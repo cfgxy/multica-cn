@@ -15,8 +15,14 @@
  *
  * Cascade semantics are web's: switching the runtime clears model /
  * thinking / tier (old vocabulary may not exist on the new runtime);
- * switching the model clears thinking / tier the same way. The voice slot
- * is independent of the text runtime and stays in edit-profile (RUYI-425).
+ * switching the model clears thinking / tier the same way.
+ *
+ * The voice override section (RUYI-749 D1) rides in the same PUT but is
+ * independent of the text runtime — a level-wise triple (provider, model,
+ * advanced) that overrides the workspace default when bound and inherits
+ * it when not; the legacy voice_runtime_id slot has no editor since
+ * RUYI-748 retired it. Provider choices share the workspace-eligibility
+ * rule (@multica/core/voice/chain) with web and the settings screen.
  *
  * Numeric fields follow web's BoundedNumberField: a draft outside its range
  * is NOT stored (revert semantics) — buildProfilePatch omits it. Session
@@ -56,7 +62,15 @@ import {
 import { agentDetailOptions } from "@/data/queries/agents";
 import { runtimeListOptions } from "@/data/queries/runtimes";
 import { runtimeModelsOptions } from "@/data/queries/runtime-models";
+import {
+  voiceProvidersOptions,
+  type AgentWithVoiceOverride,
+} from "@/data/voice-providers";
 import { useUpdateAgent } from "@/data/mutations/agents";
+import {
+  parseVoiceAdvancedDraft,
+  voiceProviderChainEligible,
+} from "@multica/core/voice/chain";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { agentSlotChoices } from "@multica/core/runtimes";
@@ -83,6 +97,11 @@ export default function AgentRunConfig() {
   const { data: runtimes, isLoading: runtimesLoading } = useQuery(
     runtimeListOptions(wsId),
   );
+  const { data: voiceProviders = [] } = useQuery(voiceProvidersOptions(wsId ?? ""));
+  const voiceEligible = useMemo(
+    () => voiceProviders.filter(voiceProviderChainEligible),
+    [voiceProviders],
+  );
 
   const [runtimeId, setRuntimeId] = useState("");
   const [model, setModel] = useState("");
@@ -96,10 +115,15 @@ export default function AgentRunConfig() {
     String(AGENT_SESSION_COMPACT_PCT_DEFAULT),
   );
   const [subagents, setSubagents] = useState(false);
+  // Voice override triple (RUYI-749 D1) — "none" is the inherit sentinel.
+  const [voiceProviderId, setVoiceProviderId] = useState("none");
+  const [voiceModel, setVoiceModel] = useState("");
+  const [voiceAdvanced, setVoiceAdvanced] = useState("");
   const [seeded, setSeeded] = useState(false);
 
   useEffect(() => {
     if (!agent || !agent.id || seeded) return;
+    const voice = agent as AgentWithVoiceOverride;
     setRuntimeId(agent.runtime_id);
     setModel(agent.model);
     setThinking(agent.thinking_level ?? "");
@@ -115,6 +139,13 @@ export default function AgentRunConfig() {
       String(agent.session_compact_pct ?? AGENT_SESSION_COMPACT_PCT_DEFAULT),
     );
     setSubagents(allowsSubagents(agent.runtime_config));
+    // The wire represents "unbound" as an empty string, which must map to
+    // the "none" (inherit) sentinel — a raw "" would select no option at all.
+    setVoiceProviderId(voice.voice_provider_id || "none");
+    setVoiceModel(voice.voice_model ?? "");
+    setVoiceAdvanced(
+      voice.voice_advanced ? JSON.stringify(voice.voice_advanced, null, 2) : "",
+    );
     setSeeded(true);
   }, [agent, seeded]);
 
@@ -190,6 +221,11 @@ export default function AgentRunConfig() {
       maxContext,
       compactPct,
       subagents,
+      // buildProfilePatch's draft vocabulary uses "" as the inherit
+      // sentinel; the UI state uses "none" — map here, once.
+      voiceProviderId: voiceProviderId === "none" ? "" : voiceProviderId,
+      voiceModel,
+      voiceAdvanced,
     });
   }, [
     agent,
@@ -202,13 +238,25 @@ export default function AgentRunConfig() {
     maxContext,
     compactPct,
     subagents,
+    voiceProviderId,
+    voiceModel,
+    voiceAdvanced,
   ]);
   const dirty = !!patch && Object.keys(patch).length > 0;
 
-  const runtimeReady =
-    !runtimesLoading && (runtimeChoices.length > 0 || runtimeId !== "");
+  // Runtime readiness must not gate the save: a runtime-less agent can
+  // still save a voice override (the server accepts it), and unchanged
+  // runtime fields never enter the patch, so nothing invalid is sent.
+  // An unparsable advanced draft still blocks the whole save —
+  // buildProfilePatch would silently drop it, and silent drops behind a
+  // visible error are exactly the confusion the error text exists to
+  // prevent.
+  const voiceAdvancedInvalid =
+    voiceProviderId !== "none" &&
+    parseVoiceAdvancedDraft(voiceAdvanced) === "invalid";
 
-  const canSave = !!patch && dirty && runtimeReady && !update.isPending;
+  const canSave =
+    !!patch && dirty && !voiceAdvancedInvalid && !update.isPending;
 
   const onSave = () => {
     if (!canSave || !patch) return;
@@ -426,6 +474,97 @@ export default function AgentRunConfig() {
             })}
           </Text>
         </Field>
+
+        <Field label={t("inspector.section_voice", "Voice")}>
+          <Text className="text-xs text-muted-foreground">
+            {t(
+              "inspector.section_voice_hint",
+              "Override the workspace default voice for this agent. Leave unbound to inherit the workspace default.",
+            )}
+          </Text>
+          <View className="rounded-md border border-border overflow-hidden mt-2">
+            <Pressable
+              onPress={() => setVoiceProviderId("none")}
+              className="flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary"
+              accessibilityRole="radio"
+              accessibilityState={{ selected: voiceProviderId === "none" }}
+            >
+              <RadioDot selected={voiceProviderId === "none"} />
+              <Text className="flex-1 text-sm text-foreground">
+                {t("inspector.voice_inherit_option", "Inherit workspace default")}
+              </Text>
+            </Pressable>
+            {voiceEligible.map((p) => (
+              <Pressable
+                key={p.id}
+                onPress={() => setVoiceProviderId(p.id)}
+                className="flex-row items-center gap-3 px-3 py-2.5 active:bg-secondary border-t border-border"
+                accessibilityRole="radio"
+                accessibilityState={{ selected: voiceProviderId === p.id }}
+              >
+                <RadioDot selected={voiceProviderId === p.id} />
+                <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
+                  {p.display_name}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          {voiceEligible.length === 0 ? (
+            <Text className="text-xs text-muted-foreground mt-1">
+              {t(
+                "inspector.voice_no_providers_hint",
+                "No eligible provider yet — add a Gemini provider with a working API key in the workspace voice settings.",
+              )}
+            </Text>
+          ) : null}
+        </Field>
+
+        {voiceProviderId !== "none" ? (
+          <>
+            <Field label={t("inspector.prop_voice_model", "Voice model")}>
+              <TextInput
+                value={voiceModel}
+                onChangeText={setVoiceModel}
+                placeholder={t("inspector.voice_model_placeholder_default", {
+                  defaultValue: "Inherits the workspace default model",
+                })}
+                placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!update.isPending}
+                className="text-base text-foreground bg-secondary/50 rounded-md px-3 py-2"
+              />
+            </Field>
+
+            <Field label={t("inspector.prop_voice_advanced", "Advanced parameters (JSON)")}>
+              <TextInput
+                value={voiceAdvanced}
+                onChangeText={setVoiceAdvanced}
+                placeholder={t(
+                  "inspector.voice_advanced_placeholder",
+                  'e.g. {"temperature": 0.5}',
+                )}
+                placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
+                multiline
+                textAlignVertical="top"
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!update.isPending}
+                className={`text-base text-foreground bg-secondary/50 rounded-md px-3 py-2 min-h-20 ${
+                  voiceAdvancedInvalid ? "border border-destructive" : ""
+                }`}
+              />
+              {voiceAdvancedInvalid ? (
+                <Text className="text-xs text-destructive mt-1">
+                  {t(
+                    "inspector.voice_advanced_invalid",
+                    "Advanced parameters must be a valid JSON object",
+                  )}
+                </Text>
+              ) : null}
+            </Field>
+          </>
+        ) : null}
 
         <Field label={t("inspector.section_session_context", "Session context")}>
           <Text className="text-xs text-muted-foreground">

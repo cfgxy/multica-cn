@@ -94,10 +94,14 @@ import type {
   SquadMember,
   TimelineEntry,
   User,
+  ClauseGovernanceOverview,
+  ClauseGovernanceDetail,
+  ClauseGovernanceReconciliation,
 } from "../types";
 import type {
   AdminUser,
   AdminUserList,
+  AdminFileReadPolicy,
   AdminWorkspace,
   AdminWorkspaceList,
   ImpersonationResponse,
@@ -135,6 +139,39 @@ import type {
 } from "../types/prompt-version";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
+import type { AuditEventsPage } from "../types/audit";
+
+export const AuditEventSchema = z.object({
+  id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  domain: z.string().default(""),
+  event_type: z.string().default(""),
+  occurred_at: z.string().nullable().default(null),
+  actor_type: z.string().default(""),
+  actor_id: z.string().nullable().default(null),
+  trigger_kind: z.string().nullable().default(null),
+  trigger_ref: z.string().nullable().default(null),
+  issue_id: z.string().nullable().default(null),
+  task_id: z.string().nullable().default(null),
+  agent_id: z.string().nullable().default(null),
+  runtime_id: z.string().nullable().default(null),
+  reason: z.string().nullable().default(null),
+  invocation_id: z.string().optional(),
+  sensitive: z.boolean().default(false),
+  details: z.record(z.string(), z.unknown()).default({}),
+}).loose();
+
+export const AuditEventsPageSchema = z.object({
+  events: z.array(AuditEventSchema).default([]),
+  next_cursor: z.string().nullable().default(null),
+  next_cursor_id: z.string().nullable().default(null),
+}).loose();
+
+export const EMPTY_AUDIT_EVENTS_PAGE: AuditEventsPage = {
+  events: [],
+  next_cursor: null,
+  next_cursor_id: null,
+};
 
 export const PluginConfigFieldSchema = z.object({
   key: z.string(),
@@ -480,6 +517,7 @@ export const GitHubPullRequestSchema = z.object({
   state: z.string(),
   html_url: z.string(),
   branch: z.string().nullable(),
+  base_branch: z.string().nullable().optional(),
   author_login: z.string().nullable(),
   author_avatar_url: z.string().nullable(),
   merged_at: z.string().nullable(),
@@ -488,6 +526,7 @@ export const GitHubPullRequestSchema = z.object({
   pr_updated_at: z.string(),
   mergeable: z.string().nullable().optional(),
   merge_state_status: z.string().nullable().optional(),
+  review_decision: z.string().nullable().optional(),
   snapshot_available: z.boolean().optional(),
   checks_rollup: z.string().nullable().optional(),
   checks_conclusion: z.string().nullable().optional(),
@@ -1044,11 +1083,23 @@ export const DecisionOptionSchema = z.object({
   label: z.string(),
 }).loose();
 
+export const DecisionContextSchema = z.object({
+  why_now: z.string().optional(),
+  facts: z.array(z.object({
+    statement: z.string(),
+    evidence: z.array(z.string()).optional(),
+  }).loose()).optional(),
+  impact: z.string().optional(),
+  recommendation_reason: z.string().optional(),
+  unknowns: z.array(z.string()).optional(),
+}).loose();
+
 export const IssueDecisionSchema = z.object({
   id: z.string(),
   issue_id: z.string(),
   source_comment_id: z.string().nullable().optional(),
   question: z.string(),
+  context: DecisionContextSchema.nullable().optional(),
   options: z.array(DecisionOptionSchema),
   multi_select: z.boolean(),
   recommended_indices: z.array(z.number().int()),
@@ -2248,6 +2299,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   agent_id: z.string().default(""),
   creator_id: z.string().default(""),
   project_id: z.string().nullable().optional(),
+  model_override: z.string().nullable().optional(),
   title: z.string().default(""),
   status: z.enum(["active", "archived"]).catch("active"),
   has_unread: z.boolean().default(false),
@@ -2266,6 +2318,7 @@ export const EMPTY_CHAT_SESSION: ChatSession = {
   agent_id: "",
   creator_id: "",
   title: "",
+  model_override: null,
   status: "active",
   has_unread: false,
   created_at: "",
@@ -2909,6 +2962,24 @@ export const AdminWorkspaceListSchema = z.object({
 export const EMPTY_ADMIN_WORKSPACE_LIST: AdminWorkspaceList = {
   workspaces: [],
   total: 0,
+};
+
+export const FileReadDenyRuleSchema = z.object({
+  id: z.string().default(""),
+  pattern: z.string().default(""),
+  description: z.string().default(""),
+  enabled: z.boolean().default(false),
+  builtin: z.boolean().default(false),
+}).loose();
+
+export const AdminFileReadPolicySchema = z.object({
+  version: z.number().default(1),
+  rules: z.array(FileReadDenyRuleSchema).default([]),
+}).loose();
+
+export const EMPTY_ADMIN_FILE_READ_POLICY: AdminFileReadPolicy = {
+  version: 1,
+  rules: [],
 };
 
 // Impersonation start/stop reuse the login response shape ({token, user}).
@@ -5012,6 +5083,7 @@ export const PromptProposalSchema = z.object({
   gate_errors: z.array(LegislationGateFindingSchema),
   gate_warnings: z.array(LegislationGateFindingSchema),
   enacted_version: z.number().optional(),
+  rollback_of_version: z.number().optional(),
   rollback_reason: z.string(),
   merged_from: z.array(PromptProposalMergeRefSchema),
   source: z.string(),
@@ -5358,3 +5430,171 @@ const DaemonBackpressureEventSchema = z.object({
 export const RuntimeBackpressureEventListSchema = z.array(DaemonBackpressureEventSchema);
 
 export type RuntimeBackpressureEvent = z.infer<typeof DaemonBackpressureEventSchema>;
+
+const ClauseGovernanceTotalsSchema = z.object({
+  injections: z.number().default(0),
+  runs: z.number().default(0),
+  degraded_rows: z.number().default(0),
+  degraded_runs: z.number().default(0),
+  clause_tokens: z.number().default(0),
+}).loose();
+
+const ClauseGovernanceClauseSchema = z.object({
+  id: z.string().default(""),
+  slug: z.string().default(""),
+  title: z.string().default(""),
+  status: z.string().default(""),
+  latest_version: z.number().default(0),
+  bound_scope: z.string().optional(),
+  bound_scope_id: z.string().optional(),
+  injections: z.number().default(0),
+  runs: z.number().default(0),
+  injected_tokens: z.number().default(0),
+  tokens_pending: z.boolean().default(false),
+}).loose();
+
+const ClauseGovernanceMigrationSchema = z.object({
+  total_carriers: z.number().default(0),
+  bound_carriers: z.number().default(0),
+  by_scope: z.record(z.string(), z.number()).default({}),
+  by_scope_total: z.record(z.string(), z.number()).default({}),
+}).loose();
+
+export const ClauseGovernanceOverviewSchema = z.object({
+  workspace_id: z.string().default(""),
+  since: z.string().default(""),
+  dynamic_injection_disabled: z.boolean().default(false),
+  clauses: z.array(ClauseGovernanceClauseSchema).default([]),
+  status_counts: z.record(z.string(), z.number()).default({}),
+  totals: ClauseGovernanceTotalsSchema.default({
+    injections: 0,
+    runs: 0,
+    degraded_rows: 0,
+    degraded_runs: 0,
+    clause_tokens: 0,
+  }),
+  migration: ClauseGovernanceMigrationSchema.default({
+    total_carriers: 0,
+    bound_carriers: 0,
+    by_scope: {},
+    by_scope_total: {},
+  }),
+  rollback_suggestions: z.array(PromptProposalSchema).default([]),
+}).loose();
+
+export const EMPTY_CLAUSE_GOVERNANCE_OVERVIEW: ClauseGovernanceOverview = {
+  workspace_id: "",
+  since: "",
+  dynamic_injection_disabled: false,
+  clauses: [],
+  status_counts: {},
+  totals: { injections: 0, runs: 0, degraded_rows: 0, degraded_runs: 0, clause_tokens: 0 },
+  migration: { total_carriers: 0, bound_carriers: 0, by_scope: {}, by_scope_total: {} },
+  rollback_suggestions: [],
+};
+
+const ClauseGovernanceVersionSchema = z.object({
+  version: z.number().default(0),
+  content: z.string().default(""),
+  content_sha256: z.string().default(""),
+  source: z.string().default(""),
+  carrier_scope: z.string().default(""),
+  created_by_type: z.string().default(""),
+  created_at: z.string().default(""),
+}).loose();
+
+const ClauseGovernanceBindingSchema = z.object({
+  id: z.string().default(""),
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  status: z.string().default(""),
+  conditions: z.object({ task_kinds: z.array(z.string()).optional() }).loose().nullable().optional(),
+  since_clause_version: z.number().default(0),
+  created_at: z.string().default(""),
+}).loose();
+
+const ClauseGovernanceQualityDaySchema = z.object({
+  day: z.string().default(""),
+  clause_version: z.number().default(0),
+  finished_runs: z.number().default(0),
+  injected_tokens: z.number().nullable().optional(),
+  run_tokens_median: z.number().nullable().optional(),
+  attributable_failed_runs: z.number().default(0),
+  excluded_failed_runs: z.number().default(0),
+}).loose();
+
+export const ClauseGovernanceDetailSchema = z.object({
+  id: z.string().default(""),
+  slug: z.string().default(""),
+  title: z.string().default(""),
+  status: z.string().default(""),
+  latest_version: z.number().default(0),
+  versions: z.array(ClauseGovernanceVersionSchema).default([]),
+  bindings: z.array(ClauseGovernanceBindingSchema).default([]),
+  proposals: z.array(PromptProposalSchema).default([]),
+  quality_daily: z.array(ClauseGovernanceQualityDaySchema).default([]),
+  injections: z.number().default(0),
+  runs: z.number().default(0),
+  injected_tokens: z.number().default(0),
+}).loose();
+
+export const EMPTY_CLAUSE_GOVERNANCE_DETAIL: ClauseGovernanceDetail = {
+  id: "",
+  slug: "",
+  title: "",
+  status: "",
+  latest_version: 0,
+  versions: [],
+  bindings: [],
+  proposals: [],
+  quality_daily: [],
+  injections: 0,
+  runs: 0,
+  injected_tokens: 0,
+};
+
+const ClauseLayerSetViolationSchema = z.object({
+  task_id: z.string().default(""),
+  clause_id: z.string().default(""),
+  clause_version: z.number().default(0),
+  carrier_scope: z.string().default(""),
+  degraded: z.boolean().default(false),
+  created_at: z.string().default(""),
+}).loose();
+
+const ClauseDriftEntrySchema = z.object({
+  kind: z.string().default(""),
+  slug: z.string().default(""),
+  marker_rev: z.number().optional(),
+  expected_rev: z.number().optional(),
+}).loose();
+
+const ClauseDriftCarrierSchema = z.object({
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  entries: z.array(ClauseDriftEntrySchema).default([]),
+}).loose();
+
+export const ClauseGovernanceReconciliationSchema = z.object({
+  since: z.string().default(""),
+  healthy: z.boolean().default(false),
+  layer_set_violations: z.array(ClauseLayerSetViolationSchema).default([]),
+  totals: ClauseGovernanceTotalsSchema.default({
+    injections: 0,
+    runs: 0,
+    degraded_rows: 0,
+    degraded_runs: 0,
+    clause_tokens: 0,
+  }),
+  drift: z.array(ClauseDriftCarrierSchema).default([]),
+  carriers_scanned: z.number().default(0),
+}).loose();
+
+export const EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION: ClauseGovernanceReconciliation = {
+  since: "",
+  healthy: false,
+  layer_set_violations: [],
+  totals: { injections: 0, runs: 0, degraded_rows: 0, degraded_runs: 0, clause_tokens: 0 },
+  drift: [],
+  carriers_scanned: 0,
+};

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS mcp_pre_auth_rejection_expiry_idx;

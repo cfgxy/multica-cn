@@ -39,8 +39,12 @@ export interface InputShapeInput {
   sending: boolean;
   /** queued 任务不给 Stop（现状语义）。 */
   allowStop: boolean;
+  /** Running session accepts queue submissions while the current task is active. */
+  allowSubmitWhileRunning: boolean;
   /** text.trim() 非空。 */
   hasDraft: boolean;
+  /** Composer is busy with an attachment upload or a local submission. */
+  busy: boolean;
   /** 听写长条已展开。 */
   dictationOpen: boolean;
   voice: VoiceGateVerdict;
@@ -65,7 +69,7 @@ export function resolveInputShape(input: InputShapeInput): InputShape {
   if (input.sending && input.allowStop) {
     return { dictation: false, pill: false, rightSlot: "stop" };
   }
-  if (!input.hasDraft && input.voice === "available") {
+  if (!input.busy && !input.hasDraft && input.voice === "available") {
     return { dictation: false, pill: false, rightSlot: "voice" };
   }
   return {

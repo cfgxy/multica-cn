@@ -249,6 +249,18 @@ func removeClauseBlock(text, block string) string {
 	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
 
+// RemoveClauses removes each clause block — matched by its leading bold
+// label, the same block semantics re-render uses — from text. It backs
+// legacy-migration snapshot verification (ADR 007 §8): the stable half of a
+// migrated document must equal the pre-migration text with every migrated
+// body removed, byte for byte.
+func RemoveClauses(text string, blocks []string) string {
+	for _, block := range blocks {
+		text = removeClauseBlock(text, block)
+	}
+	return text
+}
+
 var clauseStartRe = regexp.MustCompile(`^(?:[-*]|\d+\.)\s+\*\*([^*\n]+)\*\*[：:]|^\*\*([^*\n]+)\*\*[：:]`)
 var headingRe = regexp.MustCompile(`^#{1,6} `)
 

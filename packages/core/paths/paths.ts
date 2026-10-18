@@ -43,6 +43,9 @@ function workspaceScoped(slug: string) {
     selfEvolutionSkillDetail: (id: string) =>
       `${ws}/self-evolution/skills/${encode(id)}`,
     selfEvolutionQuality: () => `${ws}/self-evolution/quality`,
+    selfEvolutionClauseGovernance: () => `${ws}/self-evolution/clause-governance`,
+    selfEvolutionClauseGovernanceDetail: (clauseId: string) =>
+      `${ws}/self-evolution/clause-governance/${encode(clauseId)}`,
     selfEvolutionQuiz: () => `${ws}/self-evolution/quiz`,
     selfEvolutionProposals: () => `${ws}/self-evolution/proposals`,
     selfEvolutionVersions: () => `${ws}/self-evolution/versions`,

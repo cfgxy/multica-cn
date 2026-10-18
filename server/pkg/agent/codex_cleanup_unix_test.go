@@ -102,6 +102,58 @@ func TestCodexInitializeTimeoutReapsDetachedStdioDescendant(t *testing.T) {
 	}
 }
 
+func TestCodexReconnectTimeoutReapsDetachedStdioDescendant(t *testing.T) {
+	previousReconnect := codexReconnectTimeoutNanos.Swap(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexReconnectTimeoutNanos.Store(previousReconnect) })
+	previousGrace := codexGracefulShutdownTimeoutNanos.Swap(int64(100 * time.Millisecond))
+	t.Cleanup(func() { codexGracefulShutdownTimeoutNanos.Store(previousGrace) })
+
+	tempDir := t.TempDir()
+	pidFile := filepath.Join(tempDir, "descendant.pid")
+	fakePath := writeFakeCodexAppServer(t, ""+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":1,"result":{}}'`+"\n"+
+		`read line`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thr-reconnect-cleanup"}}}'`+"\n"+
+		`read line`+"\n"+
+		`echo '{"jsonrpc":"2.0","id":3,"result":{}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"thr-reconnect-cleanup","turn":{"id":"turn-reconnect-cleanup"}}}'`+"\n"+
+		`echo '{"jsonrpc":"2.0","method":"error","params":{"threadId":"thr-reconnect-cleanup","error":{"message":"temporary reconnect"},"willRetry":true}}'`+"\n"+
+		`sleep 30 >/dev/null 2>&1 & echo $! > "`+pidFile+`"`+"\n"+
+		`sleep 30`+"\n")
+
+	backend, err := New("codex", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := backend.Execute(context.Background(), "prompt", ExecOptions{
+		Timeout:                   5 * time.Second,
+		SemanticInactivityTimeout: 3 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+	result := <-session.Result
+	if result.Status != "failed" || !strings.Contains(result.Error, "could not reconnect within 100ms") {
+		t.Fatalf("expected reconnect window failure, got %+v", result)
+	}
+
+	rawPID, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitProcessGone(t, pid)
+}
+
 func TestCodexInitializeTimeoutDoesNotPersistOpaqueEnv(t *testing.T) {
 	const secret = "opaque-init-auth-sentinel-7319"
 	fakePath := writeFakeCodexAppServer(t, ""+

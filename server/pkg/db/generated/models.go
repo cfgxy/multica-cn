@@ -219,6 +219,7 @@ type AgentTaskQueue struct {
 	CancelActorType         pgtype.Text        `json:"cancel_actor_type"`
 	CancelActorID           pgtype.UUID        `json:"cancel_actor_id"`
 	LocalDirectoryScope     []byte             `json:"local_directory_scope"`
+	ChatModelSnapshot       pgtype.Text        `json:"chat_model_snapshot"`
 }
 
 type AgentToLabel struct {
@@ -246,21 +247,24 @@ type Attachment struct {
 }
 
 type AuditEvent struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Domain      string             `json:"domain"`
-	EventType   string             `json:"event_type"`
-	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
-	ActorType   string             `json:"actor_type"`
-	ActorID     pgtype.UUID        `json:"actor_id"`
-	TriggerKind pgtype.Text        `json:"trigger_kind"`
-	TriggerRef  pgtype.Text        `json:"trigger_ref"`
-	IssueID     pgtype.UUID        `json:"issue_id"`
-	TaskID      pgtype.UUID        `json:"task_id"`
-	AgentID     pgtype.UUID        `json:"agent_id"`
-	RuntimeID   pgtype.UUID        `json:"runtime_id"`
-	Reason      pgtype.Text        `json:"reason"`
-	Details     []byte             `json:"details"`
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Domain       string             `json:"domain"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	TriggerKind  pgtype.Text        `json:"trigger_kind"`
+	TriggerRef   pgtype.Text        `json:"trigger_ref"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Autopilot struct {
@@ -627,6 +631,7 @@ type ChatSession struct {
 	PinnedAt            pgtype.Timestamptz `json:"pinned_at"`
 	ProjectID           pgtype.UUID        `json:"project_id"`
 	ExplicitlyCreatedAt pgtype.Timestamptz `json:"explicitly_created_at"`
+	ModelOverride       pgtype.Text        `json:"model_override"`
 }
 
 // Governance clause asset (RUYI-751 / ADR 007): stable identity and lifecycle status only. The effective body lives in clause_version, the effective scope in clause_binding — this row is never the read source for injected text.
@@ -852,6 +857,68 @@ type DaemonConnection struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DaemonFileAccessTarget struct {
+	ID           string             `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Enabled      bool               `json:"enabled"`
+	Roots        []byte             `json:"roots"`
+	WorkspaceAcl []byte             `json:"workspace_acl"`
+	MemberAcl    []byte             `json:"member_acl"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DaemonFileOperation struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	TargetID     string             `json:"target_id"`
+	Kind         string             `json:"kind"`
+	Request      []byte             `json:"request"`
+	Status       string             `json:"status"`
+	LeaseEpoch   int64              `json:"lease_epoch"`
+	Result       []byte             `json:"result"`
+	ErrorClass   pgtype.Text        `json:"error_class"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ClaimedAt    pgtype.Timestamptz `json:"claimed_at"`
+	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	RequesterID  pgtype.UUID        `json:"requester_id"`
+}
+
+type DaemonOpsCommand struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	RuntimeID       pgtype.UUID        `json:"runtime_id"`
+	DaemonID        string             `json:"daemon_id"`
+	Kind            string             `json:"kind"`
+	Args            []byte             `json:"args"`
+	Status          string             `json:"status"`
+	TimeoutS        int32              `json:"timeout_s"`
+	LeaseEpoch      int64              `json:"lease_epoch"`
+	ClaimedAt       pgtype.Timestamptz `json:"claimed_at"`
+	FinishedAt      pgtype.Timestamptz `json:"finished_at"`
+	ExitCode        pgtype.Int4        `json:"exit_code"`
+	Result          []byte             `json:"result"`
+	RejectReason    pgtype.Text        `json:"reject_reason"`
+	SubmittedByType string             `json:"submitted_by_type"`
+	SubmittedByID   pgtype.UUID        `json:"submitted_by_id"`
+	SubmissionKey   pgtype.Text        `json:"submission_key"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DaemonServiceInventory struct {
+	DaemonID      string             `json:"daemon_id"`
+	CollectStatus string             `json:"collect_status"`
+	Services      []byte             `json:"services"`
+	Error         pgtype.Text        `json:"error"`
+	LastReportAt  pgtype.Timestamptz `json:"last_report_at"`
+	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
 type DaemonToken struct {
 	ID          pgtype.UUID        `json:"id"`
 	TokenHash   string             `json:"token_hash"`
@@ -1029,6 +1096,8 @@ type GithubPullRequest struct {
 	ChecksRollupState   pgtype.Text        `json:"checks_rollup_state"`
 	SnapshotHeadSha     string             `json:"snapshot_head_sha"`
 	SnapshotFetchedAt   pgtype.Timestamptz `json:"snapshot_fetched_at"`
+	TargetBranch        pgtype.Text        `json:"target_branch"`
+	ReviewDecision      pgtype.Text        `json:"review_decision"`
 }
 
 type GithubPullRequestCheckRun struct {
@@ -1140,6 +1209,7 @@ type IssueDecision struct {
 	ExecutionResult       []byte             `json:"execution_result"`
 	ExecutionError        pgtype.Text        `json:"execution_error"`
 	ExecutedAt            pgtype.Timestamptz `json:"executed_at"`
+	Context               []byte             `json:"context"`
 }
 
 type IssueDependency struct {
@@ -1532,6 +1602,54 @@ type MarketplacePromptVersion struct {
 	WithdrawnBy          pgtype.UUID        `json:"withdrawn_by"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
+type McpFileAccessInstanceBinding struct {
+	InstanceID  string             `json:"instance_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	TargetID    string             `json:"target_id"`
+	Enabled     bool               `json:"enabled"`
+	UpdatedBy   pgtype.UUID        `json:"updated_by"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type McpFileReadPolicy struct {
+	Singleton bool               `json:"singleton"`
+	Version   int64              `json:"version"`
+	Rules     []byte             `json:"rules"`
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type McpInvocationAuditOutbox struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	EventType     string             `json:"event_type"`
+	OccurredAt    pgtype.Timestamptz `json:"occurred_at"`
+	ActorType     string             `json:"actor_type"`
+	ActorID       pgtype.UUID        `json:"actor_id"`
+	InvocationID  pgtype.UUID        `json:"invocation_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	RuntimeID     pgtype.UUID        `json:"runtime_id"`
+	Reason        pgtype.Text        `json:"reason"`
+	Details       []byte             `json:"details"`
+	Sensitive     bool               `json:"sensitive"`
+	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
+	Attempts      int32              `json:"attempts"`
+	LastAttemptAt pgtype.Timestamptz `json:"last_attempt_at"`
+	LastErrorCode pgtype.Text        `json:"last_error_code"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type McpPreAuthRejection struct {
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	InstanceID   string             `json:"instance_id"`
+	ReasonCode   string             `json:"reason_code"`
+	FileToolName pgtype.Text        `json:"file_tool_name"`
+	RecordedAt   pgtype.Timestamptz `json:"recorded_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Member struct {
@@ -2354,6 +2472,7 @@ type VcsPullRequest struct {
 	ChangedFiles    int32              `json:"changed_files"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	TargetBranch    pgtype.Text        `json:"target_branch"`
 }
 
 type VerificationCode struct {

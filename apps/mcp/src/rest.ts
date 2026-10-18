@@ -47,6 +47,8 @@ import type {
   IssueListResult,
   IssueRelationType,
   IssueRelationsInfo,
+  InboxItemInfo,
+  InboxWorkspaceUnreadInfo,
   ModelListRequestInfo,
   ProjectInfo,
   ProjectResourceInfo,
@@ -55,6 +57,7 @@ import type {
   QuickReplyInfo,
   RemoveIssueRelationResult,
   RunDetail,
+  RunActivity,
   RunInfo,
   RuntimeInfo,
   SearchIssueInfo,
@@ -133,12 +136,18 @@ export interface MulticaClientOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   logger?: Logger;
+  auditServiceCredential?: string | undefined;
+  mcpInstanceId?: string | undefined;
+  fileAccessInstanceCredential?: string | undefined;
 }
 
 interface RequestOptions {
   workspace?: string | undefined;
   query?: Record<string, string | number | boolean | undefined> | undefined;
   body?: unknown;
+  headers?: Record<string, string> | undefined;
+  auditService?: boolean | undefined;
+  fileAccessInstance?: boolean | undefined;
 }
 
 export class MulticaClient {
@@ -147,6 +156,9 @@ export class MulticaClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly logger: Logger;
+  private readonly auditServiceCredential: string | undefined;
+  private readonly mcpInstanceId: string | undefined;
+  private readonly fileAccessInstanceCredential: string | undefined;
 
   constructor(options: MulticaClientOptions) {
     this.baseUrl = options.serverUrl.replace(/\/+$/, "");
@@ -154,12 +166,168 @@ export class MulticaClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.logger = options.logger ?? stderrLogger;
+    this.auditServiceCredential = options.auditServiceCredential?.trim() || undefined;
+    this.mcpInstanceId = options.mcpInstanceId?.trim() || undefined;
+    this.fileAccessInstanceCredential = options.fileAccessInstanceCredential?.trim() || undefined;
+  }
+
+  get mcpInstanceIdentity(): string | undefined {
+    return this.mcpInstanceId;
   }
 
   // ---- workspace-scoped operations -------------------------------------
 
   async listWorkspaces(): Promise<WorkspaceInfo[]> {
     return this.request<WorkspaceInfo[]>("GET", "/api/workspaces");
+  }
+
+  async resolveWorkspaceId(workspace: string): Promise<string> {
+    return isUuid(workspace) ? workspace : this.resolveWorkspaceIdBySlug(workspace);
+  }
+
+  async listInbox(workspace: string): Promise<InboxItemInfo[]> {
+    return this.request("GET", "/api/inbox", { workspace });
+  }
+
+  async listArchivedInbox(workspace: string): Promise<InboxItemInfo[]> {
+    return this.request("GET", "/api/inbox/archived", { workspace });
+  }
+
+  async countUnreadInbox(workspace: string): Promise<{ count: number }> {
+    return this.request("GET", "/api/inbox/unread-count", { workspace });
+  }
+
+  async unreadInboxSummary(workspace: string): Promise<InboxWorkspaceUnreadInfo[]> {
+    return this.request("GET", "/api/inbox/unread-summary", { workspace });
+  }
+
+  async markAllInboxRead(workspace: string): Promise<{ count: number }> {
+    return this.request("POST", "/api/inbox/mark-all-read", { workspace, body: {} });
+  }
+
+  async archiveAllInbox(workspace: string): Promise<{ count: number }> {
+    return this.request("POST", "/api/inbox/archive-all", { workspace, body: {} });
+  }
+
+  async archiveAllReadInbox(workspace: string): Promise<{ count: number }> {
+    return this.request("POST", "/api/inbox/archive-all-read", { workspace, body: {} });
+  }
+
+  async archiveCompletedInbox(workspace: string): Promise<{ count: number }> {
+    return this.request("POST", "/api/inbox/archive-completed", { workspace, body: {} });
+  }
+
+  async markInboxItemRead(workspace: string, id: string): Promise<InboxItemInfo> {
+    return this.request("POST", `/api/inbox/${encodeURIComponent(id)}/read`, { workspace, body: {} });
+  }
+
+  async markInboxItemUnread(workspace: string, id: string): Promise<InboxItemInfo> {
+    return this.request("POST", `/api/inbox/${encodeURIComponent(id)}/unread`, { workspace, body: {} });
+  }
+
+  async archiveInboxItem(workspace: string, id: string): Promise<InboxItemInfo> {
+    return this.request("POST", `/api/inbox/${encodeURIComponent(id)}/archive`, { workspace, body: {} });
+  }
+
+  async unarchiveInboxItem(workspace: string, id: string): Promise<InboxItemInfo> {
+    return this.request("POST", `/api/inbox/${encodeURIComponent(id)}/unarchive`, { workspace, body: {} });
+  }
+
+  async startMcpInvocationAudit(input: {
+    invocation_id: string;
+    workspace_id: string;
+    tool_name: string;
+    reported_client_name?: string;
+    reported_client_version?: string;
+    target_type?: "workspace";
+    target_id?: string;
+    instance_id?: string;
+  }): Promise<void> {
+    await this.request("POST", "/api/mcp/audit-start", {
+      body: input,
+      auditService: true,
+      fileAccessInstance: input.instance_id !== undefined,
+    });
+  }
+
+  async finishMcpInvocationAudit(input: {
+    invocation_id: string;
+    status: "success" | "failure" | "refused";
+    duration_ms: number;
+    operation_id?: string;
+    instance_id?: string;
+    error_code?: "invalid_input" | "not_found" | "permission_denied" | "unavailable" | "timeout" | "internal";
+  }): Promise<"recorded" | "queued" | "unrecorded"> {
+    const { instance_id: instanceId, ...body } = input;
+    const response = await this.request<{ status: "recorded" | "queued" | "unrecorded" }>("POST", "/api/mcp/audit-finish", {
+      body,
+      auditService: true,
+      fileAccessInstance: instanceId !== undefined,
+    });
+    return response.status;
+  }
+
+  async recordMcpPreAuthRejection(input: {
+    invocation_id: string;
+    reason_code: "unknown_tool" | "missing_workspace" | "invalid_workspace" | "unauthenticated_actor" | "entry_rejected";
+    file_tool_name?: "list_files" | "get_file_metadata" | "read_file_chunk";
+  }): Promise<void> {
+    await this.request("POST", "/api/mcp/pre-auth-rejections", {
+      body: input,
+      auditService: true,
+      fileAccessInstance: true,
+    });
+  }
+
+  async runFileAccessTool(input: {
+    tool: "list_files" | "get_file_metadata" | "read_file_chunk";
+    workspace: string;
+    invocation_id: string;
+    path: string;
+    host?: string;
+    offset?: number;
+    length?: number;
+    limit?: number;
+    cursor?: string;
+  }): Promise<MCPFileAccessResult> {
+    const route = {
+      list_files: "/api/file-access/list",
+      get_file_metadata: "/api/file-access/metadata",
+      read_file_chunk: "/api/file-access/read",
+    }[input.tool];
+    const { operation_id: operationId } = await this.request<{ operation_id: string; status: string }>("POST", route, {
+      workspace: input.workspace,
+      body: {
+        invocation_id: input.invocation_id,
+        ...(input.host !== undefined ? { host: input.host } : {}),
+        path: input.path,
+        ...(input.offset !== undefined ? { offset: input.offset } : {}),
+        ...(input.length !== undefined ? { length: input.length } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
+      },
+      fileAccessInstance: true,
+    });
+    const deadline = Date.now() + 110_000;
+    while (Date.now() < deadline) {
+      const operation = await this.request<{
+        operation_id: string;
+        kind: string;
+        status: "pending" | "claimed" | "succeeded" | "rejected" | "failed" | "timeout" | "expired";
+        result: unknown;
+        error: string;
+      }>("GET", `/api/file-access/operations/${encodeURIComponent(operationId)}`, {
+        workspace: input.workspace,
+        query: { invocation_id: input.invocation_id },
+        fileAccessInstance: true,
+      });
+      if (operation.status === "succeeded") return new MCPFileAccessResult(operation.result, operationId);
+      if (operation.status === "failed" || operation.status === "rejected" || operation.status === "expired" || operation.status === "timeout") {
+        throw new MCPFileAccessError(normalizeFileAccessErrorCode(operation.error || "internal"), operation.status, operationId);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new MCPFileAccessError("timeout", "timeout", operationId);
   }
 
   async listAgents(workspace: string): Promise<AgentInfo[]> {
@@ -182,6 +350,29 @@ export class MulticaClient {
       `/api/projects/${encodeURIComponent(projectId)}`,
       { workspace },
     );
+  }
+
+  async getAutopilot(workspace: string, autopilotId: string): Promise<Record<string, unknown>> {
+    return this.request("GET", `/api/autopilots/${encodeURIComponent(autopilotId)}`, { workspace });
+  }
+
+  async listAutopilotRuns(
+    workspace: string,
+    autopilotId: string,
+    params: { limit?: number; offset?: number; status?: string; source?: string; triggered_after?: string; triggered_before?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    return this.request("GET", `/api/autopilots/${encodeURIComponent(autopilotId)}/runs`, {
+      workspace,
+      query: params,
+    });
+  }
+
+  async getAutopilotRun(workspace: string, autopilotId: string, runId: string): Promise<Record<string, unknown>> {
+    return this.request("GET", `/api/autopilots/${encodeURIComponent(autopilotId)}/runs/${encodeURIComponent(runId)}`, { workspace });
+  }
+
+  async triggerAutopilot(workspace: string, autopilotId: string, body: Record<string, unknown>, idempotencyKey: string): Promise<Record<string, unknown>> {
+    return this.request("POST", `/api/autopilots/${encodeURIComponent(autopilotId)}/trigger`, { workspace, body, headers: { "Idempotency-Key": idempotencyKey } });
   }
 
   async createProject(workspace: string, body: CreateProjectBody): Promise<ProjectInfo> {
@@ -448,6 +639,25 @@ export class MulticaClient {
       "GET",
       `/api/issues/${encodeURIComponent(issueId)}/tasks/${encodeURIComponent(runId)}`,
       { workspace },
+    );
+  }
+
+  async getIssueRunActivity(
+    workspace: string,
+    issueId: string,
+    runId: string,
+    params: {
+      after_seq?: number;
+      semantic_limit?: number;
+      stream?: "stdout" | "stderr" | "both";
+      tail_bytes?: number;
+      worker_cursor?: string;
+    } = {},
+  ): Promise<RunActivity> {
+    return this.request(
+      "GET",
+      `/api/issues/${encodeURIComponent(issueId)}/tasks/${encodeURIComponent(runId)}/activity`,
+      { workspace, query: params },
     );
   }
 
@@ -893,6 +1103,20 @@ export class MulticaClient {
     if (options.workspace !== undefined) {
       Object.assign(headers, this.workspaceHeaders(options.workspace));
     }
+    Object.assign(headers, options.headers ?? {});
+    if (options.auditService) {
+      if (!this.auditServiceCredential) {
+        throw new MulticaRequestError("MCP audit service credential is not configured");
+      }
+      headers["X-Multica-MCP-Service-Credential"] = this.auditServiceCredential;
+    }
+    if (options.fileAccessInstance) {
+      if (!this.mcpInstanceId || !this.fileAccessInstanceCredential) {
+        throw new MulticaRequestError("MCP file access instance credential is not configured");
+      }
+      headers["X-Multica-MCP-Instance-ID"] = this.mcpInstanceId;
+      headers["X-Multica-MCP-Instance-Credential"] = this.fileAccessInstanceCredential;
+    }
     let requestBody: string | undefined;
     if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";
@@ -943,6 +1167,41 @@ export class MulticaClient {
       );
     }
   }
+}
+
+export class MCPFileAccessError extends Error {
+  readonly code: MCPFileAccessErrorCode;
+  readonly status: MCPFileAccessStatus;
+  readonly operationId: string | undefined;
+
+  constructor(code: MCPFileAccessErrorCode, status: MCPFileAccessStatus, operationId?: string) {
+    super(`MCP file access ${status}: ${code}`);
+    this.name = "MCPFileAccessError";
+    this.code = code;
+    this.status = status;
+    this.operationId = operationId;
+  }
+}
+
+type MCPFileAccessErrorCode = "invalid_input" | "not_found" | "permission_denied" | "unavailable" | "timeout" | "internal";
+type MCPFileAccessStatus = "rejected" | "failed" | "expired" | "timeout";
+
+function normalizeFileAccessErrorCode(code: string): MCPFileAccessErrorCode {
+  switch (code) {
+    case "invalid_input":
+    case "not_found":
+    case "permission_denied":
+    case "unavailable":
+    case "timeout":
+    case "internal":
+      return code;
+    default:
+      return "internal";
+  }
+}
+
+export class MCPFileAccessResult {
+  constructor(readonly result: unknown, readonly operationId: string) {}
 }
 
 function describeErrorBody(rawBody: string, status: number): string {

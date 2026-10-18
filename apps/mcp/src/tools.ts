@@ -6,7 +6,8 @@
  * matter (runs started, quota spent, destructive outcomes). Parameter-level
  * constraints live in the input schema, not the description.
  *
- * Read: list_workspaces, list_agents, list_projects, get_project, list_issues,
+ * Read: list_workspaces, list_files, get_file_metadata, read_file_chunk,
+ *       list_agents, list_projects, get_project, list_issues,
  *       get_issue, search_issues, progress_digest, list_comments, get_comment,
  *       get_issue_relations.
  * Write (issues): create_issue, add_comment, update_issue_status,
@@ -175,6 +176,8 @@ const DATE_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
 
 const BULK_ON_ERROR = ["continue", "stop"] as const;
 const MAX_BULK_UPDATE_ITEMS = 50;
+const AUTOPILOT_OUTPUT_MAX_LENGTH = 4_000;
+const AUTOPILOT_DETAIL_MAX_LENGTH = 512;
 // Fields a bulk item may carry. Unknown keys are rejected rather than
 // ignored: a silently dropped field across 50 issues is exactly the
 // "silent miss" bulk_update_issues exists to prevent.
@@ -233,6 +236,80 @@ function issueBrief(issue: IssueInfo | SearchIssueInfo): Record<string, unknown>
   const snippet = (issue as SearchIssueInfo).matched_snippet;
   if (snippet !== undefined) brief.matched_snippet = snippet;
   return brief;
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function safeAutopilotText(value: unknown, maxLength = AUTOPILOT_DETAIL_MAX_LENGTH): string | null {
+  if (typeof value !== "string") return null;
+  const redacted = value
+    .replace(/(authorization\s*[:=]\s*)([^\r\n]+)/gi, "$1[REDACTED]")
+    .replace(/((?:api[_ -]?key|token|password|secret|authorization)\s*[:=]\s*)([^\s,;]+)/gi, "$1[REDACTED]")
+    .replace(/\b(?:mul|sk|ghp)_[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+    .trim();
+  if (redacted.length <= maxLength) return redacted || null;
+  return `${redacted.slice(0, maxLength)}...`;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+// The API's native run row is authoritative. This allow-list keeps MCP from
+// echoing trigger payloads, arbitrary task results, or future server fields.
+function autopilotRunProjection(run: Record<string, unknown>): Record<string, unknown> {
+  const result = objectValue(run.result);
+  const sample = objectValue(result.sample);
+  const rawOutput = typeof result.output === "string" ? result.output.trim() : "";
+  const task = objectValue(run.task);
+  const taskID = typeof run.task_id === "string" ? run.task_id : null;
+  return {
+    id: run.id,
+    autopilot_id: run.autopilot_id,
+    source: run.source,
+    mode: run.mode,
+    source_run_id: run.source_run_id ?? null,
+    status: run.status,
+    issue_id: run.issue_id ?? null,
+    task_id: taskID,
+    triggered_at: run.triggered_at,
+    completed_at: run.completed_at ?? null,
+    reason_code: run.reason_code ?? null,
+    failure_reason: safeAutopilotText(run.failure_reason),
+    result_summary: {
+      sample_status: typeof sample.status === "string" ? sample.status : null,
+      candidate_count: numberValue(sample.candidate_count),
+      qualified_count: numberValue(sample.qualified_count),
+      model_call_count: numberValue(sample.model_call_count),
+      draft_count: numberValue(sample.draft_count),
+      final_review_status: typeof sample.final_review_status === "string" ? sample.final_review_status : null,
+      output_summary: safeAutopilotText(rawOutput, AUTOPILOT_OUTPUT_MAX_LENGTH),
+      output_truncated: rawOutput.length > AUTOPILOT_OUTPUT_MAX_LENGTH,
+    },
+    task: taskID === null ? null : {
+      id: task.id ?? taskID,
+      status: task.status ?? null,
+      issue_id: task.issue_id ?? null,
+      created_at: task.created_at ?? null,
+      dispatched_at: task.dispatched_at ?? null,
+      started_at: task.started_at ?? null,
+      completed_at: task.completed_at ?? null,
+      failure_reason: safeAutopilotText(task.failure_reason),
+      error: safeAutopilotText(task.error),
+    },
+  };
+}
+
+function requireRFC3339(args: Record<string, unknown>, key: string): string | undefined {
+  const value = optionalString(args, key);
+  if (value !== undefined && Number.isNaN(Date.parse(value))) {
+    throw new ToolInputError(`'${key}' must be an RFC3339 timestamp`);
+  }
+  return value;
 }
 
 function commentBrief(comment: CommentInfo): Record<string, unknown> {
@@ -991,6 +1068,7 @@ function decisionCardBrief(
     issue_number: issue?.number ?? null,
     issue_title: issue?.title ?? null,
     question: card.question,
+    ...(card.context ? { context: card.context } : {}),
     options: card.options.map((label, index) => ({
       letter: String.fromCharCode(65 + index),
       label,
@@ -1064,6 +1142,166 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           issue_prefix: workspace.issue_prefix,
         })),
       };
+    },
+  },
+  {
+    name: "get_autopilot",
+    description: "Read one Autopilot configuration and status. This read is scoped by workspace membership and the server's Autopilot visibility rules.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), autopilot_id: { type: "string", description: "Autopilot UUID." } }, required: ["workspace", "autopilot_id"] },
+    async handler(args, client) { return client.getAutopilot(requireString(args, "workspace"), requireString(args, "autopilot_id")); },
+  },
+  {
+    name: "list_autopilot_runs",
+    description: "Read native execution history for one Autopilot. Filter by status, source (manual/scheduled/replay/webhook), and trigger time; rows contain only safe run summaries and page cursors.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), autopilot_id: { type: "string", description: "Autopilot UUID." }, status: { type: "string", description: "Exact native run status, such as running, completed, skipped, or failed." }, source: { type: "string", enum: ["manual", "scheduled", "replay", "webhook"], description: "Trigger source filter." }, triggered_after: { type: "string", description: "RFC3339 inclusive lower time bound." }, triggered_before: { type: "string", description: "RFC3339 exclusive upper time bound." }, limit: { type: "integer", description: "Page size (1-100).", minimum: 1, maximum: 100 }, offset: { type: "integer", description: "Rows to skip.", minimum: 0 } }, required: ["workspace", "autopilot_id"] },
+    async handler(args, client) {
+      const source = optionalEnum(args, "source", ["manual", "scheduled", "replay", "webhook"]);
+      if (args.source !== undefined && source === undefined) {
+        throw new ToolInputError("'source' must be manual, scheduled, replay, or webhook");
+      }
+      const result = await client.listAutopilotRuns(requireString(args, "workspace"), requireString(args, "autopilot_id"), {
+        limit: optionalInt(args, "limit", { min: 1, max: 100 }) ?? 20,
+        offset: optionalInt(args, "offset", { min: 0 }) ?? 0,
+        status: optionalString(args, "status"),
+        source,
+        triggered_after: requireRFC3339(args, "triggered_after"),
+        triggered_before: requireRFC3339(args, "triggered_before"),
+      });
+      const runs = Array.isArray(result.runs) ? result.runs.map((run) => autopilotRunProjection(objectValue(run))) : [];
+      return {
+        runs,
+        total: runs.length,
+        has_more: result.has_more === true,
+        next_offset: typeof result.next_offset === "number" ? result.next_offset : null,
+      };
+    },
+  },
+  {
+    name: "get_autopilot_run",
+    description: "Read one native Autopilot execution with its lifecycle, linked task status, and safe output/sample summary. Trigger payloads and raw task results are never returned.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), autopilot_id: { type: "string", description: "Autopilot UUID." }, run_id: { type: "string", description: "Run UUID." } }, required: ["workspace", "autopilot_id", "run_id"] },
+    async handler(args, client) { return autopilotRunProjection(objectValue(await client.getAutopilotRun(requireString(args, "workspace"), requireString(args, "autopilot_id"), requireString(args, "run_id")))); },
+  },
+  {
+    name: "get_autopilot_run_diagnostics",
+    description:
+      "Read one native Autopilot run and its linked task audit trail. The run record is authoritative for Autopilot status; issue runs and comments are not used to infer completion. Returns audit events only when a linked task_id exists.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        autopilot_id: { type: "string", description: "Autopilot UUID." },
+        run_id: { type: "string", description: "Native Autopilot run UUID." },
+        audit_limit: { type: "integer", description: "Maximum linked audit events (1-200).", minimum: 1, maximum: 200 },
+      },
+      required: ["workspace", "autopilot_id", "run_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const autopilotId = requireString(args, "autopilot_id");
+      const run = await client.getAutopilotRun(workspace, autopilotId, requireString(args, "run_id"));
+      const taskId = typeof run.task_id === "string" ? run.task_id : undefined;
+      const audit = taskId
+        ? await client.listAuditEvents(workspace, { domain: "run", task_id: taskId, limit: optionalInt(args, "audit_limit", { min: 1, max: 200 }) ?? 50 })
+        : { events: [], next_cursor: null, next_cursor_id: null };
+      return { run: autopilotRunProjection(objectValue(run)), task_id: taskId ?? null, task_audit: audit };
+    },
+  },
+  {
+    name: "trigger_autopilot",
+    description: "Immediately execute an active Autopilot through its native dispatch. mode=current uses current config; mode=replay reuses a run's historical payload under current config and caller permissions. Requires an explicit idempotency_key.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), autopilot_id: { type: "string", description: "Autopilot UUID." }, mode: { type: "string", enum: ["current", "replay"], description: "Execution semantics." }, source_run_id: { type: "string", description: "Required for replay; source run must belong to this Autopilot." }, idempotency_key: { type: "string", description: "Stable key for retrying the same request.", maxLength: 200 }, params: { type: "object", description: "Optional current parameter overrides." } }, required: ["workspace", "autopilot_id", "mode", "idempotency_key"] },
+    async handler(args, client) {
+      const mode = requireString(args, "mode");
+      if (mode !== "current" && mode !== "replay") throw new ToolInputError("'mode' must be current or replay");
+      const sourceRunId = optionalString(args, "source_run_id");
+      if ((mode === "replay") !== (sourceRunId !== undefined)) throw new ToolInputError("source_run_id is required only for replay mode");
+      const params = args.params;
+      if (params !== undefined && (typeof params !== "object" || params === null || Array.isArray(params))) throw new ToolInputError("'params' must be an object");
+      const autopilotId = requireString(args, "autopilot_id");
+      const run = await client.triggerAutopilot(requireString(args, "workspace"), autopilotId, { mode, source_run_id: sourceRunId, params }, requireString(args, "idempotency_key"));
+      const safeRun = autopilotRunProjection(objectValue(run));
+      return {
+        autopilot_run_id: safeRun.id,
+        status: safeRun.status,
+        reason_code: safeRun.reason_code,
+        run: safeRun,
+        query: { tool: "get_autopilot_run_diagnostics", autopilot_id: autopilotId, run_id: safeRun.id },
+      };
+    },
+  },
+  {
+    name: "list_files",
+    description: "List entries in a path on the explicitly registered local or remote file target for this workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        path: { type: "string", description: "Absolute path on the registered target." },
+        host: { type: "string", description: "Registered target ID or alias; omitted to use this MCP instance's explicit local binding." },
+        limit: { type: "integer", description: "Maximum entries (1-200).", minimum: 1, maximum: 200 },
+        cursor: { type: "string", description: "Opaque pagination cursor returned by the previous page." },
+      },
+      required: ["workspace", "path"],
+    },
+    async handler(args, client) {
+      return client.runFileAccessTool({
+        tool: "list_files",
+        workspace: requireString(args, "workspace"),
+        path: requireString(args, "path"),
+        invocation_id: requireString(args, "_mcp_invocation_id"),
+        host: optionalString(args, "host"),
+        limit: optionalInt(args, "limit", { min: 1, max: 200 }),
+        cursor: optionalString(args, "cursor"),
+      });
+    },
+  },
+  {
+    name: "get_file_metadata",
+    description: "Read metadata for one file on the explicitly registered local or remote file target for this workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        path: { type: "string", description: "Absolute path on the registered target." },
+        host: { type: "string", description: "Registered target ID or alias; omitted to use this MCP instance's explicit local binding." },
+      },
+      required: ["workspace", "path"],
+    },
+    async handler(args, client) {
+      return client.runFileAccessTool({
+        tool: "get_file_metadata",
+        workspace: requireString(args, "workspace"),
+        path: requireString(args, "path"),
+        invocation_id: requireString(args, "_mcp_invocation_id"),
+        host: optionalString(args, "host"),
+      });
+    },
+  },
+  {
+    name: "read_file_chunk",
+    description: "Read a bounded byte chunk from one file on the explicitly registered local or remote file target for this workspace.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        path: { type: "string", description: "Absolute path on the registered target." },
+        host: { type: "string", description: "Registered target ID or alias; omitted to use this MCP instance's explicit local binding." },
+        offset: { type: "integer", description: "Byte offset from the start of the file.", minimum: 0 },
+        length: { type: "integer", description: "Number of bytes to read (1-65536).", minimum: 1, maximum: 65536 },
+      },
+      required: ["workspace", "path", "offset", "length"],
+    },
+    async handler(args, client) {
+      return client.runFileAccessTool({
+        tool: "read_file_chunk",
+        workspace: requireString(args, "workspace"),
+        path: requireString(args, "path"),
+        invocation_id: requireString(args, "_mcp_invocation_id"),
+        host: optionalString(args, "host"),
+        offset: optionalInt(args, "offset", { min: 0 }),
+        length: optionalInt(args, "length", { min: 1, max: 65_536 }),
+      });
     },
   },
   {
@@ -1318,6 +1556,102 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         updated: true,
         ...projectFull(project),
       };
+    },
+  },
+  {
+    name: "list_inbox",
+    description: "List the current user's active inbox notifications, including system notices with no linked issue. The backend returns the full current projection with no filters, sorting, or pagination.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.listInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "list_archived_inbox",
+    description: "List archived inbox notifications, including issue-less system notices. The backend returns at most 200 issue groups and its selected rows/comment anchors; there is no cursor or pagination contract.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.listArchivedInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "get_inbox_unread_count",
+    description: "Read the current workspace's unread inbox count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.countUnreadInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "get_inbox_unread_summary",
+    description: "Read the authenticated user's unread counts across all workspaces. workspace is used only as the audit membership context; the backend summary itself is account-wide.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.unreadInboxSummary(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "mark_all_inbox_read",
+    description: "Mark every active inbox item read for the authenticated user in this workspace; returns the backend's changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.markAllInboxRead(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "archive_all_inbox",
+    description: "Archive all active inbox items for the authenticated user in this workspace; returns the backend's changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.archiveAllInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "archive_all_read_inbox",
+    description: "Archive all inbox groups whose newest active notification is read. Issue groups are archived together; the backend returns a changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.archiveAllReadInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "archive_completed_inbox",
+    description: "Archive inbox notifications linked to issues in a terminal status. Issue-less system notices remain governed by the backend query; returns the backend's changed-row count.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty() }, required: ["workspace"] },
+    async handler(args, client) {
+      return client.archiveCompletedInbox(requireString(args, "workspace"));
+    },
+  },
+  {
+    name: "mark_inbox_item_read",
+    description: "Mark one authorized inbox item read. Item ownership and workspace access are enforced by the backend.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.markInboxItemRead(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
+    },
+  },
+  {
+    name: "mark_inbox_item_unread",
+    description: "Mark one authorized inbox item unread. This is item-level and follows the backend's existing notification semantics.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.markInboxItemUnread(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
+    },
+  },
+  {
+    name: "archive_inbox_item",
+    description: "Archive one authorized inbox item. The backend also archives sibling notifications for the same issue; issue-less system notices remain item-level.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.archiveInboxItem(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
+    },
+  },
+  {
+    name: "unarchive_inbox_item",
+    description: "Restore one authorized archived inbox item. The backend restores sibling notifications for the same issue and preserves their read state.",
+    inputSchema: { type: "object", properties: { workspace: wsProperty(), inbox_item_id: { type: "string", description: "Inbox item UUID." } }, required: ["workspace", "inbox_item_id"] },
+    async handler(args, client) {
+      return client.unarchiveInboxItem(requireString(args, "workspace"), requireString(args, "inbox_item_id"));
     },
   },
   {
@@ -2679,6 +3013,44 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: "get_run_activity",
+    description:
+      "Read one issue run's bounded, sequenced Agent messages, platform timing, and worker evidence via its authenticated runtime daemon. The first call establishes an activity baseline; only messages after a supplied after_seq count as new progress. Platform running is not evidence of progress. Missing or unresponsive daemons return daemon_unreachable without server-side log access. Read-only; each retry run has its own cursor.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        run_id: { type: "string", description: "Run UUID from list_issue_runs." },
+        after_seq: { type: "integer", minimum: 0, description: "Return semantic messages with a higher sequence; omit for the initial page." },
+        semantic_limit: { type: "integer", minimum: 1, maximum: 100, description: "Semantic page size (default 50, maximum 100)." },
+        stream: { type: "string", enum: ["stdout", "stderr", "both"], description: "Worker stream selection (default both)." },
+        tail_bytes: { type: "integer", minimum: 1, maximum: 65536, description: "Maximum requested worker bytes per selected stream (default 16384)." },
+        worker_cursor: { type: "string", maxLength: 512, description: "Opaque worker cursor from a previous response." },
+      },
+      required: ["workspace", "issue", "run_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const runId = requireString(args, "run_id");
+      const stream = optionalEnum(args, "stream", ["stdout", "stderr", "both"]);
+      if (args.stream !== undefined && stream === undefined) {
+        throw new ToolInputError("'stream' must be one of: stdout, stderr, both");
+      }
+      const afterSeq = optionalInt(args, "after_seq", { min: 0 });
+      const semanticLimit = optionalInt(args, "semantic_limit", { min: 1, max: 100 });
+      const tailBytes = optionalInt(args, "tail_bytes", { min: 1, max: 65536 });
+      return client.getIssueRunActivity(workspace, issueId, runId, {
+        after_seq: afterSeq,
+        semantic_limit: semanticLimit,
+        stream,
+        tail_bytes: tailBytes,
+        worker_cursor: optionalString(args, "worker_cursor"),
+      });
+    },
+  },
+  {
     name: "cancel_run",
     description:
       "Stop ONE specific run of an issue by run id. SIDE EFFECT: requests a real stop — for an in-flight run (running/dispatched/deferred/waiting_local_directory) the status moves to cancel_requested and the runtime interrupts the agent process tree, then confirms; the row only becomes 'cancelled' after that confirmation. A queued run (never started) is cancelled immediately. " +
@@ -2879,8 +3251,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "get_runtime_models",
     description:
       "Discover a runtime's model catalog: the models the daemon advertises (each with its per-model thinking/effort levels), the ones marked unavailable, and which is the runtime default. " +
-      "Answers from the server-side catalog cache when warm; otherwise asks the daemon and polls — pass wait_ms (default 15000, max 60000) to bound the wait, and request_id to resume polling an earlier request. " +
-      "An offline runtime returns code runtime_offline. Read-only; this is also the source for valid model / thinking_level values on the config-write faces.",
+      "Answers from the server-side catalog cache when warm; otherwise starts a model-discovery request with the runtime daemon and polls — pass wait_ms (default 15000, max 60000) to bound the wait, and request_id to resume polling an earlier request. " +
+      "Calling without request_id may start a new daemon request when the cache is cold. This does not change runtime configuration. " +
+      "An offline runtime returns code runtime_offline. This is also the source for valid model / thinking_level values on the config-write faces.",
     inputSchema: {
       type: "object",
       properties: {

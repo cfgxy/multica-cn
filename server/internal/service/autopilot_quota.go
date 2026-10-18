@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -120,6 +121,15 @@ func (s *AutopilotService) createAutopilotRunWithQuota(
 	policy, enabled := s.quotaPolicy(ctx, workspaceID)
 	if !enabled {
 		run, err := s.Queries.CreateAutopilotRun(ctx, params)
+		if err != nil && params.ID.Valid {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				existing, lookupErr := s.Queries.GetAutopilotRun(ctx, params.ID)
+				if lookupErr == nil && existing.AutopilotID == params.AutopilotID && existing.Source == params.Source {
+					return existing, true, nil
+				}
+			}
+		}
 		return run, false, err
 	}
 

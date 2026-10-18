@@ -38,6 +38,18 @@ done
 [ -n "$pubkey_file" ] && [ -f "$pubkey_file" ] || { printf 'build-seed: --pubkey-file <acceptance.pub> required\n' >&2; exit 2; }
 image_version="${image_version:-$(date -u '+%Y.%m.%d')}"
 pubkey="$(cat "$pubkey_file")"
+# Fingerprint-grade anchor (RUYI-727): the seed manifest records WHICH public
+# key the image authorizes so a bake can be reconciled against the pool's
+# production key without reading the image or touching private material.
+# pubkey_sha256 covers the base64 body text (no ssh-keygen dependency, byte
+# exact; trailing newline stripped via command substitution); the SSH
+# fingerprint is best effort (absent for malformed keys).
+pubkey_body="$(head -n1 "$pubkey_file" | awk '{print $2}')"
+pubkey_sha256="$(printf '%s' "$pubkey_body" | sha256sum | awk '{print $1}')"
+pubkey_fp=""
+if command -v ssh-keygen >/dev/null 2>&1; then
+  pubkey_fp="$(ssh-keygen -lf "$pubkey_file" 2>/dev/null | awk '{print $2}')" || pubkey_fp=""
+fi
 
 mkdir -p "$out_dir"
 
@@ -108,6 +120,7 @@ autoinstall:
     - curtin in-target --target=/target -- bash -c "echo '${SLOT_IMAGE_USER} ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/90-${SLOT_IMAGE_USER} && chmod 440 /etc/sudoers.d/90-${SLOT_IMAGE_USER}"
     - curtin in-target --target=/target -- bash -c "curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - && apt-get install -y nodejs"
     - curtin in-target --target=/target -- bash -c "systemctl enable fstrim.timer"
+    - curtin in-target --target=/target -- bash -c "useradd -m -d /home/agent -s /bin/bash agent && chmod 750 /home/agent"
 $guest_cmds  shutdown: poweroff
   user-data:
     disable_root: true
@@ -128,10 +141,15 @@ jq -n \
   --arg iso_sha "$iso_sha" \
   --argjson node "$node_major" \
   --argjson pg "$pg_major" \
+  --arg identity_user "$SLOT_IMAGE_USER" \
+  --arg pk_sha "$pubkey_sha256" \
+  --arg pk_fp "$pubkey_fp" \
   --arg guest_entries "[$guest_entries]" \
   '{schema: "multica-slot-base-seed v1", image: $image, version: $version,
     versions: {ubuntu: $ubuntu, iso_name: $iso_name, iso_sha256: $iso_sha,
                node_major: $node, postgres_major: $pg},
+    identity: {user: $identity_user, pubkey_sha256: $pk_sha,
+               pubkey_fingerprint: (if $pk_fp == "" then null else $pk_fp end)},
     guest_scripts: ($guest_entries | fromjson)}' \
   >"$out_dir/seed-manifest.json"
 

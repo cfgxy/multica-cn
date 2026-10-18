@@ -10,6 +10,7 @@ import { Badge } from "@multica/ui/components/ui/badge";
 import { cn } from "@multica/ui/lib/utils";
 import { api } from "@multica/core/api";
 import { decisionOptionDisplayLabel, patchDecisionInCache } from "@multica/core/issues/decisions";
+import { DecisionContextView } from "./decision-context-view";
 import { decisionRequestKeys } from "@multica/core/issues/decision-requests";
 import { issueKeys } from "@multica/core/issues/queries";
 import type { IssueDecision } from "@multica/core/types";
@@ -224,6 +225,7 @@ function StandardDecisionCard({ decision }: { decision: IssueDecision }) {
             )}
           </div>
           <p className="mt-1 whitespace-pre-wrap break-words text-body font-medium">{decision.question}</p>
+          <DecisionContextView context={decision.context} />
           <p className="mt-0.5 text-caption text-muted-foreground">
             {creatorName} · {timeAgo(decision.created_at)}
           </p>

@@ -123,6 +123,7 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 	case "github_repo":
 		var payload struct {
 			URL               string `json:"url"`
+			Upstream          string `json:"upstream,omitempty"`
 			DefaultBranchHint string `json:"default_branch_hint,omitempty"`
 			Ref               string `json:"ref,omitempty"`
 		}
@@ -134,6 +135,11 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 		}
 		if payload.DefaultBranchHint != "" {
 			details = append(details, fmt.Sprintf("default branch hint: `%s`", payload.DefaultBranchHint))
+		}
+		if payload.Upstream != "" {
+			details = append(details, fmt.Sprintf("confirmed upstream: `%s`", payload.Upstream))
+		} else {
+			details = append(details, "upstream not confirmed; add it with `multica project resource update <project-id> <resource-id> --upstream <github-url>` if this repo is a fork; unknown remotes remain blocked")
 		}
 		if len(details) > 0 {
 			out += " (" + strings.Join(details, ", ") + ")"

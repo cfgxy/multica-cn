@@ -795,7 +795,7 @@ describe("IssueDetail (shared)", () => {
 
     renderIssueDetail();
     expect(await screen.findByRole("button", { name: "Pull requests" })).toBeInTheDocument();
-    expect(await screen.findByText("GitLab MR")).toBeInTheDocument();
+    expect(await screen.findAllByText("GitLab MR")).toHaveLength(2);
     expect(screen.queryByText("GitHub PR")).not.toBeInTheDocument();
   });
 

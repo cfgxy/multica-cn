@@ -26,8 +26,8 @@ SELECT * FROM agent_runtime
 WHERE id = ANY(@ids::uuid[]);
 
 -- name: LockAgentRuntime :one
--- Acquires a row-level exclusive lock on the runtime row. Used at the
--- top of the cascade-delete transaction so that:
+-- Acquires a row-level exclusive lock on the runtime row. Teardown callers
+-- first lock affected chat sessions in stable order, then use this lock so:
 --   1. PostgreSQL's FK validation on agent.runtime_id (FK ... ON DELETE
 --      RESTRICT) needs FOR KEY SHARE on the parent runtime row, which
 --      conflicts with FOR UPDATE — so any concurrent INSERT or UPDATE
@@ -510,11 +510,10 @@ SET runtime_id = @new_runtime_id
 WHERE runtime_id = @old_runtime_id;
 
 -- name: LockWorkspaceForRuntimeMerge :exec
--- Step 1 of the legacy runtime merge's fence, and the same first step every task
--- write takes (lock_task_owner_rows, migration 284): the workspace row, FOR KEY
--- SHARE. Taking it here rather than relying on the fence inside the reassignment
--- keeps the merge's lock order identical to the writers' — workspaces before owner
--- rows — so the two can never hold each other's next lock (MUL-5999).
+-- Step 1 of the legacy runtime merge's owner fence, using the same workspace
+-- row and FOR KEY SHARE mode as task writes (lock_task_owner_rows, migration 284).
+-- It remains compatible with enqueue while preventing workspace teardown from
+-- overtaking the merge before it takes chat-session locks (MUL-5999).
 SELECT 1 FROM workspace w
 WHERE w.id IN (
     SELECT r.workspace_id FROM agent_runtime r WHERE r.id = ANY(@runtime_ids::uuid[])

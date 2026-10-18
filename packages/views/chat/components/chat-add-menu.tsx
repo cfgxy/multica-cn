@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef } from "react";
-import { Check, FolderKanban, Image as ImageIcon, Plus, X } from "lucide-react";
+import { Check, FolderKanban, Image as ImageIcon, MoreHorizontal, X } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import {
   DropdownMenu,
@@ -13,9 +13,10 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
-import type { Project } from "@multica/core/types";
+import type { ChatSession, Project } from "@multica/core/types";
 import { ProjectIcon } from "../../projects/components/project-icon";
 import { useT } from "../../i18n";
+import { ChatSessionModelSubmenu } from "./chat-session-model-selector";
 
 interface ChatAddMenuProps {
   /** Called with each selected file — the caller routes it through the
@@ -28,6 +29,14 @@ interface ChatAddMenuProps {
    *  project description. Selection stays enabled; the submenu only appends
    *  an explanatory hint so the user knows before choosing. */
   projectContextUnsupported?: boolean;
+  model?: {
+    session: ChatSession;
+    wsId: string;
+    runtimeId: string;
+    agentModel: string | null;
+    disabled: boolean;
+  };
+  anchor?: HTMLElement | null;
   disabled?: boolean;
 }
 
@@ -43,6 +52,8 @@ export function ChatAddMenu({
   projectId,
   onSelectProject,
   projectContextUnsupported,
+  model,
+  anchor,
   disabled,
 }: ChatAddMenuProps) {
   const { t } = useT("chat");
@@ -69,11 +80,19 @@ export function ChatAddMenu({
               title={t(($) => $.input.add_tooltip)}
               className="rounded-full text-muted-foreground"
             >
-              <Plus />
+              <MoreHorizontal />
             </Button>
           }
         />
-        <DropdownMenuContent align="start" side="top" sideOffset={6}>
+        <DropdownMenuContent
+          align="start"
+          side="top"
+          sideOffset={0}
+          anchor={anchor}
+          className="w-[var(--anchor-width)] rounded-b-none border border-b-0 border-surface-border bg-surface ring-0 origin-bottom data-[side=top]:slide-in-from-bottom-0 data-open:zoom-in-100 motion-reduce:animate-none motion-reduce:transition-none"
+        >
+          {model && <ChatSessionModelSubmenu {...model} />}
+          {model && (onSelectFile || onSelectProject) && <DropdownMenuSeparator />}
           {onSelectFile && (
             <DropdownMenuItem onClick={() => inputRef.current?.click()}>
               <ImageIcon />

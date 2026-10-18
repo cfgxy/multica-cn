@@ -80,6 +80,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -110,6 +111,13 @@ import { IssueDescription } from "./issue-description";
 import { IssueReactionRow } from "./issue-reaction-row";
 import { ActivityRow } from "./activity-row";
 import { CommentCard } from "./comment-card";
+import {
+  clearIssueCommentBodyVisibility,
+  clearIssueReferenceTailVisibility,
+  hasPotentialIssueReference,
+  replaceIssueCommentBodyVisibleIds,
+  replaceIssueReferenceTailVisibleIds,
+} from "@/lib/issue-reference-visibility";
 import { useLastViewedStore } from "@/data/stores/last-viewed-store";
 import {
   buildTimelineRowsModel,
@@ -128,6 +136,7 @@ import { issuePullRequestsOptions } from "@/data/queries/github";
 import { DecisionCard } from "./decision-card";
 import { DecisionBatchBar } from "./decision-batch-bar";
 import { PullRequestCard } from "./pull-request-card";
+import { pendingPullRequests } from "@multica/core/github/pending-pull-requests";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -147,6 +156,7 @@ import {
   resolvePublishedRootIds,
 } from "@/lib/comment-locate";
 import { CommentGeometryRegistry } from "@/lib/comment-geometry";
+import { commentIdsInPrefetchRange } from "@/lib/issue-reference-prefetch";
 import { AnchorHighlightGate } from "@/lib/comment-anchor-highlight";
 import { resolveCommentAnchor } from "@/lib/comment-anchor";
 import {
@@ -235,6 +245,7 @@ const DIVIDER_ID = "__divider__";
  *  Overflow drops the OLDEST id — the earliest thread is the one the user
  *  has had the most time to expand by hand anyway. */
 const PUBLISHED_QUEUE_MAX = 16;
+const REPLY_VISIBILITY_UPDATE_THRESHOLD_PX = 240;
 const EMPTY_ROWS: TimelineRow[] = [];
 
 export const TimelineList = forwardRef<TimelineListHandle, Props>(
@@ -255,6 +266,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     },
     ref,
   ) {
+  const referenceTailVisibilityScope = useId();
   const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   // Top-level selection subscription gates the outer "tap-outside-to-dismiss"
@@ -433,6 +445,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     offsetY: 0,
     viewportHeight: 0,
   });
+  const referenceRangeUpdaterRef = useRef<(force?: boolean) => void>(() => {});
   const [farFromEnd, setFarFromEnd] = useState(false);
   const farFromEndRef = useRef(false);
   const setFarFromEndIfChanged = useCallback((next: boolean) => {
@@ -517,6 +530,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       scrollGeoRef.current.contentHeight = contentSize.height;
       scrollGeoRef.current.offsetY = contentOffset.y;
       scrollGeoRef.current.viewportHeight = layoutMeasurement.height;
+      referenceRangeUpdaterRef.current();
       const distFromBottom =
         contentSize.height - (contentOffset.y + layoutMeasurement.height);
       const wasAtBottom = isAtBottomRef.current;
@@ -640,9 +654,111 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   const dataRef = useRef(dataWithDivider);
   dataRef.current = dataWithDivider;
   const viewableIdsRef = useRef<Set<string>>(new Set());
+  const rowIndexById = useMemo(
+    () => new Map(dataWithDivider.map((row, index) => [row.entry.id, index])),
+    [dataWithDivider],
+  );
+  const lastReferenceRangeOffsetRef = useRef<number | null>(null);
+  const referenceCandidateIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const row of dataWithDivider) {
+      if (!("replies" in row) || row.entry.type !== "comment") continue;
+      if (hasPotentialIssueReference(row.entry.content ?? "")) {
+        ids.add(row.entry.id);
+      }
+      for (const reply of row.replies) {
+        if (hasPotentialIssueReference(reply.content ?? "")) ids.add(reply.id);
+      }
+    }
+    return ids;
+  }, [dataWithDivider]);
   // RUYI-108 行内几何：回复与 root 共用一行，行级 viewability 判不出被引用的
   // 回复是否真的入屏，控制器的行内校正靠卡片上报的这份测量值。
   const geometryRef = useRef(new CommentGeometryRegistry());
+  const updateReferenceTailRange = useCallback((force = false) => {
+    const viewport = scrollGeoRef.current;
+    const previousOffset = lastReferenceRangeOffsetRef.current;
+    if (
+      !force &&
+      previousOffset !== null &&
+      Math.abs(viewport.offsetY - previousOffset) <
+        REPLY_VISIBILITY_UPDATE_THRESHOLD_PX
+    ) {
+      return;
+    }
+    lastReferenceRangeOffsetRef.current = viewport.offsetY;
+
+    const visibleIndexes = [...viewableIdsRef.current]
+      .map((id) => rowIndexById.get(id))
+      .filter((index): index is number => index !== undefined);
+    const next =
+      referenceCandidateIds.size > 0
+        ? commentIdsInPrefetchRange(dataWithDivider, visibleIndexes)
+        : new Set<string>();
+    const nextBodies = new Set<string>();
+    const firstItemOffset = listRef.current?.getFirstItemOffset() ?? null;
+    if (
+      referenceCandidateIds.size > 0 &&
+      firstItemOffset != null &&
+      viewport.viewportHeight > 0
+    ) {
+      const nearTop = viewport.offsetY - 600;
+      const nearBottom = viewport.offsetY + viewport.viewportHeight + 600;
+      const rowTops = new Map<string, number | null>();
+      const rowTopOf = (rootId: string) => {
+        if (rowTops.has(rootId)) return rowTops.get(rootId) ?? null;
+        const index = rowIndexById.get(rootId);
+        const top =
+          index === undefined ? null : listRef.current?.getLayout(index)?.y ?? null;
+        rowTops.set(rootId, top);
+        return top;
+      };
+      for (const commentId of geometryRef.current.commentIds()) {
+        const rect = geometryRef.current.resolve(
+          commentId,
+          rowTopOf,
+          firstItemOffset,
+        );
+        if (
+          rect &&
+          rect.top + rect.height >= nearTop &&
+          rect.top <= nearBottom
+        ) {
+          next.add(commentId);
+          if (referenceCandidateIds.has(commentId)) {
+            nextBodies.add(commentId);
+          }
+        }
+      }
+    }
+    for (const id of next) {
+      if (!referenceCandidateIds.has(id)) next.delete(id);
+    }
+    replaceIssueReferenceTailVisibleIds(referenceTailVisibilityScope, next);
+    if (
+      referenceCandidateIds.size > 0 &&
+      firstItemOffset != null &&
+      viewport.viewportHeight > 0
+    ) {
+      replaceIssueCommentBodyVisibleIds(
+        referenceTailVisibilityScope,
+        nextBodies,
+      );
+    }
+  }, [
+    dataWithDivider,
+    referenceCandidateIds,
+    referenceTailVisibilityScope,
+    rowIndexById,
+  ]);
+  useEffect(
+    () => () => {
+      clearIssueReferenceTailVisibility(referenceTailVisibilityScope);
+      clearIssueCommentBodyVisibility(referenceTailVisibilityScope);
+    },
+    [referenceTailVisibilityScope],
+  );
+  referenceRangeUpdaterRef.current = updateReferenceTailRange;
   // RUYI-108 高亮起算闸门：点击只武装，定位流程结束才起算那 1.7s 播放。
   const highlightGateRef = useRef(new AnchorHighlightGate());
 
@@ -977,6 +1093,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
                 : [],
           ),
       );
+      referenceRangeUpdaterRef.current(true);
       handleLocateViewable();
       if (!dividerAnchorId) return;
       if (dividerScrolledPastRef.current) return;
@@ -1225,6 +1342,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
                 expandedRoots ? expandedRoots.has(item.entry.id) : false
               }
               onCommentPublished={onCommentPublished}
+              referenceTailVisibilityScope={referenceTailVisibilityScope}
             />
           ) : (
             <ActivityRow entry={item.entry} />
@@ -1253,6 +1371,11 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
         viewabilityConfigCallbackPairs={viewabilityCallbackPairs.current}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+        ListFooterComponent={
+          <PendingPullRequestFooter
+            pullRequests={pendingPullRequests(pullRequestsData?.pull_requests ?? [])}
+          />
         }
         contentContainerStyle={{ paddingBottom: 16 }}
       />
@@ -1299,6 +1422,37 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
  */
 function RowSeparator() {
   return <View style={{ height: 12 }} />;
+}
+
+function PendingPullRequestFooter({
+  pullRequests,
+}: {
+  pullRequests: ReturnType<typeof pendingPullRequests>;
+}) {
+  const { t } = useT("issues");
+
+  if (pullRequests.length === 0) return null;
+
+  return (
+    <View
+      className="mt-4 border-t border-border/60 pt-4"
+      testID="pending-pull-requests-section"
+    >
+      <Text className="mb-2 px-4 text-xs font-medium text-muted-foreground">
+        {t("detail.section_pending_pull_requests", "Pending merge PRs")}
+      </Text>
+      <View className="gap-3">
+        {pullRequests.map((pr) => (
+          <PullRequestCard
+            key={`${pr.provider ?? "github"}:${pr.id}`}
+            pr={pr}
+            showTargetBranch
+            showMergeRisk
+          />
+        ))}
+      </View>
+    </View>
+  );
 }
 
 /**

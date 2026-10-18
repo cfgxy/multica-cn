@@ -25,6 +25,15 @@ export default [
     },
   },
   {
+    files: ["**/*.bench.{ts,tsx}", "vitest.bench.config.ts"],
+    rules: {
+      "import-x/no-extraneous-dependencies": ["error", {
+        devDependencies: true,
+        peerDependencies: true,
+      }],
+    },
+  },
+  {
     // Toasts are fired from hooks (`.ts`) as often as from components.
     files: ["**/*.{ts,tsx}"],
     ignores: ["**/*.test.{ts,tsx}", "test/**"],

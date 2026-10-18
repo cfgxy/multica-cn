@@ -41,6 +41,36 @@ func TestValidateDecisionOptions(t *testing.T) {
 	}
 }
 
+func TestParseDecisionContextJSON(t *testing.T) {
+	value, err := parseDecisionContextJSON(`{"why_now":"window closes","facts":[{"statement":"build passed","evidence":["CI 1"]}]}`)
+	if err != nil {
+		t.Fatalf("parse structured context: %v", err)
+	}
+	facts, ok := value["facts"].([]any)
+	if !ok || len(facts) != 1 {
+		t.Fatalf("facts = %#v, want one fact", value["facts"])
+	}
+	empty, err := parseDecisionContextJSON(`{}`)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("parse empty optional context: value=%#v err=%v", empty, err)
+	}
+	for _, raw := range []string{"null", "[]", "not-json"} {
+		if _, err := parseDecisionContextJSON(raw); err == nil {
+			t.Fatalf("parseDecisionContextJSON(%q) succeeded, want error", raw)
+		}
+	}
+}
+
+func TestDecisionContextFlagIsOptional(t *testing.T) {
+	f := issueDecisionAddCmd.Flags().Lookup("context")
+	if f == nil {
+		t.Fatal("--context flag is not registered on the decision add command")
+	}
+	if f.DefValue != "" {
+		t.Fatalf("--context default = %q, want empty for backward-compatible calls", f.DefValue)
+	}
+}
+
 // RUYI-514: the run-scoped retry key must be stable across retries of the
 // same decision (even with rewritten flags) and distinct across runs,
 // issues, and questions.

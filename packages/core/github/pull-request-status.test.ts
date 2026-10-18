@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveChecksStatus,
   deriveMergeStatus,
+  deriveReviewDecision,
   derivePullRequestStateVisual,
   shouldShowPullRequestStats,
 } from "./pull-request-status";
@@ -68,6 +69,40 @@ describe("deriveChecksStatus", () => {
         checks_total: 5,
       }).kind,
     ).toBe("none");
+  });
+
+  it("keeps an unrecognized rollup unknown instead of claiming there are no checks", () => {
+    expect(
+      deriveChecksStatus({
+        snapshot_available: true,
+        checks_rollup: "mystery",
+        checks_conclusion: null,
+        checks_total: 0,
+        checks_failed: 0,
+      }),
+    ).toEqual({ kind: "unknown" });
+  });
+
+  it("still surfaces a known failure count when the rollup is unrecognized", () => {
+    expect(
+      deriveChecksStatus({
+        snapshot_available: true,
+        checks_rollup: "mystery",
+        checks_failed: 1,
+      }).kind,
+    ).toBe("failed");
+  });
+
+  it("does not fall back to an older passed conclusion for an unknown rollup", () => {
+    expect(
+      deriveChecksStatus({
+        snapshot_available: true,
+        checks_rollup: "mystery",
+        checks_conclusion: "passed",
+        checks_total: 5,
+        checks_passed: 5,
+      }),
+    ).toEqual({ kind: "unknown" });
   });
 
   it("hides CI when the API snapshot is disabled or has not landed", () => {
@@ -200,5 +235,23 @@ describe("derivePullRequestStateVisual", () => {
     expect(derivePullRequestStateVisual("")).toEqual(unknown);
     expect(derivePullRequestStateVisual(null)).toEqual(unknown);
     expect(derivePullRequestStateVisual(undefined)).toEqual(unknown);
+  });
+});
+
+describe("deriveReviewDecision", () => {
+  it.each([
+    ["APPROVED", "approved"],
+    ["CHANGES_REQUESTED", "changes_requested"],
+    ["REVIEW_REQUIRED", "review_required"],
+  ])("normalizes %s", (input, expected) => {
+    expect(deriveReviewDecision(input, true)).toBe(expected);
+  });
+
+  it("keeps null and future decisions unknown, and hides old or non-current snapshots", () => {
+    expect(deriveReviewDecision(null, true)).toBe("unknown");
+    expect(deriveReviewDecision("NEW_DECISION", true)).toBe("unknown");
+    expect(deriveReviewDecision(undefined, true)).toBeNull();
+    expect(deriveReviewDecision("APPROVED", false)).toBeNull();
+    expect(deriveReviewDecision(undefined, undefined)).toBeNull();
   });
 });

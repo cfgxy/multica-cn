@@ -108,6 +108,7 @@ func TestForgejoEventKindAndParse(t *testing.T) {
 		"action":"closed",
 		"pull_request":{"number":7,"title":"Fix MUL-1","state":"closed","merged":true,
 			"html_url":"https://g/acme/widget/pulls/7","head":{"ref":"fix","sha":"abc"},
+			"base":{"ref":"main"},
 			"user":{"username":"octo"},"additions":3},
 		"repository":{"name":"widget","owner":{"username":"acme"}}}`))
 	if err != nil {
@@ -122,8 +123,18 @@ func TestForgejoEventKindAndParse(t *testing.T) {
 	if pr.AuthorLogin != "octo" || pr.HeadSHA != "abc" {
 		t.Errorf("bad author/sha: %+v", pr)
 	}
+	if pr.TargetBranch != "main" {
+		t.Errorf("target branch = %q, want main", pr.TargetBranch)
+	}
 	if !pr.Terminal() {
 		t.Error("closed action must be terminal")
+	}
+	withoutBase, err := p.ParsePullRequest([]byte(`{"pull_request":{"number":8,"head":{"ref":"fix"}}}`))
+	if err != nil {
+		t.Fatalf("ParsePullRequest without base: %v", err)
+	}
+	if withoutBase.TargetBranch != "" {
+		t.Errorf("missing target branch = %q, want empty", withoutBase.TargetBranch)
 	}
 
 	st, err := p.ParseCIStatus([]byte(`{"sha":"abc","context":"ci","state":"success"}`))
@@ -148,7 +159,7 @@ func TestGitlabParse(t *testing.T) {
 		"user":{"username":"alice","avatar_url":"a"},
 		"project":{"path_with_namespace":"group/sub/widget"},
 		"object_attributes":{"iid":42,"title":"Add MUL-9","state":"merged","action":"merge",
-			"source_branch":"feat","url":"https://gl/group/sub/widget/-/merge_requests/42",
+			"source_branch":"feat","target_branch":"main","url":"https://gl/group/sub/widget/-/merge_requests/42",
 			"last_commit":{"id":"deadbeef"}}}`))
 	if err != nil {
 		t.Fatalf("ParsePullRequest: %v", err)
@@ -158,6 +169,9 @@ func TestGitlabParse(t *testing.T) {
 	}
 	if pr.Number != 42 || pr.State != "merged" || pr.HeadSHA != "deadbeef" {
 		t.Errorf("bad MR: %+v", pr)
+	}
+	if pr.TargetBranch != "main" {
+		t.Errorf("target branch = %q, want main", pr.TargetBranch)
 	}
 	if !pr.Terminal() {
 		t.Error("merge action must be terminal")

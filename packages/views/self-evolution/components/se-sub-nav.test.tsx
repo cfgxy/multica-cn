@@ -107,6 +107,7 @@ describe("SeSubNav", () => {
       "Knowledge",
       "Skill evolution",
       "Quality",
+      "Clause governance",
       "Quiz",
       "Proposals",
       "Versions",
