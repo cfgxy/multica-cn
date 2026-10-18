@@ -186,6 +186,7 @@ type DaemonRegisterRequest struct {
 	DeviceName      string   `json:"device_name"`
 	CLIVersion      string   `json:"cli_version"` // multica CLI version
 	LaunchedBy      string   `json:"launched_by"` // "desktop" when spawned by the Electron app
+	ServerURL       string   `json:"server_url"`
 	Runtimes        []struct {
 		Name    string `json:"name"`
 		Type    string `json:"type"`
@@ -418,6 +419,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.WorkspaceID = uuidToString(wsUUID)
+	serverURL := util.RuntimeAPIURL(req.ServerURL)
 
 	// Verify workspace access and resolve owner.
 	// Daemon tokens (mdt_) prove workspace access directly; OwnerID will be zero
@@ -475,6 +477,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 			"version":      runtime.Version,
 			"cli_version":  req.CLIVersion,
 			"launched_by":  req.LaunchedBy,
+			"server_url":   serverURL,
 			"capabilities": requestClientCapabilities(r),
 			// RUYI-645: daemon-probed ops capabilities; an empty slice is
 			// stored as absent so the ops gate fails closed for daemons
@@ -692,7 +695,6 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 				// worktree gates read the newest row. Omitting them made a failed
 				// profile look, for that window, like a daemon that advertises
 				// nothing (and now like a capability-blind server).
-				serverURL, _ := runtimeCacheServerURL()
 				metadata, _ := json.Marshal(map[string]any{
 					"version":                            "",
 					"cli_version":                        req.CLIVersion,
@@ -2939,6 +2941,23 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			if latestBrief.continuityGap && !compacted {
 				resp.PriorSessionResumeUnavailable = true
 			}
+		}
+	}
+
+	// Automation runs reuse code within the same automation, but each run gets
+	// a fresh provider session. Workdir lookup is best-effort so an unavailable
+	// prior run never blocks an otherwise valid claim.
+	if task.AutopilotRunID.Valid && !task.IssueID.Valid && !task.ChatSessionID.Valid {
+		if run, err := h.Queries.GetAutopilotRun(r.Context(), task.AutopilotRunID); err == nil {
+			if workdir, workErr := h.automationPriorWorkdir(r.Context(), *task, runtime.WorkspaceID, run.AutopilotID); workErr == nil && workdir.Valid {
+				resp.PriorWorkDir = workdir.String
+			} else if workErr != nil {
+				slog.Warn("automation claim: prior workdir lookup failed",
+					"task_id", uuidToString(task.ID), "error", workErr)
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("automation claim: load autopilot run failed",
+				"task_id", uuidToString(task.ID), "error", err)
 		}
 	}
 
