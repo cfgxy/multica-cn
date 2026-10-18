@@ -222,6 +222,29 @@ func TestIssuePullRequestResponseHidesUnavailableSnapshot(t *testing.T) {
 	}
 }
 
+func TestIssuePullRequestResponseIncludesNullableBaseBranch(t *testing.T) {
+	row := db.ListPullRequestsByIssueRow{}
+	if got := issuePullRequestRowToResponse(row, false).BaseBranch; got != nil {
+		t.Fatalf("historical null base branch = %q, want nil", *got)
+	}
+	row.TargetBranch = pgtype.Text{String: "main", Valid: true}
+	resp := issuePullRequestRowToResponse(row, false)
+	if resp.BaseBranch == nil || *resp.BaseBranch != "main" {
+		t.Fatalf("base branch response = %v, want main", resp.BaseBranch)
+	}
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body["base_branch"] != "main" {
+		t.Fatalf("base_branch JSON = %v, want main", body["base_branch"])
+	}
+}
+
 func TestVerifyWebhookSignature(t *testing.T) {
 	secret := "shared-secret"
 	body := []byte(`{"action":"opened"}`)
@@ -1151,11 +1174,15 @@ func TestWebhook_MergedPR_BranchNameDoesNotClose(t *testing.T) {
 // title, body, branch, and lifecycle (open / merged / closed without
 // merge). Tests below need the open→merged sequence so close_intent on
 // one PR has to persist across multiple webhook events for a sibling PR.
-func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber int32, title, body, branch, lifecycle string) {
+func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber int32, title, body, branch, lifecycle string, targetBranches ...string) {
 	t.Helper()
 	var action, state string
 	var merged bool
 	var mergedAt, closedAt any
+	targetBranch := "main"
+	if len(targetBranches) > 0 {
+		targetBranch = targetBranches[0]
+	}
 	switch lifecycle {
 	case "opened":
 		action, state, merged = "opened", "open", false
@@ -1175,23 +1202,27 @@ func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber i
 	default:
 		t.Fatalf("firePRWebhook: unknown lifecycle %q", lifecycle)
 	}
+	pullRequest := map[string]any{
+		"number":     prNumber,
+		"html_url":   fmt.Sprintf("https://github.com/acme/widget/pull/%d", prNumber),
+		"title":      title,
+		"body":       body,
+		"state":      state,
+		"draft":      false,
+		"merged":     merged,
+		"merged_at":  mergedAt,
+		"closed_at":  closedAt,
+		"created_at": "2026-04-28T00:00:00Z",
+		"updated_at": "2026-04-29T00:00:00Z",
+		"head":       map[string]any{"ref": branch},
+		"user":       map[string]any{"login": "octocat"},
+	}
+	if targetBranch != "" {
+		pullRequest["base"] = map[string]any{"ref": targetBranch}
+	}
 	payload := map[string]any{
-		"action": action,
-		"pull_request": map[string]any{
-			"number":     prNumber,
-			"html_url":   fmt.Sprintf("https://github.com/acme/widget/pull/%d", prNumber),
-			"title":      title,
-			"body":       body,
-			"state":      state,
-			"draft":      false,
-			"merged":     merged,
-			"merged_at":  mergedAt,
-			"closed_at":  closedAt,
-			"created_at": "2026-04-28T00:00:00Z",
-			"updated_at": "2026-04-29T00:00:00Z",
-			"head":       map[string]any{"ref": branch},
-			"user":       map[string]any{"login": "octocat"},
-		},
+		"action":       action,
+		"pull_request": pullRequest,
 		"repository":   map[string]any{"name": "widget", "owner": map[string]any{"login": "acme"}},
 		"installation": map[string]any{"id": installationID},
 	}
@@ -1292,6 +1323,233 @@ func TestWebhook_CloseKeywordRemovedBeforeMergeDoesNotClose(t *testing.T) {
 	}
 	if got.Status != "in_progress" {
 		t.Errorf("second issue after post-merge closing keyword: status = %q, want in_progress", got.Status)
+	}
+}
+
+func TestWebhook_PullRequestEditUnlinksOnlyStaleSystemAssociation(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "pr-unlink-system-association-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	createIssue := func(title string) IssueResponse {
+		t.Helper()
+		w := testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+			"title": title, "status": "in_progress",
+		})).Want(http.StatusCreated)
+		var issue IssueResponse
+		if err := json.NewDecoder(w.Body).Decode(&issue); err != nil {
+			t.Fatalf("decode issue: %v", err)
+		}
+		return issue
+	}
+	staleIssue := createIssue("PR unlink stale issue")
+	manualIssue := createIssue("PR unlink manual issue")
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = ANY($1)`, []string{staleIssue.ID, manualIssue.ID})
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = ANY($1)`, []string{staleIssue.ID, manualIssue.ID})
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE repo_owner = 'acme' AND repo_name = 'widget' AND pr_number = 77301`)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1 AND installation_id = $2`, testWorkspaceID, 30264031)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = ANY($1)`, []string{staleIssue.ID, manualIssue.ID})
+	})
+
+	const installationID int64 = 30264031
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID, AccountLogin: "acme", AccountType: "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+	firePRWebhook(t, secret, installationID, 77301, "Fix "+staleIssue.Identifier, "", "feature", "opened")
+	pr, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), RepoOwner: "acme", RepoName: "widget", PrNumber: 77301,
+	})
+	if err != nil {
+		t.Fatalf("GetGitHubPullRequest: %v", err)
+	}
+	if pr.TargetBranch.String != "main" || !pr.TargetBranch.Valid {
+		t.Fatalf("target branch = %+v, want main", pr.TargetBranch)
+	}
+	if err := testHandler.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+		IssueID: parseUUID(manualIssue.ID), PullRequestID: pr.ID, LinkedByType: strToText("user"),
+	}); err != nil {
+		t.Fatalf("create user association: %v", err)
+	}
+
+	firePRWebhook(t, secret, installationID, 77301, "Fix "+manualIssue.Identifier, "", "feature", "edited", "")
+	pr, err = testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), RepoOwner: "acme", RepoName: "widget", PrNumber: 77301,
+	})
+	if err != nil {
+		t.Fatalf("GetGitHubPullRequest after missing base: %v", err)
+	}
+	if !pr.TargetBranch.Valid || pr.TargetBranch.String != "main" {
+		t.Fatalf("missing base erased target branch: %+v", pr.TargetBranch)
+	}
+	staleRows, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(staleIssue.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue stale issue: %v", err)
+	}
+	if len(staleRows) != 0 {
+		t.Fatalf("stale system association remained visible: %+v", staleRows)
+	}
+	manualRows, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(manualIssue.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue manual issue: %v", err)
+	}
+	if len(manualRows) != 1 {
+		t.Fatalf("user-origin association was removed, got %d rows", len(manualRows))
+	}
+	var linkedByType string
+	if err := testPool.QueryRow(ctx, `SELECT linked_by_type FROM issue_pull_request WHERE issue_id = $1 AND pull_request_id = $2`, manualIssue.ID, pr.ID).Scan(&linkedByType); err != nil {
+		t.Fatalf("read association source: %v", err)
+	}
+	if linkedByType != "user" {
+		t.Fatalf("association source changed to %q, want user", linkedByType)
+	}
+
+	// A later edited delivery for a merged PR must retain its system association
+	// and close intent even after all issue identifiers are removed.
+	firePRWebhook(t, secret, installationID, 77301, "Fix "+staleIssue.Identifier, "", "feature", "opened")
+	firePRWebhook(t, secret, installationID, 77301, "Fix "+staleIssue.Identifier, "", "feature", "merged")
+	firePRWebhook(t, secret, installationID, 77301, "Merged work", "", "feature", "edited_merged")
+	terminalRows, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(staleIssue.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue after merged edit: %v", err)
+	}
+	if len(terminalRows) != 1 {
+		t.Fatalf("merged PR association was removed by edit, got %d rows", len(terminalRows))
+	}
+	var closeIntent bool
+	if err := testPool.QueryRow(ctx, `SELECT close_intent FROM issue_pull_request WHERE issue_id = $1 AND pull_request_id = $2`, staleIssue.ID, pr.ID).Scan(&closeIntent); err != nil {
+		t.Fatalf("read retained close intent: %v", err)
+	}
+	if !closeIntent {
+		t.Fatal("merged PR edit cleared close intent")
+	}
+}
+
+func TestUnlinkPullRequestFromIssueScopesLinkAndKeepsPRMirror(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "issue-scoped-pr-unlink-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	createIssue := func(title string) IssueResponse {
+		t.Helper()
+		w := testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+			"title": title, "status": "in_progress",
+		})).Want(http.StatusCreated)
+		var issue IssueResponse
+		if err := json.NewDecoder(w.Body).Decode(&issue); err != nil {
+			t.Fatalf("decode issue: %v", err)
+		}
+		return issue
+	}
+	issueA := createIssue("Issue scoped unlink A")
+	issueB := createIssue("Issue scoped unlink B")
+	const installationID int64 = 30264032
+	const prNumber int32 = 77302
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = ANY($1)`, []string{issueA.ID, issueB.ID})
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = ANY($1)`, []string{issueA.ID, issueB.ID})
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE repo_owner = 'acme' AND repo_name = 'widget' AND pr_number = $1`, prNumber)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1 AND installation_id = $2`, testWorkspaceID, installationID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = ANY($1)`, []string{issueA.ID, issueB.ID})
+	})
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: installationID, AccountLogin: "acme", AccountType: "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+	firePRWebhook(t, secret, installationID, prNumber, "Fix "+issueA.Identifier, "", "feature/unlink", "opened")
+	pr, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), RepoOwner: "acme", RepoName: "widget", PrNumber: prNumber,
+	})
+	if err != nil {
+		t.Fatalf("GetGitHubPullRequest: %v", err)
+	}
+	if err := testHandler.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+		IssueID: parseUUID(issueB.ID), PullRequestID: pr.ID, LinkedByType: strToText("user"),
+	}); err != nil {
+		t.Fatalf("create second issue association: %v", err)
+	}
+
+	unlink := func(issueID string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := newRequest("DELETE", "/api/issues/"+issueID+"/pull-requests/"+uuidToString(pr.ID)+"?workspace_id="+testWorkspaceID, nil)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("id", issueID)
+		rctx.URLParams.Add("pullRequestId", uuidToString(pr.ID))
+		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+		rec := httptest.NewRecorder()
+		testHandler.UnlinkPullRequestFromIssue(rec, req)
+		return rec
+	}
+	if rec := unlink(issueA.ID); rec.Code != http.StatusNoContent {
+		t.Fatalf("unlink issue A: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := unlink(issueA.ID); rec.Code != http.StatusNotFound {
+		t.Fatalf("repeated unlink should be isolated as not found, status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rowsA, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(issueA.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue A: %v", err)
+	}
+	rowsB, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(issueB.ID))
+	if err != nil {
+		t.Fatalf("ListPullRequestsByIssue B: %v", err)
+	}
+	if len(rowsA) != 0 || len(rowsB) != 1 {
+		t.Fatalf("unlink crossed issue boundary: A=%d rows, B=%d rows", len(rowsA), len(rowsB))
+	}
+	if _, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), RepoOwner: "acme", RepoName: "widget", PrNumber: prNumber,
+	}); err != nil {
+		t.Fatalf("unlink removed the shared PR mirror: %v", err)
+	}
+
+	foreignWorkspaceID := dbfx.Workspace(t, "PR unlink foreign workspace", fmt.Sprintf("pr-unlink-foreign-%d", time.Now().UnixNano()))
+	foreignIssueID := dbfx.Issue(t, "foreign workspace PR issue", testutil.Cols{
+		"workspace_id": foreignWorkspaceID,
+		"creator_id":   testUserID,
+	})
+	now := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+	foreignPR, err := testHandler.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
+		WorkspaceID: parseUUID(foreignWorkspaceID), InstallationID: 30264033,
+		RepoOwner: "acme", RepoName: "foreign-unlink", PrNumber: 1,
+		Title: "Foreign workspace PR", State: "open", HtmlUrl: "https://github.com/acme/foreign-unlink/pull/1",
+		PrCreatedAt: now, PrUpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create foreign workspace PR: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, foreignPR.ID)
+		testPool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id = $1`, foreignPR.ID)
+	})
+	if err := testHandler.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+		IssueID: parseUUID(foreignIssueID), PullRequestID: foreignPR.ID, LinkedByType: strToText("user"),
+	}); err != nil {
+		t.Fatalf("link foreign workspace PR: %v", err)
+	}
+	foreignReq := newRequest("DELETE", "/api/issues/"+foreignIssueID+"/pull-requests/"+uuidToString(foreignPR.ID), nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", foreignIssueID)
+	rctx.URLParams.Add("pullRequestId", uuidToString(foreignPR.ID))
+	foreignReq = foreignReq.WithContext(context.WithValue(foreignReq.Context(), chi.RouteCtxKey, rctx))
+	foreignResponse := httptest.NewRecorder()
+	testHandler.UnlinkPullRequestFromIssue(foreignResponse, foreignReq)
+	if foreignResponse.Code != http.StatusNotFound {
+		t.Fatalf("cross-workspace unlink status=%d, want 404", foreignResponse.Code)
+	}
+	foreignIssueIDs, err := testHandler.Queries.ListIssueIDsForPullRequest(ctx, foreignPR.ID)
+	if err != nil {
+		t.Fatalf("list foreign PR issue associations: %v", err)
+	}
+	if len(foreignIssueIDs) != 1 || uuidToString(foreignIssueIDs[0]) != foreignIssueID {
+		t.Fatalf("unauthorized request changed foreign PR association: %v", uuidsToStrings(foreignIssueIDs))
 	}
 }
 
