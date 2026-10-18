@@ -2424,7 +2424,7 @@ class ApiClient {
   }
 
   async createChatSession(
-    data: { agent_id: string; title?: string },
+    data: { agent_id: string; title?: string; project_id?: string | null },
   ): Promise<ChatSession> {
     // Strict parse — a malformed create response derails the optimistic
     // burst (we need the new session id to seed caches). Fallback would
@@ -2526,7 +2526,7 @@ class ApiClient {
   // helper table in apps/mobile/CLAUDE.md.
   async updateChatSession(
     id: string,
-    data: { title: string },
+    data: { title?: string; project_id?: string | null },
   ): Promise<void> {
     await this.fetch<void>(`/api/chat/sessions/${id}`, {
       method: "PATCH",

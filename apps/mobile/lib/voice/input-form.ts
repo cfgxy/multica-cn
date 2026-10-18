@@ -54,29 +54,25 @@ export interface InputShape {
   /** 现状灰 pill（disabled 链）。 */
   pill: boolean;
   rightSlot: InputRightSlot;
-  /** Keep a direct stop action beside Send when queue submission remains available. */
-  showStopAction: boolean;
 }
 
-const DICTATION: InputShape = { dictation: true, pill: false, rightSlot: "send", showStopAction: false };
-const PILL: InputShape = { dictation: false, pill: true, rightSlot: "muted-send", showStopAction: false };
+const DICTATION: InputShape = { dictation: true, pill: false, rightSlot: "send" };
+const PILL: InputShape = { dictation: false, pill: true, rightSlot: "muted-send" };
 
 export function resolveInputShape(input: InputShapeInput): InputShape {
   // 已展开的听写条不因 sending 翻回 bar——录音中被任务完成事件闪屏
   // 比多显示一瞬 Stop 更糟；听写条自身不提供发送路径（松开即发送）。
   if (input.dictationOpen && !input.disabled) return DICTATION;
   if (input.disabled) return PILL;
-  const showStopAction = input.sending && input.allowStop && input.allowSubmitWhileRunning;
-  if (input.sending && input.allowStop && !input.allowSubmitWhileRunning) {
-    return { dictation: false, pill: false, rightSlot: "stop", showStopAction: false };
+  if (input.sending && input.allowStop && (!input.allowSubmitWhileRunning || !input.hasDraft)) {
+    return { dictation: false, pill: false, rightSlot: "stop" };
   }
   if (!input.hasDraft && input.voice === "available") {
-    return { dictation: false, pill: false, rightSlot: "voice", showStopAction };
+    return { dictation: false, pill: false, rightSlot: "voice" };
   }
   return {
     dictation: false,
     pill: false,
     rightSlot: input.hasDraft ? "send" : "muted-send",
-    showStopAction,
   };
 }

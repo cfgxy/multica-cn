@@ -39,6 +39,8 @@ interface Props {
   onSkill?: () => void;
   /** 快捷回复入口；不传不渲染。 */
   onQuickReplies?: () => void;
+  onProjectContext?: () => void;
+  projectContextLabel?: string;
 }
 
 export function PlusPanel({
@@ -51,6 +53,8 @@ export function PlusPanel({
   onFiles,
   onSkill,
   onQuickReplies,
+  onProjectContext,
+  projectContextLabel,
 }: Props) {
   const { t } = useT("chat");
   const { colorScheme } = useColorScheme();
@@ -96,6 +100,14 @@ export function PlusPanel({
             onPress: onQuickReplies,
           },
         ]
+      : []),
+    ...(onProjectContext
+      ? [{
+          key: "project",
+          icon: "folder-outline" as const,
+          label: projectContextLabel ?? t("input.project_context", "Project context"),
+          onPress: onProjectContext,
+        }]
       : []),
     {
       key: "files",
