@@ -26,6 +26,14 @@ function fakeClient(overrides: Partial<Record<string, unknown>> = {}): MulticaCl
       calls.push({ method: "getAutopilotRun", args: [autopilotId, runId] });
       return { id: runId, autopilot_id: autopilotId, status: "completed", task_id: "task-9" };
     },
+    listAutopilotRuns: async (_ws: string, autopilotId: string, params: Record<string, unknown>) => {
+      calls.push({ method: "listAutopilotRuns", args: [autopilotId, params] });
+      return { runs: [{ id: "run-9", autopilot_id: autopilotId, status: "completed" }], has_more: false };
+    },
+    triggerAutopilot: async (_ws: string, autopilotId: string, body: Record<string, unknown>, key: string) => {
+      calls.push({ method: "triggerAutopilot", args: [autopilotId, body, key] });
+      return { id: "run-triggered", autopilot_id: autopilotId, status: "running" };
+    },
     listAuditEvents: async (_ws: string, params: Record<string, unknown>) => {
       calls.push({ method: "listAuditEvents", args: [params] });
       return { events: [{ id: "audit-1" }], next_cursor: null, next_cursor_id: null };
@@ -294,6 +302,54 @@ describe("get_autopilot_run_diagnostics handler", () => {
     expect(result.run).not.toHaveProperty("trigger_payload");
     expect(result.run).not.toHaveProperty("raw_log");
     expect(result.run.result_summary).not.toHaveProperty("prompt");
+  });
+
+  it("returns only a bounded, redacted output and task lifecycle projection", async () => {
+    const client = fakeClient({ getAutopilotRun: async () => ({
+      id: "run-safe-output",
+      autopilot_id: "ap-7",
+      status: "completed",
+      task_id: "task-9",
+      trigger_payload: { webhook_token: "must-not-leak" },
+      result: { output: "Authorization: Bearer must-not-leak\ntoken=still-must-not-leak\nfinished" },
+      task: { id: "task-9", status: "completed", started_at: "2026-10-18T11:50:27Z", result: { raw: "must-not-leak" } },
+    }) });
+    const result = await findTool("get_autopilot_run")?.handler(
+      { workspace: WS, autopilot_id: "ap-7", run_id: "run-safe-output" }, client,
+    ) as { result_summary: Record<string, unknown>; task: Record<string, unknown> };
+    expect(result.result_summary.output_summary).toBe("Authorization: [REDACTED]\ntoken=[REDACTED]\nfinished");
+    expect(result.task).toMatchObject({ id: "task-9", status: "completed" });
+    expect(result.task).not.toHaveProperty("result");
+    expect(result).not.toHaveProperty("trigger_payload");
+  });
+
+  it("forwards native run filters and returns a safe page", async () => {
+    const client = fakeClient({ listAutopilotRuns: async (_ws: string, autopilotId: string, params: Record<string, unknown>) => {
+      callsOf(client).push({ method: "listAutopilotRuns", args: [autopilotId, params] });
+      return { runs: [{ id: "run-1", autopilot_id: autopilotId, status: "running", result: { raw_log: "must-not-leak" } }], has_more: true, next_offset: 3 };
+    } });
+    const result = await findTool("list_autopilot_runs")?.handler({
+      workspace: WS,
+      autopilot_id: "ap-7",
+      source: "replay",
+      status: "running",
+      triggered_after: "2026-10-18T00:00:00Z",
+      limit: 3,
+    }, client) as { runs: Array<Record<string, unknown>>; has_more: boolean; next_offset: number };
+    expect(callsOf(client)[0]?.args[1]).toMatchObject({ source: "replay", status: "running", limit: 3 });
+    expect(result).toMatchObject({ has_more: true, next_offset: 3 });
+    expect(result.runs[0]).not.toHaveProperty("raw_log");
+  });
+
+  it("returns an Autopilot run receipt that names its read-back query", async () => {
+    const result = await findTool("trigger_autopilot")?.handler({
+      workspace: WS,
+      autopilot_id: "ap-7",
+      mode: "current",
+      idempotency_key: "stable-key",
+    }, fakeClient()) as Record<string, unknown>;
+    expect(result).toMatchObject({ autopilot_run_id: "run-triggered", status: "running" });
+    expect(result.query).toMatchObject({ tool: "get_autopilot_run_diagnostics", run_id: "run-triggered" });
   });
 });
 
