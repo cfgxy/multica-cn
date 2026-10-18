@@ -37,6 +37,19 @@ export interface AdminWorkspaceList {
   total: number;
 }
 
+export interface FileReadDenyRule {
+  id: string;
+  pattern: string;
+  description: string;
+  enabled: boolean;
+  builtin: boolean;
+}
+
+export interface AdminFileReadPolicy {
+  version: number;
+  rules: FileReadDenyRule[];
+}
+
 /** Impersonation start/stop responses reuse the login shape. */
 export interface ImpersonationResponse {
   token: string;

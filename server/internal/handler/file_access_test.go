@@ -15,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/fileaccess"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func TestResolveFileAccessTargetByHost(t *testing.T) {
@@ -66,6 +67,21 @@ func TestListRuntimeFilesRejectsMissingHost(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), fileaccess.ErrorHostNotRegistered.Error()) {
 		t.Fatalf("response = %q, want missing-host error", response.Body.String())
+	}
+}
+
+func TestFileAccessRejectsLegacyDaemonBeforeQueue(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := dbfx.Runtime(t, "legacy file access runtime", testutil.Cols{"visibility": "public"})
+	targetID := "legacy-files-" + uuid.NewString()
+	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, nil)
+	dbfx.Exec(t, `UPDATE agent_runtime SET metadata = '{}'::jsonb WHERE id = $1`, runtimeID)
+	request := submitFilesRequest(runtimeID, targetID, "/srv/data/report.txt", testUserID)
+	wantFileAccessError(t, testHandler.ListRuntimeFiles, request, http.StatusConflict, "daemon_upgrade_required")
+	if count := dbfx.Count(t, `SELECT count(*) FROM daemon_file_operation WHERE runtime_id = $1`, runtimeID); count != 0 {
+		t.Fatalf("legacy daemon received %d file operations", count)
 	}
 }
 
@@ -416,10 +432,14 @@ func TestReportFileOperationResultRequiresCurrentClaimLease(t *testing.T) {
 	expiredID := insertFileOperation(t, runtimeID, "receipt-target", "file_list", "expired", 1)
 	staleID := insertFileOperation(t, runtimeID, "receipt-target", "file_list", "claimed", 3)
 	validID := insertFileOperation(t, runtimeID, "receipt-target", "file_list", "claimed", 3)
+	var policyVersion int64
+	if err := testPool.QueryRow(t.Context(), `SELECT version FROM mcp_file_read_policy WHERE singleton = TRUE`).Scan(&policyVersion); err != nil {
+		t.Fatal(err)
+	}
 
 	report := func(id string, epoch int64) *http.Request {
 		request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/file-operations/"+id+"/result", map[string]any{
-			"status": "succeeded", "lease_epoch": epoch, "result": map[string]any{"entries": []any{}},
+			"status": "succeeded", "lease_epoch": epoch, "policy_version": policyVersion, "result": map[string]any{"entries": []any{}},
 		}, testWorkspaceID, "file-operation-receipt-test")
 		return testutil.WithURLParams(request, "runtimeId", runtimeID, "operationId", id)
 	}
@@ -443,6 +463,7 @@ func TestReportFileOperationResultRequiresCurrentClaimLease(t *testing.T) {
 
 func registerFileAccessTarget(t *testing.T, runtimeID, id string, enabled bool, roots, workspaceIDs, memberIDs []string) {
 	t.Helper()
+	dbfx.Exec(t, `UPDATE agent_runtime SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{capabilities}', $2::jsonb, TRUE) WHERE id = $1`, runtimeID, []byte(`["file-read-policy-v1"]`))
 	rootJSON, err := json.Marshal(roots)
 	if err != nil {
 		t.Fatal(err)
@@ -491,10 +512,12 @@ func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
 		t.Skip("database not available")
 	}
 	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+	dbfx.Exec(t, `UPDATE agent_runtime SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{capabilities}', $2::jsonb, TRUE) WHERE id = $1`, runtimeID, []byte(`["file-read-policy-v1"]`))
 	targetID := "heartbeat-files-" + uuid.NewString()
 	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, nil)
 	operationID := insertFileOperation(t, runtimeID, targetID, "file_list", "pending", 0)
 	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": runtimeID}, testWorkspaceID, "runtime-local-skills-daemon")
+	request.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityFileReadPolicyV1)
 	var response struct {
 		Pending []struct {
 			OperationID string `json:"operation_id"`

@@ -14,7 +14,11 @@ import (
 // beneath/no-magic-link resolution. Symlinks may resolve inside the root but
 // cannot escape it, including during concurrent path replacement.
 func OpenBeneath(roots []string, path string, flags int) (*os.File, error) {
-	canonical, err := ResolveRootPath(roots, path)
+	return OpenBeneathWithPolicy(roots, path, flags, DefaultDenyPolicy())
+}
+
+func OpenBeneathWithPolicy(roots []string, path string, flags int, policy DenyPolicy) (*os.File, error) {
+	canonical, err := ResolveRootPathWithPolicy(roots, path, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -60,4 +64,8 @@ func OpenBeneath(roots []string, path string, flags int) (*os.File, error) {
 
 func OpenDirectoryBeneath(roots []string, path string) (*os.File, error) {
 	return OpenBeneath(roots, path, unix.O_RDONLY|unix.O_DIRECTORY)
+}
+
+func OpenDirectoryBeneathWithPolicy(roots []string, path string, policy DenyPolicy) (*os.File, error) {
+	return OpenBeneathWithPolicy(roots, path, unix.O_RDONLY|unix.O_DIRECTORY, policy)
 }

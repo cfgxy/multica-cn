@@ -18,7 +18,7 @@ import (
 
 func (d *Daemon) handleFileOperation(ctx context.Context, rt Runtime, op protocol.DaemonFileOperationDispatch) {
 	result, err := executeFileOperation(op)
-	receipt := map[string]any{"lease_epoch": op.LeaseEpoch}
+	receipt := map[string]any{"lease_epoch": op.LeaseEpoch, "policy_version": op.PolicyVersion}
 	if err != nil {
 		receipt["status"] = "rejected"
 		receipt["error"] = errorClass(err)
@@ -38,6 +38,10 @@ func (d *Daemon) handleFileOperation(ctx context.Context, rt Runtime, op protoco
 }
 
 func executeFileOperation(op protocol.DaemonFileOperationDispatch) (any, error) {
+	var policy fileaccess.DenyPolicy
+	if len(op.Policy) == 0 || json.Unmarshal(op.Policy, &policy) != nil || policy.Version != op.PolicyVersion || fileaccess.ValidateDenyPolicy(policy) != nil {
+		return nil, fileaccess.ErrorPermissionDenied
+	}
 	var expectedModTime *time.Time
 	if op.ExpectedModTime != "" {
 		parsed, err := time.Parse(time.RFC3339Nano, op.ExpectedModTime)
@@ -47,16 +51,16 @@ func executeFileOperation(op protocol.DaemonFileOperationDispatch) (any, error) 
 		expectedModTime = &parsed
 	}
 	req := fileaccess.Request{TargetID: op.TargetID, Kind: fileaccess.Kind(op.Kind), Path: op.Path, Offset: op.Offset, Length: op.Length, Limit: op.Limit, Cursor: op.Cursor, ExpectedSize: op.ExpectedSize, ExpectedModTime: expectedModTime}
-	if err := fileaccess.ValidateRequest(req); err != nil {
+	if err := fileaccess.ValidateRequestWithPolicy(req, policy); err != nil {
 		return nil, err
 	}
-	canonical, err := fileaccess.ResolveRootPath(op.Roots, op.Path)
+	canonical, err := fileaccess.ResolveRootPathWithPolicy(op.Roots, op.Path, policy)
 	if err != nil {
 		return nil, err
 	}
 	switch req.Kind {
 	case fileaccess.KindList:
-		dir, err := fileaccess.OpenDirectoryBeneath(op.Roots, canonical)
+		dir, err := fileaccess.OpenDirectoryBeneathWithPolicy(op.Roots, canonical, policy)
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +70,7 @@ func executeFileOperation(op protocol.DaemonFileOperationDispatch) (any, error) 
 			return nil, err
 		}
 		limit := normalizedListLimit(op.Limit)
-		entries, hasMore, err := readDirectoryPage(dir, op.Roots, canonical, cursor, limit)
+		entries, hasMore, err := readDirectoryPage(dir, op.Roots, canonical, cursor, limit, policy)
 		if err != nil {
 			return nil, fileaccess.ErrorPathNotAllowed
 		}
@@ -76,7 +80,7 @@ func executeFileOperation(op protocol.DaemonFileOperationDispatch) (any, error) 
 		}
 		return out, nil
 	case fileaccess.KindMetadata:
-		f, err := fileaccess.OpenBeneath(op.Roots, canonical, os.O_RDONLY)
+		f, err := fileaccess.OpenBeneathWithPolicy(op.Roots, canonical, os.O_RDONLY, policy)
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +91,7 @@ func executeFileOperation(op protocol.DaemonFileOperationDispatch) (any, error) 
 		}
 		return fileaccess.MetadataFor(op.TargetID, canonical, info)
 	case fileaccess.KindRead:
-		f, err := fileaccess.OpenBeneath(op.Roots, canonical, os.O_RDONLY)
+		f, err := fileaccess.OpenBeneathWithPolicy(op.Roots, canonical, os.O_RDONLY, policy)
 		if err != nil {
 			return nil, err
 		}
@@ -134,7 +138,7 @@ func (h *directoryEntryHeap) Pop() any {
 }
 
 // readDirectoryPage scans the full iterator while retaining only limit+1 valid entries after the cursor.
-func readDirectoryPage(dir *os.File, roots []string, path, cursor string, limit int) ([]fileaccess.Entry, bool, error) {
+func readDirectoryPage(dir *os.File, roots []string, path, cursor string, limit int, policy fileaccess.DenyPolicy) ([]fileaccess.Entry, bool, error) {
 	candidates := make(directoryEntryHeap, 0, limit+1)
 	heap.Init(&candidates)
 	for {
@@ -145,7 +149,7 @@ func readDirectoryPage(dir *os.File, roots []string, path, cursor string, limit 
 				continue
 			}
 			child := filepath.Join(path, name)
-			if _, resolveErr := fileaccess.ResolveRootPath(roots, child); resolveErr != nil {
+			if _, resolveErr := fileaccess.ResolveRootPathWithPolicy(roots, child, policy); resolveErr != nil {
 				continue
 			}
 			info, infoErr := ent.Info()

@@ -101,6 +101,7 @@ import type {
 import type {
   AdminUser,
   AdminUserList,
+  AdminFileReadPolicy,
   AdminWorkspace,
   AdminWorkspaceList,
   ImpersonationResponse,
@@ -2891,6 +2892,24 @@ export const AdminWorkspaceListSchema = z.object({
 export const EMPTY_ADMIN_WORKSPACE_LIST: AdminWorkspaceList = {
   workspaces: [],
   total: 0,
+};
+
+export const FileReadDenyRuleSchema = z.object({
+  id: z.string().default(""),
+  pattern: z.string().default(""),
+  description: z.string().default(""),
+  enabled: z.boolean().default(false),
+  builtin: z.boolean().default(false),
+}).loose();
+
+export const AdminFileReadPolicySchema = z.object({
+  version: z.number().default(1),
+  rules: z.array(FileReadDenyRuleSchema).default([]),
+}).loose();
+
+export const EMPTY_ADMIN_FILE_READ_POLICY: AdminFileReadPolicy = {
+  version: 1,
+  rules: [],
 };
 
 // Impersonation start/stop reuse the login response shape ({token, user}).

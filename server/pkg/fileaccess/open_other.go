@@ -10,6 +10,14 @@ func OpenBeneath([]string, string, int) (*os.File, error) {
 	return nil, ErrorUnsupportedResolution
 }
 
+func OpenBeneathWithPolicy([]string, string, int, DenyPolicy) (*os.File, error) {
+	return nil, ErrorUnsupportedResolution
+}
+
 func OpenDirectoryBeneath([]string, string) (*os.File, error) {
+	return nil, ErrorUnsupportedResolution
+}
+
+func OpenDirectoryBeneathWithPolicy([]string, string, DenyPolicy) (*os.File, error) {
 	return nil, ErrorUnsupportedResolution
 }

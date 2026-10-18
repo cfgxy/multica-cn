@@ -36,6 +36,64 @@ func TestNormalizePath(t *testing.T) {
 	}
 }
 
+func TestDenyPolicyMatchesConfiguredPatterns(t *testing.T) {
+	policy := DenyPolicy{Version: 3, Rules: []DenyRule{
+		{ID: "ssh", Pattern: "**/.ssh/**", Enabled: true},
+		{ID: "env", Pattern: "**/.env*", Enabled: true},
+		{ID: "credential", Pattern: "**/*credential*", Enabled: true},
+	}}
+	for _, candidate := range []string{"/home/member/.ssh/id_ed25519", "/srv/app/.env.production", "/home/member/.config/cloud/credentials.json"} {
+		if !policy.Denies(candidate) {
+			t.Errorf("policy did not deny %q", candidate)
+		}
+	}
+	if policy.Denies("/srv/app/src/configuration.go") {
+		t.Fatal("policy denied an unrelated source file")
+	}
+	policy.Rules[0].Enabled = false
+	if policy.Denies("/home/member/.ssh/id_ed25519") {
+		t.Fatal("disabled rule remained effective")
+	}
+	if _, err := NormalizePathWithPolicy("/home/member/.ssh/id_ed25519", policy); err != nil {
+		t.Fatalf("disabled rule still rejected the path: %v", err)
+	}
+}
+
+func TestValidateDenyPolicyRejectsUnsafeAndMalformedRules(t *testing.T) {
+	for _, policy := range []DenyPolicy{
+		{Version: 0},
+		{Version: 1, Rules: []DenyRule{{ID: "escape", Pattern: "**/../secret", Enabled: true}}},
+		{Version: 1, Rules: []DenyRule{{ID: "bad", Pattern: "**/[", Enabled: true}}},
+		{Version: 1, Rules: []DenyRule{{ID: "same", Pattern: "**/a", Enabled: true}, {ID: "same", Pattern: "**/b", Enabled: true}}},
+	} {
+		if err := ValidateDenyPolicy(policy); err == nil {
+			t.Errorf("ValidateDenyPolicy(%+v) succeeded", policy)
+		}
+	}
+	if err := ValidateDenyPolicy(DefaultDenyPolicy()); err != nil {
+		t.Fatalf("default policy invalid: %v", err)
+	}
+}
+
+func TestResolveRootPathChecksResolvedPathAgainstCustomPolicy(t *testing.T) {
+	root := t.TempDir()
+	privateDir := filepath.Join(root, "private-config")
+	if err := os.Mkdir(privateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(privateDir, "settings.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(privateDir, alias); err != nil {
+		t.Fatal(err)
+	}
+	policy := DenyPolicy{Version: 1, Rules: []DenyRule{{ID: "private", Pattern: "**/private-config/**", Enabled: true}}}
+	if _, err := ResolveRootPathWithPolicy([]string{root}, filepath.Join(alias, "settings.json"), policy); !errors.Is(err, ErrorSensitivePathDenied) {
+		t.Fatalf("resolved sensitive path error = %v", err)
+	}
+}
+
 func TestResolveTargetIDByHost(t *testing.T) {
 	tests := []struct {
 		name    string
