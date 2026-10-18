@@ -109,6 +109,12 @@ func installCodexCommandGuards(env []string, guardBinDir, home string) ([]string
 	guardBinDir = filepath.Join(guardBinDir, fmt.Sprintf("%x", configID))
 	ghGuard := filepath.Join(home, ".config", "gh-guard", "gh-pr-guard")
 	gitGuard := filepath.Join(home, ".config", "git-push-guard", "git-push-guard")
+	if configured := envValue(env, "MULTICA_GIT_PUSH_GUARD"); configured != "" {
+		gitGuard = configured
+	}
+	if configured := envValue(env, "MULTICA_GH_PR_GUARD"); configured != "" {
+		ghGuard = configured
+	}
 	if err := writeCodexGuardShim(filepath.Join(guardBinDir, "gh"), renderCodexGuardShim(codexGHShim, ghGuard)); err != nil {
 		return nil, fmt.Errorf("install gh command guard: %w", err)
 	}
