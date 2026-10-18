@@ -8517,6 +8517,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		// These platform-owned settings take precedence over per-agent custom env.
 		agentEnv["MULTICA_GIT_PUSH_GUARD"] = guardPath
+		agentEnv["MULTICA_GH_PR_GUARD"] = filepath.Join(filepath.Dir(guardPath), "gh-pr-guard")
 		agentEnv["PUSH_GUARD_CONF"] = policyPath
 		agentEnv["GH_GUARD_CONF"] = policyPath
 	}

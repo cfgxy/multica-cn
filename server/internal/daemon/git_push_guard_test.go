@@ -13,6 +13,7 @@ func TestPrepareTaskGitPushGuardBuildsIsolatedCanonicalPolicy(t *testing.T) {
 	guard, config, err := prepareTaskGitPushGuard(root, "task-shan-465", []RepoData{
 		{URL: "https://github.com/cfgxy/sub2api.git"},
 		{URL: "git@github.com:cfgxy/multica-cn.git"},
+		{URL: "https://github.com/cfgxy/fork.git", Upstream: "https://github.com/source/parent.git"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -24,11 +25,16 @@ func TestPrepareTaskGitPushGuardBuildsIsolatedCanonicalPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(policy), "cfgxy/sub2api\ncfgxy/multica-cn\n"; got != want {
+	if got, want := string(policy), "cfgxy/sub2api\ncfgxy/multica-cn\ncfgxy/fork upstream=source/parent\n"; got != want {
 		t.Fatalf("canonical policy = %q, want %q", got, want)
 	}
 	if info, err := os.Stat(guard); err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("guard mode: info=%v err=%v", info, err)
+	}
+	ghGuardPath := filepath.Join(filepath.Dir(guard), "gh-pr-guard")
+	ghGuard, err := os.ReadFile(ghGuardPath)
+	if err != nil || string(ghGuard) != string(ghPRGuardSource) {
+		t.Fatalf("materialized RUYI-401 guard differs from embedded source: err=%v", err)
 	}
 	otherGuard, otherConfig, err := prepareTaskGitPushGuard(root, "another-task", []RepoData{{URL: "https://github.com/cfgxy/multica-cn"}})
 	if err != nil {
@@ -53,6 +59,22 @@ func TestPrepareTaskGitPushGuardRejectsUntrustedResourcesAndDrift(t *testing.T) 
 			}
 		})
 	}
+	for _, repo := range []RepoData{
+		{URL: "https://github.com/cfgxy/repo", Upstream: "https://gitlab.com/other/repo"},
+		{URL: "https://github.com/cfgxy/repo", Upstream: "https://github.com/cfgxy/repo.git"},
+		{URL: "https://github.com/cfgxy/repo", Upstream: "not-a-url"},
+	} {
+		if _, _, err := prepareTaskGitPushGuard(t.TempDir(), "task", []RepoData{repo}); err == nil {
+			t.Fatalf("invalid upstream was accepted: %+v", repo)
+		}
+	}
+	_, _, err := prepareTaskGitPushGuard(t.TempDir(), "task", []RepoData{
+		{URL: "https://github.com/cfgxy/repo", Upstream: "source/parent"},
+		{URL: "https://github.com/cfgxy/repo", Upstream: "other/parent"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "conflicting upstream") {
+		t.Fatalf("conflicting upstream confirmation error = %v", err)
+	}
 
 	root := t.TempDir()
 	_, config, err := prepareTaskGitPushGuard(root, "task", []RepoData{{URL: "https://github.com/cfgxy/multica-cn"}})
@@ -66,6 +88,18 @@ func TestPrepareTaskGitPushGuardRejectsUntrustedResourcesAndDrift(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "policy drift detected") {
 		t.Fatalf("drift error = %v", err)
 	}
+
+	guardDriftRoot := t.TempDir()
+	guardPath, _, err := prepareTaskGitPushGuard(guardDriftRoot, "task", []RepoData{{URL: "https://github.com/cfgxy/multica-cn"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(guardPath, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := prepareTaskGitPushGuard(guardDriftRoot, "task", []RepoData{{URL: "https://github.com/cfgxy/multica-cn"}}); err == nil || !strings.Contains(err.Error(), "versioned guard") {
+		t.Fatalf("guard drift error = %v", err)
+	}
 }
 
 func TestEmbeddedGitPushGuardAllowsCanonicalAndRejectsUpstream(t *testing.T) {
@@ -73,6 +107,7 @@ func TestEmbeddedGitPushGuardAllowsCanonicalAndRejectsUpstream(t *testing.T) {
 	guardPath, configPath, err := prepareTaskGitPushGuard(root, "task", []RepoData{
 		{URL: "https://github.com/cfgxy/multica-cn"},
 		{URL: "https://github.com/cfgxy/sub2api"},
+		{URL: "https://github.com/cfgxy/fork", Upstream: "https://github.com/multica-ai/multica"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +133,12 @@ func TestEmbeddedGitPushGuardAllowsCanonicalAndRejectsUpstream(t *testing.T) {
 	}
 	if out, err := run("origin", []string{"ORIGIN_URL=https://github.com/cfgxy/sub2api.git"}); err != nil || !strings.Contains(out, "delegated") {
 		t.Fatalf("SHAN-465 canonical push output=%q error=%v", out, err)
+	}
+	if out, err := run("origin", []string{"ORIGIN_URL=https://github.com/cfgxy/fork.git"}); err != nil || !strings.Contains(out, "delegated") {
+		t.Fatalf("confirmed fork canonical push output=%q error=%v", out, err)
+	}
+	if out, err := run("upstream", []string{"UPSTREAM_URL=https://github.com/multica-ai/multica.git"}); err == nil || !strings.Contains(out, "upstream") {
+		t.Fatalf("confirmed fork upstream push output=%q error=%v", out, err)
 	}
 	if out, err := run("upstream", nil); err == nil || !strings.Contains(out, "白名单外") {
 		t.Fatalf("upstream push output=%q error=%v", out, err)

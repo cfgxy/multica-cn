@@ -151,6 +151,46 @@ func TestProjectResourceLifecycle(t *testing.T) {
 	}
 }
 
+func TestValidateGithubRepoUpstreamConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		ref       map[string]any
+		wantError bool
+		wantValue string
+	}{
+		{name: "absent remains unconfirmed", ref: map[string]any{"url": "https://github.com/cfgxy/fork"}},
+		{name: "valid URL normalizes", ref: map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": "https://GitHub.com/Source/Parent.git"}, wantValue: "source/parent"},
+		{name: "empty rejected", ref: map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": ""}, wantError: true},
+		{name: "non GitHub rejected", ref: map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": "https://gitlab.com/source/parent"}, wantError: true},
+		{name: "same canonical rejected", ref: map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": "git@github.com:cfgxy/fork.git"}, wantError: true},
+		{name: "path suffix rejected", ref: map[string]any{"url": "https://github.com/cfgxy/fork", "upstream": "https://github.com/source/parent/tree/main"}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := validateGithubRepoRef(raw)
+			if tc.wantError {
+				if err == nil {
+					t.Fatal("expected invalid upstream to be rejected")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var normalized map[string]any
+			if err := json.Unmarshal(got, &normalized); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantValue != "" && normalized["upstream"] != tc.wantValue {
+				t.Fatalf("normalized upstream=%v, want %q", normalized["upstream"], tc.wantValue)
+			}
+		})
+	}
+}
+
 // TestProjectResourceAcceptsSSHRepoURLs covers GitHub issue #2484: SSH and
 // scp-like git URLs must be accepted alongside https URLs, because workspace
 // repos configured with an SSH remote previously got rejected when attached

@@ -430,6 +430,7 @@ func preserveMaskedGatewayToken(incoming any, persistedRuntimeConfig []byte) {
 // daemon can set up worktrees for each workspace repo.
 type RepoData struct {
 	URL         string `json:"url"`
+	Upstream    string `json:"upstream,omitempty"`
 	Description string `json:"description,omitempty"`
 	Ref         string `json:"ref,omitempty"`
 }
