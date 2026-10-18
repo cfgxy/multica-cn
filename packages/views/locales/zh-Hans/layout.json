@@ -108,6 +108,7 @@
       "result_error_code": "结果错误码",
       "target_type": "目标类型（workspace/issue/host）",
       "target_id": "目标 ID",
+      "target_pair_required": "请同时选择目标类型和目标 ID，或同时清空两者。",
       "permission_denied": "你没有权限查看工作区审计事件。",
       "service_failed": "审计服务暂不可用，请重试。",
       "retry": "重试",
