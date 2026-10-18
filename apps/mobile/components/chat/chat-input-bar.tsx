@@ -27,7 +27,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
 import * as Haptics from "expo-haptics";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
@@ -76,8 +76,6 @@ import {
   resolvePlusPanelMaxHeight,
 } from "@/lib/chat-composer-layout";
 import { Text } from "@/components/ui/text";
-
-const VOICE_WAVE_HEIGHTS = [8, 14, 20, 11];
 
 interface Props {
   value: string;
@@ -692,21 +690,11 @@ function RightSlot({
         >
           {({ pressed }) => (
             <>
-              <View className="h-5 w-5 flex-row items-center justify-center gap-[3px]">
-                {VOICE_WAVE_HEIGHTS.map((height, index) => (
-                  <View
-                    key={index}
-                    style={{
-                      width: 2.6,
-                      height,
-                      borderRadius: 2,
-                      backgroundColor: disabled
-                        ? theme.mutedForeground
-                        : theme.brandForeground,
-                    }}
-                  />
-                ))}
-              </View>
+              <MaterialCommunityIcons
+                name="waveform"
+                size={21}
+                color={disabled ? theme.mutedForeground : theme.brandForeground}
+              />
               {pressed && !disabled ? (
                 <View
                   pointerEvents="none"

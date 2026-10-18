@@ -55,6 +55,7 @@ class VoiceAudioModule : Module() {
   private val playbackExecutor: ExecutorService = Executors.newSingleThreadExecutor()
   private val playbackRunning = AtomicBoolean(false)
   private var audioTrack: AudioTrack? = null
+  private var previousAudioMode: Int? = null
 
   override fun definition() = ModuleDefinition {
     Name("VoiceAudio")
@@ -189,8 +190,20 @@ class VoiceAudioModule : Module() {
       throw IllegalStateException("AudioRecord init failed")
     }
     audioRecord = record
-    captureRunning.set(true)
-    record.startRecording()
+    try {
+      enterVoiceAudioMode()
+      captureRunning.set(true)
+      record.startRecording()
+      if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+        throw IllegalStateException("AudioRecord failed to start")
+      }
+    } catch (e: Exception) {
+      captureRunning.set(false)
+      audioRecord = null
+      record.release()
+      restoreAudioModeIfIdle()
+      throw e
+    }
     val thread = Thread({
       val buffer = ByteArray(CHUNK_BYTES)
       try {
@@ -219,13 +232,21 @@ class VoiceAudioModule : Module() {
   }
 
   private fun stopCapture() {
-    if (!captureRunning.compareAndSet(true, false)) return
+    if (!captureRunning.compareAndSet(true, false)) {
+      restoreAudioModeIfIdle()
+      return
+    }
+    try {
+      audioRecord?.stop()
+    } catch (_: IllegalStateException) {
+    }
     try {
       captureThread?.join(1000)
     } catch (_: InterruptedException) {
       Thread.currentThread().interrupt()
     }
     captureThread = null
+    restoreAudioModeIfIdle()
   }
 
   private fun ensurePlaybackTrack() {
@@ -240,7 +261,7 @@ class VoiceAudioModule : Module() {
     }
     val track = AudioTrack(
       AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_MEDIA)
+        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
         .build(),
       AudioFormat.Builder()
@@ -252,9 +273,16 @@ class VoiceAudioModule : Module() {
       AudioTrack.MODE_STREAM,
       AudioManager.AUDIO_SESSION_ID_GENERATE,
     )
-    track.play()
-    audioTrack = track
-    playbackRunning.set(true)
+    try {
+      enterVoiceAudioMode()
+      track.play()
+      audioTrack = track
+      playbackRunning.set(true)
+    } catch (e: Exception) {
+      track.release()
+      restoreAudioModeIfIdle()
+      throw e
+    }
   }
 
   private fun stopPlaybackInternal() {
@@ -270,6 +298,27 @@ class VoiceAudioModule : Module() {
       }
       track.release()
     }
+    restoreAudioModeIfIdle()
+  }
+
+  private fun enterVoiceAudioMode() {
+    val audioManager = appContext.reactContext
+      ?.getSystemService(android.content.Context.AUDIO_SERVICE) as? AudioManager ?: return
+    if (previousAudioMode == null) {
+      previousAudioMode = audioManager.mode
+      audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+    }
+  }
+
+  private fun restoreAudioModeIfIdle() {
+    if (captureRunning.get() || playbackRunning.get()) return
+    val previous = previousAudioMode ?: return
+    val audioManager = appContext.reactContext
+      ?.getSystemService(android.content.Context.AUDIO_SERVICE) as? AudioManager
+    if (audioManager != null && audioManager.mode == AudioManager.MODE_IN_COMMUNICATION) {
+      audioManager.mode = previous
+    }
+    previousAudioMode = null
   }
 
   private fun sendErrorEvent(e: Exception) {

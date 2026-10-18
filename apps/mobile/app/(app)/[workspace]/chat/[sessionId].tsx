@@ -844,9 +844,6 @@ export default function ChatDetailScreen() {
         agentId={voiceOpen && currentAgent !== null ? currentAgent.id : null}
         workspaceSlug={wsSlug ?? ""}
         onClose={() => setVoiceOpen(false)}
-        onUserTurn={(text) =>
-          setDraft(draftKey, draft ? `${draft}\n${text}` : text)
-        }
       />
     </View>
   );
