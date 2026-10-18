@@ -26,6 +26,7 @@ function source(relative: string): string {
 
 const detail = source("../app/(app)/[workspace]/issue/[id].tsx");
 const attributeRow = source("../components/issue/attribute-row.tsx");
+const menuFields = source("../components/issue/issue-menu-field-items.tsx");
 const layout = source("../app/(app)/[workspace]/_layout.tsx");
 
 describe("issuePickerHref", () => {
@@ -72,14 +73,22 @@ describe("更多菜单快捷设置接线", () => {
   ];
 
   it.each(quickFields)("菜单里有 %s 的快捷入口", (field) => {
-    expect(detail).toContain(`openPicker("${field}")`);
+    expect(menuFields).toContain(`onOpenPicker("${field}")`);
   });
 
   it("菜单与 chip 行共用同一张路由表，不各自维护字符串", () => {
     expect(detail).toContain('from "@/lib/issue-picker-routes"');
+    expect(detail).toContain("<IssueMenuFieldItems");
+    expect(detail).toContain("onOpenPicker={openPicker}");
     expect(attributeRow).toContain('from "@/lib/issue-picker-routes"');
     // chip 行里不得再留本地副本，否则两处会各自漂移。
     expect(attributeRow).not.toContain("const ISSUE_PICKER_PATHNAMES");
+  });
+
+  it("详情菜单可进入 Relations 页面，且路由已注册", () => {
+    expect(detail).toContain("onPress={onOpenRelations}");
+    expect(detail).toContain("/${wsSlug}/issue/${issue.id}/relations");
+    expect(layout).toContain('name="issue/[id]/relations"');
   });
 
   it("先关菜单再在交互结束后 push，避免 popover 卸载与 sheet 呈现打架", () => {

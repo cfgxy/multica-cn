@@ -100,6 +100,7 @@ export default function SettingsPage() {
   const goProfile = () => router.push(`/${currentSlug}/more/settings/profile`);
   const goNotifications = () =>
     router.push(`/${currentSlug}/more/settings/notifications`);
+  const goVoice = () => router.push(`/${currentSlug}/more/settings/voice`);
 
   return (
     <ScrollView
@@ -133,6 +134,18 @@ export default function SettingsPage() {
           subtitle={t(
             "mobile.page.notifications_subtitle",
             "Inbox and system alerts",
+          )}
+        />
+      </SectionGroup>
+
+      <SectionGroup title={t("page.tabs.workspace", "Workspace")}>
+        <NavRow
+          onPress={goVoice}
+          chevronColor={mutedFg}
+          title={t("page.tabs.voice", "Voice")}
+          subtitle={t(
+            "mobile.page.voice_subtitle",
+            "Provider pool, workspace default and dictation",
           )}
         />
       </SectionGroup>

@@ -3,6 +3,8 @@
 export interface McpEntry {
   /** Absolute path to the built `apps/mcp` entrypoint (`dist/index.js`). */
   distPath: string;
+  /** Absolute path to the protected file containing the MCP audit credential. */
+  auditCredentialFile?: string | undefined;
 }
 
 export type InstallOutcome =

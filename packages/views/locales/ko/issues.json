@@ -324,6 +324,11 @@
     "desc_placeholder": "설명 추가...",
     "current_issue": "현재 태스크",
     "referenced_issues": "참조된 태스크",
+    "reference_tail_header": "참조 · {{count}}",
+    "reference_tail_more": "참조 {{count}}개 더 보기",
+    "reference_tail_more_with_pr": "참조 {{count}}개 더 보기 (PR {{prCount}}개 포함)",
+    "reference_group_tasks": "태스크",
+    "reference_group_prs": "Pull Request",
     "sub_issues_label": "하위 태스크",
     "sub_issue_of": "상위 태스크",
     "add_sub_issues": "하위 태스크 추가",
@@ -334,6 +339,13 @@
     "section_properties": "속성",
     "section_parent_issue": "상위 태스크",
     "section_pull_requests": "Pull requests",
+    "section_pending_pull_requests": "병합 대기 PR",
+    "section_relations": "관련 태스크",
+    "relations_blocks": "블로킹",
+    "relations_blocked_by": "블로크됨",
+    "relations_relates_to": "관련",
+    "relations_supersedes": "대체 중",
+    "relations_superseded_by": "대체됨",
     "section_metadata": "메타데이터",
     "section_details": "세부 정보",
     "section_quick_actions": "퀵 액션",
@@ -354,10 +366,17 @@
     "pull_request_state_draft": "초안",
     "pull_request_state_merged": "병합됨",
     "pull_request_state_closed": "닫힘",
+    "pull_request_target_branch_label": "대상 브랜치",
+    "pull_request_target_branch_unknown": "알 수 없음",
     "pull_request_checks_none": "아직 검사 없음",
+    "pull_request_checks_unknown": "검사 상태 알 수 없음",
+    "pull_request_checks_passed": "검사 통과",
+    "pull_request_checks_pending": "검사 진행 중",
     "pull_request_checks_all_passed": "모든 검사 통과 ({{total}}/{{total}})",
     "pull_request_checks_running": "{{passed}}/{{total}} · {{running}}개 실행 중",
     "pull_request_checks_failed_count": "{{failed}}/{{total}} 실패",
+    "pull_request_checks_failed_unknown": "검사 실패",
+    "pull_request_checks_failed_named_unknown_count": "검사 실패 · {{names}}",
     "pull_request_checks_failed_named": "{{failed}}/{{total}} 실패 · {{names}}",
     "pull_request_checks_more": "+{{count}}개",
     "pull_request_merge_conflicting": "병합 충돌 있음",
@@ -366,6 +385,10 @@
     "pull_request_merge_behind": "기준 브랜치보다 뒤처짐",
     "pull_request_merge_unstable": "불안정",
     "pull_request_merge_has_hooks": "훅 있음",
+    "pull_request_review_approved": "검토 승인됨",
+    "pull_request_review_changes_requested": "변경 요청됨",
+    "pull_request_review_required": "검토 필요",
+    "pull_request_review_unknown": "검토 상태 알 수 없음",
     "pull_request_snapshot_stale": "{{time}} 업데이트됨",
     "pull_request_snapshot_stale_unknown": "스냅샷이 오래되었을 수 있습니다",
     "pull_request_card_files_count_other": "파일 {{count}}개",
@@ -511,8 +534,6 @@
     "trigger_blocked_short_runtime_offline": "런타임 오프라인",
     "trigger_blocked_short_runtime_unusable": "CLI 실행 불가",
     "trigger_blocked_short_agent_runtime_required": "런타임 필요",
-    "trigger_blocked_budget_exceeded": "이 대상의 런타임이 비용 예산 한도에 도달했습니다 — 기간이 재설정된 후 다시 시도하세요",
-    "trigger_blocked_short_budget_exceeded": "한도 도달",
     "trigger_blocked_short_generic": "트리거 안 됨",
     "send_reply_failed": "답글을 보내지 못했습니다",
     "delete_failed": "댓글을 삭제하지 못했습니다",
@@ -562,7 +583,9 @@
       "menu_label": "빠른 답장",
       "menu_empty": "워크스페이스 관리자가 아직 빠른 답장을 설정하지 않았습니다",
       "insert_aria": "빠른 답장 \"{{name}}\" 삽입"
-    }
+    },
+    "trigger_blocked_budget_exceeded": "이 대상의 런타임이 비용 예산 한도에 도달했습니다 — 기간이 재설정된 후 다시 시도하세요",
+    "trigger_blocked_short_budget_exceeded": "한도 도달"
   },
   "reply": {
     "placeholder": "답글 남기기..."
@@ -603,9 +626,6 @@
     "section": "실행 로그",
     "show_past": "이전 실행 보기 ({{count}})",
     "hide_past": "이전 실행 숨기기 ({{count}})",
-    "day_today": "오늘",
-    "day_yesterday": "어제",
-    "day_runs_other": "실행 {{count}}회",
     "cancel_task_tooltip": "작업 취소",
     "cancel_task_aria": "작업 취소",
     "retry_task_tooltip": "작업 다시 시도",
@@ -645,7 +665,6 @@
       "source_unattributed": "책임 멤버를 확인할 수 없음"
     },
     "usage_total_tooltip": "이 태스크의 토큰 사용량 — 클릭하면 실행별 내역",
-    "unpriced_rows_other": "미산출 {{count}}건",
     "status_cancel_requested": "정지 중",
     "stop_again_tooltip": "정지 요청 다시 보내기",
     "stop_again_aria": "정지 요청 다시 보내기",
@@ -674,7 +693,11 @@
     "rerun_confirm_title": "이 작업을 다시 실행할까요?",
     "rerun_confirm_body": "동일한 에이전트에서 현재 설정과 새 세션으로 다시 실행합니다. 이 실행은 기록에 그대로 남습니다.",
     "rerun_confirm_keep": "그대로 두기",
-    "rerun_confirm_confirm": "다시 실행"
+    "rerun_confirm_confirm": "다시 실행",
+    "day_today": "오늘",
+    "day_yesterday": "어제",
+    "day_runs_other": "실행 {{count}}회",
+    "unpriced_rows_other": "미산출 {{count}}건"
   },
   "usage_detail": {
     "title": "사용량 내역",
@@ -682,7 +705,6 @@
     "empty": "이 태스크에서 토큰 사용량이 기록된 실행이 아직 없습니다.",
     "kpi_cost": "비용",
     "kpi_cost_hint_other": "실패한 실행 {{count}}회가 {{pct}}%를 차지합니다",
-    "kpi_unpriced_other": "미산출 {{count}}건",
     "kpi_cache": "캐시 절감",
     "kpi_cache_hint": "적중률 {{pct}}% · 읽기 {{reads}}",
     "kpi_tokens": "토큰",
@@ -705,7 +727,8 @@
     "total": "합계",
     "note_unpriced_other": "실행 {{count}}회는 사용량 기록이 없어 합계에 포함되지 않습니다.",
     "note_unmapped": "{{models}}의 가격 정보가 없어 토큰은 집계되지만 비용은 포함되지 않습니다.",
-    "note_estimate": "비용은 공개된 모델 요금 기준 추정치이며, 제공자가 자체 비용을 보고한 경우는 그 값을 사용합니다."
+    "note_estimate": "비용은 공개된 모델 요금 기준 추정치이며, 제공자가 자체 비용을 보고한 경우는 그 값을 사용합니다.",
+    "kpi_unpriced_other": "미산출 {{count}}건"
   },
   "terminate_dialog": {
     "title": "이 작업을 중지할까요?",
@@ -976,6 +999,7 @@
       "actions_a11y": "태스크 작업",
       "edit_details": "세부 정보 편집",
       "open_on_web": "웹에서 열기",
+      "relations_empty": "아직 구조화된 관련이 없습니다. 블로킹, 관련, 대체 링크가 여기에 표시됩니다.",
       "load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
       "not_found": "찾을 수 없음",
       "retry": "다시 시도",
@@ -990,6 +1014,7 @@
       "comments_no_match": "일치하는 댓글이 없습니다.",
       "comments_open_a11y": "댓글 찾아보기",
       "pull_request_open_failed": "이 Pull request를 열 수 없습니다.",
+      "reference_sheet_close": "닫기",
       "pull_request_card_label": "Pull request"
     },
     "picker": {
@@ -1170,13 +1195,13 @@
     "created": "생성 시각",
     "finished": "종료 시각",
     "usage": "사용량",
-    "unpriced_rows_other": "미산출 {{count}}건",
     "reason": "원인",
     "cancelled_by": "{{name}} 님이 정지 요청 · {{time}}",
     "raw_error": "원본 오류",
     "lineage": "실행 체인",
     "lineage_rerun": "수동 재실행",
-    "lineage_system_retry": "시스템 재시도"
+    "lineage_system_retry": "시스템 재시도",
+    "unpriced_rows_other": "미산출 {{count}}건"
   },
   "decisions": {
     "title": "의사결정 카드",
@@ -1190,6 +1215,21 @@
     "answer_failed": "답변 제출 실패",
     "cancel_failed": "카드 취소 실패",
     "batch_title": "일괄 답변",
-    "batch_submit": "모두 제출"
+    "batch_submit": "모두 제출",
+    "auth_title": "승인 요청",
+    "auth_state_approved": "승인됨",
+    "auth_state_denied": "거부됨",
+    "auth_state_executed": "실행됨",
+    "auth_state_execute_failed": "실행 실패",
+    "auth_approve_default": "승인",
+    "auth_deny_default": "거부",
+    "auth_execute_failed": "실행 실패: {{reason}}",
+    "auth_answer_failed": "승인 작업에 실패했습니다",
+    "context_title": "결정 배경",
+    "context_why_now": "지금 결정하는 이유",
+    "context_facts": "확인된 사실과 근거",
+    "context_impact": "영향 범위",
+    "context_recommendation": "추천 이유",
+    "context_unknowns": "미확인 사항"
   }
 }

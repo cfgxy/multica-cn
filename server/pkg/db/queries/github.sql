@@ -91,13 +91,13 @@ SELECT * FROM github_pending_installation WHERE installation_id = $1
 -- INSERT path always writes the incoming value (NULL acceptable for a new row).
 INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
-    title, state, html_url, branch, author_login, author_avatar_url,
+    title, state, html_url, target_branch, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state,
     additions, deletions, changed_files
 ) VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, $8, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
+    $6, $7, $8, sqlc.narg('target_branch'), sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $9, $10,
     $11, sqlc.narg('mergeable_state'),
     $12, $13, $14
@@ -107,6 +107,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     title = EXCLUDED.title,
     state = EXCLUDED.state,
     html_url = EXCLUDED.html_url,
+    target_branch = COALESCE(EXCLUDED.target_branch, github_pull_request.target_branch),
     branch = EXCLUDED.branch,
     author_login = EXCLUDED.author_login,
     author_avatar_url = EXCLUDED.author_avatar_url,
@@ -128,6 +129,12 @@ RETURNING *;
 -- name: GetGitHubPullRequest :one
 SELECT * FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
+
+-- name: GetGitHubPullRequestsByNumber :many
+-- Number-only lookup for `MR !N` text references (RUYI-728): the handler
+-- enforces the unique-hit contract (0 rows → 404, >1 rows → 409 ambiguous).
+SELECT * FROM github_pull_request
+WHERE workspace_id = $1 AND pr_number = $2;
 
 -- name: ListPullRequestsByIssue :many
 -- Returns the issue's linked PRs with the GitHub API snapshot (MUL-5265): the
@@ -170,11 +177,11 @@ checks AS (
 )
 SELECT
     pr.id, pr.workspace_id, pr.installation_id, pr.repo_owner, pr.repo_name,
-    pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login,
+    pr.pr_number, pr.title, pr.state, pr.html_url, pr.target_branch, pr.branch, pr.author_login,
     pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at,
     pr.pr_updated_at, pr.head_sha, pr.mergeable_state,
     pr.additions, pr.deletions, pr.changed_files,
-    pr.api_mergeable, pr.api_merge_state_status, pr.checks_rollup_state,
+    pr.api_mergeable, pr.api_merge_state_status, pr.review_decision, pr.checks_rollup_state,
     pr.snapshot_head_sha, pr.snapshot_fetched_at,
     pr.created_at, pr.updated_at,
     COALESCE(c.total, 0)::bigint   AS checks_total,
@@ -223,6 +230,32 @@ LIMIT 1;
 -- name: ListIssueIDsForPullRequest :many
 SELECT issue_id FROM issue_pull_request
 WHERE pull_request_id = $1;
+
+-- name: ListSystemIssueIDsForPullRequest :many
+SELECT issue_id FROM issue_pull_request
+WHERE pull_request_id = $1 AND linked_by_type = 'system';
+
+-- name: UnlinkIssuePullRequest :one
+-- A user may unlink either provider's PR only from an issue in the same
+-- workspace. The mirrored PR rows remain intact for other linked issues.
+WITH github_pr AS (
+    SELECT gpr.id FROM github_pull_request gpr
+    WHERE gpr.id = sqlc.arg('pull_request_id') AND gpr.workspace_id = sqlc.arg('workspace_id')
+), vcs_pr AS (
+    SELECT vpr.id FROM vcs_pull_request vpr
+    WHERE vpr.id = sqlc.arg('pull_request_id') AND vpr.workspace_id = sqlc.arg('workspace_id')
+), deleted_github AS (
+    DELETE FROM issue_pull_request AS ipr
+    WHERE ipr.issue_id = sqlc.arg('issue_id')
+      AND ipr.pull_request_id IN (SELECT id FROM github_pr)
+    RETURNING 1
+), deleted_vcs AS (
+    DELETE FROM issue_vcs_pull_request AS ipr
+    WHERE ipr.issue_id = sqlc.arg('issue_id')
+      AND ipr.pull_request_id IN (SELECT id FROM vcs_pr)
+    RETURNING 1
+)
+SELECT ((SELECT COUNT(*) FROM deleted_github) + (SELECT COUNT(*) FROM deleted_vcs))::bigint AS deleted_count;
 
 -- name: GetIssuePullRequestCloseAggregate :one
 -- Aggregates the issue's linked PRs into the two counts that gate
@@ -279,4 +312,4 @@ ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
 
 -- name: UnlinkIssueFromPullRequest :exec
 DELETE FROM issue_pull_request
-WHERE issue_id = $1 AND pull_request_id = $2;
+WHERE issue_id = $1 AND pull_request_id = $2 AND linked_by_type = 'system';

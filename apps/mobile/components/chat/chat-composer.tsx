@@ -1,42 +1,35 @@
 /**
- * Chat composer — thin wrapper around the shared `<MessageComposer>` with
- * chat-specific wiring:
+ * Chat composer — thin wrapper around the new `<ChatInputBar>` (RUYI-694
+ * 板1 ChatGPT 风格改版) with chat-specific wiring:
  *
  *   - **Controlled text**: parent (chat.tsx) owns the draft via
  *     `useChatDraftsStore` so switching sessions rehydrates the right
  *     draft. Pass `value` + `onChangeText` through.
  *   - **Stop button**: while an agent task is running for the active
- *     session, `sending` flips true and we replace the Send button slot
- *     with a Stop affordance (filled foreground bg + stop glyph). Tap →
- *     `onStop()` cancels the in-flight task.
+ *     session, `sending` flips true and the send slot becomes Stop.
+ *   - **Voice gate**: RUYI-694 D2 供应商池解析链（`useVoiceAvailability`）
+ *     由父层算好传入；🎤 听写 + 🔵 全屏语音的显隐全部由 gate 决定
+ *     （unreachable 仍可发起——回退门禁只有 missing/invalid）。
  *   - **Mention picker mode=chat**: chat is user ↔ single agent so
- *     @member / @agent / @squad / @all are noise + would notify the
- *     wrong people. Picker route honors `?mode=chat` and surfaces only
- *     Issues (useful for "reference this ticket for context").
- *   - **No reply target**: chat is a flat conversation; passes no
- *     reply chip.
+ *     @member / @agent / @squad / @all are noise. Picker route honors
+ *     `?mode=chat`（`ChatInputBar` 内部自构路由）。
  *   - **No upload context**: chat attachments are session-scoped; the
- *     server back-fills `chat_message_id` on each row when the message
- *     persists (server-side). `MessageComposer` calls `api.uploadFile`
- *     without `{ issueId, commentId }`.
- *   - **Parent owns keyboard**: chat.tsx wraps in KeyboardAvoidingView +
- *     SafeAreaView, so `manageKeyboard={false}` prevents the composer
- *     from double-stacking its own keyboard handling.
+ *     server back-fills `chat_message_id` on each row.
+ *   - **Parent owns keyboard**: chat.tsx wraps in KeyboardAvoidingView.
  *
- * Previously a hand-written 400-LOC twin of inline-comment-composer.tsx;
- * now ~50 LOC plus the StopButton subcomponent.
+ * 旧实现包装共享 `<MessageComposer>`（pill 展开式）；本单换芯为板1
+ * 常驻胶囊条，行为面（受控草稿/mention 触发/附件通道/乐观回滚）在
+ * `ChatInputBar` 内等价复刻，共享 composer 零改动。
  */
-import { useCallback, type ReactNode } from "react";
-import { Pressable, View } from "react-native";
-import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
-import { Ionicons } from "@expo/vector-icons";
+import { useCallback } from "react";
 import * as Haptics from "expo-haptics";
-import { MessageComposer } from "@/components/composer/message-composer";
-import { useWorkspaceStore } from "@/data/workspace-store";
+import { ChatInputBar } from "@/components/chat/chat-input-bar";
+import type { Attachment } from "@multica/core/types";
 import type { SharedFile } from "@/lib/share-payload";
-import { useColorScheme } from "@/lib/use-color-scheme";
-import { THEME } from "@/lib/theme";
-import { useT } from "@/lib/use-t";
+import type { VoiceAvailability } from "@/data/voice-providers";
+import type { Href } from "expo-router";
+
+const IS_IOS = process.env.EXPO_OS === "ios";
 
 interface Props {
   /** Current draft text (controlled). Empty string = no draft. */
@@ -49,29 +42,38 @@ interface Props {
   onSend: (content: string, attachmentIds: string[]) => Promise<void> | void;
   /** Cancel the in-flight agent task. Only callable while `sending===true`. */
   onStop: () => void;
-  /** True while an agent task is running for the active session. The
-   *  composer swaps Send for Stop. */
+  /** True while an agent task is running for the active session. */
   sending: boolean;
   /** Queued tasks remain busy, but do not expose Stop without draft restore. */
   allowStop?: boolean;
-  /** Hard-disable typing + send. Used when there's no usable agent in the
-   *  workspace or the session is archived (legacy). */
+  allowSubmitWhileRunning?: boolean;
+  hasQueuedMessages?: boolean;
+  stopPending?: boolean;
+  /** Hard-disable typing + send（no agent / revoked / archived / runtime
+   *  missing——R1 灰 pill 语义不变）。 */
   disabled?: boolean;
   /** When `disabled`, replaces the pill label with the reason. */
   disabledReason?: string;
 
-  /** RUYI-463: 系统分享的附件，原样透传给 `MessageComposer`（语义见其
-   *  同名 prop）。chat.tsx 从 shared-intent-store take 后传入。 */
+  /** RUYI-463: 系统分享的附件，原样透传（语义见 `ChatInputBar`）。 */
   incomingSharedFiles?: SharedFile[];
   onIncomingSharedFilesConsumed?: () => void;
 
-  /** RUYI-449 三态入口：草稿为空且未禁用时替换发送按钮位（语义见
-   *  `MessageComposer.renderVoiceWhenEmpty`）。chat.tsx 在 runtime 已绑定
-   *  且有可用 agent 时传入；置灰/无 agent 时仍显示发送箭头。 */
-  renderVoiceWhenEmpty?: () => ReactNode;
+  /** RUYI-694: D2 语音可用性门禁（供应商池解析链结果）。 */
+  voiceGate: VoiceAvailability | null;
+  /** 发起全屏语音会话（🔵）。 */
+  onOpenVoice: () => void;
+  skillPickerPath?: Href;
+  projectId?: string | null;
+  onProjectChange?: (projectId: string | null) => void;
+  modelRuntimeId?: string | null;
+  modelOverride?: string | null;
+  agentModel?: string | null;
+  modelDisabled?: boolean;
+  onModelSelect?: (model: string | null) => Promise<void>;
+  restoredAttachments?: Attachment[];
+  onRestoredAttachmentsConsumed?: () => void;
 }
-
-const IS_IOS = process.env.EXPO_OS === "ios";
 
 export function ChatComposer({
   value,
@@ -80,33 +82,26 @@ export function ChatComposer({
   onStop,
   sending,
   allowStop = true,
+  allowSubmitWhileRunning = false,
+  hasQueuedMessages = false,
+  stopPending = false,
   disabled = false,
   disabledReason,
   incomingSharedFiles,
   onIncomingSharedFilesConsumed,
-  renderVoiceWhenEmpty,
+  voiceGate,
+  onOpenVoice,
+  skillPickerPath,
+  projectId,
+  onProjectChange,
+  modelRuntimeId,
+  modelOverride,
+  agentModel,
+  modelDisabled,
+  onModelSelect,
+  restoredAttachments,
+  onRestoredAttachmentsConsumed,
 }: Props) {
-  const { t } = useT("chat");
-  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
-
-  const onSubmit = useCallback(
-    async ({
-      content,
-      attachmentIds,
-    }: {
-      content: string;
-      attachmentIds: string[];
-    }) => {
-      // `onSend` may be sync or async; await is safe in both cases. If it
-      // throws, MessageComposer's catch restores text + chips.
-      await onSend(content, attachmentIds);
-    },
-    [onSend],
-  );
-
-  const idlePlaceholder = t("mobile.composer.placeholder", "Message…");
-  const agentWorking = t("mobile.composer.agent_working", "Agent is working…");
-
   const handleStop = useCallback(() => {
     if (IS_IOS) {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -115,68 +110,32 @@ export function ChatComposer({
   }, [onStop]);
 
   return (
-    <MessageComposer
+    <ChatInputBar
       value={value}
       onChangeText={onChangeText}
-      onSubmit={onSubmit}
-      mentionPickerPath={{
-        pathname: "/[workspace]/mention-picker",
-        params: { workspace: wsSlug ?? "", mode: "chat" },
-      }}
-      placeholder={sending ? agentWorking : idlePlaceholder}
-      pillLabel={
-        sending
-          ? agentWorking
-          : disabled
-            ? // 当前唯一调用方 chat.tsx 的 `disabledReason` 与 `disabled`
-              // 同集合同判据、无 undefined 出口，所以右侧不可达。保留为
-              // 防御性兜底：防未来新增调用方传 disabled 却漏传 reason，
-              // 那时 pill 会空白而不是给出原因。
-              (disabledReason ??
-              t("mobile.composer.unavailable", "Chat unavailable"))
-            : idlePlaceholder
-      }
-      pillIcon="chatbubble-ellipses-outline"
+      onSend={onSend}
+      onStop={handleStop}
+      sending={sending}
+      allowStop={allowStop}
+      allowSubmitWhileRunning={allowSubmitWhileRunning}
+      hasQueuedMessages={hasQueuedMessages}
+      stopPending={stopPending}
       disabled={disabled}
       disabledReason={disabledReason}
-      isSending={sending}
-      renderStop={
-        allowStop ? () => <StopButton onPress={handleStop} /> : undefined
-      }
-      manageKeyboard={false}
       incomingSharedFiles={incomingSharedFiles}
       onIncomingSharedFilesConsumed={onIncomingSharedFilesConsumed}
-      renderVoiceWhenEmpty={renderVoiceWhenEmpty}
+      voiceGate={voiceGate}
+      onOpenVoice={onOpenVoice}
+      skillPickerPath={skillPickerPath}
+      projectId={projectId}
+      onProjectChange={onProjectChange}
+      modelRuntimeId={modelRuntimeId}
+      modelOverride={modelOverride}
+      agentModel={agentModel}
+      modelDisabled={modelDisabled}
+      onModelSelect={onModelSelect}
+      restoredAttachments={restoredAttachments}
+      onRestoredAttachmentsConsumed={onRestoredAttachmentsConsumed}
     />
-  );
-}
-
-function StopButton({ onPress }: { onPress: () => void }) {
-  const { t } = useT("chat");
-  const { colorScheme } = useColorScheme();
-  const theme = THEME[colorScheme];
-  return (
-    <Animated.View
-      key="stop"
-      entering={FadeIn.duration(120)}
-      exiting={FadeOut.duration(120)}
-    >
-      <Pressable
-        onPress={onPress}
-        className="h-8 w-8 items-center justify-center rounded-full bg-foreground active:opacity-80"
-        hitSlop={12}
-        accessibilityRole="button"
-        accessibilityLabel={t("mobile.composer.stop_agent", "Stop agent")}
-      >
-        <View
-          style={{
-            width: 10,
-            height: 10,
-            backgroundColor: theme.background,
-            borderRadius: 1.5,
-          }}
-        />
-      </Pressable>
-    </Animated.View>
   );
 }

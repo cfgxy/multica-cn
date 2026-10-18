@@ -5,6 +5,8 @@ package supervisor
 import (
 	"os"
 	"syscall"
+
+	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
 // signalWorkerProcessGroup terminates the worker process directly: Windows
@@ -23,4 +25,15 @@ func signalWorkerProcessGroup(pid int, sig syscall.Signal) {
 // POSIX concept and no Windows spawn flags are required.
 func workerSysProcAttr() *syscall.SysProcAttr {
 	return nil
+}
+
+// workerSysProcAttrFor refuses snapshot-wrapped spawn specs on Windows: the
+// namespace machinery does not exist there, and the daemon never advertises
+// the capability on this platform — a wrapped spec arriving anyway is a
+// wiring bug that must fail the spawn, not run the agent unwrapped.
+func workerSysProcAttrFor(argv []string) (*syscall.SysProcAttr, error) {
+	if _, err := agent.SnapshotSysProcAttrFor(argv); err != nil {
+		return nil, err
+	}
+	return workerSysProcAttr(), nil
 }

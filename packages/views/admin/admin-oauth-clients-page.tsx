@@ -383,6 +383,7 @@ export function AdminOAuthClientsPage() {
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
                 placeholder={t(($) => $.oauth.name_placeholder)}
+                spellCheck={false}
               />
             </div>
             <div className="space-y-1">
@@ -393,6 +394,7 @@ export function AdminOAuthClientsPage() {
                 onChange={(e) => setCreateURIs(e.target.value)}
                 placeholder={"https://chatgpt.com/connector_platform_oauth_redirect"}
                 rows={3}
+                spellCheck={false}
               />
               <p className="text-caption text-muted-foreground">{t(($) => $.oauth.redirect_uris_hint)}</p>
             </div>
@@ -427,6 +429,7 @@ export function AdminOAuthClientsPage() {
                 id="oauth-edit-name"
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
+                spellCheck={false}
               />
             </div>
             <div className="space-y-1">
@@ -436,6 +439,7 @@ export function AdminOAuthClientsPage() {
                 value={editURIs}
                 onChange={(e) => setEditURIs(e.target.value)}
                 rows={3}
+                spellCheck={false}
               />
             </div>
             {editError !== "" && (

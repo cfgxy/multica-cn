@@ -31,6 +31,8 @@ describe("readRuntimeBackpressure", () => {
       psiReadOK: true,
       deferredClaims: 12,
       recordedAt: "2026-10-03T06:00:00Z",
+      config: null,
+      conditions: null,
     });
   });
 
@@ -54,6 +56,8 @@ describe("readRuntimeBackpressure", () => {
       psiReadOK: false,
       deferredClaims: 0,
       recordedAt: "",
+      config: null,
+      conditions: null,
     });
   });
 

@@ -6,8 +6,16 @@ import { RemoteOperationSchema, ComputerBindingDetailSchema, AcceptedComputerOpe
 import { AdminSshPubKeySchema, InstanceAccessSchema, AdminComputerSchema, AdminBindingSchema, ComputerAuditSchema, ProbeResultSchema, AdminComputerRuntimeSchema, LinuxUserCheckSchema, type AdminComputer, type AdminBinding, type ComputerAudit, type ProbeResult, type AdminComputerRuntime } from "../computers/admin-schema";
 import { ComputerSchema, ComputerBindingSchema, parseComputerSettings, parseCredentialWriteResult, type Computer, type ComputerBinding, type ComputerOperation, type ComputerSettings } from "../computers/schema";
 import { configStore } from "../config";
+import type { ListAuditEventsParams, AuditEventsPage } from "../types/audit";
+import type {
+  RuntimeBackpressureSettings,
+  RuntimeBackpressureEvent,
+} from "./schemas";
 import type {
   Issue,
+  DecisionRequest,
+  DecisionRequestDetail,
+  DecisionRequestsList,
   IssueDecision,
   BatchDecisionAnswerResult,
   BatchIssueDecisionAnswer,
@@ -18,6 +26,7 @@ import type {
   UpdateIssueRequest,
   GroupedIssuesResponse,
   ListIssuesResponse,
+  IssueRelationsResponse,
   SearchIssuesResponse,
   SearchProjectsResponse,
   UpdateMeRequest,
@@ -84,10 +93,15 @@ import type {
   PromptTargetState,
   PromptVersion,
   PromptQualityDashboard,
+  ClauseGovernanceOverview,
+  ClauseGovernanceDetail,
+  ClauseGovernanceReconciliation,
   SelfEvolutionOverview,
   SelfEvolutionConfigValidation,
   SelfEvolutionModelConfig,
   SelfEvolutionModelConfigSave,
+  WorkspaceBackpressureSettings,
+  WorkspaceBackpressureSettingsSave,
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
@@ -129,14 +143,17 @@ import type {
   PersonalAccessToken,
   CreatePersonalAccessTokenRequest,
   CreatePersonalAccessTokenResponse,
-  RuntimeCostBudget,
-  RuntimeCostBudgetInput,
   RuntimeUsage,
   IssueUsageSummary,
   RuntimeHourlyActivity,
   RuntimeUsageByAgent,
   RuntimeUsageByHour,
+  RuntimeCostBudget,
+  RuntimeCostBudgetInput,
   DashboardUsageDaily,
+  DashboardUsageResources,
+  DashboardUsageTraffic,
+  DashboardUsageTrafficDim,
   DashboardUsageByAgent,
   DashboardAgentRunTime,
   DashboardRunTimeDaily,
@@ -147,6 +164,9 @@ import type {
   RuntimeLocalSkillListRequest,
   CreateRuntimeLocalSkillImportRequest,
   RuntimeLocalSkillImportRequest,
+  CreateRuntimeOpsCommandRequest,
+  RuntimeOpsCommand,
+  RuntimeOpsInventory,
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
@@ -297,9 +317,11 @@ import type {
   CreateCommentSubIssueManualRequest,
   CreateCommentSubIssueAgentRequest,
   CreateCommentSubIssueRequest,
+  VoiceProvider,
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
+  AdminFileReadPolicy,
   AdminUserList,
   AdminWorkspaceList,
   ImpersonationResponse,
@@ -332,6 +354,7 @@ import {
 } from "../issues/timeline-query";
 import { parseWithFallback } from "./schema";
 import {
+  AdminFileReadPolicySchema,
   AgentTaskListSchema,
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
@@ -345,9 +368,14 @@ import {
   SendChatMessageResponseSchema,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
+  IssueRelationsResponseSchema,
+  EMPTY_ISSUE_RELATIONS,
   ChildIssueProgressResponseSchema,
   CommentsListSchema,
   IssueDecisionsListSchema,
+  DecisionRequestDetailSchema,
+  DecisionRequestSchema,
+  DecisionRequestsListSchema,
   IssueDecisionSchema,
   WorkspaceDecisionInboxSchema,
   BatchDecisionAnswersSchema,
@@ -366,6 +394,8 @@ import {
   DashboardFailureByAgentListSchema,
   DashboardUsageByAgentListSchema,
   DashboardUsageDailyListSchema,
+  DashboardUsageResourcesSchema,
+  DashboardUsageTrafficSchema,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_CHAT_MESSAGE_LIST,
@@ -411,6 +441,8 @@ import {
   CommentSubIssueTaskResponseSchema,
   ListWebhookDeliveriesResponseSchema,
   RuntimeHourlyActivityListSchema,
+  RuntimeBackpressureSettingsSchema,
+  RuntimeBackpressureEventListSchema,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
@@ -435,6 +467,7 @@ import {
   AdminWorkspaceListSchema,
   ImpersonationResponseSchema,
   EMPTY_ADMIN_USER_LIST,
+  EMPTY_ADMIN_FILE_READ_POLICY,
   EMPTY_ADMIN_WORKSPACE_LIST,
   EMPTY_IMPERSONATION_RESPONSE,
   AdminMCPStatusSchema,
@@ -528,7 +561,9 @@ import {
   EMPTY_LIST_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PROPERTIES_RESPONSE,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
   IssuePullRequestsResponseSchema,
+  PullRequestLookupResponseSchema,
   ResourceLabelsResponseSchema,
   EMPTY_LABEL,
   EMPTY_LIST_LABELS_RESPONSE,
@@ -608,9 +643,16 @@ import {
   EMPTY_PROMPT_VERSION,
   PromptQualityDashboardSchema,
   EMPTY_PROMPT_QUALITY_DASHBOARD,
+  ClauseGovernanceOverviewSchema,
+  EMPTY_CLAUSE_GOVERNANCE_OVERVIEW,
+  ClauseGovernanceDetailSchema,
+  EMPTY_CLAUSE_GOVERNANCE_DETAIL,
+  ClauseGovernanceReconciliationSchema,
+  EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION,
   SelfEvolutionOverviewSchema,
   SelfEvolutionConfigValidationSchema,
   SelfEvolutionModelConfigSchema,
+  WorkspaceBackpressureSettingsSchema,
   EMPTY_SELF_EVOLUTION_OVERVIEW,
   PromptGovernanceVersionSchema,
   PromptGovernanceVersionListSchema,
@@ -625,6 +667,8 @@ import {
   PromptQuizBankImportResponseSchema,
   EMPTY_PROMPT_QUIZ_ITEM,
   EMPTY_PROMPT_QUIZ_BASELINE,
+  AuditEventsPageSchema,
+  EMPTY_AUDIT_EVENTS_PAGE,
   MarketplaceListingSchema,
   MarketplaceListingListSchema,
   ShareLinkSchema,
@@ -1228,6 +1272,33 @@ export class ApiClient {
     });
   }
 
+  async adminGetFileReadPolicy(): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy");
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "GET /api/admin/file-read-policy",
+    });
+  }
+
+  async adminUpdateFileReadPolicy(policy: AdminFileReadPolicy): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy", {
+      method: "PUT",
+      body: JSON.stringify(policy),
+    });
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "PUT /api/admin/file-read-policy",
+    });
+  }
+
+  async adminRestoreFileReadPolicy(version: number): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy/restore-defaults", {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    });
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "POST /api/admin/file-read-policy/restore-defaults",
+    });
+  }
+
   async adminSetUserDisabled(userId: string, disabled: boolean, reason?: string): Promise<User> {
     const raw = await this.fetch<unknown>(`/api/admin/users/${userId}/disabled`, {
       method: "PATCH",
@@ -1745,6 +1816,16 @@ export class ApiClient {
     });
   }
 
+  /** Structured relations: parent + the five edge views (RUYI-689).
+   *  Read-only — creating/deleting edges is a server-side/API concern;
+   *  no write counterpart exists in this client by design. */
+  async getIssueRelations(id: string): Promise<IssueRelationsResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/relations`);
+    return parseWithFallback(raw, IssueRelationsResponseSchema, EMPTY_ISSUE_RELATIONS, {
+      endpoint: "GET /api/issues/:id/relations",
+    });
+  }
+
   /** Batched variant — returns children for multiple parents in one request.
    *  Avoids an N-request fan-out in Swimlane (one per visible parent lane).
    *  parentIds must be non-empty; pass a sorted, deduplicated list so the
@@ -1893,6 +1974,56 @@ export class ApiClient {
     });
     if (!inbox) throw new Error("Invalid decision inbox response");
     return inbox;
+  }
+
+  // Agent authorization requests (RUYI-630). Listing/detail are the
+  // decision-center's summary surface; answering/cancelling are human acts —
+  // the server refuses agent callers regardless of what the client sends.
+  async listDecisionRequests(
+    workspaceId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<DecisionRequestsList> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests${query}`);
+    const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests",
+    });
+    if (!list) throw new Error("Invalid decision requests response");
+    return list;
+  }
+
+  async getDecisionRequest(workspaceId: string, requestId: string): Promise<DecisionRequestDetail> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}`);
+    const detail = parseWithFallback(raw, DecisionRequestDetailSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests/:requestId",
+    });
+    if (!detail) throw new Error("Invalid decision request response");
+    return detail;
+  }
+
+  async answerDecisionRequest(workspaceId: string, requestId: string, decision: "approve" | "deny"): Promise<DecisionRequest> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+    const request = parseWithFallback(raw, DecisionRequestSchema, null, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/answer",
+    });
+    if (!request) throw new Error("Invalid decision request answer response");
+    return request;
+  }
+
+  async cancelDecisionRequest(workspaceId: string, requestId: string): Promise<{ status: string }> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, z.object({ status: z.string() }).loose(), { status: "" }, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
+    });
   }
 
   async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {
@@ -2926,6 +3057,85 @@ export class ApiClient {
     );
   }
 
+  // ---- Daemon host backpressure settings + event history (RUYI-729) ----
+
+  async getRuntimeBackpressureSettings(
+    runtimeId: string,
+  ): Promise<RuntimeBackpressureSettings> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-settings`,
+    );
+    return parseWithFallback<RuntimeBackpressureSettings>(
+      raw,
+      RuntimeBackpressureSettingsSchema,
+      {
+        daemon_id: "",
+        configured: false,
+        config: null,
+        report: null,
+      },
+      { endpoint: "GET /api/runtimes/:id/backpressure-settings" },
+    );
+  }
+
+  async putRuntimeBackpressureSettings(
+    runtimeId: string,
+    config: RuntimeBackpressureSettings["config"],
+  ): Promise<RuntimeBackpressureSettings> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-settings`,
+      { method: "PUT", body: JSON.stringify(config) },
+    );
+    return parseWithFallback<RuntimeBackpressureSettings>(
+      raw,
+      RuntimeBackpressureSettingsSchema,
+      {
+        daemon_id: "",
+        configured: false,
+        config: null,
+        report: null,
+      },
+      { endpoint: "PUT /api/runtimes/:id/backpressure-settings" },
+    );
+  }
+
+  async deleteRuntimeBackpressureSettings(
+    runtimeId: string,
+  ): Promise<RuntimeBackpressureSettings> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-settings`,
+      { method: "DELETE" },
+    );
+    return parseWithFallback<RuntimeBackpressureSettings>(
+      raw,
+      RuntimeBackpressureSettingsSchema,
+      {
+        daemon_id: "",
+        configured: false,
+        config: null,
+        report: null,
+      },
+      { endpoint: "DELETE /api/runtimes/:id/backpressure-settings" },
+    );
+  }
+
+  async listRuntimeBackpressureEvents(
+    runtimeId: string,
+    params?: { limit?: number },
+  ): Promise<RuntimeBackpressureEvent[]> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", String(params.limit));
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-events?${search}`,
+    );
+    return parseWithFallback<RuntimeBackpressureEvent[]>(
+      raw,
+      RuntimeBackpressureEventListSchema,
+      [],
+      { endpoint: "GET /api/runtimes/:id/backpressure-events" },
+    );
+  }
+
   async getRuntimeUsage(
     runtimeId: string,
     params?: { days?: number; tz?: string },
@@ -3055,6 +3265,41 @@ export class ApiClient {
       DashboardUsageDailyListSchema,
       [],
       { endpoint: "GET /api/dashboard/usage/daily" },
+    );
+  }
+
+  // System-resource panel (RUYI-618): Prometheus-proxied per-daemon series
+  // for the usage page. A 200 with configured=false is the "no observability
+  // stack" normal state, not an error.
+  async getDashboardUsageResources(
+    params: { window?: string },
+  ): Promise<DashboardUsageResources> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/resources?${search}`);
+    return parseWithFallback<DashboardUsageResources>(
+      raw,
+      DashboardUsageResourcesSchema,
+      { configured: false, series: {} },
+      { endpoint: "GET /api/dashboard/usage/resources" },
+    );
+  }
+
+  // Model-traffic panel (RUYI-618): token/cost/task rates by runtime,
+  // provider, or model, aggregated server-side from the task-usage
+  // exposition.
+  async getDashboardUsageTraffic(
+    params: { window?: string; by?: DashboardUsageTrafficDim },
+  ): Promise<DashboardUsageTraffic> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    if (params.by) search.set("by", params.by);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/traffic?${search}`);
+    return parseWithFallback<DashboardUsageTraffic>(
+      raw,
+      DashboardUsageTrafficSchema,
+      { configured: false, series: {} },
+      { endpoint: "GET /api/dashboard/usage/traffic" },
     );
   }
 
@@ -3282,6 +3527,31 @@ export class ApiClient {
     requestId: string,
   ): Promise<RuntimeLocalSkillImportRequest> {
     return this.fetch(`/api/runtimes/${runtimeId}/local-skills/import/${requestId}`);
+  }
+
+  async getRuntimeOpsInventory(runtimeId: string): Promise<RuntimeOpsInventory> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/inventory`);
+  }
+
+  async submitRuntimeOpsCommand(
+    runtimeId: string,
+    data: CreateRuntimeOpsCommandRequest,
+  ): Promise<RuntimeOpsCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listRuntimeOpsCommands(runtimeId: string): Promise<RuntimeOpsCommand[]> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands?limit=50`);
+  }
+
+  async getRuntimeOpsCommand(
+    runtimeId: string,
+    commandId: string,
+  ): Promise<RuntimeOpsCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands/${commandId}`);
   }
 
   async listAgentTasks(agentId: string): Promise<AgentTask[]> {
@@ -3569,6 +3839,88 @@ export class ApiClient {
       method: "PATCH",
       body: JSON.stringify(data),
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Voice provider pool (RUYI-693 D2). Reads are member-visible; writes are
+  // workspace-admin state, enforced server-side. No plaintext key ever
+  // round-trips: it enters through putVoiceProviderCredential (which probes
+  // on save) and is only ever read back as the coarse credential_status
+  // badge plus the last probe verdict.
+  // -------------------------------------------------------------------------
+
+  async listVoiceProviders(workspaceId: string): Promise<VoiceProvider[]> {
+    return this.fetch<VoiceProvider[]>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+    );
+  }
+
+  async createVoiceProvider(
+    workspaceId: string,
+    data: { display_name: string; provider_type: string },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+      { method: "POST", body: JSON.stringify(data) },
+    );
+  }
+
+  async updateVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+    data: { display_name?: string; enabled?: boolean },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}`,
+      { method: "PATCH", body: JSON.stringify(data) },
+    );
+  }
+
+  /** Delete unbinds rather than blocks: the server clears referencing agent
+   *  overrides and the workspace settings' voice refs in one transaction. */
+  async deleteVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ id: string; cleared_agents: number }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/voice-providers/${providerId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /** Stores/rotates the key and runs the server-side connectivity probe
+   *  (保存即探针); the response is the refreshed pool row. */
+  async putVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+    value: string,
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "PUT", body: JSON.stringify({ value }) },
+    );
+  }
+
+  async deleteVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /** Re-runs the server-side probe and records the outcome on the badge. */
+  async probeVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ voice_provider_id: string; probe: { status: string; http_status?: number; checked_at: string } }> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credential-probe`,
+      { method: "POST" },
+    );
   }
 
   async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {
@@ -3866,6 +4218,37 @@ export class ApiClient {
     });
   }
 
+  async getClauseGovernanceOverview(days: number): Promise<ClauseGovernanceOverview> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/governance/clauses?${query.toString()}`);
+    return parseWithFallback(raw, ClauseGovernanceOverviewSchema, EMPTY_CLAUSE_GOVERNANCE_OVERVIEW, {
+      endpoint: "GET /api/prompt-legislation/governance/clauses",
+      redactContent: true,
+    });
+  }
+
+  async getClauseGovernanceDetail(clauseId: string, days: number): Promise<ClauseGovernanceDetail> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}?${query.toString()}`,
+    );
+    return parseWithFallback(raw, ClauseGovernanceDetailSchema, EMPTY_CLAUSE_GOVERNANCE_DETAIL, {
+      endpoint: "GET /api/prompt-legislation/governance/clauses/{clauseId}",
+      redactContent: true,
+    });
+  }
+
+  async getClauseGovernanceReconciliation(days: number): Promise<ClauseGovernanceReconciliation> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-legislation/governance/reconciliation?${query.toString()}`,
+    );
+    return parseWithFallback(raw, ClauseGovernanceReconciliationSchema, EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION, {
+      endpoint: "GET /api/prompt-legislation/governance/reconciliation",
+      redactContent: true,
+    });
+  }
+
   /**
    * The workspace-level self-evolution overview (RUYI-284): one read-only
    * aggregate across the six data planes the tabs serve. Member-visible on the
@@ -3986,6 +4369,27 @@ export class ApiClient {
       EMPTY_PROMPT_GOVERNANCE_VERSION_LIST,
       { endpoint: "GET /api/prompt-governance/{scope}/{id}/versions" },
     );
+  }
+
+  async listAuditEvents(workspaceId: string, params: ListAuditEventsParams = {}): Promise<AuditEventsPage> {
+    const query = new URLSearchParams();
+    for (const key of [
+      "since", "until", "time_basis", "actor_id", "actor_type", "client_name", "client_version",
+      "tool_name", "result_status", "result_error_code", "target_type", "target_id",
+    ] as const) {
+      const value = params[key];
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.cursor !== undefined && params.cursor_id !== undefined) {
+      query.set("cursor", params.cursor);
+      query.set("cursor_id", params.cursor_id);
+    }
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events${suffix}`);
+    return parseWithFallback(raw, AuditEventsPageSchema, EMPTY_AUDIT_EVENTS_PAGE, {
+      endpoint: "GET /api/workspaces/{id}/audit-events",
+    });
   }
 
   /**
@@ -5293,6 +5697,19 @@ export class ApiClient {
     });
   }
 
+  async setChatSessionModel(
+    id: string,
+    modelOverride: string | null,
+  ): Promise<ChatSession> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/model`, {
+      method: "PATCH",
+      body: JSON.stringify({ model_override: modelOverride }),
+    });
+    return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
+      endpoint: "PATCH /api/chat/sessions/:id/model",
+    });
+  }
+
   async setChatSessionPinned(id: string, pinned: boolean): Promise<ChatSession> {
     return this.fetch(`/api/chat/sessions/${id}/pin`, {
       method: "PATCH",
@@ -6451,6 +6868,78 @@ export class ApiClient {
     );
   }
 
+  async unlinkIssuePullRequest(issueId: string, pullRequestId: string): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/pull-requests/${pullRequestId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Resolve one `owner/repo#N` text reference to the workspace's snapshot of
+   * that PR (RUYI-635 增量, reference tail). A 404 — the platform has never
+   * seen this PR — returns `null` so the tail degrades the token to plain
+   * text, the same miss-reads-as-typed contract the issue tail follows.
+   */
+  async lookupPullRequest(
+    workspaceId: string,
+    owner: string,
+    repo: string,
+    number: number,
+    options?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    const params = new URLSearchParams({ owner, repo, number: String(number) });
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
+        { signal: options?.signal },
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+    const parsed = parseWithFallback(
+      raw,
+      PullRequestLookupResponseSchema,
+      EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/pull-requests/lookup" },
+    );
+    return parsed.pull_request;
+  }
+
+  /**
+   * Resolve one `MR !N` text reference to a PR in the workspace snapshot by
+   * number alone (RUYI-728, body autolink + reference tail). A 404 — the
+   * platform has never seen this number — and a 409 — the number is
+   * ambiguous across repos — both return `null` so the token degrades to
+   * plain text, the same miss-reads-as-typed contract the issue tail follows.
+   */
+  async lookupPullRequestByNumber(
+    workspaceId: string,
+    number: number,
+    options?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${number}`,
+        { signal: options?.signal },
+      );
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
+        return null;
+      }
+      throw err;
+    }
+    const parsed = parseWithFallback(
+      raw,
+      PullRequestLookupResponseSchema,
+      EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/pull-requests/lookup-by-number" },
+    );
+    return parsed.pull_request;
+  }
+
   // VCS integration (Forgejo / Gitea / GitLab)
   async listVCSConnections(workspaceId: string): Promise<ListVCSConnectionsResponse> {
     return this.fetch(`/api/workspaces/${workspaceId}/vcs/connections`);
@@ -6854,5 +7343,53 @@ export class ApiClient {
       EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE,
       { endpoint: "POST /api/telegram/binding/redeem" },
     );
+  }
+
+  /**
+   * The workspace's effective host-backpressure card (RUYI-618): the saved
+   * settings when an owner ever saved the form, the daemon code defaults
+   * (custom=false) otherwise.
+   */
+  async getWorkspaceBackpressureSettings(): Promise<WorkspaceBackpressureSettings> {
+    const raw = await this.fetch<unknown>("/api/workspace/backpressure-settings");
+    return parseWithFallback(raw, WorkspaceBackpressureSettingsSchema, {
+      enabled: true,
+      mem_high_pct: 15,
+      mem_recovery_pct: 25,
+      swap_high_pct: 80,
+      swap_recovery_pct: 60,
+      psi_high_pct: 50,
+      psi_recovery_pct: 20,
+      sample_interval_seconds: 5,
+      window_size: 6,
+      custom: false,
+    }, { endpoint: "GET /api/workspace/backpressure-settings" });
+  }
+
+  /**
+   * Save the workspace's backpressure card (owner-only server-side). A 422
+   * carries the shared hysteresis-validation message and nothing persisted —
+   * surface it through the mutation error so the form can show the reason.
+   */
+  async putWorkspaceBackpressureSettings(save: WorkspaceBackpressureSettingsSave): Promise<WorkspaceBackpressureSettings> {
+    const raw = await this.fetch<unknown>("/api/workspace/backpressure-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: save.enabled,
+        mem_high_pct: save.mem_high_pct,
+        mem_recovery_pct: save.mem_recovery_pct,
+        swap_high_pct: save.swap_high_pct,
+        swap_recovery_pct: save.swap_recovery_pct,
+        psi_high_pct: save.psi_high_pct,
+        psi_recovery_pct: save.psi_recovery_pct,
+        sample_interval_seconds: save.sample_interval_seconds,
+        window_size: save.window_size,
+      }),
+    });
+    return parseWithFallback(raw, WorkspaceBackpressureSettingsSchema, {
+      ...save,
+      custom: true,
+    }, { endpoint: "PUT /api/workspace/backpressure-settings" });
   }
 }

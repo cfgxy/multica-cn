@@ -16,7 +16,11 @@ import AgentRunConfig from "@/app/(app)/[workspace]/more/agents/[id]/run-config"
  *     each other) — model switch cascades thinking/tier clear first;
  *   - a bounded draft outside its range reverts (Save stays disabled) —
  *     never clamps;
- *   - a failed save alerts instead of silently popping.
+ *   - a failed save alerts instead of silently popping;
+ *   - the voice override (RUYI-749) binds an eligible provider as a bare
+ *     `voice_provider_id` (empty model/advanced drafts ride along as
+ *     omissions, not explicit clears) and clears back to inherit with
+ *     `voice_provider_id: ""` alone.
  */
 
 const mockBack = jest.fn();
@@ -26,6 +30,15 @@ jest.mock("expo-router", () => ({
   router: { back: (...args) => mockBack(...args), push: jest.fn() },
   useLocalSearchParams: () => ({ id: "agent-1", workspace: "ws" }),
   Stack: { Screen: ({ children }) => children },
+}));
+
+jest.mock("@react-navigation/native", () => ({
+  ...jest.requireActual("@react-navigation/native"),
+  useNavigation: () => ({ addListener: jest.fn(() => jest.fn()) }),
+}));
+
+jest.mock("@/components/ui/sheet-header", () => ({
+  SheetHeader: ({ children }) => children,
 }));
 
 jest.mock("react-native-keyboard-controller", () => {
@@ -65,16 +78,39 @@ const mockAgent = {
   invocation_targets: [{ target_type: "workspace", target_id: "ws-1" }],
 };
 
-const mockRuntimes = [
+let mockRuntimes = [
   { id: "runtime-1", name: "Runtime One", custom_name: "", status: "online", provider: "openai" },
   { id: "runtime-2", name: "Runtime Two", custom_name: "", status: "online", provider: "openai" },
 ];
 
+// Eligible-pool row (RUYI-749): gemini + enabled + configured credential +
+// a probe that is not invalid — the full voiceProviderChainEligible gate.
+const mockVoiceProviders = [
+  {
+    id: "vp-1",
+    provider_type: "gemini",
+    display_name: "Gemini WS",
+    enabled: true,
+    credential_status: "configured",
+    credential_probe: { status: "ok" },
+  },
+];
+
+// Per-test additive fields merged over mockAgent at useQuery call time, so
+// a saved voice override can be staged without mutating the shared fixture.
+let mockAgentOverrides: Record<string, unknown> = {};
+
 jest.mock("@tanstack/react-query", () => ({
+  // voiceProvidersOptions (RUYI-749) builds its query through queryOptions;
+  // pass the descriptor through so useQuery below sees the real queryKey.
+  queryOptions: (opts) => opts,
   useQuery: (opts) => {
     const key = opts.queryKey;
     if (key[0] === "agents") {
-      return { data: mockAgent, isLoading: false };
+      return { data: { ...mockAgent, ...mockAgentOverrides }, isLoading: false };
+    }
+    if (key[0] === "workspaces" && key[2] === "voice-providers") {
+      return { data: mockVoiceProviders, isLoading: false };
     }
     if (key[0] === "runtimes") {
       return { data: mockRuntimes, isLoading: false };
@@ -159,6 +195,11 @@ jest.mock("@/data/auth-store", () => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockAgentOverrides = {};
+  mockRuntimes = [
+    { id: "runtime-1", name: "Runtime One", custom_name: "", status: "online", provider: "openai" },
+    { id: "runtime-2", name: "Runtime Two", custom_name: "", status: "online", provider: "openai" },
+  ];
 });
 
 describe("AgentRunConfig (RUYI-624)", () => {
@@ -239,6 +280,68 @@ describe("AgentRunConfig (RUYI-624)", () => {
     await fireEvent.press(screen.getByLabelText("Save"));
     expect(mockMutate).toHaveBeenCalledWith(
       { runtime_config: { allow_subagents: true } },
+      expect.anything(),
+    );
+  });
+
+  it("binding a voice override PUTs the provider id alone; empty drafts ride as omissions (RUYI-749)", async () => {
+    await render(<AgentRunConfig />);
+    await waitFor(() => expect(screen.getByDisplayValue("3")).toBeTruthy());
+
+    // The eligible row renders the provider display name; picking it is
+    // the whole bind gesture. The exact-match assertion pins that the
+    // empty model/advanced drafts are OMITTED, not sent as clears — an
+    // explicit empty model would wipe a server-side value on a fresh bind.
+    await fireEvent.press(screen.getByText("Gemini WS"));
+    await fireEvent.press(screen.getByLabelText("Save"));
+
+    expect(mockMutate).toHaveBeenCalledWith(
+      { voice_provider_id: "vp-1" },
+      expect.anything(),
+    );
+  });
+
+  it("a runtime-less agent can still save a voice override (save is not runtime-gated, RUYI-749 P2-c)", async () => {
+    // QA m19 scenario: no runtime exists at all and the agent has none
+    // bound. The voice override is agent-level config, so Save must be
+    // enabled and the PUT must carry the voice field alone — unchanged
+    // runtime fields are pinned out of the patch by buildProfilePatch.
+    mockAgentOverrides = { runtime_id: "" };
+    mockRuntimes = [];
+    await render(<AgentRunConfig />);
+    await waitFor(() => expect(screen.getByText("Gemini WS")).toBeTruthy());
+
+    expect(screen.getByLabelText("Save").props.accessibilityState.disabled).toBe(
+      true,
+    );
+    await fireEvent.press(screen.getByText("Gemini WS"));
+    expect(screen.getByLabelText("Save").props.accessibilityState.disabled).toBe(
+      false,
+    );
+    await fireEvent.press(screen.getByLabelText("Save"));
+
+    expect(mockMutate).toHaveBeenCalledWith(
+      { voice_provider_id: "vp-1" },
+      expect.anything(),
+    );
+  });
+
+  it("clearing a saved override back to inherit PUTs an empty provider id alone (RUYI-749)", async () => {
+    mockAgentOverrides = {
+      voice_provider_id: "vp-1",
+      voice_model: "m-9",
+      voice_advanced: { temperature: 0.5 },
+    };
+    await render(<AgentRunConfig />);
+    await waitFor(() => expect(screen.getByDisplayValue("3")).toBeTruthy());
+
+    await fireEvent.press(screen.getByText("Inherit workspace default"));
+    await fireEvent.press(screen.getByLabelText("Save"));
+
+    // The server 400s a clear that carries model/advanced, so the wire
+    // body must be exactly this one field.
+    expect(mockMutate).toHaveBeenCalledWith(
+      { voice_provider_id: "" },
       expect.anything(),
     );
   });

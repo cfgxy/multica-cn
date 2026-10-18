@@ -32,16 +32,20 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
 ok()   { PASS=$((PASS + 1)); }
 
 # --- fake curl: log request, serve canned response by JSON-RPC method -------
+# Bare transfers (artifact PUT / artifact GET download, no JSON-RPC body) are
+# served raw from resp/<basename-of-url>; their headers still land in the log.
 cat >"$fake_bin/curl" <<'CUREOF'
 #!/usr/bin/env bash
 dir="$(dirname "$0")"
 log="$dir/../log"; resp="$dir/../resp"
 n="$(ls "$log" 2>/dev/null | wc -l)"
 n=$((n + 1))
+url=""
 {
   printf 'URL: '
   prev=""
   for a in "$@"; do
+    case "$a" in http*) url="$a" ;; esac
     case "$prev" in
       -X|--request|-H|--header) printf '[%s] ' "$a" ;;
       *) case "$a" in -*) ;; *) printf '%s ' "$a" ;; esac ;;
@@ -58,6 +62,15 @@ for a in "$@"; do
   esac
   prev="$a"
 done
+if [ -z "$body" ] && [ -n "$url" ]; then
+  key="$(basename "$url")"
+  if [ -f "$resp/$key" ]; then
+    cat "$resp/$key"
+    exit 0
+  fi
+  printf 'no canned bare response for %s' "$url"
+  exit 0
+fi
 if [ -n "$body" ]; then
   printf '%s\n' "${body#@}" >> "$log/req.$n"
   method="$(printf '%s' "${body#@}" | sed -n 's/.*"method": *"\([a-z/]*\)".*/\1/p')"
@@ -90,8 +103,10 @@ reqs() { # list of logged request numbers containing a pattern
   done
 }
 last_method_order() { # print method sequence in request order
+  # sort -V: the temp dir name contains dots, so -t. field math is unreliable;
+  # version sort orders req.2 before req.10 regardless of the path shape.
   local f out=""
-  for f in $(ls "$log_dir"/req.* 2>/dev/null | sort -t. -k2 -n); do
+  for f in $(ls "$log_dir"/req.* 2>/dev/null | sort -V); do
     m="$(sed -n '2p' "$f" | sed -n 's/.*"method": *"\([a-z/]*\)".*/\1/p')"
     t="$(sed -n '2p' "$f" | sed -n 's/.*"name": *"\([a-z_]*\)".*/\1/p')"
     out="$out ${t:-$m}"
@@ -163,7 +178,9 @@ if [ "$rc" = 0 ] && grep -q '"wait": *true' <<<"$body" \
 
 # --- 6. lock-release: guard exec BEFORE release_lease, then manifest cleared --
 reset_log
-tool_result exec '{"execution_id":"ex-g","state":"succeeded","exit_code":0}'
+tool_result exec '{"execution_id":"ex-g","state":"succeeded","exit_code":0,"log_tail":"verdict: pass"}'
+tool_result list_artifacts '{"artifacts":[{"artifact_id":"ar-ev","path":".recycle-evidence/guard-pass.txt","size_bytes":5,"sha256":"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}]}'
+tool_result download_artifact '{"artifact_id":"ar-ev","content_base64":"aGVsbG8="}'
 out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release)"; rc=$?
 order="$(last_method_order)"
 guard_pos="$(printf '%s' "$order" | tr ' ' '\n' | grep -n '^exec$' | head -1 | cut -d: -f1)"
@@ -183,7 +200,7 @@ if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] && grep -qi 'blocked' <<<"$ou
 
 # --- 8. override: guard sees the env, blocked verdict released ----------------
 reset_log
-tool_result exec '{"execution_id":"ex-g3","state":"succeeded","exit_code":0}'
+tool_result exec '{"execution_id":"ex-g3","state":"succeeded","exit_code":0,"log_tail":"verdict: pass"}'
 rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST MULTICA_RECYCLE_OVERRIDE=1 bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
 ex="$(reqs '"name": *"exec"' | head -1)"
 body="$(sed -n '2p' "$log_dir/req.$ex")"
@@ -208,11 +225,11 @@ if [ "$rc" = 0 ] && [ -z "$(reqs '"name": *"exec"')" ] && [ -n "$(reqs release_l
 
 # --- 11. handoff --to qa: guarded release + re-acquire with qa template --------
 reset_log
-tool_result exec '{"execution_id":"ex-g4","state":"succeeded","exit_code":0}'
+tool_result exec '{"execution_id":"ex-g4","state":"succeeded","exit_code":0,"log_tail":"verdict: pass"}'
 tool_result acquire_lease '{"lease_id":"ls-2","instance_id":"ri-2","state":"active","expires_at":"2030-01-01T00:00:00Z","template":{"id":"tpl-test-qa"}}'
 MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 use --phase dev --template tpl-test-dev --ttl 60 >/dev/null
 reset_log
-tool_result exec '{"execution_id":"ex-g4","state":"succeeded","exit_code":0}'
+tool_result exec '{"execution_id":"ex-g4","state":"succeeded","exit_code":0,"log_tail":"verdict: pass"}'
 tool_result acquire_lease '{"lease_id":"ls-2","instance_id":"ri-2","state":"active","expires_at":"2030-01-01T00:00:00Z","template":{"id":"tpl-test-qa"}}'
 out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 handoff --to qa --template tpl-test-qa)"; rc=$?
 order="$(last_method_order)"
@@ -248,6 +265,22 @@ tool_result exec '{"execution_id":"ex-i2","state":"succeeded","exit_code":1,"log
 rc=0; out="$(bash "$pool" pdev1 orphans 2>&1)" || rc=$?
 if [ "$rc" = 1 ]; then ok; else fail "orphans residue: rc=$rc out=$out"; fi
 
+reset_log
+# ssh transport noise (known_hosts notice) ahead of the inventory JSON must
+# not flip a clean inventory into rc=1 (P2-1: whole-buffer jq parse).
+tool_result exec '{"execution_id":"ex-i3","state":"succeeded","exit_code":0,"log_tail":"Warning: Permanently added '\''192.168.2.130'\'' (ED25519) to the list of known hosts.\n{\"clean\": true, \"port_residues\": [], \"process_residues\": [], \"git_carriers\": 0}"}'
+rc=0; out="$(bash "$pool" pdev1 orphans 2>&1)" || rc=$?
+if [ "$rc" = 0 ]; then ok; else fail "orphans known_hosts noise: rc=$rc out=$out"; fi
+
+# --- 14b. list: both global and slot-prefixed shapes -----------------------------
+reset_log
+tool_result list_leases '{"leases":[{"lease_id":"ls-7","owner":"RUYI-TEST","issue_id":"RUYI-TEST","template_id":"tpl-t","state":"active"}]}'
+out="$(bash "$pool" list)"; rc=$?
+if [ "$rc" = 0 ] && grep -q 'ls-7' <<<"$out"; then ok; else fail "list global: rc=$rc out=$out"; fi
+
+rc=0; out="$(bash "$pool" pdev1 list 2>&1)" || rc=$?
+if [ "$rc" = 0 ] && grep -q 'ls-7' <<<"$out"; then ok; else fail "list slot-prefixed: rc=$rc out=$out"; fi
+
 # --- 15. load: upload_package params pinned -------------------------------------
 reset_log
 tool_result upload_package '{"package_id":"pkg-1","upload":{"method":"PUT","url":"http://files.example/put-here"}}'
@@ -259,6 +292,282 @@ if [ "$rc" = 0 ] && grep -q '"name": *"app.zip"' <<<"$body" \
    && grep -q '"sha256"' <<<"$body" && grep -q '"size_bytes": *2' <<<"$body" \
    && grep -q '^ARTIFACT_PACKAGE=app.zip$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
   fail "load: rc=$rc body=$body out=$out manifest=$(cat "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" 2>/dev/null)"; fi
+
+# --- 16. pool-auth file fallback: 600 file used when env unset ------------------
+reset_log
+unset MULTICA_POOL_TOKEN
+mkdir -p "$home/.multica"
+printf 'file-token-abc\n' >"$home/.multica/pool-auth"
+chmod 600 "$home/.multica/pool-auth"
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pauth use --phase dev --template tpl-test-dev --ttl 60 2>&1)" || rc=$?
+pa_req="$(reqs acquire_lease | head -1)"
+pa_hdr=""
+[ -n "$pa_req" ] && pa_hdr="$(sed -n '1p' "$log_dir/req.$pa_req")"
+if [ "$rc" = 0 ] && grep -q 'Authorization: Bearer file-token-abc' <<<"$pa_hdr"; then ok; else
+  fail "pool-auth fallback: rc=$rc hdr=$pa_hdr out=$out"; fi
+
+# --- 17. pool-auth fallback: wrong mode refused before anything is sent ---------
+reset_log
+chmod 644 "$home/.multica/pool-auth"
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pauth2 use --phase dev --template tpl-test-dev --ttl 60 2>&1)" || rc=$?
+if [ "$rc" != 0 ] && grep -q 'must be mode 600' <<<"$out" \
+   && [ -z "$(reqs initialize)" ]; then ok; else
+  fail "pool-auth 644: rc=$rc out=$out reqs=$(reqs initialize | tr '\n' ' ')"; fi
+rm -f "$home/.multica/pool-auth"
+export MULTICA_POOL_TOKEN="test-token"
+
+# --- 18. gc: only an explicit server-side expired clears the manifest -----------
+gc_home="$tmp_dir/gc-home"; mkdir -p "$gc_home"
+reset_log
+tool_result get_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"active"}'
+MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST \
+  bash "$pool" pgc use --phase dev --template tpl-test-dev --ttl 60 >/dev/null
+rc=0; out="$(MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" gc 2>&1)" || rc=$?
+if [ "$rc" = 0 ] && [ -f "$gc_home/pgc/lease.env" ]; then ok; else
+  fail "gc keeps active: rc=$rc out=$out"; fi
+
+reset_log
+tool_result get_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"expired"}'
+rc=0; out="$(MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" gc 2>&1)" || rc=$?
+if [ "$rc" = 0 ] && [ ! -f "$gc_home/pgc/lease.env" ] \
+   && grep -q 'gc cleared manifest' <<<"$out"; then ok; else
+  fail "gc clears expired: rc=$rc out=$out"; fi
+
+mkdir -p "$gc_home/pgc2"
+printf 'LEASE_ID=ls-1\nISSUE=RUYI-TEST\nPHASE=dev\nTEMPLATE=tpl-test-dev\n' >"$gc_home/pgc2/lease.env"
+tool_result get_lease '{"lease_id":"ls-1","instance_id":"ri-1"}'
+rc=0; out="$(MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" gc 2>&1)" || rc=$?
+if [ "$rc" = 0 ] && [ -f "$gc_home/pgc2/lease.env" ]; then ok; else
+  fail "gc keeps unknown state: rc=$rc out=$out"; fi
+
+# --- guard exec chain (RUYI-681 scope 1) ---------------------------------------
+# The guard verdict is parsed from the guest guard's stdout (log_tail), and the
+# in-VM evidence file (.recycle-evidence/*.txt, collected via artifact_globs) is
+# archived to the local recycle-evidence dir via list_artifacts/download_artifact.
+# Negative assertions pin the fail-closed shape: a guard exec that yields no
+# parsable verdict, no evidence artifact, a checksum mismatch or a download
+# failure must refuse the release (no release_lease call) — removing any of
+# those guards flips the matching case red.
+export MULTICA_RECYCLE_EVIDENCE_DIR="$home/.multica/recycle-evidence"
+
+ev_fixture() { # <file> <verdict> — a guard-scan-shaped evidence file
+  cat >"$1" <<EOF
+recycle-evidence v1
+timestamp: 2026-10-11T12:00:00Z
+tool: slot-pool
+target: /home/agent/workspace
+kind: slot-release
+topology: standalone
+dry_run: false
+override: false
+verdict: $2
+predicates:
+  predicate: sole_ref cmd="git -C /home/agent/workspace rev-list --count HEAD --not --branches --remotes" exit=0 count=0
+  predicate: unpushed cmd="git -C /home/agent/workspace rev-list --count HEAD --not --remotes" exit=0 count=0
+  predicate: stash cmd="git -C /home/agent/workspace stash list" exit=0 count=0
+  predicate: dirty_tracked cmd="git -C /home/agent/workspace status --porcelain --untracked-files=no" exit=0 count=0
+  predicate: untracked cmd="git -C /home/agent/workspace status --porcelain" exit=0 count=0
+EOF
+}
+# canned_guard_ok <exec-id> <verdict> <evfile> — full pass-through guard chain
+canned_guard_ok() {
+  local xid=$1 verdict=$2 ev=$3 base sha
+  base="$(basename "$ev")"; sha="$(sha256sum "$ev" | awk '{print $1}')"
+  tool_result exec "{\"execution_id\":\"$xid\",\"state\":\"succeeded\",\"exit_code\":0,\"log_tail\":\"verdict: $verdict\"}"
+  tool_result list_artifacts "{\"artifacts\":[{\"artifact_id\":\"ar-$xid\",\"path\":\".recycle-evidence/$base\",\"size_bytes\":$(stat -c %s "$ev"),\"sha256\":\"$sha\"}]}"
+  tool_result download_artifact "{\"artifact_id\":\"ar-$xid\",\"content_base64\":\"$(base64 -w0 "$ev")\"}"
+}
+new_lease() { # <name> — fresh dev lease so each guard case owns its manifest
+  tool_result exec '{"execution_id":"ex-env","state":"succeeded","exit_code":0}'
+  MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" "$1" use --phase dev --template tpl-test-dev --ttl 60 >/dev/null
+}
+
+# --- 19. verdict parsed from guard stdout + evidence archived locally ----------
+reset_log
+new_lease pdev1
+reset_log
+rm -rf "$MULTICA_RECYCLE_EVIDENCE_DIR"
+ev19="$tmp_dir/guard-ev19.txt"; ev_fixture "$ev19" evidence
+canned_guard_ok ex-g5 evidence "$ev19"
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+dl_req="$(reqs download_artifact | head -1)"; dl_body=""
+[ -n "$dl_req" ] && dl_body="$(sed -n '2p' "$log_dir/req.$dl_req")"
+if [ "$rc" = 0 ] && [ -n "$(reqs release_lease)" ] && grep -q 'evidence' <<<"$out" \
+   && grep -q '"artifact_id": *"ar-ex-g5"' <<<"$dl_body" \
+   && cmp -s "$MULTICA_RECYCLE_EVIDENCE_DIR/guard-ev19.txt" "$ev19"; then ok; else
+  fail "guard chain: rc=$rc out=$out dl=$dl_body archived=$(ls "$MULTICA_RECYCLE_EVIDENCE_DIR" 2>/dev/null)"; fi
+
+# --- 20. unparsable guard output: fail-closed, refuse release ------------------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6","state":"succeeded","exit_code":0,"log_tail":"counts: sole_ref=0 unpushed=0 (no verdict line)"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] && grep -qi 'fail-closed' <<<"$out" \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "verdict parse fail-closed: rc=$rc out=$out"; fi
+
+# --- 20a. exit_code=0 with blocked verdict: fail-closed, refuse release -------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6a","state":"succeeded","exit_code":0,"log_tail":"verdict: blocked"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -z "$(reqs list_artifacts)" ] \
+   && grep -qi 'fail-closed' <<<"$out" \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "exit 0 blocked fail-closed: rc=$rc out=$out"; fi
+
+# --- 20b. unknown non-empty verdict: fail-closed, refuse release --------------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6b","state":"succeeded","exit_code":0,"log_tail":"verdict: suspicious"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -z "$(reqs list_artifacts)" ] \
+   && grep -qi 'unknown guard verdict' <<<"$out" \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "unknown verdict fail-closed: rc=$rc out=$out"; fi
+
+# --- 20c. guest disabled is not the local kill-switch: fail-closed ------------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6c","state":"succeeded","exit_code":0,"log_tail":"verdict: disabled"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -z "$(reqs list_artifacts)" ] \
+   && grep -qi 'unexpected disabled' <<<"$out" \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "unexpected disabled fail-closed: rc=$rc out=$out"; fi
+
+# --- 20d. exit_code=1 with pass verdict is inconsistent and still blocked -----
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6d","state":"failed","exit_code":1,"log_tail":"verdict: pass"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "exit 1 pass mismatch fail-closed: rc=$rc out=$out"; fi
+
+# --- 20e. handoff with unknown verdict: retain manifest and lease ------------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g6e","state":"succeeded","exit_code":0,"log_tail":"verdict: suspicious"}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 handoff --to qa --template tpl-test-qa 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -z "$(reqs acquire_lease)" ] \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "handoff unknown verdict fail-closed: rc=$rc out=$out"; fi
+
+# --- 21. no evidence artifact: fail-closed, refuse release ---------------------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g7","state":"succeeded","exit_code":0,"log_tail":"verdict: pass"}'
+tool_result list_artifacts '{"artifacts":[]}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] && grep -qi 'fail-closed\|evidence' <<<"$out" \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "no-evidence fail-closed: rc=$rc out=$out"; fi
+
+# --- 22. evidence checksum mismatch: fail-closed, refuse release ---------------
+reset_log
+new_lease pdev1
+reset_log
+ev22="$tmp_dir/guard-ev22.txt"; ev_fixture "$ev22" pass
+tool_result exec '{"execution_id":"ex-g8","state":"succeeded","exit_code":0,"log_tail":"verdict: pass"}'
+tool_result list_artifacts '{"artifacts":[{"artifact_id":"ar-bad","path":".recycle-evidence/guard-ev22.txt","size_bytes":300,"sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}'
+tool_result download_artifact "{\"artifact_id\":\"ar-bad\",\"content_base64\":\"$(base64 -w0 "$ev22")\"}"
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] && grep -qi 'sha256\|fail-closed' <<<"$out" \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "sha mismatch fail-closed: rc=$rc out=$out"; fi
+
+# --- 23. evidence download failure: fail-closed, refuse release ----------------
+reset_log
+new_lease pdev1
+reset_log
+tool_result exec '{"execution_id":"ex-g9","state":"succeeded","exit_code":0,"log_tail":"verdict: pass"}'
+tool_result list_artifacts '{"artifacts":[{"artifact_id":"ar-gone","path":".recycle-evidence/guard-gone.txt","size_bytes":300,"sha256":"abc"}]}'
+resp download_artifact '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"artifact missing"}],"isError":true}}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] && grep -qi 'fail-closed\|archive' <<<"$out" \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
+  fail "download fail-closed: rc=$rc out=$out"; fi
+
+# --- 24. large evidence: download_url GET channel, archived with auth ----------
+reset_log
+new_lease pdev1
+reset_log
+ev24="$tmp_dir/guard-ev24.txt"; ev_fixture "$ev24" pass
+sha24="$(sha256sum "$ev24" | awk '{print $1}')"
+tool_result exec '{"execution_id":"ex-ga","state":"succeeded","exit_code":0,"log_tail":"verdict: pass"}'
+tool_result list_artifacts "{\"artifacts\":[{\"artifact_id\":\"ar-url\",\"path\":\".recycle-evidence/guard-ev24.txt\",\"size_bytes\":$(stat -c %s "$ev24"),\"sha256\":\"$sha24\"}]}"
+tool_result download_artifact '{"artifact_id":"ar-url","download_url":"http://pool.example:8772/files/artifacts/ex-ga/guard-ev24.txt"}'
+cp "$ev24" "$resp_dir/guard-ev24.txt"
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release 2>&1)" || rc=$?
+get_req="$(grep -l 'files/artifacts' "$log_dir"/req.* 2>/dev/null | head -1 || true)"
+get_hdr=""
+[ -n "$get_req" ] && get_hdr="$(sed -n '1p' "$get_req")"
+if [ "$rc" = 0 ] && [ -n "$(reqs release_lease)" ] \
+   && cmp -s "$MULTICA_RECYCLE_EVIDENCE_DIR/guard-ev24.txt" "$ev24" \
+   && grep -q 'Authorization: Bearer test-token' <<<"$get_hdr"; then ok; else
+  fail "download_url chain: rc=$rc out=$out hdr=$get_hdr"; fi
+rm -f "$resp_dir/guard-ev24.txt"
+
+# --- 25. evidence schema isomorphic to the local track -------------------------
+iso="$tmp_dir/iso"; mkdir -p "$iso/repo" "$iso/ev-guest" "$iso/ev-local"
+d="$iso/repo"
+git -C "$d" init -q -b main; git -C "$d" config user.email t@t; git -C "$d" config user.name t
+echo a >"$d/a"
+git -C "$d" add a; git -C "$d" commit -qm init
+git -C "$d" update-ref refs/remotes/origin/main HEAD
+MULTICA_RECYCLE_EVIDENCE_DIR="$iso/ev-guest" RG_TOOL=iso-guest \
+  bash "$root_dir/scripts/slot-image/guest/guard-scan.sh" "$d" slot-release 0 >/dev/null
+(
+  export MULTICA_RECYCLE_EVIDENCE_DIR="$iso/ev-local"
+  . "$root_dir/scripts/lib-recycle-guard.sh"
+  RG_TOOL=iso-local
+  recycle_guard_scan_worktree "$d" slot-release 0 || true
+)
+norm_ev() { sed -e 's/^timestamp: .*/timestamp: X/' -e 's/^tool: .*/tool: X/' -e 's/^target: .*/target: X/' "$1"; }
+vm_ev="$(ls "$iso/ev-guest"/*.txt 2>/dev/null | head -1)"
+lo_ev="$(ls "$iso/ev-local"/*.txt 2>/dev/null | head -1)"
+if [ -n "$vm_ev" ] && [ -n "$lo_ev" ] \
+   && diff <(norm_ev "$vm_ev") <(norm_ev "$lo_ev") >/dev/null; then ok; else
+  fail "schema isomorphism: vm=$vm_ev local=$lo_ev
+--- guest ---
+$(cat "${vm_ev:-/dev/null}")
+--- local ---
+$(cat "${lo_ev:-/dev/null}")"; fi
+
+# --- 26. lock-release --dry-run: guard + archive run, lease untouched ----------
+reset_log
+new_lease pdev1
+reset_log
+ev26="$tmp_dir/guard-ev26.txt"; ev_fixture "$ev26" pass
+canned_guard_ok ex-gd pass "$ev26"
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 lock-release --dry-run 2>&1)" || rc=$?
+ex_req="$(reqs '"name": *"exec"' | head -1)"; ex_body=""
+[ -n "$ex_req" ] && ex_body="$(sed -n '2p' "$log_dir/req.$ex_req")"
+if [ "$rc" = 0 ] && [ -z "$(reqs release_lease)" ] \
+   && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ] \
+   && grep -q 'dry' <<<"$out" && grep -q '"slot-release","1"' <<<"$ex_body"; then ok; else
+  fail "dry-run: rc=$rc out=$out ex=$ex_body"; fi
+
+# --- 27. exec --cwd: workspace-relative cwd pinned in the call -----------------
+reset_log
+tool_result exec '{"execution_id":"ex-c","state":"succeeded","exit_code":0}'
+out="$(bash "$pool" pdev1 exec --cwd sub/dir -- echo hi 2>&1)" || rc=$?
+ex="$(reqs '"name": *"exec"' | head -1)"; body=""
+[ -n "$ex" ] && body="$(sed -n '2p' "$log_dir/req.$ex")"
+if [ "$rc" = 0 ] && grep -q '"cwd": *"sub/dir"' <<<"$body"; then ok; else
+  fail "exec --cwd: rc=$rc body=$body"; fi
 
 printf '\nslot-pool.test.sh: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]

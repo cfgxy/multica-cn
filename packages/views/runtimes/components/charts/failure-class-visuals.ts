@@ -14,18 +14,10 @@ import { useT } from "../../../i18n";
 // prominent class is still visible against the card it sits on. Order follows
 // FAILURE_CLASSES (most-actionable first), so the darkest segment is always
 // the one worth looking at first.
-// One bucket's failure counts, keyed by display class. Every class is always
-// present (0 when unused) so a bucket can be read without existence checks;
-// which of them actually get drawn is `activeFailureClasses`' call.
-export type FailureClassCounts = Record<FailureClass, number>;
-
-// Bucket-level totals that ride alongside the per-class counts. `total`
-// counts every terminal task in the bucket, not just failures, so the
-// tooltip can report a rate.
-export interface FailureBucketTotals {
-  failed: number;
-  total: number;
-}
+// Bucket-level count/total shapes moved to `@multica/core/dashboard`
+// (RUYI-638) with the aggregators that produce them; re-exported here so the
+// web chart modules keep their import surface.
+export type { FailureClassCounts, FailureBucketTotals } from "@multica/core/dashboard";
 
 export const FAILURE_CLASS_COLOR: Record<FailureClass, string> = {
   auth: "var(--destructive)",

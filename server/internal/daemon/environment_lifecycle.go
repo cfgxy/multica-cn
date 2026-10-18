@@ -28,7 +28,7 @@ func (d *Daemon) recordEnvironmentCompletion(task Task, result TaskResult, logge
 		return ""
 	}
 	meta.AutoCleanup = result.Status == "completed"
-	if assignment, _ := localDirectoryAssignmentForTask(task, d.cfg.DaemonID); assignment != nil && !assignment.UsesWorktree() {
+	if localDirectoryGCExemption(task, d.cfg.DaemonID) {
 		meta.LocalDirectory = true
 	}
 	if err := execenv.WriteGCMeta(result.EnvRoot, meta, logger); err != nil {

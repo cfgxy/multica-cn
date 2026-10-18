@@ -46,26 +46,47 @@ type WorkspaceDecisionInboxResponse struct {
 
 // issueDecisionFromInboxRow reassembles the plain card row from the inbox
 // join row so the shared decisionToResponse mapping stays single-sourced.
+// Every business column of the card must land here: decisionToResponse
+// serializes whatever this function carries, and an unmapped column silently
+// becomes its zero value on the wire (the RUYI-630 QA defect#2 shape — an
+// authorization card with decision_kind="" that no client schema accepts).
 func issueDecisionFromInboxRow(row db.ListWorkspaceIssueDecisionsRow) db.IssueDecision {
 	return db.IssueDecision{
-		ID:                 row.ID,
-		WorkspaceID:        row.WorkspaceID,
-		IssueID:            row.IssueID,
-		SourceCommentID:    row.SourceCommentID,
-		Question:           row.Question,
-		Options:            row.Options,
-		MultiSelect:        row.MultiSelect,
-		RecommendedIndices: row.RecommendedIndices,
-		Status:             row.Status,
-		SelectedIndices:    row.SelectedIndices,
-		AnsweredByType:     row.AnsweredByType,
-		AnsweredByID:       row.AnsweredByID,
-		AnsweredAt:         row.AnsweredAt,
-		AnswerCommentID:    row.AnswerCommentID,
-		CreatedByType:      row.CreatedByType,
-		CreatedByID:        row.CreatedByID,
-		CreatedAt:          row.CreatedAt,
-		UpdatedAt:          row.UpdatedAt,
+		ID:                    row.ID,
+		WorkspaceID:           row.WorkspaceID,
+		IssueID:               row.IssueID,
+		SourceCommentID:       row.SourceCommentID,
+		Question:              row.Question,
+		Context:               row.Context,
+		Options:               row.Options,
+		MultiSelect:           row.MultiSelect,
+		RecommendedIndices:    row.RecommendedIndices,
+		Status:                row.Status,
+		SelectedIndices:       row.SelectedIndices,
+		AnsweredByType:        row.AnsweredByType,
+		AnsweredByID:          row.AnsweredByID,
+		AnsweredAt:            row.AnsweredAt,
+		AnswerCommentID:       row.AnswerCommentID,
+		CreatedByType:         row.CreatedByType,
+		CreatedByID:           row.CreatedByID,
+		CreatedAt:             row.CreatedAt,
+		UpdatedAt:             row.UpdatedAt,
+		ClientRequestID:       row.ClientRequestID,
+		DecisionKind:          row.DecisionKind,
+		VisibleTier:           row.VisibleTier,
+		OperatorTier:          row.OperatorTier,
+		NamedApproverIds:      row.NamedApproverIds,
+		ApproveLabel:          row.ApproveLabel,
+		DenyLabel:             row.DenyLabel,
+		ExpiresAt:             row.ExpiresAt,
+		AnswerSource:          row.AnswerSource,
+		AuthState:             row.AuthState,
+		PendingRequestGroupID: row.PendingRequestGroupID,
+		PendingActionType:     row.PendingActionType,
+		PendingActionParams:   row.PendingActionParams,
+		ExecutionResult:       row.ExecutionResult,
+		ExecutionError:        row.ExecutionError,
+		ExecutedAt:            row.ExecutedAt,
 	}
 }
 
@@ -124,13 +145,23 @@ func (h *Handler) ListWorkspaceDecisionInbox(w http.ResponseWriter, r *http.Requ
 
 	items := make([]WorkspaceDecisionInboxItem, 0, len(rows))
 	for _, row := range rows {
+		card := issueDecisionFromInboxRow(row)
+		// RUYI-630: authorization cards never aggregate into the decision
+		// inbox — their authorization summary lives in the decision-requests
+		// surface, and the inbox entry would only duplicate the entry point.
+		if card.DecisionKind == "authorization" {
+			continue
+		}
+		if !h.decisionCardVisibleToCaller(r, uuidToString(workspaceID), card) {
+			continue
+		}
 		items = append(items, WorkspaceDecisionInboxItem{
-				IssueDecisionResponse: decisionToResponse(issueDecisionFromInboxRow(row)),
-				WorkspaceID:           uuidToString(row.WorkspaceID),
-				IssueNumber:           row.IssueNumber,
-				IssueIdentifier:       row.IssueIdentifier,
-				IssueTitle:            row.IssueTitle,
-			})
+			IssueDecisionResponse: decisionToResponse(card),
+			WorkspaceID:           uuidToString(row.WorkspaceID),
+			IssueNumber:           row.IssueNumber,
+			IssueIdentifier:       row.IssueIdentifier,
+			IssueTitle:            row.IssueTitle,
+		})
 	}
 	resp := WorkspaceDecisionInboxResponse{
 		Items: items,

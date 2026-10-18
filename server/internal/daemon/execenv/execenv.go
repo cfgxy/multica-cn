@@ -129,6 +129,9 @@ type PrepareParams struct {
 
 // TaskContextForEnv is the subset of task context used for writing context files.
 type TaskContextForEnv struct {
+	TaskID           string // unique ID for the running task
+	ManagedBranch    string // harness-owned delivery branch for worktree tasks
+	BaseCommit       string // commit the task must preserve as an ancestor
 	IssueID          string
 	SquadID          string
 	TriggerCommentID string // comment that triggered this task (empty for on_assign)
@@ -638,6 +641,11 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		}()
 	}
 
+	params.Task.TaskID = params.TaskID
+	if localWorktree != nil {
+		params.Task.ManagedBranch = localWorktree.Branch
+		params.Task.BaseCommit = localWorktree.BaseCommit
+	}
 	if err := writeContextFiles(workDir, params.Provider, params.Task, manifest); err != nil {
 		return nil, fmt.Errorf("execenv: write context files: %w", err)
 	}
