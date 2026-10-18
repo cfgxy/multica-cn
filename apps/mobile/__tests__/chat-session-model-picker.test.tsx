@@ -1,9 +1,21 @@
 // @ts-nocheck
 import React from "react";
-import { render, screen } from "@testing-library/react-native";
+import { fireEvent, render, screen } from "@testing-library/react-native";
 import { ChatSessionModelPicker } from "@/components/chat/chat-session-model-picker";
+import { PlusPanel } from "@/components/chat/plus-panel";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
+jest.mock("react-native-reanimated", () => {
+  const React = jest.requireActual<typeof import("react")>("react");
+  const { View } = jest.requireActual<typeof import("react-native")>("react-native");
+  const animation = { duration: () => undefined };
+  return {
+    __esModule: true,
+    default: { View: React.forwardRef((props, ref) => React.createElement(View, { ...props, ref })) },
+    SlideInUp: animation,
+    SlideOutDown: animation,
+  };
+});
 jest.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ data: { supported: true, models: [{ id: "model-a" }, { id: "model-b" }] } }),
 }));
@@ -49,5 +61,35 @@ describe("ChatSessionModelPicker", () => {
     expect(options).toHaveLength(3);
     expect(options.every((option) => option.props.accessibilityState?.disabled === true)).toBe(true);
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("offers model choices inside the composer more panel and forwards selection", async () => {
+    const onSelect = jest.fn(async () => {});
+    await render(
+      <PlusPanel
+        visible
+        maxHeight={400}
+        onClose={jest.fn()}
+        onMention={jest.fn()}
+        onCamera={jest.fn()}
+        onImage={jest.fn()}
+        onFiles={jest.fn()}
+        modelPicker={
+          <ChatSessionModelPicker
+            runtimeId="runtime-1"
+            modelOverride={null}
+            agentModel="model-a"
+            disabled={false}
+            onSelect={onSelect}
+            embedded
+          />
+        }
+      />,
+    );
+
+    const choices = screen.getAllByTestId("model-option");
+    expect(choices).toHaveLength(3);
+    fireEvent.press(choices[1]);
+    expect(onSelect).toHaveBeenCalledWith("model-a");
   });
 });

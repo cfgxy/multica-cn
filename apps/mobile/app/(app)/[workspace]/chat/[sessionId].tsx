@@ -84,7 +84,6 @@ import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
 import { ChatQueuePanel } from "@/components/chat/chat-queue-panel";
-import { ChatSessionModelPicker } from "@/components/chat/chat-session-model-picker";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
 import { VoiceSessionOverlay } from "@/components/voice/voice-session-overlay";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
@@ -772,15 +771,6 @@ export default function ChatDetailScreen() {
             setChatContentHeight(event.nativeEvent.layout.height)
           }
         >
-          {activeSession && currentAgent ? (
-            <ChatSessionModelPicker
-              runtimeId={currentAgent.runtime_id ?? null}
-              modelOverride={activeSession.model_override ?? null}
-              agentModel={currentAgent.model ?? null}
-              disabled={isArchived || accessRevoked || !runtimeBound || savingSessionModel}
-              onSelect={handleSessionModelSelect}
-            />
-          ) : null}
           <ChatMessageList
             messages={visibleMessages}
             loading={messagesLoading}
@@ -832,6 +822,11 @@ export default function ChatDetailScreen() {
           skillPickerPath={{ pathname: "/[workspace]/skill-picker", params: { workspace: wsSlug ?? "" } }}
           projectId={projectId}
           onProjectChange={handleProjectChange}
+          modelRuntimeId={activeSession && currentAgent ? currentAgent.runtime_id ?? null : null}
+          modelOverride={activeSession?.model_override ?? null}
+          agentModel={currentAgent?.model ?? null}
+          modelDisabled={isArchived || accessRevoked || !runtimeBound || savingSessionModel}
+          onModelSelect={handleSessionModelSelect}
           restoredAttachments={restoredAttachments}
           onRestoredAttachmentsConsumed={() => setRestoredAttachments([])}
         />

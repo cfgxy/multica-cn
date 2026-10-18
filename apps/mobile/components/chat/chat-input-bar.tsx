@@ -35,6 +35,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ActionSheetModal, useActionSheet } from "@/components/ui/action-sheet";
 import { AttachmentZone } from "@/components/issue/attachment-zone";
 import { PlusPanel } from "@/components/chat/plus-panel";
+import { ChatSessionModelPicker } from "@/components/chat/chat-session-model-picker";
 import { DictationBar } from "@/components/chat/dictation-bar";
 import { useFileAttach } from "@/components/editor/use-file-attach";
 import { assetFromSharedFile } from "@/lib/picked-asset";
@@ -104,6 +105,11 @@ interface Props {
   onProjectContext?: () => void;
   projectId?: string | null;
   onProjectChange?: (projectId: string | null) => void;
+  modelRuntimeId?: string | null;
+  modelOverride?: string | null;
+  agentModel?: string | null;
+  modelDisabled?: boolean;
+  onModelSelect?: (model: string | null) => Promise<void>;
   restoredAttachments?: Attachment[];
   onRestoredAttachmentsConsumed?: () => void;
 }
@@ -128,6 +134,11 @@ export function ChatInputBar({
   onProjectContext,
   projectId,
   onProjectChange,
+  modelRuntimeId,
+  modelOverride,
+  agentModel,
+  modelDisabled,
+  onModelSelect,
   restoredAttachments,
   onRestoredAttachmentsConsumed,
 }: Props) {
@@ -583,6 +594,16 @@ export function ChatInputBar({
         projectContextLabel={selectedProject
           ? `${t("input.project_context", "Project context")} - ${selectedProject.title}`
           : undefined}
+        modelPicker={modelRuntimeId && onModelSelect ? (
+          <ChatSessionModelPicker
+            runtimeId={modelRuntimeId}
+            modelOverride={modelOverride ?? null}
+            agentModel={agentModel ?? null}
+            disabled={disabled || modelDisabled === true}
+            onSelect={onModelSelect}
+            embedded
+          />
+        ) : undefined}
       />
       <ActionSheetModal {...imageSourceModalProps} />
       <ActionSheetModal {...quickReplySheet.modalProps} />
