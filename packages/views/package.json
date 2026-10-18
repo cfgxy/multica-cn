@@ -56,6 +56,7 @@
     "./platform": "./platform/index.ts",
     "./i18n": "./i18n/index.ts",
     "./attachments": "./attachments/index.ts",
+    "./audit": "./audit/index.ts",
     "./locales": "./locales/index.ts",
     "./locales/*": "./locales/*"
   },
