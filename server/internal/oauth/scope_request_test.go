@@ -25,6 +25,9 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		{"GET", "/api/runtimes/rt-1/models", ScopeNeedRead},
 		{"GET", "/api/runtimes/rt-1/models/m-1", ScopeNeedRead},
 		{"GET", "/api/task-runs", ScopeNeedRead},
+		{"GET", "/api/autopilots/ap-1", ScopeNeedRead},
+		{"GET", "/api/autopilots/ap-1/runs", ScopeNeedRead},
+		{"GET", "/api/autopilots/ap-1/runs/run-1", ScopeNeedRead},
 		{"GET", "/api/quick-replies", ScopeNeedRead},
 		{"GET", "/api/workspaces/ws-1/audit-events", ScopeNeedRead},
 		{"POST", "/api/mcp/audit-start", ScopeNeedRead},
@@ -97,6 +100,7 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		// shapes are POST-only: a GET on the same path classifies as an
 		// ordinary read of the underlying resource.
 		{"POST", "/api/issues/quick-create", ScopeNeedRun},
+		{"POST", "/api/autopilots/ap-1/trigger", ScopeNeedRun},
 		{"POST", "/api/issues/i-1/tasks/r-1/cancel", ScopeNeedRun},
 		{"POST", "/api/issues/i-1/tasks/r-1/retry", ScopeNeedRun},
 		{"GET", "/api/issues/quick-create", ScopeNeedRead},
