@@ -603,6 +603,16 @@ describe("ChatDetailScreen (RUYI-496)", () => {
     });
   });
 
+  it("keeps the composer model entry wired while the session list catches up", async () => {
+    mockSessions.splice(0, mockSessions.length);
+
+    await render(<ChatDetailScreen />);
+
+    expect(mockComposerProps.current).toMatchObject({
+      modelRuntimeId: "runtime-1",
+    });
+  });
+
   it("new chat honors the preselected agent param", async () => {
     mockRoute.sessionId = "new";
     mockRoute.agentId = "agent-2";
