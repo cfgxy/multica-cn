@@ -66,6 +66,11 @@ interface Props {
   skillPickerPath?: Href;
   projectId?: string | null;
   onProjectChange?: (projectId: string | null) => void;
+  modelRuntimeId?: string | null;
+  modelOverride?: string | null;
+  agentModel?: string | null;
+  modelDisabled?: boolean;
+  onModelSelect?: (model: string | null) => Promise<void>;
   restoredAttachments?: Attachment[];
   onRestoredAttachmentsConsumed?: () => void;
 }
@@ -89,6 +94,11 @@ export function ChatComposer({
   skillPickerPath,
   projectId,
   onProjectChange,
+  modelRuntimeId,
+  modelOverride,
+  agentModel,
+  modelDisabled,
+  onModelSelect,
   restoredAttachments,
   onRestoredAttachmentsConsumed,
 }: Props) {
@@ -119,6 +129,11 @@ export function ChatComposer({
       skillPickerPath={skillPickerPath}
       projectId={projectId}
       onProjectChange={onProjectChange}
+      modelRuntimeId={modelRuntimeId}
+      modelOverride={modelOverride}
+      agentModel={agentModel}
+      modelDisabled={modelDisabled}
+      onModelSelect={onModelSelect}
       restoredAttachments={restoredAttachments}
       onRestoredAttachmentsConsumed={onRestoredAttachmentsConsumed}
     />
