@@ -442,6 +442,7 @@ func TestAuthOAuthWriteTokenCannotRun(t *testing.T) {
 	for _, path := range []string{
 		"/api/issues/quick-create",
 		"/api/issues/i-1/tasks/r-1/cancel",
+		"/api/autopilots/ap-1/trigger",
 	} {
 		next := &capturingHandler{}
 		req := httptest.NewRequest(http.MethodPost, path, nil)

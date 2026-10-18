@@ -84,10 +84,13 @@ type scopeShape struct {
 //	POST /api/issues/quick-create              (dispatch_agent)
 //	POST /api/issues/{id}/tasks/{run}/cancel   (cancel_run)
 //	POST /api/issues/{id}/tasks/{run}/retry    (retry_run)
+//
+// Autopilot trigger requires mcp:run for the same reason as issue dispatch.
 var runShapes = [][]string{
 	{"issues", "quick-create"},
 	{"issues", "*", "tasks", "*", "cancel"},
 	{"issues", "*", "tasks", "*", "retry"},
+	{"autopilots", "*", "trigger"},
 }
 
 // surfaceShapes is the complete MCP surface. Order within the list does not
@@ -95,6 +98,9 @@ var runShapes = [][]string{
 // given request.
 var surfaceShapes = []scopeShape{
 	{[]string{"file-access", "operations", "*"}, shapeReadOnly},
+	{[]string{"autopilots", "*"}, shapeReadOnly},
+	{[]string{"autopilots", "*", "runs"}, shapeReadOnly},
+	{[]string{"autopilots", "*", "runs", "*"}, shapeReadOnly},
 	// Workspaces: the list, plus the two sub-resources the tools drive —
 	// execution profiles and the audit trail. Everything else under
 	// /api/workspaces/{id} (members, invitations, plugins, …) stays

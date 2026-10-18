@@ -22,6 +22,22 @@ function fakeClient(overrides: Partial<Record<string, unknown>> = {}): MulticaCl
       calls.push({ method: "getProject", args: [id] });
       return projectFixture();
     },
+    getAutopilotRun: async (_ws: string, autopilotId: string, runId: string) => {
+      calls.push({ method: "getAutopilotRun", args: [autopilotId, runId] });
+      return { id: runId, autopilot_id: autopilotId, status: "completed", task_id: "task-9" };
+    },
+    listAutopilotRuns: async (_ws: string, autopilotId: string, params: Record<string, unknown>) => {
+      calls.push({ method: "listAutopilotRuns", args: [autopilotId, params] });
+      return { runs: [{ id: "run-9", autopilot_id: autopilotId, status: "completed" }], has_more: false };
+    },
+    triggerAutopilot: async (_ws: string, autopilotId: string, body: Record<string, unknown>, key: string) => {
+      calls.push({ method: "triggerAutopilot", args: [autopilotId, body, key] });
+      return { id: "run-triggered", autopilot_id: autopilotId, status: "running" };
+    },
+    listAuditEvents: async (_ws: string, params: Record<string, unknown>) => {
+      calls.push({ method: "listAuditEvents", args: [params] });
+      return { events: [{ id: "audit-1" }], next_cursor: null, next_cursor_id: null };
+    },
     createProject: async (_ws: string, body: Record<string, unknown>) => {
       calls.push({ method: "createProject", args: [body] });
       return { ...projectFixture(), ...body, revision: 1 };
@@ -143,6 +159,9 @@ describe("tool surface", () => {
         "edit_comment",
         "get_agent",
         "get_agent_runtime_config",
+        "get_autopilot",
+        "get_autopilot_run",
+        "get_autopilot_run_diagnostics",
         "get_comment",
         "get_daemon_instance",
         "get_decision",
@@ -160,6 +179,7 @@ describe("tool surface", () => {
         "get_squad",
         "list_agents",
         "list_archived_inbox",
+        "list_autopilot_runs",
         "list_comments",
         "list_daemon_instances",
         "list_decisions",
@@ -185,6 +205,7 @@ describe("tool surface", () => {
         "retry_run",
         "search_audit_events",
         "search_issues",
+        "trigger_autopilot",
         "unarchive_inbox_item",
         "update_agent",
         "update_agent_runtime_config",
@@ -227,6 +248,108 @@ describe("tool surface", () => {
     // The mutating comment tools declare their destructive/run side effects.
     expect(findTool("edit_comment")?.description).toMatch(/WARNING \(run side effects\)/);
     expect(findTool("delete_comment")?.description).toMatch(/SIDE EFFECTS/i);
+  });
+});
+
+describe("get_autopilot_run_diagnostics handler", () => {
+  it("reads the native run first and scopes audit lookup to its linked task", async () => {
+    const client = fakeClient();
+    const result = await findTool("get_autopilot_run_diagnostics")?.handler(
+      { workspace: WS, autopilot_id: "ap-7", run_id: "run-9" },
+      client,
+    ) as Record<string, unknown>;
+    expect(result.run).toMatchObject({ id: "run-9", status: "completed", task_id: "task-9" });
+    expect(result.task_audit).toMatchObject({ events: [{ id: "audit-1" }] });
+    const calls = callsOf(client);
+    expect(calls.map((call) => call.method)).toEqual(["getAutopilotRun", "listAuditEvents"]);
+    expect(calls[1]?.args[0]).toMatchObject({ domain: "run", task_id: "task-9" });
+  });
+
+  it("does not search an unrelated audit trail when the run has no task", async () => {
+    const client = fakeClient({ getAutopilotRun: async () => ({ id: "run-no-task", status: "skipped" }) });
+    const result = await findTool("get_autopilot_run_diagnostics")?.handler(
+      { workspace: WS, autopilot_id: "ap-7", run_id: "run-no-task" },
+      client,
+    ) as Record<string, unknown>;
+    expect(result.task_id).toBeNull();
+    expect(result.task_audit).toMatchObject({ events: [] });
+    expect(callsOf(client)).toEqual([]);
+  });
+
+  it("omits trigger payload and unapproved result fields from diagnostics", async () => {
+    const client = fakeClient({ getAutopilotRun: async () => ({
+      id: "run-safe",
+      autopilot_id: "ap-7",
+      source: "manual",
+      status: "completed",
+      task_id: "task-9",
+      triggered_at: "2026-10-18T11:50:27Z",
+      completed_at: "2026-10-18T11:57:54Z",
+      trigger_payload: { webhook_token: "must-not-leak" },
+      result: {
+        sample: { status: "no_sample", candidate_count: 4, qualified_count: 2, draft_count: 0, prompt: "must-not-leak" },
+        raw_log: "must-not-leak",
+      },
+    }) });
+    const result = await findTool("get_autopilot_run_diagnostics")?.handler(
+      { workspace: WS, autopilot_id: "ap-7", run_id: "run-safe" }, client,
+    ) as { run: Record<string, unknown> };
+    expect(result.run).toMatchObject({
+      id: "run-safe",
+      status: "completed",
+      result_summary: { sample_status: "no_sample", candidate_count: 4, qualified_count: 2, draft_count: 0 },
+    });
+    expect(result.run).not.toHaveProperty("trigger_payload");
+    expect(result.run).not.toHaveProperty("raw_log");
+    expect(result.run.result_summary).not.toHaveProperty("prompt");
+  });
+
+  it("returns only a bounded, redacted output and task lifecycle projection", async () => {
+    const client = fakeClient({ getAutopilotRun: async () => ({
+      id: "run-safe-output",
+      autopilot_id: "ap-7",
+      status: "completed",
+      task_id: "task-9",
+      trigger_payload: { webhook_token: "must-not-leak" },
+      result: { output: "Authorization: Bearer must-not-leak\ntoken=still-must-not-leak\nfinished" },
+      task: { id: "task-9", status: "completed", started_at: "2026-10-18T11:50:27Z", result: { raw: "must-not-leak" } },
+    }) });
+    const result = await findTool("get_autopilot_run")?.handler(
+      { workspace: WS, autopilot_id: "ap-7", run_id: "run-safe-output" }, client,
+    ) as { result_summary: Record<string, unknown>; task: Record<string, unknown> };
+    expect(result.result_summary.output_summary).toBe("Authorization: [REDACTED]\ntoken=[REDACTED]\nfinished");
+    expect(result.task).toMatchObject({ id: "task-9", status: "completed" });
+    expect(result.task).not.toHaveProperty("result");
+    expect(result).not.toHaveProperty("trigger_payload");
+  });
+
+  it("forwards native run filters and returns a safe page", async () => {
+    const client = fakeClient({ listAutopilotRuns: async (_ws: string, autopilotId: string, params: Record<string, unknown>) => {
+      callsOf(client).push({ method: "listAutopilotRuns", args: [autopilotId, params] });
+      return { runs: [{ id: "run-1", autopilot_id: autopilotId, status: "running", result: { raw_log: "must-not-leak" } }], has_more: true, next_offset: 3 };
+    } });
+    const result = await findTool("list_autopilot_runs")?.handler({
+      workspace: WS,
+      autopilot_id: "ap-7",
+      source: "replay",
+      status: "running",
+      triggered_after: "2026-10-18T00:00:00Z",
+      limit: 3,
+    }, client) as { runs: Array<Record<string, unknown>>; has_more: boolean; next_offset: number };
+    expect(callsOf(client)[0]?.args[1]).toMatchObject({ source: "replay", status: "running", limit: 3 });
+    expect(result).toMatchObject({ has_more: true, next_offset: 3 });
+    expect(result.runs[0]).not.toHaveProperty("raw_log");
+  });
+
+  it("returns an Autopilot run receipt that names its read-back query", async () => {
+    const result = await findTool("trigger_autopilot")?.handler({
+      workspace: WS,
+      autopilot_id: "ap-7",
+      mode: "current",
+      idempotency_key: "stable-key",
+    }, fakeClient()) as Record<string, unknown>;
+    expect(result).toMatchObject({ autopilot_run_id: "run-triggered", status: "running" });
+    expect(result.query).toMatchObject({ tool: "get_autopilot_run_diagnostics", run_id: "run-triggered" });
   });
 });
 

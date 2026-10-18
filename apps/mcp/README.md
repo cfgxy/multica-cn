@@ -12,6 +12,11 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 类别 | 工具 | 说明 |
 | --- | --- | --- |
 | 读 | `list_workspaces` | 当前用户所属工作区 |
+| 读 | `get_autopilot` | 读取 Autopilot 配置与状态 |
+| 读 | `list_autopilot_runs` | 按状态、来源和时间过滤原生 Autopilot run，支持分页 |
+| 读 | `get_autopilot_run` | 读取单次原生运行、关联 task 生命周期及脱敏输出/采样摘要 |
+| 读 | `get_autopilot_run_diagnostics` | 读取原生 Autopilot run，并按其 task ID 查询关联运行审计 |
+| 写 | `trigger_autopilot` | 通过原生 Autopilot 调度链路立即执行；支持 current 与历史 payload replay，需提供幂等键 |
 | 读 | `list_agents` | 工作区内可派发的 agent |
 | 读 | `list_projects` | 工作区项目清单 |
 | 读 | `get_project` | 单个项目完整元数据与 revision |
