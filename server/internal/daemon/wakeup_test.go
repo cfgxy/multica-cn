@@ -8,14 +8,78 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+func TestHandleWorkerEvidenceRPCChecksRuntimeAndSupervisorOwnership(t *testing.T) {
+	const taskID = "11111111-1111-4111-8111-111111111111"
+	const runID = taskID + "-1"
+	mgr, err := supervisor.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup, err := supervisor.New(mgr, nil, "/tmp/fake-daemon", "daemon-a", "owner-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mgr.Dir(runID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stdout := filepath.Join(mgr.Dir(runID), "worker-stdout.log")
+	if err := os.WriteFile(stdout, []byte("owned output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.WriteManifest(&supervisor.Manifest{RunID: runID, TaskID: taskID, DaemonID: "daemon-a", State: supervisor.StateExited, StdoutLog: stdout, StderrLog: filepath.Join(mgr.Dir(runID), "worker-stderr.log")}); err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{supervisor: sup, wsRPC: newWSRPCClient(0), logger: slog.Default(), workspaces: map[string]*workspaceState{"workspace-a": {runtimeIDs: []string{"runtime-a"}}}}
+	frames := make(chan []byte, 2)
+	d.wsRPC.attach(func(frame []byte) (*wsOutbound, error) { frames <- frame; return &wsOutbound{data: frame}, nil })
+	d.handleWorkerEvidenceRPC(protocol.WorkerEvidenceRequest{RequestID: "request-a", RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 128, TimeoutMs: 2500})
+	var msg protocol.Message
+	if err := json.Unmarshal(<-frames, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if msg.Type != protocol.EventDaemonWorkerEvidenceResponse {
+		t.Fatalf("event=%q", msg.Type)
+	}
+	var got protocol.WorkerEvidenceResponse
+	if err := json.Unmarshal(msg.Payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RequestID != "request-a" || !got.Available || got.StdoutTail != "owned output" || got.ProcessLiveness != "exited" {
+		t.Fatalf("response=%+v", got)
+	}
+	d.handleWorkerEvidenceRPC(protocol.WorkerEvidenceRequest{RequestID: "request-b", RunID: taskID, RuntimeID: "runtime-other", Stream: "stdout", TailBytes: 128, TimeoutMs: 2500})
+	if err := json.Unmarshal(<-frames, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(msg.Payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RequestID != "request-b" || got.Available || got.Unavailable != "daemon_unreachable" {
+		t.Fatalf("unregistered runtime response=%+v", got)
+	}
+	d.handleWorkerEvidenceRPC(protocol.WorkerEvidenceRequest{RequestID: "request-c", RunID: "22222222-2222-4222-8222-222222222222", RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 128, TimeoutMs: 2500})
+	if err := json.Unmarshal(<-frames, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(msg.Payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RequestID != "request-c" || got.Available || got.Unavailable != "not_supervised" {
+		t.Fatalf("foreign run response=%+v", got)
+	}
+}
 
 func TestTaskWakeupURL(t *testing.T) {
 	tests := []struct {

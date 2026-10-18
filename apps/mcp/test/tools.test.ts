@@ -174,6 +174,7 @@ describe("tool surface", () => {
         "get_issue_relations",
         "get_project",
         "get_run",
+        "get_run_activity",
         "get_runtime",
         "get_runtime_models",
         "get_squad",
@@ -1186,6 +1187,30 @@ describe("run lifecycle tools", () => {
     expect(result.total).toBe(2);
     expect(result.runs[0]?.trigger).toBe("other");
     expect(result.runs[1]?.trigger).toBe("rerun");
+  });
+
+  it("get_run_activity forwards an independent run cursor and bounded worker options", async () => {
+    const activity = {
+      run_state: { status: "running", created_at: null, started_at: null, completed_at: null, elapsed_ms: null, wait_reason: null },
+      semantic_activity: { messages: [], next_after_seq: 0, has_more: false, last_activity_at: null },
+      worker_evidence: { log_available: false, unavailable_reason: "daemon_unreachable", stdout_tail: null, stderr_tail: null, next_cursor: null, last_activity_at: null, process_liveness: "unknown" },
+      progress_assessment: { status: "unknown", basis: ["worker_evidence_unavailable"] },
+    };
+    const client = fakeClient({
+      getIssueRunActivity: async (_ws: string, issue: string, runId: string, params: Record<string, unknown>) => {
+        callsOf(client).push({ method: "getIssueRunActivity", args: [issue, runId, params] });
+        return activity;
+      },
+    });
+    const result = await findTool("get_run_activity")?.handler(
+      { workspace: WS, issue: "VOI-1", run_id: "run-1", after_seq: 4, semantic_limit: 20, stream: "stderr", tail_bytes: 1024, worker_cursor: "opaque" },
+      client,
+    );
+    expect(callsOf(client)[0]).toEqual({
+      method: "getIssueRunActivity",
+      args: ["VOI-1", "run-1", { after_seq: 4, semantic_limit: 20, stream: "stderr", tail_bytes: 1024, worker_cursor: "opaque" }],
+    });
+    expect(result).toEqual(activity);
   });
 
   it("list_issue_runs consumes the server's bare-array task-runs payload (contract drift guard)", async () => {

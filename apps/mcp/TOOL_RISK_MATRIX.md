@@ -54,6 +54,7 @@ bounded metadata domain.
 | `list_issue_runs` | read | true | false | true | false | Reads issue run history. |
 | `search_audit_events` | read | true | false | true | false | Searches audit events. |
 | `get_run` | read | true | false | true | false | Reads run details. |
+| `get_run_activity` | read | true | false | true | false | Reads bounded semantic activity and diagnostics; worker evidence is requested only from the authenticated daemon registered for the run runtime. |
 | `cancel_run` | external | false | true | false | true | Requests cancellation of an executing run. |
 | `retry_run` | external | false | true | false | true | Creates a new run from a finished run. |
 | `list_daemon_instances` | read | true | false | true | false | Reads Daemon instances. |
