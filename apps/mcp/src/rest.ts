@@ -144,6 +144,7 @@ interface RequestOptions {
   workspace?: string | undefined;
   query?: Record<string, string | number | boolean | undefined> | undefined;
   body?: unknown;
+  headers?: Record<string, string> | undefined;
   auditService?: boolean | undefined;
   fileAccessInstance?: boolean | undefined;
 }
@@ -348,6 +349,29 @@ export class MulticaClient {
       `/api/projects/${encodeURIComponent(projectId)}`,
       { workspace },
     );
+  }
+
+  async getAutopilot(workspace: string, autopilotId: string): Promise<Record<string, unknown>> {
+    return this.request("GET", `/api/autopilots/${encodeURIComponent(autopilotId)}`, { workspace });
+  }
+
+  async listAutopilotRuns(
+    workspace: string,
+    autopilotId: string,
+    params: { limit?: number; offset?: number; status?: string; source?: string; triggered_after?: string; triggered_before?: string } = {},
+  ): Promise<Record<string, unknown>> {
+    return this.request("GET", `/api/autopilots/${encodeURIComponent(autopilotId)}/runs`, {
+      workspace,
+      query: params,
+    });
+  }
+
+  async getAutopilotRun(workspace: string, autopilotId: string, runId: string): Promise<Record<string, unknown>> {
+    return this.request("GET", `/api/autopilots/${encodeURIComponent(autopilotId)}/runs/${encodeURIComponent(runId)}`, { workspace });
+  }
+
+  async triggerAutopilot(workspace: string, autopilotId: string, body: Record<string, unknown>, idempotencyKey: string): Promise<Record<string, unknown>> {
+    return this.request("POST", `/api/autopilots/${encodeURIComponent(autopilotId)}/trigger`, { workspace, body, headers: { "Idempotency-Key": idempotencyKey } });
   }
 
   async createProject(workspace: string, body: CreateProjectBody): Promise<ProjectInfo> {
@@ -1059,6 +1083,7 @@ export class MulticaClient {
     if (options.workspace !== undefined) {
       Object.assign(headers, this.workspaceHeaders(options.workspace));
     }
+    Object.assign(headers, options.headers ?? {});
     if (options.auditService) {
       if (!this.auditServiceCredential) {
         throw new MulticaRequestError("MCP audit service credential is not configured");

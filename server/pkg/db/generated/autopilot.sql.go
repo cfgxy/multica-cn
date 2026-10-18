@@ -1296,6 +1296,84 @@ func (q *Queries) ListAutopilotRuns(ctx context.Context, arg ListAutopilotRunsPa
 	return items, nil
 }
 
+const listAutopilotRunsFiltered = `-- name: ListAutopilotRunsFiltered :many
+SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, webhook_delivery_id, quota_reservation_id, reason_code FROM autopilot_run r
+WHERE r.autopilot_id = $1
+  AND ($2::text IS NULL OR r.status = $2)
+  AND (
+    $3::text IS NULL
+    OR ($3 = 'scheduled' AND r.source = 'schedule')
+    OR ($3 = 'replay' AND r.trigger_payload ? '_mcp_replay')
+    OR ($3 = 'manual' AND r.source = 'manual' AND NOT COALESCE(r.trigger_payload ? '_mcp_replay', false))
+    OR ($3 NOT IN ('scheduled', 'replay', 'manual') AND r.source = $3)
+  )
+  AND ($4::timestamptz IS NULL OR r.triggered_at >= $4)
+  AND ($5::timestamptz IS NULL OR r.triggered_at < $5)
+ORDER BY r.triggered_at DESC, r.id DESC
+LIMIT $7 OFFSET $6
+`
+
+type ListAutopilotRunsFilteredParams struct {
+	AutopilotID     pgtype.UUID        `json:"autopilot_id"`
+	Status          pgtype.Text        `json:"status"`
+	Source          pgtype.Text        `json:"source"`
+	TriggeredAfter  pgtype.Timestamptz `json:"triggered_after"`
+	TriggeredBefore pgtype.Timestamptz `json:"triggered_before"`
+	Offset          int32              `json:"offset"`
+	Limit           int32              `json:"limit"`
+}
+
+// Keep MCP and the product UI on the same native run history. `scheduled`
+// and `replay` are presentation sources: schedule is stored as `schedule`,
+// while replay is encoded in the persisted payload so the historical input
+// can be reproduced without a second run table.
+func (q *Queries) ListAutopilotRunsFiltered(ctx context.Context, arg ListAutopilotRunsFilteredParams) ([]AutopilotRun, error) {
+	rows, err := q.db.Query(ctx, listAutopilotRunsFiltered,
+		arg.AutopilotID,
+		arg.Status,
+		arg.Source,
+		arg.TriggeredAfter,
+		arg.TriggeredBefore,
+		arg.Offset,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AutopilotRun{}
+	for rows.Next() {
+		var i AutopilotRun
+		if err := rows.Scan(
+			&i.ID,
+			&i.AutopilotID,
+			&i.TriggerID,
+			&i.Source,
+			&i.Status,
+			&i.IssueID,
+			&i.TaskID,
+			&i.TriggeredAt,
+			&i.CompletedAt,
+			&i.FailureReason,
+			&i.TriggerPayload,
+			&i.Result,
+			&i.CreatedAt,
+			&i.SquadID,
+			&i.PlannedAt,
+			&i.WebhookDeliveryID,
+			&i.QuotaReservationID,
+			&i.ReasonCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAutopilotSubscribers = `-- name: ListAutopilotSubscribers :many
 
 SELECT s.autopilot_id, s.user_type, s.user_id, s.created_at FROM autopilot_subscriber AS s

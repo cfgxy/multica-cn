@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -1102,6 +1103,69 @@ func TestGetAutopilotRun_ReturnsFullPayload(t *testing.T) {
 	}
 	if !strings.Contains(wDetail.Body.String(), `"answer":42`) {
 		t.Fatalf("detail response should carry full trigger_payload, body=%s", wDetail.Body.String())
+	}
+}
+
+func TestListAutopilotRunsFiltersNativeSourceAndTime(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID := createWebhookTestAgent(t, "Autopilot run filter agent")
+	apID := createWebhookTestAutopilot(t, agentID, "active", "run_only")
+	ctx := context.Background()
+	base := time.Date(2026, time.October, 18, 9, 0, 0, 0, time.UTC)
+	createRun := func(source string, payload []byte, at time.Time) db.AutopilotRun {
+		t.Helper()
+		run, err := testHandler.Queries.CreateAutopilotRun(ctx, db.CreateAutopilotRunParams{
+			AutopilotID:    parseUUID(apID),
+			Source:         source,
+			Status:         "completed",
+			TriggerPayload: payload,
+		})
+		if err != nil {
+			t.Fatalf("create %s run: %v", source, err)
+		}
+		if _, err := testPool.Exec(ctx, "UPDATE autopilot_run SET triggered_at = $2 WHERE id = $1", run.ID, at); err != nil {
+			t.Fatalf("set triggered_at: %v", err)
+		}
+		return run
+	}
+	manual := createRun("manual", nil, base)
+	scheduled := createRun("schedule", nil, base.Add(time.Hour))
+	replay := createRun("manual", []byte(`{"_mcp_replay":{"source_run_id":"source-run"}}`), base.Add(2*time.Hour))
+
+	type listResponse struct {
+		Runs       []AutopilotRunResponse `json:"runs"`
+		HasMore    bool                   `json:"has_more"`
+		NextOffset *int32                 `json:"next_offset"`
+	}
+	list := func(query string) listResponse {
+		t.Helper()
+		req := withURLParam(newRequest(http.MethodGet, "/api/autopilots/"+apID+"/runs"+query, nil), "id", apID)
+		var response listResponse
+		testutil.Call(t, testHandler.ListAutopilotRuns, req).Want(http.StatusOK).JSON(&response)
+		return response
+	}
+
+	replayRows := list("?source=replay&triggered_after=2026-10-18T10:00:00Z")
+	if len(replayRows.Runs) != 1 || replayRows.Runs[0].ID != uuidToString(replay.ID) {
+		t.Fatalf("replay filter rows = %#v, want only %s", replayRows.Runs, uuidToString(replay.ID))
+	}
+	if replayRows.Runs[0].Mode != "replay" || replayRows.Runs[0].SourceRunID == nil {
+		t.Fatalf("replay row lost provenance: %#v", replayRows.Runs[0])
+	}
+
+	scheduledRows := list("?source=scheduled&triggered_before=2026-10-18T11:30:00Z")
+	if len(scheduledRows.Runs) != 1 || scheduledRows.Runs[0].ID != uuidToString(scheduled.ID) {
+		t.Fatalf("scheduled filter rows = %#v, want only %s", scheduledRows.Runs, uuidToString(scheduled.ID))
+	}
+	manualRows := list("?source=manual")
+	if len(manualRows.Runs) != 1 || manualRows.Runs[0].ID != uuidToString(manual.ID) {
+		t.Fatalf("manual filter rows = %#v, want only %s", manualRows.Runs, uuidToString(manual.ID))
+	}
+	allRows := list("?limit=3")
+	if len(allRows.Runs) != 3 || allRows.Runs[0].ID != uuidToString(replay.ID) || allRows.Runs[1].ID != uuidToString(scheduled.ID) || allRows.Runs[2].ID != uuidToString(manual.ID) {
+		t.Fatalf("run order = %#v, want trigger-time descending", allRows.Runs)
 	}
 }
 
