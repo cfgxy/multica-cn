@@ -2699,6 +2699,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// coverage for this claim. The trigger snapshot CAS below also rejects a
 		// concurrent edit/delete that changes the FK after this read.
 		deliveredCommentIDs = commentDataIDs(deliveredComments)
+		resp.DecisionAnswers = h.decisionAnswerContextForComments(r.Context(), issue.WorkspaceID, task.IssueID, deliveredCommentIDs)
 		// taskToResponse exposes the enqueue plan to UI task-list callers. A
 		// daemon claim must instead advertise only the structured ids actually
 		// present in this payload, especially when the delivery budget truncates.
