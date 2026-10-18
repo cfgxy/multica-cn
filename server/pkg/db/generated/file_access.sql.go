@@ -12,9 +12,9 @@ import (
 )
 
 const claimFileOperations = `-- name: ClaimFileOperations :many
-UPDATE daemon_file_operation SET status = 'claimed', lease_epoch = lease_epoch + 1, claimed_at = now()
-WHERE id IN (
-    SELECT candidate.id FROM daemon_file_operation AS candidate
+WITH candidates AS MATERIALIZED (
+    SELECT candidate.id, target.roots
+    FROM daemon_file_operation AS candidate
     JOIN daemon_file_access_target AS target ON target.id = candidate.target_id
         AND target.runtime_id = candidate.runtime_id AND target.workspace_id = candidate.workspace_id
     WHERE candidate.runtime_id = $1 AND candidate.status = 'pending'
@@ -22,8 +22,18 @@ WHERE id IN (
       AND candidate.requester_id IS NOT NULL
       AND target.workspace_acl ? candidate.workspace_id::text
       AND (target.member_acl = '[]'::jsonb OR target.member_acl ? candidate.requester_id::text)
-    ORDER BY candidate.created_at, candidate.id LIMIT $2 FOR UPDATE SKIP LOCKED
-) RETURNING id, target_id, kind, request, lease_epoch
+    ORDER BY candidate.created_at, candidate.id LIMIT $2
+    FOR UPDATE OF candidate SKIP LOCKED
+), claimed AS (
+    UPDATE daemon_file_operation AS operation
+    SET status = 'claimed', lease_epoch = operation.lease_epoch + 1, claimed_at = now()
+    FROM candidates
+    WHERE operation.id = candidates.id
+    RETURNING operation.id, operation.target_id, operation.kind, operation.request,
+        operation.lease_epoch
+)
+SELECT claimed.id, claimed.target_id, claimed.kind, claimed.request, claimed.lease_epoch, candidates.roots
+FROM claimed JOIN candidates ON candidates.id = claimed.id
 `
 
 type ClaimFileOperationsParams struct {
@@ -37,6 +47,7 @@ type ClaimFileOperationsRow struct {
 	Kind       string      `json:"kind"`
 	Request    []byte      `json:"request"`
 	LeaseEpoch int64       `json:"lease_epoch"`
+	Roots      []byte      `json:"roots"`
 }
 
 func (q *Queries) ClaimFileOperations(ctx context.Context, arg ClaimFileOperationsParams) ([]ClaimFileOperationsRow, error) {
@@ -54,6 +65,7 @@ func (q *Queries) ClaimFileOperations(ctx context.Context, arg ClaimFileOperatio
 			&i.Kind,
 			&i.Request,
 			&i.LeaseEpoch,
+			&i.Roots,
 		); err != nil {
 			return nil, err
 		}

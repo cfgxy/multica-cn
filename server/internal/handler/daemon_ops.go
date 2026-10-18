@@ -186,13 +186,8 @@ func (h *Handler) claimFileOperations(ctx context.Context, rt db.AgentRuntime, a
 		if json.Unmarshal(row.Request, &req) != nil {
 			continue
 		}
-		var target db.DaemonFileAccessTarget
-		target, err = h.Queries.GetFileAccessTargetByRuntime(ctx, db.GetFileAccessTargetByRuntimeParams{ID: row.TargetID, RuntimeID: rt.ID})
-		if err != nil || !target.Enabled {
-			continue
-		}
 		var roots []string
-		if json.Unmarshal(target.Roots, &roots) != nil || len(roots) == 0 {
+		if json.Unmarshal(row.Roots, &roots) != nil || len(roots) == 0 {
 			continue
 		}
 		policyJSON, marshalErr := json.Marshal(policy)
