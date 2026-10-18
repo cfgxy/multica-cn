@@ -124,7 +124,7 @@ export function ChatQueuePanel({
                 <DropdownMenuContent align="end" className="w-48">
                   <DropdownMenuItem disabled={disabled || !headCanRun} onPress={() => void run(task.task_id, () => onPrioritize(task))}>
                     <Ionicons name="arrow-up-outline" size={16} color={disabled || !headCanRun ? theme.mutedForeground : theme.brand} />
-                    <Text>{t("queue.steer", "Steer")}</Text>
+                    <Text>{t("queue.steer", "Send now")}</Text>
                   </DropdownMenuItem>
                   <DropdownMenuItem disabled={disabled} onPress={() => void run(task.task_id, () => onEdit(task))}>
                     <Ionicons name="create-outline" size={16} color={theme.mutedForeground} />
