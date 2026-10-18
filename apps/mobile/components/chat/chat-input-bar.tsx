@@ -77,6 +77,8 @@ import {
 } from "@/lib/chat-composer-layout";
 import { Text } from "@/components/ui/text";
 
+const VOICE_WAVE_HEIGHTS = [8, 14, 20, 11];
+
 interface Props {
   value: string;
   onChangeText: (next: string) => void;
@@ -656,26 +658,64 @@ function RightSlot({
         {dictationReady ? (
           <Pressable
             onPress={onOpenDictation}
-            hitSlop={4}
+            hitSlop={6}
             accessibilityRole="button"
             disabled={disabled}
             accessibilityLabel={tVoice("dictation.open", "听写转文字")}
             accessibilityHint={tVoice("dictation.open_hint", "开始听写转文字")}
-            className="h-9 w-9 items-center justify-center rounded-full active:opacity-70"
+            className="h-9 w-9 items-center justify-center rounded-full"
+            style={({ pressed }) => ({
+              backgroundColor: disabled || pressed ? theme.secondary : "transparent",
+              borderColor: theme.brand,
+              borderWidth: disabled || !pressed ? 0 : 1.5,
+            })}
           >
-            <Ionicons name="document-text-outline" size={22} color={theme.mutedForeground} />
+            <Ionicons
+              name="mic-outline"
+              size={22}
+              color={disabled ? theme.mutedForeground : theme.foreground}
+            />
           </Pressable>
         ) : null}
         <Pressable
           onPress={onOpenVoice}
-          hitSlop={4}
+          hitSlop={6}
           accessibilityRole="button"
           disabled={disabled}
           accessibilityLabel={tVoice("button.start", "实时语音对话")}
           accessibilityHint={tVoice("button.start_hint", "开始实时语音对话")}
-          className="h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80"
+          className="relative h-9 w-9 items-center justify-center rounded-full"
+          style={({ pressed }) => ({
+            backgroundColor: disabled ? theme.secondary : theme.brand,
+            opacity: pressed && !disabled ? 0.88 : 1,
+          })}
         >
-          <Ionicons name="headset-outline" size={20} color={theme.primaryForeground} />
+          {({ pressed }) => (
+            <>
+              <View className="h-5 w-5 flex-row items-center justify-center gap-[3px]">
+                {VOICE_WAVE_HEIGHTS.map((height, index) => (
+                  <View
+                    key={index}
+                    style={{
+                      width: 2.6,
+                      height,
+                      borderRadius: 2,
+                      backgroundColor: disabled
+                        ? theme.mutedForeground
+                        : theme.brandForeground,
+                    }}
+                  />
+                ))}
+              </View>
+              {pressed && !disabled ? (
+                <View
+                  pointerEvents="none"
+                  className="absolute -inset-[3px] rounded-full border-[3px]"
+                  style={{ borderColor: theme.brand, opacity: 0.24 }}
+                />
+              ) : null}
+            </>
+          )}
         </Pressable>
       </View>
     );
