@@ -41,14 +41,10 @@
  * a custom renderer — mobile doesn't lose anything that exists by
  * default elsewhere.
  */
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef } from "react";
 import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
-import {
-  dedupeIssueReferences,
-  extractIssueReferences,
-} from "@multica/core/markdown";
 import type { Attachment } from "@multica/core/types";
 import { api } from "@/data/api";
 import { openAttachmentDownload } from "@/lib/attachment-open";
@@ -70,6 +66,8 @@ import { resolveLinkAction } from "./link-route";
 // Log-gate shape only — cheap over-match is harmless (the extractor does the
 // real, skip-rule-aware scan); this just avoids logging for plain content.
 const BARE_IDENTIFIER_SHAPE = /[A-Z][A-Z0-9]*-\d/;
+
+export const IssueReferenceTailVisibilityContext = createContext(true);
 
 interface Props {
   content: string;
@@ -125,13 +123,15 @@ interface Props {
    * case.
    */
   compact?: boolean;
+  renderReferenceTail?: boolean;
 }
 
-export function Markdown({
+export const Markdown = memo(function Markdown({
   content,
   attachments,
   selectable = true,
   compact = false,
+  renderReferenceTail = true,
 }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   // 评论锚点的落地方（RUYI-108）。issue 时间线挂 provider；其余渲染场景
@@ -218,14 +218,6 @@ export function Markdown({
       }),
     );
   }
-  const issueReferences = useMemo(
-    () =>
-      dedupeIssueReferences(
-        extractIssueReferences(content, { workspacePrefix }),
-      ),
-    [content, workspacePrefix],
-  );
-
   // Where each link SHAPE goes is decided by `resolveLinkAction` (pure,
   // unit-tested — `link-route.ts`); this callback only performs the effect.
   // Splitting them out became necessary with RUYI-72: the table row-detail
@@ -359,9 +351,12 @@ export function Markdown({
             );
         }
         })}
-        {issueReferences.length > 0 && (
-          <IssueReferenceList references={issueReferences} />
-        )}
+        {renderReferenceTail ? <IssueReferenceTail content={content} /> : null}
       </View>
   );
+});
+
+function IssueReferenceTail({ content }: { content: string }) {
+  const visible = useContext(IssueReferenceTailVisibilityContext);
+  return visible ? <IssueReferenceList content={content} /> : null;
 }

@@ -257,9 +257,8 @@ describe("tail aggregation block", () => {
     // the resolved row is a direct link, same as the owner/repo#N form.
     expect(footer.querySelectorAll(".issue-reference-row")).toHaveLength(1);
     expect(footer.querySelectorAll("a.issue-reference-row")).toHaveLength(1);
-    expect(footer.querySelector(".issue-reference-row")!.textContent).toContain(
-      "cfgxy/multica-cn#468",
-    );
+    expect(footer.querySelector(".issue-reference-identifier")).toHaveTextContent("#468");
+    expect(footer.querySelector("a.issue-reference-row")).toHaveAttribute("href", prFixture(468).html_url);
   });
 
   it("renders no tail block when there are no references", () => {
