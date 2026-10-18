@@ -27,6 +27,10 @@ git-push-guard 是**客户端行为防线**，与 RUYI-401 gh-pr-guard（PR 目�
 
 结论：本守卫对「顺手误推」提供强拦截，对「刻意绕过」只提供审计成本（绕过者必须主动选择非常规路径）。团队约束的最终闸门是远端仓库自身的分支保护与权限配置，本守卫不替代它们。
 
+## Codex task-scoped shim 边界（RUYI-817）
+
+Codex 常规启动会把任务目录中的 `git`/`gh` shim 放在 `PATH` 前部，并通过 `BASH_ENV` 为非交互 Bash 加载同一命令目录；shim 将受控命令转给任务物化的 RUYI-403 / RUYI-401 guard。它约束的是常规 PATH/BASH_ENV 命令解析，不是操作系统级安全边界，也不承诺抵御绝对路径调用、替换 `PATH`、直接 HTTP/API 调用或恶意 Agent 绕过。缺少任务配置、守卫文件缺失或版本漂移时，任务准备或受控命令 fail-closed。
+
 ## push.default 推导语义
 
 无 refspec 时按 `remote.pushDefault` → `branch.<当前分支>.remote` → `origin` 推导实际 remote，按 `push.default`（默认 `simple`）推导 dst；`nothing` 无操作放行；detached HEAD 拒绝。
