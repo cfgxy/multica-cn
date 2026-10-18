@@ -15,6 +15,29 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+func TestAutomaticEnvironmentRecyclingDisabledRetainsEnvironment(t *testing.T) {
+	d := newGCTestDaemon(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(protocol.TaskGCStatus{Status: "completed", LifecycleSupported: true, WorkspaceID: "ws1", CompletedAt: time.Now().Add(-48 * time.Hour)})
+	}))
+	d.cfg.EnvironmentRecycleEnabled = false
+	d.cfg.GCEnabled, d.cfg.EnvironmentArchiveEnabled, d.cfg.EnvironmentArchiveTTL = true, true, 24*time.Hour
+	root := createTaskDir(t, d.cfg.WorkspacesRoot, "ws1", "task", &execenv.GCMeta{
+		Kind: execenv.GCKindIssue, WorkspaceID: "ws1", TaskID: "task", CompletedAt: time.Now().Add(-48 * time.Hour), LocalDirectory: true,
+	})
+
+	if d.scheduleAutomaticEnvironmentRecycle(t.Context(), root) {
+		t.Fatal("disabled automatic recycling scheduled an archive")
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("disabled automatic recycling removed the environment: %v", err)
+	}
+	archives, err := d.listEnvironmentArchives(t.Context(), "ws1")
+	if err != nil || len(archives) != 0 {
+		t.Fatalf("disabled automatic recycling created archives: %+v %v", archives, err)
+	}
+}
+
 func TestAutomaticEnvironmentRecyclingFollowsCompletedRunAndParentEvents(t *testing.T) {
 	for _, kind := range []string{"issue", "done_issue", "review_issue", "recent_issue", "archived_chat", "active_chat", "completed_automation", "automation_review_issue", "running_automation", "recent_automation", "running_task", "retention", "foreign_workspace", "unknown"} {
 		t.Run(kind, func(t *testing.T) {
