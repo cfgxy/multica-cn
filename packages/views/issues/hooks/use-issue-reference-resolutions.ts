@@ -79,18 +79,28 @@ export function useIssueReferenceResolutions(
           // cheap guard so a malformed ref (or an empty workspace) never
           // spends a query.
           const parts = parsePullRequestReference(ref.ref);
-          return pullRequestLookupOptions(
-            wsId,
-            parts?.owner ?? "",
-            parts?.repo ?? "",
-            parts?.number ?? 0,
-          );
+          return {
+            ...pullRequestLookupOptions(
+              wsId,
+              parts?.owner ?? "",
+              parts?.repo ?? "",
+              parts?.number ?? 0,
+            ),
+            staleTime: 60_000,
+          };
         }
         if (ref.form === "merge_request") {
           const parts = parseMergeRequestReference(ref.ref);
-          return pullRequestLookupByNumberOptions(wsId, parts?.number ?? 0);
+          return {
+            ...pullRequestLookupByNumberOptions(wsId, parts?.number ?? 0),
+            staleTime: 60_000,
+          };
         }
-        return { ...issueDetailOptions(wsId, ref.ref), enabled: Boolean(wsId) };
+        return {
+          ...issueDetailOptions(wsId, ref.ref),
+          enabled: Boolean(wsId),
+          staleTime: 60_000,
+        };
       }),
     [references, wsId, prefix],
   );
