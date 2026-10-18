@@ -135,6 +135,45 @@ Inbox 工具通过后端现有的 MCP invocation audit 端点记录调用。部�
 执行前失败关闭。审计只记录操作者、工具、工作区、耗时和结果，不记录通知正文、
 认证头或凭据。
 
+### 只读文件工具装配
+
+`list_files`、`get_file_metadata` 和 `read_file_chunk` 还需要一个受管 MCP
+instance 身份。为同一个 instance 配置 ID 和独立凭据：
+
+- API 进程设置 `MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS` 为 JSON 对象，键为
+  instance ID，值为 instance 凭据；并继续配置
+  `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL`。
+- stdio MCP 进程使用 `--file-access-instance-id` 和
+  `--file-access-credential-file`；HTTP MCP 进程使用
+  `MULTICA_MCP_INSTANCE_ID` 和
+  `MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE`。凭据文件只放凭据内容并设为
+  `chmod 600` 或 `chmod 400`。HTTP systemd unit 默认只加载审计凭据；部署 HTTP 文件
+  工具时，须另用受限 systemd credential 加载 instance 凭据，并将凭据文件路径传给
+  `MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE`，不要把凭据值写入 unit 或日志。
+- 两侧的 instance ID 与凭据必须匹配。instance ID 只允许 ASCII 字母、数字、`-`、`_`，
+  最长 64 字符；凭据最长 512 字节。
+
+在目标 runtime 上先以 owner/admin 身份注册文件目标：
+
+```text
+PUT /api/runtimes/{runtimeId}/file-access-target
+{"id":"<target-id>","enabled":true,"roots":["/allowed/root"],"workspace_ids":["<workspace-uuid>"],"member_ids":["<member-uuid>"]}
+```
+
+`roots` 必须是绝对路径；`workspace_ids` 限定工作区，`member_ids` 非空时限定到所列成员。
+随后把 instance 绑定到目标：
+
+```text
+PUT /api/runtimes/{runtimeId}/file-access-instance-bindings/{instanceId}
+{"target_id":"<target-id>","enabled":true}
+```
+
+MCP 工具的 `host` 可省略；省略时只使用上述已启用的 instance binding。显式传入
+`host` 也只会解析到服务端已登记、并通过 workspace、runtime、member 与 path-root
+校验的目标，不会让 MCP 进程直接读取本地文件或建立 SSH 连接。数据库迁移须先按
+部署仓库的标准流程应用，再启动 API 和 MCP 进程。客户端名称与版本取自 MCP
+initialize 的 peer `clientInfo`，是可伪造的审计观测值，不参与鉴权或授权。
+
 ## 用法
 
 stdio（claude code 示例，`.mcp.json`）：

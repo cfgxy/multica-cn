@@ -193,6 +193,45 @@ describe("ApiClient edit guards", () => {
   });
 });
 
+describe("ApiClient audit events", () => {
+  it("preserves invocation filters and paired full precision cursors", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ events: [], next_cursor: null, next_cursor_id: null }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+    await client.listAuditEvents("ws/1", {
+      time_basis: "invocation_start",
+      since: "2026-10-17T10:00:00.123456789Z",
+      actor_type: "member",
+      client_name: "Codex",
+      tool_name: "read_file_chunk",
+      result_status: "success",
+      target_type: "host",
+      target_id: "host-7",
+      limit: 20,
+      cursor: "2026-10-17T09:00:00.123456789Z",
+      cursor_id: "event-1",
+    });
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe("/api/workspaces/ws%2F1/audit-events");
+    expect(url.searchParams.get("since")).toBe("2026-10-17T10:00:00.123456789Z");
+    expect(url.searchParams.get("cursor")).toBe("2026-10-17T09:00:00.123456789Z");
+    expect(url.searchParams.get("cursor_id")).toBe("event-1");
+    expect(url.searchParams.get("result_status")).toBe("success");
+  });
+
+  it("drops a malformed audit page to the empty fallback", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ events: [{ id: 7 }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })));
+    await expect(new ApiClient("https://api.example.test").listAuditEvents("ws-1"))
+      .resolves.toEqual({ events: [], next_cursor: null, next_cursor_id: null });
+  });
+});
+
 describe("ApiClient pull-request response schema", () => {
   const validPR = {
     id: "pr-1",

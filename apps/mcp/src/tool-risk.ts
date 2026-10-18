@@ -70,6 +70,9 @@ const externalRead = (effect: string): ToolRiskEntry => ({
 // registered tools and checks the serialized tools/list annotations.
 export const TOOL_RISK_MATRIX: Record<string, ToolRiskEntry> = {
   list_workspaces: read("读取当前凭据可见的工作区"),
+  list_files: read("读取已登记文件目标中的目录条目"),
+  get_file_metadata: read("读取已登记文件目标中的文件元数据"),
+  read_file_chunk: read("读取已登记文件目标中的有界文件片段"),
   list_agents: read("读取工作区 Agent 列表"),
   list_projects: read("读取项目列表"),
   get_project: read("读取项目详情"),
