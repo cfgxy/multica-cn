@@ -73,6 +73,20 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"client_usage_daily":            workspaceDeleteDetach,
 	"comment":                       workspaceDelete,
 	"comment_reaction":              workspaceDelete,
+	// Computer records belong to the deployment/human, not the workspace.
+	// Keep bindings so their owner can uninstall an OS service even after
+	// workspace deletion (RUYI-670, ported from trustbe-cn).
+	"computer":                      workspaceDeleteKeep,
+	"computer_audit":                workspaceDeleteKeep,
+	"computer_binding":              workspaceDeleteDetach,
+	"computer_credential":           workspaceDeleteKeep,
+	"computer_operation":            workspaceDeleteKeep,
+	"computer_runtime_asset":        workspaceDeleteKeep,
+	"computer_runtime_model_config": workspaceDeleteKeep,
+	"model_key_directory_entry":     workspaceDeleteKeep,
+	"model_key_source":              workspaceDeleteKeep,
+	"runtime_config_template":       workspaceDeleteKeep,
+	"user_model_key_grant":          workspaceDeleteKeep,
 	"contact_sales_inquiry":         workspaceDeleteKeep,
 	// Clause asset family (RUYI-751 / ADR 007): identity, versions, bindings,
 	// injection attribution and the daily quality rollup all die with the
@@ -242,6 +256,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"prompt_quiz_sweep_state": workspaceDeleteKeep,
 	"quick_action":            workspaceDelete,
 	"runtime_profile":         workspaceDelete,
+	// Per-runtime cost budgets (RUYI-665) carry workspace_id and no FKs
+	// (house rule); DeleteWorkspaceRuntimesAndProjects deletes them by
+	// workspace_id in the same statement that deletes the runtimes.
+	"runtime_cost_budget": workspaceDelete,
 	// Runtime instance credentials (RUYI-425 §4.5) carry only ciphertext and
 	// are keyed by (runtime_instance_id, credential_key) with no workspace
 	// column; DeleteWorkspaceRuntimesAndProjects sweeps them through the
