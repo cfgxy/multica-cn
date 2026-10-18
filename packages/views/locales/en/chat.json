@@ -36,7 +36,11 @@
   "queue": {
     "title_one": "{{count}} queued message",
     "title_other": "{{count}} queued messages",
+    "title_single": "{{number}} queued message",
+    "title_multiple": "{{number}} queued messages",
     "clear": "Clear all",
+    "clear_confirm_title": "Clear queued messages?",
+    "clear_confirm_body": "This removes queued messages only. The current task will keep running.",
     "steer": "Steer",
     "steer_unavailable": "Steer is available after the current reply starts",
     "steer_no_permission": "You no longer have permission to run this agent",

@@ -45,6 +45,7 @@ const mockSeenMessageOptionIds = [];
 const mockMarkReadMutate = jest.fn();
 const mockDeleteMutate = jest.fn();
 const mockCreateMutateAsync = jest.fn();
+const mockInvalidateQueries = jest.fn();
 const mockModelSelectHandler = { current: null as null | ((model: string | null) => Promise<void>) };
 const mockModelDisabledState = { current: false };
 const mockSetSessionQueryData = jest.fn();
@@ -110,7 +111,7 @@ jest.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({
     setQueryData: mockSetSessionQueryData,
     getQueryData: () => mockPendingTask.current,
-    invalidateQueries: jest.fn(),
+    invalidateQueries: mockInvalidateQueries,
     cancelQueries: jest.fn(),
   }),
 }));
@@ -574,6 +575,17 @@ describe("ChatDetailScreen (RUYI-496)", () => {
   it("marks an unread session read while focused", async () => {
     await render(<ChatDetailScreen />);
     expect(mockMarkReadMutate).toHaveBeenCalledWith("sa");
+  });
+
+  it("refreshes messages and pending state whenever the detail regains focus", async () => {
+    await render(<ChatDetailScreen />);
+
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["chat", "messages", "sa"],
+    });
+    expect(mockInvalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["chat", "pending-task", "sa"],
+    });
   });
 
   it("new chat honors the preselected agent param", async () => {
