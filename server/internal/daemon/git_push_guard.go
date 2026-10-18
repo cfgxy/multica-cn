@@ -93,7 +93,19 @@ func canonicalGitHubRepo(raw string) (string, error) {
 	var host, path string
 	if strings.Contains(value, "://") {
 		u, err := url.Parse(value)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil {
+		if err != nil || u.RawQuery != "" || u.Fragment != "" {
+			return "", fmt.Errorf("expected a public GitHub repository URL")
+		}
+		switch u.Scheme {
+		case "https", "http":
+			if u.User != nil {
+				return "", fmt.Errorf("expected a public GitHub repository URL")
+			}
+		case "ssh":
+			if u.User == nil || u.User.Username() != "git" {
+				return "", fmt.Errorf("expected a GitHub SSH repository URL for user git")
+			}
+		default:
 			return "", fmt.Errorf("expected a public GitHub repository URL")
 		}
 		host, path = u.Hostname(), strings.TrimPrefix(u.EscapedPath(), "/")

@@ -138,8 +138,20 @@ func githubRepoIdentity(raw string) (string, error) {
 	var host, path string
 	if strings.Contains(value, "://") {
 		u, err := url.Parse(value)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Port() != "" || u.RawQuery != "" || u.Fragment != "" {
-			return "", errors.New("expected an http(s) GitHub URL")
+		if err != nil || u.RawQuery != "" || u.Fragment != "" || u.Port() != "" {
+			return "", errors.New("expected an http(s) or SSH GitHub URL")
+		}
+		switch u.Scheme {
+		case "https", "http":
+			if u.User != nil {
+				return "", errors.New("expected an http(s) GitHub URL without credentials")
+			}
+		case "ssh":
+			if u.User == nil || u.User.Username() != "git" {
+				return "", errors.New("expected a GitHub SSH URL for user git")
+			}
+		default:
+			return "", errors.New("expected an http(s) or SSH GitHub URL")
 		}
 		host, path = u.Hostname(), strings.TrimPrefix(u.EscapedPath(), "/")
 	} else if strings.HasPrefix(value, "git@") {
