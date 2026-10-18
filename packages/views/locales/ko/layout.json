@@ -69,6 +69,9 @@
       "dismiss": "닫기"
     }
   },
+  "audit_view": {
+    "title": "MCP 감사", "description": "거부 및 실패한 요청을 포함한 MCP 호출을 기록합니다.", "since": "시작 시간", "since_placeholder": "시작 시간(RFC3339)", "tool": "도구", "actor": "호출자", "actor_id": "호출자 ID", "result": "결과", "all_results": "모든 결과", "result_success": "성공", "result_failure": "실패", "result_refused": "거부됨", "target": "대상", "target_type": "대상 유형", "target_id": "대상 ID", "all_targets": "모든 대상", "target_workspace": "워크스페이스", "target_issue": "태스크", "target_host": "호스트", "apply": "적용", "loading": "감사 이벤트를 불러오는 중...", "load_failed": "감사 이벤트를 불러올 수 없습니다.", "empty": "이 필터와 일치하는 감사 이벤트가 없습니다.", "time": "시간", "reason": "사유", "started": "시작됨"
+  },
   "mobile": {
     "agents": {
       "coming_soon": "에이전트 기능은 곧 제공될 예정입니다."

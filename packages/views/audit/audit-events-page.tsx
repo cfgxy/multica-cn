@@ -7,6 +7,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import type { ListAuditEventsParams } from "@multica/core/types/audit";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
+import { useT } from "../i18n";
 import { PageHeader } from "../layout/page-header";
 
 const RESULTS = ["", "success", "failure", "refused"] as const;
@@ -19,6 +20,7 @@ function dateTime(value: string | null): string {
 }
 
 export function AuditEventsPage() {
+  const { t } = useT("layout");
   const workspaceId = useWorkspaceId();
   const [filters, setFilters] = useState<ListAuditEventsParams>({ limit: 50 });
   const [draft, setDraft] = useState({ since: "", tool_name: "", actor_id: "", target_id: "", result_status: "", target_type: "" });
@@ -35,34 +37,52 @@ export function AuditEventsPage() {
     });
   }
 
+  function resultLabel(value: (typeof RESULTS)[number]) {
+    switch (value) {
+      case "success": return t(($) => $.audit_view.result_success);
+      case "failure": return t(($) => $.audit_view.result_failure);
+      case "refused": return t(($) => $.audit_view.result_refused);
+      default: return t(($) => $.audit_view.all_results);
+    }
+  }
+
+  function targetLabel(value: (typeof TARGETS)[number]) {
+    switch (value) {
+      case "workspace": return t(($) => $.audit_view.target_workspace);
+      case "issue": return t(($) => $.audit_view.target_issue);
+      case "host": return t(($) => $.audit_view.target_host);
+      default: return t(($) => $.audit_view.all_targets);
+    }
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <PageHeader>
         <div className="min-w-0">
-          <h1 className="truncate text-title font-semibold">MCP audit</h1>
-          <p className="truncate text-caption text-muted-foreground">Recorded MCP calls, including denied and failed requests.</p>
+          <h1 className="truncate text-title font-semibold">{t(($) => $.audit_view.title)}</h1>
+          <p className="truncate text-caption text-muted-foreground">{t(($) => $.audit_view.description)}</p>
         </div>
       </PageHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 sm:p-6">
         <div className="grid gap-2 md:grid-cols-6">
-          <Input aria-label="Since" placeholder="Since (RFC3339)" value={draft.since} onChange={(event) => setDraft((current) => ({ ...current, since: event.target.value }))} />
-          <Input aria-label="Tool" placeholder="Tool" value={draft.tool_name} onChange={(event) => setDraft((current) => ({ ...current, tool_name: event.target.value }))} />
-          <Input aria-label="Actor ID" placeholder="Actor ID" value={draft.actor_id} onChange={(event) => setDraft((current) => ({ ...current, actor_id: event.target.value }))} />
-          <select aria-label="Result" className="h-9 border bg-background px-2 text-body" value={draft.result_status} onChange={(event) => setDraft((current) => ({ ...current, result_status: event.target.value }))}>
-            {RESULTS.map((value) => <option key={value} value={value}>{value || "All results"}</option>)}
+          <Input aria-label={t(($) => $.audit_view.since)} placeholder={t(($) => $.audit_view.since_placeholder)} value={draft.since} onChange={(event) => setDraft((current) => ({ ...current, since: event.target.value }))} />
+          <Input aria-label={t(($) => $.audit_view.tool)} placeholder={t(($) => $.audit_view.tool)} value={draft.tool_name} onChange={(event) => setDraft((current) => ({ ...current, tool_name: event.target.value }))} />
+          <Input aria-label={t(($) => $.audit_view.actor_id)} placeholder={t(($) => $.audit_view.actor_id)} value={draft.actor_id} onChange={(event) => setDraft((current) => ({ ...current, actor_id: event.target.value }))} />
+          <select aria-label={t(($) => $.audit_view.result)} className="h-9 border bg-background px-2 text-body" value={draft.result_status} onChange={(event) => setDraft((current) => ({ ...current, result_status: event.target.value }))}>
+            {RESULTS.map((value) => <option key={value} value={value}>{resultLabel(value)}</option>)}
           </select>
-          <select aria-label="Target type" className="h-9 border bg-background px-2 text-body" value={draft.target_type} onChange={(event) => setDraft((current) => ({ ...current, target_type: event.target.value }))}>
-            {TARGETS.map((value) => <option key={value} value={value}>{value || "All targets"}</option>)}
+          <select aria-label={t(($) => $.audit_view.target_type)} className="h-9 border bg-background px-2 text-body" value={draft.target_type} onChange={(event) => setDraft((current) => ({ ...current, target_type: event.target.value }))}>
+            {TARGETS.map((value) => <option key={value} value={value}>{targetLabel(value)}</option>)}
           </select>
-          <div className="flex gap-2"><Input aria-label="Target ID" placeholder="Target ID" value={draft.target_id} onChange={(event) => setDraft((current) => ({ ...current, target_id: event.target.value }))} /><Button type="button" onClick={applyFilters}>Apply</Button></div>
+          <div className="flex gap-2"><Input aria-label={t(($) => $.audit_view.target_id)} placeholder={t(($) => $.audit_view.target_id)} value={draft.target_id} onChange={(event) => setDraft((current) => ({ ...current, target_id: event.target.value }))} /><Button type="button" onClick={applyFilters}>{t(($) => $.audit_view.apply)}</Button></div>
         </div>
-        {query.isLoading ? <p className="text-body text-muted-foreground">Loading audit events...</p> : null}
-        {query.isError ? <p role="alert" className="text-body text-destructive">Unable to load audit events.</p> : null}
-        {query.data?.events.length === 0 ? <p className="text-body text-muted-foreground">No audit events match these filters.</p> : null}
+        {query.isLoading ? <p className="text-body text-muted-foreground">{t(($) => $.audit_view.loading)}</p> : null}
+        {query.isError ? <p role="alert" className="text-body text-destructive">{t(($) => $.audit_view.load_failed)}</p> : null}
+        {query.data?.events.length === 0 ? <p className="text-body text-muted-foreground">{t(($) => $.audit_view.empty)}</p> : null}
         <div className="overflow-x-auto border">
           <table className="w-full min-w-[860px] text-left text-caption">
-            <thead className="bg-muted/40 text-muted-foreground"><tr><th className="p-3">Time</th><th className="p-3">Tool</th><th className="p-3">Result</th><th className="p-3">Actor</th><th className="p-3">Target</th><th className="p-3">Reason</th></tr></thead>
-            <tbody>{query.data?.events.map((event) => <tr key={event.id} className="border-t align-top"><td className="p-3 whitespace-nowrap">{dateTime(event.occurred_at)}</td><td className="p-3 font-medium">{String(event.details.tool_name ?? event.event_type)}</td><td className="p-3">{String(event.details.result_status ?? event.reason ?? "started")}</td><td className="p-3 break-all">{event.actor_id ?? event.actor_type}</td><td className="p-3 break-all">{String(event.details.target_id ?? event.issue_id ?? "-")}</td><td className="p-3">{event.reason ?? String(event.details.error_code ?? "-")}</td></tr>)}</tbody>
+            <thead className="bg-muted/40 text-muted-foreground"><tr><th className="p-3">{t(($) => $.audit_view.time)}</th><th className="p-3">{t(($) => $.audit_view.tool)}</th><th className="p-3">{t(($) => $.audit_view.result)}</th><th className="p-3">{t(($) => $.audit_view.actor)}</th><th className="p-3">{t(($) => $.audit_view.target)}</th><th className="p-3">{t(($) => $.audit_view.reason)}</th></tr></thead>
+            <tbody>{query.data?.events.map((event) => <tr key={event.id} className="border-t align-top"><td className="p-3 whitespace-nowrap">{dateTime(event.occurred_at)}</td><td className="p-3 font-medium">{String(event.details.tool_name ?? event.event_type)}</td><td className="p-3">{String(event.details.result_status ?? event.reason ?? t(($) => $.audit_view.started))}</td><td className="p-3 break-all">{event.actor_id ?? event.actor_type}</td><td className="p-3 break-all">{String(event.details.target_id ?? event.issue_id ?? "-")}</td><td className="p-3">{event.reason ?? String(event.details.error_code ?? "-")}</td></tr>)}</tbody>
           </table>
         </div>
       </div>
