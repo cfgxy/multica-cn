@@ -506,6 +506,7 @@ export default function WorkspaceLayout() {
           name="more/projects"
           options={{ title: i18n.t("layout:nav.projects", "Projects"), headerBackTitle: "Back" }}
         />
+        <Stack.Screen name="more/audit" options={{ title: i18n.t("layout:nav.audit", "MCP audit"), headerBackTitle: "Back" }} />
         {/* Tasks-tab sort / actor-picker sheets (formSheet presentation). */}
         <Stack.Screen name="tasks-sort" options={SHEET_OPTIONS} />
         <Stack.Screen
@@ -585,6 +586,12 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="more/squads"
           options={{ title: i18n.t("layout:nav.squads", "Squads"), headerBackTitle: "Back" }}
+        />
+        {/* RUYI-638 阶段3: workspace usage 统计屏（web /usage 语义，
+            More 下拉入口进入；数据层镜像 core dashboard 查询语义）。 */}
+        <Stack.Screen
+          name="more/stats"
+          options={{ title: i18n.t("layout:nav.usage", "Analytics"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/squads/[id]"

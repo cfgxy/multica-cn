@@ -138,7 +138,7 @@ func (q *Queries) GetGitHubInstallationByID(ctx context.Context, id pgtype.UUID)
 }
 
 const getGitHubPullRequest = `-- name: GetGitHubPullRequest :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, target_branch, review_decision FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
 `
 
@@ -186,12 +186,14 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 		&i.ChecksRollupState,
 		&i.SnapshotHeadSha,
 		&i.SnapshotFetchedAt,
+		&i.TargetBranch,
+		&i.ReviewDecision,
 	)
 	return i, err
 }
 
 const getGitHubPullRequestsByNumber = `-- name: GetGitHubPullRequestsByNumber :many
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, target_branch, review_decision FROM github_pull_request
 WHERE workspace_id = $1 AND pr_number = $2
 `
 
@@ -240,6 +242,8 @@ func (q *Queries) GetGitHubPullRequestsByNumber(ctx context.Context, arg GetGitH
 			&i.ChecksRollupState,
 			&i.SnapshotHeadSha,
 			&i.SnapshotFetchedAt,
+			&i.TargetBranch,
+			&i.ReviewDecision,
 		); err != nil {
 			return nil, err
 		}
@@ -534,11 +538,11 @@ checks AS (
 )
 SELECT
     pr.id, pr.workspace_id, pr.installation_id, pr.repo_owner, pr.repo_name,
-    pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login,
+    pr.pr_number, pr.title, pr.state, pr.html_url, pr.target_branch, pr.branch, pr.author_login,
     pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at,
     pr.pr_updated_at, pr.head_sha, pr.mergeable_state,
     pr.additions, pr.deletions, pr.changed_files,
-    pr.api_mergeable, pr.api_merge_state_status, pr.checks_rollup_state,
+    pr.api_mergeable, pr.api_merge_state_status, pr.review_decision, pr.checks_rollup_state,
     pr.snapshot_head_sha, pr.snapshot_fetched_at,
     pr.created_at, pr.updated_at,
     COALESCE(c.total, 0)::bigint   AS checks_total,
@@ -563,6 +567,7 @@ type ListPullRequestsByIssueRow struct {
 	Title               string             `json:"title"`
 	State               string             `json:"state"`
 	HtmlUrl             string             `json:"html_url"`
+	TargetBranch        pgtype.Text        `json:"target_branch"`
 	Branch              pgtype.Text        `json:"branch"`
 	AuthorLogin         pgtype.Text        `json:"author_login"`
 	AuthorAvatarUrl     pgtype.Text        `json:"author_avatar_url"`
@@ -577,6 +582,7 @@ type ListPullRequestsByIssueRow struct {
 	ChangedFiles        int32              `json:"changed_files"`
 	ApiMergeable        pgtype.Text        `json:"api_mergeable"`
 	ApiMergeStateStatus pgtype.Text        `json:"api_merge_state_status"`
+	ReviewDecision      pgtype.Text        `json:"review_decision"`
 	ChecksRollupState   pgtype.Text        `json:"checks_rollup_state"`
 	SnapshotHeadSha     string             `json:"snapshot_head_sha"`
 	SnapshotFetchedAt   pgtype.Timestamptz `json:"snapshot_fetched_at"`
@@ -618,6 +624,7 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 			&i.Title,
 			&i.State,
 			&i.HtmlUrl,
+			&i.TargetBranch,
 			&i.Branch,
 			&i.AuthorLogin,
 			&i.AuthorAvatarUrl,
@@ -632,6 +639,7 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 			&i.ChangedFiles,
 			&i.ApiMergeable,
 			&i.ApiMergeStateStatus,
+			&i.ReviewDecision,
 			&i.ChecksRollupState,
 			&i.SnapshotHeadSha,
 			&i.SnapshotFetchedAt,
@@ -653,9 +661,34 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 	return items, nil
 }
 
+const listSystemIssueIDsForPullRequest = `-- name: ListSystemIssueIDsForPullRequest :many
+SELECT issue_id FROM issue_pull_request
+WHERE pull_request_id = $1 AND linked_by_type = 'system'
+`
+
+func (q *Queries) ListSystemIssueIDsForPullRequest(ctx context.Context, pullRequestID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listSystemIssueIDsForPullRequest, pullRequestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var issue_id pgtype.UUID
+		if err := rows.Scan(&issue_id); err != nil {
+			return nil, err
+		}
+		items = append(items, issue_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const unlinkIssueFromPullRequest = `-- name: UnlinkIssueFromPullRequest :exec
 DELETE FROM issue_pull_request
-WHERE issue_id = $1 AND pull_request_id = $2
+WHERE issue_id = $1 AND pull_request_id = $2 AND linked_by_type = 'system'
 `
 
 type UnlinkIssueFromPullRequestParams struct {
@@ -666,6 +699,42 @@ type UnlinkIssueFromPullRequestParams struct {
 func (q *Queries) UnlinkIssueFromPullRequest(ctx context.Context, arg UnlinkIssueFromPullRequestParams) error {
 	_, err := q.db.Exec(ctx, unlinkIssueFromPullRequest, arg.IssueID, arg.PullRequestID)
 	return err
+}
+
+const unlinkIssuePullRequest = `-- name: UnlinkIssuePullRequest :one
+WITH github_pr AS (
+    SELECT gpr.id FROM github_pull_request gpr
+    WHERE gpr.id = $1 AND gpr.workspace_id = $2
+), vcs_pr AS (
+    SELECT vpr.id FROM vcs_pull_request vpr
+    WHERE vpr.id = $1 AND vpr.workspace_id = $2
+), deleted_github AS (
+    DELETE FROM issue_pull_request AS ipr
+    WHERE ipr.issue_id = $3
+      AND ipr.pull_request_id IN (SELECT id FROM github_pr)
+    RETURNING 1
+), deleted_vcs AS (
+    DELETE FROM issue_vcs_pull_request AS ipr
+    WHERE ipr.issue_id = $3
+      AND ipr.pull_request_id IN (SELECT id FROM vcs_pr)
+    RETURNING 1
+)
+SELECT ((SELECT COUNT(*) FROM deleted_github) + (SELECT COUNT(*) FROM deleted_vcs))::bigint AS deleted_count
+`
+
+type UnlinkIssuePullRequestParams struct {
+	PullRequestID pgtype.UUID `json:"pull_request_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+}
+
+// A user may unlink either provider's PR only from an issue in the same
+// workspace. The mirrored PR rows remain intact for other linked issues.
+func (q *Queries) UnlinkIssuePullRequest(ctx context.Context, arg UnlinkIssuePullRequestParams) (int64, error) {
+	row := q.db.QueryRow(ctx, unlinkIssuePullRequest, arg.PullRequestID, arg.WorkspaceID, arg.IssueID)
+	var deleted_count int64
+	err := row.Scan(&deleted_count)
+	return deleted_count, err
 }
 
 const updateGitHubInstallationAccountByInstallationID = `-- name: UpdateGitHubInstallationAccountByInstallationID :many
@@ -727,15 +796,15 @@ const upsertGitHubPullRequest = `-- name: UpsertGitHubPullRequest :one
 
 INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
-    title, state, html_url, branch, author_login, author_avatar_url,
+    title, state, html_url, target_branch, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state,
     additions, deletions, changed_files
 ) VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, $8, $15, $16, $17,
-    $18, $19, $9, $10,
-    $11, $20,
+    $6, $7, $8, $15, $16, $17, $18,
+    $19, $20, $9, $10,
+    $11, $21,
     $12, $13, $14
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
@@ -743,6 +812,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     title = EXCLUDED.title,
     state = EXCLUDED.state,
     html_url = EXCLUDED.html_url,
+    target_branch = COALESCE(EXCLUDED.target_branch, github_pull_request.target_branch),
     branch = EXCLUDED.branch,
     author_login = EXCLUDED.author_login,
     author_avatar_url = EXCLUDED.author_avatar_url,
@@ -751,7 +821,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     pr_updated_at = EXCLUDED.pr_updated_at,
     head_sha = EXCLUDED.head_sha,
     mergeable_state = CASE
-        WHEN COALESCE($21::boolean, FALSE) THEN NULL
+        WHEN COALESCE($22::boolean, FALSE) THEN NULL
         WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
         ELSE github_pull_request.mergeable_state
     END,
@@ -759,7 +829,7 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     deletions     = EXCLUDED.deletions,
     changed_files = EXCLUDED.changed_files,
     updated_at = now()
-RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at
+RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, target_branch, review_decision
 `
 
 type UpsertGitHubPullRequestParams struct {
@@ -777,6 +847,7 @@ type UpsertGitHubPullRequestParams struct {
 	Additions           int32              `json:"additions"`
 	Deletions           int32              `json:"deletions"`
 	ChangedFiles        int32              `json:"changed_files"`
+	TargetBranch        pgtype.Text        `json:"target_branch"`
 	Branch              pgtype.Text        `json:"branch"`
 	AuthorLogin         pgtype.Text        `json:"author_login"`
 	AuthorAvatarUrl     pgtype.Text        `json:"author_avatar_url"`
@@ -815,6 +886,7 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		arg.Additions,
 		arg.Deletions,
 		arg.ChangedFiles,
+		arg.TargetBranch,
 		arg.Branch,
 		arg.AuthorLogin,
 		arg.AuthorAvatarUrl,
@@ -853,6 +925,8 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		&i.ChecksRollupState,
 		&i.SnapshotHeadSha,
 		&i.SnapshotFetchedAt,
+		&i.TargetBranch,
+		&i.ReviewDecision,
 	)
 	return i, err
 }

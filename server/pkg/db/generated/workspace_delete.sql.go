@@ -373,6 +373,9 @@ deleted_issue_reactions AS (
 deleted_activity AS (
     DELETE FROM activity_log WHERE workspace_id = $1
 ),
+deleted_mcp_invocation_audit_outbox AS (
+    DELETE FROM mcp_invocation_audit_outbox WHERE workspace_id = $1
+),
 deleted_inbox AS (
     DELETE FROM inbox_item WHERE workspace_id = $1
 ),

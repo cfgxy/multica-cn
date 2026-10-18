@@ -36,14 +36,14 @@ import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { router, useLocalSearchParams } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Agent, ChatMessage, ChatPendingTask } from "@multica/core/types";
+import type { Agent, Attachment, CancelTaskResponse, ChatMessage, ChatPendingTask, ChatSession } from "@multica/core/types";
 import {
   enqueuePendingChatTask,
   hideQueuedChatMessages,
   removePendingChatTask,
 } from "@multica/core/chat/pending";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
-import { api } from "@/data/api";
+import { api, ApiError } from "@/data/api";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { agentListOptions } from "@/data/queries/agents";
@@ -61,6 +61,7 @@ import {
   useMarkChatSessionRead,
   useSetChatSessionArchived,
   useSetChatSessionPinned,
+  useUpdateChatSession,
 } from "@/data/mutations/chat";
 import {
   DRAFT_NEW_SESSION,
@@ -82,6 +83,7 @@ import { ChatTitleButton } from "@/components/chat/chat-title-button";
 import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
+import { ChatQueuePanel } from "@/components/chat/chat-queue-panel";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
 import { VoiceSessionOverlay } from "@/components/voice/voice-session-overlay";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
@@ -89,11 +91,11 @@ import { OfflineBanner } from "@/components/chat/offline-banner";
 import { RuntimeRequiredBanner } from "@/components/chat/runtime-required-banner";
 import { useChatSelectStore } from "@/data/chat-select-store";
 import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
+import { useVoiceAvailability } from "@/data/voice-providers";
 import { useT } from "@/lib/use-t";
-import { useColorScheme } from "@/lib/use-color-scheme";
-import { THEME } from "@/lib/theme";
 import { IconButton } from "@/components/ui/icon-button";
 import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
+import { resolveChatQueuePanelMaxHeight } from "@/lib/chat-composer-layout";
 
 /** Literal route param for a blank new chat (session ids are UUIDs). */
 export const NEW_CHAT_SESSION_ID = "new";
@@ -101,8 +103,6 @@ export const NEW_CHAT_SESSION_ID = "new";
 export default function ChatDetailScreen() {
   const qc = useQueryClient();
   const { t } = useT("chat");
-  const { colorScheme } = useColorScheme();
-  const theme = THEME[colorScheme];
   const params = useLocalSearchParams<{
     sessionId: string;
     agentId?: string;
@@ -118,10 +118,18 @@ export default function ChatDetailScreen() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
     params.agentId ?? null,
   );
+  const [newSessionProjectId, setNewSessionProjectId] = useState<string | null>(null);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+  const [savingSessionModel, setSavingSessionModel] = useState(false);
+  const savingSessionModelRef = useRef(false);
+  const stopInFlightRef = useRef<string | null>(null);
+  const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   // RUYI-449: 非空时经 VoiceSessionOverlay 对当前 agent 发起语音会话
   // （425 链路）；关闭即结束，不影响文本发送。
   const [voiceOpen, setVoiceOpen] = useState(false);
+  const [chatContentHeight, setChatContentHeight] = useState(0);
+  const queuePanelMaxHeight = resolveChatQueuePanelMaxHeight(chatContentHeight);
+  const [restoredAttachments, setRestoredAttachments] = useState<Attachment[]>([]);
 
   // ── Server state ───────────────────────────────────────────────────────
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
@@ -170,6 +178,9 @@ export default function ChatDetailScreen() {
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
     [sessions, activeSessionId],
   );
+  const projectId = activeSessionId
+    ? activeSession?.project_id ?? null
+    : newSessionProjectId;
 
   // Active agent: explicit selection wins; otherwise inherit from the
   // active session; otherwise pick the first available agent.
@@ -204,6 +215,18 @@ export default function ChatDetailScreen() {
   const isArchived = activeSession?.status === "archived";
   const runtimeBound =
     currentAgent !== null && isAgentRuntimeBound(currentAgent);
+  const canManageQueue = Boolean(
+    activeSession &&
+      activeSession.status === "active" &&
+      !accessRevoked &&
+      !currentAgent?.archived_at &&
+      runtimeBound,
+  );
+  // RUYI-694 D2 免绑定解析链：agent 覆盖 → workspace default → 供应商
+  // 池。resolving（数据未决）与判负都收敛为隐藏 🔵🎤；available 含
+  // credential unreachable（unreachable 保持可发起——回退门禁只有
+  // missing/invalid）。
+  const voiceGate = useVoiceAvailability(currentAgent, wsSlug);
   const sending = !!pendingTask?.task_id;
 
   // ── Drafts ─────────────────────────────────────────────────────────────
@@ -220,9 +243,17 @@ export default function ChatDetailScreen() {
     router.back();
   });
 
-  // Exit text-selection mode whenever this screen loses focus.
+  // A list-level WS subscription can refresh the preview while this screen is
+  // unmounted. The messages cache is infinitely fresh, so explicitly refetch
+  // both session-owned queries whenever the detail becomes visible again.
   useFocusEffect(
-    useCallback(() => () => useChatSelectStore.getState().clear(), []),
+    useCallback(() => {
+      if (activeSessionId) {
+        void qc.invalidateQueries({ queryKey: chatKeys.messages(activeSessionId) });
+        void qc.invalidateQueries({ queryKey: chatKeys.pendingTask(activeSessionId) });
+      }
+      return () => useChatSelectStore.getState().clear();
+    }, [activeSessionId, qc]),
   );
 
   // ── Auto markRead while viewing a session with unread state ──────────
@@ -237,6 +268,7 @@ export default function ChatDetailScreen() {
 
   // ── Mutations ──────────────────────────────────────────────────────────
   const createSession = useCreateChatSession();
+  const updateSession = useUpdateChatSession();
   const deleteSession = useDeleteChatSession();
   const setSessionPinned = useSetChatSessionPinned();
   const setSessionArchived = useSetChatSessionArchived();
@@ -255,6 +287,7 @@ export default function ChatDetailScreen() {
           const session = await createSession.mutateAsync({
             agent_id: currentAgent.id,
             title: titleSeed.slice(0, 50),
+            project_id: newSessionProjectId,
           });
           return session.id;
         } finally {
@@ -264,8 +297,20 @@ export default function ChatDetailScreen() {
       sessionPromiseRef.current = promise;
       return promise;
     },
-    [activeSessionId, currentAgent, createSession],
+    [activeSessionId, currentAgent, createSession, newSessionProjectId],
   );
+
+  const handleProjectChange = useCallback(async (nextProjectId: string | null) => {
+    if (!activeSessionId) {
+      setNewSessionProjectId(nextProjectId);
+      return;
+    }
+    try {
+      await updateSession.mutateAsync({ sessionId: activeSessionId, projectId: nextProjectId });
+    } catch {
+      Alert.alert(t("input.project_context_failed", "Could not update project context"));
+    }
+  }, [activeSessionId, t, updateSession]);
 
   const handleSend = useCallback(
     async (
@@ -412,22 +457,130 @@ export default function ChatDetailScreen() {
     ],
   );
 
+  const restoreCancelledMessage = useCallback((restored: CancelTaskResponse["cancelled_chat_message"]) => {
+    if (!restored?.restore_to_input || restored.chat_session_id !== activeSessionId) return;
+    setDraft(restored.chat_session_id, restored.content);
+    setRestoredAttachments(restored.attachments ?? []);
+  }, [activeSessionId, setDraft]);
+
   // ── Cancel in-flight ───────────────────────────────────────────────────
-  const handleStop = useCallback(() => {
-    if (!pendingTask?.task_id || !activeSessionId) return;
-    if (pendingTask.status === "queued") return;
-    const taskId = pendingTask.task_id;
+  const handleStop = useCallback(async () => {
+    const taskId = pendingTask?.task_id;
     const sessionId = activeSessionId;
-    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), (old) =>
-      removePendingChatTask(old, taskId),
-    );
-    void api
-      .cancelTaskById(taskId)
-      .catch(() => {
-        // Silent — task may have already terminated server-side.
-      })
-      .finally(() => invalidatePendingTask(qc, sessionId));
-  }, [pendingTask?.task_id, pendingTask?.status, activeSessionId, qc]);
+    if (!taskId || !sessionId || pendingTask?.status === "queued") return;
+    if (stopInFlightRef.current) return;
+
+    stopInFlightRef.current = taskId;
+    setStoppingTaskId(taskId);
+    const pendingKey = chatKeys.pendingTask(sessionId);
+    try {
+      await qc.cancelQueries({ queryKey: pendingKey });
+      const snapshot = qc.getQueryData<ChatPendingTask>(pendingKey) ?? pendingTask;
+      if (!snapshot || snapshot.task_id !== taskId || snapshot.status === "queued") return;
+
+      qc.setQueryData<ChatPendingTask>(pendingKey, (old) =>
+        removePendingChatTask(old, taskId),
+      );
+      try {
+        const result = await api.cancelTaskById(taskId);
+        restoreCancelledMessage(result.cancelled_chat_message);
+      } catch {
+        qc.setQueryData(pendingKey, snapshot);
+        Alert.alert(
+          t("mobile.composer.stop_failed_title", "Could not stop agent"),
+          t("mobile.composer.stop_failed", "Try again. The current message was kept."),
+        );
+      } finally {
+        invalidatePendingTask(qc, sessionId);
+        qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+      }
+    } finally {
+      stopInFlightRef.current = null;
+      setStoppingTaskId(null);
+    }
+  }, [pendingTask, activeSessionId, qc, restoreCancelledMessage, t]);
+
+  const handleQueuedAction = useCallback(async (
+    task: NonNullable<ChatPendingTask["queued_tasks"]>[number],
+    action: "edit" | "remove",
+  ) => {
+    if (!activeSessionId || !canManageQueue) return;
+    try {
+      const result = await api.cancelTaskById(task.task_id, { sessionId: activeSessionId, queuedAction: action });
+      if (action === "edit") restoreCancelledMessage(result.cancelled_chat_message);
+    } catch (error) {
+      Alert.alert(
+        t("mobile.queue.action_failed_title", "Queue changed"),
+        error instanceof ApiError && error.status === 409
+          ? t("mobile.queue.stale", "This queued message changed. The queue has been refreshed.")
+          : t("mobile.queue.action_failed", "Could not update the queue. Try again."),
+      );
+    } finally {
+      invalidatePendingTask(qc, activeSessionId);
+      qc.invalidateQueries({ queryKey: chatKeys.messages(activeSessionId) });
+    }
+  }, [activeSessionId, canManageQueue, restoreCancelledMessage, qc, t]);
+
+  const handlePrioritizeQueuedTask = useCallback(async (
+    task: NonNullable<ChatPendingTask["queued_tasks"]>[number],
+  ) => {
+    if (!activeSessionId || !canManageQueue) return;
+    try {
+      const result = await api.prioritizeQueuedChatTask(activeSessionId, task.task_id);
+      if (result.active_task_id) {
+        const stopped = await api.cancelTaskById(result.active_task_id);
+        restoreCancelledMessage(stopped.cancelled_chat_message);
+      }
+    } catch (error) {
+      Alert.alert(
+        t("mobile.queue.action_failed_title", "Queue changed"),
+        error instanceof ApiError && error.status === 409
+          ? t("mobile.queue.stale", "This queued message changed. The queue has been refreshed.")
+          : t("mobile.queue.action_failed", "Could not update the queue. Try again."),
+      );
+    } finally {
+      invalidatePendingTask(qc, activeSessionId);
+    }
+  }, [activeSessionId, canManageQueue, restoreCancelledMessage, qc, t]);
+
+  const handleClearQueue = useCallback(async () => {
+    if (!activeSessionId || !canManageQueue) return;
+    try {
+      await api.clearQueuedChatTasks(activeSessionId);
+    } catch {
+      Alert.alert(t("mobile.queue.action_failed_title", "Queue changed"), t("mobile.queue.action_failed", "Could not update the queue. Try again."));
+    } finally {
+      invalidatePendingTask(qc, activeSessionId);
+      qc.invalidateQueries({ queryKey: chatKeys.messages(activeSessionId) });
+    }
+  }, [activeSessionId, canManageQueue, qc, t]);
+
+  const handleSessionModelSelect = useCallback(async (model: string | null) => {
+    if (!activeSessionId || !canManageQueue || savingSessionModelRef.current) return;
+    savingSessionModelRef.current = true;
+    setSavingSessionModel(true);
+    try {
+      const confirmed = await api.setChatSessionModel(activeSessionId, model);
+      if (confirmed.id === activeSessionId && "model_override" in confirmed) {
+        qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) =>
+          old?.map((session) => session.id === activeSessionId
+            ? { ...session, model_override: confirmed.model_override }
+            : session),
+        );
+      }
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+    } catch (error) {
+      Alert.alert(
+        t("mobile.model.save_failed_title", "Model not changed"),
+        error instanceof ApiError && error.status === 409
+          ? t("mobile.model.unavailable", "Model or session is no longer available")
+          : t("mobile.model.save_failed", "Could not save model selection"),
+      );
+    } finally {
+      savingSessionModelRef.current = false;
+      setSavingSessionModel(false);
+    }
+  }, [activeSessionId, canManageQueue, qc, wsId, t]);
 
   // ── New-chat agent selection (list "+" multi-agent flow) ──────────────
   const handleNewChat = useCallback(() => {
@@ -611,55 +764,71 @@ export default function ChatDetailScreen() {
       />
       {availability === "none" ? <NoAgentBanner /> : null}
       <KeyboardAvoidingView behavior="padding" className="flex-1">
-        <ChatMessageList
-          messages={visibleMessages}
-          loading={messagesLoading}
-          hasSessions={sessions.length > 0}
-          agent={currentAgent}
-          onPickPrompt={(text) => setDraft(draftKey, text)}
-          onQuickAction={(action) =>
-            handleSend(action.prompt, [], { clearDraft: false })
+        <View
+          className="flex-1"
+          style={{ minHeight: 0, overflow: "hidden" }}
+          onLayout={(event) =>
+            setChatContentHeight(event.nativeEvent.layout.height)
           }
-          quickActionsDisabled={sending || disabled}
-          pendingTask={pendingTask}
-          liveTaskMessages={liveTaskMessages}
-          availability={presenceAvailability}
-        />
-        {runtimeBound ? (
-          <OfflineBanner
-            agentName={currentAgent?.name}
+        >
+          <ChatMessageList
+            messages={visibleMessages}
+            loading={messagesLoading}
+            hasSessions={sessions.length > 0}
+            agent={currentAgent}
+            onPickPrompt={(text) => setDraft(draftKey, text)}
+            onQuickAction={(action) =>
+              handleSend(action.prompt, [], { clearDraft: false })
+            }
+            quickActionsDisabled={sending || disabled}
+            pendingTask={pendingTask}
+            liveTaskMessages={liveTaskMessages}
             availability={presenceAvailability}
           />
-        ) : currentAgent ? (
-          <RuntimeRequiredBanner agentName={currentAgent.name} />
-        ) : null}
+          {runtimeBound ? (
+            <OfflineBanner
+              agentName={currentAgent?.name}
+              availability={presenceAvailability}
+            />
+          ) : currentAgent ? (
+            <RuntimeRequiredBanner agentName={currentAgent.name} />
+          ) : null}
+          <ChatQueuePanel
+            pendingTask={pendingTask}
+            maxHeight={queuePanelMaxHeight}
+            canManage={canManageQueue}
+            onEdit={(task) => handleQueuedAction(task, "edit")}
+            onRemove={(task) => handleQueuedAction(task, "remove")}
+            onPrioritize={handlePrioritizeQueuedTask}
+            onClear={handleClearQueue}
+          />
+        </View>
         <ChatComposer
           value={draft}
           onChangeText={(next) => setDraft(draftKey, next)}
           onSend={handleSend}
           onStop={handleStop}
           sending={sending}
+          stopPending={stoppingTaskId !== null}
           allowStop={pendingTask?.status !== "queued"}
+          hasQueuedMessages={(pendingTask?.queued_tasks?.length ?? 0) > 0}
+          allowSubmitWhileRunning={pendingTask?.supports_queue === true}
           disabled={disabled}
           disabledReason={disabledReason}
           incomingSharedFiles={incomingSharedFiles}
           onIncomingSharedFilesConsumed={() => setIncomingSharedFiles([])}
-          renderVoiceWhenEmpty={
-            runtimeBound && currentAgent !== null && !voiceOpen
-              ? () => (
-                  <IconButton
-                    name="mic-outline"
-                    iconSize={18}
-                    color={theme.primaryForeground}
-                    variant="default"
-                    onPress={() => setVoiceOpen(true)}
-                    hitSlop={12}
-                    className="h-8 w-8 rounded-full"
-                    accessibilityLabel={t("voice:button.start", "Start voice conversation")}
-                  />
-                )
-              : undefined
-          }
+          voiceGate={runtimeBound && currentAgent !== null ? voiceGate : null}
+          onOpenVoice={() => setVoiceOpen(true)}
+          skillPickerPath={{ pathname: "/[workspace]/skill-picker", params: { workspace: wsSlug ?? "" } }}
+          projectId={projectId}
+          onProjectChange={handleProjectChange}
+          modelRuntimeId={activeSessionId && currentAgent ? currentAgent.runtime_id ?? null : null}
+          modelOverride={activeSession?.model_override ?? null}
+          agentModel={currentAgent?.model ?? null}
+          modelDisabled={isArchived || accessRevoked || !runtimeBound || savingSessionModel}
+          onModelSelect={handleSessionModelSelect}
+          restoredAttachments={restoredAttachments}
+          onRestoredAttachmentsConsumed={() => setRestoredAttachments([])}
         />
       </KeyboardAvoidingView>
 
@@ -675,6 +844,9 @@ export default function ChatDetailScreen() {
         agentId={voiceOpen && currentAgent !== null ? currentAgent.id : null}
         workspaceSlug={wsSlug ?? ""}
         onClose={() => setVoiceOpen(false)}
+        onUserTurn={(text) =>
+          setDraft(draftKey, draft ? `${draft}\n${text}` : text)
+        }
       />
     </View>
   );

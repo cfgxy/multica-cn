@@ -18,9 +18,11 @@ import type {
   Agent,
   AgentEnvResponse,
   AgentTask,
+  CancelTaskResponse,
   Attachment,
   ChatMessage,
   ChatPendingTask,
+  PrioritizeQueuedChatTaskResponse,
   ChatSession,
   Comment,
   CreateAgentRequest,
@@ -30,6 +32,12 @@ import type {
   CreateProjectRequest,
   CreateSquadRequest,
   CreateProjectResourceRequest,
+  DashboardUsageDaily,
+  DashboardUsageByAgent,
+  DashboardAgentRunTime,
+  DashboardRunTimeDaily,
+  DashboardFailureDaily,
+  DashboardFailureByAgent,
   ExecutionProfile,
   ExecutionProfileActivationResponse,
   ExecutionProfileEntry,
@@ -96,7 +104,13 @@ import type {
   WorkspaceSubscriptionSummary,
   DecisionRequest,
   DecisionRequestsList,
+  AuditEventsPage,
+  ListAuditEventsParams,
 } from "@multica/core/types";
+import {
+  EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
+  PrioritizeQueuedChatTaskResponseSchema,
+} from "@multica/core/api/schemas";
 import {
   parseTimelineTruncatedKinds,
   type TimelineQueryData,
@@ -105,6 +119,7 @@ import {
   AgentEnvResponseSchema,
   AppConfigSchema,
   AttachmentResponseSchema,
+  CancelTaskResponseSchema,
   EMPTY_AGENT_ENV,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
@@ -144,6 +159,14 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   RuntimeModelListRequestSchema,
   WorkspaceMcpServerListSchema,
+  DashboardUsageDailyListSchema,
+  DashboardUsageByAgentListSchema,
+  DashboardAgentRunTimeListSchema,
+  DashboardRunTimeDailyListSchema,
+  DashboardFailureDailyListSchema,
+  DashboardFailureByAgentListSchema,
+  AuditEventsPageSchema,
+  EMPTY_AUDIT_EVENTS_PAGE,
 } from "@multica/core/api/schemas";
 import { z } from "zod";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
@@ -259,7 +282,9 @@ export interface FileAsset {
   type: string;
 }
 
-/** Pool row from GET /api/workspaces/:id/voice-providers. */
+/** Pool row of `GET /api/workspaces/:id/voice-providers` (RUYI-693 D2) —
+ *  mirrors server VoiceProviderResponse. No secret material: the credential
+ *  surfaces only as the coarse badge + last probe verdict. */
 export interface VoiceProvider {
   id: string;
   workspace_id: string;
@@ -297,6 +322,9 @@ const FETCH_TIMEOUT_MS = 30_000;
  *  the 30s FETCH_TIMEOUT_MS ceiling. */
 const LOGIN_TIMEOUT_MS = 10_000;
 
+/** RUYI-710 阶段 2 降级听写转写预算：录音上限 60s（hook 的 MAX_RECORD_MS）
+ *  ≈ 1.9MB（16kHz PCM16）上行，叠加服务端供应商转写一轮往返；60s 覆盖
+ *  弱网上行 + 慢供应商，超时即走「转写失败，请重试」toast。 */
 const VOICE_TRANSCRIBE_TIMEOUT_MS = 60_000;
 
 /** Budget for `/api/upload-file` (RUYI-569). Much larger than
@@ -367,7 +395,9 @@ class ApiClient {
       "X-Request-ID": rid,
       ...((init.headers as Record<string, string>) ?? {}),
     };
-    // Let fetch add the multipart boundary for FormData bodies.
+    // FormData body 的 multipart boundary 由 fetch 的序列化层自己生成并
+    // 写入请求头（uploadFile 同一条先例注释）；客户端预设 Content-Type
+    // 会与实际 boundary 错位导致服务端解析失败。
     if (!(init.body instanceof FormData) && !headers["Content-Type"]) {
       headers["Content-Type"] = "application/json";
     }
@@ -677,19 +707,30 @@ class ApiClient {
     });
   }
 
-  // GET /api/workspaces/:id/voice-providers — member-visible provider pool.
+  // GET /api/workspaces/:id/voice-providers (RUYI-693 D2 pool) —
+  // member-visible; carries no secret material, only the coarse
+  // credential_status badge and the last probe verdict (RUYI-694 D3
+  // availability gate).
   async listVoiceProviders(workspaceId: string): Promise<VoiceProvider[]> {
     return this.fetch<VoiceProvider[]>(
       `/api/workspaces/${workspaceId}/voice-providers`,
     );
   }
 
+  // POST /api/workspaces/:id/voice-transcriptions (RUYI-710 阶段 1 端点) —
+  // 降级听写：16kHz PCM16 WAV 一次上传，服务端走 workspace 的 voice.asr
+  // 解析链调供应商转写，返回 {"text"}。凭据只在服务端持有，端侧零凭据。
+  // 空 text（供应商未识别到语音）原样返回空串，由状态机收敛成
+  // 「未识别到语音」toast；非 2xx（含 409 VOICE_UNAVAILABLE、502 供应商
+  // 不可达）抛 ApiError，由 hook 统一收敛「转写失败」toast。
   async transcribeVoiceAudio(
     workspaceId: string,
     audio: Blob,
     opts?: { signal?: AbortSignal },
   ): Promise<string> {
     const formData = new FormData();
+    // Blob part（内存 WAV，不落盘）；文件名只进 Content-Disposition，
+    // 服务端按 magic 嗅探容器不读文件名。
     formData.append("audio", audio, "dictation.wav");
     const res = await this.fetchRaw(
       `/api/workspaces/${workspaceId}/voice-transcriptions`,
@@ -943,6 +984,33 @@ class ApiClient {
       endpoint: "listRuntimes",
     });
   }
+
+  async listAuditEvents(
+    workspaceId: string,
+    params: ListAuditEventsParams = {},
+    opts?: { signal?: AbortSignal },
+  ): Promise<AuditEventsPage> {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined) query.set(key, String(value));
+    }
+    const queryString = query.toString();
+    const suffix = queryString === "" ? "" : `?${queryString}`;
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events${suffix}`,
+      { signal: opts?.signal },
+    );
+    return parseWithFallback(raw, AuditEventsPageSchema, EMPTY_AUDIT_EVENTS_PAGE, {
+      endpoint: "listAuditEvents",
+    });
+  }
+
+  // --- Voice runtime instances & profiles (RUYI-425 §4.3, mobile) ---
+  // The §4.3 instance-write surface (profile create/delete, manual
+  // instance registration, instance credentials/probe) was removed with
+  // the old voice-instance model in RUYI-748; the pool methods above own
+  // voice configuration now. Reads that still have callers (listRuntimes)
+  // stay.
 
   // Workspace-wide active agent tasks + each agent's most recent terminal —
   // feeds the workload dimension of presence (currently unused in the mobile
@@ -1626,6 +1694,9 @@ class ApiClient {
     );
   }
 
+  // Structured relations (RUYI-689) — mirrors web packages/core/api/client.ts
+  // getIssueRelations → GET /api/issues/:id/relations. Read-only: edge
+  // creation/deletion stays an API concern, no mobile write counterpart.
   async getIssueRelations(
     id: string,
     opts?: { signal?: AbortSignal },
@@ -1638,6 +1709,10 @@ class ApiClient {
     );
   }
 
+  // Sub-issues of a parent — mirrors web packages/core/api/client.ts
+  // listChildIssues → GET /api/issues/:id/children. Backs the children
+  // group of the Relations page (RUYI-689); the relations endpoint covers
+  // parent + edge views but deliberately not children.
   async listChildIssues(
     id: string,
     opts?: { signal?: AbortSignal },
@@ -2010,6 +2085,10 @@ class ApiClient {
     return inbox;
   }
 
+  // --- Agent authorization requests (RUYI-630) ---
+  // Mirrors packages/core/api/client.ts listDecisionRequests /
+  // answerDecisionRequest / cancelDecisionRequest: mobile-owned fetch
+  // wrapper, shared zod schemas, same endpoints and query-string contract.
   async listDecisionRequests(
     workspaceId: string,
     params?: { limit?: number },
@@ -2051,13 +2130,130 @@ class ApiClient {
       `/api/workspaces/${workspaceId}/decision-requests/${requestId}/cancel`,
       { method: "POST", body: JSON.stringify({}) },
     );
-    return parseWithFallback(
-      raw,
-      z.object({ status: z.string() }).loose(),
-      { status: "" },
-      {
-        endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
-      },
+    return parseWithFallback(raw, z.object({ status: z.string() }).loose(), { status: "" }, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
+    });
+  }
+
+  // Workspace usage dashboard rollups. The explicit calendar window mirrors
+  // the web dashboard contract and keeps mobile's aggregation scope aligned.
+  async getDashboardUsageDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardUsageDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/usage/daily?${search}`,
+      DashboardUsageDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/usage/daily" },
+    );
+  }
+
+  async getDashboardUsageByAgent(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardUsageByAgent[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/usage/by-agent?${search}`,
+      DashboardUsageByAgentListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/usage/by-agent" },
+    );
+  }
+
+  async getDashboardAgentRunTime(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardAgentRunTime[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/agent-runtime?${search}`,
+      DashboardAgentRunTimeListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/agent-runtime" },
+    );
+  }
+
+  async getDashboardRunTimeDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardRunTimeDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/runtime/daily?${search}`,
+      DashboardRunTimeDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/runtime/daily" },
+    );
+  }
+
+  async getDashboardFailuresDaily(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardFailureDaily[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/failures/daily?${search}`,
+      DashboardFailureDailyListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/failures/daily" },
+    );
+  }
+
+  async getDashboardFailuresByAgent(params: {
+    start: string;
+    end: string;
+    project_id?: string | null;
+    tz: string;
+    signal?: AbortSignal;
+  }): Promise<DashboardFailureByAgent[]> {
+    const search = new URLSearchParams();
+    search.set("start", params.start);
+    search.set("end", params.end);
+    if (params.project_id) search.set("project_id", params.project_id);
+    search.set("tz", params.tz);
+    return this.fetchValidated(
+      `/api/dashboard/failures/by-agent?${search}`,
+      DashboardFailureByAgentListSchema,
+      [],
+      { signal: params.signal, endpoint: "GET /api/dashboard/failures/by-agent" },
     );
   }
 
@@ -2174,6 +2370,12 @@ class ApiClient {
     );
   }
 
+  /**
+   * Workspace-scoped PR point lookup by `owner/repo#N` (RUYI-635 增量) —
+   * mirrors packages/core/api/client.ts lookupPullRequest and its 404→null
+   * contract: a PR the platform has never seen is `null`, so the reference
+   * tail's row degrades to plain text instead of erroring.
+   */
   async lookupPullRequest(
     workspaceId: string,
     owner: string,
@@ -2203,6 +2405,13 @@ class ApiClient {
     }
   }
 
+  /**
+   * Workspace-scoped PR point lookup by bare number (RUYI-728) — mirrors
+   * packages/core/api/client.ts lookupPullRequestByNumber: a unique hit
+   * returns the PR; never-seen (404) AND cross-repo ambiguous (409) both
+   * read as `null`, so a body-text `MR !N` tap and the reference tail's row
+   * degrade silently instead of erroring.
+   */
   async lookupPullRequestByNumber(
     workspaceId: string,
     number: number,
@@ -2373,7 +2582,7 @@ class ApiClient {
   }
 
   async createChatSession(
-    data: { agent_id: string; title?: string },
+    data: { agent_id: string; title?: string; project_id?: string | null },
   ): Promise<ChatSession> {
     // Strict parse — a malformed create response derails the optimistic
     // burst (we need the new session id to seed caches). Fallback would
@@ -2475,7 +2684,7 @@ class ApiClient {
   // helper table in apps/mobile/CLAUDE.md.
   async updateChatSession(
     id: string,
-    data: { title: string },
+    data: { title?: string; project_id?: string | null },
   ): Promise<void> {
     await this.fetch<void>(`/api/chat/sessions/${id}`, {
       method: "PATCH",
@@ -2497,8 +2706,60 @@ class ApiClient {
     });
   }
 
-  async cancelTaskById(taskId: string): Promise<void> {
-    await this.fetch<void>(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+  async setChatSessionModel(id: string, modelOverride: string | null): Promise<ChatSession> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${id}/model`, {
+      method: "PATCH",
+      body: JSON.stringify({ model_override: modelOverride }),
+    });
+    return parseWithFallback(raw, ChatSessionSchema, {
+      id: "", workspace_id: "", agent_id: "", creator_id: "", title: "",
+      status: "active", has_unread: false, created_at: "", updated_at: "",
+    }, { endpoint: "PATCH /api/chat/sessions/:id/model" });
+  }
+
+  async clearQueuedChatTasks(sessionId: string): Promise<void> {
+    await this.fetch<void>(`/api/chat/sessions/${sessionId}/queued-tasks`, { method: "DELETE" });
+  }
+
+  async prioritizeQueuedChatTask(sessionId: string, taskId: string): Promise<PrioritizeQueuedChatTaskResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/queued-tasks/${taskId}/prioritize`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, PrioritizeQueuedChatTaskResponseSchema,
+      EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
+      { endpoint: "POST /api/chat/sessions/:id/queued-tasks/:taskId/prioritize" },
+    );
+  }
+
+  async cancelTaskById(
+    taskId: string,
+    options?: { sessionId: string; queuedAction: "edit" | "remove" },
+  ): Promise<CancelTaskResponse> {
+    const params = new URLSearchParams();
+    if (options) {
+      params.set("expected_status", "queued");
+      params.set("chat_session_id", options.sessionId);
+      params.set("queue_action", options.queuedAction);
+    }
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/tasks/${taskId}/cancel${query}`, { method: "POST" });
+    return parseWithFallback(raw, CancelTaskResponseSchema, {
+      id: "",
+      agent_id: "",
+      runtime_id: "",
+      issue_id: "",
+      status: "cancelled",
+      priority: 0,
+      dispatched_at: null,
+      started_at: null,
+      completed_at: null,
+      result: null,
+      error: null,
+      created_at: "",
+    }, {
+      endpoint: "POST /api/tasks/:id/cancel",
+    });
   }
 
   // Full per-agent task list (active + terminal) — RUYI-538 ② run history.

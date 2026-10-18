@@ -84,16 +84,23 @@ type scopeShape struct {
 //	POST /api/issues/quick-create              (dispatch_agent)
 //	POST /api/issues/{id}/tasks/{run}/cancel   (cancel_run)
 //	POST /api/issues/{id}/tasks/{run}/retry    (retry_run)
+//
+// Autopilot trigger requires mcp:run for the same reason as issue dispatch.
 var runShapes = [][]string{
 	{"issues", "quick-create"},
 	{"issues", "*", "tasks", "*", "cancel"},
 	{"issues", "*", "tasks", "*", "retry"},
+	{"autopilots", "*", "trigger"},
 }
 
 // surfaceShapes is the complete MCP surface. Order within the list does not
 // matter: shapes are same-length exact matches, so at most one can match a
 // given request.
 var surfaceShapes = []scopeShape{
+	{[]string{"file-access", "operations", "*"}, shapeReadOnly},
+	{[]string{"autopilots", "*"}, shapeReadOnly},
+	{[]string{"autopilots", "*", "runs"}, shapeReadOnly},
+	{[]string{"autopilots", "*", "runs", "*"}, shapeReadOnly},
 	// Workspaces: the list, plus the two sub-resources the tools drive —
 	// execution profiles and the audit trail. Everything else under
 	// /api/workspaces/{id} (members, invitations, plugins, …) stays
@@ -176,6 +183,21 @@ func ScopeForRequest(method, path string) ScopeRequirement {
 		return ScopeUnknown
 	}
 	rest := segments[1:]
+	if method == "POST" {
+		for _, shape := range [][]string{{"file-access", "list"}, {"file-access", "metadata"}, {"file-access", "read"}} {
+			if matchSegments(shape, rest) {
+				return ScopeNeedRead
+			}
+		}
+	}
+	// The MCP service records a read-only tool call as an audit side effect.
+	// The private service credential gates these writes; the caller's OAuth
+	// scope still reflects the tool's business-data authority, so read-scoped
+	// tokens can record read-tool invocations.
+	if method == "POST" && (matchSegments([]string{"mcp", "audit-start"}, rest) ||
+		matchSegments([]string{"mcp", "audit-finish"}, rest)) {
+		return ScopeNeedRead
+	}
 
 	if method == "POST" {
 		for _, shape := range runShapes {

@@ -12,21 +12,183 @@ import (
 )
 
 type CreateAuditEventsParams struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Domain      string             `json:"domain"`
-	EventType   string             `json:"event_type"`
-	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
-	ActorType   string             `json:"actor_type"`
-	ActorID     pgtype.UUID        `json:"actor_id"`
-	TriggerKind pgtype.Text        `json:"trigger_kind"`
-	TriggerRef  pgtype.Text        `json:"trigger_ref"`
-	IssueID     pgtype.UUID        `json:"issue_id"`
-	TaskID      pgtype.UUID        `json:"task_id"`
-	AgentID     pgtype.UUID        `json:"agent_id"`
-	RuntimeID   pgtype.UUID        `json:"runtime_id"`
-	Reason      pgtype.Text        `json:"reason"`
-	Details     []byte             `json:"details"`
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Domain       string             `json:"domain"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	TriggerKind  pgtype.Text        `json:"trigger_kind"`
+	TriggerRef   pgtype.Text        `json:"trigger_ref"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+}
+
+const createMCPInvocationAuditEvent = `-- name: CreateMCPInvocationAuditEvent :execrows
+INSERT INTO audit_event (
+    id, workspace_id, domain, event_type, occurred_at,
+    actor_type, actor_id, trigger_kind, trigger_ref,
+    issue_id, task_id, agent_id, runtime_id,
+    reason, details, invocation_id, sensitive, expires_at
+) VALUES (
+    $1, $2, 'mcp', $3, $4,
+    $5, $6, 'mcp_invocation', $7::uuid::text,
+    $8, $9, $10, $11,
+    $12, $13, $7::uuid, $14, $15
+)
+ON CONFLICT (id) DO NOTHING
+`
+
+type CreateMCPInvocationAuditEventParams struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) CreateMCPInvocationAuditEvent(ctx context.Context, arg CreateMCPInvocationAuditEventParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createMCPInvocationAuditEvent,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.EventType,
+		arg.OccurredAt,
+		arg.ActorType,
+		arg.ActorID,
+		arg.InvocationID,
+		arg.IssueID,
+		arg.TaskID,
+		arg.AgentID,
+		arg.RuntimeID,
+		arg.Reason,
+		arg.Details,
+		arg.Sensitive,
+		arg.ExpiresAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredMCPInvocationAuditEvents = `-- name: DeleteExpiredMCPInvocationAuditEvents :execrows
+DELETE FROM audit_event
+WHERE domain = 'mcp' AND expires_at IS NOT NULL AND expires_at <= $1
+`
+
+func (q *Queries) DeleteExpiredMCPInvocationAuditEvents(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredMCPInvocationAuditEvents, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredMCPInvocationAuditOutbox = `-- name: DeleteExpiredMCPInvocationAuditOutbox :execrows
+DELETE FROM mcp_invocation_audit_outbox WHERE expires_at <= $1
+`
+
+func (q *Queries) DeleteExpiredMCPInvocationAuditOutbox(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredMCPInvocationAuditOutbox, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteExpiredMCPPreAuthRejections = `-- name: DeleteExpiredMCPPreAuthRejections :execrows
+DELETE FROM mcp_pre_auth_rejection WHERE expires_at <= $1
+`
+
+func (q *Queries) DeleteExpiredMCPPreAuthRejections(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredMCPPreAuthRejections, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteMCPInvocationAuditOutbox = `-- name: DeleteMCPInvocationAuditOutbox :exec
+DELETE FROM mcp_invocation_audit_outbox WHERE id = $1
+`
+
+func (q *Queries) DeleteMCPInvocationAuditOutbox(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteMCPInvocationAuditOutbox, id)
+	return err
+}
+
+const getMCPInvocationAuditStart = `-- name: GetMCPInvocationAuditStart :one
+SELECT invocation_id, workspace_id, actor_id, sensitive, details
+FROM audit_event
+WHERE domain = 'mcp'
+  AND event_type = 'mcp.invocation_started'
+  AND invocation_id = $1
+LIMIT 1
+`
+
+type GetMCPInvocationAuditStartRow struct {
+	InvocationID pgtype.UUID `json:"invocation_id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	ActorID      pgtype.UUID `json:"actor_id"`
+	Sensitive    bool        `json:"sensitive"`
+	Details      []byte      `json:"details"`
+}
+
+func (q *Queries) GetMCPInvocationAuditStart(ctx context.Context, invocationID pgtype.UUID) (GetMCPInvocationAuditStartRow, error) {
+	row := q.db.QueryRow(ctx, getMCPInvocationAuditStart, invocationID)
+	var i GetMCPInvocationAuditStartRow
+	err := row.Scan(
+		&i.InvocationID,
+		&i.WorkspaceID,
+		&i.ActorID,
+		&i.Sensitive,
+		&i.Details,
+	)
+	return i, err
+}
+
+const insertMCPPreAuthRejection = `-- name: InsertMCPPreAuthRejection :execrows
+INSERT INTO mcp_pre_auth_rejection (invocation_id, instance_id, reason_code, file_tool_name, recorded_at, expires_at)
+VALUES ($1, $2, $3, $4, now(), now() + interval '7 days')
+ON CONFLICT (invocation_id) DO NOTHING
+`
+
+type InsertMCPPreAuthRejectionParams struct {
+	InvocationID pgtype.UUID `json:"invocation_id"`
+	InstanceID   string      `json:"instance_id"`
+	ReasonCode   string      `json:"reason_code"`
+	FileToolName pgtype.Text `json:"file_tool_name"`
+}
+
+func (q *Queries) InsertMCPPreAuthRejection(ctx context.Context, arg InsertMCPPreAuthRejectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertMCPPreAuthRejection,
+		arg.InvocationID,
+		arg.InstanceID,
+		arg.ReasonCode,
+		arg.FileToolName,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listAllWorkspaceIDs = `-- name: ListAllWorkspaceIDs :many
@@ -58,41 +220,118 @@ func (q *Queries) ListAllWorkspaceIDs(ctx context.Context) ([]pgtype.UUID, error
 }
 
 const listAuditEvents = `-- name: ListAuditEvents :many
-SELECT id, workspace_id, domain, event_type, occurred_at, actor_type, actor_id, trigger_kind, trigger_ref, issue_id, task_id, agent_id, runtime_id, reason, details FROM audit_event
-WHERE workspace_id = $1
-  AND ($3::timestamptz IS NULL OR occurred_at >= $3)
-  AND ($4::timestamptz IS NULL OR occurred_at <= $4)
-  AND ($5::text IS NULL OR domain = $5)
-  AND ($6::text IS NULL OR event_type = $6)
-  AND ($7::text IS NULL OR actor_type = $7)
-  AND ($8::uuid IS NULL OR actor_id = $8)
-  AND ($9::uuid IS NULL OR issue_id = $9)
-  AND ($10::uuid IS NULL OR task_id = $10)
-  AND ($11::uuid IS NULL OR agent_id = $11)
-  AND ($12::uuid IS NULL OR runtime_id = $12)
-  AND ($13::text IS NULL OR reason = $13)
-  AND ($14::timestamptz IS NULL
-       OR (occurred_at, id) < ($14, $15::uuid))
-ORDER BY occurred_at DESC, id DESC
+SELECT audit_event.id, audit_event.workspace_id, audit_event.domain, audit_event.event_type, audit_event.occurred_at, audit_event.actor_type, audit_event.actor_id, audit_event.trigger_kind, audit_event.trigger_ref, audit_event.issue_id, audit_event.task_id, audit_event.agent_id, audit_event.runtime_id, audit_event.reason, audit_event.details, audit_event.invocation_id, audit_event.sensitive, audit_event.expires_at FROM audit_event AS audit_event
+WHERE audit_event.workspace_id = $1
+  AND (
+       ($3::text = 'invocation_start' AND audit_event.domain = 'mcp'
+        AND ($4::timestamptz IS NULL AND $5::timestamptz IS NULL
+             OR EXISTS (
+                 SELECT 1 FROM audit_event AS invocation_start
+                 WHERE invocation_start.workspace_id = audit_event.workspace_id
+                   AND invocation_start.invocation_id = audit_event.invocation_id
+                   AND invocation_start.domain = 'mcp'
+                   AND invocation_start.event_type = 'mcp.invocation_started'
+                   AND ($4::timestamptz IS NULL OR invocation_start.occurred_at >= $4)
+                   AND ($5::timestamptz IS NULL OR invocation_start.occurred_at <= $5)
+                   AND ($6::boolean OR invocation_start.sensitive = false)
+                   AND (invocation_start.expires_at IS NULL OR invocation_start.expires_at > now())
+             )))
+       OR (($3::text IS NULL OR $3::text <> 'invocation_start' OR audit_event.domain <> 'mcp')
+           AND ($4::timestamptz IS NULL OR audit_event.occurred_at >= $4)
+           AND ($5::timestamptz IS NULL OR audit_event.occurred_at <= $5))
+  )
+  AND ($7::text IS NULL OR audit_event.domain = $7)
+  AND ($8::text IS NULL OR audit_event.event_type = $8)
+  AND ($9::text IS NULL OR audit_event.actor_type = $9)
+  AND ($10::uuid IS NULL OR audit_event.actor_id = $10)
+  AND ($11::uuid IS NULL OR audit_event.issue_id = $11)
+  AND ($12::uuid IS NULL OR audit_event.task_id = $12)
+  AND ($13::uuid IS NULL OR audit_event.agent_id = $13)
+  AND ($14::uuid IS NULL OR audit_event.runtime_id = $14)
+  AND ($15::text IS NULL OR audit_event.reason = $15)
+  AND ($6::boolean OR audit_event.sensitive = false)
+  AND ($16::uuid IS NULL OR (audit_event.domain = 'mcp' AND audit_event.invocation_id = $16))
+  AND (NOT $17::boolean OR (
+       audit_event.domain = 'mcp'
+       AND audit_event.invocation_id IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM audit_event AS invocation_start
+           WHERE invocation_start.workspace_id = audit_event.workspace_id
+             AND invocation_start.invocation_id = audit_event.invocation_id
+             AND invocation_start.domain = 'mcp'
+             AND invocation_start.event_type = 'mcp.invocation_started'
+             AND ($6::boolean OR invocation_start.sensitive = false)
+             AND (invocation_start.expires_at IS NULL OR invocation_start.expires_at > now())
+             AND ($9::text IS NULL OR invocation_start.actor_type = $9)
+             AND ($10::uuid IS NULL OR invocation_start.actor_id = $10)
+             AND ($18::text IS NULL OR invocation_start.details->>'reported_client_name' = $18)
+             AND ($19::text IS NULL OR invocation_start.details->>'reported_client_version' = $19)
+             AND ($20::text IS NULL OR invocation_start.details->>'tool_name' = $20)
+             AND (
+                 ($21::text IS NULL AND $22::text IS NULL)
+                 OR (
+                     ($21::text IS NULL OR invocation_start.details->>'target_type' = $21)
+                     AND ($22::text IS NULL OR invocation_start.details->>'target_id' = $22)
+                 )
+                 OR (
+                     EXISTS (
+                         SELECT 1 FROM daemon_file_operation AS file_operation
+                         WHERE file_operation.workspace_id = invocation_start.workspace_id
+                           AND file_operation.invocation_id = invocation_start.invocation_id
+                           AND ($21::text IS NULL OR $21::text = 'host')
+                           AND ($22::text IS NULL OR file_operation.target_id = $22)
+                     )
+                 )
+             )
+       )))
+  AND ($23::text IS NULL AND $24::text IS NULL OR (
+       audit_event.domain = 'mcp'
+       AND audit_event.invocation_id IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM audit_event AS invocation_finish
+           WHERE invocation_finish.workspace_id = audit_event.workspace_id
+             AND invocation_finish.invocation_id = audit_event.invocation_id
+             AND invocation_finish.domain = 'mcp'
+             AND invocation_finish.event_type = 'mcp.invocation_finished'
+             AND ($6::boolean OR invocation_finish.sensitive = false)
+             AND (invocation_finish.expires_at IS NULL OR invocation_finish.expires_at > now())
+             AND ($23::text IS NULL OR invocation_finish.details->>'status' = $23)
+             AND ($24::text IS NULL OR invocation_finish.details->>'error_code' = $24)
+       )))
+  AND (audit_event.domain <> 'mcp' OR audit_event.expires_at IS NULL OR audit_event.expires_at > now())
+  AND ($25::timestamptz IS NULL
+       OR (audit_event.occurred_at, audit_event.id) < ($25, $26::uuid))
+ORDER BY audit_event.occurred_at DESC, audit_event.id DESC
 LIMIT $2
 `
 
 type ListAuditEventsParams struct {
-	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
-	Limit           int32              `json:"limit"`
-	Since           pgtype.Timestamptz `json:"since"`
-	Until           pgtype.Timestamptz `json:"until"`
-	FilterDomain    pgtype.Text        `json:"filter_domain"`
-	FilterEventType pgtype.Text        `json:"filter_event_type"`
-	FilterActorType pgtype.Text        `json:"filter_actor_type"`
-	FilterActorID   pgtype.UUID        `json:"filter_actor_id"`
-	FilterIssueID   pgtype.UUID        `json:"filter_issue_id"`
-	FilterTaskID    pgtype.UUID        `json:"filter_task_id"`
-	FilterAgentID   pgtype.UUID        `json:"filter_agent_id"`
-	FilterRuntimeID pgtype.UUID        `json:"filter_runtime_id"`
-	FilterReason    pgtype.Text        `json:"filter_reason"`
-	CursorAt        pgtype.Timestamptz `json:"cursor_at"`
-	CursorID        pgtype.UUID        `json:"cursor_id"`
+	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
+	Limit                 int32              `json:"limit"`
+	TimeBasis             pgtype.Text        `json:"time_basis"`
+	Since                 pgtype.Timestamptz `json:"since"`
+	Until                 pgtype.Timestamptz `json:"until"`
+	IncludeSensitive      bool               `json:"include_sensitive"`
+	FilterDomain          pgtype.Text        `json:"filter_domain"`
+	FilterEventType       pgtype.Text        `json:"filter_event_type"`
+	FilterActorType       pgtype.Text        `json:"filter_actor_type"`
+	FilterActorID         pgtype.UUID        `json:"filter_actor_id"`
+	FilterIssueID         pgtype.UUID        `json:"filter_issue_id"`
+	FilterTaskID          pgtype.UUID        `json:"filter_task_id"`
+	FilterAgentID         pgtype.UUID        `json:"filter_agent_id"`
+	FilterRuntimeID       pgtype.UUID        `json:"filter_runtime_id"`
+	FilterReason          pgtype.Text        `json:"filter_reason"`
+	FilterInvocationID    pgtype.UUID        `json:"filter_invocation_id"`
+	FilterInvocationStart bool               `json:"filter_invocation_start"`
+	FilterClientName      pgtype.Text        `json:"filter_client_name"`
+	FilterClientVersion   pgtype.Text        `json:"filter_client_version"`
+	FilterToolName        pgtype.Text        `json:"filter_tool_name"`
+	FilterTargetType      pgtype.Text        `json:"filter_target_type"`
+	FilterTargetID        pgtype.Text        `json:"filter_target_id"`
+	FilterResultStatus    pgtype.Text        `json:"filter_result_status"`
+	FilterResultCode      pgtype.Text        `json:"filter_result_code"`
+	CursorAt              pgtype.Timestamptz `json:"cursor_at"`
+	CursorID              pgtype.UUID        `json:"cursor_id"`
 }
 
 // Workspace-level audit search: time window + domain/event_type + actor +
@@ -104,8 +343,10 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 	rows, err := q.db.Query(ctx, listAuditEvents,
 		arg.WorkspaceID,
 		arg.Limit,
+		arg.TimeBasis,
 		arg.Since,
 		arg.Until,
+		arg.IncludeSensitive,
 		arg.FilterDomain,
 		arg.FilterEventType,
 		arg.FilterActorType,
@@ -115,6 +356,15 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 		arg.FilterAgentID,
 		arg.FilterRuntimeID,
 		arg.FilterReason,
+		arg.FilterInvocationID,
+		arg.FilterInvocationStart,
+		arg.FilterClientName,
+		arg.FilterClientVersion,
+		arg.FilterToolName,
+		arg.FilterTargetType,
+		arg.FilterTargetID,
+		arg.FilterResultStatus,
+		arg.FilterResultCode,
 		arg.CursorAt,
 		arg.CursorID,
 	)
@@ -141,6 +391,9 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 			&i.RuntimeID,
 			&i.Reason,
 			&i.Details,
+			&i.InvocationID,
+			&i.Sensitive,
+			&i.ExpiresAt,
 		); err != nil {
 			return nil, err
 		}
@@ -150,4 +403,195 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 		return nil, err
 	}
 	return items, nil
+}
+
+const listMCPInvocationAuditOutbox = `-- name: ListMCPInvocationAuditOutbox :many
+SELECT id, workspace_id, event_type, occurred_at, actor_type, actor_id,
+       invocation_id, issue_id, task_id, agent_id, runtime_id, reason,
+       details, sensitive, expires_at, attempts
+FROM mcp_invocation_audit_outbox
+WHERE expires_at > now()
+  AND attempts < 10
+ORDER BY created_at ASC
+LIMIT $1
+`
+
+type ListMCPInvocationAuditOutboxRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	Attempts     int32              `json:"attempts"`
+}
+
+func (q *Queries) ListMCPInvocationAuditOutbox(ctx context.Context, limit int32) ([]ListMCPInvocationAuditOutboxRow, error) {
+	rows, err := q.db.Query(ctx, listMCPInvocationAuditOutbox, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMCPInvocationAuditOutboxRow{}
+	for rows.Next() {
+		var i ListMCPInvocationAuditOutboxRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.EventType,
+			&i.OccurredAt,
+			&i.ActorType,
+			&i.ActorID,
+			&i.InvocationID,
+			&i.IssueID,
+			&i.TaskID,
+			&i.AgentID,
+			&i.RuntimeID,
+			&i.Reason,
+			&i.Details,
+			&i.Sensitive,
+			&i.ExpiresAt,
+			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMCPPreAuthRejections = `-- name: ListMCPPreAuthRejections :many
+SELECT invocation_id, instance_id, reason_code, file_tool_name, recorded_at, expires_at
+FROM mcp_pre_auth_rejection
+WHERE expires_at > now()
+  AND ($1::text IS NULL OR instance_id = $1)
+  AND ($2::text IS NULL OR reason_code = $2)
+  AND ($3::timestamptz IS NULL OR recorded_at >= $3)
+  AND ($4::timestamptz IS NULL OR recorded_at <= $4)
+ORDER BY recorded_at DESC, invocation_id DESC
+LIMIT $5
+`
+
+type ListMCPPreAuthRejectionsParams struct {
+	InstanceID pgtype.Text        `json:"instance_id"`
+	ReasonCode pgtype.Text        `json:"reason_code"`
+	Since      pgtype.Timestamptz `json:"since"`
+	Until      pgtype.Timestamptz `json:"until"`
+	Limit      int32              `json:"limit"`
+}
+
+func (q *Queries) ListMCPPreAuthRejections(ctx context.Context, arg ListMCPPreAuthRejectionsParams) ([]McpPreAuthRejection, error) {
+	rows, err := q.db.Query(ctx, listMCPPreAuthRejections,
+		arg.InstanceID,
+		arg.ReasonCode,
+		arg.Since,
+		arg.Until,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []McpPreAuthRejection{}
+	for rows.Next() {
+		var i McpPreAuthRejection
+		if err := rows.Scan(
+			&i.InvocationID,
+			&i.InstanceID,
+			&i.ReasonCode,
+			&i.FileToolName,
+			&i.RecordedAt,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markMCPInvocationAuditOutboxAttempt = `-- name: MarkMCPInvocationAuditOutboxAttempt :exec
+UPDATE mcp_invocation_audit_outbox
+SET attempts = attempts + 1,
+    last_attempt_at = now(),
+    last_error_code = $1
+WHERE id = $2
+`
+
+type MarkMCPInvocationAuditOutboxAttemptParams struct {
+	LastErrorCode pgtype.Text `json:"last_error_code"`
+	ID            pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) MarkMCPInvocationAuditOutboxAttempt(ctx context.Context, arg MarkMCPInvocationAuditOutboxAttemptParams) error {
+	_, err := q.db.Exec(ctx, markMCPInvocationAuditOutboxAttempt, arg.LastErrorCode, arg.ID)
+	return err
+}
+
+const queueMCPInvocationAuditEvent = `-- name: QueueMCPInvocationAuditEvent :exec
+INSERT INTO mcp_invocation_audit_outbox (
+    id, workspace_id, event_type, occurred_at, actor_type, actor_id,
+    invocation_id, issue_id, task_id, agent_id, runtime_id, reason,
+    details, sensitive, expires_at
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10, $11,
+    $12, $13, $14, $15
+)
+ON CONFLICT (id) DO NOTHING
+`
+
+type QueueMCPInvocationAuditEventParams struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) QueueMCPInvocationAuditEvent(ctx context.Context, arg QueueMCPInvocationAuditEventParams) error {
+	_, err := q.db.Exec(ctx, queueMCPInvocationAuditEvent,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.EventType,
+		arg.OccurredAt,
+		arg.ActorType,
+		arg.ActorID,
+		arg.InvocationID,
+		arg.IssueID,
+		arg.TaskID,
+		arg.AgentID,
+		arg.RuntimeID,
+		arg.Reason,
+		arg.Details,
+		arg.Sensitive,
+		arg.ExpiresAt,
+	)
+	return err
 }

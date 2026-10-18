@@ -85,6 +85,50 @@
       "toast_saved": "マシンの名前を変更しました",
       "toast_cleared": "マシン名をクリアしました",
       "toast_failed": "マシンの名前変更に失敗しました"
+    },
+    "ops": {
+      "title": "ノード運用",
+      "subtitle": "このマシンへの読み取り専用診断：サービス状態・ログ・スナップショット。オーナー/管理者のみ利用できます。",
+      "sensitive_notice": "ノードの生の出力です。機密情報が含まれる可能性があります。共有前に確認してください。",
+      "inventory_title": "サービス一覧",
+      "inventory_as": "{{time}} 更新",
+      "inventory_empty": "ノードからサービスの報告はありません。",
+      "inventory_unavailable": "このノードのサービス一覧はまだ受信していません。",
+      "loading": "読み込み中…",
+      "run_title": "読み取り専用コマンドを実行",
+      "offline_hint": "マシンがオフラインのため、再接続までコマンドを送信できません。",
+      "kind_label": "コマンド",
+      "unit_label": "サービスユニット",
+      "unit_placeholder": "ユニットを選択",
+      "lines_label": "行数",
+      "minutes_label": "分",
+      "run_button": "実行",
+      "submit_failed": "送信が拒否されました。詳細はコマンド履歴を確認してください。",
+      "exit_code": "終了コード {{code}}",
+      "history_title": "コマンド履歴",
+      "history_empty": "コマンドはまだありません。",
+      "show_output": "出力を表示",
+      "hide_output": "出力を隠す",
+      "truncated": "出力は切り詰められました",
+      "terminal_note": "このコマンドは実行中ではありません。",
+      "status": {
+        "pending": "待機中",
+        "claimed": "実行中",
+        "succeeded": "成功",
+        "failed": "失敗",
+        "rejected": "拒否",
+        "timeout": "タイムアウト",
+        "expired": "期限切れ"
+      },
+      "kinds": {
+        "systemctl_status": "systemd サービス状態",
+        "journalctl_tail": "journalctl ログ末尾",
+        "ps_snapshot": "プロセススナップショット",
+        "df_report": "ディスク使用量",
+        "launchctl_list": "launchd サービス一覧",
+        "mac_log_show": "macOS ログ",
+        "docker_ps": "Docker コンテナ一覧"
+      }
     }
   },
   "health": {

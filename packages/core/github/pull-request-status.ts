@@ -5,11 +5,12 @@ import type {
   GitHubPullRequestMergeStateStatus,
 } from "../types";
 
-// The PR sidebar row surfaces TWO independent facts, each tri-state and each
-// sourced from the GitHub API snapshot:
+// The PR sidebar row surfaces three independent facts sourced from the
+// GitHub API snapshot:
 //
-//   1. CI status      — derived from `checks_rollup` (primary) + counts.
-//   2. Mergeability   — derived from `mergeable` + `merge_state_status`.
+//   1. CI status       — derived from `checks_rollup` (primary) + counts.
+//   2. Mergeability    — derived from `mergeable` + `merge_state_status`.
+//   3. Review decision — the authoritative `reviewDecision` aggregate.
 //
 // The two are intentionally decoupled: a PR can have failing checks AND a merge
 // conflict, and both must show. Neither element is derived from the other, and
@@ -30,6 +31,7 @@ export type PullRequestChecksStatus =
   | { kind: "failed"; failed: number; total: number; names: string[] }
   | { kind: "pending"; passed: number; total: number; running: number }
   | { kind: "passed"; total: number }
+  | { kind: "unknown" }
   | { kind: "none" }
   | { kind: "unavailable" };
 
@@ -50,9 +52,11 @@ export interface PullRequestChecksInput {
 //   1. rollup failure/error OR any failed count → failed
 //   2. rollup pending/expected                  → pending
 //   3. rollup success                           → passed
-//   4. legacy provider conclusion               → matching coarse state
-//   5. current snapshot + null rollup            → none ("no checks yet")
-//   6. otherwise                                 → unavailable
+//   4. legacy provider failure                   → failed
+//   5. unknown rollup                            → unknown
+//   6. legacy provider pending/passed            → matching coarse state
+//   7. current snapshot + null rollup            → none ("no checks yet")
+//   8. otherwise                                 → unavailable
 //
 // Failure trusts the count as well as the rollup so a known legacy failure is
 // surfaced even if its coarse conclusion lags. An explicit false availability
@@ -83,6 +87,9 @@ export function deriveChecksStatus(input: PullRequestChecksInput): PullRequestCh
   // snapshot with a current "no checks" verdict.
   if (input.checks_conclusion === "failed") {
     return { kind: "failed", failed, total, names };
+  }
+  if (rollup !== null) {
+    return { kind: "unknown" };
   }
   if (input.checks_conclusion === "pending") {
     return { kind: "pending", passed, total, running };
@@ -138,6 +145,30 @@ export function deriveMergeStatus(input: PullRequestMergeInput): PullRequestMerg
   if (mergeState === "unstable") return { kind: "unstable" };
   if (mergeState === "has_hooks") return { kind: "has_hooks" };
   return { kind: "none" };
+}
+
+export type PullRequestReviewDecision =
+  | "approved"
+  | "changes_requested"
+  | "review_required"
+  | "unknown";
+
+export function deriveReviewDecision(
+  reviewDecision: string | null | undefined,
+  snapshotAvailable: boolean | undefined,
+): PullRequestReviewDecision | null {
+  if (snapshotAvailable !== true) return null;
+  if (reviewDecision === undefined) return null;
+  switch (reviewDecision?.toLowerCase()) {
+    case "approved":
+      return "approved";
+    case "changes_requested":
+      return "changes_requested";
+    case "review_required":
+      return "review_required";
+    default:
+      return "unknown";
+  }
 }
 
 // ---------------------------------------------------------------------------

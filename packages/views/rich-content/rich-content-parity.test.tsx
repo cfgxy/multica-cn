@@ -77,15 +77,12 @@ vi.mock("../issues/components/issue-mention-card", () => ({
 // aggregation block present in the surface comparison without dragging those
 // providers in; the pure extractor decides presence exactly like the real
 // tail does.
-vi.mock("./issue-reference-footer", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("./issue-reference-footer")>();
+vi.mock("./lazy-issue-reference-tail", async () => {
   const { dedupeIssueReferences, extractIssueReferences } = await import(
     "@multica/core/markdown"
   );
   return {
-    ...actual,
-    IssueReferenceTail: ({ content }: { content: string }) =>
+    LazyIssueReferenceTail: ({ content }: { content: string }) =>
       dedupeIssueReferences(extractIssueReferences(content)).length > 0 ? (
         <div data-issue-reference-footer="" />
       ) : null,

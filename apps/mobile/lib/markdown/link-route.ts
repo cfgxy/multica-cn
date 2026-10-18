@@ -26,7 +26,13 @@ export type LinkAction =
    * 无副作用的渲染锚点变成可探测存在性的接口）。
    */
   | { kind: "commentAnchor"; commentId: string }
-  /** Resolve an MR number to its synced PR before opening it externally. */
+  /** 正文 `PR #N` 链接：按编号解析唯一 GitHub PR 后交系统打开。 */
+  | { kind: "pullRequest"; number: number }
+  /**
+   * 正文 `MR !N` 链接（RUYI-728）：站内没有 MR 详情页，调用方按编号解析
+   * 出 PR 后交系统打开（`data/api` 的 lookupPullRequestByNumber）。解析
+   * 不到（未同步/跨仓歧义）时与 noop 同义；不需要 workspace slug。
+   */
   | { kind: "mergeRequest"; number: number }
   /** 交给系统打开（http(s) / mailto / tel / app scheme）。 */
   | { kind: "external"; url: string }
@@ -46,7 +52,8 @@ export function resolveLinkAction(
   //   mention://issue/<uuid>   → 跳转 issue 详情
   //   mention://project/<uuid> → 跳转 project 详情
   //   mention://comment/<uuid> → 当前任务单内定位评论（不换页）
-  //   mention://merge-request/<N> → 按编号解析 PR 后交系统打开
+  //   mention://pull-request/<N> → 按编号解析 PR 后交系统打开（RUYI-728）
+  //   mention://merge-request/<N> → 按编号解析 MR 后交系统打开（RUYI-728）
   //   mention://member|agent|squad/<uuid> → 无对应页面，忽略
   //   mention://all/all        → 纯语义（「所有人」），忽略
   //   畸形                     → 忽略
@@ -60,13 +67,13 @@ export function resolveLinkAction(
     // 评论锚点在 slug 判断之前返回：定位发生在当前时间线内，不拼路由，
     // 因此不该被「拿不到 slug」这条针对跳转的前置条件连坐。
     if (type === "comment") return { kind: "commentAnchor", commentId: id };
-    if (type === "merge-request") {
-      if (!/^\d+$/.test(id)) return { kind: "noop" };
+    if (type === "pull-request" || type === "merge-request") {
       const number = Number(id);
-      return Number.isSafeInteger(number) && number > 0
-        ? { kind: "mergeRequest", number }
+      return Number.isInteger(number) && number > 0
+        ? { kind: type === "pull-request" ? "pullRequest" : "mergeRequest", number }
         : { kind: "noop" };
     }
+    // PR/MR 编号都不依赖 slug 拼站内路由；畸形编号与 noop 同义。
     if (!wsSlug) return { kind: "noop" };
     // 手机端路由段是单数（`/issue/`、`/project/`），与 mention 类型同词但
     // 映射保持显式，新增类型不会静默走空。

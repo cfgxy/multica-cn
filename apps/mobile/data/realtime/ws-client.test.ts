@@ -91,3 +91,47 @@ describe("WSClient application heartbeat", () => {
     client.disconnect();
   });
 });
+
+describe("WSClient reconnect authentication", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    MockWebSocket.instances = [];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("notifies reconnect once after authentication, ignoring failures and duplicate acknowledgements", () => {
+    const client = new WSClient({
+      url: "wss://example.test/ws",
+      token: "token",
+      workspaceSlug: "workspace",
+    });
+    const onReconnect = vi.fn();
+    client.onReconnect(onReconnect);
+
+    client.connect();
+    const firstSocket = MockWebSocket.instances[0];
+    firstSocket.open();
+    firstSocket.receive({ error: "unauthorized" });
+    expect(onReconnect).not.toHaveBeenCalled();
+
+    firstSocket.receive({ type: "auth_ack" });
+    firstSocket.receive({ type: "auth_ack" });
+    expect(onReconnect).not.toHaveBeenCalled();
+
+    client.forceReconnect();
+    const reconnectedSocket = MockWebSocket.instances[1];
+    reconnectedSocket.open();
+    reconnectedSocket.receive({ type: "auth_ack" });
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+
+    reconnectedSocket.receive({ type: "auth_ack" });
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+    client.disconnect();
+  });
+});

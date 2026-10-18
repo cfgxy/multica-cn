@@ -54,7 +54,15 @@ const PURE_READ_TOOLS = [
   "list_agents",
   "list_projects",
   "get_project",
+  "get_autopilot",
+  "list_autopilot_runs",
+  "get_autopilot_run",
+  "get_autopilot_run_diagnostics",
   "list_issues",
+  "list_inbox",
+  "list_archived_inbox",
+  "get_inbox_unread_count",
+  "get_inbox_unread_summary",
   "get_issue",
   "search_issues",
   "progress_digest",
@@ -68,7 +76,6 @@ const PURE_READ_TOOLS = [
   "get_daemon_instance",
   "list_runtimes",
   "get_runtime",
-  "get_runtime_models",
   "get_agent_runtime_config",
   "list_execution_profiles",
   "get_execution_profile",
@@ -76,6 +83,7 @@ const PURE_READ_TOOLS = [
   "search_audit_events",
   // Workspace management reads.
   "list_runs",
+  "list_quick_replies",
   "get_agent",
   "list_squads",
   "get_squad",
@@ -84,6 +92,9 @@ const PURE_READ_TOOLS = [
   "get_decision",
   // Project resource binding read.
   "list_project_resources",
+  "list_files",
+  "get_file_metadata",
+  "read_file_chunk",
 ] as const;
 
 const CAS_TOOLS = [
@@ -101,7 +112,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
   it("registers every tool exactly once with a real description and an object schema", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(65);
+    expect(names).toHaveLength(85);
     for (const definition of TOOL_DEFINITIONS) {
       expect(
         definition.description.length,
@@ -122,7 +133,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
     const { client, cleanup } = await connectViaMcp(new FakeRestBackend());
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(65);
+      expect(tools).toHaveLength(85);
       const hint = Object.fromEntries(
         tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint === true]),
       );
@@ -135,7 +146,7 @@ describe("whole-surface registration and readOnlyHint audit", () => {
           expect(hint[tool.name], `${tool.name} must be readOnlyHint=false`).toBe(false);
         }
       }
-      expect(Object.keys(hint)).toHaveLength(65);
+      expect(Object.keys(hint)).toHaveLength(85);
     } finally {
       await cleanup();
     }
@@ -783,6 +794,7 @@ describe("combined serial path: update → assign → relations → comments", (
       // Only the assign step ever carried run-trigger keys.
       const triggeringWrites = backend.requestLog.filter(
         (entry) => {
+          if (entry.path.startsWith("/api/mcp/audit-")) return false;
           const body = entry.body ?? {};
           return body.assignee_type !== undefined || body.status !== undefined;
         },
@@ -1177,6 +1189,7 @@ class FakeRestBackend {
       token: "mul_test",
       fetchImpl: this.fetchImpl(),
       logger: silentLogger(),
+      auditServiceCredential: "test-audit-credential",
     });
   }
 
@@ -1210,7 +1223,11 @@ class FakeRestBackend {
       const listComments = path.match(/^\/api\/issues\/([^/]+)\/comments$/);
 
       let response: Response;
-      if (method === "PUT" && putIssue) {
+      if (method === "GET" && path === "/api/workspaces") {
+        response = json([{ id: "w-1", slug: WS }]);
+      } else if (method === "POST" && (path === "/api/mcp/audit-start" || path === "/api/mcp/audit-finish")) {
+        response = json({ status: "recorded" }, path.endsWith("start") ? 201 : 200);
+      } else if (method === "PUT" && putIssue) {
         response = this.updateIssue(decodeURIComponent(putIssue[1]!), body ?? {});
       } else if (method === "GET" && getIssue) {
         const issue = this.issues.get(decodeURIComponent(getIssue[1]!));

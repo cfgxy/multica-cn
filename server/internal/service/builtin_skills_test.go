@@ -595,10 +595,13 @@ func TestProjectsAndResourcesSkillCoversDurableContext(t *testing.T) {
 		".multica/project/resources.json",
 		"multica project resource list <project-id> --output json",
 		"multica project resource add <project-id> --type github_repo --url <github-url> --output json",
+		"multica project resource add <project-id> --type github_repo --url <fork-url> --upstream <confirmed-upstream-url> --output json",
+		"multica project resource update <project-id> <resource-id> --upstream <confirmed-upstream-url> --output json",
 		"multica project resource add <project-id> --type github_repo --url <github-url> --ref <branch-or-sha> --output json",
 		"multica project resource add <project-id> --type local_directory",
 		"Project resources are durable and affect future tasks",
 		"github_repo.resource_ref.url",
+		"resource_ref.upstream",
 		"resource_ref.ref",
 		"references/projects-and-resources-source-map.md",
 	}

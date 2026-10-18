@@ -52,6 +52,7 @@ export function useChatSessionsRealtime() {
           const payload = p as {
             chat_session_id: string;
             title?: string;
+            model_override?: string | null;
             pinned?: boolean;
             status?: string;
             updated_at?: string;
@@ -59,6 +60,7 @@ export function useChatSessionsRealtime() {
           applyChatSessionUpdatedToCache(qc, wsId, {
             chat_session_id: payload.chat_session_id,
             title: payload.title,
+            ...("model_override" in payload ? { model_override: payload.model_override } : {}),
             pinned: payload.pinned,
             status:
               payload.status === "active" || payload.status === "archived"

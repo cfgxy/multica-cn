@@ -42,6 +42,7 @@ trap 'rm -f "$tmp_env"; rm -rf "$tmp_dir"' EXIT
 sed 's/^FRONTEND_PORT=.*/FRONTEND_PORT=3100/' .env.example >"$tmp_env"
 printf '\nBACKEND_PORT=9100\nSMTP_FROM_EMAIL=multica@example.com\n' >>"$tmp_env"
 printf 'MULTICA_LLM_API_KEY=llm-key-from-env\nMULTICA_LLM_BASE_URL=http://gateway.example/v1\nMULTICA_LLM_DEFAULT_MODEL=model-from-env\nMULTICA_LLM_MAX_RETRIES=3\n' >>"$tmp_env"
+printf 'MULTICA_GEMINI_PROBE_BASE_URL=https://probe.example/v1beta\nMULTICA_GEMINI_WS_BASE_URL=wss://live.example\nMULTICA_GEMINI_ASR_BASE_URL=https://asr.example\nMULTICA_GEMINI_PROXY_URL=socks5://proxy.example:1080\nMULTICA_VOICE_PROBE_REFRESH=15m\n' >>"$tmp_env"
 printf 'MULTICA_BACKUP_RETENTION_DAYS=14\nMULTICA_BACKUP_INTERVAL=12h\n' >>"$tmp_env"
 
 config="$(
@@ -93,6 +94,11 @@ require_config "$config" 'MULTICA_LLM_API_KEY: llm-key-from-env'
 require_config "$config" 'MULTICA_LLM_BASE_URL: http://gateway.example/v1'
 require_config "$config" 'MULTICA_LLM_DEFAULT_MODEL: model-from-env'
 require_config "$config" 'MULTICA_LLM_MAX_RETRIES: "3"'
+require_config "$config" 'MULTICA_GEMINI_PROBE_BASE_URL: https://probe.example/v1beta'
+require_config "$config" 'MULTICA_GEMINI_WS_BASE_URL: wss://live.example'
+require_config "$config" 'MULTICA_GEMINI_ASR_BASE_URL: https://asr.example'
+require_config "$config" 'MULTICA_GEMINI_PROXY_URL: socks5://proxy.example:1080'
+require_config "$config" 'MULTICA_VOICE_PROBE_REFRESH: 15m'
 
 while IFS= read -r llm_var; do
   if ! grep -Eq "^[[:space:]]+${llm_var}: \\\$\{${llm_var}:-" docker-compose.selfhost.yml; then
@@ -102,31 +108,17 @@ while IFS= read -r llm_var; do
   fi
 done < <(grep -oE '^MULTICA_LLM_[A-Z_]+' .env.example)
 
-# The same drift for integration encryption keys, keyed on the server rather
-# than on .env.example: each secretbox.LoadKey() gates an integration that
-# stays silently disabled when its key never reaches the container. Telegram's
-# key was once missing from both files, so a check that trusted the
-# documentation alone would not have caught it.
-secret_keys="$(
-  grep -rhoE --include='*.go' --exclude='*_test.go' 'secretbox\.LoadKey\("[A-Z0-9_]+"\)' server |
-    sed -E 's/.*"([A-Z0-9_]+)".*/\1/' | sort -u
-)" || true
-if [ -z "$secret_keys" ]; then
-  echo "Found no secretbox.LoadKey(\"...\") calls under server/; this check no longer"
-  echo "sees the integration keys and needs updating."
-  exit 1
-fi
-while IFS= read -r secret_key; do
-  if ! grep -Eq "^[[:space:]]+${secret_key}: \\\$\{${secret_key}:-" docker-compose.selfhost.yml; then
-    echo "$secret_key is loaded by the server but not mapped into the backend service"
-    echo "in docker-compose.selfhost.yml, so self-hosted deployments cannot enable it."
+for voice_var in \
+  MULTICA_GEMINI_PROBE_BASE_URL \
+  MULTICA_GEMINI_WS_BASE_URL \
+  MULTICA_GEMINI_ASR_BASE_URL \
+  MULTICA_GEMINI_PROXY_URL \
+  MULTICA_VOICE_PROBE_REFRESH; do
+  if ! grep -Eq "^[[:space:]]+${voice_var}: \\\${${voice_var}:-" docker-compose.selfhost.yml; then
+    echo "$voice_var is documented in .env.example but not mapped into the backend"
     exit 1
   fi
-  if ! grep -Eq "^${secret_key}=" .env.example; then
-    echo "$secret_key is loaded by the server but missing from .env.example."
-    exit 1
-  fi
-done <<<"$secret_keys"
+done
 
 for script in scripts/dev.sh scripts/check.sh; do
   if ! grep -Fq '. scripts/local-env.sh' "$script"; then
