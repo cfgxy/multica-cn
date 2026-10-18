@@ -218,6 +218,36 @@ func TestRunActivityProgressSeparatesSnapshotAndNewEvidence(t *testing.T) {
 	}
 }
 
+func TestRunActivityWorkerDeltaAdvancesOnlyAfterCursor(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    string
+		hadCursor bool
+		stdout    string
+		stderr    string
+		want      string
+	}{
+		{name: "new worker bytes advance", status: "no_recent_evidence", hadCursor: true, stdout: "output", want: "advancing"},
+		{name: "first snapshot is baseline", status: "no_recent_evidence", stdout: "initial", want: "no_recent_evidence"},
+		{name: "unchanged cursor has no delta", status: "no_recent_evidence", hadCursor: true, want: "no_recent_evidence"},
+		{name: "finished remains finished", status: "finished", hadCursor: true, stderr: "exit", want: "finished"},
+		{name: "waiting remains waiting", status: "waiting", hadCursor: true, stdout: "output", want: "waiting"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := runActivityResponse{}
+			resp.ProgressAssessment.Status = tt.status
+			applyWorkerEvidenceProgress(&resp, tt.hadCursor, tt.stdout, tt.stderr)
+			if resp.ProgressAssessment.Status != tt.want {
+				t.Fatalf("status = %q, want %q", resp.ProgressAssessment.Status, tt.want)
+			}
+			if tt.want == "advancing" && len(resp.ProgressAssessment.Basis) != 1 || tt.want != "advancing" && len(resp.ProgressAssessment.Basis) != 0 {
+				t.Fatalf("basis = %v", resp.ProgressAssessment.Basis)
+			}
+		})
+	}
+}
+
 func TestRunActivityMessageIsRedactedAndBounded(t *testing.T) {
 	secret := "ghp_" + strings.Repeat("a", 36)
 	message := boundRunActivityMessage(runActivityMessage{
