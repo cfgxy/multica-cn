@@ -83,6 +83,7 @@ describe("bucketDiagnosticPath", () => {
   it("keeps static segments that share a slot with an id", () => {
     expect(bucketDiagnosticPath("/acme/agents/new")).toBe("/:slug/agents/new");
     expect(bucketDiagnosticPath("/acme/agents")).toBe("/:slug/agents");
+    expect(bucketDiagnosticPath("/acme/audit")).toBe("/:slug/audit");
   });
 
   it("keeps pre-workspace routes intact", () => {

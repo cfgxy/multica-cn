@@ -104,6 +104,7 @@ const PAGE_KEYWORDS: Record<WorkspacePageKey, string[]> = {
   decisions: ["decisions", "decision inbox", "decision cards", "决策", "决策中心", "决策卡"],
   suspensions: ["suspensions", "suspended", "waiting", "挂起", "挂起中心", "等待"],
   settings: ["settings", "config", "preferences", "设置", "配置"],
+  audit: ["audit", "mcp audit", "audit records", "审计", "审计记录"],
   admin: ["admin", "super admin", "manage users", "管理", "超级管理员"],
 };
 
