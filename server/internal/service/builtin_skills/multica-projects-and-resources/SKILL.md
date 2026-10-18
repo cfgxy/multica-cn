@@ -28,7 +28,7 @@ A project's `description` is also durable context: when an issue (or a quick-cre
 
 Common resource types:
 
-- `github_repo` — durable GitHub repo context, with `resource_ref.url`, optional checkout `ref`, and optional prompt-only `default_branch_hint`;
+- `github_repo` — durable GitHub repo context, with canonical `resource_ref.url`, optional confirmed fork `upstream` GitHub URL (stored normalized as `owner/repo`), checkout `ref`, and prompt-only `default_branch_hint`;
 - `local_directory` — daemon-local path context, with `resource_ref.local_path`, `daemon_id`, optional label, and
   optional `execution_mode` (`in_place`, the default, or `worktree`).
 
@@ -45,11 +45,13 @@ multica project update <project-id> --start-date "" --output json   # clear the 
 multica project status <project-id> in_progress --output json
 multica project resource list <project-id> --output json
 multica project resource add <project-id> --type github_repo --url <github-url> --output json
+multica project resource add <project-id> --type github_repo --url <fork-url> --upstream <confirmed-upstream-url> --output json
 multica project resource add <project-id> --type github_repo --url <github-url> --ref <branch-or-sha> --output json
 multica project resource add <project-id> --type local_directory --local-path <abs-path> --daemon-id <daemon-id> --output json
 multica project resource add <project-id> --type local_directory --local-path <abs-path> --daemon-id <daemon-id> --execution-mode worktree --output json
 multica project resource update <project-id> <resource-id> --execution-mode in_place --output json
 multica project resource update <project-id> <resource-id> --url <new-github-url> --output json
+multica project resource update <project-id> <resource-id> --upstream <confirmed-upstream-url> --output json
 multica project resource update <project-id> <resource-id> --ref <branch-or-sha> --output json
 multica project resource remove <project-id> <resource-id> --output json
 ```
@@ -76,6 +78,8 @@ not advertise the capability — the fix is updating the Multica app there, then
 it back to the default.
 
 For `github_repo`, non-JSON `--ref` sets `resource_ref.ref`, the default checkout branch/tag/SHA for future tasks in that project. JSON `--ref '<json>'` remains the escape hatch for full payloads or resource types not covered by shortcuts.
+
+The bound `url` is the canonical writable repository. `resource_ref.upstream` / `--upstream` is an explicit maintainer confirmation for a fork parent and accepts only a GitHub repository URL different from the canonical URL; it is stored as normalized `owner/repo`. Do not infer the parent from remote names or GitHub metadata. When the parent is unknown, omit `--upstream`; normal write guards then reject any remote not matching the canonical repository. Codex task startup materializes the versioned RUYI-401 `gh-pr-guard` and RUYI-403 `git-push-guard` with one task-scoped policy file.
 
 `--start-date` / `--due-date` are optional calendar days (`YYYY-MM-DD`, like issue dates). On `project update`, pass an empty string (`--start-date ""`) to clear a date; an unset flag leaves it untouched.
 
