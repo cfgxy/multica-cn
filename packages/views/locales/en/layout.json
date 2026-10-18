@@ -109,6 +109,7 @@
       "result_error_code": "Result error code",
       "target_type": "Target type (workspace/issue/host)",
       "target_id": "Target ID",
+      "target_pair_required": "Choose both a target type and target ID, or clear both.",
       "permission_denied": "You do not have permission to view workspace audit events.",
       "service_failed": "The audit service is unavailable. Try again.",
       "retry": "Retry",
