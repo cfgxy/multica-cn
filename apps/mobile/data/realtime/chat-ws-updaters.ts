@@ -255,8 +255,21 @@ export function seedPendingTaskFromQueued(
   payload: TaskQueuedPayload,
 ) {
   if (!payload.chat_session_id) return;
-  // A follow-up can be queued while another task is active. The event does
-  // not carry enough queue state to replace that active head safely.
+  // The event is sparse, but it is enough to make the compact queue visible
+  // immediately. Keep the active head intact and let the refetch fill the
+  // queued message preview and server ordering.
+  qc.setQueryData<ChatPendingTask>(
+    chatKeys.pendingTask(payload.chat_session_id),
+    (old) => enqueuePendingChatTask(
+      old,
+      {
+        task_id: payload.task_id,
+        status: payload.status,
+        created_at: "",
+      },
+      true,
+    ),
+  );
   invalidatePendingTask(qc, payload.chat_session_id);
 }
 
