@@ -318,6 +318,7 @@ func (h *Handler) auditFileAccessDenied(ctx context.Context, workspaceID, runtim
 		return
 	}
 	service.TryAppendAuditEvents(ctx, h.Queries, service.Event{
+		ID:          dbid.NewV7(),
 		WorkspaceID: workspaceID,
 		Domain:      service.AuditDomainRuntime,
 		EventType:   service.AuditRuntimeFileAccessDenied,

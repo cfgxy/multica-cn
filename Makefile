@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc audit env-exec api-dev web-dev web-release desktop-dev mcp-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-render mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
+.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc audit env-exec api-dev web-dev web-release desktop-dev desktop-build android-build mcp-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-render mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
 ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $(WORKTREE_ENV_FILE)),$(WORKTREE_ENV_FILE),$(MAIN_ENV_FILE)))
@@ -615,6 +615,14 @@ web-release: ## Serve the prebuilt Next.js production bundle for the current env
 
 desktop-dev: ## Run only the Electron desktop app for the current env file
 	pnpm dev:desktop
+
+desktop-build: ## Compile the Electron desktop app and its bundled CLI
+	pnpm --filter @multica/desktop build
+
+APP_ENV ?= production
+android-build: ## Prebuild and compile the Android release APK (APP_ENV=production|staging)
+	cd apps/mobile && pnpm exec dotenv -e .env.$(APP_ENV) -- cross-env APP_ENV=$(APP_ENV) expo prebuild -p android
+	cd apps/mobile/android && EXPO_NO_BUNDLE_SPLITTING=1 ./gradlew assembleRelease --build-cache --parallel --no-daemon
 
 # Dev-slot MCP Node (RUYI-428): behind the web /api/mcp rewrite. --server-url
 # overrides the env file's daemon-shaped ws://.../ws MULTICA_SERVER_URL with
