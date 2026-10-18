@@ -1,13 +1,19 @@
 // @vitest-environment jsdom
 
-import { act, render } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RichContentScrollRootProvider } from "./scroll-root";
+import { IssueReferenceLayoutProvider } from "./issue-reference-layout";
 
 vi.mock("./issue-reference-footer", () => ({
-  IssueReferenceTail: ({ content }: { content: string }) => (
-    <div data-reference-content="">{content}</div>
+  useIssueReferences: (content: string) => content ? [{ form: "identifier", ref: content }] : [],
+  IssueReferenceFooter: ({ references }: { references: { ref: string }[] }) => (
+    <div data-reference-content="">{references[0]?.ref}</div>
   ),
+}));
+
+vi.mock("@multica/core/paths", () => ({
+  useCurrentWorkspace: () => ({ id: "ws", issue_prefix: "RUYI" }),
 }));
 
 import { LazyIssueReferenceTail } from "./lazy-issue-reference-tail";
@@ -18,6 +24,7 @@ describe("LazyIssueReferenceTail", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     observers = [];
+    vi.stubGlobal("scrollBy", vi.fn());
     class Observer {
       disconnect = vi.fn();
       constructor(readonly callback: IntersectionObserverCallback) {
@@ -39,7 +46,7 @@ describe("LazyIssueReferenceTail", () => {
 
     act(() => {
       observers[0]!.callback(
-        [{ isIntersecting: true, target: shell } as IntersectionObserverEntry],
+        [{ isIntersecting: true, target: shell } as unknown as IntersectionObserverEntry],
         {} as IntersectionObserver,
       );
     });
@@ -47,14 +54,14 @@ describe("LazyIssueReferenceTail", () => {
 
     act(() => {
       observers[0]!.callback(
-        [{ isIntersecting: false, target: shell } as IntersectionObserverEntry],
+        [{ isIntersecting: false, target: shell } as unknown as IntersectionObserverEntry],
         {} as IntersectionObserver,
       );
     });
     expect(container.querySelector("[data-reference-content]")).toBeNull();
   });
 
-  it("preserves the visible position when a footer mounts and unmounts above a find hit", () => {
+  it("preserves measured space when a footer leaves the viewport", () => {
     let scrollTop = 900;
     vi.stubGlobal("scrollY", 900);
     const scrollBy = vi.fn((_x: number, y: number) => {
@@ -77,12 +84,12 @@ describe("LazyIssueReferenceTail", () => {
     } as DOMRect);
     Object.defineProperty(shell, "scrollHeight", {
       configurable: true,
-      get: () => container.querySelector("[data-reference-content]") ? 600 : 0,
+      get: () => container.querySelector("[data-reference-content]") ? 600 : Number.parseFloat((shell as HTMLElement).style.height) || 0,
     });
 
     act(() => {
       observers[0]!.callback(
-        [{ isIntersecting: true, target: shell } as IntersectionObserverEntry],
+        [{ isIntersecting: true, target: shell } as unknown as IntersectionObserverEntry],
         {} as IntersectionObserver,
       );
     });
@@ -93,13 +100,14 @@ describe("LazyIssueReferenceTail", () => {
 
     act(() => {
       observers[0]!.callback(
-        [{ isIntersecting: false, target: shell } as IntersectionObserverEntry],
+        [{ isIntersecting: false, target: shell } as unknown as IntersectionObserverEntry],
         {} as IntersectionObserver,
       );
     });
 
-    expect(scrollBy).toHaveBeenLastCalledWith(0, -600);
-    expect(scrollTop).toBe(900);
+    expect((shell as HTMLElement).style.height).toBe("600px");
+    expect(scrollBy).toHaveBeenCalledTimes(1);
+    expect(scrollTop).toBe(1500);
     expect(container.querySelector("[data-reference-content]")).toBeNull();
   });
 
@@ -189,7 +197,7 @@ describe("LazyIssueReferenceTail", () => {
 
       act(() => {
         observers[0]!.callback(
-          [{ isIntersecting: true, target: shell } as IntersectionObserverEntry],
+          [{ isIntersecting: true, target: shell } as unknown as IntersectionObserverEntry],
           {} as IntersectionObserver,
         );
       });
@@ -327,6 +335,97 @@ describe("LazyIssueReferenceTail", () => {
 
     expect(scrollTop).toBe(1100);
     expect(findHit.getBoundingClientRect().top).toBe(initialHitTop);
+  });
+
+  it("reuses Activity measurements after virtual row remount, but not after content, width or page changes", () => {
+    let show = true;
+    let content = "RUYI-10";
+    let page = "page-a";
+    let width = 640;
+    const view = () => (
+      <IssueReferenceLayoutProvider key={page}>
+        {show ? <LazyIssueReferenceTail content={content} /> : null}
+      </IssueReferenceLayoutProvider>
+    );
+    const { container, rerender } = render(view());
+    let shell = container.querySelector<HTMLElement>("[data-issue-reference-tail-shell]")!;
+    Object.defineProperty(shell, "clientWidth", { configurable: true, get: () => width });
+    Object.defineProperty(shell, "scrollHeight", { configurable: true, get: () => 120 });
+    act(() => observers.at(-1)!.callback(
+      [{ isIntersecting: true, target: shell } as unknown as IntersectionObserverEntry], {} as IntersectionObserver,
+    ));
+    show = false;
+    rerender(view());
+    const widthSpy = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(() => width);
+    show = true;
+    rerender(view());
+    shell = container.querySelector<HTMLElement>("[data-issue-reference-tail-shell]")!;
+    expect(shell.style.height).toBe("120px");
+    expect(shell.querySelector("[data-reference-content]")).toBeNull();
+
+    content = "RUYI-11";
+    rerender(view());
+    expect(shell.style.height).toBe("");
+    expect(shell.querySelector("[data-issue-reference-placeholder]")).not.toBeNull();
+    content = "RUYI-10";
+    rerender(view());
+    expect(shell.style.height).toBe("120px");
+    show = false;
+    rerender(view());
+    width = 320;
+    show = true;
+    rerender(view());
+    shell = container.querySelector<HTMLElement>("[data-issue-reference-tail-shell]")!;
+    expect(shell.style.height).toBe("");
+    width = 640;
+    page = "page-b";
+    rerender(view());
+    shell = container.querySelector<HTMLElement>("[data-issue-reference-tail-shell]")!;
+    expect(shell.style.height).toBe("");
+    widthSpy.mockRestore();
+  });
+
+  it("updates the reserved space when asynchronously resolved content changes height", () => {
+    const resizeCallbacks: ResizeObserverCallback[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resizeCallbacks.push(callback); }
+      observe() {}
+      disconnect() {}
+    });
+    const { container } = render(<LazyIssueReferenceTail content="RUYI-12" />);
+    const shell = container.querySelector<HTMLElement>("[data-issue-reference-tail-shell]")!;
+    let height = 80;
+    Object.defineProperty(shell, "scrollHeight", { get: () => height });
+    act(() => observers[0]!.callback(
+      [{ isIntersecting: true, target: shell } as unknown as IntersectionObserverEntry], {} as IntersectionObserver,
+    ));
+    height = 140;
+    act(() => resizeCallbacks.at(-1)!([], {} as ResizeObserver));
+    act(() => observers[0]!.callback(
+      [{ isIntersecting: false, target: shell } as unknown as IntersectionObserverEntry], {} as IntersectionObserver,
+    ));
+    expect(shell.style.height).toBe("140px");
+  });
+
+  it("invalidates an offscreen measurement when typography changes", async () => {
+    const { container } = render(<LazyIssueReferenceTail content="RUYI-13" />);
+    const shell = container.querySelector<HTMLElement>("[data-issue-reference-tail-shell]")!;
+    Object.defineProperty(shell, "scrollHeight", { get: () => 80 });
+    act(() => observers[0]!.callback(
+      [{ isIntersecting: true, target: shell } as unknown as IntersectionObserverEntry], {} as IntersectionObserver,
+    ));
+    act(() => observers[0]!.callback(
+      [{ isIntersecting: false, target: shell } as unknown as IntersectionObserverEntry], {} as IntersectionObserver,
+    ));
+    expect(shell.style.height).toBe("80px");
+    document.documentElement.style.fontSize = "20px";
+    await waitFor(() => expect(shell.style.height).toBe(""));
+    document.documentElement.style.removeProperty("font-size");
+  });
+
+  it("does not reserve space for content without references", () => {
+    const { container } = render(<LazyIssueReferenceTail content="" />);
+    expect(container.querySelector("[data-issue-reference-placeholder]")).toBeNull();
   });
 
   it("falls back to mounting when IntersectionObserver is unavailable", async () => {

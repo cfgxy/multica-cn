@@ -237,16 +237,20 @@ function IssueReferenceFooter({ references }: { references: IssueReference[] }) 
  * mount this — one extraction and one dedup policy, no per-surface fork.
  * Nothing renders when there are no references.
  */
-function IssueReferenceTail({ content }: { content: string }) {
+export function useIssueReferences(content: string): IssueReference[] {
   const workspace = useCurrentWorkspace();
   const workspacePrefix = workspace?.issue_prefix || null;
-  const references = useMemo(
+  return useMemo(
     () =>
       dedupeIssueReferences(
         extractIssueReferences(content, { workspacePrefix }),
       ),
     [content, workspacePrefix],
   );
+}
+
+function IssueReferenceTail({ content }: { content: string }) {
+  const references = useIssueReferences(content);
   if (references.length === 0) return null;
   return <IssueReferenceFooter references={references} />;
 }

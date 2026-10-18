@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { IssueReferenceTail } from "./issue-reference-footer";
+import type { IssueReference } from "@multica/core/markdown";
+import { IssueReferenceFooter, useIssueReferences } from "./issue-reference-footer";
+import { useCurrentWorkspace } from "@multica/core/paths";
+import { useCurrentIssueRenderContext } from "../issues/current-issue-render-context";
+import { saveTailMeasurement, useIssueReferenceMeasurements } from "./issue-reference-layout";
 import { useRichContentScrollRoot } from "./scroll-root";
 
 type ScrollAdjustment = { manual: number; claimed: number };
@@ -18,9 +22,30 @@ function getScrollAdjustment(target: object): ScrollAdjustment {
 }
 
 export function LazyIssueReferenceTail({ content }: { content: string }) {
+  const references = useIssueReferences(content);
+  if (references.length === 0) return null;
+  return <MeasuredIssueReferenceTail content={content} references={references} />;
+}
+
+function MeasuredIssueReferenceTail({ content, references }: { content: string; references: IssueReference[] }) {
   const root = useRichContentScrollRoot();
+  const workspace = useCurrentWorkspace();
+  const issue = useCurrentIssueRenderContext();
+  const sharedMeasurements = useIssueReferenceMeasurements();
+  const localMeasurements = useRef<NonNullable<ReturnType<typeof useIssueReferenceMeasurements>>>(new Map());
+  const measurements = sharedMeasurements ?? localMeasurements.current;
+  const cacheKey = JSON.stringify([workspace?.id, workspace?.issue_prefix, issue?.id, content]);
+  const [layout, setLayout] = useState("");
+  const [measurementRevision, setMeasurementRevision] = useState(0);
+  const cached = measurements.get(cacheKey);
+  const reservedHeight = cached?.layout === layout ? cached.height : undefined;
+  const estimatedRows = references.filter((reference) =>
+    !((reference.form === "mention" && reference.ref === issue?.id) ||
+      (reference.form === "identifier" && reference.ref === issue?.identifier)),
+  ).length;
   const ref = useRef<HTMLDivElement>(null);
   const [nearViewport, setNearViewport] = useState(false);
+  const visibility = useRef(false);
   const mountedHeight = useRef(0);
   const pendingScroll = useRef<{
     top: number;
@@ -31,6 +56,42 @@ export function LazyIssueReferenceTail({ content }: { content: string }) {
     selectionText: string;
     selectionTop: number | null;
   } | null>(null);
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const inspect = () => {
+      const style = getComputedStyle(element);
+      const signature = JSON.stringify([
+        element.clientWidth, style.font, style.letterSpacing,
+        style.getPropertyValue("--text-body"),
+        style.getPropertyValue("--text-body--line-height"),
+        style.getPropertyValue("--text-micro--line-height"),
+        getComputedStyle(document.documentElement).fontSize,
+      ]);
+      setLayout(signature);
+      if (nearViewport) {
+        const height = element.scrollHeight;
+        const previous = measurements.get(cacheKey);
+        if (previous?.layout !== signature || previous.height !== height) {
+          saveTailMeasurement(measurements, cacheKey, { layout: signature, height });
+          setMeasurementRevision((revision) => revision + 1);
+        }
+      }
+    };
+    inspect();
+    const resize = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(inspect);
+    resize?.observe(element);
+    const attributes = new MutationObserver(inspect);
+    attributes.observe(document.documentElement, { attributes: true });
+    attributes.observe(document.body, { attributes: true });
+    document.fonts?.addEventListener("loadingdone", inspect);
+    return () => {
+      resize?.disconnect();
+      attributes.disconnect();
+      document.fonts?.removeEventListener("loadingdone", inspect);
+    };
+  }, [nearViewport, cacheKey, measurements]);
 
   useLayoutEffect(() => {
     const element = ref.current;
@@ -90,7 +151,7 @@ export function LazyIssueReferenceTail({ content }: { content: string }) {
       root.scrollTop += correction;
     }
     if (adjustment) adjustment.manual += correction;
-  }, [nearViewport, root]);
+  }, [nearViewport, root, layout, measurementRevision]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.IntersectionObserver) {
@@ -103,7 +164,8 @@ export function LazyIssueReferenceTail({ content }: { content: string }) {
     const observer = new IntersectionObserver(
       (entries) => {
         const entry = entries.find((candidate) => candidate.target === element);
-        if (entry) {
+        if (entry && entry.isIntersecting !== visibility.current) {
+          visibility.current = entry.isIntersecting;
           const adjustment = getScrollAdjustment(root ?? window);
           const selection = window.getSelection();
           const selectionRange = selection && !selection.isCollapsed
@@ -128,8 +190,18 @@ export function LazyIssueReferenceTail({ content }: { content: string }) {
   }, [root]);
 
   return (
-    <div ref={ref} data-issue-reference-tail-shell="">
-      {nearViewport ? <IssueReferenceTail content={content} /> : null}
+    <div
+      ref={ref}
+      data-issue-reference-tail-shell=""
+      style={{ display: "flow-root", height: nearViewport ? undefined : reservedHeight }}
+    >
+      {nearViewport ? <IssueReferenceFooter references={references} /> : reservedHeight === undefined && estimatedRows > 0 ? (
+        <div
+          aria-hidden="true"
+          data-issue-reference-placeholder=""
+          style={{ height: `calc(0.75rem + 2px + var(--text-micro--line-height, 15px) + 1rem + ${estimatedRows} * (max(15px, var(--text-body--line-height, 20px)) + 1rem + 1px))` }}
+        />
+      ) : null}
     </div>
   );
 }
