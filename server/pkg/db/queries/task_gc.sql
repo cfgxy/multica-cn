@@ -10,23 +10,10 @@ SELECT q.id, q.runtime_id, q.agent_id, q.issue_id, q.chat_session_id,
        COALESCE(current_work.work_dir, '')::text AS current_work_dir,
        COALESCE(current_work.id::text, '')::text AS current_task_id,
        EXISTS (
-           SELECT 1 FROM human_request request
-           JOIN agent_task_queue source ON source.id = request.source_task_id
-           WHERE request.workspace_id = a.workspace_id
-             AND request.agent_id = q.agent_id
-             AND source.runtime_id = q.runtime_id
-			 AND source.agent_id = q.agent_id
-             AND request.issue_id IS NOT DISTINCT FROM q.issue_id
-             AND request.chat_session_id IS NOT DISTINCT FROM q.chat_session_id
-             AND (q.issue_id IS NOT NULL OR q.chat_session_id IS NOT NULL OR request.source_task_id = q.id)
-             AND request.status = 'pending' AND request.expires_at > now()
-             AND source.status NOT IN ('failed', 'cancelled')
-			 AND (q.issue_id IS NULL OR i.id IS NOT NULL)
-			 AND (q.chat_session_id IS NULL OR EXISTS (
-				 SELECT 1 FROM chat_session chat WHERE chat.id = q.chat_session_id
-				 AND chat.workspace_id = a.workspace_id AND chat.status = 'active'
-			 ))
-       )::boolean AS waiting_human,
+           SELECT 1
+           WHERE i.metadata ->> 'outerloop_state' = 'waiting_human'
+              OR q.failure_reason = 'agent_blocked'
+       ) AS waiting_human,
        COALESCE((a.archived_at IS NULL AND (
            q.issue_id IS NULL
            OR (a.runtime_id = q.runtime_id AND i.assignee_type = 'agent' AND i.assignee_id = q.agent_id)
