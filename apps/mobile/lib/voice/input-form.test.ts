@@ -12,6 +12,7 @@ const base: InputShapeInput = {
   allowStop: true,
   allowSubmitWhileRunning: false,
   hasDraft: false,
+  busy: false,
   dictationOpen: false,
   voice: "available",
 };
@@ -50,7 +51,6 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
       dictation: false,
       pill: false,
       rightSlot: "voice",
-      showStopAction: false,
     });
   });
 
@@ -73,7 +73,7 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
     ).toBe("send");
   });
 
-  it("发送中 → stop；队列可用时并列保留直接停止入口", () => {
+  it("停止操作优先于草稿发送；不支持停止时仍可提交队列", () => {
     expect(resolveInputShape({ ...base, sending: true }).rightSlot).toBe(
       "stop",
     );
@@ -82,11 +82,29 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
       sending: true,
       allowSubmitWhileRunning: true,
       hasDraft: true,
-    })).toMatchObject({ rightSlot: "send", showStopAction: true });
+    })).toMatchObject({ rightSlot: "stop" });
+    expect(resolveInputShape({
+      ...base,
+      sending: true,
+      allowSubmitWhileRunning: true,
+      hasDraft: false,
+    }).rightSlot).toBe("stop");
     expect(
       resolveInputShape({ ...base, sending: true, allowStop: false })
         .rightSlot,
     ).toBe("voice");
+    expect(resolveInputShape({
+      ...base,
+      sending: true,
+      allowStop: false,
+      allowSubmitWhileRunning: true,
+      hasDraft: true,
+    }).rightSlot).toBe("send");
+  });
+
+  it("上传或提交中隐藏语音入口", () => {
+    expect(resolveInputShape({ ...base, busy: true }).rightSlot).toBe("muted-send");
+    expect(resolveInputShape({ ...base, busy: true, hasDraft: true }).rightSlot).toBe("send");
   });
 
   it("disabled → pill（R1 语义），优先于一切", () => {
@@ -94,7 +112,6 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
       dictation: false,
       pill: true,
       rightSlot: "muted-send",
-      showStopAction: false,
     });
     expect(
       resolveInputShape({ ...base, disabled: true, dictationOpen: true }).pill,
@@ -106,7 +123,6 @@ describe("resolveInputShape（板1 形态矩阵）", () => {
       dictation: true,
       pill: false,
       rightSlot: "send",
-      showStopAction: false,
     });
     expect(
       resolveInputShape({ ...base, dictationOpen: true, sending: true })

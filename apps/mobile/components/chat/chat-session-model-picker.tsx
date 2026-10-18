@@ -14,9 +14,10 @@ interface Props {
   agentModel: string | null;
   disabled: boolean;
   onSelect: (model: string | null) => Promise<void>;
+  embedded?: boolean;
 }
 
-export function ChatSessionModelPicker({ runtimeId, modelOverride, agentModel, disabled, onSelect }: Props) {
+export function ChatSessionModelPicker({ runtimeId, modelOverride, agentModel, disabled, onSelect, embedded = false }: Props) {
   const { t } = useT("chat");
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
@@ -39,7 +40,9 @@ export function ChatSessionModelPicker({ runtimeId, modelOverride, agentModel, d
           disabled={disabled}
           accessibilityRole="button"
           accessibilityLabel={t("mobile.model.current", "Current model: {{model}}", { model: currentLabel })}
-          className="mx-3 my-1 min-h-10 flex-row items-center gap-2 self-start rounded-md border border-border bg-background px-3 active:opacity-70 disabled:opacity-50"
+          className={embedded
+            ? "min-h-11 w-full flex-row items-center gap-2 rounded-md border border-border bg-secondary px-3 active:opacity-70 disabled:opacity-50"
+            : "mx-3 my-1 min-h-10 flex-row items-center gap-2 self-start rounded-md border border-border bg-background px-3 active:opacity-70 disabled:opacity-50"}
         >
           <Ionicons name="hardware-chip-outline" size={16} color={theme.mutedForeground} />
           <Text numberOfLines={1} className="max-w-64 text-xs text-foreground">{currentLabel}</Text>
@@ -62,7 +65,7 @@ export function ChatSessionModelPicker({ runtimeId, modelOverride, agentModel, d
         )) : null}
         {models.isLoading ? <DropdownMenuItem disabled><Text>{t("mobile.model.loading", "Loading models…")}</Text></DropdownMenuItem> : null}
         {models.isError ? <DropdownMenuItem disabled><Text>{t("mobile.model.load_failed", "Could not load models")}</Text></DropdownMenuItem> : null}
-        {models.data?.supported === false ? <DropdownMenuItem disabled><Text>{t("mobile.model.unsupported", "This runtime does not support model selection")}</Text></DropdownMenuItem> : null}
+        {models.data?.supported === false ? <DropdownMenuItem disabled><Text>{t("mobile.model.unsupported", "Runtime does not support model selection")}</Text></DropdownMenuItem> : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

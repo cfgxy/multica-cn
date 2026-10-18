@@ -108,7 +108,6 @@ describe("ChatQueuePanel", () => {
       />,
     );
 
-    expect(screen.getByText("1 queued message")).toBeTruthy();
     expect(screen.getByLabelText("1 queued message")).toBeTruthy();
     fireEvent.press(screen.getByLabelText("Clear all"));
     const [title, body, buttons] = alertSpy.mock.calls.at(-1)!;
@@ -116,6 +115,26 @@ describe("ChatQueuePanel", () => {
     expect(body).toBe("This removes queued messages only. The current task will keep running.");
     expect(buttons?.[0]?.text).toBe("Cancel");
     alertSpy.mockRestore();
+  });
+
+  it("keeps the queue compact until expanded, then exposes every queued action", async () => {
+    await render(
+      <ChatQueuePanel
+        pendingTask={pendingTask()}
+        maxHeight={160}
+        canManage
+        onClear={jest.fn(async () => {})}
+        onEdit={jest.fn(async () => {})}
+        onRemove={jest.fn(async () => {})}
+        onPrioritize={jest.fn(async () => {})}
+      />,
+    );
+    expect(screen.getByText(/Long queued message/)).toBeTruthy();
+    expect(screen.queryByText("Edit queued message")).toBeNull();
+    fireEvent.press(screen.getByLabelText("1 queued message"));
+    expect(await screen.findByText("Edit queued message")).toBeTruthy();
+    expect(screen.getByText("Remove queued message")).toBeTruthy();
+    expect(screen.getByText("Send now")).toBeTruthy();
   });
 
   it("disables queue management when the session cannot be managed", async () => {
@@ -134,6 +153,8 @@ describe("ChatQueuePanel", () => {
     );
 
     const alertSpy = jest.spyOn(Alert, "alert");
+    fireEvent.press(screen.getByLabelText("1 queued message"));
+    await screen.findByText("Edit queued message");
     fireEvent.press(screen.getByLabelText("Clear all"));
     fireEvent.press(screen.getByText("Edit queued message"));
     expect(alertSpy).not.toHaveBeenCalled();
@@ -159,6 +180,8 @@ describe("ChatQueuePanel", () => {
       />,
     );
 
+    fireEvent.press(screen.getByLabelText("1 queued message"));
+    await screen.findByText("Edit queued message");
     fireEvent.press(screen.getByLabelText("Clear all"));
     const confirm = alertSpy.mock.calls.at(-1)?.[2]?.find((button) => button.style === "destructive");
     expect(confirm).toBeTruthy();

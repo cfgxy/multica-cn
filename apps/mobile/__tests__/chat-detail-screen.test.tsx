@@ -45,9 +45,8 @@ const mockSeenMessageOptionIds = [];
 const mockMarkReadMutate = jest.fn();
 const mockDeleteMutate = jest.fn();
 const mockCreateMutateAsync = jest.fn();
+const mockUpdateSessionMutateAsync = jest.fn();
 const mockInvalidateQueries = jest.fn();
-const mockModelSelectHandler = { current: null as null | ((model: string | null) => Promise<void>) };
-const mockModelDisabledState = { current: false };
 const mockSetSessionQueryData = jest.fn();
 const mockSetChatSessionModel = jest.fn();
 const mockArchivedAgentIds = new Set<string>();
@@ -80,6 +79,8 @@ jest.mock("@tanstack/react-query", () => ({
             name: "Alpha",
             archived_at: mockArchivedAgentIds.has("agent-1") ? "2026-10-17T00:00:00Z" : null,
             runtime_bound: true,
+            runtime_id: "runtime-1",
+            model: "agent-model",
             owner_id: "user-1",
             permission_mode: "public_to",
             invocation_targets: [{ target_type: "workspace", target_id: "ws-1" }],
@@ -92,6 +93,8 @@ jest.mock("@tanstack/react-query", () => ({
             name: "Beta",
             archived_at: mockArchivedAgentIds.has("agent-2") ? "2026-10-17T00:00:00Z" : null,
             runtime_bound: true,
+            runtime_id: "runtime-2",
+            model: "agent-model",
             owner_id: "user-1",
             permission_mode: "public_to",
             invocation_targets: [{ target_type: "workspace", target_id: "ws-1" }],
@@ -154,8 +157,13 @@ jest.mock("@/data/queries/members", () => ({
   memberListOptions: (wsId) => ({ queryKey: ["members", wsId], queryFn: jest.fn() }),
 }));
 
+jest.mock("@/data/queries/projects", () => ({
+  projectListOptions: (wsId) => ({ queryKey: ["projects", wsId, "list"], queryFn: jest.fn() }),
+}));
+
 jest.mock("@/data/mutations/chat", () => ({
   useCreateChatSession: () => ({ mutateAsync: mockCreateMutateAsync }),
+  useUpdateChatSession: () => ({ mutateAsync: mockUpdateSessionMutateAsync }),
   useDeleteChatSession: () => ({ mutate: mockDeleteMutate }),
   useMarkChatSessionRead: () => ({ mutate: mockMarkReadMutate }),
   useSetChatSessionArchived: () => ({ mutate: jest.fn() }),
@@ -288,17 +296,9 @@ jest.mock("@/components/chat/chat-composer", () => {
 
 jest.mock("@/components/chat/chat-session-model-picker", () => {
   const React = jest.requireActual<typeof import("react")>("react");
-  const { Pressable, Text } = jest.requireActual<typeof import("react-native")>("react-native");
+  const { Text } = jest.requireActual<typeof import("react-native")>("react-native");
   return {
-    ChatSessionModelPicker: ({ disabled, onSelect }) => {
-      mockModelSelectHandler.current = onSelect;
-      mockModelDisabledState.current = disabled;
-      return React.createElement(Pressable, {
-        testID: "model-picker",
-        disabled,
-        onPress: () => void onSelect("requested-model"),
-      }, React.createElement(Text, null, "Model picker"));
-    },
+    ChatSessionModelPicker: () => React.createElement(Text, { testID: "model-picker" }, "Model picker"),
   };
 });
 
@@ -414,8 +414,6 @@ function seedWorld() {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockModelSelectHandler.current = null;
-  mockModelDisabledState.current = false;
   mockQueueCanManage.current = false;
   mockPendingTask.current = null;
   mockComposerProps.current = null;
@@ -479,21 +477,25 @@ describe("ChatDetailScreen (RUYI-496)", () => {
     ]);
   });
 
-  it("serializes model changes and only applies the server-confirmed override", async () => {
+  it("passes model selection through the composer and only applies the server-confirmed override", async () => {
     const alertSpy = jest.spyOn(Alert, "alert");
     let resolveModel!: (session: { id: string; model_override: string | null }) => void;
     let firstSelection!: Promise<void>;
     mockSetChatSessionModel.mockImplementation(() => new Promise((resolve) => { resolveModel = resolve; }));
     await render(<ChatDetailScreen />);
+    expect(screen.queryByTestId("model-picker")).toBeNull();
+    expect(mockComposerProps.current.modelRuntimeId).toBe("runtime-1");
+    expect(mockComposerProps.current.agentModel).toBe("agent-model");
+    expect(mockComposerProps.current.onModelSelect).toEqual(expect.any(Function));
 
     await act(async () => {
-      firstSelection = mockModelSelectHandler.current!("requested-model");
-      void mockModelSelectHandler.current!("other-model");
+      firstSelection = mockComposerProps.current.onModelSelect("requested-model");
+      void mockComposerProps.current.onModelSelect("other-model");
       await Promise.resolve();
     });
     expect(mockSetChatSessionModel).toHaveBeenCalledTimes(1);
     expect(mockSetChatSessionModel).toHaveBeenCalledWith("sa", "requested-model");
-    expect(mockModelDisabledState.current).toBe(true);
+    expect(mockComposerProps.current.modelDisabled).toBe(true);
     expect(mockSetSessionQueryData).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -509,7 +511,7 @@ describe("ChatDetailScreen (RUYI-496)", () => {
         ? { ...session, model_override: "server-confirmed-model" }
         : session),
     );
-    expect(mockModelDisabledState.current).toBe(false);
+    expect(mockComposerProps.current.modelDisabled).toBe(false);
     alertSpy.mockRestore();
   });
 
@@ -542,6 +544,19 @@ describe("ChatDetailScreen (RUYI-496)", () => {
     expect(mockSeenMessageOptionIds).toContain(null);
     expect(mockCreateMutateAsync).not.toHaveBeenCalled();
     expect(screen.getByTestId("chat-composer")).toBeTruthy();
+  });
+
+  it("wires the skill picker and project context into a new-chat composer", async () => {
+    mockRoute.sessionId = "new";
+    await render(<ChatDetailScreen />);
+    expect(mockComposerProps.current.skillPickerPath).toEqual({
+      pathname: "/[workspace]/skill-picker",
+      params: { workspace: "acme" },
+    });
+    await act(async () => {
+      await mockComposerProps.current.onProjectChange("project-1");
+    });
+    expect(mockComposerProps.current.projectId).toBe("project-1");
   });
 
   it("RUYI-418 link: a pending agent request selects that agent in new chat", async () => {
@@ -585,6 +600,16 @@ describe("ChatDetailScreen (RUYI-496)", () => {
     });
     expect(mockInvalidateQueries).toHaveBeenCalledWith({
       queryKey: ["chat", "pending-task", "sa"],
+    });
+  });
+
+  it("keeps the composer model entry wired while the session list catches up", async () => {
+    mockSessions.splice(0, mockSessions.length);
+
+    await render(<ChatDetailScreen />);
+
+    expect(mockComposerProps.current).toMatchObject({
+      modelRuntimeId: "runtime-1",
     });
   });
 

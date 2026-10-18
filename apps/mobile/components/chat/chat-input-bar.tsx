@@ -31,9 +31,11 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
 import * as Haptics from "expo-haptics";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
-import { ActionSheetModal } from "@/components/ui/action-sheet";
+import { useQuery } from "@tanstack/react-query";
+import { ActionSheetModal, useActionSheet } from "@/components/ui/action-sheet";
 import { AttachmentZone } from "@/components/issue/attachment-zone";
 import { PlusPanel } from "@/components/chat/plus-panel";
+import { ChatSessionModelPicker } from "@/components/chat/chat-session-model-picker";
 import { DictationBar } from "@/components/chat/dictation-bar";
 import { useFileAttach } from "@/components/editor/use-file-attach";
 import { assetFromSharedFile } from "@/lib/picked-asset";
@@ -60,6 +62,8 @@ import {
 } from "@/lib/voice/input-form";
 import type { VoiceAvailabilityOutcome } from "@/lib/voice/availability";
 import { useDictation } from "@/lib/voice/use-dictation";
+import { quickReplyListOptions } from "@/data/queries/quick-replies";
+import { projectListOptions } from "@/data/queries/projects";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
@@ -98,6 +102,14 @@ interface Props {
   onOpenVoice: () => void;
   /** 技能指令 picker 路由；不传则不渲染该项与 / 触发。 */
   skillPickerPath?: Href;
+  onProjectContext?: () => void;
+  projectId?: string | null;
+  onProjectChange?: (projectId: string | null) => void;
+  modelRuntimeId?: string | null;
+  modelOverride?: string | null;
+  agentModel?: string | null;
+  modelDisabled?: boolean;
+  onModelSelect?: (model: string | null) => Promise<void>;
   restoredAttachments?: Attachment[];
   onRestoredAttachmentsConsumed?: () => void;
 }
@@ -119,15 +131,29 @@ export function ChatInputBar({
   voiceGate,
   onOpenVoice,
   skillPickerPath,
+  onProjectContext,
+  projectId,
+  onProjectChange,
+  modelRuntimeId,
+  modelOverride,
+  agentModel,
+  modelDisabled,
+  onModelSelect,
   restoredAttachments,
   onRestoredAttachmentsConsumed,
 }: Props) {
   const { t } = useT("chat");
+  const { t: tCommon } = useT("common");
   const { t: tVoice } = useT("voice");
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { data: quickReplies = [] } = useQuery(quickReplyListOptions(wsId));
+  const { data: projects = [] } = useQuery(projectListOptions(wsId));
+  const selectedProject = projects.find((project) => project.id === projectId);
+  const quickReplySheet = useActionSheet();
+  const projectSheet = useActionSheet();
   const mentionPickerPath: Href = {
     pathname: "/[workspace]/mention-picker",
     params: { workspace: wsSlug ?? "", mode: "chat" },
@@ -382,6 +408,39 @@ export function ChatInputBar({
     dictation.open();
   }, [dictation]);
 
+  const openQuickReplies = useCallback(() => {
+    if (!quickReplies.length) return;
+    const draft = value;
+    quickReplySheet.show({
+      title: t("composer.quick_replies_title", "Quick replies"),
+      options: [...quickReplies.map((reply) => reply.name), tCommon("cancel", "Cancel")],
+      cancelButtonIndex: quickReplies.length,
+      onSelect: (index) => {
+        const reply = quickReplies[index];
+        if (reply) onChangeText(draft ? `${draft}\n\n${reply.content}` : reply.content);
+      },
+    });
+  }, [onChangeText, quickReplies, quickReplySheet, t, tCommon, value]);
+
+  const openProjectContext = useCallback(() => {
+    if (!onProjectChange || projects.length === 0) return;
+    const options = [
+      ...projects.map((project) => `${project.title}${project.id === projectId ? " ✓" : ""}`),
+      ...(projectId ? [t("input.remove_project_context", "Remove project context")] : []),
+      tCommon("cancel", "Cancel"),
+    ];
+    const cancelIndex = options.length - 1;
+    projectSheet.show({
+      title: t("input.project_context", "Project context"),
+      options,
+      cancelButtonIndex: cancelIndex,
+      onSelect: (index) => {
+        if (index < projects.length) onProjectChange(projects[index]?.id ?? null);
+        else if (projectId && index === projects.length) onProjectChange(null);
+      },
+    });
+  }, [onProjectChange, projectId, projectSheet, projects, t, tCommon]);
+
   const closeDictation = useCallback(() => {
     dictation.close();
     setDictationOpen(false);
@@ -394,6 +453,7 @@ export function ChatInputBar({
     allowStop,
     allowSubmitWhileRunning,
     hasDraft: value.trim().length > 0,
+    busy: uploading || submitting || stopPending,
     dictationOpen,
     voice,
   });
@@ -494,9 +554,6 @@ export function ChatInputBar({
           accessibilityLabel={t("mobile.composer.placeholder", "Message…")}
         />
         <View className="flex-row items-center gap-1">
-          {shape.showStopAction ? (
-            <StopAction onStop={onStop} disabled={stopPending} />
-          ) : null}
           <RightSlot
             shape={shape.rightSlot}
             canSend={canSend}
@@ -532,8 +589,25 @@ export function ChatInputBar({
           void pickAndUploadFiles();
         }}
         onSkill={hasSkillPicker ? openSkillPicker : undefined}
+        onQuickReplies={quickReplies.length > 0 ? openQuickReplies : undefined}
+        onProjectContext={onProjectChange ? openProjectContext : onProjectContext}
+        projectContextLabel={selectedProject
+          ? `${t("input.project_context", "Project context")} - ${selectedProject.title}`
+          : undefined}
+        modelPicker={modelRuntimeId && onModelSelect ? (
+          <ChatSessionModelPicker
+            runtimeId={modelRuntimeId}
+            modelOverride={modelOverride ?? null}
+            agentModel={agentModel ?? null}
+            disabled={disabled || modelDisabled === true}
+            onSelect={onModelSelect}
+            embedded
+          />
+        ) : undefined}
       />
       <ActionSheetModal {...imageSourceModalProps} />
+      <ActionSheetModal {...quickReplySheet.modalProps} />
+      <ActionSheetModal {...projectSheet.modalProps} />
     </View>
   );
 }
@@ -582,24 +656,26 @@ function RightSlot({
         {dictationReady ? (
           <Pressable
             onPress={onOpenDictation}
-            hitSlop={6}
+            hitSlop={4}
             accessibilityRole="button"
             disabled={disabled}
-            accessibilityLabel={tVoice("dictation.open", "Dictation")}
+            accessibilityLabel={tVoice("dictation.open", "听写转文字")}
+            accessibilityHint={tVoice("dictation.open_hint", "开始听写转文字")}
             className="h-9 w-9 items-center justify-center rounded-full active:opacity-70"
           >
-            <Ionicons name="mic-outline" size={22} color={theme.mutedForeground} />
+            <Ionicons name="document-text-outline" size={22} color={theme.mutedForeground} />
           </Pressable>
         ) : null}
         <Pressable
           onPress={onOpenVoice}
-          hitSlop={6}
+          hitSlop={4}
           accessibilityRole="button"
           disabled={disabled}
-          accessibilityLabel={tVoice("button.start", "Start voice conversation")}
+          accessibilityLabel={tVoice("button.start", "实时语音对话")}
+          accessibilityHint={tVoice("button.start_hint", "开始实时语音对话")}
           className="h-9 w-9 items-center justify-center rounded-full bg-primary active:opacity-80"
         >
-          <Ionicons name="mic" size={18} color={theme.primaryForeground} />
+          <Ionicons name="headset-outline" size={20} color={theme.primaryForeground} />
         </Pressable>
       </View>
     );
