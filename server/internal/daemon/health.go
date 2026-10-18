@@ -415,7 +415,13 @@ func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt tim
 	mux.HandleFunc("/health", d.healthHandler(startedAt))
 	mux.HandleFunc("/shutdown", d.shutdownHandler())
 	mux.HandleFunc("/repo/checkout", d.repoCheckoutHandler())
+<<<<<<< HEAD
 	mux.HandleFunc("/worktree/adopt", d.branchAdoptionHandler())
+=======
+	mux.HandleFunc("/worktrees", d.worktreeManagerHandler())
+	mux.HandleFunc("/worktrees/archives", d.worktreeManagerHandler())
+	mux.HandleFunc("/worktrees/operations", d.worktreeManagerHandler())
+>>>>>>> 12dba07a0 (feat(daemon): 实现执行环境归档回收与复用)
 
 	srv := &http.Server{Handler: mux}
 

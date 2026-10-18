@@ -1795,7 +1795,7 @@ func (o branchOwner) validTask() bool {
 // used to name a branch when the readable name is already taken by someone
 // else's. Stable across turns, so the fallback branch is continued too.
 func (o branchOwner) fingerprint() string {
-	sum := sha256.Sum256([]byte(o.WorkspaceID + "\x00" + o.ConversationID))
+	sum := sha256.Sum256([]byte(o.WorkspaceID + "\x00" + o.AgentID + "\x00" + o.ConversationID + "\x00" + o.ProjectID + "\x00" + o.SquadID + "\x00" + o.RuntimeID + "\x00" + o.RepositoryScope))
 	return hex.EncodeToString(sum[:])[:12]
 }
 
