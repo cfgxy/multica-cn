@@ -59,6 +59,23 @@ function makeClient(
 }
 
 describe("MulticaClient", () => {
+  it("uses the native Autopilot routes and forwards an idempotency key", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(makeFetch(200, { id: "run-1" }, calls));
+    await client.getAutopilot("ws", "ap-1");
+    await client.listAutopilotRuns("ws", "ap-1", 10, 20);
+    await client.getAutopilotRun("ws", "ap-1", "run-1");
+    await client.triggerAutopilot("ws", "ap-1", { mode: "current" }, "stable-key");
+    expect(calls.map((call) => call.url.pathname)).toEqual([
+      "/api/autopilots/ap-1",
+      "/api/autopilots/ap-1/runs",
+      "/api/autopilots/ap-1/runs/run-1",
+      "/api/autopilots/ap-1/trigger",
+    ]);
+    expect(calls[1]?.url.searchParams.get("limit")).toBe("10");
+    expect((calls[3]?.init.headers as Record<string, string>)["Idempotency-Key"]).toBe("stable-key");
+  });
+
   it("sends the PAT as a bearer token", async () => {
     const calls: CapturedCall[] = [];
     const client = makeClient(makeFetch(200, [], calls));

@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -164,6 +166,8 @@ type AutopilotRunResponse struct {
 	AutopilotID   string  `json:"autopilot_id"`
 	TriggerID     *string `json:"trigger_id"`
 	Source        string  `json:"source"`
+	Mode          string  `json:"mode"`
+	SourceRunID   *string `json:"source_run_id,omitempty"`
 	Status        string  `json:"status"`
 	IssueID       *string `json:"issue_id"`
 	TaskID        *string `json:"task_id"`
@@ -292,11 +296,23 @@ func runToResponse(r db.AutopilotRun) AutopilotRunResponse {
 	if r.Result != nil {
 		json.Unmarshal(r.Result, &result)
 	}
+	mode := "current"
+	var sourceRunID *string
+	if metadata, ok := payload.(map[string]any); ok {
+		if replay, ok := metadata["_mcp_replay"].(map[string]any); ok {
+			mode = "replay"
+			if id, ok := replay["source_run_id"].(string); ok {
+				sourceRunID = &id
+			}
+		}
+	}
 	return AutopilotRunResponse{
 		ID:             uuidToString(r.ID),
 		AutopilotID:    uuidToString(r.AutopilotID),
 		TriggerID:      uuidToPtr(r.TriggerID),
 		Source:         r.Source,
+		Mode:           mode,
+		SourceRunID:    sourceRunID,
 		Status:         r.Status,
 		IssueID:        uuidToPtr(r.IssueID),
 		TaskID:         uuidToPtr(r.TaskID),
@@ -2289,7 +2305,9 @@ func (h *Handler) TriggerAutopilot(w http.ResponseWriter, r *http.Request) {
 	// a contract violation surfaces as *service.AutopilotParamError and maps
 	// to a 400 before any run is created.
 	var triggerBody struct {
-		Params map[string]json.RawMessage `json:"params"`
+		Params      map[string]json.RawMessage `json:"params"`
+		Mode        string                     `json:"mode"`
+		SourceRunID string                     `json:"source_run_id"`
 	}
 	if r.Body != nil {
 		// Bound the read like every other inbound body surface: a missing cap
@@ -2314,7 +2332,42 @@ func (h *Handler) TriggerAutopilot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var payload []byte
-	if len(triggerBody.Params) > 0 {
+	switch triggerBody.Mode {
+	case "", "current":
+		if triggerBody.SourceRunID != "" {
+			writeError(w, http.StatusBadRequest, "source_run_id is only valid for replay mode")
+			return
+		}
+	case "replay":
+		sourceID, valid := parseUUIDOrBadRequest(w, triggerBody.SourceRunID, "source run id")
+		if !valid {
+			return
+		}
+		sourceRun, err := h.Queries.GetAutopilotRun(r.Context(), sourceID)
+		if err != nil || uuidToString(sourceRun.AutopilotID) != uuidToString(autopilot.ID) {
+			writeError(w, http.StatusNotFound, "source run not found")
+			return
+		}
+		var original map[string]json.RawMessage
+		if len(sourceRun.TriggerPayload) > 0 && json.Unmarshal(sourceRun.TriggerPayload, &original) != nil {
+			writeError(w, http.StatusBadRequest, "source run payload is invalid")
+			return
+		}
+		if original == nil {
+			original = map[string]json.RawMessage{}
+		}
+		if len(triggerBody.Params) > 0 {
+			params, _ := json.Marshal(triggerBody.Params)
+			original["params"] = params
+		}
+		replay, _ := json.Marshal(map[string]string{"source_run_id": triggerBody.SourceRunID})
+		original["_mcp_replay"] = replay
+		payload, _ = json.Marshal(original)
+	default:
+		writeError(w, http.StatusBadRequest, "mode must be current or replay")
+		return
+	}
+	if triggerBody.Mode != "replay" && len(triggerBody.Params) > 0 {
 		var marshalErr error
 		payload, marshalErr = json.Marshal(map[string]any{"params": triggerBody.Params})
 		if marshalErr != nil {
@@ -2324,6 +2377,39 @@ func (h *Handler) TriggerAutopilot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	run, reasonCode, err := h.AutopilotService.DispatchAutopilotManualWithKey(r.Context(), autopilot, pgtype.UUID{}, payload, memberActorUserID(actorType, actorID), idempotencyKey)
+	auditDetails := map[string]any{
+		"operation": "autopilot_trigger", "mode": triggerBody.Mode,
+		"idempotency_key_sha256": fmt.Sprintf("%x", sha256.Sum256([]byte(idempotencyKey))),
+		"params_sha256":          fmt.Sprintf("%x", sha256.Sum256(payload)),
+		"outcome":                "accepted",
+	}
+	if auditDetails["mode"] == "" {
+		auditDetails["mode"] = "current"
+	}
+	if triggerBody.SourceRunID != "" {
+		auditDetails["source_run_id"] = triggerBody.SourceRunID
+	}
+	if err != nil {
+		auditDetails["outcome"] = "rejected"
+	}
+	if run != nil {
+		auditDetails["run_id"] = uuidToString(run.ID)
+		auditDetails["status"] = run.Status
+		if run.TaskID.Valid {
+			auditDetails["task_id"] = uuidToString(run.TaskID)
+		}
+		if run.IssueID.Valid {
+			auditDetails["issue_id"] = uuidToString(run.IssueID)
+		}
+	}
+	actorUUID, _ := util.ParseUUID(actorID)
+	actorAuditType, actorAuditID := service.AuditActorFor(actorType, actorUUID)
+	service.TryAppendAuditEvents(r.Context(), h.Queries, service.Event{
+		ID: dbid.NewV7(), WorkspaceID: autopilot.WorkspaceID,
+		Domain: service.AuditDomainOps, EventType: "ops.autopilot_triggered",
+		OccurredAt: time.Now().UTC(), ActorType: actorAuditType, ActorID: actorAuditID,
+		Details: service.JSONDetails(auditDetails),
+	})
 	if err != nil {
 		var paramErr *service.AutopilotParamError
 		if errors.As(err, &paramErr) {
