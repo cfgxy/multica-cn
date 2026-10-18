@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { addDaysIso, todayIso, weekStartIso } from "./date-utils";
+import { addDaysIso, formatDateRange, todayIso, weekStartIso } from "./date-utils";
 
 describe("weekStartIso", () => {
   it("returns the Monday of the same ISO week", () => {
@@ -30,6 +30,20 @@ describe("addDaysIso", () => {
 
   it("subtracts across year boundary", () => {
     expect(addDaysIso("2026-01-02", -5)).toBe("2025-12-28");
+  });
+});
+
+describe("formatDateRange", () => {
+  it("keeps same-year windows compact", () => {
+    expect(formatDateRange("2026-04-21", "2026-10-17")).toBe(
+      "Apr 21 – Oct 17",
+    );
+  });
+
+  it("includes both years for a window that crosses New Year", () => {
+    expect(formatDateRange("2025-10-24", "2026-04-21")).toBe(
+      "Oct 24, 2025 – Apr 21, 2026",
+    );
   });
 });
 
