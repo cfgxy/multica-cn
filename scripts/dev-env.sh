@@ -749,6 +749,34 @@ ensure_slot_env_secret() {
   fi
 }
 
+ensure_slot_env_raw_secret() {
+  local key="$1" expected="$2" appended_name="$3" current temp
+  current="$(env_file_field "$key" || true)"
+  if [ "$current" = "$expected" ]; then
+    return 0
+  fi
+  if [ -n "$current" ]; then
+    # Older slot files wrote JSON through printf %q. That is valid when sourced
+    # by a shell but Make exports the backslashes literally, so the API rejects
+    # the value as JSON. Rewrite only that known legacy representation.
+    [ "$(env -i bash -c 'set -a; . "$1"; printenv "$2"' _ "$SLOT_ENV_FILE" "$key" 2>/dev/null || true)" = "$expected" ] \
+      || die "slot env field $key does not match its slot-derived value"
+    temp="$(mktemp "$SLOT_DIR/.env.XXXXXX")"
+    RAW_SECRET_KEY="$key" RAW_SECRET_VALUE="$expected" awk '
+      index($0, ENVIRON["RAW_SECRET_KEY"] "=") == 1 {
+        print ENVIRON["RAW_SECRET_KEY"] "=" ENVIRON["RAW_SECRET_VALUE"]
+        next
+      }
+      { print }
+    ' "$SLOT_ENV_FILE" > "$temp"
+    chmod 600 "$temp"
+    mv "$temp" "$SLOT_ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$expected" >> "$SLOT_ENV_FILE"
+    MCP_ENV_APPENDED="${MCP_ENV_APPENDED:+$MCP_ENV_APPENDED }$appended_name"
+  fi
+}
+
 ensure_slot_mcp_credentials() {
   local password="$1" replace_files="${2:-false}" audit_credential instance_credential instance_id bindings
   [ -n "$password" ] || die "cannot derive MCP credentials without the slot database password"
@@ -758,7 +786,7 @@ ensure_slot_mcp_credentials() {
   bindings=$(printf '{"%s":"%s"}' "$instance_id" "$instance_credential")
 
   ensure_slot_env_secret MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL "$audit_credential" MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL
-  ensure_slot_env_secret MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS "$bindings" MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS
+  ensure_slot_env_raw_secret MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS "$bindings" MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS
   ensure_slot_env_secret MULTICA_MCP_INSTANCE_ID "$instance_id" MULTICA_MCP_INSTANCE_ID
   ensure_slot_env_secret MCP_AUDIT_CREDENTIAL_FILE "$(slot_mcp_audit_credential_file)" MCP_AUDIT_CREDENTIAL_FILE
   ensure_slot_env_secret MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE "$(slot_mcp_file_access_credential_file)" MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE
@@ -790,7 +818,7 @@ generate_slot_env() {
     printf 'MCP_URL=http://localhost:%s\n' "$SLOT_MCP_PORT"
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT"
     printf 'MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=%q\n' "$(slot_mcp_credential "$password" audit)"
-    printf 'MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=%q\n' "$(printf '{"%s":"%s"}' "$(slot_mcp_instance_id)" "$(slot_mcp_credential "$password" file-access)")"
+    printf 'MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=%s\n' "$(printf '{"%s":"%s"}' "$(slot_mcp_instance_id)" "$(slot_mcp_credential "$password" file-access)")"
     printf 'MULTICA_MCP_INSTANCE_ID=%q\n' "$(slot_mcp_instance_id)"
     printf 'MCP_AUDIT_CREDENTIAL_FILE=%q\n' "$(slot_mcp_audit_credential_file)"
     printf 'MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE=%q\n' "$(slot_mcp_file_access_credential_file)"
