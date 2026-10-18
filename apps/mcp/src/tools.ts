@@ -1108,7 +1108,38 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       const audit = taskId
         ? await client.listAuditEvents(workspace, { domain: "run", task_id: taskId, limit: optionalInt(args, "audit_limit", { min: 1, max: 200 }) ?? 50 })
         : { events: [], next_cursor: null, next_cursor_id: null };
-      return { run, task_id: taskId ?? null, task_audit: audit };
+      // Trigger payloads may contain webhook data or user-provided secrets.
+      // Diagnostics expose only execution facts and a small result summary.
+      const result = run.result;
+      const resultObject = result && typeof result === "object" && !Array.isArray(result)
+        ? result as Record<string, unknown>
+        : {};
+      const sample = resultObject.sample && typeof resultObject.sample === "object" && !Array.isArray(resultObject.sample)
+        ? resultObject.sample as Record<string, unknown>
+        : {};
+      const diagnosticRun = {
+        id: run.id,
+        autopilot_id: run.autopilot_id,
+        source: run.source,
+        mode: run.mode,
+        source_run_id: run.source_run_id,
+        status: run.status,
+        issue_id: run.issue_id,
+        task_id: taskId ?? null,
+        triggered_at: run.triggered_at,
+        completed_at: run.completed_at,
+        reason_code: run.reason_code,
+        failure_reason: run.failure_reason,
+        result_summary: {
+          sample_status: typeof sample.status === "string" ? sample.status : null,
+          candidate_count: typeof sample.candidate_count === "number" ? sample.candidate_count : null,
+          qualified_count: typeof sample.qualified_count === "number" ? sample.qualified_count : null,
+          model_call_count: typeof sample.model_call_count === "number" ? sample.model_call_count : null,
+          draft_count: typeof sample.draft_count === "number" ? sample.draft_count : null,
+          final_review_status: typeof sample.final_review_status === "string" ? sample.final_review_status : null,
+        },
+      };
+      return { run: diagnosticRun, task_id: taskId ?? null, task_audit: audit };
     },
   },
   {
