@@ -213,6 +213,20 @@ func (q *Queries) DeleteTaskMessages(ctx context.Context, taskID pgtype.UUID) er
 	return err
 }
 
+const getLatestTaskMessage = `-- name: GetLatestTaskMessage :one
+SELECT created_at FROM task_message
+WHERE task_id = $1
+ORDER BY seq DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestTaskMessage(ctx context.Context, taskID pgtype.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getLatestTaskMessage, taskID)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
+}
+
 const listTaskMessages = `-- name: ListTaskMessages :many
 SELECT id, task_id, seq, type, tool, content, input, output, created_at, is_error FROM task_message
 WHERE task_id = $1
@@ -239,6 +253,78 @@ func (q *Queries) ListTaskMessages(ctx context.Context, taskID pgtype.UUID) ([]T
 			&i.Output,
 			&i.CreatedAt,
 			&i.IsError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTaskMessagesPage = `-- name: ListTaskMessagesPage :many
+SELECT
+    id, task_id, seq,
+    left(type, 64) AS type,
+    left(tool, 256) AS tool,
+    left(content, 2048) AS content,
+    CASE WHEN input IS NULL OR octet_length(input::text) <= 2048 THEN input::jsonb ELSE NULL::jsonb END AS input,
+    left(output, 2048) AS output,
+    created_at, is_error,
+    (octet_length(type) > octet_length(left(type, 64))
+      OR coalesce(octet_length(tool) > octet_length(left(tool, 256)), false)
+      OR coalesce(octet_length(content) > octet_length(left(content, 2048)), false)
+      OR coalesce(octet_length(output) > octet_length(left(output, 2048)), false)
+      OR (input IS NOT NULL AND octet_length(input::text) > 2048)) AS truncated
+FROM task_message
+WHERE task_id = $1 AND seq > $2
+ORDER BY seq ASC
+LIMIT $3
+`
+
+type ListTaskMessagesPageParams struct {
+	TaskID pgtype.UUID `json:"task_id"`
+	Seq    int32       `json:"seq"`
+	Limit  int32       `json:"limit"`
+}
+
+type ListTaskMessagesPageRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	TaskID    pgtype.UUID        `json:"task_id"`
+	Seq       int32              `json:"seq"`
+	Type      string             `json:"type"`
+	Tool      string             `json:"tool"`
+	Content   string             `json:"content"`
+	Input     []byte             `json:"input"`
+	Output    string             `json:"output"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	IsError   pgtype.Bool        `json:"is_error"`
+	Truncated pgtype.Bool        `json:"truncated"`
+}
+
+func (q *Queries) ListTaskMessagesPage(ctx context.Context, arg ListTaskMessagesPageParams) ([]ListTaskMessagesPageRow, error) {
+	rows, err := q.db.Query(ctx, listTaskMessagesPage, arg.TaskID, arg.Seq, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTaskMessagesPageRow{}
+	for rows.Next() {
+		var i ListTaskMessagesPageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TaskID,
+			&i.Seq,
+			&i.Type,
+			&i.Tool,
+			&i.Content,
+			&i.Input,
+			&i.Output,
+			&i.CreatedAt,
+			&i.IsError,
+			&i.Truncated,
 		); err != nil {
 			return nil, err
 		}

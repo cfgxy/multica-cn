@@ -4,6 +4,8 @@ export {
   SkillsEvolutionPage,
   SkillEvolutionDetailPage,
   QualityPage,
+  ClauseGovernancePage,
+  ClauseGovernanceDetailPage,
   QuizPage,
   ProposalsPage,
   VersionsPage,

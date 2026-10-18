@@ -117,7 +117,7 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 	}
 	// Advertise the same capabilities as the HTTP path so a claim built over
 	// this WS connection gets identical capability gating (MUL-4257).
-	headers.Set("X-Client-Capabilities", daemonClientCapabilities(d.client.workerSupervision.Load()))
+	headers.Set("X-Client-Capabilities", daemonClientCapabilities(d.client.workerSupervision.Load(), d.client.snapshotSupport.Load()))
 
 	// A hand-built websocket.Dialer has Proxy == nil, which gorilla reads as
 	// "dial direct" — unlike websocket.DefaultDialer, it does not fall back to
@@ -445,8 +445,36 @@ func (d *Daemon) readTaskWakeupMessagesForConnection(conn *websocket.Conn, taskW
 				continue
 			}
 			d.wsRPC.deliver(resp)
+		case protocol.EventDaemonWorkerEvidenceRequest:
+			var req protocol.WorkerEvidenceRequest
+			if json.Unmarshal(msg.Payload, &req) == nil {
+				go d.handleWorkerEvidenceRPC(req)
+			}
 		}
 	}
+}
+
+func (d *Daemon) handleWorkerEvidenceRPC(input protocol.WorkerEvidenceRequest) {
+	if input.RequestID == "" || input.RuntimeID == "" || input.TimeoutMs < 1 || input.TimeoutMs > 2500 {
+		return
+	}
+	allowed := false
+	for _, id := range d.allRuntimeIDs() {
+		if id == input.RuntimeID {
+			allowed = true
+			break
+		}
+	}
+	if !allowed || d.supervisor == nil {
+		d.wsRPC.sendWorkerEvidenceResponse(protocol.WorkerEvidenceResponse{RequestID: input.RequestID, Unavailable: "daemon_unreachable", ProcessLiveness: "unknown"})
+		return
+	}
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(input.TimeoutMs)*time.Millisecond)
+	defer cancel()
+	evidence := d.supervisor.WorkerEvidence(ctx, input)
+	evidence.RequestID = input.RequestID
+	d.wsRPC.sendWorkerEvidenceResponse(evidence)
 }
 
 func (d *Daemon) configureTaskWakeupReadLiveness(conn *websocket.Conn) {

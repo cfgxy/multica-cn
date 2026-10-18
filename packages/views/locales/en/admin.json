@@ -6,7 +6,8 @@
     "users": "Users",
     "workspaces": "Workspaces",
     "mcp": "MCP Server",
-    "oauth": "OAuth Clients"
+    "oauth": "OAuth Clients",
+    "file_read_policy": "File Read Safety"
   },
   "search_placeholder": "Search…",
   "total": "{{count}} total",
@@ -81,6 +82,23 @@
     "tools_title": "MCP tools ({{count}})",
     "col_tool": "Tool",
     "col_description": "Description"
+  },
+  "file_read_policy": {
+    "title": "File read safety",
+    "description": "Rules protect sensitive paths accessed through the controlled file tools. They do not restrict shell commands or other host processes.",
+    "rules_title": "Denied paths",
+    "enabled": "Enabled",
+    "pattern": "Path pattern",
+    "description_label": "Description",
+    "pattern_placeholder": "**/.config/example/auth.json",
+    "description_placeholder": "What this path contains",
+    "add": "Add rule",
+    "remove": "Remove",
+    "save": "Save changes",
+    "restore_defaults": "Restore defaults",
+    "save_confirm": "Saving may lower protection for some paths. Apply these rule changes?",
+    "restore_confirm": "Replace all current rules with the built-in defaults?",
+    "save_failed": "Could not save. Refresh the policy and try again."
   },
   "oauth": {
     "clients_hint": "Registered clients can connect to the external MCP service. The plaintext client_secret is shown exactly once, at create or rotate time.",

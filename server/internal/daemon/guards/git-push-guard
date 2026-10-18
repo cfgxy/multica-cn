@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+# git-push-guard（RUYI-403）——git push 声明式 remote 白名单守卫
+# 机制：bashrc/zshrc 注入 git() wrapper（见 install-git-push-guard.sh），本脚本只对
+# push 子命令做判定，其余子命令与全局选项全参透传（参数保真）。
+# 白名单：与 gh-pr-guard（RUYI-401）共用 canonical-repos.conf 登记源
+# （默认 ~/.config/gh-guard/canonical-repos.conf，PUSH_GUARD_CONF 可覆盖）。
+# 语义要点：
+#   - 白名单（cfgxy 账号仓，host 必须 github.com）外 remote 拒绝并给登记改道指引；
+#   - 直连 URL push 一律拒绝（审计按 remote 名，直连绕过登记）；
+#   - conf 内 upstream= 声明仓与名为 upstream 的 remote deny-by-default，
+#     PUSH_GUARD_ALLOW_UPSTREAM=<owner/repo 或 remote 名> 显式授权可解（留日志）；
+#   - 受保护分支（默认 main master，PUSH_GUARD_PROTECTED 可覆盖）任何形态直推拒绝：
+#     裸名 / --force / -f / --force-with-lease / HEAD:main / +src:dst / 全限定
+#     refs/heads/ / :dst 删除 / --delete 均覆盖；PR 合流为唯一改道；
+#   - --all / --mirror / refspec 通配 / 裸 : / push.default=matching 因 dst 不可
+#     枚举拒绝；--tags 仅标签面放行；
+#   - 无 refspec 时按 push.default / remote.pushDefault / branch.<cur>.remote
+#     推导实际 remote 与 dst 后照常判定；
+#   - -c/-C/--git-dir/--work-tree/--namespace/--super-prefix 与 push 连用拒绝
+#     （仓库上下文改写面）；连非 push 子命令无害透传；
+#   - conf 缺失 fail-closed；未知 remote 名交还 git 原生报错；
+#   - 本地路径 remote 非上游事故面，按普通 remote 判定（受保护分支照查）。
+# 日志：只记录时间/动作/remote 名/目标 owner-repo/分支，绝不输出含凭据的完整 URL。
+set -u
+
+GITBIN="git"  # wrapper 函数不 export，此处 PATH 解析到真实二进制（测试环境为 stub）
+CONF="${PUSH_GUARD_CONF:-$HOME/.config/gh-guard/canonical-repos.conf}"
+PROTECTED="${PUSH_GUARD_PROTECTED:-main master}"
+LOG_FILE="${PUSH_GUARD_LOG:-${GIT_PUSH_GUARD_HOME:-$HOME/.config/git-push-guard}/guard.log}"
+
+ORIG_ARGS=("$@")
+
+gq() { "$GITBIN" "$@" 2>/dev/null; }
+
+die() {
+  printf '[git-push-guard] 已拒绝：%s\n' "$1" >&2
+  exit 97
+}
+
+log_action() { # $1=allow|deny $2=remote名 $3=目标 $4=分支
+  [ -d "$(dirname "$LOG_FILE")" ] || return 0
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%FT%T)" "$1" "$2" "$3" "${4:-}" >> "$LOG_FILE" 2>/dev/null || true
+}
+
+in_list() { local x="$1"; shift; local e; for e in "$@"; do [ "$e" = "$x" ] && return 0; done; return 1; }
+
+parse_git_url() { # $1=url → P_HOST/P_OWNER/P_REPO；不可解析返回 1
+  local u="$1" rest path proto port
+  u="${u%.git}"
+  case "$u" in
+    *://*)
+      proto="${u%%://*}"
+      rest="${u#*://}"
+      rest="${rest#*@}"
+      P_HOST="${rest%%[:/]*}"
+      rest="${rest#"$P_HOST"}"
+      port=""
+      case "$rest" in :*) port="${rest%%/*}"; rest="${rest#"$port"}" ;; esac
+      if [ -n "$port" ] && { [ "$proto" != "ssh" ] || [ "$port" != ":22" ]; }; then return 1; fi
+      rest="${rest#/}"
+      path="$rest" ;;
+    *@*:*)
+      rest="${u#*@}"
+      P_HOST="${rest%%:*}"
+      path="${rest#*:}" ;;
+    *) return 1 ;;
+  esac
+  path="${path#/}"
+  P_OWNER="${path%%/*}"
+  P_REPO="${path#*/}"
+  case "$P_REPO" in ""|*/*) return 1 ;; esac
+  [ -n "$P_OWNER" ] && [ -n "$P_REPO" ]
+}
+
+# ---------- 1. 分离全局选项与子命令；非 push 全参透传 ----------
+ARGS=("$@")
+n=${#ARGS[@]}
+idx=0; SUBCMD_IDX=-1; TAMPER=0
+while [ "$idx" -lt "$n" ]; do
+  a="${ARGS[$idx]}"
+  case "$a" in
+    --) SUBCMD_IDX=$((idx+1)); break ;;
+    -c|-C|--git-dir|--work-tree|--namespace|--super-prefix)
+      TAMPER=1; idx=$((idx+1)) ;;
+    --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*)
+      TAMPER=1 ;;
+    -*) : ;;
+    *)  SUBCMD_IDX=$idx; break ;;
+  esac
+  idx=$((idx+1))
+done
+SUBCMD=""
+if [ "$SUBCMD_IDX" -ge 0 ] && [ "$SUBCMD_IDX" -lt "$n" ]; then SUBCMD="${ARGS[$SUBCMD_IDX]}"; fi
+if [ "$SUBCMD" != "push" ]; then
+  exec "$GITBIN" "${ORIG_ARGS[@]}"
+fi
+if [ "$TAMPER" -eq 1 ]; then
+  log_action deny "-" context-tamper "-"
+  die "git push 与 -c/-C/--git-dir/--work-tree 等仓库上下文改写选项连用（守卫无法确认实际目标仓库）。改道：先 cd 到目标仓库目录，再用普通 git push；如属配置改写需求请在仓库 .git/config 内固定后重试。"
+fi
+
+# ---------- 2. 解析 push 参数 ----------
+PARGS=("${ARGS[@]:$((SUBCMD_IDX+1))}")
+pn=${#PARGS[@]}
+REMOTE=""; REFSPECS=(); DELETE=0; ALLMIRROR=0; TAGSONLY=0; REPO_OPT=""
+i=0
+while [ "$i" -lt "$pn" ]; do
+  a="${PARGS[$i]}"
+  case "$a" in
+    --)
+      j=$((i+1))
+      while [ "$j" -lt "$pn" ]; do REFSPECS+=("${PARGS[$j]}"); j=$((j+1)); done
+      break ;;
+    --all|--mirror) ALLMIRROR=1 ;;
+    --tags) TAGSONLY=1 ;;
+    --delete) DELETE=1 ;;
+    --delete=*) DELETE=1; REFSPECS+=("${a#--delete=}") ;;
+    -f|--force|--force-with-lease|--force-with-lease=*) : ;;  # force 不改变判定：受保护分支恒拒
+    --repo) REPO_OPT="${PARGS[$((i+1))]:-}"; i=$((i+1)) ;;
+    --repo=*) REPO_OPT="${a#--repo=}" ;;
+    --receive-pack|--exec|--push-option|-o|--recurse-submodules)
+      i=$((i+1)) ;;  # 带独立值选项：跳过值，防止误入 refspec
+    -*) : ;;
+    *)  if [ -z "$REMOTE" ]; then REMOTE="$a"; else REFSPECS+=("$a"); fi ;;
+  esac
+  i=$((i+1))
+done
+[ -n "$REPO_OPT" ] && REMOTE="$REPO_OPT"
+
+if [ "$ALLMIRROR" -eq 1 ]; then
+  log_action deny "${REMOTE:-<bare>}" bulk "-"
+  die "--all/--mirror 批量推送 dst 不可枚举（必然覆盖受保护分支面）。改道：逐分支显式推送，如 git push origin feat-x。"
+fi
+
+# ---------- 3. 无 refspec 时按 push.default 语义推导 remote 与 dst ----------
+DST=""
+derive_dst() {
+  local pd br r
+  pd=$(gq config --get push.default); pd="${pd:-simple}"
+  if [ "$pd" = "matching" ]; then
+    log_action deny "${REMOTE:-<bare>}" matching "-"
+    die "push.default=matching 会推送全部分支，dst 不可枚举。改道：显式列出分支逐个推送，或将 push.default 调整为 simple/current。"
+  fi
+  [ "$pd" = "nothing" ] && return 0  # 无操作，放行
+  br=$(gq rev-parse --abbrev-ref HEAD)
+  if [ -z "$br" ] || [ "$br" = "HEAD" ]; then
+    log_action deny "${REMOTE:-<bare>}" detached "-"
+    die "当前处于 detached HEAD，无 refspec 时无法推导推送目标。改道：先切换到目标分支或显式写 refspec。"
+  fi
+  DST="$br"
+}
+if [ -z "$REMOTE" ]; then
+  REMOTE=$(gq config --get remote.pushDefault)
+  if [ -z "$REMOTE" ]; then
+    br=$(gq rev-parse --abbrev-ref HEAD)
+    r=""
+    [ -n "$br" ] && r=$(gq config --get "branch.$br.remote")
+    REMOTE="${r:-origin}"
+  fi
+fi
+
+# ---------- 4. remote 形态分类与白名单判定 ----------
+IS_URL=0; IS_LOCAL=0
+case "$REMOTE" in
+  *://*|git@*) IS_URL=1 ;;
+  */*|*.git|.|../*|~*) IS_LOCAL=1 ;;
+  *:*) pre="${REMOTE%%:*}"; case "$pre" in */*) IS_LOCAL=1 ;; *) IS_URL=1 ;; esac ;;
+  *) IS_LOCAL=2 ;;  # remote 名
+esac
+if [ "$IS_URL" -eq 1 ]; then
+  log_action deny "<direct-url>" direct "-"
+  die "直接以 URL push 被拒绝（守卫按 remote 名审计，直连绕过登记面）。改道：git remote add <名> <url> 登记为命名 remote 后按名推送；canonical 白名单见 conf（cfgxy 账号仓）。"
+fi
+
+TGT_DESC="local"
+if [ "$IS_LOCAL" -eq 2 ]; then
+  URL=$(gq remote get-url "$REMOTE")
+  if [ -z "$URL" ]; then
+    exec "$GITBIN" "${ORIG_ARGS[@]}"  # 未知 remote：交还 git 原生报错
+  fi
+  case "$URL" in
+    *://*|git@*|*@*:*) : ;;
+    *) URL="" ; TGT_DESC="local" ;;  # 登记值本身是本地路径
+  esac
+else
+  URL=""
+fi
+
+if [ -n "$URL" ]; then
+  if ! parse_git_url "$URL"; then
+    log_action deny "$REMOTE" unparseable "-"
+    die "remote $REMOTE 的 URL 无法解析为 host/owner/repo，按白名单外处理。改道：核对 remote url；如为合规仓库请联系 Leader Review 后登记 canonical-repos.conf。"
+  fi
+  TGT_DESC="$P_OWNER/$P_REPO"
+  DENY_REPO=""
+  if in_list "$P_OWNER/$P_REPO" $(gq list-deny 2>/dev/null); then :; fi
+  # upstream deny-by-default 与白名单判定（读 conf）
+  if [ ! -f "$CONF" ]; then
+    log_action deny "$REMOTE" noconf "-"
+    die "白名单配置缺失（$CONF），守卫 fail-closed 拒绝推送。改道：运行 tools/install-git-push-guard.sh 安装守卫与白名单，或用 PUSH_GUARD_CONF 指向有效 conf。"
+  fi
+  ALLOW_HIT=0; DENY_HIT=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    # shellcheck disable=SC2086
+    set -- $line
+    [ $# -eq 0 ] && continue
+    case "$1" in */*) [ "$1" = "$P_OWNER/$P_REPO" ] && ALLOW_HIT=1 ;; esac
+    for tok in "$@"; do
+      case "$tok" in upstream=*) [ "${tok#upstream=}" = "$P_OWNER/$P_REPO" ] && DENY_HIT=1 ;; esac
+    done
+  done < "$CONF"
+  if [ "$DENY_HIT" -eq 1 ]; then
+    if [ "${PUSH_GUARD_ALLOW_UPSTREAM:-}" = "$P_OWNER/$P_REPO" ]; then
+      log_action allow "$REMOTE" "$TGT_DESC upstream-authorized" "-"
+    else
+      log_action deny "$REMOTE" "$TGT_DESC upstream" "-"
+      die "upstream 上游仓 $P_OWNER/$P_REPO（白名单外）deny-by-default，已拒绝。改道：向上游回馈请走 PR 流程——fork 到 cfgxy 账号、经 Leader 登记后推送特性分支、再建上游 PR；确有直推任务依据时以 PUSH_GUARD_ALLOW_UPSTREAM=$P_OWNER/$P_REPO 显式授权后重试（会留审计日志）。"
+    fi
+  elif [ "$ALLOW_HIT" -eq 1 ]; then
+    if [ "$P_HOST" != "github.com" ]; then
+      log_action deny "$REMOTE" "$P_HOST/$TGT_DESC host-mismatch" "-"
+      die "remote $REMOTE 指向 host $P_HOST，非 github.com 同形路径不构成白名单命中，已拒绝。改道：核对 remote url 是否被仿冒/改写；确为合规仓库联系 Leader Review 后调整登记。"
+    fi
+    log_action allow "$REMOTE" "$TGT_DESC" "-"
+  else
+    log_action deny "$REMOTE" "$TGT_DESC not-in-allowlist" "-"
+    die "白名单外 remote（$P_OWNER/$P_REPO@$P_HOST），已拒绝。改道：①目标属你本人 fork→联系 Leader Review 后登记 canonical-repos.conf；②目标为团队交付仓→push 到登记名 cfgxy/* 仓库；③上游回馈走 PR 流程。白名单语义见 tools/git-push-guard-bypass-boundary.md。"
+  fi
+else
+  # 本地路径 remote：非上游事故面；名为 upstream 仍 deny-by-default
+  if [ "$IS_LOCAL" -eq 1 ] || [ "$TGT_DESC" = "local" ]; then
+    if [ "$REMOTE" = "upstream" ]; then
+      if [ "${PUSH_GUARD_ALLOW_UPSTREAM:-}" = "upstream" ]; then
+        log_action allow "$REMOTE" local-upstream-authorized "-"
+      else
+        log_action deny "$REMOTE" local-upstream "-"
+        die "名为 upstream 的 remote deny-by-default（上游登记语义）。改道：确属本地镜像且需直推时以 PUSH_GUARD_ALLOW_UPSTREAM=upstream 显式授权后重试；上游回馈走 PR 流程。"
+      fi
+    else
+      log_action allow "$REMOTE" local "-"
+    fi
+  fi
+fi
+
+# ---------- 5. 受保护分支判定 ----------
+check_dst() { # $1=dst
+  local dst="$1" b
+  case "$dst" in
+    refs/tags/*|tags/*) return 0 ;;
+    HEAD|@) dst=$(gq rev-parse --abbrev-ref HEAD); [ -z "$dst" ] && return 0 ;;
+  esac
+  case "$dst" in refs/heads/*) b="${dst#refs/heads/}" ;; *) b="$dst" ;; esac
+  case "$b" in *\**) return 1 ;; esac
+  # shellcheck disable=SC2086
+  if in_list "$b" $PROTECTED; then
+    log_action deny "${REMOTE:-<bare>}" "$TGT_DESC" "$b"
+    die "受保护分支「$b」直推被拒绝（含 --force/-f/--force-with-lease 与删除形态）。改道：推送特性分支后建 PR 合流（gh pr create）；受保护分支一律经 PR 评审合入。"
+  fi
+  return 0
+}
+check_refspec_list() {
+  local rs dst
+  for rs in ${REFSPECS[@]+"${REFSPECS[@]}"}; do
+    case "$rs" in ^*) continue ;; esac
+    [ "$DELETE" -eq 1 ] && case "$rs" in :*) rs="${rs#:}" ;; esac
+    rs="${rs#+}"
+    case "$rs" in
+      ":") log_action deny "${REMOTE}" wildcard "-"; die "裸 : refspec dst 不可枚举，已拒绝。改道：显式列出分支逐个推送。" ;;
+      :*) dst="${rs#:}" ;;
+      *:*) dst="${rs#*:}" ;;
+      *)  dst="$rs" ;;
+    esac
+    [ -z "$dst" ] && dst="${rs%%:*}"
+    case "$dst" in
+      *\**)
+        log_action deny "${REMOTE}" wildcard "$dst"
+        die "refspec 通配（$rs）dst 不可枚举，已拒绝。改道：逐分支显式推送。" ;;
+    esac
+    check_dst "$dst" || return 1
+  done
+  return 0
+}
+if [ ${#REFSPECS[@]} -eq 0 ]; then
+  if [ "$TAGSONLY" -eq 0 ]; then
+    derive_dst
+    [ -n "$DST" ] && { check_dst "$DST" || exit $?; }
+  fi
+else
+  check_refspec_list || exit 97
+fi
+
+# ---------- 6. 放行：全参透传给真实 git ----------
+exec "$GITBIN" "${ORIG_ARGS[@]}"

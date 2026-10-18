@@ -218,6 +218,8 @@ type AgentTaskQueue struct {
 	CancelReason            pgtype.Text        `json:"cancel_reason"`
 	CancelActorType         pgtype.Text        `json:"cancel_actor_type"`
 	CancelActorID           pgtype.UUID        `json:"cancel_actor_id"`
+	LocalDirectoryScope     []byte             `json:"local_directory_scope"`
+	ChatModelSnapshot       pgtype.Text        `json:"chat_model_snapshot"`
 }
 
 type AgentToLabel struct {
@@ -245,21 +247,24 @@ type Attachment struct {
 }
 
 type AuditEvent struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Domain      string             `json:"domain"`
-	EventType   string             `json:"event_type"`
-	OccurredAt  pgtype.Timestamptz `json:"occurred_at"`
-	ActorType   string             `json:"actor_type"`
-	ActorID     pgtype.UUID        `json:"actor_id"`
-	TriggerKind pgtype.Text        `json:"trigger_kind"`
-	TriggerRef  pgtype.Text        `json:"trigger_ref"`
-	IssueID     pgtype.UUID        `json:"issue_id"`
-	TaskID      pgtype.UUID        `json:"task_id"`
-	AgentID     pgtype.UUID        `json:"agent_id"`
-	RuntimeID   pgtype.UUID        `json:"runtime_id"`
-	Reason      pgtype.Text        `json:"reason"`
-	Details     []byte             `json:"details"`
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	Domain       string             `json:"domain"`
+	EventType    string             `json:"event_type"`
+	OccurredAt   pgtype.Timestamptz `json:"occurred_at"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      pgtype.UUID        `json:"actor_id"`
+	TriggerKind  pgtype.Text        `json:"trigger_kind"`
+	TriggerRef   pgtype.Text        `json:"trigger_ref"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Reason       pgtype.Text        `json:"reason"`
+	Details      []byte             `json:"details"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	Sensitive    bool               `json:"sensitive"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Autopilot struct {
@@ -626,6 +631,102 @@ type ChatSession struct {
 	PinnedAt            pgtype.Timestamptz `json:"pinned_at"`
 	ProjectID           pgtype.UUID        `json:"project_id"`
 	ExplicitlyCreatedAt pgtype.Timestamptz `json:"explicitly_created_at"`
+	ModelOverride       pgtype.Text        `json:"model_override"`
+}
+
+// Governance clause asset (RUYI-751 / ADR 007): stable identity and lifecycle status only. The effective body lives in clause_version, the effective scope in clause_binding — this row is never the read source for injected text.
+type Clause struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	// Marker-contract identity (cls_ + 8 lowercase alphanumerics), unique per workspace, immutable for life; rendered into carrier snapshot markers and used by proposals as the reference key.
+	Slug string `json:"slug"`
+	// Display name (the former clause_name). Free to change; never an identity.
+	Title string `json:"title"`
+	// Lifecycle: active = in force; deprecated = removed/retired, version line kept, excluded from the effective set; revoked = terminal, requires a new proposal to rebuild.
+	Status        string             `json:"status"`
+	CreatedByType string             `json:"created_by_type"`
+	CreatedByID   pgtype.UUID        `json:"created_by_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+// Where a clause is in force (RUYI-751): one active row per clause (partial unique index below), history kept as superseded/withdrawn rows. Conditions carry the task_kind filter for dynamic injection.
+type ClauseBinding struct {
+	ID       pgtype.UUID `json:"id"`
+	ClauseID pgtype.UUID `json:"clause_id"`
+	Scope    string      `json:"scope"`
+	ScopeID  pgtype.UUID `json:"scope_id"`
+	Status   string      `json:"status"`
+	// NULL = applies to every task kind; otherwise an object whose optional task_kinds array whitelists task kinds (issue/chat/autopilot/quick_create).
+	Conditions         []byte             `json:"conditions"`
+	SinceClauseVersion int32              `json:"since_clause_version"`
+	AuditLog           []byte             `json:"audit_log"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+// One row per (task, clause version) actually injected into a run (RUYI-751 / ADR 007 §6): the sole basis for the "call count" metric. Write failures are logged-and-swallowed — attribution is observability, never a claim precondition; the standing reconciliation view covers the gap.
+type ClauseInjection struct {
+	ID             pgtype.UUID `json:"id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	TaskID         pgtype.UUID `json:"task_id"`
+	ClauseID       pgtype.UUID `json:"clause_id"`
+	ClauseVersion  int32       `json:"clause_version"`
+	CarrierScope   string      `json:"carrier_scope"`
+	CarrierVersion pgtype.Int4 `json:"carrier_version"`
+	// True = recorded from the carrier snapshot fallback (dynamic computation failed or the global kill switch is on), so the row set may be the full unfiltered snapshot rather than the task_kind-filtered effective set.
+	Degraded  bool               `json:"degraded"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// Per (clause, version, UTC day) quality rollup (RUYI-751): clause-level mirror of prompt_quality_daily. Counts only — rates are derived at read time so "not measured" stays distinguishable from zero.
+type ClauseQualityDaily struct {
+	ID                     pgtype.UUID        `json:"id"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	ClauseID               pgtype.UUID        `json:"clause_id"`
+	ClauseVersion          int32              `json:"clause_version"`
+	Day                    pgtype.Date        `json:"day"`
+	FinishedRuns           int32              `json:"finished_runs"`
+	InjectedTokens         pgtype.Int8        `json:"injected_tokens"`
+	RunTokensMedian        pgtype.Int8        `json:"run_tokens_median"`
+	DisciplineScoreMedian  pgtype.Numeric     `json:"discipline_score_median"`
+	DisciplineCoveredRuns  int32              `json:"discipline_covered_runs"`
+	DisciplineDeductions   []byte             `json:"discipline_deductions"`
+	ToolResultsMeasured    int64              `json:"tool_results_measured"`
+	ToolResultsError       int64              `json:"tool_results_error"`
+	AttemptTotal           int32              `json:"attempt_total"`
+	RetriedRuns            int32              `json:"retried_runs"`
+	AttributableFailedRuns int32              `json:"attributable_failed_runs"`
+	ExcludedFailedRuns     int32              `json:"excluded_failed_runs"`
+	FailureReasonCounts    []byte             `json:"failure_reason_counts"`
+	FirstPassIssues        int32              `json:"first_pass_issues"`
+	ReviewedIssues         int32              `json:"reviewed_issues"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Singleton watermark for the clause_quality_daily rollup job; same shape and contract as prompt_quality_rollup_state.
+type ClauseQualityRollupState struct {
+	ID                int16              `json:"id"`
+	WatermarkAt       pgtype.Timestamptz `json:"watermark_at"`
+	LastRunStartedAt  pgtype.Timestamptz `json:"last_run_started_at"`
+	LastRunFinishedAt pgtype.Timestamptz `json:"last_run_finished_at"`
+	LastRunRows       int64              `json:"last_run_rows"`
+	LastError         pgtype.Text        `json:"last_error"`
+}
+
+// Append-only clause body snapshots (RUYI-751): one row per enacted version. The sole fact source for injected text; never updated in place.
+type ClauseVersion struct {
+	ID            pgtype.UUID `json:"id"`
+	ClauseID      pgtype.UUID `json:"clause_id"`
+	Version       int32       `json:"version"`
+	Content       string      `json:"content"`
+	ContentSha256 string      `json:"content_sha256"`
+	Source        string      `json:"source"`
+	CarrierScope  string      `json:"carrier_scope"`
+	// prompt_version.version of the carrier at enactment time; NULL when the carrier had no governance version yet.
+	CarrierVersion pgtype.Int4        `json:"carrier_version"`
+	CreatedByType  string             `json:"created_by_type"`
+	CreatedByID    pgtype.UUID        `json:"created_by_id"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
 type ClientUsageDaily struct {
@@ -696,6 +797,55 @@ type ContactSalesInquiry struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+// Backpressure trigger/recovery history (RUYI-729): one row per observed active->inactive transition of a runtime's host-backpressure report, with hit detail and the effective config snapshot.
+type DaemonBackpressureEvent struct {
+	ID              pgtype.UUID        `json:"id"`
+	RuntimeID       pgtype.UUID        `json:"runtime_id"`
+	DaemonID        string             `json:"daemon_id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	EventType       string             `json:"event_type"`
+	Reason          string             `json:"reason"`
+	MemAvailablePct float64            `json:"mem_available_pct"`
+	SwapUsedPct     float64            `json:"swap_used_pct"`
+	PsiSomeAvg10    float64            `json:"psi_some_avg10"`
+	PsiReadOk       bool               `json:"psi_read_ok"`
+	DeferredClaims  int64              `json:"deferred_claims"`
+	EffectiveConfig []byte             `json:"effective_config"`
+	Hits            []byte             `json:"hits"`
+	OccurredAt      pgtype.Timestamptz `json:"occurred_at"`
+}
+
+// Daemon-level host-backpressure gate settings (RUYI-729): the single authority for the watermarks that pause new task claims on a daemon host; delivered to the daemon over heartbeat acks. No row = daemon code defaults.
+type DaemonBackpressureSetting struct {
+	// The daemon host this config gates; same TEXT identity as agent_runtime.daemon_id.
+	DaemonID    string      `json:"daemon_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	// Gate master switch: false pauses nothing regardless of the watermarks.
+	Enabled bool `json:"enabled"`
+	// MemAvailable%% below which new claims pause, percent of total (0,100].
+	MemHighPct float64 `json:"mem_high_pct"`
+	// MemAvailable%% above which claiming resumes; must exceed mem_high_pct (hysteresis).
+	MemRecoveryPct float64 `json:"mem_recovery_pct"`
+	// SwapUsed%% above which new claims pause; <=0 disables the swap condition.
+	SwapHighPct float64 `json:"swap_high_pct"`
+	// SwapUsed%% below which claiming resumes; must sit below swap_high_pct when enabled.
+	SwapRecoveryPct float64 `json:"swap_recovery_pct"`
+	// Memory PSI some-avg10%% above which new claims pause; <=0 disables the PSI condition.
+	PsiHighPct float64 `json:"psi_high_pct"`
+	// PSI some-avg10%% below which claiming resumes; must sit below psi_high_pct when enabled.
+	PsiRecoveryPct float64 `json:"psi_recovery_pct"`
+	// Proc sampling cadence for the watermark gate, in seconds (>=1).
+	SampleIntervalSeconds int32 `json:"sample_interval_seconds"`
+	// Smoothing window in samples before thresholds are evaluated on the mean (>=1).
+	WindowSize int32 `json:"window_size"`
+	// Incremented on every save; daemons use it to detect a changed card.
+	ConfigVersion int64 `json:"config_version"`
+	// Member who last saved this row; plain UUID on purpose (rows survive member deletion).
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type DaemonConnection struct {
 	ID              pgtype.UUID        `json:"id"`
 	AgentID         pgtype.UUID        `json:"agent_id"`
@@ -705,6 +855,68 @@ type DaemonConnection struct {
 	RuntimeInfo     []byte             `json:"runtime_info"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DaemonFileAccessTarget struct {
+	ID           string             `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	Enabled      bool               `json:"enabled"`
+	Roots        []byte             `json:"roots"`
+	WorkspaceAcl []byte             `json:"workspace_acl"`
+	MemberAcl    []byte             `json:"member_acl"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DaemonFileOperation struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	RuntimeID    pgtype.UUID        `json:"runtime_id"`
+	TargetID     string             `json:"target_id"`
+	Kind         string             `json:"kind"`
+	Request      []byte             `json:"request"`
+	Status       string             `json:"status"`
+	LeaseEpoch   int64              `json:"lease_epoch"`
+	Result       []byte             `json:"result"`
+	ErrorClass   pgtype.Text        `json:"error_class"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ClaimedAt    pgtype.Timestamptz `json:"claimed_at"`
+	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	RequesterID  pgtype.UUID        `json:"requester_id"`
+}
+
+type DaemonOpsCommand struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	RuntimeID       pgtype.UUID        `json:"runtime_id"`
+	DaemonID        string             `json:"daemon_id"`
+	Kind            string             `json:"kind"`
+	Args            []byte             `json:"args"`
+	Status          string             `json:"status"`
+	TimeoutS        int32              `json:"timeout_s"`
+	LeaseEpoch      int64              `json:"lease_epoch"`
+	ClaimedAt       pgtype.Timestamptz `json:"claimed_at"`
+	FinishedAt      pgtype.Timestamptz `json:"finished_at"`
+	ExitCode        pgtype.Int4        `json:"exit_code"`
+	Result          []byte             `json:"result"`
+	RejectReason    pgtype.Text        `json:"reject_reason"`
+	SubmittedByType string             `json:"submitted_by_type"`
+	SubmittedByID   pgtype.UUID        `json:"submitted_by_id"`
+	SubmissionKey   pgtype.Text        `json:"submission_key"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DaemonServiceInventory struct {
+	DaemonID      string             `json:"daemon_id"`
+	CollectStatus string             `json:"collect_status"`
+	Services      []byte             `json:"services"`
+	Error         pgtype.Text        `json:"error"`
+	LastReportAt  pgtype.Timestamptz `json:"last_report_at"`
+	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
 type DaemonToken struct {
@@ -884,6 +1096,8 @@ type GithubPullRequest struct {
 	ChecksRollupState   pgtype.Text        `json:"checks_rollup_state"`
 	SnapshotHeadSha     string             `json:"snapshot_head_sha"`
 	SnapshotFetchedAt   pgtype.Timestamptz `json:"snapshot_fetched_at"`
+	TargetBranch        pgtype.Text        `json:"target_branch"`
+	ReviewDecision      pgtype.Text        `json:"review_decision"`
 }
 
 type GithubPullRequestCheckRun struct {
@@ -956,6 +1170,8 @@ type Issue struct {
 	LastActivityAt     pgtype.Timestamptz `json:"last_activity_at"`
 	RunSuppressed      bool               `json:"run_suppressed"`
 	RunSuppressedAt    pgtype.Timestamptz `json:"run_suppressed_at"`
+	// Read-side snapshot of an active issue_suspension row (RUYI-690), maintained in the same transaction that flips the row's status. NULL = not suspended. Badge/list/filter surfaces read this column with zero joins; the suspension table owns the audit trail.
+	SuspendedAt pgtype.Timestamptz `json:"suspended_at"`
 }
 
 type IssueDecision struct {
@@ -993,6 +1209,7 @@ type IssueDecision struct {
 	ExecutionResult       []byte             `json:"execution_result"`
 	ExecutionError        pgtype.Text        `json:"execution_error"`
 	ExecutedAt            pgtype.Timestamptz `json:"executed_at"`
+	Context               []byte             `json:"context"`
 }
 
 type IssueDependency struct {
@@ -1101,6 +1318,35 @@ type IssueSubscriber struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UnsubscribedAt pgtype.Timestamptz `json:"unsubscribed_at"`
 	OptOutScope    pgtype.Text        `json:"opt_out_scope"`
+}
+
+// Issue suspensions (RUYI-690): "waiting" as a dimension orthogonal to the lifecycle status. One row per suspension; the partial unique index keeps at most one active per issue. issue.suspended_at mirrors activeness for join-free board/list badge rendering. No FKs by house rule; swept by workspace/issue deletion in the application layer.
+type IssueSuspension struct {
+	ID                  pgtype.UUID `json:"id"`
+	WorkspaceID         pgtype.UUID `json:"workspace_id"`
+	IssueID             pgtype.UUID `json:"issue_id"`
+	Status              string      `json:"status"`
+	Reason              string      `json:"reason"`
+	WaitingOnType       string      `json:"waiting_on_type"`
+	WaitingOnIssueID    pgtype.UUID `json:"waiting_on_issue_id"`
+	WaitingOnDecisionID pgtype.UUID `json:"waiting_on_decision_id"`
+	WaitingOnSummary    string      `json:"waiting_on_summary"`
+	ResumeCondition     string      `json:"resume_condition"`
+	// Closed machine-predicate set: {"kind":"issue_done","issue_id":…} | {"kind":"decision_answered","decision_id":…} | {"kind":"manual"}. Only the first two ever auto-resume; external/manual waits are judged by humans.
+	ResumePredicate []byte             `json:"resume_predicate"`
+	SuspendedByType string             `json:"suspended_by_type"`
+	SuspendedByID   pgtype.UUID        `json:"suspended_by_id"`
+	SuspendedAt     pgtype.Timestamptz `json:"suspended_at"`
+	ResumedByType   pgtype.Text        `json:"resumed_by_type"`
+	ResumedByID     pgtype.UUID        `json:"resumed_by_id"`
+	ResumedAt       pgtype.Timestamptz `json:"resumed_at"`
+	ResumeNote      string             `json:"resume_note"`
+	CancelledByType pgtype.Text        `json:"cancelled_by_type"`
+	CancelledByID   pgtype.UUID        `json:"cancelled_by_id"`
+	CancelledAt     pgtype.Timestamptz `json:"cancelled_at"`
+	CancelNote      string             `json:"cancel_note"`
+	// Denormalized copy of the predicate that fired for a system resume, so the audit trail names the releasing condition without a JSONB re-read. NULL on manual resume/cancel.
+	ResumedByPredicate []byte `json:"resumed_by_predicate"`
 }
 
 type IssueToLabel struct {
@@ -1356,6 +1602,54 @@ type MarketplacePromptVersion struct {
 	WithdrawnBy          pgtype.UUID        `json:"withdrawn_by"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
+type McpFileAccessInstanceBinding struct {
+	InstanceID  string             `json:"instance_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	TargetID    string             `json:"target_id"`
+	Enabled     bool               `json:"enabled"`
+	UpdatedBy   pgtype.UUID        `json:"updated_by"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type McpFileReadPolicy struct {
+	Singleton bool               `json:"singleton"`
+	Version   int64              `json:"version"`
+	Rules     []byte             `json:"rules"`
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+type McpInvocationAuditOutbox struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	EventType     string             `json:"event_type"`
+	OccurredAt    pgtype.Timestamptz `json:"occurred_at"`
+	ActorType     string             `json:"actor_type"`
+	ActorID       pgtype.UUID        `json:"actor_id"`
+	InvocationID  pgtype.UUID        `json:"invocation_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	RuntimeID     pgtype.UUID        `json:"runtime_id"`
+	Reason        pgtype.Text        `json:"reason"`
+	Details       []byte             `json:"details"`
+	Sensitive     bool               `json:"sensitive"`
+	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
+	Attempts      int32              `json:"attempts"`
+	LastAttemptAt pgtype.Timestamptz `json:"last_attempt_at"`
+	LastErrorCode pgtype.Text        `json:"last_error_code"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type McpPreAuthRejection struct {
+	InvocationID pgtype.UUID        `json:"invocation_id"`
+	InstanceID   string             `json:"instance_id"`
+	ReasonCode   string             `json:"reason_code"`
+	FileToolName pgtype.Text        `json:"file_tool_name"`
+	RecordedAt   pgtype.Timestamptz `json:"recorded_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
 type Member struct {
@@ -1614,6 +1908,16 @@ type PromptProposal struct {
 	ExpectedGain pgtype.Text `json:"expected_gain"`
 	// RUYI-723: 1-5 integer reference score (5 = caused a delivery rollback/blocking or repeated cross-issue friction; 4 = one rework or acceptance failure; 3 = notable verification cost; 2 = minor improvement; 1 = nice-to-have); NULL = unrated. Reference only, never a gate.
 	ValueScore pgtype.Int4 `json:"value_score"`
+	// RUYI-751: the referenced clause for revise/remove/move proposals; clause_name is display-only from here on. NULL on legacy name-only rows (resolved at enact via the name fallback).
+	ClauseID pgtype.UUID `json:"clause_id"`
+	// RUYI-751 move_clause: destination carrier scope. NULL for every other change kind.
+	MoveToScope pgtype.Text `json:"move_to_scope"`
+	// RUYI-751 move_clause: destination entity id within the workspace. NULL for every other change kind.
+	MoveToScopeID pgtype.UUID `json:"move_to_scope_id"`
+	// RUYI-751: draft-level effectiveness conditions ({"task_kinds": [...]}, NULL = 全适用), copied onto the clause_binding row at enact. Shape-checked at the DB, value-checked in the handler (task kind whitelist).
+	Conditions []byte `json:"conditions"`
+	// RUYI-751: set on auto-generated rollback suggestion drafts — the clause version the suggestion reverts from; live rows with the same (clause_id, rollback_of_version) suppress duplicate suggestions.
+	RollbackOfVersion pgtype.Int4 `json:"rollback_of_version"`
 }
 
 // Per (prompt scope, version, UTC day) quality rollup for RUYI-184 dimensions D1/D2/D4/D5/D6/D7. Aggregates and pointers only — no prompt text, no transcript text. Every dimension stores counts rather than rates so "not measured" stays distinguishable from zero.
@@ -2168,6 +2472,7 @@ type VcsPullRequest struct {
 	ChangedFiles    int32              `json:"changed_files"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	TargetBranch    pgtype.Text        `json:"target_branch"`
 }
 
 type VerificationCode struct {

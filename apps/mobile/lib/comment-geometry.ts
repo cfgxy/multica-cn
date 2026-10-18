@@ -44,6 +44,10 @@ export class CommentGeometryRegistry {
     this.rects.delete(commentId);
   }
 
+  commentIds(): string[] {
+    return [...this.rects.keys()];
+  }
+
   /**
    * 把行内偏移换算成**原生滚动坐标系**里的矩形。
    *

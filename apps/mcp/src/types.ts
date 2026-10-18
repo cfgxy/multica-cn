@@ -182,6 +182,11 @@ export interface CommentInfo {
    * audit trail; there is no per-edit content history beyond this.
    */
   revision?: number;
+  /**
+   * Summary-mode listings only: the server clipped this body to ~200
+   * characters; absent on full reads.
+   */
+  content_truncated?: boolean;
   /** roots_only listings only: orientation stats for the thread under this root. */
   reply_count?: number;
   last_activity_at?: string;
@@ -410,6 +415,46 @@ export interface RunDetail {
   task: RunInfo;
   ancestors: RunLineageEntry[];
   descendants: RunLineageEntry[];
+}
+
+export interface RunActivity {
+  run_state: {
+    status: string;
+    created_at: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+    elapsed_ms: number | null;
+    wait_reason: string | null;
+  };
+  semantic_activity: {
+    messages: Array<{
+      seq: number;
+      type: string;
+      tool?: string;
+      content?: string;
+      input?: Record<string, unknown>;
+      output?: string;
+      created_at: string | null;
+      is_error?: boolean;
+      truncated: boolean;
+    }>;
+    next_after_seq: number;
+    has_more: boolean;
+    last_activity_at: string | null;
+  };
+  worker_evidence: {
+    log_available: boolean;
+    unavailable_reason: "" | "not_supervised" | "expired" | "not_found" | "daemon_unreachable";
+    stdout_tail: string | null;
+    stderr_tail: string | null;
+    next_cursor: string | null;
+    last_activity_at: string | null;
+    process_liveness: "alive" | "exited" | "unknown";
+  };
+  progress_assessment: {
+    status: "advancing" | "waiting" | "no_recent_evidence" | "finished" | "unknown";
+    basis: string[];
+  };
 }
 
 // Server cancel-matrix answer: code ∈ cancelled | cancel_requested |
@@ -806,6 +851,13 @@ export interface DecisionCardInfo {
   issue_id: string;
   source_comment_id?: string | null;
   question: string;
+  context?: {
+    why_now?: string;
+    facts?: Array<{ statement: string; evidence?: string[] }>;
+    impact?: string;
+    recommendation_reason?: string;
+    unknowns?: string[];
+  } | null;
   /** Option labels in display order; the letter for label[i] is A+i. */
   options: string[];
   multi_select: boolean;
@@ -857,4 +909,31 @@ export interface DecisionInboxItemInfo extends DecisionCardInfo {
 export interface DecisionInboxResult {
   items: DecisionInboxItemInfo[];
   counts: { open: number; answered: number; cancelled: number };
+}
+
+/** The existing inbox API projection, including issue-less system notices. */
+export interface InboxItemInfo {
+  id: string;
+  workspace_id: string;
+  recipient_type: "member" | "agent";
+  recipient_id: string;
+  type: string;
+  severity: string;
+  issue_id: string | null;
+  title: string;
+  body: string | null;
+  read: boolean;
+  archived: boolean;
+  created_at: string;
+  issue_status: string | null;
+  issue_priority: string | null;
+  issue_identifier: string | null;
+  actor_type: string | null;
+  actor_id: string | null;
+  details: unknown;
+}
+
+export interface InboxWorkspaceUnreadInfo {
+  workspace_id: string;
+  count: number;
 }

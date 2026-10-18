@@ -1,5 +1,12 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("mdast-util-from-markdown", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("mdast-util-from-markdown")>();
+  return { ...actual, fromMarkdown: vi.fn(actual.fromMarkdown) };
+});
+
+import { fromMarkdown } from "mdast-util-from-markdown";
 import { computeClosedFenceOffsets } from "./streaming-fence";
 
 const isClosed = (src: string, offset = 0): boolean =>
@@ -99,5 +106,28 @@ describe("computeClosedFenceOffsets", () => {
 
   it("returns an empty set for prose with no code", () => {
     expect(computeClosedFenceOffsets("just some **text**\n").size).toBe(0);
+  });
+
+  it("skips Markdown parsing when prose cannot contain a code block", () => {
+    vi.mocked(fromMarkdown).mockClear();
+
+    expect(computeClosedFenceOffsets("plain text with **formatting** and a [link](https://example.test)\n").size).toBe(0);
+    expect(fromMarkdown).not.toHaveBeenCalled();
+  });
+
+  it("keeps parsing indented code introduced by a tab", () => {
+    vi.mocked(fromMarkdown).mockClear();
+    const source = "\tconst value = 1\n";
+
+    expect(computeClosedFenceOffsets(source)).toEqual(new Set([0]));
+    expect(fromMarkdown).toHaveBeenCalledOnce();
+  });
+
+  it("keeps parsing code-like syntax inside Markdown containers", () => {
+    vi.mocked(fromMarkdown).mockClear();
+    const source = ">     const value = 1\n";
+
+    expect(computeClosedFenceOffsets(source)).toEqual(new Set([2]));
+    expect(fromMarkdown).toHaveBeenCalledOnce();
   });
 });

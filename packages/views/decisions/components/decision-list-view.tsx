@@ -2,7 +2,6 @@
 
 import { memo, useMemo } from "react";
 import type { IssueDecisionStatus, WorkspaceDecisionInboxItem } from "@multica/core/types";
-import { DECISION_ANCHOR_PREFIX, useWorkspacePaths } from "@multica/core/paths";
 import { useT } from "../../i18n";
 import { DecisionInboxRow } from "./decision-inbox-row";
 import {
@@ -16,14 +15,15 @@ import {
 
 interface DecisionListViewProps {
   items: WorkspaceDecisionInboxItem[];
+  onSelect: (item: WorkspaceDecisionInboxItem) => void;
   /** Workspace-wide totals; section numbers stay true even when the list
    *  window is bounded. */
   counts: Record<IssueDecisionStatus, number>;
   visibleStatuses: IssueDecisionStatus[];
 }
-
 export const DecisionListView = memo(function DecisionListView({
   items,
+  onSelect,
   counts,
   visibleStatuses,
 }: DecisionListViewProps) {
@@ -48,7 +48,7 @@ export const DecisionListView = memo(function DecisionListView({
               <DecisionSectionHeading status={status} count={counts[status]} />
               <div className="flex flex-col gap-1">
                 {sectionItems.map((item) => (
-                  <DecisionInboxRowContainer key={item.id} item={item} />
+                  <DecisionInboxRow key={item.id} item={item} onSelect={onSelect} />
                 ))}
               </div>
             </section>
@@ -78,15 +78,5 @@ function DecisionSectionHeading({
       </span>
       <span className="text-caption text-muted-foreground">{count}</span>
     </div>
-  );
-}
-
-function DecisionInboxRowContainer({ item }: { item: WorkspaceDecisionInboxItem }) {
-  const p = useWorkspacePaths();
-  return (
-    <DecisionInboxRow
-      item={item}
-      href={`${p.issueDetail(item.issue_id)}#${DECISION_ANCHOR_PREFIX}${item.id}`}
-    />
   );
 }

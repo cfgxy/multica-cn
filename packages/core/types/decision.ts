@@ -7,6 +7,19 @@ export interface DecisionOption {
   label: string;
 }
 
+export interface DecisionContextFact {
+  statement: string;
+  evidence?: string[];
+}
+
+export interface DecisionContext {
+  why_now?: string;
+  facts?: DecisionContextFact[];
+  impact?: string;
+  recommendation_reason?: string;
+  unknowns?: string[];
+}
+
 export type IssueDecisionStatus = "open" | "answered" | "cancelled";
 
 export interface IssueDecision {
@@ -14,6 +27,7 @@ export interface IssueDecision {
   issue_id: string;
   source_comment_id: string | null;
   question: string;
+  context?: DecisionContext | null;
   options: DecisionOption[];
   multi_select: boolean;
   recommended_indices: number[];

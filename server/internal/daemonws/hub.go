@@ -3,12 +3,14 @@ package daemonws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -109,7 +111,9 @@ type client struct {
 	seenList []string
 
 	// rpcSem bounds concurrent RPC handlers for this connection.
-	rpcSem chan struct{}
+	rpcSem      chan struct{}
+	serverRPCMu sync.Mutex
+	serverRPC   map[string]chan protocol.WorkerEvidenceResponse
 }
 
 // trySend delivers frame to the write pump without blocking and without ever
@@ -315,6 +319,55 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request, identity C
 // NotifyTaskAvailable sends a best-effort wakeup to daemons watching runtimeID.
 func (h *Hub) NotifyTaskAvailable(runtimeID, taskID string) {
 	h.notifyTaskAvailable(runtimeID, taskID, "")
+}
+
+// RequestWorkerEvidence sends only a fixed-purpose evidence request to the
+// authenticated connection registered for runtimeID and waits for its
+// correlated response. It never searches another runtime on failure.
+func (h *Hub) RequestWorkerEvidence(ctx context.Context, runtimeID string, req protocol.WorkerEvidenceRequest) (protocol.WorkerEvidenceResponse, error) {
+	var out protocol.WorkerEvidenceResponse
+	if h == nil || runtimeID == "" || req.RuntimeID != runtimeID {
+		return out, errors.New("daemon_unreachable")
+	}
+	h.mu.RLock()
+	var target *client
+	for c := range h.byRuntime[runtimeID] {
+		if _, ok := c.runtimes[runtimeID]; ok && (c.identity.DaemonID != "" || c.identity.UserID != "") {
+			target = c
+			break
+		}
+	}
+	h.mu.RUnlock()
+	if target == nil {
+		return out, errors.New("daemon_unreachable")
+	}
+	id := uuid.NewString()
+	req.RequestID, req.TimeoutMs = id, 2500
+	body, err := json.Marshal(req)
+	if err != nil {
+		return out, errors.New("daemon_unreachable")
+	}
+	frame, err := json.Marshal(protocol.Message{Type: protocol.EventDaemonWorkerEvidenceRequest, Payload: body})
+	if err != nil {
+		return out, errors.New("daemon_unreachable")
+	}
+	ch := make(chan protocol.WorkerEvidenceResponse, 1)
+	target.serverRPCMu.Lock()
+	if target.serverRPC == nil {
+		target.serverRPC = make(map[string]chan protocol.WorkerEvidenceResponse)
+	}
+	target.serverRPC[id] = ch
+	target.serverRPCMu.Unlock()
+	defer func() { target.serverRPCMu.Lock(); delete(target.serverRPC, id); target.serverRPCMu.Unlock() }()
+	if !target.trySend(frame) {
+		return out, errors.New("daemon_unreachable")
+	}
+	select {
+	case <-ctx.Done():
+		return out, errors.New("daemon_unreachable")
+	case resp := <-ch:
+		return resp, nil
+	}
 }
 
 // NotifyRuntimeProfilesChanged asks connected daemons in workspaceID to pull
@@ -748,6 +801,19 @@ func (c *client) handleFrame(raw []byte) {
 		c.handleHeartbeatFrame(msg.Payload)
 	case protocol.EventDaemonRPCRequest:
 		c.handleRPCFrame(msg.Payload)
+	case protocol.EventDaemonWorkerEvidenceResponse:
+		var resp protocol.WorkerEvidenceResponse
+		if json.Unmarshal(msg.Payload, &resp) == nil && resp.RequestID != "" {
+			c.serverRPCMu.Lock()
+			ch := c.serverRPC[resp.RequestID]
+			c.serverRPCMu.Unlock()
+			if ch != nil {
+				select {
+				case ch <- resp:
+				default:
+				}
+			}
+		}
 	default:
 		// Unknown app messages are intentionally ignored for forward
 		// compatibility with future daemon → server message types.

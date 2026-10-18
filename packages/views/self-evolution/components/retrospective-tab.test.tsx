@@ -67,6 +67,14 @@ vi.mock("@multica/core/workspace/queries", () => ({
   }),
 }));
 
+// RUYI-742: the detail sheet's issue entries render through IssueChip, whose
+// workspace id comes from this hook (the real one needs a WorkspaceSlugProvider
+// this test doesn't mount). Without issue fixtures the chips degrade to their
+// raw ids — the href assertions below are what this test pins.
+vi.mock("@multica/core/hooks", () => ({
+  useWorkspaceId: () => "ws-1",
+}));
+
 vi.mock("@multica/core/api", () => ({
   ApiError: TestApiError,
   // Mirrors the real clientErrorMessage contract (MUL-6472): the server's

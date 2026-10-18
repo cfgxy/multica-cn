@@ -4,18 +4,19 @@ import type { IssueReference } from "@multica/core/markdown";
 import type { GitHubPullRequest, Issue } from "@multica/core/types";
 
 /**
- * Pure row-building + grouping for the reference tail (RUYI-635 增量).
+ * Pure row-building + folding + grouping for the reference tail (RUYI-635
+ * 增量 + RUYI-731).
  *
- * Mirrors the web footer's row union and popover grouping; the fold cut
- * itself comes from `partitionReferencePreview` in core, so both ends fold
- * at the same row with the same counts. RN components can't render in the
- * node vitest lane, so the tail's policy lives here where it CAN be tested
- * for real — the component (issue-reference-list.tsx) only resolves,
- * partitions, and draws.
+ * Mirrors the web footer's row union; RUYI-731 (Owner correction) kept the
+ * fold as mobile-only policy, so the preview cut and the sheet grouping live
+ * here too. RN components can't render in the node vitest lane, so the
+ * tail's policy is tested for real here — the component
+ * (issue-reference-list.tsx) only resolves and draws.
  */
 import {
   buildReferenceTailRows,
   groupReferenceTailRows,
+  partitionReferencePreview,
   shouldCloseSheetOnDragRelease,
 } from "./issue-reference-rows";
 
@@ -106,6 +107,109 @@ describe("buildReferenceTailRows", () => {
       "identifier:MUL-2",
       "pull_request:cfgxy/multica-cn#338",
     ]);
+  });
+});
+
+describe("buildReferenceTailRows self-filter (RUYI-731)", () => {
+  it("drops a row that resolves to the current issue", () => {
+    const rows = buildReferenceTailRows(
+      [mention(UUID, "MUL-7")],
+      [issue(UUID, "MUL-7")],
+      UUID,
+    );
+
+    expect(rows).toHaveLength(0);
+  });
+
+  it("drops only the self row and keeps the rest", () => {
+    const rows = buildReferenceTailRows(
+      [mention(UUID, "MUL-7"), bare("MUL-9")],
+      [issue(UUID, "MUL-7"), issue(UUID2, "MUL-9")],
+      UUID,
+    );
+
+    expect(rows.map((r) => r.key)).toEqual(["identifier:MUL-9"]);
+  });
+
+  it("keeps every row when there is no current-issue context", () => {
+    const rows = buildReferenceTailRows(
+      [mention(UUID, "MUL-7")],
+      [issue(UUID, "MUL-7")],
+      null,
+    );
+
+    expect(rows).toHaveLength(1);
+  });
+});
+
+describe("partitionReferencePreview", () => {
+  it("shows every row when the list fits the preview budget", () => {
+    const rows = buildReferenceTailRows(
+      [bare("MUL-1"), prRef("cfgxy/multica-cn#338")],
+      [issue(UUID, "MUL-1"), pr(338)],
+    );
+    expect(partitionReferencePreview(rows)).toEqual({
+      previews: rows,
+      hidden: [],
+      hiddenPrCount: 0,
+    });
+  });
+
+  it("folds the tail beyond two rows and counts folded PRs", () => {
+    const rows = buildReferenceTailRows(
+      [
+        bare("MUL-1"),
+        prRef("cfgxy/multica-cn#338"),
+        bare("MUL-2"),
+        prRef("cfgxy/multica-cn#341"),
+        bare("MUL-3"),
+      ],
+      [issue(UUID, "MUL-1"), pr(338), issue(UUID2, "MUL-2"), pr(341), null],
+    );
+    const partition = partitionReferencePreview(rows);
+    expect(partition.previews.map((r) => r.kind)).toEqual(["issue", "pr"]);
+    expect(partition.hidden.map((r) => r.kind)).toEqual([
+      "issue",
+      "pr",
+      "degraded",
+    ]);
+    expect(partition.hiddenPrCount).toBe(1);
+  });
+
+  it("counts PRs that appear only inside the folded tail", () => {
+    const rows = buildReferenceTailRows(
+      [bare("MUL-1"), bare("MUL-2"), prRef("cfgxy/multica-cn#338")],
+      [issue(UUID, "MUL-1"), issue(UUID2, "MUL-2"), pr(338)],
+    );
+    const partition = partitionReferencePreview(rows);
+    expect(partition.hidden).toHaveLength(1);
+    expect(partition.hiddenPrCount).toBe(1);
+  });
+
+  it("returns empty slices for an empty list", () => {
+    expect(partitionReferencePreview([])).toEqual({
+      previews: [],
+      hidden: [],
+      hiddenPrCount: 0,
+    });
+  });
+
+  it("never surfaces a self-filtered row: the fold runs on post-filter rows", () => {
+    const rows = buildReferenceTailRows(
+      [
+        mention(UUID, "MUL-7"),
+        bare("MUL-9"),
+        bare("MUL-11"),
+        bare("MUL-12"),
+      ],
+      [issue(UUID, "MUL-7"), issue(UUID2, "MUL-9"), issue("u3", "MUL-11"), issue("u4", "MUL-12")],
+      UUID,
+    );
+    const partition = partitionReferencePreview(rows);
+    // The self row is gone BEFORE the cut: the two other issues fill the
+    // preview and only the third folds — the self row consumed no slot.
+    expect(partition.previews.map((r) => r.kind)).toEqual(["issue", "issue"]);
+    expect(partition.hidden).toHaveLength(1);
   });
 });
 

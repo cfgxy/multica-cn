@@ -172,16 +172,52 @@ func TestIssueDecisionCreateValidation(t *testing.T) {
 			t.Fatalf("1 option: expected 400, got %d: %s", w.Code, w.Body.String())
 		}
 	})
+	t.Run("missing question rejected over the API", func(t *testing.T) {
+		w := createDecisionCard(t, f, false, map[string]any{"options": []string{"Yes", "No"}})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("missing question: expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
 	t.Run("more than four options rejected over the API", func(t *testing.T) {
 		w := createDecisionCard(t, f, false, map[string]any{"question": "q", "options": []string{"a", "b", "c", "d", "e"}})
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("5 options: expected 400, got %d: %s", w.Code, w.Body.String())
 		}
 	})
+	t.Run("minimum card creates without optional context", func(t *testing.T) {
+		w := createDecisionCard(t, f, false, map[string]any{"question": "Ship?", "options": []string{"Yes", "No"}})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("minimum create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		card := decodeDecision(t, w)
+		if card.Question != "Ship?" || len(card.Options) != 2 || card.Context != nil {
+			t.Fatalf("minimum card = %+v, want question/options and no context", card)
+		}
+	})
+	t.Run("empty context creates as absent context", func(t *testing.T) {
+		w := createDecisionCard(t, f, false, map[string]any{
+			"question": "Ship?",
+			"options":  []string{"Yes", "No"},
+			"context":  map[string]any{},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("empty context create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		if card := decodeDecision(t, w); card.Context != nil {
+			t.Fatalf("empty context normalized to %+v, want nil", card.Context)
+		}
+	})
 	t.Run("agent identity recorded on create", func(t *testing.T) {
 		w := createDecisionCard(t, f, true, map[string]any{
 			"question": "Ship which day?",
 			"options":  []string{"Monday", "Tuesday"},
+			"context": map[string]any{
+				"why_now":               "The window closes Friday.",
+				"facts":                 []map[string]any{{"statement": "The staging build passed.", "evidence": []string{"CI run 123"}}},
+				"impact":                "A delay moves launch by one week.",
+				"recommendation_reason": "Monday leaves rollback time.",
+				"unknowns":              []string{"External review timing"},
+			},
 		})
 		if w.Code != http.StatusCreated {
 			t.Fatalf("agent create: expected 201, got %d: %s", w.Code, w.Body.String())
@@ -192,6 +228,9 @@ func TestIssueDecisionCreateValidation(t *testing.T) {
 		}
 		if len(card.Options) != 2 || card.Options[0].Label != "Monday" {
 			t.Fatalf("options = %+v, want Monday/Tuesday", card.Options)
+		}
+		if card.Context == nil || card.Context.WhyNow != "The window closes Friday." || card.Context.Facts[0].Evidence[0] != "CI run 123" {
+			t.Fatalf("context = %+v, want the structured context from create", card.Context)
 		}
 	})
 	t.Run("list returns created cards", func(t *testing.T) {
@@ -208,7 +247,38 @@ func TestIssueDecisionCreateValidation(t *testing.T) {
 		if len(cards) < 1 {
 			t.Fatal("list returned no cards")
 		}
+		foundContext := false
+		for _, card := range cards {
+			if card.Context != nil {
+				foundContext = card.Context.RecommendationReason == "Monday leaves rollback time."
+			}
+		}
+		if !foundContext {
+			t.Fatal("list response dropped the structured decision context")
+		}
 	})
+}
+
+func TestValidateDecisionContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		context *DecisionContext
+		wantErr bool
+	}{
+		{name: "absent remains valid"},
+		{name: "structured fields", context: &DecisionContext{WhyNow: "now", Facts: []DecisionContextFact{{Statement: "known", Evidence: []string{"source"}}}, Impact: "impact", RecommendationReason: "reason", Unknowns: []string{"unknown"}}},
+		{name: "empty context normalizes to absent", context: &DecisionContext{}},
+		{name: "fact requires a statement", context: &DecisionContext{Facts: []DecisionContextFact{{Evidence: []string{"source"}}}}, wantErr: true},
+		{name: "context text is bounded", context: &DecisionContext{WhyNow: strings.Repeat("x", decisionMaxContextTextLen+1)}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateDecisionContext(tc.context)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateDecisionContext() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
 }
 
 func TestIssueDecisionAnswerAuthorization(t *testing.T) {
@@ -217,6 +287,7 @@ func TestIssueDecisionAnswerAuthorization(t *testing.T) {
 	w := createDecisionCard(t, f, true, map[string]any{
 		"question": "Which option ships?",
 		"options":  []string{"Alpha", "Beta", "Gamma"},
+		"context":  map[string]any{"why_now": "The release window closes Friday."},
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
@@ -274,6 +345,9 @@ func TestIssueDecisionAnswerAuthorization(t *testing.T) {
 		}
 		if got.AnswerCommentID == nil {
 			t.Fatal("answer comment id not linked")
+		}
+		if got.Context == nil || got.Context.WhyNow != "The release window closes Friday." {
+			t.Fatalf("answer response context = %+v, want context retained", got.Context)
 		}
 		var content string
 		if err := testPool.QueryRow(t.Context(), `SELECT content FROM comment WHERE id = $1`, parseUUID(*got.AnswerCommentID)).Scan(&content); err != nil {

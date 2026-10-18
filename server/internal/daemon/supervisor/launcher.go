@@ -74,7 +74,22 @@ func RunWorkerLauncher() int {
 	cmd.Stdin = stdinR
 	cmd.Stdout = outF
 	cmd.Stderr = errF
-	cmd.SysProcAttr = workerSysProcAttr()
+	// The stored spec may be a snapshot-wrapped invocation (RUYI-669): the
+	// worker child then needs user+mount namespace clone flags so it can
+	// materialize the overlay views before exec'ing the agent. A malformed
+	// wrap refuses the spawn — the alternative is running the agent unwrapped
+	// in the user's directory, which is the one outcome snapshot mode exists
+	// to prevent.
+	attr, err := workerSysProcAttrFor(spec.Args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "supervisor: launcher %v\n", err)
+		we := WorkerExit{Code: 126}
+		updateManifestExit(spec, ExitRecord{Code: we.Code, At: time.Now().UTC(), Source: ExitSourceLauncher})
+		exit <- we
+		_ = serveControl(spec.Socket, stdinW, 0, exit, deliverSignal)
+		return we.Code
+	}
+	cmd.SysProcAttr = attr
 
 	if err := cmd.Start(); err != nil {
 		stdinR.Close()

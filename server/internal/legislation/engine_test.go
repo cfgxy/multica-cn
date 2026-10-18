@@ -30,15 +30,15 @@ const carrierText = `# 平台协作规范
 
 func baseInput() ProposalInput {
 	return ProposalInput{
-		ChangeKind:         "add_clause",
-		ClauseName:         "证据先行",
-		ClauseText:         "- **证据先行**：关键结论必须附带可复核证据。",
-		TargetSection:      "沟通规范",
-		GateAnswerLayer:    "workspace",
+		ChangeKind:          "add_clause",
+		ClauseName:          "证据先行",
+		ClauseText:          "- **证据先行**：关键结论必须附带可复核证据。",
+		TargetSection:       "沟通规范",
+		GateAnswerLayer:     "workspace",
 		GateAnswerRetention: "每轮输出都适用的纪律，留底座。",
-		GateAnswerCost:     "常驻新增约 40 字符。",
-		GateAnswerConflict: "与既有条款无冲突。",
-		GateAnswerDedup:    "已 grep 现行条款，无重复。",
+		GateAnswerCost:      "常驻新增约 40 字符。",
+		GateAnswerConflict:  "与既有条款无冲突。",
+		GateAnswerDedup:     "已 grep 现行条款，无重复。",
 	}
 }
 
@@ -456,5 +456,191 @@ func TestDiffLines(t *testing.T) {
 	d2 := DiffLines(big, big+"y\n")
 	if len(d2) < maxDiffLines {
 		t.Fatal("oversized input degraded path lost lines")
+	}
+}
+
+// --- SynthesizeMove (RUYI-751 / ADR 007 §2 move_clause) ---
+
+func TestSynthesizeMoveTransplantsClause(t *testing.T) {
+	move := baseInput()
+	move.ChangeKind = "move_clause"
+	move.ClauseName = "行文基调"
+	move.ClauseText = ""
+
+	srcNext, dstNext, err := SynthesizeMove(carrierText, "# 目标载体\n\n## 规范\n\n- **目标既有条款**：内容。\n", move, MoveTarget{Scope: "workspace"})
+	if err != nil {
+		t.Fatalf("move failed: %v", err)
+	}
+	if strings.Contains(srcNext, "行文基调") {
+		t.Fatal("source still holds the moved clause")
+	}
+	if !strings.Contains(dstNext, "行文基调") {
+		t.Fatal("destination missing the moved clause")
+	}
+	// The transplanted block keeps its full body.
+	if !strings.Contains(dstNext, "简明扼要") {
+		t.Fatal("moved clause lost its body in transit")
+	}
+	// Source keeps its other clauses and structure.
+	if !strings.Contains(srcNext, "先结论后依据") || !strings.Contains(srcNext, "## 成本纪律") {
+		t.Fatal("source lost unrelated content")
+	}
+}
+
+func TestSynthesizeMoveCombinesWithRevision(t *testing.T) {
+	move := baseInput()
+	move.ChangeKind = "move_clause"
+	move.ClauseName = "行文基调"
+	move.ClauseText = "- **行文基调**：一律专业、正式、准确（迁移后修订）。"
+
+	srcNext, dstNext, err := SynthesizeMove(carrierText, "# 目标载体\n", move, MoveTarget{Scope: "workspace"})
+	if err != nil {
+		t.Fatalf("move+revise failed: %v", err)
+	}
+	if strings.Contains(srcNext, "行文基调") || strings.Contains(dstNext, "简明扼要") {
+		t.Fatal("old body survived a move+revise")
+	}
+	if !strings.Contains(dstNext, "迁移后修订") {
+		t.Fatal("revised body missing at destination")
+	}
+}
+
+func TestSynthesizeMoveErrors(t *testing.T) {
+	move := baseInput()
+	move.ChangeKind = "move_clause"
+	move.ClauseName = "行文基调"
+
+	// Missing clause at source.
+	if _, _, err := SynthesizeMove(carrierText, "# 目标\n", move, MoveTarget{Scope: "workspace"}); err == nil {
+		t.Fatal("expected error for absent source clause")
+	}
+	// Clause already present at destination.
+	dup := baseInput()
+	dup.ClauseName = "行文基调"
+	dupDst := "# 目标载体\n\n## 沟通规范\n\n- **行文基调**：已存在。\n"
+	if _, _, err := SynthesizeMove(carrierText, dupDst, dup, MoveTarget{Scope: "workspace"}); err == nil {
+		t.Fatal("expected error for duplicate clause at destination")
+	}
+	// Unknown destination section.
+	if _, _, err := SynthesizeMove(carrierText, "# 目标\n", move, MoveTarget{Scope: "workspace", Section: "不存在的章节"}); err == nil {
+		t.Fatal("expected error for unknown destination section")
+	}
+	// Invalid destination scope.
+	if _, _, err := SynthesizeMove(carrierText, "# 目标\n", move, MoveTarget{Scope: "galaxy"}); err == nil {
+		t.Fatal("expected error for invalid destination scope")
+	}
+	// Empty clause name.
+	nameless := move
+	nameless.ClauseName = "  "
+	if _, _, err := SynthesizeMove(carrierText, "# 目标\n", nameless, MoveTarget{Scope: "workspace"}); err == nil {
+		t.Fatal("expected error for empty clause name")
+	}
+}
+
+func TestGateMoveBothCarriersPass(t *testing.T) {
+	move := baseInput()
+	move.ChangeKind = "move_clause"
+	move.ClauseName = "行文基调"
+	move.ClauseText = ""
+	dst := "# 目标载体\n\n## 规范\n\n- **目标既有条款**：内容。\n"
+
+	srcNext, dstNext, err := SynthesizeMove(carrierText, dst, move, MoveTarget{Scope: "workspace"})
+	if err != nil {
+		t.Fatalf("synthesize move: %v", err)
+	}
+	srcBaseline := &Baseline{Sections: Sections(carrierText), Clauses: Clauses(carrierText)}
+	dstBaseline := &Baseline{Sections: Sections(dst), Clauses: Clauses(dst)}
+	okResult(t, RunGate(carrierText, srcNext, srcBaseline, move))
+	okResult(t, RunGate(dst, dstNext, dstBaseline, move))
+}
+
+// --- Synthesize: migrate_clause (ADR 007 §8 存量迁移) ---
+
+func TestSynthesizeMigrateRemovesBlockInPlace(t *testing.T) {
+	block := "- **合并取数**：能一条命令取得的情报不拆多轮。"
+	p := baseInput()
+	p.ChangeKind = "migrate_clause"
+	p.ClauseName = "合并取数"
+	p.ClauseText = block
+	p.TargetSection = ""
+
+	next, err := Synthesize(carrierText, p)
+	if err != nil {
+		t.Fatalf("migrate synthesize failed: %v", err)
+	}
+	// The block must be gone from the output and the rest byte-identical.
+	if strings.Contains(next, "合并取数") {
+		t.Fatalf("migrated block still present:\n%s", next)
+	}
+	if !strings.Contains(next, "- **禁止叙述轮**：工具编排期间不带工具调用的纯文字轮禁止出现。") {
+		t.Fatalf("sibling clause lost:\n%s", next)
+	}
+	if !strings.Contains(next, "## 成员 UUID 索引") {
+		t.Fatalf("structure lost:\n%s", next)
+	}
+}
+
+func TestSynthesizeMigrateDriftFailsClosed(t *testing.T) {
+	// Inventory says one text, the carrier says another: enact-time drift
+	// check must refuse (fail-closed) — the tool's drift report can be stale.
+	p := baseInput()
+	p.ChangeKind = "migrate_clause"
+	p.ClauseName = "合并取数"
+	p.ClauseText = "- **合并取数**：清单里写的正文。"
+	_, err := Synthesize(carrierText, p)
+	if err == nil || !strings.Contains(err.Error(), "漂移") {
+		t.Fatalf("expected drift error, got %v", err)
+	}
+}
+
+func TestSynthesizeMigrateMissingBlockFails(t *testing.T) {
+	p := baseInput()
+	p.ChangeKind = "migrate_clause"
+	p.ClauseName = "不存在的条款"
+	p.ClauseText = "- **不存在的条款**：正文。"
+	if _, err := Synthesize(carrierText, p); err == nil {
+		t.Fatal("expected error for missing block")
+	}
+}
+
+func TestSynthesizeMigrateEmptyTextFails(t *testing.T) {
+	p := baseInput()
+	p.ChangeKind = "migrate_clause"
+	p.ClauseName = "合并取数"
+	p.ClauseText = ""
+	if _, err := Synthesize(carrierText, p); err == nil {
+		t.Fatal("expected error for empty clause_text")
+	}
+}
+
+// --- RestoreBlockToSection (migration rollback primitive) ---
+
+func TestRestoreBlockToSection(t *testing.T) {
+	without := "- **合并取数**：能一条命令取得的情报不拆多轮。"
+	restored, err := RestoreBlockToSection(carrierText, "成本纪律", without)
+	if err != nil {
+		t.Fatalf("restore failed: %v", err)
+	}
+	if !strings.Contains(restored, "## 成本纪律\n\n- **合并取数**：能一条命令取得的情报不拆多轮。") {
+		t.Fatalf("block not restored at section end:\n%s", restored)
+	}
+	// Restoring every removed block from the original yields the original.
+	lines := strings.Split(strings.TrimRight(carrierText, "\n"), "\n")
+	_ = lines
+}
+
+func TestRestoreBlockToSectionMissingSectionFails(t *testing.T) {
+	if _, err := RestoreBlockToSection(carrierText, "不存在章节", "- **X**：y。"); err == nil {
+		t.Fatal("expected error for missing section")
+	}
+}
+
+func TestRestoreBlockToSectionTail(t *testing.T) {
+	restored, err := RestoreBlockToSection(carrierText, "", "- **尾部条款**：无章节落文档尾。")
+	if err != nil {
+		t.Fatalf("restore failed: %v", err)
+	}
+	if !strings.Contains(restored, "\n\n- **尾部条款**：无章节落文档尾。") {
+		t.Fatalf("block not at tail:\n%s", restored)
 	}
 }

@@ -17,6 +17,7 @@ import {
   type ChartConfig,
 } from "@multica/ui/components/ui/chart";
 import { useLocale, useT } from "../../../i18n";
+import type { DailyTasksData } from "@multica/core/dashboard";
 
 // Three-segment stack — completed runs at the bottom (chart-1, primary
 // brand), then cancelled (chart-3, muted: a manual stop is an outcome, not
@@ -28,13 +29,7 @@ const tasksChartConfig = {
   failed: { label: "Failed", color: "var(--chart-5)" },
 } satisfies ChartConfig;
 
-export interface DailyTasksData {
-  date: string;
-  label: string;
-  completed: number;
-  failed: number;
-  cancelled: number;
-}
+export type { DailyTasksData } from "@multica/core/dashboard";
 
 export function DailyTasksChart({
   data,

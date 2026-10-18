@@ -99,12 +99,21 @@ export function MoreTabDropdownAnchor({
     // RUYI-344: the full-space list moved into the bottom Tasks tab; the
     // dropdown entry now opens the preserved personal view (more/my-issues).
     { label: i18n.t("layout:nav.my_issues", "My Issues"), icon: "checklist", androidIcon: "checkbox-outline", path: "/more/my-issues" },
+    // RUYI-690: 挂起中心入口（可发现的挂起筛选）。
+    { label: i18n.t("layout:nav.suspensions", "Suspensions"), icon: "pause.circle", androidIcon: "pause-outline", path: "/more/suspensions" },
     { label: i18n.t("layout:nav.projects", "Projects"), icon: "square.stack", androidIcon: "layers-outline", path: "/more/projects" },
     // RUYI-346: 智能体与小队管理入口（P0）。
     { label: i18n.t("layout:nav.agents", "Agents"), icon: "cpu", androidIcon: "hardware-chip-outline", path: "/more/agents" },
     { label: i18n.t("layout:nav.squads", "Squads"), icon: "person.3", androidIcon: "people-outline", path: "/more/squads" },
-    // RUYI-425 §4.3: 语音实例配置入口（Gemini Live 创建/配置，独立页面）。
-    { label: i18n.t("layout:nav.voice_runtimes", "Voice Runtimes"), icon: "waveform", androidIcon: "mic-outline", path: "/more/runtimes" },
+    // RUYI-748 retired the legacy runtime-instance screens; voice management
+    // now lives in the localized workspace voice settings screen.
+    { label: i18n.t("settings:page.tabs.voice", "Voice"), icon: "waveform", androidIcon: "mic-outline", path: "/more/settings/voice" },
+    // RUYI-638 阶段3: workspace usage 统计入口。键与 web sidebar 同源
+    // （layout:nav.usage，"Analytics"），可达性不做角色过滤——web 端
+    // usage 入口对全部工作区成员可见（views app-sidebar 静态 nav 数组），
+    // 权限面由服务端六个 dashboard rollup 接口一致裁决（A2 parity）。
+    { label: i18n.t("layout:nav.usage", "Analytics"), icon: "chart.bar", androidIcon: "stats-chart-outline", path: "/more/stats" },
+    { label: i18n.t("layout:nav.audit", "MCP audit"), icon: "checkmark.shield", androidIcon: "shield-checkmark-outline", path: "/more/audit" },
   ];
   const insets = useSafeAreaInsets();
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);

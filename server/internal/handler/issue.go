@@ -93,6 +93,12 @@ type IssueResponse struct {
 	// RunSuppressedAt is when the hold was placed (nanosecond RFC3339, same
 	// format as LastActivityAt); null whenever RunSuppressed is false.
 	RunSuppressedAt *string `json:"run_suppressed_at"`
+	// SuspendedAt mirrors an active issue_suspension row (RUYI-690): the
+	// "waiting" dimension that never touches the lifecycle status. Nanosecond
+	// RFC3339 like RunSuppressedAt; null when the issue is not suspended. The
+	// issue_suspension table owns the audit trail (reason, waiting target,
+	// resume condition); this column only answers "is it waiting right now".
+	SuspendedAt *string `json:"suspended_at"`
 	// Metadata is the per-issue KV map (see issue_metadata.go). Always emitted
 	// (empty object when unset) so frontend code can `issue.metadata[key]`
 	// without nil-guarding the parent field.
@@ -312,33 +318,34 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		statusCategory = i.Status
 	}
 	return IssueResponse{
-		ID:             uuidToString(i.ID),
-		WorkspaceID:    uuidToString(i.WorkspaceID),
-		Number:         i.Number,
-		Identifier:     identifier,
-		Title:          i.Title,
-		Description:    textToPtr(i.Description),
-		Status:         i.Status,
-		StatusCategory: statusCategory,
-		Priority:       i.Priority,
-		AssigneeType:   textToPtr(i.AssigneeType),
-		AssigneeID:     uuidToPtr(i.AssigneeID),
-		CreatorType:    i.CreatorType,
-		CreatorID:      uuidToString(i.CreatorID),
-		ParentIssueID:  uuidToPtr(i.ParentIssueID),
-		ProjectID:      uuidToPtr(i.ProjectID),
-		Position:       i.Position,
-		Stage:          int4ToPtr(i.Stage),
-		StartDate:      dateToPtr(i.StartDate),
-		DueDate:        dateToPtr(i.DueDate),
-		CreatedAt:      timestampToString(i.CreatedAt),
-		UpdatedAt:      timestampToString(i.UpdatedAt),
-		Revision:       i.Revision,
+		ID:              uuidToString(i.ID),
+		WorkspaceID:     uuidToString(i.WorkspaceID),
+		Number:          i.Number,
+		Identifier:      identifier,
+		Title:           i.Title,
+		Description:     textToPtr(i.Description),
+		Status:          i.Status,
+		StatusCategory:  statusCategory,
+		Priority:        i.Priority,
+		AssigneeType:    textToPtr(i.AssigneeType),
+		AssigneeID:      uuidToPtr(i.AssigneeID),
+		CreatorType:     i.CreatorType,
+		CreatorID:       uuidToString(i.CreatorID),
+		ParentIssueID:   uuidToPtr(i.ParentIssueID),
+		ProjectID:       uuidToPtr(i.ProjectID),
+		Position:        i.Position,
+		Stage:           int4ToPtr(i.Stage),
+		StartDate:       dateToPtr(i.StartDate),
+		DueDate:         dateToPtr(i.DueDate),
+		CreatedAt:       timestampToString(i.CreatedAt),
+		UpdatedAt:       timestampToString(i.UpdatedAt),
+		Revision:        i.Revision,
 		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
 		RunSuppressed:   i.RunSuppressed,
 		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
+		SuspendedAt:     timestampToNanoPtr(i.SuspendedAt),
 		Metadata:        parseIssueMetadata(i.Metadata),
-		Properties:     parseIssueProperties(i.Properties),
+		Properties:      parseIssueProperties(i.Properties),
 	}
 }
 
@@ -351,33 +358,34 @@ func issueListRowToResponse(i db.ListIssuesRow, issuePrefix string) IssueRespons
 	}
 	identifier := issuePrefix + "-" + strconv.Itoa(int(i.Number))
 	return IssueResponse{
-		ID:             uuidToString(i.ID),
-		WorkspaceID:    uuidToString(i.WorkspaceID),
-		Number:         i.Number,
-		Identifier:     identifier,
-		Title:          i.Title,
-		Description:    textToPtr(i.Description),
-		Status:         i.Status,
-		StatusCategory: statusCategory,
-		Priority:       i.Priority,
-		AssigneeType:   textToPtr(i.AssigneeType),
-		AssigneeID:     uuidToPtr(i.AssigneeID),
-		CreatorType:    i.CreatorType,
-		CreatorID:      uuidToString(i.CreatorID),
-		ParentIssueID:  uuidToPtr(i.ParentIssueID),
-		ProjectID:      uuidToPtr(i.ProjectID),
-		Position:       i.Position,
-		Stage:          int4ToPtr(i.Stage),
-		StartDate:      dateToPtr(i.StartDate),
-		DueDate:        dateToPtr(i.DueDate),
-		CreatedAt:      timestampToString(i.CreatedAt),
-		UpdatedAt:      timestampToString(i.UpdatedAt),
-		Revision:       i.Revision,
+		ID:              uuidToString(i.ID),
+		WorkspaceID:     uuidToString(i.WorkspaceID),
+		Number:          i.Number,
+		Identifier:      identifier,
+		Title:           i.Title,
+		Description:     textToPtr(i.Description),
+		Status:          i.Status,
+		StatusCategory:  statusCategory,
+		Priority:        i.Priority,
+		AssigneeType:    textToPtr(i.AssigneeType),
+		AssigneeID:      uuidToPtr(i.AssigneeID),
+		CreatorType:     i.CreatorType,
+		CreatorID:       uuidToString(i.CreatorID),
+		ParentIssueID:   uuidToPtr(i.ParentIssueID),
+		ProjectID:       uuidToPtr(i.ProjectID),
+		Position:        i.Position,
+		Stage:           int4ToPtr(i.Stage),
+		StartDate:       dateToPtr(i.StartDate),
+		DueDate:         dateToPtr(i.DueDate),
+		CreatedAt:       timestampToString(i.CreatedAt),
+		UpdatedAt:       timestampToString(i.UpdatedAt),
+		Revision:        i.Revision,
 		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
 		RunSuppressed:   i.RunSuppressed,
 		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
+		SuspendedAt:     timestampToNanoPtr(i.SuspendedAt),
 		Metadata:        parseIssueMetadata(i.Metadata),
-		Properties:     parseIssueProperties(i.Properties),
+		Properties:      parseIssueProperties(i.Properties),
 	}
 }
 
@@ -422,33 +430,34 @@ func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueRes
 	}
 	identifier := issuePrefix + "-" + strconv.Itoa(int(i.Number))
 	return IssueResponse{
-		ID:             uuidToString(i.ID),
-		WorkspaceID:    uuidToString(i.WorkspaceID),
-		Number:         i.Number,
-		Identifier:     identifier,
-		Title:          i.Title,
-		Description:    textToPtr(i.Description),
-		Status:         i.Status,
-		StatusCategory: statusCategory,
-		Priority:       i.Priority,
-		AssigneeType:   textToPtr(i.AssigneeType),
-		AssigneeID:     uuidToPtr(i.AssigneeID),
-		CreatorType:    i.CreatorType,
-		CreatorID:      uuidToString(i.CreatorID),
-		ParentIssueID:  uuidToPtr(i.ParentIssueID),
-		ProjectID:      uuidToPtr(i.ProjectID),
-		Position:       i.Position,
-		Stage:          int4ToPtr(i.Stage),
-		StartDate:      dateToPtr(i.StartDate),
-		DueDate:        dateToPtr(i.DueDate),
-		CreatedAt:      timestampToString(i.CreatedAt),
-		UpdatedAt:      timestampToString(i.UpdatedAt),
-		Revision:       i.Revision,
+		ID:              uuidToString(i.ID),
+		WorkspaceID:     uuidToString(i.WorkspaceID),
+		Number:          i.Number,
+		Identifier:      identifier,
+		Title:           i.Title,
+		Description:     textToPtr(i.Description),
+		Status:          i.Status,
+		StatusCategory:  statusCategory,
+		Priority:        i.Priority,
+		AssigneeType:    textToPtr(i.AssigneeType),
+		AssigneeID:      uuidToPtr(i.AssigneeID),
+		CreatorType:     i.CreatorType,
+		CreatorID:       uuidToString(i.CreatorID),
+		ParentIssueID:   uuidToPtr(i.ParentIssueID),
+		ProjectID:       uuidToPtr(i.ProjectID),
+		Position:        i.Position,
+		Stage:           int4ToPtr(i.Stage),
+		StartDate:       dateToPtr(i.StartDate),
+		DueDate:         dateToPtr(i.DueDate),
+		CreatedAt:       timestampToString(i.CreatedAt),
+		UpdatedAt:       timestampToString(i.UpdatedAt),
+		Revision:        i.Revision,
 		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
 		RunSuppressed:   i.RunSuppressed,
 		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
+		SuspendedAt:     timestampToNanoPtr(i.SuspendedAt),
 		Metadata:        parseIssueMetadata(i.Metadata),
-		Properties:     parseIssueProperties(i.Properties),
+		Properties:      parseIssueProperties(i.Properties),
 	}
 }
 
@@ -673,26 +682,43 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		}
 	}
 
+	// --- comment phrase-match flag (single materialization) ---
+	//
+	// The comment EXISTS subquery used to appear twice — once in the WHERE
+	// phrase match and once in rank tier 7 — so Postgres materialized the
+	// same candidate set twice (two hashed SubPlans, each doing a full
+	// LOWER+LIKE recheck over every trgm candidate; ~130ms each on the
+	// production comment table for common CJK tokens). The LEFT JOIN below
+	// materializes the matching issue_id set exactly once, and both the
+	// WHERE clause and the rank CASE reuse the `cm.issue_id IS NOT NULL`
+	// flag instead of re-running the EXISTS.
+	//
+	// The join subquery keeps the MUL-4059 workspace contract: it filters
+	// on c.workspace_id = wsParam, so the materialized set can only ever
+	// contain this workspace's comments. Without that filter the set blows
+	// up to every comment in the table matching the LIKE (30+ second
+	// hashed subplans; see MUL-4059 EXPLAIN reports). The outer WHERE still
+	// binds i.workspace_id = wsParam, so join pairs are same-workspace by
+	// construction.
+	//
+	// matched_comment_content deliberately stays a correlated scalar
+	// subquery: it probes the returned issue's own comments through
+	// comment_issue_resolved_at_idx (~0.5ms per row), so folding it into
+	// the join would buy nothing and cost a per-issue content aggregation.
+	commentMatchJoin := fmt.Sprintf(
+		"LEFT JOIN (SELECT DISTINCT c.issue_id FROM comment c WHERE c.workspace_id = %s AND LOWER(c.content) LIKE %s) cm ON cm.issue_id = i.id",
+		wsParam, phraseContainsParam,
+	)
+	commentMatchFlag := "cm.issue_id IS NOT NULL"
+
 	// --- WHERE clause ---
 	var whereParts []string
 
-	// Full phrase match: title, description, or comment.
-	//
-	// The comment EXISTS subquery is deliberately correlated on BOTH
-	// c.issue_id = i.id AND c.workspace_id = wsParam. The workspace_id
-	// filter is not strictly necessary for correctness (comment.workspace_id
-	// is FK-consistent with its issue's workspace), but it is critical for
-	// the planner. Without it, Postgres rewrites the correlated EXISTS
-	// into a hashed subplan that materializes every comment in the entire
-	// `comment` table matching the LIKE — for common tokens like "search"
-	// this can be hundreds of thousands of rows, blowing out work_mem into
-	// a lossy bitmap and taking 30+ seconds. With the workspace_id
-	// constant duplicated into the subquery, the hashed set collapses to
-	// this workspace's comments and the plan uses the supporting
-	// idx_comment_workspace (migration 135). See MUL-4059 EXPLAIN reports.
+	// Full phrase match: title, description, or comment (comment part reads
+	// the flag materialized once by commentMatchJoin above).
 	phraseMatch := fmt.Sprintf(
-		"(LOWER(i.title) LIKE %s OR LOWER(COALESCE(i.description, '')) LIKE %s OR EXISTS (SELECT 1 FROM comment c WHERE c.issue_id = i.id AND c.workspace_id = %s AND LOWER(c.content) LIKE %s))",
-		phraseContainsParam, phraseContainsParam, wsParam, phraseContainsParam,
+		"(LOWER(i.title) LIKE %s OR LOWER(COALESCE(i.description, '')) LIKE %s OR %s)",
+		phraseContainsParam, phraseContainsParam, commentMatchFlag,
 	)
 	whereParts = append(whereParts, phraseMatch)
 
@@ -764,9 +790,9 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		rankCases = append(rankCases, fmt.Sprintf("WHEN (%s) THEN 6", strings.Join(descTerms, " AND ")))
 	}
 
-	// Tier 7: Comment contains phrase. Same workspace_id-in-subquery
-	// contract as the WHERE clause; see the phraseMatch comment above.
-	rankCases = append(rankCases, fmt.Sprintf("WHEN EXISTS (SELECT 1 FROM comment c WHERE c.issue_id = i.id AND c.workspace_id = %s AND LOWER(c.content) LIKE %s) THEN 7", wsParam, phraseContainsParam))
+	// Tier 7: Comment contains phrase. Reads the flag materialized once by
+	// commentMatchJoin; see its comment for the MUL-4059 workspace contract.
+	rankCases = append(rankCases, fmt.Sprintf("WHEN %s THEN 7", commentMatchFlag))
 
 	// Tier 8: Comment matches all words (multi-word only)
 	if len(termContainsParams) > 1 {
@@ -882,11 +908,13 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		%s AS match_source,
 		%s AS matched_comment_content
 	FROM issue i
+	%s
 	WHERE i.workspace_id = %s AND %s
 	ORDER BY %s, %s, %s, i.updated_at DESC
 	LIMIT %s OFFSET %s`,
 		matchSourceExpr,
 		commentSubquery,
+		commentMatchJoin,
 		wsParam,
 		whereClause,
 		cancelledRank,
@@ -1519,7 +1547,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision, i.run_suppressed, i.run_suppressed_at
+	   i.revision, i.run_suppressed, i.run_suppressed_at, i.suspended_at
 FROM issue i
 WHERE %s
 ORDER BY %s
@@ -1562,6 +1590,7 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 			&row.Revision,
 			&row.RunSuppressed,
 			&row.RunSuppressedAt,
+			&row.SuspendedAt,
 		); err != nil {
 			slog.Warn("ListIssues scan failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to list issues")
@@ -2112,7 +2141,7 @@ WITH ranked AS (
 		i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at,
-		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision,
+		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.suspended_at,
 		COUNT(*) OVER (PARTITION BY i.assignee_type, i.assignee_id) AS group_total,
 		ROW_NUMBER() OVER (
 			PARTITION BY i.assignee_type, i.assignee_id
@@ -2125,7 +2154,7 @@ SELECT
 	id, workspace_id, title, description, status, priority,
 	assignee_type, assignee_id, creator_type, creator_id,
 	parent_issue_id, position, start_date, due_date, created_at, updated_at, last_activity_at,
-	number, project_id, metadata, stage, properties, revision, group_total
+	number, project_id, metadata, stage, properties, revision, suspended_at, group_total
 FROM ranked
 WHERE rn > %s AND rn <= %s + %s
 ORDER BY
@@ -2174,6 +2203,7 @@ ORDER BY
 			&row.Stage,
 			&row.Properties,
 			&row.Revision,
+			&row.SuspendedAt,
 			&row.GroupTotal,
 		); err != nil {
 			slog.Warn("ListGroupedIssues scan failed", "error", err)
@@ -2474,6 +2504,11 @@ type QuickCreateIssueRequest struct {
 	ProjectID     string   `json:"project_id,omitempty"`
 	ParentIssueID string   `json:"parent_issue_id,omitempty"`
 	AttachmentIDs []string `json:"attachment_ids,omitempty"`
+	// LocalDirectoryScope is the optional RUYI-669 declaration of which
+	// snapshot-mode project resources and subdirectories the new task
+	// claims. Validated against the picked project's resources below; the
+	// daemon re-validates at claim time. Requires project_id.
+	LocalDirectoryScope json.RawMessage `json:"local_directory_scope,omitempty"`
 }
 
 // QuickCreateIssueResponse echoes the queued task id so the frontend can
@@ -2672,7 +2707,17 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		parentIssueUUID = pid
 	}
 
-	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, priority, dueDate, projectUUID, parentIssueUUID, attachmentIDs)
+	// RUYI-669: optional snapshot directory declaration. Validated against
+	// the picked project's snapshot resources here; the daemon runs the same
+	// wire parser again at claim time, so a hand-forged task row cannot
+	// widen its write set past what this check approved.
+	scopeJSON, status, msg := h.validateQuickCreateDirectoryScope(r.Context(), projectUUID, req.LocalDirectoryScope)
+	if status != 0 {
+		writeError(w, status, msg)
+		return
+	}
+
+	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, priority, dueDate, projectUUID, parentIssueUUID, attachmentIDs, scopeJSON)
 	if err != nil {
 		if writeIssueLimitReached(w, err) {
 			return
@@ -3762,6 +3807,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// fails best-effort.
 	if statusChanged {
 		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
+		// RUYI-690: machine predicate issue_done — active suspensions waiting
+		// on this issue auto-resume (and wake its assignee) when it enters
+		// the done category. Best-effort; never fails the update.
+		if h.enteredDoneCategory(r.Context(), prevIssue, issue) {
+			h.ResumeSuspensionsWaitingOnIssue(r.Context(), issue)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -4219,6 +4270,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// the parent/stage notification is evaluated once against the final state
 	// after the loop (MUL-4155) rather than per-child mid-batch.
 	var childDoneCompleted []db.Issue
+	var suspensionDoneTargets []db.Issue
 	for _, issueID := range req.IssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
@@ -4488,6 +4540,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// RUYI-690: same issue_done transition rule as UpdateIssue, deferred
+		// to after the loop like the stage barrier so each waiting issue's
+		// suspensions resume against the batch's final committed state.
+		if statusChanged && h.enteredDoneCategory(r.Context(), prevIssue, issue) {
+			suspensionDoneTargets = append(suspensionDoneTargets, issue)
+		}
+
 		updated++
 	}
 
@@ -4496,6 +4555,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// of issue_ids order (MUL-4155). Best-effort; failure does not abort the
 	// batch. Single-issue UpdateIssue is unchanged and still notifies inline.
 	h.notifyParentsOfBatchChildDone(r.Context(), childDoneCompleted)
+
+	// RUYI-690: resume suspensions waiting on issues the batch just moved
+	// into done. Best-effort per target; failure does not abort the batch.
+	for _, target := range suspensionDoneTargets {
+		h.ResumeSuspensionsWaitingOnIssue(r.Context(), target)
+	}
 
 	slog.Info("batch update issues", append(logger.RequestAttrs(r), "count", updated)...)
 	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
