@@ -61,7 +61,7 @@ describe("ChatQueue", () => {
     expect(screen.queryByText("2 queued messages")).not.toBeInTheDocument();
     expect(screen.getByText("First follow-up")).toBeInTheDocument();
     expect(screen.getByText("Queued message")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Steer" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Send now" })).toHaveLength(2);
     expect(screen.getAllByLabelText("Remove queued message")).toHaveLength(2);
     expect(screen.getAllByLabelText("More queue actions")).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Clear all" })).not.toBeInTheDocument();
@@ -84,7 +84,7 @@ describe("ChatQueue", () => {
   it("runs steer, remove, and overflow actions against the selected queue state", async () => {
     const actions = renderQueue();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Steer" })[1]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "Send now" })[1]!);
     await waitFor(() => expect(actions.onSendNow).toHaveBeenCalledWith("task-3"));
 
     fireEvent.click(screen.getAllByLabelText("More queue actions")[0]!);
@@ -161,6 +161,6 @@ describe("ChatQueue send-now gating", () => {
   it("leaves Steer available when the head task is dispatchable and permitted", () => {
     renderQueue("running", false);
 
-    expect(screen.getAllByRole("button", { name: "Steer" })[0]!).not.toBeDisabled();
+    expect(screen.getAllByRole("button", { name: "Send now" })[0]!).not.toBeDisabled();
   });
 });
