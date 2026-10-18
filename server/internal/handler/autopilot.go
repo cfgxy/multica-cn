@@ -182,6 +182,21 @@ type AutopilotRunResponse struct {
 	TriggerPayload any     `json:"trigger_payload"`
 	Result         any     `json:"result"`
 	CreatedAt      string  `json:"created_at"`
+	// Task is populated only for a single-run read. It is intentionally a
+	// lifecycle projection, not the task's raw result or working directory.
+	Task *AutopilotRunTaskResponse `json:"task,omitempty"`
+}
+
+type AutopilotRunTaskResponse struct {
+	ID            string  `json:"id"`
+	Status        string  `json:"status"`
+	IssueID       *string `json:"issue_id"`
+	CreatedAt     string  `json:"created_at"`
+	DispatchedAt  *string `json:"dispatched_at"`
+	StartedAt     *string `json:"started_at"`
+	CompletedAt   *string `json:"completed_at"`
+	FailureReason *string `json:"failure_reason"`
+	Error         *string `json:"error"`
 }
 
 // ── Converters ──────────────────────────────────────────────────────────────
@@ -335,6 +350,20 @@ func runToResponseSlim(r db.AutopilotRun) AutopilotRunResponse {
 	resp := runToResponse(r)
 	resp.TriggerPayload = nil
 	return resp
+}
+
+func autopilotRunTaskToResponse(task db.AgentTaskQueue) *AutopilotRunTaskResponse {
+	return &AutopilotRunTaskResponse{
+		ID:            uuidToString(task.ID),
+		Status:        task.Status,
+		IssueID:       uuidToPtr(task.IssueID),
+		CreatedAt:     timestampToString(task.CreatedAt),
+		DispatchedAt:  timestampToPtr(task.DispatchedAt),
+		StartedAt:     timestampToPtr(task.StartedAt),
+		CompletedAt:   timestampToPtr(task.CompletedAt),
+		FailureReason: textToPtr(task.FailureReason),
+		Error:         textToPtr(task.Error),
+	}
 }
 
 // ── Request types ───────────────────────────────────────────────────────────
@@ -2203,17 +2232,35 @@ func (h *Handler) ListAutopilotRuns(w http.ResponseWriter, r *http.Request) {
 			offset = int32(v)
 		}
 	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	triggeredAfter, ok := parseAutopilotRunTimeFilter(w, r, "triggered_after")
+	if !ok {
+		return
+	}
+	triggeredBefore, ok := parseAutopilotRunTimeFilter(w, r, "triggered_before")
+	if !ok {
+		return
+	}
 
-	runs, err := h.Queries.ListAutopilotRuns(r.Context(), db.ListAutopilotRunsParams{
-		AutopilotID: autopilot.ID,
-		Limit:       limit,
-		Offset:      offset,
+	runs, err := h.Queries.ListAutopilotRunsFiltered(r.Context(), db.ListAutopilotRunsFilteredParams{
+		AutopilotID:     autopilot.ID,
+		Status:          pgtype.Text{String: status, Valid: status != ""},
+		Source:          pgtype.Text{String: source, Valid: source != ""},
+		TriggeredAfter:  triggeredAfter,
+		TriggeredBefore: triggeredBefore,
+		Limit:           limit + 1,
+		Offset:          offset,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list runs")
 		return
 	}
 
+	hasMore := len(runs) > int(limit)
+	if hasMore {
+		runs = runs[:limit]
+	}
 	resp := make([]AutopilotRunResponse, len(runs))
 	for i, run := range runs {
 		// Omit trigger_payload in the list response — a webhook envelope
@@ -2222,7 +2269,33 @@ func (h *Handler) ListAutopilotRuns(w http.ResponseWriter, r *http.Request) {
 		// full payload from GetAutopilotRun.
 		resp[i] = runToResponseSlim(run)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"runs": resp, "total": len(resp)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"runs":        resp,
+		"total":       len(resp),
+		"has_more":    hasMore,
+		"next_offset": nextAutopilotRunOffset(offset, limit, hasMore),
+	})
+}
+
+func parseAutopilotRunTimeFilter(w http.ResponseWriter, r *http.Request, key string) (pgtype.Timestamptz, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get(key))
+	if raw == "" {
+		return pgtype.Timestamptz{}, true
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, key+" must be RFC3339")
+		return pgtype.Timestamptz{}, false
+	}
+	return pgtype.Timestamptz{Time: parsed, Valid: true}, true
+}
+
+func nextAutopilotRunOffset(offset, limit int32, hasMore bool) *int32 {
+	if !hasMore {
+		return nil
+	}
+	next := offset + limit
+	return &next
 }
 
 // GetAutopilotRun returns a single run including its full trigger_payload.
@@ -2257,7 +2330,17 @@ func (h *Handler) GetAutopilotRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, runToResponse(run))
+	resp := runToResponse(run)
+	if run.TaskID.Valid {
+		task, err := h.Queries.GetAgentTaskInWorkspace(r.Context(), db.GetAgentTaskInWorkspaceParams{
+			ID:          run.TaskID,
+			WorkspaceID: autopilot.WorkspaceID,
+		})
+		if err == nil {
+			resp.Task = autopilotRunTaskToResponse(task)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ── Manual trigger ──────────────────────────────────────────────────────────
