@@ -128,7 +128,7 @@ export const EMPTY_NOTIFICATION_PREFERENCES = {
   preferences: {},
 } as const;
 
-const LabelSchema = z.object({
+export const LabelSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   name: z.string(),
@@ -136,6 +136,15 @@ const LabelSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
 }).loose();
+
+export const EMPTY_LABEL: Label = {
+  id: "",
+  workspace_id: "",
+  name: "",
+  color: "",
+  created_at: "",
+  updated_at: "",
+};
 
 export const ListLabelsResponseSchema = z.object({
   labels: z.array(LabelSchema).default([]),
@@ -953,9 +962,18 @@ export const IntegrationInstallationsSchema = z.object({
   installations: z
     .array(
       z.object({
+        id: z.string().optional(),
+        workspace_id: z.string().optional(),
         agent_id: z.string().nullable().optional(),
         status: z.string().optional(),
-      }),
+        team_id: z.string().optional(),
+        bot_user_id: z.string().optional(),
+        tenant_key: z.string().nullable().optional(),
+        app_id: z.string().optional(),
+        bot_open_id: z.string().optional(),
+        account_name: z.string().optional(),
+        login: z.string().optional(),
+      }).passthrough(),
     )
     .default([]),
 });

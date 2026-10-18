@@ -2,6 +2,8 @@
   "page": {
     "title": "런타임",
     "tagline": "에이전트의 CLI 세션을 실행하는 기기와 클라우드 워커입니다.",
+    "load_failed": "런타임을 불러오지 못했습니다",
+    "retry": "다시 시도",
     "learn_more": "자세히 보기 →",
     "connect_remote": "컴퓨터 추가",
     "search_placeholder": "런타임 검색...",
@@ -26,6 +28,27 @@
       "title": "로컬 런타임 시작 중...",
       "hint": "보통 몇 초 정도 걸립니다. 데몬이 워크스페이스에 등록되는 중입니다."
     }
+  },
+  "status": { "online": "온라인", "offline": "오프라인" },
+  "mobile_nodes": {
+    "voice": "음성",
+    "credential_configured": "구성됨",
+    "credential_error": "문제 있음",
+    "credential_missing": "구성되지 않음",
+    "credential": "인증 정보 상태",
+    "type": "유형",
+    "agents": "바인딩된 에이전트",
+    "visibility": "공개 범위",
+    "rename": "런타임 이름 변경",
+    "name_label": "런타임 이름",
+    "saving": "저장 중…",
+    "save_failed": "런타임 이름을 저장하지 못했습니다",
+    "delete_title": "런타임을 삭제할까요?",
+    "delete_bound_title": "에이전트를 바인딩 해제하고 런타임을 삭제할까요?",
+    "delete_description": "이 작업은 되돌릴 수 없습니다.",
+    "delete_bound_description": "에이전트는 유지되지만 바인딩이 해제되고 대기 또는 실행 중인 작업은 취소됩니다.",
+    "delete_failed": "런타임이 변경되었거나 삭제할 수 없습니다. 새로고침 후 현재 바인딩을 확인하세요.",
+    "deleting": "삭제 중…"
   },
   "mika_setup": {
     "title": "런타임이 준비되었습니다. Mika와 시작하세요.",
@@ -150,6 +173,7 @@
     }
   },
   "detail": {
+    "visibility_label": { "private": "비공개", "public": "공개" },
     "all_runtimes": "모든 런타임",
     "read_only": "읽기 전용",
     "delete_button": "런타임 삭제",

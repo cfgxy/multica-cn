@@ -1889,6 +1889,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Use(handler.RequireHumanActor)
 			r.Use(middleware.RequireSuperAdmin(queries))
 			r.Get("/users", h.AdminListUsers)
+			r.Get("/audit", h.AdminListAuditLogs)
 			r.Patch("/users/{id}/disabled", h.AdminSetUserDisabled)
 			r.Patch("/users/{id}/super-admin", h.AdminSetUserSuperAdmin)
 			r.Post("/users/{id}/impersonate", h.AdminImpersonate)

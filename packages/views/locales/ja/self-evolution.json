@@ -857,5 +857,6 @@
   "configPage": {
     "title": "モジュール設定",
     "description": "以下のモデルサービスが品質スコアリングを支えます。Langfuse はインスタンス単位のため、ここでは読み取り専用です。"
-  }
+  },
+  "mobile": { "title": "自己進化", "overview": "概要", "versions": "バージョン", "proposals": "提案", "proposal_count_label": "件の提案", "pending_owner": "オーナーの確認待ち", "skills": "Skills", "review_diff": "提案の差分を確認", "empty_diff": "差分なし", "cancel": "キャンセル", "approve": "承認", "approving": "承認中…", "reject": "却下", "rejecting": "却下中…", "action_failed": "操作に失敗しました。変更は保存されていません。内容を確認して再試行してください。", "reject_reason": "却下理由", "reject_unavailable": "この端末では理由を入力できません。", "error": "提案プレビューを読み込めません", "load_error": "一部データを読み込めません。タップして再試行してください。", "review_approve": "確認して承認", "no_proposals": "提案はありません", "clauses": "条項ガバナンス", "injections": "回使用", "no_clauses": "管理対象の条項はありません", "retrospective": "振り返り実行", "issues_analyzed": "件を分析", "no_retrospectives": "振り返り記録はありません" }
 }

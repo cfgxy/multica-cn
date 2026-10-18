@@ -2,6 +2,8 @@
   "page": {
     "title": "Runtimes",
     "tagline": "Machines and cloud workers running CLI sessions for your agents.",
+    "load_failed": "Couldn't load runtimes",
+    "retry": "Retry",
     "learn_more": "Learn more →",
     "connect_remote": "Add a computer",
     "search_placeholder": "Search runtimes…",
@@ -26,6 +28,27 @@
       "title": "Starting local runtime…",
       "hint": "This usually takes a few seconds. Your daemon is registering with the workspace."
     }
+  },
+  "status": { "online": "Online", "offline": "Offline" },
+  "mobile_nodes": {
+    "voice": "Voice",
+    "credential_configured": "Configured",
+    "credential_error": "Issue",
+    "credential_missing": "Not configured",
+    "credential": "Credential status",
+    "type": "Type",
+    "agents": "Bound agents",
+    "visibility": "Visibility",
+    "rename": "Rename runtime",
+    "name_label": "Runtime name",
+    "saving": "Saving…",
+    "save_failed": "Couldn't save the runtime name",
+    "delete_title": "Delete runtime?",
+    "delete_bound_title": "Unbind agents and delete runtime?",
+    "delete_description": "This action cannot be undone.",
+    "delete_bound_description": "Bound agents will be kept but unbound; queued and running tasks will be cancelled.",
+    "delete_failed": "The runtime changed or could not be deleted. Refresh and review the current bindings.",
+    "deleting": "Deleting…"
   },
   "mika_setup": {
     "title": "Your runtime is ready. Start with Mika.",
@@ -154,6 +177,7 @@
     }
   },
   "detail": {
+    "visibility_label": { "private": "Private", "public": "Public" },
     "all_runtimes": "All runtimes",
     "read_only": "Read-only",
     "delete_button": "Delete runtime",

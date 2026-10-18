@@ -1,5 +1,5 @@
 {
-  "title": "自进化",
+  "title": "自演化",
   "description": "查看智能体与小队 prompt 随时间的变化，以及变化的来源。",
   "overview": {
     "loading": "正在加载总览",
@@ -797,7 +797,7 @@
     "error": { "title": "加载失败", "retry": "重试" }
   },
   "nav": {
-    "label": "自进化分区",
+    "label": "自演化分区",
     "overview": "总览",
     "groupKnowledgeAssets": "知识资产",
     "groupMeasures": "度量",
@@ -963,5 +963,6 @@
   "configPage": {
     "title": "模块配置",
     "description": "下方模型服务支撑质量评分；Langfuse 为实例级配置，此处只读。"
-  }
+  },
+  "mobile": { "title": "自演化", "overview": "总览", "versions": "版本", "proposals": "提案", "proposal_count_label": "项提案", "pending_owner": "待所有者处理", "skills": "技能", "review_diff": "查看提案差异", "empty_diff": "无差异行", "cancel": "取消", "approve": "批准", "approving": "正在批准…", "reject": "驳回", "rejecting": "正在驳回…", "action_failed": "操作失败，修改未保存。请检查后重试。", "reject_reason": "驳回原因", "reject_unavailable": "此设备暂不支持输入驳回原因。", "error": "无法加载提案预览", "load_error": "部分数据加载失败，点击重试。", "review_approve": "查看并批准", "no_proposals": "暂无提案", "clauses": "条款治理", "injections": "次使用", "no_clauses": "暂无治理条款", "retrospective": "复盘运行记录", "issues_analyzed": "个任务已分析", "no_retrospectives": "暂无复盘记录" }
 }

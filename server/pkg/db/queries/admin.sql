@@ -2,6 +2,18 @@
 -- instance-level /api/admin endpoint guarded by RequireSuperAdmin; none of
 -- them consult workspace membership.
 
+-- name: ListAdminAuditLogs :many
+SELECT a.id, a.actor_id, COALESCE(actor.name, '') AS actor_name,
+       actor.email AS actor_email, a.action, a.target_type, a.target_id,
+       a.workspace_id, a.reason, a.metadata, a.created_at
+FROM admin_audit_log a
+LEFT JOIN "user" actor ON actor.id = a.actor_id
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountAdminAuditLogs :one
+SELECT count(*) FROM admin_audit_log;
+
 -- name: GetUserAdminState :one
 -- Lightweight auth-path read: only the columns the disabled check and the
 -- super-admin guard need. The auth middleware runs this on user-state cache
