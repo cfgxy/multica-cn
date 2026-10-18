@@ -167,6 +167,19 @@ describe("VoiceTab", () => {
     expect(await screen.findByText("API key — Gemini OK")).toBeInTheDocument();
   });
 
+  it("keeps the provider menu and credential dialog translated and clickable in Chinese", async () => {
+    const user = userEvent.setup();
+    mocks.providers = [providerFixture({ id: "p-ok", display_name: "Gemini OK" })];
+    renderWithI18n(<VoiceTab />, { locale: "zh-Hans" });
+
+    expect(screen.getByRole("heading", { name: "语音" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Gemini OK" }));
+    await user.click(await screen.findByRole("menuitem", { name: "配置 API Key…" }));
+
+    expect(await screen.findByText("API Key — Gemini OK")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存并测试" })).toBeInTheDocument();
+  });
+
   it("opens the delete confirmation from the row actions menu", async () => {
     const user = userEvent.setup();
     mocks.providers = [providerFixture({ id: "p-ok", display_name: "Gemini OK" })];
