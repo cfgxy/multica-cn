@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { auditFailureKind, buildAuditParams, nextAuditCursor, safeAuditDetails } from "./audit-display";
+import { auditDateToISOString, auditFailureKind, buildAuditParams, nextAuditCursor, safeAuditDetails, type AuditFilterDraft } from "./audit-display";
 
 describe("audit display helpers", () => {
   it("maps the complete supported filter set and drops blank values", () => {
@@ -23,6 +23,21 @@ describe("audit display helpers", () => {
     });
     expect(params).not.toHaveProperty("target_type");
     expect(params).not.toHaveProperty("target_id");
+  });
+
+  it("maps picked dates to UTC RFC3339 values and rejects invalid dates", () => {
+    expect(auditDateToISOString(new Date("2026-10-01T12:34:56.000Z"))).toBe("2026-10-01T12:34:56.000Z");
+    expect(() => auditDateToISOString(new Date(Number.NaN))).toThrow("Invalid audit date");
+  });
+
+  it("rejects invalid non-empty enumerations instead of silently omitting filters", () => {
+    const base: AuditFilterDraft = {
+      since: "", until: "", timeBasis: "", actorID: "", actorType: "", clientName: "", clientVersion: "",
+      toolName: "", resultStatus: "", resultErrorCode: "", targetType: "", targetID: "",
+    };
+    for (const [field, value] of [["timeBasis", "started"], ["actorType", "robot"], ["resultStatus", "ok"], ["resultErrorCode", "oops"], ["targetType", "repo"]] as const) {
+      expect(() => buildAuditParams({ ...base, [field]: value })).toThrow(`Invalid audit filter: ${field}`);
+    }
   });
 
   it("requires both server cursors before requesting another page", () => {
