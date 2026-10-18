@@ -8,13 +8,13 @@ import { ApiError } from "@multica/core/api";
 import enCommon from "../locales/en/common.json";
 import enLayout from "../locales/en/layout.json";
 
-const query = vi.hoisted(() => vi.fn());
+const { query, queryFilters } = vi.hoisted(() => ({ query: vi.fn(), queryFilters: vi.fn() }));
 
 vi.mock("@tanstack/react-query", () => ({
   useInfiniteQuery: () => query(),
 }));
 vi.mock("@multica/core/audit", () => ({
-  auditEventsPageOptions: () => ({ queryKey: ["audit"] }),
+  auditEventsPageOptions: (_workspaceId: string, filters: Record<string, unknown>) => { queryFilters(filters); return { queryKey: ["audit"] }; },
 }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "workspace-1" }));
 vi.mock("@multica/core/paths", () => ({
@@ -60,6 +60,22 @@ describe("AuditEventsPage", () => {
     expect(screen.getByText("Desktop 1.2")).toBeInTheDocument();
     expect(screen.getAllByText("host: host-1").length).toBeGreaterThan(0);
     expect(screen.queryByText("/private/secret")).not.toBeInTheDocument();
+  });
+
+  it("fixes the query to MCP and displays plugin-hook status and latency", () => {
+    const pluginEvent = {
+      ...event,
+      event_type: "mcp.invocation_finished",
+      details: { ...event.details, status: "success", latency_ms: 42 },
+    };
+    query.mockReturnValue({ data: { pages: [{ events: [pluginEvent], next_cursor: null, next_cursor_id: null }] }, isLoading: false, error: null, hasNextPage: false, isFetchingNextPage: false, fetchNextPage: vi.fn(), refetch: vi.fn() });
+
+    render(<AuditEventsPage />, { wrapper: Wrapper });
+
+    expect(queryFilters).toHaveBeenLastCalledWith(expect.objectContaining({ domain: "mcp", time_basis: "invocation_start" }));
+    expect(screen.getByText("success")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("button", { name: /read_file_chunk/i })[0]!);
+    expect(screen.getByText("42 ms")).toBeInTheDocument();
   });
 
   it("renders permission denial independently from an empty result", () => {

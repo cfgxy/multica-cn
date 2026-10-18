@@ -53,7 +53,12 @@ function eventTool(event: AuditEvent): string {
 }
 
 function eventResult(event: AuditEvent): string | null {
-  return detailString(event.details, "result_status") ?? event.reason;
+  return detailString(event.details, "result_status") ?? detailString(event.details, "status") ?? event.reason;
+}
+
+function eventDuration(event: AuditEvent): string | null {
+  const duration = detailString(event.details, "duration_ms") ?? detailString(event.details, "latency_ms");
+  return duration === null ? null : `${duration} ms`;
 }
 
 function eventTarget(event: AuditEvent): string | null {
@@ -64,6 +69,7 @@ function eventTarget(event: AuditEvent): string | null {
 
 function filtersFromDraft(draft: AuditDraft): ListAuditEventsParams {
   return {
+    domain: "mcp",
     limit: 50,
     time_basis: "invocation_start",
     ...(draft.since.trim() ? { since: draft.since.trim() } : {}),
@@ -185,7 +191,7 @@ function AuditEventList({ events, selectedId, onSelect }: { events: AuditEvent[]
 
 function AuditEventDetail({ event, onOpenChange }: { event: AuditEvent | null; onOpenChange: (open: boolean) => void }) {
   const { t } = useT("layout");
-  return <Sheet open={event !== null} onOpenChange={onOpenChange}><SheetContent side="right" className="w-full gap-5 overflow-y-auto p-4 sm:max-w-md">{event ? <><SheetHeader className="p-0"><SheetTitle>{eventTool(event)}</SheetTitle></SheetHeader><div className="space-y-4"><DetailRow label={t(($) => $.audit_view.time)} value={dateTime(event.occurred_at)} /><DetailRow label={t(($) => $.audit_view.event_type)} value={event.event_type} /><DetailRow label={t(($) => $.audit_view.actor)} value={event.actor_id ?? event.actor_type} /><DetailRow label={t(($) => $.audit_view.client)} value={[detailString(event.details, "reported_client_name"), detailString(event.details, "reported_client_version")].filter(Boolean).join(" ") || null} /><DetailRow label={t(($) => $.audit_view.tool)} value={detailString(event.details, "tool_name")} /><DetailRow label={t(($) => $.audit_view.target)} value={eventTarget(event)} /><DetailRow label={t(($) => $.audit_view.result)} value={eventResult(event)} /><DetailRow label={t(($) => $.audit_view.duration)} value={detailString(event.details, "duration_ms") ? `${detailString(event.details, "duration_ms")} ms` : null} /><DetailRow label={t(($) => $.audit_view.error_code)} value={detailString(event.details, "error_code")} /><DetailRow label={t(($) => $.audit_view.invocation_id)} value={event.invocation_id ?? null} /></div></> : null}</SheetContent></Sheet>;
+  return <Sheet open={event !== null} onOpenChange={onOpenChange}><SheetContent side="right" className="w-full gap-5 overflow-y-auto p-4 sm:max-w-md">{event ? <><SheetHeader className="p-0"><SheetTitle>{eventTool(event)}</SheetTitle></SheetHeader><div className="space-y-4"><DetailRow label={t(($) => $.audit_view.time)} value={dateTime(event.occurred_at)} /><DetailRow label={t(($) => $.audit_view.event_type)} value={event.event_type} /><DetailRow label={t(($) => $.audit_view.actor)} value={event.actor_id ?? event.actor_type} /><DetailRow label={t(($) => $.audit_view.client)} value={[detailString(event.details, "reported_client_name"), detailString(event.details, "reported_client_version")].filter(Boolean).join(" ") || null} /><DetailRow label={t(($) => $.audit_view.tool)} value={detailString(event.details, "tool_name")} /><DetailRow label={t(($) => $.audit_view.target)} value={eventTarget(event)} /><DetailRow label={t(($) => $.audit_view.result)} value={eventResult(event)} /><DetailRow label={t(($) => $.audit_view.duration)} value={eventDuration(event)} /><DetailRow label={t(($) => $.audit_view.error_code)} value={detailString(event.details, "error_code")} /><DetailRow label={t(($) => $.audit_view.invocation_id)} value={event.invocation_id ?? null} /></div></> : null}</SheetContent></Sheet>;
 }
 
 function DetailRow({ label, value }: { label: string; value: string | null }) {
