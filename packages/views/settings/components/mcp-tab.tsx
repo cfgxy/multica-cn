@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2, Pencil, Plus, Server, Store, Trash2 } from "lucide-react";
+import { ClipboardList, Loader2, Pencil, Plus, Server, Store, Trash2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -16,7 +16,7 @@ import {
 } from "@multica/ui/components/ui/alert-dialog";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
-import { useCurrentWorkspace } from "@multica/core/paths";
+import { paths, useCurrentWorkspace } from "@multica/core/paths";
 import { useCurrentMember } from "@multica/core/permissions";
 import { workspaceMcpServersOptions } from "@multica/core/workspace/queries";
 import {
@@ -28,6 +28,7 @@ import type { MarketplaceListing, WorkspaceMcpServer } from "@multica/core/types
 import { McpServerDialog } from "../../agents/components/tabs/mcp-server-dialog";
 import type { ManagedMcpServer } from "../../agents/components/tabs/mcp-config-model";
 import { useT } from "../../i18n";
+import { useNavigation } from "../../navigation";
 import { MarketplacePublishDialog } from "./marketplace-publish-dialog";
 import { useMarketplacePublishFlow } from "./use-marketplace-publish";
 import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
@@ -50,6 +51,7 @@ import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
 export function McpTab() {
   const { t } = useT("settings");
   const workspace = useCurrentWorkspace();
+  const navigation = useNavigation();
   const wsId = workspace?.id ?? "";
   const currentMember = useCurrentMember(wsId);
   const canManage =
@@ -144,6 +146,28 @@ export function McpTab() {
       title={t(($) => $.mcp.title)}
       description={t(($) => $.mcp.description)}
     >
+      <SettingsSection
+        title={t(($) => $.mcp.audit_title)}
+        description={t(($) => $.mcp.audit_description)}
+        action={
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => navigation.push(paths.workspace(workspace?.slug ?? "").audit())}
+            disabled={!workspace?.slug}
+          >
+            <ClipboardList className="h-4 w-4" />
+            {t(($) => $.mcp.open_audit)}
+          </Button>
+        }
+      >
+        <SettingsCard>
+          <div className="px-4 py-3 text-caption text-muted-foreground">
+            {t(($) => $.mcp.audit_note)}
+          </div>
+        </SettingsCard>
+      </SettingsSection>
+
       <SettingsSection
         title={t(($) => $.mcp.servers_title)}
         description={t(($) => $.mcp.write_only_note)}
