@@ -93,6 +93,7 @@ export function LongTextEditor({
   const [saving, setSaving] = useState(false);
   const snapshotRef = useRef(value);
   const inlineRef = useRef<HTMLTextAreaElement | null>(null);
+  const expandButtonRef = useRef<HTMLButtonElement | null>(null);
   const selectionRef = useRef<{ start: number; end: number } | null>(null);
 
   const openExpanded = () => {
@@ -103,6 +104,10 @@ export function LongTextEditor({
       : null;
     setMode("edit");
     setExpanded(true);
+  };
+
+  const updateSelection = (el: HTMLTextAreaElement) => {
+    selectionRef.current = { start: el.selectionStart, end: el.selectionEnd };
   };
 
   const closeExpanded = () => {
@@ -164,7 +169,12 @@ export function LongTextEditor({
           aria-label={ariaLabel}
           value={value}
           onChange={(event) => onChange(event.target.value)}
-          onBlur={onBlur}
+          onBlur={(event) => {
+            // Moving focus to the expand control is part of opening the editor,
+            // not an inline commit. The button handles a later keyboard blur.
+            if (event.relatedTarget === expandButtonRef.current) return;
+            onBlur?.();
+          }}
           placeholder={placeholder}
           disabled={disabled}
           className="resize-none overflow-y-auto pr-9"
@@ -172,12 +182,17 @@ export function LongTextEditor({
         />
         {expandable && !disabled && (
           <Button
+            ref={expandButtonRef}
             type="button"
             variant="ghost"
             size="icon-sm"
             aria-label={t(($) => $.long_text_editor.expand)}
             title={t(($) => $.long_text_editor.expand)}
             className="absolute top-1.5 right-1.5 text-muted-foreground hover:text-foreground"
+            onPointerDown={(event) => event.preventDefault()}
+            onBlur={() => {
+              if (!expanded) onBlur?.();
+            }}
             onClick={openExpanded}
           >
             <Maximize2 className="h-3.5 w-3.5" />
@@ -218,7 +233,11 @@ export function LongTextEditor({
               <textarea
                 aria-label={ariaLabel}
                 value={value}
-                onChange={(event) => onChange(event.target.value)}
+                onChange={(event) => {
+                  updateSelection(event.currentTarget);
+                  onChange(event.currentTarget.value);
+                }}
+                onSelect={(event) => updateSelection(event.currentTarget)}
                 placeholder={placeholder}
                 className={cn(
                   "h-full w-full resize-none rounded-lg border border-input bg-transparent px-3 py-2",

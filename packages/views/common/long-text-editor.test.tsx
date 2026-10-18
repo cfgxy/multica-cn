@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { renderWithI18n } from "../test/i18n";
@@ -175,6 +175,24 @@ describe("LongTextEditor", () => {
     });
     // The inline textarea shows the committed draft — nothing was lost.
     expect(getInlineTextarea().value).toBe("after");
+  });
+
+  it("restores the latest selection after editing in the expanded textarea", async () => {
+    const user = userEvent.setup();
+    renderWithI18n(<Harness initial="before expanded edit" />);
+
+    await user.click(screen.getByRole("button", { name: "Expand editor" }));
+    const expanded = getDialogTextarea();
+    await user.clear(expanded);
+    await user.type(expanded, "updated expanded text");
+    expanded.setSelectionRange(8, 16);
+    fireEvent.select(expanded);
+
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Done" }));
+
+    const inline = getInlineTextarea();
+    await waitFor(() => expect(inline.selectionStart).toBe(8));
+    expect(inline.selectionEnd).toBe(16);
   });
 
   it("Cancel discards back to the pre-expand snapshot", async () => {
