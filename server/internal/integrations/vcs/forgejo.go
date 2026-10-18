@@ -90,6 +90,9 @@ type fjPullRequestPayload struct {
 			Ref string `json:"ref"`
 			Sha string `json:"sha"`
 		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
 	} `json:"pull_request"`
 	Repository struct {
 		Name     string `json:"name"`
@@ -121,6 +124,7 @@ func (p forgejoProvider) ParsePullRequest(body []byte) (PullRequestEvent, error)
 		Body:            d.PullRequest.Body,
 		State:           derivePRState(d.PullRequest.State, d.PullRequest.Draft, d.PullRequest.Merged),
 		HTMLURL:         d.PullRequest.HTMLURL,
+		TargetBranch:    d.PullRequest.Base.Ref,
 		Branch:          d.PullRequest.Head.Ref,
 		HeadSHA:         d.PullRequest.Head.Sha,
 		AuthorLogin:     coalesce(d.PullRequest.User.UserName, d.PullRequest.User.Login),

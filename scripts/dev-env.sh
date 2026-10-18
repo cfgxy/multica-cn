@@ -337,6 +337,7 @@ load_manifest() {
   [ "${NAME:-}" = "$SLOT" ] || die "Manifest $SLOT_MANIFEST declares NAME=${NAME:-}; expected $SLOT."
   : "${CREATED_AT:=}" "${ISSUE:=}" "${CODE_SOURCE:=}" "${CODE_SHA:=}" \
     "${OWNER:=unknown}" "${TTL_HOURS:=0}" "${EXPIRES_AT:=}" "${PHASE:=dev}" \
+    "${DESKTOP_MEMORY_MB:=$(budget_field components.desktop.memory_mb)}" \
     "${DESKTOP_USER_DATA_DIR:=}" "${DESKTOP_ENV_FILE:=$DIR/apps/desktop/.env.development.local}"
   return 0
 }
@@ -362,6 +363,7 @@ save_manifest() {
     write_manifest_value PROFILE "$SLOT_PROFILE"
     write_manifest_value WORKSPACES_ROOT "$SLOT_WORKSPACES_ROOT"
     write_manifest_value DESKTOP_APP_SUFFIX "$SLOT_DESKTOP_SUFFIX"
+    write_manifest_value DESKTOP_MEMORY_MB "${DESKTOP_MEMORY_MB:-$(budget_field components.desktop.memory_mb)}"
     write_manifest_value DESKTOP_USER_DATA_DIR "$(desktop_user_data_dir "$SLOT_DESKTOP_SUFFIX")"
     write_manifest_value DESKTOP_ENV_FILE "$DESKTOP_ENV_FILE"
   } > "$SLOT_MANIFEST"
@@ -1596,11 +1598,38 @@ start_watchdog() {
     "$SLOT" "$SLOT_DIR" "$SLOTS_FILE"
   sleep 0.3
   if pid="$(component_pid watchdog 2>/dev/null)"; then
-    ok "resource watchdog running (pid $pid, budget: api $(budget_field components.api.memory_mb)MB / web $(budget_field components.web.memory_mb)MB / others $(budget_field components.daemon.memory_mb)MB)"
+    ok "resource watchdog running (pid $pid, budget: api $(budget_field components.api.memory_mb)MB / web $(budget_field components.web.memory_mb)MB / desktop ${DESKTOP_MEMORY_MB:-$(budget_field components.desktop.memory_mb)}MB / others $(budget_field components.daemon.memory_mb)MB)"
   else
     warn "resource watchdog did not stay up; log: $(log_file watchdog)"
     return 1
   fi
+}
+
+cmd_resource_budget() {
+  local target="${1:-}" operation="${2:-}" desired
+  local caller
+  [ "$SLOT" = dev2 ] || die "Temporary Desktop budget override is authorized only for dev2."
+  [ "$target" = desktop ] || die "Only the desktop component supports a temporary budget override."
+  case "$operation" in
+    --temporary-4096) desired=4096 ;;
+    --restore) desired="$(budget_field components.desktop.memory_mb)" ;;
+    *) die "Usage: $0 dev2 resource-budget desktop --temporary-4096|--restore" ;;
+  esac
+  [ "$desired" = 256 ] || [ "$desired" = 4096 ] \
+    || die "Desktop budget must be the canonical 256MB or the authorized temporary 4096MB."
+  require_lease active
+  caller="$(caller_owner)"
+  [ "$caller" = RUYI-773 ] || die "The temporary Desktop budget is authorized only for RUYI-773."
+  [ "$(effective_lease_issue)" = RUYI-773 ] \
+    || die "The dev2 lease must belong to RUYI-773 to change its Desktop budget."
+  [ -f "$SLOT_MANIFEST" ] || die "Slot $SLOT has no manifest; bind it with use/up before changing its budget."
+  load_manifest
+  [ "${ISSUE:-}" = RUYI-773 ] \
+    || die "The dev2 manifest must belong to RUYI-773 to change its Desktop budget."
+  DESKTOP_MEMORY_MB="$desired"
+  MANIFEST_ISSUE="$ISSUE"
+  save_manifest
+  ok "dev2 desktop watchdog budget set to ${DESKTOP_MEMORY_MB}MB"
 }
 
 stop_watchdog() {
@@ -1839,6 +1868,9 @@ cmd_use() {
   now="$(now_iso)"
   if [ -f "$SLOT_MANIFEST" ]; then
     load_manifest || true
+    if [ "${ISSUE:-}" != "${MULTICA_CALLER_OWNER:-}" ]; then
+      DESKTOP_MEMORY_MB="$(budget_field components.desktop.memory_mb)"
+    fi
     created="${CREATED_AT:-$now}"
   fi
   CREATED_AT="${created:-$now}"
@@ -2712,6 +2744,7 @@ Fixed-slot local development environments (fact source: scripts/slots.json).
   dev-env.sh <slot> down    [--components ...]  # stop a held slot — run BEFORE lock-release
   dev-env.sh <slot> status  [--json]
   dev-env.sh <slot> use     [sha]        # bind this checkout, or load a revision
+  dev-env.sh dev2 resource-budget desktop --temporary-4096|--restore
   dev-env.sh <slot> handoff --to dev|qa [--note ...]  # role handover, same issue
   dev-env.sh <slot> lock-status
   dev-env.sh <slot> lock-release [--force]
@@ -2802,6 +2835,7 @@ main() {
     down) cmd_down "$@" ;;
     status) cmd_status "$@" ;;
     use) cmd_use "$@" ;;
+    resource-budget) cmd_resource_budget "$@" ;;
     handoff) cmd_handoff "$@" ;;
     lock-status) cmd_lock_status ;;
     lock-release) cmd_lock_release "$@" ;;

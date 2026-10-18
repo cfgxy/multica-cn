@@ -141,6 +141,7 @@
     "./billing/queries": "./billing/queries.ts",
     "./billing/mutations": "./billing/mutations.ts",
     "./github": "./github/index.ts",
+    "./github/pending-pull-requests": "./github/pending-pull-requests.ts",
     "./github/queries": "./github/queries.ts",
     "./vcs": "./vcs/index.ts",
     "./vcs/queries": "./vcs/queries.ts",

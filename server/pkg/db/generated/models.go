@@ -1094,6 +1094,8 @@ type GithubPullRequest struct {
 	ChecksRollupState   pgtype.Text        `json:"checks_rollup_state"`
 	SnapshotHeadSha     string             `json:"snapshot_head_sha"`
 	SnapshotFetchedAt   pgtype.Timestamptz `json:"snapshot_fetched_at"`
+	TargetBranch        pgtype.Text        `json:"target_branch"`
+	ReviewDecision      pgtype.Text        `json:"review_decision"`
 }
 
 type GithubPullRequestCheckRun struct {
@@ -2411,6 +2413,7 @@ type VcsPullRequest struct {
 	ChangedFiles    int32              `json:"changed_files"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	TargetBranch    pgtype.Text        `json:"target_branch"`
 }
 
 type VerificationCode struct {
