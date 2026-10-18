@@ -267,6 +267,34 @@ describe("get_autopilot_run_diagnostics handler", () => {
     expect(result.task_audit).toMatchObject({ events: [] });
     expect(callsOf(client)).toEqual([]);
   });
+
+  it("omits trigger payload and unapproved result fields from diagnostics", async () => {
+    const client = fakeClient({ getAutopilotRun: async () => ({
+      id: "run-safe",
+      autopilot_id: "ap-7",
+      source: "manual",
+      status: "completed",
+      task_id: "task-9",
+      triggered_at: "2026-10-18T11:50:27Z",
+      completed_at: "2026-10-18T11:57:54Z",
+      trigger_payload: { webhook_token: "must-not-leak" },
+      result: {
+        sample: { status: "no_sample", candidate_count: 4, qualified_count: 2, draft_count: 0, prompt: "must-not-leak" },
+        raw_log: "must-not-leak",
+      },
+    }) });
+    const result = await findTool("get_autopilot_run_diagnostics")?.handler(
+      { workspace: WS, autopilot_id: "ap-7", run_id: "run-safe" }, client,
+    ) as { run: Record<string, unknown> };
+    expect(result.run).toMatchObject({
+      id: "run-safe",
+      status: "completed",
+      result_summary: { sample_status: "no_sample", candidate_count: 4, qualified_count: 2, draft_count: 0 },
+    });
+    expect(result.run).not.toHaveProperty("trigger_payload");
+    expect(result.run).not.toHaveProperty("raw_log");
+    expect(result.run.result_summary).not.toHaveProperty("prompt");
+  });
 });
 
 describe("list_projects handler", () => {
