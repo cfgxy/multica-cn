@@ -683,6 +683,7 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(HeaderCommentsTruncated, "true")
 	}
 
+	h.recordIssueCoordinatorRead(r, issue, "comment")
 	writeJSON(w, http.StatusOK, resp)
 }
 

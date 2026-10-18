@@ -2295,7 +2295,21 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.recordIssueCoordinatorRead(r, issue, "issue")
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) recordIssueCoordinatorRead(r *http.Request, issue db.Issue, kind string) {
+	if r.Header.Get("X-Actor-Source") != "task_token" || r.Header.Get("X-Task-ID") == "" || r.Header.Get("X-Agent-ID") == "" {
+		return
+	}
+	_, err := h.Queries.RecordIssueCoordinatorRead(r.Context(), db.RecordIssueCoordinatorReadParams{
+		IssueID: issue.ID, LeaderAgentID: parseUUID(r.Header.Get("X-Agent-ID")),
+		TaskID: parseUUID(r.Header.Get("X-Task-ID")), ReadKind: kind,
+	})
+	if err != nil {
+		slog.Warn("issue coordinator read observation failed", "issue_id", uuidToString(issue.ID), "read_kind", kind, "error", err)
+	}
 }
 
 func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {

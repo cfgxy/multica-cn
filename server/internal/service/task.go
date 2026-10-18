@@ -22,6 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/issuecoordinator"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -4100,6 +4101,8 @@ func (s *TaskService) FinalizeTaskClaim(
 	token db.CreateTaskTokenParams,
 	deliveredCommentIDs []pgtype.UUID,
 	recordCommentReceipt bool,
+	issueCoordinatorEnabled bool,
+	issueCoordinatorColdStart bool,
 	daemonTokens ...db.CreateDaemonTokenParams,
 ) ([]pgtype.UUID, error) {
 	if len(daemonTokens) > 1 {
@@ -4107,6 +4110,17 @@ func (s *TaskService) FinalizeTaskClaim(
 	}
 	receipt := task.DeliveredCommentIds
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if issueCoordinatorEnabled {
+			if _, err := qtx.ClaimIssueCoordinatorSession(ctx, db.ClaimIssueCoordinatorSessionParams{
+				IssueID:        task.IssueID,
+				LeaderAgentID:  task.AgentID,
+				RuntimeID:      task.RuntimeID,
+				TaskID:         task.ID,
+				ForceColdStart: issueCoordinatorColdStart,
+			}); err != nil {
+				return fmt.Errorf("claim issue coordinator session: %w", err)
+			}
+		}
 		if _, err := qtx.CreateTaskToken(ctx, token); err != nil {
 			return fmt.Errorf("create task token: %w", err)
 		}
@@ -4712,6 +4726,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
 	guardConverged := false
+	coordinatorCASConflict := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
@@ -4752,6 +4767,97 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			return err
 		}
 		task = t
+		if t.IsLeaderTask && t.IssueID.Valid {
+			coordinator, coordErr := qtx.GetIssueCoordinatorSession(ctx, db.GetIssueCoordinatorSessionParams{
+				IssueID:       t.IssueID,
+				LeaderAgentID: t.AgentID,
+			})
+			if coordErr != nil && !errors.Is(coordErr, pgx.ErrNoRows) {
+				return fmt.Errorf("load issue coordinator session: %w", coordErr)
+			}
+			if coordErr == nil && coordinator.ActiveTaskID == t.ID {
+				issue, issueErr := qtx.GetIssue(ctx, t.IssueID)
+				if issueErr != nil {
+					return fmt.Errorf("load issue state for coordinator snapshot: %w", issueErr)
+				}
+				decisions, decisionsErr := qtx.ListIssueCoordinatorDecisionRefs(ctx, db.ListIssueCoordinatorDecisionRefsParams{
+					IssueID: t.IssueID, WorkspaceID: issue.WorkspaceID, RowLimit: issuecoordinator.MaxSnapshotRefs,
+				})
+				if decisionsErr != nil {
+					return fmt.Errorf("load issue decisions for coordinator snapshot: %w", decisionsErr)
+				}
+				decisionRefs := make([]issuecoordinator.DecisionRef, 0, len(decisions))
+				evidenceRefs := make([]string, 0, len(decisions))
+				for _, decision := range decisions {
+					ref := issuecoordinator.DecisionRef{ID: util.UUIDToString(decision.ID), Status: decision.Status}
+					if decision.AnswerCommentID.Valid {
+						ref.AnswerCommentID = util.UUIDToString(decision.AnswerCommentID)
+						evidenceRefs = append(evidenceRefs, ref.AnswerCommentID)
+					}
+					decisionRefs = append(decisionRefs, ref)
+				}
+				rootIssueID := issue.ID
+				if issue.ParentIssueID.Valid {
+					rootIssueID = issue.ParentIssueID
+				}
+				activeTasks, activeTaskErr := qtx.ListActiveTasksByIssueFamily(ctx, db.ListActiveTasksByIssueFamilyParams{
+					WorkspaceID: issue.WorkspaceID, RootIssueID: rootIssueID, RowLimit: issuecoordinator.MaxSnapshotRefs,
+				})
+				if activeTaskErr != nil {
+					return fmt.Errorf("load active issue tasks for coordinator snapshot: %w", activeTaskErr)
+				}
+				todoRefs := make([]string, 0, len(activeTasks))
+				for _, activeTask := range activeTasks {
+					todoRefs = append(todoRefs, util.UUIDToString(activeTask.TaskID))
+				}
+				unresolved, unresolvedErr := qtx.ListUnresolvedThreadsForBrief(ctx, db.ListUnresolvedThreadsForBriefParams{
+					IssueID: t.IssueID, WorkspaceID: issue.WorkspaceID, RowLimit: issuecoordinator.MaxSnapshotRefs,
+				})
+				if unresolvedErr != nil {
+					return fmt.Errorf("load unresolved issue threads for coordinator snapshot: %w", unresolvedErr)
+				}
+				riskRefs := make([]string, 0, len(unresolved))
+				for _, thread := range unresolved {
+					riskRefs = append(riskRefs, util.UUIDToString(thread.ID))
+				}
+				issueRef := fmt.Sprintf("issue:%s@revision:%d", util.UUIDToString(issue.ID), issue.Revision)
+				resourceRefs := []string{}
+				if issue.ProjectID.Valid {
+					resourceRefs = append(resourceRefs, "project:"+util.UUIDToString(issue.ProjectID))
+				}
+				snapshot, marshalErr := issuecoordinator.MarshalSnapshot(issuecoordinator.Snapshot{
+					IssueID:           util.UUIDToString(issue.ID),
+					IssueRevision:     issue.Revision,
+					IssueStatus:       issue.Status,
+					ResourceRefs:      resourceRefs,
+					DecisionRefs:      decisionRefs,
+					PlanRefs:          []string{issueRef},
+					TodoTaskRefs:      todoRefs,
+					EvidenceRefs:      evidenceRefs,
+					RiskCommentRefs:   riskRefs,
+					CompletedTaskRefs: []string{util.UUIDToString(t.ID)},
+				})
+				if marshalErr != nil {
+					return fmt.Errorf("marshal issue coordinator snapshot: %w", marshalErr)
+				}
+				if _, err := qtx.CompleteIssueCoordinatorSession(ctx, db.CompleteIssueCoordinatorSessionParams{
+					RuntimeID:     t.RuntimeID,
+					SessionID:     sessionID,
+					Snapshot:      snapshot,
+					TaskID:        t.ID,
+					IssueID:       t.IssueID,
+					LeaderAgentID: t.AgentID,
+				}); err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						coordinatorCASConflict = true
+					} else {
+						return fmt.Errorf("complete issue coordinator session: %w", err)
+					}
+				}
+			} else if coordErr == nil {
+				coordinatorCASConflict = true
+			}
+		}
 
 		// Atomic with the status flip: a crash between the two would leave a
 		// finished obligation looking pending forever.
@@ -4847,6 +4953,11 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 		// Not a completion: the cancel path owns this row and its side effects.
 		return &task, false, nil
+	}
+	if coordinatorCASConflict {
+		slog.Warn("issue coordinator completion rejected by snapshot CAS; task completion committed",
+			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID),
+			"agent_id", util.UUIDToString(task.AgentID), "error", issuecoordinator.ErrSnapshotCASConflict)
 	}
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCompleted(ctx, task)
