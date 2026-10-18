@@ -5,10 +5,26 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestInstallCodexCommandGuardsIsNoopOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only guard fallback")
+	}
+
+	input := []string{"PATH=C:\\Windows\\System32", "MULTICA_GIT_PUSH_GUARD=unavailable"}
+	got, err := installCodexCommandGuards(input, t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("installCodexCommandGuards() error = %v", err)
+	}
+	if !slices.Equal(got, input) {
+		t.Fatalf("installCodexCommandGuards() = %v, want %v", got, input)
+	}
+}
 
 func TestInstallCodexCommandGuardsPrependsExecutableShims(t *testing.T) {
 	if runtime.GOOS == "windows" {
