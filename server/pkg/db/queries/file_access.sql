@@ -31,8 +31,8 @@ SELECT * FROM daemon_file_access_target WHERE id = $1 AND runtime_id = $2;
 SELECT * FROM daemon_file_access_target WHERE id = sqlc.arg('host') OR runtime_id::text = sqlc.arg('host');
 
 -- name: InsertFileOperation :one
-INSERT INTO daemon_file_operation (id, workspace_id, runtime_id, target_id, kind, request, invocation_id)
-VALUES ($1, $2, $3, $4, $5, $6, sqlc.narg('invocation_id')) RETURNING *;
+INSERT INTO daemon_file_operation (id, workspace_id, runtime_id, target_id, kind, request, requester_id, invocation_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('invocation_id')) RETURNING *;
 
 -- name: UpsertMCPFileAccessInstanceBinding :one
 INSERT INTO mcp_file_access_instance_binding (instance_id, workspace_id, target_id, enabled, updated_by, updated_at)
@@ -68,6 +68,9 @@ WHERE id IN (
         AND target.runtime_id = candidate.runtime_id AND target.workspace_id = candidate.workspace_id
     WHERE candidate.runtime_id = $1 AND candidate.status = 'pending'
       AND target.enabled = TRUE AND target.roots <> '[]'::jsonb
+      AND candidate.requester_id IS NOT NULL
+      AND target.workspace_acl ? candidate.workspace_id::text
+      AND (target.member_acl = '[]'::jsonb OR target.member_acl ? candidate.requester_id::text)
     ORDER BY candidate.created_at, candidate.id LIMIT $2 FOR UPDATE SKIP LOCKED
 ) RETURNING id, target_id, kind, request, lease_epoch;
 
