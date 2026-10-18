@@ -235,6 +235,33 @@ describe("ApiClient pull-request response schema", () => {
     });
   });
 
+  it("accepts review_decision from new backends and keeps it optional for old ones", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ pull_requests: [
+        { ...validPR, review_decision: "changes_requested" },
+        { ...validPR, id: "pr-old" },
+      ] }), { status: 200, headers: { "Content-Type": "application/json" } })),
+    );
+
+    const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
+    expect(result.pull_requests).toHaveLength(2);
+    expect(result.pull_requests[0]?.review_decision).toBe("changes_requested");
+    expect(result.pull_requests[1]?.review_decision).toBeUndefined();
+  });
+
+  it("unlinks a pull request through the issue-scoped endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new ApiClient("https://api.example.test").unlinkIssuePullRequest("issue-1", "pr-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/issues/issue-1/pull-requests/pr-1",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
   it("falls back safely when failed_check_names is malformed", async () => {
     vi.stubGlobal(
       "fetch",
@@ -249,6 +276,19 @@ describe("ApiClient pull-request response schema", () => {
           },
         ),
       ),
+    );
+
+    await expect(
+      new ApiClient("https://api.example.test").listIssuePullRequests("issue-1"),
+    ).resolves.toEqual({ pull_requests: [] });
+  });
+
+  it("rejects malformed review_decision without breaking response parsing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        pull_requests: [{ ...validPR, review_decision: 12 }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } })),
     );
 
     await expect(
