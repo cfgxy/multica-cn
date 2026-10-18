@@ -190,11 +190,11 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 		proxyCtx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		evidence, proxyErr := h.DaemonHub.RequestWorkerEvidence(proxyCtx, uuid.UUID(task.RuntimeID.Bytes).String(), protocol.WorkerEvidenceRequest{
 			RunID: uuid.UUID(task.ID.Bytes).String(), RuntimeID: uuid.UUID(task.RuntimeID.Bytes).String(), Stream: stream,
-			Cursor: workerCursor, TailBytes: min(tailBytes, 8<<10),
+			Cursor: workerCursor, TailBytes: tailBytes,
 		})
 		cancel()
 		if proxyErr == nil {
-			if len(evidence.StdoutTail) > 8<<10 || len(evidence.StderrTail) > 8<<10 || len(evidence.NextCursor) > 512 {
+			if len(evidence.StdoutTail) > tailBytes || len(evidence.StderrTail) > tailBytes || len(evidence.NextCursor) > 512 {
 				proxyErr = fmt.Errorf("invalid evidence response")
 			}
 		}
@@ -208,11 +208,12 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 				resp.WorkerEvidence.StderrTail = &stderr
 				resp.WorkerEvidence.NextCursor = &evidence.NextCursor
 				resp.WorkerEvidence.LastActivityAt = timestampToPtr(pgtype.Timestamptz{Time: valueOrZeroTime(evidence.ObservedAt), Valid: evidence.ObservedAt != nil})
-				if evidence.ProcessLiveness == "alive" || evidence.ProcessLiveness == "dead" {
+				if evidence.ProcessLiveness == "alive" || evidence.ProcessLiveness == "exited" {
 					resp.WorkerEvidence.ProcessLiveness = evidence.ProcessLiveness
 				} else {
 					resp.WorkerEvidence.ProcessLiveness = "unknown"
 				}
+				applyWorkerEvidenceProgress(&resp, workerCursor != "", evidence.StdoutTail, evidence.StderrTail)
 			} else {
 				resp.WorkerEvidence.UnavailableReason = stableWorkerUnavailable(evidence.Unavailable)
 				resp.WorkerEvidence.ProcessLiveness = "unknown"
@@ -255,9 +256,22 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(encoded)
 }
 
+func applyWorkerEvidenceProgress(resp *runActivityResponse, hadCursor bool, stdout, stderr string) {
+	if resp == nil || !hadCursor || (stdout == "" && stderr == "") || resp.ProgressAssessment.Status == "finished" || resp.ProgressAssessment.Status == "waiting" {
+		return
+	}
+	resp.ProgressAssessment.Status = "advancing"
+	for _, basis := range resp.ProgressAssessment.Basis {
+		if basis == "worker_evidence_delta" {
+			return
+		}
+	}
+	resp.ProgressAssessment.Basis = append(resp.ProgressAssessment.Basis, "worker_evidence_delta")
+}
+
 func stableWorkerUnavailable(value string) string {
 	switch value {
-	case "evidence_unavailable":
+	case "not_supervised", "expired", "not_found", "daemon_unreachable":
 		return value
 	default:
 		return "daemon_unreachable"

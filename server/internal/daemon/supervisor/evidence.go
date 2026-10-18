@@ -2,6 +2,8 @@ package supervisor
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,8 +17,55 @@ import (
 )
 
 type evidenceCursor struct {
-	Out int64 `json:"o"`
-	Err int64 `json:"e"`
+	Daemon string    `json:"d"`
+	Run    string    `json:"r"`
+	Stream string    `json:"s"`
+	Out    int64     `json:"o"`
+	Err    int64     `json:"e"`
+	At     time.Time `json:"t"`
+	MAC    string    `json:"m"`
+}
+
+const evidenceCursorTTL = 24 * time.Hour
+
+func (s *Supervisor) signEvidenceCursor(cur evidenceCursor) (string, bool) {
+	cur.MAC = ""
+	raw, err := json.Marshal(cur)
+	if err != nil || s.evidenceCursorKey == ([32]byte{}) {
+		return "", false
+	}
+	mac := hmac.New(sha256.New, s.evidenceCursorKey[:])
+	_, _ = mac.Write(raw)
+	cur.MAC = base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	encoded, err := json.Marshal(cur)
+	if err != nil {
+		return "", false
+	}
+	return base64.RawURLEncoding.EncodeToString(encoded), true
+}
+
+func (s *Supervisor) verifyEvidenceCursor(token, run, stream string, now time.Time) (evidenceCursor, string) {
+	var cur evidenceCursor
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || json.Unmarshal(raw, &cur) != nil || cur.Out < 0 || cur.Err < 0 || cur.At.IsZero() {
+		return cur, "expired"
+	}
+	wantMAC := cur.MAC
+	cur.MAC = ""
+	unsigned, err := json.Marshal(cur)
+	if err != nil || wantMAC == "" || s.evidenceCursorKey == ([32]byte{}) {
+		return cur, "expired"
+	}
+	mac := hmac.New(sha256.New, s.evidenceCursorKey[:])
+	_, _ = mac.Write(unsigned)
+	sig, err := base64.RawURLEncoding.DecodeString(wantMAC)
+	if err != nil || !hmac.Equal(sig, mac.Sum(nil)) || cur.Daemon != s.daemonID || cur.Run != run || cur.Stream != stream {
+		return cur, "expired"
+	}
+	if now.Sub(cur.At) > evidenceCursorTTL || cur.At.After(now.Add(time.Minute)) {
+		return cur, "expired"
+	}
+	return cur, ""
 }
 
 // WorkerEvidence resolves task identity through this daemon's owned manifests;
@@ -24,12 +73,12 @@ type evidenceCursor struct {
 func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvidenceRequest) protocol.WorkerEvidenceResponse {
 	out := protocol.WorkerEvidenceResponse{ProcessLiveness: "unknown"}
 	if s == nil || s.mgr == nil || req.RunID == "" || req.TailBytes < 1 || req.TailBytes > 64<<10 || (req.Stream != "stdout" && req.Stream != "stderr" && req.Stream != "both") {
-		out.Unavailable = "evidence_unavailable"
+		out.Unavailable = "not_found"
 		return out
 	}
 	ids, err := s.mgr.ListRunIDs()
 	if err != nil {
-		out.Unavailable = "evidence_unavailable"
+		out.Unavailable = "daemon_unreachable"
 		return out
 	}
 	var man *Manifest
@@ -41,14 +90,15 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 		}
 	}
 	if man == nil {
-		out.Unavailable = "daemon_unreachable"
+		out.Unavailable = "not_supervised"
 		return out
 	}
 	cur := evidenceCursor{}
 	if req.Cursor != "" {
-		raw, e := base64.RawURLEncoding.DecodeString(req.Cursor)
-		if e != nil || json.Unmarshal(raw, &cur) != nil || cur.Out < 0 || cur.Err < 0 {
-			out.Unavailable = "evidence_unavailable"
+		var reason string
+		cur, reason = s.verifyEvidenceCursor(req.Cursor, req.RunID, req.Stream, time.Now().UTC())
+		if reason != "" {
+			out.Unavailable = reason
 			return out
 		}
 	}
@@ -87,7 +137,7 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 	if req.Stream == "stdout" || req.Stream == "both" {
 		out.StdoutTail, cur.Out, observed, err = read(stdoutLogPath(s.mgr.Dir(man.RunID)), cur.Out)
 		if err != nil {
-			out.Unavailable = "evidence_unavailable"
+			out.Unavailable = "not_found"
 			return out
 		}
 	}
@@ -95,7 +145,7 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 		var at time.Time
 		out.StderrTail, cur.Err, at, err = read(stderrLogPath(s.mgr.Dir(man.RunID)), cur.Err)
 		if err != nil {
-			out.Unavailable = "evidence_unavailable"
+			out.Unavailable = "not_found"
 			return out
 		}
 		if at.After(observed) {
@@ -105,15 +155,23 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 	if !observed.IsZero() {
 		out.ObservedAt = &observed
 	}
-	encoded, _ := json.Marshal(cur)
-	out.NextCursor = base64.RawURLEncoding.EncodeToString(encoded)
+	cur.Daemon, cur.Run, cur.Stream = s.daemonID, req.RunID, req.Stream
+	if cur.At.IsZero() {
+		cur.At = time.Now().UTC()
+	}
+	var ok bool
+	out.NextCursor, ok = s.signEvidenceCursor(cur)
+	if !ok {
+		out.Unavailable = "not_found"
+		return out
+	}
 	if man.State == StateExited {
-		out.ProcessLiveness = "dead"
+		out.ProcessLiveness = "exited"
 	} else if man.State == StateRunning {
 		if active, e := s.unitActive(ctx, man.Unit); e == nil && active {
 			out.ProcessLiveness = "alive"
 		} else if e == nil {
-			out.ProcessLiveness = "dead"
+			out.ProcessLiveness = "exited"
 		}
 	}
 	out.Available = true

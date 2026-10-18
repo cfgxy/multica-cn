@@ -444,7 +444,7 @@ export interface RunActivity {
   };
   worker_evidence: {
     log_available: boolean;
-    unavailable_reason: string;
+    unavailable_reason: "" | "not_supervised" | "expired" | "not_found" | "daemon_unreachable";
     stdout_tail: string | null;
     stderr_tail: string | null;
     next_cursor: string | null;
