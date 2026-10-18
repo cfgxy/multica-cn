@@ -55,6 +55,13 @@ describe("shiftedWindow", () => {
     });
   });
 
+  it("180d offset 1 retains chronological ISO boundaries across New Year", () => {
+    expect(shiftedWindow(180, 1, "2026-10-18")).toEqual({
+      start: "2025-10-24",
+      end: "2026-04-21",
+    });
+  });
+
   it("offset 0 is the current window", () => {
     expect(shiftedWindow(30, 0, "2026-03-10")).toEqual(quickWindow(30, "2026-03-10"));
   });
