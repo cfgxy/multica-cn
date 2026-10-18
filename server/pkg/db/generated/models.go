@@ -884,6 +884,7 @@ type DaemonFileOperation struct {
 	ClaimedAt    pgtype.Timestamptz `json:"claimed_at"`
 	FinishedAt   pgtype.Timestamptz `json:"finished_at"`
 	InvocationID pgtype.UUID        `json:"invocation_id"`
+	RequesterID  pgtype.UUID        `json:"requester_id"`
 }
 
 type DaemonOpsCommand struct {
@@ -1579,6 +1580,14 @@ type McpFileAccessInstanceBinding struct {
 	Enabled     bool               `json:"enabled"`
 	UpdatedBy   pgtype.UUID        `json:"updated_by"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type McpFileReadPolicy struct {
+	Singleton bool               `json:"singleton"`
+	Version   int64              `json:"version"`
+	Rules     []byte             `json:"rules"`
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type McpInvocationAuditOutbox struct {

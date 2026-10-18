@@ -1,13 +1,17 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/fileaccess"
@@ -51,7 +55,7 @@ func (h *Handler) PutRuntimeFileAccessTarget(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	for i, root := range body.Roots {
-		clean, err := fileaccess.NormalizePath(root)
+		clean, err := fileaccess.NormalizePathUnfiltered(root)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
 			return
@@ -103,7 +107,7 @@ func (h *Handler) submitFileOperation(w http.ResponseWriter, r *http.Request, ki
 		return
 	}
 	req.Kind = kind
-	if err := fileaccess.ValidateRequest(req); err != nil {
+	if err := fileaccess.ValidateRequestStructure(req); err != nil {
 		writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
 		return
 	}
@@ -132,8 +136,9 @@ func (h *Handler) submitFileOperation(w http.ResponseWriter, r *http.Request, ki
 		writeError(w, http.StatusForbidden, fileaccess.ErrorPermissionDenied.Error())
 		return
 	}
-	policy := fileaccess.Target{ID: target.ID, Enabled: target.Enabled, WorkspaceIDs: workspaceIDs, MemberIDs: memberIDs}
-	if err := fileaccess.HasTargetAccess(policy, uuidToString(rt.WorkspaceID), uuidToString(member.UserID)); err != nil {
+	targetPolicy := fileaccess.Target{ID: target.ID, Enabled: target.Enabled, WorkspaceIDs: workspaceIDs, MemberIDs: memberIDs}
+	if err := fileaccess.HasTargetAccess(targetPolicy, uuidToString(rt.WorkspaceID), uuidToString(member.UserID)); err != nil {
+		h.auditFileAccessDenied(r.Context(), rt.WorkspaceID, rt.ID, member.UserID, target.ID, fileAccessErrorClass(err))
 		writeError(w, http.StatusForbidden, fileAccessErrorClass(err))
 		return
 	}
@@ -146,6 +151,10 @@ func (h *Handler) submitFileOperation(w http.ResponseWriter, r *http.Request, ki
 		writeError(w, http.StatusConflict, fileaccess.ErrorTargetUnreachable.Error())
 		return
 	}
+	if !runtimeHasCapability(rt.Metadata, protocol.DaemonCapabilityFileReadPolicyV1) {
+		writeError(w, http.StatusConflict, "daemon_upgrade_required")
+		return
+	}
 	inFlight, err := h.Queries.CountInFlightFileOperations(r.Context(), rt.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to check file operation quota")
@@ -155,12 +164,24 @@ func (h *Handler) submitFileOperation(w http.ResponseWriter, r *http.Request, ki
 		writeError(w, http.StatusTooManyRequests, "rate_limited")
 		return
 	}
-	canonical, err := fileaccess.NormalizePath(req.Path)
+	policy, err := h.loadMCPFileReadPolicy(r.Context())
 	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "file read policy unavailable")
+		return
+	}
+	if err := fileaccess.ValidateRequestWithPolicy(req, policy); err != nil {
+		h.auditFileAccessDenied(r.Context(), rt.WorkspaceID, rt.ID, member.UserID, target.ID, fileAccessErrorClass(err))
 		writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
 		return
 	}
-	if !fileaccess.PathWithinRoots(roots, canonical) {
+	canonical, err := fileaccess.NormalizePathWithPolicy(req.Path, policy)
+	if err != nil {
+		h.auditFileAccessDenied(r.Context(), rt.WorkspaceID, rt.ID, member.UserID, target.ID, fileAccessErrorClass(err))
+		writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
+		return
+	}
+	if !fileaccess.PathWithinRootsWithPolicy(roots, canonical, policy) {
+		h.auditFileAccessDenied(r.Context(), rt.WorkspaceID, rt.ID, member.UserID, target.ID, fileaccess.ErrorPathNotAllowed.Error())
 		writeError(w, http.StatusForbidden, fileaccess.ErrorPathNotAllowed.Error())
 		return
 	}
@@ -168,7 +189,7 @@ func (h *Handler) submitFileOperation(w http.ResponseWriter, r *http.Request, ki
 	encoded, _ := json.Marshal(req)
 	operation, err := h.Queries.InsertFileOperation(r.Context(), db.InsertFileOperationParams{
 		ID: dbid.NewV7(), WorkspaceID: rt.WorkspaceID, RuntimeID: rt.ID,
-		TargetID: target.ID, Kind: string(kind), Request: encoded,
+		TargetID: target.ID, Kind: string(kind), Request: encoded, RequesterID: member.UserID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to queue file operation")
@@ -237,10 +258,11 @@ func (h *Handler) ReportFileOperationResult(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var receipt struct {
-		Status     string          `json:"status"`
-		LeaseEpoch int64           `json:"lease_epoch"`
-		Result     json.RawMessage `json:"result"`
-		Error      string          `json:"error"`
+		Status        string          `json:"status"`
+		LeaseEpoch    int64           `json:"lease_epoch"`
+		PolicyVersion int64           `json:"policy_version"`
+		Result        json.RawMessage `json:"result"`
+		Error         string          `json:"error"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128*1024)).Decode(&receipt); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -252,6 +274,10 @@ func (h *Handler) ReportFileOperationResult(w http.ResponseWriter, r *http.Reque
 	}
 	if receipt.Status == "succeeded" && len(receipt.Result) == 0 {
 		writeError(w, http.StatusBadRequest, "result is required")
+		return
+	}
+	if receipt.PolicyVersion < 1 {
+		writeError(w, http.StatusConflict, "file read policy is stale")
 		return
 	}
 	if len(receipt.Result) > 96*1024 {
@@ -270,12 +296,37 @@ func (h *Handler) ReportFileOperationResult(w http.ResponseWriter, r *http.Reque
 	if receipt.Status == "rejected" || receipt.Status == "failed" {
 		result = nil
 	}
-	_, err := h.Queries.FinalizeFileOperation(r.Context(), db.FinalizeFileOperationParams{ID: id, RuntimeID: parseUUID(runtimeID), Status: receipt.Status, Result: result, ErrorClass: strToTextPtr(errorClassValue), LeaseEpoch: receipt.LeaseEpoch})
+	operation, err := h.Queries.FinalizeFileOperationForPolicy(r.Context(), db.FinalizeFileOperationForPolicyParams{
+		ID: id, RuntimeID: parseUUID(runtimeID), Status: receipt.Status, Result: result,
+		ErrorClass: strToTextPtr(errorClassValue), LeaseEpoch: receipt.LeaseEpoch, PolicyVersion: receipt.PolicyVersion,
+	})
 	if err != nil {
 		writeError(w, http.StatusConflict, "file operation lease is stale")
 		return
 	}
+	if receipt.Status == "rejected" {
+		h.auditFileAccessDenied(r.Context(), operation.WorkspaceID, operation.RuntimeID, operation.RequesterID, operation.TargetID, errorClassValue)
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// auditFileAccessDenied stores only the server-resolved identities and reason.
+// Paths and file content must never enter the audit trail.
+func (h *Handler) auditFileAccessDenied(ctx context.Context, workspaceID, runtimeID, requesterID pgtype.UUID, targetID, errorClass string) {
+	details, err := json.Marshal(map[string]string{"target_id": targetID, "error_class": errorClass})
+	if err != nil {
+		return
+	}
+	service.TryAppendAuditEvents(ctx, h.Queries, service.Event{
+		WorkspaceID: workspaceID,
+		Domain:      service.AuditDomainRuntime,
+		EventType:   service.AuditRuntimeFileAccessDenied,
+		OccurredAt:  time.Now().UTC(),
+		ActorType:   service.AuditActorMember,
+		ActorID:     requesterID,
+		RuntimeID:   runtimeID,
+		Details:     details,
+	})
 }
 
 func fileAccessErrorClass(err error) string {

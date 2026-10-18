@@ -130,6 +130,7 @@ func (h *Handler) submitMCPFileOperation(w http.ResponseWriter, r *http.Request,
 	var workspaceIDs, memberIDs, roots []string
 	if json.Unmarshal(target.WorkspaceAcl, &workspaceIDs) != nil || json.Unmarshal(target.MemberAcl, &memberIDs) != nil ||
 		fileaccess.HasTargetAccess(fileaccess.Target{ID: target.ID, Enabled: target.Enabled, WorkspaceIDs: workspaceIDs, MemberIDs: memberIDs}, uuidToString(workspaceID), uuidToString(actorID)) != nil {
+		h.auditFileAccessDenied(r.Context(), workspaceID, target.RuntimeID, actorID, target.ID, fileaccess.ErrorPermissionDenied.Error())
 		writeError(w, http.StatusForbidden, fileaccess.ErrorPermissionDenied.Error())
 		return
 	}
@@ -138,16 +139,28 @@ func (h *Handler) submitMCPFileOperation(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	req.TargetID = target.ID
-	if err := fileaccess.ValidateRequest(req); err != nil {
+	if err := fileaccess.ValidateRequestStructure(req); err != nil {
 		writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
 		return
 	}
-	canonical, err := fileaccess.NormalizePath(req.Path)
+	policy, err := h.loadMCPFileReadPolicy(r.Context())
 	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "file read policy unavailable")
+		return
+	}
+	if err := fileaccess.ValidateRequestWithPolicy(req, policy); err != nil {
+		h.auditFileAccessDenied(r.Context(), workspaceID, rt.ID, actorID, target.ID, fileAccessErrorClass(err))
 		writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
 		return
 	}
-	if !fileaccess.PathWithinRoots(roots, canonical) {
+	canonical, err := fileaccess.NormalizePathWithPolicy(req.Path, policy)
+	if err != nil {
+		h.auditFileAccessDenied(r.Context(), workspaceID, rt.ID, actorID, target.ID, fileAccessErrorClass(err))
+		writeError(w, http.StatusBadRequest, fileAccessErrorClass(err))
+		return
+	}
+	if !fileaccess.PathWithinRootsWithPolicy(roots, canonical, policy) {
+		h.auditFileAccessDenied(r.Context(), workspaceID, rt.ID, actorID, target.ID, fileaccess.ErrorPathNotAllowed.Error())
 		writeError(w, http.StatusForbidden, fileaccess.ErrorPathNotAllowed.Error())
 		return
 	}
@@ -155,11 +168,15 @@ func (h *Handler) submitMCPFileOperation(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusConflict, fileaccess.ErrorTargetUnreachable.Error())
 		return
 	}
+	if !runtimeHasCapability(rt.Metadata, protocol.DaemonCapabilityFileReadPolicyV1) {
+		writeError(w, http.StatusConflict, "daemon_upgrade_required")
+		return
+	}
 	req.Path = canonical
 	encoded, _ := json.Marshal(req)
 	op, err := h.Queries.InsertFileOperation(r.Context(), db.InsertFileOperationParams{
 		ID: dbid.NewV7(), WorkspaceID: workspaceID, RuntimeID: rt.ID, TargetID: target.ID,
-		Kind: string(kind), Request: encoded, InvocationID: invocationID,
+		Kind: string(kind), Request: encoded, RequesterID: actorID, InvocationID: invocationID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to queue file operation")
