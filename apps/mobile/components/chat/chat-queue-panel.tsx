@@ -40,6 +40,7 @@ export function ChatQueuePanel({
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const busyRef = useRef(false);
   if (tasks.length === 0) return null;
 
@@ -59,15 +60,21 @@ export function ChatQueuePanel({
   };
 
   return (
-    <View
-      className="mb-2 rounded-lg border border-border bg-background px-3 py-2"
-      style={{ height: maxHeight, maxHeight, minHeight: 0 }}
-      accessibilityLabel={title}
-    >
-      <View className="mb-1 flex-row items-center justify-between">
-        <Text className="font-medium text-foreground">
-          {title}
-        </Text>
+    <View className="mb-1 px-3">
+      <View className="flex-row items-center">
+        <Pressable
+          onPress={() => setExpanded((value) => !value)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          accessibilityLabel={title}
+          className="min-h-8 flex-1 flex-row items-center gap-2"
+        >
+          <Ionicons name="list-outline" size={15} color={theme.mutedForeground} />
+          <Text numberOfLines={1} className="flex-1 text-xs text-muted-foreground">
+            {title}: {tasks[0]?.content?.trim() || t("queue.fallback", "Queued message")}
+          </Text>
+          <Ionicons name={expanded ? "chevron-down" : "chevron-up"} size={14} color={theme.mutedForeground} />
+        </Pressable>
         <Pressable
           onPress={() => {
             if (busyRef.current || !canManage) return;
@@ -84,18 +91,14 @@ export function ChatQueuePanel({
           accessibilityRole="button"
           accessibilityLabel={t("queue.clear", "Clear all")}
           hitSlop={8}
-          className="h-9 flex-row items-center gap-1 px-2"
+          className="h-8 flex-row items-center gap-1 px-2"
         >
           <Ionicons name="trash-outline" size={16} color={theme.mutedForeground} />
           <Text className="text-xs text-muted-foreground">{t("queue.clear", "Clear all")}</Text>
         </Pressable>
       </View>
-      <ScrollView
-        style={{
-          flex: 1,
-          minHeight: 0,
-          maxHeight: Math.max(0, maxHeight - 52),
-        }}
+      {expanded ? <ScrollView
+        style={{ maxHeight: Math.max(96, maxHeight), minHeight: 0 }}
         keyboardShouldPersistTaps="handled"
       >
         {tasks.map((task, index) => {
@@ -136,7 +139,7 @@ export function ChatQueuePanel({
             </View>
           );
         })}
-      </ScrollView>
+      </ScrollView> : null}
     </View>
   );
 }

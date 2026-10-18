@@ -17,6 +17,7 @@ import { withAlphaColor } from "@/lib/color-alpha";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
+import type { ReactNode } from "react";
 
 interface GridEntry {
   key: string;
@@ -39,6 +40,9 @@ interface Props {
   onSkill?: () => void;
   /** 快捷回复入口；不传不渲染。 */
   onQuickReplies?: () => void;
+  onProjectContext?: () => void;
+  projectContextLabel?: string;
+  modelPicker?: ReactNode;
 }
 
 export function PlusPanel({
@@ -51,6 +55,9 @@ export function PlusPanel({
   onFiles,
   onSkill,
   onQuickReplies,
+  onProjectContext,
+  projectContextLabel,
+  modelPicker,
 }: Props) {
   const { t } = useT("chat");
   const { colorScheme } = useColorScheme();
@@ -96,6 +103,14 @@ export function PlusPanel({
             onPress: onQuickReplies,
           },
         ]
+      : []),
+    ...(onProjectContext
+      ? [{
+          key: "project",
+          icon: "folder-outline" as const,
+          label: projectContextLabel ?? t("input.project_context", "Project context"),
+          onPress: onProjectContext,
+        }]
       : []),
     {
       key: "files",
@@ -158,6 +173,7 @@ export function PlusPanel({
               <Ionicons name="close" size={20} color={theme.mutedForeground} />
             </Pressable>
           </View>
+          {modelPicker ? <View className="mb-2">{modelPicker}</View> : null}
           <View className="flex-row gap-2">
             <BigTile
               icon="camera"

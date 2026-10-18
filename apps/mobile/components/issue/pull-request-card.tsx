@@ -214,7 +214,7 @@ function getReviewDecisionLabel(
 ): string {
   switch (decision) {
     case "approved":
-      return t("detail.pull_request_review_approved", "Approved");
+      return t("detail.pull_request_review_approved", "Review approved");
     case "changes_requested":
       return t("detail.pull_request_review_changes_requested", "Changes requested");
     case "review_required":
