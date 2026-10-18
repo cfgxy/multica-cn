@@ -44,6 +44,7 @@
     "steer_unavailable": "当前回复开始后才能引导",
     "steer_no_permission": "你已没有运行该智能体的权限",
     "steer_unavailable_toast": "暂时无法引导，正在刷新队列。",
+    "more_actions": "排队消息 {{position}} 的更多操作",
     "edit": "编辑排队消息",
     "remove": "移除排队消息",
     "more": "更多队列操作",
@@ -257,6 +258,9 @@
   "mobile": {
     "model": {
       "agent_default": "智能体默认模型",
+      "current": "当前模型：{{model}}",
+      "runtime_default": "运行时默认模型",
+      "save_failed_title": "模型未更改",
       "loading": "正在加载模型…",
       "load_failed": "无法加载模型",
       "unsupported": "此运行时不支持模型选择",

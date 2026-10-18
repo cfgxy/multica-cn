@@ -275,6 +275,9 @@ func AppendAuditEvents(ctx context.Context, q *db.Queries, events ...Event) erro
 	params := make([]db.CreateAuditEventsParams, 0, len(events))
 	for i := range events {
 		e := events[i]
+		if !e.ID.Valid {
+			e.ID = dbid.NewV7()
+		}
 		if err := e.Validate(); err != nil {
 			return err
 		}

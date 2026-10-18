@@ -532,6 +532,9 @@ func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
 	}
 	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
 	dbfx.Exec(t, `UPDATE agent_runtime SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{capabilities}', $2::jsonb, TRUE) WHERE id = $1`, runtimeID, []byte(`["file-read-policy-v1"]`))
+	if !runtimeHasCapability(loadRuntime(t, runtimeID).Metadata, protocol.DaemonCapabilityFileReadPolicyV1) {
+		t.Fatal("fixture runtime is missing the file-read-policy-v1 capability")
+	}
 	targetID := "heartbeat-files-" + uuid.NewString()
 	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, nil)
 	operationID := insertFileOperation(t, runtimeID, targetID, "file_list", "pending", 0)
