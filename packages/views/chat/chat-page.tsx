@@ -249,13 +249,6 @@ export function ChatPage() {
           session={c.currentSession}
           agent={c.activeAgent}
           onArchive={handleArchive}
-          showModelSelector={!!c.activeAgent}
-          modelSelectorDisabled={
-            c.isSessionArchived ||
-            c.isAgentArchived ||
-            c.isAgentAccessRevoked ||
-            !c.isAgentRuntimeBound
-          }
         />
       )}
       {c.showSkeleton ? (
@@ -345,6 +338,12 @@ export function ChatPage() {
         agentRuntimeRequired={!c.isAgentRuntimeBound}
         agentName={c.activeAgent?.name}
         agentId={c.activeAgent?.id}
+        modelSelector={c.currentSession && c.activeAgent?.runtime_id ? {
+          session: c.currentSession,
+          runtimeId: c.activeAgent.runtime_id,
+          agentModel: c.activeAgent.model ?? null,
+          disabled: c.isSessionArchived || c.isAgentArchived || c.isAgentAccessRevoked || !c.isAgentRuntimeBound,
+        } : undefined}
         projects={c.projects}
         projectId={c.activeProjectId}
         projectContextUnsupported={c.projectContextUnsupported}

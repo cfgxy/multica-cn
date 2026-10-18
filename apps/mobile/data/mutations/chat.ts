@@ -26,7 +26,7 @@ export function useCreateChatSession() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
 
   return useMutation({
-    mutationFn: (data: { agent_id: string; title?: string }) =>
+    mutationFn: (data: { agent_id: string; title?: string; project_id?: string | null }) =>
       api.createChatSession(data),
     onSettled: () => {
       // Optimistic prepend isn't done here — the chat screen seeds caches
@@ -71,14 +71,21 @@ export function useUpdateChatSession() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
 
   return useMutation({
-    mutationFn: (data: { sessionId: string; title: string }) =>
-      api.updateChatSession(data.sessionId, { title: data.title }),
-    onMutate: async ({ sessionId, title }) => {
+    mutationFn: (data: { sessionId: string; title?: string; projectId?: string | null }) =>
+      api.updateChatSession(data.sessionId, {
+        ...(data.title !== undefined ? { title: data.title } : {}),
+        ...(data.projectId !== undefined ? { project_id: data.projectId } : {}),
+      }),
+    onMutate: async ({ sessionId, title, projectId }) => {
       const key = chatKeys.sessions(wsId);
       await qc.cancelQueries({ queryKey: key });
       const prev = qc.getQueryData<ChatSession[]>(key);
       qc.setQueryData<ChatSession[]>(key, (old) =>
-        old?.map((s) => (s.id === sessionId ? { ...s, title } : s)),
+        old?.map((s) => (s.id === sessionId ? {
+          ...s,
+          ...(title !== undefined ? { title } : {}),
+          ...(projectId !== undefined ? { project_id: projectId } : {}),
+        } : s)),
       );
       return { prev, key };
     },

@@ -1,17 +1,16 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, Cpu, Loader2 } from "lucide-react";
+import { Check, Cpu, Loader2, RotateCw } from "lucide-react";
 import { api, ApiError } from "@multica/core/api";
 import { runtimeModelsOptions } from "@multica/core/runtimes";
 import { chatKeys } from "@multica/core/chat/queries";
 import type { ChatSession } from "@multica/core/types";
-import { Button } from "@multica/ui/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@multica/ui/components/ui/dropdown-menu";
+import { DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from "@multica/ui/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { useT } from "../../i18n";
 
-export function ChatSessionModelSelector({
+export function ChatSessionModelSubmenu({
   session,
   wsId,
   runtimeId,
@@ -25,6 +24,7 @@ export function ChatSessionModelSelector({
   disabled: boolean;
 }) {
   const { t } = useT("chat");
+  const { t: tIssues } = useT("issues");
   const qc = useQueryClient();
   const catalog = useQuery(runtimeModelsOptions(runtimeId));
   const save = useMutation({
@@ -45,13 +45,12 @@ export function ChatSessionModelSelector({
   const label = selected ?? agentModel ?? t(($) => $.mobile.model.agent_default);
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger render={<Button variant="outline" size="sm" disabled={disabled || save.isPending} /> }>
-        {save.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Cpu aria-hidden="true" />}
-        <span className="max-w-44 truncate">{label}</span>
-        <ChevronDown aria-hidden="true" />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="max-h-80 w-72 overflow-y-auto">
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger disabled={disabled}>
+          {save.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Cpu aria-hidden="true" />}
+          <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="max-h-[min(60vh,var(--available-height))] min-w-56 max-w-[min(24rem,var(--available-width))] overflow-y-auto bg-surface border-surface-border origin-bottom data-[side=top]:slide-in-from-bottom-1 data-open:zoom-in-100">
         <DropdownMenuItem disabled={save.isPending} onClick={() => save.mutate(null)}>
           <span className="min-w-0 flex-1">{t(($) => $.mobile.model.agent_default)}</span>
           {selected === null ? <Check aria-hidden="true" /> : null}
@@ -64,8 +63,10 @@ export function ChatSessionModelSelector({
         )) : null}
         {catalog.isLoading ? <DropdownMenuItem disabled>{t(($) => $.mobile.model.loading)}</DropdownMenuItem> : null}
         {catalog.isError ? <DropdownMenuItem disabled>{t(($) => $.mobile.model.load_failed)}</DropdownMenuItem> : null}
+        {catalog.isError ? <DropdownMenuItem onClick={() => void catalog.refetch()}><RotateCw aria-hidden="true" />{tIssues(($) => $.status_catalog_error.retry)}</DropdownMenuItem> : null}
         {catalog.data?.supported === false ? <DropdownMenuItem disabled>{t(($) => $.mobile.model.unsupported)}</DropdownMenuItem> : null}
-      </DropdownMenuContent>
-    </DropdownMenu>
+        {catalog.data?.supported && catalog.data.models.length === 0 ? <DropdownMenuItem disabled>{t(($) => $.mobile.model.unsupported)}</DropdownMenuItem> : null}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
   );
 }

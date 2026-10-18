@@ -61,6 +61,7 @@ import {
   useMarkChatSessionRead,
   useSetChatSessionArchived,
   useSetChatSessionPinned,
+  useUpdateChatSession,
 } from "@/data/mutations/chat";
 import {
   DRAFT_NEW_SESSION,
@@ -83,7 +84,6 @@ import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
 import { ChatQueuePanel } from "@/components/chat/chat-queue-panel";
-import { ChatSessionModelPicker } from "@/components/chat/chat-session-model-picker";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
 import { VoiceSessionOverlay } from "@/components/voice/voice-session-overlay";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
@@ -118,6 +118,7 @@ export default function ChatDetailScreen() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
     params.agentId ?? null,
   );
+  const [newSessionProjectId, setNewSessionProjectId] = useState<string | null>(null);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [savingSessionModel, setSavingSessionModel] = useState(false);
   const savingSessionModelRef = useRef(false);
@@ -177,6 +178,9 @@ export default function ChatDetailScreen() {
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
     [sessions, activeSessionId],
   );
+  const projectId = activeSessionId
+    ? activeSession?.project_id ?? null
+    : newSessionProjectId;
 
   // Active agent: explicit selection wins; otherwise inherit from the
   // active session; otherwise pick the first available agent.
@@ -264,6 +268,7 @@ export default function ChatDetailScreen() {
 
   // ── Mutations ──────────────────────────────────────────────────────────
   const createSession = useCreateChatSession();
+  const updateSession = useUpdateChatSession();
   const deleteSession = useDeleteChatSession();
   const setSessionPinned = useSetChatSessionPinned();
   const setSessionArchived = useSetChatSessionArchived();
@@ -282,6 +287,7 @@ export default function ChatDetailScreen() {
           const session = await createSession.mutateAsync({
             agent_id: currentAgent.id,
             title: titleSeed.slice(0, 50),
+            project_id: newSessionProjectId,
           });
           return session.id;
         } finally {
@@ -291,8 +297,20 @@ export default function ChatDetailScreen() {
       sessionPromiseRef.current = promise;
       return promise;
     },
-    [activeSessionId, currentAgent, createSession],
+    [activeSessionId, currentAgent, createSession, newSessionProjectId],
   );
+
+  const handleProjectChange = useCallback(async (nextProjectId: string | null) => {
+    if (!activeSessionId) {
+      setNewSessionProjectId(nextProjectId);
+      return;
+    }
+    try {
+      await updateSession.mutateAsync({ sessionId: activeSessionId, projectId: nextProjectId });
+    } catch {
+      Alert.alert(t("input.project_context_failed", "Could not update project context"));
+    }
+  }, [activeSessionId, t, updateSession]);
 
   const handleSend = useCallback(
     async (
@@ -555,8 +573,8 @@ export default function ChatDetailScreen() {
       Alert.alert(
         t("mobile.model.save_failed_title", "Model not changed"),
         error instanceof ApiError && error.status === 409
-          ? t("mobile.model.unavailable", "This model or session is no longer available. Your previous selection is unchanged.")
-          : t("mobile.model.save_failed", "Could not save this model. Your previous selection is unchanged."),
+          ? t("mobile.model.unavailable", "Model or session is no longer available")
+          : t("mobile.model.save_failed", "Could not save model selection"),
       );
     } finally {
       savingSessionModelRef.current = false;
@@ -753,15 +771,6 @@ export default function ChatDetailScreen() {
             setChatContentHeight(event.nativeEvent.layout.height)
           }
         >
-          {activeSession && currentAgent ? (
-            <ChatSessionModelPicker
-              runtimeId={currentAgent.runtime_id ?? null}
-              modelOverride={activeSession.model_override ?? null}
-              agentModel={currentAgent.model ?? null}
-              disabled={isArchived || accessRevoked || !runtimeBound || savingSessionModel}
-              onSelect={handleSessionModelSelect}
-            />
-          ) : null}
           <ChatMessageList
             messages={visibleMessages}
             loading={messagesLoading}
@@ -810,6 +819,14 @@ export default function ChatDetailScreen() {
           onIncomingSharedFilesConsumed={() => setIncomingSharedFiles([])}
           voiceGate={runtimeBound && currentAgent !== null ? voiceGate : null}
           onOpenVoice={() => setVoiceOpen(true)}
+          skillPickerPath={{ pathname: "/[workspace]/skill-picker", params: { workspace: wsSlug ?? "" } }}
+          projectId={projectId}
+          onProjectChange={handleProjectChange}
+          modelRuntimeId={activeSessionId && currentAgent ? currentAgent.runtime_id ?? null : null}
+          modelOverride={activeSession?.model_override ?? null}
+          agentModel={currentAgent?.model ?? null}
+          modelDisabled={isArchived || accessRevoked || !runtimeBound || savingSessionModel}
+          onModelSelect={handleSessionModelSelect}
           restoredAttachments={restoredAttachments}
           onRestoredAttachmentsConsumed={() => setRestoredAttachments([])}
         />
