@@ -736,10 +736,23 @@ func TestHandleWebSocket_ValidCookieAuthsDirectly(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if _, err := readWSFrame(t, conn, 1500*time.Millisecond); err == nil {
-		t.Fatal("expected no frame (client registered via cookie), got one")
-	} else if closeErr := (*websocket.CloseError)(nil); errors.As(err, &closeErr) {
-		t.Fatalf("server closed a valid-cookie connection instead of registering it: %v", err)
+	frame, err := readWSFrame(t, conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read auth_ack after cookie authentication: %v", err)
+	}
+	if !strings.Contains(frame, "auth_ack") {
+		t.Fatalf("expected auth_ack after cookie authentication, got %s", frame)
+	}
+
+	if err := conn.WriteJSON(map[string]string{"type": "ping"}); err != nil {
+		t.Fatalf("send ping after cookie authentication: %v", err)
+	}
+	frame, err = readWSFrame(t, conn, 2*time.Second)
+	if err != nil {
+		t.Fatalf("read pong after cookie authentication: %v", err)
+	}
+	if !strings.Contains(frame, "pong") {
+		t.Fatalf("expected pong after auth_ack, got %s", frame)
 	}
 }
 
