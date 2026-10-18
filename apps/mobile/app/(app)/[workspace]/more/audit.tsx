@@ -22,6 +22,7 @@ export default function AuditPage() {
   const { t } = useT("layout");
   const [draft, setDraft] = useState(EMPTY_FILTERS);
   const [applied, setApplied] = useState(EMPTY_FILTERS);
+  const [targetFilterError, setTargetFilterError] = useState(false);
   const timeBasisSheet = useActionSheet();
   const actorTypeSheet = useActionSheet();
   const resultSheet = useActionSheet();
@@ -38,7 +39,18 @@ export default function AuditPage() {
   });
   const events = query.data?.pages.flatMap((page) => page.events) ?? [];
 
-  const update = (key: keyof AuditFilterDraft, value: string) => setDraft((current) => ({ ...current, [key]: value }));
+  const update = (key: keyof AuditFilterDraft, value: string) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+    if (key === "targetType" || key === "targetID") setTargetFilterError(false);
+  };
+  const applyFilters = () => {
+    if (Boolean(draft.targetType.trim()) !== Boolean(draft.targetID.trim())) {
+      setTargetFilterError(true);
+      return;
+    }
+    setTargetFilterError(false);
+    setApplied({ ...draft });
+  };
   const renderError = (error: unknown) => {
     const forbidden = auditFailureKind(error) === "permission";
     return <View className="gap-2 p-4">
@@ -71,7 +83,8 @@ export default function AuditPage() {
         <FilterChoice label={t("mobile.audit.result_error_code", "Result error code")} value={draft.resultErrorCode} options={["", "invalid_input", "not_found", "permission_denied", "unavailable", "timeout", "internal"]} labels={[t("mobile.audit.any", "Any"), "invalid_input", "not_found", "permission_denied", "unavailable", "timeout", "internal"]} onPick={(v) => update("resultErrorCode", v)} sheet={errorCodeSheet} />
         <FilterChoice label={t("mobile.audit.target_type", "Target type (workspace/issue/host)")} value={draft.targetType} options={["", "workspace", "issue", "host"]} labels={[t("mobile.audit.any", "Any"), "workspace", "issue", "host"]} onPick={(v) => update("targetType", v)} sheet={targetTypeSheet} />
         <FilterInput label={t("mobile.audit.target_id", "Target ID")} value={draft.targetID} onChange={(v) => update("targetID", v)} />
-        <Pressable accessibilityRole="button" onPress={() => setApplied({ ...draft })} className="self-start rounded bg-primary px-3 py-2">
+        {targetFilterError ? <Text accessibilityRole="alert" className="text-sm text-destructive">{t("mobile.audit.target_pair_required", "Choose both a target type and target ID, or clear both.")}</Text> : null}
+        <Pressable accessibilityRole="button" onPress={applyFilters} className="self-start rounded bg-primary px-3 py-2">
           <Text className="text-sm text-primary-foreground">{t("mobile.audit.apply_filters", "Apply filters")}</Text>
         </Pressable>
       </View>
