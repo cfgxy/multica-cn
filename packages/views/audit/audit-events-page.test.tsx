@@ -78,6 +78,35 @@ describe("AuditEventsPage", () => {
     expect(screen.getByText("42 ms")).toBeInTheDocument();
   });
 
+  it("shows the default empty state without an available clear action", () => {
+    query.mockReturnValue({ data: { pages: [{ events: [], next_cursor: null, next_cursor_id: null }] }, isLoading: false, error: null, hasNextPage: false, isFetchingNextPage: false, fetchNextPage: vi.fn(), refetch: vi.fn() });
+
+    render(<AuditEventsPage />, { wrapper: Wrapper });
+
+    expect(screen.getByText("No audit records yet.")).toBeInTheDocument();
+    expect(screen.queryByText("No records match these filters.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear filters" })).toBeDisabled();
+    expect(queryFilters).toHaveBeenLastCalledWith({ domain: "mcp", limit: 50, time_basis: "invocation_start" });
+  });
+
+  it("clears editable filters while preserving the fixed MCP query constraints", () => {
+    query.mockReturnValue({ data: { pages: [{ events: [], next_cursor: null, next_cursor_id: null }] }, isLoading: false, error: null, hasNextPage: false, isFetchingNextPage: false, fetchNextPage: vi.fn(), refetch: vi.fn() });
+
+    render(<AuditEventsPage />, { wrapper: Wrapper });
+    fireEvent.change(screen.getByRole("textbox", { name: "Since" }), { target: { value: "2026-10-18T00:00:00Z" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(screen.getByText("No records match these filters.")).toBeInTheDocument();
+    expect(queryFilters).toHaveBeenLastCalledWith(expect.objectContaining({ domain: "mcp", time_basis: "invocation_start", since: "2026-10-18T00:00:00Z" }));
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Clear filters" })[0]!);
+
+    expect(screen.getByText("No audit records yet.")).toBeInTheDocument();
+    expect(screen.queryByText("No records match these filters.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear filters" })).toBeDisabled();
+    expect(queryFilters).toHaveBeenLastCalledWith({ domain: "mcp", limit: 50, time_basis: "invocation_start" });
+  });
+
   it("renders permission denial independently from an empty result", () => {
     query.mockReturnValue({ data: undefined, isLoading: false, error: new ApiError("forbidden", 403, "Forbidden"), hasNextPage: false, isFetchingNextPage: false, fetchNextPage: vi.fn(), refetch: vi.fn() });
 
