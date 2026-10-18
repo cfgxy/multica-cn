@@ -513,3 +513,16 @@ describe("project resource client methods", () => {
     expect(profile.entry_count).toBe(1);
   });
 });
+
+it("sends file audit instance identity only in headers when finishing an invocation", async () => {
+  const calls: CapturedCall[] = [];
+  const client = new MulticaClient({
+    serverUrl: "http://localhost:3000", token: TOKEN,
+    auditServiceCredential: "audit-test", mcpInstanceId: "instance-test",
+    fileAccessInstanceCredential: "instance-test-credential",
+    fetchImpl: makeFetch(200, { status: "recorded" }, calls), logger: silentLogger(),
+  });
+  expect(await client.finishMcpInvocationAudit({ invocation_id: "invocation-test", instance_id: "instance-test", operation_id: "operation-test", status: "success", duration_ms: 3 })).toBe("recorded");
+  expect(JSON.parse(String(calls[0]?.init.body))).toEqual({ invocation_id: "invocation-test", operation_id: "operation-test", status: "success", duration_ms: 3 });
+  expect((calls[0]?.init.headers as Record<string, string>)["X-Multica-MCP-Instance-ID"]).toBe("instance-test");
+});

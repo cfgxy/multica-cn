@@ -94,6 +94,7 @@ var runShapes = [][]string{
 // matter: shapes are same-length exact matches, so at most one can match a
 // given request.
 var surfaceShapes = []scopeShape{
+	{[]string{"file-access", "operations", "*"}, shapeReadOnly},
 	// Workspaces: the list, plus the two sub-resources the tools drive —
 	// execution profiles and the audit trail. Everything else under
 	// /api/workspaces/{id} (members, invitations, plugins, …) stays
@@ -176,6 +177,13 @@ func ScopeForRequest(method, path string) ScopeRequirement {
 		return ScopeUnknown
 	}
 	rest := segments[1:]
+	if method == "POST" {
+		for _, shape := range [][]string{{"file-access", "list"}, {"file-access", "metadata"}, {"file-access", "read"}} {
+			if matchSegments(shape, rest) {
+				return ScopeNeedRead
+			}
+		}
+	}
 	// The MCP service records a read-only tool call as an audit side effect.
 	// The private service credential gates these writes; the caller's OAuth
 	// scope still reflects the tool's business-data authority, so read-scoped
