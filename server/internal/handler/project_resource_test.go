@@ -215,18 +215,20 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 	}()
 
 	cases := []struct {
-		name string
-		url  string
+		name     string
+		url      string
+		upstream string
 	}{
-		{"scp-like", "git@github.com:multica-ai/multica.git"},
-		{"ssh-scheme", "ssh://git@github.com/multica-ai/multica.git"},
+		{"scp-like", "git@github.com:multica-ai/multica.git", ""},
+		{"ssh-scheme", "ssh://git@github.com/multica-ai/multica.git", ""},
+		{"ssh-scheme-port-22", "ssh://git@github.com:22/multica-ai/multica.git", "ssh://git@github.com:22/source/parent.git"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			req := newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
 				"resource_type": "github_repo",
-				"resource_ref":  map[string]any{"url": tc.url},
+				"resource_ref":  map[string]any{"url": tc.url, "upstream": tc.upstream},
 			})
 			req = withURLParam(req, "id", project.ID)
 			testHandler.CreateProjectResource(w, req)
@@ -238,7 +240,8 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 				t.Fatalf("decode: %v", err)
 			}
 			var ref struct {
-				URL string `json:"url"`
+				URL      string  `json:"url"`
+				Upstream *string `json:"upstream"`
 			}
 			if err := json.Unmarshal(created.ResourceRef, &ref); err != nil {
 				t.Fatalf("decode resource_ref: %v", err)
@@ -246,12 +249,15 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 			if ref.URL != tc.url {
 				t.Errorf("ref.url = %q, want %q", ref.URL, tc.url)
 			}
+			if tc.upstream != "" && (ref.Upstream == nil || *ref.Upstream != "source/parent") {
+				t.Errorf("ref.upstream = %v, want normalized %q", ref.Upstream, "source/parent")
+			}
 		})
 	}
 }
 
 func TestValidateGithubRepoRefNormalizesSSHSchemeCanonicalAndUpstream(t *testing.T) {
-	ref, err := validateGithubRepoRef(json.RawMessage(`{"url":"ssh://git@github.com/Owner/Project.git","upstream":"ssh://git@github.com/Source/Parent.git"}`))
+	ref, err := validateGithubRepoRef(json.RawMessage(`{"url":"ssh://git@github.com:22/Owner/Project.git","upstream":"ssh://git@github.com:22/Source/Parent.git"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,11 +265,23 @@ func TestValidateGithubRepoRefNormalizesSSHSchemeCanonicalAndUpstream(t *testing
 	if err := json.Unmarshal(ref, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.URL != "ssh://git@github.com/Owner/Project.git" {
+	if got.URL != "ssh://git@github.com:22/Owner/Project.git" {
 		t.Errorf("canonical URL = %q, want original URL preserved", got.URL)
 	}
 	if got.Upstream == nil || *got.Upstream != "source/parent" {
 		t.Errorf("normalized upstream = %v, want %q", got.Upstream, "source/parent")
+	}
+}
+
+func TestValidateGithubRepoRefRejectsUnsupportedIdentityPorts(t *testing.T) {
+	for _, raw := range []string{
+		`{"url":"ssh://git@github.com:2222/Owner/Project.git","upstream":"https://github.com/Source/Parent"}`,
+		`{"url":"https://github.com:443/Owner/Project","upstream":"https://github.com/Source/Parent"}`,
+		`{"url":"ssh://git@github.com/Owner/Project.git","upstream":"ssh://git@github.com:2222/Source/Parent.git"}`,
+	} {
+		if _, err := validateGithubRepoRef(json.RawMessage(raw)); err == nil {
+			t.Errorf("validateGithubRepoRef(%s) accepted unsupported port", raw)
+		}
 	}
 }
 

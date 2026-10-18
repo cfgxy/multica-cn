@@ -14,6 +14,7 @@ func TestPrepareTaskGitPushGuardBuildsIsolatedCanonicalPolicy(t *testing.T) {
 		{URL: "https://github.com/cfgxy/sub2api.git"},
 		{URL: "git@github.com:cfgxy/multica-cn.git"},
 		{URL: "ssh://git@github.com/cfgxy/ssh-project.git", Upstream: "ssh://git@github.com/source/parent.git"},
+		{URL: "ssh://git@github.com:22/cfgxy/port-fork.git", Upstream: "ssh://git@github.com:22/source/parent.git"},
 		{URL: "https://github.com/cfgxy/fork.git", Upstream: "https://github.com/source/parent.git"},
 	})
 	if err != nil {
@@ -26,7 +27,7 @@ func TestPrepareTaskGitPushGuardBuildsIsolatedCanonicalPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := string(policy), "cfgxy/sub2api\ncfgxy/multica-cn\ncfgxy/ssh-project upstream=source/parent\ncfgxy/fork upstream=source/parent\n"; got != want {
+	if got, want := string(policy), "cfgxy/sub2api\ncfgxy/multica-cn\ncfgxy/ssh-project upstream=source/parent\ncfgxy/port-fork upstream=source/parent\ncfgxy/fork upstream=source/parent\n"; got != want {
 		t.Fatalf("canonical policy = %q, want %q", got, want)
 	}
 	if info, err := os.Stat(guard); err != nil || info.Mode().Perm() != 0o700 {
@@ -52,6 +53,8 @@ func TestPrepareTaskGitPushGuardRejectsUntrustedResourcesAndDrift(t *testing.T) 
 		"https://gitlab.com/cfgxy/repo",
 		"https://github.com/cfgxy/repo/tree/main",
 		"https://user:secret@github.com/cfgxy/repo",
+		"ssh://git@github.com:2222/cfgxy/repo",
+		"https://github.com:443/cfgxy/repo",
 	} {
 		t.Run(raw, func(t *testing.T) {
 			_, _, err := prepareTaskGitPushGuard(t.TempDir(), "task", []RepoData{{URL: raw}})
@@ -109,6 +112,7 @@ func TestEmbeddedGitPushGuardAllowsCanonicalAndRejectsUpstream(t *testing.T) {
 		{URL: "https://github.com/cfgxy/multica-cn"},
 		{URL: "https://github.com/cfgxy/sub2api"},
 		{URL: "ssh://git@github.com/cfgxy/ssh-project.git"},
+		{URL: "ssh://git@github.com:22/cfgxy/port-project.git", Upstream: "ssh://git@github.com:22/source/parent.git"},
 		{URL: "https://github.com/cfgxy/fork", Upstream: "https://github.com/multica-ai/multica"},
 	})
 	if err != nil {
@@ -141,6 +145,12 @@ func TestEmbeddedGitPushGuardAllowsCanonicalAndRejectsUpstream(t *testing.T) {
 	}
 	if out, err := run("origin", []string{"ORIGIN_URL=ssh://git@github.com/cfgxy/ssh-project.git"}); err != nil || !strings.Contains(out, "delegated") {
 		t.Fatalf("SSH-scheme canonical push output=%q error=%v", out, err)
+	}
+	if out, err := run("origin", []string{"ORIGIN_URL=ssh://git@github.com:22/cfgxy/port-project.git"}); err != nil || !strings.Contains(out, "delegated") {
+		t.Fatalf("SSH-scheme :22 canonical push output=%q error=%v", out, err)
+	}
+	if out, err := run("origin", []string{"ORIGIN_URL=ssh://git@github.com:2222/cfgxy/port-project.git"}); err == nil || !strings.Contains(out, "无法解析") {
+		t.Fatalf("SSH-scheme nonstandard port push output=%q error=%v", out, err)
 	}
 	if out, err := run("upstream", []string{"UPSTREAM_URL=https://github.com/multica-ai/multica.git"}); err == nil || !strings.Contains(out, "upstream") {
 		t.Fatalf("confirmed fork upstream push output=%q error=%v", out, err)
