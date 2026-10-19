@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -117,6 +118,9 @@ func isSecureCookie(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
+	if scheme := requestOriginScheme(r); scheme != "" {
+		return scheme == "https"
+	}
 	if r.TLS != nil || strings.EqualFold(r.URL.Scheme, "https") {
 		return true
 	}
@@ -124,6 +128,25 @@ func isSecureCookie(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]), "https")
+}
+
+func requestOriginScheme(r *http.Request) string {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" || strings.EqualFold(origin, "null") {
+		return ""
+	}
+	u, err := url.Parse(origin)
+	if err != nil ||
+		u.Host == "" ||
+		u.User != nil ||
+		u.Opaque != "" ||
+		u.Path != "" ||
+		u.RawQuery != "" ||
+		u.Fragment != "" ||
+		(!strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https")) {
+		return ""
+	}
+	return strings.ToLower(u.Scheme)
 }
 
 func isTrustedCookieProxy(remoteAddr string) bool {

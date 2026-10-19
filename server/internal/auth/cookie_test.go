@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -13,11 +16,15 @@ func TestIsSecureCookie(t *testing.T) {
 		forwardedProto string
 		remoteAddr     string
 		trustedProxies string
+		origin         string
 		frontendOrigin string
 		want           bool
 	}{
 		{name: "https request remains Secure", requestScheme: "https", frontendOrigin: "http://ignored.example", want: true},
 		{name: "http request is not Secure despite https environment", requestScheme: "http", frontendOrigin: "https://ignored.example", want: false},
+		{name: "HTTP origin overrides stale trusted HTTPS proxy header", requestScheme: "http", forwardedProto: "https", remoteAddr: "10.0.0.2:443", trustedProxies: "10.0.0.0/8", origin: "http://arbitrary-host.example", want: false},
+		{name: "HTTPS origin overrides internal HTTP proxy header", requestScheme: "http", forwardedProto: "http", remoteAddr: "10.0.0.2:443", trustedProxies: "10.0.0.0/8", origin: "https://arbitrary-host.example", want: true},
+		{name: "invalid origin falls back to trusted proxy", requestScheme: "http", forwardedProto: "https", remoteAddr: "10.0.0.2:443", trustedProxies: "10.0.0.0/8", origin: "http://arbitrary-host.example/path", want: true},
 		{name: "trusted proxy forwarded https", requestScheme: "http", forwardedProto: "https", remoteAddr: "10.0.0.2:443", trustedProxies: "10.0.0.0/8", want: true},
 		{name: "untrusted forwarded https is ignored", requestScheme: "http", forwardedProto: "https", remoteAddr: "192.0.2.2:443", trustedProxies: "10.0.0.0/8", want: false},
 		{name: "trusted proxy forwarded http", requestScheme: "http", forwardedProto: "http", remoteAddr: "10.0.0.2:443", trustedProxies: "10.0.0.0/8", want: false},
@@ -34,8 +41,91 @@ func TestIsSecureCookie(t *testing.T) {
 			if tc.forwardedProto != "" {
 				req.Header.Set("X-Forwarded-Proto", tc.forwardedProto)
 			}
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
 			if got := isSecureCookie(req); got != tc.want {
 				t.Errorf("isSecureCookie() = %v, want %v (scheme=%q, X-Forwarded-Proto=%q)", got, tc.want, tc.requestScheme, tc.forwardedProto)
+			}
+		})
+	}
+}
+
+func TestAuthCookieRoundTripUsesBrowserProtocol(t *testing.T) {
+	t.Setenv("COOKIE_DOMAIN", "")
+	t.Setenv("MULTICA_TRUSTED_PROXIES", "127.0.0.0/8")
+	for _, tc := range []struct {
+		name           string
+		secure         bool
+		forwardedProto string
+	}{
+		{name: "HTTP", secure: false, forwardedProto: "https"},
+		{name: "HTTPS", secure: true, forwardedProto: "http"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			originScheme := "http"
+			if tc.secure {
+				originScheme = "https"
+			}
+			mux := http.NewServeMux()
+			mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+				r.Header.Set("X-Forwarded-Proto", tc.forwardedProto)
+				if err := SetAuthCookies(w, r, "round-trip-token"); err != nil {
+					t.Errorf("SetAuthCookies: %v", err)
+					http.Error(w, "cookie error", http.StatusInternalServerError)
+				}
+			})
+			mux.HandleFunc("/protected", func(w http.ResponseWriter, r *http.Request) {
+				cookie, err := r.Cookie(AuthCookieName)
+				if err != nil || cookie.Value != "round-trip-token" {
+					http.Error(w, "missing auth cookie", http.StatusUnauthorized)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			})
+
+			server := httptest.NewUnstartedServer(mux)
+			if tc.secure {
+				server.StartTLS()
+			} else {
+				server.Start()
+			}
+			defer server.Close()
+
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := server.Client()
+			client.Jar = jar
+			loginURL := server.URL + "/login"
+			req, err := http.NewRequest(http.MethodPost, loginURL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Origin", fmt.Sprintf("%s://arbitrary-host.example", originScheme))
+			req.Header.Set("X-Forwarded-Proto", tc.forwardedProto)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("login status = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+			for _, cookie := range resp.Cookies() {
+				if cookie.Name == AuthCookieName && cookie.Secure != tc.secure {
+					t.Errorf("auth cookie Secure = %v, want %v", cookie.Secure, tc.secure)
+				}
+			}
+
+			resp, err = client.Get(server.URL + "/protected")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("protected request status = %d, want %d", resp.StatusCode, http.StatusOK)
 			}
 		})
 	}
