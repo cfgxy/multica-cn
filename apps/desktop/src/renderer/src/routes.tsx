@@ -53,8 +53,9 @@ import { SettingsPage } from "@multica/views/settings";
 import { AdminArea } from "@multica/views/admin";
 import { AuditEventsPage } from "@multica/views/audit";
 import { useT } from "@multica/views/i18n";
-import { Download, Server } from "lucide-react";
+import { Boxes, Download, Server } from "lucide-react";
 import { DaemonSettingsTab } from "./components/daemon-settings-tab";
+import { EnvironmentManagerTab } from "./components/environment-manager-tab";
 import { UpdatesSettingsTab } from "./components/updates-settings-tab";
 import { WorkspaceRouteLayout } from "./components/workspace-route-layout";
 import { DesktopRouteErrorPage } from "./components/route-error-page";
@@ -74,6 +75,12 @@ function DesktopSettingsRoute() {
           label: "Daemon",
           icon: Server,
           content: <DaemonSettingsTab />,
+        },
+        {
+          value: "environment",
+          label: t(($) => $.desktop.tabs.environment),
+          icon: Boxes,
+          content: <EnvironmentManagerTab />,
         },
         {
           value: "updates",

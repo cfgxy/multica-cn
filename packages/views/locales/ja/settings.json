@@ -1437,7 +1437,22 @@
   },
   "desktop": {
     "tabs": {
-      "updates": "アップデート"
+      "updates": "アップデート",
+      "environment": "実行環境"
+    },
+    "environment": {
+      "title": "実行環境", "description": "このデスクトップデーモンが管理する環境を確認し、キャッシュの削除や環境のアーカイブ・復元を行います。",
+      "environments": "環境", "cache": "キャッシュ", "archives": "アーカイブ", "refresh": "環境を更新",
+      "selected": "{{count}} 件を選択", "environment": "実行環境", "size": "サイズ", "state": "状態",
+      "protected": "保護中", "available": "操作可能", "unknown_status": "状態不明", "empty": "管理対象の実行環境はありません",
+      "load_failed": "環境を読み込めませんでした", "operation_failed": "操作に失敗しました", "preview_cache": "キャッシュをプレビュー",
+      "preview_archive": "アーカイブをプレビュー", "cache_preview_count": "キャッシュのプレビュー：{{count}} 環境", "clean_cache": "選択したキャッシュを削除",
+      "cache_cleaned": "{{size}} を解放しました", "no_preview": "削除できるキャッシュはありません", "archive_preview_count": "{{count}} 環境をプレビューしました",
+      "archive_now": "選択した環境をアーカイブ", "archived": "{{count}} 環境をアーカイブしました", "no_archives": "復元できるアーカイブはありません",
+      "restore": "復元", "restored": "環境を復元しました", "restore_failed": "環境を復元できませんでした",
+      "confirm_cache_title": "選択したキャッシュを削除しますか？", "confirm_cache_description": "この操作は取り消せません。削除前にデーモンが環境状態とプレビューの版を再確認します。",
+      "confirm_archive_title": "選択した環境をアーカイブしますか？", "confirm_archive_description": "スナップショットの検証に成功した場合のみ元のフォルダーを解放します。処理に時間がかかる場合があります。",
+      "cancel": "キャンセル", "confirm": "確認"
     },
     "updates": {
       "title": "アップデート",

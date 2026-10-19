@@ -16,6 +16,7 @@ import type {
   DaemonPrefs,
   LocalRuntimeProbe,
 } from "../shared/daemon-types";
+import type { EnvironmentManagerAPI } from "../shared/environment-manager";
 import type { TabSelectionShortcutKey } from "../shared/main-renderer-messages";
 
 interface DesktopAPI {
@@ -154,6 +155,7 @@ interface DaemonAPI {
   stopLogStream: () => void;
   onLogLine: (callback: (line: string) => void) => () => void;
   openLogFile: () => Promise<{ success: boolean; error?: string }>;
+  environments: EnvironmentManagerAPI;
 }
 
 interface UpdaterAPI {
