@@ -5873,6 +5873,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 			}
 		}
 	}
+	d.recordEnvironmentCompletion(task, result, taskLog)
 }
 
 // worktreePreservedError marks a task error that must survive the cancel path:
@@ -8557,6 +8558,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			"units", len(units),
 			"declared_scope", snapPlan.Declared,
 			"primary", snapPlan.Primary.AbsPath)
+	}
+	if env.CodeRootDir != "" {
+		defer func() { taskResult.CodeRoot = env.CodeRootDir }()
 	}
 	// Finalize the worktree on EVERY exit path, success or failure: commit
 	// whatever the agent left uncommitted, then unregister the worktree from
