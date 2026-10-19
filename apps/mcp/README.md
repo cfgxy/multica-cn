@@ -138,10 +138,12 @@ mention 准入拒绝）以结构化 `code` 返回，不复用异常字符串。�
 `--server-url` 或 `MULTICA_SERVER_URL` 覆盖。
 
 Inbox 工具通过后端现有的 MCP invocation audit 端点记录调用。部署时须在 MCP
-进程和 API 进程配置同一个 `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL`。MCP 进程通过
-`--audit-credential-file` 从用户私有凭据文件读取该值；未配置时，Inbox 操作会在
-执行前失败关闭。审计只记录操作者、工具、工作区、耗时和结果，不记录通知正文、
-认证头或凭据。
+进程和 API 进程配置同一个 `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL`。MCP 进程优先用
+`--audit-credential-file` 从用户私有凭据文件读取该值；未传该参数时直接读取
+`MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL` 环境变量——同栈部署（自托管 compose）在
+.env 里配一个固定值即同时覆盖两侧，无需凭据文件。两者都未配置时 MCP 服务正常
+启动但审计上报禁用，Inbox 操作会在执行前失败关闭。审计只记录操作者、工具、
+工作区、耗时和结果，不记录通知正文、认证头或凭据。
 
 ### 只读文件工具装配
 
@@ -259,6 +261,10 @@ make mcp-http-uninstall  # 只移除本服务单元，绝不触碰 multica-daemo
   服务凭据。将其单独写入用户私有文件并设为 `chmod 600`，再运行
   `make mcp-http-install MCP_AUDIT_CREDENTIAL_FILE=/绝对路径`。systemd 通过
   `LoadCredential` 投递到运行时凭据目录，unit 与日志只包含源文件路径，不包含凭据。
+- **自托管 compose 形态不需要凭据文件**：`docker-compose.selfhost.local.yml` 把
+  同一个 `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL` 传给 backend 与 mcp 两个服务；
+  .env 里一个固定值即同时覆盖两侧，mcp 进程未收到 `--audit-credential-file`
+  时从该环境变量读取；留空则审计上报禁用、服务正常启动。
 - 默认绑定 `127.0.0.1`；`MCP_HTTP_HOST` 传入非 loopback 值时 `mcp-http-install`
   会打印警告——对外暴露前必须置于 TLS 反代之后，不建议直接暴露明文 HTTP。
 - 单实例（非 `@` 模板）：一台机器通常只需一个 HTTP 端点；需要多端口并存时用不同

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createClientTargets } from "../src/install/clients.js";
-import { readAuditCredential } from "../src/audit-credential.js";
+import { AUDIT_CREDENTIAL_ENV_VAR, readAuditCredential } from "../src/audit-credential.js";
 import {
   formatInstallReport,
   formatStatusReport,
@@ -249,14 +249,18 @@ describe("credential hygiene", () => {
     expect(formatInstallReport(results)).not.toContain(secret);
   });
 
-  it("gives an actionable error when the protected audit credential file is missing", () => {
-    expect(() => readAuditCredential(undefined)).toThrow("Run `make mcp-install`");
-    expect(() => readAuditCredential(join(home, "missing-audit-credential"))).toThrow("chmod 600");
+  it("keeps actionable file errors while an unset credential degrades to disabled instead of failing", () => {
+    // no file, no env var: the service starts with audit reporting disabled.
+    expect(readAuditCredential(undefined, {})).toBeUndefined();
+    // env-var form: the same fixed token the backend reads.
+    expect(readAuditCredential(undefined, { [AUDIT_CREDENTIAL_ENV_VAR]: "  t  " })).toBe("t");
+
+    expect(() => readAuditCredential(join(home, "missing-audit-credential"), {})).toThrow("chmod 600");
 
     const permissiveFile = join(home, "permissive-audit-credential");
     writeFileSync(permissiveFile, "private", { mode: 0o644 });
     chmodSync(permissiveFile, 0o644);
-    expect(() => readAuditCredential(permissiveFile)).toThrow("permissions must be restricted");
+    expect(() => readAuditCredential(permissiveFile, {})).toThrow("permissions must be restricted");
   });
 
   it("never writes token/credential-shaped fields into any client's multica entry", () => {
