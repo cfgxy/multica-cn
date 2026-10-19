@@ -72,7 +72,7 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
   };
 
   return (
-    <Card className="mx-2 border-brand/40 p-4" data-testid="decision-card" data-decision-kind="authorization" data-status={decision.status}>
+    <Card className="mx-2 border-brand/40 p-3" data-testid="decision-card" data-decision-kind="authorization" data-status={decision.status}>
       <div className="flex items-start gap-2">
         <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-brand" aria-hidden />
         <div className="min-w-0 flex-1">
@@ -104,7 +104,7 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
       </div>
 
       {isOpen && (
-        <div className="mt-3 flex items-center gap-2">
+        <div className="mt-2 flex items-center gap-2">
           <Button
             size="sm"
             disabled={answer.isPending}
@@ -209,7 +209,7 @@ function StandardDecisionCard({ decision }: { decision: IssueDecision }) {
   const canSubmit = isOpen && selected.length > 0 && !submitting && !answer.isPending;
 
   return (
-    <Card className="mx-2 p-4" data-testid="decision-card" data-status={decision.status}>
+    <Card className="mx-2 p-3" data-testid="decision-card" data-status={decision.status}>
       <div className="flex items-start gap-2">
         <CircleHelp className="mt-0.5 h-4 w-4 shrink-0 text-brand" aria-hidden />
         <div className="min-w-0 flex-1">
@@ -233,7 +233,7 @@ function StandardDecisionCard({ decision }: { decision: IssueDecision }) {
       </div>
 
       <div
-        className="mt-3 flex flex-col gap-1.5"
+        className="mt-2 flex flex-col gap-1.5"
         role={decision.multi_select ? "group" : "radiogroup"}
         aria-label={decision.question}
       >
@@ -289,7 +289,7 @@ function StandardDecisionCard({ decision }: { decision: IssueDecision }) {
       </div>
 
       {isOpen && (
-        <div className="mt-3 flex items-center gap-2">
+        <div className="mt-2 flex items-center gap-2">
           <Button
             size="sm"
             disabled={!canSubmit}
@@ -316,7 +316,7 @@ function StandardDecisionCard({ decision }: { decision: IssueDecision }) {
       )}
 
       {decision.status === "answered" && (
-        <div className="mt-3 flex items-center gap-2 text-caption text-muted-foreground">
+        <div className="mt-2 flex items-center gap-2 text-caption text-muted-foreground">
           <ListChecks className="h-3.5 w-3.5 shrink-0" aria-hidden />
           <span>
             <span className="font-medium text-foreground">{answeredName ?? ""}</span>
