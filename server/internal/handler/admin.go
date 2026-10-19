@@ -616,7 +616,7 @@ func (h *Handler) AdminImpersonate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := auth.SetAuthCookies(w, tokenString); err != nil {
+	if err := auth.SetAuthCookies(w, r, tokenString); err != nil {
 		slog.Warn("failed to set impersonation cookies", "error", err)
 	}
 
@@ -679,7 +679,7 @@ func (h *Handler) StopImpersonation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := auth.SetAuthCookies(w, tokenString); err != nil {
+	if err := auth.SetAuthCookies(w, r, tokenString); err != nil {
 		slog.Warn("failed to set auth cookies", "error", err)
 	}
 

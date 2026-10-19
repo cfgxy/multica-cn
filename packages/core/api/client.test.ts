@@ -8,6 +8,38 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ApiClient cookie-auth transport", () => {
+  it("includes browser credentials from login through the first protected request", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ token: "session-token", user: { id: "user-1" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("http://arbitrary-host.example");
+    await client.verifyCode("user@example.test", "123456");
+    await client.listWorkspaces();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init?.credentials).toBe("include");
+    }
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).not.toHaveProperty(
+      "Authorization",
+    );
+  });
+});
+
 describe("ApiClient agent conversation-starter compatibility", () => {
   const prompt = {
     label: "Review a PR",
