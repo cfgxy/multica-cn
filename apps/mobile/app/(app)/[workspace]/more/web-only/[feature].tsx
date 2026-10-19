@@ -2,13 +2,14 @@ import { Linking, Pressable, View } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { Text } from "@/components/ui/text";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { getWebUrl } from "@/data/server-store";
 import { useT } from "@/lib/use-t";
 
 export default function WebOnlyGuidePage() {
   const { feature } = useLocalSearchParams<{ feature: string }>();
   const { t } = useT("settings");
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
-  const webUrl = process.env.EXPO_PUBLIC_WEB_URL?.replace(/\/+$/, "");
+  const webUrl = getWebUrl().replace(/\/+$/, "");
   const billing = feature === "billing";
   const title = billing ? t("page.tabs.billing", "Billing") : t("page.tabs.marketplace", "Marketplace");
   const href = webUrl && slug ? `${webUrl}/${encodeURIComponent(slug)}/${billing ? "billing" : "marketplace"}` : null;
