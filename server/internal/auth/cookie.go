@@ -9,7 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"net/url"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -111,20 +111,37 @@ func cookieDomain() string {
 	return raw
 }
 
-// isSecureCookie reports whether session cookies should carry the Secure flag.
-// Derived from the scheme of FRONTEND_ORIGIN — browsers silently drop Secure
-// cookies received on a plain-HTTP page, so the flag has to track the actual
-// user-facing scheme rather than a coarser environment name.
-func isSecureCookie() bool {
-	raw := strings.TrimSpace(os.Getenv("FRONTEND_ORIGIN"))
-	if raw == "" {
+// isSecureCookie reports whether the current request used HTTPS. X-Forwarded-Proto
+// supports TLS-terminating proxies, which must overwrite that header.
+func isSecureCookie(r *http.Request) bool {
+	if r == nil {
 		return false
 	}
-	u, err := url.Parse(raw)
+	if r.TLS != nil || strings.EqualFold(r.URL.Scheme, "https") {
+		return true
+	}
+	if !isTrustedCookieProxy(r.RemoteAddr) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]), "https")
+}
+
+func isTrustedCookieProxy(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
 		return false
 	}
-	return strings.EqualFold(u.Scheme, "https")
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	for _, raw := range strings.Split(os.Getenv("MULTICA_TRUSTED_PROXIES"), ",") {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+		if err == nil && prefix.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // generateCSRFToken creates a CSRF token bound to the auth token via HMAC.
@@ -146,8 +163,8 @@ func generateCSRFToken(authToken string) (string, error) {
 }
 
 // SetAuthCookies sets the HttpOnly auth cookie and the readable CSRF cookie on the response.
-func SetAuthCookies(w http.ResponseWriter, token string) error {
-	secure := isSecureCookie()
+func SetAuthCookies(w http.ResponseWriter, r *http.Request, token string) error {
+	secure := isSecureCookie(r)
 	domain := cookieDomain()
 	ttl := AuthTokenTTL()
 	now := time.Now()
@@ -185,9 +202,9 @@ func SetAuthCookies(w http.ResponseWriter, token string) error {
 }
 
 // ClearAuthCookies removes the auth and CSRF cookies.
-func ClearAuthCookies(w http.ResponseWriter) {
+func ClearAuthCookies(w http.ResponseWriter, r *http.Request) {
 	domain := cookieDomain()
-	secure := isSecureCookie()
+	secure := isSecureCookie(r)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     AuthCookieName,
