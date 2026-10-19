@@ -1437,7 +1437,22 @@
   },
   "desktop": {
     "tabs": {
-      "updates": "更新"
+      "updates": "更新",
+      "environment": "执行环境"
+    },
+    "environment": {
+      "title": "执行环境", "description": "查看本机守护进程管理的执行环境，清理缓存或归档并恢复环境。",
+      "environments": "环境", "cache": "缓存", "archives": "归档", "refresh": "刷新环境列表",
+      "selected": "已选择 {{count}} 项", "environment": "执行环境", "size": "占用空间", "state": "状态",
+      "protected": "受保护", "available": "可操作", "unknown_status": "状态未知", "empty": "没有可管理的执行环境",
+      "load_failed": "无法加载执行环境", "operation_failed": "操作失败", "preview_cache": "预览缓存",
+      "preview_archive": "预览归档", "cache_preview_count": "缓存预览：{{count}} 个环境", "clean_cache": "清理所选缓存",
+      "cache_cleaned": "已释放 {{size}}", "no_preview": "没有可清理的缓存", "archive_preview_count": "已生成 {{count}} 项归档预览",
+      "archive_now": "归档所选环境", "archived": "已归档 {{count}} 个环境", "no_archives": "没有可恢复的归档",
+      "restore": "恢复", "restored": "环境已恢复", "restore_failed": "无法恢复该环境",
+      "confirm_cache_title": "清理所选缓存？", "confirm_cache_description": "清理后无法撤销。执行前会再次检查环境状态和预览版本。",
+      "confirm_archive_title": "归档所选环境？", "confirm_archive_description": "仅在快照校验成功后才会释放源目录。归档可能需要一些时间。",
+      "cancel": "取消", "confirm": "确认"
     },
     "updates": {
       "title": "更新",

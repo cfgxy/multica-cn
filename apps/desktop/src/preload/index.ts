@@ -24,6 +24,7 @@ import type {
   DaemonStatus,
   LocalRuntimeProbe,
 } from "../shared/daemon-types";
+import type { EnvironmentManagerAPI } from "../shared/environment-manager";
 import {
   MAIN_RENDERER_CHANNEL_STATE_CHANNEL,
   parseTabSelectionShortcutKey,
@@ -300,6 +301,18 @@ const daemonAPI = {
   },
   openLogFile: (): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke("daemon:open-log-file"),
+  environments: {
+    inventory: () => ipcRenderer.invoke("daemon:environment-inventory"),
+    previewCache: () => ipcRenderer.invoke("daemon:environment-cache-preview"),
+    cleanCache: (rows: Parameters<EnvironmentManagerAPI["cleanCache"]>[0]) =>
+      ipcRenderer.invoke("daemon:environment-cache-clean", rows),
+    archives: () => ipcRenderer.invoke("daemon:environment-archives"),
+    previewArchive: () => ipcRenderer.invoke("daemon:environment-archive-preview"),
+    archive: (rows: Parameters<EnvironmentManagerAPI["archive"]>[0]) =>
+      ipcRenderer.invoke("daemon:environment-archive", rows),
+    restoreArchive: (archiveId: string) =>
+      ipcRenderer.invoke("daemon:environment-restore", archiveId),
+  } satisfies EnvironmentManagerAPI,
 };
 
 const updaterAPI = {
