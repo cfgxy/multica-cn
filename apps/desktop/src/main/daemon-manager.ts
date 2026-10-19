@@ -1,5 +1,6 @@
 import { app, ipcMain, BrowserWindow, shell } from "electron";
 import { execFile } from "child_process";
+import { randomBytes } from "crypto";
 import {
   readFile,
   writeFile,
@@ -21,6 +22,13 @@ import type {
   DaemonPrefs,
   LocalRuntimeProbe,
 } from "../shared/daemon-types";
+import {
+  parseArchiveResults,
+  parseArchives,
+  parseCachePreview,
+  parseCacheResults,
+  parseManagedEnvironments,
+} from "../shared/environment-manager";
 import { daemonStatusAlive } from "../shared/daemon-types";
 import { ensureManagedCli, managedCliPath } from "./cli-bootstrap";
 import { decideVersionAction } from "./version-decision";
@@ -200,6 +208,41 @@ async function fetchHealthAtPort(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function environmentRequest(path: string, method = "GET", body?: unknown): Promise<unknown> {
+  const active = await ensureActiveProfile();
+  if (!active) throw new Error("Desktop daemon profile is not ready");
+  const health = await fetchHealthAtPort(active.port);
+  if (health?.status !== "running") throw new Error("Desktop daemon is not running");
+  const config = await readProfileConfig(active.name);
+  const token = typeof config.token === "string" ? config.token : "";
+  if (!token) throw new Error("Desktop daemon is not authenticated");
+  const response = await fetch(`http://127.0.0.1:${active.port}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "X-Multica-Profile": active.name,
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error((await response.text()).slice(0, 500) || `Daemon request failed (${response.status})`);
+  return response.json();
+}
+
+function checkedSelections(value: unknown): Array<{ environment_id: string; revision: string }> {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 1000) throw new Error("Select at least one environment");
+  return value.map((row) => {
+    if (!row || typeof row !== "object") throw new Error("Invalid environment selection");
+    const item = row as Record<string, unknown>;
+    if (typeof item.environmentId !== "string" || !/^[0-9a-f]{64}$/.test(item.environmentId) ||
+      typeof item.revision !== "string" || !/^[0-9a-f]{64}$/.test(item.revision)) {
+      throw new Error("Invalid environment selection");
+    }
+    return { environment_id: item.environmentId, revision: item.revision };
+  });
 }
 
 /**
@@ -1376,6 +1419,54 @@ export function setupDaemonManager(
   });
   ipcMain.handle("daemon:get-status", () => fetchHealth());
   ipcMain.handle("daemon:probe-runtimes", () => probeLocalRuntimes());
+  ipcMain.handle("daemon:environment-inventory", async () =>
+    parseManagedEnvironments(await environmentRequest("/worktrees")),
+  );
+  ipcMain.handle("daemon:environment-cache-preview", async () =>
+    parseCachePreview(await environmentRequest("/worktrees", "POST", {
+      action: "preview_cache",
+      workspace_id: "",
+      selections: [],
+    })),
+  );
+  ipcMain.handle("daemon:environment-cache-clean", async (_event, selections: unknown) =>
+    parseCacheResults(await environmentRequest("/worktrees", "POST", {
+      action: "clean_cache",
+      workspace_id: "",
+      selections: checkedSelections(selections),
+    })),
+  );
+  ipcMain.handle("daemon:environment-archives", async () =>
+    parseArchives(await environmentRequest("/worktrees/archives")),
+  );
+  ipcMain.handle("daemon:environment-archive-preview", async () =>
+    parseArchiveResults(await environmentRequest("/worktrees/archives", "POST", {
+      action: "preview",
+      workspace_id: "",
+      operation_id: "",
+      archive_id: "",
+      selections: [],
+    })),
+  );
+  ipcMain.handle("daemon:environment-archive", async (_event, selections: unknown) =>
+    parseArchiveResults(await environmentRequest("/worktrees/archives", "POST", {
+      action: "archive",
+      workspace_id: "",
+      operation_id: randomBytes(32).toString("hex"),
+      archive_id: "",
+      selections: checkedSelections(selections),
+    })),
+  );
+  ipcMain.handle("daemon:environment-restore", async (_event, archiveId: unknown) => {
+    if (typeof archiveId !== "string" || !/^[0-9a-f]{64}$/.test(archiveId)) throw new Error("Invalid archive identity");
+    return parseArchiveResults(await environmentRequest("/worktrees/archives", "POST", {
+      action: "restore",
+      workspace_id: "",
+      operation_id: "",
+      archive_id: archiveId,
+      selections: [],
+    }));
+  });
   // The host's OS name, available regardless of daemon state. The Runtimes
   // page uses it as a fallback identity for "this machine" when no
   // app-managed daemon is reporting a device name (e.g. the daemon runs
