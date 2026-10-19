@@ -117,6 +117,7 @@ describe("PullRequestList sidebar rows", () => {
     const row = screen.getByTestId("pull-request-row");
     expect(row).toHaveClass("rounded-md", "-mx-2", "hover:bg-accent/50");
     expect(row).not.toHaveClass("rounded-lg", "border", "bg-card");
+    expect(screen.getByText("Visual row")).toHaveClass("text-body");
   });
 
   // --- CI status element ---------------------------------------------------
