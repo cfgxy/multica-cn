@@ -1,31 +1,27 @@
 /**
  * Bottom tab bar — JS `<Tabs>` from expo-router (react-navigation under the
- * hood). We tried NativeTabs first but its `canPreventDefault: false`
- * constraint makes "tap More → open something" impossible. JS Tabs
- * supports `listeners.tabPress + e.preventDefault()`, the canonical RN
- * pattern for tab-as-action.
+ * hood). More is an action rather than a destination, so its tab button
+ * opens the dropdown directly instead of dispatching navigation to its stub.
  *
  * The "More" tab is **not a navigation target** — its press opens a
  * DropdownMenu popover anchored above the tab. The popover is rendered
  * by `<MoreTabDropdownAnchor />` as a sibling of `<Tabs>`, NOT as a
- * `tabBarButton` replacement: keeping the real tab button intact means
- * the icon + "More" label render identically to the other three tabs.
- * We just open the dropdown imperatively from `listeners.tabPress` via
- * the exposed `TriggerRef.open()`.
+ * `tabBarButton` replacement: the custom button forwards the default
+ * button props and only replaces its press action with `TriggerRef.open()`.
  *
  * The stub (tabs)/more.tsx file still exists only because expo-router
- * requires every Tabs.Screen to have a backing route file — the press
- * is preventDefault'd so we never actually navigate to it.
+ * requires every Tabs.Screen to have a backing route file. The custom
+ * button does not dispatch a navigation press to it.
  *
  * Active / inactive tint colors are derived from the current colour
  * scheme via THEME so dark mode picks contrasting values automatically.
  */
 import { useRef } from "react";
-import { Platform } from "react-native";
+import { Platform, View } from "react-native";
 import { Tabs } from "expo-router";
+import { PlatformPressable } from "@react-navigation/elements";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
-import { View } from "react-native";
 import i18n from "i18next";
 import type { TriggerRef } from "@rn-primitives/dropdown-menu";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -71,9 +67,7 @@ export default function TabsLayout() {
         : String(openDecisions)
       : undefined;
 
-  // Imperative handle into the More tab's dropdown — listeners.tabPress
-  // calls .open(); the @rn-primitives Trigger measures itself inside
-  // open() so the popover anchors to MoreTabDropdownAnchor's rect.
+  // The More button opens this trigger without changing the selected route.
   const moreTriggerRef = useRef<TriggerRef>(null);
 
   return (
@@ -189,6 +183,12 @@ export default function TabsLayout() {
           name="more"
           options={{
             title: i18n.t("agents:transcript.more_actions", "More"),
+            tabBarButton: (props) => (
+              <PlatformPressable
+                {...props}
+                onPress={() => moreTriggerRef.current?.open()}
+              />
+            ),
             tabBarIcon: Platform.OS === "ios"
               ? ({ color, size }) => (
                   <Image
@@ -205,16 +205,6 @@ export default function TabsLayout() {
                   />
                 ),
           }}
-          listeners={() => ({
-            tabPress: (e) => {
-              // Don't navigate to the (stub) /more screen — open the
-              // dropdown popover instead. The trigger is invisible and
-              // mounted in MoreTabDropdownAnchor below; ref.open() also
-              // measures its rect so the popover anchors correctly.
-              e.preventDefault();
-              moreTriggerRef.current?.open();
-            },
-          })}
         />
       </Tabs>
 
