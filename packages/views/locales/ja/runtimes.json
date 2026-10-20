@@ -2,6 +2,8 @@
   "page": {
     "title": "ランタイム",
     "tagline": "エージェントの CLI セッションを実行するマシンとクラウドワーカーです。",
+    "load_failed": "ランタイムを読み込めません",
+    "retry": "再試行",
     "learn_more": "詳しく見る →",
     "connect_remote": "コンピュータを追加",
     "search_placeholder": "ランタイムを検索…",
@@ -26,6 +28,27 @@
       "title": "ローカルランタイムを起動中…",
       "hint": "通常は数秒かかります。デーモンがワークスペースに登録しています。"
     }
+  },
+  "status": { "online": "オンライン", "offline": "オフライン" },
+  "mobile_nodes": {
+    "voice": "音声",
+    "credential_configured": "設定済み",
+    "credential_error": "問題あり",
+    "credential_missing": "未設定",
+    "credential": "認証情報の状態",
+    "type": "種類",
+    "agents": "バインドされたエージェント",
+    "visibility": "公開範囲",
+    "rename": "ランタイム名を変更",
+    "name_label": "ランタイム名",
+    "saving": "保存中…",
+    "save_failed": "ランタイム名を保存できませんでした",
+    "delete_title": "ランタイムを削除しますか？",
+    "delete_bound_title": "エージェントを解除してランタイムを削除しますか？",
+    "delete_description": "この操作は取り消せません。",
+    "delete_bound_description": "エージェントは保持されますがバインド解除され、実行中・待機中のタスクはキャンセルされます。",
+    "delete_failed": "ランタイムが変更されたか削除できません。更新して現在のバインドを確認してください。",
+    "deleting": "削除中…"
   },
   "mika_setup": {
     "title": "ランタイムの準備ができました。Mika と始めましょう。",
@@ -150,6 +173,7 @@
     }
   },
   "detail": {
+    "visibility_label": { "private": "プライベート", "public": "公開" },
     "all_runtimes": "すべてのランタイム",
     "read_only": "読み取り専用",
     "delete_button": "ランタイムを削除",

@@ -88,11 +88,11 @@ type PromptProposalResponse struct {
 	// RUYI-751: the clause reference key and move destination (move_clause),
 	// plus the draft's effectiveness conditions. clause_id is empty on
 	// unresolvable legacy name-only rows.
-	ClauseID       string          `json:"clause_id,omitempty"`
-	MoveToScope    string          `json:"move_to_scope,omitempty"`
-	MoveToScopeID  string          `json:"move_to_scope_id,omitempty"`
-	Conditions     json.RawMessage `json:"conditions,omitempty"`
-	RollbackOfVer  *int32          `json:"rollback_of_version,omitempty"`
+	ClauseID      string          `json:"clause_id,omitempty"`
+	MoveToScope   string          `json:"move_to_scope,omitempty"`
+	MoveToScopeID string          `json:"move_to_scope_id,omitempty"`
+	Conditions    json.RawMessage `json:"conditions,omitempty"`
+	RollbackOfVer *int32          `json:"rollback_of_version,omitempty"`
 }
 
 func proposalToResponse(p db.PromptProposal) PromptProposalResponse {
@@ -306,7 +306,7 @@ func mustJSON(v any) []byte {
 // or gate_failed (report stored), all inside the caller's transaction. The
 // response for a gate failure is written by the caller from the returned
 // result.
-func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, auditBase []byte) (bool, legislation.Result) {
+func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, gateFailedAudit, enactedAudit []byte) (bool, legislation.Result) {
 	// Carrier references this enactment touches: plain proposals touch one,
 	// a move touches source and destination. Locked in a deterministic order.
 	refs := []carrierRef{{scope: p.CarrierScope, id: p.CarrierScopeID}}
@@ -391,7 +391,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	if !res.OK() {
 		if _, err := qtx.MarkPromptProposalGateFailed(ctx, db.MarkPromptProposalGateFailedParams{
 			ID: p.ID, WorkspaceID: workspaceID,
-			Audit:       auditBase,
+			Audit:       gateFailedAudit,
 			Errors:      mustJSON(res.Errors),
 			Warnings:    mustJSON(res.Warnings),
 			JevAdvisory: advisory,
@@ -420,7 +420,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		enactedVersion = pgtype.Int4{Int32: outcome.Version, Valid: true}
 	}
 	if _, err := qtx.EnactPromptProposal(ctx, db.EnactPromptProposalParams{
-		ID: p.ID, WorkspaceID: workspaceID, Audit: auditBase, Warnings: mustJSON(res.Warnings),
+		ID: p.ID, WorkspaceID: workspaceID, Audit: enactedAudit, Warnings: mustJSON(res.Warnings),
 		JevAdvisory: advisory, ClauseID: outcome.ClauseID, EnactedVersion: enactedVersion,
 	}); err != nil {
 		slog.Error("enact persist failed", append(logger.RequestAttrs(r), "error", err)...)
@@ -844,7 +844,9 @@ func (h *Handler) approveOne(w http.ResponseWriter, r *http.Request, id string, 
 		p = approved
 	}
 
-	enacted, res := h.runGateAndEnactTx(r.Context(), r, qtx, workspaceID, p, audit)
+	gateFailedAudit := legislationAudit("gate_failed", "member", userID, nil)
+	enactedAudit := legislationAudit("enacted", "member", userID, nil)
+	enacted, res := h.runGateAndEnactTx(r.Context(), r, qtx, workspaceID, p, gateFailedAudit, enactedAudit)
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to approve proposal")
 		return
@@ -887,8 +889,9 @@ func (h *Handler) EnactPromptProposal(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context()) //nolint:errcheck
 	qtx := h.Queries.WithTx(tx)
 
-	audit := legislationAudit("enacted", "member", userID, map[string]any{"path": "recovery"})
-	enacted, res := h.runGateAndEnactTx(r.Context(), r, qtx, workspaceID, p, audit)
+	gateFailedAudit := legislationAudit("gate_failed", "member", userID, map[string]any{"path": "recovery"})
+	enactedAudit := legislationAudit("enacted", "member", userID, map[string]any{"path": "recovery"})
+	enacted, res := h.runGateAndEnactTx(r.Context(), r, qtx, workspaceID, p, gateFailedAudit, enactedAudit)
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to enact proposal")
 		return

@@ -113,9 +113,31 @@ type AdminUserListResponse struct {
 	Total int64               `json:"total"`
 }
 
+type AdminAuditLogResponse struct {
+	ID          string          `json:"id"`
+	ActorID     string          `json:"actor_id"`
+	ActorName   string          `json:"actor_name"`
+	ActorEmail  string          `json:"actor_email"`
+	Action      string          `json:"action"`
+	TargetType  string          `json:"target_type"`
+	TargetID    *string         `json:"target_id"`
+	WorkspaceID *string         `json:"workspace_id"`
+	Reason      *string         `json:"reason"`
+	Metadata    json.RawMessage `json:"metadata"`
+	CreatedAt   string          `json:"created_at"`
+}
+
+type AdminAuditLogListResponse struct {
+	Events []AdminAuditLogResponse `json:"events"`
+	Total  int64                   `json:"total"`
+	Limit  int32                   `json:"limit"`
+	Offset int32                   `json:"offset"`
+}
+
 const (
 	adminListDefaultLimit = 50
 	adminListMaxLimit     = 200
+	adminListMaxOffset    = 1<<31 - 1
 )
 
 // parseAdminListParams reads the shared ?query=&limit=&offset= pagination
@@ -130,8 +152,12 @@ func parseAdminListParams(r *http.Request) (query string, limit, offset int32) {
 		limit = int32(min(v, adminListMaxLimit)) //nolint:gosec // clamped to adminListMaxLimit above
 	}
 
-	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v > 0 {
-		offset = int32(v) //nolint:gosec // negatives rejected; overflow inputs fail Atoi
+	if v, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64); err == nil && v > 0 {
+		if v > adminListMaxOffset {
+			offset = adminListMaxOffset
+		} else {
+			offset = int32(v)
+		}
 	}
 	return query, limit, offset
 }
@@ -187,6 +213,47 @@ func (h *Handler) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, AdminUserListResponse{Users: users, Total: total})
+}
+
+func (h *Handler) AdminListAuditLogs(w http.ResponseWriter, r *http.Request) {
+	_, limit, offset := parseAdminListParams(r)
+	rows, err := h.Queries.ListAdminAuditLogs(r.Context(), db.ListAdminAuditLogsParams{Limit: limit, Offset: offset})
+	if err != nil {
+		slog.Warn("admin list audit logs failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to list audit logs")
+		return
+	}
+	total, err := h.Queries.CountAdminAuditLogs(r.Context())
+	if err != nil {
+		slog.Warn("admin count audit logs failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to list audit logs")
+		return
+	}
+	events := make([]AdminAuditLogResponse, 0, len(rows))
+	for _, row := range rows {
+		event := AdminAuditLogResponse{
+			ID: uuidToString(row.ID), ActorID: uuidToString(row.ActorID), ActorName: row.ActorName,
+			Action: row.Action, TargetType: row.TargetType, Metadata: json.RawMessage(row.Metadata),
+			CreatedAt: row.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+		}
+		if row.ActorEmail.Valid {
+			event.ActorEmail = row.ActorEmail.String
+		}
+		if row.TargetID.Valid {
+			value := uuidToString(row.TargetID)
+			event.TargetID = &value
+		}
+		if row.WorkspaceID.Valid {
+			value := uuidToString(row.WorkspaceID)
+			event.WorkspaceID = &value
+		}
+		if row.Reason.Valid {
+			value := row.Reason.String
+			event.Reason = &value
+		}
+		events = append(events, event)
+	}
+	writeJSON(w, http.StatusOK, AdminAuditLogListResponse{Events: events, Total: total, Limit: limit, Offset: offset})
 }
 
 type AdminSetUserDisabledRequest struct {
