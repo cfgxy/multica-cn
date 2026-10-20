@@ -24,6 +24,7 @@ const state = vi.hoisted(() => ({
 
 vi.mock("react", () => ({ useEffect: vi.fn() }));
 vi.mock("react-native", () => ({
+  View: () => null,
   Platform: {
     get OS() {
       return state.platformOS;
@@ -37,7 +38,14 @@ vi.mock("expo-router", () => ({
   useLocalSearchParams: () => ({ workspace: "acme" }),
 }));
 vi.mock("@react-navigation/native", () => ({ useIsFocused: () => true }));
-vi.mock("@tanstack/react-query", () => ({ useQuery: state.useQuery }));
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: state.useQuery,
+  useMutation: () => ({ mutate: vi.fn(), isPending: false, isError: false }),
+  useQueryClient: () => ({ clear: vi.fn() }),
+}));
+vi.mock("@/data/api", () => ({ api: {} }));
+vi.mock("@/lib/use-t", () => ({ useT: () => ({ t: vi.fn() }) }));
+vi.mock("@/components/ui/text", () => ({ Text: () => null }));
 vi.mock("i18next", () => ({
   default: { t: (_key: string, defaultValue?: string) => defaultValue },
 }));

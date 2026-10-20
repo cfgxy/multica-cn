@@ -9,6 +9,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -58,6 +59,34 @@ func setSuperAdminEmailsForTest(t *testing.T, emails []string) {
 	t.Cleanup(func() {
 		testHandler.cfg.SuperAdminEmails = previous
 	})
+}
+
+func TestParseAdminListParamsOffsetBounds(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset string
+		want   int32
+	}{
+		{name: "missing defaults to zero", want: 0},
+		{name: "positive offset", offset: "25", want: 25},
+		{name: "int32 maximum", offset: "2147483647", want: 1<<31 - 1},
+		{name: "above int32 maximum clamps", offset: "2147483648", want: 1<<31 - 1},
+		{name: "negative offset defaults to zero", offset: "-1", want: 0},
+		{name: "invalid offset defaults to zero", offset: "invalid", want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newRequest(http.MethodGet, "/api/admin/users?offset="+tt.offset, nil)
+			if tt.offset == "" {
+				r = newRequest(http.MethodGet, "/api/admin/users", nil)
+			}
+			_, _, got := parseAdminListParams(r)
+			if got != tt.want {
+				t.Fatalf("parseAdminListParams offset = %d, want %d", got, tt.want)
+			}
+		})
+	}
 }
 
 // latestImpersonationSessionID returns the session_id stamped in the most
@@ -501,6 +530,32 @@ func TestAdminListWorkspaces_ReturnsOwnerAndCounts(t *testing.T) {
 	got := body.Workspaces[0]
 	if got.ID != ws || got.OwnerID == nil || *got.OwnerID != admin || got.MemberCount != 2 {
 		t.Fatalf("unexpected workspace row: %+v", got)
+	}
+}
+
+func TestAdminListAuditLogs_ReturnsNewestRowsAndPagination(t *testing.T) {
+	admin := insertAdminTestUser(t, "admin-audit-list@test.local", "Audit List Admin", true)
+	testHandler.writeAdminAudit(context.Background(), admin, "audit.test", AuditTargetTypeUser, pgtype.UUID{}, pgtype.UUID{}, adminReason("review access"), map[string]any{"source": "test"})
+
+	req := newRequest("GET", "/api/admin/audit?limit=1&offset=0", nil)
+	req.Header.Set("X-User-ID", admin)
+	resp := testutil.Call(t, testHandler.AdminListAuditLogs, req).Want(http.StatusOK)
+	var body AdminAuditLogListResponse
+	resp.JSON(&body)
+	if body.Limit != 1 || body.Offset != 0 || body.Total < 1 || len(body.Events) != 1 {
+		t.Fatalf("unexpected audit page: %+v", body)
+	}
+	if got := body.Events[0]; got.ActorID != admin || got.ActorEmail == "" || got.Action == "" || got.Reason == nil || *got.Reason != "review access" || len(got.Metadata) == 0 {
+		t.Fatalf("audit event missing expected actor/action/reason/metadata: %+v", got)
+	}
+
+	largeOffsetReq := newRequest("GET", "/api/admin/audit?limit=1&offset=2147483648", nil)
+	largeOffsetReq.Header.Set("X-User-ID", admin)
+	largeOffsetResp := testutil.Call(t, testHandler.AdminListAuditLogs, largeOffsetReq).Want(http.StatusOK)
+	var largeOffsetBody AdminAuditLogListResponse
+	largeOffsetResp.JSON(&largeOffsetBody)
+	if largeOffsetBody.Offset != 1<<31-1 || len(largeOffsetBody.Events) != 0 {
+		t.Fatalf("unexpected oversized-offset page: offset=%d events=%d", largeOffsetBody.Offset, len(largeOffsetBody.Events))
 	}
 }
 

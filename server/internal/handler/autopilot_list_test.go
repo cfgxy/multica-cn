@@ -44,6 +44,10 @@ func TestListAutopilots_DerivedFields(t *testing.T) {
 	agentID := createHandlerTestAgent(t, "autopilot-list-derived-agent", []byte(`[]`))
 	withData := insertListTestAutopilot(t, agentID, "list-derived-with-data")
 	bare := insertListTestAutopilot(t, agentID, "list-derived-bare")
+	const lastRunAt = "2026-10-17T12:02:00Z"
+	if _, err := testPool.Exec(ctx, `UPDATE autopilot SET last_run_at = $2 WHERE id = $1`, withData, lastRunAt); err != nil {
+		t.Fatalf("seed last_run_at: %v", err)
+	}
 
 	// Enabled schedule (carries next_run_at), enabled webhook, and a
 	// DISABLED api trigger that must not leak into trigger_kinds.
@@ -103,6 +107,9 @@ func TestListAutopilots_DerivedFields(t *testing.T) {
 	}
 	if rich["last_run_status"] != "failed" {
 		t.Errorf("last_run_status: expected most recent run (failed), got %v", rich["last_run_status"])
+	}
+	if rich["last_run_at"] != lastRunAt {
+		t.Errorf("last_run_at: expected %q in list response, got %v", lastRunAt, rich["last_run_at"])
 	}
 
 	plain, ok := rows[bare]
