@@ -46,17 +46,17 @@ export function ChatSessionModelSubmenu({
 
   return (
       <DropdownMenuSub>
-        <DropdownMenuSubTrigger disabled={disabled}>
-          {save.isPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <Cpu aria-hidden="true" />}
-          <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
+        <DropdownMenuSubTrigger disabled={disabled} className="h-16 flex-col justify-center gap-1 rounded-md px-1 py-2 text-caption text-muted-foreground data-popup-open:bg-accent data-popup-open:text-accent-foreground [&>svg:last-child]:hidden">
+          {save.isPending ? <Loader2 className="size-5 animate-spin" aria-hidden="true" /> : <Cpu className="size-5" aria-hidden="true" />}
+          <span className="max-w-full truncate" title={label}>{t(($) => $.mobile.model.current, { model: label })}</span>
         </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="max-h-[min(60vh,var(--available-height))] min-w-56 max-w-[min(24rem,var(--available-width))] overflow-y-auto bg-surface border-surface-border origin-bottom data-[side=top]:slide-in-from-bottom-1 data-open:zoom-in-100">
-        <DropdownMenuItem disabled={save.isPending} onClick={() => save.mutate(null)}>
+        <DropdownMenuSubContent className="max-h-[min(60vh,var(--available-height))] min-w-56 max-w-[min(24rem,var(--available-width))] overflow-y-auto rounded-lg border border-surface-border bg-surface-raised p-1 shadow-[var(--menu-shadow)] ring-1 ring-surface-border origin-bottom data-[side=top]:slide-in-from-bottom-1 data-open:zoom-in-100">
+        <DropdownMenuItem disabled={save.isPending} onClick={() => save.mutate(null)} className="min-h-9 rounded-md px-2">
           <span className="min-w-0 flex-1">{t(($) => $.mobile.model.agent_default)}</span>
           {selected === null ? <Check aria-hidden="true" /> : null}
         </DropdownMenuItem>
         {catalog.data?.supported ? catalog.data.models.map((model) => (
-          <DropdownMenuItem key={model.id} disabled={save.isPending} onClick={() => save.mutate(model.id)}>
+          <DropdownMenuItem key={model.id} disabled={save.isPending} onClick={() => save.mutate(model.id)} className="min-h-9 rounded-md px-2 data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground">
             <span className="min-w-0 flex-1 truncate">{model.label || model.id}</span>
             {selected === model.id ? <Check aria-hidden="true" /> : null}
           </DropdownMenuItem>
