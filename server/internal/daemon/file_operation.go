@@ -140,6 +140,9 @@ func executeSSHFileOperation(ctx context.Context, alias string, op protocol.Daem
 	if _, ok := fileaccess.SSHTargetAlias("ssh:" + alias); !ok {
 		return nil, fileaccess.ErrorPermissionDenied
 	}
+	if !sshAliasConfigured(alias) {
+		return nil, fileaccess.ErrorPermissionDenied
+	}
 	operationCtx, cancel := context.WithTimeout(ctx, sshFileOperationTimeout)
 	defer cancel()
 	session, err := openSSHFileSession(operationCtx, alias)
@@ -231,6 +234,107 @@ type sshFileSession interface {
 
 var openSSHFileSession func(context.Context, string) (sshFileSession, error) = func(ctx context.Context, alias string) (sshFileSession, error) {
 	return newSFTPFileSession(ctx, alias)
+}
+
+var sshAliasConfigured = daemonSSHConfigDeclaresAlias
+
+// daemonSSHConfigDeclaresAlias only authorizes literal Host entries. OpenSSH
+// otherwise treats an arbitrary token as a hostname, so shape validation or
+// ssh -G alone would allow an unregistered remote connection.
+func daemonSSHConfigDeclaresAlias(alias string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	return sshConfigDeclaresAlias(alias, []string{
+		filepath.Join(home, ".ssh", "config"),
+		"/etc/ssh/ssh_config",
+	})
+}
+
+func sshConfigDeclaresAlias(alias string, configFiles []string) bool {
+	seen := make(map[string]struct{})
+	var visit func(string, int) bool
+	visit = func(configFile string, depth int) bool {
+		if depth > 8 || len(seen) >= 64 {
+			return false
+		}
+		resolved, err := filepath.Abs(configFile)
+		if err != nil {
+			return false
+		}
+		if _, ok := seen[resolved]; ok {
+			return false
+		}
+		seen[resolved] = struct{}{}
+		content, err := os.ReadFile(resolved)
+		if err != nil {
+			return false
+		}
+		for _, line := range strings.Split(string(content), "\n") {
+			key, values := sshConfigDirective(line)
+			switch key {
+			case "host":
+				for _, value := range values {
+					if value == alias {
+						return true
+					}
+				}
+			case "include":
+				for _, pattern := range values {
+					if strings.HasPrefix(pattern, "~/") {
+						home, err := os.UserHomeDir()
+						if err != nil {
+							continue
+						}
+						pattern = filepath.Join(home, strings.TrimPrefix(pattern, "~/"))
+					} else if !filepath.IsAbs(pattern) {
+						pattern = filepath.Join(filepath.Dir(resolved), pattern)
+					}
+					matches, _ := filepath.Glob(pattern)
+					for _, match := range matches {
+						if visit(match, depth+1) {
+							return true
+						}
+					}
+				}
+			}
+		}
+		return false
+	}
+	for _, configFile := range configFiles {
+		if visit(configFile, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func sshConfigDirective(line string) (string, []string) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", nil
+	}
+	line = strings.Replace(line, "=", " ", 1)
+	parts := strings.Fields(line)
+	if len(parts) < 2 {
+		return "", nil
+	}
+	key := strings.ToLower(parts[0])
+	if key != "host" && key != "include" {
+		return "", nil
+	}
+	values := make([]string, 0, len(parts)-1)
+	for _, value := range parts[1:] {
+		if strings.HasPrefix(value, "#") {
+			break
+		}
+		value = strings.Trim(value, "\"'")
+		if value != "" && !strings.HasPrefix(value, "!") {
+			values = append(values, value)
+		}
+	}
+	return key, values
 }
 
 type sshFileInfo struct {

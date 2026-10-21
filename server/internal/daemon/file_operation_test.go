@@ -200,12 +200,92 @@ func TestSSHTargetAliasAcceptsOnlyRegisteredAliasShape(t *testing.T) {
 	}
 }
 
+func TestSSHConfigDeclaresOnlyExactExplicitAlias(t *testing.T) {
+	configDir := t.TempDir()
+	includedDir := filepath.Join(configDir, "conf.d")
+	if err := os.Mkdir(includedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(configDir, "config")
+	include := filepath.Join(includedDir, "registered.conf")
+	if err := os.WriteFile(config, []byte("Host *.example\n  User ignored\nInclude conf.d/*.conf\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(include, []byte("Host gti-server gti-readonly\n  HostName gti\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !sshConfigDeclaresAlias("gti-server", []string{config}) {
+		t.Fatal("explicit included alias was not recognized")
+	}
+	if sshConfigDeclaresAlias("unregistered", []string{config}) {
+		t.Fatal("wildcard Host entry must not authorize an alias")
+	}
+}
+
+func TestExecuteFileOperationSSHRejectsUnconfiguredAliasBeforeConnect(t *testing.T) {
+	previousChecker := sshAliasConfigured
+	previousFactory := openSSHFileSession
+	sshAliasConfigured = func(string) bool { return false }
+	called := false
+	openSSHFileSession = func(context.Context, string) (sshFileSession, error) {
+		called = true
+		return nil, fileaccess.ErrorTargetUnreachable
+	}
+	t.Cleanup(func() {
+		sshAliasConfigured = previousChecker
+		openSSHFileSession = previousFactory
+	})
+	policy, version := policyDispatchFields(t)
+	_, err := executeFileOperation(context.Background(), protocol.DaemonFileOperationDispatch{
+		TargetID: "ssh:unregistered", Kind: string(fileaccess.KindMetadata), Path: "/configured/file", Roots: []string{"/configured"},
+		Policy: policy, PolicyVersion: version,
+	})
+	if !errors.Is(err, fileaccess.ErrorPermissionDenied) || called {
+		t.Fatalf("error = %v, attempted connection = %v", err, called)
+	}
+}
+
+func TestExecuteFileOperationSSHAppliesOperationDeadline(t *testing.T) {
+	previousChecker := sshAliasConfigured
+	previousFactory := openSSHFileSession
+	sshAliasConfigured = func(string) bool { return true }
+	openSSHFileSession = func(ctx context.Context, _ string) (sshFileSession, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > sshFileOperationTimeout || time.Until(deadline) <= 0 {
+			t.Fatalf("unexpected SSH operation deadline: %v (present=%v)", deadline, ok)
+		}
+		return nil, fileaccess.ErrorTargetUnreachable
+	}
+	t.Cleanup(func() {
+		sshAliasConfigured = previousChecker
+		openSSHFileSession = previousFactory
+	})
+	policy, version := policyDispatchFields(t)
+	_, err := executeFileOperation(context.Background(), protocol.DaemonFileOperationDispatch{
+		TargetID: "ssh:gti-server", Kind: string(fileaccess.KindMetadata), Path: "/configured/file", Roots: []string{"/configured"},
+		Policy: policy, PolicyVersion: version,
+	})
+	if !errors.Is(err, fileaccess.ErrorTargetUnreachable) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSFTPFileSessionHonorsCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := newSFTPFileSession(ctx, "gti-server")
+	if !errors.Is(err, fileaccess.ErrorTargetUnreachable) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestExecuteFileOperationSSHReadsResolvedFileAndRejectsEscape(t *testing.T) {
 	session := &fakeSSHSession{
 		realpaths: map[string]string{
 			"/configured":           "/srv/approved",
 			"/configured/notes.txt": "/srv/approved/notes.txt",
 			"/configured/escape":    "/srv/private/escape",
+			"/configured/sensitive": "/srv/approved/.env",
 		},
 		attrs: map[string]sshFileAttributes{
 			"/srv/approved/notes.txt": {size: 6, mode: 0o600, modTime: time.Unix(1700000000, 0).UTC()},
@@ -234,6 +314,13 @@ func TestExecuteFileOperationSSHReadsResolvedFileAndRejectsEscape(t *testing.T) 
 	})
 	if !errors.Is(err, fileaccess.ErrorSymlinkEscapeDenied) {
 		t.Fatalf("escape error = %v", err)
+	}
+	_, err = executeFileOperation(context.Background(), protocol.DaemonFileOperationDispatch{
+		TargetID: "ssh:gti-server", Kind: string(fileaccess.KindMetadata), Path: "/configured/sensitive", Roots: []string{"/configured"},
+		Policy: policy, PolicyVersion: version,
+	})
+	if !errors.Is(err, fileaccess.ErrorSensitivePathDenied) {
+		t.Fatalf("sensitive path error = %v", err)
 	}
 }
 
@@ -280,6 +367,9 @@ func TestSFTPFileSessionIntegration(t *testing.T) {
 	alias := os.Getenv("MULTICA_SFTP_TEST_ALIAS")
 	if alias == "" {
 		t.Skip("set MULTICA_SFTP_TEST_ALIAS to run against an authorized non-production target")
+	}
+	if !daemonSSHConfigDeclaresAlias(alias) {
+		t.Fatalf("authorized test alias %q was not found as an explicit SSH Host entry", alias)
 	}
 	session, err := newSFTPFileSession(context.Background(), alias)
 	if err != nil {
@@ -353,9 +443,14 @@ func (s *fakeSSHSession) List(_ string, _ []string, _ string, _ int, _ fileacces
 
 func replaceSSHSessionFactory(t *testing.T, session sshFileSession) func() {
 	t.Helper()
-	previous := openSSHFileSession
+	previousSessionFactory := openSSHFileSession
+	previousAliasChecker := sshAliasConfigured
 	openSSHFileSession = func(context.Context, string) (sshFileSession, error) {
 		return session, nil
 	}
-	return func() { openSSHFileSession = previous }
+	sshAliasConfigured = func(string) bool { return true }
+	return func() {
+		openSSHFileSession = previousSessionFactory
+		sshAliasConfigured = previousAliasChecker
+	}
 }
