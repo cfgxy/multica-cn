@@ -811,6 +811,7 @@ generate_slot_env() {
     printf 'MULTICA_PUBLIC_URL=http://localhost:%s\n' "$SLOT_BACKEND_PORT"
     printf 'MULTICA_APP_URL=http://localhost:%s\n' "$SLOT_FRONTEND_PORT"
     printf 'NEXT_PUBLIC_API_URL=http://localhost:%s\n' "$SLOT_BACKEND_PORT"
+    printf 'LOCAL_UPLOAD_BASE_URL=http://localhost:%s\n' "$SLOT_BACKEND_PORT"
     printf 'NEXT_PUBLIC_WS_URL=ws://localhost:%s/ws\n' "$SLOT_BACKEND_PORT"
     printf 'MULTICA_DEV_VERIFICATION_CODE=%s\n' "$DEV_CODE_DEFAULT"
     printf 'MULTICA_DEV_EMAIL=%s\n' "$DEV_EMAIL"

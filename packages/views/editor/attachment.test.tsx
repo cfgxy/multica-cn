@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Attachment as AttachmentRecord } from "@multica/core/types";
@@ -82,6 +82,16 @@ vi.mock("../navigation", () => ({
     openInNewTab: vi.fn(),
     getShareableUrl: (p: string) => `https://app.example${p}`,
   }),
+  useOptionalNavigation: () => ({
+    push: vi.fn(),
+    openInNewTab: vi.fn(),
+    getShareableUrl: (p: string) => `https://app.example${p}`,
+  }),
+  useAppOrigin: () => null,
+  resolveClickIntent: () => "push",
+  AppLink: ({ href, children }: { href: string; children: ReactNode }) => (
+    <a href={href}>{children}</a>
+  ),
 }));
 
 vi.mock("@multica/core/paths", async (importOriginal) => {
@@ -814,6 +824,57 @@ describe("Attachment — file-card dispatch", () => {
     expect(screen.getByText("manual.pdf")).toBeTruthy();
     expect(document.querySelector("iframe")).toBeNull();
     expect(document.querySelector("img")).toBeNull();
+  });
+
+  it("opens a PDF preview from the file-card and keeps its download action", () => {
+    const att = makeRecord({
+      filename: "manual.pdf",
+      content_type: "application/pdf",
+      url: "/uploads/manual.pdf",
+      download_url: "/api/attachments/att-1/download",
+    });
+    renderWithQuery(<Attachment attachment={{ kind: "record", attachment: att }} />);
+
+    fireEvent.mouseDown(screen.getByTitle("Preview"));
+    expect(screen.getByRole("dialog", { name: "manual.pdf" })).toBeTruthy();
+    expect(document.querySelector("iframe[title='manual.pdf']")?.getAttribute("src"))
+      .toBe("/uploads/manual.pdf");
+
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "manual.pdf" })).getByRole("button", {
+        name: "Download",
+      }),
+    );
+    expect(downloadMock).toHaveBeenCalledWith("att-1");
+  });
+
+  it("opens a Markdown attachment in-app and falls back to download on preview failure", async () => {
+    const att = makeRecord({
+      filename: "notes.md",
+      content_type: "text/markdown",
+    });
+    getAttachmentTextContentMock.mockResolvedValueOnce({
+      text: "# Previewed Markdown",
+      originalContentType: "text/markdown",
+    });
+    const { unmount } = renderWithQuery(
+      <Attachment attachment={{ kind: "record", attachment: att }} />,
+    );
+
+    fireEvent.mouseDown(screen.getByTitle("Preview"));
+    await waitFor(() => expect(screen.getByText("Previewed Markdown")).toBeTruthy());
+    expect(getAttachmentTextContentMock).toHaveBeenCalledWith("att-1");
+    unmount();
+
+    getAttachmentTextContentMock.mockRejectedValueOnce(new Error("preview unavailable"));
+    renderWithQuery(<Attachment attachment={{ kind: "record", attachment: att }} />);
+    fireEvent.mouseDown(screen.getByTitle("Preview"));
+    await waitFor(() => expect(screen.getByText("Couldn't load preview")).toBeTruthy());
+    const fallbackDownloads = within(
+      screen.getByRole("dialog", { name: "notes.md" }),
+    ).getAllByRole("button", { name: "Download" });
+    fireEvent.click(fallbackDownloads[fallbackDownloads.length - 1]!);
+    expect(downloadMock).toHaveBeenCalledWith("att-1");
   });
 
   it("url-only stable attachment download file-card resolves to record and downloads by id", () => {

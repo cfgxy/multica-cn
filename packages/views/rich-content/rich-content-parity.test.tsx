@@ -231,6 +231,7 @@ async function expectMermaidRendered(container: HTMLElement) {
   });
   // Not a plain code block: the fence was upgraded.
   expect(container.querySelector("code.hljs")).toBeNull();
+  expect(container.textContent).not.toContain("flowchart LR");
 }
 
 describe("Mermaid parity across the five surfaces", () => {
