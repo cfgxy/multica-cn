@@ -152,6 +152,11 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 		}
 	}
 
+	if err := validateDecisionRequestGroupSpec(rows); err != nil {
+		slog.Warn("decision request specification validation failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID), "error", err)...)
+		return
+	}
+
 	// Still waiting on another step — stay pending, publish, no callback.
 	allApproved := true
 	for _, row := range rows {
@@ -200,11 +205,9 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 	var execErrText pgtype.Text
 	if execErr != nil {
 		status = decisionReqExecuteFailed
-		executedAt = pgtype.Timestamptz{}
-		execErrText = pgtype.Text{String: execErr.Error(), Valid: true}
-	} else {
-		resultBytes = resultJSON
+		execErrText = pgtype.Text{String: decisionRequestSafeErrorCode(landing.ActionType), Valid: true}
 	}
+	resultBytes = decisionRequestReceipt(landing.ActionType, resultJSON, execErr == nil, execErr != nil)
 
 	updated, err := qtx.SetDecisionRequestExecution(r.Context(), db.SetDecisionRequestExecutionParams{
 		Status:          status,
@@ -263,7 +266,7 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 
 	var errPtr *string
 	if execErr != nil {
-		s := execErr.Error()
+		s := decisionRequestSafeErrorCode(landing.ActionType)
 		errPtr = &s
 	}
 	if ownsTerminal {
@@ -271,6 +274,46 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 		return
 	}
 	h.publishGroupUpdate(r, groupID)
+}
+
+func decisionRequestSafeErrorCode(actionType string) string {
+	switch actionType {
+	case DecisionActionProjectPromptSync:
+		return "PROMPT_SYNC_FAILED"
+	case DecisionActionPromptRestore:
+		return "PROMPT_RESTORE_FAILED"
+	case DecisionActionWorkspaceInfoRead:
+		return "WORKSPACE_READ_FAILED"
+	default:
+		return "EXECUTION_FAILED"
+	}
+}
+
+func decisionRequestReceipt(actionType string, result []byte, completed, failed bool) []byte {
+	var receipt map[string]any
+	if json.Unmarshal(result, &receipt) != nil || receipt == nil {
+		receipt = map[string]any{}
+	}
+	sideEffect := "no_side_effect"
+	stepStatus := "completed"
+	if completed && actionType != DecisionActionWorkspaceInfoRead {
+		sideEffect = "completed"
+	}
+	if failed {
+		stepStatus = "failed"
+	}
+	receipt["receipt_version"] = 1
+	receipt["side_effect_status"] = sideEffect
+	receipt["steps"] = []map[string]string{{
+		"handler":            actionType,
+		"status":             stepStatus,
+		"side_effect_status": sideEffect,
+	}}
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		return []byte(`{"receipt_version":1,"side_effect_status":"unknown","steps":[]}`)
+	}
+	return encoded
 }
 
 // finalizeDecisionRequestGroup propagates a terminal state (denied today;

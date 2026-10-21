@@ -358,6 +358,19 @@ describe("DecisionCard authorization face (RUYI-630)", () => {
     expect(screen.getByTestId("decision-auth-project-result").props.children).toContain("project-1");
   });
 
+  it("announces unknown side effects and does not display the internal error code", async () => {
+    await renderCard(card({
+      ...authCard,
+      status: "answered",
+      auth_state: "execute_failed",
+      execution_error: "PROMPT_SYNC_FAILED",
+      execution_result: { receipt_version: 1, side_effect_status: "unknown", steps: [] },
+    }));
+
+    expect(screen.getByText("Result needs verification. Do not retry this request.")).toBeTruthy();
+    expect(screen.queryByText("PROMPT_SYNC_FAILED")).toBeNull();
+  });
+
   it("answers through the issue decision endpoint with the approve index", async () => {
     await renderCard(authCard);
     await pressPressable("decision-auth-approve");
@@ -391,6 +404,6 @@ describe("DecisionCard authorization face (RUYI-630)", () => {
         execution_error: "modified",
       }),
     );
-    expect(screen.getByText("Execution failed: {{reason}}")).toBeTruthy();
+    expect(screen.getByText("Execution failed; it was not retried")).toBeTruthy();
   });
 });
