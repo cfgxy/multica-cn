@@ -229,7 +229,7 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
       {message ? <Alert role="status"><AlertDescription>{message}</AlertDescription></Alert> : null}
 
       {formOpen && selectedTarget ? (
-        <form className="space-y-4 rounded-md border border-surface-border p-3 sm:p-4" onSubmit={(event) => { event.preventDefault(); if (createMutation.isPending) return; secretForSubmission.current = secret; setSecret(""); setMessage(""); createMutation.mutate(); }}>
+        <form className="space-y-4 rounded-md border border-surface-border p-3 sm:p-4 max-md:pe-chat-launcher" onSubmit={(event) => { event.preventDefault(); if (createMutation.isPending) return; secretForSubmission.current = secret; setSecret(""); setMessage(""); createMutation.mutate(); }}>
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="credential-name">{t(($) => $.credential_manager.name)}</Label>
