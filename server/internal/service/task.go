@@ -3852,6 +3852,25 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return fmt.Errorf("probe scheduling pause: %w", err)
 		}
 
+		if err := qtx.LockRuntimeClaimCapacity(ctx, util.UUIDToString(claimRuntimeID)); err != nil {
+			outcome = "error_lock_runtime_capacity"
+			return fmt.Errorf("lock runtime claim capacity: %w", err)
+		}
+		runtimeCapacity, err := qtx.GetRuntimeClaimCapacity(ctx, claimRuntimeID)
+		if err != nil {
+			outcome = "error_get_runtime_capacity"
+			return fmt.Errorf("get runtime claim capacity: %w", err)
+		}
+		if runtimeCapacity.MaxConcurrentTasks > 0 && runtimeCapacity.ActiveTasks >= int64(runtimeCapacity.MaxConcurrentTasks) {
+			slog.Debug("task claim: runtime capacity exhausted",
+				"agent_id", util.UUIDToString(agentID),
+				"runtime_id", util.UUIDToString(claimRuntimeID),
+				"active", runtimeCapacity.ActiveTasks,
+				"max", runtimeCapacity.MaxConcurrentTasks)
+			outcome = "no_runtime_capacity"
+			return nil
+		}
+
 		t0 = time.Now()
 		running, err := qtx.CountRunningTasks(ctx, agentID)
 		countRunningMs = time.Since(t0).Milliseconds()
@@ -3868,7 +3887,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		if weight < 1 {
 			weight = 1
 		}
-		if running*weight >= int64(agent.MaxConcurrentTasks) {
+		if agent.MaxConcurrentTasks != -1 && running*weight >= int64(agent.MaxConcurrentTasks) {
 			slog.Debug("task claim: no capacity", "agent_id", util.UUIDToString(agentID), "running", running, "weight", weight, "max", agent.MaxConcurrentTasks)
 			outcome = "no_capacity"
 			return nil

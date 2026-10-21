@@ -363,6 +363,8 @@ import { parseWithFallback } from "./schema";
 import {
   AdminFileReadPolicySchema,
   AgentTaskListSchema,
+  AgentRuntimeSchema,
+  EMPTY_AGENT_RUNTIME,
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
@@ -2469,8 +2471,11 @@ export class ApiClient {
     // workspace_id alone is not enough: the server resolves the workspace from
     // the slug header first, so a caller listing another workspace's runtimes
     // must override the header too.
-    return this.fetch(`/api/runtimes?${search}`, {
+    const raw = await this.fetch<unknown>(`/api/runtimes?${search}`, {
       headers: workspaceHeader(workspaceSlug),
+    });
+    return parseWithFallback(raw, z.array(AgentRuntimeSchema), [], {
+      endpoint: "/api/runtimes",
     });
   }
 
@@ -2880,6 +2885,8 @@ export class ApiClient {
     runtimeId: string,
     patch: {
       visibility?: "private" | "public";
+      /** Runtime-wide parallel task cap; zero means unlimited. */
+      max_concurrent_tasks?: number;
       /**
        * Custom display name. Pass an empty string to clear it (the server
        * reverts to the default name). Omit to leave it unchanged — a JSON
@@ -2899,9 +2906,12 @@ export class ApiClient {
       disabled?: boolean;
     },
   ): Promise<AgentRuntime> {
-    return this.fetch(`/api/runtimes/${runtimeId}`, {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
+    });
+    return parseWithFallback(raw, AgentRuntimeSchema, EMPTY_AGENT_RUNTIME, {
+      endpoint: `/api/runtimes/${runtimeId}`,
     });
   }
 

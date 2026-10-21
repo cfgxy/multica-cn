@@ -143,6 +143,10 @@ var concurrentMigrationPrefixGroups = map[string]struct {
 			"979_credential_capability_task_index_drop_unique",
 		},
 	},
+	"980": {
+		issue: "RUYI-843",
+		stems: []string{"980_runtime_concurrency_limit"},
+	},
 }
 
 var concurrentIndexUpPattern = regexp.MustCompile(`(?is)^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b[^;]*;?\s*$`)

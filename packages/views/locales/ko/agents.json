@@ -251,6 +251,8 @@
   "pickers": {
     "concurrency_tooltip": "동시 실행 · 최대 {{value}}개 작업",
     "concurrency_range": "최대 동시 작업 수({{min}}-{{max}})",
+    "concurrency_hint": "-1을 입력하면 에이전트별 상한을 해제합니다. 런타임 상한은 계속 적용됩니다.",
+    "concurrency_unlimited": "에이전트 상한 없음",
     "session_max_context_tokens_range": "컨텍스트 상한 토큰 수({{min}}-{{max}}), 0이면 사용하지 않습니다",
     "session_compact_pct_range": "상한의 이 비율에 도달하면 새 세션을 시작합니다({{min}}-{{max}}). 전환은 50,000 토큰 미만에서는 일어나지 않으므로 실제 임계값은 {{threshold}} 토큰입니다",
     "session_context_disabled": "사용 안 함 — 크기와 무관하게 세션을 이어갑니다",
@@ -704,7 +706,8 @@
   },
   "presence": {
     "queue_badge": "+{{count}} 대기 중",
-    "running_ratio": "실행 중 {{running}}/{{capacity}}"
+    "running_ratio": "실행 중 {{running}}/{{capacity}}",
+    "running_count": "실행 중 {{count}}개"
   },
   "visibility": {
     "private": {

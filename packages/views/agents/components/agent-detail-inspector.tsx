@@ -12,6 +12,7 @@ import {
   AGENT_DESCRIPTION_MAX_LENGTH,
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
+  AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
   AGENT_SESSION_COMPACT_PCT_MAX,
   AGENT_SESSION_COMPACT_PCT_MIN,
   AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED,
@@ -811,8 +812,9 @@ function ConcurrencyField({
     const next = Number(draft);
     if (
       !Number.isInteger(next) ||
-      next < AGENT_MAX_CONCURRENT_TASKS_MIN ||
-      next > AGENT_MAX_CONCURRENT_TASKS_MAX
+      (next !== AGENT_MAX_CONCURRENT_TASKS_UNLIMITED &&
+        (next < AGENT_MAX_CONCURRENT_TASKS_MIN ||
+          next > AGENT_MAX_CONCURRENT_TASKS_MAX))
     ) {
       setDraft(String(value));
       return;
@@ -828,7 +830,7 @@ function ConcurrencyField({
         name="agent-concurrency"
         autoComplete="off"
         inputMode="numeric"
-        min={AGENT_MAX_CONCURRENT_TASKS_MIN}
+        min={AGENT_MAX_CONCURRENT_TASKS_UNLIMITED}
         max={AGENT_MAX_CONCURRENT_TASKS_MAX}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
@@ -845,10 +847,7 @@ function ConcurrencyField({
         className="font-mono tabular-nums"
       />
       <p className="mt-1 text-caption text-muted-foreground">
-        {t(($) => $.pickers.concurrency_range, {
-          min: AGENT_MAX_CONCURRENT_TASKS_MIN,
-          max: AGENT_MAX_CONCURRENT_TASKS_MAX,
-        })}
+        {t(($) => $.pickers.concurrency_hint)}
       </p>
     </div>
   );

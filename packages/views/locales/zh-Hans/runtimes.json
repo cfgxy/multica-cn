@@ -196,6 +196,12 @@
     "diagnostics_title": "诊断",
     "diagnostics_cli": "CLI",
     "diagnostics_visibility": "可见性",
+    "diagnostics_concurrency": "并行 task 上限",
+    "concurrency_unlimited": "不限",
+    "concurrency_unlimited_hint": "0 表示不限",
+    "concurrency_save": "保存并行 task 上限",
+    "concurrency_toast_updated": "运行时 task 上限已更新",
+    "concurrency_toast_failed": "更新运行时 task 上限失败",
     "visibility_label": {
       "private": "私有",
       "public": "公开"

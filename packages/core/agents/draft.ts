@@ -11,6 +11,7 @@ import {
   AGENT_DESCRIPTION_MAX_LENGTH,
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
+  AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
   AGENT_RESOURCE_WEIGHT_MAX,
   AGENT_RESOURCE_WEIGHT_MIN,
 } from "./constants";
@@ -248,8 +249,9 @@ export function buildCreateAgentRequest(options: {
     const sourceConcurrency = duplicateSource.max_concurrent_tasks;
     if (
       Number.isInteger(sourceConcurrency) &&
-      sourceConcurrency >= AGENT_MAX_CONCURRENT_TASKS_MIN &&
-      sourceConcurrency <= AGENT_MAX_CONCURRENT_TASKS_MAX
+      (sourceConcurrency === AGENT_MAX_CONCURRENT_TASKS_UNLIMITED ||
+      (sourceConcurrency >= AGENT_MAX_CONCURRENT_TASKS_MIN &&
+        sourceConcurrency <= AGENT_MAX_CONCURRENT_TASKS_MAX))
     ) {
       request.max_concurrent_tasks = sourceConcurrency;
     }

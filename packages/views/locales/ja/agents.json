@@ -243,6 +243,8 @@
   "pickers": {
     "concurrency_tooltip": "同時実行数 · 最大 {{value}} 件の同時作業",
     "concurrency_range": "最大同時作業数（{{min}}–{{max}}）",
+    "concurrency_hint": "-1 を指定するとエージェント単位の上限を解除します。ランタイム上限は適用されます。",
+    "concurrency_unlimited": "エージェント上限なし",
     "session_max_context_tokens_range": "コンテキスト上限のトークン数（{{min}}–{{max}}）。0 で無効化します",
     "session_compact_pct_range": "上限のこの割合に達したら新しいセッションを開始します（{{min}}–{{max}}）。切り替えは 50,000 トークン未満では起きないため、実際の閾値は {{threshold}} トークンです",
     "session_context_disabled": "無効 — サイズに関係なくセッションを再開します",
@@ -696,7 +698,8 @@
   },
   "presence": {
     "queue_badge": "+{{count}} 待機中",
-    "running_ratio": "実行中 {{running}}/{{capacity}}"
+    "running_ratio": "実行中 {{running}}/{{capacity}}",
+    "running_count": "実行中 {{count}} 件"
   },
   "visibility": {
     "private": {
