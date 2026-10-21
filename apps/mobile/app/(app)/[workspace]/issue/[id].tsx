@@ -195,6 +195,12 @@ export default function IssueDetail() {
       router.push(`/${wsSlug}/issue/${issue.id}/relations`);
     }
   }, [wsSlug, issue]);
+  const onOpenDecisionCards = useCallback(() => {
+    if (!wsSlug || !issue) return;
+    InteractionManager.runAfterInteractions(() =>
+      router.push(`/${wsSlug}/issue/${issue.id}/decisions`),
+    );
+  }, [wsSlug, issue]);
   // Quick property setters (RUYI-129). The header menu reuses the very
   // same formSheet picker routes the attribute chip row opens — one route
   // table (`lib/issue-picker-routes.ts`), so both entry points can never
@@ -349,6 +355,9 @@ export default function IssueDetail() {
                             {t("detail.section_relations", "Relations")}
                           </Text>
                         </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenDecisionCards}>
+                          <Text className="flex-1">{t("decisions.section_all", "Decision cards")}</Text>
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem variant="destructive" onPress={onDelete}>
                           <Text className="flex-1">{t("actions.delete_issue", "Delete issue")}</Text>
@@ -394,6 +403,8 @@ export default function IssueDetail() {
             highlightCommentId={highlight}
             highlightDecisionId={decisionParam}
             highlightNonce={h}
+            onOpenDecision={(decisionId) => router.push(`/${wsSlug}/issue/${id}/decisions/${decisionId}`)}
+            onOpenDecisionBatch={() => router.push(`/${wsSlug}/issue/${id}/decisions/batch`)}
             onCommentPublished={onCommentPublished}
           />
           <InlineCommentComposer
