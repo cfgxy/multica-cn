@@ -131,7 +131,7 @@ func findTaskCredentialGrants(ctx context.Context, tx pgx.Tx, taskID string) ([]
 		JOIN credential_connector cc ON cc.id = c.connector_id AND cc.workspace_id = c.workspace_id
 		WHERE q.id = $1 AND q.status IN ('dispatched', 'running')
 		  AND g.status = 'active' AND c.status = 'active'
-		  AND (g.expires_at IS NULL OR g.expires_at > now())
+		  AND (g.expires_at IS NULL OR g.expires_at > clock_timestamp())
 		  AND c.connector_revision = cc.revision AND cc.status = 'active'
 		  AND (COALESCE(rt.daemon_id, '') <> '')`
 	rows, err := tx.Query(ctx, query+` ORDER BY c.id, g.id FOR SHARE OF q, i, rt, g, c, cc`, taskUUID)
@@ -149,6 +149,12 @@ func findTaskCredentialGrants(ctx context.Context, tx pgx.Tx, taskID string) ([]
 			&candidate.ConnectorRev, &candidate.ConnectorStatus, &candidate.ConnectorTarget, &candidate.EncryptedValue,
 			&candidate.TaskStatus, &candidate.IssueCategory, &candidate.DaemonID); err != nil {
 			return nil, err
+		}
+		// PostgreSQL evaluates WHERE before waiting for FOR SHARE locks and
+		// does not recheck a row when the locker made no update. Recheck the
+		// deadline after the grant lock is acquired so a wait cannot extend it.
+		if candidate.ExpiresAt.Valid && !candidate.ExpiresAt.Time.After(time.Now()) {
+			continue
 		}
 		if !credentialGrantMatchesTask(candidate) {
 			continue
