@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -188,6 +190,10 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("handler database is unavailable")
 	}
+	var capturedLogs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&capturedLogs, nil)))
+	defer slog.SetDefault(previousLogger)
 	ctx := context.Background()
 	runtimeID := createClaimReclaimRuntime(t, ctx, "Credential broker runtime")
 	dbfx.Exec(t, `UPDATE agent_runtime SET daemon_id = $2 WHERE id = $1`, runtimeID, batchClaimTestDaemonID)
@@ -195,6 +201,7 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 	taskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
 	connectorID := insertCredentialConnectorForAuth(t, testWorkspaceID)
 	credentialID := uuidToString(dbid.NewV7())
+	marker := "synthetic-credential-marker-" + uuidToString(dbid.NewV7())
 	key := make([]byte, 32)
 	for index := range key {
 		key[index] = byte(index + 1)
@@ -209,7 +216,7 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatal("build storage AAD")
 	}
-	storageEnvelope, err := storage.Seal([]byte("synthetic-broker-secret"), storageAAD)
+	storageEnvelope, err := storage.Seal([]byte(marker), storageAAD)
 	if err != nil {
 		t.Fatal("seal storage fixture")
 	}
@@ -313,6 +320,36 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 	resolveBody, _ := json.Marshal(credentialResolveRequest{
 		Capability: capability.Capability, ConnectorID: connectorID, ConnectorRevision: 1,
 	})
+
+	// Hold the grant row while resolve starts before expiry, then release it
+	// only after expiry. Authorization must use wall-clock time after waiting.
+	var grantExpiry time.Time
+	if err := testPool.QueryRow(ctx, `UPDATE credential_grant SET expires_at = now() + interval '500 milliseconds' WHERE id = $1 RETURNING expires_at`, grantID).Scan(&grantExpiry); err != nil {
+		t.Fatal("set short grant expiry")
+	}
+	grantLock, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal("begin grant-expiry lock")
+	}
+	if err := grantLock.QueryRow(ctx, `SELECT id FROM credential_grant WHERE id = $1 FOR UPDATE`, grantID).Scan(new(string)); err != nil {
+		_ = grantLock.Rollback(ctx)
+		t.Fatal("lock grant for expiry race")
+	}
+	expiryResolve := make(chan int, 1)
+	go func() {
+		code, _, _ := h.DaemonRPCHandler(ctx, identity, "credentials.resolve", resolveBody)
+		expiryResolve <- code
+	}()
+	waitForCredentialResolveLock(t, ctx)
+	time.Sleep(time.Until(grantExpiry) + 25*time.Millisecond)
+	if err := grantLock.Commit(ctx); err != nil {
+		t.Fatal("release grant-expiry lock")
+	}
+	if code := <-expiryResolve; code != http.StatusForbidden {
+		t.Fatalf("resolve waiting across grant expiry returned %d, want 403", code)
+	}
+	dbfx.Exec(t, `UPDATE credential_grant SET expires_at = NULL WHERE id = $1`, grantID)
+
 	if code, _, resolveErr := h.DaemonRPCHandler(ctx,
 		daemonws.ClientIdentity{DaemonID: "other-daemon"}, "credentials.resolve", resolveBody); code != http.StatusForbidden {
 		t.Fatalf("wrong daemon resolve status=%d err=%v", code, resolveErr)
@@ -329,6 +366,59 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 		t.Fatalf("wrong task issue binding status=%d err=%v", code, resolveErr)
 	}
 	dbfx.Exec(t, `UPDATE agent_task_queue SET issue_id = $2 WHERE id = $1`, taskID, issueID)
+
+	// Resolve must reject after the issue reaches a terminal state, before
+	// releasing the sealed value.
+	var originalIssueStatus string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&originalIssueStatus); err != nil {
+		t.Fatal("read issue status before terminal resolve check")
+	}
+	issueLock, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal("begin terminal issue lock")
+	}
+	if err := issueLock.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1 FOR UPDATE`, issueID).Scan(&originalIssueStatus); err != nil {
+		_ = issueLock.Rollback(ctx)
+		t.Fatal("lock issue for terminal resolve race")
+	}
+	terminalResolve := make(chan struct {
+		code     int
+		response json.RawMessage
+		err      error
+	}, 1)
+	go func() {
+		code, response, resolveErr := h.DaemonRPCHandler(ctx, identity, "credentials.resolve", resolveBody)
+		terminalResolve <- struct {
+			code     int
+			response json.RawMessage
+			err      error
+		}{code, response, resolveErr}
+	}()
+	waitForCredentialResolveLock(t, ctx)
+	if _, err := issueLock.Exec(ctx, `UPDATE issue SET status = 'done' WHERE id = $1`, issueID); err != nil {
+		_ = issueLock.Rollback(ctx)
+		t.Fatal("mark issue terminal during resolve")
+	}
+	if err := issueLock.Commit(ctx); err != nil {
+		t.Fatal("commit terminal issue transition")
+	}
+	terminalResult := <-terminalResolve
+	if terminalResult.code != http.StatusForbidden || bytes.Contains(terminalResult.response, []byte(marker)) {
+		t.Fatalf("terminal issue race status=%d err=%v markerVisible=%t, want denial without value", terminalResult.code, terminalResult.err, bytes.Contains(terminalResult.response, []byte(marker)))
+	}
+	dbfx.Exec(t, `UPDATE issue SET status = $2 WHERE id = $1`, issueID, originalIssueStatus)
+
+	// A capability minted against an active connector must not survive either
+	// deactivation or a revision change in the database.
+	dbfx.Exec(t, `UPDATE credential_connector SET status = 'disabled' WHERE id = $1`, connectorID)
+	if code, _, resolveErr := h.DaemonRPCHandler(ctx, identity, "credentials.resolve", resolveBody); code != http.StatusForbidden {
+		t.Fatalf("disabled connector resolve status=%d err=%v, want denial", code, resolveErr)
+	}
+	dbfx.Exec(t, `UPDATE credential_connector SET status = 'active', revision = revision + 1 WHERE id = $1`, connectorID)
+	if code, _, resolveErr := h.DaemonRPCHandler(ctx, identity, "credentials.resolve", resolveBody); code != http.StatusForbidden {
+		t.Fatalf("changed connector revision resolve status=%d err=%v, want denial", code, resolveErr)
+	}
+	dbfx.Exec(t, `UPDATE credential_connector SET revision = 1 WHERE id = $1`, connectorID)
 	secondResolveBody, _ := json.Marshal(credentialResolveRequest{
 		Capability: secondCapability.Capability, ConnectorID: secondConnectorID, ConnectorRevision: 1,
 	})
@@ -408,10 +498,17 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 		t.Fatal("build execution AAD")
 	}
 	plaintext, err := credentialcrypto.OpenForSession(sessionKey, envelope.Envelope, executionAAD)
-	if err != nil || string(plaintext) != "synthetic-broker-secret" {
-		t.Fatalf("open execution envelope = %q, %v", plaintext, err)
+	if err != nil || string(plaintext) != marker {
+		t.Fatalf("open execution envelope failed or returned unexpected synthetic value (err=%v)", err)
 	}
 	zeroCredentialBytes(plaintext)
+	var persistedAudit []byte
+	if err := testPool.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(to_jsonb(a)), '[]'::jsonb) FROM credential_audit a WHERE task_id = $1`, taskID).Scan(&persistedAudit); err != nil {
+		t.Fatal("read persisted credential audit rows")
+	}
+	if bytes.Contains(persistedAudit, []byte(marker)) {
+		t.Fatal("synthetic credential marker was persisted in credential audit")
+	}
 	if code, _, resolveErr := h.DaemonRPCHandler(ctx, identity, "credentials.resolve", resolveBody); code != http.StatusForbidden {
 		t.Fatalf("replay resolve status=%d err=%v", code, resolveErr)
 	}
@@ -466,4 +563,28 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 	if (resolveStatus == http.StatusOK) != consumed {
 		t.Fatalf("revocation-race status=%d consumed=%t: expected success and consumption to linearize together", resolveStatus, consumed)
 	}
+	if bytes.Contains(capturedLogs.Bytes(), []byte(marker)) {
+		t.Fatal("synthetic credential marker appeared in service logs")
+	}
+}
+
+func waitForCredentialResolveLock(t *testing.T, ctx context.Context) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting bool
+		if err := testPool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE pid <> pg_backend_pid() AND wait_event_type = 'Lock'
+				  AND query LIKE '%credential_grant%'
+			)`).Scan(&waiting); err != nil {
+			t.Fatal("observe credential resolve lock wait")
+		}
+		if waiting {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("credential resolve did not block on the locked grant row")
 }
