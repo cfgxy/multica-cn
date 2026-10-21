@@ -816,18 +816,20 @@ type CredentialAudit struct {
 }
 
 type CredentialCapability struct {
-	ID               pgtype.UUID        `json:"id"`
-	CapabilityHash   []byte             `json:"capability_hash"`
-	DaemonID         string             `json:"daemon_id"`
-	TaskID           pgtype.UUID        `json:"task_id"`
-	AgentID          pgtype.UUID        `json:"agent_id"`
-	IssueID          pgtype.UUID        `json:"issue_id"`
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
-	SessionPublicKey []byte             `json:"session_public_key"`
-	Nonce            []byte             `json:"nonce"`
-	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
-	ConsumedAt       pgtype.Timestamptz `json:"consumed_at"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ID                pgtype.UUID        `json:"id"`
+	CapabilityHash    []byte             `json:"capability_hash"`
+	DaemonID          string             `json:"daemon_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ConnectorID       pgtype.UUID        `json:"connector_id"`
+	ConnectorRevision int64              `json:"connector_revision"`
+	SessionPublicKey  []byte             `json:"session_public_key"`
+	Nonce             []byte             `json:"nonce"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	ConsumedAt        pgtype.Timestamptz `json:"consumed_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
 type CredentialConnector struct {

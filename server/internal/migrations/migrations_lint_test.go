@@ -61,6 +61,7 @@ var concurrentMigrationPrefixGroups = map[string]struct {
 	issue             string
 	stems             []string
 	concurrentIndexes []string
+	supportingStems   []string
 }{
 	"973": {
 		issue: "RUYI-788",
@@ -104,6 +105,42 @@ var concurrentMigrationPrefixGroups = map[string]struct {
 			"977_mcp_file_access_operation_invocation_index",
 			"977_mcp_pre_auth_rejection_expiry_index",
 			"977_mcp_pre_auth_rejection_invocation_index",
+		},
+	},
+	"979": {
+		issue: "RUYI-837",
+		stems: []string{
+			"979_credential_000_vault",
+			"979_credential_connector_workspace_index",
+			"979_credential_connector_binding_index",
+			"979_credential_vault_id_index",
+			"979_credential_vault_workspace_created_index",
+			"979_credential_grant_id_index",
+			"979_credential_grant_lookup_index",
+			"979_credential_grant_credential_index",
+			"979_credential_capability_hash_index",
+			"979_credential_capability_task_index",
+			"979_credential_capability_task_index_drop_unique",
+			"979_credential_capability_task_index_nonunique",
+			"979_credential_audit_id_index",
+			"979_credential_audit_workspace_created_index",
+		},
+		concurrentIndexes: []string{
+			"979_credential_connector_workspace_index",
+			"979_credential_connector_binding_index",
+			"979_credential_vault_id_index",
+			"979_credential_vault_workspace_created_index",
+			"979_credential_grant_id_index",
+			"979_credential_grant_lookup_index",
+			"979_credential_grant_credential_index",
+			"979_credential_capability_hash_index",
+			"979_credential_capability_task_index",
+			"979_credential_capability_task_index_nonunique",
+			"979_credential_audit_id_index",
+			"979_credential_audit_workspace_created_index",
+		},
+		supportingStems: []string{
+			"979_credential_capability_task_index_drop_unique",
 		},
 	},
 }
@@ -199,11 +236,12 @@ func TestConcurrentMigrationPrefixGroupsUseSingleStatementIndexes(t *testing.T) 
 		registeredStems := append([]string(nil), group.concurrentIndexes...)
 		baseStems := make([]string, 0, 1)
 		for _, stem := range group.stems {
-			if !containsMigrationStem(group.concurrentIndexes, stem) {
+			if !containsMigrationStem(group.concurrentIndexes, stem) && !containsMigrationStem(group.supportingStems, stem) {
 				baseStems = append(baseStems, stem)
 			}
 		}
 		registeredStems = append(registeredStems, baseStems...)
+		registeredStems = append(registeredStems, group.supportingStems...)
 		if len(baseStems) != 1 || !matchesRegisteredMigrationPrefixGroup(prefix, registeredStems, concurrentMigrationPrefixGroups) {
 			t.Errorf("approved migration prefix %s must register exactly one base migration and all its concurrent index stems", prefix)
 		}
@@ -247,6 +285,7 @@ func matchesRegisteredMigrationPrefixGroup(prefix string, stems []string, groups
 	issue             string
 	stems             []string
 	concurrentIndexes []string
+	supportingStems   []string
 }) bool {
 	group, ok := groups[prefix]
 	if !ok {
