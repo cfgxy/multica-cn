@@ -157,7 +157,7 @@ func TestAgentCopySameRuntimeCopiesPortableFields(t *testing.T) {
 }
 
 func TestAgentCopyOmitsInvalidHistoricalConcurrency(t *testing.T) {
-	for _, value := range []any{0, -1, 51} {
+	for _, value := range []any{0, -2, 51} {
 		t.Run(fmt.Sprint(value), func(t *testing.T) {
 			source := fullSourceAgent()
 			source["max_concurrent_tasks"] = value
@@ -175,6 +175,24 @@ func TestAgentCopyOmitsInvalidHistoricalConcurrency(t *testing.T) {
 				t.Errorf("invalid historical max_concurrent_tasks must be omitted, got %v", gotBody["max_concurrent_tasks"])
 			}
 		})
+	}
+}
+
+func TestAgentCopyPreservesUnlimitedConcurrency(t *testing.T) {
+	source := fullSourceAgent()
+	source["max_concurrent_tasks"] = float64(-1)
+
+	var gotBody map[string]any
+	srv := copyMockServer(t, source, &gotBody)
+	defer srv.Close()
+	setCopyTestEnv(t, srv.URL)
+
+	cmd := newAgentCopyTestCmd()
+	if err := runAgentCopy(cmd, []string{"agent-src"}); err != nil {
+		t.Fatalf("runAgentCopy: %v", err)
+	}
+	if gotBody["max_concurrent_tasks"] != float64(-1) {
+		t.Errorf("max_concurrent_tasks = %v, want -1", gotBody["max_concurrent_tasks"])
 	}
 }
 
