@@ -4,6 +4,7 @@ import type {
   AgentBuilderSession,
   AgentBuilderSessionSummary,
   AgentEnvResponse,
+  AgentRuntime,
   Attachment,
   AutopilotRun,
   BillingBalance,
@@ -160,6 +161,54 @@ export const AuditEventSchema = z.object({
   sensitive: z.boolean().default(false),
   details: z.record(z.string(), z.unknown()).default({}),
 }).loose();
+
+export const AgentRuntimeSchema = z.object({
+  id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  daemon_id: z.string().nullable().default(null),
+  name: z.string().default(""),
+  custom_name: z.string().nullable().optional(),
+  runtime_mode: z.string().default("local"),
+  provider: z.string().default(""),
+  launch_header: z.string().default(""),
+  status: z.string().default("offline"),
+  device_info: z.string().default(""),
+  metadata: z.record(z.string(), z.unknown()).default({}),
+  owner_id: z.string().nullable().default(null),
+  visibility: z.enum(["private", "public"]).catch("private"),
+  max_concurrent_tasks: z.number().int().nonnegative().catch(0).default(0),
+  profile_id: z.string().nullable().optional(),
+  registration_source: z.string().optional(),
+  credential_status: z.string().optional(),
+  protocol_family: z.string().optional(),
+  capabilities: z.object({
+    text: z.boolean(),
+    realtime_voice: z.boolean(),
+    tools: z.boolean(),
+  }).optional(),
+  last_seen_at: z.string().nullable().default(null),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose();
+
+export const EMPTY_AGENT_RUNTIME: AgentRuntime = {
+  id: "",
+  workspace_id: "",
+  daemon_id: null,
+  name: "",
+  runtime_mode: "local",
+  provider: "",
+  launch_header: "",
+  status: "offline",
+  device_info: "",
+  metadata: {},
+  owner_id: null,
+  visibility: "private",
+  max_concurrent_tasks: 0,
+  last_seen_at: null,
+  created_at: "",
+  updated_at: "",
+};
 
 export const AuditEventsPageSchema = z.object({
   events: z.array(AuditEventSchema).default([]),

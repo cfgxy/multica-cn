@@ -196,6 +196,12 @@
     "diagnostics_title": "診断",
     "diagnostics_cli": "CLI",
     "diagnostics_visibility": "公開範囲",
+    "diagnostics_concurrency": "並行 task 上限",
+    "concurrency_unlimited": "上限なし",
+    "concurrency_unlimited_hint": "0 は上限なし",
+    "concurrency_save": "並行 task 上限を保存",
+    "concurrency_toast_updated": "ランタイムの task 上限を更新しました",
+    "concurrency_toast_failed": "ランタイムの task 上限を更新できませんでした",
     "visibility_label": {
       "private": "非公開",
       "public": "公開"

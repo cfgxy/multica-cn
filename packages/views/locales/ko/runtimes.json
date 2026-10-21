@@ -196,6 +196,12 @@
     "diagnostics_title": "진단",
     "diagnostics_cli": "CLI",
     "diagnostics_visibility": "공개 범위",
+    "diagnostics_concurrency": "병렬 task 상한",
+    "concurrency_unlimited": "상한 없음",
+    "concurrency_unlimited_hint": "0은 상한 없음",
+    "concurrency_save": "병렬 task 상한 저장",
+    "concurrency_toast_updated": "런타임 task 상한을 업데이트했습니다",
+    "concurrency_toast_failed": "런타임 task 상한을 업데이트하지 못했습니다",
     "visibility_label": {
       "private": "비공개",
       "public": "공개"
