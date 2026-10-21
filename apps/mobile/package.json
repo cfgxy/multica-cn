@@ -76,6 +76,7 @@
     "marked": "^18.0.3",
     "mermaid": "catalog:",
     "nativewind": "^4.1.23",
+    "pdfjs-dist": "6.4.299",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-i18next": "catalog:",

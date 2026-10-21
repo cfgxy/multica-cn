@@ -43,6 +43,10 @@ import {
   useWorkspaceSlug,
 } from "@multica/core/paths";
 import { useConfigStore } from "@multica/core/config";
+import {
+  selectMarkdownRenderer,
+  type MarkdownRenderer,
+} from "@multica/core/markdown";
 import type { IssueReference } from "@multica/core/markdown";
 import type { Attachment } from "@multica/core/types";
 import {
@@ -639,13 +643,20 @@ export interface RichContentProps {
   className?: string;
 }
 
-export const RichContent = memo(function RichContent({
+export const RichContent = memo(function RichContent(props: RichContentProps) {
+  const featureFlags = useConfigStore((s) => s.featureFlags);
+  const renderer = selectMarkdownRenderer(featureFlags);
+  return <RichContentAdapter {...props} renderer={renderer} />;
+});
+
+function RichContentAdapter({
   content,
   attachments,
   density = "document",
   phase = "settled",
   className,
-}: RichContentProps) {
+  renderer,
+}: RichContentProps & { renderer: MarkdownRenderer }) {
   // Subscribed, not read once. The CDN config is fetched asynchronously after
   // auth, so content that renders first would otherwise keep its legacy CDN
   // links as plain anchors permanently — the preprocess step that turns them
@@ -710,9 +721,11 @@ export const RichContent = memo(function RichContent({
         data-rich-content=""
         data-density={density}
         data-phase={phase}
+        data-reader-version={renderer}
         className={cn(
           "rich-text-editor readonly text-body",
           density === "compact" && "rich-content-compact",
+          renderer === "modern" && "markdown-reader-v2",
           className,
         )}
       >
@@ -722,4 +735,4 @@ export const RichContent = memo(function RichContent({
       </div>
     </AttachmentDownloadProvider>
   );
-});
+}
