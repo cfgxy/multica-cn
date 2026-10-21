@@ -105,6 +105,23 @@ describe("DecisionCard", () => {
     expect(screen.getByTestId("decision-auth-project-result")).toHaveTextContent("project-1 · updated · v4");
   });
 
+  it("shows the one created issue and its in-progress state", () => {
+    renderCard(card({
+      decision_kind: "authorization",
+      action_type: "single_issue_create",
+      status: "answered",
+      auth_state: "executed",
+      executed_at: "2026-10-21T12:00:00Z",
+      execution_result: {
+        target_issue_id: "issue-12",
+        target_identifier: "RUYI-12",
+        target_issue_status: "in_progress",
+      },
+    }));
+
+    expect(screen.getByTestId("decision-auth-created-issue")).toHaveTextContent("Created RUYI-12 · in_progress");
+  });
+
   it("labels an unknown side effect as requiring verification without exposing an error", () => {
     renderCard(card({
       decision_kind: "authorization",

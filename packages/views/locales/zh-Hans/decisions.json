@@ -61,6 +61,8 @@
     "action_workspace_info_read": "读取工作区信息",
     "action_prompt_restore": "恢复提示词",
     "action_project_prompt_sync": "同步项目提示词",
+    "action_single_issue_create": "创建单一事项",
+    "issue_created": "目标 Issue {{identifier}} · {{status}}",
     "review_prompt_content": "查看待授权提示词",
     "hide_prompt_content": "收起待授权提示词",
     "risk_read": "只读",

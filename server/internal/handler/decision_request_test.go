@@ -23,6 +23,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -690,6 +691,144 @@ func TestDecisionRequestCrossSpaceTwoStep(t *testing.T) {
 			t.Fatalf("origin_issue_id = %v, want the title-level reference", resp.Request.OriginIssueID)
 		}
 	})
+}
+
+func TestDecisionRequestSingleIssueCreateAndDoneReceipt(t *testing.T) {
+	f := newDecisionFixture(t)
+	ws2 := secondWorkspaceWithOwner(t)
+	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+		"action_type":         DecisionActionSingleIssueCreate,
+		"title":               "One exact target-space task",
+		"origin_issue_id":     f.IssueID,
+		"target_workspace_id": ws2,
+		"params": map[string]any{
+			"title":       "Fix the specified callback",
+			"description": "Make callback delivery idempotent for this request.",
+		},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create request: %d %s", w.Code, w.Body.String())
+	}
+	request := decodeDecisionRequestDetail(t, w)
+	var originID, targetID string
+	for _, step := range request.Steps {
+		if step.Role == decisionReqRoleOrigin {
+			originID = step.ID
+		} else {
+			targetID = step.ID
+		}
+	}
+	if originID == "" || targetID == "" {
+		t.Fatalf("missing source/target approval rows: %+v", request.Steps)
+	}
+	if request.Card == nil {
+		t.Fatal("source issue authorization card missing")
+	}
+	cardAnswer := httptest.NewRecorder()
+	cardRequest := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+request.Card.ID+"/answer", map[string]any{
+		"selected_indices": []int{0},
+	})
+	cardRequest = withURLParams(cardRequest, "id", f.IssueID, "decisionId", request.Card.ID)
+	testHandler.AnswerIssueDecision(cardAnswer, cardRequest)
+	if cardAnswer.Code != http.StatusOK {
+		t.Fatalf("source card approval: %d %s", cardAnswer.Code, cardAnswer.Body.String())
+	}
+	if w := answerDecisionRequestFor(t, ws2, targetID, "", "approve"); w.Code != http.StatusOK {
+		t.Fatalf("target approval: %d %s", w.Code, w.Body.String())
+	}
+	_, detail := getDecisionRequestFor(t, ws2, targetID)
+	var created struct {
+		TargetIssueID     string `json:"target_issue_id"`
+		TargetIssueStatus string `json:"target_issue_status"`
+	}
+	if err := json.Unmarshal(detail.Request.ExecutionResult, &created); err != nil {
+		t.Fatalf("decode issue creation receipt: %v (%s)", err, detail.Request.ExecutionResult)
+	}
+	if created.TargetIssueID == "" || created.TargetIssueStatus != "in_progress" {
+		t.Fatalf("creation receipt = %+v", created)
+	}
+	// Re-entering the same approved request group must observe its durable
+	// executed state and keep the original target issue as the sole result.
+	testHandler.advanceDecisionRequestAfterAnswer(newRequest(http.MethodPost, "/", nil), parseUUID(request.Request.RequestGroupID), testUserID)
+	_, detail = getDecisionRequestFor(t, ws2, targetID)
+	var retried struct {
+		TargetIssueID string `json:"target_issue_id"`
+	}
+	if err := json.Unmarshal(detail.Request.ExecutionResult, &retried); err != nil {
+		t.Fatalf("decode retried issue creation receipt: %v (%s)", err, detail.Request.ExecutionResult)
+	}
+	if retried.TargetIssueID != created.TargetIssueID {
+		t.Fatalf("request re-entry changed target issue from %q to %q", created.TargetIssueID, retried.TargetIssueID)
+	}
+	issue, err := testHandler.Queries.GetIssueInWorkspace(t.Context(), db.GetIssueInWorkspaceParams{
+		ID: parseUUID(created.TargetIssueID), WorkspaceID: parseUUID(ws2),
+	})
+	if err != nil || issue.Status != "in_progress" || issue.Title != "Fix the specified callback" {
+		t.Fatalf("created issue = %s / %q, err=%v", issue.Status, issue.Title, err)
+	}
+
+	update := newRequest(http.MethodPut, "/api/issues/"+created.TargetIssueID, map[string]any{"status": "done"})
+	update = withURLParam(update, "id", created.TargetIssueID)
+	update.Header.Set("X-Workspace-ID", ws2)
+	update.Header.Set("X-User-ID", testUserID)
+	updated := httptest.NewRecorder()
+	testHandler.UpdateIssue(updated, update)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("mark target issue Done: %d %s", updated.Code, updated.Body.String())
+	}
+	_, detail = getDecisionRequestFor(t, testWorkspaceID, originID)
+	var completed struct {
+		DoneReceipt struct {
+			Status string `json:"status"`
+		} `json:"done_receipt"`
+	}
+	if err := json.Unmarshal(detail.Request.ExecutionResult, &completed); err != nil {
+		t.Fatalf("decode Done receipt: %v (%s)", err, detail.Request.ExecutionResult)
+	}
+	if completed.DoneReceipt.Status != "done" {
+		t.Fatalf("Done receipt = %+v, want done", completed.DoneReceipt)
+	}
+	cardsRequest := withURLParam(newRequest(http.MethodGet, "/api/issues/"+f.IssueID+"/decisions", nil), "id", f.IssueID)
+	cardsResponse := httptest.NewRecorder()
+	testHandler.ListIssueDecisions(cardsResponse, cardsRequest)
+	if cardsResponse.Code != http.StatusOK {
+		t.Fatalf("list completed source authorization cards: %d %s", cardsResponse.Code, cardsResponse.Body.String())
+	}
+	var cards []IssueDecisionResponse
+	if err := json.Unmarshal(cardsResponse.Body.Bytes(), &cards); err != nil {
+		t.Fatalf("decode completed source authorization cards: %v", err)
+	}
+	var card *IssueDecisionResponse
+	for i := range cards {
+		if cards[i].ID == request.Card.ID {
+			card = &cards[i]
+			break
+		}
+	}
+	if card == nil || len(card.ExecutionResult) == 0 {
+		t.Fatalf("completed authorization card response omitted execution receipt: %+v", card)
+	}
+	var cardResult struct {
+		DoneReceipt struct {
+			Status string `json:"status"`
+		} `json:"done_receipt"`
+	}
+	if err := json.Unmarshal(card.ExecutionResult, &cardResult); err != nil {
+		t.Fatalf("decode authorization card Done receipt: %v (%s)", err, card.ExecutionResult)
+	}
+	if cardResult.DoneReceipt.Status != "done" {
+		t.Fatalf("authorization card Done receipt = %+v, want done", cardResult.DoneReceipt)
+	}
+	var callbacks int
+	dbfx.QueryRow(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND content LIKE '%授权事项已完成%'`, f.IssueID).Scan(&callbacks)
+	if callbacks != 1 {
+		t.Fatalf("source Done callback count = %d, want 1", callbacks)
+	}
+	testHandler.completeSingleIssueDecisionRequest(update.Context(), issue)
+	dbfx.QueryRow(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND content LIKE '%授权事项已完成%'`, f.IssueID).Scan(&callbacks)
+	if callbacks != 1 {
+		t.Fatalf("duplicate Done callback count = %d, want 1", callbacks)
+	}
 }
 
 // ── 文字回复不构成授权 + 批量不含授权卡 ─────────────────────────────────────

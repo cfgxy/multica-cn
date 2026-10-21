@@ -82,6 +82,9 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
   const sideEffectStatus = decision.execution_result && typeof decision.execution_result === "object"
     ? (decision.execution_result as { side_effect_status?: unknown }).side_effect_status
     : null;
+  const createdIssue = decision.action_type === "single_issue_create" && decision.execution_result && typeof decision.execution_result === "object"
+    ? decision.execution_result as { target_identifier?: unknown; target_issue_status?: unknown }
+    : null;
 
   return (
     <Card className="mx-2 border-brand/40 p-3" data-testid="decision-card" data-decision-kind="authorization" data-status={decision.status}>
@@ -112,6 +115,11 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
           {decision.action_type === "project_prompt_sync" && (
             <p className="mt-1 text-caption text-muted-foreground">
               {t(($) => $.decisions.auth_action_project_prompt_sync)}
+            </p>
+          )}
+          {decision.action_type === "single_issue_create" && (
+            <p className="mt-1 text-caption text-muted-foreground">
+              {t(($) => $.decisions.auth_action_single_issue_create)}
             </p>
           )}
           <p className="mt-0.5 text-caption text-muted-foreground">
@@ -167,6 +175,14 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
           {String(result.project_id)} · {String(result.status)} · v{String(result.version)}
         </p>
       ))}
+      {typeof createdIssue?.target_identifier === "string" && (
+        <p className="mt-1 break-all text-caption text-muted-foreground" data-testid="decision-auth-created-issue">
+          {t(($) => $.decisions.auth_issue_created, {
+            identifier: createdIssue.target_identifier,
+            status: typeof createdIssue.target_issue_status === "string" ? createdIssue.target_issue_status : "in_progress",
+          })}
+        </p>
+      )}
     </Card>
   );
 }

@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -32,9 +34,42 @@ func decisionRequestKind(actionType string) (string, bool) {
 	switch actionType {
 	case DecisionActionWorkspaceInfoRead, DecisionActionPromptRestore, DecisionActionProjectPromptSync:
 		return "cli", true
+	case DecisionActionSingleIssueCreate:
+		return "single_issue", true
 	default:
 		return "", false
 	}
+}
+
+type decisionSingleIssueCreateParams struct {
+	Title       string `json:"title"`
+	Description string `json:"description"`
+}
+
+func normalizeSingleIssueCreateParams(raw json.RawMessage) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return nil, errors.New("single_issue_create parameters must be an object")
+	}
+	delete(fields, "authorization_spec")
+	canonical, err := json.Marshal(fields)
+	if err != nil {
+		return nil, errors.New("single_issue_create parameters are invalid")
+	}
+	var params decisionSingleIssueCreateParams
+	decoder := json.NewDecoder(bytes.NewReader(canonical))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&params); err != nil {
+		return nil, errors.New("single_issue_create requires only a title and description")
+	}
+	if strings.TrimSpace(params.Title) == "" || len([]rune(params.Title)) > 160 {
+		return nil, errors.New("single_issue_create title must be 1-160 characters")
+	}
+	if strings.TrimSpace(params.Description) == "" || len([]rune(params.Description)) > 20000 {
+		return nil, errors.New("single_issue_create description must be 1-20000 characters")
+	}
+	params.Title = strings.TrimSpace(params.Title)
+	return json.Marshal(params)
 }
 
 func buildDecisionRequestActionParams(actionType string, params []byte, sourceWorkspaceID, targetWorkspaceID, issueID, taskID string, expiresAt time.Time, publicSummary string) ([]byte, error) {

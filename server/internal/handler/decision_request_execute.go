@@ -13,6 +13,7 @@ package handler
 // the 926 audit log as agent.decision_* events.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -263,6 +265,9 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 		slog.Warn("decision request advance commit failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
 		return
 	}
+	if execErr == nil && landing.ActionType == DecisionActionSingleIssueCreate {
+		h.publishSingleIssueCreated(r, landing, resultJSON)
+	}
 
 	var errPtr *string
 	if execErr != nil {
@@ -274,6 +279,30 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 		return
 	}
 	h.publishGroupUpdate(r, groupID)
+}
+
+func (h *Handler) publishSingleIssueCreated(r *http.Request, approval db.DecisionRequest, result []byte) {
+	var receipt struct {
+		TargetIssueID string `json:"target_issue_id"`
+	}
+	if json.Unmarshal(result, &receipt) != nil || receipt.TargetIssueID == "" {
+		return
+	}
+	issueID, err := util.ParseUUID(receipt.TargetIssueID)
+	if err != nil {
+		return
+	}
+	issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+		ID: issueID, WorkspaceID: approval.WorkspaceID,
+	})
+	if err != nil {
+		slog.Warn("decision request created issue missing after commit", "request_group_id", uuidToString(approval.RequestGroupID), "error", err)
+		return
+	}
+	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
+	resp := issueToResponse(issue, prefix)
+	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
+	h.publish(protocol.EventIssueCreated, uuidToString(issue.WorkspaceID), "member", uuidToString(approval.AnsweredByID), map[string]any{"issue": resp})
 }
 
 func decisionRequestSafeErrorCode(actionType string) string {
@@ -430,6 +459,81 @@ func (h *Handler) postDecisionRequestCallback(r *http.Request, origin db.Decisio
 	}
 }
 
+func (h *Handler) completeSingleIssueDecisionRequest(ctx context.Context, issue db.Issue) {
+	if issuestatus.Effective(ctx, h.Queries, issue.WorkspaceID, issue.Status) != "done" {
+		return
+	}
+	rows, err := h.Queries.ClaimDecisionRequestIssueDoneReceipt(ctx, uuidToString(issue.ID))
+	if err != nil {
+		slog.Warn("decision request Done receipt claim failed", "issue_id", uuidToString(issue.ID), "error", err)
+		return
+	}
+	for _, origin := range rows {
+		h.postSingleIssueDoneCallback(ctx, origin)
+		h.publishGroupUpdateContext(ctx, origin.RequestGroupID)
+		h.publishSingleIssueDoneCard(ctx, origin)
+	}
+}
+
+func (h *Handler) publishSingleIssueDoneCard(ctx context.Context, origin db.ClaimDecisionRequestIssueDoneReceiptRow) {
+	card, err := h.Queries.GetAuthorizationCardForGroup(ctx, db.GetAuthorizationCardForGroupParams{
+		RequestGroupID: origin.RequestGroupID,
+		WorkspaceID:    origin.OriginWorkspaceID,
+	})
+	if err != nil {
+		return
+	}
+	issue, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID: card.IssueID, WorkspaceID: card.WorkspaceID,
+	})
+	if err != nil {
+		return
+	}
+	h.publish(protocol.EventDecisionUpdated, uuidToString(card.WorkspaceID), "system", "", map[string]any{
+		"decision": decisionToResponse(card), "issue_id": uuidToString(issue.ID), "issue_title": issue.Title,
+	})
+}
+
+func (h *Handler) postSingleIssueDoneCallback(ctx context.Context, origin db.ClaimDecisionRequestIssueDoneReceiptRow) {
+	if !origin.OriginIssueID.Valid {
+		return
+	}
+	source, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID: origin.OriginIssueID, WorkspaceID: origin.OriginWorkspaceID,
+	})
+	if err != nil {
+		slog.Warn("decision request Done callback source issue missing", "request_group_id", uuidToString(origin.RequestGroupID), "error", err)
+		return
+	}
+	agent, _ := h.Queries.GetAgent(ctx, origin.OriginAgentID)
+	mention := ""
+	ownerID := ""
+	if agent.ID.Valid {
+		mention = fmt.Sprintf("[@%s](mention://agent/%s) ", agent.Name, uuidToString(origin.OriginAgentID))
+		ownerID = uuidToString(agent.OwnerID)
+	}
+	content := fmt.Sprintf("%s授权事项已完成 [%s]（decision_request:%s，状态=done）", mention,
+		origin.Title, uuidToString(origin.RequestGroupID))
+	created, err := h.Queries.CreateComment(ctx, db.CreateCommentParams{
+		ID: dbid.NewV7(), IssueID: source.ID, WorkspaceID: source.WorkspaceID,
+		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content,
+		Type: "system", ParentID: pgtype.UUID{},
+	})
+	if err != nil {
+		slog.Warn("decision request Done callback comment failed", "request_group_id", uuidToString(origin.RequestGroupID), "error", err)
+		return
+	}
+	comment := created.Comment()
+	h.publish(protocol.EventCommentCreated, uuidToString(source.WorkspaceID), "system", "", map[string]any{
+		"comment": commentToResponse(comment, nil, nil), "issue_title": source.Title,
+		"issue_assignee_type": textToPtr(source.AssigneeType), "issue_assignee_id": uuidToPtr(source.AssigneeID),
+		"issue_status": source.Status, "issue_revision": created.IssueRevision,
+	})
+	if ownerID != "" {
+		h.triggerTasksForComment(ctx, source, comment, nil, "member", ownerID, ownerID, nil)
+	}
+}
+
 // buildDecisionRequestCallbackContent renders the structured terminal-state
 // card the requesting run reads: machine-parseable head line + human
 // summary lines. The answer never arrives as free text.
@@ -534,9 +638,52 @@ func (h *Handler) executeDecisionRequestAction(r *http.Request, qtx *db.Queries,
 		return h.executePromptRestore(r, qtx, row)
 	case DecisionActionProjectPromptSync:
 		return h.executeProjectPromptSync(r, qtx, row)
+	case DecisionActionSingleIssueCreate:
+		return h.executeSingleIssueCreate(r, qtx, row)
 	default:
 		return nil, fmt.Errorf("action %q is not in the whitelist registry", row.ActionType)
 	}
+}
+
+func (h *Handler) executeSingleIssueCreate(r *http.Request, qtx *db.Queries, row db.DecisionRequest) ([]byte, error) {
+	raw, err := normalizeSingleIssueCreateParams(row.ActionParams)
+	if err != nil {
+		return nil, err
+	}
+	var params decisionSingleIssueCreateParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, errors.New("single_issue_create parameters are invalid")
+	}
+	if !row.AnsweredByID.Valid {
+		return nil, errors.New("target Owner approval actor is missing")
+	}
+	policy := service.ResolveIssueCountPolicy(r.Context(), h.Entitlements, row.WorkspaceID)
+	number, err := service.AllocateIssueNumber(r.Context(), qtx, row.WorkspaceID, policy)
+	if err != nil {
+		return nil, fmt.Errorf("allocate target issue number: %w", err)
+	}
+	created, err := qtx.CreateIssue(r.Context(), db.CreateIssueParams{
+		ID:          dbid.NewV7(),
+		WorkspaceID: row.WorkspaceID,
+		Title:       params.Title,
+		Description: pgtype.Text{String: params.Description, Valid: true},
+		Status:      "in_progress",
+		Priority:    "none",
+		CreatorType: "member",
+		CreatorID:   row.AnsweredByID,
+		Position:    0,
+		Number:      number,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create target issue: %w", err)
+	}
+	prefix := h.getIssuePrefix(r.Context(), created.WorkspaceID)
+	return json.Marshal(map[string]any{
+		"action":              DecisionActionSingleIssueCreate,
+		"target_issue_id":     uuidToString(created.ID),
+		"target_identifier":   fmt.Sprintf("%s-%d", prefix, created.Number),
+		"target_issue_status": created.Status,
+	})
 }
 
 func (h *Handler) executeProjectPromptSync(r *http.Request, qtx *db.Queries, row db.DecisionRequest) ([]byte, error) {
