@@ -36,6 +36,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
+	"github.com/multica-ai/multica/server/pkg/taskadaptation"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
@@ -2236,6 +2237,7 @@ func claimResponseAgentIdentityMatches(resp AgentTaskResponse) bool {
 func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQueue, runtime db.AgentRuntime, runtimeID, runtimeWorkspaceID string) (resp AgentTaskResponse, deliveredCommentIDs []pgtype.UUID, agentSkillCount, builtinSkillCount int, failure *claimBuildFailure) {
 	// Build response with fresh agent data (name + skills + custom_env + custom_args).
 	resp = taskToResponse(*task, runtimeWorkspaceID)
+	resp.CapabilityAdaptation = taskadaptation.SnapshotFromContext(task.Context)
 	var issueNumber int32
 	// promptVersionScopeIDs accumulates (scope -> scope_id) for every prompt
 	// tier this claim actually injects non-empty content for, populated at
@@ -4235,6 +4237,8 @@ type TaskCompleteRequest struct {
 	// to report" — this says "never hand this id to a later run". Older
 	// daemons omit it, which is exactly the pre-fix behaviour.
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
+	// CapabilityAdaptationResult is accepted only for the matching claim snapshot.
+	CapabilityAdaptationResult *taskadaptation.Outcome `json:"capability_adaptation_result,omitempty"`
 }
 
 // sanitizeTaskCompleteRequest / sanitizeTaskFailRequest scrub every
@@ -4268,7 +4272,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
 	// Verify the caller owns this task's workspace.
-	_, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
+	claimedTask, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
 	if !ok {
 		return
 	}
@@ -4287,6 +4291,12 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// re-route below feeds req.Output into the failure classifier, and that
 	// classifier must see exactly the text we are going to persist.
 	sanitizeTaskCompleteRequest(&req)
+	claimedAdaptation := taskadaptation.SnapshotFromContext(claimedTask.Context)
+	if result := req.CapabilityAdaptationResult; result != nil &&
+		(claimedAdaptation == nil || result.PolicyID != claimedAdaptation.PolicyID || !taskadaptation.ValidStatus(result.Status)) {
+		writeError(w, http.StatusBadRequest, "invalid capability adaptation result")
+		return
+	}
 
 	// GH #6402: a daemon whose backend does not (yet) read the provider's
 	// structured terminal reason reports a context-exhausted run as a clean

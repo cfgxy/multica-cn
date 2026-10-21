@@ -30,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
+	"github.com/multica-ai/multica/server/pkg/taskadaptation"
 )
 
 // Mirrors AGENT_DESCRIPTION_MAX_LENGTH in packages/core/agents/constants.ts
@@ -663,6 +664,9 @@ type AgentTaskResponse struct {
 	// degradation, where the echo text alone keeps the pre-RUYI-719 behavior).
 	// Mirror field: internal/daemon/types.go, same JSON name.
 	DecisionAnswers       []DecisionAnswerContextData `json:"decision_answers,omitempty"`
+	// CapabilityAdaptation is the validated, task-only policy snapshot; omitted
+	// when the task context does not explicitly opt in.
+	CapabilityAdaptation *taskadaptation.Snapshot `json:"capability_adaptation,omitempty"`
 	SquadID               string                      `json:"squad_id,omitempty"`                // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
 	SquadName             string                      `json:"squad_name,omitempty"`              // display name for the picker squad
 	ParentIssueID         string                      `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under

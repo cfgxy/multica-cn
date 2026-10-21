@@ -8,6 +8,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/pkg/taskadaptation"
 )
 
 // TestBuildQuickCreatePromptRules locks in the rules that govern how the
@@ -2123,5 +2124,27 @@ func TestBuildQuickCreatePromptNoAttachmentSectionWithoutAttachments(t *testing.
 	out := buildQuickCreatePrompt(Task{QuickCreatePrompt: "plain single-line input"})
 	if strings.Contains(out, "Attachments uploaded in the quick-create modal") {
 		t.Errorf("no-attachment quick-create prompt grew an attachment section\n--- output ---\n%s", out)
+	}
+}
+
+func TestCapabilityAdaptationPromptIsOptInAndTaskBound(t *testing.T) {
+	snapshot := &taskadaptation.Snapshot{
+		PolicyID:          "policy-1",
+		PolicyVersion:     "v2",
+		Scope:             "current_task",
+		Trigger:           "task needs a shorter plan",
+		CurrentStrategy:   "plan fully before acting",
+		SuggestedStrategy: "plan in small checkpoints",
+		AllowedActions:    []string{"use short checkpoints"},
+	}
+	base := BuildPrompt(Task{IssueID: "issue-1"}, "claude")
+	if strings.Contains(base, "capability adaptation") {
+		t.Fatal("default-off task unexpectedly received adaptation guidance")
+	}
+	adapted := BuildPrompt(Task{IssueID: "issue-1", CapabilityAdaptation: snapshot}, "claude")
+	for _, want := range []string{"Task-scoped capability adaptation", "current_task", "policy-1", "cannot change permissions", "<!-- multica-capability-adaptation: applied -->"} {
+		if !strings.Contains(adapted, want) {
+			t.Errorf("adaptation prompt missing %q", want)
+		}
 	}
 }
