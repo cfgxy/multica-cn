@@ -61,9 +61,9 @@ const (
 // text_token and batch; decision_center labels the row answer endpoint
 // (decision-center row buttons and the bare API), which is no card click.
 const (
-	decisionSourceCardClick     = "card_click"
-	decisionSourceTextToken     = "text_token"
-	decisionSourceBatch         = "batch"
+	decisionSourceCardClick      = "card_click"
+	decisionSourceTextToken      = "text_token"
+	decisionSourceBatch          = "batch"
 	decisionSourceDecisionCenter = "decision_center"
 )
 
@@ -133,30 +133,31 @@ type DecisionRequestResponse struct {
 	Detail         string          `json:"detail"`
 	// Title-level origin references only — the detail view never carries the
 	// origin issue's body or comments (决策中心点击不进 Issue).
-	OriginWorkspaceID string          `json:"origin_workspace_id"`
-	OriginAgentID     string          `json:"origin_agent_id"`
+	OriginWorkspaceID   string  `json:"origin_workspace_id"`
+	TargetWorkspaceSlug *string `json:"target_workspace_slug,omitempty"`
+	OriginAgentID       string  `json:"origin_agent_id"`
 	// Resolved server-side: the origin agent lives in the origin workspace's
 	// roster, which a target-space client never loads, so the name rides on
 	// the wire (RUYI-630 QA defect#3). Null only for an agent row that no
 	// longer resolves.
-	OriginAgentName   *string         `json:"origin_agent_name"`
-	OriginTaskID      *string         `json:"origin_task_id"`
-	OriginIssueID     *string         `json:"origin_issue_id"`
-	OriginIssueTitle  *string         `json:"origin_issue_title"`
-	OperatorTier      string          `json:"operator_tier"`
-	NamedApproverIDs  []string        `json:"named_approver_ids"`
-	ApproveLabel      *string         `json:"approve_label"`
-	DenyLabel         *string         `json:"deny_label"`
-	ExpiresAt         time.Time       `json:"expires_at"`
-	AnsweredByType    *string         `json:"answered_by_type"`
-	AnsweredByID      *string         `json:"answered_by_id"`
-	AnsweredAt        *time.Time      `json:"answered_at"`
-	AnswerSource      *string         `json:"answer_source"`
-	ExecutedAt        *time.Time      `json:"executed_at"`
-	ExecutionResult   json.RawMessage `json:"execution_result,omitempty"`
-	ExecutionError    *string         `json:"execution_error"`
-	CreatedAt         time.Time       `json:"created_at"`
-	UpdatedAt         time.Time       `json:"updated_at"`
+	OriginAgentName  *string         `json:"origin_agent_name"`
+	OriginTaskID     *string         `json:"origin_task_id"`
+	OriginIssueID    *string         `json:"origin_issue_id"`
+	OriginIssueTitle *string         `json:"origin_issue_title"`
+	OperatorTier     string          `json:"operator_tier"`
+	NamedApproverIDs []string        `json:"named_approver_ids"`
+	ApproveLabel     *string         `json:"approve_label"`
+	DenyLabel        *string         `json:"deny_label"`
+	ExpiresAt        time.Time       `json:"expires_at"`
+	AnsweredByType   *string         `json:"answered_by_type"`
+	AnsweredByID     *string         `json:"answered_by_id"`
+	AnsweredAt       *time.Time      `json:"answered_at"`
+	AnswerSource     *string         `json:"answer_source"`
+	ExecutedAt       *time.Time      `json:"executed_at"`
+	ExecutionResult  json.RawMessage `json:"execution_result,omitempty"`
+	ExecutionError   *string         `json:"execution_error"`
+	CreatedAt        time.Time       `json:"created_at"`
+	UpdatedAt        time.Time       `json:"updated_at"`
 }
 
 // DecisionRequestDetailResponse is the authorization summary the decision
@@ -774,7 +775,8 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, ok := h.workspaceMember(w, r, uuidToString(workspaceID)); !ok {
+	member, ok := h.workspaceMember(w, r, uuidToString(workspaceID))
+	if !ok {
 		return
 	}
 	h.sweepDueDecisionRequests(r)
@@ -810,6 +812,20 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list decision requests")
 		return
 	}
+	targetRows, err := h.Queries.ListAccessibleDecisionRequestTargetSlugs(r.Context(), db.ListAccessibleDecisionRequestTargetSlugsParams{
+		WorkspaceID: workspaceID,
+		UserID:      member.UserID,
+		Status:      status,
+		Limit:       int32(limit),
+	})
+	if err != nil {
+		slog.Warn("accessible decision request target lookup failed", append(logger.RequestAttrs(r), "error", err)...)
+		targetRows = nil
+	}
+	targetSlugs := make(map[string]string, len(targetRows))
+	for _, target := range targetRows {
+		targetSlugs[uuidToString(target.RequestGroupID)] = target.Slug
+	}
 	counts, err := h.Queries.CountWorkspaceDecisionRequestsByStatus(r.Context(), workspaceID)
 	if err != nil {
 		slog.Warn("decision request counts failed", append(logger.RequestAttrs(r), "error", err)...)
@@ -818,7 +834,13 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]DecisionRequestResponse, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, decisionRequestToResponse(row))
+		item := decisionRequestToResponse(row)
+		if row.Role == decisionReqRoleOrigin && !row.Operable {
+			if slug, ok := targetSlugs[uuidToString(row.RequestGroupID)]; ok {
+				item.TargetWorkspaceSlug = &slug
+			}
+		}
+		items = append(items, item)
 	}
 	agentNames := h.originAgentNames(r.Context(), rows)
 	for i := range items {
