@@ -131,7 +131,7 @@ describe("DecisionRequestRow script review", () => {
     expect(Clipboard.setStringAsync).toHaveBeenCalledWith("a".repeat(64));
     await act(async () => fireEvent.press(screen.getByTestId("script-review-toggle")));
     expect(await screen.findByText(script)).toBeTruthy();
-    expect(screen.getByText("sh", { exact: false })).toBeTruthy();
+    expect(screen.getByText("Interpreter: sh", { exact: true })).toBeTruthy();
     expect(screen.getByText('["-e"]', { exact: false })).toBeTruthy();
     expect(screen.queryByText(/execute/i)).toBeNull();
   });
