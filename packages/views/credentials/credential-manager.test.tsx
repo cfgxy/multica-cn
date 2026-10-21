@@ -106,6 +106,32 @@ describe("CredentialManager", () => {
     expect(JSON.stringify(apiMock.replaceIssueCredential.mock.calls[0]?.[2])).not.toContain("replacement-secret");
   });
 
+  it("keeps the narrow replacement form clear of the chat launcher without exposing its secret", async () => {
+    apiMock.listIssueCredentials.mockResolvedValue([{
+      id: "existing-id", name: "Build token", target_service: "Build service", connector_id: "connector-id",
+      connector_revision: 1, purpose: "Publish artifacts", status: "active", resource_scope: "issue",
+      subject_type: "agent", subject_id: "agent-id", expires_at: null, created_at: "2026-10-21T00:00:00Z",
+    }]);
+    const user = userEvent.setup();
+    renderManager();
+    await user.click(await screen.findByRole("button", { name: "Replace Build token" }));
+
+    const form = screen.getByRole("textbox", { name: "Purpose" }).closest("form");
+    expect(form).toHaveClass("max-md:pe-chat-launcher");
+
+    const secret = screen.getByLabelText("Secret value");
+    expect(secret).toHaveAttribute("type", "password");
+    expect(secret).toHaveAttribute("aria-describedby", "credential-secret-help");
+    for (let index = 0; index < 12 && document.activeElement !== secret; index += 1) {
+      await user.tab();
+    }
+    expect(secret).toHaveFocus();
+    await user.type(secret, "replacement-secret-canary");
+    expect(form).toHaveTextContent("Text machine credentials only");
+    expect(form?.textContent).not.toContain("replacement-secret-canary");
+    expect(screen.getByRole("button", { name: "Replace atomically" })).toBeVisible();
+  });
+
   it("submits global scope with the global resource sentinel in both request and envelope context", async () => {
     apiMock.memberRole = "owner";
     const user = userEvent.setup();
