@@ -140,6 +140,40 @@ func TestRemoteMCPProxyRechecksCredentialBeforeUpstreamCall(t *testing.T) {
 	}
 }
 
+func TestCredentialConnectorProxyUsesClaimBoundHeaderWithoutReplayingCapability(t *testing.T) {
+	resolverCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer synthetic-session-secret" {
+			t.Errorf("authorization header was not injected")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))
+	}))
+	defer upstream.Close()
+	endpoint, _ := url.Parse(upstream.URL)
+	proxy := &remoteMCPProxy{
+		endpoint: endpoint, client: upstream.Client(), path: "/capability",
+		credentialHeaders: http.Header{"Authorization": []string{"Bearer synthetic-session-secret"}},
+		resolveCredential: func(context.Context, string) (http.Header, error) {
+			resolverCalls++
+			return nil, errors.New("one-time capability must not be replayed")
+		},
+		cacheCredential: true,
+		semaphore:       make(chan struct{}, remoteMCPMaxConcurrency),
+		connection: remotemcp.Connection{
+			ContributionID: "credential:connector-id", CredentialHeader: "Authorization",
+			ApprovedTools: []remotemcp.Tool{{Name: "allowed"}},
+		},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/capability", bytes.NewBufferString(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","arguments":{}}}`))
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, request)
+	if resolverCalls != 0 || response.Code != http.StatusOK {
+		t.Fatalf("resolver calls=%d status=%d response=%s", resolverCalls, response.Code, response.Body.String())
+	}
+}
+
 func TestRemoteMCPProviderMatrixAndConfigMerge(t *testing.T) {
 	for _, provider := range []string{"codex", "claude", "hermes", "qoder", "mcode"} {
 		if !providerSupportsRemoteMCPBroker(provider) {

@@ -72,3 +72,10 @@ func TestDaemonRPCHandler_UnknownMethod(t *testing.T) {
 		t.Fatalf("status=%d err=%v, want 404 + error", status, err)
 	}
 }
+
+func TestDaemonRPCHandler_CredentialResolveRequiresDaemonIdentity(t *testing.T) {
+	status, _, err := testHandler.DaemonRPCHandler(context.Background(), daemonws.ClientIdentity{}, "credentials.resolve", json.RawMessage(`{}`))
+	if status != http.StatusForbidden || err == nil {
+		t.Fatalf("status=%d err=%v, want 403 + error", status, err)
+	}
+}

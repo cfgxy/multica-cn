@@ -54,6 +54,8 @@ CREATE TABLE credential_capability (
     agent_id UUID NOT NULL,
     issue_id UUID NOT NULL,
     workspace_id UUID NOT NULL,
+    connector_id UUID NOT NULL,
+    connector_revision BIGINT NOT NULL CHECK (connector_revision > 0),
     session_public_key BYTEA NOT NULL,
     nonce BYTEA NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,

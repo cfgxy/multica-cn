@@ -56,6 +56,14 @@ type ProjectResourceData struct {
 // sharing the canonical JSON shape with the runtime app metadata package.
 type ConnectedAppData = runtimeapps.ConnectedApp
 
+type CredentialCapability struct {
+	Capability        string `json:"capability"`
+	ConnectorID       string `json:"connector_id"`
+	ConnectorRevision int64  `json:"connector_revision"`
+	TargetURL         string `json:"target_url"`
+	ExpiresAt         string `json:"expires_at"`
+}
+
 // ActiveSiblingRunData mirrors the claim-time warning context returned by the
 // server for another in-flight issue task owned by this agent. Queued tasks are
 // intentionally excluded from this context.
@@ -92,7 +100,8 @@ type Task struct {
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// RemoteMCPDaemonToken stays inside the daemon and authenticates the local
 	// broker's credential-resolution calls. It must never enter agent env/config.
-	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`
+	RemoteMCPDaemonToken string                `json:"remote_mcp_daemon_token,omitempty"`
+	CredentialCapability *CredentialCapability `json:"credential_capability,omitempty"`
 	// PluginHookTools are this workspace's agent-trigger plugin hooks, which
 	// the local MCP server presents to the agent as tools. Resolved by the
 	// server at claim time; the daemon never reads plugin state itself.

@@ -132,8 +132,8 @@ func TestTransportTamperingAndUnknownKeyFailWithValueFreeErrors(t *testing.T) {
 	ctx := testContext()
 	sealed := sealTransportFixture(t, &privateKey.PublicKey, "transport-v1", ctx, []byte("synthetic-fixture"))
 	for name, mutate := range map[string]func(*TransportEnvelope){
-		"ciphertext":  func(e *TransportEnvelope) { e.Ciphertext = e.Ciphertext[:len(e.Ciphertext)-1] + "A" },
-		"wrapped-key": func(e *TransportEnvelope) { e.WrappedDataKey = e.WrappedDataKey[:len(e.WrappedDataKey)-1] + "A" },
+		"ciphertext":  func(e *TransportEnvelope) { e.Ciphertext = flipFirstBase64Character(e.Ciphertext) },
+		"wrapped-key": func(e *TransportEnvelope) { e.WrappedDataKey = flipFirstBase64Character(e.WrappedDataKey) },
 		"version":     func(e *TransportEnvelope) { e.Version++ },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -148,6 +148,16 @@ func TestTransportTamperingAndUnknownKeyFailWithValueFreeErrors(t *testing.T) {
 	if _, err := (TransportKeyring{PrivateKeys: map[string]*rsa.PrivateKey{}}).Open(sealed, ctx); !errors.Is(err, ErrKeyUnavailable) {
 		t.Fatal("unknown key ID did not fail closed")
 	}
+}
+
+func flipFirstBase64Character(value string) string {
+	if len(value) == 0 {
+		return "A"
+	}
+	if value[0] == 'A' {
+		return "B" + value[1:]
+	}
+	return "A" + value[1:]
 }
 
 func TestStorageEnvelopeUsesDistinctDomainAndSupportsKeyRotation(t *testing.T) {
