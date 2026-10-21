@@ -447,7 +447,9 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
           workspace_id: "ws-1",
           role: "origin",
           status: "pending",
-          action_type: "workspace_info_read",
+          action_type: "project_prompt_sync",
+          action_params: { project_ids: ["project-1"], content: "approved prompt body", content_sha256: "hash" },
+          execution_result: { projects: [{ project_id: "project-1", status: "updated", version: 3 }] },
           risk_tier: "write_low",
           title: "Read workspace info",
           detail: "",
@@ -468,6 +470,8 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
 
     deferred.settle();
     expect(await screen.findByTestId("decision-requests-section")).toBeInTheDocument();
+    expect(screen.getByTestId("decision-request-project-result")).toHaveTextContent("project-1 · updated · v3");
+    expect(screen.getByText("approved prompt body")).toBeInTheDocument();
   });
 });
 

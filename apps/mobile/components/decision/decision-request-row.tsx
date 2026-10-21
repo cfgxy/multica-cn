@@ -9,7 +9,7 @@
  * projection shows a hint instead. The server enforces tier, window and
  * CAS — the row only needs to fail readably.
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Pressable, View } from "react-native";
 import { useRouter } from "expo-router";
@@ -59,6 +59,7 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId) ?? "";
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
+  const [showPrompt, setShowPrompt] = useState(false);
 
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const getActorName = useMemo(
@@ -69,6 +70,17 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
   // workspace's roster, so local resolution alone renders "Unknown Agent".
   const originName =
     request.origin_agent_name || getActorName("agent", request.origin_agent_id);
+  const projectResults = request.action_type === "project_prompt_sync"
+    && request.execution_result && typeof request.execution_result === "object"
+    && Array.isArray((request.execution_result as { projects?: unknown }).projects)
+    ? (request.execution_result as { projects: Array<{ project_id?: unknown; status?: unknown; version?: unknown }> }).projects
+        .filter((item) => typeof item.project_id === "string" && typeof item.status === "string" && typeof item.version === "number")
+    : [];
+  const approvedPrompt = request.action_type === "project_prompt_sync"
+    && request.action_params && typeof request.action_params === "object"
+    && typeof (request.action_params as { content?: unknown }).content === "string"
+    ? (request.action_params as { content: string }).content
+    : null;
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: decisionRequestKeys.all() });
@@ -97,6 +109,8 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
   const isPending = request.status === "pending";
   const actionLabel = request.action_type === "prompt_restore"
     ? t("requests.action_prompt_restore", "Restore prompt")
+    : request.action_type === "project_prompt_sync"
+      ? t("requests.action_project_prompt_sync", "Sync project prompt")
     : request.action_type === "workspace_info_read"
       ? t("requests.action_workspace_info_read", "Read workspace info")
       : request.action_type;
@@ -145,6 +159,18 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
             title: request.origin_issue_title,
           })}
         </Text>
+      ) : null}
+      {approvedPrompt !== null ? (
+        <View className="mt-2">
+          <Pressable onPress={() => setShowPrompt((value) => !value)} accessibilityRole="button">
+            <Text className="text-xs text-muted-foreground">
+              {showPrompt
+                ? t("requests.hide_prompt_content", "Hide approved prompt")
+                : t("requests.review_prompt_content", "Review approved prompt")}
+            </Text>
+          </Pressable>
+          {showPrompt ? <Text className="mt-1 text-xs text-muted-foreground">{approvedPrompt}</Text> : null}
+        </View>
       ) : null}
 
       {isPending ? (
@@ -219,6 +245,11 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
           })}
         </Text>
       ) : null}
+      {projectResults.map((result) => (
+        <Text key={String(result.project_id)} className="mt-1 text-xs text-muted-foreground" testID="decision-request-project-result">
+          {String(result.project_id)} · {String(result.status)} · v{String(result.version)}
+        </Text>
+      ))}
     </View>
   );
 }

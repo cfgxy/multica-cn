@@ -89,6 +89,22 @@ describe("DecisionCard", () => {
     expect(screen.queryByTestId("decision-context")).toBeNull();
   });
 
+  it("shows each project result on a completed project-prompt authorization", () => {
+    renderCard(card({
+      decision_kind: "authorization",
+      action_type: "project_prompt_sync",
+      status: "answered",
+      auth_state: "executed",
+      executed_at: "2026-10-21T12:00:00Z",
+      execution_result: {
+        action: "project_prompt_sync",
+        projects: [{ project_id: "project-1", status: "updated", version: 4 }],
+      },
+    }));
+
+    expect(screen.getByTestId("decision-auth-project-result")).toHaveTextContent("project-1 · updated · v4");
+  });
+
   it("renders question, options and the recommended badge in open state", () => {
     renderCard(card());
     expect(screen.getByTestId("decision-card")).toHaveAttribute("data-status", "open");

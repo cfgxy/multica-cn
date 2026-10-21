@@ -280,6 +280,15 @@ func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionR
 	return i, err
 }
 
+const createDecisionRequestActionSavepoint = `-- name: CreateDecisionRequestActionSavepoint :exec
+SAVEPOINT decision_request_action
+`
+
+func (q *Queries) CreateDecisionRequestActionSavepoint(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, createDecisionRequestActionSavepoint)
+	return err
+}
+
 const expireDueDecisionRequests = `-- name: ExpireDueDecisionRequests :many
 WITH due_groups AS (
     SELECT request_group_id
@@ -754,6 +763,24 @@ func (q *Queries) PropagateDecisionRequestGroup(ctx context.Context, arg Propaga
 		return nil, err
 	}
 	return items, nil
+}
+
+const releaseDecisionRequestActionSavepoint = `-- name: ReleaseDecisionRequestActionSavepoint :exec
+RELEASE SAVEPOINT decision_request_action
+`
+
+func (q *Queries) ReleaseDecisionRequestActionSavepoint(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, releaseDecisionRequestActionSavepoint)
+	return err
+}
+
+const rollbackDecisionRequestAction = `-- name: RollbackDecisionRequestAction :exec
+ROLLBACK TO SAVEPOINT decision_request_action
+`
+
+func (q *Queries) RollbackDecisionRequestAction(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, rollbackDecisionRequestAction)
+	return err
 }
 
 const setDecisionRequestExecution = `-- name: SetDecisionRequestExecution :many

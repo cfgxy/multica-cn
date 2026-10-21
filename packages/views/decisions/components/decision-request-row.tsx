@@ -28,9 +28,10 @@ import { AppLink } from "../../navigation";
 
 type DecisionRequestStatus = DecisionRequest["status"];
 
-const ACTION_LABEL_KEYS: Record<string, "action_workspace_info_read" | "action_prompt_restore"> = {
+const ACTION_LABEL_KEYS: Record<string, "action_workspace_info_read" | "action_prompt_restore" | "action_project_prompt_sync"> = {
   workspace_info_read: "action_workspace_info_read",
   prompt_restore: "action_prompt_restore",
+  project_prompt_sync: "action_project_prompt_sync",
 };
 
 const RISK_LABEL_KEYS: Record<string, "risk_read" | "risk_write_low"> = {
@@ -71,6 +72,18 @@ function statusBadgeVariant(
     default:
       return "outline";
   }
+}
+
+function projectPromptResults(value: unknown): Array<{ projectId: string; status: string; version: number }> {
+  if (!value || typeof value !== "object") return [];
+  const projects = (value as { projects?: unknown }).projects;
+  if (!Array.isArray(projects)) return [];
+  return projects.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const result = item as { project_id?: unknown; status?: unknown; version?: unknown };
+    if (typeof result.project_id !== "string" || typeof result.status !== "string" || typeof result.version !== "number") return [];
+    return [{ projectId: result.project_id, status: result.status, version: result.version }];
+  });
 }
 
 /** Per-space step lines for cross-space requests (方案甲 dual-row carrier). */
@@ -140,6 +153,14 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
   // workspace's roster, so local resolution alone renders "Unknown Agent".
   const originName =
     request.origin_agent_name || getActorName("agent", request.origin_agent_id);
+  const syncResults = request.action_type === "project_prompt_sync"
+    ? projectPromptResults(request.execution_result)
+    : [];
+  const approvedPrompt = request.action_type === "project_prompt_sync"
+    && request.action_params && typeof request.action_params === "object"
+    && typeof (request.action_params as { content?: unknown }).content === "string"
+    ? (request.action_params as { content: string }).content
+    : null;
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: decisionRequestKeys.all() });
@@ -225,6 +246,16 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
         ) : (
           content
         )}
+        {approvedPrompt !== null && (
+          <details className="mt-1 text-caption">
+            <summary className="cursor-pointer text-muted-foreground">
+              {t(($) => $.requests.review_prompt_content)}
+            </summary>
+            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border bg-muted/30 p-2 font-sans text-caption">
+              {approvedPrompt}
+            </pre>
+          </details>
+        )}
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -290,6 +321,11 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
             {t(($) => $.requests.executed_failed, { reason: request.execution_error })}
           </span>
         )}
+        {syncResults.map((result) => (
+          <span key={result.projectId} className="min-w-0 text-caption text-muted-foreground" data-testid="decision-request-project-result">
+            {result.projectId} · {result.status} · v{result.version}
+          </span>
+        ))}
       </div>
 
       <RequestSteps request={request} />
