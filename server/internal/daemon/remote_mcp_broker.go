@@ -28,6 +28,12 @@ const (
 	remoteMCPMaxConcurrency  = 8
 )
 
+func zeroCredentialBytes(value []byte) {
+	for i := range value {
+		value[i] = 0
+	}
+}
+
 type remoteMCPBrokerSet struct {
 	servers   []*http.Server
 	listeners []net.Listener
@@ -123,8 +129,10 @@ func startTaskRemoteMCPBrokers(setupCtx, lifetimeCtx context.Context, taskID, pr
 		proxy := &remoteMCPProxy{
 			taskID: taskID, connection: connection, endpoint: endpoint,
 			client: remotemcp.NewSecureHTTPClient(endpoint), credentialHeaders: headers,
-			resolveCredential: resolveCredential, path: "/" + pathToken,
-			semaphore: make(chan struct{}, remoteMCPMaxConcurrency), logger: logger,
+			resolveCredential: resolveCredential,
+			cacheCredential:   strings.HasPrefix(connection.ContributionID, "credential:"),
+			path:              "/" + pathToken,
+			semaphore:         make(chan struct{}, remoteMCPMaxConcurrency), logger: logger,
 		}
 		server := &http.Server{Handler: proxy, ReadHeaderTimeout: 5 * time.Second}
 		set.servers = append(set.servers, server)
@@ -211,6 +219,7 @@ type remoteMCPProxy struct {
 	client            *http.Client
 	credentialHeaders http.Header
 	resolveCredential remoteMCPCredentialResolver
+	cacheCredential   bool
 	path              string
 	semaphore         chan struct{}
 	calls             atomic.Int64
@@ -292,7 +301,7 @@ func (proxy *remoteMCPProxy) ServeHTTP(w http.ResponseWriter, request *http.Requ
 		}
 	}
 	credentialHeaders := proxy.credentialHeaders
-	if proxy.connection.CredentialHeader != "" && proxy.resolveCredential != nil {
+	if proxy.connection.CredentialHeader != "" && proxy.resolveCredential != nil && !proxy.cacheCredential {
 		credentialHeaders, err = proxy.resolveCredential(request.Context(), proxy.connection.ContributionID)
 		if err != nil {
 			resultClass = "credential_revoked"

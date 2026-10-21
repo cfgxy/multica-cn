@@ -31,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/redact"
+	"github.com/multica-ai/multica/server/pkg/remotemcp"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -7778,9 +7779,38 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var agentMcpConfig json.RawMessage
 	var effectiveMcpConfig json.RawMessage
 	var cursorMcpAuthSource string
+	remoteMCPConnections := append([]remotemcp.Connection(nil), task.RemoteMCPConnections...)
+	for _, candidate := range task.CredentialCapabilities {
+		capability, ok := credentialCapabilityForConnector(task.CredentialCapabilities, candidate.ConnectorID)
+		if !ok {
+			continue
+		}
+		remoteMCPConnections = append(remoteMCPConnections, remotemcp.Connection{
+			ContributionID:  "credential:" + capability.ConnectorID,
+			ContributionKey: "credential-connector-" + capability.ConnectorID,
+			ConfigID:        capability.ConnectorID, ConfigRevision: capability.ConnectorRevision,
+			Endpoint: capability.TargetURL, Transport: "http", ProtocolVersions: []string{"2025-03-26"},
+			CredentialHeader: "Authorization",
+		})
+	}
 	remoteMCPConfig, remoteMCPDiagnostics, remoteMCPBrokers, remoteMCPErr := startTaskRemoteMCPBrokers(
-		prepareCtx, ctx, task.ID, provider, task.RemoteMCPConnections,
+		prepareCtx, ctx, task.ID, provider, remoteMCPConnections,
 		func(resolveCtx context.Context, contributionID string) (http.Header, error) {
+			if strings.HasPrefix(contributionID, "credential:") {
+				connectorID := strings.TrimPrefix(contributionID, "credential:")
+				capability, ok := credentialCapabilityForConnector(task.CredentialCapabilities, connectorID)
+				if !ok || contributionID != "credential:"+capability.ConnectorID {
+					return nil, errors.New("credential connector binding mismatch")
+				}
+				plaintext, err := d.resolveCredentialCapability(resolveCtx, &task, capability)
+				if err != nil {
+					return nil, err
+				}
+				defer zeroCredentialBytes(plaintext)
+				headers := make(http.Header)
+				headers.Set("Authorization", "Bearer "+string(plaintext))
+				return headers, nil
+			}
 			return d.client.ResolveRemoteMCPCredential(resolveCtx, task.RemoteMCPDaemonToken, task.ID, contributionID)
 		},
 		taskLog,

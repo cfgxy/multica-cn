@@ -797,6 +797,89 @@ type ContactSalesInquiry struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 }
 
+type CredentialAudit struct {
+	ID           pgtype.UUID        `json:"id"`
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	CredentialID pgtype.UUID        `json:"credential_id"`
+	GrantID      pgtype.UUID        `json:"grant_id"`
+	EventType    string             `json:"event_type"`
+	Result       string             `json:"result"`
+	ReasonCode   string             `json:"reason_code"`
+	ActorType    string             `json:"actor_type"`
+	ActorID      string             `json:"actor_id"`
+	DaemonID     pgtype.Text        `json:"daemon_id"`
+	TaskID       pgtype.UUID        `json:"task_id"`
+	AgentID      pgtype.UUID        `json:"agent_id"`
+	IssueID      pgtype.UUID        `json:"issue_id"`
+	Purpose      string             `json:"purpose"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+type CredentialCapability struct {
+	ID                pgtype.UUID        `json:"id"`
+	CapabilityHash    []byte             `json:"capability_hash"`
+	DaemonID          string             `json:"daemon_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ConnectorID       pgtype.UUID        `json:"connector_id"`
+	ConnectorRevision int64              `json:"connector_revision"`
+	SessionPublicKey  []byte             `json:"session_public_key"`
+	Nonce             []byte             `json:"nonce"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	ConsumedAt        pgtype.Timestamptz `json:"consumed_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+type CredentialConnector struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Name          string             `json:"name"`
+	Kind          string             `json:"kind"`
+	TargetUrl     string             `json:"target_url"`
+	AdapterPolicy string             `json:"adapter_policy"`
+	AuthField     string             `json:"auth_field"`
+	Status        string             `json:"status"`
+	Revision      int64              `json:"revision"`
+	CreatedBy     pgtype.UUID        `json:"created_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type CredentialGrant struct {
+	ID            pgtype.UUID        `json:"id"`
+	CredentialID  pgtype.UUID        `json:"credential_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ResourceScope string             `json:"resource_scope"`
+	ResourceID    pgtype.UUID        `json:"resource_id"`
+	SubjectType   string             `json:"subject_type"`
+	SubjectID     pgtype.UUID        `json:"subject_id"`
+	Effect        string             `json:"effect"`
+	Status        string             `json:"status"`
+	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
+	GrantedBy     pgtype.UUID        `json:"granted_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type CredentialVault struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Name              string             `json:"name"`
+	TargetService     string             `json:"target_service"`
+	ConnectorID       pgtype.UUID        `json:"connector_id"`
+	ConnectorRevision int64              `json:"connector_revision"`
+	Purpose           string             `json:"purpose"`
+	CredentialType    string             `json:"credential_type"`
+	Status            string             `json:"status"`
+	EncryptedValue    []byte             `json:"encrypted_value"`
+	CreatedBy         pgtype.UUID        `json:"created_by"`
+	ReplacedBy        pgtype.UUID        `json:"replaced_by"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 // Backpressure trigger/recovery history (RUYI-729): one row per observed active->inactive transition of a runtime's host-backpressure report, with hit detail and the effective config snapshot.
 type DaemonBackpressureEvent struct {
 	ID              pgtype.UUID        `json:"id"`

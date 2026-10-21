@@ -1,4 +1,16 @@
 import { z } from "zod";
+import {
+  CredentialConnectorListSchema,
+  CredentialMetadataListSchema,
+  CredentialMetadataSchema,
+  CredentialAuditEventListSchema,
+  CredentialTransportKeySchema,
+  type CredentialConnector,
+  type CredentialAuditEvent,
+  type CredentialMetadata,
+  type CredentialTransportKey,
+} from "../credentials/api";
+import type { CredentialTransportEnvelope } from "../credentials/envelope";
 import { configStore } from "../config";
 import type { ListAuditEventsParams, AuditEventsPage } from "../types/audit";
 import type {
@@ -1309,6 +1321,94 @@ export class ApiClient {
     });
     return parseWithFallback(raw, ImpersonationResponseSchema, EMPTY_IMPERSONATION_RESPONSE, {
       endpoint: "POST /api/impersonation/stop",
+    });
+  }
+
+  async getCredentialTransportKey(): Promise<CredentialTransportKey | null> {
+    const raw = await this.fetch<unknown>("/api/credentials/transport-key");
+    return parseWithFallback(raw, CredentialTransportKeySchema, null, {
+      endpoint: "GET /api/credentials/transport-key",
+      redactContent: true,
+    });
+  }
+
+  async listCredentialConnectors(workspaceId: string): Promise<CredentialConnector[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors`);
+    return parseWithFallback(raw, CredentialConnectorListSchema, [], {
+      endpoint: "GET /api/workspaces/{id}/credential-connectors",
+      redactContent: true,
+    });
+  }
+
+  async createIssueCredential(issueId: string, data: {
+    name: string;
+    target_service: string;
+    connector_id: string;
+    connector_revision: number;
+    purpose: string;
+    subject_type: "agent" | "squad";
+    subject_id: string;
+    resource_scope: "single_use" | "issue" | "project" | "workspace" | "global";
+    resource_id?: string;
+    expires_at: string | null;
+    envelope: CredentialTransportEnvelope;
+  }): Promise<CredentialMetadata | null> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialMetadataSchema, null, {
+      endpoint: "POST /api/issues/{id}/credentials",
+      redactContent: true,
+    });
+  }
+
+  async replaceIssueCredential(issueId: string, credentialId: string, data: {
+    name: string;
+    target_service: string;
+    connector_id: string;
+    connector_revision: number;
+    purpose: string;
+    subject_type: "agent" | "squad";
+    subject_id: string;
+    resource_scope: "single_use" | "issue" | "project" | "workspace" | "global";
+    resource_id?: string;
+    expires_at: string | null;
+    envelope: CredentialTransportEnvelope;
+  }): Promise<CredentialMetadata | null> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials/${credentialId}/replace`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialMetadataSchema, null, {
+      endpoint: "POST /api/issues/{id}/credentials/{credentialId}/replace",
+      redactContent: true,
+    });
+  }
+
+  async listCredentialAudit(workspaceId: string): Promise<CredentialAuditEvent[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/credential-audit`);
+    return parseWithFallback(raw, CredentialAuditEventListSchema, [], {
+      endpoint: "GET /api/workspaces/{id}/credential-audit",
+      redactContent: true,
+    });
+  }
+
+  async listIssueCredentials(issueId: string): Promise<CredentialMetadata[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials`);
+    return parseWithFallback(raw, CredentialMetadataListSchema, [], {
+      endpoint: "GET /api/issues/{id}/credentials",
+      redactContent: true,
+    });
+  }
+
+  async revokeIssueCredential(issueId: string, credentialId: string): Promise<{ status: string } | null> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials/${credentialId}/revoke`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, z.object({ status: z.string() }), null, {
+      endpoint: "POST /api/issues/{id}/credentials/{credentialId}/revoke",
+      redactContent: true,
     });
   }
 

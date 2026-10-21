@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS credential_vault_connector_revision_idx;
