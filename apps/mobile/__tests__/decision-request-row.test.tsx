@@ -6,10 +6,7 @@ import { DecisionRequestRow } from "@/components/decision/decision-request-row";
 
 const mockPush = jest.fn();
 
-jest.mock("expo-router", () => ({
-  useRouter: () => ({ push: mockPush }),
-}));
-
+jest.mock("expo-router", () => ({ useRouter: () => ({ push: mockPush }) }));
 jest.mock("@/data/api", () => ({
   api: {
     listAgents: jest.fn().mockImplementation(() => new Promise(() => undefined)),
@@ -17,40 +14,24 @@ jest.mock("@/data/api", () => ({
     cancelDecisionRequest: jest.fn(),
   },
 }));
-
 jest.mock("@/data/workspace-store", () => ({
   useWorkspaceStore: (selector: (state: { currentWorkspaceId: string }) => unknown) =>
     selector({ currentWorkspaceId: "origin-workspace" }),
 }));
-
-jest.mock("@multica/core/workspace/hooks", () => ({
-  buildActorNameResolver: () => () => "Seed Agent",
-}));
-
-jest.mock("@/lib/use-t", () => ({
-  useT: () => ({ t: (_key: string, fallback?: string) => fallback ?? _key }),
-}));
-
-jest.mock("@/lib/use-color-scheme", () => ({
-  useColorScheme: () => ({ colorScheme: "light" }),
-}));
-
+jest.mock("@multica/core/workspace/hooks", () => ({ buildActorNameResolver: () => () => "Seed Agent" }));
+jest.mock("@/lib/use-t", () => ({ useT: () => ({ t: (_key: string, fallback?: string) => fallback ?? _key }) }));
+jest.mock("@/lib/use-color-scheme", () => ({ useColorScheme: () => ({ colorScheme: "light" }) }));
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
-
 jest.mock("@/components/ui/text", () => {
   const { Text } = jest.requireActual<typeof import("react-native")>("react-native");
   return { Text };
 });
-
 jest.mock("@/components/ui/button", () => {
   const { Pressable } = jest.requireActual<typeof import("react-native")>("react-native");
-  return {
-    Button: ({ variant: _variant, size: _size, ...props }: React.ComponentProps<typeof Pressable> & { variant?: string; size?: string }) => (
-      <Pressable {...props} />
-    ),
-  };
+  return { Button: ({ variant: _variant, size: _size, ...props }: React.ComponentProps<typeof Pressable> & { variant?: string; size?: string }) => (
+    <Pressable {...props} />
+  ) };
 });
-
 jest.mock("@/lib/time-ago", () => ({ timeAgo: () => "2h" }));
 jest.mock("@/lib/utils", () => ({ cn: (...classes: unknown[]) => classes.filter(Boolean).join(" ") }));
 
@@ -91,36 +72,22 @@ function makeRequest(overrides: Partial<DecisionRequest> = {}): DecisionRequest 
 
 async function renderRow(request: DecisionRequest) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await render(
-    <QueryClientProvider client={queryClient}>
-      <DecisionRequestRow request={request} />
-    </QueryClientProvider>,
-  );
+  await render(<QueryClientProvider client={queryClient}><DecisionRequestRow request={request} /></QueryClientProvider>);
 }
 
-beforeEach(() => {
-  jest.clearAllMocks();
-});
+beforeEach(() => jest.clearAllMocks());
 
 describe("DecisionRequestRow target navigation (RUYI-842)", () => {
-  it("navigates to the accessible target workspace decisions tab without enabling local approval", async () => {
+  it("navigates to the target workspace without enabling local approval", async () => {
     await renderRow(makeRequest({ target_workspace_slug: "target-space" }));
-
-    await act(async () => {
-      fireEvent.press(screen.getByTestId("decision-request-target-link"));
-    });
-
-    expect(mockPush).toHaveBeenCalledWith({
-      pathname: "/[workspace]/(tabs)/decisions",
-      params: { workspace: "target-space" },
-    });
+    await act(async () => fireEvent.press(screen.getByTestId("decision-request-target-link")));
+    expect(mockPush).toHaveBeenCalledWith({ pathname: "/[workspace]/(tabs)/decisions", params: { workspace: "target-space" } });
     expect(screen.queryByTestId("decision-request-approve")).toBeNull();
     expect(screen.queryByTestId("decision-request-deny")).toBeNull();
   });
 
-  it("keeps the read-only hint when the response has no safe target route", async () => {
+  it("keeps a read-only hint when no safe target route is available", async () => {
     await renderRow(makeRequest());
-
     expect(screen.getByText("This row is a read-only projection — act in the target workspace")).toBeTruthy();
     expect(screen.queryByTestId("decision-request-target-link")).toBeNull();
   });

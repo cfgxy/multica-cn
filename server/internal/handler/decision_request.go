@@ -92,6 +92,7 @@ const (
 	DecisionActionWorkspaceInfoRead = "workspace_info_read"
 	DecisionActionPromptRestore     = "prompt_restore"
 	DecisionActionProjectPromptSync = "project_prompt_sync"
+	DecisionActionSingleIssueCreate = "single_issue_create"
 )
 
 const (
@@ -116,6 +117,10 @@ var decisionRequestActions = map[string]decisionRequestActionDef{
 	DecisionActionProjectPromptSync: {
 		RiskTier: decisionRiskWriteLow,
 		Summary:  "Write the approved prompt content to an explicit set of projects in the target workspace.",
+	},
+	DecisionActionSingleIssueCreate: {
+		RiskTier: decisionRiskWriteLow,
+		Summary:  "Create one precisely scoped issue in the target workspace and report when it reaches Done.",
 	},
 }
 
@@ -482,6 +487,14 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 	}
 	if req.ActionType == DecisionActionProjectPromptSync {
 		normalized, err := normalizeProjectPromptSyncParams(req.Params)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Params = normalized
+	}
+	if req.ActionType == DecisionActionSingleIssueCreate {
+		normalized, err := normalizeSingleIssueCreateParams(req.Params)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -996,7 +1009,11 @@ func (h *Handler) revokeCrossSpaceDecisionRequestsOnDelete(ctx context.Context, 
 // publishGroupUpdate fans the freshest group state to both workspaces' WS
 // channels (one event per row) — clients never read across spaces.
 func (h *Handler) publishGroupUpdate(r *http.Request, groupID pgtype.UUID) {
-	rows, err := h.Queries.GetDecisionRequestGroup(r.Context(), groupID)
+	h.publishGroupUpdateContext(r.Context(), groupID)
+}
+
+func (h *Handler) publishGroupUpdateContext(ctx context.Context, groupID pgtype.UUID) {
+	rows, err := h.Queries.GetDecisionRequestGroup(ctx, groupID)
 	if err != nil {
 		return
 	}

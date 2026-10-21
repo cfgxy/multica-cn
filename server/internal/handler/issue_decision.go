@@ -371,7 +371,9 @@ func decisionToResponse(d db.IssueDecision) IssueDecisionResponse {
 		v := d.ExecutedAt.Time
 		resp.ExecutedAt = &v
 	}
-	if d.PendingActionType.Valid && d.PendingActionType.String == DecisionActionProjectPromptSync && len(d.ExecutionResult) > 0 {
+	if d.PendingActionType.Valid &&
+		(d.PendingActionType.String == DecisionActionProjectPromptSync || d.PendingActionType.String == DecisionActionSingleIssueCreate) &&
+		len(d.ExecutionResult) > 0 {
 		resp.ExecutionResult = json.RawMessage(d.ExecutionResult)
 	}
 	if d.ExecutionError.Valid {

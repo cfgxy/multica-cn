@@ -28,10 +28,11 @@ import { AppLink } from "../../navigation";
 
 type DecisionRequestStatus = DecisionRequest["status"];
 
-const ACTION_LABEL_KEYS: Record<string, "action_workspace_info_read" | "action_prompt_restore" | "action_project_prompt_sync"> = {
+const ACTION_LABEL_KEYS: Record<string, "action_workspace_info_read" | "action_prompt_restore" | "action_project_prompt_sync" | "action_single_issue_create"> = {
   workspace_info_read: "action_workspace_info_read",
   prompt_restore: "action_prompt_restore",
   project_prompt_sync: "action_project_prompt_sync",
+  single_issue_create: "action_single_issue_create",
 };
 
 const RISK_LABEL_KEYS: Record<string, "risk_read" | "risk_write_low"> = {
@@ -43,6 +44,7 @@ const KIND_LABEL_KEYS = {
   cli: "kind_cli",
   restricted_script: "kind_script",
   issue_creation: "kind_issue",
+  single_issue: "kind_issue",
 } as const;
 
 const STATUS_LABEL_KEYS: Record<
@@ -180,7 +182,13 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
     ? (request.action_params as { content: string }).content
     : null;
   const receipt = request.execution_result && typeof request.execution_result === "object"
-    ? request.execution_result as { side_effect_status?: unknown; steps?: unknown }
+    ? request.execution_result as {
+      side_effect_status?: unknown;
+      steps?: unknown;
+      target_identifier?: unknown;
+      target_issue_status?: unknown;
+      done_receipt?: { status?: unknown };
+    }
     : null;
   const receiptSteps = Array.isArray(receipt?.steps)
     ? receipt.steps.filter((step): step is { handler: string; status: string; side_effect_status: string } =>
@@ -351,6 +359,14 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
         {receipt?.side_effect_status === "no_side_effect" && (
           <span className="text-caption text-muted-foreground" data-testid="decision-request-no-side-effect">
             {t(($) => $.requests.no_side_effect)}
+          </span>
+        )}
+        {request.action_type === "single_issue_create" && typeof receipt?.target_identifier === "string" && (
+          <span className="text-caption text-muted-foreground" data-testid="decision-request-created-issue">
+            {t(($) => $.requests.issue_created, {
+              identifier: receipt.target_identifier,
+              status: receipt.done_receipt?.status === "done" ? "done" : String(receipt.target_issue_status ?? "in_progress"),
+            })}
           </span>
         )}
         {receiptSteps.map((step, index) => (

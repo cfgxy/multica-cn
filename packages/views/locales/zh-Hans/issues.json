@@ -1227,6 +1227,8 @@
     "auth_state_execute_failed": "执行失败",
     "auth_result_unknown": "结果待核实，请勿重试此请求",
     "auth_action_project_prompt_sync": "同步指定项目提示词",
+    "auth_action_single_issue_create": "创建一个目标 Issue",
+    "auth_issue_created": "已创建 {{identifier}}，状态：{{status}}",
     "auth_approve_default": "同意",
     "auth_deny_default": "拒绝",
     "auth_execute_failed": "执行失败，未自动重试",

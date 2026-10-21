@@ -148,6 +148,133 @@ func (q *Queries) CancelDecisionRequestGroup(ctx context.Context, requestGroupID
 	return items, nil
 }
 
+const claimDecisionRequestIssueDoneReceipt = `-- name: ClaimDecisionRequestIssueDoneReceipt :many
+WITH updated AS (
+    UPDATE decision_requests SET
+        execution_result = jsonb_set(
+            execution_result,
+            '{done_receipt}',
+            jsonb_build_object('status', 'done', 'target_issue_id', $1::text, 'completed_at', now()),
+            true
+        ),
+        updated_at = now()
+    WHERE action_type = 'single_issue_create'
+      AND status = 'executed'
+      AND execution_result->>'target_issue_id' = $1::text
+      AND execution_result->'done_receipt' IS NULL
+    RETURNING id, request_group_id, workspace_id, role, operable, status, action_type, action_params, risk_tier, title, detail, origin_workspace_id, origin_agent_id, origin_task_id, origin_issue_id, origin_issue_title, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answered_by_type, answered_by_id, answered_at, answer_source, executed_at, execution_result, execution_error, terminal_callback_at, created_by_type, created_by_id, created_at, updated_at
+), updated_cards AS (
+    UPDATE issue_decisions SET
+        execution_result = jsonb_set(
+            execution_result,
+            '{done_receipt}',
+            jsonb_build_object('status', 'done', 'target_issue_id', $1::text, 'completed_at', now()),
+            true
+        ),
+        updated_at = now()
+    WHERE pending_request_group_id IN (
+        SELECT request_group_id FROM updated WHERE role = 'origin'
+    )
+      AND pending_action_type = 'single_issue_create'
+      AND auth_state = 'executed'
+    RETURNING id
+)
+SELECT id, request_group_id, workspace_id, role, operable, status, action_type, action_params, risk_tier, title, detail, origin_workspace_id, origin_agent_id, origin_task_id, origin_issue_id, origin_issue_title, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answered_by_type, answered_by_id, answered_at, answer_source, executed_at, execution_result, execution_error, terminal_callback_at, created_by_type, created_by_id, created_at, updated_at FROM updated WHERE role = 'origin'
+`
+
+type ClaimDecisionRequestIssueDoneReceiptRow struct {
+	ID                 pgtype.UUID        `json:"id"`
+	RequestGroupID     pgtype.UUID        `json:"request_group_id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Role               string             `json:"role"`
+	Operable           bool               `json:"operable"`
+	Status             string             `json:"status"`
+	ActionType         string             `json:"action_type"`
+	ActionParams       []byte             `json:"action_params"`
+	RiskTier           string             `json:"risk_tier"`
+	Title              string             `json:"title"`
+	Detail             string             `json:"detail"`
+	OriginWorkspaceID  pgtype.UUID        `json:"origin_workspace_id"`
+	OriginAgentID      pgtype.UUID        `json:"origin_agent_id"`
+	OriginTaskID       pgtype.UUID        `json:"origin_task_id"`
+	OriginIssueID      pgtype.UUID        `json:"origin_issue_id"`
+	OriginIssueTitle   pgtype.Text        `json:"origin_issue_title"`
+	OperatorTier       string             `json:"operator_tier"`
+	NamedApproverIds   []byte             `json:"named_approver_ids"`
+	ApproveLabel       pgtype.Text        `json:"approve_label"`
+	DenyLabel          pgtype.Text        `json:"deny_label"`
+	ExpiresAt          pgtype.Timestamptz `json:"expires_at"`
+	AnsweredByType     pgtype.Text        `json:"answered_by_type"`
+	AnsweredByID       pgtype.UUID        `json:"answered_by_id"`
+	AnsweredAt         pgtype.Timestamptz `json:"answered_at"`
+	AnswerSource       pgtype.Text        `json:"answer_source"`
+	ExecutedAt         pgtype.Timestamptz `json:"executed_at"`
+	ExecutionResult    []byte             `json:"execution_result"`
+	ExecutionError     pgtype.Text        `json:"execution_error"`
+	TerminalCallbackAt pgtype.Timestamptz `json:"terminal_callback_at"`
+	CreatedByType      string             `json:"created_by_type"`
+	CreatedByID        pgtype.UUID        `json:"created_by_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+// The target issue status transition is the idempotency fence for the second
+// (Done) receipt. The request-group execution transaction already persists
+// the single target issue id in execution_result.
+func (q *Queries) ClaimDecisionRequestIssueDoneReceipt(ctx context.Context, targetIssueID string) ([]ClaimDecisionRequestIssueDoneReceiptRow, error) {
+	rows, err := q.db.Query(ctx, claimDecisionRequestIssueDoneReceipt, targetIssueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimDecisionRequestIssueDoneReceiptRow{}
+	for rows.Next() {
+		var i ClaimDecisionRequestIssueDoneReceiptRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RequestGroupID,
+			&i.WorkspaceID,
+			&i.Role,
+			&i.Operable,
+			&i.Status,
+			&i.ActionType,
+			&i.ActionParams,
+			&i.RiskTier,
+			&i.Title,
+			&i.Detail,
+			&i.OriginWorkspaceID,
+			&i.OriginAgentID,
+			&i.OriginTaskID,
+			&i.OriginIssueID,
+			&i.OriginIssueTitle,
+			&i.OperatorTier,
+			&i.NamedApproverIds,
+			&i.ApproveLabel,
+			&i.DenyLabel,
+			&i.ExpiresAt,
+			&i.AnsweredByType,
+			&i.AnsweredByID,
+			&i.AnsweredAt,
+			&i.AnswerSource,
+			&i.ExecutedAt,
+			&i.ExecutionResult,
+			&i.ExecutionError,
+			&i.TerminalCallbackAt,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countWorkspaceDecisionRequestsByStatus = `-- name: CountWorkspaceDecisionRequestsByStatus :one
 SELECT
     count(*) FILTER (WHERE status IN ('pending', 'approved'))::int AS pending_count,

@@ -1227,6 +1227,8 @@
     "auth_state_execute_failed": "실행 실패",
     "auth_result_unknown": "결과 확인이 필요합니다. 이 요청을 재시도하지 마세요.",
     "auth_action_project_prompt_sync": "지정 프로젝트 프롬프트 동기화",
+    "auth_action_single_issue_create": "대상 Issue 하나 생성",
+    "auth_issue_created": "{{identifier}} 생성 · 상태: {{status}}",
     "auth_approve_default": "승인",
     "auth_deny_default": "거부",
     "auth_execute_failed": "실행 실패, 자동 재시도하지 않음",
