@@ -845,7 +845,7 @@ generate_slot_env() {
 # so the stored POSTGRES_PASSWORD, the one the shared instance's slot role was
 # provisioned with, survives the upgrade untouched.
 ensure_slot_env() {
-  local password="$1" appended="" stored_password=""
+  local password="$1" appended="" stored_password="" expected_upload_base="" current_upload_base=""
   if [ ! -f "$SLOT_ENV_FILE" ]; then
     generate_slot_env "$password"
     ok "generated slot env $SLOT_ENV_FILE (${SLOT_ACCOUNT}@${SLOT_PG_ENDPOINT}/${SLOT_DB})"
@@ -858,6 +858,16 @@ ensure_slot_env() {
   if ! grep -q '^MULTICA_MCP_PORT=' "$SLOT_ENV_FILE"; then
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT" >> "$SLOT_ENV_FILE"
     appended="${appended:+$appended }MULTICA_MCP_PORT"
+  fi
+  expected_upload_base="http://localhost:${SLOT_BACKEND_PORT}"
+  current_upload_base="$(env_file_field LOCAL_UPLOAD_BASE_URL || true)"
+  if [ "$current_upload_base" != "$expected_upload_base" ]; then
+    if grep -q '^LOCAL_UPLOAD_BASE_URL=' "$SLOT_ENV_FILE"; then
+      sed -i "s|^LOCAL_UPLOAD_BASE_URL=.*|LOCAL_UPLOAD_BASE_URL=$expected_upload_base|" "$SLOT_ENV_FILE"
+    else
+      printf 'LOCAL_UPLOAD_BASE_URL=%s\n' "$expected_upload_base" >> "$SLOT_ENV_FILE"
+    fi
+    appended="${appended:+$appended }LOCAL_UPLOAD_BASE_URL"
   fi
   if ! grep -q '^FF_COMPOSIO_MCP_APPS=' "$SLOT_ENV_FILE"; then
     printf 'FF_COMPOSIO_MCP_APPS=true\n' >> "$SLOT_ENV_FILE"
