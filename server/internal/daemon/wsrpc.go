@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/ecdh"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/credentialcrypto"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -90,6 +93,7 @@ type wsRPCClient struct {
 	// reconnect can never carry negotiation state across connections.
 	rpcV1Supported bool
 	generation     uint64
+	sessionKey     *ecdh.PrivateKey
 	// grace is added to a call's server-side timeout budget to get how long the
 	// daemon waits for the response, so a claim that committed just before the
 	// server deadline still reports back before the daemon gives up (MUL-4257).
@@ -113,6 +117,9 @@ func (c *wsRPCClient) attach(sendFrame func([]byte) (*wsOutbound, error)) uint64
 	c.generation++
 	c.rpcV1Supported = false
 	c.sendFrame = sendFrame
+	if sendFrame == nil {
+		c.sessionKey = nil
+	}
 	for id, ch := range c.pending {
 		close(ch)
 		delete(c.pending, id)
@@ -120,6 +127,41 @@ func (c *wsRPCClient) attach(sendFrame func([]byte) (*wsOutbound, error)) uint64
 	generation := c.generation
 	c.mu.Unlock()
 	return generation
+}
+
+func (c *wsRPCClient) setSessionKey(key *ecdh.PrivateKey) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.sessionKey = key
+	c.mu.Unlock()
+}
+
+func (c *wsRPCClient) sessionPublicKey() (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sendFrame == nil || c.sessionKey == nil {
+		return "", false
+	}
+	return base64.RawURLEncoding.EncodeToString(c.sessionKey.PublicKey().Bytes()), true
+}
+
+func (c *wsRPCClient) openSessionEnvelope(envelope credentialcrypto.ExecutionEnvelope, aad []byte) ([]byte, error) {
+	if c == nil {
+		return nil, errWSRPCUnavailable
+	}
+	c.mu.Lock()
+	key := c.sessionKey
+	connected := c.sendFrame != nil
+	c.mu.Unlock()
+	if !connected || key == nil {
+		return nil, errWSRPCUnavailable
+	}
+	return credentialcrypto.OpenForSession(key, envelope, aad)
 }
 
 // markRPCV1Supported records explicit server support for the currently
@@ -367,6 +409,9 @@ func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		if bp := d.backpressureReportForClaim(runtimeIDs); bp != nil {
 			body["backpressure"] = bp
 		}
+		if sessionPublicKey, ok := d.wsRPC.sessionPublicKey(); ok {
+			body["session_public_key"] = sessionPublicKey
+		}
 		// batchClaimRequestTimeout is the server-side execution budget; the
 		// daemon waits that plus the client's grace margin for the response.
 		_, err := d.wsRPC.CallIfRPCV1Supported(ctx, "tasks.claim", batchClaimRequestTimeout, body, &resp)
@@ -403,4 +448,44 @@ func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		return d.client.claimTasksLegacy(ctx, runtimeIDs, maxTasks)
 	}
 	return nil, err
+}
+
+// resolveCredentialCapability uses only the authenticated control RPC. The
+// returned plaintext remains in daemon memory and is never copied into a task
+// environment, prompt, or generic task response.
+func (d *Daemon) resolveCredentialCapability(ctx context.Context, task *Task) ([]byte, error) {
+	if task == nil || task.CredentialCapability == nil || task.ID == "" {
+		return nil, errors.New("credential capability unavailable")
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, task.CredentialCapability.ExpiresAt)
+	if err != nil || !time.Now().Before(expiresAt) {
+		return nil, errors.New("credential capability unavailable")
+	}
+	var response struct {
+		Envelope  credentialcrypto.ExecutionEnvelope `json:"envelope"`
+		ExpiresAt time.Time                          `json:"expires_at"`
+	}
+	body := map[string]any{
+		"capability":         task.CredentialCapability.Capability,
+		"connector_id":       task.CredentialCapability.ConnectorID,
+		"connector_revision": task.CredentialCapability.ConnectorRevision,
+	}
+	if _, err := d.wsRPC.CallIfRPCV1Supported(ctx, "credentials.resolve", 10*time.Second, body, &response); err != nil {
+		return nil, errors.New("credential capability rejected")
+	}
+	if response.ExpiresAt.IsZero() || !time.Now().Before(response.ExpiresAt) {
+		return nil, errors.New("credential capability rejected")
+	}
+	aad, err := json.Marshal(struct {
+		TaskID            string    `json:"task_id"`
+		WorkspaceID       string    `json:"workspace_id"`
+		DaemonID          string    `json:"daemon_id"`
+		ConnectorID       string    `json:"connector_id"`
+		ConnectorRevision int64     `json:"connector_revision"`
+		ExpiresAt         time.Time `json:"expires_at"`
+	}{task.ID, task.WorkspaceID, d.cfg.DaemonID, task.CredentialCapability.ConnectorID, task.CredentialCapability.ConnectorRevision, response.ExpiresAt})
+	if err != nil {
+		return nil, errors.New("credential capability rejected")
+	}
+	return d.wsRPC.openSessionEnvelope(response.Envelope, aad)
 }
