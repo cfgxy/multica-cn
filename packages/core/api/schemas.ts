@@ -1149,6 +1149,7 @@ export const DecisionRequestSchema = z.object({
   title: z.string(),
   detail: z.string(),
   origin_workspace_id: z.string(),
+  target_workspace_slug: z.string().optional(),
   origin_agent_id: z.string(),
   // Server-resolved display name: the origin agent is not in this
   // workspace's roster, so local resolution can never name it.

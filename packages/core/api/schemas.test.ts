@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { IssueDecisionSchema } from "./schemas";
+import { DecisionRequestSchema, IssueDecisionSchema } from "./schemas";
 import {
   AppConfigSchema,
   MarketplaceItemSchema,
@@ -95,6 +95,41 @@ import {
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 import { SkillSummaryListSchema } from "./schemas";
+
+describe("decision request response", () => {
+  const baseRequest = {
+    id: "request-1",
+    request_group_id: "group-1",
+    workspace_id: "workspace-origin",
+    role: "origin",
+    operable: false,
+    status: "pending",
+    action_type: "workspace_info_read",
+    risk_tier: "read",
+    title: "Read workspace info",
+    detail: "",
+    origin_workspace_id: "workspace-origin",
+    origin_agent_id: "agent-1",
+    operator_tier: "owner",
+    named_approver_ids: [],
+    expires_at: "2026-10-22T00:00:00Z",
+    created_at: "2026-10-21T00:00:00Z",
+    updated_at: "2026-10-21T00:00:00Z",
+  };
+
+  it("accepts existing responses without optional target navigation metadata", () => {
+    expect(DecisionRequestSchema.safeParse(baseRequest).success).toBe(true);
+  });
+
+  it("rejects a malformed target workspace route", () => {
+    expect(
+      DecisionRequestSchema.safeParse({
+        ...baseRequest,
+        target_workspace_slug: { slug: "target-space" },
+      }).success,
+    ).toBe(false);
+  });
+});
 
 describe("skill list response", () => {
   it("normalizes optional fields and fails closed on malformed records", () => {

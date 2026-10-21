@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ChevronDown, ChevronRight, ShieldCheck } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ChevronRight, ShieldCheck } from "lucide-react";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
+import { paths } from "@multica/core/paths";
 import type { DecisionRequest } from "@multica/core/types";
 import {
   answerDecisionRequest,
@@ -16,6 +17,7 @@ import {
 } from "@multica/core/issues/decision-requests";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useT, useTimeAgo } from "../../i18n";
+import { AppLink } from "../../navigation";
 
 // One row of the decision center's authorization-requests section
 // (RUYI-630). The summary is deliberately issue-free: the origin issue shows
@@ -235,9 +237,20 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
           </>
         )}
         {!request.operable && isPending && (
-          <span className="text-caption text-faint-foreground">
-            {t(($) => $.requests.projection_hint)}
-          </span>
+          request.target_workspace_slug ? (
+            <AppLink
+              href={paths.workspace(request.target_workspace_slug).decisions()}
+              className="inline-flex items-center gap-1 text-caption text-brand hover:underline"
+              data-testid="decision-request-target-link"
+            >
+              {t(($) => $.requests.open_target_workspace)}
+              <ArrowUpRight className="size-3.5" aria-hidden />
+            </AppLink>
+          ) : (
+            <span className="text-caption text-faint-foreground">
+              {t(($) => $.requests.projection_hint)}
+            </span>
+          )
         )}
         {isPending && (
           <Button
