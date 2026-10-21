@@ -79,7 +79,9 @@ export function AgentOverviewSummary({
           </SummaryRow>
           <SummaryRow label={t(($) => $.inspector.prop_concurrency)}>
             <span className="font-mono tabular-nums text-foreground">
-              {agent.max_concurrent_tasks}
+              {agent.max_concurrent_tasks === -1
+                ? t(($) => $.pickers.concurrency_unlimited)
+                : agent.max_concurrent_tasks}
             </span>
           </SummaryRow>
         </dl>

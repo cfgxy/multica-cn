@@ -26,8 +26,9 @@ func TestCreateAgent_MaxConcurrentTasksBoundsAndDefault(t *testing.T) {
 		{name: "null defaults to six", value: nil, provided: true, wantCode: http.StatusCreated, want: 6},
 		{name: "minimum accepted", value: 1, provided: true, wantCode: http.StatusCreated, want: 1},
 		{name: "maximum accepted", value: 50, provided: true, wantCode: http.StatusCreated, want: 50},
+		{name: "unlimited agent cap accepted", value: -1, provided: true, wantCode: http.StatusCreated, want: -1},
 		{name: "zero rejected", value: 0, provided: true, wantCode: http.StatusBadRequest},
-		{name: "negative rejected", value: -1, provided: true, wantCode: http.StatusBadRequest},
+		{name: "less than unlimited rejected", value: -2, provided: true, wantCode: http.StatusBadRequest},
 		{name: "above maximum rejected", value: 51, provided: true, wantCode: http.StatusBadRequest},
 	}
 
@@ -92,7 +93,7 @@ func TestUpdateAgent_MaxConcurrentTasksBoundsAndOmission(t *testing.T) {
 		return got
 	}
 
-	for _, value := range []int32{0, -1, 51} {
+	for _, value := range []int32{0, -2, 51} {
 		t.Run(fmt.Sprintf("rejects_%d", value), func(t *testing.T) {
 			w := httptest.NewRecorder()
 			req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
@@ -112,7 +113,7 @@ func TestUpdateAgent_MaxConcurrentTasksBoundsAndOmission(t *testing.T) {
 		})
 	}
 
-	for _, value := range []int32{1, 50} {
+	for _, value := range []int32{-1, 1, 50} {
 		t.Run(fmt.Sprintf("accepts_%d", value), func(t *testing.T) {
 			w := httptest.NewRecorder()
 			req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{

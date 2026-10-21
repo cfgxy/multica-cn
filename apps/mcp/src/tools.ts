@@ -4148,8 +4148,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         thinking_level: { type: "string", description: "Runtime-native reasoning/effort token (optional)." },
         max_concurrent_tasks: {
           type: "integer",
-          description: "How many runs this agent may execute in parallel (default 1).",
-          minimum: 1,
+          description: "How many runs this agent may execute in parallel; -1 disables the agent-level cap (the runtime cap still applies).",
+          minimum: -1,
         },
       },
       required: ["workspace", "name", "runtime_id"],
@@ -4163,7 +4163,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         instructions: optionalString(args, "instructions") ?? "",
         model: optionalString(args, "model") ?? "",
         thinking_level: optionalString(args, "thinking_level") ?? "",
-        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: 1 }),
+        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: -1 }),
       });
       return {
         created: true,
@@ -4193,7 +4193,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description: "New reasoning/effort token. Pass empty string to clear back to the runtime default.",
         },
         service_tier: { type: "string", description: "Runtime-native execution tier (Codex). Empty string clears." },
-        max_concurrent_tasks: { type: "integer", description: "New parallel-run cap.", minimum: 1 },
+        max_concurrent_tasks: { type: "integer", description: "New parallel-run cap; -1 disables the agent-level cap (the runtime cap still applies).", minimum: -1 },
         runtime_id: { type: "string", description: "Rebind to this runtime UUID (from list_runtimes)." },
       },
       required: ["workspace", "agent_id"],
@@ -4208,7 +4208,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         model: optionalString(args, "model"),
         thinking_level: optionalString(args, "thinking_level"),
         service_tier: optionalString(args, "service_tier"),
-        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: 1 }),
+        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: -1 }),
         runtime_id: optionalString(args, "runtime_id"),
       });
       return {

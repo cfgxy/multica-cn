@@ -275,6 +275,27 @@ describe("RuntimeDetail visibility section", () => {
     );
   });
 
+  it("saves a runtime-wide task limit from diagnostics", async () => {
+    renderDetail(makeRuntime({ owner_id: "user-me", max_concurrent_tasks: 0 }));
+    const input = screen.getByRole("spinbutton", { name: "Parallel task limit" });
+    fireEvent.change(input, { target: { value: "8" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save parallel task limit" }));
+
+    await waitFor(() =>
+      expect(mockUpdateRuntime).toHaveBeenCalledWith("rt-1", {
+        max_concurrent_tasks: 8,
+      }),
+    );
+  });
+
+  it("shows the unlimited runtime setting read-only to non-editors", () => {
+    renderDetail(makeRuntime({ owner_id: "someone-else", max_concurrent_tasks: 0 }));
+    expect(screen.getByText("Unlimited")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Save parallel task limit" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders a read-only visibility chip when the caller cannot edit", () => {
     renderDetail(makeRuntime({ owner_id: "someone-else", visibility: "public" }));
     expect(screen.getByText("Public")).toBeInTheDocument();

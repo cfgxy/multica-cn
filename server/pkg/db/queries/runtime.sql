@@ -16,6 +16,30 @@ ORDER BY created_at ASC;
 SELECT * FROM agent_runtime
 WHERE id = $1;
 
+-- name: UpdateAgentRuntimeConcurrencyLimit :one
+WITH capacity_lock AS MATERIALIZED (
+    SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('id')::uuid::text || ':runtime_claim_capacity', 0))
+)
+UPDATE agent_runtime
+SET max_concurrent_tasks = @max_concurrent_tasks, updated_at = now()
+WHERE id = sqlc.arg('id')::uuid
+  AND EXISTS (SELECT 1 FROM capacity_lock)
+RETURNING *;
+
+-- name: LockRuntimeClaimCapacity :exec
+-- Serializes capacity-bearing claims across every agent hosted by this runtime.
+SELECT pg_advisory_xact_lock(hashtextextended(@runtime_id::text || ':runtime_claim_capacity', 0));
+
+-- name: GetRuntimeClaimCapacity :one
+SELECT r.max_concurrent_tasks,
+       count(t.id)::bigint AS active_tasks
+FROM agent_runtime r
+LEFT JOIN agent_task_queue t
+  ON t.runtime_id = r.id
+ AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+WHERE r.id = @runtime_id
+GROUP BY r.id;
+
 -- name: GetAgentRuntimes :many
 -- Batch variant of GetAgentRuntime (MUL-4257): loads every runtime in the
 -- input set in one round trip so the machine-level batch claim handler can

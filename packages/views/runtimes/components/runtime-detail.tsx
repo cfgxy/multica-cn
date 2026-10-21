@@ -7,6 +7,7 @@ import {
   Cpu,
   Globe,
   Lock,
+  Save,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
@@ -32,6 +33,7 @@ import {
 } from "@multica/core/agents";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { Button } from "@multica/ui/components/ui/button";
+import { Input } from "@multica/ui/components/ui/input";
 import {
   Tooltip,
   TooltipContent,
@@ -225,6 +227,7 @@ export function RuntimeDetail({
             <DiagnosticsCard
               runtime={runtime}
               canEditVisibility={!!isRuntimeOwner}
+              canEditConcurrency={!!canEditRuntime}
               canDelete={!!canDelete}
               onDelete={() => setDeleteOpen(true)}
             />
@@ -495,6 +498,7 @@ function ServingAgentsCard({
 function DiagnosticsCard({
   runtime,
   canEditVisibility,
+  canEditConcurrency,
   canDelete,
   onDelete,
 }: {
@@ -506,6 +510,7 @@ function DiagnosticsCard({
    * may still rename or delete the runtime.
    */
   canEditVisibility: boolean;
+  canEditConcurrency: boolean;
   canDelete: boolean;
   onDelete: () => void;
 }) {
@@ -525,6 +530,12 @@ function DiagnosticsCard({
           ) : (
             <VisibilityReadout runtime={runtime} />
           )}
+        </div>
+        <div>
+          <div className="mb-1.5 text-micro uppercase tracking-wide text-muted-foreground">
+            {t(($) => $.detail.diagnostics_concurrency)}
+          </div>
+          <RuntimeConcurrencyEditor runtime={runtime} canEdit={canEditConcurrency} />
         </div>
         {canDelete && (
           // The button stays clickable even when the runtime is a live
@@ -546,6 +557,83 @@ function DiagnosticsCard({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function RuntimeConcurrencyEditor({
+  runtime,
+  canEdit,
+}: {
+  runtime: AgentRuntime;
+  canEdit: boolean;
+}) {
+  const { t } = useT("runtimes");
+  const wsId = useWorkspaceId();
+  const updateRuntime = useUpdateRuntime(wsId);
+  const current = runtime.max_concurrent_tasks ?? 0;
+  const [draft, setDraft] = useState(String(current));
+
+  useEffect(() => setDraft(String(current)), [current]);
+
+  const next = Number(draft);
+  const valid = Number.isInteger(next) && next >= 0 && next <= 2_147_483_647;
+  const save = () => {
+    if (!valid || next === current) return;
+    updateRuntime.mutate(
+      { runtimeId: runtime.id, patch: { max_concurrent_tasks: next } },
+      {
+        onSuccess: () => toast.success(t(($) => $.detail.concurrency_toast_updated)),
+        onError: (err) => toast.error(
+          err instanceof Error && err.message
+            ? err.message
+            : t(($) => $.detail.concurrency_toast_failed),
+        ),
+      },
+    );
+  };
+
+  if (!canEdit) {
+    return (
+      <span className="font-mono text-caption tabular-nums text-muted-foreground">
+        {current === 0 ? t(($) => $.detail.concurrency_unlimited) : current}
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <Input
+        type="number"
+        min={0}
+        max={2_147_483_647}
+        step={1}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            save();
+          }
+        }}
+        aria-label={t(($) => $.detail.diagnostics_concurrency)}
+        className="h-8 w-24 font-mono text-caption"
+      />
+      <Button
+        type="button"
+        size="icon"
+        variant="ghost"
+        className="h-8 w-8"
+        disabled={!valid || next === current || updateRuntime.isPending}
+        onClick={save}
+        aria-label={t(($) => $.detail.concurrency_save)}
+        title={t(($) => $.detail.concurrency_save)}
+      >
+        <Save className="h-4 w-4" />
+      </Button>
+      <span className="text-caption text-muted-foreground">
+        {t(($) => $.detail.concurrency_unlimited_hint)}
+      </span>
     </div>
   );
 }
