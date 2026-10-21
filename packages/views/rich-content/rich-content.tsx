@@ -90,6 +90,7 @@ import {
 } from "./rehype-raw-gate";
 import {
   CodeBlockShell,
+  ModernCodeBlockShell,
   RichFenceBlock,
   StaticCodeBody,
   isRichFenceLanguage,
@@ -548,10 +549,26 @@ function RichPre({ children }: RichPreProps) {
   );
 }
 
+function ModernRichPre({ children }: RichPreProps) {
+  const { language, offset } = readFencedCodeChild(children);
+  const isFenceClosed = useIsFenceClosed(offset);
+
+  if (shouldUpgradeFence(language, isFenceClosed)) return <>{children}</>;
+
+  return (
+    <ModernCodeBlockShell
+      language={language}
+      code={getTextContent(children).replace(/\n$/, "")}
+    >
+      {children}
+    </ModernCodeBlockShell>
+  );
+}
+
 // The components map is module-level and static: it never depends on density,
 // phase or the fence gate, so its identity is stable for the lifetime of the
 // app and react-markdown can bail out of unchanged subtrees.
-const COMPONENTS: Partial<Components> = {
+const SHARED_COMPONENTS: Partial<Components> = {
   a: RichLink,
 
   // Images — unified through <Attachment>. The resolver context provided by
@@ -596,8 +613,18 @@ const COMPONENTS: Partial<Components> = {
     </div>
   ),
 
+};
+
+const LEGACY_COMPONENTS: Partial<Components> = {
+  ...SHARED_COMPONENTS,
   code: RichCode,
   pre: RichPre,
+};
+
+const MODERN_COMPONENTS: Partial<Components> = {
+  ...SHARED_COMPONENTS,
+  code: RichCode,
+  pre: ModernRichPre,
 };
 
 // `satisfies` rather than a cast: the plugin lists are still checked against
@@ -701,17 +728,14 @@ function RichContentAdapter({
   const markdown = useMemo(
     () => (
       <ClosedFenceContext.Provider value={closedFences}>
-        <ReactMarkdown
-          remarkPlugins={REMARK_PLUGINS}
-          rehypePlugins={REHYPE_PLUGINS}
-          urlTransform={markdownUrlTransform}
-          components={COMPONENTS}
-        >
-          {processed}
-        </ReactMarkdown>
+        {renderer === "modern" ? (
+          <ModernRichContentRenderer content={processed} />
+        ) : (
+          <LegacyRichContentRenderer content={processed} />
+        )}
       </ClosedFenceContext.Provider>
     ),
-    [processed, closedFences],
+    [processed, closedFences, renderer],
   );
 
   return (
@@ -734,5 +758,31 @@ function RichContentAdapter({
         <LinkHoverCard {...hover} />
       </div>
     </AttachmentDownloadProvider>
+  );
+}
+
+function LegacyRichContentRenderer({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
+      urlTransform={markdownUrlTransform}
+      components={LEGACY_COMPONENTS}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
+
+function ModernRichContentRenderer({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
+      urlTransform={markdownUrlTransform}
+      components={MODERN_COMPONENTS}
+    >
+      {content}
+    </ReactMarkdown>
   );
 }
