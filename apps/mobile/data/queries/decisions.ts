@@ -11,6 +11,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import { decisionInboxKeys } from "@multica/core/issues/decisions";
 import { decisionRequestKeys } from "@multica/core/issues/decision-requests";
+import type { DecisionRequestDetail } from "@multica/core/types";
 import { issueKeys } from "@multica/core/issues/queries";
 import { api } from "@/data/api";
 
@@ -49,5 +50,16 @@ export function workspaceDecisionRequestsOptions(wsId: string | null) {
       return api.listDecisionRequests(wsId);
     },
     enabled: !!wsId,
+  });
+}
+
+export function decisionRequestDetailOptions(wsId: string | null, requestId: string | null) {
+  return queryOptions({
+    queryKey: [...decisionRequestKeys.workspace(wsId), requestId ?? "none", "detail"] as const,
+    queryFn: async (): Promise<DecisionRequestDetail> => {
+      if (!wsId || !requestId) throw new Error("decision request detail requires ids");
+      return api.getDecisionRequest(wsId, requestId);
+    },
+    enabled: !!wsId && !!requestId,
   });
 }

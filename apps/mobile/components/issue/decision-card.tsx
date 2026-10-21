@@ -24,6 +24,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Pressable, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import { buildActorNameResolver } from "@multica/core/workspace/hooks";
 import { decisionOptionDisplayLabel, upsertDecisionInCache } from "@multica/core/issues/decisions";
 import { issueKeys } from "@multica/core/issues/queries";
@@ -79,6 +80,7 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
       api.answerIssueDecision(decision.issue_id, decision.id, [index]),
     onSuccess: (updated) => {
       upsertDecisionInCache(qc, updated.issue_id, updated);
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
     },
     onError: () => {
       qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
@@ -98,6 +100,21 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
       ? t("decisions.auth_approve_default", "Approve")
       : t("decisions.auth_deny_default", "Deny");
   };
+  const projectResults = decision.action_type === "project_prompt_sync"
+    && decision.execution_result && typeof decision.execution_result === "object"
+    && Array.isArray((decision.execution_result as { projects?: unknown }).projects)
+    ? (decision.execution_result as { projects: Array<{ project_id?: unknown; status?: unknown; version?: unknown }> }).projects
+        .filter((item) => typeof item.project_id === "string" && typeof item.status === "string" && typeof item.version === "number")
+    : [];
+  const sideEffectStatus = decision.execution_result && typeof decision.execution_result === "object"
+    ? (decision.execution_result as { side_effect_status?: unknown }).side_effect_status
+    : null;
+  const createdIssue = decision.action_type === "single_issue_create" && decision.execution_result && typeof decision.execution_result === "object"
+    ? decision.execution_result as { target_identifier?: unknown; target_issue_status?: unknown }
+    : null;
+  const scriptHash = decision.action_type === "script_review" && decision.execution_result && typeof decision.execution_result === "object"
+    ? (decision.execution_result as { script_sha256?: unknown }).script_sha256
+    : null;
 
   return (
     <View className="px-4" testID="decision-card">
@@ -131,7 +148,9 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
               )}
               {decision.executed_at && !decision.execution_error && (
                 <Text className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
-                  {t("decisions.auth_state_executed", "Executed")}
+                  {decision.action_type === "script_review"
+                    ? t("decisions.auth_state_reviewed", "Reviewed")
+                    : t("decisions.auth_state_executed", "Executed")}
                 </Text>
               )}
               {decision.execution_error && (
@@ -141,6 +160,21 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
               )}
             </View>
             <Text className="mt-1 text-sm font-medium">{decision.question}</Text>
+            {decision.action_type === "project_prompt_sync" ? (
+              <Text className="mt-1 text-xs text-muted-foreground">
+                {t("decisions.auth_action_project_prompt_sync", "Sync selected project prompts")}
+              </Text>
+            ) : null}
+            {decision.action_type === "single_issue_create" ? (
+              <Text className="mt-1 text-xs text-muted-foreground">
+                {t("decisions.auth_action_single_issue_create", "Create one target issue")}
+              </Text>
+            ) : null}
+            {decision.action_type === "script_review" ? (
+              <Text className="mt-1 text-xs text-muted-foreground">
+                {t("decisions.auth_action_script_review", "Script review only")}
+              </Text>
+            ) : null}
             <Text className="mt-0.5 text-xs text-muted-foreground">
               {creatorName} · {timeAgo(decision.created_at)}
             </Text>
@@ -185,11 +219,42 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
 
         {decision.execution_error ? (
           <Text className="mt-2 text-xs text-destructive">
-            {t("decisions.auth_execute_failed", "Execution failed: {{reason}}", {
-              reason: decision.execution_error,
-            })}
+            {t("decisions.auth_execute_failed", "Execution failed; it was not retried")}
           </Text>
         ) : null}
+        {sideEffectStatus === "unknown" ? (
+          <Text className="mt-2 text-xs font-medium text-destructive" accessibilityRole="text" accessibilityLiveRegion="polite">
+            {t("decisions.auth_result_unknown", "Result needs verification. Do not retry this request.")}
+          </Text>
+        ) : null}
+        {projectResults.map((result) => (
+          <Text key={String(result.project_id)} className="mt-1 text-xs text-muted-foreground" testID="decision-auth-project-result">
+            {String(result.project_id)} · {String(result.status)} · v{String(result.version)}
+          </Text>
+        ))}
+      {typeof createdIssue?.target_identifier === "string" ? (
+        <Text className="mt-1 text-xs text-muted-foreground" testID="decision-auth-created-issue">
+          {t("decisions.auth_issue_created", "Created {{identifier}} · {{status}}", {
+            identifier: createdIssue.target_identifier,
+            status: typeof createdIssue.target_issue_status === "string" ? createdIssue.target_issue_status : "in_progress",
+          })}
+        </Text>
+      ) : null}
+      {typeof scriptHash === "string" ? (
+        <View className="mt-2 flex-row flex-wrap items-center gap-2" testID="decision-auth-script-receipt">
+          <Text selectable className="flex-1 break-all text-xs text-muted-foreground">
+            {t("decisions.script_hash", "SHA-256")}: {scriptHash}
+          </Text>
+          <Pressable
+            onPress={() => void Clipboard.setStringAsync(scriptHash)}
+            accessibilityRole="button"
+            accessibilityLabel={t("decisions.copy_script_hash", "Copy script hash")}
+            testID="decision-auth-copy-script-hash"
+          >
+            <Ionicons name="copy-outline" size={16} color={theme.brand} />
+          </Pressable>
+        </View>
+      ) : null}
       </Card>
     </View>
   );

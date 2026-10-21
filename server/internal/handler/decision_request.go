@@ -91,6 +91,9 @@ const (
 const (
 	DecisionActionWorkspaceInfoRead = "workspace_info_read"
 	DecisionActionPromptRestore     = "prompt_restore"
+	DecisionActionProjectPromptSync = "project_prompt_sync"
+	DecisionActionSingleIssueCreate = "single_issue_create"
+	DecisionActionScriptReview      = "script_review"
 )
 
 const (
@@ -112,6 +115,18 @@ var decisionRequestActions = map[string]decisionRequestActionDef{
 		RiskTier: decisionRiskWriteLow,
 		Summary:  "Undo the last applied marketplace prompt on an agent or squad (one-step restore, hand-edit guarded).",
 	},
+	DecisionActionProjectPromptSync: {
+		RiskTier: decisionRiskWriteLow,
+		Summary:  "Write the approved prompt content to an explicit set of projects in the target workspace.",
+	},
+	DecisionActionSingleIssueCreate: {
+		RiskTier: decisionRiskWriteLow,
+		Summary:  "Create one precisely scoped issue in the target workspace and report when it reaches Done.",
+	},
+	DecisionActionScriptReview: {
+		RiskTier: decisionRiskWriteLow,
+		Summary:  "Review a fixed script snapshot; approval records review only and never executes it.",
+	},
 }
 
 // errDecisionRequestValidation marks input-shape rejections (400).
@@ -120,17 +135,18 @@ type errDecisionRequestValidation struct{ msg string }
 func (e errDecisionRequestValidation) Error() string { return e.msg }
 
 type DecisionRequestResponse struct {
-	ID             string          `json:"id"`
-	RequestGroupID string          `json:"request_group_id"`
-	WorkspaceID    string          `json:"workspace_id"`
-	Role           string          `json:"role"`
-	Operable       bool            `json:"operable"`
-	Status         string          `json:"status"`
-	ActionType     string          `json:"action_type"`
-	ActionParams   json.RawMessage `json:"action_params"`
-	RiskTier       string          `json:"risk_tier"`
-	Title          string          `json:"title"`
-	Detail         string          `json:"detail"`
+	ID                string                            `json:"id"`
+	RequestGroupID    string                            `json:"request_group_id"`
+	WorkspaceID       string                            `json:"workspace_id"`
+	Role              string                            `json:"role"`
+	Operable          bool                              `json:"operable"`
+	Status            string                            `json:"status"`
+	ActionType        string                            `json:"action_type"`
+	ActionParams      json.RawMessage                   `json:"action_params"`
+	AuthorizationSpec *decisionRequestAuthorizationSpec `json:"authorization_spec,omitempty"`
+	RiskTier          string                            `json:"risk_tier"`
+	Title             string                            `json:"title"`
+	Detail            string                            `json:"detail"`
 	// Title-level origin references only — the detail view never carries the
 	// origin issue's body or comments (决策中心点击不进 Issue).
 	OriginWorkspaceID   string  `json:"origin_workspace_id"`
@@ -200,6 +216,11 @@ type AnswerDecisionRequestRequest struct {
 }
 
 func decisionRequestToResponse(row db.DecisionRequest) DecisionRequestResponse {
+	return decisionRequestToResponseWithPromptAccess(row, false)
+}
+
+func decisionRequestToResponseWithPromptAccess(row db.DecisionRequest, revealPrompt bool) DecisionRequestResponse {
+	actionParams := decisionRequestProjectedParams(row, revealPrompt)
 	resp := DecisionRequestResponse{
 		ID:               uuidToString(row.ID),
 		RequestGroupID:   uuidToString(row.RequestGroupID),
@@ -208,7 +229,7 @@ func decisionRequestToResponse(row db.DecisionRequest) DecisionRequestResponse {
 		Operable:         row.Operable,
 		Status:           row.Status,
 		ActionType:       row.ActionType,
-		ActionParams:     json.RawMessage(row.ActionParams),
+		ActionParams:     actionParams,
 		RiskTier:         row.RiskTier,
 		Title:            row.Title,
 		Detail:           row.Detail,
@@ -218,6 +239,9 @@ func decisionRequestToResponse(row db.DecisionRequest) DecisionRequestResponse {
 		ExpiresAt:        row.ExpiresAt.Time,
 		CreatedAt:        row.CreatedAt.Time,
 		UpdatedAt:        row.UpdatedAt.Time,
+	}
+	if spec, err := readDecisionRequestSpec(row); err == nil {
+		resp.AuthorizationSpec = &spec
 	}
 	resp.OriginWorkspaceID = uuidToString(row.OriginWorkspaceID)
 	if row.OriginTaskID.Valid {
@@ -268,6 +292,31 @@ func decisionRequestToResponse(row db.DecisionRequest) DecisionRequestResponse {
 		resp.ExecutionError = &v
 	}
 	return resp
+}
+
+func decisionRequestProjectedParams(row db.DecisionRequest, revealSensitive bool) json.RawMessage {
+	if revealSensitive {
+		return append(json.RawMessage(nil), row.ActionParams...)
+	}
+	var params map[string]json.RawMessage
+	if json.Unmarshal(row.ActionParams, &params) != nil || params == nil {
+		return json.RawMessage(`{}`)
+	}
+	switch row.ActionType {
+	case DecisionActionProjectPromptSync:
+		delete(params, "content")
+	case DecisionActionScriptReview:
+		public := make(map[string]json.RawMessage, 1)
+		if rawHash, ok := params["sha256"]; ok {
+			public["sha256"] = rawHash
+		}
+		params = public
+	}
+	redacted, err := json.Marshal(params)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return redacted
 }
 
 // originAgentNames resolves display names for the distinct origin agents
@@ -450,12 +499,40 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("detail must be at most %d characters", decisionReqMaxDetailLen))
 		return
 	}
+	if req.ActionType == DecisionActionScriptReview {
+		title = "Review script snapshot"
+		detail = ""
+	}
 	if len(req.Params) == 0 {
 		req.Params = []byte("{}")
 	}
 	if !json.Valid(req.Params) {
 		writeError(w, http.StatusBadRequest, "params must be a JSON object")
 		return
+	}
+	if req.ActionType == DecisionActionProjectPromptSync {
+		normalized, err := normalizeProjectPromptSyncParams(req.Params)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Params = normalized
+	}
+	if req.ActionType == DecisionActionSingleIssueCreate {
+		normalized, err := normalizeSingleIssueCreateParams(req.Params)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Params = normalized
+	}
+	if req.ActionType == DecisionActionScriptReview {
+		normalized, err := normalizeScriptReviewParams(req.Params)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Params = normalized
 	}
 	approveLabel, denyLabel, err := validateDecisionRequestLabels(req.ApproveLabel, req.DenyLabel)
 	if err != nil {
@@ -466,6 +543,10 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if req.ActionType == DecisionActionProjectPromptSync || req.ActionType == DecisionActionScriptReview {
+		visibleTier = "restricted"
+		operatorTier = "owner"
 	}
 	namedIDs := make([]string, 0, len(req.NamedApproverIDs))
 	for _, id := range req.NamedApproverIDs {
@@ -484,7 +565,7 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "failed to encode named approvers")
 		return
 	}
-	expiresAt := resolveDecisionRequestExpiry(req.TTLMinutes)
+	expiresAt := resolveDecisionRequestExpiry(req.TTLMinutes).UTC().Truncate(time.Microsecond)
 
 	// The origin task (when supplied) must exist so the terminal callback can
 	// find its issue context; it is recorded, not authorized here.
@@ -531,12 +612,26 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 	}
 	crossSpace := targetWorkspaceID != workspaceID
 
+	sourceIssueID := ""
+	if originIssueID.Valid {
+		sourceIssueID = uuidToString(originIssueID)
+	}
+	sourceTaskID := ""
+	if originTaskID.Valid {
+		sourceTaskID = uuidToString(originTaskID)
+	}
+	paramsCopy, err := buildDecisionRequestActionParams(req.ActionType, req.Params,
+		uuidToString(workspaceID), uuidToString(targetWorkspaceID), sourceIssueID, sourceTaskID, expiresAt, title)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "authorization specification is invalid")
+		return
+	}
+
 	groupID := dbid.NewV7()
 	agentUUID := parseUUID(authorID)
 	expires := pgtype.Timestamptz{Time: expiresAt, Valid: true}
 
 	originOperable := !originIssueID.Valid
-	paramsCopy := append([]byte(nil), req.Params...)
 
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
@@ -735,6 +830,14 @@ func (h *Handler) GetDecisionRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "only workspace members or the creating agent can view this request")
 		return
 	}
+	member, isMember := h.workspaceMember(w, r, uuidToString(workspaceID))
+	if !isMember {
+		return
+	}
+	requestSpec, specErr := readDecisionRequestSpec(row)
+	revealPrompt := authorType == "member" && member.Role == "owner" && specErr == nil &&
+		requestSpec.TargetWorkspaceID == uuidToString(workspaceID) &&
+		(row.Role == decisionReqRoleTarget || requestSpec.SourceWorkspaceID == requestSpec.TargetWorkspaceID)
 
 	h.sweepDueDecisionRequests(r)
 
@@ -744,13 +847,20 @@ func (h *Handler) GetDecisionRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := DecisionRequestDetailResponse{
-		Request: decisionRequestToResponse(row),
+		Request: decisionRequestToResponseWithPromptAccess(row, revealPrompt),
 		Steps:   make([]DecisionRequestResponse, 0, len(group)),
 	}
 	agentNames := h.originAgentNames(r.Context(), group)
 	attachOriginAgentName(agentNames, &resp.Request)
 	for _, step := range group {
-		resp.Steps = append(resp.Steps, decisionRequestToResponse(step))
+		stepResp := decisionRequestToResponseWithPromptAccess(step,
+			revealPrompt && uuidToString(step.WorkspaceID) == requestSpec.TargetWorkspaceID)
+		if uuidToString(step.WorkspaceID) != uuidToString(workspaceID) {
+			stepResp.AnsweredByType = nil
+			stepResp.AnsweredByID = nil
+			stepResp.AnswerSource = nil
+		}
+		resp.Steps = append(resp.Steps, stepResp)
 	}
 	for i := range resp.Steps {
 		attachOriginAgentName(agentNames, &resp.Steps[i])
@@ -834,7 +944,10 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]DecisionRequestResponse, 0, len(rows))
 	for _, row := range rows {
-		item := decisionRequestToResponse(row)
+		spec, specErr := readDecisionRequestSpec(row)
+		revealPrompt := member.Role == "owner" && specErr == nil &&
+			spec.TargetWorkspaceID == uuidToString(workspaceID)
+		item := decisionRequestToResponseWithPromptAccess(row, revealPrompt)
 		if row.Role == decisionReqRoleOrigin && !row.Operable {
 			if slug, ok := targetSlugs[uuidToString(row.RequestGroupID)]; ok {
 				item.TargetWorkspaceSlug = &slug
@@ -930,7 +1043,11 @@ func (h *Handler) revokeCrossSpaceDecisionRequestsOnDelete(ctx context.Context, 
 // publishGroupUpdate fans the freshest group state to both workspaces' WS
 // channels (one event per row) — clients never read across spaces.
 func (h *Handler) publishGroupUpdate(r *http.Request, groupID pgtype.UUID) {
-	rows, err := h.Queries.GetDecisionRequestGroup(r.Context(), groupID)
+	h.publishGroupUpdateContext(r.Context(), groupID)
+}
+
+func (h *Handler) publishGroupUpdateContext(ctx context.Context, groupID pgtype.UUID) {
+	rows, err := h.Queries.GetDecisionRequestGroup(ctx, groupID)
 	if err != nil {
 		return
 	}
@@ -999,6 +1116,13 @@ func (h *Handler) AnswerDecisionRequest(w http.ResponseWriter, r *http.Request) 
 	if !decisionRequestTierAllows(row.OperatorTier, parseUUIDJSONArray(row.NamedApproverIds), member.Role, userID) {
 		writeError(w, http.StatusForbidden, "your role does not meet this request's operator tier")
 		return
+	}
+	if decision == decisionReqApproved {
+		group, groupErr := h.Queries.GetDecisionRequestGroup(r.Context(), row.RequestGroupID)
+		if groupErr != nil || validateDecisionRequestGroupSpec(group) != nil || validateDecisionRequestRowSpec(row) != nil {
+			writeError(w, http.StatusConflict, "authorization specification is invalid; create a new request")
+			return
+		}
 	}
 
 	answered, err := h.Queries.AnswerDecisionRequest(r.Context(), db.AnswerDecisionRequestParams{
@@ -1174,6 +1298,25 @@ func (h *Handler) answerAuthorizationCard(w http.ResponseWriter, r *http.Request
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if decision == decisionReqApproved {
+		rows, err := qtx.GetDecisionRequestGroupForUpdate(r.Context(), card.PendingRequestGroupID)
+		if err != nil || validateDecisionRequestGroupSpec(rows) != nil {
+			writeError(w, http.StatusConflict, "authorization specification is invalid; create a new request")
+			return
+		}
+		var groupSpec decisionRequestAuthorizationSpec
+		if len(rows) > 0 {
+			groupSpec, err = readDecisionRequestSpec(rows[0])
+		}
+		var cardParams map[string]json.RawMessage
+		var cardSpec decisionRequestAuthorizationSpec
+		if err != nil || json.Unmarshal(card.PendingActionParams, &cardParams) != nil ||
+			json.Unmarshal(cardParams["authorization_spec"], &cardSpec) != nil ||
+			card.PendingActionType.String != groupSpec.ActionType || cardSpec.Digest != groupSpec.Digest {
+			writeError(w, http.StatusConflict, "authorization specification does not match the approved request")
+			return
+		}
+	}
 
 	selectedJSON, err := json.Marshal([]int{selected[0]})
 	if err != nil {

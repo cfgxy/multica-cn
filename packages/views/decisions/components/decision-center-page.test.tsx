@@ -17,6 +17,7 @@ import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 
 const inboxRef = vi.hoisted(() => ({ current: null as WorkspaceDecisionInbox | null }));
 const requestsRef = vi.hoisted(() => ({ current: null as Promise<DecisionRequestsList> | null }));
+const scriptDetailRef = vi.hoisted(() => ({ current: null as unknown }));
 const navigationPushRef = vi.hoisted(() => ({ push: vi.fn() }));
 
 vi.mock("@multica/core/issues/decisions", async (importOriginal) => {
@@ -34,6 +35,10 @@ vi.mock("@multica/core/issues/decision-requests", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@multica/core/issues/decision-requests")>();
   return {
     ...actual,
+    decisionRequestDetailQueryOptions: (workspaceId: string, requestId: string) => ({
+      queryKey: ["test", "decision-request-detail", workspaceId, requestId],
+      queryFn: async () => scriptDetailRef.current,
+    }),
     workspaceDecisionRequestsQueryOptions: (workspaceId: string | null | undefined) => ({
       queryKey: ["test", "decision-requests", workspaceId],
       queryFn: () =>
@@ -123,6 +128,7 @@ beforeEach(() => {
   // test starts from the shipped defaults.
   decisionCenterPrefsStore.setState({ viewMode: "list", hiddenStatuses: [] });
   requestsRef.current = null;
+  scriptDetailRef.current = null;
   navigationPushRef.push.mockClear();
 });
 
@@ -447,7 +453,9 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
           workspace_id: "ws-1",
           role: "origin",
           status: "pending",
-          action_type: "workspace_info_read",
+          action_type: "project_prompt_sync",
+          action_params: { project_ids: ["project-1"], content_sha256: "hash" },
+          execution_result: { projects: [{ project_id: "project-1", status: "updated", version: 3 }] },
           risk_tier: "write_low",
           title: "Read workspace info",
           detail: "",
@@ -468,6 +476,176 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
 
     deferred.settle();
     expect(await screen.findByTestId("decision-requests-section")).toBeInTheDocument();
+    expect(screen.getByTestId("decision-request-project-result")).toHaveTextContent("project-1 · updated · v3");
+    expect(screen.queryByText("approved prompt body")).toBeNull();
+  });
+
+  it("shows a verification warning for unknown side effects and keeps the approval toggle accessible", async () => {
+    inboxRef.current = { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
+    requestsRef.current = Promise.resolve({
+      items: [{
+        id: "dr-unknown",
+        request_group_id: "rg-unknown",
+        workspace_id: "ws-1",
+        role: "origin",
+        operable: true,
+        status: "execute_failed",
+        action_type: "project_prompt_sync",
+        action_params: { project_ids: ["project-1"] },
+        authorization_spec: {
+          version: 1,
+          kind: "cli",
+          action_type: "project_prompt_sync",
+          scope: { target_workspace_id: "ws-2", project_ids: ["project-1"] },
+          parameter_digest: "a".repeat(64),
+          source_workspace_id: "ws-1",
+          target_workspace_id: "ws-2",
+          expires_at: "2026-10-22T00:00:00Z",
+          public_summary: "Sync project prompts",
+          digest: "b".repeat(64),
+        },
+        execution_error: "PROMPT_SYNC_FAILED",
+        execution_result: {
+          receipt_version: 1,
+          side_effect_status: "unknown",
+          steps: [{ handler: "project_prompt_sync", status: "unknown", side_effect_status: "unknown" }],
+        },
+        risk_tier: "write_low",
+        title: "Sync project prompts",
+        detail: "",
+        origin_workspace_id: "ws-1",
+        origin_agent_id: "agent-1",
+        origin_agent_name: "Seed Agent",
+        origin_task_id: null,
+        origin_issue_id: null,
+        origin_issue_title: null,
+        operator_tier: "owner",
+        named_approver_ids: [],
+        approve_label: null,
+        deny_label: null,
+        expires_at: "2026-10-22T00:00:00Z",
+        answered_by_type: null,
+        answered_by_id: null,
+        answered_at: null,
+        answer_source: null,
+        executed_at: null,
+        created_at: "2026-10-21T00:00:00Z",
+        updated_at: "2026-10-21T00:00:00Z",
+      }],
+      counts: { pending: 0, closed: 1, executed: 0 },
+    } as unknown as DecisionRequestsList);
+    renderPage();
+
+    expect(await screen.findByTestId("decision-request-result-unknown")).toHaveTextContent("Result needs verification");
+    expect(screen.queryByText("PROMPT_SYNC_FAILED")).toBeNull();
+    expect(screen.getByTestId("decision-request-steps-toggle")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("labels a single-issue request and shows its Done receipt", async () => {
+    inboxRef.current = { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
+    requestsRef.current = Promise.resolve({
+      items: [{
+        id: "dr-issue",
+        request_group_id: "rg-issue",
+        workspace_id: "ws-1",
+        role: "origin",
+        operable: false,
+        status: "executed",
+        action_type: "single_issue_create",
+        action_params: { title: "Fix callback", description: "Make one callback idempotent" },
+        authorization_spec: { version: 1, kind: "single_issue", digest: "d".repeat(64) },
+        execution_result: {
+          target_issue_id: "issue-12",
+          target_identifier: "RUYI-12",
+          target_issue_status: "in_progress",
+          done_receipt: { status: "done" },
+        },
+        risk_tier: "write_low",
+        title: "Create one exact issue",
+        detail: "",
+        origin_workspace_id: "ws-1",
+        origin_agent_id: "agent-1",
+        origin_agent_name: "Seed Agent",
+        origin_issue_id: null,
+        origin_issue_title: null,
+        created_at: "2026-10-21T00:00:00Z",
+      }],
+      counts: { pending: 0, closed: 0, executed: 1 },
+    } as unknown as DecisionRequestsList);
+    renderPage();
+
+    expect(await screen.findByTestId("decision-request-created-issue")).toHaveTextContent("Target issue RUYI-12 · done");
+    expect(screen.getByText("Create one issue")).toBeInTheDocument();
+  });
+
+  it("loads the fixed script snapshot only through target request detail and labels review without execution", async () => {
+    inboxRef.current = { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
+    const script = "printf reviewed";
+    scriptDetailRef.current = {
+      request: {
+        id: "dr-script",
+        action_params: { script, interpreter: "bash", args: ["-e"], sha256: "a".repeat(64) },
+      },
+      steps: [],
+    };
+    requestsRef.current = Promise.resolve({
+      items: [{
+        id: "dr-script",
+        request_group_id: "rg-script",
+        workspace_id: "ws-target",
+        role: "target",
+        operable: true,
+        status: "executed",
+        action_type: "script_review",
+        action_params: { sha256: "a".repeat(64) },
+        authorization_spec: {
+          version: 1,
+          kind: "script_review",
+          action_type: "script_review",
+          scope: { target_workspace_id: "ws-target" },
+          parameter_digest: "b".repeat(64),
+          source_workspace_id: "ws-origin",
+          target_workspace_id: "ws-target",
+          expires_at: "2026-10-22T00:00:00Z",
+          public_summary: "Review script snapshot",
+          digest: "c".repeat(64),
+        },
+        execution_result: { receipt_type: "script_review", status: "reviewed", script_sha256: "a".repeat(64) },
+        risk_tier: "write_low",
+        title: "Review script snapshot",
+        detail: "",
+        origin_workspace_id: "ws-origin",
+        origin_agent_id: "agent-1",
+        origin_agent_name: "Seed Agent",
+        origin_task_id: null,
+        origin_issue_id: null,
+        origin_issue_title: null,
+        operator_tier: "owner",
+        named_approver_ids: [],
+        approve_label: null,
+        deny_label: null,
+        expires_at: "2026-10-22T00:00:00Z",
+        answered_by_type: null,
+        answered_by_id: null,
+        answered_at: null,
+        answer_source: null,
+        executed_at: "2026-10-21T00:00:00Z",
+        execution_error: null,
+        created_at: "2026-10-21T00:00:00Z",
+        updated_at: "2026-10-21T00:00:00Z",
+      }],
+      counts: { pending: 0, closed: 1, executed: 1 },
+    } as unknown as DecisionRequestsList);
+    renderPage();
+
+    expect(await screen.findByText("Reviewed")).toBeInTheDocument();
+    expect(screen.queryByText("Executed")).toBeNull();
+    expect(screen.queryByText(script)).toBeNull();
+    fireEvent.click(screen.getByTestId("script-review-toggle"));
+    expect(await screen.findByText(script)).toBeInTheDocument();
+    expect(screen.getByText("bash")).toBeInTheDocument();
+    expect(screen.getByText('["-e"]')).toBeInTheDocument();
+    expect(screen.queryByText(/execution complete/i)).toBeNull();
   });
 });
 

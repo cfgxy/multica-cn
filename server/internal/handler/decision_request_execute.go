@@ -13,16 +13,19 @@ package handler
 // the 926 audit log as agent.decision_* events.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -151,6 +154,11 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 		}
 	}
 
+	if err := validateDecisionRequestGroupSpec(rows); err != nil {
+		slog.Warn("decision request specification validation failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID), "error", err)...)
+		return
+	}
+
 	// Still waiting on another step — stay pending, publish, no callback.
 	allApproved := true
 	for _, row := range rows {
@@ -174,22 +182,90 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 		return
 	}
 
+	if landing.ActionType == DecisionActionScriptReview {
+		spec, err := readDecisionRequestSpec(landing)
+		if err != nil {
+			slog.Warn("script review authorization validation failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID), "error", err)...)
+			return
+		}
+		var params decisionScriptReviewParams
+		if err := json.Unmarshal(landing.ActionParams, &params); err != nil || params.SHA256 == "" {
+			slog.Warn("script review payload validation failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID))...)
+			return
+		}
+		resultJSON, err := json.Marshal(map[string]any{
+			"receipt_version":      1,
+			"receipt_type":         "script_review",
+			"status":               "reviewed",
+			"authorization_digest": spec.Digest,
+			"script_sha256":        params.SHA256,
+		})
+		if err != nil {
+			return
+		}
+		executedAt := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+		updated, err := qtx.SetDecisionRequestExecution(r.Context(), db.SetDecisionRequestExecutionParams{
+			Status: decisionReqExecuted, ExecutedAt: executedAt, ExecutionResult: resultJSON,
+			ExecutionError: pgtype.Text{}, RequestGroupID: groupID,
+		})
+		if err != nil {
+			slog.Warn("script review receipt write failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID), "error", err)...)
+			return
+		}
+		if _, err := qtx.SetAuthorizationCardExecution(r.Context(), db.SetAuthorizationCardExecutionParams{
+			AuthState: decisionReqExecuted, ExecutedAt: executedAt, ExecutionResult: resultJSON,
+			ExecutionError: pgtype.Text{}, RequestGroupID: groupID,
+		}); err != nil {
+			slog.Warn("script review card sync failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID), "error", err)...)
+			return
+		}
+		reviewRow := origin
+		if len(updated) > 0 {
+			reviewRow = updated[0]
+		}
+		service.TryAppendAuditEvents(r.Context(), qtx, auditEventForDecisionRequest(
+			"agent.decision_script_reviewed", reviewRow,
+			decisionRequestAuditDetails(reviewRow, map[string]any{
+				"authorization_digest": spec.Digest,
+				"script_sha256":        params.SHA256,
+				"review_status":        "reviewed",
+			})))
+		if err := tx.Commit(r.Context()); err != nil {
+			slog.Warn("script review commit failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID), "error", err)...)
+			return
+		}
+		h.publishGroupUpdate(r, groupID)
+		return
+	}
+
 	// Every step approved: run the whitelisted action in this same
 	// transaction (the group lock already serializes us against any other
 	// final-step approval). The landing row names the workspace the action
 	// executes in; its ActionParams are byte-identical to the origin row's.
+	if err := qtx.CreateDecisionRequestActionSavepoint(r.Context()); err != nil {
+		slog.Warn("decision request action savepoint failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
+		return
+	}
 	resultJSON, execErr := h.executeDecisionRequestAction(r, qtx, landing)
+	if execErr != nil {
+		if err := qtx.RollbackDecisionRequestAction(r.Context()); err != nil {
+			slog.Warn("decision request action rollback failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
+			return
+		}
+	}
+	if err := qtx.ReleaseDecisionRequestActionSavepoint(r.Context()); err != nil {
+		slog.Warn("decision request action savepoint release failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
+		return
+	}
 	status := decisionReqExecuted
 	executedAt := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
 	var resultBytes []byte
 	var execErrText pgtype.Text
 	if execErr != nil {
 		status = decisionReqExecuteFailed
-		executedAt = pgtype.Timestamptz{}
-		execErrText = pgtype.Text{String: execErr.Error(), Valid: true}
-	} else {
-		resultBytes = resultJSON
+		execErrText = pgtype.Text{String: decisionRequestSafeErrorCode(landing.ActionType), Valid: true}
 	}
+	resultBytes = decisionRequestReceipt(landing.ActionType, resultJSON, execErr == nil, execErr != nil)
 
 	updated, err := qtx.SetDecisionRequestExecution(r.Context(), db.SetDecisionRequestExecutionParams{
 		Status:          status,
@@ -220,9 +296,18 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 	if execErr != nil {
 		eventType = service.AuditAgentDecisionExecuteFailed
 	}
-	service.TryAppendAuditEvents(r.Context(), qtx, auditEventForDecisionRequest(eventType, execRow, decisionRequestAuditDetails(execRow, map[string]any{
-		"answered_by": answererID,
-	})))
+	auditDetails := map[string]any{"answered_by": answererID}
+	if execErr == nil && landing.ActionType == DecisionActionProjectPromptSync {
+		var summary struct {
+			ContentSHA256 string           `json:"content_sha256"`
+			Projects      []map[string]any `json:"projects"`
+		}
+		if json.Unmarshal(resultJSON, &summary) == nil {
+			auditDetails["content_sha256"] = summary.ContentSHA256
+			auditDetails["projects"] = summary.Projects
+		}
+	}
+	service.TryAppendAuditEvents(r.Context(), qtx, auditEventForDecisionRequest(eventType, execRow, decisionRequestAuditDetails(execRow, auditDetails)))
 	// The callback marker rides the execution transaction: the group lock
 	// makes the locked-read marker state authoritative, so a concurrent
 	// terminal path can never double-post the once-only callback.
@@ -236,10 +321,13 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 		slog.Warn("decision request advance commit failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
 		return
 	}
+	if execErr == nil && landing.ActionType == DecisionActionSingleIssueCreate {
+		h.publishSingleIssueCreated(r, landing, resultJSON)
+	}
 
 	var errPtr *string
 	if execErr != nil {
-		s := execErr.Error()
+		s := decisionRequestSafeErrorCode(landing.ActionType)
 		errPtr = &s
 	}
 	if ownsTerminal {
@@ -247,6 +335,70 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 		return
 	}
 	h.publishGroupUpdate(r, groupID)
+}
+
+func (h *Handler) publishSingleIssueCreated(r *http.Request, approval db.DecisionRequest, result []byte) {
+	var receipt struct {
+		TargetIssueID string `json:"target_issue_id"`
+	}
+	if json.Unmarshal(result, &receipt) != nil || receipt.TargetIssueID == "" {
+		return
+	}
+	issueID, err := util.ParseUUID(receipt.TargetIssueID)
+	if err != nil {
+		return
+	}
+	issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+		ID: issueID, WorkspaceID: approval.WorkspaceID,
+	})
+	if err != nil {
+		slog.Warn("decision request created issue missing after commit", "request_group_id", uuidToString(approval.RequestGroupID), "error", err)
+		return
+	}
+	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
+	resp := issueToResponse(issue, prefix)
+	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
+	h.publish(protocol.EventIssueCreated, uuidToString(issue.WorkspaceID), "member", uuidToString(approval.AnsweredByID), map[string]any{"issue": resp})
+}
+
+func decisionRequestSafeErrorCode(actionType string) string {
+	switch actionType {
+	case DecisionActionProjectPromptSync:
+		return "PROMPT_SYNC_FAILED"
+	case DecisionActionPromptRestore:
+		return "PROMPT_RESTORE_FAILED"
+	case DecisionActionWorkspaceInfoRead:
+		return "WORKSPACE_READ_FAILED"
+	default:
+		return "EXECUTION_FAILED"
+	}
+}
+
+func decisionRequestReceipt(actionType string, result []byte, completed, failed bool) []byte {
+	var receipt map[string]any
+	if json.Unmarshal(result, &receipt) != nil || receipt == nil {
+		receipt = map[string]any{}
+	}
+	sideEffect := "no_side_effect"
+	stepStatus := "completed"
+	if completed && actionType != DecisionActionWorkspaceInfoRead {
+		sideEffect = "completed"
+	}
+	if failed {
+		stepStatus = "failed"
+	}
+	receipt["receipt_version"] = 1
+	receipt["side_effect_status"] = sideEffect
+	receipt["steps"] = []map[string]string{{
+		"handler":            actionType,
+		"status":             stepStatus,
+		"side_effect_status": sideEffect,
+	}}
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		return []byte(`{"receipt_version":1,"side_effect_status":"unknown","steps":[]}`)
+	}
+	return encoded
 }
 
 // finalizeDecisionRequestGroup propagates a terminal state (denied today;
@@ -363,6 +515,81 @@ func (h *Handler) postDecisionRequestCallback(r *http.Request, origin db.Decisio
 	}
 }
 
+func (h *Handler) completeSingleIssueDecisionRequest(ctx context.Context, issue db.Issue) {
+	if issuestatus.Effective(ctx, h.Queries, issue.WorkspaceID, issue.Status) != "done" {
+		return
+	}
+	rows, err := h.Queries.ClaimDecisionRequestIssueDoneReceipt(ctx, uuidToString(issue.ID))
+	if err != nil {
+		slog.Warn("decision request Done receipt claim failed", "issue_id", uuidToString(issue.ID), "error", err)
+		return
+	}
+	for _, origin := range rows {
+		h.postSingleIssueDoneCallback(ctx, origin)
+		h.publishGroupUpdateContext(ctx, origin.RequestGroupID)
+		h.publishSingleIssueDoneCard(ctx, origin)
+	}
+}
+
+func (h *Handler) publishSingleIssueDoneCard(ctx context.Context, origin db.ClaimDecisionRequestIssueDoneReceiptRow) {
+	card, err := h.Queries.GetAuthorizationCardForGroup(ctx, db.GetAuthorizationCardForGroupParams{
+		RequestGroupID: origin.RequestGroupID,
+		WorkspaceID:    origin.OriginWorkspaceID,
+	})
+	if err != nil {
+		return
+	}
+	issue, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID: card.IssueID, WorkspaceID: card.WorkspaceID,
+	})
+	if err != nil {
+		return
+	}
+	h.publish(protocol.EventDecisionUpdated, uuidToString(card.WorkspaceID), "system", "", map[string]any{
+		"decision": decisionToResponse(card), "issue_id": uuidToString(issue.ID), "issue_title": issue.Title,
+	})
+}
+
+func (h *Handler) postSingleIssueDoneCallback(ctx context.Context, origin db.ClaimDecisionRequestIssueDoneReceiptRow) {
+	if !origin.OriginIssueID.Valid {
+		return
+	}
+	source, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID: origin.OriginIssueID, WorkspaceID: origin.OriginWorkspaceID,
+	})
+	if err != nil {
+		slog.Warn("decision request Done callback source issue missing", "request_group_id", uuidToString(origin.RequestGroupID), "error", err)
+		return
+	}
+	agent, _ := h.Queries.GetAgent(ctx, origin.OriginAgentID)
+	mention := ""
+	ownerID := ""
+	if agent.ID.Valid {
+		mention = fmt.Sprintf("[@%s](mention://agent/%s) ", agent.Name, uuidToString(origin.OriginAgentID))
+		ownerID = uuidToString(agent.OwnerID)
+	}
+	content := fmt.Sprintf("%s授权事项已完成 [%s]（decision_request:%s，状态=done）", mention,
+		origin.Title, uuidToString(origin.RequestGroupID))
+	created, err := h.Queries.CreateComment(ctx, db.CreateCommentParams{
+		ID: dbid.NewV7(), IssueID: source.ID, WorkspaceID: source.WorkspaceID,
+		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content,
+		Type: "system", ParentID: pgtype.UUID{},
+	})
+	if err != nil {
+		slog.Warn("decision request Done callback comment failed", "request_group_id", uuidToString(origin.RequestGroupID), "error", err)
+		return
+	}
+	comment := created.Comment()
+	h.publish(protocol.EventCommentCreated, uuidToString(source.WorkspaceID), "system", "", map[string]any{
+		"comment": commentToResponse(comment, nil, nil), "issue_title": source.Title,
+		"issue_assignee_type": textToPtr(source.AssigneeType), "issue_assignee_id": uuidToPtr(source.AssigneeID),
+		"issue_status": source.Status, "issue_revision": created.IssueRevision,
+	})
+	if ownerID != "" {
+		h.triggerTasksForComment(ctx, source, comment, nil, "member", ownerID, ownerID, nil)
+	}
+}
+
 // buildDecisionRequestCallbackContent renders the structured terminal-state
 // card the requesting run reads: machine-parseable head line + human
 // summary lines. The answer never arrives as free text.
@@ -414,6 +641,47 @@ type decisionWorkspaceInfoParams struct {
 	IncludeCounts bool `json:"include_counts,omitempty"`
 }
 
+const maxProjectPromptSyncTargets = 50
+
+type decisionProjectPromptSyncParams struct {
+	ProjectIDs    []string `json:"project_ids"`
+	Content       string   `json:"content"`
+	ContentSHA256 string   `json:"content_sha256"`
+}
+
+func normalizeProjectPromptSyncParams(raw json.RawMessage) (json.RawMessage, error) {
+	var params decisionProjectPromptSyncParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, errors.New("project_prompt_sync params must be an object")
+	}
+	if len(params.ProjectIDs) == 0 || len(params.ProjectIDs) > maxProjectPromptSyncTargets {
+		return nil, fmt.Errorf("project_ids must contain between 1 and %d projects", maxProjectPromptSyncTargets)
+	}
+	if len([]rune(params.Content)) > maxProjectInstructionsLen {
+		return nil, fmt.Errorf("content exceeds the maximum length of %d characters", maxProjectInstructionsLen)
+	}
+	if params.ContentSHA256 == "" || params.ContentSHA256 != sha256Hex(params.Content) {
+		return nil, errors.New("content_sha256 does not match content")
+	}
+	ids := make([]string, 0, len(params.ProjectIDs))
+	seen := make(map[string]struct{}, len(params.ProjectIDs))
+	for _, rawID := range params.ProjectIDs {
+		id, err := util.ParseUUID(rawID)
+		if err != nil {
+			return nil, errors.New("project_ids must contain only UUIDs")
+		}
+		canonical := uuidToString(id)
+		if _, ok := seen[canonical]; ok {
+			return nil, errors.New("project_ids must not contain duplicates")
+		}
+		seen[canonical] = struct{}{}
+		ids = append(ids, canonical)
+	}
+	sort.Strings(ids)
+	params.ProjectIDs = ids
+	return json.Marshal(params)
+}
+
 // executeDecisionRequestAction dispatches the whitelisted action inside the
 // caller's transaction. The operable row names the action, its params, and
 // the workspace the action lands in; the registry's closed set is the only
@@ -424,9 +692,133 @@ func (h *Handler) executeDecisionRequestAction(r *http.Request, qtx *db.Queries,
 		return h.executeWorkspaceInfoRead(r, qtx, row)
 	case DecisionActionPromptRestore:
 		return h.executePromptRestore(r, qtx, row)
+	case DecisionActionProjectPromptSync:
+		return h.executeProjectPromptSync(r, qtx, row)
+	case DecisionActionSingleIssueCreate:
+		return h.executeSingleIssueCreate(r, qtx, row)
+	case DecisionActionScriptReview:
+		return nil, errors.New("script_review is non-executable")
 	default:
 		return nil, fmt.Errorf("action %q is not in the whitelist registry", row.ActionType)
 	}
+}
+
+func (h *Handler) executeSingleIssueCreate(r *http.Request, qtx *db.Queries, row db.DecisionRequest) ([]byte, error) {
+	raw, err := normalizeSingleIssueCreateParams(row.ActionParams)
+	if err != nil {
+		return nil, err
+	}
+	var params decisionSingleIssueCreateParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, errors.New("single_issue_create parameters are invalid")
+	}
+	if !row.AnsweredByID.Valid {
+		return nil, errors.New("target Owner approval actor is missing")
+	}
+	policy := service.ResolveIssueCountPolicy(r.Context(), h.Entitlements, row.WorkspaceID)
+	number, err := service.AllocateIssueNumber(r.Context(), qtx, row.WorkspaceID, policy)
+	if err != nil {
+		return nil, fmt.Errorf("allocate target issue number: %w", err)
+	}
+	created, err := qtx.CreateIssue(r.Context(), db.CreateIssueParams{
+		ID:          dbid.NewV7(),
+		WorkspaceID: row.WorkspaceID,
+		Title:       params.Title,
+		Description: pgtype.Text{String: params.Description, Valid: true},
+		Status:      "in_progress",
+		Priority:    "none",
+		CreatorType: "member",
+		CreatorID:   row.AnsweredByID,
+		Position:    0,
+		Number:      number,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create target issue: %w", err)
+	}
+	prefix := h.getIssuePrefix(r.Context(), created.WorkspaceID)
+	return json.Marshal(map[string]any{
+		"action":              DecisionActionSingleIssueCreate,
+		"target_issue_id":     uuidToString(created.ID),
+		"target_identifier":   fmt.Sprintf("%s-%d", prefix, created.Number),
+		"target_issue_status": created.Status,
+	})
+}
+
+func (h *Handler) executeProjectPromptSync(r *http.Request, qtx *db.Queries, row db.DecisionRequest) ([]byte, error) {
+	raw, err := normalizeProjectPromptSyncParams(row.ActionParams)
+	if err != nil {
+		return nil, err
+	}
+	var params decisionProjectPromptSyncParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, err
+	}
+	scan, ok, badReason := promptGovernanceGate(params.Content)
+	if badReason != "" {
+		return nil, fmt.Errorf("prompt rejected: %s", badReason)
+	}
+	if !ok {
+		return nil, errors.New("prompt rejected by the secret scanner")
+	}
+
+	projectIDs := make([]pgtype.UUID, len(params.ProjectIDs))
+	for i, id := range params.ProjectIDs {
+		projectIDs[i], err = util.ParseUUID(id)
+		if err != nil {
+			return nil, errors.New("project_ids must contain only UUIDs")
+		}
+		if _, err := qtx.LockProjectForPromptVersion(r.Context(), db.LockProjectForPromptVersionParams{
+			ID: projectIDs[i], WorkspaceID: row.WorkspaceID,
+		}); err != nil {
+			return nil, fmt.Errorf("project %s not found in the target workspace", id)
+		}
+	}
+
+	gateResult, err := json.Marshal(scan.Findings)
+	if err != nil {
+		return nil, errors.New("failed to encode prompt scan result")
+	}
+	results := make([]map[string]any, 0, len(projectIDs))
+	for i, projectID := range projectIDs {
+		next, err := qtx.NextPromptVersion(r.Context(), db.NextPromptVersionParams{
+			Scope: string(promptVersionScopeProject), ScopeID: projectID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to allocate prompt version for project %s", params.ProjectIDs[i])
+		}
+		if _, err := qtx.CreatePromptVersion(r.Context(), db.CreatePromptVersionParams{
+			WorkspaceID:       row.WorkspaceID,
+			Scope:             string(promptVersionScopeProject),
+			ScopeID:           projectID,
+			Version:           next,
+			Content:           params.Content,
+			ContentSha256:     params.ContentSHA256,
+			Source:            "edit",
+			ChangeNote:        "跨空间 Owner 授权的项目提示词同步",
+			ScannerRevision:   scan.Revision,
+			GateResult:        gateResult,
+			AuthorUserID:      row.AnsweredByID,
+			AuthorNoteIssueID: pgtype.UUID{},
+		}); err != nil {
+			return nil, fmt.Errorf("failed to record prompt version for project %s", params.ProjectIDs[i])
+		}
+		if _, err := qtx.UpdateProjectInstructionsForPromptVersion(r.Context(), db.UpdateProjectInstructionsForPromptVersionParams{
+			ID: projectID, Instructions: strToText(params.Content),
+		}); err != nil {
+			return nil, fmt.Errorf("failed to update project %s", params.ProjectIDs[i])
+		}
+		results = append(results, map[string]any{
+			"project_id":     params.ProjectIDs[i],
+			"status":         "updated",
+			"version":        next,
+			"content_sha256": params.ContentSHA256,
+		})
+	}
+	return json.Marshal(map[string]any{
+		"action":         DecisionActionProjectPromptSync,
+		"content_sha256": params.ContentSHA256,
+		"projects":       results,
+	})
 }
 
 // executeWorkspaceInfoRead answers with the target workspace's basic
