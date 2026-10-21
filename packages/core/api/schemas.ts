@@ -1196,7 +1196,7 @@ export const DecisionRequestSchema = z.object({
   action_params: z.unknown().optional(),
   authorization_spec: z.object({
     version: z.number().int(),
-    kind: z.enum(["cli", "restricted_script", "issue_creation"]),
+    kind: z.enum(["cli", "restricted_script", "issue_creation", "single_issue", "script_review"]),
     action_type: z.string(),
     scope: z.record(z.string(), z.unknown()),
     parameter_digest: z.string(),

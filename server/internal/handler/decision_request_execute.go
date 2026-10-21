@@ -182,6 +182,62 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 		return
 	}
 
+	if landing.ActionType == DecisionActionScriptReview {
+		spec, err := readDecisionRequestSpec(landing)
+		if err != nil {
+			slog.Warn("script review authorization validation failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID), "error", err)...)
+			return
+		}
+		var params decisionScriptReviewParams
+		if err := json.Unmarshal(landing.ActionParams, &params); err != nil || params.SHA256 == "" {
+			slog.Warn("script review payload validation failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID))...)
+			return
+		}
+		resultJSON, err := json.Marshal(map[string]any{
+			"receipt_version":      1,
+			"receipt_type":         "script_review",
+			"status":               "reviewed",
+			"authorization_digest": spec.Digest,
+			"script_sha256":        params.SHA256,
+		})
+		if err != nil {
+			return
+		}
+		executedAt := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+		updated, err := qtx.SetDecisionRequestExecution(r.Context(), db.SetDecisionRequestExecutionParams{
+			Status: decisionReqExecuted, ExecutedAt: executedAt, ExecutionResult: resultJSON,
+			ExecutionError: pgtype.Text{}, RequestGroupID: groupID,
+		})
+		if err != nil {
+			slog.Warn("script review receipt write failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID), "error", err)...)
+			return
+		}
+		if _, err := qtx.SetAuthorizationCardExecution(r.Context(), db.SetAuthorizationCardExecutionParams{
+			AuthState: decisionReqExecuted, ExecutedAt: executedAt, ExecutionResult: resultJSON,
+			ExecutionError: pgtype.Text{}, RequestGroupID: groupID,
+		}); err != nil {
+			slog.Warn("script review card sync failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID), "error", err)...)
+			return
+		}
+		reviewRow := origin
+		if len(updated) > 0 {
+			reviewRow = updated[0]
+		}
+		service.TryAppendAuditEvents(r.Context(), qtx, auditEventForDecisionRequest(
+			"agent.decision_script_reviewed", reviewRow,
+			decisionRequestAuditDetails(reviewRow, map[string]any{
+				"authorization_digest": spec.Digest,
+				"script_sha256":        params.SHA256,
+				"review_status":        "reviewed",
+			})))
+		if err := tx.Commit(r.Context()); err != nil {
+			slog.Warn("script review commit failed", append(logger.RequestAttrs(r), "group_id", uuidToString(groupID), "error", err)...)
+			return
+		}
+		h.publishGroupUpdate(r, groupID)
+		return
+	}
+
 	// Every step approved: run the whitelisted action in this same
 	// transaction (the group lock already serializes us against any other
 	// final-step approval). The landing row names the workspace the action
@@ -640,6 +696,8 @@ func (h *Handler) executeDecisionRequestAction(r *http.Request, qtx *db.Queries,
 		return h.executeProjectPromptSync(r, qtx, row)
 	case DecisionActionSingleIssueCreate:
 		return h.executeSingleIssueCreate(r, qtx, row)
+	case DecisionActionScriptReview:
+		return nil, errors.New("script_review is non-executable")
 	default:
 		return nil, fmt.Errorf("action %q is not in the whitelist registry", row.ActionType)
 	}

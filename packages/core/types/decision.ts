@@ -130,7 +130,7 @@ export type DecisionRequestStatus =
   | "executed"
   | "execute_failed";
 
-export type DecisionRequestKind = "cli" | "restricted_script" | "issue_creation";
+export type DecisionRequestKind = "cli" | "restricted_script" | "issue_creation" | "single_issue" | "script_review";
 export type DecisionRequestSideEffectStatus = "no_side_effect" | "completed" | "unknown";
 
 export interface DecisionRequestAuthorizationSpec {

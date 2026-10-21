@@ -36,9 +36,50 @@ func decisionRequestKind(actionType string) (string, bool) {
 		return "cli", true
 	case DecisionActionSingleIssueCreate:
 		return "single_issue", true
+	case DecisionActionScriptReview:
+		return "script_review", true
 	default:
 		return "", false
 	}
+}
+
+type decisionScriptReviewParams struct {
+	Script      string   `json:"script"`
+	Interpreter string   `json:"interpreter"`
+	Args        []string `json:"args"`
+	SHA256      string   `json:"sha256"`
+}
+
+func normalizeScriptReviewParams(raw json.RawMessage) (json.RawMessage, error) {
+	var params decisionScriptReviewParams
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&params); err != nil {
+		return nil, errors.New("script_review requires script, interpreter, args, and sha256")
+	}
+	if strings.TrimSpace(params.Script) == "" || len(params.Script) > 64*1024 || strings.IndexByte(params.Script, 0) >= 0 {
+		return nil, errors.New("script_review script must contain 1-65536 bytes")
+	}
+	if params.Interpreter == "" || len(params.Interpreter) > 64 {
+		return nil, errors.New("script_review interpreter must be a short identifier")
+	}
+	for _, r := range params.Interpreter {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._+-", r)) {
+			return nil, errors.New("script_review interpreter must be an identifier, not a path")
+		}
+	}
+	if params.Args == nil || len(params.Args) > 64 {
+		return nil, errors.New("script_review args must contain at most 64 values")
+	}
+	for _, arg := range params.Args {
+		if len(arg) > 4096 || strings.IndexByte(arg, 0) >= 0 {
+			return nil, errors.New("script_review arguments must be at most 4096 bytes each")
+		}
+	}
+	if len(params.SHA256) != 64 || params.SHA256 != strings.ToLower(params.SHA256) || params.SHA256 != sha256Hex(params.Script) {
+		return nil, errors.New("script_review sha256 does not match script")
+	}
+	return json.Marshal(params)
 }
 
 type decisionSingleIssueCreateParams struct {
@@ -151,6 +192,11 @@ func readDecisionRequestSpec(row db.DecisionRequest) (decisionRequestAuthorizati
 	canonicalParams, err := json.Marshal(payload)
 	if err != nil {
 		return decisionRequestAuthorizationSpec{}, errors.New("authorization parameters are invalid")
+	}
+	if row.ActionType == DecisionActionScriptReview {
+		if _, err := normalizeScriptReviewParams(canonicalParams); err != nil {
+			return decisionRequestAuthorizationSpec{}, errors.New("script review payload or hash is invalid")
+		}
 	}
 	parameterHash := sha256.Sum256(canonicalParams)
 	if hex.EncodeToString(parameterHash[:]) != spec.ParameterDigest {
