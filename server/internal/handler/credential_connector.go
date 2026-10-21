@@ -39,7 +39,10 @@ type credentialConnectorResponse struct {
 }
 
 func validCredentialConnectorTarget(raw string) bool {
-	parsed, err := url.ParseRequestURI(strings.TrimSpace(raw))
+	if raw == "" || raw != strings.TrimSpace(raw) || strings.ContainsAny(raw, "#?") {
+		return false
+	}
+	parsed, err := url.ParseRequestURI(raw)
 	return err == nil && parsed.Scheme == "https" && parsed.Hostname() != "" &&
 		parsed.User == nil && parsed.Fragment == "" && parsed.RawQuery == ""
 }
