@@ -51,6 +51,9 @@ import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { openExternalUrl } from "@/lib/pull-request-link";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import type { MarkdownRenderer } from "@multica/core/markdown";
+import { useMarkdownRenderer } from "./use-reader-adapter";
+import { attachmentPreviewPath } from "@/lib/attachment-preview";
 import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { useCommentAnchor } from "@/lib/comment-anchor-context";
 import { IssueReferenceList } from "@/components/issue/issue-reference-list";
@@ -126,20 +129,26 @@ interface Props {
   renderReferenceTail?: boolean;
 }
 
-export const Markdown = memo(function Markdown({
+export const Markdown = memo(function Markdown(props: Props) {
+  const renderer = useMarkdownRenderer();
+  return <MarkdownReaderAdapter {...props} renderer={renderer} />;
+});
+
+function MarkdownReaderAdapter({
   content,
   attachments,
   selectable = true,
   compact = false,
   renderReferenceTail = true,
-}: Props) {
+  renderer,
+}: Props & { renderer: MarkdownRenderer }) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   // 评论锚点的落地方（RUYI-108）。issue 时间线挂 provider；其余渲染场景
   // 拿到的是 no-op 实现，点击安静无事发生。
   const commentAnchor = useCommentAnchor();
   const baseStyle = useMarkdownStyle();
-  const markdownStyle = useMemo(
-    () =>
+  const markdownStyle = useMemo(() => {
+    const style =
       compact
         ? {
             ...baseStyle,
@@ -149,9 +158,16 @@ export const Markdown = memo(function Markdown({
               lineHeight: 20,
             },
           }
-        : baseStyle,
-    [baseStyle, compact],
-  );
+        : baseStyle;
+    if (renderer !== "modern" || compact) return style;
+    return {
+      ...style,
+      paragraph: { ...style.paragraph, marginBottom: 16 },
+      h1: { ...style.h1, marginTop: 24, marginBottom: 12 },
+      h2: { ...style.h2, marginTop: 20, marginBottom: 10 },
+      h3: { ...style.h3, marginTop: 16, marginBottom: 8 },
+    };
+  }, [baseStyle, compact, renderer]);
 
   // RUYI-635 tail aggregation, carried forward under the RUYI-728 body
   // contract. Scanned from the RAW content, not the preprocessed text: the
@@ -270,12 +286,16 @@ export const Markdown = memo(function Markdown({
           commentAnchor.focus(action.commentId);
           return;
         case "attachment":
-          void openAttachmentDownload(action.id, {
-            source: api,
-            opener: Linking,
-            resolveUrl: resolveAttachmentUrl,
-            fallbackUrl: action.fallbackUrl,
-          });
+          if (renderer === "modern" && wsSlug) {
+            router.push(attachmentPreviewPath(wsSlug, action.id));
+          } else {
+            void openAttachmentDownload(action.id, {
+              source: api,
+              opener: Linking,
+              resolveUrl: resolveAttachmentUrl,
+              fallbackUrl: action.fallbackUrl,
+            });
+          }
           return;
         case "external":
           // Linking.openURL throws if no app handles the URL; the catch
@@ -287,7 +307,7 @@ export const Markdown = memo(function Markdown({
           return;
       }
     },
-    [wsSlug, commentAnchor, wsId],
+    [wsSlug, commentAnchor, wsId, renderer],
   );
 
   if (segments.length === 0) return null;
@@ -299,7 +319,7 @@ export const Markdown = memo(function Markdown({
     // adjacent `marginVertical` siblings collapse closer than the sum
     // would suggest — `gap` is layout-level spacing that doesn't depend
     // on margin behaviour.
-    <View className="gap-3">
+    <View className="gap-3" testID={`markdown-reader-${renderer}`}>
       {segments.map((seg, i) => {
         switch (seg.type) {
           case "prose":
@@ -354,7 +374,7 @@ export const Markdown = memo(function Markdown({
         {renderReferenceTail ? <IssueReferenceTail content={content} /> : null}
       </View>
   );
-});
+}
 
 function IssueReferenceTail({ content }: { content: string }) {
   const visible = useContext(IssueReferenceTailVisibilityContext);

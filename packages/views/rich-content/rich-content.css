@@ -36,6 +36,32 @@
   margin-bottom: 0.5rem;
 }
 
+.markdown-reader-v2[data-density="document"] > :is(h1, h2, h3, h4) {
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.markdown-reader-v2[data-density="document"] > h1 {
+  margin-block: 1.5rem 0.75rem;
+  font-size: var(--text-title-lg);
+}
+
+.markdown-reader-v2[data-density="document"] > h2 {
+  margin-block: 1.25rem 0.5rem;
+  font-size: var(--text-title);
+}
+
+.markdown-reader-v2[data-density="document"] > h3,
+.markdown-reader-v2[data-density="document"] > h4 {
+  margin-block: 1rem 0.5rem;
+  font-size: var(--text-title-sm);
+}
+
+.markdown-reader-v2[data-density="document"] > p {
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
 /*
  * Issue reference tail aggregation (RUYI-635 + 增量, RUYI-731 flatten,
  * RUYI-730 visual rebuild).
