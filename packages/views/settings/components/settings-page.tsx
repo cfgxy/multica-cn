@@ -24,6 +24,7 @@ import {
   Store,
   MessageSquareText,
   Mic,
+  KeyRound,
 } from "lucide-react";
 import { GitHubMark } from "./github-mark";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@multica/ui/components/ui/tabs";
@@ -59,6 +60,7 @@ import { McpTab } from "./mcp-tab";
 import { MarketplaceTab } from "./marketplace-tab";
 import { BillingTab } from "./billing-tab";
 import { VoiceTab } from "./voice-tab";
+import { CredentialsTab } from "./credentials-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
@@ -91,6 +93,7 @@ const WORKSPACE_TAB_KEYS = [
   "marketplace",
   "mcp",
   "plugins",
+  "credentials",
 ] as const;
 const WORKSPACE_TAB_VALUES = {
   general: "workspace",
@@ -109,6 +112,7 @@ const WORKSPACE_TAB_VALUES = {
   marketplace: "marketplace",
   mcp: "mcp",
   plugins: "plugins",
+  credentials: "credentials",
 } as const;
 const WORKSPACE_TAB_ICONS = {
   general: Settings,
@@ -127,6 +131,7 @@ const WORKSPACE_TAB_ICONS = {
   marketplace: Store,
   mcp: Server,
   plugins: Blocks,
+  credentials: KeyRound,
 } as const;
 
 const DEFAULT_TAB = "profile";
@@ -319,6 +324,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
           ) : null}
           <TabsContent value="mcp"><McpTab /></TabsContent>
           <TabsContent value="plugins"><PluginsTab /></TabsContent>
+          <TabsContent value="credentials"><CredentialsTab /></TabsContent>
           {extraAccountTabs?.map((tab) => (
             <TabsContent key={tab.value} value={tab.value}>{tab.content}</TabsContent>
           ))}

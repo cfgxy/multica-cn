@@ -85,6 +85,7 @@
     "./runtimes/mutations": "./runtimes/mutations.ts",
     "./runtimes/custom-pricing-store": "./runtimes/custom-pricing-store.ts",
     "./credentials/envelope": "./credentials/envelope.ts",
+    "./credentials/api": "./credentials/api.ts",
     "./runtimes/cli-version": "./runtimes/cli-version.ts",
     "./self-evolution": "./self-evolution/index.ts",
     "./self-evolution/measure": "./self-evolution/measure.ts",
