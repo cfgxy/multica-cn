@@ -27,7 +27,7 @@ func TestReportTaskResult_RecordsTaskAdaptationAndStripsReceipt(t *testing.T) {
 		t.Fatalf("user-visible output retained receipt: %#v", rec.payload["output"])
 	}
 	outcome, ok := rec.payload["capability_adaptation_result"].(map[string]any)
-	if !ok || outcome["policy_id"] != "policy-1" || outcome["status"] != "applied" {
+	if !ok || outcome["policy_id"] != "policy-1" || outcome["policy_version"] != "v1" || outcome["status"] != "applied" {
 		t.Fatalf("adaptation result = %#v", rec.payload["capability_adaptation_result"])
 	}
 }

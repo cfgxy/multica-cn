@@ -19,8 +19,14 @@ type Snapshot struct {
 }
 
 type Outcome struct {
-	PolicyID string `json:"policy_id"`
-	Status   string `json:"status"`
+	PolicyID      string `json:"policy_id"`
+	PolicyVersion string `json:"policy_version"`
+	Status        string `json:"status"`
+}
+
+func (o Outcome) Matches(snapshot *Snapshot) bool {
+	return snapshot != nil && snapshot.Valid() && o.PolicyID == snapshot.PolicyID &&
+		o.PolicyVersion == snapshot.PolicyVersion && ValidStatus(o.Status)
 }
 
 func SnapshotFromContext(raw json.RawMessage) *Snapshot {
@@ -96,5 +102,5 @@ func ExtractReceipt(output string, snapshot *Snapshot) (string, *Outcome) {
 		return output, nil
 	}
 	cleaned := strings.TrimRight(trimmed[:lineStart], "\r\n")
-	return cleaned, &Outcome{PolicyID: snapshot.PolicyID, Status: status}
+	return cleaned, &Outcome{PolicyID: snapshot.PolicyID, PolicyVersion: snapshot.PolicyVersion, Status: status}
 }
