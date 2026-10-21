@@ -17,6 +17,7 @@ import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 
 const inboxRef = vi.hoisted(() => ({ current: null as WorkspaceDecisionInbox | null }));
 const requestsRef = vi.hoisted(() => ({ current: null as Promise<DecisionRequestsList> | null }));
+const navigationPushRef = vi.hoisted(() => ({ push: vi.fn() }));
 
 vi.mock("@multica/core/issues/decisions", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@multica/core/issues/decisions")>();
@@ -53,6 +54,7 @@ vi.mock("@multica/core/workspace/hooks", () => ({
 
 vi.mock("@multica/core/paths", () => ({
   DECISION_ANCHOR_PREFIX: "decision-",
+  paths: { workspace: (slug: string) => ({ decisions: () => `/${slug}/decisions` }) },
   useCurrentWorkspace: () => ({ id: "ws-1", slug: "acme" }),
   useWorkspacePaths: () => ({
     issueDetail: (id: string) => `/acme/issues/${id}`,
@@ -96,7 +98,7 @@ function makeItem(over: Partial<WorkspaceDecisionInbox["items"][number]> & { id:
 
 function Harness({ children }: { children: ReactNode }) {
   const adapter = {
-    push: vi.fn(),
+    push: navigationPushRef.push,
     replace: vi.fn(),
     back: vi.fn(),
     pathname: "/acme/decisions",
@@ -121,6 +123,7 @@ beforeEach(() => {
   // test starts from the shipped defaults.
   decisionCenterPrefsStore.setState({ viewMode: "list", hiddenStatuses: [] });
   requestsRef.current = null;
+  navigationPushRef.push.mockClear();
 });
 
 afterEach(() => {
@@ -465,5 +468,63 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
 
     deferred.settle();
     expect(await screen.findByTestId("decision-requests-section")).toBeInTheDocument();
+  });
+});
+
+describe("DecisionCenterPage cross-space authorization navigation (RUYI-842)", () => {
+  const projection = {
+    id: "request-origin",
+    request_group_id: "group-1",
+    workspace_id: "ws-origin",
+    role: "origin",
+    operable: false,
+    status: "pending",
+    action_type: "workspace_info_read",
+    risk_tier: "read",
+    title: "Read workspace info",
+    detail: "",
+    origin_workspace_id: "ws-origin",
+    origin_agent_id: "agent-1",
+    created_at: "2026-10-12T00:00:00Z",
+  } as unknown as DecisionRequestsList["items"][number];
+
+  it("links an accessible origin projection to the target decisions center", async () => {
+    inboxRef.current = { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
+    requestsRef.current = Promise.resolve({
+      items: [{ ...projection, target_workspace_slug: "target-space" }],
+      counts: { pending: 1, closed: 0, executed: 0 },
+    });
+    renderPage();
+
+    const link = await screen.findByTestId("decision-request-target-link");
+    expect(link).toHaveAttribute("href", "/target-space/decisions");
+    expect(link.textContent).toContain("Read workspace info");
+    expect(screen.queryByText("This row is a read-only projection — act in the target workspace")).toBeNull();
+  });
+
+  it("navigates when the read-only origin request row face is clicked", async () => {
+    inboxRef.current = { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
+    requestsRef.current = Promise.resolve({
+      items: [{ ...projection, target_workspace_slug: "target-space" }],
+      counts: { pending: 1, closed: 0, executed: 0 },
+    });
+    renderPage();
+
+    const rowFace = await screen.findByTestId("decision-request-target-link");
+    fireEvent.click(rowFace.querySelector(".text-body")!);
+
+    expect(navigationPushRef.push).toHaveBeenCalledWith("/target-space/decisions");
+  });
+
+  it("keeps the read-only hint when the API omits a safe target route", async () => {
+    inboxRef.current = { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
+    requestsRef.current = Promise.resolve({
+      items: [projection],
+      counts: { pending: 1, closed: 0, executed: 0 },
+    });
+    renderPage();
+
+    expect(await screen.findByText("This row is a read-only projection — act in the target workspace")).toBeInTheDocument();
+    expect(screen.queryByTestId("decision-request-target-link")).toBeNull();
   });
 });
