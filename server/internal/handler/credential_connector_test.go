@@ -2,7 +2,7 @@ package handler
 
 import "testing"
 
-func TestCredentialConnectorTargetIsExactHTTPSWithoutUserInfoOrQuery(t *testing.T) {
+func TestCredentialConnectorTargetIsExactHTTPSWithoutUserInfoQueryOrFragment(t *testing.T) {
 	tests := []struct {
 		name string
 		url  string
@@ -12,7 +12,10 @@ func TestCredentialConnectorTargetIsExactHTTPSWithoutUserInfoOrQuery(t *testing.
 		{name: "http is refused", url: "http://connector.example/mcp"},
 		{name: "embedded credentials are refused", url: "https://user:secret@connector.example/mcp"},
 		{name: "query routing is refused", url: "https://connector.example/mcp?token=synthetic"},
+		{name: "empty query delimiter is refused", url: "https://connector.example/mcp?"},
 		{name: "fragment is refused", url: "https://connector.example/mcp#route"},
+		{name: "empty fragment delimiter is refused", url: "https://connector.example/mcp#"},
+		{name: "surrounding whitespace is refused", url: " https://connector.example/mcp "},
 		{name: "hostless target is refused", url: "https:/mcp"},
 	}
 	for _, tt := range tests {
