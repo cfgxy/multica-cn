@@ -75,6 +75,7 @@
     "deny": "거부",
     "cancel": "요청 철회",
     "projection_hint": "이 행은 상태 표시입니다. 대상 워크스페이스에서 조작하세요",
+    "open_target_workspace": "대상 워크스페이스에서 열기",
     "executed_failed": "실행 실패: {{reason}}",
     "steps_title": "워크스페이스별 단계",
     "step_origin": "발신",

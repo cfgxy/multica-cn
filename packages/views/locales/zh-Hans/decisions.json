@@ -75,6 +75,7 @@
     "deny": "拒绝",
     "cancel": "撤销请求",
     "projection_hint": "此行是状态投影，请在目标空间操作",
+    "open_target_workspace": "前往目标空间处理",
     "executed_failed": "执行失败：{{reason}}",
     "steps_title": "各空间步骤",
     "step_origin": "发起空间",
