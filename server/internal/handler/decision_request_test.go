@@ -1707,6 +1707,135 @@ func TestDecisionRequestPromptContentIsVisibleOnlyToTargetOwner(t *testing.T) {
 	t.Fatal("source decision list omitted the request")
 }
 
+func TestDecisionRequestScriptReviewVisibilityAndNonExecution(t *testing.T) {
+	f := newDecisionFixture(t)
+	ws2 := secondWorkspaceWithOwner(t)
+	targetOwnerID := dbfx.User(t, "ruyi844-script-owner", "ruyi844-script-owner@test.local")
+	dbfx.Member(t, ws2, targetOwnerID, "owner")
+	nonOwnerID := dbfx.User(t, "ruyi844-script-member", "ruyi844-script-member@test.local")
+	dbfx.Member(t, ws2, nonOwnerID, "member")
+	script := "printf '%s\\n' no-execution"
+	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+		"action_type": DecisionActionScriptReview, "title": "caller supplied title", "detail": script,
+		"target_workspace_id": ws2,
+		"params":              map[string]any{"script": script, "interpreter": "bash", "args": []string{"-e"}, "sha256": sha256Hex(script)},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	created := decodeDecisionRequestDetail(t, w)
+	if created.Request.Title != "Review script snapshot" || created.Request.Detail != "" {
+		t.Fatalf("unsafe public summary = %q / %q", created.Request.Title, created.Request.Detail)
+	}
+	var targetID string
+	for _, step := range created.Steps {
+		if step.Role == decisionReqRoleTarget {
+			targetID = step.ID
+		}
+	}
+	if targetID == "" {
+		t.Fatal("target approval row missing")
+	}
+	assertScriptBody := func(request DecisionRequestResponse, visible bool) {
+		t.Helper()
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(request.ActionParams, &params); err != nil {
+			t.Fatal(err)
+		}
+		_, hasScript := params["script"]
+		_, hasInterpreter := params["interpreter"]
+		_, hasArgs := params["args"]
+		_, hasHash := params["sha256"]
+		if hasScript != visible || hasInterpreter != visible || hasArgs != visible || !hasHash {
+			t.Fatalf("script projection visible=%v params=%v", visible, params)
+		}
+	}
+	getAs := func(workspaceID, requestID, userID string) DecisionRequestDetailResponse {
+		t.Helper()
+		req := newRequest("GET", "/api/workspaces/"+workspaceID+"/decision-requests/"+requestID, nil)
+		req = withURLParams(req, "id", workspaceID, "requestId", requestID)
+		req.Header.Set("X-Workspace-ID", workspaceID)
+		req.Header.Set("X-User-ID", userID)
+		response := httptest.NewRecorder()
+		testHandler.GetDecisionRequest(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("detail as %s: %d %s", userID, response.Code, response.Body.String())
+		}
+		return decodeDecisionRequestDetail(t, response)
+	}
+	assertScriptBody(getAs(testWorkspaceID, created.Request.ID, testUserID).Request, false)
+	assertScriptBody(getAs(ws2, targetID, nonOwnerID).Request, false)
+	targetDetail := getAs(ws2, targetID, targetOwnerID)
+	assertScriptBody(targetDetail.Request, true)
+	for _, step := range targetDetail.Steps {
+		assertScriptBody(step, step.Role == decisionReqRoleTarget)
+	}
+
+	listReq := newRequest("GET", "/api/workspaces/"+testWorkspaceID+"/decision-requests", nil)
+	listReq = withURLParam(listReq, "id", testWorkspaceID)
+	listReq.Header.Set("X-Workspace-ID", testWorkspaceID)
+	listReq.Header.Set("X-User-ID", testUserID)
+	listResp := httptest.NewRecorder()
+	testHandler.ListDecisionRequests(listResp, listReq)
+	if listResp.Code != http.StatusOK || strings.Contains(listResp.Body.String(), script) || strings.Contains(listResp.Body.String(), "interpreter") {
+		t.Fatalf("list leaked script snapshot: %d %s", listResp.Code, listResp.Body.String())
+	}
+
+	for _, approval := range []struct{ ws, id, user string }{
+		{testWorkspaceID, created.Request.ID, testUserID}, {ws2, targetID, targetOwnerID},
+	} {
+		response := answerDecisionRequestFor(t, approval.ws, approval.id, approval.user, "approve")
+		if response.Code != http.StatusOK {
+			t.Fatalf("approve %s: %d %s", approval.ws, response.Code, response.Body.String())
+		}
+	}
+	final := getAs(ws2, targetID, targetOwnerID).Request
+	if final.Status != decisionReqExecuted {
+		t.Fatalf("review status = %q", final.Status)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(final.ExecutionResult, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt["receipt_type"] != "script_review" || receipt["status"] != "reviewed" || receipt["script_sha256"] != sha256Hex(script) {
+		t.Fatalf("review receipt = %v", receipt)
+	}
+	if _, exists := receipt["side_effect_status"]; exists || strings.Contains(string(final.ExecutionResult), script) || strings.Contains(string(final.ExecutionResult), "interpreter") {
+		t.Fatalf("review receipt includes execution or private payload: %s", final.ExecutionResult)
+	}
+	var auditCount, executeCount int
+	dbfx.QueryRow(t, `SELECT count(*) FROM audit_event WHERE trigger_kind='decision_request' AND trigger_ref=$1 AND event_type='agent.decision_script_reviewed'`, created.Request.RequestGroupID).Scan(&auditCount)
+	dbfx.QueryRow(t, `SELECT count(*) FROM audit_event WHERE trigger_kind='decision_request' AND trigger_ref=$1 AND event_type='agent.decision_executed'`, created.Request.RequestGroupID).Scan(&executeCount)
+	if auditCount != 1 || executeCount != 0 {
+		t.Fatalf("review/execution audits = %d/%d", auditCount, executeCount)
+	}
+}
+
+func TestDecisionRequestScriptReviewRejectsTamperedSnapshotOnApproval(t *testing.T) {
+	f := newDecisionFixture(t)
+	ws2 := secondWorkspaceWithOwner(t)
+	script := "echo immutable"
+	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+		"action_type": DecisionActionScriptReview, "title": "Review fixed script", "target_workspace_id": ws2,
+		"params": map[string]any{"script": script, "interpreter": "sh", "args": []string{}, "sha256": sha256Hex(script)},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	created := decodeDecisionRequestDetail(t, w)
+	var targetID string
+	for _, step := range created.Steps {
+		if step.Role == decisionReqRoleTarget {
+			targetID = step.ID
+		}
+	}
+	dbfx.Exec(t, `UPDATE decision_request SET action_params = jsonb_set(action_params, '{script}', '"tampered"'::jsonb) WHERE id = $1`, targetID)
+	response := answerDecisionRequestFor(t, ws2, targetID, "", "approve")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("tampered approval = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestDecisionRequestAgentPolling(t *testing.T) {
 	f := newDecisionFixture(t)
 	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{

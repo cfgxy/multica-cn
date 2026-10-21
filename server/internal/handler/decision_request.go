@@ -93,6 +93,7 @@ const (
 	DecisionActionPromptRestore     = "prompt_restore"
 	DecisionActionProjectPromptSync = "project_prompt_sync"
 	DecisionActionSingleIssueCreate = "single_issue_create"
+	DecisionActionScriptReview      = "script_review"
 )
 
 const (
@@ -121,6 +122,10 @@ var decisionRequestActions = map[string]decisionRequestActionDef{
 	DecisionActionSingleIssueCreate: {
 		RiskTier: decisionRiskWriteLow,
 		Summary:  "Create one precisely scoped issue in the target workspace and report when it reaches Done.",
+	},
+	DecisionActionScriptReview: {
+		RiskTier: decisionRiskWriteLow,
+		Summary:  "Review a fixed script snapshot; approval records review only and never executes it.",
 	},
 }
 
@@ -215,16 +220,7 @@ func decisionRequestToResponse(row db.DecisionRequest) DecisionRequestResponse {
 }
 
 func decisionRequestToResponseWithPromptAccess(row db.DecisionRequest, revealPrompt bool) DecisionRequestResponse {
-	actionParams := json.RawMessage(row.ActionParams)
-	if row.ActionType == DecisionActionProjectPromptSync && !revealPrompt {
-		var params map[string]json.RawMessage
-		if json.Unmarshal(row.ActionParams, &params) == nil {
-			delete(params, "content")
-			if redacted, err := json.Marshal(params); err == nil {
-				actionParams = redacted
-			}
-		}
-	}
+	actionParams := decisionRequestProjectedParams(row, revealPrompt)
 	resp := DecisionRequestResponse{
 		ID:               uuidToString(row.ID),
 		RequestGroupID:   uuidToString(row.RequestGroupID),
@@ -296,6 +292,31 @@ func decisionRequestToResponseWithPromptAccess(row db.DecisionRequest, revealPro
 		resp.ExecutionError = &v
 	}
 	return resp
+}
+
+func decisionRequestProjectedParams(row db.DecisionRequest, revealSensitive bool) json.RawMessage {
+	if revealSensitive {
+		return append(json.RawMessage(nil), row.ActionParams...)
+	}
+	var params map[string]json.RawMessage
+	if json.Unmarshal(row.ActionParams, &params) != nil || params == nil {
+		return json.RawMessage(`{}`)
+	}
+	switch row.ActionType {
+	case DecisionActionProjectPromptSync:
+		delete(params, "content")
+	case DecisionActionScriptReview:
+		public := make(map[string]json.RawMessage, 1)
+		if rawHash, ok := params["sha256"]; ok {
+			public["sha256"] = rawHash
+		}
+		params = public
+	}
+	redacted, err := json.Marshal(params)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return redacted
 }
 
 // originAgentNames resolves display names for the distinct origin agents
@@ -478,6 +499,10 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("detail must be at most %d characters", decisionReqMaxDetailLen))
 		return
 	}
+	if req.ActionType == DecisionActionScriptReview {
+		title = "Review script snapshot"
+		detail = ""
+	}
 	if len(req.Params) == 0 {
 		req.Params = []byte("{}")
 	}
@@ -501,6 +526,14 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 		}
 		req.Params = normalized
 	}
+	if req.ActionType == DecisionActionScriptReview {
+		normalized, err := normalizeScriptReviewParams(req.Params)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Params = normalized
+	}
 	approveLabel, denyLabel, err := validateDecisionRequestLabels(req.ApproveLabel, req.DenyLabel)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -511,7 +544,7 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.ActionType == DecisionActionProjectPromptSync {
+	if req.ActionType == DecisionActionProjectPromptSync || req.ActionType == DecisionActionScriptReview {
 		visibleTier = "restricted"
 		operatorTier = "owner"
 	}
@@ -803,7 +836,8 @@ func (h *Handler) GetDecisionRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	requestSpec, specErr := readDecisionRequestSpec(row)
 	revealPrompt := authorType == "member" && member.Role == "owner" && specErr == nil &&
-		requestSpec.TargetWorkspaceID == uuidToString(workspaceID)
+		requestSpec.TargetWorkspaceID == uuidToString(workspaceID) &&
+		(row.Role == decisionReqRoleTarget || requestSpec.SourceWorkspaceID == requestSpec.TargetWorkspaceID)
 
 	h.sweepDueDecisionRequests(r)
 
@@ -1084,7 +1118,8 @@ func (h *Handler) AnswerDecisionRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if decision == decisionReqApproved {
-		if err := validateDecisionRequestRowSpec(row); err != nil {
+		group, groupErr := h.Queries.GetDecisionRequestGroup(r.Context(), row.RequestGroupID)
+		if groupErr != nil || validateDecisionRequestGroupSpec(group) != nil || validateDecisionRequestRowSpec(row) != nil {
 			writeError(w, http.StatusConflict, "authorization specification is invalid; create a new request")
 			return
 		}

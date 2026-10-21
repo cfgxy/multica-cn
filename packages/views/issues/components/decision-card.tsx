@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { CircleHelp, ListChecks, ShieldCheck } from "lucide-react";
+import { CircleHelp, Copy, ListChecks, ShieldCheck } from "lucide-react";
 import { Card } from "@multica/ui/components/ui/card";
 import { Button } from "@multica/ui/components/ui/button";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -105,7 +105,11 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
               <Badge variant="outline">{t(($) => $.decisions.auth_state_denied)}</Badge>
             )}
             {decision.executed_at && !decision.execution_error && (
-              <Badge variant="secondary">{t(($) => $.decisions.auth_state_executed)}</Badge>
+              <Badge variant="secondary">
+                {decision.action_type === "script_review"
+                  ? t(($) => $.decisions.auth_state_reviewed)
+                  : t(($) => $.decisions.auth_state_executed)}
+              </Badge>
             )}
             {decision.execution_error && (
               <Badge variant="destructive">{t(($) => $.decisions.auth_state_execute_failed)}</Badge>
@@ -120,6 +124,11 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
           {decision.action_type === "single_issue_create" && (
             <p className="mt-1 text-caption text-muted-foreground">
               {t(($) => $.decisions.auth_action_single_issue_create)}
+            </p>
+          )}
+          {decision.action_type === "script_review" && (
+            <p className="mt-1 text-caption text-muted-foreground">
+              {t(($) => $.decisions.auth_action_script_review)}
             </p>
           )}
           <p className="mt-0.5 text-caption text-muted-foreground">
@@ -183,6 +192,22 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
           })}
         </p>
       )}
+      {decision.action_type === "script_review" && decision.execution_result && typeof decision.execution_result === "object" &&
+        typeof (decision.execution_result as { script_sha256?: unknown }).script_sha256 === "string" && (
+          <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="decision-auth-script-receipt">
+            <code className="break-all text-caption text-muted-foreground">{t(($) => $.decisions.script_hash)}: {(decision.execution_result as { script_sha256: string }).script_sha256}</code>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={t(($) => $.decisions.copy_script_hash)}
+              title={t(($) => $.decisions.copy_script_hash)}
+              onClick={() => void navigator.clipboard.writeText((decision.execution_result as { script_sha256: string }).script_sha256)}
+            >
+              <Copy className="size-4" aria-hidden />
+            </Button>
+          </div>
+        )}
     </Card>
   );
 }
