@@ -161,6 +161,10 @@ type Config struct {
 	BackpressureSampleInterval  time.Duration         // /proc sampling cadence for the watermark gate (default: 5s)
 	BackpressureWindowSize      int                   // smoothing window in samples before thresholds are evaluated on the mean (default: 6)
 	GCEnabled                   bool                  // enable periodic workspace garbage collection (default: true)
+	EnvironmentRecycleEnabled   bool                  // enable daemon environment lifecycle policy and automatic recycling
+	EnvironmentArchiveEnabled   bool                  // preserve and archive idle environments before reclamation
+	EnvironmentArchiveTTL       time.Duration         // minimum idle terminal-run retention before automatic archival
+	EnvironmentRecycleInterval  time.Duration         // parent-lifecycle scan interval
 	GCInterval                  time.Duration         // how often the GC loop runs (default: 2h)
 	GCTTL                       time.Duration         // clean dirs whose issue is done/cancelled and updated_at < now()-TTL (default: 24h)
 	GCCompletedTaskTTL          time.Duration         // fully clean inactive issue-task envs completed at least this long ago, regardless of parent issue status (default: 14d on Multica Cloud, 0/disabled elsewhere; local_directory envs are never fully removed)
@@ -632,6 +636,20 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	environmentArchiveTTL, err := durationFromEnv("MULTICA_ENVIRONMENT_ARCHIVE_TTL", 24*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	if environmentArchiveTTL < 0 {
+		return Config{}, fmt.Errorf("MULTICA_ENVIRONMENT_ARCHIVE_TTL must not be negative")
+	}
+	environmentRecycleInterval, err := durationFromEnv("MULTICA_ENVIRONMENT_RECYCLE_INTERVAL", 5*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	if environmentRecycleInterval <= 0 {
+		return Config{}, fmt.Errorf("MULTICA_ENVIRONMENT_RECYCLE_INTERVAL must be positive")
+	}
 	gcOrphanTTL, err := durationFromEnv("MULTICA_GC_ORPHAN_TTL", DefaultGCOrphanTTL)
 	if err != nil {
 		return Config{}, err
@@ -716,9 +734,13 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		WorkspacesRoot:                  workspacesRoot,
 		KeepEnvAfterTask:                keepEnv,
 		GCEnabled:                       gcEnabled,
+		EnvironmentRecycleEnabled:       boolFromEnv("MULTICA_ENVIRONMENT_RECYCLE_ENABLED", true),
 		GCInterval:                      gcInterval,
 		GCTTL:                           gcTTL,
 		GCCompletedTaskTTL:              gcCompletedTaskTTL,
+		EnvironmentArchiveEnabled:       boolFromEnv("MULTICA_ENVIRONMENT_ARCHIVE_ENABLED", true),
+		EnvironmentArchiveTTL:           environmentArchiveTTL,
+		EnvironmentRecycleInterval:      environmentRecycleInterval,
 		GCOrphanTTL:                     gcOrphanTTL,
 		GCArtifactTTL:                   gcArtifactTTL,
 		GCArtifactPatterns:              gcArtifactPatterns,

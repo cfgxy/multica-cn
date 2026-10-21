@@ -29,6 +29,7 @@ type taskContextMarkerFile struct {
 	AgentID       string `json:"agent_id,omitempty"`
 	IssueID       string `json:"issue_id,omitempty"`
 	ChatSessionID string `json:"chat_session_id,omitempty"`
+	AutopilotID   string `json:"autopilot_id,omitempty"`
 	Branch        string `json:"branch,omitempty"`
 	BaseCommit    string `json:"base_commit,omitempty"`
 }
@@ -221,6 +222,7 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 		AgentID:       ctx.AgentID,
 		IssueID:       ctx.IssueID,
 		ChatSessionID: ctx.ChatSessionID,
+		AutopilotID:   ctx.AutopilotID,
 		Branch:        ctx.ManagedBranch,
 		BaseCommit:    ctx.BaseCommit,
 	}

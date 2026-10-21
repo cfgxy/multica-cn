@@ -1442,7 +1442,22 @@
   },
   "desktop": {
     "tabs": {
-      "updates": "Updates"
+      "updates": "Updates",
+      "environment": "Environments"
+    },
+    "environment": {
+      "title": "Environments", "description": "Review task environments managed by this desktop daemon, clean caches, or archive and restore environments.",
+      "environments": "Environments", "cache": "Cache", "archives": "Archives", "refresh": "Refresh environments",
+      "selected": "{{count}} selected", "environment": "Environment", "size": "Size", "state": "State",
+      "protected": "Protected", "available": "Available", "unknown_status": "Unknown status", "empty": "No managed environments",
+      "load_failed": "Couldn't load environments", "operation_failed": "Operation failed", "preview_cache": "Preview cache",
+      "preview_archive": "Preview archive", "cache_preview_count": "Cache preview: {{count}} environments", "clean_cache": "Clean selected cache",
+      "cache_cleaned": "Released {{size}}", "no_preview": "No cache to clean", "archive_preview_count": "Previewed {{count}} environments",
+      "archive_now": "Archive selected", "archived": "Archived {{count}} environments", "no_archives": "No archives available to restore",
+      "restore": "Restore", "restored": "Environment restored", "restore_failed": "Couldn't restore this environment",
+      "confirm_cache_title": "Clean the selected cache?", "confirm_cache_description": "This cannot be undone. The daemon will recheck environment state and the preview revision before cleaning.",
+      "confirm_archive_title": "Archive the selected environments?", "confirm_archive_description": "Source folders are released only after snapshot verification succeeds. Archiving may take a while.",
+      "cancel": "Cancel", "confirm": "Confirm"
     },
     "updates": {
       "title": "Updates",

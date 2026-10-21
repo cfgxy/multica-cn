@@ -975,21 +975,46 @@ func (c *Client) GetAutopilotRunGCCheck(ctx context.Context, runID string) (*Aut
 	return &resp, nil
 }
 
-// TaskGCStatus carries the agent_task_queue status for quick-create cleanup.
-// Quick-create tasks have no separate parent record, so GC keys directly on
-// the task itself.
-type TaskGCStatus struct {
-	Status      string    `json:"status"`
-	CompletedAt time.Time `json:"completed_at"`
-}
-
 // GetTaskGCCheck returns the status of an agent task for GC decisions.
-func (c *Client) GetTaskGCCheck(ctx context.Context, taskID string) (*TaskGCStatus, error) {
-	var resp TaskGCStatus
+func (c *Client) GetTaskGCCheck(ctx context.Context, taskID string) (*protocol.TaskGCStatus, error) {
+	var resp protocol.TaskGCStatus
 	if err := c.getJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/gc-check", taskID), &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
+}
+
+func (c *Client) GetTaskGCChecks(ctx context.Context, workspaceID, runtimeID string, taskIDs []string) (map[string]*protocol.TaskGCStatus, error) {
+	results := make(map[string]*protocol.TaskGCStatus, len(taskIDs))
+	for start := 0; start < len(taskIDs); start += 500 {
+		chunk := taskIDs[start:min(start+500, len(taskIDs))]
+		var response protocol.TaskGCBatch
+		request := struct {
+			TaskIDs []string `json:"task_ids"`
+		}{chunk}
+		path := fmt.Sprintf("/api/daemon/workspaces/%s/runtimes/%s/tasks/gc-check", url.PathEscape(workspaceID), url.PathEscape(runtimeID))
+		if runtimeID == "" {
+			path = fmt.Sprintf("/api/daemon/workspaces/%s/tasks/gc-check", url.PathEscape(workspaceID))
+		}
+		if err := c.postJSON(ctx, path, request, &response); err != nil {
+			return nil, err
+		}
+		requested := make(map[string]bool, len(chunk))
+		for _, id := range chunk {
+			requested[id] = true
+		}
+		for index := range response.Tasks {
+			status := &response.Tasks[index]
+			if !requested[status.TaskID] || status.WorkspaceID != workspaceID || runtimeID != "" && status.RuntimeID != runtimeID {
+				return nil, errors.New("invalid task lifecycle batch scope")
+			}
+			if _, duplicate := results[status.TaskID]; duplicate {
+				return nil, errors.New("duplicate task lifecycle result")
+			}
+			results[status.TaskID] = status
+		}
+	}
+	return results, nil
 }
 
 // RuntimeOfflineCodeNotExecutable marks a runtime taken offline because the OS
