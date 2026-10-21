@@ -108,6 +108,7 @@ import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { ExecutionLogSection } from "./execution-log-section";
 import { QuickActionsSection } from "./quick-actions-section";
 import { PluginPanelSection } from "../../plugins";
+import { CredentialManager } from "../../credentials/credential-manager";
 import { PullRequestList } from "./pull-request-list";
 import { PendingPullRequestSection } from "./pending-pull-request-section";
 import { issuePullRequestsOptions, useGitHubSettings } from "@multica/core/github";
@@ -2735,6 +2736,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           time rather than by a silently shorter list. */}
       <QuickActionsSection issueId={issue.id} />
       <PluginPanelSection issueId={issue.id} />
+      <CredentialManager key={issue.id} issue={issue} />
 
       {/* Parent issue — standalone section, only when the issue has a
           parent. Setting a parent is reachable via the issue actions menu;

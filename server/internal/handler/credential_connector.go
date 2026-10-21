@@ -64,7 +64,7 @@ func decodeCredentialConnectorRequest(w http.ResponseWriter, r *http.Request, ou
 
 func (h *Handler) ListCredentialConnectors(w http.ResponseWriter, r *http.Request) {
 	workspaceID := workspaceIDFromURL(r, "id")
-	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner"); !ok {
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner", "admin", "member"); !ok {
 		return
 	}
 	rows, err := h.DB.Query(r.Context(), `
