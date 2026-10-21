@@ -75,6 +75,7 @@
     "deny": "却下",
     "cancel": "リクエストを取り下げ",
     "projection_hint": "この行は状態の投影です。対象ワークスペースで操作してください",
+    "open_target_workspace": "対象ワークスペースで開く",
     "executed_failed": "実行失敗：{{reason}}",
     "steps_title": "ワークスペース別のステップ",
     "step_origin": "発信元",

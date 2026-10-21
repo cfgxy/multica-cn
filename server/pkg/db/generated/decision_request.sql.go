@@ -530,6 +530,65 @@ func (q *Queries) GetDecisionRequestGroupForUpdate(ctx context.Context, requestG
 	return items, nil
 }
 
+const listAccessibleDecisionRequestTargetSlugs = `-- name: ListAccessibleDecisionRequestTargetSlugs :many
+WITH visible_origin AS (
+    SELECT request_row.request_group_id
+    FROM decision_requests request_row
+    WHERE request_row.workspace_id = $1
+      AND request_row.role = 'origin'
+      AND ($4::text IS NULL OR request_row.status = $4::text)
+    ORDER BY request_row.created_at DESC, request_row.id DESC
+    LIMIT $3
+)
+SELECT DISTINCT origin.request_group_id, target_workspace.slug
+FROM visible_origin origin
+JOIN decision_requests target
+  ON target.request_group_id = origin.request_group_id
+ AND target.role = 'target'
+JOIN workspace target_workspace ON target_workspace.id = target.workspace_id
+JOIN member target_member ON target_member.workspace_id = target.workspace_id
+WHERE target_member.user_id = $2
+`
+
+type ListAccessibleDecisionRequestTargetSlugsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+	Limit       int32       `json:"limit"`
+	Status      pgtype.Text `json:"status"`
+}
+
+type ListAccessibleDecisionRequestTargetSlugsRow struct {
+	RequestGroupID pgtype.UUID `json:"request_group_id"`
+	Slug           string      `json:"slug"`
+}
+
+// Return target routes only when the requesting user is also a member of the
+// target workspace. This metadata is attached only to origin projections.
+func (q *Queries) ListAccessibleDecisionRequestTargetSlugs(ctx context.Context, arg ListAccessibleDecisionRequestTargetSlugsParams) ([]ListAccessibleDecisionRequestTargetSlugsRow, error) {
+	rows, err := q.db.Query(ctx, listAccessibleDecisionRequestTargetSlugs,
+		arg.WorkspaceID,
+		arg.UserID,
+		arg.Limit,
+		arg.Status,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAccessibleDecisionRequestTargetSlugsRow{}
+	for rows.Next() {
+		var i ListAccessibleDecisionRequestTargetSlugsRow
+		if err := rows.Scan(&i.RequestGroupID, &i.Slug); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionRequestsForWorkspace = `-- name: ListDecisionRequestsForWorkspace :many
 SELECT id, request_group_id, workspace_id, role, operable, status, action_type, action_params, risk_tier, title, detail, origin_workspace_id, origin_agent_id, origin_task_id, origin_issue_id, origin_issue_title, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answered_by_type, answered_by_id, answered_at, answer_source, executed_at, execution_result, execution_error, terminal_callback_at, created_by_type, created_by_id, created_at, updated_at FROM decision_requests
 WHERE workspace_id = $1
