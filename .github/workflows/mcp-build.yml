@@ -4,7 +4,7 @@ name: MCP Server Build
 # apps/mcp 变更即自动构建 npm 包（tarball）并上传为 Actions artifact，
 # 供 QA/使用方下载核验。与 mobile-android-build.yml 的分阶语义一致：
 # - push main / workflow_dispatch：构建并上传 artifact（含 SHA256 校验值）。
-# - pull_request：同样构建上传，仅用于 PR 门禁，不产生额外发布动作。
+# - Draft PR：需显式 dispatch 精确 head SHA，不产生自动运行或发布动作。
 #
 # 该 workflow 不做发布（npm registry 发布另行决策）；构建结果由 Leader
 # 在 push 后核对。
@@ -19,16 +19,16 @@ on:
       - "pnpm-workspace.yaml"
       - "turbo.json"
       - ".github/workflows/mcp-build.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "apps/mcp/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "turbo.json"
-      - ".github/workflows/mcp-build.yml"
   workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR number
+        required: false
+        type: string
+      expected_sha:
+        description: Exact 40-character PR head SHA to validate
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -40,9 +40,29 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Verify manual PR head
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.pr_number != '' || inputs.expected_sha != '') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[(.state), (.base.ref), (.head.sha), (.head.ref), (.head.repo.full_name)] | join("|")')"
+          expected="open|main|$EXPECTED_SHA|$GITHUB_REF_NAME|$GITHUB_REPOSITORY"
+          test "$pr" = "$expected" || {
+            echo "::error::PR is not open on main at the selected branch and expected SHA"
+            exit 1
+          }
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
