@@ -2,6 +2,8 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,5 +111,79 @@ func TestDecisionRequestSingleIssueParamsAreNarrowAndVersioned(t *testing.T) {
 		if _, err := normalizeSingleIssueCreateParams(invalid); err == nil {
 			t.Fatalf("invalid params accepted: %s", invalid)
 		}
+	}
+}
+
+func TestDecisionRequestScriptReviewBindsSnapshotWithoutRegisteringExecutionKind(t *testing.T) {
+	script := "printf '%s\\n' reviewed"
+	params := json.RawMessage(fmt.Sprintf(`{"script":%q,"interpreter":"bash","args":["-e"],"sha256":%q}`, script, sha256Hex(script)))
+	normalized, err := normalizeScriptReviewParams(params)
+	if err != nil {
+		t.Fatalf("normalize script review params: %v", err)
+	}
+	source := "00000000-0000-7000-8000-000000000001"
+	target := "00000000-0000-7000-8000-000000000002"
+	expires := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	encoded, err := buildDecisionRequestActionParams(DecisionActionScriptReview, normalized, source, target, "", "", expires, "Review script snapshot")
+	if err != nil {
+		t.Fatalf("build script review spec: %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var spec decisionRequestAuthorizationSpec
+	if err := json.Unmarshal(payload["authorization_spec"], &spec); err != nil {
+		t.Fatal(err)
+	}
+	if spec.Kind != "script_review" || spec.ActionType != DecisionActionScriptReview || spec.Digest == "" {
+		t.Fatalf("script review spec = %+v", spec)
+	}
+	row := db.DecisionRequest{
+		ActionType: DecisionActionScriptReview, ActionParams: encoded,
+		OriginWorkspaceID: parseUUID(source), WorkspaceID: parseUUID(source),
+		Role: decisionReqRoleOrigin, Title: "Review script snapshot",
+		ExpiresAt: pgtype.Timestamptz{Time: expires, Valid: true},
+	}
+	if _, err := readDecisionRequestSpec(row); err != nil {
+		t.Fatalf("valid script snapshot rejected: %v", err)
+	}
+	var projected map[string]json.RawMessage
+	if err := json.Unmarshal(decisionRequestProjectedParams(row, false), &projected); err != nil {
+		t.Fatal(err)
+	}
+	if len(projected) != 1 || string(projected["sha256"]) != fmt.Sprintf("%q", sha256Hex(script)) {
+		t.Fatalf("public params projection = %s", decisionRequestProjectedParams(row, false))
+	}
+	if string(decisionRequestProjectedParams(row, true)) != string(encoded) {
+		t.Fatal("authorized detail projection did not retain the fixed snapshot")
+	}
+
+	var changed map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &changed); err != nil {
+		t.Fatal(err)
+	}
+	changed["script"] = json.RawMessage(`"printf tampered"`)
+	row.ActionParams, err = json.Marshal(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readDecisionRequestSpec(row); err == nil {
+		t.Fatal("tampered script was accepted")
+	}
+	for _, invalid := range []json.RawMessage{
+		[]byte(`{"script":"echo x","interpreter":"/bin/sh","args":[],"sha256":"` + sha256Hex("echo x") + `"}`),
+		[]byte(`{"script":"echo x","interpreter":"sh","args":[],"sha256":"` + strings.ToUpper(sha256Hex("echo x")) + `"}`),
+		[]byte(`{"script":"echo x","interpreter":"sh","args":[],"sha256":"` + sha256Hex("different") + `","extra":true}`),
+	} {
+		if _, err := normalizeScriptReviewParams(invalid); err == nil {
+			t.Fatalf("invalid script review payload accepted: %s", invalid)
+		}
+	}
+	if _, ok := decisionRequestKind("script"); ok {
+		t.Fatal("generic script authorization kind must remain unavailable")
+	}
+	if _, err := (&Handler{}).executeDecisionRequestAction(nil, nil, db.DecisionRequest{ActionType: DecisionActionScriptReview}); err == nil {
+		t.Fatal("script_review reached an action executor")
 	}
 }

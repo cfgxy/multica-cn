@@ -2660,6 +2660,33 @@ describe("DecisionRequestSchema authorization receipt", () => {
     expect(parsed.success).toBe(true);
   });
 
+  it("accepts the non-executable script review kind and reviewed hash receipt", () => {
+    const parsed = DecisionRequestSchema.safeParse({
+      ...base,
+      action_type: "script_review",
+      authorization_spec: {
+        version: 1,
+        kind: "script_review",
+        action_type: "script_review",
+        scope: { target_workspace_id: "workspace-2" },
+        parameter_digest: "a".repeat(64),
+        source_workspace_id: "workspace-1",
+        target_workspace_id: "workspace-2",
+        expires_at: "2026-10-22T00:00:00Z",
+        public_summary: "Review script snapshot",
+        digest: "b".repeat(64),
+      },
+      execution_result: {
+        receipt_version: 1,
+        receipt_type: "script_review",
+        status: "reviewed",
+        authorization_digest: "b".repeat(64),
+        script_sha256: "c".repeat(64),
+      },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
   it("rejects unknown transaction kinds and malformed receipt side-effect states", () => {
     expect(DecisionRequestSchema.safeParse({
       ...base,

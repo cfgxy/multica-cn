@@ -472,15 +472,18 @@ const PREFIX_VALUES: Record<string, string[]> = {
   // RUYI-630: 授权请求行状态 pill 按请求状态枚举拼接（组件内
   // STATUS_LABEL_KEYS，七个状态与 core 的 DecisionRequestStatus 一致）。
   "decisions:requests": [
+    "action_script_review",
     "action_single_issue_create",
     "issue_created",
     "kind_issue",
+    "kind_script_review",
     "status_pending",
     "status_approved",
     "status_denied",
     "status_expired",
     "status_revoked",
     "status_executed",
+    "status_reviewed",
     "status_execute_failed",
   ],
 };

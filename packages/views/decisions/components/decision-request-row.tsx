@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ArrowUpRight, ChevronDown, ChevronRight, ShieldCheck } from "lucide-react";
+import { ArrowUpRight, ChevronDown, ChevronRight, Copy, ShieldCheck } from "lucide-react";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -28,11 +28,12 @@ import { AppLink } from "../../navigation";
 
 type DecisionRequestStatus = DecisionRequest["status"];
 
-const ACTION_LABEL_KEYS: Record<string, "action_workspace_info_read" | "action_prompt_restore" | "action_project_prompt_sync" | "action_single_issue_create"> = {
+const ACTION_LABEL_KEYS: Record<string, "action_workspace_info_read" | "action_prompt_restore" | "action_project_prompt_sync" | "action_single_issue_create" | "action_script_review"> = {
   workspace_info_read: "action_workspace_info_read",
   prompt_restore: "action_prompt_restore",
   project_prompt_sync: "action_project_prompt_sync",
   single_issue_create: "action_single_issue_create",
+  script_review: "action_script_review",
 };
 
 const RISK_LABEL_KEYS: Record<string, "risk_read" | "risk_write_low"> = {
@@ -45,6 +46,7 @@ const KIND_LABEL_KEYS = {
   restricted_script: "kind_script",
   issue_creation: "kind_issue",
   single_issue: "kind_issue",
+  script_review: "kind_script_review",
 } as const;
 
 const STATUS_LABEL_KEYS: Record<
@@ -55,6 +57,7 @@ const STATUS_LABEL_KEYS: Record<
   | "status_expired"
   | "status_revoked"
   | "status_executed"
+  | "status_reviewed"
   | "status_execute_failed"
 > = {
   pending: "status_pending",
@@ -176,11 +179,6 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
   const syncResults = request.action_type === "project_prompt_sync"
     ? projectPromptResults(request.execution_result)
     : [];
-  const approvedPrompt = request.action_type === "project_prompt_sync"
-    && request.action_params && typeof request.action_params === "object"
-    && typeof (request.action_params as { content?: unknown }).content === "string"
-    ? (request.action_params as { content: string }).content
-    : null;
   const receipt = request.execution_result && typeof request.execution_result === "object"
     ? request.execution_result as {
       side_effect_status?: unknown;
@@ -196,11 +194,14 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
       && typeof (step as { status?: unknown }).status === "string"
       && typeof (step as { side_effect_status?: unknown }).side_effect_status === "string")
     : [];
-  const executionInProgress = request.status === "approved"
+  const executionInProgress = request.action_type !== "script_review" && request.status === "approved"
     && (request.role === "target" || (request.role === "origin" && request.operable));
   const kindLabelKey = request.authorization_spec
     ? KIND_LABEL_KEYS[request.authorization_spec.kind]
     : null;
+  const statusLabelKey = request.action_type === "script_review" && request.status === "executed"
+    ? "status_reviewed"
+    : STATUS_LABEL_KEYS[request.status];
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: decisionRequestKeys.all() });
@@ -238,7 +239,7 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
           </Badge>
         )}
         <Badge variant={statusBadgeVariant(request.status)} className="shrink-0">
-          {t(($) => $.requests[STATUS_LABEL_KEYS[request.status]])}
+          {t(($) => $.requests[statusLabelKey])}
         </Badge>
       </span>
       <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption text-muted-foreground">
@@ -395,7 +396,111 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
         ))}
       </div>
 
+      {request.action_type === "script_review" && <ScriptReviewSnapshot request={request} />}
+      {request.action_type === "project_prompt_sync" && <ProjectPromptSnapshot request={request} />}
       <RequestSteps request={request} />
+    </div>
+  );
+}
+
+function ScriptReviewSnapshot({ request }: { request: DecisionRequest }) {
+  const { t } = useT("decisions");
+  const [open, setOpen] = useState(false);
+  const canRequestDetail = request.role === "target" || (
+    request.authorization_spec?.source_workspace_id === request.authorization_spec?.target_workspace_id
+    && request.workspace_id === request.authorization_spec?.target_workspace_id
+  );
+  const detail = useQuery({
+    ...decisionRequestDetailQueryOptions(request.workspace_id, request.id),
+    enabled: open && canRequestDetail,
+  });
+  const listParams = request.action_params && typeof request.action_params === "object"
+    ? request.action_params as Record<string, unknown>
+    : {};
+  const detailParams = detail.data?.request.action_params && typeof detail.data.request.action_params === "object"
+    ? detail.data.request.action_params as Record<string, unknown>
+    : {};
+  const scriptHash = typeof listParams.sha256 === "string" ? listParams.sha256 : "";
+  const script = typeof detailParams.script === "string" ? detailParams.script : null;
+  const interpreter = typeof detailParams.interpreter === "string" ? detailParams.interpreter : null;
+  const args = Array.isArray(detailParams.args) && detailParams.args.every((arg) => typeof arg === "string")
+    ? detailParams.args as string[]
+    : null;
+
+  if (!canRequestDetail) return null;
+  return (
+    <div className="mt-2 flex flex-col gap-2" data-testid="script-review-snapshot">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-expanded={open}
+          data-testid="script-review-toggle"
+          onClick={() => setOpen((value) => !value)}
+        >
+          {t(($) => $.requests.script_review_details)}
+        </Button>
+        <span className="min-w-0 break-all text-caption text-muted-foreground">
+          {t(($) => $.requests.script_hash)}: <code>{scriptHash}</code>
+        </span>
+        {scriptHash && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label={t(($) => $.requests.copy_script_hash)}
+            title={t(($) => $.requests.copy_script_hash)}
+            onClick={() => void navigator.clipboard.writeText(scriptHash).then(() => toast.success(t(($) => $.requests.hash_copied)))}
+          >
+            <Copy className="size-4" aria-hidden />
+          </Button>
+        )}
+      </div>
+      {open && detail.isPending && <span role="status" className="text-caption text-muted-foreground">{t(($) => $.requests.script_details_loading)}</span>}
+      {open && detail.isError && <span role="alert" className="text-caption text-destructive">{t(($) => $.requests.script_details_error)}</span>}
+      {open && script !== null && interpreter !== null && args !== null && (
+        <dl className="grid min-w-0 gap-2 text-caption" data-testid="script-review-read-only-details">
+          <div><dt className="font-medium">{t(($) => $.requests.script_interpreter)}</dt><dd className="break-all"><code>{interpreter}</code></dd></div>
+          <div><dt className="font-medium">{t(($) => $.requests.script_arguments)}</dt><dd className="break-all"><code>{JSON.stringify(args)}</code></dd></div>
+          <div><dt className="font-medium">{t(($) => $.requests.script_body)}</dt><dd><pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border p-2 font-mono text-caption">{script}</pre></dd></div>
+        </dl>
+      )}
+    </div>
+  );
+}
+
+function ProjectPromptSnapshot({ request }: { request: DecisionRequest }) {
+  const { t } = useT("decisions");
+  const [open, setOpen] = useState(false);
+  const canRequestDetail = request.role === "target" || (
+    request.authorization_spec?.source_workspace_id === request.authorization_spec?.target_workspace_id
+    && request.workspace_id === request.authorization_spec?.target_workspace_id
+  );
+  const detail = useQuery({
+    ...decisionRequestDetailQueryOptions(request.workspace_id, request.id),
+    enabled: open && canRequestDetail,
+  });
+  const params = detail.data?.request.action_params && typeof detail.data.request.action_params === "object"
+    ? detail.data.request.action_params as Record<string, unknown>
+    : {};
+  const content = typeof params.content === "string" ? params.content : null;
+  const listParams = request.action_params && typeof request.action_params === "object"
+    ? request.action_params as Record<string, unknown>
+    : {};
+  const hash = typeof listParams.content_sha256 === "string" ? listParams.content_sha256 : "";
+  if (!canRequestDetail) return null;
+  return (
+    <div className="mt-2 flex flex-col gap-2" data-testid="project-prompt-snapshot">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="button" variant="outline" size="sm" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+          {t(($) => $.requests.review_prompt_content)}
+        </Button>
+        {hash && <span className="break-all text-caption text-muted-foreground"><code>{hash}</code></span>}
+      </div>
+      {open && detail.isPending && <span role="status" className="text-caption text-muted-foreground">{t(($) => $.requests.script_details_loading)}</span>}
+      {open && detail.isError && <span role="alert" className="text-caption text-destructive">{t(($) => $.requests.script_details_error)}</span>}
+      {open && content !== null && <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded border p-2 font-mono text-caption">{content}</pre>}
     </div>
   );
 }

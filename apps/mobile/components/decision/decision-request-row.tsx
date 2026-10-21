@@ -14,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Pressable, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import { buildActorNameResolver } from "@multica/core/workspace/hooks";
 import { decisionRequestKeys } from "@multica/core/issues/decision-requests";
 import type { DecisionRequest } from "@multica/core/types";
@@ -60,6 +61,7 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId) ?? "";
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
+  const [showScript, setShowScript] = useState(false);
   const [showPrompt, setShowPrompt] = useState(false);
   const [showSteps, setShowSteps] = useState(false);
 
@@ -78,11 +80,6 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
     ? (request.execution_result as { projects: Array<{ project_id?: unknown; status?: unknown; version?: unknown }> }).projects
         .filter((item) => typeof item.project_id === "string" && typeof item.status === "string" && typeof item.version === "number")
     : [];
-  const approvedPrompt = request.action_type === "project_prompt_sync"
-    && request.action_params && typeof request.action_params === "object"
-    && typeof (request.action_params as { content?: unknown }).content === "string"
-    ? (request.action_params as { content: string }).content
-    : null;
   const receipt = request.execution_result && typeof request.execution_result === "object"
     ? request.execution_result as {
       side_effect_status?: unknown;
@@ -100,7 +97,7 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
     : [];
   const detail = useQuery({
     ...decisionRequestDetailOptions(request.workspace_id, request.id),
-    enabled: showSteps,
+    enabled: showSteps || showScript || showPrompt,
   });
 
   const refresh = () => {
@@ -136,6 +133,8 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
       ? t("requests.action_workspace_info_read", "Read workspace info")
       : request.action_type === "single_issue_create"
         ? t("requests.action_single_issue_create", "Create one issue")
+      : request.action_type === "script_review"
+        ? t("requests.action_script_review", "Review script")
       : request.action_type;
   const riskLabel = request.risk_tier === "write_low"
     ? t("requests.risk_write_low", "Low-risk write")
@@ -150,8 +149,35 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
         ? t("requests.kind_issue", "Single issue task")
         : request.authorization_spec?.kind === "single_issue"
           ? t("requests.kind_issue", "Single issue task")
+      : request.authorization_spec?.kind === "script_review"
+        ? t("requests.kind_script_review", "Script review only")
         : null;
-  const executionInProgress = request.status === "approved"
+  const statusLabel = request.action_type === "script_review" && request.status === "executed"
+    ? t("requests.status_reviewed", "Reviewed")
+    : t(`requests.${STATUS_LABEL_KEYS[request.status]}`, String(request.status));
+  const canRequestScriptDetail = request.role === "target" || (
+    request.authorization_spec?.source_workspace_id === request.authorization_spec?.target_workspace_id
+    && request.workspace_id === request.authorization_spec?.target_workspace_id
+  );
+  const requestParams = request.action_params && typeof request.action_params === "object"
+    ? request.action_params as Record<string, unknown>
+    : {};
+  const detailParams = detail.data?.request.action_params && typeof detail.data.request.action_params === "object"
+    ? detail.data.request.action_params as Record<string, unknown>
+    : {};
+  const scriptHash = typeof requestParams.sha256 === "string" ? requestParams.sha256 : "";
+  const script = typeof detailParams.script === "string" ? detailParams.script : null;
+  const interpreter = typeof detailParams.interpreter === "string" ? detailParams.interpreter : null;
+  const scriptArgs = Array.isArray(detailParams.args) && detailParams.args.every((arg) => typeof arg === "string")
+    ? detailParams.args as string[]
+    : null;
+  const promptContent = typeof detailParams.content === "string" ? detailParams.content : null;
+  const promptHash = typeof requestParams.content_sha256 === "string" ? requestParams.content_sha256 : "";
+  const canRequestSensitiveDetail = request.role === "target" || (
+    request.authorization_spec?.source_workspace_id === request.authorization_spec?.target_workspace_id
+    && request.workspace_id === request.authorization_spec?.target_workspace_id
+  );
+  const executionInProgress = request.action_type !== "script_review" && request.status === "approved"
     && (request.role === "target" || (request.role === "origin" && request.operable));
 
   return (
@@ -182,7 +208,7 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
             statusPillClass(request.status),
           )}
         >
-          {t(`requests.${STATUS_LABEL_KEYS[request.status]}`, String(request.status))}
+          {statusLabel}
         </Text>
         {executionInProgress ? (
           <Text className="text-xs text-muted-foreground" accessibilityRole="text" accessibilityLiveRegion="polite" testID="decision-request-executing">
@@ -204,16 +230,57 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
           })}
         </Text>
       ) : null}
-      {approvedPrompt !== null ? (
-        <View className="mt-2">
-          <Pressable onPress={() => setShowPrompt((value) => !value)} accessibilityRole="button">
-            <Text className="text-xs text-muted-foreground">
-              {showPrompt
-                ? t("requests.hide_prompt_content", "Hide approved prompt")
-                : t("requests.review_prompt_content", "Review approved prompt")}
+      {request.action_type === "script_review" && canRequestScriptDetail ? (
+        <View className="mt-2 gap-2" testID="script-review-snapshot">
+          <View className="flex-row flex-wrap items-center gap-2">
+            <Pressable
+              onPress={() => setShowScript((value) => !value)}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: showScript }}
+              testID="script-review-toggle"
+            >
+              <Text className="text-xs text-brand">{t("requests.script_review_details", "Review script snapshot")}</Text>
+            </Pressable>
+            <Text className="text-xs text-muted-foreground" selectable>
+              {t("requests.script_hash", "SHA-256")}: {scriptHash}
             </Text>
+            {scriptHash ? (
+              <Pressable
+                onPress={() => void Clipboard.setStringAsync(scriptHash)}
+                accessibilityRole="button"
+                accessibilityLabel={t("requests.copy_script_hash", "Copy script hash")}
+                testID="script-review-copy-hash"
+              >
+                <Ionicons name="copy-outline" size={16} color={theme.brand} />
+              </Pressable>
+            ) : null}
+          </View>
+          {showScript && detail.isPending ? <Text accessibilityLiveRegion="polite" className="text-xs text-muted-foreground">{t("requests.script_details_loading", "Loading script snapshot")}</Text> : null}
+          {showScript && detail.isError ? <Text accessibilityRole="alert" className="text-xs text-destructive">{t("requests.script_details_error", "Unable to load the script snapshot")}</Text> : null}
+          {showScript && script !== null && interpreter !== null && scriptArgs !== null ? (
+            <View className="gap-1" testID="script-review-read-only-details">
+              <Text className="text-xs font-medium">{t("requests.script_interpreter", "Interpreter")}: <Text selectable>{interpreter}</Text></Text>
+              <Text className="text-xs font-medium">{t("requests.script_arguments", "Arguments")}: <Text selectable>{JSON.stringify(scriptArgs)}</Text></Text>
+              <Text className="text-xs font-medium">{t("requests.script_body", "Script")}</Text>
+              <Text selectable className="rounded border border-border p-2 font-mono text-xs">{script}</Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+      {request.action_type === "project_prompt_sync" && canRequestSensitiveDetail ? (
+        <View className="mt-2 gap-2" testID="project-prompt-snapshot">
+          <Pressable
+            onPress={() => setShowPrompt((value) => !value)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showPrompt }}
+            testID="project-prompt-toggle"
+          >
+            <Text className="text-xs text-brand">{t("requests.review_prompt_content", "Review approved prompt")}</Text>
           </Pressable>
-          {showPrompt ? <Text className="mt-1 text-xs text-muted-foreground">{approvedPrompt}</Text> : null}
+          {promptHash ? <Text selectable className="text-xs text-muted-foreground">{promptHash}</Text> : null}
+          {showPrompt && detail.isPending ? <Text accessibilityLiveRegion="polite" className="text-xs text-muted-foreground">{t("requests.script_details_loading", "Loading prompt snapshot")}</Text> : null}
+          {showPrompt && detail.isError ? <Text accessibilityRole="alert" className="text-xs text-destructive">{t("requests.script_details_error", "Unable to load the prompt snapshot")}</Text> : null}
+          {showPrompt && promptContent !== null ? <Text selectable className="rounded border border-border p-2 text-xs">{promptContent}</Text> : null}
         </View>
       ) : null}
 
