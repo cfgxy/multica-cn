@@ -3,8 +3,10 @@ import {
   CredentialConnectorListSchema,
   CredentialMetadataListSchema,
   CredentialMetadataSchema,
+  CredentialAuditEventListSchema,
   CredentialTransportKeySchema,
   type CredentialConnector,
+  type CredentialAuditEvent,
   type CredentialMetadata,
   type CredentialTransportKey,
 } from "../credentials/api";
@@ -1357,6 +1359,37 @@ export class ApiClient {
     });
     return parseWithFallback(raw, CredentialMetadataSchema, null, {
       endpoint: "POST /api/issues/{id}/credentials",
+      redactContent: true,
+    });
+  }
+
+  async replaceIssueCredential(issueId: string, credentialId: string, data: {
+    name: string;
+    target_service: string;
+    connector_id: string;
+    connector_revision: number;
+    purpose: string;
+    subject_type: "agent" | "squad";
+    subject_id: string;
+    resource_scope: "single_use" | "issue" | "project" | "workspace" | "global";
+    resource_id?: string;
+    expires_at: string | null;
+    envelope: CredentialTransportEnvelope;
+  }): Promise<CredentialMetadata | null> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials/${credentialId}/replace`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialMetadataSchema, null, {
+      endpoint: "POST /api/issues/{id}/credentials/{credentialId}/replace",
+      redactContent: true,
+    });
+  }
+
+  async listCredentialAudit(workspaceId: string): Promise<CredentialAuditEvent[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/credential-audit`);
+    return parseWithFallback(raw, CredentialAuditEventListSchema, [], {
+      endpoint: "GET /api/workspaces/{id}/credential-audit",
       redactContent: true,
     });
   }

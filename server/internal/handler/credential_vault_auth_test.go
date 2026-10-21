@@ -1,12 +1,20 @@
 package handler
 
 import (
+	"bytes"
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,6 +60,18 @@ func TestCredentialWriteScopeAuthorization(t *testing.T) {
 				t.Fatalf("credentialCanWriteScope(%q) = %t, want %t", tt.scope, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGlobalCredentialResourceUsesGlobalEnvelopeSentinel(t *testing.T) {
+	issue := dbIssueForCredentialAuth("00000000-0000-7000-8000-000000000001")
+	owner := dbMemberForCredentialAuth("owner", "00000000-0000-7000-8000-000000000001")
+	resourceID, aadID, ok := credentialResource(issue, owner, "00000000-0000-7000-8000-000000000001", "global", "global")
+	if !ok || resourceID.Valid || aadID != "global" {
+		t.Fatalf("global resource = (%v, %q, %t), want null storage ID and global AAD", resourceID, aadID, ok)
+	}
+	if _, _, ok := credentialResource(issue, owner, "00000000-0000-7000-8000-000000000001", "global", "workspace"); ok {
+		t.Fatal("non-global resource ID was accepted for global scope")
 	}
 }
 
@@ -179,6 +199,131 @@ func TestCredentialWritesUseCurrentRoleAndAssignee(t *testing.T) {
 	}
 	agentID := dbfx.Agent(t, "Credential authorization subject", testRuntimeID)
 	connectorID := insertCredentialConnectorForAuth(t, testWorkspaceID)
+	globalContext := credentialcrypto.Context{
+		WorkspaceID: testWorkspaceID, ResourceType: "global", ResourceID: "global",
+		SubjectType: "agent", SubjectID: agentID, ConnectorID: connectorID, ConnectorRev: 1,
+		Purpose: "credential.create", Version: credentialcrypto.ProtocolVersion,
+	}
+	globalEnvelope := sealCredentialEnvelopeForHandlerTest(t, &transportKey.PublicKey, globalContext)
+	globalBody := map[string]any{
+		"name": "Global fixture", "target_service": "fixture", "purpose": "synthetic global authorization test",
+		"connector_id": connectorID, "connector_revision": 1, "subject_type": "agent", "subject_id": agentID,
+		"resource_scope": "global", "resource_id": "global",
+		"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339), "envelope": globalEnvelope,
+	}
+	globalRecorder := httptest.NewRecorder()
+	globalRequest := newRequest(http.MethodPost, "/api/issues/"+issueID+"/credentials", globalBody)
+	globalRequest.Header.Set("X-User-ID", testUserID)
+	globalRequest = withURLParam(globalRequest, "id", issueID)
+	h.CreateIssueCredential(globalRecorder, globalRequest)
+	if globalRecorder.Code != http.StatusCreated {
+		t.Fatalf("owner global credential submission status = %d, want 201: %s", globalRecorder.Code, globalRecorder.Body.String())
+	}
+	var globalResponse credentialMetadataResponse
+	if err := json.Unmarshal(globalRecorder.Body.Bytes(), &globalResponse); err != nil {
+		t.Fatal("global credential response was invalid")
+	}
+	if strings.Contains(globalRecorder.Body.String(), "synthetic-global-secret") {
+		t.Fatal("global credential response disclosed the submitted value")
+	}
+	var globalResourceID *string
+	if err := testPool.QueryRow(context.Background(), `SELECT resource_id::text FROM credential_grant WHERE credential_id = $1`, globalResponse.ID).Scan(&globalResourceID); err != nil {
+		t.Fatal("global credential grant was not persisted")
+	}
+	if globalResourceID != nil {
+		t.Fatal("global grant must persist a null resource_id")
+	}
+	globalListRequest := newRequest(http.MethodGet, "/api/issues/"+issueID+"/credentials", nil)
+	globalListRequest.Header.Set("X-User-ID", testUserID)
+	globalListRequest = withURLParam(globalListRequest, "id", issueID)
+	globalListRecorder := httptest.NewRecorder()
+	h.ListIssueCredentials(globalListRecorder, globalListRequest)
+	var listedCredentials []credentialMetadataResponse
+	if globalListRecorder.Code != http.StatusOK || json.Unmarshal(globalListRecorder.Body.Bytes(), &listedCredentials) != nil {
+		t.Fatalf("global credential list status = %d: %s", globalListRecorder.Code, globalListRecorder.Body.String())
+	}
+	foundGlobal := false
+	for _, item := range listedCredentials {
+		foundGlobal = foundGlobal || item.ID == globalResponse.ID
+	}
+	if !foundGlobal {
+		t.Fatal("global credential was not shown in the issue management list")
+	}
+	var globalAudit struct {
+		Result, Reason, Purpose string
+		IssueID                 pgtype.UUID
+	}
+	if err := testPool.QueryRow(context.Background(), `SELECT result, reason_code, purpose, issue_id FROM credential_audit WHERE credential_id = $1 AND event_type = 'credential.created'`, globalResponse.ID).
+		Scan(&globalAudit.Result, &globalAudit.Reason, &globalAudit.Purpose, &globalAudit.IssueID); err != nil {
+		t.Fatal("global credential creation audit was not persisted")
+	}
+	if globalAudit.Result != "recorded" || globalAudit.Reason != "created" || globalAudit.Purpose != "synthetic global authorization test" || globalAudit.IssueID != parseUUID(issueID) {
+		t.Fatalf("global credential audit fields are incomplete: %+v", globalAudit)
+	}
+	auditRequest := newRequest(http.MethodGet, "/api/workspaces/"+testWorkspaceID+"/credential-audit", nil)
+	auditRequest.Header.Set("X-User-ID", testUserID)
+	auditRequest = withURLParam(auditRequest, "id", testWorkspaceID)
+	auditRecorder := httptest.NewRecorder()
+	h.ListCredentialAudit(auditRecorder, auditRequest)
+	if auditRecorder.Code != http.StatusOK || !strings.Contains(auditRecorder.Body.String(), "synthetic global authorization test") || strings.Contains(auditRecorder.Body.String(), "synthetic-global-secret") {
+		t.Fatalf("owner credential audit response status/body mismatch: %d %s", auditRecorder.Code, auditRecorder.Body.String())
+	}
+	deniedAuditRequest := newRequest(http.MethodGet, "/api/workspaces/"+testWorkspaceID+"/credential-audit", nil)
+	deniedAuditRequest.Header.Set("X-User-ID", memberID)
+	deniedAuditRequest = withURLParam(deniedAuditRequest, "id", testWorkspaceID)
+	deniedAuditRecorder := httptest.NewRecorder()
+	h.ListCredentialAudit(deniedAuditRecorder, deniedAuditRequest)
+	if deniedAuditRecorder.Code != http.StatusForbidden {
+		t.Fatalf("member credential audit status = %d, want 403: %s", deniedAuditRecorder.Code, deniedAuditRecorder.Body.String())
+	}
+	var originalCiphertext []byte
+	if err := testPool.QueryRow(context.Background(), `SELECT encrypted_value FROM credential_vault WHERE id = $1`, globalResponse.ID).Scan(&originalCiphertext); err != nil {
+		t.Fatal("could not read stored test ciphertext")
+	}
+	failedReplacementBody := map[string]any{
+		"name": "Global fixture", "target_service": "fixture", "purpose": "synthetic replacement test",
+		"connector_id": connectorID, "connector_revision": 1, "subject_type": "agent", "subject_id": agentID,
+		"resource_scope": "global", "resource_id": "global",
+		"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		"envelope": map[string]any{
+			"version": 1, "key_id": "test-key", "algorithm": credentialcrypto.TransportRSAOAEP,
+			"wrapped_data_key": globalEnvelope.WrappedDataKey, "nonce": globalEnvelope.Nonce, "ciphertext": "invalid-envelope-ciphertext",
+		},
+	}
+	failedReplacement := replaceCredentialAs(t, &h, testUserID, issueID, globalResponse.ID, failedReplacementBody)
+	if failedReplacement.Code != http.StatusBadRequest {
+		t.Fatalf("invalid replacement status = %d, want 400: %s", failedReplacement.Code, failedReplacement.Body.String())
+	}
+	var unchangedCiphertext []byte
+	if err := testPool.QueryRow(context.Background(), `SELECT encrypted_value FROM credential_vault WHERE id = $1`, globalResponse.ID).Scan(&unchangedCiphertext); err != nil || !bytes.Equal(originalCiphertext, unchangedCiphertext) {
+		t.Fatal("failed replacement changed the active ciphertext")
+	}
+	replacementContext := globalContext
+	replacementContext.Purpose = "credential.create"
+	replacementEnvelope := sealCredentialEnvelopeForHandlerTest(t, &transportKey.PublicKey, replacementContext)
+	failedReplacementBody["envelope"] = replacementEnvelope
+	const concurrentReplacements = 2
+	var replacementWait sync.WaitGroup
+	replacementResponses := make(chan int, concurrentReplacements)
+	for i := 0; i < concurrentReplacements; i++ {
+		replacementWait.Add(1)
+		go func() {
+			defer replacementWait.Done()
+			response := replaceCredentialAs(t, &h, testUserID, issueID, globalResponse.ID, failedReplacementBody)
+			replacementResponses <- response.Code
+		}()
+	}
+	replacementWait.Wait()
+	close(replacementResponses)
+	for status := range replacementResponses {
+		if status != http.StatusOK {
+			t.Fatalf("concurrent replacement status = %d, want 200", status)
+		}
+	}
+	var activeGrantCount int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM credential_grant WHERE credential_id = $1 AND status = 'active'`, globalResponse.ID).Scan(&activeGrantCount); err != nil || activeGrantCount != 1 {
+		t.Fatalf("active grant count after concurrent replacement = %d, want 1", activeGrantCount)
+	}
 	requestCreate := func(userID, resourceScope string) *httptest.ResponseRecorder {
 		t.Helper()
 		body := map[string]any{
@@ -220,6 +365,52 @@ func TestCredentialWritesUseCurrentRoleAndAssignee(t *testing.T) {
 	if currentAssigneeCreate.Code != http.StatusBadRequest {
 		t.Fatalf("current assignee single-use create status = %d, want envelope rejection 400: %s", currentAssigneeCreate.Code, currentAssigneeCreate.Body.String())
 	}
+}
+
+func sealCredentialEnvelopeForHandlerTest(t *testing.T, key *rsa.PublicKey, ctx credentialcrypto.Context) credentialcrypto.TransportEnvelope {
+	t.Helper()
+	aad, err := ctx.AssociatedData()
+	if err != nil {
+		t.Fatal("global credential context was invalid")
+	}
+	dataKey := make([]byte, 32)
+	if _, err := rand.Read(dataKey); err != nil {
+		t.Fatal("fixture key generation failed")
+	}
+	block, err := aes.NewCipher(dataKey)
+	if err != nil {
+		t.Fatal("fixture cipher setup failed")
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal("fixture AEAD setup failed")
+	}
+	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal("fixture nonce generation failed")
+	}
+	label := sha256.Sum256(aad)
+	wrapped, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, key, dataKey, label[:])
+	if err != nil {
+		t.Fatal("fixture wrapping failed")
+	}
+	return credentialcrypto.TransportEnvelope{
+		Version: credentialcrypto.ProtocolVersion, KeyID: "test-key", Algorithm: credentialcrypto.TransportRSAOAEP,
+		WrappedDataKey: base64.RawURLEncoding.EncodeToString(wrapped),
+		Nonce:          base64.RawURLEncoding.EncodeToString(nonce),
+		Ciphertext:     base64.RawURLEncoding.EncodeToString(aead.Seal(nil, nonce, []byte("synthetic-global-secret"), aad)),
+	}
+}
+
+func replaceCredentialAs(t *testing.T, h *Handler, userID, issueID, credentialID string, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/credentials/"+credentialID+"/replace", body)
+	req.Header.Set("X-User-ID", userID)
+	req = withURLParam(req, "id", issueID)
+	req = withURLParam(req, "credentialId", credentialID)
+	h.ReplaceIssueCredential(recorder, req)
+	return recorder
 }
 
 func insertCredentialForAuth(t *testing.T, resourceID, scope, creatorID string) string {

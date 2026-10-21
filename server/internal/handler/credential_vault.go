@@ -52,6 +52,24 @@ type credentialMetadataResponse struct {
 	CreatedAt     time.Time  `json:"created_at"`
 }
 
+type credentialAuditResponse struct {
+	ID           string    `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	CredentialID *string   `json:"credential_id"`
+	EventType    string    `json:"event_type"`
+	Result       string    `json:"result"`
+	ReasonCode   string    `json:"reason_code"`
+	ActorType    string    `json:"actor_type"`
+	ActorID      string    `json:"actor_id"`
+	ProjectID    *string   `json:"project_id"`
+	ProjectTitle *string   `json:"project_title"`
+	IssueID      *string   `json:"issue_id"`
+	IssueTitle   *string   `json:"issue_title"`
+	TaskID       *string   `json:"task_id"`
+	AgentID      *string   `json:"agent_id"`
+	Purpose      string    `json:"purpose"`
+}
+
 func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) {
 	if len(h.CredentialTransportKeys.PrivateKeys) == 0 || len(h.CredentialStorageKeys.MasterKeys) == 0 {
 		writeError(w, http.StatusServiceUnavailable, "credential encryption is unavailable")
@@ -211,6 +229,195 @@ func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (h *Handler) ReplaceIssueCredential(w http.ResponseWriter, r *http.Request) {
+	if len(h.CredentialTransportKeys.PrivateKeys) == 0 || len(h.CredentialStorageKeys.MasterKeys) == 0 {
+		writeError(w, http.StatusServiceUnavailable, "credential encryption is unavailable")
+		return
+	}
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	credentialID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "credentialId"), "credential_id")
+	if !ok {
+		return
+	}
+	data, err := readCredentialBody(http.MaxBytesReader(w, r.Body, maxCredentialEnvelopeRequest))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid encrypted credential request")
+		return
+	}
+	req, envelope, err := decodeCreateIssueCredentialRequest(data)
+	if err != nil || !credentialRequestValid(req) {
+		writeError(w, http.StatusBadRequest, "invalid encrypted credential request")
+		return
+	}
+	if req.ResourceScope != "issue" && req.ResourceScope != "single_use" && req.ResourceScope != "project" &&
+		req.ResourceScope != "workspace" && req.ResourceScope != "global" {
+		writeError(w, http.StatusBadRequest, "unsupported credential resource scope")
+		return
+	}
+	if req.SubjectType != "agent" && req.SubjectType != "squad" {
+		writeError(w, http.StatusBadRequest, "invalid credential subject")
+		return
+	}
+	var expiresAt *time.Time
+	if req.ExpiresAt != nil {
+		parsed, parseErr := time.Parse(time.RFC3339, *req.ExpiresAt)
+		if parseErr != nil || !parsed.After(time.Now()) {
+			writeError(w, http.StatusBadRequest, "invalid credential expiry")
+			return
+		}
+		expiresAt = &parsed
+	}
+	if req.ResourceScope == "single_use" && expiresAt != nil {
+		writeError(w, http.StatusBadRequest, "single-use credentials do not accept an explicit expiry")
+		return
+	}
+	if (req.ResourceScope == "project" || req.ResourceScope == "workspace" || req.ResourceScope == "global") && expiresAt == nil {
+		writeError(w, http.StatusBadRequest, "credential expiry is required for this resource scope")
+		return
+	}
+
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "credential replacement failed")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	authorizedIssue, member, err := lockCredentialWriteContext(r.Context(), tx, issue.ID, issue.WorkspaceID, userID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+	resourceID, resourceAADID, scopeAuthorized := credentialResource(authorizedIssue, member, userID, req.ResourceScope, req.ResourceID)
+	if !scopeAuthorized || !h.validCredentialSubject(r, authorizedIssue, req.SubjectType, req.SubjectID) {
+		writeError(w, http.StatusForbidden, "credential authorization denied")
+		return
+	}
+	var status string
+	var createdBy pgtype.UUID
+	var createdAt time.Time
+	if err := tx.QueryRow(r.Context(), `SELECT status, created_by, created_at FROM credential_vault WHERE id = $1 AND workspace_id = $2 FOR UPDATE`,
+		credentialID, authorizedIssue.WorkspaceID).Scan(&status, &createdBy, &createdAt); err != nil {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+	if status != "active" {
+		writeError(w, http.StatusConflict, "credential is no longer active")
+		return
+	}
+	rows, err := tx.Query(r.Context(), `SELECT id, workspace_id, resource_scope, resource_id, status, expires_at FROM credential_grant WHERE credential_id = $1 ORDER BY id FOR UPDATE`, credentialID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "credential replacement failed")
+		return
+	}
+	var grantID pgtype.UUID
+	var reachable, sameWorkspace bool = false, true
+	var issueLocalOnly bool = true
+	grantActiveAndUnexpired := true
+	grantCount := 0
+	for rows.Next() {
+		var id, workspaceID, oldResourceID pgtype.UUID
+		var oldScope string
+		var oldStatus string
+		var oldExpiresAt pgtype.Timestamptz
+		if err := rows.Scan(&id, &workspaceID, &oldScope, &oldResourceID, &oldStatus, &oldExpiresAt); err != nil {
+			rows.Close()
+			writeError(w, http.StatusInternalServerError, "credential replacement failed")
+			return
+		}
+		grantCount++
+		grantID = id
+		sameWorkspace = sameWorkspace && workspaceID == authorizedIssue.WorkspaceID
+		reachable = reachable || credentialGrantMatchesIssue(authorizedIssue, oldScope, oldResourceID)
+		issueLocalOnly = issueLocalOnly && (oldScope == "issue" || oldScope == "single_use") && oldResourceID.Valid && oldResourceID == authorizedIssue.ID
+		grantActiveAndUnexpired = grantActiveAndUnexpired && oldStatus == "active" && (!oldExpiresAt.Valid || oldExpiresAt.Time.After(time.Now()))
+	}
+	rowsErr := rows.Err()
+	rows.Close()
+	if rowsErr != nil {
+		writeError(w, http.StatusInternalServerError, "credential replacement failed")
+		return
+	}
+	if !reachable || !sameWorkspace || grantCount != 1 {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+	if !grantActiveAndUnexpired {
+		writeError(w, http.StatusConflict, "credential grant is no longer active")
+		return
+	}
+	if member.Role != "owner" && !(credentialIssueWriter(member, authorizedIssue, userID) && issueLocalOnly && createdBy.Valid && createdBy == member.UserID) {
+		writeError(w, http.StatusForbidden, "credential authorization denied")
+		return
+	}
+	var connectorStatus string
+	var connectorRevision int64
+	if err := tx.QueryRow(r.Context(), `SELECT status, revision FROM credential_connector WHERE id = $1 AND workspace_id = $2 FOR SHARE`,
+		parseUUID(req.ConnectorID), authorizedIssue.WorkspaceID).Scan(&connectorStatus, &connectorRevision); err != nil || connectorStatus != "active" || connectorRevision != req.ConnectorRev {
+		writeError(w, http.StatusConflict, "credential connector is unavailable or changed")
+		return
+	}
+	workspaceID := uuidToString(authorizedIssue.WorkspaceID)
+	credentialIDString := uuidToString(credentialID)
+	transportContext := credentialcrypto.Context{WorkspaceID: workspaceID, ResourceType: req.ResourceScope, ResourceID: resourceAADID,
+		SubjectType: req.SubjectType, SubjectID: req.SubjectID, ConnectorID: req.ConnectorID, ConnectorRev: connectorRevision,
+		Purpose: "credential.create", Version: credentialcrypto.ProtocolVersion}
+	storageContext := credentialcrypto.Context{WorkspaceID: workspaceID, ResourceType: "credential", ResourceID: credentialIDString,
+		SubjectType: req.SubjectType, SubjectID: req.SubjectID, ConnectorID: req.ConnectorID, ConnectorRev: connectorRevision,
+		Purpose: "credential.storage", Version: credentialcrypto.ProtocolVersion}
+	storageAAD, err := storageContext.AssociatedData()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid credential context")
+		return
+	}
+	stored, err := credentialcrypto.ReencryptForStorage(h.CredentialTransportKeys, h.CredentialStorageKeys, envelope, transportContext, storageAAD)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "encrypted credential could not be accepted")
+		return
+	}
+	storedJSON, err := json.Marshal(stored)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "credential replacement failed")
+		return
+	}
+	var expiry any
+	if expiresAt != nil {
+		expiry = *expiresAt
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE credential_vault SET name = $2, target_service = $3, connector_id = $4,
+		connector_revision = $5, purpose = $6, encrypted_value = $7::jsonb, updated_at = now() WHERE id = $1`,
+		credentialID, strings.TrimSpace(req.Name), strings.TrimSpace(req.TargetService), parseUUID(req.ConnectorID), connectorRevision,
+		strings.TrimSpace(req.Purpose), storedJSON); err != nil {
+		writeError(w, http.StatusInternalServerError, "credential replacement failed")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `UPDATE credential_grant SET resource_scope = $2, resource_id = $3, subject_type = $4,
+		subject_id = $5, status = 'active', expires_at = $6, granted_by = $7, updated_at = now() WHERE id = $1`,
+		grantID, req.ResourceScope, resourceID, req.SubjectType, parseUUID(req.SubjectID), expiry, member.UserID); err != nil {
+		writeError(w, http.StatusInternalServerError, "credential replacement failed")
+		return
+	}
+	if err := writeCredentialAudit(r.Context(), tx, authorizedIssue.WorkspaceID, credentialID, grantID,
+		"credential.replaced", "recorded", "replaced", "member", userID, "", pgtype.UUID{}, pgtype.UUID{}, authorizedIssue.ID, req.Purpose); err != nil {
+		writeError(w, http.StatusInternalServerError, "credential replacement failed")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "credential replacement failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, credentialMetadataResponse{ID: credentialIDString, Name: strings.TrimSpace(req.Name),
+		TargetService: strings.TrimSpace(req.TargetService), ConnectorID: req.ConnectorID, ConnectorRev: connectorRevision,
+		Purpose: strings.TrimSpace(req.Purpose), Status: "active", ResourceScope: req.ResourceScope,
+		SubjectType: req.SubjectType, SubjectID: req.SubjectID, ExpiresAt: expiresAt, CreatedAt: createdAt})
+}
+
 func decodeCreateIssueCredentialRequest(data []byte) (createIssueCredentialRequest, credentialcrypto.TransportEnvelope, error) {
 	if len(data) == 0 || len(data) > maxCredentialEnvelopeRequest || credentialcrypto.RejectDuplicateJSONKeys(data) != nil {
 		return createIssueCredentialRequest{}, credentialcrypto.TransportEnvelope{}, errInvalidCredentialRequest
@@ -250,7 +457,7 @@ func (h *Handler) ListIssueCredentials(w http.ResponseWriter, r *http.Request) {
 		SELECT c.id::text, c.name, c.target_service, c.connector_id::text, c.connector_revision, c.purpose, c.status,
 		       g.resource_scope, g.subject_type, g.subject_id::text, g.expires_at, c.created_at
 		FROM credential_vault c JOIN credential_grant g ON g.credential_id = c.id
-		WHERE c.workspace_id = $1 AND g.resource_id = $2
+		WHERE c.workspace_id = $1 AND (g.resource_id = $2 OR g.resource_scope = 'global')
 		  AND (c.created_by = $3 OR $4 = 'owner' OR ($5 AND g.resource_scope IN ('issue', 'single_use')))
 		ORDER BY c.created_at DESC`, issue.WorkspaceID, issue.ID, member.UserID,
 		member.Role, credentialIssueWriter(member, issue, userID))
@@ -452,13 +659,66 @@ func credentialResource(issue db.Issue, member db.Member, userID, scope, request
 		}
 		return issue.WorkspaceID, workspaceID, true
 	case "global":
-		if requestedID != "" {
+		if requestedID != "" && requestedID != "global" {
 			return pgtype.UUID{}, "", false
 		}
 		return pgtype.UUID{}, "global", true
 	default:
 		return pgtype.UUID{}, "", false
 	}
+}
+
+func (h *Handler) ListCredentialAudit(w http.ResponseWriter, r *http.Request) {
+	workspaceID := workspaceIDFromURL(r, "id")
+	if _, ok := h.requireWorkspaceRole(w, r, workspaceID, "workspace not found", "owner"); !ok {
+		return
+	}
+	rows, err := h.DB.Query(r.Context(), `
+		SELECT a.id::text, a.created_at, a.credential_id::text, a.event_type, a.result, a.reason_code,
+		       a.actor_type, a.actor_id, p.id::text, p.title, i.id::text, i.title,
+		       a.task_id::text, a.agent_id::text, a.purpose
+		FROM credential_audit a
+		LEFT JOIN issue i ON i.id = a.issue_id AND i.workspace_id = a.workspace_id
+		LEFT JOIN project p ON p.id = i.project_id AND p.workspace_id = a.workspace_id
+		WHERE a.workspace_id = $1
+		ORDER BY a.created_at DESC, a.id DESC
+		LIMIT 500`, parseUUID(workspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list credential audit")
+		return
+	}
+	defer rows.Close()
+	items := make([]credentialAuditResponse, 0)
+	for rows.Next() {
+		var item credentialAuditResponse
+		var credentialID, projectID, projectTitle, issueID, issueTitle, taskID, agentID pgtype.Text
+		if err := rows.Scan(&item.ID, &item.CreatedAt, &credentialID, &item.EventType, &item.Result, &item.ReasonCode,
+			&item.ActorType, &item.ActorID, &projectID, &projectTitle, &issueID, &issueTitle,
+			&taskID, &agentID, &item.Purpose); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list credential audit")
+			return
+		}
+		item.CredentialID = credentialNullableText(credentialID)
+		item.ProjectID = credentialNullableText(projectID)
+		item.ProjectTitle = credentialNullableText(projectTitle)
+		item.IssueID = credentialNullableText(issueID)
+		item.IssueTitle = credentialNullableText(issueTitle)
+		item.TaskID = credentialNullableText(taskID)
+		item.AgentID = credentialNullableText(agentID)
+		items = append(items, item)
+	}
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list credential audit")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func credentialNullableText(value pgtype.Text) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
 }
 
 func (h *Handler) validCredentialSubject(r *http.Request, issue db.Issue, subjectType, subjectID string) bool {
