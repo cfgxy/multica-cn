@@ -18,12 +18,11 @@
 import { useCallback, useState } from "react";
 import {
   Alert,
-  KeyboardAvoidingView,
   Modal,
-  Platform,
   Pressable,
   View,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useEditComment } from "@/data/mutations/issues";
 import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
@@ -72,7 +71,7 @@ export function CommentEditModal({
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
         className="flex-1"
       >
         <Pressable
