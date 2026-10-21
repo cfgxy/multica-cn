@@ -150,6 +150,8 @@ export interface DecisionRequest {
   title: string;
   detail: string;
   origin_workspace_id: string;
+  /** Present only on origin projections when the viewer can access the target workspace. */
+  target_workspace_slug?: string;
   origin_agent_id: string;
   /** Server-resolved name — the origin agent is not in this workspace's roster. */
   origin_agent_name: string | null;
