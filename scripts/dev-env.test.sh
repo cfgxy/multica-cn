@@ -696,11 +696,13 @@ printf '%s' "${cred_key_line#*=}" | base64 -d | wc -c | grep -q '^32$' || fail "
 # Env files generated before RUYI-428 predate the MCP lines: `use` upgrades
 # them in place (append only) instead of regenerating, so the stored account
 # password — the one the shared instance's role was provisioned with — survives.
-sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d; /^MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=/d; /^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=/d; /^MULTICA_MCP_INSTANCE_ID=/d; /^MCP_AUDIT_CREDENTIAL_FILE=/d; /^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE=/d; /^FF_COMPOSIO_MCP_APPS=/d; /^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=/d' "$slot_env"
+sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d; /^LOCAL_UPLOAD_BASE_URL=/d; /^MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=/d; /^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=/d; /^MULTICA_MCP_INSTANCE_ID=/d; /^MCP_AUDIT_CREDENTIAL_FILE=/d; /^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE=/d; /^FF_COMPOSIO_MCP_APPS=/d; /^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=/d' "$slot_env"
+printf 'LOCAL_UPLOAD_BASE_URL=http://localhost:8080\n' >> "$slot_env"
 password_before="$(grep '^POSTGRES_PASSWORD=' "$slot_env")"
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "use must accept a pre-MCP legacy env"
 grep -q '^MCP_URL=http://localhost:13001$' "$slot_env" || fail "legacy env must gain MCP_URL via the in-place upgrade"
 grep -q '^MULTICA_MCP_PORT=13001$' "$slot_env" || fail "legacy env must gain MULTICA_MCP_PORT via the in-place upgrade"
+grep -q '^LOCAL_UPLOAD_BASE_URL=http://localhost:21801$' "$slot_env" || fail "legacy env must replace a stale upload base with the registered slot API port"
 grep -q '^MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=' "$slot_env" || fail "legacy env must gain the slot audit credential"
 grep -q '^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=' "$slot_env" || fail "legacy env must gain the slot file access instance credential map"
 grep -q '^MULTICA_MCP_INSTANCE_ID=slot-dev1-file-access$' "$slot_env" || fail "legacy env must gain the slot file access instance ID"
