@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -66,62 +67,67 @@ type credentialResolveResponse struct {
 	ExpiresAt time.Time                          `json:"expires_at"`
 }
 
-func mintCredentialCapability(ctx context.Context, tx pgx.Tx, daemonID, taskID string, sessionPublicKey []byte) (*credentialControlGrant, error) {
+func mintCredentialCapabilities(ctx context.Context, tx pgx.Tx, daemonID, taskID string, sessionPublicKey []byte) ([]credentialControlGrant, error) {
 	if daemonID == "" || len(sessionPublicKey) != 32 {
 		return nil, nil
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM credential_capability WHERE task_id = $1`, parseUUID(taskID)); err != nil {
 		return nil, err
 	}
-	grant, matches, denied, err := findTaskCredentialGrant(ctx, tx, taskID)
+	grants, err := findTaskCredentialGrants(ctx, tx, taskID)
 	if err != nil {
 		return nil, err
 	}
-	if denied || matches != 1 || grant.DaemonID != daemonID || grant.ConnectorStatus != "active" || grant.ConnectorRev < 1 || grant.TaskStatus != "dispatched" {
-		return nil, nil
+	selected := selectTaskCredentialGrants(grants)
+	capabilities := make([]credentialControlGrant, 0, len(selected))
+	for _, grant := range selected {
+		if grant.DaemonID != daemonID || grant.ConnectorStatus != "active" || grant.ConnectorRev < 1 || grant.TaskStatus != "dispatched" {
+			continue
+		}
+		capabilityBytes := make([]byte, 32)
+		if _, err := rand.Read(capabilityBytes); err != nil {
+			return nil, errors.New("credential capability generation failed")
+		}
+		capability := base64.RawURLEncoding.EncodeToString(capabilityBytes)
+		zeroCredentialBytes(capabilityBytes)
+		hash := sha256.Sum256([]byte(capability))
+		nonce := make([]byte, 32)
+		if _, err := rand.Read(nonce); err != nil {
+			return nil, errors.New("credential capability generation failed")
+		}
+		expiresAt := time.Now().UTC().Add(credentialCapabilityTTL)
+		_, err = tx.Exec(ctx, `
+			INSERT INTO credential_capability
+			(id, capability_hash, daemon_id, task_id, agent_id, issue_id, workspace_id, connector_id, connector_revision, session_public_key, nonce, expires_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+			dbid.NewV7(), hash[:], daemonID, parseUUID(taskID), grant.AgentID, grant.IssueID,
+			grant.WorkspaceID, grant.ConnectorID, grant.ConnectorRev, sessionPublicKey, nonce, expiresAt)
+		if err != nil {
+			return nil, err
+		}
+		capabilities = append(capabilities, credentialControlGrant{Capability: capability,
+			ConnectorID: uuidToString(grant.ConnectorID), ConnectorRevision: grant.ConnectorRev,
+			TargetURL: grant.ConnectorTarget, ExpiresAt: expiresAt})
 	}
-	capabilityBytes := make([]byte, 32)
-	if _, err := rand.Read(capabilityBytes); err != nil {
-		return nil, errors.New("credential capability generation failed")
-	}
-	capability := base64.RawURLEncoding.EncodeToString(capabilityBytes)
-	defer zeroCredentialBytes(capabilityBytes)
-	hash := sha256.Sum256([]byte(capability))
-	nonce := make([]byte, 32)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, errors.New("credential capability generation failed")
-	}
-	expiresAt := time.Now().UTC().Add(credentialCapabilityTTL)
-	_, err = tx.Exec(ctx, `
-		INSERT INTO credential_capability
-		(id, capability_hash, daemon_id, task_id, agent_id, issue_id, workspace_id, connector_id, connector_revision, session_public_key, nonce, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		dbid.NewV7(), hash[:], daemonID, parseUUID(taskID), grant.AgentID, grant.IssueID,
-		grant.WorkspaceID, grant.ConnectorID, grant.ConnectorRev, sessionPublicKey, nonce, expiresAt)
-	if err != nil {
-		return nil, err
-	}
-	return &credentialControlGrant{Capability: capability, ConnectorID: uuidToString(grant.ConnectorID),
-		ConnectorRevision: grant.ConnectorRev, TargetURL: grant.ConnectorTarget, ExpiresAt: expiresAt}, nil
+	return capabilities, nil
 }
 
-// findTaskCredentialGrant evaluates both authorization dimensions from the
+// findTaskCredentialGrants evaluates both authorization dimensions from the
 // task and grant rows. Credential identifiers and adapter fields are never
 // accepted from the daemon as selectors.
-func findTaskCredentialGrant(ctx context.Context, tx pgx.Tx, taskID string) (credentialCapabilityGrant, int, bool, error) {
-	var empty credentialCapabilityGrant
+func findTaskCredentialGrants(ctx context.Context, tx pgx.Tx, taskID string) ([]credentialCapabilityGrant, error) {
 	taskUUID := parseUUID(taskID)
 	query := `
-		SELECT c.id, g.id, q.workspace_id, q.issue_id, q.agent_id, i.project_id, q.squad_id,
+		SELECT c.id, g.id, i.workspace_id, q.issue_id, q.agent_id, i.project_id, q.squad_id,
 		       g.resource_scope, g.resource_id, g.subject_type, g.subject_id, g.effect, c.purpose,
 		       c.status, g.expires_at, c.connector_id, c.connector_revision, cc.status, cc.target_url,
 		       c.encrypted_value, q.status, COALESCE(s.category, i.status), COALESCE(rt.daemon_id, '')
 		FROM agent_task_queue q
-		JOIN issue i ON i.id = q.issue_id AND i.workspace_id = q.workspace_id
+		JOIN issue i ON i.id = q.issue_id
 		LEFT JOIN issue_status s ON s.workspace_id = i.workspace_id AND s.key = i.status
-		JOIN agent_runtime rt ON rt.id = q.runtime_id AND rt.workspace_id = q.workspace_id
-		JOIN credential_grant g ON g.workspace_id = q.workspace_id
-		JOIN credential_vault c ON c.id = g.credential_id AND c.workspace_id = q.workspace_id
+		JOIN agent_runtime rt ON rt.id = q.runtime_id AND rt.workspace_id = i.workspace_id
+		JOIN credential_grant g ON g.workspace_id = i.workspace_id
+		JOIN credential_vault c ON c.id = g.credential_id AND c.workspace_id = i.workspace_id
 		JOIN credential_connector cc ON cc.id = c.connector_id AND cc.workspace_id = c.workspace_id
 		WHERE q.id = $1 AND q.status IN ('dispatched', 'running')
 		  AND g.status = 'active' AND c.status = 'active'
@@ -130,12 +136,10 @@ func findTaskCredentialGrant(ctx context.Context, tx pgx.Tx, taskID string) (cre
 		  AND (COALESCE(rt.daemon_id, '') <> '')`
 	rows, err := tx.Query(ctx, query+` ORDER BY c.id, g.id FOR SHARE OF q, i, rt, g, c, cc`, taskUUID)
 	if err != nil {
-		return empty, 0, false, err
+		return nil, err
 	}
 	defer rows.Close()
-	var chosen credentialCapabilityGrant
-	matches := 0
-	denied := false
+	var candidates []credentialCapabilityGrant
 	for rows.Next() {
 		var candidate credentialCapabilityGrant
 		if err := rows.Scan(&candidate.CredentialID, &candidate.GrantID, &candidate.WorkspaceID,
@@ -144,24 +148,72 @@ func findTaskCredentialGrant(ctx context.Context, tx pgx.Tx, taskID string) (cre
 			&candidate.Effect, &candidate.Purpose, &candidate.CredentialStatus, &candidate.ExpiresAt, &candidate.ConnectorID,
 			&candidate.ConnectorRev, &candidate.ConnectorStatus, &candidate.ConnectorTarget, &candidate.EncryptedValue,
 			&candidate.TaskStatus, &candidate.IssueCategory, &candidate.DaemonID); err != nil {
-			return empty, 0, false, err
+			return nil, err
 		}
 		if !credentialGrantMatchesTask(candidate) {
 			continue
 		}
-		if candidate.Effect == "deny" {
-			denied = true
-			continue
-		}
-		if candidate.Effect == "allow" {
-			matches++
-			chosen = candidate
-		}
+		candidates = append(candidates, candidate)
 	}
 	if err := rows.Err(); err != nil {
-		return empty, 0, false, err
+		return nil, err
 	}
-	return chosen, matches, denied, nil
+	return candidates, nil
+}
+
+func selectTaskCredentialGrants(candidates []credentialCapabilityGrant) []credentialCapabilityGrant {
+	type credentialKey struct {
+		credentialID pgtype.UUID
+		connectorID  pgtype.UUID
+		revision     int64
+	}
+	type connectorKey struct {
+		connectorID pgtype.UUID
+		revision    int64
+	}
+	type credentialDecision struct {
+		grant   credentialCapabilityGrant
+		allowed bool
+		denied  bool
+	}
+	credentials := make(map[credentialKey]credentialDecision)
+	for _, candidate := range candidates {
+		key := credentialKey{candidate.CredentialID, candidate.ConnectorID, candidate.ConnectorRev}
+		decision := credentials[key]
+		if candidate.Effect == "deny" {
+			decision.denied = true
+		} else if candidate.Effect == "allow" {
+			if !decision.allowed {
+				decision.grant = candidate
+			}
+			decision.allowed = true
+		}
+		credentials[key] = decision
+	}
+	byConnector := make(map[connectorKey][]credentialCapabilityGrant)
+	for key, decision := range credentials {
+		if decision.allowed && !decision.denied {
+			connector := connectorKey{key.connectorID, key.revision}
+			byConnector[connector] = append(byConnector[connector], decision.grant)
+		}
+	}
+	connectors := make([]connectorKey, 0, len(byConnector))
+	for connector := range byConnector {
+		connectors = append(connectors, connector)
+	}
+	sort.Slice(connectors, func(i, j int) bool {
+		if idI, idJ := uuidToString(connectors[i].connectorID), uuidToString(connectors[j].connectorID); idI != idJ {
+			return idI < idJ
+		}
+		return connectors[i].revision < connectors[j].revision
+	})
+	selected := make([]credentialCapabilityGrant, 0, len(connectors))
+	for _, connector := range connectors {
+		if len(byConnector[connector]) == 1 {
+			selected = append(selected, byConnector[connector][0])
+		}
+	}
+	return selected
 }
 
 func credentialGrantMatchesTask(g credentialCapabilityGrant) bool {
@@ -243,11 +295,19 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 	if capabilityConnector != connectorUUID || capabilityRevision != req.ConnectorRevision {
 		return deny("connector_mismatch", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
-	grant, matches, denied, err := findTaskCredentialGrant(ctx, tx, uuidToString(taskID))
+	candidates, err := findTaskCredentialGrants(ctx, tx, uuidToString(taskID))
 	if err != nil {
 		return rejected, errors.New("credential capability rejected")
 	}
-	if denied || matches != 1 {
+	var grant credentialCapabilityGrant
+	matches := 0
+	for _, candidate := range selectTaskCredentialGrants(candidates) {
+		if candidate.ConnectorID == capabilityConnector && candidate.ConnectorRev == capabilityRevision {
+			grant = candidate
+			matches++
+		}
+	}
+	if matches != 1 {
 		return deny("grant_missing_or_ambiguous", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
 	if grant.DaemonID != daemonID || grant.WorkspaceID != workspaceID || grant.AgentID != agentID || grant.IssueID != issueID ||
