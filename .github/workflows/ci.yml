@@ -3,9 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR number
+        required: true
+        type: string
+      expected_sha:
+        description: Exact 40-character PR head SHA to validate
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -35,6 +42,23 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Verify manual PR head
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[(.state), (.base.ref), (.head.sha), (.head.ref), (.head.repo.full_name)] | join("|")')"
+          expected="open|main|$EXPECTED_SHA|$GITHUB_REF_NAME|$GITHUB_REPOSITORY"
+          test "$pr" = "$expected" || {
+            echo "::error::PR is not open on main at the selected branch and expected SHA"
+            exit 1
+          }
 
       - name: Filter paths
         id: filter
@@ -817,8 +841,11 @@ jobs:
     # why. Pull requests only — a push to main has no description to read,
     # and the branch it came from was already checked.
     needs: changes
-    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.images == 'true' }}
+    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.images == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -829,8 +856,15 @@ jobs:
 
       - name: Check image budget
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: node scripts/check-image-budget.mjs --base "origin/${{ github.base_ref }}"
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            PR_BODY="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .body)"
+            export PR_BODY
+          fi
+          node scripts/check-image-budget.mjs --base "origin/${{ github.base_ref || 'main' }}"
 
   installer:
     # Stub-driven shell tests for scripts/install.sh and scripts/install.ps1.
