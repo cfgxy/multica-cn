@@ -74,10 +74,10 @@ func (s *LocalStorage) CdnDomain() string {
 }
 
 func (s *LocalStorage) KeyFromURL(rawURL string) string {
-	if s.baseURL != "" && strings.HasPrefix(rawURL, s.baseURL) {
-		rawURL = strings.TrimPrefix(rawURL, s.baseURL)
+	parsed, err := url.Parse(rawURL)
+	if err == nil {
+		rawURL = parsed.Path
 	}
-
 	prefix := "/uploads/"
 	if idx := strings.Index(rawURL, prefix); idx >= 0 {
 		return rawURL[idx+len(prefix):]

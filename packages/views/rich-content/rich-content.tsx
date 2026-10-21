@@ -84,6 +84,7 @@ import { computeClosedFenceOffsets } from "./streaming-fence";
 import { LazyIssueReferenceTail } from "./lazy-issue-reference-tail";
 import { remarkRepairCjkStrongTrailingWhitespace } from "./cjk-emphasis";
 import { remarkGfmWithSharedExtensions } from "./shared-gfm-extensions";
+import { remarkRestoreCurrencyText } from "./remark-restore-currency-text";
 import {
   rehypeKatexWhenNeeded,
   rehypeRawWhenNeeded,
@@ -631,7 +632,8 @@ const MODERN_COMPONENTS: Partial<Components> = {
 // react-markdown's own option types, so a bad plugin tuple fails here instead of
 // being silenced.
 const REMARK_PLUGINS = [
-  [remarkMath, { singleDollarTextMath: false }],
+  [remarkMath, { singleDollarTextMath: true }],
+  remarkRestoreCurrencyText,
   remarkBreaks,
   remarkGfmWithSharedExtensions,
   remarkCjkFriendly,

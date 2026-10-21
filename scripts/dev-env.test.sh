@@ -418,6 +418,7 @@ grep -q "^CODE_SHA=$sha2" "$manifest" || fail "manifest must record the loaded r
 [ -f "$wt/.env.worktree" ] || fail "use <sha> must materialize .env.worktree in the slot worktree for the E2E harness"
 [ "$(stat -c %a "$wt/.env.worktree")" = 600 ] || fail ".env.worktree must be 600 (it mirrors the slot env secrets)"
 grep -q '^NEXT_PUBLIC_API_URL=http://localhost:21801$' "$wt/.env.worktree" || fail ".env.worktree must pin the E2E API base to the slot backend"
+grep -q '^LOCAL_UPLOAD_BASE_URL=http://localhost:21801$' "$wt/.env.worktree" || fail ".env.worktree must pin local upload URLs to the slot backend"
 cmp -s "$wt/.env.worktree" "$MULTICA_SLOTS_HOME/dev1/env" || fail ".env.worktree must mirror the slot env file byte-for-byte"
 # Bind mode (use without a sha points DIR at REPO_ROOT) must not write the
 # checkout root's own env file.
