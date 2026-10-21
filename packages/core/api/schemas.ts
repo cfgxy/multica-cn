@@ -953,6 +953,8 @@ export interface AppConfigResponse {
    * Settings → Integrations "Git providers" section. */
   vcs_integration_available?: boolean;
   feature_flags?: Record<string, boolean>;
+  /** Enabled only by isolated development slots that hot-reload local flags. */
+  feature_flags_refresh_interval_ms?: number;
   /** Whether this server understands local_directory `execution_mode` and
    * gates worktree mode at save time. Absent on every server that predates this
    * capability signal, which includes the ones that silently DROPPED an unknown
@@ -1402,6 +1404,7 @@ export const AppConfigSchema = z.object({
   workspace_creation_disabled: BooleanWithDefaultSchema(false).optional(),
   vcs_integration_available: BooleanWithDefaultSchema(false).optional(),
   feature_flags: FeatureFlagsSchema,
+  feature_flags_refresh_interval_ms: z.number().int().min(1000).max(30000).optional(),
   local_worktree_supported: BooleanWithDefaultSchema(false),
   agent_conversation_starters_supported: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,

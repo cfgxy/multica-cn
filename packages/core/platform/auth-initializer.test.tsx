@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setApiInstance } from "../api";
 import { ApiError, type ApiClient } from "../api/client";
+import { configStore } from "../config";
 import {
   createAuthStore,
   registerAuthStore,
@@ -269,6 +270,35 @@ describe("AuthInitializer recovery", () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(getConfig).toHaveBeenCalledTimes(3);
+  });
+
+  it("refreshes feature flags in an active session only when the server opts in", async () => {
+    vi.useFakeTimers();
+    const getConfig = vi
+      .fn()
+      .mockResolvedValueOnce({
+        feature_flags: { markdown_reader_v2: false },
+        feature_flags_refresh_interval_ms: 1000,
+      })
+      .mockResolvedValue({
+        feature_flags: { markdown_reader_v2: true },
+        feature_flags_refresh_interval_ms: 1000,
+      });
+    const api = makeApi({ getConfig });
+    renderInitializer({ api });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(configStore.getState().featureFlags.markdown_reader_v2).toBe(false);
+    expect(getConfig).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(configStore.getState().featureFlags.markdown_reader_v2).toBe(true);
+    expect(getConfig).toHaveBeenCalledTimes(2);
   });
 
   it("publishes a definitive logout for a genuine 401", async () => {

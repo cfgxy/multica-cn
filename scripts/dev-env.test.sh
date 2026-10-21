@@ -419,7 +419,15 @@ grep -q "^CODE_SHA=$sha2" "$manifest" || fail "manifest must record the loaded r
 [ "$(stat -c %a "$wt/.env.worktree")" = 600 ] || fail ".env.worktree must be 600 (it mirrors the slot env secrets)"
 grep -q '^NEXT_PUBLIC_API_URL=http://localhost:21801$' "$wt/.env.worktree" || fail ".env.worktree must pin the E2E API base to the slot backend"
 grep -q '^LOCAL_UPLOAD_BASE_URL=http://localhost:21801$' "$wt/.env.worktree" || fail ".env.worktree must pin local upload URLs to the slot backend"
+grep -q "^MULTICA_FEATURE_FLAGS_FILE=$MULTICA_SLOTS_HOME/dev1/feature-flags.yaml$" "$wt/.env.worktree" || fail ".env.worktree must pin feature flags to the isolated slot file"
+grep -q '^MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS=1500$' "$wt/.env.worktree" || fail "development slots must opt into short-interval flag refresh"
 cmp -s "$wt/.env.worktree" "$MULTICA_SLOTS_HOME/dev1/env" || fail ".env.worktree must mirror the slot env file byte-for-byte"
+[ -f "$MULTICA_SLOTS_HOME/dev1/feature-flags.yaml" ] || fail "use must create the isolated feature flag file"
+grep -q '^  default: false$' "$MULTICA_SLOTS_HOME/dev1/feature-flags.yaml" || fail "the slot renderer flag must default to Legacy"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 markdown-reader modern > "$out" 2>&1 || fail "slot markdown-reader modern command must succeed"
+grep -q '^  default: true$' "$MULTICA_SLOTS_HOME/dev1/feature-flags.yaml" || fail "modern command must atomically enable the renderer"
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 markdown-reader legacy > "$out" 2>&1 || fail "slot markdown-reader legacy command must succeed"
+grep -q '^  default: false$' "$MULTICA_SLOTS_HOME/dev1/feature-flags.yaml" || fail "legacy command must restore the renderer"
 # Bind mode (use without a sha points DIR at REPO_ROOT) must not write the
 # checkout root's own env file.
 [ ! -e "$repo/.env.worktree" ] || fail "bind-mode use must not touch the main checkout's .env.worktree"
@@ -696,13 +704,15 @@ printf '%s' "${cred_key_line#*=}" | base64 -d | wc -c | grep -q '^32$' || fail "
 # Env files generated before RUYI-428 predate the MCP lines: `use` upgrades
 # them in place (append only) instead of regenerating, so the stored account
 # password — the one the shared instance's role was provisioned with — survives.
-sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d; /^LOCAL_UPLOAD_BASE_URL=/d; /^MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=/d; /^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=/d; /^MULTICA_MCP_INSTANCE_ID=/d; /^MCP_AUDIT_CREDENTIAL_FILE=/d; /^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE=/d; /^FF_COMPOSIO_MCP_APPS=/d; /^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=/d' "$slot_env"
+sed -i '/^MCP_URL=/d; /^MULTICA_MCP_PORT=/d; /^LOCAL_UPLOAD_BASE_URL=/d; /^MULTICA_FEATURE_FLAGS_FILE=/d; /^MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS=/d; /^MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=/d; /^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=/d; /^MULTICA_MCP_INSTANCE_ID=/d; /^MCP_AUDIT_CREDENTIAL_FILE=/d; /^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE=/d; /^FF_COMPOSIO_MCP_APPS=/d; /^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=/d' "$slot_env"
 printf 'LOCAL_UPLOAD_BASE_URL=http://localhost:8080\n' >> "$slot_env"
 password_before="$(grep '^POSTGRES_PASSWORD=' "$slot_env")"
 MULTICA_CALLER_OWNER=$issue_a dev_env dev1 use > "$out" 2>&1 || fail "use must accept a pre-MCP legacy env"
 grep -q '^MCP_URL=http://localhost:13001$' "$slot_env" || fail "legacy env must gain MCP_URL via the in-place upgrade"
 grep -q '^MULTICA_MCP_PORT=13001$' "$slot_env" || fail "legacy env must gain MULTICA_MCP_PORT via the in-place upgrade"
 grep -q '^LOCAL_UPLOAD_BASE_URL=http://localhost:21801$' "$slot_env" || fail "legacy env must replace a stale upload base with the registered slot API port"
+grep -q "^MULTICA_FEATURE_FLAGS_FILE=$MULTICA_SLOTS_HOME/dev1/feature-flags.yaml$" "$slot_env" || fail "legacy env must bind hot-reloaded flags to the registered slot path"
+grep -q '^MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS=1500$' "$slot_env" || fail "legacy env must opt into live flag refresh"
 grep -q '^MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL=' "$slot_env" || fail "legacy env must gain the slot audit credential"
 grep -q '^MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS=' "$slot_env" || fail "legacy env must gain the slot file access instance credential map"
 grep -q '^MULTICA_MCP_INSTANCE_ID=slot-dev1-file-access$' "$slot_env" || fail "legacy env must gain the slot file access instance ID"
