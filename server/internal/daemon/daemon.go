@@ -6312,7 +6312,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 		if len(snapshots) > 0 {
 			snapshot = snapshots[0]
 		}
-		output, adaptationResult := taskadaptation.ExtractReceipt(result.Comment, snapshot)
+		output, adaptationResult := taskadaptation.ExtractReceipt(result.Comment, snapshot, taskID)
 		taskLog.Info("task completed", "status", result.Status)
 		err := d.reportTerminalTask(ctx, terminalTaskReport{
 			kind:                       terminalTaskReportComplete,

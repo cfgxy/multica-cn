@@ -9,6 +9,7 @@ import (
 const contextKey = "capability_adaptation"
 
 type Snapshot struct {
+	TaskID            string   `json:"task_id"`
 	PolicyID          string   `json:"policy_id"`
 	PolicyVersion     string   `json:"policy_version"`
 	Scope             string   `json:"scope"`
@@ -19,13 +20,14 @@ type Snapshot struct {
 }
 
 type Outcome struct {
+	TaskID        string `json:"task_id"`
 	PolicyID      string `json:"policy_id"`
 	PolicyVersion string `json:"policy_version"`
 	Status        string `json:"status"`
 }
 
-func (o Outcome) Matches(snapshot *Snapshot) bool {
-	return snapshot != nil && snapshot.Valid() && o.PolicyID == snapshot.PolicyID &&
+func (o Outcome) Matches(snapshot *Snapshot, taskID string) bool {
+	return snapshot != nil && snapshot.Valid() && taskID != "" && snapshot.TaskID == taskID && o.TaskID == taskID && o.PolicyID == snapshot.PolicyID &&
 		o.PolicyVersion == snapshot.PolicyVersion && ValidStatus(o.Status)
 }
 
@@ -85,22 +87,62 @@ func ValidStatus(status string) bool {
 
 const receiptPrefix = "<!-- multica-capability-adaptation: "
 const receiptSuffix = " -->"
+const receiptMarker = "multica-capability-adaptation:"
 
-// ExtractReceipt removes one exact, final-line receipt only when adaptation is enabled.
-func ExtractReceipt(output string, snapshot *Snapshot) (string, *Outcome) {
-	if snapshot == nil || !snapshot.Valid() {
-		return output, nil
+// StripReceiptLines removes internal adaptation marker lines from user-visible output.
+func StripReceiptLines(output string) string {
+	parts := strings.SplitAfter(output, "\n")
+	var clean strings.Builder
+	stripped := false
+	for _, part := range parts {
+		line := strings.TrimSuffix(strings.TrimSuffix(part, "\n"), "\r")
+		if strings.Contains(line, receiptMarker) {
+			stripped = true
+			continue
+		}
+		clean.WriteString(part)
 	}
-	trimmed := strings.TrimRight(output, "\r\n")
-	lineStart := strings.LastIndex(trimmed, "\n") + 1
-	line := strings.TrimSuffix(trimmed[lineStart:], "\r")
-	if strings.Count(output, receiptPrefix) != 1 || !strings.HasPrefix(line, receiptPrefix) || !strings.HasSuffix(line, receiptSuffix) {
-		return output, nil
+	result := clean.String()
+	if stripped {
+		return strings.TrimRight(result, "\r\n")
 	}
-	status := strings.TrimSuffix(strings.TrimPrefix(line, receiptPrefix), receiptSuffix)
+	return result
+}
+
+// ExtractReceipt always strips internal receipt lines from user-visible output.
+// Only one exact final receipt bound to the claimed task can produce an outcome.
+func ExtractReceipt(output string, snapshot *Snapshot, taskID string) (string, *Outcome) {
+	parts := strings.SplitAfter(output, "\n")
+	var receipt string
+	var receiptIndex = -1
+	count := 0
+	for i, part := range parts {
+		line := strings.TrimSuffix(strings.TrimSuffix(part, "\n"), "\r")
+		if strings.Contains(line, receiptMarker) {
+			count++
+			receipt = line
+			receiptIndex = i
+		}
+	}
+	cleaned := StripReceiptLines(output)
+	if count != 1 || snapshot == nil || !snapshot.Valid() || taskID == "" || snapshot.TaskID != taskID {
+		return cleaned, nil
+	}
+	lastContent := len(parts) - 1
+	for lastContent >= 0 && strings.Trim(parts[lastContent], "\r\n") == "" {
+		lastContent--
+	}
+	if receiptIndex != lastContent || !strings.HasPrefix(receipt, receiptPrefix) || !strings.HasSuffix(receipt, receiptSuffix) {
+		return cleaned, nil
+	}
+	value := strings.TrimSuffix(strings.TrimPrefix(receipt, receiptPrefix), receiptSuffix)
+	separator := strings.LastIndex(value, ": ")
+	if separator <= 0 || value[:separator] != taskID {
+		return cleaned, nil
+	}
+	status := value[separator+2:]
 	if !ValidStatus(status) {
-		return output, nil
+		return cleaned, nil
 	}
-	cleaned := strings.TrimRight(trimmed[:lineStart], "\r\n")
-	return cleaned, &Outcome{PolicyID: snapshot.PolicyID, PolicyVersion: snapshot.PolicyVersion, Status: status}
+	return strings.TrimRight(cleaned, "\r\n"), &Outcome{TaskID: taskID, PolicyID: snapshot.PolicyID, PolicyVersion: snapshot.PolicyVersion, Status: status}
 }
