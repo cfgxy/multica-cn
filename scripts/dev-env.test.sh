@@ -704,21 +704,37 @@ grep -q '^MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=' "$slot_env" || fail "legacy en
 
 lines_before="$(wc -l < "$psql_log")"
 status=0
-MULTICA_CALLER_OWNER=$issue_a dev_env dev1 up --components api > "$out" 2>&1 || status=$?
+register_slot dev2 RUYI-594 "$tmp_dir/expired-dev2" 24 "$past_iso" qa
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 up --components api --skip-auto-gc > "$out" 2>&1 || status=$?
 [ "$status" -ne 0 ] || fail "up with stubbed components is expected to stop at component start in this suite"
 require_contains "$out" "reachable through the slot account and migrated"
 require_contains "$out" "api exited during startup"
+[ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "up --skip-auto-gc must not collect the expired other slot"
 
 sql="$(tail -n +"$((lines_before + 1))" "$psql_log")"
 printf '%s' "$sql" | grep -qF 'CREATE ROLE "dev1_app" WITH LOGIN CREATEDB PASSWORD' || fail "provisioning must create the slot account with CREATEDB (integration tests mint scratch databases)"
 printf '%s' "$sql" | grep -qF 'CREATE DATABASE "multica_dev1" OWNER "dev1_app"' || fail "provisioning must create the slot database owned by the slot account"
 printf '%s' "$sql" | grep -qF 'REVOKE CONNECT ON DATABASE "multica_dev1" FROM PUBLIC' || fail "provisioning must revoke PUBLIC CONNECT on the slot database"
+if printf '%s' "$sql" | grep -qF 'DROP DATABASE IF EXISTS "multica_dev2"'; then
+  fail "up --skip-auto-gc must not run GC against the other slot"
+fi
 if printf '%s' "$sql" | grep -qF 'psql -d multica '; then
   fail "no provisioning statement may target the main database as psql -d multica"
 fi
 if printf '%s' "$sql" | grep -Eq 'DROP DATABASE|DROP ROLE'; then
   fail "up must never drop anything"
 fi
+
+# The one-call override must not change the default: ordinary up still runs
+# auto-GC and collects an expired slot before initializing its own target.
+register_slot dev2 RUYI-594 "$tmp_dir/expired-dev2" 24 "$past_iso" qa
+lines_before="$(wc -l < "$psql_log")"
+status=0
+MULTICA_CALLER_OWNER=$issue_a dev_env dev1 up --components api > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "default up with stubbed components is expected to stop at component start"
+[ ! -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "default up must continue to collect the expired other slot"
+sql="$(tail -n +"$((lines_before + 1))" "$psql_log")"
+printf '%s' "$sql" | grep -qF 'DROP DATABASE IF EXISTS "multica_dev2"' || fail "default up must run the existing auto-GC path"
 
 # ---------------------------------------------------------------------------
 # exec: the slot's own variables, without the runtime's production MULTICA_*.
