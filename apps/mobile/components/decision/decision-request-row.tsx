@@ -27,6 +27,7 @@ import { THEME } from "@/lib/theme";
 import { timeAgo } from "@/lib/time-ago";
 import { useT } from "@/lib/use-t";
 import { cn } from "@/lib/utils";
+import { decisionRequestDetailOptions } from "@/data/queries/decisions";
 
 const STATUS_LABEL_KEYS = {
   pending: "status_pending",
@@ -60,6 +61,7 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const [showPrompt, setShowPrompt] = useState(false);
+  const [showSteps, setShowSteps] = useState(false);
 
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const getActorName = useMemo(
@@ -81,6 +83,19 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
     && typeof (request.action_params as { content?: unknown }).content === "string"
     ? (request.action_params as { content: string }).content
     : null;
+  const receipt = request.execution_result && typeof request.execution_result === "object"
+    ? request.execution_result as { side_effect_status?: unknown; steps?: unknown }
+    : null;
+  const receiptSteps = Array.isArray(receipt?.steps)
+    ? receipt.steps.filter((step): step is { handler: string; status: string; side_effect_status: string } =>
+      !!step && typeof step === "object" && typeof (step as { handler?: unknown }).handler === "string"
+      && typeof (step as { status?: unknown }).status === "string"
+      && typeof (step as { side_effect_status?: unknown }).side_effect_status === "string")
+    : [];
+  const detail = useQuery({
+    ...decisionRequestDetailOptions(request.workspace_id, request.id),
+    enabled: showSteps,
+  });
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: decisionRequestKeys.all() });
@@ -119,6 +134,15 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
     : request.risk_tier === "read"
       ? t("requests.risk_read", "Read-only")
       : request.risk_tier;
+  const kindLabel = request.authorization_spec?.kind === "cli"
+    ? t("requests.kind_cli", "Whitelisted operation")
+    : request.authorization_spec?.kind === "restricted_script"
+      ? t("requests.kind_script", "Restricted script")
+      : request.authorization_spec?.kind === "issue_creation"
+        ? t("requests.kind_issue", "Single issue task")
+        : null;
+  const executionInProgress = request.status === "approved"
+    && (request.role === "target" || (request.role === "origin" && request.operable));
 
   return (
     <View className="px-4 py-2" testID="decision-request-row">
@@ -134,6 +158,11 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
         <Text className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
           {actionLabel}
         </Text>
+        {kindLabel ? (
+          <Text className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+            {kindLabel}
+          </Text>
+        ) : null}
         <Text className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
           {riskLabel}
         </Text>
@@ -145,6 +174,11 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
         >
           {t(`requests.${STATUS_LABEL_KEYS[request.status]}`, String(request.status))}
         </Text>
+        {executionInProgress ? (
+          <Text className="text-xs text-muted-foreground" accessibilityRole="text" accessibilityLiveRegion="polite" testID="decision-request-executing">
+            {t("requests.execution_in_progress", "Approvals complete; execution in progress")}
+          </Text>
+        ) : null}
       </View>
       <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={1}>
         {t("requests.origin_label", "Requested by {{agent}}", {
@@ -238,13 +272,71 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
         </View>
       ) : null}
 
+      {request.role === "origin" ? (
+        <View className="mt-2">
+          <Pressable
+            onPress={() => setShowSteps((value) => !value)}
+            accessibilityRole="button"
+            accessibilityState={{ expanded: showSteps }}
+            accessibilityLabel={t("requests.steps_title", "Approval timeline")}
+            testID="decision-request-steps-toggle"
+          >
+            <Text className="text-xs text-muted-foreground">
+              {showSteps ? "⌄ " : "› "}{t("requests.steps_title", "Approval timeline")}
+            </Text>
+          </Pressable>
+          {showSteps ? (
+            <View className="mt-1 border-l border-border pl-3" accessibilityRole="list">
+              {detail.isPending ? (
+                <Text accessibilityRole="text" accessibilityLiveRegion="polite" className="text-xs text-muted-foreground">
+                  {t("requests.steps_loading", "Loading approval steps")}
+                </Text>
+              ) : null}
+              {detail.isError ? (
+                <Text accessibilityRole="alert" className="text-xs text-destructive">
+                  {t("requests.detail_error", "Unable to load approval steps")}
+                </Text>
+              ) : null}
+              {(detail.data?.steps ?? []).map((step) => (
+                <View key={step.id} className="flex-row flex-wrap gap-x-2 py-0.5" accessibilityLabel={`${step.role} ${step.status}`} testID="decision-request-step">
+                  <Text className="text-xs font-medium">
+                    {step.role === "target"
+                      ? t("requests.step_target", "Target space")
+                      : t("requests.step_origin", "Origin space")}
+                  </Text>
+                  <Text className="text-xs text-muted-foreground">
+                    {t(`requests.${STATUS_LABEL_KEYS[step.status]}`, String(step.status))}
+                  </Text>
+                  {step.answered_at ? (
+                    <Text className="text-xs text-muted-foreground">{timeAgo(step.answered_at)}</Text>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
       {request.status === "execute_failed" && request.execution_error ? (
         <Text className="mt-1 text-xs text-destructive" numberOfLines={2}>
-          {t("requests.executed_failed", "Execution failed: {{reason}}", {
-            reason: request.execution_error,
-          })}
+          {t("requests.executed_failed", "Execution failed; it was not retried")}
         </Text>
       ) : null}
+      {receipt?.side_effect_status === "unknown" ? (
+        <Text className="mt-1 text-xs font-medium text-destructive" accessibilityRole="text" accessibilityLiveRegion="polite" testID="decision-request-result-unknown">
+          {t("requests.result_unknown", "Result needs verification. Do not retry this request.")}
+        </Text>
+      ) : null}
+      {receipt?.side_effect_status === "no_side_effect" ? (
+        <Text className="mt-1 text-xs text-muted-foreground" testID="decision-request-no-side-effect">
+          {t("requests.no_side_effect", "No side effect confirmed")}
+        </Text>
+      ) : null}
+      {receiptSteps.map((step, index) => (
+        <Text key={`${step.handler}-${index}`} className="mt-1 text-xs text-muted-foreground" testID="decision-request-receipt-step">
+          {step.handler} · {step.status} · {step.side_effect_status}
+        </Text>
+      ))}
       {projectResults.map((result) => (
         <Text key={String(result.project_id)} className="mt-1 text-xs text-muted-foreground" testID="decision-request-project-result">
           {String(result.project_id)} · {String(result.status)} · v{String(result.version)}

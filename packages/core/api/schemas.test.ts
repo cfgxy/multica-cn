@@ -2614,3 +2614,60 @@ describe("IssueDecisionSchema context compatibility", () => {
     }).success).toBe(false);
   });
 });
+
+describe("DecisionRequestSchema authorization receipt", () => {
+  const base = {
+    id: "request-1",
+    request_group_id: "group-1",
+    workspace_id: "workspace-1",
+    role: "origin",
+    operable: false,
+    status: "approved",
+    action_type: "project_prompt_sync",
+    risk_tier: "write_low",
+    title: "Sync project prompts",
+    detail: "",
+    origin_workspace_id: "workspace-1",
+    origin_agent_id: "agent-1",
+    operator_tier: "owner",
+    named_approver_ids: [],
+    expires_at: "2026-10-22T00:00:00Z",
+    created_at: "2026-10-21T00:00:00Z",
+    updated_at: "2026-10-21T00:00:00Z",
+  };
+
+  it("accepts a versioned authorization spec and an unknown-side-effect receipt", () => {
+    const parsed = DecisionRequestSchema.safeParse({
+      ...base,
+      authorization_spec: {
+        version: 1,
+        kind: "cli",
+        action_type: "project_prompt_sync",
+        scope: { target_workspace_id: "workspace-2", project_ids: ["project-1"] },
+        parameter_digest: "a".repeat(64),
+        source_workspace_id: "workspace-1",
+        target_workspace_id: "workspace-2",
+        expires_at: "2026-10-22T00:00:00Z",
+        public_summary: "Sync project prompts",
+        digest: "b".repeat(64),
+      },
+      execution_result: {
+        receipt_version: 1,
+        side_effect_status: "unknown",
+        steps: [{ handler: "project_prompt_sync", status: "unknown", side_effect_status: "unknown" }],
+      },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("rejects unknown transaction kinds and malformed receipt side-effect states", () => {
+    expect(DecisionRequestSchema.safeParse({
+      ...base,
+      authorization_spec: { version: 1, kind: "shell", digest: "x" },
+    }).success).toBe(false);
+    expect(DecisionRequestSchema.safeParse({
+      ...base,
+      execution_result: { receipt_version: 1, side_effect_status: "maybe" },
+    }).success).toBe(false);
+  });
+});
