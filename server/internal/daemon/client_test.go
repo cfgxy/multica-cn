@@ -546,12 +546,12 @@ func TestCompleteTaskCarriesCapabilityAdaptationResult(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	outcome := &taskadaptation.Outcome{PolicyID: "policy-1", PolicyVersion: "v2", Status: "applied"}
+	outcome := &taskadaptation.Outcome{TaskID: "task-1", PolicyID: "policy-1", PolicyVersion: "v2", Status: "applied"}
 	if err := NewClient(srv.URL).CompleteTask(context.Background(), "task-1", "done", "", "", "", false, "", "", outcome); err != nil {
 		t.Fatalf("CompleteTask: %v", err)
 	}
 	got, ok := body["capability_adaptation_result"].(map[string]any)
-	if !ok || got["policy_id"] != "policy-1" || got["policy_version"] != "v2" || got["status"] != "applied" {
+	if !ok || got["task_id"] != "task-1" || got["policy_id"] != "policy-1" || got["policy_version"] != "v2" || got["status"] != "applied" {
 		t.Fatalf("capability adaptation result = %#v", body["capability_adaptation_result"])
 	}
 }

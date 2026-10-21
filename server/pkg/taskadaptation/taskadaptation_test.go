@@ -25,45 +25,51 @@ func TestSnapshotFromContextIsOptInAndFailClosed(t *testing.T) {
 }
 
 func TestExtractReceiptRequiresEnabledSnapshotAndExactFinalStatus(t *testing.T) {
-	snapshot := &Snapshot{PolicyID: "policy-7", PolicyVersion: "1", Scope: "current_task", Trigger: "trigger", CurrentStrategy: "current", SuggestedStrategy: "suggested", AllowedActions: []string{"bounded action"}}
+	snapshot := &Snapshot{TaskID: "task-a", PolicyID: "policy-7", PolicyVersion: "1", Scope: "current_task", Trigger: "trigger", CurrentStrategy: "current", SuggestedStrategy: "suggested", AllowedActions: []string{"bounded action"}}
 	for _, status := range []string{"applied", "retained", "blocked"} {
-		output, result := ExtractReceipt("work completed\n"+receiptPrefix+status+receiptSuffix+"\n", snapshot)
-		if output != "work completed" || result == nil || result.PolicyID != snapshot.PolicyID || result.PolicyVersion != snapshot.PolicyVersion || result.Status != status {
+		output, result := ExtractReceipt("work completed\n"+receiptPrefix+"task-a: "+status+receiptSuffix+"\n", snapshot, "task-a")
+		if output != "work completed" || result == nil || result.TaskID != "task-a" || result.PolicyID != snapshot.PolicyID || result.PolicyVersion != snapshot.PolicyVersion || result.Status != status {
 			t.Errorf("ExtractReceipt(%q) = %q, %#v", status, output, result)
 		}
 	}
-	for _, output := range []string{
-		"work completed",
-		"work completed\n" + receiptPrefix + "unknown" + receiptSuffix,
-		receiptPrefix + "applied" + receiptSuffix + "\nmore output",
-		receiptPrefix + "retained" + receiptSuffix + "\n" + receiptPrefix + "applied" + receiptSuffix,
+	for _, tc := range []struct {
+		name   string
+		input  string
+		output string
+	}{
+		{name: "no footer", input: "work completed", output: "work completed"},
+		{name: "unknown status", input: "work completed\n" + receiptPrefix + "task-a: unknown" + receiptSuffix, output: "work completed"},
+		{name: "wrong task", input: "work completed\n" + receiptPrefix + "task-b: applied" + receiptSuffix, output: "work completed"},
+		{name: "non-final", input: receiptPrefix + "task-a: applied" + receiptSuffix + "\nmore output", output: "more output"},
+		{name: "duplicate", input: receiptPrefix + "task-a: retained" + receiptSuffix + "\n" + receiptPrefix + "task-a: applied" + receiptSuffix, output: ""},
 	} {
-		cleaned, result := ExtractReceipt(output, snapshot)
-		if cleaned != output || result != nil {
-			t.Errorf("invalid receipt changed output: %q, %#v", cleaned, result)
+		cleaned, result := ExtractReceipt(tc.input, snapshot, "task-a")
+		if cleaned != tc.output || result != nil {
+			t.Errorf("%s: ExtractReceipt() = %q, %#v; want %q, nil", tc.name, cleaned, result, tc.output)
 		}
 	}
-	if cleaned, result := ExtractReceipt(receiptPrefix+"applied"+receiptSuffix, nil); cleaned != receiptPrefix+"applied"+receiptSuffix || result != nil {
-		t.Fatalf("disabled adaptation changed output: %q, %#v", cleaned, result)
+	if cleaned, result := ExtractReceipt("answer\n"+receiptPrefix+"task-a: applied"+receiptSuffix, nil, "task-a"); cleaned != "answer" || result != nil {
+		t.Fatalf("disabled adaptation leaked internal footer: %q, %#v", cleaned, result)
 	}
 }
 
 func TestOutcomeMustMatchExactPolicySnapshot(t *testing.T) {
-	snapshot := &Snapshot{PolicyID: "policy-7", PolicyVersion: "2", Scope: "current_task", Trigger: "trigger", CurrentStrategy: "current", SuggestedStrategy: "suggested", AllowedActions: []string{"bounded action"}}
+	snapshot := &Snapshot{TaskID: "task-a", PolicyID: "policy-7", PolicyVersion: "2", Scope: "current_task", Trigger: "trigger", CurrentStrategy: "current", SuggestedStrategy: "suggested", AllowedActions: []string{"bounded action"}}
 	for _, outcome := range []Outcome{
-		{PolicyID: "policy-7", PolicyVersion: "2", Status: "applied"},
-		{PolicyID: "policy-7", PolicyVersion: "1", Status: "applied"},
-		{PolicyID: "policy-8", PolicyVersion: "2", Status: "applied"},
-		{PolicyID: "policy-7", PolicyVersion: "2", Status: "unknown"},
-		{PolicyID: "policy-7", Status: "applied"},
+		{TaskID: "task-a", PolicyID: "policy-7", PolicyVersion: "2", Status: "applied"},
+		{TaskID: "task-b", PolicyID: "policy-7", PolicyVersion: "2", Status: "applied"},
+		{TaskID: "task-a", PolicyID: "policy-7", PolicyVersion: "1", Status: "applied"},
+		{TaskID: "task-a", PolicyID: "policy-8", PolicyVersion: "2", Status: "applied"},
+		{TaskID: "task-a", PolicyID: "policy-7", PolicyVersion: "2", Status: "unknown"},
+		{TaskID: "task-a", PolicyID: "policy-7", Status: "applied"},
 	} {
-		got := outcome.Matches(snapshot)
-		want := outcome.PolicyID == snapshot.PolicyID && outcome.PolicyVersion == snapshot.PolicyVersion && ValidStatus(outcome.Status)
+		got := outcome.Matches(snapshot, "task-a")
+		want := outcome.TaskID == "task-a" && outcome.PolicyID == snapshot.PolicyID && outcome.PolicyVersion == snapshot.PolicyVersion && ValidStatus(outcome.Status)
 		if got != want {
 			t.Errorf("Outcome(%+v).Matches() = %v, want %v", outcome, got, want)
 		}
 	}
-	if (Outcome{PolicyID: "policy-7", PolicyVersion: "2", Status: "applied"}).Matches(nil) {
+	if (Outcome{TaskID: "task-a", PolicyID: "policy-7", PolicyVersion: "2", Status: "applied"}).Matches(nil, "task-a") {
 		t.Fatal("outcome matched a missing snapshot")
 	}
 }

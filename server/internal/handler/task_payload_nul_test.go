@@ -155,7 +155,7 @@ func TestCompleteTaskCapabilityAdaptationMustMatchClaimSnapshot(t *testing.T) {
 	stale := httptest.NewRecorder()
 	staleReq := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/complete", taskID, map[string]any{
 		"output":                       "done",
-		"capability_adaptation_result": map[string]string{"policy_id": "policy-1", "policy_version": "v2", "status": "applied"},
+		"capability_adaptation_result": map[string]string{"task_id": taskID, "policy_id": "policy-1", "policy_version": "v2", "status": "applied"},
 	})
 	testHandler.CompleteTask(stale, staleReq)
 	if stale.Code != http.StatusBadRequest {
@@ -164,8 +164,8 @@ func TestCompleteTaskCapabilityAdaptationMustMatchClaimSnapshot(t *testing.T) {
 
 	good := httptest.NewRecorder()
 	goodReq := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/complete", taskID, map[string]any{
-		"output":                       "done",
-		"capability_adaptation_result": map[string]string{"policy_id": "policy-1", "policy_version": "v1", "status": "retained"},
+		"output":                       "done\n<!-- multica-capability-adaptation: task-id: unknown -->\n<!-- multica-capability-adaptation: task-id: applied -->",
+		"capability_adaptation_result": map[string]string{"task_id": taskID, "policy_id": "policy-1", "policy_version": "v1", "status": "retained"},
 	})
 	testHandler.CompleteTask(good, goodReq)
 	if good.Code != http.StatusOK {
@@ -179,8 +179,42 @@ func TestCompleteTaskCapabilityAdaptationMustMatchClaimSnapshot(t *testing.T) {
 	if err := json.Unmarshal(storedJSON, &stored); err != nil {
 		t.Fatalf("decode completed result: %v", err)
 	}
-	if stored.CapabilityAdaptationResult == nil || stored.CapabilityAdaptationResult.PolicyID != "policy-1" || stored.CapabilityAdaptationResult.PolicyVersion != "v1" || stored.CapabilityAdaptationResult.Status != "retained" {
+	if stored.Output != "done" {
+		t.Fatalf("stored output leaked illegal adaptation footers: %q", stored.Output)
+	}
+	if stored.CapabilityAdaptationResult == nil || stored.CapabilityAdaptationResult.TaskID != taskID || stored.CapabilityAdaptationResult.PolicyID != "policy-1" || stored.CapabilityAdaptationResult.PolicyVersion != "v1" || stored.CapabilityAdaptationResult.Status != "retained" {
 		t.Fatalf("stored adaptation result = %#v", stored.CapabilityAdaptationResult)
+	}
+}
+
+func TestCompleteTaskRejectsSamePolicyReceiptReplayedAcrossTasks(t *testing.T) {
+	ctx := context.Background()
+	_, taskA := seedNULTask(t, "adaptation-replay-a")
+	_, taskB := seedNULTask(t, "adaptation-replay-b")
+	contextJSON := `{"capability_adaptation":{"policy_id":"policy-shared","policy_version":"v1","scope":"current_task","trigger":"task shape","current_strategy":"long plan","suggested_strategy":"short checkpoints","allowed_actions":["use checkpoints"]}}`
+	for _, taskID := range []string{taskA, taskB} {
+		if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET context = $2::jsonb WHERE id = $1`, taskID, contextJSON); err != nil {
+			t.Fatalf("set task %s context: %v", taskID, err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	req := daemonTaskRequest(t, "/api/daemon/tasks/"+taskB+"/complete", taskB, map[string]any{
+		"output": "completed",
+		"capability_adaptation_result": map[string]string{
+			"task_id": taskA, "policy_id": "policy-shared", "policy_version": "v1", "status": "applied",
+		},
+	})
+	testHandler.CompleteTask(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("same-policy receipt from task A returned %d, want 400: %s", w.Code, w.Body.String())
+	}
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskB).Scan(&status); err != nil {
+		t.Fatalf("read task B after replay rejection: %v", err)
+	}
+	if status != "running" {
+		t.Fatalf("replayed receipt changed task B status to %q", status)
 	}
 }
 

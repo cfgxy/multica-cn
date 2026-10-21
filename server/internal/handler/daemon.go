@@ -2238,6 +2238,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// Build response with fresh agent data (name + skills + custom_env + custom_args).
 	resp = taskToResponse(*task, runtimeWorkspaceID)
 	resp.CapabilityAdaptation = taskadaptation.SnapshotFromContext(task.Context)
+	if resp.CapabilityAdaptation != nil {
+		resp.CapabilityAdaptation.TaskID = uuidToString(task.ID)
+	}
 	var issueNumber int32
 	// promptVersionScopeIDs accumulates (scope -> scope_id) for every prompt
 	// tier this claim actually injects non-empty content for, populated at
@@ -4291,8 +4294,12 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// re-route below feeds req.Output into the failure classifier, and that
 	// classifier must see exactly the text we are going to persist.
 	sanitizeTaskCompleteRequest(&req)
+	req.Output = taskadaptation.StripReceiptLines(req.Output)
 	claimedAdaptation := taskadaptation.SnapshotFromContext(claimedTask.Context)
-	if result := req.CapabilityAdaptationResult; result != nil && !result.Matches(claimedAdaptation) {
+	if claimedAdaptation != nil {
+		claimedAdaptation.TaskID = uuidToString(claimedTask.ID)
+	}
+	if result := req.CapabilityAdaptationResult; result != nil && !result.Matches(claimedAdaptation, uuidToString(claimedTask.ID)) {
 		writeError(w, http.StatusBadRequest, "invalid capability adaptation result")
 		return
 	}

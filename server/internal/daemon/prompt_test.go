@@ -2141,8 +2141,9 @@ func TestCapabilityAdaptationPromptIsOptInAndTaskBound(t *testing.T) {
 	if strings.Contains(base, "capability adaptation") {
 		t.Fatal("default-off task unexpectedly received adaptation guidance")
 	}
-	adapted := BuildPrompt(Task{IssueID: "issue-1", CapabilityAdaptation: snapshot}, "claude")
-	for _, want := range []string{"Task-scoped capability adaptation", "current_task", "policy-1", "cannot change permissions", "<!-- multica-capability-adaptation: applied -->"} {
+	snapshot.TaskID = "task-1"
+	adapted := BuildPrompt(Task{ID: "task-1", IssueID: "issue-1", CapabilityAdaptation: snapshot}, "claude")
+	for _, want := range []string{"Task-scoped capability adaptation", "current_task", "policy-1", "cannot change permissions", "task `task-1`", "<!-- multica-capability-adaptation: task-1: applied -->"} {
 		if !strings.Contains(adapted, want) {
 			t.Errorf("adaptation prompt missing %q", want)
 		}
