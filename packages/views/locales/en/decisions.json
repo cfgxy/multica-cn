@@ -76,6 +76,7 @@
     "deny": "Deny",
     "cancel": "Revoke request",
     "projection_hint": "This row is a read-only projection — act in the target workspace",
+    "open_target_workspace": "Open target workspace",
     "executed_failed": "Execution failed: {{reason}}",
     "steps_title": "Per-workspace steps",
     "step_origin": "Origin",
