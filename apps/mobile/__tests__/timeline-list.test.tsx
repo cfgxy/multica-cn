@@ -469,7 +469,7 @@ describe("selection-mode dismiss layer (RUYI-416)", () => {
 });
 
 describe("decision batch bar placement (RUYI-534)", () => {
-  function decisionCard(id: string, createdAt: string): IssueDecision {
+  function decisionCard(id: string, createdAt: string, decisionKind?: IssueDecision["decision_kind"]): IssueDecision {
     return {
       id,
       issue_id: issue.id,
@@ -479,6 +479,7 @@ describe("decision batch bar placement (RUYI-534)", () => {
       multi_select: false,
       recommended_indices: [],
       status: "open",
+      decision_kind: decisionKind,
       selected_indices: [],
       answered_by_type: null,
       answered_by_id: null,
@@ -530,6 +531,20 @@ describe("decision batch bar placement (RUYI-534)", () => {
 
     expect(screen.queryByTestId("timeline-row-decision-batch-bar")).toBeNull();
     expect(screen.getByText("decision-summary:d-1")).toBeTruthy();
+  });
+
+  it("excludes open authorization cards from the batch count and ordering", async () => {
+    mockDecisionsData.data = [
+      decisionCard("auth-1", "2026-09-05T07:00:00Z", "authorization"),
+      decisionCard("d-2", "2026-09-05T12:00:00Z"),
+      decisionCard("d-1", "2026-09-05T08:00:00Z"),
+    ];
+
+    await renderTimeline([comment("root-a", "2026-09-05T09:00:00Z")]);
+
+    expect(screen.getByText("decision-batch-entry:2")).toBeTruthy();
+    expect(screen.getByTestId("timeline-row-decision-batch-bar")).toBeTruthy();
+    expect(screen.getByText("decision-summary:auth-1")).toBeTruthy();
   });
 });
 

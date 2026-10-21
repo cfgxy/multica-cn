@@ -2232,7 +2232,7 @@ describe("IssueDetail (shared)", () => {
   // issue feed; the interactive batch flow opens separately on demand.
   // -------------------------------------------------------------------------
   describe("decision batch bar placement (RUYI-534)", () => {
-    function decision(id: string, createdAt: string, status = "open") {
+    function decision(id: string, createdAt: string, status = "open", decisionKind?: "authorization") {
       return {
         id,
         issue_id: "issue-1",
@@ -2242,6 +2242,7 @@ describe("IssueDetail (shared)", () => {
         multi_select: false,
         recommended_indices: [0],
         status,
+        decision_kind: decisionKind,
         selected_indices: [],
         answered_by_type: null,
         answered_by_id: null,
@@ -2306,6 +2307,22 @@ describe("IssueDetail (shared)", () => {
       fireEvent.click(await screen.findByTestId("decision-batch-entry"));
       expect(await screen.findByTestId("decision-batch-bar")).toBeInTheDocument();
       expect(screen.getByTestId("decision-batch-card-decision-1")).toBeInTheDocument();
+      expect(screen.queryByTestId("decision-batch-card-decision-2")).toBeNull();
+    });
+
+    it("excludes an open authorization card from the batch count and candidates", async () => {
+      renderWithDecisions(
+        [
+          decision("authorization-1", "2026-01-18T00:00:00Z", "open", "authorization"),
+          decision("decision-1", "2026-01-19T00:00:00Z"),
+          decision("decision-2", "2026-01-20T00:00:00Z"),
+        ],
+        "decision-1",
+      );
+
+      fireEvent.click(await screen.findByTestId("decision-batch-entry"));
+      expect(await screen.findByTestId("decision-batch-card-decision-1")).toBeInTheDocument();
+      expect(screen.queryByTestId("decision-batch-card-authorization-1")).toBeNull();
       expect(screen.queryByTestId("decision-batch-card-decision-2")).toBeNull();
     });
 

@@ -2,6 +2,7 @@ import { ActivityIndicator, ScrollView, View } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { issueDecisionsOptions } from "@/data/queries/decisions";
+import { getBatchDecisionCandidates } from "@/lib/decision-batch";
 import { DecisionBatchBar } from "@/components/issue/decision-batch-bar";
 import { Text } from "@/components/ui/text";
 import { useT } from "@/lib/use-t";
@@ -10,7 +11,7 @@ export default function IssueDecisionBatch() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { t } = useT("issues");
   const decisions = useQuery(issueDecisionsOptions(id));
-  const open = decisions.data?.filter((decision) => decision.status === "open").slice().sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)) ?? [];
+  const open = getBatchDecisionCandidates(decisions.data ?? []);
 
   return (
     <View className="flex-1 bg-background">

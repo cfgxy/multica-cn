@@ -133,6 +133,7 @@ import {
   type TimelineFeedItem,
 } from "@/lib/timeline-pull-requests";
 import { issueDecisionsOptions } from "@/data/queries/decisions";
+import { getBatchDecisionCandidates } from "@/lib/decision-batch";
 import { issuePullRequestsOptions } from "@/data/queries/github";
 import { DecisionSummary, DecisionBatchEntry } from "./decision-summary";
 import { PullRequestCard } from "./pull-request-card";
@@ -310,9 +311,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   const feed = useMemo<TimelineFeedItem[]>(
     () => {
       const rows = interleavePullRequests(merged, pullRequestsData?.pull_requests ?? []);
-      const open = (decisionsData ?? [])
-        .filter((decision) => decision.status === "open")
-        .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+      const open = getBatchDecisionCandidates(decisionsData ?? []);
       if (open.length < 2) return rows;
       return [...rows, {
         batchBar: { open },
