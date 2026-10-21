@@ -3715,12 +3715,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             )}
 
             <PendingPullRequestSection issueId={id} />
-            {issueDecisions.filter((decision) => decision.status === "open").length > 1 && (
+            {issueDecisions.filter((decision) => decision.status === "open" && decision.decision_kind !== "authorization").length > 1 && (
               <div className="mt-3" id="decision-batch-entry">
                 <DecisionBatchEntry
                   issueId={id}
                   open={issueDecisions
-                    .filter((decision) => decision.status === "open")
+                    .filter((decision) => decision.status === "open" && decision.decision_kind !== "authorization")
                     .slice()
                     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))}
                 />
