@@ -7,7 +7,7 @@ import { PropertyPicker } from "../../../issues/components/pickers";
 import { CHIP_CLASS } from "./chip";
 import { useT } from "../../../i18n";
 
-const MIN = 1;
+const MIN = -1;
 const MAX = 50;
 
 export function ConcurrencyPicker({
@@ -43,12 +43,17 @@ export function ConcurrencyPicker({
 
   const commit = async () => {
     const n = Number(draft);
-    if (!Number.isFinite(n) || n < MIN || n > MAX) return;
+    if (!Number.isInteger(n) || (n !== -1 && (n < 1 || n > MAX))) return;
     setOpen(false);
     if (n !== value) await onChange(n);
   };
 
-  const tooltip = t(($) => $.pickers.concurrency_tooltip, { value });
+  const tooltip = t(($) => $.pickers.concurrency_tooltip, {
+    value:
+      value === -1
+        ? t(($) => $.pickers.concurrency_unlimited)
+        : value,
+  });
 
   return (
     <PropertyPicker
@@ -66,7 +71,7 @@ export function ConcurrencyPicker({
     >
       <div className="space-y-2 p-2">
         <p className="text-caption text-muted-foreground">
-          {t(($) => $.pickers.concurrency_range, { min: MIN, max: MAX })}
+          {t(($) => $.pickers.concurrency_hint)}
         </p>
         <div className="flex items-center gap-2">
           <Input

@@ -182,6 +182,7 @@ var postConsolidationStems = []string{
 	"979_credential_capability_task_index_nonunique",   // RUYI-837
 	"979_credential_audit_id_index",                    // RUYI-837
 	"979_credential_audit_workspace_created_index",     // RUYI-837
+	"980_runtime_concurrency_limit",                    // RUYI-843
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

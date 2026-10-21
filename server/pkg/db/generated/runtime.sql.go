@@ -134,7 +134,7 @@ const clearAgentRuntimeCredentialRef = `-- name: ClearAgentRuntimeCredentialRef 
 UPDATE agent_runtime
 SET credential_ref = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks
 `
 
 // Unsets the instance's credential pointer. Runs in the same transaction as
@@ -163,6 +163,7 @@ func (q *Queries) ClearAgentRuntimeCredentialRef(ctx context.Context, id pgtype.
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 	)
 	return i, err
 }
@@ -222,7 +223,7 @@ INSERT INTO agent_runtime (
     workspace_id, name, runtime_mode, provider, status,
     device_info, metadata, owner_id, profile_id, visibility, registration_source
 ) VALUES ($1, $2, 'cloud', $3, 'online', '', $4, $5, $6, 'public', 'manual')
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks
 `
 
 type CreateManualAgentRuntimeParams struct {
@@ -273,6 +274,7 @@ func (q *Queries) CreateManualAgentRuntime(ctx context.Context, arg CreateManual
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 	)
 	return i, err
 }
@@ -452,7 +454,7 @@ func (q *Queries) FailTasksForOfflineRuntimes(ctx context.Context, arg FailTasks
 }
 
 const findLegacyRuntimesByDaemonID = `-- name: FindLegacyRuntimesByDaemonID :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks FROM agent_runtime
 WHERE workspace_id = $1
   AND provider = $2
   AND LOWER(daemon_id) = LOWER($3)
@@ -508,6 +510,7 @@ func (q *Queries) FindLegacyRuntimesByDaemonID(ctx context.Context, arg FindLega
 			&i.CustomName,
 			&i.RegistrationSource,
 			&i.CredentialRef,
+			&i.MaxConcurrentTasks,
 		); err != nil {
 			return nil, err
 		}
@@ -567,7 +570,7 @@ func (q *Queries) ForceOfflineRuntimesByIDs(ctx context.Context, runtimeIds []pg
 }
 
 const getAgentRuntime = `-- name: GetAgentRuntime :one
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks FROM agent_runtime
 WHERE id = $1
 `
 
@@ -594,12 +597,13 @@ func (q *Queries) GetAgentRuntime(ctx context.Context, id pgtype.UUID) (AgentRun
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 	)
 	return i, err
 }
 
 const getAgentRuntimeForWorkspace = `-- name: GetAgentRuntimeForWorkspace :one
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks FROM agent_runtime
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -631,12 +635,13 @@ func (q *Queries) GetAgentRuntimeForWorkspace(ctx context.Context, arg GetAgentR
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 	)
 	return i, err
 }
 
 const getAgentRuntimes = `-- name: GetAgentRuntimes :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks FROM agent_runtime
 WHERE id = ANY($1::uuid[])
 `
 
@@ -674,6 +679,7 @@ func (q *Queries) GetAgentRuntimes(ctx context.Context, ids []pgtype.UUID) ([]Ag
 			&i.CustomName,
 			&i.RegistrationSource,
 			&i.CredentialRef,
+			&i.MaxConcurrentTasks,
 		); err != nil {
 			return nil, err
 		}
@@ -683,6 +689,29 @@ func (q *Queries) GetAgentRuntimes(ctx context.Context, ids []pgtype.UUID) ([]Ag
 		return nil, err
 	}
 	return items, nil
+}
+
+const getRuntimeClaimCapacity = `-- name: GetRuntimeClaimCapacity :one
+SELECT r.max_concurrent_tasks,
+       count(t.id)::bigint AS active_tasks
+FROM agent_runtime r
+LEFT JOIN agent_task_queue t
+  ON t.runtime_id = r.id
+ AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+WHERE r.id = $1
+GROUP BY r.id
+`
+
+type GetRuntimeClaimCapacityRow struct {
+	MaxConcurrentTasks int32 `json:"max_concurrent_tasks"`
+	ActiveTasks        int64 `json:"active_tasks"`
+}
+
+func (q *Queries) GetRuntimeClaimCapacity(ctx context.Context, runtimeID pgtype.UUID) (GetRuntimeClaimCapacityRow, error) {
+	row := q.db.QueryRow(ctx, getRuntimeClaimCapacity, runtimeID)
+	var i GetRuntimeClaimCapacityRow
+	err := row.Scan(&i.MaxConcurrentTasks, &i.ActiveTasks)
+	return i, err
 }
 
 const getRuntimeCredential = `-- name: GetRuntimeCredential :one
@@ -741,7 +770,7 @@ func (q *Queries) IsAgentRuntimeEligibleForGC(ctx context.Context, arg IsAgentRu
 }
 
 const listAgentRuntimes = `-- name: ListAgentRuntimes :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks FROM agent_runtime
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -775,6 +804,7 @@ func (q *Queries) ListAgentRuntimes(ctx context.Context, workspaceID pgtype.UUID
 			&i.CustomName,
 			&i.RegistrationSource,
 			&i.CredentialRef,
+			&i.MaxConcurrentTasks,
 		); err != nil {
 			return nil, err
 		}
@@ -787,7 +817,7 @@ func (q *Queries) ListAgentRuntimes(ctx context.Context, workspaceID pgtype.UUID
 }
 
 const listAgentRuntimesByOwner = `-- name: ListAgentRuntimesByOwner :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks FROM agent_runtime
 WHERE workspace_id = $1 AND owner_id = $2
 ORDER BY created_at ASC
 `
@@ -826,6 +856,7 @@ func (q *Queries) ListAgentRuntimesByOwner(ctx context.Context, arg ListAgentRun
 			&i.CustomName,
 			&i.RegistrationSource,
 			&i.CredentialRef,
+			&i.MaxConcurrentTasks,
 		); err != nil {
 			return nil, err
 		}
@@ -911,7 +942,7 @@ func (q *Queries) ListOnlineRuntimesByWorkspace(ctx context.Context, workspaceID
 }
 
 const listRuntimesWithCredentialRef = `-- name: ListRuntimesWithCredentialRef :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks FROM agent_runtime
 WHERE credential_ref IS NOT NULL
 `
 
@@ -947,6 +978,7 @@ func (q *Queries) ListRuntimesWithCredentialRef(ctx context.Context) ([]AgentRun
 			&i.CustomName,
 			&i.RegistrationSource,
 			&i.CredentialRef,
+			&i.MaxConcurrentTasks,
 		); err != nil {
 			return nil, err
 		}
@@ -1010,7 +1042,7 @@ func (q *Queries) ListStaleOfflineRuntimeGCCandidates(ctx context.Context, arg L
 }
 
 const listVisibleAgentRuntimes = `-- name: ListVisibleAgentRuntimes :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks FROM agent_runtime
 WHERE workspace_id = $1
   AND (owner_id = $2 OR visibility = 'public')
 ORDER BY created_at ASC
@@ -1053,6 +1085,7 @@ func (q *Queries) ListVisibleAgentRuntimes(ctx context.Context, arg ListVisibleA
 			&i.CustomName,
 			&i.RegistrationSource,
 			&i.CredentialRef,
+			&i.MaxConcurrentTasks,
 		); err != nil {
 			return nil, err
 		}
@@ -1097,7 +1130,7 @@ func (q *Queries) ListWorkspaceDaemonIDs(ctx context.Context, workspaceID pgtype
 }
 
 const lockAgentRuntime = `-- name: LockAgentRuntime :one
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks FROM agent_runtime
 WHERE id = $1
 FOR UPDATE
 `
@@ -1138,8 +1171,19 @@ func (q *Queries) LockAgentRuntime(ctx context.Context, id pgtype.UUID) (AgentRu
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 	)
 	return i, err
+}
+
+const lockRuntimeClaimCapacity = `-- name: LockRuntimeClaimCapacity :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':runtime_claim_capacity', 0))
+`
+
+// Serializes capacity-bearing claims across every agent hosted by this runtime.
+func (q *Queries) LockRuntimeClaimCapacity(ctx context.Context, runtimeID string) error {
+	_, err := q.db.Exec(ctx, lockRuntimeClaimCapacity, runtimeID)
+	return err
 }
 
 const lockRuntimesForMerge = `-- name: LockRuntimesForMerge :many
@@ -1207,7 +1251,7 @@ const markAgentRuntimeOnline = `-- name: MarkAgentRuntimeOnline :one
 UPDATE agent_runtime
 SET status = 'online', last_seen_at = now(), updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks
 `
 
 // Used on the offline→online transition (and on first heartbeat after
@@ -1236,6 +1280,7 @@ func (q *Queries) MarkAgentRuntimeOnline(ctx context.Context, id pgtype.UUID) (A
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 	)
 	return i, err
 }
@@ -1482,7 +1527,7 @@ const setAgentRuntimeCredentialRef = `-- name: SetAgentRuntimeCredentialRef :one
 UPDATE agent_runtime
 SET credential_ref = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks
 `
 
 type SetAgentRuntimeCredentialRefParams struct {
@@ -1518,6 +1563,7 @@ func (q *Queries) SetAgentRuntimeCredentialRef(ctx context.Context, arg SetAgent
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 	)
 	return i, err
 }
@@ -1798,11 +1844,55 @@ func (q *Queries) UnbindUserAgentsFromVoiceRuntime(ctx context.Context, voiceRun
 	return items, nil
 }
 
+const updateAgentRuntimeConcurrencyLimit = `-- name: UpdateAgentRuntimeConcurrencyLimit :one
+WITH capacity_lock AS MATERIALIZED (
+    SELECT pg_advisory_xact_lock(hashtextextended($2::uuid::text || ':runtime_claim_capacity', 0))
+)
+UPDATE agent_runtime
+SET max_concurrent_tasks = $1, updated_at = now()
+WHERE id = $2::uuid
+  AND EXISTS (SELECT 1 FROM capacity_lock)
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks
+`
+
+type UpdateAgentRuntimeConcurrencyLimitParams struct {
+	MaxConcurrentTasks int32       `json:"max_concurrent_tasks"`
+	ID                 pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateAgentRuntimeConcurrencyLimit(ctx context.Context, arg UpdateAgentRuntimeConcurrencyLimitParams) (AgentRuntime, error) {
+	row := q.db.QueryRow(ctx, updateAgentRuntimeConcurrencyLimit, arg.MaxConcurrentTasks, arg.ID)
+	var i AgentRuntime
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DaemonID,
+		&i.Name,
+		&i.RuntimeMode,
+		&i.Provider,
+		&i.Status,
+		&i.DeviceInfo,
+		&i.Metadata,
+		&i.LastSeenAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OwnerID,
+		&i.LegacyDaemonID,
+		&i.Visibility,
+		&i.ProfileID,
+		&i.CustomName,
+		&i.RegistrationSource,
+		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
+	)
+	return i, err
+}
+
 const updateAgentRuntimeCustomName = `-- name: UpdateAgentRuntimeCustomName :one
 UPDATE agent_runtime
 SET custom_name = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks
 `
 
 type UpdateAgentRuntimeCustomNameParams struct {
@@ -1838,6 +1928,7 @@ func (q *Queries) UpdateAgentRuntimeCustomName(ctx context.Context, arg UpdateAg
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 	)
 	return i, err
 }
@@ -1848,7 +1939,7 @@ SET custom_name = $1, updated_at = now()
 WHERE workspace_id = $2
   AND daemon_id = $3
   AND ($4::uuid IS NULL OR owner_id = $4)
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks
 `
 
 type UpdateAgentRuntimeCustomNameByDaemonParams struct {
@@ -1898,6 +1989,7 @@ func (q *Queries) UpdateAgentRuntimeCustomNameByDaemon(ctx context.Context, arg 
 			&i.CustomName,
 			&i.RegistrationSource,
 			&i.CredentialRef,
+			&i.MaxConcurrentTasks,
 		); err != nil {
 			return nil, err
 		}
@@ -1913,7 +2005,7 @@ const updateAgentRuntimeVisibility = `-- name: UpdateAgentRuntimeVisibility :one
 UPDATE agent_runtime
 SET visibility = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks
 `
 
 type UpdateAgentRuntimeVisibilityParams struct {
@@ -1948,6 +2040,7 @@ func (q *Queries) UpdateAgentRuntimeVisibility(ctx context.Context, arg UpdateAg
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 	)
 	return i, err
 }
@@ -1975,7 +2068,7 @@ DO UPDATE SET
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
     last_seen_at = now(),
     updated_at = now()
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, (xmax = 0) AS inserted
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, (xmax = 0) AS inserted
 `
 
 type UpsertAgentRuntimeParams struct {
@@ -2010,6 +2103,7 @@ type UpsertAgentRuntimeRow struct {
 	CustomName         pgtype.Text        `json:"custom_name"`
 	RegistrationSource string             `json:"registration_source"`
 	CredentialRef      pgtype.Text        `json:"credential_ref"`
+	MaxConcurrentTasks int32              `json:"max_concurrent_tasks"`
 	Inserted           bool               `json:"inserted"`
 }
 
@@ -2053,6 +2147,7 @@ func (q *Queries) UpsertAgentRuntime(ctx context.Context, arg UpsertAgentRuntime
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 		&i.Inserted,
 	)
 	return i, err
@@ -2083,7 +2178,7 @@ DO UPDATE SET
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
     last_seen_at = now(),
     updated_at = now()
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, (xmax = 0) AS inserted
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, (xmax = 0) AS inserted
 `
 
 type UpsertAgentRuntimeWithProfileParams struct {
@@ -2119,6 +2214,7 @@ type UpsertAgentRuntimeWithProfileRow struct {
 	CustomName         pgtype.Text        `json:"custom_name"`
 	RegistrationSource string             `json:"registration_source"`
 	CredentialRef      pgtype.Text        `json:"credential_ref"`
+	MaxConcurrentTasks int32              `json:"max_concurrent_tasks"`
 	Inserted           bool               `json:"inserted"`
 }
 
@@ -2163,6 +2259,7 @@ func (q *Queries) UpsertAgentRuntimeWithProfile(ctx context.Context, arg UpsertA
 		&i.CustomName,
 		&i.RegistrationSource,
 		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
 		&i.Inserted,
 	)
 	return i, err
