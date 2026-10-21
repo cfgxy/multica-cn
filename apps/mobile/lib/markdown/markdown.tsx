@@ -41,7 +41,16 @@
  * a custom renderer — mobile doesn't lose anything that exists by
  * default elsewhere.
  */
-import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef } from "react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  type ComponentProps,
+} from "react";
 import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
@@ -59,8 +68,8 @@ import { useCommentAnchor } from "@/lib/comment-anchor-context";
 import { IssueReferenceList } from "@/components/issue/issue-reference-list";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
-import { splitMarkdown } from "./split-markdown";
-import { CodeBlock } from "./code-block";
+import { splitMarkdown, type MarkdownSegment } from "./split-markdown";
+import { CodeBlock, ModernCodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
 import { MermaidDiagram } from "./mermaid-diagram";
 import { TableBlock } from "./table-block";
@@ -131,10 +140,10 @@ interface Props {
 
 export const Markdown = memo(function Markdown(props: Props) {
   const renderer = useMarkdownRenderer();
-  return <MarkdownReaderAdapter {...props} renderer={renderer} />;
+  return <MarkdownRendererAdapter {...props} renderer={renderer} />;
 });
 
-function MarkdownReaderAdapter({
+export function MarkdownRendererAdapter({
   content,
   attachments,
   selectable = true,
@@ -312,68 +321,160 @@ function MarkdownReaderAdapter({
 
   if (segments.length === 0) return null;
 
+  const Reader = renderer === "modern" ? ModernMarkdownRenderer : LegacyMarkdownRenderer;
   return (
-    // `gap-3` enforces 12px between every segment sibling (prose ↔ code,
-    // code ↔ code, image ↔ anything). Going through gap instead of
-    // per-child marginVertical avoids a NativeWind 4 / Yoga quirk where
-    // adjacent `marginVertical` siblings collapse closer than the sum
-    // would suggest — `gap` is layout-level spacing that doesn't depend
-    // on margin behaviour.
-    <View className="gap-3" testID={`markdown-reader-${renderer}`}>
-      {segments.map((seg, i) => {
-        switch (seg.type) {
-          case "prose":
-            return (
-              <EnrichedMarkdownText
-                key={i}
-                flavor="github"
-                markdown={seg.content}
-                markdownStyle={markdownStyle}
-                onLinkPress={onLinkPress}
-                selectable={selectable}
-              />
-            );
-          case "code":
-            return (
-              <CodeBlock
-                key={i}
-                code={seg.code}
-                lang={seg.lang}
-                selectable={selectable}
-              />
-            );
-          case "mermaid":
-            // RUYI-80: drawn by the DOM component (Expo DOM Components
-            // WebView) — see mermaid-diagram.tsx for the security contract.
-            return <MermaidDiagram key={i} code={seg.code} />;
-          case "table":
-            // RUYI-72: wide tables render as a tappable grid + row-detail
-            // sheet; the sheet's enriched instances share this component's
-            // `onLinkPress` so link behaviour never forks from prose.
-            return (
-              <TableBlock
-                key={i}
-                headers={seg.headers}
-                rows={seg.rows}
-                align={seg.align}
-                onLinkPress={onLinkPress}
-                selectable={selectable}
-              />
-            );
-          case "image":
-            return (
-              <MarkdownImage
-                key={i}
-                uri={seg.uri}
-                alt={seg.alt}
-                attachments={attachments}
-              />
-            );
-        }
-        })}
-        {renderReferenceTail ? <IssueReferenceTail content={content} /> : null}
-      </View>
+    <Reader
+      segments={segments}
+      content={content}
+      attachments={attachments}
+      selectable={selectable}
+      onLinkPress={onLinkPress}
+      renderReferenceTail={renderReferenceTail}
+      markdownStyle={markdownStyle}
+    />
   );
+}
+
+interface MarkdownRendererProps {
+  segments: MarkdownSegment[];
+  content: string;
+  attachments?: Attachment[];
+  selectable: boolean;
+  onLinkPress: (event: { url: string }) => void;
+  renderReferenceTail: boolean;
+  markdownStyle: NonNullable<ComponentProps<typeof EnrichedMarkdownText>["markdownStyle"]>;
+}
+
+function LegacyMarkdownRenderer({
+  segments,
+  content,
+  attachments,
+  selectable,
+  onLinkPress,
+  renderReferenceTail,
+  markdownStyle,
+}: MarkdownRendererProps) {
+  return (
+    <View className="gap-3" testID="markdown-legacy-renderer">
+      {segments.map((segment, index) => (
+        <LegacyMarkdownSegment
+          key={index}
+          segment={segment}
+          attachments={attachments}
+          selectable={selectable}
+          onLinkPress={onLinkPress}
+          markdownStyle={markdownStyle}
+        />
+      ))}
+      {renderReferenceTail ? <IssueReferenceTail content={content} /> : null}
+    </View>
+  );
+}
+
+function LegacyMarkdownSegment({
+  segment,
+  attachments,
+  selectable,
+  onLinkPress,
+  markdownStyle,
+}: Omit<MarkdownRendererProps, "segments" | "content" | "renderReferenceTail"> & {
+  segment: MarkdownSegment;
+}) {
+  switch (segment.type) {
+    case "prose":
+      return (
+        <EnrichedMarkdownText
+          flavor="github"
+          markdown={segment.content}
+          markdownStyle={markdownStyle}
+          onLinkPress={onLinkPress}
+          selectable={selectable}
+        />
+      );
+    case "code":
+      return <CodeBlock code={segment.code} lang={segment.lang} selectable={selectable} />;
+    case "mermaid":
+      return <MermaidDiagram code={segment.code} />;
+    case "table":
+      return (
+        <TableBlock
+          headers={segment.headers}
+          rows={segment.rows}
+          align={segment.align}
+          onLinkPress={onLinkPress}
+          selectable={selectable}
+        />
+      );
+    case "image":
+      return <MarkdownImage uri={segment.uri} alt={segment.alt} attachments={attachments} />;
+  }
+}
+
+function ModernMarkdownRenderer({
+  segments,
+  content,
+  attachments,
+  selectable,
+  onLinkPress,
+  renderReferenceTail,
+  markdownStyle,
+}: MarkdownRendererProps) {
+  return (
+    <View className="gap-3" testID="markdown-modern-renderer">
+      {segments.map((segment, index) => (
+        <ModernMarkdownSegment
+          key={index}
+          segment={segment}
+          attachments={attachments}
+          selectable={selectable}
+          onLinkPress={onLinkPress}
+          markdownStyle={markdownStyle}
+        />
+      ))}
+      {renderReferenceTail ? <IssueReferenceTail content={content} /> : null}
+    </View>
+  );
+}
+
+function ModernMarkdownSegment({
+  segment,
+  attachments,
+  selectable,
+  onLinkPress,
+  markdownStyle,
+}: Omit<MarkdownRendererProps, "segments" | "content" | "renderReferenceTail"> & {
+  segment: MarkdownSegment;
+}) {
+  switch (segment.type) {
+    case "prose":
+      return (
+        <View testID="markdown-modern-prose">
+          <EnrichedMarkdownText
+            flavor="github"
+            markdown={segment.content}
+            markdownStyle={markdownStyle}
+            onLinkPress={onLinkPress}
+            selectable={selectable}
+          />
+        </View>
+      );
+    case "code":
+      return <ModernCodeBlock code={segment.code} lang={segment.lang} selectable={selectable} />;
+    case "mermaid":
+      return <MermaidDiagram code={segment.code} />;
+    case "table":
+      return (
+        <TableBlock
+          headers={segment.headers}
+          rows={segment.rows}
+          align={segment.align}
+          onLinkPress={onLinkPress}
+          selectable={selectable}
+        />
+      );
+    case "image":
+      return <MarkdownImage uri={segment.uri} alt={segment.alt} attachments={attachments} />;
+  }
 }
 
 function IssueReferenceTail({ content }: { content: string }) {
