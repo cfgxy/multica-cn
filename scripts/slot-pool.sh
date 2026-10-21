@@ -15,7 +15,9 @@
 #     MULTICA_RECYCLE_OVERRIDE and the MULTICA_GC_GUARD_ENABLED kill switch,
 #     and file evidence under ~/.multica/recycle-evidence (same v1 format
 #     written by scripts/slot-image/guest/guard-scan.sh).
-#   - dev phase = wide TTL + activity renew; qa phase = tighter TTL
+#   - deploy phase = wide TTL + activity renew; qa phase = tighter TTL.
+#     These phases describe deployment activity inside one resource-pool
+#     lease. They never designate a developer's local build environment.
 #     (scripts/slot-pool.json; E1 makes them per-template server-side).
 #
 # Credentials: MULTICA_POOL_URL (default http://192.168.2.130:8772) and
@@ -152,7 +154,7 @@ config_phase_field() { # <phase> <field>
 
 epoch_of() { date -d "$1" '+%s' 2>/dev/null || printf 0; }
 
-# _maybe_renew <expires_at> — activity renewal (dev 长租约 + 活跃续约):
+# _maybe_renew <expires_at> — activity renewal (deploy 长租约 + 活跃续约):
 # renew when the server-reported expiry is inside the ahead-of-expiry window.
 # Falls back to the manifest value when the caller has no fresh payload.
 _maybe_renew() {
@@ -342,7 +344,7 @@ _do_release() { # <reason>
 # --- verbs -------------------------------------------------------------------
 
 cmd_use() {
-  local phase=dev template="" ttl=""
+  local phase=deploy template="" ttl=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --phase) phase=$2; shift 2 ;;
@@ -351,7 +353,13 @@ cmd_use() {
       *) die "use: unknown flag $1" ;;
     esac
   done
-  case "$phase" in dev|qa) ;; *) die "use: phase must be dev or qa" ;; esac
+  # dev is accepted only for existing callers. It is an alias for deploy, not
+  # permission to move source development or builds into the resource pool.
+  if [ "$phase" = "dev" ]; then
+    printf 'slot-pool: --phase dev is deprecated; treating it as deploy (the pool is deployment-only)\n' >&2
+    phase=deploy
+  fi
+  case "$phase" in deploy|qa) ;; *) die "use: phase must be deploy or qa" ;; esac
   require_owner
   template="${template:-$(config_phase_field "$phase" template)}"
   ttl="${ttl:-$(config_phase_field "$phase" ttl_minutes)}"
@@ -515,7 +523,11 @@ cmd_handoff() {
       *) die "handoff: unknown flag $1" ;;
     esac
   done
-  case "$to" in dev|qa) ;; *) die "handoff: --to dev|qa required" ;; esac
+  if [ "$to" = "dev" ]; then
+    printf 'slot-pool: --to dev is deprecated; treating it as deploy (the pool is deployment-only)\n' >&2
+    to=deploy
+  fi
+  case "$to" in deploy|qa) ;; *) die "handoff: --to deploy|qa required" ;; esac
   require_owner
   load_manifest
   local rc=0 verdict
@@ -524,8 +536,14 @@ cmd_handoff() {
     printf 'slot-pool: handoff refused (%s) — guard blocked %s\n' "$verdict" "$LEASE_ID" >&2
     return 1
   fi
-  _do_release "handoff"
-  cmd_use --phase "$to" ${template:+--template "$template"}
+  # A phase change belongs to the same Issue lease. Releasing and acquiring a
+  # second lease here used to create a capacity race and broke deployment→QA
+  # continuity. Template changes require a new deployment lease instead.
+  if [ -n "$template" ] && [ "$template" != "$TEMPLATE" ]; then
+    die "handoff: template changes require release followed by a new use; phase handoff preserves the current lease"
+  fi
+  sed -i "s/^PHASE=.*/PHASE=$to/" "$(manifest_path)"
+  printf 'slot-pool: handoff %s retained lease %s (phase %s)\n' "$POOL_SLOT" "$LEASE_ID" "$to"
 }
 
 cmd_orphans() {
@@ -640,12 +658,12 @@ usage() {
   cat <<'EOF'
 Pool-backed slot leases (RUYI-676 E3; MCP contract docs/03).
 
-  slot-pool.sh <name> use    [--phase dev|qa] [--template <id>] [--ttl <min>]
+  slot-pool.sh <name> use    [--phase deploy|qa] [--template <id>] [--ttl <min>]
   slot-pool.sh <name> load   --file <pkg> [--name <nm>] [--prepare]
   slot-pool.sh <name> status [--json]
   slot-pool.sh <name> exec   [--cwd <dir>] -- <command> [args...]
   slot-pool.sh <name> logs   <execution_id> [lines]
-  slot-pool.sh <name> handoff --to dev|qa [--template <id>]
+  slot-pool.sh <name> handoff --to deploy|qa
   slot-pool.sh <name> lock-status
   slot-pool.sh <name> lock-release [--dry-run]
                               # guard runs inside the VM; the release is only
@@ -662,7 +680,7 @@ Env: MULTICA_POOL_URL, MULTICA_POOL_TOKEN (or ~/.multica/pool-auth),
 MULTICA_SLOT_POOL_HOME, MULTICA_CALLER_OWNER (write verbs),
 MULTICA_RECYCLE_OVERRIDE (one-shot), MULTICA_GC_GUARD_ENABLED=false (kill switch),
 MULTICA_RECYCLE_EVIDENCE_DIR (local archive, default ~/.multica/recycle-evidence).
-Config: scripts/slot-pool.json (phase→template/TTL, guest ports).
+Config: scripts/slot-pool.json (deployment phase→template/TTL, guest ports).
 EOF
 }
 
