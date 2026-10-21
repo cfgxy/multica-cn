@@ -28,7 +28,7 @@ func TestExtractReceiptRequiresEnabledSnapshotAndExactFinalStatus(t *testing.T) 
 	snapshot := &Snapshot{PolicyID: "policy-7", PolicyVersion: "1", Scope: "current_task", Trigger: "trigger", CurrentStrategy: "current", SuggestedStrategy: "suggested", AllowedActions: []string{"bounded action"}}
 	for _, status := range []string{"applied", "retained", "blocked"} {
 		output, result := ExtractReceipt("work completed\n"+receiptPrefix+status+receiptSuffix+"\n", snapshot)
-		if output != "work completed" || result == nil || result.PolicyID != snapshot.PolicyID || result.Status != status {
+		if output != "work completed" || result == nil || result.PolicyID != snapshot.PolicyID || result.PolicyVersion != snapshot.PolicyVersion || result.Status != status {
 			t.Errorf("ExtractReceipt(%q) = %q, %#v", status, output, result)
 		}
 	}
@@ -45,5 +45,25 @@ func TestExtractReceiptRequiresEnabledSnapshotAndExactFinalStatus(t *testing.T) 
 	}
 	if cleaned, result := ExtractReceipt(receiptPrefix+"applied"+receiptSuffix, nil); cleaned != receiptPrefix+"applied"+receiptSuffix || result != nil {
 		t.Fatalf("disabled adaptation changed output: %q, %#v", cleaned, result)
+	}
+}
+
+func TestOutcomeMustMatchExactPolicySnapshot(t *testing.T) {
+	snapshot := &Snapshot{PolicyID: "policy-7", PolicyVersion: "2", Scope: "current_task", Trigger: "trigger", CurrentStrategy: "current", SuggestedStrategy: "suggested", AllowedActions: []string{"bounded action"}}
+	for _, outcome := range []Outcome{
+		{PolicyID: "policy-7", PolicyVersion: "2", Status: "applied"},
+		{PolicyID: "policy-7", PolicyVersion: "1", Status: "applied"},
+		{PolicyID: "policy-8", PolicyVersion: "2", Status: "applied"},
+		{PolicyID: "policy-7", PolicyVersion: "2", Status: "unknown"},
+		{PolicyID: "policy-7", Status: "applied"},
+	} {
+		got := outcome.Matches(snapshot)
+		want := outcome.PolicyID == snapshot.PolicyID && outcome.PolicyVersion == snapshot.PolicyVersion && ValidStatus(outcome.Status)
+		if got != want {
+			t.Errorf("Outcome(%+v).Matches() = %v, want %v", outcome, got, want)
+		}
+	}
+	if (Outcome{PolicyID: "policy-7", PolicyVersion: "2", Status: "applied"}).Matches(nil) {
+		t.Fatal("outcome matched a missing snapshot")
 	}
 }

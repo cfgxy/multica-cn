@@ -4292,8 +4292,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// classifier must see exactly the text we are going to persist.
 	sanitizeTaskCompleteRequest(&req)
 	claimedAdaptation := taskadaptation.SnapshotFromContext(claimedTask.Context)
-	if result := req.CapabilityAdaptationResult; result != nil &&
-		(claimedAdaptation == nil || result.PolicyID != claimedAdaptation.PolicyID || !taskadaptation.ValidStatus(result.Status)) {
+	if result := req.CapabilityAdaptationResult; result != nil && !result.Matches(claimedAdaptation) {
 		writeError(w, http.StatusBadRequest, "invalid capability adaptation result")
 		return
 	}
