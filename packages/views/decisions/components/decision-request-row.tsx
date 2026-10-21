@@ -132,6 +132,10 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
   const actionKey = ACTION_LABEL_KEYS[request.action_type];
   const riskKey = RISK_LABEL_KEYS[request.risk_tier];
   const isPending = request.status === "pending";
+  const targetPath =
+    !request.operable && isPending && request.target_workspace_slug
+      ? paths.workspace(request.target_workspace_slug).decisions()
+      : null;
   // The wire name wins: a cross-space origin agent is never in this
   // workspace's roster, so local resolution alone renders "Unknown Agent".
   const originName =
@@ -159,44 +163,67 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
     },
   });
 
+  const content = (
+    <>
+      <span className="flex min-w-0 flex-wrap items-center gap-2">
+        <ShieldCheck className="size-3.5 shrink-0 text-brand" aria-hidden />
+        <span className="truncate text-body font-medium">{request.title}</span>
+        <Badge variant="outline" className="shrink-0">
+          {actionKey ? t(($) => $.requests[actionKey]) : request.action_type}
+        </Badge>
+        {riskKey && (
+          <Badge variant="secondary" className="shrink-0">
+            {t(($) => $.requests[riskKey])}
+          </Badge>
+        )}
+        <Badge variant={statusBadgeVariant(request.status)} className="shrink-0">
+          {t(($) => $.requests[STATUS_LABEL_KEYS[request.status]])}
+        </Badge>
+      </span>
+      <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption text-muted-foreground">
+        <span className="truncate">
+          {t(($) => $.requests.origin_label, { agent: originName || request.origin_agent_id })}
+        </span>
+        <span aria-hidden>·</span>
+        <span className="shrink-0">{timeAgo(request.created_at)}</span>
+        {request.origin_issue_title && (
+          <span className="truncate" title={request.origin_issue_title}>
+            {t(($) => $.requests.source_issue, { title: request.origin_issue_title })}
+          </span>
+        )}
+      </span>
+      {request.detail && (
+        <span className="whitespace-pre-wrap break-words text-caption text-muted-foreground">
+          {request.detail}
+        </span>
+      )}
+    </>
+  );
+
   return (
     <div
       className="rounded-lg px-3 py-2 hover:bg-surface-hover"
       data-testid="decision-request-row"
       data-status={request.status}
     >
-      <div className="flex min-w-0 flex-col gap-1">
-        <span className="flex min-w-0 flex-wrap items-center gap-2">
-          <ShieldCheck className="size-3.5 shrink-0 text-brand" aria-hidden />
-          <span className="truncate text-body font-medium">{request.title}</span>
-          <Badge variant="outline" className="shrink-0">
-            {actionKey ? t(($) => $.requests[actionKey]) : request.action_type}
-          </Badge>
-          {riskKey && (
-            <Badge variant="secondary" className="shrink-0">
-              {t(($) => $.requests[riskKey])}
-            </Badge>
-          )}
-          <Badge variant={statusBadgeVariant(request.status)} className="shrink-0">
-            {t(($) => $.requests[STATUS_LABEL_KEYS[request.status]])}
-          </Badge>
-        </span>
-        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-caption text-muted-foreground">
-          <span className="truncate">
-            {t(($) => $.requests.origin_label, { agent: originName || request.origin_agent_id })}
-          </span>
-          <span aria-hidden>·</span>
-          <span className="shrink-0">{timeAgo(request.created_at)}</span>
-          {request.origin_issue_title && (
-            <span className="truncate" title={request.origin_issue_title}>
-              {t(($) => $.requests.source_issue, { title: request.origin_issue_title })}
+      <div
+        className="flex min-w-0 flex-col gap-1"
+        data-testid="decision-request-row-content"
+      >
+        {targetPath ? (
+          <AppLink
+            href={targetPath}
+            className="flex min-w-0 flex-col gap-1 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            data-testid="decision-request-target-link"
+          >
+            {content}
+            <span className="inline-flex items-center gap-1 text-caption text-brand">
+              {t(($) => $.requests.open_target_workspace)}
+              <ArrowUpRight className="size-3.5" aria-hidden />
             </span>
-          )}
-        </span>
-        {request.detail && (
-          <span className="whitespace-pre-wrap break-words text-caption text-muted-foreground">
-            {request.detail}
-          </span>
+          </AppLink>
+        ) : (
+          content
         )}
       </div>
 
@@ -236,21 +263,10 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
             </Button>
           </>
         )}
-        {!request.operable && isPending && (
-          request.target_workspace_slug ? (
-            <AppLink
-              href={paths.workspace(request.target_workspace_slug).decisions()}
-              className="inline-flex items-center gap-1 text-caption text-brand hover:underline"
-              data-testid="decision-request-target-link"
-            >
-              {t(($) => $.requests.open_target_workspace)}
-              <ArrowUpRight className="size-3.5" aria-hidden />
-            </AppLink>
-          ) : (
-            <span className="text-caption text-faint-foreground">
-              {t(($) => $.requests.projection_hint)}
-            </span>
-          )
+        {!request.operable && isPending && !targetPath && (
+          <span className="text-caption text-faint-foreground">
+            {t(($) => $.requests.projection_hint)}
+          </span>
         )}
         {isPending && (
           <Button
