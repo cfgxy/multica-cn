@@ -126,7 +126,7 @@ tool_result acquire_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"acti
 tool_result get_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"active","expires_at":"2030-01-01T00:00:00Z","owner":"RUYI-TEST","issue_id":"RUYI-TEST"}'
 tool_result release_lease '{"lease_id":"ls-1","state":"released"}'
 
-# --- 1. use (dev): acquire params + manifest ---------------------------------
+# --- 1. use (deprecated dev alias): acquire deploy params + manifest ----------
 reset_log
 out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 use --phase dev --template tpl-test-dev --ttl 60)"; rc=$?
 acq_req="$(reqs acquire_lease | head -1)"
@@ -140,7 +140,7 @@ if [ "$rc" = 0 ] \
   fail "use dev: rc=$rc acquire body=$body out=$out"; fi
 if [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ] \
    && grep -q '^LEASE_ID=ls-1$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
-   && grep -q '^PHASE=dev$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
+   && grep -q '^PHASE=deploy$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
   fail "use dev manifest missing"; fi
 
 # --- 2. write verb without MULTICA_CALLER_OWNER: refused, no acquire ---------
@@ -223,21 +223,17 @@ rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST MULTICA_GC_GUARD_ENABLED=false bash 
 if [ "$rc" = 0 ] && [ -z "$(reqs '"name": *"exec"')" ] && [ -n "$(reqs release_lease)" ]; then ok; else
   fail "kill switch: rc=$rc out=$out"; fi
 
-# --- 11. handoff --to qa: guarded release + re-acquire with qa template --------
+# --- 11. handoff --to qa: guard then retain the same deployment lease ----------
 reset_log
 tool_result exec '{"execution_id":"ex-g4","state":"succeeded","exit_code":0,"log_tail":"verdict: pass"}'
-tool_result acquire_lease '{"lease_id":"ls-2","instance_id":"ri-2","state":"active","expires_at":"2030-01-01T00:00:00Z","template":{"id":"tpl-test-qa"}}'
 MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 use --phase dev --template tpl-test-dev --ttl 60 >/dev/null
 reset_log
 tool_result exec '{"execution_id":"ex-g4","state":"succeeded","exit_code":0,"log_tail":"verdict: pass"}'
-tool_result acquire_lease '{"lease_id":"ls-2","instance_id":"ri-2","state":"active","expires_at":"2030-01-01T00:00:00Z","template":{"id":"tpl-test-qa"}}'
-out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 handoff --to qa --template tpl-test-qa)"; rc=$?
+out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 handoff --to qa)"; rc=$?
 order="$(last_method_order)"
-rel_pos="$(printf '%s' "$order" | tr ' ' '\n' | grep -n '^release_lease$' | tail -1 | cut -d: -f1)"
-acq_pos="$(printf '%s' "$order" | tr ' ' '\n' | grep -n '^acquire_lease$' | tail -1 | cut -d: -f1)"
-if [ "$rc" = 0 ] && [ -n "$rel_pos" ] && [ -n "$acq_pos" ] && [ "$rel_pos" -lt "$acq_pos" ] \
+if [ "$rc" = 0 ] && [ -z "$(reqs release_lease)" ] && [ -z "$(reqs acquire_lease)" ] \
    && grep -q '^PHASE=qa$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
-   && grep -q '^LEASE_ID=ls-2$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
+   && grep -q '^LEASE_ID=ls-1$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
   fail "handoff: rc=$rc order=[$order] out=$out"; fi
 
 # --- 12. audit: foreign lease reported -----------------------------------------
