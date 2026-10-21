@@ -3,9 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { IssueDecision } from "@multica/core/types";
 import type { TimelineRow } from "./timeline-thread";
 import {
-  DECISION_BATCH_BAR_ID,
   interleaveDecisions,
-  isDecisionBatchItem,
   isDecisionItem,
 } from "./timeline-decisions";
 
@@ -79,17 +77,12 @@ describe("interleaveDecisions", () => {
       card("d-2", "2026-10-02T05:00:00Z"),
       card("d-1", "2026-10-02T02:00:00Z"),
     ]);
-    // Two open cards ⇒ the batch bar lands at the very END of the timeline
-    // (after every comment, activity and card) regardless of the input
-    // array order — server numbering order stays created_at ASC inside the
-    // bar itself.
     expect(ids(merged)).toEqual([
       "d-1",
       "c-1",
       "c-2",
       "d-2",
       "c-3",
-      DECISION_BATCH_BAR_ID,
     ]);
   });
 
@@ -106,42 +99,17 @@ describe("interleaveDecisions", () => {
     expect(isDecisionItem(row("c-1", "2026-10-02T04:00:00Z"))).toBe(false);
   });
 
-  it("appends the batch bar after every timeline row when two or more are open", () => {
-    const rows = [row("c-1", "2026-10-02T03:00:00Z"), row("c-2", "2026-10-02T06:00:00Z")];
-    const merged = interleaveDecisions(rows, [
-      card("d-1", "2026-10-02T04:00:00Z"),
-      card("d-2", "2026-10-02T05:00:00Z"),
-    ]);
-    expect(ids(merged)).toEqual(["c-1", "d-1", "d-2", "c-2", DECISION_BATCH_BAR_ID]);
-    const bar = merged.find(isDecisionBatchItem);
-    expect(bar?.batchBar.open.map((d) => d.id)).toEqual(["d-1", "d-2"]);
-    expect(bar?.entry.id).toBe(DECISION_BATCH_BAR_ID);
-    // Comment-only consumers keep skipping the bar (no entry.type, no
-    // `decision` field).
-    expect("decision" in bar!).toBe(false);
-  });
-
-  it("emits no batch bar below two open cards", () => {
+  it("leaves batch placement to the timeline feed after PR interleaving", () => {
     const single = interleaveDecisions(
       [row("c-1", "2026-10-02T03:00:00Z"), row("c-2", "2026-10-02T06:00:00Z")],
       [card("d-1", "2026-10-02T04:00:00Z")],
     );
-    expect(single.some(isDecisionBatchItem)).toBe(false);
+    expect(single.some((item) => "batchBar" in item)).toBe(false);
 
     const answered = interleaveDecisions([], [
       card("d-1", "2026-10-02T04:00:00Z"),
       card("d-2", "2026-10-02T05:00:00Z"),
     ].map((d, i) => ({ ...d, status: "answered" as const, selected_indices: [i] })));
-    expect(answered.some(isDecisionBatchItem)).toBe(false);
-  });
-
-  it("counts only open cards: answered ones stay put while open ones get the bar", () => {
-    const answered = { ...card("d-old", "2026-10-02T02:00:00Z"), status: "answered" as const, selected_indices: [0] };
-    const merged = interleaveDecisions([], [
-      answered,
-      card("d-1", "2026-10-02T04:00:00Z"),
-      card("d-2", "2026-10-02T05:00:00Z"),
-    ]);
-    expect(ids(merged)).toEqual(["d-old", "d-1", "d-2", DECISION_BATCH_BAR_ID]);
+    expect(answered.some((item) => "batchBar" in item)).toBe(false);
   });
 });

@@ -23,11 +23,7 @@ export interface DecisionTimelineItem {
   entry: { id: string; created_at: string };
 }
 
-// Batch answer bar (RUYI-471): one aggregate row above the first open card
-// when the issue has two or more. Carries the same minimal `entry` surface as
-// a card (FlashList keys / divider anchor read entry.id), and deliberately
-// has no `decision` field so `"decision" in item` keeps excluding it from
-// comment-only consumers.
+// Batch answer entry is appended after linked PR cards by TimelineList.
 export interface DecisionBatchTimelineItem {
   batchBar: { open: IssueDecision[] };
   entry: { id: string; created_at: string };
@@ -76,25 +72,5 @@ export function interleaveDecisions(
   const out = ordered
     .sort((a, b) => a.at - b.at || a.tie - b.tie)
     .map((o) => o.item);
-  // Mirrors web's issue-detail placement (RUYI-534): with two or more open
-  // cards the bar lands at the very end of the timeline, appended after the
-  // sort so timestamps never move it. The cards themselves stay ordered by
-  // created_at, which is what the server's "1A 2B" numbering reads.
-  // Server numbering ("1A 2B" binding) is created_at ASC over open cards —
-  // sort locally so the bar's row order and anchor never depend on the
-  // caller's array order.
-  const open = decisions
-    .filter((d) => d.status === "open")
-    .sort(
-      (a, b) =>
-        Date.parse(a.created_at) - Date.parse(b.created_at) ||
-        (a.id < b.id ? -1 : 1),
-    );
-  if (open.length >= 2) {
-    out.push({
-      batchBar: { open },
-      entry: { id: DECISION_BATCH_BAR_ID, created_at: open[0]!.created_at },
-    });
-  }
   return out;
 }
