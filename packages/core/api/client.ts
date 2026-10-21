@@ -3698,6 +3698,22 @@ export class ApiClient {
     });
   }
 
+  async getOuterLoopPlan(issueId: string): Promise<unknown> {
+    return this.fetch(`/api/issues/${issueId}/outerloop`);
+  }
+
+  async updateOuterLoopPlan(issueId: string, data: { enabled?: boolean; max_rounds?: number; goal?: string }): Promise<unknown> {
+    return this.fetch(`/api/issues/${issueId}/outerloop`, { method: "PUT", body: JSON.stringify(data) });
+  }
+
+  async fireOuterLoopPlan(issueId: string): Promise<unknown> {
+    return this.fetch(`/api/issues/${issueId}/outerloop/fire`, { method: "POST" });
+  }
+
+  async stopOuterLoopPlan(issueId: string): Promise<unknown> {
+    return this.fetch(`/api/issues/${issueId}/outerloop/stop`, { method: "POST" });
+  }
+
   async retrySourceContextQuickCreate(taskId: string): Promise<AgentTask> {
     const raw = await this.fetch<unknown>(`/api/tasks/${taskId}/retry-source-context`, {
       method: "POST",
