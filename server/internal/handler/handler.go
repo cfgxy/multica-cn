@@ -448,7 +448,7 @@ type Handler struct {
 	// unset; the credential PUT/DELETE handlers return 503 in that case so a
 	// misconfigured self-host deployment fails closed rather than storing
 	// plaintext. Wired in cmd/server/router.go after New.
-	RuntimeCredentialBox *secretbox.Box
+	RuntimeCredentialBox    *secretbox.Box
 	CredentialTransportKeys credentialcrypto.TransportKeyring
 	CredentialStorageKeys   credentialcrypto.StorageKeyring
 	// SelfEvolution resolves the per-workspace model service config for the

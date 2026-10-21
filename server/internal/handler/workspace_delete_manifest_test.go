@@ -248,7 +248,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// column; DeleteWorkspaceRuntimesAndProjects sweeps them through the
 	// workspace's runtime set in the same statement that deletes the
 	// runtimes. Destroying the workspace destroys its secrets.
-	"runtime_credential": workspaceDelete,
+	"runtime_credential":    workspaceDelete,
+	"credential_vault":      workspaceDelete,
+	"credential_grant":      workspaceDelete,
+	"credential_capability": workspaceDelete,
+	"credential_audit":      workspaceDelete,
 	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
 	// metadata; the whole set goes away with the workspace.
 	"runtime_skill_discovery": workspaceDelete,

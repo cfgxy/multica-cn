@@ -81,11 +81,12 @@ func TestTransportEnvelopeOpenAuthenticatesContextWithoutHTTP(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*Context){
-		"workspace": func(c *Context) { c.WorkspaceID = "other-workspace" },
-		"resource":  func(c *Context) { c.ResourceID = "other-issue" },
-		"subject":   func(c *Context) { c.SubjectID = "other-agent" },
-		"purpose":   func(c *Context) { c.Purpose = "credential.replace" },
-		"version":   func(c *Context) { c.Version++ },
+		"workspace":      func(c *Context) { c.WorkspaceID = "other-workspace" },
+		"resource scope": func(c *Context) { c.ResourceType = "project" },
+		"resource":       func(c *Context) { c.ResourceID = "other-issue" },
+		"subject":        func(c *Context) { c.SubjectID = "other-agent" },
+		"purpose":        func(c *Context) { c.Purpose = "credential.replace" },
+		"version":        func(c *Context) { c.Version++ },
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := ctx
@@ -176,6 +177,44 @@ func TestStorageEnvelopeUsesDistinctDomainAndSupportsKeyRotation(t *testing.T) {
 	encoded, err := json.Marshal(envelope)
 	if err != nil || strings.Contains(string(encoded), "synthetic-fixture") {
 		t.Fatal("storage envelope exposed fixture plaintext")
+	}
+}
+
+func TestAuthorizedReencryptionNeverReturnsPlaintext(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal("test key generation failed")
+	}
+	transportContext := testContext()
+	transportEnvelope := sealTransportFixture(t, &privateKey.PublicKey, "transport-v1", transportContext, []byte("synthetic-fixture"))
+	storageContext := transportContext
+	storageContext.ResourceType = "credential"
+	storageContext.ResourceID = "credential-fixture"
+	storageContext.Purpose = "credential.storage"
+	storageAAD, err := storageContext.AssociatedData()
+	if err != nil {
+		t.Fatal("storage context rejected")
+	}
+	storageRing := StorageKeyring{CurrentKeyID: "storage-v1", MasterKeys: map[string][]byte{
+		"storage-v1": []byte("synthetic-static-storage-master-key-32bytes"),
+	}}
+	stored, err := ReencryptForStorage(
+		TransportKeyring{PrivateKeys: map[string]*rsa.PrivateKey{"transport-v1": privateKey}},
+		storageRing,
+		transportEnvelope,
+		transportContext,
+		storageAAD,
+	)
+	if err != nil {
+		t.Fatal("authorized re-encryption failed")
+	}
+	serialized, err := json.Marshal(stored)
+	if err != nil || strings.Contains(string(serialized), "synthetic-fixture") {
+		t.Fatal("storage write representation exposed fixture plaintext")
+	}
+	opened, err := storageRing.Open(stored, storageAAD)
+	if err != nil || string(opened) != "synthetic-fixture" {
+		t.Fatal("storage envelope could not be opened")
 	}
 }
 
