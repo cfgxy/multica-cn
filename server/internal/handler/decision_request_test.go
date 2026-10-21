@@ -436,7 +436,26 @@ func TestDecisionRequestCrossSpaceTwoStep(t *testing.T) {
 		}
 	})
 	t.Run("origin projection exposes target route only while the requester is a target member", func(t *testing.T) {
-		originID, _ := seed(t)
+		projectionTargetID := secondWorkspaceWithOwner(t)
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type": "workspace_info_read", "title": "origin projection",
+			"target_workspace_id": projectionTargetID,
+			"origin_issue_id":     f.IssueID,
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("seed origin projection: %d %s", w.Code, w.Body.String())
+		}
+		resp := decodeDecisionRequestDetail(t, w)
+		var originID string
+		for _, step := range resp.Steps {
+			if step.Role == "origin" {
+				originID = step.ID
+				break
+			}
+		}
+		if originID == "" {
+			t.Fatal("origin projection missing from response")
+		}
 		list := func() map[string]any {
 			t.Helper()
 			w := httptest.NewRecorder()
@@ -462,10 +481,14 @@ func TestDecisionRequestCrossSpaceTwoStep(t *testing.T) {
 			return nil
 		}
 
-		if got := list()["target_workspace_slug"]; got == nil {
+		origin := list()
+		if got := origin["operable"]; got != false {
+			t.Fatalf("origin projection operable = %v, want false", got)
+		}
+		if got := origin["target_workspace_slug"]; got == nil {
 			t.Fatal("target member should receive the target workspace slug")
 		}
-		dbfx.Exec(t, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, ws2, testUserID)
+		dbfx.Exec(t, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, projectionTargetID, testUserID)
 		if got := list()["target_workspace_slug"]; got != nil {
 			t.Fatalf("non-member response leaked target workspace slug: %v", got)
 		}
