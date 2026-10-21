@@ -171,6 +171,8 @@ PUT /api/runtimes/{runtimeId}/file-access-target
 ```
 
 `roots` 必须是绝对路径；`workspace_ids` 限定工作区，`member_ids` 非空时限定到所列成员。
+
+远程只读目标使用 `ssh:<OpenSSH-alias>` 作为 `<target-id>`，例如 `ssh:gti-server`。alias 仅允许 ASCII 字母、数字、`_`、`-`，且必须在承载该 runtime 的 daemon 用户或系统 OpenSSH 配置（含 `Include`）中以精确 `Host <alias>` 条目预先定义；`Host *` 或其他通配符不会授权连接。MCP 调用者不能传入 hostname、用户、端口、密钥或命令。daemon 通过 SFTP v3 在该既有 SSH 连接上执行路径解析、目录列表、元数据和分块读取，单次远程操作最长 15 秒，仍受同一目标根目录、ACL 与拒绝策略约束。不要以 `ssh:` 前缀登记未配置的 alias。
 随后把 instance 绑定到目标：
 
 ```text

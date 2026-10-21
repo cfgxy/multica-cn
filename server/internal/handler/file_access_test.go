@@ -126,6 +126,12 @@ func TestPutRuntimeFileAccessTargetDBBacked(t *testing.T) {
 	if got := dbfx.Count(t, `SELECT count(*) FROM daemon_file_access_target WHERE id = 'bad-root'`); got != 0 {
 		t.Fatalf("invalid target was persisted; count = %d", got)
 	}
+	invalidSSH := body("ssh:user@gti-server")
+	invalidSSHRequest := testutil.WithURLParams(newRequest(http.MethodPut, "/api/runtimes/"+runtimeID+"/file-access-targets", invalidSSH), "runtimeId", runtimeID)
+	testutil.Call(t, testHandler.PutRuntimeFileAccessTarget, invalidSSHRequest).Want(http.StatusBadRequest)
+	if got := dbfx.Count(t, `SELECT count(*) FROM daemon_file_access_target WHERE id = 'ssh:user@gti-server'`); got != 0 {
+		t.Fatalf("invalid SSH target was persisted; count = %d", got)
+	}
 }
 
 func TestSubmitRuntimeFileAccessDBBackedRejectionsAndQueue(t *testing.T) {
