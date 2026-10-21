@@ -57,7 +57,7 @@ interface Props {
   agentId: string | null;
   workspaceSlug: string;
   onClose: () => void;
-  /** Finalized spoken turns（聊天页回填 draft；new-issue 入口回填 prompt）。 */
+  /** Finalized spoken turns for composers that intentionally accept transcript text. */
   onUserTurn?: (text: string) => void;
 }
 
