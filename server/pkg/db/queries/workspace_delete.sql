@@ -809,6 +809,9 @@ deleted_credential_grants AS (
 deleted_credentials AS (
     DELETE FROM credential_vault WHERE workspace_id = $1
 ),
+deleted_credential_connectors AS (
+    DELETE FROM credential_connector WHERE workspace_id = $1
+),
 -- runtime_credential has no FK to agent_runtime (house rule), so the sweep
 -- owns it: matched through the runtime set rather than a workspace column
 -- (same construction as execution_profile_entry below). The encrypted

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS credential_connector_workspace_id_uidx;

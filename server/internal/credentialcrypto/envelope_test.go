@@ -69,6 +69,8 @@ func TestTransportEnvelopeOpenAuthenticatesContextWithoutHTTP(t *testing.T) {
 		t.Fatal("test key generation failed")
 	}
 	ctx := testContext()
+	ctx.ConnectorID = "connector-fixture"
+	ctx.ConnectorRev = 7
 	sealed := sealTransportFixture(t, &privateKey.PublicKey, "transport-v1", ctx, []byte("synthetic-fixture"))
 	opened, err := (TransportKeyring{
 		CurrentKeyID: "transport-v2",
@@ -81,12 +83,14 @@ func TestTransportEnvelopeOpenAuthenticatesContextWithoutHTTP(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*Context){
-		"workspace":      func(c *Context) { c.WorkspaceID = "other-workspace" },
-		"resource scope": func(c *Context) { c.ResourceType = "project" },
-		"resource":       func(c *Context) { c.ResourceID = "other-issue" },
-		"subject":        func(c *Context) { c.SubjectID = "other-agent" },
-		"purpose":        func(c *Context) { c.Purpose = "credential.replace" },
-		"version":        func(c *Context) { c.Version++ },
+		"workspace":          func(c *Context) { c.WorkspaceID = "other-workspace" },
+		"resource scope":     func(c *Context) { c.ResourceType = "project" },
+		"resource":           func(c *Context) { c.ResourceID = "other-issue" },
+		"subject":            func(c *Context) { c.SubjectID = "other-agent" },
+		"connector":          func(c *Context) { c.ConnectorID = "other-connector" },
+		"connector revision": func(c *Context) { c.ConnectorRev++ },
+		"purpose":            func(c *Context) { c.Purpose = "credential.replace" },
+		"version":            func(c *Context) { c.Version++ },
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := ctx

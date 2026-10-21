@@ -250,6 +250,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// runtimes. Destroying the workspace destroys its secrets.
 	"runtime_credential":    workspaceDelete,
 	"credential_vault":      workspaceDelete,
+	"credential_connector":  workspaceDelete,
 	"credential_grant":      workspaceDelete,
 	"credential_capability": workspaceDelete,
 	"credential_audit":      workspaceDelete,

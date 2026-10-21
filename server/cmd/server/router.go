@@ -1934,6 +1934,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Member-level access
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Route("/credential-connectors", func(r chi.Router) {
+						r.Use(handler.RequireHumanActor)
+						r.Get("/", h.ListCredentialConnectors)
+						r.Group(func(r chi.Router) {
+							r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+							r.Post("/", h.CreateCredentialConnector)
+							r.Put("/{connectorId}", h.UpdateCredentialConnector)
+						})
+					})
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
 					// RUYI-494: the workspace decision inbox — every card in

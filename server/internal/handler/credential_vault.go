@@ -24,6 +24,8 @@ const maxCredentialEnvelopeRequest = 2 << 20
 type createIssueCredentialRequest struct {
 	Name          string          `json:"name"`
 	TargetService string          `json:"target_service"`
+	ConnectorID   string          `json:"connector_id"`
+	ConnectorRev  int64           `json:"connector_revision"`
 	Purpose       string          `json:"purpose"`
 	SubjectType   string          `json:"subject_type"`
 	SubjectID     string          `json:"subject_id"`
@@ -39,6 +41,8 @@ type credentialMetadataResponse struct {
 	ID            string     `json:"id"`
 	Name          string     `json:"name"`
 	TargetService string     `json:"target_service"`
+	ConnectorID   string     `json:"connector_id"`
+	ConnectorRev  int64      `json:"connector_revision"`
 	Purpose       string     `json:"purpose"`
 	Status        string     `json:"status"`
 	ResourceScope string     `json:"resource_scope"`
@@ -123,17 +127,28 @@ func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid credential subject")
 		return
 	}
+	var connectorStatus string
+	var connectorRevision int64
+	if err := tx.QueryRow(r.Context(), `
+		SELECT status, revision FROM credential_connector
+		WHERE id = $1 AND workspace_id = $2 FOR SHARE`, parseUUID(req.ConnectorID), authorizedIssue.WorkspaceID).
+		Scan(&connectorStatus, &connectorRevision); err != nil || connectorStatus != "active" || connectorRevision != req.ConnectorRev {
+		writeError(w, http.StatusConflict, "credential connector is unavailable or changed")
+		return
+	}
 	workspaceID := uuidToString(authorizedIssue.WorkspaceID)
 	transportContext := credentialcrypto.Context{
 		WorkspaceID: workspaceID, ResourceType: req.ResourceScope, ResourceID: resourceAADID,
-		SubjectType: req.SubjectType, SubjectID: req.SubjectID, Purpose: "credential.create",
+		SubjectType: req.SubjectType, SubjectID: req.SubjectID, ConnectorID: req.ConnectorID,
+		ConnectorRev: connectorRevision, Purpose: "credential.create",
 		Version: credentialcrypto.ProtocolVersion,
 	}
 	credentialID := dbid.NewV7()
 	credentialIDString := uuidToString(credentialID)
 	storageContext := credentialcrypto.Context{
 		WorkspaceID: workspaceID, ResourceType: "credential", ResourceID: credentialIDString,
-		SubjectType: req.SubjectType, SubjectID: req.SubjectID, Purpose: "credential.storage",
+		SubjectType: req.SubjectType, SubjectID: req.SubjectID, ConnectorID: req.ConnectorID,
+		ConnectorRev: connectorRevision, Purpose: "credential.storage",
 		Version: credentialcrypto.ProtocolVersion,
 	}
 	storageAAD, err := storageContext.AssociatedData()
@@ -164,10 +179,10 @@ func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) 
 		expiry = *expiresAt
 	}
 	if _, err := tx.Exec(r.Context(), `
-		INSERT INTO credential_vault (id, workspace_id, name, target_service, purpose, credential_type, status, encrypted_value, created_by)
-		VALUES ($1, $2, $3, $4, $5, 'machine', 'active', $6::jsonb, $7)`,
+		INSERT INTO credential_vault (id, workspace_id, name, target_service, connector_id, connector_revision, purpose, credential_type, status, encrypted_value, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'machine', 'active', $8::jsonb, $9)`,
 		credentialID, authorizedIssue.WorkspaceID, strings.TrimSpace(req.Name), strings.TrimSpace(req.TargetService),
-		strings.TrimSpace(req.Purpose), storedJSON, member.UserID); err != nil {
+		parseUUID(req.ConnectorID), connectorRevision, strings.TrimSpace(req.Purpose), storedJSON, member.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "credential storage failed")
 		return
 	}
@@ -190,6 +205,7 @@ func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusCreated, credentialMetadataResponse{
 		ID: credentialIDString, Name: strings.TrimSpace(req.Name), TargetService: strings.TrimSpace(req.TargetService),
+		ConnectorID: req.ConnectorID, ConnectorRev: connectorRevision,
 		Purpose: strings.TrimSpace(req.Purpose), Status: "active", ResourceScope: req.ResourceScope,
 		SubjectType: req.SubjectType, SubjectID: req.SubjectID, ExpiresAt: expiresAt, CreatedAt: time.Now().UTC(),
 	})
@@ -231,7 +247,7 @@ func (h *Handler) ListIssueCredentials(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.DB.Query(r.Context(), `
-		SELECT c.id::text, c.name, c.target_service, c.purpose, c.status,
+		SELECT c.id::text, c.name, c.target_service, c.connector_id::text, c.connector_revision, c.purpose, c.status,
 		       g.resource_scope, g.subject_type, g.subject_id::text, g.expires_at, c.created_at
 		FROM credential_vault c JOIN credential_grant g ON g.credential_id = c.id
 		WHERE c.workspace_id = $1 AND g.resource_id = $2
@@ -247,7 +263,7 @@ func (h *Handler) ListIssueCredentials(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var item credentialMetadataResponse
 		var subjectID string
-		if err := rows.Scan(&item.ID, &item.Name, &item.TargetService, &item.Purpose, &item.Status,
+		if err := rows.Scan(&item.ID, &item.Name, &item.TargetService, &item.ConnectorID, &item.ConnectorRev, &item.Purpose, &item.Status,
 			&item.ResourceScope, &item.SubjectType, &subjectID, &item.ExpiresAt, &item.CreatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list credentials")
 			return
@@ -464,6 +480,9 @@ func (h *Handler) validCredentialSubject(r *http.Request, issue db.Issue, subjec
 }
 
 func credentialRequestValid(req createIssueCredentialRequest) bool {
+	if _, err := util.ParseUUID(req.ConnectorID); err != nil || req.ConnectorRev < 1 {
+		return false
+	}
 	return len(strings.TrimSpace(req.Name)) > 0 && len(req.Name) <= 200 &&
 		len(strings.TrimSpace(req.TargetService)) > 0 && len(req.TargetService) <= 200 &&
 		len(strings.TrimSpace(req.Purpose)) > 0 && len(req.Purpose) <= 2000

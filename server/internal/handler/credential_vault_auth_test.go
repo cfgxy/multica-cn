@@ -178,10 +178,12 @@ func TestCredentialWritesUseCurrentRoleAndAssignee(t *testing.T) {
 		CurrentKeyID: "test-storage", MasterKeys: map[string][]byte{"test-storage": make([]byte, 32)},
 	}
 	agentID := dbfx.Agent(t, "Credential authorization subject", testRuntimeID)
+	connectorID := insertCredentialConnectorForAuth(t, testWorkspaceID)
 	requestCreate := func(userID, resourceScope string) *httptest.ResponseRecorder {
 		t.Helper()
 		body := map[string]any{
 			"name": "fixture", "target_service": "fixture", "purpose": "synthetic authorization test",
+			"connector_id": connectorID, "connector_revision": 1,
 			"subject_type": "agent", "subject_id": agentID, "resource_scope": resourceScope,
 			"envelope": map[string]any{
 				"version": 1, "key_id": "test-key", "algorithm": credentialcrypto.TransportRSAOAEP,
@@ -223,14 +225,28 @@ func TestCredentialWritesUseCurrentRoleAndAssignee(t *testing.T) {
 func insertCredentialForAuth(t *testing.T, resourceID, scope, creatorID string) string {
 	t.Helper()
 	credentialID := uuidToString(dbid.NewV7())
+	connectorID := insertCredentialConnectorForAuth(t, testWorkspaceID)
 	dbfx.Insert(t, "credential_vault", testutil.Cols{
 		"id": credentialID, "workspace_id": testWorkspaceID, "name": "fixture",
 		"target_service": "fixture", "purpose": "synthetic authorization test",
+		"connector_id": connectorID, "connector_revision": 1,
 		"credential_type": "machine", "status": "active", "encrypted_value": testutil.Raw("'{}'::jsonb"),
 		"created_by": creatorID,
 	})
 	insertCredentialGrantForAuth(t, credentialID, scope, resourceID, creatorID)
 	return credentialID
+}
+
+func insertCredentialConnectorForAuth(t *testing.T, workspaceID string) string {
+	t.Helper()
+	id := uuidToString(dbid.NewV7())
+	dbfx.Insert(t, "credential_connector", testutil.Cols{
+		"id": id, "workspace_id": workspaceID, "name": "synthetic connector",
+		"kind": credentialConnectorKind, "target_url": "https://connector.example/mcp",
+		"adapter_policy": credentialConnectorPolicy, "auth_field": credentialConnectorAuth,
+		"status": "active", "revision": 1, "created_by": testUserID,
+	})
+	return id
 }
 
 func insertCredentialGrantForAuth(t *testing.T, credentialID, scope, resourceID, creatorID string) {
