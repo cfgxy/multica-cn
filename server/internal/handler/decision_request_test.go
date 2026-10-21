@@ -435,6 +435,41 @@ func TestDecisionRequestCrossSpaceTwoStep(t *testing.T) {
 			t.Fatalf("target executed_at = %v, want nil before second confirmation", detail.Request.ExecutedAt)
 		}
 	})
+	t.Run("origin projection exposes target route only while the requester is a target member", func(t *testing.T) {
+		originID, _ := seed(t)
+		list := func() map[string]any {
+			t.Helper()
+			w := httptest.NewRecorder()
+			req := newRequest("GET", "/api/workspaces/"+testWorkspaceID+"/decision-requests", nil)
+			req = withURLParams(req, "id", testWorkspaceID)
+			req.Header.Set("X-Workspace-ID", testWorkspaceID)
+			testHandler.ListDecisionRequests(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("list decision requests: %d %s", w.Code, w.Body.String())
+			}
+			var response struct {
+				Items []map[string]any `json:"items"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+				t.Fatalf("decode decision requests: %v", err)
+			}
+			for _, item := range response.Items {
+				if item["id"] == originID {
+					return item
+				}
+			}
+			t.Fatalf("origin row %s missing from response", originID)
+			return nil
+		}
+
+		if got := list()["target_workspace_slug"]; got == nil {
+			t.Fatal("target member should receive the target workspace slug")
+		}
+		dbfx.Exec(t, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, ws2, testUserID)
+		if got := list()["target_workspace_slug"]; got != nil {
+			t.Fatalf("non-member response leaked target workspace slug: %v", got)
+		}
+	})
 	t.Run("target approval completes the group and dual-writes execution truth", func(t *testing.T) {
 		originID, targetID := seed(t)
 		if w := answerDecisionRequestFor(t, testWorkspaceID, originID, "", "approve"); w.Code != http.StatusOK {
