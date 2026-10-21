@@ -14,6 +14,9 @@ import type {
   BatchDecisionAnswerResult,
   BatchIssueDecisionAnswer,
   WorkspaceDecisionInbox,
+  IssueSuspension,
+  WorkspaceSuspensionList,
+  IssueSuspensionMutation,
   IssuePriority,
   CreateIssueRequest,
   MoveIssueRequest,
@@ -370,6 +373,9 @@ import {
   DecisionRequestsListSchema,
   IssueDecisionSchema,
   WorkspaceDecisionInboxSchema,
+  IssueSuspensionsListSchema,
+  IssueSuspensionMutationSchema,
+  WorkspaceSuspensionsSchema,
   BatchDecisionAnswersSchema,
   CommentTriggerPreviewSchema,
   IssueTriggerPreviewSchema,
@@ -1810,6 +1816,94 @@ export class ApiClient {
     });
     if (!inbox) throw new Error("Invalid decision inbox response");
     return inbox;
+  }
+
+  // Issue suspension (RUYI-690): "waiting" as a dimension orthogonal to the
+  // lifecycle status. Suspend inserts one audit row + flips the
+  // issue.suspended_at snapshot; resume/cancel release it (CAS on the active
+  // row) and return the suspension plus the refreshed issue snapshot.
+  async suspendIssue(
+    issueId: string,
+    body: {
+      reason: string;
+      note?: string;
+      waiting_on_type: "external" | "manual" | "issue" | "decision";
+      waiting_on_issue_id?: string;
+      waiting_on_decision_id?: string;
+      resume_condition?: string;
+    },
+  ): Promise<IssueSuspensionMutation> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/suspensions`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: body.reason,
+        ...(body.note ? { note: body.note } : {}),
+        waiting_on_type: body.waiting_on_type,
+        ...(body.waiting_on_issue_id ? { waiting_on_issue_id: body.waiting_on_issue_id } : {}),
+        ...(body.waiting_on_decision_id ? { waiting_on_decision_id: body.waiting_on_decision_id } : {}),
+        ...(body.resume_condition ? { resume_condition: body.resume_condition } : {}),
+      }),
+    });
+    const result = parseWithFallback(raw, IssueSuspensionMutationSchema, null, {
+      endpoint: "POST /api/issues/:id/suspensions",
+    });
+    if (!result) throw new Error("Invalid suspension response");
+    return result as IssueSuspensionMutation;
+  }
+
+  async listIssueSuspensions(issueId: string, params?: { status?: string; limit?: number }): Promise<IssueSuspension[]> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/suspensions${query}`);
+    const parsed = parseWithFallback(
+      raw,
+      IssueSuspensionsListSchema,
+      { suspensions: [] },
+      { endpoint: "GET /api/issues/:id/suspensions" },
+    );
+    return parsed.suspensions;
+  }
+
+  async listWorkspaceSuspensions(
+    workspaceId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<WorkspaceSuspensionList> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/suspensions${query}`);
+    const list = parseWithFallback(raw, WorkspaceSuspensionsSchema, null, {
+      endpoint: "GET /api/workspaces/:id/suspensions",
+    });
+    if (!list) throw new Error("Invalid workspace suspensions response");
+    return list;
+  }
+
+  async resumeIssueSuspension(issueId: string, suspensionId: string, note?: string): Promise<IssueSuspensionMutation> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/suspensions/${suspensionId}/resume`, {
+      method: "POST",
+      body: JSON.stringify(note ? { note } : {}),
+    });
+    const result = parseWithFallback(raw, IssueSuspensionMutationSchema, null, {
+      endpoint: "POST /api/issues/:id/suspensions/:suspensionId/resume",
+    });
+    if (!result) throw new Error("Invalid suspension resume response");
+    return result as IssueSuspensionMutation;
+  }
+
+  async cancelIssueSuspension(issueId: string, suspensionId: string, note?: string): Promise<IssueSuspensionMutation> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/suspensions/${suspensionId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify(note ? { note } : {}),
+    });
+    const result = parseWithFallback(raw, IssueSuspensionMutationSchema, null, {
+      endpoint: "POST /api/issues/:id/suspensions/:suspensionId/cancel",
+    });
+    if (!result) throw new Error("Invalid suspension cancel response");
+    return result as IssueSuspensionMutation;
   }
 
   // Agent authorization requests (RUYI-630). Listing/detail are the
@@ -4186,7 +4280,7 @@ export class ApiClient {
   async listAuditEvents(workspaceId: string, params: ListAuditEventsParams = {}): Promise<AuditEventsPage> {
     const query = new URLSearchParams();
     for (const key of [
-      "since", "until", "time_basis", "actor_id", "actor_type", "client_name", "client_version",
+      "domain", "since", "until", "time_basis", "actor_id", "actor_type", "client_name", "client_version",
       "tool_name", "result_status", "result_error_code", "target_type", "target_id",
     ] as const) {
       const value = params[key];

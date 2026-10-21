@@ -1,11 +1,14 @@
 import { useEffect } from "react";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { Platform } from "react-native";
+import { Alert, Platform, Pressable, View } from "react-native";
 import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import i18n from "i18next";
 import { useAuthStore } from "@/data/auth-store";
+import { api } from "@/data/api";
+import { Text } from "@/components/ui/text";
+import { useT } from "@/lib/use-t";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { RealtimeProvider } from "@/data/realtime/realtime-provider";
@@ -187,7 +190,9 @@ export default function WorkspaceLayout() {
   return (
     <RealtimeProvider>
       <RealtimeSubscriptions />
-      <Stack>
+      <View className="flex-1 bg-background">
+        <ImpersonationBanner />
+        <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen
           name="issue/[id]"
@@ -512,6 +517,7 @@ export default function WorkspaceLayout() {
           options={{ title: i18n.t("layout:nav.projects", "Projects"), headerBackTitle: "Back" }}
         />
         <Stack.Screen name="more/audit" options={{ title: i18n.t("layout:nav.audit", "MCP audit"), headerBackTitle: "Back" }} />
+        <Stack.Screen name="more/audit/[id]" options={LONG_CONTENT_SHEET_OPTIONS} />
         {/* Tasks-tab sort / actor-picker sheets (formSheet presentation). */}
         <Stack.Screen name="tasks-sort" options={SHEET_OPTIONS} />
         <Stack.Screen
@@ -599,6 +605,25 @@ export default function WorkspaceLayout() {
           options={{ title: i18n.t("layout:nav.usage", "Analytics"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
+          name="more/management"
+          options={{ title: i18n.t("layout:nav.management", "Management"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
+          name="more/runtimes"
+          options={{ title: i18n.t("settings:mobile_management.runtimes", "Runtime nodes"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
+          name="more/runtimes/[id]"
+          options={{ title: i18n.t("settings:mobile_management.runtimes", "Runtime nodes"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen name="more/workspace-settings" options={{ title: i18n.t("settings:mobile_management.workspace", "Workspace settings"), headerBackTitle: "Back" }} />
+        <Stack.Screen name="more/integrations" options={{ title: i18n.t("settings:page.tabs.integrations", "Integrations"), headerBackTitle: "Back" }} />
+        <Stack.Screen name="more/self-evolution" options={{ title: i18n.t("self-evolution:mobile.title", "Self-Evolution"), headerBackTitle: "Back" }} />
+        <Stack.Screen name="more/skills" options={{ title: i18n.t("settings:mobile_management.skills", "Skills"), headerBackTitle: "Back" }} />
+        <Stack.Screen name="more/autopilots" options={{ title: i18n.t("settings:mobile_management.autopilots", "Automations"), headerBackTitle: "Back" }} />
+        <Stack.Screen name="more/platform-admin" options={{ title: i18n.t("settings:mobile_management.platform_admin", "Platform administration"), headerBackTitle: "Back" }} />
+        <Stack.Screen name="more/web-only/[feature]" options={{ headerBackTitle: "Back" }} />
+        <Stack.Screen
           name="more/squads/[id]"
           options={{ title: i18n.t("layout:nav.squads", "Squads"), headerBackTitle: "Back" }}
         />
@@ -627,6 +652,10 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="more/pins"
           options={{ title: i18n.t("layout:sidebar.pinned_label", "Pinned"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
+          name="more/suspensions"
+          options={{ title: i18n.t("layout:nav.suspensions", "Suspensions"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/settings"
@@ -677,7 +706,38 @@ export default function WorkspaceLayout() {
             headerLeft: () => <ModalCloseButton />,
           }}
         />
-      </Stack>
+        </Stack>
+      </View>
     </RealtimeProvider>
   );
+}
+
+function ImpersonationBanner() {
+  const user = useAuthStore((state) => state.user);
+  const applySession = useAuthStore((state) => state.applySession);
+  const queryClient = useQueryClient();
+  const { t } = useT("settings");
+  const stop = useMutation({
+    mutationFn: () => api.stopImpersonation(),
+    onSuccess: async (session) => {
+      await applySession(session.token, session.user);
+      await queryClient.clear();
+    },
+  });
+  if (!user?.impersonator_id) return null;
+  const confirmStop = () => Alert.alert(
+    t("mobile_management.stop_impersonation", "Stop impersonation"),
+    t("mobile_management.return_confirm", { name: user.name || user.email }),
+    [
+      { text: t("mobile_management.cancel", "Cancel"), style: "cancel" },
+      { text: t("mobile_management.stop", "Stop"), style: "destructive", onPress: () => stop.mutate() },
+    ],
+  );
+  return <View>
+    <View accessibilityRole="alert" className="flex-row items-center justify-between gap-3 bg-destructive px-4 py-2">
+      <Text className="min-w-0 flex-1 text-xs font-medium text-destructive-foreground">{t("mobile_management.impersonating", { name: user.name || user.email })}</Text>
+      <Pressable accessibilityRole="button" disabled={stop.isPending} onPress={confirmStop} className="rounded border border-destructive-foreground px-3 py-2"><Text className="text-xs font-semibold text-destructive-foreground">{t("mobile_management.stop_impersonation", "Stop impersonation")}</Text></Pressable>
+    </View>
+    {stop.isError ? <Text accessibilityRole="alert" className="bg-destructive px-4 py-2 text-xs text-destructive-foreground">{t("mobile_management.action_failed", "Action failed. Check your permissions and try again.")}</Text> : null}
+  </View>;
 }

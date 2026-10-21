@@ -1,0 +1,24 @@
+{
+  "page": {
+    "breadcrumb": "보류 센터",
+    "empty_title": "보류 중인 태스크가 없습니다",
+    "empty_description": "외부 조건을 기다리기 위해 보류된 태스크가 여기에 집계되어, 재개될 때까지 잠긴 작업이 보입니다.",
+    "load_failed": "보류 목록을 불러오지 못했습니다"
+  },
+  "filter": {
+    "label": "상태",
+    "active": "보류 중",
+    "resumed": "재개됨",
+    "cancelled": "취소됨",
+    "all": "전체"
+  },
+  "row": {
+    "waiting_on": "대상",
+    "condition": "재개 조건",
+    "reason": "사유",
+    "resume": "재개",
+    "cancel": "대기 취소",
+    "resume_done": "재개됨",
+    "lifecycle": "수명 주기"
+  }
+}

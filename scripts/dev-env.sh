@@ -2,6 +2,7 @@
 # Local development environments as fixed, lease-protected slots.
 #
 #   scripts/dev-env.sh dev1 up                 # start the slot (api + web)
+#   scripts/dev-env.sh dev1 up --skip-auto-gc  # start without collecting other slots
 #   scripts/dev-env.sh dev1 up C=api,web       # pick the components
 #   scripts/dev-env.sh dev1 use <sha>          # load a revision into the slot
 #   scripts/dev-env.sh dev1 handoff --to qa    # dev -> QA verification handover
@@ -2023,12 +2024,12 @@ ensure_code_binding() {
 }
 
 cmd_up() {
-  local requested="$DEFAULT_COMPONENTS" comp skip_auto_gc=0
+  local requested="$DEFAULT_COMPONENTS" comp run_auto_gc=true
   while [ $# -gt 0 ]; do
     case "$1" in
       --components|-c) requested="$(printf '%s' "$2" | tr ',' ' ')"; shift 2 ;;
       --all) requested="$ALL_COMPONENTS"; shift ;;
-      --skip-auto-gc) skip_auto_gc=1; shift ;;
+      --skip-auto-gc) run_auto_gc=false; shift ;;
       *) die "Unknown flag for up: $1" ;;
     esac
   done
@@ -2044,7 +2045,7 @@ cmd_up() {
   require_lease
   # Starting one slot must not implicitly destroy another slot's expired QA
   # lease when the caller has explicitly asked to preserve the pool.
-  if [ "$skip_auto_gc" != 1 ]; then
+  if [ "$run_auto_gc" = true ]; then
     cmd_gc --auto
   fi
 
@@ -2838,7 +2839,7 @@ usage() {
   cat <<'EOF'
 Fixed-slot local development environments (fact source: scripts/slots.json).
 
-  dev-env.sh <slot> up      [--components api,web,daemon,desktop] [--all]
+  dev-env.sh <slot> up      [--components api,web,daemon,desktop] [--all] [--skip-auto-gc]
   dev-env.sh <slot> down    [--components ...]  # stop a held slot — run BEFORE lock-release
   dev-env.sh <slot> status  [--json]
   dev-env.sh <slot> use     [sha]        # bind this checkout, or load a revision

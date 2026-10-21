@@ -137,6 +137,11 @@ const (
 	// self-describing); nothing routes on it.
 	EventIssueStatusChanged = "issue_status:changed"
 
+	// RUYI-690: suspension dimension flips. Carries the refreshed issue
+	// snapshot (suspended_at) because the suspension writes deliberately do
+	// not bump the issue revision.
+	EventIssueSuspensionUpdated = "issue_suspension:updated"
+
 	// Workspace quick-reply catalog (RUYI-435). Same shape as the issue
 	// status catalog event: one event for every write (settings tab or MCP
 	// tool), no row payload — clients re-read the whole list.

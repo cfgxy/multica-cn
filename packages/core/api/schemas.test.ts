@@ -52,6 +52,7 @@ import {
   EMPTY_USER,
   AdminUserListSchema,
   AdminWorkspaceListSchema,
+  IssueSuspensionsListSchema,
   AdminFileReadPolicySchema,
   ImpersonationResponseSchema,
   EMPTY_ADMIN_USER_LIST,
@@ -2501,6 +2502,34 @@ describe("prompt quiz schemas (RUYI-185)", () => {
     expect(parsed.comparison).toBeUndefined();
   });
 });
+describe("IssueSuspensionsListSchema", () => {
+  const row = {
+    id: "susp-1",
+    workspace_id: "ws-1",
+    issue_id: "issue-1",
+    status: "active",
+    reason: "waiting for CI",
+    waiting_on_type: "external",
+    waiting_on_summary: "ci run 42",
+    resume_condition: "ci green",
+    suspended_by_type: "agent",
+    suspended_by_id: "agent-1",
+    suspended_at: "2026-10-14T00:00:00Z",
+    resume_note: "",
+    cancel_note: "",
+  };
+
+  it("parses the server wrapped shape {suspensions: [...]}", () => {
+    const result = IssueSuspensionsListSchema.safeParse({ suspensions: [row] });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.suspensions).toEqual([row]);
+  });
+
+  it("rejects the legacy bare-array shape", () => {
+    expect(IssueSuspensionsListSchema.safeParse([row]).success).toBe(false);
+  });
+});
+
 describe("IssueDecisionSchema context compatibility", () => {
   const legacy = {
     id: "d-1",

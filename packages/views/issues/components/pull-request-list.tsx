@@ -123,21 +123,21 @@ export function PullRequestRow({
       target="_blank"
       rel="noreferrer noopener"
       className={cn(
-        "flex items-start gap-2 rounded-md px-2 py-1.5 -mx-2 hover:bg-accent/50 transition-colors group",
+        "flex items-start gap-2 rounded-md px-2 py-1 -mx-2 hover:bg-accent/50 transition-colors group",
         visual.dimmed ? "opacity-80" : null,
       )}
     >
       <StateIcon className={cn("h-3.5 w-3.5 mt-0.5 shrink-0", cfg.className)} />
       <div className="min-w-0 flex-1">
-        <p className="text-caption font-medium leading-snug truncate group-hover:text-foreground">
+        <p className="text-body font-medium leading-snug truncate group-hover:text-foreground">
           {pr.title}
         </p>
-        <p className="text-micro text-muted-foreground truncate">
+        <p className="text-caption text-muted-foreground truncate">
           {pr.repo_owner}/{pr.repo_name}#{pr.number} · {stateLabel}
           {pr.author_login ? ` · @${pr.author_login}` : null}
         </p>
         {showTargetBranch ? (
-          <p className="text-micro text-muted-foreground truncate">
+          <p className="text-caption text-muted-foreground truncate">
             {t(($) => $.detail.pull_request_target_branch_label)}: {pr.base_branch || t(($) => $.detail.pull_request_target_branch_unknown)}
           </p>
         ) : null}

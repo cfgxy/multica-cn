@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { configStore } from "@multica/core/config";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -173,6 +173,36 @@ describe("InstructionsTab persisted-state synchronization", () => {
 
     expect(onSave).toHaveBeenCalledWith({
       instructions: "Updated instructions.",
+    });
+  });
+
+  it("keeps expanded instructions open and retryable when saving fails", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn()
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(undefined);
+    render(tab({ ...baseAgent, conversation_starters: [] }, onSave));
+
+    await user.click(screen.getByRole("button", { name: "Expand editor" }));
+    const dialog = screen.getByRole("dialog");
+    const editor = within(dialog).getByRole("textbox", { name: "System prompt" });
+    await user.clear(editor);
+    await user.type(editor, "Retry this prompt.");
+
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog")).getByRole("textbox", { name: "System prompt" }))
+      .toHaveValue("Retry this prompt.");
+    expect(onSave).toHaveBeenCalledTimes(1);
+
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(onSave).toHaveBeenLastCalledWith({
+      instructions: "Retry this prompt.",
+      conversation_starters: [],
     });
   });
 });

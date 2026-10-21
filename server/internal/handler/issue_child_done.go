@@ -622,6 +622,19 @@ func (h *Handler) dispatchParentAssigneeTrigger(ctx context.Context, parent db.I
 		return
 	}
 
+	// RUYI-690: a suspended parent stays parked — a child finishing is a
+	// routine wake, and the hold's resume condition, not sibling progress,
+	// decides when work resumes. Only the dispatch is held; the child-done
+	// comment already posted, and the completion-reconcile gate replays it
+	// once the hold is released. If the suspension waits on this very child,
+	// the issue_done hook releases the hold and wakes the assignee right
+	// after (both UpdateIssue and advanceIssueToDone run it post-notification).
+	if parent.SuspendedAt.Valid {
+		slog.Info("child done: parent assignee wake skipped, parent is suspended",
+			"parent_id", uuidToString(parent.ID))
+		return
+	}
+
 	switch parent.AssigneeType.String {
 	case "agent":
 		h.triggerChildDoneAgent(ctx, parent, systemComment.ID)

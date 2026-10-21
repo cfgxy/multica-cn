@@ -254,6 +254,13 @@ func (h *Handler) applyDecisionBatchAnswers(r *http.Request, issue db.Issue, aut
 		return resp
 	}
 
+	// RUYI-690: machine predicate decision_answered — resume before the
+	// shared echo runs the trigger pipeline (see the single-card path). The
+	// text-answer hook funnels into this same core, so "1A 2B" answers
+	// resume too.
+	for _, card := range answered {
+		h.ResumeSuspensionsWaitingOnDecision(r.Context(), card.decision)
+	}
 	echoID, outcomes := h.postDecisionBatchEcho(r, issue, authorID, answered)
 	if echoID != "" {
 		resp.EchoCommentID = echoID

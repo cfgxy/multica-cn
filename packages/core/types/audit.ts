@@ -25,6 +25,7 @@ export interface AuditEventsPage {
 }
 
 export interface ListAuditEventsParams {
+  domain?: "mcp";
   since?: string;
   until?: string;
   time_basis?: "invocation_start";

@@ -1226,6 +1226,76 @@ export const BatchDecisionAnswersSchema = z.object({
   trigger_outcomes: z.array(z.record(z.string(), z.unknown())).optional(),
 }).loose();
 
+// Issue suspension (RUYI-690). Mirrors handler.IssueSuspensionResponse —
+// one row per suspension, retained after release as the audit trail.
+export const IssueSuspensionSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  issue_id: z.string(),
+  status: z.enum(["active", "resumed", "cancelled"]),
+  reason: z.string(),
+  waiting_on_type: z.enum(["external", "manual", "issue", "decision"]),
+  waiting_on_issue_id: z.string().nullable().optional(),
+  waiting_on_decision_id: z.string().nullable().optional(),
+  waiting_on_summary: z.string(),
+  resume_condition: z.string(),
+  resume_predicate: z.string().nullable().optional(),
+  suspended_by_type: z.string(),
+  suspended_by_id: z.string(),
+  suspended_at: z.string(),
+  resumed_by_type: z.string().nullable().optional(),
+  resumed_by_id: z.string().nullable().optional(),
+  resumed_at: z.string().nullable().optional(),
+  resume_note: z.string(),
+  cancelled_by_type: z.string().nullable().optional(),
+  cancelled_by_id: z.string().nullable().optional(),
+  cancelled_at: z.string().nullable().optional(),
+  cancel_note: z.string(),
+  resumed_by_predicate: z.string().nullable().optional(),
+}).loose();
+
+// Mirrors handler.ListIssueSuspensions: wrapped list response, matching the
+// repo-wide wrapped-object list convention (see WorkspaceSuspensionsSchema).
+export const IssueSuspensionsListSchema = z.object({
+  suspensions: z.array(IssueSuspensionSchema),
+});
+
+// Aggregate row: suspension + issue context, mirrors
+// handler.WorkspaceIssueSuspensionResponse.
+export const WorkspaceIssueSuspensionSchema = IssueSuspensionSchema.extend({
+  issue_identifier: z.string(),
+  issue_title: z.string(),
+  issue_status: z.string(),
+  issue_suspended_at: z.string(),
+  waiting_on_target: z
+    .object({
+      issue_id: z.string().optional(),
+      identifier: z.string().optional(),
+      title: z.string().optional(),
+      status: z.string().optional(),
+      decision_id: z.string().optional(),
+      question: z.string().nullable().optional(),
+      card_status: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
+});
+
+// Mirrors handler.WorkspaceSuspensionsResponse.
+export const WorkspaceSuspensionsSchema = z.object({
+  suspensions: z.array(WorkspaceIssueSuspensionSchema),
+  total: z.number().int(),
+});
+
+// Mirrors handler.IssueSuspensionMutationResponse — the release payload:
+// updated suspension plus the refreshed issue snapshot (suspended_at
+// cleared). The issue rides back loose; callers re-hydrate through the
+// shared issue caches.
+export const IssueSuspensionMutationSchema = z.object({
+  suspension: IssueSuspensionSchema,
+  issue: z.record(z.string(), z.unknown()),
+}).loose();
+
 export const EMPTY_TIMELINE_ENTRIES: TimelineEntry[] = [];
 
 const OptionalStringSchema = z.preprocess(

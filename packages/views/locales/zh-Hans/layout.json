@@ -5,12 +5,14 @@
     "my_issues": "我的任务",
     "issues": "任务",
     "decisions": "决策中心",
+    "suspensions": "挂起中心",
     "projects": "项目",
     "autopilots": "自动化",
     "agents": "智能体",
     "squads": "小队",
     "usage": "统计",
-    "self_evolution": "自进化",
+    "management": "管理",
+    "self_evolution": "自演化",
     "runtimes": "运行时",
     "voice_runtimes": "语音运行时",
     "skills": "Skills",
@@ -70,7 +72,7 @@
     }
   },
   "audit_view": {
-    "title": "MCP 审计", "description": "已记录 MCP 调用，包括拒绝和失败的请求。", "since": "起始时间", "since_placeholder": "起始时间（RFC3339）", "tool": "工具", "actor": "调用者", "actor_id": "调用者 ID", "result": "结果", "all_results": "全部结果", "result_success": "成功", "result_failure": "失败", "result_refused": "拒绝", "target": "目标", "target_type": "目标类型", "target_id": "目标 ID", "all_targets": "全部目标", "target_workspace": "工作区", "target_issue": "任务", "target_host": "主机", "apply": "应用", "loading": "正在加载审计事件...", "load_failed": "无法加载审计事件。", "empty": "没有符合这些筛选条件的审计事件。", "time": "时间", "reason": "原因", "started": "已开始"
+    "title": "MCP 审计", "description": "已记录 MCP 调用，包括拒绝和失败的请求。", "since": "起始时间", "since_placeholder": "起始时间（RFC3339）", "until": "结束时间", "until_placeholder": "结束时间（RFC3339）", "tool": "工具", "actor": "调用者", "actor_id": "调用者 ID", "client": "客户端", "client_name": "客户端名称", "client_version": "客户端版本", "result": "结果", "all_results": "全部结果", "result_success": "成功", "result_failure": "失败", "result_refused": "拒绝", "target": "目标", "target_type": "目标类型", "target_id": "目标 ID", "all_targets": "全部目标", "target_workspace": "工作区", "target_issue": "任务", "target_host": "主机", "filters": "筛选", "apply": "应用", "clear": "清空筛选", "loading": "正在加载审计事件...", "loading_more": "正在加载更多...", "load_more": "加载更多", "load_failed_title": "无法加载审计记录", "load_failed": "无法加载审计事件。", "retry": "重试", "permission_title": "无权查看审计记录", "permission_description": "请联系工作区 owner 或 admin 获取访问权限。", "unavailable_title": "审计服务暂不可用", "unavailable_description": "服务恢复前记录可能不完整。", "empty": "暂无审计记录", "empty_filtered": "没有符合条件的记录", "time": "时间", "event_type": "事件", "reason": "原因", "duration": "耗时", "error_code": "错误码", "invocation_id": "调用 ID", "not_provided": "未提供", "back_to_mcp": "返回 MCP 设置", "started": "已开始"
   },
   "mobile": {
     "agents": {
@@ -93,7 +95,38 @@
       "tool": "工具",
       "actor_id": "调用者 ID",
       "host_target_id": "主机目标 ID",
-      "since": "起始时间（RFC3339）"
+      "since": "起始时间（RFC3339）",
+      "until": "结束时间（RFC3339）",
+      "time_basis": "时间依据（invocation_start）",
+      "occurred_at": "事件时间",
+      "any": "不限",
+      "cancel": "取消",
+      "actor_type": "调用者类型",
+      "client_name": "客户端名称",
+      "client_version": "客户端版本",
+      "result": "结果",
+      "target": "目标",
+      "result_status": "结果状态（success/failure/refused）",
+      "result_error_code": "结果错误码",
+      "target_type": "目标类型（workspace/issue/host）",
+      "target_id": "目标 ID",
+      "target_pair_required": "请同时选择目标类型和目标 ID，或同时清空两者。",
+      "permission_denied": "你没有权限查看工作区审计事件。",
+      "service_failed": "审计服务暂不可用，请重试。",
+      "retry": "重试",
+      "time_filters": "时间",
+      "user_filters": "用户",
+      "client_filters": "客户端",
+      "load_more": "加载更多",
+      "detail": "审计事件",
+      "detail_unavailable": "此审计事件已不在当前结果中。",
+      "close": "关闭",
+      "event_type": "事件",
+      "event_id": "事件 ID",
+      "domain": "类型",
+      "time": "时间",
+      "actor": "调用者",
+      "reason": "原因"
     }
   }
 }

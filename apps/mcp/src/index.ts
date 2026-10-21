@@ -72,6 +72,15 @@ function parseFlags(): ParsedFlags {
 
 async function main(): Promise<void> {
   const flags = parseFlags();
+  // One credential resolution for both transports: an explicit file flag
+  // wins; otherwise the env var the backend reads (self-hosted compose
+  // form). Unset/blank starts the service with audit reporting disabled.
+  const auditServiceCredential = readAuditCredential(flags.auditCredentialFile);
+  if (!auditServiceCredential) {
+    stderrLogger.info(
+      "multica-mcp: MCP audit credential not configured; audit reporting stays disabled. Set MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL (or pass --audit-credential-file) to enable it.",
+    );
+  }
 
   if (flags.transport === "stdio") {
     const overrides: CredentialOverrides = {
@@ -87,7 +96,7 @@ async function main(): Promise<void> {
     const client = new MulticaClient({
       serverUrl: credentials.serverUrl,
       token: credentials.token,
-      auditServiceCredential: readAuditCredential(flags.auditCredentialFile),
+      auditServiceCredential,
       mcpInstanceId: flags.fileAccessInstanceId ?? process.env.MULTICA_MCP_INSTANCE_ID,
       fileAccessInstanceCredential: readFileAccessCredential(flags.fileAccessCredentialFile ?? process.env.MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE),
     });
@@ -119,7 +128,7 @@ async function main(): Promise<void> {
       host,
       serverUrl,
       siteRoot,
-      auditServiceCredential: readAuditCredential(flags.auditCredentialFile),
+      auditServiceCredential,
       mcpInstanceId: process.env.MULTICA_MCP_INSTANCE_ID,
       fileAccessInstanceCredential: readFileAccessCredential(process.env.MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE),
     });

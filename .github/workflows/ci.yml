@@ -3,8 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR number
+        required: true
+        type: string
+      expected_sha:
+        description: Exact 40-character PR head SHA to validate
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -21,6 +29,7 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,6 +42,23 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Verify manual PR head
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[(.state), (.base.ref), (.head.sha), (.head.ref), (.head.repo.full_name)] | join("|")')"
+          expected="open|main|$EXPECTED_SHA|$GITHUB_REF_NAME|$GITHUB_REPOSITORY"
+          test "$pr" = "$expected" || {
+            echo "::error::PR is not open on main at the selected branch and expected SHA"
+            exit 1
+          }
 
       - name: Filter paths
         id: filter
@@ -445,11 +471,11 @@ jobs:
   # staying pending) on PRs the path filter excluded — all workers succeed
   # trivially in that case because every step is gated off.
   frontend:
-    needs: [frontend-build, frontend-test, frontend-views-test]
+    needs: [changes, frontend-build, frontend-test, frontend-views-test]
     # `!cancelled()` rather than `always()`: a run superseded by a newer push
     # is cancelled by the concurrency group above, and there is no reason to
     # spend a runner reporting a verdict nobody will read.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check frontend job results
@@ -592,8 +618,8 @@ jobs:
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
-    needs: [backend-tests, sqlc-check, go-vulnerability-scan]
-    if: ${{ !cancelled() }}
+    needs: [changes, backend-tests, sqlc-check, go-vulnerability-scan]
+    if: ${{ !cancelled() && needs.changes.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check backend job results
@@ -815,8 +841,11 @@ jobs:
     # why. Pull requests only — a push to main has no description to read,
     # and the branch it came from was already checked.
     needs: changes
-    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.images == 'true' }}
+    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.images == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -827,8 +856,15 @@ jobs:
 
       - name: Check image budget
         env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: node scripts/check-image-budget.mjs --base "origin/${{ github.base_ref }}"
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            PR_BODY="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq .body)"
+            export PR_BODY
+          fi
+          node scripts/check-image-budget.mjs --base "origin/${{ github.base_ref || 'main' }}"
 
   installer:
     # Stub-driven shell tests for scripts/install.sh and scripts/install.ps1.
@@ -838,6 +874,7 @@ jobs:
     # userlands. Windows runs the PowerShell installer's own suite: the two
     # installers share one port contract, and neither is covered by the
     # frontend job.
+    needs: changes
     strategy:
       fail-fast: false
       matrix:

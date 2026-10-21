@@ -2,6 +2,8 @@
   "page": {
     "title": "运行时",
     "tagline": "为智能体跑 CLI 会话的机器和云端 worker。",
+    "load_failed": "无法加载运行时",
+    "retry": "重试",
     "learn_more": "了解更多 →",
     "connect_remote": "添加电脑",
     "search_placeholder": "搜索运行时...",
@@ -26,6 +28,27 @@
       "title": "正在启动本地运行时...",
       "hint": "通常需要几秒钟。守护进程正在向工作区注册。"
     }
+  },
+  "status": { "online": "在线", "offline": "离线" },
+  "mobile_nodes": {
+    "voice": "语音",
+    "credential_configured": "已配置",
+    "credential_error": "异常",
+    "credential_missing": "未配置",
+    "credential": "凭据状态",
+    "type": "类型",
+    "agents": "绑定的智能体",
+    "visibility": "可见范围",
+    "rename": "重命名运行时",
+    "name_label": "运行时名称",
+    "saving": "正在保存…",
+    "save_failed": "运行时名称保存失败",
+    "delete_title": "删除运行时？",
+    "delete_bound_title": "解绑智能体并删除运行时？",
+    "delete_description": "此操作无法撤销。",
+    "delete_bound_description": "智能体会保留但解除绑定；排队和运行中的任务会被取消。",
+    "delete_failed": "运行时已变化或无法删除。请刷新并重新检查当前绑定。",
+    "deleting": "正在删除…"
   },
   "mika_setup": {
     "title": "运行时已准备好，和 Mika 开始。",
@@ -150,6 +173,7 @@
     }
   },
   "detail": {
+    "visibility_label": { "private": "私有", "public": "公开" },
     "all_runtimes": "全部运行时",
     "read_only": "只读",
     "delete_button": "删除运行时",

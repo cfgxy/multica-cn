@@ -37,6 +37,7 @@ import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { PriorityIcon } from "@/components/ui/priority-icon";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { CustomStatusChip } from "@/components/issue/custom-status-chip";
+import { SuspensionChip } from "@/components/issue/suspension-banner";
 import { issueColumnCategory } from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
 
@@ -74,6 +75,7 @@ export function IssueRow({ issue, onPress, showStatus = false }: Props) {
             {issue.title}
           </Text>
           <CustomStatusChip status={issue.status} catalog={catalog} />
+          {issue.suspended_at ? <SuspensionChip /> : null}
         </View>
         {issue.assignee_type && issue.assignee_id ? (
           <ActorAvatar

@@ -73,6 +73,8 @@ const editorState = vi.hoisted(() => ({
   cleared: 0,
   blurred: 0,
   focused: 0,
+  mentionTriggers: 0,
+  slashTriggers: 0,
   adopted: [] as string[],
 }));
 
@@ -130,6 +132,14 @@ vi.mock("../../editor", async () => ({
       },
       focus: () => {
         editorState.focused += 1;
+      },
+      insertMentionTrigger: () => {
+        editorState.mentionTriggers += 1;
+        return true;
+      },
+      insertSlashTrigger: () => {
+        editorState.slashTriggers += 1;
+        return true;
       },
       uploadFile: async (file: File) => {
         uploadingRef.current += 1;
@@ -268,6 +278,8 @@ beforeEach(() => {
   editorState.cleared = 0;
   editorState.blurred = 0;
   editorState.focused = 0;
+  editorState.mentionTriggers = 0;
+  editorState.slashTriggers = 0;
   editorState.adopted = [];
   const state = useChatStore.getState() as unknown as {
     activeSessionId: string | null;
@@ -1076,6 +1088,28 @@ describe("ChatInput attachment wiring", () => {
     // The agent picker may render zero buttons
     // in this test (no leftAdornment passed). So a single button = submit.
     expect(buttons.length).toBe(1);
+  });
+
+  it("opens the editor's existing mention and skill pickers from the add menu", () => {
+    renderInput();
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByText("Mention someone or an issue"));
+    expect(editorState.mentionTriggers).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByText("Choose a skill"));
+    expect(editorState.slashTriggers).toBe(1);
+  });
+
+  it("offers distinct camera, photo-library, and file inputs through the upload handler", () => {
+    const { container } = renderInput();
+    const inputs = Array.from(container.querySelectorAll('input[type="file"]'));
+    expect(inputs.map((input) => input.getAttribute("accept"))).toEqual([
+      "image/*",
+      "image/*",
+      null,
+    ]);
+    expect(inputs[0]?.getAttribute("capture")).toBe("environment");
   });
 });
 

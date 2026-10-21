@@ -107,6 +107,13 @@ jest.mock("@/components/ui/text", () => {
   return { Text };
 });
 
+jest.mock("@/lib/markdown", () => ({
+  Markdown: ({ content }) => {
+    const { Text } = jest.requireActual("react-native");
+    return <Text testID="markdown-preview">{content}</Text>;
+  },
+}));
+
 jest.mock("@/lib/use-t", () => ({
   useT: () => ({ t: (key, fallback) => fallback ?? key }),
 }));
@@ -143,6 +150,26 @@ describe("AgentInstructionsEditor (RUYI-624)", () => {
       "next instructions",
     );
     expect(mockPreventRemove).toHaveBeenLastCalledWith(true, expect.any(Function));
+  });
+
+  it("previews common Markdown and keeps the unsaved source across mode switches", async () => {
+    const source =
+      "# Title\n\n**bold** and *italic* with `code`\n\n- item\n\n> quote\n\n```ts\nconst x = 1;\n```\n\n[link](https://example.com)";
+    await render(<AgentInstructionsEditor />);
+    await waitFor(() =>
+      expect(screen.getByDisplayValue(LONG_TEXT)).toBeTruthy(),
+    );
+    await fireEvent.changeText(screen.getByDisplayValue(LONG_TEXT), source);
+    await fireEvent.press(screen.getByLabelText("Preview"));
+    expect(screen.getByTestId("markdown-preview").props.children).toBe(source);
+    await fireEvent.press(screen.getByLabelText("Edit"));
+    expect(screen.getByDisplayValue(source)).toBeTruthy();
+    expect(mockPreventRemove).toHaveBeenLastCalledWith(true, expect.any(Function));
+    await fireEvent.press(screen.getByLabelText("Save"));
+    expect(mockMutate).toHaveBeenCalledWith(
+      { instructions: source },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
   });
 
   it("Save writes instructions through useUpdateAgent, toasts and pops", async () => {
@@ -190,5 +217,7 @@ describe("AgentInstructionsEditor (RUYI-624)", () => {
     await waitFor(() => expect(screen.getByText(LONG_TEXT)).toBeTruthy());
     expect(screen.queryByDisplayValue(LONG_TEXT)).toBeNull();
     expect(screen.queryByLabelText("Save")).toBeNull();
+    expect(screen.queryByLabelText("Edit")).toBeNull();
+    expect(screen.queryByLabelText("Preview")).toBeNull();
   });
 });
