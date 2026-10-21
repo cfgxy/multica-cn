@@ -105,6 +105,9 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
     ? (decision.execution_result as { projects: Array<{ project_id?: unknown; status?: unknown; version?: unknown }> }).projects
         .filter((item) => typeof item.project_id === "string" && typeof item.status === "string" && typeof item.version === "number")
     : [];
+  const sideEffectStatus = decision.execution_result && typeof decision.execution_result === "object"
+    ? (decision.execution_result as { side_effect_status?: unknown }).side_effect_status
+    : null;
 
   return (
     <View className="px-4" testID="decision-card">
@@ -148,6 +151,11 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
               )}
             </View>
             <Text className="mt-1 text-sm font-medium">{decision.question}</Text>
+            {decision.action_type === "project_prompt_sync" ? (
+              <Text className="mt-1 text-xs text-muted-foreground">
+                {t("decisions.auth_action_project_prompt_sync", "Sync selected project prompts")}
+              </Text>
+            ) : null}
             <Text className="mt-0.5 text-xs text-muted-foreground">
               {creatorName} · {timeAgo(decision.created_at)}
             </Text>
@@ -192,9 +200,12 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
 
         {decision.execution_error ? (
           <Text className="mt-2 text-xs text-destructive">
-            {t("decisions.auth_execute_failed", "Execution failed: {{reason}}", {
-              reason: decision.execution_error,
-            })}
+            {t("decisions.auth_execute_failed", "Execution failed; it was not retried")}
+          </Text>
+        ) : null}
+        {sideEffectStatus === "unknown" ? (
+          <Text className="mt-2 text-xs font-medium text-destructive" accessibilityRole="text" accessibilityLiveRegion="polite">
+            {t("decisions.auth_result_unknown", "Result needs verification. Do not retry this request.")}
           </Text>
         ) : null}
         {projectResults.map((result) => (

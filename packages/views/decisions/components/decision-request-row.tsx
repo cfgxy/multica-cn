@@ -39,6 +39,12 @@ const RISK_LABEL_KEYS: Record<string, "risk_read" | "risk_write_low"> = {
   write_low: "risk_write_low",
 };
 
+const KIND_LABEL_KEYS = {
+  cli: "kind_cli",
+  restricted_script: "kind_script",
+  issue_creation: "kind_issue",
+} as const;
+
 const STATUS_LABEL_KEYS: Record<
   DecisionRequestStatus,
   | "status_pending"
@@ -89,6 +95,8 @@ function projectPromptResults(value: unknown): Array<{ projectId: string; status
 /** Per-space step lines for cross-space requests (方案甲 dual-row carrier). */
 function RequestSteps({ request }: { request: DecisionRequest }) {
   const { t } = useT("decisions");
+  const timeAgo = useTimeAgo();
+  const { getActorName } = useActorName();
   const [open, setOpen] = useState(false);
   const detail = useQuery({
     ...decisionRequestDetailQueryOptions(request.workspace_id, request.request_group_id),
@@ -103,34 +111,44 @@ function RequestSteps({ request }: { request: DecisionRequest }) {
         type="button"
         className="flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground"
         data-testid="decision-request-steps-toggle"
+        aria-expanded={open}
+        aria-controls={`decision-request-steps-${request.id}`}
         onClick={() => setOpen((prev) => !prev)}
       >
         {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         {t(($) => $.requests.steps_title)}
       </button>
       {open && (
-        <div className="mt-1 flex flex-col gap-1 border-l pl-3">
-          {detail.isPending && <Skeleton className="h-4 w-40" />}
+        <ol id={`decision-request-steps-${request.id}`} className="mt-1 flex flex-col gap-1 border-l pl-3" aria-label={t(($) => $.requests.steps_title)}>
+          {detail.isPending && <li role="status"><Skeleton className="h-4 w-40" /></li>}
           {detail.isError && (
-            <span className="text-caption text-destructive">
+            <li role="alert" className="text-caption text-destructive">
               {t(($) => $.requests.detail_error)}
-            </span>
+            </li>
           )}
           {(detail.data?.steps ?? []).map((step) => (
-            <span
+            <li
               key={step.id}
               className="flex items-center gap-2 text-caption text-muted-foreground"
               data-testid="decision-request-step"
             >
-              <span className="shrink-0 font-mono">
+              <span className="shrink-0 font-medium">
                 {step.role === "target"
                   ? t(($) => $.requests.step_target)
                   : t(($) => $.requests.step_origin)}
               </span>
               <span>{t(($) => $.requests[STATUS_LABEL_KEYS[step.status]])}</span>
-            </span>
+              {step.answered_by_id && (
+                <span>
+                  {t(($) => $.requests.approved_by, {
+                    actor: getActorName(step.answered_by_type ?? "member", step.answered_by_id),
+                  })}
+                </span>
+              )}
+              {step.answered_at && <time dateTime={step.answered_at}>{timeAgo(step.answered_at)}</time>}
+            </li>
           ))}
-        </div>
+        </ol>
       )}
     </div>
   );
@@ -160,6 +178,20 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
     && request.action_params && typeof request.action_params === "object"
     && typeof (request.action_params as { content?: unknown }).content === "string"
     ? (request.action_params as { content: string }).content
+    : null;
+  const receipt = request.execution_result && typeof request.execution_result === "object"
+    ? request.execution_result as { side_effect_status?: unknown; steps?: unknown }
+    : null;
+  const receiptSteps = Array.isArray(receipt?.steps)
+    ? receipt.steps.filter((step): step is { handler: string; status: string; side_effect_status: string } =>
+      !!step && typeof step === "object" && typeof (step as { handler?: unknown }).handler === "string"
+      && typeof (step as { status?: unknown }).status === "string"
+      && typeof (step as { side_effect_status?: unknown }).side_effect_status === "string")
+    : [];
+  const executionInProgress = request.status === "approved"
+    && (request.role === "target" || (request.role === "origin" && request.operable));
+  const kindLabelKey = request.authorization_spec
+    ? KIND_LABEL_KEYS[request.authorization_spec.kind]
     : null;
 
   const refresh = () => {
@@ -246,16 +278,6 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
         ) : (
           content
         )}
-        {approvedPrompt !== null && (
-          <details className="mt-1 text-caption">
-            <summary className="cursor-pointer text-muted-foreground">
-              {t(($) => $.requests.review_prompt_content)}
-            </summary>
-            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border bg-muted/30 p-2 font-sans text-caption">
-              {approvedPrompt}
-            </pre>
-          </details>
-        )}
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -318,9 +340,38 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
             className="min-w-0 truncate text-caption text-destructive"
             title={request.execution_error}
           >
-            {t(($) => $.requests.executed_failed, { reason: request.execution_error })}
+            {t(($) => $.requests.executed_failed)}
           </span>
         )}
+        {receipt?.side_effect_status === "unknown" && (
+          <span className="text-caption font-medium text-destructive" role="status" aria-live="polite" data-testid="decision-request-result-unknown">
+            {t(($) => $.requests.result_unknown)}
+          </span>
+        )}
+        {receipt?.side_effect_status === "no_side_effect" && (
+          <span className="text-caption text-muted-foreground" data-testid="decision-request-no-side-effect">
+            {t(($) => $.requests.no_side_effect)}
+          </span>
+        )}
+        {receiptSteps.map((step, index) => (
+          <span key={`${step.handler}-${index}`} className="text-caption text-muted-foreground" data-testid="decision-request-receipt-step">
+            {t(($) => $.requests.receipt_step, {
+              handler: step.handler === "workspace_info_read"
+                ? t(($) => $.requests.action_workspace_info_read)
+                : step.handler === "prompt_restore"
+                  ? t(($) => $.requests.action_prompt_restore)
+                  : step.handler === "project_prompt_sync"
+                    ? t(($) => $.requests.action_project_prompt_sync)
+                    : step.handler,
+              status: t(($) => $.requests[step.status === "completed" ? "receipt_completed" : "receipt_failed"]),
+              effect: t(($) => $.requests[step.side_effect_status === "completed"
+                ? "side_effect_completed"
+                : step.side_effect_status === "no_side_effect"
+                  ? "no_side_effect"
+                  : "result_unknown"]),
+            })}
+          </span>
+        ))}
         {syncResults.map((result) => (
           <span key={result.projectId} className="min-w-0 text-caption text-muted-foreground" data-testid="decision-request-project-result">
             {result.projectId} · {result.status} · v{result.version}

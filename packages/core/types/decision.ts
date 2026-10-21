@@ -130,6 +130,37 @@ export type DecisionRequestStatus =
   | "executed"
   | "execute_failed";
 
+export type DecisionRequestKind = "cli" | "restricted_script" | "issue_creation";
+export type DecisionRequestSideEffectStatus = "no_side_effect" | "completed" | "unknown";
+
+export interface DecisionRequestAuthorizationSpec {
+  version: number;
+  kind: DecisionRequestKind;
+  action_type: string;
+  scope: Record<string, unknown>;
+  parameter_digest: string;
+  source_workspace_id: string;
+  target_workspace_id: string;
+  source_issue_id?: string;
+  source_task_id?: string;
+  expires_at: string;
+  public_summary: string;
+  digest: string;
+}
+
+export interface DecisionRequestReceiptStep {
+  handler: string;
+  status: "completed" | "failed" | "unknown";
+  side_effect_status: DecisionRequestSideEffectStatus;
+}
+
+export interface DecisionRequestReceipt {
+  receipt_version: number;
+  side_effect_status: DecisionRequestSideEffectStatus;
+  steps: DecisionRequestReceiptStep[];
+  [key: string]: unknown;
+}
+
 export type DecisionRequestRole = "origin" | "target";
 
 /** answer_source discriminates HOW a human acted (server-authoritative). */
@@ -145,6 +176,7 @@ export interface DecisionRequest {
   status: DecisionRequestStatus;
   action_type: string;
   action_params?: unknown;
+  authorization_spec?: DecisionRequestAuthorizationSpec;
   /** Registry-derived risk tier ("read" | "write_low"); server-authoritative. */
   risk_tier: string;
   title: string;

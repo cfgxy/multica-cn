@@ -473,6 +473,67 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
     expect(screen.getByTestId("decision-request-project-result")).toHaveTextContent("project-1 · updated · v3");
     expect(screen.getByText("approved prompt body")).toBeInTheDocument();
   });
+
+  it("shows a verification warning for unknown side effects and keeps the approval toggle accessible", async () => {
+    inboxRef.current = { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
+    requestsRef.current = Promise.resolve({
+      items: [{
+        id: "dr-unknown",
+        request_group_id: "rg-unknown",
+        workspace_id: "ws-1",
+        role: "origin",
+        operable: true,
+        status: "execute_failed",
+        action_type: "project_prompt_sync",
+        action_params: { project_ids: ["project-1"] },
+        authorization_spec: {
+          version: 1,
+          kind: "cli",
+          action_type: "project_prompt_sync",
+          scope: { target_workspace_id: "ws-2", project_ids: ["project-1"] },
+          parameter_digest: "a".repeat(64),
+          source_workspace_id: "ws-1",
+          target_workspace_id: "ws-2",
+          expires_at: "2026-10-22T00:00:00Z",
+          public_summary: "Sync project prompts",
+          digest: "b".repeat(64),
+        },
+        execution_error: "PROMPT_SYNC_FAILED",
+        execution_result: {
+          receipt_version: 1,
+          side_effect_status: "unknown",
+          steps: [{ handler: "project_prompt_sync", status: "unknown", side_effect_status: "unknown" }],
+        },
+        risk_tier: "write_low",
+        title: "Sync project prompts",
+        detail: "",
+        origin_workspace_id: "ws-1",
+        origin_agent_id: "agent-1",
+        origin_agent_name: "Seed Agent",
+        origin_task_id: null,
+        origin_issue_id: null,
+        origin_issue_title: null,
+        operator_tier: "owner",
+        named_approver_ids: [],
+        approve_label: null,
+        deny_label: null,
+        expires_at: "2026-10-22T00:00:00Z",
+        answered_by_type: null,
+        answered_by_id: null,
+        answered_at: null,
+        answer_source: null,
+        executed_at: null,
+        created_at: "2026-10-21T00:00:00Z",
+        updated_at: "2026-10-21T00:00:00Z",
+      }],
+      counts: { pending: 0, closed: 1, executed: 0 },
+    } as unknown as DecisionRequestsList);
+    renderPage();
+
+    expect(await screen.findByTestId("decision-request-result-unknown")).toHaveTextContent("Result needs verification");
+    expect(screen.queryByText("PROMPT_SYNC_FAILED")).toBeNull();
+    expect(screen.getByTestId("decision-request-steps-toggle")).toHaveAttribute("aria-expanded", "false");
+  });
 });
 
 describe("DecisionCenterPage cross-space authorization navigation (RUYI-842)", () => {

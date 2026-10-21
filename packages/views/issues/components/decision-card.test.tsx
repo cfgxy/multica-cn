@@ -105,6 +105,20 @@ describe("DecisionCard", () => {
     expect(screen.getByTestId("decision-auth-project-result")).toHaveTextContent("project-1 · updated · v4");
   });
 
+  it("labels an unknown side effect as requiring verification without exposing an error", () => {
+    renderCard(card({
+      decision_kind: "authorization",
+      action_type: "project_prompt_sync",
+      status: "answered",
+      auth_state: "execute_failed",
+      execution_error: "PROMPT_SYNC_FAILED",
+      execution_result: { receipt_version: 1, side_effect_status: "unknown", steps: [] },
+    }));
+
+    expect(screen.getByText("Result needs verification. Do not retry this request.")).toBeInTheDocument();
+    expect(screen.queryByText("PROMPT_SYNC_FAILED")).toBeNull();
+  });
+
   it("renders question, options and the recommended badge in open state", () => {
     renderCard(card());
     expect(screen.getByTestId("decision-card")).toHaveAttribute("data-status", "open");
