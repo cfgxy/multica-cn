@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
+	"github.com/multica-ai/multica/server/internal/credentialcrypto"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -519,6 +520,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		ServerVersion:            normalizeServerVersion(version),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	if keyring, err := credentialcrypto.LoadTransportKeyring(os.Getenv("MULTICA_CREDENTIAL_TRANSPORT_KEYRING_JSON")); err == nil {
+		h.CredentialTransportKeys = keyring
+	} else {
+		slog.Warn("credential transport encryption disabled: keyring unavailable")
+	}
+	if keyring, err := credentialcrypto.LoadStorageKeyring(os.Getenv("MULTICA_CREDENTIAL_STORAGE_KEYRING_JSON")); err == nil {
+		h.CredentialStorageKeys = keyring
+	} else {
+		slog.Warn("credential storage encryption disabled: keyring unavailable")
+	}
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
 	invitationRateLimits.Actor.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_ACTOR_10M", invitationRateLimits.Actor.Limit)
 	invitationRateLimits.Workspace.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_WORKSPACE_24H", invitationRateLimits.Workspace.Limit)
@@ -1826,6 +1837,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// no workspace in the path to gate on.
 		// --- User-scoped routes (no workspace context required) ---
 		r.Get("/api/me", h.GetMe)
+		r.Get("/api/credentials/transport-key", h.GetCredentialTransportKey)
 		r.Post("/api/mcp/audit-start", h.StartMCPInvocationAudit)
 		r.Post("/api/mcp/audit-finish", h.FinishMCPInvocationAudit)
 		r.Patch("/api/me", h.UpdateMe)
