@@ -152,10 +152,20 @@ func TestCompleteTaskCapabilityAdaptationMustMatchClaimSnapshot(t *testing.T) {
 		t.Fatalf("mismatched policy changed task status to %q", status)
 	}
 
+	stale := httptest.NewRecorder()
+	staleReq := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/complete", taskID, map[string]any{
+		"output":                       "done",
+		"capability_adaptation_result": map[string]string{"policy_id": "policy-1", "policy_version": "v2", "status": "applied"},
+	})
+	testHandler.CompleteTask(stale, staleReq)
+	if stale.Code != http.StatusBadRequest {
+		t.Fatalf("same policy ID with stale version returned %d, want 400: %s", stale.Code, stale.Body.String())
+	}
+
 	good := httptest.NewRecorder()
 	goodReq := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/complete", taskID, map[string]any{
 		"output":                       "done",
-		"capability_adaptation_result": map[string]string{"policy_id": "policy-1", "status": "retained"},
+		"capability_adaptation_result": map[string]string{"policy_id": "policy-1", "policy_version": "v1", "status": "retained"},
 	})
 	testHandler.CompleteTask(good, goodReq)
 	if good.Code != http.StatusOK {
@@ -169,7 +179,7 @@ func TestCompleteTaskCapabilityAdaptationMustMatchClaimSnapshot(t *testing.T) {
 	if err := json.Unmarshal(storedJSON, &stored); err != nil {
 		t.Fatalf("decode completed result: %v", err)
 	}
-	if stored.CapabilityAdaptationResult == nil || stored.CapabilityAdaptationResult.PolicyID != "policy-1" || stored.CapabilityAdaptationResult.Status != "retained" {
+	if stored.CapabilityAdaptationResult == nil || stored.CapabilityAdaptationResult.PolicyID != "policy-1" || stored.CapabilityAdaptationResult.PolicyVersion != "v1" || stored.CapabilityAdaptationResult.Status != "retained" {
 		t.Fatalf("stored adaptation result = %#v", stored.CapabilityAdaptationResult)
 	}
 }
