@@ -142,8 +142,9 @@ import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-st
 import { BatchActionToolbar } from "./batch-action-toolbar";
 import { useIssueTimeline } from "../hooks/use-issue-timeline";
 import { issueDecisionsQueryOptions } from "@multica/core/issues/decisions";
-import { DecisionCard } from "./decision-card";
-import { DecisionBatchBar } from "./decision-batch-bar";
+import { DecisionBatchEntry } from "./decision-batch-entry";
+import { DecisionTimelineRow } from "./decision-timeline-row";
+import { DecisionCardsSection } from "./decision-cards-section";
 import { useIssueReactions } from "../hooks/use-issue-reactions";
 import { useIssueSubscribers } from "../hooks/use-issue-subscribers";
 import { ReactionBar } from "@multica/ui/components/common/reaction-bar";
@@ -490,10 +491,7 @@ type TimelineItem =
   | { kind: "activity-group"; id: string; entries: TimelineEntry[] }
   | { kind: "decision"; id: string; decision: IssueDecision };
 
-// Batch answer bar (RUYI-471): not a sorted item — spliced into place after
-// the sort, so it stays out of itemTimestampMs's domain.
-type DecisionBatchBarItem = { kind: "decision-batch-bar"; id: string; open: IssueDecision[] };
-type TimelineRow = TimelineItem | DecisionBatchBarItem;
+type TimelineRow = TimelineItem;
 
 /** Sort key for interleaving decision cards into the comment stream. */
 function itemTimestampMs(item: TimelineItem): number {
@@ -1631,19 +1629,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     }
     keyed.sort((a, b) => a.key - b.key);
     const out: TimelineRow[] = keyed.map((k) => k.item);
-    // Batch answer bar (RUYI-471, RUYI-534): with two or more open cards,
-    // one aggregate row sits at the very end of the timeline so all picks
-    // go out in a single submit. Appended after the sort so placement never
-    // depends on timestamp ties; the cards themselves stay ordered by
-    // created_at, which is what the server's "1A 2B" numbering reads.
-    const openDecisions = issueDecisions.filter((d) => d.status === "open");
-    if (openDecisions.length >= 2) {
-      out.push({
-        kind: "decision-batch-bar",
-        id: "decision-batch-bar",
-        open: openDecisions,
-      });
-    }
     return out;
   }, [timelineView.groups, expandedResolved, issueDecisions]);
 
@@ -2787,6 +2772,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           its query and collapse state. */}
       <IssueRelationsSection issueId={id} />
 
+      <DecisionCardsSection decisions={issueDecisions} />
+
       {/* GitHub settings do not suppress linked self-hosted VCS pull requests. */}
       {shouldShowPullRequestSection(githubSettings.prSidebar, vcsAvailable, linkedPullRequests?.pull_requests ?? []) && (
         <div>
@@ -2899,14 +2886,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           )}
           id={`decision-${item.id}`}
         >
-          <DecisionCard decision={item.decision} />
-        </div>
-      );
-    }
-    if (item.kind === "decision-batch-bar") {
-      return (
-        <div className="pb-3" id={item.id}>
-          <DecisionBatchBar issueId={id} open={item.open} />
+          <DecisionTimelineRow decision={item.decision} />
         </div>
       );
     }
@@ -3737,6 +3717,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             )}
 
             <PendingPullRequestSection issueId={id} />
+            {issueDecisions.filter((decision) => decision.status === "open" && decision.decision_kind !== "authorization").length > 1 && (
+              <div className="mt-3" id="decision-batch-entry">
+                <DecisionBatchEntry
+                  issueId={id}
+                  open={issueDecisions
+                    .filter((decision) => decision.status === "open" && decision.decision_kind !== "authorization")
+                    .slice()
+                    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))}
+                />
+              </div>
+            )}
 
           </div>
 
