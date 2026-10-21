@@ -24,10 +24,6 @@ vi.mock("@multica/core/issues/decisions", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@multica/core/issues/decisions")>();
   return {
     ...actual,
-    decisionRequestDetailQueryOptions: (workspaceId: string, requestId: string) => ({
-      queryKey: ["test", "decision-request-detail", workspaceId, requestId],
-      queryFn: async () => scriptDetailRef.current,
-    }),
     workspaceDecisionInboxQueryOptions: (workspaceId: string | null | undefined) => ({
       queryKey: ["test", "decision-inbox", workspaceId],
       queryFn: async () => inboxRef.current ?? { items: [], counts: { open: 0, answered: 0, cancelled: 0 } },
@@ -39,6 +35,10 @@ vi.mock("@multica/core/issues/decision-requests", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@multica/core/issues/decision-requests")>();
   return {
     ...actual,
+    decisionRequestDetailQueryOptions: (workspaceId: string, requestId: string) => ({
+      queryKey: ["test", "decision-request-detail", workspaceId, requestId],
+      queryFn: async () => scriptDetailRef.current,
+    }),
     workspaceDecisionRequestsQueryOptions: (workspaceId: string | null | undefined) => ({
       queryKey: ["test", "decision-requests", workspaceId],
       queryFn: () =>
