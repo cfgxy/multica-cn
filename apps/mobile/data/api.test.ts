@@ -672,6 +672,12 @@ describe("X-Client-OS header", () => {
   });
 });
 
+describe("api.listIssueSuspensions", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
 describe("ApiClient.lookupPullRequest", () => {
   afterEach(() => {
     api.setToken(null);
@@ -679,6 +685,37 @@ describe("ApiClient.lookupPullRequest", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
+
+  it("unwraps the wrapped {suspensions} payload and returns the rows", async () => {
+    const row = {
+      id: "susp-1",
+      workspace_id: "ws-1",
+      issue_id: "issue-1",
+      status: "active",
+      reason: "waiting for CI",
+      waiting_on_type: "external",
+      waiting_on_summary: "ci run 42",
+      resume_condition: "ci green",
+      suspended_by_type: "agent",
+      suspended_by_id: "agent-1",
+      suspended_at: "2026-10-14T00:00:00Z",
+      resume_note: "",
+      cancel_note: "",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ suspensions: [row] }),
+      { headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(api.listIssueSuspensions("issue-1")).resolves.toEqual([row]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/issues/issue-1/suspensions",
+      expect.anything(),
+    );
+  });
+});
 
   // RUYI-635 返工：端点注册在 /api/workspaces/{id} 路由组内
   // （server/cmd/server/router.go），core 同口径见

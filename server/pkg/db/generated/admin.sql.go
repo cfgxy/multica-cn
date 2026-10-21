@@ -27,6 +27,17 @@ func (q *Queries) CountActiveSuperAdminsExcluding(ctx context.Context, id pgtype
 	return count, err
 }
 
+const countAdminAuditLogs = `-- name: CountAdminAuditLogs :one
+SELECT count(*) FROM admin_audit_log
+`
+
+func (q *Queries) CountAdminAuditLogs(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countAdminAuditLogs)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countAllUsers = `-- name: CountAllUsers :one
 SELECT count(*) FROM "user" u
 WHERE $1::text = ''
@@ -87,7 +98,6 @@ func (q *Queries) CreateAdminAuditLog(ctx context.Context, arg CreateAdminAuditL
 }
 
 const getUserAdminState = `-- name: GetUserAdminState :one
-
 SELECT id, email, is_super_admin, disabled_at FROM "user"
 WHERE id = $1
 `
@@ -99,9 +109,6 @@ type GetUserAdminStateRow struct {
 	DisabledAt   pgtype.Timestamptz `json:"disabled_at"`
 }
 
-// Admin account-management queries (RUYI-47). Every statement here backs an
-// instance-level /api/admin endpoint guarded by RequireSuperAdmin; none of
-// them consult workspace membership.
 // Lightweight auth-path read: only the columns the disabled check and the
 // super-admin guard need. The auth middleware runs this on user-state cache
 // misses, so it must stay a single narrow index scan on the primary key.
@@ -115,6 +122,71 @@ func (q *Queries) GetUserAdminState(ctx context.Context, id pgtype.UUID) (GetUse
 		&i.DisabledAt,
 	)
 	return i, err
+}
+
+const listAdminAuditLogs = `-- name: ListAdminAuditLogs :many
+
+SELECT a.id, a.actor_id, COALESCE(actor.name, '') AS actor_name,
+       actor.email AS actor_email, a.action, a.target_type, a.target_id,
+       a.workspace_id, a.reason, a.metadata, a.created_at
+FROM admin_audit_log a
+LEFT JOIN "user" actor ON actor.id = a.actor_id
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListAdminAuditLogsParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+type ListAdminAuditLogsRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	ActorName   string             `json:"actor_name"`
+	ActorEmail  pgtype.Text        `json:"actor_email"`
+	Action      string             `json:"action"`
+	TargetType  string             `json:"target_type"`
+	TargetID    pgtype.UUID        `json:"target_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Reason      pgtype.Text        `json:"reason"`
+	Metadata    []byte             `json:"metadata"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// Admin account-management queries (RUYI-47). Every statement here backs an
+// instance-level /api/admin endpoint guarded by RequireSuperAdmin; none of
+// them consult workspace membership.
+func (q *Queries) ListAdminAuditLogs(ctx context.Context, arg ListAdminAuditLogsParams) ([]ListAdminAuditLogsRow, error) {
+	rows, err := q.db.Query(ctx, listAdminAuditLogs, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAdminAuditLogsRow{}
+	for rows.Next() {
+		var i ListAdminAuditLogsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ActorID,
+			&i.ActorName,
+			&i.ActorEmail,
+			&i.Action,
+			&i.TargetType,
+			&i.TargetID,
+			&i.WorkspaceID,
+			&i.Reason,
+			&i.Metadata,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAllUsers = `-- name: ListAllUsers :many

@@ -74,6 +74,11 @@ vi.mock("@multica/core/api", () => ({
 
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "workspace-1", name: "Acme", slug: "acme" }),
+  paths: { workspace: () => ({ audit: () => "/acme/audit" }) },
+}));
+
+vi.mock("../../navigation", () => ({
+  useNavigation: () => ({ push: vi.fn() }),
 }));
 
 vi.mock("@multica/core/permissions", () => ({

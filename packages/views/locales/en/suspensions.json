@@ -1,0 +1,24 @@
+{
+  "page": {
+    "breadcrumb": "Suspensions",
+    "empty_title": "No suspended issues",
+    "empty_description": "Issues suspended with a waiting reason will be aggregated here, so paused work stays visible until it resumes.",
+    "load_failed": "Failed to load suspensions"
+  },
+  "filter": {
+    "label": "Status",
+    "active": "Active",
+    "resumed": "Resumed",
+    "cancelled": "Cancelled",
+    "all": "All"
+  },
+  "row": {
+    "waiting_on": "Waiting on",
+    "condition": "Resume condition",
+    "reason": "Reason",
+    "resume": "Resume",
+    "cancel": "Stop waiting",
+    "resume_done": "Resumed",
+    "lifecycle": "Lifecycle"
+  }
+}

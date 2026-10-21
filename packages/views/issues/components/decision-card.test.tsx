@@ -92,6 +92,7 @@ describe("DecisionCard", () => {
   it("renders question, options and the recommended badge in open state", () => {
     renderCard(card());
     expect(screen.getByTestId("decision-card")).toHaveAttribute("data-status", "open");
+    expect(screen.getByTestId("decision-card")).toHaveClass("p-3");
     expect(screen.getByText("走哪条方案？")).toBeInTheDocument();
     expect(screen.getByText("方案 B")).toBeInTheDocument();
     expect(screen.getByText("Recommended")).toBeInTheDocument();

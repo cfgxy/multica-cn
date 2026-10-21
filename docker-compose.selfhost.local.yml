@@ -5,7 +5,7 @@
 #   docker compose -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml \
 #     -f docker-compose.selfhost.local.yml <cmd>
 # Rollback: drop this file from the -f list, `down redis mcp`, and clear the
-# three OAuth/MCP variables in .env.
+# OAuth/MCP variables in .env.
 services:
   redis:
     image: redis:7-alpine
@@ -35,6 +35,12 @@ services:
       # Base for the absolute resource_metadata URL in the 401
       # WWW-Authenticate header (the real public domain).
       MULTICA_APP_URL: ${MULTICA_APP_URL}
+      # Fixed service-to-service token for the MCP invocation audit
+      # (audit-start/audit-finish). The mcp process reads this env var when
+      # no --audit-credential-file flag is present, so a co-deployed stack
+      # needs one value in .env and no credential file. Empty = audit
+      # reporting disabled (service keeps running).
+      MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL: ${MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL:-}
 
   backend:
     environment:
@@ -53,6 +59,10 @@ services:
       # both keys set = quality dashboard reports the export as configured.
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      # Same fixed token the mcp service presents as
+      # X-Multica-MCP-Service-Credential; empty = audit write endpoints
+      # disabled.
+      MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL: ${MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL:-}
 
   frontend:
     environment:

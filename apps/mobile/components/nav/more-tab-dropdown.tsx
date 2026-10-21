@@ -99,6 +99,8 @@ export function MoreTabDropdownAnchor({
     // RUYI-344: the full-space list moved into the bottom Tasks tab; the
     // dropdown entry now opens the preserved personal view (more/my-issues).
     { label: i18n.t("layout:nav.my_issues", "My Issues"), icon: "checklist", androidIcon: "checkbox-outline", path: "/more/my-issues" },
+    // RUYI-690: 挂起中心入口（可发现的挂起筛选）。
+    { label: i18n.t("layout:nav.suspensions", "Suspensions"), icon: "pause.circle", androidIcon: "pause-outline", path: "/more/suspensions" },
     { label: i18n.t("layout:nav.projects", "Projects"), icon: "square.stack", androidIcon: "layers-outline", path: "/more/projects" },
     // RUYI-346: 智能体与小队管理入口（P0）。
     { label: i18n.t("layout:nav.agents", "Agents"), icon: "cpu", androidIcon: "hardware-chip-outline", path: "/more/agents" },
@@ -111,6 +113,7 @@ export function MoreTabDropdownAnchor({
     // usage 入口对全部工作区成员可见（views app-sidebar 静态 nav 数组），
     // 权限面由服务端六个 dashboard rollup 接口一致裁决（A2 parity）。
     { label: i18n.t("layout:nav.usage", "Analytics"), icon: "chart.bar", androidIcon: "stats-chart-outline", path: "/more/stats" },
+    { label: i18n.t("layout:nav.management", "Management"), icon: "slider.horizontal.3", androidIcon: "options-outline", path: "/more/management" },
     { label: i18n.t("layout:nav.audit", "MCP audit"), icon: "checkmark.shield", androidIcon: "shield-checkmark-outline", path: "/more/audit" },
   ];
   const insets = useSafeAreaInsets();

@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CirclePause, LogOut } from "lucide-react";
 import { Input } from "@multica/ui/components/ui/input";
-import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Button } from "@multica/ui/components/ui/button";
 import { Switch } from "@multica/ui/components/ui/switch";
 import {
@@ -35,6 +34,7 @@ import {
 import { setCurrentWorkspace } from "@multica/core/platform";
 import type { Workspace } from "@multica/core/types";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
+import { LongTextEditor } from "../../common/long-text-editor";
 import { useNavigation } from "../../navigation";
 import { DeleteWorkspaceDialog } from "./delete-workspace-dialog";
 import { WorkspaceBackpressureCard } from "./workspace-backpressure-card";
@@ -409,17 +409,16 @@ export function WorkspaceTab() {
             size="text"
             align="start"
           >
-            <Textarea
-              name="workspace-description"
-              autoComplete="off"
-              aria-label={t(($) => $.workspace.description_label)}
+            <LongTextEditor
               value={description}
-              onChange={(event) => setDescription(event.target.value)}
+              onChange={setDescription}
               onBlur={detailsAutoSave.flush}
-              rows={3}
-              disabled={!canManageWorkspace}
-              className="resize-none"
+              onSave={() => detailsAutoSave.flush()}
+              ariaLabel={t(($) => $.workspace.description_label)}
+              dialogTitle={t(($) => $.workspace.description_label)}
               placeholder={t(($) => $.workspace.description_placeholder)}
+              disabled={!canManageWorkspace}
+              minHeight={80}
             />
           </SettingsRow>
 
@@ -428,17 +427,15 @@ export function WorkspaceTab() {
             size="text"
             align="start"
           >
-            <Textarea
-              name="workspace-context"
-              autoComplete="off"
-              aria-label={t(($) => $.workspace.context_label)}
+            <LongTextEditor
               value={context}
-              onChange={(event) => setContext(event.target.value)}
+              onChange={setContext}
               onBlur={detailsAutoSave.flush}
-              rows={4}
-              disabled={!canManageWorkspace}
-              className="resize-none"
+              onSave={() => detailsAutoSave.flush()}
+              ariaLabel={t(($) => $.workspace.context_label)}
+              dialogTitle={t(($) => $.workspace.context_label)}
               placeholder={t(($) => $.workspace.context_placeholder)}
+              disabled={!canManageWorkspace}
             />
           </SettingsRow>
 

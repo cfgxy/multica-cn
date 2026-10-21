@@ -28,16 +28,16 @@ on:
       - "pnpm-workspace.yaml"
       - "turbo.json"
       - ".github/workflows/mobile-verify.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "apps/mobile/**"
-      - "packages/core/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "turbo.json"
-      - ".github/workflows/mobile-verify.yml"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR number
+        required: true
+        type: string
+      expected_sha:
+        description: Exact 40-character PR head SHA to validate
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -46,9 +46,29 @@ concurrency:
 jobs:
   mobile:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Verify manual PR head
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[(.state), (.base.ref), (.head.sha), (.head.ref), (.head.repo.full_name)] | join("|")')"
+          expected="open|main|$EXPECTED_SHA|$GITHUB_REF_NAME|$GITHUB_REPOSITORY"
+          test "$pr" = "$expected" || {
+            echo "::error::PR is not open on main at the selected branch and expected SHA"
+            exit 1
+          }
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4

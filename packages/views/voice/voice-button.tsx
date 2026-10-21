@@ -35,7 +35,7 @@ export function VoiceButton({
   const button = (
     <Button
       size="icon-sm"
-      className="rounded-full"
+      className="rounded-full bg-foreground text-background hover:bg-foreground/90 hover:text-background"
       disabled={disabled || unavailable}
       onPointerDown={(event) => event.preventDefault()}
       onMouseDown={(event) => event.preventDefault()}

@@ -90,6 +90,7 @@ import { ProjectPicker } from "../../projects/components/project-picker";
 import { LocalDirectoryHint } from "../../projects/components/local-directory-hint";
 import { CommentCard } from "./comment-card";
 import { SourceContextBadge } from "./source-context-viewer";
+import { SuspensionBanner } from "./suspension-banner";
 import { RevisionConflictCompare } from "./revision-conflict-compare";
 import { CommentInput } from "./comment-input";
 import {
@@ -3271,6 +3272,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               })()}
             </AppLink>
           )}
+
+          <SuspensionBanner
+            issue={issue}
+            onChanged={async () => {
+              const result = await refetchIssue();
+              return result.isError ? null : result.data;
+            }}
+          />
 
           {issue.source_context && (
             <SourceContextBadge

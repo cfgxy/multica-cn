@@ -365,9 +365,9 @@
 .rich-text-editor blockquote {
   border-left: 3px solid color-mix(in srgb, var(--muted-foreground) 30%, transparent);
   padding-left: 0.75rem;
-  margin: 0.625rem 0;
-  color: var(--muted-foreground);
-  font-style: italic;
+  margin: 0.5rem 0;
+  color: inherit;
+  font: inherit;
 }
 
 .rich-text-editor blockquote p {

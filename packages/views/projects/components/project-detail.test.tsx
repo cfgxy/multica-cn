@@ -1,6 +1,6 @@
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Project } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
@@ -386,7 +386,8 @@ describe("ProjectDetail agent instructions", () => {
     // The counter reflects the typed length.
     expect(screen.getByText("16 / 32000")).toBeInTheDocument();
 
-    await user.tab(); // blur -> save
+    await user.tab(); // focus the expand control
+    await user.tab(); // leaving the editor commits the draft
 
     expect(mocks.updateProject).toHaveBeenCalledTimes(1);
     expect(mocks.updateProject).toHaveBeenCalledWith(
@@ -397,6 +398,31 @@ describe("ProjectDetail agent instructions", () => {
     expect(
       screen.queryByRole("textbox", { name: "Agent instructions" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps a blank new instructions editor mounted while expanding and saving", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail();
+
+    await user.click(screen.getByRole("button", { name: "Add agent instructions" }));
+    await user.click(screen.getByRole("textbox", { name: "Agent instructions" }));
+    await user.click(screen.getByRole("button", { name: "Expand editor" }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(
+      within(dialog).getByRole("textbox", { name: "Agent instructions" }),
+    ).toBeInTheDocument();
+    expect(mocks.updateProject).not.toHaveBeenCalled();
+
+    const expanded = within(dialog).getByRole("textbox", { name: "Agent instructions" });
+    await user.type(expanded, "Keep this project prompt.");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    expect(mocks.updateProject).toHaveBeenCalledWith(
+      expect.objectContaining({ instructions: "Keep this project prompt." }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
   it("edits and saves existing instructions, distinguishing copy from description", async () => {
@@ -414,6 +440,7 @@ describe("ProjectDetail agent instructions", () => {
 
     await user.clear(editor);
     await user.type(editor, "Updated rules.");
+    await user.tab();
     await user.tab();
 
     expect(mocks.updateProject).toHaveBeenCalledWith(

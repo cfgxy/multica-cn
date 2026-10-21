@@ -8,6 +8,38 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ApiClient cookie-auth transport", () => {
+  it("includes browser credentials from login through the first protected request", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ token: "session-token", user: { id: "user-1" } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response("[]", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("http://arbitrary-host.example");
+    await client.verifyCode("user@example.test", "123456");
+    await client.listWorkspaces();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init?.credentials).toBe("include");
+    }
+    expect(fetchMock.mock.calls[1]?.[1]?.headers).not.toHaveProperty(
+      "Authorization",
+    );
+  });
+});
+
 describe("ApiClient agent conversation-starter compatibility", () => {
   const prompt = {
     label: "Review a PR",
@@ -202,6 +234,7 @@ describe("ApiClient audit events", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = new ApiClient("https://api.example.test");
     await client.listAuditEvents("ws/1", {
+      domain: "mcp",
       time_basis: "invocation_start",
       since: "2026-10-17T10:00:00.123456789Z",
       actor_type: "member",
@@ -217,6 +250,7 @@ describe("ApiClient audit events", () => {
     const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
     expect(url.pathname).toBe("/api/workspaces/ws%2F1/audit-events");
     expect(url.searchParams.get("since")).toBe("2026-10-17T10:00:00.123456789Z");
+    expect(url.searchParams.get("domain")).toBe("mcp");
     expect(url.searchParams.get("cursor")).toBe("2026-10-17T09:00:00.123456789Z");
     expect(url.searchParams.get("cursor_id")).toBe("event-1");
     expect(url.searchParams.get("result_status")).toBe("success");
@@ -2961,5 +2995,52 @@ describe("ApiClient prompt governance versions (RUYI-285)", () => {
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({ method: "POST" }),
     );
+  });
+});
+
+describe("ApiClient listIssueSuspensions", () => {
+  const row = {
+    id: "susp-1",
+    workspace_id: "ws-1",
+    issue_id: "issue-1",
+    status: "active",
+    reason: "waiting for CI",
+    waiting_on_type: "external",
+    waiting_on_summary: "ci run 42",
+    resume_condition: "ci green",
+    suspended_by_type: "agent",
+    suspended_by_id: "agent-1",
+    suspended_at: "2026-10-14T00:00:00Z",
+    resume_note: "",
+    cancel_note: "",
+  };
+
+  it("unwraps the wrapped {suspensions} payload and returns the rows", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ suspensions: [row] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listIssueSuspensions("issue-1")).resolves.toEqual([row]);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/issues/issue-1/suspensions",
+    );
+  });
+
+  it("degrades the legacy bare-array payload to an empty list", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([row]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listIssueSuspensions("issue-1")).resolves.toEqual([]);
   });
 });

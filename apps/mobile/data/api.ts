@@ -29,6 +29,10 @@ import type {
   AddSquadMemberRequest,
   CreateIssueRequest,
   CreateLabelRequest,
+  UpdateLabelRequest,
+  CreateIssueStatusRequest,
+  UpdateIssueStatusRequest,
+  IssueStatusEntry,
   CreateProjectRequest,
   CreateSquadRequest,
   CreateProjectResourceRequest,
@@ -59,6 +63,9 @@ import type {
   IssueRelationsResponse,
   IssueDecision,
   WorkspaceDecisionInbox,
+  IssueSuspension,
+  IssueSuspensionMutation,
+  WorkspaceSuspensionList,
   IssueLabelsResponse,
   IssuePriority,
   Label,
@@ -106,6 +113,19 @@ import type {
   DecisionRequestsList,
   AuditEventsPage,
   ListAuditEventsParams,
+  ClauseGovernanceOverview,
+  PromptProposal,
+  PromptProposalPreview,
+  SelfEvolutionOverview,
+  ListAutopilotsResponse,
+  AutopilotRun,
+  AutopilotQuotaUsage,
+  SkillVersion,
+  SkillVersionSummary,
+  SkillUsage,
+  RetrospectiveRun,
+  CreateMemberRequest,
+  UpdateMemberRequest,
 } from "@multica/core/types";
 import {
   EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
@@ -140,6 +160,8 @@ import {
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
+  IssueStatusEntrySchema,
+  EMPTY_ISSUE_STATUS_ENTRY,
   ListQuickRepliesResponseSchema,
   PullRequestLookupResponseSchema,
   SquadMemberListSchema,
@@ -167,9 +189,48 @@ import {
   DashboardFailureByAgentListSchema,
   AuditEventsPageSchema,
   EMPTY_AUDIT_EVENTS_PAGE,
+  SelfEvolutionOverviewSchema,
+  EMPTY_SELF_EVOLUTION_OVERVIEW,
+  PromptProposalListSchema,
+  PromptProposalSchema,
+  PromptProposalPreviewSchema,
+  ClauseGovernanceOverviewSchema,
+  EMPTY_CLAUSE_GOVERNANCE_OVERVIEW,
+  ListAutopilotsResponseSchema,
+  AdminUserListSchema,
+  EMPTY_ADMIN_USER_LIST,
+  AdminWorkspaceListSchema,
+  EMPTY_ADMIN_WORKSPACE_LIST,
+  AdminMCPStatusSchema,
+  EMPTY_ADMIN_MCP_STATUS,
+  AdminOAuthClientListSchema,
+  EMPTY_ADMIN_OAUTH_CLIENT_LIST,
+  AdminOAuthGrantListSchema,
+  EMPTY_ADMIN_OAUTH_GRANT_LIST,
+  ImpersonationResponseSchema,
+  EMPTY_IMPERSONATION_RESPONSE,
+  OAuthClientSecretRevealSchema,
+  EMPTY_OAUTH_SECRET_REVEAL,
+  SkillVersionListSchema,
+  SkillVersionSchema,
+  EMPTY_SKILL_VERSION,
+  SkillUsageSchema,
+  SkillRestoreResultSchema,
+  AutopilotQuotaUsageSchema,
+  AutopilotRunSchema,
+  RetrospectiveRunListSchema,
+  AdminFileReadPolicySchema,
+  EMPTY_ADMIN_FILE_READ_POLICY,
 } from "@multica/core/api/schemas";
 import { z } from "zod";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
+
+type AdminAuditLogPage = {
+  events: { id: string; actor_id: string; actor_name: string; actor_email: string; action: string; target_type: string; target_id: string | null; workspace_id: string | null; reason: string | null; metadata: Record<string, unknown>; created_at: string }[];
+  total: number;
+  limit: number;
+  offset: number;
+};
 import {
   BatchDecisionAnswersSchema,
   DecisionRequestSchema,
@@ -177,6 +238,9 @@ import {
   IssueDecisionSchema,
   IssueDecisionsListSchema,
   WorkspaceDecisionInboxSchema,
+  IssueSuspensionsListSchema,
+  IssueSuspensionMutationSchema,
+  WorkspaceSuspensionsSchema,
 } from "@multica/core/api/schemas";
 import {
   ActiveTasksResponseSchema,
@@ -203,6 +267,7 @@ import {
   EMPTY_INBOX_LIST,
   EMPTY_INBOX_UNREAD_SUMMARY,
   EMPTY_INTEGRATION_INSTALLATIONS,
+  EMPTY_LABEL,
   EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
@@ -212,6 +277,7 @@ import {
   EMPTY_PIN_LIST,
   EMPTY_PROJECT,
   EMPTY_RUNTIME_LIST,
+  EMPTY_RUNTIME,
   EMPTY_SEARCH_ISSUES_RESPONSE,
   EMPTY_SEARCH_PROJECTS_RESPONSE,
   EMPTY_SQUAD_LIST,
@@ -225,6 +291,7 @@ import {
   IntegrationInstallationsSchema,
   NotificationPreferenceResponseSchema,
   ListLabelsResponseSchema,
+  LabelSchema,
   ListProjectResourcesResponseSchema,
   ListProjectsResponseSchema,
   MemberListSchema,
@@ -232,6 +299,7 @@ import {
   PinnedItemSchema,
   ProjectSchema,
   RuntimeListSchema,
+  RuntimeSchema,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SendChatMessageResponseSchema,
@@ -844,6 +912,17 @@ class ApiClient {
     });
   }
 
+  async updateWorkspace(workspaceId: string, patch: { name?: string; description?: string; context?: string }): Promise<Workspace> {
+    return this.fetch<Workspace>(`/api/workspaces/${encodeURIComponent(workspaceId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+
+  async deleteWorkspace(workspaceId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}`, { method: "DELETE" });
+  }
+
   // --- Inbox ---
   async listInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
     const raw = await this.fetch<unknown>("/api/inbox", {
@@ -943,6 +1022,24 @@ class ApiClient {
     });
   }
 
+  async inviteWorkspaceMember(workspaceId: string, body: CreateMemberRequest): Promise<void> {
+    await this.fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async updateWorkspaceMember(workspaceId: string, memberId: string, body: UpdateMemberRequest): Promise<MemberWithUser> {
+    return this.fetch<MemberWithUser>(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(memberId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async removeWorkspaceMember(workspaceId: string, memberId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(memberId)}`, { method: "DELETE" });
+  }
+
   // `include_archived` is on unconditionally, mirroring web's
   // agentListOptions (packages/core/workspace/queries.ts:75): the archived
   // scope and its count are filtered client-side from this one list, so
@@ -973,6 +1070,193 @@ class ApiClient {
     return this.fetchValidated("/api/skills", SkillSummaryListSchema, [], { signal: opts?.signal });
   }
 
+  async getSelfEvolutionOverview(opts?: { signal?: AbortSignal }): Promise<SelfEvolutionOverview> {
+    return this.fetchValidated(
+      "/api/self-evolution/overview",
+      SelfEvolutionOverviewSchema,
+      EMPTY_SELF_EVOLUTION_OVERVIEW,
+      { ...opts, endpoint: "GET /api/self-evolution/overview" },
+    );
+  }
+
+  async listPromptProposals(opts?: { signal?: AbortSignal }): Promise<PromptProposal[]> {
+    return this.fetchValidated("/api/prompt-legislation/proposals", PromptProposalListSchema, [], {
+      ...opts,
+      endpoint: "GET /api/prompt-legislation/proposals",
+    });
+  }
+
+  async previewPromptProposal(id: string): Promise<PromptProposalPreview> {
+    return this.fetchValidatedWith(
+      `/api/prompt-legislation/proposals/${encodeURIComponent(id)}/preview`,
+      PromptProposalPreviewSchema,
+      { proposal: {} as PromptProposal, diff: [], current_sha256: "", baseline_used: false },
+      { method: "POST", body: JSON.stringify({}) },
+      { endpoint: "POST /api/prompt-legislation/proposals/:id/preview" },
+    );
+  }
+
+  async approvePromptProposal(id: string): Promise<PromptProposal> {
+    return this.fetchValidatedWith(
+      `/api/prompt-legislation/proposals/${encodeURIComponent(id)}/approve`,
+      PromptProposalSchema,
+      {} as PromptProposal,
+      { method: "POST", body: JSON.stringify({ confirm_diff_previewed: true }) },
+      { endpoint: "POST /api/prompt-legislation/proposals/:id/approve" },
+    );
+  }
+
+  async rejectPromptProposal(id: string, reason: string): Promise<PromptProposal> {
+    return this.fetchValidatedWith(
+      `/api/prompt-legislation/proposals/${encodeURIComponent(id)}/reject`,
+      PromptProposalSchema,
+      {} as PromptProposal,
+      { method: "POST", body: JSON.stringify({ reason }) },
+      { endpoint: "POST /api/prompt-legislation/proposals/:id/reject" },
+    );
+  }
+
+  async getClauseGovernanceOverview(opts?: { signal?: AbortSignal }): Promise<ClauseGovernanceOverview> {
+    return this.fetchValidated(
+      "/api/prompt-legislation/governance/clauses?days=30",
+      ClauseGovernanceOverviewSchema,
+      EMPTY_CLAUSE_GOVERNANCE_OVERVIEW,
+      { ...opts, endpoint: "GET /api/prompt-legislation/governance/clauses" },
+    );
+  }
+
+  async listAutopilots(opts?: { signal?: AbortSignal }): Promise<ListAutopilotsResponse> {
+    return this.fetchValidated(
+      "/api/autopilots",
+      ListAutopilotsResponseSchema,
+      { autopilots: [], total: 0 },
+      { ...opts, endpoint: "GET /api/autopilots" },
+    );
+  }
+
+  async getAutopilotQuotaUsage(opts?: { signal?: AbortSignal }): Promise<AutopilotQuotaUsage> {
+    return this.fetchValidated(
+      "/api/autopilots/usage",
+      AutopilotQuotaUsageSchema,
+      { action: "off", used: null, reserved: null, total: null, limit: null, reached: null, period_start: null, period_end: null, reset_at: null, blocked_counts: null },
+      { ...opts, endpoint: "GET /api/autopilots/usage" },
+    );
+  }
+
+  async listAutopilotRuns(id: string, opts?: { signal?: AbortSignal }): Promise<{ runs: AutopilotRun[]; total: number; has_more: boolean; next_offset: number | null }> {
+    return this.fetchValidated(
+      `/api/autopilots/${encodeURIComponent(id)}/runs?limit=20&offset=0`,
+      z.object({ runs: z.array(AutopilotRunSchema).default([]), total: z.number().default(0), has_more: z.boolean().default(false), next_offset: z.number().nullable().default(null) }).loose(),
+      { runs: [], total: 0, has_more: false, next_offset: null },
+      { ...opts, endpoint: "GET /api/autopilots/:id/runs" },
+    );
+  }
+
+  async getSkillVersions(id: string, opts?: { signal?: AbortSignal }): Promise<SkillVersionSummary[]> {
+    return this.fetchValidated(`/api/skills/${encodeURIComponent(id)}/versions`, SkillVersionListSchema, [], { ...opts, endpoint: "GET /api/skills/:id/versions" });
+  }
+
+  async getSkillVersion(id: string, version: number, opts?: { signal?: AbortSignal }): Promise<SkillVersion> {
+    return this.fetchValidated(`/api/skills/${encodeURIComponent(id)}/versions/${version}`, SkillVersionSchema, EMPTY_SKILL_VERSION, { ...opts, endpoint: "GET /api/skills/:id/versions/:version" });
+  }
+
+  async getSkillUsage(id: string, opts?: { signal?: AbortSignal }): Promise<SkillUsage> {
+    return this.fetchValidated(`/api/skills/${encodeURIComponent(id)}/usage`, SkillUsageSchema, { total: 0, last_30_days: 0, assigned_agents: 0, versions: [], recent: [] }, { ...opts, endpoint: "GET /api/skills/:id/usage" });
+  }
+
+  async restoreSkillVersion(id: string, version: number): Promise<{ version: number }> {
+    return this.fetchValidatedWith(`/api/skills/${encodeURIComponent(id)}/versions/${version}/restore`, SkillRestoreResultSchema, { version: 0 }, { method: "POST", body: JSON.stringify({}) }, { endpoint: "POST /api/skills/:id/versions/:version/restore" });
+  }
+
+  async listRetrospectiveRuns(opts?: { signal?: AbortSignal }): Promise<RetrospectiveRun[]> {
+    return this.fetchValidated("/api/retrospective/runs", RetrospectiveRunListSchema, [], { ...opts, endpoint: "GET /api/retrospective/runs" });
+  }
+
+  async getAdminFileReadPolicy(opts?: { signal?: AbortSignal }) {
+    return this.fetchValidated("/api/admin/file-read-policy", AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, { ...opts, endpoint: "GET /api/admin/file-read-policy" });
+  }
+
+  async updateAdminFileReadPolicy(policy: { version: number; rules: { id: string; pattern: string; description: string; enabled: boolean; builtin: boolean }[] }) {
+    return this.fetchValidatedWith("/api/admin/file-read-policy", AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, { method: "PUT", body: JSON.stringify(policy) }, { endpoint: "PUT /api/admin/file-read-policy" });
+  }
+
+  async restoreAdminFileReadPolicy(version: number) {
+    return this.fetchValidatedWith("/api/admin/file-read-policy/restore-defaults", AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, { method: "POST", body: JSON.stringify({ version }) }, { endpoint: "POST /api/admin/file-read-policy/restore-defaults" });
+  }
+
+  async adminListUsers(opts?: { signal?: AbortSignal }) {
+    return this.fetchValidated("/api/admin/users?limit=100", AdminUserListSchema, EMPTY_ADMIN_USER_LIST, { ...opts, endpoint: "GET /api/admin/users" });
+  }
+
+  async adminListWorkspaces(opts?: { signal?: AbortSignal }) {
+    return this.fetchValidated("/api/admin/workspaces?limit=100", AdminWorkspaceListSchema, EMPTY_ADMIN_WORKSPACE_LIST, { ...opts, endpoint: "GET /api/admin/workspaces" });
+  }
+
+  async adminListAuditLogs(opts?: { signal?: AbortSignal; limit?: number; offset?: number }): Promise<AdminAuditLogPage> {
+    const search = new URLSearchParams({ limit: String(opts?.limit ?? 50), offset: String(opts?.offset ?? 0) });
+    const schema = z.object({
+      events: z.array(z.object({ id: z.string(), actor_id: z.string(), actor_name: z.string().default(""), actor_email: z.string().default(""), action: z.string(), target_type: z.string(), target_id: z.string().nullable().default(null), workspace_id: z.string().nullable().default(null), reason: z.string().nullable().default(null), metadata: z.record(z.string(), z.unknown()).default({}), created_at: z.string() }).loose()).default([]),
+      total: z.number().default(0), limit: z.number().default(50), offset: z.number().default(0),
+    }).loose();
+    return this.fetchValidated<AdminAuditLogPage>(`/api/admin/audit?${search}`, schema, { events: [], total: 0, limit: 50, offset: 0 }, { signal: opts?.signal, endpoint: "GET /api/admin/audit" });
+  }
+
+  async adminAddWorkspaceMember(workspaceId: string, body: { email?: string; user_id?: string; role: "member" | "admin"; reason: string }) {
+    await this.fetch(`/api/admin/workspaces/${encodeURIComponent(workspaceId)}/members`, { method: "POST", body: JSON.stringify(body) });
+  }
+
+  async adminMCPStatus(opts?: { signal?: AbortSignal }) {
+    return this.fetchValidated("/api/admin/mcp/status", AdminMCPStatusSchema, EMPTY_ADMIN_MCP_STATUS, { ...opts, endpoint: "GET /api/admin/mcp/status" });
+  }
+
+  async adminListOAuthClients(opts?: { signal?: AbortSignal }) {
+    return this.fetchValidated("/api/admin/oauth/clients", AdminOAuthClientListSchema, EMPTY_ADMIN_OAUTH_CLIENT_LIST, { ...opts, endpoint: "GET /api/admin/oauth/clients" });
+  }
+
+  async adminListOAuthGrants(opts?: { signal?: AbortSignal }) {
+    return this.fetchValidated("/api/admin/oauth/grants", AdminOAuthGrantListSchema, EMPTY_ADMIN_OAUTH_GRANT_LIST, { ...opts, endpoint: "GET /api/admin/oauth/grants" });
+  }
+
+  async adminSetUserDisabled(userId: string, disabled: boolean, reason: string) {
+    return this.fetchValidatedWith(`/api/admin/users/${encodeURIComponent(userId)}/disabled`, UserSchema, EMPTY_USER, { method: "PATCH", body: JSON.stringify({ disabled, reason }) }, { endpoint: "PATCH /api/admin/users/:id/disabled" });
+  }
+
+  async adminSetUserSuperAdmin(userId: string, granted: boolean, reason: string) {
+    return this.fetchValidatedWith(`/api/admin/users/${encodeURIComponent(userId)}/super-admin`, UserSchema, EMPTY_USER, { method: "PATCH", body: JSON.stringify({ granted, reason }) }, { endpoint: "PATCH /api/admin/users/:id/super-admin" });
+  }
+
+  async adminImpersonate(userId: string, reason: string) {
+    return this.fetchValidatedWith(`/api/admin/users/${encodeURIComponent(userId)}/impersonate`, ImpersonationResponseSchema, EMPTY_IMPERSONATION_RESPONSE, { method: "POST", body: JSON.stringify({ reason }) }, { endpoint: "POST /api/admin/users/:id/impersonate" });
+  }
+
+  async stopImpersonation() {
+    return this.fetchValidatedWith("/api/impersonation/stop", ImpersonationResponseSchema, EMPTY_IMPERSONATION_RESPONSE, { method: "POST", body: JSON.stringify({}) }, { endpoint: "POST /api/impersonation/stop" });
+  }
+
+  async adminCreateOAuthClient(body: { name: string; redirect_uris: string[] }) {
+    return this.fetchValidatedWith("/api/admin/oauth/clients", OAuthClientSecretRevealSchema, EMPTY_OAUTH_SECRET_REVEAL, { method: "POST", body: JSON.stringify(body) }, { endpoint: "POST /api/admin/oauth/clients" });
+  }
+
+  async adminSetOAuthClientDisabled(id: string, disabled: boolean, reason: string) {
+    await this.fetch(`/api/admin/oauth/clients/${encodeURIComponent(id)}/disabled`, { method: "PATCH", body: JSON.stringify({ disabled, reason }) });
+  }
+
+  async adminUpdateOAuthClient(id: string, body: { name: string; redirect_uris: string[] }) {
+    await this.fetch(`/api/admin/oauth/clients/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+  }
+
+  async adminRotateOAuthClientSecret(id: string, reason: string) {
+    return this.fetchValidatedWith(`/api/admin/oauth/clients/${encodeURIComponent(id)}/rotate?reason=${encodeURIComponent(reason)}`, OAuthClientSecretRevealSchema, EMPTY_OAUTH_SECRET_REVEAL, { method: "POST" }, { endpoint: "POST /api/admin/oauth/clients/:id/rotate" });
+  }
+
+  async adminDeleteOAuthClient(id: string, reason: string) {
+    await this.fetch(`/api/admin/oauth/clients/${encodeURIComponent(id)}?reason=${encodeURIComponent(reason)}`, { method: "DELETE" });
+  }
+
+  async adminRevokeOAuthGrant(id: string, reason: string) {
+    await this.fetch(`/api/admin/oauth/grants/${encodeURIComponent(id)}?reason=${encodeURIComponent(reason)}`, { method: "DELETE" });
+  }
+
   // Workspace runtimes — feeds the presence dot's availability dimension
   // (runtime.status + last_seen_at). Backend route registered in
   // server/cmd/server/router.go:514 (GET /api/runtimes).
@@ -982,6 +1266,33 @@ class ApiClient {
     });
     return parseWithFallback(raw, RuntimeListSchema, EMPTY_RUNTIME_LIST, {
       endpoint: "listRuntimes",
+    });
+  }
+
+  async updateRuntime(
+    runtimeId: string,
+    patch: { custom_name?: string; visibility?: "private" | "public" },
+  ): Promise<RuntimeDevice> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    return parseWithFallback(raw, RuntimeSchema, EMPTY_RUNTIME, {
+      endpoint: "PATCH /api/runtimes/:id",
+    });
+  }
+
+  async deleteRuntime(runtimeId: string): Promise<void> {
+    await this.fetch<void>(`/api/runtimes/${runtimeId}`, { method: "DELETE" });
+  }
+
+  async unbindAgentsAndDeleteRuntime(
+    runtimeId: string,
+    expectedActiveAgentIds: string[],
+  ): Promise<{ agents_unbound?: number; tasks_cancelled: number; autopilots_paused?: number }> {
+    return this.fetch(`/api/runtimes/${runtimeId}/unbind-agents-and-delete`, {
+      method: "POST",
+      body: JSON.stringify({ expected_active_agent_ids: expectedActiveAgentIds }),
     });
   }
 
@@ -2085,6 +2396,80 @@ class ApiClient {
     return inbox;
   }
 
+  // Issue suspension (RUYI-690). Mirrors packages/core/api/client.ts —
+  // mobile-owned fetch wrapper, shared zod schemas, same endpoint and
+  // query-string contracts. Suspend is desktop/web-authored; mobile reads
+  // the aggregation and releases (resume/cancel) from the detail banner.
+  async listWorkspaceSuspensions(
+    workspaceId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<WorkspaceSuspensionList> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/suspensions${query}`,
+    );
+    const list = parseWithFallback(raw, WorkspaceSuspensionsSchema, null, {
+      endpoint: "GET /api/workspaces/:id/suspensions",
+    });
+    if (!list) throw new Error("Invalid workspace suspensions response");
+    return list;
+  }
+
+  async listIssueSuspensions(
+    issueId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<IssueSuspension[]> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/suspensions${query}`,
+    );
+    const parsed = parseWithFallback(
+      raw,
+      IssueSuspensionsListSchema,
+      { suspensions: [] },
+      { endpoint: "GET /api/issues/:id/suspensions" },
+    );
+    return parsed.suspensions;
+  }
+
+  async resumeIssueSuspension(
+    issueId: string,
+    suspensionId: string,
+    note?: string,
+  ): Promise<IssueSuspensionMutation> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/suspensions/${suspensionId}/resume`,
+      { method: "POST", body: JSON.stringify(note ? { note } : {}) },
+    );
+    const result = parseWithFallback(raw, IssueSuspensionMutationSchema, null, {
+      endpoint: "POST /api/issues/:id/suspensions/:suspensionId/resume",
+    });
+    if (!result) throw new Error("Invalid suspension resume response");
+    return result as IssueSuspensionMutation;
+  }
+
+  async cancelIssueSuspension(
+    issueId: string,
+    suspensionId: string,
+    note?: string,
+  ): Promise<IssueSuspensionMutation> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/suspensions/${suspensionId}/cancel`,
+      { method: "POST", body: JSON.stringify(note ? { note } : {}) },
+    );
+    const result = parseWithFallback(raw, IssueSuspensionMutationSchema, null, {
+      endpoint: "POST /api/issues/:id/suspensions/:suspensionId/cancel",
+    });
+    if (!result) throw new Error("Invalid suspension cancel response");
+    return result as IssueSuspensionMutation;
+  }
+
   // --- Agent authorization requests (RUYI-630) ---
   // Mirrors packages/core/api/client.ts listDecisionRequests /
   // answerDecisionRequest / cancelDecisionRequest: mobile-owned fetch
@@ -2277,10 +2662,31 @@ class ApiClient {
   // used — same convention as createProject (cache rollback on failure is
   // preferable to a parseWithFallback fallback that would mask server errors).
   async createLabel(body: CreateLabelRequest): Promise<Label> {
-    return this.fetch<Label>("/api/labels", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    return this.fetchValidatedWith("/api/labels", LabelSchema, EMPTY_LABEL, { method: "POST", body: JSON.stringify(body) }, { endpoint: "POST /api/labels" });
+  }
+
+  async updateLabel(id: string, body: UpdateLabelRequest): Promise<Label> {
+    return this.fetchValidatedWith(`/api/labels/${encodeURIComponent(id)}`, LabelSchema, EMPTY_LABEL, { method: "PUT", body: JSON.stringify(body) }, { endpoint: "PUT /api/labels/:id" });
+  }
+
+  async deleteLabel(id: string): Promise<void> {
+    await this.fetch(`/api/labels/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  async createIssueStatus(body: CreateIssueStatusRequest): Promise<IssueStatusEntry> {
+    return this.fetchValidatedWith("/api/issue-statuses", IssueStatusEntrySchema, EMPTY_ISSUE_STATUS_ENTRY, { method: "POST", body: JSON.stringify(body) }, { endpoint: "POST /api/issue-statuses" });
+  }
+
+  async updateIssueStatus(id: string, body: UpdateIssueStatusRequest): Promise<IssueStatusEntry> {
+    return this.fetchValidatedWith(`/api/issue-statuses/${encodeURIComponent(id)}`, IssueStatusEntrySchema, EMPTY_ISSUE_STATUS_ENTRY, { method: "PATCH", body: JSON.stringify(body) }, { endpoint: "PATCH /api/issue-statuses/:id" });
+  }
+
+  async archiveIssueStatus(id: string): Promise<IssueStatusEntry> {
+    return this.fetchValidatedWith(`/api/issue-statuses/${encodeURIComponent(id)}`, IssueStatusEntrySchema, EMPTY_ISSUE_STATUS_ENTRY, { method: "DELETE" }, { endpoint: "DELETE /api/issue-statuses/:id" });
+  }
+
+  async reorderIssueStatuses(category: IssueStatusEntry["category"], ids: string[]): Promise<ListIssueStatusesResponse> {
+    return this.fetchValidatedWith("/api/issue-statuses/reorder", ListIssueStatusesResponseSchema, { statuses: [], categories: [], total: 0 }, { method: "PATCH", body: JSON.stringify({ category, ids }) }, { endpoint: "PATCH /api/issue-statuses/reorder" });
   }
 
   async attachLabel(

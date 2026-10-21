@@ -80,6 +80,8 @@ function workspaceScoped(slug: string) {
     inbox: () => `${ws}/inbox`,
     // Decision Center (RUYI-494): workspace-wide decision-card aggregation.
     decisions: () => `${ws}/decisions`,
+    // Suspension center (RUYI-690): workspace-wide issue-suspension view.
+    suspensions: () => `${ws}/suspensions`,
     chat: () => `${ws}/chat`,
     chatWithAgent: (agentId: string) =>
       `${ws}/chat?agent=${encode(agentId)}`,
@@ -93,6 +95,7 @@ function workspaceScoped(slug: string) {
     skills: () => `${ws}/skills`,
     skillDetail: (id: string) => `${ws}/skills/${encode(id)}`,
     settings: () => `${ws}/settings`,
+    audit: () => `${ws}/audit`,
     /** Instance-level admin area (RUYI-47); data is global, the URL rides
      *  the workspace tab architecture like /settings does. */
     admin: () => `${ws}/admin`,

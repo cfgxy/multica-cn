@@ -1208,6 +1208,7 @@
     "cancel_failed": "カードのキャンセルに失敗しました",
     "batch_title": "一括回答",
     "batch_submit": "すべて送信",
+    "batch_submit": "すべて送信",
     "auth_title": "承認リクエスト",
     "auth_state_approved": "承認済み",
     "auth_state_denied": "却下済み",
@@ -1223,5 +1224,38 @@
     "context_impact": "影響範囲",
     "context_recommendation": "推奨理由",
     "context_unknowns": "未確認事項"
+  },
+  "suspension": {
+    "badge": "保留中",
+    "tooltip": "外部条件を待機中 — 再開までコメントと @ は実行されません",
+    "banner": {
+      "active_title": "保留中",
+      "waiting_on": "待機対象",
+      "condition": "再開条件",
+      "reason_label": "理由",
+      "resume": "再開",
+      "cancel": "待機を取消",
+      "blocked_hint": "Blocked はライフサイクル内の停止です。作業自体が完了し依存のみ残っている場合は、保留にすることでライフサイクル状態を保ちつつ待機を可視化し、条件成立時に自動再開できます。",
+      "convert": "保留に変更",
+      "dialog_title": "タスクを保留",
+      "reason_placeholder": "例：RUYI-668 を待機中",
+      "waiting_type_label": "待機対象",
+      "type_external": "外部条件",
+      "type_manual": "人工判断",
+      "type_issue": "指定 Issue",
+      "type_decision": "指定ディシジョンカード",
+      "target_issue": "対象 Issue",
+      "target_decision": "対象ディシジョンカード",
+      "pick_issue": "Issue を選択…",
+      "pick_decision": "ディシジョンカードを選択…",
+      "no_open_cards": "このワークスペースに未回答のカードはありません",
+      "condition_label": "再開条件",
+      "condition_placeholder": "例：RUYI-668 完了後に再開",
+      "condition_required_hint": "外部 / 人工待ちでは必須",
+      "cancel_dialog": "キャンセル",
+      "submit": "保留",
+      "toast_success": "保留しました",
+      "toast_failed": "保留に失敗しました"
+    }
   }
 }
