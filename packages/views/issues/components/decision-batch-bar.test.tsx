@@ -57,14 +57,16 @@ beforeEach(() => {
 });
 
 describe("DecisionBatchBar", () => {
-  it("renders one numbered row per open card with lettered options", () => {
+  it("shows one decision at a time and navigates between cards", () => {
     renderBar([card("d-1"), card("d-2")]);
     expect(screen.getByTestId("decision-batch-bar")).toBeInTheDocument();
     expect(screen.getByTestId("decision-batch-count")).toHaveTextContent("2");
     expect(screen.getByText("问题 d-1？")).toBeInTheDocument();
-    expect(screen.getByText("问题 d-2？")).toBeInTheDocument();
+    expect(screen.queryByText("问题 d-2？")).toBeNull();
     expect(screen.getByTestId(`decision-batch-option-d-1-0`)).toHaveTextContent("A");
-    expect(screen.getByTestId(`decision-batch-option-d-2-1`)).toHaveTextContent("B");
+    fireEvent.click(screen.getByTestId("decision-batch-next"));
+    expect(screen.getByText("问题 d-2？")).toBeInTheDocument();
+    expect(screen.queryByText("问题 d-1？")).toBeNull();
   });
 
   // RUYI-575: labels written under the decision-numbering convention embed the
@@ -98,8 +100,8 @@ describe("DecisionBatchBar", () => {
 
   it("submit stays disabled until at least one card has a pick", () => {
     renderBar([card("d-1"), card("d-2")]);
-    expect(screen.getByTestId("decision-batch-submit")).toBeDisabled();
     fireEvent.click(screen.getByTestId("decision-batch-option-d-1-0"));
+    fireEvent.click(screen.getByTestId("decision-batch-next"));
     expect(screen.getByTestId("decision-batch-submit")).toBeEnabled();
   });
 
@@ -123,6 +125,7 @@ describe("DecisionBatchBar", () => {
     const { qc } = renderBar(open);
 
     fireEvent.click(screen.getByTestId("decision-batch-option-d-1-0"));
+    fireEvent.click(screen.getByTestId("decision-batch-next"));
     fireEvent.click(screen.getByTestId("decision-batch-option-d-2-1"));
     fireEvent.click(screen.getByTestId("decision-batch-submit"));
 
@@ -148,6 +151,7 @@ describe("DecisionBatchBar", () => {
     renderBar([card("d-1"), card("d-2")]);
 
     fireEvent.click(screen.getByTestId("decision-batch-option-d-1-0"));
+    fireEvent.click(screen.getByTestId("decision-batch-next"));
     fireEvent.click(screen.getByTestId("decision-batch-submit"));
 
     await waitFor(() =>
@@ -163,6 +167,7 @@ describe("DecisionBatchBar", () => {
 
     fireEvent.click(screen.getByTestId("decision-batch-option-d-1-1"));
     fireEvent.click(screen.getByTestId("decision-batch-option-d-1-0"));
+    fireEvent.click(screen.getByTestId("decision-batch-next"));
     fireEvent.click(screen.getByTestId("decision-batch-submit"));
 
     await waitFor(() =>
@@ -183,6 +188,8 @@ describe("DecisionBatchBar", () => {
     const { qc } = renderBar([card("d-1"), card("d-2")]);
 
     fireEvent.click(screen.getByTestId("decision-batch-option-d-1-0"));
+    fireEvent.click(screen.getByTestId("decision-batch-next"));
+    fireEvent.click(screen.getByTestId("decision-batch-option-d-2-0"));
     fireEvent.click(screen.getByTestId("decision-batch-submit"));
 
     await waitFor(() => expect(toast.error).toHaveBeenCalled());

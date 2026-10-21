@@ -13,6 +13,8 @@ import { decisionOptionDisplayLabel, patchDecisionInCache } from "@multica/core/
 import { issueKeys } from "@multica/core/issues/queries";
 import type { IssueDecision } from "@multica/core/types";
 import { useT } from "../../i18n";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { DecisionContextView } from "./decision-context-view";
 
 // Batch answer bar (RUYI-471): shown above the first open card when an issue
 // has two or more. One pass of picks, one submit, one shared echo comment —
@@ -26,6 +28,9 @@ export function DecisionBatchBar({ issueId, open }: { issueId: string; open: Iss
   const qc = useQueryClient();
   const [picks, setPicks] = useState<Record<string, number[]>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const currentIndex = Math.min(activeIndex, Math.max(0, open.length - 1));
+  const decision = open[currentIndex];
 
   const toggle = (decision: IssueDecision, idx: number) => {
     if (submitting) return;
@@ -84,59 +89,34 @@ export function DecisionBatchBar({ issueId, open }: { issueId: string; open: Iss
         </Badge>
       </div>
 
-      <div className="mt-3 flex flex-col gap-3">
-        {open.map((decision, cardIdx) => (
-          <div key={decision.id} data-testid={`decision-batch-card-${decision.id}`}>
-            <p className="break-words text-body font-medium">
-              <span className="mr-1 text-muted-foreground">{cardIdx + 1}.</span>
-              {decision.question}
-            </p>
-            <div
-              className="mt-1.5 flex flex-wrap gap-1.5"
-              role={decision.multi_select ? "group" : "radiogroup"}
-              aria-label={decision.question}
-            >
-              {decision.options.map((opt, idx) => {
-                const isSelected = (picks[decision.id] ?? []).includes(idx);
-                return (
-                  <button
-                    key={idx}
-                    type="button"
-                    role={decision.multi_select ? "checkbox" : "radio"}
-                    aria-checked={isSelected}
-                    disabled={submitting}
-                    onClick={() => toggle(decision, idx)}
-                    data-testid={`decision-batch-option-${decision.id}-${idx}`}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-left text-caption transition-colors",
-                      !submitting && "hover:bg-accent/60 cursor-pointer",
-                      isSelected && "border-brand bg-accent/40",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "font-medium",
-                        isSelected ? "text-brand" : "text-muted-foreground",
-                      )}
-                      aria-hidden
-                    >
-                      {OPTION_LETTERS[idx] ?? idx + 1}
-                    </span>
-                    <span className="break-words">{decisionOptionDisplayLabel(opt.label)}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
+      {decision && <div className="mt-3" data-testid={`decision-batch-card-${decision.id}`}>
+        <div className="flex items-start justify-between gap-3">
+          <p className="min-w-0 break-words text-body font-medium">{decision.question}</p>
+          <span className="shrink-0 text-caption text-muted-foreground">{currentIndex + 1} / {open.length}</span>
+        </div>
+        <DecisionContextView context={decision.context} />
+        <div className="mt-2 flex flex-col gap-1.5" role={decision.multi_select ? "group" : "radiogroup"} aria-label={decision.question}>
+          {decision.options.map((opt, idx) => {
+            const isSelected = (picks[decision.id] ?? []).includes(idx);
+            return (
+              <button key={idx} type="button" role={decision.multi_select ? "checkbox" : "radio"} aria-checked={isSelected} disabled={submitting} onClick={() => toggle(decision, idx)} data-testid={`decision-batch-option-${decision.id}-${idx}`} className={cn("flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-left text-caption transition-colors", !submitting && "hover:bg-accent/60 cursor-pointer", isSelected && "border-brand bg-accent/40")}>
+                <span className={cn("font-medium", isSelected ? "text-brand" : "text-muted-foreground")} aria-hidden>{OPTION_LETTERS[idx] ?? idx + 1}</span>
+                <span className="break-words">{decisionOptionDisplayLabel(opt.label)}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>}
 
-      <div className="mt-3">
-        <Button size="sm" disabled={!canSubmit} onClick={() => void submit()} data-testid="decision-batch-submit">
-          {submitting
-            ? t(($) => $.decisions.submitting)
-            : t(($) => $.decisions.batch_submit)}
-        </Button>
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <Button size="sm" variant="outline" disabled={currentIndex === 0 || submitting} onClick={() => setActiveIndex((index) => Math.max(0, index - 1))} data-testid="decision-batch-previous"><ChevronLeft />{t(($) => $.decisions.previous)}</Button>
+        {currentIndex < open.length - 1 ? (
+          <Button size="sm" onClick={() => setActiveIndex((index) => Math.min(open.length - 1, index + 1))} disabled={submitting} data-testid="decision-batch-next">{t(($) => $.decisions.next)}<ChevronRight /></Button>
+        ) : (
+          <Button size="sm" disabled={!canSubmit} onClick={() => void submit()} data-testid="decision-batch-submit">
+            {submitting ? t(($) => $.decisions.submitting) : t(($) => $.decisions.batch_submit)}
+          </Button>
+        )}
       </div>
     </Card>
   );

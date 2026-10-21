@@ -126,6 +126,7 @@ import {
 import {
   interleaveDecisions,
   type TimelineListItem,
+  DECISION_BATCH_BAR_ID,
 } from "@/lib/timeline-decisions";
 import {
   interleavePullRequests,
@@ -133,8 +134,7 @@ import {
 } from "@/lib/timeline-pull-requests";
 import { issueDecisionsOptions } from "@/data/queries/decisions";
 import { issuePullRequestsOptions } from "@/data/queries/github";
-import { DecisionCard } from "./decision-card";
-import { DecisionBatchBar } from "./decision-batch-bar";
+import { DecisionSummary, DecisionBatchEntry } from "./decision-summary";
 import { PullRequestCard } from "./pull-request-card";
 import { pendingPullRequests } from "@multica/core/github/pending-pull-requests";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
@@ -199,6 +199,8 @@ interface Props {
    *  the bounded-locate controller with a decision-aware `findIndex` and
    *  flashes the card wrapper on `located`. Shares `highlightNonce`. */
   highlightDecisionId?: string;
+  onOpenDecision?: (decisionId: string) => void;
+  onOpenDecisionBatch?: () => void;
   /** RUYI-28 shared publish channel: called with the SERVER comment id
    *  whenever THIS user publishes a comment — composer success OR failed-
    *  comment Retry success. The timeline maps it to the owning root and
@@ -261,6 +263,8 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       onRefresh,
       highlightCommentId,
       highlightDecisionId,
+      onOpenDecision,
+      onOpenDecisionBatch,
       highlightNonce,
       onCommentPublished,
     },
@@ -304,9 +308,18 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     issuePullRequestsOptions(issue.id),
   );
   const feed = useMemo<TimelineFeedItem[]>(
-    () =>
-      interleavePullRequests(merged, pullRequestsData?.pull_requests ?? []),
-    [merged, pullRequestsData],
+    () => {
+      const rows = interleavePullRequests(merged, pullRequestsData?.pull_requests ?? []);
+      const open = (decisionsData ?? [])
+        .filter((decision) => decision.status === "open")
+        .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+      if (open.length < 2) return rows;
+      return [...rows, {
+        batchBar: { open },
+        entry: { id: DECISION_BATCH_BAR_ID, created_at: open[0]!.created_at },
+      }];
+    },
+    [merged, pullRequestsData, decisionsData],
   );
   const canChangeTimelineSort =
     (timelineRowsModel?.stats.threadBlockCount ?? 0) >= 1 &&
@@ -1319,13 +1332,25 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
                     : undefined
                 }
               >
-                <DecisionCard decision={item.decision} />
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => onOpenDecision?.(item.decision.id)}
+                  testID={`decision-summary-${item.decision.id}`}
+                >
+                  <DecisionSummary decision={item.decision} />
+                </Pressable>
               </View>
             );
           }
           if ("batchBar" in item) {
             return (
-              <DecisionBatchBar issueId={issue.id} open={item.batchBar.open} />
+              <Pressable
+                accessibilityRole="button"
+                onPress={onOpenDecisionBatch}
+                testID="decision-batch-entry"
+              >
+                <DecisionBatchEntry openCount={item.batchBar.open.length} />
+              </Pressable>
             );
           }
           if ("pullRequest" in item) {

@@ -139,18 +139,21 @@ describe("DecisionBatchBar", () => {
     expect(screen.getByText("B超 声呐")).toBeTruthy();
   });
 
-  it("renders one numbered row per open card and disables submit until a pick", async () => {
+  it("shows one decision at a time and navigates between cards", async () => {
     await renderBar([card("d-1"), card("d-2")]);
 
     expect(screen.getByTestId("decision-batch-bar")).toBeTruthy();
     expect(screen.getByText("2")).toBeTruthy();
     expect(screen.getByText("Question d-1?")).toBeTruthy();
-    expect(screen.getByText("Question d-2?")).toBeTruthy();
-    expect(submitDisabled()).toBe(true);
+    expect(screen.queryByText("Question d-2?")).toBeNull();
 
     await pressPressable("decision-batch-option-d-1-0");
     await waitFor(() => expect(optionState("decision-batch-option-d-1-0").checked).toBe(true));
-    expect(submitDisabled()).toBe(false);
+    await pressPressable("decision-batch-next");
+    expect(screen.getByText("Question d-2?")).toBeTruthy();
+    expect(screen.queryByText("Question d-1?")).toBeNull();
+    await pressPressable("decision-batch-previous");
+    expect(optionState("decision-batch-option-d-1-0").checked).toBe(true);
   });
 
   it("single-select rows replace the pick", async () => {
@@ -174,6 +177,7 @@ describe("DecisionBatchBar", () => {
     const qc = await renderBar(open);
 
     await pressPressable("decision-batch-option-d-1-0");
+    await pressPressable("decision-batch-next");
     await pressPressable("decision-batch-option-d-2-1");
     await pressPressable("decision-batch-submit");
 
@@ -205,6 +209,7 @@ describe("DecisionBatchBar", () => {
 
     await pressPressable("decision-batch-option-d-1-2");
     await pressPressable("decision-batch-option-d-1-0");
+    await pressPressable("decision-batch-next");
     await pressPressable("decision-batch-submit");
 
     await waitFor(() =>
@@ -225,6 +230,8 @@ describe("DecisionBatchBar", () => {
     const qc = await renderBar([card("d-1"), card("d-2")]);
 
     await pressPressable("decision-batch-option-d-1-0");
+    await pressPressable("decision-batch-next");
+    await pressPressable("decision-batch-option-d-2-0");
     await pressPressable("decision-batch-submit");
 
     await waitFor(() => expect(alert).toHaveBeenCalled());
