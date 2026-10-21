@@ -1,8 +1,25 @@
+CREATE TABLE credential_connector (
+    id UUID NOT NULL,
+    workspace_id UUID NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind = 'mcp_http_bearer'),
+    target_url TEXT NOT NULL,
+    adapter_policy TEXT NOT NULL CHECK (adapter_policy = 'mcp_http_v1'),
+    auth_field TEXT NOT NULL CHECK (auth_field = 'authorization_bearer'),
+    status TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
+    revision BIGINT NOT NULL DEFAULT 1 CHECK (revision > 0),
+    created_by UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE credential_vault (
     id UUID NOT NULL,
     workspace_id UUID NOT NULL,
     name TEXT NOT NULL,
     target_service TEXT NOT NULL,
+    connector_id UUID NOT NULL,
+    connector_revision BIGINT NOT NULL CHECK (connector_revision > 0),
     purpose TEXT NOT NULL,
     credential_type TEXT NOT NULL CHECK (credential_type = 'machine'),
     status TEXT NOT NULL CHECK (status IN ('active', 'exhausted', 'revoked', 'expired')),

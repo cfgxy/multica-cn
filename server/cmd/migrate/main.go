@@ -333,6 +333,8 @@ var concurrentIndexCleanups = map[string][]string{
 	"977_mcp_pre_auth_rejection_expiry_index":                   {"mcp_pre_auth_rejection_expiry_idx"},
 	"977_mcp_pre_auth_rejection_invocation_index":               {"mcp_pre_auth_rejection_invocation_uidx"},
 	"979_credential_vault_id_index":                             {"credential_vault_id_uidx"},
+	"979_credential_connector_workspace_index":                  {"credential_connector_workspace_id_uidx"},
+	"979_credential_connector_binding_index":                    {"credential_vault_connector_revision_idx"},
 	"979_credential_vault_workspace_created_index":              {"credential_vault_workspace_created_idx"},
 	"979_credential_grant_id_index":                             {"credential_grant_id_uidx"},
 	"979_credential_grant_lookup_index":                         {"credential_grant_lookup_idx"},

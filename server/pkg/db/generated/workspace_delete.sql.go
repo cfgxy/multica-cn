@@ -663,6 +663,21 @@ func (q *Queries) DeleteWorkspacePullRequests(ctx context.Context, workspaceID p
 
 const deleteWorkspaceRuntimesAndProjects = `-- name: DeleteWorkspaceRuntimesAndProjects :exec
 WITH
+deleted_credential_audit AS (
+    DELETE FROM credential_audit WHERE workspace_id = $1
+),
+deleted_credential_capabilities AS (
+    DELETE FROM credential_capability WHERE workspace_id = $1
+),
+deleted_credential_grants AS (
+    DELETE FROM credential_grant WHERE workspace_id = $1
+),
+deleted_credentials AS (
+    DELETE FROM credential_vault WHERE workspace_id = $1
+),
+deleted_credential_connectors AS (
+    DELETE FROM credential_connector WHERE workspace_id = $1
+),
 deleted_runtime_credentials AS (
     DELETE FROM runtime_credential
     WHERE runtime_instance_id IN (

@@ -35,6 +35,8 @@ type Context struct {
 	ResourceID   string `json:"resource_id"`
 	SubjectType  string `json:"subject_type"`
 	SubjectID    string `json:"subject_id"`
+	ConnectorID  string `json:"connector_id,omitempty"`
+	ConnectorRev int64  `json:"connector_revision,omitempty"`
 	Purpose      string `json:"purpose"`
 	Version      int    `json:"version"`
 }
@@ -42,6 +44,9 @@ type Context struct {
 func (c Context) AssociatedData() ([]byte, error) {
 	if c.WorkspaceID == "" || c.ResourceType == "" || c.ResourceID == "" ||
 		c.SubjectType == "" || c.SubjectID == "" || c.Purpose == "" || c.Version != ProtocolVersion {
+		return nil, ErrInvalidEnvelope
+	}
+	if (c.ConnectorID == "") != (c.ConnectorRev == 0) || c.ConnectorRev < 0 {
 		return nil, ErrInvalidEnvelope
 	}
 	b, err := json.Marshal(c)
