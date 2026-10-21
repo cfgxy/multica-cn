@@ -353,6 +353,23 @@ func ResolveTargetIDByHost(host string, targets []Target) (string, error) {
 	return resolvedID, nil
 }
 
+// SSHTargetAlias recognizes the only remote target form accepted by the
+// daemon. The alias is resolved through the daemon's existing OpenSSH config;
+// callers never provide hostnames, users, ports, keys or commands.
+func SSHTargetAlias(targetID string) (string, bool) {
+	alias, ok := strings.CutPrefix(targetID, "ssh:")
+	if !ok || len(alias) == 0 || len(alias) > 60 {
+		return "", false
+	}
+	for i, char := range alias {
+		isAlphaNumeric := char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9'
+		if (!isAlphaNumeric && char != '_' && char != '-') || (i == 0 && !isAlphaNumeric) {
+			return "", false
+		}
+	}
+	return alias, true
+}
+
 func PathWithinRoots(roots []string, path string) bool {
 	return PathWithinRootsWithPolicy(roots, path, DefaultDenyPolicy())
 }
