@@ -144,9 +144,7 @@ func NewServiceFromEnv(opts ...Option) (*Service, error) {
 		if err != nil {
 			return nil, err
 		}
-		sp := NewStaticProvider()
-		sp.LoadRules(rules)
-		providers = append(providers, sp)
+		providers = append(providers, NewReloadingFileProvider(path, rules, slog.Default()))
 		loadedCount = len(rules)
 	}
 
