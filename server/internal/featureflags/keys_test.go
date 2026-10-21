@@ -65,6 +65,17 @@ func TestPluginsV1DefaultsOff(t *testing.T) {
 	}
 }
 
+func TestMarkdownReaderV2IsPublishedAndDefaultsOff(t *testing.T) {
+	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
+	enabled, published := flags[MarkdownReaderV2]
+	if !published {
+		t.Fatal("markdown_reader_v2 must be published so clients can read the rollback flag")
+	}
+	if enabled {
+		t.Fatal("markdown_reader_v2 must default to legacy rendering")
+	}
+}
+
 // The marketplace has to be published (the client fails closed on absence)
 // and on by default (Owner decision: no configuration should be required to
 // see the marketplace entry point).

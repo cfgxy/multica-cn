@@ -33,7 +33,6 @@ import { Text } from "@/components/ui/text";
 import { THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import {
-  buildMermaidThemeVariables,
   type MermaidThemeColors,
 } from "./mermaid-config";
 import MermaidDiagramDom from "./mermaid-diagram.dom";
@@ -94,6 +93,7 @@ export function MermaidDiagram({ code }: { code: string }) {
   // Inline: track the rendered SVG's height (matchContents) and fill the
   // column so the DOM-side `max-width` scaling has a width to scale to.
   const inlineProps: DomDiagramProps = {
+    kind: "mermaid",
     chart: code,
     colors,
     mode: "inline",
@@ -104,6 +104,7 @@ export function MermaidDiagram({ code }: { code: string }) {
     },
   };
   const fullProps: DomDiagramProps = {
+    kind: "mermaid",
     chart: code,
     colors,
     mode: "full",

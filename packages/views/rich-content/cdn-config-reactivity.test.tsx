@@ -87,7 +87,7 @@ const FILE_URL = `https://${CDN_DOMAIN}/workspaces/w1/files/report.pdf`;
 const CONTENT = `Attached:\n\n[report.pdf](${FILE_URL})`;
 
 beforeEach(() => {
-  configStore.setState({ cdnDomain: "", cdnSigned: false });
+  configStore.setState({ cdnDomain: "", cdnSigned: false, featureFlags: {} });
 });
 
 describe("RichContent CDN config reactivity", () => {
@@ -130,5 +130,25 @@ describe("RichContent CDN config reactivity", () => {
     expect(
       container.querySelector('a[href="https://example.com/spec.pdf"]'),
     ).not.toBeNull();
+  });
+
+  it("selects the modern document adapter only while the remote flag is enabled", () => {
+    const { container, rerender } = render(<RichContent content="# Heading" />);
+    const root = container.querySelector("[data-rich-content]");
+    expect(root?.getAttribute("data-reader-version")).toBe("legacy");
+
+    act(() => {
+      configStore.getState().setFeatureFlags({ markdown_reader_v2: true });
+    });
+    expect(root?.getAttribute("data-reader-version")).toBe("modern");
+    expect(root?.classList.contains("markdown-reader-v2")).toBe(true);
+
+    act(() => {
+      configStore.getState().setFeatureFlags({ markdown_reader_v2: false });
+    });
+    expect(root?.getAttribute("data-reader-version")).toBe("legacy");
+    expect(root?.classList.contains("markdown-reader-v2")).toBe(false);
+    rerender(<RichContent content="# Updated" />);
+    expect(root?.textContent).toContain("Updated");
   });
 });
