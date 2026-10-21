@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/credentialcrypto"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -407,8 +408,16 @@ func replaceCredentialAs(t *testing.T, h *Handler, userID, issueID, credentialID
 	recorder := httptest.NewRecorder()
 	req := newRequest(http.MethodPost, "/api/issues/"+issueID+"/credentials/"+credentialID+"/replace", body)
 	req.Header.Set("X-User-ID", userID)
-	req = withURLParam(req, "id", issueID)
-	req = withURLParam(req, "credentialId", credentialID)
+	routeCtx := chi.NewRouteContext()
+	routeCtx.URLParams.Add("id", issueID)
+	routeCtx.URLParams.Add("credentialId", credentialID)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeCtx))
+	if got := chi.URLParam(req, "id"); got != issueID {
+		t.Fatalf("replace route issue parameter = %q, want %q", got, issueID)
+	}
+	if got := chi.URLParam(req, "credentialId"); got != credentialID {
+		t.Fatalf("replace route credential parameter = %q, want %q", got, credentialID)
+	}
 	h.ReplaceIssueCredential(recorder, req)
 	return recorder
 }
