@@ -127,7 +127,8 @@ type NavKey =
   | "runtimes"
   | "skills"
   | "settings"
-  | "decisions";
+  | "decisions"
+  | "suspensions";
 
 // Static schema (key only) — labels resolved at render via useT("layout"),
 // icons derived from the destination path via routeIconForPath.
@@ -137,6 +138,7 @@ type NavLabelKey =
   | "my_issues"
   | "issues"
   | "decisions"
+  | "suspensions"
   | "projects"
   | "autopilots"
   | "agents"
@@ -160,6 +162,9 @@ const workspaceNav: { key: NavKey; labelKey: NavLabelKey }[] = [
   { key: "issues", labelKey: "issues" },
   // RUYI-494: Decision Center — aggregates decision cards across issues.
   { key: "decisions", labelKey: "decisions" },
+  // RUYI-690: Suspension Center — aggregates suspended issues across the
+  // workspace, next to the decisions center it mirrors.
+  { key: "suspensions", labelKey: "suspensions" },
   { key: "projects", labelKey: "projects" },
   { key: "autopilots", labelKey: "autopilots" },
   { key: "agents", labelKey: "agents" },

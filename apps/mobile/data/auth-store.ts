@@ -44,6 +44,7 @@ interface AuthState {
   /** Overwrite the in-memory user — call after PATCH /api/me so name/avatar
    *  edits land without a refetch. Server response is the source of truth. */
   setUser: (user: User) => void;
+  applySession: (token: string, user: User) => Promise<void>;
 }
 
 export const useAuthStore = create<AuthState>((set) => {
@@ -151,5 +152,11 @@ export const useAuthStore = create<AuthState>((set) => {
   },
 
   setUser: (user) => set({ user }),
+  applySession: async (token, user) => {
+    const { activeServerId } = useServerStore.getState();
+    await setToken(activeServerId, token);
+    api.setToken(token);
+    set({ user });
+  },
   };
 });

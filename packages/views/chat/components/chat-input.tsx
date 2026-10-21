@@ -26,6 +26,7 @@ import { createLogger } from "@multica/core/logger";
 import { getCurrentWsId } from "@multica/core/platform";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import { skillListOptions } from "@multica/core/workspace/queries";
+import { quickReplyListOptions } from "@multica/core/quick-replies/queries";
 import { useQuery } from "@tanstack/react-query";
 import type { MentionItem } from "../../editor/extensions/mention-suggestion";
 import type { Attachment, ChatSession, Project } from "@multica/core/types";
@@ -203,6 +204,10 @@ export function ChatInput({
   // (RUYI-288). Same prefetch the issue comment composer does.
   const wsId = getCurrentWsId();
   useQuery({ ...skillListOptions(wsId ?? ""), enabled: !!wsId });
+  const { data: quickReplies = [] } = useQuery({
+    ...quickReplyListOptions(wsId ?? ""),
+    enabled: !!wsId,
+  });
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -772,6 +777,16 @@ export function ChatInput({
                 onSelectFile={uploadEnabled
                   ? (file) => editorRef.current?.uploadFile(file)
                   : undefined}
+                onInsertMention={() => editorRef.current?.insertMentionTrigger()}
+                onInsertSkill={() => editorRef.current?.insertSlashTrigger()}
+                quickReplies={quickReplies}
+                onSelectQuickReply={(content) => {
+                  if (!editorRef.current?.insertMarkdownAtEnd(content)) return;
+                  const updated = editorRef.current.flushPendingUpdate();
+                  if (updated === null) return;
+                  setIsEmpty(!updated.trim());
+                  commitDraft(editorDraftKeyRef.current, updated);
+                }}
                 projects={projects}
                 projectId={projectId}
                 onSelectProject={projectSelectionEnabled ? onProjectChange : undefined}

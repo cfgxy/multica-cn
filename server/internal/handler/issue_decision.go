@@ -663,6 +663,14 @@ func (h *Handler) AnswerIssueDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RUYI-690: machine predicate decision_answered — resume suspensions
+	// waiting on this card BEFORE the echo comment runs the trigger pipeline,
+	// so an issue suspended on its own card's decision is unsuspended (and
+	// its assignee woken) by the time the echo reaches the admission gate.
+	// Only the answer arm grants the question; the cancel arm never reaches
+	// this code.
+	h.ResumeSuspensionsWaitingOnDecision(r.Context(), answered)
+
 	resp := decisionToResponse(answered)
 	resp.TriggerOutcomes = h.postDecisionAnswerEcho(r, issue, answered, req.SelectedIndices, authorID, &resp)
 

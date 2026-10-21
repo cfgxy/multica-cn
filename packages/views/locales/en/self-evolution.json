@@ -858,5 +858,6 @@
   "configPage": {
     "title": "Module configuration",
     "description": "The model service below backs quality scoring; Langfuse is instance-level and read-only here."
-  }
+  },
+  "mobile": { "title": "Self-Evolution", "overview": "Overview", "versions": "Versions", "proposals": "Proposals", "proposal_count_label": "proposals", "pending_owner": "Awaiting owner", "skills": "Skills", "review_diff": "Review proposal diff", "empty_diff": "No diff lines", "cancel": "Cancel", "approve": "Approve", "approving": "Approving…", "reject": "Reject", "rejecting": "Rejecting…", "action_failed": "Action failed. Your changes were not saved. Review and try again.", "reject_reason": "Reason for rejection", "reject_unavailable": "Rejection reason entry is not available on this device.", "error": "Could not load proposal preview", "load_error": "Some data could not be loaded. Tap to retry.", "review_approve": "Review and approve", "no_proposals": "No proposals", "clauses": "Clause governance", "injections": "uses", "no_clauses": "No governed clauses", "retrospective": "Retrospective runs", "issues_analyzed": "tasks analyzed", "no_retrospectives": "No retrospective runs" }
 }

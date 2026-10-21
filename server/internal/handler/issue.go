@@ -93,6 +93,12 @@ type IssueResponse struct {
 	// RunSuppressedAt is when the hold was placed (nanosecond RFC3339, same
 	// format as LastActivityAt); null whenever RunSuppressed is false.
 	RunSuppressedAt *string `json:"run_suppressed_at"`
+	// SuspendedAt mirrors an active issue_suspension row (RUYI-690): the
+	// "waiting" dimension that never touches the lifecycle status. Nanosecond
+	// RFC3339 like RunSuppressedAt; null when the issue is not suspended. The
+	// issue_suspension table owns the audit trail (reason, waiting target,
+	// resume condition); this column only answers "is it waiting right now".
+	SuspendedAt *string `json:"suspended_at"`
 	// Metadata is the per-issue KV map (see issue_metadata.go). Always emitted
 	// (empty object when unset) so frontend code can `issue.metadata[key]`
 	// without nil-guarding the parent field.
@@ -337,6 +343,7 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
 		RunSuppressed:   i.RunSuppressed,
 		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
+		SuspendedAt:     timestampToNanoPtr(i.SuspendedAt),
 		Metadata:        parseIssueMetadata(i.Metadata),
 		Properties:      parseIssueProperties(i.Properties),
 	}
@@ -376,6 +383,7 @@ func issueListRowToResponse(i db.ListIssuesRow, issuePrefix string) IssueRespons
 		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
 		RunSuppressed:   i.RunSuppressed,
 		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
+		SuspendedAt:     timestampToNanoPtr(i.SuspendedAt),
 		Metadata:        parseIssueMetadata(i.Metadata),
 		Properties:      parseIssueProperties(i.Properties),
 	}
@@ -447,6 +455,7 @@ func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueRes
 		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
 		RunSuppressed:   i.RunSuppressed,
 		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
+		SuspendedAt:     timestampToNanoPtr(i.SuspendedAt),
 		Metadata:        parseIssueMetadata(i.Metadata),
 		Properties:      parseIssueProperties(i.Properties),
 	}
@@ -1538,7 +1547,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision, i.run_suppressed, i.run_suppressed_at
+	   i.revision, i.run_suppressed, i.run_suppressed_at, i.suspended_at
 FROM issue i
 WHERE %s
 ORDER BY %s
@@ -1581,6 +1590,7 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 			&row.Revision,
 			&row.RunSuppressed,
 			&row.RunSuppressedAt,
+			&row.SuspendedAt,
 		); err != nil {
 			slog.Warn("ListIssues scan failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to list issues")
@@ -2131,7 +2141,7 @@ WITH ranked AS (
 		i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at,
-		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision,
+		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.suspended_at,
 		COUNT(*) OVER (PARTITION BY i.assignee_type, i.assignee_id) AS group_total,
 		ROW_NUMBER() OVER (
 			PARTITION BY i.assignee_type, i.assignee_id
@@ -2144,7 +2154,7 @@ SELECT
 	id, workspace_id, title, description, status, priority,
 	assignee_type, assignee_id, creator_type, creator_id,
 	parent_issue_id, position, start_date, due_date, created_at, updated_at, last_activity_at,
-	number, project_id, metadata, stage, properties, revision, group_total
+	number, project_id, metadata, stage, properties, revision, suspended_at, group_total
 FROM ranked
 WHERE rn > %s AND rn <= %s + %s
 ORDER BY
@@ -2193,6 +2203,7 @@ ORDER BY
 			&row.Stage,
 			&row.Properties,
 			&row.Revision,
+			&row.SuspendedAt,
 			&row.GroupTotal,
 		); err != nil {
 			slog.Warn("ListGroupedIssues scan failed", "error", err)
@@ -3796,6 +3807,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// fails best-effort.
 	if statusChanged {
 		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
+		// RUYI-690: machine predicate issue_done — active suspensions waiting
+		// on this issue auto-resume (and wake its assignee) when it enters
+		// the done category. Best-effort; never fails the update.
+		if h.enteredDoneCategory(r.Context(), prevIssue, issue) {
+			h.ResumeSuspensionsWaitingOnIssue(r.Context(), issue)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -4253,6 +4270,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// the parent/stage notification is evaluated once against the final state
 	// after the loop (MUL-4155) rather than per-child mid-batch.
 	var childDoneCompleted []db.Issue
+	var suspensionDoneTargets []db.Issue
 	for _, issueID := range req.IssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
@@ -4522,6 +4540,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// RUYI-690: same issue_done transition rule as UpdateIssue, deferred
+		// to after the loop like the stage barrier so each waiting issue's
+		// suspensions resume against the batch's final committed state.
+		if statusChanged && h.enteredDoneCategory(r.Context(), prevIssue, issue) {
+			suspensionDoneTargets = append(suspensionDoneTargets, issue)
+		}
+
 		updated++
 	}
 
@@ -4530,6 +4555,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// of issue_ids order (MUL-4155). Best-effort; failure does not abort the
 	// batch. Single-issue UpdateIssue is unchanged and still notifies inline.
 	h.notifyParentsOfBatchChildDone(r.Context(), childDoneCompleted)
+
+	// RUYI-690: resume suspensions waiting on issues the batch just moved
+	// into done. Best-effort per target; failure does not abort the batch.
+	for _, target := range suspensionDoneTargets {
+		h.ResumeSuspensionsWaitingOnIssue(r.Context(), target)
+	}
 
 	slog.Info("batch update issues", append(logger.RequestAttrs(r), "count", updated)...)
 	writeJSON(w, http.StatusOK, map[string]any{"updated": updated})
