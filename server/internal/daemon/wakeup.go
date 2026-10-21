@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/multica-ai/multica/server/internal/credentialcrypto"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -192,6 +193,12 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 			return nil, errWSRPCWriteBufferFull
 		}
 	})
+	sessionKey, err := credentialcrypto.NewSessionKey()
+	if err != nil {
+		d.wsRPC.attach(nil)
+		return 0, err
+	}
+	d.wsRPC.setSessionKey(sessionKey)
 	// A (re)connect may be a freshly-upgraded server: re-probe the batch claim
 	// route rather than staying on the legacy fallback forever (MUL-4257).
 	d.batchClaimUnsupported.Store(false)

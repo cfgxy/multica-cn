@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -46,6 +48,8 @@ func (h *Handler) DaemonRPCHandler(ctx context.Context, identity daemonws.Client
 	switch method {
 	case "tasks.claim":
 		return h.rpcClaimTasks(ctx, identity, body)
+	case "credentials.resolve":
+		return h.rpcResolveCredential(ctx, identity, body)
 	default:
 		return http.StatusNotFound, nil, fmt.Errorf("unknown rpc method %q", method)
 	}
@@ -54,6 +58,18 @@ func (h *Handler) DaemonRPCHandler(ctx context.Context, identity daemonws.Client
 func (h *Handler) rpcClaimTasks(ctx context.Context, identity daemonws.ClientIdentity, body json.RawMessage) (int, json.RawMessage, error) {
 	if len(body) == 0 {
 		body = json.RawMessage("{}")
+	}
+	var claim struct {
+		SessionPublicKey string `json:"session_public_key"`
+	}
+	var sessionPublicKey []byte
+	if len(body) > 0 && json.Unmarshal(body, &claim) == nil && identity.DaemonID != "" {
+		sessionPublicKey, _ = base64.RawURLEncoding.Strict().DecodeString(claim.SessionPublicKey)
+		if len(sessionPublicKey) != 32 {
+			sessionPublicKey = nil
+		} else if _, err := ecdh.X25519().NewPublicKey(sessionPublicKey); err != nil {
+			sessionPublicKey = nil
+		}
 	}
 	reqCtx := ctx
 	// A daemon-token connection is workspace-scoped: pin the daemon context so
@@ -86,5 +102,55 @@ func (h *Handler) rpcClaimTasks(ctx context.Context, identity daemonws.ClientIde
 	if status == 0 {
 		status = http.StatusOK
 	}
+	responseBody := append([]byte(nil), rec.body.Bytes()...)
+	if len(sessionPublicKey) == 32 && identity.DaemonID != "" && status >= 200 && status < 300 {
+		responseBody = h.attachCredentialCapabilities(ctx, identity.DaemonID, sessionPublicKey, responseBody)
+	}
+	return status, json.RawMessage(responseBody), nil
+}
+
+func (h *Handler) rpcResolveCredential(ctx context.Context, identity daemonws.ClientIdentity, body json.RawMessage) (int, json.RawMessage, error) {
+	if identity.DaemonID == "" {
+		return http.StatusForbidden, nil, fmt.Errorf("daemon identity required")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/internal/daemon/credential-resolve", bytes.NewReader(body))
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	rec := &rpcResponseCapture{}
+	h.ResolveCredentialCapability(rec, req, identity.DaemonID, body)
+	status := rec.status
+	if status == 0 {
+		status = http.StatusOK
+	}
 	return status, json.RawMessage(rec.body.Bytes()), nil
+}
+
+func (h *Handler) attachCredentialCapabilities(ctx context.Context, daemonID string, sessionPublicKey []byte, body []byte) []byte {
+	var response struct {
+		Tasks []AgentTaskResponse `json:"tasks"`
+	}
+	if json.Unmarshal(body, &response) != nil || len(response.Tasks) == 0 {
+		return body
+	}
+	for index := range response.Tasks {
+		tx, err := h.TxStarter.Begin(ctx)
+		if err != nil {
+			continue
+		}
+		capabilities, err := mintCredentialCapabilities(ctx, tx, daemonID, response.Tasks[index].ID, sessionPublicKey)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			continue
+		}
+		if err := tx.Commit(ctx); err != nil || len(capabilities) == 0 {
+			continue
+		}
+		response.Tasks[index].CredentialCapabilities = capabilities
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return body
+	}
+	return encoded
 }
