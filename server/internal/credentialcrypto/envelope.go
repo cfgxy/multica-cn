@@ -115,7 +115,7 @@ func (k TransportKeyring) Open(envelope TransportEnvelope, context Context) ([]b
 	if err != nil {
 		return nil, ErrInvalidEnvelope
 	}
-	wrapped, err := base64.RawURLEncoding.DecodeString(envelope.WrappedDataKey)
+	wrapped, err := base64.RawURLEncoding.Strict().DecodeString(envelope.WrappedDataKey)
 	if err != nil || len(wrapped) != key.Size() {
 		return nil, ErrInvalidEnvelope
 	}
@@ -125,11 +125,11 @@ func (k TransportKeyring) Open(envelope TransportEnvelope, context Context) ([]b
 		return nil, ErrInvalidEnvelope
 	}
 	defer zero(dataKey)
-	nonce, err := base64.RawURLEncoding.DecodeString(envelope.Nonce)
+	nonce, err := base64.RawURLEncoding.Strict().DecodeString(envelope.Nonce)
 	if err != nil {
 		return nil, ErrInvalidEnvelope
 	}
-	ciphertext, err := base64.RawURLEncoding.DecodeString(envelope.Ciphertext)
+	ciphertext, err := base64.RawURLEncoding.Strict().DecodeString(envelope.Ciphertext)
 	if err != nil {
 		return nil, ErrInvalidEnvelope
 	}
@@ -210,11 +210,11 @@ func (k StorageKeyring) Open(envelope StorageEnvelope, aad []byte) ([]byte, erro
 	if err != nil {
 		return nil, ErrInvalidEnvelope
 	}
-	nonce, err := base64.RawURLEncoding.DecodeString(envelope.Nonce)
+	nonce, err := base64.RawURLEncoding.Strict().DecodeString(envelope.Nonce)
 	if err != nil || len(nonce) != aead.NonceSize() {
 		return nil, ErrInvalidEnvelope
 	}
-	ciphertext, err := base64.RawURLEncoding.DecodeString(envelope.Ciphertext)
+	ciphertext, err := base64.RawURLEncoding.Strict().DecodeString(envelope.Ciphertext)
 	if err != nil {
 		return nil, ErrInvalidEnvelope
 	}

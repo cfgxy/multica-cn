@@ -8,8 +8,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/credentialcrypto"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+func TestWSRPCSessionKeyIsAvailableOnlyOnActiveConnection(t *testing.T) {
+	client := newWSRPCClient(time.Second)
+	key, err := credentialcrypto.NewSessionKey()
+	if err != nil {
+		t.Fatal("generate session key")
+	}
+	client.setSessionKey(key)
+	if _, ok := client.sessionPublicKey(); ok {
+		t.Fatal("session public key available without a control connection")
+	}
+	client.attach(func([]byte) (*wsOutbound, error) { return &wsOutbound{}, nil })
+	if publicKey, ok := client.sessionPublicKey(); !ok || publicKey == "" {
+		t.Fatal("session public key unavailable on active control connection")
+	}
+	client.attach(nil)
+	if _, ok := client.sessionPublicKey(); ok {
+		t.Fatal("session public key survived control connection teardown")
+	}
+}
 
 // TestWSRPCClient_CallRoundTrip: a request is framed and sent, and a matching
 // response (by request_id) is decoded into respBody.
