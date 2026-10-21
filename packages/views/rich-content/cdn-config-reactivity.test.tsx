@@ -132,23 +132,29 @@ describe("RichContent CDN config reactivity", () => {
     ).not.toBeNull();
   });
 
-  it("selects the modern document adapter only while the remote flag is enabled", () => {
-    const { container, rerender } = render(<RichContent content="# Heading" />);
+  it("mounts the modern code renderer and immediately restores legacy on flag-off", () => {
+    const content = "```text\nreader path\n```";
+    const { container } = render(<RichContent content={content} />);
     const root = container.querySelector("[data-rich-content]");
     expect(root?.getAttribute("data-reader-version")).toBe("legacy");
+    expect(container.querySelector("[data-modern-code-block]")).toBeNull();
+    expect(container.querySelector(".code-block-wrapper")).not.toBeNull();
 
     act(() => {
       configStore.getState().setFeatureFlags({ markdown_reader_v2: true });
     });
     expect(root?.getAttribute("data-reader-version")).toBe("modern");
     expect(root?.classList.contains("markdown-reader-v2")).toBe(true);
+    expect(container.querySelector("[data-modern-code-block]")).not.toBeNull();
+    expect(container.querySelector('[aria-label="Copy code"]')).not.toBeNull();
+    expect(container.querySelector(".code-block-wrapper")).toBeNull();
 
     act(() => {
       configStore.getState().setFeatureFlags({ markdown_reader_v2: false });
     });
     expect(root?.getAttribute("data-reader-version")).toBe("legacy");
     expect(root?.classList.contains("markdown-reader-v2")).toBe(false);
-    rerender(<RichContent content="# Updated" />);
-    expect(root?.textContent).toContain("Updated");
+    expect(container.querySelector("[data-modern-code-block]")).toBeNull();
+    expect(container.querySelector(".code-block-wrapper")).not.toBeNull();
   });
 });
