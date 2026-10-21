@@ -97,6 +97,9 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 		"created_by":      testUserID,
 	})
 	grantID := uuidToString(dbid.NewV7())
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM credential_audit WHERE task_id = $1`, taskID)
+	})
 	dbfx.Insert(t, "credential_grant", testutil.Cols{
 		"id": grantID, "credential_id": credentialID, "workspace_id": testWorkspaceID,
 		"resource_scope": "issue", "resource_id": issueID, "subject_type": "agent", "subject_id": agentID,
@@ -153,6 +156,13 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 		t.Fatalf("wrong task issue binding status=%d err=%v", code, resolveErr)
 	}
 	dbfx.Exec(t, `UPDATE agent_task_queue SET issue_id = $2 WHERE id = $1`, taskID, issueID)
+	var deniedAudits int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM credential_audit WHERE task_id = $1 AND event_type = 'credential.broker_resolved' AND result = 'denied'`, taskID).Scan(&deniedAudits); err != nil {
+		t.Fatal("count denied broker audits")
+	}
+	if deniedAudits < 3 {
+		t.Fatalf("denied broker audit count = %d, want at least 3 for daemon, connector, and task binding mismatches", deniedAudits)
+	}
 	type resolveResult struct {
 		status int
 		body   json.RawMessage
