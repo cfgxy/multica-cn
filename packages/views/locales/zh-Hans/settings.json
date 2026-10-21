@@ -458,10 +458,11 @@
     "deliver": "交付凭据", "close": "关闭", "name": "名称", "connector": "连接器", "select_connector": "选择连接器", "purpose": "用途说明", "secret": "凭据值",
     "secret_help": "仅支持文本机器凭据。提交、失败或离开此页面后，输入值都会清空且不会再次显示。", "resource": "资源范围", "scope_once": "单次", "scope_task": "当前任务", "scope_project": "项目", "scope_workspace": "工作区", "scope_global": "全局",
     "member_scope_hint": "成员只能为自己负责的任务授权。", "subject": "允许使用的智能体或小队", "select_subject": "选择一个主体", "expires": "到期时间", "owner_scope_denied": "只有工作区所有者可以授予此资源范围。",
-    "dual_match": "必须同时匹配此资源范围和所选主体才允许使用；任一不匹配都会拒绝。", "summary": "授权摘要：", "cancel": "取消", "save": "保存并授权", "replace": "替换并撤销旧凭据", "saving": "保存中…", "saved": "凭据已保存并授权。",
-    "replaced": "凭据已替换。旧值将无法再次交付。", "replace_partial": "新凭据已保存，但旧凭据未能撤销。请先撤销旧凭据，再使用新凭据。", "save_failed": "凭据未能保存。输入值已清空，请重新录入后重试。",
+    "dual_match": "必须同时匹配此资源范围和所选主体才允许使用；任一不匹配都会拒绝。", "summary": "授权摘要：", "cancel": "取消", "save": "保存并授权", "replace": "原子替换", "saving": "保存中…", "saved": "凭据已保存并授权。",
+    "replaced": "凭据已替换。旧值将无法再次交付。", "save_failed": "凭据未能保存。输入值已清空，请重新录入后重试。",
     "task_filter": "任务", "choose_task": "选择任务", "loading": "正在加载凭据…", "empty": "此任务没有可用凭据。", "status": "状态：", "expires_prefix": "到期时间", "replace_title": "替换凭据", "revoke_title": "撤销凭据",
     "revoke_aria": "撤销 {{name}}", "replace_aria": "替换 {{name}}", "revoke_confirm": "确定撤销此凭据？这会阻止后续交付，但无法收回已交付到运行中进程的值。", "revoked": "凭据已撤销。此操作无法移除已交付到运行中进程的值。", "revoke_failed": "凭据撤销失败，状态未更改；请稍后重试。",
+    "audit_title": "凭据审计", "audit_empty": "暂无凭据审计记录。", "audit_project": "项目", "audit_issue": "Issue", "audit_actor": "使用者",
     "no_permission": "只有任务负责人或工作区所有者可以在此管理凭据。", "no_connector": "没有可用的连接器，请联系工作区所有者进行配置。"
   },
   "page": {

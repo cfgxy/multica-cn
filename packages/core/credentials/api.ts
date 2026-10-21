@@ -33,6 +33,24 @@ export const CredentialMetadataSchema = z.object({
   created_at: z.string(),
 });
 
+export const CredentialAuditEventSchema = z.object({
+  id: z.string(),
+  created_at: z.string(),
+  credential_id: z.string().nullable(),
+  event_type: z.string(),
+  result: z.string(),
+  reason_code: z.string(),
+  actor_type: z.string(),
+  actor_id: z.string(),
+  project_id: z.string().nullable(),
+  project_title: z.string().nullable(),
+  issue_id: z.string().nullable(),
+  issue_title: z.string().nullable(),
+  task_id: z.string().nullable(),
+  agent_id: z.string().nullable(),
+  purpose: z.string(),
+});
+
 export type CredentialTransportKey = {
   key_id: string;
   algorithm: typeof CREDENTIAL_ENVELOPE_ALGORITHM;
@@ -40,6 +58,8 @@ export type CredentialTransportKey = {
 };
 export type CredentialConnector = z.infer<typeof CredentialConnectorSchema>;
 export type CredentialMetadata = z.infer<typeof CredentialMetadataSchema>;
+export type CredentialAuditEvent = z.infer<typeof CredentialAuditEventSchema>;
 
 export const CredentialConnectorListSchema = z.array(CredentialConnectorSchema);
 export const CredentialMetadataListSchema = z.array(CredentialMetadataSchema);
+export const CredentialAuditEventListSchema = z.array(CredentialAuditEventSchema);
