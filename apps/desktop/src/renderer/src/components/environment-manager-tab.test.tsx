@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { RESOURCES } from "@multica/views/locales";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -78,5 +78,38 @@ describe("EnvironmentManagerTab", () => {
     expect(cleanCache).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "确认" }));
     expect(cleanCache).toHaveBeenCalledWith([{ environmentId: "a".repeat(64), revision: "c".repeat(64) }]);
+  });
+
+  it("previews, confirms, and restores an archive through the renderer boundary", async () => {
+    const archiveId = "d".repeat(64);
+    const preview = {
+      environmentId: "a".repeat(64), revision: "c".repeat(64), archiveId: "",
+      reason: "", originalBytes: 2048, archiveBytes: 1024, reclaimed: false, restored: false,
+    };
+    const archived = { ...preview, archiveId, reclaimed: true };
+    archives.mockResolvedValueOnce([]).mockResolvedValue([{
+      archiveId, taskId: "task-1", taskName: "RUYI-1", kind: "task",
+      createdAt: "2026-10-20T00:00:00Z", archiveBytes: 1024, logicalBytes: 2048, restoreReason: "",
+    }]);
+    previewArchive.mockResolvedValue([preview]);
+    archive.mockResolvedValue([archived]);
+    restoreArchive.mockResolvedValue([{ ...archived, restored: true }]);
+
+    mount();
+    await screen.findByText("RUYI-1");
+    const row = screen.getByText("RUYI-1").closest("div.grid");
+    fireEvent.click(within(row as HTMLElement).getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "预览归档" }));
+
+    expect(await screen.findByText("已生成 1 项归档预览")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "归档所选环境" }));
+    expect(archive).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(archive).toHaveBeenCalledWith([
+      { environmentId: "a".repeat(64), revision: "c".repeat(64) },
+    ]));
+
+    fireEvent.click(await screen.findByRole("button", { name: "恢复" }));
+    await waitFor(() => expect(restoreArchive).toHaveBeenCalledWith(archiveId));
   });
 });
