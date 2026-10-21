@@ -25,7 +25,10 @@ jest.mock("@/data/workspace-store", () => ({
 }));
 
 jest.mock("@/lib/use-t", () => ({
-  useT: () => ({ t: (_key: string, fallback?: string) => fallback ?? _key }),
+  useT: () => ({
+    t: (_key: string, fallback?: string, options?: Record<string, string>) =>
+      (fallback ?? _key).replace(/\{\{(\w+)\}\}/g, (_match, name: string) => options?.[name] ?? ""),
+  }),
 }));
 
 jest.mock("@/lib/time-ago", () => ({
@@ -342,6 +345,52 @@ describe("DecisionCard authorization face (RUYI-630)", () => {
     expect(screen.queryByTestId("decision-cancel")).toBeNull();
   });
 
+  it("shows each project result after project-prompt execution", async () => {
+    await renderCard(card({
+      ...authCard,
+      action_type: "project_prompt_sync",
+      status: "answered",
+      auth_state: "executed",
+      executed_at: "2026-10-21T12:00:00Z",
+      execution_result: {
+        action: "project_prompt_sync",
+        projects: [{ project_id: "project-1", status: "updated", version: 4 }],
+      },
+    }));
+
+    expect(screen.getByTestId("decision-auth-project-result").props.children).toContain("project-1");
+  });
+
+  it("shows the one created issue and its in-progress state", async () => {
+    await renderCard(card({
+      ...authCard,
+      action_type: "single_issue_create",
+      status: "answered",
+      auth_state: "executed",
+      executed_at: "2026-10-21T12:00:00Z",
+      execution_result: {
+        target_issue_id: "issue-12",
+        target_identifier: "RUYI-12",
+        target_issue_status: "in_progress",
+      },
+    }));
+
+    expect(screen.getByTestId("decision-auth-created-issue").props.children).toContain("RUYI-12");
+  });
+
+  it("announces unknown side effects and does not display the internal error code", async () => {
+    await renderCard(card({
+      ...authCard,
+      status: "answered",
+      auth_state: "execute_failed",
+      execution_error: "PROMPT_SYNC_FAILED",
+      execution_result: { receipt_version: 1, side_effect_status: "unknown", steps: [] },
+    }));
+
+    expect(screen.getByText("Result needs verification. Do not retry this request.")).toBeTruthy();
+    expect(screen.queryByText("PROMPT_SYNC_FAILED")).toBeNull();
+  });
+
   it("answers through the issue decision endpoint with the approve index", async () => {
     await renderCard(authCard);
     await pressPressable("decision-auth-approve");
@@ -375,6 +424,6 @@ describe("DecisionCard authorization face (RUYI-630)", () => {
         execution_error: "modified",
       }),
     );
-    expect(screen.getByText("Execution failed: {{reason}}")).toBeTruthy();
+    expect(screen.getByText("Execution failed; it was not retried")).toBeTruthy();
   });
 });

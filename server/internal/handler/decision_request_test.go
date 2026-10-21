@@ -23,6 +23,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -194,6 +195,47 @@ func TestDecisionRequestCreateValidation(t *testing.T) {
 		})
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("unknown action: expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("project prompt sync requires an exact content digest and unique project UUIDs", func(t *testing.T) {
+		content := "approved project instructions"
+		for _, params := range []map[string]any{
+			{"project_ids": []string{"00000000-0000-7000-8000-000000000001"}, "content": content, "content_sha256": "wrong"},
+			{"project_ids": []string{"00000000-0000-7000-8000-000000000001", "00000000-0000-7000-8000-000000000001"}, "content": content, "content_sha256": sha256Hex(content)},
+		} {
+			w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+				"action_type": DecisionActionProjectPromptSync, "title": "sync project prompt", "params": params,
+			})
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("invalid prompt sync params: status=%d body=%s, want 400", w.Code, w.Body.String())
+			}
+		}
+	})
+	t.Run("project prompt sync authorization card is owner-visible only", func(t *testing.T) {
+		content := "restricted approved prompt"
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type":     DecisionActionProjectPromptSync,
+			"title":           "restricted project prompt",
+			"origin_issue_id": f.IssueID,
+			"params": map[string]any{
+				"project_ids":    []string{"00000000-0000-7000-8000-000000000001"},
+				"content":        content,
+				"content_sha256": sha256Hex(content),
+			},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		resp := decodeDecisionRequestDetail(t, w)
+		if resp.Card == nil || resp.Card.VisibleTier != "restricted" || resp.Card.OperatorTier != "owner" {
+			t.Fatalf("authorization card visibility/operator = %v/%v, want restricted/owner", resp.Card, resp.Card)
+		}
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(resp.Request.ActionParams, &params); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := params["content"]; ok {
+			t.Fatal("agent-facing create response exposed the prompt body")
 		}
 	})
 	t.Run("single-space create is operable with read risk tier", func(t *testing.T) {
@@ -651,6 +693,144 @@ func TestDecisionRequestCrossSpaceTwoStep(t *testing.T) {
 	})
 }
 
+func TestDecisionRequestSingleIssueCreateAndDoneReceipt(t *testing.T) {
+	f := newDecisionFixture(t)
+	ws2 := secondWorkspaceWithOwner(t)
+	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+		"action_type":         DecisionActionSingleIssueCreate,
+		"title":               "One exact target-space task",
+		"origin_issue_id":     f.IssueID,
+		"target_workspace_id": ws2,
+		"params": map[string]any{
+			"title":       "Fix the specified callback",
+			"description": "Make callback delivery idempotent for this request.",
+		},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create request: %d %s", w.Code, w.Body.String())
+	}
+	request := decodeDecisionRequestDetail(t, w)
+	var originID, targetID string
+	for _, step := range request.Steps {
+		if step.Role == decisionReqRoleOrigin {
+			originID = step.ID
+		} else {
+			targetID = step.ID
+		}
+	}
+	if originID == "" || targetID == "" {
+		t.Fatalf("missing source/target approval rows: %+v", request.Steps)
+	}
+	if request.Card == nil {
+		t.Fatal("source issue authorization card missing")
+	}
+	cardAnswer := httptest.NewRecorder()
+	cardRequest := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+request.Card.ID+"/answer", map[string]any{
+		"selected_indices": []int{0},
+	})
+	cardRequest = withURLParams(cardRequest, "id", f.IssueID, "decisionId", request.Card.ID)
+	testHandler.AnswerIssueDecision(cardAnswer, cardRequest)
+	if cardAnswer.Code != http.StatusOK {
+		t.Fatalf("source card approval: %d %s", cardAnswer.Code, cardAnswer.Body.String())
+	}
+	if w := answerDecisionRequestFor(t, ws2, targetID, "", "approve"); w.Code != http.StatusOK {
+		t.Fatalf("target approval: %d %s", w.Code, w.Body.String())
+	}
+	_, detail := getDecisionRequestFor(t, ws2, targetID)
+	var created struct {
+		TargetIssueID     string `json:"target_issue_id"`
+		TargetIssueStatus string `json:"target_issue_status"`
+	}
+	if err := json.Unmarshal(detail.Request.ExecutionResult, &created); err != nil {
+		t.Fatalf("decode issue creation receipt: %v (%s)", err, detail.Request.ExecutionResult)
+	}
+	if created.TargetIssueID == "" || created.TargetIssueStatus != "in_progress" {
+		t.Fatalf("creation receipt = %+v", created)
+	}
+	// Re-entering the same approved request group must observe its durable
+	// executed state and keep the original target issue as the sole result.
+	testHandler.advanceDecisionRequestAfterAnswer(newRequest(http.MethodPost, "/", nil), parseUUID(request.Request.RequestGroupID), testUserID)
+	_, detail = getDecisionRequestFor(t, ws2, targetID)
+	var retried struct {
+		TargetIssueID string `json:"target_issue_id"`
+	}
+	if err := json.Unmarshal(detail.Request.ExecutionResult, &retried); err != nil {
+		t.Fatalf("decode retried issue creation receipt: %v (%s)", err, detail.Request.ExecutionResult)
+	}
+	if retried.TargetIssueID != created.TargetIssueID {
+		t.Fatalf("request re-entry changed target issue from %q to %q", created.TargetIssueID, retried.TargetIssueID)
+	}
+	issue, err := testHandler.Queries.GetIssueInWorkspace(t.Context(), db.GetIssueInWorkspaceParams{
+		ID: parseUUID(created.TargetIssueID), WorkspaceID: parseUUID(ws2),
+	})
+	if err != nil || issue.Status != "in_progress" || issue.Title != "Fix the specified callback" {
+		t.Fatalf("created issue = %s / %q, err=%v", issue.Status, issue.Title, err)
+	}
+
+	update := newRequest(http.MethodPut, "/api/issues/"+created.TargetIssueID, map[string]any{"status": "done"})
+	update = withURLParam(update, "id", created.TargetIssueID)
+	update.Header.Set("X-Workspace-ID", ws2)
+	update.Header.Set("X-User-ID", testUserID)
+	updated := httptest.NewRecorder()
+	testHandler.UpdateIssue(updated, update)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("mark target issue Done: %d %s", updated.Code, updated.Body.String())
+	}
+	_, detail = getDecisionRequestFor(t, testWorkspaceID, originID)
+	var completed struct {
+		DoneReceipt struct {
+			Status string `json:"status"`
+		} `json:"done_receipt"`
+	}
+	if err := json.Unmarshal(detail.Request.ExecutionResult, &completed); err != nil {
+		t.Fatalf("decode Done receipt: %v (%s)", err, detail.Request.ExecutionResult)
+	}
+	if completed.DoneReceipt.Status != "done" {
+		t.Fatalf("Done receipt = %+v, want done", completed.DoneReceipt)
+	}
+	cardsRequest := withURLParam(newRequest(http.MethodGet, "/api/issues/"+f.IssueID+"/decisions", nil), "id", f.IssueID)
+	cardsResponse := httptest.NewRecorder()
+	testHandler.ListIssueDecisions(cardsResponse, cardsRequest)
+	if cardsResponse.Code != http.StatusOK {
+		t.Fatalf("list completed source authorization cards: %d %s", cardsResponse.Code, cardsResponse.Body.String())
+	}
+	var cards []IssueDecisionResponse
+	if err := json.Unmarshal(cardsResponse.Body.Bytes(), &cards); err != nil {
+		t.Fatalf("decode completed source authorization cards: %v", err)
+	}
+	var card *IssueDecisionResponse
+	for i := range cards {
+		if cards[i].ID == request.Card.ID {
+			card = &cards[i]
+			break
+		}
+	}
+	if card == nil || len(card.ExecutionResult) == 0 {
+		t.Fatalf("completed authorization card response omitted execution receipt: %+v", card)
+	}
+	var cardResult struct {
+		DoneReceipt struct {
+			Status string `json:"status"`
+		} `json:"done_receipt"`
+	}
+	if err := json.Unmarshal(card.ExecutionResult, &cardResult); err != nil {
+		t.Fatalf("decode authorization card Done receipt: %v (%s)", err, card.ExecutionResult)
+	}
+	if cardResult.DoneReceipt.Status != "done" {
+		t.Fatalf("authorization card Done receipt = %+v, want done", cardResult.DoneReceipt)
+	}
+	var callbacks int
+	dbfx.QueryRow(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND content LIKE '%授权事项已完成%'`, f.IssueID).Scan(&callbacks)
+	if callbacks != 1 {
+		t.Fatalf("source Done callback count = %d, want 1", callbacks)
+	}
+	testHandler.completeSingleIssueDecisionRequest(update.Context(), issue)
+	dbfx.QueryRow(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND content LIKE '%授权事项已完成%'`, f.IssueID).Scan(&callbacks)
+	if callbacks != 1 {
+		t.Fatalf("duplicate Done callback count = %d, want 1", callbacks)
+	}
+}
+
 // ── 文字回复不构成授权 + 批量不含授权卡 ─────────────────────────────────────
 
 func TestDecisionRequestCardChannels(t *testing.T) {
@@ -958,8 +1138,11 @@ func TestDecisionRequestExecutorPromptRestore(t *testing.T) {
 			t.Fatalf("approve: %d", aw.Code)
 		}
 		_, after := getDecisionRequestFor(t, testWorkspaceID, detail.Request.ID)
-		if after.Request.Status != "execute_failed" || after.Request.ExecutionError == nil || !strings.Contains(*after.Request.ExecutionError, "modified") {
+		if after.Request.Status != "execute_failed" || after.Request.ExecutionError == nil || *after.Request.ExecutionError != "PROMPT_RESTORE_FAILED" {
 			t.Fatalf("row status=%s err=%v, want execute_failed with the hand-edit refusal", after.Request.Status, after.Request.ExecutionError)
+		}
+		if !strings.Contains(string(after.Request.ExecutionResult), `"side_effect_status":"no_side_effect"`) {
+			t.Fatalf("failed restore receipt = %s, want confirmed no side effect", after.Request.ExecutionResult)
 		}
 		var instructions string
 		dbfx.QueryRow(t, `SELECT instructions FROM agent WHERE id = $1`, f.AgentID).Scan(&instructions)
@@ -1034,13 +1217,280 @@ func TestDecisionRequestExecutorPromptRestore(t *testing.T) {
 		var status string
 		var execErr *string
 		dbfx.QueryRow(t, `SELECT status, execution_error FROM decision_requests WHERE request_group_id = $1 AND role = 'target'`, detail.Request.RequestGroupID).Scan(&status, &execErr)
-		if status != "execute_failed" || execErr == nil || !strings.Contains(*execErr, "different workspace") {
+		if status != "execute_failed" || execErr == nil || *execErr != "PROMPT_RESTORE_FAILED" {
 			t.Fatalf("target row status=%s err=%v, want execute_failed on landing-workspace containment", status, execErr)
 		}
 		var instructions string
 		dbfx.QueryRow(t, `SELECT instructions FROM agent WHERE id = $1`, f.AgentID).Scan(&instructions)
 		if instructions != "marketplace text" {
 			t.Fatalf("origin agent instructions = %q, want untouched by the refused execution", instructions)
+		}
+	})
+}
+
+func TestDecisionRequestExecutorProjectPromptSync(t *testing.T) {
+	f := newDecisionFixture(t)
+	ws2 := secondWorkspaceWithOwner(t)
+	projectA := dbfx.Project(t, "ruyi844 target project a", testutil.Cols{"workspace_id": ws2, "instructions": "old a"})
+	projectB := dbfx.Project(t, "ruyi844 target project b", testutil.Cols{"workspace_id": ws2, "instructions": "old b"})
+	content := "Owner-approved project prompt contents."
+	contentHash := sha256Hex(content)
+
+	create := func(projectIDs []string) DecisionRequestDetailResponse {
+		t.Helper()
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type":         DecisionActionProjectPromptSync,
+			"title":               "同步目标项目提示词",
+			"target_workspace_id": ws2,
+			"params": map[string]any{
+				"project_ids":    projectIDs,
+				"content":        content,
+				"content_sha256": contentHash,
+			},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		return decodeDecisionRequestDetail(t, w)
+	}
+	approve := func(detail DecisionRequestDetailResponse) {
+		t.Helper()
+		var targetID string
+		for _, step := range detail.Steps {
+			if step.Role == decisionReqRoleTarget {
+				targetID = step.ID
+			}
+		}
+		if targetID == "" {
+			t.Fatal("cross-space request has no target approval row")
+		}
+		if w := answerDecisionRequestFor(t, testWorkspaceID, detail.Request.ID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("origin approval: %d %s", w.Code, w.Body.String())
+		}
+		if w := answerDecisionRequestFor(t, ws2, targetID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("target approval: %d %s", w.Code, w.Body.String())
+		}
+	}
+
+	t.Run("both Owner approvals update every scoped project and return per-project versions", func(t *testing.T) {
+		detail := create([]string{projectB, projectA})
+		approve(detail)
+		_, after := getDecisionRequestFor(t, ws2, detail.Steps[1].ID)
+		if after.Request.Status != decisionReqExecuted {
+			t.Fatalf("request status=%s error=%v, want executed", after.Request.Status, after.Request.ExecutionError)
+		}
+		var ownerParams map[string]json.RawMessage
+		if err := json.Unmarshal(after.Request.ActionParams, &ownerParams); err != nil {
+			t.Fatal(err)
+		}
+		var reviewedContent string
+		if err := json.Unmarshal(ownerParams["content"], &reviewedContent); err != nil || reviewedContent != content {
+			t.Fatalf("Owner request detail does not expose the exact approved prompt: %q (%v)", reviewedContent, err)
+		}
+		for _, projectID := range []string{projectA, projectB} {
+			var instructions, versionContent, versionHash string
+			var version int
+			dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1 AND workspace_id = $2`, projectID, ws2).Scan(&instructions)
+			dbfx.QueryRow(t, `SELECT version, content, content_sha256 FROM prompt_version WHERE scope = 'project' AND scope_id = $1 ORDER BY version DESC LIMIT 1`, projectID).Scan(&version, &versionContent, &versionHash)
+			if instructions != content || versionContent != content || versionHash != contentHash || version != 1 {
+				t.Fatalf("project %s prompt=%q history=(%d,%q,%q), want approved content and version 1", projectID, instructions, version, versionContent, versionHash)
+			}
+		}
+		var result struct {
+			Action   string `json:"action"`
+			Hash     string `json:"content_sha256"`
+			Projects []struct {
+				ProjectID string `json:"project_id"`
+				Status    string `json:"status"`
+				Version   int    `json:"version"`
+			} `json:"projects"`
+		}
+		if err := json.Unmarshal(after.Request.ExecutionResult, &result); err != nil {
+			t.Fatalf("decode execution result: %v (%s)", err, after.Request.ExecutionResult)
+		}
+		if result.Action != DecisionActionProjectPromptSync || result.Hash != contentHash || len(result.Projects) != 2 {
+			t.Fatalf("execution result = %+v, want action, digest, and two project rows", result)
+		}
+		for _, item := range result.Projects {
+			if item.Status != "updated" || item.Version != 1 || (item.ProjectID != projectA && item.ProjectID != projectB) {
+				t.Fatalf("project result = %+v, want updated project/version", item)
+			}
+		}
+		if strings.Contains(string(after.Request.ExecutionResult), content) {
+			t.Fatal("execution result echoed the prompt body")
+		}
+		var auditRaw []byte
+		dbfx.QueryRow(t, `SELECT details FROM audit_event WHERE trigger_kind = 'decision_request' AND trigger_ref = $1 AND event_type = 'agent.decision_executed'`, detail.Request.RequestGroupID).Scan(&auditRaw)
+		var auditDetails struct {
+			ContentSHA256 string           `json:"content_sha256"`
+			Projects      []map[string]any `json:"projects"`
+		}
+		if err := json.Unmarshal(auditRaw, &auditDetails); err != nil || auditDetails.ContentSHA256 != contentHash || len(auditDetails.Projects) != 2 {
+			t.Fatalf("execution audit details = %s (%v), want hash and two project results", auditRaw, err)
+		}
+		testHandler.advanceDecisionRequestAfterAnswer(newRequest("POST", "/", nil), parseUUID(detail.Request.RequestGroupID), testUserID)
+		for _, projectID := range []string{projectA, projectB} {
+			if count := dbfx.Count(t, `SELECT count(*) FROM prompt_version WHERE scope = 'project' AND scope_id = $1`, projectID); count != 1 {
+				t.Fatalf("re-entering the terminal group created %d prompt versions for %s, want exactly one", count, projectID)
+			}
+		}
+		memberID := dbfx.User(t, "ruyi844-target-member", "ruyi844-target-member@test.local")
+		dbfx.Member(t, ws2, memberID, "member")
+		listW := httptest.NewRecorder()
+		listReq := withURLParam(newRequest("GET", "/api/workspaces/"+ws2+"/decision-requests", nil), "id", ws2)
+		listReq.Header.Set("X-Workspace-ID", ws2)
+		listReq.Header.Set("X-User-ID", memberID)
+		testHandler.ListDecisionRequests(listW, listReq)
+		if listW.Code != http.StatusOK {
+			t.Fatalf("member list: %d %s", listW.Code, listW.Body.String())
+		}
+		var list struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		}
+		if err := json.NewDecoder(listW.Body).Decode(&list); err != nil {
+			t.Fatal(err)
+		}
+		foundRedacted := false
+		for _, item := range list.Items {
+			var groupID string
+			_ = json.Unmarshal(item["request_group_id"], &groupID)
+			if groupID != detail.Request.RequestGroupID {
+				continue
+			}
+			var redacted map[string]json.RawMessage
+			if err := json.Unmarshal(item["action_params"], &redacted); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := redacted["content"]; ok {
+				t.Fatal("non-owner decision list exposed the prompt body")
+			}
+			if _, ok := redacted["content_sha256"]; !ok {
+				t.Fatal("non-owner response lost the approved content digest")
+			}
+			foundRedacted = true
+		}
+		if !foundRedacted {
+			t.Fatal("non-owner decision list did not include the target request")
+		}
+	})
+
+	t.Run("issue authorization card returns execution result after both approvals", func(t *testing.T) {
+		cardProject := dbfx.Project(t, "ruyi844 issue-card target project", testutil.Cols{"workspace_id": ws2, "instructions": "card old"})
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type":         DecisionActionProjectPromptSync,
+			"title":               "issue-linked prompt sync",
+			"target_workspace_id": ws2,
+			"origin_issue_id":     f.IssueID,
+			"params": map[string]any{
+				"project_ids":    []string{cardProject},
+				"content":        content,
+				"content_sha256": contentHash,
+			},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		detail := decodeDecisionRequestDetail(t, w)
+		if detail.Card == nil {
+			t.Fatal("expected the origin issue authorization card")
+		}
+		var targetID string
+		for _, step := range detail.Steps {
+			if step.Role == decisionReqRoleTarget {
+				targetID = step.ID
+			}
+		}
+		cardAnswer := withURLParams(newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+detail.Card.ID+"/answer", map[string]any{"selected_indices": []int{0}}), "id", f.IssueID, "decisionId", detail.Card.ID)
+		cardW := httptest.NewRecorder()
+		testHandler.AnswerIssueDecision(cardW, cardAnswer)
+		if cardW.Code != http.StatusOK {
+			t.Fatalf("origin card approval: %d %s", cardW.Code, cardW.Body.String())
+		}
+		if w := answerDecisionRequestFor(t, ws2, targetID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("target approval: %d %s", w.Code, w.Body.String())
+		}
+		_, originDetail := getDecisionRequestFor(t, testWorkspaceID, detail.Request.ID)
+		if originDetail.Card == nil || len(originDetail.Card.ExecutionResult) == 0 || !strings.Contains(string(originDetail.Card.ExecutionResult), cardProject) {
+			t.Fatalf("origin authorization card result = %v, want per-project execution result", originDetail.Card)
+		}
+	})
+
+	t.Run("missing or out-of-scope project fails without updating any project", func(t *testing.T) {
+		untouchedProject := dbfx.Project(t, "ruyi844 untouched target project", testutil.Cols{"workspace_id": ws2, "instructions": "untouched"})
+		missingID := "00000000-0000-7000-8000-000000000001"
+		detail := create([]string{untouchedProject, missingID})
+		approve(detail)
+		_, after := getDecisionRequestFor(t, ws2, detail.Steps[1].ID)
+		if after.Request.Status != decisionReqExecuteFailed || after.Request.ExecutionError == nil || *after.Request.ExecutionError != "PROMPT_SYNC_FAILED" {
+			t.Fatalf("status=%s error=%v, want execute_failed for unavailable target project", after.Request.Status, after.Request.ExecutionError)
+		}
+		var instructions string
+		dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, untouchedProject).Scan(&instructions)
+		if instructions != "untouched" {
+			t.Fatalf("project changed to %q despite missing target project", instructions)
+		}
+		if count := dbfx.Count(t, `SELECT count(*) FROM prompt_version WHERE scope = 'project' AND scope_id = $1`, untouchedProject); count != 0 {
+			t.Fatalf("project prompt history has %d rows after rejected batch, want 0", count)
+		}
+	})
+
+	t.Run("expired authorization never writes", func(t *testing.T) {
+		expiryProject := dbfx.Project(t, "ruyi844 expired target project", testutil.Cols{"workspace_id": ws2, "instructions": "expiry untouched"})
+		detail := create([]string{expiryProject})
+		dbfx.Exec(t, `UPDATE decision_requests SET expires_at = now() - interval '1 minute' WHERE request_group_id = $1`, detail.Request.RequestGroupID)
+		if w := answerDecisionRequestFor(t, testWorkspaceID, detail.Request.ID, "", "approve"); w.Code != http.StatusConflict {
+			t.Fatalf("expired origin approval status=%d, want 409", w.Code)
+		}
+		var instructions string
+		dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, expiryProject).Scan(&instructions)
+		if instructions != "expiry untouched" {
+			t.Fatalf("expired request changed project to %q", instructions)
+		}
+	})
+
+	t.Run("secret scanner failure records no prompt version or partial project write", func(t *testing.T) {
+		secretProject := dbfx.Project(t, "ruyi844 scanner target project", testutil.Cols{"workspace_id": ws2, "instructions": "scanner untouched"})
+		secretContent := "token: ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type":         DecisionActionProjectPromptSync,
+			"title":               "scanner guarded prompt",
+			"target_workspace_id": ws2,
+			"params": map[string]any{
+				"project_ids":    []string{secretProject},
+				"content":        secretContent,
+				"content_sha256": sha256Hex(secretContent),
+			},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		detail := decodeDecisionRequestDetail(t, w)
+		var targetID string
+		for _, step := range detail.Steps {
+			if step.Role == decisionReqRoleTarget {
+				targetID = step.ID
+			}
+		}
+		if w := answerDecisionRequestFor(t, testWorkspaceID, detail.Request.ID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("origin approval: %d %s", w.Code, w.Body.String())
+		}
+		if w := answerDecisionRequestFor(t, ws2, targetID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("target approval: %d %s", w.Code, w.Body.String())
+		}
+		_, after := getDecisionRequestFor(t, ws2, targetID)
+		if after.Request.Status != decisionReqExecuteFailed || after.Request.ExecutionError == nil || *after.Request.ExecutionError != "PROMPT_SYNC_FAILED" {
+			t.Fatalf("status=%s error=%v, want execute_failed from scanner", after.Request.Status, after.Request.ExecutionError)
+		}
+		if !strings.Contains(string(after.Request.ExecutionResult), `"side_effect_status":"no_side_effect"`) {
+			t.Fatalf("scanner failure receipt = %s, want confirmed no side effect", after.Request.ExecutionResult)
+		}
+		var instructions string
+		dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, secretProject).Scan(&instructions)
+		if instructions != "scanner untouched" {
+			t.Fatalf("scanner-rejected project changed to %q", instructions)
+		}
+		if count := dbfx.Count(t, `SELECT count(*) FROM prompt_version WHERE scope = 'project' AND scope_id = $1`, secretProject); count != 0 {
+			t.Fatalf("scanner-rejected prompt created %d versions", count)
 		}
 	})
 }
@@ -1151,6 +1601,240 @@ func TestDecisionRequestRowAnswerSource(t *testing.T) {
 }
 
 // ── agent polling access ────────────────────────────────────────────────────
+
+func TestDecisionRequestPromptContentIsVisibleOnlyToTargetOwner(t *testing.T) {
+	f := newDecisionFixture(t)
+	ws2 := secondWorkspaceWithOwner(t)
+	targetOwnerID := dbfx.User(t, "ruyi844-distinct-target-owner", "ruyi844-distinct-target-owner@test.local")
+	dbfx.Member(t, ws2, targetOwnerID, "owner")
+	projectID := dbfx.Project(t, "ruyi844 projection project", testutil.Cols{"workspace_id": ws2, "instructions": "old"})
+	content := "target-only approved prompt contents"
+	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+		"action_type":         DecisionActionProjectPromptSync,
+		"title":               "target-only prompt",
+		"target_workspace_id": ws2,
+		"params": map[string]any{
+			"project_ids":    []string{projectID},
+			"content":        content,
+			"content_sha256": sha256Hex(content),
+		},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	detail := decodeDecisionRequestDetail(t, w)
+	var targetRequestID string
+	for _, step := range detail.Steps {
+		if step.Role == decisionReqRoleTarget {
+			targetRequestID = step.ID
+		}
+	}
+	if targetRequestID == "" {
+		t.Fatal("cross-workspace request has no target row")
+	}
+	for _, approval := range []struct{ workspaceID, requestID, userID string }{
+		{testWorkspaceID, detail.Request.ID, testUserID},
+		{ws2, targetRequestID, targetOwnerID},
+	} {
+		request := newRequest("POST", "/api/workspaces/"+approval.workspaceID+"/decision-requests/"+approval.requestID+"/answer", map[string]any{"decision": "approve"})
+		request = withURLParams(request, "id", approval.workspaceID, "requestId", approval.requestID)
+		request.Header.Set("X-Workspace-ID", approval.workspaceID)
+		request.Header.Set("X-User-ID", approval.userID)
+		response := httptest.NewRecorder()
+		testHandler.AnswerDecisionRequest(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("approve in %s: %d %s", approval.workspaceID, response.Code, response.Body.String())
+		}
+	}
+
+	getAs := func(workspaceID, requestID, userID string) DecisionRequestDetailResponse {
+		t.Helper()
+		request := newRequest("GET", "/api/workspaces/"+workspaceID+"/decision-requests/"+requestID, nil)
+		request = withURLParams(request, "id", workspaceID, "requestId", requestID)
+		request.Header.Set("X-Workspace-ID", workspaceID)
+		request.Header.Set("X-User-ID", userID)
+		response := httptest.NewRecorder()
+		testHandler.GetDecisionRequest(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("get as %s in %s: %d %s", userID, workspaceID, response.Code, response.Body.String())
+		}
+		return decodeDecisionRequestDetail(t, response)
+	}
+	assertContent := func(row DecisionRequestResponse, visible bool) {
+		t.Helper()
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(row.ActionParams, &params); err != nil {
+			t.Fatal(err)
+		}
+		_, hasContent := params["content"]
+		if hasContent != visible {
+			t.Fatalf("content visible=%v for workspace=%s role=%s, want %v", hasContent, row.WorkspaceID, row.Role, visible)
+		}
+	}
+
+	sourceDetail := getAs(testWorkspaceID, detail.Request.ID, testUserID)
+	assertContent(sourceDetail.Request, false)
+	for _, step := range sourceDetail.Steps {
+		assertContent(step, false)
+	}
+	targetDetail := getAs(ws2, targetRequestID, targetOwnerID)
+	assertContent(targetDetail.Request, true)
+	for _, step := range targetDetail.Steps {
+		assertContent(step, step.Role == decisionReqRoleTarget)
+	}
+
+	list := newRequest("GET", "/api/workspaces/"+testWorkspaceID+"/decision-requests", nil)
+	list = withURLParam(list, "id", testWorkspaceID)
+	list.Header.Set("X-Workspace-ID", testWorkspaceID)
+	list.Header.Set("X-User-ID", testUserID)
+	listResponse := httptest.NewRecorder()
+	testHandler.ListDecisionRequests(listResponse, list)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("source owner list: %d %s", listResponse.Code, listResponse.Body.String())
+	}
+	var listed struct {
+		Items []DecisionRequestResponse `json:"items"`
+	}
+	if err := json.NewDecoder(listResponse.Body).Decode(&listed); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range listed.Items {
+		if item.RequestGroupID == detail.Request.RequestGroupID {
+			assertContent(item, false)
+			return
+		}
+	}
+	t.Fatal("source decision list omitted the request")
+}
+
+func TestDecisionRequestScriptReviewVisibilityAndNonExecution(t *testing.T) {
+	f := newDecisionFixture(t)
+	ws2 := secondWorkspaceWithOwner(t)
+	targetOwnerID := dbfx.User(t, "ruyi844-script-owner", "ruyi844-script-owner@test.local")
+	dbfx.Member(t, ws2, targetOwnerID, "owner")
+	nonOwnerID := dbfx.User(t, "ruyi844-script-member", "ruyi844-script-member@test.local")
+	dbfx.Member(t, ws2, nonOwnerID, "member")
+	script := "printf '%s\\n' no-execution"
+	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+		"action_type": DecisionActionScriptReview, "title": "caller supplied title", "detail": script,
+		"target_workspace_id": ws2,
+		"params":              map[string]any{"script": script, "interpreter": "bash", "args": []string{"-e"}, "sha256": sha256Hex(script)},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	created := decodeDecisionRequestDetail(t, w)
+	if created.Request.Title != "Review script snapshot" || created.Request.Detail != "" {
+		t.Fatalf("unsafe public summary = %q / %q", created.Request.Title, created.Request.Detail)
+	}
+	var targetID string
+	for _, step := range created.Steps {
+		if step.Role == decisionReqRoleTarget {
+			targetID = step.ID
+		}
+	}
+	if targetID == "" {
+		t.Fatal("target approval row missing")
+	}
+	assertScriptBody := func(request DecisionRequestResponse, visible bool) {
+		t.Helper()
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(request.ActionParams, &params); err != nil {
+			t.Fatal(err)
+		}
+		_, hasScript := params["script"]
+		_, hasInterpreter := params["interpreter"]
+		_, hasArgs := params["args"]
+		_, hasHash := params["sha256"]
+		if hasScript != visible || hasInterpreter != visible || hasArgs != visible || !hasHash {
+			t.Fatalf("script projection visible=%v params=%v", visible, params)
+		}
+	}
+	getAs := func(workspaceID, requestID, userID string) DecisionRequestDetailResponse {
+		t.Helper()
+		req := newRequest("GET", "/api/workspaces/"+workspaceID+"/decision-requests/"+requestID, nil)
+		req = withURLParams(req, "id", workspaceID, "requestId", requestID)
+		req.Header.Set("X-Workspace-ID", workspaceID)
+		req.Header.Set("X-User-ID", userID)
+		response := httptest.NewRecorder()
+		testHandler.GetDecisionRequest(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("detail as %s: %d %s", userID, response.Code, response.Body.String())
+		}
+		return decodeDecisionRequestDetail(t, response)
+	}
+	assertScriptBody(getAs(testWorkspaceID, created.Request.ID, testUserID).Request, false)
+	assertScriptBody(getAs(ws2, targetID, nonOwnerID).Request, false)
+	targetDetail := getAs(ws2, targetID, targetOwnerID)
+	assertScriptBody(targetDetail.Request, true)
+	for _, step := range targetDetail.Steps {
+		assertScriptBody(step, step.Role == decisionReqRoleTarget)
+	}
+
+	listReq := newRequest("GET", "/api/workspaces/"+testWorkspaceID+"/decision-requests", nil)
+	listReq = withURLParam(listReq, "id", testWorkspaceID)
+	listReq.Header.Set("X-Workspace-ID", testWorkspaceID)
+	listReq.Header.Set("X-User-ID", testUserID)
+	listResp := httptest.NewRecorder()
+	testHandler.ListDecisionRequests(listResp, listReq)
+	if listResp.Code != http.StatusOK || strings.Contains(listResp.Body.String(), script) || strings.Contains(listResp.Body.String(), "interpreter") {
+		t.Fatalf("list leaked script snapshot: %d %s", listResp.Code, listResp.Body.String())
+	}
+
+	for _, approval := range []struct{ ws, id, user string }{
+		{testWorkspaceID, created.Request.ID, testUserID}, {ws2, targetID, targetOwnerID},
+	} {
+		response := answerDecisionRequestFor(t, approval.ws, approval.id, approval.user, "approve")
+		if response.Code != http.StatusOK {
+			t.Fatalf("approve %s: %d %s", approval.ws, response.Code, response.Body.String())
+		}
+	}
+	final := getAs(ws2, targetID, targetOwnerID).Request
+	if final.Status != decisionReqExecuted {
+		t.Fatalf("review status = %q", final.Status)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(final.ExecutionResult, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt["receipt_type"] != "script_review" || receipt["status"] != "reviewed" || receipt["script_sha256"] != sha256Hex(script) {
+		t.Fatalf("review receipt = %v", receipt)
+	}
+	if _, exists := receipt["side_effect_status"]; exists || strings.Contains(string(final.ExecutionResult), script) || strings.Contains(string(final.ExecutionResult), "interpreter") {
+		t.Fatalf("review receipt includes execution or private payload: %s", final.ExecutionResult)
+	}
+	var auditCount, executeCount int
+	dbfx.QueryRow(t, `SELECT count(*) FROM audit_event WHERE trigger_kind='decision_request' AND trigger_ref=$1 AND event_type='agent.decision_script_reviewed'`, created.Request.RequestGroupID).Scan(&auditCount)
+	dbfx.QueryRow(t, `SELECT count(*) FROM audit_event WHERE trigger_kind='decision_request' AND trigger_ref=$1 AND event_type='agent.decision_executed'`, created.Request.RequestGroupID).Scan(&executeCount)
+	if auditCount != 1 || executeCount != 0 {
+		t.Fatalf("review/execution audits = %d/%d", auditCount, executeCount)
+	}
+}
+
+func TestDecisionRequestScriptReviewRejectsTamperedSnapshotOnApproval(t *testing.T) {
+	f := newDecisionFixture(t)
+	ws2 := secondWorkspaceWithOwner(t)
+	script := "echo immutable"
+	w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+		"action_type": DecisionActionScriptReview, "title": "Review fixed script", "target_workspace_id": ws2,
+		"params": map[string]any{"script": script, "interpreter": "sh", "args": []string{}, "sha256": sha256Hex(script)},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	created := decodeDecisionRequestDetail(t, w)
+	var targetID string
+	for _, step := range created.Steps {
+		if step.Role == decisionReqRoleTarget {
+			targetID = step.ID
+		}
+	}
+	dbfx.Exec(t, `UPDATE decision_requests SET action_params = jsonb_set(action_params, '{script}', '"tampered"'::jsonb) WHERE id = $1`, targetID)
+	response := answerDecisionRequestFor(t, ws2, targetID, "", "approve")
+	if response.Code != http.StatusConflict {
+		t.Fatalf("tampered approval = %d %s", response.Code, response.Body.String())
+	}
+}
 
 func TestDecisionRequestAgentPolling(t *testing.T) {
 	f := newDecisionFixture(t)
