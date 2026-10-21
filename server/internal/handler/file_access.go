@@ -44,6 +44,12 @@ func (h *Handler) PutRuntimeFileAccessTarget(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid target id")
 		return
 	}
+	if strings.HasPrefix(body.ID, "ssh:") {
+		if _, ok := fileaccess.SSHTargetAlias(body.ID); !ok {
+			writeError(w, http.StatusBadRequest, "invalid ssh target alias")
+			return
+		}
+	}
 	if len(body.Roots) == 0 || len(body.Roots) > 32 {
 		writeError(w, http.StatusBadRequest, "roots must contain 1 to 32 absolute paths")
 		return

@@ -39,6 +39,27 @@ WHERE workspace_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT $2;
 
+-- name: ListAccessibleDecisionRequestTargetSlugs :many
+-- Return target routes only when the requesting user is also a member of the
+-- target workspace. This metadata is attached only to origin projections.
+WITH visible_origin AS (
+    SELECT request_row.request_group_id
+    FROM decision_requests request_row
+    WHERE request_row.workspace_id = $1
+      AND request_row.role = 'origin'
+      AND (sqlc.narg('status')::text IS NULL OR request_row.status = sqlc.narg('status')::text)
+    ORDER BY request_row.created_at DESC, request_row.id DESC
+    LIMIT $3
+)
+SELECT DISTINCT origin.request_group_id, target_workspace.slug
+FROM visible_origin origin
+JOIN decision_requests target
+  ON target.request_group_id = origin.request_group_id
+ AND target.role = 'target'
+JOIN workspace target_workspace ON target_workspace.id = target.workspace_id
+JOIN member target_member ON target_member.workspace_id = target.workspace_id
+WHERE target_member.user_id = $2;
+
 -- name: CountWorkspaceDecisionRequestsByStatus :one
 -- Section counts for the decision-center authorization section. One scan
 -- serves all three counts; the caller scopes by workspace_id.

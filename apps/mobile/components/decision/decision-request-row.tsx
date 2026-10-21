@@ -12,6 +12,7 @@
 import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Pressable, View } from "react-native";
+import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { buildActorNameResolver } from "@multica/core/workspace/hooks";
 import { decisionRequestKeys } from "@multica/core/issues/decision-requests";
@@ -53,6 +54,7 @@ function statusPillClass(status: DecisionRequest["status"]): string {
 
 export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
   const { t } = useT("decisions");
+  const router = useRouter();
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId) ?? "";
   const { colorScheme } = useColorScheme();
@@ -173,12 +175,29 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
               </Button>
             </>
           ) : (
-            <Text className="shrink text-xs text-muted-foreground">
-              {t(
-                "requests.projection_hint",
-                "This row is a read-only projection — act in the target workspace",
-              )}
-            </Text>
+            request.target_workspace_slug ? (
+              <Pressable
+                className="flex-row items-center gap-1"
+                onPress={() => router.push({
+                  pathname: "/[workspace]/(tabs)/decisions",
+                  params: { workspace: request.target_workspace_slug! },
+                })}
+                accessibilityRole="link"
+                testID="decision-request-target-link"
+              >
+                <Text className="text-xs text-brand">
+                  {t("requests.open_target_workspace", "Open target workspace")}
+                </Text>
+                <Ionicons name="arrow-forward-outline" size={14} color={theme.brand} />
+              </Pressable>
+            ) : (
+              <Text className="shrink text-xs text-muted-foreground">
+                {t(
+                  "requests.projection_hint",
+                  "This row is a read-only projection — act in the target workspace",
+                )}
+              </Text>
+            )
           )}
           <Pressable
             className="ml-auto px-2 py-1"
