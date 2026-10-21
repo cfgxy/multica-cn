@@ -127,6 +127,53 @@ func TestCompleteTaskCallbackWithNULSucceeds(t *testing.T) {
 	}
 }
 
+func TestCompleteTaskCapabilityAdaptationMustMatchClaimSnapshot(t *testing.T) {
+	ctx := context.Background()
+	_, taskID := seedNULTask(t, "task-adaptation")
+	contextJSON := `{"capability_adaptation":{"policy_id":"policy-1","policy_version":"v1","scope":"current_task","trigger":"task shape","current_strategy":"long plan","suggested_strategy":"short checkpoints","allowed_actions":["use checkpoints"]}}`
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET context = $2::jsonb WHERE id = $1`, taskID, contextJSON); err != nil {
+		t.Fatalf("set task context: %v", err)
+	}
+
+	bad := httptest.NewRecorder()
+	badReq := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/complete", taskID, map[string]any{
+		"output":                       "done",
+		"capability_adaptation_result": map[string]string{"policy_id": "other-policy", "status": "applied"},
+	})
+	testHandler.CompleteTask(bad, badReq)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("mismatched policy returned %d, want 400: %s", bad.Code, bad.Body.String())
+	}
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read task after rejection: %v", err)
+	}
+	if status != "running" {
+		t.Fatalf("mismatched policy changed task status to %q", status)
+	}
+
+	good := httptest.NewRecorder()
+	goodReq := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/complete", taskID, map[string]any{
+		"output":                       "done",
+		"capability_adaptation_result": map[string]string{"policy_id": "policy-1", "status": "retained"},
+	})
+	testHandler.CompleteTask(good, goodReq)
+	if good.Code != http.StatusOK {
+		t.Fatalf("matching policy returned %d, want 200: %s", good.Code, good.Body.String())
+	}
+	var storedJSON []byte
+	if err := testPool.QueryRow(ctx, `SELECT result FROM agent_task_queue WHERE id = $1`, taskID).Scan(&storedJSON); err != nil {
+		t.Fatalf("read completed result: %v", err)
+	}
+	var stored TaskCompleteRequest
+	if err := json.Unmarshal(storedJSON, &stored); err != nil {
+		t.Fatalf("decode completed result: %v", err)
+	}
+	if stored.CapabilityAdaptationResult == nil || stored.CapabilityAdaptationResult.PolicyID != "policy-1" || stored.CapabilityAdaptationResult.Status != "retained" {
+		t.Fatalf("stored adaptation result = %#v", stored.CapabilityAdaptationResult)
+	}
+}
+
 // TestReportTaskMessagesCallbackWithNULSucceeds covers the /messages entry,
 // again through the real handler.
 //

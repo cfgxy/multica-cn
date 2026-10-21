@@ -33,6 +33,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
+	"github.com/multica-ai/multica/server/pkg/taskadaptation"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
@@ -262,7 +263,8 @@ type terminalTaskReport struct {
 	// abandoned as unresumable (GH #6066). The server records it so no later
 	// run on the issue or chat can select it again, however many clean rows
 	// still reference it.
-	retiredSessionID string
+	retiredSessionID           string
+	capabilityAdaptationResult *taskadaptation.Outcome
 }
 
 type executionEnvironmentCommand func() ([]string, error)
@@ -5808,7 +5810,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		return
 	}
 
-	d.reportTaskResult(ctx, task.ID, result, taskLog)
+	d.reportTaskResult(ctx, task.ID, result, taskLog, task.CapabilityAdaptation)
 
 	// Write GC metadata after the task finishes so the periodic GC loop
 	// can look up the parent record (issue / chat session / autopilot run /
@@ -6303,20 +6305,26 @@ func (d *Daemon) acquireSnapshotScopeLocks(ctx context.Context, task Task, plan 
 // the agent may have built a real session before getting stuck, and we want
 // the next chat turn to resume there rather than start over and "forget"
 // the conversation.
-func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result TaskResult, taskLog *slog.Logger) {
+func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result TaskResult, taskLog *slog.Logger, snapshots ...*taskadaptation.Snapshot) {
 	switch result.Status {
 	case "completed":
+		var snapshot *taskadaptation.Snapshot
+		if len(snapshots) > 0 {
+			snapshot = snapshots[0]
+		}
+		output, adaptationResult := taskadaptation.ExtractReceipt(result.Comment, snapshot)
 		taskLog.Info("task completed", "status", result.Status)
 		err := d.reportTerminalTask(ctx, terminalTaskReport{
-			kind:                  terminalTaskReportComplete,
-			taskID:                taskID,
-			output:                result.Comment,
-			branchName:            result.BranchName,
-			sessionID:             result.SessionID,
-			workDir:               result.WorkDir,
-			durableWorkDir:        result.DurableWorkDir,
-			sessionRolloutMissing: result.SessionRolloutMissing,
-			retiredSessionID:      result.RetiredSessionID,
+			kind:                       terminalTaskReportComplete,
+			taskID:                     taskID,
+			output:                     output,
+			capabilityAdaptationResult: adaptationResult,
+			branchName:                 result.BranchName,
+			sessionID:                  result.SessionID,
+			workDir:                    result.WorkDir,
+			durableWorkDir:             result.DurableWorkDir,
+			sessionRolloutMissing:      result.SessionRolloutMissing,
+			retiredSessionID:           result.RetiredSessionID,
 		})
 		if err == nil {
 			return
@@ -6415,7 +6423,7 @@ func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTa
 
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.CompleteTask(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir)
+		return d.client.CompleteTask(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.capabilityAdaptationResult)
 	case terminalTaskReportFail:
 		return d.client.FailTask(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir)
 	default:

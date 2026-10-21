@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
+	"github.com/multica-ai/multica/server/pkg/taskadaptation"
 	"time"
 
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -534,6 +535,24 @@ func TestTerminalReportsOmitEmptyRetiredSessionID(t *testing.T) {
 	}
 	if _, present := body["retired_session_id"]; present {
 		t.Fatalf("retired_session_id must be omitted when nothing was retired, got %v", body)
+	}
+}
+
+func TestCompleteTaskCarriesCapabilityAdaptationResult(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	outcome := &taskadaptation.Outcome{PolicyID: "policy-1", Status: "applied"}
+	if err := NewClient(srv.URL).CompleteTask(context.Background(), "task-1", "done", "", "", "", false, "", "", outcome); err != nil {
+		t.Fatalf("CompleteTask: %v", err)
+	}
+	got, ok := body["capability_adaptation_result"].(map[string]any)
+	if !ok || got["policy_id"] != "policy-1" || got["status"] != "applied" {
+		t.Fatalf("capability adaptation result = %#v", body["capability_adaptation_result"])
 	}
 }
 
