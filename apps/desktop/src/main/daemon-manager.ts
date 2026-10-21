@@ -1,5 +1,6 @@
 import { app, ipcMain, BrowserWindow, shell } from "electron";
 import { execFile } from "child_process";
+import { randomBytes } from "crypto";
 import {
   readFile,
   writeFile,
@@ -21,6 +22,10 @@ import type {
   DaemonPrefs,
   LocalRuntimeProbe,
 } from "../shared/daemon-types";
+import {
+  registerEnvironmentManagerIpcHandlers,
+} from "./environment-manager-ipc";
+import { createEnvironmentRequest } from "./environment-request";
 import { daemonStatusAlive } from "../shared/daemon-types";
 import { ensureManagedCli, managedCliPath } from "./cli-bootstrap";
 import { decideVersionAction } from "./version-decision";
@@ -201,6 +206,13 @@ async function fetchHealthAtPort(
     clearTimeout(timeout);
   }
 }
+
+const environmentRequest = createEnvironmentRequest({
+  ensureActiveProfile,
+  fetchHealthAtPort,
+  readProfileConfig,
+  fetch,
+});
 
 /**
  * Validates the daemon profile's token against the backend to find out whether
@@ -1376,6 +1388,11 @@ export function setupDaemonManager(
   });
   ipcMain.handle("daemon:get-status", () => fetchHealth());
   ipcMain.handle("daemon:probe-runtimes", () => probeLocalRuntimes());
+  registerEnvironmentManagerIpcHandlers(
+    ipcMain,
+    environmentRequest,
+    () => randomBytes(32).toString("hex"),
+  );
   // The host's OS name, available regardless of daemon state. The Runtimes
   // page uses it as a fallback identity for "this machine" when no
   // app-managed daemon is reporting a device name (e.g. the daemon runs

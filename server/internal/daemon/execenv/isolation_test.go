@@ -175,6 +175,83 @@ func TestPreparationHelperRoundTripsProjectResources(t *testing.T) {
 	}
 }
 
+func TestPreparationHelperKeepsReusedCodeAndRunConfigurationSeparate(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	params := PrepareParams{WorkspacesRoot: t.TempDir(), WorkspaceID: "ws-helper-isolation", TaskID: "first-helper", Provider: "claude", Task: TaskContextForEnv{AgentID: "agent", IssueID: "issue"}}
+	env, err := PrepareIsolated(ctx, preparationHelperTestCommand(), params, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := ClaimEnvRoot(RootDirParams{WorkspacesRoot: params.WorkspacesRoot, WorkspaceID: params.WorkspaceID, TaskID: "second-helper"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer claim.Release()
+	reused, err := ReuseIsolated(ctx, preparationHelperTestCommand(), ReuseParams{WorkspacesRoot: params.WorkspacesRoot, RunRoot: claim.RootDir(), WorkDir: env.WorkDir, Provider: "claude", Task: params.Task}, logger)
+	if err != nil || reused == nil || reused.RootDir != claim.RootDir() || reused.CodeRootDir != env.RootDir || reused.WorkDir != env.WorkDir || reused.MulticaConfigRoot == env.MulticaConfigRoot {
+		t.Fatalf("helper lost per-run isolation: %+v %v", reused, err)
+	}
+}
+
+// TestPreparationHelperAcceptsFieldsFromAnOlderParent pins the version-skew
+// half of the helper protocol. The parent is the running daemon process and
+// the helper is the binary currently at its executable path, so an upgrade
+// that replaces that file under a live daemon has an older parent feeding a
+// newer helper until the daemon re-execs. Rejecting the fields the newer build
+// dropped failed every task on the host for the whole window: removing
+// TaskContextForEnv.HandoffNote (#7626) left installed daemons sending an
+// untagged, non-omitempty `"HandoffNote": ""` and the helper answered
+// `json: unknown field "HandoffNote"` (MUL-7029).
+func TestPreparationHelperAcceptsFieldsFromAnOlderParent(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	workDir := filepath.Join(t.TempDir(), "workdir")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("seed workdir: %v", err)
+	}
+
+	payload, err := marshalPreparationRequest(preparationRequest{
+		Action: preparationActionReuse,
+		Reuse: &ReuseParams{
+			WorkDir:  workDir,
+			Provider: "claude",
+			Task:     TaskContextForEnv{IssueID: "issue-helper-old-parent"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal preparation request: %v", err)
+	}
+	// Re-add the fields an older build put on the wire: one the removed
+	// handoff note actually occupied, and one on the params struct itself.
+	var wire map[string]any
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		t.Fatalf("open payload: %v", err)
+	}
+	reuse := wire["reuse"].(map[string]any)
+	reuse["Task"].(map[string]any)["HandoffNote"] = "scope this run to the parser"
+	reuse["RetiredParamFromAnOlderBuild"] = true
+	oldParentPayload, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatalf("reseal payload: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := RunPreparationHelper(bytes.NewReader(oldParentPayload), &out, logger); err != nil {
+		t.Fatalf("RunPreparationHelper on an older parent's payload: %v", err)
+	}
+	var response preparationResponse
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("decode preparation response: %v", err)
+	}
+	if response.Error != "" {
+		t.Fatalf("helper reported error %q, want the reuse to succeed", response.Error)
+	}
+	if response.Environment == nil || response.Environment.WorkDir != workDir {
+		t.Fatalf("environment = %#v, want workdir %q", response.Environment, workDir)
+	}
+}
+
 func TestPreparationRequestPreservesOpenclawGatewayForHelper(t *testing.T) {
 	t.Parallel()
 	want := OpenclawGatewayPin{

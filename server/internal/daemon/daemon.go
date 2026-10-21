@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
 	"github.com/multica-ai/multica/server/internal/selfexec"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
@@ -569,7 +571,13 @@ type Daemon struct {
 	// parent of this daemon's namespaced segment). The startup reconcile
 	// migrates own in-flight runs out of it; empty — as in directly
 	// constructed test daemons — disables migration entirely.
-	supervisedRunsBase string
+	supervisedRunsBase           string
+	environmentOperationsMu      sync.Mutex
+	environmentOperations        map[string]*environmentOperationLive
+	environmentOperationWorkers  sync.WaitGroup
+	environmentOperationsStopped bool
+	environmentPolicyMu          sync.Mutex
+	environmentPolicyScans       map[string]protocol.EnvironmentPolicyStatus
 	// restartMu guards restartBinary. Two goroutines can reach triggerRestart —
 	// the server-triggered handleUpdate and the autoUpdateLoop — and
 	// trySelfReload reads RestartBinary() from the latter to avoid racing the
@@ -2075,6 +2083,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	d.cancelFunc = cancel
 	d.rootCtx = ctx
+	defer d.stopEnvironmentOperations()
 
 	// Bind health port early to detect another running daemon.
 	healthLn, err := d.listenHealth()
@@ -2195,6 +2204,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Node ops channel (RUYI-645): periodic service inventory collector.
 	go d.opsInventoryLoop(ctx)
 	go d.gcLoop(ctx)
+	if d.cfg.EnvironmentRecycleEnabled {
+		go d.environmentRecycleLoop(ctx)
+	}
 	go d.autoUpdateLoop(ctx)
 	go d.tokenRenewalLoop(ctx)
 
@@ -2842,6 +2854,7 @@ func (d *Daemon) registerRuntimesForWorkspaceBatchLocked(ctx context.Context, wo
 		"daemon_id":         d.cfg.DaemonID,
 		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
 		"device_name":       d.cfg.DeviceName,
+		"server_url":        registrationServerBaseURL(d.cfg.ServerBaseURL),
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
 		"ops_caps":          d.opsCaps(),
@@ -2888,6 +2901,7 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 		"daemon_id":         d.cfg.DaemonID,
 		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
 		"device_name":       d.cfg.DeviceName,
+		"server_url":        registrationServerBaseURL(d.cfg.ServerBaseURL),
 		"cli_version":       d.cfg.CLIVersion,
 		"launched_by":       d.cfg.LaunchedBy,
 		"ops_caps":          d.opsCaps(),
@@ -2906,6 +2920,19 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 	d.logger.Debug("builtin register response", "workspace_id", workspaceID, "runtimes", len(resp.Runtimes))
 	d.recordBuiltinVersionsSent(workspaceID, runtimes)
 	return resp, nil
+}
+
+func registrationServerBaseURL(raw string) string {
+	base, err := NormalizeServerBaseURL(raw)
+	if err != nil {
+		return ""
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return ""
+	}
+	u.User = nil
+	return u.String()
 }
 
 // appendProfileRuntimes fetches the workspace's enabled custom runtime
@@ -5679,7 +5706,11 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		defer d.unmarkActiveEnvRoot(resolvedEnvRoot)
 	}
 	if task.PriorWorkDir != "" {
-		if priorRoot := filepath.Dir(task.PriorWorkDir); priorRoot != "" && priorRoot != resolvedEnvRoot {
+		priorRoot := managedCodeRoot(d.cfg.WorkspacesRoot, task.PriorWorkDir)
+		if priorRoot == "" {
+			priorRoot = filepath.Dir(task.PriorWorkDir)
+		}
+		if priorRoot != "" && priorRoot != resolvedEnvRoot {
 			d.markActiveEnvRoot(priorRoot)
 			defer d.unmarkActiveEnvRoot(priorRoot)
 		}
@@ -5804,44 +5835,13 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		if ackErr := d.client.AckTaskCancelled(ctx, task.ID, TaskCancelAck{BranchName: result.BranchName, DurableWorkDir: result.DurableWorkDir, Confirmed: true}); ackErr != nil {
 			taskLog.Warn("cancel ack failed; server sweeper will finalize", "error", ackErr)
 		}
+		d.recordEnvironmentCompletion(task, result, taskLog)
 		return
 	}
 
 	d.reportTaskResult(ctx, task.ID, result, taskLog)
 
-	// Write GC metadata after the task finishes so the periodic GC loop
-	// can look up the parent record (issue / chat session / autopilot run /
-	// task itself for quick-create) later. Written last so that a mid-task
-	// crash leaves the directory as an orphan (cleaned up by GCOrphanTTL).
-	if result.EnvRoot != "" {
-		if meta, ok := gcMetaForTask(task); ok {
-			// A local_directory project_resource matched this daemon
-			// means the agent ran in the user's own tree. Stamp the
-			// meta so the GC loop never tries to RemoveAll envRoot's
-			// sibling workdir (which is the user's path) or the envRoot
-			// itself (we want output/ and logs/ to linger for forensic
-			// access).
-			//
-			// Worktree mode is excluded: its workdir is a disposable
-			// worktree INSIDE envRoot, already removed by Finalize, and
-			// the deliverable lives on as a branch in the user's repo.
-			// Stamping it would hand every worktree task a permanently
-			// exempt env root, so the directory would accumulate one env
-			// root per task forever — the exact cost the exemption was
-			// meant to trade away for a user's own files.
-			// Snapshot mode stamps the same exemption: the env root hosts
-			// the local-snapshots tree whose failed-run entries are reaped
-			// by ReapExpiredSnapshots on the ledger's own 7-day schedule —
-			// the ordinary orphan sweep must not RemoveAll the root out
-			// from under that retention window.
-			if localDirectoryGCExemption(task, d.cfg.DaemonID) {
-				meta.LocalDirectory = true
-			}
-			if err := execenv.WriteGCMeta(result.EnvRoot, meta, taskLog); err != nil {
-				taskLog.Warn("write gc meta failed (non-fatal)", "error", err)
-			}
-		}
-	}
+	d.recordEnvironmentCompletion(task, result, taskLog)
 }
 
 // worktreePreservedError marks a task error that must survive the cancel path:
@@ -6431,7 +6431,12 @@ func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTa
 // internal task with no IDs at all). The caller skips writing a meta file
 // in that case so the directory falls back to mtime-based orphan cleanup.
 func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
-	meta := execenv.GCMeta{WorkspaceID: task.WorkspaceID, TaskID: task.ID}
+	meta := execenv.GCMeta{WorkspaceID: task.WorkspaceID, TaskID: task.ID, AgentID: task.AgentID,
+		RuntimeID: task.RuntimeID, ProjectID: task.ProjectID, ProjectName: task.ProjectTitle,
+		SquadID: task.SquadID, SquadName: task.SquadName}
+	if task.Agent != nil {
+		meta.AgentName = task.Agent.Name
+	}
 	switch {
 	case task.ChatSessionID != "":
 		meta.Kind = execenv.GCKindChat
@@ -6439,6 +6444,7 @@ func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 	case task.AutopilotRunID != "":
 		meta.Kind = execenv.GCKindAutopilotRun
 		meta.AutopilotRunID = task.AutopilotRunID
+		meta.AutopilotID = task.AutopilotID
 	case task.IssueID != "":
 		meta.Kind = execenv.GCKindIssue
 		meta.IssueID = task.IssueID
@@ -6659,16 +6665,16 @@ func sessionHomeReachable(provider string, env *execenv.Environment, envReused b
 	if env.HermesSessionStore != "" {
 		return env.HermesSessionHistoryPresent
 	}
-	return envReused
+	return envReused && env.CodeRootDir == ""
 }
 
 // shouldReusePriorWorkdir keeps the local_directory lock and cross-agent
 // isolation invariants without forcing managed follow-ups onto a fresh
-// provider session. Every managed issue or chat task may reuse only directories
+// provider session. Managed issue, chat and automation tasks may reuse directories
 // that resolve to the two-segment managed root shape, carry Prepare-time
 // managed-env provenance for the same workspace/scope/agent, and carry a
-// matching daemon task-context marker. Other task kinds have no durable scope
-// with which to prove ownership and therefore start fresh.
+// matching daemon task-context marker and repository scope. Other task kinds
+// have no durable workline identity and start fresh.
 //
 // Reuse eligibility is deliberately keyed off .managed_env.json (written by
 // execenv.Prepare) and NOT .gc_meta.json (written only after the task reaches
@@ -6679,7 +6685,7 @@ func sessionHomeReachable(provider string, env *execenv.Environment, envReused b
 // function reads — the env-root provenance and the workdir task-context marker
 // — are written at Prepare time, so neither depends on completion ordering.
 func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignment, workspacesRoot string) (string, bool) {
-	if task.PriorWorkDir == "" || localAssignment != nil {
+	if task.PriorWorkDir == "" || localAssignment != nil && !localAssignment.UsesWorktree() {
 		return "", false
 	}
 
@@ -6700,20 +6706,32 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 		return "", false
 	}
 	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] != "workdir" {
+	if len(parts) < 3 || parts[0] == "" || parts[1] == "" || localAssignment == nil && (len(parts) != 3 || parts[2] != "workdir") || localAssignment != nil && parts[2] != "worktree" {
 		return "", false
 	}
-	if task.AgentID == "" || (task.IssueID == "" && task.ChatSessionID == "") {
+	if task.AgentID == "" || (task.IssueID == "" && task.ChatSessionID == "" && task.AutopilotID == "") {
 		return "", false
 	}
 	// Managed-env provenance is written only for non-local resumable envs, so
 	// its presence (plus the workspace/scope/agent match) proves this is a
 	// safe daemon-managed reuse target and not a residual local_directory path.
-	prov, err := execenv.ReadManagedEnvProvenance(filepath.Dir(workdir))
+	physicalRoot := filepath.Join(root, parts[0], parts[1])
+	prov, err := execenv.ReadManagedEnvProvenance(physicalRoot)
 	if err != nil || prov.ManagedBy != execenv.ManagedEnvProvenanceManagedBy ||
 		prov.WorkspaceID != task.WorkspaceID ||
 		prov.AgentID != task.AgentID {
 		return "", false
+	}
+	if !managedReuseScopeMatches(task, prov) {
+		return "", false
+	}
+	if localAssignment != nil {
+		previous, err := execenv.ReadRetainedLocalWorktree(physicalRoot)
+		params := localWorktreeParamsForTask(task, localAssignment, physicalRoot)
+		if err != nil || !execenv.LocalWorktreeReuseMatches(previous, params) {
+			return "", false
+		}
+		return workdir, true
 	}
 
 	data, err := os.ReadFile(filepath.Join(workdir, execenv.TaskContextMarkerRelPath))
@@ -6725,6 +6743,7 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 		AgentID       string `json:"agent_id"`
 		IssueID       string `json:"issue_id"`
 		ChatSessionID string `json:"chat_session_id"`
+		AutopilotID   string `json:"autopilot_id"`
 	}
 	if json.Unmarshal(data, &marker) != nil {
 		return "", false
@@ -6732,16 +6751,25 @@ func shouldReusePriorWorkdir(task Task, localAssignment *localDirectoryAssignmen
 	if marker.ManagedBy != execenv.TaskContextMarkerManagedBy || marker.AgentID != task.AgentID {
 		return "", false
 	}
-	if task.IssueID != "" {
-		if prov.IssueID != task.IssueID || marker.IssueID != task.IssueID {
+	if task.ChatSessionID != "" {
+		if prov.ChatSessionID != task.ChatSessionID || marker.ChatSessionID != task.ChatSessionID || prov.IssueID != task.IssueID || marker.IssueID != task.IssueID {
 			return "", false
 		}
 		return workdir, true
 	}
-	if prov.ChatSessionID != task.ChatSessionID || marker.ChatSessionID != task.ChatSessionID {
-		return "", false
+	if task.IssueID != "" {
+		if prov.IssueID != task.IssueID || marker.IssueID != task.IssueID || prov.ChatSessionID != "" || marker.ChatSessionID != "" {
+			return "", false
+		}
+		return workdir, true
 	}
-	return workdir, true
+	if task.ChatSessionID == "" && task.AutopilotID != "" {
+		if prov.AutopilotID != task.AutopilotID || marker.AutopilotID != task.AutopilotID || prov.IssueID != "" || prov.ChatSessionID != "" || marker.IssueID != "" || marker.ChatSessionID != "" {
+			return "", false
+		}
+		return workdir, true
+	}
+	return "", false
 }
 
 // gateCodexResumeToRolloutPresence drops the prior Codex session when its
@@ -7112,6 +7140,9 @@ func (d *Daemon) startTaskPrepareLeaseExtender(ctx context.Context, task Task, t
 // and it carries the context's cause so the caller can end the task instead of
 // preparing an environment for work that no longer exists.
 func (d *Daemon) lockReusablePriorEnvRoot(ctx context.Context, task Task, localAssignment *localDirectoryAssignment, heldRoot string) (*execenv.EnvRootClaim, string, os.FileInfo, bool, error) {
+	if err := d.restoreArchivedPriorWorkdir(ctx, task, localAssignment); err != nil {
+		return nil, "", nil, false, err
+	}
 	// Pin the workspaces root BEFORE validating anything. Opening it after,
 	// from a name validation just approved, would re-resolve that name: rename
 	// the root aside, leave a symlink to a look-alike tree, and os.Root
@@ -7203,7 +7234,7 @@ func (d *Daemon) lockReusablePriorEnvRoot(ctx context.Context, task Task, localA
 	}
 	// ...and the directory we are about to hand to Reuse has to be that same
 	// one, so the object locked and the object used cannot diverge.
-	currentInfo, err := os.Stat(filepath.Dir(recheckedWorkDir))
+	currentInfo, err := os.Stat(managedCodeRoot(d.cfg.WorkspacesRoot, recheckedWorkDir))
 	if err != nil || !os.SameFile(lockedInfo, currentInfo) {
 		d.logger.Info("prior workdir changed identity while being claimed; starting a fresh environment",
 			"task", task.ID)
@@ -7633,6 +7664,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// via `multica repo checkout <url>`.
 	taskCtx := execenv.TaskContextForEnv{
 		IssueID:             task.IssueID,
+		SquadID:             task.SquadID,
 		TriggerCommentID:    task.TriggerCommentID,
 		TriggerThreadID:     task.TriggerThreadID,
 		CommentReplyTargets: commentReplyThreads(task),
@@ -7694,7 +7726,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	d.markActiveEnvRoot(resolvedRoot)
 	defer d.unmarkActiveEnvRoot(resolvedRoot)
 	if task.PriorWorkDir != "" {
-		priorRoot := filepath.Dir(task.PriorWorkDir)
+		priorRoot := managedCodeRoot(d.cfg.WorkspacesRoot, task.PriorWorkDir)
+		if priorRoot == "" {
+			priorRoot = filepath.Dir(task.PriorWorkDir)
+		}
 		if priorRoot != resolvedRoot {
 			d.markActiveEnvRoot(priorRoot)
 			defer d.unmarkActiveEnvRoot(priorRoot)
@@ -7984,31 +8019,64 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			reuseBeforeUseTestHook()
 		}
 		var err error
-		env, err = d.reuseExecutionEnvironment(prepareCtx, execenv.ReuseParams{
-			WorkspacesRoot: d.cfg.WorkspacesRoot,
-			Profile:        d.cfg.Profile,
-			// The canonical path the lock was taken on. Handing Reuse the raw
-			// PriorWorkDir instead would re-resolve it, so the directory we
-			// locked and the directory we use could differ.
-			WorkDir:               priorWorkDir,
-			Provider:              provider,
-			CodexVersion:          codexVersion,
-			ResumeSessionID:       task.PriorSessionID,
-			OpenclawBin:           openclawBin,
-			McpConfig:             effectiveMcpConfig,
-			CursorMcpAuthSource:   cursorMcpAuthSource,
-			OpenclawGateway:       openclawGateway,
-			HermesSourceHome:      hermesSourceHome,
-			HermesSourceMustExist: hermesSourceMustExist,
-			HermesEnv:             hermesEnv,
-			HermesMemoryStore:     hermesMemoryStore,
-			HermesSessionStore:    hermesSessionStore,
-			ReasonixEnv:           reasonixEnv,
-			CodexCustomArgs:       codexSandboxArgs,
-			Task:                  taskCtx,
-		})
-		if err != nil {
-			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("reuse execution environment: %w", err))
+		var localReuse *execenv.LocalWorktree
+		var releaseLocalSnapshot func()
+		if localAssignment.UsesWorktree() {
+			params := localWorktreeParamsForTask(task, localAssignment, managedCodeRoot(d.cfg.WorkspacesRoot, priorWorkDir))
+			releaseLocalSnapshot, err = d.acquireReusedWorktreeSnapshot(prepareCtx, task, localAssignment, taskLog)
+			if err != nil {
+				return TaskResult{}, err
+			}
+			previous, loadErr := execenv.ReadRetainedLocalWorktree(params.EnvRoot)
+			if loadErr != nil {
+				releaseLocalSnapshot()
+				return TaskResult{}, loadErr
+			}
+			if err := execenv.ReattachRestoredLocalWorktree(prepareCtx, previous, params, taskLog); err != nil {
+				releaseLocalSnapshot()
+				return TaskResult{}, asEnvironmentSetupFailure(err)
+			}
+			localReuse, err = execenv.ReuseLocalWorktree(previous, params, taskLog)
+			if err != nil {
+				releaseLocalSnapshot()
+				if !errors.Is(err, execenv.ErrLocalWorktreeNotReusable) {
+					return TaskResult{}, asEnvironmentSetupFailure(err)
+				}
+				reusable = false
+			}
+		}
+		if reusable {
+			env, err = d.reuseExecutionEnvironment(prepareCtx, execenv.ReuseParams{
+				WorkspacesRoot:      d.cfg.WorkspacesRoot,
+				RunRoot:             envClaim.RootDir(),
+				ReusedLocalWorktree: localReuse,
+				Profile:             d.cfg.Profile,
+				// The canonical path the lock was taken on. Handing Reuse the raw
+				// PriorWorkDir instead would re-resolve it, so the directory we
+				// locked and the directory we use could differ.
+				WorkDir:               priorWorkDir,
+				Provider:              provider,
+				CodexVersion:          codexVersion,
+				ResumeSessionID:       task.PriorSessionID,
+				OpenclawBin:           openclawBin,
+				McpConfig:             effectiveMcpConfig,
+				CursorMcpAuthSource:   cursorMcpAuthSource,
+				OpenclawGateway:       openclawGateway,
+				HermesSourceHome:      hermesSourceHome,
+				HermesSourceMustExist: hermesSourceMustExist,
+				HermesEnv:             hermesEnv,
+				HermesMemoryStore:     hermesMemoryStore,
+				HermesSessionStore:    hermesSessionStore,
+				ReasonixEnv:           reasonixEnv,
+				CodexCustomArgs:       codexSandboxArgs,
+				Task:                  taskCtx,
+			})
+			if releaseLocalSnapshot != nil {
+				releaseLocalSnapshot()
+			}
+			if err != nil {
+				return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("reuse execution environment: %w", err))
+			}
 		}
 		// Reuse resolves priorWorkDir by name, so confirm what it actually
 		// opened is still the directory we hold the lock on. An fd cannot cross
@@ -8017,7 +8085,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// into "declined and started clean". See lockReusablePriorEnvRoot for
 		// what remains uncovered.
 		if env != nil && lockedPriorInfo != nil {
-			usedInfo, statErr := os.Stat(filepath.Dir(env.WorkDir))
+			usedInfo, statErr := os.Stat(managedCodeRoot(d.cfg.WorkspacesRoot, env.WorkDir))
 			if statErr != nil || !os.SameFile(lockedPriorInfo, usedInfo) {
 				// No "task" field here: taskLog already carries the full id.
 				taskLog.Info("reused workdir is not the directory that was claimed; starting a fresh environment")
@@ -8037,6 +8105,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			WorkspaceID:     task.WorkspaceID,
 			WorkspaceSlug:   task.WorkspaceSlug,
 			TaskID:          task.ID,
+			RuntimeID:       task.RuntimeID,
 			IssueIdentifier: task.IssueIdentifier,
 			AgentName:       agentName,
 			// This run already holds the claim (envClaim above) and the reset
@@ -8058,7 +8127,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			Task:                  taskCtx,
 		}
 		if localAssignment.UsesWorktree() {
-			prepParams.LocalWorktree = &execenv.LocalWorktreeParams{LocalPath: localAssignment.AbsPath}
+			prepParams.LocalWorktree = &execenv.LocalWorktreeParams{LocalPath: localAssignment.AbsPath, RetainCheckout: true}
 			// Take the per-path mutex for the snapshot alone, then hand it
 			// straight back — long enough to read a consistent tree, short
 			// enough that worktree tasks still overlap for the run itself.
@@ -8156,6 +8225,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		d.markActiveEnvRoot(env.RootDir)
 		defer d.unmarkActiveEnvRoot(env.RootDir)
 	}
+	if env.CodeRootDir != "" {
+		defer func() { taskResult.CodeRoot = env.CodeRootDir }()
+	}
 	// Snapshot run brief (RUYI-669): the ledger entry is committed BEFORE the
 	// worker spawns, so any tree on disk is attributable from the moment it
 	// exists — that is what keeps GC ledger-driven instead of name-driven.
@@ -8231,7 +8303,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			if finalizeErr == nil {
 				// The configured local_directory becomes authoritative only after
 				// Finalize confirms the disposable task worktree is actually gone.
-				if localAssignment != nil {
+				if localAssignment != nil && !env.LocalWorktree.RetainCheckout {
 					taskResult.DurableWorkDir = localAssignment.AbsPath
 				}
 				return
