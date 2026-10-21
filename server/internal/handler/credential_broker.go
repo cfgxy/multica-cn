@@ -217,21 +217,50 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 		FROM credential_capability WHERE capability_hash = $1 FOR UPDATE`, hash[:]).
 		Scan(&capabilityDaemonID, &taskID, &workspaceID, &agentID, &issueID, &capabilityConnector, &capabilityRevision,
 			&sessionPublicKey, &expiresAt, &consumedAt)
-	if err != nil || capabilityDaemonID != daemonID || consumedAt.Valid || !time.Now().Before(expiresAt) || capabilityConnector != connectorUUID || capabilityRevision != req.ConnectorRevision {
+	if err != nil {
 		return rejected, errors.New("credential capability rejected")
+	}
+	deny := func(reason string, credentialID, grantID pgtype.UUID, purpose string) (credentialResolveResponse, error) {
+		if err := writeCredentialAudit(ctx, tx, workspaceID, credentialID, grantID,
+			"credential.broker_resolved", "denied", reason, "daemon", daemonID,
+			daemonID, taskID, agentID, issueID, purpose); err != nil {
+			return rejected, errors.New("credential capability rejected")
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return rejected, errors.New("credential capability rejected")
+		}
+		return rejected, errors.New("credential capability rejected")
+	}
+	if capabilityDaemonID != daemonID {
+		return deny("daemon_mismatch", pgtype.UUID{}, pgtype.UUID{}, "")
+	}
+	if consumedAt.Valid {
+		return deny("capability_replayed", pgtype.UUID{}, pgtype.UUID{}, "")
+	}
+	if !time.Now().Before(expiresAt) {
+		return deny("capability_expired", pgtype.UUID{}, pgtype.UUID{}, "")
+	}
+	if capabilityConnector != connectorUUID || capabilityRevision != req.ConnectorRevision {
+		return deny("connector_mismatch", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
 	grant, matches, denied, err := findTaskCredentialGrant(ctx, tx, uuidToString(taskID))
-	if err != nil || denied || matches != 1 || grant.DaemonID != daemonID || grant.WorkspaceID != workspaceID ||
-		grant.AgentID != agentID || grant.IssueID != issueID || grant.ConnectorID != capabilityConnector || grant.ConnectorID != connectorUUID ||
-		grant.ConnectorRev != capabilityRevision || grant.ConnectorStatus != "active" || grant.TaskStatus != "dispatched" && grant.TaskStatus != "running" {
+	if err != nil {
 		return rejected, errors.New("credential capability rejected")
 	}
+	if denied || matches != 1 {
+		return deny("grant_missing_or_ambiguous", pgtype.UUID{}, pgtype.UUID{}, "")
+	}
+	if grant.DaemonID != daemonID || grant.WorkspaceID != workspaceID || grant.AgentID != agentID || grant.IssueID != issueID ||
+		grant.ConnectorID != capabilityConnector || grant.ConnectorID != connectorUUID || grant.ConnectorRev != capabilityRevision ||
+		grant.ConnectorStatus != "active" || (grant.TaskStatus != "dispatched" && grant.TaskStatus != "running") {
+		return deny("task_or_connector_binding_mismatch", grant.CredentialID, grant.GrantID, grant.Purpose)
+	}
 	if len(h.CredentialStorageKeys.MasterKeys) == 0 {
-		return rejected, errors.New("credential capability rejected")
+		return deny("storage_key_unavailable", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
 	var stored credentialcrypto.StorageEnvelope
 	if json.Unmarshal(grant.EncryptedValue, &stored) != nil {
-		return rejected, errors.New("credential capability rejected")
+		return deny("stored_envelope_invalid", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
 	storageContext := credentialcrypto.Context{
 		WorkspaceID: uuidToString(workspaceID), ResourceType: "credential", ResourceID: uuidToString(grant.CredentialID),
@@ -240,16 +269,19 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 	}
 	storageAAD, err := storageContext.AssociatedData()
 	if err != nil {
-		return rejected, errors.New("credential capability rejected")
+		return deny("storage_context_invalid", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
 	plaintext, err := h.CredentialStorageKeys.Open(stored, storageAAD)
 	if err != nil {
-		return rejected, errors.New("credential capability rejected")
+		return deny("stored_envelope_rejected", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
 	defer zeroCredentialBytes(plaintext)
 	consumed, err := tx.Exec(ctx, `UPDATE credential_capability SET consumed_at = now() WHERE capability_hash = $1 AND consumed_at IS NULL`, hash[:])
-	if err != nil || consumed.RowsAffected() != 1 {
+	if err != nil {
 		return rejected, errors.New("credential capability rejected")
+	}
+	if consumed.RowsAffected() != 1 {
+		return deny("capability_replayed", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
 	if grant.ResourceScope == "single_use" {
 		if _, err := tx.Exec(ctx, `UPDATE credential_grant SET status = 'exhausted', updated_at = now() WHERE id = $1`, grant.GrantID); err != nil {
@@ -274,11 +306,11 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 		ExpiresAt         time.Time `json:"expires_at"`
 	}{uuidToString(taskID), uuidToString(workspaceID), daemonID, req.ConnectorID, capabilityRevision, envelopeExpiresAt})
 	if err != nil {
-		return rejected, errors.New("credential capability rejected")
+		return deny("execution_context_invalid", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
 	envelope, err := credentialcrypto.SealForSession(sessionPublicKey, plaintext, aad)
 	if err != nil {
-		return rejected, errors.New("credential capability rejected")
+		return deny("execution_envelope_failed", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return rejected, errors.New("credential capability rejected")
