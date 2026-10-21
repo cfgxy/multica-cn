@@ -40,7 +40,8 @@ type AgentRuntimeResponse struct {
 	// Visibility is "private" (default — only the owner can bind agents) or
 	// "public" (any workspace member can). See migration 083 and
 	// canUseRuntimeForAgent.
-	Visibility string `json:"visibility"`
+	Visibility         string `json:"visibility"`
+	MaxConcurrentTasks int32  `json:"max_concurrent_tasks"`
 	// ProfileID is set when this runtime is an instance of a custom
 	// runtime_profile (MUL-3284); null for built-in runtimes.
 	ProfileID  *string `json:"profile_id"`
@@ -123,6 +124,7 @@ func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
 		Metadata:           metadata,
 		OwnerID:            uuidToPtr(rt.OwnerID),
 		Visibility:         rt.Visibility,
+		MaxConcurrentTasks: rt.MaxConcurrentTasks,
 		ProfileID:          uuidToPtr(rt.ProfileID),
 		LastSeenAt:         timestampToPtr(rt.LastSeenAt),
 		CreatedAt:          timestampToString(rt.CreatedAt),
@@ -556,6 +558,7 @@ func (h *Handler) resolveViewingTZ(r *http.Request) string {
 // Only fields users may legitimately edit are listed; other runtime metadata
 // (provider, daemon_id, status…) flows in from the daemon and is read-only here.
 type UpdateAgentRuntimeRequest struct {
+	MaxConcurrentTasks *int32 `json:"max_concurrent_tasks,omitempty"`
 	// Visibility flips a runtime between "private" (default — only the owner
 	// can bind agents) and "public" (any workspace member can). Runtime owner
 	// only, gated by canSetRuntimeVisibility — narrower than the rest of this
@@ -653,6 +656,10 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 			needVisibility = true
 		}
 	}
+	if req.MaxConcurrentTasks != nil && *req.MaxConcurrentTasks < 0 {
+		writeError(w, http.StatusBadRequest, "max_concurrent_tasks must be a non-negative integer")
+		return
+	}
 
 	if req.CustomName != nil {
 		if len([]rune(strings.TrimSpace(*req.CustomName))) > maxRuntimeCustomNameLen {
@@ -733,6 +740,19 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			slog.Error("UpdateAgentRuntimeVisibility failed", "error", err, "runtime_id", runtimeID)
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		rt = updated
+		changed = true
+	}
+	if req.MaxConcurrentTasks != nil && *req.MaxConcurrentTasks != rt.MaxConcurrentTasks {
+		updated, err := h.Queries.UpdateAgentRuntimeConcurrencyLimit(r.Context(), db.UpdateAgentRuntimeConcurrencyLimitParams{
+			ID:                 runtimeUUID,
+			MaxConcurrentTasks: *req.MaxConcurrentTasks,
+		})
+		if err != nil {
+			slog.Error("UpdateAgentRuntimeConcurrencyLimit failed", "error", err, "runtime_id", runtimeID)
 			writeError(w, http.StatusInternalServerError, "failed to update runtime")
 			return
 		}

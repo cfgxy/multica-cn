@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { IssueDecisionSchema } from "./schemas";
+import { AgentRuntimeSchema, IssueDecisionSchema } from "./schemas";
 import {
   AppConfigSchema,
   MarketplaceItemSchema,
@@ -1182,6 +1182,18 @@ describe("dashboard + runtime usage schema drift", () => {
       { date: "2026-05-19", region: "us-east" },
     ]);
     expect((parsed[0] as Record<string, unknown>).region).toBe("us-east");
+  });
+});
+
+describe("agent runtime concurrency schema", () => {
+  it("defaults missing runtime limits to unlimited for older servers", () => {
+    expect(AgentRuntimeSchema.parse({}).max_concurrent_tasks).toBe(0);
+  });
+
+  it("accepts non-negative runtime limits and falls back on malformed values", () => {
+    expect(AgentRuntimeSchema.parse({ max_concurrent_tasks: 8 }).max_concurrent_tasks).toBe(8);
+    expect(AgentRuntimeSchema.parse({ max_concurrent_tasks: -1 }).max_concurrent_tasks).toBe(0);
+    expect(AgentRuntimeSchema.parse({ max_concurrent_tasks: "8" }).max_concurrent_tasks).toBe(0);
   });
 });
 
