@@ -249,7 +249,7 @@ func DecodeTransportEnvelope(data []byte) (TransportEnvelope, error) {
 	if len(data) == 0 || len(data) > 2<<20 {
 		return TransportEnvelope{}, ErrInvalidEnvelope
 	}
-	if err := rejectDuplicateJSONKeys(data); err != nil {
+	if err := RejectDuplicateJSONKeys(data); err != nil {
 		return TransportEnvelope{}, ErrInvalidEnvelope
 	}
 	var envelope TransportEnvelope
@@ -269,7 +269,7 @@ func DecodeTransportEnvelope(data []byte) (TransportEnvelope, error) {
 	return envelope, nil
 }
 
-func rejectDuplicateJSONKeys(data []byte) error {
+func RejectDuplicateJSONKeys(data []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := consumeJSONValue(decoder); err != nil {
 		return err

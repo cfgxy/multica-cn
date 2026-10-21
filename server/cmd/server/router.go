@@ -2562,6 +2562,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/batch-update", h.BatchUpdateIssues)
 				r.Post("/batch-delete", h.BatchDeleteIssues)
 				r.Route("/{id}", func(r chi.Router) {
+					r.Post("/credentials", h.CreateIssueCredential)
+					r.Get("/credentials", h.ListIssueCredentials)
+					r.Post("/credentials/{credentialId}/revoke", h.RevokeIssueCredential)
 					r.Get("/", h.GetIssue)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
