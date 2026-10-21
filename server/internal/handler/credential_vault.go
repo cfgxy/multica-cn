@@ -61,16 +61,6 @@ func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	member, err := h.getWorkspaceMember(r.Context(), userID, uuidToString(issue.WorkspaceID))
-	if err != nil {
-		writeError(w, http.StatusNotFound, "issue not found")
-		return
-	}
-	if !credentialIssueWriter(member, issue, userID) {
-		writeError(w, http.StatusForbidden, "credential authorization denied")
-		return
-	}
-
 	body := http.MaxBytesReader(w, r.Body, maxCredentialEnvelopeRequest)
 	data, err := readCredentialBody(body)
 	if err != nil {
@@ -91,13 +81,7 @@ func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "unsupported credential resource scope")
 		return
 	}
-	resourceID, resourceAADID, scopeAuthorized := credentialResource(issue, member, req.ResourceScope, req.ResourceID)
-	if !scopeAuthorized {
-		writeError(w, http.StatusForbidden, "credential authorization denied")
-		return
-	}
-	if (req.SubjectType != "agent" && req.SubjectType != "squad") ||
-		!h.validCredentialSubject(r, issue, req.SubjectType, req.SubjectID) {
+	if req.SubjectType != "agent" && req.SubjectType != "squad" {
 		writeError(w, http.StatusBadRequest, "invalid credential subject")
 		return
 	}
@@ -119,7 +103,27 @@ func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	workspaceID := uuidToString(issue.WorkspaceID)
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "credential storage failed")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	authorizedIssue, member, err := lockCredentialWriteContext(r.Context(), tx, issue.ID, issue.WorkspaceID, userID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "issue not found")
+		return
+	}
+	resourceID, resourceAADID, scopeAuthorized := credentialResource(authorizedIssue, member, userID, req.ResourceScope, req.ResourceID)
+	if !scopeAuthorized {
+		writeError(w, http.StatusForbidden, "credential authorization denied")
+		return
+	}
+	if !h.validCredentialSubject(r, authorizedIssue, req.SubjectType, req.SubjectID) {
+		writeError(w, http.StatusBadRequest, "invalid credential subject")
+		return
+	}
+	workspaceID := uuidToString(authorizedIssue.WorkspaceID)
 	transportContext := credentialcrypto.Context{
 		WorkspaceID: workspaceID, ResourceType: req.ResourceScope, ResourceID: resourceAADID,
 		SubjectType: req.SubjectType, SubjectID: req.SubjectID, Purpose: "credential.create",
@@ -155,12 +159,6 @@ func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) 
 	}
 
 	grantID := dbid.NewV7()
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "credential storage failed")
-		return
-	}
-	defer tx.Rollback(r.Context())
 	var expiry any
 	if expiresAt != nil {
 		expiry = *expiresAt
@@ -168,7 +166,7 @@ func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) 
 	if _, err := tx.Exec(r.Context(), `
 		INSERT INTO credential_vault (id, workspace_id, name, target_service, purpose, credential_type, status, encrypted_value, created_by)
 		VALUES ($1, $2, $3, $4, $5, 'machine', 'active', $6::jsonb, $7)`,
-		credentialID, issue.WorkspaceID, strings.TrimSpace(req.Name), strings.TrimSpace(req.TargetService),
+		credentialID, authorizedIssue.WorkspaceID, strings.TrimSpace(req.Name), strings.TrimSpace(req.TargetService),
 		strings.TrimSpace(req.Purpose), storedJSON, member.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "credential storage failed")
 		return
@@ -176,13 +174,13 @@ func (h *Handler) CreateIssueCredential(w http.ResponseWriter, r *http.Request) 
 	if _, err := tx.Exec(r.Context(), `
 		INSERT INTO credential_grant (id, credential_id, workspace_id, resource_scope, resource_id, subject_type, subject_id, effect, status, expires_at, granted_by)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, 'allow', 'active', $8, $9)`,
-		grantID, credentialID, issue.WorkspaceID, req.ResourceScope, resourceID, req.SubjectType,
+		grantID, credentialID, authorizedIssue.WorkspaceID, req.ResourceScope, resourceID, req.SubjectType,
 		parseUUID(req.SubjectID), expiry, member.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "credential storage failed")
 		return
 	}
-	if err := writeCredentialAudit(r.Context(), tx, issue.WorkspaceID, credentialID, grantID,
-		"credential.created", "recorded", "created", "member", uuidToString(member.UserID), "", pgtype.UUID{}, pgtype.UUID{}, issue.ID, req.Purpose); err != nil {
+	if err := writeCredentialAudit(r.Context(), tx, authorizedIssue.WorkspaceID, credentialID, grantID,
+		"credential.created", "recorded", "created", "member", uuidToString(member.UserID), "", pgtype.UUID{}, pgtype.UUID{}, authorizedIssue.ID, req.Purpose); err != nil {
 		writeError(w, http.StatusInternalServerError, "credential storage failed")
 		return
 	}
@@ -273,11 +271,6 @@ func (h *Handler) RevokeIssueCredential(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	member, err := h.getWorkspaceMember(r.Context(), userID, uuidToString(issue.WorkspaceID))
-	if err != nil {
-		writeError(w, http.StatusNotFound, "credential not found")
-		return
-	}
 	credentialID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "credentialId"), "credential_id")
 	if !ok {
 		return
@@ -288,20 +281,63 @@ func (h *Handler) RevokeIssueCredential(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var creatorID pgtype.UUID
-	var status string
-	var grantID pgtype.UUID
-	var scope string
-	if err := tx.QueryRow(r.Context(), `
-		SELECT c.created_by, c.status, g.id, g.resource_scope
-		FROM credential_vault c JOIN credential_grant g ON g.credential_id = c.id
-		WHERE c.id = $1 AND c.workspace_id = $2 AND g.resource_id = $3
-		FOR UPDATE OF c, g`, credentialID, issue.WorkspaceID, issue.ID).Scan(&creatorID, &status, &grantID, &scope); err != nil {
+	authorizedIssue, member, err := lockCredentialWriteContext(r.Context(), tx, issue.ID, issue.WorkspaceID, userID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
 		return
 	}
-	if uuidToString(creatorID) != userID && member.Role != "owner" &&
-		!(credentialIssueWriter(member, issue, userID) && (scope == "issue" || scope == "single_use")) {
+	var status string
+	if err := tx.QueryRow(r.Context(), `
+		SELECT status FROM credential_vault
+		WHERE id = $1 AND workspace_id = $2
+		FOR UPDATE`, credentialID, authorizedIssue.WorkspaceID).Scan(&status); err != nil {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+	rows, err := tx.Query(r.Context(), `
+		SELECT id, workspace_id, resource_scope, resource_id
+		FROM credential_grant WHERE credential_id = $1
+		ORDER BY id FOR UPDATE`, credentialID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "credential revocation failed")
+		return
+	}
+	var grantID pgtype.UUID
+	grantReachableFromIssue := false
+	grantWorkspaceConsistent := true
+	allGrantsIssueLocal := true
+	for rows.Next() {
+		var candidateID, grantWorkspaceID, resourceID pgtype.UUID
+		var scope string
+		if err := rows.Scan(&candidateID, &grantWorkspaceID, &scope, &resourceID); err != nil {
+			rows.Close()
+			writeError(w, http.StatusInternalServerError, "credential revocation failed")
+			return
+		}
+		if grantWorkspaceID != authorizedIssue.WorkspaceID {
+			grantWorkspaceConsistent = false
+		}
+		if credentialGrantMatchesIssue(authorizedIssue, scope, resourceID) {
+			grantReachableFromIssue = true
+			if !grantID.Valid {
+				grantID = candidateID
+			}
+		}
+		if (scope != "issue" && scope != "single_use") || !resourceID.Valid || resourceID != authorizedIssue.ID {
+			allGrantsIssueLocal = false
+		}
+	}
+	rowsErr := rows.Err()
+	rows.Close()
+	if rowsErr != nil {
+		writeError(w, http.StatusInternalServerError, "credential revocation failed")
+		return
+	}
+	if !grantReachableFromIssue || !grantWorkspaceConsistent {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+	if member.Role != "owner" && !(credentialIssueWriter(member, authorizedIssue, userID) && allGrantsIssueLocal) {
 		writeError(w, http.StatusForbidden, "credential authorization denied")
 		return
 	}
@@ -317,8 +353,8 @@ func (h *Handler) RevokeIssueCredential(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "credential revocation failed")
 		return
 	}
-	if err := writeCredentialAudit(r.Context(), tx, issue.WorkspaceID, credentialID, grantID,
-		"credential.revoked", "recorded", "revoked", "member", userID, "", pgtype.UUID{}, pgtype.UUID{}, issue.ID, ""); err != nil {
+	if err := writeCredentialAudit(r.Context(), tx, authorizedIssue.WorkspaceID, credentialID, grantID,
+		"credential.revoked", "recorded", "revoked", "member", userID, "", pgtype.UUID{}, pgtype.UUID{}, authorizedIssue.ID, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, "credential revocation failed")
 		return
 	}
@@ -335,7 +371,52 @@ func credentialIssueWriter(member db.Member, issue db.Issue, userID string) bool
 			issue.AssigneeID.Valid && uuidToString(issue.AssigneeID) == userID)
 }
 
-func credentialResource(issue db.Issue, member db.Member, scope, requestedID string) (pgtype.UUID, string, bool) {
+func credentialCanWriteScope(member db.Member, issue db.Issue, userID, scope string) bool {
+	if scope == "project" || scope == "workspace" || scope == "global" {
+		return member.Role == "owner"
+	}
+	return (scope == "issue" || scope == "single_use") && credentialIssueWriter(member, issue, userID)
+}
+
+func lockCredentialWriteContext(ctx context.Context, tx pgx.Tx, issueID, workspaceID pgtype.UUID, userID string) (db.Issue, db.Member, error) {
+	var issue db.Issue
+	if err := tx.QueryRow(ctx, `
+		SELECT id, workspace_id, project_id, assignee_type, assignee_id
+		FROM issue WHERE id = $1 AND workspace_id = $2
+		FOR SHARE`, issueID, workspaceID).Scan(
+		&issue.ID, &issue.WorkspaceID, &issue.ProjectID, &issue.AssigneeType, &issue.AssigneeID); err != nil {
+		return db.Issue{}, db.Member{}, err
+	}
+	var member db.Member
+	if err := tx.QueryRow(ctx, `
+		SELECT user_id, workspace_id, role
+		FROM member WHERE user_id = $1 AND workspace_id = $2
+		FOR SHARE`, parseUUID(userID), issue.WorkspaceID).Scan(
+		&member.UserID, &member.WorkspaceID, &member.Role); err != nil {
+		return db.Issue{}, db.Member{}, err
+	}
+	return issue, member, nil
+}
+
+func credentialGrantMatchesIssue(issue db.Issue, scope string, resourceID pgtype.UUID) bool {
+	switch scope {
+	case "issue", "single_use":
+		return resourceID.Valid && resourceID == issue.ID
+	case "project":
+		return issue.ProjectID.Valid && resourceID.Valid && resourceID == issue.ProjectID
+	case "workspace":
+		return resourceID.Valid && resourceID == issue.WorkspaceID
+	case "global":
+		return !resourceID.Valid
+	default:
+		return false
+	}
+}
+
+func credentialResource(issue db.Issue, member db.Member, userID, scope, requestedID string) (pgtype.UUID, string, bool) {
+	if !credentialCanWriteScope(member, issue, userID, scope) {
+		return pgtype.UUID{}, "", false
+	}
 	workspaceID := uuidToString(issue.WorkspaceID)
 	issueID := uuidToString(issue.ID)
 	switch scope {
@@ -345,17 +426,17 @@ func credentialResource(issue db.Issue, member db.Member, scope, requestedID str
 		}
 		return issue.ID, issueID, true
 	case "project":
-		if member.Role != "owner" || !issue.ProjectID.Valid || (requestedID != "" && requestedID != uuidToString(issue.ProjectID)) {
+		if !issue.ProjectID.Valid || (requestedID != "" && requestedID != uuidToString(issue.ProjectID)) {
 			return pgtype.UUID{}, "", false
 		}
 		return issue.ProjectID, uuidToString(issue.ProjectID), true
 	case "workspace":
-		if member.Role != "owner" || (requestedID != "" && requestedID != workspaceID) {
+		if requestedID != "" && requestedID != workspaceID {
 			return pgtype.UUID{}, "", false
 		}
 		return issue.WorkspaceID, workspaceID, true
 	case "global":
-		if member.Role != "owner" || requestedID != "" {
+		if requestedID != "" {
 			return pgtype.UUID{}, "", false
 		}
 		return pgtype.UUID{}, "global", true
