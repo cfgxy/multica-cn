@@ -2228,12 +2228,8 @@ describe("IssueDetail (shared)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Decision batch bar placement (RUYI-534). The bar aggregates every open
-  // card into one batch answer row; it must render at the very END of the
-  // timeline (after all comments, activities and cards), not spliced before
-  // the first open card, and disappear entirely when fewer than two cards
-  // are open. The deep-link prop keeps the timeline flat so every row is in
-  // the DOM for order assertions.
+  // Decision batch entry placement: the compact entry sits after the full
+  // issue feed; the interactive batch flow opens separately on demand.
   // -------------------------------------------------------------------------
   describe("decision batch bar placement (RUYI-534)", () => {
     function decision(id: string, createdAt: string, status = "open") {
@@ -2273,7 +2269,7 @@ describe("IssueDetail (shared)", () => {
       );
     }
 
-    it("appends the batch bar after every comment, activity and card", async () => {
+    it("appends the batch entry after every comment, activity and card", async () => {
       renderWithDecisions(
         [
           decision("decision-1", "2026-01-19T00:00:00Z"),
@@ -2282,8 +2278,8 @@ describe("IssueDetail (shared)", () => {
         "decision-1",
       );
 
-      const bar = await waitFor(() => {
-        const el = document.getElementById("decision-batch-bar");
+      const entry = await waitFor(() => {
+        const el = document.getElementById("decision-batch-entry");
         expect(el).not.toBeNull();
         return el!;
       });
@@ -2296,9 +2292,21 @@ describe("IssueDetail (shared)", () => {
       expect(rows.length).toBeGreaterThan(0);
       for (const row of rows) {
         expect(
-          bar.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_PRECEDING,
+          entry.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_PRECEDING,
         ).toBeTruthy();
       }
+      expect(document.querySelector('[data-testid="decision-batch-bar"]')).toBeNull();
+    });
+
+    it("opens the sequential batch dialog from the tail entry", async () => {
+      renderWithDecisions(
+        [decision("decision-1", "2026-01-19T00:00:00Z"), decision("decision-2", "2026-01-20T00:00:00Z")],
+        "decision-1",
+      );
+      fireEvent.click(await screen.findByTestId("decision-batch-entry"));
+      expect(await screen.findByTestId("decision-batch-bar")).toBeInTheDocument();
+      expect(screen.getByTestId("decision-batch-card-decision-1")).toBeInTheDocument();
+      expect(screen.queryByTestId("decision-batch-card-decision-2")).toBeNull();
     });
 
     it("renders no batch bar when only one card is open", async () => {
@@ -2307,7 +2315,7 @@ describe("IssueDetail (shared)", () => {
       await waitFor(() => {
         expect(document.getElementById("decision-decision-1")).not.toBeNull();
       });
-      expect(document.getElementById("decision-batch-bar")).toBeNull();
+      expect(document.getElementById("decision-batch-entry")).toBeNull();
     });
 
     it("renders no batch bar when every card is answered", async () => {
@@ -2322,7 +2330,7 @@ describe("IssueDetail (shared)", () => {
       await waitFor(() => {
         expect(document.getElementById("decision-decision-1")).not.toBeNull();
       });
-      expect(document.getElementById("decision-batch-bar")).toBeNull();
+      expect(document.getElementById("decision-batch-entry")).toBeNull();
     });
   });
 

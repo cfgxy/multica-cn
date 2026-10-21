@@ -369,6 +369,24 @@ export default function WorkspaceLayout() {
             presentation: "modal",
           }}
         />
+        <Stack.Screen
+          name="issue/[id]/decisions"
+          options={{
+            title: i18n.t("issues:decisions.section_all", "Decision cards"),
+          }}
+        />
+        <Stack.Screen
+          name="issue/[id]/decisions/[decisionId]"
+          options={{
+            title: i18n.t("issues:decisions.title", "Decision card"),
+          }}
+        />
+        <Stack.Screen
+          name="issue/[id]/decisions/batch"
+          options={{
+            title: i18n.t("issues:decisions.batch_title", "Batch answer"),
+          }}
+        />
         {/* Related pull requests (RUYI-43) — full-page modal, same
             container rationale as issue/[id]/comments above: a browse
             surface with a back-stack entry, not a picker row. Title reuses

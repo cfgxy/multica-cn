@@ -115,18 +115,11 @@ jest.mock("expo-haptics", () => ({
   impactAsync: jest.fn(),
 }));
 
-jest.mock("@/components/issue/decision-card", () => ({
-  DecisionCard: ({ decision }: { decision: { id: string } }) =>
-    mockReact.createElement(mockText, null, `decision-card:${decision.id}`),
-}));
-
-jest.mock("@/components/issue/decision-batch-bar", () => ({
-  DecisionBatchBar: ({ open }: { open: Array<{ id: string }> }) =>
-    mockReact.createElement(
-      mockText,
-      null,
-      `decision-batch-bar:${open.map((card) => card.id).join(",")}`,
-    ),
+jest.mock("@/components/issue/decision-summary", () => ({
+  DecisionSummary: ({ decision }: { decision: { id: string } }) =>
+    mockReact.createElement(mockText, null, `decision-summary:${decision.id}`),
+  DecisionBatchEntry: ({ openCount }: { openCount: number }) =>
+    mockReact.createElement(mockText, null, `decision-batch-entry:${openCount}`),
 }));
 
 jest.mock("@/components/issue/pull-request-card", () => ({
@@ -524,9 +517,7 @@ describe("decision batch bar placement (RUYI-534)", () => {
       "timeline-row-d-2",
       "timeline-row-decision-batch-bar",
     ]);
-    // Server numbering order (created_at ASC over open cards) survives the
-    // position move.
-    expect(screen.getByText("decision-batch-bar:d-1,d-2")).toBeTruthy();
+    expect(screen.getByText("decision-batch-entry:2")).toBeTruthy();
   });
 
   it("renders no batch bar for a single open card", async () => {
@@ -538,7 +529,7 @@ describe("decision batch bar placement (RUYI-534)", () => {
     ]);
 
     expect(screen.queryByTestId("timeline-row-decision-batch-bar")).toBeNull();
-    expect(screen.getByText("decision-card:d-1")).toBeTruthy();
+    expect(screen.getByText("decision-summary:d-1")).toBeTruthy();
   });
 });
 
@@ -590,7 +581,7 @@ describe("pull request cards in the timeline (RUYI-634)", () => {
     mockPullRequestsData.data = { pull_requests: [] };
   });
 
-  it("interleaves linked PR cards by pr_created_at and keeps the batch bar last", async () => {
+  it("interleaves linked PR cards by pr_created_at and appends the batch entry after them", async () => {
     mockDecisionsData.data = [
       decisionCard("d-1", "2026-09-05T08:00:00Z"),
       decisionCard("d-2", "2026-09-05T12:00:00Z"),

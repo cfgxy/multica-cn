@@ -85,10 +85,17 @@ describe("interleavePullRequests", () => {
       row("c-1", "2026-10-02T03:00:00Z"),
       row("c-2", "2026-10-02T06:00:00Z"),
     ];
-    const decisions = interleaveDecisions(rows, [
-      { ...decision("d-1", "2026-10-02T04:00:00Z") },
-      { ...decision("d-2", "2026-10-02T05:00:00Z") },
-    ]);
+    const open = [
+      decision("d-1", "2026-10-02T04:00:00Z"),
+      decision("d-2", "2026-10-02T05:00:00Z"),
+    ];
+    const decisions = [
+      ...interleaveDecisions(rows, open),
+      {
+        batchBar: { open },
+        entry: { id: DECISION_BATCH_BAR_ID, created_at: open[0]!.created_at },
+      },
+    ];
     expect(decisions.at(-1)?.entry.id).toBe(DECISION_BATCH_BAR_ID);
 
     const merged = interleavePullRequests(decisions, [
