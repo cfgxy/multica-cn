@@ -18,6 +18,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
+	"github.com/multica-ai/multica/server/pkg/taskadaptation"
 )
 
 // requestError is returned by postJSON/getJSON when the server responds with an error status.
@@ -551,8 +552,11 @@ func (c *Client) AddTaskComment(ctx context.Context, taskID, content string) err
 	}, nil)
 }
 
-func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
+func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, adaptationResults ...*taskadaptation.Outcome) error {
 	body := map[string]any{"output": output}
+	if len(adaptationResults) > 0 && adaptationResults[0] != nil {
+		body["capability_adaptation_result"] = adaptationResults[0]
+	}
 	if branchName != "" {
 		body["branch_name"] = branchName
 	}
