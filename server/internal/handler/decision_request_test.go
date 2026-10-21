@@ -1829,7 +1829,7 @@ func TestDecisionRequestScriptReviewRejectsTamperedSnapshotOnApproval(t *testing
 			targetID = step.ID
 		}
 	}
-	dbfx.Exec(t, `UPDATE decision_request SET action_params = jsonb_set(action_params, '{script}', '"tampered"'::jsonb) WHERE id = $1`, targetID)
+	dbfx.Exec(t, `UPDATE decision_requests SET action_params = jsonb_set(action_params, '{script}', '"tampered"'::jsonb) WHERE id = $1`, targetID)
 	response := answerDecisionRequestFor(t, ws2, targetID, "", "approve")
 	if response.Code != http.StatusConflict {
 		t.Fatalf("tampered approval = %d %s", response.Code, response.Body.String())
