@@ -196,6 +196,47 @@ func TestDecisionRequestCreateValidation(t *testing.T) {
 			t.Fatalf("unknown action: expected 400, got %d: %s", w.Code, w.Body.String())
 		}
 	})
+	t.Run("project prompt sync requires an exact content digest and unique project UUIDs", func(t *testing.T) {
+		content := "approved project instructions"
+		for _, params := range []map[string]any{
+			{"project_ids": []string{"00000000-0000-7000-8000-000000000001"}, "content": content, "content_sha256": "wrong"},
+			{"project_ids": []string{"00000000-0000-7000-8000-000000000001", "00000000-0000-7000-8000-000000000001"}, "content": content, "content_sha256": sha256Hex(content)},
+		} {
+			w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+				"action_type": DecisionActionProjectPromptSync, "title": "sync project prompt", "params": params,
+			})
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("invalid prompt sync params: status=%d body=%s, want 400", w.Code, w.Body.String())
+			}
+		}
+	})
+	t.Run("project prompt sync authorization card is owner-visible only", func(t *testing.T) {
+		content := "restricted approved prompt"
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type":     DecisionActionProjectPromptSync,
+			"title":           "restricted project prompt",
+			"origin_issue_id": f.IssueID,
+			"params": map[string]any{
+				"project_ids":    []string{"00000000-0000-7000-8000-000000000001"},
+				"content":        content,
+				"content_sha256": sha256Hex(content),
+			},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		resp := decodeDecisionRequestDetail(t, w)
+		if resp.Card == nil || resp.Card.VisibleTier != "restricted" || resp.Card.OperatorTier != "owner" {
+			t.Fatalf("authorization card visibility/operator = %v/%v, want restricted/owner", resp.Card, resp.Card)
+		}
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(resp.Request.ActionParams, &params); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := params["content"]; ok {
+			t.Fatal("agent-facing create response exposed the prompt body")
+		}
+	})
 	t.Run("single-space create is operable with read risk tier", func(t *testing.T) {
 		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
 			"action_type": "workspace_info_read", "title": "read ws profile",
@@ -1041,6 +1082,270 @@ func TestDecisionRequestExecutorPromptRestore(t *testing.T) {
 		dbfx.QueryRow(t, `SELECT instructions FROM agent WHERE id = $1`, f.AgentID).Scan(&instructions)
 		if instructions != "marketplace text" {
 			t.Fatalf("origin agent instructions = %q, want untouched by the refused execution", instructions)
+		}
+	})
+}
+
+func TestDecisionRequestExecutorProjectPromptSync(t *testing.T) {
+	f := newDecisionFixture(t)
+	ws2 := secondWorkspaceWithOwner(t)
+	projectA := dbfx.Project(t, "ruyi844 target project a", testutil.Cols{"workspace_id": ws2, "instructions": "old a"})
+	projectB := dbfx.Project(t, "ruyi844 target project b", testutil.Cols{"workspace_id": ws2, "instructions": "old b"})
+	content := "Owner-approved project prompt contents."
+	contentHash := sha256Hex(content)
+
+	create := func(projectIDs []string) DecisionRequestDetailResponse {
+		t.Helper()
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type":         DecisionActionProjectPromptSync,
+			"title":               "同步目标项目提示词",
+			"target_workspace_id": ws2,
+			"params": map[string]any{
+				"project_ids":    projectIDs,
+				"content":        content,
+				"content_sha256": contentHash,
+			},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		return decodeDecisionRequestDetail(t, w)
+	}
+	approve := func(detail DecisionRequestDetailResponse) {
+		t.Helper()
+		var targetID string
+		for _, step := range detail.Steps {
+			if step.Role == decisionReqRoleTarget {
+				targetID = step.ID
+			}
+		}
+		if targetID == "" {
+			t.Fatal("cross-space request has no target approval row")
+		}
+		if w := answerDecisionRequestFor(t, testWorkspaceID, detail.Request.ID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("origin approval: %d %s", w.Code, w.Body.String())
+		}
+		if w := answerDecisionRequestFor(t, ws2, targetID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("target approval: %d %s", w.Code, w.Body.String())
+		}
+	}
+
+	t.Run("both Owner approvals update every scoped project and return per-project versions", func(t *testing.T) {
+		detail := create([]string{projectB, projectA})
+		approve(detail)
+		_, after := getDecisionRequestFor(t, ws2, detail.Steps[1].ID)
+		if after.Request.Status != decisionReqExecuted {
+			t.Fatalf("request status=%s error=%v, want executed", after.Request.Status, after.Request.ExecutionError)
+		}
+		var ownerParams map[string]json.RawMessage
+		if err := json.Unmarshal(after.Request.ActionParams, &ownerParams); err != nil {
+			t.Fatal(err)
+		}
+		var reviewedContent string
+		if err := json.Unmarshal(ownerParams["content"], &reviewedContent); err != nil || reviewedContent != content {
+			t.Fatalf("Owner request detail does not expose the exact approved prompt: %q (%v)", reviewedContent, err)
+		}
+		for _, projectID := range []string{projectA, projectB} {
+			var instructions, versionContent, versionHash string
+			var version int
+			dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1 AND workspace_id = $2`, projectID, ws2).Scan(&instructions)
+			dbfx.QueryRow(t, `SELECT version, content, content_sha256 FROM prompt_version WHERE scope = 'project' AND scope_id = $1 ORDER BY version DESC LIMIT 1`, projectID).Scan(&version, &versionContent, &versionHash)
+			if instructions != content || versionContent != content || versionHash != contentHash || version != 1 {
+				t.Fatalf("project %s prompt=%q history=(%d,%q,%q), want approved content and version 1", projectID, instructions, version, versionContent, versionHash)
+			}
+		}
+		var result struct {
+			Action   string `json:"action"`
+			Hash     string `json:"content_sha256"`
+			Projects []struct {
+				ProjectID string `json:"project_id"`
+				Status    string `json:"status"`
+				Version   int    `json:"version"`
+			} `json:"projects"`
+		}
+		if err := json.Unmarshal(after.Request.ExecutionResult, &result); err != nil {
+			t.Fatalf("decode execution result: %v (%s)", err, after.Request.ExecutionResult)
+		}
+		if result.Action != DecisionActionProjectPromptSync || result.Hash != contentHash || len(result.Projects) != 2 {
+			t.Fatalf("execution result = %+v, want action, digest, and two project rows", result)
+		}
+		for _, item := range result.Projects {
+			if item.Status != "updated" || item.Version != 1 || (item.ProjectID != projectA && item.ProjectID != projectB) {
+				t.Fatalf("project result = %+v, want updated project/version", item)
+			}
+		}
+		if strings.Contains(string(after.Request.ExecutionResult), content) {
+			t.Fatal("execution result echoed the prompt body")
+		}
+		var auditRaw []byte
+		dbfx.QueryRow(t, `SELECT details FROM audit_event WHERE trigger_kind = 'decision_request' AND trigger_ref = $1 AND event_type = 'agent.decision_executed'`, detail.Request.RequestGroupID).Scan(&auditRaw)
+		var auditDetails struct {
+			ContentSHA256 string           `json:"content_sha256"`
+			Projects      []map[string]any `json:"projects"`
+		}
+		if err := json.Unmarshal(auditRaw, &auditDetails); err != nil || auditDetails.ContentSHA256 != contentHash || len(auditDetails.Projects) != 2 {
+			t.Fatalf("execution audit details = %s (%v), want hash and two project results", auditRaw, err)
+		}
+		testHandler.advanceDecisionRequestAfterAnswer(newRequest("POST", "/", nil), parseUUID(detail.Request.RequestGroupID), testUserID)
+		for _, projectID := range []string{projectA, projectB} {
+			if count := dbfx.Count(t, `SELECT count(*) FROM prompt_version WHERE scope = 'project' AND scope_id = $1`, projectID); count != 1 {
+				t.Fatalf("re-entering the terminal group created %d prompt versions for %s, want exactly one", count, projectID)
+			}
+		}
+		memberID := dbfx.User(t, "ruyi844-target-member", "ruyi844-target-member@test.local")
+		dbfx.Member(t, ws2, memberID, "member")
+		listW := httptest.NewRecorder()
+		listReq := withURLParam(newRequest("GET", "/api/workspaces/"+ws2+"/decision-requests", nil), "id", ws2)
+		listReq.Header.Set("X-Workspace-ID", ws2)
+		listReq.Header.Set("X-User-ID", memberID)
+		testHandler.ListDecisionRequests(listW, listReq)
+		if listW.Code != http.StatusOK {
+			t.Fatalf("member list: %d %s", listW.Code, listW.Body.String())
+		}
+		var list struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		}
+		if err := json.NewDecoder(listW.Body).Decode(&list); err != nil {
+			t.Fatal(err)
+		}
+		foundRedacted := false
+		for _, item := range list.Items {
+			var groupID string
+			_ = json.Unmarshal(item["request_group_id"], &groupID)
+			if groupID != detail.Request.RequestGroupID {
+				continue
+			}
+			var redacted map[string]json.RawMessage
+			if err := json.Unmarshal(item["action_params"], &redacted); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := redacted["content"]; ok {
+				t.Fatal("non-owner decision list exposed the prompt body")
+			}
+			if _, ok := redacted["content_sha256"]; !ok {
+				t.Fatal("non-owner response lost the approved content digest")
+			}
+			foundRedacted = true
+		}
+		if !foundRedacted {
+			t.Fatal("non-owner decision list did not include the target request")
+		}
+	})
+
+	t.Run("issue authorization card returns execution result after both approvals", func(t *testing.T) {
+		cardProject := dbfx.Project(t, "ruyi844 issue-card target project", testutil.Cols{"workspace_id": ws2, "instructions": "card old"})
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type":         DecisionActionProjectPromptSync,
+			"title":               "issue-linked prompt sync",
+			"target_workspace_id": ws2,
+			"origin_issue_id":     f.IssueID,
+			"params": map[string]any{
+				"project_ids":    []string{cardProject},
+				"content":        content,
+				"content_sha256": contentHash,
+			},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		detail := decodeDecisionRequestDetail(t, w)
+		if detail.Card == nil {
+			t.Fatal("expected the origin issue authorization card")
+		}
+		var targetID string
+		for _, step := range detail.Steps {
+			if step.Role == decisionReqRoleTarget {
+				targetID = step.ID
+			}
+		}
+		cardAnswer := withURLParams(newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+detail.Card.ID+"/answer", map[string]any{"selected_indices": []int{0}}), "id", f.IssueID, "decisionId", detail.Card.ID)
+		cardW := httptest.NewRecorder()
+		testHandler.AnswerIssueDecision(cardW, cardAnswer)
+		if cardW.Code != http.StatusOK {
+			t.Fatalf("origin card approval: %d %s", cardW.Code, cardW.Body.String())
+		}
+		if w := answerDecisionRequestFor(t, ws2, targetID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("target approval: %d %s", w.Code, w.Body.String())
+		}
+		_, originDetail := getDecisionRequestFor(t, testWorkspaceID, detail.Request.ID)
+		if originDetail.Card == nil || len(originDetail.Card.ExecutionResult) == 0 || !strings.Contains(string(originDetail.Card.ExecutionResult), cardProject) {
+			t.Fatalf("origin authorization card result = %v, want per-project execution result", originDetail.Card)
+		}
+	})
+
+	t.Run("missing or out-of-scope project fails without updating any project", func(t *testing.T) {
+		untouchedProject := dbfx.Project(t, "ruyi844 untouched target project", testutil.Cols{"workspace_id": ws2, "instructions": "untouched"})
+		missingID := "00000000-0000-7000-8000-000000000001"
+		detail := create([]string{untouchedProject, missingID})
+		approve(detail)
+		_, after := getDecisionRequestFor(t, ws2, detail.Steps[1].ID)
+		if after.Request.Status != decisionReqExecuteFailed || after.Request.ExecutionError == nil || !strings.Contains(*after.Request.ExecutionError, "not found") {
+			t.Fatalf("status=%s error=%v, want execute_failed for unavailable target project", after.Request.Status, after.Request.ExecutionError)
+		}
+		var instructions string
+		dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, untouchedProject).Scan(&instructions)
+		if instructions != "untouched" {
+			t.Fatalf("project changed to %q despite missing target project", instructions)
+		}
+		if count := dbfx.Count(t, `SELECT count(*) FROM prompt_version WHERE scope = 'project' AND scope_id = $1`, untouchedProject); count != 0 {
+			t.Fatalf("project prompt history has %d rows after rejected batch, want 0", count)
+		}
+	})
+
+	t.Run("expired authorization never writes", func(t *testing.T) {
+		expiryProject := dbfx.Project(t, "ruyi844 expired target project", testutil.Cols{"workspace_id": ws2, "instructions": "expiry untouched"})
+		detail := create([]string{expiryProject})
+		dbfx.Exec(t, `UPDATE decision_requests SET expires_at = now() - interval '1 minute' WHERE request_group_id = $1`, detail.Request.RequestGroupID)
+		if w := answerDecisionRequestFor(t, testWorkspaceID, detail.Request.ID, "", "approve"); w.Code != http.StatusConflict {
+			t.Fatalf("expired origin approval status=%d, want 409", w.Code)
+		}
+		var instructions string
+		dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, expiryProject).Scan(&instructions)
+		if instructions != "expiry untouched" {
+			t.Fatalf("expired request changed project to %q", instructions)
+		}
+	})
+
+	t.Run("secret scanner failure records no prompt version or partial project write", func(t *testing.T) {
+		secretProject := dbfx.Project(t, "ruyi844 scanner target project", testutil.Cols{"workspace_id": ws2, "instructions": "scanner untouched"})
+		secretContent := "token: ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+		w := createDecisionRequestFor(t, f.AgentID, f.TaskID, map[string]any{
+			"action_type":         DecisionActionProjectPromptSync,
+			"title":               "scanner guarded prompt",
+			"target_workspace_id": ws2,
+			"params": map[string]any{
+				"project_ids":    []string{secretProject},
+				"content":        secretContent,
+				"content_sha256": sha256Hex(secretContent),
+			},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		detail := decodeDecisionRequestDetail(t, w)
+		var targetID string
+		for _, step := range detail.Steps {
+			if step.Role == decisionReqRoleTarget {
+				targetID = step.ID
+			}
+		}
+		if w := answerDecisionRequestFor(t, testWorkspaceID, detail.Request.ID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("origin approval: %d %s", w.Code, w.Body.String())
+		}
+		if w := answerDecisionRequestFor(t, ws2, targetID, "", "approve"); w.Code != http.StatusOK {
+			t.Fatalf("target approval: %d %s", w.Code, w.Body.String())
+		}
+		_, after := getDecisionRequestFor(t, ws2, targetID)
+		if after.Request.Status != decisionReqExecuteFailed || after.Request.ExecutionError == nil || !strings.Contains(*after.Request.ExecutionError, "secret scanner") {
+			t.Fatalf("status=%s error=%v, want execute_failed from scanner", after.Request.Status, after.Request.ExecutionError)
+		}
+		var instructions string
+		dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, secretProject).Scan(&instructions)
+		if instructions != "scanner untouched" {
+			t.Fatalf("scanner-rejected project changed to %q", instructions)
+		}
+		if count := dbfx.Count(t, `SELECT count(*) FROM prompt_version WHERE scope = 'project' AND scope_id = $1`, secretProject); count != 0 {
+			t.Fatalf("scanner-rejected prompt created %d versions", count)
 		}
 	})
 }

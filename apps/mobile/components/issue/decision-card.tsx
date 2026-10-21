@@ -79,6 +79,7 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
       api.answerIssueDecision(decision.issue_id, decision.id, [index]),
     onSuccess: (updated) => {
       upsertDecisionInCache(qc, updated.issue_id, updated);
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
     },
     onError: () => {
       qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
@@ -98,6 +99,12 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
       ? t("decisions.auth_approve_default", "Approve")
       : t("decisions.auth_deny_default", "Deny");
   };
+  const projectResults = decision.action_type === "project_prompt_sync"
+    && decision.execution_result && typeof decision.execution_result === "object"
+    && Array.isArray((decision.execution_result as { projects?: unknown }).projects)
+    ? (decision.execution_result as { projects: Array<{ project_id?: unknown; status?: unknown; version?: unknown }> }).projects
+        .filter((item) => typeof item.project_id === "string" && typeof item.status === "string" && typeof item.version === "number")
+    : [];
 
   return (
     <View className="px-4" testID="decision-card">
@@ -190,6 +197,11 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
             })}
           </Text>
         ) : null}
+        {projectResults.map((result) => (
+          <Text key={String(result.project_id)} className="mt-1 text-xs text-muted-foreground" testID="decision-auth-project-result">
+            {String(result.project_id)} · {String(result.status)} · v{String(result.version)}
+          </Text>
+        ))}
       </Card>
     </View>
   );

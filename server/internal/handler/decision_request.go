@@ -91,6 +91,7 @@ const (
 const (
 	DecisionActionWorkspaceInfoRead = "workspace_info_read"
 	DecisionActionPromptRestore     = "prompt_restore"
+	DecisionActionProjectPromptSync = "project_prompt_sync"
 )
 
 const (
@@ -111,6 +112,10 @@ var decisionRequestActions = map[string]decisionRequestActionDef{
 	DecisionActionPromptRestore: {
 		RiskTier: decisionRiskWriteLow,
 		Summary:  "Undo the last applied marketplace prompt on an agent or squad (one-step restore, hand-edit guarded).",
+	},
+	DecisionActionProjectPromptSync: {
+		RiskTier: decisionRiskWriteLow,
+		Summary:  "Write the approved prompt content to an explicit set of projects in the target workspace.",
 	},
 }
 
@@ -200,6 +205,20 @@ type AnswerDecisionRequestRequest struct {
 }
 
 func decisionRequestToResponse(row db.DecisionRequest) DecisionRequestResponse {
+	return decisionRequestToResponseWithPromptAccess(row, false)
+}
+
+func decisionRequestToResponseWithPromptAccess(row db.DecisionRequest, revealPrompt bool) DecisionRequestResponse {
+	actionParams := json.RawMessage(row.ActionParams)
+	if row.ActionType == DecisionActionProjectPromptSync && !revealPrompt {
+		var params map[string]json.RawMessage
+		if json.Unmarshal(row.ActionParams, &params) == nil {
+			delete(params, "content")
+			if redacted, err := json.Marshal(params); err == nil {
+				actionParams = redacted
+			}
+		}
+	}
 	resp := DecisionRequestResponse{
 		ID:               uuidToString(row.ID),
 		RequestGroupID:   uuidToString(row.RequestGroupID),
@@ -208,7 +227,7 @@ func decisionRequestToResponse(row db.DecisionRequest) DecisionRequestResponse {
 		Operable:         row.Operable,
 		Status:           row.Status,
 		ActionType:       row.ActionType,
-		ActionParams:     json.RawMessage(row.ActionParams),
+		ActionParams:     actionParams,
 		RiskTier:         row.RiskTier,
 		Title:            row.Title,
 		Detail:           row.Detail,
@@ -457,6 +476,14 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "params must be a JSON object")
 		return
 	}
+	if req.ActionType == DecisionActionProjectPromptSync {
+		normalized, err := normalizeProjectPromptSyncParams(req.Params)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Params = normalized
+	}
 	approveLabel, denyLabel, err := validateDecisionRequestLabels(req.ApproveLabel, req.DenyLabel)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -466,6 +493,10 @@ func (h *Handler) CreateDecisionRequest(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if req.ActionType == DecisionActionProjectPromptSync {
+		visibleTier = "restricted"
+		operatorTier = "owner"
 	}
 	namedIDs := make([]string, 0, len(req.NamedApproverIDs))
 	for _, id := range req.NamedApproverIDs {
@@ -735,6 +766,11 @@ func (h *Handler) GetDecisionRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "only workspace members or the creating agent can view this request")
 		return
 	}
+	member, isMember := h.workspaceMember(w, r, uuidToString(workspaceID))
+	if !isMember {
+		return
+	}
+	revealPrompt := authorType == "member" && member.Role == "owner"
 
 	h.sweepDueDecisionRequests(r)
 
@@ -744,13 +780,13 @@ func (h *Handler) GetDecisionRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := DecisionRequestDetailResponse{
-		Request: decisionRequestToResponse(row),
+		Request: decisionRequestToResponseWithPromptAccess(row, revealPrompt),
 		Steps:   make([]DecisionRequestResponse, 0, len(group)),
 	}
 	agentNames := h.originAgentNames(r.Context(), group)
 	attachOriginAgentName(agentNames, &resp.Request)
 	for _, step := range group {
-		resp.Steps = append(resp.Steps, decisionRequestToResponse(step))
+		resp.Steps = append(resp.Steps, decisionRequestToResponseWithPromptAccess(step, revealPrompt))
 	}
 	for i := range resp.Steps {
 		attachOriginAgentName(agentNames, &resp.Steps[i])
@@ -838,6 +874,14 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 		if row.Role == decisionReqRoleOrigin && !row.Operable {
 			if slug, ok := targetSlugs[uuidToString(row.RequestGroupID)]; ok {
 				item.TargetWorkspaceSlug = &slug
+			}
+		}
+		if member.Role == "owner" {
+			item = decisionRequestToResponseWithPromptAccess(row, true)
+			if row.Role == decisionReqRoleOrigin && !row.Operable {
+				if slug, ok := targetSlugs[uuidToString(row.RequestGroupID)]; ok {
+					item.TargetWorkspaceSlug = &slug
+				}
 			}
 		}
 		items = append(items, item)

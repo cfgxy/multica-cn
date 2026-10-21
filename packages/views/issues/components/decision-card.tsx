@@ -53,7 +53,10 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
   const answer = useMutation({
     mutationFn: (index: 0 | 1) =>
       api.answerIssueDecision(decision.issue_id, decision.id, [index]),
-    onSuccess: invalidate,
+    onSuccess: (updated) => {
+      invalidate(updated);
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
+    },
     onError: () => {
       qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
       toast.error(t(($) => $.decisions.auth_answer_failed));
@@ -70,6 +73,12 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
       idx === 0 ? $.decisions.auth_approve_default : $.decisions.auth_deny_default,
     );
   };
+  const projectResults = decision.action_type === "project_prompt_sync"
+    && decision.execution_result && typeof decision.execution_result === "object"
+    && Array.isArray((decision.execution_result as { projects?: unknown }).projects)
+    ? (decision.execution_result as { projects: Array<{ project_id?: unknown; status?: unknown; version?: unknown }> }).projects
+        .filter((item) => typeof item.project_id === "string" && typeof item.status === "string" && typeof item.version === "number")
+    : [];
 
   return (
     <Card className="mx-2 border-brand/40 p-3" data-testid="decision-card" data-decision-kind="authorization" data-status={decision.status}>
@@ -140,6 +149,11 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
           {t(($) => $.decisions.auth_execute_failed, { reason: decision.execution_error })}
         </p>
       )}
+      {projectResults.map((result) => (
+        <p key={String(result.project_id)} className="mt-1 break-all text-caption text-muted-foreground" data-testid="decision-auth-project-result">
+          {String(result.project_id)} · {String(result.status)} · v{String(result.version)}
+        </p>
+      ))}
     </Card>
   );
 }

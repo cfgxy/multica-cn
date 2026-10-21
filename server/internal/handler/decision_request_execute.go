@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -178,7 +179,21 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 	// transaction (the group lock already serializes us against any other
 	// final-step approval). The landing row names the workspace the action
 	// executes in; its ActionParams are byte-identical to the origin row's.
+	if err := qtx.CreateDecisionRequestActionSavepoint(r.Context()); err != nil {
+		slog.Warn("decision request action savepoint failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
+		return
+	}
 	resultJSON, execErr := h.executeDecisionRequestAction(r, qtx, landing)
+	if execErr != nil {
+		if err := qtx.RollbackDecisionRequestAction(r.Context()); err != nil {
+			slog.Warn("decision request action rollback failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
+			return
+		}
+	}
+	if err := qtx.ReleaseDecisionRequestActionSavepoint(r.Context()); err != nil {
+		slog.Warn("decision request action savepoint release failed", append(logger.RequestAttrs(r), "error", err, "group_id", uuidToString(groupID))...)
+		return
+	}
 	status := decisionReqExecuted
 	executedAt := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
 	var resultBytes []byte
@@ -220,9 +235,18 @@ func (h *Handler) advanceDecisionRequestAfterAnswer(r *http.Request, groupID pgt
 	if execErr != nil {
 		eventType = service.AuditAgentDecisionExecuteFailed
 	}
-	service.TryAppendAuditEvents(r.Context(), qtx, auditEventForDecisionRequest(eventType, execRow, decisionRequestAuditDetails(execRow, map[string]any{
-		"answered_by": answererID,
-	})))
+	auditDetails := map[string]any{"answered_by": answererID}
+	if execErr == nil && landing.ActionType == DecisionActionProjectPromptSync {
+		var summary struct {
+			ContentSHA256 string           `json:"content_sha256"`
+			Projects      []map[string]any `json:"projects"`
+		}
+		if json.Unmarshal(resultJSON, &summary) == nil {
+			auditDetails["content_sha256"] = summary.ContentSHA256
+			auditDetails["projects"] = summary.Projects
+		}
+	}
+	service.TryAppendAuditEvents(r.Context(), qtx, auditEventForDecisionRequest(eventType, execRow, decisionRequestAuditDetails(execRow, auditDetails)))
 	// The callback marker rides the execution transaction: the group lock
 	// makes the locked-read marker state authoritative, so a concurrent
 	// terminal path can never double-post the once-only callback.
@@ -414,6 +438,47 @@ type decisionWorkspaceInfoParams struct {
 	IncludeCounts bool `json:"include_counts,omitempty"`
 }
 
+const maxProjectPromptSyncTargets = 50
+
+type decisionProjectPromptSyncParams struct {
+	ProjectIDs    []string `json:"project_ids"`
+	Content       string   `json:"content"`
+	ContentSHA256 string   `json:"content_sha256"`
+}
+
+func normalizeProjectPromptSyncParams(raw json.RawMessage) (json.RawMessage, error) {
+	var params decisionProjectPromptSyncParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, errors.New("project_prompt_sync params must be an object")
+	}
+	if len(params.ProjectIDs) == 0 || len(params.ProjectIDs) > maxProjectPromptSyncTargets {
+		return nil, fmt.Errorf("project_ids must contain between 1 and %d projects", maxProjectPromptSyncTargets)
+	}
+	if len([]rune(params.Content)) > maxProjectInstructionsLen {
+		return nil, fmt.Errorf("content exceeds the maximum length of %d characters", maxProjectInstructionsLen)
+	}
+	if params.ContentSHA256 == "" || params.ContentSHA256 != sha256Hex(params.Content) {
+		return nil, errors.New("content_sha256 does not match content")
+	}
+	ids := make([]string, 0, len(params.ProjectIDs))
+	seen := make(map[string]struct{}, len(params.ProjectIDs))
+	for _, rawID := range params.ProjectIDs {
+		id, err := util.ParseUUID(rawID)
+		if err != nil {
+			return nil, errors.New("project_ids must contain only UUIDs")
+		}
+		canonical := uuidToString(id)
+		if _, ok := seen[canonical]; ok {
+			return nil, errors.New("project_ids must not contain duplicates")
+		}
+		seen[canonical] = struct{}{}
+		ids = append(ids, canonical)
+	}
+	sort.Strings(ids)
+	params.ProjectIDs = ids
+	return json.Marshal(params)
+}
+
 // executeDecisionRequestAction dispatches the whitelisted action inside the
 // caller's transaction. The operable row names the action, its params, and
 // the workspace the action lands in; the registry's closed set is the only
@@ -424,9 +489,88 @@ func (h *Handler) executeDecisionRequestAction(r *http.Request, qtx *db.Queries,
 		return h.executeWorkspaceInfoRead(r, qtx, row)
 	case DecisionActionPromptRestore:
 		return h.executePromptRestore(r, qtx, row)
+	case DecisionActionProjectPromptSync:
+		return h.executeProjectPromptSync(r, qtx, row)
 	default:
 		return nil, fmt.Errorf("action %q is not in the whitelist registry", row.ActionType)
 	}
+}
+
+func (h *Handler) executeProjectPromptSync(r *http.Request, qtx *db.Queries, row db.DecisionRequest) ([]byte, error) {
+	raw, err := normalizeProjectPromptSyncParams(row.ActionParams)
+	if err != nil {
+		return nil, err
+	}
+	var params decisionProjectPromptSyncParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, err
+	}
+	scan, ok, badReason := promptGovernanceGate(params.Content)
+	if badReason != "" {
+		return nil, fmt.Errorf("prompt rejected: %s", badReason)
+	}
+	if !ok {
+		return nil, errors.New("prompt rejected by the secret scanner")
+	}
+
+	projectIDs := make([]pgtype.UUID, len(params.ProjectIDs))
+	for i, id := range params.ProjectIDs {
+		projectIDs[i], err = util.ParseUUID(id)
+		if err != nil {
+			return nil, errors.New("project_ids must contain only UUIDs")
+		}
+		if _, err := qtx.LockProjectForPromptVersion(r.Context(), db.LockProjectForPromptVersionParams{
+			ID: projectIDs[i], WorkspaceID: row.WorkspaceID,
+		}); err != nil {
+			return nil, fmt.Errorf("project %s not found in the target workspace", id)
+		}
+	}
+
+	gateResult, err := json.Marshal(scan.Findings)
+	if err != nil {
+		return nil, errors.New("failed to encode prompt scan result")
+	}
+	results := make([]map[string]any, 0, len(projectIDs))
+	for i, projectID := range projectIDs {
+		next, err := qtx.NextPromptVersion(r.Context(), db.NextPromptVersionParams{
+			Scope: string(promptVersionScopeProject), ScopeID: projectID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to allocate prompt version for project %s", params.ProjectIDs[i])
+		}
+		if _, err := qtx.CreatePromptVersion(r.Context(), db.CreatePromptVersionParams{
+			WorkspaceID:       row.WorkspaceID,
+			Scope:             string(promptVersionScopeProject),
+			ScopeID:           projectID,
+			Version:           next,
+			Content:           params.Content,
+			ContentSha256:     params.ContentSHA256,
+			Source:            "edit",
+			ChangeNote:        "跨空间 Owner 授权的项目提示词同步",
+			ScannerRevision:   scan.Revision,
+			GateResult:        gateResult,
+			AuthorUserID:      row.AnsweredByID,
+			AuthorNoteIssueID: pgtype.UUID{},
+		}); err != nil {
+			return nil, fmt.Errorf("failed to record prompt version for project %s", params.ProjectIDs[i])
+		}
+		if _, err := qtx.UpdateProjectInstructionsForPromptVersion(r.Context(), db.UpdateProjectInstructionsForPromptVersionParams{
+			ID: projectID, Instructions: strToText(params.Content),
+		}); err != nil {
+			return nil, fmt.Errorf("failed to update project %s", params.ProjectIDs[i])
+		}
+		results = append(results, map[string]any{
+			"project_id":     params.ProjectIDs[i],
+			"status":         "updated",
+			"version":        next,
+			"content_sha256": params.ContentSHA256,
+		})
+	}
+	return json.Marshal(map[string]any{
+		"action":         DecisionActionProjectPromptSync,
+		"content_sha256": params.ContentSHA256,
+		"projects":       results,
+	})
 }
 
 // executeWorkspaceInfoRead answers with the target workspace's basic

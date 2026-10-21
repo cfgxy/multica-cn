@@ -87,19 +87,20 @@ type IssueDecisionResponse struct {
 	// decision request: two fixed buttons, card-click only, tiers enforced).
 	// answer_source records which channel answered (card_click / text_token
 	// / batch); on authorization cards it is authorization-grade truth.
-	DecisionKind     string     `json:"decision_kind"`
-	VisibleTier      string     `json:"visible_tier"`
-	OperatorTier     string     `json:"operator_tier"`
-	NamedApproverIDs []string   `json:"named_approver_ids"`
-	ApproveLabel     *string    `json:"approve_label"`
-	DenyLabel        *string    `json:"deny_label"`
-	ExpiresAt        *time.Time `json:"expires_at"`
-	AnswerSource     *string    `json:"answer_source"`
-	AuthState        *string    `json:"auth_state"`
-	RequestGroupID   *string    `json:"request_group_id"`
-	ActionType       *string    `json:"action_type"`
-	ExecutedAt       *time.Time `json:"executed_at"`
-	ExecutionError   *string    `json:"execution_error"`
+	DecisionKind     string          `json:"decision_kind"`
+	VisibleTier      string          `json:"visible_tier"`
+	OperatorTier     string          `json:"operator_tier"`
+	NamedApproverIDs []string        `json:"named_approver_ids"`
+	ApproveLabel     *string         `json:"approve_label"`
+	DenyLabel        *string         `json:"deny_label"`
+	ExpiresAt        *time.Time      `json:"expires_at"`
+	AnswerSource     *string         `json:"answer_source"`
+	AuthState        *string         `json:"auth_state"`
+	RequestGroupID   *string         `json:"request_group_id"`
+	ActionType       *string         `json:"action_type"`
+	ExecutedAt       *time.Time      `json:"executed_at"`
+	ExecutionResult  json.RawMessage `json:"execution_result,omitempty"`
+	ExecutionError   *string         `json:"execution_error"`
 }
 
 type CreateIssueDecisionRequest struct {
@@ -369,6 +370,9 @@ func decisionToResponse(d db.IssueDecision) IssueDecisionResponse {
 	if d.ExecutedAt.Valid {
 		v := d.ExecutedAt.Time
 		resp.ExecutedAt = &v
+	}
+	if d.PendingActionType.Valid && d.PendingActionType.String == DecisionActionProjectPromptSync && len(d.ExecutionResult) > 0 {
+		resp.ExecutionResult = json.RawMessage(d.ExecutionResult)
 	}
 	if d.ExecutionError.Valid {
 		v := d.ExecutionError.String
