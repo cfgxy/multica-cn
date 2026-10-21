@@ -332,6 +332,18 @@ var concurrentIndexCleanups = map[string][]string{
 	"977_mcp_file_access_operation_invocation_index":            {"mcp_file_access_operation_invocation_uidx"},
 	"977_mcp_pre_auth_rejection_expiry_index":                   {"mcp_pre_auth_rejection_expiry_idx"},
 	"977_mcp_pre_auth_rejection_invocation_index":               {"mcp_pre_auth_rejection_invocation_uidx"},
+	"979_credential_vault_id_index":                             {"credential_vault_id_uidx"},
+	"979_credential_connector_workspace_index":                  {"credential_connector_workspace_id_uidx"},
+	"979_credential_connector_binding_index":                    {"credential_vault_connector_revision_idx"},
+	"979_credential_vault_workspace_created_index":              {"credential_vault_workspace_created_idx"},
+	"979_credential_grant_id_index":                             {"credential_grant_id_uidx"},
+	"979_credential_grant_lookup_index":                         {"credential_grant_lookup_idx"},
+	"979_credential_grant_credential_index":                     {"credential_grant_credential_idx"},
+	"979_credential_capability_hash_index":                      {"credential_capability_hash_uidx"},
+	"979_credential_capability_task_index":                      {"credential_capability_task_uidx"},
+	"979_credential_capability_task_index_nonunique":            {"credential_capability_task_idx"},
+	"979_credential_audit_id_index":                             {"credential_audit_id_uidx"},
+	"979_credential_audit_workspace_created_index":              {"credential_audit_workspace_created_idx"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -355,6 +367,7 @@ var concurrentDownIndexCleanups = map[string][]string{
 	"375_drop_issue_last_activity_index":                    {"idx_issue_workspace_last_activity"},
 	"391_drop_agent_task_queue_dispatched_prepare_index":    {"idx_agent_task_queue_dispatched_prepare"},
 	"437_drop_agent_runtime_last_seen_at_index":             {"idx_agent_runtime_last_seen_at"},
+	"979_credential_capability_task_index_drop_unique":      {"credential_capability_task_uidx"},
 }
 
 var preMigrationHooks = func() map[string]preMigrationHook {

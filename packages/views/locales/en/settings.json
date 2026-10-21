@@ -452,6 +452,19 @@
     "save_failed_toast": "Could not save the shared MCP server",
     "remove_failed_toast": "Could not remove the shared MCP server"
   },
+  "credential_manager": {
+    "description": "Review credential metadata and permissions for tasks you can access. Secret values are never displayed.", "agent": "Agent", "squad": "Squad",
+    "trust_boundary": "Values are encrypted in transit and stored with server-side envelope encryption. The server decrypts only through its controlled delivery flow; this is not end-to-end encryption.",
+    "deliver": "Deliver credential", "close": "Close", "name": "Name", "connector": "Connector", "select_connector": "Select a connector", "purpose": "Purpose", "secret": "Secret value",
+    "secret_help": "Text machine credentials only. This value is never shown again and is cleared after submit, failure, or leaving this view.", "resource": "Resource access", "scope_once": "Once", "scope_task": "This task", "scope_project": "Project", "scope_workspace": "Workspace", "scope_global": "Global",
+    "member_scope_hint": "Members can authorize only a task they are responsible for.", "subject": "Allowed agent or squad", "select_subject": "Select one subject", "expires": "Expires", "owner_scope_denied": "Only a workspace owner can grant this resource scope.",
+    "dual_match": "Access requires both this resource scope and the selected subject to match. Any mismatch is denied.", "summary": "Authorization summary:", "cancel": "Cancel", "save": "Save and authorize", "replace": "Replace atomically", "saving": "Saving…", "saved": "Credential saved and authorized.",
+    "replaced": "Credential replaced. The previous value is no longer available for future delivery.", "save_failed": "The credential was not saved. The secret was cleared; enter it again to retry.",
+    "task_filter": "Task", "choose_task": "Choose a task", "loading": "Loading credentials…", "empty": "No credentials are available for this task.", "status": "Status:", "expires_prefix": "Expires", "replace_title": "Replace credential", "revoke_title": "Revoke credential",
+    "revoke_aria": "Revoke {{name}}", "replace_aria": "Replace {{name}}", "revoke_confirm": "Revoke this credential? This blocks future delivery but cannot recall a value already delivered to a running process.", "revoked": "Credential revoked. This cannot remove a value already delivered to a running process.", "revoke_failed": "The credential could not be revoked. Its status has not been changed; retry later.",
+    "audit_title": "Credential audit", "audit_empty": "No credential audit records.", "audit_project": "Project", "audit_issue": "Issue", "audit_actor": "User / consumer",
+    "no_permission": "Only the task owner or a workspace owner can manage credentials here.", "no_connector": "No active connector is available. Ask a workspace owner to configure one."
+  },
   "page": {
     "title": "Settings",
     "my_account": "My Account",
@@ -476,6 +489,7 @@
       "properties": "Properties",
       "quick_actions": "Quick Actions",
       "plugins": "Plugins",
+      "credentials": "Credentials",
       "marketplace": "Marketplace",
       "mcp": "MCP",
       "billing": "Billing",

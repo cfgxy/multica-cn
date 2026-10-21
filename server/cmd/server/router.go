@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
+	"github.com/multica-ai/multica/server/internal/credentialcrypto"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -519,6 +520,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		ServerVersion:            normalizeServerVersion(version),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	if keyring, err := credentialcrypto.LoadTransportKeyring(os.Getenv("MULTICA_CREDENTIAL_TRANSPORT_KEYRING_JSON")); err == nil {
+		h.CredentialTransportKeys = keyring
+	} else {
+		slog.Warn("credential transport encryption disabled: keyring unavailable")
+	}
+	if keyring, err := credentialcrypto.LoadStorageKeyring(os.Getenv("MULTICA_CREDENTIAL_STORAGE_KEYRING_JSON")); err == nil {
+		h.CredentialStorageKeys = keyring
+	} else {
+		slog.Warn("credential storage encryption disabled: keyring unavailable")
+	}
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
 	invitationRateLimits.Actor.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_ACTOR_10M", invitationRateLimits.Actor.Limit)
 	invitationRateLimits.Workspace.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_WORKSPACE_24H", invitationRateLimits.Workspace.Limit)
@@ -1826,6 +1837,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// no workspace in the path to gate on.
 		// --- User-scoped routes (no workspace context required) ---
 		r.Get("/api/me", h.GetMe)
+		r.Get("/api/credentials/transport-key", h.GetCredentialTransportKey)
 		r.Post("/api/mcp/audit-start", h.StartMCPInvocationAudit)
 		r.Post("/api/mcp/audit-finish", h.FinishMCPInvocationAudit)
 		r.Patch("/api/me", h.UpdateMe)
@@ -1922,6 +1934,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Member-level access
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Route("/credential-connectors", func(r chi.Router) {
+						r.Use(handler.RequireHumanActor)
+						r.Get("/", h.ListCredentialConnectors)
+						r.Group(func(r chi.Router) {
+							r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+							r.Post("/", h.CreateCredentialConnector)
+							r.Put("/{connectorId}", h.UpdateCredentialConnector)
+						})
+					})
+					r.Group(func(r chi.Router) {
+						r.Use(handler.RequireHumanActor)
+						r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+						r.Get("/credential-audit", h.ListCredentialAudit)
+					})
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
 					// RUYI-494: the workspace decision inbox — every card in
@@ -2550,6 +2576,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/batch-update", h.BatchUpdateIssues)
 				r.Post("/batch-delete", h.BatchDeleteIssues)
 				r.Route("/{id}", func(r chi.Router) {
+					r.Post("/credentials", h.CreateIssueCredential)
+					r.Post("/credentials/{credentialId}/replace", h.ReplaceIssueCredential)
+					r.Get("/credentials", h.ListIssueCredentials)
+					r.Post("/credentials/{credentialId}/revoke", h.RevokeIssueCredential)
 					r.Get("/", h.GetIssue)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)

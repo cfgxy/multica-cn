@@ -8,8 +8,49 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/credentialcrypto"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+func TestCredentialCapabilityForConnectorSelectsOnlyMatchingUniqueCapability(t *testing.T) {
+	capabilities := []CredentialCapability{
+		{Capability: "cap-a", ConnectorID: "connector-a", ConnectorRevision: 1, TargetURL: "https://a.example/mcp"},
+		{Capability: "cap-b", ConnectorID: "connector-b", ConnectorRevision: 3, TargetURL: "https://b.example/mcp"},
+	}
+	selected, ok := credentialCapabilityForConnector(capabilities, "connector-b")
+	if !ok || selected.Capability != "cap-b" || selected.ConnectorRevision != 3 {
+		t.Fatalf("selected capability = %+v, %v; want connector-b capability", selected, ok)
+	}
+	if _, ok := credentialCapabilityForConnector(capabilities, "connector-missing"); ok {
+		t.Fatal("missing connector unexpectedly selected a capability")
+	}
+	capabilities = append(capabilities, CredentialCapability{
+		Capability: "duplicate", ConnectorID: "connector-b", ConnectorRevision: 3, TargetURL: "https://b.example/mcp",
+	})
+	if _, ok := credentialCapabilityForConnector(capabilities, "connector-b"); ok {
+		t.Fatal("ambiguous connector capabilities must fail closed")
+	}
+}
+
+func TestWSRPCSessionKeyIsAvailableOnlyOnActiveConnection(t *testing.T) {
+	client := newWSRPCClient(time.Second)
+	key, err := credentialcrypto.NewSessionKey()
+	if err != nil {
+		t.Fatal("generate session key")
+	}
+	client.setSessionKey(key)
+	if _, ok := client.sessionPublicKey(); ok {
+		t.Fatal("session public key available without a control connection")
+	}
+	client.attach(func([]byte) (*wsOutbound, error) { return &wsOutbound{}, nil })
+	if publicKey, ok := client.sessionPublicKey(); !ok || publicKey == "" {
+		t.Fatal("session public key unavailable on active control connection")
+	}
+	client.attach(nil)
+	if _, ok := client.sessionPublicKey(); ok {
+		t.Fatal("session public key survived control connection teardown")
+	}
+}
 
 // TestWSRPCClient_CallRoundTrip: a request is framed and sent, and a matching
 // response (by request_id) is decoded into respBody.
