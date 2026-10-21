@@ -138,15 +138,15 @@ func (h *Handler) attachCredentialCapabilities(ctx context.Context, daemonID str
 		if err != nil {
 			continue
 		}
-		capability, err := mintCredentialCapability(ctx, tx, daemonID, response.Tasks[index].ID, sessionPublicKey)
+		capabilities, err := mintCredentialCapabilities(ctx, tx, daemonID, response.Tasks[index].ID, sessionPublicKey)
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			continue
 		}
-		if err := tx.Commit(ctx); err != nil || capability == nil {
+		if err := tx.Commit(ctx); err != nil || len(capabilities) == 0 {
 			continue
 		}
-		response.Tasks[index].CredentialCapability = capability
+		response.Tasks[index].CredentialCapabilities = capabilities
 	}
 	encoded, err := json.Marshal(response)
 	if err != nil {

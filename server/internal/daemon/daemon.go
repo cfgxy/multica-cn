@@ -7780,7 +7780,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var effectiveMcpConfig json.RawMessage
 	var cursorMcpAuthSource string
 	remoteMCPConnections := append([]remotemcp.Connection(nil), task.RemoteMCPConnections...)
-	if capability := task.CredentialCapability; capability != nil {
+	for _, candidate := range task.CredentialCapabilities {
+		capability, ok := credentialCapabilityForConnector(task.CredentialCapabilities, candidate.ConnectorID)
+		if !ok {
+			continue
+		}
 		remoteMCPConnections = append(remoteMCPConnections, remotemcp.Connection{
 			ContributionID:  "credential:" + capability.ConnectorID,
 			ContributionKey: "credential-connector-" + capability.ConnectorID,
@@ -7793,10 +7797,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		prepareCtx, ctx, task.ID, provider, remoteMCPConnections,
 		func(resolveCtx context.Context, contributionID string) (http.Header, error) {
 			if strings.HasPrefix(contributionID, "credential:") {
-				if task.CredentialCapability == nil || contributionID != "credential:"+task.CredentialCapability.ConnectorID {
+				connectorID := strings.TrimPrefix(contributionID, "credential:")
+				capability, ok := credentialCapabilityForConnector(task.CredentialCapabilities, connectorID)
+				if !ok || contributionID != "credential:"+capability.ConnectorID {
 					return nil, errors.New("credential connector binding mismatch")
 				}
-				plaintext, err := d.resolveCredentialCapability(resolveCtx, &task)
+				plaintext, err := d.resolveCredentialCapability(resolveCtx, &task, capability)
 				if err != nil {
 					return nil, err
 				}

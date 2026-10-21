@@ -453,11 +453,11 @@ func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtime
 // resolveCredentialCapability uses only the authenticated control RPC. The
 // returned plaintext remains in daemon memory and is never copied into a task
 // environment, prompt, or generic task response.
-func (d *Daemon) resolveCredentialCapability(ctx context.Context, task *Task) ([]byte, error) {
-	if task == nil || task.CredentialCapability == nil || task.ID == "" {
+func (d *Daemon) resolveCredentialCapability(ctx context.Context, task *Task, capability CredentialCapability) ([]byte, error) {
+	if task == nil || task.ID == "" || capability.Capability == "" || capability.ConnectorID == "" || capability.ConnectorRevision < 1 {
 		return nil, errors.New("credential capability unavailable")
 	}
-	expiresAt, err := time.Parse(time.RFC3339Nano, task.CredentialCapability.ExpiresAt)
+	expiresAt, err := time.Parse(time.RFC3339Nano, capability.ExpiresAt)
 	if err != nil || !time.Now().Before(expiresAt) {
 		return nil, errors.New("credential capability unavailable")
 	}
@@ -466,9 +466,9 @@ func (d *Daemon) resolveCredentialCapability(ctx context.Context, task *Task) ([
 		ExpiresAt time.Time                          `json:"expires_at"`
 	}
 	body := map[string]any{
-		"capability":         task.CredentialCapability.Capability,
-		"connector_id":       task.CredentialCapability.ConnectorID,
-		"connector_revision": task.CredentialCapability.ConnectorRevision,
+		"capability":         capability.Capability,
+		"connector_id":       capability.ConnectorID,
+		"connector_revision": capability.ConnectorRevision,
 	}
 	if _, err := d.wsRPC.CallIfRPCV1Supported(ctx, "credentials.resolve", 10*time.Second, body, &response); err != nil {
 		return nil, errors.New("credential capability rejected")
@@ -483,9 +483,25 @@ func (d *Daemon) resolveCredentialCapability(ctx context.Context, task *Task) ([
 		ConnectorID       string    `json:"connector_id"`
 		ConnectorRevision int64     `json:"connector_revision"`
 		ExpiresAt         time.Time `json:"expires_at"`
-	}{task.ID, task.WorkspaceID, d.cfg.DaemonID, task.CredentialCapability.ConnectorID, task.CredentialCapability.ConnectorRevision, response.ExpiresAt})
+	}{task.ID, task.WorkspaceID, d.cfg.DaemonID, capability.ConnectorID, capability.ConnectorRevision, response.ExpiresAt})
 	if err != nil {
 		return nil, errors.New("credential capability rejected")
 	}
 	return d.wsRPC.openSessionEnvelope(response.Envelope, aad)
+}
+
+func credentialCapabilityForConnector(capabilities []CredentialCapability, connectorID string) (CredentialCapability, bool) {
+	var selected CredentialCapability
+	matches := 0
+	for _, capability := range capabilities {
+		if capability.ConnectorID != connectorID {
+			continue
+		}
+		selected = capability
+		matches++
+	}
+	if matches != 1 || selected.Capability == "" || selected.ConnectorRevision < 1 || selected.TargetURL == "" {
+		return CredentialCapability{}, false
+	}
+	return selected, true
 }
