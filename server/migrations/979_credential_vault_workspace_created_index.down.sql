@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS credential_vault_workspace_created_idx;
