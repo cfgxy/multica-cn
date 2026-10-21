@@ -25,7 +25,10 @@ jest.mock("@/data/workspace-store", () => ({
 }));
 
 jest.mock("@/lib/use-t", () => ({
-  useT: () => ({ t: (_key: string, fallback?: string) => fallback ?? _key }),
+  useT: () => ({
+    t: (_key: string, fallback?: string, options?: Record<string, string>) =>
+      (fallback ?? _key).replace(/\{\{(\w+)\}\}/g, (_match, name: string) => options?.[name] ?? ""),
+  }),
 }));
 
 jest.mock("@/lib/time-ago", () => ({
@@ -356,6 +359,23 @@ describe("DecisionCard authorization face (RUYI-630)", () => {
     }));
 
     expect(screen.getByTestId("decision-auth-project-result").props.children).toContain("project-1");
+  });
+
+  it("shows the one created issue and its in-progress state", async () => {
+    await renderCard(card({
+      ...authCard,
+      action_type: "single_issue_create",
+      status: "answered",
+      auth_state: "executed",
+      executed_at: "2026-10-21T12:00:00Z",
+      execution_result: {
+        target_issue_id: "issue-12",
+        target_identifier: "RUYI-12",
+        target_issue_status: "in_progress",
+      },
+    }));
+
+    expect(screen.getByTestId("decision-auth-created-issue").props.children).toContain("RUYI-12");
   });
 
   it("announces unknown side effects and does not display the internal error code", async () => {

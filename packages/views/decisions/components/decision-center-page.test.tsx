@@ -534,6 +534,43 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
     expect(screen.queryByText("PROMPT_SYNC_FAILED")).toBeNull();
     expect(screen.getByTestId("decision-request-steps-toggle")).toHaveAttribute("aria-expanded", "false");
   });
+
+  it("labels a single-issue request and shows its Done receipt", async () => {
+    inboxRef.current = { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
+    requestsRef.current = Promise.resolve({
+      items: [{
+        id: "dr-issue",
+        request_group_id: "rg-issue",
+        workspace_id: "ws-1",
+        role: "origin",
+        operable: false,
+        status: "executed",
+        action_type: "single_issue_create",
+        action_params: { title: "Fix callback", description: "Make one callback idempotent" },
+        authorization_spec: { version: 1, kind: "single_issue", digest: "d".repeat(64) },
+        execution_result: {
+          target_issue_id: "issue-12",
+          target_identifier: "RUYI-12",
+          target_issue_status: "in_progress",
+          done_receipt: { status: "done" },
+        },
+        risk_tier: "write_low",
+        title: "Create one exact issue",
+        detail: "",
+        origin_workspace_id: "ws-1",
+        origin_agent_id: "agent-1",
+        origin_agent_name: "Seed Agent",
+        origin_issue_id: null,
+        origin_issue_title: null,
+        created_at: "2026-10-21T00:00:00Z",
+      }],
+      counts: { pending: 0, closed: 0, executed: 1 },
+    } as unknown as DecisionRequestsList);
+    renderPage();
+
+    expect(await screen.findByTestId("decision-request-created-issue")).toHaveTextContent("Target issue RUYI-12 · done");
+    expect(screen.getByText("Create one issue")).toBeInTheDocument();
+  });
 });
 
 describe("DecisionCenterPage cross-space authorization navigation (RUYI-842)", () => {

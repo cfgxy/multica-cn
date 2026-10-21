@@ -108,6 +108,9 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
   const sideEffectStatus = decision.execution_result && typeof decision.execution_result === "object"
     ? (decision.execution_result as { side_effect_status?: unknown }).side_effect_status
     : null;
+  const createdIssue = decision.action_type === "single_issue_create" && decision.execution_result && typeof decision.execution_result === "object"
+    ? decision.execution_result as { target_identifier?: unknown; target_issue_status?: unknown }
+    : null;
 
   return (
     <View className="px-4" testID="decision-card">
@@ -154,6 +157,11 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
             {decision.action_type === "project_prompt_sync" ? (
               <Text className="mt-1 text-xs text-muted-foreground">
                 {t("decisions.auth_action_project_prompt_sync", "Sync selected project prompts")}
+              </Text>
+            ) : null}
+            {decision.action_type === "single_issue_create" ? (
+              <Text className="mt-1 text-xs text-muted-foreground">
+                {t("decisions.auth_action_single_issue_create", "Create one target issue")}
               </Text>
             ) : null}
             <Text className="mt-0.5 text-xs text-muted-foreground">
@@ -213,6 +221,14 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
             {String(result.project_id)} · {String(result.status)} · v{String(result.version)}
           </Text>
         ))}
+      {typeof createdIssue?.target_identifier === "string" ? (
+        <Text className="mt-1 text-xs text-muted-foreground" testID="decision-auth-created-issue">
+          {t("decisions.auth_issue_created", "Created {{identifier}} · {{status}}", {
+            identifier: createdIssue.target_identifier,
+            status: typeof createdIssue.target_issue_status === "string" ? createdIssue.target_issue_status : "in_progress",
+          })}
+        </Text>
+      ) : null}
       </Card>
     </View>
   );

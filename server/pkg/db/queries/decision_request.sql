@@ -176,6 +176,43 @@ UPDATE decision_requests SET
     updated_at = now()
 WHERE request_group_id = @request_group_id
 RETURNING *;
+
+-- name: ClaimDecisionRequestIssueDoneReceipt :many
+-- The target issue status transition is the idempotency fence for the second
+-- (Done) receipt. The request-group execution transaction already persists
+-- the single target issue id in execution_result.
+WITH updated AS (
+    UPDATE decision_requests SET
+        execution_result = jsonb_set(
+            execution_result,
+            '{done_receipt}',
+            jsonb_build_object('status', 'done', 'target_issue_id', @target_issue_id::text, 'completed_at', now()),
+            true
+        ),
+        updated_at = now()
+    WHERE action_type = 'single_issue_create'
+      AND status = 'executed'
+      AND execution_result->>'target_issue_id' = @target_issue_id::text
+      AND execution_result->'done_receipt' IS NULL
+    RETURNING *
+), updated_cards AS (
+    UPDATE issue_decisions SET
+        execution_result = jsonb_set(
+            execution_result,
+            '{done_receipt}',
+            jsonb_build_object('status', 'done', 'target_issue_id', @target_issue_id::text, 'completed_at', now()),
+            true
+        ),
+        updated_at = now()
+    WHERE pending_request_group_id IN (
+        SELECT request_group_id FROM updated WHERE role = 'origin'
+    )
+      AND pending_action_type = 'single_issue_create'
+      AND auth_state = 'executed'
+    RETURNING id
+)
+SELECT * FROM updated WHERE role = 'origin';
+
 -- name: CreateDecisionRequestActionSavepoint :exec
 SAVEPOINT decision_request_action;
 

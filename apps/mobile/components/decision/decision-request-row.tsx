@@ -84,7 +84,13 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
     ? (request.action_params as { content: string }).content
     : null;
   const receipt = request.execution_result && typeof request.execution_result === "object"
-    ? request.execution_result as { side_effect_status?: unknown; steps?: unknown }
+    ? request.execution_result as {
+      side_effect_status?: unknown;
+      steps?: unknown;
+      target_identifier?: unknown;
+      target_issue_status?: unknown;
+      done_receipt?: { status?: unknown };
+    }
     : null;
   const receiptSteps = Array.isArray(receipt?.steps)
     ? receipt.steps.filter((step): step is { handler: string; status: string; side_effect_status: string } =>
@@ -128,6 +134,8 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
       ? t("requests.action_project_prompt_sync", "Sync project prompt")
     : request.action_type === "workspace_info_read"
       ? t("requests.action_workspace_info_read", "Read workspace info")
+      : request.action_type === "single_issue_create"
+        ? t("requests.action_single_issue_create", "Create one issue")
       : request.action_type;
   const riskLabel = request.risk_tier === "write_low"
     ? t("requests.risk_write_low", "Low-risk write")
@@ -140,6 +148,8 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
       ? t("requests.kind_script", "Restricted script")
       : request.authorization_spec?.kind === "issue_creation"
         ? t("requests.kind_issue", "Single issue task")
+        : request.authorization_spec?.kind === "single_issue"
+          ? t("requests.kind_issue", "Single issue task")
         : null;
   const executionInProgress = request.status === "approved"
     && (request.role === "target" || (request.role === "origin" && request.operable));
@@ -330,6 +340,14 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
       {receipt?.side_effect_status === "no_side_effect" ? (
         <Text className="mt-1 text-xs text-muted-foreground" testID="decision-request-no-side-effect">
           {t("requests.no_side_effect", "No side effect confirmed")}
+        </Text>
+      ) : null}
+      {request.action_type === "single_issue_create" && typeof receipt?.target_identifier === "string" ? (
+        <Text className="mt-1 text-xs text-muted-foreground" testID="decision-request-created-issue">
+          {t("requests.issue_created", "Target issue {{identifier}} · {{status}}", {
+            identifier: receipt.target_identifier,
+            status: receipt.done_receipt?.status === "done" ? "done" : String(receipt.target_issue_status ?? "in_progress"),
+          })}
         </Text>
       ) : null}
       {receiptSteps.map((step, index) => (

@@ -1268,6 +1268,8 @@
     "auth_state_execute_failed": "Execution failed",
     "auth_result_unknown": "Result needs verification. Do not retry this request.",
     "auth_action_project_prompt_sync": "Sync selected project prompts",
+    "auth_action_single_issue_create": "Create one target issue",
+    "auth_issue_created": "Created {{identifier}} · {{status}}",
     "auth_approve_default": "Approve",
     "auth_deny_default": "Deny",
     "auth_execute_failed": "Execution failed; it was not retried",

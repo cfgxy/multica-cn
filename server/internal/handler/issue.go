@@ -3734,6 +3734,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		"creator_type":        prevIssue.CreatorType,
 		"creator_id":          uuidToString(prevIssue.CreatorID),
 	})
+	if statusChanged &&
+		issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, issue.Status) == "done" &&
+		issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, prevIssue.Status) != "done" {
+		h.completeSingleIssueDecisionRequest(r.Context(), issue)
+	}
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
 		// the same revision. Otherwise clients advance only the revision here and
@@ -4498,6 +4503,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"priority_changed": priorityChanged,
 			"project_changed":  projectChanged,
 		})
+		if statusChanged &&
+			issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, issue.Status) == "done" &&
+			issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, prevIssue.Status) != "done" {
+			h.completeSingleIssueDecisionRequest(r.Context(), issue)
+		}
 
 		// Same run-disposition shape as UpdateIssue: reassignment does not
 		// cancel existing tasks (#4963 / MUL-4113), but a transition INTO the

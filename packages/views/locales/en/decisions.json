@@ -62,6 +62,8 @@
     "action_workspace_info_read": "Read workspace info",
     "action_prompt_restore": "Restore prompt",
     "action_project_prompt_sync": "Sync project prompt",
+    "action_single_issue_create": "Create one issue",
+    "issue_created": "Target issue {{identifier}} · {{status}}",
     "review_prompt_content": "Review approved prompt",
     "hide_prompt_content": "Hide approved prompt",
     "risk_read": "Read-only",

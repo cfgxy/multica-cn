@@ -74,4 +74,40 @@ func TestDecisionRequestAuthorizationSpecRejectsUnregisteredKinds(t *testing.T) 
 	if err == nil {
 		t.Fatal("unregistered action was accepted")
 	}
+	if _, ok := decisionRequestKind("restricted_script"); ok {
+		t.Fatal("restricted script kind must stay unavailable without a proven sandbox")
+	}
+}
+
+func TestDecisionRequestSingleIssueParamsAreNarrowAndVersioned(t *testing.T) {
+	valid := json.RawMessage(`{"title":"Fix one concrete defect","description":"Make the specified callback idempotent."}`)
+	normalized, err := normalizeSingleIssueCreateParams(valid)
+	if err != nil {
+		t.Fatalf("valid single issue params rejected: %v", err)
+	}
+	encoded, err := buildDecisionRequestActionParams(DecisionActionSingleIssueCreate, normalized,
+		"source", "target", "", "", time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC), "Create one issue")
+	if err != nil {
+		t.Fatalf("build single issue authorization spec: %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var spec decisionRequestAuthorizationSpec
+	if err := json.Unmarshal(payload["authorization_spec"], &spec); err != nil {
+		t.Fatal(err)
+	}
+	if spec.Kind != "single_issue" || spec.ParameterDigest == "" || spec.Digest == "" {
+		t.Fatalf("single issue spec = %+v", spec)
+	}
+	for _, invalid := range []json.RawMessage{
+		[]byte(`{"title":"one","description":"specific","assignee_id":"forged"}`),
+		[]byte(`{"title":" ","description":"specific"}`),
+		[]byte(`{"title":"one","description":" "}`),
+	} {
+		if _, err := normalizeSingleIssueCreateParams(invalid); err == nil {
+			t.Fatalf("invalid params accepted: %s", invalid)
+		}
+	}
 }

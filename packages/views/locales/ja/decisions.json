@@ -61,6 +61,8 @@
     "action_workspace_info_read": "ワークスペース情報の読み取り",
     "action_prompt_restore": "プロンプトの復元",
     "action_project_prompt_sync": "プロジェクトプロンプトの同期",
+    "action_single_issue_create": "単一の Issue を作成",
+    "issue_created": "対象 Issue {{identifier}} · {{status}}",
     "review_prompt_content": "承認対象のプロンプトを確認",
     "hide_prompt_content": "承認対象のプロンプトを閉じる",
     "risk_read": "読み取り専用",
