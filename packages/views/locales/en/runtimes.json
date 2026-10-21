@@ -201,6 +201,12 @@
     "diagnostics_title": "Diagnostics",
     "diagnostics_cli": "CLI",
     "diagnostics_visibility": "Visibility",
+    "diagnostics_concurrency": "Parallel task limit",
+    "concurrency_unlimited": "Unlimited",
+    "concurrency_unlimited_hint": "0 means unlimited",
+    "concurrency_save": "Save parallel task limit",
+    "concurrency_toast_updated": "Runtime task limit updated",
+    "concurrency_toast_failed": "Failed to update runtime task limit",
     "visibility_label": {
       "private": "Private",
       "public": "Public"

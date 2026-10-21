@@ -136,6 +136,7 @@ type AgentRuntime struct {
 	CustomName         pgtype.Text        `json:"custom_name"`
 	RegistrationSource string             `json:"registration_source"`
 	CredentialRef      pgtype.Text        `json:"credential_ref"`
+	MaxConcurrentTasks int32              `json:"max_concurrent_tasks"`
 }
 
 type AgentSkill struct {
