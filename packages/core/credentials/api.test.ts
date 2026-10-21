@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CredentialConnectorListSchema,
+  CredentialAuditEventListSchema,
   CredentialMetadataListSchema,
   CredentialTransportKeySchema,
 } from "./api";
@@ -29,5 +30,20 @@ describe("credential API schemas", () => {
     }]);
     expect(result.success).toBe(true);
     if (result.success) expect(JSON.stringify(result.data)).not.toContain("secret");
+  });
+
+  it("parses only credential audit metadata and preserves authorization evidence", () => {
+    const result = CredentialAuditEventListSchema.safeParse([{
+      id: "audit-id", created_at: "2026-10-21T00:00:00Z", credential_id: "credential-id",
+      event_type: "credential.broker_resolved", result: "denied", reason_code: "subject_mismatch",
+      actor_type: "agent", actor_id: "agent-id", project_id: "project-id", project_title: "Build",
+      issue_id: "issue-id", issue_title: "Publish", task_id: "task-id", agent_id: "agent-id",
+      purpose: "Publish artifacts",
+    }]);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data[0]).toMatchObject({ result: "denied", reason_code: "subject_mismatch", purpose: "Publish artifacts" });
+      expect(JSON.stringify(result.data)).not.toContain("secret");
+    }
   });
 });

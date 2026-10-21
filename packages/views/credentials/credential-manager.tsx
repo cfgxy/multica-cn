@@ -68,6 +68,12 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
   const { data: squads = [] } = useQuery(squadListOptions(wsId));
   const currentMember = members.find((member) => member.user_id === currentUser?.id);
   const isOwner = currentMember?.role === "owner";
+  const { data: credentialAudit = [], isLoading: isAuditLoading } = useQuery({
+    queryKey: ["credentials", wsId, "audit"],
+    queryFn: () => api.listCredentialAudit(wsId),
+    enabled: workspaceMode && !!wsId && isOwner,
+    retry: false,
+  });
   const canWriteIssue = isOwner || (!!issue && issue.assignee_type === "member" && issue.assignee_id === currentUser?.id);
   const [formOpen, setFormOpen] = useState(false);
   const [name, setName] = useState("");
@@ -85,7 +91,7 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
 
   const selectedConnector = connectors.find((connector) => connector.id === connectorId && connector.status === "active");
   const subjectParts = subject.split(":");
-  const subjectType = subjectParts[0] === "squad" ? "squad" : "agent";
+  const subjectType: "agent" | "squad" = subjectParts[0] === "squad" ? "squad" : "agent";
   const subjectId = subjectParts[1] ?? "";
   const broadScopeDenied = !isOwner && scope !== "issue" && scope !== "single_use";
   const selectedTarget = replacing ? targets.find((target) => target.id === replacing.issueId) : issue;
@@ -111,7 +117,7 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
         purpose: "credential.create",
         version: CREDENTIAL_ENVELOPE_VERSION,
       });
-      return api.createIssueCredential(selectedTarget.id, {
+      const request = {
         name: name.trim(),
         target_service: selectedConnector.name,
         connector_id: selectedConnector.id,
@@ -123,7 +129,10 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
         resource_id: resourceId,
         expires_at: scope === "project" || scope === "workspace" || scope === "global" ? new Date(expiresAt).toISOString() : null,
         envelope,
-      });
+      };
+      return replacing
+        ? api.replaceIssueCredential(replacing.issueId, replacing.item.id, request)
+        : api.createIssueCredential(selectedTarget.id, request);
     },
     onSuccess: async (created) => {
       if (!created || !selectedTarget) {
@@ -131,18 +140,7 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
         return;
       }
       await queryClient.invalidateQueries({ queryKey: ["credentials", wsId] });
-      if (replacing) {
-        const revoked = await api.revokeIssueCredential(replacing.issueId, replacing.item.id).catch(() => null);
-        if (!revoked) {
-          setMessage(t(($) => $.credential_manager.replace_partial));
-          setReplacing(null);
-          clearForm();
-          return;
-        }
-        setMessage(t(($) => $.credential_manager.replaced));
-      } else {
-        setMessage(t(($) => $.credential_manager.saved));
-      }
+      setMessage(replacing ? t(($) => $.credential_manager.replaced) : t(($) => $.credential_manager.saved));
       setReplacing(null);
       clearForm();
       await queryClient.invalidateQueries({ queryKey: ["credentials", wsId] });
@@ -206,6 +204,27 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
       </div>
 
       <p className="text-caption leading-5 text-muted-foreground">{t(($) => $.credential_manager.trust_boundary)}</p>
+
+      {workspaceMode && isOwner ? (
+        <section className="space-y-2" aria-labelledby="credential-audit-title">
+          <h4 id="credential-audit-title" className="text-body font-semibold">{t(($) => $.credential_manager.audit_title)}</h4>
+          {isAuditLoading ? <p className="text-caption text-muted-foreground">{t(($) => $.credential_manager.loading)}</p> : null}
+          {!isAuditLoading && credentialAudit.length === 0 ? <p className="text-caption text-muted-foreground">{t(($) => $.credential_manager.audit_empty)}</p> : null}
+          <ul className="space-y-2">
+            {credentialAudit.map((event) => (
+              <li key={event.id} className="min-w-0 border-b border-surface-border py-2 last:border-0">
+                <p className="break-words text-caption font-medium">{new Date(event.created_at).toLocaleString()} · {event.event_type} · {event.result} ({event.reason_code})</p>
+                <p className="break-words text-caption text-muted-foreground">
+                  {t(($) => $.credential_manager.audit_project)}: {event.project_title ?? event.project_id ?? "—"} · {t(($) => $.credential_manager.audit_issue)}: {event.issue_title ?? event.issue_id ?? "—"}
+                </p>
+                <p className="break-words text-caption text-muted-foreground">
+                  {t(($) => $.credential_manager.audit_actor)}: {event.actor_type} / {event.actor_id} · {t(($) => $.credential_manager.purpose)}: {event.purpose || "—"}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {message ? <Alert role="status"><AlertDescription>{message}</AlertDescription></Alert> : null}
 
@@ -301,7 +320,7 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
         {allCredentials.map(({ item, target }) => {
           if (!target) return null;
           const status = displayStatus(item, issueStatusCategory(target) ?? target.status);
-          const canManage = isOwner || item.resource_scope === "issue" || item.resource_scope === "single_use";
+          const canManage = isOwner || ((item.resource_scope === "issue" || item.resource_scope === "single_use") && target.assignee_type === "member" && target.assignee_id === currentUser?.id);
           return (
             <li key={`${target.id}:${item.id}`} className="min-w-0 rounded-md border border-surface-border p-3">
               <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">

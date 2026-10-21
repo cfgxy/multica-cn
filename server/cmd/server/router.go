@@ -1943,6 +1943,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 							r.Put("/{connectorId}", h.UpdateCredentialConnector)
 						})
 					})
+					r.Group(func(r chi.Router) {
+						r.Use(handler.RequireHumanActor)
+						r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+						r.Get("/credential-audit", h.ListCredentialAudit)
+					})
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
 					// RUYI-494: the workspace decision inbox — every card in
@@ -2572,6 +2577,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/batch-delete", h.BatchDeleteIssues)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Post("/credentials", h.CreateIssueCredential)
+					r.Post("/credentials/{credentialId}/replace", h.ReplaceIssueCredential)
 					r.Get("/credentials", h.ListIssueCredentials)
 					r.Post("/credentials/{credentialId}/revoke", h.RevokeIssueCredential)
 					r.Get("/", h.GetIssue)
