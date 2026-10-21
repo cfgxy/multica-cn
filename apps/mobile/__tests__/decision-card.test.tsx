@@ -342,6 +342,22 @@ describe("DecisionCard authorization face (RUYI-630)", () => {
     expect(screen.queryByTestId("decision-cancel")).toBeNull();
   });
 
+  it("shows each project result after project-prompt execution", async () => {
+    await renderCard(card({
+      ...authCard,
+      action_type: "project_prompt_sync",
+      status: "answered",
+      auth_state: "executed",
+      executed_at: "2026-10-21T12:00:00Z",
+      execution_result: {
+        action: "project_prompt_sync",
+        projects: [{ project_id: "project-1", status: "updated", version: 4 }],
+      },
+    }));
+
+    expect(screen.getByTestId("decision-auth-project-result").props.children).toContain("project-1");
+  });
+
   it("answers through the issue decision endpoint with the approve index", async () => {
     await renderCard(authCard);
     await pressPressable("decision-auth-approve");

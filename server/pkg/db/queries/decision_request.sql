@@ -176,3 +176,11 @@ UPDATE decision_requests SET
     updated_at = now()
 WHERE request_group_id = @request_group_id
 RETURNING *;
+-- name: CreateDecisionRequestActionSavepoint :exec
+SAVEPOINT decision_request_action;
+
+-- name: RollbackDecisionRequestAction :exec
+ROLLBACK TO SAVEPOINT decision_request_action;
+
+-- name: ReleaseDecisionRequestActionSavepoint :exec
+RELEASE SAVEPOINT decision_request_action;
