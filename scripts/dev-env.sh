@@ -2023,11 +2023,12 @@ ensure_code_binding() {
 }
 
 cmd_up() {
-  local requested="$DEFAULT_COMPONENTS" comp
+  local requested="$DEFAULT_COMPONENTS" comp skip_auto_gc=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --components|-c) requested="$(printf '%s' "$2" | tr ',' ' ')"; shift 2 ;;
       --all) requested="$ALL_COMPONENTS"; shift ;;
+      --skip-auto-gc) skip_auto_gc=1; shift ;;
       *) die "Unknown flag for up: $1" ;;
     esac
   done
@@ -2041,9 +2042,11 @@ cmd_up() {
   COMPONENTS="$requested"
 
   require_lease
-  # No resident cleanup service is required: every slot start is a safe
-  # opportunity to collect expired qa slots.
-  cmd_gc --auto
+  # Starting one slot must not implicitly destroy another slot's expired QA
+  # lease when the caller has explicitly asked to preserve the pool.
+  if [ "$skip_auto_gc" != 1 ]; then
+    cmd_gc --auto
+  fi
 
   step "Prerequisites"
   local missing=() tool needed="node go git curl docker"
