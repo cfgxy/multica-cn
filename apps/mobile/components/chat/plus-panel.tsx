@@ -13,7 +13,6 @@ import Animated, { SlideInUp, SlideOutDown } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Text } from "@/components/ui/text";
-import { withAlphaColor } from "@/lib/color-alpha";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
@@ -79,6 +78,24 @@ export function PlusPanel({
 
   const grid: GridEntry[] = [
     {
+      key: "camera",
+      icon: "camera",
+      label: t("mobile.plus.camera", "Camera"),
+      onPress: onCamera,
+    },
+    {
+      key: "image",
+      icon: "image",
+      label: t("mobile.plus.image", "Photos"),
+      onPress: onImage,
+    },
+    {
+      key: "files",
+      icon: "folder-open",
+      label: t("mobile.plus.files", "Files"),
+      onPress: onFiles,
+    },
+    {
       key: "mention",
       icon: "at",
       label: t("mobile.plus.mention", "Mention"),
@@ -112,12 +129,6 @@ export function PlusPanel({
           onPress: onProjectContext,
         }]
       : []),
-    {
-      key: "files",
-      icon: "folder-open",
-      label: t("mobile.plus.files", "Files"),
-      onPress: onFiles,
-    },
   ];
 
   // A downward pull of more than 80dp closes the panel.
@@ -136,14 +147,14 @@ export function PlusPanel({
     <Animated.View
       entering={SlideInUp.duration(220)}
       exiting={SlideOutDown.duration(180)}
-      className="self-start rounded-xl border border-border bg-background px-3 pb-4 shadow-lg"
+      className="self-start rounded-xl border border-border bg-background px-3 pb-3 shadow-lg"
       style={{
         position: "absolute",
         bottom: "100%",
         left: 0,
         zIndex: 10,
         maxHeight,
-        width: "92%",
+        width: "100%",
         marginBottom: 8,
       }}
     >
@@ -159,8 +170,8 @@ export function PlusPanel({
               if (start !== null && e.nativeEvent.pageY - start > 80) onClose();
             }}
           />
-          <View className="flex-row items-center justify-between px-1 pt-2 pb-3">
-            <Text className="text-base font-semibold text-foreground">
+          <View className="flex-row items-center justify-between px-1 pb-2">
+            <Text className="text-sm font-semibold text-foreground">
               {t("mobile.plus.title", "Add to message")}
             </Text>
             <Pressable
@@ -173,28 +184,7 @@ export function PlusPanel({
               <Ionicons name="close" size={20} color={theme.mutedForeground} />
             </Pressable>
           </View>
-          {modelPicker ? <View className="mb-2">{modelPicker}</View> : null}
-          <View className="flex-row gap-2">
-            <BigTile
-              icon="camera"
-              label={t("mobile.plus.camera", "Camera")}
-              onPress={() => {
-                haptic();
-                onCamera();
-              }}
-              accent
-            />
-            <BigTile
-              icon="image"
-              label={t("mobile.plus.image", "Photos")}
-              onPress={() => {
-                haptic();
-                onImage();
-              }}
-              accent
-            />
-          </View>
-          <View className="mt-2 flex-row flex-wrap gap-2">
+          <View className="flex-row flex-wrap">
             {grid.map((entry) => (
               <GridTile
                 key={entry.key}
@@ -208,43 +198,9 @@ export function PlusPanel({
               />
             ))}
           </View>
+          {modelPicker ? <View className="mt-2">{modelPicker}</View> : null}
       </ScrollView>
     </Animated.View>
-  );
-}
-
-function BigTile({
-  icon,
-  label,
-  onPress,
-  accent,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  onPress: () => void;
-  accent: boolean;
-}) {
-  const { colorScheme } = useColorScheme();
-  const theme = THEME[colorScheme];
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      className="flex-1 flex-row items-center justify-center gap-2 rounded-[18px] active:opacity-80"
-      style={{
-        height: 86,
-        backgroundColor: accent
-          ? // 品牌色 10% 底：THEME token 是 hsl 串，hex alpha 不能直接
-            // 拼接（Android 渲染非法色为黑），须经 withAlphaColor 生成
-            // 合法 rgba（RUYI-741）。
-            withAlphaColor(theme.brand, 0.1)
-          : theme.secondary,
-      }}
-    >
-      <Ionicons name={icon} size={22} color={theme.brand} />
-      <Text className="text-sm font-medium text-foreground">{label}</Text>
-    </Pressable>
   );
 }
 
@@ -264,8 +220,8 @@ function GridTile({
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
-      className="items-center justify-center gap-1.5 rounded-2xl bg-secondary active:opacity-80"
-      style={{ height: 76, width: "23%" }}
+      className="items-center justify-center gap-1.5 active:opacity-80"
+      style={{ height: 72, width: "25%" }}
     >
       <Ionicons name={icon} size={22} color={theme.foreground} />
       <Text className="text-xs text-muted-foreground" numberOfLines={1}>
