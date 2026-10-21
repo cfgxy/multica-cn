@@ -325,6 +325,12 @@ bash -c 'source "$1"; require_slot dev2; component_resource_env desktop' _ "$rep
 # ---------------------------------------------------------------------------
 # A fresh machine lists both fixed slots, all free.
 # ---------------------------------------------------------------------------
+status=0
+dev_env dev1 up --skip-auto-gc --unsupported > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "up must reject an unsupported flag after accepting --skip-auto-gc"
+require_contains "$out" "Unknown flag for up: --unsupported"
+require_absent "$out" "Unknown flag for up: --skip-auto-gc"
+
 dev_env list > "$out" 2>&1 || fail "list on a fresh machine must succeed"
 for s in dev1 dev2; do
   require_contains "$out" "$s"

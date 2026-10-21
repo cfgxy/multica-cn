@@ -37,9 +37,9 @@ vi.mock("./native-audio", () => {
     requestPermissionsAsync: async () => ({ granted: true }),
     start: async () => null,
     stop: async () => null,
-    startPlayback: async () => null,
+    startPlayback: vi.fn(async () => null),
     playChunk: vi.fn(async () => null),
-    interruptPlayback: async () => null,
+    interruptPlayback: vi.fn(async () => null),
     stopPlayback: async () => null,
     addListener: (_event: string, cb: (e: { data: string }) => void) => {
       state.chunkListener = cb;
@@ -84,7 +84,11 @@ type SessionGatewayModule = typeof import("./session-gateway") & {
 type NativeAudioModule = typeof import("./native-audio") & {
   __testAudio: {
     state: { chunkListener: ((e: { data: string }) => void) | null };
-    audio: { playChunk: ReturnType<typeof vi.fn> };
+    audio: {
+      playChunk: ReturnType<typeof vi.fn>;
+      interruptPlayback: ReturnType<typeof vi.fn>;
+      startPlayback: ReturnType<typeof vi.fn>;
+    };
   };
 };
 
@@ -189,5 +193,31 @@ describe("MobileVoiceSession muted upstream keepalive (RUYI-694 P1)", () => {
 
     const { __testAudio } = (await import("./native-audio")) as NativeAudioModule;
     expect(__testAudio.audio.playChunk).toHaveBeenCalledWith("cGxheQ==");
+  });
+
+  it("continues forwarding downstream audio after barge-in in the same session", async () => {
+    const { transport } = await startLiveSession();
+    const emitAudio = (data: string) =>
+      transport.onFrame?.(
+        JSON.stringify({
+          serverContent: {
+            modelTurn: {
+              parts: [{ inlineData: { data, mimeType: "audio/pcm;rate=24000" } }],
+            },
+          },
+        }),
+      );
+
+    emitAudio("before-interrupt");
+    transport.onFrame?.(JSON.stringify({ serverContent: { interrupted: true } }));
+    emitAudio("after-interrupt");
+
+    const { __testAudio } = (await import("./native-audio")) as NativeAudioModule;
+    expect(__testAudio.audio.interruptPlayback).toHaveBeenCalledTimes(1);
+    expect(__testAudio.audio.startPlayback).toHaveBeenCalledTimes(1);
+    expect(__testAudio.audio.playChunk.mock.calls.map(([chunk]) => chunk)).toEqual([
+      "before-interrupt",
+      "after-interrupt",
+    ]);
   });
 });

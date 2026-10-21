@@ -2043,9 +2043,9 @@ cmd_up() {
   COMPONENTS="$requested"
 
   require_lease
+  # Starting one slot must not implicitly destroy another slot's expired QA
+  # lease when the caller has explicitly asked to preserve the pool.
   if [ "$run_auto_gc" = true ]; then
-    # No resident cleanup service is required: every slot start is a safe
-    # opportunity to collect expired qa slots.
     cmd_gc --auto
   fi
 

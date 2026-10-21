@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * onAudioChunk。stop 置位后由读线程自行退出并释放，双保险防泄漏。
  *
  * 播放：AudioTrack STREAM 模式，24 kHz 单声道 PCM16（网关下行速率），块
- * 顺序写入由单线程 executor 保证；interrupt 全清并重建 track。
+ * 顺序写入由单线程 executor 保证；interrupt 清空当前队列但保留 track。
  *
  * 安全：日志只记异常类名；音频数据只经事件桥向 JS 传递，不落盘、不打日志。
  */
@@ -53,8 +53,9 @@ class VoiceAudioModule : Module() {
   private var captureThread: Thread? = null
 
   private val playbackExecutor: ExecutorService = Executors.newSingleThreadExecutor()
-  private val playbackRunning = AtomicBoolean(false)
+  private val playbackState = PlaybackState()
   private var audioTrack: AudioTrack? = null
+  private var previousAudioMode: Int? = null
 
   override fun definition() = ModuleDefinition {
     Name("VoiceAudio")
@@ -118,7 +119,8 @@ class VoiceAudioModule : Module() {
 
     AsyncFunction("playChunk") { base64: String, promise: Promise ->
       val executor = playbackExecutor
-      if (!playbackRunning.get()) {
+      val generation = playbackState.currentGeneration()
+      if (!playbackState.isRunning()) {
         promise.resolve(null)
         return@AsyncFunction
       }
@@ -127,10 +129,16 @@ class VoiceAudioModule : Module() {
         try {
           val pcm = Base64.decode(base64, Base64.NO_WRAP)
           var offset = 0
-          while (offset < pcm.size && playbackRunning.get()) {
+          while (offset < pcm.size && playbackState.canWrite(generation)) {
             val written = track.write(pcm, offset, pcm.size - offset, AudioTrack.WRITE_BLOCKING)
             if (written <= 0) break
             offset += written
+          }
+          if (!playbackState.canWrite(generation)) {
+            try {
+              track.flush()
+            } catch (_: IllegalStateException) {
+            }
           }
           promise.resolve(null)
         } catch (e: Exception) {
@@ -141,8 +149,7 @@ class VoiceAudioModule : Module() {
     }
 
     AsyncFunction("interruptPlayback") { promise: Promise ->
-      stopPlaybackInternal()
-      promise.resolve(null)
+      interruptPlaybackInternal { promise.resolve(null) }
     }
 
     AsyncFunction("stopPlayback") { promise: Promise ->
@@ -189,8 +196,20 @@ class VoiceAudioModule : Module() {
       throw IllegalStateException("AudioRecord init failed")
     }
     audioRecord = record
-    captureRunning.set(true)
-    record.startRecording()
+    try {
+      enterVoiceAudioMode()
+      captureRunning.set(true)
+      record.startRecording()
+      if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+        throw IllegalStateException("AudioRecord failed to start")
+      }
+    } catch (e: Exception) {
+      captureRunning.set(false)
+      audioRecord = null
+      record.release()
+      restoreAudioModeIfIdle()
+      throw e
+    }
     val thread = Thread({
       val buffer = ByteArray(CHUNK_BYTES)
       try {
@@ -219,13 +238,21 @@ class VoiceAudioModule : Module() {
   }
 
   private fun stopCapture() {
-    if (!captureRunning.compareAndSet(true, false)) return
+    if (!captureRunning.compareAndSet(true, false)) {
+      restoreAudioModeIfIdle()
+      return
+    }
+    try {
+      audioRecord?.stop()
+    } catch (_: IllegalStateException) {
+    }
     try {
       captureThread?.join(1000)
     } catch (_: InterruptedException) {
       Thread.currentThread().interrupt()
     }
     captureThread = null
+    restoreAudioModeIfIdle()
   }
 
   private fun ensurePlaybackTrack() {
@@ -240,7 +267,7 @@ class VoiceAudioModule : Module() {
     }
     val track = AudioTrack(
       AudioAttributes.Builder()
-        .setUsage(AudioAttributes.USAGE_MEDIA)
+        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
         .build(),
       AudioFormat.Builder()
@@ -252,13 +279,20 @@ class VoiceAudioModule : Module() {
       AudioTrack.MODE_STREAM,
       AudioManager.AUDIO_SESSION_ID_GENERATE,
     )
-    track.play()
-    audioTrack = track
-    playbackRunning.set(true)
+    try {
+      enterVoiceAudioMode()
+      track.play()
+      audioTrack = track
+      playbackState.start()
+    } catch (e: Exception) {
+      track.release()
+      restoreAudioModeIfIdle()
+      throw e
+    }
   }
 
   private fun stopPlaybackInternal() {
-    playbackRunning.set(false)
+    playbackState.stop()
     val track = audioTrack
     audioTrack = null
     if (track != null) {
@@ -270,6 +304,50 @@ class VoiceAudioModule : Module() {
       }
       track.release()
     }
+    restoreAudioModeIfIdle()
+  }
+
+  private fun interruptPlaybackInternal(onComplete: () -> Unit) {
+    playbackState.interrupt()
+    val track = audioTrack
+    if (track == null) {
+      onComplete()
+      return
+    }
+    try {
+      track.pause()
+      track.flush()
+    } catch (_: IllegalStateException) {
+    }
+    playbackExecutor.execute {
+      if (audioTrack === track && playbackState.isRunning()) {
+        try {
+          track.play()
+        } catch (_: IllegalStateException) {
+        }
+      }
+      onComplete()
+    }
+  }
+
+  private fun enterVoiceAudioMode() {
+    val audioManager = appContext.reactContext
+      ?.getSystemService(android.content.Context.AUDIO_SERVICE) as? AudioManager ?: return
+    if (previousAudioMode == null) {
+      previousAudioMode = audioManager.mode
+      audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+    }
+  }
+
+  private fun restoreAudioModeIfIdle() {
+    if (captureRunning.get() || playbackState.isRunning()) return
+    val previous = previousAudioMode ?: return
+    val audioManager = appContext.reactContext
+      ?.getSystemService(android.content.Context.AUDIO_SERVICE) as? AudioManager
+    if (audioManager != null && audioManager.mode == AudioManager.MODE_IN_COMMUNICATION) {
+      audioManager.mode = previous
+    }
+    previousAudioMode = null
   }
 
   private fun sendErrorEvent(e: Exception) {
