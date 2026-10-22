@@ -2119,6 +2119,7 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 	// notifyParentOfChildDone re-checks every guard (prev != done, parent
 	// exists, parent not terminal), so calling it unconditionally is safe.
 	h.notifyParentOfChildDone(ctx, issue, updated)
+	h.completeSingleIssueDecisionRequest(ctx, updated)
 	// RUYI-690: same issue_done machine predicate as the HTTP paths — a PR
 	// merge is a done transition, so suspensions waiting on this issue
 	// auto-resume. Best-effort, matching the notification above.
