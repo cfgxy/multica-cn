@@ -185,6 +185,29 @@ func truncateFallbackCommentBody(body string, maxRunes int) string {
 	return oversizedFallbackCommentNotice
 }
 
+func taskResponsibilityMention(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, task db.AgentTaskQueue) (string, string, error) {
+	targetID := task.AgentID
+	if task.SquadID.Valid {
+		squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: task.SquadID, WorkspaceID: workspaceID})
+		if err != nil {
+			return "", "", err
+		}
+		targetID = squad.LeaderID
+	}
+	if !targetID.Valid {
+		return "", "", fmt.Errorf("task %s has no responsibility agent", util.UUIDToString(task.ID))
+	}
+	target, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: targetID, WorkspaceID: workspaceID})
+	if err != nil {
+		return "", "", fmt.Errorf("task %s responsibility agent is unavailable in workspace: %w", util.UUIDToString(task.ID), err)
+	}
+	if target.ArchivedAt.Valid {
+		return "", "", fmt.Errorf("task %s responsibility agent %s is archived", util.UUIDToString(task.ID), util.UUIDToString(target.ID))
+	}
+	id := util.UUIDToString(targetID)
+	return "[@负责人](mention://agent/" + id + ")", id, nil
+}
+
 const (
 	taskAnalyticsContextCacheMax = 4096
 	// RuntimeClaimFreshnessSeconds is the maximum DB heartbeat age accepted by
@@ -4879,13 +4902,13 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// for assignment-triggered tasks it is NULL and the fallback is top-level.
 	// Chat tasks have no IssueID and are handled separately below.
 	if task.IssueID.Valid {
-		suppressNoActionComment, err := HasSquadLeaderNoActionEvaluationForTask(ctx, s.Queries, task)
-		if err != nil {
+		noAction, noActionErr := HasSquadLeaderNoActionEvaluationForTask(ctx, s.Queries, task)
+		if noActionErr != nil {
 			slog.Warn("checking squad leader no_action evaluation failed",
 				"task_id", util.UUIDToString(task.ID),
 				"issue_id", util.UUIDToString(task.IssueID),
 				"agent_id", util.UUIDToString(task.AgentID),
-				"error", err,
+				"error", noActionErr,
 			)
 		}
 		agentCommented, _ := s.Queries.HasAgentCommentedSince(ctx, db.HasAgentCommentedSinceParams{
@@ -4893,29 +4916,15 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			AuthorID: task.AgentID,
 			Since:    task.StartedAt,
 		})
-		if !suppressNoActionComment && !agentCommented {
+		if !agentCommented {
 			var payload protocol.TaskCompletedPayload
-			if err := json.Unmarshal(result, &payload); err == nil {
-				if payload.Output != "" {
-					// Match the CLI's --content / --description behavior: agents that
-					// emit literal `\n` 4-char sequences (Python/JSON-style) get them
-					// decoded into real newlines before the comment hits the DB. See
-					// util.UnescapeBackslashEscapes for the exact contract.
-					body := util.UnescapeBackslashEscapes(payload.Output)
-					if task.TriggerCommentID.Valid && isTrivialDoneOutput(body) {
-						slog.Warn("suppressing trivial comment-trigger fallback output",
-							"task_id", util.UUIDToString(task.ID),
-							"issue_id", util.UUIDToString(task.IssueID),
-							"agent_id", util.UUIDToString(task.AgentID),
-						)
-					} else {
-						// Redact first, then bound: a runaway raw-stream Output (GH #5455)
-						// must never reach the issue thread, even as a clipped excerpt.
-						content := truncateFallbackCommentBody(redact.Text(body), maxSynthesizedFallbackCommentRunes)
-						s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "comment", task.TriggerCommentID, task.ID)
-					}
-				}
+			_ = json.Unmarshal(result, &payload)
+			body := util.UnescapeBackslashEscapes(payload.Output)
+			if noAction || strings.TrimSpace(body) == "" || isTrivialDoneOutput(body) {
+				body = "Run completed without a substantive comment."
 			}
+			content := truncateFallbackCommentBody(redact.Text(body), maxSynthesizedFallbackCommentRunes)
+			s.createAgentComment(ctx, task, content, "comment")
 		}
 	}
 
@@ -5605,7 +5614,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	// in addition to the coordinator recovery signal, preserving visibility on
 	// both sides of a cross-issue handoff.
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
-		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+		s.createAgentComment(ctx, task, redact.Text(errMsg), "system")
 	}
 
 	// Quick-create tasks: push a failure inbox notification to the
@@ -8005,26 +8014,45 @@ func (s *TaskService) AddDaemonTaskSystemComment(ctx context.Context, taskID pgt
 	if !task.IssueID.Valid || !task.AgentID.Valid {
 		return nil
 	}
-	s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "system", task.TriggerCommentID, task.ID)
+	s.createAgentComment(ctx, task, content, "system")
 	return nil
 }
 
-func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {
+func (s *TaskService) createAgentComment(ctx context.Context, task db.AgentTaskQueue, content, commentType string) {
 	if content == "" {
 		return
 	}
 	// Look up issue to get workspace ID for mention expansion and broadcasting.
-	issue, err := s.Queries.GetIssue(ctx, issueID)
+	issue, err := s.Queries.GetIssue(ctx, task.IssueID)
 	if err != nil {
 		return
+	}
+	mention, responsibilityID, err := taskResponsibilityMention(ctx, s.Queries, issue.WorkspaceID, task)
+	if err != nil {
+		slog.Warn("agent comment responsibility mention could not be resolved",
+			"task_id", util.UUIDToString(task.ID),
+			"issue_id", util.UUIDToString(task.IssueID),
+			"error", err,
+		)
+		return
+	}
+	hasResponsibilityMention := false
+	for _, parsed := range util.ParseMentions(content) {
+		if parsed.Type == "agent" && parsed.ID == responsibilityID {
+			hasResponsibilityMention = true
+			break
+		}
+	}
+	if !hasResponsibilityMention {
+		content += "\n\n" + mention
 	}
 	// Resolve the thread root for thread-level side effects without overwriting
 	// parentID. The stored parent_id must remain the exact comment being replied
 	// to; recursive thread reads recover the root when needed.
 	var rootComment *db.Comment
-	if parentID.Valid {
+	if task.TriggerCommentID.Valid {
 		if root, err := s.Queries.GetThreadRoot(ctx, db.GetThreadRootParams{
-			CommentID:   parentID,
+			CommentID:   task.TriggerCommentID,
 			WorkspaceID: issue.WorkspaceID,
 		}); err == nil {
 			rootComment = &root
@@ -8032,27 +8060,27 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	}
 	created, err := s.Queries.CreateComment(ctx, db.CreateCommentParams{
 		ID:           dbid.NewV7(),
-		IssueID:      issueID,
+		IssueID:      task.IssueID,
 		WorkspaceID:  issue.WorkspaceID,
 		AuthorType:   "agent",
-		AuthorID:     agentID,
+		AuthorID:     task.AgentID,
 		Content:      content,
 		Type:         commentType,
-		ParentID:     parentID,
-		SourceTaskID: sourceTaskID,
+		ParentID:     task.TriggerCommentID,
+		SourceTaskID: task.ID,
 	})
 	if err != nil {
 		return
 	}
 	comment := created.Comment()
-	s.CancelDeferredEscalationsForIssueAgent(ctx, issueID, agentID)
+	s.CancelDeferredEscalationsForIssueAgent(ctx, task.IssueID, task.AgentID)
 	commentFields := commentEventFields(comment)
 	commentFields["revision"] = comment.Revision
 	s.Bus.Publish(events.Event{
 		Type:        protocol.EventCommentCreated,
 		WorkspaceID: util.UUIDToString(issue.WorkspaceID),
 		ActorType:   "agent",
-		ActorID:     util.UUIDToString(agentID),
+		ActorID:     util.UUIDToString(task.AgentID),
 		Payload: map[string]any{
 			"comment":        commentFields,
 			"issue_title":    issue.Title,
@@ -8060,7 +8088,7 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 			"issue_revision": created.IssueRevision,
 		},
 	})
-	s.AutoUnresolveThreadOnReply(ctx, rootComment, util.UUIDToString(issue.WorkspaceID), "agent", util.UUIDToString(agentID))
+	s.AutoUnresolveThreadOnReply(ctx, rootComment, util.UUIDToString(issue.WorkspaceID), "agent", util.UUIDToString(task.AgentID))
 }
 
 // AutoUnresolveThreadOnReply clears resolved_at on the thread root when a
@@ -8181,8 +8209,8 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		// Mirrors handler.IssueResponse.SuspendedAt (RUYI-690): the read-side
 		// "waiting" snapshot; the suspension table owns the audit trail.
 		"suspended_at": util.TimestampToNanoPtr(issue.SuspendedAt),
-		"metadata":          util.JSONObjectOrEmpty(issue.Metadata),
-		"properties":        util.JSONObjectOrEmpty(issue.Properties),
+		"metadata":     util.JSONObjectOrEmpty(issue.Metadata),
+		"properties":   util.JSONObjectOrEmpty(issue.Properties),
 	}
 }
 
