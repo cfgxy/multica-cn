@@ -76,6 +76,21 @@ resolve_bootstrap() {
   fi
   resolve_bootstrap_file "$@"
 }
+
+# acquire_lease_params encodes the bootstrap credential through jq stdin so it
+# never appears in a child process argument vector.
+acquire_lease_params() { # <template> <owner> <request-id> <bootstrap> [ttl]
+  local template=$1 owner=$2 request_id=$3 bootstrap=$4 ttl=${5:-}
+  if [ -n "$ttl" ]; then
+    printf '%s' "$bootstrap" | jq -Rsc \
+      --arg t "$template" --arg o "$owner" --arg i "$owner" --arg r "$request_id" --argjson ttl "$ttl" \
+      '{template_id:$t,owner:$o,issue_id:$i,ttl_minutes:$ttl,request_id:$r,bootstrap_credential:.}'
+  else
+    printf '%s' "$bootstrap" | jq -Rsc \
+      --arg t "$template" --arg o "$owner" --arg i "$owner" --arg r "$request_id" \
+      '{template_id:$t,owner:$o,issue_id:$i,bootstrap_credential:.,request_id:$r}'
+  fi
+}
 POOL_CONFIG="${SLOT_POOL_CONFIG:-$SCRIPT_DIR/slot-pool.json}"
 EVIDENCE_DIR="${MULTICA_RECYCLE_EVIDENCE_DIR:-$HOME/.multica/recycle-evidence}"
 GUEST_GUARD="/usr/local/lib/multica/guard-scan.sh"
@@ -102,11 +117,11 @@ _rpc() {
   command -v curl >/dev/null || die "curl is required"
   command -v jq >/dev/null || die "jq is required"
   if [[ "$method" == notifications/* ]]; then
-    body="$(jq -cn --arg m "$method" --argjson p "$params" '{jsonrpc:"2.0",method:$m,params:$p}')"
+    body="$(printf '%s' "$params" | jq -c --arg m "$method" '{jsonrpc:"2.0",method:$m,params:.}')"
   else
     RPC_ID=$((RPC_ID + 1))
-    body="$(jq -cn --arg m "$method" --argjson p "$params" --argjson i "$RPC_ID" \
-      '{jsonrpc:"2.0",id:$i,method:$m,params:$p}')"
+    body="$(printf '%s' "$params" | jq -c --arg m "$method" --argjson i "$RPC_ID" \
+      '{jsonrpc:"2.0",id:$i,method:$m,params:.}')"
   fi
   # Keep all credentials out of curl's argv: process listings expose literal
   # --data-binary and -H values. curl reads the sensitive headers through an
@@ -148,7 +163,7 @@ _tool() {
   [ -n "$params" ] || params='{}'
   _pool_handshake
   local result text
-  result="$(_rpc tools/call "$(jq -n --arg n "$tool" --argjson a "$params" '{name:$n,arguments:$a}')")"
+  result="$(_rpc tools/call "$(printf '%s' "$params" | jq -c --arg n "$tool" '{name:$n,arguments:.}')")"
   [ -n "$result" ] || die "pool tool $tool returned no result"
   if jq -e '.isError == true' >/dev/null 2>&1 <<<"$result"; then
     die "pool tool $tool refused: $(jq -r '.content[0].text // "unknown"' <<<"$result")"
@@ -174,6 +189,11 @@ lock_slot() {
   umask "$old_umask"
   chmod 600 "$dir/.lease.lock"
   flock -x "$SLOT_LOCK_FD" || die "could not lock slot $POOL_SLOT"
+}
+unlock_slot() {
+  [ -n "${SLOT_LOCK_FD:-}" ] || return 0
+  exec {SLOT_LOCK_FD}>&-
+  unset SLOT_LOCK_FD
 }
 remove_manifest_capability() { # <path>
   sed -i '/^CAPABILITY=/d' "$1"
@@ -244,9 +264,7 @@ resign_execution_capability() { # <expected-lease-id> <template> <owner> <reques
   [ -n "$expected_lease_id" ] && [ -n "$template" ] && [ -n "$owner" ] && [ -n "$request_id" ] || return 1
   bootstrap="$(resolve_bootstrap_file "$owner")" || return 1
   CAPABILITY=""
-  out="$(_tool acquire_lease "$(jq -cn --arg t "$template" --arg o "$owner" --arg i "$owner" \
-      --arg b "$bootstrap" --arg r "$request_id" \
-      '{template_id:$t,owner:$o,issue_id:$i,bootstrap_credential:$b,request_id:$r}')")" || return 1
+  out="$(_tool acquire_lease "$(acquire_lease_params "$template" "$owner" "$request_id" "$bootstrap")")" || return 1
   lease_id="$(jq -r '.lease_id // empty' <<<"$out")"
   capability="$(jq -r '.execution_capability // empty' <<<"$out")"
   [ "$lease_id" = "$expected_lease_id" ] && [ -n "$capability" ] || return 1
@@ -477,6 +495,7 @@ cmd_use() {
   fi
   case "$phase" in deploy|qa) ;; *) die "use: phase must be deploy or qa" ;; esac
   require_owner
+  lock_slot
   template="${template:-$(config_phase_field "$phase" template)}"
   ttl="${ttl:-$(config_phase_field "$phase" ttl_minutes)}"
   [ -n "$template" ] || die "use: no template for phase $phase (scripts/slot-pool.json)"
@@ -488,10 +507,7 @@ cmd_use() {
   # Reusing a recorded request_id replays the same lease (idempotent pool
   # contract): the owner can bind the manifest to a lease acquired out-of-band.
   [ -n "$request_id_override" ] && request_id="$request_id_override"
-  out="$(_tool acquire_lease "$(jq -n \
-      --arg t "$template" --arg o "$(caller_owner)" --arg i "$(caller_owner)" \
-      --argjson ttl "${ttl:-60}" --arg r "$request_id" --arg b "$bootstrap" \
-      '{template_id:$t,owner:$o,issue_id:$i,ttl_minutes:$ttl,request_id:$r,bootstrap_credential:$b}')")"
+  out="$(_tool acquire_lease "$(acquire_lease_params "$template" "$(caller_owner)" "$request_id" "$bootstrap" "${ttl:-60}")")"
   lease_id="$(jq -r '.lease_id // empty' <<<"$out")"
   instance_id="$(jq -r '.instance_id // empty' <<<"$out")"
   expires_at="$(jq -r '.expires_at // empty' <<<"$out")"
@@ -683,11 +699,23 @@ cmd_load() {
   [ -n "$pkg_id" ] || die "load: no package_id returned"
   url="$(jq -r '.upload.url // empty' <<<"$out")"
   if [ -n "$url" ]; then
-    local auth=()
-    [ -n "$POOL_TOKEN" ] && auth=(-H "Authorization: Bearer $POOL_TOKEN")
-    curl -fsS --max-time "$HTTP_TIMEOUT" -X PUT "$url" \
-      -H "X-Sha256: $sha" "${auth[@]+"${auth[@]}"}" --data-binary "@$file" \
-      >/dev/null || die "PUT upload failed for $name"
+    case "$url" in
+      *$'\n'*|*$'\r'*|*'"'*|*'\\'*) die "PUT upload URL contains unsafe configuration characters" ;;
+    esac
+    local upload_config_fd="" upload_rc upload_config
+    upload_config="url = \"$url\""$'\n'
+    upload_config+="request = \"PUT\""$'\n'
+    upload_config+="header = \"X-Sha256: $sha\""$'\n'
+    [ -z "$POOL_TOKEN" ] || upload_config+="header = \"Authorization: Bearer $POOL_TOKEN\""$'\n'
+    exec {upload_config_fd}<<<"$upload_config"
+    if curl -fsS --max-time "$HTTP_TIMEOUT" --config "/proc/self/fd/$upload_config_fd" \
+      --data-binary "@$file" >/dev/null; then
+      upload_rc=0
+    else
+      upload_rc=$?
+    fi
+    exec {upload_config_fd}<&-
+    [ "$upload_rc" -eq 0 ] || die "PUT upload failed for $name"
   fi
   {
     printf 'ARTIFACT_PACKAGE=%s\n' "$name"
@@ -880,19 +908,34 @@ cmd_gc() {
   # Sweep OUR expired leases whose manifests still exist; the pool reaper is
   # the server-side backstop, this is the polite counterpart. A get_lease
   # transport failure must NOT look like an expiry — skip and say so.
-  local dir m lease_id released=0 lease_out state
+  local dir m slot lease_id template issue request_id released=0 lease_out state
+  local pool_slot_before_gc=${POOL_SLOT:-}
   for dir in "$POOL_HOME"/*/; do
     [ -d "$dir" ] || continue
-    m="$dir/lease.env"
+    slot="${dir%/}"
+    POOL_SLOT="${slot##*/}"
+    m="$(manifest_path)"
     [ -f "$m" ] || continue
+    lock_slot
+    [ -f "$m" ] || { unlock_slot; continue; }
     remove_manifest_capability "$m"
+    unset LEASE_ID TEMPLATE ISSUE REQUEST_ID CAPABILITY CAPABILITY_ISSUED_AT
     # shellcheck disable=SC1090
     . "$m"
-    [ "${ISSUE:-}" = "$(caller_owner)" ] || continue
+    [ "${ISSUE:-}" = "$(caller_owner)" ] || { unlock_slot; continue; }
     lease_id="${LEASE_ID:-}"
-    [ -n "$lease_id" ] || continue
+    [ -n "$lease_id" ] || { unlock_slot; continue; }
+    template="${TEMPLATE:-}"
+    issue="${ISSUE:-}"
+    request_id="${REQUEST_ID:-}"
+    if ! resign_execution_capability "$lease_id" "$template" "$issue" "$request_id"; then
+      printf 'slot-pool: gc: %s could not be re-signed, keeping manifest\n' "$lease_id" >&2
+      unlock_slot
+      continue
+    fi
     lease_out="$(_tool get_lease "$(jq -n --arg l "$lease_id" '{lease_id:$l}')" 2>/dev/null)" || {
       printf 'slot-pool: gc: %s unreachable (state unknown), keeping manifest\n' "$lease_id" >&2
+      unlock_slot
       continue
     }
     state="$(jq -r '.state // empty' <<<"$lease_out" 2>/dev/null)"
@@ -908,7 +951,9 @@ cmd_gc() {
         fi
         released=$((released + 1)) ;;
     esac
+    unlock_slot
   done
+  POOL_SLOT=$pool_slot_before_gc
   [ "$released" -gt 0 ] || printf 'slot-pool: gc nothing to collect\n'
 }
 
