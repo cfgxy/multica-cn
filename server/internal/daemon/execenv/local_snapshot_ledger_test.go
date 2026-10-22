@@ -97,6 +97,36 @@ func TestRecordSnapshotStartForcesActiveState(t *testing.T) {
 	}
 }
 
+func TestFinalizeSnapshotKeepsGitArtifactForRecovery(t *testing.T) {
+	envRoot := t.TempDir()
+	artifact := &SnapshotGitArtifactSpec{ArtifactDir: SnapshotGitArtifactDir(envRoot, "task-1"), Baseline: "base", EnvRoot: envRoot}
+	if err := RecordSnapshotStart(envRoot, SnapshotLedgerEntry{TaskID: "task-1", Root: envRoot, GitArtifact: artifact}); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinalizeSnapshot(envRoot, "task-1", true); err != nil {
+		t.Fatal(err)
+	}
+	entries := readLedgerEntries(t, envRoot)
+	if len(entries) != 1 || entries[0].State != snapshotStateFailed || entries[0].GitArtifact == nil || entries[0].GitArtifact.ArtifactDir != artifact.ArtifactDir {
+		t.Fatalf("failure recovery ledger = %+v, want retained Git artifact", entries)
+	}
+}
+
+func TestFinalizeSnapshotKeepsSuccessfulGitArtifactForReview(t *testing.T) {
+	envRoot := t.TempDir()
+	artifact := &SnapshotGitArtifactSpec{ArtifactDir: SnapshotGitArtifactDir(envRoot, "task-1"), Baseline: "base", EnvRoot: envRoot}
+	if err := RecordSnapshotStart(envRoot, SnapshotLedgerEntry{TaskID: "task-1", Root: envRoot, GitArtifact: artifact}); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinalizeSnapshot(envRoot, "task-1", false); err != nil {
+		t.Fatal(err)
+	}
+	entries := readLedgerEntries(t, envRoot)
+	if len(entries) != 1 || entries[0].State != snapshotStateDelivered || entries[0].GitArtifact == nil {
+		t.Fatalf("successful delivery ledger = %+v, want retained review artifact", entries)
+	}
+}
+
 func TestFinalizeSnapshotKeepFalseRemovesEntryAndKeepTrueMarksFailed(t *testing.T) {
 	t.Parallel()
 	envRoot := t.TempDir()
@@ -300,6 +330,52 @@ func TestReapExpiredSnapshotsKeepsUnexpiredFailedPastOrphanAge(t *testing.T) {
 	entries := readLedgerEntries(t, envRoot)
 	if len(entries) != 1 || entries[0].State != snapshotStateFailed {
 		t.Fatalf("failed record must survive, got %+v", entries)
+	}
+}
+
+// Git artifacts live below the shared git-artifacts directory, so their
+// ledger claims must be matched at the task directory level. An old parent
+// directory must not shorten the seven-day retention window for a bundle.
+func TestReapExpiredSnapshotsKeepsUnexpiredGitArtifactsPastOrphanAge(t *testing.T) {
+	for _, state := range []string{snapshotStateFailed, snapshotStateDelivered} {
+		t.Run(state, func(t *testing.T) {
+			envRoot := t.TempDir()
+			now := time.Now()
+			artifactDir := SnapshotGitArtifactDir(envRoot, "task-"+state)
+			entry := SnapshotLedgerEntry{
+				TaskID:    "task-" + state,
+				Root:      envRoot,
+				CreatedAt: now.Add(-3 * 24 * time.Hour),
+				State:     state,
+				GitArtifact: &SnapshotGitArtifactSpec{
+					ArtifactDir: artifactDir,
+				},
+			}
+			seedLedger(t, envRoot, []SnapshotLedgerEntry{entry})
+			bundle := filepath.Join(artifactDir, "changes.bundle")
+			if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(bundle, []byte("bundle"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stamp := now.Add(-3 * 24 * time.Hour)
+			if err := os.Chtimes(filepath.Dir(artifactDir), stamp, stamp); err != nil {
+				t.Fatal(err)
+			}
+
+			reaped := ReapExpiredSnapshots(envRoot, now)
+			if len(reaped) != 0 {
+				t.Fatalf("unexpired %s artifact must not be reaped, reaped=%v", state, reaped)
+			}
+			if _, err := os.Stat(bundle); err != nil {
+				t.Fatalf("unexpired %s bundle must survive an old parent directory: %v", state, err)
+			}
+			entries := readLedgerEntries(t, envRoot)
+			if len(entries) != 1 || entries[0].State != state {
+				t.Fatalf("%s artifact ledger entry must survive, got %+v", state, entries)
+			}
+		})
 	}
 }
 

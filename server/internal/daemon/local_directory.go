@@ -658,10 +658,13 @@ func (p *snapshotPlan) DeclaredLockPaths() []string {
 	return paths
 }
 
-// resolveSnapshotPlan resolves a snapshot-mode task into its units. Returns
-// nil (without error) when none of the task's project resources is a
-// snapshot-mode local_directory of this daemon — the task takes the regular
-// in_place/worktree paths.
+// resolveSnapshotPlan resolves a snapshot-mode task into its units. A
+// worktree resource becomes a candidate only while the deployment-local Git
+// snapshot gate is enabled; its stored mode remains worktree and any failed
+// eligibility check still routes it through the existing worktree path.
+// Returns nil (without error) when none of the task's project resources is a
+// snapshot-mode local_directory, or a gate-enabled worktree candidate, of this
+// daemon — the task takes the regular in_place/worktree paths.
 //
 // Resolution rules (ADR §3, "拒绝猜测"):
 //   - Declared scope: every entry must name a snapshot resource of this
@@ -680,6 +683,7 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 		ref localDirectoryRef
 		abs string
 	}
+	gitSnapshotEnabled := os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1"
 	var rows []snapRow
 	for _, r := range task.ProjectResources {
 		if r.ResourceType != localDirectoryResourceType {
@@ -689,7 +693,8 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 		if err := json.Unmarshal(r.ResourceRef, &ref); err != nil {
 			return nil, fmt.Errorf("local_directory: parse resource_ref: %w", err)
 		}
-		if strings.TrimSpace(ref.ExecutionMode) != localDirectoryModeSnapshot {
+		mode := strings.TrimSpace(ref.ExecutionMode)
+		if mode != localDirectoryModeSnapshot && !(gitSnapshotEnabled && mode == localDirectoryModeWorktree) {
 			continue
 		}
 		if strings.TrimSpace(ref.DaemonID) != daemonID {
@@ -698,6 +703,15 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 		abs, err := normalizeLocalPath(ref.LocalPath)
 		if err != nil {
 			return nil, err
+		}
+		// The deployment gate changes only ordinary Git worktree execution.
+		// Keep non-Git worktree resources on their established backend even
+		// while the gate is enabled.
+		if mode == localDirectoryModeWorktree {
+			top, isGit := gitToplevel(abs)
+			if !isGit || filepath.Clean(top) != filepath.Clean(abs) {
+				continue
+			}
 		}
 		rows = append(rows, snapRow{id: r.ID, ref: ref, abs: abs})
 	}
@@ -849,16 +863,37 @@ func gitToplevel(dir string) (string, bool) {
 // task. Returns a worktree-mode assignment for the resource root — the
 // worktree flow branches on that mode — or nil to proceed with mounts.
 func snapshotWorktreeFallback(plan *snapshotPlan) (*localDirectoryAssignment, error) {
+	return snapshotWorktreeFallbackWithGitGate(plan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1")
+}
+
+func snapshotWorktreeFallbackWithGitGate(plan *snapshotPlan, gitSnapshotEnabled bool) (*localDirectoryAssignment, error) {
+	return snapshotWorktreeFallbackWithGitGateAndCapability(plan, gitSnapshotEnabled, true)
+}
+
+// snapshotWorktreeFallbackWithGitGateAndCapability keeps worktree-mode
+// resources on their established backend when this daemon did not advertise
+// snapshot support. Snapshot resources are capability-gated at claim time;
+// worktree resources are not, so the local check is necessary before the
+// deployment gate may adopt one for Git snapshot delivery.
+func snapshotWorktreeFallbackWithGitGateAndCapability(plan *snapshotPlan, gitSnapshotEnabled, snapshotCapable bool) (*localDirectoryAssignment, error) {
 	if plan == nil || plan.Primary == nil {
+		return nil, nil
+	}
+	// Recursively audit Git metadata before choosing the preserved worktree
+	// delivery path. The audit is intentionally non-mutating; an unsafe or
+	// incomplete shape still falls back without attempting to repair .git.
+	// Git snapshot delivery is deliberately narrower than the audit and is
+	// off by default. Operators opt in per daemon process only after the
+	// snapshot artifact/recovery path has been deployed.
+	audit := auditSnapshotGitScope(plan)
+	worktreeCandidate := strings.TrimSpace(plan.Primary.Ref.ExecutionMode) == localDirectoryModeWorktree
+	if audit.Safe && (!audit.HasGit || (!worktreeCandidate || snapshotCapable) && gitSnapshotDeliveryEligible(plan, gitSnapshotEnabled)) {
 		return nil, nil
 	}
 	root := plan.Primary.Ref.LocalPath
 	abs, err := normalizeLocalPath(root)
 	if err != nil {
 		return nil, err
-	}
-	if _, ok := gitToplevel(abs); !ok {
-		return nil, nil
 	}
 	real, err := resolveRealPath(abs)
 	if err != nil {
@@ -869,6 +904,50 @@ func snapshotWorktreeFallback(plan *snapshotPlan) (*localDirectoryAssignment, er
 	return &localDirectoryAssignment{Ref: ref, AbsPath: abs, RealPath: real}, nil
 }
 
+// snapshotExecutionObservation is the non-sensitive decision record emitted
+// for a snapshot resource at task start. Operators need the actual backend,
+// not merely the resource's requested mode: a Git resource can deliberately
+// route to the established worktree flow without being an error.
+type snapshotExecutionObservation struct {
+	ExecutionMode string
+	GateEnabled   bool
+	Capability    bool
+	DowngradeCode string
+}
+
+// snapshotExecutionObservationFor describes the decision already made by
+// snapshotWorktreeFallback. DowngradeCode is intentionally a stable category,
+// rather than the audit's path-bearing diagnostic, because this record is
+// emitted to the daemon log and may be shown in operator tooling.
+func snapshotExecutionObservationFor(plan *snapshotPlan, fallback *localDirectoryAssignment, gateEnabled, capability bool) snapshotExecutionObservation {
+	observation := snapshotExecutionObservation{
+		ExecutionMode: localDirectoryModeSnapshot,
+		GateEnabled:   gateEnabled,
+		Capability:    capability,
+	}
+	if fallback == nil {
+		return observation
+	}
+
+	observation.ExecutionMode = localDirectoryModeWorktree
+	audit := auditSnapshotGitScope(plan)
+	switch {
+	case !audit.Safe:
+		observation.DowngradeCode = "git_metadata_audit_failed"
+	case !gateEnabled:
+		observation.DowngradeCode = "git_snapshot_gate_disabled"
+	case !capability && strings.TrimSpace(plan.Primary.Ref.ExecutionMode) == localDirectoryModeWorktree:
+		observation.DowngradeCode = "git_snapshot_capability_unavailable"
+	case !gitSnapshotDeliveryEligible(plan, true):
+		observation.DowngradeCode = "git_snapshot_unsupported_topology"
+	default:
+		// Keep an explicit code if future eligibility checks add a shape that
+		// the current categorisation does not recognise.
+		observation.DowngradeCode = "git_snapshot_ineligible"
+	}
+	return observation
+}
+
 // localDirectoryGCExemption reports whether a finished task's env root must
 // outlive the ordinary GC sweep: an in_place assignment runs inside the
 // user's own tree, and a snapshot run hosts the local-snapshots retention
@@ -877,9 +956,9 @@ func snapshotWorktreeFallback(plan *snapshotPlan) (*localDirectoryAssignment, er
 // worktree task's, so it must NOT be stamped, or every such task leaves one
 // exempt env root behind forever. Resolution errors stamp nothing: the
 // disposable default is the safe side of the guess.
-func localDirectoryGCExemption(task Task, daemonID string) bool {
+func localDirectoryGCExemption(task Task, daemonID string, snapshotCapable bool) bool {
 	if plan, err := resolveSnapshotPlan(task, daemonID); err == nil && plan != nil {
-		fb, fbErr := snapshotWorktreeFallback(plan)
+		fb, fbErr := snapshotWorktreeFallbackWithGitGateAndCapability(plan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1", snapshotCapable)
 		return fbErr == nil && fb == nil
 	}
 	if assignment, err := localDirectoryAssignmentForTask(task, daemonID); err == nil && assignment != nil {
