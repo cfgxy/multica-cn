@@ -144,6 +144,7 @@ func TestSnapshotWorkerCapturesGitArtifactSmoke(t *testing.T) {
 	gitForSnapshotTest(t, target, "add", "tracked.txt")
 	gitForSnapshotTest(t, target, "commit", "-qm", "base")
 	baseline := strings.TrimSpace(gitForSnapshotTest(t, target, "rev-parse", "HEAD"))
+	pristineRefs := gitForSnapshotTest(t, target, "show-ref", "--head")
 
 	alias := filepath.Join(scratch, "alias")
 	upper := filepath.Join(scratch, "upper")
@@ -188,6 +189,9 @@ func TestSnapshotWorkerCapturesGitArtifactSmoke(t *testing.T) {
 	}
 	if got := gitForSnapshotTest(t, target, "status", "--porcelain"); got != "" {
 		t.Fatalf("pristine repository must remain clean, status=%q", got)
+	}
+	if got := gitForSnapshotTest(t, target, "show-ref", "--head"); got != pristineRefs {
+		t.Fatalf("snapshot commit must not change pristine refs, got %q want %q", got, pristineRefs)
 	}
 
 	clone := filepath.Join(scratch, "clone")
