@@ -387,13 +387,14 @@ _do_release() { # <reason>
 # --- verbs -------------------------------------------------------------------
 
 cmd_use() {
-  local phase=deploy template="" ttl="" version_sha=""
+  local phase=deploy template="" ttl="" version_sha="" request_id_override=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --phase) phase=$2; shift 2 ;;
       --template) template=$2; shift 2 ;;
       --ttl) ttl=$2; shift 2 ;;
       --version) version_sha=$2; shift 2 ;;
+      --request-id) request_id_override=$2; shift 2 ;;
       *) die "use: unknown flag $1" ;;
     esac
   done
@@ -411,8 +412,11 @@ cmd_use() {
   local bootstrap
   bootstrap="$(resolve_bootstrap)" ||
     die "use: bootstrap credential required (set SLOT_POOL_BOOTSTRAP_CREDENTIAL, or drop a mode-600 credential at ~/.multica/pool-bootstrap/$(caller_owner); the value is sent once and never logged)"
-  local out lease_id instance_id expires_at request_id state capability
-  request_id="$(caller_owner):$POOL_SLOT:$phase"
+  local out lease_id instance_id expires_at state capability
+  local request_id="$(caller_owner):$POOL_SLOT:$phase"
+  # Reusing a recorded request_id replays the same lease (idempotent pool
+  # contract): the owner can bind the manifest to a lease acquired out-of-band.
+  [ -n "$request_id_override" ] && request_id="$request_id_override"
   out="$(_tool acquire_lease "$(jq -n \
       --arg t "$template" --arg o "$(caller_owner)" --arg i "$(caller_owner)" \
       --argjson ttl "${ttl:-60}" --arg r "$request_id" --arg b "$bootstrap" \
@@ -822,7 +826,7 @@ usage() {
   cat <<'EOF'
 Pool-backed slot leases (RUYI-676 E3; MCP contract docs/03).
 
-  slot-pool.sh <name> use    [--phase deploy|qa] [--template <id>] [--ttl <min>] [--version <source-sha>]
+  slot-pool.sh <name> use    [--phase deploy|qa] [--template <id>] [--ttl <min>] [--version <source-sha>] [--request-id <id>]
   slot-pool.sh <name> load   --file <pkg> [--name <nm>] [--prepare]
   slot-pool.sh <name> status [--json]
   slot-pool.sh <name> exec   [--cwd <dir>] -- <command> [args...]
