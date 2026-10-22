@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react-native";
 import { StyleSheet } from "react-native";
 import { ChatSessionModelPicker } from "@/components/chat/chat-session-model-picker";
 import { PlusPanel } from "@/components/chat/plus-panel";
+import { PLUS_PANEL_GAP } from "@/lib/chat-composer-layout";
 
 jest.mock("@expo/vector-icons", () => ({ Ionicons: () => null }));
 jest.mock("react-native-reanimated", () => {
@@ -110,6 +111,7 @@ describe("ChatSessionModelPicker", () => {
     expect(StyleSheet.flatten(screen.getByTestId("plus-panel").props.style)).toMatchObject({
       left: 12,
       right: 12,
+      transform: [{ translateY: -PLUS_PANEL_GAP }],
     });
   });
 });
