@@ -23,7 +23,9 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/clausemark"
+	"github.com/multica-ai/multica/server/pkg/taskadaptation"
 )
 
 // legislationCarrierText is the dedicated workspace carrier: a document the
@@ -534,6 +536,79 @@ func TestLegislationCreateValidation(t *testing.T) {
 		legislationReq(memberID, wsID, http.MethodPost, "/api/prompt-legislation/proposals", body))
 	if code != http.StatusNotFound {
 		t.Fatalf("non-project scope id: expected 404, got %d: %s", code, respBody)
+	}
+}
+
+func TestLegislationUpdateValidatesAdaptationCandidateEvidence(t *testing.T) {
+	wsID, _, memberID := legislationFixture(t)
+	id := createDraft(t, wsID, memberID, "候选证据更新", cleanClauseText)
+	var originalAnchors []byte
+	if err := testPool.QueryRow(context.Background(), `SELECT evidence_anchors FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, id).Scan(&originalAnchors); err != nil {
+		t.Fatalf("read original proposal anchors: %v", err)
+	}
+
+	agentID := dbfx.Agent(t, "legislation-candidate", handlerTestRuntimeID(t), testutil.Cols{"workspace_id": wsID})
+	taskIDs := []string{"31a16b2c-e1a0-4a44-8a8f-6a17f51d0001", "31a16b2c-e1a0-4a44-8a8f-6a17f51d0002"}
+	snapshot := `"policy_id":"policy-a","policy_version":"v2","scope":"current_task","trigger":"long implementation task","current_strategy":"one large pass","suggested_strategy":"use small verified steps","allowed_actions":["split into checkpoints"]`
+	anchors := make([]map[string]string, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		ctxJSON := `{"capability_adaptation":{` + snapshot + `}}`
+		resultJSON := `{"capability_adaptation_result":{"task_id":"` + taskID + `","policy_id":"policy-a","policy_version":"v2","status":"applied"}}`
+		dbfx.Task(t, agentID, testutil.Cols{
+			"id": taskID, "status": "completed", "completed_at": testutil.Raw("now()"),
+			"context": testutil.Raw("'" + ctxJSON + "'::jsonb"), "result": testutil.Raw("'" + resultJSON + "'::jsonb"),
+		})
+		anchors = append(anchors, map[string]string{"task_id": taskID})
+	}
+	candidateID := taskadaptation.CandidateID(&taskadaptation.Snapshot{
+		PolicyID: "policy-a", PolicyVersion: "v2", Scope: "current_task", Trigger: "long implementation task",
+		CurrentStrategy: "one large pass", SuggestedStrategy: "use small verified steps", AllowedActions: []string{"split into checkpoints"},
+	})
+	for _, anchor := range anchors {
+		anchor["ref"] = adaptationCandidateRef + candidateID
+		anchor["note"] = "policy-a@v2; applied; scope=current_task; evidence=repeated_verified_task_receipts; limitation=repeated_pattern_not_approved_workspace_policy"
+	}
+
+	invalidCases := []struct {
+		name    string
+		anchors []map[string]string
+	}{
+		{name: "forged source task", anchors: []map[string]string{{"task_id": "11111111-1111-4111-8111-111111111111", "ref": adaptationCandidateRef + candidateID, "note": anchors[0]["note"]}, anchors[1]}},
+		{name: "single receipt", anchors: anchors[:1]},
+		{name: "mismatched fingerprint", anchors: []map[string]string{{"task_id": taskIDs[0], "ref": adaptationCandidateRef + strings.Repeat("0", 64), "note": anchors[0]["note"]}, {"task_id": taskIDs[1], "ref": adaptationCandidateRef + strings.Repeat("0", 64), "note": anchors[1]["note"]}}},
+	}
+	for _, tc := range invalidCases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := legislationProposalBody(wsID, "候选证据更新", cleanClauseText)
+			body.EvidenceAnchors = tc.anchors
+			code, response := legislationCall(t, testHandler.UpdatePromptProposal,
+				legislationReq(memberID, wsID, http.MethodPatch, "/api/prompt-legislation/proposals/"+id, body, "id", id))
+			if code != http.StatusBadRequest {
+				t.Fatalf("patch invalid candidate evidence: expected 400, got %d: %s", code, response)
+			}
+			var got []byte
+			if err := testPool.QueryRow(context.Background(), `SELECT evidence_anchors FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, id).Scan(&got); err != nil {
+				t.Fatalf("read proposal anchors after rejected patch: %v", err)
+			}
+			if string(got) != string(originalAnchors) {
+				t.Fatalf("rejected patch changed stored evidence: got %s, want %s", got, originalAnchors)
+			}
+		})
+	}
+
+	body := legislationProposalBody(wsID, "候选证据更新", cleanClauseText)
+	body.EvidenceAnchors = anchors
+	code, response := legislationCall(t, testHandler.UpdatePromptProposal,
+		legislationReq(memberID, wsID, http.MethodPatch, "/api/prompt-legislation/proposals/"+id, body, "id", id))
+	if code != http.StatusOK {
+		t.Fatalf("patch valid candidate evidence: expected 200, got %d: %s", code, response)
+	}
+	var stored []map[string]string
+	if err := testPool.QueryRow(context.Background(), `SELECT evidence_anchors FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, id).Scan(&stored); err != nil {
+		t.Fatalf("read updated proposal anchors: %v", err)
+	}
+	if len(stored) != 2 || stored[0]["ref"] != adaptationCandidateRef+candidateID || stored[1]["ref"] != adaptationCandidateRef+candidateID {
+		t.Fatalf("valid candidate evidence was not persisted: %+v", stored)
 	}
 }
 
