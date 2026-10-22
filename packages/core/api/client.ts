@@ -354,6 +354,13 @@ import {
 } from "../issues/timeline-query";
 import { parseWithFallback } from "./schema";
 import {
+  OuterLoopFireResponseSchema,
+  OuterLoopPlanResponseSchema,
+  type OuterLoopFireResponse,
+  type OuterLoopPlanResponse,
+  type UpdateOuterLoopPlanInput,
+} from "../issues/outerloop";
+import {
   AdminFileReadPolicySchema,
   AgentTaskListSchema,
   AttachmentResponseSchema,
@@ -3696,6 +3703,32 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(taskId ? { task_id: taskId } : {}),
     });
+  }
+
+  async getOuterLoopPlan(issueId: string): Promise<OuterLoopPlanResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/outerloop`);
+    return parseWithFallback(raw, OuterLoopPlanResponseSchema, {
+      enabled: false, has_plan: false, plan: { state: "stopped", goal: "", max_rounds: 20, round: 0, wait_reason: "" }, issue_revision: 0,
+    }, { endpoint: "GET /api/issues/:id/outerloop" });
+  }
+
+  async updateOuterLoopPlan(issueId: string, data: UpdateOuterLoopPlanInput): Promise<OuterLoopPlanResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/outerloop`, { method: "PUT", body: JSON.stringify(data) });
+    return parseWithFallback(raw, OuterLoopPlanResponseSchema, {
+      enabled: false, has_plan: false, plan: { state: "stopped", goal: "", max_rounds: 20, round: 0, wait_reason: "" }, issue_revision: 0,
+    }, { endpoint: "PUT /api/issues/:id/outerloop" });
+  }
+
+  async fireOuterLoopPlan(issueId: string): Promise<OuterLoopFireResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/outerloop/fire`, { method: "POST" });
+    return parseWithFallback(raw, OuterLoopFireResponseSchema, { dispatched: false, issue_revision: 0 }, { endpoint: "POST /api/issues/:id/outerloop/fire" });
+  }
+
+  async stopOuterLoopPlan(issueId: string): Promise<OuterLoopPlanResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${encodeURIComponent(issueId)}/outerloop/stop`, { method: "POST" });
+    return parseWithFallback(raw, OuterLoopPlanResponseSchema, {
+      enabled: false, has_plan: false, plan: { state: "stopped", goal: "", max_rounds: 20, round: 0, wait_reason: "" }, issue_revision: 0,
+    }, { endpoint: "POST /api/issues/:id/outerloop/stop" });
   }
 
   async retrySourceContextQuickCreate(taskId: string): Promise<AgentTask> {

@@ -79,6 +79,20 @@ func TestMarketplaceV1IsPublishedAndDefaultsOn(t *testing.T) {
 	}
 }
 
+func TestOuterLoopIsPublishedAndMatchesItsServerGate(t *testing.T) {
+	ctx := context.Background()
+	flags := EvaluateFrontendPublicFlags(ctx, nil)
+	if !flags[OuterLoop] || !OuterLoopEnabled(ctx, nil) {
+		t.Fatal("outer_loop must be published and default on with its server gate")
+	}
+	provider := featureflag.NewStaticProvider()
+	provider.Set(OuterLoop, featureflag.Rule{Default: false})
+	disabled := featureflag.NewService(provider)
+	if EvaluateFrontendPublicFlags(ctx, disabled)[OuterLoop] || OuterLoopEnabled(ctx, disabled) {
+		t.Fatal("outer_loop frontend and server decisions must both honor disable")
+	}
+}
+
 func TestMarketplacePublishV1IsPublishedAndDefaultsOn(t *testing.T) {
 	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
 	enabled, published := flags[MarketplacePublishV1]
