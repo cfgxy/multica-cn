@@ -83,19 +83,18 @@ func EnsureWorkspacesRootMarker(workspacesRoot string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create workspaces root marker dir: %w", err)
 	}
-	if err := writeWorkspacesRootMarkerAtomic(path, data); err != nil {
+	if err := writeDaemonMarkerAtomic(path, data); err != nil {
 		return fmt.Errorf("write workspaces root marker: %w", err)
 	}
 	return nil
 }
 
-// writeWorkspacesRootMarkerAtomic writes data to path via a same-directory temp
+// writeDaemonMarkerAtomic writes data to path via a same-directory temp
 // file plus a rename, so a concurrent reader observes either the old file or the
-// complete new one — never a partial write. Mirrors the daemon-id / CLI-config
-// write idiom (see writeDaemonIDFile). Perm is 0644 because the CLI's upward
-// walk must be able to read the marker from a subprocess that may run under a
-// different uid; the payload is non-secret.
-func writeWorkspacesRootMarkerAtomic(path string, data []byte) error {
+// complete new one — never a partial write. Perm is 0644 because the CLI's
+// upward walk must be able to read the marker from a subprocess that may run
+// under a different uid; the payload is non-secret.
+func writeDaemonMarkerAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".daemon_task_context-*.json.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp workspaces root marker: %w", err)
@@ -248,6 +247,47 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 			return nil
 		}
 		return fmt.Errorf("write task context marker: %w", err)
+	}
+	return nil
+}
+
+// RefreshTaskContextMarker updates the daemon-owned task marker after a
+// repository checkout establishes the delivery branch and immutable base.
+// It refuses to replace a missing, corrupt, or foreign marker so a checkout
+// cannot overwrite user-owned data in a reused workdir.
+func RefreshTaskContextMarker(workDir string, ctx TaskContextForEnv) error {
+	if strings.TrimSpace(ctx.TaskID) == "" || strings.TrimSpace(ctx.ManagedBranch) == "" || strings.TrimSpace(ctx.BaseCommit) == "" {
+		return errors.New("task id, managed branch, and base commit are required")
+	}
+
+	path := filepath.Join(workDir, TaskContextMarkerRelPath)
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read task context marker: %w", err)
+	}
+	var marker taskContextMarkerFile
+	if err := json.Unmarshal(existing, &marker); err != nil {
+		return fmt.Errorf("parse task context marker: %w", err)
+	}
+	if marker.ManagedBy != TaskContextMarkerManagedBy {
+		return fmt.Errorf("task context marker at %s is not daemon-owned", path)
+	}
+
+	payload := taskContextMarkerFile{
+		ManagedBy:     TaskContextMarkerManagedBy,
+		TaskID:        ctx.TaskID,
+		AgentID:       ctx.AgentID,
+		IssueID:       ctx.IssueID,
+		ChatSessionID: ctx.ChatSessionID,
+		Branch:        ctx.ManagedBranch,
+		BaseCommit:    ctx.BaseCommit,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal task context marker: %w", err)
+	}
+	if err := writeDaemonMarkerAtomic(path, data); err != nil {
+		return fmt.Errorf("refresh task context marker: %w", err)
 	}
 	return nil
 }
