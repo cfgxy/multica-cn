@@ -107,6 +107,41 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 	return gitSnapshotAudit{HasGit: true, Safe: true}
 }
 
+// gitSnapshotDeliveryEligible is intentionally narrower than the read-only
+// audit. The first delivery implementation has one repository and one overlay
+// unit, with a real .git directory at the resource root. Linked worktrees,
+// nested repositories, submodules, and subdirectory scopes retain the proven
+// worktree path until each has its own delivery and recovery contract.
+func gitSnapshotDeliveryEligible(plan *snapshotPlan, enabled bool) bool {
+	if !enabled || plan == nil || plan.Primary == nil || len(plan.Units) != 1 {
+		return false
+	}
+	unit := plan.Units[0]
+	if unit.Subdir != "" || filepath.Clean(unit.AbsPath) != filepath.Clean(plan.Primary.AbsPath) {
+		return false
+	}
+	audit := auditSnapshotGitScope(plan)
+	if !audit.HasGit || !audit.Safe {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(unit.AbsPath, ".git"))
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	gitDirs := 0
+	err = filepath.WalkDir(unit.AbsPath, func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Name() == ".git" {
+			gitDirs++
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return err == nil && gitDirs == 1
+}
+
 func gitPath(repo, arg string) (string, error) {
 	out, err := exec.Command("git", "-C", repo, "rev-parse", arg).Output()
 	if err != nil {

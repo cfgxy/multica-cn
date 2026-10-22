@@ -90,6 +90,20 @@ type SnapshotRunSpec struct {
 	// BuildSnapshotWrap fills them; constructors leave them zero.
 	HostUID int `json:"host_uid"`
 	HostGID int `json:"host_gid"`
+	// GitArtifact is present only for the narrow, opt-in ordinary-repository
+	// delivery mode. The worker writes the bundle while its overlay mount is
+	// still alive; the daemon must never reconstruct it from an upperdir.
+	GitArtifact *SnapshotGitArtifactSpec `json:"git_artifact,omitempty"`
+}
+
+// SnapshotGitArtifactSpec describes one independently importable Git bundle.
+// ArtifactDir is outside the disposable overlay trees so success can reclaim
+// its upperdir while failures and cancellations retain their recovery bundle.
+type SnapshotGitArtifactSpec struct {
+	ArtifactDir string `json:"artifact_dir"`
+	Baseline    string `json:"baseline"`
+	EnvRoot     string `json:"env_root"`
+	Provider    string `json:"provider"`
 }
 
 // SnapshotLedgerEntry is one ownership record: which task materialized which
@@ -106,12 +120,16 @@ type SnapshotLedgerEntry struct {
 	// State is "active" while the task runs, "failed" once a run that must be
 	// preserved exits, and "reaped" marks tombstones GC writes before deleting
 	// the tree. Success removes the entry entirely.
-	State string `json:"state"`
+	State       string                   `json:"state"`
+	GitArtifact *SnapshotGitArtifactSpec `json:"git_artifact,omitempty"`
 }
 
 const (
 	snapshotStateActive = "active"
 	snapshotStateFailed = "failed"
+	// snapshotStateDelivered keeps a successful Git bundle reviewable after
+	// its overlay tree is gone. It shares the failed-run retention window.
+	snapshotStateDelivered = "delivered"
 	// snapshotFailedRetention bounds how long a failed run's upper layer is
 	// kept for inspection before GC reaps it. Mirrors the spirit of the
 	// worktree stale-worktree sweep: long enough for a human to look, short
@@ -158,6 +176,13 @@ func SnapshotStem(issueID, subdir, taskID string) string {
 func PlanSnapshotTree(envRoot, stem string) (alias, upper, work string) {
 	base := filepath.Join(SnapshotRoot(envRoot), stem)
 	return filepath.Join(base, "pristine"), filepath.Join(base, "upper"), filepath.Join(base, "work")
+}
+
+// SnapshotGitArtifactDir is task-keyed and daemon-owned. It is intentionally
+// separate from a snapshot stem: one ordinary repository has exactly one
+// bundle, and the artifact must survive successful tree reclamation.
+func SnapshotGitArtifactDir(envRoot, taskID string) string {
+	return filepath.Join(SnapshotRoot(envRoot), "git-artifacts", taskKey(taskID))
 }
 
 // recordSnapshotLedger rewrites the ledger file atomically after applying fn.
@@ -214,14 +239,12 @@ func RecordSnapshotStart(envRoot string, entry SnapshotLedgerEntry) error {
 	})
 }
 
-// FinalizeSnapshot closes one run's record. keep=false is the success path
-// only — a completed run, or a snapshot run that armed but never launched an
-// agent — and removes the entry and deletes the tree; safe without any
-// umount, since the mount lived inside the worker's namespace and evaporated
-// with the process. keep=true is every other terminal shape: a failure and a
-// mid-run cancellation alike (both land on the deferred finalizer) flip the
-// entry to "failed" and leave the tree for inspection for the retention
-// window. A cancellation that lands before the entry was recorded (lock-wait
+// FinalizeSnapshot closes one run's record. A conventional successful snapshot
+// removes its entry and tree. A successful Git delivery retains only its
+// ledger-owned bundle as "delivered" for the retention window; its overlay
+// tree is still deleted. keep=true is every other terminal shape: a failure
+// and a mid-run cancellation flip an active entry to "failed" and leave its
+// tree/artifact for inspection. A cancellation before recording (lock-wait
 // abort) finds no entry and is a no-op.
 func FinalizeSnapshot(envRoot, taskID string, keep bool) error {
 	var removed []SnapshotLedgerEntry
@@ -229,10 +252,16 @@ func FinalizeSnapshot(envRoot, taskID string, keep bool) error {
 		kept := led.Entries[:0]
 		for _, e := range led.Entries {
 			if e.TaskID == taskID && !keep {
+				if e.GitArtifact != nil {
+					e.State = snapshotStateDelivered
+					kept = append(kept, e)
+					removed = append(removed, e)
+					continue
+				}
 				removed = append(removed, e)
 				continue
 			}
-			if e.TaskID == taskID {
+			if e.TaskID == taskID && e.State == snapshotStateActive {
 				e.State = snapshotStateFailed
 			}
 			kept = append(kept, e)
@@ -279,6 +308,12 @@ func RemoveSnapshotTree(entry SnapshotLedgerEntry) {
 	}
 }
 
+func removeSnapshotGitArtifact(entry SnapshotLedgerEntry) {
+	if entry.GitArtifact != nil && entry.GitArtifact.ArtifactDir != "" {
+		_ = os.RemoveAll(entry.GitArtifact.ArtifactDir)
+	}
+}
+
 // ReapExpiredSnapshots is the GC sweep. Ledger-driven end to end:
 //
 //   - "failed" entries older than the retention window release their tree and
@@ -312,12 +347,13 @@ func ReapExpiredSnapshots(envRoot string, now time.Time) []string {
 		kept := led.Entries[:0]
 		for _, e := range led.Entries {
 			switch e.State {
-			case snapshotStateFailed:
+			case snapshotStateFailed, snapshotStateDelivered:
 				if now.Sub(e.CreatedAt) >= snapshotFailedRetention {
 					for _, treeRoot := range snapshotTreeRoots(e) {
 						_ = os.RemoveAll(treeRoot)
 						reaped = append(reaped, treeRoot)
 					}
+					removeSnapshotGitArtifact(e)
 					continue
 				}
 				// Still inside the retention window: keep the record AND
@@ -326,6 +362,9 @@ func ReapExpiredSnapshots(envRoot string, now time.Time) []string {
 				// cutting the 7-day preservation promise down to 24h.
 				for _, treeRoot := range snapshotTreeRoots(e) {
 					claimed[treeRoot] = true
+				}
+				if e.GitArtifact != nil && e.GitArtifact.ArtifactDir != "" {
+					claimed[e.GitArtifact.ArtifactDir] = true
 				}
 			case snapshotStateActive:
 				if now.Sub(e.CreatedAt) >= snapshotOrphanAge {

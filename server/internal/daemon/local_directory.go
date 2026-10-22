@@ -849,16 +849,21 @@ func gitToplevel(dir string) (string, bool) {
 // task. Returns a worktree-mode assignment for the resource root — the
 // worktree flow branches on that mode — or nil to proceed with mounts.
 func snapshotWorktreeFallback(plan *snapshotPlan) (*localDirectoryAssignment, error) {
+	return snapshotWorktreeFallbackWithGitGate(plan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1")
+}
+
+func snapshotWorktreeFallbackWithGitGate(plan *snapshotPlan, gitSnapshotEnabled bool) (*localDirectoryAssignment, error) {
 	if plan == nil || plan.Primary == nil {
 		return nil, nil
 	}
 	// Recursively audit Git metadata before choosing the preserved worktree
 	// delivery path. The audit is intentionally non-mutating; an unsafe or
 	// incomplete shape still falls back without attempting to repair .git.
-	// Git snapshot delivery is introduced behind a separate gate, so even a
-	// safe shape remains on worktree until that branch/restore lifecycle exists.
+	// Git snapshot delivery is deliberately narrower than the audit and is
+	// off by default. Operators opt in per daemon process only after the
+	// snapshot artifact/recovery path has been deployed.
 	audit := auditSnapshotGitScope(plan)
-	if audit.Safe && !audit.HasGit {
+	if audit.Safe && (!audit.HasGit || gitSnapshotDeliveryEligible(plan, gitSnapshotEnabled)) {
 		return nil, nil
 	}
 	root := plan.Primary.Ref.LocalPath

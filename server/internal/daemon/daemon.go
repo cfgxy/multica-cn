@@ -8209,12 +8209,26 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, execenv.SnapshotStem(task.IssueID, u.Subdir, task.ID))
 			units = append(units, execenv.SnapshotUnitSpec{Target: u.AbsPath, Subdir: u.Subdir, Alias: alias, Upper: upper, Work: work})
 		}
+		var gitArtifact *execenv.SnapshotGitArtifactSpec
+		if gitSnapshotDeliveryEligible(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1") {
+			baseline, baselineErr := execenv.SnapshotGitBaseline(snapPlan.Primary.AbsPath)
+			if baselineErr != nil {
+				return TaskResult{}, asEnvironmentSetupFailure(baselineErr)
+			}
+			gitArtifact = &execenv.SnapshotGitArtifactSpec{
+				ArtifactDir: execenv.SnapshotGitArtifactDir(resolvedRoot, task.ID),
+				Baseline:    baseline,
+				EnvRoot:     resolvedRoot,
+				Provider:    provider,
+			}
+		}
 		if err := execenv.RecordSnapshotStart(resolvedRoot, execenv.SnapshotLedgerEntry{
-			TaskID:  task.ID,
-			IssueID: task.IssueID,
-			Root:    resolvedRoot,
-			Primary: snapPlan.Primary.AbsPath,
-			Units:   units,
+			TaskID:      task.ID,
+			IssueID:     task.IssueID,
+			Root:        resolvedRoot,
+			Primary:     snapPlan.Primary.AbsPath,
+			Units:       units,
+			GitArtifact: gitArtifact,
 		}); err != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("record snapshot ledger: %w", err))
 		}
@@ -8224,9 +8238,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("resolve daemon executable for snapshot worker: %w", err))
 		}
 		agentSnapWrap, err = execenv.BuildSnapshotWrap(selfPath, &execenv.SnapshotRunSpec{
-			TaskID: task.ID,
-			Units:  units,
-			Cwd:    snapPlan.Primary.AbsPath,
+			TaskID:      task.ID,
+			Units:       units,
+			Cwd:         snapPlan.Primary.AbsPath,
+			GitArtifact: gitArtifact,
 		})
 		if err != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("build snapshot wrap: %w", err))

@@ -74,15 +74,35 @@ func RunSnapshotWorker(args []string) int {
 			return 1
 		}
 	}
-	// The agent sees exactly the argv its backend built, with agentPath as
-	// argv[0]; the environment is inherited untouched (the spawner applied
-	// the backend's env to this process already).
+	// Preserve the original exec path for ordinary snapshots. Git delivery alone
+	// needs the mount to stay alive briefly after the child exits.
 	argv := append([]string{rest[0]}, rest[1:]...)
-	if err := syscall.Exec(rest[0], argv, os.Environ()); err != nil {
-		fmt.Fprintf(os.Stderr, "snapshot-worker: exec %s: %v\n", rest[0], err)
+	if spec.GitArtifact == nil {
+		if err := syscall.Exec(rest[0], argv, os.Environ()); err != nil {
+			fmt.Fprintf(os.Stderr, "snapshot-worker: exec %s: %v\n", rest[0], err)
+			return 127
+		}
+		return 0 // unreachable
+	}
+	cmd := exec.Command(rest[0], argv[1:]...)
+	cmd.Env = os.Environ()
+	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
+	err = cmd.Run()
+	if captureErr := CaptureSnapshotGitArtifact(spec.Cwd, spec.GitArtifact); captureErr != nil {
+		fmt.Fprintf(os.Stderr, "snapshot-worker: capture Git artifact: %v\n", captureErr)
+		if err == nil {
+			return 1
+		}
+	}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode()
+		}
+		fmt.Fprintf(os.Stderr, "snapshot-worker: run %s: %v\n", rest[0], err)
 		return 127
 	}
-	return 0 // unreachable
+	return 0
 }
 
 // splitWorkerArgv splits <specJSON> -- <agent argv...>.
