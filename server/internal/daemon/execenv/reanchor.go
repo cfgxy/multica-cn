@@ -61,6 +61,10 @@ type ReanchorResult struct {
 // is still re-anchored (its tip moves and the audit lands); the record step
 // is a no-op reported via RecordReanchored=false.
 func ReanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorNote) (ReanchorResult, error) {
+	return reanchorBranch(gitRoot, branch, target, expectedBase, note, func() {})
+}
+
+func reanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorNote, afterLinkedWorktreeCheck func()) (ReanchorResult, error) {
 	var result ReanchorResult
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
@@ -69,26 +73,38 @@ func ReanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorN
 	if out, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err != nil || out == "" {
 		return result, fmt.Errorf("reanchor: branch %s does not exist: %w", branch, err)
 	}
-	if out, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", target); err != nil || out == "" {
+	resolvedTarget, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", target)
+	if err != nil || resolvedTarget == "" {
 		return result, fmt.Errorf("reanchor: target commit %s does not exist: %w", target, err)
 	}
-	if out, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", expectedBase); err != nil || out == "" {
+	resolvedExpectedBase, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", expectedBase)
+	if err != nil || resolvedExpectedBase == "" {
 		return result, fmt.Errorf("reanchor: expected base %s does not exist: %w", expectedBase, err)
 	}
 	// The target must stand directly on the verified mainline tip: re-anchoring
 	// onto an intermediate chain would just bind the next task to another
 	// stale base. The parent check and the ancestor check are the two proofs
 	// that matter.
-	parent, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", target+"^")
+	parent, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", resolvedTarget+"^")
 	if err != nil || parent == "" {
-		return result, fmt.Errorf("reanchor: target %s has no parent; it is not a single content commit on a mainline base", shortID(target))
+		return result, fmt.Errorf("reanchor: target %s has no parent; it is not a single content commit on a mainline base", shortID(resolvedTarget))
 	}
-	if parent != expectedBase {
-		return result, fmt.Errorf("reanchor: target %s sits on %s, not the verified base %s", shortID(target), shortID(parent), shortID(expectedBase))
+	if parent != resolvedExpectedBase {
+		return result, fmt.Errorf("reanchor: target %s sits on %s, not the verified base %s", shortID(resolvedTarget), shortID(parent), shortID(resolvedExpectedBase))
 	}
-	if _, err := runGit(gitRoot, "merge-base", "--is-ancestor", expectedBase, target); err != nil {
-		return result, fmt.Errorf("reanchor: base %s is not an ancestor of target %s: %w", shortID(expectedBase), shortID(target), err)
+	if _, err := runGit(gitRoot, "merge-base", "--is-ancestor", resolvedExpectedBase, resolvedTarget); err != nil {
+		return result, fmt.Errorf("reanchor: base %s is not an ancestor of target %s: %w", shortID(resolvedExpectedBase), shortID(resolvedTarget), err)
 	}
+
+	// Worktree creation and ref updates share the repository-wide lock with the
+	// managed worktree path. Holding it from the inspection through update-ref
+	// prevents a linked worktree from appearing after the check but before the
+	// branch transaction commits.
+	unlock, err := lockGitRoot(gitRoot, nil)
+	if err != nil {
+		return result, fmt.Errorf("reanchor: lock repository: %w", err)
+	}
+	defer unlock()
 
 	// Fail closed while the delivery guard holds this branch: a refusal marker
 	// means a previous run was refused and preserved; that handshake has its
@@ -101,13 +117,14 @@ func ReanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorN
 	} else if checkedOut {
 		return result, fmt.Errorf("reanchor: branch %s is checked out at %s; refusing to change its ref behind a live worktree", branch, path)
 	}
+	afterLinkedWorktreeCheck()
 
 	oldTip, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "refs/heads/"+branch)
 	if err != nil {
 		return result, fmt.Errorf("reanchor: resolve branch tip: %w", err)
 	}
-	if oldTip == target {
-		return result, fmt.Errorf("reanchor: branch %s already stands at %s; nothing to do", branch, shortID(target))
+	if oldTip == resolvedTarget {
+		return result, fmt.Errorf("reanchor: branch %s already stands at %s; nothing to do", branch, shortID(resolvedTarget))
 	}
 
 	oldRecord := runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", userStateRef(branch))
@@ -124,9 +141,9 @@ func ReanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorN
 		if rec.checkpoint == "" {
 			return result, fmt.Errorf("reanchor: branch record %s carries no checkpoint; refusing to rewrite it", shortID(oldRecord))
 		}
-		msg := branchRecordMessage(rec.owner) + "\n" + reanchorRecordNote(branch, note, oldTip, target, expectedBase)
+		msg := branchRecordMessage(rec.owner) + "\n" + reanchorRecordNote(branch, note, oldTip, resolvedTarget, resolvedExpectedBase)
 		args := append(commitIdentityArgs(gitRoot), "commit-tree", userState+"^{tree}",
-			"-p", userState, "-p", target, "-m", msg)
+			"-p", userState, "-p", resolvedTarget, "-m", msg)
 		newRecord, err = runGitTrimmed(gitRoot, args...)
 		if err != nil {
 			return result, fmt.Errorf("reanchor: git commit-tree: %w", err)
@@ -137,11 +154,11 @@ func ReanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorN
 	if err != nil {
 		return result, err
 	}
-	if err := updateReanchorRefs(gitRoot, branch, target, oldTip, oldRecord, newRecord, archiveTipRef, archiveStateRef); err != nil {
+	if err := updateReanchorRefs(gitRoot, branch, resolvedTarget, oldTip, oldRecord, newRecord, archiveTipRef, archiveStateRef); err != nil {
 		return result, err
 	}
 
-	result.Branch, result.OldTip, result.NewTip, result.ExpectedBase = branch, oldTip, target, expectedBase
+	result.Branch, result.OldTip, result.NewTip, result.ExpectedBase = branch, oldTip, resolvedTarget, resolvedExpectedBase
 	result.ArchiveRefs = append(result.ArchiveRefs, archiveTipRef)
 	if oldRecord != "" {
 		result.OldRecord, result.NewRecord, result.RecordReanchored = oldRecord, newRecord, true
@@ -218,6 +235,15 @@ func reanchorRecordNote(branch string, note ReanchorNote, oldTip, target, expect
 // ALLOCATIONS.md). Best-effort by design: the branch move and the record
 // rewrite are already durable, and a missing or unwritable .multica must not
 // undo them - the record commit carries the same fact.
+type reanchorAuditFile interface {
+	Write([]byte) (int, error)
+	Close() error
+}
+
+var openReanchorAuditFile = func(path string) (reanchorAuditFile, error) {
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+}
+
 func writeReanchorAudit(gitRoot string, result *ReanchorResult, note ReanchorNote) error {
 	top, err := runGitTrimmed(gitRoot, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -244,13 +270,17 @@ func writeReanchorAudit(gitRoot string, result *ReanchorResult, note ReanchorNot
 		return nil
 	}
 	path := filepath.Join(dir, "reanchor-audit.jsonl")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := openReanchorAuditFile(path)
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(append(buf, '\n')); err != nil {
-		return err
+	lineWithNewline := append(buf, '\n')
+	if n, err := f.Write(lineWithNewline); err != nil || n != len(lineWithNewline) {
+		_ = f.Close()
+		return nil
+	}
+	if err := f.Close(); err != nil {
+		return nil
 	}
 	result.AuditPath = path
 	result.AuditLine = string(buf)
