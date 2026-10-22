@@ -28,6 +28,7 @@ const state = vi.hoisted(() => ({
   retrospectiveConfig: null as Record<string, unknown> | null,
   overview: null as SelfEvolutionOverview | null,
   retroFailure: null as Error | null,
+  createProposal: vi.fn(),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -40,6 +41,7 @@ vi.mock("@multica/core/api", () => ({
         ? Promise.reject(state.retroFailure)
         : Promise.resolve(state.retrospectiveConfig),
     getSelfEvolutionOverview: () => Promise.resolve(state.overview),
+    createPromptProposal: (input: unknown) => state.createProposal(input),
   },
 }));
 
@@ -74,6 +76,20 @@ function overviewFixture(): SelfEvolutionOverview {
     knowledge: { dirs: 0, entries: 0 },
     skills: { count: 0, invocations: 0 },
     proposals: { total: 0, pending_owner: 0 },
+    experiences: [{
+	  candidate_id: "candidate-12345678",
+      trigger: "large task",
+      current_strategy: "one pass",
+      suggested_strategy: "verify in small steps",
+      allowed_actions: ["checkpoint"],
+      applicability: "current_task",
+	  evidence: "repeated_verified_task_receipts",
+	  limitation: "repeated_pattern_not_approved_workspace_policy",
+	  source_tasks: [
+	    { task_id: "task-evidence-12345678", issue_id: "issue-1", policy_id: "policy-a", policy_version: "v2", outcome: "applied", completed_at: "2026-10-22T00:00:00Z" },
+	    { task_id: "task-evidence-87654321", issue_id: "issue-2", policy_id: "policy-a", policy_version: "v2", outcome: "retained", completed_at: "2026-10-22T00:00:00Z" },
+	  ],
+    }],
   } as unknown as SelfEvolutionOverview;
 }
 
@@ -112,6 +128,7 @@ afterEach(cleanup);
 it("raises an actionable row when the retrospective is disabled or has no executor", async () => {
   state.modelConfig = MODEL_OK;
   state.overview = overviewFixture();
+  state.createProposal.mockReset().mockResolvedValue({ id: "proposal-1" });
 
   // Disabled (or never saved — the server defaults every flag off).
   state.retrospectiveConfig = {
@@ -159,6 +176,25 @@ it("stays silent once the retrospective is enabled with an executor agent", asyn
 
   await waitFor(() => expect(screen.getByTestId("overview-proposals")).toBeTruthy());
   expect(screen.queryByTestId("se-attention-list")).toBeNull();
+  expect(await screen.findByText("Task experience candidates")).toBeTruthy();
+  expect(screen.getByText("verify in small steps")).toBeTruthy();
+  expect(screen.getByText("Observed in 2 completed tasks")).toBeTruthy();
+  screen.getByRole("button", { name: "Draft a proposal" }).click();
+  expect(await screen.findByRole("link", { name: "Draft created · Open proposal pool" })).toBeTruthy();
+  expect(state.createProposal).toHaveBeenCalledWith(expect.objectContaining({
+    carrier_scope: "workspace",
+    change_kind: "add_clause",
+    gate_answer_layer: "",
+    evidence_anchors: [expect.objectContaining({
+      issue_id: "issue-1",
+      task_id: "task-evidence-12345678",
+      ref: "capability_adaptation_candidate:candidate-12345678",
+    }), expect.objectContaining({
+      issue_id: "issue-2",
+      task_id: "task-evidence-87654321",
+      ref: "capability_adaptation_candidate:candidate-12345678",
+    })],
+  }));
 });
 
 it("keeps the retrospective row out of the list when the config cannot be read", async () => {

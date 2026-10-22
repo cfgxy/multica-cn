@@ -501,6 +501,22 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                     </dd>
                   </>
                 ) : null}
+                {selected.evidence_anchors.length > 0 ? (
+                  <>
+                    <dt className="text-muted-foreground">{t(($) => $.legislation.evidenceLabel)}</dt>
+                    <dd>
+                      <ul className="space-y-1 text-caption">
+                        {selected.evidence_anchors.map((anchor, index) => (
+                          <li key={`${anchor.task_id ?? anchor.issue_id ?? anchor.ref ?? "evidence"}-${index}`} className="break-words">
+                            {anchor.task_id ? <code className="font-mono">{anchor.task_id}</code> : null}
+                            {anchor.ref ? <span className="text-muted-foreground"> · {anchor.ref}</span> : null}
+                            {anchor.note ? <p className="text-muted-foreground">{anchor.note}</p> : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </dd>
+                  </>
+                ) : null}
                 <dt className="text-muted-foreground">{t(($) => $.legislation.problemLabel)}</dt>
                 <dd>{selected.problem || "—"}</dd>
                 <dt className="text-muted-foreground">

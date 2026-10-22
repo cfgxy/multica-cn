@@ -37,6 +37,27 @@
       "noneAuto": "No automatic proposals yet.",
       "empty": "The pool is empty. Once the daily retrospective is configured, proposals enter the pool automatically from each day's analysis."
     },
+    "experiences": {
+      "title": "Task experience candidates",
+      "loading": "Loading task experiences",
+      "error": "Could not load task experiences",
+      "retry": "Retry",
+      "empty": "No repeated, verified adaptation pattern yet.",
+      "proposalsLink": "Review proposal governance",
+      "sourceCount": "Observed in {{count}} completed tasks",
+      "sourceTask": "Task {{task}} · {{policy}} · {{date}}",
+      "currentStrategy": "Current approach: {{strategy}}",
+      "scope": "Applicability {{scope}}",
+      "allowedActions": "Allowed actions: {{actions}}",
+      "limitation": "Evidence limit",
+      "repeatedLimit": "Repeated task-level evidence is not an approved workspace policy. A proposal remains a draft until governance, quiz, and enactment gates complete.",
+      "draftProposal": "Draft a proposal",
+      "creatingProposal": "Creating draft…",
+      "proposalCreated": "Draft created · Open proposal pool",
+      "createFailed": "Could not create a proposal draft. The candidate remains inactive.",
+      "proposalName": "Repeated adaptation candidate {{candidate}} ({{count}} tasks)",
+      "proposalBody": "Trigger: {{trigger}}\nApplicability: {{scope}}\nSuggested strategy: {{strategy}}\nAllowed actions: {{actions}}\nSource tasks: {{tasks}}\nLimit: {{limitation}} Effective policy remains unchanged until proposal governance approves and enacts the change."
+    },
     "knowledge": {
       "title": "Knowledge mirror",
       "empty": "No registered directories yet.",

@@ -765,6 +765,37 @@ describe("AgentTaskListSchema", () => {
     expect(parsed[0]?.relative_durable_work_dir).toBeUndefined();
     expect(parsed[0]?.branch_name).toBeUndefined();
   });
+
+  it("preserves only well-shaped adaptation detail as an optional task field", () => {
+    const [parsed] = AgentTaskListSchema.parse([{
+      ...task,
+      capability_adaptation: {
+        task_id: "task-1",
+        policy_id: "policy-1",
+        policy_version: "v2",
+        scope: "current_task",
+        trigger: "large task",
+        current_strategy: "one pass",
+        suggested_strategy: "small steps",
+        allowed_actions: ["verify each step"],
+      },
+      capability_adaptation_result: {
+        task_id: "task-1",
+        policy_id: "policy-1",
+        policy_version: "v2",
+        status: "applied",
+      },
+    }]);
+    expect(parsed?.capability_adaptation?.suggested_strategy).toBe("small steps");
+    expect(parsed?.capability_adaptation_result?.status).toBe("applied");
+
+    const [degraded] = AgentTaskListSchema.parse([{
+      ...task,
+      capability_adaptation: { task_id: 1 },
+    }]);
+    expect(degraded?.id).toBe(task.id);
+    expect(degraded?.capability_adaptation).toBeUndefined();
+  });
 });
 
 describe("ChatDraftRestoresResponseSchema", () => {
