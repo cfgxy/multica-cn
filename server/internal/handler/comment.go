@@ -1571,6 +1571,44 @@ func (h *Handler) admitExplicitAgentMentions(w http.ResponseWriter, r *http.Requ
 	return true
 }
 
+func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue db.Issue, content, actorID string, task *db.AgentTaskQueue) (bool, error) {
+	mentions := util.ParseMentions(content)
+	validAgentMentions := make(map[string]struct{})
+	for _, mention := range mentions {
+		if mention.Type != "agent" {
+			continue
+		}
+		id, err := util.ParseUUID(mention.ID)
+		if err != nil {
+			continue
+		}
+		agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
+			}
+			return false, err
+		}
+		if !agent.ArchivedAt.Valid {
+			validAgentMentions[uuidToString(agent.ID)] = struct{}{}
+		}
+	}
+	if len(validAgentMentions) == 0 {
+		return false, nil
+	}
+	if task != nil && task.SquadID.Valid {
+		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: task.SquadID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			return false, err
+		}
+		if uuidToString(squad.LeaderID) != actorID {
+			_, mentionedLeader := validAgentMentions[uuidToString(squad.LeaderID)]
+			return mentionedLeader, nil
+		}
+	}
+	return true, nil
+}
+
 type CommentTriggerAgentResponse struct {
 	ID        string  `json:"id"`
 	Name      string  `json:"name"`
@@ -1884,6 +1922,18 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 
 	// Determine author identity: agent (via X-Agent-ID header) or member.
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	if authorType == "agent" {
+		task, _ := h.taskFromRequestHeader(r)
+		valid, err := h.validateAgentResponsibilityMention(r.Context(), issue, req.Content, authorID, &task)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
+			return
+		}
+		if !valid {
+			writeError(w, http.StatusUnprocessableEntity, "agent comments must mention a responsible workspace agent; squad workers must mention their leader")
+			return
+		}
+	}
 
 	// sourceTaskID captures the agent's currently-executing task when it posts
 	// via the CLI (X-Task-ID header). Stamping it on the comment row keeps the
@@ -3540,6 +3590,27 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to prepare comment edit")
 				return
 			}
+		}
+	}
+	if actorType == "agent" {
+		issue := triggerIssue
+		if issue == nil {
+			loaded, loadErr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: existing.IssueID, WorkspaceID: existing.WorkspaceID})
+			if loadErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to load issue for responsibility mention validation")
+				return
+			}
+			issue = &loaded
+		}
+		task, _ := h.taskFromRequestHeader(r)
+		valid, mentionErr := h.validateAgentResponsibilityMention(r.Context(), *issue, req.Content, actorID, &task)
+		if mentionErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
+			return
+		}
+		if !valid {
+			writeError(w, http.StatusUnprocessableEntity, "agent comments must mention a responsible workspace agent; squad workers must mention their leader")
+			return
 		}
 	}
 

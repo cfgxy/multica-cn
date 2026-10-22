@@ -30,6 +30,9 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 		if got["status"] != "pass" || got["expected_branch"] != "agent/managed" || got["current_branch"] != "agent/managed" {
 			t.Fatalf("preflight JSON = %#v", got)
 		}
+		if got["git_root"] != repo {
+			t.Fatalf("git_root = %v, want %s (the worktree the checks ran against)", got["git_root"], repo)
+		}
 		status, ok := got["worktree_status"].([]any)
 		if !ok || !strings.Contains(strings.Join(anyStrings(status), "\n"), "notes.txt") {
 			t.Fatalf("worktree_status = %#v, want notes.txt", got["worktree_status"])
@@ -130,6 +133,27 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 			t.Fatalf("preflight = %#v, error = %v; want missing context failure", got, err)
 		}
 	})
+}
+
+// A marker in the pre-RUYI-848 shape (task_id only, no branch/base_commit -
+// what the daemon wrote before `repo checkout` registered the delivery)
+// must keep failing preflight with the diagnostic the fix removes.
+func TestWorktreePreflightLegacyMarkerShapeFails(t *testing.T) {
+	repo, _ := newPreflightRepo(t)
+	path := filepath.Join(repo, execenv.TaskContextMarkerRelPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"managed_by":"multica-daemon-task","task_id":"task-legacy","agent_id":"agent-x","issue_id":"issue-x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := runPreflightCLI(t, repo)
+	if err == nil {
+		t.Fatalf("legacy marker shape should fail preflight: %#v", got)
+	}
+	if got["status"] != "fail" || got["git_root"] != repo {
+		t.Fatalf("preflight JSON = %#v, want fail with the resolved git root", got)
+	}
 }
 
 func TestWorktreePreflightDoesNotRefreshIndexStatCache(t *testing.T) {

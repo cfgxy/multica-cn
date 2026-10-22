@@ -624,7 +624,7 @@ func newRepoCheckoutTestDaemon(t *testing.T, workspaceID, repoURL, workDir strin
 	if err := os.MkdirAll(filepath.Dir(markerPath), 0o755); err != nil {
 		t.Fatalf("create task marker directory: %v", err)
 	}
-	if err := os.WriteFile(markerPath, []byte(`{"managed_by":"multica-daemon-task"}`), 0o644); err != nil {
+	if err := os.WriteFile(markerPath, []byte(`{"managed_by":"multica-daemon-task","task_id":"task-1","agent_id":"agent-1","issue_id":"issue-1"}`), 0o644); err != nil {
 		t.Fatalf("seed task marker: %v", err)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

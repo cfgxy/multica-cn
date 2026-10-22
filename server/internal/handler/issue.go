@@ -257,6 +257,28 @@ func writeIssueStatusRaceError(w http.ResponseWriter, err error) bool {
 	return false
 }
 
+func (h *Handler) issueHasDraftPullRequest(ctx context.Context, issueID pgtype.UUID) (bool, error) {
+	githubPRs, err := h.Queries.ListPullRequestsByIssue(ctx, issueID)
+	if err != nil {
+		return false, err
+	}
+	for _, pr := range githubPRs {
+		if pr.State == "draft" {
+			return true, nil
+		}
+	}
+	vcsPRs, err := h.Queries.ListVCSPullRequestsByIssue(ctx, issueID)
+	if err != nil {
+		return false, err
+	}
+	for _, pr := range vcsPRs {
+		if pr.State == "draft" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func validateIssueEnum(w http.ResponseWriter, field, value string, allowed []string) bool {
 	for _, a := range allowed {
 		if value == a {
@@ -3462,6 +3484,18 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		statusKeyForGuard = statusKey
+		if statusKey != prevIssue.Status && issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, statusKey) == "in_review" {
+			blocked, err := h.issueHasDraftPullRequest(r.Context(), prevIssue.ID)
+			if err != nil {
+				slog.Error("update issue: check linked pull request state", append(logger.RequestAttrs(r), "issue_id", id, "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to verify linked pull request state")
+				return
+			}
+			if blocked {
+				writeError(w, http.StatusConflict, "issue cannot enter in_review while a linked pull request is draft")
+				return
+			}
+		}
 		params.Status = pgtype.Text{String: statusKey, Valid: true}
 	}
 	if req.Priority != nil {
@@ -4240,6 +4274,31 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		batchStatusKey, _, ok = h.resolveIssueStatusKeyKind(w, r, wsUUID, *req.Updates.Status)
 		if !ok {
 			return
+		}
+	}
+	if req.Updates.Status != nil && issuestatus.Effective(r.Context(), h.Queries, wsUUID, batchStatusKey) == "in_review" {
+		for _, id := range req.IssueIDs {
+			issueUUID, err := util.ParseUUID(id)
+			if err != nil {
+				continue
+			}
+			issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: issueUUID, WorkspaceID: wsUUID})
+			if err != nil {
+				continue
+			}
+			if issue.Status == batchStatusKey {
+				continue
+			}
+			blocked, err := h.issueHasDraftPullRequest(r.Context(), issue.ID)
+			if err != nil {
+				slog.Error("batch update issues: check linked pull request state", append(logger.RequestAttrs(r), "issue_id", id, "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to verify linked pull request state")
+				return
+			}
+			if blocked {
+				writeError(w, http.StatusConflict, "issue cannot enter in_review while a linked pull request is draft")
+				return
+			}
 		}
 	}
 	// The batch shares one project_id, so it is checked once here rather than
