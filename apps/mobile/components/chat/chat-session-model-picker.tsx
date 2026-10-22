@@ -41,12 +41,14 @@ export function ChatSessionModelPicker({ runtimeId, modelOverride, agentModel, d
           accessibilityRole="button"
           accessibilityLabel={t("mobile.model.current", "Current model: {{model}}", { model: currentLabel })}
           className={embedded
-            ? "min-h-11 w-full flex-row items-center gap-2 rounded-md border border-border bg-secondary px-3 active:opacity-70 disabled:opacity-50"
+            ? "h-full w-full items-center justify-center gap-1.5 active:opacity-70 disabled:opacity-50"
             : "mx-3 my-1 min-h-10 flex-row items-center gap-2 self-start rounded-md border border-border bg-background px-3 active:opacity-70 disabled:opacity-50"}
         >
-          <Ionicons name="hardware-chip-outline" size={16} color={theme.mutedForeground} />
-          <Text numberOfLines={1} className="max-w-64 text-xs text-foreground">{currentLabel}</Text>
-          <Ionicons name="chevron-down" size={14} color={theme.mutedForeground} />
+          <Ionicons name="hardware-chip-outline" size={embedded ? 22 : 16} color={embedded ? theme.foreground : theme.mutedForeground} />
+          <Text numberOfLines={1} className={embedded ? "text-xs text-muted-foreground" : "max-w-64 text-xs text-foreground"}>
+            {embedded ? t("mobile.plus.model", "Model") : currentLabel}
+          </Text>
+          {!embedded ? <Ionicons name="chevron-down" size={14} color={theme.mutedForeground} /> : null}
         </Pressable>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="max-h-80 w-72">

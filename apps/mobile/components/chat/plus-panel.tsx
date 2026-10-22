@@ -197,8 +197,12 @@ export function PlusPanel({
                 }}
               />
             ))}
+            {modelPicker ? (
+              <View style={{ height: 72, width: "25%" }}>
+                {modelPicker}
+              </View>
+            ) : null}
           </View>
-          {modelPicker ? <View className="mt-2">{modelPicker}</View> : null}
       </ScrollView>
     </Animated.View>
   );

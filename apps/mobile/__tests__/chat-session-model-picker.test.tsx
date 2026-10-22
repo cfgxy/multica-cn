@@ -89,6 +89,9 @@ describe("ChatSessionModelPicker", () => {
 
     const choices = screen.getAllByTestId("model-option");
     expect(choices).toHaveLength(3);
+    expect(screen.getAllByRole("button").some((button) =>
+      button.props.className?.includes("h-full w-full"),
+    )).toBe(true);
     fireEvent.press(choices[1]);
     expect(onSelect).toHaveBeenCalledWith("model-a");
   });
