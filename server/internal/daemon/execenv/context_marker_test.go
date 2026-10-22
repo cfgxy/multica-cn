@@ -135,40 +135,6 @@ func TestPrepare_WritesWorkspacesRootMarker(t *testing.T) {
 	}
 }
 
-func TestRefreshTaskContextMarker(t *testing.T) {
-	workDir := t.TempDir()
-	initial := TaskContextForEnv{TaskID: "old-task", AgentID: "old-agent", IssueID: "old-issue"}
-	if err := writeTaskContextMarker(workDir, initial, nil); err != nil {
-		t.Fatalf("write initial task marker: %v", err)
-	}
-
-	updated := TaskContextForEnv{
-		TaskID:        "task-1",
-		AgentID:       "agent-1",
-		IssueID:       "issue-1",
-		ManagedBranch: "agent/test/task-1",
-		BaseCommit:    "0123456789012345678901234567890123456789",
-	}
-	if err := RefreshTaskContextMarker(workDir, updated); err != nil {
-		t.Fatalf("RefreshTaskContextMarker: %v", err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(workDir, TaskContextMarkerRelPath))
-	if err != nil {
-		t.Fatalf("read refreshed task marker: %v", err)
-	}
-	var marker taskContextMarkerFile
-	if err := json.Unmarshal(data, &marker); err != nil {
-		t.Fatalf("decode refreshed task marker: %v", err)
-	}
-	if marker.TaskID != updated.TaskID || marker.AgentID != updated.AgentID || marker.IssueID != updated.IssueID {
-		t.Fatalf("marker identity = %+v, want refreshed task identity", marker)
-	}
-	if marker.Branch != updated.ManagedBranch || marker.BaseCommit != updated.BaseCommit {
-		t.Fatalf("marker delivery fields = %+v, want refreshed checkout provenance", marker)
-	}
-}
-
 // TestReuse_SelfHealsWorkspacesRootMarker verifies the root marker is restored
 // on the reuse path too: a marker deleted while the daemon runs must be back
 // before a reused task spawns, not only after the next fresh Prepare.

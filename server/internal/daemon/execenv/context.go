@@ -83,41 +83,91 @@ func EnsureWorkspacesRootMarker(workspacesRoot string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create workspaces root marker dir: %w", err)
 	}
-	if err := writeDaemonMarkerAtomic(path, data); err != nil {
+	if err := writeMarkerFileAtomic(path, data); err != nil {
 		return fmt.Errorf("write workspaces root marker: %w", err)
 	}
 	return nil
 }
 
-// writeDaemonMarkerAtomic writes data to path via a same-directory temp
-// file plus a rename, so a concurrent reader observes either the old file or the
-// complete new one — never a partial write. Perm is 0644 because the CLI's
-// upward walk must be able to read the marker from a subprocess that may run
-// under a different uid; the payload is non-secret.
-func writeDaemonMarkerAtomic(path string, data []byte) error {
+// writeMarkerFileAtomic writes data to path via a same-directory temp file plus
+// a rename, so a concurrent reader observes either the old file or the complete
+// new one — never a partial write. Mirrors the daemon-id / CLI-config write
+// idiom (see writeDaemonIDFile). Perm is 0644 because the CLI's upward walk
+// must be able to read the marker from a subprocess that may run under a
+// different uid; the payload is non-secret. Shared by the workspaces-root
+// marker and the per-task marker registration paths.
+func writeMarkerFileAtomic(path string, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".daemon_task_context-*.json.tmp")
 	if err != nil {
-		return fmt.Errorf("create temp workspaces root marker: %w", err)
+		return fmt.Errorf("create temp task marker: %w", err)
 	}
 	tmpPath := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
-		return fmt.Errorf("write temp workspaces root marker: %w", err)
+		return fmt.Errorf("write temp task marker: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("close temp workspaces root marker: %w", err)
+		return fmt.Errorf("close temp task marker: %w", err)
 	}
 	if err := os.Chmod(tmpPath, 0o644); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("chmod temp workspaces root marker: %w", err)
+		return fmt.Errorf("chmod temp task marker: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("rename workspaces root marker: %w", err)
+		return fmt.Errorf("rename task marker: %w", err)
 	}
 	return nil
+}
+
+// RegisterTaskDeliveryContext atomically merges a checkout's branch and task
+// baseline into the task's daemon marker, so `multica worktree preflight` can
+// prove the delivery relationship of a worktree created by `multica repo
+// checkout` (task_id + branch + base_commit, against the worktree's git root).
+//
+// Every field the marker already carries (managed_by, task/agent/issue/chat
+// identity) is preserved; only branch and base_commit are merged, and an
+// empty argument never clears an existing registration. The marker must be
+// parseable and owned by the daemon: a foreign or torn file is refused,
+// mirroring the workspaces-root marker's fail-closed policy, so a stale or
+// hostile file can never silently reopen the guard. The write is atomic
+// (temp file + rename): a concurrent preflight observes either the old or the
+// complete new marker, never a half-written one.
+func RegisterTaskDeliveryContext(markerPath, branch, baseCommit string) error {
+	if strings.TrimSpace(markerPath) == "" {
+		return errors.New("execenv: marker path is required")
+	}
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		return fmt.Errorf("read task context marker %s: %w", markerPath, err)
+	}
+	var marker taskContextMarkerFile
+	if err := json.Unmarshal(data, &marker); err != nil {
+		return fmt.Errorf("task context marker %s is not a parseable daemon marker; refusing to register delivery context", markerPath)
+	}
+	if marker.ManagedBy != TaskContextMarkerManagedBy {
+		return fmt.Errorf("task context marker %s is not managed by Multica; refusing to modify", markerPath)
+	}
+	// Task-scoping guard: a parseable marker carrying no task identity is the
+	// node-wide workspaces-root marker (managed_by only). Delivery context is
+	// per-task state - merging it into the root marker would pollute the
+	// node-wide fail-closed guard with one task's branch/baseline (RUYI-848).
+	if marker.TaskID == "" && marker.AgentID == "" {
+		return fmt.Errorf("task context marker %s is not task-scoped (no task_id or agent_id); refusing to register delivery context", markerPath)
+	}
+	if branch != "" {
+		marker.Branch = branch
+	}
+	if baseCommit != "" {
+		marker.BaseCommit = baseCommit
+	}
+	out, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal task context marker: %w", err)
+	}
+	return writeMarkerFileAtomic(markerPath, out)
 }
 
 // writeContextFiles renders and writes .agent_context/issue_context.md and
@@ -223,22 +273,45 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 		Branch:        ctx.ManagedBranch,
 		BaseCommit:    ctx.BaseCommit,
 	}
+	path := filepath.Join(workDir, TaskContextMarkerRelPath)
+	// DEV->QA handoff (RUYI-848): when this workdir already carries a
+	// daemon-owned marker - a prior task reused its worktree - inherit the
+	// delivery registration (branch + base_commit) unless the new task has a
+	// delivery of its own. Without the carry-over the handoff wipes the
+	// baseline from the marker and the receiving task's preflight can no
+	// longer prove the delivery relationship. A foreign or unparseable
+	// marker still fails closed, exactly as the refresh path did before.
+	if existing, readErr := os.ReadFile(path); readErr == nil {
+		var old taskContextMarkerFile
+		if json.Unmarshal(existing, &old) != nil {
+			return fmt.Errorf("read existing task context marker %s: unparseable content", path)
+		}
+		if old.ManagedBy != TaskContextMarkerManagedBy {
+			return fmt.Errorf("task context marker %s is not managed by Multica; refusing to overwrite", path)
+		}
+		// A refresh whose context lost the task id must not wipe the identity
+		// out of the marker: hand the existing task_id forward so preflight's
+		// task-identity check stays diagnosable instead of silently empty.
+		if payload.TaskID == "" && old.TaskID != "" {
+			payload.TaskID = old.TaskID
+		}
+		if payload.Branch == "" {
+			payload.Branch = old.Branch
+		}
+		if payload.BaseCommit == "" {
+			payload.BaseCommit = old.BaseCommit
+		}
+	}
 	data, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal task context marker: %w", err)
 	}
-	if err := recordWriteFile(filepath.Join(workDir, TaskContextMarkerRelPath), data, 0o644, manifest); err != nil {
+	if err := recordWriteFile(path, data, 0o644, manifest); err != nil {
 		if errors.Is(err, errPathPreExists) {
-			path := filepath.Join(workDir, TaskContextMarkerRelPath)
-			existing, readErr := os.ReadFile(path)
-			if readErr != nil {
-				return fmt.Errorf("read existing task context marker: %w", readErr)
-			}
-			var marker taskContextMarkerFile
-			if json.Unmarshal(existing, &marker) != nil || marker.ManagedBy != TaskContextMarkerManagedBy {
-				return fmt.Errorf("write task context marker: %w", err)
-			}
-			if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
+			// Existing marker with a live manifest: refresh in place, atomically
+			// (temp + rename) so a preflight racing the handoff sees either the
+			// old marker or the complete new one.
+			if writeErr := writeMarkerFileAtomic(path, data); writeErr != nil {
 				return fmt.Errorf("refresh task context marker: %w", writeErr)
 			}
 			if manifest != nil {
@@ -247,47 +320,6 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 			return nil
 		}
 		return fmt.Errorf("write task context marker: %w", err)
-	}
-	return nil
-}
-
-// RefreshTaskContextMarker updates the daemon-owned task marker after a
-// repository checkout establishes the delivery branch and immutable base.
-// It refuses to replace a missing, corrupt, or foreign marker so a checkout
-// cannot overwrite user-owned data in a reused workdir.
-func RefreshTaskContextMarker(workDir string, ctx TaskContextForEnv) error {
-	if strings.TrimSpace(ctx.TaskID) == "" || strings.TrimSpace(ctx.ManagedBranch) == "" || strings.TrimSpace(ctx.BaseCommit) == "" {
-		return errors.New("task id, managed branch, and base commit are required")
-	}
-
-	path := filepath.Join(workDir, TaskContextMarkerRelPath)
-	existing, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read task context marker: %w", err)
-	}
-	var marker taskContextMarkerFile
-	if err := json.Unmarshal(existing, &marker); err != nil {
-		return fmt.Errorf("parse task context marker: %w", err)
-	}
-	if marker.ManagedBy != TaskContextMarkerManagedBy {
-		return fmt.Errorf("task context marker at %s is not daemon-owned", path)
-	}
-
-	payload := taskContextMarkerFile{
-		ManagedBy:     TaskContextMarkerManagedBy,
-		TaskID:        ctx.TaskID,
-		AgentID:       ctx.AgentID,
-		IssueID:       ctx.IssueID,
-		ChatSessionID: ctx.ChatSessionID,
-		Branch:        ctx.ManagedBranch,
-		BaseCommit:    ctx.BaseCommit,
-	}
-	data, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal task context marker: %w", err)
-	}
-	if err := writeDaemonMarkerAtomic(path, data); err != nil {
-		return fmt.Errorf("refresh task context marker: %w", err)
 	}
 	return nil
 }
