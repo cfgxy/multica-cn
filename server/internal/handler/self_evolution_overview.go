@@ -256,7 +256,7 @@ LIMIT 500`, workspaceID)
 			continue
 		}
 		outcome := result.CapabilityAdaptationResult
-		if outcome.Status == "blocked" {
+		if outcome.Status != "applied" {
 			continue
 		}
 		p := pattern{
