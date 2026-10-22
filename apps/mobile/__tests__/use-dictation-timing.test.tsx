@@ -167,6 +167,76 @@ describe("useDictation 指松结算时序（RUYI-710 P0 回归面）", () => {
     expect(result.current.state.phase).toBe("rest");
   });
 
+  it("上一轮取消后的 start 拒绝不影响下一轮按住", async () => {
+    let rejectFirstStart!: (reason?: unknown) => void;
+    mockSpeechModule.start.mockImplementationOnce(
+      () => new Promise<null>((_, reject) => {
+        rejectFirstStart = reject;
+      }),
+    );
+    const { result } = await mountDictation({ available: true, reason: "ok" });
+    await pressAndArm(result);
+
+    await act(async () => {
+      result.current.move(60);
+      result.current.release();
+    });
+    expect(result.current.state.phase).toBe("rest");
+
+    await pressAndArm(result);
+    expect(result.current.state.phase).toBe("recording");
+    await act(async () => {
+      rejectFirstStart(new Error("stale recognizer unavailable"));
+    });
+    expect(result.current.state.phase).toBe("recording");
+    expect(onToast).not.toHaveBeenCalled();
+
+    await act(async () => {
+      jest.advanceTimersByTime(MIN_RECORD_MS - RECORD_ARM_MS + 20);
+      result.current.release();
+      mockSpeechModule.emit("onFinalResult", { text: "新一轮结果" });
+    });
+    expect(onSend).toHaveBeenCalledWith("新一轮结果");
+    expect(onToast).not.toHaveBeenCalled();
+  });
+
+  it("端侧 onError 在按住期间延迟到指松才提示失败", async () => {
+    const { result } = await mountDictation({ available: true, reason: "ok" });
+    await pressAndArm(result);
+
+    await act(async () => {
+      mockSpeechModule.emit("onError", { code: 5 });
+    });
+    expect(result.current.state.phase).toBe("recording");
+    expect(onToast).not.toHaveBeenCalled();
+
+    await act(async () => {
+      jest.advanceTimersByTime(MIN_RECORD_MS - RECORD_ARM_MS + 20);
+      result.current.release();
+    });
+    expect(result.current.state.phase).toBe("rest");
+    expect(onToast).toHaveBeenCalledWith("transcribe_failed");
+  });
+
+  it("端侧终稿早于指松到达时，指松结算已缓存终稿", async () => {
+    const { result } = await mountDictation({ available: true, reason: "ok" });
+    await pressAndArm(result);
+
+    await act(async () => {
+      mockSpeechModule.emit("onFinalResult", { text: "已在按住期间完成" });
+    });
+    expect(result.current.state.phase).toBe("recording");
+    expect(onSend).not.toHaveBeenCalled();
+
+    await act(async () => {
+      jest.advanceTimersByTime(MIN_RECORD_MS - RECORD_ARM_MS + 20);
+      result.current.release();
+    });
+    expect(result.current.state.phase).toBe("rest");
+    expect(onSend).toHaveBeenCalledWith("已在按住期间完成");
+    expect(onToast).not.toHaveBeenCalled();
+  });
+
   it("按住 ≥500ms 松开（降级）：必达结算进 transcribing 并发起上传", async () => {
     deferTranscribe();
     const { result } = await mountDictation({

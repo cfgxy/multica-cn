@@ -77,6 +77,10 @@ export interface DictationState {
   cancelArmed: boolean;
   /** 端侧 partial 预览文本。 */
   preview: string;
+  /** A final result observed while held, settled only after release. */
+  pendingFinal: string | null;
+  /** A recognizer error observed while held, settled only after release. */
+  pendingError: "empty" | "failed" | null;
   startedAtMs: number | null;
 }
 
@@ -85,6 +89,8 @@ export const idleDictation: DictationState = {
   degraded: false,
   cancelArmed: false,
   preview: "",
+  pendingFinal: null,
+  pendingError: null,
   startedAtMs: null,
 };
 
@@ -138,6 +144,8 @@ export function reduceDictation(
           startedAtMs: event.atMs,
           cancelArmed: false,
           preview: "",
+          pendingFinal: null,
+          pendingError: null,
         },
         commands: [{ type: "startCapture" }],
       };
@@ -171,6 +179,31 @@ export function reduceDictation(
           ],
         };
       }
+      if (state.pendingFinal !== null) {
+        const text = state.pendingFinal.trim();
+        if (!text) {
+          return {
+            state: idleDictation,
+            commands: [{ type: "toast", kind: "not_recognized" }],
+          };
+        }
+        return {
+          state: idleDictation,
+          commands: [{ type: "sendText", text }],
+        };
+      }
+      if (state.pendingError) {
+        return {
+          state: idleDictation,
+          commands: [
+            { type: "cancelCapture" },
+            {
+              type: "toast",
+              kind: state.pendingError === "empty" ? "not_recognized" : "transcribe_failed",
+            },
+          ],
+        };
+      }
       if (state.degraded) {
         return {
           state: { ...state, phase: "transcribing" },
@@ -192,6 +225,12 @@ export function reduceDictation(
     }
 
     case "final": {
+      if (state.phase === "recording") {
+        return {
+          state: { ...state, pendingFinal: event.text, pendingError: null },
+          commands: [],
+        };
+      }
       if (state.phase !== "finalizing") return { state, commands: [] };
       const text = event.text.trim();
       if (!text) {
@@ -222,19 +261,14 @@ export function reduceDictation(
     }
 
     case "recognizerError": {
-      if (state.phase !== "finalizing" && state.phase !== "transcribing") {
-        // 录制中识别器崩了：停止并提示，与 finalizing 错误同出口。
-        if (state.phase !== "recording") return { state, commands: [] };
+      if (state.phase === "recording") {
         return {
-          state: idleDictation,
-          commands: [
-            { type: "cancelCapture" },
-            {
-              type: "toast",
-              kind: event.kind === "empty" ? "not_recognized" : "transcribe_failed",
-            },
-          ],
+          state: { ...state, pendingError: event.kind },
+          commands: [],
         };
+      }
+      if (state.phase !== "finalizing" && state.phase !== "transcribing") {
+        return { state, commands: [] };
       }
       return {
         state: idleDictation,
