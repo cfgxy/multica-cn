@@ -418,13 +418,18 @@ func runRepoCheckout(cmd *cobra.Command, args []string) error {
 	var result struct {
 		Path       string `json:"path"`
 		BranchName string `json:"branch_name"`
+		BaseCommit string `json:"base_commit"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return fmt.Errorf("parse response: %w", err)
 	}
 
 	fmt.Fprintf(os.Stdout, "%s\n", result.Path)
-	fmt.Fprintf(os.Stderr, "Checked out %s → %s (branch: %s)\n", repoURL, result.Path, result.BranchName)
+	if result.BaseCommit != "" {
+		fmt.Fprintf(os.Stderr, "Checked out %s → %s (branch: %s, base: %s)\n", repoURL, result.Path, result.BranchName, result.BaseCommit)
+	} else {
+		fmt.Fprintf(os.Stderr, "Checked out %s → %s (branch: %s)\n", repoURL, result.Path, result.BranchName)
+	}
 
 	return nil
 }
