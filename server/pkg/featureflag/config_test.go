@@ -150,6 +150,29 @@ demo_flag:
 	}
 }
 
+func TestNewServiceFromEnvReloadsAtomicFileReplacement(t *testing.T) {
+	path := writeTempFile(t, "flags.yaml", "demo_flag:\n  default: false\n")
+	t.Setenv(EnvFlagFile, path)
+	svc, err := NewServiceFromEnv()
+	if err != nil {
+		t.Fatalf("NewServiceFromEnv: %v", err)
+	}
+	if svc.IsEnabled(context.Background(), "demo_flag", true) {
+		t.Fatal("initial file rule should disable the flag")
+	}
+
+	tmp := path + ".next"
+	if err := os.WriteFile(tmp, []byte("demo_flag:\n  default: true\n"), 0o600); err != nil {
+		t.Fatalf("write replacement: %v", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatalf("replace flag file: %v", err)
+	}
+	if !svc.IsEnabled(context.Background(), "demo_flag", false) {
+		t.Fatal("atomic file replacement should update the active flag")
+	}
+}
+
 func TestNewServiceFromEnvEnvBeatsFile(t *testing.T) {
 	// The chain is `env -> file`, so FF_<KEY> must win over the YAML.
 	// This is the Ops kill-switch path documented in .env.example.

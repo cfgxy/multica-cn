@@ -45,6 +45,9 @@ const (
 	// installable. Withdrawing content is a moderation action reached through
 	// this flag, so closing it does not retract anything already out there.
 	MarketplacePublishV1 = "marketplace_publish_v1"
+	// MarkdownReaderV2 selects the cross-platform modern read-only Markdown
+	// renderer. It remains opt-in so deployments can roll back to legacy.
+	MarkdownReaderV2 = "markdown_reader_v2"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.
@@ -76,6 +79,7 @@ var frontendPublicFlags = []string{
 	PluginsV1,
 	MarketplaceV1,
 	MarketplacePublishV1,
+	MarkdownReaderV2,
 }
 
 func BillingWorkspaceSubscriptionsEnabled(ctx context.Context, flags *featureflag.Service) bool {
@@ -111,6 +115,7 @@ func ClauseDynamicInjectionDisabledEnabled(ctx context.Context, flags *featurefl
 var frontendPublicFlagDefaults = map[string]bool{
 	MarketplaceV1:        true,
 	MarketplacePublishV1: true,
+	MarkdownReaderV2:     false,
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {

@@ -195,6 +195,10 @@ export default function WorkspaceLayout() {
         <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen
+          name="attachment/[id]"
+          options={{ presentation: "modal", headerShown: false, contentStyle: { flex: 1 } }}
+        />
+        <Stack.Screen
           name="issue/[id]"
           options={{
             // 单条任务详情，用单数实体名 `layout:tab.issue`（en "Issue"）;

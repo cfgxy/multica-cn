@@ -163,6 +163,52 @@ export function CodeBlockShell({
   );
 }
 
+/** Modern reader code blocks keep their copy affordance visible without hover. */
+export function ModernCodeBlockShell({
+  language,
+  code,
+  children,
+}: {
+  language?: string;
+  code: string;
+  children: ReactNode;
+}) {
+  const { t } = useT("editor");
+  const [copied, setCopied] = useState(false);
+  const copyLabel = t(($) => $.code_block.copy_code) || "Copy code";
+
+  const handleCopy = async () => {
+    if (!code) return;
+    if (await copyText(code)) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  return (
+    <div
+      className="modern-code-block my-3 overflow-hidden rounded-md border border-border bg-code-surface"
+      data-modern-code-block=""
+    >
+      <div className="flex min-h-9 items-center justify-between gap-2 border-b border-border px-3">
+        <span className="text-caption text-muted-foreground select-none">
+          {language || "code"}
+        </span>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+          title={copyLabel}
+          aria-label={copied ? "Code copied" : copyLabel}
+        >
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        </button>
+      </div>
+      <pre className="!m-0 !rounded-none !border-0 !bg-transparent">{children}</pre>
+    </div>
+  );
+}
+
 /**
  * The rich leaf for an upgraded fence. Only reached when shouldUpgradeFence()
  * returned true, so the fence is known-closed here.
