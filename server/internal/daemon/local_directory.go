@@ -880,6 +880,48 @@ func snapshotWorktreeFallbackWithGitGate(plan *snapshotPlan, gitSnapshotEnabled 
 	return &localDirectoryAssignment{Ref: ref, AbsPath: abs, RealPath: real}, nil
 }
 
+// snapshotExecutionObservation is the non-sensitive decision record emitted
+// for a snapshot resource at task start. Operators need the actual backend,
+// not merely the resource's requested mode: a Git resource can deliberately
+// route to the established worktree flow without being an error.
+type snapshotExecutionObservation struct {
+	ExecutionMode string
+	GateEnabled   bool
+	Capability    bool
+	DowngradeCode string
+}
+
+// snapshotExecutionObservationFor describes the decision already made by
+// snapshotWorktreeFallback. DowngradeCode is intentionally a stable category,
+// rather than the audit's path-bearing diagnostic, because this record is
+// emitted to the daemon log and may be shown in operator tooling.
+func snapshotExecutionObservationFor(plan *snapshotPlan, fallback *localDirectoryAssignment, gateEnabled, capability bool) snapshotExecutionObservation {
+	observation := snapshotExecutionObservation{
+		ExecutionMode: localDirectoryModeSnapshot,
+		GateEnabled:   gateEnabled,
+		Capability:    capability,
+	}
+	if fallback == nil {
+		return observation
+	}
+
+	observation.ExecutionMode = localDirectoryModeWorktree
+	audit := auditSnapshotGitScope(plan)
+	switch {
+	case !audit.Safe:
+		observation.DowngradeCode = "git_metadata_audit_failed"
+	case !gateEnabled:
+		observation.DowngradeCode = "git_snapshot_gate_disabled"
+	case !gitSnapshotDeliveryEligible(plan, true):
+		observation.DowngradeCode = "git_snapshot_unsupported_topology"
+	default:
+		// Keep an explicit code if future eligibility checks add a shape that
+		// the current categorisation does not recognise.
+		observation.DowngradeCode = "git_snapshot_ineligible"
+	}
+	return observation
+}
+
 // localDirectoryGCExemption reports whether a finished task's env root must
 // outlive the ordinary GC sweep: an in_place assignment runs inside the
 // user's own tree, and a snapshot run hosts the local-snapshots retention
