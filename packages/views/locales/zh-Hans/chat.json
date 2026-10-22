@@ -32,7 +32,10 @@
     "remove_project_context": "移除项目上下文",
     "no_projects": "还没有项目",
     "project_context_unsupported": "项目描述不会生效——该智能体的守护进程版本过旧，需要升级",
-    "project_context_failed": "无法更新项目上下文"
+    "project_context_failed": "无法更新项目上下文",
+    "project_context_loading": "项目仍在加载，请稍后重试。",
+    "project_context_load_failed": "无法加载项目，请稍后重试。",
+    "project_context_no_projects": "此工作区暂无项目。"
   },
   "queue": {
     "title_other": "{{count}} 条排队消息",
