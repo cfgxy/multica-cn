@@ -27,6 +27,13 @@ import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { Text } from "@/components/ui/text";
+import { router } from "expo-router";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import {
+  attachmentPreviewPath,
+  getMobileAttachmentPreviewKind,
+} from "@/lib/attachment-preview";
+import { useMarkdownRenderer } from "@/lib/markdown/use-reader-adapter";
 
 interface Props {
   mentions: MentionMarker[];
@@ -256,6 +263,8 @@ function FileChipView({
 }) {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
+  const workspaceSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const renderer = useMarkdownRenderer();
 
   const onPress = () => {
     if (item.status === "failed") {
@@ -263,6 +272,15 @@ function FileChipView({
       return;
     }
     if (item.status !== "completed" || !item.id) return;
+    const previewKind = getMobileAttachmentPreviewKind(item.mimeType, item.filename);
+    if (
+      renderer === "modern" &&
+      workspaceSlug &&
+      previewKind !== "unsupported"
+    ) {
+      router.push(attachmentPreviewPath(workspaceSlug, item.id));
+      return;
+    }
     void openAttachmentDownload(item.id, {
       source: api,
       opener: Linking,

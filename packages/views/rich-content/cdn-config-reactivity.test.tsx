@@ -87,7 +87,7 @@ const FILE_URL = `https://${CDN_DOMAIN}/workspaces/w1/files/report.pdf`;
 const CONTENT = `Attached:\n\n[report.pdf](${FILE_URL})`;
 
 beforeEach(() => {
-  configStore.setState({ cdnDomain: "", cdnSigned: false });
+  configStore.setState({ cdnDomain: "", cdnSigned: false, featureFlags: {} });
 });
 
 describe("RichContent CDN config reactivity", () => {
@@ -130,5 +130,31 @@ describe("RichContent CDN config reactivity", () => {
     expect(
       container.querySelector('a[href="https://example.com/spec.pdf"]'),
     ).not.toBeNull();
+  });
+
+  it("mounts the modern code renderer and immediately restores legacy on flag-off", () => {
+    const content = "```text\nreader path\n```";
+    const { container } = render(<RichContent content={content} />);
+    const root = container.querySelector("[data-rich-content]");
+    expect(root?.getAttribute("data-reader-version")).toBe("legacy");
+    expect(container.querySelector("[data-modern-code-block]")).toBeNull();
+    expect(container.querySelector(".code-block-wrapper")).not.toBeNull();
+
+    act(() => {
+      configStore.getState().setFeatureFlags({ markdown_reader_v2: true });
+    });
+    expect(root?.getAttribute("data-reader-version")).toBe("modern");
+    expect(root?.classList.contains("markdown-reader-v2")).toBe(true);
+    expect(container.querySelector("[data-modern-code-block]")).not.toBeNull();
+    expect(container.querySelector('[aria-label="Copy code"]')).not.toBeNull();
+    expect(container.querySelector(".code-block-wrapper")).toBeNull();
+
+    act(() => {
+      configStore.getState().setFeatureFlags({ markdown_reader_v2: false });
+    });
+    expect(root?.getAttribute("data-reader-version")).toBe("legacy");
+    expect(root?.classList.contains("markdown-reader-v2")).toBe(false);
+    expect(container.querySelector("[data-modern-code-block]")).toBeNull();
+    expect(container.querySelector(".code-block-wrapper")).not.toBeNull();
   });
 });

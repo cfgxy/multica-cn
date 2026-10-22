@@ -43,6 +43,10 @@ import {
   useWorkspaceSlug,
 } from "@multica/core/paths";
 import { useConfigStore } from "@multica/core/config";
+import {
+  selectMarkdownRenderer,
+  type MarkdownRenderer,
+} from "@multica/core/markdown";
 import type { IssueReference } from "@multica/core/markdown";
 import type { Attachment } from "@multica/core/types";
 import {
@@ -80,12 +84,14 @@ import { computeClosedFenceOffsets } from "./streaming-fence";
 import { LazyIssueReferenceTail } from "./lazy-issue-reference-tail";
 import { remarkRepairCjkStrongTrailingWhitespace } from "./cjk-emphasis";
 import { remarkGfmWithSharedExtensions } from "./shared-gfm-extensions";
+import { remarkRestoreCurrencyText } from "./remark-restore-currency-text";
 import {
   rehypeKatexWhenNeeded,
   rehypeRawWhenNeeded,
 } from "./rehype-raw-gate";
 import {
   CodeBlockShell,
+  ModernCodeBlockShell,
   RichFenceBlock,
   StaticCodeBody,
   isRichFenceLanguage,
@@ -544,10 +550,26 @@ function RichPre({ children }: RichPreProps) {
   );
 }
 
+function ModernRichPre({ children }: RichPreProps) {
+  const { language, offset } = readFencedCodeChild(children);
+  const isFenceClosed = useIsFenceClosed(offset);
+
+  if (shouldUpgradeFence(language, isFenceClosed)) return <>{children}</>;
+
+  return (
+    <ModernCodeBlockShell
+      language={language}
+      code={getTextContent(children).replace(/\n$/, "")}
+    >
+      {children}
+    </ModernCodeBlockShell>
+  );
+}
+
 // The components map is module-level and static: it never depends on density,
 // phase or the fence gate, so its identity is stable for the lifetime of the
 // app and react-markdown can bail out of unchanged subtrees.
-const COMPONENTS: Partial<Components> = {
+const SHARED_COMPONENTS: Partial<Components> = {
   a: RichLink,
 
   // Images — unified through <Attachment>. The resolver context provided by
@@ -592,15 +614,26 @@ const COMPONENTS: Partial<Components> = {
     </div>
   ),
 
+};
+
+const LEGACY_COMPONENTS: Partial<Components> = {
+  ...SHARED_COMPONENTS,
   code: RichCode,
   pre: RichPre,
+};
+
+const MODERN_COMPONENTS: Partial<Components> = {
+  ...SHARED_COMPONENTS,
+  code: RichCode,
+  pre: ModernRichPre,
 };
 
 // `satisfies` rather than a cast: the plugin lists are still checked against
 // react-markdown's own option types, so a bad plugin tuple fails here instead of
 // being silenced.
 const REMARK_PLUGINS = [
-  [remarkMath, { singleDollarTextMath: false }],
+  [remarkMath, { singleDollarTextMath: true }],
+  remarkRestoreCurrencyText,
   remarkBreaks,
   remarkGfmWithSharedExtensions,
   remarkCjkFriendly,
@@ -639,13 +672,20 @@ export interface RichContentProps {
   className?: string;
 }
 
-export const RichContent = memo(function RichContent({
+export const RichContent = memo(function RichContent(props: RichContentProps) {
+  const featureFlags = useConfigStore((s) => s.featureFlags);
+  const renderer = selectMarkdownRenderer(featureFlags);
+  return <RichContentAdapter {...props} renderer={renderer} />;
+});
+
+function RichContentAdapter({
   content,
   attachments,
   density = "document",
   phase = "settled",
   className,
-}: RichContentProps) {
+  renderer,
+}: RichContentProps & { renderer: MarkdownRenderer }) {
   // Subscribed, not read once. The CDN config is fetched asynchronously after
   // auth, so content that renders first would otherwise keep its legacy CDN
   // links as plain anchors permanently — the preprocess step that turns them
@@ -690,17 +730,14 @@ export const RichContent = memo(function RichContent({
   const markdown = useMemo(
     () => (
       <ClosedFenceContext.Provider value={closedFences}>
-        <ReactMarkdown
-          remarkPlugins={REMARK_PLUGINS}
-          rehypePlugins={REHYPE_PLUGINS}
-          urlTransform={markdownUrlTransform}
-          components={COMPONENTS}
-        >
-          {processed}
-        </ReactMarkdown>
+        {renderer === "modern" ? (
+          <ModernRichContentRenderer content={processed} />
+        ) : (
+          <LegacyRichContentRenderer content={processed} />
+        )}
       </ClosedFenceContext.Provider>
     ),
-    [processed, closedFences],
+    [processed, closedFences, renderer],
   );
 
   return (
@@ -710,9 +747,11 @@ export const RichContent = memo(function RichContent({
         data-rich-content=""
         data-density={density}
         data-phase={phase}
+        data-reader-version={renderer}
         className={cn(
           "rich-text-editor readonly text-body",
           density === "compact" && "rich-content-compact",
+          renderer === "modern" && "markdown-reader-v2",
           className,
         )}
       >
@@ -722,4 +761,30 @@ export const RichContent = memo(function RichContent({
       </div>
     </AttachmentDownloadProvider>
   );
-});
+}
+
+function LegacyRichContentRenderer({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
+      urlTransform={markdownUrlTransform}
+      components={LEGACY_COMPONENTS}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
+
+function ModernRichContentRenderer({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REHYPE_PLUGINS}
+      urlTransform={markdownUrlTransform}
+      components={MODERN_COMPONENTS}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
