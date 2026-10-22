@@ -750,6 +750,23 @@ type WorktreeParams struct {
 type WorktreeResult struct {
 	Path       string `json:"path"`        // absolute path to the worktree
 	BranchName string `json:"branch_name"` // git branch created for this worktree
+	BaseCommit string `json:"base_commit"` // immutable checkout HEAD before agent changes
+}
+
+func checkoutResultContext(ctx context.Context, worktreePath, branchName string) (*WorktreeResult, error) {
+	out, err := runGitOutputContext(ctx, "-C", worktreePath, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("resolve checkout HEAD: %w", err)
+	}
+	baseCommit := strings.TrimSpace(string(out))
+	if baseCommit == "" {
+		return nil, errors.New("resolve checkout HEAD: empty commit")
+	}
+	return &WorktreeResult{
+		Path:       worktreePath,
+		BranchName: branchName,
+		BaseCommit: baseCommit,
+	}, nil
 }
 
 // CreateWorktree looks up the bare cache for a repo, fetches latest, and creates
@@ -881,7 +898,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 			"branch", actualBranch,
 			"base", baseRef,
 		)
-		return &WorktreeResult{Path: worktreePath, BranchName: actualBranch}, nil
+		return checkoutResultContext(ctx, worktreePath, actualBranch)
 	}
 
 	// If worktree already exists (reused environment from a prior task),
@@ -913,10 +930,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 			"base", baseRef,
 		)
 
-		return &WorktreeResult{
-			Path:       worktreePath,
-			BranchName: actualBranch,
-		}, nil
+		return checkoutResultContext(ctx, worktreePath, actualBranch)
 	}
 
 	// Create a new worktree. createWorktree may rename the branch to avoid
@@ -946,10 +960,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 		"base", baseRef,
 	)
 
-	return &WorktreeResult{
-		Path:       worktreePath,
-		BranchName: actualBranch,
-	}, nil
+	return checkoutResultContext(ctx, worktreePath, actualBranch)
 }
 
 const (
