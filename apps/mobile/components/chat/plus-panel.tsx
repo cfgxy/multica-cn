@@ -13,18 +13,20 @@ import Animated, { SlideInUp, SlideOutDown } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Text } from "@/components/ui/text";
-import { withAlphaColor } from "@/lib/color-alpha";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
+import { PLUS_PANEL_OFFSET } from "@/lib/chat-composer-layout";
 import type { ReactNode } from "react";
 
 interface GridEntry {
   key: string;
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
-  onPress: () => void;
+  onPress?: () => void;
 }
+
+const COMPOSER_HORIZONTAL_INSET = 12;
 
 interface Props {
   visible: boolean;
@@ -77,46 +79,50 @@ export function PlusPanel({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   }, []);
 
+  // Web hides unavailable contextual actions. Mobile keeps the fixed 4x2 grid
+  // and marks unavailable actions disabled so the composer shape never shifts.
   const grid: GridEntry[] = [
+    {
+      key: "camera",
+      icon: "camera",
+      label: t("mobile.plus.camera", "Camera"),
+      onPress: onCamera,
+    },
+    {
+      key: "image",
+      icon: "image",
+      label: t("mobile.plus.image", "Photos"),
+      onPress: onImage,
+    },
+    {
+      key: "files",
+      icon: "folder-open",
+      label: t("mobile.plus.files", "Files"),
+      onPress: onFiles,
+    },
     {
       key: "mention",
       icon: "at",
       label: t("mobile.plus.mention", "Mention"),
       onPress: onMention,
     },
-    ...(onSkill
-      ? [
-          {
-            key: "skill",
-            icon: "flash" as const,
-            label: t("mobile.plus.skill", "Skill"),
-            onPress: onSkill,
-          },
-        ]
-      : []),
-    ...(onQuickReplies
-      ? [
-          {
-            key: "quick",
-            icon: "chatbox-ellipses" as const,
-            label: t("mobile.plus.quick_replies", "Quick replies"),
-            onPress: onQuickReplies,
-          },
-        ]
-      : []),
-    ...(onProjectContext
-      ? [{
-          key: "project",
-          icon: "folder-outline" as const,
-          label: projectContextLabel ?? t("input.project_context", "Project context"),
-          onPress: onProjectContext,
-        }]
-      : []),
     {
-      key: "files",
-      icon: "folder-open",
-      label: t("mobile.plus.files", "Files"),
-      onPress: onFiles,
+      key: "skill",
+      icon: "flash",
+      label: t("mobile.plus.skill", "Skill"),
+      onPress: onSkill,
+    },
+    {
+      key: "quick",
+      icon: "chatbox-ellipses",
+      label: t("mobile.plus.quick_replies", "Quick replies"),
+      onPress: onQuickReplies,
+    },
+    {
+      key: "project",
+      icon: "folder-outline",
+      label: projectContextLabel ?? t("input.project_context", "Project context"),
+      onPress: onProjectContext,
     },
   ];
 
@@ -136,15 +142,16 @@ export function PlusPanel({
     <Animated.View
       entering={SlideInUp.duration(220)}
       exiting={SlideOutDown.duration(180)}
-      className="self-start rounded-xl border border-border bg-background px-3 pb-4 shadow-lg"
+      className="self-start rounded-xl border border-border bg-background px-3 pb-3 shadow-lg"
+      testID="plus-panel"
       style={{
         position: "absolute",
         bottom: "100%",
-        left: 0,
+        left: COMPOSER_HORIZONTAL_INSET,
+        right: COMPOSER_HORIZONTAL_INSET,
         zIndex: 10,
         maxHeight,
-        width: "92%",
-        marginBottom: 8,
+        transform: [{ translateY: -PLUS_PANEL_OFFSET }],
       }}
     >
       <ScrollView keyboardShouldPersistTaps="handled" bounces={false}>
@@ -159,8 +166,8 @@ export function PlusPanel({
               if (start !== null && e.nativeEvent.pageY - start > 80) onClose();
             }}
           />
-          <View className="flex-row items-center justify-between px-1 pt-2 pb-3">
-            <Text className="text-base font-semibold text-foreground">
+          <View className="flex-row items-center justify-between px-1 pb-2">
+            <Text className="text-sm font-semibold text-foreground">
               {t("mobile.plus.title", "Add to message")}
             </Text>
             <Pressable
@@ -173,78 +180,33 @@ export function PlusPanel({
               <Ionicons name="close" size={20} color={theme.mutedForeground} />
             </Pressable>
           </View>
-          {modelPicker ? <View className="mb-2">{modelPicker}</View> : null}
-          <View className="flex-row gap-2">
-            <BigTile
-              icon="camera"
-              label={t("mobile.plus.camera", "Camera")}
-              onPress={() => {
-                haptic();
-                onCamera();
-              }}
-              accent
-            />
-            <BigTile
-              icon="image"
-              label={t("mobile.plus.image", "Photos")}
-              onPress={() => {
-                haptic();
-                onImage();
-              }}
-              accent
-            />
-          </View>
-          <View className="mt-2 flex-row flex-wrap gap-2">
-            {grid.map((entry) => (
-              <GridTile
-                key={entry.key}
-                icon={entry.icon}
-                label={entry.label}
-                onPress={() => {
-                  haptic();
-                  entry.onPress();
-                  onClose();
-                }}
-              />
-            ))}
+          <View className="flex-row flex-wrap">
+            {grid.map((entry) => {
+              const onPress = entry.onPress;
+              return (
+                <GridTile
+                  key={entry.key}
+                  icon={entry.icon}
+                  label={entry.label}
+                  disabled={!onPress}
+                  onPress={onPress ? () => {
+                    haptic();
+                    onPress();
+                    onClose();
+                  } : undefined}
+                />
+              );
+            })}
+            <View testID="plus-model-cell" style={{ height: 72, width: "25%" }}>
+              {modelPicker ?? (
+                <UnavailableModelTile
+                  label={t("mobile.plus.model_unavailable", "Model unavailable")}
+                />
+              )}
+            </View>
           </View>
       </ScrollView>
     </Animated.View>
-  );
-}
-
-function BigTile({
-  icon,
-  label,
-  onPress,
-  accent,
-}: {
-  icon: keyof typeof Ionicons.glyphMap;
-  label: string;
-  onPress: () => void;
-  accent: boolean;
-}) {
-  const { colorScheme } = useColorScheme();
-  const theme = THEME[colorScheme];
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      className="flex-1 flex-row items-center justify-center gap-2 rounded-[18px] active:opacity-80"
-      style={{
-        height: 86,
-        backgroundColor: accent
-          ? // 品牌色 10% 底：THEME token 是 hsl 串，hex alpha 不能直接
-            // 拼接（Android 渲染非法色为黑），须经 withAlphaColor 生成
-            // 合法 rgba（RUYI-741）。
-            withAlphaColor(theme.brand, 0.1)
-          : theme.secondary,
-      }}
-    >
-      <Ionicons name={icon} size={22} color={theme.brand} />
-      <Text className="text-sm font-medium text-foreground">{label}</Text>
-    </Pressable>
   );
 }
 
@@ -252,22 +214,44 @@ function GridTile({
   icon,
   label,
   onPress,
+  disabled = false,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
-  onPress: () => void;
+  onPress?: () => void;
+  disabled?: boolean;
 }) {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
+      testID="plus-grid-tile"
       accessibilityRole="button"
       accessibilityLabel={label}
-      className="items-center justify-center gap-1.5 rounded-2xl bg-secondary active:opacity-80"
-      style={{ height: 76, width: "23%" }}
+      className="items-center justify-center gap-1.5 active:opacity-80 disabled:opacity-50"
+      style={{ height: 72, width: "25%" }}
     >
       <Ionicons name={icon} size={22} color={theme.foreground} />
+      <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function UnavailableModelTile({ label }: { label: string }) {
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+  return (
+    <Pressable
+      disabled
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      className="h-full w-full items-center justify-center gap-1.5 opacity-50"
+    >
+      <Ionicons name="hardware-chip-outline" size={22} color={theme.mutedForeground} />
       <Text className="text-xs text-muted-foreground" numberOfLines={1}>
         {label}
       </Text>

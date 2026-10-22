@@ -18,10 +18,12 @@
 # Layers, from safe to destructive:
 #   1. slots whose lease/manifest names the target issue (any phase — the
 #      issue's slot may be back in dev phase after its qa handoff)
-#      -> `dev-env.sh <slot> destroy --yes` (stops process groups, drops the
-#         slot database and account, frees the slot). Unscoped --yes runs
-#         only touch slots in qa phase that already belong to the caller's
-#         own issue; dev-phase slots have no TTL and are released at closure.
+#      -> while the Issue is active, stop served QA components but preserve the
+#         slot database, profile and daemon identity for the next QA turn;
+#         terminal Issues use `dev-env.sh <slot> destroy --yes`. Unscoped
+#         --yes runs only touch slots in qa phase that already belong to the
+#         caller's own issue; dev-phase slots have no TTL and are released at
+#         closure.
 #   2. orphan listeners: any TCP listener whose cwd is inside the legacy QA
 #      root (~/.multica/qa) or the slot home (~/.multica/slots) and whose
 #      owning slot is gone (or was just destroyed above) -> TERM then KILL,
@@ -50,14 +52,18 @@ Reclaim build/QA leftovers from the shared slots and the legacy QA root (~/.mult
   qa-clean.sh                      # report only (dry run)
   qa-clean.sh --issue ruyi-283     # scope the sweep to one issue
   qa-clean.sh --issue ruyi-283 --yes
-                                   # destroy that issue's slot, kill orphans
+                                   # preserve an active issue's slot identity;
+                                   # destroy it once the issue is terminal
   qa-clean.sh --issue ruyi-283 --yes --docker
                                    # also remove containers naming the issue
 
-The issue's slot is destroyed via scripts/dev-env.sh <slot> destroy --yes
-(processes stopped, slot database + account dropped, slot freed) whatever its
-current phase. Without --issue and --yes, only slots in qa phase whose lease
-names MULTICA_CALLER_OWNER are destroyed — everything else is reported.
+An active issue's slot is stopped via scripts/dev-env.sh <slot> down while its
+database, profile and daemon identity remain available for follow-up QA. A
+terminal issue's slot is destroyed via scripts/dev-env.sh <slot> destroy --yes
+(processes stopped, slot database + account dropped, slot freed). If the issue
+state cannot be read, the slot is preserved. Without --issue and --yes, only
+slots in qa phase whose lease names MULTICA_CALLER_OWNER are destroyed —
+everything else is reported.
 Listener processes whose cwd sits inside the QA root or the slot home are
 killed by process group — except any `multica daemon`. Worktrees are never
 deleted here; they may hold unmerged commits and are listed with their
@@ -87,6 +93,30 @@ matches_issue() { # $1 = text to test (any case)
   [ -z "$issue_lc" ] && return 0
   case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d -- '-_')" in *"$issue_flat"*) return 0 ;; esac
   return 1
+}
+
+issue_lifecycle() { # active | terminal | unknown
+  [ -n "$issue" ] || { printf 'terminal'; return; }
+  local payload category
+  payload="$(multica issue get "$issue" --output json 2>/dev/null || true)"
+  [ -n "$payload" ] || { printf 'unknown'; return; }
+  category="$(node -e '
+    let input = "";
+    process.stdin.on("data", (chunk) => input += chunk);
+    process.stdin.on("end", () => {
+      try {
+        const issue = JSON.parse(input);
+        process.stdout.write(String(issue.status_category || issue.status || ""));
+      } catch {
+        process.exitCode = 1;
+      }
+    });
+  ' <<<"$payload" 2>/dev/null || true)"
+  case "$category" in
+    in_progress|in_review|todo|backlog|blocked) printf 'active' ;;
+    done|cancelled) printf 'terminal' ;;
+    *) printf 'unknown' ;;
+  esac
 }
 
 ensure_slots_file
@@ -131,7 +161,16 @@ while read -r slot; do
       printf 'skipped slot %s: held by %s and no MULTICA_CALLER_OWNER/--issue; nothing to destroy as\n' "$slot" "${slot_issue:-?}"
       exit 0
     fi
-    if bash "$SCRIPT_DIR/dev-env.sh" "$slot" destroy --yes; then
+    lifecycle="$(issue_lifecycle)"
+    if [ -n "$issue_lc" ] && [ "$lifecycle" = active ]; then
+      if bash "$SCRIPT_DIR/dev-env.sh" "$slot" down --components api,web,mcp,desktop; then
+        printf 'preserved active slot %s (database, profile and daemon identity retained)\n' "$slot"
+      else
+        warn "failed to stop active slot $slot; its identity was preserved"
+      fi
+    elif [ -n "$issue_lc" ] && [ "$lifecycle" = unknown ]; then
+      warn "could not read Issue $issue state; preserved slot $slot instead of destroying it"
+    elif bash "$SCRIPT_DIR/dev-env.sh" "$slot" destroy --yes; then
       printf 'destroyed slot %s\n' "$slot"
     else
       warn "failed to destroy slot $slot; its manifest was kept for retry"
