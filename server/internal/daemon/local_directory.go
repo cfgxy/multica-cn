@@ -704,6 +704,15 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 		if err != nil {
 			return nil, err
 		}
+		// The deployment gate changes only ordinary Git worktree execution.
+		// Keep non-Git worktree resources on their established backend even
+		// while the gate is enabled.
+		if mode == localDirectoryModeWorktree {
+			top, isGit := gitToplevel(abs)
+			if !isGit || filepath.Clean(top) != filepath.Clean(abs) {
+				continue
+			}
+		}
 		rows = append(rows, snapRow{id: r.ID, ref: ref, abs: abs})
 	}
 	if len(rows) == 0 {

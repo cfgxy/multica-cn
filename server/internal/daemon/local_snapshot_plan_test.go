@@ -102,6 +102,10 @@ func TestResolveSnapshotPlanUndeclaredPrimary(t *testing.T) {
 }
 
 func TestResolveSnapshotPlanUsesWorktreeResourceOnlyWithGitSnapshotGate(t *testing.T) {
+	plainTask := Task{
+		ID:               "plain",
+		ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "plain", t.TempDir(), "d1")},
+	}
 	gitRoot := newTestGitRoot(t)
 	task := Task{
 		ID:               "t1",
@@ -115,6 +119,11 @@ func TestResolveSnapshotPlanUsesWorktreeResourceOnlyWithGitSnapshotGate(t *testi
 	}
 
 	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "1")
+	plan, err = resolveSnapshotPlan(plainTask, "d1")
+	if err != nil || plan != nil {
+		t.Fatalf("enabled gate must preserve a non-Git worktree backend, plan=%+v err=%v", plan, err)
+	}
+
 	plan, err = resolveSnapshotPlan(task, "d1")
 	if err != nil || plan == nil || plan.Primary == nil || plan.Primary.AbsPath != filepath.Clean(gitRoot) {
 		t.Fatalf("enabled gate must plan the ordinary worktree resource, plan=%+v err=%v", plan, err)
