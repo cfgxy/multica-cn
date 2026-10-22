@@ -425,6 +425,11 @@ cmd_use() {
   instance_id="$(jq -r '.instance_id // empty' <<<"$out")"
   expires_at="$(jq -r '.expires_at // empty' <<<"$out")"
   [ -n "$lease_id" ] || die "use: acquire returned no lease id"
+  # A pending lease is already capability-gated by the pool. Install the
+  # acquire response before the first get_lease poll; it never leaves memory.
+  capability="$(jq -r '.execution_capability // empty' <<<"$out")"
+  [ -n "$capability" ] || die "use: acquire returned no execution capability"
+  CAPABILITY="$capability"
   # New-instance provisioning is async (RUYI-597): poll get_lease until the
   # lease settles. The reused-instance path returns state=active directly.
   state="$(jq -r '.state // "active"' <<<"$out")"
@@ -432,17 +437,20 @@ cmd_use() {
     out="$(poll_pending_lease "$lease_id")" || die "use: provisioning of $lease_id did not complete"
     state="$(jq -r '.state // empty' <<<"$out")"
     expires_at="$(jq -r '.expires_at // empty' <<<"$out")"
+    # A pool may re-sign on activation. Keep the acquire capability when the
+    # settled payload omits one, otherwise carry the newer in-memory value on.
+    local settled_capability
+    settled_capability="$(jq -r '.execution_capability // empty' <<<"$out")"
+    if [ -n "$settled_capability" ]; then
+      capability="$settled_capability"
+      CAPABILITY="$capability"
+    fi
   fi
   case "$state" in
     active) ;;
     failed) die "use: lease $lease_id provisioning failed: $(jq -r '.last_error // "unknown"' <<<"$out" 2>/dev/null)" ;;
     *) die "use: lease $lease_id in unexpected state '${state:-unknown}'" ;;
   esac
-  capability="$(jq -r '.execution_capability // empty' <<<"$out")"
-# The in-memory capability must be live before any post-acquire pool call
-  # (guest env write, polling): the acquire response is the capability source
-  # for this process; the manifest copy serves later processes.
-  CAPABILITY="$capability"
   write_manifest "$lease_id" "$instance_id" "$template" "$phase" "$expires_at" "$capability" "$request_id" "$version_sha"
   # Subshell: a die inside (VM still settling) must not lose the lease.
   ( _write_guest_env "$lease_id" ) || printf 'slot-pool: warning: guest env write failed (orphans inventory will report it)\n' >&2
@@ -699,21 +707,28 @@ cmd_refresh() {
   # (idempotent: the pool re-signs the same active lease, never creates a new one).
   require_owner
   load_manifest
-  local request_id bootstrap out newcap
+  local request_id bootstrap out newcap refreshed_lease
   request_id="$(manifest_field REQUEST_ID)"
   [ -n "$request_id" ] || die "refresh: manifest has no REQUEST_ID (older manifest; re-run use instead)"
   bootstrap="$(resolve_bootstrap)" ||
     die "refresh: bootstrap credential required (set SLOT_POOL_BOOTSTRAP_CREDENTIAL, or drop a mode-600 credential at ~/.multica/pool-bootstrap/$(caller_owner))"
-  out="$(get_lease_json "$LEASE_ID")"
-  case "$(jq -r '.state // empty' <<<"$out")" in
-    active) ;;
-    *) die "refresh: lease $LEASE_ID is not active (state $(jq -r '.state // empty' <<<"$out"))" ;;
-  esac
+  # The manifest capability may be expired. Bootstrap must therefore renew it
+  # before any capability-gated lease read; do not send the stale header.
+  CAPABILITY=""
   out="$(_tool acquire_lease "$(jq -cn --arg t "${TEMPLATE}" --arg o "$(caller_owner)" --arg i "$(caller_owner)" \
       --arg b "$bootstrap" --arg r "$request_id" \
       '{template_id:$t,owner:$o,issue_id:$i,bootstrap_credential:$b,request_id:$r}')")"
   newcap="$(jq -r '.execution_capability // empty' <<<"$out")"
   [ -n "$newcap" ] || die "refresh: pool returned no execution capability"
+  CAPABILITY="$newcap"
+  refreshed_lease="$(jq -r '.lease_id // empty' <<<"$out")"
+  [ -z "$refreshed_lease" ] || [ "$refreshed_lease" = "$LEASE_ID" ] ||
+    die "refresh: pool returned a different lease id"
+  out="$(get_lease_json "$LEASE_ID")"
+  case "$(jq -r '.state // empty' <<<"$out")" in
+    active) ;;
+    *) die "refresh: lease $LEASE_ID is not active (state $(jq -r '.state // empty' <<<"$out"))" ;;
+  esac
   set_manifest_field CAPABILITY "$newcap"
   printf 'slot-pool: %s re-signed the execution capability for lease %s (phase %s)\n' "$POOL_SLOT" "$LEASE_ID" "${PHASE:-unknown}"
 }
