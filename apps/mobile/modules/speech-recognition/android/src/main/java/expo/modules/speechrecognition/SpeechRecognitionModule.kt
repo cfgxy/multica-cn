@@ -115,7 +115,7 @@ class SpeechRecognitionModule : Module() {
           destroyRecognizer()
           val rec = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
           recognizer = rec
-          rec.setRecognitionListener(listener)
+          rec.setRecognitionListener(listenerFor(rec))
           val intent = android.content.Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
@@ -165,14 +165,18 @@ class SpeechRecognitionModule : Module() {
   }
 
   /** 用完即毁：释放识别器并清引用，主线程执行。 */
-  private fun destroyRecognizer() {
-    if (Looper.myLooper() == Looper.getMainLooper()) {
+  private fun destroyRecognizer(target: SpeechRecognizer? = null) {
+    fun destroyIfCurrent() {
+      if (target != null && recognizer !== target) return
       recognizer?.destroy()
       recognizer = null
+    }
+
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      destroyIfCurrent()
     } else {
       mainHandler.post {
-        recognizer?.destroy()
-        recognizer = null
+        destroyIfCurrent()
       }
     }
   }
@@ -182,11 +186,12 @@ class SpeechRecognitionModule : Module() {
     return list.firstOrNull()
   }
 
-  private val listener = object : RecognitionListener {
+  private fun listenerFor(target: SpeechRecognizer) = object : RecognitionListener {
     override fun onReadyForSpeech(params: Bundle?) {}
     override fun onBeginningOfSpeech() {}
 
     override fun onRmsChanged(rmsdB: Float) {
+      if (recognizer !== target) return
       // 静音 ≈ -2 dB，正常说话 0..10+；夹到 0..1 驱动波形条。
       val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
       sendEvent("onRms", mapOf("value" to normalized))
@@ -196,16 +201,19 @@ class SpeechRecognitionModule : Module() {
     override fun onEndOfSpeech() {}
 
     override fun onError(error: Int) {
+      if (recognizer !== target) return
       sendEvent("onError", mapOf("code" to error))
-      destroyRecognizer()
+      destroyRecognizer(target)
     }
 
     override fun onResults(results: Bundle?) {
+      if (recognizer !== target) return
       sendEvent("onFinalResult", mapOf("text" to (firstText(results) ?: "")))
-      destroyRecognizer()
+      destroyRecognizer(target)
     }
 
     override fun onPartialResults(partialResults: Bundle?) {
+      if (recognizer !== target) return
       val text = firstText(partialResults) ?: return
       sendEvent("onPartialResult", mapOf("text" to text))
     }
