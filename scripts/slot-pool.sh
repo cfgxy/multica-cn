@@ -98,7 +98,7 @@ RPC_ID=0
 # request log and assertion tooling key on line-oriented bodies. Request id
 # increments per call; notifications carry no id.
 _rpc() {
-  local method=$1 params=${2:-null} body out
+  local method=$1 params=${2:-null} body out header_lines="" rpc_header_fd="" curl_rc
   command -v curl >/dev/null || die "curl is required"
   command -v jq >/dev/null || die "jq is required"
   if [[ "$method" == notifications/* ]]; then
@@ -108,14 +108,20 @@ _rpc() {
     body="$(jq -cn --arg m "$method" --argjson p "$params" --argjson i "$RPC_ID" \
       '{jsonrpc:"2.0",id:$i,method:$m,params:$p}')"
   fi
-  local auth=() caps=()
-  [ -n "$POOL_TOKEN" ] && auth=(-H "Authorization: Bearer $POOL_TOKEN")
-  # The capability is secret material: it rides only as a request header,
-  # never into logs or printed output.
-  [ -n "${CAPABILITY:-}" ] && caps=(-H "X-Execution-Capability: $CAPABILITY")
+  # Keep all credentials out of curl's argv: process listings expose literal
+  # --data-binary and -H values. curl reads the sensitive headers through an
+  # inherited descriptor and the JSON-RPC body from stdin instead.
+  [ -n "$POOL_TOKEN" ] && header_lines+="Authorization: Bearer $POOL_TOKEN"$'\n'
+  [ -n "${CAPABILITY:-}" ] && header_lines+="X-Execution-Capability: $CAPABILITY"$'\n'
+  if [ -n "$header_lines" ]; then
+    exec {rpc_header_fd}<<<"$header_lines"
+  fi
   out="$(curl -sS --max-time "$HTTP_TIMEOUT" -X POST "$POOL_URL/mcp" \
     -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
-    "${auth[@]+"${auth[@]}"}" "${caps[@]+"${caps[@]}"}" --data-binary "$body" 2>&1)" ||
+    ${rpc_header_fd:+-H "@/proc/self/fd/$rpc_header_fd"} --data-binary @- <<<"$body" 2>&1)"
+  curl_rc=$?
+  [ -z "$rpc_header_fd" ] || exec {rpc_header_fd}<&-
+  [ "$curl_rc" -eq 0 ] ||
     die "pool RPC $method transport failed: $out"
   if jq -e '.error' >/dev/null 2>&1 <<<"$out"; then
     die "pool RPC $method error: $(jq -r '.error.message // .error' <<<"$out")"
@@ -157,6 +163,18 @@ _tool() {
 
 manifest_path() { printf '%s/%s/lease.env' "$POOL_HOME" "$POOL_SLOT"; }
 manifest_field() { sed -n "s/^$1=//p" "$(manifest_path)" | head -1; }
+lock_slot() {
+  local dir old_umask
+  command -v flock >/dev/null || die "flock is required to serialize slot mutations"
+  dir="$(dirname "$(manifest_path)")"
+  mkdir -p "$dir"
+  old_umask="$(umask)"
+  umask 077
+  exec {SLOT_LOCK_FD}>"$dir/.lease.lock"
+  umask "$old_umask"
+  chmod 600 "$dir/.lease.lock"
+  flock -x "$SLOT_LOCK_FD" || die "could not lock slot $POOL_SLOT"
+}
 remove_manifest_capability() { # <path>
   sed -i '/^CAPABILITY=/d' "$1"
 }
@@ -733,6 +751,7 @@ cmd_handoff() {
   fi
   case "$to" in deploy|qa) ;; *) die "handoff: --to deploy|qa required" ;; esac
   require_owner
+  lock_slot
   load_manifest
   local rc=0 verdict
   verdict="$(_guard_prehook "handoff-$to" 0)" || rc=$?
@@ -750,7 +769,7 @@ cmd_handoff() {
   # transition_lease_phase fences the generation, drains in-flight executions,
   # isolates the phase data namespace and re-signs the capability. The local
   # manifest only mirrors the pool state afterwards - it is not the mechanism.
-  local target_phase gen resp err newcap
+  local target_phase gen resp err transition newcap
   case "$to" in
     qa) target_phase="QA" ;;
     deploy) target_phase="DEV" ;;
@@ -772,9 +791,22 @@ cmd_handoff() {
     fi
     die "handoff: pool refused the phase transition: $err"
   done
-  newcap="$(jq -r '(.content[0].text | fromjson?).execution_capability // empty' <<<"$resp" 2>/dev/null)"
+  transition="$(jq -er --arg lease "$LEASE_ID" --arg phase "$target_phase" '
+    select(.isError != true)
+    | .content[0].text
+    | fromjson?
+    | select(type == "object")
+    | select(.lease.lease_id == $lease)
+    | select(.lease.phase == $phase)
+    | select(.lease.state == "active")
+    | select(.lease.generation | type == "number")
+    | select(.execution_capability | type == "string" and length > 0)
+  ' <<<"$resp" 2>/dev/null)" ||
+    die "handoff: pool transition returned no valid active lease result"
+  newcap="$(jq -r '.execution_capability' <<<"$transition")"
+  gen="$(jq -r '.lease.generation' <<<"$transition")"
   set_manifest_field PHASE "$to"
-  [ -n "$newcap" ] && install_execution_capability "$newcap"
+  install_execution_capability "$newcap"
   printf 'slot-pool: handoff %s transitioned lease %s to %s (generation %s)\n' "$POOL_SLOT" "$LEASE_ID" "$target_phase" "$gen"
 }
 
