@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /** Public wire contract for the Issue continuation-plan control surface. */
 export const OuterLoopPlanSchema = z.object({
-  state: z.enum(["running", "waiting_human", "stopped"]),
+	state: z.string(),
   goal: z.string(),
   max_rounds: z.number().int().min(1).max(1000),
   round: z.number().int().min(0),
