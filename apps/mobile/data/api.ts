@@ -110,6 +110,7 @@ import type {
   Workspace,
   WorkspaceSubscriptionSummary,
   DecisionRequest,
+  DecisionRequestDetail,
   DecisionRequestsList,
   AuditEventsPage,
   ListAuditEventsParams,
@@ -234,6 +235,7 @@ type AdminAuditLogPage = {
 import {
   BatchDecisionAnswersSchema,
   DecisionRequestSchema,
+  DecisionRequestDetailSchema,
   DecisionRequestsListSchema,
   IssueDecisionSchema,
   IssueDecisionsListSchema,
@@ -2489,6 +2491,17 @@ class ApiClient {
     });
     if (!list) throw new Error("Invalid decision requests response");
     return list;
+  }
+
+  async getDecisionRequest(workspaceId: string, requestId: string): Promise<DecisionRequestDetail> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/decision-requests/${requestId}`,
+    );
+    const detail = parseWithFallback(raw, DecisionRequestDetailSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests/:requestId",
+    });
+    if (!detail) throw new Error("Invalid decision request detail response");
+    return detail as DecisionRequestDetail;
   }
 
   async answerDecisionRequest(

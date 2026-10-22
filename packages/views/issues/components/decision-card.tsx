@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { CircleHelp, ListChecks, ShieldCheck } from "lucide-react";
+import { CircleHelp, Copy, ListChecks, ShieldCheck } from "lucide-react";
 import { Card } from "@multica/ui/components/ui/card";
 import { Button } from "@multica/ui/components/ui/button";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -53,7 +53,10 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
   const answer = useMutation({
     mutationFn: (index: 0 | 1) =>
       api.answerIssueDecision(decision.issue_id, decision.id, [index]),
-    onSuccess: invalidate,
+    onSuccess: (updated) => {
+      invalidate(updated);
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
+    },
     onError: () => {
       qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
       toast.error(t(($) => $.decisions.auth_answer_failed));
@@ -70,6 +73,18 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
       idx === 0 ? $.decisions.auth_approve_default : $.decisions.auth_deny_default,
     );
   };
+  const projectResults = decision.action_type === "project_prompt_sync"
+    && decision.execution_result && typeof decision.execution_result === "object"
+    && Array.isArray((decision.execution_result as { projects?: unknown }).projects)
+    ? (decision.execution_result as { projects: Array<{ project_id?: unknown; status?: unknown; version?: unknown }> }).projects
+        .filter((item) => typeof item.project_id === "string" && typeof item.status === "string" && typeof item.version === "number")
+    : [];
+  const sideEffectStatus = decision.execution_result && typeof decision.execution_result === "object"
+    ? (decision.execution_result as { side_effect_status?: unknown }).side_effect_status
+    : null;
+  const createdIssue = decision.action_type === "single_issue_create" && decision.execution_result && typeof decision.execution_result === "object"
+    ? decision.execution_result as { target_identifier?: unknown; target_issue_status?: unknown }
+    : null;
 
   return (
     <Card className="mx-2 border-brand/40 p-3" data-testid="decision-card" data-decision-kind="authorization" data-status={decision.status}>
@@ -90,13 +105,32 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
               <Badge variant="outline">{t(($) => $.decisions.auth_state_denied)}</Badge>
             )}
             {decision.executed_at && !decision.execution_error && (
-              <Badge variant="secondary">{t(($) => $.decisions.auth_state_executed)}</Badge>
+              <Badge variant="secondary">
+                {decision.action_type === "script_review"
+                  ? t(($) => $.decisions.auth_state_reviewed)
+                  : t(($) => $.decisions.auth_state_executed)}
+              </Badge>
             )}
             {decision.execution_error && (
               <Badge variant="destructive">{t(($) => $.decisions.auth_state_execute_failed)}</Badge>
             )}
           </div>
           <p className="mt-1 whitespace-pre-wrap break-words text-body font-medium">{decision.question}</p>
+          {decision.action_type === "project_prompt_sync" && (
+            <p className="mt-1 text-caption text-muted-foreground">
+              {t(($) => $.decisions.auth_action_project_prompt_sync)}
+            </p>
+          )}
+          {decision.action_type === "single_issue_create" && (
+            <p className="mt-1 text-caption text-muted-foreground">
+              {t(($) => $.decisions.auth_action_single_issue_create)}
+            </p>
+          )}
+          {decision.action_type === "script_review" && (
+            <p className="mt-1 text-caption text-muted-foreground">
+              {t(($) => $.decisions.auth_action_script_review)}
+            </p>
+          )}
           <p className="mt-0.5 text-caption text-muted-foreground">
             {creatorName} · {timeAgo(decision.created_at)}
           </p>
@@ -137,9 +171,43 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
 
       {decision.execution_error && (
         <p className="mt-2 break-words text-caption text-destructive">
-          {t(($) => $.decisions.auth_execute_failed, { reason: decision.execution_error })}
+          {t(($) => $.decisions.auth_execute_failed)}
         </p>
       )}
+      {sideEffectStatus === "unknown" && (
+        <p className="mt-2 text-caption font-medium text-destructive" role="status" aria-live="polite">
+          {t(($) => $.decisions.auth_result_unknown)}
+        </p>
+      )}
+      {projectResults.map((result) => (
+        <p key={String(result.project_id)} className="mt-1 break-all text-caption text-muted-foreground" data-testid="decision-auth-project-result">
+          {String(result.project_id)} · {String(result.status)} · v{String(result.version)}
+        </p>
+      ))}
+      {typeof createdIssue?.target_identifier === "string" && (
+        <p className="mt-1 break-all text-caption text-muted-foreground" data-testid="decision-auth-created-issue">
+          {t(($) => $.decisions.auth_issue_created, {
+            identifier: createdIssue.target_identifier,
+            status: typeof createdIssue.target_issue_status === "string" ? createdIssue.target_issue_status : "in_progress",
+          })}
+        </p>
+      )}
+      {decision.action_type === "script_review" && decision.execution_result && typeof decision.execution_result === "object" &&
+        typeof (decision.execution_result as { script_sha256?: unknown }).script_sha256 === "string" && (
+          <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="decision-auth-script-receipt">
+            <code className="break-all text-caption text-muted-foreground">{t(($) => $.decisions.script_hash)}: {(decision.execution_result as { script_sha256: string }).script_sha256}</code>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={t(($) => $.decisions.copy_script_hash)}
+              title={t(($) => $.decisions.copy_script_hash)}
+              onClick={() => void navigator.clipboard.writeText((decision.execution_result as { script_sha256: string }).script_sha256)}
+            >
+              <Copy className="size-4" aria-hidden />
+            </Button>
+          </div>
+        )}
     </Card>
   );
 }
