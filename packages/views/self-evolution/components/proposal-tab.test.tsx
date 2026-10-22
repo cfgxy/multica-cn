@@ -392,10 +392,9 @@ it("updates the scoped run when the filter changes", async () => {
   );
 });
 
-// RUYI-723 A: evidence anchors render as issue chips that link to the issue
-// detail (list card and detail view); merged_from accumulates into aggregate
-// anchors; a row without anchors renders no chip block, and legacy rows
-// without the decision-context fields degrade to "—" instead of blanks.
+// RUYI-723 A: evidence anchors render as issue chips and retain task-level
+// provenance in proposal detail; merged_from accumulates issue anchors; a row
+// without anchors renders no chip block, and legacy decision context degrades.
 const CHIP_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const CHIP_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const CHIP_C = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
@@ -412,7 +411,7 @@ function anchorLinks(id: string): HTMLAnchorElement[] {
 it("renders evidence anchors as links to the issue detail", async () => {
   state.proposals = [
     proposal({
-      evidence_anchors: [{ issue_id: CHIP_A, ref: "release script fix", note: "root cause" }],
+      evidence_anchors: [{ issue_id: CHIP_A, task_id: "task-1", ref: "capability_adaptation_candidate:candidate-1", note: "policy-a@v2; applied" }],
       problem: "release script breaks on spaces",
       expected_effect: "script survives spaced paths",
       expected_gain: "no more manual fixes",
@@ -432,6 +431,9 @@ it("renders evidence anchors as links to the issue detail", async () => {
   expect(screen.getByText("script survives spaced paths")).toBeTruthy();
   expect(screen.getByText("no more manual fixes")).toBeTruthy();
   expect(screen.getByText("4 / 5")).toBeTruthy();
+  expect(screen.getByText("task-1")).toBeTruthy();
+  expect(screen.getByText(/capability_adaptation_candidate:candidate-1/)).toBeTruthy();
+  expect(screen.getByText("policy-a@v2; applied")).toBeTruthy();
 });
 
 it("renders aggregate anchors from merged_from", async () => {

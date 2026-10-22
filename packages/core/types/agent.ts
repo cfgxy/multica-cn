@@ -357,6 +357,22 @@ export interface AgentTask {
   started_at: string | null;
   completed_at: string | null;
   result: unknown;
+  capability_adaptation?: {
+    task_id: string;
+    policy_id: string;
+    policy_version: string;
+    scope: string;
+    trigger: string;
+    current_strategy: string;
+    suggested_strategy: string;
+    allowed_actions: string[];
+  };
+  capability_adaptation_result?: {
+    task_id: string;
+    policy_id: string;
+    policy_version: string;
+    status: string;
+  };
   error: string | null;
   // Empty string when the task is not in a failed state (the backend uses
   // `omitempty`, so the field may also be missing on non-failed tasks).

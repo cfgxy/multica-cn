@@ -181,6 +181,40 @@ describe("ActivityTab daily-retrospective runs (RUYI-673)", () => {
   });
 });
 
+describe("ActivityTab task experience receipts (RUYI-846)", () => {
+  it("shows task-bound evidence and links to proposal governance", async () => {
+    agentTasksRef.current = () => Promise.resolve([{
+      id: "task-experience-1",
+      agent_id: "agent-1",
+      issue_id: "issue-1",
+      status: "completed",
+      created_at: "2026-10-11T00:00:00Z",
+      completed_at: "2026-10-11T00:03:00Z",
+      capability_adaptation: {
+        task_id: "task-experience-1",
+        policy_id: "policy-1",
+        policy_version: "v2",
+        scope: "current_task",
+        trigger: "large implementation",
+        current_strategy: "one large pass",
+        suggested_strategy: "use small verified steps",
+        allowed_actions: ["split into checkpoints"],
+      },
+      capability_adaptation_result: {
+        task_id: "task-experience-1",
+        policy_id: "policy-1",
+        policy_version: "v2",
+        status: "applied",
+      },
+    } as unknown as AgentTask]);
+    renderTab();
+    expect(await screen.findByText("Task experience receipt · applied")).toBeInTheDocument();
+    expect(screen.getByText("use small verified steps")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review proposal governance" }).getAttribute("href"))
+      .toBe("/acme/self-evolution/proposals");
+  });
+});
+
 // A task held by the agent's host backpressure gate (RUYI-729): queued with
 // the server-stamped queued_reason. The row must name the hold instead of
 // sitting as a bare "Queued".

@@ -37,6 +37,27 @@
       "noneAuto": "自動提案はまだありません。",
       "empty": "プールは空です。日次ふりかえりを設定すると、毎日の分析で提案が自動的にプールに入ります。"
     },
+    "experiences": {
+      "title": "タスク経験候補",
+      "loading": "タスク経験を読み込み中",
+      "error": "タスク経験を読み込めませんでした",
+      "retry": "再試行",
+      "empty": "検証済みの適応パターンはまだありません。",
+      "proposalsLink": "提案ガバナンスを確認",
+      "sourceCount": "完了したタスク {{count}} 件で確認",
+      "sourceTask": "タスク {{task}} · {{policy}} · {{date}}",
+      "currentStrategy": "現在の方法：{{strategy}}",
+      "scope": "適用範囲 {{scope}}",
+      "allowedActions": "許可された操作：{{actions}}",
+      "limitation": "証拠の制限",
+      "repeatedLimit": "繰り返し観測されたタスク単位の証拠は、承認済みの workspace ポリシーではありません。提案はガバナンス、クイズ、適用の各ゲートを完了するまで下書きです。",
+      "draftProposal": "提案の下書きを作成",
+      "creatingProposal": "下書きを作成中…",
+      "proposalCreated": "下書きを作成 · 提案プールを開く",
+      "createFailed": "提案の下書きを作成できませんでした。候補は未適用のままです。",
+      "proposalName": "反復適応候補 {{candidate}}（{{count}} 件）",
+      "proposalBody": "トリガー：{{trigger}}\n適用範囲：{{scope}}\n提案する方針：{{strategy}}\n許可する操作：{{actions}}\nソースタスク：{{tasks}}\n制限：{{limitation}} ガバナンスによる承認・適用まで有効な方針は変わりません。"
+    },
     "knowledge": {
       "title": "ナレッジミラー",
       "empty": "登録ディレクトリはまだありません。",
