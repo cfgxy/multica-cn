@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 )
 
@@ -112,6 +113,7 @@ type activeRepoCheckoutTask struct {
 	WorkspaceID string
 	TaskID      string
 	AgentID     string
+	IssueID     string
 	AgentName   string
 	WorkDir     string
 }
@@ -507,6 +509,22 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			}
 			d.logger.Error("repo checkout failed", "url", req.URL, "error", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if result == nil {
+			d.logger.Error("repo checkout returned no result", "url", req.URL)
+			http.Error(w, "repo checkout returned no result", http.StatusInternalServerError)
+			return
+		}
+		if err := execenv.RefreshTaskContextMarker(activeTask.WorkDir, execenv.TaskContextForEnv{
+			TaskID:        activeTask.TaskID,
+			ManagedBranch: result.BranchName,
+			BaseCommit:    result.BaseCommit,
+			IssueID:       activeTask.IssueID,
+			AgentID:       activeTask.AgentID,
+		}); err != nil {
+			d.logger.Error("repo checkout marker refresh failed", "url", req.URL, "error", err)
+			http.Error(w, "refresh managed task marker: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
