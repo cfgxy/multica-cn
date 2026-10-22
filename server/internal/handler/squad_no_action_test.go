@@ -104,7 +104,7 @@ func countAgentCommentsForIssue(t *testing.T, issueID, agentID string) int {
 	return count
 }
 
-func TestCompleteTask_SquadLeaderNoActionDoesNotSynthesizeComment(t *testing.T) {
+func TestCompleteTask_SquadLeaderNoActionStillReportsCompletion(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -114,12 +114,17 @@ func TestCompleteTask_SquadLeaderNoActionDoesNotSynthesizeComment(t *testing.T) 
 
 	completeRunningTask(t, fx, "No action needed. Exiting silently.")
 
-	if got := countAgentCommentsForIssue(t, fx.IssueID, fx.LeaderID); got != 0 {
-		t.Fatalf("expected no squad leader comment after no_action completion, got %d", got)
+	if got := countAgentCommentsForIssue(t, fx.IssueID, fx.LeaderID); got != 1 {
+		t.Fatalf("expected one terminal report after no_action completion, got %d", got)
+	}
+	var content string
+	dbfx.QueryRow(t, `SELECT content FROM comment WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2`, fx.IssueID, fx.LeaderID).Scan(&content)
+	if !strings.Contains(content, "Run completed without a substantive comment.") || !strings.Contains(content, "mention://agent/"+fx.LeaderID) {
+		t.Fatalf("terminal report = %q, want fallback text and leader mention", content)
 	}
 }
 
-func TestCompleteTask_SquadLeaderNoActionCanonicalizesTaskID(t *testing.T) {
+func TestCompleteTask_SquadLeaderNoActionCanonicalizesTaskIDAndReports(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -129,8 +134,8 @@ func TestCompleteTask_SquadLeaderNoActionCanonicalizesTaskID(t *testing.T) {
 
 	completeRunningTask(t, fx, "No action needed. Exiting silently.")
 
-	if got := countAgentCommentsForIssue(t, fx.IssueID, fx.LeaderID); got != 0 {
-		t.Fatalf("expected no comment when no_action was recorded with uppercase task id header, got %d", got)
+	if got := countAgentCommentsForIssue(t, fx.IssueID, fx.LeaderID); got != 1 {
+		t.Fatalf("expected one terminal report when no_action used uppercase task id header, got %d", got)
 	}
 }
 
