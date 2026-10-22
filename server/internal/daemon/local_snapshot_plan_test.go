@@ -36,6 +36,19 @@ func snapshotResourceForTest(t *testing.T, id, dir, daemonID string, primary boo
 	return ProjectResourceData{ID: id, ResourceType: localDirectoryResourceType, ResourceRef: raw}
 }
 
+func worktreeResourceForTest(t *testing.T, id, dir, daemonID string) ProjectResourceData {
+	t.Helper()
+	raw, err := json.Marshal(localDirectoryRef{
+		LocalPath:     dir,
+		DaemonID:      daemonID,
+		ExecutionMode: localDirectoryModeWorktree,
+	})
+	if err != nil {
+		t.Fatalf("marshal worktree ref: %v", err)
+	}
+	return ProjectResourceData{ID: id, ResourceType: localDirectoryResourceType, ResourceRef: raw}
+}
+
 // scopeJSONForTest renders the task-level local_directory_scope payload.
 func scopeJSONForTest(t *testing.T, resourceID string, subdirs ...string) json.RawMessage {
 	t.Helper()
@@ -86,6 +99,47 @@ func TestResolveSnapshotPlanUndeclaredPrimary(t *testing.T) {
 	if locks := plan.DeclaredLockPaths(); locks != nil {
 		t.Fatalf("undeclared plan must take no lock, got %v", locks)
 	}
+}
+
+func TestResolveSnapshotPlanUsesWorktreeResourceOnlyWithGitSnapshotGate(t *testing.T) {
+	gitRoot := newTestGitRoot(t)
+	task := Task{
+		ID:               "t1",
+		ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "r1", gitRoot, "d1")},
+	}
+
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "")
+	plan, err := resolveSnapshotPlan(task, "d1")
+	if err != nil || plan != nil {
+		t.Fatalf("disabled gate must preserve the worktree path, plan=%+v err=%v", plan, err)
+	}
+
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "1")
+	plan, err = resolveSnapshotPlan(task, "d1")
+	if err != nil || plan == nil || plan.Primary == nil || plan.Primary.AbsPath != filepath.Clean(gitRoot) {
+		t.Fatalf("enabled gate must plan the ordinary worktree resource, plan=%+v err=%v", plan, err)
+	}
+	if fallback, err := snapshotWorktreeFallback(plan); err != nil || fallback != nil {
+		t.Fatalf("eligible ordinary worktree resource must enter snapshot delivery, fallback=%+v err=%v", fallback, err)
+	}
+	if fallback, err := snapshotWorktreeFallbackWithGitGateAndCapability(plan, true, false); err != nil || fallback == nil || !fallback.UsesWorktree() {
+		t.Fatalf("incapable daemon must preserve the worktree fallback, fallback=%+v err=%v", fallback, err)
+	} else if got := snapshotExecutionObservationFor(plan, fallback, true, false); got.DowngradeCode != "git_snapshot_capability_unavailable" || got.ExecutionMode != localDirectoryModeWorktree {
+		t.Fatalf("incapable worktree observation = %+v", got)
+	}
+
+	nested := filepath.Join(gitRoot, "child")
+	if out, err := exec.Command("git", "init", "-q", nested).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	plan, err = resolveSnapshotPlan(task, "d1")
+	if err != nil || plan == nil {
+		t.Fatalf("resolve nested worktree candidate: plan=%+v err=%v", plan, err)
+	}
+	if fallback, err := snapshotWorktreeFallback(plan); err != nil || fallback == nil || !fallback.UsesWorktree() {
+		t.Fatalf("nested repository must preserve the worktree fallback, fallback=%+v err=%v", fallback, err)
+	}
+
 }
 
 func TestResolveSnapshotPlanUndeclaredSoleRowWithoutPrimary(t *testing.T) {
@@ -774,7 +828,7 @@ func TestLocalDirectoryGCExemption(t *testing.T) {
 
 	plain := t.TempDir()
 	snapTask := Task{ID: "t1", ProjectResources: []ProjectResourceData{snapshotResourceForTest(t, "r1", plain, daemonID, true)}}
-	if !localDirectoryGCExemption(snapTask, daemonID) {
+	if !localDirectoryGCExemption(snapTask, daemonID, true) {
 		t.Error("snapshot run on a non-git root must stamp the GC exemption")
 	}
 
@@ -783,7 +837,7 @@ func TestLocalDirectoryGCExemption(t *testing.T) {
 		t.Fatalf("git init: %v (%s)", err, out)
 	}
 	gitTask := Task{ID: "t2", ProjectResources: []ProjectResourceData{snapshotResourceForTest(t, "r2", gitDir, daemonID, true)}}
-	if localDirectoryGCExemption(gitTask, daemonID) {
+	if localDirectoryGCExemption(gitTask, daemonID, true) {
 		t.Error("git-root snapshot task routes to the worktree flow and must NOT stamp the exemption")
 	}
 
@@ -795,13 +849,13 @@ func TestLocalDirectoryGCExemption(t *testing.T) {
 		}
 		return ProjectResourceData{ID: id, ResourceType: localDirectoryResourceType, ResourceRef: raw}
 	}
-	if !localDirectoryGCExemption(Task{ID: "t3", ProjectResources: []ProjectResourceData{localResource("r3", localDirectoryModeInPlace)}}, daemonID) {
+	if !localDirectoryGCExemption(Task{ID: "t3", ProjectResources: []ProjectResourceData{localResource("r3", localDirectoryModeInPlace)}}, daemonID, true) {
 		t.Error("in_place assignment runs inside the user's tree and must stamp the exemption")
 	}
-	if localDirectoryGCExemption(Task{ID: "t4", ProjectResources: []ProjectResourceData{localResource("r4", localDirectoryModeWorktree)}}, daemonID) {
+	if localDirectoryGCExemption(Task{ID: "t4", ProjectResources: []ProjectResourceData{localResource("r4", localDirectoryModeWorktree)}}, daemonID, true) {
 		t.Error("worktree assignment owns a disposable env root and must NOT stamp the exemption")
 	}
-	if localDirectoryGCExemption(Task{ID: "t5"}, daemonID) {
+	if localDirectoryGCExemption(Task{ID: "t5"}, daemonID, true) {
 		t.Error("no local_directory involvement → no exemption")
 	}
 }

@@ -5835,7 +5835,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 			// by ReapExpiredSnapshots on the ledger's own 7-day schedule —
 			// the ordinary orphan sweep must not RemoveAll the root out
 			// from under that retention window.
-			if localDirectoryGCExemption(task, d.cfg.DaemonID) {
+			if localDirectoryGCExemption(task, d.cfg.DaemonID, d.client.snapshotSupport.Load()) {
 				meta.LocalDirectory = true
 			}
 			if err := execenv.WriteGCMeta(result.EnvRoot, meta, taskLog); err != nil {
@@ -6163,7 +6163,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 // each with the full waiting plumbing (status badge, prepare-lease extender,
 // cancellation poller) the in_place path uses.
 func (d *Daemon) acquireSnapshotScopeLocks(ctx context.Context, task Task, plan *snapshotPlan, taskLog *slog.Logger) (release func(), abort bool) {
-	fb, ferr := snapshotWorktreeFallback(plan)
+	fb, ferr := snapshotWorktreeFallbackWithGitGateAndCapability(plan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1", d.client.snapshotSupport.Load())
 	if ferr != nil {
 		taskLog.Error("local_directory: snapshot worktree fallback failed", "error", ferr)
 		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
@@ -7750,7 +7750,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	if snapPlan != nil {
 		gateEnabled := os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1"
-		fb, ferr := snapshotWorktreeFallbackWithGitGate(snapPlan, gateEnabled)
+		fb, ferr := snapshotWorktreeFallbackWithGitGateAndCapability(snapPlan, gateEnabled, d.client.snapshotSupport.Load())
 		if ferr != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(ferr)
 		}
