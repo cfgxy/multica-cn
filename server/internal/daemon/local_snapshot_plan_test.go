@@ -285,6 +285,29 @@ func TestAuditSnapshotGitScope(t *testing.T) {
 	}
 }
 
+func TestGitSnapshotDeliveryEligibleIsNarrow(t *testing.T) {
+	gitRoot := newTestGitRoot(t)
+	ordinary := &snapshotPlan{Units: []snapshotUnit{{AbsPath: gitRoot}}, Primary: &snapshotUnit{AbsPath: gitRoot}}
+	if !gitSnapshotDeliveryEligible(ordinary, true) {
+		t.Fatal("ordinary single-root repository must be eligible when the gate is enabled")
+	}
+	if gitSnapshotDeliveryEligible(ordinary, false) {
+		t.Fatal("delivery gate must default to a worktree fallback")
+	}
+	if fallback, err := snapshotWorktreeFallbackWithGitGate(ordinary, true); err != nil || fallback != nil {
+		t.Fatalf("enabled ordinary repository must enter snapshot delivery, fallback=%+v err=%v", fallback, err)
+	}
+
+	nested := newTestGitRoot(t)
+	if out, err := exec.Command("git", "init", "-q", filepath.Join(nested, "child")).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	nestedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: nested}}, Primary: &snapshotUnit{AbsPath: nested}}
+	if gitSnapshotDeliveryEligible(nestedPlan, true) {
+		t.Fatal("nested Git must keep the worktree fallback")
+	}
+}
+
 func newTestGitRoot(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

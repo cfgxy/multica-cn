@@ -97,6 +97,36 @@ func TestRecordSnapshotStartForcesActiveState(t *testing.T) {
 	}
 }
 
+func TestFinalizeSnapshotKeepsGitArtifactForRecovery(t *testing.T) {
+	envRoot := t.TempDir()
+	artifact := &SnapshotGitArtifactSpec{ArtifactDir: SnapshotGitArtifactDir(envRoot, "task-1"), Baseline: "base", EnvRoot: envRoot}
+	if err := RecordSnapshotStart(envRoot, SnapshotLedgerEntry{TaskID: "task-1", Root: envRoot, GitArtifact: artifact}); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinalizeSnapshot(envRoot, "task-1", true); err != nil {
+		t.Fatal(err)
+	}
+	entries := readLedgerEntries(t, envRoot)
+	if len(entries) != 1 || entries[0].State != snapshotStateFailed || entries[0].GitArtifact == nil || entries[0].GitArtifact.ArtifactDir != artifact.ArtifactDir {
+		t.Fatalf("failure recovery ledger = %+v, want retained Git artifact", entries)
+	}
+}
+
+func TestFinalizeSnapshotKeepsSuccessfulGitArtifactForReview(t *testing.T) {
+	envRoot := t.TempDir()
+	artifact := &SnapshotGitArtifactSpec{ArtifactDir: SnapshotGitArtifactDir(envRoot, "task-1"), Baseline: "base", EnvRoot: envRoot}
+	if err := RecordSnapshotStart(envRoot, SnapshotLedgerEntry{TaskID: "task-1", Root: envRoot, GitArtifact: artifact}); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinalizeSnapshot(envRoot, "task-1", false); err != nil {
+		t.Fatal(err)
+	}
+	entries := readLedgerEntries(t, envRoot)
+	if len(entries) != 1 || entries[0].State != snapshotStateDelivered || entries[0].GitArtifact == nil {
+		t.Fatalf("successful delivery ledger = %+v, want retained review artifact", entries)
+	}
+}
+
 func TestFinalizeSnapshotKeepFalseRemovesEntryAndKeepTrueMarksFailed(t *testing.T) {
 	t.Parallel()
 	envRoot := t.TempDir()
