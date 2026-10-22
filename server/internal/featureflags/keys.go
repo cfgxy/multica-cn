@@ -75,8 +75,9 @@ const (
 	// metadata permission gate for outerloop_* keys, and the stall sweep —
 	// but only for issues that opt in via an outerloop_state plan in
 	// metadata. Plan-less issues behave exactly as before regardless of this
-	// switch. It is a server-side switch (FF_OUTER_LOOP) and deliberately
-	// not published to the frontend. Defaults to true: the per-issue opt-in
+	// switch. It is published to the frontend so the control surface follows
+	// the same kill switch instead of offering controls which always 404.
+	// Defaults to true: the per-issue opt-in
 	// is the blast-radius boundary, so the global default gates dead code
 	// paths rather than user-visible behavior, and the escape hatch turns
 	// the whole subsystem off in one move (disabled = the status quo, with
@@ -98,6 +99,7 @@ var frontendPublicFlags = []string{
 	PluginsV1,
 	MarketplaceV1,
 	MarketplacePublishV1,
+	OuterLoop,
 }
 
 func BillingWorkspaceSubscriptionsEnabled(ctx context.Context, flags *featureflag.Service) bool {
@@ -146,6 +148,7 @@ func ClauseDynamicInjectionDisabledEnabled(ctx context.Context, flags *featurefl
 var frontendPublicFlagDefaults = map[string]bool{
 	MarketplaceV1:        true,
 	MarketplacePublishV1: true,
+	OuterLoop:            true,
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {

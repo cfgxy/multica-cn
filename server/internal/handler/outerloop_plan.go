@@ -10,12 +10,28 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/outerloop"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 type outerLoopPlanRequest struct {
 	Enabled   *bool   `json:"enabled"`
 	MaxRounds *int    `json:"max_rounds"`
 	Goal      *string `json:"goal"`
+}
+
+type outerLoopPlanView struct {
+	State      string `json:"state"`
+	Goal       string `json:"goal"`
+	MaxRounds  int    `json:"max_rounds"`
+	Round      int    `json:"round"`
+	WaitReason string `json:"wait_reason"`
+}
+
+type outerLoopPlanResponse struct {
+	Enabled       bool              `json:"enabled"`
+	HasPlan       bool              `json:"has_plan"`
+	Plan          outerLoopPlanView `json:"plan"`
+	IssueRevision int64             `json:"issue_revision"`
 }
 
 func (h *Handler) outerLoopIssue(w http.ResponseWriter, r *http.Request) (db.Issue, bool) {
@@ -26,9 +42,29 @@ func (h *Handler) outerLoopIssue(w http.ResponseWriter, r *http.Request) (db.Iss
 	return h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 }
 
-func outerLoopResponse(issue db.Issue) map[string]any {
-	plan, ok := outerloop.ParsePlan(util.JSONObjectOrEmpty(issue.Metadata))
-	return map[string]any{"enabled": ok && plan.State != outerloop.StateStopped, "plan": plan, "has_plan": ok, "issue_revision": issue.Revision}
+func outerLoopResponse(issue db.Issue) outerLoopPlanResponse {
+	metadata := util.JSONObjectOrEmpty(issue.Metadata)
+	plan, ok := outerloop.ParsePlan(metadata)
+	view := outerLoopPlanView{State: outerloop.StateStopped, MaxRounds: outerloop.DefaultMaxRounds}
+	if ok {
+		view = outerLoopPlanView{
+			State: plan.State, Goal: plan.Goal, MaxRounds: plan.MaxRounds, Round: plan.Round,
+		}
+	}
+	if reason, _ := metadata[outerloop.MetaWaitReason].(string); reason != "" {
+		view.WaitReason = reason
+	}
+	return outerLoopPlanResponse{
+		Enabled: ok && plan.State != outerloop.StateStopped, HasPlan: ok, Plan: view, IssueRevision: issue.Revision,
+	}
+}
+
+func (h *Handler) publishOuterLoopPlanChanged(issue db.Issue) {
+	h.publish(protocol.EventIssueMetadataChanged, uuidToString(issue.WorkspaceID), "member", "", map[string]any{
+		"issue_id":       uuidToString(issue.ID),
+		"metadata":       util.JSONObjectOrEmpty(issue.Metadata),
+		"issue_revision": issue.Revision,
+	})
 }
 
 func (h *Handler) GetOuterLoopPlan(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +99,22 @@ func (h *Handler) PutOuterLoopPlan(w http.ResponseWriter, r *http.Request) {
 	var req outerLoopPlanRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock outer loop plan")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.LockIssueDuplicateKey(r.Context(), uuidToString(issue.ID)+":outerloop"); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock outer loop plan")
+		return
+	}
+	issue, err = qtx.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "issue not found")
 		return
 	}
 	metadata := parseIssueMetadata(issue.Metadata)
@@ -127,12 +179,17 @@ func (h *Handler) PutOuterLoopPlan(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range values {
 		raw, _ := json.Marshal(entry.value)
 		var err error
-		updated, err = h.Queries.SetIssueMetadataKey(r.Context(), db.SetIssueMetadataKeyParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID, Key: entry.key, Value: raw})
+		updated, err = qtx.SetIssueMetadataKey(r.Context(), db.SetIssueMetadataKeyParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID, Key: entry.key, Value: raw})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to update outer loop plan")
 			return
 		}
 	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save outer loop plan")
+		return
+	}
+	h.publishOuterLoopPlanChanged(updated)
 	writeJSON(w, http.StatusOK, outerLoopResponse(updated))
 }
 
@@ -143,6 +200,22 @@ func (h *Handler) FireOuterLoopPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	actor, ok := h.requireOuterLoopMember(w, r, issue)
 	if !ok {
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock outer loop plan")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.LockIssueDuplicateKey(r.Context(), uuidToString(issue.ID)+":outerloop"); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock outer loop plan")
+		return
+	}
+	issue, err = qtx.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "issue not found")
 		return
 	}
 	plan, ok := outerloop.ParsePlan(parseIssueMetadata(issue.Metadata))
@@ -158,7 +231,15 @@ func (h *Handler) FireOuterLoopPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "task service is unavailable")
 		return
 	}
-	pending, err := h.Queries.HasPendingTaskForIssueAndAgent(r.Context(), db.HasPendingTaskForIssueAndAgentParams{IssueID: issue.ID, AgentID: issue.AssigneeID, HeadSha: pgtype.Text{}})
+	planAgent, err := util.ParseUUID(plan.AgentID)
+	if err != nil {
+		planAgent = issue.AssigneeID
+	}
+	if !planAgent.Valid {
+		writeError(w, http.StatusConflict, "outer loop plan has no agent")
+		return
+	}
+	pending, err := qtx.HasPendingTaskForIssueAndAgent(r.Context(), db.HasPendingTaskForIssueAndAgentParams{IssueID: issue.ID, AgentID: planAgent, HeadSha: pgtype.Text{}})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to inspect pending tasks")
 		return
@@ -167,16 +248,26 @@ func (h *Handler) FireOuterLoopPlan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"dispatched": false, "reason": "pending_task"})
 		return
 	}
-	if _, err := h.TaskService.EnqueueTaskForIssueWithHandoff(r.Context(), issue, outerloop.RoundDoc(plan.Round+1, plan.MaxRounds, plan.Goal), actor); err != nil {
+	// The loop belongs to the agent pinned in its metadata, not a potentially
+	// newer Issue assignee. This mirrors the terminal/sweep paths in service.
+	dispatchIssue := issue
+	dispatchIssue.AssigneeID = planAgent
+	dispatchIssue.AssigneeType = pgtype.Text{String: "agent", Valid: true}
+	if _, err := h.TaskService.EnqueueTaskForIssueWithHandoff(r.Context(), dispatchIssue, outerloop.RoundDoc(plan.Round+1, plan.MaxRounds, plan.Goal), actor); err != nil {
 		writeError(w, http.StatusConflict, "failed to dispatch outer loop")
 		return
 	}
-	updated, err := h.Queries.IncrementOuterLoopRound(r.Context(), db.IncrementOuterLoopRoundParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	updated, err := qtx.IncrementOuterLoopRound(r.Context(), db.IncrementOuterLoopRoundParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "outer loop dispatch succeeded but round update failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"dispatched": true, "plan": outerLoopResponse(updated)["plan"], "issue_revision": updated.Revision})
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save outer loop dispatch")
+		return
+	}
+	h.publishOuterLoopPlanChanged(updated)
+	writeJSON(w, http.StatusOK, map[string]any{"dispatched": true, "plan": outerLoopResponse(updated).Plan, "issue_revision": updated.Revision})
 }
 
 func (h *Handler) StopOuterLoopPlan(w http.ResponseWriter, r *http.Request) {
@@ -187,14 +278,35 @@ func (h *Handler) StopOuterLoopPlan(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireOuterLoopMember(w, r, issue); !ok {
 		return
 	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock outer loop plan")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.LockIssueDuplicateKey(r.Context(), uuidToString(issue.ID)+":outerloop"); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock outer loop plan")
+		return
+	}
+	issue, err = qtx.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "issue not found")
+		return
+	}
 	if _, hasPlan := outerloop.ParsePlan(parseIssueMetadata(issue.Metadata)); !hasPlan {
 		writeError(w, http.StatusNotFound, "outer loop plan not found")
 		return
 	}
-	updated, err := h.Queries.SetIssueMetadataKey(r.Context(), db.SetIssueMetadataKeyParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID, Key: outerloop.MetaState, Value: []byte(`"stopped"`)})
+	updated, err := qtx.SetIssueMetadataKey(r.Context(), db.SetIssueMetadataKeyParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID, Key: outerloop.MetaState, Value: []byte(`"stopped"`)})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to stop outer loop")
 		return
 	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to stop outer loop")
+		return
+	}
+	h.publishOuterLoopPlanChanged(updated)
 	writeJSON(w, http.StatusOK, outerLoopResponse(updated))
 }
