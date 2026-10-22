@@ -236,6 +236,56 @@ func TestSnapshotWorktreeFallbackOnGitRoot(t *testing.T) {
 	}
 }
 
+func TestAuditSnapshotGitScope(t *testing.T) {
+	t.Parallel()
+
+	plain := newTestGitRoot(t)
+	plainPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: plain}}, Primary: &snapshotUnit{AbsPath: plain}}
+	if audit := auditSnapshotGitScope(plainPlan); !audit.HasGit || !audit.Safe {
+		t.Fatalf("ordinary repository must be fully auditable, got %+v", audit)
+	}
+
+	parent := newTestGitRoot(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	if out, err := exec.Command("git", "-C", parent, "worktree", "add", "-q", linked).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v (%s)", err, out)
+	}
+	linkedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: linked}}, Primary: &snapshotUnit{AbsPath: linked}}
+	if audit := auditSnapshotGitScope(linkedPlan); !audit.HasGit || audit.Safe || !strings.Contains(audit.Reason, "outside") {
+		t.Fatalf("linked worktree with external common dir must fail audit, got %+v", audit)
+	}
+
+	nested := newTestGitRoot(t)
+	child := filepath.Join(nested, "child")
+	if out, err := exec.Command("git", "init", "-q", child).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	nestedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: nested}}, Primary: &snapshotUnit{AbsPath: nested}}
+	if audit := auditSnapshotGitScope(nestedPlan); !audit.HasGit || !audit.Safe {
+		t.Fatalf("nested repositories fully inside scope must be auditable, got %+v", audit)
+	}
+}
+
+func newTestGitRoot(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.invalid"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "add", "tracked.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", repo, "commit", "-qm", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v (%s)", err, out)
+	}
+	return repo
+}
+
 func TestSnapshotUnitDisplayName(t *testing.T) {
 	t.Parallel()
 	u := &snapshotUnit{Ref: localDirectoryRef{Label: "multica"}, AbsPath: "/home/me/multica", Subdir: "packages/core"}
