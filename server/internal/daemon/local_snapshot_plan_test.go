@@ -308,6 +308,40 @@ func TestGitSnapshotDeliveryEligibleIsNarrow(t *testing.T) {
 	}
 }
 
+func TestSnapshotExecutionObservation(t *testing.T) {
+	gitRoot := newTestGitRoot(t)
+	ordinary := &snapshotPlan{Units: []snapshotUnit{{Ref: localDirectoryRef{LocalPath: gitRoot}, AbsPath: gitRoot}}, Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: gitRoot}, AbsPath: gitRoot}}
+
+	fallback, err := snapshotWorktreeFallbackWithGitGate(ordinary, false)
+	if err != nil || fallback == nil {
+		t.Fatalf("disabled gate must use the worktree fallback, fallback=%+v err=%v", fallback, err)
+	}
+	if got := snapshotExecutionObservationFor(ordinary, fallback, false, true); got.ExecutionMode != localDirectoryModeWorktree || got.DowngradeCode != "git_snapshot_gate_disabled" || !got.Capability {
+		t.Fatalf("disabled gate observation = %+v", got)
+	}
+
+	fallback, err = snapshotWorktreeFallbackWithGitGate(ordinary, true)
+	if err != nil || fallback != nil {
+		t.Fatalf("eligible ordinary repository must use snapshot, fallback=%+v err=%v", fallback, err)
+	}
+	if got := snapshotExecutionObservationFor(ordinary, fallback, true, true); got.ExecutionMode != localDirectoryModeSnapshot || got.DowngradeCode != "" || !got.GateEnabled {
+		t.Fatalf("snapshot observation = %+v", got)
+	}
+
+	nested := newTestGitRoot(t)
+	if out, err := exec.Command("git", "init", "-q", filepath.Join(nested, "child")).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	nestedPlan := &snapshotPlan{Units: []snapshotUnit{{Ref: localDirectoryRef{LocalPath: nested}, AbsPath: nested}}, Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: nested}, AbsPath: nested}}
+	fallback, err = snapshotWorktreeFallbackWithGitGate(nestedPlan, true)
+	if err != nil || fallback == nil {
+		t.Fatalf("nested repository must fall back, fallback=%+v err=%v", fallback, err)
+	}
+	if got := snapshotExecutionObservationFor(nestedPlan, fallback, true, true); got.DowngradeCode != "git_snapshot_unsupported_topology" {
+		t.Fatalf("nested repository observation = %+v", got)
+	}
+}
+
 func newTestGitRoot(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()

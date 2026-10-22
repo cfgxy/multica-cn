@@ -7749,10 +7749,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, asEnvironmentSetupFailure(snapPlanErr)
 	}
 	if snapPlan != nil {
-		fb, ferr := snapshotWorktreeFallback(snapPlan)
+		gateEnabled := os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1"
+		fb, ferr := snapshotWorktreeFallbackWithGitGate(snapPlan, gateEnabled)
 		if ferr != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(ferr)
 		}
+		observation := snapshotExecutionObservationFor(snapPlan, fb, gateEnabled, d.client.snapshotSupport.Load())
+		taskLog.Info("local_directory: snapshot execution decision",
+			"execution_mode", observation.ExecutionMode,
+			"git_snapshot_gate", observation.GateEnabled,
+			"snapshot_capability", observation.Capability,
+			"downgrade_code", observation.DowngradeCode,
+		)
 		if fb != nil {
 			// Git directories keep the worktree flow wholesale (ADR §3): the
 			// fallback rewrites the assignment to worktree mode so the branch
