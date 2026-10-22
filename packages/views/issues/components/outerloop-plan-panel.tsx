@@ -24,7 +24,7 @@ function errorMessage(error: unknown): string {
 
 export function OuterLoopPlanPanel({ issueId }: { issueId: string }) {
   const wsId = useCurrentWorkspace()?.id ?? "";
-  const featureEnabled = useFeatureEnabled(OUTER_LOOP_FLAG, true);
+	const featureEnabled = useFeatureEnabled(OUTER_LOOP_FLAG, false);
   const [open, setOpen] = useState(true);
   const [preview, setPreview] = useState(false);
   const draft = useOuterLoopPlanDraftStore((state) => state.drafts[issueId]);
