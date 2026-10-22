@@ -216,6 +216,45 @@ func TestOuterLoopPlanFireReturnsPendingTaskWithoutAdvancingRound(t *testing.T) 
 	}
 }
 
+func TestOuterLoopPlanFireRollsBackTaskWhenRoundUpdateFails(t *testing.T) {
+	issueID, agentID, _ := seedOuterLoopPlan(t, outerloop.StateRunning, 1, 4)
+	setOuterLoopFlagForTest(t, true)
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx, `
+		CREATE FUNCTION fail_outerloop_round_increment() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF NEW.metadata->>'outerloop_round' = '2' THEN
+				RAISE EXCEPTION 'injected outer loop round update failure';
+			END IF;
+			RETURN NEW;
+		END;
+		$$;
+		CREATE TRIGGER fail_outerloop_round_increment
+		BEFORE UPDATE ON issue FOR EACH ROW
+		EXECUTE FUNCTION fail_outerloop_round_increment();
+	`); err != nil {
+		t.Fatalf("install round failure trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := testPool.Exec(ctx, `DROP TRIGGER IF EXISTS fail_outerloop_round_increment ON issue; DROP FUNCTION IF EXISTS fail_outerloop_round_increment();`); err != nil {
+			t.Errorf("remove round failure trigger: %v", err)
+		}
+	})
+
+	w := httptest.NewRecorder()
+	r := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/outerloop/fire", nil), "id", issueID)
+	testHandler.FireOuterLoopPlan(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("fire with round failure: got %d: %s", w.Code, w.Body.String())
+	}
+	if got := queuedTaskCount(t, issueID, agentID); got != 0 {
+		t.Fatalf("queued tasks = %d, want 0 after rollback", got)
+	}
+	if got := outerLoopRound(t, issueID); got != 1 {
+		t.Fatalf("round = %d, want 1 after rollback", got)
+	}
+}
+
 func TestOuterLoopPlanFireUsesPinnedAgentAfterIssueReassignment(t *testing.T) {
 	issueID, pinnedAgentID, _ := seedOuterLoopPlan(t, outerloop.StateRunning, 1, 4)
 	setOuterLoopFlagForTest(t, true)
