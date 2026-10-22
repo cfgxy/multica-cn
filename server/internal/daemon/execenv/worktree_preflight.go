@@ -13,6 +13,7 @@ import (
 type WorktreePreflight struct {
 	Status         string   `json:"status"`
 	TaskID         string   `json:"task_id,omitempty"`
+	GitRoot        string   `json:"git_root,omitempty"` // git root the worktree checks ran against
 	ExpectedBranch string   `json:"expected_branch,omitempty"`
 	CurrentBranch  string   `json:"current_branch,omitempty"`
 	Head           string   `json:"head,omitempty"`
@@ -58,6 +59,7 @@ func PreflightWorktree(cwd string) (WorktreePreflight, error) {
 		result.Errors = append(result.Errors, err.Error())
 		return result, errors.New(strings.Join(result.Errors, "; "))
 	}
+	result.GitRoot = gitRoot
 	if branch, branchErr := runGitTrimmed(gitRoot, "symbolic-ref", "--quiet", "--short", "HEAD"); branchErr == nil {
 		result.CurrentBranch = branch
 	} else {
