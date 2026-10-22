@@ -852,13 +852,19 @@ func snapshotWorktreeFallback(plan *snapshotPlan) (*localDirectoryAssignment, er
 	if plan == nil || plan.Primary == nil {
 		return nil, nil
 	}
+	// Recursively audit Git metadata before choosing the preserved worktree
+	// delivery path. The audit is intentionally non-mutating; an unsafe or
+	// incomplete shape still falls back without attempting to repair .git.
+	// Git snapshot delivery is introduced behind a separate gate, so even a
+	// safe shape remains on worktree until that branch/restore lifecycle exists.
+	audit := auditSnapshotGitScope(plan)
+	if audit.Safe && !audit.HasGit {
+		return nil, nil
+	}
 	root := plan.Primary.Ref.LocalPath
 	abs, err := normalizeLocalPath(root)
 	if err != nil {
 		return nil, err
-	}
-	if _, ok := gitToplevel(abs); !ok {
-		return nil, nil
 	}
 	real, err := resolveRealPath(abs)
 	if err != nil {
