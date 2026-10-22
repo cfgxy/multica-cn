@@ -7641,6 +7641,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Repos are passed as metadata only — the agent checks them out on demand
 	// via `multica repo checkout <url>`.
 	taskCtx := execenv.TaskContextForEnv{
+		// TaskID must flow into the task marker on every path (fresh prepare and
+		// workdir reuse alike): a reused env refreshes the marker from this ctx, and
+		// a marker that loses task_id breaks `multica worktree preflight`'s task
+		// identity check for the whole handoff chain (RUYI-848).
+		TaskID:              task.ID,
 		IssueID:             task.IssueID,
 		TriggerCommentID:    task.TriggerCommentID,
 		TriggerThreadID:     task.TriggerThreadID,
