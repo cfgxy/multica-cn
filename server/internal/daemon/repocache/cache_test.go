@@ -2331,6 +2331,29 @@ func TestBranchNameDistinctForSharedUUIDv7Prefix(t *testing.T) {
 	}
 }
 
+func TestCreateWorktreeReportsImmutableBaseCommit(t *testing.T) {
+	t.Parallel()
+	sourceRepo := createTestRepo(t)
+	cache := New(t.TempDir(), testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: sourceRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	result, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     sourceRepo,
+		WorkDir:     t.TempDir(),
+		AgentName:   "Test Agent",
+		TaskID:      "88888888-0000-0000-0000-000000000000",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+	if want := gitHead(t, result.Path); result.BaseCommit != want {
+		t.Fatalf("BaseCommit = %q, want checkout HEAD %q", result.BaseCommit, want)
+	}
+}
+
 // TestCoAuthoredByStateStopsTrailerInExistingCheckout is the MUL-6921
 // regression: disabling the workspace toggle used to apply only to checkouts
 // created afterwards, because the decision was frozen into the hook file at

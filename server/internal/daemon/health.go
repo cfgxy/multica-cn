@@ -113,6 +113,7 @@ type activeRepoCheckoutTask struct {
 	WorkspaceID string
 	TaskID      string
 	AgentID     string
+	IssueID     string
 	AgentName   string
 	WorkDir     string
 }
@@ -510,7 +511,11 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-
+		if result == nil {
+			d.logger.Error("repo checkout returned no result", "url", req.URL)
+			http.Error(w, "repo checkout returned no result", http.StatusInternalServerError)
+			return
+		}
 		// Register the delivery context (branch + task baseline) into the
 		// active task's marker so `multica worktree preflight` can prove this
 		// checkout's delivery relationship (RUYI-848). Non-fatal: a marker

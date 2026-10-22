@@ -1061,12 +1061,27 @@ require_contains "$out" "would destroy slot dev1"
 require_contains "$out" "RUYI-401"
 [ -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "qa-clean dry run must not destroy"
 
-# Scoped --yes destroys the matching slot whatever its phase and leaves
-# other issues' slots alone.
+# A scoped cleanup during an active Issue stops served components but keeps the
+# slot identity. Destroying the database/profile while a daemon still owns its
+# PAT creates an unrecoverable 401 runtime and leaves Chat without agents.
+printf 'in_progress' > "$state/issue-RUYI-401"
+cat > "$MULTICA_SLOTS_HOME/dev1/.slot-lock" <<'EOF'
+OWNER_ISSUE=RUYI-401
+OWNER_ROLE=agent
+PHASE=dev
+ACQUIRED_AT=2026-01-01T00:00:00Z
+EOF
 register_slot dev2 RUYI-402 "$repo" 24 "$future_iso" qa
 bash "$repo/scripts/qa-clean.sh" --issue RUYI-401 --yes > "$out" 2>&1 || fail "qa-clean --yes must succeed"
-[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "qa-clean --issue must destroy the matching slot (any phase)"
+[ -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "qa-clean must preserve an active issue's slot identity"
+[ -f "$MULTICA_SLOTS_HOME/dev1/manifest.env" ] || fail "qa-clean must retain the active slot manifest"
+require_contains "$out" "preserved active slot dev1"
 [ -d "$MULTICA_SLOTS_HOME/dev2" ] || fail "qa-clean --issue must not touch another issue's slot"
+
+# Once the Issue is terminal the same scoped cleanup may reclaim the slot.
+printf 'done' > "$state/issue-RUYI-401"
+bash "$repo/scripts/qa-clean.sh" --issue RUYI-401 --yes > "$out" 2>&1 || fail "terminal qa-clean --yes must succeed"
+[ ! -d "$MULTICA_SLOTS_HOME/dev1" ] || fail "terminal qa-clean must destroy the matching slot"
 
 # Unscoped --yes without an owner must not destroy anyone else's slot — a
 # qa-phase slot held by a foreign issue is skipped, not destroyed.
