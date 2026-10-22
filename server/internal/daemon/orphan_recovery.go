@@ -108,9 +108,36 @@ func (d *Daemon) recoverInFlightTasksForRuntime(ctx context.Context, runtimeID s
 			d.logger.Warn("in-flight recovery: fail task failed", "task", t.ID, "runtime_id", runtimeID, "error", err)
 			continue
 		}
+		d.preserveSnapshotAfterRecoveredFailure(t)
 		d.logger.Info("in-flight recovery: dead worker proven by env-root lock; task failed for auto-retry",
 			"task", t.ID, "runtime_id", runtimeID, "work_dir", t.WorkDir)
 	}
+}
+
+// preserveSnapshotAfterRecoveredFailure turns a crash-left active snapshot
+// into a retained failed artifact only after the server accepted the terminal
+// failure. Non-snapshot tasks have no ledger and remain a no-op.
+func (d *Daemon) preserveSnapshotAfterRecoveredFailure(t InFlightTask) {
+	envRoot, err := execenv.ResolveRootDirReadOnly(execenv.RootDirParams{
+		WorkspacesRoot: d.cfg.WorkspacesRoot,
+		WorkspaceID:    t.WorkspaceID,
+		TaskID:         t.ID,
+	})
+	if err != nil {
+		d.logger.Warn("in-flight recovery: resolve snapshot root failed", "task", t.ID, "error", err)
+		return
+	}
+	if _, err := os.Stat(execenv.SnapshotLedgerPath(envRoot)); errors.Is(err, os.ErrNotExist) {
+		return
+	} else if err != nil {
+		d.logger.Warn("in-flight recovery: stat snapshot ledger failed", "task", t.ID, "error", err)
+		return
+	}
+	if err := execenv.FinalizeSnapshot(envRoot, t.ID, true); err != nil {
+		d.logger.Warn("in-flight recovery: preserve snapshot artifact failed", "task", t.ID, "error", err)
+		return
+	}
+	d.logger.Info("in-flight recovery: retained snapshot artifact after daemon restart", "task", t.ID)
 }
 
 // probeTaskWorker decides whether the task's worker is still alive by probing

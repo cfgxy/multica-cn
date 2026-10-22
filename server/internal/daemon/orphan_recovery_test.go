@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/supervisor"
@@ -286,6 +287,70 @@ func TestRecoverInFlightTasks_FailsDeadWorker(t *testing.T) {
 	}
 	if fails[0].ErrorMsg != orphanRecoveryErrMsg {
 		t.Fatalf("error msg = %q, want %q", fails[0].ErrorMsg, orphanRecoveryErrMsg)
+	}
+}
+
+// TestRecoverInFlightTasks_PreservesSnapshotAfterDeadWorker models a daemon
+// killed while a Git snapshot worker is active. Once restart recovery proves
+// the worker dead and the server accepts the failure, its upper tree and
+// bundle must get the failed-run retention window rather than the 24-hour
+// crash-orphan deadline.
+func TestRecoverInFlightTasks_PreservesSnapshotAfterDeadWorker(t *testing.T) {
+	fx := newRecoveryFixture(t)
+	envRoot := buildEnvRoot(t, fx.root, "ws1", "tasksnapshot")
+	stem := filepath.Join(execenv.SnapshotRoot(envRoot), "i-test-snapshot")
+	upper := filepath.Join(stem, "upper")
+	artifactDir := execenv.SnapshotGitArtifactDir(envRoot, "tasksnapshot")
+	if err := os.MkdirAll(upper, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bundle := filepath.Join(artifactDir, "snapshot.bundle")
+	if err := os.WriteFile(bundle, []byte("bundle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entry := execenv.SnapshotLedgerEntry{
+		TaskID:  "tasksnapshot",
+		Root:    envRoot,
+		Primary: filepath.Join(envRoot, "repo"),
+		Units: []execenv.SnapshotUnitSpec{{
+			Target: filepath.Join(envRoot, "repo"),
+			Alias:  filepath.Join(stem, "pristine"),
+			Upper:  upper,
+			Work:   filepath.Join(stem, "work"),
+		}},
+		GitArtifact: &execenv.SnapshotGitArtifactSpec{ArtifactDir: artifactDir, Baseline: "base", EnvRoot: envRoot},
+	}
+	if err := execenv.RecordSnapshotStart(envRoot, entry); err != nil {
+		t.Fatalf("record snapshot: %v", err)
+	}
+	fx.setInFlight(InFlightTask{ID: entry.TaskID, WorkspaceID: "ws1", Status: "running", WorkDir: filepath.Join(envRoot, "repo")})
+
+	fx.daemon.recoverInFlightTasksForRuntime(context.Background(), "rt-1")
+
+	raw, err := os.ReadFile(execenv.SnapshotLedgerPath(envRoot))
+	if err != nil {
+		t.Fatalf("read snapshot ledger: %v", err)
+	}
+	var ledger struct {
+		Entries []execenv.SnapshotLedgerEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(raw, &ledger); err != nil {
+		t.Fatalf("decode snapshot ledger: %v", err)
+	}
+	if len(ledger.Entries) != 1 || ledger.Entries[0].State != "failed" {
+		t.Fatalf("recovered snapshot ledger = %+v, want one failed entry", ledger.Entries)
+	}
+	if reaped := execenv.ReapExpiredSnapshots(envRoot, time.Now().Add(48*time.Hour)); len(reaped) != 0 {
+		t.Fatalf("failed snapshot must survive the orphan window, reaped=%v", reaped)
+	}
+	if _, err := os.Stat(upper); err != nil {
+		t.Fatalf("snapshot upper was not retained: %v", err)
+	}
+	if _, err := os.Stat(bundle); err != nil {
+		t.Fatalf("snapshot bundle was not retained: %v", err)
 	}
 }
 
