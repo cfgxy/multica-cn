@@ -1,6 +1,6 @@
 # RUYI-845 Git Snapshot Compatibility Matrix
 
-Baseline under test: PR #473 head `7ca32569f3fbee7e8934ee5026bc671498eaa824` plus the matrix test in this branch. Every fixture is a disposable real Git repository under Go's test temporary directory; no project resource, daemon registration, Pool, GTI, or production database is involved.
+Automated execution baseline: PR #473 implementation commit `2ee81c16685e3ce4bdc7c8d6500b4239aededdc0`. Every fixture is a disposable real Git repository under Go's test temporary directory; no project resource, daemon registration, Pool, GTI, or production database is involved.
 
 ## Supported Delivery Path
 
