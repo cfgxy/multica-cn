@@ -83,6 +83,134 @@ func TestExtractIdentifiers(t *testing.T) {
 	}
 }
 
+func TestUpdateIssueRejectsInReviewWhileLinkedPRIsDraft(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	issueID := dbfx.Issue(t, "draft PR status gate", testutil.Cols{"status": "in_progress"})
+	now := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+	pr, err := testHandler.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: 42,
+		RepoOwner: "gate-test", RepoName: "draft-pr", PrNumber: 834,
+		Title: "Draft PR", State: "draft", HtmlUrl: "https://github.com/gate-test/draft-pr/pull/834",
+		PrCreatedAt: now, PrUpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create draft PR: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, pr.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE id = $1`, pr.ID)
+	})
+	if err := testHandler.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+		IssueID: parseUUID(issueID), PullRequestID: pr.ID, LinkedByType: strToText("user"),
+	}); err != nil {
+		t.Fatalf("link draft PR: %v", err)
+	}
+
+	req := newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_review"})
+	req = withURLParam(req, "id", issueID)
+	rec := httptest.NewRecorder()
+	testHandler.UpdateIssue(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("UpdateIssue status=%d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "in_progress" {
+		t.Fatalf("issue status changed to %q after rejected transition", status)
+	}
+}
+
+func TestBatchUpdateIssuesRejectsInReviewWhileLinkedPRIsDraft(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	issueID := dbfx.Issue(t, "batch draft PR status gate", testutil.Cols{"status": "in_progress"})
+	now := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+	pr, err := testHandler.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), InstallationID: 42,
+		RepoOwner: "gate-test", RepoName: "batch-draft-pr", PrNumber: 835,
+		Title: "Draft PR", State: "draft", HtmlUrl: "https://github.com/gate-test/batch-draft-pr/pull/835",
+		PrCreatedAt: now, PrUpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create draft PR: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, pr.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE id = $1`, pr.ID)
+	})
+	if err := testHandler.Queries.LinkIssueToPullRequest(ctx, db.LinkIssueToPullRequestParams{
+		IssueID: parseUUID(issueID), PullRequestID: pr.ID, LinkedByType: strToText("user"),
+	}); err != nil {
+		t.Fatalf("link draft PR: %v", err)
+	}
+
+	req := newRequest(http.MethodPost, "/api/issues/batch-update", map[string]any{
+		"issue_ids": []string{issueID}, "updates": map[string]any{"status": "in_review"},
+	})
+	rec := httptest.NewRecorder()
+	testHandler.BatchUpdateIssues(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("BatchUpdateIssues status=%d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "in_progress" {
+		t.Fatalf("issue status changed to %q after rejected batch transition", status)
+	}
+}
+
+func TestUpdateIssueRejectsInReviewWhileLinkedVCSReviewIsDraft(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	issueID := dbfx.Issue(t, "draft VCS PR status gate", testutil.Cols{"status": "in_progress"})
+	connection, err := testHandler.Queries.UpsertVCSConnection(ctx, db.UpsertVCSConnectionParams{
+		WorkspaceID: parseUUID(testWorkspaceID), Provider: "forgejo",
+		InstanceUrl: "https://status-gate.invalid", AccountLogin: "gate-test",
+		AccessTokenEncrypted: "encrypted-token", WebhookSecretEncrypted: "encrypted-secret",
+	})
+	if err != nil {
+		t.Fatalf("create VCS connection: %v", err)
+	}
+	now := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+	pr, err := testHandler.Queries.UpsertVCSPullRequest(ctx, db.UpsertVCSPullRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), ConnectionID: connection.ID,
+		Provider: "forgejo", RepoOwner: "gate-test", RepoName: "draft-review", PrNumber: 836,
+		Title: "Draft review", State: "draft", HtmlUrl: "https://status-gate.invalid/gate-test/draft-review/pulls/836",
+		PrCreatedAt: now, PrUpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create draft VCS PR: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_vcs_pull_request WHERE pull_request_id = $1`, pr.ID)
+		testPool.Exec(ctx, `DELETE FROM vcs_pull_request WHERE id = $1`, pr.ID)
+		testPool.Exec(ctx, `DELETE FROM vcs_connection WHERE id = $1`, connection.ID)
+	})
+	if err := testHandler.Queries.LinkIssueToVCSPullRequest(ctx, db.LinkIssueToVCSPullRequestParams{
+		IssueID: parseUUID(issueID), PullRequestID: pr.ID, LinkedByType: strToText("user"),
+	}); err != nil {
+		t.Fatalf("link draft VCS PR: %v", err)
+	}
+
+	req := withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_review"}), "id", issueID)
+	rec := httptest.NewRecorder()
+	testHandler.UpdateIssue(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("UpdateIssue with draft VCS PR status=%d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+}
+
 func TestExtractClosingIdentifiers(t *testing.T) {
 	cases := []struct {
 		name string
