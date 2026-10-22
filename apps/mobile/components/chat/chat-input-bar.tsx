@@ -69,6 +69,7 @@ import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
 import {
+  CHAT_COMPOSER_BOTTOM_PADDING,
   CHAT_COMPOSER_INPUT_MAX_HEIGHT,
   CHAT_COMPOSER_INPUT_MIN_HEIGHT,
   CHAT_COMPOSER_MIN_HEIGHT,
@@ -529,8 +530,8 @@ export function ChatInputBar({
 
   return (
     <View
-      className="relative px-3 pb-2"
-      style={{ paddingTop: 2 }}
+      className="relative px-3"
+      style={{ paddingTop: 2, paddingBottom: CHAT_COMPOSER_BOTTOM_PADDING }}
       onLayout={handleComposerLayout}
     >
       {hasZone ? (

@@ -16,7 +16,7 @@ import { Text } from "@/components/ui/text";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
-import { PLUS_PANEL_GAP } from "@/lib/chat-composer-layout";
+import { PLUS_PANEL_OFFSET } from "@/lib/chat-composer-layout";
 import type { ReactNode } from "react";
 
 interface GridEntry {
@@ -151,7 +151,7 @@ export function PlusPanel({
         right: COMPOSER_HORIZONTAL_INSET,
         zIndex: 10,
         maxHeight,
-        transform: [{ translateY: -PLUS_PANEL_GAP }],
+        transform: [{ translateY: -PLUS_PANEL_OFFSET }],
       }}
     >
       <ScrollView keyboardShouldPersistTaps="handled" bounces={false}>
