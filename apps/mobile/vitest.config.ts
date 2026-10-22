@@ -25,6 +25,7 @@ export default defineConfig({
     // 构建期动态配置（MULTICA_APP_VERSION 注入，RUYI-573）。
     include: [
       "lib/**/*.test.ts",
+      "lib/**/*.dom.test.tsx",
       "data/**/*.test.ts",
       "plugins/**/*.test.ts",
       "app.config.test.ts",

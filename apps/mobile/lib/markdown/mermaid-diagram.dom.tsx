@@ -82,6 +82,7 @@ const ERROR_CSS = `
 export default function MermaidDiagramDom(props: ReaderDocumentDomProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [diagramSvg, setDiagramSvg] = useState("");
   const [pdfState, setPdfState] = useState<"loading" | "ready" | "error" | "large">("loading");
   const kind = props.kind ?? "mermaid";
   const url = props.kind === "pdf" ? props.url : "";
@@ -147,8 +148,9 @@ export default function MermaidDiagramDom(props: ReaderDocumentDomProps) {
         if (cancelled || !hostRef.current) return;
         setError(null);
         // `svg` is pure SVG markup under the strict + htmlLabels:false config
-        // above — the same trust level as the web renderer's srcDoc iframe.
-        hostRef.current.innerHTML = svg;
+        // above. Rendering it through React lets Expo DOM observe the updated
+        // content size and resize its native WebView host.
+        setDiagramSvg(svg);
       } catch (err) {
         if (!cancelled) {
           if (kind === "pdf") setPdfState("error");
@@ -175,10 +177,10 @@ export default function MermaidDiagramDom(props: ReaderDocumentDomProps) {
   if (kind === "pdf") {
     return (
       <div style={{ minHeight: "100%", padding: 12, background: "#f3f4f6" }}>
+        <div ref={hostRef} />
         {pdfState === "loading" ? <p role="status">Loading PDF…</p> : null}
         {pdfState === "error" ? <p role="alert">PDF preview is unavailable. Download the file to continue.</p> : null}
         {pdfState === "large" ? <p role="alert">This PDF is too large to preview. Download the file to continue.</p> : null}
-        <div ref={hostRef} />
       </div>
     );
   }
@@ -193,7 +195,7 @@ export default function MermaidDiagramDom(props: ReaderDocumentDomProps) {
           <pre>{error}</pre>
         </div>
       ) : (
-        <div className="wrap" ref={hostRef} />
+        <div className="wrap" ref={hostRef} dangerouslySetInnerHTML={{ __html: diagramSvg }} />
       )}
     </>
   );
