@@ -46,13 +46,19 @@ log="$dir/../log"; resp="$dir/../resp"
 n="$(ls "$log" 2>/dev/null | wc -l)"
 n=$((n + 1))
 url=""
+printf '%s\0' "$@" > "$log/argv.$n"
 {
   printf 'URL: '
   prev=""
   for a in "$@"; do
     case "$a" in http*) url="$a" ;; esac
     case "$prev" in
-      -X|--request|-H|--header) printf '[%s] ' "$a" ;;
+      -X|--request|-H|--header)
+        if [[ "$a" == @/* ]] && [ -r "${a#@}" ]; then
+          while IFS= read -r header; do printf '[%s] ' "$header"; done < "${a#@}"
+        else
+          printf '[%s] ' "$a"
+        fi ;;
       *) case "$a" in -*) ;; *) printf '%s ' "$a" ;; esac ;;
     esac
     prev="$a"
@@ -67,6 +73,7 @@ for a in "$@"; do
   esac
   prev="$a"
 done
+if [ "$body" = "@-" ]; then body="$(cat)"; fi
 if [ -z "$body" ] && [ -n "$url" ]; then
   key="$(basename "$url")"
   count_file="$log/.count.$key"
@@ -166,6 +173,8 @@ if [ "$rc" = 0 ] \
    && grep -q '"request_id"' <<<"$body" \
    && grep -q '"bootstrap_credential"' <<<"$body"; then ok; else
   fail "use dev: rc=$rc acquire body=$body out=$out"; fi
+if ! grep -aq 'test-bc-ruyi-780' "$log_dir/argv.$acq_req"; then ok; else
+  fail "use argv: bootstrap credential leaked through curl arguments"; fi
 if ! grep -q '^CAPABILITY=' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
    && grep -q '^REQUEST_ID=RUYI-TEST:pdev1:deploy$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
    && ! grep -q 'test-bc-ruyi-780' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
@@ -284,7 +293,36 @@ tr_calls="$(reqs transition_lease_phase | wc -l)"
 if [ "$rc" = 1 ] && [ "$tr_calls" = 2 ] && grep -q 'transition' <<<"$out"; then ok; else
   fail "handoff CAS miss: rc=$rc calls=$tr_calls out=$out"; fi
 
-# --- 11c. use without a bootstrap credential: fail-closed, no acquire --------
+# --- 11c. handoff empty result: refuse and leave the mirrored phase intact ---
+reset_log
+tool_result get_lease '{"lease_id":"ls-1","state":"active","generation":2,"expires_at":"2030-01-01T00:00:00Z"}'
+resp transition_lease_phase '{"jsonrpc":"2.0","id":1,"result":{}}'
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 handoff --to deploy 2>&1)" || rc=$?
+if [ "$rc" = 1 ] && grep -q '^PHASE=qa$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
+   && grep -q 'no valid active lease result' <<<"$out"; then ok; else
+  fail "handoff empty response: rc=$rc out=$out"; fi
+
+# --- 11d. handoff waits for the per-slot lock before reading or transitioning --
+reset_log
+tool_result get_lease '{"lease_id":"ls-1","state":"active","generation":2,"expires_at":"2030-01-01T00:00:00Z"}'
+tool_result transition_lease_phase '{"lease":{"lease_id":"ls-1","state":"active","phase":"DEV","generation":3},"execution_capability":"cap-dev-2"}'
+lock_file="$MULTICA_SLOT_POOL_HOME/pdev1/.lease.lock"
+exec {handoff_lock}>"$lock_file"
+flock -x "$handoff_lock"
+handoff_out="$tmp_dir/handoff.out"
+MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 handoff --to deploy >"$handoff_out" 2>&1 &
+handoff_pid=$!
+sleep 0.2
+blocked_calls="$(reqs transition_lease_phase)"
+flock -u "$handoff_lock"
+exec {handoff_lock}>&-
+rc=0; wait "$handoff_pid" || rc=$?
+out="$(cat "$handoff_out")"
+if [ -z "$blocked_calls" ] && [ "$rc" = 0 ] \
+   && grep -q '^PHASE=deploy$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
+  fail "handoff lock: rc=$rc calls=$blocked_calls out=$out"; fi
+
+# --- 11e. use without a bootstrap credential: fail-closed, no acquire --------
 reset_log
 rm -f "$home/.multica/pool-bootstrap/RUYI-TEST"
 rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pnew1 use --phase deploy 2>&1)" || rc=$?

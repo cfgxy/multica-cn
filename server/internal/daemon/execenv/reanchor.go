@@ -119,6 +119,17 @@ func reanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorN
 	}
 	afterLinkedWorktreeCheck()
 
+	// A ref transaction alone does not participate in Git's linked-worktree
+	// branch exclusion. Reserve the branch with a no-checkout worktree before
+	// moving it: ordinary `git worktree add <path> <branch>` then fails until
+	// the transaction finishes, while a contender that won the first check
+	// makes the reservation itself fail without changing the branch.
+	releaseReservation, err := reserveReanchorBranch(gitRoot, branch)
+	if err != nil {
+		return result, err
+	}
+	defer releaseReservation()
+
 	oldTip, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "refs/heads/"+branch)
 	if err != nil {
 		return result, fmt.Errorf("reanchor: resolve branch tip: %w", err)
@@ -184,6 +195,22 @@ func branchCheckoutPath(gitRoot, branch string) (string, bool, error) {
 		}
 	}
 	return "", false, nil
+}
+
+func reserveReanchorBranch(gitRoot, branch string) (func(), error) {
+	parent, err := os.MkdirTemp("", "multica-reanchor-")
+	if err != nil {
+		return nil, fmt.Errorf("reanchor: create branch reservation directory: %w", err)
+	}
+	reservationPath := filepath.Join(parent, "checkout")
+	if _, err := runGit(gitRoot, "worktree", "add", "--no-checkout", reservationPath, branch); err != nil {
+		_ = os.RemoveAll(parent)
+		return nil, fmt.Errorf("reanchor: reserve branch %s against linked worktrees: %w", branch, err)
+	}
+	return func() {
+		_, _ = runGit(gitRoot, "worktree", "remove", "--force", reservationPath)
+		_ = os.RemoveAll(parent)
+	}, nil
 }
 
 func newReanchorArchiveRefs(branch string) (string, string, error) {

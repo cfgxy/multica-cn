@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -382,92 +381,56 @@ func TestReanchorBranchNormalizesRevisionInputs(t *testing.T) {
 	}
 }
 
-func TestReanchorBranchSerializesConcurrentLinkedWorktreeCreation(t *testing.T) {
+func TestReanchorBranchRejectsLinkedWorktreeCreatedDuringReservation(t *testing.T) {
 	repo := newTestRepo(t)
 	gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
 	m2 := gitRun(t, repo, "rev-parse", "HEAD")
 	gitRun(t, repo, "commit", "--allow-empty", "-m", "main")
 	mainTip := gitRun(t, repo, "rev-parse", "HEAD")
-	gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
+	if err := os.WriteFile(filepath.Join(repo, "reanchor-content.txt"), []byte("new content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", "reanchor-content.txt")
+	gitRun(t, repo, "commit", "-m", "content")
 	content := gitRun(t, repo, "rev-parse", "HEAD")
-	branch := "agent/j/mul-locked-race"
+	branch := "agent/j/mul-reservation-race"
 	gitRun(t, repo, "update-ref", "refs/heads/"+branch, m2)
 
-	checked := make(chan struct{})
-	allowTransaction := make(chan struct{})
-	var allowOnce sync.Once
-	afterLinkedWorktreeCheck := func() {
-		close(checked)
-		<-allowTransaction
-	}
-	t.Cleanup(func() {
-		allowOnce.Do(func() { close(allowTransaction) })
-	})
-
-	var result ReanchorResult
-	var reanchorErr error
-	reanchorDone := make(chan struct{})
-	go func() {
-		result, reanchorErr = reanchorBranch(repo, branch, content, mainTip, ReanchorNote{}, afterLinkedWorktreeCheck)
-		close(reanchorDone)
-	}()
-	select {
-	case <-checked:
-	case <-time.After(30 * time.Second):
-		t.Fatal("ReanchorBranch did not reach the linked-worktree check")
-	}
-
 	linked := filepath.Join(t.TempDir(), "linked")
-	creatorDone := make(chan error, 1)
-	go func() {
-		unlock, err := lockGitRoot(repo, nil)
-		if err != nil {
-			creatorDone <- err
-			return
+	created := make(chan error, 1)
+	oldIndex := ""
+	afterLinkedWorktreeCheck := func() {
+		go func() {
+			_, err := gitTry(t, repo, "worktree", "add", linked, branch)
+			created <- err
+		}()
+		select {
+		case err := <-created:
+			if err != nil {
+				t.Errorf("create linked worktree in re-anchor gap: %v", err)
+				return
+			}
+			oldIndex = gitRun(t, linked, "ls-files", "--stage")
+		case <-time.After(30 * time.Second):
+			t.Fatal("linked worktree creation did not finish")
 		}
-		defer unlock()
-		_, err = gitTry(t, repo, "worktree", "add", linked, branch)
-		creatorDone <- err
-	}()
-
-	// The creator has started after the inspection, but must wait until the
-	// re-anchor commits. Without the lock it adds the worktree at the old tip,
-	// then update-ref moves its branch behind the live worktree.
-	select {
-	case err := <-creatorDone:
-		t.Fatalf("linked worktree creation escaped the re-anchor critical section: %v", err)
-	case <-time.After(200 * time.Millisecond):
-	}
-	allowOnce.Do(func() { close(allowTransaction) })
-
-	select {
-	case <-reanchorDone:
-		if reanchorErr != nil {
-			t.Fatalf("ReanchorBranch: %v", reanchorErr)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("ReanchorBranch did not finish")
-	}
-	select {
-	case err := <-creatorDone:
-		if err != nil {
-			t.Fatalf("create linked worktree: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("linked worktree creation did not finish")
 	}
 
-	if result.NewTip != content {
-		t.Fatalf("re-anchor result tip = %s, want %s", result.NewTip, content)
+	_, err := reanchorBranch(repo, branch, content, mainTip, ReanchorNote{}, afterLinkedWorktreeCheck)
+	if err == nil || !strings.Contains(err.Error(), "reserve branch") {
+		t.Fatalf("re-anchor accepted a branch checked out during reservation: %v", err)
 	}
-	if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != content {
-		t.Errorf("branch = %s, want %s", got, content)
+	if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != m2 {
+		t.Errorf("branch moved after linked worktree won the gap: got %s, want %s", got, m2)
 	}
-	if got := gitRun(t, linked, "rev-parse", "HEAD"); got != content {
-		t.Errorf("linked worktree HEAD = %s, want %s", got, content)
+	if got := gitRun(t, linked, "rev-parse", "HEAD"); got != m2 {
+		t.Errorf("linked worktree HEAD changed: got %s, want %s", got, m2)
 	}
-	if got, want := gitRun(t, linked, "ls-files", "--stage"), gitRun(t, repo, "ls-files", "--stage"); got != want {
-		t.Errorf("linked worktree index differs from the re-anchored tree:\n got %s\nwant %s", got, want)
+	if oldIndex != gitRun(t, linked, "ls-files", "--stage") {
+		t.Errorf("linked worktree index changed after refused re-anchor")
+	}
+	if status := gitRun(t, linked, "status", "--porcelain"); status != "" {
+		t.Errorf("linked worktree became inconsistent after refused re-anchor: %s", status)
 	}
 }
 
