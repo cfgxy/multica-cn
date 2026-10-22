@@ -197,6 +197,13 @@ func taskResponsibilityMention(ctx context.Context, q *db.Queries, workspaceID p
 	if !targetID.Valid {
 		return "", "", fmt.Errorf("task %s has no responsibility agent", util.UUIDToString(task.ID))
 	}
+	target, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: targetID, WorkspaceID: workspaceID})
+	if err != nil {
+		return "", "", fmt.Errorf("task %s responsibility agent is unavailable in workspace: %w", util.UUIDToString(task.ID), err)
+	}
+	if target.ArchivedAt.Valid {
+		return "", "", fmt.Errorf("task %s responsibility agent %s is archived", util.UUIDToString(task.ID), util.UUIDToString(target.ID))
+	}
 	id := util.UUIDToString(targetID)
 	return "[@负责人](mention://agent/" + id + ")", id, nil
 }
