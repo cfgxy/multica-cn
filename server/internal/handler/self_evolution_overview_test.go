@@ -218,12 +218,19 @@ func TestSelfEvolutionOverviewShowsOnlyVerifiedWorkspaceTaskExperiences(t *testi
 		"context": testutil.Raw(context), "result": testutil.Raw(result),
 	})
 	secondTaskID := "d6c91ded-1a4e-4607-a2bc-8b3a0dca85dc"
-	secondResult := `'{"capability_adaptation_result":{"task_id":"` + secondTaskID + `","policy_id":"policy-a","policy_version":"v2","status":"retained"}}'::jsonb`
+	secondResult := `'{"capability_adaptation_result":{"task_id":"` + secondTaskID + `","policy_id":"policy-a","policy_version":"v2","status":"applied"}}'::jsonb`
 	dbfx.Task(t, agentID, testutil.Cols{
 		"id": secondTaskID, "status": "completed", "completed_at": testutil.Raw("now()"),
 		"context": testutil.Raw(context), "result": testutil.Raw(secondResult),
 	})
-	// Blocked and identity-mismatched receipts cannot contribute evidence.
+	// Retained, blocked and identity-mismatched receipts cannot support a
+	// candidate for the suggested strategy.
+	retainedTaskID := "0c16b8ac-d07a-4720-892a-2c0b36c21ab4"
+	retainedResult := `'{"capability_adaptation_result":{"task_id":"` + retainedTaskID + `","policy_id":"policy-a","policy_version":"v2","status":"retained"}}'::jsonb`
+	dbfx.Task(t, agentID, testutil.Cols{
+		"id": retainedTaskID, "status": "completed", "completed_at": testutil.Raw("now()"),
+		"context": testutil.Raw(context), "result": testutil.Raw(retainedResult),
+	})
 	blockedTaskID := "7d67fca5-d6e4-435b-a318-877120227cc2"
 	blockedResult := `'{"capability_adaptation_result":{"task_id":"` + blockedTaskID + `","policy_id":"policy-a","policy_version":"v2","status":"blocked"}}'::jsonb`
 	dbfx.Task(t, agentID, testutil.Cols{
@@ -256,7 +263,7 @@ func TestSelfEvolutionOverviewShowsOnlyVerifiedWorkspaceTaskExperiences(t *testi
 		sourcesByID[source.TaskID] = source
 	}
 	if sourcesByID[taskID].PolicyID != "policy-a" || sourcesByID[taskID].Outcome != "applied" ||
-		sourcesByID[secondTaskID].PolicyID != "policy-a" || sourcesByID[secondTaskID].Outcome != "retained" {
+		sourcesByID[secondTaskID].PolicyID != "policy-a" || sourcesByID[secondTaskID].Outcome != "applied" {
 		t.Errorf("source task provenance = %+v", entry.SourceTasks)
 	}
 	if entry.Applicability != "current_task" || entry.Evidence != "repeated_verified_task_receipts" || entry.Limitation != "repeated_pattern_not_approved_workspace_policy" {
