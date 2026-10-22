@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -403,6 +406,199 @@ func TestSnapshotExecutionObservation(t *testing.T) {
 	if got := snapshotExecutionObservationFor(nestedPlan, fallback, true, true); got.DowngradeCode != "git_snapshot_unsupported_topology" {
 		t.Fatalf("nested repository observation = %+v", got)
 	}
+}
+
+// TestGitSnapshotUnsupportedTopologiesFallbackWithoutPristineWrites uses real
+// disposable Git repositories to pin the fail-closed boundary. The ordinary
+// single-repository worker tests exercise snapshot delivery; each topology
+// here must instead retain the established worktree backend without changing
+// a tracked file, untracked file, binary payload, refs, objects, or Git admin
+// metadata while the daemon evaluates the gate and safety audit.
+func TestGitSnapshotUnsupportedTopologiesFallbackWithoutPristineWrites(t *testing.T) {
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "1")
+
+	type topology struct {
+		name          string
+		resourceRoot  string
+		repositories  []string
+		wantAuditSafe bool
+	}
+
+	linkedBase := newTestGitRoot(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	runTopologyGit(t, linkedBase, "worktree", "add", "-q", "--detach", linked)
+	writeTopologyMarkers(t, linked)
+
+	nested := newTestGitRoot(t)
+	child := newTopologyGitRoot(t, filepath.Join(nested, "child"))
+	writeTopologyMarkers(t, nested)
+	writeTopologyMarkers(t, child)
+
+	moduleSource := newTestGitRoot(t)
+	submodule := newTestGitRoot(t)
+	runTopologyGit(t, submodule, "-c", "protocol.file.allow=always", "submodule", "add", "-q", moduleSource, "deps/module")
+	runTopologyGit(t, submodule, "add", ".gitmodules", "deps/module")
+	runTopologyGit(t, submodule, "commit", "-qm", "add module")
+	writeTopologyMarkers(t, submodule)
+	writeTopologyMarkers(t, filepath.Join(submodule, "deps", "module"))
+
+	parent := t.TempDir()
+	parentA := newTopologyGitRoot(t, filepath.Join(parent, "repo-a"))
+	parentB := newTopologyGitRoot(t, filepath.Join(parent, "repo-b"))
+	writeTopologyMarkers(t, parentA)
+	writeTopologyMarkers(t, parentB)
+
+	for _, tc := range []topology{
+		{name: "linked_worktree", resourceRoot: linked, repositories: []string{linked}, wantAuditSafe: false},
+		{name: "nested_repository", resourceRoot: nested, repositories: []string{nested, child}, wantAuditSafe: true},
+		{name: "submodule", resourceRoot: submodule, repositories: []string{submodule, filepath.Join(submodule, "deps", "module")}, wantAuditSafe: false},
+		{name: "parent_with_multiple_repositories", resourceRoot: parent, repositories: []string{parentA, parentB}, wantAuditSafe: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := topologyFingerprint(t, tc.repositories)
+			task := Task{
+				ID:               "task-" + tc.name,
+				ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "resource-"+tc.name, tc.resourceRoot, "d1")},
+			}
+			plan, err := resolveSnapshotPlan(task, "d1")
+			if err != nil {
+				t.Fatalf("resolve snapshot plan: %v", err)
+			}
+			if plan == nil {
+				// A parent that is not itself a Git root never becomes a snapshot
+				// candidate. Audit the representative plan too, so discovery of
+				// both child repositories remains covered by this matrix.
+				plan = &snapshotPlan{
+					Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: tc.resourceRoot, ExecutionMode: localDirectoryModeWorktree}, AbsPath: tc.resourceRoot},
+					Units:   []snapshotUnit{{AbsPath: tc.resourceRoot}},
+				}
+			}
+
+			audit := auditSnapshotGitScope(plan)
+			if !audit.HasGit || audit.Safe != tc.wantAuditSafe {
+				t.Fatalf("audit = %+v, want HasGit=true Safe=%v", audit, tc.wantAuditSafe)
+			}
+			if gitSnapshotDeliveryEligible(plan, true) {
+				t.Fatal("unsupported Git topology must never be snapshot-delivery eligible")
+			}
+			fallback, err := snapshotWorktreeFallback(plan)
+			if err != nil || fallback == nil || !fallback.UsesWorktree() {
+				t.Fatalf("unsupported topology must preserve worktree backend, fallback=%+v err=%v", fallback, err)
+			}
+
+			if after := topologyFingerprint(t, tc.repositories); after != before {
+				t.Fatalf("planning and fallback changed pristine Git state\nbefore: %s\nafter:  %s", before, after)
+			}
+		})
+	}
+}
+
+func newTopologyGitRoot(t *testing.T, repo string) string {
+	t.Helper()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.invalid"}} {
+		runTopologyGit(t, repo, args...)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runTopologyGit(t, repo, "add", "tracked.txt")
+	runTopologyGit(t, repo, "commit", "-qm", "base")
+	return repo
+}
+
+func writeTopologyMarkers(t *testing.T, repo string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("locally-modified\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("untracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "payload.bin"), []byte{0, 1, 2, 255}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runTopologyGit(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	argv := append([]string(nil), args...)
+	if repo != "" {
+		argv = append([]string{"-C", repo}, argv...)
+	}
+	out, err := exec.Command("git", argv...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v (%s)", argv, err, out)
+	}
+	return string(out)
+}
+
+func topologyFingerprint(t *testing.T, repositories []string) string {
+	t.Helper()
+	parts := make([]string, 0, len(repositories)*5)
+	for _, repo := range repositories {
+		status := runTopologyGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+		refs := runTopologyGit(t, repo, "show-ref", "--head")
+		gitDir := strings.TrimSpace(runTopologyGit(t, repo, "rev-parse", "--absolute-git-dir"))
+		commonDir := strings.TrimSpace(runTopologyGit(t, repo, "rev-parse", "--git-common-dir"))
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(repo, commonDir)
+		}
+		parts = append(parts,
+			repo+" status="+status,
+			repo+" refs="+refs,
+			repo+" worktree="+treeDigest(t, repo, true),
+			repo+" git-dir="+treeDigest(t, gitDir, false),
+			repo+" common-dir="+treeDigest(t, commonDir, false),
+		)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func treeDigest(t *testing.T, root string, skipRootGitDir bool) string {
+	t.Helper()
+	hash := sha256.New()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		if skipRootGitDir && path == filepath.Join(root, ".git") && entry.IsDir() {
+			return filepath.SkipDir
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(hash, "%s\\x00%s\\x00", filepath.ToSlash(rel), entry.Type()); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprint(hash, target)
+			return err
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, err = hash.Write(contents)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("digest %s: %v", root, err)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func newTestGitRoot(t *testing.T) string {

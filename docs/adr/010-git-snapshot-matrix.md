@@ -1,53 +1,47 @@
 # RUYI-845 Git Snapshot Compatibility Matrix
 
-Baseline under test: `fdaa42a1122127791e6f61c58f9d9fb5154a749e` (`origin/main`, 2026-10-21 23:35:24 +0800). All fixtures below are disposable under `/tmp`; no project resource or RUYI-746 state was changed.
+Baseline under test: PR #473 head `7ca32569f3fbee7e8934ee5026bc671498eaa824` plus the matrix test in this branch. Every fixture is a disposable real Git repository under Go's test temporary directory; no project resource, daemon registration, Pool, GTI, or production database is involved.
 
-## Matrix
+## Supported Delivery Path
 
-| Git shape | Same-path view | Alternate-path view | Evidence / status |
-|---|---|---|---|
-| Ordinary single worktree | Existing userns overlay probe and directory smoke pass; Git `status`/checkout/commit/fsck isolation not yet exercised | Not run | Partial; no Git isolation conclusion |
-| Standard linked worktree | **Fail** when only linked worktree is overlaid: commit advances common repo branch ref outside the mounted root | Not run | Real production `__snapshot-worker` test; see output below |
-| Nested Git repository | Not run in the expanded matrix | Not run | Earlier RUYI-669 same-path nested-Git result is historical evidence only; rerun required |
-| Submodule | Not run in the expanded matrix | Not run | Must test parent scope and submodule-only scope separately because `.git` may resolve outside the submodule directory |
-| Parent directory containing multiple Git roots | Not run | Not run | Must verify each root's metadata isolation and child-scope routing |
+| Git shape | Gate / worker result | Pristine proof |
+| --- | --- | --- |
+| Ordinary single worktree | `MULTICA_ENABLE_GIT_SNAPSHOT=1` enters the real userns + overlay worker. It modifies tracked, untracked, and binary files, captures a bundle, imports it into an independent clone, and runs `git fsck`. | Host worktree remains clean; files and refs retain their original values. An interrupted worker still creates an importable bundle and a `failed` ledger entry with its upperdir retained. |
 
-| Cross-cutting check | Result |
-|---|---|
-| Absolute linked-worktree `gitdir:` incidence | 20/20 fresh `git worktree add` samples on this host had an absolute pointer into the common repository |
-| `status`, `checkout`, `commit`, `fsck` across all shapes | Incomplete; the linked-worktree `commit` case already demonstrates a write-through |
-| Untracked/binary visibility and persistence | Existing directory smoke tests only a regular text write; Git matrix incomplete |
-| Cancel/crash recovery, concurrent tasks, runtime brief injection, and GC | Existing unit tests cover parts of snapshot lifecycle; Git-topology-specific end-to-end checks not run |
-| Pristine preservation | Violated for linked-worktree common ref in same-path single-root scope; other shapes not established |
+The worker smoke starts the built `multica __snapshot-worker` binary through the same namespace and serialized wrap contract used by the daemon. It is a real local worker execution, not a mock worker or GTI canary.
 
-## Reproduction
+## Fail-Closed Topology Boundary
 
-Commands were run from the issue worktree on Linux with unprivileged user namespaces enabled. The project binary was built from the stated baseline as `/tmp/multica-ruyi845-snapshot` and the test used only temporary Git repositories.
+| Git shape | Gate-on outcome | Automated proof |
+| --- | --- | --- |
+| Standard linked worktree | Existing `worktree` backend | External common Git directory fails scope audit; no snapshot worker starts. |
+| Nested Git repository | Existing `worktree` backend | Recursive audit sees both repositories, while narrow delivery eligibility rejects more than one Git root. |
+| Submodule | Existing `worktree` backend | `.gitmodules` rejects snapshot delivery before any Git metadata repair or worker spawn. |
+| Parent directory containing multiple Git roots | Existing `worktree` backend | Parent is not a single Git-root candidate; representative recursive audit sees both children and narrow delivery eligibility rejects it. |
 
-1. Build the actual worker entrypoint:
+`TestGitSnapshotUnsupportedTopologiesFallbackWithoutPristineWrites` creates each topology with real `git init`, `git worktree add`, and `git submodule add`. Each fixture contains a modified tracked file, untracked file, and binary payload. Before and after gate planning, audit, and fallback it compares:
 
-   ```sh
-   (cd server && go build -o /tmp/multica-ruyi845-snapshot ./cmd/multica)
-   ```
+- `git status --porcelain=v1 --untracked-files=all`;
+- `git show-ref --head`;
+- a SHA-256 tree digest for the worktree (including linked/submodule `.git` files);
+- SHA-256 tree digests for each Git dir and common Git dir, including objects and refs.
 
-2. Verify the real namespace capability and existing directory smoke tests:
+Any drift fails the test. This makes the supported ordinary path and unsupported topologies materially distinct: unsupported shapes are not treated as snapshot-compatible and are not merely exercised through a mock.
 
-   ```sh
-   (cd server && env -u MULTICA_AGENT_NAME -u MULTICA_AGENT_ID -u MULTICA_TASK_ID -u MULTICA_WORKSPACE_ID -u MULTICA_TASK_SLOT -u MULTICA_TASK_WORKSPACES_ROOT -u MULTICA_TASK_CONFIG_ROOT -u MULTICA_REPO_CHECKOUT_MODE -u MULTICA_TOKEN -u MULTICA_SERVER_URL -u MULTICA_DAEMON_PORT -u MULTICA_GIT_PUSH_GUARD -u MULTICA_GH_PR_GUARD MULTICA_SNAPSHOT_SMOKE_BIN=/tmp/multica-ruyi845-snapshot go test ./internal/daemon/execenv -run 'Snapshot.*Smoke' -count=1 -v)
-   ```
+## Execution Evidence
 
-   Result: `TestProbeSnapshotSupportSmoke` and `TestSnapshotWorkerSmoke` passed. The former reported `snapshot-probe: OK (userns overlay same-path mount verified)`.
+Run from repository root with injected agent variables removed and system Git first on `PATH`:
 
-3. Generate 20 linked worktrees with `git worktree add --detach`, then read each worktree's `.git` file. Result: `linked_worktrees=20 absolute_gitdir=20 relative_gitdir=0`; sample pointer: `/tmp/.../repo/.git/worktrees/wt-1`.
+```sh
+tmpdir=$(mktemp -d /tmp/ruyi845-snapshot.XXXXXX)
+(cd server && go build -o "$tmpdir/multica" ./cmd/multica)
+(cd server && MULTICA_SNAPSHOT_SMOKE_BIN="$tmpdir/multica" go test ./internal/daemon/execenv -run '^TestSnapshotWorker(CapturesGitArtifact|InterruptedAgentKeepsRecoverableArtifact)Smoke$' -count=1 -v)
+(cd server && go test ./internal/daemon -run '^TestGitSnapshotUnsupportedTopologiesFallbackWithoutPristineWrites$' -count=1 -v)
+rm -rf "$tmpdir"
+```
 
-4. For the write-through reproduction, initialize a repository, commit a base commit, and run `git worktree add -b agent/test <tmp>/wt`. Prepare empty `alias`, `upper`, and `work` directories. Build worker spec JSON with the actual uid/gid and one unit whose `target=<tmp>/wt`, with those three paths and `cwd=<tmp>/wt`. Run:
+The scoped runs passed locally on 2026-10-23. The full `./internal/daemon` package remains the release regression suite for this implementation.
 
-   ```sh
-   unshare -Urnm /tmp/multica-ruyi845-snapshot __snapshot-worker "$spec" -- /bin/sh -c 'printf data > tracked.txt; git add tracked.txt; git -c user.name=Agent -c user.email=agent@example.invalid commit -qm snapshot-commit; git status --short; git rev-parse HEAD'
-   ```
+## Residual Boundary
 
-   Observed: the worker succeeded; after namespace exit the pristine host worktree reported `D tracked.txt`, `refs/heads/agent/test` equaled the new snapshot commit, `upper/.git/objects` contained zero files, and the common repo object directory contained five files. The `.git` file pointed to `<tmp>/repo/.git/worktrees/wt`. This is a confirmed same-path write-through, not an inference from the earlier spike.
-
-## Remaining Work Before ADR Acceptance
-
-Run each untested topology under both same-path and alternate-path views, including status/checkout/commit/fsck and pristine-byte/ref/object comparisons. Record task cancellation/crash, concurrency, runtime brief injection, and ledger/GC behavior with Git present. Until then, this document is an evidence-bearing draft, not an accepted support matrix.
+This matrix deliberately does not claim a GTI/Pool rollout, production daemon validation, or support for the rejected topologies. The minimal real-environment follow-up, if rollout is later requested, is one disposable ordinary Git repository on an isolated daemon with the deployment gate toggled on then off, verifying the same decision record and bundle import. It is not required to establish the current automated acceptance boundary.
