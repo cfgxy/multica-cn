@@ -49,6 +49,33 @@ func TestOuterLoopPlanReadAndFeatureGate(t *testing.T) {
 	}
 }
 
+func TestOuterLoopPlanWriteEndpointsRejectWhenFeatureDisabled(t *testing.T) {
+	issueID, _, _ := seedOuterLoopPlan(t, outerloop.StateRunning, 1, 5)
+	setOuterLoopFlagForTest(t, false)
+
+	requests := []struct {
+		name    string
+		method  string
+		path    string
+		body    any
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{"update", http.MethodPut, "/outerloop", map[string]any{"goal": "disabled"}, testHandler.PutOuterLoopPlan},
+		{"fire", http.MethodPost, "/outerloop/fire", nil, testHandler.FireOuterLoopPlan},
+		{"stop", http.MethodPost, "/outerloop/stop", nil, testHandler.StopOuterLoopPlan},
+	}
+	for _, tc := range requests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := withURLParam(newRequest(tc.method, "/api/issues/"+issueID+tc.path, tc.body), "id", issueID)
+			tc.handler(w, r)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("flag-off %s: got %d: %s", tc.name, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestOuterLoopPlanMemberUpdateMonotonicAndAgentForbidden(t *testing.T) {
 	issueID, agentID, taskID := seedOuterLoopPlan(t, outerloop.StateRunning, 1, 5)
 	setOuterLoopFlagForTest(t, true)
@@ -153,6 +180,63 @@ func TestOuterLoopPlanFireEnqueuesAndAdvancesRound(t *testing.T) {
 	}
 	if got := outerLoopRound(t, issueID); got != 2 {
 		t.Fatalf("round = %d, want 2", got)
+	}
+}
+
+func TestOuterLoopPlanFireReturnsPendingTaskWithoutAdvancingRound(t *testing.T) {
+	issueID, agentID, _ := seedOuterLoopPlan(t, outerloop.StateRunning, 1, 4)
+	setOuterLoopFlagForTest(t, true)
+
+	first := httptest.NewRecorder()
+	testHandler.FireOuterLoopPlan(first, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/outerloop/fire", nil), "id", issueID))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first fire: got %d: %s", first.Code, first.Body.String())
+	}
+
+	w := httptest.NewRecorder()
+	testHandler.FireOuterLoopPlan(w, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/outerloop/fire", nil), "id", issueID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("second fire: got %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Dispatched bool   `json:"dispatched"`
+		Reason     string `json:"reason"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatalf("decode pending response: %v", err)
+	}
+	if got.Dispatched || got.Reason != "pending_task" {
+		t.Fatalf("pending response = %+v", got)
+	}
+	if got := queuedTaskCount(t, issueID, agentID); got != 1 {
+		t.Fatalf("queued tasks = %d, want 1", got)
+	}
+	if got := outerLoopRound(t, issueID); got != 2 {
+		t.Fatalf("round = %d, want 2", got)
+	}
+}
+
+func TestOuterLoopPlanFireUsesPinnedAgentAfterIssueReassignment(t *testing.T) {
+	issueID, pinnedAgentID, _ := seedOuterLoopPlan(t, outerloop.StateRunning, 1, 4)
+	setOuterLoopFlagForTest(t, true)
+
+	replacementRuntimeID := dbfx.Runtime(t, "outerloop-reassigned-runtime")
+	replacementAgentID := dbfx.Agent(t, "outerloop-reassigned-agent", replacementRuntimeID)
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue SET assignee_id = $1 WHERE id = $2`, replacementAgentID, issueID); err != nil {
+		t.Fatalf("reassign issue: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	r := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/outerloop/fire", nil), "id", issueID)
+	testHandler.FireOuterLoopPlan(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fire after reassignment: got %d: %s", w.Code, w.Body.String())
+	}
+	if got := queuedTaskCount(t, issueID, pinnedAgentID); got != 1 {
+		t.Fatalf("pinned agent queued tasks = %d, want 1", got)
+	}
+	if got := queuedTaskCount(t, issueID, replacementAgentID); got != 0 {
+		t.Fatalf("replacement agent queued tasks = %d, want 0", got)
 	}
 }
 
