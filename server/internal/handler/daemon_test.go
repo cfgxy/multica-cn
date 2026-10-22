@@ -2483,8 +2483,8 @@ func TestCompleteTask_CommentTriggered_SynthesizesCommentWhenAgentSilent(t *test
 	if seen != 1 {
 		t.Fatalf("expected exactly 1 synthesized agent comment, got %d", seen)
 	}
-	if content != agentFinalOutput {
-		t.Fatalf("synthesized comment content = %q, want %q", content, agentFinalOutput)
+	if !strings.HasPrefix(content, agentFinalOutput) || !strings.Contains(content, "mention://agent/"+agentID) {
+		t.Fatalf("synthesized comment content = %q, want original output and responsibility mention", content)
 	}
 	if parentID == nil || *parentID != triggerCommentID {
 		got := "<nil>"
@@ -2552,7 +2552,7 @@ func TestCompleteTask_CommentTriggered_SkipsSynthesisWhenAgentAlreadyCommented(t
 	}
 }
 
-func TestCompleteTask_CommentTriggered_SuppressesTrivialDoneOutput(t *testing.T) {
+func TestCompleteTask_CommentTriggered_ReportsTrivialDoneOutput(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -2595,8 +2595,13 @@ func TestCompleteTask_CommentTriggered_SuppressesTrivialDoneOutput(t *testing.T)
 		SELECT count(*) FROM comment
 		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
 	`, issueID, agentID).Scan(&count)
-	if count != 0 {
-		t.Fatalf("expected no synthesized agent comment for trivial Done output, got %d", count)
+	if count != 1 {
+		t.Fatalf("expected a terminal agent comment for trivial Done output, got %d", count)
+	}
+	var content string
+	dbfx.QueryRow(t, `SELECT content FROM comment WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2`, issueID, agentID).Scan(&content)
+	if !strings.Contains(content, "Run completed without a substantive comment.") || !strings.Contains(content, "mention://agent/"+agentID) {
+		t.Fatalf("terminal comment = %q, want fallback text and responsibility mention", content)
 	}
 }
 
@@ -2641,8 +2646,8 @@ func TestCompleteTask_AssignmentTriggered_DoesNotSuppressTrivialDoneOutput(t *te
 		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
 		ORDER BY created_at DESC LIMIT 1
 	`, issueID, agentID).Scan(&content)
-	if content != "Done." {
-		t.Fatalf("synthesized comment content = %q, want Done.", content)
+	if !strings.HasPrefix(content, "Run completed without a substantive comment.") || !strings.Contains(content, "mention://agent/"+agentID) {
+		t.Fatalf("synthesized comment content = %q, want fallback text and responsibility mention", content)
 	}
 }
 
