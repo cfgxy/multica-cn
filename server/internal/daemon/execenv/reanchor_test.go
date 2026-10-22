@@ -1,10 +1,13 @@
 package execenv
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestReanchorBranchReanchorsStaleChain pins the RUYI-780 infrastructure
@@ -345,5 +348,180 @@ func TestReanchorBranchAlreadyAtTarget(t *testing.T) {
 	_, err := ReanchorBranch(repo, "agent/j/mul-v", content, mainTip, ReanchorNote{})
 	if err == nil || !strings.Contains(err.Error(), "already stands") {
 		t.Fatalf("expected an already-at-target refusal, got %v", err)
+	}
+}
+
+func TestReanchorBranchNormalizesRevisionInputs(t *testing.T) {
+	repo := newTestRepo(t)
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
+	m2 := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "main")
+	mainTip := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "update-ref", "refs/remotes/origin/main", mainTip)
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "content one")
+	contentOne := gitRun(t, repo, "rev-parse", "HEAD")
+
+	gitRun(t, repo, "update-ref", "refs/heads/agent/j/mul-symbolic-base", m2)
+	first, err := ReanchorBranch(repo, "agent/j/mul-symbolic-base", contentOne[:12], "origin/main", ReanchorNote{})
+	if err != nil {
+		t.Fatalf("ReanchorBranch(origin/main, short target): %v", err)
+	}
+	if first.NewTip != contentOne || first.ExpectedBase != mainTip {
+		t.Fatalf("normalized result = %+v, want target %s and base %s", first, contentOne, mainTip)
+	}
+
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "content two")
+	contentTwo := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "update-ref", "refs/heads/agent/j/mul-short-base", m2)
+	second, err := ReanchorBranch(repo, "agent/j/mul-short-base", contentTwo[:12], contentOne[:12], ReanchorNote{})
+	if err != nil {
+		t.Fatalf("ReanchorBranch(short base, short target): %v", err)
+	}
+	if second.NewTip != contentTwo || second.ExpectedBase != contentOne {
+		t.Fatalf("normalized result = %+v, want target %s and base %s", second, contentTwo, contentOne)
+	}
+}
+
+func TestReanchorBranchSerializesConcurrentLinkedWorktreeCreation(t *testing.T) {
+	repo := newTestRepo(t)
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
+	m2 := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "main")
+	mainTip := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
+	content := gitRun(t, repo, "rev-parse", "HEAD")
+	branch := "agent/j/mul-locked-race"
+	gitRun(t, repo, "update-ref", "refs/heads/"+branch, m2)
+
+	checked := make(chan struct{})
+	allowTransaction := make(chan struct{})
+	var allowOnce sync.Once
+	afterLinkedWorktreeCheck := func() {
+		close(checked)
+		<-allowTransaction
+	}
+	t.Cleanup(func() {
+		allowOnce.Do(func() { close(allowTransaction) })
+	})
+
+	var result ReanchorResult
+	var reanchorErr error
+	reanchorDone := make(chan struct{})
+	go func() {
+		result, reanchorErr = reanchorBranch(repo, branch, content, mainTip, ReanchorNote{}, afterLinkedWorktreeCheck)
+		close(reanchorDone)
+	}()
+	select {
+	case <-checked:
+	case <-time.After(30 * time.Second):
+		t.Fatal("ReanchorBranch did not reach the linked-worktree check")
+	}
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	creatorDone := make(chan error, 1)
+	go func() {
+		unlock, err := lockGitRoot(repo, nil)
+		if err != nil {
+			creatorDone <- err
+			return
+		}
+		defer unlock()
+		_, err = gitTry(t, repo, "worktree", "add", linked, branch)
+		creatorDone <- err
+	}()
+
+	// The creator has started after the inspection, but must wait until the
+	// re-anchor commits. Without the lock it adds the worktree at the old tip,
+	// then update-ref moves its branch behind the live worktree.
+	select {
+	case err := <-creatorDone:
+		t.Fatalf("linked worktree creation escaped the re-anchor critical section: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	allowOnce.Do(func() { close(allowTransaction) })
+
+	select {
+	case <-reanchorDone:
+		if reanchorErr != nil {
+			t.Fatalf("ReanchorBranch: %v", reanchorErr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("ReanchorBranch did not finish")
+	}
+	select {
+	case err := <-creatorDone:
+		if err != nil {
+			t.Fatalf("create linked worktree: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("linked worktree creation did not finish")
+	}
+
+	if result.NewTip != content {
+		t.Fatalf("re-anchor result tip = %s, want %s", result.NewTip, content)
+	}
+	if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != content {
+		t.Errorf("branch = %s, want %s", got, content)
+	}
+	if got := gitRun(t, linked, "rev-parse", "HEAD"); got != content {
+		t.Errorf("linked worktree HEAD = %s, want %s", got, content)
+	}
+	if got, want := gitRun(t, linked, "ls-files", "--stage"), gitRun(t, repo, "ls-files", "--stage"); got != want {
+		t.Errorf("linked worktree index differs from the re-anchored tree:\n got %s\nwant %s", got, want)
+	}
+}
+
+type failingReanchorAuditFile struct {
+	writeErr error
+	closeErr error
+}
+
+func (f failingReanchorAuditFile) Write(p []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	return len(p), nil
+}
+
+func (f failingReanchorAuditFile) Close() error {
+	return f.closeErr
+}
+
+func TestReanchorBranchAuditFailureIsBestEffort(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file failingReanchorAuditFile
+	}{
+		{name: "write", file: failingReanchorAuditFile{writeErr: errors.New("write failed")}},
+		{name: "close", file: failingReanchorAuditFile{closeErr: errors.New("close failed")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
+			m2 := gitRun(t, repo, "rev-parse", "HEAD")
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "main")
+			mainTip := gitRun(t, repo, "rev-parse", "HEAD")
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
+			content := gitRun(t, repo, "rev-parse", "HEAD")
+			branch := "agent/j/mul-audit-" + tc.name
+			gitRun(t, repo, "update-ref", "refs/heads/"+branch, m2)
+
+			previousOpen := openReanchorAuditFile
+			openReanchorAuditFile = func(string) (reanchorAuditFile, error) {
+				return tc.file, nil
+			}
+			t.Cleanup(func() { openReanchorAuditFile = previousOpen })
+
+			result, err := ReanchorBranch(repo, branch, content, mainTip, ReanchorNote{})
+			if err != nil {
+				t.Fatalf("ReanchorBranch returned an audit error after refs committed: %v", err)
+			}
+			if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != content {
+				t.Errorf("branch = %s, want %s", got, content)
+			}
+			if result.AuditPath != "" || result.AuditLine != "" {
+				t.Errorf("result claims audit was written after %s failure: %+v", tc.name, result)
+			}
+		})
 	}
 }

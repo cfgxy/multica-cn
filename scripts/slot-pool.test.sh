@@ -25,11 +25,15 @@ export HOME="$home"
 export MULTICA_SLOT_POOL_HOME="$tmp_dir/pool-home"
 export MULTICA_POOL_URL="http://pool.example:8772"
 export MULTICA_POOL_TOKEN="test-token"
-export SLOT_POOL_BOOTSTRAP_CREDENTIAL="test-bc-ruyi-780.R32v1"
-unset MULTICA_CALLER_OWNER MULTICA_RECYCLE_OVERRIDE MULTICA_GC_GUARD_ENABLED 2>/dev/null || true
+mkdir -p "$home/.multica/pool-bootstrap"
+printf '%s' 'test-bc-ruyi-780.R32v1' >"$home/.multica/pool-bootstrap/RUYI-TEST"
+chmod 600 "$home/.multica/pool-bootstrap/RUYI-TEST"
+unset SLOT_POOL_BOOTSTRAP_CREDENTIAL MULTICA_CALLER_OWNER MULTICA_RECYCLE_OVERRIDE MULTICA_GC_GUARD_ENABLED 2>/dev/null || true
 
 PASS=0; FAIL=0
-fail() { printf 'FAIL: %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
+# Request bodies and headers can contain short-lived credentials. Keep failure
+# output to the stable assertion label before its first colon.
+fail() { printf 'FAIL: %s\n' "${1%%:*}" >&2; FAIL=$((FAIL + 1)); }
 ok()   { PASS=$((PASS + 1)); }
 
 # --- fake curl: log request, serve canned response by JSON-RPC method -------
@@ -65,6 +69,15 @@ for a in "$@"; do
 done
 if [ -z "$body" ] && [ -n "$url" ]; then
   key="$(basename "$url")"
+  count_file="$log/.count.$key"
+  count=0
+  [ -f "$count_file" ] && count="$(cat "$count_file")"
+  count=$((count + 1))
+  printf '%s' "$count" >"$count_file"
+  if [ -f "$resp/$key.$count" ]; then
+    cat "$resp/$key.$count"
+    exit 0
+  fi
   if [ -f "$resp/$key" ]; then
     cat "$resp/$key"
     exit 0
@@ -79,6 +92,15 @@ if [ -n "$body" ]; then
   key="$method"
   [ -n "$name" ] && key="$name"
   key="${key//\//_}"
+  count_file="$log/.count.$key"
+  count=0
+  [ -f "$count_file" ] && count="$(cat "$count_file")"
+  count=$((count + 1))
+  printf '%s' "$count" >"$count_file"
+  if [ -f "$resp/$key.$count" ]; then
+    cat "$resp/$key.$count"
+    exit 0
+  fi
   if [ -f "$resp/$key" ]; then
     cat "$resp/$key"
     exit 0
@@ -95,6 +117,10 @@ resp() { # <key> <json> — canned response for method or tool name
 tool_result() { # <tool> <payload-json> — wrap a payload as a tool result
   resp "$1" "$(printf '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":%s}]}}' \
     "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$2")")"
+}
+tool_result_n() { # <tool> <call-number> <payload-json>
+  resp "$1.$2" "$(printf '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":%s}]}}' \
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$3")")"
 }
 reqs() { # list of logged request numbers containing a pattern
   local pat=$1 n f
@@ -118,7 +144,7 @@ last_method_order() { # print method sequence in request order
 # verb re-issues initialize/initialized, so the common fixtures below must
 # stay servable across cases. Cases that need a different reply overwrite
 # their key via tool_result before running.
-reset_log() { rm -f "$log_dir"/req.*; }
+reset_log() { rm -f "$log_dir"/req.* "$log_dir"/.count.*; }
 
 # Common canned responses ------------------------------------------------------
 resp initialize '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"pool","version":"t"}}}'
@@ -140,10 +166,10 @@ if [ "$rc" = 0 ] \
    && grep -q '"request_id"' <<<"$body" \
    && grep -q '"bootstrap_credential"' <<<"$body"; then ok; else
   fail "use dev: rc=$rc acquire body=$body out=$out"; fi
-if grep -q '^CAPABILITY=cap-dev-1$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
+if ! grep -q '^CAPABILITY=' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
    && grep -q '^REQUEST_ID=RUYI-TEST:pdev1:deploy$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
    && ! grep -q 'test-bc-ruyi-780' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
-  fail "use manifest: capability/request recorded, bootstrap credential absent (manifest: $(cat $MULTICA_SLOT_POOL_HOME/pdev1/lease.env 2>/dev/null | head -20))"; fi
+  fail "use manifest: request recorded, capability/bootstrap absent (manifest: $(cat $MULTICA_SLOT_POOL_HOME/pdev1/lease.env 2>/dev/null | head -20))"; fi
 if [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ] \
    && grep -q '^LEASE_ID=ls-1$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
    && grep -q '^PHASE=deploy$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
@@ -243,10 +269,10 @@ tr_body="$(sed -n '2p' "$log_dir/req.$tr_req")"
 if [ "$rc" = 0 ] && [ -n "$tr_req" ] \
    && grep -q '"target_phase": *"QA"' <<<"$tr_body" \
    && grep -q '"expected_generation": *1' <<<"$tr_body" \
-   && [ -z "$(reqs release_lease)" ] && [ -z "$(reqs acquire_lease)" ] \
+   && [ -z "$(reqs release_lease)" ] && [ -n "$(reqs acquire_lease)" ] \
    && grep -q '^PHASE=qa$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
    && grep -q '^LEASE_ID=ls-1$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" \
-   && grep -q '^CAPABILITY=cap-qa-1$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
+   && ! grep -q '^CAPABILITY=' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
   fail "handoff: rc=$rc body=$tr_body out=$out manifest=$(cat $MULTICA_SLOT_POOL_HOME/pdev1/lease.env 2>/dev/null | tr '\n' ' ')"; fi
 
 # --- 11b. handoff CAS miss: re-read generation, retry once -------------------
@@ -260,25 +286,53 @@ if [ "$rc" = 1 ] && [ "$tr_calls" = 2 ] && grep -q 'transition' <<<"$out"; then 
 
 # --- 11c. use without a bootstrap credential: fail-closed, no acquire --------
 reset_log
-rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST SLOT_POOL_BOOTSTRAP_CREDENTIAL= bash "$pool" pnew1 use --phase deploy 2>&1)" || rc=$?
-[ -n "$(cat "$home/.multica/pool-bootstrap/RUYI-TEST" 2>/dev/null)" ] && rm -f "$home/.multica/pool-bootstrap/RUYI-TEST"
+rm -f "$home/.multica/pool-bootstrap/RUYI-TEST"
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pnew1 use --phase deploy 2>&1)" || rc=$?
 if [ "$rc" != 0 ] && [ -z "$(reqs acquire_lease)" ] && grep -q 'bootstrap credential required' <<<"$out"; then ok; else
   fail "use no-credential: rc=$rc out=$out"; fi
+printf '%s' 'test-bc-ruyi-780.R32v1' >"$home/.multica/pool-bootstrap/RUYI-TEST"
+chmod 600 "$home/.multica/pool-bootstrap/RUYI-TEST"
 
 # --- 11d. use with pending provisioning: poll get_lease to active -----------
 reset_log
 tool_result acquire_lease '{"lease_id":"ls-50","instance_id":"ri-50","state":"pending","expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-p-1"}'
-tool_result get_lease '{"lease_id":"ls-50","state":"active","generation":1,"expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-p-1"}'
+resp get_lease.1 '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"execution capability expired"}],"isError":true}}'
+tool_result_n acquire_lease 2 '{"lease_id":"ls-50","instance_id":"ri-50","state":"pending","expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-p-2"}'
+tool_result_n get_lease 2 '{"lease_id":"ls-50","state":"active","generation":1,"expires_at":"2030-01-01T00:00:00Z"}'
 out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" ppoll1 use --phase deploy --version 42a9c2bd84731e20264421730086d95eef0c634c 2>&1)"; rc=$?
-gl_poll="$(reqs get_lease | head -1)"
+gl_poll="$(reqs get_lease | sort -n | tail -1)"
 gl_poll_headers=""
 [ -n "$gl_poll" ] && gl_poll_headers="$(sed -n '1p' "$log_dir/req.$gl_poll")"
+poll_acquires="$(reqs acquire_lease)"
+poll_resign="$(printf '%s\n' "$poll_acquires" | sort -n | tail -1)"
+poll_resign_body="$(sed -n '2p' "$log_dir/req.$poll_resign")"
 if [ "$rc" = 0 ] && [ -n "$gl_poll" ] \
-   && grep -q 'X-Execution-Capability: cap-p-1' <<<"$gl_poll_headers" \
+   && grep -q 'X-Execution-Capability: cap-p-2' <<<"$gl_poll_headers" \
+   && grep -q '"request_id": *"RUYI-TEST:ppoll1:deploy"' <<<"$poll_resign_body" \
    && grep -q '^LEASE_ID=ls-50$' "$MULTICA_SLOT_POOL_HOME/ppoll1/lease.env" \
    && grep -q '^VERSION_SHA=42a9c2bd84731e20264421730086d95eef0c634c$' "$MULTICA_SLOT_POOL_HOME/ppoll1/lease.env" \
-   && grep -q '^CAPABILITY=cap-p-1$' "$MULTICA_SLOT_POOL_HOME/ppoll1/lease.env"; then ok; else
+   && ! grep -q '^CAPABILITY=' "$MULTICA_SLOT_POOL_HOME/ppoll1/lease.env"; then ok; else
   fail "use pending poll capability: rc=$rc headers=$gl_poll_headers out=$out manifest=$(cat $MULTICA_SLOT_POOL_HOME/ppoll1/lease.env 2>/dev/null | tr '\n' ' ')"; fi
+rm -f "$resp_dir/get_lease.1" "$resp_dir/get_lease.2" "$resp_dir/acquire_lease.2"
+
+# --- 11d1. pending short capability window: re-sign before polling -----------
+reset_log
+tool_result acquire_lease '{"lease_id":"ls-51","instance_id":"ri-51","state":"pending","expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-e-1"}'
+tool_result_n acquire_lease 2 '{"lease_id":"ls-51","instance_id":"ri-51","state":"pending","expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-e-2"}'
+tool_result get_lease '{"lease_id":"ls-51","state":"active","generation":1,"expires_at":"2030-01-01T00:00:00Z"}'
+out="$(MULTICA_CALLER_OWNER=RUYI-TEST SLOT_POOL_CAPABILITY_RENEW_AFTER_SECONDS=0 bash "$pool" pexpire1 use --phase deploy 2>&1)"; rc=$?
+expire_get="$(reqs get_lease | sort -n | tail -1)"
+expire_headers=""
+[ -n "$expire_get" ] && expire_headers="$(sed -n '1p' "$log_dir/req.$expire_get")"
+expire_acquire="$(reqs acquire_lease | sort -n | tail -1)"
+expire_body="$(sed -n '2p' "$log_dir/req.$expire_acquire")"
+if [ "$rc" = 0 ] && [ -n "$expire_get" ] \
+   && grep -q 'X-Execution-Capability: cap-e-2' <<<"$expire_headers" \
+   && grep -q '"request_id": *"RUYI-TEST:pexpire1:deploy"' <<<"$expire_body" \
+   && grep -q '^LEASE_ID=ls-51$' "$MULTICA_SLOT_POOL_HOME/pexpire1/lease.env" \
+   && ! grep -q '^CAPABILITY=' "$MULTICA_SLOT_POOL_HOME/pexpire1/lease.env"; then ok; else
+  fail "pending short capability window: rc=$rc headers=$expire_headers body=$expire_body out=$out"; fi
+rm -f "$resp_dir/acquire_lease.2"
 
 # --- 11d2. use --request-id: out-of-band lease binding replays the same id ---
 reset_log
@@ -294,7 +348,7 @@ if [ "$rc" = 0 ] && grep -q '"request_id": *"RUYI-780-dev-use-3"' <<<"$body" \
 reset_log
 tool_result acquire_lease '{"lease_id":"ls-50","instance_id":"ri-50","state":"active","expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-p-2"}'
 tool_result get_lease '{"lease_id":"ls-50","state":"active","generation":1,"expires_at":"2030-01-01T00:00:00Z"}'
-out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" ppoll1 refresh 2>&1)"; rc=$?
+rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST SLOT_POOL_BOOTSTRAP_CREDENTIAL=must-not-be-used bash "$pool" ppoll1 refresh 2>&1)" || rc=$?
 rf_req="$(reqs acquire_lease | head -1)"
 rf_body="$(sed -n '2p' "$log_dir/req.$rf_req")"
 rf_headers="$(sed -n '1p' "$log_dir/req.$rf_req")"
@@ -302,10 +356,12 @@ rf_get="$(reqs get_lease | head -1)"
 rf_get_headers=""
 [ -n "$rf_get" ] && rf_get_headers="$(sed -n '1p' "$log_dir/req.$rf_get")"
 if [ "$rc" = 0 ] && grep -q '"request_id": *"RUYI-TEST:ppoll1:deploy"' <<<"$rf_body" \
+   && ! grep -q 'must-not-be-used' <<<"$rf_body" \
    && ! grep -q 'X-Execution-Capability: cap-p-1' <<<"$rf_headers" \
    && grep -q 'X-Execution-Capability: cap-p-2' <<<"$rf_get_headers" \
-   && grep -q '^CAPABILITY=cap-p-2$' "$MULTICA_SLOT_POOL_HOME/ppoll1/lease.env"; then ok; else
+   && ! grep -q '^CAPABILITY=' "$MULTICA_SLOT_POOL_HOME/ppoll1/lease.env"; then ok; else
   fail "refresh expired capability: rc=$rc acquire_headers=$rf_headers get_headers=$rf_get_headers body=$rf_body out=$out"; fi
+tool_result acquire_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"active","expires_at":"2030-01-01T00:00:00Z","template":{"id":"tpl-test-dev"},"execution_capability":"cap-dev-1"}'
 
 # --- 12. audit: foreign lease reported -----------------------------------------
 reset_log
@@ -527,7 +583,7 @@ reset_log
 tool_result exec '{"execution_id":"ex-g6e","state":"succeeded","exit_code":0,"log_tail":"verdict: suspicious"}'
 rc=0; out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 handoff --to qa --template tpl-test-qa 2>&1)" || rc=$?
 if [ "$rc" = 1 ] && [ -z "$(reqs release_lease)" ] \
-   && [ -z "$(reqs acquire_lease)" ] \
+   && [ -n "$(reqs acquire_lease)" ] \
    && [ -f "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" ]; then ok; else
   fail "handoff unknown verdict fail-closed: rc=$rc out=$out"; fi
 
