@@ -143,6 +143,49 @@ describe("端侧路径（有实时预览）", () => {
     });
     expect(failErr.commands).toEqual([{ type: "toast", kind: "transcribe_failed" }]);
   });
+
+  it("按住期间的错误保持录音态，正常松开后才提示失败", () => {
+    let r = recording();
+    r = reduceDictation(r.state, { type: "recognizerError", kind: "failed" });
+    expect(r.state.phase).toBe("recording");
+    expect(r.state.pendingError).toBe("failed");
+    expect(r.commands).toEqual([]);
+
+    r = reduceDictation(r.state, { type: "release", heldMs: 1_500 });
+    expect(r.state.phase).toBe("rest");
+    expect(r.commands).toEqual([
+      { type: "cancelCapture" },
+      { type: "toast", kind: "transcribe_failed" },
+    ]);
+  });
+
+  it("取消和短录音优先废弃按住期间的错误", () => {
+    let r = recording();
+    r = reduceDictation(r.state, { type: "recognizerError", kind: "failed" });
+    r = reduceDictation(r.state, { type: "move", upDp: CANCEL_ARM_DP + 1 });
+    r = reduceDictation(r.state, { type: "release", heldMs: 1_500 });
+    expect(r.commands).toEqual([{ type: "cancelCapture" }]);
+
+    r = recording();
+    r = reduceDictation(r.state, { type: "recognizerError", kind: "failed" });
+    r = reduceDictation(r.state, { type: "release", heldMs: MIN_RECORD_MS - 1 });
+    expect(r.commands).toEqual([
+      { type: "cancelCapture" },
+      { type: "toast", kind: "not_recognized" },
+    ]);
+  });
+
+  it("按住期间的终稿覆盖已缓存错误，并在松开后发送", () => {
+    let r = recording();
+    r = reduceDictation(r.state, { type: "recognizerError", kind: "failed" });
+    r = reduceDictation(r.state, { type: "final", text: " 发送这一句 " });
+    expect(r.state.pendingError).toBeNull();
+    expect(r.state.pendingFinal).toBe(" 发送这一句 ");
+    expect(r.commands).toEqual([]);
+
+    r = reduceDictation(r.state, { type: "release", heldMs: 1_500 });
+    expect(r.commands).toEqual([{ type: "sendText", text: "发送这一句" }]);
+  });
 });
 
 describe("降级路径（无端侧识别）", () => {
