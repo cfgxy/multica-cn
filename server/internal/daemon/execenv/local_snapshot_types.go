@@ -405,6 +405,33 @@ func ReapExpiredSnapshots(envRoot string, now time.Time) []string {
 			continue
 		}
 		path := filepath.Join(root, st.Name())
+		if st.Name() == "git-artifacts" {
+			// Git artifacts are task-keyed one level below their shared
+			// container. Claiming an artifact must protect that task directory,
+			// not merely compare its path with the container and accidentally
+			// delete every retained bundle when the container itself gets old.
+			artifacts, err := os.ReadDir(path)
+			if err != nil {
+				continue
+			}
+			for _, artifact := range artifacts {
+				if !artifact.IsDir() {
+					continue
+				}
+				artifactPath := filepath.Join(path, artifact.Name())
+				if claimed[artifactPath] {
+					continue
+				}
+				info, err := artifact.Info()
+				if err != nil || now.Sub(info.ModTime()) < snapshotOrphanAge {
+					continue
+				}
+				if os.RemoveAll(artifactPath) == nil {
+					reaped = append(reaped, artifactPath)
+				}
+			}
+			continue
+		}
 		if claimed[path] {
 			continue
 		}
