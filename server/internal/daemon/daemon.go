@@ -5835,7 +5835,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 			// by ReapExpiredSnapshots on the ledger's own 7-day schedule —
 			// the ordinary orphan sweep must not RemoveAll the root out
 			// from under that retention window.
-			if localDirectoryGCExemption(task, d.cfg.DaemonID) {
+			if localDirectoryGCExemption(task, d.cfg.DaemonID, d.client.snapshotSupport.Load()) {
 				meta.LocalDirectory = true
 			}
 			if err := execenv.WriteGCMeta(result.EnvRoot, meta, taskLog); err != nil {
@@ -6163,7 +6163,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 // each with the full waiting plumbing (status badge, prepare-lease extender,
 // cancellation poller) the in_place path uses.
 func (d *Daemon) acquireSnapshotScopeLocks(ctx context.Context, task Task, plan *snapshotPlan, taskLog *slog.Logger) (release func(), abort bool) {
-	fb, ferr := snapshotWorktreeFallback(plan)
+	fb, ferr := snapshotWorktreeFallbackWithGitGateAndCapability(plan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1", d.client.snapshotSupport.Load())
 	if ferr != nil {
 		taskLog.Error("local_directory: snapshot worktree fallback failed", "error", ferr)
 		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
@@ -7754,10 +7754,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, asEnvironmentSetupFailure(snapPlanErr)
 	}
 	if snapPlan != nil {
-		fb, ferr := snapshotWorktreeFallback(snapPlan)
+		gateEnabled := os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1"
+		fb, ferr := snapshotWorktreeFallbackWithGitGateAndCapability(snapPlan, gateEnabled, d.client.snapshotSupport.Load())
 		if ferr != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(ferr)
 		}
+		observation := snapshotExecutionObservationFor(snapPlan, fb, gateEnabled, d.client.snapshotSupport.Load())
+		taskLog.Info("local_directory: snapshot execution decision",
+			"execution_mode", observation.ExecutionMode,
+			"git_snapshot_gate", observation.GateEnabled,
+			"snapshot_capability", observation.Capability,
+			"downgrade_code", observation.DowngradeCode,
+		)
 		if fb != nil {
 			// Git directories keep the worktree flow wholesale (ADR §3): the
 			// fallback rewrites the assignment to worktree mode so the branch
@@ -8214,12 +8222,26 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, execenv.SnapshotStem(task.IssueID, u.Subdir, task.ID))
 			units = append(units, execenv.SnapshotUnitSpec{Target: u.AbsPath, Subdir: u.Subdir, Alias: alias, Upper: upper, Work: work})
 		}
+		var gitArtifact *execenv.SnapshotGitArtifactSpec
+		if gitSnapshotDeliveryEligible(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1") {
+			baseline, baselineErr := execenv.SnapshotGitBaseline(snapPlan.Primary.AbsPath)
+			if baselineErr != nil {
+				return TaskResult{}, asEnvironmentSetupFailure(baselineErr)
+			}
+			gitArtifact = &execenv.SnapshotGitArtifactSpec{
+				ArtifactDir: execenv.SnapshotGitArtifactDir(resolvedRoot, task.ID),
+				Baseline:    baseline,
+				EnvRoot:     resolvedRoot,
+				Provider:    provider,
+			}
+		}
 		if err := execenv.RecordSnapshotStart(resolvedRoot, execenv.SnapshotLedgerEntry{
-			TaskID:  task.ID,
-			IssueID: task.IssueID,
-			Root:    resolvedRoot,
-			Primary: snapPlan.Primary.AbsPath,
-			Units:   units,
+			TaskID:      task.ID,
+			IssueID:     task.IssueID,
+			Root:        resolvedRoot,
+			Primary:     snapPlan.Primary.AbsPath,
+			Units:       units,
+			GitArtifact: gitArtifact,
 		}); err != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("record snapshot ledger: %w", err))
 		}
@@ -8229,9 +8251,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("resolve daemon executable for snapshot worker: %w", err))
 		}
 		agentSnapWrap, err = execenv.BuildSnapshotWrap(selfPath, &execenv.SnapshotRunSpec{
-			TaskID: task.ID,
-			Units:  units,
-			Cwd:    snapPlan.Primary.AbsPath,
+			TaskID:      task.ID,
+			Units:       units,
+			Cwd:         snapPlan.Primary.AbsPath,
+			GitArtifact: gitArtifact,
 		})
 		if err != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("build snapshot wrap: %w", err))

@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +35,19 @@ func snapshotResourceForTest(t *testing.T, id, dir, daemonID string, primary boo
 	})
 	if err != nil {
 		t.Fatalf("marshal snapshot ref: %v", err)
+	}
+	return ProjectResourceData{ID: id, ResourceType: localDirectoryResourceType, ResourceRef: raw}
+}
+
+func worktreeResourceForTest(t *testing.T, id, dir, daemonID string) ProjectResourceData {
+	t.Helper()
+	raw, err := json.Marshal(localDirectoryRef{
+		LocalPath:     dir,
+		DaemonID:      daemonID,
+		ExecutionMode: localDirectoryModeWorktree,
+	})
+	if err != nil {
+		t.Fatalf("marshal worktree ref: %v", err)
 	}
 	return ProjectResourceData{ID: id, ResourceType: localDirectoryResourceType, ResourceRef: raw}
 }
@@ -86,6 +102,56 @@ func TestResolveSnapshotPlanUndeclaredPrimary(t *testing.T) {
 	if locks := plan.DeclaredLockPaths(); locks != nil {
 		t.Fatalf("undeclared plan must take no lock, got %v", locks)
 	}
+}
+
+func TestResolveSnapshotPlanUsesWorktreeResourceOnlyWithGitSnapshotGate(t *testing.T) {
+	plainTask := Task{
+		ID:               "plain",
+		ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "plain", t.TempDir(), "d1")},
+	}
+	gitRoot := newTestGitRoot(t)
+	task := Task{
+		ID:               "t1",
+		ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "r1", gitRoot, "d1")},
+	}
+
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "")
+	plan, err := resolveSnapshotPlan(task, "d1")
+	if err != nil || plan != nil {
+		t.Fatalf("disabled gate must preserve the worktree path, plan=%+v err=%v", plan, err)
+	}
+
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "1")
+	plan, err = resolveSnapshotPlan(plainTask, "d1")
+	if err != nil || plan != nil {
+		t.Fatalf("enabled gate must preserve a non-Git worktree backend, plan=%+v err=%v", plan, err)
+	}
+
+	plan, err = resolveSnapshotPlan(task, "d1")
+	if err != nil || plan == nil || plan.Primary == nil || plan.Primary.AbsPath != filepath.Clean(gitRoot) {
+		t.Fatalf("enabled gate must plan the ordinary worktree resource, plan=%+v err=%v", plan, err)
+	}
+	if fallback, err := snapshotWorktreeFallback(plan); err != nil || fallback != nil {
+		t.Fatalf("eligible ordinary worktree resource must enter snapshot delivery, fallback=%+v err=%v", fallback, err)
+	}
+	if fallback, err := snapshotWorktreeFallbackWithGitGateAndCapability(plan, true, false); err != nil || fallback == nil || !fallback.UsesWorktree() {
+		t.Fatalf("incapable daemon must preserve the worktree fallback, fallback=%+v err=%v", fallback, err)
+	} else if got := snapshotExecutionObservationFor(plan, fallback, true, false); got.DowngradeCode != "git_snapshot_capability_unavailable" || got.ExecutionMode != localDirectoryModeWorktree {
+		t.Fatalf("incapable worktree observation = %+v", got)
+	}
+
+	nested := filepath.Join(gitRoot, "child")
+	if out, err := exec.Command("git", "init", "-q", nested).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	plan, err = resolveSnapshotPlan(task, "d1")
+	if err != nil || plan == nil {
+		t.Fatalf("resolve nested worktree candidate: plan=%+v err=%v", plan, err)
+	}
+	if fallback, err := snapshotWorktreeFallback(plan); err != nil || fallback == nil || !fallback.UsesWorktree() {
+		t.Fatalf("nested repository must preserve the worktree fallback, fallback=%+v err=%v", fallback, err)
+	}
+
 }
 
 func TestResolveSnapshotPlanUndeclaredSoleRowWithoutPrimary(t *testing.T) {
@@ -228,12 +294,331 @@ func TestSnapshotWorktreeFallbackOnGitRoot(t *testing.T) {
 		t.Fatalf("fallback must be worktree-mode, got %+v", fb.Ref)
 	}
 
+	parent := newTestGitRoot(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	if out, err := exec.Command("git", "-C", parent, "worktree", "add", "-q", linked).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v (%s)", err, out)
+	}
+	linkedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: linked}}, Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: linked}, AbsPath: linked}}
+	if fb, err := snapshotWorktreeFallback(linkedPlan); err != nil || fb == nil || !fb.UsesWorktree() {
+		t.Fatalf("linked worktree with external common dir must fall back, fb=%v err=%v", fb, err)
+	}
+
+	nested := newTestGitRoot(t)
+	if out, err := exec.Command("git", "init", "-q", filepath.Join(nested, "child")).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	nestedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: nested}}, Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: nested}, AbsPath: nested}}
+	if fb, err := snapshotWorktreeFallback(nestedPlan); err != nil || fb == nil || !fb.UsesWorktree() {
+		t.Fatalf("nested Git inside snapshot scope must fall back, fb=%v err=%v", fb, err)
+	}
+
 	plain := t.TempDir()
 	plan2 := &snapshotPlan{Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: plain}, AbsPath: filepath.Clean(plain)}}
 	fb2, err := snapshotWorktreeFallback(plan2)
 	if err != nil || fb2 != nil {
 		t.Fatalf("non-git root must proceed with mounts, fb=%v err=%v", fb2, err)
 	}
+}
+
+func TestAuditSnapshotGitScope(t *testing.T) {
+	t.Parallel()
+
+	plain := newTestGitRoot(t)
+	plainPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: plain}}, Primary: &snapshotUnit{AbsPath: plain}}
+	if audit := auditSnapshotGitScope(plainPlan); !audit.HasGit || !audit.Safe {
+		t.Fatalf("ordinary repository must be fully auditable, got %+v", audit)
+	}
+
+	parent := newTestGitRoot(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	if out, err := exec.Command("git", "-C", parent, "worktree", "add", "-q", linked).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v (%s)", err, out)
+	}
+	linkedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: linked}}, Primary: &snapshotUnit{AbsPath: linked}}
+	if audit := auditSnapshotGitScope(linkedPlan); !audit.HasGit || audit.Safe || !strings.Contains(audit.Reason, "outside") {
+		t.Fatalf("linked worktree with external common dir must fail audit, got %+v", audit)
+	}
+
+	nested := newTestGitRoot(t)
+	child := filepath.Join(nested, "child")
+	if out, err := exec.Command("git", "init", "-q", child).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	nestedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: nested}}, Primary: &snapshotUnit{AbsPath: nested}}
+	if audit := auditSnapshotGitScope(nestedPlan); !audit.HasGit || !audit.Safe {
+		t.Fatalf("nested repositories fully inside scope must be auditable, got %+v", audit)
+	}
+}
+
+func TestGitSnapshotDeliveryEligibleIsNarrow(t *testing.T) {
+	gitRoot := newTestGitRoot(t)
+	ordinary := &snapshotPlan{Units: []snapshotUnit{{AbsPath: gitRoot}}, Primary: &snapshotUnit{AbsPath: gitRoot}}
+	if !gitSnapshotDeliveryEligible(ordinary, true) {
+		t.Fatal("ordinary single-root repository must be eligible when the gate is enabled")
+	}
+	if gitSnapshotDeliveryEligible(ordinary, false) {
+		t.Fatal("delivery gate must default to a worktree fallback")
+	}
+	if fallback, err := snapshotWorktreeFallbackWithGitGate(ordinary, true); err != nil || fallback != nil {
+		t.Fatalf("enabled ordinary repository must enter snapshot delivery, fallback=%+v err=%v", fallback, err)
+	}
+
+	nested := newTestGitRoot(t)
+	if out, err := exec.Command("git", "init", "-q", filepath.Join(nested, "child")).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	nestedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: nested}}, Primary: &snapshotUnit{AbsPath: nested}}
+	if gitSnapshotDeliveryEligible(nestedPlan, true) {
+		t.Fatal("nested Git must keep the worktree fallback")
+	}
+}
+
+func TestSnapshotExecutionObservation(t *testing.T) {
+	gitRoot := newTestGitRoot(t)
+	ordinary := &snapshotPlan{Units: []snapshotUnit{{Ref: localDirectoryRef{LocalPath: gitRoot}, AbsPath: gitRoot}}, Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: gitRoot}, AbsPath: gitRoot}}
+
+	fallback, err := snapshotWorktreeFallbackWithGitGate(ordinary, false)
+	if err != nil || fallback == nil {
+		t.Fatalf("disabled gate must use the worktree fallback, fallback=%+v err=%v", fallback, err)
+	}
+	if got := snapshotExecutionObservationFor(ordinary, fallback, false, true); got.ExecutionMode != localDirectoryModeWorktree || got.DowngradeCode != "git_snapshot_gate_disabled" || !got.Capability {
+		t.Fatalf("disabled gate observation = %+v", got)
+	}
+
+	fallback, err = snapshotWorktreeFallbackWithGitGate(ordinary, true)
+	if err != nil || fallback != nil {
+		t.Fatalf("eligible ordinary repository must use snapshot, fallback=%+v err=%v", fallback, err)
+	}
+	if got := snapshotExecutionObservationFor(ordinary, fallback, true, true); got.ExecutionMode != localDirectoryModeSnapshot || got.DowngradeCode != "" || !got.GateEnabled {
+		t.Fatalf("snapshot observation = %+v", got)
+	}
+
+	nested := newTestGitRoot(t)
+	if out, err := exec.Command("git", "init", "-q", filepath.Join(nested, "child")).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	nestedPlan := &snapshotPlan{Units: []snapshotUnit{{Ref: localDirectoryRef{LocalPath: nested}, AbsPath: nested}}, Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: nested}, AbsPath: nested}}
+	fallback, err = snapshotWorktreeFallbackWithGitGate(nestedPlan, true)
+	if err != nil || fallback == nil {
+		t.Fatalf("nested repository must fall back, fallback=%+v err=%v", fallback, err)
+	}
+	if got := snapshotExecutionObservationFor(nestedPlan, fallback, true, true); got.DowngradeCode != "git_snapshot_unsupported_topology" {
+		t.Fatalf("nested repository observation = %+v", got)
+	}
+}
+
+// TestGitSnapshotUnsupportedTopologiesFallbackWithoutPristineWrites uses real
+// disposable Git repositories to pin the fail-closed boundary. The ordinary
+// single-repository worker tests exercise snapshot delivery; each topology
+// here must instead retain the established worktree backend without changing
+// a tracked file, untracked file, binary payload, refs, objects, or Git admin
+// metadata while the daemon evaluates the gate and safety audit.
+func TestGitSnapshotUnsupportedTopologiesFallbackWithoutPristineWrites(t *testing.T) {
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "1")
+
+	type topology struct {
+		name          string
+		resourceRoot  string
+		repositories  []string
+		wantAuditSafe bool
+	}
+
+	linkedBase := newTestGitRoot(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	runTopologyGit(t, linkedBase, "worktree", "add", "-q", "--detach", linked)
+	writeTopologyMarkers(t, linked)
+
+	nested := newTestGitRoot(t)
+	child := newTopologyGitRoot(t, filepath.Join(nested, "child"))
+	writeTopologyMarkers(t, nested)
+	writeTopologyMarkers(t, child)
+
+	moduleSource := newTestGitRoot(t)
+	submodule := newTestGitRoot(t)
+	runTopologyGit(t, submodule, "-c", "protocol.file.allow=always", "submodule", "add", "-q", moduleSource, "deps/module")
+	runTopologyGit(t, submodule, "add", ".gitmodules", "deps/module")
+	runTopologyGit(t, submodule, "commit", "-qm", "add module")
+	writeTopologyMarkers(t, submodule)
+	writeTopologyMarkers(t, filepath.Join(submodule, "deps", "module"))
+
+	parent := t.TempDir()
+	parentA := newTopologyGitRoot(t, filepath.Join(parent, "repo-a"))
+	parentB := newTopologyGitRoot(t, filepath.Join(parent, "repo-b"))
+	writeTopologyMarkers(t, parentA)
+	writeTopologyMarkers(t, parentB)
+
+	for _, tc := range []topology{
+		{name: "linked_worktree", resourceRoot: linked, repositories: []string{linked}, wantAuditSafe: false},
+		{name: "nested_repository", resourceRoot: nested, repositories: []string{nested, child}, wantAuditSafe: true},
+		{name: "submodule", resourceRoot: submodule, repositories: []string{submodule, filepath.Join(submodule, "deps", "module")}, wantAuditSafe: false},
+		{name: "parent_with_multiple_repositories", resourceRoot: parent, repositories: []string{parentA, parentB}, wantAuditSafe: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := topologyFingerprint(t, tc.repositories)
+			task := Task{
+				ID:               "task-" + tc.name,
+				ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "resource-"+tc.name, tc.resourceRoot, "d1")},
+			}
+			plan, err := resolveSnapshotPlan(task, "d1")
+			if err != nil {
+				t.Fatalf("resolve snapshot plan: %v", err)
+			}
+			if plan == nil {
+				// A parent that is not itself a Git root never becomes a snapshot
+				// candidate. Audit the representative plan too, so discovery of
+				// both child repositories remains covered by this matrix.
+				plan = &snapshotPlan{
+					Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: tc.resourceRoot, ExecutionMode: localDirectoryModeWorktree}, AbsPath: tc.resourceRoot},
+					Units:   []snapshotUnit{{AbsPath: tc.resourceRoot}},
+				}
+			}
+
+			audit := auditSnapshotGitScope(plan)
+			if !audit.HasGit || audit.Safe != tc.wantAuditSafe {
+				t.Fatalf("audit = %+v, want HasGit=true Safe=%v", audit, tc.wantAuditSafe)
+			}
+			if gitSnapshotDeliveryEligible(plan, true) {
+				t.Fatal("unsupported Git topology must never be snapshot-delivery eligible")
+			}
+			fallback, err := snapshotWorktreeFallback(plan)
+			if err != nil || fallback == nil || !fallback.UsesWorktree() {
+				t.Fatalf("unsupported topology must preserve worktree backend, fallback=%+v err=%v", fallback, err)
+			}
+
+			if after := topologyFingerprint(t, tc.repositories); after != before {
+				t.Fatalf("planning and fallback changed pristine Git state\nbefore: %s\nafter:  %s", before, after)
+			}
+		})
+	}
+}
+
+func newTopologyGitRoot(t *testing.T, repo string) string {
+	t.Helper()
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.invalid"}} {
+		runTopologyGit(t, repo, args...)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runTopologyGit(t, repo, "add", "tracked.txt")
+	runTopologyGit(t, repo, "commit", "-qm", "base")
+	return repo
+}
+
+func writeTopologyMarkers(t *testing.T, repo string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("locally-modified\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("untracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "payload.bin"), []byte{0, 1, 2, 255}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runTopologyGit(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	argv := append([]string(nil), args...)
+	if repo != "" {
+		argv = append([]string{"-C", repo}, argv...)
+	}
+	out, err := exec.Command("git", argv...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v (%s)", argv, err, out)
+	}
+	return string(out)
+}
+
+func topologyFingerprint(t *testing.T, repositories []string) string {
+	t.Helper()
+	parts := make([]string, 0, len(repositories)*5)
+	for _, repo := range repositories {
+		status := runTopologyGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+		refs := runTopologyGit(t, repo, "show-ref", "--head")
+		gitDir := strings.TrimSpace(runTopologyGit(t, repo, "rev-parse", "--absolute-git-dir"))
+		commonDir := strings.TrimSpace(runTopologyGit(t, repo, "rev-parse", "--git-common-dir"))
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(repo, commonDir)
+		}
+		parts = append(parts,
+			repo+" status="+status,
+			repo+" refs="+refs,
+			repo+" worktree="+treeDigest(t, repo, true),
+			repo+" git-dir="+treeDigest(t, gitDir, false),
+			repo+" common-dir="+treeDigest(t, commonDir, false),
+		)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func treeDigest(t *testing.T, root string, skipRootGitDir bool) string {
+	t.Helper()
+	hash := sha256.New()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		if skipRootGitDir && path == filepath.Join(root, ".git") && entry.IsDir() {
+			return filepath.SkipDir
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(hash, "%s\\x00%s\\x00", filepath.ToSlash(rel), entry.Type()); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprint(hash, target)
+			return err
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, err = hash.Write(contents)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("digest %s: %v", root, err)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func newTestGitRoot(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"config", "user.name", "Test"}, {"config", "user.email", "test@example.invalid"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "add", "tracked.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", repo, "commit", "-qm", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v (%s)", err, out)
+	}
+	return repo
 }
 
 func TestSnapshotUnitDisplayName(t *testing.T) {
@@ -648,7 +1033,7 @@ func TestLocalDirectoryGCExemption(t *testing.T) {
 
 	plain := t.TempDir()
 	snapTask := Task{ID: "t1", ProjectResources: []ProjectResourceData{snapshotResourceForTest(t, "r1", plain, daemonID, true)}}
-	if !localDirectoryGCExemption(snapTask, daemonID) {
+	if !localDirectoryGCExemption(snapTask, daemonID, true) {
 		t.Error("snapshot run on a non-git root must stamp the GC exemption")
 	}
 
@@ -657,7 +1042,7 @@ func TestLocalDirectoryGCExemption(t *testing.T) {
 		t.Fatalf("git init: %v (%s)", err, out)
 	}
 	gitTask := Task{ID: "t2", ProjectResources: []ProjectResourceData{snapshotResourceForTest(t, "r2", gitDir, daemonID, true)}}
-	if localDirectoryGCExemption(gitTask, daemonID) {
+	if localDirectoryGCExemption(gitTask, daemonID, true) {
 		t.Error("git-root snapshot task routes to the worktree flow and must NOT stamp the exemption")
 	}
 
@@ -669,13 +1054,13 @@ func TestLocalDirectoryGCExemption(t *testing.T) {
 		}
 		return ProjectResourceData{ID: id, ResourceType: localDirectoryResourceType, ResourceRef: raw}
 	}
-	if !localDirectoryGCExemption(Task{ID: "t3", ProjectResources: []ProjectResourceData{localResource("r3", localDirectoryModeInPlace)}}, daemonID) {
+	if !localDirectoryGCExemption(Task{ID: "t3", ProjectResources: []ProjectResourceData{localResource("r3", localDirectoryModeInPlace)}}, daemonID, true) {
 		t.Error("in_place assignment runs inside the user's tree and must stamp the exemption")
 	}
-	if localDirectoryGCExemption(Task{ID: "t4", ProjectResources: []ProjectResourceData{localResource("r4", localDirectoryModeWorktree)}}, daemonID) {
+	if localDirectoryGCExemption(Task{ID: "t4", ProjectResources: []ProjectResourceData{localResource("r4", localDirectoryModeWorktree)}}, daemonID, true) {
 		t.Error("worktree assignment owns a disposable env root and must NOT stamp the exemption")
 	}
-	if localDirectoryGCExemption(Task{ID: "t5"}, daemonID) {
+	if localDirectoryGCExemption(Task{ID: "t5"}, daemonID, true) {
 		t.Error("no local_directory involvement → no exemption")
 	}
 }

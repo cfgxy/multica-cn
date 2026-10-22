@@ -124,3 +124,169 @@ func TestSnapshotWorkerSmoke(t *testing.T) {
 		t.Fatalf("alias must be empty from outside the namespace, got %d entries", len(entries))
 	}
 }
+
+// TestSnapshotWorkerCapturesGitArtifactSmoke exercises the production worker
+// path in which the overlay remains mounted after the agent exits so capture
+// can commit its private Git view and write a reviewable bundle.
+func TestSnapshotWorkerCapturesGitArtifactSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	scratch := t.TempDir()
+	target := filepath.Join(scratch, "pristine-repo")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, target, "init", "-q")
+	gitForSnapshotTest(t, target, "config", "user.name", "Test")
+	gitForSnapshotTest(t, target, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(target, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, target, "add", "tracked.txt")
+	gitForSnapshotTest(t, target, "commit", "-qm", "base")
+	baseline := strings.TrimSpace(gitForSnapshotTest(t, target, "rev-parse", "HEAD"))
+	pristineRefs := gitForSnapshotTest(t, target, "show-ref", "--head")
+
+	alias := filepath.Join(scratch, "alias")
+	upper := filepath.Join(scratch, "upper")
+	work := filepath.Join(scratch, "work")
+	for _, dir := range []string{alias, upper, work} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	artifactDir := filepath.Join(scratch, "artifact")
+	spec := &SnapshotRunSpec{
+		TaskID: "git-artifact-smoke",
+		Units:  []SnapshotUnitSpec{{Target: target, Alias: alias, Upper: upper, Work: work}},
+		Cwd:    target,
+		GitArtifact: &SnapshotGitArtifactSpec{
+			ArtifactDir: artifactDir,
+			Baseline:    baseline,
+			EnvRoot:     filepath.Join(scratch, "env"),
+		},
+	}
+	wrap, err := BuildSnapshotWrap(bin, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := "printf 'changed\\n' > tracked.txt" +
+		" && printf 'untracked\\n' > untracked.txt" +
+		" && printf '\\000\\001\\002\\377' > binary.bin"
+	out, err := spawnWithSnapshotNamespaces(t,
+		bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+		"/bin/sh", "-c", payload)
+	if err != nil {
+		t.Fatalf("worker failed: %v\n%s", err, out)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(target, "tracked.txt")); err != nil || string(got) != "base\n" {
+		t.Fatalf("pristine tracked file = %q, err=%v; want base content", got, err)
+	}
+	for _, name := range []string{"untracked.txt", "binary.bin"} {
+		if _, err := os.Stat(filepath.Join(target, name)); !os.IsNotExist(err) {
+			t.Fatalf("worker write %s leaked into pristine (stat err=%v)", name, err)
+		}
+	}
+	if got := gitForSnapshotTest(t, target, "status", "--porcelain"); got != "" {
+		t.Fatalf("pristine repository must remain clean, status=%q", got)
+	}
+	if got := gitForSnapshotTest(t, target, "show-ref", "--head"); got != pristineRefs {
+		t.Fatalf("snapshot commit must not change pristine refs, got %q want %q", got, pristineRefs)
+	}
+
+	clone := filepath.Join(scratch, "clone")
+	gitForSnapshotTest(t, "", "clone", "-q", target, clone)
+	bundle := filepath.Join(artifactDir, "changes.bundle")
+	gitForSnapshotTest(t, clone, "fetch", bundle, "HEAD:refs/heads/snapshot")
+	gitForSnapshotTest(t, clone, "checkout", "-q", "snapshot")
+	gitForSnapshotTest(t, clone, "fsck", "--no-dangling")
+	if got := gitForSnapshotTest(t, clone, "show", "snapshot:tracked.txt"); got != "changed\n" {
+		t.Fatalf("captured tracked content = %q, want changed", got)
+	}
+	if got := gitForSnapshotTest(t, clone, "show", "snapshot:untracked.txt"); got != "untracked\n" {
+		t.Fatalf("captured untracked content = %q, want untracked", got)
+	}
+	if got := []byte(gitForSnapshotTest(t, clone, "show", "snapshot:binary.bin")); string(got) != string([]byte{0, 1, 2, 255}) {
+		t.Fatalf("captured binary content = %v", got)
+	}
+	if entries, err := os.ReadDir(alias); err != nil || len(entries) != 0 {
+		t.Fatalf("worker mount namespace must be gone; alias entries=%d err=%v", len(entries), err)
+	}
+}
+
+// TestSnapshotWorkerInterruptedAgentKeepsRecoverableArtifactSmoke covers the
+// failure path: the wrapped agent exits non-zero after modifying the overlay,
+// but the worker still captures a reviewable bundle and the task finalizer
+// preserves its ledger-owned recovery record.
+func TestSnapshotWorkerInterruptedAgentKeepsRecoverableArtifactSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	scratch := t.TempDir()
+	target := filepath.Join(scratch, "pristine-repo")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, target, "init", "-q")
+	gitForSnapshotTest(t, target, "config", "user.name", "Test")
+	gitForSnapshotTest(t, target, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(target, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, target, "add", "tracked.txt")
+	gitForSnapshotTest(t, target, "commit", "-qm", "base")
+	baseline := strings.TrimSpace(gitForSnapshotTest(t, target, "rev-parse", "HEAD"))
+
+	alias := filepath.Join(scratch, "alias")
+	upper := filepath.Join(scratch, "upper")
+	work := filepath.Join(scratch, "work")
+	for _, dir := range []string{alias, upper, work} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	envRoot := filepath.Join(scratch, "env")
+	artifactDir := SnapshotGitArtifactDir(envRoot, "interrupted")
+	artifact := &SnapshotGitArtifactSpec{ArtifactDir: artifactDir, Baseline: baseline, EnvRoot: envRoot}
+	entry := SnapshotLedgerEntry{
+		TaskID:      "interrupted",
+		IssueID:     "RUYI-845",
+		Root:        envRoot,
+		Primary:     target,
+		Units:       []SnapshotUnitSpec{{Target: target, Alias: alias, Upper: upper, Work: work}},
+		GitArtifact: artifact,
+	}
+	if err := RecordSnapshotStart(envRoot, entry); err != nil {
+		t.Fatal(err)
+	}
+	spec := &SnapshotRunSpec{TaskID: entry.TaskID, Units: entry.Units, Cwd: target, GitArtifact: artifact}
+	wrap, err := BuildSnapshotWrap(bin, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := spawnWithSnapshotNamespaces(t, bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+		"/bin/sh", "-c", "printf 'interrupted\\n' > tracked.txt && kill -TERM $$"); err == nil {
+		t.Fatalf("interrupted agent unexpectedly succeeded: %s", out)
+	}
+	if err := FinalizeSnapshot(envRoot, entry.TaskID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := gitForSnapshotTest(t, target, "status", "--porcelain"); got != "" {
+		t.Fatalf("interrupted snapshot must leave pristine repository clean, status=%q", got)
+	}
+	clone := filepath.Join(scratch, "clone")
+	gitForSnapshotTest(t, "", "clone", "-q", target, clone)
+	gitForSnapshotTest(t, clone, "fetch", filepath.Join(artifactDir, "changes.bundle"), "HEAD:refs/heads/interrupted")
+	gitForSnapshotTest(t, clone, "checkout", "-q", "interrupted")
+	gitForSnapshotTest(t, clone, "fsck", "--no-dangling")
+	if got := gitForSnapshotTest(t, clone, "show", "interrupted:tracked.txt"); got != "interrupted\n" {
+		t.Fatalf("recovered tracked content = %q, want interrupted write", got)
+	}
+
+	entries := readLedgerEntries(t, envRoot)
+	if len(entries) != 1 || entries[0].State != snapshotStateFailed || entries[0].GitArtifact == nil {
+		t.Fatalf("interrupted task must retain failed recovery ledger entry, got %+v", entries)
+	}
+	if _, err := os.Stat(upper); err != nil {
+		t.Fatalf("interrupted task must retain its overlay upperdir: %v", err)
+	}
+}
