@@ -1,6 +1,7 @@
 // @ts-nocheck
 import React from "react";
 import { fireEvent, render, screen } from "@testing-library/react-native";
+import { StyleSheet } from "react-native";
 import { ChatSessionModelPicker } from "@/components/chat/chat-session-model-picker";
 import { PlusPanel } from "@/components/chat/plus-panel";
 
@@ -43,6 +44,16 @@ jest.mock("@/lib/theme", () => ({ THEME: { light: { mutedForeground: "#666", bra
 jest.mock("@/lib/use-t", () => ({ useT: () => ({ t: (_key, fallback) => fallback }) }));
 
 describe("ChatSessionModelPicker", () => {
+  const plusPanelProps = {
+    visible: true,
+    maxHeight: 400,
+    onClose: jest.fn(),
+    onMention: jest.fn(),
+    onCamera: jest.fn(),
+    onImage: jest.fn(),
+    onFiles: jest.fn(),
+  };
+
   it("disables the trigger and all model choices while saving", async () => {
     const onSelect = jest.fn(async () => {});
     await render(
@@ -67,13 +78,7 @@ describe("ChatSessionModelPicker", () => {
     const onSelect = jest.fn(async () => {});
     await render(
       <PlusPanel
-        visible
-        maxHeight={400}
-        onClose={jest.fn()}
-        onMention={jest.fn()}
-        onCamera={jest.fn()}
-        onImage={jest.fn()}
-        onFiles={jest.fn()}
+        {...plusPanelProps}
         modelPicker={
           <ChatSessionModelPicker
             runtimeId="runtime-1"
@@ -94,5 +99,17 @@ describe("ChatSessionModelPicker", () => {
     )).toBe(true);
     fireEvent.press(choices[1]);
     expect(onSelect).toHaveBeenCalledWith("model-a");
+  });
+
+  it("keeps an eight-cell grid and composer-aligned bounds without a selectable runtime", async () => {
+    await render(<PlusPanel {...plusPanelProps} />);
+
+    expect(screen.getAllByTestId("plus-grid-tile")).toHaveLength(7);
+    expect(screen.getByTestId("plus-model-cell")).toBeTruthy();
+    expect(screen.getByLabelText("Model unavailable").props.accessibilityState?.disabled).toBe(true);
+    expect(StyleSheet.flatten(screen.getByTestId("plus-panel").props.style)).toMatchObject({
+      left: 12,
+      right: 12,
+    });
   });
 });

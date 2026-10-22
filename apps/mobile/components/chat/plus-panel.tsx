@@ -22,8 +22,10 @@ interface GridEntry {
   key: string;
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
-  onPress: () => void;
+  onPress?: () => void;
 }
+
+const COMPOSER_HORIZONTAL_INSET = 12;
 
 interface Props {
   visible: boolean;
@@ -76,6 +78,8 @@ export function PlusPanel({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
   }, []);
 
+  // Web hides unavailable contextual actions. Mobile keeps the fixed 4x2 grid
+  // and marks unavailable actions disabled so the composer shape never shifts.
   const grid: GridEntry[] = [
     {
       key: "camera",
@@ -101,34 +105,24 @@ export function PlusPanel({
       label: t("mobile.plus.mention", "Mention"),
       onPress: onMention,
     },
-    ...(onSkill
-      ? [
-          {
-            key: "skill",
-            icon: "flash" as const,
-            label: t("mobile.plus.skill", "Skill"),
-            onPress: onSkill,
-          },
-        ]
-      : []),
-    ...(onQuickReplies
-      ? [
-          {
-            key: "quick",
-            icon: "chatbox-ellipses" as const,
-            label: t("mobile.plus.quick_replies", "Quick replies"),
-            onPress: onQuickReplies,
-          },
-        ]
-      : []),
-    ...(onProjectContext
-      ? [{
-          key: "project",
-          icon: "folder-outline" as const,
-          label: projectContextLabel ?? t("input.project_context", "Project context"),
-          onPress: onProjectContext,
-        }]
-      : []),
+    {
+      key: "skill",
+      icon: "flash",
+      label: t("mobile.plus.skill", "Skill"),
+      onPress: onSkill,
+    },
+    {
+      key: "quick",
+      icon: "chatbox-ellipses",
+      label: t("mobile.plus.quick_replies", "Quick replies"),
+      onPress: onQuickReplies,
+    },
+    {
+      key: "project",
+      icon: "folder-outline",
+      label: projectContextLabel ?? t("input.project_context", "Project context"),
+      onPress: onProjectContext,
+    },
   ];
 
   // A downward pull of more than 80dp closes the panel.
@@ -148,13 +142,14 @@ export function PlusPanel({
       entering={SlideInUp.duration(220)}
       exiting={SlideOutDown.duration(180)}
       className="self-start rounded-xl border border-border bg-background px-3 pb-3 shadow-lg"
+      testID="plus-panel"
       style={{
         position: "absolute",
         bottom: "100%",
-        left: 0,
+        left: COMPOSER_HORIZONTAL_INSET,
+        right: COMPOSER_HORIZONTAL_INSET,
         zIndex: 10,
         maxHeight,
-        width: "100%",
         marginBottom: 8,
       }}
     >
@@ -185,23 +180,29 @@ export function PlusPanel({
             </Pressable>
           </View>
           <View className="flex-row flex-wrap">
-            {grid.map((entry) => (
-              <GridTile
-                key={entry.key}
-                icon={entry.icon}
-                label={entry.label}
-                onPress={() => {
-                  haptic();
-                  entry.onPress();
-                  onClose();
-                }}
-              />
-            ))}
-            {modelPicker ? (
-              <View style={{ height: 72, width: "25%" }}>
-                {modelPicker}
-              </View>
-            ) : null}
+            {grid.map((entry) => {
+              const onPress = entry.onPress;
+              return (
+                <GridTile
+                  key={entry.key}
+                  icon={entry.icon}
+                  label={entry.label}
+                  disabled={!onPress}
+                  onPress={onPress ? () => {
+                    haptic();
+                    onPress();
+                    onClose();
+                  } : undefined}
+                />
+              );
+            })}
+            <View testID="plus-model-cell" style={{ height: 72, width: "25%" }}>
+              {modelPicker ?? (
+                <UnavailableModelTile
+                  label={t("mobile.plus.model_unavailable", "Model unavailable")}
+                />
+              )}
+            </View>
           </View>
       </ScrollView>
     </Animated.View>
@@ -212,22 +213,44 @@ function GridTile({
   icon,
   label,
   onPress,
+  disabled = false,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
-  onPress: () => void;
+  onPress?: () => void;
+  disabled?: boolean;
 }) {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
+      testID="plus-grid-tile"
       accessibilityRole="button"
       accessibilityLabel={label}
-      className="items-center justify-center gap-1.5 active:opacity-80"
+      className="items-center justify-center gap-1.5 active:opacity-80 disabled:opacity-50"
       style={{ height: 72, width: "25%" }}
     >
       <Ionicons name={icon} size={22} color={theme.foreground} />
+      <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function UnavailableModelTile({ label }: { label: string }) {
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+  return (
+    <Pressable
+      disabled
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      className="h-full w-full items-center justify-center gap-1.5 opacity-50"
+    >
+      <Ionicons name="hardware-chip-outline" size={22} color={theme.mutedForeground} />
       <Text className="text-xs text-muted-foreground" numberOfLines={1}>
         {label}
       </Text>
