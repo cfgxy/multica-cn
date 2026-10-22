@@ -16,8 +16,10 @@ pool="$root_dir/scripts/slot-pool.sh"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
+real_flock="$(command -v flock)"
 fake_bin="$tmp_dir/bin"; resp_dir="$tmp_dir/resp"; log_dir="$tmp_dir/log"
 mkdir -p "$fake_bin" "$resp_dir" "$log_dir"
+export SLOT_POOL_TEST_REAL_FLOCK="$real_flock"
 export PATH="$fake_bin:$PATH"
 
 home="$tmp_dir/home"; mkdir -p "$home"
@@ -59,6 +61,22 @@ printf '%s\0' "$@" > "$log/argv.$n"
         else
           printf '[%s] ' "$a"
         fi ;;
+      -K|--config)
+        if [ -r "$a" ]; then
+          while IFS= read -r config_line; do
+            case "$config_line" in
+              'url = '*)
+                url="${config_line#url = }"
+                url="${url#\"}"
+                url="${url%\"}" ;;
+              'header = '*)
+                header="${config_line#header = }"
+                header="${header#\"}"
+                header="${header%\"}"
+                printf '[%s] ' "$header" ;;
+            esac
+          done < "$a"
+        fi ;;
       *) case "$a" in -*) ;; *) printf '%s ' "$a" ;; esac ;;
     esac
     prev="$a"
@@ -73,7 +91,15 @@ for a in "$@"; do
   esac
   prev="$a"
 done
-if [ "$body" = "@-" ]; then body="$(cat)"; fi
+body_from_stdin=0
+if [ "$body" = "@-" ]; then
+  body_from_stdin=1
+  body="$(cat)"
+fi
+if [ -n "${SLOT_POOL_TEST_EXPECT_UPLOAD_URL:-}" ] && [ "$body_from_stdin" = 0 ] \
+   && [ "$url" != "$SLOT_POOL_TEST_EXPECT_UPLOAD_URL" ]; then
+  exit 29
+fi
 if [ -z "$body" ] && [ -n "$url" ]; then
   key="$(basename "$url")"
   count_file="$log/.count.$key"
@@ -99,6 +125,15 @@ if [ -n "$body" ]; then
   key="$method"
   [ -n "$name" ] && key="$name"
   key="${key//\//_}"
+  if [ "$key" = "get_lease" ] && [ -n "${SLOT_POOL_TEST_BLOCK_GET_LEASE:-}" ]; then
+    printf '%s\n' "$$" > "$SLOT_POOL_TEST_BLOCK_GET_LEASE.ready"
+    waits=0
+    while [ ! -f "$SLOT_POOL_TEST_BLOCK_GET_LEASE.release" ] && [ "$waits" -lt 500 ]; do
+      sleep 0.01
+      waits=$((waits + 1))
+    done
+    [ -f "$SLOT_POOL_TEST_BLOCK_GET_LEASE.release" ] || exit 28
+  fi
   count_file="$log/.count.$key"
   count=0
   [ -f "$count_file" ] && count="$(cat "$count_file")"
@@ -117,6 +152,15 @@ printf '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"no canned resp
 exit 0
 CUREOF
 chmod +x "$fake_bin/curl"
+
+cat >"$fake_bin/flock" <<'FLOCKEOF'
+#!/usr/bin/env bash
+if [ -n "${SLOT_POOL_TEST_FLOCK_ATTEMPT_FILE:-}" ]; then
+  : > "$SLOT_POOL_TEST_FLOCK_ATTEMPT_FILE"
+fi
+exec "$SLOT_POOL_TEST_REAL_FLOCK" "$@"
+FLOCKEOF
+chmod +x "$fake_bin/flock"
 
 resp() { # <key> <json> — canned response for method or tool name
   printf '%s' "$2" >"$resp_dir/$1"
@@ -444,15 +488,28 @@ if [ "$rc" = 0 ] && grep -q 'ls-7' <<<"$out"; then ok; else fail "list slot-pref
 
 # --- 15. load: upload_package params pinned -------------------------------------
 reset_log
-tool_result upload_package '{"package_id":"pkg-1","upload":{"method":"PUT","url":"http://files.example/put-here"}}'
+upload_url='https://files.example/put-here?X-Amz-Credential=upload-secret'
+tool_result upload_package "{\"package_id\":\"pkg-1\",\"upload\":{\"method\":\"PUT\",\"url\":\"$upload_url\"}}"
 f="$tmp_dir/pkg.zip"; printf 'PK' >"$f"
-out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" pdev1 load --file "$f" --name app.zip)"; rc=$?
+out="$(MULTICA_CALLER_OWNER=RUYI-TEST SLOT_POOL_TEST_EXPECT_UPLOAD_URL="$upload_url" bash "$pool" pdev1 load --file "$f" --name app.zip)"; rc=$?
 up="$(reqs upload_package | head -1)"
 body="$(sed -n '2p' "$log_dir/req.$up")"
+put_req="$(grep -l 'X-Sha256: ' "$log_dir"/req.* 2>/dev/null | head -1 || true)"
+put_headers=""
+put_argv=""
+if [ -n "$put_req" ]; then
+  put_n="${put_req##*.}"
+  put_headers="$(sed -n '1p' "$put_req")"
+  put_argv="$log_dir/argv.$put_n"
+fi
 if [ "$rc" = 0 ] && grep -q '"name": *"app.zip"' <<<"$body" \
    && grep -q '"sha256"' <<<"$body" && grep -q '"size_bytes": *2' <<<"$body" \
    && grep -q '^ARTIFACT_PACKAGE=app.zip$' "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env"; then ok; else
-  fail "load: rc=$rc body=$body out=$out manifest=$(cat "$MULTICA_SLOT_POOL_HOME/pdev1/lease.env" 2>/dev/null)"; fi
+  fail "load: rc=$rc body=$body out=$out"; fi
+if [ "$rc" = 0 ] && grep -q 'Authorization: Bearer test-token' <<<"$put_headers" \
+   && [ -n "$put_argv" ] && ! grep -aq 'test-token' "$put_argv" \
+   && ! grep -aq 'X-Amz-Credential=upload-secret' "$put_argv"; then ok; else
+  fail "load argv: Authorization header missing or upload credentials leaked"; fi
 
 # --- 16. pool-auth file fallback: 600 file used when env unset ------------------
 reset_log
@@ -483,9 +540,23 @@ reset_log
 tool_result get_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"active"}'
 MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST \
   bash "$pool" pgc use --phase dev --template tpl-test-dev --ttl 60 >/dev/null
+reset_log
+tool_result acquire_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"active","expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-gc-1"}'
+tool_result get_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"active"}'
 rc=0; out="$(MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" gc 2>&1)" || rc=$?
+gc_get="$(reqs get_lease | head -1)"
+gc_get_headers=""
+[ -n "$gc_get" ] && gc_get_headers="$(sed -n '1p' "$log_dir/req.$gc_get")"
+gc_resign="$(reqs acquire_lease | head -1)"
+gc_resign_body=""
+[ -n "$gc_resign" ] && gc_resign_body="$(sed -n '2p' "$log_dir/req.$gc_resign")"
 if [ "$rc" = 0 ] && [ -f "$gc_home/pgc/lease.env" ]; then ok; else
   fail "gc keeps active: rc=$rc out=$out"; fi
+if [ "$rc" = 0 ] \
+   && grep -q 'X-Execution-Capability: cap-gc-1' <<<"$gc_get_headers" \
+   && grep -q '"request_id": *"RUYI-TEST:pgc:deploy"' <<<"$gc_resign_body" \
+   && ! grep -q '^CAPABILITY=' "$gc_home/pgc/lease.env"; then ok; else
+  fail "gc re-sign: rc=$rc headers=$gc_get_headers body=$gc_resign_body out=$out"; fi
 
 reset_log
 tool_result get_lease '{"lease_id":"ls-1","instance_id":"ri-1","state":"expired"}'
@@ -493,6 +564,59 @@ rc=0; out="$(MULTICA_SLOT_POOL_HOME="$gc_home" MULTICA_CALLER_OWNER=RUYI-TEST ba
 if [ "$rc" = 0 ] && [ ! -f "$gc_home/pgc/lease.env" ] \
    && grep -q 'gc cleared manifest' <<<"$out"; then ok; else
   fail "gc clears expired: rc=$rc out=$out"; fi
+
+# --- 18b. gc and use serialize manifest replacement for the same slot ----------
+race_home="$tmp_dir/gc-race-home"; mkdir -p "$race_home/prace"
+printf '%s\n' \
+  'NAME=prace' \
+  'LEASE_ID=ls-race-old' \
+  'INSTANCE_ID=ri-race-old' \
+  'TEMPLATE=tpl-test-dev' \
+  'PHASE=deploy' \
+  'ISSUE=RUYI-TEST' \
+  'REQUEST_ID=RUYI-TEST:prace:deploy' \
+  >"$race_home/prace/lease.env"
+chmod 600 "$race_home/prace/lease.env"
+reset_log
+tool_result_n acquire_lease 1 '{"lease_id":"ls-race-old","instance_id":"ri-race-old","state":"active","expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-race-gc"}'
+tool_result_n acquire_lease 2 '{"lease_id":"ls-race-new","instance_id":"ri-race-new","state":"active","expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-race-use"}'
+tool_result get_lease '{"lease_id":"ls-race-old","instance_id":"ri-race-old","state":"expired"}'
+tool_result release_lease '{"lease_id":"ls-race-old","state":"released"}'
+race_block="$tmp_dir/gc-race-block"
+gc_race_rc=0
+MULTICA_SLOT_POOL_HOME="$race_home" MULTICA_CALLER_OWNER=RUYI-TEST \
+  SLOT_POOL_TEST_BLOCK_GET_LEASE="$race_block" bash "$pool" gc >"$tmp_dir/gc-race.out" 2>&1 &
+gc_race_pid=$!
+for _ in {1..100}; do
+  [ -f "$race_block.ready" ] && break
+  sleep 0.01
+done
+use_race_rc=0
+use_lock_attempted=0
+race_acquire_calls=0
+if [ -f "$race_block.ready" ]; then
+  MULTICA_SLOT_POOL_HOME="$race_home" MULTICA_CALLER_OWNER=RUYI-TEST \
+    SLOT_POOL_TEST_FLOCK_ATTEMPT_FILE="$race_block.use-lock" \
+    bash "$pool" prace use --phase deploy --template tpl-test-dev --ttl 60 >"$tmp_dir/use-race.out" 2>&1 &
+  use_race_pid=$!
+  for _ in {1..100}; do
+    [ -f "$race_block.use-lock" ] && break
+    sleep 0.01
+  done
+  [ -f "$race_block.use-lock" ] && use_lock_attempted=1
+  [ -f "$log_dir/.count.acquire_lease" ] && race_acquire_calls="$(<"$log_dir/.count.acquire_lease")"
+  touch "$race_block.release"
+  wait "$gc_race_pid" || gc_race_rc=$?
+  wait "$use_race_pid" || use_race_rc=$?
+else
+  touch "$race_block.release"
+  wait "$gc_race_pid" || gc_race_rc=$?
+fi
+if [ "$gc_race_rc" = 0 ] && [ "$use_race_rc" = 0 ] && [ "$use_lock_attempted" = 1 ] \
+   && [ "$race_acquire_calls" = 1 ] \
+   && grep -q '^LEASE_ID=ls-race-new$' "$race_home/prace/lease.env"; then ok; else
+  fail "gc/use lock: gc=$gc_race_rc use=$use_race_rc lock=$use_lock_attempted acquire=$race_acquire_calls"; fi
+rm -f "$resp_dir/acquire_lease.1" "$resp_dir/acquire_lease.2"
 
 mkdir -p "$gc_home/pgc2"
 printf 'LEASE_ID=ls-1\nISSUE=RUYI-TEST\nPHASE=dev\nTEMPLATE=tpl-test-dev\n' >"$gc_home/pgc2/lease.env"
