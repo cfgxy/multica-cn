@@ -64,6 +64,7 @@ import type { VoiceAvailabilityOutcome } from "@/lib/voice/availability";
 import { useDictation } from "@/lib/voice/use-dictation";
 import { quickReplyListOptions } from "@/data/queries/quick-replies";
 import { projectListOptions } from "@/data/queries/projects";
+import { resolveProjectContextNotice } from "@/lib/chat-project-context";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
@@ -150,7 +151,11 @@ export function ChatInputBar({
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: quickReplies = [] } = useQuery(quickReplyListOptions(wsId));
-  const { data: projects = [] } = useQuery(projectListOptions(wsId));
+  const {
+    data: projects = [],
+    isPending: projectsPending,
+    isError: projectsError,
+  } = useQuery(projectListOptions(wsId));
   const selectedProject = projects.find((project) => project.id === projectId);
   const quickReplySheet = useActionSheet();
   const projectSheet = useActionSheet();
@@ -423,7 +428,22 @@ export function ChatInputBar({
   }, [onChangeText, quickReplies, quickReplySheet, t, tCommon, value]);
 
   const openProjectContext = useCallback(() => {
-    if (!onProjectChange || projects.length === 0) return;
+    if (!onProjectChange) return;
+    const notice = resolveProjectContextNotice({
+      projectCount: projects.length,
+      hasSelectedProject: !!projectId,
+      isPending: projectsPending,
+      isError: projectsError,
+    });
+    if (notice) {
+      const message = {
+        loading: t("input.project_context_loading", "Projects are still loading. Try again in a moment."),
+        error: t("input.project_context_load_failed", "Could not load projects. Try again later."),
+        empty: t("input.project_context_no_projects", "No projects in this workspace yet."),
+      }[notice];
+      Alert.alert(t("input.project_context", "Project context"), message);
+      return;
+    }
     const options = [
       ...projects.map((project) => `${project.title}${project.id === projectId ? " ✓" : ""}`),
       ...(projectId ? [t("input.remove_project_context", "Remove project context")] : []),
@@ -439,7 +459,7 @@ export function ChatInputBar({
         else if (projectId && index === projects.length) onProjectChange(null);
       },
     });
-  }, [onProjectChange, projectId, projectSheet, projects, t, tCommon]);
+  }, [onProjectChange, projectId, projectSheet, projects, projectsError, projectsPending, t, tCommon]);
 
   const closeDictation = useCallback(() => {
     dictation.close();

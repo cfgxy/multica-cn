@@ -32,7 +32,10 @@
     "remove_project_context": "プロジェクトコンテキストを削除",
     "no_projects": "プロジェクトがまだありません",
     "project_context_unsupported": "プロジェクトの説明は適用されません——このエージェントのデーモンのアップグレードが必要です",
-    "project_context_failed": "プロジェクトコンテキストを更新できませんでした"
+    "project_context_failed": "プロジェクトコンテキストを更新できませんでした",
+    "project_context_loading": "プロジェクトを読み込み中です。少し待ってから再試行してください。",
+    "project_context_load_failed": "プロジェクトを読み込めませんでした。後でもう一度お試しください。",
+    "project_context_no_projects": "このワークスペースにはまだプロジェクトがありません。"
   },
   "queue": {
     "title_other": "キュー内のメッセージ {{count}} 件",
