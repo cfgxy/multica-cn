@@ -152,6 +152,21 @@ describe("useDictation 指松结算时序（RUYI-710 P0 回归面）", () => {
     expect(result.current.state.phase).toBe("rest");
   });
 
+  it("端侧 start 拒绝：按住期间不提示，指松后才按失败语义收敛", async () => {
+    mockSpeechModule.start.mockRejectedValueOnce(new Error("recognizer unavailable"));
+    const { result } = await mountDictation({ available: true, reason: "ok" });
+    await pressAndArm(result);
+    await act(async () => {});
+    expect(onToast).not.toHaveBeenCalled();
+
+    await act(async () => {
+      jest.advanceTimersByTime(MIN_RECORD_MS - RECORD_ARM_MS + 20);
+      result.current.release();
+    });
+    expect(onToast).toHaveBeenCalledWith("transcribe_failed");
+    expect(result.current.state.phase).toBe("rest");
+  });
+
   it("按住 ≥500ms 松开（降级）：必达结算进 transcribing 并发起上传", async () => {
     deferTranscribe();
     const { result } = await mountDictation({

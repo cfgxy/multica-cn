@@ -9,12 +9,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 )
 
@@ -339,6 +342,27 @@ func TestRepoCheckoutUsesTaskScopedProjectRefByDefault(t *testing.T) {
 	if got := cache.lastCreateParams().AgentName; got != "Test Agent" {
 		t.Fatalf("CreateWorktree AgentName = %q, want token-bound active agent", got)
 	}
+
+	data, err := os.ReadFile(filepath.Join(workDir, execenv.TaskContextMarkerRelPath))
+	if err != nil {
+		t.Fatalf("read refreshed task marker: %v", err)
+	}
+	var marker struct {
+		TaskID     string `json:"task_id"`
+		AgentID    string `json:"agent_id"`
+		IssueID    string `json:"issue_id"`
+		Branch     string `json:"branch"`
+		BaseCommit string `json:"base_commit"`
+	}
+	if err := json.Unmarshal(data, &marker); err != nil {
+		t.Fatalf("decode refreshed task marker: %v", err)
+	}
+	if marker.TaskID != "task-1" || marker.AgentID != "agent-1" || marker.IssueID != "issue-1" {
+		t.Fatalf("marker identity = %+v, want task/agent/issue bound to the active task", marker)
+	}
+	if marker.Branch != "agent/test" || marker.BaseCommit != strings.Repeat("a", 40) {
+		t.Fatalf("marker delivery fields = %+v, want recorded checkout branch and base", marker)
+	}
 }
 
 // A request with no Authorization header can only come from a CLI older than
@@ -596,6 +620,13 @@ func TestRepoCheckoutReturnsRetryableBusyToCapableClient(t *testing.T) {
 
 func newRepoCheckoutTestDaemon(t *testing.T, workspaceID, repoURL, workDir string, cache repoCacheBackend) *Daemon {
 	t.Helper()
+	markerPath := filepath.Join(workDir, execenv.TaskContextMarkerRelPath)
+	if err := os.MkdirAll(filepath.Dir(markerPath), 0o755); err != nil {
+		t.Fatalf("create task marker directory: %v", err)
+	}
+	if err := os.WriteFile(markerPath, []byte(`{"managed_by":"multica-daemon-task","task_id":"task-1","agent_id":"agent-1","issue_id":"issue-1"}`), 0o644); err != nil {
+		t.Fatalf("seed task marker: %v", err)
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/daemon/workspaces/"+workspaceID+"/repos" {
 			http.NotFound(w, r)
@@ -621,6 +652,7 @@ func newRepoCheckoutTestDaemon(t *testing.T, workspaceID, repoURL, workDir strin
 		WorkspaceID: workspaceID,
 		TaskID:      "task-1",
 		AgentID:     "agent-1",
+		IssueID:     "issue-1",
 		AgentName:   "Test Agent",
 		WorkDir:     workDir,
 	})
@@ -718,7 +750,7 @@ func (c *recordingRepoCache) CreateWorktree(params repocache.WorktreeParams) (*r
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.params = append(c.params, params)
-	return &repocache.WorktreeResult{Path: params.WorkDir, BranchName: "agent/test"}, nil
+	return &repocache.WorktreeResult{Path: params.WorkDir, BranchName: "agent/test", BaseCommit: strings.Repeat("a", 40)}, nil
 }
 
 func (c *recordingRepoCache) lastCreateParams() repocache.WorktreeParams {

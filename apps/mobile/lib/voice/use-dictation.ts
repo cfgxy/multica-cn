@@ -91,6 +91,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recordGuardRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finalizeGuardRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startFailureRef = useRef(false);
 
   // 降级采集面：分片桶（null = 不在降级录制中）、事件退订、在转写上传。
   const chunksRef = useRef<string[] | null>(null);
@@ -123,6 +124,13 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       degradedHandlers: degradedRef.current,
       onSend: (text) => optionsRef.current.onSend(text),
       onToast: (kind) => optionsRef.current.onToast(kind),
+      onStartFailure: () => {
+        if (stateRef.current.phase === "finalizing") {
+          dispatch({ type: "recognizerError", kind: "failed" });
+        } else {
+          startFailureRef.current = true;
+        }
+      },
     });
     // 副作用定时器跟状态走：进 recording 起 60s 兜底，进 finalizing
     // 起 15s 兜底，回 idle 全清。降级 transcribing 的结算由上传
@@ -306,6 +314,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       return;
     }
     const atMs = Date.now();
+    startFailureRef.current = false;
     pressAtRef.current = atMs;
     dispatch({ type: "press" });
     armTimerRef.current = setTimeout(() => {
@@ -342,6 +351,12 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     const startedAt = stateRef.current.startedAtMs;
     const heldMs = startedAt === null ? 0 : Math.max(0, Date.now() - startedAt);
     dispatch({ type: "release", heldMs });
+    if (startFailureRef.current) {
+      startFailureRef.current = false;
+      // start() can reject while Android is still acquiring the recognizer.
+      // Keep a held press quiet and surface the classified failure on release.
+      dispatch({ type: "recognizerError", kind: "failed" });
+    }
   }, [dispatch]);
 
   // RMS 事件：不入状态机，节流后供波形条。端侧识别器只在 recording 中
@@ -373,6 +388,7 @@ function runCommands(
     };
     onSend: (text: string) => void;
     onToast: (kind: "not_recognized" | "transcribe_failed") => void;
+    onStartFailure: () => void;
   },
 ): void {
   for (const command of commands) {
@@ -384,7 +400,7 @@ function runCommands(
           getSpeechRecognitionModule()
             ?.start()
             .catch(() => {
-              handlers.onToast("transcribe_failed");
+              handlers.onStartFailure();
             });
         }
         break;
