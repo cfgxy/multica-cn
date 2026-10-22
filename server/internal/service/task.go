@@ -185,6 +185,18 @@ func truncateFallbackCommentBody(body string, maxRunes int) string {
 	return oversizedFallbackCommentNotice
 }
 
+func taskResponsibilityMention(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) (string, string) {
+	targetID := task.AgentID
+	if task.SquadID.Valid {
+		squad, err := q.GetSquad(ctx, task.SquadID)
+		if err == nil && squad.LeaderID.Valid {
+			targetID = squad.LeaderID
+		}
+	}
+	id := util.UUIDToString(targetID)
+	return "[@负责人](mention://agent/" + id + ")", id
+}
+
 const (
 	taskAnalyticsContextCacheMax = 4096
 	// RuntimeClaimFreshnessSeconds is the maximum DB heartbeat age accepted by
@@ -4879,13 +4891,13 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// for assignment-triggered tasks it is NULL and the fallback is top-level.
 	// Chat tasks have no IssueID and are handled separately below.
 	if task.IssueID.Valid {
-		suppressNoActionComment, err := HasSquadLeaderNoActionEvaluationForTask(ctx, s.Queries, task)
-		if err != nil {
+		noAction, noActionErr := HasSquadLeaderNoActionEvaluationForTask(ctx, s.Queries, task)
+		if noActionErr != nil {
 			slog.Warn("checking squad leader no_action evaluation failed",
 				"task_id", util.UUIDToString(task.ID),
 				"issue_id", util.UUIDToString(task.IssueID),
 				"agent_id", util.UUIDToString(task.AgentID),
-				"error", err,
+				"error", noActionErr,
 			)
 		}
 		agentCommented, _ := s.Queries.HasAgentCommentedSince(ctx, db.HasAgentCommentedSinceParams{
@@ -4893,29 +4905,26 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			AuthorID: task.AgentID,
 			Since:    task.StartedAt,
 		})
-		if !suppressNoActionComment && !agentCommented {
+		if !agentCommented {
 			var payload protocol.TaskCompletedPayload
-			if err := json.Unmarshal(result, &payload); err == nil {
-				if payload.Output != "" {
-					// Match the CLI's --content / --description behavior: agents that
-					// emit literal `\n` 4-char sequences (Python/JSON-style) get them
-					// decoded into real newlines before the comment hits the DB. See
-					// util.UnescapeBackslashEscapes for the exact contract.
-					body := util.UnescapeBackslashEscapes(payload.Output)
-					if task.TriggerCommentID.Valid && isTrivialDoneOutput(body) {
-						slog.Warn("suppressing trivial comment-trigger fallback output",
-							"task_id", util.UUIDToString(task.ID),
-							"issue_id", util.UUIDToString(task.IssueID),
-							"agent_id", util.UUIDToString(task.AgentID),
-						)
-					} else {
-						// Redact first, then bound: a runaway raw-stream Output (GH #5455)
-						// must never reach the issue thread, even as a clipped excerpt.
-						content := truncateFallbackCommentBody(redact.Text(body), maxSynthesizedFallbackCommentRunes)
-						s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "comment", task.TriggerCommentID, task.ID)
-					}
+			_ = json.Unmarshal(result, &payload)
+			body := util.UnescapeBackslashEscapes(payload.Output)
+			if noAction || strings.TrimSpace(body) == "" || isTrivialDoneOutput(body) {
+				body = "Run completed without a substantive comment."
+			}
+			content := truncateFallbackCommentBody(redact.Text(body), maxSynthesizedFallbackCommentRunes)
+			mention, responsibilityID := taskResponsibilityMention(ctx, s.Queries, task)
+			hasMention := false
+			for _, parsed := range util.ParseMentions(content) {
+				if parsed.Type == "agent" && parsed.ID == responsibilityID {
+					hasMention = true
+					break
 				}
 			}
+			if !hasMention {
+				content += "\n\n" + mention
+			}
+			s.createAgentComment(ctx, task.IssueID, task.AgentID, content, "comment", task.TriggerCommentID, task.ID)
 		}
 	}
 
@@ -8181,8 +8190,8 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		// Mirrors handler.IssueResponse.SuspendedAt (RUYI-690): the read-side
 		// "waiting" snapshot; the suspension table owns the audit trail.
 		"suspended_at": util.TimestampToNanoPtr(issue.SuspendedAt),
-		"metadata":          util.JSONObjectOrEmpty(issue.Metadata),
-		"properties":        util.JSONObjectOrEmpty(issue.Properties),
+		"metadata":     util.JSONObjectOrEmpty(issue.Metadata),
+		"properties":   util.JSONObjectOrEmpty(issue.Properties),
 	}
 }
 

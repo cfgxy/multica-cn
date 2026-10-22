@@ -100,6 +100,50 @@ func TestCommentMentionAdmissionRejectsInvalidTargetsBeforeWrites(t *testing.T) 
 	}
 }
 
+func TestAgentCommentsRequireWorkspaceResponsibilityMention(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := dbfx.Runtime(t, "responsibility-mention-runtime")
+	agentID := dbfx.Agent(t, "responsibility-mention-author", runtimeID)
+	targetID := createHandlerTestAgent(t, "responsibility-mention-target", nil)
+	issueID := dbfx.Issue(t, "agent responsibility mention")
+	parentID := dbfx.Comment(t, issueID, "please take this")
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID, "trigger_comment_id": parentID,
+		"status": "running", "started_at": testutil.Raw("now()"),
+	})
+
+	request := func(method, commentID, content string) *http.Request {
+		req := commentRequest(method, issueID, commentID, map[string]any{
+			"content": content, "parent_id": parentID,
+		})
+		req.Header.Set("X-Agent-ID", agentID)
+		req.Header.Set("X-Task-ID", taskID)
+		return req
+	}
+
+	bad := testutil.Call(t, testHandler.CreateComment, request(http.MethodPost, "", "Progress is complete."))
+	bad.Want(http.StatusUnprocessableEntity)
+	if got := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'agent'`, issueID); got != 0 {
+		t.Fatalf("comment without responsibility mention was stored: count=%d", got)
+	}
+
+	validContent := fmt.Sprintf("Progress is complete; handing off to [@Target](mention://agent/%s).", targetID)
+	var created map[string]any
+	testutil.Call(t, testHandler.CreateComment, request(http.MethodPost, "", validContent)).Want(http.StatusCreated).JSON(&created)
+	commentID, _ := created["id"].(string)
+	if commentID == "" {
+		t.Fatalf("created comment has no id: %+v", created)
+	}
+	testutil.Call(t, testHandler.UpdateComment, request(http.MethodPut, commentID, "Edited without a responsibility mention.")).Want(http.StatusUnprocessableEntity)
+	var content string
+	dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, commentID).Scan(&content)
+	if content != validContent {
+		t.Fatalf("rejected edit changed comment to %q", content)
+	}
+}
+
 func TestCommentMentionAdmissionNormalizedSpansAndPreview(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
