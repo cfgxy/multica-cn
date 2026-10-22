@@ -750,23 +750,13 @@ type WorktreeParams struct {
 type WorktreeResult struct {
 	Path       string `json:"path"`        // absolute path to the worktree
 	BranchName string `json:"branch_name"` // git branch created for this worktree
-	BaseCommit string `json:"base_commit"` // immutable checkout HEAD before agent changes
-}
-
-func checkoutResultContext(ctx context.Context, worktreePath, branchName string) (*WorktreeResult, error) {
-	out, err := runGitOutputContext(ctx, "-C", worktreePath, "rev-parse", "--verify", "HEAD")
-	if err != nil {
-		return nil, fmt.Errorf("resolve checkout HEAD: %w", err)
-	}
-	baseCommit := strings.TrimSpace(string(out))
-	if baseCommit == "" {
-		return nil, errors.New("resolve checkout HEAD: empty commit")
-	}
-	return &WorktreeResult{
-		Path:       worktreePath,
-		BranchName: branchName,
-		BaseCommit: baseCommit,
-	}, nil
+	// BaseCommit is the commit the prepared worktree stands on - the task
+	// baseline the daemon registers into the task marker so worktree preflight
+	// can prove the delivery relationship (base is an ancestor of every later
+	// HEAD on the managed branch). Empty when HEAD could not be resolved;
+	// callers degrade to a marker without the baseline rather than failing
+	// the checkout.
+	BaseCommit string `json:"base_commit,omitempty"`
 }
 
 // CreateWorktree looks up the bare cache for a repo, fetches latest, and creates
@@ -867,6 +857,22 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 	dirName := repoNameFromURL(params.RepoURL)
 	worktreePath := filepath.Join(params.WorkDir, dirName)
 
+	// resultFor captures the prepared worktree's current HEAD as the result's
+	// BaseCommit - the task baseline the daemon registers into the task marker
+	// so `multica worktree preflight` can prove the delivery relationship.
+	// A HEAD resolution failure degrades the marker (branch without baseline)
+	// instead of failing a checkout that otherwise succeeded.
+	resultFor := func(branch string) *WorktreeResult {
+		res := &WorktreeResult{Path: worktreePath, BranchName: branch}
+		if head, headErr := resolveCommitContext(ctx, worktreePath, "HEAD"); headErr == nil {
+			res.BaseCommit = head
+		} else {
+			c.logger.Warn("repo checkout: could not resolve worktree HEAD for baseline registration",
+				"path", worktreePath, "error", headErr)
+		}
+		return res
+	}
+
 	// Once a workdir has moved to isolated metadata, keep using that safer
 	// shape even if a later task comes from an older CLI or a different runtime
 	// that omits the mode hint. This also makes provider transitions on a reused
@@ -898,7 +904,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 			"branch", actualBranch,
 			"base", baseRef,
 		)
-		return checkoutResultContext(ctx, worktreePath, actualBranch)
+		return resultFor(actualBranch), nil
 	}
 
 	// If worktree already exists (reused environment from a prior task),
@@ -930,7 +936,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 			"base", baseRef,
 		)
 
-		return checkoutResultContext(ctx, worktreePath, actualBranch)
+		return resultFor(actualBranch), nil
 	}
 
 	// Create a new worktree. createWorktree may rename the branch to avoid
@@ -960,7 +966,7 @@ func (c *Cache) CreateWorktreeContext(ctx context.Context, params WorktreeParams
 		"base", baseRef,
 	)
 
-	return checkoutResultContext(ctx, worktreePath, actualBranch)
+	return resultFor(actualBranch), nil
 }
 
 const (
