@@ -1,6 +1,6 @@
 # ADR-010 Draft: Git Tasks on Local Snapshot Execution
 
-- Status: Draft; blocked on Owner decision
+- Status: Accepted for the narrow ordinary-repository rollout
 - Issue: RUYI-845
 - Baseline: `fdaa42a1122127791e6f61c58f9d9fb5154a749e`
 
@@ -8,41 +8,35 @@
 
 The existing local snapshot worker mounts each declared resource root over itself in a private user/mount namespace. This isolates writes that resolve through that mount, but Git may resolve metadata outside the declared root. In particular, a linked worktree's `.git` file points to the common repository's worktree metadata. Git object writes, branch refs, reflogs, config, hooks, and worktree administration files therefore need an explicit isolation and delivery model; overlaying only the visible worktree directory is not sufficient.
 
-The goal remains to keep user resources configured as `execution_mode=worktree`, with snapshot execution deployment-gated and off by default. RUYI-746 shadow scheduling is out of scope and must remain untouched.
+The goal remains to keep Git snapshot execution deployment-gated and off by default. `execution_mode=snapshot` continues to be capability-gated at resource save and task claim; a Git resource that does not meet the narrow delivery contract runs through the established `worktree` path. RUYI-746 shadow scheduling is out of scope and must remain untouched.
 
 ## Evidence and Current Conclusion
 
 See [the reproducible matrix and observed results](010-git-snapshot-matrix.md). The real same-path worker passed its existing userns/overlay probe and simple directory smoke test. In a fresh real-worker test, however, a standard linked worktree's `git commit` advanced a branch ref in its common repository outside the snapshotted worktree. The host worktree then showed the committed file as deleted. On this host, 20/20 fresh `git worktree add` samples emitted an absolute `gitdir:` pointer.
 
-This proves same-path overlay of only the linked worktree is unsafe. It does not prove every Git topology is unsafe, nor establish that alternate-path mounts are categorically unsafe. The full shape/path matrix remains incomplete. Until the Owner selects an isolation/delivery contract and the remaining cells are exercised, no Git snapshot shape is approved for rollout. Existing worktree remains the supported fallback.
+This proves same-path overlay of only the linked worktree is unsafe. It does not prove every Git topology is unsafe, nor establish that alternate-path mounts are categorically unsafe. The full shape/path matrix remains incomplete.
 
-## Decision Required
+Owner selected the minimal path: recursively audit Git metadata at task initialization; use snapshot only when it can be isolated and delivered safely; otherwise make no Git metadata change and use the existing worktree backend. The implemented first slice is one ordinary repository at the resource root with one snapshot unit and a real `.git` directory. A real userns/overlay worker captures tracked, untracked, and binary changes into a ledger-owned Git bundle that an independent clone can fetch, check out, and fsck. Failed, cancelled, and delivered bundles are retained and reaped through the ledger.
 
-Choose the Git metadata boundary and delivery model before Stage B:
+## Decision
 
-1. Restrict support to repositories whose complete Git metadata is inside the declared snapshot root; reject external common Git directories and unsupported layouts before task claim. Nested repositories, submodules, and parent-directory multi-repository resources are supported only when the snapshot scope captures every Git directory they resolve to.
-2. Extend same-path snapshot scopes to cover every resolved common Git directory and linked-worktree administration path, then implement branch/ref delivery and replay against that captured set.
-3. Use an alternate-path view only with a complete, tested gate or rewrite strategy for Git metadata paths, and define how that rewritten view maps to an independently reviewable branch/commit.
+Support only the ordinary single-repository shape for this rollout. Snapshot initialization recursively audits Git metadata, but delivery eligibility is narrower: exactly one unit at the resource root, a real `.git` directory, no nested repository, no submodule, and no external common Git directory. The deployment gate is `MULTICA_ENABLE_GIT_SNAPSHOT=1`; it is off by default. The daemon startup userns/overlay probe must have advertised `local-snapshot-v1`, which is enforced both when saving a snapshot resource and when claiming its task.
 
-These options change supported resource layouts and Git artifact ownership. Do not implement one implicitly.
+The daemon emits one structured `local_directory: snapshot execution decision` record per snapshot task. It carries the actual `execution_mode`, the gate and capability verdicts, and a stable `downgrade_code`. The current codes are `git_snapshot_gate_disabled`, `git_metadata_audit_failed`, and `git_snapshot_unsupported_topology`; these intentionally do not carry local paths. This is the supported operator surface for distinguishing the requested resource mode from the backend that actually ran.
 
 ## Provisional Compatibility Boundary
 
-- Supported today: existing `worktree` execution. Non-Git snapshot behavior remains as already implemented.
-- Not approved for Git snapshot: linked worktrees whose common Git directory is outside the mounted set; unrecognized `.git` indirection; any resource shape for which all Git metadata roots cannot be proven and isolated.
-- Fail closed: if the deployment gate, daemon capability, path-resolution proof, or delivery capture is unavailable, use existing worktree execution or reject before claim. Never silently run `in_place` and never let an agent write through to pristine Git metadata.
-- Defaults: snapshot gate off; no resource configuration migration; do not touch RUYI-746.
+- Supported today: non-Git snapshots, plus one ordinary Git repository at the resource root after the gate is enabled. Successful Git runs expose a ledger-owned bundle; failed and cancelled runs retain recovery artifacts until ledger GC reaps them.
+- Worktree fallback: gate disabled; linked worktrees or any Git metadata outside scope; nested repositories; submodules; multiple units; subdirectory scopes; incomplete metadata resolution; and any other shape outside the ordinary-repository eligibility rule.
+- Fail closed: if the daemon lacks the snapshot capability, task claim is cancelled rather than running in place. If a claimed snapshot task fails its Git audit or delivery eligibility, it uses the existing worktree backend. Never silently run `in_place` and never let an agent write through to pristine Git metadata.
+- Defaults: Git snapshot gate off; no resource configuration migration; do not touch RUYI-746.
 
-## Stage B Minimum Split (conditional on decision)
+## Follow-up Work
 
-1. Detection and fail-closed claim gate: resolve `.git` files/directories, common dirs, nested repos, submodules, and declared roots; publish the exact supported-shape contract and reason for rejection.
-2. Isolation primitive: implement the selected mount topology and mount-order/path alias rules; prove pristine bytes, refs, objects, config, and worktree administration state remain unchanged until delivery.
-3. Git delivery lifecycle: anchor the starting commit and refs; capture tracked, untracked, binary, and agent-committed changes; emit an independently reviewable branch/commit or explicitly selected equivalent; preserve failed/cancelled artifacts; replay user changes with conflicts surfaced; make GC ledger-driven.
-4. Execution and observability: deployment-only default-off gate, startup capability probe, task/run mode and downgrade reason; preserve existing `worktree` behavior when disabled.
-5. Entrypoints and topology: add only the supported Desktop/Web/CLI/MCP resource/scope controls; test parent multi-repository overlap routing and primary selection; reject undeclared/ambiguous write sets.
-6. Rollout: isolated integration test, GTI canary, gate-off fallback test, independent QA, then a separately authorized rollout decision.
-
-No Stage B work should start until the decision card is resolved and the remaining Stage A matrix closes the chosen path's evidence gaps.
+1. Validate recovery/continuation behavior and concurrent ordinary-repository tasks under the enabled gate.
+2. Add an explicit user-facing review/import flow for retained Git bundles before treating a bundle as a replacement for branch delivery.
+3. Consider each unsupported topology independently; no broadening occurs without its own delivery, recovery, and pristine-preservation evidence.
+4. Complete the rollout evidence: gate-off fallback, independent QA, and an authorized GTI canary.
 
 ## Reversal
 
