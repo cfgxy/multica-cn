@@ -228,6 +228,25 @@ func TestSnapshotWorktreeFallbackOnGitRoot(t *testing.T) {
 		t.Fatalf("fallback must be worktree-mode, got %+v", fb.Ref)
 	}
 
+	parent := newTestGitRoot(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	if out, err := exec.Command("git", "-C", parent, "worktree", "add", "-q", linked).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v (%s)", err, out)
+	}
+	linkedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: linked}}, Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: linked}, AbsPath: linked}}
+	if fb, err := snapshotWorktreeFallback(linkedPlan); err != nil || fb == nil || !fb.UsesWorktree() {
+		t.Fatalf("linked worktree with external common dir must fall back, fb=%v err=%v", fb, err)
+	}
+
+	nested := newTestGitRoot(t)
+	if out, err := exec.Command("git", "init", "-q", filepath.Join(nested, "child")).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	nestedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: nested}}, Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: nested}, AbsPath: nested}}
+	if fb, err := snapshotWorktreeFallback(nestedPlan); err != nil || fb == nil || !fb.UsesWorktree() {
+		t.Fatalf("nested Git inside snapshot scope must fall back, fb=%v err=%v", fb, err)
+	}
+
 	plain := t.TempDir()
 	plan2 := &snapshotPlan{Primary: &snapshotUnit{Ref: localDirectoryRef{LocalPath: plain}, AbsPath: filepath.Clean(plain)}}
 	fb2, err := snapshotWorktreeFallback(plan2)
