@@ -1,7 +1,10 @@
 package taskadaptation
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"unicode"
 )
@@ -24,6 +27,66 @@ type Outcome struct {
 	PolicyID      string `json:"policy_id"`
 	PolicyVersion string `json:"policy_version"`
 	Status        string `json:"status"`
+}
+
+type ExperienceReceipt struct {
+	TaskID   string
+	Snapshot *Snapshot
+	Outcome  *Outcome
+}
+
+type experiencePattern struct {
+	Trigger           string   `json:"trigger"`
+	CurrentStrategy   string   `json:"current_strategy"`
+	SuggestedStrategy string   `json:"suggested_strategy"`
+	AllowedActions    []string `json:"allowed_actions"`
+}
+
+func CandidateID(snapshot *Snapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	pattern := experiencePattern{
+		Trigger: snapshot.Trigger, CurrentStrategy: snapshot.CurrentStrategy,
+		SuggestedStrategy: snapshot.SuggestedStrategy, AllowedActions: snapshot.AllowedActions,
+	}
+	encoded, err := json.Marshal(pattern)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func ValidateExperienceCandidate(candidateID string, receipts []ExperienceReceipt) error {
+	if len(receipts) < 2 {
+		return errors.New("experience candidate requires at least two task receipts")
+	}
+	seen := make(map[string]struct{}, len(receipts))
+	var patternID string
+	for _, receipt := range receipts {
+		if receipt.TaskID == "" || receipt.Snapshot == nil || receipt.Outcome == nil {
+			return errors.New("experience candidate contains an incomplete task receipt")
+		}
+		if _, exists := seen[receipt.TaskID]; exists {
+			return errors.New("experience candidate contains duplicate task receipts")
+		}
+		seen[receipt.TaskID] = struct{}{}
+		snapshot := *receipt.Snapshot
+		snapshot.TaskID = receipt.TaskID
+		if !receipt.Outcome.Matches(&snapshot, receipt.TaskID) || receipt.Outcome.Status != "applied" {
+			return errors.New("experience candidate contains an unverified or unapplied task receipt")
+		}
+		id := CandidateID(&snapshot)
+		if id == "" || (patternID != "" && patternID != id) {
+			return errors.New("experience candidate task receipts do not share one strategy pattern")
+		}
+		patternID = id
+	}
+	if candidateID == "" || patternID != candidateID {
+		return errors.New("experience candidate fingerprint does not match its task receipts")
+	}
+	return nil
 }
 
 func (o Outcome) Matches(snapshot *Snapshot, taskID string) bool {

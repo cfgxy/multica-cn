@@ -89,7 +89,7 @@ function ExperienceCandidateItem({ wsId, entry }: { wsId: string; entry: SelfEvo
         ...(source.issue_id ? { issue_id: source.issue_id } : {}),
         task_id: source.task_id,
         ref: `capability_adaptation_candidate:${entry.candidate_id}`,
-        note: `${source.policy_id}@${source.policy_version}; ${source.outcome}`,
+        note: `${source.policy_id}@${source.policy_version}; ${source.outcome}; scope=${entry.applicability}; evidence=${entry.evidence}; limitation=${entry.limitation}`,
       })),
     };
     try {

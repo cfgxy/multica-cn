@@ -10,10 +10,12 @@ package handler
 // middleware uses.
 
 import (
+	stdcontext "context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -268,6 +270,43 @@ func TestSelfEvolutionOverviewShowsOnlyVerifiedWorkspaceTaskExperiences(t *testi
 	}
 	if entry.Applicability != "current_task" || entry.Evidence != "repeated_verified_task_receipts" || entry.Limitation != "repeated_pattern_not_approved_workspace_policy" {
 		t.Errorf("experience scope/evidence/limitation = %+v", entry)
+	}
+	anchors := make([]map[string]string, 0, len(entry.SourceTasks))
+	for _, source := range entry.SourceTasks {
+		anchor := map[string]string{
+			"task_id": source.TaskID,
+			"ref":     "capability_adaptation_candidate:" + entry.CandidateID,
+			"note":    source.PolicyID + "@" + source.PolicyVersion + "; " + source.Outcome + "; scope=" + entry.Applicability + "; evidence=" + entry.Evidence + "; limitation=" + entry.Limitation,
+		}
+		if source.IssueID != "" {
+			anchor["issue_id"] = source.IssueID
+		}
+		anchors = append(anchors, anchor)
+	}
+	if err := testHandler.validateAdaptationCandidateEvidence(stdcontext.Background(), parseUUID(wsID), anchors); err != nil {
+		t.Fatalf("matching completed receipts rejected for proposal evidence: %v", err)
+	}
+	missingScope := append([]map[string]string(nil), anchors...)
+	missingScope[0] = map[string]string{
+		"task_id": anchors[0]["task_id"], "ref": anchors[0]["ref"],
+		"note": strings.Replace(anchors[0]["note"], "scope=current_task", "scope=workspace", 1),
+	}
+	if err := testHandler.validateAdaptationCandidateEvidence(stdcontext.Background(), parseUUID(wsID), missingScope); err == nil {
+		t.Fatal("experience proposal without the task-only applicability boundary was accepted")
+	}
+	if err := testHandler.validateAdaptationCandidateEvidence(stdcontext.Background(), parseUUID(wsID), anchors[:1]); err == nil {
+		t.Fatal("single source receipt accepted as a cross-task experience")
+	}
+	wrongCandidate := make([]map[string]string, 0, len(anchors))
+	for _, anchor := range anchors {
+		wrongCandidate = append(wrongCandidate, map[string]string{
+			"task_id": anchor["task_id"],
+			"ref":     "capability_adaptation_candidate:" + strings.Repeat("0", 64),
+			"note":    anchor["note"],
+		})
+	}
+	if err := testHandler.validateAdaptationCandidateEvidence(stdcontext.Background(), parseUUID(wsID), wrongCandidate); err == nil {
+		t.Fatal("candidate fingerprint unrelated to the source receipts was accepted")
 	}
 }
 
