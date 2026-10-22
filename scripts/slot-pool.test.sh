@@ -271,11 +271,14 @@ tool_result acquire_lease '{"lease_id":"ls-50","instance_id":"ri-50","state":"pe
 tool_result get_lease '{"lease_id":"ls-50","state":"active","generation":1,"expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-p-1"}'
 out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" ppoll1 use --phase deploy --version 42a9c2bd84731e20264421730086d95eef0c634c 2>&1)"; rc=$?
 gl_poll="$(reqs get_lease | head -1)"
+gl_poll_headers=""
+[ -n "$gl_poll" ] && gl_poll_headers="$(sed -n '1p' "$log_dir/req.$gl_poll")"
 if [ "$rc" = 0 ] && [ -n "$gl_poll" ] \
+   && grep -q 'X-Execution-Capability: cap-p-1' <<<"$gl_poll_headers" \
    && grep -q '^LEASE_ID=ls-50$' "$MULTICA_SLOT_POOL_HOME/ppoll1/lease.env" \
    && grep -q '^VERSION_SHA=42a9c2bd84731e20264421730086d95eef0c634c$' "$MULTICA_SLOT_POOL_HOME/ppoll1/lease.env" \
    && grep -q '^CAPABILITY=cap-p-1$' "$MULTICA_SLOT_POOL_HOME/ppoll1/lease.env"; then ok; else
-  fail "use pending poll: rc=$rc out=$out manifest=$(cat $MULTICA_SLOT_POOL_HOME/ppoll1/lease.env 2>/dev/null | tr '\n' ' ')"; fi
+  fail "use pending poll capability: rc=$rc headers=$gl_poll_headers out=$out manifest=$(cat $MULTICA_SLOT_POOL_HOME/ppoll1/lease.env 2>/dev/null | tr '\n' ' ')"; fi
 
 # --- 11d2. use --request-id: out-of-band lease binding replays the same id ---
 reset_log
@@ -290,12 +293,19 @@ if [ "$rc" = 0 ] && grep -q '"request_id": *"RUYI-780-dev-use-3"' <<<"$body" \
 
 reset_log
 tool_result acquire_lease '{"lease_id":"ls-50","instance_id":"ri-50","state":"active","expires_at":"2030-01-01T00:00:00Z","execution_capability":"cap-p-2"}'
+tool_result get_lease '{"lease_id":"ls-50","state":"active","generation":1,"expires_at":"2030-01-01T00:00:00Z"}'
 out="$(MULTICA_CALLER_OWNER=RUYI-TEST bash "$pool" ppoll1 refresh 2>&1)"; rc=$?
 rf_req="$(reqs acquire_lease | head -1)"
 rf_body="$(sed -n '2p' "$log_dir/req.$rf_req")"
+rf_headers="$(sed -n '1p' "$log_dir/req.$rf_req")"
+rf_get="$(reqs get_lease | head -1)"
+rf_get_headers=""
+[ -n "$rf_get" ] && rf_get_headers="$(sed -n '1p' "$log_dir/req.$rf_get")"
 if [ "$rc" = 0 ] && grep -q '"request_id": *"RUYI-TEST:ppoll1:deploy"' <<<"$rf_body" \
+   && ! grep -q 'X-Execution-Capability: cap-p-1' <<<"$rf_headers" \
+   && grep -q 'X-Execution-Capability: cap-p-2' <<<"$rf_get_headers" \
    && grep -q '^CAPABILITY=cap-p-2$' "$MULTICA_SLOT_POOL_HOME/ppoll1/lease.env"; then ok; else
-  fail "refresh: rc=$rc body=$rf_body out=$out"; fi
+  fail "refresh expired capability: rc=$rc acquire_headers=$rf_headers get_headers=$rf_get_headers body=$rf_body out=$out"; fi
 
 # --- 12. audit: foreign lease reported -----------------------------------------
 reset_log
