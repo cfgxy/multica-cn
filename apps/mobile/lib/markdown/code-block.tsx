@@ -54,6 +54,7 @@ import {
 interface Props {
   code: string;
   lang?: string;
+  wrapLines?: boolean;
   /**
    * When `false`, opts the code lines out of RN `<Text selectable>` so the
    * UIKit long-press selection magnifier doesn't compete with an outer
@@ -65,7 +66,7 @@ interface Props {
   selectable?: boolean;
 }
 
-export function CodeBlock({ code, lang, selectable = true }: Props) {
+export function CodeBlock({ code, lang, selectable = true, wrapLines = false }: Props) {
   const { isDarkColorScheme } = useColorScheme();
   const theme = isDarkColorScheme ? SHIKI_THEME_DARK : SHIKI_THEME_LIGHT;
   const resolvedLang = resolveLang(lang);
@@ -102,14 +103,17 @@ export function CodeBlock({ code, lang, selectable = true }: Props) {
           self-sized chat bubble that lets the child outgrow the FlashList
           cell instead of sizing to its code. */}
       <ScrollView
-        horizontal
+        testID="code-block-scroll"
+        horizontal={!wrapLines}
         showsHorizontalScrollIndicator={false}
+        scrollEnabled={!wrapLines}
+        contentContainerStyle={wrapLines ? { width: "100%" } : undefined}
         style={{ flexGrow: 0 }}
       >
         {lines ? (
-          <HighlightedCode lines={lines} selectable={selectable} />
+          <HighlightedCode lines={lines} selectable={selectable} wrapLines={wrapLines} />
         ) : (
-          <PlainCode code={code} selectable={selectable} />
+          <PlainCode code={code} selectable={selectable} wrapLines={wrapLines} />
         )}
       </ScrollView>
     </View>
@@ -119,12 +123,18 @@ export function CodeBlock({ code, lang, selectable = true }: Props) {
 function PlainCode({
   code,
   selectable,
+  wrapLines,
 }: {
   code: string;
   selectable: boolean;
+  wrapLines: boolean;
 }) {
   return (
-    <Text className={CODE_BLOCK_TEXT_CLASS} selectable={selectable}>
+    <Text
+      className={CODE_BLOCK_TEXT_CLASS}
+      style={wrapLines ? { width: "100%" } : undefined}
+      selectable={selectable}
+    >
       {code}
     </Text>
   );
@@ -133,19 +143,22 @@ function PlainCode({
 function HighlightedCode({
   lines,
   selectable,
+  wrapLines,
 }: {
   lines: HighlightedLine[];
   selectable: boolean;
+  wrapLines: boolean;
 }) {
   // One outer <Text> per line so RN treats each line as its own typographic
   // run. An empty line gets a single space so it still occupies a row's
   // height — otherwise blank lines collapse to zero pixels.
   return (
-    <View>
+    <View style={wrapLines ? { width: "100%" } : undefined}>
       {lines.map((line, i) => (
         <Text
           key={i}
           className={CODE_BLOCK_TEXT_CLASS}
+          style={wrapLines ? { width: "100%" } : undefined}
           selectable={selectable}
         >
           {line.tokens.length === 0
@@ -160,6 +173,25 @@ function HighlightedCode({
               ))}
         </Text>
       ))}
+    </View>
+  );
+}
+
+export function ModernCodeBlock({ code, lang, selectable = true }: Props) {
+  const [wrapLines, setWrapLines] = useState(false);
+  return (
+    <View className="gap-1" testID="markdown-modern-code-block">
+      <Pressable
+        onPress={() => setWrapLines((current) => !current)}
+        accessibilityRole="button"
+        accessibilityLabel={wrapLines ? "Scroll code horizontally" : "Wrap code lines"}
+        className="self-end px-1 py-1"
+      >
+        <Text className="text-xs text-muted-foreground">
+          {wrapLines ? "Scroll horizontally" : "Wrap lines"}
+        </Text>
+      </Pressable>
+      <CodeBlock code={code} lang={lang} selectable={selectable} wrapLines={wrapLines} />
     </View>
   );
 }

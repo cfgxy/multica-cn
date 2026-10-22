@@ -60,6 +60,7 @@
     "preview": "プレビュー",
     "preview_loading": "プレビューを読み込み中…",
     "preview_failed": "プレビューを読み込めませんでした",
+    "preview_empty": "ファイルは空です。",
     "preview_too_large": "ファイルが大きすぎてプレビューできません。ダウンロードしてください。",
     "preview_unsupported": "このファイル形式はプレビューできません。",
     "close": "閉じる",

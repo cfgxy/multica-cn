@@ -1279,6 +1279,14 @@ describe("AppConfigSchema agent_conversation_starters_supported drift", () => {
   });
 });
 
+describe("AppConfigSchema development flag refresh", () => {
+  it("accepts a bounded opt-in refresh interval and ignores absence", () => {
+    expect(AppConfigSchema.parse({}).feature_flags_refresh_interval_ms).toBeUndefined();
+    expect(AppConfigSchema.parse({ feature_flags_refresh_interval_ms: 1500 }).feature_flags_refresh_interval_ms).toBe(1500);
+    expect(AppConfigSchema.safeParse({ feature_flags_refresh_interval_ms: 500 }).success).toBe(false);
+  });
+});
+
 describe("AppConfigSchema cdn_signed drift", () => {
   it("defaults cdn_signed to false when the server omits it (pre-MUL-3254 servers)", () => {
     const parsed = AppConfigSchema.parse({ cdn_domain: "cdn.example.com" });
