@@ -1,6 +1,8 @@
 package execenv
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,11 +42,10 @@ type ReanchorResult struct {
 // It is auditable and reversible:
 //
 //   - the old branch tip and the old local-state record are archived under
-//     refs/multica/reanchor/ before anything moves (fixed ref pair: a second
-//     re-anchor archives the intermediate state, and the JSONL audit line is
-//     the full chain log);
-//   - the branch move is a guarded update-ref (old tip is the expected value,
-//     so a concurrent move aborts instead of clobbering);
+//     unique refs/multica/reanchor/ paths before anything moves;
+//   - the archive, branch move and record rewrite share one guarded
+//     update-ref transaction, so a concurrent change aborts without exposing a
+//     branch and record that disagree;
 //   - the branch record (refs/multica/local-state/<branch>) is rewritten with
 //     the SAME user-state snapshot and owner trailers, checkpoint re-pinned to
 //     the new tip. Without the record rewrite the next prepare would fail the
@@ -95,6 +96,11 @@ func ReanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorN
 	if refusal := runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", guardRefusalRef(branch)); refusal != "" {
 		return result, fmt.Errorf("reanchor: branch %s has a pending delivery-guard refusal at %s; resolve it via the guard's heal path first", branch, shortID(refusal))
 	}
+	if path, checkedOut, err := branchCheckoutPath(gitRoot, branch); err != nil {
+		return result, fmt.Errorf("reanchor: inspect linked worktrees: %w", err)
+	} else if checkedOut {
+		return result, fmt.Errorf("reanchor: branch %s is checked out at %s; refusing to change its ref behind a live worktree", branch, path)
+	}
 
 	oldTip, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "refs/heads/"+branch)
 	if err != nil {
@@ -104,70 +110,97 @@ func ReanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorN
 		return result, fmt.Errorf("reanchor: branch %s already stands at %s; nothing to do", branch, shortID(target))
 	}
 
-	result.Branch, result.OldTip, result.NewTip, result.ExpectedBase = branch, oldTip, target, expectedBase
-
-	// 1) Archive the displaced state before anything moves.
-	if out, err := runGit(gitRoot, "update-ref", reanchorRef(branch), oldTip); err != nil {
-		return result, fmt.Errorf("reanchor: archive old tip: %s: %w", strings.TrimSpace(out), err)
-	}
-	result.ArchiveRefs = append(result.ArchiveRefs, reanchorRef(branch))
-
 	oldRecord := runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", userStateRef(branch))
+	var newRecord string
 	if oldRecord != "" {
-		result.OldRecord = oldRecord
-		if out, err := runGit(gitRoot, "update-ref", reanchorStateRef(branch), oldRecord); err != nil {
-			return result, fmt.Errorf("reanchor: archive old record: %s: %w", strings.TrimSpace(out), err)
+		userState, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", oldRecord+"^1")
+		if err != nil || userState == "" {
+			return result, fmt.Errorf("reanchor: branch record %s has no user-state parent; refusing to guess one", shortID(oldRecord))
 		}
-		result.ArchiveRefs = append(result.ArchiveRefs, reanchorStateRef(branch))
+		rec, err := readBranchRecord(gitRoot, oldRecord)
+		if err != nil {
+			return result, fmt.Errorf("reanchor: read branch record: %w", err)
+		}
+		if rec.checkpoint == "" {
+			return result, fmt.Errorf("reanchor: branch record %s carries no checkpoint; refusing to rewrite it", shortID(oldRecord))
+		}
+		msg := branchRecordMessage(rec.owner) + "\n" + reanchorRecordNote(branch, note, oldTip, target, expectedBase)
+		args := append(commitIdentityArgs(gitRoot), "commit-tree", userState+"^{tree}",
+			"-p", userState, "-p", target, "-m", msg)
+		newRecord, err = runGitTrimmed(gitRoot, args...)
+		if err != nil {
+			return result, fmt.Errorf("reanchor: git commit-tree: %w", err)
+		}
 	}
 
-	// 2) Move the branch with the old tip as the expected value: if anything
-	// else moved it between our read and this write, abort instead of clobber.
-	if out, err := runGit(gitRoot, "update-ref", "refs/heads/"+branch, target, oldTip); err != nil {
-		return result, fmt.Errorf("reanchor: move branch (old-value guard): %s: %w", strings.TrimSpace(out), err)
+	archiveTipRef, archiveStateRef, err := newReanchorArchiveRefs(branch)
+	if err != nil {
+		return result, err
+	}
+	if err := updateReanchorRefs(gitRoot, branch, target, oldTip, oldRecord, newRecord, archiveTipRef, archiveStateRef); err != nil {
+		return result, err
 	}
 
-	// 3) Rewrite the local-state record: same user-state snapshot (the old
-	// record's first parent), same owner trailers, checkpoint re-pinned to the
-	// new tip.
-	if oldRecord == "" {
-		// No record: the branch was not owned by any managed conversation, so
-		// there is nothing to re-pin. Say so via RecordReanchored=false; the
-		// next prepare forks a fresh branch, which is the safe shape.
-		return result, writeReanchorAudit(gitRoot, &result, note)
+	result.Branch, result.OldTip, result.NewTip, result.ExpectedBase = branch, oldTip, target, expectedBase
+	result.ArchiveRefs = append(result.ArchiveRefs, archiveTipRef)
+	if oldRecord != "" {
+		result.OldRecord, result.NewRecord, result.RecordReanchored = oldRecord, newRecord, true
+		result.ArchiveRefs = append(result.ArchiveRefs, archiveStateRef)
 	}
-	userState, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", oldRecord+"^1")
-	if err != nil || userState == "" {
-		return result, fmt.Errorf("reanchor: branch record %s has no user-state parent; refusing to guess one", shortID(oldRecord))
-	}
-	rec, err := readBranchRecord(gitRoot, oldRecord)
-	if err != nil {
-		return result, fmt.Errorf("reanchor: read branch record: %w", err)
-	}
-	if rec.checkpoint == "" {
-		return result, fmt.Errorf("reanchor: branch record %s carries no checkpoint; refusing to rewrite it", shortID(oldRecord))
-	}
-	msg := branchRecordMessage(rec.owner) + "\n" + reanchorRecordNote(branch, note, oldTip, target, expectedBase)
-	args := append(commitIdentityArgs(gitRoot), "commit-tree", userState+"^{tree}",
-		"-p", userState, "-p", target, "-m", msg)
-	newRecord, err := runGitTrimmed(gitRoot, args...)
-	if err != nil {
-		return result, fmt.Errorf("reanchor: git commit-tree: %w", err)
-	}
-	if out, err := runGit(gitRoot, "update-ref", userStateRef(branch), newRecord, oldRecord); err != nil {
-		return result, fmt.Errorf("reanchor: update branch record (old-value guard): %s: %w", strings.TrimSpace(out), err)
-	}
-	result.NewRecord, result.RecordReanchored = newRecord, true
 	return result, writeReanchorAudit(gitRoot, &result, note)
 }
 
-func reanchorRef(branch string) string      { return "refs/multica/reanchor/" + branch }
-func reanchorStateRef(branch string) string { return "refs/multica/reanchor/local-state/" + branch }
+func branchCheckoutPath(gitRoot, branch string) (string, bool, error) {
+	out, err := runGitStdout(gitRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", false, err
+	}
+	var path string
+	want := "branch refs/heads/" + branch
+	for _, line := range strings.Split(out, "\n") {
+		if after, ok := strings.CutPrefix(line, "worktree "); ok {
+			path = after
+			continue
+		}
+		if line == want {
+			return path, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func newReanchorArchiveRefs(branch string) (string, string, error) {
+	bytes := make([]byte, 12)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", "", fmt.Errorf("reanchor: generate archive ref suffix: %w", err)
+	}
+	suffix := hex.EncodeToString(bytes)
+	return "refs/multica/reanchor/" + branch + "-" + suffix,
+		"refs/multica/reanchor/local-state/" + branch + "-" + suffix, nil
+}
+
+func updateReanchorRefs(gitRoot, branch, target, oldTip, oldRecord, newRecord, archiveTipRef, archiveStateRef string) error {
+	var input strings.Builder
+	input.WriteString("start\n")
+	fmt.Fprintf(&input, "create %s %s\n", archiveTipRef, oldTip)
+	if oldRecord != "" {
+		fmt.Fprintf(&input, "create %s %s\n", archiveStateRef, oldRecord)
+	}
+	fmt.Fprintf(&input, "update refs/heads/%s %s %s\n", branch, target, oldTip)
+	if oldRecord != "" {
+		fmt.Fprintf(&input, "update %s %s %s\n", userStateRef(branch), newRecord, oldRecord)
+	}
+	input.WriteString("prepare\ncommit\n")
+	if out, err := runGitInput(gitRoot, input.String(), "update-ref", "--stdin"); err != nil {
+		return fmt.Errorf("reanchor: atomically archive and move branch/record: %s: %w", strings.TrimSpace(out), err)
+	}
+	return nil
+}
 
 func reanchorRecordNote(branch string, note ReanchorNote, oldTip, target, expectedBase string) string {
 	var b strings.Builder
 	b.WriteString("multica: re-anchored task branch record\n\n")
-	fmt.Fprintf(&b, "Old chain tip %s archived at %s; checkpoint re-pinned to %s, a single content commit on verified base %s.\n", shortID(oldTip), reanchorRef(branch), shortID(target), shortID(expectedBase))
+	fmt.Fprintf(&b, "Old chain tip %s was archived before the atomic re-anchor; checkpoint re-pinned to %s, a single content commit on verified base %s.\n", shortID(oldTip), shortID(target), shortID(expectedBase))
 	if note.OperatorAgent != "" || note.OperatorTask != "" {
 		fmt.Fprintf(&b, "Operator: agent=%s task=%s\n", note.OperatorAgent, note.OperatorTask)
 	}
