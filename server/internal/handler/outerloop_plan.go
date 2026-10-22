@@ -253,7 +253,8 @@ func (h *Handler) FireOuterLoopPlan(w http.ResponseWriter, r *http.Request) {
 	dispatchIssue := issue
 	dispatchIssue.AssigneeID = planAgent
 	dispatchIssue.AssigneeType = pgtype.Text{String: "agent", Valid: true}
-	if _, err := h.TaskService.EnqueueTaskForIssueWithHandoff(r.Context(), dispatchIssue, outerloop.RoundDoc(plan.Round+1, plan.MaxRounds, plan.Goal), actor); err != nil {
+	queued, err := h.TaskService.EnqueueTaskForIssueWithHandoffTx(r.Context(), qtx, dispatchIssue, outerloop.RoundDoc(plan.Round+1, plan.MaxRounds, plan.Goal), actor)
+	if err != nil {
 		writeError(w, http.StatusConflict, "failed to dispatch outer loop")
 		return
 	}
@@ -266,6 +267,7 @@ func (h *Handler) FireOuterLoopPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save outer loop dispatch")
 		return
 	}
+	h.TaskService.PublishEnqueuedTask(r.Context(), queued)
 	h.publishOuterLoopPlanChanged(updated)
 	writeJSON(w, http.StatusOK, map[string]any{"dispatched": true, "plan": outerLoopResponse(updated).Plan, "issue_revision": updated.Revision})
 }

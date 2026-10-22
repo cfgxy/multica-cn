@@ -91,6 +91,7 @@ type TaskService struct {
 	// KnowledgeGovernanceTerminal persists an evidence-led, issue-less knowledge
 	// governance report. The run is advisory; it cannot write back knowledge.
 	KnowledgeGovernanceTerminal func(ctx context.Context, task db.AgentTaskQueue, output, taskErr string) (*knowledgegovernance.RunStats, error)
+	deferTaskNotification       bool
 	// quickActionsInFlight (chat session id -> struct{}{}) and
 	// quickActionsRunning admit suggestion passes: one per session, and a
 	// process-wide ceiling. Both zero values are usable, so a TaskService built
