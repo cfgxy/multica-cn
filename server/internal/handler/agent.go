@@ -77,8 +77,8 @@ type AgentResponse struct {
 	VoiceProviderID string          `json:"voice_provider_id"`
 	VoiceModel      string          `json:"voice_model"`
 	VoiceAdvanced   json.RawMessage `json:"voice_advanced"`
-	Name              string `json:"name"`
-	Description       string `json:"description"`
+	Name            string          `json:"name"`
+	Description     string          `json:"description"`
 	// Instructions is what this agent's owner wrote. For a system agent it
 	// holds only the workspace's own notes — the product half lives in
 	// SystemInstructions and is never stored on the row.
@@ -529,17 +529,18 @@ type AgentTaskResponse struct {
 	// IssueStatusesOmitted is how many active custom statuses were dropped by
 	// the cap, so the brief can say the list is incomplete instead of
 	// presenting a truncated catalog as the whole one.
-	IssueStatusesOmitted int                    `json:"issue_statuses_omitted,omitempty"`
-	ActiveSiblingRuns    []ActiveSiblingRunData `json:"active_sibling_runs,omitempty"`
-	ThreadName           string                 `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
-	Status               string                 `json:"status"`
-	Priority             int32                  `json:"priority"`
-	DispatchedAt         *string                `json:"dispatched_at"`
-	StartedAt            *string                `json:"started_at"`
-	CompletedAt          *string                `json:"completed_at"`
-	Result               any                    `json:"result"`
-	Error                *string                `json:"error"`
-	FailureReason        string                 `json:"failure_reason,omitempty"` // see TaskService.MaybeRetryFailedTask
+	IssueStatusesOmitted       int                     `json:"issue_statuses_omitted,omitempty"`
+	ActiveSiblingRuns          []ActiveSiblingRunData  `json:"active_sibling_runs,omitempty"`
+	ThreadName                 string                  `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
+	Status                     string                  `json:"status"`
+	Priority                   int32                   `json:"priority"`
+	DispatchedAt               *string                 `json:"dispatched_at"`
+	StartedAt                  *string                 `json:"started_at"`
+	CompletedAt                *string                 `json:"completed_at"`
+	Result                     any                     `json:"result"`
+	CapabilityAdaptationResult *taskadaptation.Outcome `json:"capability_adaptation_result,omitempty"`
+	Error                      *string                 `json:"error"`
+	FailureReason              string                  `json:"failure_reason,omitempty"` // see TaskService.MaybeRetryFailedTask
 	// QueuedReason explains why a queued row is not moving yet (RUYI-397),
 	// from the dispatch.ReasonCode vocabulary: "runtime_backpressure" means
 	// the target runtime's host reported memory backpressure, so the claim is
@@ -566,9 +567,9 @@ type AgentTaskResponse struct {
 	// undeclared tasks (primary-resource fallback, lock-free whole-root
 	// snapshot). Mirror field: internal/daemon/types.go, same JSON name.
 	LocalDirectoryScope json.RawMessage `json:"local_directory_scope,omitempty"`
-	CreatedAt           string                `json:"created_at"`
-	PriorSessionID      string                `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
-	PriorWorkDir        string                `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
+	CreatedAt           string          `json:"created_at"`
+	PriorSessionID      string          `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
+	PriorWorkDir        string          `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
 	// PriorSessionResumeUnavailable is set when a more recent Codex session was
 	// withheld because its rollout was missing (MUL-5305); PriorSessionID (if
 	// any) is then an older fallback. The daemon surfaces the continuity gap in
@@ -663,14 +664,14 @@ type AgentTaskResponse struct {
 	// delivered comments is a decision echo (including the pointer-missing
 	// degradation, where the echo text alone keeps the pre-RUYI-719 behavior).
 	// Mirror field: internal/daemon/types.go, same JSON name.
-	DecisionAnswers       []DecisionAnswerContextData `json:"decision_answers,omitempty"`
+	DecisionAnswers []DecisionAnswerContextData `json:"decision_answers,omitempty"`
 	// CapabilityAdaptation is the validated, task-only policy snapshot; omitted
 	// when the task context does not explicitly opt in.
-	CapabilityAdaptation *taskadaptation.Snapshot `json:"capability_adaptation,omitempty"`
-	SquadID               string                      `json:"squad_id,omitempty"`                // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
-	SquadName             string                      `json:"squad_name,omitempty"`              // display name for the picker squad
-	ParentIssueID         string                      `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
-	ParentIssueIdentifier string                      `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
+	CapabilityAdaptation  *taskadaptation.Snapshot `json:"capability_adaptation,omitempty"`
+	SquadID               string                   `json:"squad_id,omitempty"`                // for quick-create tasks where the picker was a squad; Agent is still the resolved leader
+	SquadName             string                   `json:"squad_name,omitempty"`              // display name for the picker squad
+	ParentIssueID         string                   `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
+	ParentIssueIdentifier string                   `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
 	// RequestingUserName + RequestingUserProfileDescription mirror the user
 	// the agent is acting on behalf of (see daemon/types.go). v1 sources them
 	// from the runtime owner so they're populated for daemon runtimes and
@@ -1052,6 +1053,17 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		// hydrated separately on user-facing surfaces (MUL-4302 §9).
 		Attribution: taskAttributionBase(t),
 	}
+	if snapshot := taskadaptation.SnapshotFromContext(t.Context); snapshot != nil {
+		snapshot.TaskID = uuidToString(t.ID)
+		var terminal struct {
+			CapabilityAdaptationResult *taskadaptation.Outcome `json:"capability_adaptation_result"`
+		}
+		if json.Unmarshal(t.Result, &terminal) == nil && terminal.CapabilityAdaptationResult != nil &&
+			terminal.CapabilityAdaptationResult.Matches(snapshot, snapshot.TaskID) {
+			resp.CapabilityAdaptation = snapshot
+			resp.CapabilityAdaptationResult = terminal.CapabilityAdaptationResult
+		}
+	}
 	// RUYI-673: retrospective runs carry their run id + window end in the
 	// task's context JSONB (written by the runner at enqueue). ParseTaskContext
 	// validates the payload shape (kind + uuids), so a legacy or corrupt blob
@@ -1413,7 +1425,7 @@ type CreateAgentRequest struct {
 	// VoiceRuntimeID optionally binds the voice slot (RUYI-425). Empty = the
 	// historical text-only shape. The target must be a workspace runtime whose
 	// protocol family declares realtime_voice, and must differ from runtime_id.
-	VoiceRuntimeID string            `json:"voice_runtime_id"`
+	VoiceRuntimeID string `json:"voice_runtime_id"`
 	// VoiceProviderID optionally points the D2 voice override at a
 	// workspace voice_provider pool entry (RUYI-693). Non-empty requires the
 	// entry to exist in this workspace, be enabled, and speak a family the
@@ -1422,11 +1434,11 @@ type CreateAgentRequest struct {
 	VoiceProviderID string            `json:"voice_provider_id"`
 	VoiceModel      string            `json:"voice_model"`
 	VoiceAdvanced   json.RawMessage   `json:"voice_advanced"`
-	RuntimeConfig  any               `json:"runtime_config"`
-	CustomEnv      map[string]string `json:"custom_env"`
-	CustomArgs     []string          `json:"custom_args"`
-	McpConfig      json.RawMessage   `json:"mcp_config"`
-	Visibility     string            `json:"visibility"`
+	RuntimeConfig   any               `json:"runtime_config"`
+	CustomEnv       map[string]string `json:"custom_env"`
+	CustomArgs      []string          `json:"custom_args"`
+	McpConfig       json.RawMessage   `json:"mcp_config"`
+	Visibility      string            `json:"visibility"`
 	// PermissionMode + InvocationTargets are the new invocation-permission
 	// inputs (MUL-3963). When permission_mode is present it is authoritative
 	// and Visibility is ignored; when absent, legacy Visibility is mapped
@@ -1886,9 +1898,9 @@ type UpdateAgentRequest struct {
 	// half-configured level can never exist. voice_advanced keeps the
 	// not-set semantics of agentVoiceAdvancedRaw: null/"" preserves (the
 	// COALESCE contract), {} stores an explicit empty refinement.
-	VoiceProviderID *string          `json:"voice_provider_id"`
-	VoiceModel      *string          `json:"voice_model"`
-	VoiceAdvanced   json.RawMessage  `json:"voice_advanced"`
+	VoiceProviderID *string         `json:"voice_provider_id"`
+	VoiceModel      *string         `json:"voice_model"`
+	VoiceAdvanced   json.RawMessage `json:"voice_advanced"`
 	// ComposioToolkitAllowlist is a tri-state, same pattern as
 	// thinking_level, mcp_config:
 	//   - field omitted → no change (column preserved as-is)

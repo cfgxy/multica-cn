@@ -118,6 +118,7 @@ function overviewFixture(): SelfEvolutionOverview {
     quiz: null,
     knowledge: { dirs: 1, entries: 2, last_scan: null },
     skills: { count: 7, invocations: 12 },
+    experiences: [],
   } as unknown as SelfEvolutionOverview;
 }
 

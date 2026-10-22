@@ -100,6 +100,25 @@ export interface SelfEvolutionOverviewProposals {
   last_auto_proposal?: SelfEvolutionOverviewLastAutoProposal;
 }
 
+export interface SelfEvolutionOverviewExperience {
+	candidate_id: string;
+  trigger: string;
+  current_strategy: string;
+  suggested_strategy: string;
+  allowed_actions: string[];
+  applicability: string;
+  evidence: string;
+  limitation: string;
+	source_tasks: {
+		task_id: string;
+		issue_id?: string;
+		policy_id: string;
+		policy_version: string;
+		outcome: string;
+		completed_at: string;
+	}[];
+}
+
 export interface SelfEvolutionOverview {
   versions: SelfEvolutionOverviewTier[];
   quality: SelfEvolutionOverviewQuality;
@@ -107,4 +126,5 @@ export interface SelfEvolutionOverview {
   knowledge: SelfEvolutionOverviewKnowledge;
   skills: SelfEvolutionOverviewSkills;
   proposals: SelfEvolutionOverviewProposals;
+  experiences: SelfEvolutionOverviewExperience[];
 }

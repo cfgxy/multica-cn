@@ -78,3 +78,39 @@ func TestTaskToResponseRetrospectiveFields(t *testing.T) {
 		}
 	})
 }
+
+func TestTaskToResponseExposesOnlyMatchingAdaptationReceipt(t *testing.T) {
+	const taskID = "8fcd3a5f-14e9-4d5b-95b9-79b70bb0a146"
+	taskContext := []byte(`{"capability_adaptation":{"policy_id":"policy-a","policy_version":"v2","scope":"current_task","trigger":"large task","current_strategy":"one pass","suggested_strategy":"small verified steps","allowed_actions":["checkpoint"]}}`)
+	result, err := json.Marshal(map[string]any{
+		"capability_adaptation_result": map[string]string{
+			"task_id": taskID, "policy_id": "policy-a", "policy_version": "v2", "status": "applied",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal task result: %v", err)
+	}
+	resp := taskToResponse(db.AgentTaskQueue{
+		ID:      pgtype.UUID{Bytes: [16]byte{0x8f, 0xcd, 0x3a, 0x5f, 0x14, 0xe9, 0x4d, 0x5b, 0x95, 0xb9, 0x79, 0xb7, 0x0b, 0xb0, 0xa1, 0x46}, Valid: true},
+		Context: taskContext,
+		Result:  result,
+	}, "workspace-1")
+	if resp.CapabilityAdaptation == nil || resp.CapabilityAdaptation.TaskID != taskID {
+		t.Fatalf("adaptation snapshot = %+v, want task-bound snapshot", resp.CapabilityAdaptation)
+	}
+	if resp.CapabilityAdaptationResult == nil || resp.CapabilityAdaptationResult.Status != "applied" {
+		t.Fatalf("adaptation result = %+v, want validated outcome", resp.CapabilityAdaptationResult)
+	}
+
+	result, _ = json.Marshal(map[string]any{"capability_adaptation_result": map[string]string{
+		"task_id": "11111111-1111-4111-8111-111111111111", "policy_id": "policy-a", "policy_version": "v2", "status": "applied",
+	}})
+	resp = taskToResponse(db.AgentTaskQueue{
+		ID:      pgtype.UUID{Bytes: [16]byte{0x8f, 0xcd, 0x3a, 0x5f, 0x14, 0xe9, 0x4d, 0x5b, 0x95, 0xb9, 0x79, 0xb7, 0x0b, 0xb0, 0xa1, 0x46}, Valid: true},
+		Context: taskContext,
+		Result:  result,
+	}, "workspace-1")
+	if resp.CapabilityAdaptation != nil || resp.CapabilityAdaptationResult != nil {
+		t.Errorf("mismatched receipt leaked into task details: %+v / %+v", resp.CapabilityAdaptation, resp.CapabilityAdaptationResult)
+	}
+}
