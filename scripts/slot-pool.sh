@@ -439,6 +439,10 @@ cmd_use() {
     *) die "use: lease $lease_id in unexpected state '${state:-unknown}'" ;;
   esac
   capability="$(jq -r '.execution_capability // empty' <<<"$out")"
+# The in-memory capability must be live before any post-acquire pool call
+  # (guest env write, polling): the acquire response is the capability source
+  # for this process; the manifest copy serves later processes.
+  CAPABILITY="$capability"
   write_manifest "$lease_id" "$instance_id" "$template" "$phase" "$expires_at" "$capability" "$request_id" "$version_sha"
   # Subshell: a die inside (VM still settling) must not lose the lease.
   ( _write_guest_env "$lease_id" ) || printf 'slot-pool: warning: guest env write failed (orphans inventory will report it)\n' >&2
