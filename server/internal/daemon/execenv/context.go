@@ -150,6 +150,13 @@ func RegisterTaskDeliveryContext(markerPath, branch, baseCommit string) error {
 	if marker.ManagedBy != TaskContextMarkerManagedBy {
 		return fmt.Errorf("task context marker %s is not managed by Multica; refusing to modify", markerPath)
 	}
+	// Task-scoping guard: a parseable marker carrying no task identity is the
+	// node-wide workspaces-root marker (managed_by only). Delivery context is
+	// per-task state - merging it into the root marker would pollute the
+	// node-wide fail-closed guard with one task's branch/baseline (RUYI-848).
+	if marker.TaskID == "" && marker.AgentID == "" {
+		return fmt.Errorf("task context marker %s is not task-scoped (no task_id or agent_id); refusing to register delivery context", markerPath)
+	}
 	if branch != "" {
 		marker.Branch = branch
 	}
@@ -281,6 +288,12 @@ func writeTaskContextMarker(workDir string, ctx TaskContextForEnv, manifest *sid
 		}
 		if old.ManagedBy != TaskContextMarkerManagedBy {
 			return fmt.Errorf("task context marker %s is not managed by Multica; refusing to overwrite", path)
+		}
+		// A refresh whose context lost the task id must not wipe the identity
+		// out of the marker: hand the existing task_id forward so preflight's
+		// task-identity check stays diagnosable instead of silently empty.
+		if payload.TaskID == "" && old.TaskID != "" {
+			payload.TaskID = old.TaskID
 		}
 		if payload.Branch == "" {
 			payload.Branch = old.Branch

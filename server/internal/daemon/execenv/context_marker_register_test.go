@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +98,57 @@ func TestRegisterTaskDeliveryContext(t *testing.T) {
 			t.Fatal("expected refusal for a missing marker")
 		}
 	})
+}
+
+// TestWriteTaskContextMarkerRefreshKeepsTaskIdentity guards the RUYI-848
+// failure: a workdir-reuse refresh whose context dropped the task id must
+// hand the existing marker's task_id forward instead of wiping it, so
+// preflight's task-identity check stays diagnosable.
+func TestWriteTaskContextMarkerRefreshKeepsTaskIdentity(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeTaskContextMarker(dir, TaskContextForEnv{TaskID: "dev-task", AgentID: "dev-agent", IssueID: "issue-x"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// The reusing task's context lost its TaskID (regressed ctx): the refresh
+	// must keep the marker's existing task identity instead of blanking it.
+	if err := writeTaskContextMarker(dir, TaskContextForEnv{TaskID: "", AgentID: "qa-agent", IssueID: "issue-x"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, TaskContextMarkerRelPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marker taskContextMarkerFile
+	if err := json.Unmarshal(data, &marker); err != nil {
+		t.Fatal(err)
+	}
+	if marker.TaskID != "dev-task" {
+		t.Fatalf("refresh with empty ctx.TaskID wiped the marker task_id: %+v", marker)
+	}
+	if marker.AgentID != "qa-agent" {
+		t.Fatalf("refresh did not rebind the agent identity: %+v", marker)
+	}
+}
+
+// TestRegisterTaskDeliveryContextRefusesRootMarker guards the node-wide
+// workspaces-root marker: delivery context is per-task state and must never
+// be merged into a marker that carries no task identity.
+func TestRegisterTaskDeliveryContextRefusesRootMarker(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, TaskContextMarkerRelPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"managed_by":"multica-daemon-task"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterTaskDeliveryContext(path, "agent/a/1", "base"); err == nil {
+		t.Fatal("expected refusal for a non task-scoped (root-shape) marker")
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"managed_by"`) || strings.Contains(string(data), "branch") {
+		t.Fatalf("root-shape marker was modified: %s", data)
+	}
 }
 
 // TestWriteTaskContextMarkerDevQaHandoff covers the atomic DEV->QA workdir
