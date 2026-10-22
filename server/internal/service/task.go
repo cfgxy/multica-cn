@@ -85,6 +85,7 @@ type TaskService struct {
 	// build that never wired the runner). output is the run's final message
 	// ("" on the fail path); taskErr distinguishes success from failure.
 	RetrospectiveTerminal func(ctx context.Context, task db.AgentTaskQueue, output, taskErr string) (*retrospective.RunStats, error)
+	deferTaskNotification bool
 	// quickActionsInFlight (chat session id -> struct{}{}) and
 	// quickActionsRunning admit suggestion passes: one per session, and a
 	// process-wide ceiling. Both zero values are usable, so a TaskService built
@@ -1170,6 +1171,18 @@ func (s *TaskService) EnqueueTaskForIssueWithHandoff(ctx context.Context, issue 
 	return s.enqueueIssueTask(ctx, issue, pgtype.UUID{}, false, handoffNote, actorUserID, pgtype.UUID{}, pgtype.Timestamptz{})
 }
 
+func (s *TaskService) EnqueueTaskForIssueWithHandoffTx(ctx context.Context, qtx *db.Queries, issue db.Issue, handoffNote string, actorUserID pgtype.UUID) (db.AgentTaskQueue, error) {
+	scoped := *s
+	scoped.Queries = qtx
+	scoped.deferTaskNotification = true
+	return scoped.EnqueueTaskForIssueWithHandoff(ctx, issue, handoffNote, actorUserID)
+}
+
+func (s *TaskService) PublishEnqueuedTask(ctx context.Context, task db.AgentTaskQueue) {
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.NotifyTaskEnqueued(ctx, task)
+}
+
 // enqueueIssueTask is the shared implementation behind EnqueueTaskForIssue
 // and the manual rerun path. forceFreshSession=true marks the task so the
 // daemon claim handler skips the (agent_id, issue_id) resume lookup — the
@@ -1339,14 +1352,16 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 	if fireAt.Valid {
 		return task, nil
 	}
+	if s.deferTaskNotification {
+		return task, nil
+	}
 	// Order matters: broadcast first, notify daemon second. notifyTaskAvailable
 	// kicks an in-process channel that the daemon picks up over HTTP and
 	// claims; the claim path then emits its own task:dispatch. Doing the
 	// queued broadcast afterwards risks the dispatch event reaching clients
 	// before the queued one (rare but unsafe-by-construction). Publishing
 	// in the desired observe-order makes correctness independent of timing.
-	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
-	s.NotifyTaskEnqueued(ctx, task)
+	s.PublishEnqueuedTask(ctx, task)
 	return task, nil
 }
 

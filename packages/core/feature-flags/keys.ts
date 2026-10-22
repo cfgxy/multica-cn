@@ -4,3 +4,4 @@ export const MARKETPLACE_V1_FLAG = "marketplace_v1";
 export const MARKETPLACE_PUBLISH_V1_FLAG = "marketplace_publish_v1";
 export const BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG =
   "billing_workspace_subscriptions";
+export const OUTER_LOOP_FLAG = "outer_loop";

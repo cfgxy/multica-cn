@@ -1,6 +1,7 @@
 import { issueStatusCategory } from "./status-category";
 import type { QueryClient } from "@tanstack/react-query";
 import { issueKeys } from "./queries";
+import { outerLoopPlanKey } from "./outerloop-queries";
 import { labelKeys } from "../labels/queries";
 import { projectKeys } from "../projects/queries";
 import {
@@ -638,6 +639,7 @@ export function onIssueMetadataChanged(
   metadata: IssueMetadata,
   revision?: number,
 ) {
+	qc.invalidateQueries({ queryKey: outerLoopPlanKey(wsId, issueId) });
   if (refetchForUnversionedIssueEvent(qc, wsId, issueId, revision)) return;
   if (
     isOlderThanRecordedAuxiliaryProjection(
