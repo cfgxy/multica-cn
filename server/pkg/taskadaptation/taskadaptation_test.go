@@ -73,3 +73,48 @@ func TestOutcomeMustMatchExactPolicySnapshot(t *testing.T) {
 		t.Fatal("outcome matched a missing snapshot")
 	}
 }
+
+func TestValidateExperienceCandidateRequiresRepeatedMatchingAppliedReceipts(t *testing.T) {
+	snapshot := func(taskID string) *Snapshot {
+		return &Snapshot{
+			TaskID: taskID, PolicyID: "policy-7", PolicyVersion: "2", Scope: "current_task",
+			Trigger: "large implementation", CurrentStrategy: "one pass",
+			SuggestedStrategy: "use verified steps", AllowedActions: []string{"split into checkpoints"},
+		}
+	}
+	first, second := snapshot("task-a"), snapshot("task-b")
+	candidateID := CandidateID(first)
+	valid := []ExperienceReceipt{
+		{TaskID: first.TaskID, Snapshot: first, Outcome: &Outcome{TaskID: first.TaskID, PolicyID: first.PolicyID, PolicyVersion: first.PolicyVersion, Status: "applied"}},
+		{TaskID: second.TaskID, Snapshot: second, Outcome: &Outcome{TaskID: second.TaskID, PolicyID: second.PolicyID, PolicyVersion: second.PolicyVersion, Status: "applied"}},
+	}
+	if err := ValidateExperienceCandidate(candidateID, valid); err != nil {
+		t.Fatalf("valid repeated evidence rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name      string
+		candidate string
+		receipts  []ExperienceReceipt
+	}{
+		{name: "single source", candidate: candidateID, receipts: valid[:1]},
+		{name: "wrong fingerprint", candidate: "other", receipts: valid},
+		{name: "duplicate source", candidate: candidateID, receipts: []ExperienceReceipt{valid[0], valid[0]}},
+		{name: "different strategy", candidate: candidateID, receipts: []ExperienceReceipt{
+			valid[0], {TaskID: second.TaskID, Snapshot: func() *Snapshot {
+				changed := *second
+				changed.SuggestedStrategy = "unverified strategy"
+				return &changed
+			}(),
+				Outcome: &Outcome{TaskID: second.TaskID, PolicyID: second.PolicyID, PolicyVersion: second.PolicyVersion, Status: "applied"}},
+		}},
+		{name: "not applied", candidate: candidateID, receipts: []ExperienceReceipt{
+			valid[0], {TaskID: second.TaskID, Snapshot: second, Outcome: &Outcome{TaskID: second.TaskID, PolicyID: second.PolicyID, PolicyVersion: second.PolicyVersion, Status: "retained"}},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateExperienceCandidate(tc.candidate, tc.receipts); err == nil {
+				t.Fatal("invalid experience evidence was accepted")
+			}
+		})
+	}
+}

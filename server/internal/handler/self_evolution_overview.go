@@ -2,10 +2,8 @@ package handler
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -283,14 +281,16 @@ LIMIT 500`, workspaceID)
 		return nil, err
 	}
 	candidates := make([]SelfEvolutionOverviewExperience, 0, len(groups))
-	for key, group := range groups {
+	for _, group := range groups {
 		if len(group.sources) < 2 {
 			continue
 		}
-		digest := sha256.Sum256([]byte(key))
 		candidates = append(candidates, SelfEvolutionOverviewExperience{
-			CandidateID: fmt.Sprintf("%x", digest[:]),
-			Trigger:     group.pattern.Trigger, CurrentStrategy: group.pattern.CurrentStrategy,
+			CandidateID: taskadaptation.CandidateID(&taskadaptation.Snapshot{
+				Trigger: group.pattern.Trigger, CurrentStrategy: group.pattern.CurrentStrategy,
+				SuggestedStrategy: group.pattern.SuggestedStrategy, AllowedActions: group.pattern.AllowedActions,
+			}),
+			Trigger: group.pattern.Trigger, CurrentStrategy: group.pattern.CurrentStrategy,
 			SuggestedStrategy: group.pattern.SuggestedStrategy, AllowedActions: group.pattern.AllowedActions,
 			Applicability: "current_task", Evidence: "repeated_verified_task_receipts",
 			Limitation: "repeated_pattern_not_approved_workspace_policy", SourceTasks: group.sources,
