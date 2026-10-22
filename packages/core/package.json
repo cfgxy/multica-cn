@@ -41,6 +41,8 @@
     "./issues/batch": "./issues/batch.ts",
     "./issues/canonical-id": "./issues/canonical-id.ts",
     "./issues/queries": "./issues/queries.ts",
+    "./issues/outerloop": "./issues/outerloop.ts",
+    "./issues/outerloop-queries": "./issues/outerloop-queries.ts",
     "./issues/decisions": "./issues/decisions.ts",
     "./issues/decision-card-browser": "./issues/decision-card-browser.ts",
     "./issues/suspensions": "./issues/suspensions.ts",
