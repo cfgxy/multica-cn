@@ -98,6 +98,18 @@ var runShapes = [][]string{
 // given request.
 var surfaceShapes = []scopeShape{
 	{[]string{"file-access", "operations", "*"}, shapeReadOnly},
+	{[]string{"inbox"}, shapeReadOnly},
+	{[]string{"inbox", "archived"}, shapeReadOnly},
+	{[]string{"inbox", "unread-count"}, shapeReadOnly},
+	{[]string{"inbox", "unread-summary"}, shapeReadOnly},
+	{[]string{"inbox", "mark-all-read"}, shapeReadWrite},
+	{[]string{"inbox", "archive-all"}, shapeReadWrite},
+	{[]string{"inbox", "archive-all-read"}, shapeReadWrite},
+	{[]string{"inbox", "archive-completed"}, shapeReadWrite},
+	{[]string{"inbox", "*", "read"}, shapeReadWrite},
+	{[]string{"inbox", "*", "unread"}, shapeReadWrite},
+	{[]string{"inbox", "*", "archive"}, shapeReadWrite},
+	{[]string{"inbox", "*", "unarchive"}, shapeReadWrite},
 	{[]string{"autopilots", "*"}, shapeReadOnly},
 	{[]string{"autopilots", "*", "runs"}, shapeReadOnly},
 	{[]string{"autopilots", "*", "runs", "*"}, shapeReadOnly},
@@ -136,6 +148,7 @@ var surfaceShapes = []scopeShape{
 	{[]string{"issues", "*", "active-task"}, shapeReadOnly},
 	{[]string{"issues", "*", "task-runs"}, shapeReadOnly},
 	{[]string{"issues", "*", "tasks", "*"}, shapeReadOnly},
+	{[]string{"issues", "*", "tasks", "*", "activity"}, shapeReadOnly},
 
 	// Decision cards (RUYI-688): the answer flow the decision tools drive.
 	// The workspace inbox and the issue-scoped card list are read-only; the
@@ -195,7 +208,8 @@ func ScopeForRequest(method, path string) ScopeRequirement {
 	// scope still reflects the tool's business-data authority, so read-scoped
 	// tokens can record read-tool invocations.
 	if method == "POST" && (matchSegments([]string{"mcp", "audit-start"}, rest) ||
-		matchSegments([]string{"mcp", "audit-finish"}, rest)) {
+		matchSegments([]string{"mcp", "audit-finish"}, rest) ||
+		matchSegments([]string{"mcp", "pre-auth-rejections"}, rest)) {
 		return ScopeNeedRead
 	}
 
