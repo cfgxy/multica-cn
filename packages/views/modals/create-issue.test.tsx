@@ -514,6 +514,7 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   DropdownMenuTrigger: ({ render }: { render: React.ReactNode }) => <>{render}</>,
   DropdownMenuContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DropdownMenuGroup: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   // `render` mirrors Base UI: an item can BE another element (an <AppLink>).
   // The real Item gives that element role="button", which is what the queries
   // below match on.
@@ -710,7 +711,7 @@ describe("CreateIssueModal", () => {
       "focus-within:ring-2",
     );
     await user.click(screen.getByRole("button", { name: "More" }));
-    expect(screen.getByRole("menuitem", { name: "Upload file" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload file" })).toBeInTheDocument();
   });
 
   it("shows success feedback with a direct path to the new issue", async () => {
@@ -900,7 +901,7 @@ describe("CreateIssueModal", () => {
     const { container } = renderModal(<CreateIssueModal onClose={vi.fn()} />);
 
     await user.click(screen.getByRole("button", { name: "More" }));
-    await user.click(screen.getByRole("menuitem", { name: "Upload file" }));
+    await user.click(screen.getByRole("button", { name: "Upload file" }));
     const fileInput = container.querySelectorAll<HTMLInputElement>('input[type="file"]')[2];
     if (!fileInput) throw new Error("Expected the composer file input");
     fireEvent.change(fileInput, {
@@ -1300,21 +1301,20 @@ describe("CreateIssueModal", () => {
       />,
     );
 
-    const description = screen.getByPlaceholderText("Add description...").parentElement;
+    const descriptionScroller = screen.getByPlaceholderText("Add description...").parentElement;
+    const composerSurface = descriptionScroller?.parentElement;
     const sourceContext = document.querySelector<HTMLElement>('[data-slot="source-context-preview"]');
 
-    expect(description).toHaveClass(
-      "relative",
-      "flex",
-      "flex-1",
-      "min-h-0",
+    expect(descriptionScroller).toHaveClass(
+      "h-full",
+      "min-h-[100px]",
       "overflow-y-auto",
-      "px-5",
     );
+    expect(composerSurface).toHaveAttribute("data-testid", "issue-composer-surface");
     expect(sourceContext).toHaveClass("shrink-0");
-    expect(description?.parentElement).toBe(sourceContext?.parentElement);
-    expect(description?.nextElementSibling).toBe(sourceContext);
-    expect(description).not.toContainElement(sourceContext);
+    expect(composerSurface?.parentElement?.parentElement).toBe(sourceContext?.parentElement);
+    expect(composerSurface?.parentElement?.nextElementSibling).toBe(sourceContext);
+    expect(composerSurface).not.toContainElement(sourceContext);
   });
 
   it("locks only a source-context parent and leaves ordinary parent controls unchanged", async () => {
@@ -1620,7 +1620,13 @@ describe("CreateIssueModal", () => {
       mockApiUploadFile.mockImplementationOnce(
         () => new Promise((resolve) => { release = resolve; }),
       );
+      fireEvent.click(screen.getByRole("button", { name: "More" }));
       fireEvent.click(screen.getByRole("button", { name: "Upload file" }));
+      const fileInput = document.querySelectorAll<HTMLInputElement>('input[type="file"]')[2];
+      if (!fileInput) throw new Error("Expected the composer file input");
+      fireEvent.change(fileInput, {
+        target: { files: [new File(["image"], "shot.png", { type: "image/png" })] },
+      });
       return { release: (result: unknown) => release(result) };
     }
 
