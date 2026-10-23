@@ -1,11 +1,18 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useStore } from "zustand";
-import { Columns3, Filter, FilterX, Gavel, List, ShieldCheck } from "lucide-react";
 import {
-  workspaceDecisionInboxQueryOptions,
+  ChevronDown,
+  ChevronRight,
+  Gavel,
+  Search,
+  ShieldCheck,
+  X,
+} from "lucide-react";
+import {
+  workspaceDecisionInboxPageOptions,
 } from "@multica/core/issues/decisions";
 import {
   workspaceDecisionRequestsQueryOptions,
@@ -15,28 +22,17 @@ import {
 } from "@multica/core/paths";
 import {
   decisionCenterPrefsStore,
-  type DecisionCenterViewMode,
+  type DecisionCenterStatusFilter,
 } from "@multica/core/issues/stores/decision-center-prefs-store";
 import { Button } from "@multica/ui/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@multica/ui/components/ui/dropdown-menu";
+import { Input } from "@multica/ui/components/ui/input";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
+import type { IssueDecisionStatus, WorkspaceDecisionInboxItem } from "@multica/core/types";
+import { useDebouncedValue } from "../../common/use-debounced-value";
 import { PageHeader } from "../../layout/page-header";
 import { useT } from "../../i18n";
-import type { WorkspaceDecisionInboxItem } from "@multica/core/types";
 import { DecisionListView } from "./decision-list-view";
-import { DecisionBoardView } from "./decision-board-view";
 import { DecisionRequestRow } from "./decision-request-row";
 import { DecisionDetailSheet } from "./decision-detail-sheet";
 import {
@@ -44,62 +40,100 @@ import {
   DECISION_STATUS_ORDER,
 } from "./decision-status-config";
 
-// Decision Center (RUYI-547): the workspace-wide aggregation of decision
-// cards, rebuilt on the issues surface's display model — a toolbar row with
-// a status filter and a list/board toggle (same control shapes as the issues
-// header), a sectioned list, and a board of status columns. Status is carried
-// by the view: section headers and column headers show the server's
-// workspace-wide counts, so the numbers stay true even when the list window
-// is bounded.
+// Decision Center (RUYI-547), refolded by RUYI-864: the page keeps only the
+// decision list. The board view and its pseudo-drag went away, and the
+// multi-status "hide" filter was replaced by one single-value status window
+// (全部/未决策/已决策/已失效) plus a debounced keyword search — both owned by
+// the server, so the list, the section counts, and every empty state follow
+// the same filter window. The authorization queue above the list is a
+// single card: the server returns exactly the oldest pending row, so
+// processing one auto-advances the next and the area vanishes when the
+// queue empties — no client-side queue state. A low-key collapsed history
+// entry shares the toolbar space for the processed requests.
 
-const VIEW_ICON: Record<DecisionCenterViewMode, typeof List> = {
-  list: List,
-  board: Columns3,
-};
+const STATUS_FILTER_OPTIONS: DecisionCenterStatusFilter[] = [
+  "all",
+  ...DECISION_STATUS_ORDER,
+];
 
 export function DecisionCenterPage() {
   const { t } = useT("decisions");
   const workspace = useCurrentWorkspace();
-  const [selectedDecision, setSelectedDecision] = useState<WorkspaceDecisionInboxItem | null>(null);
+  const wsId = workspace?.id;
+
+  const [selectedDecision, setSelectedDecision] =
+    useState<WorkspaceDecisionInboxItem | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
 
-  const viewMode = useStore(decisionCenterPrefsStore, (s) => s.viewMode);
-  const hiddenStatuses = useStore(decisionCenterPrefsStore, (s) => s.hiddenStatuses);
-  const setViewMode = useStore(decisionCenterPrefsStore, (s) => s.setViewMode);
-  const toggleStatusHidden = useStore(decisionCenterPrefsStore, (s) => s.toggleStatusHidden);
-  const showAllStatuses = useStore(decisionCenterPrefsStore, (s) => s.showAllStatuses);
-
-  const { data, isPending, isError } = useQuery(
-    workspaceDecisionInboxQueryOptions(workspace?.id),
+  // The persisted single status window (one real card status or "all").
+  const statusFilter = useStore(
+    decisionCenterPrefsStore,
+    (s) => s.statusFilter,
+  );
+  const setStatusFilter = useStore(
+    decisionCenterPrefsStore,
+    (s) => s.setStatusFilter,
   );
 
-  // Authorization requests (RUYI-630) render as their own section above the
-  // question-card surfaces: 决策5 keeps the authorization summary out of the
-  // card list/board buckets entirely, so its only toggle is presence.
+  // Session-scoped keyword: a stale search string on the next visit is
+  // pure noise, so it is kept out of the persisted prefs.
+  const [searchInput, setSearchInput] = useState("");
+  const searchQ = useDebouncedValue(searchInput.trim(), 250);
+
+  const status = statusFilter === "all" ? undefined : statusFilter;
+  const q = searchQ || undefined;
+  const hasWindow = status !== undefined || q !== undefined;
+
+  // The decision list, keyset-paged: the server walks (created_at, id)
+  // under the filter window, and "Load more" fetches the next page.
+  const pageQuery = useInfiniteQuery(
+    workspaceDecisionInboxPageOptions(wsId, { status, q }),
+  );
+  const items = useMemo(
+    () => (pageQuery.data?.pages ?? []).flatMap((page) => page.items),
+    [pageQuery.data],
+  );
+  // Counts ride the last fetched page — they are scoped to the filter
+  // window (status + keyword, never the page window), so section headers
+  // stay true after paging.
+  const counts = pageQuery.data?.pages.at(-1)?.counts ?? {
+    open: 0,
+    answered: 0,
+    cancelled: 0,
+  };
+
+  // The pending authorization queue: one row, the server's oldest pending
+  // (order=asc, limit=1). Approve/deny invalidates the whole request
+  // subtree (see the answer mutation in DecisionRequestRow), so the next
+  // oldest row slides into the card and the area vanishes when none is
+  // left. The row's operable flag carries the processing/validity split —
+  // read-only projections still render with their hint.
   const { data: requestsData, isPending: requestsPending } = useQuery(
-    workspaceDecisionRequestsQueryOptions(workspace?.id),
+    workspaceDecisionRequestsQueryOptions(wsId, {
+      status: "pending",
+      order: "asc",
+      limit: 1,
+    }),
   );
+  const pendingRow = requestsData?.items[0];
+  const historyTotal =
+    (requestsData?.counts.closed ?? 0) + (requestsData?.counts.executed ?? 0);
 
-  const visibleStatuses = useMemo(
-    () => DECISION_STATUS_ORDER.filter((s) => !hiddenStatuses.includes(s)),
-    [hiddenStatuses],
+  // The collapsed history entry: processed requests newest-first, lazily
+  // fetched on open. Pending rows never show up here — the queue owns
+  // them, and the list below renders everything else.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const { data: historyData } = useQuery({
+    ...workspaceDecisionRequestsQueryOptions(wsId, {
+      order: "desc",
+      limit: 50,
+    }),
+    enabled: historyOpen,
+  });
+  const historyRows = useMemo(
+    () => (historyData?.items ?? []).filter((row) => row.status !== "pending"),
+    [historyData],
   );
-  const filteredItems = useMemo(
-    () => (data?.items ?? []).filter((item) => visibleStatuses.includes(item.status)),
-    [data, visibleStatuses],
-  );
-  const requestItems = useMemo(() => requestsData?.items ?? [], [requestsData]);
-  const activeFilterCount = hiddenStatuses.length;
-  const isFilteredEmpty = activeFilterCount > 0 && filteredItems.length === 0;
-  const isEmpty =
-    !isPending &&
-    !requestsPending &&
-    !isError &&
-    activeFilterCount === 0 &&
-    (data?.items.length ?? 0) === 0 &&
-    requestItems.length === 0;
-
-  const ViewIcon = VIEW_ICON[viewMode];
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
@@ -109,184 +143,215 @@ export function DecisionCenterPage() {
       </PageHeader>
 
       <div
-        className="flex h-11 shrink-0 items-center gap-1 px-4"
+        className="flex h-11 shrink-0 items-center gap-2 px-4"
         data-testid="decision-center-toolbar"
       >
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
+        <div
+          role="group"
+          className="flex items-center gap-1"
+          data-testid="decision-status-filter"
+        >
+          {STATUS_FILTER_OPTIONS.map((value) => {
+            const active = statusFilter === value;
+            const Icon =
+              value === "all" ? undefined : DECISION_STATUS_CONFIG[value].icon;
+            return (
               <Button
-                variant={activeFilterCount > 0 ? "default" : "outline"}
+                key={value}
+                type="button"
+                variant={active ? "default" : "outline"}
                 size="sm"
-                data-testid="decision-center-filter-trigger"
                 className={cn(
                   "h-7 gap-1",
-                  activeFilterCount > 0 &&
-                    "bg-brand text-white hover:bg-brand/90",
+                  active && "bg-brand text-white hover:bg-brand/90",
                 )}
+                onClick={() => setStatusFilter(value)}
+                data-testid={`decision-filter-${value}`}
               >
-                <Filter className="size-3.5" />
+                {Icon ? <Icon className="size-3.5" /> : null}
                 <span className="hidden md:inline">
-                  {activeFilterCount > 0
-                    ? t(($) => $.filter.active_count, { count: activeFilterCount })
-                    : t(($) => $.filter.tooltip)}
+                  {value === "all"
+                    ? t(($) => $.section.all)
+                    : t(($) => $.section[value as IssueDecisionStatus])}
                 </span>
               </Button>
-            }
-          />
-          <DropdownMenuContent align="start" className="w-56">
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>{t(($) => $.filter.tooltip)}</DropdownMenuLabel>
-            </DropdownMenuGroup>
-            {DECISION_STATUS_ORDER.map((status) => {
-              const cfg = DECISION_STATUS_CONFIG[status];
-              const Icon = cfg.icon;
-              return (
-                <DropdownMenuCheckboxItem
-                  key={status}
-                  checked={!hiddenStatuses.includes(status)}
-                  onCheckedChange={() => toggleStatusHidden(status)}
-                  closeOnClick={false}
-                  data-testid={`decision-filter-${status}`}
-                >
-                  <Icon className={`size-3.5 ${cfg.iconColor}`} />
-                  {t(($) => $.section[status])}
-                </DropdownMenuCheckboxItem>
-              );
-            })}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={showAllStatuses}>
-              <FilterX className="size-3.5" />
-              {t(($) => $.filter.reset)}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            );
+          })}
+        </div>
 
-        <div className="ml-auto flex items-center gap-1">
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 gap-1"
-                  data-testid="decision-center-view-trigger"
-                >
-                  <ViewIcon className="size-3.5" />
-                  <span className="hidden md:inline">
-                    {t(($) => $.view[viewMode])}
-                  </span>
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="end">
-              <DropdownMenuGroup>
-                <DropdownMenuLabel>{t(($) => $.view.section)}</DropdownMenuLabel>
-              </DropdownMenuGroup>
-              <DropdownMenuRadioGroup
-                value={viewMode}
-                onValueChange={(v) => setViewMode(v as DecisionCenterViewMode)}
-              >
-                <DropdownMenuRadioItem value="board">
-                  <Columns3 />
-                  {t(($) => $.view.board)}
-                </DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="list">
-                  <List />
-                  {t(($) => $.view.list)}
-                </DropdownMenuRadioItem>
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
+        <div className="relative ml-auto w-64" data-testid="decision-search">
+          <Search
+            className="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+            aria-hidden
+          />
+          <Input
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
+            aria-label={t(($) => $.search.placeholder)}
+            placeholder={t(($) => $.search.placeholder)}
+            className="h-7 pl-7 pr-7 text-caption"
+            data-testid="decision-search-input"
+          />
+          {searchInput ? (
+            <button
+              type="button"
+              onClick={() => setSearchInput("")}
+              aria-label={t(($) => $.search.clear_search)}
+              data-testid="decision-search-clear"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <X className="size-3.5" />
+            </button>
+          ) : null}
         </div>
       </div>
 
       {/*
         RUYI-738: the skeleton stands in for the page body, so it may only
-        hold while the page would otherwise be blank — the inbox itself still
-        loading, or an empty inbox that cannot yet be declared empty because
-        the auxiliary decision-requests query has not settled. It must never
-        cover a rendered list while decision-requests is still in flight.
+        hold while the page would otherwise be blank — the list's first page
+        still loading, or an unfiltered empty inbox that cannot yet be
+        declared empty because the pending-queue query has not settled. A
+        filter or search window means the user is already mid-page: show a
+        slim loading strip instead of covering rendered context.
       */}
-      {(isPending || (!isError && (data?.items.length ?? 0) === 0 && requestsPending)) && (
+      {pageQuery.isPending && !hasWindow && (
         <div className="flex flex-col gap-2 px-4 py-3" data-testid="decision-center-loading">
           <Skeleton className="h-12 w-full" />
           <Skeleton className="h-12 w-full" />
           <Skeleton className="h-12 w-3/4" />
         </div>
       )}
+      {pageQuery.isPending && hasWindow && (
+        <div className="flex flex-col gap-2 px-4 py-3" data-testid="decision-list-loading">
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+        </div>
+      )}
+      {!pageQuery.isPending && !hasWindow && items.length === 0 && requestsPending && (
+        <div className="flex flex-col gap-2 px-4 py-3" data-testid="decision-center-loading">
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-3/4" />
+        </div>
+      )}
 
-      {isError && (
-        <div className="py-10 text-center text-caption text-muted-foreground" data-testid="decision-center-error">
+      {pageQuery.isError && (
+        <div
+          className="py-10 text-center text-caption text-muted-foreground"
+          data-testid="decision-center-error"
+        >
           {t(($) => $.page.load_failed)}
         </div>
       )}
 
-      {isFilteredEmpty && (
-        <div
-          className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-muted-foreground"
-          data-testid="decision-filtered-empty"
-        >
-          <FilterX className="h-10 w-10 text-faint-foreground" />
-          <p className="text-body">{t(($) => $.filtered_empty.title)}</p>
-          <p className="text-caption">{t(($) => $.filtered_empty.hint)}</p>
-          <Button
-            variant="outline"
-            size="sm"
-            className="mt-1"
-            onClick={showAllStatuses}
-            data-testid="decision-filter-clear"
-          >
-            {t(($) => $.filtered_empty.clear_button)}
-          </Button>
-        </div>
-      )}
-
-      {isEmpty && (
-        <div
-          className="flex flex-1 min-h-0 flex-col items-center justify-center gap-2 py-20 text-muted-foreground"
-          data-testid="decision-center-empty"
-        >
-          <Gavel className="h-10 w-10 text-faint-foreground" />
-          <p className="text-body">{t(($) => $.page.empty_title)}</p>
-          <p className="text-caption">{t(($) => $.page.empty_description)}</p>
-        </div>
-      )}
-
-      {!requestsPending && !isError && !isFilteredEmpty && !isEmpty && requestItems.length > 0 && (
-        <section className="px-4 pb-2" data-testid="decision-requests-section">
+      {!pageQuery.isPending && !pageQuery.isError && pendingRow && (
+        <section className="px-4 pb-2" data-testid="decision-queue">
           <div className="flex items-center gap-2 py-2">
             <ShieldCheck className="size-3.5 text-brand" aria-hidden />
             <h2 className="text-caption font-medium text-muted-foreground">
-              {t(($) => $.requests.section_title)}
+              {t(($) => $.queue.title)}
             </h2>
-            <span className="text-caption text-faint-foreground">{requestItems.length}</span>
+            <span className="text-caption text-faint-foreground">
+              {requestsData?.counts.pending ?? 0}
+            </span>
           </div>
-          <div className="flex flex-col">
-            {requestItems.map((request) => (
-              <DecisionRequestRow key={request.id} request={request} />
-            ))}
-          </div>
+          <DecisionRequestRow request={pendingRow} />
         </section>
       )}
 
-      {!isPending && !isError && !isFilteredEmpty && !isEmpty && (
-        <>
-          {viewMode === "list" && (
-            <DecisionListView
-              items={data?.items ?? []}
-              counts={data?.counts ?? { open: 0, answered: 0, cancelled: 0 }}
-              visibleStatuses={visibleStatuses}
-              onSelect={(item) => { setSelectedDecision(item); setDetailOpen(true); }}
-            />
+      {!requestsPending && !pageQuery.isError && historyTotal > 0 && (
+        <section className="px-4 pb-1" data-testid="decision-history">
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((open) => !open)}
+            aria-expanded={historyOpen}
+            data-testid="decision-history-toggle"
+            className="flex items-center gap-1.5 py-1.5 text-caption text-muted-foreground hover:text-foreground"
+          >
+            {historyOpen ? (
+              <ChevronDown className="size-3.5" aria-hidden />
+            ) : (
+              <ChevronRight className="size-3.5" aria-hidden />
+            )}
+            {t(($) => $.history.title)}
+            <span className="text-faint-foreground">{historyTotal}</span>
+          </button>
+          {historyOpen && (
+            <div className="flex flex-col">
+              {historyRows.map((row) => (
+                <DecisionRequestRow key={row.id} request={row} />
+              ))}
+            </div>
           )}
-          {viewMode === "board" && (
-            <DecisionBoardView
-              items={data?.items ?? []}
-              counts={data?.counts ?? { open: 0, answered: 0, cancelled: 0 }}
-              visibleStatuses={visibleStatuses}
-              onSelect={(item) => { setSelectedDecision(item); setDetailOpen(true); }}
-            />
+        </section>
+      )}
+
+      {!pageQuery.isPending &&
+        !pageQuery.isError &&
+        items.length === 0 &&
+        hasWindow && (
+          <div
+            className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-muted-foreground"
+            data-testid="decision-filtered-empty"
+          >
+            <Search className="h-10 w-10 text-faint-foreground" />
+            <p className="text-body">{t(($) => $.search.no_results)}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-1"
+              onClick={() => {
+                setStatusFilter("all");
+                setSearchInput("");
+              }}
+              data-testid="decision-window-clear"
+            >
+              {t(($) => $.clear_window)}
+            </Button>
+          </div>
+        )}
+
+      {!pageQuery.isPending &&
+        !pageQuery.isError &&
+        !requestsPending &&
+        !hasWindow &&
+        items.length === 0 &&
+        !pendingRow &&
+        historyTotal === 0 && (
+          <div
+            className="flex flex-1 min-h-0 flex-col items-center justify-center gap-2 py-20 text-muted-foreground"
+            data-testid="decision-center-empty"
+          >
+            <Gavel className="h-10 w-10 text-faint-foreground" />
+            <p className="text-body">{t(($) => $.page.empty_title)}</p>
+            <p className="text-caption">{t(($) => $.page.empty_description)}</p>
+          </div>
+        )}
+
+      {!pageQuery.isPending && !pageQuery.isError && items.length > 0 && (
+        <>
+          <DecisionListView
+            items={items}
+            counts={counts}
+            onSelect={(item) => {
+              setSelectedDecision(item);
+              setDetailOpen(true);
+            }}
+          />
+          {pageQuery.hasNextPage && (
+            <div className="flex justify-center px-4 pb-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void pageQuery.fetchNextPage()}
+                disabled={pageQuery.isFetchingNextPage}
+                data-testid="decision-load-more"
+              >
+                {pageQuery.isFetchingNextPage
+                  ? t(($) => $.loading_more)
+                  : t(($) => $.load_more)}
+              </Button>
+            </div>
           )}
         </>
       )}
