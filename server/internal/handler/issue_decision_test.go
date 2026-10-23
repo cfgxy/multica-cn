@@ -428,6 +428,111 @@ func TestIssueDecisionCancel(t *testing.T) {
 	}
 }
 
+// RUYI-863: restore flips a cancelled card back to open with its content
+// intact; answered cards can never be resurrected; agents are refused; the
+// cancel/restore pair leaves an audit trail row each.
+func TestIssueDecisionRestore(t *testing.T) {
+	f := newDecisionFixture(t)
+
+	restore := func(asAgent bool, id string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+id+"/restore", map[string]any{})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", id)
+		if asAgent {
+			req = agentIdentityHeaders(req, f)
+		}
+		testHandler.RestoreIssueDecision(w, req)
+		return w
+	}
+
+	// Cancelled card: member restore flips it back, content untouched.
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Restore me",
+		"options":  []string{"yes", "no"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	card := decodeDecision(t, w)
+	cancelled := func() IssueDecisionResponse {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+		testHandler.CancelIssueDecision(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("cancel: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		return decodeDecision(t, w)
+	}()
+	if cancelled.Status != "cancelled" {
+		t.Fatalf("cancel: status = %q, want cancelled", cancelled.Status)
+	}
+
+	if w := restore(true, card.ID); w.Code != http.StatusForbidden {
+		t.Fatalf("agent restore: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	rw := restore(false, card.ID)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("restore: expected 200, got %d: %s", rw.Code, rw.Body.String())
+	}
+	restored := decodeDecision(t, rw)
+	if restored.Status != "open" {
+		t.Fatalf("restore: status = %q, want open", restored.Status)
+	}
+	if len(restored.Options) != 2 || restored.Options[0].Label != "yes" {
+		t.Fatalf("restore lost card content: options = %+v", restored.Options)
+	}
+	if restored.AnsweredByID != nil && *restored.AnsweredByID != "" {
+		t.Fatalf("restore: answered_by_id = %q, want empty", *restored.AnsweredByID)
+	}
+	// Second restore is a conflict: the card is open again, not cancelled.
+	if w := restore(false, card.ID); w.Code != http.StatusConflict {
+		t.Fatalf("re-restore: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Answered cards are terminal: cancel is refused, restore too.
+	w = createDecisionCard(t, f, false, map[string]any{
+		"question": "Answered, not restorable",
+		"options":  []string{"a", "b"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create 2: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	answered := decodeDecision(t, w)
+	aw := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+answered.ID+"/answer", map[string]any{
+		"selected_indices": []int{0},
+	})
+	req = withURLParams(req, "id", f.IssueID, "decisionId", answered.ID)
+	testHandler.AnswerIssueDecision(aw, req)
+	if aw.Code != http.StatusOK {
+		t.Fatalf("answer: expected 200, got %d: %s", aw.Code, aw.Body.String())
+	}
+	if w := restore(false, answered.ID); w.Code != http.StatusConflict {
+		t.Fatalf("restore answered card: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Cancel and restore each leave one audit row with the acting member.
+	row := func(eventType, id string) string {
+		t.Helper()
+		var raw string
+		if err := testPool.QueryRow(t.Context(),
+			`SELECT details FROM audit_event WHERE event_type = $1 AND details->>'decision_id' = $2 ORDER BY occurred_at DESC LIMIT 1`,
+			eventType, id).Scan(&raw); err != nil {
+			t.Fatalf("load audit row (%s): %v", eventType, err)
+		}
+		return raw
+	}
+	if details := row("issue.decision_cancelled", card.ID); !strings.Contains(details, "cancelled") {
+		t.Fatalf("cancel audit details = %s, want from/to statuses", details)
+	}
+	if details := row("issue.decision_restored", card.ID); !strings.Contains(details, "open") {
+		t.Fatalf("restore audit details = %s, want from/to statuses", details)
+	}
+}
+
 // answerEchoForMemberCard keeps a member-created card mention-free: no agent
 // to wake, so the echo is a plain record.
 func TestAnswerEchoForMemberCardHasNoMention(t *testing.T) {
