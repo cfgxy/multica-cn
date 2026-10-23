@@ -59,7 +59,9 @@ import type {
   ProjectResourceListResult,
   CreatePromptProposalBody,
   PromptProposalInfo,
+  PromptProposalPreview,
   PromptVersionListResult,
+  UpdatePromptProposalBody,
   QuickCreateBody,
   QuickReplyInfo,
   RemoveIssueRelationResult,
@@ -1113,10 +1115,15 @@ export class MulticaClient {
     });
   }
 
-  /** GET /api/prompt-legislation/governance/clauses/{clauseId} */
-  async getClauseGovernanceDetail(workspace: string, clauseId: string): Promise<ClauseGovernanceDetail> {
+  /** GET /api/prompt-legislation/governance/clauses/{clauseId}?days=N */
+  async getClauseGovernanceDetail(
+    workspace: string,
+    clauseId: string,
+    params?: { days?: number },
+  ): Promise<ClauseGovernanceDetail> {
     return this.request("GET", `/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}`, {
       workspace,
+      query: params?.days ? { days: params.days } : undefined,
     });
   }
 
@@ -1169,6 +1176,65 @@ export class MulticaClient {
     body: CreatePromptProposalBody,
   ): Promise<PromptProposalInfo> {
     return this.request("POST", "/api/prompt-legislation/proposals", { workspace, body });
+  }
+
+  /**
+   * PATCH /api/prompt-legislation/proposals/{id}
+   *
+   * Draft edit: overwrite the draft's fields. The backend answers 409 when
+   * the proposal has left draft.
+   */
+  async updatePromptProposal(
+    workspace: string,
+    id: string,
+    body: UpdatePromptProposalBody,
+  ): Promise<PromptProposalInfo> {
+    return this.request("PATCH", `/api/prompt-legislation/proposals/${encodeURIComponent(id)}`, {
+      workspace,
+      body,
+    });
+  }
+
+  /**
+   * POST /api/prompt-legislation/proposals/{id}/submit
+   *
+   * Move a draft to pending_owner for the owner's decision. Answers 409
+   * when the proposal is no longer a draft.
+   */
+  async submitPromptProposal(workspace: string, id: string): Promise<PromptProposalInfo> {
+    return this.request(
+      "POST",
+      `/api/prompt-legislation/proposals/${encodeURIComponent(id)}/submit`,
+      { workspace },
+    );
+  }
+
+  /**
+   * POST /api/prompt-legislation/proposals/{id}/preview
+   *
+   * Read-only against the carrier: synthesize the sandbox text and return
+   * the full-carrier line diff the owner's approval decision is based on.
+   */
+  async previewPromptProposal(workspace: string, id: string): Promise<PromptProposalPreview> {
+    return this.request(
+      "POST",
+      `/api/prompt-legislation/proposals/${encodeURIComponent(id)}/preview`,
+      { workspace },
+    );
+  }
+
+  /**
+   * POST /api/prompt-legislation/proposals/{id}/rework
+   *
+   * Send a gate_failed proposal back to draft. Answers 409 when the
+   * proposal is not in gate_failed.
+   */
+  async reworkPromptProposal(workspace: string, id: string): Promise<PromptProposalInfo> {
+    return this.request(
+      "POST",
+      `/api/prompt-legislation/proposals/${encodeURIComponent(id)}/rework`,
+      { workspace },
+    );
   }
 
   // ---- transport --------------------------------------------------------

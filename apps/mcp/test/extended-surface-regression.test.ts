@@ -103,6 +103,9 @@ const PURE_READ_TOOLS = [
   "get_clause_reconciliation",
   "get_prompt_versions",
   "list_prompt_proposals",
+  // The proposal preview composes the POST .../preview call but is carrier-
+  // read-only (no row lock, no state change), so it reads as readOnlyHint.
+  "preview_prompt_proposal",
 ] as const;
 
 const CAS_TOOLS = [

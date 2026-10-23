@@ -206,13 +206,16 @@ describe("tool surface", () => {
         "mark_all_inbox_read",
         "mark_inbox_item_read",
         "mark_inbox_item_unread",
+        "preview_prompt_proposal",
         "progress_digest",
         "read_file_chunk",
         "restore_agent",
         "retry_run",
+        "rework_prompt_proposal",
         "search_audit_events",
         "search_clauses",
         "search_issues",
+        "submit_prompt_proposal",
         "trigger_autopilot",
         "unarchive_inbox_item",
         "update_agent",
@@ -222,6 +225,7 @@ describe("tool surface", () => {
         "update_issue_status",
         "update_project",
         "update_project_resource",
+        "update_prompt_proposal",
         "update_quick_reply",
         "update_squad",
       ].sort(),
@@ -2979,5 +2983,224 @@ describe("project resource tools", () => {
     const updateProps = findTool("update_project_resource")?.inputSchema
       .properties as Record<string, unknown>;
     expect(updateProps.resource_type).toBeUndefined();
+  });
+});
+
+describe("prompt legislation proposal lifecycle tools", () => {
+  function proposalClient(overrides: Record<string, unknown> = {}): MulticaClient {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const client = {
+      listPromptProposals: async (_ws: string, params?: Record<string, unknown>) => {
+        calls.push({ method: "listPromptProposals", args: [params] });
+        return [];
+      },
+      createPromptProposal: async (_ws: string, body: Record<string, unknown>) => {
+        calls.push({ method: "createPromptProposal", args: [body] });
+        return { id: "pp-new", status: "draft", ...body };
+      },
+      updatePromptProposal: async (
+        _ws: string,
+        id: string,
+        body: Record<string, unknown>,
+      ) => {
+        calls.push({ method: "updatePromptProposal", args: [id, body] });
+        return { id, status: "draft", ...body };
+      },
+      submitPromptProposal: async (_ws: string, id: string) => {
+        calls.push({ method: "submitPromptProposal", args: [id] });
+        return { id, status: "pending_owner" };
+      },
+      previewPromptProposal: async (_ws: string, id: string) => {
+        calls.push({ method: "previewPromptProposal", args: [id] });
+        return {
+          proposal: { id, status: "draft" },
+          diff: [{ kind: "add", text: "+ new line" }],
+          current_sha256: "abc",
+          baseline_used: true,
+        };
+      },
+      reworkPromptProposal: async (_ws: string, id: string) => {
+        calls.push({ method: "reworkPromptProposal", args: [id] });
+        return { id, status: "draft" };
+      },
+      getClauseGovernanceDetail: async (_ws: string, clauseId: string, params?: Record<string, unknown>) => {
+        calls.push({ method: "getClauseGovernanceDetail", args: [clauseId, params] });
+        return { id: clauseId, days: params?.days ?? null };
+      },
+      ...overrides,
+    } as unknown as MulticaClient;
+    (client as unknown as { __calls: unknown }).__calls = calls;
+    return client;
+  }
+
+  const fullEditArgs = {
+    workspace: WS,
+    proposal_id: "pp-1",
+    carrier_scope: "agent",
+    carrier_scope_id: "ag-1",
+    target_section: "沟通规范",
+    change_kind: "revise_clause",
+    clause_name: "每日同步",
+    clause_text: "每日同步进展。",
+    gate_answer_layer: "agent 层",
+    gate_answer_retention: "长期",
+    gate_answer_cost: "低",
+    gate_answer_conflict: "无",
+    gate_answer_dedup: "无",
+  };
+
+  it("update_prompt_proposal sends the full overwrite body and normalizes anchors", async () => {
+    const client = proposalClient();
+    await findTool("update_prompt_proposal")?.handler(
+      {
+        ...fullEditArgs,
+        evidence_anchors: [
+          { issue_id: "RUYI-834", ref: "comment 12" },
+          { issue_id: "half-entry" },
+        ],
+        conditions: { task_kinds: ["agent"] },
+      },
+      client,
+    );
+    const [id, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(id).toBe("pp-1");
+    expect(body).toMatchObject({
+      carrier_scope: "agent",
+      carrier_scope_id: "ag-1",
+      target_section: "沟通规范",
+      change_kind: "revise_clause",
+      clause_name: "每日同步",
+      clause_text: "每日同步进展。",
+      evidence_anchors: [{ issue_id: "RUYI-834", ref: "comment 12" }],
+      conditions: { task_kinds: ["agent"] },
+    });
+    expect(body).not.toHaveProperty("move_to_scope");
+    expect(body).not.toHaveProperty("move_to_scope_id");
+    expect(body).not.toHaveProperty("clause_id");
+  });
+
+  it("update_prompt_proposal refuses move_to_* fields off move_clause", async () => {
+    const client = proposalClient();
+    await expect(
+      findTool("update_prompt_proposal")?.handler(
+        { ...fullEditArgs, move_to_scope: "workspace" },
+        client,
+      ),
+    ).rejects.toThrow(ToolInputError);
+    expect(callsOf(client)).toEqual([]);
+  });
+
+  it("update_prompt_proposal requires the move destination as a pair on move_clause", async () => {
+    const client = proposalClient();
+    await expect(
+      findTool("update_prompt_proposal")?.handler(
+        {
+          ...fullEditArgs,
+          change_kind: "move_clause",
+          clause_text: "",
+          move_to_scope: "workspace",
+        },
+        client,
+      ),
+    ).rejects.toThrow(/move_to_scope_id/);
+    const result = (await findTool("update_prompt_proposal")?.handler(
+      {
+        ...fullEditArgs,
+        change_kind: "move_clause",
+        clause_text: "",
+        move_to_scope: "workspace",
+        move_to_scope_id: "w1",
+      },
+      client,
+    )) as Record<string, unknown>;
+    expect(result.id).toBe("pp-1");
+    // the rejected first call never reaches the client, so the successful
+    // call is the only recorded one.
+    const [, body] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(body).toMatchObject({
+      move_to_scope: "workspace",
+      move_to_scope_id: "w1",
+    });
+  });
+
+  it("update_prompt_proposal rejects an empty clause_text outside remove/move", async () => {
+    const client = proposalClient();
+    await expect(
+      findTool("update_prompt_proposal")?.handler(
+        { ...fullEditArgs, clause_text: "" },
+        client,
+      ),
+    ).rejects.toThrow(ToolInputError);
+    expect(callsOf(client)).toEqual([]);
+  });
+
+  it("update_prompt_proposal rejects a move destination equal to the source carrier", async () => {
+    const client = proposalClient();
+    await expect(
+      findTool("update_prompt_proposal")?.handler(
+        {
+          ...fullEditArgs,
+          change_kind: "move_clause",
+          clause_text: "",
+          move_to_scope: "agent",
+          move_to_scope_id: "ag-1",
+        },
+        client,
+      ),
+    ).rejects.toThrow(/destination must differ/);
+  });
+
+  it("submit_prompt_proposal forwards the id and reports the new status", async () => {
+    const client = proposalClient();
+    const result = (await findTool("submit_prompt_proposal")?.handler(
+      { workspace: WS, proposal_id: "pp-1" },
+      client,
+    )) as Record<string, unknown>;
+    expect(callsOf(client)).toEqual([
+      { method: "submitPromptProposal", args: ["pp-1"] },
+    ]);
+    expect(result.status).toBe("pending_owner");
+  });
+
+  it("preview_prompt_proposal returns the diff payload untouched", async () => {
+    const client = proposalClient();
+    const result = (await findTool("preview_prompt_proposal")?.handler(
+      { workspace: WS, proposal_id: "pp-1" },
+      client,
+    )) as Record<string, unknown>;
+    expect(callsOf(client)).toEqual([{ method: "previewPromptProposal", args: ["pp-1"] }]);
+    expect(result.diff).toEqual([{ kind: "add", text: "+ new line" }]);
+    expect(result.current_sha256).toBe("abc");
+  });
+
+  it("rework_prompt_proposal forwards the id", async () => {
+    const client = proposalClient();
+    const result = (await findTool("rework_prompt_proposal")?.handler(
+      { workspace: WS, proposal_id: "pp-1" },
+      client,
+    )) as Record<string, unknown>;
+    expect(callsOf(client)).toEqual([{ method: "reworkPromptProposal", args: ["pp-1"] }]);
+    expect(result.status).toBe("draft");
+  });
+
+  it("get_clause passes days through to the detail request", async () => {
+    const client = proposalClient();
+    await findTool("get_clause")?.handler(
+      { workspace: WS, clause_id: "cl-1", days: 7 },
+      client,
+    );
+    const [clauseId, params] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(clauseId).toBe("cl-1");
+    expect(params).toEqual({ days: 7 });
+  });
+
+  it("get_clause omits the days query when unspecified", async () => {
+    const client = proposalClient();
+    await findTool("get_clause")?.handler({ workspace: WS, clause_id: "cl-1" }, client);
+    const [clauseId, params] = callsOf(client)[0]?.args as [string, Record<string, unknown>];
+    expect(clauseId).toBe("cl-1");
+    // the REST client drops undefined query values, so no days param reaches
+    // the wire when the argument is omitted.
+    expect(params).toEqual({ days: undefined });
   });
 });

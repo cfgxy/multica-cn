@@ -100,6 +100,7 @@ import type {
   UpdateIssueBody,
   UpdateProjectBody,
   UpdateProjectResourceBody,
+  UpdatePromptProposalBody,
 } from "./types.js";
 
 export interface JsonSchemaProperty {
@@ -208,6 +209,199 @@ function wsProperty(): JsonSchemaProperty {
     description:
       "Target workspace: slug (preferred) or workspace UUID. Every tool names its workspace explicitly.",
   };
+}
+
+/**
+ * The optional half of the prompt-proposal draft-edit fields. The edit is a
+ * full-body overwrite on the wire (the backend re-validates and persists
+ * every field), so create and update share these edit properties: the
+ * move_to_* pair only for move_clause, optional conditions, optional
+ * evidence anchors.
+ */
+function proposalEditProperties(): Record<string, JsonSchemaProperty> {
+  return {
+    carrier_scope: {
+      type: "string",
+      enum: ["workspace", "project", "squad", "agent"],
+      description: "The prompt tier the clause lives on.",
+    },
+    carrier_scope_id: { type: "string", description: "The carrier's UUID for the chosen scope." },
+    target_section: {
+      type: "string",
+      description: "The section of the carrier the clause attaches to (e.g. 沟通规范).",
+    },
+    change_kind: {
+      type: "string",
+      enum: ["add_clause", "revise_clause", "remove_clause", "move_clause", "migrate_clause"],
+      description: "What the proposal does to a clause.",
+    },
+    clause_name: {
+      type: "string",
+      description: "The clause's name (1–60 characters).",
+    },
+    clause_text: {
+      type: "string",
+      description: "The clause's text body. Empty for remove/move; required otherwise.",
+    },
+    clause_id: {
+      type: "string",
+      description:
+        "Optional clause UUID the proposal should reference (wins over clause_name resolution).",
+    },
+    move_to_scope: {
+      type: "string",
+      enum: ["workspace", "project", "squad", "agent"],
+      description: "Destination carrier tier; only for change_kind=move_clause, and must differ from the source carrier.",
+    },
+    move_to_scope_id: {
+      type: "string",
+      description: "Destination carrier UUID; only for change_kind=move_clause.",
+    },
+    conditions: {
+      type: "object",
+      description:
+        "Optional draft effectiveness conditions: a JSON object with an optional task_kinds string array whitelisting known task kinds. Omit for unconditional.",
+    },
+    gate_answer_layer: {
+      type: "string",
+      description: "Gate answer: which layer this clause belongs to and why.",
+    },
+    gate_answer_retention: {
+      type: "string",
+      description: "Gate answer: when the clause stays active and why.",
+    },
+    gate_answer_cost: {
+      type: "string",
+      description: "Gate answer: the context-budget cost of the clause.",
+    },
+    gate_answer_conflict: {
+      type: "string",
+      description: "Gate answer: any conflict with an existing same-topic clause.",
+    },
+    gate_answer_dedup: {
+      type: "string",
+      description: "Gate answer: whether this duplicates an existing clause.",
+    },
+    evidence_anchors: {
+      type: "array",
+      description:
+        "Optional evidence anchors pointing at the issues and findings the proposal is based on.",
+      items: {
+        type: "object",
+        properties: {
+          issue_id: {
+            type: "string",
+            description: "Issue identifier (e.g. ENG-42) or UUID the evidence comes from.",
+          },
+          ref: {
+            type: "string",
+            description: "A short human-readable reference (comment link, file path, …).",
+          },
+        },
+        required: ["issue_id", "ref"],
+      },
+    },
+  };
+}
+
+/**
+ * Assemble the PATCH body for a draft edit: the backend's
+ * PromptProposalRequest re-validates and persists the full field set, so
+ * half-empty anchors are dropped rather than shipped, and a move_clause
+ * with a half-set destination fails fast on the client.
+ */
+async function buildProposalEditBody(
+  args: Record<string, unknown>,
+  toolName: string,
+): Promise<UpdatePromptProposalBody> {
+  const carrierScope = optionalEnum(args, "carrier_scope", [
+    "workspace",
+    "project",
+    "squad",
+    "agent",
+  ]);
+  if (carrierScope === undefined) {
+    throw new ToolInputError(`${toolName} requires \`carrier_scope\``);
+  }
+  const changeKind = optionalEnum(args, "change_kind", [
+    "add_clause",
+    "revise_clause",
+    "remove_clause",
+    "move_clause",
+    "migrate_clause",
+  ]);
+  if (changeKind === undefined) {
+    throw new ToolInputError(`${toolName} requires \`change_kind\``);
+  }
+  const clauseText = optionalString(args, "clause_text") ?? "";
+  if (changeKind !== "remove_clause" && changeKind !== "move_clause" && clauseText === "") {
+    throw new ToolInputError(
+      `${toolName} with change_kind=${changeKind} requires a non-empty clause_text`,
+    );
+  }
+  const moveFrom = changeKind === "move_clause";
+  if (!moveFrom && (args.move_to_scope !== undefined || args.move_to_scope_id !== undefined)) {
+    throw new ToolInputError(
+      `${toolName}: move_to_scope/move_to_scope_id are only valid on move_clause`,
+    );
+  }
+  if (moveFrom) {
+    const toScope = optionalEnum(args, "move_to_scope", ["workspace", "project", "squad", "agent"]);
+    const toScopeId = optionalString(args, "move_to_scope_id");
+    if (toScope === undefined || toScopeId === undefined) {
+      throw new ToolInputError(
+        `${toolName} with change_kind=move_clause requires move_to_scope and move_to_scope_id`,
+      );
+    }
+    if (toScope === carrierScope && toScopeId === args.carrier_scope_id) {
+      throw new ToolInputError(`${toolName}: the move destination must differ from the source carrier`);
+    }
+  }
+  // evidence_anchors arrives as a JSON-schema-validated object array;
+  // normalize it to the backend's {issue_id, ref} shape and drop entries
+  // missing either half rather than shipping a half-anchored row.
+  const anchors: Array<{ issue_id: string; ref: string }> = [];
+  if (Array.isArray(args.evidence_anchors)) {
+    for (const entry of args.evidence_anchors) {
+      const record = (typeof entry === "object" && entry !== null ? entry : {}) as {
+        issue_id?: unknown;
+        ref?: unknown;
+      };
+      if (typeof record.issue_id === "string" && typeof record.ref === "string") {
+        anchors.push({ issue_id: record.issue_id, ref: record.ref });
+      }
+    }
+  }
+  const body: UpdatePromptProposalBody = {
+    carrier_scope: carrierScope,
+    carrier_scope_id: requireString(args, "carrier_scope_id"),
+    target_section: requireString(args, "target_section"),
+    change_kind: changeKind,
+    clause_name: requireString(args, "clause_name"),
+    clause_text: clauseText,
+    gate_answer_layer: requireString(args, "gate_answer_layer"),
+    gate_answer_retention: requireString(args, "gate_answer_retention"),
+    gate_answer_cost: requireString(args, "gate_answer_cost"),
+    gate_answer_conflict: requireString(args, "gate_answer_conflict"),
+    gate_answer_dedup: requireString(args, "gate_answer_dedup"),
+    ...(typeof args.clause_id === "string" && args.clause_id !== ""
+      ? { clause_id: args.clause_id }
+      : {}),
+    ...(moveFrom
+      ? {
+          move_to_scope: optionalEnum(args, "move_to_scope", [
+            "workspace",
+            "project",
+            "squad",
+            "agent",
+          ]),
+          move_to_scope_id: optionalString(args, "move_to_scope_id"),
+        }
+      : {}),
+    ...(args.conditions !== undefined ? { conditions: args.conditions } : {}),
+    ...(anchors.length > 0 ? { evidence_anchors: anchors } : {}),
+  };
+  return body;
 }
 
 function issueProperty(): JsonSchemaProperty {
@@ -5221,7 +5415,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     async handler(args, client) {
       const workspace = requireString(args, "workspace");
       const clauseId = requireString(args, "clause_id");
-      return client.getClauseGovernanceDetail(workspace, clauseId);
+      return client.getClauseGovernanceDetail(workspace, clauseId, {
+        days: optionalInt(args, "days", { min: 1, max: 365 }),
+      });
     },
   },
   {
@@ -5475,6 +5671,104 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         ...(anchors.length > 0 ? { evidence_anchors: anchors } : {}),
       };
       return client.createPromptProposal(workspace, body);
+    },
+  },
+  {
+    name: "update_prompt_proposal",
+    description:
+      "Edit an existing draft in the prompt-legislation proposal pool — overwrite the draft's fields and resubmit the gate answers. " +
+      "The backend re-validates the whole body, so the draft's current state (from list_prompt_proposals or create_prompt_proposal) plus the changes must be sent together. " +
+      "Only proposals in `draft` status accept edits (409 otherwise); move_to_* fields are meaningful only for change_kind=move_clause. " +
+      "SIDE EFFECT: the draft row is rewritten in the same store the owner's review UI reads; nothing changes until an owner approves.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        proposal_id: { type: "string", description: "Proposal UUID, from list_prompt_proposals or create_prompt_proposal." },
+        ...proposalEditProperties(),
+      },
+      required: [
+        "workspace",
+        "proposal_id",
+        "carrier_scope",
+        "carrier_scope_id",
+        "target_section",
+        "change_kind",
+        "clause_name",
+        "gate_answer_layer",
+        "gate_answer_retention",
+        "gate_answer_cost",
+        "gate_answer_conflict",
+        "gate_answer_dedup",
+      ],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const proposalId = requireString(args, "proposal_id");
+      const body = await buildProposalEditBody(args, "update_prompt_proposal");
+      return client.updatePromptProposal(workspace, proposalId, body);
+    },
+  },
+  {
+    name: "submit_prompt_proposal",
+    description:
+      "Move a draft proposal to pending_owner so a workspace owner can review and decide. " +
+      "The backend runs a warn-only clause assessment before the row leaves draft; the submit is audited. " +
+      "Only `draft` proposals can be submitted (409 otherwise). " +
+      "SIDE EFFECT: the proposal leaves draft and enters the owner's review queue; no prompt or carrier changes until an owner approves.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        proposal_id: { type: "string", description: "Proposal UUID in `draft` status." },
+      },
+      required: ["workspace", "proposal_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const proposalId = requireString(args, "proposal_id");
+      return client.submitPromptProposal(workspace, proposalId);
+    },
+  },
+  {
+    name: "preview_prompt_proposal",
+    description:
+      "Preview the approval-facing diff of a proposal: synthesize the sandbox text against the carrier's current content and return the full-carrier line diff plus the baseline used. " +
+      "Read-only against the carrier — previews may interleave with other work; approval re-locks and re-derives everything. " +
+      "Use this to confirm what an owner's approval would change before submitting or answering the owner.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        proposal_id: { type: "string", description: "Proposal UUID to preview." },
+      },
+      required: ["workspace", "proposal_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const proposalId = requireString(args, "proposal_id");
+      return client.previewPromptProposal(workspace, proposalId);
+    },
+  },
+  {
+    name: "rework_prompt_proposal",
+    description:
+      "Send a `gate_failed` proposal back to `draft` for revision after an owner rejection or gate failure. " +
+      "The transition is audited; the draft can then be edited with update_prompt_proposal and resubmitted. " +
+      "Only `gate_failed` proposals can be reworked (409 otherwise). " +
+      "SIDE EFFECT: the proposal re-enters the draft state in the owner's proposal pool; no prompt or carrier changes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        proposal_id: { type: "string", description: "Proposal UUID in `gate_failed` status." },
+      },
+      required: ["workspace", "proposal_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const proposalId = requireString(args, "proposal_id");
+      return client.reworkPromptProposal(workspace, proposalId);
     },
   },
 ];
