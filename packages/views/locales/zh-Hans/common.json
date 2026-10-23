@@ -154,6 +154,7 @@
     "upload_failed_title": "上传失败",
     "quick_replies_title": "快速回复",
     "quick_reply_hint": "插入快速回复",
+    "more_tooltip": "更多",
     "camera_permission_title": "需要相机权限",
     "camera_permission_message": "Multica 需要相机权限拍摄照片作为附件，请在系统设置中开启。",
     "image_source_camera": "拍照",

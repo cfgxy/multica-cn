@@ -80,7 +80,8 @@ import {
   useComposerSubmit,
 } from "../editor";
 import { useIssueCreateUploads } from "./use-issue-create-uploads";
-import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
+import { ChatAddMenu } from "../chat/components/chat-add-menu";
+import { COMPOSER_SURFACE_CLASS } from "../common/composer-surface";
 import { useT } from "../i18n";
 import { matchesPinyin } from "../editor/extensions/pinyin-match";
 import { SourceContextPreviewCard, useSourceContextFailureMessage } from "./source-context-preview";
@@ -120,6 +121,7 @@ export function AgentCreatePanel({
   setIsExpanded: (v: boolean) => void;
 }) {
   const { t } = useT("modals");
+  const { t: tCommon } = useT("common");
   const { t: tIssues } = useT("issues");
   const { t: tProjects } = useT("projects");
   const { t: tVoice } = useT("voice");
@@ -360,6 +362,7 @@ export function AgentCreatePanel({
   // submit/switch time. `hasContent` mirrors emptiness so the Create button
   // can disable correctly without a controlled-input rerender on every keystroke.
   const editorRef = useRef<ContentEditorRef>(null);
+  const [composerSurface, setComposerSurface] = useState<HTMLDivElement | null>(null);
   const [hasContent, setHasContent] = useState(initialPrompt.trim().length > 0);
   const [justSent, setJustSent] = useState(false);
   const [sentCount, setSentCount] = useState(0);
@@ -699,24 +702,36 @@ export function AgentCreatePanel({
             editor unbounded and pushed the modal past the viewport. */}
         <div
           {...dropZoneProps}
-          className="relative px-5 pb-3 flex flex-1 min-h-[140px] overflow-y-auto"
+          className="relative px-5 pb-3 flex flex-1 min-h-[140px] min-w-0"
         >
-          <ContentEditor
-            ref={editorRef}
-            defaultValue={initialPrompt}
-            placeholder={anchorCommentId
-              ? t(($) => $.create_issue.agent.source_context_prompt_placeholder)
-              : t(($) => $.create_issue.agent.prompt_placeholder)}
-            onUpdate={(md) => {
-              setHasContent(md.trim().length > 0);
-              setAgent({ prompt: md });
-            }}
-            onUploadFile={handleUploadFile}
-            onUploadingChange={uploadGate.onUploadingChange}
-            attachments={pendingAttachments}
-            onSubmit={submit}
-            debounceMs={150}
-          />
+          <div ref={setComposerSurface} data-testid="issue-composer-surface" className={cn(COMPOSER_SURFACE_CLASS, "min-h-0 flex-1 overflow-hidden pb-9")}>
+            <div className="h-full min-h-[100px] overflow-y-auto px-3 py-2">
+              <ContentEditor
+                ref={editorRef}
+                defaultValue={initialPrompt}
+                placeholder={anchorCommentId
+                  ? t(($) => $.create_issue.agent.source_context_prompt_placeholder)
+                  : t(($) => $.create_issue.agent.prompt_placeholder)}
+                onUpdate={(md) => {
+                  setHasContent(md.trim().length > 0);
+                  setAgent({ prompt: md });
+                }}
+                onUploadFile={handleUploadFile}
+                onUploadingChange={uploadGate.onUploadingChange}
+                attachments={pendingAttachments}
+                onSubmit={submit}
+                debounceMs={150}
+              />
+            </div>
+            <div className="absolute bottom-1 left-1.5">
+              <ChatAddMenu
+                disabled={submitting}
+                ariaLabel={tCommon(($) => $.composer.more_tooltip)}
+                anchor={composerSurface}
+                onSelectFile={(file) => editorRef.current?.uploadFile(file)}
+              />
+            </div>
+          </div>
           {isDragOver && <FileDropOverlay />}
         </div>
 
@@ -869,14 +884,6 @@ export function AgentCreatePanel({
               inert on flex items. */}
         <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-2.5 border-t px-4 py-3 shrink-0 sm:flex sm:flex-wrap">
           <div className="flex min-h-7 items-center gap-2 sm:mr-auto">
-            {/* Deliberately NOT disabled while uploading: each file is its
-                own queue entry, so queueing a second one is safe and waiting
-                for the first to land just to attach the next is busywork. */}
-            <FileUploadButton
-              size="sm"
-              multiple
-              onSelect={(file) => editorRef.current?.uploadFile(file)}
-            />
             {/* RUYI-626 stage 1: direct connect ships mobile-only — the
                 desktop/web entry is a disabled mic that says so (never
                 silent). */}
