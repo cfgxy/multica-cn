@@ -29,9 +29,12 @@ const (
 	decisionAutoCancelSource = "issue_done_cascade"
 )
 
-// cancelOpenDecisionCardsForDone cancels every still-open question decision
-// card of an issue that just entered the done category, and records the
-// transition as an auditable, self-describing system event:
+// cancelOpenDecisionCardsForDone settles the done-side half of the
+// create-vs-done race (RUYI-865) for the entry points that run their done
+// status write and then finalize post-commit: HTTP single update, HTTP
+// batch update, and the PR-merged advance. It runs the idempotent cancel
+// batch and records the transition as an auditable, self-describing system
+// event:
 //
 //   - ONE CAS batch (CancelOpenIssueDecisionsForIssue): atomic, and because
 //     it only flips rows still in status='open' it is idempotent — a replay
@@ -50,7 +53,22 @@ const (
 //     the workspace decision inbox (RUYI-494) re-bucket and drop the todo
 //     badge without a refetch.
 //
-// The cascade runs post-commit, best-effort, like the other done-entry
+// Why this post-commit read is the close of the race (not just a cleanup):
+// the card-create side holds the issue row FOR UPDATE inside its own
+// transaction (LockIssueForDecisionCreate). That lock serialises the two
+// writers on the row:
+//
+//   - create wins: its insert lands while the issue is still non-done, and
+//     it is holding the row lock, so every done status UPDATE blocks
+//     behind it. Once the create commits, the blocked UPDATE proceeds and
+//     this settle reads with a fresh READ COMMITTED snapshot that sees the
+//     just-committed card — the CAS flips it to cancelled and the audit
+//     row records it. No open question card survives the done transition.
+//   - done wins: the create side's done guard (INSERT ... WHERE NOT EXISTS,
+//     re-read after its lock is granted under READ COMMITTED) sees the
+//     committed done status and refuses the card with a 409.
+//
+// The settle itself is best-effort, like the other post-commit done
 // side effects: a failure is logged with the ids and retried by the next
 // formal done transition — it never fails the issue write that already
 // committed.

@@ -29,6 +29,31 @@ WHERE NOT EXISTS (
 )
 RETURNING *;
 
+-- name: LockIssueForDecisionCreate :one
+-- RUYI-865: the create-side half of the done-race lock protocol. Taking the
+-- issue row FOR UPDATE inside the card-create transaction serialises the
+-- insert's done guard against every formal done status write. A done status
+-- write is a plain `UPDATE issue SET status = ...`, which locks the same
+-- row (FOR UPDATE / ROW EXCLUSIVE, or at least FOR NO KEY UPDATE when the
+-- table has no unique constraint); FOR UPDATE conflicts with BOTH, so the
+-- two writers cannot interleave on the row regardless of the table's
+-- constraints. Outcomes:
+--   - the done write commits first -> the guarded insert's post-lock re-read
+--     (a fresh READ COMMITTED snapshot once the lock is granted) sees done
+--     and the INSERT ... WHERE NOT EXISTS yields 0 rows -> the handler maps
+--     it to a 409;
+--   - the card commits first -> the done write's UPDATE is still queued
+--     behind the FOR UPDATE lock, so once it lands its post-commit cancel
+--     batch (a fresh READ COMMITTED snapshot) sees the just-committed card
+--     and cancels it.
+-- Either way no open question card survives a done transition. Mirrors
+-- LockIssueForDelete (issue.sql): the side that must not slip past the
+-- writer holds the exclusive row lock the writer conflicts with. Lock
+-- order is the single issue row, so no deadlock cycle is possible.
+SELECT id FROM issue
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE;
+
 -- name: GetIssueDecision :one
 SELECT * FROM issue_decisions
 WHERE id = $1 AND workspace_id = $2;
