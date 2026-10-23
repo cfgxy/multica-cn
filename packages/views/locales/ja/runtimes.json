@@ -335,7 +335,7 @@
       "empty_not_configured_title": "オブザーバビリティが設定されていません",
       "empty_not_configured_hint": "このサーバーに Prometheus URL が設定されていないため、ホストレソースを読み取れません。サーバーの PROMETHEUS_URL を設定し、このデーモンホストに node エクスポーターのターゲットを追加してください。",
       "empty_no_daemon_title": "デーモンホストなし",
-      "empty_no_daemon_hint": "このランタイムはクラウドで実行され、ローカルのデーモンホストが紐付いていないため、表示するホストレソースがありません。",
+      "empty_no_daemon_hint": "このランタイムはローカルのデーモンホストに紐付いていないため、表示するホストレソースがありません。",
       "empty_no_samples_title": "まだサンプルがありません",
       "empty_no_samples_hint": "Prometheus は設定済みですが、このデーモンホストは選択したウィンドウ内にサンプルを生成していません。node エクスポーターのターゲットが起動し、スクレイプされていることを確認してください。",
       "no_series": "このウィンドウ内にサンプルがありません。",
