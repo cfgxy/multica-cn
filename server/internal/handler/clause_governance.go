@@ -462,6 +462,23 @@ type clauseDriftCarrier struct {
 	Entries []clauseDriftEntry `json:"entries"`
 }
 
+type clauseCarrierKey struct {
+	Scope   string
+	ScopeID pgtype.UUID
+}
+
+func expectedClausesByCarrier(rows []db.ListActiveWorkspaceClausesRow) map[clauseCarrierKey]map[string]int {
+	expected := make(map[clauseCarrierKey]map[string]int)
+	for _, row := range rows {
+		key := clauseCarrierKey{Scope: row.Scope, ScopeID: row.ScopeID}
+		if expected[key] == nil {
+			expected[key] = map[string]int{}
+		}
+		expected[key][row.Slug] = int(row.Version)
+	}
+	return expected
+}
+
 type clauseReconciliation struct {
 	Since             string                 `json:"since"`
 	Healthy           bool                   `json:"healthy"`
@@ -555,13 +572,7 @@ func (h *Handler) scanClauseDrift(ctx context.Context, workspaceID pgtype.UUID) 
 	if err != nil {
 		return nil, 0, err
 	}
-	expected := map[string]map[string]int{}
-	for _, row := range activeRows {
-		if expected[row.Scope] == nil {
-			expected[row.Scope] = map[string]int{}
-		}
-		expected[row.Scope][row.Slug] = int(row.Version)
-	}
+	expected := expectedClausesByCarrier(activeRows)
 
 	type driftCarrier struct {
 		scope string
@@ -607,7 +618,7 @@ func (h *Handler) scanClauseDrift(ctx context.Context, workspaceID pgtype.UUID) 
 	out := []clauseDriftCarrier{}
 	for _, c := range carriers {
 		markers := clausemark.ScanMarkers(c.text)
-		want := expected[c.scope]
+		want := expected[clauseCarrierKey{Scope: c.scope, ScopeID: c.id}]
 		var entries []clauseDriftEntry
 		seen := map[string]bool{}
 		for _, mk := range markers {
