@@ -28,12 +28,23 @@
 import { useEffect, useRef, useState } from "react";
 import mermaid from "mermaid";
 import * as pdfjs from "pdfjs-dist";
+import { WorkerMessageHandler } from "pdfjs-dist/build/pdf.worker";
 import { buildMermaidConfig, type MermaidThemeColors } from "./mermaid-config";
 
 export type MermaidViewMode = "inline" | "full";
 
 const MAX_PDF_BYTES = 20 * 1024 * 1024;
 const MAX_PDF_PAGES = 100;
+
+// Expo DOM executes its Android WebView bundle as a classic script. PDF.js 6
+// and its worker are ESM-only, so their `import.meta` syntax prevents the
+// document from loading at all. The v3 UMD worker can be bundled directly;
+// registering it here makes PDF.js use its loopback worker rather than trying
+// to resolve a module URL at runtime.
+const pdfjsGlobal = globalThis as typeof globalThis & {
+  pdfjsWorker?: { WorkerMessageHandler: typeof WorkerMessageHandler };
+};
+pdfjsGlobal.pdfjsWorker ??= { WorkerMessageHandler };
 
 interface MermaidDiagramDomProps {
   kind?: "mermaid";
@@ -112,10 +123,6 @@ export default function MermaidDiagramDom(props: ReaderDocumentDomProps) {
             return;
           }
 
-          pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-            "pdfjs-dist/build/pdf.worker.min.mjs",
-            import.meta.url,
-          ).toString();
           loadingTask = pdfjs.getDocument({ data: bytes });
           const document = await loadingTask.promise;
           if (document.numPages > MAX_PDF_PAGES) {
@@ -136,7 +143,9 @@ export default function MermaidDiagramDom(props: ReaderDocumentDomProps) {
             canvas.setAttribute("aria-label", `Page ${pageNumber}`);
             canvas.style.cssText = "display:block;width:100%;height:auto;margin:0 auto 12px;";
             hostRef.current.append(canvas);
-            await page.render({ canvas, viewport }).promise;
+            const canvasContext = canvas.getContext("2d");
+            if (!canvasContext) throw new Error("PDF canvas is unavailable");
+            await page.render({ canvasContext, viewport }).promise;
           }
           if (!cancelled) setPdfState("ready");
           return;
