@@ -3156,6 +3156,21 @@ func runGit(dir string, args ...string) (string, error) {
 	return runGitEnv(dir, nil, args...)
 }
 
+// runGitInput runs git with the supplied standard input and returns combined
+// output. Ref transactions use it so they can be committed atomically.
+func runGitInput(dir, input string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+
+	full := append([]string{"-C", dir}, args...)
+	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd.Env = gitMessageEnv()
+	cmd.Stdin = strings.NewReader(input)
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
 // runGitEnv is runGit with extra environment entries, for the one caller that
 // has to redirect GIT_INDEX_FILE.
 func runGitEnv(dir string, extraEnv []string, args ...string) (string, error) {
