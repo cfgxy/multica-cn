@@ -109,6 +109,44 @@ func TestSynthesizeReviseAndRemove(t *testing.T) {
 	}
 }
 
+func TestSynthesizeReviseLegacySectionAsset(t *testing.T) {
+	legacy := "# 规范\n\n## 交接\n\n- 旧规则。\n\n## 保留章节\n\n- 保留规则。\n"
+	p := baseInput()
+	p.ChangeKind = "revise_clause"
+	p.ClauseName = "交接"
+	p.ClauseText = "## 交接\n\n- 新规则。"
+
+	out, err := Synthesize(legacy, p)
+	if err != nil {
+		t.Fatalf("revise legacy section: %v", err)
+	}
+	if strings.Contains(out, "旧规则") || strings.Count(out, "## 交接") != 1 {
+		t.Fatalf("legacy section was not replaced exactly once:\n%s", out)
+	}
+	if !strings.Contains(out, "新规则") || !strings.Contains(out, "## 保留章节") {
+		t.Fatalf("replacement damaged adjacent sections:\n%s", out)
+	}
+}
+
+func TestSynthesizeRemoveLegacyHeadingAsset(t *testing.T) {
+	legacy := "# Workspace Context\n\n## 工作原则\n\n- 保留规则。\n"
+	p := baseInput()
+	p.ChangeKind = "remove_clause"
+	p.ClauseName = "前言"
+	p.TargetSection = "# Workspace Context"
+
+	out, err := Synthesize(legacy, p)
+	if err != nil {
+		t.Fatalf("remove legacy heading: %v", err)
+	}
+	if strings.Contains(out, "# Workspace Context") {
+		t.Fatalf("legacy heading survived removal:\n%s", out)
+	}
+	if !strings.Contains(out, "## 工作原则") || !strings.Contains(out, "保留规则") {
+		t.Fatalf("heading removal damaged following content:\n%s", out)
+	}
+}
+
 // --- Synthesize: structural failures (each blocks the gate downstream) ---
 
 func TestSynthesizeErrors(t *testing.T) {
