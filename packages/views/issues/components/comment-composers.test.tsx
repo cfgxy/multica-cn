@@ -434,7 +434,8 @@ describe("quick action `/` menu", () => {
 describe("comment composers", () => {
   it("activates the lazy editor and inserts the toolbar slash through its suggestion trigger", async () => {
     renderWithProviders(<CommentInput issueId="issue-1" assignedAgentId="agent-1" onSubmit={vi.fn().mockResolvedValue(true)} />);
-    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Choose a skill" }));
     await waitFor(() => expect(insertSlashSpy).toHaveBeenCalledOnce());
     expect(editorQuickActionMenu.last?.getAssignedAgentId?.()).toBe("agent-1");
   });
@@ -454,7 +455,8 @@ describe("comment composers", () => {
     activateComposer("comment-composer-shell");
     await screen.findByTestId("editor");
 
-    fireEvent.click(screen.getByRole("button", { name: "Quick Replies" }));
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Insert a quick reply" }));
     const item = await screen.findByRole("menuitem", { name: /Add tests/ });
     fireEvent.click(item);
 
@@ -479,15 +481,15 @@ describe("comment composers", () => {
     expect(screen.getByTestId("comment-composer-shell")).toHaveTextContent("Leave a comment...");
     activateComposer("comment-composer-shell");
     expect(screen.getByPlaceholderText("Leave a comment...")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Quick Replies" })).toBeInTheDocument();
-    // RUYI-550 mobile-parity entries: @ mention + dedicated image upload.
-    expect(screen.getByRole("button", { name: "Mention someone or an issue" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Upload image" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Attach file" })).toBeInTheDocument();
-    expect(container.querySelectorAll("button")).toHaveLength(6);
+    expect(screen.getByRole("button", { name: "More" })).toBeInTheDocument();
+    expect(container.querySelectorAll("button")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("menuitem", { name: "Mention someone or an issue" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Choose a skill" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Upload file" })).toBeInTheDocument();
 
     const shell = screen.getByTestId("drop-zone");
+    expect(shell.className).toContain("focus-within:ring-2");
     expect(shell.className).not.toMatch(/max-h-/);
     expect(shell.className).not.toContain("h-[70vh]");
   });

@@ -87,7 +87,8 @@ import {
   type DuplicateIssueErrorBody,
   parseWithFallback,
 } from "@multica/core/api";
-import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
+import { ChatAddMenu } from "../chat/components/chat-add-menu";
+import { COMPOSER_SURFACE_CLASS } from "../common/composer-surface";
 import { ClearablePillButton, PillButton } from "../common/pill-button";
 import { ActorAvatar } from "../common/actor-avatar";
 import { PropertyIcon } from "../common/property-icon";
@@ -216,6 +217,7 @@ export function ManualCreatePanel({
   setIsExpanded: (v: boolean) => void;
 }) {
   const { t } = useT("modals");
+  const { t: tCommon } = useT("common");
   const { t: tIssues } = useT("issues");
   const { t: tEditor } = useT("editor");
   const { t: tProjects } = useT("projects");
@@ -252,6 +254,7 @@ export function ManualCreatePanel({
   const [formResetKey, setFormResetKey] = useState(0);
   const titleEditorRef = useRef<TitleEditorRef>(null);
   const descEditorRef = useRef<ContentEditorRef>(null);
+  const [composerSurface, setComposerSurface] = useState<HTMLDivElement | null>(null);
   const { isDragOver: descDragOver, dropZoneProps: descDropZoneProps } = useFileDropZone({
     onDrop: (files) => files.forEach((f) => descEditorRef.current?.uploadFile(f)),
   });
@@ -943,18 +946,30 @@ export function ManualCreatePanel({
             </div>
 
             {/* Description — takes remaining space */}
-            <div {...descDropZoneProps} className="relative flex flex-1 min-h-0 overflow-y-auto px-5">
-              <ContentEditor
-                ref={descEditorRef}
-                defaultValue={draft.manual.description}
-                placeholder={t(($) => $.create_issue.description_placeholder)}
-                onUpdate={(md) => setManual({ description: md })}
-                onSubmit={handleSubmit}
-                onUploadFile={handleUpload}
-                onUploadingChange={uploadGate.onUploadingChange}
-                debounceMs={500}
-                attachments={draftAttachments}
-              />
+            <div {...descDropZoneProps} className="relative flex flex-1 min-h-0 min-w-0 overflow-hidden px-5">
+              <div ref={setComposerSurface} data-testid="issue-composer-surface" className={cn(COMPOSER_SURFACE_CLASS, "min-h-0 flex-1 overflow-hidden pb-9")}>
+                <div className="h-full min-h-[100px] overflow-y-auto px-3 py-2">
+                  <ContentEditor
+                    ref={descEditorRef}
+                    defaultValue={draft.manual.description}
+                    placeholder={t(($) => $.create_issue.description_placeholder)}
+                    onUpdate={(md) => setManual({ description: md })}
+                    onSubmit={handleSubmit}
+                    onUploadFile={handleUpload}
+                    onUploadingChange={uploadGate.onUploadingChange}
+                    debounceMs={500}
+                    attachments={draftAttachments}
+                  />
+                </div>
+                <div className="absolute bottom-1 left-1.5">
+                  <ChatAddMenu
+                    disabled={submitting}
+                    ariaLabel={tCommon(($) => $.composer.more_tooltip)}
+                    anchor={composerSurface}
+                    onSelectFile={(file) => descEditorRef.current?.uploadFile(file)}
+                  />
+                </div>
+              </div>
               {descDragOver && <FileDropOverlay />}
             </div>
 
@@ -1366,13 +1381,6 @@ export function ManualCreatePanel({
                 TooltipContent is portaled, so the Create button stays a direct
                 grid child in both branches below. */}
             <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-2.5 border-t px-4 py-3 shrink-0 sm:flex sm:flex-wrap">
-              <div className="flex min-h-7 items-center gap-2 sm:mr-auto">
-                <FileUploadButton
-                  size="sm"
-                  multiple
-                  onSelect={(file) => descEditorRef.current?.uploadFile(file)}
-                />
-              </div>
               <button
                 type="button"
                 onClick={switchToAgent}
@@ -1380,7 +1388,7 @@ export function ManualCreatePanel({
                 aria-disabled={gate.uploading || undefined}
                 aria-busy={gate.uploading || undefined}
                 title={t(($) => $.create_issue.switch_to_agent_tooltip)}
-                className="border-beam group flex shrink-0 items-center gap-1.5 justify-self-end text-caption px-2 py-1 rounded-sm text-muted-foreground bg-brand/5 hover:bg-brand/10 hover:text-foreground transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                className="border-beam group col-span-2 flex shrink-0 items-center gap-1.5 justify-self-end text-caption px-2 py-1 rounded-sm text-muted-foreground bg-brand/5 hover:bg-brand/10 hover:text-foreground transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <ArrowLeftRight className="size-3.5 text-brand transition-transform duration-300 group-hover:rotate-180" />
                 {t(($) => $.create_issue.switch_to_agent)}

@@ -5,18 +5,11 @@ import { useQuery } from "@tanstack/react-query";
 import { skillListOptions } from "@multica/core/workspace/queries";
 import { getCurrentWsId } from "@multica/core/platform";
 import { quickReplyListOptions } from "@multica/core/quick-replies/queries";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@multica/ui/components/ui/dropdown-menu";
-import { AtSign, ImagePlus, MessageSquareText, Slash } from "lucide-react";
-import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import { ContentEditor, type ContentEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useUploadGate, useComposerSubmit } from "../../editor";
-import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
+import { ChatAddMenu } from "../../chat/components/chat-add-menu";
+import { COMPOSER_SURFACE_CLASS } from "../../common/composer-surface";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
@@ -41,10 +34,12 @@ interface CommentInputProps {
 
 function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: CommentInputProps) {
   const { t } = useT("issues");
+  const { t: tCommon } = useT("common");
   const { t: tEditor } = useT("editor");
   const { t: tVoice } = useT("voice");
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
+  const [composerSurface, setComposerSurface] = useState<HTMLDivElement | null>(null);
   // Sending mid-upload would strip the pending image's blob URL out of the
   // markdown and bind no attachment id — the comment posts without the file.
   const uploadGate = useUploadGate(editorRef);
@@ -330,7 +325,8 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
   return (
     <div
       {...dropZoneProps}
-      className="relative flex flex-col rounded-lg bg-card pb-8 ring-1 ring-border"
+      ref={setComposerSurface}
+      className={cn(COMPOSER_SURFACE_CLASS, "pb-8")}
     >
       {/* Lock the editor while the send is in flight. ContentEditor can't
           toggle Tiptap's `editable` post-mount (see its docstring), so the
@@ -393,7 +389,7 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
           </div>
         </div>
       )}
-      <div className="absolute bottom-1 left-2 right-28 min-w-0">
+      <div className="absolute bottom-1 left-12 right-28 min-w-0">
         <CommentTriggerChips
           agents={triggerPreview.agents}
           blocked={triggerPreview.blocked}
@@ -403,89 +399,23 @@ function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: Commen
           onToggle={toggleSuppressedAgent}
         />
       </div>
-      <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
-        {/* @ mention entry (RUYI-550 mobile parity): opens the same @ picker
-         *  as typing "@" — the mobile composer leads its toolbar with it. */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          title={t(($) => $.comment.mention_hint)}
-          aria-label={t(($) => $.comment.mention_hint)}
+      <div className="absolute bottom-1 left-1.5">
+        <ChatAddMenu
           disabled={submitting}
-          onClick={() => {
+          ariaLabel={tCommon(($) => $.composer.more_tooltip)}
+          anchor={composerSurface}
+          onSelectFile={(file) => lazy.uploadOrQueue([file])}
+          onInsertMention={() => {
             if (lazy.ready && editorRef.current?.insertMentionTrigger()) return;
             setMentionPending(true);
             lazy.activate();
           }}
-        >
-          <AtSign className="size-4" />
-        </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                title={t(($) => $.comment.quick_replies.menu_label)}
-                aria-label={t(($) => $.comment.quick_replies.menu_label)}
-                disabled={submitting}
-              >
-                <MessageSquareText className="size-4" />
-              </Button>
-            }
-          />
-          <DropdownMenuContent align="end" className="max-h-72 w-72 overflow-y-auto">
-            {(quickReplies ?? []).length === 0 ? (
-              <div className="px-2 py-1.5 text-caption text-muted-foreground">
-                {t(($) => $.comment.quick_replies.menu_empty)}
-              </div>
-            ) : (
-              (quickReplies ?? []).map((reply) => (
-                <DropdownMenuItem
-                  key={reply.id}
-                  onClick={() => insertQuickReply(reply.content)}
-                  className="flex-col items-start gap-0.5"
-                >
-                  <span className="w-full truncate text-body font-medium">
-                    {reply.name}
-                  </span>
-                  <span className="w-full truncate text-caption text-muted-foreground">
-                    {reply.content.split("\n")[0]}
-                  </span>
-                </DropdownMenuItem>
-              ))
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          title={tEditor(($) => $.slash_command.skills_group)}
-          aria-label={tEditor(($) => $.slash_command.skills_group)}
-          disabled={submitting}
-          onClick={() => { setSlashPending(true); lazy.activate(); }}
-        >
-          <Slash className="size-4" />
-        </Button>
-        {/* Image entry (RUYI-550 mobile parity): the mobile composer keeps a
-         *  dedicated image button beside the generic file one; same upload
-         *  pipeline, OS picker narrowed to images. */}
-        <FileUploadButton
-          size="sm"
-          multiple
-          accept="image/*"
-          icon={<ImagePlus className="size-4" />}
-          label={t(($) => $.comment.upload_image)}
-          onSelect={(file) => lazy.uploadOrQueue([file])}
+          onInsertSkill={() => { setSlashPending(true); lazy.activate(); }}
+          quickReplies={quickReplies ?? []}
+          onSelectQuickReply={insertQuickReply}
         />
-        <FileUploadButton
-          size="sm"
-          multiple
-          onSelect={(file) => lazy.uploadOrQueue([file])}
-        />
+      </div>
+      <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
         {/* Voice entry (RUYI-474): while the draft holds nothing to send, the
             send-button slot becomes a mic — same three-state contract as the
             chat composer (RUYI-449). Text, an in-flight upload, or a
