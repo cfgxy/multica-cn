@@ -51,6 +51,7 @@ import { DecisionRequestRow } from "@/components/decision/decision-request-row";
 import {
   workspaceDecisionInboxPageOptions,
   workspaceDecisionRequestsOptions,
+  workspaceDecisionRequestsHistoryPageOptions,
 } from "@/data/queries/decisions";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useDecisionsViewStore } from "@/data/stores/decisions-view-store";
@@ -159,22 +160,27 @@ export default function Decisions() {
     }),
   );
   const pendingRow = requestsData?.items[0];
-  const historyTotal =
-    (requestsData?.counts.closed ?? 0) + (requestsData?.counts.executed ?? 0);
+  // RUYI-864 rework: the entry's total is the server's `history` count —
+  // every non-pending row (approved ∪ closed ∪ executed), the SAME set the
+  // terminal-state window below walks. An "approved, waiting on the other
+  // space" row keeps the entry visible even though the queue's own
+  // status=pending call already stopped showing it — web's
+  // decision-center-page.tsx drives the badge from the same field.
+  const historyTotal = requestsData?.counts.history ?? 0;
 
-  // The collapsed history entry: processed requests newest-first, lazily
-  // fetched on open. Pending rows never show up here — the queue owns them.
+  // The collapsed history entry: the server's terminal-state window
+  // (status=history, newest-first), keyset-paged and lazily fetched on
+  // open. Pending rows never show up here — the window excludes them at
+  // the source, and the queue owns them.
   const [historyOpen, setHistoryOpen] = useState(false);
-  const { data: historyData } = useQuery({
-    ...workspaceDecisionRequestsOptions(wsId ?? null, {
-      order: "desc",
-      limit: 50,
-    }),
+  const historyPageQuery = useInfiniteQuery({
+    ...workspaceDecisionRequestsHistoryPageOptions(wsId ?? null),
     enabled: historyOpen,
   });
+  const historyPages = historyPageQuery.data?.pages ?? [];
   const historyRows = useMemo(
-    () => (historyData?.items ?? []).filter((row) => row.status !== "pending"),
-    [historyData],
+    () => historyPages.flatMap((page) => page.items),
+    [historyPages],
   );
 
   const tabs = useMemo<DecisionTab[]>(() => [...DECISION_TAB_ORDER], []);
@@ -252,7 +258,10 @@ export default function Decisions() {
             open={historyOpen}
             total={historyTotal}
             rows={historyRows}
-            loading={historyOpen && historyData === undefined}
+            loading={historyOpen && historyPageQuery.data === undefined}
+            hasNextPage={historyOpen && historyPageQuery.hasNextPage}
+            loadingNextPage={historyOpen && historyPageQuery.isFetchingNextPage}
+            onLoadMore={() => historyPageQuery.fetchNextPage()}
             onToggle={() => setHistoryOpen((open) => !open)}
           />
         ) : null}
@@ -370,19 +379,28 @@ function DecisionsQueueCard({
  * Low-key collapsed authorization history (RUYI-864): a single toggle row
  * that expands to the processed requests (newest-first), coexisting with the
  * card list/filter space. Renders only when there is a processed total;
- * pending rows never appear here (the queue owns them).
+ * pending rows never appear here (the queue owns them). RUYI-864 rework:
+ * the rows come from the server's terminal-state window (status=history),
+ * keyset-paged — a "Load more" button rides the same button style the card
+ * list uses.
  */
 function DecisionsHistory({
   open,
   total,
   rows,
   loading,
+  hasNextPage,
+  loadingNextPage,
+  onLoadMore,
   onToggle,
 }: {
   open: boolean;
   total: number;
   rows: DecisionRequest[];
   loading: boolean;
+  hasNextPage: boolean;
+  loadingNextPage: boolean;
+  onLoadMore: () => void;
   onToggle: () => void;
 }) {
   const { t } = useT("decisions");
@@ -390,6 +408,7 @@ function DecisionsHistory({
   return (
     <View className="mx-4 my-1 rounded-lg border border-border bg-secondary/20">
       <Pressable
+        testID="decisions-history-toggle"
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
         onPress={onToggle}
@@ -415,6 +434,26 @@ function DecisionsHistory({
           {rows.map((request) => (
             <DecisionRequestRow key={request.id} request={request} />
           ))}
+          {hasNextPage ? (
+            <View className="items-center py-3">
+              <Pressable
+                testID="decisions-history-load-more"
+                accessibilityRole="button"
+                disabled={loadingNextPage}
+                onPress={onLoadMore}
+                className="flex-row items-center gap-2 rounded-full px-4 py-2 bg-secondary/40 active:bg-secondary"
+              >
+                {loadingNextPage ? (
+                  <ActivityIndicator size="small" color={THEME[colorScheme].brand} />
+                ) : null}
+                <Text className="text-xs text-foreground">
+                  {loadingNextPage
+                    ? t("loading_more", "Loading…")
+                    : t("load_more", "Load more")}
+                </Text>
+              </Pressable>
+            </View>
+          ) : null}
         </View>
       ) : null}
     </View>

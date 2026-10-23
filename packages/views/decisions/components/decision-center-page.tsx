@@ -15,6 +15,7 @@ import {
   workspaceDecisionInboxPageOptions,
 } from "@multica/core/issues/decisions";
 import {
+  workspaceDecisionRequestsHistoryPageOptions,
   workspaceDecisionRequestsQueryOptions,
 } from "@multica/core/issues/decision-requests";
 import {
@@ -116,23 +117,26 @@ export function DecisionCenterPage() {
     }),
   );
   const pendingRow = requestsData?.items[0];
-  const historyTotal =
-    (requestsData?.counts.closed ?? 0) + (requestsData?.counts.executed ?? 0);
+  // RUYI-864 rework: the entry's total is the server's `history` count —
+  // every non-pending row (approved ∪ closed ∪ executed). It is the SAME
+  // set the history window below walks, so an "approved, waiting on the
+  // other space" row keeps the entry visible even though the queue's own
+  // single-card query (status=pending) already stopped showing it. Never
+  // recombine bucket counts client-side.
+  const historyTotal = requestsData?.counts.history ?? 0;
 
-  // The collapsed history entry: processed requests newest-first, lazily
-  // fetched on open. Pending rows never show up here — the queue owns
-  // them, and the list below renders everything else.
+  // The collapsed history entry: the server's terminal-state window
+  // (status=history, newest-first), keyset-paged and lazily fetched on open.
+  // Pending rows never show up here — the window excludes them at the
+  // source, and the queue owns them.
   const [historyOpen, setHistoryOpen] = useState(false);
-  const { data: historyData } = useQuery({
-    ...workspaceDecisionRequestsQueryOptions(wsId, {
-      order: "desc",
-      limit: 50,
-    }),
+  const historyPageQuery = useInfiniteQuery({
+    ...workspaceDecisionRequestsHistoryPageOptions(wsId),
     enabled: historyOpen,
   });
   const historyRows = useMemo(
-    () => (historyData?.items ?? []).filter((row) => row.status !== "pending"),
-    [historyData],
+    () => (historyPageQuery.data?.pages ?? []).flatMap((page) => page.items),
+    [historyPageQuery.data],
   );
 
   return (
@@ -280,6 +284,22 @@ export function DecisionCenterPage() {
               {historyRows.map((row) => (
                 <DecisionRequestRow key={row.id} request={row} />
               ))}
+              {historyPageQuery.hasNextPage && (
+                <div className="flex justify-center pb-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void historyPageQuery.fetchNextPage()}
+                    disabled={historyPageQuery.isFetchingNextPage}
+                    data-testid="decision-history-load-more"
+                  >
+                    {historyPageQuery.isFetchingNextPage
+                      ? t(($) => $.loading_more)
+                      : t(($) => $.load_more)}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </section>
