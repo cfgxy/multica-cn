@@ -24,6 +24,12 @@ vi.mock("pdfjs-dist", () => ({
   }),
 }));
 
+const { WorkerMessageHandler } = vi.hoisted(() => ({
+  WorkerMessageHandler: { setup: vi.fn() },
+}));
+
+vi.mock("pdfjs-dist/build/pdf.worker", () => ({ WorkerMessageHandler }));
+
 const colors = {
   primaryColor: "#fff",
   primaryBorderColor: "#000",
@@ -45,6 +51,9 @@ beforeEach(() => {
     headers: { get: () => "1" },
     arrayBuffer: async () => new ArrayBuffer(1),
   }));
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+    {} as CanvasRenderingContext2D,
+  );
 });
 
 afterEach(async () => {
@@ -54,6 +63,25 @@ afterEach(async () => {
 });
 
 describe("MermaidDiagramDom", () => {
+  it("registers the classic PDF.js worker without an ESM worker URL", () => {
+    expect((globalThis as { pdfjsWorker?: unknown }).pdfjsWorker).toEqual({
+      WorkerMessageHandler,
+    });
+  });
+
+  it("renders native-fetched bytes without a DOM fetch", async () => {
+    await act(async () => {
+      root.render(<MermaidDiagramDom kind="pdf" data="AA==" />);
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(container.querySelector("canvas")).not.toBeNull();
+  });
+
   it("keeps rendered PDF canvases when loading state changes to ready", async () => {
     await act(async () => {
       root.render(<MermaidDiagramDom kind="pdf" url="/document.pdf" />);
