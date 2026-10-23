@@ -134,6 +134,30 @@ describe("RuntimeResourcesCard", () => {
     ).toBeInTheDocument();
   });
 
+  // Named P1 regression (RUYI-859 cross state): the server's no-daemon
+  // answer is { configured: h.Prometheus.Enabled(), has_daemon: false }, so
+  // the legal combination { configured: false, has_daemon: false } must
+  // reach the no-daemon empty — the not-configured hint would hide the fact
+  // that this runtime binds no host at all.
+  it("shows the no-daemon-host state in the { configured:false, has_daemon:false } cross state", () => {
+    fixturesRef.current["resources"] = {
+      configured: false,
+      has_daemon: false,
+      series: {},
+    };
+    renderWithI18n(<RuntimeResourcesCard runtime={makeRuntime()} />);
+    expect(screen.getByText("No daemon host")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "This runtime binds no local daemon host, so there are no host resources to show.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Observability not configured")).toBeNull();
+    expect(
+      screen.queryByTestId("runtime-resources-charts"),
+    ).toBeNull();
+  });
+
   it("shows the no-samples state when Prometheus is up but empty", () => {
     fixturesRef.current["resources"] = {
       configured: true,
