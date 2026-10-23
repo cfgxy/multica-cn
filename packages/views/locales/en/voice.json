@@ -1,8 +1,7 @@
 {
   "button": {
     "start": "Start voice conversation",
-    "stop": "End voice conversation",
-    "disabled_stage1": "Voice is mobile-only for now — open the mobile app to talk"
+    "stop": "End voice conversation"
   },
   "overlay": {
     "title": "Voice conversation",
