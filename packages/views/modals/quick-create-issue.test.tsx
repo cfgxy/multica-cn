@@ -290,6 +290,7 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
   DropdownMenuTrigger: ({ render }: { render: ReactNode }) => <>{render}</>,
   DropdownMenuContent: ({ children }: { children: ReactNode }) => <>{children}</>,
+  DropdownMenuGroup: ({ children }: { children: ReactNode }) => <>{children}</>,
   // `render` mirrors Base UI: an item can BE another element (an <AppLink>).
   // The real Item gives that element role="button", which the queries match.
   DropdownMenuItem: ({
@@ -556,7 +557,7 @@ describe("AgentCreatePanel", () => {
       "focus-within:ring-2",
     );
     await user.click(screen.getByRole("button", { name: "More" }));
-    expect(screen.getByRole("menuitem", { name: "Upload file" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Upload file" })).toBeInTheDocument();
   });
 
   it("restores unfinished actor, project, priority, and due-date selections after remount", async () => {
@@ -1057,16 +1058,18 @@ describe("AgentCreatePanel", () => {
       data: sourceContextPanelData,
     });
 
-    const prompt = screen.getByPlaceholderText(
+    const promptScroller = screen.getByPlaceholderText(
       'Tell the agent what to do with this context, e.g. "continue investigating and fix the issue described here"',
     ).parentElement;
+    const composerSurface = promptScroller?.parentElement;
     const sourceContext = document.querySelector<HTMLElement>('[data-slot="source-context-preview"]');
 
-    expect(prompt).toHaveClass("flex-1", "min-h-[140px]", "overflow-y-auto");
+    expect(promptScroller).toHaveClass("h-full", "min-h-[100px]", "overflow-y-auto");
+    expect(composerSurface).toHaveAttribute("data-testid", "issue-composer-surface");
     expect(sourceContext).toHaveClass("shrink-0");
-    expect(prompt?.parentElement).toBe(sourceContext?.parentElement);
-    expect(prompt?.nextElementSibling).toBe(sourceContext);
-    expect(prompt).not.toContainElement(sourceContext);
+    expect(composerSurface?.parentElement?.parentElement).toBe(sourceContext?.parentElement);
+    expect(composerSurface?.parentElement?.nextElementSibling).toBe(sourceContext);
+    expect(composerSurface).not.toContainElement(sourceContext);
   });
 
   it("submits source-context agent create through the dedicated endpoint", async () => {
