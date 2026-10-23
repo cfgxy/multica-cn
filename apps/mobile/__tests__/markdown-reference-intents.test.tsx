@@ -43,7 +43,14 @@ jest.mock("@/lib/pull-request-link", () => ({
   openExternalUrl: (...args) => mockOpenExternalUrl(...args),
 }));
 jest.mock("@/lib/attachment-url", () => ({ resolveAttachmentUrl: (url) => url }));
-jest.mock("@/lib/markdown/code-block", () => ({ CodeBlock: () => null }));
+jest.mock("@/lib/markdown/code-block", () => {
+  const { createElement } = jest.requireActual("react");
+  const { Text } = jest.requireActual("react-native");
+  return {
+    CodeBlock: () => createElement(Text, { testID: "legacy-code-block" }),
+    ModernCodeBlock: () => createElement(Text, { testID: "modern-code-block" }),
+  };
+});
 jest.mock("@/lib/markdown/mermaid-diagram", () => ({ MermaidDiagram: () => null }));
 jest.mock("@/lib/markdown/markdown-image", () => ({ MarkdownImage: () => null }));
 jest.mock("@/lib/markdown/table-block", () => ({ TableBlock: () => null }));
@@ -74,10 +81,13 @@ jest.mock("@/components/issue/issue-reference-list", () => ({
   },
 }));
 jest.mock("@/lib/markdown/split-markdown", () => ({
-  splitMarkdown: (content) => [{ type: "prose", content }],
+  splitMarkdown: (content) =>
+    content === "reader code"
+      ? [{ type: "code", code: "const reader = true", lang: "ts" }]
+      : [{ type: "prose", content }],
 }));
 
-import { Markdown } from "@/lib/markdown/markdown";
+import { Markdown, MarkdownRendererAdapter } from "@/lib/markdown/markdown";
 import { api } from "@/data/api";
 
 function makeClient() {
@@ -110,6 +120,35 @@ beforeEach(() => {
   };
   jest.clearAllMocks();
   mockOpenExternalUrl.mockResolvedValue({ ok: true });
+});
+
+describe("mobile Markdown renderer adapter", () => {
+  it("mounts the dedicated modern implementation and immediately restores legacy", async () => {
+    const client = makeClient();
+    const renderReader = (renderer: "legacy" | "modern") => (
+      <QueryClientProvider client={client}>
+        <MarkdownRendererAdapter content="reader code" renderer={renderer} />
+      </QueryClientProvider>
+    );
+    const utils = await render(renderReader("legacy"));
+
+    expect(utils.getByTestId("markdown-legacy-renderer")).toBeTruthy();
+    expect(utils.queryByTestId("markdown-modern-prose")).toBeNull();
+    expect(utils.getByTestId("legacy-code-block")).toBeTruthy();
+    expect(utils.queryByTestId("modern-code-block")).toBeNull();
+
+    await utils.rerender(renderReader("modern"));
+    expect(utils.queryByTestId("markdown-legacy-renderer")).toBeNull();
+    expect(utils.getByTestId("markdown-modern-renderer")).toBeTruthy();
+    expect(utils.getByTestId("modern-code-block")).toBeTruthy();
+    expect(utils.queryByTestId("legacy-code-block")).toBeNull();
+
+    await utils.rerender(renderReader("legacy"));
+    expect(utils.getByTestId("markdown-legacy-renderer")).toBeTruthy();
+    expect(utils.queryByTestId("markdown-modern-renderer")).toBeNull();
+    expect(utils.queryByTestId("modern-code-block")).toBeNull();
+    expect(utils.getByTestId("legacy-code-block")).toBeTruthy();
+  });
 });
 
 describe("mobile Markdown reference intents (RUYI-728)", () => {

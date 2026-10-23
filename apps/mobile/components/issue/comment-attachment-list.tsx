@@ -23,6 +23,7 @@
  */
 import { useMemo } from "react";
 import { Linking, Pressable, View } from "react-native";
+import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type { Attachment } from "@multica/core/types";
 import { standaloneAttachments } from "@/lib/attachment-dedup";
@@ -33,6 +34,12 @@ import { api } from "@/data/api";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { Text } from "@/components/ui/text";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import {
+  attachmentPreviewPath,
+  getMobileAttachmentPreviewKind,
+} from "@/lib/attachment-preview";
+import { useMarkdownRenderer } from "@/lib/markdown/use-reader-adapter";
 
 interface Props {
   attachments?: Attachment[];
@@ -92,10 +99,24 @@ function FileCard({
   attachment: Attachment;
   theme: typeof THEME["light"];
 }) {
+  const workspaceSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const renderer = useMarkdownRenderer();
   const sizeLabel = formatBytes(attachment.size_bytes);
   return (
     <Pressable
       onPress={() => {
+        const previewKind = getMobileAttachmentPreviewKind(
+          attachment.content_type,
+          attachment.filename,
+        );
+        if (
+          renderer === "modern" &&
+          workspaceSlug &&
+          previewKind !== "unsupported"
+        ) {
+          router.push(attachmentPreviewPath(workspaceSlug, attachment.id));
+          return;
+        }
         // Mint a fresh credential-free URL at tap time (RUYI-73). The list
         // response's `download_url` is the auth-gated stable
         // `/api/attachments/{id}/download` path in proxy mode, and the

@@ -49,6 +49,7 @@ export function AuthInitializer({
   const retryGeneration = useAuthStore((state) => state.retryGeneration);
   const configLoadedRef = useRef(false);
   const configRequestRef = useRef<Promise<boolean> | null>(null);
+  const featureFlagsRefreshIntervalRef = useRef(0);
   const authRecoveryPendingRef = useRef(false);
   const retryConfigRef = useRef<() => void>(() => {});
 
@@ -80,6 +81,8 @@ export function AuthInitializer({
           daemonAppUrl: cfg.daemon_app_url,
         });
         configStore.getState().setFeatureFlags(cfg.feature_flags);
+        featureFlagsRefreshIntervalRef.current =
+          cfg.feature_flags_refresh_interval_ms ?? 0;
         configStore.getState().setServerVersion(cfg.server_version);
         // Absent on every server that predates the worktree save gate, which
         // is exactly when the client must not offer the mode (#7113).
@@ -126,6 +129,21 @@ export function AuthInitializer({
     let retryAfterFlight = false;
     let retryIndex = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let featureFlagsTimer: number | undefined;
+    let featureFlagsInFlight = false;
+
+    const refreshFeatureFlags = async () => {
+      if (cancelled || featureFlagsInFlight || document.visibilityState === "hidden") return;
+      featureFlagsInFlight = true;
+      try {
+        const cfg = await getApi().getConfig();
+        if (!cancelled) configStore.getState().setFeatureFlags(cfg.feature_flags);
+      } catch {
+        // Keep the last known flag decisions until the next refresh succeeds.
+      } finally {
+        featureFlagsInFlight = false;
+      }
+    };
 
     const attempt = async () => {
       if (cancelled || configLoadedRef.current) return;
@@ -144,6 +162,10 @@ export function AuthInitializer({
       if (cancelled) return;
       if (loaded) {
         window.removeEventListener("online", retryNow);
+        const interval = featureFlagsRefreshIntervalRef.current;
+        if (interval > 0 && featureFlagsTimer === undefined) {
+          featureFlagsTimer = window.setInterval(() => void refreshFeatureFlags(), interval);
+        }
         return;
       }
       if (retryAfterFlight) {
@@ -186,6 +208,7 @@ export function AuthInitializer({
       retryConfigRef.current = () => {};
       window.removeEventListener("online", retryNow);
       if (retryTimer !== undefined) clearTimeout(retryTimer);
+      if (featureFlagsTimer !== undefined) clearInterval(featureFlagsTimer);
     };
   }, [loadConfig]);
 

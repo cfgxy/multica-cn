@@ -2153,6 +2153,20 @@ class ApiClient {
     });
   }
 
+  async getAttachmentTextContent(
+    attachmentId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<string> {
+    const response = await this.fetchRaw(
+      `/api/attachments/${attachmentId}/content`,
+      { signal: opts?.signal },
+    );
+    if (!response.ok) {
+      throw new Error(`Attachment preview request failed (${response.status})`);
+    }
+    return response.text();
+  }
+
   // Active tasks for an issue (status in queued/dispatched/running). Returns
   // the inner `tasks` array directly — handler wraps it in `{ tasks: [] }`
   // (server/internal/handler/daemon.go:1866) so the response object survives

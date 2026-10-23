@@ -41,7 +41,16 @@
  * a custom renderer — mobile doesn't lose anything that exists by
  * default elsewhere.
  */
-import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef } from "react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  type ComponentProps,
+} from "react";
 import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
@@ -51,13 +60,16 @@ import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { openExternalUrl } from "@/lib/pull-request-link";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import type { MarkdownRenderer } from "@multica/core/markdown";
+import { useMarkdownRenderer } from "./use-reader-adapter";
+import { attachmentPreviewPath } from "@/lib/attachment-preview";
 import { useWorkspaceIssuePrefix } from "@/lib/use-workspace-prefix";
 import { useCommentAnchor } from "@/lib/comment-anchor-context";
 import { IssueReferenceList } from "@/components/issue/issue-reference-list";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
-import { splitMarkdown } from "./split-markdown";
-import { CodeBlock } from "./code-block";
+import { splitMarkdown, type MarkdownSegment } from "./split-markdown";
+import { CodeBlock, ModernCodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
 import { MermaidDiagram } from "./mermaid-diagram";
 import { TableBlock } from "./table-block";
@@ -126,20 +138,26 @@ interface Props {
   renderReferenceTail?: boolean;
 }
 
-export const Markdown = memo(function Markdown({
+export const Markdown = memo(function Markdown(props: Props) {
+  const renderer = useMarkdownRenderer();
+  return <MarkdownRendererAdapter {...props} renderer={renderer} />;
+});
+
+export function MarkdownRendererAdapter({
   content,
   attachments,
   selectable = true,
   compact = false,
   renderReferenceTail = true,
-}: Props) {
+  renderer,
+}: Props & { renderer: MarkdownRenderer }) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   // 评论锚点的落地方（RUYI-108）。issue 时间线挂 provider；其余渲染场景
   // 拿到的是 no-op 实现，点击安静无事发生。
   const commentAnchor = useCommentAnchor();
   const baseStyle = useMarkdownStyle();
-  const markdownStyle = useMemo(
-    () =>
+  const markdownStyle = useMemo(() => {
+    const style =
       compact
         ? {
             ...baseStyle,
@@ -149,9 +167,16 @@ export const Markdown = memo(function Markdown({
               lineHeight: 20,
             },
           }
-        : baseStyle,
-    [baseStyle, compact],
-  );
+        : baseStyle;
+    if (renderer !== "modern" || compact) return style;
+    return {
+      ...style,
+      paragraph: { ...style.paragraph, marginBottom: 16 },
+      h1: { ...style.h1, marginTop: 24, marginBottom: 12 },
+      h2: { ...style.h2, marginTop: 20, marginBottom: 10 },
+      h3: { ...style.h3, marginTop: 16, marginBottom: 8 },
+    };
+  }, [baseStyle, compact, renderer]);
 
   // RUYI-635 tail aggregation, carried forward under the RUYI-728 body
   // contract. Scanned from the RAW content, not the preprocessed text: the
@@ -270,12 +295,16 @@ export const Markdown = memo(function Markdown({
           commentAnchor.focus(action.commentId);
           return;
         case "attachment":
-          void openAttachmentDownload(action.id, {
-            source: api,
-            opener: Linking,
-            resolveUrl: resolveAttachmentUrl,
-            fallbackUrl: action.fallbackUrl,
-          });
+          if (renderer === "modern" && wsSlug) {
+            router.push(attachmentPreviewPath(wsSlug, action.id));
+          } else {
+            void openAttachmentDownload(action.id, {
+              source: api,
+              opener: Linking,
+              resolveUrl: resolveAttachmentUrl,
+              fallbackUrl: action.fallbackUrl,
+            });
+          }
           return;
         case "external":
           // Linking.openURL throws if no app handles the URL; the catch
@@ -287,74 +316,166 @@ export const Markdown = memo(function Markdown({
           return;
       }
     },
-    [wsSlug, commentAnchor, wsId],
+    [wsSlug, commentAnchor, wsId, renderer],
   );
 
   if (segments.length === 0) return null;
 
+  const Reader = renderer === "modern" ? ModernMarkdownRenderer : LegacyMarkdownRenderer;
   return (
-    // `gap-3` enforces 12px between every segment sibling (prose ↔ code,
-    // code ↔ code, image ↔ anything). Going through gap instead of
-    // per-child marginVertical avoids a NativeWind 4 / Yoga quirk where
-    // adjacent `marginVertical` siblings collapse closer than the sum
-    // would suggest — `gap` is layout-level spacing that doesn't depend
-    // on margin behaviour.
-    <View className="gap-3">
-      {segments.map((seg, i) => {
-        switch (seg.type) {
-          case "prose":
-            return (
-              <EnrichedMarkdownText
-                key={i}
-                flavor="github"
-                markdown={seg.content}
-                markdownStyle={markdownStyle}
-                onLinkPress={onLinkPress}
-                selectable={selectable}
-              />
-            );
-          case "code":
-            return (
-              <CodeBlock
-                key={i}
-                code={seg.code}
-                lang={seg.lang}
-                selectable={selectable}
-              />
-            );
-          case "mermaid":
-            // RUYI-80: drawn by the DOM component (Expo DOM Components
-            // WebView) — see mermaid-diagram.tsx for the security contract.
-            return <MermaidDiagram key={i} code={seg.code} />;
-          case "table":
-            // RUYI-72: wide tables render as a tappable grid + row-detail
-            // sheet; the sheet's enriched instances share this component's
-            // `onLinkPress` so link behaviour never forks from prose.
-            return (
-              <TableBlock
-                key={i}
-                headers={seg.headers}
-                rows={seg.rows}
-                align={seg.align}
-                onLinkPress={onLinkPress}
-                selectable={selectable}
-              />
-            );
-          case "image":
-            return (
-              <MarkdownImage
-                key={i}
-                uri={seg.uri}
-                alt={seg.alt}
-                attachments={attachments}
-              />
-            );
-        }
-        })}
-        {renderReferenceTail ? <IssueReferenceTail content={content} /> : null}
-      </View>
+    <Reader
+      segments={segments}
+      content={content}
+      attachments={attachments}
+      selectable={selectable}
+      onLinkPress={onLinkPress}
+      renderReferenceTail={renderReferenceTail}
+      markdownStyle={markdownStyle}
+    />
   );
-});
+}
+
+interface MarkdownRendererProps {
+  segments: MarkdownSegment[];
+  content: string;
+  attachments?: Attachment[];
+  selectable: boolean;
+  onLinkPress: (event: { url: string }) => void;
+  renderReferenceTail: boolean;
+  markdownStyle: NonNullable<ComponentProps<typeof EnrichedMarkdownText>["markdownStyle"]>;
+}
+
+function LegacyMarkdownRenderer({
+  segments,
+  content,
+  attachments,
+  selectable,
+  onLinkPress,
+  renderReferenceTail,
+  markdownStyle,
+}: MarkdownRendererProps) {
+  return (
+    <View className="gap-3" testID="markdown-legacy-renderer">
+      {segments.map((segment, index) => (
+        <LegacyMarkdownSegment
+          key={index}
+          segment={segment}
+          attachments={attachments}
+          selectable={selectable}
+          onLinkPress={onLinkPress}
+          markdownStyle={markdownStyle}
+        />
+      ))}
+      {renderReferenceTail ? <IssueReferenceTail content={content} /> : null}
+    </View>
+  );
+}
+
+function LegacyMarkdownSegment({
+  segment,
+  attachments,
+  selectable,
+  onLinkPress,
+  markdownStyle,
+}: Omit<MarkdownRendererProps, "segments" | "content" | "renderReferenceTail"> & {
+  segment: MarkdownSegment;
+}) {
+  switch (segment.type) {
+    case "prose":
+      return (
+        <EnrichedMarkdownText
+          flavor="github"
+          markdown={segment.content}
+          markdownStyle={markdownStyle}
+          onLinkPress={onLinkPress}
+          selectable={selectable}
+        />
+      );
+    case "code":
+      return <CodeBlock code={segment.code} lang={segment.lang} selectable={selectable} />;
+    case "mermaid":
+      return <MermaidDiagram code={segment.code} />;
+    case "table":
+      return (
+        <TableBlock
+          headers={segment.headers}
+          rows={segment.rows}
+          align={segment.align}
+          onLinkPress={onLinkPress}
+          selectable={selectable}
+        />
+      );
+    case "image":
+      return <MarkdownImage uri={segment.uri} alt={segment.alt} attachments={attachments} />;
+  }
+}
+
+function ModernMarkdownRenderer({
+  segments,
+  content,
+  attachments,
+  selectable,
+  onLinkPress,
+  renderReferenceTail,
+  markdownStyle,
+}: MarkdownRendererProps) {
+  return (
+    <View className="gap-3" testID="markdown-modern-renderer">
+      {segments.map((segment, index) => (
+        <ModernMarkdownSegment
+          key={index}
+          segment={segment}
+          attachments={attachments}
+          selectable={selectable}
+          onLinkPress={onLinkPress}
+          markdownStyle={markdownStyle}
+        />
+      ))}
+      {renderReferenceTail ? <IssueReferenceTail content={content} /> : null}
+    </View>
+  );
+}
+
+function ModernMarkdownSegment({
+  segment,
+  attachments,
+  selectable,
+  onLinkPress,
+  markdownStyle,
+}: Omit<MarkdownRendererProps, "segments" | "content" | "renderReferenceTail"> & {
+  segment: MarkdownSegment;
+}) {
+  switch (segment.type) {
+    case "prose":
+      return (
+        <View testID="markdown-modern-prose">
+          <EnrichedMarkdownText
+            flavor="github"
+            markdown={segment.content}
+            markdownStyle={markdownStyle}
+            onLinkPress={onLinkPress}
+            selectable={selectable}
+          />
+        </View>
+      );
+    case "code":
+      return <ModernCodeBlock code={segment.code} lang={segment.lang} selectable={selectable} />;
+    case "mermaid":
+      return <MermaidDiagram code={segment.code} />;
+    case "table":
+      return (
+        <TableBlock
+          headers={segment.headers}
+          rows={segment.rows}
+          align={segment.align}
+          onLinkPress={onLinkPress}
+          selectable={selectable}
+        />
+      );
+    case "image":
+      return <MarkdownImage uri={segment.uri} alt={segment.alt} attachments={attachments} />;
+  }
+}
 
 function IssueReferenceTail({ content }: { content: string }) {
   const visible = useContext(IssueReferenceTailVisibilityContext);

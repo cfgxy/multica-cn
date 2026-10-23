@@ -192,7 +192,7 @@ function AuthorizationCard({ decision }: { decision: IssueDecision }) {
           })}
         </p>
       )}
-      {decision.action_type === "script_review" && decision.execution_result && typeof decision.execution_result === "object" &&
+      {decision.action_type === "script_review" && Boolean(decision.execution_result) && typeof decision.execution_result === "object" &&
         typeof (decision.execution_result as { script_sha256?: unknown }).script_sha256 === "string" && (
           <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="decision-auth-script-receipt">
             <code className="break-all text-caption text-muted-foreground">{t(($) => $.decisions.script_hash)}: {(decision.execution_result as { script_sha256: string }).script_sha256}</code>
