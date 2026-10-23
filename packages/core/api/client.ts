@@ -161,6 +161,7 @@ import type {
   DashboardUsageResources,
   DashboardUsageTraffic,
   DashboardUsageTrafficDim,
+  RuntimeResources,
   DashboardUsageByAgent,
   DashboardAgentRunTime,
   DashboardRunTimeDaily,
@@ -408,6 +409,7 @@ import {
   DashboardUsageDailyListSchema,
   DashboardUsageResourcesSchema,
   DashboardUsageTrafficSchema,
+  RuntimeResourcesSchema,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_CHAT_MESSAGE_LIST,
@@ -3298,6 +3300,27 @@ export class ApiClient {
       DashboardUsageResourcesSchema,
       { configured: false, series: {} },
       { endpoint: "GET /api/dashboard/usage/resources" },
+    );
+  }
+
+  // Per-Runtime host resources (RUYI-859): the RUYI-618 resource panel
+  // narrowed to this runtime's daemon host, server-side. A 200 with
+  // configured=false (no observability stack) or has_daemon=false (cloud
+  // runtime) is a normal state, not an error.
+  async getRuntimeResources(
+    runtimeId: string,
+    params: { window?: string },
+  ): Promise<RuntimeResources> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/resources?${search}`,
+    );
+    return parseWithFallback<RuntimeResources>(
+      raw,
+      RuntimeResourcesSchema,
+      { configured: false, daemon_id: "", has_daemon: false, series: {} },
+      { endpoint: "GET /api/runtimes/:id/resources" },
     );
   }
 

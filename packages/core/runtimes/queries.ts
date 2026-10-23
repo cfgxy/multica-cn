@@ -60,6 +60,27 @@ export function runtimeListOptions(wsId: string, owner?: "me", wsSlug?: string) 
   });
 }
 
+// ---- Per-Runtime host resources (RUYI-859 stage 1) ----
+
+// Live node-exporter series for this runtime's daemon host: same 60s cadence
+// as the dashboard's resource panel (the scrape itself is 15s, so a 60s
+// poll re-reads cached responses four out of five times) with the same
+// short relative window. The key carries the window so switching ranges
+// keeps the previous chart mounted.
+export const runtimeResourcesKeys = {
+  resources: (rid: string, window: string) =>
+    ["runtimes", "resources", rid, window] as const,
+};
+
+export function runtimeResourcesOptions(runtimeId: string, window: string) {
+  return queryOptions({
+    queryKey: runtimeResourcesKeys.resources(runtimeId, window),
+    queryFn: () => api.getRuntimeResources(runtimeId, { window }),
+    staleTime: 60 * 1000,
+    refetchInterval: 60 * 1000,
+  });
+}
+
 // ---- Daemon host backpressure settings + event history (RUYI-729) ----
 
 export const runtimeBackpressureKeys = {

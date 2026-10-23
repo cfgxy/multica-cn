@@ -3013,6 +3013,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/backpressure-settings", h.PutRuntimeBackpressureSettings)
 					r.Delete("/backpressure-settings", h.DeleteRuntimeBackpressureSettings)
 					r.Get("/backpressure-events", h.ListRuntimeBackpressureEvents)
+					// Per-daemon host resources (RUYI-859): the usage
+					// panel narrowed to this runtime's daemon host.
+					r.Get("/resources", h.GetRuntimeResources)
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)
