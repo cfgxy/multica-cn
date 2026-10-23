@@ -2,13 +2,16 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -355,6 +358,275 @@ func TestDecisionCreateRefusedOnCustomDoneKey(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create after re-open: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
+}
+
+// RUYI-865 P1 follow-up: the create-vs-done interleavings, pinned by
+// holding each side's transaction open on its own connection so the row
+// lock the protocol serialises on (issue row FOR UPDATE on the create
+// side, conflicting with the done side's status UPDATE) is observed
+// directly. waitForBlockedWriter proves a backend is genuinely parked on a
+// lock, not merely slow.
+
+// openCardCreateTx starts the create side's transaction on a dedicated
+// connection and runs the two create-side statements in handler order
+// (issue-row lock, then the guarded insert). The returned channels let the
+// caller order the race deterministically: the create transaction is
+// proven holding the row lock via the locked channel BEFORE the done side
+// writes, and finish commits it (or returns the statement error) at the
+// caller's chosen moment, which is when the blocked done write unblocks.
+func openCardCreateTx(t *testing.T, ctx context.Context, params db.CreateIssueDecisionParams) (locked chan struct{}, finish func() error) {
+	t.Helper()
+	conn, err := testPool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire create connection: %v", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		conn.Release()
+		t.Fatalf("begin create transaction: %v", err)
+	}
+	stmtErr := make(chan error, 1)
+	locked = make(chan struct{})
+	qtx := db.New(tx)
+	go func() {
+		if _, err := qtx.LockIssueForDecisionCreate(ctx, db.LockIssueForDecisionCreateParams{
+			ID: params.IssueID, WorkspaceID: params.WorkspaceID,
+		}); err != nil {
+			stmtErr <- err
+			return
+		}
+		close(locked)
+		if _, err := qtx.CreateIssueDecision(ctx, params); err != nil {
+			stmtErr <- err
+			return
+		}
+		stmtErr <- nil
+	}()
+	finish = func() error {
+		if err := <-stmtErr; err != nil {
+			_ = tx.Rollback(ctx)
+			conn.Release()
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			conn.Release()
+			return err
+		}
+		conn.Release()
+		return nil
+	}
+	return locked, finish
+}
+
+// assertNoOpenQuestionCards is the P1 acceptance check: after a done
+// transition has converged, no open question card survives on the issue.
+func assertNoOpenQuestionCards(t *testing.T, issueID string) {
+	t.Helper()
+	var n int
+	if err := testPool.QueryRow(t.Context(),
+		`SELECT count(*)::int FROM issue_decisions
+		 WHERE issue_id = $1 AND status = 'open' AND decision_kind = 'question'`,
+		parseUUID(issueID)).Scan(&n); err != nil {
+		t.Fatalf("count open question cards: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("open question cards after done transition = %d, want 0 (RUYI-865 P1: no survivor)", n)
+	}
+}
+
+// runDoneStatusUpdate issues the done side's status write on a dedicated
+// connection and reports when it parked and when it landed: parked lets
+// the caller assert the write is blocked on the create side's row lock,
+// doneErr the write's outcome once unblocked.
+func runDoneStatusUpdate(ctx context.Context, t *testing.T, issueID string) (parked chan int32, doneErr chan error) {
+	t.Helper()
+	parked = make(chan int32, 1)
+	doneErr = make(chan error, 1)
+	go func() {
+		conn, err := testPool.Acquire(ctx)
+		if err != nil {
+			doneErr <- err
+			return
+		}
+		defer conn.Release()
+		var pid int32
+		if err := conn.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+			doneErr <- err
+			return
+		}
+		parked <- pid
+		qdone := db.New(conn)
+		// Auto-commit on a dedicated connection: exactly what the
+		// github/Batch entry points do — one status write, then the
+		// post-commit settle.
+		if _, err := qdone.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+			ID: parseUUID(issueID), Status: "done", WorkspaceID: parseUUID(testWorkspaceID),
+		}); err != nil {
+			doneErr <- err
+			return
+		}
+		doneErr <- nil
+	}()
+	return parked, doneErr
+}
+
+// create-commits-first: the card's create transaction holds the issue row
+// lock, its card lands, and it commits before the done status write. The
+// done write is proven parked on that lock, and once the card commits it
+// lands and its post-commit settle — the same step the http entry point
+// runs on the transition, a fresh READ COMMITTED snapshot — converges the
+// just-committed card to cancelled with an audit row. This is the P1
+// survivor interleaving: without the lock, the done write's post-commit
+// batch would miss a card that commits in between.
+func TestIssueDoneCascadeCreateCommitsFirstConvergesLeftoverCard(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := t.Context()
+	issueID := dbfx.Issue(t, "done race create-first issue")
+
+	// The pre-write snapshot the entry point would carry as prevIssue.
+	prev, err := testHandler.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID: parseUUID(issueID), WorkspaceID: parseUUID(testWorkspaceID),
+	})
+	if err != nil {
+		t.Fatalf("load pre-write issue snapshot: %v", err)
+	}
+
+	locked, finish := openCardCreateTx(t, ctx, db.CreateIssueDecisionParams{
+		ID:                 dbid.NewV7(),
+		WorkspaceID:        parseUUID(testWorkspaceID),
+		IssueID:            parseUUID(issueID),
+		Question:           "raced card",
+		Options:            []byte(`[{"label":"A"},{"label":"B"}]`),
+		MultiSelect:        false,
+		RecommendedIndices: []byte(`[]`),
+		CreatedByType:      "member",
+		CreatedByID:        parseUUID(testUserID),
+	})
+	<-locked // the create transaction holds the issue row lock
+
+	// The done write on a second connection: it must park on the row
+	// lock the create transaction holds.
+	parked, doneErr := runDoneStatusUpdate(ctx, t, issueID)
+	donePID := <-parked
+	waitForBlockedWriter(t, ctx, donePID)
+
+	if err := finish(); err != nil {
+		t.Fatalf("create transaction: %v", err)
+	}
+	if err := <-doneErr; err != nil {
+		t.Fatalf("done status write: %v", err)
+	}
+
+	// The post-commit settle the http entry point runs on the same
+	// transition: it sees the just-committed card and cancels it.
+	issueRow, err := testHandler.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID: parseUUID(issueID), WorkspaceID: parseUUID(testWorkspaceID),
+	})
+	if err != nil {
+		t.Fatalf("reload done issue: %v", err)
+	}
+	testHandler.cancelOpenDecisionCardsForDone(ctx, prev, issueRow, "http_update_issue")
+	assertNoOpenQuestionCards(t, issueID)
+	if rows := assertCascadeEvents(t, issueID, 1); len(rows[0].DecisionIDs) != 1 {
+		t.Errorf("settle audit decision_ids = %v, want exactly the raced card", rows[0].DecisionIDs)
+	}
+}
+
+// done-commits-first: the done status write lands inside its own
+// transaction and commits before the card's create transaction requests
+// the row lock. The lock request is proven parked behind the uncommitted
+// done write; after the done write commits the lock is granted and the
+// guarded insert must refuse under its post-lock re-read — the card never
+// enters the backlog.
+func TestIssueDoneCascadeDoneCommitsFirstRefusesRacedCreate(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := t.Context()
+	issueID := dbfx.Issue(t, "done race done-first issue")
+
+	// The done side: a write transaction that moves the issue to done but
+	// has NOT committed yet, holding the row lock.
+	doneConn, err := testPool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire done connection: %v", err)
+	}
+	defer doneConn.Release()
+	doneTx, err := doneConn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin done transaction: %v", err)
+	}
+	qdone := db.New(doneTx)
+	if _, err := qdone.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+		ID: parseUUID(issueID), Status: "done", WorkspaceID: parseUUID(testWorkspaceID),
+	}); err != nil {
+		t.Fatalf("done status write: %v", err)
+	}
+
+	// The create side: its lock request must park behind the uncommitted
+	// done write; prove it via pg_stat_activity on the create backend.
+	createConn, err := testPool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire create connection: %v", err)
+	}
+	defer createConn.Release()
+	createTx, err := createConn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin create transaction: %v", err)
+	}
+	defer createTx.Rollback(ctx)
+	createPID := backendPID(t, ctx, createConn)
+	qcreate := db.New(createTx) // statements ride the transaction's connection
+	locked := make(chan error, 1)
+	go func() {
+		_, lerr := qcreate.LockIssueForDecisionCreate(ctx, db.LockIssueForDecisionCreateParams{
+			ID: parseUUID(issueID), WorkspaceID: parseUUID(testWorkspaceID),
+		})
+		locked <- lerr
+	}()
+	waitForBlockedWriter(t, ctx, createPID) // the lock request is parked
+
+	if err := doneTx.Commit(ctx); err != nil {
+		t.Fatalf("commit done transaction: %v", err)
+	}
+	if err := <-locked; err != nil {
+		t.Fatalf("create-side lock request after done commit: %v", err)
+	}
+
+	// The guarded insert now runs with its lock granted: the post-lock
+	// re-read sees done and refuses the card.
+	created, err := qcreate.CreateIssueDecision(ctx, db.CreateIssueDecisionParams{
+		ID:                 dbid.NewV7(),
+		WorkspaceID:        parseUUID(testWorkspaceID),
+		IssueID:            parseUUID(issueID),
+		Question:           "raced card",
+		Options:            []byte(`[{"label":"A"},{"label":"B"}]`),
+		MultiSelect:        false,
+		RecommendedIndices: []byte(`[]`),
+		CreatedByType:      "member",
+		CreatedByID:        parseUUID(testUserID),
+	})
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("guarded insert on a done issue = %v, want the done guard's 0-row miss (RUYI-865 P1 survivor)", err)
+	}
+	_ = created
+	if err := createTx.Commit(ctx); err != nil {
+		t.Fatalf("commit create transaction: %v", err)
+	}
+	assertNoOpenQuestionCards(t, issueID)
+}
+
+// backendPID reports the server pid of a pool connection, so a test can
+// prove that connection is parked on a lock via pg_stat_activity.
+func backendPID(t *testing.T, ctx context.Context, conn *pgxpool.Conn) int32 {
+	t.Helper()
+	var pid int32
+	if err := conn.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("pg_backend_pid: %v", err)
+	}
+	return pid
 }
 
 // TestIssueDoneCascadeRecoveryAfterMissedTransition pins the failure-retry
