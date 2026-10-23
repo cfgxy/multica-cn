@@ -5172,6 +5172,311 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       return payload;
     },
   },
+  {
+    name: "list_clauses",
+    description:
+      "List the clause asset library for a workspace — the structured prompt legislation that RUYI governance enacts into agent context. " +
+      "Each clause carries its slug, title, lifecycle status (active/deprecated), latest version, and the carrier scope it is bound to. " +
+      "Read-only; use get_clause for one clause's full versions, bindings and proposals, and get_clause_reconciliation for the standing drift/invariant checks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        days: {
+          type: "integer",
+          description: "Rolling-window length in days for the injection and token stats (default 30, max 365).",
+          minimum: 1,
+          maximum: 365,
+        },
+      },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const result = await client.listClauseGovernance(workspace, {
+        days: optionalInt(args, "days", { min: 1, max: 365 }),
+      });
+      return result;
+    },
+  },
+  {
+    name: "get_clause",
+    description:
+      "Read one clause's full governance detail: its version history (with content, source, carrier scope and created-at), bindings (scope + status + since-version), associated proposals, daily quality rows, and aggregate injection counts. " +
+      "Read-only; a clause from another workspace is a 404, not a 403 — the non-disclosure the scope checks use.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        clause_id: { type: "string", description: "Clause UUID, from list_clauses or search_clauses." },
+        days: {
+          type: "integer",
+          description: "Rolling-window length in days for the daily quality rows (default 30, max 365).",
+          minimum: 1,
+          maximum: 365,
+        },
+      },
+      required: ["workspace", "clause_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const clauseId = requireString(args, "clause_id");
+      return client.getClauseGovernanceDetail(workspace, clauseId);
+    },
+  },
+  {
+    name: "search_clauses",
+    description:
+      "Search a workspace's clause asset library by keyword and/or exact lifecycle status. " +
+      "The keyword matches case-insensitively against a clause's slug and title; the status filter is an exact lifecycle match. " +
+      "This is the keyword entry point to read a clause in full via get_clause. Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        q: {
+          type: "string",
+          description:
+            "Case-insensitive keyword matched against clause slug and title. Omit to filter by status alone.",
+        },
+        status: {
+          type: "string",
+          description: "Exact lifecycle status to filter on, e.g. active. Omit to match on keyword alone.",
+        },
+      },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const q = optionalString(args, "q");
+      const status = optionalString(args, "status");
+      if (q === undefined && status === undefined) {
+        throw new ToolInputError(
+          "search_clauses requires at least one of `q` or `status`; list_clauses is the unfiltered view.",
+        );
+      }
+      return client.searchClauseGovernance(workspace, { q, status });
+    },
+  },
+  {
+    name: "get_clause_reconciliation",
+    description:
+      "Run a read-only reconciliation over a workspace's clause injection invariants: the standing layer-set violations, the degraded-injection share, and marker-vs-asset drift across every carrier (a re-render would be a no-op if drift is empty). " +
+      "Surfaces as a healthy flag plus the findings; this is the QA/verification view of whether enacted clauses actually match what is rendered into agent context.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        days: {
+          type: "integer",
+          description: "Rolling-window length in days for the injection stats (default 30, max 365).",
+          minimum: 1,
+          maximum: 365,
+        },
+      },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const result = await client.getClauseReconciliation(workspace, {
+        days: optionalInt(args, "days", { min: 1, max: 365 }),
+      });
+      return result;
+    },
+  },
+  {
+    name: "get_prompt_versions",
+    description:
+      "List the version ledger of one prompt tier (workspace context, project instructions, squad instructions, agent instructions) — the carrier text a clause-versus-prompt comparison reads the current prompt from. " +
+      "Each version carries its content, SHA256, source and change note. Read-only; the write path (save/snapshot/switch) is owner-only and not exposed here.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        scope: {
+          type: "string",
+          enum: ["workspace", "project", "squad", "agent"],
+          description: "Prompt tier to read the version ledger of.",
+        },
+        scope_id: { type: "string", description: "The carrier's UUID for the chosen scope." },
+      },
+      required: ["workspace", "scope", "scope_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const scope = optionalEnum(args, "scope", ["workspace", "project", "squad", "agent"]);
+      if (scope === undefined) {
+        throw new ToolInputError("get_prompt_versions requires `scope`");
+      }
+      const scopeId = requireString(args, "scope_id");
+      return client.listPromptGovernanceVersions(workspace, scope, scopeId);
+    },
+  },
+  {
+    name: "list_prompt_proposals",
+    description:
+      "List the prompt-legislation proposal pool for a workspace — drafts moving through draft → pending_owner → approved → (gate) → enacted | gate_failed, with rejected kept for the record. " +
+      "Each proposal carries its change kind, clause reference, carrier, status and audit log. Read-only; use create_prompt_proposal to open a new draft (an owner then decides).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        status: {
+          type: "string",
+          description: "Filter by proposal status, e.g. pending_owner. Omit for all.",
+        },
+      },
+      required: ["workspace"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const result = await client.listPromptProposals(workspace, {
+        status: optionalString(args, "status"),
+      });
+      return { proposals: result, total: result.length };
+    },
+  },
+  {
+    name: "create_prompt_proposal",
+    description:
+      "Open a new draft in the prompt-legislation proposal pool — the member-side entry point for proposing a change to a clause. " +
+      "A created draft changes nothing until an owner approves it (approve is an owner-only, off-MCP surface); the draft records its gate answers and evidence anchors for the owner's decision. " +
+      "SIDE EFFECT: a pending_owner draft is created in the same store the owner's review UI reads; nothing about a created draft changes any prompt or carrier.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        carrier_scope: {
+          type: "string",
+          enum: ["workspace", "project", "squad", "agent"],
+          description: "The prompt tier the clause lives on.",
+        },
+        carrier_scope_id: { type: "string", description: "The carrier's UUID for the chosen scope." },
+        target_section: {
+          type: "string",
+          description: "The section of the carrier the clause attaches to (e.g. 沟通规范).",
+        },
+        change_kind: {
+          type: "string",
+          enum: ["add_clause", "revise_clause", "remove_clause", "move_clause", "migrate_clause"],
+          description: "What the proposal does to a clause.",
+        },
+        clause_name: {
+          type: "string",
+          description: "The clause's name (1–60 characters).",
+        },
+        clause_text: {
+          type: "string",
+          description: "The clause's text body. Empty for remove/move; required otherwise.",
+        },
+        gate_answer_layer: {
+          type: "string",
+          description: "Gate answer: which layer this clause belongs to and why.",
+        },
+        gate_answer_retention: {
+          type: "string",
+          description: "Gate answer: when the clause stays active and why.",
+        },
+        gate_answer_cost: {
+          type: "string",
+          description: "Gate answer: the context-budget cost of the clause.",
+        },
+        gate_answer_conflict: {
+          type: "string",
+          description: "Gate answer: any conflict with an existing same-topic clause.",
+        },
+        gate_answer_dedup: {
+          type: "string",
+          description: "Gate answer: whether this duplicates an existing clause.",
+        },
+        evidence_anchors: {
+          type: "array",
+          description:
+            "Optional evidence anchors pointing at the issues and findings the proposal is based on.",
+          items: {
+            type: "object",
+            properties: {
+              issue_id: {
+                type: "string",
+                description: "Issue identifier (e.g. ENG-42) or UUID the evidence comes from.",
+              },
+              ref: {
+                type: "string",
+                description: "A short human-readable reference (comment link, file path, …).",
+              },
+            },
+            required: ["issue_id", "ref"],
+          },
+        },
+      },
+      required: [
+        "workspace",
+        "carrier_scope",
+        "carrier_scope_id",
+        "target_section",
+        "change_kind",
+        "clause_name",
+        "gate_answer_layer",
+        "gate_answer_retention",
+        "gate_answer_cost",
+        "gate_answer_conflict",
+        "gate_answer_dedup",
+      ],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const carrierScope = optionalEnum(args, "carrier_scope", ["workspace", "project", "squad", "agent"]);
+      if (carrierScope === undefined) {
+        throw new ToolInputError("create_prompt_proposal requires `carrier_scope`");
+      }
+      const changeKind = optionalEnum(args, "change_kind", [
+        "add_clause",
+        "revise_clause",
+        "remove_clause",
+        "move_clause",
+        "migrate_clause",
+      ]);
+      if (changeKind === undefined) {
+        throw new ToolInputError("create_prompt_proposal requires `change_kind`");
+      }
+      const clauseText = optionalString(args, "clause_text") ?? "";
+      if (changeKind !== "remove_clause" && changeKind !== "move_clause" && clauseText === "") {
+        throw new ToolInputError(
+          `create_prompt_proposal with change_kind=${changeKind} requires a non-empty clause_text`,
+        );
+      }
+      // evidence_anchors arrives as a JSON-schema-validated object array;
+      // normalize it to the backend's {issue_id, ref} shape and drop entries
+      // missing either half rather than shipping a half-anchored row.
+      const anchors: Array<{ issue_id: string; ref: string }> = [];
+      if (Array.isArray(args.evidence_anchors)) {
+        for (const entry of args.evidence_anchors) {
+          const record = (typeof entry === "object" && entry !== null ? entry : {}) as {
+            issue_id?: unknown;
+            ref?: unknown;
+          };
+          if (typeof record.issue_id === "string" && typeof record.ref === "string") {
+            anchors.push({ issue_id: record.issue_id, ref: record.ref });
+          }
+        }
+      }
+      const body = {
+        carrier_scope: carrierScope,
+        carrier_scope_id: requireString(args, "carrier_scope_id"),
+        target_section: requireString(args, "target_section"),
+        change_kind: changeKind,
+        clause_name: requireString(args, "clause_name"),
+        clause_text: clauseText,
+        gate_answer_layer: requireString(args, "gate_answer_layer"),
+        gate_answer_retention: requireString(args, "gate_answer_retention"),
+        gate_answer_cost: requireString(args, "gate_answer_cost"),
+        gate_answer_conflict: requireString(args, "gate_answer_conflict"),
+        gate_answer_dedup: requireString(args, "gate_answer_dedup"),
+        ...(anchors.length > 0 ? { evidence_anchors: anchors } : {}),
+      };
+      return client.createPromptProposal(workspace, body);
+    },
+  },
 ];
 
 export const TOOL_NAMES: Set<string> = new Set(TOOL_DEFINITIONS.map((tool) => tool.name));

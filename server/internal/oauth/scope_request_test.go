@@ -119,6 +119,40 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		{"POST", "/api/issues/i-1/tasks/r-1/retry", ScopeNeedRun},
 		{"GET", "/api/issues/quick-create", ScopeNeedRead},
 
+		// Prompt legislation (RUYI-868): governance reads are read-only on the
+		// wire; the member proposal actions ride mcp:write; the owner's
+		// decide-and-execute endpoints stay off-surface so no OAuth scope can
+		// reach them.
+		{"GET", "/api/prompt-legislation/governance/clauses", ScopeNeedRead},
+		{"POST", "/api/prompt-legislation/governance/clauses", ScopeUnknown},
+		{"GET", "/api/prompt-legislation/governance/clauses/c-1", ScopeNeedRead},
+		{"GET", "/api/prompt-legislation/governance/clauses/search?q=mention", ScopeNeedRead},
+		{"GET", "/api/prompt-legislation/governance/reconciliation", ScopeNeedRead},
+		{"POST", "/api/prompt-legislation/proposals", ScopeNeedWrite},
+		{"PATCH", "/api/prompt-legislation/proposals/p-1", ScopeNeedWrite},
+		{"POST", "/api/prompt-legislation/proposals/p-1/submit", ScopeNeedWrite},
+		{"POST", "/api/prompt-legislation/proposals/p-1/preview", ScopeNeedWrite},
+		{"POST", "/api/prompt-legislation/proposals/p-1/rework", ScopeNeedWrite},
+		{"GET", "/api/prompt-legislation/proposals", ScopeNeedRead},
+		{"POST", "/api/prompt-legislation/proposals/p-1/approve", ScopeUnknown},
+		{"POST", "/api/prompt-legislation/proposals/approve-batch", ScopeUnknown},
+		{"POST", "/api/prompt-legislation/proposals/p-1/reject", ScopeUnknown},
+		{"POST", "/api/prompt-legislation/proposals/p-1/restore", ScopeUnknown},
+		{"POST", "/api/prompt-legislation/proposals/p-1/enact", ScopeUnknown},
+
+		// Prompt-governance carrier reads (RUYI-868): version ledger and diff
+		// stay reads; the owner carrier writes and the quality/quiz views are
+		// off-surface.
+		{"GET", "/api/prompt-governance/workspace/ws-1/versions", ScopeNeedRead},
+		{"GET", "/api/prompt-governance/project/p-1/versions/2", ScopeNeedRead},
+		{"GET", "/api/prompt-governance/squad/s-1/diff", ScopeNeedRead},
+		{"POST", "/api/prompt-governance/workspace/ws-1/versions", ScopeUnknown},
+		{"POST", "/api/prompt-governance/workspace/ws-1/versions/snapshot", ScopeUnknown},
+		{"POST", "/api/prompt-governance/agent/ag-1/versions/1/switch", ScopeUnknown},
+		{"GET", "/api/prompt-governance/workspace/ws-1/quality", ScopeUnknown},
+		{"GET", "/api/prompt-governance/workspace/ws-1/quiz", ScopeUnknown},
+		{"GET", "/api/prompt-governance/workspace/ws-1/baseline", ScopeUnknown},
+
 		// Deliberately tightened shapes: reachable before this table was
 		// enumerated, but no MCP tool drives them and the envelope excludes
 		// them — workspace creation, project hard delete, and squad member

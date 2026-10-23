@@ -24,6 +24,10 @@ import type {
   AuditEventListParams,
   AuditEventListResult,
   CancelRunResult,
+  ClauseGovernanceDetail,
+  ClauseGovernanceOverview,
+  ClauseGovernanceSearchResult,
+  ClauseReconciliation,
   CommentInfo,
   CommentListParams,
   CreateAgentBody,
@@ -53,6 +57,9 @@ import type {
   ProjectInfo,
   ProjectResourceInfo,
   ProjectResourceListResult,
+  CreatePromptProposalBody,
+  PromptProposalInfo,
+  PromptVersionListResult,
   QuickCreateBody,
   QuickReplyInfo,
   RemoveIssueRelationResult,
@@ -1074,6 +1081,94 @@ export class MulticaClient {
   async deleteQuickReply(workspace: string, id: string): Promise<void> {
     // The handler answers 204 with an empty body; request() resolves undefined.
     await this.request("DELETE", `/api/quick-replies/${encodeURIComponent(id)}`, { workspace });
+  }
+
+  // ---- clause governance & prompt legislation (RUYI-868) ----------------
+  //
+  // The MCP read/write surface over the clause asset library and the
+  // proposal pool. Every path below is pinned in the backend's OAuth scope
+  // table (server/internal/oauth/scope_request.go) so an OAuth token can
+  // only reach the tiers these methods declare; the owner's decide-and-
+  // execute endpoints never appear here, by design.
+
+  /** GET /api/prompt-legislation/governance/clauses?days=N */
+  async listClauseGovernance(workspace: string, params?: { days?: number }): Promise<ClauseGovernanceOverview> {
+    return this.request("GET", "/api/prompt-legislation/governance/clauses", {
+      workspace,
+      query: params?.days ? { days: params.days } : undefined,
+    });
+  }
+
+  /** GET /api/prompt-legislation/governance/clauses/search?q=&status= */
+  async searchClauseGovernance(
+    workspace: string,
+    params: { q?: string; status?: string },
+  ): Promise<ClauseGovernanceSearchResult> {
+    const query: Record<string, string | number | boolean | undefined> = {};
+    if (params.q !== undefined) query["q"] = params.q;
+    if (params.status !== undefined) query["status"] = params.status;
+    return this.request("GET", "/api/prompt-legislation/governance/clauses/search", {
+      workspace,
+      query,
+    });
+  }
+
+  /** GET /api/prompt-legislation/governance/clauses/{clauseId} */
+  async getClauseGovernanceDetail(workspace: string, clauseId: string): Promise<ClauseGovernanceDetail> {
+    return this.request("GET", `/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}`, {
+      workspace,
+    });
+  }
+
+  /** GET /api/prompt-legislation/governance/reconciliation?days=N */
+  async getClauseReconciliation(workspace: string, params?: { days?: number }): Promise<ClauseReconciliation> {
+    return this.request("GET", "/api/prompt-legislation/governance/reconciliation", {
+      workspace,
+      query: params?.days ? { days: params.days } : undefined,
+    });
+  }
+
+  /**
+   * GET /api/prompt-governance/{scope}/{scopeId}/versions
+   *
+   * The version ledger a clause-versus-prompt comparison reads the current
+   * carrier text from. scope is one of the four prompt tiers.
+   */
+  async listPromptGovernanceVersions(
+    workspace: string,
+    scope: "workspace" | "project" | "squad" | "agent",
+    scopeId: string,
+  ): Promise<PromptVersionListResult> {
+    return this.request("GET", `/api/prompt-governance/${scope}/${encodeURIComponent(scopeId)}/versions`, {
+      workspace,
+    });
+  }
+
+  /** GET /api/prompt-legislation/proposals?status=&run_id= */
+  async listPromptProposals(
+    workspace: string,
+    params?: { status?: string; run_id?: string },
+  ): Promise<PromptProposalInfo[]> {
+    return this.request("GET", "/api/prompt-legislation/proposals", {
+      workspace,
+      query: params
+        ? { status: params.status, run_id: params.run_id }
+        : undefined,
+    });
+  }
+
+  /**
+   * POST /api/prompt-legislation/proposals
+   *
+   * The member-side entry into the proposal pool: a draft that an owner
+   * decides on. Nothing about a created draft changes any prompt or carrier
+   * until the owner approves; the audit log records the whole chain.
+   */
+  async createPromptProposal(
+    workspace: string,
+    body: CreatePromptProposalBody,
+  ): Promise<PromptProposalInfo> {
+    return this.request("POST", "/api/prompt-legislation/proposals", { workspace, body });
   }
 
   // ---- transport --------------------------------------------------------
