@@ -970,6 +970,68 @@ func (q *Queries) ListWorkspaceIssueDecisions(ctx context.Context, arg ListWorks
 	return items, nil
 }
 
+const restoreIssueDecision = `-- name: RestoreIssueDecision :one
+UPDATE issue_decisions SET
+    status = 'open',
+    updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND status = 'cancelled'
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at, context
+`
+
+type RestoreIssueDecisionParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// RUYI-863: the inverse CAS of CancelIssueDecision — only a cancelled card
+// can be restored to open. An answered card is never revivable (sql.ErrNoRows
+// here), which is exactly the state machine's "no illegal resurrection"
+// guard: cancelled is the only pre-terminal state that flips back, and the
+// whole card row (question, options, context, recommendations) is left
+// untouched by the flip so a restore days later still shows the original.
+func (q *Queries) RestoreIssueDecision(ctx context.Context, arg RestoreIssueDecisionParams) (IssueDecision, error) {
+	row := q.db.QueryRow(ctx, restoreIssueDecision, arg.ID, arg.WorkspaceID)
+	var i IssueDecision
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.SourceCommentID,
+		&i.Question,
+		&i.Options,
+		&i.MultiSelect,
+		&i.RecommendedIndices,
+		&i.Status,
+		&i.SelectedIndices,
+		&i.AnsweredByType,
+		&i.AnsweredByID,
+		&i.AnsweredAt,
+		&i.AnswerCommentID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
+		&i.Context,
+	)
+	return i, err
+}
+
 const setAuthorizationCardExecution = `-- name: SetAuthorizationCardExecution :many
 UPDATE issue_decisions SET
     auth_state = $1::text,

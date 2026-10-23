@@ -2599,6 +2599,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/decisions/answer-batch", h.AnswerIssueDecisionsBatch)
 					r.Post("/decisions/{decisionId}/answer", h.AnswerIssueDecision)
 					r.Post("/decisions/{decisionId}/cancel", h.CancelIssueDecision)
+					// RUYI-863: the inverse of cancel — flip a cancelled card
+					// back to open. No human-actor gate here: member-only
+					// enforcement lives in the handler (agent callers are
+					// refused), matching the cancel arm above.
+					r.Post("/decisions/{decisionId}/restore", h.RestoreIssueDecision)
 
 					// Suspensions (RUYI-690): the orthogonal "waiting"
 					// dimension. Suspend/list on the issue; resume/cancel on
