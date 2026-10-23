@@ -128,6 +128,25 @@ func TestSynthesizeReviseLegacySectionAsset(t *testing.T) {
 	}
 }
 
+func TestSynthesizeRemoveLegacyHeadingAsset(t *testing.T) {
+	legacy := "# Workspace Context\n\n## 工作原则\n\n- 保留规则。\n"
+	p := baseInput()
+	p.ChangeKind = "remove_clause"
+	p.ClauseName = "前言"
+	p.TargetSection = "# Workspace Context"
+
+	out, err := Synthesize(legacy, p)
+	if err != nil {
+		t.Fatalf("remove legacy heading: %v", err)
+	}
+	if strings.Contains(out, "# Workspace Context") {
+		t.Fatalf("legacy heading survived removal:\n%s", out)
+	}
+	if !strings.Contains(out, "## 工作原则") || !strings.Contains(out, "保留规则") {
+		t.Fatalf("heading removal damaged following content:\n%s", out)
+	}
+}
+
 // --- Synthesize: structural failures (each blocks the gate downstream) ---
 
 func TestSynthesizeErrors(t *testing.T) {

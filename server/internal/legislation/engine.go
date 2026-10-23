@@ -393,14 +393,43 @@ func synthesizeRevise(current string, p ProposalInput, name string) (string, err
 	return "", fmt.Errorf("条款「%s」在当前内容中不存在，修订请改用新增", name)
 }
 
-func synthesizeRemove(current string, _ ProposalInput, name string) (string, error) {
+func synthesizeRemove(current string, p ProposalInput, name string) (string, error) {
 	lines := splitLines(current)
 	s, e := clauseSpan(lines, name)
 	if s < 0 {
-		return "", fmt.Errorf("条款「%s」在当前内容中不存在，无法删除", name)
+		// A legacy asset may represent the root document heading rather than a
+		// bold-label rule. Only an explicit "# <heading>" locator takes this
+		// path, so an ordinary target section cannot remove unrelated content.
+		locator := strings.TrimSpace(p.TargetSection)
+		if strings.HasPrefix(locator, "# ") {
+			s, e = rootHeadingLineSpan(lines, strings.TrimSpace(strings.TrimPrefix(locator, "# ")))
+		}
+		if s < 0 {
+			return "", fmt.Errorf("条款「%s」在当前内容中不存在，无法删除", name)
+		}
 	}
 	out := append(lines[:s:s], lines[e:]...)
 	return strings.Join(out, "\n"), nil
+}
+
+// rootHeadingLineSpan locates an H1 and removes only its line plus its
+// following blank separator. A root heading owns the whole document subtree,
+// so removing that subtree would erase the rules the heading only labels.
+func rootHeadingLineSpan(lines []string, heading string) (int, int) {
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "# ") {
+			continue
+		}
+		if clauseNamesEqual(strings.TrimSpace(strings.TrimPrefix(trimmed, "# ")), heading) {
+			end := i + 1
+			if end < len(lines) && strings.TrimSpace(lines[end]) == "" {
+				end++
+			}
+			return i, end
+		}
+	}
+	return -1, -1
 }
 
 // MoveTarget is the destination half of a move_clause proposal: the carrier
