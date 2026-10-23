@@ -974,7 +974,23 @@ const restoreIssueDecision = `-- name: RestoreIssueDecision :one
 UPDATE issue_decisions SET
     status = 'open',
     updated_at = now()
-WHERE id = $1 AND workspace_id = $2 AND status = 'cancelled'
+WHERE issue_decisions.id = $1
+  AND issue_decisions.workspace_id = $2
+  AND issue_decisions.status = 'cancelled'
+  AND NOT EXISTS (
+      SELECT 1 FROM issue i
+      WHERE i.id = issue_decisions.issue_id
+        AND i.workspace_id = issue_decisions.workspace_id
+        AND (
+          i.status IN ('done', 'cancelled')
+          OR EXISTS (
+            SELECT 1 FROM issue_status s
+            WHERE s.workspace_id = i.workspace_id
+              AND s.key = i.status
+              AND s.category IN ('done', 'cancelled')
+          )
+        )
+  )
 RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at, context
 `
 
@@ -984,11 +1000,17 @@ type RestoreIssueDecisionParams struct {
 }
 
 // RUYI-863: the inverse CAS of CancelIssueDecision — only a cancelled card
-// can be restored to open. An answered card is never revivable (sql.ErrNoRows
-// here), which is exactly the state machine's "no illegal resurrection"
-// guard: cancelled is the only pre-terminal state that flips back, and the
-// whole card row (question, options, context, recommendations) is left
-// untouched by the flip so a restore days later still shows the original.
+// on a non-terminal issue can be restored to open. An answered card is
+// never revivable (sql.ErrNoRows here). The terminal-issue predicate is the
+// write-side half of the "no illegal resurrection" rule: it mirrors
+// issuestatus.Effective exactly — built-in done/cancelled are terminal keys
+// on their own (unseeded workspaces have no catalog rows for them, so the
+// key set is checked directly), and a custom status is terminal when its
+// catalog category is done/cancelled. Effective ignores archived entries on
+// purpose (issues still on them keep their behavior), so this predicate does
+// too. Because the handler's pre-check and this UPDATE are not one atomic
+// read, an issue that turns terminal in the race still loses here with
+// sql.ErrNoRows instead of resurrecting its card.
 func (q *Queries) RestoreIssueDecision(ctx context.Context, arg RestoreIssueDecisionParams) (IssueDecision, error) {
 	row := q.db.QueryRow(ctx, restoreIssueDecision, arg.ID, arg.WorkspaceID)
 	var i IssueDecision

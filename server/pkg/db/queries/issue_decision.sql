@@ -72,15 +72,37 @@ RETURNING *;
 
 -- name: RestoreIssueDecision :one
 -- RUYI-863: the inverse CAS of CancelIssueDecision — only a cancelled card
--- can be restored to open. An answered card is never revivable (sql.ErrNoRows
--- here), which is exactly the state machine's "no illegal resurrection"
--- guard: cancelled is the only pre-terminal state that flips back, and the
--- whole card row (question, options, context, recommendations) is left
--- untouched by the flip so a restore days later still shows the original.
+-- on a non-terminal issue can be restored to open. An answered card is
+-- never revivable (sql.ErrNoRows here). The terminal-issue predicate is the
+-- write-side half of the "no illegal resurrection" rule: it mirrors
+-- issuestatus.Effective exactly — built-in done/cancelled are terminal keys
+-- on their own (unseeded workspaces have no catalog rows for them, so the
+-- key set is checked directly), and a custom status is terminal when its
+-- catalog category is done/cancelled. Effective ignores archived entries on
+-- purpose (issues still on them keep their behavior), so this predicate does
+-- too. Because the handler's pre-check and this UPDATE are not one atomic
+-- read, an issue that turns terminal in the race still loses here with
+-- sql.ErrNoRows instead of resurrecting its card.
 UPDATE issue_decisions SET
     status = 'open',
     updated_at = now()
-WHERE id = @id AND workspace_id = @workspace_id AND status = 'cancelled'
+WHERE issue_decisions.id = @id
+  AND issue_decisions.workspace_id = @workspace_id
+  AND issue_decisions.status = 'cancelled'
+  AND NOT EXISTS (
+      SELECT 1 FROM issue i
+      WHERE i.id = issue_decisions.issue_id
+        AND i.workspace_id = issue_decisions.workspace_id
+        AND (
+          i.status IN ('done', 'cancelled')
+          OR EXISTS (
+            SELECT 1 FROM issue_status s
+            WHERE s.workspace_id = i.workspace_id
+              AND s.key = i.status
+              AND s.category IN ('done', 'cancelled')
+          )
+        )
+  )
 RETURNING *;
 
 -- name: SetIssueDecisionAnswerComment :one

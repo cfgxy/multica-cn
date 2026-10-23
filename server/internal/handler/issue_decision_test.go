@@ -2,13 +2,18 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -531,6 +536,171 @@ func TestIssueDecisionRestore(t *testing.T) {
 	if details := row("issue.decision_restored", card.ID); !strings.Contains(details, "open") {
 		t.Fatalf("restore audit details = %s, want from/to statuses", details)
 	}
+}
+
+// RUYI-863 rework: a cancelled card on a TERMINAL issue must not be
+// resurrected. The terminal classification is the authoritative
+// issuestatus.Effective one — built-in done/cancelled and custom statuses
+// whose category is done/cancelled — not the raw status string. Every case
+// asserts the full refusal contract: 409, the card stays cancelled, no
+// restore audit row, no decision:updated event, and the SQL CAS itself
+// carries the terminal predicate so an issue that turns terminal in the
+// race still loses instead of resurrecting the card.
+func TestRestoreRefusedOnTerminalIssue(t *testing.T) {
+	// terminalRestoreCase runs one terminal classification: it builds the
+	// fixture, cancels the card, points the issue at the classification,
+	// and proves the refusal contract end to end.
+	terminalRestoreCase := func(classification string, terminalize func(f decisionFixture)) func(t *testing.T) {
+		return func(t *testing.T) {
+			f := newDecisionFixture(t)
+			w := createDecisionCard(t, f, false, map[string]any{
+				"question": "Terminal " + classification,
+				"options":  []string{"yes", "no"},
+			})
+			if w.Code != http.StatusCreated {
+				t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+			}
+			card := decodeDecision(t, w)
+			cw := httptest.NewRecorder()
+			creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+			creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+			testHandler.CancelIssueDecision(cw, creq)
+			if cw.Code != http.StatusOK {
+				t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+			}
+			terminalize(f)
+
+			// A fresh bus proves the refusal happens BEFORE any publish —
+			// a terminal restore must not surface to the decision inbox.
+			h := *testHandler
+			h.Bus = events.New()
+			eventsSeen := 0
+			h.Bus.Subscribe(protocol.EventDecisionUpdated, func(event events.Event) {
+				t.Helper()
+				eventsSeen++
+			})
+
+			rw := httptest.NewRecorder()
+			req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/restore", map[string]any{})
+			req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+			h.RestoreIssueDecision(rw, req)
+			if rw.Code != http.StatusConflict {
+				t.Fatalf("restore on %s issue: expected 409, got %d: %s", classification, rw.Code, rw.Body.String())
+			}
+			if eventsSeen != 0 {
+				t.Fatalf("restore on %s issue published %d decision:updated event(s), want 0", classification, eventsSeen)
+			}
+
+			var status string
+			if err := testPool.QueryRow(t.Context(),
+				`SELECT status FROM issue_decisions WHERE id = $1`, parseUUID(card.ID)).Scan(&status); err != nil {
+				t.Fatalf("load card status: %v", err)
+			}
+			if status != "cancelled" {
+				t.Fatalf("card on %s issue = %q, want cancelled (restore must not resurrect it)", classification, status)
+			}
+
+			// No audit row: the refusal is pre-audit, so the trail keeps
+			// only the cancel, never a restore that never happened.
+			var auditRows int
+			if err := testPool.QueryRow(t.Context(),
+				`SELECT count(*) FROM audit_event
+				 WHERE event_type = 'issue.decision_restored' AND details->>'decision_id' = $1`,
+				card.ID).Scan(&auditRows); err != nil {
+				t.Fatalf("count restore audits: %v", err)
+			}
+			if auditRows != 0 {
+				t.Fatalf("%d restore audit rows on a terminal issue, want 0", auditRows)
+			}
+
+			// The CAS is the race half of the rule: even a direct query
+			// (no handler pre-check in front) must not flip the card.
+			_, err := testHandler.Queries.RestoreIssueDecision(t.Context(), db.RestoreIssueDecisionParams{
+				ID:          parseUUID(card.ID),
+				WorkspaceID: parseUUID(testWorkspaceID),
+			})
+			if !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("terminal CAS expected sql.ErrNoRows, got %v", err)
+			}
+		}
+	}
+
+	t.Run("built-in done", terminalRestoreCase("done", func(f decisionFixture) {
+		terminalizeIssue(t, f.IssueID, "done")
+	}))
+	t.Run("built-in cancelled", terminalRestoreCase("cancelled", func(f decisionFixture) {
+		terminalizeIssue(t, f.IssueID, "cancelled")
+	}))
+	t.Run("custom done-category status", terminalRestoreCase("custom done-category", func(f decisionFixture) {
+		customKey := seedCustomStatusCategory(t, "done")
+		terminalizeIssue(t, f.IssueID, customKey)
+	}))
+
+	// Control: a custom status whose category is NOT terminal must keep the
+	// normal restore path open, so the gate refuses the right set and only.
+	t.Run("custom in_progress-category status still restores", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		w := createDecisionCard(t, f, false, map[string]any{
+			"question": "Non-terminal custom",
+			"options":  []string{"yes", "no"},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		card := decodeDecision(t, w)
+		cw := httptest.NewRecorder()
+		creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+		creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+		testHandler.CancelIssueDecision(cw, creq)
+		if cw.Code != http.StatusOK {
+			t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+		}
+		customKey := seedCustomStatusCategory(t, "in_progress")
+		terminalizeIssue(t, f.IssueID, customKey)
+
+		rw := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/restore", map[string]any{})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+		testHandler.RestoreIssueDecision(rw, req)
+		if rw.Code != http.StatusOK {
+			t.Fatalf("restore on non-terminal custom issue: expected 200, got %d: %s", rw.Code, rw.Body.String())
+		}
+		got := decodeDecision(t, rw)
+		if got.Status != "open" {
+			t.Fatalf("restore: status = %q, want open", got.Status)
+		}
+	})
+}
+
+// terminalizeIssue points the fixture's issue at an arbitrary status key
+// (built-in or custom) for terminal-state case work.
+func terminalizeIssue(t *testing.T, issueID, status string) {
+	t.Helper()
+	if _, err := testPool.Exec(t.Context(), `UPDATE issue SET status = $1 WHERE id = $2`, status, issueID); err != nil {
+		t.Fatalf("terminalize issue: %v", err)
+	}
+}
+
+// seedCustomStatusCategory inserts a workspace status key whose behavior
+// class is the given built-in category and returns its key; the row is
+// removed with the test.
+func seedCustomStatusCategory(t *testing.T, category string) string {
+	t.Helper()
+	// Key is bounded to 32 characters by the issue_status CHECK — the 8-digit
+	// millisecond tail keeps qa863_<category>_<ts> under the ceiling for the
+	// longest category (in_progress).
+	key := fmt.Sprintf("qa863_%s_%d", category, time.Now().UnixMilli())
+	if _, err := testPool.Exec(t.Context(),
+		`INSERT INTO issue_status (workspace_id, key, name, description, category, color, position)
+		 VALUES ($1, $2, $2, '', $3, '#ff0000', 1)`,
+		testWorkspaceID, key, category); err != nil {
+		t.Fatalf("seed custom status: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(),
+			`DELETE FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, key)
+	})
+	return key
 }
 
 // answerEchoForMemberCard keeps a member-created card mention-free: no agent
