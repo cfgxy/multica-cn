@@ -1,12 +1,31 @@
 -- name: CreateIssueDecision :one
+-- RUYI-865: the insert is refused in one atomic statement when the issue
+-- sits in the done category (built-in 'done' or a custom done key resolved
+-- through the status catalog): a card raised after the done transition has
+-- no cascade left to clear it, so it must not enter the backlog. The guard
+-- makes the create a no-op RETURNING 0 rows (sql.ErrNoRows) in that case;
+-- the handler maps the miss onto the 409 contract.
 INSERT INTO issue_decisions (
     id, workspace_id, issue_id, source_comment_id,
     question, context, options, multi_select, recommended_indices,
     created_by_type, created_by_id, client_request_id
-) VALUES (
-    @id, @workspace_id, @issue_id, @source_comment_id,
-    @question, @context::jsonb, @options::jsonb, @multi_select, @recommended_indices::jsonb,
-    @created_by_type, @created_by_id, @client_request_id
+)
+SELECT
+    @id::uuid, @workspace_id::uuid, @issue_id::uuid, @source_comment_id::uuid,
+    @question::text, @context::jsonb, @options::jsonb, @multi_select::bool, @recommended_indices::jsonb,
+    @created_by_type::text, @created_by_id::uuid, @client_request_id
+WHERE NOT EXISTS (
+    SELECT 1 FROM issue i
+    WHERE i.id = @issue_id::uuid AND i.workspace_id = @workspace_id::uuid
+      AND (
+        i.status = 'done'
+        OR EXISTS (
+            SELECT 1 FROM issue_status s
+            WHERE s.workspace_id = i.workspace_id
+              AND s.key = i.status
+              AND s.category = 'done'
+        )
+      )
 )
 RETURNING *;
 
@@ -68,6 +87,24 @@ UPDATE issue_decisions SET
     status = 'cancelled',
     updated_at = now()
 WHERE id = @id AND workspace_id = @workspace_id AND status = 'open'
+RETURNING *;
+
+-- name: CancelOpenIssueDecisionsForIssue :many
+-- RUYI-865: when an issue formally enters the done category, every one of
+-- its still-open question cards is auto-cancelled in a single CAS batch so
+-- it cannot re-enter the decision-center backlog. The status guard makes
+-- the batch idempotent (re-running on an already-cleaned issue is a no-op)
+-- and races an in-flight answer safely: whichever of {answer, cancel} wins
+-- the open->terminal flip first leaves a consistent row, and only cards
+-- actually flipped are returned so events and audit rows cover exactly
+-- what changed. Authorization cards keep their request-owned lifecycle
+-- (RUYI-630 decision_requests surface) and are excluded here on purpose.
+UPDATE issue_decisions SET
+    status = 'cancelled',
+    updated_at = now()
+WHERE issue_id = @issue_id AND workspace_id = @workspace_id
+  AND status = 'open'
+  AND decision_kind = 'question'
 RETURNING *;
 
 -- name: SetIssueDecisionAnswerComment :one
