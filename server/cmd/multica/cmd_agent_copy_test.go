@@ -157,7 +157,10 @@ func TestAgentCopySameRuntimeCopiesPortableFields(t *testing.T) {
 }
 
 func TestAgentCopyOmitsInvalidHistoricalConcurrency(t *testing.T) {
-	for _, value := range []any{0, -2, 51} {
+	// -2 and -3 are not the legacy unlimited sentinel, so they stay
+	// non-portable; 51 is out of the 1-50 range. 0 is the current
+	// unlimited sentinel and is portable (see the next test).
+	for _, value := range []any{-2, -3, 51} {
 		t.Run(fmt.Sprint(value), func(t *testing.T) {
 			source := fullSourceAgent()
 			source["max_concurrent_tasks"] = value
@@ -179,20 +182,25 @@ func TestAgentCopyOmitsInvalidHistoricalConcurrency(t *testing.T) {
 }
 
 func TestAgentCopyPreservesUnlimitedConcurrency(t *testing.T) {
-	source := fullSourceAgent()
-	source["max_concurrent_tasks"] = float64(-1)
+	// Both the legacy -1 sentinel from historical rows and the current 0
+	// sentinel mean unlimited; a copy of either is written with the current
+	// sentinel (0), never with -1 and never dropped to the default.
+	for _, value := range []any{float64(-1), float64(0)} {
+		source := fullSourceAgent()
+		source["max_concurrent_tasks"] = value
 
-	var gotBody map[string]any
-	srv := copyMockServer(t, source, &gotBody)
-	defer srv.Close()
-	setCopyTestEnv(t, srv.URL)
+		var gotBody map[string]any
+		srv := copyMockServer(t, source, &gotBody)
+		setCopyTestEnv(t, srv.URL)
 
-	cmd := newAgentCopyTestCmd()
-	if err := runAgentCopy(cmd, []string{"agent-src"}); err != nil {
-		t.Fatalf("runAgentCopy: %v", err)
-	}
-	if gotBody["max_concurrent_tasks"] != float64(-1) {
-		t.Errorf("max_concurrent_tasks = %v, want -1", gotBody["max_concurrent_tasks"])
+		cmd := newAgentCopyTestCmd()
+		if err := runAgentCopy(cmd, []string{"agent-src"}); err != nil {
+			t.Fatalf("runAgentCopy (source %v): %v", value, err)
+		}
+		if gotBody["max_concurrent_tasks"] != float64(0) {
+			t.Errorf("source %v: max_concurrent_tasks = %v, want 0", value, gotBody["max_concurrent_tasks"])
+		}
+		srv.Close()
 	}
 }
 

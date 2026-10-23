@@ -96,7 +96,9 @@ export function AgentPresenceIndicator({
         </span>
         {isWorking && (
           <span className="font-mono text-caption tabular-nums text-muted-foreground">
-            {detail.capacity === -1
+            {/* Both 0 and the legacy -1 sentinel read as "no cap", so only
+                a positive capacity anchors a running/capacity ratio. */}
+            {detail.capacity === -1 || detail.capacity === 0
               ? t(($) => $.presence.running_count, { count: detail.runningCount })
               : t(($) => $.presence.running_ratio, {
                   running: detail.runningCount,
