@@ -971,27 +971,34 @@ func (q *Queries) ListWorkspaceIssueDecisions(ctx context.Context, arg ListWorks
 }
 
 const restoreIssueDecision = `-- name: RestoreIssueDecision :one
+WITH locked_issue AS MATERIALIZED (
+    -- Admit the restore only when the locked issue row is still
+    -- non-terminal; the MATERIALIZED CTE plus the UPDATE's FROM clause force
+    -- the lock before the card flip. Mirrors the global issue -> child
+    -- lock order used by issue teardown and comment writes, so no
+    -- deadlock cycle against those paths.
+    SELECT i.id
+    FROM issue i
+    JOIN issue_decisions d ON d.issue_id = i.id
+                            AND d.workspace_id = i.workspace_id
+    WHERE d.id = $1
+      AND i.status NOT IN ('done', 'cancelled')
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_status s
+          WHERE s.workspace_id = i.workspace_id
+            AND s.key = i.status
+            AND s.category IN ('done', 'cancelled')
+      )
+    FOR UPDATE OF i
+)
 UPDATE issue_decisions SET
     status = 'open',
     updated_at = now()
+FROM locked_issue
 WHERE issue_decisions.id = $1
   AND issue_decisions.workspace_id = $2
   AND issue_decisions.status = 'cancelled'
-  AND NOT EXISTS (
-      SELECT 1 FROM issue i
-      WHERE i.id = issue_decisions.issue_id
-        AND i.workspace_id = issue_decisions.workspace_id
-        AND (
-          i.status IN ('done', 'cancelled')
-          OR EXISTS (
-            SELECT 1 FROM issue_status s
-            WHERE s.workspace_id = i.workspace_id
-              AND s.key = i.status
-              AND s.category IN ('done', 'cancelled')
-          )
-        )
-  )
-RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at, context
+RETURNING issue_decisions.id, issue_decisions.workspace_id, issue_decisions.issue_id, issue_decisions.source_comment_id, issue_decisions.question, issue_decisions.options, issue_decisions.multi_select, issue_decisions.recommended_indices, issue_decisions.status, issue_decisions.selected_indices, issue_decisions.answered_by_type, issue_decisions.answered_by_id, issue_decisions.answered_at, issue_decisions.answer_comment_id, issue_decisions.created_by_type, issue_decisions.created_by_id, issue_decisions.created_at, issue_decisions.updated_at, issue_decisions.client_request_id, issue_decisions.decision_kind, issue_decisions.visible_tier, issue_decisions.operator_tier, issue_decisions.named_approver_ids, issue_decisions.approve_label, issue_decisions.deny_label, issue_decisions.expires_at, issue_decisions.answer_source, issue_decisions.auth_state, issue_decisions.pending_request_group_id, issue_decisions.pending_action_type, issue_decisions.pending_action_params, issue_decisions.execution_result, issue_decisions.execution_error, issue_decisions.executed_at, issue_decisions.context
 `
 
 type RestoreIssueDecisionParams struct {
@@ -1008,9 +1015,21 @@ type RestoreIssueDecisionParams struct {
 // key set is checked directly), and a custom status is terminal when its
 // catalog category is done/cancelled. Effective ignores archived entries on
 // purpose (issues still on them keep their behavior), so this predicate does
-// too. Because the handler's pre-check and this UPDATE are not one atomic
-// read, an issue that turns terminal in the race still loses here with
-// sql.ErrNoRows instead of resurrecting its card.
+// too.
+//
+// The predicate runs under a FOR UPDATE lock on the card's owning issue row,
+// which is the linearization point for the terminal-write race. The plain
+// snapshot predicate this used to rely on was not an atomic guard: the CTE's
+// plain read of the issue row saw whatever snapshot it had, while a
+// concurrent UpdateIssueStatus commits its own terminal write independently,
+// so a restore that read "in_progress" could still commit an open card on an
+// issue that was already done (RUYI-863 P1). With the lock, the issue row
+// serializes both sides: a terminal write that commits first is held out of
+// the row until this statement finishes, and this statement's CTE — run
+// second — re-reads the row under its own lock, sees the committed terminal
+// version, yields zero rows, and the UPDATE flips nothing. A restore that
+// wins the lock first is the legal boundary: its card goes open and the
+// later terminal write simply lands behind it.
 func (q *Queries) RestoreIssueDecision(ctx context.Context, arg RestoreIssueDecisionParams) (IssueDecision, error) {
 	row := q.db.QueryRow(ctx, restoreIssueDecision, arg.ID, arg.WorkspaceID)
 	var i IssueDecision

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -701,6 +702,209 @@ func seedCustomStatusCategory(t *testing.T, category string) string {
 			`DELETE FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, key)
 	})
 	return key
+}
+
+// --- two-connection concurrency regression (RUYI-863 P1) -------------------
+//
+// Both tests drive the REAL restore SQL and the REAL UpdateIssueStatus on
+// two separate connections, parked on each other's issue-row lock so the
+// interleaving is observed, never guessed. waitForWaiterBlockedBy's PID
+// attribution is the false-green guard: if the path under test never takes
+// the lock, the probe finds no waiter and the test fails.
+
+// TestRestoreRaceLosesToCommittedTerminalWrite: the terminal status write
+// commits BEFORE the restore statement finishes. The terminal write parks
+// the restore's CTE on the issue row; once it commits, the restore must
+// lose — 409, card stays cancelled, no restore audit row, no
+// decision:updated event. This is the exact window the snapshot-only CAS
+// (pre-fix) could not survive.
+func TestRestoreRaceLosesToCommittedTerminalWrite(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	f := newDecisionFixture(t)
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Race card",
+		"options":  []string{"yes", "no"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	card := decodeDecision(t, w)
+	cw := httptest.NewRecorder()
+	creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+	creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+	testHandler.CancelIssueDecision(cw, creq)
+	if cw.Code != http.StatusOK {
+		t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+	}
+
+	// Fresh bus: a losing restore must publish nothing.
+	h := *testHandler
+	h.Bus = events.New()
+	eventsSeen := 0
+	h.Bus.Subscribe(protocol.EventDecisionUpdated, func(event events.Event) {
+		t.Helper()
+		eventsSeen++
+	})
+
+	// Connection B: the terminal write, uncommitted. UpdateIssueStatus
+	// takes the issue row lock; the commit is deferred until the restore
+	// has been observed parked on it.
+	txB, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin terminal-write tx: %v", err)
+	}
+	if _, err := h.Queries.WithTx(txB).UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+		ID:          parseUUID(f.IssueID),
+		Status:      "done",
+		WorkspaceID: parseUUID(testWorkspaceID),
+	}); err != nil {
+		txB.Rollback(ctx)
+		t.Fatalf("terminal write: %v", err)
+	}
+	pidB := holderBackendPID(t, ctx, txB)
+
+	// Connection A: the real handler restore on its own pool connection.
+	// Its CAS statement reaches FOR UPDATE OF issue and parks behind B.
+	restoreRW := httptest.NewRecorder()
+	restoreReq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/restore", map[string]any{})
+	restoreReq = withURLParams(restoreReq, "id", f.IssueID, "decisionId", card.ID)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h.RestoreIssueDecision(restoreRW, restoreReq)
+	}()
+	if !waitForWaiterBlockedBy(t, pidB, 10*time.Second) {
+		t.Fatalf("restore CAS is not parked on the terminal write's issue-row lock — the CTE never took the lock")
+	}
+
+	// The terminal write commits first; the parked restore then re-reads
+	// the locked row under EPQ, sees done, and flips nothing.
+	if err := txB.Commit(ctx); err != nil {
+		t.Fatalf("commit terminal write: %v", err)
+	}
+	wg.Wait()
+	if restoreRW.Code != http.StatusConflict {
+		t.Fatalf("restore after committed terminal write: expected 409, got %d: %s", restoreRW.Code, restoreRW.Body.String())
+	}
+
+	var status string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status FROM issue_decisions WHERE id = $1`, parseUUID(card.ID)).Scan(&status); err != nil {
+		t.Fatalf("load card status: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("card = %q after losing the race, want cancelled (no resurrection)", status)
+	}
+
+	var auditRows int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM audit_event
+		 WHERE event_type = 'issue.decision_restored' AND details->>'decision_id' = $1`,
+		card.ID).Scan(&auditRows); err != nil {
+		t.Fatalf("count restore audits: %v", err)
+	}
+	if auditRows != 0 {
+		t.Fatalf("%d restore audit rows on a lost race, want 0", auditRows)
+	}
+	if eventsSeen != 0 {
+		t.Fatalf("losing restore published %d decision:updated event(s), want 0", eventsSeen)
+	}
+}
+
+// TestRestoreRaceWinsBeforeTerminalWrite: the positive boundary. The
+// restore linearizes first — its card flip lands on the locked, still
+// non-terminal issue row and its transaction commits; the terminal status
+// write parked behind it then commits as a legal, independent transition.
+// Nothing may be rejected or rolled back.
+func TestRestoreRaceWinsBeforeTerminalWrite(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	f := newDecisionFixture(t)
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Race card",
+		"options":  []string{"yes", "no"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	card := decodeDecision(t, w)
+	cw := httptest.NewRecorder()
+	creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+	creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+	testHandler.CancelIssueDecision(cw, creq)
+	if cw.Code != http.StatusOK {
+		t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+	}
+
+	// Connection A: the real restore SQL inside an uncommitted tx — the
+	// handler's CAS statement, paused before commit so its issue-row lock
+	// outlives the statement.
+	txA, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin restore tx: %v", err)
+	}
+	if _, err := testHandler.Queries.WithTx(txA).RestoreIssueDecision(ctx, db.RestoreIssueDecisionParams{
+		ID:          parseUUID(card.ID),
+		WorkspaceID: parseUUID(testWorkspaceID),
+	}); err != nil {
+		txA.Rollback(ctx)
+		t.Fatalf("restore within tx: %v", err)
+	}
+	pidA := holderBackendPID(t, ctx, txA)
+
+	// Connection B: the terminal write parks on A's issue-row lock.
+	txB, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin terminal-write tx: %v", err)
+	}
+	writeErr := make(chan error, 1)
+	go func() {
+		_, err := testHandler.Queries.WithTx(txB).UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+			ID:          parseUUID(f.IssueID),
+			Status:      "done",
+			WorkspaceID: parseUUID(testWorkspaceID),
+		})
+		writeErr <- err
+	}()
+	if !waitForWaiterBlockedBy(t, pidA, 10*time.Second) {
+		t.Fatalf("terminal write is not parked on the restore's issue-row lock — the restore CTE never took the lock")
+	}
+
+	// The restore commits first: the card is linearly open, and only then
+	// does the parked terminal write land behind it.
+	if err := txA.Commit(ctx); err != nil {
+		t.Fatalf("commit restore: %v", err)
+	}
+	if err := <-writeErr; err != nil {
+		txB.Rollback(ctx)
+		t.Fatalf("parked terminal write after restore commit: %v", err)
+	}
+	if err := txB.Commit(ctx); err != nil {
+		t.Fatalf("commit terminal write: %v", err)
+	}
+
+	var status string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status FROM issue_decisions WHERE id = $1`, parseUUID(card.ID)).Scan(&status); err != nil {
+		t.Fatalf("load card status: %v", err)
+	}
+	if status != "open" {
+		t.Fatalf("card = %q after winning the race, want open (no rollback of a committed restore)", status)
+	}
+	var issueStatus string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status FROM issue WHERE id = $1`, parseUUID(f.IssueID)).Scan(&issueStatus); err != nil {
+		t.Fatalf("load issue status: %v", err)
+	}
+	if issueStatus != "done" {
+		t.Fatalf("issue = %q after the terminal write, want done (legal transition after a committed restore)", issueStatus)
+	}
 }
 
 // answerEchoForMemberCard keeps a member-created card mention-free: no agent
