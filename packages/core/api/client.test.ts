@@ -3044,3 +3044,128 @@ describe("ApiClient listIssueSuspensions", () => {
     await expect(client.listIssueSuspensions("issue-1")).resolves.toEqual([]);
   });
 });
+
+describe("ApiClient agent backpressure policy (RUYI-859 stage A)", () => {
+  it("falls back to the unconfigured monitor-only card on a malformed policy body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ configured: "nope", config: 42, window: "x", events: null }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+    const policy = await client.getAgentBackpressurePolicy("agent-1");
+    expect(policy.agent_id).toBe("agent-1");
+    expect(policy.configured).toBe(false);
+    expect(policy.config).toBeNull();
+    expect(policy.window).toBeNull();
+    expect(policy.scheduling).toBeNull();
+    expect(policy.events).toEqual([]);
+  });
+
+  it("parses a full policy card and degrades a malformed event list to empty", async () => {
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    const okFetch = vi.fn().mockImplementation(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("/backpressure-events")) {
+        return json({ not: "an array" });
+      }
+      return json({
+        agent_id: "agent-1",
+        configured: true,
+        config: {
+          window_minutes: 60,
+          error_rate_threshold_pct: 30,
+          min_samples: 5,
+          recovery_window_minutes: 30,
+          suppress_on_error_rate: false,
+          count_model_api_failures: true,
+          count_execution_failures: true,
+        },
+        window: {
+          window_minutes: 60,
+          total_terminal: 5,
+          selected_failures: 2,
+          recovery_threshold_pct: 15,
+          error_rate_pct: 40,
+          by_class: { runtime: 1, rate_limit: 1 },
+        },
+        scheduling: { paused: true, scope: "agent", queued_count: 3 },
+        events: [
+          {
+            id: "evt-1",
+            event_type: "entered",
+            sample_count: 5,
+            error_rate_pct: 40,
+            effective_policy: {},
+            occurred_at: "2026-10-24T00:00:00Z",
+          },
+        ],
+      });
+    });
+    vi.stubGlobal("fetch", okFetch);
+    const client = new ApiClient("https://api.example.test");
+    const policy = await client.getAgentBackpressurePolicy("agent-1");
+    expect(policy.configured).toBe(true);
+    expect(policy.config?.suppress_on_error_rate).toBe(false);
+    expect(policy.window?.error_rate_pct).toBe(40);
+    expect(policy.scheduling?.paused).toBe(true);
+    expect(policy.events).toHaveLength(1);
+
+    const events = await client.listAgentBackpressureEvents("agent-1", { limit: 10 });
+    expect(events).toEqual([]);
+    const url = new URL(String(okFetch.mock.calls[1]?.[0]));
+    expect(url.pathname).toBe("/api/agents/agent-1/backpressure-events");
+    expect(url.searchParams.get("limit")).toBe("10");
+  });
+
+  it("saves and deletes the card through PUT/DELETE and survives a malformed write body", async () => {
+    let writes = 0;
+    const writeFetch = vi
+      .fn()
+      .mockImplementation(async (_input: unknown, init?: RequestInit) => {
+        writes += 1;
+        const body = JSON.stringify(
+          init?.method === "DELETE"
+            ? { configured: 1, events: { broken: true } } // malformed write response
+            : { agent_id: "agent-1", configured: writes === 1, config: null },
+        );
+        return new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+    vi.stubGlobal("fetch", writeFetch);
+    const client = new ApiClient("https://api.example.test");
+    const saved = await client.putAgentBackpressurePolicy("agent-1", {
+      window_minutes: 60,
+      error_rate_threshold_pct: 30,
+      min_samples: 5,
+      recovery_window_minutes: 30,
+      suppress_on_error_rate: true,
+      count_model_api_failures: true,
+      count_execution_failures: true,
+    });
+    expect(saved.agent_id).toBe("agent-1");
+    const putCall = String(writeFetch.mock.calls[0]?.[0]);
+    expect(putCall).toBe("https://api.example.test/api/agents/agent-1/backpressure-policy");
+
+    const deleted = await client.deleteAgentBackpressurePolicy("agent-1");
+    expect(deleted.configured).toBe(false);
+    expect(deleted.events).toEqual([]);
+
+    const again = await client.putAgentBackpressurePolicy("agent-1", {
+      window_minutes: 60,
+      error_rate_threshold_pct: 30,
+      min_samples: 5,
+      recovery_window_minutes: 30,
+      suppress_on_error_rate: false,
+      count_model_api_failures: true,
+      count_execution_failures: true,
+    });
+    expect(again.agent_id).toBe("agent-1");
+    expect(again.events).toEqual([]);
+  });
+});

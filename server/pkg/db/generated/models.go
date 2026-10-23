@@ -77,6 +77,30 @@ type Agent struct {
 	VoiceAdvanced          []byte      `json:"voice_advanced"`
 }
 
+// Agent-level error-rate backpressure policy (RUYI-859 stage A): per-agent aggregation window, threshold, sample floor, recovery window, auto-suppression switch and failure-class inclusion. No row = defaults (monitor only, auto-suppression off).
+type AgentBackpressurePolicy struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	// Trailing window, in minutes, over which the entry judgment aggregates terminal task samples.
+	WindowMinutes int32 `json:"window_minutes"`
+	// Percent (0,100] of in-window failed terminal samples that arms the automatic suppression; the recovery threshold is fixed at 0.5x this value.
+	ErrorRateThresholdPct float64 `json:"error_rate_threshold_pct"`
+	// Minimum in-window terminal samples for the error rate to be evaluated at all.
+	MinSamples int32 `json:"min_samples"`
+	// Full trailing window, in minutes, the recovery judgment aggregates over; the judgment must reach min_samples and stay below the fixed 0.5x threshold before the suppression clears.
+	RecoveryWindowMinutes int32 `json:"recovery_window_minutes"`
+	// Automatic suppression master switch; default false means the policy only drives the read-only visibility card.
+	SuppressOnErrorRate bool `json:"suppress_on_error_rate"`
+	// Whether model/API-side failure display classes (auth, rate_limit, timeout, provider) count toward the error-rate numerator.
+	CountModelApiFailures bool `json:"count_model_api_failures"`
+	// Whether platform execution failure display classes (runtime, agent, other including unclassified) count toward the error-rate numerator.
+	CountExecutionFailures bool `json:"count_execution_failures"`
+	// Member who last saved this row; plain UUID on purpose (rows survive member deletion).
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type AgentBuilderDraft struct {
 	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -144,6 +168,18 @@ type AgentSkill struct {
 	SkillID   pgtype.UUID        `json:"skill_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	Enabled   bool               `json:"enabled"`
+}
+
+// Automatic error-rate suppression history (RUYI-859 stage B writer, stage A reader): one row per entered/cleared transition, with sample count, error rate and the effective policy snapshot.
+type AgentSuppressionEvent struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	AgentID         pgtype.UUID        `json:"agent_id"`
+	EventType       string             `json:"event_type"`
+	SampleCount     int32              `json:"sample_count"`
+	ErrorRatePct    float64            `json:"error_rate_pct"`
+	EffectivePolicy []byte             `json:"effective_policy"`
+	OccurredAt      pgtype.Timestamptz `json:"occurred_at"`
 }
 
 type AgentTaskQueue struct {

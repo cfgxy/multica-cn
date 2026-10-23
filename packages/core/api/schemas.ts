@@ -5547,6 +5547,69 @@ export const RuntimeBackpressureSettingsSchema = z.object({
 
 export type RuntimeBackpressureSettings = z.infer<typeof RuntimeBackpressureSettingsSchema>;
 
+// RUYI-859 stage A: agent-level error-rate backpressure policy (config
+// surface + read-only visibility). A no-row agent answers with the server's
+// built-in defaults (monitor-only, auto-suppression off), so the card always
+// has concrete numbers. The two windows and the FIXED 0.5x recovery
+// threshold are product semantics the page must show.
+
+const AgentBackpressureConfigSchema = z.object({
+  window_minutes: z.number().default(60),
+  error_rate_threshold_pct: z.number().default(30),
+  min_samples: z.number().default(5),
+  recovery_window_minutes: z.number().default(30),
+  suppress_on_error_rate: z.boolean().default(false),
+  count_model_api_failures: z.boolean().default(true),
+  count_execution_failures: z.boolean().default(true),
+}).loose();
+
+export type AgentBackpressureConfig = z.infer<typeof AgentBackpressureConfigSchema>;
+
+const AgentBackpressureSchedulingSchema = z.object({
+  paused: z.boolean().default(false),
+  scope: z.string().optional(),
+  reason: z.string().optional(),
+  created_by: z.string().optional(),
+  created_at: z.string().optional(),
+  queued_count: z.number().default(0),
+});
+
+const AgentBackpressureWindowSchema = z
+  .object({
+    window_minutes: z.number().default(0),
+    total_terminal: z.number().default(0),
+    selected_failures: z.number().default(0),
+    recovery_threshold_pct: z.number().default(0),
+    error_rate_pct: z.number().nullable().default(null),
+    by_class: z.record(z.string(), z.number()).default({}),
+  })
+  .loose();
+
+const AgentBackpressureEventSchema = z.object({
+  id: z.string().default(""),
+  event_type: z.string().default(""),
+  sample_count: z.number().default(0),
+  error_rate_pct: z.number().default(0),
+  effective_policy: z.unknown().optional(),
+  occurred_at: z.string().default(""),
+}).loose();
+
+export const AgentBackpressurePolicySchema = z.object({
+  agent_id: z.string().default(""),
+  configured: z.boolean().default(false),
+  config: AgentBackpressureConfigSchema.nullish().catch(null),
+  updated_by: z.string().optional(),
+  updated_at: z.string().optional(),
+  window: AgentBackpressureWindowSchema.nullish().catch(null),
+  scheduling: AgentBackpressureSchedulingSchema.nullish().catch(null),
+  events: z.array(AgentBackpressureEventSchema).default([]),
+}).loose();
+
+export type AgentBackpressurePolicy = z.infer<typeof AgentBackpressurePolicySchema>;
+export type AgentBackpressureEvent = z.infer<typeof AgentBackpressureEventSchema>;
+
+export const AgentBackpressureEventListSchema = z.array(AgentBackpressureEventSchema);
+
 const DaemonBackpressureEventSchema = z.object({
   id: z.string().default(""),
   event_type: z.string().default(""),
