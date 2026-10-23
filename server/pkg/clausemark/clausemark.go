@@ -144,6 +144,7 @@ func Render(text string, clauses []RenderedClause) string {
 	stable := StripMarkers(text)
 	for _, c := range clauses {
 		stable = removeClauseBlock(stable, c.Body)
+		stable = removeSectionBlock(stable, c.Body)
 	}
 	stable = strings.TrimRight(stable, "\n")
 
@@ -247,6 +248,54 @@ func removeClauseBlock(text, block string) string {
 		out = append(out, line)
 	}
 	return strings.TrimRight(strings.Join(out, "\n"), "\n")
+}
+
+// removeSectionBlock moves a legacy section-sized clause asset out of stable
+// text before it is rendered in the managed region. New clause assets use
+// bold labels, but the initial inventory also contains whole ## sections.
+func removeSectionBlock(text, block string) string {
+	section := firstSectionHeading(block)
+	if section == "" {
+		return text
+	}
+	lines := splitLines(text)
+	start := -1
+	end := len(lines)
+	for i, line := range lines {
+		heading := sectionHeading(line)
+		if heading == "" {
+			continue
+		}
+		if start >= 0 {
+			end = i
+			break
+		}
+		if heading == section {
+			start = i
+		}
+	}
+	if start < 0 {
+		return text
+	}
+	out := append(lines[:start:start], lines[end:]...)
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
+}
+
+func firstSectionHeading(block string) string {
+	for _, line := range splitLines(block) {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		return sectionHeading(line)
+	}
+	return ""
+}
+
+func sectionHeading(line string) string {
+	if !strings.HasPrefix(line, "## ") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(line, "## "))
 }
 
 // RemoveClauses removes each clause block — matched by its leading bold
