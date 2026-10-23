@@ -22,14 +22,31 @@ export const decisionRequestKeys = {
     [...decisionRequestKeys.all(), workspaceId ?? "none"] as const,
 };
 
-export function workspaceDecisionRequestsQueryOptions(workspaceId: string | null | undefined) {
+/**
+ * RUYI-864 list window for authorization requests. `status` is one of the
+ * row's real lifecycle statuses (never a folded pseudo-state) and `order`
+ * picks the scan direction: 'asc' is the oldest-first pending queue,
+ * 'desc' the newest-first history surface (the server default when absent).
+ */
+export interface DecisionRequestsListFilters {
+  status?: string;
+  limit?: number;
+  order?: "asc" | "desc";
+}
+
+export function workspaceDecisionRequestsQueryOptions(
+  workspaceId: string | null | undefined,
+  filters?: DecisionRequestsListFilters,
+) {
   return queryOptions({
-    queryKey: decisionRequestKeys.workspace(workspaceId),
+    queryKey: filters
+      ? [...decisionRequestKeys.workspace(workspaceId), filters]
+      : decisionRequestKeys.workspace(workspaceId),
     queryFn: async (): Promise<DecisionRequestsList> => {
       if (!workspaceId) {
         return { items: [], counts: { pending: 0, closed: 0, executed: 0 } };
       }
-      return api.listDecisionRequests(workspaceId);
+      return api.listDecisionRequests(workspaceId, filters);
     },
     enabled: !!workspaceId,
   });
