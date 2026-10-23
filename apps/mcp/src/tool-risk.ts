@@ -155,6 +155,17 @@ export const TOOL_RISK_MATRIX: Record<string, ToolRiskEntry> = {
   list_decisions: read("读取决策卡"),
   get_decision: read("读取决策卡详情"),
   answer_decisions: external("回答决策卡并发布提及创建者 Agent 的回声评论，可能恢复其运行"),
+  list_clauses: read("读取工作区条款资产库概览（版本/绑定/状态/注入统计）"),
+  get_clause: read("读取单条条款的完整治理详情（版本/绑定/提案/质量日表）"),
+  search_clauses: read("按关键词与状态检索工作区条款资产库"),
+  get_clause_reconciliation: read("只读对账条款注入不变量：层集违规、降级占比、标记漂移"),
+  get_prompt_versions: read("读取提示词载体版本台账（对照条款与现行提示词的载体文本）"),
+  list_prompt_proposals: read("读取提示词立法提案池（生命周期与审计记录）"),
+  create_prompt_proposal: write("向提案池新增一条条款变更草案（owner 批准前不改变任何提示词或载体）"),
+  update_prompt_proposal: write("全量改写提案池中的一条草案（仅 draft 态可改；owner 批准前不改变任何提示词或载体）", true),
+  submit_prompt_proposal: write("把一条草案送入 owner 决策队列（draft → pending_owner，仅 draft 态可提交）"),
+  preview_prompt_proposal: read("只读合成提案的沙箱文本并返回全载体行级 diff（不写载体、不动提案状态）"),
+  rework_prompt_proposal: write("把一条 gate_failed 提案退回草案（gate_failed → draft，审计记录回退原因）"),
 };
 
 export function getToolRisk(name: string): ToolRiskEntry {
