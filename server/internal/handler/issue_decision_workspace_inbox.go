@@ -5,10 +5,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -23,6 +26,10 @@ import (
 const (
 	decisionInboxDefaultLimit = 200
 	decisionInboxMaxLimit     = 500
+	// RUYI-864: keyword length cap. The keyword is a user-typed filter box,
+	// not a bulk dump request — 200 runes is far beyond a real search and
+	// keeps the ILIKE scan bounded.
+	decisionInboxMaxKeywordLen = 200
 )
 
 type WorkspaceDecisionInboxItem struct {
@@ -40,8 +47,15 @@ type DecisionInboxCounts struct {
 }
 
 type WorkspaceDecisionInboxResponse struct {
-	Items  []WorkspaceDecisionInboxItem `json:"items"`
+	Items []WorkspaceDecisionInboxItem `json:"items"`
 	Counts DecisionInboxCounts          `json:"counts"`
+	// RUYI-864: the keyset cursor for the next page — the last row's
+	// created_at (RFC3339Nano, sub-second precision) plus its id. Both are
+	// null when the last page came back short (the window ended). Clients
+	// page with ?after_created_at=&after_id= and pass a null cursor through
+	// as "no more pages".
+	NextCursor   *string `json:"next_cursor"`
+	NextCursorID *string `json:"next_cursor_id"`
 }
 
 // issueDecisionFromInboxRow reassembles the plain card row from the inbox
@@ -90,13 +104,86 @@ func issueDecisionFromInboxRow(row db.ListWorkspaceIssueDecisionsRow) db.IssueDe
 	}
 }
 
+// parseDecisionInboxQueryParams reads the filter window of the inbox list:
+// `status` (one card status), `limit`, the RUYI-864 keyword `q` (LIKE
+// wildcards escaped server-side — the client sends the raw keyword and only
+// this function knows how to quote it), and the keyset cursor pair
+// `after_created_at` + `after_id`. The cursor pair must arrive together,
+// exactly mirroring the audit-events cursor discipline: a timestamp without
+// its tiebreaker id silently skips or repeats rows.
+func parseDecisionInboxQueryParams(w http.ResponseWriter, r *http.Request) (
+	workspaceID pgtype.UUID, status pgtype.Text, limit int32, q pgtype.Text,
+	afterCreatedAt pgtype.Timestamptz, afterID pgtype.UUID, ok bool,
+) {
+	workspaceID, ok = parseUUIDOrBadRequest(w, workspaceIDFromURL(r, "id"), "workspace id")
+	if !ok {
+		return workspaceID, status, 0, q, afterCreatedAt, afterID, false
+	}
+	var raw string
+	switch raw = r.URL.Query().Get("status"); raw {
+	case "":
+		// no status filter
+	case "open", "answered", "cancelled":
+		status = pgtype.Text{String: raw, Valid: true}
+	default:
+		writeError(w, http.StatusBadRequest, "status must be one of open, answered, cancelled")
+		return workspaceID, status, 0, q, afterCreatedAt, afterID, false
+	}
+	limit = int32(decisionInboxDefaultLimit)
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > decisionInboxMaxLimit {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("limit must be between 1 and %d", decisionInboxMaxLimit))
+			return workspaceID, status, 0, q, afterCreatedAt, afterID, false
+		}
+		limit = int32(n)
+	}
+	// Keyword: trim, cap, then escape LIKE wildcards so the literal match
+	// stays literal even when a card's question contains % or _.
+	if raw := strings.TrimSpace(r.URL.Query().Get("q")); raw != "" {
+		if len([]rune(raw)) > decisionInboxMaxKeywordLen {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("q must be at most %d characters", decisionInboxMaxKeywordLen))
+			return workspaceID, status, limit, q, afterCreatedAt, afterID, false
+		}
+		q = pgtype.Text{String: escapeLikePattern(raw), Valid: true}
+	}
+	// Cursor pair (RUYI-864 keyset paging): `after_created_at` is the
+	// RFC3339Nano created_at of the last row of the previous page, `after_id`
+	// its id — both together, or neither.
+	if raw := r.URL.Query().Get("after_created_at"); raw != "" {
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid after_created_at parameter; expected RFC3339 timestamp")
+			return workspaceID, status, limit, q, afterCreatedAt, afterID, false
+		}
+		afterCreatedAt = pgtype.Timestamptz{Time: t, Valid: true}
+	}
+	if raw := r.URL.Query().Get("after_id"); raw != "" {
+		id, err := util.ParseUUID(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid after_id parameter; expected uuid")
+			return workspaceID, status, limit, q, afterCreatedAt, afterID, false
+		}
+		afterID = id
+	}
+	if afterCreatedAt.Valid != afterID.Valid {
+		writeError(w, http.StatusBadRequest, "after_created_at and after_id must arrive together")
+		return workspaceID, status, limit, q, afterCreatedAt, afterID, false
+	}
+	return workspaceID, status, limit, q, afterCreatedAt, afterID, true
+}
+
 // ListWorkspaceDecisionInbox handles GET /api/workspaces/{id}/decision-inbox.
 // Membership is enforced by the router middleware (and re-checked here so a
-// direct call fails closed); `status` optionally filters to one status and
-// `limit` bounds the window (the client groups sections and renders counts
-// from the same response).
+// direct call fails closed). The filter window is `status` (one card status,
+// a 1:1 real state — the request lifecycle statuses are never folded onto a
+// card) and the RUYI-864 keyword `q` (question / structured context / issue
+// identifier or title, LIKE'd server-side); `limit` bounds the page and the
+// `after_created_at` + `after_id` pair is the keyset cursor for the next one.
+// Counts ride along scoped to status + q (never the page window), so the
+// section headers and empty states can't disagree with the rows on screen.
 func (h *Handler) ListWorkspaceDecisionInbox(w http.ResponseWriter, r *http.Request) {
-	workspaceID, ok := parseUUIDOrBadRequest(w, workspaceIDFromURL(r, "id"), "workspace id")
+	workspaceID, status, limit, q, afterCreatedAt, afterID, ok := parseDecisionInboxQueryParams(w, r)
 	if !ok {
 		return
 	}
@@ -104,30 +191,13 @@ func (h *Handler) ListWorkspaceDecisionInbox(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var status pgtype.Text
-	if raw := r.URL.Query().Get("status"); raw != "" {
-		switch raw {
-		case "open", "answered", "cancelled":
-			status = pgtype.Text{String: raw, Valid: true}
-		default:
-			writeError(w, http.StatusBadRequest, "status must be one of open, answered, cancelled")
-			return
-		}
-	}
-	limit := decisionInboxDefaultLimit
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > decisionInboxMaxLimit {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("limit must be between 1 and %d", decisionInboxMaxLimit))
-			return
-		}
-		limit = n
-	}
-
 	rows, err := h.Queries.ListWorkspaceIssueDecisions(r.Context(), db.ListWorkspaceIssueDecisionsParams{
 		WorkspaceID: workspaceID,
-		Limit:       int32(limit),
+		Limit:       limit,
 		Status:      status,
+		Q:           q,
+		AfterCreatedAt: afterCreatedAt,
+		AfterID:     afterID,
 	})
 	if err != nil {
 		slog.Warn("workspace decision inbox list failed", append(logger.RequestAttrs(r),
@@ -135,7 +205,11 @@ func (h *Handler) ListWorkspaceDecisionInbox(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "failed to list decision cards")
 		return
 	}
-	counts, err := h.Queries.CountWorkspaceIssueDecisionsByStatus(r.Context(), workspaceID)
+	counts, err := h.Queries.CountWorkspaceIssueDecisionsByStatus(r.Context(), db.CountWorkspaceIssueDecisionsByStatusParams{
+		WorkspaceID: workspaceID,
+		Status:      status,
+		Q:           q,
+	})
 	if err != nil {
 		slog.Warn("workspace decision inbox counts failed", append(logger.RequestAttrs(r),
 			"error", err, "workspace_id", uuidToString(workspaceID))...)
@@ -164,12 +238,23 @@ func (h *Handler) ListWorkspaceDecisionInbox(w http.ResponseWriter, r *http.Requ
 		})
 	}
 	resp := WorkspaceDecisionInboxResponse{
-		Items: items,
-		Counts: DecisionInboxCounts{
-			Open:      int(counts.OpenCount),
-			Answered:  int(counts.AnsweredCount),
-			Cancelled: int(counts.CancelledCount),
-		},
+		Items:  items,
+		Counts: DecisionInboxCounts{Open: int(counts.OpenCount), Answered: int(counts.AnsweredCount), Cancelled: int(counts.CancelledCount)},
+	}
+	// RUYI-864: the response's own last row is the safe cursor for the next
+	// page — the created_at must keep sub-second precision, exactly as the
+	// audit-events cursor does (a truncated second would drop every row
+	// sharing it).
+	// The cursor rides the last row of the DB page (not of the filtered
+	// items — a page whose tail rows all get dropped by the visibility or
+	// authorization filters must still advance past them), and only when
+	// the page came back full, so a short page means the window ended.
+	if len(rows) == int(limit) {
+		lastRow := rows[len(rows)-1]
+		ts := lastRow.CreatedAt.Time.UTC().Format(time.RFC3339Nano)
+		id := uuidToString(lastRow.ID)
+		resp.NextCursor = &ts
+		resp.NextCursorID = &id
 	}
 	// Log ids/shape only — never question text or actor identities (they are
 	// already on the card records; the log line must not duplicate readable
@@ -177,6 +262,7 @@ func (h *Handler) ListWorkspaceDecisionInbox(w http.ResponseWriter, r *http.Requ
 	slog.Info("workspace decision inbox listed", append(logger.RequestAttrs(r),
 		"workspace_id", uuidToString(workspaceID),
 		"status_filter", status.String,
+		"keyword", q.Valid,
 		"count", len(items))...)
 	writeJSON(w, http.StatusOK, resp)
 }
