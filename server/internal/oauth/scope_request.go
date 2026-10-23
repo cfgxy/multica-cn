@@ -136,6 +136,7 @@ var surfaceShapes = []scopeShape{
 	{[]string{"issues", "*", "active-task"}, shapeReadOnly},
 	{[]string{"issues", "*", "task-runs"}, shapeReadOnly},
 	{[]string{"issues", "*", "tasks", "*"}, shapeReadOnly},
+	{[]string{"issues", "*", "tasks", "*", "activity"}, shapeReadOnly},
 
 	// Decision cards (RUYI-688): the answer flow the decision tools drive.
 	// The workspace inbox and the issue-scoped card list are read-only; the
