@@ -2280,6 +2280,22 @@ export const AgentTaskSchema = z.object({
   started_at: z.string().nullable().default(null),
   completed_at: z.string().nullable().default(null),
   result: z.unknown().default(null),
+  capability_adaptation: z.object({
+    task_id: z.string(),
+    policy_id: z.string(),
+    policy_version: z.string(),
+    scope: z.string(),
+    trigger: z.string(),
+    current_strategy: z.string(),
+    suggested_strategy: z.string(),
+    allowed_actions: z.array(z.string()),
+  }).optional().catch(undefined),
+  capability_adaptation_result: z.object({
+    task_id: z.string(),
+    policy_id: z.string(),
+    policy_version: z.string(),
+    status: z.string(),
+  }).optional().catch(undefined),
   error: z.string().nullable().default(null),
   failure_reason: z.string().optional(),
   // RUYI-397 admission code; degrades independently like the fields below.
@@ -5326,6 +5342,25 @@ const SelfEvolutionOverviewProposalsSchema = z.object({
     .optional(),
 });
 
+const SelfEvolutionOverviewExperienceSchema = z.object({
+	candidate_id: z.string(),
+  trigger: z.string(),
+  current_strategy: z.string(),
+  suggested_strategy: z.string(),
+  allowed_actions: z.array(z.string()).default([]),
+  applicability: z.string(),
+  evidence: z.string(),
+  limitation: z.string(),
+	source_tasks: z.array(z.object({
+		task_id: z.string(),
+		issue_id: z.string().optional(),
+		policy_id: z.string(),
+		policy_version: z.string(),
+		outcome: z.string(),
+		completed_at: z.string(),
+	})).default([]),
+});
+
 export const SelfEvolutionOverviewSchema = z.object({
   versions: z.array(SelfEvolutionOverviewTierSchema).default([]),
   quality: z
@@ -5357,6 +5392,7 @@ export const SelfEvolutionOverviewSchema = z.object({
   knowledge: SelfEvolutionOverviewKnowledgeSchema.default({ dirs: 0, entries: 0 }),
   skills: SelfEvolutionOverviewSkillsSchema.default({ count: 0, invocations: 0 }),
   proposals: SelfEvolutionOverviewProposalsSchema.default({ total: 0, pending_owner: 0 }),
+  experiences: z.array(SelfEvolutionOverviewExperienceSchema).default([]),
 });
 
 // The fallback for a response that did not parse: no tier rows, an unmeasured
@@ -5376,6 +5412,7 @@ export const EMPTY_SELF_EVOLUTION_OVERVIEW: SelfEvolutionOverview = {
   knowledge: { dirs: 0, entries: 0 },
   skills: { count: 0, invocations: 0 },
   proposals: { total: 0, pending_owner: 0 },
+  experiences: [],
 };
 
 // ---- Self-evolution model-service config (RUYI-551) ----

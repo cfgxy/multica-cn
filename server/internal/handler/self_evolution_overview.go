@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptquality"
 	"github.com/multica-ai/multica/server/pkg/promptquiz"
+	"github.com/multica-ai/multica/server/pkg/taskadaptation"
 )
 
 // Self-evolution workspace overview (RUYI-284; proposal section wired on
@@ -111,13 +114,38 @@ type SelfEvolutionOverviewProposals struct {
 	LastAutoProposal *SelfEvolutionOverviewLastAutoProposal `json:"last_auto_proposal,omitempty"`
 }
 
+// SelfEvolutionOverviewExperience is a repeated adaptation pattern derived
+// from immutable task receipts. Repetition is evidence for review, not
+// authorization to change a workspace policy.
+type SelfEvolutionOverviewExperience struct {
+	CandidateID       string                                  `json:"candidate_id"`
+	Trigger           string                                  `json:"trigger"`
+	CurrentStrategy   string                                  `json:"current_strategy"`
+	SuggestedStrategy string                                  `json:"suggested_strategy"`
+	AllowedActions    []string                                `json:"allowed_actions"`
+	Applicability     string                                  `json:"applicability"`
+	Evidence          string                                  `json:"evidence"`
+	Limitation        string                                  `json:"limitation"`
+	SourceTasks       []SelfEvolutionOverviewExperienceSource `json:"source_tasks"`
+}
+
+type SelfEvolutionOverviewExperienceSource struct {
+	TaskID        string `json:"task_id"`
+	IssueID       string `json:"issue_id,omitempty"`
+	PolicyID      string `json:"policy_id"`
+	PolicyVersion string `json:"policy_version"`
+	Outcome       string `json:"outcome"`
+	CompletedAt   string `json:"completed_at"`
+}
+
 type SelfEvolutionOverviewResponse struct {
-	Versions  []SelfEvolutionOverviewTier    `json:"versions"`
-	Quality   SelfEvolutionOverviewQuality   `json:"quality"`
-	Quiz      SelfEvolutionOverviewQuiz      `json:"quiz"`
-	Knowledge SelfEvolutionOverviewKnowledge `json:"knowledge"`
-	Skills    SelfEvolutionOverviewSkills    `json:"skills"`
-	Proposals SelfEvolutionOverviewProposals `json:"proposals"`
+	Versions    []SelfEvolutionOverviewTier       `json:"versions"`
+	Quality     SelfEvolutionOverviewQuality      `json:"quality"`
+	Quiz        SelfEvolutionOverviewQuiz         `json:"quiz"`
+	Knowledge   SelfEvolutionOverviewKnowledge    `json:"knowledge"`
+	Skills      SelfEvolutionOverviewSkills       `json:"skills"`
+	Proposals   SelfEvolutionOverviewProposals    `json:"proposals"`
+	Experiences []SelfEvolutionOverviewExperience `json:"experiences"`
 }
 
 // GetSelfEvolutionOverview — GET /api/self-evolution/overview?days=N
@@ -162,15 +190,125 @@ func (h *Handler) GetSelfEvolutionOverview(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to read proposal pool")
 		return
 	}
+	experiences, err := h.selfEvolutionOverviewExperiences(ctx, workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read task adaptation evidence")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, SelfEvolutionOverviewResponse{
-		Versions:  versions,
-		Quality:   quality,
-		Quiz:      quiz,
-		Knowledge: knowledge,
-		Skills:    skills,
-		Proposals: proposals,
+		Versions:    versions,
+		Quality:     quality,
+		Quiz:        quiz,
+		Knowledge:   knowledge,
+		Skills:      skills,
+		Proposals:   proposals,
+		Experiences: experiences,
 	})
+}
+
+func (h *Handler) selfEvolutionOverviewExperiences(ctx context.Context, workspaceID pgtype.UUID) ([]SelfEvolutionOverviewExperience, error) {
+	rows, err := h.DB.Query(ctx, `
+SELECT t.id::text, COALESCE(t.issue_id::text, ''), t.context, t.result, t.completed_at
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE a.workspace_id = $1 AND t.status = 'completed'
+  AND t.completed_at >= now() - interval '180 days'
+  AND t.context ? 'capability_adaptation'
+  AND t.result ? 'capability_adaptation_result'
+ORDER BY t.completed_at DESC, t.id
+LIMIT 500`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type pattern struct {
+		Trigger           string   `json:"trigger"`
+		CurrentStrategy   string   `json:"current_strategy"`
+		SuggestedStrategy string   `json:"suggested_strategy"`
+		AllowedActions    []string `json:"allowed_actions"`
+	}
+	type candidateBuilder struct {
+		pattern pattern
+		sources []SelfEvolutionOverviewExperienceSource
+	}
+	groups := make(map[string]*candidateBuilder)
+	for rows.Next() {
+		var taskID, issueID string
+		var rawContext, rawResult []byte
+		var completedAt pgtype.Timestamptz
+		if err := rows.Scan(&taskID, &issueID, &rawContext, &rawResult, &completedAt); err != nil {
+			return nil, err
+		}
+		snapshot := taskadaptation.SnapshotFromContext(rawContext)
+		if snapshot == nil {
+			continue
+		}
+		snapshot.TaskID = taskID
+		var result struct {
+			CapabilityAdaptationResult *taskadaptation.Outcome `json:"capability_adaptation_result"`
+		}
+		if json.Unmarshal(rawResult, &result) != nil || result.CapabilityAdaptationResult == nil ||
+			!result.CapabilityAdaptationResult.Matches(snapshot, taskID) {
+			continue
+		}
+		outcome := result.CapabilityAdaptationResult
+		if outcome.Status != "applied" {
+			continue
+		}
+		p := pattern{
+			Trigger: snapshot.Trigger, CurrentStrategy: snapshot.CurrentStrategy,
+			SuggestedStrategy: snapshot.SuggestedStrategy, AllowedActions: snapshot.AllowedActions,
+		}
+		keyBytes, err := json.Marshal(p)
+		if err != nil {
+			return nil, err
+		}
+		key := string(keyBytes)
+		group := groups[key]
+		if group == nil {
+			group = &candidateBuilder{pattern: p}
+			groups[key] = group
+		}
+		group.sources = append(group.sources, SelfEvolutionOverviewExperienceSource{
+			TaskID: taskID, IssueID: issueID, PolicyID: snapshot.PolicyID,
+			PolicyVersion: snapshot.PolicyVersion, Outcome: outcome.Status,
+			CompletedAt: completedAt.Time.UTC().Format(httpTimeFormat),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	candidates := make([]SelfEvolutionOverviewExperience, 0, len(groups))
+	for _, group := range groups {
+		if len(group.sources) < 2 {
+			continue
+		}
+		candidates = append(candidates, SelfEvolutionOverviewExperience{
+			CandidateID: taskadaptation.CandidateID(&taskadaptation.Snapshot{
+				Trigger: group.pattern.Trigger, CurrentStrategy: group.pattern.CurrentStrategy,
+				SuggestedStrategy: group.pattern.SuggestedStrategy, AllowedActions: group.pattern.AllowedActions,
+			}),
+			Trigger: group.pattern.Trigger, CurrentStrategy: group.pattern.CurrentStrategy,
+			SuggestedStrategy: group.pattern.SuggestedStrategy, AllowedActions: group.pattern.AllowedActions,
+			Applicability: "current_task", Evidence: "repeated_verified_task_receipts",
+			Limitation: "repeated_pattern_not_approved_workspace_policy", SourceTasks: group.sources,
+		})
+	}
+	// Stable order: newest source first, then the deterministic signature.
+	sort.Slice(candidates, func(i, j int) bool {
+		left := candidates[i].SourceTasks[0].CompletedAt
+		right := candidates[j].SourceTasks[0].CompletedAt
+		if left == right {
+			return candidates[i].CandidateID < candidates[j].CandidateID
+		}
+		return left > right
+	})
+	if len(candidates) > 20 {
+		candidates = candidates[:20]
+	}
+	return candidates, nil
 }
 
 func (h *Handler) selfEvolutionOverviewVersions(ctx context.Context, workspaceID pgtype.UUID) ([]SelfEvolutionOverviewTier, error) {

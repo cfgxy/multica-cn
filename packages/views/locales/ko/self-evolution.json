@@ -37,6 +37,27 @@
       "noneAuto": "아직 자동 제안이 없습니다.",
       "empty": "풀이 비어 있습니다. 일일 회고를 설정하면 매일의 분석으로 제안이 자동으로 풀에 들어갑니다."
     },
+    "experiences": {
+      "title": "작업 경험 후보",
+      "loading": "작업 경험을 불러오는 중",
+      "error": "작업 경험을 불러오지 못했습니다",
+      "retry": "다시 시도",
+      "empty": "검증된 반복 적응 패턴이 아직 없습니다.",
+      "proposalsLink": "제안 거버넌스 검토",
+      "sourceCount": "완료된 작업 {{count}}건에서 확인",
+      "sourceTask": "작업 {{task}} · {{policy}} · {{date}}",
+      "currentStrategy": "현재 방식: {{strategy}}",
+      "scope": "적용 범위 {{scope}}",
+      "allowedActions": "허용된 동작: {{actions}}",
+      "limitation": "증거 한계",
+      "repeatedLimit": "반복된 작업 단위 증거는 승인된 workspace 정책이 아닙니다. 제안은 거버넌스, 퀴즈, 적용 게이트를 통과하기 전까지 초안입니다.",
+      "draftProposal": "제안 초안 작성",
+      "creatingProposal": "초안 작성 중…",
+      "proposalCreated": "초안 생성 · 제안 풀 열기",
+      "createFailed": "제안 초안을 만들지 못했습니다. 후보는 비활성 상태로 유지됩니다.",
+      "proposalName": "반복 적응 후보 {{candidate}} ({{count}}건)",
+      "proposalBody": "트리거: {{trigger}}\n적용 범위: {{scope}}\n제안 전략: {{strategy}}\n허용 동작: {{actions}}\n출처 작업: {{tasks}}\n제한: {{limitation}} 거버넌스 승인 및 적용 전까지 유효 정책은 변경되지 않습니다."
+    },
     "knowledge": {
       "title": "지식 미러",
       "empty": "등록된 디렉터리가 아직 없습니다.",
