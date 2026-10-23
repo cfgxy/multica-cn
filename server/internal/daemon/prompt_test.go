@@ -23,8 +23,18 @@ func TestBuildQuickCreatePromptRules(t *testing.T) {
 	out := buildQuickCreatePrompt(Task{QuickCreatePrompt: "fix the login button color"})
 
 	mustContain := []string{
+		"Use all five sections below, in this exact order",
+		"**Original request**",
+		"Task source: user input captured by quick-create.",
+		"complete raw user input verbatim",
+		"**Background**",
+		"**User stories**",
+		"**Acceptance criteria**",
+		"**Original attachments**",
+		"Not provided in the user input or verified source context.",
+		"No original attachments were provided.",
 		// high-fidelity invariant
-		"Faithfully restate what the user wants",
+		"faithfully restate the substantive request",
 		"Preserve specific names, identifiers, file paths",
 		// strip non-spec material: verbal routing wrappers + conversational fillers
 		"verbal routing wrappers about creating the issue",
@@ -33,9 +43,10 @@ func TestBuildQuickCreatePromptRules(t *testing.T) {
 		// auto-subscribe path fires (multica issue create has no --subscriber flag)
 		"CC exception",
 		"auto-subscribes members",
-		// context section is conditional and must not be an apology log
-		"include ONLY when the input cited external resources",
-		"never use it as an apology log",
+		"using only facts the user supplied",
+		"Do not use this section as an apology log",
+		"Do not invent a role, user, workflow, or benefit",
+		"Do not turn implementation guesses into criteria",
 		// output/reporting must be workspace-prefix agnostic. Workspaces can
 		// use custom issue prefixes, so a successful issue creation should
 		// not look failed merely because the identifier does not match one
@@ -64,6 +75,37 @@ func TestBuildQuickCreatePromptRules(t *testing.T) {
 
 	if strings.Contains(out, "do NOT pass `--attachment`") {
 		t.Errorf("buildQuickCreatePrompt carries the unconditional --attachment ban that conflicts with the quick-create ## Output delivery channel (MUL-5696)\n--- output ---\n%s", out)
+	}
+}
+
+func TestBuildQuickCreatePromptPreservesUploadedAttachmentsInOriginalAttachments(t *testing.T) {
+	out := buildQuickCreatePrompt(Task{
+		QuickCreatePrompt: "document the attachment behavior",
+		QuickCreateAttachments: []QuickCreateAttachmentMeta{
+			{
+				ID:          "image-id",
+				Filename:    "diagram.png",
+				ContentType: "image/png",
+				MarkdownURL: "https://example.test/attachments/image-id/download",
+			},
+			{
+				ID:          "file-id",
+				Filename:    "requirements.pdf",
+				ContentType: "application/pdf",
+				MarkdownURL: "https://example.test/attachments/file-id/download",
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"preserve every one in the **Original attachments** section",
+		"![diagram.png](https://example.test/attachments/image-id/download)",
+		"[requirements.pdf](https://example.test/attachments/file-id/download)",
+		"pass no extra flags for them, and do not download them",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("buildQuickCreatePrompt attachment rule missing %q\n--- output ---\n%s", want, out)
+		}
 	}
 }
 
