@@ -4550,6 +4550,15 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 			// Already delivered to this run (trigger or pre-claim coalesced).
 			continue
 		}
+		// CompleteTask may synthesize an agent comment after the task is marked
+		// complete. That receipt carries the responsibility mention required for
+		// agent comments, but it is output from this task, not a new instruction.
+		// Replaying it here would turn its mandatory self-mention into another
+		// task for the same agent on every completion. Agent comments authored by
+		// another task still take the explicit-mention recovery path below.
+		if c.AuthorType == "agent" && c.SourceTaskID.Valid && c.SourceTaskID == task.ID {
+			continue
+		}
 		if isNoteComment(c.Content) {
 			continue
 		}
