@@ -92,6 +92,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
   const recordGuardRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const finalizeGuardRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startFailureRef = useRef(false);
+  const captureAttemptRef = useRef(0);
 
   // 降级采集面：分片桶（null = 不在降级录制中）、事件退订、在转写上传。
   const chunksRef = useRef<string[] | null>(null);
@@ -124,10 +125,12 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
       degradedHandlers: degradedRef.current,
       onSend: (text) => optionsRef.current.onSend(text),
       onToast: (kind) => optionsRef.current.onToast(kind),
-      onStartFailure: () => {
+      captureAttempt: () => captureAttemptRef.current,
+      onStartFailure: (attempt) => {
+        if (attempt !== captureAttemptRef.current) return;
         if (stateRef.current.phase === "finalizing") {
           dispatch({ type: "recognizerError", kind: "failed" });
-        } else {
+        } else if (stateRef.current.phase === "recording") {
           startFailureRef.current = true;
         }
       },
@@ -315,6 +318,7 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
     }
     const atMs = Date.now();
     startFailureRef.current = false;
+    captureAttemptRef.current += 1;
     pressAtRef.current = atMs;
     dispatch({ type: "press" });
     armTimerRef.current = setTimeout(() => {
@@ -388,7 +392,8 @@ function runCommands(
     };
     onSend: (text: string) => void;
     onToast: (kind: "not_recognized" | "transcribe_failed") => void;
-    onStartFailure: () => void;
+    captureAttempt: () => number;
+    onStartFailure: (attempt: number) => void;
   },
 ): void {
   for (const command of commands) {
@@ -397,10 +402,11 @@ function runCommands(
         if (handlers.degraded) {
           handlers.degradedHandlers.startCapture();
         } else {
+          const attempt = handlers.captureAttempt();
           getSpeechRecognitionModule()
             ?.start()
             .catch(() => {
-              handlers.onStartFailure();
+              handlers.onStartFailure(attempt);
             });
         }
         break;
