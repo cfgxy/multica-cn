@@ -2326,10 +2326,74 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 		results[uuidToString(trigger.Agent.ID)] = commentEnqueueResult{status: status, reason: reason, execSquadID: execSquadID}
 	}
 	for _, trigger := range triggers {
+		if h.agentOnlyCommentCascadeBlocked(ctx, triggerCommentID) {
+			slog.Warn("comment trigger circuit breaker blocked agent-only cascade",
+				"issue_id", uuidToString(issue.ID),
+				"comment_id", uuidToString(triggerCommentID),
+				"agent_id", uuidToString(trigger.Agent.ID))
+			record(trigger, DispatchBlocked, ReasonSelfTriggerSuppressed)
+			continue
+		}
 		status, reason := h.resolveCommentTriggerEnqueue(ctx, issue, trigger, triggerCommentID, getEscalationDelay)
 		record(trigger, status, reason)
 	}
 	return results
+}
+
+const (
+	// An agent-only handoff chain without a fresh member comment is allowed to
+	// coordinate, but it must not consume unbounded runs. The short-window
+	// limit catches rapid ping-pong; the depth limit catches a slower loop.
+	maxAgentOnlyCommentCascadeHops      = 12
+	maxRapidAgentOnlyCommentCascadeHops = 8
+	agentOnlyCommentCascadeWindow       = 10 * time.Minute
+)
+
+// agentOnlyCommentCascadeBlocked follows comment.source_task_id back through
+// each source task's trigger comment. A member-authored comment has no source
+// task, so it deliberately terminates the chain and represents fresh external
+// input. The comment and task rows are already durable audit evidence; this
+// function merely bounds their automatic re-dispatch effect.
+func (h *Handler) agentOnlyCommentCascadeBlocked(ctx context.Context, commentID pgtype.UUID) bool {
+	comment, err := h.Queries.GetComment(ctx, commentID)
+	if err != nil || comment.AuthorType != "agent" || !comment.SourceTaskID.Valid {
+		return false
+	}
+
+	depth := 0
+	oldest := comment.CreatedAt
+	sourceTaskID := comment.SourceTaskID
+	seen := make(map[string]struct{}, maxAgentOnlyCommentCascadeHops)
+	for sourceTaskID.Valid {
+		key := uuidToString(sourceTaskID)
+		if _, duplicate := seen[key]; duplicate {
+			return true
+		}
+		seen[key] = struct{}{}
+
+		task, err := h.Queries.GetAgentTask(ctx, sourceTaskID)
+		if err != nil {
+			return false
+		}
+		depth++
+		if task.CreatedAt.Valid && (!oldest.Valid || task.CreatedAt.Time.Before(oldest.Time)) {
+			oldest = task.CreatedAt
+		}
+		if depth >= maxAgentOnlyCommentCascadeHops {
+			return true
+		}
+		if !task.TriggerCommentID.Valid {
+			break
+		}
+
+		parent, err := h.Queries.GetComment(ctx, task.TriggerCommentID)
+		if err != nil || parent.AuthorType != "agent" || !parent.SourceTaskID.Valid {
+			break
+		}
+		sourceTaskID = parent.SourceTaskID
+	}
+	return depth >= maxRapidAgentOnlyCommentCascadeHops && oldest.Valid &&
+		time.Since(oldest.Time) <= agentOnlyCommentCascadeWindow
 }
 
 // resolveCommentTriggerEnqueue resolves ONE trigger into its final dispatch
