@@ -124,6 +124,7 @@ export function AgentCreatePanel({
   const { t: tCommon } = useT("common");
   const { t: tIssues } = useT("issues");
   const { t: tProjects } = useT("projects");
+  const { t: tVoice } = useT("voice");
   const sendShortcut = useShortcut("send");
   const workspaceName = useCurrentWorkspace()?.name;
   const workspacePaths = useWorkspacePaths();
@@ -392,6 +393,16 @@ export function AgentCreatePanel({
       editorRef.current?.insertMarkdownAtEnd(text);
     },
   });
+  // `start()` silently no-ops without a targetable agent, so the entry must
+  // never look clickable in those states (RUYI-866, "never disable
+  // silently"): no actor picked yet explains the pick-first path, and a squad
+  // actor explains the agent-only limitation with its own reason.
+  const voiceDisabledReason =
+    actor?.type === "agent"
+      ? null
+      : actor?.type === "squad"
+        ? tVoice(($) => $.button.disabled_squad)
+        : tVoice(($) => $.button.disabled_no_target);
 
   useEffect(() => {
     // Defer focus so it lands after the dialog's focus trap has settled —
@@ -886,6 +897,7 @@ export function AgentCreatePanel({
             <VoiceButton
               onStart={voice.start}
               disabled={submitting || gate.uploading}
+              disabledReason={voiceDisabledReason}
             />
             {keepOpen && sentCount > 0 && (
               <span className="text-caption text-emerald-600 dark:text-emerald-400">
