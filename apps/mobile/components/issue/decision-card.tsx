@@ -285,6 +285,7 @@ export function DecisionCard({ decision }: { decision: IssueDecision }) {
  */
 function AnswerableDecisionCard({ decision }: { decision: IssueDecision }) {
   const { t } = useT("issues");
+  const { t: tCommon } = useT("common");
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { colorScheme } = useColorScheme();
@@ -347,6 +348,35 @@ function AnswerableDecisionCard({ decision }: { decision: IssueDecision }) {
     },
   });
 
+  // RUYI-863: a cancelled card restores to open from the card's more
+  // affordance — the header's "···" asks via a native confirm (the
+  // waterfall: Alert.alert beats a hand-rolled sheet for a single
+  // confirm), then the mutation mirrors the server's flipped card.
+  const restore = useMutation({
+    mutationFn: () => api.restoreIssueDecision(decision.issue_id, decision.id),
+    onSuccess: (updated) => {
+      upsertDecisionInCache(qc, updated.issue_id, updated);
+    },
+    onError: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
+      Alert.alert(t("decisions.restore_failed", "Failed to restore card"));
+    },
+  });
+
+  const confirmRestore = () => {
+    Alert.alert(
+      t("decisions.restore_card", "Restore decision card"),
+      undefined,
+      [
+        { text: tCommon("cancel", "Cancel"), style: "cancel" },
+        {
+          text: t("decisions.restore_card", "Restore decision card"),
+          onPress: () => restore.mutate(),
+        },
+      ],
+    );
+  };
+
   const isOpen = decision.status === "open";
   const interactive = isOpen && !submitting;
   const canSubmit = isOpen && selected.length > 0 && !submitting && !answer.isPending;
@@ -375,6 +405,21 @@ function AnswerableDecisionCard({ decision }: { decision: IssueDecision }) {
                 <Text className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
                   {t("decisions.status_cancelled", "Cancelled")}
                 </Text>
+              )}
+              {decision.status === "cancelled" && (
+                // RUYI-863: the card's only more action — restore to open.
+                // Native "···" affordance in the header (not a primary
+                // button, matching the web card's more menu).
+                <Pressable
+                  onPress={confirmRestore}
+                  disabled={restore.isPending}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("decisions.restore_card", "Restore decision card")}
+                  testID="decision-card-more"
+                  className="self-center p-1"
+                >
+                  <Ionicons name="ellipsis-horizontal" size={18} color={theme.mutedForeground} />
+                </Pressable>
               )}
             </View>
             <Text className="mt-1 text-sm font-medium">{decision.question}</Text>
