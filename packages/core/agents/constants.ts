@@ -11,7 +11,13 @@ export const AGENT_CONVERSATION_STARTER_MAX_LENGTH = 4000;
 // duplication, and settings editing cannot silently drift.
 export const AGENT_MAX_CONCURRENT_TASKS_MIN = 1;
 export const AGENT_MAX_CONCURRENT_TASKS_MAX = 50;
-export const AGENT_MAX_CONCURRENT_TASKS_UNLIMITED = -1;
+// 0 = no agent-level cap (RUYI-843 semantic revision); the owning
+// runtime's cap still applies.
+export const AGENT_MAX_CONCURRENT_TASKS_UNLIMITED = 0;
+// Pre-revision unlimited sentinel that still exists in historical rows.
+// Read-side code treats it as unlimited so in-flight schedules keep
+// running; every write path rejects it.
+export const AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED = -1;
 
 // Valid range for the claim-budget multiplier (RUYI-397): a running task
 // occupies resource_weight slots of max_concurrent_tasks, so heavy agents
