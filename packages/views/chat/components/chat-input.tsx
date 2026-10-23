@@ -19,6 +19,7 @@ import {
 } from "../../editor/use-coordinated-uploads";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
 import { ChatAddMenu } from "./chat-add-menu";
+import { COMPOSER_SURFACE_CLASS } from "../../common/composer-surface";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
@@ -694,7 +695,8 @@ export function ChatInput({
           // composer without a definite height (percentage max-height would
           // then resolve to none).
           CHAT_COLUMN,
-          "relative flex min-h-16 max-h-96 flex-col rounded-lg border border-surface-border bg-surface pb-9 transition-[border-color,box-shadow] focus-within:border-brand focus-within:ring-2 focus-within:ring-ring/20",
+          COMPOSER_SURFACE_CLASS,
+          "max-h-96 pb-9",
           // Visual + interaction lock when there's no agent. We don't
           // toggle ContentEditor's editable mode (Tiptap can't switch
           // cleanly post-mount, and the prop has been removed); instead

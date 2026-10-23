@@ -154,6 +154,7 @@
     "upload_failed_title": "アップロードに失敗しました",
     "quick_replies_title": "クイック返信",
     "quick_reply_hint": "クイック返信を挿入",
+    "more_tooltip": "その他",
     "camera_permission_title": "カメラの権限が必要です",
     "camera_permission_message": "Multica が添付用の写真を撮影するにはカメラへのアクセスが必要です。システム設定で許可してください。",
     "image_source_camera": "写真を撮る",
