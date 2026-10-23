@@ -41,9 +41,29 @@ ORDER BY created_at ASC, id ASC;
 -- sync: the inactive direction's columns are all NULL and sort last, leaving
 -- the active direction's (created_at, id) pair fully in charge. 'asc' is what
 -- makes the queue's "oldest pending first, next after processing" stable.
+--
+-- The rework adds two predicates on the SAME set the counts badge: 'history'
+-- is the terminal-state window — every non-pending row (approved, denied,
+-- expired, revoked, executed, execute_failed) — so the history list and the
+-- counts.history total can never disagree (a newest-50 page of pending rows
+-- no longer leaves the entry pointing at an empty expansion). `after_id`
+-- must arrive paired with `after_created_at` (the handler enforces it); the
+-- comparison follows the active scan direction — the inactive side selects
+-- an empty set because its CASE branch is the one that runs.
 SELECT * FROM decision_requests
 WHERE workspace_id = $1
-  AND (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text)
+  AND (
+    sqlc.narg('status')::text IS NULL
+    OR status = sqlc.narg('status')::text
+    OR (sqlc.narg('status')::text = 'history' AND status <> 'pending')
+  )
+  AND (
+    sqlc.narg('after_id')::uuid IS NULL
+    OR CASE WHEN sqlc.narg('order')::text = 'asc'
+      THEN ((created_at, id) > (sqlc.narg('after_created_at')::timestamptz, sqlc.narg('after_id')::uuid))
+      ELSE ((created_at, id) < (sqlc.narg('after_created_at')::timestamptz, sqlc.narg('after_id')::uuid))
+    END
+  )
 ORDER BY
   (CASE WHEN sqlc.narg('order')::text = 'desc' THEN created_at ELSE NULL END) DESC NULLS LAST,
   (CASE WHEN sqlc.narg('order')::text = 'desc' THEN id ELSE NULL END) DESC NULLS LAST,
@@ -56,12 +76,26 @@ LIMIT $2;
 -- target workspace. This metadata is attached only to origin projections.
 -- RUYI-864: the window mirrors the list's `order` direction, so the slugs
 -- attached to an oldest-first page come from the same page's origin rows.
+-- RUYI-864 rework: the window predicates are the LIST's, verbatim — the
+-- history window and the keyset cursor included — so the slugs attached to a
+-- page describe exactly that page's rows, never a parallel uncursored walk.
 WITH visible_origin AS (
     SELECT request_row.request_group_id
     FROM decision_requests request_row
     WHERE request_row.workspace_id = $1
       AND request_row.role = 'origin'
-      AND (sqlc.narg('status')::text IS NULL OR request_row.status = sqlc.narg('status')::text)
+      AND (
+        sqlc.narg('status')::text IS NULL
+        OR request_row.status = sqlc.narg('status')::text
+        OR (sqlc.narg('status')::text = 'history' AND request_row.status <> 'pending')
+      )
+      AND (
+        sqlc.narg('after_id')::uuid IS NULL
+        OR CASE WHEN sqlc.narg('order')::text = 'asc'
+          THEN ((request_row.created_at, request_row.id) > (sqlc.narg('after_created_at')::timestamptz, sqlc.narg('after_id')::uuid))
+          ELSE ((request_row.created_at, request_row.id) < (sqlc.narg('after_created_at')::timestamptz, sqlc.narg('after_id')::uuid))
+        END
+      )
     ORDER BY
       (CASE WHEN sqlc.narg('order')::text = 'desc' THEN request_row.created_at ELSE NULL END) DESC NULLS LAST,
       (CASE WHEN sqlc.narg('order')::text = 'desc' THEN request_row.id ELSE NULL END) DESC NULLS LAST,
@@ -80,11 +114,32 @@ WHERE target_member.user_id = $2;
 
 -- name: CountWorkspaceDecisionRequestsByStatus :one
 -- Section counts for the decision-center authorization section. One scan
--- serves all three counts; the caller scopes by workspace_id.
+-- serves every count; the caller scopes by workspace_id.
+--
+-- RUYI-864 rework — the queue badge and the history entry badge are two
+-- DISJOINT sets and must never be derived client-side by recombining
+-- bucket counts:
+--   * pending  — strictly `status = 'pending'` (not yet consented, not yet
+--     denied, still inside its window). An `approved` row that is waiting
+--     for the other space's step or the execution pass is NOT pending: the
+--     queue's single-card query is `status=pending`, so this count badges
+--     exactly the rows the queue can show.
+--   * approved — its own named bucket (agreed, not yet executed or
+--     failed): the "in-flight after consent" population, reported under a
+--     distinct name instead of being folded into either side.
+--   * closed / executed — the RUYI-630 buckets, kept for pre-rework
+--     clients of this (still unreleased) endpoint.
+--   * history  — the entry's authoritative total: every NON-pending row
+--     (approved ∪ closed ∪ executed). It is the SAME set the `status=history`
+--     list window walks, so the entry's number and the expandable rows can
+--     never disagree. A "no pending, approved history only" workspace
+--     badges 0 in the queue and >0 here — the entry must stay visible.
 SELECT
-    count(*) FILTER (WHERE status IN ('pending', 'approved'))::int AS pending_count,
+    count(*) FILTER (WHERE status = 'pending')::int AS pending_count,
+    count(*) FILTER (WHERE status = 'approved')::int AS approved_count,
     count(*) FILTER (WHERE status IN ('denied', 'expired', 'revoked', 'execute_failed'))::int AS closed_count,
-    count(*) FILTER (WHERE status = 'executed')::int AS executed_count
+    count(*) FILTER (WHERE status = 'executed')::int AS executed_count,
+    count(*) FILTER (WHERE status <> 'pending')::int AS history_count
 FROM decision_requests
 WHERE workspace_id = $1;
 

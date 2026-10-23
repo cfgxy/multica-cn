@@ -1,4 +1,5 @@
 import {
+  infiniteQueryOptions,
   queryOptions,
   type MutationFunction,
 } from "@tanstack/react-query";
@@ -24,14 +25,20 @@ export const decisionRequestKeys = {
 
 /**
  * RUYI-864 list window for authorization requests. `status` is one of the
- * row's real lifecycle statuses (never a folded pseudo-state) and `order`
- * picks the scan direction: 'asc' is the oldest-first pending queue,
- * 'desc' the newest-first history surface (the server default when absent).
+ * row's real lifecycle statuses or the `history` terminal-state window
+ * (every non-pending row — the same set the counts' `history` total
+ * reports), and `order` picks the scan direction: 'asc' is the oldest-first
+ * pending queue, 'desc' the newest-first history surface (the server
+ * default when absent). `after_created_at`/`after_id` are the keyset cursor
+ * pair: both together or neither — the comparison follows the active
+ * direction, so the same pair pages a desc and an asc walk.
  */
 export interface DecisionRequestsListFilters {
   status?: string;
   limit?: number;
   order?: "asc" | "desc";
+  after_created_at?: string;
+  after_id?: string;
 }
 
 export function workspaceDecisionRequestsQueryOptions(
@@ -44,10 +51,61 @@ export function workspaceDecisionRequestsQueryOptions(
       : decisionRequestKeys.workspace(workspaceId),
     queryFn: async (): Promise<DecisionRequestsList> => {
       if (!workspaceId) {
-        return { items: [], counts: { pending: 0, closed: 0, executed: 0 } };
+        return {
+          items: [],
+          counts: { pending: 0, approved: 0, closed: 0, executed: 0, history: 0 },
+          next_cursor: null,
+          next_cursor_id: null,
+        };
       }
       return api.listDecisionRequests(workspaceId, filters);
     },
+    enabled: !!workspaceId,
+  });
+}
+
+/**
+ * RUYI-864 rework: keyset pagination of the authorization HISTORY window —
+ * `status="history"` is the server's terminal-state window (every non-pending
+ * row), newest-first. It is the SAME set the counts' `history` total badges,
+ * so an expanded entry can never show "total > 0, rows empty": the newest
+ * 50 rows all being pending no longer leaves the entry pointing at an empty
+ * expansion. The cursor pair travels together (the server rejects a lone
+ * half with 400); a short page ends the walk.
+ */
+export function workspaceDecisionRequestsHistoryPageOptions(
+  workspaceId: string | null | undefined,
+) {
+  return infiniteQueryOptions({
+    queryKey: [
+      ...decisionRequestKeys.workspace(workspaceId),
+      { status: "history", order: "desc" },
+      "pages",
+    ],
+    initialPageParam: null as { after_created_at: string; after_id: string } | null,
+    queryFn: async ({ pageParam }): Promise<DecisionRequestsList> => {
+      if (!workspaceId) {
+        return {
+          items: [],
+          counts: { pending: 0, approved: 0, closed: 0, executed: 0, history: 0 },
+          next_cursor: null,
+          next_cursor_id: null,
+        };
+      }
+      return api.listDecisionRequests(workspaceId, {
+        status: "history",
+        order: "desc",
+        limit: 20,
+        ...(pageParam ?? {}),
+      });
+    },
+    getNextPageParam: (lastPage) =>
+      lastPage.next_cursor && lastPage.next_cursor_id
+        ? {
+            after_created_at: lastPage.next_cursor,
+            after_id: lastPage.next_cursor_id,
+          }
+        : undefined,
     enabled: !!workspaceId,
   });
 }

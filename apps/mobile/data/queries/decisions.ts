@@ -109,9 +109,58 @@ export function workspaceDecisionRequestsOptions(
       : decisionRequestKeys.workspace(wsId),
     queryFn: async ({ signal }) => {
       if (!wsId)
-        return { items: [], counts: { pending: 0, closed: 0, executed: 0 } };
+        return {
+          items: [],
+          counts: { pending: 0, approved: 0, closed: 0, executed: 0, history: 0 },
+          next_cursor: null,
+          next_cursor_id: null,
+        };
       return api.listDecisionRequests(wsId, filters, { signal });
     },
+    enabled: !!wsId,
+  });
+}
+
+// RUYI-864 rework: keyset pagination of the authorization history window —
+// mirrors core's `workspaceDecisionInboxPageOptions` shape: two-field
+// cursor, the pair travels together, a short page ends the walk. The
+// `status: "history"` filter is THE window (every non-pending row), the
+// same set the counts' `history` total badges, so an expanded entry can
+// never show "total > 0, rows empty".
+export function workspaceDecisionRequestsHistoryPageOptions(wsId: string | null) {
+  return infiniteQueryOptions({
+    queryKey: [
+      ...decisionRequestKeys.workspace(wsId),
+      { status: "history", order: "desc" },
+      "pages",
+    ],
+    initialPageParam: null as { after_created_at: string; after_id: string } | null,
+    queryFn: async ({ pageParam, signal }) => {
+      if (!wsId)
+        return {
+          items: [],
+          counts: { pending: 0, approved: 0, closed: 0, executed: 0, history: 0 },
+          next_cursor: null,
+          next_cursor_id: null,
+        };
+      return api.listDecisionRequests(
+        wsId,
+        {
+          status: "history",
+          order: "desc",
+          limit: 20,
+          ...(pageParam ?? {}),
+        },
+        { signal },
+      );
+    },
+    getNextPageParam: (lastPage) =>
+      lastPage.next_cursor && lastPage.next_cursor_id
+        ? {
+            after_created_at: lastPage.next_cursor,
+            after_id: lastPage.next_cursor_id,
+          }
+        : undefined,
     enabled: !!wsId,
   });
 }

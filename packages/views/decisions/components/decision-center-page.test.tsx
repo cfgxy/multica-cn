@@ -30,6 +30,14 @@ const inboxRef = vi.hoisted(() => ({
 const requestsRef = vi.hoisted(() => ({
   current: null as null | ((filters: DecisionRequestsListFilters) => Promise<DecisionRequestsList>),
 }));
+const historyRequestsRef = vi.hoisted(() => ({
+  current: null as null | ((
+    pageParam: { after_created_at: string; after_id: string } | null,
+  ) => Promise<DecisionRequestsList>),
+}));
+const historyCallsRef = vi.hoisted(() => ({
+  current: [] as Array<{ after_created_at: string; after_id: string } | null>,
+}));
 const pageFiltersRef = vi.hoisted(() => ({ current: [] as WorkspaceDecisionInboxFilters[] }));
 const requestFiltersRef = vi.hoisted(() => ({ current: [] as DecisionRequestsListFilters[] }));
 const scriptDetailRef = vi.hoisted(() => ({ current: null as unknown }));
@@ -87,10 +95,35 @@ vi.mock("@multica/core/issues/decision-requests", async (importOriginal) => {
         queryKey: ["test", "decision-requests", workspaceId, filters],
         queryFn: () =>
           requestsRef.current?.(filters ?? {}) ??
-          Promise.resolve<DecisionRequestsList>({
-            items: [],
-            counts: { pending: 0, closed: 0, executed: 0 },
-          }),
+          Promise.resolve<DecisionRequestsList>(emptyRequestsList()),
+        enabled: true,
+      };
+    },
+    // RUYI-864 rework: the history window's keyset pages — the same
+    // terminal-state set the counts' `history` total badges. The mock
+    // mirrors the real options' cursor contract (pair travels together,
+    // a short page ends the walk).
+    workspaceDecisionRequestsHistoryPageOptions: (
+      workspaceId: string | null | undefined,
+    ) => {
+      return {
+        queryKey: ["test", "decision-requests", workspaceId, "history-pages"],
+        initialPageParam: null as { after_created_at: string; after_id: string } | null,
+        queryFn: async ({
+          pageParam,
+        }: {
+          pageParam: { after_created_at: string; after_id: string } | null;
+        }) => {
+          historyCallsRef.current.push(pageParam);
+          return historyRequestsRef.current?.(pageParam) ?? emptyRequestsList();
+        },
+        getNextPageParam: (lastPage: DecisionRequestsList) =>
+          lastPage.next_cursor && lastPage.next_cursor_id
+            ? {
+                after_created_at: lastPage.next_cursor,
+                after_id: lastPage.next_cursor_id,
+              }
+            : undefined,
         enabled: true,
       };
     },
@@ -148,6 +181,28 @@ function makeItem(over: Partial<WorkspaceDecisionInbox["items"][number]> & { id:
     updated_at: "2026-10-07T00:00:00Z",
     ...over,
   };
+}
+
+// RUYI-864 rework: a wire-shaped requests list — counts carry the new
+// `approved` / `history` buckets and the keyset cursor pair, exactly what
+// handler.ListDecisionRequests now returns.
+function requestsList(
+  items: DecisionRequest[],
+  counts: Partial<DecisionRequestsList["counts"]> = {},
+  cursor: { next_cursor: string | null; next_cursor_id: string | null } = {
+    next_cursor: null,
+    next_cursor_id: null,
+  },
+): DecisionRequestsList {
+  return {
+    items,
+    counts: { pending: 0, approved: 0, closed: 0, executed: 0, history: 0, ...counts },
+    ...cursor,
+  };
+}
+
+function emptyRequestsList() {
+  return requestsList([]);
 }
 
 function makeRequest(over: Partial<DecisionRequest> & { id: string }): DecisionRequest {
@@ -212,6 +267,8 @@ beforeEach(() => {
   decisionCenterPrefsStore.setState({ statusFilter: "all" });
   inboxRef.current = null;
   requestsRef.current = null;
+  historyRequestsRef.current = null;
+  historyCallsRef.current = [];
   pageFiltersRef.current = [];
   requestFiltersRef.current = [];
   scriptDetailRef.current = null;
@@ -474,18 +531,20 @@ describe("DecisionCenterPage pending queue (RUYI-864)", () => {
     return (filters: DecisionRequestsListFilters) => {
       if (filters.status === "pending") {
         // Simulate the server's oldest-first walk (order=asc, limit=1):
-        // at most the oldest pending row, nothing else.
+        // at most the oldest pending row, nothing else. The counts are
+        // workspace-wide (never scoped to the page window), so `history`
+        // badges the terminal-state set on the same call.
         const oldest = [...rows].sort(
           (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at),
         )[0];
-        return Promise.resolve({
-          items: oldest ? [oldest] : [],
-          counts: { pending: rows.length, closed: 0, executed: 0 },
-        });
+        return Promise.resolve(
+          requestsList(oldest ? [oldest] : [], {
+            pending: rows.length,
+            history: rows.filter((row) => row.status !== "pending").length,
+          }),
+        );
       }
-      // The history call (no status) is newest-first; pending rows belong
-      // to the queue and are stripped on the page.
-      return Promise.resolve({ items: rows, counts: { pending: 0, closed: 0, executed: 0 } });
+      return Promise.resolve(requestsList(rows));
     };
   }
 
@@ -530,19 +589,32 @@ describe("DecisionCenterPage pending queue (RUYI-864)", () => {
   it("exposes history only through the collapsed entry, never with pending rows", async () => {
     requestsRef.current = (filters) => {
       if (filters.status === "pending") {
-        return Promise.resolve({ items: [makeRequest({ id: "r-pending" })], counts: { pending: 1, closed: 1, executed: 1 } });
+        // The queue call badges BOTH sets on one call: the queue total and
+        // the entry's `history` total — same sets, one response.
+        return Promise.resolve(
+          requestsList([makeRequest({ id: "r-pending" })], {
+            pending: 1,
+            closed: 1,
+            executed: 1,
+            history: 2,
+          }),
+        );
       }
-      // The history call is unfiltered newest-first; the page must strip
-      // the pending row, which the queue owns.
-      return Promise.resolve({
-        items: [
-          makeRequest({ id: "r-pending", status: "pending" }),
-          makeRequest({ id: "r-approved", status: "approved", created_at: "2026-10-18T00:00:00Z" }),
-          makeRequest({ id: "r-executed", status: "executed", created_at: "2026-10-17T00:00:00Z" }),
-        ],
-        counts: { pending: 1, closed: 1, executed: 1 },
-      });
+      return Promise.resolve(requestsList([]));
     };
+    // The history window is the server's terminal-state set
+    // (status=history): pending rows never arrive in it, no client-side
+    // strip is needed any more.
+    historyRequestsRef.current = () =>
+      Promise.resolve(
+        requestsList(
+          [
+            makeRequest({ id: "r-approved", status: "approved", created_at: "2026-10-18T00:00:00Z" }),
+            makeRequest({ id: "r-executed", status: "executed", created_at: "2026-10-17T00:00:00Z" }),
+          ],
+          { closed: 1, executed: 1, history: 2 },
+        ),
+      );
     inboxRef.current = () => ({
       items: [],
       counts: { open: 0, answered: 0, cancelled: 0 },
@@ -558,13 +630,58 @@ describe("DecisionCenterPage pending queue (RUYI-864)", () => {
     expect(screen.getAllByTestId("decision-request-row")).toHaveLength(1);
 
     fireEvent.click(toggle);
-    // The queue row plus the two processed rows; the pending row never
-    // enters the history. The queue row is already visible, so findByTestId
-    // would resolve on it — poll until the history's own rows arrive.
+    // The queue row plus the two terminal rows. The pending row never
+    // enters the history — the server window excludes it at the source.
+    // The queue row is already visible, so findByTestId would resolve on
+    // it — poll until the history's own rows arrive.
     await vi.waitFor(() =>
       expect(screen.getAllByTestId("decision-request-row")).toHaveLength(3),
     );
     expect(screen.getByTestId("decision-history-toggle")).toHaveAttribute("aria-expanded", "true");
+  });
+
+  // P1 regression (review thread 2): an `approved` row has LEFT the top
+  // queue (the single-card query is status=pending) while the consent is
+  // still in flight in another space. The entry must stay visible — driven
+  // by the server's `history` count, never by queue rows — and expand to
+  // the agreed rows without re-entering the queue.
+  it("keeps the entry visible for approved-only history when no pending row remains", async () => {
+    requestsRef.current = () =>
+      Promise.resolve(
+        requestsList([], { approved: 1, history: 1 }),
+      );
+    historyRequestsRef.current = () =>
+      Promise.resolve(
+        requestsList(
+          [makeRequest({ id: "r-approved", status: "approved", created_at: "2026-10-18T00:00:00Z" })],
+          { approved: 1, history: 1 },
+        ),
+      );
+    inboxRef.current = () => ({
+      items: [],
+      counts: { open: 0, answered: 0, cancelled: 0 },
+      next_cursor: null,
+      next_cursor_id: null,
+    });
+    renderPage();
+
+    // No pending row → the queue area is gone, but the entry's total is
+    // 1, so the collapsed entry must still be present.
+    expect(await screen.findByTestId("decision-history-toggle")).toBeInTheDocument();
+    expect(screen.queryByTestId("decision-queue")).toBeNull();
+    const toggle = screen.getByTestId("decision-history-toggle");
+    expect(toggle.textContent).toContain("1");
+
+    // Expanding renders the approved row — and it does NOT re-enter the
+    // queue: the queue query is still status=pending.
+    fireEvent.click(toggle);
+    await vi.waitFor(() =>
+      expect(screen.getAllByTestId("decision-request-row")).toHaveLength(1),
+    );
+    expect(screen.queryByTestId("decision-queue")).toBeNull();
+    // The history window asked the server for status=history, never pending.
+    expect(requestFiltersRef.current.filter((f) => f.status === "pending")).toHaveLength(1);
+    expect(historyCallsRef.current).toEqual([null]);
   });
 });
 
@@ -674,22 +791,24 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
       next_cursor: null,
       next_cursor_id: null,
     });
-    const deferred = deferredRequests({
-      items: [
-        makeRequest({
-          id: "dr-1",
-          request_group_id: "rg-1",
-          role: "origin",
-          status: "pending",
-          action_type: "project_prompt_sync",
-          action_params: { project_ids: ["project-1"], content_sha256: "hash" },
-          execution_result: { projects: [{ project_id: "project-1", status: "updated", version: 3 }] },
-          risk_tier: "write_low",
-          title: "Read workspace info",
-        }),
-      ],
-      counts: { pending: 1, closed: 0, executed: 0 },
-    });
+    const deferred = deferredRequests(
+      requestsList(
+        [
+          makeRequest({
+            id: "dr-1",
+            request_group_id: "rg-1",
+            role: "origin",
+            status: "pending",
+            action_type: "project_prompt_sync",
+            action_params: { project_ids: ["project-1"], content_sha256: "hash" },
+            execution_result: { projects: [{ project_id: "project-1", status: "updated", version: 3 }] },
+            risk_tier: "write_low",
+            title: "Read workspace info",
+          }),
+        ],
+        { pending: 1 },
+      ),
+    );
     requestsRef.current = () => deferred.promise;
     renderPage();
 
@@ -709,30 +828,34 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
       next_cursor: null,
       next_cursor_id: null,
     });
-    requestsRef.current = (filters) =>
-      filters.status === "pending"
-        ? Promise.resolve({ items: [], counts: { pending: 0, closed: 1, executed: 0 } })
-        : Promise.resolve({
-            items: [
-              makeRequest({
-                id: "dr-unknown",
-                request_group_id: "rg-unknown",
-                operable: true,
-                status: "execute_failed",
-                action_type: "project_prompt_sync",
-                action_params: { project_ids: ["project-1"] },
-                execution_result: {
-                  receipt_version: 1,
-                  side_effect_status: "unknown",
-                  steps: [{ handler: "project_prompt_sync", status: "unknown", side_effect_status: "unknown" }],
-                },
-                risk_tier: "write_low",
-                title: "Sync project prompts",
-                origin_agent_name: "Seed Agent",
-              }),
-            ],
-            counts: { pending: 0, closed: 1, executed: 0 },
-          });
+    // The queue call (status=pending) badges the entry with `history`;
+    // the processed row itself comes from the terminal-state window.
+    requestsRef.current = () =>
+      Promise.resolve(requestsList([], { closed: 1, history: 1 }));
+    historyRequestsRef.current = () =>
+      Promise.resolve(
+        requestsList(
+          [
+            makeRequest({
+              id: "dr-unknown",
+              request_group_id: "rg-unknown",
+              operable: true,
+              status: "execute_failed",
+              action_type: "project_prompt_sync",
+              action_params: { project_ids: ["project-1"] },
+              execution_result: {
+                receipt_version: 1,
+                side_effect_status: "unknown",
+                steps: [{ handler: "project_prompt_sync", status: "unknown", side_effect_status: "unknown" }],
+              },
+              risk_tier: "write_low",
+              title: "Sync project prompts",
+              origin_agent_name: "Seed Agent",
+            }),
+          ],
+          { closed: 1, history: 1 },
+        ),
+      );
     renderPage();
 
     const toggle = await screen.findByTestId("decision-history-toggle");
@@ -749,31 +872,35 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
       next_cursor: null,
       next_cursor_id: null,
     });
-    requestsRef.current = (filters) =>
-      filters.status === "pending"
-        ? Promise.resolve({ items: [], counts: { pending: 0, closed: 0, executed: 1 } })
-        : Promise.resolve({
-            items: [
-              makeRequest({
-                id: "dr-issue",
-                request_group_id: "rg-issue",
-                operable: false,
-                status: "executed",
-                action_type: "single_issue_create",
-                action_params: { title: "Fix callback", description: "Make one callback idempotent" },
-                execution_result: {
-                  target_issue_id: "issue-12",
-                  target_identifier: "RUYI-12",
-                  target_issue_status: "in_progress",
-                  done_receipt: { status: "done" },
-                },
-                risk_tier: "write_low",
-                title: "Create one issue",
-                origin_agent_name: "Seed Agent",
-              }),
-            ],
-            counts: { pending: 0, closed: 0, executed: 1 },
-          });
+    // The queue call badges the entry with `history`; the executed row
+    // itself comes from the terminal-state window.
+    requestsRef.current = () =>
+      Promise.resolve(requestsList([], { executed: 1, history: 1 }));
+    historyRequestsRef.current = () =>
+      Promise.resolve(
+        requestsList(
+          [
+            makeRequest({
+              id: "dr-issue",
+              request_group_id: "rg-issue",
+              operable: false,
+              status: "executed",
+              action_type: "single_issue_create",
+              action_params: { title: "Fix callback", description: "Make one callback idempotent" },
+              execution_result: {
+                target_issue_id: "issue-12",
+                target_identifier: "RUYI-12",
+                target_issue_status: "in_progress",
+                done_receipt: { status: "done" },
+              },
+              risk_tier: "write_low",
+              title: "Create one issue",
+              origin_agent_name: "Seed Agent",
+            }),
+          ],
+          { executed: 1, history: 1 },
+        ),
+      );
     renderPage();
 
     fireEvent.click(await screen.findByTestId("decision-history-toggle"));
@@ -797,41 +924,48 @@ describe("DecisionCenterPage loading skeleton (RUYI-738)", () => {
       },
       steps: [],
     };
+    // The script row is a processed (executed) row: the queue call badges
+    // the entry with `history` and the row itself arrives through the
+    // terminal-state window.
     requestsRef.current = () =>
-      Promise.resolve({
-        items: [
-          makeRequest({
-            id: "dr-script",
-            request_group_id: "rg-script",
-            workspace_id: "ws-target",
-            role: "target",
-            operable: true,
-            status: "executed",
-            action_type: "script_review",
-            action_params: { sha256: "a".repeat(64) },
-            authorization_spec: {
-              version: 1,
-              kind: "script_review",
+      Promise.resolve(requestsList([], { closed: 1, executed: 1, history: 2 }));
+    historyRequestsRef.current = () =>
+      Promise.resolve(
+        requestsList(
+          [
+            makeRequest({
+              id: "dr-script",
+              request_group_id: "rg-script",
+              workspace_id: "ws-target",
+              role: "target",
+              operable: true,
+              status: "executed",
               action_type: "script_review",
-              scope: { target_workspace_id: "ws-target" },
-              parameter_digest: "b".repeat(64),
-              source_workspace_id: "ws-origin",
-              target_workspace_id: "ws-target",
-              expires_at: "2026-10-22T00:00:00Z",
-              public_summary: "Review script snapshot",
-              digest: "c".repeat(64),
-            },
-            execution_result: { receipt_type: "script_review", status: "reviewed", script_sha256: "a".repeat(64) },
-            risk_tier: "write_low",
-            title: "Review script snapshot",
-            origin_workspace_id: "ws-origin",
-            origin_agent_id: "agent-1",
-            origin_agent_name: "Seed Agent",
-            executed_at: "2026-10-21T00:00:00Z",
-          }),
-        ],
-        counts: { pending: 0, closed: 1, executed: 1 },
-      });
+              action_params: { sha256: "a".repeat(64) },
+              authorization_spec: {
+                version: 1,
+                kind: "script_review",
+                action_type: "script_review",
+                scope: { target_workspace_id: "ws-target" },
+                parameter_digest: "b".repeat(64),
+                source_workspace_id: "ws-origin",
+                target_workspace_id: "ws-target",
+                expires_at: "2026-10-22T00:00:00Z",
+                public_summary: "Review script snapshot",
+                digest: "c".repeat(64),
+              },
+              execution_result: { receipt_type: "script_review", status: "reviewed", script_sha256: "a".repeat(64) },
+              risk_tier: "write_low",
+              title: "Review script snapshot",
+              origin_workspace_id: "ws-origin",
+              origin_agent_id: "agent-1",
+              origin_agent_name: "Seed Agent",
+              executed_at: "2026-10-21T00:00:00Z",
+            }),
+          ],
+          { closed: 1, executed: 1, history: 2 },
+        ),
+      );
     renderPage();
 
     fireEvent.click(await screen.findByTestId("decision-history-toggle"));
@@ -863,10 +997,9 @@ describe("DecisionCenterPage cross-space authorization navigation (RUYI-842)", (
 
   it("links an accessible origin projection to the target decisions center", async () => {
     requestsRef.current = () =>
-      Promise.resolve({
-        items: [{ ...projection, target_workspace_slug: "target-space" }],
-        counts: { pending: 1, closed: 0, executed: 0 },
-      });
+      Promise.resolve(
+        requestsList([{ ...projection, target_workspace_slug: "target-space" }], { pending: 1 }),
+      );
     renderPage();
 
     const link = await screen.findByTestId("decision-request-target-link");
@@ -877,10 +1010,9 @@ describe("DecisionCenterPage cross-space authorization navigation (RUYI-842)", (
 
   it("navigates when the read-only origin request row face is clicked", async () => {
     requestsRef.current = () =>
-      Promise.resolve({
-        items: [{ ...projection, target_workspace_slug: "target-space" }],
-        counts: { pending: 1, closed: 0, executed: 0 },
-      });
+      Promise.resolve(
+        requestsList([{ ...projection, target_workspace_slug: "target-space" }], { pending: 1 }),
+      );
     renderPage();
 
     const rowFace = await screen.findByTestId("decision-request-target-link");
@@ -891,10 +1023,7 @@ describe("DecisionCenterPage cross-space authorization navigation (RUYI-842)", (
 
   it("keeps the read-only hint when the API omits a safe target route", async () => {
     requestsRef.current = () =>
-      Promise.resolve({
-        items: [projection],
-        counts: { pending: 1, closed: 0, executed: 0 },
-      });
+      Promise.resolve(requestsList([projection], { pending: 1 }));
     renderPage();
 
     expect(await screen.findByText("This row is a read-only projection — act in the target workspace")).toBeInTheDocument();

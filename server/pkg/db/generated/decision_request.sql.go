@@ -277,25 +277,54 @@ func (q *Queries) ClaimDecisionRequestIssueDoneReceipt(ctx context.Context, targ
 
 const countWorkspaceDecisionRequestsByStatus = `-- name: CountWorkspaceDecisionRequestsByStatus :one
 SELECT
-    count(*) FILTER (WHERE status IN ('pending', 'approved'))::int AS pending_count,
+    count(*) FILTER (WHERE status = 'pending')::int AS pending_count,
+    count(*) FILTER (WHERE status = 'approved')::int AS approved_count,
     count(*) FILTER (WHERE status IN ('denied', 'expired', 'revoked', 'execute_failed'))::int AS closed_count,
-    count(*) FILTER (WHERE status = 'executed')::int AS executed_count
+    count(*) FILTER (WHERE status = 'executed')::int AS executed_count,
+    count(*) FILTER (WHERE status <> 'pending')::int AS history_count
 FROM decision_requests
 WHERE workspace_id = $1
 `
 
 type CountWorkspaceDecisionRequestsByStatusRow struct {
 	PendingCount  int32 `json:"pending_count"`
+	ApprovedCount int32 `json:"approved_count"`
 	ClosedCount   int32 `json:"closed_count"`
 	ExecutedCount int32 `json:"executed_count"`
+	HistoryCount  int32 `json:"history_count"`
 }
 
 // Section counts for the decision-center authorization section. One scan
-// serves all three counts; the caller scopes by workspace_id.
+// serves every count; the caller scopes by workspace_id.
+//
+// RUYI-864 rework — the queue badge and the history entry badge are two
+// DISJOINT sets and must never be derived client-side by recombining
+// bucket counts:
+//   - pending  — strictly `status = 'pending'` (not yet consented, not yet
+//     denied, still inside its window). An `approved` row that is waiting
+//     for the other space's step or the execution pass is NOT pending: the
+//     queue's single-card query is `status=pending`, so this count badges
+//     exactly the rows the queue can show.
+//   - approved — its own named bucket (agreed, not yet executed or
+//     failed): the "in-flight after consent" population, reported under a
+//     distinct name instead of being folded into either side.
+//   - closed / executed — the RUYI-630 buckets, kept for pre-rework
+//     clients of this (still unreleased) endpoint.
+//   - history  — the entry's authoritative total: every NON-pending row
+//     (approved ∪ closed ∪ executed). It is the SAME set the `status=history`
+//     list window walks, so the entry's number and the expandable rows can
+//     never disagree. A "no pending, approved history only" workspace
+//     badges 0 in the queue and >0 here — the entry must stay visible.
 func (q *Queries) CountWorkspaceDecisionRequestsByStatus(ctx context.Context, workspaceID pgtype.UUID) (CountWorkspaceDecisionRequestsByStatusRow, error) {
 	row := q.db.QueryRow(ctx, countWorkspaceDecisionRequestsByStatus, workspaceID)
 	var i CountWorkspaceDecisionRequestsByStatusRow
-	err := row.Scan(&i.PendingCount, &i.ClosedCount, &i.ExecutedCount)
+	err := row.Scan(
+		&i.PendingCount,
+		&i.ApprovedCount,
+		&i.ClosedCount,
+		&i.ExecutedCount,
+		&i.HistoryCount,
+	)
 	return i, err
 }
 
@@ -672,12 +701,23 @@ WITH visible_origin AS (
     FROM decision_requests request_row
     WHERE request_row.workspace_id = $1
       AND request_row.role = 'origin'
-      AND ($4::text IS NULL OR request_row.status = $4::text)
+      AND (
+        $4::text IS NULL
+        OR request_row.status = $4::text
+        OR ($4::text = 'history' AND request_row.status <> 'pending')
+      )
+      AND (
+        $5::uuid IS NULL
+        OR CASE WHEN $6::text = 'asc'
+          THEN ((request_row.created_at, request_row.id) > ($7::timestamptz, $5::uuid))
+          ELSE ((request_row.created_at, request_row.id) < ($7::timestamptz, $5::uuid))
+        END
+      )
     ORDER BY
-      (CASE WHEN $5::text = 'desc' THEN request_row.created_at ELSE NULL END) DESC NULLS LAST,
-      (CASE WHEN $5::text = 'desc' THEN request_row.id ELSE NULL END) DESC NULLS LAST,
-      (CASE WHEN $5::text = 'asc' THEN request_row.created_at ELSE NULL END) ASC NULLS LAST,
-      (CASE WHEN $5::text = 'asc' THEN request_row.id ELSE NULL END) ASC NULLS LAST
+      (CASE WHEN $6::text = 'desc' THEN request_row.created_at ELSE NULL END) DESC NULLS LAST,
+      (CASE WHEN $6::text = 'desc' THEN request_row.id ELSE NULL END) DESC NULLS LAST,
+      (CASE WHEN $6::text = 'asc' THEN request_row.created_at ELSE NULL END) ASC NULLS LAST,
+      (CASE WHEN $6::text = 'asc' THEN request_row.id ELSE NULL END) ASC NULLS LAST
     LIMIT $3
 )
 SELECT DISTINCT origin.request_group_id, target_workspace.slug
@@ -691,11 +731,13 @@ WHERE target_member.user_id = $2
 `
 
 type ListAccessibleDecisionRequestTargetSlugsParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	UserID      pgtype.UUID `json:"user_id"`
-	Limit       int32       `json:"limit"`
-	Status      pgtype.Text `json:"status"`
-	Order       pgtype.Text `json:"order"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	UserID         pgtype.UUID        `json:"user_id"`
+	Limit          int32              `json:"limit"`
+	Status         pgtype.Text        `json:"status"`
+	AfterID        pgtype.UUID        `json:"after_id"`
+	Order          pgtype.Text        `json:"order"`
+	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
 }
 
 type ListAccessibleDecisionRequestTargetSlugsRow struct {
@@ -707,13 +749,18 @@ type ListAccessibleDecisionRequestTargetSlugsRow struct {
 // target workspace. This metadata is attached only to origin projections.
 // RUYI-864: the window mirrors the list's `order` direction, so the slugs
 // attached to an oldest-first page come from the same page's origin rows.
+// RUYI-864 rework: the window predicates are the LIST's, verbatim — the
+// history window and the keyset cursor included — so the slugs attached to a
+// page describe exactly that page's rows, never a parallel uncursored walk.
 func (q *Queries) ListAccessibleDecisionRequestTargetSlugs(ctx context.Context, arg ListAccessibleDecisionRequestTargetSlugsParams) ([]ListAccessibleDecisionRequestTargetSlugsRow, error) {
 	rows, err := q.db.Query(ctx, listAccessibleDecisionRequestTargetSlugs,
 		arg.WorkspaceID,
 		arg.UserID,
 		arg.Limit,
 		arg.Status,
+		arg.AfterID,
 		arg.Order,
+		arg.AfterCreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -736,20 +783,33 @@ func (q *Queries) ListAccessibleDecisionRequestTargetSlugs(ctx context.Context, 
 const listDecisionRequestsForWorkspace = `-- name: ListDecisionRequestsForWorkspace :many
 SELECT id, request_group_id, workspace_id, role, operable, status, action_type, action_params, risk_tier, title, detail, origin_workspace_id, origin_agent_id, origin_task_id, origin_issue_id, origin_issue_title, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answered_by_type, answered_by_id, answered_at, answer_source, executed_at, execution_result, execution_error, terminal_callback_at, created_by_type, created_by_id, created_at, updated_at FROM decision_requests
 WHERE workspace_id = $1
-  AND ($3::text IS NULL OR status = $3::text)
+  AND (
+    $3::text IS NULL
+    OR status = $3::text
+    OR ($3::text = 'history' AND status <> 'pending')
+  )
+  AND (
+    $4::uuid IS NULL
+    OR CASE WHEN $5::text = 'asc'
+      THEN ((created_at, id) > ($6::timestamptz, $4::uuid))
+      ELSE ((created_at, id) < ($6::timestamptz, $4::uuid))
+    END
+  )
 ORDER BY
-  (CASE WHEN $4::text = 'desc' THEN created_at ELSE NULL END) DESC NULLS LAST,
-  (CASE WHEN $4::text = 'desc' THEN id ELSE NULL END) DESC NULLS LAST,
-  (CASE WHEN $4::text = 'asc' THEN created_at ELSE NULL END) ASC NULLS LAST,
-  (CASE WHEN $4::text = 'asc' THEN id ELSE NULL END) ASC NULLS LAST
+  (CASE WHEN $5::text = 'desc' THEN created_at ELSE NULL END) DESC NULLS LAST,
+  (CASE WHEN $5::text = 'desc' THEN id ELSE NULL END) DESC NULLS LAST,
+  (CASE WHEN $5::text = 'asc' THEN created_at ELSE NULL END) ASC NULLS LAST,
+  (CASE WHEN $5::text = 'asc' THEN id ELSE NULL END) ASC NULLS LAST
 LIMIT $2
 `
 
 type ListDecisionRequestsForWorkspaceParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Limit       int32       `json:"limit"`
-	Status      pgtype.Text `json:"status"`
-	Order       pgtype.Text `json:"order"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Limit          int32              `json:"limit"`
+	Status         pgtype.Text        `json:"status"`
+	AfterID        pgtype.UUID        `json:"after_id"`
+	Order          pgtype.Text        `json:"order"`
+	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
 }
 
 // Decision-center rows for one workspace (one row PER SPACE-LEVEL REQUEST).
@@ -765,12 +825,23 @@ type ListDecisionRequestsForWorkspaceParams struct {
 // sync: the inactive direction's columns are all NULL and sort last, leaving
 // the active direction's (created_at, id) pair fully in charge. 'asc' is what
 // makes the queue's "oldest pending first, next after processing" stable.
+//
+// The rework adds two predicates on the SAME set the counts badge: 'history'
+// is the terminal-state window — every non-pending row (approved, denied,
+// expired, revoked, executed, execute_failed) — so the history list and the
+// counts.history total can never disagree (a newest-50 page of pending rows
+// no longer leaves the entry pointing at an empty expansion). `after_id`
+// must arrive paired with `after_created_at` (the handler enforces it); the
+// comparison follows the active scan direction — the inactive side selects
+// an empty set because its CASE branch is the one that runs.
 func (q *Queries) ListDecisionRequestsForWorkspace(ctx context.Context, arg ListDecisionRequestsForWorkspaceParams) ([]DecisionRequest, error) {
 	rows, err := q.db.Query(ctx, listDecisionRequestsForWorkspace,
 		arg.WorkspaceID,
 		arg.Limit,
 		arg.Status,
+		arg.AfterID,
 		arg.Order,
+		arg.AfterCreatedAt,
 	)
 	if err != nil {
 		return nil, err

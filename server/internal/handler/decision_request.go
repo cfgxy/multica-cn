@@ -921,17 +921,51 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 		case decisionReqPending, decisionReqApproved, decisionReqDenied,
 			decisionReqExpired, decisionReqRevoked, decisionReqExecuted, decisionReqExecuteFailed:
 			status = pgtype.Text{String: raw, Valid: true}
+		case "history":
+			// RUYI-864 rework: the terminal-state window — every non-pending
+			// row, the SAME set the counts' `history` badge reports, so the
+			// entry's total and the expandable rows can never disagree.
+			status = pgtype.Text{String: raw, Valid: true}
 		default:
 			writeError(w, http.StatusBadRequest, "unknown status filter")
 			return
 		}
 	}
+	// RUYI-864 rework: the keyset cursor pair for the next page. Both halves
+	// must arrive together (mirroring the decision-inbox cursor discipline) —
+	// a timestamp without its tiebreaker id silently skips or repeats rows.
+	// The comparison follows the active scan direction in the SQL, so a
+	// desc walk pages newest-first and an asc walk pages oldest-first.
+	var afterCreatedAt pgtype.Timestamptz
+	var afterID pgtype.UUID
+	if raw := r.URL.Query().Get("after_created_at"); raw != "" {
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid after_created_at parameter; expected RFC3339 timestamp")
+			return
+		}
+		afterCreatedAt = pgtype.Timestamptz{Time: t, Valid: true}
+	}
+	if raw := r.URL.Query().Get("after_id"); raw != "" {
+		id, err := util.ParseUUID(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid after_id parameter; expected uuid")
+			return
+		}
+		afterID = id
+	}
+	if afterCreatedAt.Valid != afterID.Valid {
+		writeError(w, http.StatusBadRequest, "after_created_at and after_id must arrive together")
+		return
+	}
 
 	rows, err := h.Queries.ListDecisionRequestsForWorkspace(r.Context(), db.ListDecisionRequestsForWorkspaceParams{
-		WorkspaceID: workspaceID,
-		Limit:       int32(limit),
-		Status:      status,
-		Order:       orderParam,
+		WorkspaceID:    workspaceID,
+		Limit:          int32(limit),
+		Status:         status,
+		Order:          orderParam,
+		AfterID:        afterID,
+		AfterCreatedAt: afterCreatedAt,
 	})
 	if err != nil {
 		slog.Warn("decision request list failed", append(logger.RequestAttrs(r), "error", err)...)
@@ -939,11 +973,13 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	targetRows, err := h.Queries.ListAccessibleDecisionRequestTargetSlugs(r.Context(), db.ListAccessibleDecisionRequestTargetSlugsParams{
-		WorkspaceID: workspaceID,
-		UserID:      member.UserID,
-		Status:      status,
-		Order:       orderParam,
-		Limit:       int32(limit),
+		WorkspaceID:    workspaceID,
+		UserID:         member.UserID,
+		Status:         status,
+		Order:          orderParam,
+		Limit:          int32(limit),
+		AfterID:        afterID,
+		AfterCreatedAt: afterCreatedAt,
 	})
 	if err != nil {
 		slog.Warn("accessible decision request target lookup failed", append(logger.RequestAttrs(r), "error", err)...)
@@ -976,14 +1012,36 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 	for i := range items {
 		attachOriginAgentName(agentNames, &items[i])
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"items": items,
+		// The queue badge and the history entry badge are two disjoint sets,
+		// reported under distinct names (a count recomputed client-side from
+		// bucket counts is how the pending total used to drift): `pending`
+		// badges exactly what the single-card queue can show, `approved` the
+		// in-flight-after-consent population, `history` the entry's total.
 		"counts": map[string]int{
 			"pending":  int(counts.PendingCount),
+			"approved": int(counts.ApprovedCount),
 			"closed":   int(counts.ClosedCount),
 			"executed": int(counts.ExecutedCount),
+			"history":  int(counts.HistoryCount),
 		},
-	})
+	}
+	// RUYI-864 rework: the keyset cursor for the next page rides the last row
+	// of the DB page (not of the projected items) with sub-second
+	// created_at precision, emitted only when the page came back full — a
+	// short page means the window ended, exactly like the decision inbox.
+	if int32(len(rows)) == int32(limit) {
+		last := rows[len(rows)-1]
+		nextCursor := last.CreatedAt.Time.UTC().Format(time.RFC3339Nano)
+		nextCursorID := uuidToString(last.ID)
+		resp["next_cursor"] = &nextCursor
+		resp["next_cursor_id"] = &nextCursorID
+	} else {
+		resp["next_cursor"] = nil
+		resp["next_cursor_id"] = nil
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // sweepDueDecisionRequests runs the lazy expiry sweep (groups then their
