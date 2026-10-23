@@ -621,6 +621,7 @@ desktop-build: ## Compile the Electron desktop app and its bundled CLI
 
 android-build: APP_ENV ?= production
 android-build: ## Prebuild and compile the Android release APK (APP_ENV=production|staging)
+	cd apps/mobile && pnpm exec dotenv -e .env.$(APP_ENV) -- cross-env APP_ENV=$(APP_ENV) pnpm run verify:android-dom-bundle
 	cd apps/mobile && pnpm exec dotenv -e .env.$(APP_ENV) -- cross-env APP_ENV=$(APP_ENV) expo prebuild -p android
 	cd apps/mobile/android && EXPO_NO_BUNDLE_SPLITTING=1 ./gradlew assembleRelease --build-cache --parallel --no-daemon
 

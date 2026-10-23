@@ -139,7 +139,11 @@ jobs:
           java-version: "17"
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Android DOM bundle
+        working-directory: apps/mobile
+        run: pnpm exec dotenv -e .env.${{ env.APP_ENV }} -- cross-env APP_ENV=${{ env.APP_ENV }} pnpm run verify:android-dom-bundle
 
       # Re-applies app.config.ts (package name, icon, signing plugin) into a
       # fresh android/ every run — same rationale as apps/mobile's
