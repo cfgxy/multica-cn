@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceDecisionInbox } from "@multica/core/types";
 import {
-  filterDecisionRows,
   groupDecisionInboxSections,
   isDecidedDecisionRow,
   resolveDecisionActorType,
@@ -35,9 +34,21 @@ function makeItem(
   } as WorkspaceDecisionInbox["items"][number];
 }
 
+function makePage(
+  items: WorkspaceDecisionInbox["items"],
+  counts: WorkspaceDecisionInbox["counts"],
+): WorkspaceDecisionInbox {
+  return {
+    items,
+    counts,
+    next_cursor: null,
+    next_cursor_id: null,
+  };
+}
+
 // RUYI-494 acceptance at the shaping layer: the list's data unit is the CARD
 // (same issue with 3 cards = 3 rows, AC2), sections run open → answered →
-// cancelled with 待决策 first (AC7), counts stay the server's workspace
+// cancelled with 待决策 first (AC7), counts stay the server's filter-window
 // totals, and the recommendation flag feeds the 「有推荐」 badge (AC10).
 describe("toDecisionInboxRow", () => {
   it("builds the fixed two-line row surface", () => {
@@ -68,52 +79,69 @@ describe("toDecisionInboxRow", () => {
   });
 });
 
+// RUYI-864: the grouping walks PAGES (keyset) instead of one full list. The
+// section counts come off the last page so they stay the filter-window
+// totals while the page walk is in flight.
 describe("groupDecisionInboxSections", () => {
   it("groups by status, 待决策 first, preserving server order inside", () => {
-    const sections = groupDecisionInboxSections({
-      items: [
-        makeItem({ id: "o2", created_at: "2026-10-07T10:00:00Z" }),
-        makeItem({ id: "o1", created_at: "2026-10-07T09:00:00Z" }),
-        makeItem({ id: "a1", status: "answered", selected_indices: [0] }),
-        makeItem({ id: "x1", status: "cancelled" }),
-      ],
-      counts: { open: 2, answered: 1, cancelled: 1 },
-    });
+    const sections = groupDecisionInboxSections([
+      makePage(
+        [
+          makeItem({ id: "o2", created_at: "2026-10-07T10:00:00Z" }),
+          makeItem({ id: "o1", created_at: "2026-10-07T09:00:00Z" }),
+          makeItem({ id: "a1", status: "answered", selected_indices: [0] }),
+          makeItem({ id: "x1", status: "cancelled" }),
+        ],
+        { open: 2, answered: 1, cancelled: 1 },
+      ),
+    ]);
     expect(sections.map((s) => s.key)).toEqual(["open", "answered", "cancelled"]);
     expect(sections[0]!.rows.map((r) => r.id)).toEqual(["o2", "o1"]);
   });
 
-  it("keeps server counts as section totals, not row counts", () => {
-    const sections = groupDecisionInboxSections({
-      items: [makeItem({ id: "o1" })],
-      counts: { open: 7, answered: 3, cancelled: 1 },
-    });
+  it("merges rows across pages in fetch order", () => {
+    const sections = groupDecisionInboxSections([
+      makePage([makeItem({ id: "o1" })], { open: 2, answered: 0, cancelled: 0 }),
+      makePage([makeItem({ id: "o2" })], { open: 2, answered: 0, cancelled: 0 }),
+    ]);
+    expect(sections[0]!.rows.map((r) => r.id)).toEqual(["o1", "o2"]);
+  });
+
+  it("keeps the LAST page's window counts as section totals, not row counts", () => {
+    const sections = groupDecisionInboxSections([
+      makePage([makeItem({ id: "o1" })], { open: 1, answered: 0, cancelled: 0 }),
+      makePage([makeItem({ id: "o2" })], { open: 7, answered: 3, cancelled: 1 }),
+    ]);
     expect(sections).toHaveLength(1);
     expect(sections[0]!.count).toBe(7);
   });
 
   it("drops empty sections entirely (web parity)", () => {
-    const sections = groupDecisionInboxSections({
-      items: [makeItem({ id: "o1" })],
-      counts: { open: 1, answered: 0, cancelled: 0 },
-    });
+    const sections = groupDecisionInboxSections([
+      makePage(
+        [makeItem({ id: "o1" })],
+        { open: 1, answered: 0, cancelled: 0 },
+      ),
+    ]);
     expect(sections.map((s) => s.key)).toEqual(["open"]);
   });
 
   it("renders the empty inbox as no sections", () => {
     expect(
-      groupDecisionInboxSections({
-        items: [],
-        counts: { open: 0, answered: 0, cancelled: 0 },
-      }),
+      groupDecisionInboxSections([
+        makePage([], { open: 0, answered: 0, cancelled: 0 }),
+      ]),
     ).toEqual([]);
+  });
+
+  it("renders no sections when no page has been fetched yet", () => {
+    expect(groupDecisionInboxSections([])).toEqual([]);
   });
 });
 
 // ── RUYI-530 ────────────────────────────────────────────────────────────────
 // 三项优化在数据整形层的契约：行携带发起者身份（头像数据面）、已决策灰化
-// 判定（answered/cancelled 灰、open 不灰——负向断言）、TAB/筛选逻辑
-// （状态 TAB 映射 + 有推荐 / Agent 发起两个筛选维度，叠加为 AND）。
+// 判定（answered/cancelled 灰、open 不灰——负向断言）。
 describe("RUYI-530 toDecisionInboxRow creator identity", () => {
   it("carries the card creator's actor identity for the avatar", () => {
     const row = toDecisionInboxRow(
@@ -146,57 +174,5 @@ describe("RUYI-530 isDecidedDecisionRow (graying predicate)", () => {
 
   it("does NOT gray open rows (negative assertion)", () => {
     expect(isDecidedDecisionRow("open")).toBe(false);
-  });
-});
-
-describe("RUYI-530 filterDecisionRows (TAB + filter mechanics)", () => {
-  const rows = [
-    {
-      ...toDecisionInboxRow(makeItem({ id: "a1", status: "answered", recommended_indices: [0] })),
-      createdByType: "agent",
-      createdById: "agent-1",
-    },
-    {
-      ...toDecisionInboxRow(makeItem({ id: "a2", status: "answered" })),
-      createdByType: "member",
-      createdById: "u1",
-    },
-    {
-      ...toDecisionInboxRow(makeItem({ id: "o1", status: "open", recommended_indices: [0] })),
-      createdByType: "agent",
-      createdById: "agent-1",
-    },
-    {
-      ...toDecisionInboxRow(makeItem({ id: "x1", status: "cancelled" })),
-      createdByType: "agent",
-      createdById: "agent-2",
-    },
-  ];
-
-  it("tab=all keeps every status; a status tab narrows to it", () => {
-    const all = filterDecisionRows(rows, { tab: "all", recommendedOnly: false, agentCreatedOnly: false });
-    expect(all.map((r) => r.id)).toEqual(["a1", "a2", "o1", "x1"]);
-    expect(filterDecisionRows(rows, { tab: "open", recommendedOnly: false, agentCreatedOnly: false }).map((r) => r.id)).toEqual(["o1"]);
-    expect(filterDecisionRows(rows, { tab: "answered", recommendedOnly: false, agentCreatedOnly: false }).map((r) => r.id)).toEqual(["a1", "a2"]);
-    expect(filterDecisionRows(rows, { tab: "cancelled", recommendedOnly: false, agentCreatedOnly: false }).map((r) => r.id)).toEqual(["x1"]);
-  });
-
-  it("recommendedOnly keeps only cards with recommendations, across tabs", () => {
-    expect(filterDecisionRows(rows, { tab: "all", recommendedOnly: true, agentCreatedOnly: false }).map((r) => r.id)).toEqual(["a1", "o1"]);
-    expect(filterDecisionRows(rows, { tab: "answered", recommendedOnly: true, agentCreatedOnly: false }).map((r) => r.id)).toEqual(["a1"]);
-  });
-
-  it("agentCreatedOnly keeps only agent-created cards", () => {
-    expect(filterDecisionRows(rows, { tab: "all", recommendedOnly: false, agentCreatedOnly: true }).map((r) => r.id)).toEqual(["a1", "o1", "x1"]);
-  });
-
-  it("composes tab and both filters as AND", () => {
-    expect(
-      filterDecisionRows(rows, { tab: "answered", recommendedOnly: true, agentCreatedOnly: true }).map((r) => r.id),
-    ).toEqual(["a1"]);
-    // 成员发起 + 有推荐 + answered → 无命中，空集而非报错。
-    expect(
-      filterDecisionRows(rows, { tab: "open", recommendedOnly: true, agentCreatedOnly: false }).map((r) => r.id),
-    ).toEqual(["o1"]);
   });
 });
