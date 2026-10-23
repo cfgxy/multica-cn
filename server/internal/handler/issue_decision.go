@@ -475,6 +475,24 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		CreatedByID:        parseUUID(authorID),
 		ClientRequestID:    keyParam,
 	})
+	if errors.Is(err, sql.ErrNoRows) {
+		// The create's atomic done guard (RUYI-865) may be the cause: a
+		// concurrent done transition that landed after this request read
+		// its issue snapshot refuses the insert even though the snapshot
+		// still says non-done. Re-read the row and check against the
+		// CURRENT state — the request-start snapshot is stale by definition
+		// in that race, and a foreign no-row miss (a concurrent delete)
+		// stays a 500 with a log either way.
+		fresh, freshErr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+			ID:          issue.ID,
+			WorkspaceID: issue.WorkspaceID,
+		})
+		if freshErr == nil && !h.decisionCardsAllowedWhileDone(r.Context(), fresh) {
+			writeError(w, http.StatusConflict,
+				"decision cards can no longer be raised: the issue has entered the done category; reopen it first")
+			return
+		}
+	}
 	if err != nil {
 		// Same-key retry: the insert lost the race against the original
 		// create, which by then must be committed (READ COMMITTED waits on
