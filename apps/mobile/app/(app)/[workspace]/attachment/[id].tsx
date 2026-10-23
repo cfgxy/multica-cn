@@ -8,7 +8,10 @@ import { api } from "@/data/api";
 import { useT } from "@/lib/use-t";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
-import { getMobileAttachmentPreviewKind } from "@/lib/attachment-preview";
+import {
+  getMobileAttachmentPreviewKind,
+  resolveMobileAttachmentPreviewUrl,
+} from "@/lib/attachment-preview";
 import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { Markdown } from "@/lib/markdown";
@@ -33,6 +36,10 @@ export default function AttachmentReaderScreen() {
   const kind = useMemo(
     () => getMobileAttachmentPreviewKind(attachment?.content_type ?? "", attachment?.filename ?? ""),
     [attachment?.content_type, attachment?.filename],
+  );
+  const pdfUrl = useMemo(
+    () => resolveMobileAttachmentPreviewUrl(attachment, resolveAttachmentUrl),
+    [attachment],
   );
   const markdownQuery = useQuery({
     queryKey: ["attachment-reader-content", id],
@@ -84,8 +91,10 @@ export default function AttachmentReaderScreen() {
       ) : kind === "pdf" ? (
         attachment.size_bytes > MAX_PDF_BYTES ? (
           <ReaderMessage text={t("attachment.preview_too_large", "File is too large to preview. Please download.")} />
+        ) : !pdfUrl ? (
+          <ReaderMessage text={t("attachment.preview_failed", "Couldn't load preview")} />
         ) : (
-          <PdfDocument url={attachment.attachment_download_url || attachment.download_url} />
+          <PdfDocument url={pdfUrl} />
         )
       ) : (
         <ReaderMessage text={t("attachment.preview_unsupported", "This file type can't be previewed.")} />
