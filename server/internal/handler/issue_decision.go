@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -816,6 +817,15 @@ func (h *Handler) CancelIssueDecision(w http.ResponseWriter, r *http.Request) {
 // answered cards can never be resurrected and a racing restore/answer loses
 // with 409 instead of double-flipping. No echo comment — restoring asks
 // nothing, it only re-opens the card, so the audit row carries the trail.
+//
+// The issue's terminal state is the other half of that rule: when the issue
+// has reached a done/cancelled-class terminal state — built-in or a custom
+// status whose category is done/cancelled, judged by the authoritative
+// issuestatus.Effective, the same classification other terminal gates use —
+// the card is refused with 409 instead of being revived on a closed issue.
+// The check runs before the CAS and before any audit/event write, and the
+// SQL CAS itself carries the same terminal predicate so an issue that turns
+// terminal in the race still loses instead of resurrecting the card.
 func (h *Handler) RestoreIssueDecision(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
@@ -844,13 +854,22 @@ func (h *Handler) RestoreIssueDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Terminal-issue gate: a done/cancelled-class issue no longer accepts
+	// revived decisions, so refuse before writing any audit row or event.
+	// Effective keeps built-in keys intact and maps a custom key to its
+	// category, so a workspace's own terminal status is classified here.
+	if cat := issuestatus.Effective(r.Context(), h.issueStatusCatalog(), issue.WorkspaceID, issue.Status); cat == "done" || cat == "cancelled" {
+		writeError(w, http.StatusConflict, "the issue is in a terminal state, its decision cards cannot be restored")
+		return
+	}
+
 	restored, err := h.Queries.RestoreIssueDecision(r.Context(), db.RestoreIssueDecisionParams{
 		ID:          decision.ID,
 		WorkspaceID: issue.WorkspaceID,
 	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusConflict, "only cancelled decision cards can be restored")
+			writeError(w, http.StatusConflict, "only cancelled decision cards on a non-terminal issue can be restored")
 			return
 		}
 		slog.Warn("restore issue decision failed", append(logger.RequestAttrs(r), "error", err, "decision_id", uuidToString(decision.ID))...)
