@@ -362,6 +362,75 @@ func TestClauseReconciliationDriftKinds(t *testing.T) {
 	})
 }
 
+func TestExpectedClausesByCarrierKeepsProjectBindingsSeparate(t *testing.T) {
+	boundID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	unboundID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
+	expected := expectedClausesByCarrier([]db.ListActiveWorkspaceClausesRow{{
+		Scope: "project", ScopeID: boundID, Slug: "project-clause", Version: 1,
+	}})
+
+	if got := expected[clauseCarrierKey{Scope: "project", ScopeID: boundID}]["project-clause"]; got != 1 {
+		t.Fatalf("bound project clause version = %d, want 1", got)
+	}
+	if _, found := expected[clauseCarrierKey{Scope: "project", ScopeID: unboundID}]["project-clause"]; found {
+		t.Fatal("project clause leaked to an unbound project")
+	}
+}
+
+// A clause bound to one project is not expected in every project. The drift
+// scan must use both the carrier scope and its ID when matching bindings.
+func TestClauseReconciliationScopesExpectedClausesToCarrier(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	boundProjectID := dbfx.Project(t, "bound project", testutil.Cols{
+		"workspace_id": f.wsID,
+		"instructions": "# Bound project\n\n## Project rules\n",
+	})
+	dbfx.Project(t, "unbound project", testutil.Cols{
+		"workspace_id": f.wsID,
+		"instructions": "# Unbound project\n\n## Project rules\n",
+	})
+
+	body := legislationProposalBody(f.wsID, "project clause", cleanClauseText)
+	body.CarrierScope = "project"
+	body.CarrierScopeID = boundProjectID
+	body.TargetSection = "Project rules"
+	body.GateAnswerLayer = "project=项目事实"
+	code, response := legislationCall(t, testHandler.CreatePromptProposal,
+		legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals", body))
+	if code != http.StatusCreated {
+		t.Fatalf("create project clause draft: expected 201, got %d: %s", code, response)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(response), &created); err != nil {
+		t.Fatalf("decode project clause draft: %v (%s)", err, response)
+	}
+	submitDraft(t, f.wsID, f.memberID, created.ID)
+	if code, response = ownerApprove(t, f.ownerID, f.wsID, created.ID); code != http.StatusOK {
+		t.Fatalf("approve project clause: expected 200, got %d: %s", code, response)
+	}
+
+	code, response = legislationCall(t, testHandler.GetClauseReconciliation,
+		legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/reconciliation", nil))
+	if code != http.StatusOK {
+		t.Fatalf("reconciliation: expected 200, got %d: %s", code, response)
+	}
+	var reconciliation struct {
+		Healthy bool `json:"healthy"`
+		Drift   []struct {
+			Scope   string `json:"scope"`
+			ScopeID string `json:"scope_id"`
+		} `json:"drift"`
+	}
+	if err := json.Unmarshal([]byte(response), &reconciliation); err != nil {
+		t.Fatalf("decode reconciliation: %v (%s)", err, response)
+	}
+	if !reconciliation.Healthy || len(reconciliation.Drift) != 0 {
+		t.Fatalf("project-scoped clause leaked to another carrier: %s", response)
+	}
+}
+
 func assertSingleDriftKind(t *testing.T, f *clauseInjectionFixture, kind string) {
 	t.Helper()
 	code, body := legislationCall(t, testHandler.GetClauseReconciliation,
