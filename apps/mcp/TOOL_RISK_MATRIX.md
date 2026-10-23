@@ -1,7 +1,7 @@
 # MCP Tool Risk Matrix
 
 This inventory covers the complete static `TOOL_DEFINITIONS` registry exposed
-by `tools/list` (77 tools at this revision). `src/tool-risk.ts` is the runtime
+by `tools/list` (84 tools at this revision). `src/tool-risk.ts` is the runtime
 source of truth; `test/server.test.ts` verifies exact name coverage and the
 serialized annotations over an in-memory MCP client/server connection.
 
@@ -95,6 +95,13 @@ bounded metadata domain.
 | `get_decision` | read | true | false | true | false | Reads a decision card. |
 | `answer_decisions` | external | false | true | false | true | Answers a card and posts a creator-Agent mention that can resume its run. |
 | `unarchive_inbox_item` | write | false | false | true | false | Restores an item and issue siblings while preserving read state. |
+| `list_clauses` | read | true | false | true | false | Reads the workspace clause-governance overview (versions, bindings, status, injection counters). |
+| `get_clause` | read | true | false | true | false | Reads full governance detail for one clause (versions, bindings, proposals, quality ledger). |
+| `search_clauses` | read | true | false | true | false | Searches the clause inventory by keyword and status. |
+| `get_clause_reconciliation` | read | true | false | true | false | Read-only reconciliation of clause injection invariants (layer-set violations, demotion share, flag drift). |
+| `get_prompt_versions` | read | true | false | true | false | Reads the prompt-carrier version ledger for clause-versus-prompt comparison. |
+| `list_prompt_proposals` | read | true | false | true | false | Reads the prompt legislation proposal pool (lifecycle and audit records). |
+| `create_prompt_proposal` | write | false | false | false | false | Adds a clause-change draft to the proposal pool; changes no prompt or carrier before owner approval. |
 
 ## Coverage Notes
 

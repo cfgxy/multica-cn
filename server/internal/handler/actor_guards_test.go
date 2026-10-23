@@ -164,3 +164,128 @@ func TestRequireHumanActor_AppliedViaChiRouterUse(t *testing.T) {
 		t.Fatalf("status = %d, want 403", w.Code)
 	}
 }
+
+// TestRequireHumanOrOAuthActor_AllowsHumanAndOAuth (RUYI-868) pins the
+// two actor shapes the legislation surface must admit: a plain human
+// request (no X-Actor-Source) and an MCP OAuth access token
+// (X-Actor-Source: oauth). The OAuth admission is deliberate — those
+// tokens are tiered by oauth.ScopeForRequest on every request, and the
+// owner-only decide-and-execute endpoints keep RequireHumanActor, so
+// the OAuth client can reach the reads and the member-side proposal
+// actions and nothing more.
+func TestRequireHumanOrOAuthActor_AllowsHumanAndOAuth(t *testing.T) {
+	cases := []struct {
+		name        string
+		actorSource string
+	}{
+		{name: "human", actorSource: ""},
+		{name: "oauth", actorSource: "oauth"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				called = true
+				w.WriteHeader(http.StatusOK)
+			})
+			mw := RequireHumanOrOAuthActor(next)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/prompt-legislation/governance/clauses", nil)
+			if tc.actorSource != "" {
+				// Same trust argument as the RequireHumanActor tests: the
+				// auth middlewares strip any client-supplied value before
+				// stamping their own, so setting the header directly here
+				// proves the gate's decision on the source alone.
+				req.Header.Set("X-Actor-Source", tc.actorSource)
+			}
+			w := httptest.NewRecorder()
+			mw.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 for actor source %q", w.Code, tc.actorSource)
+			}
+			if !called {
+				t.Fatal("inner handler must run for human and oauth actors")
+			}
+		})
+	}
+}
+
+// TestRequireHumanOrOAuthActor_BlocksUnscopedMachineCredentials (RUYI-868)
+// pins the two machine-credential shapes the legislation surface must keep
+// denying: mat_ task tokens and mcn_ cloud-node PATs. They carry no OAuth
+// scope tier, so a compromised agent process or cloud node must not be able
+// to read clause text or walk the proposal pool.
+func TestRequireHumanOrOAuthActor_BlocksUnscopedMachineCredentials(t *testing.T) {
+	for _, actorSource := range []string{"task_token", "cloud_pat"} {
+		t.Run(actorSource, func(t *testing.T) {
+			next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				t.Fatalf("inner handler must NOT run for actor source %q", actorSource)
+			})
+			mw := RequireHumanOrOAuthActor(next)
+
+			req := httptest.NewRequest(http.MethodGet, "/api/prompt-legislation/proposals", nil)
+			req.Header.Set("X-Actor-Source", actorSource)
+			w := httptest.NewRecorder()
+			mw.ServeHTTP(w, req)
+
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", w.Code)
+			}
+		})
+	}
+}
+
+// TestRequireHumanOrOAuthActor_IgnoresUnknownActorSource (RUYI-868) keeps
+// the new guard's denylist discipline in lockstep with
+// isMachineCredentialActor's: an actor source nobody has classified yet is
+// human-equivalent by default, and classifying a new credential kind is a
+// security-review decision point, not a default-deny surprise.
+func TestRequireHumanOrOAuthActor_IgnoresUnknownActorSource(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+	mw := RequireHumanOrOAuthActor(next)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/prompt-legislation/governance/clauses", nil)
+	req.Header.Set("X-Actor-Source", "future_kind")
+	w := httptest.NewRecorder()
+	mw.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — unknown actor sources stay admitted", w.Code)
+	}
+	if !called {
+		t.Fatal("inner handler must run for unknown actor sources")
+	}
+}
+
+// TestRequireHumanOrOAuthActor_AppliedViaChiRouterUse (RUYI-868) pins the
+// router wiring: a task-token request is rejected at the guard and never
+// reaches the handler behind it, while an OAuth request passes through the
+// same group.
+func TestRequireHumanOrOAuthActor_AppliedViaChiRouterUse(t *testing.T) {
+	r := chi.NewRouter()
+	r.Use(RequireHumanOrOAuthActor)
+	r.Get("/probe", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
+	req.Header.Set("X-Actor-Source", "task_token")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("task_token: status = %d, want 403", w.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/probe", nil)
+	req.Header.Set("X-Actor-Source", "oauth")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("oauth: status = %d, want 200", w.Code)
+	}
+}

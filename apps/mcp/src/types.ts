@@ -937,3 +937,146 @@ export interface InboxWorkspaceUnreadInfo {
   workspace_id: string;
   count: number;
 }
+
+/**
+ * Clause governance (RUYI-868): the read surfaces of the clause asset
+ * library and the proposal pool under /api/prompt-legislation, plus the
+ * prompt-governance version ledger a clause-versus-prompt comparison reads
+ * carrier text from. These mirror the backend's own JSON contracts
+ * (server/internal/handler/clause_governance.go, legislation.go,
+ * prompt_version.go); optional fields track `omitempty` and stay nullable.
+ */
+export interface ClauseGovernanceOverview {
+  workspace_id: string;
+  since: string;
+  dynamic_injection_disabled: boolean;
+  clauses: {
+    id: string;
+    slug: string;
+    title: string;
+    status: string;
+    latest_version: number;
+    bound_scope?: string;
+    bound_scope_id?: string;
+    injections: number;
+    runs: number;
+    injected_tokens: number;
+    tokens_pending: boolean;
+  }[];
+  status_counts: Record<string, number>;
+  migration: {
+    total_carriers: number;
+    bound_carriers: number;
+  };
+}
+
+export interface ClauseGovernanceSearchResult {
+  query: string;
+  matched: number;
+  clauses: {
+    id: string;
+    slug: string;
+    title: string;
+    status: string;
+    latest_version: number;
+    bound_scope?: string;
+    bound_scope_id?: string;
+  }[];
+}
+
+export interface ClauseGovernanceDetail {
+  id: string;
+  slug: string;
+  title: string;
+  status: string;
+  latest_version: number;
+  versions: {
+    version: number;
+    content: string;
+    content_sha256: string;
+    source: string;
+    created_at: string;
+  }[];
+  bindings: {
+    id: string;
+    scope: string;
+    scope_id: string;
+    status: string;
+    since_clause_version: number;
+  }[];
+  proposals: PromptProposalInfo[];
+  injections: number;
+  runs: number;
+  injected_tokens: number;
+}
+
+export interface ClauseReconciliation {
+  since: string;
+  healthy: boolean;
+  layer_set_violations: {
+    task_id: string;
+    clause_id: string;
+    clause_version: number;
+    degraded: boolean;
+    created_at: string;
+  }[];
+  drift: {
+    scope: string;
+    scope_id: string;
+    entries: {
+      kind: "stale_rev" | "orphan_marker" | "missing_segment";
+      slug: string;
+      marker_rev?: number;
+      expected_rev?: number;
+    }[];
+  }[];
+  carriers_scanned: number;
+}
+
+export interface PromptVersionInfo {
+  id: string;
+  scope: string;
+  scope_id: string;
+  version: number;
+  content: string;
+  content_sha256: string;
+  source: string;
+  change_note: string;
+  created_at?: string;
+}
+
+export interface PromptVersionListResult {
+  versions: PromptVersionInfo[];
+  total: number;
+}
+
+export interface PromptProposalInfo {
+  id: string;
+  workspace_id: string;
+  carrier_scope: string;
+  carrier_scope_id: string;
+  target_section: string;
+  change_kind: string;
+  clause_name: string;
+  clause_text: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  enacted_version?: number;
+  clause_id?: string;
+}
+
+export interface CreatePromptProposalBody {
+  carrier_scope: string;
+  carrier_scope_id: string;
+  target_section: string;
+  change_kind: string;
+  clause_name: string;
+  clause_text: string;
+  gate_answer_layer: string;
+  gate_answer_retention: string;
+  gate_answer_cost: string;
+  gate_answer_conflict: string;
+  gate_answer_dedup: string;
+  evidence_anchors?: { issue_id: string; ref: string }[];
+}
