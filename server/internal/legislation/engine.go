@@ -215,6 +215,29 @@ func sectionSpan(lines []string, section string) (int, int) {
 	return -1, -1
 }
 
+// sectionBlockSpan locates a complete ## section including its heading. It is
+// the legacy counterpart to clauseSpan for assets originally segmented by
+// section rather than by a bold-label clause.
+func sectionBlockSpan(lines []string, section string) (int, int) {
+	start := -1
+	for i, line := range lines {
+		m := sectionRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		if start >= 0 {
+			return start, i
+		}
+		if strings.TrimSpace(m[1]) == strings.TrimSpace(section) {
+			start = i
+		}
+	}
+	if start >= 0 {
+		return start, len(lines)
+	}
+	return -1, -1
+}
+
 // Synthesize applies the proposal to a copy of the carrier's current
 // effective content and returns the sandbox-synthesized full text. It never
 // mutates the input. Errors here are gate errors (they block enactment).
@@ -352,21 +375,61 @@ func synthesizeRevise(current string, p ProposalInput, name string) (string, err
 	}
 	lines := splitLines(current)
 	s, e := clauseSpan(lines, name)
-	if s < 0 {
-		return "", fmt.Errorf("条款「%s」在当前内容中不存在，修订请改用新增", name)
+	if s >= 0 {
+		out := insertBlock(append(lines[:s:s], lines[e:]...), s, strings.TrimRight(p.ClauseText, "\n"))
+		return strings.Join(out, "\n"), nil
 	}
-	out := insertBlock(append(lines[:s:s], lines[e:]...), s, strings.TrimRight(p.ClauseText, "\n"))
-	return strings.Join(out, "\n"), nil
+
+	// Legacy clause assets were sometimes created from a whole ## section.
+	// Only take this path when the proposed replacement carries the same
+	// heading, so a section can never be silently replaced by a bare rule.
+	if heading := firstSectionName(p.ClauseText); heading != "" && clauseNamesEqual(heading, name) {
+		s, e = sectionBlockSpan(lines, name)
+		if s >= 0 {
+			out := insertBlock(append(lines[:s:s], lines[e:]...), s, strings.TrimRight(p.ClauseText, "\n"))
+			return strings.Join(out, "\n"), nil
+		}
+	}
+	return "", fmt.Errorf("条款「%s」在当前内容中不存在，修订请改用新增", name)
 }
 
-func synthesizeRemove(current string, _ ProposalInput, name string) (string, error) {
+func synthesizeRemove(current string, p ProposalInput, name string) (string, error) {
 	lines := splitLines(current)
 	s, e := clauseSpan(lines, name)
 	if s < 0 {
-		return "", fmt.Errorf("条款「%s」在当前内容中不存在，无法删除", name)
+		// A legacy asset may represent the root document heading rather than a
+		// bold-label rule. Only an explicit "# <heading>" locator takes this
+		// path, so an ordinary target section cannot remove unrelated content.
+		locator := strings.TrimSpace(p.TargetSection)
+		if strings.HasPrefix(locator, "# ") {
+			s, e = rootHeadingLineSpan(lines, strings.TrimSpace(strings.TrimPrefix(locator, "# ")))
+		}
+		if s < 0 {
+			return "", fmt.Errorf("条款「%s」在当前内容中不存在，无法删除", name)
+		}
 	}
 	out := append(lines[:s:s], lines[e:]...)
 	return strings.Join(out, "\n"), nil
+}
+
+// rootHeadingLineSpan locates an H1 and removes only its line plus its
+// following blank separator. A root heading owns the whole document subtree,
+// so removing that subtree would erase the rules the heading only labels.
+func rootHeadingLineSpan(lines []string, heading string) (int, int) {
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "# ") {
+			continue
+		}
+		if clauseNamesEqual(strings.TrimSpace(strings.TrimPrefix(trimmed, "# ")), heading) {
+			end := i + 1
+			if end < len(lines) && strings.TrimSpace(lines[end]) == "" {
+				end++
+			}
+			return i, end
+		}
+	}
+	return -1, -1
 }
 
 // MoveTarget is the destination half of a move_clause proposal: the carrier
@@ -454,6 +517,20 @@ func firstClauseName(block string) string {
 			continue
 		}
 		return clauseStartName(line)
+	}
+	return ""
+}
+
+func firstSectionName(block string) string {
+	for _, line := range splitLines(block) {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		m := sectionRe.FindStringSubmatch(line)
+		if m == nil {
+			return ""
+		}
+		return strings.TrimSpace(m[1])
 	}
 	return ""
 }
