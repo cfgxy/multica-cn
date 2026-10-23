@@ -124,3 +124,60 @@ func isMachineCredentialActor(r *http.Request) bool {
 		return false
 	}
 }
+
+// RequireHumanOrOAuthActor (RUYI-868) is the clause-legislation variant of
+// RequireHumanActor: it rejects mat_ task tokens and mcn_ cloud-node PATs but
+// admits MCP OAuth access tokens, so an MCP client can reach the clause
+// governance reads and the member-side proposal actions through the OAuth
+// surface.
+//
+// The security argument differs from RequireHumanActor's on purpose:
+//
+//   - OAuth access tokens are tiered on every request by
+//     oauth.ScopeForRequest (server/internal/oauth/scope_request.go): the
+//     clause endpoints are classified into mcp:read / mcp:write tiers, and
+//     the owner's decide-and-execute endpoints (approve / reject / restore /
+//     enact / approve-batch) are off-surface, so no OAuth token — whatever
+//     its scope — can reach them. The guard here is the second half of that
+//     two-gate design; the scope tier is the first.
+//   - The member-side proposal actions that an OAuth client may drive are
+//     additionally bounded by the workspace-member middleware and, inside
+//     the handlers, by the creator-or-owner write gate, so the tool cannot
+//     rewrite someone else's draft.
+//   - mat_ task tokens and mcn_ cloud PATs have NO scope model at all — a
+//     compromised agent process or cloud node could otherwise walk the
+//     proposal pool and read clause text it was never authorized to see —
+//     so they stay denied here, exactly as in RequireHumanActor.
+//
+// Unknown actor sources are admitted, the same explicit fail-safe the
+// denylist shape of isMachineCredentialActor is pinned by
+// TestRequireHumanActor_IgnoresUnknownActorSource: a new credential kind is
+// a security-review decision point, not a default-deny surprise.
+//
+// Apply via `r.Use(handler.RequireHumanOrOAuthActor)` on the chi route
+// groups that open the legislation surface to the MCP OAuth client; the
+// owner-only groups keep RequireHumanActor untouched.
+func RequireHumanOrOAuthActor(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isUnscopedMachineActor(r) {
+			writeError(w, http.StatusForbidden, "this endpoint is available to human actors and MCP clients, not to agent task or cloud-node credentials")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isUnscopedMachineActor reports whether the request is authenticated with a
+// machine credential that carries no OAuth scope tier: the task-token and
+// cloud-node-PAT branches of the auth middleware. OAuth and human-equivalent
+// actor sources pass.
+func isUnscopedMachineActor(r *http.Request) bool {
+	// X-Actor-Source is server-set only, same trust argument as
+	// isMachineCredentialActor.
+	switch r.Header.Get("X-Actor-Source") {
+	case "task_token", "cloud_pat":
+		return true
+	default:
+		return false
+	}
+}
