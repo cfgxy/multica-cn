@@ -3,9 +3,10 @@ import MermaidDiagramDom, { type ReaderDocumentDomProps } from "./mermaid-diagra
 
 type DomPdfProps = Extract<ReaderDocumentDomProps, { kind: "pdf" }> & { dom?: DOMProps };
 
-export function PdfDocument({ url }: { url: string }) {
+export function PdfDocument({ data, url }: { data?: string; url?: string }) {
   const props: DomPdfProps = {
     kind: "pdf",
+    data,
     url,
     dom: {
       useExpoDOMWebView: true,

@@ -28,6 +28,7 @@
 import { useEffect, useRef, useState } from "react";
 import mermaid from "mermaid";
 import * as pdfjs from "pdfjs-dist";
+import { WorkerMessageHandler } from "pdfjs-dist/build/pdf.worker";
 import { buildMermaidConfig, type MermaidThemeColors } from "./mermaid-config";
 
 export type MermaidViewMode = "inline" | "full";
@@ -46,7 +47,8 @@ interface MermaidDiagramDomProps {
 
 interface PdfDocumentDomProps {
   kind: "pdf";
-  url: string;
+  data?: string;
+  url?: string;
 }
 
 export type ReaderDocumentDomProps = MermaidDiagramDomProps | PdfDocumentDomProps;
@@ -54,6 +56,13 @@ export type ReaderDocumentDomProps = MermaidDiagramDomProps | PdfDocumentDomProp
 // Mermaid requires a document-unique id per render; a module counter is
 // enough because one DOM bundle instance renders one diagram at a time.
 let renderSeq = 0;
+
+// Android Expo DOM bundles execute as classic scripts. The v3 UMD worker can
+// run in-process, avoiding a runtime ESM worker URL and import.meta syntax.
+const pdfjsGlobal = globalThis as typeof globalThis & {
+  pdfjsWorker?: { WorkerMessageHandler: typeof WorkerMessageHandler };
+};
+pdfjsGlobal.pdfjsWorker ??= { WorkerMessageHandler };
 
 const BASE_CSS = `
   html, body { margin: 0; padding: 0; background: transparent; }
@@ -85,7 +94,8 @@ export default function MermaidDiagramDom(props: ReaderDocumentDomProps) {
   const [diagramSvg, setDiagramSvg] = useState("");
   const [pdfState, setPdfState] = useState<"loading" | "ready" | "error" | "large">("loading");
   const kind = props.kind ?? "mermaid";
-  const url = props.kind === "pdf" ? props.url : "";
+  const url = props.kind === "pdf" ? props.url ?? "" : "";
+  const data = props.kind === "pdf" ? props.data : undefined;
   const chart = props.kind === "pdf" ? "" : props.chart;
   const colors = props.kind === "pdf" ? null : props.colors;
   const mode = props.kind === "pdf" ? null : props.mode;
@@ -99,23 +109,26 @@ export default function MermaidDiagramDom(props: ReaderDocumentDomProps) {
     async function render() {
       try {
         if (kind === "pdf") {
-          const response = await fetch(url, { signal: controller.signal });
-          if (!response.ok) throw new Error("PDF request failed");
-          const declaredLength = Number(response.headers.get("content-length"));
-          if (Number.isFinite(declaredLength) && declaredLength > MAX_PDF_BYTES) {
-            if (!cancelled) setPdfState("large");
-            return;
+          let bytes: Uint8Array;
+          if (data) {
+            const binary = globalThis.atob(data);
+            bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+          } else {
+            if (!url) throw new Error("PDF source is unavailable");
+            const response = await fetch(url, { signal: controller.signal });
+            if (!response.ok) throw new Error("PDF request failed");
+            const declaredLength = Number(response.headers.get("content-length"));
+            if (Number.isFinite(declaredLength) && declaredLength > MAX_PDF_BYTES) {
+              if (!cancelled) setPdfState("large");
+              return;
+            }
+            bytes = new Uint8Array(await response.arrayBuffer());
           }
-          const bytes = new Uint8Array(await response.arrayBuffer());
           if (bytes.byteLength > MAX_PDF_BYTES) {
             if (!cancelled) setPdfState("large");
             return;
           }
 
-          pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-            "pdfjs-dist/build/pdf.worker.min.mjs",
-            import.meta.url,
-          ).toString();
           loadingTask = pdfjs.getDocument({ data: bytes });
           const document = await loadingTask.promise;
           if (document.numPages > MAX_PDF_PAGES) {
@@ -136,7 +149,9 @@ export default function MermaidDiagramDom(props: ReaderDocumentDomProps) {
             canvas.setAttribute("aria-label", `Page ${pageNumber}`);
             canvas.style.cssText = "display:block;width:100%;height:auto;margin:0 auto 12px;";
             hostRef.current.append(canvas);
-            await page.render({ canvas, viewport }).promise;
+            const canvasContext = canvas.getContext("2d");
+            if (!canvasContext) throw new Error("PDF canvas is unavailable");
+            await page.render({ canvasContext, viewport }).promise;
           }
           if (!cancelled) setPdfState("ready");
           return;
@@ -168,6 +183,7 @@ export default function MermaidDiagramDom(props: ReaderDocumentDomProps) {
     };
   }, [
     kind,
+    data,
     url,
     chart,
     colors,
