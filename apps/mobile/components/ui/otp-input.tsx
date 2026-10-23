@@ -8,7 +8,7 @@
  * Numeric input enforced via `inputMode="numeric"` (library default).
  */
 import { forwardRef } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import {
   OTPInput,
   type OTPInputProps,
@@ -34,7 +34,13 @@ export const OtpInput = forwardRef<OTPInputRef, OtpInputProps>(
         render={({ slots }) => (
           <>
             {slots.map((slot, idx) => (
-              <Slot key={idx} slot={slot} />
+              <Pressable
+                key={idx}
+                onPress={slot.focus}
+                testID={`otp-slot-${idx}`}
+              >
+                <Slot slot={slot} />
+              </Pressable>
             ))}
           </>
         )}
