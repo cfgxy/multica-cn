@@ -202,6 +202,62 @@ func TestCompleteTask_DoesNotReconcileItsSynthesizedReceipt(t *testing.T) {
 	}
 }
 
+func TestAgentOnlyCommentCascadeBlocked(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	var agentID, runtimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 AND runtime_id IS NOT NULL LIMIT 1`,
+		testWorkspaceID).Scan(&agentID, &runtimeID)
+	issueID := dbfx.Issue(t, "agent-only cascade breaker", testutil.Cols{
+		"status":        "in_progress",
+		"number":        999013,
+		"assignee_type": "agent",
+		"assignee_id":   agentID,
+	})
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, issueID)
+	})
+
+	parentID := dbfx.Comment(t, issueID, "member starts the work", testutil.Cols{
+		"created_at": testutil.Raw("now() - interval '1 minute'"),
+	})
+	appendHop := func() string {
+		t.Helper()
+		var taskID, commentID string
+		dbfx.QueryRow(t, `
+			INSERT INTO agent_task_queue (
+				agent_id, runtime_id, issue_id, trigger_comment_id, status, priority,
+				originator_user_id, accountable_user_id, created_at
+			)
+			VALUES ($1, $2, $3, $4, 'completed', 0, $5, $5, now() - interval '1 minute')
+			RETURNING id
+		`, agentID, runtimeID, issueID, parentID, testUserID).Scan(&taskID)
+		dbfx.QueryRow(t, `
+			INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, source_task_id, created_at)
+			VALUES ($1, $2, 'agent', $3, $4, 'comment', $5, now())
+			RETURNING id
+		`, issueID, testWorkspaceID, agentID, "handoff", taskID).Scan(&commentID)
+		parentID = commentID
+		return commentID
+	}
+
+	for range maxRapidAgentOnlyCommentCascadeHops - 1 {
+		appendHop()
+	}
+	if testHandler.agentOnlyCommentCascadeBlocked(ctx, parseUUID(parentID)) {
+		t.Fatalf("%d rapid agent-only hops must remain available for a legitimate handoff", maxRapidAgentOnlyCommentCascadeHops-1)
+	}
+	appendHop()
+	if !testHandler.agentOnlyCommentCascadeBlocked(ctx, parseUUID(parentID)) {
+		t.Fatalf("%d rapid agent-only hops must open the circuit", maxRapidAgentOnlyCommentCascadeHops)
+	}
+}
+
 // TestCompleteTask_DoesNotReTriggerOtherAgentMentionedDuringRun is the MUL-4195
 // review must-fix #2 regression test. Agent A is running on an issue when a
 // member posts a comment that @-mentions a DIFFERENT agent B. B is triggered at
