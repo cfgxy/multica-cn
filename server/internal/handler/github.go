@@ -2120,6 +2120,12 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 	// exists, parent not terminal), so calling it unconditionally is safe.
 	h.notifyParentOfChildDone(ctx, issue, updated)
 	h.completeSingleIssueDecisionRequest(ctx, updated)
+	// RUYI-865: a PR merge advancing the issue into done settles its
+	// decision backlog on the same transition, like the HTTP entry points.
+	// The issue moved from a non-done status (the caller guards terminal
+	// statuses before calling), so enteredDoneCategory is the no-op check
+	// only when the write was already done at read time.
+	h.cancelOpenDecisionCardsForDone(ctx, issue, updated, "github_pr_merged")
 	// RUYI-690: same issue_done machine predicate as the HTTP paths — a PR
 	// merge is a done transition, so suspensions waiting on this issue
 	// auto-resume. Best-effort, matching the notification above.

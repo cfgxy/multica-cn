@@ -229,6 +229,86 @@ func (q *Queries) CancelIssueDecision(ctx context.Context, arg CancelIssueDecisi
 	return i, err
 }
 
+const cancelOpenIssueDecisionsForIssue = `-- name: CancelOpenIssueDecisionsForIssue :many
+UPDATE issue_decisions SET
+    status = 'cancelled',
+    updated_at = now()
+WHERE issue_id = $1 AND workspace_id = $2
+  AND status = 'open'
+  AND decision_kind = 'question'
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at, context
+`
+
+type CancelOpenIssueDecisionsForIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// RUYI-865: when an issue formally enters the done category, every one of
+// its still-open question cards is auto-cancelled in a single CAS batch so
+// it cannot re-enter the decision-center backlog. The status guard makes
+// the batch idempotent (re-running on an already-cleaned issue is a no-op)
+// and races an in-flight answer safely: whichever of {answer, cancel} wins
+// the open->terminal flip first leaves a consistent row, and only cards
+// actually flipped are returned so events and audit rows cover exactly
+// what changed. Authorization cards keep their request-owned lifecycle
+// (RUYI-630 decision_requests surface) and are excluded here on purpose.
+func (q *Queries) CancelOpenIssueDecisionsForIssue(ctx context.Context, arg CancelOpenIssueDecisionsForIssueParams) ([]IssueDecision, error) {
+	rows, err := q.db.Query(ctx, cancelOpenIssueDecisionsForIssue, arg.IssueID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueDecision{}
+	for rows.Next() {
+		var i IssueDecision
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.SourceCommentID,
+			&i.Question,
+			&i.Options,
+			&i.MultiSelect,
+			&i.RecommendedIndices,
+			&i.Status,
+			&i.SelectedIndices,
+			&i.AnsweredByType,
+			&i.AnsweredByID,
+			&i.AnsweredAt,
+			&i.AnswerCommentID,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClientRequestID,
+			&i.DecisionKind,
+			&i.VisibleTier,
+			&i.OperatorTier,
+			&i.NamedApproverIds,
+			&i.ApproveLabel,
+			&i.DenyLabel,
+			&i.ExpiresAt,
+			&i.AnswerSource,
+			&i.AuthState,
+			&i.PendingRequestGroupID,
+			&i.PendingActionType,
+			&i.PendingActionParams,
+			&i.ExecutionResult,
+			&i.ExecutionError,
+			&i.ExecutedAt,
+			&i.Context,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countWorkspaceIssueDecisionsByStatus = `-- name: CountWorkspaceIssueDecisionsByStatus :one
 SELECT
     count(*) FILTER (WHERE status = 'open')::int AS open_count,
@@ -367,10 +447,23 @@ INSERT INTO issue_decisions (
     id, workspace_id, issue_id, source_comment_id,
     question, context, options, multi_select, recommended_indices,
     created_by_type, created_by_id, client_request_id
-) VALUES (
-    $1, $2, $3, $4,
-    $5, $6::jsonb, $7::jsonb, $8, $9::jsonb,
-    $10, $11, $12
+)
+SELECT
+    $1::uuid, $2::uuid, $3::uuid, $4::uuid,
+    $5::text, $6::jsonb, $7::jsonb, $8::bool, $9::jsonb,
+    $10::text, $11::uuid, $12
+WHERE NOT EXISTS (
+    SELECT 1 FROM issue i
+    WHERE i.id = $3::uuid AND i.workspace_id = $2::uuid
+      AND (
+        i.status = 'done'
+        OR EXISTS (
+            SELECT 1 FROM issue_status s
+            WHERE s.workspace_id = i.workspace_id
+              AND s.key = i.status
+              AND s.category = 'done'
+        )
+      )
 )
 RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at, context
 `
@@ -390,6 +483,12 @@ type CreateIssueDecisionParams struct {
 	ClientRequestID    pgtype.Text `json:"client_request_id"`
 }
 
+// RUYI-865: the insert is refused in one atomic statement when the issue
+// sits in the done category (built-in 'done' or a custom done key resolved
+// through the status catalog): a card raised after the done transition has
+// no cascade left to clear it, so it must not enter the backlog. The guard
+// makes the create a no-op RETURNING 0 rows (sql.ErrNoRows) in that case;
+// the handler maps the miss onto the 409 contract.
 func (q *Queries) CreateIssueDecision(ctx context.Context, arg CreateIssueDecisionParams) (IssueDecision, error) {
 	row := q.db.QueryRow(ctx, createIssueDecision,
 		arg.ID,

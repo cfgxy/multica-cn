@@ -3772,6 +3772,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, issue.Status) == "done" &&
 		issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, prevIssue.Status) != "done" {
 		h.completeSingleIssueDecisionRequest(r.Context(), issue)
+		// RUYI-865: the done transition settles the issue's decision backlog
+		// in the same post-commit pass: still-open question cards are
+		// auto-cancelled with an auditable record, best-effort and idempotent.
+		h.cancelOpenDecisionCardsForDone(r.Context(), prevIssue, issue, "http_update_issue")
 	}
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
@@ -4566,6 +4570,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			issuestatus.Effective(r.Context(), h.Queries, issue.WorkspaceID, issue.Status) == "done" &&
 			issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, prevIssue.Status) != "done" {
 			h.completeSingleIssueDecisionRequest(r.Context(), issue)
+			// RUYI-865: batch writes settle each issue's decision backlog in
+			// the same post-commit pass as the single-update path. The
+			// per-issue enteredDoneCategory guard keeps repeat status writes
+			// inside one batch a no-op.
+			h.cancelOpenDecisionCardsForDone(r.Context(), prevIssue, issue, "http_batch_update_issues")
 		}
 
 		// Same run-disposition shape as UpdateIssue: reassignment does not
