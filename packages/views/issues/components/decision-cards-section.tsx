@@ -29,7 +29,11 @@ export function DecisionCardsSection({ decisions }: { decisions: IssueDecision[]
         <ChevronRight className="!size-3 shrink-0 text-muted-foreground" aria-hidden />
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        {/* RUYI-861: width contract — see decision-timeline-row. The base
+            `sm:max-w-sm` shadowed the plain `max-w-2xl`; the important
+            breakpoint-scoped width reads at the issue body column
+            (`max-w-4xl` = 56rem) and clamps to the viewport gutters. */}
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:!max-w-[min(56rem,calc(100%_-_2rem))]">
           <DialogHeader>
             <DialogTitle>{selected ? selected.question : t(($) => $.decisions.section_all)}</DialogTitle>
           </DialogHeader>
