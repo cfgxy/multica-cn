@@ -88,13 +88,26 @@ RETURNING *;
 -- stay out of the inbox aggregation entirely — the item filter in the
 -- handler drops them, and these counts must agree with the items they
 -- badge, so they exclude the authorization kind at the source.
+--
+-- RUYI-864: the counts follow the list's filter window (a set status and a
+-- keyword q, but NEVER the limit/cursor window), so section headers and
+-- empty states can never disagree with the rows on screen. An unfiltered
+-- call (the badge's source) is the plain workspace total as before.
 SELECT
-    count(*) FILTER (WHERE status = 'open')::int AS open_count,
-    count(*) FILTER (WHERE status = 'answered')::int AS answered_count,
-    count(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count
-FROM issue_decisions
-WHERE workspace_id = $1
-  AND decision_kind = 'question';
+    count(*) FILTER (WHERE d.status = 'open')::int AS open_count,
+    count(*) FILTER (WHERE d.status = 'answered')::int AS answered_count,
+    count(*) FILTER (WHERE d.status = 'cancelled')::int AS cancelled_count
+FROM issue_decisions d
+JOIN issue i ON i.id = d.issue_id
+LEFT JOIN workspace ws ON ws.id = d.workspace_id
+WHERE d.workspace_id = $1
+  AND d.decision_kind = 'question'
+  AND (sqlc.narg('status')::text IS NULL OR d.status = sqlc.narg('status')::text)
+  AND (sqlc.narg('q')::text IS NULL
+    OR d.question ILIKE '%' || sqlc.narg('q')::text || '%'
+    OR COALESCE(d.context::text, '') ILIKE '%' || sqlc.narg('q')::text || '%'
+    OR i.title ILIKE '%' || sqlc.narg('q')::text || '%'
+    OR COALESCE(ws.issue_prefix || '-' || i.number::text, '') ILIKE '%' || sqlc.narg('q')::text || '%');
 
 -- name: ListWorkspaceIssueDecisions :many
 -- Workspace decision inbox rows (RUYI-494). One row PER CARD — issues are
@@ -103,6 +116,15 @@ WHERE workspace_id = $1
 -- open cards can't be hidden by a newer one. NULL status lists every
 -- status; a set status filters to it. Ordered newest-first; the client
 -- groups by status with open first.
+--
+-- RUYI-864: two orthogonal dimensions join the window. `q` is a keyword
+-- (the server-escaped LIKE body, no wildcards of its own) matched against
+-- the card's question, its structured context, and the issue's identifier /
+-- title — the search lives in the database, never a client-side scan of a
+-- full list. `after_created_at` + `after_id` are the keyset cursor: both
+-- must arrive together (the handler enforces the pair) and select strictly
+-- the rows ordered after the last page, so deep pages stay O(limit) on
+-- the (workspace_id, ...) index instead of skipping OFFSET rows.
 SELECT d.*,
        i.number AS issue_number,
        i.title AS issue_title,
@@ -112,6 +134,13 @@ JOIN issue i ON i.id = d.issue_id
 LEFT JOIN workspace ws ON ws.id = d.workspace_id
 WHERE d.workspace_id = $1
   AND (sqlc.narg('status')::text IS NULL OR d.status = sqlc.narg('status')::text)
+  AND (sqlc.narg('q')::text IS NULL
+    OR d.question ILIKE '%' || sqlc.narg('q')::text || '%'
+    OR COALESCE(d.context::text, '') ILIKE '%' || sqlc.narg('q')::text || '%'
+    OR i.title ILIKE '%' || sqlc.narg('q')::text || '%'
+    OR COALESCE(ws.issue_prefix || '-' || i.number::text, '') ILIKE '%' || sqlc.narg('q')::text || '%')
+  AND (sqlc.narg('after_id')::uuid IS NULL
+    OR (d.created_at, d.id) < (sqlc.narg('after_created_at')::timestamptz, sqlc.narg('after_id')::uuid))
 ORDER BY d.created_at DESC, d.id DESC
 LIMIT $2;
 
