@@ -125,6 +125,9 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		// reach them.
 		{"GET", "/api/prompt-legislation/governance/clauses", ScopeNeedRead},
 		{"POST", "/api/prompt-legislation/governance/clauses", ScopeUnknown},
+		// Note: the caller passes r.URL.Path (middleware/auth.go), so query
+		// strings such as the get_clause window (?days=N) never reach this
+		// classifier — only the path shape is ever matched.
 		{"GET", "/api/prompt-legislation/governance/clauses/c-1", ScopeNeedRead},
 		{"GET", "/api/prompt-legislation/governance/clauses/search?q=mention", ScopeNeedRead},
 		{"GET", "/api/prompt-legislation/governance/reconciliation", ScopeNeedRead},

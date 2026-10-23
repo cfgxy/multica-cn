@@ -162,6 +162,10 @@ export const TOOL_RISK_MATRIX: Record<string, ToolRiskEntry> = {
   get_prompt_versions: read("读取提示词载体版本台账（对照条款与现行提示词的载体文本）"),
   list_prompt_proposals: read("读取提示词立法提案池（生命周期与审计记录）"),
   create_prompt_proposal: write("向提案池新增一条条款变更草案（owner 批准前不改变任何提示词或载体）"),
+  update_prompt_proposal: write("全量改写提案池中的一条草案（仅 draft 态可改；owner 批准前不改变任何提示词或载体）", true),
+  submit_prompt_proposal: write("把一条草案送入 owner 决策队列（draft → pending_owner，仅 draft 态可提交）"),
+  preview_prompt_proposal: read("只读合成提案的沙箱文本并返回全载体行级 diff（不写载体、不动提案状态）"),
+  rework_prompt_proposal: write("把一条 gate_failed 提案退回草案（gate_failed → draft，审计记录回退原因）"),
 };
 
 export function getToolRisk(name: string): ToolRiskEntry {
