@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -345,6 +346,97 @@ func TestDecisionRequestCreateValidation(t *testing.T) {
 }
 
 // ── answer gates (规格 column-1 items) ──────────────────────────────────────
+
+// seedDecisionRequestRow inserts one pending request row directly, with a
+// staggered created_at so the scan-direction test is deterministic.
+func seedDecisionRequestRow(t *testing.T, workspaceID, agentID, title, createdAgo string) string {
+	t.Helper()
+	group := dbid.NewV7()
+	id := dbid.NewV7()
+	cols := testutil.Cols{
+		"id":                  id,
+		"request_group_id":    group,
+		"workspace_id":        workspaceID,
+		"role":                "origin",
+		"operable":            true,
+		"action_type":         "workspace_info_read",
+		"risk_tier":           "read",
+		"title":               title,
+		"origin_workspace_id": workspaceID,
+		"origin_agent_id":     agentID,
+		"created_by_id":       agentID,
+		"expires_at":          testutil.Raw("now() + interval '1 hour'"),
+	}
+	if createdAgo != "" {
+		cols["created_at"] = testutil.Raw(fmt.Sprintf("now() - interval '%s'", createdAgo))
+	}
+	return dbfx.Insert(t, "decision_requests", cols)
+}
+
+// RUYI-864: the `order` axis of the list — 'desc' (default, the history
+// surface, newest-first) and 'asc' (the authorization queue, oldest-first,
+// what makes "first pending only, next after processing" a stable server
+// order instead of client sorting).
+func TestDecisionRequestListOrderDirection(t *testing.T) {
+	// A dedicated workspace: the shared test workspace carries pending rows
+	// left by other tests, and the order assertion is a per-position check
+	// over the WHOLE list, not just the three rows this test seeded.
+	n := ruyi630WorkspaceSeq.Add(1)
+	ws := dbfx.Workspace(t, fmt.Sprintf("ruyi864-order-%d", n), fmt.Sprintf("ruyi864-order-%d", n))
+	dbfx.Member(t, ws, testUserID, "owner")
+	agent := dbfx.Agent(t, "ruyi864-order-agent", "", testutil.Cols{"workspace_id": ws})
+	oldest := seedDecisionRequestRow(t, ws, agent, "ruyi864 oldest", "3 hours")
+	seedDecisionRequestRow(t, ws, agent, "ruyi864 middle", "2 hours")
+	newest := seedDecisionRequestRow(t, ws, agent, "ruyi864 newest", "1 hour")
+
+	list := func(query string) []string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("GET", "/api/workspaces/"+ws+"/decision-requests"+query, nil)
+		req = withURLParams(req, "id", ws)
+		req.Header.Set("X-Workspace-ID", ws)
+		testHandler.ListDecisionRequests(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list %s: expected 200, got %d: %s", query, w.Code, w.Body.String())
+		}
+		var response struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		ids := make([]string, 0, len(response.Items))
+		for _, item := range response.Items {
+			ids = append(ids, item.ID)
+		}
+		return ids
+	}
+
+	// Queue direction: oldest pending leads — the first row IS the next one to
+	// process, so the client never re-sorts.
+	if got := list("?order=asc&status=pending"); len(got) != 3 || got[0] != oldest || got[2] != newest {
+		t.Fatalf("order=asc ids = %v, want oldest %s first and newest last", got, oldest)
+	}
+	// History direction (the default): newest-first, unchanged for existing
+	// clients that send no order param.
+	if got := list(""); len(got) != 3 || got[0] != newest || got[2] != oldest {
+		t.Fatalf("default ids = %v, want newest %s first (back-compat)", got, newest)
+	}
+	if got := list("?order=desc"); got[0] != newest {
+		t.Fatalf("order=desc ids = %v, want newest first", got)
+	}
+	// An unknown direction is a 400, not a silent fallthrough.
+	w := httptest.NewRecorder()
+	req := newRequest("GET", "/api/workspaces/"+ws+"/decision-requests?order=up", nil)
+	req = withURLParams(req, "id", ws)
+	req.Header.Set("X-Workspace-ID", ws)
+	testHandler.ListDecisionRequests(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("order=up: expected 400, got %d", w.Code)
+	}
+}
 
 func TestDecisionRequestAnswerGates(t *testing.T) {
 	f := newDecisionFixture(t)

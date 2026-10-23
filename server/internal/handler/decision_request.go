@@ -900,6 +900,21 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
+	// RUYI-864: scan direction. 'desc' (default) is the history surface —
+	// newest-first; 'asc' is the authorization queue — oldest-first, so the
+	// first row is the oldest still-pending request and "next after
+	// processing" falls out of the stable order instead of client sorting.
+	order := "desc"
+	if raw := r.URL.Query().Get("order"); raw != "" {
+		switch raw {
+		case "asc", "desc":
+			order = raw
+		default:
+			writeError(w, http.StatusBadRequest, "order must be asc or desc")
+			return
+		}
+	}
+	orderParam := pgtype.Text{String: order, Valid: true}
 	var status pgtype.Text
 	if raw := r.URL.Query().Get("status"); raw != "" {
 		switch raw {
@@ -916,6 +931,7 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: workspaceID,
 		Limit:       int32(limit),
 		Status:      status,
+		Order:       orderParam,
 	})
 	if err != nil {
 		slog.Warn("decision request list failed", append(logger.RequestAttrs(r), "error", err)...)
@@ -926,6 +942,7 @@ func (h *Handler) ListDecisionRequests(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: workspaceID,
 		UserID:      member.UserID,
 		Status:      status,
+		Order:       orderParam,
 		Limit:       int32(limit),
 	})
 	if err != nil {

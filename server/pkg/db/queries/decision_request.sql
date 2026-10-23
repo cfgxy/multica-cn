@@ -33,22 +33,40 @@ ORDER BY created_at ASC, id ASC;
 -- is workspace-membership scoped at the route: every member of this space
 -- sees its rows; operator tiers gate who may ANSWER (the answer endpoint's
 -- tier check), never who may see.
+--
+-- RUYI-864: `order` selects the scan direction — 'desc' (newest-first, the
+-- history surface) or 'asc' (oldest-first, the authorization queue). The two
+-- directions are parameterized with the CASE + NULLS LAST idiom so a single
+-- query serves both without a second query (or a second slugs CTE) to keep in
+-- sync: the inactive direction's columns are all NULL and sort last, leaving
+-- the active direction's (created_at, id) pair fully in charge. 'asc' is what
+-- makes the queue's "oldest pending first, next after processing" stable.
 SELECT * FROM decision_requests
 WHERE workspace_id = $1
   AND (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status')::text)
-ORDER BY created_at DESC, id DESC
+ORDER BY
+  (CASE WHEN sqlc.narg('order')::text = 'desc' THEN created_at ELSE NULL END) DESC NULLS LAST,
+  (CASE WHEN sqlc.narg('order')::text = 'desc' THEN id ELSE NULL END) DESC NULLS LAST,
+  (CASE WHEN sqlc.narg('order')::text = 'asc' THEN created_at ELSE NULL END) ASC NULLS LAST,
+  (CASE WHEN sqlc.narg('order')::text = 'asc' THEN id ELSE NULL END) ASC NULLS LAST
 LIMIT $2;
 
 -- name: ListAccessibleDecisionRequestTargetSlugs :many
 -- Return target routes only when the requesting user is also a member of the
 -- target workspace. This metadata is attached only to origin projections.
+-- RUYI-864: the window mirrors the list's `order` direction, so the slugs
+-- attached to an oldest-first page come from the same page's origin rows.
 WITH visible_origin AS (
     SELECT request_row.request_group_id
     FROM decision_requests request_row
     WHERE request_row.workspace_id = $1
       AND request_row.role = 'origin'
       AND (sqlc.narg('status')::text IS NULL OR request_row.status = sqlc.narg('status')::text)
-    ORDER BY request_row.created_at DESC, request_row.id DESC
+    ORDER BY
+      (CASE WHEN sqlc.narg('order')::text = 'desc' THEN request_row.created_at ELSE NULL END) DESC NULLS LAST,
+      (CASE WHEN sqlc.narg('order')::text = 'desc' THEN request_row.id ELSE NULL END) DESC NULLS LAST,
+      (CASE WHEN sqlc.narg('order')::text = 'asc' THEN request_row.created_at ELSE NULL END) ASC NULLS LAST,
+      (CASE WHEN sqlc.narg('order')::text = 'asc' THEN request_row.id ELSE NULL END) ASC NULLS LAST
     LIMIT $3
 )
 SELECT DISTINCT origin.request_group_id, target_workspace.slug

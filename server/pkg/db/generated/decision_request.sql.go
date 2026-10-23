@@ -673,7 +673,11 @@ WITH visible_origin AS (
     WHERE request_row.workspace_id = $1
       AND request_row.role = 'origin'
       AND ($4::text IS NULL OR request_row.status = $4::text)
-    ORDER BY request_row.created_at DESC, request_row.id DESC
+    ORDER BY
+      (CASE WHEN $5::text = 'desc' THEN request_row.created_at ELSE NULL END) DESC NULLS LAST,
+      (CASE WHEN $5::text = 'desc' THEN request_row.id ELSE NULL END) DESC NULLS LAST,
+      (CASE WHEN $5::text = 'asc' THEN request_row.created_at ELSE NULL END) ASC NULLS LAST,
+      (CASE WHEN $5::text = 'asc' THEN request_row.id ELSE NULL END) ASC NULLS LAST
     LIMIT $3
 )
 SELECT DISTINCT origin.request_group_id, target_workspace.slug
@@ -691,6 +695,7 @@ type ListAccessibleDecisionRequestTargetSlugsParams struct {
 	UserID      pgtype.UUID `json:"user_id"`
 	Limit       int32       `json:"limit"`
 	Status      pgtype.Text `json:"status"`
+	Order       pgtype.Text `json:"order"`
 }
 
 type ListAccessibleDecisionRequestTargetSlugsRow struct {
@@ -700,12 +705,15 @@ type ListAccessibleDecisionRequestTargetSlugsRow struct {
 
 // Return target routes only when the requesting user is also a member of the
 // target workspace. This metadata is attached only to origin projections.
+// RUYI-864: the window mirrors the list's `order` direction, so the slugs
+// attached to an oldest-first page come from the same page's origin rows.
 func (q *Queries) ListAccessibleDecisionRequestTargetSlugs(ctx context.Context, arg ListAccessibleDecisionRequestTargetSlugsParams) ([]ListAccessibleDecisionRequestTargetSlugsRow, error) {
 	rows, err := q.db.Query(ctx, listAccessibleDecisionRequestTargetSlugs,
 		arg.WorkspaceID,
 		arg.UserID,
 		arg.Limit,
 		arg.Status,
+		arg.Order,
 	)
 	if err != nil {
 		return nil, err
@@ -729,7 +737,11 @@ const listDecisionRequestsForWorkspace = `-- name: ListDecisionRequestsForWorksp
 SELECT id, request_group_id, workspace_id, role, operable, status, action_type, action_params, risk_tier, title, detail, origin_workspace_id, origin_agent_id, origin_task_id, origin_issue_id, origin_issue_title, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answered_by_type, answered_by_id, answered_at, answer_source, executed_at, execution_result, execution_error, terminal_callback_at, created_by_type, created_by_id, created_at, updated_at FROM decision_requests
 WHERE workspace_id = $1
   AND ($3::text IS NULL OR status = $3::text)
-ORDER BY created_at DESC, id DESC
+ORDER BY
+  (CASE WHEN $4::text = 'desc' THEN created_at ELSE NULL END) DESC NULLS LAST,
+  (CASE WHEN $4::text = 'desc' THEN id ELSE NULL END) DESC NULLS LAST,
+  (CASE WHEN $4::text = 'asc' THEN created_at ELSE NULL END) ASC NULLS LAST,
+  (CASE WHEN $4::text = 'asc' THEN id ELSE NULL END) ASC NULLS LAST
 LIMIT $2
 `
 
@@ -737,6 +749,7 @@ type ListDecisionRequestsForWorkspaceParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	Limit       int32       `json:"limit"`
 	Status      pgtype.Text `json:"status"`
+	Order       pgtype.Text `json:"order"`
 }
 
 // Decision-center rows for one workspace (one row PER SPACE-LEVEL REQUEST).
@@ -744,8 +757,21 @@ type ListDecisionRequestsForWorkspaceParams struct {
 // is workspace-membership scoped at the route: every member of this space
 // sees its rows; operator tiers gate who may ANSWER (the answer endpoint's
 // tier check), never who may see.
+//
+// RUYI-864: `order` selects the scan direction — 'desc' (newest-first, the
+// history surface) or 'asc' (oldest-first, the authorization queue). The two
+// directions are parameterized with the CASE + NULLS LAST idiom so a single
+// query serves both without a second query (or a second slugs CTE) to keep in
+// sync: the inactive direction's columns are all NULL and sort last, leaving
+// the active direction's (created_at, id) pair fully in charge. 'asc' is what
+// makes the queue's "oldest pending first, next after processing" stable.
 func (q *Queries) ListDecisionRequestsForWorkspace(ctx context.Context, arg ListDecisionRequestsForWorkspaceParams) ([]DecisionRequest, error) {
-	rows, err := q.db.Query(ctx, listDecisionRequestsForWorkspace, arg.WorkspaceID, arg.Limit, arg.Status)
+	rows, err := q.db.Query(ctx, listDecisionRequestsForWorkspace,
+		arg.WorkspaceID,
+		arg.Limit,
+		arg.Status,
+		arg.Order,
+	)
 	if err != nil {
 		return nil, err
 	}
