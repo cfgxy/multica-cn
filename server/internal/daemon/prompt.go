@@ -453,7 +453,12 @@ func buildQuickCreatePrompt(task Task) string {
 			if strings.HasPrefix(a.ContentType, "image/") {
 				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s — IMAGE: embed this Markdown image in the Original attachments section so it renders in the issue body: `![%s](%s)`\n", a.ID, a.Filename, a.ContentType, a.Filename, a.MarkdownURL)
 			} else {
-				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s — FILE: preserve its filename and durable Markdown link in the Original attachments section: `[%s](%s)`\n", a.ID, a.Filename, a.ContentType, a.Filename, a.MarkdownURL)
+				// RUYI-857: the UI renders non-image attachments as a dedicated
+				// download block only from the standalone-line file-card syntax
+				// `!file[name](url)` (packages/ui/markdown/file-cards.ts); a
+				// plain `[name](url)` line renders as an ordinary link. Ship
+				// the label pre-escaped so the agent copies it verbatim.
+				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s — FILE: put this file-card line on its own single line in the Original attachments section so the issue UI renders the dedicated download card for it: `!file[%s](%s)`. Copy it verbatim; the filename label is already backslash-escaped where needed.\n", a.ID, a.Filename, a.ContentType, escapeFileCardLabel(a.Filename), a.MarkdownURL)
 			}
 		}
 		b.WriteString("\n")
@@ -467,6 +472,26 @@ func buildQuickCreatePrompt(task Task) string {
 	b.WriteString("- Do NOT call `multica issue get` or `multica issue comment add` — there is no issue to query or comment on.\n")
 	b.WriteString("- On CLI error or JSON parse error, exit with the error as the only output. The platform writes a failure notification automatically.\n")
 	return b.String()
+}
+
+// escapeFileCardLabel backslashes the filename characters that would break a
+// `!file[name](url)` file-card line out of the renderer's grammar so the line
+// survives preprocessFileCards in packages/ui/markdown/file-cards.ts. Only `\`
+// and `]` are required for the line to match (a bare `\` swallows the next
+// char, a bare `]` terminates the label early); `[`, `(`, `)` are escaped too
+// because their escaped forms are the well-defined ones the renderer unescapes.
+// A bare `"` is deliberately NOT escaped: the renderer's label char class
+// swallows it fine, but its unescape (\\([[\]\\()]) -> $1) does not cover `"`,
+// so escaping it would corrupt the filename back into the card.
+func escapeFileCardLabel(filename string) string {
+	replacer := strings.NewReplacer(
+		`\`, `\\`,
+		`]`, `\]`,
+		`[`, `\[`,
+		`(`, `\(`,
+		`)`, `\)`,
+	)
+	return replacer.Replace(filename)
 }
 
 // buildCommentPrompt constructs a prompt for comment-triggered tasks.

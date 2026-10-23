@@ -100,12 +100,54 @@ func TestBuildQuickCreatePromptPreservesUploadedAttachmentsInOriginalAttachments
 	for _, want := range []string{
 		"preserve every one in the **Original attachments** section",
 		"![diagram.png](https://example.test/attachments/image-id/download)",
-		"[requirements.pdf](https://example.test/attachments/file-id/download)",
+		"!file[requirements.pdf](https://example.test/attachments/file-id/download)",
 		"pass no extra flags for them, and do not download them",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("buildQuickCreatePrompt attachment rule missing %q\n--- output ---\n%s", want, out)
 		}
+	}
+
+	// RUYI-857: a plain `[name](url)` line renders as an ordinary link, not
+	// the dedicated file-card download block the UI wants for non-image
+	// attachments (packages/ui/markdown/file-cards.ts). The old plain-link
+	// directive ("preserve its filename and durable Markdown link") must be
+	// gone; note the card line is a superset of the plain link, so the
+	// negative check targets the directive wording, not the link itself.
+	if strings.Contains(out, "preserve its filename and durable Markdown link") {
+		t.Errorf("non-image attachment still carries the plain-link directive instead of a !file card line\n--- output ---\n%s", out)
+	}
+	if !strings.Contains(out, "on its own single line") {
+		t.Errorf("file-card directive does not state the standalone-line requirement\n--- output ---\n%s", out)
+	}
+}
+
+// RUYI-857: filenames carrying Markdown label characters must ship
+// backslash-escaped so the `!file[name](url)` line stays inside the
+// renderer's file-card grammar (mirror of escapeMarkdownLabel / the
+// preprocessFileCards unescape in packages).
+func TestBuildQuickCreatePromptEscapesFileCardLabels(t *testing.T) {
+	out := buildQuickCreatePrompt(Task{
+		QuickCreatePrompt: "attachments",
+		QuickCreateAttachments: []QuickCreateAttachmentMeta{
+			{
+				ID:          "file-id",
+				Filename:    `spec [draft] (v2).pdf`,
+				ContentType: "application/pdf",
+				MarkdownURL: "https://example.test/attachments/file-id/download",
+			},
+		},
+	})
+
+	// Every label character that can break the file-card line is escaped;
+	// the card line the prompt ships must round-trip back to the filename.
+	want := `!file[spec \[draft\] \(v2\).pdf](https://example.test/attachments/file-id/download)`
+	if !strings.Contains(out, want) {
+		t.Errorf("buildQuickCreatePrompt file-card label not escaped\n--- output ---\n%s", out)
+	}
+	// The un-escaped plain label must not leak through as the directive.
+	if strings.Contains(out, "!file[spec [draft] (v2).pdf]") {
+		t.Errorf("unescaped file-card label leaked into the directive\n--- output ---\n%s", out)
 	}
 }
 
@@ -2136,6 +2178,10 @@ func TestBuildQuickCreatePromptAttachmentMetas(t *testing.T) {
 		// the image is inlined via its durable markdown URL so it renders
 		// in the created issue's body
 		"![1000013602.jpg](https://multica.example.com/api/attachments/019aff3c-1111-7000-8000-000000000001/download)",
+		// RUYI-857: the non-image attachment ships as a standalone !file
+		// card line so the issue UI renders the dedicated download block
+		// (packages/ui/markdown/file-cards.ts), not a plain link
+		"!file[spec.pdf](https://multica.example.com/api/attachments/019aff3c-1111-7000-8000-000000000002/download)",
 		// binding already happens server-side via MULTICA_QUICK_CREATE_ATTACHMENT_IDS
 		"automatically",
 	}
