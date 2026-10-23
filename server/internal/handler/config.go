@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/analytics"
@@ -58,6 +59,9 @@ type AppConfig struct {
 	// FeatureFlags exposes only frontend-safe boolean decisions. Do not dump
 	// raw rules here: /api/config is public and may be called anonymously.
 	FeatureFlags map[string]bool `json:"feature_flags,omitempty"`
+	// FeatureFlagsRefreshIntervalMs is nonzero only for isolated development
+	// slots that support hot-reloaded local flag files.
+	FeatureFlagsRefreshIntervalMs int `json:"feature_flags_refresh_interval_ms,omitempty"`
 
 	// LocalWorktreeSupported tells clients this server understands
 	// local_directory `execution_mode` and enforces the worktree capability
@@ -99,6 +103,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		// running, the save gate is running with it.
 		LocalWorktreeSupported:             true,
 		AgentConversationStartersSupported: true,
+		FeatureFlagsRefreshIntervalMs:      featureFlagsRefreshIntervalMs(),
 		AllowSignup:                        os.Getenv("ALLOW_SIGNUP") != "false",
 		GoogleClientID:                     os.Getenv("GOOGLE_CLIENT_ID"),
 		WorkspaceCreationDisabled:          os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
@@ -129,6 +134,17 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, config)
+}
+
+func featureFlagsRefreshIntervalMs() int {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
+		return 0
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv("MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS")))
+	if err != nil || value < 1000 || value > 30000 {
+		return 0
+	}
+	return value
 }
 
 func daemonSetupURLsFromEnv() (string, string) {
