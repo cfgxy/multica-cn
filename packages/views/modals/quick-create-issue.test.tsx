@@ -290,6 +290,7 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: { children: ReactNode }) => <>{children}</>,
   DropdownMenuTrigger: ({ render }: { render: ReactNode }) => <>{render}</>,
   DropdownMenuContent: ({ children }: { children: ReactNode }) => <>{children}</>,
+  DropdownMenuGroup: ({ children }: { children: ReactNode }) => <>{children}</>,
   // `render` mirrors Base UI: an item can BE another element (an <AppLink>).
   // The real Item gives that element role="button", which the queries match.
   DropdownMenuItem: ({
@@ -445,8 +446,8 @@ vi.mock("../issues/components/pickers/property-picker", () => ({
 }));
 
 vi.mock("@multica/ui/components/ui/button", () => ({
-  Button: ({ children, disabled, onClick }: { children: ReactNode; disabled?: boolean; onClick?: () => void }) => (
-    <button type="button" disabled={disabled} onClick={onClick}>
+  Button: ({ children, disabled, onClick, ...props }: { children: ReactNode; disabled?: boolean; onClick?: () => void; [key: string]: unknown }) => (
+    <button type="button" disabled={disabled} onClick={onClick} {...props}>
       {children}
     </button>
   ),
@@ -459,14 +460,6 @@ vi.mock("@multica/ui/components/ui/switch", () => ({
       checked={checked}
       onChange={(e) => onCheckedChange(e.target.checked)}
     />
-  ),
-}));
-
-vi.mock("@multica/ui/components/common/file-upload-button", () => ({
-  // `disabled` is forwarded so the "can still queue another file mid-upload"
-  // guarantee is actually assertable here (MUL-4808).
-  FileUploadButton: ({ disabled, size }: { disabled?: boolean; size?: string }) => (
-    <button type="button" disabled={disabled} data-size={size}>Upload file</button>
   ),
 }));
 
@@ -554,6 +547,17 @@ describe("AgentCreatePanel", () => {
         'Tell the agent what to do, e.g. "let Bohan fix the inbox loading slowness in the Web project"',
       ),
     ).toHaveValue("Persisted draft prompt");
+  });
+
+  it("uses the shared composer surface and puts attachments in More", async () => {
+    const user = userEvent.setup();
+    renderPanel({ onClose: vi.fn(), isExpanded: false, setIsExpanded: vi.fn() });
+
+    expect(screen.getByTestId("issue-composer-surface").className).toContain(
+      "focus-within:ring-2",
+    );
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("button", { name: "Upload file" })).toBeInTheDocument();
   });
 
   it("restores unfinished actor, project, priority, and due-date selections after remount", async () => {
@@ -1054,16 +1058,18 @@ describe("AgentCreatePanel", () => {
       data: sourceContextPanelData,
     });
 
-    const prompt = screen.getByPlaceholderText(
+    const promptScroller = screen.getByPlaceholderText(
       'Tell the agent what to do with this context, e.g. "continue investigating and fix the issue described here"',
     ).parentElement;
+    const composerSurface = promptScroller?.parentElement;
     const sourceContext = document.querySelector<HTMLElement>('[data-slot="source-context-preview"]');
 
-    expect(prompt).toHaveClass("flex-1", "min-h-[140px]", "overflow-y-auto");
+    expect(promptScroller).toHaveClass("h-full", "min-h-[100px]", "overflow-y-auto");
+    expect(composerSurface).toHaveAttribute("data-testid", "issue-composer-surface");
     expect(sourceContext).toHaveClass("shrink-0");
-    expect(prompt?.parentElement).toBe(sourceContext?.parentElement);
-    expect(prompt?.nextElementSibling).toBe(sourceContext);
-    expect(prompt).not.toContainElement(sourceContext);
+    expect(composerSurface?.parentElement?.parentElement).toBe(sourceContext?.parentElement);
+    expect(composerSurface?.parentElement?.nextElementSibling).toBe(sourceContext);
+    expect(composerSurface).not.toContainElement(sourceContext);
   });
 
   it("submits source-context agent create through the dedicated endpoint", async () => {
@@ -1102,7 +1108,7 @@ describe("AgentCreatePanel", () => {
 
   // MUL-4808 — Quick Create already gated Create; these pin the two gaps:
   // the mode switch (which re-serializes the prompt into the manual draft)
-  // and the file button that used to lock during an upload for no reason.
+  // and the shared More entry must stay usable during an upload.
   describe("upload submit gate", () => {
     function startPendingUpload() {
       let release!: (result: unknown) => void;
@@ -1127,7 +1133,7 @@ describe("AgentCreatePanel", () => {
       expect(onSwitchMode).not.toHaveBeenCalled();
     });
 
-    it("keeps the attach-file button usable during an upload so files can queue", async () => {
+    it("keeps the More menu usable during an upload so files can queue", async () => {
       renderPanel({ onClose: vi.fn(), isExpanded: false, setIsExpanded: vi.fn() });
 
       startPendingUpload();
@@ -1137,7 +1143,7 @@ describe("AgentCreatePanel", () => {
       // it, and this issue explicitly removed it.
       const submit = await screen.findByRole("button", { name: "Uploading…" });
       expect(submit).toBeDisabled();
-      expect(screen.getByRole("button", { name: "Upload file" })).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: "More" })).not.toBeDisabled();
     });
   });
 
@@ -1189,7 +1195,7 @@ describe("AgentCreatePanel", () => {
       const switchToManual = screen.getByRole("button", { name: /Switch to Manual/i });
       const create = screen.getByRole("button", { name: /^Create$/i });
       const keepOpen = screen.getByRole("checkbox");
-      const attach = screen.getByRole("button", { name: "Upload file" });
+      const more = screen.getByRole("button", { name: "More" });
 
       const footer = switchToManual.parentElement;
       expect(footer?.className).toContain("grid-cols-[auto_1fr]");
@@ -1198,12 +1204,13 @@ describe("AgentCreatePanel", () => {
 
       // Grid placement only sees direct children: re-wrapping any of these in
       // a <div> collapses the 2x2 back to the jammed single row the bug
-      // report showed. The attach button keeps its own wrapper because it can
-      // gain a "N sent" badge — that wrapper is itself the first grid cell.
+      // report showed.
       expect(create.parentElement).toBe(footer);
       expect(keepOpen.parentElement?.parentElement).toBe(footer);
-      expect(attach.parentElement?.parentElement).toBe(footer);
-      expect(attach).toHaveAttribute("data-size", "sm");
+      expect(more).toBeInTheDocument();
+      expect(screen.getByTestId("issue-composer-surface").className).toContain(
+        "focus-within:ring-2",
+      );
     });
 
     it("hides the send keycaps below the sm breakpoint", () => {

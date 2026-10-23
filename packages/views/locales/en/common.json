@@ -154,6 +154,7 @@
     "upload_failed_title": "Upload failed",
     "quick_replies_title": "Quick replies",
     "quick_reply_hint": "Insert a quick reply",
+    "more_tooltip": "More",
     "camera_permission_title": "Camera permission needed",
     "camera_permission_message": "Multica needs camera access to take photos for attachments. Enable it in system settings.",
     "image_source_camera": "Take Photo",

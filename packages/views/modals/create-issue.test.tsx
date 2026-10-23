@@ -514,6 +514,7 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   DropdownMenuTrigger: ({ render }: { render: React.ReactNode }) => <>{render}</>,
   DropdownMenuContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DropdownMenuGroup: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   // `render` mirrors Base UI: an item can BE another element (an <AppLink>).
   // The real Item gives that element role="button", which is what the queries
   // below match on.
@@ -584,14 +585,6 @@ vi.mock("@multica/ui/components/ui/switch", () => ({
       checked={checked}
       onChange={(e) => onCheckedChange(e.target.checked)}
     />
-  ),
-}));
-
-vi.mock("@multica/ui/components/common/file-upload-button", () => ({
-  FileUploadButton: ({ onSelect, size }: { onSelect: (file: File) => void; size?: string }) => (
-    <button type="button" data-size={size} onClick={() => onSelect(new File(["test"], "test.txt"))}>
-      Upload file
-    </button>
   ),
 }));
 
@@ -710,10 +703,15 @@ describe("CreateIssueModal", () => {
     });
   });
 
-  it("uses the same compact attachment control as agent mode", () => {
+  it("uses the shared composer surface and puts attachments in More", async () => {
+    const user = userEvent.setup();
     renderModal(<CreateIssueModal onClose={vi.fn()} />);
 
-    expect(screen.getByRole("button", { name: "Upload file" })).toHaveAttribute("data-size", "sm");
+    expect(screen.getByTestId("issue-composer-surface").className).toContain(
+      "focus-within:ring-2",
+    );
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("button", { name: "Upload file" })).toBeInTheDocument();
   });
 
   it("shows success feedback with a direct path to the new issue", async () => {
@@ -900,9 +898,15 @@ describe("CreateIssueModal", () => {
   it("persists manual-mode uploads in the issue draft", async () => {
     const user = userEvent.setup();
 
-    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    const { container } = renderModal(<CreateIssueModal onClose={vi.fn()} />);
 
+    await user.click(screen.getByRole("button", { name: "More" }));
     await user.click(screen.getByRole("button", { name: "Upload file" }));
+    const fileInput = container.querySelectorAll<HTMLInputElement>('input[type="file"]')[2];
+    if (!fileInput) throw new Error("Expected the composer file input");
+    fireEvent.change(fileInput, {
+      target: { files: [new File(["image"], "shot.png", { type: "image/png" })] },
+    });
 
     // Coordinator flow (MUL-5181 L2): a placeholder is written at pick time,
     // then settles into an `uploaded` entry carrying the server row.
@@ -1297,21 +1301,20 @@ describe("CreateIssueModal", () => {
       />,
     );
 
-    const description = screen.getByPlaceholderText("Add description...").parentElement;
+    const descriptionScroller = screen.getByPlaceholderText("Add description...").parentElement;
+    const composerSurface = descriptionScroller?.parentElement;
     const sourceContext = document.querySelector<HTMLElement>('[data-slot="source-context-preview"]');
 
-    expect(description).toHaveClass(
-      "relative",
-      "flex",
-      "flex-1",
-      "min-h-0",
+    expect(descriptionScroller).toHaveClass(
+      "h-full",
+      "min-h-[100px]",
       "overflow-y-auto",
-      "px-5",
     );
+    expect(composerSurface).toHaveAttribute("data-testid", "issue-composer-surface");
     expect(sourceContext).toHaveClass("shrink-0");
-    expect(description?.parentElement).toBe(sourceContext?.parentElement);
-    expect(description?.nextElementSibling).toBe(sourceContext);
-    expect(description).not.toContainElement(sourceContext);
+    expect(composerSurface?.parentElement?.parentElement).toBe(sourceContext?.parentElement);
+    expect(composerSurface?.parentElement?.nextElementSibling).toBe(sourceContext);
+    expect(composerSurface).not.toContainElement(sourceContext);
   });
 
   it("locks only a source-context parent and leaves ordinary parent controls unchanged", async () => {
@@ -1617,7 +1620,13 @@ describe("CreateIssueModal", () => {
       mockApiUploadFile.mockImplementationOnce(
         () => new Promise((resolve) => { release = resolve; }),
       );
+      fireEvent.click(screen.getByRole("button", { name: "More" }));
       fireEvent.click(screen.getByRole("button", { name: "Upload file" }));
+      const fileInput = document.querySelectorAll<HTMLInputElement>('input[type="file"]')[2];
+      if (!fileInput) throw new Error("Expected the composer file input");
+      fireEvent.change(fileInput, {
+        target: { files: [new File(["image"], "shot.png", { type: "image/png" })] },
+      });
       return { release: (result: unknown) => release(result) };
     }
 
