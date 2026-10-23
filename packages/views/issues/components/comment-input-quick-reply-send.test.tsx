@@ -134,9 +134,18 @@ function getSendButton(): HTMLButtonElement {
 }
 
 async function pickQuickReply(name: RegExp) {
-  fireEvent.click(screen.getByRole("button", { name: "Quick Replies" }));
+  fireEvent.click(screen.getByRole("button", { name: "More" }));
+  const trigger = await screen.findByRole("menuitem", { name: "Insert a quick reply" });
+  fireEvent.click(trigger);
   const item = await screen.findByRole("menuitem", { name });
   fireEvent.click(item);
+}
+
+async function insertMention() {
+  fireEvent.click(screen.getByRole("button", { name: "More" }));
+  fireEvent.click(
+    await screen.findByRole("menuitem", { name: "Mention someone or an issue" }),
+  );
 }
 
 /** The send button must be usable within a bounded wait — the debounced
@@ -247,12 +256,15 @@ describe("quick reply → send button availability (real editor, RUYI-550)", () 
 // behave identically on the readonly shell and on the mounted editor, because
 // both are mainline first-interaction paths.
 describe("input-area entries — mobile parity (RUYI-550)", () => {
-  it("renders the @ mention, image and file entries", () => {
+  it("puts the @ mention, image and file entries in More", async () => {
     renderCommentInput(vi.fn().mockResolvedValue(true));
 
-    expect(screen.getByRole("button", { name: "Mention someone or an issue" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Upload image" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Attach file" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(
+      await screen.findByRole("menuitem", { name: "Mention someone or an issue" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Choose from Library" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Upload file" })).toBeTruthy();
     // The image entry narrows the OS picker to images; the generic entry stays
     // unrestricted — the same split as the mobile composer's two buttons.
     const accepts = Array.from(document.querySelectorAll('input[type="file"]')).map((i) =>
@@ -267,7 +279,7 @@ describe("input-area entries — mobile parity (RUYI-550)", () => {
     const editorText = () => document.querySelector(".ProseMirror")?.textContent ?? "";
 
     // Shell path: the trigger queues until the lazy editor mounts.
-    fireEvent.click(screen.getByRole("button", { name: "Mention someone or an issue" }));
+    await insertMention();
     await waitFor(() => expect(editorText()).toBe("@"), { timeout: 2000 });
     // Unlike quick replies, the @ insert is not synchronously flushed — the
     // host learns of it only via the debounced emission, whose dedupe must
@@ -277,7 +289,7 @@ describe("input-area entries — mobile parity (RUYI-550)", () => {
     await expectSendEnabled();
 
     // Mounted path: a second click inserts immediately at the caret.
-    fireEvent.click(screen.getByRole("button", { name: "Mention someone or an issue" }));
+    await insertMention();
     await waitFor(() => expect(editorText()).toBe("@@"));
   });
 });

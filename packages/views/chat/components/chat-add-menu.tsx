@@ -54,6 +54,7 @@ interface ChatAddMenuProps {
   };
   anchor?: HTMLElement | null;
   disabled?: boolean;
+  ariaLabel?: string;
 }
 
 /**
@@ -75,6 +76,7 @@ export function ChatAddMenu({
   model,
   anchor,
   disabled,
+  ariaLabel,
 }: ChatAddMenuProps) {
   const { t } = useT("chat");
   const { t: tCommon } = useT("common");
@@ -99,8 +101,8 @@ export function ChatAddMenu({
               variant="ghost"
               size="icon-sm"
               disabled={disabled}
-              aria-label={t(($) => $.input.add_tooltip)}
-              title={t(($) => $.input.add_tooltip)}
+              aria-label={ariaLabel ?? t(($) => $.input.add_tooltip)}
+              title={ariaLabel ?? t(($) => $.input.add_tooltip)}
               className="rounded-full text-muted-foreground"
             >
               <MoreHorizontal />
