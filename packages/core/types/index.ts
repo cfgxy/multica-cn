@@ -115,6 +115,7 @@ export type {
   DashboardUsageResources,
   DashboardUsageTraffic,
   DashboardUsageTrafficDim,
+  RuntimeResources,
   SchedulingPauseScope,
   SchedulingPauseState,
 } from "./agent";
