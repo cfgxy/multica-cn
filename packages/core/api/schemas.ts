@@ -2099,6 +2099,28 @@ export const DashboardUsageTrafficSchema = z.object({
   series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
 }).loose();
 
+// Per-Runtime host resources (RUYI-859 stage 1): the RUYI-618 resource panel
+// narrowed server-side to the one daemon host the runtime binds. Three
+// distinct structured empty states the Runtime page must render visibly
+// instead of hiding the section:
+//   configured=false — the deployment has no PROMETHEUS_URL (normal);
+//   has_daemon=false — cloud/manual runtime binds no daemon host;
+//   configured+has_daemon with empty series — Prometheus is up but the
+//   daemon host is not scraping yet.
+// `sampled_at` is the newest sample timestamp across all series — "how
+// fresh is this reading" without a second request.
+export const RuntimeResourcesSchema = z.object({
+  configured: z.boolean(),
+  daemon_id: z.string().default(""),
+  has_daemon: z.boolean().default(false),
+  window: z.string().optional(),
+  step_seconds: z.number().optional(),
+  sampled_at: z.string().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
+
+export type RuntimeResources = z.infer<typeof RuntimeResourcesSchema>;
+
 const DashboardUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
   provider: z.string().default(""),
