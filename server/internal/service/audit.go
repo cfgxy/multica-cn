@@ -86,6 +86,12 @@ const (
 	AuditAgentSchedulingPaused  = "agent.scheduling_paused"
 	AuditAgentSchedulingResumed = "agent.scheduling_resumed"
 
+	// Agent-level error-rate backpressure policy (RUYI-859 stage A): one
+	// event per save/restore of the agent_backpressure_policy card; details
+	// carry the agent_id and the old/new cards (old null on first save,
+	// new null on a restore-to-defaults delete).
+	AuditAgentSuppressionConfigUpdated = "agent.suppression_config_updated"
+
 	// Agent domain, RUYI-630: the sensitive-operation authorization channel.
 	// One story per request_group_id: requested → authorized/denied (per
 	// step) → executed/execute_failed, with revoked and the sweep's expired
