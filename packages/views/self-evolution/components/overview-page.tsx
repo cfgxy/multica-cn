@@ -12,6 +12,7 @@ import { OverviewTab } from "./overview-tab";
 import { AttentionList, type AttentionItem } from "./attention-list";
 import { useT } from "../../i18n";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { ExperienceCandidates } from "./experience-candidates";
 
 /**
  * The module's landing page (RUYI-551 §2.2): the read-only overview lens,
@@ -109,6 +110,7 @@ export function SelfEvolutionOverviewPage() {
       <div className="flex min-w-0 flex-col gap-6 overflow-y-auto">
         <AttentionList items={items} />
         <OverviewTab wsId={wsId} />
+        <ExperienceCandidates wsId={wsId} />
       </div>
     </SelfEvolutionShell>
   );

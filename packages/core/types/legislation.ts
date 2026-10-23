@@ -65,9 +65,8 @@ export interface PromptProposal {
   gate_answer_cost: string;
   gate_answer_conflict: string;
   gate_answer_dedup: string;
-  /** Evidence anchors as written by the retrospective (issue_id / ref / note);
-   *  manual proposals may carry their own shape-free entries. */
-  evidence_anchors: { issue_id?: string; ref?: string; note?: string }[];
+  /** Evidence anchors from retrospective and task-adaptation candidates. */
+  evidence_anchors: { issue_id?: string; task_id?: string; ref?: string; note?: string }[];
   /** Decision context (RUYI-723 B) — retrospective drafts only; absent on
    *  legacy rows and manual proposals, the UI renders "—". */
   problem?: string;
@@ -104,7 +103,7 @@ export interface PromptProposalDraftRequest {
   gate_answer_cost: string;
   gate_answer_conflict: string;
   gate_answer_dedup: string;
-  evidence_anchors?: { issue_id?: string; quote?: string }[];
+  evidence_anchors?: { issue_id?: string; quote?: string; task_id?: string; ref?: string; note?: string }[];
 }
 
 /** One line of the sandbox full-carrier diff shown before approval. */

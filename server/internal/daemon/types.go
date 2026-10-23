@@ -5,6 +5,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
+	"github.com/multica-ai/multica/server/pkg/taskadaptation"
 )
 
 // AgentEntry describes a single available agent CLI.
@@ -111,6 +112,8 @@ type Task struct {
 	// regardless of task kind so the daemon can inject `## Workspace Context`
 	// into the brief. Empty when the owner hasn't set one.
 	WorkspaceContext string `json:"workspace_context,omitempty"`
+	// CapabilityAdaptation is a validated policy snapshot scoped to this task.
+	CapabilityAdaptation *taskadaptation.Snapshot `json:"capability_adaptation,omitempty"`
 	// IssueStatuses mirrors the claim payload's active CUSTOM status catalog
 	// (MUL-6460): key/name/category/description per status, already in catalog
 	// order. Rendered into the brief's status-command line; empty (including on

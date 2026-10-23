@@ -3,6 +3,7 @@
 import { RetrospectiveTab } from "./retrospective-tab";
 import { SelfEvolutionShell } from "./self-evolution-shell";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { ExperienceCandidates } from "./experience-candidates";
 
 /**
  * The retrospective page (RUYI-551 §3.1, fig 8): the task settings and run
@@ -18,6 +19,7 @@ export function RetrospectivePage() {
     <SelfEvolutionShell>
       <div className="flex min-w-0 flex-col gap-4 overflow-y-auto">
         <RetrospectiveTab wsId={wsId} />
+        <ExperienceCandidates wsId={wsId} />
       </div>
     </SelfEvolutionShell>
   );

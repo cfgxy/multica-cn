@@ -550,6 +550,10 @@ func (h *Handler) CreatePromptProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	if err := h.validateAdaptationCandidateEvidence(r.Context(), workspaceID, req.EvidenceAnchors); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// Carrier entity must exist in this workspace — the house rule's
 	// "validated against the scope's owning table on every write path".
 	if _, ok := h.readScopeEffectiveContent(w, r, promptVersionScope(req.CarrierScope), workspaceID, parseUUID(req.CarrierScopeID)); !ok {
@@ -611,6 +615,10 @@ func (h *Handler) UpdatePromptProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	if err := h.validateAdaptationCandidateEvidence(r.Context(), workspaceID, req.EvidenceAnchors); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if _, ok := h.readScopeEffectiveContent(w, r, promptVersionScope(req.CarrierScope), workspaceID, parseUUID(req.CarrierScopeID)); !ok {
 		return
 	}

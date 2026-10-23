@@ -516,6 +516,7 @@ export type {
   SelfEvolutionOverviewSkills,
   SelfEvolutionOverviewLastAutoProposal,
   SelfEvolutionOverviewProposals,
+  SelfEvolutionOverviewExperience,
 } from "./self-evolution-overview";
 export type {
   SelfEvolutionConfigSource,

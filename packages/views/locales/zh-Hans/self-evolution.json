@@ -37,6 +37,27 @@
       "noneAuto": "尚无自动提案。",
       "empty": "提案池为空。配置每日总复盘后，提案将随每日分析自动入池。"
     },
+    "experiences": {
+      "title": "任务经验候选",
+      "loading": "正在加载任务经验",
+      "error": "任务经验加载失败",
+      "retry": "重试",
+      "empty": "暂无经过核验的重复适配模式。",
+      "proposalsLink": "查看提案治理",
+      "sourceCount": "在 {{count}} 个已完成任务中观察到",
+      "sourceTask": "任务 {{task}} · {{policy}} · {{date}}",
+      "currentStrategy": "当前做法：{{strategy}}",
+      "scope": "适用范围 {{scope}}",
+      "allowedActions": "允许动作：{{actions}}",
+      "limitation": "证据限制",
+      "repeatedLimit": "重复观察到的任务级证据仍不是已审批的 workspace 策略。提案在完成治理、题库和生效门禁前始终只是草稿。",
+      "draftProposal": "转为提案草稿",
+      "creatingProposal": "正在创建草稿…",
+      "proposalCreated": "提案草稿已创建 · 查看提案池",
+      "createFailed": "创建提案草稿失败。候选仍保持未生效状态。",
+      "proposalName": "重复适配候选 {{candidate}}（{{count}} 个任务）",
+      "proposalBody": "触发条件：{{trigger}}\n适用范围：{{scope}}\n建议策略：{{strategy}}\n允许动作：{{actions}}\n来源任务：{{tasks}}\n限制：{{limitation}} 经治理审批并正式生效前，不会改变当前策略。"
+    },
     "knowledge": {
       "title": "知识库沉淀",
       "empty": "暂无注册目录。",
