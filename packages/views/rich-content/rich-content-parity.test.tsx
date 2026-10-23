@@ -231,9 +231,38 @@ async function expectMermaidRendered(container: HTMLElement) {
   });
   // Not a plain code block: the fence was upgraded.
   expect(container.querySelector("code.hljs")).toBeNull();
+  expect(container.textContent).not.toContain("flowchart LR");
 }
 
 describe("Mermaid parity across the five surfaces", () => {
+  it("renders the Modern QA inline-math and Mermaid fixture", async () => {
+    const client = makeClient();
+    const fixture = [
+      "Inline $E=mc^2$",
+      "",
+      "```mermaid",
+      "graph LR; Start-->Finish;",
+      "```",
+    ].join("\n");
+    const { container } = render(
+      withClient(
+        <ChatMessageList
+          messages={[assistantMessage(fixture)] as never}
+          pendingTask={null}
+          availability={undefined}
+        />,
+        client,
+      ),
+    );
+
+    expect(container.querySelector(".katex")).not.toBeNull();
+    await expectMermaidRendered(container);
+    expect(mermaidRenderMock).toHaveBeenCalledWith(
+      expect.any(String),
+      "graph LR; Start-->Finish;",
+    );
+  });
+
   it("renders a diagram in an Issue description", async () => {
     const { container } = render(<ReadonlyContent content={MERMAID_FIXTURE} />);
     await expectMermaidRendered(container);

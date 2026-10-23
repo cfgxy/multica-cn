@@ -106,6 +106,26 @@ func TestGetConfigIncludesRuntimeAuthConfig(t *testing.T) {
 	}
 }
 
+func TestGetConfigExposesDevFeatureFlagRefreshOnlyOutsideProduction(t *testing.T) {
+	fetch := func() AppConfig {
+		t.Helper()
+		var cfg AppConfig
+		testutil.Call(t, testHandler.GetConfig, httptest.NewRequest(http.MethodGet, "/api/config", nil)).Want(http.StatusOK).JSON(&cfg)
+		return cfg
+	}
+
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS", "1500")
+	if got := fetch().FeatureFlagsRefreshIntervalMs; got != 1500 {
+		t.Fatalf("development refresh interval = %d, want 1500", got)
+	}
+
+	t.Setenv("APP_ENV", "production")
+	if got := fetch().FeatureFlagsRefreshIntervalMs; got != 0 {
+		t.Fatalf("production refresh interval = %d, want 0", got)
+	}
+}
+
 func TestGetConfigUsesDaemonServerURLOverride(t *testing.T) {
 	t.Setenv("MULTICA_DAEMON_SERVER_URL", " https://api.internal.example/// ")
 	t.Setenv("MULTICA_PUBLIC_URL", "https://hooks.example.com/")

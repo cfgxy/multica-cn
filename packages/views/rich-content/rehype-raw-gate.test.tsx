@@ -16,9 +16,11 @@ import {
   rehypeRawWhenNeeded,
 } from "./rehype-raw-gate";
 import { remarkGfmWithSharedExtensions } from "./shared-gfm-extensions";
+import { remarkRestoreCurrencyText } from "./remark-restore-currency-text";
 
 const remarkPlugins = [
-  [remarkMath, { singleDollarTextMath: false }],
+  [remarkMath, { singleDollarTextMath: true }],
+  remarkRestoreCurrencyText,
   remarkBreaks,
   remarkGfmWithSharedExtensions,
   remarkCjkFriendly,

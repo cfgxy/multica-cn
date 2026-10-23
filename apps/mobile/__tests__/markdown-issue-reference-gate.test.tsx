@@ -39,7 +39,7 @@ jest.mock("@/lib/attachment-open", () => ({
 jest.mock("@/lib/attachment-url", () => ({
   resolveAttachmentUrl: (u: string) => u,
 }));
-jest.mock("@/lib/markdown/code-block", () => ({ CodeBlock: () => null }));
+jest.mock("@/lib/markdown/code-block", () => ({ CodeBlock: () => null, ModernCodeBlock: () => null }));
 jest.mock("@/lib/markdown/mermaid-diagram", () => ({
   MermaidDiagram: () => null,
 }));

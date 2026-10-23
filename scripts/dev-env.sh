@@ -500,6 +500,24 @@ cmd_lock_status() {
   printf '%s: held by issue %s (phase %s, role %s, since %s)\n' "$SLOT" "$issue" "$phase" "$role" "$at"
 }
 
+cmd_markdown_reader() {
+  local mode="${1:-}" enabled temp flags_file="$SLOT_DIR/feature-flags.yaml"
+  [ $# -eq 1 ] || die "Usage: $0 $SLOT markdown-reader modern|legacy"
+  case "$mode" in
+    modern) enabled=true ;;
+    legacy) enabled=false ;;
+    *) die "Usage: $0 $SLOT markdown-reader modern|legacy" ;;
+  esac
+  require_lease active
+  [ "$(env_file_field MULTICA_FEATURE_FLAGS_FILE || true)" = "$flags_file" ] \
+    || die "Slot $SLOT feature flag file is not bound to its isolated slot path. Run '$0 $SLOT use' first."
+  temp="$flags_file.tmp.$$"
+  printf 'markdown_reader_v2:\n  default: %s\n' "$enabled" > "$temp"
+  chmod 600 "$temp"
+  mv -f "$temp" "$flags_file"
+  ok "markdown_reader_v2=$enabled in isolated slot $SLOT; active clients refresh without restart"
+}
+
 # Atomic role handover on the lease: dev -> qa when development hands the slot
 # to QA verification, qa -> dev to hand it back. The whole slot is held by one
 # role at any moment; the transition runs under the slot allocation lock so
@@ -811,6 +829,9 @@ generate_slot_env() {
     printf 'MULTICA_PUBLIC_URL=http://localhost:%s\n' "$SLOT_BACKEND_PORT"
     printf 'MULTICA_APP_URL=http://localhost:%s\n' "$SLOT_FRONTEND_PORT"
     printf 'NEXT_PUBLIC_API_URL=http://localhost:%s\n' "$SLOT_BACKEND_PORT"
+    printf 'LOCAL_UPLOAD_BASE_URL=http://localhost:%s\n' "$SLOT_BACKEND_PORT"
+    printf 'MULTICA_FEATURE_FLAGS_FILE=%s/feature-flags.yaml\n' "$SLOT_DIR"
+    printf 'MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS=1500\n'
     printf 'NEXT_PUBLIC_WS_URL=ws://localhost:%s/ws\n' "$SLOT_BACKEND_PORT"
     printf 'MULTICA_DEV_VERIFICATION_CODE=%s\n' "$DEV_CODE_DEFAULT"
     printf 'MULTICA_DEV_EMAIL=%s\n' "$DEV_EMAIL"
@@ -834,6 +855,8 @@ generate_slot_env() {
     printf 'MULTICA_RUNTIME_CREDENTIAL_SECRET_KEY=%s\n' "$(slot_credential_key "$password")"
   } > "$SLOT_ENV_FILE"
   chmod 600 "$SLOT_ENV_FILE"
+  printf 'markdown_reader_v2:\n  default: false\n' > "$SLOT_DIR/feature-flags.yaml"
+  chmod 600 "$SLOT_DIR/feature-flags.yaml"
   MCP_ENV_APPENDED=""
   ensure_slot_mcp_credentials "$password" true
 }
@@ -844,7 +867,7 @@ generate_slot_env() {
 # so the stored POSTGRES_PASSWORD, the one the shared instance's slot role was
 # provisioned with, survives the upgrade untouched.
 ensure_slot_env() {
-  local password="$1" appended="" stored_password=""
+  local password="$1" appended="" stored_password="" expected_upload_base="" current_upload_base="" expected_flags_file="" current_flags_file="" current_refresh=""
   if [ ! -f "$SLOT_ENV_FILE" ]; then
     generate_slot_env "$password"
     ok "generated slot env $SLOT_ENV_FILE (${SLOT_ACCOUNT}@${SLOT_PG_ENDPOINT}/${SLOT_DB})"
@@ -857,6 +880,39 @@ ensure_slot_env() {
   if ! grep -q '^MULTICA_MCP_PORT=' "$SLOT_ENV_FILE"; then
     printf 'MULTICA_MCP_PORT=%s\n' "$SLOT_MCP_PORT" >> "$SLOT_ENV_FILE"
     appended="${appended:+$appended }MULTICA_MCP_PORT"
+  fi
+  expected_upload_base="http://localhost:${SLOT_BACKEND_PORT}"
+  current_upload_base="$(env_file_field LOCAL_UPLOAD_BASE_URL || true)"
+  if [ "$current_upload_base" != "$expected_upload_base" ]; then
+    if grep -q '^LOCAL_UPLOAD_BASE_URL=' "$SLOT_ENV_FILE"; then
+      sed -i "s|^LOCAL_UPLOAD_BASE_URL=.*|LOCAL_UPLOAD_BASE_URL=$expected_upload_base|" "$SLOT_ENV_FILE"
+    else
+      printf 'LOCAL_UPLOAD_BASE_URL=%s\n' "$expected_upload_base" >> "$SLOT_ENV_FILE"
+    fi
+    appended="${appended:+$appended }LOCAL_UPLOAD_BASE_URL"
+  fi
+  expected_flags_file="$SLOT_DIR/feature-flags.yaml"
+  current_flags_file="$(env_file_field MULTICA_FEATURE_FLAGS_FILE || true)"
+  if [ "$current_flags_file" != "$expected_flags_file" ]; then
+    if grep -q '^MULTICA_FEATURE_FLAGS_FILE=' "$SLOT_ENV_FILE"; then
+      sed -i "s|^MULTICA_FEATURE_FLAGS_FILE=.*|MULTICA_FEATURE_FLAGS_FILE=$expected_flags_file|" "$SLOT_ENV_FILE"
+    else
+      printf 'MULTICA_FEATURE_FLAGS_FILE=%s\n' "$expected_flags_file" >> "$SLOT_ENV_FILE"
+    fi
+    appended="${appended:+$appended }MULTICA_FEATURE_FLAGS_FILE"
+  fi
+  current_refresh="$(env_file_field MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS || true)"
+  if [ "$current_refresh" != "1500" ]; then
+    if grep -q '^MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS=' "$SLOT_ENV_FILE"; then
+      sed -i 's|^MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS=.*|MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS=1500|' "$SLOT_ENV_FILE"
+    else
+      printf 'MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS=1500\n' >> "$SLOT_ENV_FILE"
+    fi
+    appended="${appended:+$appended }MULTICA_DEV_FEATURE_FLAGS_REFRESH_MS"
+  fi
+  if [ ! -f "$expected_flags_file" ]; then
+    printf 'markdown_reader_v2:\n  default: false\n' > "$expected_flags_file"
+    chmod 600 "$expected_flags_file"
   fi
   if ! grep -q '^FF_COMPOSIO_MCP_APPS=' "$SLOT_ENV_FILE"; then
     printf 'FF_COMPOSIO_MCP_APPS=true\n' >> "$SLOT_ENV_FILE"
@@ -2846,6 +2902,7 @@ Fixed-slot local development environments (fact source: scripts/slots.json).
   dev-env.sh dev2 resource-budget desktop --temporary-4096|--restore
   dev-env.sh <slot> handoff --to dev|qa [--note ...]  # role handover, same issue
   dev-env.sh <slot> lock-status
+  dev-env.sh <slot> markdown-reader modern|legacy  # live, slot-local renderer switch
   dev-env.sh <slot> lock-release [--force]
   dev-env.sh <slot> lock-recover          # take over after the lease issue left in_progress
   dev-env.sh <slot> destroy [--yes]
@@ -2937,6 +2994,7 @@ main() {
     resource-budget) cmd_resource_budget "$@" ;;
     handoff) cmd_handoff "$@" ;;
     lock-status) cmd_lock_status ;;
+    markdown-reader) cmd_markdown_reader "$@" ;;
     lock-release) cmd_lock_release "$@" ;;
     lock-recover) cmd_lock_recover ;;
     destroy) cmd_destroy "$@" ;;

@@ -6,6 +6,8 @@ export const appConfigOptions = () =>
     queryKey: ["config"] as const,
     queryFn: ({ signal }) => api.getConfig({ signal }),
     staleTime: 5 * 60 * 1000,
+    refetchInterval: (query) =>
+      query.state.data?.feature_flags_refresh_interval_ms ?? false,
   });
 
 // Mirrors packages/core/billing/workspace-subscription-queries.ts. The route
