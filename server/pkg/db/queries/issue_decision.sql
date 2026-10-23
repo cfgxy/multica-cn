@@ -70,6 +70,19 @@ UPDATE issue_decisions SET
 WHERE id = @id AND workspace_id = @workspace_id AND status = 'open'
 RETURNING *;
 
+-- name: RestoreIssueDecision :one
+-- RUYI-863: the inverse CAS of CancelIssueDecision — only a cancelled card
+-- can be restored to open. An answered card is never revivable (sql.ErrNoRows
+-- here), which is exactly the state machine's "no illegal resurrection"
+-- guard: cancelled is the only pre-terminal state that flips back, and the
+-- whole card row (question, options, context, recommendations) is left
+-- untouched by the flip so a restore days later still shows the original.
+UPDATE issue_decisions SET
+    status = 'open',
+    updated_at = now()
+WHERE id = @id AND workspace_id = @workspace_id AND status = 'cancelled'
+RETURNING *;
+
 -- name: SetIssueDecisionAnswerComment :one
 -- Links the answer echo comment to an already-won card and returns the
 -- updated row, so the handler's response reflects the link. The answer CAS
