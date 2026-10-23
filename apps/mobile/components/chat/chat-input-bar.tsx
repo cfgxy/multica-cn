@@ -705,7 +705,7 @@ function RightSlot({
           accessibilityHint={tVoice("button.start_hint", "开始实时语音对话")}
           className="relative h-9 w-9 items-center justify-center rounded-full"
           style={({ pressed }) => ({
-            backgroundColor: disabled ? theme.secondary : theme.brand,
+            backgroundColor: disabled ? theme.secondary : theme.primary,
             opacity: pressed && !disabled ? 0.88 : 1,
           })}
         >
