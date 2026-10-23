@@ -41,6 +41,7 @@
     "./issues/canonical-id": "./issues/canonical-id.ts",
     "./issues/queries": "./issues/queries.ts",
     "./issues/decisions": "./issues/decisions.ts",
+    "./issues/decision-card-browser": "./issues/decision-card-browser.ts",
     "./issues/suspensions": "./issues/suspensions.ts",
     "./issues/decision-requests": "./issues/decision-requests.ts",
     "./issues/mutations": "./issues/mutations.ts",

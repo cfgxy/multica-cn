@@ -1901,6 +1901,22 @@ export class ApiClient {
     return decision;
   }
 
+  // RUYI-863: the inverse of cancel — a cancelled question card flips back to
+  // open. The server CAS refuses answered cards and authorization cards
+  // (409), so the client only mirrors the card + fails readably, same as
+  // cancel above.
+  async restoreIssueDecision(issueId: string, decisionId: string): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/${decisionId}/restore`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/restore",
+    });
+    if (!decision) throw new Error("Invalid decision restore response");
+    return decision;
+  }
+
   // Workspace decision inbox (RUYI-494): the Decision Center's aggregation —
   // every card in the workspace, one row per card, with issue context. Read
   // only; answering/cancelling stays on the issue-scoped endpoints above.
