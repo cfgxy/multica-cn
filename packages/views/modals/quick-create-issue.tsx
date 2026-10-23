@@ -124,7 +124,6 @@ export function AgentCreatePanel({
   const { t: tCommon } = useT("common");
   const { t: tIssues } = useT("issues");
   const { t: tProjects } = useT("projects");
-  const { t: tVoice } = useT("voice");
   const sendShortcut = useShortcut("send");
   const workspaceName = useCurrentWorkspace()?.name;
   const workspacePaths = useWorkspacePaths();
@@ -884,13 +883,9 @@ export function AgentCreatePanel({
               inert on flex items. */}
         <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-2.5 border-t px-4 py-3 shrink-0 sm:flex sm:flex-wrap">
           <div className="flex min-h-7 items-center gap-2 sm:mr-auto">
-            {/* RUYI-626 stage 1: direct connect ships mobile-only — the
-                desktop/web entry is a disabled mic that says so (never
-                silent). */}
             <VoiceButton
               onStart={voice.start}
               disabled={submitting || gate.uploading}
-              disabledReason={tVoice(($) => $.button.disabled_stage1)}
             />
             {keepOpen && sentCount > 0 && (
               <span className="text-caption text-emerald-600 dark:text-emerald-400">
