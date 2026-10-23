@@ -27,11 +27,17 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// rather than being genuinely workspace-agnostic.
 	"admin_audit_log":         workspaceDeleteSettle,
 	"agent":                   workspaceDelete,
-	"agent_builder_draft":     workspaceDelete,
-	"agent_invocation_target": workspaceDelete,
-	"agent_runtime":           workspaceDelete,
-	"agent_skill":             workspaceDelete,
-	"agent_task_queue":        workspaceDelete,
+	// RUYI-859 stage A: agent-level error-rate backpressure policy and the
+	// automatic-suppression transition history. Both are workspace-scoped
+	// with no FK, swept explicitly by DeleteWorkspaceLeafData (same
+	// treatment as daemon_backpressure_event below).
+	"agent_backpressure_policy": workspaceDelete,
+	"agent_builder_draft":       workspaceDelete,
+	"agent_invocation_target":   workspaceDelete,
+	"agent_runtime":             workspaceDelete,
+	"agent_skill":               workspaceDelete,
+	"agent_suppression_event":   workspaceDelete,
+	"agent_task_queue":          workspaceDelete,
 	"agent_to_label":          workspaceDelete,
 	"attachment":              workspaceDelete,
 	// Workspace-scoped audit trail (RUYI-355): append-only rows carry no

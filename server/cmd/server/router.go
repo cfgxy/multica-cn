@@ -2875,6 +2875,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/scheduling-pause", h.PauseAgentScheduling)
 					r.Delete("/scheduling-pause", h.ResumeAgentScheduling)
 					r.Get("/scheduling-pause", h.GetAgentSchedulingPause)
+					// Agent-level error-rate backpressure policy (RUYI-859
+					// stage A): config surface + read-only visibility.
+					// Writes are workspace owner/admin, human-only (the
+					// same gate as the scheduling freeze); reads follow the
+					// agent's visibility. Stage A does not pause anything —
+					// the automatic loop is stage B.
+					r.Get("/backpressure-policy", h.GetAgentBackpressurePolicy)
+					r.Put("/backpressure-policy", h.PutAgentBackpressurePolicy)
+					r.Delete("/backpressure-policy", h.DeleteAgentBackpressurePolicy)
+					r.Get("/backpressure-events", h.ListAgentBackpressureEvents)
 				})
 			})
 

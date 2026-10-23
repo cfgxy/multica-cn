@@ -16,6 +16,9 @@ import type { ListAuditEventsParams, AuditEventsPage } from "../types/audit";
 import type {
   RuntimeBackpressureSettings,
   RuntimeBackpressureEvent,
+  AgentBackpressurePolicy,
+  AgentBackpressureConfig,
+  AgentBackpressureEvent,
 } from "./schemas";
 import type {
   Issue,
@@ -457,6 +460,8 @@ import {
   RuntimeHourlyActivityListSchema,
   RuntimeBackpressureSettingsSchema,
   RuntimeBackpressureEventListSchema,
+  AgentBackpressurePolicySchema,
+  AgentBackpressureEventListSchema,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
@@ -3176,6 +3181,94 @@ export class ApiClient {
       RuntimeBackpressureEventListSchema,
       [],
       { endpoint: "GET /api/runtimes/:id/backpressure-events" },
+    );
+  }
+
+  // ---- Agent-level error-rate backpressure policy (RUYI-859 stage A) ----
+  // Config surface + read-only visibility on the Agent detail page. A
+  // malformed response degrades to the built-in defaults (monitor-only,
+  // auto-suppression off) rather than breaking the page.
+
+  async getAgentBackpressurePolicy(
+    agentId: string,
+  ): Promise<AgentBackpressurePolicy> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-policy`,
+    );
+    return parseWithFallback<AgentBackpressurePolicy>(
+      raw,
+      AgentBackpressurePolicySchema,
+      {
+        agent_id: agentId,
+        configured: false,
+        config: null,
+        window: null,
+        scheduling: null,
+        events: [],
+      },
+      { endpoint: "GET /api/agents/:id/backpressure-policy" },
+    );
+  }
+
+  async putAgentBackpressurePolicy(
+    agentId: string,
+    config: AgentBackpressureConfig,
+  ): Promise<AgentBackpressurePolicy> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-policy`,
+      { method: "PUT", body: JSON.stringify(config) },
+    );
+    return parseWithFallback<AgentBackpressurePolicy>(
+      raw,
+      AgentBackpressurePolicySchema,
+      {
+        agent_id: agentId,
+        configured: true,
+        config: null,
+        window: null,
+        scheduling: null,
+        events: [],
+      },
+      { endpoint: "PUT /api/agents/:id/backpressure-policy" },
+    );
+  }
+
+  async deleteAgentBackpressurePolicy(
+    agentId: string,
+  ): Promise<AgentBackpressurePolicy> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-policy`,
+      { method: "DELETE" },
+    );
+    return parseWithFallback<AgentBackpressurePolicy>(
+      raw,
+      AgentBackpressurePolicySchema,
+      {
+        agent_id: agentId,
+        configured: false,
+        config: null,
+        window: null,
+        scheduling: null,
+        events: [],
+      },
+      { endpoint: "DELETE /api/agents/:id/backpressure-policy" },
+    );
+  }
+
+  async listAgentBackpressureEvents(
+    agentId: string,
+    params?: { limit?: number },
+  ): Promise<AgentBackpressureEvent[]> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", String(params.limit));
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-events?${search}`,
+    );
+    return parseWithFallback<AgentBackpressureEvent[]>(
+      raw,
+      AgentBackpressureEventListSchema,
+      [],
+      { endpoint: "GET /api/agents/:id/backpressure-events" },
     );
   }
 

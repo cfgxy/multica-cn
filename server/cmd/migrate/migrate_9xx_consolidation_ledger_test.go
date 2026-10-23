@@ -183,6 +183,8 @@ var postConsolidationStems = []string{
 	"979_credential_audit_id_index",                    // RUYI-837
 	"979_credential_audit_workspace_created_index",     // RUYI-837
 	"980_runtime_concurrency_limit",                    // RUYI-843
+	"982_agent_backpressure_policy",                    // RUYI-859 stage A (agent error-rate policy + suppression event tables)
+	"983_agent_suppression_event_index",                // RUYI-859 stage A (CONCURRENTLY index, separate single-statement stem)
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

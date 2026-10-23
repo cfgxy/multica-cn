@@ -36,6 +36,7 @@ import { McpConfigTab } from "./tabs/mcp-config-tab";
 import { AgentMcpTab } from "./tabs/agent-mcp-tab";
 import { IntegrationsTab } from "./tabs/integrations-tab";
 import { RuntimeConfigTab } from "./tabs/runtime-config-tab";
+import { BackpressureTab } from "./tabs/backpressure-tab";
 import { AgentDetailInspector } from "./agent-detail-inspector";
 import { AgentAccessSettings } from "./agent-access-settings";
 import { AgentOverviewSummary } from "./agent-overview-summary";
@@ -57,7 +58,8 @@ export type DetailTab =
   | "access"
   | "env"
   | "custom_args"
-  | "runtime_config";
+  | "runtime_config"
+  | "backpressure";
 
 type SecondaryTab = {
   id: DetailTab;
@@ -71,7 +73,8 @@ type SecondaryTab = {
     | "access"
     | "environment"
     | "custom_args"
-    | "runtime_config";
+    | "runtime_config"
+    | "backpressure";
 };
 
 const CAPABILITY_TABS: SecondaryTab[] = [
@@ -88,6 +91,7 @@ const SETTINGS_TABS: SecondaryTab[] = [
   { id: "env", labelKey: "environment" },
   { id: "custom_args", labelKey: "custom_args" },
   { id: "runtime_config", labelKey: "runtime_config" },
+  { id: "backpressure", labelKey: "backpressure" },
 ];
 
 const TOP_TABS: { id: DetailSection; labelKey: DetailSection }[] = [
@@ -492,6 +496,9 @@ export function AgentOverviewPane({
                       onSave={(updates) => onUpdate(agent.id, updates)}
                       onDirtyChange={setActiveDirty}
                     />
+                  )}
+                  {effectiveView === "backpressure" && (
+                    <BackpressureTab agent={agent} />
                   )}
                 </div>
               </div>
