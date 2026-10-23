@@ -47,6 +47,7 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		{"GET", "/api/issues/i-1/comments", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/task-runs", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/tasks/r-1", ScopeNeedRead},
+		{"GET", "/api/issues/i-1/tasks/r-1/activity", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/active-task", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/relations", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/relations/blocks/i-2", ScopeNeedRead},
