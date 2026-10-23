@@ -345,7 +345,7 @@
       "empty_not_configured_title": "Observability not configured",
       "empty_not_configured_hint": "This server has no Prometheus URL configured, so host resources cannot be read. Set PROMETHEUS_URL on the server and add a node exporter target for this daemon host.",
       "empty_no_daemon_title": "No daemon host",
-      "empty_no_daemon_hint": "This runtime runs in the cloud and binds no local daemon host, so there are no host resources to show.",
+      "empty_no_daemon_hint": "This runtime binds no local daemon host, so there are no host resources to show.",
       "empty_no_samples_title": "No samples yet",
       "empty_no_samples_hint": "Prometheus is configured but this daemon host has not produced samples in the selected window. Check that the node exporter target is up and being scraped.",
       "no_series": "No samples in this window.",

@@ -9,9 +9,10 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enRuntimes from "../../locales/en/runtimes.json";
 import enAgents from "../../locales/en/agents.json";
+import enUsage from "../../locales/en/usage.json";
 
 const TEST_RESOURCES = {
-  en: { common: enCommon, runtimes: enRuntimes, agents: enAgents },
+  en: { common: enCommon, runtimes: enRuntimes, agents: enAgents, usage: enUsage },
 };
 
 const mockUpdateRuntime = vi.hoisted(() => vi.fn());
@@ -19,6 +20,15 @@ const mockDeleteRuntimeProfile = vi.hoisted(() => vi.fn());
 const mockQueryData = vi.hoisted(() => ({
   members: [] as Array<Record<string, unknown>>,
   profiles: [] as RuntimeProfile[],
+}));
+// The resources / backpressure-settings fixtures the useQuery mock answers
+// per runtime. The resources fixture feeds the real RuntimeResourcesCard body
+// (RUYI-859 P1: a cloud / no-daemon runtime must reach the card's own
+// "No daemon host" structured empty, not a silently absent section); the
+// settings fixture keeps the daemon-only BackpressureLayerNote renderable.
+const mockRuntimeFixtures = vi.hoisted(() => ({
+  resources: {} as Record<string, Record<string, unknown>>,
+  backpressureSettings: {} as Record<string, Record<string, unknown>>,
 }));
 
 vi.mock("@multica/core/hooks", () => ({
@@ -63,6 +73,29 @@ vi.mock("@tanstack/react-query", async () => {
       }
       if (key?.[0] === "workspaces" && key?.[2] === "members") {
         return { data: mockQueryData.members, isLoading: false };
+      }
+      // RUYI-859 section: the REAL RuntimeResourcesCard mounts under the
+      // section (for every readable runtime, daemon or not), so its fetch is
+      // answered from the per-runtime fixture. Key shape is
+      // ["runtimes", "resources", rid, window]; unbound runtimes carry the
+      // server's structured empty { configured: true, has_daemon: false,
+      // series: {} }.
+      if (key?.[1] === "resources") {
+        const fixture = mockRuntimeFixtures.resources[key[2] as string];
+        return {
+          data: fixture,
+          isLoading: fixture === undefined,
+          isPending: fixture === undefined,
+          isError: false,
+        };
+      }
+      // Daemon-host backpressure keys (LayerNote's reads) — no fixture means
+      // "nothing saved", which the note names as the all-defaults layer.
+      if (key?.[1] === "backpressure-settings") {
+        return {
+          data: mockRuntimeFixtures.backpressureSettings[key[2] as string],
+          isLoading: false,
+        };
       }
       return { data: [], isLoading: false };
     }),
@@ -110,6 +143,7 @@ vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({
     runtimes: () => "/runtimes",
     agentDetail: () => "/agents",
+    settings: () => "/settings",
   }),
 }));
 
@@ -139,6 +173,19 @@ vi.mock("./usage-section", () => ({
   UsageSection: () => <div data-testid="usage-section" />,
 }));
 vi.mock("./shared", () => ({ HealthBadge: () => null }));
+
+// RUYI-859 P1 mount-level regression: the resources section must reach the
+// real RuntimeResourcesCard's "No daemon host" structured empty for cloud /
+// unbound runtimes — not a silently absent section — while the settings card
+// stays daemon-bound. The REAL card is kept (its own fetch is answered by the
+// useQuery fixture above; its card-level behavior is pinned in
+// runtime-resources-card.test.tsx), only the per-daemon BackpressureSettingsCard
+// becomes a presence marker here, since ITS mounting is the decision under test.
+vi.mock("./runtime-backpressure-settings-card", () => ({
+  BackpressureSettingsCard: () => (
+    <div data-testid="backpressure-settings-card" />
+  ),
+}));
 vi.mock("../../agents/presence", () => ({
   availabilityConfig: { offline: { dotClass: "", textClass: "" } },
   workloadConfig: { idle: { icon: () => null, textClass: "" } },
@@ -212,6 +259,8 @@ describe("RuntimeDetail visibility section", () => {
     vi.clearAllMocks();
     mockQueryData.members = [];
     mockQueryData.profiles = [];
+    mockRuntimeFixtures.resources = {};
+    mockRuntimeFixtures.backpressureSettings = {};
     mockDeleteRuntimeProfile.mockResolvedValue(undefined);
   });
 
@@ -435,5 +484,95 @@ describe("RuntimeDetail visibility section", () => {
     expect(
       screen.queryByRole("button", { name: /Delete runtime/i }),
     ).not.toBeInTheDocument();
+  });
+
+  // RUYI-859 P1 regression: the resources section mounts for every readable
+  // runtime, and the card's "No daemon host" structured empty is the visible
+  // answer for runtimes that bind no daemon host — NOT a silently absent
+  // section. The card-level state machine is pinned in
+  // runtime-resources-card.test.tsx; here the assertion is MOUNT + which
+  // empty reaches the page.
+
+  it("shows the no-daemon-host empty state for a cloud runtime (section not silently absent)", () => {
+    mockRuntimeFixtures.resources["rt-1"] = {
+      configured: true,
+      has_daemon: false,
+      series: {},
+    };
+
+    renderDetail(
+      makeRuntime({ runtime_mode: "cloud", visibility: "public" }),
+    );
+
+    // The section itself renders on a cloud runtime…
+    expect(
+      screen.getByTestId("resources-backpressure-section"),
+    ).toBeInTheDocument();
+    // …and the resources card answers with its own named empty, not nothing.
+    expect(screen.getByTestId("runtime-resources-card")).toBeInTheDocument();
+    expect(screen.getByText("No daemon host")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "This runtime binds no local daemon host, so there are no host resources to show.",
+      ),
+    ).toBeInTheDocument();
+    // The per-daemon settings card and layer note stay daemon-bound.
+    expect(screen.queryByTestId("backpressure-settings-card")).toBeNull();
+    expect(screen.queryByTestId("backpressure-layer-note")).toBeNull();
+  });
+
+  it("shows the no-daemon-host empty state for a local runtime that binds no daemon", () => {
+    mockRuntimeFixtures.resources["rt-1"] = {
+      configured: true,
+      has_daemon: false,
+      series: {},
+    };
+
+    renderDetail(makeRuntime({ runtime_mode: "local", daemon_id: null }));
+
+    expect(screen.getByText("No daemon host")).toBeInTheDocument();
+    expect(screen.queryByTestId("backpressure-settings-card")).toBeNull();
+  });
+
+  it("keeps the resources card, layer note and settings card together for a bound local runtime", () => {
+    mockRuntimeFixtures.resources["rt-1"] = {
+      configured: true,
+      has_daemon: true,
+      series: {
+        cpu_cores: [
+          {
+            labels: { daemon: "daemon-1" },
+            points: [
+              { t: 1000, v: 1.5 },
+              { t: 1060, v: 3.2 },
+            ],
+          },
+        ],
+        boot_time_seconds: [
+          {
+            labels: { daemon: "daemon-1" },
+            points: [
+              { t: 1000, v: 1_000_000 },
+              { t: 1060, v: 1_000_000 },
+            ],
+          },
+        ],
+      },
+    };
+
+    renderDetail(
+      makeRuntime({
+        runtime_mode: "local",
+        daemon_id: "daemon-1",
+        visibility: "public",
+      }),
+    );
+
+    // Live card with its chart surface — the bound-host path is unchanged.
+    expect(screen.getByTestId("runtime-resources-charts")).toBeInTheDocument();
+    // The layer note and settings card are back (daemon-bound members of the
+    // section; the note names the all-defaults layer when nothing is saved).
+    expect(screen.getByTestId("backpressure-layer-note")).toBeInTheDocument();
+    expect(screen.getByTestId("backpressure-settings-card")).toBeInTheDocument();
   });
 });

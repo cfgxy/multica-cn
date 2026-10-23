@@ -335,7 +335,7 @@
       "empty_not_configured_title": "관측 설정(Observability)이 설정되지 않음",
       "empty_not_configured_hint": "이 서버에 Prometheus URL이 설정되어 있지 않아 호스트 리소스를 읽을 수 없습니다. 서버의 PROMETHEUS_URL을 설정하고 이 데몬 호스트에 node exporter 타깃을 추가하세요.",
       "empty_no_daemon_title": "데몬 호스트가 없습니다",
-      "empty_no_daemon_hint": "이 런타임은 클라우드에서 실행되며 로컬 데몬 호스트에 바인딩되지 않아 보여줄 호스트 리소스가 없습니다.",
+      "empty_no_daemon_hint": "이 런타임은 로컬 데몬 호스트에 바인딩되지 않아 보여줄 호스트 리소스가 없습니다.",
       "empty_no_samples_title": "아직 샘플이 없습니다",
       "empty_no_samples_hint": "Prometheus는 설정되어 있지만, 이 데몬 호스트가 선택한 창 안에 샘플을 생성하지 않았습니다. node exporter 타깃이 가동 중이고 스크래핑되는지 확인하세요.",
       "no_series": "이 창 안에 샘플이 없습니다.",

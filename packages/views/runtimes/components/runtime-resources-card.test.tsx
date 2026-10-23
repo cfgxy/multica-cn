@@ -129,7 +129,7 @@ describe("RuntimeResourcesCard", () => {
     expect(screen.getByText("No daemon host")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "This runtime runs in the cloud and binds no local daemon host, so there are no host resources to show.",
+        "This runtime binds no local daemon host, so there are no host resources to show.",
       ),
     ).toBeInTheDocument();
   });
