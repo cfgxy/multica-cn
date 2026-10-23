@@ -1080,3 +1080,42 @@ export interface CreatePromptProposalBody {
   gate_answer_dedup: string;
   evidence_anchors?: { issue_id: string; ref: string }[];
 }
+
+/**
+ * PATCH /api/prompt-legislation/proposals/{id} — the draft edit is a
+ * full-body overwrite (the backend re-validates and persists every field),
+ * so the tool ships the complete state, not a patch of changed keys.
+ * move_to_* apply only to change_kind=move_clause; conditions are the
+ * draft's effectiveness conditions.
+ */
+export interface UpdatePromptProposalBody {
+  carrier_scope: string;
+  carrier_scope_id: string;
+  target_section: string;
+  change_kind: string;
+  clause_name: string;
+  clause_text: string;
+  clause_id?: string;
+  move_to_scope?: string;
+  move_to_scope_id?: string;
+  conditions?: unknown;
+  gate_answer_layer: string;
+  gate_answer_retention: string;
+  gate_answer_cost: string;
+  gate_answer_conflict: string;
+  gate_answer_dedup: string;
+  evidence_anchors?: { issue_id: string; ref: string }[];
+}
+
+export interface PromptDiffLine {
+  kind: "context" | "add" | "del";
+  text: string;
+}
+
+/** POST /api/prompt-legislation/proposals/{id}/preview — the approval-facing diff. */
+export interface PromptProposalPreview {
+  proposal: PromptProposalInfo;
+  diff: PromptDiffLine[];
+  current_sha256: string;
+  baseline_used: boolean;
+}
