@@ -146,6 +146,62 @@ func TestCompleteTask_NoReconcileWhenNoNewMemberComment(t *testing.T) {
 	}
 }
 
+// TestCompleteTask_DoesNotReconcileItsSynthesizedReceipt guards against a
+// self-dispatch loop. A task that finishes without an agent-authored comment
+// gets a completion receipt synthesized from its output. The receipt includes
+// the responsible-agent mention, so reconciliation must recognize that it was
+// created by the task that is currently completing instead of treating it as a
+// new explicit instruction to run that same agent again.
+func TestCompleteTask_DoesNotReconcileItsSynthesizedReceipt(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	var agentID, runtimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 AND runtime_id IS NOT NULL LIMIT 1`,
+		testWorkspaceID).Scan(&agentID, &runtimeID)
+
+	issueID := dbfx.Issue(t, "completion receipt does not re-dispatch", testutil.Cols{
+		"status":        "in_progress",
+		"number":        999012,
+		"assignee_type": "agent",
+		"assignee_id":   agentID,
+	})
+	triggerCommentID := dbfx.Comment(t, issueID, "initial request", testutil.Cols{
+		"created_at": testutil.Raw("now() - interval '10 minutes'"),
+	})
+
+	var taskID string
+	dbfx.QueryRow(t, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, trigger_comment_id, delivered_comment_ids,
+			status, priority, originator_user_id, accountable_user_id, created_at, started_at
+		)
+		VALUES ($1, $2, $3, $4, ARRAY[$4::uuid], 'running', 0, $5, $5,
+			now() - interval '10 minutes', now() - interval '5 minutes')
+		RETURNING id
+	`, agentID, runtimeID, issueID, triggerCommentID, testUserID).Scan(&taskID)
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID) })
+
+	if w := completeTaskViaHandler(t, taskID, "implemented and verified"); w.Code != http.StatusOK {
+		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var receiptCount int
+	dbfx.QueryRow(t, `
+		SELECT count(*) FROM comment
+		WHERE issue_id = $1 AND author_type = 'agent' AND source_task_id = $2
+	`, issueID, taskID).Scan(&receiptCount)
+	if receiptCount != 1 {
+		t.Fatalf("expected one synthesized completion receipt, got %d", receiptCount)
+	}
+	if n := pendingTaskCountForAgentIssue(t, issueID, agentID); n != 0 {
+		t.Fatalf("synthesized receipt must not enqueue a follow-up task, got %d", n)
+	}
+}
+
 // TestCompleteTask_DoesNotReTriggerOtherAgentMentionedDuringRun is the MUL-4195
 // review must-fix #2 regression test. Agent A is running on an issue when a
 // member posts a comment that @-mentions a DIFFERENT agent B. B is triggered at
