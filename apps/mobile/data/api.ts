@@ -2507,11 +2507,17 @@ class ApiClient {
     workspaceId: string,
     params?: {
       limit?: number;
-      /** RUYI-864: one real lifecycle status (never a folded pseudo-state). */
+      /** RUYI-864: one real lifecycle status or the `history` terminal
+       *  window (every non-pending row — the set the counts' `history`
+       *  total badges; never a folded pseudo-state of the queue). */
       status?: string;
       /** RUYI-864: scan direction — 'asc' is the oldest-first pending queue,
        *  'desc' the newest-first history surface. */
       order?: "asc" | "desc";
+      /** RUYI-864 rework: keyset cursor pair (both together or neither —
+       *  the server rejects a lone half with 400). */
+      after_created_at?: string;
+      after_id?: string;
     },
     opts?: { signal?: AbortSignal },
   ): Promise<DecisionRequestsList> {
@@ -2519,6 +2525,8 @@ class ApiClient {
     if (params?.limit != null) qs.set("limit", String(params.limit));
     if (params?.status) qs.set("status", params.status);
     if (params?.order) qs.set("order", params.order);
+    if (params?.after_created_at) qs.set("after_created_at", params.after_created_at);
+    if (params?.after_id) qs.set("after_id", params.after_id);
     const query = qs.size > 0 ? `?${qs.toString()}` : "";
     const raw = await this.fetch<unknown>(
       `/api/workspaces/${workspaceId}/decision-requests${query}`,

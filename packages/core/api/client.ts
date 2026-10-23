@@ -2024,7 +2024,13 @@ export class ApiClient {
   // the server refuses agent callers regardless of what the client sends.
   async listDecisionRequests(
     workspaceId: string,
-    params?: { status?: string; limit?: number; order?: "asc" | "desc" },
+    params?: {
+      status?: string;
+      limit?: number;
+      order?: "asc" | "desc";
+      after_created_at?: string;
+      after_id?: string;
+    },
   ): Promise<DecisionRequestsList> {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
@@ -2032,6 +2038,10 @@ export class ApiClient {
     // RUYI-864: 'asc' = oldest-first (the pending authorization queue),
     // 'desc' = newest-first (the history surface; the default when absent).
     if (params?.order) qs.set("order", params.order);
+    // RUYI-864 rework: the keyset cursor pair — both halves or neither, the
+    // server rejects a lone half with 400.
+    if (params?.after_created_at) qs.set("after_created_at", params.after_created_at);
+    if (params?.after_id) qs.set("after_id", params.after_id);
     const query = qs.size > 0 ? `?${qs.toString()}` : "";
     const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests${query}`);
     const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {

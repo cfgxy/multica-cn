@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { AgentRuntimeSchema, DecisionRequestSchema, IssueDecisionSchema } from "./schemas";
+import {
+  AgentRuntimeSchema,
+  DecisionRequestSchema,
+  DecisionRequestsListSchema,
+  IssueDecisionSchema,
+} from "./schemas";
 import {
   AppConfigSchema,
   MarketplaceItemSchema,
@@ -2735,5 +2740,70 @@ describe("DecisionRequestSchema authorization receipt", () => {
       ...base,
       execution_result: { receipt_version: 1, side_effect_status: "maybe" },
     }).success).toBe(false);
+  });
+});
+
+// RUYI-864 rework: the list envelope's NEW wire fields (the approved/history
+// count buckets and the keyset cursor pair) must survive a backend that
+// predates them — the installed desktop client's parseWithFallback relies on
+// the .default() shapes below.
+
+describe("DecisionRequestsListSchema rework fields", () => {
+  const listBase = {
+    items: [],
+    counts: { pending: 0, closed: 0, executed: 0 },
+  };
+
+  it("defaults the new count buckets and cursor pair on an old response", () => {
+    const parsed = DecisionRequestsListSchema.safeParse(listBase);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.counts).toEqual({
+      pending: 0,
+      approved: 0,
+      closed: 0,
+      executed: 0,
+      history: 0,
+    });
+    expect(parsed.data.next_cursor).toBeNull();
+    expect(parsed.data.next_cursor_id).toBeNull();
+  });
+
+  it("keeps the full rework envelope round-trip intact", () => {
+    const parsed = DecisionRequestsListSchema.safeParse({
+      ...listBase,
+      counts: { pending: 1, approved: 2, closed: 3, executed: 4, history: 7 },
+      next_cursor: "2026-10-20T00:00:00.000000000Z",
+      next_cursor_id: "request-1",
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    expect(parsed.data.counts).toEqual({
+      pending: 1,
+      approved: 2,
+      closed: 3,
+      executed: 4,
+      history: 7,
+    });
+    expect(parsed.data.next_cursor).toBe("2026-10-20T00:00:00.000000000Z");
+    expect(parsed.data.next_cursor_id).toBe("request-1");
+  });
+
+  it("rejects a malformed counts bucket rather than silently zeroing it", () => {
+    expect(
+      DecisionRequestsListSchema.safeParse({
+        ...listBase,
+        counts: { pending: 1, approved: "two" },
+      }).success,
+    ).toBe(false);
+    // A lone cursor half is still accepted at the parse boundary — the
+    // server's 400 on a lone half is the real guard; the schema must not
+    // fabricate the missing half.
+    expect(
+      DecisionRequestsListSchema.safeParse({
+        ...listBase,
+        next_cursor: "2026-10-20T00:00:00Z",
+      }).success,
+    ).toBe(true);
   });
 });

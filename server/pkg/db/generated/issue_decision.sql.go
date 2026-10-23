@@ -872,6 +872,12 @@ FROM issue_decisions d
 JOIN issue i ON i.id = d.issue_id
 LEFT JOIN workspace ws ON ws.id = d.workspace_id
 WHERE d.workspace_id = $1
+  -- RUYI-630/RUYI-864: the kind predicate lives in the page walk itself,
+  -- next to the counts' — an authorization card never occupies a page row
+  -- (otherwise a full page of them would carry a next cursor past real
+  -- question cards while items came back empty), and items/counts stay one
+  -- set under every window.
+  AND d.decision_kind = 'question'
   AND ($3::text IS NULL OR d.status = $3::text)
   AND ($4::text IS NULL
     OR d.question ILIKE '%' || $4::text || '%'
