@@ -41,14 +41,6 @@ const RISK_LABEL_KEYS: Record<string, "risk_read" | "risk_write_low"> = {
   write_low: "risk_write_low",
 };
 
-const KIND_LABEL_KEYS = {
-  cli: "kind_cli",
-  restricted_script: "kind_script",
-  issue_creation: "kind_issue",
-  single_issue: "kind_issue",
-  script_review: "kind_script_review",
-} as const;
-
 const STATUS_LABEL_KEYS: Record<
   DecisionRequestStatus,
   | "status_pending"
@@ -194,11 +186,6 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
       && typeof (step as { status?: unknown }).status === "string"
       && typeof (step as { side_effect_status?: unknown }).side_effect_status === "string")
     : [];
-  const executionInProgress = request.action_type !== "script_review" && request.status === "approved"
-    && (request.role === "target" || (request.role === "origin" && request.operable));
-  const kindLabelKey = request.authorization_spec
-    ? KIND_LABEL_KEYS[request.authorization_spec.kind]
-    : null;
   const statusLabelKey = request.action_type === "script_review" && request.status === "executed"
     ? "status_reviewed"
     : STATUS_LABEL_KEYS[request.status];
