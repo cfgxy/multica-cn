@@ -10,10 +10,12 @@ package handler
 // middleware uses.
 
 import (
+	stdcontext "context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,6 +203,110 @@ func TestSelfEvolutionOverviewEmptyWorkspace(t *testing.T) {
 	}
 	if resp.Proposals.Total != 0 || resp.Proposals.PendingOwner != 0 || resp.Proposals.LastAutoProposal != nil {
 		t.Errorf("proposals = %+v, want an empty pool", resp.Proposals)
+	}
+}
+
+func TestSelfEvolutionOverviewShowsOnlyVerifiedWorkspaceTaskExperiences(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	wsID, slug := overviewWorkspace(t)
+	agentID := dbfx.Agent(t, fmt.Sprintf("ov-experience-%d", time.Now().UnixNano()), handlerTestRuntimeID(t), testutil.Cols{"workspace_id": wsID})
+	taskID := "8fcd3a5f-14e9-4d5b-95b9-79b70bb0a146"
+	context := `'{"capability_adaptation":{"policy_id":"policy-a","policy_version":"v2","scope":"current_task","trigger":"long implementation task","current_strategy":"one large pass","suggested_strategy":"use small verified steps","allowed_actions":["split into checkpoints"]}}'::jsonb`
+	result := `'{"capability_adaptation_result":{"task_id":"` + taskID + `","policy_id":"policy-a","policy_version":"v2","status":"applied"}}'::jsonb`
+	dbfx.Task(t, agentID, testutil.Cols{
+		"id": taskID, "status": "completed", "completed_at": testutil.Raw("now()"),
+		"context": testutil.Raw(context), "result": testutil.Raw(result),
+	})
+	secondTaskID := "d6c91ded-1a4e-4607-a2bc-8b3a0dca85dc"
+	secondResult := `'{"capability_adaptation_result":{"task_id":"` + secondTaskID + `","policy_id":"policy-a","policy_version":"v2","status":"applied"}}'::jsonb`
+	dbfx.Task(t, agentID, testutil.Cols{
+		"id": secondTaskID, "status": "completed", "completed_at": testutil.Raw("now()"),
+		"context": testutil.Raw(context), "result": testutil.Raw(secondResult),
+	})
+	// Retained, blocked and identity-mismatched receipts cannot support a
+	// candidate for the suggested strategy.
+	retainedTaskID := "0c16b8ac-d07a-4720-892a-2c0b36c21ab4"
+	retainedResult := `'{"capability_adaptation_result":{"task_id":"` + retainedTaskID + `","policy_id":"policy-a","policy_version":"v2","status":"retained"}}'::jsonb`
+	dbfx.Task(t, agentID, testutil.Cols{
+		"id": retainedTaskID, "status": "completed", "completed_at": testutil.Raw("now()"),
+		"context": testutil.Raw(context), "result": testutil.Raw(retainedResult),
+	})
+	blockedTaskID := "7d67fca5-d6e4-435b-a318-877120227cc2"
+	blockedResult := `'{"capability_adaptation_result":{"task_id":"` + blockedTaskID + `","policy_id":"policy-a","policy_version":"v2","status":"blocked"}}'::jsonb`
+	dbfx.Task(t, agentID, testutil.Cols{
+		"id": blockedTaskID, "status": "completed", "completed_at": testutil.Raw("now()"),
+		"context": testutil.Raw(context), "result": testutil.Raw(blockedResult),
+	})
+	singleTaskID := "4dc89761-9424-4861-a310-b3883c95150d"
+	singleContext := `'{"capability_adaptation":{"policy_id":"policy-a","policy_version":"v2","scope":"current_task","trigger":"one-off request","current_strategy":"one pass","suggested_strategy":"use small verified steps","allowed_actions":["split into checkpoints"]}}'::jsonb`
+	singleResult := `'{"capability_adaptation_result":{"task_id":"` + singleTaskID + `","policy_id":"policy-a","policy_version":"v2","status":"applied"}}'::jsonb`
+	dbfx.Task(t, agentID, testutil.Cols{
+		"id": singleTaskID, "status": "completed", "completed_at": testutil.Raw("now()"),
+		"context": testutil.Raw(singleContext), "result": testutil.Raw(singleResult),
+	})
+	otherResult := `'{"capability_adaptation_result":{"task_id":"11111111-1111-4111-8111-111111111111","policy_id":"policy-a","policy_version":"v2","status":"applied"}}'::jsonb`
+	dbfx.Task(t, agentID, testutil.Cols{
+		"status": "completed", "completed_at": testutil.Raw("now()"),
+		"context": testutil.Raw(context), "result": testutil.Raw(otherResult),
+	})
+
+	_, resp := getOverview(t, slug, "")
+	if len(resp.Experiences) != 1 {
+		t.Fatalf("experiences = %+v, want one repeated pattern from two identity-matched receipts", resp.Experiences)
+	}
+	entry := resp.Experiences[0]
+	if entry.CandidateID == "" || entry.Trigger != "long implementation task" || len(entry.SourceTasks) != 2 {
+		t.Errorf("candidate identity/evidence = %+v", entry)
+	}
+	sourcesByID := make(map[string]SelfEvolutionOverviewExperienceSource, len(entry.SourceTasks))
+	for _, source := range entry.SourceTasks {
+		sourcesByID[source.TaskID] = source
+	}
+	if sourcesByID[taskID].PolicyID != "policy-a" || sourcesByID[taskID].Outcome != "applied" ||
+		sourcesByID[secondTaskID].PolicyID != "policy-a" || sourcesByID[secondTaskID].Outcome != "applied" {
+		t.Errorf("source task provenance = %+v", entry.SourceTasks)
+	}
+	if entry.Applicability != "current_task" || entry.Evidence != "repeated_verified_task_receipts" || entry.Limitation != "repeated_pattern_not_approved_workspace_policy" {
+		t.Errorf("experience scope/evidence/limitation = %+v", entry)
+	}
+	anchors := make([]map[string]string, 0, len(entry.SourceTasks))
+	for _, source := range entry.SourceTasks {
+		anchor := map[string]string{
+			"task_id": source.TaskID,
+			"ref":     "capability_adaptation_candidate:" + entry.CandidateID,
+			"note":    source.PolicyID + "@" + source.PolicyVersion + "; " + source.Outcome + "; scope=" + entry.Applicability + "; evidence=" + entry.Evidence + "; limitation=" + entry.Limitation,
+		}
+		if source.IssueID != "" {
+			anchor["issue_id"] = source.IssueID
+		}
+		anchors = append(anchors, anchor)
+	}
+	if err := testHandler.validateAdaptationCandidateEvidence(stdcontext.Background(), parseUUID(wsID), anchors); err != nil {
+		t.Fatalf("matching completed receipts rejected for proposal evidence: %v", err)
+	}
+	missingScope := append([]map[string]string(nil), anchors...)
+	missingScope[0] = map[string]string{
+		"task_id": anchors[0]["task_id"], "ref": anchors[0]["ref"],
+		"note": strings.Replace(anchors[0]["note"], "scope=current_task", "scope=workspace", 1),
+	}
+	if err := testHandler.validateAdaptationCandidateEvidence(stdcontext.Background(), parseUUID(wsID), missingScope); err == nil {
+		t.Fatal("experience proposal without the task-only applicability boundary was accepted")
+	}
+	if err := testHandler.validateAdaptationCandidateEvidence(stdcontext.Background(), parseUUID(wsID), anchors[:1]); err == nil {
+		t.Fatal("single source receipt accepted as a cross-task experience")
+	}
+	wrongCandidate := make([]map[string]string, 0, len(anchors))
+	for _, anchor := range anchors {
+		wrongCandidate = append(wrongCandidate, map[string]string{
+			"task_id": anchor["task_id"],
+			"ref":     "capability_adaptation_candidate:" + strings.Repeat("0", 64),
+			"note":    anchor["note"],
+		})
+	}
+	if err := testHandler.validateAdaptationCandidateEvidence(stdcontext.Background(), parseUUID(wsID), wrongCandidate); err == nil {
+		t.Fatal("candidate fingerprint unrelated to the source receipts was accepted")
 	}
 }
 

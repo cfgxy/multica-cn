@@ -626,6 +626,20 @@ function TaskRow({
     task.status === "failed"
       ? failureReasonLabel(task.failure_reason, t)
       : cancelReasonLabel(task, t);
+  const adaptation = task.capability_adaptation && task.capability_adaptation_result
+    ? task.capability_adaptation_result.task_id === task.id &&
+      task.capability_adaptation_result.policy_id === task.capability_adaptation.policy_id &&
+      task.capability_adaptation_result.policy_version === task.capability_adaptation.policy_version
+      ? task.capability_adaptation
+      : null
+    : null;
+  const adaptationOutcome = task.capability_adaptation_result?.status === "applied"
+    ? t(($) => $.tab_body.activity.adaptation_applied)
+    : task.capability_adaptation_result?.status === "retained"
+      ? t(($) => $.tab_body.activity.adaptation_retained)
+      : task.capability_adaptation_result?.status === "blocked"
+        ? t(($) => $.tab_body.activity.adaptation_blocked)
+        : "";
 
   // Only show duration for terminal rows. An active row's duration is
   // inferred from the timeText already ("Started 2m ago") and adding a
@@ -753,6 +767,18 @@ function TaskRow({
             </>
           )}
         </div>
+        {adaptation && adaptationOutcome ? (
+          <div className="mt-2 flex min-w-0 flex-col gap-1 border-l-2 border-primary/40 pl-2 text-caption">
+            <span className="font-medium">{t(($) => $.tab_body.activity.adaptation_title)} · {adaptationOutcome}</span>
+            <span className="break-words text-muted-foreground">{adaptation.suggested_strategy}</span>
+            <span className="break-words text-muted-foreground">
+              {t(($) => $.tab_body.activity.adaptation_scope)}: {adaptation.scope} · {adaptation.trigger}
+            </span>
+            <AppLink href={paths.selfEvolutionProposals()} className="w-fit text-primary">
+              {t(($) => $.tab_body.activity.adaptation_review)}
+            </AppLink>
+          </div>
+        ) : null}
       </div>
 
       {/* Hover-only actions. The row is intentionally non-clickable so

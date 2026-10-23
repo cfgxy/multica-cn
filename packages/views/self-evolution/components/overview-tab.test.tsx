@@ -102,6 +102,7 @@ function overviewFixture(overrides: Partial<SelfEvolutionOverview> = {}): SelfEv
       pending_owner: 2,
       last_auto_proposal: { source: "retrospective", created_at: "2026-09-30T03:00:00Z" },
     },
+    experiences: [],
     ...overrides,
   };
 }
@@ -205,6 +206,7 @@ it("keeps the three kinds of emptiness distinguishable and offers no write contr
     knowledge: { dirs: 0, entries: 0 },
     skills: { count: 0, invocations: 0 },
     proposals: { total: 0, pending_owner: 0 },
+    experiences: [],
   });
   mount();
 
