@@ -211,19 +211,25 @@ export function RuntimeDetail({
               daemonShort={daemonShort}
             />
             {/* Host resources & backpressure section (RUYI-859 stage 1).
-                The live node-exporter series for this runtime's daemon host
-                and the gate that pauses claims when the host runs hot are
-                both per daemon host, so the section mounts under the same
-                gate as the RUYI-729 card; cloud/manual runtimes (no host)
-                get neither, which the server answers as has_daemon=false. */}
-            {canReadRuntime && runtime.runtime_mode === "local" && !!runtime.daemon_id && (
+                The resources card renders for EVERY readable runtime: the
+                server answers cloud / manual / local-but-unbound runtimes with
+                the structured has_daemon=false empty, so the promise "the
+                reader always knows WHY the panel is empty" also holds on
+                machines that bind no daemon host. The backpressure layer note
+                and the per-daemon settings card stay daemon-host-bound — a
+                cloud runtime has no gate and no host card to configure. */}
+            {canReadRuntime && (
               <section className="space-y-3" data-testid="resources-backpressure-section">
                 <h3 className="flex items-center gap-1.5 text-body font-medium">
                   {t(($) => $.detail.resources_backpressure_title)}
                 </h3>
                 <RuntimeResourcesCard runtime={runtime} />
-                <BackpressureLayerNote runtime={runtime} />
-                <BackpressureSettingsCard runtime={runtime} canEdit={isAdmin} />
+                {runtime.runtime_mode === "local" && !!runtime.daemon_id && (
+                  <>
+                    <BackpressureLayerNote runtime={runtime} />
+                    <BackpressureSettingsCard runtime={runtime} canEdit={isAdmin} />
+                  </>
+                )}
               </section>
             )}
             {canReadRuntime && <UsageSection runtime={runtime} />}
