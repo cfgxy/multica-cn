@@ -1282,6 +1282,12 @@ export const DecisionInboxCountsSchema = z.object({
 export const WorkspaceDecisionInboxSchema = z.object({
   items: z.array(WorkspaceDecisionInboxItemSchema),
   counts: DecisionInboxCountsSchema,
+  // RUYI-864: the keyset cursor pair. The server omits both fields on
+  // short pages and drops them entirely on older responses — the
+  // .default(null) is what lets an installed desktop client survive a
+  // backend that does not send them yet.
+  next_cursor: z.string().nullable().default(null),
+  next_cursor_id: z.string().nullable().default(null),
 });
 
 // Batch answer (RUYI-471). Mirrors handler.BatchAnswerIssueDecisionsResponse:
