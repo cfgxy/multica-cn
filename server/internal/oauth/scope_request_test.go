@@ -13,6 +13,10 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		// Read surface.
 		{"GET", "/api/mcp", ScopeUnknown}, // /api/mcp itself is Node's, never classified here
 		{"GET", "/api/workspaces", ScopeNeedRead},
+		{"GET", "/api/inbox", ScopeNeedRead},
+		{"GET", "/api/inbox/archived", ScopeNeedRead},
+		{"GET", "/api/inbox/unread-count", ScopeNeedRead},
+		{"GET", "/api/inbox/unread-summary", ScopeNeedRead},
 		{"GET", "/api/agents", ScopeNeedRead},
 		{"GET", "/api/agents/ag-1", ScopeNeedRead},
 		{"GET", "/api/projects", ScopeNeedRead},
@@ -32,6 +36,7 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		{"GET", "/api/workspaces/ws-1/audit-events", ScopeNeedRead},
 		{"POST", "/api/mcp/audit-start", ScopeNeedRead},
 		{"POST", "/api/mcp/audit-finish", ScopeNeedRead},
+		{"POST", "/api/mcp/pre-auth-rejections", ScopeNeedRead},
 		{"POST", "/api/file-access/list", ScopeNeedRead},
 		{"POST", "/api/file-access/metadata", ScopeNeedRead},
 		{"POST", "/api/file-access/read", ScopeNeedRead},
@@ -47,6 +52,7 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		{"GET", "/api/issues/i-1/comments", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/task-runs", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/tasks/r-1", ScopeNeedRead},
+		{"GET", "/api/issues/i-1/tasks/r-1/activity", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/active-task", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/relations", ScopeNeedRead},
 		{"GET", "/api/issues/i-1/relations/blocks/i-2", ScopeNeedRead},
@@ -56,6 +62,14 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 
 		// Write surface.
 		{"POST", "/api/issues", ScopeNeedWrite},
+		{"POST", "/api/inbox/mark-all-read", ScopeNeedWrite},
+		{"POST", "/api/inbox/archive-all", ScopeNeedWrite},
+		{"POST", "/api/inbox/archive-all-read", ScopeNeedWrite},
+		{"POST", "/api/inbox/archive-completed", ScopeNeedWrite},
+		{"POST", "/api/inbox/item-1/read", ScopeNeedWrite},
+		{"POST", "/api/inbox/item-1/unread", ScopeNeedWrite},
+		{"POST", "/api/inbox/item-1/archive", ScopeNeedWrite},
+		{"POST", "/api/inbox/item-1/unarchive", ScopeNeedWrite},
 		{"PATCH", "/api/issues/i-1", ScopeNeedWrite},
 		{"PUT", "/api/issues/i-1", ScopeNeedWrite},
 		{"DELETE", "/api/issues/i-1", ScopeNeedWrite},
