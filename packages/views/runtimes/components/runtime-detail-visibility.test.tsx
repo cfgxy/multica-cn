@@ -534,6 +534,53 @@ describe("RuntimeDetail visibility section", () => {
     expect(screen.queryByTestId("backpressure-settings-card")).toBeNull();
   });
 
+  // RUYI-859 P1 cross state (no Prometheus AND no daemon): the server
+  // answers { configured: false, has_daemon: false } and the page must still
+  // reach the no-daemon empty — pinning the same legal response at the
+  // page level for both flavors of unbound runtime.
+
+  it("shows the no-daemon-host empty for a cloud runtime in the { configured:false, has_daemon:false } cross state", () => {
+    mockRuntimeFixtures.resources["rt-1"] = {
+      configured: false,
+      has_daemon: false,
+      series: {},
+    };
+
+    renderDetail(
+      makeRuntime({ runtime_mode: "cloud", visibility: "public" }),
+    );
+
+    // The resources section stays reachable…
+    expect(
+      screen.getByTestId("resources-backpressure-section"),
+    ).toBeInTheDocument();
+    // …and answers with the no-daemon empty, not the not-configured hint.
+    expect(screen.getByText("No daemon host")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Observability not configured"),
+    ).toBeNull();
+    // The daemon-only backpressure controls stay absent.
+    expect(screen.queryByTestId("backpressure-settings-card")).toBeNull();
+    expect(screen.queryByTestId("backpressure-layer-note")).toBeNull();
+  });
+
+  it("shows the no-daemon-host empty for a local-unbound runtime in the { configured:false, has_daemon:false } cross state", () => {
+    mockRuntimeFixtures.resources["rt-1"] = {
+      configured: false,
+      has_daemon: false,
+      series: {},
+    };
+
+    renderDetail(makeRuntime({ runtime_mode: "local", daemon_id: null }));
+
+    expect(screen.getByText("No daemon host")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Observability not configured"),
+    ).toBeNull();
+    expect(screen.queryByTestId("backpressure-settings-card")).toBeNull();
+    expect(screen.queryByTestId("backpressure-layer-note")).toBeNull();
+  });
+
   it("keeps the resources card, layer note and settings card together for a bound local runtime", () => {
     mockRuntimeFixtures.resources["rt-1"] = {
       configured: true,

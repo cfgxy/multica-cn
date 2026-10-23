@@ -192,21 +192,25 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
 
   if (!data) return null;
 
-  if (!data.configured) {
-    return (
-      <EmptyShell
-        title={t(($) => $.detail.resources.empty_not_configured_title)}
-        hint={t(($) => $.detail.resources.empty_not_configured_hint)}
-        window={window}
-        onWindow={setWindow}
-      />
-    );
-  }
+  // The no-daemon empty wins over not-configured: the server's cross state
+  // { configured: false, has_daemon: false } (no Prometheus AND no daemon)
+  // is still the fact that this runtime binds no host, and the reader must
+  // see that, not a "configure observability" hint that hides it.
   if (!data.has_daemon) {
     return (
       <EmptyShell
         title={t(($) => $.detail.resources.empty_no_daemon_title)}
         hint={t(($) => $.detail.resources.empty_no_daemon_hint)}
+        window={window}
+        onWindow={setWindow}
+      />
+    );
+  }
+  if (!data.configured) {
+    return (
+      <EmptyShell
+        title={t(($) => $.detail.resources.empty_not_configured_title)}
+        hint={t(($) => $.detail.resources.empty_not_configured_hint)}
         window={window}
         onWindow={setWindow}
       />
