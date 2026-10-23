@@ -154,6 +154,7 @@
     "upload_failed_title": "업로드 실패",
     "quick_replies_title": "빠른 답장",
     "quick_reply_hint": "빠른 답장 삽입",
+    "more_tooltip": "더 보기",
     "camera_permission_title": "카메라 권한 필요",
     "camera_permission_message": "Multica가 첨부 사진을 촬영하려면 카메라 접근 권한이 필요합니다. 시스템 설정에서 허용해 주세요.",
     "image_source_camera": "사진 촬영",

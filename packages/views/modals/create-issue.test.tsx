@@ -587,14 +587,6 @@ vi.mock("@multica/ui/components/ui/switch", () => ({
   ),
 }));
 
-vi.mock("@multica/ui/components/common/file-upload-button", () => ({
-  FileUploadButton: ({ onSelect, size }: { onSelect: (file: File) => void; size?: string }) => (
-    <button type="button" data-size={size} onClick={() => onSelect(new File(["test"], "test.txt"))}>
-      Upload file
-    </button>
-  ),
-}));
-
 vi.mock("@multica/ui/lib/utils", () => ({
   cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(" "),
 }));
@@ -710,10 +702,15 @@ describe("CreateIssueModal", () => {
     });
   });
 
-  it("uses the same compact attachment control as agent mode", () => {
+  it("uses the shared composer surface and puts attachments in More", async () => {
+    const user = userEvent.setup();
     renderModal(<CreateIssueModal onClose={vi.fn()} />);
 
-    expect(screen.getByRole("button", { name: "Upload file" })).toHaveAttribute("data-size", "sm");
+    expect(screen.getByTestId("issue-composer-surface").className).toContain(
+      "focus-within:ring-2",
+    );
+    await user.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("menuitem", { name: "Upload file" })).toBeInTheDocument();
   });
 
   it("shows success feedback with a direct path to the new issue", async () => {
@@ -900,9 +897,15 @@ describe("CreateIssueModal", () => {
   it("persists manual-mode uploads in the issue draft", async () => {
     const user = userEvent.setup();
 
-    renderModal(<CreateIssueModal onClose={vi.fn()} />);
+    const { container } = renderModal(<CreateIssueModal onClose={vi.fn()} />);
 
-    await user.click(screen.getByRole("button", { name: "Upload file" }));
+    await user.click(screen.getByRole("button", { name: "More" }));
+    await user.click(screen.getByRole("menuitem", { name: "Upload file" }));
+    const fileInput = container.querySelectorAll<HTMLInputElement>('input[type="file"]')[2];
+    if (!fileInput) throw new Error("Expected the composer file input");
+    fireEvent.change(fileInput, {
+      target: { files: [new File(["image"], "shot.png", { type: "image/png" })] },
+    });
 
     // Coordinator flow (MUL-5181 L2): a placeholder is written at pick time,
     // then settles into an `uploaded` entry carrying the server row.
