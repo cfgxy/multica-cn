@@ -117,6 +117,21 @@ func TestRenderRemovesInlineClauseBlocks(t *testing.T) {
 	}
 }
 
+func TestRenderRemovesLegacySectionBlocks(t *testing.T) {
+	legacy := "# 规范\n\n## 交接\n\n- 旧规则。\n\n## 保留章节\n\n- 保留规则。\n"
+	section := RenderedClause{Slug: "cls_ccc00003", Version: 2, Body: "## 交接\n\n- 新规则。"}
+	out := Render(legacy, []RenderedClause{section})
+	if strings.Contains(out, "旧规则") || strings.Count(out, "## 交接") != 1 {
+		t.Fatalf("legacy section remained outside the managed region:\n%s", out)
+	}
+	if !strings.Contains(out, "新规则") || !strings.Contains(out, "## 保留章节") {
+		t.Fatalf("render damaged the replacement or adjacent section:\n%s", out)
+	}
+	if _, err := Parse(out); err != nil {
+		t.Fatalf("rendered legacy section does not parse: %v", err)
+	}
+}
+
 func TestRenderEmptyClauseSetKeepsStable(t *testing.T) {
 	out := Render(stableFixture+"\n"+OpenTag("cls_aaa00001", 1)+"\n- **x**：y。\n<!-- /clause -->\n", nil)
 	if strings.Contains(out, "clause:") {
