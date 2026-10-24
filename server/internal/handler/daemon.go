@@ -148,6 +148,132 @@ func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r 
 	return task, wsID, true
 }
 
+// BranchAdoptionAuthorizationRequest names the suspended source task whose
+// already-delivered branch a running continuation task requests to adopt.
+// The continuation task is path-bound and is never accepted from the body.
+type BranchAdoptionAuthorizationRequest struct {
+	SourceTaskID string `json:"source_task_id"`
+	Branch       string `json:"branch"`
+}
+
+// BranchAdoptionOwner is the server-authoritative ownership snapshot returned
+// only after the daemon token's workspace gate and every adoption rule passes.
+// ConversationID deliberately follows the record trailer identity, rather than
+// a human-facing issue key which is not globally unique.
+type BranchAdoptionOwner struct {
+	WorkspaceID    string `json:"workspace_id"`
+	AgentID        string `json:"agent_id"`
+	ConversationID string `json:"conversation_id"`
+	TaskID         string `json:"task_id"`
+}
+
+type BranchAdoptionAuthorizationResponse struct {
+	Branch                    string              `json:"branch"`
+	Source                    BranchAdoptionOwner `json:"source"`
+	Continuation              BranchAdoptionOwner `json:"continuation"`
+	SourceIssueSuspended      bool                `json:"source_issue_suspended"`
+	ContinuationTaskIsRunning bool                `json:"continuation_task_is_running"`
+}
+
+// AuthorizeBranchAdoption proves the database-side part of an intentional,
+// one-way continuation mapping. The localhost daemon combines this snapshot
+// with its task-token-bound workdir identity and execenv's Git proof; neither
+// a CLI field nor a daemon workspace token can independently select a branch.
+func (h *Handler) AuthorizeBranchAdoption(w http.ResponseWriter, r *http.Request) {
+	continuationTaskID := chi.URLParam(r, "taskId")
+	continuation, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, continuationTaskID)
+	if !ok {
+		return
+	}
+	if continuation.Status != "running" {
+		writeError(w, http.StatusConflict, "continuation task is not running")
+		return
+	}
+	if !continuation.IssueID.Valid || !continuation.AgentID.Valid {
+		writeError(w, http.StatusConflict, "continuation task has no issue or agent identity")
+		return
+	}
+
+	var req BranchAdoptionAuthorizationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.SourceTaskID = strings.TrimSpace(req.SourceTaskID)
+	req.Branch = strings.TrimSpace(req.Branch)
+	if req.SourceTaskID == "" || req.Branch == "" {
+		writeError(w, http.StatusBadRequest, "source_task_id and branch are required")
+		return
+	}
+	if req.SourceTaskID == continuationTaskID {
+		writeError(w, http.StatusConflict, "source task and continuation task must differ")
+		return
+	}
+	sourceTaskUUID, ok := parseUUIDOrBadRequest(w, req.SourceTaskID, "source_task_id")
+	if !ok {
+		return
+	}
+	source, err := h.Queries.GetAgentTask(r.Context(), sourceTaskUUID)
+	if err != nil {
+		if isNotFound(err) {
+			writeError(w, http.StatusNotFound, "source task not found")
+			return
+		}
+		slog.Warn("load branch adoption source task failed", "source_task_id", req.SourceTaskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load source task")
+		return
+	}
+	sourceWorkspaceID := h.TaskService.ResolveTaskWorkspaceID(r.Context(), source)
+	if sourceWorkspaceID == "" || sourceWorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "source task not found")
+		return
+	}
+	if !source.BranchName.Valid || source.BranchName.String != req.Branch {
+		writeError(w, http.StatusConflict, "source task does not own the requested branch")
+		return
+	}
+	if !source.IssueID.Valid || !source.AgentID.Valid {
+		writeError(w, http.StatusConflict, "source task has no issue or agent identity")
+		return
+	}
+	sourceIssue, err := h.Queries.GetIssue(r.Context(), source.IssueID)
+	if err != nil {
+		if isNotFound(err) {
+			writeError(w, http.StatusNotFound, "source issue not found")
+			return
+		}
+		slog.Warn("load branch adoption source issue failed", "source_task_id", req.SourceTaskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load source issue")
+		return
+	}
+	if uuidToString(sourceIssue.WorkspaceID) != workspaceID {
+		writeError(w, http.StatusNotFound, "source issue not found")
+		return
+	}
+	if !sourceIssue.SuspendedAt.Valid {
+		writeError(w, http.StatusConflict, "source issue is not suspended")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, BranchAdoptionAuthorizationResponse{
+		Branch: req.Branch,
+		Source: BranchAdoptionOwner{
+			WorkspaceID:    workspaceID,
+			AgentID:        uuidToString(source.AgentID),
+			ConversationID: uuidToString(source.IssueID),
+			TaskID:         req.SourceTaskID,
+		},
+		Continuation: BranchAdoptionOwner{
+			WorkspaceID:    workspaceID,
+			AgentID:        uuidToString(continuation.AgentID),
+			ConversationID: uuidToString(continuation.IssueID),
+			TaskID:         continuationTaskID,
+		},
+		SourceIssueSuspended:      true,
+		ContinuationTaskIsRunning: true,
+	})
+}
+
 // verifyDaemonWorkspaceAccess checks workspace access without writing an HTTP error.
 // Used in loops where individual items may be skipped silently.
 func (h *Handler) verifyDaemonWorkspaceAccess(r *http.Request, workspaceID string) bool {

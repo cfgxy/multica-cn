@@ -527,6 +527,65 @@ func TestRepoCheckoutRejectsAnotherTaskWorkdir(t *testing.T) {
 	}
 }
 
+func TestBranchAdoptionHandlerRejectsUnauthenticatedAndForeignWorkdir(t *testing.T) {
+	const workspaceID = "ws-branch-adoption"
+	workDir := t.TempDir()
+	d := newRepoCheckoutTestDaemon(t, workspaceID, "https://github.com/org/repo.git", workDir, &recordingRepoCache{})
+	body := `{"source_task_id":"source-task","branch":"agent/source/ruyi-871","expected_remote_sha":"` + strings.Repeat("a", 40) + `","workdir":"` + workDir + `"}`
+
+	t.Run("missing credential", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		d.branchAdoptionHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/worktree/adopt", strings.NewReader(body)))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("workdir outside active task", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		foreignBody := strings.Replace(body, workDir, t.TempDir(), 1)
+		d.branchAdoptionHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(strings.NewReader(foreignBody)))
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestBranchAdoptionHandlerRejectsServerSnapshotBeforeMarkerWrite(t *testing.T) {
+	const workspaceID = "ws-branch-adoption"
+	workDir := t.TempDir()
+	d := newRepoCheckoutTestDaemon(t, workspaceID, "https://github.com/org/repo.git", workDir, &recordingRepoCache{})
+	markerPath := filepath.Join(workDir, execenv.TaskContextMarkerRelPath)
+	markerBefore, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/daemon/tasks/task-1/branch-adoptions/authorize" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branch":"agent/source/ruyi-871","source":{"workspace_id":"ws-branch-adoption","agent_id":"source-agent","conversation_id":"source-issue","task_id":"source-task"},"continuation":{"workspace_id":"ws-branch-adoption","agent_id":"wrong-agent","conversation_id":"issue-1","task_id":"task-1"},"source_issue_suspended":true,"continuation_task_is_running":true}`))
+	}))
+	defer authServer.Close()
+	d.client = NewClient(authServer.URL)
+
+	rec := httptest.NewRecorder()
+	body := `{"source_task_id":"source-task","branch":"agent/source/ruyi-871","expected_remote_sha":"` + strings.Repeat("a", 40) + `","workdir":"` + workDir + `"}`
+	d.branchAdoptionHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(strings.NewReader(body)))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	markerAfter, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(markerBefore, markerAfter) {
+		t.Fatalf("server snapshot rejection changed marker:\n got %s\nwant %s", markerAfter, markerBefore)
+	}
+}
+
 func TestRepoCheckoutExplicitRefOverridesProjectDefault(t *testing.T) {
 	t.Parallel()
 

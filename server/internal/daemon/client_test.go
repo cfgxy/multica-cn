@@ -89,6 +89,40 @@ func TestClient_IdentityHeaders_GetJSON(t *testing.T) {
 	}
 }
 
+func TestClientAuthorizeBranchAdoptionSendsBoundTaskAndDecodesSnapshot(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/api/daemon/tasks/continuation-task/branch-adoptions/authorize" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer daemon-token" {
+			t.Errorf("Authorization = %q", got)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body["source_task_id"] != "source-task" || body["branch"] != "agent/source/ruyi-871" {
+			t.Errorf("request body = %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branch":"agent/source/ruyi-871","source":{"workspace_id":"workspace","agent_id":"source-agent","conversation_id":"source-issue","task_id":"source-task"},"continuation":{"workspace_id":"workspace","agent_id":"target-agent","conversation_id":"target-issue","task_id":"continuation-task"},"source_issue_suspended":true,"continuation_task_is_running":true}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	c.SetToken("daemon-token")
+	got, err := c.AuthorizeBranchAdoption(context.Background(), "continuation-task", "source-task", "agent/source/ruyi-871")
+	if err != nil {
+		t.Fatalf("AuthorizeBranchAdoption: %v", err)
+	}
+	if got.Branch != "agent/source/ruyi-871" || got.Source.TaskID != "source-task" || got.Continuation.TaskID != "continuation-task" || !got.SourceIssueSuspended || !got.ContinuationTaskIsRunning {
+		t.Fatalf("authorization = %+v", got)
+	}
+}
+
 func TestClient_ResolveRemoteMCPCredentialUsesExplicitDaemonToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer mdt_task_broker" {
