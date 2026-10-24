@@ -708,9 +708,8 @@ export function DashboardPage() {
                   <DashboardEmpty />
                 ) : (
                   <>
-                    {/* KPI row — same 3-divide-x card grid the runtime usage
-                        section uses, expanded to four tiles. */}
-                    <div className="grid grid-cols-1 divide-y rounded-lg border bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-4">
+                    {/* KPI row — expanded to five tiles for call counts. */}
+                    <div className="grid grid-cols-1 divide-y rounded-lg border bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 lg:grid-cols-5">
                       <KpiCard
                         label={t(($) => $.kpi.cost_label, { days: windowLen })}
                         value={<CurrencyNumberFlow value={totals.cost} locales={locales} />}
@@ -766,6 +765,23 @@ export function DashboardPage() {
                           failed: runTimeTotals.failedCount,
                         })}
                       />
+                      <KpiCard
+                        label={t(($) => $.kpi.calls_label, { days: windowLen })}
+                        value={
+                          <CompactNumberFlow
+                            value={totals.modelCallCount}
+                            locales={locales}
+                            aria-label={String(totals.modelCallCount)}
+                          />
+                        }
+                        hint={
+                          totals.modelCallUnknownCount > 0
+                            ? t(($) => $.kpi.calls_unknown_hint, {
+                                unknown: totals.modelCallUnknownCount,
+                              })
+                            : undefined
+                        }
+                      />
                     </div>
 
                     <UsageTrendCard
@@ -803,7 +819,10 @@ export function DashboardPage() {
                     own relative windows, so they sit outside the
                     calendar-window data flow above. */}
                 <UsageResourcesCard wsId={wsId} />
-                <UsageTrafficCard wsId={wsId} />
+                <UsageTrafficCard
+                  wsId={wsId}
+                  unknownCallCount={totals.modelCallUnknownCount}
+                />
               </>
             )}
           </TabsContent>

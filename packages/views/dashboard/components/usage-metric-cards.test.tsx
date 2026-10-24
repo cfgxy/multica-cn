@@ -85,6 +85,7 @@ const TRAFFIC_FIXTURE = {
       series({ provider: "anthropic" }, [[1000, 0.01], [1060, 0.02]]),
     ],
     tasks_per_second: [series({ provider: "anthropic" }, [[1000, 0.1], [1060, 0.2]])],
+    calls_per_second: [series({ provider: "anthropic" }, [[1000, 0.01], [1060, 0.02]])],
   },
 };
 
@@ -135,21 +136,36 @@ describe("UsageResourcesCard", () => {
 describe("UsageTrafficCard", () => {
   it("renders nothing when the deployment has no metric backend", () => {
     fixturesRef.current["usage-traffic"] = { configured: false };
-    const { container } = renderWithI18n(<UsageTrafficCard wsId="ws-1" />);
+    const { container } = renderWithI18n(
+      <UsageTrafficCard wsId="ws-1" unknownCallCount={0} />,
+    );
     expect(container).toBeEmptyDOMElement();
   });
 
   it("draws tokens, cost and task rate tiles", () => {
-    renderWithI18n(<UsageTrafficCard wsId="ws-1" />);
+    renderWithI18n(<UsageTrafficCard wsId="ws-1" unknownCallCount={0} />);
     expect(screen.getByText("Model traffic")).toBeInTheDocument();
     expect(screen.getByText("Tokens/s")).toBeInTheDocument();
     expect(screen.getByText("Cost/h")).toBeInTheDocument();
     expect(screen.getByText("Tasks/h")).toBeInTheDocument();
+    expect(screen.getByText("Calls/h")).toBeInTheDocument();
+    expect(screen.queryByText(/unreported in the selected period/)).toBeNull();
+  });
+
+  it("clarifies that Calls/h excludes unreported calls when unknown rows exist", () => {
+    renderWithI18n(<UsageTrafficCard wsId="ws-1" unknownCallCount={2} />);
+
+    expect(
+      screen.getByText(
+        "The Dashboard date range has 2 usage rows with unknown call counts; Calls/h includes only calls with evidence.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Calls/h")).toBeInTheDocument();
   });
 
   it("switches the breakdown dimension through the query key", async () => {
     const user = userEvent.setup();
-    renderWithI18n(<UsageTrafficCard wsId="ws-1" />);
+    renderWithI18n(<UsageTrafficCard wsId="ws-1" unknownCallCount={0} />);
     await user.click(screen.getByRole("button", { name: "Model" }));
     const key = queryKeys.findLast((k) => k[2] === "usage-traffic");
     expect(key).toEqual(["dashboard", "ws-1", "usage-traffic", "1h", "model"]);

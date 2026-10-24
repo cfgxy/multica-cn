@@ -533,6 +533,8 @@
     "kpi_cache_hint": "적중률 {{pct}}% · 읽기 {{reads}}",
     "kpi_tokens_label": "토큰 · {{days}}일",
     "kpi_tokens_hint": "입력 {{input}} · 출력 {{output}}",
+    "kpi_calls_label": "모델 호출 · {{days}}일",
+    "kpi_calls_unknown_hint": "사용량 레코드 {{unknown}}개의 모델 호출 수를 알 수 없어 확인된 합계에서 제외했습니다.",
     "when_title": "런타임 비용 발생 시점",
     "when_tab_daily": "일별",
     "when_tab_weekly": "주별",
