@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -717,6 +718,111 @@ fi
 	outcome, err := worktree.Finalize(worktreeTestLogger())
 	if err == nil || outcome.PreservedPath != fixture.repo || outcome.Branch != "" {
 		t.Fatalf("Finalize after failed rollback = outcome %+v, error %v; want preserved worktree", outcome, err)
+	}
+}
+
+// This covers the second half of the retirement race. The target reservation
+// must be released before the original worktree can attach to its branch, so a
+// linked worktree can win that interval. A failed ref transaction must then
+// preserve the source checkout instead of letting Finalize deliver it using the
+// target task's metadata.
+func TestLocalWorktreeAdoptManagedBranchAbortsWhenRestoreLosesReleasedReservation(t *testing.T) {
+	fixture := newBranchAdoptionFixture(t)
+	const targetBranch = "agent/target/ruyi-870"
+	targetTip := gitRun(t, fixture.repo, "rev-parse", "refs/heads/"+targetBranch)
+	markerBefore, err := os.ReadFile(fixture.markerPath)
+	if err != nil {
+		t.Fatalf("read target marker: %v", err)
+	}
+	contender := filepath.Join(t.TempDir(), "contender")
+	armRestoreRace := filepath.Join(t.TempDir(), "arm-restore-race")
+	mappingRef := adoptedContinuationRef(adoptionRecordOwner(fixture.adoption.TargetOwner))
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+
+	// The hook creates a genuine ref CAS conflict only after source checkout.
+	// That reaches rollback after the marker write, so the test also proves that
+	// the old marker survives an unverified checkout restoration.
+	hookPath := filepath.Join(fixture.repo, ".git", "hooks", "post-checkout")
+	hook := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = %q ] && [ "$3" = 1 ]; then
+  %q -C %q update-ref %q %q
+  touch %q
+fi
+`, fixture.tip, realGit, fixture.repo, mappingRef, fixture.tip, armRestoreRace)
+	if err := os.WriteFile(hookPath, []byte(hook), 0o755); err != nil {
+		t.Fatalf("write post-checkout hook: %v", err)
+	}
+
+	// `restoreCheckout` invokes Git only after releasing the linked-worktree
+	// reservation. Intercept that exact restore invocation and let an external
+	// linked worktree claim the target branch first. The production code still
+	// runs real Git for every operation; the wrapper only schedules the external
+	// contender at the narrow race boundary.
+	gitWrapperDir := t.TempDir()
+	gitWrapperPath := filepath.Join(gitWrapperDir, "git")
+	gitWrapper := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "-C" ] && [ "$3" = "checkout" ] && [ "$4" = %q ] && [ -e %q ]; then
+  %q -C %q worktree add --quiet %q %q
+  rm -f %q
+fi
+exec %q "$@"
+`, targetBranch, armRestoreRace, realGit, fixture.repo, contender, targetBranch, armRestoreRace, realGit)
+	if err := os.WriteFile(gitWrapperPath, []byte(gitWrapper), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	t.Setenv("PATH", gitWrapperDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		_, _ = gitTry(t, fixture.repo, "worktree", "remove", "--force", contender)
+	})
+
+	worktree := &LocalWorktree{
+		GitRoot:       fixture.repo,
+		Path:          fixture.repo,
+		WorkDir:       fixture.repo,
+		Branch:        targetBranch,
+		BaseCommit:    targetTip,
+		owner:         adoptionRecordOwner(fixture.adoption.TargetOwner),
+		createdBranch: true,
+	}
+	if _, err := worktree.AdoptManagedBranch(fixture.adoption); err == nil || !strings.Contains(err.Error(), "adoption rollback could not be verified") {
+		t.Fatalf("AdoptManagedBranch error = %v, want an unverified rollback", err)
+	}
+	if _, err := os.Stat(contender); err != nil {
+		t.Fatalf("external contender did not claim the released target branch: %v", err)
+	}
+	if got := gitRun(t, contender, "branch", "--show-current"); got != targetBranch {
+		t.Fatalf("external contender branch = %q, want %q", got, targetBranch)
+	}
+	if current := gitRun(t, fixture.repo, "branch", "--show-current"); current != fixture.branch {
+		t.Fatalf("checkout after failed restore = %q, want adopted source %q", current, fixture.branch)
+	}
+	if markerAfter, err := os.ReadFile(fixture.markerPath); err != nil || !bytes.Equal(markerAfter, markerBefore) {
+		t.Fatalf("marker after failed restore = %q, error %v; want exact original bytes", markerAfter, err)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.branch)); got != fixture.sourceRecord {
+		t.Fatalf("source record after failed restore = %s, want %s", got, fixture.sourceRecord)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", mappingRef); got != fixture.tip {
+		t.Fatalf("external continuation mapping = %s, want %s", got, fixture.tip)
+	}
+	for _, branch := range []string{fixture.branch, targetBranch} {
+		if _, err := gitTry(t, fixture.repo, "rev-parse", "--verify", "--quiet", guardRefusalRef(branch)); err == nil {
+			t.Fatalf("failed adoption wrote delivery guard for %q", branch)
+		}
+	}
+	if worktree.aborted == nil {
+		t.Fatal("failed restore left LocalWorktree deliverable")
+	}
+
+	outcome, err := worktree.Finalize(worktreeTestLogger())
+	if err == nil || outcome.PreservedPath != fixture.repo || outcome.Branch != "" {
+		t.Fatalf("Finalize after failed restore = outcome %+v, error %v; want preserved worktree", outcome, err)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.branch)); got != fixture.sourceRecord {
+		t.Fatalf("Finalize after failed restore changed source record: got %s, want %s", got, fixture.sourceRecord)
 	}
 }
 
