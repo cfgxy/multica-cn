@@ -535,6 +535,9 @@ deleted_issue_decisions AS (
 deleted_decision_requests AS (
     DELETE FROM decision_requests WHERE workspace_id = $1
 ),
+deleted_agent_promql_rule_pauses AS (
+    DELETE FROM agent_promql_rule_pause WHERE workspace_id = $1
+),
 deleted_agent_backpressure_policies AS (
     DELETE FROM agent_backpressure_policy WHERE workspace_id = $1
 ),

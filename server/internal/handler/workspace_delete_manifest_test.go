@@ -32,6 +32,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// with no FK, swept explicitly by DeleteWorkspaceLeafData (same
 	// treatment as daemon_backpressure_event below).
 	"agent_backpressure_policy": workspaceDelete,
+	"agent_promql_rule_pause":   workspaceDelete,
 	"agent_builder_draft":       workspaceDelete,
 	"agent_invocation_target":   workspaceDelete,
 	"agent_runtime":             workspaceDelete,

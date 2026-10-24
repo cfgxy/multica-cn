@@ -168,25 +168,26 @@ var postConsolidationStems = []string{
 	"977_mcp_file_access_operation_invocation_index",
 	"977_mcp_pre_auth_rejection_expiry_index",
 	"977_mcp_pre_auth_rejection_invocation_index",
-	"979_credential_000_vault",                         // RUYI-837
-	"979_credential_connector_workspace_index",         // RUYI-837
-	"979_credential_connector_binding_index",           // RUYI-837
-	"979_credential_vault_id_index",                    // RUYI-837
-	"979_credential_vault_workspace_created_index",     // RUYI-837
-	"979_credential_grant_id_index",                    // RUYI-837
-	"979_credential_grant_lookup_index",                // RUYI-837
-	"979_credential_grant_credential_index",            // RUYI-837
-	"979_credential_capability_hash_index",             // RUYI-837
-	"979_credential_capability_task_index",             // RUYI-837
-	"979_credential_capability_task_index_drop_unique", // RUYI-837
-	"979_credential_capability_task_index_nonunique",   // RUYI-837
-	"979_credential_audit_id_index",                    // RUYI-837
-	"979_credential_audit_workspace_created_index",     // RUYI-837
-	"980_runtime_concurrency_limit",                    // RUYI-843
-	"982_agent_backpressure_policy",                    // RUYI-859 stage A (agent error-rate policy + suppression event tables)
-	"983_agent_suppression_event_index",                // RUYI-859 stage A (CONCURRENTLY index, separate single-statement stem)
-	"984_prompt_proposal_enactment_target",             // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
-	"985_scheduling_pause_system_source",               // RUYI-859 stage B (created_by nullable: system error-rate suppression source)
+	"979_credential_000_vault",                           // RUYI-837
+	"979_credential_connector_workspace_index",           // RUYI-837
+	"979_credential_connector_binding_index",             // RUYI-837
+	"979_credential_vault_id_index",                      // RUYI-837
+	"979_credential_vault_workspace_created_index",       // RUYI-837
+	"979_credential_grant_id_index",                      // RUYI-837
+	"979_credential_grant_lookup_index",                  // RUYI-837
+	"979_credential_grant_credential_index",              // RUYI-837
+	"979_credential_capability_hash_index",               // RUYI-837
+	"979_credential_capability_task_index",               // RUYI-837
+	"979_credential_capability_task_index_drop_unique",   // RUYI-837
+	"979_credential_capability_task_index_nonunique",     // RUYI-837
+	"979_credential_audit_id_index",                      // RUYI-837
+	"979_credential_audit_workspace_created_index",       // RUYI-837
+	"980_runtime_concurrency_limit",                      // RUYI-843
+	"982_agent_backpressure_policy",                      // RUYI-859 stage A (agent error-rate policy + suppression event tables)
+	"983_agent_suppression_event_index",                  // RUYI-859 stage A (CONCURRENTLY index, separate single-statement stem)
+	"984_prompt_proposal_enactment_target",               // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
+	"985_scheduling_pause_system_source",                 // RUYI-859 stage B (created_by nullable: system error-rate suppression source)
+	"985_scheduling_pause_system_source_promql_recovery", // RUYI-859 forward recovery for historical stage-A databases
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

@@ -15,6 +15,7 @@ import {
 } from "@multica/core/agents";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions } from "@multica/core/workspace/queries";
+import { workspacePromQLRulesOptions } from "@multica/core/workspace/promql-rules";
 import {
   Alert,
   AlertDescription,
@@ -79,7 +80,12 @@ function effectiveConfig(
     suppress_on_error_rate: config?.suppress_on_error_rate ?? false,
     count_model_api_failures: config?.count_model_api_failures ?? true,
     count_execution_failures: config?.count_execution_failures ?? true,
+    promql_rule_ids: config?.promql_rule_ids ?? [],
   };
+}
+
+function sameIDs(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
 type CardNumberFields = Pick<
@@ -112,6 +118,10 @@ export function BackpressureTab({ agent }: { agent: Agent }) {
   const { data: events } = useQuery({
     ...agentBackpressureEventsOptions(wsId, agent.id),
   });
+  const { data: workspacePromQLRules } = useQuery({
+    ...workspacePromQLRulesOptions(wsId),
+    enabled: canEdit && !!wsId,
+  });
 
   const refresh = () =>
     queryClient.invalidateQueries({
@@ -123,6 +133,8 @@ export function BackpressureTab({ agent }: { agent: Agent }) {
   const windowReading = policyData?.window ?? null;
   const scheduling = policyData?.scheduling ?? null;
   const shownEvents = events ?? policyData?.events ?? [];
+  const selectedRuleStatuses = policyData?.promql_rules ?? [];
+  const availablePromQLRules = workspacePromQLRules?.rules ?? [];
 
   // RUYI-859 stage B: the automatic loop's pause row carries no created_by
   // (the system source, created_by IS NULL) plus the fixed reason marker. A
@@ -144,6 +156,7 @@ export function BackpressureTab({ agent }: { agent: Agent }) {
   const [suppressedOn, setSuppressedOn] = useState(false);
   const [modelClassOn, setModelClassOn] = useState(true);
   const [execClassOn, setExecClassOn] = useState(true);
+  const [selectedRuleIDs, setSelectedRuleIDs] = useState<string[]>([]);
 
   const beginEdit = () => {
     setDraft({
@@ -155,6 +168,7 @@ export function BackpressureTab({ agent }: { agent: Agent }) {
     setSuppressedOn(effective.suppress_on_error_rate);
     setModelClassOn(effective.count_model_api_failures);
     setExecClassOn(effective.count_execution_failures);
+    setSelectedRuleIDs(effective.promql_rule_ids);
     setEditing(true);
   };
 
@@ -196,7 +210,8 @@ export function BackpressureTab({ agent }: { agent: Agent }) {
     draft.recovery_window_minutes !== effective.recovery_window_minutes ||
     suppressedOn !== effective.suppress_on_error_rate ||
     modelClassOn !== effective.count_model_api_failures ||
-    execClassOn !== effective.count_execution_failures;
+    execClassOn !== effective.count_execution_failures ||
+    !sameIDs(selectedRuleIDs, effective.promql_rule_ids);
 
   const save = () => {
     saveMutation.mutate({
@@ -207,6 +222,7 @@ export function BackpressureTab({ agent }: { agent: Agent }) {
       suppress_on_error_rate: suppressedOn,
       count_model_api_failures: modelClassOn,
       count_execution_failures: execClassOn,
+      promql_rule_ids: selectedRuleIDs,
     });
   };
 
@@ -407,6 +423,37 @@ export function BackpressureTab({ agent }: { agent: Agent }) {
                   />
                 </div>
               </div>
+              <div className="space-y-2">
+                <Label>{t(($) => $.tab_body.backpressure.promql_selection_title)}</Label>
+                {availablePromQLRules.length === 0 ? (
+                  <p className="text-caption text-muted-foreground">
+                    {t(($) => $.tab_body.backpressure.promql_selection_empty)}
+                  </p>
+                ) : (
+                  availablePromQLRules.map((rule) => {
+                    const checked = selectedRuleIDs.includes(rule.id);
+                    return (
+                      <div key={rule.id} className="flex items-center justify-between gap-3">
+                        <Label htmlFor={`bp-promql-${rule.id}`} className="min-w-0 truncate">
+                          {rule.name}
+                        </Label>
+                        <Switch
+                          id={`bp-promql-${rule.id}`}
+                          checked={checked}
+                          onCheckedChange={(next) =>
+                            setSelectedRuleIDs((current) => {
+                              if (next === true) {
+                                return current.includes(rule.id) ? current : [...current, rule.id];
+                              }
+                              return current.filter((id) => id !== rule.id);
+                            })
+                          }
+                        />
+                      </div>
+                    );
+                  })
+                )}
+              </div>
               <div className="flex justify-end gap-2">
                 <Button
                   type="button"
@@ -496,6 +543,40 @@ export function BackpressureTab({ agent }: { agent: Agent }) {
             })}
           </div>
         </div>
+      </section>
+
+      <section className="space-y-3">
+        <h3 className="text-title-sm font-medium">
+          {t(($) => $.tab_body.backpressure.promql_rules_title)}
+        </h3>
+        {selectedRuleStatuses.length === 0 ? (
+          <p className="text-caption text-muted-foreground">
+            {t(($) => $.tab_body.backpressure.promql_rules_empty)}
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {selectedRuleStatuses.map((rule) => (
+              <li key={rule.id} className="rounded-lg border p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <span className="min-w-0 truncate text-body font-medium">{rule.name}</span>
+                  <span className="shrink-0 text-caption text-muted-foreground">
+                    {t(($) => $.tab_body.backpressure.promql_status, { status: rule.status })}
+                  </span>
+                </div>
+                <div className="mt-1 text-caption text-muted-foreground">
+                  {rule.source_active
+                    ? t(($) => $.tab_body.backpressure.promql_source_active, {
+                        reason: rule.reason ?? "rule_firing",
+                        enteredAt: rule.entered_at ?? "",
+                      })
+                    : rule.mapping_mismatch
+                      ? t(($) => $.tab_body.backpressure.promql_mapping_mismatch)
+                      : t(($) => $.tab_body.backpressure.promql_source_clear)}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <section className="space-y-3">

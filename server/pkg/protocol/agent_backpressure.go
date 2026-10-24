@@ -1,6 +1,10 @@
 package protocol
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/google/uuid"
+)
 
 // AgentBackpressureConfig is the agent-level error-rate backpressure card
 // (RUYI-859 stage A: config surface and read-only visibility; the automatic
@@ -42,6 +46,9 @@ type AgentBackpressureConfig struct {
 	// CountExecutionFailures selects the platform execution display classes
 	// (runtime, agent, other including unclassified) in the numerator.
 	CountExecutionFailures bool `json:"count_execution_failures"`
+	// PromQLRuleIDs are stable IDs of advanced workspace rules selected to
+	// independently hold this agent's queued work behind the claim fence.
+	PromQLRuleIDs []string `json:"promql_rule_ids"`
 }
 
 // DefaultAgentBackpressureConfig is what the read model reports for an agent
@@ -55,6 +62,7 @@ func DefaultAgentBackpressureConfig() *AgentBackpressureConfig {
 		SuppressOnErrorRate:    false,
 		CountModelAPIFailures:  true,
 		CountExecutionFailures: true,
+		PromQLRuleIDs:          []string{},
 	}
 }
 
@@ -83,6 +91,25 @@ func ValidateAgentBackpressureConfig(c *AgentBackpressureConfig) error {
 	}
 	if c.RecoveryWindowMinutes < 1 {
 		return fmt.Errorf("backpressure: recovery_window_minutes %d must be at least 1", c.RecoveryWindowMinutes)
+	}
+	if c.PromQLRuleIDs == nil {
+		c.PromQLRuleIDs = []string{}
+	}
+	if len(c.PromQLRuleIDs) > 20 {
+		return fmt.Errorf("backpressure: at most 20 PromQL rules may be selected")
+	}
+	seen := make(map[string]struct{}, len(c.PromQLRuleIDs))
+	for i, id := range c.PromQLRuleIDs {
+		parsed, err := uuid.Parse(id)
+		if err != nil {
+			return fmt.Errorf("backpressure: PromQL rule id %q is invalid", id)
+		}
+		canonicalID := parsed.String()
+		if _, duplicate := seen[canonicalID]; duplicate {
+			return fmt.Errorf("backpressure: PromQL rule ids must be unique")
+		}
+		seen[canonicalID] = struct{}{}
+		c.PromQLRuleIDs[i] = canonicalID
 	}
 	return nil
 }

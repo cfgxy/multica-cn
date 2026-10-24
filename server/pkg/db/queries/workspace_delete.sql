@@ -542,6 +542,9 @@ deleted_decision_requests AS (
 -- (RUYI-859 stage A): both are workspace-scoped with no FK and no
 -- dependents outside this database, same treatment as
 -- daemon_backpressure_event — swept explicitly with the workspace.
+deleted_agent_promql_rule_pauses AS (
+    DELETE FROM agent_promql_rule_pause WHERE workspace_id = $1
+),
 deleted_agent_backpressure_policies AS (
     DELETE FROM agent_backpressure_policy WHERE workspace_id = $1
 ),

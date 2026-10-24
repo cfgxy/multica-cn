@@ -3274,6 +3274,38 @@ describe("ApiClient agent backpressure policy (RUYI-859 stage A)", () => {
     expect(policy.events).toEqual([]);
   });
 
+  it("falls back safely when a newer backpressure response has malformed PromQL rules", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            agent_id: "agent-1",
+            configured: true,
+            config: null,
+            window: null,
+            scheduling: null,
+            events: [],
+            promql_rules: { unexpected: true },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    const policy = await new ApiClient("https://api.example.test")
+      .getAgentBackpressurePolicy("agent-1");
+    expect(policy).toEqual({
+      agent_id: "agent-1",
+      configured: false,
+      config: null,
+      window: null,
+      scheduling: null,
+      events: [],
+      promql_rules: [],
+    });
+  });
+
   it("parses a full policy card and degrades a malformed event list to empty", async () => {
     const json = (body: unknown) =>
       new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });

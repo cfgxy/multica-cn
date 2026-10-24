@@ -91,6 +91,8 @@ type AgentBackpressurePolicy struct {
 	RecoveryWindowMinutes int32 `json:"recovery_window_minutes"`
 	// Automatic suppression master switch; default false means the policy only drives the read-only visibility card.
 	SuppressOnErrorRate bool `json:"suppress_on_error_rate"`
+	// Stable IDs of selected workspace PromQL rules that may independently hold this agent behind the PromQL claim fence. Validated by the handler against the locked workspace settings; no foreign key by design.
+	PromqlRuleIds []pgtype.UUID `json:"promql_rule_ids"`
 	// Whether model/API-side failure display classes (auth, rate_limit, timeout, provider) count toward the error-rate numerator.
 	CountModelApiFailures bool `json:"count_model_api_failures"`
 	// Whether platform execution failure display classes (runtime, agent, other including unclassified) count toward the error-rate numerator.
@@ -140,6 +142,16 @@ type AgentMcpServer struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+// One independently-owned PromQL-rule scheduling pause per selected agent. ClaimAgentTask consults this table alongside scheduling_pause; deleting one row can never release a human, error-rate, or another rule source.
+type AgentPromqlRulePause struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	RuleID      pgtype.UUID        `json:"rule_id"`
+	RuleName    string             `json:"rule_name"`
+	Reason      string             `json:"reason"`
+	EnteredAt   pgtype.Timestamptz `json:"entered_at"`
+}
+
 type AgentRuntime struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
@@ -170,7 +182,7 @@ type AgentSkill struct {
 	Enabled   bool               `json:"enabled"`
 }
 
-// Automatic error-rate suppression history (RUYI-859 stage B writer, stage A reader): one row per entered/cleared transition, with sample count, error rate and the effective policy snapshot.
+// Automatic backpressure history (RUYI-859): error-rate and source-owned PromQL-rule pause transitions, with an effective policy or rule snapshot.
 type AgentSuppressionEvent struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
@@ -179,6 +191,10 @@ type AgentSuppressionEvent struct {
 	SampleCount     int32              `json:"sample_count"`
 	ErrorRatePct    float64            `json:"error_rate_pct"`
 	EffectivePolicy []byte             `json:"effective_policy"`
+	Source          string             `json:"source"`
+	RuleID          pgtype.UUID        `json:"rule_id"`
+	RuleName        pgtype.Text        `json:"rule_name"`
+	Reason          pgtype.Text        `json:"reason"`
 	OccurredAt      pgtype.Timestamptz `json:"occurred_at"`
 }
 

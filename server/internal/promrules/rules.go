@@ -44,6 +44,11 @@ type Rule struct {
 	NoDataPolicy      string    `json:"no_data_policy"`
 	QueryErrorPolicy  string    `json:"query_error_policy"`
 	State             RuleState `json:"state"`
+	// AgentStates keeps independent pending/firing/recovery state for each
+	// verified workspace-local agent label of an agent-grouped rule. A single
+	// global state would incorrectly broadcast one agent's firing to every
+	// selected agent.
+	AgentStates map[string]RuleState `json:"agent_states,omitempty"`
 }
 
 type RuleState struct {
@@ -101,9 +106,11 @@ func ValidateRules(rules []Rule) error {
 		if rule.ID == "" {
 			rule.ID = uuid.NewString()
 		}
-		if _, err := uuid.Parse(rule.ID); err != nil {
+		parsedID, err := uuid.Parse(rule.ID)
+		if err != nil {
 			return fmt.Errorf("rule %d has an invalid id", i+1)
 		}
+		rule.ID = parsedID.String()
 		if _, ok := ids[rule.ID]; ok {
 			return fmt.Errorf("rule ids must be unique")
 		}
@@ -321,4 +328,22 @@ func Status(state RuleState) string {
 		return "pending"
 	}
 	return "inactive"
+}
+
+// AgentState returns the persisted state for a verified agent mapping. The
+// returned zero value deliberately means the worker has never observed a
+// current workspace-local agent_id label for this rule.
+func AgentState(rule Rule, agentID string) RuleState {
+	if rule.AgentStates == nil {
+		return RuleState{}
+	}
+	return rule.AgentStates[agentID]
+}
+
+// SetAgentState saves state only for a verified workspace-local agent mapping.
+func SetAgentState(rule *Rule, agentID string, state RuleState) {
+	if rule.AgentStates == nil {
+		rule.AgentStates = make(map[string]RuleState)
+	}
+	rule.AgentStates[agentID] = state
 }

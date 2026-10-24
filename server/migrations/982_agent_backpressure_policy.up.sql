@@ -68,6 +68,10 @@ CREATE TABLE agent_backpressure_policy (
     -- Automatic suppression master switch, default OFF: an unsaved or
     -- default agent is monitored only, never auto-paused.
     suppress_on_error_rate BOOLEAN NOT NULL DEFAULT false,
+    -- Stable IDs of this workspace's advanced PromQL rules that may pause
+    -- this agent. The handler validates every ID against the locked workspace
+    -- settings before it reaches this row; no row means no selection.
+    promql_rule_ids UUID[] NOT NULL DEFAULT '{}',
     -- Failure-class inclusion switches; see the table comment.
     count_model_api_failures BOOLEAN NOT NULL DEFAULT true,
     count_execution_failures BOOLEAN NOT NULL DEFAULT true,
@@ -90,6 +94,8 @@ COMMENT ON COLUMN agent_backpressure_policy.recovery_window_minutes IS
     'Full trailing window, in minutes, the recovery judgment aggregates over; the judgment must reach min_samples and stay below the fixed 0.5x threshold before the suppression clears.';
 COMMENT ON COLUMN agent_backpressure_policy.suppress_on_error_rate IS
     'Automatic suppression master switch; default false means the policy only drives the read-only visibility card.';
+COMMENT ON COLUMN agent_backpressure_policy.promql_rule_ids IS
+    'Stable IDs of selected workspace PromQL rules that may independently hold this agent behind the PromQL claim fence. Validated by the handler against the locked workspace settings; no foreign key by design.';
 COMMENT ON COLUMN agent_backpressure_policy.count_model_api_failures IS
     'Whether model/API-side failure display classes (auth, rate_limit, timeout, provider) count toward the error-rate numerator.';
 COMMENT ON COLUMN agent_backpressure_policy.count_execution_failures IS
@@ -111,8 +117,28 @@ CREATE TABLE agent_suppression_event (
     -- API read model), so history stays interpretable after the settings
     -- change — same rationale as daemon_backpressure_event.effective_config.
     effective_policy JSONB NOT NULL,
+    -- error_rate is the original automatic loop source. promql_rule records
+    -- one source-owned advanced-rule pause transition with its stable ID.
+    source TEXT NOT NULL DEFAULT 'error_rate',
+    rule_id UUID,
+    rule_name TEXT,
+    reason TEXT,
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 COMMENT ON TABLE agent_suppression_event IS
-    'Automatic error-rate suppression history (RUYI-859 stage B writer, stage A reader): one row per entered/cleared transition, with sample count, error rate and the effective policy snapshot.';
+    'Automatic backpressure history (RUYI-859): error-rate and source-owned PromQL-rule pause transitions, with an effective policy or rule snapshot.';
+
+CREATE TABLE agent_promql_rule_pause (
+    workspace_id UUID NOT NULL,
+    agent_id UUID NOT NULL,
+    rule_id UUID NOT NULL,
+    -- Snapshot names the source even after the rule is deleted or renamed.
+    rule_name TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT 'rule_firing',
+    entered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, agent_id, rule_id)
+);
+
+COMMENT ON TABLE agent_promql_rule_pause IS
+    'One independently-owned PromQL-rule scheduling pause per selected agent. ClaimAgentTask consults this table alongside scheduling_pause; deleting one row can never release a human, error-rate, or another rule source.';
