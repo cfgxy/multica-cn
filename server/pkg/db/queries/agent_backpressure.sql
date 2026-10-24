@@ -101,3 +101,48 @@ INSERT INTO agent_suppression_event (
     @effective_policy
 )
 RETURNING *;
+
+-- Stage B: the automatic suppression loop. Every judgment below is a plain
+-- read of stored state (policy row + trailing terminal-task windows); the
+-- loop keeps no in-process timer, so a fresh tick after a restart sees
+-- exactly what a restarted process must see.
+
+-- name: SelectArmedAgentBackpressurePolicies :many
+-- The candidate set for one loop tick: every non-archived agent whose
+-- saved policy has the automatic-suppression switch on. Joining agent
+-- keeps archived agents out of the candidate set even though a policy row
+-- can outlive the archive (reads never delete it; only the management
+-- surface owns that row).
+SELECT p.* FROM agent_backpressure_policy p
+JOIN agent a ON a.id = p.agent_id AND a.workspace_id = p.workspace_id
+WHERE p.suppress_on_error_rate = TRUE
+  AND a.archived_at IS NULL;
+
+-- name: EnsureAgentErrorRateSchedulingPause :execrows
+-- The loop's only way into scheduling_pause. ON CONFLICT DO NOTHING against
+-- the agent-level partial unique index (idx_scheduling_pause_agent_level,
+-- 939) makes the insert idempotent at the storage layer: when ANY row
+-- already occupies this (workspace, agent) slot — a human freeze, an older
+-- loop row, anything else — the statement writes nothing and reports 0
+-- affected rows, so the caller observes without ever taking ownership.
+-- created_by stays NULL: that is what marks the system source (985), and
+-- no human path ever writes it. Rows>0 means this tick actually inserted
+-- the system pause — that is the moment the paused transition, its audit
+-- and its realtime broadcast are owed.
+INSERT INTO scheduling_pause (workspace_id, agent_id, reason)
+VALUES (@workspace_id, @agent_id, 'error_rate_suppression')
+ON CONFLICT (workspace_id, agent_id) WHERE agent_id IS NOT NULL
+DO NOTHING;
+
+-- name: DeleteAgentErrorRateSchedulingPause :execrows
+-- The loop's only way out of scheduling_pause. The WHERE clause matches the
+-- system source precisely: created_by IS NULL together with the fixed
+-- reason. A human freeze on the same agent survives untouched — releasing
+-- the automatic suppression must never lift a human decision — and a
+-- pre-existing foreign-source row that the ensure observed (0 rows) can
+-- not be deleted here either. Rows>0 is the resumed transition.
+DELETE FROM scheduling_pause
+WHERE workspace_id = @workspace_id
+  AND agent_id = @agent_id
+  AND created_by IS NULL
+  AND reason = 'error_rate_suppression';

@@ -729,6 +729,7 @@
       "paused_now": "已暂停（{{scope}} 范围）",
       "not_paused": "当前无调度暂停",
       "pause_reason_unknown": "未记录暂停原因",
+      "pause_auto_source": "自动错误率抑制（系统来源，非人工冻结）——仅自动循环可解除。",
       "queued_depth": "排队深度：{{count}}",
       "events_title": "最近抑制事件",
       "events_empty": "暂无 entered / cleared 事件",
