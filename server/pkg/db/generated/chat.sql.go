@@ -569,6 +569,41 @@ func (q *Queries) CreateMikaOnboardingOpening(ctx context.Context, arg CreateMik
 	return i, err
 }
 
+const createVoiceChatMessageIfAbsent = `-- name: CreateVoiceChatMessageIfAbsent :execrows
+INSERT INTO chat_message (chat_session_id, role, content, message_kind, id, created_at)
+VALUES ($1, $2, $3, 'voice', $4, $5)
+ON CONFLICT (id) DO NOTHING
+`
+
+type CreateVoiceChatMessageIfAbsentParams struct {
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	Role          string             `json:"role"`
+	Content       string             `json:"content"`
+	ID            pgtype.UUID        `json:"id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+// RUYI-874 link ①: idempotent voice write-back into the chat session the
+// voice UI was opened from. The caller derives the row id deterministically
+// (UUIDv5 over live session + role + turn index), so a replay of the same
+// session's merged turns collides on the primary key and collapses —
+// ON CONFLICT DO NOTHING makes every write safe to retry, and the affected
+// row count distinguishes first insert (publish the chat:message event) from
+// replay (silent).
+func (q *Queries) CreateVoiceChatMessageIfAbsent(ctx context.Context, arg CreateVoiceChatMessageIfAbsentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createVoiceChatMessageIfAbsent,
+		arg.ChatSessionID,
+		arg.Role,
+		arg.Content,
+		arg.ID,
+		arg.CreatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deferChatTaskForSealedPendingMedia = `-- name: DeferChatTaskForSealedPendingMedia :one
 UPDATE agent_task_queue AS task
 SET status = 'deferred', fire_at = pending.max_until

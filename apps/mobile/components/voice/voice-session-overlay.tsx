@@ -56,6 +56,9 @@ interface Props {
   /** Non-null mounts the surface and starts the session. */
   agentId: string | null;
   workspaceSlug: string;
+  /** RUYI-874 ①: the chat session the voice surface was opened from; the
+   * gateway links the voice write-back and rich context to it. */
+  chatSessionId?: string | null;
   onClose: () => void;
   /** Finalized spoken turns for composers that intentionally accept transcript text. */
   onUserTurn?: (text: string) => void;
@@ -82,6 +85,7 @@ const STATUS_FALLBACKS: Record<OrbPhase, string> = {
 export function VoiceSessionOverlay({
   agentId,
   workspaceSlug,
+  chatSessionId,
   onClose,
   onUserTurn,
 }: Props) {
@@ -118,6 +122,7 @@ export function VoiceSessionOverlay({
   const runtime = useVoiceSessionRuntime({
     agentId,
     workspaceSlug,
+    chatSessionId,
     onUserTurn,
     onEnded: handleEnded,
   });

@@ -61,6 +61,8 @@ export class MobileVoiceSession {
     private readonly agentId: string,
     private readonly workspaceSlug: string,
     private readonly callbacks: MobileVoiceSessionCallbacks,
+    /** RUYI-874 ①: the chat session the voice surface was opened from. */
+    private readonly chatSessionId: string | null = null,
   ) {}
 
   async start(): Promise<void> {
@@ -81,6 +83,7 @@ export class MobileVoiceSession {
         apiUrl: getApiUrl(),
         agentId: this.agentId,
         workspaceSlug: this.workspaceSlug,
+        chatSessionId: this.chatSessionId,
         token,
       }),
       transport: new MobileVoiceTransport(),

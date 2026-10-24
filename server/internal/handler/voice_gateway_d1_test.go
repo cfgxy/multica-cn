@@ -696,10 +696,58 @@ func TestComposeVoiceSetupFrame_ToolsReserved(t *testing.T) {
 		"tools":       json.RawMessage(`[{"functionDeclarations":[{"name":"shadow_tool"}]}]`),
 	}
 	setup := composeVoiceSetupFrame("instructions", "m", advanced)["setup"].(map[string]any)
-	if _, ok := setup["tools"]; ok {
-		t.Fatalf("advanced JSON must not inject tools (reserved key): %v", setup["tools"])
+
+	// RUYI-692 D1 rule still holds: a USER-supplied tools list from the
+	// advanced JSON must never reach the provider — a shadow declaration
+	// with no server-side executor would stall the session.
+	var advancedInjected bool
+	decls := voiceMCPBridgeToolNames()
+	for _, group := range setup["tools"].([]map[string]any) {
+		for _, raw := range group["functionDeclarations"].([]map[string]any) {
+			if raw["name"] == "shadow_tool" {
+				advancedInjected = true
+			}
+		}
+	}
+	if advancedInjected {
+		t.Fatalf("advanced JSON injected a user tool declaration: %v", setup["tools"])
+	}
+
+	// RUYI-874 ③: the server COMPOSES the controlled bridge face itself, so
+	// the setup carries exactly the registered bridge tool names.
+	if len(decls) == 0 || !containsAllNames(setup, decls) {
+		t.Fatalf("server-composed bridge tools missing from setup: %v (want %v)", setup["tools"], decls)
 	}
 	if raw, ok := setup["temperature"].(json.RawMessage); !ok || string(raw) != "0.7" {
 		t.Fatalf("non-reserved advanced passthrough broken: %v", setup["temperature"])
 	}
+}
+
+// voiceMCPBridgeToolNames lists the registered bridge tool names, keeping
+// the test decoupled from the exact face so a new tool registers in one
+// place.
+func voiceMCPBridgeToolNames() []string {
+	names := make([]string, 0, len(voiceMCPBridgeTools()))
+	for _, tool := range voiceMCPBridgeTools() {
+		names = append(names, tool.name)
+	}
+	return names
+}
+
+// containsAllNames reports whether every want name appears in the setup's
+// composed functionDeclarations.
+func containsAllNames(setup map[string]any, wants []string) bool {
+	have := map[string]bool{}
+	for _, group := range setup["tools"].([]map[string]any) {
+		for _, decl := range group["functionDeclarations"].([]map[string]any) {
+			name, _ := decl["name"].(string)
+			have[name] = true
+		}
+	}
+	for _, want := range wants {
+		if !have[want] {
+			return false
+		}
+	}
+	return true
 }

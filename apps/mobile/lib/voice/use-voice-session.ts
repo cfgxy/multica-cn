@@ -51,11 +51,13 @@ export interface VoiceSessionRuntime {
 export function useVoiceSessionRuntime(args: {
   agentId: string | null;
   workspaceSlug: string;
+  /** RUYI-874 ①: the chat session the voice surface was opened from. */
+  chatSessionId?: string | null;
   onUserTurn?: (text: string) => void;
   /** 会话因任何原因终止（自动挂断含内）——overlay 借此收尾。 */
   onEnded?: (autoEnd: AutoEndReason | null) => void;
 }): VoiceSessionRuntime {
-  const { agentId, workspaceSlug, onUserTurn, onEnded } = args;
+  const { agentId, workspaceSlug, chatSessionId, onUserTurn, onEnded } = args;
 
   const [orb, dispatchOrb] = useOrbReducer();
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
@@ -118,11 +120,14 @@ export function useVoiceSessionRuntime(args: {
 
   const startSession = useCallback(() => {
     if (!agentId || closedRef.current) return;
-    const session = new MobileVoiceSession(agentId, workspaceSlug, {
-      onStateChange: (state) => {
-        dispatch({ type: "sessionState", state });
-        if (state === "live") touch();
-      },
+    const session = new MobileVoiceSession(
+      agentId,
+      workspaceSlug,
+      {
+        onStateChange: (state) => {
+          dispatch({ type: "sessionState", state });
+          if (state === "live") touch();
+        },
       onUserTranscriptDelta: (delta) => {
         touch();
         dispatch({ type: "userSpeechStarted" });
@@ -180,14 +185,16 @@ export function useVoiceSessionRuntime(args: {
         setFailure({ kind: "rejection", rejection });
         dispatch({ type: "degraded" });
       },
-      onEnded: () => {
-        if (closedRef.current) return;
-        // 意外断线（服务端重启、网络切换）：不自动收尾，进 disconnected
-        // 供「重连/挂断」；重连失败由 start().catch 落 failed 终态。
-        sessionRef.current = null;
-        dispatch({ type: "connectionLost" });
+        onEnded: () => {
+          if (closedRef.current) return;
+          // 意外断线（服务端重启、网络切换）：不自动收尾，进 disconnected
+          // 供「重连/挂断」；重连失败由 start().catch 落 failed 终态。
+          sessionRef.current = null;
+          dispatch({ type: "connectionLost" });
+        },
       },
-    });
+      chatSessionId ?? null,
+    );
     sessionRef.current = session;
     session.setMuted(mutedRef.current);
     session.start().catch((error: Error) => {
@@ -201,7 +208,7 @@ export function useVoiceSessionRuntime(args: {
       }
       dispatch({ type: "degraded" });
     });
-  }, [agentId, workspaceSlug, dispatch, touch, finishSession]);
+  }, [agentId, workspaceSlug, chatSessionId, dispatch, touch, finishSession]);
 
   // 挂载即开会话；卸载/agentId 变化即挂断。
   useEffect(() => {
@@ -220,6 +227,11 @@ export function useVoiceSessionRuntime(args: {
       sessionRef.current = null;
       clearTimers();
     };
+    // The link is the chat session AT DIAL TIME: a new chat's session id
+    // appearing later (null → id on first send) must not tear down a live
+    // voice session, so chatSessionId is intentionally out of the deps —
+    // startSession's own dep list keeps the closure fresh for the next
+    // mount, and the gateway degrades an invalid link, never rejects.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, workspaceSlug]);
 
