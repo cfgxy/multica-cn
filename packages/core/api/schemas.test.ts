@@ -71,6 +71,8 @@ import {
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
+  RuntimeModelCallBudgetSchema,
+  EMPTY_RUNTIME_MODEL_CALL_BUDGET,
   SendChatMessageResponseSchema,
   SquadListSchema,
   SquadSchema,
@@ -1276,6 +1278,69 @@ describe("dashboard + runtime usage schema drift", () => {
       { date: "2026-05-19", region: "us-east" },
     ]);
     expect((parsed[0] as Record<string, unknown>).region).toBe("us-east");
+  });
+});
+
+describe("runtime model-call budget schema drift", () => {
+  it("defaults missing config and report to a disabled, incomplete budget", () => {
+    const parsed = RuntimeModelCallBudgetSchema.parse({});
+    expect(parsed.config).toEqual({
+      enabled: false,
+      max_calls: 1000,
+      window_seconds: 86400,
+    });
+    expect(parsed.report).toEqual({
+      known_calls: 0,
+      unknown_usage_rows: 0,
+      complete: false,
+      active: false,
+      window_started_at: "",
+    });
+  });
+
+  it("preserves the server-derived complete and active verdicts", () => {
+    const parsed = RuntimeModelCallBudgetSchema.parse({
+      config: { enabled: true, max_calls: 100, window_seconds: 3600 },
+      report: {
+        known_calls: 100,
+        unknown_usage_rows: 0,
+        complete: true,
+        active: true,
+        window_started_at: "2026-10-24T00:00:00Z",
+      },
+    });
+    expect(parsed.report.complete).toBe(true);
+    expect(parsed.report.active).toBe(true);
+  });
+
+  it("falls back to the disabled budget for malformed numeric config", () => {
+    const parsed = parseWithFallback(
+      {
+        config: { enabled: true, max_calls: "100", window_seconds: 3600 },
+        report: { complete: true, active: true },
+      },
+      RuntimeModelCallBudgetSchema,
+      EMPTY_RUNTIME_MODEL_CALL_BUDGET,
+      { endpoint: "GET /api/runtimes/:id/model-call-budget" },
+    );
+    expect(parsed).toBe(EMPTY_RUNTIME_MODEL_CALL_BUDGET);
+  });
+
+  it("fails open when a persisted config exceeds the supported bounds", () => {
+    const parsed = parseWithFallback(
+      {
+        config: {
+          enabled: true,
+          max_calls: 1_000_000_001,
+          window_seconds: 3600,
+        },
+        report: { complete: true, active: true },
+      },
+      RuntimeModelCallBudgetSchema,
+      EMPTY_RUNTIME_MODEL_CALL_BUDGET,
+      { endpoint: "GET /api/runtimes/:id/model-call-budget" },
+    );
+    expect(parsed).toBe(EMPTY_RUNTIME_MODEL_CALL_BUDGET);
   });
 });
 

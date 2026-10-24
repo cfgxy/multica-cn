@@ -11,6 +11,37 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getRuntimeModelCallBudgetUsage = `-- name: GetRuntimeModelCallBudgetUsage :one
+SELECT
+    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS known_calls,
+    COUNT(tu.task_id) FILTER (WHERE tu.model_call_count IS NULL)::bigint AS unknown_usage_rows
+FROM task_usage tu
+JOIN agent_task_queue atq ON atq.id = tu.task_id
+WHERE atq.runtime_id = $1
+  AND tu.created_at >= $2::timestamptz
+`
+
+type GetRuntimeModelCallBudgetUsageParams struct {
+	RuntimeID pgtype.UUID        `json:"runtime_id"`
+	Since     pgtype.Timestamptz `json:"since"`
+}
+
+type GetRuntimeModelCallBudgetUsageRow struct {
+	KnownCalls       int64 `json:"known_calls"`
+	UnknownUsageRows int64 `json:"unknown_usage_rows"`
+}
+
+// Rolling, raw usage for one Runtime's provider-call admission budget. Rows
+// with NULL model_call_count are intentionally counted separately: a partial
+// known sum must not be treated as the whole window and therefore cannot hold
+// a Runtime.
+func (q *Queries) GetRuntimeModelCallBudgetUsage(ctx context.Context, arg GetRuntimeModelCallBudgetUsageParams) (GetRuntimeModelCallBudgetUsageRow, error) {
+	row := q.db.QueryRow(ctx, getRuntimeModelCallBudgetUsage, arg.RuntimeID, arg.Since)
+	var i GetRuntimeModelCallBudgetUsageRow
+	err := row.Scan(&i.KnownCalls, &i.UnknownUsageRows)
+	return i, err
+}
+
 const getRuntimeTaskHourlyActivity = `-- name: GetRuntimeTaskHourlyActivity :many
 SELECT EXTRACT(HOUR FROM started_at AT TIME ZONE $2::text)::int AS hour,
        COUNT(*)::int AS count
@@ -133,6 +164,55 @@ func (q *Queries) GetRuntimeUsageByHour(ctx context.Context, arg GetRuntimeUsage
 			&i.ModelCallUnknownCount,
 			&i.TaskCount,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRuntimeModelCallBudgetUsage = `-- name: ListRuntimeModelCallBudgetUsage :many
+SELECT
+    rt.id AS runtime_id,
+    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS known_calls,
+    COUNT(tu.task_id) FILTER (WHERE tu.task_id IS NOT NULL AND tu.model_call_count IS NULL)::bigint AS unknown_usage_rows
+FROM agent_runtime rt
+LEFT JOIN agent_task_queue atq ON atq.runtime_id = rt.id
+LEFT JOIN task_usage tu ON tu.task_id = atq.id
+	AND tu.created_at >= to_timestamp(
+		EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
+	)
+WHERE rt.id = ANY($2::uuid[])
+GROUP BY rt.id
+`
+
+type ListRuntimeModelCallBudgetUsageParams struct {
+	Now        pgtype.Timestamptz `json:"now"`
+	RuntimeIds []pgtype.UUID      `json:"runtime_ids"`
+}
+
+type ListRuntimeModelCallBudgetUsageRow struct {
+	RuntimeID        pgtype.UUID `json:"runtime_id"`
+	KnownCalls       int64       `json:"known_calls"`
+	UnknownUsageRows int64       `json:"unknown_usage_rows"`
+}
+
+// Batch equivalent for queued-reason decoration and multi-runtime claims. The
+// time predicate derives its rolling boundary from each runtime's persisted
+// config, keeping a mixed set of windows correct in one round trip.
+func (q *Queries) ListRuntimeModelCallBudgetUsage(ctx context.Context, arg ListRuntimeModelCallBudgetUsageParams) ([]ListRuntimeModelCallBudgetUsageRow, error) {
+	rows, err := q.db.Query(ctx, listRuntimeModelCallBudgetUsage, arg.Now, arg.RuntimeIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRuntimeModelCallBudgetUsageRow{}
+	for rows.Next() {
+		var i ListRuntimeModelCallBudgetUsageRow
+		if err := rows.Scan(&i.RuntimeID, &i.KnownCalls, &i.UnknownUsageRows); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

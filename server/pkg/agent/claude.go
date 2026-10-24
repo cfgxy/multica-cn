@@ -368,15 +368,21 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				terminalReasonError = claudeTerminalReasonFailure(msg.TerminalReason, msg.ResultText)
 				sessionID = msg.SessionID
 				if resultUsage := claudeResultUsage(msg, opts.Model); len(resultUsage) > 0 {
-					// The result event replaces the map wholesale, and its
-					// per-model totals carry no call counts — so port the
-					// counts accumulated from this run's assistant events,
-					// or a successful run would report tokens without its
-					// call evidence.
+					// The result event replaces the map wholesale and its per-model
+					// totals carry no provider event identities. Port only the IDs seen in
+					// this run's assistant events; a summary total must never become its
+					// own synthetic call evidence.
 					for model, u := range usage {
-						if u.ModelCallCount > 0 {
+						evidenceIDs := u.ModelCallEvidenceIDs()
+						if len(evidenceIDs) > 0 || u.ModelCallEvidenceIncomplete {
 							ru := resultUsage[model]
-							ru.ModelCallCount += u.ModelCallCount
+							for _, evidenceID := range evidenceIDs {
+								ru = appendModelCallEvidence(ru, evidenceID)
+							}
+							if u.ModelCallEvidenceIncomplete {
+								ru.ModelCallEvidenceIncomplete = true
+								ru.ModelCallCount = 0
+							}
 							resultUsage[model] = ru
 						}
 					}
@@ -556,13 +562,10 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		u.OutputTokens += content.Usage.OutputTokens
 		u.CacheReadTokens += content.Usage.CacheReadInputTokens
 		u.CacheWriteTokens += content.Usage.CacheCreationInputTokens
-		// One assistant event is one completed model API response to the
-		// request that produced it, so it is provider-original, dedupable
-		// call evidence (unlike a turn or session total). Count every
-		// readable event: a response that happened to move zero tokens is
-		// still a call, and a replayed session re-emitting the same
-		// response is still one call per event, matching the stream shape.
-		u.ModelCallCount++
+		// One assistant message is one completed provider response. Its nested
+		// message ID is the only identity safe to persist across daemon report
+		// replay; a readable response without that ID leaves this model unknown.
+		u = appendModelCallEvidence(u, content.ID)
 		usage[content.Model] = u
 
 		// Context size, in contrast, is OVERWRITTEN by each assistant event
@@ -767,6 +770,7 @@ type claudeLogEntry struct {
 }
 
 type claudeMessageContent struct {
+	ID      string               `json:"id,omitempty"`
 	Role    string               `json:"role"`
 	Model   string               `json:"model"`
 	Content []claudeContentBlock `json:"content"`

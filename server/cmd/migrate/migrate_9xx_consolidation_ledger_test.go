@@ -185,6 +185,8 @@ var postConsolidationStems = []string{
 	"980_runtime_concurrency_limit",                    // RUYI-843
 	"984_prompt_proposal_enactment_target",             // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
 	"987_task_usage_model_call_count",                  // RUYI-871
+	"987_task_usage_model_call_evidence_index",         // RUYI-871
+	"987_runtime_model_call_budget",                    // RUYI-871
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

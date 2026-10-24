@@ -108,41 +108,42 @@ func TestTaskUsagePayloadOldDaemonMissingRunStatsDecodesToZero(t *testing.T) {
 	}
 }
 
-// TestTaskUsagePayloadModelCallCountDecodeAndAuthority is the migration-987
-// pair: a payload that names the call count decodes into the struct, and the
-// authority rule keeps the "0 = no provider evidence" contract — a 0 or
-// negative count must become a NULL column (unknown), while a real count
-// stays.
-func TestTaskUsagePayloadModelCallCountDecodeAndAuthority(t *testing.T) {
-	// New daemon with evidence: the count decodes and the authority
-	// conversion keeps it.
-	withEvidence := []byte(`{"provider":"anthropic","model":"claude-opus-5","model_call_count":42}`)
+// TestTaskUsagePayloadEvidenceCompatibility proves that new daemons can send
+// provider IDs to old servers without changing their known fields, while a new
+// server treats an old daemon's aggregate-only payload as unknown.
+func TestTaskUsagePayloadEvidenceCompatibility(t *testing.T) {
+	withEvidence := []byte(`{"provider":"anthropic","model":"claude-opus-5","model_call_count":42,"model_call_evidence_complete":true,"model_call_evidence_ids":["msg_01","msg_02"]}`)
 	var payload TaskUsagePayload
 	if err := json.Unmarshal(withEvidence, &payload); err != nil {
-		t.Fatalf("decode with model_call_count: %v", err)
+		t.Fatalf("decode evidence payload: %v", err)
 	}
 	if payload.ModelCallCount != 42 {
-		t.Errorf("model_call_count = %d, want 42", payload.ModelCallCount)
+		t.Errorf("legacy model_call_count = %d, want 42", payload.ModelCallCount)
 	}
-	if v := authoritativeModelCallCount(payload.ModelCallCount); !v.Valid || v.Int64 != 42 {
-		t.Errorf("authoritativeModelCallCount(42) = %+v, want Valid 42", v)
+	if !payload.ModelCallEvidenceComplete || len(payload.ModelCallEvidenceIDs) != 2 {
+		t.Fatalf("decoded evidence = complete=%v ids=%v, want complete msg_01/msg_02", payload.ModelCallEvidenceComplete, payload.ModelCallEvidenceIDs)
+	}
+	if ids := completeModelCallEvidenceIDs(payload); len(ids) != 2 || ids[0] != "msg_01" || ids[1] != "msg_02" {
+		t.Errorf("complete evidence ids = %v, want [msg_01 msg_02]", ids)
 	}
 
-	// Old daemon: the field is absent, the decoder zeroes it, and the
-	// authority rule turns that 0 into NULL — readers see "unknown", not a
-	// measured zero.
-	oldDaemon := []byte(`{"provider":"anthropic","model":"claude-opus-5"}`)
+	oldDaemon := []byte(`{"provider":"anthropic","model":"claude-opus-5","model_call_count":42}`)
 	var legacy TaskUsagePayload
 	if err := json.Unmarshal(oldDaemon, &legacy); err != nil {
 		t.Fatalf("new server must not error on a pre-987 payload: %v", err)
 	}
-	if legacy.ModelCallCount != 0 {
-		t.Errorf("absent model_call_count decoded to %d, want 0", legacy.ModelCallCount)
+	if legacy.ModelCallCount != 42 {
+		t.Errorf("legacy model_call_count = %d, want 42", legacy.ModelCallCount)
 	}
-	if v := authoritativeModelCallCount(legacy.ModelCallCount); v.Valid {
-		t.Errorf("authoritativeModelCallCount(0) = %+v, want invalid/NULL (unknown, not zero)", v)
+	if legacy.ModelCallEvidenceComplete || len(legacy.ModelCallEvidenceIDs) != 0 {
+		t.Errorf("old daemon evidence = complete=%v ids=%v, want unknown", legacy.ModelCallEvidenceComplete, legacy.ModelCallEvidenceIDs)
 	}
-	if v := authoritativeModelCallCount(-1); v.Valid {
-		t.Errorf("authoritativeModelCallCount(-1) = %+v, want invalid/NULL (negative is malformed)", v)
+	if ids := completeModelCallEvidenceIDs(legacy); ids != nil {
+		t.Errorf("aggregate-only old daemon produced evidence ids %v, want nil", ids)
+	}
+
+	partial := TaskUsagePayload{ModelCallEvidenceIDs: []string{"msg_01"}}
+	if ids := completeModelCallEvidenceIDs(partial); ids != nil {
+		t.Errorf("incomplete evidence ids = %v, want nil", ids)
 	}
 }

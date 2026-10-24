@@ -229,19 +229,59 @@ type TokenUsage struct {
 	// resume fit in the context window". The session gate (RUYI-107) needs the
 	// latter, so it gets its own field with its own overwrite semantics.
 	ContextTokens int64
-	// ModelCallCount is the provider-observed number of model API calls made
-	// to this model in this run. Zero means "the backend has no
-	// provider-original, dedupable call evidence" — most backends never see
-	// individual provider requests (they stream a session), so 0 must not be
-	// stored or displayed as a real zero; the write path turns it into NULL.
-	//
-	// It is a SUM counter like the token fields: evidence must be either a
-	// per-call event stream (count one per event) or a provider-reported
-	// cumulative figure (merge across snapshots by max, like the token
-	// snapshots, so replays of the same session do not re-count). A
-	// session-shutdown aggregate or a daemon-report count is NOT evidence:
-	// one such record per turn would count turns, not model calls.
+	// modelCallEvidence stores provider-original call identities as NUL-delimited
+	// text. Keeping TokenUsage comparable preserves existing backend tests and
+	// map-value comparisons; NUL is rejected at the network boundary and cannot
+	// be a valid identity. ModelCallEvidenceIDs exposes the decoded IDs to the
+	// daemon without making this struct contain a slice.
+	modelCallEvidence string
+	// ModelCallEvidenceIncomplete marks a model whose event stream included a
+	// call without a stable provider-original ID. Its collected IDs are useful
+	// for diagnostics but must not be sent to the accounting path: a partial
+	// total is unknown, never a lower known count.
+	ModelCallEvidenceIncomplete bool
+	// ModelCallCount is a local diagnostic derived from ModelCallEvidenceIDs for
+	// providers with stable evidence. It remains for internal compatibility only;
+	// the server never accepts it as an accounting input.
 	ModelCallCount int64
+}
+
+// ModelCallEvidenceIDs returns the provider-original model-call identities
+// observed during this run. The handler persists them with a database-enforced
+// unique key, so a retried daemon report cannot bill the same request twice.
+func (usage TokenUsage) ModelCallEvidenceIDs() []string {
+	if usage.modelCallEvidence == "" {
+		return nil
+	}
+	return strings.Split(usage.modelCallEvidence, "\x00")
+}
+
+// WithModelCallEvidence adds one provider-original event identity once. A
+// duplicate line in a CLI stream must not inflate the daemon's own diagnostic
+// count before the database receives its replay-safe copy.
+func (usage TokenUsage) WithModelCallEvidence(evidenceID string) TokenUsage {
+	evidenceID = strings.TrimSpace(evidenceID)
+	if evidenceID == "" || strings.IndexByte(evidenceID, 0) >= 0 {
+		usage.ModelCallEvidenceIncomplete = true
+		usage.ModelCallCount = 0
+		return usage
+	}
+	ids := usage.ModelCallEvidenceIDs()
+	for _, existing := range ids {
+		if existing == evidenceID {
+			return usage
+		}
+	}
+	ids = append(ids, evidenceID)
+	usage.modelCallEvidence = strings.Join(ids, "\x00")
+	if !usage.ModelCallEvidenceIncomplete {
+		usage.ModelCallCount = int64(len(ids))
+	}
+	return usage
+}
+
+func appendModelCallEvidence(usage TokenUsage, evidenceID string) TokenUsage {
+	return usage.WithModelCallEvidence(evidenceID)
 }
 
 // CostUSDTicksPerUSD is the scale of the provider-reported cost unit: xAI

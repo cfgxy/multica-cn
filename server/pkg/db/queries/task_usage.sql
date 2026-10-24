@@ -14,9 +14,10 @@
 -- turns / compactions / max_context_tokens (RUYI-154) are run-scoped stats
 -- reported exactly once, at task completion, so they are overwritten like the
 -- token counters rather than COALESCEd like context_tokens.
--- model_call_count is NULL when the provider reported no call evidence
--- (migration 987); overwritten like cost_usd_ticks so a corrected report
--- replaces the previous figure, including NULLing out a bogus earlier one.
+-- model_call_count is NULL when complete provider-original per-call evidence is
+-- unavailable (migration 987). The handler derives a known count transactionally
+-- from task_usage_model_call_evidence; daemon-supplied aggregate counts are not
+-- trusted.
 INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, model_call_count, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), sqlc.narg('model_call_count'), now())
 ON CONFLICT (task_id, provider, model)
@@ -32,6 +33,16 @@ DO UPDATE SET
     max_context_tokens = EXCLUDED.max_context_tokens,
     model_call_count = EXCLUDED.model_call_count,
     updated_at = now();
+
+-- name: InsertTaskUsageModelCallEvidence :exec
+INSERT INTO task_usage_model_call_evidence (task_id, provider, model, evidence_id)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (task_id, provider, evidence_id) DO NOTHING;
+
+-- name: CountTaskUsageModelCallEvidence :one
+SELECT COUNT(*)::bigint
+FROM task_usage_model_call_evidence
+WHERE task_id = $1 AND provider = $2 AND model = $3;
 
 -- name: GetTaskUsage :many
 SELECT * FROM task_usage

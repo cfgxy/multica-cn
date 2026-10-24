@@ -384,11 +384,11 @@ export interface AgentTask {
   // coarse values; `string & {}` admits the rest without collapsing the
   // hints.
   failure_reason?: TaskFailureReason | (string & {}) | "";
-  // RUYI-397: why a queued row is not moving yet, from the backend's
-  // dispatch.ReasonCode vocabulary ("runtime_backpressure" = the host
-  // reported memory backpressure and the server defers new claims until it
-  // recovers). `omitempty` on the wire: absent on old servers, on rows that
-  // are not queued, and once the hold clears — never a permanent verdict.
+  // Why a queued row is not moving yet, from the backend's dispatch.ReasonCode
+  // vocabulary. "runtime_backpressure" means the host reported memory pressure;
+  // "runtime_model_call_budget" means a complete known call-count window reached
+  // its configured limit. Unknown usage never creates the latter hold. `omitempty`
+  // on the wire: absent on old servers, non-queued rows, and once the hold clears.
   queued_reason?: string;
   created_at: string;
   /** Non-empty when the task was spawned from a chat session. */
