@@ -10,10 +10,10 @@
  * disabled provider, runtime gates) collapses into one generic "cannot
  * connect" message.
  *
- * The gate chain runs BEFORE the upgrade, so a plain GET on the same URL
- * with the same identity gets the identical rejection JSON. Parsing that
- * code through the shared degrade mapping yields the exact reason instead of
- * the generic copy. Mirrors apps/mobile/lib/voice/handshake-reason.ts,
+ * The authenticated preflight route runs the same read-only gate chain without
+ * creating a session or dialing the provider. Parsing its rejection code
+ * through the shared degrade mapping yields the exact reason instead of the
+ * generic copy. Mirrors apps/mobile/lib/voice/handshake-reason.ts,
  * which owns the mobile copy (mobile consumes @multica/core, not this
  * package, per its import rules).
  *
@@ -45,8 +45,11 @@ export async function probeVoiceHandshakeRejection(
   options: ProbeVoiceHandshakeOptions = {},
 ): Promise<VoiceRejection | null> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  // ws:// → http://, wss:// → https:// (the gateway serves both on one port).
-  const httpUrl = wsUrl.replace(/^ws/, "http");
+  // ws:// → http://, wss:// → https://, then select the side-effect-free gate.
+  const httpUrl = wsUrl
+    .replace(/^ws/, "http")
+    .replace(/(\/api\/agents\/[^/?#]+\/voice-session)(?=\?|$)/, "$1/preflight");
+  if (httpUrl === wsUrl.replace(/^ws/, "http")) return null;
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(),
