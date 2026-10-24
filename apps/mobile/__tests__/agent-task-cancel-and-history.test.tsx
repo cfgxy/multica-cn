@@ -523,7 +523,7 @@ describe("AgentTaskRow three-line structure (RUYI-700)", () => {
     expect(screen.getByText("Check the deploy logs first")).toBeTruthy();
   });
 
-  it("queued_reason renders the named hint on queued rows only", async () => {
+  it("queued_reason renders named hints on queued rows only", async () => {
     await renderTaskRow({
       status: "queued",
       issue_id: "",
@@ -532,11 +532,18 @@ describe("AgentTaskRow three-line structure (RUYI-700)", () => {
     expect(screen.getByText("Waiting for runtime recovery")).toBeTruthy();
 
     await renderTaskRow({
-      status: "running",
+      status: "queued",
       issue_id: "",
-      queued_reason: "runtime_backpressure",
+      queued_reason: "runtime_model_call_budget",
     });
-    expect(screen.queryByText("Waiting for runtime recovery")).toBeNull();
+    expect(screen.getByText("Waiting for model call budget window")).toBeTruthy();
+
+    await renderTaskRow({
+      status: "dispatched",
+      issue_id: "",
+      queued_reason: "runtime_model_call_budget",
+    });
+    expect(screen.queryByText("Waiting for model call budget window")).toBeNull();
   });
 
   it("row 3 renders the other-agents stack with count semantics", async () => {

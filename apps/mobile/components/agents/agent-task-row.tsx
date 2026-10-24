@@ -77,16 +77,22 @@ export function AgentTaskRow({
   const summary =
     task.trigger_summary?.trim() || task.handoff_note?.trim() || null;
 
-  // RUYI-397 admission code, named per the RUYI-700 design (「等待运行时恢
-  // 复」). Only the known code renders a hint — unknown future codes keep
-  // the bare status label instead of leaking a raw enum.
+  // Only known queued reasons render a hint. Unknown future codes keep the
+  // bare status label instead of leaking a raw enum.
   const queuedReasonHint =
-    !runningSide && task.queued_reason === "runtime_backpressure"
-      ? t(
-          "agents:mobile.run_history.queued_backpressure",
-          "Waiting for runtime recovery",
-        )
-      : null;
+    task.status !== "queued"
+      ? null
+      : task.queued_reason === "runtime_backpressure"
+        ? t(
+            "agents:mobile.run_history.queued_backpressure",
+            "Waiting for runtime recovery",
+          )
+        : task.queued_reason === "runtime_model_call_budget"
+          ? t(
+              "agents:mobile.run_history.queued_model_call_budget",
+              "Waiting for model call budget window",
+            )
+          : null;
 
   const runStatusA11y = t(`mobile.run_status.${task.status}`, task.status);
 

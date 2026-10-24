@@ -1056,6 +1056,7 @@
       "load_more": "加载更多",
       "empty": "暂无运行记录。",
       "queued_backpressure": "等待运行时恢复",
+      "queued_model_call_budget": "等待模型调用预算窗口推进",
       "other_agents": "{{count}} 个智能体运行中"
     },
     "edit": {
