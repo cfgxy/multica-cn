@@ -72,6 +72,12 @@ func (w *LocalWorktree) AdoptManagedBranch(adoption BranchAdoption) (BranchAdopt
 	}
 	result, err := adoptManagedBranch(w.Path, adoption, retirement)
 	if err != nil {
+		// The adoption helper restores the original checkout on every failed
+		// transition. If an external linked worktree wins that restoration race,
+		// never let Finalize interpret the source checkout using target metadata.
+		if actualBranch := runGitSafeTrimmed(w.Path, "symbolic-ref", "--quiet", "--short", "HEAD"); actualBranch != w.Branch {
+			w.AbortWithReason(fmt.Errorf("adopt branch left worktree checked out at %q instead of %q: %w", actualBranch, w.Branch, err))
+		}
 		return result, err
 	}
 
