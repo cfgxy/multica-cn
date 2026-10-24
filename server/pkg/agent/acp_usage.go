@@ -15,7 +15,6 @@ const (
 	acpUsageCacheRead
 	acpUsageCacheWrite
 	acpUsageCost
-	acpUsageModelCalls
 )
 
 // acpUsageSnapshot keeps field presence separate from the parsed values.
@@ -83,14 +82,6 @@ func (a *acpUsageAccumulator) merge(next acpUsageSnapshot) {
 	if next.has(acpUsageCost) && (!a.has(acpUsageCost) || next.CostUSDTicks > a.CostUSDTicks) {
 		a.CostUSDTicks = next.CostUSDTicks
 	}
-	// Model call counts (xAI modelCalls and friends) are cumulative over the
-	// same session the token totals are, so they take the max too: a replayed
-	// or duplicate snapshot of a session must not add its calls a second
-	// time, while a genuinely later, larger snapshot wins.
-	if next.has(acpUsageModelCalls) && (!a.has(acpUsageModelCalls) || next.ModelCallCount > a.ModelCallCount) {
-		a.ModelCallCount = next.ModelCallCount
-	}
-
 	a.fields |= next.fields
 	a.resolveInput()
 }
@@ -143,10 +134,6 @@ func (s acpUsageSnapshot) withFallback(fallback acpUsageSnapshot) acpUsageSnapsh
 	if fallback.has(acpUsageCost) && (!result.has(acpUsageCost) || fallback.CostUSDTicks > result.CostUSDTicks) {
 		result.CostUSDTicks = fallback.CostUSDTicks
 	}
-	if fallback.has(acpUsageModelCalls) && (!result.has(acpUsageModelCalls) || fallback.ModelCallCount > result.ModelCallCount) {
-		result.ModelCallCount = fallback.ModelCallCount
-	}
-
 	result.fields |= fallback.fields
 	if inputFromFallback && fallback.inputNormalized {
 		result.totalTokens = fallback.totalTokens
@@ -216,10 +203,6 @@ func parseACPTokenUsageSnapshot(data json.RawMessage) acpUsageSnapshot {
 	if value, ok := acpUsageInt64(rawFields, "costUsdTicks", "cost_usd_ticks"); ok {
 		snapshot.CostUSDTicks = value
 		snapshot.fields |= acpUsageCost
-	}
-	if value, ok := acpUsageInt64(rawFields, "modelCalls", "model_calls"); ok {
-		snapshot.ModelCallCount = value
-		snapshot.fields |= acpUsageModelCalls
 	}
 	if value, ok := acpUsageInt64(rawFields, "totalTokens", "total_tokens"); ok {
 		snapshot.totalTokens = value

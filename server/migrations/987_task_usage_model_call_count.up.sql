@@ -5,7 +5,9 @@
 -- substitute: it Inc()s once per aggregated usage row on the write path, i.e.
 -- it counts daemon reports, not provider requests. Call counts must come from
 -- provider-original evidence the harness observed (per-call events, or a
--- provider-reported cumulative counter), deduplicated per task.
+-- provider event), deduplicated per task and provider. Cumulative counters are
+-- deliberately not evidence: they cannot identify the individual calls that a
+-- replay must not charge twice.
 --
 -- NULL is the convention (same as cost_usd_ticks, migration 213, and the
 -- 9xx observation columns, migration 906): NULL means "the provider did not
@@ -18,7 +20,24 @@ ALTER TABLE task_usage
     ADD COLUMN IF NOT EXISTS model_call_count BIGINT;
 
 COMMENT ON COLUMN task_usage.model_call_count IS
-    'Provider-reported or provider-observed model API call count for this task, e.g. xAI modelCalls / a per-call usage event stream. NULL when the provider does not report it; history before this column is permanently NULL.';
+    'Count derived by the server from complete provider-original per-call evidence. NULL when evidence is unavailable or incomplete; historical rows remain permanently NULL.';
+
+-- Every known count is derived from these durable, provider-original event
+-- identities. There is intentionally no foreign key: task deletion owns the
+-- explicit cleanup in DeleteTaskBatch, consistent with the rest of this schema.
+--
+-- Recovery: a conditionally skipped migration is still ledgered. If this table
+-- or its index is absent in an environment whose schema_migrations records 987,
+-- restore exactly this CREATE TABLE and the companion evidence-index migration before
+-- enabling call-count accounting there. The handler fails closed to unknown if
+-- persistence is unavailable; it never accepts the daemon's aggregate count.
+CREATE TABLE IF NOT EXISTS task_usage_model_call_evidence (
+    task_id UUID NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    evidence_id TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- Rollup side. One hourly bucket can mix rows that carry a call count with
 -- rows that do not (two providers, or a CLI upgrade inside the hour). Summing
@@ -53,7 +72,7 @@ UPDATE task_usage_hourly
 COMMENT ON COLUMN task_usage_hourly.model_call_count IS
     'Sum of model_call_count over the rows in this bucket that had one; 0 when none did.';
 COMMENT ON COLUMN task_usage_hourly.model_call_unknown_count IS
-    'Rows in this bucket whose model_call_count is NULL (provider did not report it). Readers must not present model_call_count as a complete total while this is nonzero.';
+    'Rows in this bucket whose model_call_count is NULL (provider evidence was unavailable or incomplete). Readers must not present model_call_count as a complete total while this is nonzero.';
 
 -- Teach the rollup to populate them. Body is migration 213's, with the two new
 -- expression groups in `recomputed` and the matching SET list on conflict;

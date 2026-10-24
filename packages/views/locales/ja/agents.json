@@ -696,7 +696,8 @@
       "started_prefix": "{{when}} に開始",
       "dispatched_prefix": "{{when}} にディスパッチ",
       "queued_prefix": "{{when}} に待機開始",
-      "queued_backpressure": "ランタイムの復帰待ち"
+      "queued_backpressure": "ランタイムの復帰待ち",
+      "queued_model_call_budget": "モデル呼び出し予算ウィンドウの進行待ち"
     }
   },
   "char_counter": {

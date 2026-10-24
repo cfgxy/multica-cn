@@ -58,6 +58,9 @@ func TestTaskUsageModelCallCountMigrationMarksExistingBucketsUnknown(t *testing.
 	}
 
 	applyMigrationFile(t, ctx, pool, "987_task_usage_model_call_count.up.sql")
+	// Concurrent indexes must remain a one-statement migration. Run the
+	// companion migration separately to prove the table/index ordering is viable.
+	applyMigrationFile(t, ctx, pool, "987_task_usage_model_call_evidence_index.up.sql")
 
 	var knownZero, unknownCount int64
 	if err := pool.QueryRow(ctx, `

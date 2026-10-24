@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
@@ -11,11 +13,9 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// TestTaskUsageModelCallCountDBPath is the migration-987 database guard:
-// the upsert stores a reported call count as a real value and an absent
-// one as NULL (unknown, never a measured 0); the rollup window function
-// splits the known and unknown halves into task_usage_hourly; and the
-// dashboard read path surfaces both halves per (date, provider, model).
+// TestTaskUsageModelCallCountDBPath drives the daemon handler's durable
+// evidence path. It proves replay safety, distinct retry accounting, failure
+// accounting, old-daemon unknown behavior, and the known/unknown rollup split.
 func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -30,54 +30,56 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 		"runtime_id": runtimeID,
 		"status":     "completed",
 	})
+	dbfx.Cleanup(t, `DELETE FROM task_usage_model_call_evidence WHERE task_id = $1`, taskID)
 	dbfx.Cleanup(t, `DELETE FROM task_usage WHERE task_id = $1`, taskID)
 
 	queries := testHandler.Queries
 
-	// One row with provider call evidence, one without: the upsert must
-	// store the count as a real value and the absence as NULL, never 0.
-	if err := queries.UpsertTaskUsage(ctx, db.UpsertTaskUsageParams{
-		TaskID:         parseUUID(taskID),
-		Provider:       "claude",
-		Model:          "model-call-count-known",
-		InputTokens:    1000,
-		OutputTokens:   100,
-		ModelCallCount: authoritativeModelCallCount(42),
-	}); err != nil {
-		t.Fatalf("upsert known row: %v", err)
-	}
-	if err := queries.UpsertTaskUsage(ctx, db.UpsertTaskUsageParams{
-		TaskID:       parseUUID(taskID),
-		Provider:     "claude",
-		Model:        "model-call-count-unknown",
-		InputTokens:  500,
-		OutputTokens: 50,
-		// authoritativeModelCallCount(0) is the zero (NULL) Int8: an older
-		// daemon that never carried call evidence.
-		ModelCallCount: authoritativeModelCallCount(0),
-	}); err != nil {
-		t.Fatalf("upsert unknown row: %v", err)
+	report := func(body string) {
+		req := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/usage", taskID, json.RawMessage(body))
+		testutil.Call(t, testHandler.ReportTaskUsage, req).Want(http.StatusOK)
 	}
 
-	var knownRows int
-	if err := testPool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM task_usage
-		WHERE task_id = $1 AND model = 'model-call-count-known' AND model_call_count = 42
-	`, taskID).Scan(&knownRows); err != nil {
-		t.Fatalf("read known row: %v", err)
+	// A successful provider response with stable evidence is known. Replaying the
+	// daemon report must not add a second count; a later retry with a distinct
+	// provider ID must add one.
+	report(`{"usage":[{"provider":"claude","model":"model-call-count-known","input_tokens":1000,"output_tokens":100,"model_call_evidence_complete":true,"model_call_evidence_ids":["success-1"]}]}`)
+	report(`{"usage":[{"provider":"claude","model":"model-call-count-known","input_tokens":1000,"output_tokens":100,"model_call_evidence_complete":true,"model_call_evidence_ids":["success-1"]}]}`)
+	report(`{"usage":[{"provider":"claude","model":"model-call-count-known","input_tokens":1200,"output_tokens":120,"model_call_evidence_complete":true,"model_call_evidence_ids":["success-2"]}]}`)
+
+	// ReportTaskUsage runs before the terminal callback. A provider request that
+	// was issued before a later task failure therefore remains billable when it
+	// carries its original evidence ID.
+	report(`{"usage":[{"provider":"claude","model":"model-call-count-failure","input_tokens":500,"output_tokens":50,"model_call_evidence_complete":true,"model_call_evidence_ids":["failure-1"]}]}`)
+
+	// An old daemon aggregate and a transport failure without raw request
+	// evidence both remain unknown. Neither may be interpreted as 0 or 42 calls.
+	report(`{"usage":[{"provider":"claude","model":"model-call-count-unknown","input_tokens":250,"output_tokens":25,"model_call_count":42}]}`)
+
+	rows, err := queries.GetTaskUsage(ctx, parseUUID(taskID))
+	if err != nil {
+		t.Fatalf("read task usage: %v", err)
 	}
-	if knownRows != 1 {
-		t.Errorf("known row: expected the count 42 stored, got %d matching rows", knownRows)
+	byModel := make(map[string]db.TaskUsage, len(rows))
+	for _, row := range rows {
+		byModel[row.Model] = row
 	}
-	var unknownIsNull bool
-	if err := testPool.QueryRow(ctx, `
-		SELECT model_call_count IS NULL FROM task_usage
-		WHERE task_id = $1 AND model = 'model-call-count-unknown'
-	`, taskID).Scan(&unknownIsNull); err != nil {
-		t.Fatalf("read unknown row: %v", err)
+	if got := byModel["model-call-count-known"].ModelCallCount; !got.Valid || got.Int64 != 2 {
+		t.Errorf("known evidence count = %+v, want 2", got)
 	}
-	if !unknownIsNull {
-		t.Error("unknown row: an absent count must store as NULL, not a real 0")
+	if got := byModel["model-call-count-failure"].ModelCallCount; !got.Valid || got.Int64 != 1 {
+		t.Errorf("failure evidence count = %+v, want 1", got)
+	}
+	if got := byModel["model-call-count-unknown"].ModelCallCount; got.Valid {
+		t.Errorf("aggregate-only row count = %+v, want NULL/unknown", got)
+	}
+
+	var evidenceRows int
+	if err := testPool.QueryRow(ctx, `SELECT COUNT(*) FROM task_usage_model_call_evidence WHERE task_id = $1`, taskID).Scan(&evidenceRows); err != nil {
+		t.Fatalf("count durable evidence: %v", err)
+	}
+	if evidenceRows != 3 {
+		t.Errorf("durable evidence rows = %d, want 3 after one replay and three distinct IDs", evidenceRows)
 	}
 
 	// Drive the rollup window function over the last hour — the production
@@ -100,8 +102,8 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 	`, taskID).Scan(&hourlyKnown, &hourlyUnknown); err != nil {
 		t.Fatalf("rollup read: %v", err)
 	}
-	if hourlyKnown != 42 {
-		t.Errorf("rollup known half = %d, want 42 (only the evidenced row)", hourlyKnown)
+	if hourlyKnown != 3 {
+		t.Errorf("rollup known half = %d, want 3 (two success IDs plus one failure ID)", hourlyKnown)
 	}
 	if hourlyUnknown != 1 {
 		t.Errorf("rollup unknown half = %d, want 1 (the row without call evidence)", hourlyUnknown)
@@ -114,7 +116,7 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 		Time:  time.Now().AddDate(0, 0, -31).Truncate(time.Hour),
 		Valid: true,
 	}
-	rows, err := queries.ListDashboardUsageDaily(ctx, db.ListDashboardUsageDailyParams{
+	dashboardRows, err := queries.ListDashboardUsageDaily(ctx, db.ListDashboardUsageDailyParams{
 		WorkspaceID: parseUUID(testWorkspaceID),
 		Tz:          "UTC",
 		Since:       since,
@@ -123,12 +125,12 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 		t.Fatalf("list dashboard daily: %v", err)
 	}
 	var seenKnown, seenUnknown bool
-	for _, r := range rows {
+	for _, r := range dashboardRows {
 		switch r.Model {
 		case "model-call-count-known":
 			seenKnown = true
-			if r.ModelCallCount != 42 || r.ModelCallUnknownCount != 0 {
-				t.Errorf("daily known row = calls %d unknown %d, want 42 / 0", r.ModelCallCount, r.ModelCallUnknownCount)
+			if r.ModelCallCount != 2 || r.ModelCallUnknownCount != 0 {
+				t.Errorf("daily known row = calls %d unknown %d, want 2 / 0", r.ModelCallCount, r.ModelCallUnknownCount)
 			}
 		case "model-call-count-unknown":
 			seenUnknown = true

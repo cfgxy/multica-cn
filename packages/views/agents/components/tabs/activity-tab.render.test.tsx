@@ -236,6 +236,21 @@ describe("ActivityTab runtime backpressure hold (RUYI-729)", () => {
     ).toBeInTheDocument();
   });
 
+  it("names the model-call budget hold on a queued row", async () => {
+    snapshotRef.current = () =>
+      Promise.resolve([
+        {
+          ...backpressuredTask,
+          id: "task-budget-1",
+          queued_reason: "runtime_model_call_budget",
+        },
+      ]);
+    renderTab();
+    expect(
+      await screen.findByText("Waiting for model call budget window"),
+    ).toBeInTheDocument();
+  });
+
   it("keeps an unstamped queued row on the plain Queued label", async () => {
     snapshotRef.current = () =>
       Promise.resolve([

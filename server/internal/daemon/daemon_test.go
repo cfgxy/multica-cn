@@ -1666,7 +1666,7 @@ func TestRunTask_ReportsContextOnlyUsage(t *testing.T) {
 			}
 
 			script := fmt.Sprintf("#!/bin/sh\nIFS= read -r _\nprintf '%%s\\n' '%s' '%s'\n",
-				fmt.Sprintf(`{"type":"assistant","message":{"model":"%s","usage":{"input_tokens":%d,"output_tokens":%d,"cache_read_input_tokens":%d,"cache_creation_input_tokens":%d},"content":[{"type":"text","text":"done"}]}}`, model, tt.inputTokens, tt.outputTokens, tt.cacheRead, tt.cacheWrite),
+				fmt.Sprintf(`{"type":"assistant","message":{"id":"msg-script","model":"%s","usage":{"input_tokens":%d,"output_tokens":%d,"cache_read_input_tokens":%d,"cache_creation_input_tokens":%d},"content":[{"type":"text","text":"done"}]}}`, model, tt.inputTokens, tt.outputTokens, tt.cacheRead, tt.cacheWrite),
 				fmt.Sprintf(`{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"done"}`, tt.sessionID))
 			if err := os.WriteFile(d.cfg.Agents["claude"].Path, []byte(script), 0o755); err != nil {
 				t.Fatalf("write fake agent: %v", err)
@@ -1719,8 +1719,8 @@ func TestRunTask_ClaudeResultPortsCallCounts(t *testing.T) {
 
 	// Two assistant events (two model API responses) plus a result event that
 	// re-reports the summed tokens via modelUsage.
-	assistant1 := fmt.Sprintf(`{"type":"assistant","message":{"model":"%s","usage":{"input_tokens":100,"output_tokens":10},"content":[{"type":"text","text":"one"}]}}`, model)
-	assistant2 := fmt.Sprintf(`{"type":"assistant","message":{"model":"%s","usage":{"input_tokens":50,"output_tokens":5},"content":[{"type":"text","text":"two"}]}}`, model)
+	assistant1 := fmt.Sprintf(`{"type":"assistant","message":{"id":"msg-1","model":"%s","usage":{"input_tokens":100,"output_tokens":10},"content":[{"type":"text","text":"one"}]}}`, model)
+	assistant2 := fmt.Sprintf(`{"type":"assistant","message":{"id":"msg-2","model":"%s","usage":{"input_tokens":50,"output_tokens":5},"content":[{"type":"text","text":"two"}]}}`, model)
 	result := fmt.Sprintf(`{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"done","modelUsage":{"%s":{"inputTokens":150,"outputTokens":15}}}`, sessionID, model)
 	script := fmt.Sprintf("#!/bin/sh\nIFS= read -r _\nprintf '%%s\\n' '%s' '%s' '%s'\n",
 		assistant1, assistant2, result)

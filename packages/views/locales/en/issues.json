@@ -669,6 +669,8 @@
     "status_queued": "Queued",
     "status_queued_backpressure": "Queued · host memory busy",
     "queued_backpressure_hint": "The host reported memory backpressure; new runs wait until it recovers.",
+    "status_queued_model_call_budget": "Queued · model call budget reached",
+    "queued_model_call_budget_hint": "This runtime reached its complete known model call budget; new runs wait for the rolling window to advance.",
     "status_dispatched": "Starting",
     "status_waiting_local_directory": "Waiting for local directory",
     "status_running": "Working",

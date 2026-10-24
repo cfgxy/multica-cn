@@ -155,3 +155,5 @@ ALTER TABLE task_usage_hourly
 
 ALTER TABLE task_usage
     DROP COLUMN IF EXISTS model_call_count;
+
+DROP TABLE IF EXISTS task_usage_model_call_evidence;
