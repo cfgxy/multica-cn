@@ -38,6 +38,38 @@ const FINALIZE_TIMEOUT_MS = 15_000;
 const RMS_INTERVAL_MS = 50;
 const RMS_SLOTS = 28;
 
+export type SpeechErrorDisposition = "empty" | "fallback" | "failed";
+
+/**
+ * A successful capability probe does not guarantee the current recognizer
+ * session starts. Service, network, and language-service failures can use
+ * server ASR; permission and microphone failures cannot be recovered this way.
+ */
+export function classifySpeechError(code: number | undefined): SpeechErrorDisposition {
+  switch (code) {
+    // ERROR_SPEECH_TIMEOUT / ERROR_NO_MATCH: captured audio had no text.
+    case 6:
+    case 7:
+      return "empty";
+    // ERROR_NETWORK_TIMEOUT / ERROR_NETWORK / ERROR_SERVER / ERROR_CLIENT /
+    // ERROR_RECOGNIZER_BUSY / ERROR_TOO_MANY_REQUESTS /
+    // ERROR_SERVER_DISCONNECTED / ERROR_LANGUAGE_UNAVAILABLE /
+    // ERROR_LANGUAGE_NOT_SUPPORTED.
+    case 1:
+    case 2:
+    case 4:
+    case 5:
+    case 8:
+    case 10:
+    case 11:
+    case 12:
+    case 13:
+      return "fallback";
+    default:
+      return "failed";
+  }
+}
+
 export interface UseDictationOptions {
   /** 端侧终稿与降级转写均以文本消息发送。 */
   onSend: (text: string) => void;
@@ -131,6 +163,10 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         if (stateRef.current.phase === "finalizing") {
           dispatch({ type: "recognizerError", kind: "failed" });
         } else if (stateRef.current.phase === "recording") {
+          if (optionsRef.current.transcribe != null) {
+            dispatch({ type: "fallbackToBackend" });
+            return;
+          }
           startFailureRef.current = true;
         }
       },
@@ -182,11 +218,18 @@ export function useDictation(options: UseDictationOptions): UseDictationResult {
         dispatch({ type: "final", text: event.text ?? "" });
       }),
       module.addListener("onError", (event) => {
-        // Android SpeechRecognizer：ERROR_NO_MATCH(6) / ERROR_SPEECH_TIMEOUT(7)
-        // = 没听清（空结果语义），其余（网络、权限、客户端错误等）按失败。
-        const kind =
-          event.code === 6 || event.code === 7 ? "empty" : "failed";
-        dispatch({ type: "recognizerError", kind });
+        const disposition = classifySpeechError(event.code);
+        if (
+          disposition === "fallback" &&
+          optionsRef.current.transcribe != null
+        ) {
+          dispatch({ type: "fallbackToBackend" });
+          return;
+        }
+        dispatch({
+          type: "recognizerError",
+          kind: disposition === "empty" ? "empty" : "failed",
+        });
       }),
     ];
     return () => {
