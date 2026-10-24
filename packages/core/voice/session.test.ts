@@ -217,6 +217,73 @@ describe("VoiceSessionController", () => {
   });
 });
 
+describe("VoiceSessionController abort (RUYI-866 P1)", () => {
+  it("abort during connect closes the socket but keeps the state non-terminal", async () => {
+    const io = fakeTransport();
+    const { c, events } = controller(io);
+    const started = c.start();
+    // Dismiss/switch/unmount before the handshake settles.
+    c.abort();
+    expect((io.transport.close as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    expect(events.ended).toBe(0);
+    expect(c.getState()).toBe("connecting");
+    // The late handshake settle must not resurrect the session: no degrade,
+    // no terminal state, and a late rejection frame stays a no-op.
+    io.open();
+    await started;
+    expect(events.ended).toBe(0);
+    expect(c.getState()).toBe("connecting");
+    io.emit({ error: { message: "late gate rejection" }, code: "VOICE_UNAVAILABLE:voice_unconfigured" });
+    io.drop(1000);
+    expect(events.ended).toBe(0);
+    expect(events.degraded).toEqual([]);
+    expect(c.getState()).toBe("connecting");
+  });
+
+  it("abort while live keeps failed state the caller set, without a terminal flip", async () => {
+    const io = fakeTransport();
+    const { c, events } = controller(io);
+    io.open();
+    await c.start();
+    io.emit({ setupComplete: {} });
+    // Permission-denial shape: the caller marks the session failed itself
+    // (via its own state), then aborts so the overlay stays visible until
+    // the user dismisses.
+    c.abort();
+    expect(events.ended).toBe(0);
+    expect((io.transport.close as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    // A late drop of the aborted socket stays a no-op.
+    io.drop(1006);
+    expect(events.ended).toBe(0);
+    // Post-abort audio and frames are ignored entirely.
+    c.sendAudio("late-audio");
+    io.emit({ setupComplete: {} });
+    expect(io.sent.filter((f) => f.includes("late-audio"))).toEqual([]);
+  });
+
+  it("abort is idempotent and a no-op after any terminal state", async () => {
+    const io = fakeTransport();
+    const { c, events } = controller(io);
+    io.open();
+    await c.start();
+    c.abort();
+    c.abort();
+    expect((io.transport.close as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+
+    const io2 = fakeTransport();
+    const { c: c2, events: events2 } = controller(io2);
+    io2.open();
+    await c2.start();
+    io2.emit({ setupComplete: {} });
+    c2.end();
+    expect(events2.ended).toBe(1);
+    c2.abort();
+    expect((io2.transport.close as ReturnType<typeof vi.fn>)).toHaveBeenCalledTimes(1);
+    expect(events2.ended).toBe(1);
+    expect(events.ended).toBe(0);
+  });
+});
+
 describe("VoiceSessionController direct mode (RUYI-626)", () => {
   function directController(io: ReturnType<typeof fakeTransport>, overrides?: {
     setup?: { instructions: string; model: string; advanced: Record<string, unknown> };

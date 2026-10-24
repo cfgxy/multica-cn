@@ -126,6 +126,12 @@ const mockSquadsData = vi.hoisted(
   () => ({ list: [] as Array<{ id: string; name: string; leader_id: string; archived_at: string | null }> }),
 );
 
+// Per-test override for the agents list so the voice-entry tests can build
+// the "no visible actor at all" state (RUYI-866).
+const mockAgentsData = vi.hoisted(
+  () => ({ list: [] as Array<{ id: string; name: string; archived_at: string | null; runtime_id?: string }> }),
+);
+
 // The real handle mints an id when it inserts the placeholder and hands it to
 // the uploader, which adopts it as the draft `clientUploadId`. Mocks must do
 // the same or the two records drift apart only in tests.
@@ -142,9 +148,7 @@ vi.mock("@tanstack/react-query", () => ({
       case "members":
         return { data: [{ user_id: "user-1", role: "admin" }] };
       case "agents":
-        return {
-          data: [{ id: "agent-1", name: "Bohan", archived_at: null, runtime_id: "runtime-1" }],
-        };
+        return { data: mockAgentsData.list };
       case "runtimes":
         return { data: [{ id: "runtime-1", metadata: { cli_version: "1.2.3" } }] };
       case "projects":
@@ -178,6 +182,10 @@ vi.mock("@multica/core/api", () => ({
     uploadFile: mockApiUploadFile,
   },
   ApiError,
+  // `useVoiceSession.start()` reads the base URL to build the WS session
+  // endpoint; give it one so the (real) voice chain runs under jsdom like
+  // in the chat-input suite.
+  getApi: () => ({ getBaseUrl: () => "http://localhost:3000" }),
 }));
 
 vi.mock("@multica/core/hooks", () => ({
@@ -475,10 +483,18 @@ import enModals from "../locales/en/modals.json";
 import enEditor from "../locales/en/editor.json";
 import enProjects from "../locales/en/projects.json";
 import enIssues from "../locales/en/issues.json";
+import enVoice from "../locales/en/voice.json";
 import { AgentCreatePanel } from "./quick-create-issue";
 
 const TEST_RESOURCES = {
-  en: { common: enCommon, modals: enModals, editor: enEditor, projects: enProjects, issues: enIssues },
+  en: {
+    common: enCommon,
+    modals: enModals,
+    editor: enEditor,
+    projects: enProjects,
+    issues: enIssues,
+    voice: enVoice,
+  },
 };
 
 function renderPanel(props: React.ComponentProps<typeof AgentCreatePanel>) {
@@ -515,6 +531,7 @@ describe("AgentCreatePanel", () => {
     mockProjectsQuery.data = [];
     mockProjectsQuery.isSuccess = true;
     mockSquadsData.list = [];
+    mockAgentsData.list = [{ id: "agent-1", name: "Bohan", archived_at: null, runtime_id: "runtime-1" }];
     mockQuickCreateIssue.mockResolvedValue(undefined);
     mockCreateCommentSubIssue.mockResolvedValue({ task_id: "task-source-child" });
     mockApiUploadFile.mockResolvedValue({
@@ -1220,6 +1237,55 @@ describe("AgentCreatePanel", () => {
       // no ⌘ key and the least room in the footer row.
       expect(keycaps).not.toBeNull();
       expect(keycaps?.className).toContain("max-sm:hidden");
+    });
+  });
+
+  // RUYI-866: `useVoiceSession.start()` silently no-ops without a targetable
+  // agent, so the entry must never read as a clickable mic in the states
+  // where it cannot start a session. The default panel seeds the first
+  // visible agent as the actor, which is the "targetable" baseline.
+  describe("voice entry target gate", () => {
+    it("is enabled and opens the voice overlay when the target is an agent", () => {
+      renderPanel({ onClose: vi.fn(), isExpanded: false, setIsExpanded: vi.fn() });
+
+      const mic = screen.getByRole("button", { name: "Start voice conversation" });
+      expect(mic).not.toBeDisabled();
+
+      fireEvent.click(mic);
+      expect(
+        screen.getByRole("dialog", { name: "Voice conversation" }),
+      ).toBeInTheDocument();
+    });
+
+    it("is disabled with a pick-an-agent reason when no actor exists to pick", () => {
+      mockAgentsData.list = [];
+      renderPanel({ onClose: vi.fn(), isExpanded: false, setIsExpanded: vi.fn() });
+
+      const mic = screen.getByRole("button", {
+        name: /Voice needs an agent/i,
+      });
+      expect(mic).toBeDisabled();
+      // The mic must not start a session from this state — clicking a
+      // disabled button is a no-op, and no overlay may mount.
+      fireEvent.click(mic);
+      expect(screen.queryByRole("dialog", { name: "Voice conversation" })).toBeNull();
+    });
+
+    it("is disabled with a squad reason when a squad is picked as the target", async () => {
+      mockSquadsData.list = [
+        { id: "squad-1", name: "Frontend Squad", leader_id: "agent-1", archived_at: null },
+      ];
+      const user = userEvent.setup();
+      renderPanel({ onClose: vi.fn(), isExpanded: false, setIsExpanded: vi.fn() });
+
+      await user.click(screen.getByRole("button", { name: /Frontend Squad/ }));
+
+      const mic = screen.getByRole("button", {
+        name: /Voice targets a single agent/i,
+      });
+      expect(mic).toBeDisabled();
+      fireEvent.click(mic);
+      expect(screen.queryByRole("dialog", { name: "Voice conversation" })).toBeNull();
     });
   });
 });
