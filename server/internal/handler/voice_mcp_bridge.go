@@ -156,6 +156,36 @@ func (h *Handler) resolveVoiceWorkspace(ctx context.Context, session db.LiveSess
 	return ws.ID, nil
 }
 
+// listVoiceVisibleAgents reuses the HTTP ListAgents member visibility predicate.
+// Voice context and MCP tools must use the live session user, never the raw
+// workspace-wide query result.
+func (h *Handler) listVoiceVisibleAgents(ctx context.Context, session db.LiveSession, workspaceID pgtype.UUID) ([]db.Agent, bool) {
+	if !session.UserID.Valid {
+		return nil, false
+	}
+
+	member, err := h.getWorkspaceMember(ctx, uuidToString(session.UserID), uuidToString(workspaceID))
+	if err != nil {
+		return nil, false
+	}
+	agents, err := h.Queries.ListAgents(ctx, workspaceID)
+	if err != nil {
+		return nil, false
+	}
+	targetsByAgent, ok := h.loadInvocationTargetsByAgent(ctx, agents)
+	if !ok {
+		return nil, false
+	}
+
+	visible := make([]db.Agent, 0, len(agents))
+	for _, agent := range agents {
+		if memberAllowedToViewAgent(agent, targetsByAgent[uuidToString(agent.ID)], uuidToString(session.UserID), member.Role) {
+			visible = append(visible, agent)
+		}
+	}
+	return visible, true
+}
+
 // execVoiceListWorkspaces — Multica MCP list_workspaces, same projection
 // (id, name, slug, description, issue prefix), membership-scoped by the
 // session user's rows.
@@ -280,8 +310,8 @@ func execVoiceGetProject(h *Handler, ctx context.Context, session db.LiveSession
 // execVoiceListAgents — Multica MCP list_agents: the workspace's active
 // (kind=user, unarchived) agents, same fields the MCP surface projects.
 func execVoiceListAgents(h *Handler, ctx context.Context, session db.LiveSession, workspaceID pgtype.UUID, _ map[string]any) (json.RawMessage, error) {
-	agents, err := h.Queries.ListAgents(ctx, workspaceID)
-	if err != nil {
+	agents, ok := h.listVoiceVisibleAgents(ctx, session, workspaceID)
+	if !ok {
 		return nil, &execVoiceToolError{Code: "internal", Message: "failed to list agents"}
 	}
 	out := map[string]any{
@@ -314,11 +344,9 @@ func execVoiceGetIssue(h *Handler, ctx context.Context, session db.LiveSession, 
 			return nil, &execVoiceToolError{Code: "not_found", Message: "issue not found in this workspace"}
 		}
 	} else {
-		issue, err = h.Queries.GetIssueByNumber(ctx, db.GetIssueByNumberParams{
-			WorkspaceID: workspaceID,
-			Number:      issueNumber(rawID),
-		})
-		if err != nil {
+		var ok bool
+		issue, ok = h.resolveIssueByIdentifier(ctx, rawID, uuidToString(workspaceID))
+		if !ok {
 			return nil, &execVoiceToolError{Code: "invalid_arguments", Message: "issue_id must be a UUID or PREFIX-NUMBER"}
 		}
 	}
@@ -340,19 +368,6 @@ func execVoiceGetIssue(h *Handler, ctx context.Context, session db.LiveSession, 
 		out["description"] = issue.Description.String
 	}
 	return json.Marshal(out)
-}
-
-// issueNumber extracts the numeric part of a PREFIX-NUMBER identifier.
-func issueNumber(raw string) int32 {
-	for i := 0; i < len(raw); i++ {
-		if raw[i] == '-' {
-			if n, err := strconv.Atoi(raw[i+1:]); err == nil {
-				return int32(n)
-			}
-			return 0
-		}
-	}
-	return 0
 }
 
 // voiceIntArg reads a numeric argument with its default. Missing, non-number

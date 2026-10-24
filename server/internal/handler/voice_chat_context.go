@@ -94,9 +94,24 @@ func (h *Handler) composeVoiceChatContext(ctx context.Context, session db.LiveSe
 		return nil
 	}
 
-	// Agent names for the mention rewrite (workspace-level, one read).
-	agents, _ := h.Queries.ListAgents(ctx, session.WorkspaceID)
+	// Re-check the linked chat agent using the same single-agent gate as the
+	// chat endpoint before reading any messages, attachments, or skills.
+	chatAgent, aerr := h.Queries.GetAgent(ctx, chat.AgentID)
+	if aerr != nil || !h.canAccessPrivateAgent(ctx, chatAgent, "member", uuidToString(session.UserID), uuidToString(session.WorkspaceID)) {
+		slog.Warn("voice chat context: chat agent is no longer visible; degrading to plain voice",
+			"session_id", uuidToString(session.ID), "agent_id", uuidToString(chat.AgentID))
+		return nil
+	}
+
+	// Build the mention name map only from the HTTP ListAgents-visible set, so a
+	// hand-written UUID cannot disclose an otherwise inaccessible agent name.
 	names := map[string]string{}
+	agents, ok := h.listVoiceVisibleAgents(ctx, session, session.WorkspaceID)
+	if !ok {
+		slog.Warn("voice chat context: visible agents load failed; agent mentions will degrade",
+			"session_id", uuidToString(session.ID))
+		return nil
+	}
 	for _, a := range agents {
 		names[uuidToString(a.ID)] = a.Name
 	}
@@ -138,9 +153,11 @@ func (h *Handler) composeVoiceChatContext(ctx context.Context, session db.LiveSe
 			}
 			if m.Role == "user" {
 				fmt.Fprintf(&b, "User: %s\n", h.rewriteVoiceMentions(ctx, m.Content, session.WorkspaceID, names))
-			} else {
-				fmt.Fprintf(&b, "%s: %s\n", m.Role, m.Content)
+				continue
 			}
+			// Assistant and tool messages are not user attachments. Strip every
+			// mention from them so an older reply cannot disclose a now-hidden agent.
+			fmt.Fprintf(&b, "%s: %s\n", m.Role, stripVoiceMentionLinks(m.Content))
 		}
 		b.WriteString("\n")
 	}

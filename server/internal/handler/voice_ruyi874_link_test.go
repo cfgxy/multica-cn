@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -642,6 +643,131 @@ func TestVoiceChatContext_SemanticIssueAndProjectMentions(t *testing.T) {
 	updatedConn.Close()
 }
 
+// TestVoiceAgentVisibility_ContextAndMCP ensures voice uses the same member
+// visibility rule as HTTP ListAgents: private agents do not leak through a
+// hand-written mention or MCP enumeration, while owners and public_to targets
+// retain access to their visible agents.
+func TestVoiceAgentVisibility_ContextAndMCP(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	ownerID := dbfx.User(t, "Voice Private Agent Owner", "voice-private-owner@example.test")
+	dbfx.Member(t, testWorkspaceID, ownerID, "member")
+	memberID := dbfx.User(t, "Voice Plain Member", "voice-plain-member@example.test")
+	dbfx.Member(t, testWorkspaceID, memberID, "member")
+
+	privateAgentID := dbfx.Agent(t, "Voice Private Agent", handlerTestRuntimeID(t), testutil.Cols{
+		"owner_id":    ownerID,
+		"description": "private agent description",
+	})
+	allowedAgentID := dbfx.Agent(t, "Voice Allowed Agent", handlerTestRuntimeID(t), testutil.Cols{
+		"owner_id":        ownerID,
+		"description":     "allowed agent description",
+		"visibility":      "workspace",
+		"permission_mode": "public_to",
+	})
+	dbfx.Insert(t, "agent_invocation_target", testutil.Cols{
+		"agent_id":    allowedAgentID,
+		"target_type": "member",
+		"target_id":   memberID,
+		"created_by":  ownerID,
+	})
+
+	chatAgentID := dbfx.Agent(t, "Voice Visibility Chat", handlerTestRuntimeID(t), testutil.Cols{
+		"owner_id":        ownerID,
+		"visibility":      "workspace",
+		"permission_mode": "public_to",
+	})
+	dbfx.Insert(t, "agent_invocation_target", testutil.Cols{
+		"agent_id":    chatAgentID,
+		"target_type": "member",
+		"target_id":   memberID,
+		"created_by":  ownerID,
+	})
+	memberChatID := dbfx.ChatSession(t, chatAgentID, testutil.Cols{"creator_id": memberID})
+	dbfx.Insert(t, "chat_message", testutil.Cols{
+		"chat_session_id": memberChatID,
+		"role":            "user",
+		"content": "[Private label](mention://agent/" + privateAgentID + ") " +
+			"[Allowed label](mention://agent/" + allowedAgentID + ")",
+	})
+	dbfx.Insert(t, "chat_message", testutil.Cols{
+		"chat_session_id": memberChatID,
+		"role":            "assistant",
+		"content":         "[Private label](mention://agent/" + privateAgentID + ")",
+	})
+	ownerChatID := dbfx.ChatSession(t, chatAgentID, testutil.Cols{"creator_id": ownerID})
+	dbfx.Insert(t, "chat_message", testutil.Cols{
+		"chat_session_id": ownerChatID,
+		"role":            "user",
+		"content":         "[Private label](mention://agent/" + privateAgentID + ")",
+	})
+
+	memberSession := db.LiveSession{
+		WorkspaceID:   parseUUID(testWorkspaceID),
+		UserID:        parseUUID(memberID),
+		ChatSessionID: parseUUID(memberChatID),
+	}
+	memberContext := testHandler.composeVoiceChatContext(ctx, memberSession)
+	if memberContext == nil {
+		t.Fatal("plain member context = nil, want rendered mention context")
+	}
+	for _, forbidden := range []string{privateAgentID, "Voice Private Agent", "private agent description"} {
+		if strings.Contains(memberContext.Text, forbidden) {
+			t.Errorf("plain member context leaked private agent value %q: %s", forbidden, memberContext.Text)
+		}
+	}
+	if !strings.Contains(memberContext.Text, "[unavailable agent reference]") {
+		t.Errorf("private mention did not degrade: %s", memberContext.Text)
+	}
+	if !strings.Contains(memberContext.Text, `user mentions agent "Voice Allowed Agent"`) {
+		t.Errorf("allowed mention lost semantic context: %s", memberContext.Text)
+	}
+
+	// Revocation after a voice session starts must prevent further rich-context reads.
+	dbfx.Exec(t, `DELETE FROM agent_invocation_target WHERE agent_id = $1 AND target_type = 'member' AND target_id = $2`, chatAgentID, memberID)
+	if contextAfterRevocation := testHandler.composeVoiceChatContext(ctx, memberSession); contextAfterRevocation != nil {
+		t.Errorf("revoked chat agent access retained rich context: %+v", contextAfterRevocation)
+	}
+
+	ownerSession := db.LiveSession{
+		WorkspaceID:   parseUUID(testWorkspaceID),
+		UserID:        parseUUID(ownerID),
+		ChatSessionID: parseUUID(ownerChatID),
+	}
+	ownerContext := testHandler.composeVoiceChatContext(ctx, ownerSession)
+	if ownerContext == nil || !strings.Contains(ownerContext.Text, `user mentions agent "Voice Private Agent"`) {
+		t.Errorf("agent owner lost private mention semantics: %+v", ownerContext)
+	}
+
+	memberOutput, err := execVoiceListAgents(testHandler, ctx, memberSession, parseUUID(testWorkspaceID), nil)
+	if err != nil {
+		t.Fatalf("list_agents as plain member: %v", err)
+	}
+	for _, forbidden := range []string{privateAgentID, "Voice Private Agent", "private agent description"} {
+		if strings.Contains(string(memberOutput), forbidden) {
+			t.Errorf("list_agents leaked private agent value %q: %s", forbidden, memberOutput)
+		}
+	}
+	for _, want := range []string{allowedAgentID, "Voice Allowed Agent", "allowed agent description"} {
+		if !strings.Contains(string(memberOutput), want) {
+			t.Errorf("list_agents omitted authorized agent value %q: %s", want, memberOutput)
+		}
+	}
+
+	ownerOutput, err := execVoiceListAgents(testHandler, ctx, ownerSession, parseUUID(testWorkspaceID), nil)
+	if err != nil {
+		t.Fatalf("list_agents as agent owner: %v", err)
+	}
+	for _, want := range []string{privateAgentID, "Voice Private Agent", "private agent description"} {
+		if !strings.Contains(string(ownerOutput), want) {
+			t.Errorf("list_agents omitted owner-visible agent value %q: %s", want, ownerOutput)
+		}
+	}
+}
+
 // TestVoiceChatContext_PlainVoiceFallback: with NO chat link the injection
 // stays the existing plain-voice summary section — rich context must not be
 // invented for a plain voice session (§3.6 "never invent continuity").
@@ -951,6 +1077,35 @@ func TestVoiceMCPBridge_DirectExecution(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "invalid_arguments") {
 		t.Errorf("missing workspace argument not reported: %s", out)
+	}
+
+	// 6) PREFIX-NUMBER must use the active workspace's canonical prefix. A
+	// matching number alone must not resolve a different local issue.
+	issueID := dbfx.Issue(t, "Voice MCP Identifier Issue")
+	var issueNumber int
+	var issuePrefix string
+	dbfx.QueryRow(t, `SELECT number FROM issue WHERE id = $1`, issueID).Scan(&issueNumber)
+	dbfx.QueryRow(t, `SELECT issue_prefix FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&issuePrefix)
+	identifier := issuePrefix + "-" + strconv.Itoa(issueNumber)
+	out, err = testHandler.executeVoiceMCPTool(ctx, session, "get_issue",
+		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID, "issue_id": identifier}))
+	if err != nil {
+		t.Fatalf("get_issue by canonical identifier: %v", err)
+	}
+	if strings.Contains(string(out), `"error"`) || !strings.Contains(string(out), "Voice MCP Identifier Issue") {
+		t.Errorf("canonical issue identifier did not resolve: %s", out)
+	}
+	wrongPrefix := "OTHER"
+	if strings.EqualFold(wrongPrefix, issuePrefix) {
+		wrongPrefix = "DIFFERENT"
+	}
+	out, err = testHandler.executeVoiceMCPTool(ctx, session, "get_issue",
+		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID, "issue_id": wrongPrefix + "-" + strconv.Itoa(issueNumber)}))
+	if err != nil {
+		t.Fatalf("get_issue with wrong prefix: %v", err)
+	}
+	if !strings.Contains(string(out), "invalid_arguments") || strings.Contains(string(out), "Voice MCP Identifier Issue") {
+		t.Errorf("wrong issue prefix was not rejected without data leak: %s", out)
 	}
 }
 
