@@ -533,6 +533,8 @@
     "kpi_cache_hint": "命中率 {{pct}}% · 读取 {{reads}}",
     "kpi_tokens_label": "Token · {{days}} 天",
     "kpi_tokens_hint": "输入 {{input}} · 输出 {{output}}",
+    "kpi_calls_label": "模型调用 · {{days}} 天",
+    "kpi_calls_unknown_hint": "另有 {{unknown}} 条用量记录的模型调用数未知，未计入已知调用数。",
     "when_title": "这个运行时在何时消耗",
     "when_tab_daily": "按天",
     "when_tab_weekly": "按周",
