@@ -49,7 +49,17 @@ export class BrowserVoiceTransport implements VoiceTransport {
   close(): void {
     const ws = this.ws;
     this.ws = null;
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (!ws) return;
+    // A socket that never finished the handshake is aborted, not closed:
+    // close() on CONNECTING rejects the connect() promise (browser spec),
+    // which is exactly what a late settle of a dismissed session needs.
+    // The controller treats that rejection as a no-op when it is already
+    // finished, so no degrade or terminal state is emitted (RUYI-866 P1).
+    if (ws.readyState === WebSocket.CONNECTING) {
+      ws.close();
+      return;
+    }
+    if (ws.readyState === WebSocket.OPEN) {
       ws.close(1000);
     }
   }
