@@ -178,6 +178,46 @@ var surfaceShapes = []scopeShape{
 
 	{[]string{"quick-replies"}, shapeReadWrite},
 	{[]string{"quick-replies", "*"}, shapeReadWrite},
+
+	// Prompt legislation (RUYI-868): clause governance reads and the proposal
+	// pool. The governance views are read-only on the wire; the member write
+	// actions on the proposal pool (create, draft edit, submit, preview,
+	// rework) ride mcp:write. The owner's decide-and-execute endpoints
+	// (approve / reject / restore / enact / approve-batch) are deliberately
+	// off-surface AND keep the router's human-actor guard — they are the
+	// platform's confirmation mechanism for high-risk prompt changes and an
+	// OAuth client must never reach them, whatever its scope.
+	{[]string{"prompt-legislation", "governance", "clauses"}, shapeReadOnly},
+	{[]string{"prompt-legislation", "governance", "clauses", "*"}, shapeReadOnly},
+	{[]string{"prompt-legislation", "governance", "reconciliation"}, shapeReadOnly},
+	{[]string{"prompt-legislation", "proposals"}, shapeReadWrite},
+	{[]string{"prompt-legislation", "proposals", "*"}, shapeReadWrite},
+	{[]string{"prompt-legislation", "proposals", "*", "submit"}, shapeReadWrite},
+	{[]string{"prompt-legislation", "proposals", "*", "preview"}, shapeReadWrite},
+	{[]string{"prompt-legislation", "proposals", "*", "rework"}, shapeReadWrite},
+
+	// Prompt governance carrier reads (RUYI-868): the version ledger and diff
+	// view a clause-versus-prompt comparison reads the current prompt text
+	// from. The carrier writes (save / snapshot / switch) are owner-only and
+	// stay off-surface.
+	{[]string{"prompt-governance", "*", "*", "versions"}, shapeReadOnly},
+	{[]string{"prompt-governance", "*", "*", "versions", "*"}, shapeReadOnly},
+	{[]string{"prompt-governance", "*", "*", "diff"}, shapeReadOnly},
+}
+
+// writeExcluded are POST paths that share a shape tier with in-surface writes
+// but are deliberately off-surface. Same mechanism as runShapes: matched in
+// the POST-only pre-pass, so the tier they would otherwise classify into never
+// sees them.
+//
+//   - prompt-legislation/proposals/approve-batch (RUYI-868): the batch
+//     owner decision sits on the same three-segment tier as the per-id
+//     write shape below it, which would admit it with mcp:write. It is the
+//     owner's confirm-and-execute action and must stay unreachable by any
+//     OAuth scope — the per-id owner endpoints (approve / reject / restore /
+//     enact) fall off-surface by their length, this one falls off by name.
+var writeExcluded = [][]string{
+	{"prompt-legislation", "proposals", "approve-batch"},
 }
 
 // ScopeForRequest classifies one request. Never fails: an unrecognized
@@ -217,6 +257,11 @@ func ScopeForRequest(method, path string) ScopeRequirement {
 		for _, shape := range runShapes {
 			if matchSegments(shape, rest) {
 				return ScopeNeedRun
+			}
+		}
+		for _, shape := range writeExcluded {
+			if matchSegments(shape, rest) {
+				return ScopeUnknown
 			}
 		}
 	}

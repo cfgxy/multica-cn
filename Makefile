@@ -105,6 +105,15 @@ SELFHOST_LOCAL_OVERRIDE := $(if $(wildcard $(SELFHOST_LOCAL_FILE)),-f $(SELFHOST
 SELFHOST_COMPOSE_FILES := $(strip -f docker-compose.selfhost.yml $(SELFHOST_LOCAL_OVERRIDE))
 SELFHOST_BUILD_COMPOSE_FILES := $(strip -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml $(SELFHOST_LOCAL_OVERRIDE))
 
+# RUYI-867: stamp selfhost-build backend images with the full 40-char HEAD SHA
+# so /health reports `commit` instead of `unknown` and can serve as immutable
+# release evidence. An explicitly provided COMMIT (make command line or shell
+# environment) always wins; only when unset does it default to this
+# checkout's full SHA. Scoped to selfhost-build: the dev-slot COMMIT
+# definitions below keep their short-SHA semantics.
+SELFHOST_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+SELFHOST_BUILD_COMMIT = $(if $(filter command line environment,$(origin COMMIT)),$(COMMIT),$(SELFHOST_COMMIT))
+
 selfhost: ## Create .env if needed, then pull and start the official images (overlays docker-compose.selfhost.local.yml when present)
 	$(REQUIRE_COMPOSE)
 	@if [ ! -f .env ]; then \
@@ -163,8 +172,8 @@ selfhost-build: ## Build backend/web from this checkout and start the stack (ove
 		fi; \
 		echo "==> Generated random JWT_SECRET, POSTGRES_PASSWORD, and MULTICA_VCS_SECRET_KEY"; \
 	fi
-	@echo "==> Building Multica from the current checkout..."
-	$(COMPOSE) $(SELFHOST_BUILD_COMPOSE_FILES) up -d --build
+	@echo "==> Building Multica from the current checkout (backend /health commit: $(SELFHOST_BUILD_COMMIT))"
+	@COMMIT="$(SELFHOST_BUILD_COMMIT)" $(COMPOSE) $(SELFHOST_BUILD_COMPOSE_FILES) up -d --build
 	@bash scripts/selfhost-wait.sh build
 
 selfhost-stop: ## Stop the self-hosted Docker Compose stack (overlays docker-compose.selfhost.local.yml when present)

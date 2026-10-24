@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   CredentialConnectorListSchema,
+  CredentialConnectorSchema,
   CredentialMetadataListSchema,
   CredentialMetadataSchema,
   CredentialAuditEventListSchema,
@@ -1345,6 +1346,36 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors`);
     return parseWithFallback(raw, CredentialConnectorListSchema, [], {
       endpoint: "GET /api/workspaces/{id}/credential-connectors",
+      redactContent: true,
+    });
+  }
+
+  async createCredentialConnector(workspaceId: string, data: {
+    name: string;
+    target_url: string;
+  }): Promise<CredentialConnector | null> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialConnectorSchema, null, {
+      endpoint: "POST /api/workspaces/{id}/credential-connectors",
+      redactContent: true,
+    });
+  }
+
+  async updateCredentialConnector(workspaceId: string, connectorId: string, data: {
+    name: string;
+    target_url: string;
+    status: string;
+    revision: number;
+  }): Promise<CredentialConnector | null> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors/${connectorId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialConnectorSchema, null, {
+      endpoint: "PUT /api/workspaces/{id}/credential-connectors/{connectorId}",
       redactContent: true,
     });
   }

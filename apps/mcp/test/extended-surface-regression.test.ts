@@ -96,6 +96,16 @@ const PURE_READ_TOOLS = [
   "list_files",
   "get_file_metadata",
   "read_file_chunk",
+  // Clause governance reads (RUYI-868): all six route GETs only.
+  "list_clauses",
+  "get_clause",
+  "search_clauses",
+  "get_clause_reconciliation",
+  "get_prompt_versions",
+  "list_prompt_proposals",
+  // The proposal preview composes the POST .../preview call but is carrier-
+  // read-only (no row lock, no state change), so it reads as readOnlyHint.
+  "preview_prompt_proposal",
 ] as const;
 
 const CAS_TOOLS = [
