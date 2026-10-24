@@ -8463,6 +8463,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
+	} else if snapPlan == nil && env.LocalWorktree != nil {
+		// The worktree can later adopt an already-managed branch. Keep the exact
+		// successful injection context so that transition can remove the current
+		// managed block before checkout and rebuild it from the adopted tree.
+		env.LocalWorktree.BindRuntimeConfig(provider, taskCtx)
 	}
 	// An exempt turn runs in the user's directory without having queued for it,
 	// so a sibling coding task may be writing to the same tree right now. That
@@ -8901,6 +8906,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
 		} else {
 			runtimeBrief = freshBrief
+			if snapPlan == nil && env.LocalWorktree != nil {
+				env.LocalWorktree.BindRuntimeConfig(provider, taskCtx)
+			}
 			if providerNeedsInlineSystemPrompt(provider) {
 				execOpts.SystemPrompt = runtimeBrief
 			}

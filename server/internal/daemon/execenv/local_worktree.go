@@ -267,6 +267,30 @@ type LocalWorktree struct {
 	// Set by the daemon when a pre-commit step failed in a way that would make
 	// the committed branch wrong (see AbortWithReason).
 	aborted error
+	// runtimeConfig is installed by the daemon after it successfully injects the
+	// task brief. It intentionally stays process-local: Prepare crosses a JSON
+	// helper boundary before injection exists, while branch adoption needs it
+	// later to move the managed block across a checkout.
+	runtimeConfig *runtimeConfigBinding
+}
+
+// BindRuntimeConfig records the successfully injected runtime brief so branch
+// adoption can remove and restore it without turning a tracked config file into
+// an uncommitted checkout conflict. Snapshot worktrees never call this: their
+// runtime file lives in an overlay upper layer rather than this Git worktree.
+func (w *LocalWorktree) BindRuntimeConfig(provider string, ctx TaskContextForEnv) {
+	if w == nil {
+		return
+	}
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
+	ctx.ManagedBranch = w.Branch
+	ctx.BaseCommit = w.BaseCommit
+	w.runtimeConfig = &runtimeConfigBinding{
+		workDir:  w.WorkDir,
+		provider: provider,
+		context:  ctx,
+	}
 }
 
 // MarshalJSON / UnmarshalJSON carry this struct's unexported state across the
