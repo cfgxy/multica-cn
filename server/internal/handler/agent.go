@@ -1736,6 +1736,13 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, wsUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create agent")
+		return
+	}
+	if !allowStaticClauseRefsWrite(w, r.Context(), qtx, wsUUID, map[carrierRef]string{{scope: "agent", id: wsUUID}: req.Instructions}) {
+		return
+	}
 
 	created, err := qtx.CreateAgent(r.Context(), db.CreateAgentParams{
 		WorkspaceID:              wsUUID,
@@ -2577,8 +2584,13 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// agent-row write and the queued/deferred row migration commit atomically
 	// (RUYI-224).
 	rebinding := params.RuntimeID.Valid && params.RuntimeID != existing.RuntimeID
-	updated, migratedTasks, err := h.updateAgentPersisted(r.Context(), params, rebinding)
+	updated, migratedTasks, err := h.updateAgentPersisted(r.Context(), params, existing.WorkspaceID, rebinding)
 	if err != nil {
+		var refErr *staticClauseReferenceError
+		if errors.As(err, &refErr) {
+			writeError(w, http.StatusConflict, refErr.Error())
+			return
+		}
 		// 0 rows with an expected_revision means a concurrent config write
 		// won the race between the handler's read and the UPDATE — same
 		// recovery as UpdateProject: reload and answer with the actual
@@ -2799,8 +2811,9 @@ func (h *Handler) resolveAgentProviderForContext(ctx context.Context, workspaceI
 // runtime's claim candidates, with no error and no log. Returns the number of
 // queue rows migrated (always 0 when not rebinding). Runtime rebinds lock all
 // chat sessions first, matching the chat model save and enqueue lock order.
-func (h *Handler) updateAgentPersisted(ctx context.Context, params db.UpdateAgentParams, rebinding bool) (db.Agent, int64, error) {
-	if !rebinding {
+func (h *Handler) updateAgentPersisted(ctx context.Context, params db.UpdateAgentParams, workspaceID pgtype.UUID, rebinding bool) (db.Agent, int64, error) {
+	writeInstructions := params.Instructions.Valid
+	if !rebinding && !writeInstructions {
 		updated, err := h.Queries.UpdateAgent(ctx, params)
 		return updated, 0, err
 	}
@@ -2810,8 +2823,22 @@ func (h *Handler) updateAgentPersisted(ctx context.Context, params db.UpdateAgen
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
-	if _, err := qtx.LockChatSessionsForAgentRuntimeBind(ctx, params.ID); err != nil {
-		return db.Agent{}, 0, fmt.Errorf("lock chat sessions for runtime rebind: %w", err)
+	if writeInstructions {
+		if err := lockClauseReferenceWorkspaceTx(ctx, qtx, workspaceID); err != nil {
+			return db.Agent{}, 0, fmt.Errorf("lock clause-reference workspace: %w", err)
+		}
+		if err := validateStaticClauseRefsTx(ctx, qtx, workspaceID, map[carrierRef]string{{scope: "agent", id: params.ID}: params.Instructions.String}); err != nil {
+			var refErr *staticClauseReferenceError
+			if errors.As(err, &refErr) {
+				return db.Agent{}, 0, err
+			}
+			return db.Agent{}, 0, fmt.Errorf("validate clause references: %w", err)
+		}
+	}
+	if rebinding {
+		if _, err := qtx.LockChatSessionsForAgentRuntimeBind(ctx, params.ID); err != nil {
+			return db.Agent{}, 0, fmt.Errorf("lock chat sessions for runtime rebind: %w", err)
+		}
 	}
 	updated, err := qtx.UpdateAgent(ctx, params)
 	if err != nil {
