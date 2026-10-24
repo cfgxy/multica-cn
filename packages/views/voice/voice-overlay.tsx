@@ -125,6 +125,14 @@ function voiceFailureText(failure: VoiceFailure, t: VoiceT): string {
     capability_mismatch: t(($) => $.failure.unavailable.capability_mismatch),
     credential_missing: t(($) => $.failure.unavailable.credential_missing),
     credential_invalid: t(($) => $.failure.unavailable.credential_invalid),
+    voice_unconfigured: t(($) => $.failure.unavailable.voice_unconfigured),
+    voice_provider_missing: t(($) => $.failure.unavailable.voice_provider_missing),
+    voice_provider_disabled: t(($) => $.failure.unavailable.voice_provider_disabled),
   };
-  return reasons[rejection.reason];
+  // A wire reason added after this build renders the generic message rather
+  // than `undefined` — the enum above is exhaustive, so this only guards a
+  // future enum member that a stale consumer union hasn't caught up with.
+  const text = reasons[rejection.reason];
+  if (text !== undefined) return text;
+  return t(($) => $.failure.connection_failed);
 }

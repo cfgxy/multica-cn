@@ -393,6 +393,16 @@ export function AgentCreatePanel({
       editorRef.current?.insertMarkdownAtEnd(text);
     },
   });
+  // `start()` silently no-ops without a targetable agent, so the entry must
+  // never look clickable in those states (RUYI-866, "never disable
+  // silently"): no actor picked yet explains the pick-first path, and a squad
+  // actor explains the agent-only limitation with its own reason.
+  const voiceDisabledReason =
+    actor?.type === "agent"
+      ? null
+      : actor?.type === "squad"
+        ? tVoice(($) => $.button.disabled_squad)
+        : tVoice(($) => $.button.disabled_no_target);
 
   useEffect(() => {
     // Defer focus so it lands after the dialog's focus trap has settled —
@@ -884,13 +894,10 @@ export function AgentCreatePanel({
               inert on flex items. */}
         <div className="grid grid-cols-[auto_1fr] items-center gap-x-2 gap-y-2.5 border-t px-4 py-3 shrink-0 sm:flex sm:flex-wrap">
           <div className="flex min-h-7 items-center gap-2 sm:mr-auto">
-            {/* RUYI-626 stage 1: direct connect ships mobile-only — the
-                desktop/web entry is a disabled mic that says so (never
-                silent). */}
             <VoiceButton
               onStart={voice.start}
               disabled={submitting || gate.uploading}
-              disabledReason={tVoice(($) => $.button.disabled_stage1)}
+              disabledReason={voiceDisabledReason}
             />
             {keepOpen && sentCount > 0 && (
               <span className="text-caption text-emerald-600 dark:text-emerald-400">
