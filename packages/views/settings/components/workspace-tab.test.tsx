@@ -23,9 +23,19 @@ const workspaceRef = vi.hoisted(() => ({
 const membersRef = vi.hoisted(() => ({
   current: [{ user_id: "user-1", role: "owner" as "owner" | "admin" | "member" }],
 }));
+const promqlRulesRef = vi.hoisted(() => ({
+  current: { rules: [], prometheus_configured: false },
+}));
 
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: membersRef.current, isFetched: true }),
+  useQuery: (options: { queryKey: readonly unknown[] }) =>
+    options.queryKey[0] === "workspace-promql-rules"
+      ? {
+          data: promqlRulesRef.current,
+          isPending: false,
+          isError: false,
+        }
+      : { data: membersRef.current, isFetched: true },
   // The host-backpressure card's save mutation (RUYI-618): never fired by
   // these tab tests, only hooked at mount.
   useMutation: () => ({ mutateAsync: vi.fn(() => Promise.reject(new Error("not under test"))), isPending: false }),
