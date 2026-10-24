@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -143,7 +144,16 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 		if pr, err := provider.ParsePullRequest(body); err != nil {
 			slog.Warn("vcs: bad pull_request payload", "provider", conn.Provider, "err", err)
 		} else {
-			h.mirrorVCSPullRequest(r.Context(), conn, pr)
+			// A 5xx here is deliberate (RUYI-865 P1): the mirror only fails
+			// when a merged-PR auto-advance could not commit (upsert, or the
+			// done write + card cascade). Answering 5xx makes the provider
+			// re-deliver and drives the retry that converges the settle;
+			// no-op replays of already-converged deliveries still ack 202.
+			if err := h.mirrorVCSPullRequest(r.Context(), conn, pr); err != nil {
+				slog.Error("vcs webhook: pull_request processing failed", "provider", conn.Provider, "err", err)
+				writeError(w, http.StatusInternalServerError, "pull_request processing failed")
+				return
+			}
 		}
 	case vcs.EventCIStatus:
 		if st, err := provider.ParseCIStatus(body); err != nil {
@@ -157,10 +167,16 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) {
+// mirrorVCSPullRequest returns an error only when a merged-PR auto-advance
+// fails to commit (RUYI-865 P1): that is the one failure the caller must
+// not ack, because the done transition's card cascade must land in the same
+// commit, and a 5xx makes the provider re-deliver so nothing is stranded.
+// Every other step stays best-effort — a redelivery replays the idempotent
+// upserts and converges — so their failures are logged and return nil.
+func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) error {
 	if ev.RepoOwner == "" || ev.RepoName == "" || ev.Number == 0 {
 		slog.Warn("vcs: pull_request missing repo identity", "provider", conn.Provider)
-		return
+		return nil
 	}
 
 	pr, err := h.Queries.UpsertVCSPullRequest(ctx, db.UpsertVCSPullRequestParams{
@@ -187,8 +203,12 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 		HeadSha:         ev.HeadSHA,
 	})
 	if err != nil {
+		// The upsert is the whole point of the delivery: without the PR row
+		// the link rows and the auto-advance have nothing to hang off, and a
+		// redelivery will simply retry the upsert. Fail the delivery (5xx)
+		// rather than ack it.
 		slog.Warn("vcs: upsert pr failed", "err", err)
-		return
+		return err
 	}
 
 	// Out-of-order guard for the link metadata. UpsertVCSPullRequest keeps the
@@ -203,7 +223,8 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	// now(), which is never strictly after the stored value, so it proceeds.)
 	evUpdatedAt := parseGHTimeRequired(ev.UpdatedAt)
 	if pr.PrUpdatedAt.Valid && evUpdatedAt.Valid && pr.PrUpdatedAt.Time.After(evUpdatedAt.Time) {
-		return
+		// The newer event already settled this delivery: ack it.
+		return nil
 	}
 
 	workspaceID := uuidToString(conn.WorkspaceID)
@@ -299,7 +320,13 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 				continue
 			}
 			if counts.OpenCount == 0 && counts.MergedWithCloseIntentCount > 0 {
-				h.advanceIssueToDone(ctx, issue, workspaceID)
+				if err := h.advanceIssueToDone(ctx, issue, workspaceID); err != nil {
+					// The auto-advance (status write + card cascade) is
+					// the one failure this delivery must not ack: the 5xx
+					// makes the provider re-deliver and the idempotent
+					// settle converges on the retry.
+					return fmt.Errorf("vcs: advance issue to done: %w", err)
+				}
 			}
 		}
 	}
@@ -309,6 +336,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,
 	})
+	return nil
 }
 
 func (h *Handler) mirrorVCSCIStatus(ctx context.Context, conn db.VcsConnection, ev vcs.CIStatusEvent) {

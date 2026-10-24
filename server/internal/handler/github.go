@@ -1201,7 +1201,17 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	case "installation":
 		h.handleInstallationEvent(ctx, body)
 	case "pull_request":
-		h.handlePullRequestEvent(ctx, body)
+		// A 5xx here is deliberate (RUYI-865 P1): the pull_request handler
+		// only fails when a merged-PR auto-advance could not commit (upsert,
+		// or the done write + card cascade). Answering 5xx makes GitHub
+		// re-deliver and drives the retry that converges the settle; every
+		// other outcome — including no-op replays of already-converged
+		// deliveries — still acks 202.
+		if err := h.handlePullRequestEvent(ctx, body); err != nil {
+			slog.Error("github webhook: pull_request processing failed", "err", err)
+			writeError(w, http.StatusInternalServerError, "pull_request processing failed")
+			return
+		}
 	case "pull_request_review":
 		h.triggerPRRefreshFromReviewEvent(ctx, body)
 	case "check_suite", "check_run", "status":
@@ -1381,24 +1391,24 @@ type ghPullRequestPayload struct {
 	} `json:"installation"`
 }
 
-func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
+func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error {
 	var p ghPullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		slog.Warn("github: bad pull_request payload", "err", err)
-		return
+		return nil
 	}
 	if p.Installation.ID == 0 {
-		return
+		return nil
 	}
 	insts, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, p.Installation.ID)
 	if err != nil {
 		slog.Warn("github: lookup installation failed", "err", err)
-		return
+		return nil
 	}
 	if len(insts) == 0 {
 		// Webhook from an installation we never wired up — nothing we
 		// can attribute to a workspace, so drop it silently.
-		return
+		return nil
 	}
 	// #4855 lets one GitHub App installation bind to several workspaces. A
 	// repo's events belong to every bound workspace, so fan the delivery out:
@@ -1415,14 +1425,25 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 	// links, and treat that verdict as authoritative for the whole delivery, so
 	// the mirror pass cannot re-derive a different answer. See closeIntentPolicy.
 	closePolicy := h.resolveCloseIntentPolicy(ctx, insts, &p)
+	// A mirror error means a merged-PR auto-advance failed to commit (the
+	// PR row's upsert, or the done write + card cascade). Propagate it to the
+	// webhook so the delivery answers 5xx and GitHub re-delivers; the settle
+	// is idempotent, so the retry converges without duplicating audit rows
+	// or synced cards.
+	var mirrorErr error
 	for _, inst := range insts {
-		h.mirrorPullRequestForWorkspace(ctx, inst.WorkspaceID, inst.InstallationID, &p, closePolicy)
+		if err := h.mirrorPullRequestForWorkspace(ctx, inst.WorkspaceID, inst.InstallationID, &p, closePolicy); err != nil {
+			if mirrorErr == nil {
+				mirrorErr = err
+			}
+		}
 	}
 	// The PR row(s) now carry the new head; ask the API pipeline for the
 	// authoritative CI + mergeability snapshot for that head. The webhook is
 	// only the doorbell — its own mergeable/checks payload is not used for
 	// display anymore (MUL-5265).
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	return mirrorErr
 }
 
 // closeIntentPolicy decides which (closing identifier, workspace) pairs this
@@ -1711,7 +1732,13 @@ func (h *Handler) triggerPRRefreshFromCIEvent(ctx context.Context, body []byte) 
 // carry close_intent, so they can never advance an issue to done. This function
 // only ever narrows that verdict — it cannot grant close intent the policy
 // withheld.
-func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype.UUID, installationID int64, p *ghPullRequestPayload, closePolicy closeIntentPolicy) {
+// It returns an error only when a merged-PR auto-advance fails (RUYI-865
+// P1): that is the one failure the caller must not paper over, because the
+// done transition's card cascade must land in the same commit, and a 5xx
+// makes the provider re-deliver so nothing is stranded. Every other step
+// stays best-effort — a redelivery replays the idempotent upserts and
+// converges — so their failures are logged and return nil.
+func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype.UUID, installationID int64, p *ghPullRequestPayload, closePolicy closeIntentPolicy) error {
 	state := derivePRState(p.PullRequest.State, p.PullRequest.Draft, p.PullRequest.Merged)
 	mergeable, clearMergeable := derivePRMergeableState(p.Action, p.PullRequest.MergeableState, baseRefChanged(p.Changes))
 	pr, err := h.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
@@ -1739,8 +1766,12 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		ChangedFiles:        p.PullRequest.ChangedFiles,
 	})
 	if err != nil {
+		// The upsert is the whole point of the delivery: without the PR row
+		// the link rows and the auto-advance have nothing to hang off, and a
+		// redelivery will simply retry the upsert. Fail the delivery (5xx)
+		// rather than ack it.
 		slog.Warn("github: upsert pr failed", "err", err)
-		return
+		return err
 	}
 
 	workspaceID := uuidToString(wsID)
@@ -1888,7 +1919,13 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 					continue
 				}
 				if counts.OpenCount == 0 && counts.MergedWithCloseIntentCount > 0 {
-					h.advanceIssueToDone(ctx, issue, workspaceID)
+					if err := h.advanceIssueToDone(ctx, issue, workspaceID); err != nil {
+						// The auto-advance (status write + card cascade) is
+						// the one failure this delivery must not ack: the
+						// 5xx makes GitHub re-deliver and the idempotent
+						// settle converges on the retry.
+						return fmt.Errorf("github: advance issue to done: %w", err)
+					}
 				}
 			}
 		}
@@ -1902,6 +1939,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,
 	})
+	return nil
 }
 
 // derivePRMergeableState resolves the upsert behaviour for the PR row's
@@ -2101,16 +2139,51 @@ func (h *Handler) lookupIssueByIdentifier(ctx context.Context, workspaceID pgtyp
 	return issue, true
 }
 
-func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) {
-	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
-		ID:          issue.ID,
-		Status:      "done",
-		WorkspaceID: issue.WorkspaceID,
-	})
+// advanceIssueToDone moves a linked issue into done on a merged PR and, in
+// the SAME transaction, settles its done-side card cascade (RUYI-865 P1): a
+// failed cancel batch rolls back the status write instead of leaving a
+// committed done status behind open cards. It returns an error so the
+// webhook entry points answer 5xx and let the provider's re-delivery drive
+// the retry — the settle is idempotent (CAS + audit-only-when-flipped), so
+// a redelivery after a committed transition converges without duplicating
+// audit rows or events.
+func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, workspaceID string) error {
+	if h.TxStarter == nil {
+		return errors.New("advance issue to done requires transaction starter")
+	}
+	var flipped []db.IssueDecision
+	updated, err := func() (db.Issue, error) {
+		tx, err := h.TxStarter.Begin(ctx)
+		if err != nil {
+			return db.Issue{}, err
+		}
+		defer tx.Rollback(ctx)
+		qtx := h.Queries.WithTx(tx)
+		updated, err := qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+			ID:          issue.ID,
+			Status:      "done",
+			WorkspaceID: issue.WorkspaceID,
+		})
+		if err != nil {
+			return db.Issue{}, err
+		}
+		// The card cascade commits with the status write: the one-sided done
+		// gate no-ops when nothing flipped, so a redelivery of an already
+		// converged transition appends no audit row.
+		flipped, err = h.settleDoneCascadeInTx(ctx, qtx, updated, "github_pr_merged")
+		if err != nil {
+			return db.Issue{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return db.Issue{}, err
+		}
+		return updated, nil
+	}()
 	if err != nil {
 		slog.Warn("github: advance issue to done failed", "err", err)
-		return
+		return err
 	}
+	h.publishDoneCascade(ctx, updated, flipped)
 
 	// Fire the platform parent-notification path on the same transition the
 	// HTTP UpdateIssue / BatchUpdateIssues paths use. A merged PR is one of
@@ -2118,14 +2191,10 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 	// it here would leave the parent silent for the dominant completion path.
 	// notifyParentOfChildDone re-checks every guard (prev != done, parent
 	// exists, parent not terminal), so calling it unconditionally is safe.
+	// Best-effort post-commit side effects: the done write and its card
+	// cascade have committed, so these never fail the request again.
 	h.notifyParentOfChildDone(ctx, issue, updated)
 	h.completeSingleIssueDecisionRequest(ctx, updated)
-	// RUYI-865: a PR merge advancing the issue into done settles its
-	// decision backlog on the same transition, like the HTTP entry points.
-	// The issue moved from a non-done status (the caller guards terminal
-	// statuses before calling), so enteredDoneCategory is the no-op check
-	// only when the write was already done at read time.
-	h.cancelOpenDecisionCardsForDone(ctx, issue, updated, "github_pr_merged")
 	// RUYI-690: same issue_done machine predicate as the HTTP paths — a PR
 	// merge is a done transition, so suspensions waiting on this issue
 	// auto-resume. Best-effort, matching the notification above.
@@ -2142,6 +2211,7 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 		"creator_id":     uuidToString(issue.CreatorID),
 		"source":         "github_pr_merged",
 	})
+	return nil
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
