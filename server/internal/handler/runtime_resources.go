@@ -89,7 +89,10 @@ func (h *Handler) GetRuntimeResources(w http.ResponseWriter, r *http.Request) {
 	// answer, not a 404 (the caller is authorized; the host simply does
 	// not exist), and not an error state.
 	if !rt.DaemonID.Valid || rt.DaemonID.String == "" {
-		writeJSON(w, http.StatusOK, runtimeResourcesResponse{Configured: h.Prometheus.Enabled()})
+		writeJSON(w, http.StatusOK, runtimeResourcesResponse{
+			Configured: h.Prometheus.Enabled(),
+			Series:     map[string][]promquery.Series{},
+		})
 		return
 	}
 	daemonID := rt.DaemonID.String

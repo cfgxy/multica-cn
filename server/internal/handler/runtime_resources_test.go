@@ -154,9 +154,9 @@ func TestGetRuntimeResources_EmptyStates(t *testing.T) {
 		t.Fatalf("no-samples: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var empty struct {
-		Configured  bool   `json:"configured"`
-		HasDaemon   bool   `json:"has_daemon"`
-		SampledAt   string `json:"sampled_at"`
+		Configured bool   `json:"configured"`
+		HasDaemon  bool   `json:"has_daemon"`
+		SampledAt  string `json:"sampled_at"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &empty); err != nil {
 		t.Fatal(err)
@@ -181,13 +181,17 @@ func TestGetRuntimeResources_EmptyStates(t *testing.T) {
 		t.Fatalf("no-daemon: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	var noDaemon struct {
-		HasDaemon bool `json:"has_daemon"`
+		HasDaemon bool            `json:"has_daemon"`
+		Series    json.RawMessage `json:"series"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &noDaemon); err != nil {
 		t.Fatal(err)
 	}
 	if noDaemon.HasDaemon {
 		t.Fatalf("no-daemon: has_daemon must be false, got %+v", noDaemon)
+	}
+	if string(noDaemon.Series) != "{}" {
+		t.Fatalf("no-daemon: series must be an empty object, got %s", noDaemon.Series)
 	}
 }
 
