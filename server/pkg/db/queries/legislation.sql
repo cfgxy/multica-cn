@@ -192,6 +192,11 @@ RETURNING id;
 
 -- --- Structure baseline (E4) ---
 
+-- name: LockClauseReferenceWorkspace :exec
+-- All writes that can change the active clause universe or four-tier static
+-- text acquire this transaction lock before taking carrier row locks.
+SELECT pg_advisory_xact_lock(hashtextextended(@workspace_id::text, 869));
+
 -- name: GetWorkspacePromptContent :one
 -- Read-only effective content of the workspace carrier (no row lock): the
 -- legislation preview and the retrospective's duplicate pre-check read the
@@ -210,6 +215,28 @@ WHERE squad.id = $1 AND squad.workspace_id = $2;
 -- name: GetAgentPromptContent :one
 SELECT COALESCE(instructions, '')::text AS effective_content FROM agent
 WHERE agent.id = $1 AND agent.workspace_id = $2;
+
+-- name: ListWorkspaceCarrierTexts :many
+-- The reference-contract universe (RUYI-869): every carrier tier in the
+-- workspace — the one workspace row, every project/squad row and every
+-- agent row. The legislation gate reads it inside the enactment
+-- transaction: the carriers it row-locks see a consistent snapshot, and
+-- the ones it does not lock are exactly the tiers whose static text a
+-- remove could orphan without the gate ever seeing it. No condition
+-- filtering (this is the reference check, not the injection set) and no
+-- LIMIT (a truncated scan would leave a fail-closed check incomplete).
+SELECT id AS scope_id, COALESCE(context, '')::text AS effective_content, 'workspace'::text AS scope
+FROM workspace WHERE id = sqlc.arg('workspace_id')::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'project'
+FROM project WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'squad'
+FROM squad WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'agent'
+FROM agent WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+ORDER BY scope, scope_id;
 
 -- name: GetPromptStructureBaseline :one
 SELECT * FROM prompt_structure_baseline

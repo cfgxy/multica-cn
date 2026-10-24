@@ -639,10 +639,23 @@ func (h *Handler) commitPromptGovernanceVersion(w http.ResponseWriter, r *http.R
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
+	if isFourTierPromptScope(scope) {
+		if err := lockClauseReferenceWorkspaceTx(ctx, qtx, workspaceID); err != nil {
+			slog.Error("prompt clause-reference lock failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to save prompt version")
+			return
+		}
+	}
 
 	currentContent, ok := h.lockScopeEntity(w, r, qtx, scope, workspaceID, scopeID)
 	if !ok {
 		return
+	}
+	if isFourTierPromptScope(scope) {
+		ref := carrierRef{scope: string(scope), id: scopeID}
+		if !allowStaticClauseRefsWrite(w, ctx, qtx, workspaceID, map[carrierRef]string{ref: pw.content}) {
+			return
+		}
 	}
 
 	// Empty-content guard (RUYI-213): a blank incoming content must never

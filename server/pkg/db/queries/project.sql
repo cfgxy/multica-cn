@@ -48,7 +48,7 @@ INSERT INTO project (
 UPDATE project SET
     title = COALESCE(sqlc.narg('title'), title),
     description = sqlc.narg('description'),
-    instructions = sqlc.narg('instructions'),
+    instructions = CASE WHEN @instructions_set::boolean THEN sqlc.narg('instructions') ELSE instructions END,
     icon = sqlc.narg('icon'),
     status = COALESCE(sqlc.narg('status'), status),
     priority = COALESCE(sqlc.narg('priority'), priority),
