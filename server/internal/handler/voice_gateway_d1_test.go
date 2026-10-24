@@ -695,13 +695,13 @@ func TestComposeVoiceSetupFrame_ToolsReserved(t *testing.T) {
 		"temperature": json.RawMessage(`0.7`),
 		"tools":       json.RawMessage(`[{"functionDeclarations":[{"name":"shadow_tool"}]}]`),
 	}
-	setup := composeVoiceSetupFrame("instructions", "m", advanced)["setup"].(map[string]any)
+	setup := composeVoiceSetupFrame("instructions", "m", advanced, []map[string]any{voiceSkillFunctionDeclaration()})["setup"].(map[string]any)
 
 	// RUYI-692 D1 rule still holds: a USER-supplied tools list from the
 	// advanced JSON must never reach the provider — a shadow declaration
 	// with no server-side executor would stall the session.
 	var advancedInjected bool
-	decls := voiceMCPBridgeToolNames()
+	decls := []string{"load_skill"}
 	for _, group := range setup["tools"].([]map[string]any) {
 		for _, raw := range group["functionDeclarations"].([]map[string]any) {
 			if raw["name"] == "shadow_tool" {
@@ -721,17 +721,6 @@ func TestComposeVoiceSetupFrame_ToolsReserved(t *testing.T) {
 	if raw, ok := setup["temperature"].(json.RawMessage); !ok || string(raw) != "0.7" {
 		t.Fatalf("non-reserved advanced passthrough broken: %v", setup["temperature"])
 	}
-}
-
-// voiceMCPBridgeToolNames lists the registered bridge tool names, keeping
-// the test decoupled from the exact face so a new tool registers in one
-// place.
-func voiceMCPBridgeToolNames() []string {
-	names := make([]string, 0, len(voiceMCPBridgeTools()))
-	for _, tool := range voiceMCPBridgeTools() {
-		names = append(names, tool.name)
-	}
-	return names
 }
 
 // containsAllNames reports whether every want name appears in the setup's

@@ -2,10 +2,8 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -742,30 +740,6 @@ func TestVoiceAgentVisibility_ContextAndMCP(t *testing.T) {
 		t.Errorf("agent owner lost private mention semantics: %+v", ownerContext)
 	}
 
-	memberOutput, err := execVoiceListAgents(testHandler, ctx, memberSession, parseUUID(testWorkspaceID), nil)
-	if err != nil {
-		t.Fatalf("list_agents as plain member: %v", err)
-	}
-	for _, forbidden := range []string{privateAgentID, "Voice Private Agent", "private agent description"} {
-		if strings.Contains(string(memberOutput), forbidden) {
-			t.Errorf("list_agents leaked private agent value %q: %s", forbidden, memberOutput)
-		}
-	}
-	for _, want := range []string{allowedAgentID, "Voice Allowed Agent", "allowed agent description"} {
-		if !strings.Contains(string(memberOutput), want) {
-			t.Errorf("list_agents omitted authorized agent value %q: %s", want, memberOutput)
-		}
-	}
-
-	ownerOutput, err := execVoiceListAgents(testHandler, ctx, ownerSession, parseUUID(testWorkspaceID), nil)
-	if err != nil {
-		t.Fatalf("list_agents as agent owner: %v", err)
-	}
-	for _, want := range []string{privateAgentID, "Voice Private Agent", "private agent description"} {
-		if !strings.Contains(string(ownerOutput), want) {
-			t.Errorf("list_agents omitted owner-visible agent value %q: %s", want, ownerOutput)
-		}
-	}
 }
 
 // TestVoiceChatContext_PlainVoiceFallback: with NO chat link the injection
@@ -813,328 +787,31 @@ func TestVoiceChatContext_PlainVoiceFallback(t *testing.T) {
 	c2.Close()
 }
 
-// TestVoiceMCPCBridge_RealDataAndErrors pins link ③: the provider's tool
-// calls execute server-side against REAL rows (the acceptance anchor:
-// list_workspaces / list_projects return the seeded data, never synthesis),
-// the permission boundary is the session user's own membership, and
-// failures come back as structured {error:{code,message}} — a drifted
-// provider can never fabricate a result.
-func TestVoiceMCPCBridge_RealDataAndErrors(t *testing.T) {
+func TestVoiceIssueContextInjection(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	provider := newStubVoiceProvider(t)
-	agentID, _ := seedUsableVoiceSetup(t, "MCP Bridge", `{"model":"stubby-live-1"}`)
+	agentID, _ := seedUsableVoiceSetup(t, "Issue Context", `{"model":"stubby-live-1"}`)
+	issueID := dbfx.Issue(t, "Voice Issue Entry Context", testutil.Cols{
+		"description": "Context opened from an Issue comment.",
+		"status":      "in_progress",
+	})
 	srv := voiceGatewayServer(t)
 
-	// The acceptance anchor: real seeded data.
-	var wsName, wsSlug string
-	dbfx.QueryRow(t, `SELECT name, slug FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&wsName, &wsSlug)
-	projectID := dbfx.Project(t, "Voice MCP Anchor")
-	// A workspace the session user is NOT a member of.
-	dbfx.Workspace(t, "Voice MCP Other", "voice-mcp-other-ws")
-
-	conn := dialVoiceSession(t, srv, agentID)
+	conn := dialVoiceSessionChatLinked(t, srv, agentID, "?issue_id="+issueID)
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, first, err := conn.ReadMessage(); err != nil {
 		t.Fatalf("read setupComplete: %v", err)
 	} else if !strings.Contains(string(first), "setupComplete") {
 		t.Fatalf("expected setupComplete, got %s", first)
 	}
-	// The setup carries the bridge tool face (RUYI-874 ③: the SERVER
-	// composes it; the advanced injection stays rejected by d1's test).
-	// The stub records the whole FRAME ({"setup": {...}}) and decodes it
-	// from JSON, so tools sits under frame["setup"] and is []any here —
-	// walk it without the typed assertion containsAllNames uses.
-	frame := provider.setupsRecorded(t)[0]
-	setup, ok := frame["setup"].(map[string]any)
-	if !ok {
-		t.Fatalf("setup frame shape wrong: %v", frame)
-	}
-	declNames := map[string]bool{}
-	for _, groupAny := range toAnySlice(setup["tools"]) {
-		group, ok := groupAny.(map[string]any)
-		if !ok {
-			continue
-		}
-		for _, declAny := range toAnySlice(group["functionDeclarations"]) {
-			decl, ok := declAny.(map[string]any)
-			if !ok {
-				continue
-			}
-			if name, _ := decl["name"].(string); name != "" {
-				declNames[name] = true
-			}
-		}
-	}
-	for _, want := range voiceMCPBridgeToolNames() {
-		if !declNames[want] {
-			t.Fatalf("setup tools missing the bridge tool %q: %v", want, declNames)
-		}
-	}
-
-	stubConn := provider.gatewayConn(t)
-	provider.sendDownstream(stubConn, map[string]any{
-		"toolCall": map[string]any{"functionCalls": []any{
-			map[string]any{"id": "m1", "name": "list_workspaces", "args": map[string]any{}},
-			map[string]any{"id": "m2", "name": "list_projects", "args": map[string]any{"workspace": testWorkspaceID}},
-			map[string]any{"id": "m3", "name": "get_project", "args": map[string]any{"workspace": "voice-mcp-other-ws", "project_id": projectID}},
-			map[string]any{"id": "m4", "name": "search", "args": map[string]any{"q": "x"}},
-		}},
-	})
-	echo := waitProviderFrame(t, provider, `"m4"`)
-
-	// m1: the REAL workspaces the user belongs to — the seeded name and
-	// slug must appear (fabrication would fail to name them).
-	if !strings.Contains(echo, wsName) || !strings.Contains(echo, wsSlug) {
-		t.Errorf("list_workspaces result does not carry the real workspace: %s", echo)
-	}
-	// m2: the REAL project row the test seeded.
-	if !strings.Contains(echo, "Voice MCP Anchor") || !strings.Contains(echo, projectID) {
-		t.Errorf("list_projects result missing the seeded project: %s", echo)
-	}
-	// m3: the session user is not a member of "voice-mcp-other-ws" → the
-	// structured permission_denied, the boundary held (the denial message
-	// names the SLUG the model passed, no foreign data).
-	if !strings.Contains(echo, "permission_denied") || !strings.Contains(echo, "voice-mcp-other-ws") {
-		t.Errorf("non-member workspace was not denied: %s", echo)
-	}
-	// m4: unknown tool → structured unknown_tool, never a fabricated result.
-	if !strings.Contains(echo, "unknown_tool") {
-		t.Errorf("unknown tool was not reported as such: %s", echo)
-	}
-	// Every call answered exactly once in one frame — the echo is the
-	// provider's own result path; no fabrication channel exists.
-	if n := strings.Count(echo, `"id":"m`); n != 4 {
-		t.Errorf("want 4 function responses in the echo, got %d: %s", n, echo)
-	}
-	// Success carries NO error object: m1/m2 payloads are real data.
-	for _, real := range []string{`"total":`, `"workspaces":`, `"projects":`} {
-		if !strings.Contains(echo, real) {
-			t.Errorf("real result field %q missing: %s", real, echo)
+	provider.gatewayConn(t)
+	contextTurn := waitProviderFrame(t, provider, "### Issue context")
+	for _, want := range []string{"Voice Issue Entry Context", "Context opened from an Issue comment.", "in_progress"} {
+		if !strings.Contains(contextTurn, want) {
+			t.Errorf("Issue context omitted %q: %s", want, contextTurn)
 		}
 	}
 	conn.Close()
-
-	// The bridge's own execution lands in the facts layer (call + result
-	// pairs, evidence-referenced) — the write-back stays consistent.
-	waitForVoiceFacts(t, agentID, 8)
-}
-
-// TestVoiceMCPBridge_DirectExecution pins the executor contract at the
-// function level (no relay race): the session's own user identity runs the
-// read, the permission check, and the failure path.
-func TestVoiceMCPBridge_DirectExecution(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	// The gateway dials its provider through the stub the test owns; this
-	// executor-level test never reads its frames, so the return is dropped.
-	newStubVoiceProvider(t)
-	agentID, _ := seedUsableVoiceSetup(t, "MCP Direct", `{"model":"stubby-live-1"}`)
-	srv := voiceGatewayServer(t)
-	conn := dialVoiceSession(t, srv, agentID)
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, first, err := conn.ReadMessage(); err != nil {
-		t.Fatalf("read setupComplete: %v", err)
-	} else if !strings.Contains(string(first), "setupComplete") {
-		t.Fatalf("expected setupComplete, got %s", first)
-	}
-
-	// The session row the executor runs under: same user, same workspace.
-	var sessionID string
-	if err := testPool.QueryRow(context.Background(),
-		`SELECT id::text FROM live_session WHERE agent_id = $1::uuid AND status = 'active'`,
-		agentID).Scan(&sessionID); err != nil {
-		t.Fatalf("find active session: %v", err)
-	}
-	session, err := testHandler.Queries.GetLiveSession(context.Background(), parseUUID(sessionID))
-	if err != nil {
-		t.Fatalf("get live session: %v", err)
-	}
-	ctx := context.Background()
-
-	// 1) list_workspaces: real rows for the session user (acceptance
-	// anchor — the seeded workspace name must appear, not a fabrication).
-	var wsName string
-	dbfx.QueryRow(t, `SELECT name FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&wsName)
-	out, err := testHandler.executeVoiceMCPTool(ctx, session, "list_workspaces", nil)
-	if err != nil {
-		t.Fatalf("list_workspaces: %v", err)
-	}
-	if !strings.Contains(string(out), wsName) {
-		t.Errorf("list_workspaces result missing the real workspace: %s", out)
-	}
-	if strings.Contains(string(out), "error") {
-		t.Errorf("list_workspaces returned an error, want real data: %s", out)
-	}
-
-	// 2) list_projects in the user's own workspace: the seeded project.
-	projectID := dbfx.Project(t, "Voice MCP Direct Project")
-	for _, title := range []string{"Voice MCP Page Project A", "Voice MCP Page Project B", "Voice MCP Page Project C"} {
-		dbfx.Project(t, title)
-	}
-	out, err = testHandler.executeVoiceMCPTool(ctx, session, "list_projects",
-		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID}))
-	if err != nil {
-		t.Fatalf("list_projects: %v", err)
-	}
-	if !strings.Contains(string(out), "Voice MCP Direct Project") || !strings.Contains(string(out), projectID) {
-		t.Errorf("list_projects missing the seeded project: %s", out)
-	}
-	allProjects, err := testHandler.Queries.ListProjects(ctx, db.ListProjectsParams{WorkspaceID: parseUUID(testWorkspaceID)})
-	if err != nil {
-		t.Fatalf("query projects for pagination assertions: %v", err)
-	}
-	if len(allProjects) < 3 {
-		t.Fatalf("pagination fixture has %d projects, want at least 3", len(allProjects))
-	}
-	out, err = testHandler.executeVoiceMCPTool(ctx, session, "list_projects",
-		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID, "limit": 2, "offset": 1}))
-	if err != nil {
-		t.Fatalf("list_projects page: %v", err)
-	}
-	var page struct {
-		Total    int `json:"total"`
-		Projects []struct {
-			ID string `json:"id"`
-		} `json:"projects"`
-	}
-	if err := json.Unmarshal(out, &page); err != nil {
-		t.Fatalf("decode list_projects page: %v", err)
-	}
-	if page.Total != len(allProjects) || len(page.Projects) != 2 {
-		t.Errorf("list_projects page total/items = %d/%d, want %d/2", page.Total, len(page.Projects), len(allProjects))
-	}
-	for i, want := range allProjects[1:3] {
-		if i < len(page.Projects) && page.Projects[i].ID != uuidToString(want.ID) {
-			t.Errorf("list_projects page item %d = %s, want %s", i, page.Projects[i].ID, uuidToString(want.ID))
-		}
-	}
-	out, err = testHandler.executeVoiceMCPTool(ctx, session, "list_projects",
-		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID, "offset": -1}))
-	if err != nil {
-		t.Fatalf("list_projects negative offset: %v", err)
-	}
-	var invalidOffset struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(out, &invalidOffset); err != nil {
-		t.Fatalf("decode negative offset error: %v", err)
-	}
-	if invalidOffset.Error.Code != "invalid_arguments" {
-		t.Errorf("negative offset error code = %q, want invalid_arguments: %s", invalidOffset.Error.Code, out)
-	}
-	out, err = testHandler.executeVoiceMCPTool(ctx, session, "list_projects",
-		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID, "limit": 2, "offset": len(allProjects) + 10}))
-	if err != nil {
-		t.Fatalf("list_projects out-of-range offset: %v", err)
-	}
-	var emptyPage struct {
-		Total    int               `json:"total"`
-		Projects []json.RawMessage `json:"projects"`
-	}
-	if err := json.Unmarshal(out, &emptyPage); err != nil {
-		t.Fatalf("decode out-of-range page: %v", err)
-	}
-	if emptyPage.Total != len(allProjects) || len(emptyPage.Projects) != 0 {
-		t.Errorf("out-of-range page total/items = %d/%d, want %d/0", emptyPage.Total, len(emptyPage.Projects), len(allProjects))
-	}
-
-	// 3) get_project in a workspace the user is NOT a member of: the
-	// structured denial (the message names the SLUG the model passed),
-	// and no data from that workspace.
-	dbfx.Workspace(t, "Voice MCP Foreign", "voice-mcp-foreign-ws")
-	out, err = testHandler.executeVoiceMCPTool(ctx, session, "get_project",
-		mustToolArgs(t, map[string]any{"workspace": "voice-mcp-foreign-ws", "project_id": projectID}))
-	if err != nil {
-		t.Fatalf("get_project (foreign): %v", err)
-	}
-	if !strings.Contains(string(out), "permission_denied") || !strings.Contains(string(out), "voice-mcp-foreign-ws") {
-		t.Errorf("foreign workspace not denied by membership: %s", out)
-	}
-	// The denial carries NO project data.
-	if strings.Contains(string(out), "Voice MCP Direct Project") {
-		t.Errorf("denied call leaked data: %s", out)
-	}
-
-	// 4) unknown tool: structured unknown_tool — the fabrication guard.
-	out, err = testHandler.executeVoiceMCPTool(ctx, session, "launch_missiles", mustToolArgs(t, nil))
-	if err != nil {
-		t.Fatalf("unknown tool: %v", err)
-	}
-	if !strings.Contains(string(out), "unknown_tool") {
-		t.Errorf("unknown tool not reported as such: %s", out)
-	}
-
-	// 5) a workspace-scoped tool without the workspace argument: the
-	// structured invalid_arguments, not a silent no-op.
-	out, err = testHandler.executeVoiceMCPTool(ctx, session, "get_project", mustToolArgs(t, map[string]any{"project_id": projectID}))
-	if err != nil {
-		t.Fatalf("get_project no-workspace: %v", err)
-	}
-	if !strings.Contains(string(out), "invalid_arguments") {
-		t.Errorf("missing workspace argument not reported: %s", out)
-	}
-
-	// 6) PREFIX-NUMBER must use the active workspace's canonical prefix. A
-	// matching number alone must not resolve a different local issue.
-	issueID := dbfx.Issue(t, "Voice MCP Identifier Issue")
-	var issueNumber int
-	var issuePrefix string
-	dbfx.QueryRow(t, `SELECT number FROM issue WHERE id = $1`, issueID).Scan(&issueNumber)
-	dbfx.QueryRow(t, `SELECT issue_prefix FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&issuePrefix)
-	identifier := issuePrefix + "-" + strconv.Itoa(issueNumber)
-	out, err = testHandler.executeVoiceMCPTool(ctx, session, "get_issue",
-		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID, "issue_id": identifier}))
-	if err != nil {
-		t.Fatalf("get_issue by canonical identifier: %v", err)
-	}
-	if strings.Contains(string(out), `"error"`) || !strings.Contains(string(out), "Voice MCP Identifier Issue") {
-		t.Errorf("canonical issue identifier did not resolve: %s", out)
-	}
-	wrongPrefix := "OTHER"
-	if strings.EqualFold(wrongPrefix, issuePrefix) {
-		wrongPrefix = "DIFFERENT"
-	}
-	out, err = testHandler.executeVoiceMCPTool(ctx, session, "get_issue",
-		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID, "issue_id": wrongPrefix + "-" + strconv.Itoa(issueNumber)}))
-	if err != nil {
-		t.Fatalf("get_issue with wrong prefix: %v", err)
-	}
-	if !strings.Contains(string(out), "invalid_arguments") || strings.Contains(string(out), "Voice MCP Identifier Issue") {
-		t.Errorf("wrong issue prefix was not rejected without data leak: %s", out)
-	}
-}
-
-// toAnySlice unwraps the JSON-decoded array shape (either []any from an
-// already-decoded map, or []interface{} from a raw value).
-func toAnySlice(v any) []any {
-	switch arr := v.(type) {
-	case []any:
-		return arr
-	case []map[string]any:
-		out := make([]any, len(arr))
-		for i, m := range arr {
-			out[i] = m
-		}
-		return out
-	}
-	return nil
-}
-
-// mustToolArgs encodes the JSON arguments a tool call carries.
-func mustToolArgs(t *testing.T, args map[string]any) json.RawMessage {
-	t.Helper()
-	var raw json.RawMessage
-	if args != nil {
-		b, err := json.Marshal(args)
-		if err != nil {
-			t.Fatalf("marshal args: %v", err)
-		}
-		raw = b
-	}
-	return raw
 }

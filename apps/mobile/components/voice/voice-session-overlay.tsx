@@ -59,6 +59,8 @@ interface Props {
   /** RUYI-874 ①: the chat session the voice surface was opened from; the
    * gateway links the voice write-back and rich context to it. */
   chatSessionId?: string | null;
+  /** Issue-comment entry context, validated by the gateway. */
+  issueId?: string | null;
   onClose: () => void;
   /** Finalized spoken turns for composers that intentionally accept transcript text. */
   onUserTurn?: (text: string) => void;
@@ -86,6 +88,7 @@ export function VoiceSessionOverlay({
   agentId,
   workspaceSlug,
   chatSessionId,
+  issueId,
   onClose,
   onUserTurn,
 }: Props) {
@@ -123,6 +126,7 @@ export function VoiceSessionOverlay({
     agentId,
     workspaceSlug,
     chatSessionId,
+    issueId,
     onUserTurn,
     onEnded: handleEnded,
   });

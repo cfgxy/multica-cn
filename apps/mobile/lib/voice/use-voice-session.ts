@@ -53,11 +53,13 @@ export function useVoiceSessionRuntime(args: {
   workspaceSlug: string;
   /** RUYI-874 ①: the chat session the voice surface was opened from. */
   chatSessionId?: string | null;
+  /** Issue-comment entry context, validated by the gateway. */
+  issueId?: string | null;
   onUserTurn?: (text: string) => void;
   /** 会话因任何原因终止（自动挂断含内）——overlay 借此收尾。 */
   onEnded?: (autoEnd: AutoEndReason | null) => void;
 }): VoiceSessionRuntime {
-  const { agentId, workspaceSlug, chatSessionId, onUserTurn, onEnded } = args;
+  const { agentId, workspaceSlug, chatSessionId, issueId, onUserTurn, onEnded } = args;
 
   const [orb, dispatchOrb] = useOrbReducer();
   const [entries, setEntries] = useState<TranscriptEntry[]>([]);
@@ -194,6 +196,7 @@ export function useVoiceSessionRuntime(args: {
         },
       },
       chatSessionId ?? null,
+      issueId ?? null,
     );
     sessionRef.current = session;
     session.setMuted(mutedRef.current);
@@ -208,7 +211,7 @@ export function useVoiceSessionRuntime(args: {
       }
       dispatch({ type: "degraded" });
     });
-  }, [agentId, workspaceSlug, chatSessionId, dispatch, touch, finishSession]);
+  }, [agentId, workspaceSlug, chatSessionId, issueId, dispatch, touch, finishSession]);
 
   // 挂载即开会话；卸载/agentId 变化即挂断。
   useEffect(() => {

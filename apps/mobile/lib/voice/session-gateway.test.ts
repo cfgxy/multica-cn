@@ -65,6 +65,19 @@ describe("buildGatewayVoiceSessionConfig", () => {
     );
   });
 
+  it("carries Issue-comment context in the query", () => {
+    const config = buildGatewayVoiceSessionConfig({
+      apiUrl: "https://api.example.com",
+      agentId: "ag-1",
+      workspaceSlug: "acme",
+      token: "t",
+      issueId: "issue-uuid",
+    });
+    expect(config.url).toBe(
+      "wss://api.example.com/api/agents/ag-1/voice-session?workspace_slug=acme&issue_id=issue-uuid",
+    );
+  });
+
   it("omits the query string without a workspace slug", () => {
     const config = buildGatewayVoiceSessionConfig({
       apiUrl: "https://api.example.com/",

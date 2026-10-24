@@ -45,6 +45,15 @@ describe("buildVoiceSessionUrl", () => {
     );
   });
 
+  it("carries Issue-comment context as issue_id", () => {
+    expect(
+      buildVoiceSessionUrl("http://localhost:8080", "a", {
+        workspaceSlug: "acme",
+        issueId: "issue uuid",
+      }),
+    ).toBe("ws://localhost:8080/api/agents/a/voice-session?workspace_slug=acme&issue_id=issue%20uuid");
+  });
+
   it("omits the link when no chat session is bound", () => {
     expect(
       buildVoiceSessionUrl("http://localhost:8080", "a", {

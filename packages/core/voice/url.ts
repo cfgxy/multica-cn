@@ -18,6 +18,8 @@ export interface VoiceSessionUrlOptions {
    * plain voice rather than rejecting the session.
    */
   chatSessionId?: string | null;
+  /** The Issue whose comment surface opened the voice conversation. */
+  issueId?: string | null;
 }
 
 /** http(s):// → ws(s)://. String munging, no WHATWG URL (Hermes lacks it). */
@@ -39,6 +41,9 @@ export function buildVoiceSessionUrl(
   }
   if (opts.chatSessionId) {
     params.push(`chat_session_id=${encodeURIComponent(opts.chatSessionId)}`);
+  }
+  if (opts.issueId) {
+    params.push(`issue_id=${encodeURIComponent(opts.issueId)}`);
   }
   return params.length ? `${base}?${params.join("&")}` : base;
 }

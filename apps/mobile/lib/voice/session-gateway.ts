@@ -68,11 +68,14 @@ export function buildGatewayVoiceSessionConfig(args: {
   token: string;
   /** RUYI-874 ①: the chat session the voice surface was opened from. */
   chatSessionId?: string | null;
+  /** Issue-comment entry context, validated by the gateway. */
+  issueId?: string | null;
 }): GatewayVoiceSessionConfig {
   return {
     url: buildVoiceSessionUrl(args.apiUrl, args.agentId, {
       workspaceSlug: args.workspaceSlug ?? null,
       chatSessionId: args.chatSessionId ?? null,
+      issueId: args.issueId ?? null,
     }),
     mode: "gateway",
     authToken: args.token,

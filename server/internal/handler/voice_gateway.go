@@ -255,10 +255,10 @@ func liveSessionSnapshot(agentRow db.Agent, target *voiceTarget, model string) [
 // service) plus the three capability switches the demo lacked (§2.5):
 // sessionResumption, contextWindowCompression, and both transcription taps
 // that feed the write-back. RUYI-874 ③: the setup also carries the
-// controlled Multica MCP bridge tool face — server-composed declarations
-// with a server-side executor (executeVoiceMCPTool), so a provider-issued
-// toolCall is answered on the same identity instead of stalling.
-func composeVoiceSetupFrame(instructions, model string, advanced map[string]json.RawMessage) map[string]any {
+// canonical Multica MCP declarations, adapted from tools/list for Gemini's
+// function-calling protocol, so a provider-issued toolCall is answered on the
+// caller's own identity instead of stalling.
+func composeVoiceSetupFrame(instructions, model string, advanced map[string]json.RawMessage, toolDeclarations []map[string]any) map[string]any {
 	setup := map[string]any{
 		"model":                    "models/" + model,
 		"generationConfig":         map[string]any{"responseModalities": []string{"AUDIO"}},
@@ -272,12 +272,14 @@ func composeVoiceSetupFrame(instructions, model string, advanced map[string]json
 				"startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
 			},
 		},
-		"tools": []map[string]any{{"functionDeclarations": voiceMCPToolDeclarations()}},
 	}
 	if strings.TrimSpace(instructions) != "" {
 		setup["systemInstruction"] = map[string]any{
 			"parts": []map[string]any{{"text": instructions}},
 		}
+	}
+	if len(toolDeclarations) > 0 {
+		setup["tools"] = []map[string]any{{"functionDeclarations": toolDeclarations}}
 	}
 	for key, value := range advanced {
 		if reservedSetupKeys[key] {
@@ -471,7 +473,7 @@ func (h *Handler) StartVoiceSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if userID := h.voiceRequestUserID(r); userID != "" {
-		plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID, h.voiceChatSessionQuery(r))
+		plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID, h.voiceChatSessionQuery(r), h.voiceIssueQuery(r), voiceRequestToken(r))
 		if hsErr != nil {
 			hsErr.writeHTTP(w)
 			return
@@ -514,6 +516,9 @@ type voiceSessionPlan struct {
 	instructions string
 	model        string
 	advanced     map[string]json.RawMessage
+	mcp          *voiceMCPBridge
+	tools        []map[string]any
+	issueID      pgtype.UUID
 }
 
 // Transport modes for live_session rows (RUYI-626). RUYI-692 D1 ② retired
@@ -582,8 +587,9 @@ func (h *Handler) resolveVoiceSessionGate(ctx context.Context, userID, workspace
 
 // openVoiceSession creates the gateway-relayed live session after the shared
 // read-only gate chain has passed. (RUYI-692 D1 ②: every session is gateway.)
-// chatSessionRaw is optional; an invalid chat link degrades to plain voice.
-func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID, chatSessionRaw string) (*voiceSessionPlan, *voiceHandshakeError) {
+// chatSessionRaw and issueRaw are optional. An invalid contextual link degrades
+// to the existing plain-voice behavior rather than changing the voice gate.
+func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID, chatSessionRaw, issueRaw, callerToken string) (*voiceSessionPlan, *voiceHandshakeError) {
 	gate, hsErr := h.resolveVoiceSessionGate(ctx, userID, workspaceID, agentUUID)
 	if hsErr != nil {
 		return nil, hsErr
@@ -608,7 +614,9 @@ func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID stri
 		slog.Error("create live session failed", "agent_id", uuidToString(agentUUID), "error", err)
 		return nil, &voiceHandshakeError{status: http.StatusInternalServerError, detail: "failed to start voice session"}
 	}
-	return &voiceSessionPlan{session: session, target: gate.target, apiKey: gate.target.apiKey, instructions: gate.agentRow.Instructions, model: model, advanced: gate.target.advanced}, nil
+	plan := &voiceSessionPlan{session: session, target: gate.target, apiKey: gate.target.apiKey, instructions: gate.agentRow.Instructions, model: model, advanced: gate.target.advanced, issueID: h.resolveVoiceIssueContext(ctx, userID, workspaceID, issueRaw)}
+	plan.tools = prepareVoiceToolDeclarations(ctx, plan, callerToken)
+	return plan, nil
 }
 
 // voiceRequestUserID resolves the caller identity from the request's bearer
@@ -676,6 +684,37 @@ func (h *Handler) resolveVoiceWorkspaceID(r *http.Request) string {
 // Both start paths share r.URL, so one reader serves header and frame auth.
 func (h *Handler) voiceChatSessionQuery(r *http.Request) string {
 	return r.URL.Query().Get("chat_session_id")
+}
+
+// voiceIssueQuery reads an optional Issue-context link. Issue-comment surfaces
+// pass this value so Live receives the same verified Issue context that an
+// explicit chat mention would provide; other entry points keep their existing
+// chat-link or plain-voice behavior.
+func (h *Handler) voiceIssueQuery(r *http.Request) string {
+	return r.URL.Query().Get("issue_id")
+}
+
+// resolveVoiceIssueContext authorizes an Issue-context link independently of a
+// chat session. Workspace membership was established by the voice gate, then
+// GetIssueInWorkspace prevents cross-workspace UUIDs from becoming model input.
+func (h *Handler) resolveVoiceIssueContext(ctx context.Context, userID, workspaceID, raw string) pgtype.UUID {
+	if raw == "" {
+		return pgtype.UUID{}
+	}
+	issueID, err := util.ParseUUID(raw)
+	if err != nil {
+		slog.Warn("voice: issue_id query is not a UUID; degrading Issue context", "user_id", userID)
+		return pgtype.UUID{}
+	}
+	workspaceIDParsed, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	if _, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: workspaceIDParsed}); err != nil {
+		slog.Warn("voice: issue_id not found in caller workspace; degrading Issue context", "issue_id", raw, "user_id", userID)
+		return pgtype.UUID{}
+	}
+	return issueID
 }
 
 // resolveVoiceChatSession validates the optional chat-session link against
@@ -817,7 +856,7 @@ func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID, h.voiceChatSessionQuery(r))
+	plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID, h.voiceChatSessionQuery(r), h.voiceIssueQuery(r), token)
 	if hsErr != nil {
 		// Guard failures carry no stable code; the frame path always names
 		// one so clients branch on `code` uniformly.
@@ -837,7 +876,7 @@ func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Req
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
-	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced)); err != nil {
+	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced, plan.tools)); err != nil {
 		slog.Warn("voice setup write failed", "session_id", uuidToString(plan.session.ID), "error", err)
 		providerConn.Close()
 		h.recordDialFailureBadge(r.Context(), plan.target, nil)
@@ -845,7 +884,7 @@ func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Req
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
-	h.relayVoiceSessionConn(r, plan.session, plan.target, providerConn, conn)
+	h.relayVoiceSessionConn(r, plan, providerConn, conn)
 }
 
 // dialVoiceProvider opens the provider relay hop. The key rides the
@@ -926,7 +965,7 @@ func (h *Handler) relayVoiceSession(
 	}
 	defer providerConn.Close()
 
-	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced)); err != nil {
+	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced, plan.tools)); err != nil {
 		slog.Warn("voice setup write failed", "session_id", uuidToString(plan.session.ID), "error", err)
 		h.recordDialFailureBadge(r.Context(), plan.target, nil)
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
@@ -939,7 +978,7 @@ func (h *Handler) relayVoiceSession(
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
-	h.relayVoiceSessionConn(r, plan.session, plan.target, providerConn, clientConn)
+	h.relayVoiceSessionConn(r, plan, providerConn, clientConn)
 }
 
 // relayVoiceSessionConn is the pump shared by both start paths; it owns two
@@ -949,10 +988,11 @@ func (h *Handler) relayVoiceSession(
 // actually runs under.
 func (h *Handler) relayVoiceSessionConn(
 	r *http.Request,
-	session db.LiveSession,
-	target *voiceTarget,
+	plan *voiceSessionPlan,
 	providerConn, clientConn *websocket.Conn,
 ) {
+	session := plan.session
+	target := plan.target
 	defer providerConn.Close()
 	defer clientConn.Close()
 
@@ -1141,6 +1181,11 @@ func (h *Handler) relayVoiceSessionConn(
 				parts = append(parts, img)
 			}
 		}
+		if ctx := h.composeVoiceIssueContext(r.Context(), session, plan.issueID); ctx != nil {
+			if strings.TrimSpace(ctx.Text) != "" {
+				parts = append(parts, map[string]any{"text": ctx.Text})
+			}
+		}
 		if len(parts) == 0 {
 			section := h.loadVoiceSessionSection(r.Context(), session.WorkspaceID, session.AgentID)
 			if strings.TrimSpace(section) == "" {
@@ -1215,7 +1260,14 @@ func (h *Handler) relayVoiceSessionConn(
 				var responses []map[string]any
 				for _, call := range frame.ToolCall.FunctionCalls {
 					markBridgeCall(call.ID)
-					result, _ := h.executeVoiceMCPTool(execCtx, session, call.Name, call.Args)
+					var result json.RawMessage
+					if call.Name == "load_skill" {
+						result, _ = h.executeVoiceSkill(execCtx, session, call.Args)
+					} else if plan.mcp == nil {
+						result = voiceToolError("unavailable", "Multica MCP is unavailable for this voice session")
+					} else if result, err = plan.mcp.call(execCtx, call.Name, call.Args); err != nil || result == nil {
+						result = voiceToolError("unavailable", "Multica MCP tool call failed")
+					}
 					responses = append(responses, map[string]any{
 						"id":       call.ID,
 						"name":     call.Name,
