@@ -35,6 +35,14 @@ SELECT * FROM attachment
 WHERE comment_id = $1 AND workspace_id = $2
 ORDER BY created_at ASC;
 
+-- name: ListAttachmentsByChatSession :many
+-- RUYI-874 link ②: session-level attachment surface for the voice context
+-- injection — the files the user dropped into THIS chat conversation, newest
+-- last so the renderer can cap the budget from the tail.
+SELECT * FROM attachment
+WHERE chat_session_id = $1 AND workspace_id = $2
+ORDER BY created_at ASC;
+
 -- name: GetAttachment :one
 SELECT * FROM attachment
 WHERE id = $1 AND workspace_id = $2;
