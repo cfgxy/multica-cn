@@ -15,6 +15,7 @@ import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Android 端侧语音识别入口（RUYI-694 D3 听写链）。Android-only，与
@@ -46,7 +47,8 @@ class SpeechRecognitionModule : Module() {
   }
 
   private val mainHandler = Handler(Looper.getMainLooper())
-  private var recognizer: SpeechRecognizer? = null
+  private val requestedSessionId = AtomicLong(0)
+  private val recognizerSession = RecognitionSession<SpeechRecognizer>()
 
   override fun definition() = ModuleDefinition {
     Name("SpeechRecognition")
@@ -110,11 +112,17 @@ class SpeechRecognitionModule : Module() {
         promise.reject(CodedException("E_ON_DEVICE_UNAVAILABLE", "on-device recognition unavailable", null))
         return@AsyncFunction
       }
+      val sessionId = requestedSessionId.incrementAndGet()
       mainHandler.post {
+        if (sessionId != requestedSessionId.get()) {
+          promise.resolve(null)
+          return@post
+        }
+        var rec: SpeechRecognizer? = null
         try {
           destroyRecognizer()
-          val rec = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-          recognizer = rec
+          rec = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+          recognizerSession.replace(sessionId, rec)?.destroy()
           rec.setRecognitionListener(listenerFor(rec))
           val intent = android.content.Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
@@ -137,25 +145,35 @@ class SpeechRecognitionModule : Module() {
           promise.resolve(null)
         } catch (t: Throwable) {
           android.util.Log.w(TAG, t.javaClass.simpleName)
-          destroyRecognizer()
+          rec?.let(::destroyRecognizer)
           promise.reject(CodedException("E_START_FAILED", t.javaClass.simpleName, t))
         }
       }
     }
 
     AsyncFunction("stop") { promise: Promise ->
+      val sessionId = requestedSessionId.get()
       mainHandler.post {
+        val rec = recognizerSession.recognizerForStop(sessionId)
+        if (rec == null) {
+          promise.resolve(null)
+          return@post
+        }
         try {
-          recognizer?.stopListening()
+          rec.stopListening()
           promise.resolve(null)
         } catch (t: Throwable) {
           android.util.Log.w(TAG, t.javaClass.simpleName)
+          destroyRecognizer(rec)
           promise.reject(CodedException("E_STOP_FAILED", t.javaClass.simpleName, t))
         }
       }
     }
 
-    OnDestroy { destroyRecognizer() }
+    OnDestroy {
+      requestedSessionId.incrementAndGet()
+      destroyRecognizer()
+    }
   }
 
   private fun isRecordAudioGranted(): Boolean {
@@ -167,9 +185,12 @@ class SpeechRecognitionModule : Module() {
   /** 用完即毁：释放识别器并清引用，主线程执行。 */
   private fun destroyRecognizer(target: SpeechRecognizer? = null) {
     fun destroyIfCurrent() {
-      if (target != null && recognizer !== target) return
-      recognizer?.destroy()
-      recognizer = null
+      val rec = if (target == null) {
+        recognizerSession.takeCurrent()
+      } else {
+        recognizerSession.takeIfCurrent(target)
+      }
+      rec?.destroy()
     }
 
     if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -191,7 +212,7 @@ class SpeechRecognitionModule : Module() {
     override fun onBeginningOfSpeech() {}
 
     override fun onRmsChanged(rmsdB: Float) {
-      if (recognizer !== target) return
+      if (!recognizerSession.isCurrent(target)) return
       // 静音 ≈ -2 dB，正常说话 0..10+；夹到 0..1 驱动波形条。
       val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
       sendEvent("onRms", mapOf("value" to normalized))
@@ -201,19 +222,19 @@ class SpeechRecognitionModule : Module() {
     override fun onEndOfSpeech() {}
 
     override fun onError(error: Int) {
-      if (recognizer !== target) return
+      val rec = recognizerSession.takeIfCurrent(target) ?: return
       sendEvent("onError", mapOf("code" to error))
-      destroyRecognizer(target)
+      rec.destroy()
     }
 
     override fun onResults(results: Bundle?) {
-      if (recognizer !== target) return
+      val rec = recognizerSession.takeIfCurrent(target) ?: return
       sendEvent("onFinalResult", mapOf("text" to (firstText(results) ?: "")))
-      destroyRecognizer(target)
+      rec.destroy()
     }
 
     override fun onPartialResults(partialResults: Bundle?) {
-      if (recognizer !== target) return
+      if (!recognizerSession.isCurrent(target)) return
       val text = firstText(partialResults) ?: return
       sendEvent("onPartialResult", mapOf("text" to text))
     }
