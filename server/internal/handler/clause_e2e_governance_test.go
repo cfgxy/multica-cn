@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/clausequalityrollup"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -507,6 +508,137 @@ func TestRollbackSuggestionSurfacesInGovernance(t *testing.T) {
 	json.Unmarshal([]byte(body), &overview)
 	if len(overview.RollbackSuggestions) != 1 {
 		t.Fatalf("overview rollback_suggestions = %d, want 1: %s", len(overview.RollbackSuggestions), body)
+	}
+}
+
+// TestClauseGovernanceSearchFiltersOverviewRows (RUYI-868): the keyword
+// endpoint filters the overview's own rows by slug/title and exact status,
+// and it is workspace-scoped like the overview is.
+func TestClauseGovernanceSearchFiltersOverviewRows(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	// The gate checks the clause text's first-line label against the clause
+	// name, so the second clause carries its own labelled text.
+	const detailClauseText = `- **每日同步详细版**：各成员开工前在任务单回报当日计划、阻塞与预计完成时间。`
+	enactWorkspaceClause(t, f, "每日同步详细版", detailClauseText)
+
+	// q=每日 matches both clauses by title; the detailed variant is
+	// reachable only through its longer title.
+	code, body := legislationCall(t, testHandler.SearchClauseGovernance,
+		legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/clauses/search?q=每日", nil))
+	if code != http.StatusOK {
+		t.Fatalf("search q=每日: expected 200, got %d: %s", code, body)
+	}
+	var out struct {
+		Matched int `json:"matched"`
+		Clauses []struct {
+			ID    string `json:"id"`
+			Slug  string `json:"slug"`
+			Title string `json:"title"`
+		} `json:"clauses"`
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode search: %v (%s)", err, body)
+	}
+	if out.Matched != 2 || len(out.Clauses) != 2 {
+		t.Fatalf("q=每日 matched = %d, want 2: %s", out.Matched, body)
+	}
+
+	code, body = legislationCall(t, testHandler.SearchClauseGovernance,
+		legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/clauses/search?q=详细&status=active", nil))
+	if code != http.StatusOK {
+		t.Fatalf("search q=详细: expected 200, got %d: %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode search: %v (%s)", err, body)
+	}
+	if out.Matched != 1 || out.Clauses[0].Title != "每日同步详细版" {
+		t.Fatalf("q=详细&status=active = %+v, want exactly the detailed clause", out.Clauses)
+	}
+
+	// The status filter alone narrows without a keyword.
+	code, body = legislationCall(t, testHandler.SearchClauseGovernance,
+		legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/clauses/search?status=active", nil))
+	if code != http.StatusOK {
+		t.Fatalf("search status=active: expected 200, got %d: %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode search: %v (%s)", err, body)
+	}
+	if out.Matched != 2 {
+		t.Fatalf("status=active matched = %d, want 2: %s", out.Matched, body)
+	}
+
+	// No filter is a misuse: the overview is the list view.
+	code, body = legislationCall(t, testHandler.SearchClauseGovernance,
+		legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/clauses/search", nil))
+	if code != http.StatusBadRequest {
+		t.Fatalf("search without q/status: expected 400, got %d: %s", code, body)
+	}
+
+	// Workspace isolation: a clause that exists in another workspace is
+	// invisible to this workspace's search, not merely absent.
+	other := newClauseInjectionFixture(t)
+	otherID := enactWorkspaceClause(t, other, "每日同步", cleanClauseText)
+	code, body = legislationCall(t, testHandler.SearchClauseGovernance,
+		legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/clauses/search?q=每日", nil))
+	if code != http.StatusOK {
+		t.Fatalf("search after second workspace: expected 200, got %d: %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode search: %v (%s)", err, body)
+	}
+	if out.Matched != 2 {
+		t.Fatalf("search leaked or lost clauses: matched = %d, want 2 (own workspace only)", out.Matched)
+	}
+	for _, c := range out.Clauses {
+		if c.ID == otherID {
+			t.Fatalf("search returned clause %s from another workspace", otherID)
+		}
+	}
+}
+
+// TestRequireHumanOrOAuthActorGatesLegislationRouter (RUYI-868): the router
+// wiring for the opened surface — the unscoped machine credentials are
+// rejected at the guard, and a plain member request passes the whole chain
+// including workspace context resolution.
+func TestRequireHumanOrOAuthActorGatesLegislationRouter(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+
+	// The router.go order for the opened group: guard outside, the
+	// workspace-member middleware inside.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		testHandler.ListClauseGovernance(w, r)
+	})
+	chain := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Serve the composed guard → member chain directly, in the router.go
+		// order.
+		RequireHumanOrOAuthActor(
+			middleware.RequireWorkspaceMember(testHandler.Queries)(inner),
+		).ServeHTTP(w, r)
+	})
+
+	req := legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/clauses", nil)
+	req.Header.Set("X-Actor-Source", "task_token")
+	if code, body := legislationCall(t, chain, req); code != http.StatusForbidden {
+		t.Fatalf("task_token: expected 403 at the guard, got %d: %s", code, body)
+	}
+
+	req = legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/clauses", nil)
+	req.Header.Set("X-Actor-Source", "cloud_pat")
+	if code, body := legislationCall(t, chain, req); code != http.StatusForbidden {
+		t.Fatalf("cloud_pat: expected 403 at the guard, got %d: %s", code, body)
+	}
+
+	req = legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/clauses", nil)
+	req.Header.Set("X-Actor-Source", "oauth")
+	if code, body := legislationCall(t, chain, req); code != http.StatusOK {
+		t.Fatalf("oauth member: expected 200, got %d: %s", code, body)
+	}
+
+	req = legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/clauses", nil)
+	if code, body := legislationCall(t, chain, req); code != http.StatusOK {
+		t.Fatalf("human member: expected 200, got %d: %s", code, body)
 	}
 }
 

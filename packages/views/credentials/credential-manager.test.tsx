@@ -9,6 +9,8 @@ import { renderWithI18n } from "../test/i18n";
 const apiMock = vi.hoisted(() => ({
   getCredentialTransportKey: vi.fn(),
   listCredentialConnectors: vi.fn(),
+  createCredentialConnector: vi.fn(),
+  updateCredentialConnector: vi.fn(),
   createIssueCredential: vi.fn(),
   replaceIssueCredential: vi.fn(),
   listIssueCredentials: vi.fn(),
@@ -57,6 +59,8 @@ describe("CredentialManager", () => {
     apiMock.createIssueCredential.mockResolvedValue({ id: "saved-id", name: "Build token" });
     apiMock.replaceIssueCredential.mockResolvedValue({ id: "saved-id", name: "Build token" });
     apiMock.listCredentialAudit.mockResolvedValue([]);
+    apiMock.createCredentialConnector.mockResolvedValue({ id: "new-connector-id", name: "New target", kind: "mcp_http_bearer", target_url: "https://example.com/mcp", adapter_policy: "mcp_http_v1", auth_field: "authorization_bearer", status: "active", revision: 1 });
+    apiMock.updateCredentialConnector.mockResolvedValue({ id: "connector-id", name: "Build service", kind: "mcp_http_bearer", target_url: "https://build.example.com", adapter_policy: "mcp_http_v1", auth_field: "authorization_bearer", status: "disabled", revision: 2 });
     apiMock.memberRole = "member";
   });
 
@@ -152,6 +156,43 @@ describe("CredentialManager", () => {
     expect(apiMock.createIssueCredential.mock.calls[0]?.[1].resource_id).toBe("global");
     expect(apiMock.encryptCredentialForTransport.mock.calls[0]?.[2].resource_id).toBe("global");
     expect(JSON.stringify(apiMock.createIssueCredential.mock.calls[0]?.[1])).not.toContain("synthetic-global-secret");
+  });
+
+  it("explains the empty connector state instead of rendering a dead dropdown", async () => {
+    apiMock.listCredentialConnectors.mockResolvedValue([]);
+    renderManager();
+    fireEvent.click(await screen.findByRole("button", { name: /deliver credential/i }));
+    const trigger = screen.getByRole("combobox", { name: "Connector" });
+    fireEvent.click(trigger);
+    expect(await screen.findByText(/no connectors yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/no active connector yet/i)).toBeInTheDocument();
+    // The empty dropdown must not leave a save path silently blocked:
+    // the form's save button stays disabled until a connector exists.
+    expect(screen.getByRole("button", { name: "Save and authorize" })).toBeDisabled();
+  });
+
+  it("surfaces a connector load failure with a retry affordance", async () => {
+    apiMock.memberRole = "owner";
+    apiMock.listCredentialConnectors.mockRejectedValue(new Error("network down"));
+    renderManager(true);
+    expect(await screen.findByText(/could not load connectors/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(apiMock.listCredentialConnectors).toHaveBeenCalledTimes(2));
+  });
+
+  it("lets an owner add a connector and toggle its status from the management panel", async () => {
+    apiMock.memberRole = "owner";
+    apiMock.listCredentialConnectors.mockResolvedValue([{ id: "connector-id", name: "Build service", status: "disabled", revision: 1 }]);
+    renderManager(true);
+    expect(await screen.findByText(/connectors/i, { selector: "h4" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Add connector"), { target: { value: "Deploy target" } });
+    const targetInput = screen.getByPlaceholderText(/https:\/\/example\.com/i);
+    fireEvent.change(targetInput, { target: { value: "https://deploy.example.com/mcp" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add connector" }));
+    await waitFor(() => expect(apiMock.createCredentialConnector).toHaveBeenCalledWith("workspace-id", { name: "Deploy target", target_url: "https://deploy.example.com/mcp" }));
+    expect(await screen.findByText("Connector added.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Enable" }));
+    await waitFor(() => expect(apiMock.updateCredentialConnector).toHaveBeenCalledWith("workspace-id", "connector-id", expect.objectContaining({ status: "active", revision: 1 })));
   });
 
   it("shows credential audit metadata only to workspace owners", async () => {
