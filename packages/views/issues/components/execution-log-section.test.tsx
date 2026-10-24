@@ -125,6 +125,21 @@ describe("ActiveTaskRow", () => {
     expect(screen.queryByText("Working")).not.toBeInTheDocument();
   });
 
+  it("names the model-call budget hold on a held queued row", () => {
+    renderWithI18n(
+      <ActiveTaskRow
+        task={makeTask({
+          status: "queued",
+          queued_reason: "runtime_model_call_budget",
+        })}
+        issueId="issue-1"
+      />,
+    );
+
+    expect(screen.getByText("Queued · model call budget reached")).toBeInTheDocument();
+    expect(screen.queryByText("Queued · host memory busy")).not.toBeInTheDocument();
+  });
+
   it("keeps the plain queued label when no admission code rides the row", () => {
     renderWithI18n(
       <ActiveTaskRow task={makeTask({ status: "queued" })} issueId="issue-1" />,

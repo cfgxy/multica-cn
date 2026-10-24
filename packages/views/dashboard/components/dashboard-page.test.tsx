@@ -16,6 +16,7 @@ import { addDaysIso } from "../../runtimes/utils";
 // dashboard options builders runs for real, so the key is the production key.
 const queryKeys = vi.hoisted(() => [] as unknown[][]);
 const dashboardDataRef = vi.hoisted(() => ({ current: false }));
+const modelCallsRef = vi.hoisted(() => ({ known: 0, unknown: 0 }));
 // Swaps the per-agent fixtures for ones with enough agents to exercise the
 // top-offenders and leaderboard caps. Kept off by default so the other tests
 // keep their exact 4-of-10 arithmetic.
@@ -239,6 +240,8 @@ vi.mock("@tanstack/react-query", async () => {
                   output_tokens: 2_000,
                   cache_read_tokens: 0,
                   cache_write_tokens: 0,
+                    model_call_count: modelCallsRef.known,
+                    model_call_unknown_count: modelCallsRef.unknown,
                   task_count: 2,
                 },
               ]
@@ -546,7 +549,7 @@ describe("DashboardPage — viewing timezone drives the query key", () => {
       container.querySelectorAll("number-flow-react"),
     );
 
-    expect(flows).toHaveLength(5);
+    expect(flows).toHaveLength(6);
     expect(flows.map((flow) => flow.getAttribute("aria-label"))).toEqual(
       expect.arrayContaining(["$0.03", "3K", "12"]),
     );
@@ -558,6 +561,58 @@ describe("DashboardPage — viewing timezone drives the query key", () => {
             .respectMotionPreference === true,
       ),
     ).toBe(true);
+  });
+});
+
+describe("DashboardPage — known and unknown model calls", () => {
+  beforeEach(() => {
+    queryKeys.length = 0;
+    dashboardDataRef.current = true;
+    emptyUsageRef.current = false;
+    modelCallsRef.known = 0;
+    modelCallsRef.unknown = 0;
+    tzRef.current = "UTC";
+    cleanup();
+  });
+
+  it("shows zero known calls and the unreported count without folding them together", () => {
+    modelCallsRef.unknown = 2;
+    renderDashboard();
+
+    const label = screen.getByText("Model calls · 30D");
+    const card = label.parentElement as HTMLElement;
+    expect(card.querySelector("number-flow-react")).toHaveAttribute(
+      "aria-label",
+      "0",
+    );
+    expect(card).toHaveTextContent(
+      "2 usage rows have an unknown model call count; excluded from the known total.",
+    );
+  });
+
+  it("shows known calls separately when both known and unknown counts are nonzero", () => {
+    modelCallsRef.known = 4;
+    modelCallsRef.unknown = 3;
+    renderDashboard();
+
+    const label = screen.getByText("Model calls · 30D");
+    const card = label.parentElement as HTMLElement;
+    expect(card.querySelector("number-flow-react")).toHaveAttribute(
+      "aria-label",
+      "4",
+    );
+    expect(card).toHaveTextContent(
+      "3 usage rows have an unknown model call count; excluded from the known total.",
+    );
+  });
+
+  it("omits the unknown hint when no calls are unreported", () => {
+    modelCallsRef.known = 4;
+    renderDashboard();
+
+    const card = screen.getByText("Model calls · 30D").parentElement as HTMLElement;
+    expect(card).toHaveTextContent("4");
+    expect(card).not.toHaveTextContent("unreported");
   });
 });
 

@@ -195,6 +195,9 @@ var postConsolidationStems = []string{
 	"994_clause_injection_observation_id_index",
 	"994_clause_injection_observation_task_scope_time_index",
 	"994_clause_injection_observation_workspace_time_index",
+	"987_task_usage_model_call_count",          // RUYI-870
+	"987_task_usage_model_call_evidence_index", // RUYI-870
+	"987_runtime_model_call_budget",            // RUYI-870
 	"995_knowledge_lifecycle", // RUYI-916
 	"995_knowledge_lifecycle_entry_version_index",
 	"995_knowledge_lifecycle_event_entry_index",

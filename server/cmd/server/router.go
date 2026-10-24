@@ -3114,6 +3114,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Per-daemon host resources (RUYI-859): the usage
 					// panel narrowed to this runtime's daemon host.
 					r.Get("/resources", h.GetRuntimeResources)
+					r.Get("/model-call-budget", h.GetRuntimeModelCallBudget)
+					r.Put("/model-call-budget", h.PutRuntimeModelCallBudget)
+
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)

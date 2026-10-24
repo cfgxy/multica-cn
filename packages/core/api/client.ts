@@ -20,6 +20,8 @@ import type {
   AgentBackpressurePolicy,
   AgentBackpressureConfig,
   AgentBackpressureEvent,
+  RuntimeModelCallBudget,
+  RuntimeModelCallBudgetConfig,
 } from "./schemas";
 import type {
   Issue,
@@ -481,6 +483,8 @@ import {
   WorkspacePromQLRulePreviewSchema,
   AgentBackpressurePolicySchema,
   AgentBackpressureEventListSchema,
+  RuntimeModelCallBudgetSchema,
+  EMPTY_RUNTIME_MODEL_CALL_BUDGET,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
@@ -3243,6 +3247,36 @@ export class ApiClient {
         report: null,
       },
       { endpoint: "DELETE /api/runtimes/:id/backpressure-settings" },
+    );
+  }
+
+  async getRuntimeModelCallBudget(
+    runtimeId: string,
+  ): Promise<RuntimeModelCallBudget> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/model-call-budget`,
+    );
+    return parseWithFallback<RuntimeModelCallBudget>(
+      raw,
+      RuntimeModelCallBudgetSchema,
+      EMPTY_RUNTIME_MODEL_CALL_BUDGET,
+      { endpoint: "GET /api/runtimes/:id/model-call-budget" },
+    );
+  }
+
+  async putRuntimeModelCallBudget(
+    runtimeId: string,
+    config: RuntimeModelCallBudgetConfig,
+  ): Promise<RuntimeModelCallBudget> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/model-call-budget`,
+      { method: "PUT", body: JSON.stringify(config) },
+    );
+    return parseWithFallback<RuntimeModelCallBudget>(
+      raw,
+      RuntimeModelCallBudgetSchema,
+      EMPTY_RUNTIME_MODEL_CALL_BUDGET,
+      { endpoint: "PUT /api/runtimes/:id/model-call-budget" },
     );
   }
 

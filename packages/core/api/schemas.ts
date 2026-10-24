@@ -2079,6 +2079,17 @@ const CostSplitShape = {
   uncosted_cache_write_tokens: z.number().optional(),
 };
 
+// Model API/Prompt call counts (migration 987). `model_call_count` is the
+// known half only; `model_call_unknown_count` counts the rows whose provider
+// gave no call evidence. Defaults mirror the cost split: a backend older than
+// the column sends neither, and once the backend carries them the unknown
+// count stays a real number (0 = every row had call evidence) rather than
+// undefined.
+const ModelCallCountShape = {
+  model_call_count: z.number().default(0),
+  model_call_unknown_count: z.number().default(0),
+};
+
 const DashboardUsageDailySchema = z.object({
   date: z.string().default(""),
   provider: z.string().default(""),
@@ -2088,6 +2099,7 @@ const DashboardUsageDailySchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
+  ...ModelCallCountShape,
   task_count: z.number().default(0),
 }).loose();
 
@@ -2153,6 +2165,7 @@ const DashboardUsageByAgentSchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
+  ...ModelCallCountShape,
   task_count: z.number().default(0),
 }).loose();
 
@@ -2224,6 +2237,7 @@ const RuntimeUsageSchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
+  ...ModelCallCountShape,
 }).loose();
 
 export const RuntimeUsageListSchema = z.array(RuntimeUsageSchema);
@@ -2244,6 +2258,7 @@ const RuntimeUsageByAgentSchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
+  ...ModelCallCountShape,
   task_count: z.number().default(0),
 }).loose();
 
@@ -2257,6 +2272,7 @@ const RuntimeUsageByHourSchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
+  ...ModelCallCountShape,
   task_count: z.number().default(0),
 }).loose();
 
@@ -5859,6 +5875,49 @@ const DaemonBackpressureEventSchema = z.object({
 export const RuntimeBackpressureEventListSchema = z.array(DaemonBackpressureEventSchema);
 
 export type RuntimeBackpressureEvent = z.infer<typeof DaemonBackpressureEventSchema>;
+
+const RuntimeModelCallBudgetConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  max_calls: z.number().int().min(1).max(1_000_000_000).default(1000),
+  window_seconds: z.number().int().min(60).max(90 * 24 * 60 * 60).default(86400),
+}).loose();
+
+const RuntimeModelCallBudgetReportSchema = z.object({
+  known_calls: z.number().int().nonnegative().default(0),
+  unknown_usage_rows: z.number().int().nonnegative().default(0),
+  complete: z.boolean().default(false),
+  active: z.boolean().default(false),
+  window_started_at: z.string().default(""),
+}).loose();
+
+export const RuntimeModelCallBudgetSchema = z.object({
+  config: RuntimeModelCallBudgetConfigSchema.default({
+    enabled: false,
+    max_calls: 1000,
+    window_seconds: 86400,
+  }),
+  report: RuntimeModelCallBudgetReportSchema.default({
+    known_calls: 0,
+    unknown_usage_rows: 0,
+    complete: false,
+    active: false,
+    window_started_at: "",
+  }),
+}).loose();
+
+export type RuntimeModelCallBudget = z.infer<typeof RuntimeModelCallBudgetSchema>;
+export type RuntimeModelCallBudgetConfig = z.infer<typeof RuntimeModelCallBudgetConfigSchema>;
+
+export const EMPTY_RUNTIME_MODEL_CALL_BUDGET: RuntimeModelCallBudget = {
+  config: { enabled: false, max_calls: 1000, window_seconds: 86400 },
+  report: {
+    known_calls: 0,
+    unknown_usage_rows: 0,
+    complete: false,
+    active: false,
+    window_started_at: "",
+  },
+};
 
 const ClauseGovernanceTotalsSchema = z.object({
   injections: z.number().default(0),

@@ -22,12 +22,44 @@ SELECT
     SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint           AS uncosted_input_tokens,
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
-    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens
+    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(model_call_count)::bigint         AS model_call_count,
+    SUM(model_call_unknown_count)::bigint AS model_call_unknown_count
 FROM task_usage_hourly
 WHERE runtime_id = $1
   AND bucket_hour >= sqlc.arg('since')::timestamptz
 GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), LOWER(provider), model
 ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provider), model;
+
+-- name: GetRuntimeModelCallBudgetUsage :one
+-- Rolling, raw usage for one Runtime's provider-call admission budget. Rows
+-- with NULL model_call_count are intentionally counted separately: a partial
+-- known sum must not be treated as the whole window and therefore cannot hold
+-- a Runtime.
+SELECT
+    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS known_calls,
+    COUNT(tu.task_id) FILTER (WHERE tu.model_call_count IS NULL)::bigint AS unknown_usage_rows
+FROM task_usage tu
+JOIN agent_task_queue atq ON atq.id = tu.task_id
+WHERE atq.runtime_id = @runtime_id
+  AND tu.created_at >= @since::timestamptz;
+
+-- name: ListRuntimeModelCallBudgetUsage :many
+-- Batch equivalent for queued-reason decoration and multi-runtime claims. The
+-- time predicate derives its rolling boundary from each runtime's persisted
+-- config, keeping a mixed set of windows correct in one round trip.
+SELECT
+    rt.id AS runtime_id,
+    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS known_calls,
+    COUNT(tu.task_id) FILTER (WHERE tu.task_id IS NOT NULL AND tu.model_call_count IS NULL)::bigint AS unknown_usage_rows
+FROM agent_runtime rt
+LEFT JOIN agent_task_queue atq ON atq.runtime_id = rt.id
+LEFT JOIN task_usage tu ON tu.task_id = atq.id
+	AND tu.created_at >= to_timestamp(
+		EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
+	)
+WHERE rt.id = ANY(@runtime_ids::uuid[])
+GROUP BY rt.id;
 
 -- name: GetRuntimeTaskHourlyActivity :many
 -- Hour-of-day distribution for queue starts. Bucketed in the viewer's
@@ -65,6 +97,11 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    -- Call counts straight off the raw rows (this query has no hourly
+    -- rollup available): known half only, plus the row count without
+    -- provider evidence so readers cannot pad a partial sum to "complete".
+    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS model_call_count,
+    COUNT(*) FILTER (WHERE tu.model_call_count IS NULL)::int  AS model_call_unknown_count,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
@@ -94,6 +131,8 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS model_call_count,
+    COUNT(*) FILTER (WHERE tu.model_call_count IS NULL)::int  AS model_call_unknown_count,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id

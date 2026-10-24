@@ -180,8 +180,8 @@ describe("UsageSection — Viewing timezone wiring", () => {
     render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
 
     const flows = Array.from(document.querySelectorAll("number-flow-react"));
-    expect(flows).toHaveLength(3);
-    expect(flows.at(-1)).toHaveAttribute("aria-label", "3K");
+    expect(flows).toHaveLength(4);
+    expect(flows.at(-2)).toHaveAttribute("aria-label", "3K");
     expect(
       flows.every(
         (flow) =>
@@ -192,7 +192,90 @@ describe("UsageSection — Viewing timezone wiring", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "7d" }));
 
-    expect(flows.at(-1)).toHaveAttribute("aria-label", "1K");
+    expect(flows.at(-2)).toHaveAttribute("aria-label", "1K");
+  });
+
+  it("keeps unknown calls visible instead of presenting them as a known zero", () => {
+    usageOverride.rows = [
+      {
+        runtime_id: "r-1",
+        date: new Date().toISOString().slice(0, 10),
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        model_call_count: 0,
+        model_call_unknown_count: 2,
+      },
+    ];
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    const label = screen.getByText("Model calls · 30D");
+    const card = label.parentElement as HTMLElement;
+    expect(card.querySelector("number-flow-react")).toHaveAttribute(
+      "aria-label",
+      "0",
+    );
+    expect(card).toHaveTextContent(
+      "2 usage rows have an unknown model call count; excluded from the known total.",
+    );
+  });
+
+  it("shows known calls and the unknown count as separate values", () => {
+    usageOverride.rows = [
+      {
+        runtime_id: "r-1",
+        date: new Date().toISOString().slice(0, 10),
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        model_call_count: 5,
+        model_call_unknown_count: 3,
+      },
+    ];
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    const card = screen.getByText("Model calls · 30D").parentElement as HTMLElement;
+    expect(card.querySelector("number-flow-react")).toHaveAttribute(
+      "aria-label",
+      "5",
+    );
+    expect(card).toHaveTextContent(
+      "3 usage rows have an unknown model call count; excluded from the known total.",
+    );
+  });
+
+  it("omits the unknown hint when the runtime has no unreported calls", () => {
+    usageOverride.rows = [
+      {
+        runtime_id: "r-1",
+        date: new Date().toISOString().slice(0, 10),
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        model_call_count: 5,
+        model_call_unknown_count: 0,
+      },
+    ];
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    const card = screen.getByText("Model calls · 30D").parentElement as HTMLElement;
+    expect(card.querySelector("number-flow-react")).toHaveAttribute(
+      "aria-label",
+      "5",
+    );
+    expect(card).not.toHaveTextContent("unknown model call count");
   });
 });
 

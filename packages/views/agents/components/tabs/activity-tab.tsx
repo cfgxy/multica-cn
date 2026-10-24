@@ -626,6 +626,14 @@ function TaskRow({
     task.status === "failed"
       ? failureReasonLabel(task.failure_reason, t)
       : cancelReasonLabel(task, t);
+  const queuedHoldLabel =
+    task.status !== "queued"
+      ? null
+      : task.queued_reason === "runtime_backpressure"
+        ? t(($) => $.tab_body.activity.queued_backpressure)
+        : task.queued_reason === "runtime_model_call_budget"
+          ? t(($) => $.tab_body.activity.queued_model_call_budget)
+          : null;
   const adaptation = task.capability_adaptation && task.capability_adaptation_result
     ? task.capability_adaptation_result.task_id === task.id &&
       task.capability_adaptation_result.policy_id === task.capability_adaptation.policy_id &&
@@ -707,17 +715,10 @@ function TaskRow({
           <span className={cfg.color}>
             {taskStatusLabel(task.status, t)}
           </span>
-          {/* Runtime backpressure hold (RUYI-729): the server stamps
-              queued_reason while the agent's host gate defers claims. Naming
-              the hold on the row turns a silent queue into an explainable
-              one; rows without the stamp render exactly as before. */}
-          {task.status === "queued" &&
-            task.queued_reason === "runtime_backpressure" && (
+          {queuedHoldLabel && (
             <>
               <Sep />
-              <span className="text-warning">
-                {t(($) => $.tab_body.activity.queued_backpressure)}
-              </span>
+              <span className="text-warning">{queuedHoldLabel}</span>
             </>
           )}
           {isRetro && (

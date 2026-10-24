@@ -107,3 +107,43 @@ func TestTaskUsagePayloadOldDaemonMissingRunStatsDecodesToZero(t *testing.T) {
 		t.Error("authoritativeMaxContextTokens(0) is Valid, want invalid/NULL for an absent field")
 	}
 }
+
+// TestTaskUsagePayloadEvidenceCompatibility proves that new daemons can send
+// provider IDs to old servers without changing their known fields, while a new
+// server treats an old daemon's aggregate-only payload as unknown.
+func TestTaskUsagePayloadEvidenceCompatibility(t *testing.T) {
+	withEvidence := []byte(`{"provider":"anthropic","model":"claude-opus-5","model_call_count":42,"model_call_evidence_complete":true,"model_call_evidence_ids":["msg_01","msg_02"]}`)
+	var payload TaskUsagePayload
+	if err := json.Unmarshal(withEvidence, &payload); err != nil {
+		t.Fatalf("decode evidence payload: %v", err)
+	}
+	if payload.ModelCallCount != 42 {
+		t.Errorf("legacy model_call_count = %d, want 42", payload.ModelCallCount)
+	}
+	if !payload.ModelCallEvidenceComplete || len(payload.ModelCallEvidenceIDs) != 2 {
+		t.Fatalf("decoded evidence = complete=%v ids=%v, want complete msg_01/msg_02", payload.ModelCallEvidenceComplete, payload.ModelCallEvidenceIDs)
+	}
+	if ids := completeModelCallEvidenceIDs(payload); len(ids) != 2 || ids[0] != "msg_01" || ids[1] != "msg_02" {
+		t.Errorf("complete evidence ids = %v, want [msg_01 msg_02]", ids)
+	}
+
+	oldDaemon := []byte(`{"provider":"anthropic","model":"claude-opus-5","model_call_count":42}`)
+	var legacy TaskUsagePayload
+	if err := json.Unmarshal(oldDaemon, &legacy); err != nil {
+		t.Fatalf("new server must not error on a pre-987 payload: %v", err)
+	}
+	if legacy.ModelCallCount != 42 {
+		t.Errorf("legacy model_call_count = %d, want 42", legacy.ModelCallCount)
+	}
+	if legacy.ModelCallEvidenceComplete || len(legacy.ModelCallEvidenceIDs) != 0 {
+		t.Errorf("old daemon evidence = complete=%v ids=%v, want unknown", legacy.ModelCallEvidenceComplete, legacy.ModelCallEvidenceIDs)
+	}
+	if ids := completeModelCallEvidenceIDs(legacy); ids != nil {
+		t.Errorf("aggregate-only old daemon produced evidence ids %v, want nil", ids)
+	}
+
+	partial := TaskUsagePayload{ModelCallEvidenceIDs: []string{"msg_01"}}
+	if ids := completeModelCallEvidenceIDs(partial); ids != nil {
+		t.Errorf("incomplete evidence ids = %v, want nil", ids)
+	}
+}

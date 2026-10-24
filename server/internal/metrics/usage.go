@@ -59,6 +59,7 @@ type UsageCollector struct {
 	tokens *prometheus.Desc
 	cost   *prometheus.Desc
 	tasks  *prometheus.Desc
+	calls  *prometheus.Desc
 
 	mu       sync.Mutex
 	snapshot []db.SumTaskUsageTotalsForMetricsRow
@@ -89,6 +90,12 @@ func NewUsageCollectorWithTTL(src UsageTotalsSource, ttl time.Duration) *UsageCo
 		tasks: prometheus.NewDesc("multica_task_usage_tasks_total",
 			"Lifetime task count behind the usage rows.",
 			labels, nil),
+		calls: prometheus.NewDesc("multica_task_usage_model_calls_total",
+			"Lifetime model API/Prompt call count from provider-original, dedupable evidence. "+
+				"Rows whose provider does not report call evidence are excluded from this counter "+
+				"(its unknown row count is exposed through the dashboard read paths, not here); "+
+				"rate() over this series gives calls per second.",
+			labels, nil),
 	}
 }
 
@@ -96,6 +103,7 @@ func (c *UsageCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.tokens
 	ch <- c.cost
 	ch <- c.tasks
+	ch <- c.calls
 }
 
 func (c *UsageCollector) Collect(ch chan<- prometheus.Metric) {
@@ -108,6 +116,12 @@ func (c *UsageCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.cost, prometheus.CounterValue, usageCostUSD(row), labels...)
 		ch <- prometheus.MustNewConstMetric(c.tasks, prometheus.CounterValue,
 			float64(row.TaskCount), labels...)
+		// Lifetime known-half sum: monotonically non-decreasing, so rate()
+		// in PromQL is safe. Rows without provider call evidence are not
+		// counted here (that would pad the total with zeros), only flagged
+		// through the dashboard read paths' unknown count.
+		ch <- prometheus.MustNewConstMetric(c.calls, prometheus.CounterValue,
+			float64(row.ModelCallCount), labels...)
 	}
 }
 

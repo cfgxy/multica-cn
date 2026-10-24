@@ -174,6 +174,12 @@ type AgentRuntime struct {
 	CredentialRef      pgtype.Text        `json:"credential_ref"`
 	MaxConcurrentTasks int32              `json:"max_concurrent_tasks"`
 	RemovedAt          pgtype.Timestamptz `json:"removed_at"`
+	// Whether complete known provider-call usage may hold new task claims for this runtime.
+	ModelCallBudgetEnabled bool `json:"model_call_budget_enabled"`
+	// Maximum complete known provider calls allowed in the rolling budget window.
+	ModelCallBudgetMaxCalls int64 `json:"model_call_budget_max_calls"`
+	// Rolling provider-call budget window in seconds.
+	ModelCallBudgetWindowSeconds int32 `json:"model_call_budget_window_seconds"`
 }
 
 type AgentSkill struct {
