@@ -86,6 +86,12 @@ const (
 	AuditAgentSchedulingPaused  = "agent.scheduling_paused"
 	AuditAgentSchedulingResumed = "agent.scheduling_resumed"
 
+	// Agent-level error-rate backpressure policy (RUYI-859 stage A): one
+	// event per save/restore of the agent_backpressure_policy card; details
+	// carry the agent_id and the old/new cards (old null on first save,
+	// new null on a restore-to-defaults delete).
+	AuditAgentSuppressionConfigUpdated = "agent.suppression_config_updated"
+
 	// Agent domain, RUYI-630: the sensitive-operation authorization channel.
 	// One story per request_group_id: requested → authorized/denied (per
 	// step) → executed/execute_failed, with revoked and the sweep's expired
@@ -117,9 +123,9 @@ const (
 	// transition carrying every flipped card id).
 	AuditIssueDecisionCardsAutoCancelled = "issue.decision_cards_auto_cancelled"
 	// RUYI-690: issue suspension lifecycle (orthogonal "waiting" dimension).
-	AuditIssueSuspended             = "issue.suspended"
-	AuditIssueSuspensionResumed     = "issue.suspension_resumed"
-	AuditIssueSuspensionCancelled   = "issue.suspension_cancelled"
+	AuditIssueSuspended           = "issue.suspended"
+	AuditIssueSuspensionResumed   = "issue.suspension_resumed"
+	AuditIssueSuspensionCancelled = "issue.suspension_cancelled"
 	// RUYI-863: question-card lifecycle. Cancel is the member-side terminal
 	// act and restore flips a cancelled card back to open — both carry the
 	// acting member + the from/to status in details so the audit surface
@@ -151,6 +157,9 @@ const (
 	// daemon_id and the full old→new cards.
 	AuditOpsBackpressureSettingsUpdated = "ops.backpressure_settings_updated"
 	AuditOpsBackpressureSettingsRemoved = "ops.backpressure_settings_removed"
+	AuditOpsPromQLRulesUpdated          = "ops.promql_rules_updated"
+	AuditOpsPromQLRuleFired             = "ops.promql_rule_fired"
+	AuditOpsPromQLRuleResolved          = "ops.promql_rule_resolved"
 
 	AuditMCPInvocationStarted  = "mcp.invocation_started"
 	AuditMCPInvocationFinished = "mcp.invocation_finished"

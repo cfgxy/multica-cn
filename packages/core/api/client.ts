@@ -17,6 +17,9 @@ import type { ListAuditEventsParams, AuditEventsPage } from "../types/audit";
 import type {
   RuntimeBackpressureSettings,
   RuntimeBackpressureEvent,
+  AgentBackpressurePolicy,
+  AgentBackpressureConfig,
+  AgentBackpressureEvent,
 } from "./schemas";
 import type {
   Issue,
@@ -112,6 +115,9 @@ import type {
   SelfEvolutionModelConfigSave,
   WorkspaceBackpressureSettings,
   WorkspaceBackpressureSettingsSave,
+  WorkspacePromQLRuleSave,
+  WorkspacePromQLRules,
+  WorkspacePromQLRulePreview,
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
@@ -162,6 +168,7 @@ import type {
   DashboardUsageResources,
   DashboardUsageTraffic,
   DashboardUsageTrafficDim,
+  RuntimeResources,
   DashboardUsageByAgent,
   DashboardAgentRunTime,
   DashboardRunTimeDaily,
@@ -409,6 +416,7 @@ import {
   DashboardUsageDailyListSchema,
   DashboardUsageResourcesSchema,
   DashboardUsageTrafficSchema,
+  RuntimeResourcesSchema,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_CHAT_MESSAGE_LIST,
@@ -456,6 +464,10 @@ import {
   RuntimeHourlyActivityListSchema,
   RuntimeBackpressureSettingsSchema,
   RuntimeBackpressureEventListSchema,
+  WorkspacePromQLRulesSchema,
+  WorkspacePromQLRulePreviewSchema,
+  AgentBackpressurePolicySchema,
+  AgentBackpressureEventListSchema,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
@@ -3224,6 +3236,97 @@ export class ApiClient {
     );
   }
 
+  // ---- Agent-level error-rate backpressure policy (RUYI-859 stage A) ----
+  // Config surface + read-only visibility on the Agent detail page. A
+  // malformed response degrades to the built-in defaults (monitor-only,
+  // auto-suppression off) rather than breaking the page.
+
+  async getAgentBackpressurePolicy(
+    agentId: string,
+  ): Promise<AgentBackpressurePolicy> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-policy`,
+    );
+    return parseWithFallback<AgentBackpressurePolicy>(
+      raw,
+      AgentBackpressurePolicySchema,
+      {
+        agent_id: agentId,
+        configured: false,
+        config: null,
+        window: null,
+        scheduling: null,
+        events: [],
+        promql_rules: [],
+      },
+      { endpoint: "GET /api/agents/:id/backpressure-policy" },
+    );
+  }
+
+  async putAgentBackpressurePolicy(
+    agentId: string,
+    config: AgentBackpressureConfig,
+  ): Promise<AgentBackpressurePolicy> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-policy`,
+      { method: "PUT", body: JSON.stringify(config) },
+    );
+    return parseWithFallback<AgentBackpressurePolicy>(
+      raw,
+      AgentBackpressurePolicySchema,
+      {
+        agent_id: agentId,
+        configured: true,
+        config: null,
+        window: null,
+        scheduling: null,
+        events: [],
+        promql_rules: [],
+      },
+      { endpoint: "PUT /api/agents/:id/backpressure-policy" },
+    );
+  }
+
+  async deleteAgentBackpressurePolicy(
+    agentId: string,
+  ): Promise<AgentBackpressurePolicy> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-policy`,
+      { method: "DELETE" },
+    );
+    return parseWithFallback<AgentBackpressurePolicy>(
+      raw,
+      AgentBackpressurePolicySchema,
+      {
+        agent_id: agentId,
+        configured: false,
+        config: null,
+        window: null,
+        scheduling: null,
+        events: [],
+        promql_rules: [],
+      },
+      { endpoint: "DELETE /api/agents/:id/backpressure-policy" },
+    );
+  }
+
+  async listAgentBackpressureEvents(
+    agentId: string,
+    params?: { limit?: number },
+  ): Promise<AgentBackpressureEvent[]> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", String(params.limit));
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-events?${search}`,
+    );
+    return parseWithFallback<AgentBackpressureEvent[]>(
+      raw,
+      AgentBackpressureEventListSchema,
+      [],
+      { endpoint: "GET /api/agents/:id/backpressure-events" },
+    );
+  }
+
   async getRuntimeUsage(
     runtimeId: string,
     params?: { days?: number; tz?: string },
@@ -3345,6 +3448,27 @@ export class ApiClient {
       DashboardUsageResourcesSchema,
       { configured: false, series: {} },
       { endpoint: "GET /api/dashboard/usage/resources" },
+    );
+  }
+
+  // Per-Runtime host resources (RUYI-859): the RUYI-618 resource panel
+  // narrowed to this runtime's daemon host, server-side. A 200 with
+  // configured=false (no observability stack) or has_daemon=false (cloud
+  // runtime) is a normal state, not an error.
+  async getRuntimeResources(
+    runtimeId: string,
+    params: { window?: string },
+  ): Promise<RuntimeResources> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/resources?${search}`,
+    );
+    return parseWithFallback<RuntimeResources>(
+      raw,
+      RuntimeResourcesSchema,
+      { configured: false, daemon_id: "", has_daemon: false, series: {} },
+      { endpoint: "GET /api/runtimes/:id/resources" },
     );
   }
 
@@ -7469,5 +7593,38 @@ export class ApiClient {
       ...save,
       custom: true,
     }, { endpoint: "PUT /api/workspace/backpressure-settings" });
+  }
+
+  async getWorkspacePromQLRules(): Promise<WorkspacePromQLRules> {
+    const raw = await this.fetch<unknown>("/api/workspace/promql-rules");
+    return parseWithFallback(raw, WorkspacePromQLRulesSchema, {
+      rules: [],
+      prometheus_configured: false,
+    }, { endpoint: "GET /api/workspace/promql-rules" });
+  }
+
+  async putWorkspacePromQLRules(rules: WorkspacePromQLRuleSave[]): Promise<WorkspacePromQLRules> {
+    const raw = await this.fetch<unknown>("/api/workspace/promql-rules", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rules }),
+    });
+    return parseWithFallback(raw, WorkspacePromQLRulesSchema, {
+      rules: rules.map((rule) => ({ ...rule, state: { firing: false } })),
+      prometheus_configured: false,
+    }, { endpoint: "PUT /api/workspace/promql-rules" });
+  }
+
+  async previewWorkspacePromQLRule(rule: WorkspacePromQLRuleSave): Promise<WorkspacePromQLRulePreview> {
+    const raw = await this.fetch<unknown>("/api/workspace/promql-rules/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rule }),
+    });
+    return parseWithFallback(raw, WorkspacePromQLRulePreviewSchema, {
+      query: "",
+      samples: [],
+      matches: false,
+    }, { endpoint: "POST /api/workspace/promql-rules/preview" });
   }
 }

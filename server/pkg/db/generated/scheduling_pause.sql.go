@@ -113,21 +113,6 @@ func (q *Queries) CountQueuedTasksPerWorkspace(ctx context.Context, workspaceIds
 	return items, nil
 }
 
-const deleteAgentSchedulingPause = `-- name: DeleteAgentSchedulingPause :exec
-DELETE FROM scheduling_pause
-WHERE workspace_id = $1 AND agent_id = $2
-`
-
-type DeleteAgentSchedulingPauseParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	AgentID     pgtype.UUID `json:"agent_id"`
-}
-
-func (q *Queries) DeleteAgentSchedulingPause(ctx context.Context, arg DeleteAgentSchedulingPauseParams) error {
-	_, err := q.db.Exec(ctx, deleteAgentSchedulingPause, arg.WorkspaceID, arg.AgentID)
-	return err
-}
-
 const deleteAllSchedulingPausesByWorkspace = `-- name: DeleteAllSchedulingPausesByWorkspace :exec
 DELETE FROM scheduling_pause
 WHERE workspace_id = $1
@@ -137,6 +122,34 @@ WHERE workspace_id = $1
 func (q *Queries) DeleteAllSchedulingPausesByWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteAllSchedulingPausesByWorkspace, workspaceID)
 	return err
+}
+
+const deleteHumanAgentSchedulingPause = `-- name: DeleteHumanAgentSchedulingPause :execrows
+DELETE FROM scheduling_pause
+WHERE workspace_id = $1
+  AND agent_id = $2
+  AND created_by IS NOT NULL
+`
+
+type DeleteHumanAgentSchedulingPauseParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// The human resume's precise-source delete: created_by NOT NULL selects the
+// human freezes only. The loop's system source row — created_by NULL with
+// the fixed 'error_rate_suppression' reason (RUYI-859 stage B) — is
+// invisible to this statement, so a human resume can neither lift an
+// automatic suppression nor fake a human-resumed transition on top of it;
+// the loop is that row's only releaser. Rows>0 is the resumed transition
+// (audit row + broadcast owed); rows=0 means the slot was empty or is held
+// by a row no human may release: read-only.
+func (q *Queries) DeleteHumanAgentSchedulingPause(ctx context.Context, arg DeleteHumanAgentSchedulingPauseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteHumanAgentSchedulingPause, arg.WorkspaceID, arg.AgentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteWorkspaceSchedulingPause = `-- name: DeleteWorkspaceSchedulingPause :exec
@@ -222,6 +235,49 @@ func (q *Queries) GetWorkspaceSchedulingPause(ctx context.Context, workspaceID p
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const insertAgentSchedulingPause = `-- name: InsertAgentSchedulingPause :execrows
+
+INSERT INTO scheduling_pause (workspace_id, agent_id, reason, created_by)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (workspace_id, agent_id) WHERE agent_id IS NOT NULL
+DO NOTHING
+`
+
+type InsertAgentSchedulingPauseParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	Reason      string      `json:"reason"`
+	CreatedBy   pgtype.UUID `json:"created_by"`
+}
+
+// RUYI-608: queries for the scheduling freeze switch. The table and its
+// semantics are documented in migration 936; the claim gate itself is the
+// NOT EXISTS fence inside ClaimAgentTask (agent.sql) — these queries are the
+// management surface (freeze / unfreeze / inspect) plus the counts the API
+// surfaces as "frozen queue depth".
+// Freeze one agent. The ON CONFLICT DO NOTHING arm makes the insert
+// source-guarded: when ANY row already occupies the (workspace, agent)
+// agent-level slot — a first human write, the automatic loop's system
+// source row (created_by NULL, RUYI-859) or anything else — the statement
+// writes nothing and reports 0 affected rows, so the caller observes the
+// slot instead of taking it. Rows>0 is the paused transition (audit row +
+// realtime broadcast owed); rows=0 is a read-only no-op. The caller
+// reads the slot back with GetAgentSchedulingPause to report the CURRENT
+// row (first write's attribution preserved), keeping a double freeze
+// idempotent: the second call never rewrites the audit trail.
+func (q *Queries) InsertAgentSchedulingPause(ctx context.Context, arg InsertAgentSchedulingPauseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertAgentSchedulingPause,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.Reason,
+		arg.CreatedBy,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listAgentRuntimesByWorkspace = `-- name: ListAgentRuntimesByWorkspace :many
@@ -319,52 +375,6 @@ func (q *Queries) ListWorkspaceSchedulingPauses(ctx context.Context, workspaceId
 		return nil, err
 	}
 	return items, nil
-}
-
-const upsertAgentSchedulingPause = `-- name: UpsertAgentSchedulingPause :one
-
-INSERT INTO scheduling_pause (workspace_id, agent_id, reason, created_by)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (workspace_id, agent_id) WHERE agent_id IS NOT NULL
-DO UPDATE SET workspace_id = EXCLUDED.workspace_id
-RETURNING id, workspace_id, agent_id, reason, created_by, created_at
-`
-
-type UpsertAgentSchedulingPauseParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	AgentID     pgtype.UUID `json:"agent_id"`
-	Reason      string      `json:"reason"`
-	CreatedBy   pgtype.UUID `json:"created_by"`
-}
-
-// RUYI-608: queries for the scheduling freeze switch. The table and its
-// semantics are documented in migration 936; the claim gate itself is the
-// NOT EXISTS fence inside ClaimAgentTask (agent.sql) — these queries are the
-// management surface (freeze / unfreeze / inspect) plus the counts the API
-// surfaces as "frozen queue depth".
-// Freeze one agent. The ON CONFLICT arm is a no-op against the partial
-// unique index (idx_scheduling_pause_agent_level), so a double freeze is
-// idempotent: the second call returns the ORIGINAL row, preserving the first
-// operator's created_by / created_at / reason instead of letting a later
-// caller quietly rewrite the audit trail. Pass an empty reason to explicitly
-// clear it on a deliberate re-freeze.
-func (q *Queries) UpsertAgentSchedulingPause(ctx context.Context, arg UpsertAgentSchedulingPauseParams) (SchedulingPause, error) {
-	row := q.db.QueryRow(ctx, upsertAgentSchedulingPause,
-		arg.WorkspaceID,
-		arg.AgentID,
-		arg.Reason,
-		arg.CreatedBy,
-	)
-	var i SchedulingPause
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.AgentID,
-		&i.Reason,
-		&i.CreatedBy,
-		&i.CreatedAt,
-	)
-	return i, err
 }
 
 const upsertWorkspaceSchedulingPause = `-- name: UpsertWorkspaceSchedulingPause :one

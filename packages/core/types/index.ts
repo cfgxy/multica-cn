@@ -115,6 +115,7 @@ export type {
   DashboardUsageResources,
   DashboardUsageTraffic,
   DashboardUsageTrafficDim,
+  RuntimeResources,
   SchedulingPauseScope,
   SchedulingPauseState,
 } from "./agent";
@@ -531,3 +532,16 @@ export type {
   WorkspaceBackpressureSettings,
   WorkspaceBackpressureSettingsSave,
 } from "./workspace-backpressure";
+export type {
+  PromQLRuleMetric,
+  PromQLRuleGrouping,
+  PromQLRuleCondition,
+  PromQLRuleComparison,
+  PromQLRulePolicy,
+  PromQLRuleSample,
+  PromQLRuleState,
+  WorkspacePromQLRule,
+  WorkspacePromQLRuleSave,
+  WorkspacePromQLRules,
+  WorkspacePromQLRulePreview,
+} from "./workspace-promql";

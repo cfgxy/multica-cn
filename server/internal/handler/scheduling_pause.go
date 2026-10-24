@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -130,7 +131,13 @@ func (h *Handler) ResumeAgentScheduling(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	queued, err := h.TaskService.ResumeAgentScheduling(r.Context(),
+	// The service returns the slot's CURRENT row after the guarded delete:
+	// a human resume that found nothing to lift (empty slot, or the slot
+	// held by the automatic loop's system source row, which a human may not
+	// lift) reports that reality instead of a hardcoded false (RUYI-859 P1-1).
+	// The agent slot's row is the state this endpoint reports; a workspace-
+	// level freeze on top of it is out of scope here.
+	pause, queued, err := h.TaskService.ResumeAgentScheduling(r.Context(),
 		agent.WorkspaceID, agent.ID, member.UserID)
 	if err != nil {
 		slog.Error("resume agent scheduling failed", "agent_id", uuidToString(agent.ID), "error", err)
@@ -138,12 +145,19 @@ func (h *Handler) ResumeAgentScheduling(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Resume is idempotent; report the (now flowing) queue depth plus the
-	// post-resume pause state, which is false even when no row existed.
-	writeJSON(w, http.StatusOK, schedulingPauseResponse{
-		Paused:      false,
+	state := service.SchedulingState{
+		Paused:      pause.AgentID.Valid,
+		CreatedBy:   uuidToString(pause.CreatedBy),
 		QueuedCount: queued,
-	})
+	}
+	if pause.CreatedAt.Valid {
+		state.CreatedAt = pause.CreatedAt.Time.UTC().Format(time.RFC3339)
+	}
+	if state.Paused {
+		state.Scope = service.SchedulingPauseScopeAgent
+		state.Reason = pause.Reason
+	}
+	writeJSON(w, http.StatusOK, schedulingPauseResponseFrom(state))
 }
 
 func (h *Handler) GetAgentSchedulingPause(w http.ResponseWriter, r *http.Request) {

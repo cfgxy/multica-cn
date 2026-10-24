@@ -113,6 +113,7 @@ func createSchedulingPauseFixture(t *testing.T, ctx context.Context, pool *pgxpo
 		cleanupCtx := context.Background()
 		pool.Exec(cleanupCtx, `DELETE FROM agent_task_queue WHERE agent_id = $1`, agentID)
 		pool.Exec(cleanupCtx, `DELETE FROM audit_event WHERE workspace_id = $1`, workspaceID)
+		pool.Exec(cleanupCtx, `DELETE FROM agent_promql_rule_pause WHERE workspace_id = $1`, workspaceID)
 		pool.Exec(cleanupCtx, `DELETE FROM scheduling_pause WHERE workspace_id = $1`, workspaceID)
 		pool.Exec(cleanupCtx, `DELETE FROM issue WHERE workspace_id = $1`, workspaceID)
 		pool.Exec(cleanupCtx, `DELETE FROM agent WHERE id = $1`, agentID)
@@ -179,7 +180,7 @@ func TestSchedulingPauseBlocksClaim(t *testing.T) {
 	}
 
 	// Resume; the next claim takes the task again.
-	if _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
+	if _, _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	resumed, err := svc.ClaimTask(ctx, agentUUID)
@@ -188,6 +189,64 @@ func TestSchedulingPauseBlocksClaim(t *testing.T) {
 	}
 	if resumed == nil {
 		t.Fatal("claim after resume returned nil — queue did not flow")
+	}
+}
+
+// TestPromQLRulePauseBlocksClaimAndLeavesHumanPauseUntouched pins the separate
+// source ownership contract. A rule source fences claims without changing the
+// queued row; removing that source allows only the source itself to clear.
+// An independent human pause remains in force until its owner resumes it.
+func TestPromQLRulePauseBlocksClaimAndLeavesHumanPauseUntouched(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	workspaceID, agentID, _, ownerID := createSchedulingPauseFixture(t, ctx, pool)
+	workspaceUUID := util.MustParseUUID(workspaceID)
+	agentUUID := util.MustParseUUID(agentID)
+	ownerUUID := util.MustParseUUID(ownerID)
+	ruleUUID := util.MustParseUUID("8da35391-fd75-4b80-b4ec-436d563c5348")
+	svc := newSchedulingPauseService(t, pool)
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO agent_promql_rule_pause (workspace_id, agent_id, rule_id, rule_name, reason)
+		VALUES ($1, $2, $3, 'Provider failures', 'rule_firing')
+	`, workspaceID, agentID, util.UUIDToString(ruleUUID)); err != nil {
+		t.Fatalf("insert PromQL rule pause: %v", err)
+	}
+
+	blocked, err := svc.ClaimTask(ctx, agentUUID)
+	if err != nil || blocked != nil {
+		t.Fatalf("PromQL-paused claim: task=%v err=%v; want nil/nil", blocked, err)
+	}
+	var queued int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue WHERE agent_id = $1 AND status = 'queued'
+	`, agentID).Scan(&queued); err != nil {
+		t.Fatalf("count queued task: %v", err)
+	}
+	if queued != 1 {
+		t.Fatalf("PromQL pause changed queued work: queued=%d, want 1", queued)
+	}
+
+	if _, _, err := svc.PauseAgentScheduling(ctx, workspaceUUID, agentUUID, "manual incident hold", ownerUUID); err != nil {
+		t.Fatalf("insert human pause: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM agent_promql_rule_pause
+		WHERE workspace_id = $1 AND agent_id = $2 AND rule_id = $3
+	`, workspaceID, agentID, util.UUIDToString(ruleUUID)); err != nil {
+		t.Fatalf("clear PromQL rule pause: %v", err)
+	}
+
+	stillBlocked, err := svc.ClaimTask(ctx, agentUUID)
+	if err != nil || stillBlocked != nil {
+		t.Fatalf("claim after PromQL source clear: task=%v err=%v; human pause must remain", stillBlocked, err)
+	}
+	if _, _, err := svc.ResumeAgentScheduling(ctx, workspaceUUID, agentUUID, ownerUUID); err != nil {
+		t.Fatalf("resume human pause: %v", err)
+	}
+	flowed, err := svc.ClaimTask(ctx, agentUUID)
+	if err != nil || flowed == nil {
+		t.Fatalf("claim after both sources clear: task=%v err=%v; want queued task", flowed, err)
 	}
 }
 
@@ -224,7 +283,7 @@ func TestSchedulingPauseWorkspaceScopeAndResumeSemantics(t *testing.T) {
 	}
 
 	// Agent-level resume is a no-op against a workspace freeze...
-	if _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
+	if _, _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
 		t.Fatalf("agent resume under workspace freeze: %v", err)
 	}
 	stillBlocked, err := svc.ClaimTask(ctx, agentUUID)
@@ -300,7 +359,7 @@ func TestSchedulingPauseAuditTrail(t *testing.T) {
 	if _, _, err := svc.PauseAgentScheduling(ctx, wsUUID, agentUUID, "audit drill", ownerUUID); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	if _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
+	if _, _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 
@@ -348,7 +407,7 @@ func TestResumeAgentSchedulingBumpsEmptyClaimCache(t *testing.T) {
 	cache.MarkEmpty(ctx, runtimeID, 7)
 	before := cache.CurrentVersion(ctx, runtimeID)
 
-	if _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
+	if _, _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 
