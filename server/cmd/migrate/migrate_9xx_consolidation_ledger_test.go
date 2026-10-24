@@ -183,6 +183,7 @@ var postConsolidationStems = []string{
 	"979_credential_audit_id_index",                    // RUYI-837
 	"979_credential_audit_workspace_created_index",     // RUYI-837
 	"980_runtime_concurrency_limit",                    // RUYI-843
+	"984_prompt_proposal_enactment_target",             // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
 	"987_task_usage_model_call_count",                  // RUYI-871
 }
 

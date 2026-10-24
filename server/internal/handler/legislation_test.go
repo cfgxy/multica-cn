@@ -127,6 +127,8 @@ type proposalReqBody struct {
 	ChangeKind          string              `json:"change_kind"`
 	ClauseName          string              `json:"clause_name"`
 	ClauseText          string              `json:"clause_text"`
+	MoveToScope         string              `json:"move_to_scope"`
+	MoveToScopeID       string              `json:"move_to_scope_id"`
 	GateAnswerLayer     string              `json:"gate_answer_layer"`
 	GateAnswerRetention string              `json:"gate_answer_retention"`
 	GateAnswerCost      string              `json:"gate_answer_cost"`
@@ -699,6 +701,187 @@ func TestLegislationBatchApprove(t *testing.T) {
 	}
 	if approvedCount != 1 || gateFailedCount != 1 {
 		t.Fatalf("single gate-failed approval should append one approved and one gate_failed audit entry, got approved=%d gate_failed=%d audit=%s", approvedCount, gateFailedCount, failedAuditJSON)
+	}
+}
+
+// cleanClauseFor returns gate-passing clause text whose first-line label IS
+// the clause name — the engine consistency rule requires the two to match
+// verbatim for add/revise drafts, and the body stays free of weak wording.
+func cleanClauseFor(name string) string {
+	return "- **" + name + "**：各成员开工前在任务单回报当日计划与阻塞。"
+}
+
+// TestLegislationEnactmentTargets (RUYI-858): the owner's landing target is
+// decided at approval and persisted on the row. clause_library (the default,
+// sent or not) writes the clause assets; static_prompt lands the gate
+// synthesis through the version funnel WITHOUT clause asset rows; move/migrate
+// kinds reject the static target with a 400; the /enact recovery path enacts
+// the persisted target; the batch endpoint carries per-id targets.
+func TestLegislationEnactmentTargets(t *testing.T) {
+	wsID, ownerID, memberID := legislationFixture(t)
+
+	var contextBefore string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, wsID).Scan(&contextBefore)
+
+	// Default (no target in the body): the library path is unchanged —
+	// clause assets written, carrier re-rendered with the clause region.
+	libID := createDraft(t, wsID, memberID, "默认入条款库", cleanClauseFor("默认入条款库"))
+	submitDraft(t, wsID, memberID, libID)
+	ownerApprove := ownerRoute(http.HandlerFunc(testHandler.ApprovePromptProposal))
+	code, body := legislationCall(t, ownerApprove.ServeHTTP,
+		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+libID+"/approve",
+			map[string]any{"confirm_diff_previewed": true}, "id", libID))
+	if code != http.StatusOK {
+		t.Fatalf("library default approve: expected 200, got %d: %s", code, body)
+	}
+	var libTarget, libClause string
+	var libVersion int
+	dbfx.QueryRow(t, `SELECT enactment_target, COALESCE(clause_id::text, ''), enacted_version FROM prompt_proposal WHERE id = $1`, libID).
+		Scan(&libTarget, &libClause, &libVersion)
+	if libTarget != "clause_library" || libClause == "" || libVersion != 1 {
+		t.Fatalf("library row = target %q / clause %q / version %d, want clause_library with a clause at version 1", libTarget, libClause, libVersion)
+	}
+
+	// static_prompt: the same gate-passing clause lands in the carrier text
+	// ONLY — the version funnel records a carrier write, but no clause
+	// asset rows and no clause reference on the row.
+	staticID := createDraft(t, wsID, memberID, "静态落地", cleanClauseFor("静态落地"))
+	submitDraft(t, wsID, memberID, staticID)
+	code, body = legislationCall(t, ownerApprove.ServeHTTP,
+		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+staticID+"/approve",
+			map[string]any{"confirm_diff_previewed": true, "enactment_target": "static_prompt"}, "id", staticID))
+	if code != http.StatusOK {
+		t.Fatalf("static approve: expected 200, got %d: %s", code, body)
+	}
+	var staticTarget, staticClause string
+	var staticVersion int
+	dbfx.QueryRow(t, `SELECT enactment_target, COALESCE(clause_id::text, ''), enacted_version FROM prompt_proposal WHERE id = $1`, staticID).
+		Scan(&staticTarget, &staticClause, &staticVersion)
+	if staticTarget != "static_prompt" || staticClause != "" {
+		t.Fatalf("static row = target %q / clause %q, want static_prompt with no clause reference", staticTarget, staticClause)
+	}
+	if staticVersion == 0 || staticVersion < libVersion {
+		t.Fatalf("static row enacted_version = %d, want a carrier version written by the funnel", staticVersion)
+	}
+	// No clause asset row exists for the static landing.
+	var clauseRows int
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause c WHERE c.workspace_id = $1`, wsID).Scan(&clauseRows)
+	if clauseRows != 1 {
+		t.Fatalf("clause rows = %d, want exactly the library clause (the static landing writes none)", clauseRows)
+	}
+	// The carrier column carries the synthesized text through the funnel.
+	var contextAfter string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, wsID).Scan(&contextAfter)
+	if contextAfter == contextBefore || !strings.Contains(contextAfter, "静态落地") {
+		t.Fatalf("static landing did not write the carrier content")
+	}
+	var staticVersions int
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM prompt_version WHERE workspace_id = $1 AND scope = 'workspace' AND scope_id = $2`, wsID, wsID).Scan(&staticVersions)
+	if staticVersions < 2 {
+		t.Fatalf("static landing bypassed the prompt_version funnel: %d carrier versions", staticVersions)
+	}
+
+	// The recovery path enacts the PERSISTED target: a static row parked in
+	// approved must still land statically when /enact runs later.
+	restID := createDraft(t, wsID, memberID, "恢复路径静态", cleanClauseFor("恢复路径静态"))
+	submitDraft(t, wsID, memberID, restID)
+	dbfx.Exec(t, `UPDATE prompt_proposal SET status = 'approved', enactment_target = 'static_prompt' WHERE workspace_id = $1 AND id = $2`, wsID, restID)
+	ownerEnact := ownerRoute(http.HandlerFunc(testHandler.EnactPromptProposal))
+	code, body = legislationCall(t, ownerEnact.ServeHTTP,
+		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+restID+"/enact", nil, "id", restID))
+	if code != http.StatusOK {
+		t.Fatalf("recovery enact on static row: expected 200, got %d: %s", code, body)
+	}
+	if got := proposalStatus(t, wsID, restID); got != "enacted" {
+		t.Fatalf("recovery enact: status %q, want enacted", got)
+	}
+	var restTarget string
+	dbfx.QueryRow(t, `SELECT enactment_target FROM prompt_proposal WHERE id = $1`, restID).Scan(&restTarget)
+	if restTarget != "static_prompt" {
+		t.Fatalf("recovery enact rewrote the persisted target: %q", restTarget)
+	}
+
+	// A mid-flight crash on a DEFAULT row (approved, no explicit target
+	// column value — migration default) must land as clause_library.
+	restLibID := createDraft(t, wsID, memberID, "恢复路径默认", cleanClauseFor("恢复路径默认"))
+	submitDraft(t, wsID, memberID, restLibID)
+	approveDefault := ownerRoute(http.HandlerFunc(testHandler.ApprovePromptProposal))
+	code, body = legislationCall(t, approveDefault.ServeHTTP,
+		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+restLibID+"/approve",
+			map[string]any{"confirm_diff_previewed": true}, "id", restLibID))
+	if code != http.StatusOK {
+		t.Fatalf("default recovery approve: expected 200, got %d: %s", code, body)
+	}
+	var defaultTarget string
+	dbfx.QueryRow(t, `SELECT enactment_target FROM prompt_proposal WHERE id = $1`, restLibID).Scan(&defaultTarget)
+	if defaultTarget != "clause_library" {
+		t.Fatalf("default approve persisted target %q, want clause_library", defaultTarget)
+	}
+
+	// Move/migrate kinds reject the static target up front.
+	moveDraft := legislationProposalBody(wsID, "移动条款", "")
+	moveDraft.ChangeKind = "move_clause"
+	moveDraft.MoveToScope = "project"
+	// A distinct, well-formed UUID keeps the "destination differs" rule
+	// satisfied; the destination project need not exist — the target-400
+	// fires in normalizeEnactmentTarget before any carrier read on approve.
+	moveDraft.MoveToScopeID = "00000000-0000-0000-0000-000000000000"
+	// Park the row at pending_owner the way a real move proposal would.
+	code, body = legislationCall(t, testHandler.CreatePromptProposal,
+		legislationReq(memberID, wsID, http.MethodPost, "/api/prompt-legislation/proposals", moveDraft))
+	if code != http.StatusCreated {
+		t.Fatalf("create move draft: expected 201, got %d: %s", code, body)
+	}
+	var moveResp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(body), &moveResp); err != nil {
+		t.Fatalf("decode move id: %v (%s)", err, body)
+	}
+	moveID := moveResp.ID
+	dbfx.Exec(t, `UPDATE prompt_proposal SET status = 'pending_owner' WHERE id = $1`, moveID)
+	code, body = legislationCall(t, ownerApprove.ServeHTTP,
+		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+moveID+"/approve",
+			map[string]any{"confirm_diff_previewed": true, "enactment_target": "static_prompt"}, "id", moveID))
+	if code != http.StatusBadRequest {
+		t.Fatalf("static target on move_clause: expected 400, got %d: %s", code, body)
+	}
+	if got := proposalStatus(t, wsID, moveID); got != "pending_owner" {
+		t.Fatalf("rejected static target changed the status: %q", got)
+	}
+
+	// Unknown targets are rejected too, without status movement.
+	otherID := createDraft(t, wsID, memberID, "未知目标", cleanClauseFor("未知目标"))
+	submitDraft(t, wsID, memberID, otherID)
+	code, body = legislationCall(t, ownerApprove.ServeHTTP,
+		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+otherID+"/approve",
+			map[string]any{"confirm_diff_previewed": true, "enactment_target": "carrier_override"}, "id", otherID))
+	if code != http.StatusBadRequest {
+		t.Fatalf("unknown target: expected 400, got %d: %s", code, body)
+	}
+
+	// The batch endpoint carries per-id landing targets: the clean row lands
+	// statically, the sibling keeps the default library path.
+	batchA := createDraft(t, wsID, memberID, "批量静态", cleanClauseFor("批量静态"))
+	batchB := createDraft(t, wsID, memberID, "批量默认", cleanClauseFor("批量默认"))
+	submitDraft(t, wsID, memberID, batchA)
+	submitDraft(t, wsID, memberID, batchB)
+	batch := ownerRoute(http.HandlerFunc(testHandler.BatchApprovePromptProposals))
+	code, body = legislationCall(t, batch.ServeHTTP,
+		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/approve-batch",
+			map[string]any{
+				"ids":                    []string{batchA, batchB},
+				"confirm_diff_previewed": true,
+				"enactment_targets":      map[string]string{batchA: "static_prompt"},
+			}))
+	if code != http.StatusOK {
+		t.Fatalf("batch with per-id targets: expected 200, got %d: %s", code, body)
+	}
+	var targetA, targetB, clauseB string
+	dbfx.QueryRow(t, `SELECT enactment_target FROM prompt_proposal WHERE id = $1`, batchA).Scan(&targetA)
+	dbfx.QueryRow(t, `SELECT enactment_target, COALESCE(clause_id::text, '') FROM prompt_proposal WHERE id = $1`, batchB).Scan(&targetB, &clauseB)
+	if targetA != "static_prompt" || targetB != "clause_library" || clauseB == "" {
+		t.Fatalf("batch targets: A=%q B=%q clauseB=%q, want A static_prompt / B clause_library with clause", targetA, targetB, clauseB)
 	}
 }
 

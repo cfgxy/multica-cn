@@ -130,7 +130,13 @@ export class BrowserVoiceAudio {
 
   constructor(private readonly callbacks: BrowserVoiceAudioCallbacks) {}
 
-  async startCapture(): Promise<void> {
+  /**
+   * Captures the microphone. `isCancelled` must return true once the owning
+   * session has been dismissed, its agent switched, or the host unmounted
+   * (RUYI-866 P1): both awaits below can settle long after that moment, and
+   * a late success must not hold the stream / mic LED for a dead session.
+   */
+  async startCapture(isCancelled: () => boolean = () => false): Promise<void> {
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
@@ -145,6 +151,12 @@ export class BrowserVoiceAudio {
       this.callbacks.onCaptureError("microphone permission denied or unavailable");
       throw new Error("voice capture unavailable");
     }
+    if (isCancelled()) {
+      // The permission prompt outran the dismiss: release the tracks we just
+      // won and let the owning session's catch decide the (stale) state.
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error("voice capture cancelled");
+    }
     this.captureStream = stream;
     const ctx = new AudioContext();
     this.captureCtx = ctx;
@@ -154,6 +166,12 @@ export class BrowserVoiceAudio {
       await ctx.audioWorklet.addModule(workletUrl);
     } finally {
       URL.revokeObjectURL(workletUrl);
+    }
+    if (isCancelled()) {
+      // Worklet load outran the dismiss: tear down everything attached so
+      // far and stop the freshly won stream.
+      this.stopCapture();
+      throw new Error("voice capture cancelled");
     }
     const source = ctx.createMediaStreamSource(stream);
     const worklet = new AudioWorkletNode(ctx, "voice-capture");

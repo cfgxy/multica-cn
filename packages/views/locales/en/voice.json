@@ -2,7 +2,8 @@
   "button": {
     "start": "Start voice conversation",
     "stop": "End voice conversation",
-    "disabled_stage1": "Voice is mobile-only for now — open the mobile app to talk"
+    "disabled_no_target": "Voice needs an agent as its target. Pick an agent to start speaking — typing still works.",
+    "disabled_squad": "Voice targets a single agent, and a squad routes to its leader. Pick an agent to start speaking — typing still works."
   },
   "overlay": {
     "title": "Voice conversation",
@@ -23,7 +24,10 @@
       "instance_not_active": "The voice runtime for this agent isn't active right now. Try again later, or keep using text.",
       "capability_mismatch": "This agent's model doesn't support voice conversations. Text messaging still works as usual.",
       "credential_missing": "Voice isn't fully configured for this agent (missing credentials). A workspace admin needs to finish setup.",
-      "credential_invalid": "The voice credentials for this agent are invalid or expired. A workspace admin needs to update them."
+      "credential_invalid": "The voice credentials for this agent are invalid or expired. A workspace admin needs to update them.",
+      "voice_unconfigured": "Voice isn't set up for this agent yet. A workspace admin needs to configure a voice provider — text messaging still works.",
+      "voice_provider_missing": "The voice provider for this agent no longer exists. A workspace admin needs to reconfigure voice — text messaging still works.",
+      "voice_provider_disabled": "Voice is turned off for this agent's voice provider. A workspace admin can turn it back on — text messaging still works."
     }
   },
   "dictation": {
