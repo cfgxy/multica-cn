@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   CredentialConnectorListSchema,
+  CredentialConnectorSchema,
   CredentialMetadataListSchema,
   CredentialMetadataSchema,
   CredentialAuditEventListSchema,
@@ -1342,6 +1343,36 @@ export class ApiClient {
     });
   }
 
+  async createCredentialConnector(workspaceId: string, data: {
+    name: string;
+    target_url: string;
+  }): Promise<CredentialConnector | null> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialConnectorSchema, null, {
+      endpoint: "POST /api/workspaces/{id}/credential-connectors",
+      redactContent: true,
+    });
+  }
+
+  async updateCredentialConnector(workspaceId: string, connectorId: string, data: {
+    name: string;
+    target_url: string;
+    status: string;
+    revision: number;
+  }): Promise<CredentialConnector | null> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors/${connectorId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialConnectorSchema, null, {
+      endpoint: "PUT /api/workspaces/{id}/credential-connectors/{connectorId}",
+      redactContent: true,
+    });
+  }
+
   async createIssueCredential(issueId: string, data: {
     name: string;
     target_service: string;
@@ -1898,6 +1929,22 @@ export class ApiClient {
       endpoint: "POST /api/issues/:id/decisions/:decisionId/cancel",
     });
     if (!decision) throw new Error("Invalid decision cancel response");
+    return decision;
+  }
+
+  // RUYI-863: the inverse of cancel — a cancelled question card flips back to
+  // open. The server CAS refuses answered cards and authorization cards
+  // (409), so the client only mirrors the card + fails readably, same as
+  // cancel above.
+  async restoreIssueDecision(issueId: string, decisionId: string): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/${decisionId}/restore`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/restore",
+    });
+    if (!decision) throw new Error("Invalid decision restore response");
     return decision;
   }
 

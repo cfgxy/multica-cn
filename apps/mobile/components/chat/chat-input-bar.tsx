@@ -703,18 +703,16 @@ function RightSlot({
           disabled={disabled}
           accessibilityLabel={tVoice("button.start", "实时语音对话")}
           accessibilityHint={tVoice("button.start_hint", "开始实时语音对话")}
-          className="relative h-9 w-9 items-center justify-center rounded-full"
-          style={({ pressed }) => ({
-            backgroundColor: disabled ? theme.secondary : theme.primary,
-            opacity: pressed && !disabled ? 0.88 : 1,
-          })}
+          className={`relative h-9 w-9 items-center justify-center rounded-full active:opacity-90 ${
+            disabled ? "bg-secondary" : "bg-primary"
+          }`}
         >
           {({ pressed }) => (
             <>
               <MaterialCommunityIcons
                 name="waveform"
                 size={21}
-                color={disabled ? theme.mutedForeground : theme.brandForeground}
+                color={disabled ? theme.mutedForeground : theme.primaryForeground}
               />
               {pressed && !disabled ? (
                 <View

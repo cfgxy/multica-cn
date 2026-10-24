@@ -463,7 +463,12 @@
     "task_filter": "Task", "choose_task": "Choose a task", "loading": "Loading credentials…", "empty": "No credentials are available for this task.", "status": "Status:", "expires_prefix": "Expires", "replace_title": "Replace credential", "revoke_title": "Revoke credential",
     "revoke_aria": "Revoke {{name}}", "replace_aria": "Replace {{name}}", "revoke_confirm": "Revoke this credential? This blocks future delivery but cannot recall a value already delivered to a running process.", "revoked": "Credential revoked. This cannot remove a value already delivered to a running process.", "revoke_failed": "The credential could not be revoked. Its status has not been changed; retry later.",
     "audit_title": "Credential audit", "audit_empty": "No credential audit records.", "audit_project": "Project", "audit_issue": "Issue", "audit_actor": "User / consumer",
-    "no_permission": "Only the task owner or a workspace owner can manage credentials here.", "no_connector": "No active connector is available. Ask a workspace owner to configure one."
+    "no_permission": "Only the task owner or a workspace owner can manage credentials here.", "no_connector": "No active connector is available. Ask a workspace owner to configure one.",
+    "connector_hint": "A connector points at the target service endpoint this credential authorizes; delivery is scoped to that endpoint.",
+    "connectors_section": "Connectors", "add_connector": "Add connector", "target_url": "Target URL", "target_url_help": "https only, no query or fragment.",
+    "disable_connector": "Disable", "enable_connector": "Enable", "connector_added": "Connector added.", "connector_updated": "Connector updated.",
+    "connector_failed": "The connector change failed. Please retry.", "connector_load_failed": "Could not load connectors.", "retry_load": "Retry",
+    "add_connector_required": "No active connector yet. A workspace owner must add one before this credential can be saved.", "connector_empty_item": "No connectors yet"
   },
   "page": {
     "title": "Settings",

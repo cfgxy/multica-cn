@@ -2391,6 +2391,24 @@ class ApiClient {
     return decision;
   }
 
+  // RUYI-863: the inverse of cancel — restores a cancelled card to open.
+  // Mirrors core's restoreIssueDecision (same endpoint, same schema);
+  // the server's CAS 409s answered and authorization cards.
+  async restoreIssueDecision(
+    issueId: string,
+    decisionId: string,
+  ): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/decisions/${decisionId}/restore`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/restore",
+    });
+    if (!decision) throw new Error("Invalid decision restore response");
+    return decision;
+  }
+
   // Workspace-level decision inbox aggregation (RUYI-494). Mirrors
   // packages/core/api/client.ts listWorkspaceDecisionInbox — mobile-owned
   // fetch wrapper, shared zod schema, same query-string contract.
