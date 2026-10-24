@@ -3389,6 +3389,7 @@ describe("ApiClient agent backpressure policy (RUYI-859 stage A)", () => {
       suppress_on_error_rate: true,
       count_model_api_failures: true,
       count_execution_failures: true,
+      promql_rule_ids: [],
     });
     expect(saved.agent_id).toBe("agent-1");
     const putCall = String(writeFetch.mock.calls[0]?.[0]);
@@ -3406,6 +3407,7 @@ describe("ApiClient agent backpressure policy (RUYI-859 stage A)", () => {
       suppress_on_error_rate: false,
       count_model_api_failures: true,
       count_execution_failures: true,
+      promql_rule_ids: [],
     });
     expect(again.agent_id).toBe("agent-1");
     expect(again.events).toEqual([]);

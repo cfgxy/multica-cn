@@ -341,7 +341,7 @@ export function WorkspacePromQLRulesCard({
                   {statusLabel(liveRule) ?? t(($) => $.workspace.promql_status_unsaved)}
                 </span>
                 <Switch
-                  aria-label={t(($) => $.workspace.promql_enabled)}
+                  aria-label={`${t(($) => $.workspace.promql_enabled)}: ${rule.name.trim() || `${t(($) => $.workspace.promql_rule)} ${index + 1}`}`}
                   checked={rule.enabled}
                   disabled={!canManage}
                   onCheckedChange={(enabled) => updateRule(index, { enabled })}
