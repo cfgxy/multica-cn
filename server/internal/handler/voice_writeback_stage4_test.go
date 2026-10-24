@@ -45,6 +45,9 @@ func TestVoiceWriteBack_FactsSummaryOnDisconnect(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
+	// This flow asserts the explicit unavailable-MCP contract. It must not
+	// depend on whether a developer happens to run an MCP listener locally.
+	t.Setenv("MCP_URL", "")
 	provider := newStubVoiceProvider(t)
 	agentID, _ := seedUsableVoiceSetup(t, "WriteBack Probe", `{"model":"stubby-live-1"}`)
 	srv := voiceGatewayServer(t)
@@ -74,19 +77,15 @@ func TestVoiceWriteBack_FactsSummaryOnDisconnect(t *testing.T) {
 	provider.sendDownstream(stubConn, map[string]any{
 		"sessionResumptionUpdate": map[string]any{"newHandle": "wb-handle-9"},
 	})
-	// Since RUYI-874 ③ the gateway bridge executes the "search" call
-	// server-side (here "search" is not a bridge tool, so the execution
-	// result is the structured unknown_tool error — still a REAL result,
-	// never a fabrication) and echoes that response upstream itself. The
-	// echo lands in provider.clientMsgs, so wait for it FIRST: its
-	// presence proves the call id was marked bridge-handled before the
-	// client pump can swallow anything.
+	// The MCP endpoint is deliberately unavailable in this test. The bridge
+	// must return its structured unavailable response and echo it upstream
+	// before the client pump can swallow a duplicate tool response.
 	waitFor(t, 3*time.Second, func() bool {
 		provider.mu.Lock()
 		defer provider.mu.Unlock()
 		for _, msg := range provider.clientMsgs {
 			if strings.Contains(string(msg), "toolResponse") &&
-				strings.Contains(string(msg), `unknown_tool`) {
+				strings.Contains(string(msg), `unavailable`) {
 				return true
 			}
 		}
@@ -101,9 +100,25 @@ func TestVoiceWriteBack_FactsSummaryOnDisconnect(t *testing.T) {
 		`{"toolResponse":{"functionResponses":[{"id":"call-1","name":"search","response":{"hits":2}}]}}`)); err != nil {
 		t.Fatalf("send toolResponse: %v", err)
 	}
+	// The marker gives the client pump an observable ordering barrier: it can
+	// reach the provider only after the preceding duplicate response has been
+	// consumed and dropped.
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(
+		`{"clientContent":{"turns":[{"role":"user","parts":[{"text":"dedupe barrier"}]}],"turnComplete":true}}`)); err != nil {
+		t.Fatalf("send dedupe barrier: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		provider.mu.Lock()
+		defer provider.mu.Unlock()
+		for _, msg := range provider.clientMsgs {
+			if strings.Contains(string(msg), "dedupe barrier") {
+				return true
+			}
+		}
+		return false
+	})
 	// The swallowed echo must NOT add a second toolResponse frame to the
-	// provider: wait briefly and pin the frame count at one (the bridge's).
-	time.Sleep(200 * time.Millisecond)
+	// provider: the marker above confirms the echo has already been processed.
 	provider.mu.Lock()
 	toolResponseFrames := 0
 	for _, msg := range provider.clientMsgs {

@@ -14,6 +14,7 @@ import type { HttpServerOptions } from "../src/http.js";
 import type { Server as HttpServer } from "node:http";
 
 const TOKEN = `mul_${"a1b2c3d4e5".repeat(4)}`;
+const NON_MEMBER_TOKEN = `mul_${"b1".repeat(20)}`;
 // Shape only — never verified here, so the segments need no real signature.
 const OAUTH_TOKEN = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2lnbmF0dXJl";
 
@@ -346,6 +347,64 @@ describe("http transport gate", () => {
       idempotentHint: false,
       openWorldHint: true,
     });
+  });
+
+  it("executes workspace and project tools through the authenticated HTTP transport", async () => {
+    const backendRequests: Array<{ path: string; authorization: string; workspaceSlug: string | null }> = [];
+    const base = await listen(undefined, {
+      fetchImpl: (async (input, init) => {
+        const url = new URL(String(input));
+        const requestHeaders = new Headers(init?.headers);
+        const authorization = requestHeaders.get("Authorization") ?? "";
+        const workspaceSlug = requestHeaders.get("X-Workspace-Slug");
+        backendRequests.push({ path: url.pathname, authorization, workspaceSlug });
+        if (url.pathname === "/api/workspaces") {
+          if (authorization === `Bearer ${TOKEN}`) {
+            return new Response(JSON.stringify([{ id: "ws-1", slug: "member", name: "Member workspace" }]), { status: 200 });
+          }
+          return new Response(JSON.stringify([]), { status: 200 });
+        }
+        if (url.pathname === "/api/projects") {
+          if (authorization === `Bearer ${TOKEN}` && workspaceSlug === "member") {
+            return new Response(JSON.stringify({ total: 1, projects: [{ id: "p-1", title: "Member project", status: "active", issue_count: 2 }] }), { status: 200 });
+          }
+          return new Response(JSON.stringify({ error: "membership required" }), { status: 403 });
+        }
+        return new Response(JSON.stringify({ status: "recorded" }), { status: 200 });
+      }) as typeof fetch,
+    });
+    const headers = {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      Authorization: `Bearer ${TOKEN}`,
+    };
+    const call = async (id: number, name: string, args: Record<string, unknown>, authorization = headers.Authorization) => {
+      const response = await fetch(`${base}/mcp`, {
+        method: "POST",
+        headers: { ...headers, Authorization: authorization },
+        body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } }),
+      });
+      expect(response.status).toBe(200);
+      return (await response.json()) as { result?: { content?: Array<{ text?: string }>; isError?: boolean } };
+    };
+
+    const tools = await fetch(`${base}/mcp`, { method: "POST", headers, body: rpcBody("tools/list") });
+    const toolPayload = (await tools.json()) as { result?: { tools?: Array<{ name: string }> } };
+    expect(toolPayload.result?.tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["list_workspaces", "list_projects"]));
+
+    const workspaces = await call(2, "list_workspaces", {});
+    expect(JSON.parse(workspaces.result?.content?.[0]?.text ?? "{}")).toMatchObject({ total: 1, workspaces: [{ slug: "member" }] });
+    const projects = await call(3, "list_projects", { workspace: "member" });
+    expect(JSON.parse(projects.result?.content?.[0]?.text ?? "{}")).toMatchObject({ total: 1, projects: [{ title: "Member project" }] });
+
+    const denied = await call(4, "list_projects", { workspace: "member" }, `Bearer ${NON_MEMBER_TOKEN}`);
+    expect(denied.result?.isError).toBe(true);
+    expect(JSON.stringify(denied)).toContain("membership required");
+    expect(backendRequests).toEqual(expect.arrayContaining([
+      { path: "/api/workspaces", authorization: `Bearer ${TOKEN}`, workspaceSlug: null },
+      { path: "/api/projects", authorization: `Bearer ${TOKEN}`, workspaceSlug: "member" },
+      { path: "/api/projects", authorization: `Bearer ${NON_MEMBER_TOKEN}`, workspaceSlug: "member" },
+    ]));
   });
 
   it("keeps requests isolated per bearer token (stateless)", async () => {

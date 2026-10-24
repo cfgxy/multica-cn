@@ -25,7 +25,8 @@ func TestVoiceMCPBridge_UsesCanonicalToolsListAndCall(t *testing.T) {
 		var request struct {
 			Method string `json:"method"`
 			Params struct {
-				Name string `json:"name"`
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
 			} `json:"params"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -35,12 +36,22 @@ func TestVoiceMCPBridge_UsesCanonicalToolsListAndCall(t *testing.T) {
 		result := any(map[string]any{})
 		switch request.Method {
 		case "tools/list":
-			result = map[string]any{"tools": []map[string]any{{"name": "list_workspaces", "description": "real MCP tool", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}}}}
+			result = map[string]any{"tools": []map[string]any{
+				{"name": "list_workspaces", "description": "canonical MCP workspace tool", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
+				{"name": "list_projects", "description": "canonical MCP project tool", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"workspace": map[string]any{"type": "string"}}, "required": []string{"workspace"}}},
+			}}
 		case "tools/call":
-			if request.Params.Name != "list_workspaces" {
+			switch request.Params.Name {
+			case "list_workspaces":
+				result = map[string]any{"content": []map[string]any{{"type": "text", "text": `{"total":1,"workspaces":[{"slug":"member"}]}`}}}
+			case "list_projects":
+				if got := string(request.Params.Arguments); !strings.Contains(got, `"workspace":"member"`) {
+					t.Errorf("project arguments = %s", got)
+				}
+				result = map[string]any{"content": []map[string]any{{"type": "text", "text": `{"total":1,"projects":[{"title":"Member project"}]}`}}}
+			default:
 				t.Errorf("tool name = %q", request.Params.Name)
 			}
-			result = map[string]any{"content": []map[string]any{{"type": "text", "text": "real result"}}}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 	}))
@@ -52,14 +63,22 @@ func TestVoiceMCPBridge_UsesCanonicalToolsListAndCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools, err := bridge.tools(context.Background())
-	if err != nil || len(tools) != 1 || tools[0].Name != "list_workspaces" {
+	if err != nil || len(tools) != 2 || tools[0].Name != "list_workspaces" || tools[1].Name != "list_projects" {
 		t.Fatalf("tools = %+v, err = %v", tools, err)
 	}
-	result, err := bridge.call(context.Background(), "list_workspaces", nil)
-	if err != nil || !strings.Contains(string(result), "real result") {
-		t.Fatalf("call result = %s, err = %v", result, err)
+	declarations := voiceMCPFunctionDeclarations(tools)
+	if len(declarations) != 2 || declarations[0]["name"] != "list_workspaces" || declarations[1]["name"] != "list_projects" {
+		t.Fatalf("Gemini declarations = %#v", declarations)
 	}
-	if got := strings.Join(methods, ","); got != "initialize,tools/list,initialize,tools/call" {
+	workspaceResult, err := bridge.call(context.Background(), "list_workspaces", nil)
+	if err != nil || !strings.Contains(string(workspaceResult), `"slug":"member"`) {
+		t.Fatalf("workspace call result = %s, err = %v", workspaceResult, err)
+	}
+	projectResult, err := bridge.call(context.Background(), "list_projects", json.RawMessage(`{"workspace":"member"}`))
+	if err != nil || !strings.Contains(string(projectResult), "Member project") {
+		t.Fatalf("project call result = %s, err = %v", projectResult, err)
+	}
+	if got := strings.Join(methods, ","); got != "initialize,tools/list,initialize,tools/call,initialize,tools/call" {
 		t.Fatalf("MCP sequence = %q", got)
 	}
 }
@@ -182,12 +201,13 @@ func TestExecuteVoiceSkillLoadsOnlyCatalogPinnedBundles(t *testing.T) {
 	if err != nil || !strings.Contains(string(hashMismatch), "conflict") {
 		t.Errorf("hash mismatch = %s, err = %v", hashMismatch, err)
 	}
-	if _, err := testPool.Exec(context.Background(), `UPDATE skill SET content = '# changed after catalog injection' WHERE id = $1`, skillID); err != nil {
+	const changedSkillContent = "# changed after catalog injection"
+	if _, err := testPool.Exec(context.Background(), `UPDATE skill SET content = $1 WHERE id = $2`, changedSkillContent, skillID); err != nil {
 		t.Fatalf("change skill after catalog injection: %v", err)
 	}
 	staleBundle, err := testHandler.executeVoiceSkill(context.Background(), session, catalog, voiceSkillArgs(t, workspaceRef, workspaceRef.Hash))
-	if err != nil || !strings.Contains(string(staleBundle), "conflict") {
-		t.Errorf("changed skill with stale catalog hash = %s, err = %v", staleBundle, err)
+	if err != nil || !strings.Contains(string(staleBundle), "conflict") || strings.Contains(string(staleBundle), changedSkillContent) || strings.Contains(string(staleBundle), `"content"`) {
+		t.Errorf("changed skill with stale catalog hash = %s, err = %v; want a content-free conflict", staleBundle, err)
 	}
 
 	unboundID := createImportTargetSkill(t, "voice-unbound-"+time.Now().UTC().Format("20060102150405.000000000"), testUserID, nil)
