@@ -163,6 +163,9 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 	} else if checkedOut && !sameAdoptionPath(path, root) {
 		return result, fmt.Errorf("adopt branch: branch %s is checked out at %s", adoption.Branch, path)
 	}
+	if err := rejectCompetingAdoptedContinuation(root, adoption.Branch, adoptionRecordOwner(adoption.TargetOwner)); err != nil {
+		return result, err
+	}
 
 	newMarker, err := adoptedMarker(marker, adoption.Branch, adoption.ExpectedRemoteSHA)
 	if err != nil {
@@ -227,6 +230,20 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 		Record:           newRecord,
 		BaseCommit:       adoption.ExpectedRemoteSHA,
 	}, nil
+}
+
+// rejectCompetingAdoptedContinuation keeps one continuation task on one adopted
+// work line. Overwriting a live discovery mapping would leave the first branch
+// owned but unreachable to later Prepare calls.
+func rejectCompetingAdoptedContinuation(gitRoot, branch string, continuation branchOwner) error {
+	existing := adoptedContinuationBranch(gitRoot, continuation, nil)
+	if existing == "" || existing == branch {
+		return nil
+	}
+	if _, owned := branchOwnedBy(gitRoot, existing, continuation, nil); owned {
+		return fmt.Errorf("adopt branch: continuation already owns adopted branch %s", existing)
+	}
+	return nil
 }
 
 // adoptionRecordOwner deliberately excludes TaskID. Issue branches are owned by
