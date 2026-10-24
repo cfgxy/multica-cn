@@ -2035,6 +2035,59 @@ describe("ApiClient", () => {
     });
   });
 
+  describe("restoreIssueDecision response parsing", () => {
+    const restoredDecision = {
+      id: "decision-1",
+      issue_id: "issue-1",
+      question: "Pick a lane?",
+      options: [{ label: "A" }, { label: "B" }],
+      multi_select: false,
+      recommended_indices: [],
+      status: "open",
+      selected_indices: [],
+      created_by_type: "member",
+      created_by_id: "user-1",
+      created_at: "2026-10-24T00:00:00Z",
+      updated_at: "2026-10-24T00:05:00Z",
+    };
+
+    it("parses the restored decision payload", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(restoredDecision), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+      const result = await client.restoreIssueDecision("issue-1", "decision-1");
+
+      expect(fetchMock.mock.calls[0]).toMatchObject([
+        "https://api.example.test/api/issues/issue-1/decisions/decision-1/restore",
+        expect.objectContaining({ method: "POST" }),
+      ]);
+      expect(result).toEqual(restoredDecision);
+    });
+
+    it("rejects a malformed restore payload instead of leaking it downstream", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ id: "decision-1" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+
+      const client = new ApiClient("https://api.example.test");
+      await expect(
+        client.restoreIssueDecision("issue-1", "decision-1"),
+      ).rejects.toThrow(/Invalid decision restore response/);
+    });
+  });
+
   it("clears a chat queue with one session-scoped request", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
@@ -3042,5 +3095,117 @@ describe("ApiClient listIssueSuspensions", () => {
 
     const client = new ApiClient("https://api.example.test");
     await expect(client.listIssueSuspensions("issue-1")).resolves.toEqual([]);
+  });
+});
+
+describe("ApiClient credential connector writes (RUYI-860)", () => {
+  const validConnector = {
+    id: "cc-1",
+    name: "Vault",
+    kind: "https",
+    target_url: "https://vault.example.test/",
+    adapter_policy: "single_use",
+    auth_field: "token",
+    status: "enabled",
+    revision: 1,
+  };
+
+  it("parses a valid create response and posts to the workspace route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(validConnector), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    const connector = await client.createCredentialConnector("ws-1", {
+      name: "Vault",
+      target_url: "https://vault.example.test/",
+    });
+
+    expect(connector).toMatchObject({ id: "cc-1", revision: 1 });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/ws-1/credential-connectors",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      name: "Vault",
+      target_url: "https://vault.example.test/",
+    });
+  });
+
+  it("falls back to null when the create response is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ connector: 42 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .createCredentialConnector("ws-1", {
+        name: "Vault",
+        target_url: "https://vault.example.test/",
+      });
+    expect(result).toBeNull();
+  });
+
+  it("parses a valid update response and PUTs the revisioned body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ...validConnector, status: "disabled", revision: 2 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    const connector = await client.updateCredentialConnector(
+      "ws-1",
+      "cc-1",
+      {
+        name: "Vault",
+        target_url: "https://vault.example.test/",
+        status: "disabled",
+        revision: 1,
+      },
+    );
+
+    expect(connector).toMatchObject({ id: "cc-1", status: "disabled", revision: 2 });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/workspaces/ws-1/credential-connectors/cc-1",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      name: "Vault",
+      target_url: "https://vault.example.test/",
+      status: "disabled",
+      revision: 1,
+    });
+  });
+
+  it("falls back to null when the update response is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ id: "cc-1", revision: "two" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test")
+      .updateCredentialConnector("ws-1", "cc-1", {
+        name: "Vault",
+        target_url: "https://vault.example.test/",
+        status: "enabled",
+        revision: 2,
+      });
+    expect(result).toBeNull();
   });
 });

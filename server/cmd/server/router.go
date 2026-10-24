@@ -2364,12 +2364,22 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// subscription writes above, because prompt content can carry
 		// credentials and this is a stricter write surface.
 		r.Route("/api/prompt-governance/{scope}/{scopeId}", func(r chi.Router) {
-			r.Use(handler.RequireHumanActor)
+			// RUYI-868: the version ledger and diff view — the carrier text a
+			// clause-versus-prompt comparison reads — open to the MCP OAuth
+			// surface: mcp:read tier via oauth.ScopeForRequest plus the
+			// unscoped-machine-credential guard. The quality, quiz and
+			// baseline views are NOT part of that comparison and stay
+			// off-surface, so they keep the human-only guard.
 			r.Group(func(r chi.Router) {
+				r.Use(handler.RequireHumanOrOAuthActor)
 				r.Use(middleware.RequireWorkspaceMember(queries))
 				r.Get("/versions", h.ListPromptGovernanceVersions)
 				r.Get("/versions/{version}", h.GetPromptGovernanceVersion)
 				r.Get("/diff", h.GetPromptGovernanceVersionDiff)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(handler.RequireHumanActor)
+				r.Use(middleware.RequireWorkspaceMember(queries))
 				// Quality dashboard (RUYI-184): read-only rollups over the
 				// same scope, member-visible for the same reason history is.
 				r.Get("/quality", h.GetPromptQualityDashboard)
@@ -2383,6 +2393,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/baseline", h.GetPromptStructureBaselineHandler)
 			})
 			r.Group(func(r chi.Router) {
+				r.Use(handler.RequireHumanActor)
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
 				r.Post("/versions", h.SavePromptGovernanceVersion)
 				r.Post("/versions/snapshot", h.SnapshotPromptGovernanceVersion)
@@ -2444,16 +2455,26 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// share, marker-vs-asset drift). Member-visible like the quality
 		// dashboard; writes stay in the proposal pool routes above.
 		r.Route("/api/prompt-legislation/governance", func(r chi.Router) {
-			r.Use(handler.RequireHumanActor)
+			// RUYI-868: the governance reads open to the MCP OAuth surface.
+			// The OAuth tier is enforced twice: oauth.ScopeForRequest admits
+			// these paths only with mcp:read, and this guard drops the
+			// unscoped machine credentials (task tokens, cloud-node PATs)
+			// the ScopeForRequest tiering never applies to.
+			r.Use(handler.RequireHumanOrOAuthActor)
 			r.Use(middleware.RequireWorkspaceMember(queries))
 			r.Get("/clauses", h.ListClauseGovernance)
+			r.Get("/clauses/search", h.SearchClauseGovernance)
 			r.Get("/clauses/{clauseId}", h.GetClauseGovernanceDetail)
 			r.Get("/reconciliation", h.GetClauseReconciliation)
 		})
 
 		r.Route("/api/prompt-legislation/proposals", func(r chi.Router) {
-			r.Use(handler.RequireHumanActor)
 			r.Group(func(r chi.Router) {
+				// RUYI-868: member-side proposal actions (create, draft edit,
+				// submit, preview, rework) open to the MCP OAuth surface —
+				// mcp:write tier plus the unscoped-machine-credential guard.
+				// The handlers keep their creator-or-owner write gate.
+				r.Use(handler.RequireHumanOrOAuthActor)
 				r.Use(middleware.RequireWorkspaceMember(queries))
 				r.Get("/", h.ListPromptProposals)
 				r.Post("/", h.CreatePromptProposal)
@@ -2463,6 +2484,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/{id}/rework", h.ReworkPromptProposal)
 			})
 			r.Group(func(r chi.Router) {
+				// The owner's decide-and-execute endpoints stay
+				// human-only: the platform's confirmation mechanism for
+				// high-risk prompt changes; no OAuth scope reaches them.
+				r.Use(handler.RequireHumanActor)
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
 				r.Post("/{id}/approve", h.ApprovePromptProposal)
 				r.Post("/approve-batch", h.BatchApprovePromptProposals)
@@ -2599,6 +2624,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/decisions/answer-batch", h.AnswerIssueDecisionsBatch)
 					r.Post("/decisions/{decisionId}/answer", h.AnswerIssueDecision)
 					r.Post("/decisions/{decisionId}/cancel", h.CancelIssueDecision)
+					// RUYI-863: the inverse of cancel — flip a cancelled card
+					// back to open. No human-actor gate here: member-only
+					// enforcement lives in the handler (agent callers are
+					// refused), matching the cancel arm above.
+					r.Post("/decisions/{decisionId}/restore", h.RestoreIssueDecision)
 
 					// Suspensions (RUYI-690): the orthogonal "waiting"
 					// dimension. Suspend/list on the issue; resume/cancel on

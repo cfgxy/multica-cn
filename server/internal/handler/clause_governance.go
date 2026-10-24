@@ -227,6 +227,70 @@ func (h *Handler) ListClauseGovernance(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── Search ─────────────────────────────────────────────────────────────────
+
+type clauseGovernanceSearch struct {
+	Query   string                   `json:"query"`
+	Matched int                     `json:"matched"`
+	Clauses []clauseGovernanceClause `json:"clauses"`
+}
+
+// SearchClauseGovernance — GET /api/prompt-legislation/governance/clauses/search?q=term&status=active
+//
+// RUYI-868: the keyword entry point an MCP client uses to find clauses in a
+// workspace before reading one in full. It filters the same ListClauseOverview
+// rows the overview view lists — slug and title, case-insensitive substring,
+// plus an optional exact status — instead of a new SQL query: the workspace
+// clause set is small enough that a second query buys nothing, and keeping the
+// filter in the handler means no migration number and no sqlc surface. The
+// cross-workspace non-disclosure is the overview's own: rows come from
+// ListClauseOverview, which is workspace-scoped.
+func (h *Handler) SearchClauseGovernance(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	status := r.URL.Query().Get("status")
+
+	if query == "" && status == "" {
+		// A search with no filter is the overview's job; reject it so the
+		// endpoint cannot become a second, undocumented copy of it.
+		writeError(w, http.StatusBadRequest, "q or status is required")
+		return
+	}
+
+	rows, err := h.Queries.ListClauseOverview(ctx, workspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list clauses")
+		return
+	}
+
+	clauses := make([]clauseGovernanceClause, 0, len(rows))
+	for _, row := range rows {
+		if status != "" && row.Status != status {
+			continue
+		}
+		if query != "" {
+			if !strings.Contains(strings.ToLower(row.Slug), query) &&
+				!strings.Contains(strings.ToLower(row.Title), query) {
+				continue
+			}
+		}
+		clauses = append(clauses, clauseGovernanceClause{
+			ID:            uuidToString(row.ID),
+			Slug:          row.Slug,
+			Title:         row.Title,
+			Status:        row.Status,
+			LatestVersion: row.LatestVersion,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, clauseGovernanceSearch{
+		Query:   query,
+		Matched: len(clauses),
+		Clauses: clauses,
+	})
+}
+
 type governanceCarrierCounts struct {
 	total   int64
 	byScope map[string]int64

@@ -3,10 +3,16 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { CircleHelp, Copy, ListChecks, ShieldCheck } from "lucide-react";
+import { CircleHelp, Copy, ListChecks, MoreHorizontal, RotateCcw, ShieldCheck } from "lucide-react";
 import { Card } from "@multica/ui/components/ui/card";
 import { Button } from "@multica/ui/components/ui/button";
 import { Badge } from "@multica/ui/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@multica/ui/components/ui/dropdown-menu";
 import { cn } from "@multica/ui/lib/utils";
 import { api } from "@multica/core/api";
 import { decisionOptionDisplayLabel, patchDecisionInCache } from "@multica/core/issues/decisions";
@@ -273,6 +279,21 @@ function StandardDecisionCard({ decision }: { decision: IssueDecision }) {
     },
   });
 
+  // RUYI-863: a cancelled card can be restored to open from the card's
+  // more menu — the inverse CAS on the server refuses answered cards
+  // (ErrNoRows → 409) and authorization cards (409), so this face only
+  // needs to mirror the card and fail readably. The question/option/
+  // context rows render verbatim again because the flip touches status
+  // only.
+  const restore = useMutation({
+    mutationFn: () => api.restoreIssueDecision(decision.issue_id, decision.id),
+    onSuccess: invalidate,
+    onError: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
+      toast.error(t(($) => $.decisions.restore_failed));
+    },
+  });
+
   const isOpen = decision.status === "open";
   const canSubmit = isOpen && selected.length > 0 && !submitting && !answer.isPending;
 
@@ -290,6 +311,38 @@ function StandardDecisionCard({ decision }: { decision: IssueDecision }) {
             )}
             {decision.status === "cancelled" && (
               <Badge variant="outline">{t(($) => $.decisions.status_cancelled)}</Badge>
+            )}
+            {decision.status === "cancelled" && (
+              // RUYI-863: the only more action a cancelled card exposes —
+              // restore it to open. Deliberately tucked in the header's
+              // "···" menu, not a primary button: restoration is a
+              // maintenance act, and answered cards get no equivalent
+              // (the server's CAS makes illegal resurrection a 409).
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      className="ml-auto text-muted-foreground"
+                      aria-label={t(($) => $.decisions.restore_card)}
+                      data-testid="decision-card-more"
+                    >
+                      <MoreHorizontal className="h-4 w-4" aria-hidden />
+                    </Button>
+                  }
+                />
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onClick={() => restore.mutate()}
+                    disabled={restore.isPending}
+                    data-testid="decision-card-restore"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+                    {t(($) => $.decisions.restore_card)}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
           </div>
           <p className="mt-1 whitespace-pre-wrap break-words text-body font-medium">{decision.question}</p>

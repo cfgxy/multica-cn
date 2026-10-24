@@ -2,13 +2,19 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -425,6 +431,479 @@ func TestIssueDecisionCancel(t *testing.T) {
 	}
 	if w := cancel(false); w.Code != http.StatusConflict {
 		t.Fatalf("re-cancel: expected 409, got %d", w.Code)
+	}
+}
+
+// RUYI-863: restore flips a cancelled card back to open with its content
+// intact; answered cards can never be resurrected; agents are refused; the
+// cancel/restore pair leaves an audit trail row each.
+func TestIssueDecisionRestore(t *testing.T) {
+	f := newDecisionFixture(t)
+
+	restore := func(asAgent bool, id string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+id+"/restore", map[string]any{})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", id)
+		if asAgent {
+			req = agentIdentityHeaders(req, f)
+		}
+		testHandler.RestoreIssueDecision(w, req)
+		return w
+	}
+
+	// Cancelled card: member restore flips it back, content untouched.
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Restore me",
+		"options":  []string{"yes", "no"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	card := decodeDecision(t, w)
+	cancelled := func() IssueDecisionResponse {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+		testHandler.CancelIssueDecision(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("cancel: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		return decodeDecision(t, w)
+	}()
+	if cancelled.Status != "cancelled" {
+		t.Fatalf("cancel: status = %q, want cancelled", cancelled.Status)
+	}
+
+	if w := restore(true, card.ID); w.Code != http.StatusForbidden {
+		t.Fatalf("agent restore: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	rw := restore(false, card.ID)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("restore: expected 200, got %d: %s", rw.Code, rw.Body.String())
+	}
+	restored := decodeDecision(t, rw)
+	if restored.Status != "open" {
+		t.Fatalf("restore: status = %q, want open", restored.Status)
+	}
+	if len(restored.Options) != 2 || restored.Options[0].Label != "yes" {
+		t.Fatalf("restore lost card content: options = %+v", restored.Options)
+	}
+	if restored.AnsweredByID != nil && *restored.AnsweredByID != "" {
+		t.Fatalf("restore: answered_by_id = %q, want empty", *restored.AnsweredByID)
+	}
+	// Second restore is a conflict: the card is open again, not cancelled.
+	if w := restore(false, card.ID); w.Code != http.StatusConflict {
+		t.Fatalf("re-restore: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Answered cards are terminal: cancel is refused, restore too.
+	w = createDecisionCard(t, f, false, map[string]any{
+		"question": "Answered, not restorable",
+		"options":  []string{"a", "b"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create 2: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	answered := decodeDecision(t, w)
+	aw := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+answered.ID+"/answer", map[string]any{
+		"selected_indices": []int{0},
+	})
+	req = withURLParams(req, "id", f.IssueID, "decisionId", answered.ID)
+	testHandler.AnswerIssueDecision(aw, req)
+	if aw.Code != http.StatusOK {
+		t.Fatalf("answer: expected 200, got %d: %s", aw.Code, aw.Body.String())
+	}
+	if w := restore(false, answered.ID); w.Code != http.StatusConflict {
+		t.Fatalf("restore answered card: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Cancel and restore each leave one audit row with the acting member.
+	row := func(eventType, id string) string {
+		t.Helper()
+		var raw string
+		if err := testPool.QueryRow(t.Context(),
+			`SELECT details FROM audit_event WHERE event_type = $1 AND details->>'decision_id' = $2 ORDER BY occurred_at DESC LIMIT 1`,
+			eventType, id).Scan(&raw); err != nil {
+			t.Fatalf("load audit row (%s): %v", eventType, err)
+		}
+		return raw
+	}
+	if details := row("issue.decision_cancelled", card.ID); !strings.Contains(details, "cancelled") {
+		t.Fatalf("cancel audit details = %s, want from/to statuses", details)
+	}
+	if details := row("issue.decision_restored", card.ID); !strings.Contains(details, "open") {
+		t.Fatalf("restore audit details = %s, want from/to statuses", details)
+	}
+}
+
+// RUYI-863 rework: a cancelled card on a TERMINAL issue must not be
+// resurrected. The terminal classification is the authoritative
+// issuestatus.Effective one — built-in done/cancelled and custom statuses
+// whose category is done/cancelled — not the raw status string. Every case
+// asserts the full refusal contract: 409, the card stays cancelled, no
+// restore audit row, no decision:updated event, and the SQL CAS itself
+// carries the terminal predicate so an issue that turns terminal in the
+// race still loses instead of resurrecting the card.
+func TestRestoreRefusedOnTerminalIssue(t *testing.T) {
+	// terminalRestoreCase runs one terminal classification: it builds the
+	// fixture, cancels the card, points the issue at the classification,
+	// and proves the refusal contract end to end.
+	terminalRestoreCase := func(classification string, terminalize func(f decisionFixture)) func(t *testing.T) {
+		return func(t *testing.T) {
+			f := newDecisionFixture(t)
+			w := createDecisionCard(t, f, false, map[string]any{
+				"question": "Terminal " + classification,
+				"options":  []string{"yes", "no"},
+			})
+			if w.Code != http.StatusCreated {
+				t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+			}
+			card := decodeDecision(t, w)
+			cw := httptest.NewRecorder()
+			creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+			creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+			testHandler.CancelIssueDecision(cw, creq)
+			if cw.Code != http.StatusOK {
+				t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+			}
+			terminalize(f)
+
+			// A fresh bus proves the refusal happens BEFORE any publish —
+			// a terminal restore must not surface to the decision inbox.
+			h := *testHandler
+			h.Bus = events.New()
+			eventsSeen := 0
+			h.Bus.Subscribe(protocol.EventDecisionUpdated, func(event events.Event) {
+				t.Helper()
+				eventsSeen++
+			})
+
+			rw := httptest.NewRecorder()
+			req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/restore", map[string]any{})
+			req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+			h.RestoreIssueDecision(rw, req)
+			if rw.Code != http.StatusConflict {
+				t.Fatalf("restore on %s issue: expected 409, got %d: %s", classification, rw.Code, rw.Body.String())
+			}
+			if eventsSeen != 0 {
+				t.Fatalf("restore on %s issue published %d decision:updated event(s), want 0", classification, eventsSeen)
+			}
+
+			var status string
+			if err := testPool.QueryRow(t.Context(),
+				`SELECT status FROM issue_decisions WHERE id = $1`, parseUUID(card.ID)).Scan(&status); err != nil {
+				t.Fatalf("load card status: %v", err)
+			}
+			if status != "cancelled" {
+				t.Fatalf("card on %s issue = %q, want cancelled (restore must not resurrect it)", classification, status)
+			}
+
+			// No audit row: the refusal is pre-audit, so the trail keeps
+			// only the cancel, never a restore that never happened.
+			var auditRows int
+			if err := testPool.QueryRow(t.Context(),
+				`SELECT count(*) FROM audit_event
+				 WHERE event_type = 'issue.decision_restored' AND details->>'decision_id' = $1`,
+				card.ID).Scan(&auditRows); err != nil {
+				t.Fatalf("count restore audits: %v", err)
+			}
+			if auditRows != 0 {
+				t.Fatalf("%d restore audit rows on a terminal issue, want 0", auditRows)
+			}
+
+			// The CAS is the race half of the rule: even a direct query
+			// (no handler pre-check in front) must not flip the card.
+			_, err := testHandler.Queries.RestoreIssueDecision(t.Context(), db.RestoreIssueDecisionParams{
+				ID:          parseUUID(card.ID),
+				WorkspaceID: parseUUID(testWorkspaceID),
+			})
+			if !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("terminal CAS expected sql.ErrNoRows, got %v", err)
+			}
+		}
+	}
+
+	t.Run("built-in done", terminalRestoreCase("done", func(f decisionFixture) {
+		terminalizeIssue(t, f.IssueID, "done")
+	}))
+	t.Run("built-in cancelled", terminalRestoreCase("cancelled", func(f decisionFixture) {
+		terminalizeIssue(t, f.IssueID, "cancelled")
+	}))
+	t.Run("custom done-category status", terminalRestoreCase("custom done-category", func(f decisionFixture) {
+		customKey := seedCustomStatusCategory(t, "done")
+		terminalizeIssue(t, f.IssueID, customKey)
+	}))
+
+	// Control: a custom status whose category is NOT terminal must keep the
+	// normal restore path open, so the gate refuses the right set and only.
+	t.Run("custom in_progress-category status still restores", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		w := createDecisionCard(t, f, false, map[string]any{
+			"question": "Non-terminal custom",
+			"options":  []string{"yes", "no"},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		card := decodeDecision(t, w)
+		cw := httptest.NewRecorder()
+		creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+		creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+		testHandler.CancelIssueDecision(cw, creq)
+		if cw.Code != http.StatusOK {
+			t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+		}
+		customKey := seedCustomStatusCategory(t, "in_progress")
+		terminalizeIssue(t, f.IssueID, customKey)
+
+		rw := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/restore", map[string]any{})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+		testHandler.RestoreIssueDecision(rw, req)
+		if rw.Code != http.StatusOK {
+			t.Fatalf("restore on non-terminal custom issue: expected 200, got %d: %s", rw.Code, rw.Body.String())
+		}
+		got := decodeDecision(t, rw)
+		if got.Status != "open" {
+			t.Fatalf("restore: status = %q, want open", got.Status)
+		}
+	})
+}
+
+// terminalizeIssue points the fixture's issue at an arbitrary status key
+// (built-in or custom) for terminal-state case work.
+func terminalizeIssue(t *testing.T, issueID, status string) {
+	t.Helper()
+	if _, err := testPool.Exec(t.Context(), `UPDATE issue SET status = $1 WHERE id = $2`, status, issueID); err != nil {
+		t.Fatalf("terminalize issue: %v", err)
+	}
+}
+
+// seedCustomStatusCategory inserts a workspace status key whose behavior
+// class is the given built-in category and returns its key; the row is
+// removed with the test.
+func seedCustomStatusCategory(t *testing.T, category string) string {
+	t.Helper()
+	// Key is bounded to 32 characters by the issue_status CHECK — the 8-digit
+	// millisecond tail keeps qa863_<category>_<ts> under the ceiling for the
+	// longest category (in_progress).
+	key := fmt.Sprintf("qa863_%s_%d", category, time.Now().UnixMilli())
+	if _, err := testPool.Exec(t.Context(),
+		`INSERT INTO issue_status (workspace_id, key, name, description, category, color, position)
+		 VALUES ($1, $2, $2, '', $3, '#ff0000', 1)`,
+		testWorkspaceID, key, category); err != nil {
+		t.Fatalf("seed custom status: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(),
+			`DELETE FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, key)
+	})
+	return key
+}
+
+// --- two-connection concurrency regression (RUYI-863 P1) -------------------
+//
+// Both tests drive the REAL restore SQL and the REAL UpdateIssueStatus on
+// two separate connections, parked on each other's issue-row lock so the
+// interleaving is observed, never guessed. waitForWaiterBlockedBy's PID
+// attribution is the false-green guard: if the path under test never takes
+// the lock, the probe finds no waiter and the test fails.
+
+// TestRestoreRaceLosesToCommittedTerminalWrite: the terminal status write
+// commits BEFORE the restore statement finishes. The terminal write parks
+// the restore's CTE on the issue row; once it commits, the restore must
+// lose — 409, card stays cancelled, no restore audit row, no
+// decision:updated event. This is the exact window the snapshot-only CAS
+// (pre-fix) could not survive.
+func TestRestoreRaceLosesToCommittedTerminalWrite(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	f := newDecisionFixture(t)
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Race card",
+		"options":  []string{"yes", "no"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	card := decodeDecision(t, w)
+	cw := httptest.NewRecorder()
+	creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+	creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+	testHandler.CancelIssueDecision(cw, creq)
+	if cw.Code != http.StatusOK {
+		t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+	}
+
+	// Fresh bus: a losing restore must publish nothing.
+	h := *testHandler
+	h.Bus = events.New()
+	eventsSeen := 0
+	h.Bus.Subscribe(protocol.EventDecisionUpdated, func(event events.Event) {
+		t.Helper()
+		eventsSeen++
+	})
+
+	// Connection B: the terminal write, uncommitted. UpdateIssueStatus
+	// takes the issue row lock; the commit is deferred until the restore
+	// has been observed parked on it.
+	txB, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin terminal-write tx: %v", err)
+	}
+	if _, err := h.Queries.WithTx(txB).UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+		ID:          parseUUID(f.IssueID),
+		Status:      "done",
+		WorkspaceID: parseUUID(testWorkspaceID),
+	}); err != nil {
+		txB.Rollback(ctx)
+		t.Fatalf("terminal write: %v", err)
+	}
+	pidB := holderBackendPID(t, ctx, txB)
+
+	// Connection A: the real handler restore on its own pool connection.
+	// Its CAS statement reaches FOR UPDATE OF issue and parks behind B.
+	restoreRW := httptest.NewRecorder()
+	restoreReq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/restore", map[string]any{})
+	restoreReq = withURLParams(restoreReq, "id", f.IssueID, "decisionId", card.ID)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h.RestoreIssueDecision(restoreRW, restoreReq)
+	}()
+	if !waitForWaiterBlockedBy(t, pidB, 10*time.Second) {
+		t.Fatalf("restore CAS is not parked on the terminal write's issue-row lock — the CTE never took the lock")
+	}
+
+	// The terminal write commits first; the parked restore then re-reads
+	// the locked row under EPQ, sees done, and flips nothing.
+	if err := txB.Commit(ctx); err != nil {
+		t.Fatalf("commit terminal write: %v", err)
+	}
+	wg.Wait()
+	if restoreRW.Code != http.StatusConflict {
+		t.Fatalf("restore after committed terminal write: expected 409, got %d: %s", restoreRW.Code, restoreRW.Body.String())
+	}
+
+	var status string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status FROM issue_decisions WHERE id = $1`, parseUUID(card.ID)).Scan(&status); err != nil {
+		t.Fatalf("load card status: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("card = %q after losing the race, want cancelled (no resurrection)", status)
+	}
+
+	var auditRows int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM audit_event
+		 WHERE event_type = 'issue.decision_restored' AND details->>'decision_id' = $1`,
+		card.ID).Scan(&auditRows); err != nil {
+		t.Fatalf("count restore audits: %v", err)
+	}
+	if auditRows != 0 {
+		t.Fatalf("%d restore audit rows on a lost race, want 0", auditRows)
+	}
+	if eventsSeen != 0 {
+		t.Fatalf("losing restore published %d decision:updated event(s), want 0", eventsSeen)
+	}
+}
+
+// TestRestoreRaceWinsBeforeTerminalWrite: the positive boundary. The
+// restore linearizes first — its card flip lands on the locked, still
+// non-terminal issue row and its transaction commits; the terminal status
+// write parked behind it then commits as a legal, independent transition.
+// Nothing may be rejected or rolled back.
+func TestRestoreRaceWinsBeforeTerminalWrite(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	f := newDecisionFixture(t)
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Race card",
+		"options":  []string{"yes", "no"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	card := decodeDecision(t, w)
+	cw := httptest.NewRecorder()
+	creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+	creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+	testHandler.CancelIssueDecision(cw, creq)
+	if cw.Code != http.StatusOK {
+		t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+	}
+
+	// Connection A: the real restore SQL inside an uncommitted tx — the
+	// handler's CAS statement, paused before commit so its issue-row lock
+	// outlives the statement.
+	txA, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin restore tx: %v", err)
+	}
+	if _, err := testHandler.Queries.WithTx(txA).RestoreIssueDecision(ctx, db.RestoreIssueDecisionParams{
+		ID:          parseUUID(card.ID),
+		WorkspaceID: parseUUID(testWorkspaceID),
+	}); err != nil {
+		txA.Rollback(ctx)
+		t.Fatalf("restore within tx: %v", err)
+	}
+	pidA := holderBackendPID(t, ctx, txA)
+
+	// Connection B: the terminal write parks on A's issue-row lock.
+	txB, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin terminal-write tx: %v", err)
+	}
+	writeErr := make(chan error, 1)
+	go func() {
+		_, err := testHandler.Queries.WithTx(txB).UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+			ID:          parseUUID(f.IssueID),
+			Status:      "done",
+			WorkspaceID: parseUUID(testWorkspaceID),
+		})
+		writeErr <- err
+	}()
+	if !waitForWaiterBlockedBy(t, pidA, 10*time.Second) {
+		t.Fatalf("terminal write is not parked on the restore's issue-row lock — the restore CTE never took the lock")
+	}
+
+	// The restore commits first: the card is linearly open, and only then
+	// does the parked terminal write land behind it.
+	if err := txA.Commit(ctx); err != nil {
+		t.Fatalf("commit restore: %v", err)
+	}
+	if err := <-writeErr; err != nil {
+		txB.Rollback(ctx)
+		t.Fatalf("parked terminal write after restore commit: %v", err)
+	}
+	if err := txB.Commit(ctx); err != nil {
+		t.Fatalf("commit terminal write: %v", err)
+	}
+
+	var status string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status FROM issue_decisions WHERE id = $1`, parseUUID(card.ID)).Scan(&status); err != nil {
+		t.Fatalf("load card status: %v", err)
+	}
+	if status != "open" {
+		t.Fatalf("card = %q after winning the race, want open (no rollback of a committed restore)", status)
+	}
+	var issueStatus string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status FROM issue WHERE id = $1`, parseUUID(f.IssueID)).Scan(&issueStatus); err != nil {
+		t.Fatalf("load issue status: %v", err)
+	}
+	if issueStatus != "done" {
+		t.Fatalf("issue = %q after the terminal write, want done (legal transition after a committed restore)", issueStatus)
 	}
 }
 

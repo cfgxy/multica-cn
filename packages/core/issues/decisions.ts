@@ -145,3 +145,10 @@ export const cancelIssueDecision: MutationFunction<
   IssueDecision,
   { issueId: string; decisionId: string }
 > = ({ issueId, decisionId }) => api.cancelIssueDecision(issueId, decisionId);
+
+// RUYI-863: restore a cancelled card to open (question cards only — the
+// server 409s authorization cards and answered cards at the CAS).
+export const restoreIssueDecision: MutationFunction<
+  IssueDecision,
+  { issueId: string; decisionId: string }
+> = ({ issueId, decisionId }) => api.restoreIssueDecision(issueId, decisionId);

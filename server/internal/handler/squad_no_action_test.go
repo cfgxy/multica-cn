@@ -104,7 +104,13 @@ func countAgentCommentsForIssue(t *testing.T, issueID, agentID string) int {
 	return count
 }
 
-func TestCompleteTask_SquadLeaderNoActionStillReportsCompletion(t *testing.T) {
+// RUYI-867: a no_action evaluation is terminal by design. The #474 invariant
+// "every completed issue task has at least one agent comment" no longer applies
+// here: the synthetic fallback would carry taskResponsibilityMention (the squad
+// leader for squad tasks), which enqueues a fresh leader run and turns the
+// no_action stop-loss into a retrigger loop. Silence is the expected outcome,
+// mirroring the 409 on the manual comment path.
+func TestCompleteTask_SquadLeaderNoActionStaysSilent(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -114,17 +120,14 @@ func TestCompleteTask_SquadLeaderNoActionStillReportsCompletion(t *testing.T) {
 
 	completeRunningTask(t, fx, "No action needed. Exiting silently.")
 
-	if got := countAgentCommentsForIssue(t, fx.IssueID, fx.LeaderID); got != 1 {
-		t.Fatalf("expected one terminal report after no_action completion, got %d", got)
-	}
-	var content string
-	dbfx.QueryRow(t, `SELECT content FROM comment WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2`, fx.IssueID, fx.LeaderID).Scan(&content)
-	if !strings.Contains(content, "Run completed without a substantive comment.") || !strings.Contains(content, "mention://agent/"+fx.LeaderID) {
-		t.Fatalf("terminal report = %q, want fallback text and leader mention", content)
+	if got := countAgentCommentsForIssue(t, fx.IssueID, fx.LeaderID); got != 0 {
+		t.Fatalf("expected no synthesized agent comment after no_action completion, got %d", got)
 	}
 }
 
-func TestCompleteTask_SquadLeaderNoActionCanonicalizesTaskIDAndReports(t *testing.T) {
+// The no_action lookup matches the recorded task id case-sensitively; an
+// uppercase header must not escape the silence contract.
+func TestCompleteTask_SquadLeaderNoActionCanonicalizesTaskIDAndStaysSilent(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -134,8 +137,8 @@ func TestCompleteTask_SquadLeaderNoActionCanonicalizesTaskIDAndReports(t *testin
 
 	completeRunningTask(t, fx, "No action needed. Exiting silently.")
 
-	if got := countAgentCommentsForIssue(t, fx.IssueID, fx.LeaderID); got != 1 {
-		t.Fatalf("expected one terminal report when no_action used uppercase task id header, got %d", got)
+	if got := countAgentCommentsForIssue(t, fx.IssueID, fx.LeaderID); got != 0 {
+		t.Fatalf("expected no synthesized agent comment when no_action used uppercase task id header, got %d", got)
 	}
 }
 
@@ -162,9 +165,12 @@ func TestCreateComment_SquadLeaderNoActionRejectsComment(t *testing.T) {
 	fx := newRunningSquadLeaderTaskFixture(t)
 	recordSquadLeaderEvaluationForTask(t, fx, "no_action")
 
+	// The content must clear the mandatory-mention gate first (422), or the
+	// 409 no_action check is never reached: a leader agent posting a valid
+	// agent mention (its own) passes validateAgentResponsibilityMention.
 	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/issues/"+fx.IssueID+"/comments", map[string]any{
-		"content":   "No action needed.",
+		"content":   "No action needed. [@leader](mention://agent/" + fx.LeaderID + ")",
 		"parent_id": fx.TriggerCommentID,
 	})
 	r = withURLParam(r, "id", fx.IssueID)
