@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -303,9 +304,185 @@ func voiceGatewayServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	r := chi.NewRouter()
 	r.Get("/api/agents/{id}/voice-session", testHandler.StartVoiceSession)
+	r.Get("/api/agents/{id}/voice-session/preflight", testHandler.PreflightVoiceSession)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func preflightVoiceSession(t *testing.T, srv *httptest.Server, agentID string, authenticated bool) *http.Response {
+	t.Helper()
+	url := srv.URL + "/api/agents/" + agentID + "/voice-session/preflight?workspace_id=" + testWorkspaceID
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("create voice preflight request: %v", err)
+	}
+	if authenticated {
+		req.AddCookie(voiceAuthCookie(t, testUserID))
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("send voice preflight request: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func voiceWriteBackSnapshot(t *testing.T, agentID string) (string, int) {
+	t.Helper()
+	type sessionSnapshot struct {
+		ID         string `json:"id"`
+		Status     string `json:"status"`
+		Transcript string `json:"transcript"`
+		Summary    string `json:"summary"`
+	}
+	rows, err := testPool.Query(context.Background(), `
+		SELECT id::text, status::text, transcript::text, COALESCE(summary, '')
+		FROM live_session WHERE agent_id = $1 ORDER BY id
+	`, agentID)
+	if err != nil {
+		t.Fatalf("query voice session snapshot: %v", err)
+	}
+	defer rows.Close()
+	sessions := make([]sessionSnapshot, 0)
+	for rows.Next() {
+		var row sessionSnapshot
+		if err := rows.Scan(&row.ID, &row.Status, &row.Transcript, &row.Summary); err != nil {
+			t.Fatalf("scan voice session snapshot: %v", err)
+		}
+		sessions = append(sessions, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate voice session snapshot: %v", err)
+	}
+	encoded, err := json.Marshal(sessions)
+	if err != nil {
+		t.Fatalf("encode voice session snapshot: %v", err)
+	}
+	var factCount int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM agent_fact_event WHERE agent_id = $1
+	`, agentID).Scan(&factCount); err != nil {
+		t.Fatalf("count voice fact events: %v", err)
+	}
+	return string(encoded), factCount
+}
+
+func TestVoiceSessionPreflight_RequiresIdentityAndPreservesD2Reasons(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	srv := voiceGatewayServer(t)
+
+	t.Run("requires header identity", func(t *testing.T) {
+		agentID := dbfx.Agent(t, "Preflight Unauthenticated Agent", handlerTestRuntimeID(t))
+		resp := preflightVoiceSession(t, srv, agentID, false)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated preflight status = %d, want 401", resp.StatusCode)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode unauthenticated preflight response: %v", err)
+		}
+		if body["code"] != "VOICE_AUTH_FAILED" {
+			t.Fatalf("unauthenticated preflight code = %q, want VOICE_AUTH_FAILED", body["code"])
+		}
+	})
+
+	missingProviderID := "00000000-0000-0000-0000-000000000001"
+	disabledProviderID := seedVoiceProvider(t, "Preflight Disabled Provider", testutil.Cols{"enabled": false})
+	cases := []struct {
+		name      string
+		agentName string
+		provider  string
+		want      string
+	}{
+		{name: "voice_unconfigured", agentName: "Preflight Unconfigured Agent", want: "voice_unconfigured"},
+		{name: "voice_provider_missing", agentName: "Preflight Missing Provider Agent", provider: missingProviderID, want: "voice_provider_missing"},
+		{name: "voice_provider_disabled", agentName: "Preflight Disabled Provider Agent", provider: disabledProviderID, want: "voice_provider_disabled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cols := testutil.Cols{}
+			if tc.provider != "" {
+				cols["voice_provider_id"] = tc.provider
+			}
+			agentID := dbfx.Agent(t, tc.agentName, handlerTestRuntimeID(t), cols)
+			resp := preflightVoiceSession(t, srv, agentID, true)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusConflict {
+				t.Fatalf("preflight status = %d, want 409", resp.StatusCode)
+			}
+			var body map[string]string
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode preflight response: %v", err)
+			}
+			if got := body["code"]; got != "VOICE_UNAVAILABLE:"+tc.want {
+				t.Fatalf("preflight code = %q, want VOICE_UNAVAILABLE:%s", got, tc.want)
+			}
+			if sessions, facts := voiceWriteBackSnapshot(t, agentID); sessions != "[]" || facts != 0 {
+				t.Fatalf("rejected preflight wrote sessions=%s facts=%d", sessions, facts)
+			}
+		})
+	}
+}
+
+func TestVoiceSessionPreflight_ProviderDialFailureDoesNotRepeatSideEffects(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID, _ := seedUsableVoiceSetup(t, "Preflight Healthy Config", "")
+	var providerDials atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		providerDials.Add(1)
+		http.Error(w, "provider unavailable", http.StatusBadGateway)
+	}))
+	t.Cleanup(provider.Close)
+	previousBaseURL := testHandler.VoiceProviderWSBaseURL
+	testHandler.VoiceProviderWSBaseURL = "ws" + strings.TrimPrefix(provider.URL, "http")
+	t.Cleanup(func() { testHandler.VoiceProviderWSBaseURL = previousBaseURL })
+	srv := voiceGatewayServer(t)
+
+	initialSessions, initialFacts := voiceWriteBackSnapshot(t, agentID)
+	if initialSessions != "[]" || initialFacts != 0 {
+		t.Fatalf("fixture starts with sessions=%s facts=%d, want none", initialSessions, initialFacts)
+	}
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/agents/" + agentID + "/voice-session?workspace_id=" + testWorkspaceID
+	header := http.Header{}
+	header.Set("Cookie", voiceAuthCookie(t, testUserID).String())
+	_, resp, dialErr := websocket.DefaultDialer.Dial(wsURL, header)
+	if dialErr == nil {
+		t.Fatal("expected the initial websocket attempt to fail at provider dial")
+	}
+	if resp == nil || resp.StatusCode != http.StatusBadGateway {
+		status := "no response"
+		if resp != nil {
+			status = resp.Status
+		}
+		t.Fatalf("initial websocket failure status = %s, want 502", status)
+	}
+	resp.Body.Close()
+	if got := providerDials.Load(); got != 1 {
+		t.Fatalf("initial websocket provider dials = %d, want 1", got)
+	}
+	afterStart, factsAfterStart := voiceWriteBackSnapshot(t, agentID)
+	if !strings.Contains(afterStart, `"status":"ended"`) || factsAfterStart != initialFacts+1 {
+		t.Fatalf("initial failed session snapshot=%s facts=%d, want one ended row and one end fact", afterStart, factsAfterStart)
+	}
+
+	preflightResp := preflightVoiceSession(t, srv, agentID, true)
+	defer preflightResp.Body.Close()
+	if preflightResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("healthy preflight status = %d, want 204", preflightResp.StatusCode)
+	}
+	afterPreflight, factsAfterPreflight := voiceWriteBackSnapshot(t, agentID)
+	if afterPreflight != afterStart || factsAfterPreflight != factsAfterStart {
+		t.Fatalf("preflight changed persisted voice data: before=%s facts=%d after=%s facts=%d",
+			afterStart, factsAfterStart, afterPreflight, factsAfterPreflight)
+	}
+	if got := providerDials.Load(); got != 1 {
+		t.Fatalf("provider dials after preflight = %d, want only the initial websocket dial", got)
+	}
 }
 
 // dialVoiceSession connects a websocket client to the gateway with cookie

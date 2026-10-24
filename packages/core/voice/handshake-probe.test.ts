@@ -39,12 +39,13 @@ describe("probeVoiceHandshakeRejection", () => {
     ).resolves.toEqual({ kind: "voice_unavailable", reason });
   });
 
-  it("probes the same URL over https with cookies and no token in the URL", async () => {
+  it("uses the authenticated preflight URL over https with cookies", async () => {
     const f = fetchJson(409, { code: "VOICE_UNAVAILABLE:voice_unconfigured" });
     await probeVoiceHandshakeRejection("wss://gw/api/agents/a/voice-session", {
       fetchImpl: f,
     });
-    expect(f.mock.calls[0]?.[0]).toBe("https://gw/api/agents/a/voice-session");
+    expect(f.mock.calls[0]?.[0]).toBe("https://gw/api/agents/a/voice-session/preflight");
+    expect(f.mock.calls[0]?.[0]).not.toMatch(/\/voice-session(?:\?|$)/);
     expect(f.mock.calls[0]?.[0]).not.toContain("token");
     expect(f.mock.calls[0]?.[1]).toMatchObject({
       method: "GET",
@@ -52,9 +53,29 @@ describe("probeVoiceHandshakeRejection", () => {
     });
   });
 
+  it("preserves workspace query parameters on the preflight URL", async () => {
+    const f = fetchJson(409, { code: "VOICE_UNAVAILABLE:voice_unconfigured" });
+    await probeVoiceHandshakeRejection("ws://gw/api/agents/a/voice-session?workspace_id=ws-1", {
+      fetchImpl: f,
+    });
+    expect(f.mock.calls[0]?.[0]).toBe(
+      "http://gw/api/agents/a/voice-session/preflight?workspace_id=ws-1",
+    );
+  });
+
+  it.each([
+    "ws://gw/api/agents/a",
+    "ws://gw/other/voice-session",
+    "ws://gw/api/agents/a/voice-session-extra",
+  ])("does not fetch for a non-session URL: %s", async (url) => {
+    const f = fetchJson(409, { code: "VOICE_UNAVAILABLE:voice_unconfigured" });
+    await expect(probeVoiceHandshakeRejection(url, { fetchImpl: f })).resolves.toBeNull();
+    expect(f).not.toHaveBeenCalled();
+  });
+
   it("adds the bearer header only when a token exists", async () => {
     const withToken = fetchJson(409, { code: "VOICE_UNAVAILABLE:voice_unconfigured" });
-    await probeVoiceHandshakeRejection("wss://gw/x", {
+    await probeVoiceHandshakeRejection("wss://gw/api/agents/a/voice-session", {
       fetchImpl: withToken,
       authorizationHeader: "Bearer t-1",
     });
@@ -62,7 +83,7 @@ describe("probeVoiceHandshakeRejection", () => {
       headers: { Authorization: "Bearer t-1" },
     });
     const noToken = fetchJson(409, { code: "VOICE_UNAVAILABLE:voice_unconfigured" });
-    await probeVoiceHandshakeRejection("ws://gw/x", { fetchImpl: noToken });
+    await probeVoiceHandshakeRejection("ws://gw/api/agents/a/voice-session", { fetchImpl: noToken });
     expect((noToken.mock.calls[0]?.[1] as RequestInit | undefined)?.headers).toBeUndefined();
   });
 

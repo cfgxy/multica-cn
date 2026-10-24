@@ -180,6 +180,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 /* ------------------------- P1-1: lifecycle races ------------------------- */
@@ -417,10 +418,10 @@ describe("useVoiceSession gate-reason recovery (RUYI-866 P1-3)", () => {
       rejection: { kind: "voice_unavailable", reason: "voice_unconfigured" },
     });
     expect(result.current.phase).toBe("failed");
-    // The probe read the gateway over the same URL, cookies included.
+    // The probe calls the side-effect-free gate endpoint with cookies.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "http://localhost:3000/api/agents/agent-a/voice-session",
+      "http://localhost:3000/api/agents/agent-a/voice-session/preflight",
     );
     expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
       method: "GET",
@@ -506,5 +507,92 @@ describe("useVoiceSession gate-reason recovery (RUYI-866 P1-3)", () => {
     });
     expect(result.current.phase).toBe("idle");
     expect(result.current.failure).toBeNull();
+  });
+
+  it("keeps the generic failure when the preflight probe times out", async () => {
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+
+    const { result } = renderHook(() => useVoiceSession({ agentId: "agent-a" }));
+    await act(async () => {
+      result.current.start();
+    });
+    await act(async () => {
+      lastSocket().close(1006);
+      await flush();
+    });
+    expect(result.current.failure).toEqual({ kind: "rejection", rejection: null });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current.phase).toBe("failed");
+    expect(result.current.failure).toEqual({ kind: "rejection", rejection: null });
+  });
+
+  it("ignores a pending probe after switching agents", async () => {
+    let resolveFetch: ((response: Response) => void) | null = null;
+    const fetchMock = vi.fn(
+      () => new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result, rerender } = renderHook(
+      ({ agentId }: { agentId: string | null }) => useVoiceSession({ agentId }),
+      { initialProps: { agentId: "agent-a" } },
+    );
+
+    await act(async () => {
+      result.current.start();
+    });
+    await act(async () => {
+      lastSocket().close(1006);
+      await flush();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      rerender({ agentId: "agent-b" });
+    });
+    await act(async () => {
+      resolveFetch!(new Response(JSON.stringify({ code: "VOICE_UNAVAILABLE:voice_unconfigured" }), { status: 409 }));
+      await flush();
+    });
+    expect(result.current.phase).toBe("idle");
+    expect(result.current.failure).toBeNull();
+  });
+
+  it("does not update state when a pending probe resolves after unmount", async () => {
+    let resolveFetch: ((response: Response) => void) | null = null;
+    const fetchMock = vi.fn(
+      () => new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result, unmount } = renderHook(() => useVoiceSession({ agentId: "agent-a" }));
+
+    await act(async () => {
+      result.current.start();
+    });
+    await act(async () => {
+      lastSocket().close(1006);
+      await flush();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    act(() => unmount());
+    await act(async () => {
+      resolveFetch!(new Response(JSON.stringify({ code: "VOICE_UNAVAILABLE:voice_unconfigured" }), { status: 409 }));
+      await flush();
+    });
   });
 });
