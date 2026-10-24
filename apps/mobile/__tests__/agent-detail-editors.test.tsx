@@ -327,6 +327,14 @@ describe("AgentDetailPage editor entries (RUYI-624)", () => {
     expect(screen.getByText("Alice")).toBeTruthy();
   });
 
+  it.each([0, -1])("shows concurrency %s as unlimited", async (concurrency) => {
+    mockCurrentAgent = { ...mockAgent, max_concurrent_tasks: concurrency };
+    await render(<AgentDetailPage />);
+
+    expect(screen.getByText("Unlimited")).toBeTruthy();
+    expect(screen.queryByText(String(concurrency))).toBeNull();
+  });
+
   it("Assign work seeds the quick-create smart actor with this agent and opens new-issue", async () => {
     await render(<AgentDetailPage />);
     await fireEvent.press(screen.getByLabelText("Assign work"));

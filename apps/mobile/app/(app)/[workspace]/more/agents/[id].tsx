@@ -105,6 +105,7 @@ import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
+import { isUnlimitedAgentConcurrency } from "@/lib/agent-profile-patch";
 
 type DetailTab = "overview" | "active" | "settings";
 
@@ -556,7 +557,11 @@ export default function AgentDetailPage() {
       label: t("mobile.detail.fact_concurrency", "Concurrency cap"),
       editable: true,
       value: (
-        <Text className="text-sm text-foreground">{a.max_concurrent_tasks}</Text>
+        <Text className="text-sm text-foreground">
+          {isUnlimitedAgentConcurrency(a.max_concurrent_tasks)
+            ? t("pickers.concurrency_unlimited", "Unlimited")
+            : a.max_concurrent_tasks}
+        </Text>
       ),
     },
     // RUYI-538 ①: reasoning-effort surfaced next to the model it qualifies,
