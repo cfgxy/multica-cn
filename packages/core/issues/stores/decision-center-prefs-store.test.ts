@@ -1,71 +1,35 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  decisionCenterPrefsStore,
-  type DecisionCenterViewMode,
-} from "./decision-center-prefs-store";
+import { decisionCenterPrefsStore } from "./decision-center-prefs-store";
 
-// RUYI-547: the Decision Center's display prefs (view mode + which decision
-// statuses are filtered out) persist like the issues surfaces' view state —
-// same workspace-aware storage pattern, own storage key.
+// RUYI-864: the Decision Center owns one single-value status window —
+// "all" or exactly one card status, mapping 1:1 onto the server's
+// `status` query param. The v1 `viewMode`/`hiddenStatuses` payload is
+// forgotten at the storage boundary (version 2 reopens on "all").
 
 function reset() {
-  decisionCenterPrefsStore.setState({
-    viewMode: "list",
-    hiddenStatuses: [],
-  });
+  decisionCenterPrefsStore.setState({ statusFilter: "all" });
 }
 
 beforeEach(reset);
 
 describe("decisionCenterPrefsStore", () => {
-  it("starts on the list view with every status visible", () => {
-    const s = decisionCenterPrefsStore.getState();
-    expect(s.viewMode).toBe<DecisionCenterViewMode>("list");
-    expect(s.hiddenStatuses).toEqual([]);
+  it("starts on the all window", () => {
+    expect(decisionCenterPrefsStore.getState().statusFilter).toBe("all");
   });
 
-  it("switches the view mode between list and board", () => {
-    decisionCenterPrefsStore.getState().setViewMode("board");
-    expect(decisionCenterPrefsStore.getState().viewMode).toBe("board");
+  it("sets a single status window", () => {
+    decisionCenterPrefsStore.getState().setStatusFilter("open");
+    expect(decisionCenterPrefsStore.getState().statusFilter).toBe("open");
 
-    decisionCenterPrefsStore.getState().setViewMode("list");
-    expect(decisionCenterPrefsStore.getState().viewMode).toBe("list");
+    decisionCenterPrefsStore.getState().setStatusFilter("answered");
+    expect(decisionCenterPrefsStore.getState().statusFilter).toBe("answered");
   });
 
-  it("toggles one status hidden without touching the others", () => {
-    const { toggleStatusHidden } = decisionCenterPrefsStore.getState();
-
-    toggleStatusHidden("answered");
-    expect(decisionCenterPrefsStore.getState().hiddenStatuses).toEqual(["answered"]);
-
-    toggleStatusHidden("cancelled");
-    expect(decisionCenterPrefsStore.getState().hiddenStatuses).toEqual([
-      "answered",
-      "cancelled",
-    ]);
-
-    toggleStatusHidden("answered");
-    expect(decisionCenterPrefsStore.getState().hiddenStatuses).toEqual(["cancelled"]);
-  });
-
-  it("toggling the same status twice returns it to visible", () => {
-    const { toggleStatusHidden } = decisionCenterPrefsStore.getState();
-
-    toggleStatusHidden("open");
-    expect(decisionCenterPrefsStore.getState().hiddenStatuses).toEqual(["open"]);
-
-    toggleStatusHidden("open");
-    expect(decisionCenterPrefsStore.getState().hiddenStatuses).toEqual([]);
-  });
-
-  it("restores every status at once", () => {
-    const s = decisionCenterPrefsStore.getState();
-    s.toggleStatusHidden("open");
-    s.toggleStatusHidden("answered");
-
-    s.showAllStatuses();
-    expect(decisionCenterPrefsStore.getState().hiddenStatuses).toEqual([]);
+  it("returns to the all window", () => {
+    decisionCenterPrefsStore.getState().setStatusFilter("cancelled");
+    decisionCenterPrefsStore.getState().setStatusFilter("all");
+    expect(decisionCenterPrefsStore.getState().statusFilter).toBe("all");
   });
 });

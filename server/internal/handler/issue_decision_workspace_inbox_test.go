@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -155,10 +158,16 @@ func TestWorkspaceDecisionInboxStatusFilter(t *testing.T) {
 	if len(resp.Items) != 1 || resp.Items[0].Status != "open" {
 		t.Fatalf("status=open items = %+v, want only the open card", resp.Items)
 	}
-	// Counts stay the workspace totals so section headers render real numbers
-	// while the list window is filtered.
-	if resp.Counts.Open != 1 || resp.Counts.Answered != 1 {
-		t.Fatalf("counts = %+v, want totals independent of the filter", resp.Counts)
+	// RUYI-864: counts follow the filter window (status + keyword, but never
+	// the limit/cursor window), so the section headers, the rows on screen
+	// and the empty state can never disagree with each other. A filtered view
+	// of open reports no answered cards — the badge's source is the plain
+	// unfiltered call, which still carries the workspace total.
+	if resp.Counts.Open != 1 || resp.Counts.Answered != 0 || resp.Counts.Cancelled != 0 {
+		t.Fatalf("filtered counts = %+v, want the open-only window's totals", resp.Counts)
+	}
+	if resp := decodeInbox(t, getInbox(t, testWorkspaceID, "")); resp.Counts.Open != 1 || resp.Counts.Answered != 1 {
+		t.Fatalf("unfiltered counts = %+v, want the workspace totals (the badge's source)", resp.Counts)
 	}
 
 	if w := getInbox(t, testWorkspaceID, "?status=exploded"); w.Code != http.StatusBadRequest {
@@ -276,6 +285,137 @@ func TestWorkspaceDecisionInboxNoCrossWorkspaceBleed(t *testing.T) {
 		if item.WorkspaceID != testWorkspaceID {
 			t.Fatalf("cross-workspace leak: card %q from %s in %s inbox", item.Question, item.WorkspaceID, testWorkspaceID)
 		}
+	}
+}
+
+// RUYI-864: the keyword and the keyset cursor are the two new axes of the
+// filter window. The search lives in the database (four target fields, LIKE
+// wildcards escaped server-side), the cursor is a created_at + id pair that
+// must arrive together, and the counts follow status + keyword but never the
+// page window — so a filtered view can never show a section count that the
+// rows on screen cannot produce.
+func TestWorkspaceDecisionInboxKeywordSearch(t *testing.T) {
+	issueA := dbfx.Issue(t, "Keyword issue alpha")
+	issueB := dbfx.Issue(t, "Keyword issue beta")
+
+	insertInboxCard(t, testWorkspaceID, issueA, "how to alpha?", "open", "3 hours",
+		testutil.Cols{"context": testutil.Raw(`'{"why_now":"Gamma window","facts":[{"statement":"beta build","evidence":["x"]}]}'::jsonb`)})
+	insertInboxCard(t, testWorkspaceID, issueB, "unrelated question", "open", "2 hours")
+	insertInboxCard(t, testWorkspaceID, issueB, "another unrelated", "answered", "1 hour",
+		testutil.Cols{"selected_indices": testutil.Raw(`'[0]'::jsonb`)})
+
+	// By the card's own question.
+	resp := decodeInbox(t, getInbox(t, testWorkspaceID, "?q=alpha"))
+	if len(resp.Items) != 1 || resp.Items[0].Question != "how to alpha?" {
+		t.Fatalf("q=alpha items = %+v, want only the matching question", resp.Items)
+	}
+
+	// By the structured context (the jsonb body, not the question).
+	resp = decodeInbox(t, getInbox(t, testWorkspaceID, "?q=Gamma"))
+	if len(resp.Items) != 1 || resp.Items[0].Question != "how to alpha?" {
+		t.Fatalf("q=Gamma items = %+v, want the context-matched card", resp.Items)
+	}
+
+	// By the issue title AND by the structured context: the two cards of the
+	// beta-titled issue plus the alpha card whose context says "beta build".
+	resp = decodeInbox(t, getInbox(t, testWorkspaceID, "?q=beta"))
+	if len(resp.Items) != 3 {
+		t.Fatalf("q=beta items = %d, want 2 (title match) + 1 (context match)", len(resp.Items))
+	}
+
+	// LIKE wildcards are escaped server-side: a literal % in the keyword is
+	// a literal %, not a pattern — it matches nothing. (%25 is the
+	// percent-encoding of %, exactly what a real client fetch sends.)
+	if w := getInbox(t, testWorkspaceID, "?q=%25alpha%25"); w.Code != http.StatusOK {
+		t.Fatalf("escaped wildcard: expected 200, got %d: %s", w.Code, w.Body.String())
+	} else if resp := decodeInbox(t, w); len(resp.Items) != 0 {
+		t.Fatalf("q=%%alpha%% items = %d, want 0 (wildcards must be escaped)", len(resp.Items))
+	}
+
+	// Counts follow the keyword window, and stay limit-immune.
+	if w := getInbox(t, testWorkspaceID, "?q=unrelated&limit=1"); w.Code != http.StatusOK {
+		t.Fatalf("q+limit: expected 200, got %d: %s", w.Code, w.Body.String())
+	} else {
+		resp = decodeInbox(t, w)
+		if len(resp.Items) != 1 {
+			t.Fatalf("limit=1 items = %d, want 1", len(resp.Items))
+		}
+		if resp.Counts.Open != 1 || resp.Counts.Answered != 1 || resp.Counts.Cancelled != 0 {
+			t.Fatalf("keyword counts = %+v, want the filtered window's totals (open=1 answered=1)", resp.Counts)
+		}
+	}
+
+	// A keyword the count query agrees with: q=open+alpha window is empty on
+	// the answered card, so its count must drop to zero while the plain
+	// workspace total still carries it.
+	if resp := decodeInbox(t, getInbox(t, testWorkspaceID, "?q=unrelated&status=answered"));
+		resp.Counts.Answered != 1 || resp.Counts.Open != 0 {
+		t.Fatalf("status+keyword counts = %+v, want the intersection's totals", resp.Counts)
+	}
+
+	// An over-long keyword is a 400, not a scan bomb.
+	long := strings.Repeat("a", 201)
+	if w := getInbox(t, testWorkspaceID, "?q="+long); w.Code != http.StatusBadRequest {
+		t.Fatalf("over-long q: expected 400, got %d", w.Code)
+	}
+}
+
+func TestWorkspaceDecisionInboxKeysetCursor(t *testing.T) {
+	issue := dbfx.Issue(t, "Cursor issue")
+	oldest := insertInboxCard(t, testWorkspaceID, issue, "page tail", "open", "3 hours")
+	mid := insertInboxCard(t, testWorkspaceID, issue, "page middle", "open", "2 hours")
+	_ = mid
+	newest := insertInboxCard(t, testWorkspaceID, issue, "page head", "open", "1 hour")
+	_ = newest
+
+	// First page of two: newest two rows, and the response carries the keyset
+	// cursor of the page's LAST ROW (the DB tail, not the filtered tail).
+	w := getInbox(t, testWorkspaceID, "?limit=2")
+	if w.Code != http.StatusOK {
+		t.Fatalf("page 1: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	page1 := decodeInbox(t, w)
+	if len(page1.Items) != 2 || page1.NextCursor == nil || page1.NextCursorID == nil {
+		t.Fatalf("page 1 = %+v, want 2 items plus a full cursor pair", page1)
+	}
+	if page1.Items[0].Question != "page head" || page1.Items[1].Question != "page middle" {
+		t.Fatalf("page 1 items = %q, %q; want newest-first", page1.Items[0].Question, page1.Items[1].Question)
+	}
+
+	// Second page with the cursor: strictly the rows ordered after the last
+	// page's tail — the tail card itself is never repeated or skipped.
+	w = getInbox(t, testWorkspaceID, "?limit=2&after_created_at="+url.QueryEscape(*page1.NextCursor)+"&after_id="+*page1.NextCursorID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("page 2: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	page2 := decodeInbox(t, w)
+	if len(page2.Items) != 1 || page2.Items[0].ID != oldest {
+		t.Fatalf("page 2 = %+v, want exactly the tail card", page2.Items)
+	}
+	if page2.NextCursor != nil || page2.NextCursorID != nil {
+		t.Fatalf("short page must end the window: cursor = %v/%v, want both nil", page2.NextCursor, page2.NextCursorID)
+	}
+
+	// Cursor pair discipline: a timestamp without its tiebreaker id (or vice
+	// versa) silently skips or repeats rows — reject the unpaired cursor.
+	if w := getInbox(t, testWorkspaceID, "?after_created_at="+time.Now().UTC().Format(time.RFC3339Nano)); w.Code != http.StatusBadRequest {
+		t.Fatalf("cursor without after_id: expected 400, got %d", w.Code)
+	}
+	if w := getInbox(t, testWorkspaceID, "?after_id="+oldest); w.Code != http.StatusBadRequest {
+		t.Fatalf("after_id without cursor: expected 400, got %d", w.Code)
+	}
+	if w := getInbox(t, testWorkspaceID, "?after_created_at=not-a-time&after_id="+oldest); w.Code != http.StatusBadRequest {
+		t.Fatalf("malformed cursor timestamp: expected 400, got %d", w.Code)
+	}
+	// A strictly-past cursor pair returns an empty window — the (created_at,
+	// id) < cursor test means "older than the cursor", so nothing older than
+	// 1970 exists. (A future cursor is the opposite: it returns everything.)
+	w = getInbox(t, testWorkspaceID, "?limit=1&after_created_at=1970-01-01T00:00:00Z&after_id=00000000-0000-0000-0000-000000000000")
+	if w.Code != http.StatusOK {
+		t.Fatalf("past cursor: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if resp := decodeInbox(t, w); len(resp.Items) != 0 {
+		t.Fatalf("past cursor items = %d, want 0", len(resp.Items))
 	}
 }
 

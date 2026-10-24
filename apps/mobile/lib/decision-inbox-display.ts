@@ -13,10 +13,11 @@
  *   - Section order is open → answered → cancelled (待决策 first); within a
  *     section the server's newest-first order passes through untouched.
  *   - Zero-row sections are dropped from the rendered list, but a section's
- *     `count` is the server's workspace total (data.counts), not rows.length
- *     — the server list endpoint carries no pagination today, and keeping
- *     the server number as the single source means the badge, the section
- *     header and web can never disagree.
+ *     `count` is the server's counts for the FILTER WINDOW (status + keyword,
+ *     never the page window) — RUYI-864: the list is keyset-paged and the
+ *     counts ride every page, so the section header and the badge stay true
+ *     mid-walk. The server number is the single source, so the badge, the
+ *     section header and web can never disagree.
  */
 import type {
   IssueDecision,
@@ -35,7 +36,9 @@ export const DECISION_SECTION_ORDER = [
 /**
  * TAB dimension of the Decisions tab (RUYI-530) — mirrors the Tasks tab's
  * "全部 + one pill per window" shape; each non-all pill maps 1:1 to a card
- * status (待决策/已决策/已失效, same labels as the section headers).
+ * status (待决策/已决策/已失效, same labels as the section headers) and,
+ * since RUYI-864, travels to the server as the `status` query param — the
+ * pill is a window selector, not a client-side row drop.
  */
 export const DECISION_TAB_ORDER = [
   "all",
@@ -45,19 +48,6 @@ export const DECISION_TAB_ORDER = [
 ] as const;
 
 export type DecisionTab = (typeof DECISION_TAB_ORDER)[number];
-
-/**
- * Filter toggle dimensions (RUYI-530). Status belongs to the TAB itself
- * (same division as Tasks: the tab owns the status window), so the sheet
- * only carries the two card-owned dimensions:
- *   - recommendedOnly → the 「有推荐」 badge flag
- *   - agentCreatedOnly → the card was raised by an agent, not a member
- */
-export interface DecisionViewFilter {
-  tab: DecisionTab;
-  recommendedOnly: boolean;
-  agentCreatedOnly: boolean;
-}
 
 /**
  * Actor type for the row avatar (RUYI-530). The card's `created_by_type`
@@ -108,7 +98,7 @@ export interface DecisionInboxRow {
 export interface DecisionInboxSection {
   key: DecisionInboxSectionKey;
   rows: DecisionInboxRow[];
-  /** Workspace total from the server counts, not rows.length. */
+  /** Server counts for the filter window, not rows.length. */
   count: number;
 }
 
@@ -130,31 +120,21 @@ export function toDecisionInboxRow(
 }
 
 /**
- * TAB + filter narrowing (RUYI-530). The TAB owns the status window (all →
- * no status filter; otherwise exactly one card status); the two sheet
- * toggles compose with it as AND. Server order passes through untouched —
- * this only drops rows, never reorders.
+ * RUYI-864: section grouping over the walked PAGES of the keyset list.
+ * Items merge in fetch order (the server's (created_at, id) order passes
+ * through untouched); the counts come off the LAST page — they are scoped
+ * to the filter window, never the page window, so the headers stay true
+ * after "load more".
  */
-export function filterDecisionRows(
-  rows: DecisionInboxRow[],
-  view: DecisionViewFilter,
-): DecisionInboxRow[] {
-  return rows.filter(
-    (row) =>
-      (view.tab === "all" || row.status === view.tab) &&
-      (!view.recommendedOnly || row.recommended) &&
-      (!view.agentCreatedOnly ||
-        resolveDecisionActorType(row.createdByType) === "agent"),
-  );
-}
-
 export function groupDecisionInboxSections(
-  inbox: WorkspaceDecisionInbox,
+  pages: WorkspaceDecisionInbox[],
 ): DecisionInboxSection[] {
-  const rows = inbox.items.map(toDecisionInboxRow);
+  const rows = pages.flatMap((page) => page.items).map(toDecisionInboxRow);
+  const last = pages.length > 0 ? pages[pages.length - 1] : null;
+  const counts = last?.counts ?? { open: 0, answered: 0, cancelled: 0 };
   return DECISION_SECTION_ORDER.map((key) => ({
     key,
     rows: rows.filter((row) => row.status === key),
-    count: inbox.counts[key],
+    count: counts[key],
   })).filter((section) => section.rows.length > 0);
 }

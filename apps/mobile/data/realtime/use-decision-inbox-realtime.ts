@@ -11,10 +11,19 @@
  * Per-issue card patching stays in use-issue-realtime.ts (`upsertDecisionInCache`
  * on the per-issue keys); this hook only owns the workspace-level aggregate.
  *
+ * RUYI-864: the decisions tab's authorization queue is a server-ordered single
+ * card (oldest pending, order=asc, limit=1) plus the collapsed history. When a
+ * request is answered from another client the queue must advance and the
+ * history refresh, so this hook also invalidates the request subtree on
+ * `decision_request:updated` — the exact mirror of web's
+ * `decisionRequestKeys.all()` invalidation in use-realtime-sync.ts. The list
+ * is tiny, so a subtree invalidation is cheaper than patching.
+ *
  * Reconnect: we may have missed events while down — refetch from server.
  */
 import { useQueryClient } from "@tanstack/react-query";
 import { decisionInboxKeys } from "@multica/core/issues/decisions";
+import { decisionRequestKeys } from "@multica/core/issues/decision-requests";
 import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 
 export function useDecisionInboxRealtime() {
@@ -22,10 +31,20 @@ export function useDecisionInboxRealtime() {
 
   useWSSubscriptions(
     (ws) => {
-      const invalidate = () => {
+      const invalidateInbox = () => {
         qc.invalidateQueries({ queryKey: decisionInboxKeys.all() });
       };
-      return [ws.on("decision:updated", invalidate), ws.onReconnect(invalidate)];
+      const invalidateRequests = () => {
+        qc.invalidateQueries({ queryKey: decisionRequestKeys.all() });
+      };
+      return [
+        ws.on("decision:updated", invalidateInbox),
+        ws.on("decision_request:updated", invalidateRequests),
+        ws.onReconnect(() => {
+          invalidateInbox();
+          invalidateRequests();
+        }),
+      ];
     },
     [qc],
   );

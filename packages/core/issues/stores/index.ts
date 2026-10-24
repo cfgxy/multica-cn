@@ -37,7 +37,7 @@ export {
 export {
   decisionCenterPrefsStore,
   type DecisionCenterPrefsState,
-  type DecisionCenterViewMode,
+  type DecisionCenterStatusFilter,
 } from "./decision-center-prefs-store";
 export {
   actorIssuesViewStore,

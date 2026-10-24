@@ -231,13 +231,27 @@ func (q *Queries) CancelIssueDecision(ctx context.Context, arg CancelIssueDecisi
 
 const countWorkspaceIssueDecisionsByStatus = `-- name: CountWorkspaceIssueDecisionsByStatus :one
 SELECT
-    count(*) FILTER (WHERE status = 'open')::int AS open_count,
-    count(*) FILTER (WHERE status = 'answered')::int AS answered_count,
-    count(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count
-FROM issue_decisions
-WHERE workspace_id = $1
-  AND decision_kind = 'question'
+    count(*) FILTER (WHERE d.status = 'open')::int AS open_count,
+    count(*) FILTER (WHERE d.status = 'answered')::int AS answered_count,
+    count(*) FILTER (WHERE d.status = 'cancelled')::int AS cancelled_count
+FROM issue_decisions d
+JOIN issue i ON i.id = d.issue_id
+LEFT JOIN workspace ws ON ws.id = d.workspace_id
+WHERE d.workspace_id = $1
+  AND d.decision_kind = 'question'
+  AND ($2::text IS NULL OR d.status = $2::text)
+  AND ($3::text IS NULL
+    OR d.question ILIKE '%' || $3::text || '%'
+    OR COALESCE(d.context::text, '') ILIKE '%' || $3::text || '%'
+    OR i.title ILIKE '%' || $3::text || '%'
+    OR COALESCE(ws.issue_prefix || '-' || i.number::text, '') ILIKE '%' || $3::text || '%')
 `
+
+type CountWorkspaceIssueDecisionsByStatusParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Status      pgtype.Text `json:"status"`
+	Q           pgtype.Text `json:"q"`
+}
 
 type CountWorkspaceIssueDecisionsByStatusRow struct {
 	OpenCount      int32 `json:"open_count"`
@@ -251,8 +265,13 @@ type CountWorkspaceIssueDecisionsByStatusRow struct {
 // stay out of the inbox aggregation entirely — the item filter in the
 // handler drops them, and these counts must agree with the items they
 // badge, so they exclude the authorization kind at the source.
-func (q *Queries) CountWorkspaceIssueDecisionsByStatus(ctx context.Context, workspaceID pgtype.UUID) (CountWorkspaceIssueDecisionsByStatusRow, error) {
-	row := q.db.QueryRow(ctx, countWorkspaceIssueDecisionsByStatus, workspaceID)
+//
+// RUYI-864: the counts follow the list's filter window (a set status and a
+// keyword q, but NEVER the limit/cursor window), so section headers and
+// empty states can never disagree with the rows on screen. An unfiltered
+// call (the badge's source) is the plain workspace total as before.
+func (q *Queries) CountWorkspaceIssueDecisionsByStatus(ctx context.Context, arg CountWorkspaceIssueDecisionsByStatusParams) (CountWorkspaceIssueDecisionsByStatusRow, error) {
+	row := q.db.QueryRow(ctx, countWorkspaceIssueDecisionsByStatus, arg.WorkspaceID, arg.Status, arg.Q)
 	var i CountWorkspaceIssueDecisionsByStatusRow
 	err := row.Scan(&i.OpenCount, &i.AnsweredCount, &i.CancelledCount)
 	return i, err
@@ -853,15 +872,31 @@ FROM issue_decisions d
 JOIN issue i ON i.id = d.issue_id
 LEFT JOIN workspace ws ON ws.id = d.workspace_id
 WHERE d.workspace_id = $1
+  -- RUYI-630/RUYI-864: the kind predicate lives in the page walk itself,
+  -- next to the counts' — an authorization card never occupies a page row
+  -- (otherwise a full page of them would carry a next cursor past real
+  -- question cards while items came back empty), and items/counts stay one
+  -- set under every window.
+  AND d.decision_kind = 'question'
   AND ($3::text IS NULL OR d.status = $3::text)
+  AND ($4::text IS NULL
+    OR d.question ILIKE '%' || $4::text || '%'
+    OR COALESCE(d.context::text, '') ILIKE '%' || $4::text || '%'
+    OR i.title ILIKE '%' || $4::text || '%'
+    OR COALESCE(ws.issue_prefix || '-' || i.number::text, '') ILIKE '%' || $4::text || '%')
+  AND ($5::uuid IS NULL
+    OR (d.created_at, d.id) < ($6::timestamptz, $5::uuid))
 ORDER BY d.created_at DESC, d.id DESC
 LIMIT $2
 `
 
 type ListWorkspaceIssueDecisionsParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Limit       int32       `json:"limit"`
-	Status      pgtype.Text `json:"status"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Limit          int32              `json:"limit"`
+	Status         pgtype.Text        `json:"status"`
+	Q              pgtype.Text        `json:"q"`
+	AfterID        pgtype.UUID        `json:"after_id"`
+	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
 }
 
 type ListWorkspaceIssueDecisionsRow struct {
@@ -911,8 +946,24 @@ type ListWorkspaceIssueDecisionsRow struct {
 // open cards can't be hidden by a newer one. NULL status lists every
 // status; a set status filters to it. Ordered newest-first; the client
 // groups by status with open first.
+//
+// RUYI-864: two orthogonal dimensions join the window. `q` is a keyword
+// (the server-escaped LIKE body, no wildcards of its own) matched against
+// the card's question, its structured context, and the issue's identifier /
+// title — the search lives in the database, never a client-side scan of a
+// full list. `after_created_at` + `after_id` are the keyset cursor: both
+// must arrive together (the handler enforces the pair) and select strictly
+// the rows ordered after the last page, so deep pages stay O(limit) on
+// the (workspace_id, ...) index instead of skipping OFFSET rows.
 func (q *Queries) ListWorkspaceIssueDecisions(ctx context.Context, arg ListWorkspaceIssueDecisionsParams) ([]ListWorkspaceIssueDecisionsRow, error) {
-	rows, err := q.db.Query(ctx, listWorkspaceIssueDecisions, arg.WorkspaceID, arg.Limit, arg.Status)
+	rows, err := q.db.Query(ctx, listWorkspaceIssueDecisions,
+		arg.WorkspaceID,
+		arg.Limit,
+		arg.Status,
+		arg.Q,
+		arg.AfterID,
+		arg.AfterCreatedAt,
+	)
 	if err != nil {
 		return nil, err
 	}

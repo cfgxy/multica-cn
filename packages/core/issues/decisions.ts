@@ -1,11 +1,16 @@
 import {
+  infiniteQueryOptions,
   queryOptions,
   useQuery,
   type MutationFunction,
   type QueryClient,
 } from "@tanstack/react-query";
 import { api } from "../api";
-import type { IssueDecision, WorkspaceDecisionInbox } from "../types";
+import type {
+  IssueDecision,
+  IssueDecisionStatus,
+  WorkspaceDecisionInbox,
+} from "../types";
 import { issueKeys } from "./queries";
 
 // Decision cards (RUYI-345): server state owned by React Query like every
@@ -27,19 +32,87 @@ export function issueDecisionsQueryOptions(issueId: string) {
  * have missed decision:updated events from any workspace. Lifecycle events
  * invalidate this subtree explicitly (same file, decision:updated handler).
  */
+/** Filter window of a decision-inbox list call: one card status (a 1:1 real
+ * state — request lifecycle statuses are never folded onto a card) plus the
+ * RUYI-864 raw keyword. Keys nest under the workspace prefix so a
+ * reconnect's invalidation of decisionInboxKeys.all() reaches every filter
+ * window, not just the default one. */
+export interface WorkspaceDecisionInboxFilters {
+  status?: IssueDecisionStatus;
+  /** Raw keyword; LIKE wildcards are escaped server-side. */
+  q?: string;
+  /** Page size for a keyset walk (server default 200, max 500). */
+  limit?: number;
+}
+
 export const decisionInboxKeys = {
   all: () => [...issueKeys.decisionsAll(), "workspace-inbox"] as const,
   workspace: (workspaceId: string | null | undefined) =>
     [...decisionInboxKeys.all(), workspaceId ?? "none"] as const,
+  /** One filter window's list (RUYI-864). */
+  inbox: (
+    workspaceId: string | null | undefined,
+    filters: WorkspaceDecisionInboxFilters,
+  ) => [...decisionInboxKeys.workspace(workspaceId), filters] as const,
 };
 
-export function workspaceDecisionInboxQueryOptions(workspaceId: string | null | undefined) {
+export function workspaceDecisionInboxQueryOptions(
+  workspaceId: string | null | undefined,
+  filters?: WorkspaceDecisionInboxFilters,
+) {
   return queryOptions({
-    queryKey: decisionInboxKeys.workspace(workspaceId),
+    queryKey: filters
+      ? decisionInboxKeys.inbox(workspaceId, filters)
+      : decisionInboxKeys.workspace(workspaceId),
     queryFn: async (): Promise<WorkspaceDecisionInbox> => {
-      if (!workspaceId) return { items: [], counts: { open: 0, answered: 0, cancelled: 0 } };
-      return api.listWorkspaceDecisionInbox(workspaceId);
+      if (!workspaceId)
+        return {
+          items: [],
+          counts: { open: 0, answered: 0, cancelled: 0 },
+          next_cursor: null,
+          next_cursor_id: null,
+        };
+      return api.listWorkspaceDecisionInbox(workspaceId, filters);
     },
+    enabled: !!workspaceId,
+  });
+}
+
+/**
+ * RUYI-864 keyset pagination of the decision list — the same two-field
+ * cursor shape as the audit-events page options (the cursor pair must
+ * travel together; a boundary that splits them would duplicate or skip the
+ * card that shares a created_at). The counts in every page are scoped to
+ * the filter window, so a section header stays true even after paging;
+ * the badge keeps using the unfiltered default query (limit-immune).
+ */
+export function workspaceDecisionInboxPageOptions(
+  workspaceId: string | null | undefined,
+  filters: WorkspaceDecisionInboxFilters = {},
+) {
+  return infiniteQueryOptions({
+    queryKey: decisionInboxKeys.inbox(workspaceId, filters),
+    initialPageParam: null as { after_created_at: string; after_id: string } | null,
+    queryFn: async ({ pageParam }): Promise<WorkspaceDecisionInbox> => {
+      if (!workspaceId)
+        return {
+          items: [],
+          counts: { open: 0, answered: 0, cancelled: 0 },
+          next_cursor: null,
+          next_cursor_id: null,
+        };
+      return api.listWorkspaceDecisionInbox(workspaceId, {
+        ...filters,
+        ...(pageParam ?? {}),
+      });
+    },
+    getNextPageParam: (lastPage) =>
+      lastPage.next_cursor && lastPage.next_cursor_id
+        ? {
+            after_created_at: lastPage.next_cursor,
+            after_id: lastPage.next_cursor_id,
+          }
+        : undefined,
     enabled: !!workspaceId,
   });
 }
