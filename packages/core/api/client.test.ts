@@ -2080,6 +2080,59 @@ describe("ApiClient", () => {
     });
   });
 
+  describe("restoreIssueDecision response parsing", () => {
+    const restoredDecision = {
+      id: "decision-1",
+      issue_id: "issue-1",
+      question: "Pick a lane?",
+      options: [{ label: "A" }, { label: "B" }],
+      multi_select: false,
+      recommended_indices: [],
+      status: "open",
+      selected_indices: [],
+      created_by_type: "member",
+      created_by_id: "user-1",
+      created_at: "2026-10-24T00:00:00Z",
+      updated_at: "2026-10-24T00:05:00Z",
+    };
+
+    it("parses the restored decision payload", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(restoredDecision), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+      const result = await client.restoreIssueDecision("issue-1", "decision-1");
+
+      expect(fetchMock.mock.calls[0]).toMatchObject([
+        "https://api.example.test/api/issues/issue-1/decisions/decision-1/restore",
+        expect.objectContaining({ method: "POST" }),
+      ]);
+      expect(result).toEqual(restoredDecision);
+    });
+
+    it("rejects a malformed restore payload instead of leaking it downstream", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ id: "decision-1" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+
+      const client = new ApiClient("https://api.example.test");
+      await expect(
+        client.restoreIssueDecision("issue-1", "decision-1"),
+      ).rejects.toThrow(/Invalid decision restore response/);
+    });
+  });
+
   it("clears a chat queue with one session-scoped request", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);

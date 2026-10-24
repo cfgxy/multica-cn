@@ -15,7 +15,9 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -461,7 +463,39 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	created, err := h.Queries.CreateIssueDecision(r.Context(), db.CreateIssueDecisionParams{
+	// RUYI-865: the create runs inside a transaction that takes the issue
+	// row FOR UPDATE first (LockIssueForDecisionCreate). The insert's
+	// done guard is only as linear as the lock that serialises it against
+	// the done side: a done status write is a plain row UPDATE, which
+	// row-locks the issue as FOR UPDATE (issue carries a primary key),
+	// so the two writers cannot interleave on the row. Whichever writer
+	// wins the row lock, the loser's own commit is guaranteed to observe
+	// the winner's state — create-first, the done settle (post-commit,
+	// fresh READ COMMITTED snapshot) cancels the card that just
+	// committed; done-first, the guard's post-lock re-read sees done and
+	// refuses with 409. Without the lock the two snapshots pass each
+	// other and an open question card survives the done transition.
+	tx, txErr := h.TxStarter.Begin(r.Context())
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start decision card create")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	qtx := h.Queries.WithTx(tx)
+
+	if _, lockErr := qtx.LockIssueForDecisionCreate(r.Context(), db.LockIssueForDecisionCreateParams{
+		ID:          issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+	}); lockErr != nil {
+		if errors.Is(lockErr, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "issue not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to lock issue for decision create")
+		return
+	}
+
+	created, err := qtx.CreateIssueDecision(r.Context(), db.CreateIssueDecisionParams{
 		ID:                 dbid.NewV7(),
 		WorkspaceID:        issue.WorkspaceID,
 		IssueID:            issue.ID,
@@ -475,6 +509,23 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		CreatedByID:        parseUUID(authorID),
 		ClientRequestID:    keyParam,
 	})
+	if errors.Is(err, sql.ErrNoRows) {
+		// The insert's atomic done guard (RUYI-865) missed: a concurrent
+		// done transition committed while this request held the row lock.
+		// Re-read the row and check against the CURRENT state — the
+		// request-start snapshot is stale by definition in that race, and
+		// a foreign no-row miss (a concurrent delete) stays a 500 with a
+		// log either way.
+		fresh, freshErr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+			ID:          issue.ID,
+			WorkspaceID: issue.WorkspaceID,
+		})
+		if freshErr == nil && !h.decisionCardsAllowedWhileDone(r.Context(), fresh) {
+			writeError(w, http.StatusConflict,
+				"decision cards can no longer be raised: the issue has entered the done category; reopen it first")
+			return
+		}
+	}
 	if err != nil {
 		// Same-key retry: the insert lost the race against the original
 		// create, which by then must be committed (READ COMMITTED waits on
@@ -506,6 +557,14 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Commit before the publish: the card is not a fact until the create
+	// transaction lands, and only then may a concurrent done settle see it.
+	if commitErr := tx.Commit(r.Context()); commitErr != nil {
+		slog.Error("issue decision create commit failed", append(logger.RequestAttrs(r),
+			"error", commitErr, "issue_id", uuidToString(issue.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to create decision card")
+		return
+	}
 	resp := decisionToResponse(created)
 	h.publish(protocol.EventDecisionUpdated, uuidToString(issue.WorkspaceID), authorType, authorID, map[string]any{
 		"decision":    resp,
@@ -791,6 +850,13 @@ func (h *Handler) CancelIssueDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RUYI-863: the cancel is the card's only pre-terminal act that is not an
+	// answer, and it leaves no echo comment — the audit row is the only
+	// record of who closed it and when. Best-effort, like every issue-domain
+	// audit write: the CAS flip already committed, the trail must not block it.
+	h.recordDecisionLifecycleAudit(r.Context(), issue, service.AuditIssueDecisionCancelled,
+		"open", "cancelled", authorID, cancelled)
+
 	resp := decisionToResponse(cancelled)
 	h.publish(protocol.EventDecisionUpdated, uuidToString(issue.WorkspaceID), "member", authorID, map[string]any{
 		"decision":    resp,
@@ -798,6 +864,112 @@ func (h *Handler) CancelIssueDecision(w http.ResponseWriter, r *http.Request) {
 		"issue_title": issue.Title,
 	})
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// RestoreIssueDecision handles POST /api/issues/{id}/decisions/{decisionId}/restore.
+// RUYI-863: the inverse of cancel — a cancelled card flips back to open with
+// its question, options, context and recommendations untouched. Member-only,
+// no time limit (a cancel days later is still restorable), and the CAS in
+// the SQL is the state machine's guard: only status='cancelled' matches, so
+// answered cards can never be resurrected and a racing restore/answer loses
+// with 409 instead of double-flipping. No echo comment — restoring asks
+// nothing, it only re-opens the card, so the audit row carries the trail.
+//
+// The issue's terminal state is the other half of that rule: when the issue
+// has reached a done/cancelled-class terminal state — built-in or a custom
+// status whose category is done/cancelled, judged by the authoritative
+// issuestatus.Effective, the same classification other terminal gates use —
+// the card is refused with 409 instead of being revived on a closed issue.
+// The check runs before the CAS and before any audit/event write, and the
+// SQL CAS itself carries the same terminal predicate so an issue that turns
+// terminal in the race still loses instead of resurrecting the card.
+func (h *Handler) RestoreIssueDecision(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	if authorType != "member" {
+		writeError(w, http.StatusForbidden, "decision cards can only be restored by human members")
+		return
+	}
+
+	decision, ok := h.loadDecisionForIssue(w, r, issue)
+	if !ok {
+		return
+	}
+
+	// Same carve-out as the cancel arm (RUYI-630): an authorization card's
+	// lifecycle belongs to its decision request; flipping a cancelled auth
+	// card back to open here would strand the group and re-wake nothing.
+	if decision.DecisionKind == "authorization" {
+		writeError(w, http.StatusConflict, "authorization cards are restored through the decision request, not this endpoint")
+		return
+	}
+
+	// Terminal-issue gate: a done/cancelled-class issue no longer accepts
+	// revived decisions, so refuse before writing any audit row or event.
+	// Effective keeps built-in keys intact and maps a custom key to its
+	// category, so a workspace's own terminal status is classified here.
+	if cat := issuestatus.Effective(r.Context(), h.issueStatusCatalog(), issue.WorkspaceID, issue.Status); cat == "done" || cat == "cancelled" {
+		writeError(w, http.StatusConflict, "the issue is in a terminal state, its decision cards cannot be restored")
+		return
+	}
+
+	restored, err := h.Queries.RestoreIssueDecision(r.Context(), db.RestoreIssueDecisionParams{
+		ID:          decision.ID,
+		WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusConflict, "only cancelled decision cards on a non-terminal issue can be restored")
+			return
+		}
+		slog.Warn("restore issue decision failed", append(logger.RequestAttrs(r), "error", err, "decision_id", uuidToString(decision.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to restore decision card")
+		return
+	}
+
+	h.recordDecisionLifecycleAudit(r.Context(), issue, service.AuditIssueDecisionRestored,
+		"cancelled", "open", authorID, restored)
+
+	resp := decisionToResponse(restored)
+	h.publish(protocol.EventDecisionUpdated, uuidToString(issue.WorkspaceID), "member", authorID, map[string]any{
+		"decision":    resp,
+		"issue_id":    uuidToString(issue.ID),
+		"issue_title": issue.Title,
+	})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// recordDecisionLifecycleAudit writes the cancel/restore audit trail row
+// (RUYI-863) best-effort — a failed audit must never block the card
+// transition that already committed. details carries the acting member and
+// the from/to status so the card's full history is reconstructable.
+func (h *Handler) recordDecisionLifecycleAudit(
+	ctx context.Context,
+	issue db.Issue,
+	eventType, fromStatus, toStatus, actorID string,
+	card db.IssueDecision,
+) {
+	details, err := json.Marshal(map[string]any{
+		"decision_id": uuidToString(card.ID),
+		"from_status": fromStatus,
+		"to_status":   toStatus,
+		"actor_id":    actorID,
+		"actor_type":  "member",
+	})
+	if err != nil {
+		slog.Warn("marshal decision lifecycle audit details", "decision_id", uuidToString(card.ID), "error", err)
+		return
+	}
+	service.TryAppendAuditEvents(ctx, h.Queries,
+		service.IssueEvent(eventType, service.AuditActorMember, parseUUID(actorID),
+			issue.WorkspaceID, issue.ID, details))
 }
 
 // buildDecisionAnswerContent renders the echo comment body. Cards created by
