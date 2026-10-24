@@ -760,6 +760,9 @@ func (h *Handler) executeProjectPromptSync(r *http.Request, qtx *db.Queries, row
 	if !ok {
 		return nil, errors.New("prompt rejected by the secret scanner")
 	}
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, row.WorkspaceID); err != nil {
+		return nil, fmt.Errorf("lock clause-reference workspace: %w", err)
+	}
 
 	projectIDs := make([]pgtype.UUID, len(params.ProjectIDs))
 	for i, id := range params.ProjectIDs {
@@ -767,10 +770,19 @@ func (h *Handler) executeProjectPromptSync(r *http.Request, qtx *db.Queries, row
 		if err != nil {
 			return nil, errors.New("project_ids must contain only UUIDs")
 		}
+	}
+	staticTexts := make(map[carrierRef]string, len(projectIDs))
+	for _, projectID := range projectIDs {
+		staticTexts[carrierRef{scope: "project", id: projectID}] = params.Content
+	}
+	if err := validateStaticClauseRefsTx(r.Context(), qtx, row.WorkspaceID, staticTexts); err != nil {
+		return nil, fmt.Errorf("validate project prompt clause references: %w", err)
+	}
+	for i, projectID := range projectIDs {
 		if _, err := qtx.LockProjectForPromptVersion(r.Context(), db.LockProjectForPromptVersionParams{
-			ID: projectIDs[i], WorkspaceID: row.WorkspaceID,
+			ID: projectID, WorkspaceID: row.WorkspaceID,
 		}); err != nil {
-			return nil, fmt.Errorf("project %s not found in the target workspace", id)
+			return nil, fmt.Errorf("project %s not found in the target workspace", params.ProjectIDs[i])
 		}
 	}
 
@@ -861,6 +873,9 @@ func (h *Handler) executePromptRestore(r *http.Request, qtx *db.Queries, row db.
 	if err != nil {
 		return nil, errors.New("target_id must be a UUID")
 	}
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, row.WorkspaceID); err != nil {
+		return nil, fmt.Errorf("lock clause-reference workspace: %w", err)
+	}
 
 	locked, ok := h.lockPromptTarget(r, qtx, targetType, targetID)
 	if !ok {
@@ -868,6 +883,9 @@ func (h *Handler) executePromptRestore(r *http.Request, qtx *db.Queries, row db.
 	}
 	if uuidToString(locked.workspaceID) != uuidToString(row.WorkspaceID) {
 		return nil, errors.New("prompt target belongs to a different workspace than the request")
+	}
+	if err := validateStaticClauseRefsTx(r.Context(), qtx, row.WorkspaceID, map[carrierRef]string{{scope: targetType, id: targetID}: locked.state.PreviousText}); err != nil {
+		return nil, fmt.Errorf("validate restored prompt clause references: %w", err)
 	}
 	state := locked.state
 	if state.AppliedContentSha256 == "" || !state.canRestore() {

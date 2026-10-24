@@ -290,6 +290,17 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create workspace: "+err.Error())
 		return
 	}
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, ws.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create workspace")
+		return
+	}
+	initialContext := ""
+	if req.Context != nil {
+		initialContext = *req.Context
+	}
+	if !allowStaticClauseRefsWrite(w, r.Context(), qtx, ws.ID, map[carrierRef]string{{scope: "workspace", id: ws.ID}: initialContext}) {
+		return
+	}
 
 	_, err = qtx.CreateMember(r.Context(), db.CreateMemberParams{
 		WorkspaceID: ws.ID,
@@ -485,7 +496,30 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	ws, err := h.Queries.UpdateWorkspace(r.Context(), params)
+	var ws db.Workspace
+	var err error
+	if req.Context != nil {
+		tx, err := h.TxStarter.Begin(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update workspace")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		qtx := h.Queries.WithTx(tx)
+		if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, idUUID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update workspace")
+			return
+		}
+		if !allowStaticClauseRefsWrite(w, r.Context(), qtx, idUUID, map[carrierRef]string{{scope: "workspace", id: idUUID}: *req.Context}) {
+			return
+		}
+		ws, err = qtx.UpdateWorkspace(r.Context(), params)
+		if err == nil {
+			err = tx.Commit(r.Context())
+		}
+	} else {
+		ws, err = h.Queries.UpdateWorkspace(r.Context(), params)
+	}
 	if err != nil {
 		slog.Warn("update workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update workspace: "+err.Error())

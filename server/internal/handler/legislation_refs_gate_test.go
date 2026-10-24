@@ -21,10 +21,13 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/clausemark"
 )
 
@@ -227,5 +230,233 @@ func TestRefsGateDeterministicOrdering(t *testing.T) {
 	twice := clausemark.Render(once, clauses)
 	if once != twice {
 		t.Fatalf("render not byte-stable:\n--once--\n%s\n--twice--\n%s", once, twice)
+	}
+}
+
+func callRoute(t *testing.T, route http.Handler, req *http.Request) *testutil.Response {
+	t.Helper()
+	return testutil.Call(t, http.HandlerFunc(route.ServeHTTP), req)
+}
+
+func waitForClauseReferenceLockWaiters(wsID string, want int) error {
+	ctx := context.Background()
+	var key int64
+	if err := testPool.QueryRow(ctx, `SELECT hashtextextended($1::text, 869)`, wsID).Scan(&key); err != nil {
+		return fmt.Errorf("read workspace advisory lock key: %w", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var count int
+		if err := testPool.QueryRow(ctx, `
+			SELECT count(*)
+			FROM pg_locks
+			WHERE locktype = 'advisory' AND NOT granted AND objsubid = 1
+			  AND classid = (($1::bigint >> 32) & 4294967295)::oid
+			  AND objid = ($1::bigint & 4294967295)::oid`, key).Scan(&count); err != nil {
+			return fmt.Errorf("read workspace advisory lock waiters: %w", err)
+		}
+		if count >= want {
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return fmt.Errorf("workspace advisory lock waiters did not reach %d", want)
+}
+
+func TestClauseRemovalRacesWithUntouchedCarrierStaticWrite(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	wsID, ownerID, memberID := legislationFixture(t)
+	proposalID := enactAddClause(t, wsID, ownerID, memberID, "每日同步", cleanClauseText)
+	slug := clauseSlugOfProposal(t, wsID, proposalID)
+	agentID := dbfx.Agent(t, "clause-ref-race", "", map[string]any{
+		"workspace_id": wsID,
+		"instructions": "existing static instructions",
+	})
+
+	removeBody := legislationProposalBody(wsID, "每日同步", "")
+	removeBody.ChangeKind = "remove_clause"
+	removeID := createProposal(t, wsID, memberID, removeBody)
+	submitDraft(t, wsID, memberID, removeID)
+
+	approveRoute := ownerRoute(http.HandlerFunc(testHandler.ApprovePromptProposal))
+	saveRoute := ownerRoute(http.HandlerFunc(testHandler.SavePromptGovernanceVersion))
+	approveReq := legislationReq(ownerID, wsID, http.MethodPost,
+		"/api/prompt-legislation/proposals/"+removeID+"/approve",
+		map[string]any{"confirm_diff_previewed": true}, "id", removeID)
+	saveReq := legislationReq(ownerID, wsID, http.MethodPost,
+		"/api/prompt-governance/agent/"+agentID+"/versions",
+		map[string]any{"content": "Keep the static reference " + slug, "change_note": "race"},
+		"scope", "agent", "scopeId", agentID)
+
+	blocker, err := testPool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin advisory lock barrier: %v", err)
+	}
+	defer blocker.Rollback(context.Background())
+	if _, err := blocker.Exec(context.Background(),
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 869))`, wsID); err != nil {
+		t.Fatalf("hold workspace advisory lock: %v", err)
+	}
+
+	type result struct {
+		name string
+		code int
+		body string
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	go func() {
+		<-start
+		resp := callRoute(t, approveRoute, approveReq)
+		results <- result{name: "remove", code: resp.Code, body: resp.Text()}
+	}()
+	go func() {
+		<-start
+		resp := callRoute(t, saveRoute, saveReq)
+		results <- result{name: "static write", code: resp.Code, body: resp.Text()}
+	}()
+	close(start)
+	waitErr := waitForClauseReferenceLockWaiters(wsID, 2)
+	if err := blocker.Commit(context.Background()); err != nil {
+		t.Fatalf("release workspace advisory lock: %v", err)
+	}
+
+	got := map[string]result{}
+	for range 2 {
+		res := <-results
+		got[res.name] = res
+	}
+	if waitErr != nil {
+		t.Fatalf("requests did not contend on the workspace lock: %v; remove=%d %s, static write=%d %s",
+			waitErr, got["remove"].code, got["remove"].body, got["static write"].code, got["static write"].body)
+	}
+	if got["remove"].code == got["static write"].code ||
+		(got["remove"].code != http.StatusOK && got["remove"].code != http.StatusConflict) ||
+		(got["static write"].code != http.StatusOK && got["static write"].code != http.StatusConflict) {
+		t.Fatalf("concurrent outcomes must be one commit and one conflict; remove=%d %s, static write=%d %s",
+			got["remove"].code, got["remove"].body, got["static write"].code, got["static write"].body)
+	}
+
+	activeClauses := dbfx.Count(t, `SELECT count(*) FROM clause WHERE workspace_id = $1 AND slug = $2 AND status = 'active'`, wsID, slug)
+	var instructions string
+	if err := testPool.QueryRow(context.Background(), `SELECT instructions FROM agent WHERE id = $1`, agentID).Scan(&instructions); err != nil {
+		t.Fatalf("read agent instructions after race: %v", err)
+	}
+	if got["remove"].code == http.StatusOK {
+		if activeClauses != 0 || instructions != "existing static instructions" {
+			t.Fatalf("remove won but state is inconsistent: active clauses=%d, instructions=%q", activeClauses, instructions)
+		}
+	} else if activeClauses != 1 || instructions != "Keep the static reference "+slug {
+		t.Fatalf("static write won but state is inconsistent: active clauses=%d, instructions=%q", activeClauses, instructions)
+	}
+}
+
+func TestPromptGovernanceSaveRejectsReferenceAfterClauseRemoval(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	wsID, ownerID, memberID := legislationFixture(t)
+	proposalID := enactAddClause(t, wsID, ownerID, memberID, "每日同步", cleanClauseText)
+	slug := clauseSlugOfProposal(t, wsID, proposalID)
+	agentID := dbfx.Agent(t, "clause-ref-after-remove", "", map[string]any{
+		"workspace_id": wsID,
+		"instructions": "clean instructions",
+	})
+
+	removeBody := legislationProposalBody(wsID, "每日同步", "")
+	removeBody.ChangeKind = "remove_clause"
+	removeID := createProposal(t, wsID, memberID, removeBody)
+	submitDraft(t, wsID, memberID, removeID)
+	if code, body := ownerApprove(t, ownerID, wsID, removeID); code != http.StatusOK {
+		t.Fatalf("remove clause before static write: expected 200, got %d: %s", code, body)
+	}
+
+	route := ownerRoute(http.HandlerFunc(testHandler.SavePromptGovernanceVersion))
+	req := legislationReq(ownerID, wsID, http.MethodPost,
+		"/api/prompt-governance/agent/"+agentID+"/versions",
+		map[string]any{"content": "Dangling static reference " + slug, "change_note": "should be rejected"},
+		"scope", "agent", "scopeId", agentID)
+	resp := callRoute(t, route, req).Want(http.StatusConflict)
+	if !strings.Contains(resp.Text(), slug) {
+		t.Fatalf("conflict response does not identify the rejected clause slug %q: %s", slug, resp.Text())
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM prompt_version WHERE workspace_id = $1 AND scope = 'agent' AND scope_id = $2`, wsID, agentID); got != 0 {
+		t.Fatalf("rejected static write created %d prompt versions, want 0", got)
+	}
+	var instructions string
+	if err := testPool.QueryRow(context.Background(), `SELECT instructions FROM agent WHERE id = $1`, agentID).Scan(&instructions); err != nil {
+		t.Fatalf("read agent instructions: %v", err)
+	}
+	if instructions != "clean instructions" {
+		t.Fatalf("rejected static write changed instructions to %q", instructions)
+	}
+}
+
+func TestCreateProjectRejectsDanglingInitialStaticReference(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	wsID, ownerID, _ := legislationFixture(t)
+	initialInstructions := "Reference missing clause cls_deadbeef"
+	title := fmt.Sprintf("dangling initial prompt %d", time.Now().UnixNano())
+	before := dbfx.Count(t, `SELECT count(*) FROM project WHERE workspace_id = $1 AND title = $2`, wsID, title)
+
+	req := legislationReq(ownerID, wsID, http.MethodPost, "/api/projects",
+		CreateProjectRequest{Title: title, Instructions: &initialInstructions})
+	resp := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusConflict)
+	if !strings.Contains(resp.Text(), "cls_deadbeef") {
+		t.Fatalf("conflict response does not identify the dangling initial reference: %s", resp.Text())
+	}
+	after := dbfx.Count(t, `SELECT count(*) FROM project WHERE workspace_id = $1 AND title = $2`, wsID, title)
+	if after != before {
+		t.Fatalf("rejected project create left %d project rows (before=%d)", after, before)
+	}
+}
+
+func TestCreateAgentRejectsDanglingInitialStaticReference(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	wsID, ownerID, _ := legislationFixture(t)
+	runtimeID := dbfx.Runtime(t, "clause-ref-create-runtime", map[string]any{
+		"workspace_id": wsID,
+		"owner_id":     ownerID,
+	})
+	name := fmt.Sprintf("dangling initial agent %d", time.Now().UnixNano())
+	initialInstructions := "Reference missing clause cls_deadbeef"
+	before := dbfx.Count(t, `SELECT count(*) FROM agent WHERE workspace_id = $1 AND name = $2`, wsID, name)
+
+	req := legislationReq(ownerID, wsID, http.MethodPost, "/api/agents",
+		map[string]any{"name": name, "runtime_id": runtimeID, "instructions": initialInstructions, "max_concurrent_tasks": 1, "resource_weight": 1})
+	resp := testutil.Call(t, testHandler.CreateAgent, req).Want(http.StatusConflict)
+	if !strings.Contains(resp.Text(), "cls_deadbeef") {
+		t.Fatalf("conflict response does not identify the dangling initial reference: %s", resp.Text())
+	}
+	after := dbfx.Count(t, `SELECT count(*) FROM agent WHERE workspace_id = $1 AND name = $2`, wsID, name)
+	if after != before {
+		t.Fatalf("rejected agent create left %d agents (before=%d)", after, before)
+	}
+}
+
+func TestCreateWorkspaceRejectsDanglingInitialStaticReference(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	_, ownerID, _ := legislationFixture(t)
+	slug := fmt.Sprintf("dangling-context-%d", time.Now().UnixNano())
+	initialContext := "Reference missing clause cls_deadbeef"
+	before := dbfx.Count(t, `SELECT count(*) FROM workspace WHERE slug = $1`, slug)
+
+	req := legislationReq(ownerID, "", http.MethodPost, "/api/workspaces",
+		CreateWorkspaceRequest{Name: "Dangling context", Slug: slug, Context: &initialContext})
+	resp := testutil.Call(t, testHandler.CreateWorkspace, req).Want(http.StatusConflict)
+	if !strings.Contains(resp.Text(), "cls_deadbeef") {
+		t.Fatalf("conflict response does not identify the dangling initial reference: %s", resp.Text())
+	}
+	after := dbfx.Count(t, `SELECT count(*) FROM workspace WHERE slug = $1`, slug)
+	if after != before {
+		t.Fatalf("rejected workspace create left %d workspaces (before=%d)", after, before)
 	}
 }

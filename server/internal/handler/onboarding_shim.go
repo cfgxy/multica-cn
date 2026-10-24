@@ -201,6 +201,10 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 	if !h.validateAgentTextBinding(w, r, runtime) {
 		return
 	}
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, wsUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start onboarding")
+		return
+	}
 
 	agents, err := qtx.ListAgents(r.Context(), wsUUID)
 	if err != nil {
@@ -218,6 +222,9 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 		}
 	}
 	if !assistant.ID.Valid {
+		if !allowStaticClauseRefsWrite(w, r.Context(), qtx, wsUUID, map[carrierRef]string{{scope: "agent"}: onboardingAssistantInstructions}) {
+			return
+		}
 		assistant, err = qtx.CreateAgent(r.Context(), db.CreateAgentParams{
 			WorkspaceID:        wsUUID,
 			Name:               onboardingAssistantName,

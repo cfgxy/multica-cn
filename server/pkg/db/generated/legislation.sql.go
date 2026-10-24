@@ -831,11 +831,9 @@ func (q *Queries) GetSquadPromptContent(ctx context.Context, arg GetSquadPromptC
 }
 
 const getWorkspacePromptContent = `-- name: GetWorkspacePromptContent :one
-
 SELECT COALESCE(context, '')::text AS effective_content FROM workspace WHERE id = $1
 `
 
-// --- Structure baseline (E4) ---
 // Read-only effective content of the workspace carrier (no row lock): the
 // legislation preview and the retrospective's duplicate pre-check read the
 // live clause set against it. Write paths must use the Lock*ForPromptVersion
@@ -1240,6 +1238,68 @@ func (q *Queries) ListRetrospectiveRuns(ctx context.Context, workspaceID pgtype.
 		return nil, err
 	}
 	return items, nil
+}
+
+const listWorkspaceCarrierTexts = `-- name: ListWorkspaceCarrierTexts :many
+SELECT id AS scope_id, COALESCE(context, '')::text AS effective_content, 'workspace'::text AS scope
+FROM workspace WHERE id = $1::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'project'
+FROM project WHERE workspace_id = $1::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'squad'
+FROM squad WHERE workspace_id = $1::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'agent'
+FROM agent WHERE workspace_id = $1::uuid
+ORDER BY scope, scope_id
+`
+
+type ListWorkspaceCarrierTextsRow struct {
+	ScopeID          pgtype.UUID `json:"scope_id"`
+	EffectiveContent string      `json:"effective_content"`
+	Scope            string      `json:"scope"`
+}
+
+// The reference-contract universe (RUYI-869): every carrier tier in the
+// workspace — the one workspace row, every project/squad row and every
+// agent row. The legislation gate reads it inside the enactment
+// transaction: the carriers it row-locks see a consistent snapshot, and
+// the ones it does not lock are exactly the tiers whose static text a
+// remove could orphan without the gate ever seeing it. No condition
+// filtering (this is the reference check, not the injection set) and no
+// LIMIT (a truncated scan would leave a fail-closed check incomplete).
+func (q *Queries) ListWorkspaceCarrierTexts(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceCarrierTextsRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceCarrierTexts, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceCarrierTextsRow{}
+	for rows.Next() {
+		var i ListWorkspaceCarrierTextsRow
+		if err := rows.Scan(&i.ScopeID, &i.EffectiveContent, &i.Scope); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockClauseReferenceWorkspace = `-- name: LockClauseReferenceWorkspace :exec
+
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 869))
+`
+
+// --- Structure baseline (E4) ---
+// All writes that can change the active clause universe or four-tier static
+// text acquire this transaction lock before taking carrier row locks.
+func (q *Queries) LockClauseReferenceWorkspace(ctx context.Context, workspaceID string) error {
+	_, err := q.db.Exec(ctx, lockClauseReferenceWorkspace, workspaceID)
+	return err
 }
 
 const markPromptProposalGateFailed = `-- name: MarkPromptProposalGateFailed :one
