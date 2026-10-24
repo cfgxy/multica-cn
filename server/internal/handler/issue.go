@@ -224,11 +224,20 @@ func assertIssueStatusStillActive(ctx context.Context, qtx *db.Queries, workspac
 
 // runWithIssueStatusGuard runs an issue write that lands on a custom status
 // inside a transaction that re-verifies the status under the shared catalog
-// lock (see assertIssueStatusStillActive). A built-in target skips the
-// transaction entirely.
-func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, fn func(q *db.Queries) error) error {
-	if statusKey == "" || issuestatus.IsBuiltIn(statusKey) {
-		return fn(h.Queries)
+// lock (see assertIssueStatusStillActive).
+//
+// Auto-commit is taken only for a write that carries no status target, or a
+// built-in target that is not `done`: nothing to re-verify (built-ins cannot
+// archive) and nothing to settle. A built-in `done` target takes the
+// transaction on purpose — its card cascade must commit in the SAME
+// transaction as the status write (settleDoneCascadeInTx), so a failed
+// settle rolls back the done write instead of stranding open cards behind
+// a committed status (RUYI-865 P1). A custom target still gets the catalog
+// lock; the built-in done target skips it (assertIssueStatusStillActive
+// short-circuits for built-ins).
+func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID, issueID pgtype.UUID, statusKey string, fn func(q *db.Queries, oldIssue db.Issue) error) error {
+	if statusKey == "" || (issuestatus.IsBuiltIn(statusKey) && statusKey != issuestatus.Done) {
+		return fn(h.Queries, db.Issue{})
 	}
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
@@ -240,7 +249,13 @@ func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtyp
 	if err := assertIssueStatusStillActive(ctx, qtx, workspaceID, statusKey); err != nil {
 		return err
 	}
-	if err := fn(qtx); err != nil {
+	oldIssue, err := qtx.LockIssueForUpdate(ctx, db.LockIssueForUpdateParams{
+		ID: issueID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return err
+	}
+	if err := fn(qtx, oldIssue); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -3313,7 +3328,12 @@ func refreshUntouchedNullableIssueParams(params *db.UpdateIssueParams, current d
 
 var errIssueFieldConflict = errors.New("issue text field conflict")
 
-func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey string) (db.Issue, db.Issue, bool, error) {
+// entrySource names this write in the cascade audit details, distinguishing
+// http_update_issue from http_batch_update_issues. flippedOut is populated
+// on the success path with the decision cards this write flipped into
+// cancelled (nil when the write lands in no done category or flipped none),
+// so the caller can publish their realtime events post-commit.
+func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey, entrySource string, flippedOut *[]db.IssueDecision) (db.Issue, db.Issue, bool, error) {
 	if h.TxStarter == nil {
 		return db.Issue{}, db.Issue{}, false, errors.New("atomic issue update requires transaction starter")
 	}
@@ -3338,7 +3358,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 			return db.Issue{}, db.Issue{}, false, fmt.Errorf("lock issue attachments: %w", err)
 		}
 	}
-	current, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
+	current, err := qtx.LockIssueForUpdate(ctx, db.LockIssueForUpdateParams{
 		ID:          params.ID,
 		WorkspaceID: workspaceID,
 	})
@@ -3411,6 +3431,18 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 				return db.Issue{}, current, false, fmt.Errorf("reload issue after attachment link: %w", err)
 			}
 		}
+	}
+	// RUYI-865 P1: settle the done card cascade in THIS transaction, on this
+	// qtx, before the commit — a failed settle rolls back the whole write
+	// rather than leaving a committed done status behind open cards. The
+	// one-sided done gate makes this a no-op for writes that land in no
+	// done category.
+	if flippedOut != nil {
+		flipped, err := h.settleDoneCascadeInTx(ctx, qtx, current, issue, entrySource)
+		if err != nil {
+			return db.Issue{}, current, false, fmt.Errorf("settle done cascade: %w", err)
+		}
+		*flippedOut = flipped
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("commit atomic issue update: %w", err)
@@ -3650,18 +3682,32 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	var issue db.Issue
 	attachmentsChanged := false
+	// flippedCards is populated inside the write transaction (either path)
+	// with the decision cards this write auto-cancelled, so the post-commit
+	// publish below stays bound to what actually flipped.
+	var flippedCards []db.IssueDecision
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
 		var lockedPrev db.Issue
 		issue, lockedPrev, attachmentsChanged, err = h.updateIssueAtomically(
-			r.Context(), prevIssue.WorkspaceID, params, rawFields, req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard,
+			r.Context(), prevIssue.WorkspaceID, params, rawFields, req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard, "http_update_issue", &flippedCards,
 		)
 		if lockedPrev.ID.Valid {
 			prevIssue = lockedPrev
 		}
 	} else {
-		err = h.runWithIssueStatusGuard(r.Context(), prevIssue.WorkspaceID, statusKeyForGuard, func(q *db.Queries) error {
+		err = h.runWithIssueStatusGuard(r.Context(), prevIssue.WorkspaceID, prevIssue.ID, statusKeyForGuard, func(q *db.Queries, oldIssue db.Issue) error {
 			var innerErr error
 			issue, innerErr = q.UpdateIssue(r.Context(), params)
+			if innerErr != nil {
+				return innerErr
+			}
+			// RUYI-865 P1: a built-in done target took this same transaction,
+			// so settle the card cascade in-tx; a failed settle rolls back the
+			// status write instead of stranding open cards.
+			if req.Status == nil || !oldIssue.ID.Valid {
+				return nil
+			}
+			flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, "http_update_issue")
 			return innerErr
 		})
 	}
@@ -3773,6 +3819,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, prevIssue.Status) != "done" {
 		h.completeSingleIssueDecisionRequest(r.Context(), issue)
 	}
+	// RUYI-865: the card cascade settled inside the write transaction above
+	// (guard, atomic, or status-only path); publish its realtime events now,
+	// bound to the cards actually flipped. A failed settle never reaches
+	// this point — the write answered 5xx and the caller retries — and a
+	// no-op settle flipped nothing, so a retry publishes nothing either.
+	h.publishDoneCascade(r.Context(), issue, flippedCards)
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
 		// the same revision. Otherwise clients advance only the revision here and
@@ -4487,21 +4539,38 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var issue db.Issue
+		// flippedCards is populated inside the item's write transaction (either
+		// path) with the decision cards this item auto-cancelled, so the
+		// post-commit publish below stays bound to what actually flipped.
+		var flippedCards []db.IssueDecision
 		if req.Updates.Description != nil {
 			// One batch-level base cannot describe multiple issue documents.
 			// Preserve every marked channel-media block conservatively, matching
 			// legacy single-update clients that omit description_base.
 			var lockedPrev db.Issue
 			issue, lockedPrev, _, err = h.updateIssueAtomically(
-				r.Context(), prevIssue.WorkspaceID, params, rawUpdates, nil, nil, nil, batchStatusKey,
+				r.Context(), prevIssue.WorkspaceID, params, rawUpdates, nil, nil, nil, batchStatusKey, "http_batch_update_issues", &flippedCards,
 			)
 			if err == nil {
 				prevIssue = lockedPrev
 			}
 		} else {
-			err = h.runWithIssueStatusGuard(r.Context(), wsUUID, batchStatusKey, func(q *db.Queries) error {
+			err = h.runWithIssueStatusGuard(r.Context(), wsUUID, prevIssue.ID, batchStatusKey, func(q *db.Queries, oldIssue db.Issue) error {
 				var innerErr error
 				issue, innerErr = q.UpdateIssue(r.Context(), params)
+				if innerErr != nil {
+					return innerErr
+				}
+				// RUYI-865 P1: a done target takes this same transaction (batch
+				// or single item alike), so settle the card cascade in-tx; a
+				// failed settle rolls back this item's status write instead of
+				// stranding open cards. The item is skipped and the request's
+				// remaining items proceed; the client retries the failed item
+				// and the CAS converges it.
+				if !oldIssue.ID.Valid {
+					return nil
+				}
+				flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, "http_batch_update_issues")
 				return innerErr
 			})
 		}
@@ -4567,6 +4636,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, prevIssue.Status) != "done" {
 			h.completeSingleIssueDecisionRequest(r.Context(), issue)
 		}
+		// RUYI-865 P1: the card cascade settled inside this item's write
+		// transaction (a failed settle skipped the item above); publish its
+		// realtime events now, bound to the cards actually flipped.
+		h.publishDoneCascade(r.Context(), issue, flippedCards)
 
 		// Same run-disposition shape as UpdateIssue: reassignment does not
 		// cancel existing tasks (#4963 / MUL-4113), but a transition INTO the
