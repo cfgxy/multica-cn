@@ -211,3 +211,175 @@ func TestWorkspacePromQLRules_RoleGatesPersistenceAndPreview(t *testing.T) {
 		t.Fatalf("preview query must use the fixed metric and workspace selector, got %q", askedQuery)
 	}
 }
+
+func TestPutWorkspacePromQLRules_DeletesPolicySelections(t *testing.T) {
+	if testHandler == nil || testPool == nil || dbfx == nil {
+		t.Skip("database not available")
+	}
+
+	workspaceID, agentID := backpressurePromQLFixture(t)
+	firstRule := validWorkspacePromQLRule()
+	secondRule := validWorkspacePromQLRule()
+	secondRule["id"] = "ad9d1473-7c2a-47b1-a2fa-59efab1130fa"
+	secondRule["name"] = "Runtime errors"
+	firstRuleID := firstRule["id"].(string)
+	secondRuleID := secondRule["id"].(string)
+	storeWorkspacePromQLRules(t, workspaceID, []map[string]any{firstRule, secondRule})
+
+	policy := validBPBody()
+	policy["promql_rule_ids"] = []string{firstRuleID, secondRuleID}
+	if w := agentBackpressurePolicyPut(t, workspaceID, agentID, policy); w.Code != http.StatusOK {
+		t.Fatalf("save selected rules: got %d -- %s", w.Code, w.Body.String())
+	}
+	selectedIDs := func() string {
+		t.Helper()
+		var ids string
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT array_to_string(promql_rule_ids, ',')
+			FROM agent_backpressure_policy
+			WHERE workspace_id = $1 AND agent_id = $2
+		`, workspaceID, agentID).Scan(&ids); err != nil {
+			t.Fatalf("read selected rules: %v", err)
+		}
+		return ids
+	}
+
+	cloneRule := func(rule map[string]any) map[string]any {
+		clone := make(map[string]any, len(rule))
+		for key, value := range rule {
+			clone[key] = value
+		}
+		return clone
+	}
+	disabledRule := cloneRule(firstRule)
+	disabledRule["enabled"] = false
+	testutil.Call(t, testHandler.PutWorkspacePromQLRules,
+		workspacePromQLRequest(http.MethodPut, workspaceID, testUserID, map[string]any{"rules": []any{disabledRule, secondRule}}),
+	).Want(http.StatusOK)
+	if got, want := selectedIDs(), firstRuleID+","+secondRuleID; got != want {
+		t.Fatalf("disabling a rule changed selections: got %q, want %q", got, want)
+	}
+
+	reconfiguredRule := cloneRule(firstRule)
+	reconfiguredRule["name"] = "Task failures reconfigured"
+	testutil.Call(t, testHandler.PutWorkspacePromQLRules,
+		workspacePromQLRequest(http.MethodPut, workspaceID, testUserID, map[string]any{"rules": []any{reconfiguredRule, secondRule}}),
+	).Want(http.StatusOK)
+	if got, want := selectedIDs(), firstRuleID+","+secondRuleID; got != want {
+		t.Fatalf("reconfiguring a rule changed selections: got %q, want %q", got, want)
+	}
+
+	testutil.Call(t, testHandler.PutWorkspacePromQLRules,
+		workspacePromQLRequest(http.MethodPut, workspaceID, testUserID, map[string]any{"rules": []any{secondRule}}),
+	).Want(http.StatusOK)
+	if got := selectedIDs(); got != secondRuleID {
+		t.Fatalf("deleting one rule retained stale or removed sibling selections: got %q, want %q", got, secondRuleID)
+	}
+
+	updatedPolicy := validBPBody()
+	updatedPolicy["window_minutes"] = 45
+	updatedPolicy["promql_rule_ids"] = []string{secondRuleID}
+	if w := agentBackpressurePolicyPut(t, workspaceID, agentID, updatedPolicy); w.Code != http.StatusOK {
+		t.Fatalf("save policy after rule deletion: got %d -- %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGetWorkspacePromQLRules_FiltersPrivateAgentGroupedState(t *testing.T) {
+	if testHandler == nil || testPool == nil || dbfx == nil {
+		t.Skip("database not available")
+	}
+
+	workspaceID := dbfx.Workspace(t, "PromQL state visibility", handlerTestSlug("promql-state-visibility"))
+	dbfx.Member(t, workspaceID, testUserID, "owner")
+	memberID := dbfx.User(t, "PromQL state member "+handlerFixtureSuffix, "promql-state-member+"+handlerFixtureSuffix+"@multica.test")
+	privateOwnerID := dbfx.User(t, "PromQL private owner "+handlerFixtureSuffix, "promql-private-owner+"+handlerFixtureSuffix+"@multica.test")
+	dbfx.Member(t, workspaceID, memberID, "member")
+	dbfx.Member(t, workspaceID, privateOwnerID, "member")
+	runtimeID := dbfx.Runtime(t, "PromQL state runtime", testutil.Cols{
+		"workspace_id": workspaceID,
+		"owner_id":     testUserID,
+	})
+	privateAgentID := dbfx.Agent(t, "PromQL private state agent", runtimeID, testutil.Cols{
+		"workspace_id":    workspaceID,
+		"owner_id":        privateOwnerID,
+		"visibility":      "private",
+		"permission_mode": "private",
+	})
+	rule := validWorkspacePromQLRule()
+	rule["grouping"] = "agent"
+	rule["state"] = map[string]any{
+		"firing": true,
+		"values": []any{map[string]any{
+			"labels": map[string]string{"agent_id": privateAgentID},
+			"value":  9,
+		}},
+	}
+	rule["agent_states"] = map[string]any{
+		privateAgentID: map[string]any{
+			"firing": true,
+			"values": []any{map[string]any{
+				"labels": map[string]string{"agent_id": privateAgentID},
+				"value":  9,
+			}},
+		},
+	}
+	storeWorkspacePromQLRules(t, workspaceID, []map[string]any{rule})
+
+	var memberRules workspacePromQLRulesResponse
+	testutil.Call(t, testHandler.GetWorkspacePromQLRules,
+		workspacePromQLRequest(http.MethodGet, workspaceID, memberID, nil),
+	).Want(http.StatusOK).JSON(&memberRules)
+	if len(memberRules.Rules) != 1 {
+		t.Fatalf("member rules = %d, want 1", len(memberRules.Rules))
+	}
+	memberRule := memberRules.Rules[0]
+	if memberRule.State.Firing || len(memberRule.State.Values) != 0 || len(memberRule.AgentStates) != 0 {
+		t.Fatalf("member response leaked private agent state: %+v", memberRule)
+	}
+	memberBody, err := json.Marshal(memberRules)
+	if err != nil {
+		t.Fatalf("encode member rules: %v", err)
+	}
+	if strings.Contains(string(memberBody), privateAgentID) {
+		t.Fatalf("member response leaked private agent id %s: %s", privateAgentID, memberBody)
+	}
+
+	var ownerRules workspacePromQLRulesResponse
+	testutil.Call(t, testHandler.GetWorkspacePromQLRules,
+		workspacePromQLRequest(http.MethodGet, workspaceID, testUserID, nil),
+	).Want(http.StatusOK).JSON(&ownerRules)
+	if len(ownerRules.Rules) != 1 || !ownerRules.Rules[0].State.Firing || len(ownerRules.Rules[0].AgentStates) != 1 {
+		t.Fatalf("workspace owner lost authorized agent state: %+v", ownerRules.Rules)
+	}
+
+	policy := validBPBody()
+	policy["promql_rule_ids"] = []string{rule["id"].(string)}
+	if w := agentBackpressurePolicyPut(t, workspaceID, privateAgentID, policy); w.Code != http.StatusOK {
+		t.Fatalf("save private agent policy: got %d -- %s", w.Code, w.Body.String())
+	}
+	w := httptest.NewRecorder()
+	req := newRequestAs(privateOwnerID, http.MethodGet, "/api/agents/"+privateAgentID+"/backpressure-policy", nil)
+	req.Header.Set("X-Workspace-ID", workspaceID)
+	testHandler.GetAgentBackpressurePolicy(w, withURLParam(req, "id", privateAgentID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("private owner detail: got %d -- %s", w.Code, w.Body.String())
+	}
+	var detail struct {
+		PromQLRules []struct {
+			ID    string `json:"id"`
+			State struct {
+				Firing bool `json:"firing"`
+				Values []struct {
+					Labels map[string]string `json:"labels"`
+				} `json:"values"`
+			} `json:"state"`
+		} `json:"promql_rules"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode private owner detail: %v", err)
+	}
+	if len(detail.PromQLRules) != 1 || detail.PromQLRules[0].ID != rule["id"].(string) || !detail.PromQLRules[0].State.Firing ||
+		len(detail.PromQLRules[0].State.Values) != 1 || detail.PromQLRules[0].State.Values[0].Labels["agent_id"] != privateAgentID {
+		t.Fatalf("private owner detail lost own rule state: %+v", detail.PromQLRules)
+	}
+}
