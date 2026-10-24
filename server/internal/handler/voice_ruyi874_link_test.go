@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -64,6 +65,96 @@ func waitProviderFrame(t *testing.T, provider *stubVoiceProvider, want string) s
 		t.Fatalf("provider never received a frame containing %q; recorded: %v", want, provider.clientMsgs)
 	}
 	return found
+}
+
+type providerVoiceSkillRef struct {
+	ID     string `json:"id"`
+	Source string `json:"source"`
+	Hash   string `json:"hash"`
+}
+
+type providerVoicePart struct {
+	Text       string `json:"text"`
+	InlineData *struct {
+		MIMEType string `json:"mimeType"`
+		Data     string `json:"data"`
+	} `json:"inlineData"`
+}
+
+type providerVoiceFrame struct {
+	ClientContent struct {
+		Turns []struct {
+			Parts []providerVoicePart `json:"parts"`
+		} `json:"turns"`
+	} `json:"clientContent"`
+}
+
+func decodeProviderVoiceFrame(t *testing.T, raw string) providerVoiceFrame {
+	t.Helper()
+	var frame providerVoiceFrame
+	if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+		t.Fatalf("decode provider frame: %v (%s)", err, raw)
+	}
+	return frame
+}
+
+func providerFrameText(t *testing.T, raw string) string {
+	t.Helper()
+	frame := decodeProviderVoiceFrame(t, raw)
+	var text strings.Builder
+	for _, turn := range frame.ClientContent.Turns {
+		for _, part := range turn.Parts {
+			text.WriteString(part.Text)
+		}
+	}
+	if text.Len() == 0 {
+		t.Fatalf("provider frame contained no text parts: %s", raw)
+	}
+	return text.String()
+}
+
+func providerFrameInlineDataParts(t *testing.T, raw string) []providerVoicePart {
+	t.Helper()
+	frame := decodeProviderVoiceFrame(t, raw)
+	var inlineData []providerVoicePart
+	for _, turn := range frame.ClientContent.Turns {
+		for _, part := range turn.Parts {
+			if part.InlineData != nil {
+				inlineData = append(inlineData, part)
+			}
+		}
+	}
+	return inlineData
+}
+
+func providerVoiceSkillCatalog(t *testing.T, text string) []providerVoiceSkillRef {
+	t.Helper()
+	const marker = "### Available agent skills\n"
+	start := strings.Index(text, marker)
+	if start < 0 {
+		t.Fatalf("provider text omitted skill catalog: %s", text)
+	}
+	catalogText := text[start+len(marker):]
+	jsonStart := strings.Index(catalogText, "[")
+	if jsonStart < 0 {
+		t.Fatalf("provider skill catalog omitted JSON: %s", text)
+	}
+	var catalog []providerVoiceSkillRef
+	decoder := json.NewDecoder(strings.NewReader(catalogText[jsonStart:]))
+	if err := decoder.Decode(&catalog); err != nil {
+		t.Fatalf("decode provider skill catalog: %v (%s)", err, text)
+	}
+	return catalog
+}
+
+func assertProviderVoiceSkillCatalog(t *testing.T, catalog []providerVoiceSkillRef, source, id, hash string) {
+	t.Helper()
+	for _, ref := range catalog {
+		if ref.Source == source && ref.ID == id && ref.Hash == hash {
+			return
+		}
+	}
+	t.Errorf("skill catalog = %+v, want source=%q id=%q hash=%q", catalog, source, id, hash)
 }
 
 // waitForTranscriptParked polls until the agent's live session has PARKED a
@@ -466,6 +557,7 @@ func TestVoiceChatContext_RichInjection(t *testing.T) {
 		"agent_id": agentID,
 		"skill_id": skillID,
 	}, "agent_id = $1 AND skill_id = $2", agentID, skillID)
+	_, workspaceSkillRef := voiceSkillCatalogRef(t, agentID, "voice-anchor-skill", "workspace")
 	// Two image attachments, the newest first under the budget. The mock
 	// storage serves what the test uploaded — no remote fetch.
 	origStorage := testHandler.Storage
@@ -512,7 +604,8 @@ func TestVoiceChatContext_RichInjection(t *testing.T) {
 		t.Fatalf("expected setupComplete, got %s", first)
 	}
 	provider.gatewayConn(t)
-	turn := waitProviderFrame(t, provider, "clientContent")
+	frame := waitProviderFrame(t, provider, "clientContent")
+	turn := providerFrameText(t, frame)
 
 	// 1) the bound project, read from the row — never invented.
 	if !strings.Contains(turn, "### Chat project") || !strings.Contains(turn, "Voice Anchor Project") || !strings.Contains(turn, "the bound project") {
@@ -531,15 +624,16 @@ func TestVoiceChatContext_RichInjection(t *testing.T) {
 	}
 	// 3) the Skill catalog is assembled independently of the chat link and
 	// carries the exact identity required by load_skill.
-	if !strings.Contains(turn, "### Available agent skills") || !strings.Contains(turn, "voice-anchor-skill") || !strings.Contains(turn, `"source":"workspace"`) {
-		t.Errorf("workspace skill catalog missing or incomplete: %s", turn)
-	}
+	assertProviderVoiceSkillCatalog(t, providerVoiceSkillCatalog(t, turn), "workspace", workspaceSkillRef.ID, workspaceSkillRef.Hash)
 	// 4) both images within budget, as inlineData parts.
-	if n := strings.Count(turn, "inlineData"); n != 2 {
-		t.Errorf("want 2 image parts, got %d: %s", n, turn)
+	imageParts := providerFrameInlineDataParts(t, frame)
+	if len(imageParts) != 2 {
+		t.Errorf("want 2 image parts, got %+v", imageParts)
 	}
-	if !strings.Contains(turn, "image/png") {
-		t.Errorf("image mime missing: %s", turn)
+	for _, part := range imageParts {
+		if part.InlineData.MIMEType != "image/png" || part.InlineData.Data == "" {
+			t.Errorf("invalid image part: %+v", part)
+		}
 	}
 	conn.Close()
 }
@@ -794,6 +888,11 @@ func TestVoiceIssueContextInjection(t *testing.T) {
 	}
 	provider := newStubVoiceProvider(t)
 	agentID, _ := seedUsableVoiceSetup(t, "Issue Context", `{"model":"stubby-live-1"}`)
+	builtins := testHandler.TaskService.BuiltinSkills()
+	if len(builtins) == 0 {
+		t.Fatal("embedded builtin skills are required for voice catalog")
+	}
+	_, builtinSkillRef := voiceSkillCatalogRef(t, agentID, builtins[0].Name, "builtin")
 	issueID := dbfx.Issue(t, "Voice Issue Entry Context", testutil.Cols{
 		"description": "Context opened from an Issue comment.",
 		"status":      "in_progress",
@@ -808,14 +907,13 @@ func TestVoiceIssueContextInjection(t *testing.T) {
 		t.Fatalf("expected setupComplete, got %s", first)
 	}
 	provider.gatewayConn(t)
-	contextTurn := waitProviderFrame(t, provider, "### Issue context")
+	contextFrame := waitProviderFrame(t, provider, "### Issue context")
+	contextTurn := providerFrameText(t, contextFrame)
 	for _, want := range []string{"Voice Issue Entry Context", "Context opened from an Issue comment.", "in_progress"} {
 		if !strings.Contains(contextTurn, want) {
 			t.Errorf("Issue context omitted %q: %s", want, contextTurn)
 		}
 	}
-	if !strings.Contains(contextTurn, "### Available agent skills") || !strings.Contains(contextTurn, `"source":"builtin"`) {
-		t.Errorf("Issue entry omitted the builtin skill catalog: %s", contextTurn)
-	}
+	assertProviderVoiceSkillCatalog(t, providerVoiceSkillCatalog(t, contextTurn), "builtin", builtinSkillRef.ID, builtinSkillRef.Hash)
 	conn.Close()
 }

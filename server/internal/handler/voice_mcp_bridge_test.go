@@ -157,6 +157,26 @@ func voiceSkillArgs(t *testing.T, ref service.AgentSkillRefData, hash string) js
 	return raw
 }
 
+type voiceSkillResponse struct {
+	ID      string            `json:"id"`
+	Source  string            `json:"source"`
+	Hash    string            `json:"hash"`
+	Content *string           `json:"content"`
+	Files   map[string]string `json:"files"`
+	Error   *struct {
+		Code string `json:"code"`
+	} `json:"error"`
+}
+
+func decodeVoiceSkillResponse(t *testing.T, raw json.RawMessage) voiceSkillResponse {
+	t.Helper()
+	var response voiceSkillResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatalf("decode voice skill response: %v (%s)", err, raw)
+	}
+	return response
+}
+
 func TestExecuteVoiceSkillLoadsOnlyCatalogPinnedBundles(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -164,6 +184,10 @@ func TestExecuteVoiceSkillLoadsOnlyCatalogPinnedBundles(t *testing.T) {
 	agentID, _ := seedUsableVoiceSetup(t, "Voice Skill Files", `{"model":"stubby-live-1"}`)
 	skillName := "voice-skill-" + time.Now().UTC().Format("20060102150405.000000000")
 	skillID := createImportTargetSkill(t, skillName, testUserID, map[string]string{"references/usage.md": "use the checked procedure"})
+	const workspaceSkillContent = "# original\n\nUse the checked procedure."
+	if _, err := testPool.Exec(context.Background(), `UPDATE skill SET content = $1 WHERE id = $2`, workspaceSkillContent, skillID); err != nil {
+		t.Fatalf("set multiline skill content: %v", err)
+	}
 	if _, err := testPool.Exec(context.Background(), `INSERT INTO agent_skill (agent_id, skill_id) VALUES ($1, $2)`, agentID, skillID); err != nil {
 		t.Fatalf("assign skill: %v", err)
 	}
@@ -181,10 +205,10 @@ func TestExecuteVoiceSkillLoadsOnlyCatalogPinnedBundles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeVoiceSkill: %v", err)
 	}
-	for _, want := range []string{`"source":"workspace"`, workspaceRef.Hash, "# original", "references/usage.md", "use the checked procedure"} {
-		if !strings.Contains(string(result), want) {
-			t.Errorf("skill result omitted %q: %s", want, result)
-		}
+	workspace := decodeVoiceSkillResponse(t, result)
+	if workspace.ID != workspaceRef.ID || workspace.Source != skillbundle.SourceWorkspace || workspace.Hash != workspaceRef.Hash ||
+		workspace.Content == nil || *workspace.Content != workspaceSkillContent || workspace.Files["references/usage.md"] != "use the checked procedure" {
+		t.Errorf("workspace skill response = %+v, want pinned multiline content and files", workspace)
 	}
 
 	builtins := testHandler.TaskService.BuiltinSkills()
@@ -193,29 +217,34 @@ func TestExecuteVoiceSkillLoadsOnlyCatalogPinnedBundles(t *testing.T) {
 	}
 	_, builtinRef := voiceSkillCatalogRef(t, agentID, builtins[0].Name, skillbundle.SourceBuiltin)
 	builtin, err := testHandler.executeVoiceSkill(context.Background(), session, catalog, voiceSkillArgs(t, builtinRef, builtinRef.Hash))
-	if err != nil || !strings.Contains(string(builtin), builtins[0].Content) {
-		t.Errorf("builtin skill = %s, err = %v", builtin, err)
+	builtinResponse := decodeVoiceSkillResponse(t, builtin)
+	if err != nil || builtinResponse.ID != builtinRef.ID || builtinResponse.Source != skillbundle.SourceBuiltin || builtinResponse.Hash != builtinRef.Hash ||
+		builtinResponse.Content == nil || *builtinResponse.Content != builtins[0].Content {
+		t.Errorf("builtin skill response = %+v, err = %v", builtinResponse, err)
 	}
 
 	hashMismatch, err := testHandler.executeVoiceSkill(context.Background(), session, catalog, voiceSkillArgs(t, workspaceRef, "sha256:stale"))
-	if err != nil || !strings.Contains(string(hashMismatch), "conflict") {
-		t.Errorf("hash mismatch = %s, err = %v", hashMismatch, err)
+	hashMismatchResponse := decodeVoiceSkillResponse(t, hashMismatch)
+	if err != nil || hashMismatchResponse.Error == nil || hashMismatchResponse.Error.Code != "conflict" || hashMismatchResponse.Content != nil {
+		t.Errorf("hash mismatch response = %+v, err = %v", hashMismatchResponse, err)
 	}
 	const changedSkillContent = "# changed after catalog injection"
 	if _, err := testPool.Exec(context.Background(), `UPDATE skill SET content = $1 WHERE id = $2`, changedSkillContent, skillID); err != nil {
 		t.Fatalf("change skill after catalog injection: %v", err)
 	}
 	staleBundle, err := testHandler.executeVoiceSkill(context.Background(), session, catalog, voiceSkillArgs(t, workspaceRef, workspaceRef.Hash))
-	if err != nil || !strings.Contains(string(staleBundle), "conflict") || strings.Contains(string(staleBundle), changedSkillContent) || strings.Contains(string(staleBundle), `"content"`) {
-		t.Errorf("changed skill with stale catalog hash = %s, err = %v; want a content-free conflict", staleBundle, err)
+	staleResponse := decodeVoiceSkillResponse(t, staleBundle)
+	if err != nil || staleResponse.Error == nil || staleResponse.Error.Code != "conflict" || staleResponse.Content != nil {
+		t.Errorf("changed skill with stale catalog hash response = %+v, err = %v; want a content-free conflict", staleResponse, err)
 	}
 
 	unboundID := createImportTargetSkill(t, "voice-unbound-"+time.Now().UTC().Format("20060102150405.000000000"), testUserID, nil)
 	unboundRef := workspaceRef
 	unboundRef.ID = unboundID
 	denied, err := testHandler.executeVoiceSkill(context.Background(), session, catalog, voiceSkillArgs(t, unboundRef, unboundRef.Hash))
-	if err != nil || !strings.Contains(string(denied), "not_found") {
-		t.Errorf("unassigned skill = %s, err = %v", denied, err)
+	deniedResponse := decodeVoiceSkillResponse(t, denied)
+	if err != nil || deniedResponse.Error == nil || deniedResponse.Error.Code != "not_found" || deniedResponse.Content != nil {
+		t.Errorf("unassigned skill response = %+v, err = %v", deniedResponse, err)
 	}
 }
 
