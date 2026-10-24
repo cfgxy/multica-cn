@@ -340,6 +340,10 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	if !validateProjectInstructions(w, req.Instructions) {
 		return
 	}
+	initialInstructions := ""
+	if req.Instructions != nil {
+		initialInstructions = *req.Instructions
+	}
 	var leadType pgtype.Text
 	var leadID pgtype.UUID
 	if req.LeadType != nil {
@@ -463,6 +467,13 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		}
 		defer tx.Rollback(r.Context())
 		qtx := h.Queries.WithTx(tx)
+		if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, wsUUID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create project")
+			return
+		}
+		if !allowStaticClauseRefsWrite(w, r.Context(), qtx, wsUUID, map[carrierRef]string{{scope: "project", id: wsUUID}: initialInstructions}) {
+			return
+		}
 
 		project, err := qtx.CreateProject(r.Context(), createParams)
 		if err != nil {
@@ -491,6 +502,13 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, wsUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create project")
+		return
+	}
+	if !allowStaticClauseRefsWrite(w, r.Context(), qtx, wsUUID, map[carrierRef]string{{scope: "project", id: wsUUID}: initialInstructions}) {
+		return
+	}
 
 	project, err := qtx.CreateProject(r.Context(), createParams)
 	if err != nil {
@@ -597,14 +615,15 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal(bodyBytes, &rawFields)
 
 	params := db.UpdateProjectParams{
-		ID:           prevProject.ID,
-		Description:  prevProject.Description,
-		Instructions: prevProject.Instructions,
-		Icon:         prevProject.Icon,
-		LeadType:     prevProject.LeadType,
-		LeadID:       prevProject.LeadID,
-		StartDate:    prevProject.StartDate,
-		DueDate:      prevProject.DueDate,
+		ID:              prevProject.ID,
+		Description:     prevProject.Description,
+		Instructions:    prevProject.Instructions,
+		InstructionsSet: false,
+		Icon:            prevProject.Icon,
+		LeadType:        prevProject.LeadType,
+		LeadID:          prevProject.LeadID,
+		StartDate:       prevProject.StartDate,
+		DueDate:         prevProject.DueDate,
 	}
 	if req.ExpectedRevision != nil {
 		if *req.ExpectedRevision < 1 {
@@ -633,6 +652,7 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		params.Priority = pgtype.Text{String: *req.Priority, Valid: true}
 	}
 	if _, ok := rawFields["instructions"]; ok {
+		params.InstructionsSet = true
 		if !validateProjectInstructions(w, req.Instructions) {
 			return
 		}
@@ -700,7 +720,33 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			params.DueDate = pgtype.Date{Valid: false} // explicit null = clear date
 		}
 	}
-	project, err := h.Queries.UpdateProject(r.Context(), params)
+	var project db.Project
+	if _, writesInstructions := rawFields["instructions"]; writesInstructions {
+		tx, err := h.TxStarter.Begin(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update project")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		qtx := h.Queries.WithTx(tx)
+		if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, wsUUID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update project")
+			return
+		}
+		staticText := ""
+		if req.Instructions != nil {
+			staticText = *req.Instructions
+		}
+		if !allowStaticClauseRefsWrite(w, r.Context(), qtx, wsUUID, map[carrierRef]string{{scope: "project", id: idUUID}: staticText}) {
+			return
+		}
+		project, err = qtx.UpdateProject(r.Context(), params)
+		if err == nil {
+			err = tx.Commit(r.Context())
+		}
+	} else {
+		project, err = h.Queries.UpdateProject(r.Context(), params)
+	}
 	if err != nil {
 		// 0 rows with an expected_revision means a concurrent writer won the
 		// race between the handler's read and the UPDATE — same recovery as
