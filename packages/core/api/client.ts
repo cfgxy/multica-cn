@@ -5340,10 +5340,18 @@ export class ApiClient {
     });
   }
 
-  async approvePromptProposal(id: string, confirmDiffPreviewed: boolean): Promise<PromptProposal> {
+  async approvePromptProposal(
+    id: string,
+    confirmDiffPreviewed: boolean,
+    enactmentTarget?: "clause_library" | "static_prompt",
+  ): Promise<PromptProposal> {
+    const body: Record<string, unknown> = { confirm_diff_previewed: confirmDiffPreviewed };
+    // RUYI-858: the landing target is sent only when the owner chose one;
+    // absence means the server default (clause library).
+    if (enactmentTarget !== undefined) body.enactment_target = enactmentTarget;
     const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/approve`, {
       method: "POST",
-      body: JSON.stringify({ confirm_diff_previewed: confirmDiffPreviewed }),
+      body: JSON.stringify(body),
     });
     return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
       endpoint: "POST /api/prompt-legislation/proposals/{id}/approve",
@@ -5353,10 +5361,17 @@ export class ApiClient {
   async batchApprovePromptProposals(
     ids: string[],
     confirmDiffPreviewed: boolean,
+    enactmentTargets?: Record<string, "clause_library" | "static_prompt">,
   ): Promise<PromptProposalBatchOutcome[]> {
     const raw = await this.fetch<unknown>("/api/prompt-legislation/proposals/approve-batch", {
       method: "POST",
-      body: JSON.stringify({ ids, confirm_diff_previewed: confirmDiffPreviewed }),
+      body: JSON.stringify({
+        ids,
+        confirm_diff_previewed: confirmDiffPreviewed,
+        // RUYI-858: per-id landing targets; ids without an entry keep the
+        // server default (clause library).
+        ...(enactmentTargets !== undefined ? { enactment_targets: enactmentTargets } : {}),
+      }),
     });
     return parseWithFallback(raw, z.array(PromptProposalBatchOutcomeSchema), raw as PromptProposalBatchOutcome[], {
       endpoint: "POST /api/prompt-legislation/proposals/approve-batch",

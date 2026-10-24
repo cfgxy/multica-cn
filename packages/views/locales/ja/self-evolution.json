@@ -422,7 +422,15 @@
     },
     "changeKind": {
       "add_clause": "条項追加",
-      "remove_clause": "条項削除"
+      "revise_clause": "条項改訂",
+      "remove_clause": "条項削除",
+      "move_clause": "条項移動",
+      "migrate_clause": "条項移行"
+    },
+    "enactmentTargetLabel": "条項の反映先",
+    "enactmentTargetOptions": {
+      "clause_library": "条項ライブラリへ",
+      "static_prompt": "静的プロンプト書き換え"
     },
     "carrierScope": {
       "workspace": "ワークスペース",

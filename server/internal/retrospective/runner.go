@@ -403,6 +403,31 @@ func truncateRunes(s string, n int) string {
 // back to the workspace default; a carrier read never fails the run.
 func (r *Runner) collectCarriers(ctx context.Context, workspaceID pgtype.UUID, scanned []TaskContextIssue) []TaskContextCarrier {
 	carriers := make([]TaskContextCarrier, 0, 2)
+	// RUYI-858: the active structured clause assets, grouped by carrier —
+	// the revise/remove target set and the add dedup input. A read failure
+	// degrades to an empty inventory exactly like a carrier read (warn,
+	// skip): the run keeps the static-text-only contract, never fails.
+	clauseTitles := map[string][]string{}
+	if rows, err := r.Queries.ListActiveWorkspaceClauses(ctx, workspaceID); err != nil {
+		slog.Warn("retrospective: active clause inventory read failed",
+			"workspace_id", util.UUIDToString(workspaceID), "error", err)
+	} else {
+		for _, row := range rows {
+			key := row.Scope + "/" + util.UUIDToString(row.ScopeID)
+			clauseTitles[key] = append(clauseTitles[key], row.Title)
+		}
+	}
+	clausesFor := func(scope string, scopeID string) []string {
+		titles := clauseTitles[scope+"/"+scopeID]
+		if len(titles) > maxCarrierClauses {
+			titles = titles[:maxCarrierClauses]
+		}
+		capped := make([]string, len(titles))
+		for i, t := range titles {
+			capped[i] = truncateRunes(t, maxClauseTitleRunes)
+		}
+		return capped
+	}
 	if content, err := r.Queries.GetWorkspacePromptContent(ctx, workspaceID); err != nil {
 		slog.Warn("retrospective: workspace carrier read failed",
 			"workspace_id", util.UUIDToString(workspaceID), "error", err)
@@ -411,6 +436,7 @@ func (r *Runner) collectCarriers(ctx context.Context, workspaceID pgtype.UUID, s
 			Scope:    "workspace",
 			ScopeID:  util.UUIDToString(workspaceID),
 			Sections: sections,
+			Clauses:  clausesFor("workspace", util.UUIDToString(workspaceID)),
 		})
 	}
 
@@ -462,6 +488,7 @@ func (r *Runner) collectCarriers(ctx context.Context, workspaceID pgtype.UUID, s
 			ScopeID:  id,
 			Name:     truncateRunes(names[id], maxSectionNameRunes),
 			Sections: sections,
+			Clauses:  clausesFor("project", id),
 		})
 	}
 	return carriers

@@ -93,6 +93,10 @@ type PromptProposalResponse struct {
 	MoveToScopeID string          `json:"move_to_scope_id,omitempty"`
 	Conditions    json.RawMessage `json:"conditions,omitempty"`
 	RollbackOfVer *int32          `json:"rollback_of_version,omitempty"`
+	// RUYI-858: where the owner decided the clause lands — the structured
+	// clause library (default) or the carrier's static prompt text only.
+	// Persisted at approval; the /enact recovery path enacts the same target.
+	EnactmentTarget string `json:"enactment_target"`
 }
 
 func proposalToResponse(p db.PromptProposal) PromptProposalResponse {
@@ -143,6 +147,7 @@ func proposalToResponse(p db.PromptProposal) PromptProposalResponse {
 		resp.ValueScore = &v
 	}
 	resp.ClauseID = uuidToString(p.ClauseID)
+	resp.EnactmentTarget = p.EnactmentTarget
 	resp.MoveToScope = p.MoveToScope.String
 	resp.MoveToScopeID = uuidToString(p.MoveToScopeID)
 	if len(p.Conditions) > 0 {
@@ -401,6 +406,36 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		return false, res
 	}
 
+	// RUYI-858: the owner's landing decision (persisted at the approval
+	// transition, so the /enact recovery path enacts the same choice).
+	// static_prompt lands the gate-synthesized text straight into the
+	// carrier through the version funnel — no clause asset rows, no dynamic
+	// injection — then enacts with the new carrier version.
+	if p.EnactmentTarget == "static_prompt" {
+		// static_prompt is only offered for add/revise/remove (the handler
+		// rejects it for move/migrate up front), so refs holds exactly one
+		// carrier and refs[0] is that carrier.
+		ref := refs[0]
+		text, ok := synth[ref]
+		if !ok {
+			return false, errorResult(errors.New("静态落地目标缺少合成文本"))
+		}
+		createdVersion, err := h.landStaticCarrierTx(ctx, qtx, workspaceID, ref, text, p.CreatedByType, uuidToString(p.CreatedByID))
+		if err != nil {
+			slog.Error("static carrier landing failed", append(logger.RequestAttrs(r), "error", err)...)
+			return false, errorResult(err)
+		}
+		if _, err := qtx.EnactPromptProposal(ctx, db.EnactPromptProposalParams{
+			ID: p.ID, WorkspaceID: workspaceID, Audit: enactedAudit, Warnings: mustJSON(res.Warnings),
+			JevAdvisory:    advisory,
+			EnactedVersion: pgtype.Int4{Int32: createdVersion, Valid: createdVersion > 0},
+		}); err != nil {
+			slog.Error("enact persist failed", append(logger.RequestAttrs(r), "error", err)...)
+			return false, errorResult(fmt.Errorf("enact 落账失败: %w", err))
+		}
+		return true, res
+	}
+
 	// Asset write first (the re-render reads the asset library for the full
 	// effective set, so the new state must be visible to it), then the
 	// re-render funnels every affected business column through the same
@@ -427,6 +462,39 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		return false, errorResult(fmt.Errorf("enact 落账失败: %w", err))
 	}
 	return true, res
+}
+
+// landStaticCarrierTx is the static-prompt landing branch (RUYI-858): the
+// owner chose static_prompt, so the gate-synthesized text goes straight into
+// the carrier through the governance version funnel — business column,
+// prompt_version row and the rebuilt structure baseline — without touching
+// the clause asset tables (no clause / clause_version / clause_binding rows,
+// no dynamic injection). Only add / revise / remove reach here; move and
+// migrate are structurally library-only and are rejected at the approval
+// handler. The synthesized text is content-scanned (secret + governance
+// gate) before it is written, mirroring the library re-render's scan.
+func (h *Handler) landStaticCarrierTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, ref carrierRef, synthesized string, actorType, actorID string) (int32, error) {
+	scan, ok, reason := promptGovernanceGate(synthesized)
+	if !ok {
+		return 0, fmt.Errorf("静态落地文本未通过内容门闸（%s）: %s", ref.scope, reason)
+	}
+	created, err := persistCarrierVersionTx(ctx, qtx, workspaceID, promptVersionScope(ref.scope), ref.id, synthesized,
+		"条款提案静态落地", "legislation", nil, scan.Revision, scan.Findings, actorID)
+	if err != nil {
+		return 0, fmt.Errorf("载体版本写入失败（%s）: %w", ref.scope, err)
+	}
+	sections, clauses := legislation.ExtractStructure(synthesized)
+	if _, err := qtx.UpsertPromptStructureBaseline(ctx, db.UpsertPromptStructureBaselineParams{
+		WorkspaceID:    workspaceID,
+		CarrierScope:   ref.scope,
+		CarrierScopeID: ref.id,
+		Sections:       mustJSON(sections),
+		Clauses:        mustJSON(clauses),
+		ContentSha256:  sha256Hex(synthesized),
+	}); err != nil {
+		return 0, fmt.Errorf("结构基线重建失败（%s）: %w", ref.scope, err)
+	}
+	return created.Version, nil
 }
 
 // mergeGateResults combines the two gate verdicts of a move_clause: both
@@ -741,9 +809,32 @@ func (h *Handler) PreviewPromptProposal(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// ApprovePromptProposalRequest — the injection-defence flag.
+// ApprovePromptProposalRequest — the injection-defence flag and the
+// enactment target (RUYI-858): where the owner wants the clause to land.
+// Empty or clause_library = the structured clause library (default);
+// static_prompt = the carrier's static prompt text only — no clause asset
+// rows, no dynamic injection.
 type ApprovePromptProposalRequest struct {
-	ConfirmDiffPreviewed bool `json:"confirm_diff_previewed"`
+	ConfirmDiffPreviewed bool   `json:"confirm_diff_previewed"`
+	EnactmentTarget      string `json:"enactment_target"`
+}
+
+// normalizeEnactmentTarget validates and canonicalizes an incoming target
+// against the proposal's change kind. move_clause and migrate_clause are
+// structurally library-only (their whole point is the asset write), so a
+// static target on them is rejected up front — fail-closed, not defaulted.
+func normalizeEnactmentTarget(target, changeKind string) (string, string) {
+	switch target {
+	case "":
+		return "clause_library", ""
+	case "clause_library", "static_prompt":
+	default:
+		return "", "unknown enactment_target"
+	}
+	if target == "static_prompt" && (changeKind == "move_clause" || changeKind == "migrate_clause") {
+		return "", "static_prompt target is not available for " + changeKind
+	}
+	return target, ""
 }
 
 // ApprovePromptProposal — POST /api/prompt-legislation/proposals/{id}/approve
@@ -752,7 +843,7 @@ type ApprovePromptProposalRequest struct {
 func (h *Handler) ApprovePromptProposal(w http.ResponseWriter, r *http.Request) {
 	var req ApprovePromptProposalRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	h.approveOne(w, r, chi.URLParam(r, "id"), req.ConfirmDiffPreviewed)
+	h.approveOne(w, r, chi.URLParam(r, "id"), req.ConfirmDiffPreviewed, req.EnactmentTarget)
 }
 
 // interceptWriter buffers an approveOne response so the batch path can
@@ -780,6 +871,10 @@ func (h *Handler) BatchApprovePromptProposals(w http.ResponseWriter, r *http.Req
 	var req struct {
 		IDs                  []string `json:"ids"`
 		ConfirmDiffPreviewed bool     `json:"confirm_diff_previewed"`
+		// RUYI-858: per-proposal enactment targets; absent entries take the
+		// clause-library default. A static target on a move/migrate row is
+		// rejected for that row only (the batch keeps going).
+		EnactmentTargets map[string]string `json:"enactment_targets"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -800,7 +895,7 @@ func (h *Handler) BatchApprovePromptProposals(w http.ResponseWriter, r *http.Req
 	results := make([]map[string]any, 0, len(req.IDs))
 	for _, id := range req.IDs {
 		w2 := &interceptWriter{header: http.Header{}}
-		h.approveOne(w2, r, id, true)
+		h.approveOne(w2, r, id, true, req.EnactmentTargets[id])
 		results = append(results, map[string]any{
 			"id":     id,
 			"status": w2.status,
@@ -812,7 +907,10 @@ func (h *Handler) BatchApprovePromptProposals(w http.ResponseWriter, r *http.Req
 
 // approveOne is the shared single-approve core. It writes its own response,
 // which lets the batch path reuse it verbatim with an intercepted writer.
-func (h *Handler) approveOne(w http.ResponseWriter, r *http.Request, id string, confirmDiffPreviewed bool) {
+// enactmentTarget (RUYI-858) is the owner's landing decision; it is written
+// into the row by the pending_owner → approved transition, so a crash and
+// the later /enact recovery path act on the same decision.
+func (h *Handler) approveOne(w http.ResponseWriter, r *http.Request, id string, confirmDiffPreviewed bool, enactmentTarget string) {
 	p, ok := h.loadPromptProposalByID(w, r, id)
 	if !ok {
 		return
@@ -823,6 +921,17 @@ func (h *Handler) approveOne(w http.ResponseWriter, r *http.Request, id string, 
 	}
 	if !confirmDiffPreviewed && p.Status == "pending_owner" {
 		writeError(w, http.StatusBadRequest, "approval requires confirm_diff_previewed (the full-text diff must be reviewed first)")
+		return
+	}
+	// RUYI-858: the target is decided ONCE, at the pending_owner → approved
+	// transition. Approving an approved row again (recovery) keeps the target
+	// the first approval recorded; only the first transition may carry one.
+	if p.Status == "approved" {
+		enactmentTarget = p.EnactmentTarget
+	}
+	target, targetErr := normalizeEnactmentTarget(enactmentTarget, p.ChangeKind)
+	if targetErr != "" {
+		writeError(w, http.StatusBadRequest, targetErr)
 		return
 	}
 	userID, _, _ := h.legislationActor(w, r)
@@ -836,10 +945,10 @@ func (h *Handler) approveOne(w http.ResponseWriter, r *http.Request, id string, 
 	defer tx.Rollback(r.Context()) //nolint:errcheck
 	qtx := h.Queries.WithTx(tx)
 
-	audit := legislationAudit("approved", "member", userID, nil)
+	audit := legislationAudit("approved", "member", userID, map[string]any{"enactment_target": target})
 	if p.Status == "pending_owner" {
 		approved, err := qtx.ApprovePromptProposal(r.Context(), db.ApprovePromptProposalParams{
-			ID: p.ID, WorkspaceID: workspaceID, Audit: audit,
+			ID: p.ID, WorkspaceID: workspaceID, EnactmentTarget: target, Audit: audit,
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
