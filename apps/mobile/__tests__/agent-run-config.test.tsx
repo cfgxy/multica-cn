@@ -241,6 +241,53 @@ describe("AgentRunConfig (RUYI-624)", () => {
     );
   });
 
+  it.each([0, -1])(
+    "preserves unlimited concurrency %s while saving a runtime change (legacy -1 normalizes)",
+    async (concurrency) => {
+      mockAgentOverrides = { max_concurrent_tasks: concurrency };
+      await render(<AgentRunConfig />);
+      await waitFor(() => expect(screen.getByDisplayValue("0")).toBeTruthy());
+
+      await fireEvent.press(screen.getByText("Runtime Two"));
+      await fireEvent.press(screen.getByLabelText("Save"));
+
+      expect(mockMutate).toHaveBeenCalledWith(
+        {
+          runtime_id: "runtime-2",
+          model: "",
+          ...(concurrency === -1 ? { max_concurrent_tasks: 0 } : {}),
+        },
+        expect.anything(),
+      );
+    },
+  );
+
+  it("allows an explicit 0 unlimited value", async () => {
+    await render(<AgentRunConfig />);
+    await waitFor(() => expect(screen.getByDisplayValue("3")).toBeTruthy());
+
+    await fireEvent.changeText(screen.getByDisplayValue("3"), "0");
+    await fireEvent.press(screen.getByLabelText("Save"));
+
+    expect(mockMutate).toHaveBeenCalledWith(
+      { max_concurrent_tasks: 0 },
+      expect.anything(),
+    );
+  });
+
+  it("rejects pasted negative concurrency instead of turning it into a positive cap", async () => {
+    await render(<AgentRunConfig />);
+    await waitFor(() => expect(screen.getByDisplayValue("3")).toBeTruthy());
+
+    await fireEvent.changeText(screen.getByDisplayValue("3"), "-2");
+
+    expect(screen.getByLabelText("Save").props.accessibilityState.disabled).toBe(
+      true,
+    );
+    await fireEvent.press(screen.getByLabelText("Save"));
+    expect(mockMutate).not.toHaveBeenCalled();
+  });
+
   it("switching the runtime clears model-derived state and PUTs the rebind with a cleared model", async () => {
     await render(<AgentRunConfig />);
     await waitFor(() => expect(screen.getByDisplayValue("gpt-x")).toBeTruthy());

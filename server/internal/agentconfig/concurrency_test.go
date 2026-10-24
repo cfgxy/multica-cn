@@ -30,4 +30,3 @@ func TestIsUnlimitedMaxConcurrentTasks(t *testing.T) {
 		}
 	}
 }
-
