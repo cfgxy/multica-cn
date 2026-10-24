@@ -231,6 +231,9 @@ export function useVoiceSession(options: {
   const end = useCallback(() => {
     const handle = handleRef.current;
     if (!handle) return;
+    // Preserve the normal ended transition, but invalidate pending capture
+    // before controller.end() can synchronously finalize and dispose audio.
+    handle.cancelled = true;
     handle.controller?.end();
     // A live socket finalizes itself synchronously inside end() (close →
     // onClose → onEnded). If it already died without that close callback,
