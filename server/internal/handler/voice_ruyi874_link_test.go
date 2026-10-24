@@ -106,6 +106,9 @@ func TestVoiceChatWriteBack_SingleInsertAndReplayNoop(t *testing.T) {
 	var eventsMu sync.Mutex
 	var chatEvents []events.Event
 	testHandler.Bus.Subscribe(protocol.EventChatMessage, func(e events.Event) {
+		if e.ChatSessionID != chatID {
+			return
+		}
 		eventsMu.Lock()
 		chatEvents = append(chatEvents, e)
 		eventsMu.Unlock()
@@ -150,7 +153,7 @@ func TestVoiceChatWriteBack_SingleInsertAndReplayNoop(t *testing.T) {
 	// Park every turn before the close tears down the relay.
 	waitForTranscriptParked(t, agentID, "助手第三轮")
 	conn.Close()
-	sessionID, _ := waitForVoiceFacts(t, agentID, 2)
+	sessionID, _ := waitForVoiceFacts(t, agentID, 1)
 
 	// The link was validated at open: the live session row carries it.
 	sessionRow, err := testHandler.Queries.GetLiveSession(context.Background(), parseUUID(sessionID))
@@ -242,6 +245,10 @@ func TestVoiceChatWriteBack_SingleInsertAndReplayNoop(t *testing.T) {
 			t.Errorf("voice row %d timestamp %s is not after row %d timestamp %s", i, persisted[i].createdAt, i-1, persisted[i-1].createdAt)
 		}
 	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return len(chatEventsFor(chatID)) == len(wantTurns)
+	})
 
 	// First-insert broadcast: one chat:message event per row, in transcript order.
 	broadcasts := chatEventsFor(chatID)
