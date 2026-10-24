@@ -3042,6 +3042,12 @@ func pruneOrphanedAdoptedContinuations(gitRoot string, logger *slog.Logger) {
 		if valid {
 			_, valid = branchOwnedBy(gitRoot, record.continuationBranch, record.owner, logger)
 		}
+		if !valid && adoptedContinuationMayHealGuardRefusal(gitRoot, record) {
+			// The next Prepare gives the delivery-guard healer the only chance to
+			// re-anchor this branch. Removing the adoption mapping here would make
+			// that retry fall back to an unrelated target-derived branch.
+			continue
+		}
 		if valid {
 			continue
 		}
@@ -3055,6 +3061,19 @@ func pruneOrphanedAdoptedContinuations(gitRoot string, logger *slog.Logger) {
 			logger.Info("execenv: dropped an orphaned adopted continuation ref", "git_root", gitRoot, "ref", ref)
 		}
 	}
+}
+
+func adoptedContinuationMayHealGuardRefusal(gitRoot string, record branchRecord) bool {
+	if !record.owner.valid() || record.continuationBranch == "" ||
+		runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", guardRefusalRef(record.continuationBranch)) == "" {
+		return false
+	}
+	stateRef := runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", userStateRef(record.continuationBranch))
+	if stateRef == "" {
+		return false
+	}
+	state, err := readBranchRecord(gitRoot, stateRef)
+	return err == nil && state.owner == record.owner && state.checkpoint != ""
 }
 
 func pruneOrphanedRefs(gitRoot, refPrefix, what string, logger *slog.Logger) {

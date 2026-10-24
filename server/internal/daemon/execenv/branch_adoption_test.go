@@ -96,6 +96,10 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 		t.Fatalf("write source branch record: %v", err)
 	}
 	gitRun(t, repo, "switch", "main")
+	// Give Prepare an initial target-branch checkpoint. Adoption must retire this
+	// preliminary line rather than allowing it to reappear when the source branch
+	// is later deleted.
+	writeFile(t, filepath.Join(repo, "tracked.txt"), "target user draft\n")
 
 	targetOwner := BranchAdoptionOwner{
 		WorkspaceID:    "workspace-id",
@@ -115,6 +119,12 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 	}, worktreeTestLogger())
 	if err != nil {
 		t.Fatalf("PrepareLocalWorktree: %v", err)
+	}
+	originalTargetBranch := worktree.Branch
+	originalTargetRecord, err := readUserStateRef(repo, originalTargetBranch)
+	if err != nil || originalTargetRecord == "" {
+		record := originalTargetRecord
+		t.Fatalf("initial target branch record = %q, error = %v; want replay baseline record", record, err)
 	}
 	markerPath := filepath.Join(worktree.WorkDir, TaskContextMarkerRelPath)
 	if err := os.MkdirAll(filepath.Dir(markerPath), 0o755); err != nil {
@@ -154,8 +164,17 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 	if worktree.userState != result.Record || worktree.priorState != result.Record {
 		t.Fatalf("adopted worktree snapshot state = current %q prior %q, want continuation record %q", worktree.userState, worktree.priorState, result.Record)
 	}
+	if retiredSnapshot := gitRun(t, repo, "rev-parse", result.Record+"^3"); retiredSnapshot != originalTargetRecord {
+		t.Fatalf("adopted record retired snapshot = %s, want %s", retiredSnapshot, originalTargetRecord)
+	}
 	if marker := readBranchAdoptionMarker(t, markerPath); marker.Branch != sourceBranch || marker.BaseCommit != sourceTip {
 		t.Fatalf("adopted marker = %+v, want source branch and tip", marker)
+	}
+	if branchExists(repo, originalTargetBranch) {
+		t.Fatalf("adoption left its empty target branch %q behind", originalTargetBranch)
+	}
+	if _, err := readUserStateRef(repo, originalTargetBranch); err == nil {
+		t.Fatalf("adoption left a continuation record for its retired target branch %q", originalTargetBranch)
 	}
 
 	writeFile(t, filepath.Join(worktree.WorkDir, "continuation-delivery.txt"), "continued delivery\n")
@@ -206,6 +225,7 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 		t.Fatalf("follow-up worktree did not retain adopted delivery: %q", got)
 	}
 	finalizeOK(t, followUp)
+	gitRun(t, repo, "restore", "tracked.txt")
 
 	// A user can later delete the adopted branch. The private discovery ref must
 	// then be reclaimed rather than recreating that source name from a fresh base.
@@ -227,6 +247,12 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 	}
 	if afterDeletion.Branch == sourceBranch {
 		t.Fatalf("PrepareLocalWorktree recreated deleted adopted branch %q", sourceBranch)
+	}
+	if afterDeletion.Continued {
+		t.Fatalf("PrepareLocalWorktree continued an abandoned target branch %q", afterDeletion.Branch)
+	}
+	if got := readFile(t, filepath.Join(afterDeletion.WorkDir, "tracked.txt")); got != "original\n" {
+		t.Fatalf("PrepareLocalWorktree revived the retired target baseline: %q", got)
 	}
 	if _, err := gitTry(t, repo, "rev-parse", "--verify", "--quiet", adoptedContinuationRef(adoptionRecordOwner(targetOwner))); err == nil {
 		t.Fatal("deleted adopted branch left its continuation discovery ref behind")
@@ -308,6 +334,7 @@ func TestUpdateAdoptedBranchRecordUsesContinuationMappingCAS(t *testing.T) {
 		fixture.tip,
 		fixture.adoption.TargetOwner,
 		fixture.adoption.SourceOwner.TaskID,
+		"",
 	)
 	if err != nil {
 		t.Fatalf("writeAdoptedBranchRecord: %v", err)
@@ -315,7 +342,7 @@ func TestUpdateAdoptedBranchRecordUsesContinuationMappingCAS(t *testing.T) {
 
 	mappingRef := adoptedContinuationRef(continuation)
 	gitRun(t, fixture.repo, "update-ref", mappingRef, fixture.sourceRecord)
-	if err := updateAdoptedBranchRecord(fixture.repo, fixture.branch, fixture.sourceRecord, newRecord, continuation, ""); err == nil {
+	if err := updateAdoptedBranchRecord(fixture.repo, fixture.branch, fixture.sourceRecord, newRecord, continuation, "", nil); err == nil {
 		t.Fatal("updateAdoptedBranchRecord succeeded after another process created the continuation mapping")
 	}
 	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.branch)); got != fixture.sourceRecord {
@@ -326,7 +353,7 @@ func TestUpdateAdoptedBranchRecordUsesContinuationMappingCAS(t *testing.T) {
 	}
 
 	gitRun(t, fixture.repo, "update-ref", mappingRef, fixture.tip)
-	if err := updateAdoptedBranchRecord(fixture.repo, fixture.branch, fixture.sourceRecord, newRecord, continuation, fixture.sourceRecord); err == nil {
+	if err := updateAdoptedBranchRecord(fixture.repo, fixture.branch, fixture.sourceRecord, newRecord, continuation, fixture.sourceRecord, nil); err == nil {
 		t.Fatal("updateAdoptedBranchRecord succeeded after another process replaced the continuation mapping")
 	}
 	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.branch)); got != fixture.sourceRecord {
@@ -334,6 +361,132 @@ func TestUpdateAdoptedBranchRecordUsesContinuationMappingCAS(t *testing.T) {
 	}
 	if got := gitRun(t, fixture.repo, "rev-parse", mappingRef); got != fixture.tip {
 		t.Fatalf("continuation mapping changed after update conflict: got %s, want %s", got, fixture.tip)
+	}
+
+	retirementFixture := newBranchAdoptionFixture(t)
+	retirementContinuation := adoptionRecordOwner(retirementFixture.adoption.TargetOwner)
+	retirementRecord, err := writeBranchRecord(
+		retirementFixture.repo,
+		"agent/target/ruyi-870",
+		retirementFixture.sourceRecord,
+		gitRun(t, retirementFixture.repo, "rev-parse", "refs/heads/agent/target/ruyi-870"),
+		retirementContinuation,
+	)
+	if err != nil {
+		t.Fatalf("write target branch record: %v", err)
+	}
+	retirementNewRecord, err := writeAdoptedBranchRecord(
+		retirementFixture.repo,
+		retirementFixture.sourceRecord,
+		retirementFixture.branch,
+		retirementFixture.tip,
+		retirementFixture.adoption.TargetOwner,
+		retirementFixture.adoption.SourceOwner.TaskID,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("write adopted branch record for retirement conflict: %v", err)
+	}
+	retirement := &branchAdoptionRetirement{
+		branch:      "agent/target/ruyi-870",
+		stateRecord: retirementRecord,
+	}
+	gitRun(t, retirementFixture.repo, "update-ref", userStateRef(retirement.branch), retirementFixture.sourceRecord)
+	if err := updateAdoptedBranchRecord(
+		retirementFixture.repo,
+		retirementFixture.branch,
+		retirementFixture.sourceRecord,
+		retirementNewRecord,
+		retirementContinuation,
+		"",
+		retirement,
+	); err == nil {
+		t.Fatal("updateAdoptedBranchRecord succeeded after the retired target state changed")
+	}
+	if got := gitRun(t, retirementFixture.repo, "rev-parse", userStateRef(retirementFixture.branch)); got != retirementFixture.sourceRecord {
+		t.Fatalf("source record changed after retired target conflict: got %s, want %s", got, retirementFixture.sourceRecord)
+	}
+	if _, err := gitTry(t, retirementFixture.repo, "rev-parse", "--verify", "--quiet", adoptedContinuationRef(retirementContinuation)); err == nil {
+		t.Fatal("continuation mapping was created after retired target conflict")
+	}
+	if got := gitRun(t, retirementFixture.repo, "rev-parse", userStateRef(retirement.branch)); got != retirementFixture.sourceRecord {
+		t.Fatalf("retired target record changed after conflict: got %s, want %s", got, retirementFixture.sourceRecord)
+	}
+}
+
+func TestPruneOrphanedAdoptedContinuationsKeepsPendingGuardHeal(t *testing.T) {
+	fixture := newBranchAdoptionFixture(t)
+	result, err := AdoptManagedBranch(fixture.repo, fixture.adoption)
+	if err != nil {
+		t.Fatalf("AdoptManagedBranch: %v", err)
+	}
+	continuation := adoptionRecordOwner(fixture.adoption.TargetOwner)
+	mappingRef := adoptedContinuationRef(continuation)
+
+	// Use a synthetic tip whose only history beyond main is a daemon checkpoint.
+	// The fixture's ordinary source commit deliberately models user work, which
+	// the guard must never heal over.
+	refusedTip := gitRun(t, fixture.repo, "commit-tree", fixture.tip+"^{tree}", "-p", "main", "-m", "chore(agent): delivery checkpoint")
+	gitRun(t, fixture.repo, "update-ref", "refs/heads/"+fixture.branch, refusedTip, fixture.tip)
+	userState := gitRun(t, fixture.repo, "commit-tree", "main^{tree}", "-p", "main", "-m", "continuation snapshot")
+	if _, err := writeBranchRecord(fixture.repo, fixture.branch, userState, refusedTip, continuation); err != nil {
+		t.Fatalf("write healed continuation record: %v", err)
+	}
+
+	// Break checkpoint continuity and keep the delivery-guard marker. Pruning
+	// must retain the discovery mapping long enough for resolveTaskBranch to use
+	// the guard's normal healing path.
+	gitRun(t, fixture.repo, "update-ref", "refs/heads/"+fixture.branch, gitRun(t, fixture.repo, "rev-parse", "main"))
+	gitRun(t, fixture.repo, "update-ref", guardRefusalRef(fixture.branch), refusedTip)
+	pruneOrphanedStateRefs(fixture.repo, worktreeTestLogger())
+	if got := gitRun(t, fixture.repo, "rev-parse", mappingRef); got != result.Record {
+		t.Fatalf("prune dropped mapping before guard heal: got %s, want %s", got, result.Record)
+	}
+
+	plan := resolveTaskBranch(fixture.repo, LocalWorktreeParams{
+		WorkspaceID:     fixture.adoption.TargetOwner.WorkspaceID,
+		AgentID:         fixture.adoption.TargetOwner.AgentID,
+		ConversationID:  fixture.adoption.TargetOwner.ConversationID,
+		ConversationKey: "RUYI-870",
+	}, gitRun(t, fixture.repo, "rev-parse", "main"), worktreeTestLogger())
+	if plan.name != fixture.branch || !plan.continues || plan.base != refusedTip {
+		t.Fatalf("guard-healed adopted plan = %+v, want continued %q at %q", plan, fixture.branch, refusedTip)
+	}
+	if _, err := gitTry(t, fixture.repo, "rev-parse", "--verify", "--quiet", guardRefusalRef(fixture.branch)); err == nil {
+		t.Fatal("guard heal did not clear the delivery-guard refusal")
+	}
+
+	gitRun(t, fixture.repo, "update-ref", "refs/heads/"+fixture.branch, gitRun(t, fixture.repo, "rev-parse", "main"), refusedTip)
+	gitRun(t, fixture.repo, "update-ref", "-d", guardRefusalRef(fixture.branch))
+	pruneOrphanedStateRefs(fixture.repo, worktreeTestLogger())
+	if _, err := gitTry(t, fixture.repo, "rev-parse", "--verify", "--quiet", mappingRef); err == nil {
+		t.Fatal("prune retained an unusable adopted continuation without a guard refusal")
+	}
+}
+
+func TestPrepareBranchAdoptionRetirementRequiresContinuousOwnership(t *testing.T) {
+	fixture := newBranchAdoptionFixture(t)
+	const targetBranch = "agent/target/ruyi-870"
+	continuation := adoptionRecordOwner(fixture.adoption.TargetOwner)
+	gitRun(t, fixture.repo, "switch", targetBranch)
+	targetTip := gitRun(t, fixture.repo, "rev-parse", "HEAD")
+	userState := gitRun(t, fixture.repo, "commit-tree", "main^{tree}", "-p", "main", "-m", "target snapshot")
+	orphanCheckpoint := gitRun(t, fixture.repo, "commit-tree", "main^{tree}", "-m", "unrelated checkpoint")
+	if _, err := writeBranchRecord(fixture.repo, targetBranch, userState, orphanCheckpoint, continuation); err != nil {
+		t.Fatalf("write disconnected target branch record: %v", err)
+	}
+
+	retirement := &branchAdoptionRetirement{
+		branch:     targetBranch,
+		baseCommit: targetTip,
+		owner:      continuation,
+	}
+	err := prepareBranchAdoptionRetirement(fixture.repo, fixture.branch, retirement)
+	if err == nil || !strings.Contains(err.Error(), "does not prove continuous ownership") {
+		t.Fatalf("prepareBranchAdoptionRetirement error = %v, want ownership continuity refusal", err)
+	}
+	if retirement.stateRecord != "" {
+		t.Fatalf("retirement recorded an unsafe target state %q", retirement.stateRecord)
 	}
 }
 

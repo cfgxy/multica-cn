@@ -47,7 +47,7 @@ type BranchAdoptionResult struct {
 // marker or branch-record ref is changed. The source record remains the first
 // parent of the new record, retaining its provenance without a parallel ref.
 func AdoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoptionResult, error) {
-	return adoptManagedBranch(gitRoot, adoption)
+	return adoptManagedBranch(gitRoot, adoption, nil)
 }
 
 // AdoptManagedBranch binds the adoption to this running worktree. It holds the
@@ -64,7 +64,13 @@ func (w *LocalWorktree) AdoptManagedBranch(adoption BranchAdoption) (BranchAdopt
 		return BranchAdoptionResult{}, fmt.Errorf("adopt branch: local worktree is no longer deliverable: %w", w.aborted)
 	}
 
-	result, err := adoptManagedBranch(w.Path, adoption)
+	retirement := &branchAdoptionRetirement{
+		branch:        w.Branch,
+		baseCommit:    w.BaseCommit,
+		owner:         w.owner,
+		createdBranch: w.createdBranch,
+	}
+	result, err := adoptManagedBranch(w.Path, adoption, retirement)
 	if err != nil {
 		return result, err
 	}
@@ -87,7 +93,7 @@ func (w *LocalWorktree) AdoptManagedBranch(adoption BranchAdoption) (BranchAdopt
 	return result, nil
 }
 
-func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoptionResult, error) {
+func adoptManagedBranch(gitRoot string, adoption BranchAdoption, retirement *branchAdoptionRetirement) (BranchAdoptionResult, error) {
 	var result BranchAdoptionResult
 	adoption.Branch = strings.TrimSpace(adoption.Branch)
 	adoption.ExpectedRemoteSHA = strings.TrimSpace(adoption.ExpectedRemoteSHA)
@@ -168,12 +174,15 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 	if err != nil {
 		return result, err
 	}
+	if err := prepareBranchAdoptionRetirement(root, adoption.Branch, retirement); err != nil {
+		return result, err
+	}
 
 	newMarker, err := adoptedMarker(marker, adoption.Branch, adoption.ExpectedRemoteSHA)
 	if err != nil {
 		return result, err
 	}
-	newRecord, err := writeAdoptedBranchRecord(root, oldRecordRef, adoption.Branch, adoption.ExpectedRemoteSHA, adoption.TargetOwner, adoption.SourceOwner.TaskID)
+	newRecord, err := writeAdoptedBranchRecord(root, oldRecordRef, adoption.Branch, adoption.ExpectedRemoteSHA, adoption.TargetOwner, adoption.SourceOwner.TaskID, retirementStateRecord(retirement))
 	if err != nil {
 		return result, err
 	}
@@ -205,6 +214,15 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 		}
 		return nil
 	}
+	if err := finalizeBranchAdoptionRetirement(root, retirement); err != nil {
+		if rollbackErr := restoreCheckout(); rollbackErr != nil {
+			return result, fmt.Errorf("adopt branch: retire original continuation branch: %w (also %v)", err, rollbackErr)
+		}
+		return result, fmt.Errorf("adopt branch: retire original continuation branch: %w", err)
+	}
+	if retirement != nil && retirement.releaseReservation != nil {
+		defer retirement.releaseReservation()
+	}
 
 	// The marker is written before the ref transaction and restored on a failed
 	// transaction. The filesystem and Git ref store cannot share one primitive,
@@ -215,7 +233,7 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 		}
 		return result, fmt.Errorf("adopt branch: bind continuation task marker: %w", err)
 	}
-	if err := updateAdoptedBranchRecord(root, adoption.Branch, oldRecordRef, newRecord, continuation, previousContinuationRecord); err != nil {
+	if err := updateAdoptedBranchRecord(root, adoption.Branch, oldRecordRef, newRecord, continuation, previousContinuationRecord, retirement); err != nil {
 		markerRollbackErr := writeMarkerFileAtomic(adoption.MarkerPath, markerBefore)
 		checkoutRollbackErr := restoreCheckout()
 		if markerRollbackErr != nil || checkoutRollbackErr != nil {
@@ -232,6 +250,61 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 		Record:           newRecord,
 		BaseCommit:       adoption.ExpectedRemoteSHA,
 	}, nil
+}
+
+// branchAdoptionRetirement describes the branch that Prepare selected before a
+// live worktree switches to an adopted source branch. Its continuation record
+// must not survive the switch: if the adopted branch is later deleted, a fresh
+// Prepare must not revive the abandoned work line.
+type branchAdoptionRetirement struct {
+	branch             string
+	baseCommit         string
+	owner              branchOwner
+	createdBranch      bool
+	stateRecord        string
+	guardRef           string
+	dropBranch         bool
+	releaseReservation func()
+}
+
+func prepareBranchAdoptionRetirement(gitRoot, adoptedBranch string, retirement *branchAdoptionRetirement) error {
+	if retirement == nil || retirement.branch == "" || retirement.branch == adoptedBranch {
+		return nil
+	}
+	stateRecord := runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", userStateRef(retirement.branch))
+	if stateRecord == "" {
+		return nil
+	}
+	if _, owned := branchOwnedBy(gitRoot, retirement.branch, retirement.owner, nil); !owned {
+		return errors.New("original continuation branch does not prove continuous ownership by the running task")
+	}
+	retirement.stateRecord = stateRecord
+	retirement.guardRef = runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", guardRefusalRef(retirement.branch))
+	return nil
+}
+
+func finalizeBranchAdoptionRetirement(gitRoot string, retirement *branchAdoptionRetirement) error {
+	if retirement == nil || !retirement.createdBranch || retirement.branch == "" {
+		return nil
+	}
+	tip, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "refs/heads/"+retirement.branch)
+	if err != nil || tip != retirement.baseCommit {
+		return nil
+	}
+	releaseReservation, err := reserveReanchorBranch(gitRoot, retirement.branch)
+	if err != nil {
+		return fmt.Errorf("reserve original continuation branch: %w", err)
+	}
+	retirement.releaseReservation = releaseReservation
+	retirement.dropBranch = true
+	return nil
+}
+
+func retirementStateRecord(retirement *branchAdoptionRetirement) string {
+	if retirement == nil {
+		return ""
+	}
+	return retirement.stateRecord
 }
 
 // rejectCompetingAdoptedContinuation keeps one continuation task on one adopted
@@ -325,13 +398,19 @@ func adoptedMarker(marker taskContextMarkerFile, branch, baseCommit string) ([]b
 	return data, nil
 }
 
-func writeAdoptedBranchRecord(gitRoot, oldRecord, branch, checkpoint string, continuation BranchAdoptionOwner, sourceTaskID string) (string, error) {
+func writeAdoptedBranchRecord(gitRoot, oldRecord, branch, checkpoint string, continuation BranchAdoptionOwner, sourceTaskID, retiredState string) (string, error) {
 	owner := adoptionRecordOwner(continuation)
 	message := branchRecordMessage(owner) + "\nmultica: authorized continuation branch adoption\n\n"
 	message += fmt.Sprintf("Source task: %s\n", sourceTaskID)
 	message += fmt.Sprintf("Continuation task: %s\n", continuation.TaskID)
 	message += fmt.Sprintf("%s: %s\n", ownerTrailerContinuation, branch)
-	args := append(commitIdentityArgs(gitRoot), "commit-tree", oldRecord+"^{tree}", "-p", oldRecord, "-p", checkpoint, "-m", message)
+	args := append(commitIdentityArgs(gitRoot), "commit-tree", oldRecord+"^{tree}", "-p", oldRecord, "-p", checkpoint)
+	if retiredState != "" && retiredState != oldRecord {
+		// The target line is retired below, but its captured user snapshot must
+		// remain reachable while this adopted continuation is alive.
+		args = append(args, "-p", retiredState)
+	}
+	args = append(args, "-m", message)
 	record, err := runGitTrimmed(gitRoot, args...)
 	if err != nil {
 		return "", fmt.Errorf("adopt branch: write continuation branch record: %w", err)
@@ -339,12 +418,21 @@ func writeAdoptedBranchRecord(gitRoot, oldRecord, branch, checkpoint string, con
 	return record, nil
 }
 
-func updateAdoptedBranchRecord(gitRoot, branch, oldRecord, newRecord string, continuation branchOwner, previousContinuationRecord string) error {
+func updateAdoptedBranchRecord(gitRoot, branch, oldRecord, newRecord string, continuation branchOwner, previousContinuationRecord string, retirement *branchAdoptionRetirement) error {
 	input := "start\n" + fmt.Sprintf("update %s %s %s\n", userStateRef(branch), newRecord, oldRecord)
 	if previousContinuationRecord == "" {
 		input += fmt.Sprintf("create %s %s\n", adoptedContinuationRef(continuation), newRecord)
 	} else {
 		input += fmt.Sprintf("update %s %s %s\n", adoptedContinuationRef(continuation), newRecord, previousContinuationRecord)
+	}
+	if retirement != nil && retirement.stateRecord != "" {
+		input += fmt.Sprintf("delete %s %s\n", userStateRef(retirement.branch), retirement.stateRecord)
+	}
+	if retirement != nil && retirement.guardRef != "" {
+		input += fmt.Sprintf("delete %s %s\n", guardRefusalRef(retirement.branch), retirement.guardRef)
+	}
+	if retirement != nil && retirement.dropBranch {
+		input += fmt.Sprintf("delete refs/heads/%s %s\n", retirement.branch, retirement.baseCommit)
 	}
 	input += "prepare\ncommit\n"
 	if out, err := runGitInput(gitRoot, input, "update-ref", "--stdin"); err != nil {
