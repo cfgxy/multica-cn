@@ -463,7 +463,12 @@
     "task_filter": "タスク", "choose_task": "タスクを選択", "loading": "認証情報を読み込み中…", "empty": "このタスクに利用可能な認証情報はありません。", "status": "状態:", "expires_prefix": "有効期限", "replace_title": "認証情報を置き換える", "revoke_title": "認証情報を取り消す",
     "revoke_aria": "{{name}} を取り消す", "replace_aria": "{{name}} を置き換える", "revoke_confirm": "この認証情報を取り消しますか？今後の受け渡しは停止しますが、実行中プロセスに渡された値は回収できません。", "revoked": "認証情報を取り消しました。実行中プロセスに渡された値は回収できません。", "revoke_failed": "認証情報を取り消せませんでした。状態は変更されていません。後でもう一度お試しください。",
     "audit_title": "認証情報の監査", "audit_empty": "認証情報の監査記録はありません。", "audit_project": "プロジェクト", "audit_issue": "Issue", "audit_actor": "使用者 / 利用主体",
-    "no_permission": "ここで認証情報を管理できるのはタスク担当者またはワークスペース owner のみです。", "no_connector": "利用可能なコネクターがありません。ワークスペース owner に設定を依頼してください。"
+    "no_permission": "ここで認証情報を管理できるのはタスク担当者またはワークスペース owner のみです。", "no_connector": "利用可能なコネクターがありません。ワークスペース owner に設定を依頼してください。",
+    "connector_hint": "コネクターはこの認証情報が許可する対象サービスのエンドポイントを示し、デリバリーはそのエンドポイントに範囲を限定します。",
+    "connectors_section": "コネクター", "add_connector": "コネクターを追加", "target_url": "対象 URL", "target_url_help": "https のみ、クエリやフラグメントは指定できません。",
+    "disable_connector": "無効にする", "enable_connector": "有効にする", "connector_added": "コネクターを追加しました。", "connector_updated": "コネクターを更新しました。",
+    "connector_failed": "コネクターの変更に失敗しました。再試行してください。", "connector_load_failed": "コネクターの読み込みに失敗しました。", "retry_load": "再試行",
+    "add_connector_required": "利用可能なコネクターがありません。保存する前にワークスペース owner が 1 個以上追加してください。", "connector_empty_item": "コネクターはまだありません"
   },
   "page": {
     "title": "設定",

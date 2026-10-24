@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react-native";
 import { MIN_RECORD_MS, RECORD_ARM_MS } from "@/lib/voice/dictation";
-import { useDictation } from "@/lib/voice/use-dictation";
+import { classifySpeechError, useDictation } from "@/lib/voice/use-dictation";
 
 /**
  * RUYI-710 阶段 2 返工 — 听写 hook press/release 定时器引用时序回归面。
@@ -109,6 +109,17 @@ async function pressAndArm(result: { current: ReturnType<typeof useDictation> })
 }
 
 describe("useDictation 指松结算时序（RUYI-710 P0 回归面）", () => {
+  it("SpeechRecognizer 错误只对可恢复的服务故障启动后端降级", () => {
+    expect(classifySpeechError(6)).toBe("empty");
+    expect(classifySpeechError(7)).toBe("empty");
+    for (const code of [1, 2, 4, 5, 8, 10, 11, 12, 13]) {
+      expect(classifySpeechError(code)).toBe("fallback");
+    }
+    expect(classifySpeechError(3)).toBe("failed");
+    expect(classifySpeechError(9)).toBe("failed");
+    expect(classifySpeechError(undefined)).toBe("failed");
+  });
+
   it("轻点 <120ms 松开：不起录、安静回 rest、无 toast", async () => {
     const { result } = await mountDictation({ available: true, reason: "ok" });
     expect(result.current.entry).toBe("ondevice");
@@ -152,18 +163,25 @@ describe("useDictation 指松结算时序（RUYI-710 P0 回归面）", () => {
     expect(result.current.state.phase).toBe("rest");
   });
 
-  it("端侧 start 拒绝：按住期间不提示，指松后才按失败语义收敛", async () => {
+  it("端侧 start 拒绝：按住期间切换录音上传，松开后发送服务端转写", async () => {
+    deferTranscribe();
     mockSpeechModule.start.mockRejectedValueOnce(new Error("recognizer unavailable"));
     const { result } = await mountDictation({ available: true, reason: "ok" });
     await pressAndArm(result);
     await act(async () => {});
+    expect(mockAudioModule.start).toHaveBeenCalledTimes(1);
     expect(onToast).not.toHaveBeenCalled();
 
     await act(async () => {
+      mockAudioModule.emit("onAudioChunk", { data: "AAAA" });
       jest.advanceTimersByTime(MIN_RECORD_MS - RECORD_ARM_MS + 20);
       result.current.release();
     });
-    expect(onToast).toHaveBeenCalledWith("transcribe_failed");
+    expect(result.current.state.phase).toBe("transcribing");
+    resolveTranscribe("start 失败后的补偿结果");
+    await act(async () => {});
+    expect(onSend).toHaveBeenCalledWith("start 失败后的补偿结果");
+    expect(onToast).not.toHaveBeenCalled();
     expect(result.current.state.phase).toBe("rest");
   });
 
@@ -200,12 +218,13 @@ describe("useDictation 指松结算时序（RUYI-710 P0 回归面）", () => {
     expect(onToast).not.toHaveBeenCalled();
   });
 
-  it("端侧 onError 在按住期间延迟到指松才提示失败", async () => {
+  it("端侧麦克风错误在按住期间延迟到指松才提示失败", async () => {
     const { result } = await mountDictation({ available: true, reason: "ok" });
     await pressAndArm(result);
 
     await act(async () => {
-      mockSpeechModule.emit("onError", { code: 5 });
+      // ERROR_AUDIO: local capture cannot be repaired by server fallback.
+      mockSpeechModule.emit("onError", { code: 3 });
     });
     expect(result.current.state.phase).toBe("recording");
     expect(onToast).not.toHaveBeenCalled();
@@ -216,6 +235,33 @@ describe("useDictation 指松结算时序（RUYI-710 P0 回归面）", () => {
     });
     expect(result.current.state.phase).toBe("rest");
     expect(onToast).toHaveBeenCalledWith("transcribe_failed");
+  });
+
+  it("端侧识别器在按住期间不可用时改走录音上传，松开后发送服务端转写", async () => {
+    deferTranscribe();
+    const { result } = await mountDictation({ available: true, reason: "ok" });
+    await pressAndArm(result);
+
+    await act(async () => {
+      // ERROR_CLIENT: the probe passed but this recognizer session cannot serve.
+      mockSpeechModule.emit("onError", { code: 5 });
+    });
+    expect(result.current.state.phase).toBe("recording");
+    expect(mockAudioModule.start).toHaveBeenCalledTimes(1);
+    expect(onToast).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mockAudioModule.emit("onAudioChunk", { data: "AAAA" });
+      jest.advanceTimersByTime(MIN_RECORD_MS - RECORD_ARM_MS + 20);
+      result.current.release();
+    });
+    expect(result.current.state.phase).toBe("transcribing");
+    expect(transcribe).toHaveBeenCalledTimes(1);
+
+    resolveTranscribe("服务端补偿结果");
+    await act(async () => {});
+    expect(onSend).toHaveBeenCalledWith("服务端补偿结果");
+    expect(onToast).not.toHaveBeenCalled();
   });
 
   it("端侧终稿早于指松到达时，指松结算已缓存终稿", async () => {

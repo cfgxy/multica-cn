@@ -30,7 +30,15 @@ export function DecisionTimelineRow({ decision }: { decision: IssueDecision }) {
         <Badge variant={decision.status === "open" ? "secondary" : "outline"} className="shrink-0">{status}</Badge>
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        {/* RUYI-861: the base `sm:max-w-sm` (384px) sits in the media block
+            that Tailwind emits AFTER the plain `max-w-2xl` rule, so the
+            card used to render 384px-wide and tall. `!` wins that conflict;
+            the `min()` clamps to the viewport gutters instead of relying on
+            the base `max-w-[calc(100%-2rem)]`, which the important rule
+            would otherwise shadow. 56rem (= `max-w-4xl`) matches the
+            issue-detail body column so the card reads at the same width
+            as the issue's own content. */}
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:!max-w-[min(56rem,calc(100%_-_2rem))]">
           <DialogHeader>
             <DialogTitle className="pr-8">{decision.question}</DialogTitle>
           </DialogHeader>

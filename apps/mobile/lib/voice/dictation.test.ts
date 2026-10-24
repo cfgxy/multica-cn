@@ -186,6 +186,26 @@ describe("端侧路径（有实时预览）", () => {
     r = reduceDictation(r.state, { type: "release", heldMs: 1_500 });
     expect(r.commands).toEqual([{ type: "sendText", text: "发送这一句" }]);
   });
+
+  it("端侧会话不可用时，仍按住则切换为后端转写采集", () => {
+    const r = reduceDictation(recording().state, { type: "fallbackToBackend" });
+    expect(r.state).toMatchObject({
+      phase: "recording",
+      degraded: true,
+      preview: "",
+      pendingFinal: null,
+      pendingError: null,
+    });
+    expect(r.commands).toEqual([{ type: "startCapture" }]);
+  });
+
+  it("松开后的端侧错误不重新开始录音", () => {
+    let r = recording();
+    r = reduceDictation(r.state, { type: "release", heldMs: 1_500 });
+    r = reduceDictation(r.state, { type: "fallbackToBackend" });
+    expect(r.state.phase).toBe("finalizing");
+    expect(r.commands).toEqual([]);
+  });
 });
 
 describe("降级路径（无端侧识别）", () => {

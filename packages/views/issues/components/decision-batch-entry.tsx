@@ -29,7 +29,11 @@ export function DecisionBatchEntry({ issueId, open }: { issueId: string; open: I
         <span className="shrink-0 text-caption text-muted-foreground">{t(($) => $.decisions.batch_count, { count: open.length })}</span>
       </Button>
       <Dialog open={showBatch} onOpenChange={setShowBatch}>
-        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        {/* RUYI-861: width contract — see decision-timeline-row. The base
+            `sm:max-w-sm` shadowed the plain `max-w-2xl`; the important
+            breakpoint-scoped width reads at the issue body column
+            (`max-w-4xl` = 56rem) and clamps to the viewport gutters. */}
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:!max-w-[min(56rem,calc(100%_-_2rem))]">
           <DialogHeader>
             <DialogTitle>{t(($) => $.decisions.batch_title)}</DialogTitle>
           </DialogHeader>

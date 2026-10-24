@@ -463,7 +463,12 @@
     "task_filter": "任务", "choose_task": "选择任务", "loading": "正在加载凭据…", "empty": "此任务没有可用凭据。", "status": "状态：", "expires_prefix": "到期时间", "replace_title": "替换凭据", "revoke_title": "撤销凭据",
     "revoke_aria": "撤销 {{name}}", "replace_aria": "替换 {{name}}", "revoke_confirm": "确定撤销此凭据？这会阻止后续交付，但无法收回已交付到运行中进程的值。", "revoked": "凭据已撤销。此操作无法移除已交付到运行中进程的值。", "revoke_failed": "凭据撤销失败，状态未更改；请稍后重试。",
     "audit_title": "凭据审计", "audit_empty": "暂无凭据审计记录。", "audit_project": "项目", "audit_issue": "Issue", "audit_actor": "使用者",
-    "no_permission": "只有任务负责人或工作区所有者可以在此管理凭据。", "no_connector": "没有可用的连接器，请联系工作区所有者进行配置。"
+    "no_permission": "只有任务负责人或工作区所有者可以在此管理凭据。", "no_connector": "没有可用的连接器，请联系工作区所有者进行配置。",
+    "connector_hint": "连接器指向该凭据授权的目标服务端点，凭据交付按此端点限定范围。",
+    "connectors_section": "连接器", "add_connector": "添加连接器", "target_url": "目标地址", "target_url_help": "仅支持 https 地址，且不能含查询参数或片段。",
+    "disable_connector": "禁用", "enable_connector": "启用", "connector_added": "连接器已添加。", "connector_updated": "连接器已更新。",
+    "connector_failed": "连接器变更失败，请重试。", "connector_load_failed": "连接器加载失败。", "retry_load": "重试",
+    "add_connector_required": "还没有可用连接器。请先由工作区所有者添加连接器，再保存此凭据。", "connector_empty_item": "暂无连接器"
   },
   "page": {
     "title": "设置",
