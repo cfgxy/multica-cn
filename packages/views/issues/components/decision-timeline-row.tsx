@@ -6,9 +6,22 @@ import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { useT } from "../../i18n";
-import { DecisionCard } from "./decision-card";
+import { DecisionCardBrowser } from "./decision-card-browser";
 
-export function DecisionTimelineRow({ decision }: { decision: IssueDecision }) {
+// RUYI-863: the info-feed row is the single-card entry of the unified
+// browser. Clicking opens the browser pre-filtered to "all" and PINS this
+// card — an already-answered or cancelled card lands exactly here and
+// never bounces to the first card. The browser (filter, x/N position,
+// previous/next, done/empty states) is shared with every other entry.
+
+export function DecisionTimelineRow({
+  decision,
+  decisions,
+}: {
+  decision: IssueDecision;
+  /** The issue's full card list, for the browser's navigation. */
+  decisions: readonly IssueDecision[];
+}) {
   const { t } = useT("issues");
   const [open, setOpen] = useState(false);
   const status = decision.status === "open"
@@ -40,9 +53,13 @@ export function DecisionTimelineRow({ decision }: { decision: IssueDecision }) {
             as the issue's own content. */}
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:!max-w-[min(56rem,calc(100%_-_2rem))]">
           <DialogHeader>
-            <DialogTitle className="pr-8">{decision.question}</DialogTitle>
+            <DialogTitle className="pr-8">{t(($) => $.decisions.section_all)}</DialogTitle>
           </DialogHeader>
-          <DecisionCard decision={decision} />
+          <DecisionCardBrowser
+            decisions={decisions}
+            initialFilter="all"
+            initialCardId={decision.id}
+          />
         </DialogContent>
       </Dialog>
     </>
