@@ -2159,6 +2159,12 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 		}
 		defer tx.Rollback(ctx)
 		qtx := h.Queries.WithTx(tx)
+		oldIssue, err := qtx.LockIssueForUpdate(ctx, db.LockIssueForUpdateParams{
+			ID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		})
+		if err != nil {
+			return db.Issue{}, err
+		}
 		updated, err := qtx.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
 			ID:          issue.ID,
 			Status:      "done",
@@ -2170,7 +2176,7 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 		// The card cascade commits with the status write: the one-sided done
 		// gate no-ops when nothing flipped, so a redelivery of an already
 		// converged transition appends no audit row.
-		flipped, err = h.settleDoneCascadeInTx(ctx, qtx, updated, "github_pr_merged")
+		flipped, err = h.settleDoneCascadeInTx(ctx, qtx, oldIssue, updated, "github_pr_merged")
 		if err != nil {
 			return db.Issue{}, err
 		}

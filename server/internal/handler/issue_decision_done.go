@@ -69,18 +69,16 @@ const (
 // transaction's fresh READ COMMITTED read, the CAS flips it before commit,
 // no survivor — or the done write commits first and the create's post-lock
 // re-read refuses the card with a 409.
-func (h *Handler) settleDoneCascadeInTx(ctx context.Context, q *db.Queries, newIssue db.Issue, entrySource string) ([]db.IssueDecision, error) {
-	if !newIssue.ID.Valid {
-		// The in-tx update matched no row: the issue no longer exists in
-		// this workspace, so there is no cascade to settle.
+func (h *Handler) settleDoneCascadeInTx(ctx context.Context, q *db.Queries, oldIssue, newIssue db.Issue, entrySource string) ([]db.IssueDecision, error) {
+	if !oldIssue.ID.Valid || !newIssue.ID.Valid {
+		// Without both rows, the transaction cannot prove a status transition.
 		return nil, nil
 	}
-	// One-sided gate: only a write whose post row sits in the done category
-	// (built-in `done` or a custom done key, MUL-6243) settles anything. A
-	// post row still in another category flips no card, by construction.
-	// Gate-free retries on an already-converged issue are a CAS no-op that
-	// returns no rows and appends no audit.
-	if issuestatus.Effective(ctx, q, newIssue.WorkspaceID, newIssue.Status) != issuestatus.Done {
+	// Settle legacy cards only when this write moves the issue into the done
+	// category, including custom statuses (MUL-6243). Metadata edits, repeated
+	// done writes, and transitions out of done must not backfill history.
+	if issuestatus.Effective(ctx, q, oldIssue.WorkspaceID, oldIssue.Status) == issuestatus.Done ||
+		issuestatus.Effective(ctx, q, newIssue.WorkspaceID, newIssue.Status) != issuestatus.Done {
 		return nil, nil
 	}
 	flipped, err := q.CancelOpenIssueDecisionsForIssue(ctx, db.CancelOpenIssueDecisionsForIssueParams{
