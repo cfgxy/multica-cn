@@ -52,6 +52,11 @@ type copilotEventState struct {
 	callUsage     map[string]TokenUsage
 	msgUsage      map[string]TokenUsage
 	shutdownUsage map[string]TokenUsage
+	// callCounts is the per-model number of assistant.usage events. Each such
+	// event is one model API call, so it is the provider-original, dedupable
+	// call evidence this backend produces; the three token sources above carry
+	// no per-call boundary and must not stand in for it.
+	callCounts map[string]int64
 	// resumed marks a run that continued an existing Copilot session, which is
 	// what disqualifies the session.shutdown totals — see resolveUsage.
 	resumed bool
@@ -73,16 +78,36 @@ type copilotEventState struct {
 // letting it win over a source with the full breakdown would silently drop the
 // input and cache tiers.
 func (st *copilotEventState) resolveUsage() map[string]TokenUsage {
-	if !st.resumed && hasTokens(st.shutdownUsage) {
-		return st.shutdownUsage
+	var usage map[string]TokenUsage
+	// Pick the token source by completeness only. Per-call COUNT evidence
+	// must not promote a tokenless assistant.usage source above one that
+	// actually carries tokens: the counts ride onto whichever source wins,
+	// and a count-only entry never shadows a real token report.
+	switch {
+	case !st.resumed && hasTokens(st.shutdownUsage):
+		usage = st.shutdownUsage
+	case hasTokens(st.callUsage):
+		usage = st.callUsage
+	case hasTokens(st.msgUsage):
+		usage = st.msgUsage
+	default:
+		usage = map[string]TokenUsage{}
 	}
-	if hasTokens(st.callUsage) {
-		return st.callUsage
+	// Per-call counts are independent of which TOKEN source wins: the
+	// assistant.usage events observed during THIS run are this run's call
+	// evidence no matter where the tokens came from. Models the selected
+	// source does not name get a count-only entry, so a call that reported no
+	// tokens still counts as a call.
+	st.attachCallCounts(usage)
+	return usage
+}
+
+func (st *copilotEventState) attachCallCounts(usage map[string]TokenUsage) {
+	for model, n := range st.callCounts {
+		u := usage[model]
+		u.ModelCallCount = n
+		usage[model] = u
 	}
-	if hasTokens(st.msgUsage) {
-		return st.msgUsage
-	}
-	return map[string]TokenUsage{}
 }
 
 // hasTokens reports whether a source carries any real numbers. Presence alone
@@ -145,6 +170,7 @@ func newCopilotEventState(seedModel string, resumed bool) *copilotEventState {
 		callUsage:     make(map[string]TokenUsage),
 		msgUsage:      make(map[string]TokenUsage),
 		shutdownUsage: make(map[string]TokenUsage),
+		callCounts:    make(map[string]int64),
 		resumed:       resumed,
 	}
 }
@@ -241,6 +267,9 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 			st.activeModel = model
 		}
 		addUsage(st.callUsage, model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)
+		// This event IS one model API call. Count it even for an all-zero
+		// record: a call that reported no tokens is still a call.
+		st.callCounts[model]++
 
 	case "session.shutdown":
 		// Session-wide per-model totals, emitted once as the session tears down.

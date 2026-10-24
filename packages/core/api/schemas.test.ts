@@ -1199,6 +1199,34 @@ describe("dashboard + runtime usage schema drift", () => {
     expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.provider).toBe("");
   });
 
+  it("defaults model call counts to 0 so a pre-migration-987 backend still renders", () => {
+    // A backend older than migration 987 sends neither call-count field. The
+    // row must survive with both halves at 0 — "no known calls, no unknown
+    // rows" — rather than a missing field reading as "unknown".
+    for (const list of [
+      DashboardUsageDailyListSchema.parse([{ date: "2026-05-19" }]),
+      DashboardUsageByAgentListSchema.parse([{ model: "claude-opus-4-7" }]),
+      RuntimeUsageListSchema.parse([{ date: "2026-05-19" }]),
+      RuntimeUsageByAgentListSchema.parse([{ model: "x" }]),
+      RuntimeUsageByHourListSchema.parse([{ hour: 9 }]),
+    ]) {
+      expect(list[0]?.model_call_count).toBe(0);
+      expect(list[0]?.model_call_unknown_count).toBe(0);
+    }
+    // A live backend sends the known half plus its unknown-row count; both
+    // must round-trip untouched.
+    expect(
+      DashboardUsageDailyListSchema.parse([
+        { date: "2026-05-19", model_call_count: 42, model_call_unknown_count: 3 },
+      ])[0]?.model_call_count,
+    ).toBe(42);
+    expect(
+      DashboardUsageDailyListSchema.parse([
+        { date: "2026-05-19", model_call_count: 42, model_call_unknown_count: 3 },
+      ])[0]?.model_call_unknown_count,
+    ).toBe(3);
+  });
+
   it("rejects a non-array body so parseWithFallback can return its fallback", () => {
     expect(DashboardUsageDailyListSchema.safeParse(null).success).toBe(false);
     expect(DashboardFailureDailyListSchema.safeParse(null).success).toBe(false);

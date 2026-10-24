@@ -22,7 +22,9 @@
     "run_time_label": "运行时长 · {{days}}天",
     "run_time_hint": "共 {{tasks}} 个 task",
     "tasks_label": "task 数 · {{days}}天",
-    "tasks_hint": "失败 {{failed}} 个"
+    "tasks_hint": "失败 {{failed}} 个",
+    "calls_label": "调用 · {{days}}天",
+    "calls_unknown_hint": "另有 {{unknown}} 行未上报"
   },
   "dim": {
     "label": "维度",
@@ -136,7 +138,8 @@
       "dim_model": "模型",
       "tokens": "Tokens/秒",
       "cost": "费用/小时",
-      "tasks": "任务/小时"
+      "tasks": "任务/小时",
+      "calls": "调用/小时"
     }
   },
   "error": {

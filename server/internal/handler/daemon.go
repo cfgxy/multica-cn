@@ -4933,6 +4933,15 @@ type TaskUsagePayload struct {
 	Turns            int   `json:"turns,omitempty"`
 	Compactions      int   `json:"compactions,omitempty"`
 	MaxContextTokens int64 `json:"max_context_tokens,omitempty"`
+	// ModelCallCount is the provider-observed number of model API calls for
+	// this (provider, model) row — see agent.TokenUsage.ModelCallCount.
+	// Absent or 0 from every daemon or backend without provider-original,
+	// dedupable call evidence (a session-shutdown total or a report count
+	// would measure turns or reports, not calls); stored as NULL so readers
+	// say "unknown" instead of "0 calls". An older daemon build omits the
+	// field entirely; the JSON decoder zeroes it, and
+	// authoritativeModelCallCount treats that identically to an explicit 0.
+	ModelCallCount int64 `json:"model_call_count,omitempty"`
 }
 
 // authoritativeContextTokens converts a reported context size into the nullable
@@ -4985,6 +4994,18 @@ func authoritativeCostTicks(ticks int64) pgtype.Int8 {
 	return pgtype.Int8{Int64: ticks, Valid: true}
 }
 
+// authoritativeModelCallCount converts a reported call count into the
+// nullable column. Same rule as authoritativeCostTicks: 0 is what a daemon
+// or backend without provider-original call evidence sends (or what an older
+// build omits), and storing it would claim a real "0 calls" instead of
+// "unknown".
+func authoritativeModelCallCount(count int64) pgtype.Int8 {
+	if count <= 0 {
+		return pgtype.Int8{}
+	}
+	return pgtype.Int8{Int64: count, Valid: true}
+}
+
 func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
@@ -5035,6 +5056,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			Turns:            authoritativeTurns(u.Turns),
 			Compactions:      authoritativeCompactions(u.Compactions),
 			MaxContextTokens: authoritativeMaxContextTokens(u.MaxContextTokens),
+			ModelCallCount:   authoritativeModelCallCount(u.ModelCallCount),
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
 			continue

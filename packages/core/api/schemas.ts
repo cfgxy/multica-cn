@@ -2056,6 +2056,17 @@ const CostSplitShape = {
   uncosted_cache_write_tokens: z.number().optional(),
 };
 
+// Model API/Prompt call counts (migration 987). `model_call_count` is the
+// known half only; `model_call_unknown_count` counts the rows whose provider
+// gave no call evidence. Defaults mirror the cost split: a backend older than
+// the column sends neither, and once the backend carries them the unknown
+// count stays a real number (0 = every row had call evidence) rather than
+// undefined.
+const ModelCallCountShape = {
+  model_call_count: z.number().default(0),
+  model_call_unknown_count: z.number().default(0),
+};
+
 const DashboardUsageDailySchema = z.object({
   date: z.string().default(""),
   provider: z.string().default(""),
@@ -2065,6 +2076,7 @@ const DashboardUsageDailySchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
+  ...ModelCallCountShape,
   task_count: z.number().default(0),
 }).loose();
 
@@ -2108,6 +2120,7 @@ const DashboardUsageByAgentSchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
+  ...ModelCallCountShape,
   task_count: z.number().default(0),
 }).loose();
 
@@ -2179,6 +2192,7 @@ const RuntimeUsageSchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
+  ...ModelCallCountShape,
 }).loose();
 
 export const RuntimeUsageListSchema = z.array(RuntimeUsageSchema);
@@ -2199,6 +2213,7 @@ const RuntimeUsageByAgentSchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
+  ...ModelCallCountShape,
   task_count: z.number().default(0),
 }).loose();
 
@@ -2212,6 +2227,7 @@ const RuntimeUsageByHourSchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
+  ...ModelCallCountShape,
   task_count: z.number().default(0),
 }).loose();
 
