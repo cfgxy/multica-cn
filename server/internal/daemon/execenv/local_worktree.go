@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
@@ -190,6 +191,10 @@ func localWorktreeConversation(params PrepareParams) (key, id string) {
 // LocalWorktree is a prepared worktree plus everything the daemon needs to
 // finalize it after the agent exits.
 type LocalWorktree struct {
+	// lifecycleMu serializes an in-flight branch adoption with Finalize. A
+	// continuation must never expose a checkout on the adopted branch with the
+	// delivery state of the branch Prepare originally created.
+	lifecycleMu sync.Mutex
 	// GitRoot is the user's repository root — the repo that owns the branch.
 	GitRoot string
 	// Path is the worktree root inside the env root.
@@ -632,6 +637,8 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 	if w == nil {
 		return LocalWorktreeOutcome{}, nil
 	}
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
 	outcome := LocalWorktreeOutcome{Branch: w.Branch}
 
 	unlock, err := lockGitRoot(w.GitRoot, logger)
