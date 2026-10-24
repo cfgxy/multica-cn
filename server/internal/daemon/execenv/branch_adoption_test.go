@@ -88,7 +88,10 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 		ConversationID: "source-issue",
 		TaskID:         "source-task",
 	}
-	sourceState := gitRun(t, repo, "commit-tree", "HEAD^{tree}")
+	// A captured user snapshot is rooted at the user's checkout HEAD. Keep the
+	// fixture structurally identical so the follow-up Prepare exercises normal
+	// replay semantics rather than an impossible parentless snapshot.
+	sourceState := gitRun(t, repo, "commit-tree", "main^{tree}", "-p", "main", "-m", "source snapshot")
 	if _, err := writeBranchRecord(repo, sourceBranch, sourceState, sourceTip, adoptionRecordOwner(sourceOwner)); err != nil {
 		t.Fatalf("write source branch record: %v", err)
 	}
@@ -177,6 +180,58 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 	if got, want := record.checkpoint, gitRun(t, repo, "rev-parse", sourceBranch); got != want {
 		t.Fatalf("continuation record checkpoint = %q, want adopted branch tip %q", got, want)
 	}
+
+	// The follow-up task starts from a fresh env root. Its target-derived branch
+	// name is not the adopted source branch, so this proves the durable adoption
+	// index, rather than the in-memory LocalWorktree state, resumes the work line.
+	followUpOwner := targetOwner
+	followUpOwner.TaskID = "target-follow-up-task"
+	followUp, err := PrepareLocalWorktree(LocalWorktreeParams{
+		LocalPath:       repo,
+		EnvRoot:         t.TempDir(),
+		AgentName:       "Target Agent",
+		TaskID:          followUpOwner.TaskID,
+		WorkspaceID:     followUpOwner.WorkspaceID,
+		AgentID:         followUpOwner.AgentID,
+		ConversationID:  followUpOwner.ConversationID,
+		ConversationKey: "RUYI-870",
+	}, worktreeTestLogger())
+	if err != nil {
+		t.Fatalf("PrepareLocalWorktree after adoption: %v", err)
+	}
+	if followUp.Branch != sourceBranch || !followUp.Continued {
+		t.Fatalf("follow-up worktree = branch %q continued %t, want adopted branch %q and continuation", followUp.Branch, followUp.Continued, sourceBranch)
+	}
+	if got := readFile(t, filepath.Join(followUp.WorkDir, "continuation-delivery.txt")); got != "continued delivery\n" {
+		t.Fatalf("follow-up worktree did not retain adopted delivery: %q", got)
+	}
+	finalizeOK(t, followUp)
+
+	// A user can later delete the adopted branch. The private discovery ref must
+	// then be reclaimed rather than recreating that source name from a fresh base.
+	gitRun(t, repo, "branch", "-D", sourceBranch)
+	staleOwner := targetOwner
+	staleOwner.TaskID = "target-after-deletion-task"
+	afterDeletion, err := PrepareLocalWorktree(LocalWorktreeParams{
+		LocalPath:       repo,
+		EnvRoot:         t.TempDir(),
+		AgentName:       "Target Agent",
+		TaskID:          staleOwner.TaskID,
+		WorkspaceID:     staleOwner.WorkspaceID,
+		AgentID:         staleOwner.AgentID,
+		ConversationID:  staleOwner.ConversationID,
+		ConversationKey: "RUYI-870",
+	}, worktreeTestLogger())
+	if err != nil {
+		t.Fatalf("PrepareLocalWorktree after adopted branch deletion: %v", err)
+	}
+	if afterDeletion.Branch == sourceBranch {
+		t.Fatalf("PrepareLocalWorktree recreated deleted adopted branch %q", sourceBranch)
+	}
+	if _, err := gitTry(t, repo, "rev-parse", "--verify", "--quiet", adoptedContinuationRef(adoptionRecordOwner(targetOwner))); err == nil {
+		t.Fatal("deleted adopted branch left its continuation discovery ref behind")
+	}
+	finalizeOK(t, afterDeletion)
 }
 
 func TestAdoptManagedBranchRefusesBeforeBinding(t *testing.T) {
