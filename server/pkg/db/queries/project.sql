@@ -23,6 +23,14 @@ SELECT id FROM project
 WHERE id = $1 AND workspace_id = $2
 FOR UPDATE;
 
+-- name: DeletePromptProposalsByProjectReference :exec
+-- Project deletion removes proposals targeting that carrier as well as moves
+-- whose destination is the deleted project. They cannot be enacted afterward.
+DELETE FROM prompt_proposal
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND ((carrier_scope = 'project' AND carrier_scope_id = sqlc.arg('project_id')::uuid)
+    OR (move_to_scope = 'project' AND move_to_scope_id = sqlc.arg('project_id')::uuid));
+
 -- name: CreateProject :one
 INSERT INTO project (
     workspace_id, title, description, instructions, icon, status,
