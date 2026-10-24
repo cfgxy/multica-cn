@@ -344,6 +344,7 @@ var concurrentIndexCleanups = map[string][]string{
 	"979_credential_capability_task_index_nonunique":            {"credential_capability_task_idx"},
 	"979_credential_audit_id_index":                             {"credential_audit_id_uidx"},
 	"979_credential_audit_workspace_created_index":              {"credential_audit_workspace_created_idx"},
+	"987_task_usage_model_call_evidence_index":                  {"uq_task_usage_model_call_evidence_identity"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

@@ -803,7 +803,8 @@
       "started_prefix": "{{when}}启动",
       "dispatched_prefix": "{{when}}派发",
       "queued_prefix": "{{when}}排队",
-      "queued_backpressure": "等待运行时恢复"
+      "queued_backpressure": "等待运行时恢复",
+      "queued_model_call_budget": "等待模型调用预算窗口推进"
     }
   },
   "char_counter": {

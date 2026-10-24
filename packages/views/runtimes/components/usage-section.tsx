@@ -224,7 +224,7 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
           if the user has saved overrides, so those rates remain editable. */}
       <CustomPricingBar usage={filtered} />
 
-      <div className="grid grid-cols-3 divide-x rounded-lg border bg-card">
+      <div className="grid grid-cols-2 divide-y rounded-lg border bg-card sm:grid-cols-2 sm:divide-x sm:divide-y-0 md:grid-cols-4">
         <KpiCard
           label={t(($) => $.usage.kpi_cost_label, { days })}
           value={
@@ -288,6 +288,23 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
                 output: formatTokens(totals.output),
               })}
             </span>
+          }
+        />
+        <KpiCard
+          label={t(($) => $.usage.kpi_calls_label, { days })}
+          value={
+            <CompactNumberFlow
+              value={totals.modelCallCount}
+              locales={locales}
+              aria-label={String(totals.modelCallCount)}
+            />
+          }
+          hint={
+            totals.modelCallUnknownCount > 0
+              ? t(($) => $.usage.kpi_calls_unknown_hint, {
+                  unknown: totals.modelCallUnknownCount,
+                })
+              : undefined
           }
         />
       </div>
@@ -906,6 +923,8 @@ interface UsageTotals {
   cacheWrite: number;
   cost: number;
   cacheSavings: number;
+  modelCallCount: number;
+  modelCallUnknownCount: number;
 }
 
 function computeTotals(rows: RuntimeUsage[]): UsageTotals {
@@ -917,7 +936,19 @@ function computeTotals(rows: RuntimeUsage[]): UsageTotals {
       cacheWrite: acc.cacheWrite + u.cache_write_tokens,
       cost: acc.cost + estimateCost(u),
       cacheSavings: acc.cacheSavings + estimateCacheSavings(u),
+      modelCallCount: acc.modelCallCount + (u.model_call_count ?? 0),
+      modelCallUnknownCount:
+        acc.modelCallUnknownCount + (u.model_call_unknown_count ?? 0),
     }),
-    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, cacheSavings: 0 },
+    {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      cacheSavings: 0,
+      modelCallCount: 0,
+      modelCallUnknownCount: 0,
+    },
   );
 }

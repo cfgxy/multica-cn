@@ -3046,6 +3046,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/backpressure-settings", h.PutRuntimeBackpressureSettings)
 					r.Delete("/backpressure-settings", h.DeleteRuntimeBackpressureSettings)
 					r.Get("/backpressure-events", h.ListRuntimeBackpressureEvents)
+					r.Get("/model-call-budget", h.GetRuntimeModelCallBudget)
+					r.Put("/model-call-budget", h.PutRuntimeModelCallBudget)
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)
