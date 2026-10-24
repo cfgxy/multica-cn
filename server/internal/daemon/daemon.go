@@ -8812,12 +8812,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// fields or ambient process environment. Register only for the provider
 	// execution window and always remove the credential afterwards.
 	d.registerActiveRepoCheckoutTask(agentToken, activeRepoCheckoutTask{
-		WorkspaceID: task.WorkspaceID,
-		TaskID:      task.ID,
-		AgentID:     task.AgentID,
-		IssueID:     task.IssueID,
-		AgentName:   task.Agent.Name,
-		WorkDir:     env.WorkDir,
+		WorkspaceID:   task.WorkspaceID,
+		TaskID:        task.ID,
+		AgentID:       task.AgentID,
+		IssueID:       task.IssueID,
+		AgentName:     task.Agent.Name,
+		WorkDir:       env.WorkDir,
+		LocalWorktree: env.LocalWorktree,
 	})
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 

@@ -47,6 +47,47 @@ type BranchAdoptionResult struct {
 // marker or branch-record ref is changed. The source record remains the first
 // parent of the new record, retaining its provenance without a parallel ref.
 func AdoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoptionResult, error) {
+	return adoptManagedBranch(gitRoot, adoption)
+}
+
+// AdoptManagedBranch binds the adoption to this running worktree. It holds the
+// same lifecycle lock as Finalize, so a successful checkout, marker, and branch
+// record update become visible to Finalize together with the matching in-memory
+// delivery state.
+func (w *LocalWorktree) AdoptManagedBranch(adoption BranchAdoption) (BranchAdoptionResult, error) {
+	if w == nil {
+		return BranchAdoptionResult{}, errors.New("adopt branch: no running local worktree")
+	}
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
+	if w.aborted != nil {
+		return BranchAdoptionResult{}, fmt.Errorf("adopt branch: local worktree is no longer deliverable: %w", w.aborted)
+	}
+
+	result, err := adoptManagedBranch(w.Path, adoption)
+	if err != nil {
+		return result, err
+	}
+
+	// The new record carries the source branch's exact snapshot tree and names
+	// the continuation owner. It is therefore the only snapshot Finalize may
+	// advance after checkout changes the worktree's branch.
+	w.Branch = result.Branch
+	w.BaseCommit = result.BaseCommit
+	w.DirtyBaseCaptured = false
+	w.Continued = true
+	w.ReplayConflicts = nil
+	w.createdBranch = false
+	w.userState = result.Record
+	w.priorState = result.Record
+	w.owner = adoptionRecordOwner(adoption.TargetOwner)
+	w.tracksState = true
+	w.snapshotPending = false
+
+	return result, nil
+}
+
+func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoptionResult, error) {
 	var result BranchAdoptionResult
 	adoption.Branch = strings.TrimSpace(adoption.Branch)
 	adoption.ExpectedRemoteSHA = strings.TrimSpace(adoption.ExpectedRemoteSHA)
