@@ -156,6 +156,16 @@ WHERE workspace_id = @workspace_id
   AND rule_id = ANY(@rule_ids::uuid[])
 RETURNING *;
 
+-- name: RemoveDeletedPromQLRuleIDsFromWorkspacePolicies :exec
+-- A deleted workspace rule must not leave a stale selection behind. The
+-- workspace settings lock held by the caller serializes this rewrite with
+-- policy saves, while array_remove retains every unrelated selected rule.
+UPDATE agent_backpressure_policy
+SET promql_rule_ids = array_remove(promql_rule_ids, @rule_id::uuid),
+    updated_at = now()
+WHERE workspace_id = @workspace_id
+  AND @rule_id::uuid = ANY(promql_rule_ids);
+
 -- name: DeleteAgentPromQLRulePauses :many
 DELETE FROM agent_promql_rule_pause
 WHERE workspace_id = @workspace_id AND agent_id = @agent_id

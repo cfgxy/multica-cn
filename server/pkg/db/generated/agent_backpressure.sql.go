@@ -605,6 +605,27 @@ func (q *Queries) ListAgentSuppressionEvents(ctx context.Context, arg ListAgentS
 	return items, nil
 }
 
+const removeDeletedPromQLRuleIDsFromWorkspacePolicies = `-- name: RemoveDeletedPromQLRuleIDsFromWorkspacePolicies :exec
+UPDATE agent_backpressure_policy
+SET promql_rule_ids = array_remove(promql_rule_ids, $1::uuid),
+    updated_at = now()
+WHERE workspace_id = $2
+  AND $1::uuid = ANY(promql_rule_ids)
+`
+
+type RemoveDeletedPromQLRuleIDsFromWorkspacePoliciesParams struct {
+	RuleID      pgtype.UUID `json:"rule_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// A deleted workspace rule must not leave a stale selection behind. The
+// workspace settings lock held by the caller serializes this rewrite with
+// policy saves, while array_remove retains every unrelated selected rule.
+func (q *Queries) RemoveDeletedPromQLRuleIDsFromWorkspacePolicies(ctx context.Context, arg RemoveDeletedPromQLRuleIDsFromWorkspacePoliciesParams) error {
+	_, err := q.db.Exec(ctx, removeDeletedPromQLRuleIDsFromWorkspacePolicies, arg.RuleID, arg.WorkspaceID)
+	return err
+}
+
 const selectAgentErrorRateSuppressionHolders = `-- name: SelectAgentErrorRateSuppressionHolders :many
 SELECT sp.id, sp.workspace_id, sp.agent_id, sp.reason, sp.created_by, sp.created_at FROM scheduling_pause sp
 JOIN agent a ON a.id = sp.agent_id AND a.workspace_id = sp.workspace_id

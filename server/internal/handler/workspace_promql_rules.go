@@ -65,7 +65,8 @@ func decodeWorkspacePromQLRequest(r *http.Request, target any) error {
 
 func (h *Handler) GetWorkspacePromQLRules(w http.ResponseWriter, r *http.Request) {
 	workspaceID := h.resolveWorkspaceID(r)
-	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+	member, ok := h.workspaceMember(w, r, workspaceID)
+	if !ok {
 		return
 	}
 	workspace, err := h.Queries.GetWorkspace(r.Context(), parseUUID(workspaceID))
@@ -80,9 +81,70 @@ func (h *Handler) GetWorkspacePromQLRules(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to read PromQL rules")
 		return
 	}
+	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
+	if actorType == "member" && !roleAllowed(member.Role, "owner", "admin") {
+		accessible, accessOK := h.accessibleAgentIDs(r.Context(), workspaceID, actorType, actorID, member.Role)
+		if !accessOK {
+			slog.Error("resolve visible agents for workspace PromQL rules failed", "workspace_id", workspaceID)
+			writeError(w, http.StatusInternalServerError, "failed to read PromQL rules")
+			return
+		}
+		config = filterPromQLRulesForVisibleAgents(config, accessible)
+	}
 	writeJSON(w, http.StatusOK, workspacePromQLRulesResponse{
 		Rules: config.Rules, PrometheusConfigured: h.Prometheus != nil && h.Prometheus.Enabled(),
 	})
+}
+
+// filterPromQLRulesForVisibleAgents removes every inaccessible agent's state
+// from an agent-grouped rule. A member can still inspect the selected rule's
+// own visible agents, but cannot use workspace-wide rule reads to enumerate a
+// private agent or infer its evaluation state from the aggregate state.
+func filterPromQLRulesForVisibleAgents(config promrules.Config, visible map[string]struct{}) promrules.Config {
+	out := promrules.Config{Rules: append([]promrules.Rule(nil), config.Rules...)}
+	for i := range out.Rules {
+		rule := &out.Rules[i]
+		if rule.Grouping != promrules.GroupAgent {
+			continue
+		}
+
+		states := make(map[string]promrules.RuleState)
+		for agentID, state := range rule.AgentStates {
+			if _, allowed := visible[agentID]; !allowed {
+				continue
+			}
+			values := make([]promrules.Sample, 0, len(state.Values))
+			for _, sample := range state.Values {
+				if sampleAgentID, hasAgentID := sample.Labels["agent_id"]; hasAgentID && sampleAgentID == agentID {
+					values = append(values, sample)
+				}
+			}
+			state.Values = values
+			states[agentID] = state
+		}
+		rule.AgentStates = states
+
+		values := make([]promrules.Sample, 0, len(rule.State.Values))
+		for _, sample := range rule.State.Values {
+			agentID, hasAgentID := sample.Labels["agent_id"]
+			if _, allowed := visible[agentID]; hasAgentID && allowed {
+				values = append(values, sample)
+			}
+		}
+		rule.State.Values = values
+		rule.State.Firing = false
+		rule.State.PendingSince = nil
+		for _, state := range states {
+			if state.Firing {
+				rule.State.Firing = true
+			}
+			if state.PendingSince != nil && (rule.State.PendingSince == nil || state.PendingSince.Before(*rule.State.PendingSince)) {
+				pending := *state.PendingSince
+				rule.State.PendingSince = &pending
+			}
+		}
+	}
+	return out
 }
 
 func (h *Handler) PutWorkspacePromQLRules(w http.ResponseWriter, r *http.Request) {
@@ -166,6 +228,7 @@ func (h *Handler) PutWorkspacePromQLRules(w http.ResponseWriter, r *http.Request
 		}
 	}
 	ruleIDsToClear := make([]pgtype.UUID, 0, len(ruleClearCauses))
+	deletedRuleIDs := make([]pgtype.UUID, 0)
 	for ruleID := range ruleClearCauses {
 		parsed, parseErr := util.ParseUUID(ruleID)
 		if parseErr != nil {
@@ -174,6 +237,19 @@ func (h *Handler) PutWorkspacePromQLRules(w http.ResponseWriter, r *http.Request
 			return
 		}
 		ruleIDsToClear = append(ruleIDsToClear, parsed)
+		if ruleClearCauses[ruleID] == "rule_deleted" {
+			deletedRuleIDs = append(deletedRuleIDs, parsed)
+		}
+	}
+	for _, ruleID := range deletedRuleIDs {
+		if err := qtx.RemoveDeletedPromQLRuleIDsFromWorkspacePolicies(ctx, db.RemoveDeletedPromQLRuleIDsFromWorkspacePoliciesParams{
+			WorkspaceID: workspaceUUID,
+			RuleID:      ruleID,
+		}); err != nil {
+			slog.Error("remove deleted PromQL rule selections failed", "workspace_id", workspaceID, "rule_id", util.UUIDToString(ruleID), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to save PromQL rules")
+			return
+		}
 	}
 	releasedPauses := []db.AgentPromqlRulePause{}
 	if len(ruleIDsToClear) > 0 {
