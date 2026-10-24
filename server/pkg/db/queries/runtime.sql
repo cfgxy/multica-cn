@@ -26,6 +26,18 @@ WHERE id = sqlc.arg('id')::uuid
   AND EXISTS (SELECT 1 FROM capacity_lock)
 RETURNING *;
 
+-- name: UpdateAgentRuntimeModelCallBudget :one
+-- The budget is per runtime. Provider-call consumption is calculated from
+-- task_usage separately at claim time; these columns only configure that
+-- admission check and never receive daemon-reported usage.
+UPDATE agent_runtime
+SET model_call_budget_enabled = @model_call_budget_enabled,
+    model_call_budget_max_calls = @model_call_budget_max_calls,
+    model_call_budget_window_seconds = @model_call_budget_window_seconds,
+    updated_at = now()
+WHERE id = @id
+RETURNING *;
+
 -- name: LockRuntimeClaimCapacity :exec
 -- Serializes capacity-bearing claims across every agent hosted by this runtime.
 SELECT pg_advisory_xact_lock(hashtextextended(@runtime_id::text || ':runtime_claim_capacity', 0));

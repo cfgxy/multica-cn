@@ -84,3 +84,17 @@ export function runtimeBackpressureEventsOptions(runtimeId: string) {
     staleTime: 30 * 1000,
   });
 }
+
+export const runtimeModelCallBudgetKeys = {
+  budget: (rid: string) => ["runtimes", "model-call-budget", rid] as const,
+};
+
+export function runtimeModelCallBudgetOptions(runtimeId: string) {
+  return queryOptions({
+    queryKey: runtimeModelCallBudgetKeys.budget(runtimeId),
+    queryFn: () => api.getRuntimeModelCallBudget(runtimeId),
+    // A rolling admission window changes without a mutation, so refresh this
+    // server-derived state promptly when the operator returns to the page.
+    staleTime: 15 * 1000,
+  });
+}

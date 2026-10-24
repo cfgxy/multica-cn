@@ -8957,18 +8957,22 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Convert agent usage map to task usage entries.
 	var usageEntries []TaskUsageEntry
 	for model, u := range result.Usage {
-		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 {
+		evidenceIDs := u.ModelCallEvidenceIDs()
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 && len(evidenceIDs) == 0 {
 			continue
 		}
 		usageEntries = append(usageEntries, TaskUsageEntry{
-			Provider:         provider,
-			Model:            model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUSDTicks:     u.CostUSDTicks,
-			ContextTokens:    u.ContextTokens,
+			Provider:                  provider,
+			Model:                     model,
+			InputTokens:               u.InputTokens,
+			OutputTokens:              u.OutputTokens,
+			CacheReadTokens:           u.CacheReadTokens,
+			CacheWriteTokens:          u.CacheWriteTokens,
+			CostUSDTicks:              u.CostUSDTicks,
+			ContextTokens:             u.ContextTokens,
+			ModelCallEvidenceIDs:      evidenceIDs,
+			ModelCallEvidenceComplete: len(evidenceIDs) > 0 && !u.ModelCallEvidenceIncomplete,
+			ModelCallCount:            u.ModelCallCount,
 			// Run-scoped (RUYI-154), not per-model — same values on every
 			// entry of this run; see TaskUsageEntry.Turns.
 			Turns:            result.Turns,
@@ -10018,6 +10022,18 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 		existing.CacheReadTokens += u.CacheReadTokens
 		existing.CacheWriteTokens += u.CacheWriteTokens
 		existing.CostUSDTicks += u.CostUSDTicks
+		// Each retry attempt can issue distinct provider calls. Preserve every
+		// raw identity and let the database's task/provider uniqueness key
+		// deduplicate any replayed provider event across attempts.
+		for _, evidenceID := range u.ModelCallEvidenceIDs() {
+			existing = existing.WithModelCallEvidence(evidenceID)
+		}
+		existing.ModelCallEvidenceIncomplete = existing.ModelCallEvidenceIncomplete || u.ModelCallEvidenceIncomplete
+		if existing.ModelCallEvidenceIncomplete {
+			existing.ModelCallCount = 0
+		} else {
+			existing.ModelCallCount = int64(len(existing.ModelCallEvidenceIDs()))
+		}
 		merged[model] = existing
 	}
 	return merged

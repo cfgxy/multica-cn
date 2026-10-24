@@ -803,6 +803,26 @@ function UsagePane(props: UsagePaneProps) {
         />
       </View>
 
+      {/* Model API call KPI (migration 987): rendered only when the window
+          actually has data. The value is the known half; rows whose provider
+          gave no call evidence stay in the hint, never folded into the
+          number (contract: unknown must not read as 0). */}
+      {props.totals.modelCallCount > 0 || props.totals.modelCallUnknownCount > 0 ? (
+        <View className="mt-3 flex-row gap-3">
+          <KpiCard
+            label={t("kpi.calls_label", "Calls · {{days}}D", { days: props.windowLen })}
+            value={formatCompactNumber(props.totals.modelCallCount)}
+            hint={
+              props.totals.modelCallUnknownCount > 0
+                ? t("kpi.calls_unknown_hint", "{{unknown}} rows unreported", {
+                    unknown: props.totals.modelCallUnknownCount,
+                  })
+                : undefined
+            }
+          />
+        </View>
+      ) : null}
+
       <TrendCard
         allowedDims={props.allowedDims}
         dim={props.dim}

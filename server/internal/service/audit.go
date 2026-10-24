@@ -117,9 +117,9 @@ const (
 	// transition carrying every flipped card id).
 	AuditIssueDecisionCardsAutoCancelled = "issue.decision_cards_auto_cancelled"
 	// RUYI-690: issue suspension lifecycle (orthogonal "waiting" dimension).
-	AuditIssueSuspended             = "issue.suspended"
-	AuditIssueSuspensionResumed     = "issue.suspension_resumed"
-	AuditIssueSuspensionCancelled   = "issue.suspension_cancelled"
+	AuditIssueSuspended           = "issue.suspended"
+	AuditIssueSuspensionResumed   = "issue.suspension_resumed"
+	AuditIssueSuspensionCancelled = "issue.suspension_cancelled"
 	// RUYI-863: question-card lifecycle. Cancel is the member-side terminal
 	// act and restore flips a cancelled card back to open — both carry the
 	// acting member + the from/to status in details so the audit surface
@@ -149,8 +149,9 @@ const (
 	// that pauses task claims on a host. Scheduling-affecting config gets
 	// the same fail-closed trail as the freeze switch; details carry the
 	// daemon_id and the full old→new cards.
-	AuditOpsBackpressureSettingsUpdated = "ops.backpressure_settings_updated"
-	AuditOpsBackpressureSettingsRemoved = "ops.backpressure_settings_removed"
+	AuditOpsBackpressureSettingsUpdated   = "ops.backpressure_settings_updated"
+	AuditOpsBackpressureSettingsRemoved   = "ops.backpressure_settings_removed"
+	AuditOpsRuntimeModelCallBudgetUpdated = "ops.runtime_model_call_budget_updated"
 
 	AuditMCPInvocationStarted  = "mcp.invocation_started"
 	AuditMCPInvocationFinished = "mcp.invocation_finished"
