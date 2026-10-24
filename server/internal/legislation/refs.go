@@ -14,10 +14,15 @@
 //     cleanly; the rule belongs in the static text instead.
 //
 // Plus the deterministic-ordering invariant: when a post-enact carrier text
-// carries marker regions, they must be well-formed (clausemark.Parse strict)
-// and in ascending slug order — the same total order the effective-set SQL
-// (ORDER BY scope_rank, c.slug) and clausemark.Render emit; re-rendering is
-// byte-stable only under it.
+// carries marker regions, their open tags must sit in ascending slug order
+// — the same total order the effective-set SQL (ORDER BY scope_rank,
+// c.slug) and clausemark.Render emit; re-rendering is byte-stable only
+// under it. The gate judges the legacy engine's synthesis INTERMEDIATE,
+// which may carry marker fragments the re-renderer (clausemark.Render's
+// tolerant StripMarkers) converges before the text lands in the carrier
+// column — so the region inventory is observed with the same tolerant
+// open-tag scan (clausemark.ScanMarkers), never a strict Parse: a region
+// the re-renderer heals must not gate-block the proposal that produced it.
 package legislation
 
 import (
@@ -35,14 +40,11 @@ import (
 // alnum makes it not a reference.
 var refRe = regexp.MustCompile(`\bcls_[0-9a-z]{8}\b`)
 
-// clauseMarkRe spot-checks whether a text even carries clause markers, so
-// the ordering scan can skip plain documents.
-var clauseMarkRe = regexp.MustCompile(`<!--\s*clause:id=|<!--\s*/clause\s*-->`)
-
 // RefUniverse is the reference universe one gate run validates against:
-// the post-enact state of the workspace's active clause library plus the
+// the post-enact state of the workspace's active clause library, the
 // post-enact text and static heading set of every carrier the enactment
-// touches.
+// re-renders, and the current static context of every carrier it does not
+// touch — the set a remove can orphan without the gate ever seeing it.
 type RefUniverse struct {
 	// Bodies: slug -> clause body in the post-enact state (the proposal's
 	// own new/revised body replaces the stored one; a removed clause's
@@ -54,9 +56,20 @@ type RefUniverse struct {
 	// Headings: carrier key -> the carrier's static `## ` section titles
 	// (post-enact text).
 	Headings map[string][]string
-	// Texts: carrier key -> the post-enact carrier text the ordering check
-	// scans.
+	// Texts: carrier key -> the post-enact carrier text of the carriers this
+	// enactment re-renders; both the ordering check and the static
+	// missing-ref check scan these.
 	Texts map[string]string
+	// StaticTexts: carrier key -> the CURRENT full text of a carrier the
+	// enactment does NOT re-render. Its text is unchanged by this proposal,
+	// so only the static missing-ref rule applies to it — a forward ref to a
+	// clause that leaves the active set would otherwise dangle in the runtime
+	// prompt. The ordering check never runs over it (its regions are
+	// inherited debt the next successful enactment heals; scanning them here
+	// would misreport that debt as newly introduced). Marker regions are
+	// stripped tolerantly by the ref scan: their ids are snapshot debt, not
+	// static references.
+	StaticTexts map[string]string
 	// CurrentTexts: carrier key -> the pre-proposal carrier text. Present so
 	// rule 4 can tell a NEWLY introduced out-of-order region (error) from
 	// inherited legacy disorder (warning — the re-renderer heals it on the
@@ -175,60 +188,77 @@ func CheckClauseRefs(u *RefUniverse) []Finding {
 		}
 	}
 
-	// 4) 确定性顺序: marker regions in a post-enact carrier text must be
-	// well-formed and in ascending slug order. A disorder the pre-proposal
-	// text already had is inherited legacy debt the re-renderer heals on
-	// the next successful enactment — reporting it as an error would
-	// deadlock that carrier behind itself — so it downgrades to a warning.
-	// Disorder the proposal newly introduced is a hard error.
+	// 4) 确定性顺序: the well-formed open tags of a post-enact carrier
+	// text must sit in ascending slug order. Region fragments the legacy
+	// synthesis leaves behind (an orphaned closer, an unclosed opener)
+	// are not judged here: the re-renderer's tolerant strip converges
+	// them before the text lands in the carrier column. A DISORDER the
+	// pre-proposal text already had is inherited legacy debt the re-renderer
+	// heals on the next successful enactment — reporting it as an error
+	// would deadlock that carrier behind itself — so it downgrades to a
+	// warning. Disorder the proposal newly introduced is a hard error.
 	//
 	// 5) 静态缺失引用: the owner permits the forward direction — the static
 	// carrier context naming active clause slugs — but a static text that
 	// names a slug the post-enact universe no longer carries is the same
-	// 缺失引用 class and fails closed.
-	keys := make([]string, 0, len(u.Texts))
+	// 缺失引用 class and fails closed. The scan covers BOTH the stable
+	// halves of the post-enact texts of the carriers this enactment
+	// re-renders (Texts) and the current static text of every carrier it
+	// leaves untouched (StaticTexts): a remove must not orphan a forward
+	// reference that lives in a sibling tier's prompt, which the re-render
+	// never rewrites.
+	findStaticMissingRefs := func(static, origin string) {
+		for _, m := range refRe.FindAllString(static, -1) {
+			if !seen[m] && m != SelfAlias {
+				out = append(out, Finding{Level: "error",
+					Message: fmt.Sprintf("缺失引用：%s 载体的静态上下文引用了不在空间 active 条款库中的编号 %s（引用必须指向 active 条款；不存在的编号运行时不会被注入）", origin, m)})
+			}
+		}
+	}
+	keys := make([]string, 0, len(u.Texts)+len(u.StaticTexts))
 	for k := range u.Texts {
+		keys = append(keys, k)
+	}
+	for k := range u.StaticTexts {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		text := u.Texts[k]
-		if !clauseMarkRe.MatchString(text) {
+		scope := strings.SplitN(k, "\x00", 2)[0]
+		post, postOK := u.Texts[k]
+		if !postOK {
+			// Untouched carrier: the proposal leaves its text unchanged, so
+			// only the static missing-ref rule can newly break. Marker
+			// regions are that carrier's own snapshot debt (healed by the
+			// next enactment that re-renders IT, out of this gate's scope),
+			// so they are stripped tolerantly and their clause bodies are
+			// not re-judged here — clause-body refs are rule 1's domain.
+			findStaticMissingRefs(clausemark.StripMarkers(u.StaticTexts[k]), scope)
+			continue
+		}
+		refs := clausemark.ScanMarkers(post)
+		if len(refs) == 0 {
 			// No markers: the whole text is static; a bare slug mention is
 			// still a reference that must resolve.
-			for _, m := range refRe.FindAllString(text, -1) {
-				if !seen[m] && m != SelfAlias {
-					out = append(out, Finding{Level: "error",
-						Message: fmt.Sprintf("缺失引用：静态上下文引用了不在空间 active 条款库中的编号 %s（引用必须指向 active 条款；不存在的编号运行时不会被注入）", m)})
-				}
-			}
+			findStaticMissingRefs(post, scope)
 			continue
 		}
-		doc, err := clausemark.Parse(text)
-		if err != nil {
-			out = append(out, Finding{Level: "error",
-				Message: fmt.Sprintf("条款区段损坏：%v（渲染区段必须保持良构；确定性重渲染依赖严格解析）", err)})
-			continue
-		}
-		// 5) the stable half of the parsed text is the static context.
-		for _, m := range refRe.FindAllString(doc.Stable, -1) {
-			if !seen[m] && m != SelfAlias {
-				out = append(out, Finding{Level: "error",
-					Message: fmt.Sprintf("缺失引用：静态上下文引用了不在空间 active 条款库中的编号 %s（引用必须指向 active 条款；不存在的编号运行时不会被注入）", m)})
-			}
-		}
+		// 5) The stable half — exactly what the re-renderer's tolerant
+		// strip leaves before it re-emits the region — is the static
+		// context; region bodies are rule 1's domain, not static refs.
+		findStaticMissingRefs(clausemark.StripMarkers(post), scope)
 		inherited := false
 		if current, ok := u.CurrentTexts[k]; ok {
 			inherited = hasOutOfOrderSegment(current)
 		}
-		for i, seg := range doc.Segments {
-			if i > 0 && seg.Slug < doc.Segments[i-1].Slug {
+		for i := range refs {
+			if i > 0 && refs[i].Slug < refs[i-1].Slug {
 				level, what := "error", "条款区段顺序非升序（本提案引入）："
 				if inherited {
 					level, what = "warning", "条款区段顺序非升序（继承自提案前文本，下次成功立法渲染时自愈）："
 				}
 				out = append(out, Finding{Level: level,
-					Message: what + fmt.Sprintf("区域 %s 出现在 %s 之后（确定性渲染要求按 slug 升序排列区段，渲染输出才会逐字节稳定）", seg.Slug, doc.Segments[i-1].Slug)})
+					Message: what + fmt.Sprintf("区域 %s 出现在 %s 之后（确定性渲染要求按 slug 升序排列区段，渲染输出才会逐字节稳定）", refs[i].Slug, refs[i-1].Slug)})
 			}
 		}
 	}
@@ -236,20 +266,15 @@ func CheckClauseRefs(u *RefUniverse) []Finding {
 	return out
 }
 
-// hasOutOfOrderSegment reports whether text's marker regions already sit
-// out of ascending-slug order (or are unparseable, which the re-renderer
-// must also heal). It observes like clausemark.ScanMarkers: malformed
-// input degrades to "inherited", never blocks.
+// hasOutOfOrderSegment reports whether text's marker open tags already sit
+// out of ascending-slug order — the inherited-disorder signal for rule 4.
+// It observes the well-formed open tags with clausemark.ScanMarkers, the
+// same inventory the main scan uses: a fragment the re-renderer will heal
+// degrades to "inherited", never blocks.
 func hasOutOfOrderSegment(text string) bool {
-	if !clauseMarkRe.MatchString(text) {
-		return false
-	}
-	doc, err := clausemark.Parse(text)
-	if err != nil {
-		return true // a damaged region is legacy debt the re-render converges
-	}
-	for i := range doc.Segments {
-		if i > 0 && doc.Segments[i].Slug < doc.Segments[i-1].Slug {
+	refs := clausemark.ScanMarkers(text)
+	for i := range refs {
+		if i > 0 && refs[i].Slug < refs[i-1].Slug {
 			return true
 		}
 	}

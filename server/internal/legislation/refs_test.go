@@ -187,6 +187,51 @@ func TestRefContractStaticForwardRefPasses(t *testing.T) {
 	}
 }
 
+// 静态缺失引用 across carriers: an untouched carrier's static context
+// naming a slug the post-enact universe no longer carries (remove_clause)
+// fails closed — the forward reference would dangle in a runtime prompt
+// the re-render never rewrites.
+func TestRefContractStaticMissingRefUntouchedCarrier(t *testing.T) {
+	gone := mustSlug(t, "aaaa00ff")
+	u := &RefUniverse{
+		Bodies:       map[string]string{},
+		Binding:      map[string]string{},
+		Headings:     map[string][]string{},
+		StaticTexts:  map[string]string{"project\x00proj": "## 沟通规范\n\n参见 " + gone + " 的约定。"},
+		Texts:        map[string]string{"workspace\x00ws": "## 沟通规范\n\n- **行文基调**：正式。"},
+		CurrentTexts: map[string]string{},
+	}
+	findings := CheckClauseRefs(u)
+	f := findFinding(t, findings, "缺失引用")
+	if f.Level != "error" {
+		t.Fatalf("untouched carrier dangling ref must be an error, got %s", f.Level)
+	}
+	if !strings.Contains(f.Message, "project") {
+		t.Fatalf("finding must name the offending scope, got: %s", f.Message)
+	}
+}
+
+// 静态正向引用 across carriers: an untouched carrier's static context
+// naming a slug that IS in the post-enact universe passes — the owner's
+// permitted forward direction, regardless of which tier the reference
+// lives in.
+func TestRefContractStaticForwardRefUntouchedCarrierPasses(t *testing.T) {
+	live := mustSlug(t, "aaaa0001")
+	u := &RefUniverse{
+		Bodies:  map[string]string{live: "- 每日同步：开工前回报当日计划"},
+		Binding: map[string]string{live: "workspace\x00ws"},
+		Headings: map[string][]string{
+			"workspace\x00ws": {},
+		},
+		StaticTexts:  map[string]string{"squad\x00sq": "## 沟通规范\n\n参见 " + live + " 的约定。"},
+		Texts:        map[string]string{},
+		CurrentTexts: map[string]string{},
+	}
+	if findings := CheckClauseRefs(u); len(findings) != 0 {
+		t.Fatalf("untouched carrier static forward ref must pass, got %+v", findings)
+	}
+}
+
 // 确定性顺序, newly introduced: a synthesized carrier text whose region
 // sits out of ascending-slug order is a gate error.
 func TestRefContractOrderNewlyIntroduced(t *testing.T) {
@@ -251,9 +296,11 @@ func TestRefContractOrderAscendingPasses(t *testing.T) {
 	}
 }
 
-// A damaged region (unclosed marker) is an error: the re-renderer cannot
-// converge unparseable text into a byte-stable snapshot.
-func TestRefContractDamagedRegionFails(t *testing.T) {
+// A region fragment the legacy synthesis leaves behind (an open tag whose
+// closer the bold-label span cut off) must NOT block the gate: the
+// re-renderer's tolerant strip converges it before the text lands in the
+// carrier column, so the gate observes open tags, not well-formedness.
+func TestRefContractRegionFragmentNotGated(t *testing.T) {
 	u := &RefUniverse{
 		Bodies:       map[string]string{},
 		Binding:      map[string]string{},
@@ -263,8 +310,26 @@ func TestRefContractDamagedRegionFails(t *testing.T) {
 			"workspace\x00ws": "## 沟通规范\n\n" + clausemark.OpenTag(mustSlug(t, "aaaa0001"), 1) + "\nbody",
 		},
 	}
-	findings := CheckClauseRefs(u)
-	findFinding(t, findings, "条款区段损坏")
+	if findings := CheckClauseRefs(u); len(findings) != 0 {
+		t.Fatalf("a re-renderer-healable region fragment must not gate-block, got %+v", findings)
+	}
+}
+
+// An orphaned closer on its own is likewise fragment, not finding: the
+// tolerant strip drops it and the stable half is all that is judged.
+func TestRefContractOrphanedCloserNotGated(t *testing.T) {
+	u := &RefUniverse{
+		Bodies:       map[string]string{},
+		Binding:      map[string]string{},
+		Headings:     map[string][]string{},
+		CurrentTexts: map[string]string{},
+		Texts: map[string]string{
+			"workspace\x00ws": "## 沟通规范\n\n- 静态条文。\n" + clausemark.CloseTag(),
+		},
+	}
+	if findings := CheckClauseRefs(u); len(findings) != 0 {
+		t.Fatalf("an orphaned closer must not gate-block, got %+v", findings)
+	}
 }
 
 // findCycle is deterministic: the same graph yields the same cycle.

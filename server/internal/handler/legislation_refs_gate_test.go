@@ -25,6 +25,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/clausemark"
 )
 
@@ -39,6 +40,17 @@ func clauseSlugOfProposal(t *testing.T, wsID, proposalID string) string {
 		t.Fatalf("read clause slug: %v", err)
 	}
 	return slug
+}
+
+// clauseStatus reads the clause row's status by its asset id.
+func clauseStatus(t *testing.T, clauseID string) string {
+	t.Helper()
+	var status string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT status FROM clause WHERE id = $1`, clauseID).Scan(&status); err != nil {
+		t.Fatalf("read clause status: %v", err)
+	}
+	return status
 }
 
 // createProposal posts a raw proposal body (the shared createDraft helper
@@ -187,6 +199,57 @@ func TestRefsGateCycleRejected(t *testing.T) {
 	errs := gateErrorsRow(t, wsID, idR)
 	if !strings.Contains(errs, "循环引用") {
 		t.Fatalf("gate_errors missing the 循环引用 finding: %s", errs)
+	}
+}
+
+// TestRefsGateRemoveDanglingStaticRefUntouchedCarrierRejected: removing a
+// clause that an UNTOUCHED carrier's static context references is
+// gate_failed — the proposal's own carrier is re-rendered and drops the
+// clause, but a sibling tier's prompt names the slug; the re-render of the
+// removed carrier never rewrites the sibling, so the forward reference
+// would dangle in the runtime prompt. The gate scans every carrier tier,
+// not just the ones the enactment locks.
+func TestRefsGateRemoveDanglingStaticRefUntouchedCarrierRejected(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	var slug string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT slug FROM clause WHERE id = $1`, clauseID).Scan(&slug); err != nil {
+		t.Fatalf("read clause slug: %v", err)
+	}
+	if slug == "" {
+		t.Fatal("enacted clause has no slug")
+	}
+	// Second carrier on a different tier: a plain agent whose static
+	// prompt cites the clause — the owner's permitted forward direction
+	// static -> clause.
+	dbfx.Agent(t, "refs static carrier", f.runtimeID, testutil.Cols{
+		"workspace_id": f.wsID,
+		"instructions": "任务单回报须按 " + slug + " 的约定执行。",
+	})
+
+	body := legislationProposalBody(f.wsID, "每日同步", "")
+	body.ChangeKind = "remove_clause"
+	body.ClauseID = clauseID
+	idR := createProposal(t, f.wsID, f.memberID, body)
+	submitDraft(t, f.wsID, f.memberID, idR)
+	code, resp := ownerApprove(t, f.ownerID, f.wsID, idR)
+	if code != http.StatusConflict {
+		t.Fatalf("remove leaving an untouched-carrier static ref: expected 409 gate-failed, got %d: %s", code, resp)
+	}
+	errs := gateErrorsRow(t, f.wsID, idR)
+	if !strings.Contains(errs, "缺失引用") {
+		t.Fatalf("gate_errors missing the 缺失引用 finding: %s", errs)
+	}
+	if !strings.Contains(errs, "agent") {
+		t.Fatalf("gate_errors must name the offending scope (agent tier): %s", errs)
+	}
+	// The clause survives the rejected remove.
+	if status := clauseStatus(t, clauseID); status != "active" {
+		t.Fatalf("clause status after rejected remove = %q, want active", status)
 	}
 }
 

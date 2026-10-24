@@ -1242,6 +1242,55 @@ func (q *Queries) ListRetrospectiveRuns(ctx context.Context, workspaceID pgtype.
 	return items, nil
 }
 
+const listWorkspaceCarrierTexts = `-- name: ListWorkspaceCarrierTexts :many
+SELECT id AS scope_id, COALESCE(context, '')::text AS effective_content, 'workspace'::text AS scope
+FROM workspace WHERE id = $1::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'project'
+FROM project WHERE workspace_id = $1::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'squad'
+FROM squad WHERE workspace_id = $1::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'agent'
+FROM agent WHERE workspace_id = $1::uuid
+ORDER BY scope, scope_id
+`
+
+type ListWorkspaceCarrierTextsRow struct {
+	ScopeID          pgtype.UUID `json:"scope_id"`
+	EffectiveContent string      `json:"effective_content"`
+	Scope            string      `json:"scope"`
+}
+
+// The reference-contract universe (RUYI-869): every carrier tier in the
+// workspace — the one workspace row, every project/squad row and every
+// agent row. The legislation gate reads it inside the enactment
+// transaction: the carriers it row-locks see a consistent snapshot, and
+// the ones it does not lock are exactly the tiers whose static text a
+// remove could orphan without the gate ever seeing it. No condition
+// filtering (this is the reference check, not the injection set) and no
+// LIMIT (a truncated scan would leave a fail-closed check incomplete).
+func (q *Queries) ListWorkspaceCarrierTexts(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceCarrierTextsRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceCarrierTexts, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceCarrierTextsRow{}
+	for rows.Next() {
+		var i ListWorkspaceCarrierTextsRow
+		if err := rows.Scan(&i.ScopeID, &i.EffectiveContent, &i.Scope); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markPromptProposalGateFailed = `-- name: MarkPromptProposalGateFailed :one
 UPDATE prompt_proposal SET status = 'gate_failed',
     gate_errors = $1::jsonb, gate_warnings = $2::jsonb,

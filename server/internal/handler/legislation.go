@@ -476,7 +476,14 @@ func (h *Handler) failGateInTx(ctx context.Context, r *http.Request, qtx *db.Que
 // joins the ordering check: when a marker region sits out of ascending-slug
 // order, re-rendering is no longer byte-stable and the proposal fails
 // closed. The static heading set of each touched carrier feeds the
-// 反向静态引用 check.
+// 反向静态引用 check. Every OTHER carrier in the workspace (workspace,
+// project, squad and agent tiers the proposal does not re-render) joins
+// the check as a static-text carrier: a remove_clause may not orphan a
+// forward static reference that lives in one of them, so their current
+// static context — marker regions stripped — feeds the 缺失引用 scan.
+// Read inside the enactment transaction: the row-locked carriers see a
+// consistent snapshot, and the unlocked tiers are exactly the ones this
+// read reaches for. A read failure stays fail-closed.
 func (h *Handler) refContractGate(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, texts, synth map[carrierRef]string) []legislation.Finding {
 	// The static universe: the workspace's active clauses. A read failure is
 	// fail-closed, not a skip.
@@ -513,6 +520,7 @@ func (h *Handler) refContractGate(ctx context.Context, qtx *db.Queries, workspac
 		Binding:      binding,
 		Headings:     map[string][]string{},
 		Texts:        map[string]string{},
+		StaticTexts:  map[string]string{},
 		CurrentTexts: map[string]string{},
 		SelfSlug:     selfNode,
 		SelfBody:     selfBody,
@@ -541,6 +549,25 @@ func (h *Handler) refContractGate(ctx context.Context, qtx *db.Queries, workspac
 		u.Texts[key] = text
 		u.CurrentTexts[key] = currentByKey[key]
 		u.Headings[key] = legislation.Sections(text)
+	}
+	// Static text of every carrier the proposal does NOT re-render — the
+	// workspace tier plus each project/squad/agent tier. Read inside the
+	// enactment transaction so the row-locked carriers stay consistent;
+	// the unlocked tiers are exactly what a remove could orphan without
+	// the gate seeing them. Raw current text: the check side decides how
+	// to treat marker regions (tolerant strip, see legislation package).
+	// Touched carriers already hold their post-enact synthesized text in
+	// u.Texts, so they are excluded here.
+	untouched, err := qtx.ListWorkspaceCarrierTexts(ctx, workspaceID)
+	if err != nil {
+		return []legislation.Finding{{Level: "error", Message: fmt.Sprintf("条款引用契约检查失败，已阻断（fail-closed）：%v", err)}}
+	}
+	for _, row := range untouched {
+		key := carrierKey(row.Scope, row.ScopeID)
+		if _, touched := u.Texts[key]; touched {
+			continue
+		}
+		u.StaticTexts[key] = row.EffectiveContent
 	}
 	findings := legislation.CheckClauseRefs(u)
 	errs := make([]legislation.Finding, 0, len(findings))

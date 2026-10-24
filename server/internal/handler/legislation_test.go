@@ -126,6 +126,7 @@ type proposalReqBody struct {
 	TargetSection       string              `json:"target_section"`
 	ChangeKind          string              `json:"change_kind"`
 	ClauseName          string              `json:"clause_name"`
+	ClauseID            string              `json:"clause_id,omitempty"`
 	ClauseText          string              `json:"clause_text"`
 	GateAnswerLayer     string              `json:"gate_answer_layer"`
 	GateAnswerRetention string              `json:"gate_answer_retention"`

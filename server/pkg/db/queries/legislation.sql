@@ -207,6 +207,28 @@ WHERE squad.id = $1 AND squad.workspace_id = $2;
 SELECT COALESCE(instructions, '')::text AS effective_content FROM agent
 WHERE agent.id = $1 AND agent.workspace_id = $2;
 
+-- name: ListWorkspaceCarrierTexts :many
+-- The reference-contract universe (RUYI-869): every carrier tier in the
+-- workspace — the one workspace row, every project/squad row and every
+-- agent row. The legislation gate reads it inside the enactment
+-- transaction: the carriers it row-locks see a consistent snapshot, and
+-- the ones it does not lock are exactly the tiers whose static text a
+-- remove could orphan without the gate ever seeing it. No condition
+-- filtering (this is the reference check, not the injection set) and no
+-- LIMIT (a truncated scan would leave a fail-closed check incomplete).
+SELECT id AS scope_id, COALESCE(context, '')::text AS effective_content, 'workspace'::text AS scope
+FROM workspace WHERE id = sqlc.arg('workspace_id')::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'project'
+FROM project WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'squad'
+FROM squad WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'agent'
+FROM agent WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+ORDER BY scope, scope_id;
+
 -- name: GetPromptStructureBaseline :one
 SELECT * FROM prompt_structure_baseline
 WHERE prompt_structure_baseline.carrier_scope = $1
