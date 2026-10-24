@@ -81,12 +81,19 @@ export function AgentTaskRow({
   // 复」). Only the known code renders a hint — unknown future codes keep
   // the bare status label instead of leaking a raw enum.
   const queuedReasonHint =
-    !runningSide && task.queued_reason === "runtime_backpressure"
-      ? t(
-          "agents:mobile.run_history.queued_backpressure",
-          "Waiting for runtime recovery",
-        )
-      : null;
+    task.status !== "queued"
+      ? null
+      : task.queued_reason === "runtime_backpressure"
+        ? t(
+            "agents:mobile.run_history.queued_backpressure",
+            "Waiting for runtime recovery",
+          )
+        : task.queued_reason === "runtime_model_call_budget"
+          ? t(
+              "agents:mobile.run_history.queued_model_call_budget",
+              "Waiting for model call budget window",
+            )
+          : null;
 
   const runStatusA11y = t(`mobile.run_status.${task.status}`, task.status);
 
