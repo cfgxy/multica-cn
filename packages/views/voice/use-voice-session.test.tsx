@@ -266,6 +266,52 @@ describe("useVoiceSession lifecycle races (RUYI-866 P1-1)", () => {
     expect(lastSocket()).not.toBe(socketA);
   });
 
+  it("end preserves ended state and releases a late capture grant without rebuilding audio", async () => {
+    const media = installMediaDevices();
+    const createdContexts: unknown[] = [];
+    const createdWorklets: unknown[] = [];
+    vi.stubGlobal("AudioContext", class {
+      constructor() {
+        createdContexts.push(this);
+      }
+    });
+    vi.stubGlobal("AudioWorkletNode", class {
+      constructor() {
+        createdWorklets.push(this);
+      }
+    });
+    const { result } = renderHook(() => useVoiceSession({ agentId: "agent-a" }));
+
+    await act(async () => {
+      result.current.start();
+    });
+    const socket = lastSocket();
+    await act(async () => {
+      socket.open();
+      socket.emit({ setupComplete: {} });
+    });
+    expect(result.current.phase).toBe("live");
+    expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      result.current.end();
+    });
+    expect(result.current.phase).toBe("ended");
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+
+    // The permission prompt resolves after End. The stale stream must be
+    // released before AudioContext/worklet construction can restart capture.
+    await act(async () => {
+      media.settleSuccess(0);
+      await flush();
+    });
+    expect(media.streamAt(0)!.getTracks()[0]!.stopped).toBe(true);
+    expect(createdContexts).toHaveLength(0);
+    expect(createdWorklets).toHaveLength(0);
+    expect(result.current.phase).toBe("ended");
+    expect(result.current.failure).toBeNull();
+  });
+
   it("unmount closes the in-flight socket", async () => {
     const { result, unmount } = renderHook(() => useVoiceSession({ agentId: "agent-a" }));
 
