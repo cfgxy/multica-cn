@@ -229,6 +229,86 @@ func (q *Queries) CancelIssueDecision(ctx context.Context, arg CancelIssueDecisi
 	return i, err
 }
 
+const cancelOpenIssueDecisionsForIssue = `-- name: CancelOpenIssueDecisionsForIssue :many
+UPDATE issue_decisions SET
+    status = 'cancelled',
+    updated_at = now()
+WHERE issue_id = $1 AND workspace_id = $2
+  AND status = 'open'
+  AND decision_kind = 'question'
+RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at, context
+`
+
+type CancelOpenIssueDecisionsForIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// RUYI-865: when an issue formally enters the done category, every one of
+// its still-open question cards is auto-cancelled in a single CAS batch so
+// it cannot re-enter the decision-center backlog. The status guard makes
+// the batch idempotent (re-running on an already-cleaned issue is a no-op)
+// and races an in-flight answer safely: whichever of {answer, cancel} wins
+// the open->terminal flip first leaves a consistent row, and only cards
+// actually flipped are returned so events and audit rows cover exactly
+// what changed. Authorization cards keep their request-owned lifecycle
+// (RUYI-630 decision_requests surface) and are excluded here on purpose.
+func (q *Queries) CancelOpenIssueDecisionsForIssue(ctx context.Context, arg CancelOpenIssueDecisionsForIssueParams) ([]IssueDecision, error) {
+	rows, err := q.db.Query(ctx, cancelOpenIssueDecisionsForIssue, arg.IssueID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueDecision{}
+	for rows.Next() {
+		var i IssueDecision
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.SourceCommentID,
+			&i.Question,
+			&i.Options,
+			&i.MultiSelect,
+			&i.RecommendedIndices,
+			&i.Status,
+			&i.SelectedIndices,
+			&i.AnsweredByType,
+			&i.AnsweredByID,
+			&i.AnsweredAt,
+			&i.AnswerCommentID,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClientRequestID,
+			&i.DecisionKind,
+			&i.VisibleTier,
+			&i.OperatorTier,
+			&i.NamedApproverIds,
+			&i.ApproveLabel,
+			&i.DenyLabel,
+			&i.ExpiresAt,
+			&i.AnswerSource,
+			&i.AuthState,
+			&i.PendingRequestGroupID,
+			&i.PendingActionType,
+			&i.PendingActionParams,
+			&i.ExecutionResult,
+			&i.ExecutionError,
+			&i.ExecutedAt,
+			&i.Context,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countWorkspaceIssueDecisionsByStatus = `-- name: CountWorkspaceIssueDecisionsByStatus :one
 SELECT
     count(*) FILTER (WHERE status = 'open')::int AS open_count,
@@ -367,10 +447,23 @@ INSERT INTO issue_decisions (
     id, workspace_id, issue_id, source_comment_id,
     question, context, options, multi_select, recommended_indices,
     created_by_type, created_by_id, client_request_id
-) VALUES (
-    $1, $2, $3, $4,
-    $5, $6::jsonb, $7::jsonb, $8, $9::jsonb,
-    $10, $11, $12
+)
+SELECT
+    $1::uuid, $2::uuid, $3::uuid, $4::uuid,
+    $5::text, $6::jsonb, $7::jsonb, $8::bool, $9::jsonb,
+    $10::text, $11::uuid, $12
+WHERE NOT EXISTS (
+    SELECT 1 FROM issue i
+    WHERE i.id = $3::uuid AND i.workspace_id = $2::uuid
+      AND (
+        i.status = 'done'
+        OR EXISTS (
+            SELECT 1 FROM issue_status s
+            WHERE s.workspace_id = i.workspace_id
+              AND s.key = i.status
+              AND s.category = 'done'
+        )
+      )
 )
 RETURNING id, workspace_id, issue_id, source_comment_id, question, options, multi_select, recommended_indices, status, selected_indices, answered_by_type, answered_by_id, answered_at, answer_comment_id, created_by_type, created_by_id, created_at, updated_at, client_request_id, decision_kind, visible_tier, operator_tier, named_approver_ids, approve_label, deny_label, expires_at, answer_source, auth_state, pending_request_group_id, pending_action_type, pending_action_params, execution_result, execution_error, executed_at, context
 `
@@ -390,6 +483,12 @@ type CreateIssueDecisionParams struct {
 	ClientRequestID    pgtype.Text `json:"client_request_id"`
 }
 
+// RUYI-865: the insert is refused in one atomic statement when the issue
+// sits in the done category (built-in 'done' or a custom done key resolved
+// through the status catalog): a card raised after the done transition has
+// no cascade left to clear it, so it must not enter the backlog. The guard
+// makes the create a no-op RETURNING 0 rows (sql.ErrNoRows) in that case;
+// the handler maps the miss onto the 409 contract.
 func (q *Queries) CreateIssueDecision(ctx context.Context, arg CreateIssueDecisionParams) (IssueDecision, error) {
 	row := q.db.QueryRow(ctx, createIssueDecision,
 		arg.ID,
@@ -968,6 +1067,148 @@ func (q *Queries) ListWorkspaceIssueDecisions(ctx context.Context, arg ListWorks
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockIssueForDecisionCreate = `-- name: LockIssueForDecisionCreate :one
+SELECT id FROM issue
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type LockIssueForDecisionCreateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// RUYI-865: the create-side half of the done-race lock protocol. Taking the
+// issue row FOR UPDATE inside the card-create transaction serialises the
+// insert's done guard against every formal done status write. A done status
+// write is a plain `UPDATE issue SET status = ...`, which locks the same
+// row (FOR UPDATE / ROW EXCLUSIVE, or at least FOR NO KEY UPDATE when the
+// table has no unique constraint); FOR UPDATE conflicts with BOTH, so the
+// two writers cannot interleave on the row regardless of the table's
+// constraints. Outcomes:
+//   - the done write commits first -> the guarded insert's post-lock re-read
+//     (a fresh READ COMMITTED snapshot once the lock is granted) sees done
+//     and the INSERT ... WHERE NOT EXISTS yields 0 rows -> the handler maps
+//     it to a 409;
+//   - the card commits first -> the done write's UPDATE is still queued
+//     behind the FOR UPDATE lock, so once it lands its post-commit cancel
+//     batch (a fresh READ COMMITTED snapshot) sees the just-committed card
+//     and cancels it.
+//
+// Either way no open question card survives a done transition. Mirrors
+// LockIssueForDelete (issue.sql): the side that must not slip past the
+// writer holds the exclusive row lock the writer conflicts with. Lock
+// order is the single issue row, so no deadlock cycle is possible.
+func (q *Queries) LockIssueForDecisionCreate(ctx context.Context, arg LockIssueForDecisionCreateParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockIssueForDecisionCreate, arg.ID, arg.WorkspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const restoreIssueDecision = `-- name: RestoreIssueDecision :one
+WITH locked_issue AS MATERIALIZED (
+    -- Admit the restore only when the locked issue row is still
+    -- non-terminal; the MATERIALIZED CTE plus the UPDATE's FROM clause force
+    -- the lock before the card flip. Mirrors the global issue -> child
+    -- lock order used by issue teardown and comment writes, so no
+    -- deadlock cycle against those paths.
+    SELECT i.id
+    FROM issue i
+    JOIN issue_decisions d ON d.issue_id = i.id
+                            AND d.workspace_id = i.workspace_id
+    WHERE d.id = $1
+      AND i.status NOT IN ('done', 'cancelled')
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_status s
+          WHERE s.workspace_id = i.workspace_id
+            AND s.key = i.status
+            AND s.category IN ('done', 'cancelled')
+      )
+    FOR UPDATE OF i
+)
+UPDATE issue_decisions SET
+    status = 'open',
+    updated_at = now()
+FROM locked_issue
+WHERE issue_decisions.id = $1
+  AND issue_decisions.workspace_id = $2
+  AND issue_decisions.status = 'cancelled'
+RETURNING issue_decisions.id, issue_decisions.workspace_id, issue_decisions.issue_id, issue_decisions.source_comment_id, issue_decisions.question, issue_decisions.options, issue_decisions.multi_select, issue_decisions.recommended_indices, issue_decisions.status, issue_decisions.selected_indices, issue_decisions.answered_by_type, issue_decisions.answered_by_id, issue_decisions.answered_at, issue_decisions.answer_comment_id, issue_decisions.created_by_type, issue_decisions.created_by_id, issue_decisions.created_at, issue_decisions.updated_at, issue_decisions.client_request_id, issue_decisions.decision_kind, issue_decisions.visible_tier, issue_decisions.operator_tier, issue_decisions.named_approver_ids, issue_decisions.approve_label, issue_decisions.deny_label, issue_decisions.expires_at, issue_decisions.answer_source, issue_decisions.auth_state, issue_decisions.pending_request_group_id, issue_decisions.pending_action_type, issue_decisions.pending_action_params, issue_decisions.execution_result, issue_decisions.execution_error, issue_decisions.executed_at, issue_decisions.context
+`
+
+type RestoreIssueDecisionParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// RUYI-863: the inverse CAS of CancelIssueDecision — only a cancelled card
+// on a non-terminal issue can be restored to open. An answered card is
+// never revivable (sql.ErrNoRows here). The terminal-issue predicate is the
+// write-side half of the "no illegal resurrection" rule: it mirrors
+// issuestatus.Effective exactly — built-in done/cancelled are terminal keys
+// on their own (unseeded workspaces have no catalog rows for them, so the
+// key set is checked directly), and a custom status is terminal when its
+// catalog category is done/cancelled. Effective ignores archived entries on
+// purpose (issues still on them keep their behavior), so this predicate does
+// too.
+//
+// The predicate runs under a FOR UPDATE lock on the card's owning issue row,
+// which is the linearization point for the terminal-write race. The plain
+// snapshot predicate this used to rely on was not an atomic guard: the CTE's
+// plain read of the issue row saw whatever snapshot it had, while a
+// concurrent UpdateIssueStatus commits its own terminal write independently,
+// so a restore that read "in_progress" could still commit an open card on an
+// issue that was already done (RUYI-863 P1). With the lock, the issue row
+// serializes both sides: a terminal write that commits first is held out of
+// the row until this statement finishes, and this statement's CTE — run
+// second — re-reads the row under its own lock, sees the committed terminal
+// version, yields zero rows, and the UPDATE flips nothing. A restore that
+// wins the lock first is the legal boundary: its card goes open and the
+// later terminal write simply lands behind it.
+func (q *Queries) RestoreIssueDecision(ctx context.Context, arg RestoreIssueDecisionParams) (IssueDecision, error) {
+	row := q.db.QueryRow(ctx, restoreIssueDecision, arg.ID, arg.WorkspaceID)
+	var i IssueDecision
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.SourceCommentID,
+		&i.Question,
+		&i.Options,
+		&i.MultiSelect,
+		&i.RecommendedIndices,
+		&i.Status,
+		&i.SelectedIndices,
+		&i.AnsweredByType,
+		&i.AnsweredByID,
+		&i.AnsweredAt,
+		&i.AnswerCommentID,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ClientRequestID,
+		&i.DecisionKind,
+		&i.VisibleTier,
+		&i.OperatorTier,
+		&i.NamedApproverIds,
+		&i.ApproveLabel,
+		&i.DenyLabel,
+		&i.ExpiresAt,
+		&i.AnswerSource,
+		&i.AuthState,
+		&i.PendingRequestGroupID,
+		&i.PendingActionType,
+		&i.PendingActionParams,
+		&i.ExecutionResult,
+		&i.ExecutionError,
+		&i.ExecutedAt,
+		&i.Context,
+	)
+	return i, err
 }
 
 const setAuthorizationCardExecution = `-- name: SetAuthorizationCardExecution :many

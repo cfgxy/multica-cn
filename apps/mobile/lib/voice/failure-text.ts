@@ -75,4 +75,19 @@ const REASONS: Record<VoiceDegradeReason, [key: string, fallback: string]> = {
     "voice:failure.unavailable.credential_invalid",
     "The voice credentials for this agent are invalid or expired. A workspace admin needs to update them.",
   ],
+  // D2 config-gate reasons (RUYI-866): same stable codes the gateway emits
+  // on 409 / error frames; fallbacks stay verbatim-identical to the EN
+  // resource text so the i18n-keys guard passes.
+  voice_unconfigured: [
+    "voice:failure.unavailable.voice_unconfigured",
+    "Voice isn't set up for this agent yet. A workspace admin needs to configure a voice provider — text messaging still works.",
+  ],
+  voice_provider_missing: [
+    "voice:failure.unavailable.voice_provider_missing",
+    "The voice provider for this agent no longer exists. A workspace admin needs to reconfigure voice — text messaging still works.",
+  ],
+  voice_provider_disabled: [
+    "voice:failure.unavailable.voice_provider_disabled",
+    "Voice is turned off for this agent's voice provider. A workspace admin can turn it back on — text messaging still works.",
+  ],
 };
