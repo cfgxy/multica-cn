@@ -187,9 +187,8 @@ export function useVoiceSession(options: {
           if (rejection) return;
           // A bare failure: the WebSocket API cannot read the pre-upgrade
           // 409 body that carries the gate's stable code (RUYI-866 P1-3).
-          // Probe the same URL over plain HTTP; any probe failure keeps the
-          // generic copy, and a session that was dismissed, switched, or
-          // already finalized in the meantime no longer accepts the result.
+          // The probe uses the authenticated, read-only gate endpoint; any
+          // probe failure keeps generic copy and stale sessions ignore results.
           const token = defaultStorage.getItem("multica_token");
           void probeVoiceHandshakeRejection(url, {
             authorizationHeader: token ? `Bearer ${token}` : null,
