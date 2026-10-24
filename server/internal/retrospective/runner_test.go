@@ -1019,3 +1019,131 @@ func TestProcessTaskTerminalProjectCarrierScope(t *testing.T) {
 		t.Fatalf("scope-less draft must default to workspace, got %s", scope)
 	}
 }
+
+// retroClauseAsset seeds one active structured clause asset (clause,
+// clause_version, clause_binding) bound to the workspace carrier and
+// returns the clause id. The retroFixture cleanup does not cover the
+// clause tables (RUYI-751), so the seed owns its own teardown.
+func retroClauseAsset(t *testing.T, wsID, slug, title string) string {
+	t.Helper()
+	var clauseID string
+	if err := testPool.QueryRow(context.Background(),
+		`INSERT INTO clause (workspace_id, slug, title, status)
+		 VALUES ($1, $2, $3, 'active') RETURNING id`,
+		wsID, slug, title).Scan(&clauseID); err != nil {
+		t.Fatalf("create clause asset: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(),
+		`INSERT INTO clause_version (clause_id, version, content, content_sha256, carrier_scope)
+		 VALUES ($1, 1, $2, $3, 'workspace')`,
+		clauseID, "- **"+title+"**：结构化条款正文", "testsha"); err != nil {
+		t.Fatalf("create clause version: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(),
+		`INSERT INTO clause_binding (clause_id, scope, scope_id, status)
+		 VALUES ($1, 'workspace', $2, 'active')`,
+		clauseID, wsID); err != nil {
+		t.Fatalf("create clause binding: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		for _, stmt := range []string{
+			`DELETE FROM clause_binding WHERE clause_id = $1`,
+			`DELETE FROM clause_version WHERE clause_id = $1`,
+			`DELETE FROM clause WHERE id = $1`,
+		} {
+			if _, err := testPool.Exec(ctx, stmt, clauseID); err != nil {
+				t.Logf("clause asset cleanup: %v", err)
+			}
+		}
+	})
+	return clauseID
+}
+
+// TestRunContextCarriesClauseInventory (RUYI-858): the run context's
+// workspace carrier lists the active structured clause asset titles, and
+// the prompt's three-action section engages because the inventory is
+// non-empty — the agent can see the clause library's dynamic surface even
+// when its text is not rendered into the carrier's static content.
+func TestRunContextCarriesClauseInventory(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE workspace SET context = $2 WHERE id = $1`, wsID,
+		"# 平台协作规范\n\n## 沟通规范\n\n- 单写者。\n"); err != nil {
+		t.Fatalf("seed carrier: %v", err)
+	}
+	retroClauseAsset(t, wsID, "cls_858a01", "运行时复盘去重")
+	retroIssue(t, wsID, "复盘清单检查", "")
+
+	runner, calls := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+	var tc TaskContext
+	if err := json.Unmarshal((*calls)[0].params.Context, &tc); err != nil {
+		t.Fatalf("context is not a TaskContext: %v", err)
+	}
+	var wsCarrier TaskContextCarrier
+	found := false
+	for _, c := range tc.Carriers {
+		if c.Scope == "workspace" && c.ScopeID == wsID {
+			wsCarrier, found = c, true
+		}
+	}
+	if !found {
+		t.Fatalf("workspace carrier missing: %+v", tc.Carriers)
+	}
+	if len(wsCarrier.Clauses) != 1 || wsCarrier.Clauses[0] != "运行时复盘去重" {
+		t.Fatalf("expected the asset clause title on the carrier, got %+v", wsCarrier.Clauses)
+	}
+	prompt, ok := PromptFromContext(mustJSON(t, tc))
+	if !ok {
+		t.Fatalf("PromptFromContext rejected its own context")
+	}
+	if !strings.Contains(prompt, "holds two kinds of rules") {
+		t.Fatalf("three-action section must render with a non-empty clause inventory")
+	}
+}
+
+// TestProcessTaskTerminalDedupAgainstClauseAssets (RUYI-858): an
+// add_clause draft whose name matches only an active structured clause
+// asset — the title is absent from the carrier's static text — is dropped
+// as a duplicate. Pre-RUYI-858 dedup saw the static surface alone and let
+// this duplicate through; the assertion on ProposalsCreated=0 pins the
+// asset-library surface.
+func TestProcessTaskTerminalDedupAgainstClauseAssets(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE workspace SET context = $2 WHERE id = $1`, wsID,
+		"# 平台协作规范\n\n## 沟通规范\n\n- 单写者。\n"); err != nil {
+		t.Fatalf("seed carrier: %v", err)
+	}
+	retroClauseAsset(t, wsID, "cls_858a02", "运行时复盘去重")
+	issueA := retroIssue(t, wsID, "复盘去重验证", "")
+	runner, calls := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+
+	task := db.AgentTaskQueue{
+		ID:      util.MustParseUUID(stubTaskID),
+		Context: (*calls)[0].params.Context,
+	}
+	out, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(issueA, "运行时复盘去重"), "")
+	if err != nil {
+		t.Fatalf("ProcessTaskTerminal: %v", err)
+	}
+	if out.DuplicatesSkipped != 1 || out.ProposalsCreated != 0 {
+		t.Fatalf("expected the asset clause to be skipped: %+v", out)
+	}
+	status, _, _ := runRecord(t, wsID)
+	if status != "succeeded" {
+		t.Fatalf("asset-dedup-only report still succeeds, got %q", status)
+	}
+	var watermark int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM retrospective_issue_watermark WHERE workspace_id = $1 AND issue_id = $2`,
+		wsID, issueA).Scan(&watermark); err != nil || watermark != 1 {
+		t.Fatalf("watermark missing after asset dedup (%v, %d)", err, watermark)
+	}
+}
