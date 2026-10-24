@@ -89,11 +89,9 @@ SELECT id FROM issue
 WHERE id = $1 AND workspace_id = $2
 FOR KEY SHARE;
 
--- name: LockIssueForDescriptionUpdate :one
--- Serialize field-baseline checks and combined attachment binding on the
--- owner row. The handler merges channel media that landed after the editor's
--- submitted base, updates the issue, and binds this request's attachments in
--- the same transaction while holding this lock.
+-- name: LockIssueForUpdate :one
+-- Serialize issue reads and writes while protecting attachment binding and
+-- status-transition side effects in the same transaction.
 SELECT * FROM issue
 WHERE id = $1 AND workspace_id = $2
 FOR UPDATE;

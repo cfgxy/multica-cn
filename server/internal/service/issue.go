@@ -221,7 +221,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	qtx := s.Queries.WithTx(tx)
 
 	if p.SourceContext != nil {
-		if _, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
+		if _, err := qtx.LockIssueForUpdate(ctx, db.LockIssueForUpdateParams{
 			ID: p.SourceContext.SourceIssueID, WorkspaceID: p.WorkspaceID,
 		}); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

@@ -235,9 +235,9 @@ func assertIssueStatusStillActive(ctx context.Context, qtx *db.Queries, workspac
 // a committed status (RUYI-865 P1). A custom target still gets the catalog
 // lock; the built-in done target skips it (assertIssueStatusStillActive
 // short-circuits for built-ins).
-func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, fn func(q *db.Queries) error) error {
+func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID, issueID pgtype.UUID, statusKey string, fn func(q *db.Queries, oldIssue db.Issue) error) error {
 	if statusKey == "" || (issuestatus.IsBuiltIn(statusKey) && statusKey != issuestatus.Done) {
-		return fn(h.Queries)
+		return fn(h.Queries, db.Issue{})
 	}
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
@@ -249,7 +249,13 @@ func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtyp
 	if err := assertIssueStatusStillActive(ctx, qtx, workspaceID, statusKey); err != nil {
 		return err
 	}
-	if err := fn(qtx); err != nil {
+	oldIssue, err := qtx.LockIssueForUpdate(ctx, db.LockIssueForUpdateParams{
+		ID: issueID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return err
+	}
+	if err := fn(qtx, oldIssue); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -3352,7 +3358,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 			return db.Issue{}, db.Issue{}, false, fmt.Errorf("lock issue attachments: %w", err)
 		}
 	}
-	current, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
+	current, err := qtx.LockIssueForUpdate(ctx, db.LockIssueForUpdateParams{
 		ID:          params.ID,
 		WorkspaceID: workspaceID,
 	})
@@ -3432,7 +3438,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	// one-sided done gate makes this a no-op for writes that land in no
 	// done category.
 	if flippedOut != nil {
-		flipped, err := h.settleDoneCascadeInTx(ctx, qtx, issue, entrySource)
+		flipped, err := h.settleDoneCascadeInTx(ctx, qtx, current, issue, entrySource)
 		if err != nil {
 			return db.Issue{}, current, false, fmt.Errorf("settle done cascade: %w", err)
 		}
@@ -3689,7 +3695,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			prevIssue = lockedPrev
 		}
 	} else {
-		err = h.runWithIssueStatusGuard(r.Context(), prevIssue.WorkspaceID, statusKeyForGuard, func(q *db.Queries) error {
+		err = h.runWithIssueStatusGuard(r.Context(), prevIssue.WorkspaceID, prevIssue.ID, statusKeyForGuard, func(q *db.Queries, oldIssue db.Issue) error {
 			var innerErr error
 			issue, innerErr = q.UpdateIssue(r.Context(), params)
 			if innerErr != nil {
@@ -3698,7 +3704,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			// RUYI-865 P1: a built-in done target took this same transaction,
 			// so settle the card cascade in-tx; a failed settle rolls back the
 			// status write instead of stranding open cards.
-			flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, issue, "http_update_issue")
+			if req.Status == nil || !oldIssue.ID.Valid {
+				return nil
+			}
+			flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, "http_update_issue")
 			return innerErr
 		})
 	}
@@ -4546,7 +4555,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				prevIssue = lockedPrev
 			}
 		} else {
-			err = h.runWithIssueStatusGuard(r.Context(), wsUUID, batchStatusKey, func(q *db.Queries) error {
+			err = h.runWithIssueStatusGuard(r.Context(), wsUUID, prevIssue.ID, batchStatusKey, func(q *db.Queries, oldIssue db.Issue) error {
 				var innerErr error
 				issue, innerErr = q.UpdateIssue(r.Context(), params)
 				if innerErr != nil {
@@ -4558,7 +4567,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				// stranding open cards. The item is skipped and the request's
 				// remaining items proceed; the client retries the failed item
 				// and the CAS converges it.
-				flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, issue, "http_batch_update_issues")
+				if !oldIssue.ID.Valid {
+					return nil
+				}
+				flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, "http_batch_update_issues")
 				return innerErr
 			})
 		}
