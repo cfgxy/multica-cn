@@ -682,6 +682,11 @@ func main() {
 	}
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
+	// RUYI-859 stage B: automatic agent error-rate suppression. Shares the
+	// autopilot shutdown context (the shutdown sequence's StopAutopilot hook
+	// cancels it) and reuses the router's TaskService so a released agent's
+	// EmptyClaim cache is bumped on the same object the claim path reads.
+	go runAgentErrorRateSuppressor(autopilotCtx, taskSvc, envAgentSuppressionConfig())
 	if autopilotSvc.QuotaEnabled() {
 		go runAutopilotQuotaReconciler(autopilotCtx, autopilotSvc)
 	}

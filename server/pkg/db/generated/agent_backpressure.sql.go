@@ -97,6 +97,63 @@ func (q *Queries) DeleteAgentBackpressurePolicy(ctx context.Context, arg DeleteA
 	return err
 }
 
+const deleteAgentErrorRateSchedulingPause = `-- name: DeleteAgentErrorRateSchedulingPause :execrows
+DELETE FROM scheduling_pause
+WHERE workspace_id = $1
+  AND agent_id = $2
+  AND created_by IS NULL
+  AND reason = 'error_rate_suppression'
+`
+
+type DeleteAgentErrorRateSchedulingPauseParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// The loop's only way out of scheduling_pause. The WHERE clause matches the
+// system source precisely: created_by IS NULL together with the fixed
+// reason. A human freeze on the same agent survives untouched — releasing
+// the automatic suppression must never lift a human decision — and a
+// pre-existing foreign-source row that the ensure observed (0 rows) can
+// not be deleted here either. Rows>0 is the resumed transition.
+func (q *Queries) DeleteAgentErrorRateSchedulingPause(ctx context.Context, arg DeleteAgentErrorRateSchedulingPauseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAgentErrorRateSchedulingPause, arg.WorkspaceID, arg.AgentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const ensureAgentErrorRateSchedulingPause = `-- name: EnsureAgentErrorRateSchedulingPause :execrows
+INSERT INTO scheduling_pause (workspace_id, agent_id, reason)
+VALUES ($1, $2, 'error_rate_suppression')
+ON CONFLICT (workspace_id, agent_id) WHERE agent_id IS NOT NULL
+DO NOTHING
+`
+
+type EnsureAgentErrorRateSchedulingPauseParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// The loop's only way into scheduling_pause. ON CONFLICT DO NOTHING against
+// the agent-level partial unique index (idx_scheduling_pause_agent_level,
+// 939) makes the insert idempotent at the storage layer: when ANY row
+// already occupies this (workspace, agent) slot — a human freeze, an older
+// loop row, anything else — the statement writes nothing and reports 0
+// affected rows, so the caller observes without ever taking ownership.
+// created_by stays NULL: that is what marks the system source (985), and
+// no human path ever writes it. Rows>0 means this tick actually inserted
+// the system pause — that is the moment the paused transition, its audit
+// and its realtime broadcast are owed.
+func (q *Queries) EnsureAgentErrorRateSchedulingPause(ctx context.Context, arg EnsureAgentErrorRateSchedulingPauseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, ensureAgentErrorRateSchedulingPause, arg.WorkspaceID, arg.AgentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getAgentBackpressurePolicy = `-- name: GetAgentBackpressurePolicy :one
 
 SELECT workspace_id, agent_id, window_minutes, error_rate_threshold_pct, min_samples, recovery_window_minutes, suppress_on_error_rate, count_model_api_failures, count_execution_failures, updated_by, created_at, updated_at FROM agent_backpressure_policy
@@ -215,6 +272,56 @@ func (q *Queries) ListAgentSuppressionEvents(ctx context.Context, arg ListAgentS
 			&i.ErrorRatePct,
 			&i.EffectivePolicy,
 			&i.OccurredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const selectArmedAgentBackpressurePolicies = `-- name: SelectArmedAgentBackpressurePolicies :many
+
+SELECT p.workspace_id, p.agent_id, p.window_minutes, p.error_rate_threshold_pct, p.min_samples, p.recovery_window_minutes, p.suppress_on_error_rate, p.count_model_api_failures, p.count_execution_failures, p.updated_by, p.created_at, p.updated_at FROM agent_backpressure_policy p
+JOIN agent a ON a.id = p.agent_id AND a.workspace_id = p.workspace_id
+WHERE p.suppress_on_error_rate = TRUE
+  AND a.archived_at IS NULL
+`
+
+// Stage B: the automatic suppression loop. Every judgment below is a plain
+// read of stored state (policy row + trailing terminal-task windows); the
+// loop keeps no in-process timer, so a fresh tick after a restart sees
+// exactly what a restarted process must see.
+// The candidate set for one loop tick: every non-archived agent whose
+// saved policy has the automatic-suppression switch on. Joining agent
+// keeps archived agents out of the candidate set even though a policy row
+// can outlive the archive (reads never delete it; only the management
+// surface owns that row).
+func (q *Queries) SelectArmedAgentBackpressurePolicies(ctx context.Context) ([]AgentBackpressurePolicy, error) {
+	rows, err := q.db.Query(ctx, selectArmedAgentBackpressurePolicies)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentBackpressurePolicy{}
+	for rows.Next() {
+		var i AgentBackpressurePolicy
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.WindowMinutes,
+			&i.ErrorRateThresholdPct,
+			&i.MinSamples,
+			&i.RecoveryWindowMinutes,
+			&i.SuppressOnErrorRate,
+			&i.CountModelApiFailures,
+			&i.CountExecutionFailures,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

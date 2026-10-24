@@ -124,6 +124,16 @@ export function BackpressureTab({ agent }: { agent: Agent }) {
   const scheduling = policyData?.scheduling ?? null;
   const shownEvents = events ?? policyData?.events ?? [];
 
+  // RUYI-859 stage B: the automatic loop's pause row carries no created_by
+  // (the system source, created_by IS NULL) plus the fixed reason marker. A
+  // human freeze always stamps a member id, so the combination — empty
+  // created_by together with the reason marker — names the automatic
+  // suppression unambiguously, and it is the ONLY source the loop may lift.
+  const isAutoSuppression =
+    scheduling?.paused === true &&
+    (scheduling.created_by ?? "") === "" &&
+    scheduling.reason === "error_rate_suppression";
+
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<CardNumberFields>(() => ({
     window_minutes: effective.window_minutes,
@@ -467,13 +477,17 @@ export function BackpressureTab({ agent }: { agent: Agent }) {
           </div>
           {scheduling?.paused && (
             <div className="mt-1 text-caption text-muted-foreground">
-              {/* Stage B's auto-suppression loop will name its own reason
-                  here; today every pause source is a human freeze (agent or
-                  workspace scope). The created_by field is raw on purpose:
-                  a system-generated marker must not be mistranslated. */}
-              {scheduling.reason || scheduling.created_by
-                ? `${scheduling.reason ?? scheduling.created_by} · ${scheduling.created_at ?? ""}`
-                : ""}
+              {isAutoSuppression ? (
+                // The automatic loop's own source row: no human froze this,
+                // so name it as such — and only the loop may lift it.
+                t(($) => $.tab_body.backpressure.pause_auto_source)
+              ) : scheduling.reason || scheduling.created_by ? (
+                // Human (or other-source) freeze: keep the raw field on
+                // purpose — a marker must not be mistranslated.
+                `${scheduling.reason ?? scheduling.created_by} · ${scheduling.created_at ?? ""}`
+              ) : (
+                ""
+              )}
             </div>
           )}
           <div className="mt-2 text-caption text-muted-foreground">
