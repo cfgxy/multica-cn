@@ -70,6 +70,60 @@ UPDATE issue_decisions SET
 WHERE id = @id AND workspace_id = @workspace_id AND status = 'open'
 RETURNING *;
 
+-- name: RestoreIssueDecision :one
+-- RUYI-863: the inverse CAS of CancelIssueDecision — only a cancelled card
+-- on a non-terminal issue can be restored to open. An answered card is
+-- never revivable (sql.ErrNoRows here). The terminal-issue predicate is the
+-- write-side half of the "no illegal resurrection" rule: it mirrors
+-- issuestatus.Effective exactly — built-in done/cancelled are terminal keys
+-- on their own (unseeded workspaces have no catalog rows for them, so the
+-- key set is checked directly), and a custom status is terminal when its
+-- catalog category is done/cancelled. Effective ignores archived entries on
+-- purpose (issues still on them keep their behavior), so this predicate does
+-- too.
+--
+-- The predicate runs under a FOR UPDATE lock on the card's owning issue row,
+-- which is the linearization point for the terminal-write race. The plain
+-- snapshot predicate this used to rely on was not an atomic guard: the CTE's
+-- plain read of the issue row saw whatever snapshot it had, while a
+-- concurrent UpdateIssueStatus commits its own terminal write independently,
+-- so a restore that read "in_progress" could still commit an open card on an
+-- issue that was already done (RUYI-863 P1). With the lock, the issue row
+-- serializes both sides: a terminal write that commits first is held out of
+-- the row until this statement finishes, and this statement's CTE — run
+-- second — re-reads the row under its own lock, sees the committed terminal
+-- version, yields zero rows, and the UPDATE flips nothing. A restore that
+-- wins the lock first is the legal boundary: its card goes open and the
+-- later terminal write simply lands behind it.
+WITH locked_issue AS MATERIALIZED (
+    -- Admit the restore only when the locked issue row is still
+    -- non-terminal; the MATERIALIZED CTE plus the UPDATE's FROM clause force
+    -- the lock before the card flip. Mirrors the global issue -> child
+    -- lock order used by issue teardown and comment writes, so no
+    -- deadlock cycle against those paths.
+    SELECT i.id
+    FROM issue i
+    JOIN issue_decisions d ON d.issue_id = i.id
+                            AND d.workspace_id = i.workspace_id
+    WHERE d.id = $1
+      AND i.status NOT IN ('done', 'cancelled')
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_status s
+          WHERE s.workspace_id = i.workspace_id
+            AND s.key = i.status
+            AND s.category IN ('done', 'cancelled')
+      )
+    FOR UPDATE OF i
+)
+UPDATE issue_decisions SET
+    status = 'open',
+    updated_at = now()
+FROM locked_issue
+WHERE issue_decisions.id = $1
+  AND issue_decisions.workspace_id = $2
+  AND issue_decisions.status = 'cancelled'
+RETURNING issue_decisions.*;
+
 -- name: SetIssueDecisionAnswerComment :one
 -- Links the answer echo comment to an already-won card and returns the
 -- updated row, so the handler's response reflects the link. The answer CAS

@@ -1,26 +1,30 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronLeft, ChevronRight, ListChecks } from "lucide-react";
+import { ChevronRight, ListChecks } from "lucide-react";
 import type { IssueDecision } from "@multica/core/types";
 import { Badge } from "@multica/ui/components/ui/badge";
-import { Button } from "@multica/ui/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { useT } from "../../i18n";
-import { DecisionCard } from "./decision-card";
+import { DecisionCardBrowser } from "./decision-card-browser";
+
+// RUYI-863: the sidebar's "decision cards" entry is the more-menu entry of
+// the unified browser — it opens on the FIRST card under the default "all"
+// filter (list order = creation order), and the browser itself carries the
+// status filter, x/N position and previous/next navigation. It no longer
+// keeps its own list→detail selection state: the card view is the shared
+// DecisionCard, rendered through the same browser every entry uses.
 
 export function DecisionCardsSection({ decisions }: { decisions: IssueDecision[] }) {
   const { t } = useT("issues");
   const [open, setOpen] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = decisions.find((decision) => decision.id === selectedId) ?? null;
 
   return (
     <>
       <button
         type="button"
         className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70"
-        onClick={() => { setSelectedId(null); setOpen(true); }}
+        onClick={() => setOpen(true)}
         data-testid="decision-cards-sidebar-entry"
       >
         <ListChecks className="mr-1 size-3.5" aria-hidden />
@@ -35,38 +39,9 @@ export function DecisionCardsSection({ decisions }: { decisions: IssueDecision[]
             (`max-w-4xl` = 56rem) and clamps to the viewport gutters. */}
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:!max-w-[min(56rem,calc(100%_-_2rem))]">
           <DialogHeader>
-            <DialogTitle>{selected ? selected.question : t(($) => $.decisions.section_all)}</DialogTitle>
+            <DialogTitle>{t(($) => $.decisions.section_all)}</DialogTitle>
           </DialogHeader>
-          {selected ? (
-            <div className="space-y-3">
-              <Button variant="ghost" size="sm" onClick={() => setSelectedId(null)}>
-                <ChevronLeft />{t(($) => $.decisions.back_to_list)}
-              </Button>
-              <DecisionCard decision={selected} />
-            </div>
-          ) : (
-            <div className="divide-y">
-              {decisions.map((decision) => (
-                <button
-                  key={decision.id}
-                  type="button"
-                  className="flex w-full items-center gap-3 py-3 text-left hover:bg-accent/50"
-                  onClick={() => setSelectedId(decision.id)}
-                  data-testid={`decision-list-row-${decision.id}`}
-                >
-                  <span className="min-w-0 flex-1 truncate text-body">{decision.question}</span>
-                  <Badge variant={decision.status === "open" ? "secondary" : "outline"}>
-                    {decision.status === "open"
-                      ? t(($) => $.decisions.status_open)
-                      : decision.status === "answered"
-                        ? t(($) => $.decisions.status_answered)
-                        : t(($) => $.decisions.status_cancelled)}
-                  </Badge>
-                </button>
-              ))}
-              {decisions.length === 0 && <p className="py-6 text-center text-caption text-muted-foreground">{t(($) => $.decisions.empty_issue)}</p>}
-            </div>
-          )}
+          <DecisionCardBrowser decisions={decisions} initialFilter="all" />
         </DialogContent>
       </Dialog>
     </>

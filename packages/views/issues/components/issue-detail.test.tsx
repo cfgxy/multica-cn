@@ -2299,18 +2299,26 @@ describe("IssueDetail (shared)", () => {
       expect(document.querySelector('[data-testid="decision-batch-bar"]')).toBeNull();
     });
 
-    it("opens the sequential batch dialog from the tail entry", async () => {
+    it("opens the card browser on the first pending card from the tail entry", async () => {
       renderWithDecisions(
         [decision("decision-1", "2026-01-19T00:00:00Z"), decision("decision-2", "2026-01-20T00:00:00Z")],
         "decision-1",
       );
       fireEvent.click(await screen.findByTestId("decision-batch-entry"));
-      expect(await screen.findByTestId("decision-batch-bar")).toBeInTheDocument();
-      expect(screen.getByTestId("decision-batch-card-decision-1")).toBeInTheDocument();
-      expect(screen.queryByTestId("decision-batch-card-decision-2")).toBeNull();
+      // RUYI-863: the entry opens the shared per-card browser (the RUYI-471
+      // submit-all bar is retired) filtered to "open", landing on the first
+      // pending card with its x/N position.
+      const browser = await screen.findByTestId("decision-card-browser");
+      expect(browser).toBeInTheDocument();
+      expect(screen.getByTestId("decision-browser-position")).toHaveTextContent("1 / 2");
+      const card = screen.getByTestId("decision-card");
+      expect(card).toHaveAttribute("data-status", "open");
+      // The second card is one "next" away, not rendered eagerly.
+      fireEvent.click(screen.getByTestId("decision-browser-next"));
+      expect(screen.getByTestId("decision-browser-position")).toHaveTextContent("2 / 2");
     });
 
-    it("excludes an open authorization card from the batch count and candidates", async () => {
+    it("excludes open authorization cards from the batch entry and candidates", async () => {
       renderWithDecisions(
         [
           decision("authorization-1", "2026-01-18T00:00:00Z", "open", "authorization"),
@@ -2321,9 +2329,17 @@ describe("IssueDetail (shared)", () => {
       );
 
       fireEvent.click(await screen.findByTestId("decision-batch-entry"));
-      expect(await screen.findByTestId("decision-batch-card-decision-1")).toBeInTheDocument();
-      expect(screen.queryByTestId("decision-batch-card-authorization-1")).toBeNull();
-      expect(screen.queryByTestId("decision-batch-card-decision-2")).toBeNull();
+      // The browser's "open" filter counts question cards only; the
+      // authorization card's lifecycle lives on its decision request.
+      expect(await screen.findByTestId("decision-card-browser")).toBeInTheDocument();
+      expect(screen.getByTestId("decision-browser-position")).toHaveTextContent("1 / 2");
+      // The "open" bucket holds the two question cards; the authorization
+      // card renders with data-decision-kind="authorization" and is the
+      // only card carrying that attribute.
+      const cards = screen.queryAllByTestId("decision-card");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).not.toHaveAttribute("data-decision-kind");
+      expect(cards[0]).toHaveAttribute("data-status", "open");
     });
 
     it("renders no batch bar when only one card is open", async () => {
