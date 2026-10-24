@@ -157,12 +157,17 @@ func voiceSkillArgs(t *testing.T, ref service.AgentSkillRefData, hash string) js
 	return raw
 }
 
+type voiceSkillResponseFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
 type voiceSkillResponse struct {
-	ID      string            `json:"id"`
-	Source  string            `json:"source"`
-	Hash    string            `json:"hash"`
-	Content *string           `json:"content"`
-	Files   map[string]string `json:"files"`
+	ID      string                   `json:"id"`
+	Source  string                   `json:"source"`
+	Hash    string                   `json:"hash"`
+	Content *string                  `json:"content"`
+	Files   []voiceSkillResponseFile `json:"files"`
 	Error   *struct {
 		Code string `json:"code"`
 	} `json:"error"`
@@ -207,7 +212,8 @@ func TestExecuteVoiceSkillLoadsOnlyCatalogPinnedBundles(t *testing.T) {
 	}
 	workspace := decodeVoiceSkillResponse(t, result)
 	if workspace.ID != workspaceRef.ID || workspace.Source != skillbundle.SourceWorkspace || workspace.Hash != workspaceRef.Hash ||
-		workspace.Content == nil || *workspace.Content != workspaceSkillContent || workspace.Files["references/usage.md"] != "use the checked procedure" {
+		workspace.Content == nil || *workspace.Content != workspaceSkillContent || len(workspace.Files) != 1 ||
+		workspace.Files[0].Path != "references/usage.md" || workspace.Files[0].Content != "use the checked procedure" {
 		t.Errorf("workspace skill response = %+v, want pinned multiline content and files", workspace)
 	}
 
