@@ -719,18 +719,18 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var project db.Project
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update project")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, wsUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update project")
+		return
+	}
 	if _, writesInstructions := rawFields["instructions"]; writesInstructions {
-		tx, err := h.TxStarter.Begin(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to update project")
-			return
-		}
-		defer tx.Rollback(r.Context())
-		qtx := h.Queries.WithTx(tx)
-		if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, wsUUID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to update project")
-			return
-		}
 		staticText := ""
 		if req.Instructions != nil {
 			staticText = *req.Instructions
@@ -738,12 +738,19 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		if !allowStaticClauseRefsWrite(w, r.Context(), qtx, wsUUID, map[carrierRef]string{{scope: "project", id: idUUID}: staticText}) {
 			return
 		}
-		project, err = qtx.UpdateProject(r.Context(), params)
-		if err == nil {
-			err = tx.Commit(r.Context())
-		}
 	} else {
-		project, err = h.Queries.UpdateProject(r.Context(), params)
+		current, err := qtx.GetProjectInWorkspace(r.Context(), db.GetProjectInWorkspaceParams{
+			ID: idUUID, WorkspaceID: wsUUID,
+		})
+		if err != nil {
+			writeError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		params.Instructions = current.Instructions
+	}
+	project, err = qtx.UpdateProject(r.Context(), params)
+	if err == nil {
+		err = tx.Commit(r.Context())
 	}
 	if err != nil {
 		// 0 rows with an expected_revision means a concurrent writer won the

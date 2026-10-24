@@ -353,6 +353,75 @@ func TestClauseRemovalRacesWithUntouchedCarrierStaticWrite(t *testing.T) {
 	}
 }
 
+func TestProjectMetadataUpdatePreservesConcurrentClauseRender(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	wsID, ownerID, _ := legislationFixture(t)
+	initialInstructions := "original project instructions"
+	createReq := legislationReq(ownerID, wsID, http.MethodPost, "/api/projects",
+		CreateProjectRequest{Title: "clause render race", Instructions: &initialInstructions})
+	created := testutil.Call(t, testHandler.CreateProject, createReq).Want(http.StatusCreated)
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(created.Text()), &project); err != nil {
+		t.Fatalf("decode created project: %v (%s)", err, created.Text())
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(),
+			`DELETE FROM project WHERE workspace_id = $1 AND id = $2`, wsID, project.ID)
+	})
+
+	blocker, err := testPool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin advisory lock barrier: %v", err)
+	}
+	defer blocker.Rollback(context.Background())
+	if _, err := blocker.Exec(context.Background(),
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 869))`, wsID); err != nil {
+		t.Fatalf("hold workspace advisory lock: %v", err)
+	}
+
+	type result struct {
+		code int
+		body string
+	}
+	results := make(chan result, 1)
+	go func() {
+		req := legislationReq(ownerID, wsID, http.MethodPut, "/api/projects/"+project.ID,
+			map[string]any{"title": "updated without prompt"}, "id", project.ID)
+		resp := testutil.Call(t, testHandler.UpdateProject, req)
+		results <- result{code: resp.Code, body: resp.Text()}
+	}()
+	if err := waitForClauseReferenceLockWaiters(wsID, 1); err != nil {
+		t.Fatalf("project update did not wait on workspace lock: %v", err)
+	}
+
+	const renderedInstructions = "original project instructions\n<!-- clause: cls_abcdefgh -->\n- **已生效条款**：保留"
+	if _, err := blocker.Exec(context.Background(),
+		`UPDATE project SET instructions = $1 WHERE workspace_id = $2 AND id = $3`,
+		renderedInstructions, wsID, project.ID); err != nil {
+		t.Fatalf("simulate clause render under workspace lock: %v", err)
+	}
+	if err := blocker.Commit(context.Background()); err != nil {
+		t.Fatalf("release workspace advisory lock: %v", err)
+	}
+	got := <-results
+	if got.code != http.StatusOK {
+		t.Fatalf("metadata update: expected 200, got %d: %s", got.code, got.body)
+	}
+
+	var instructions string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT instructions FROM project WHERE workspace_id = $1 AND id = $2`, wsID, project.ID).Scan(&instructions); err != nil {
+		t.Fatalf("read project instructions after metadata update: %v", err)
+	}
+	if instructions != renderedInstructions {
+		t.Fatalf("metadata update overwrote clause render: got %q, want %q", instructions, renderedInstructions)
+	}
+}
+
 func TestPromptGovernanceSaveRejectsReferenceAfterClauseRemoval(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
