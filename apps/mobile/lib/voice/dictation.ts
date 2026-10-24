@@ -108,6 +108,8 @@ export type DictationEvent =
   | { type: "final"; text: string }
   /** 降级分支：后端转写完成。 */
   | { type: "transcribed"; text: string }
+  /** The on-device recognizer cannot serve this press; switch to PCM upload. */
+  | { type: "fallbackToBackend" }
   | { type: "recognizerError"; kind: "empty" | "failed" };
 
 export type DictationCommand =
@@ -257,6 +259,25 @@ export function reduceDictation(
       return {
         state: idleDictation,
         commands: [{ type: "sendText", text }],
+      };
+    }
+
+    case "fallbackToBackend": {
+      // A positive probe does not guarantee this SpeechRecognizer session can
+      // serve the current press. Only an active hold can move to server ASR;
+      // an error after release must still settle through finalizing.
+      if (state.phase !== "recording" || state.degraded) {
+        return { state, commands: [] };
+      }
+      return {
+        state: {
+          ...state,
+          degraded: true,
+          preview: "",
+          pendingFinal: null,
+          pendingError: null,
+        },
+        commands: [{ type: "startCapture" }],
       };
     }
 
