@@ -13,8 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/testutil"
-	"github.com/multica-ai/multica/server/pkg/dbid"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // RUYI-865: when an issue formally enters the done category, the server
@@ -247,8 +247,13 @@ func TestIssueDoneCascadePRMergedEntry(t *testing.T) {
 		t.Fatalf("load issue row: %v", err)
 	}
 	// Drive the shared PR-merged path directly; github_test.go's webhook
-	// fixture pins its request-side wiring separately.
-	testHandler.advanceIssueToDone(t.Context(), issueRow, testWorkspaceID)
+	// fixture pins its request-side wiring separately. The transition
+	// (status write + card cascade) commits in one transaction, so a
+	// failure here leaves neither a done status nor a half-cancelled
+	// backlog behind.
+	if err := testHandler.advanceIssueToDone(t.Context(), issueRow, testWorkspaceID); err != nil {
+		t.Fatalf("advance to done: %v", err)
+	}
 
 	assertCardStatuses(t, statusCardsAfterDone(t, openA, openB, answered, cancelled, auth))
 	events := assertCascadeEvents(t, issueID, 1)
@@ -434,10 +439,14 @@ func assertNoOpenQuestionCards(t *testing.T, issueID string) {
 	}
 }
 
-// runDoneStatusUpdate issues the done side's status write on a dedicated
+// runDoneStatusUpdate runs the done side's transition on a dedicated
 // connection and reports when it parked and when it landed: parked lets
 // the caller assert the write is blocked on the create side's row lock,
-// doneErr the write's outcome once unblocked.
+// doneErr the transition's outcome once unblocked. It drives the SAME
+// explicit-transaction shape the production entry points now use
+// (RUYI-865 P1): one transaction that issues the status write, settles the
+// card cascade inside it, and commits both — so the test's parked write is
+// proven against the protocol the handlers actually run.
 func runDoneStatusUpdate(ctx context.Context, t *testing.T, issueID string) (parked chan int32, doneErr chan error) {
 	t.Helper()
 	parked = make(chan int32, 1)
@@ -454,18 +463,28 @@ func runDoneStatusUpdate(ctx context.Context, t *testing.T, issueID string) (par
 			doneErr <- err
 			return
 		}
-		parked <- pid
-		qdone := db.New(conn)
-		// Auto-commit on a dedicated connection: exactly what the
-		// github/Batch entry points do — one status write, then the
-		// post-commit settle.
-		if _, err := qdone.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
-			ID: parseUUID(issueID), Status: "done", WorkspaceID: parseUUID(testWorkspaceID),
-		}); err != nil {
+		tx, err := conn.Begin(ctx)
+		if err != nil {
 			doneErr <- err
 			return
 		}
-		doneErr <- nil
+		qdone := db.New(tx)
+		parked <- pid
+		issue, err := qdone.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+			ID: parseUUID(issueID), Status: "done", WorkspaceID: parseUUID(testWorkspaceID),
+		})
+		if err == nil {
+			// Same settle the http entry point runs in this transaction:
+			// the just-committed card is seen under a fresh READ COMMITTED
+			// snapshot once the lock release unblocked the update.
+			if _, err = testHandler.settleDoneCascadeInTx(ctx, qdone, issue, "http_update_issue"); err == nil {
+				err = tx.Commit(ctx)
+			}
+		}
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+		doneErr <- err
 	}()
 	return parked, doneErr
 }
@@ -473,25 +492,18 @@ func runDoneStatusUpdate(ctx context.Context, t *testing.T, issueID string) (par
 // create-commits-first: the card's create transaction holds the issue row
 // lock, its card lands, and it commits before the done status write. The
 // done write is proven parked on that lock, and once the card commits it
-// lands and its post-commit settle — the same step the http entry point
-// runs on the transition, a fresh READ COMMITTED snapshot — converges the
-// just-committed card to cancelled with an audit row. This is the P1
-// survivor interleaving: without the lock, the done write's post-commit
-// batch would miss a card that commits in between.
+// proceeds — the status write and the in-tx settle that converges the
+// just-committed card to cancelled with an audit row ride ONE transaction
+// (the same shape the http entry points now run, RUYI-865 P1), so no open
+// card survives the done transition. This is the P1 survivor interleaving:
+// without the lock, the done write's transaction would miss a card that
+// commits in between.
 func TestIssueDoneCascadeCreateCommitsFirstConvergesLeftoverCard(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
 	ctx := t.Context()
 	issueID := dbfx.Issue(t, "done race create-first issue")
-
-	// The pre-write snapshot the entry point would carry as prevIssue.
-	prev, err := testHandler.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
-		ID: parseUUID(issueID), WorkspaceID: parseUUID(testWorkspaceID),
-	})
-	if err != nil {
-		t.Fatalf("load pre-write issue snapshot: %v", err)
-	}
 
 	locked, finish := openCardCreateTx(t, ctx, db.CreateIssueDecisionParams{
 		ID:                 dbid.NewV7(),
@@ -516,18 +528,12 @@ func TestIssueDoneCascadeCreateCommitsFirstConvergesLeftoverCard(t *testing.T) {
 		t.Fatalf("create transaction: %v", err)
 	}
 	if err := <-doneErr; err != nil {
-		t.Fatalf("done status write: %v", err)
+		t.Fatalf("done transition (status write + in-tx settle + commit): %v", err)
 	}
 
-	// The post-commit settle the http entry point runs on the same
-	// transition: it sees the just-committed card and cancels it.
-	issueRow, err := testHandler.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
-		ID: parseUUID(issueID), WorkspaceID: parseUUID(testWorkspaceID),
-	})
-	if err != nil {
-		t.Fatalf("reload done issue: %v", err)
-	}
-	testHandler.cancelOpenDecisionCardsForDone(ctx, prev, issueRow, "http_update_issue")
+	// The done write's transaction settled the just-committed card in-tx
+	// (the same step the http entry points run on the transition, now in the
+	// same commit): exactly one audit row, covering the raced card.
 	assertNoOpenQuestionCards(t, issueID)
 	if rows := assertCascadeEvents(t, issueID, 1); len(rows[0].DecisionIDs) != 1 {
 		t.Errorf("settle audit decision_ids = %v, want exactly the raced card", rows[0].DecisionIDs)
