@@ -57,6 +57,12 @@ const (
 	// carrier through the prompt.
 	maxCarrierSections  = 80
 	maxSectionNameRunes = 120
+	// maxCarrierClauses / maxClauseTitleRunes bound one carrier's active
+	// clause-asset title list (RUYI-858): the revise/remove target set and
+	// the add_clause dedup input, capped like the section list so a
+	// pathological library cannot blow up the prompt.
+	maxCarrierClauses   = 200
+	maxClauseTitleRunes = 120
 )
 
 // TaskContextIssue is one scanned issue inside the task payload — id plus
@@ -74,11 +80,16 @@ type TaskContextIssue struct {
 // (RUYI-723): its scope, the carrier entity id, a display name and the
 // carrier's current `## ` section list. The list is the single legal source
 // of target_section values — verbatim copy or empty (document tail).
+// Clauses (RUYI-858) lists the carrier's currently-active structured clause
+// asset titles: the target set for revise_clause / remove_clause drafts and
+// the dedup input for add_clause. Absent on pre-RUYI-858 task payloads;
+// those runs keep the static-text-only contract.
 type TaskContextCarrier struct {
 	Scope    string   `json:"scope"`
 	ScopeID  string   `json:"scope_id"`
 	Name     string   `json:"name,omitempty"`
 	Sections []string `json:"sections"`
+	Clauses  []string `json:"clauses,omitempty"`
 }
 
 // TaskContext is the JSONB payload the enqueued task carries: everything the
@@ -159,6 +170,19 @@ func PromptFromContext(raw []byte) (string, bool) {
 		b.WriteString("- target_section must be copied VERBATIM from the chosen carrier's section list (exact characters, no paraphrase, no invented section); use the empty string to append the clause at the carrier's document tail instead.\n")
 		b.WriteString("- gate_answers.layer must agree with carrier_scope (层次归属): a workspace-carrier draft claims the workspace layer (workspace=…), a project-carrier draft claims the project layer (proj=…). An inconsistent pair is a defect.\n")
 		b.WriteString("- The project carrier of an issue is that issue's project_id above; an issue without a project_id only supports the workspace carrier.\n")
+	}
+	// RUYI-858: the three clause actions and the active structured-clause
+	// inventory. The inventory covers BOTH the carrier's static clause text
+	// (rendered into sections above) and the active clause-asset titles
+	// (clauses lists) — a draft may revise or remove a clause that lives
+	// only in the asset library, and an add_clause is a duplicate when its
+	// title already appears in either surface.
+	if hasCarrierClauses(tc.Carriers) {
+		b.WriteString("\nThe clause library holds two kinds of rules: static clauses embedded in the carrier text, and structured clause assets injected dynamically at runtime. A draft expresses exactly one of three actions via change_kind:\n")
+		b.WriteString("- add_clause: a new rule nobody states yet; clause_name must not already exist in either surface (a duplicate is dropped by the pool dedup).\n")
+		b.WriteString("- revise_clause: rewrite an existing clause; clause_name names the clause to replace (copy it VERBATIM from the lists above) and clause_text is the full new text starting with the clause label.\n")
+		b.WriteString("- remove_clause: retire a clause that is obsolete or harmful; clause_name names it and clause_text stays empty.\n")
+		b.WriteString("Only revise and remove target clauses that actually appear in the lists above; an improvement that changes no existing clause is an add_clause.\n")
 	}
 	b.WriteString("\nFor each issue worth learning from, propose at most 3 drafts. A draft must be written as final, directly-enactable clause text (no revision marks, no weak wording), carry the five content-gate answers (layer / retention / cost / conflict / dedup) and cite its evidence. If an issue yields nothing worth proposing, still list its id in analyzed_issue_ids so it is not re-read by the next run.\n\n")
 	b.WriteString(`Output contract (the server rejects output it cannot parse, and the run then fails visibly):
@@ -427,6 +451,18 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 	for _, c := range legislation.Clauses(current) {
 		liveClauses[strings.ToLower(c)] = true
 	}
+	// RUYI-858: dedup must see the active structured clause assets, not just
+	// the carrier's rendered static text — a clause injected dynamically by
+	// the library is invisible in the static text when its marker is missing
+	// or the snapshot lags, and an add_clause duplicate would slip through
+	// otherwise.
+	for _, carrier := range tc.Carriers {
+		for _, c := range carrier.Clauses {
+			if c != "" {
+				liveClauses[strings.ToLower(c)] = true
+			}
+		}
+	}
 
 	// Normalize drafts into per-issue buckets: unknown change kinds and
 	// nameless/oversized clauses are dropped here (counted, not fatal), the
@@ -645,6 +681,18 @@ func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID st
 		}
 		return nil
 	})
+}
+
+// hasCarrierClauses reports whether the context carries any active clause
+// inventory (RUYI-858) — the prompt's three-action section and the asset
+// dedup engage only when the runner saw at least one title.
+func hasCarrierClauses(carriers []TaskContextCarrier) bool {
+	for _, c := range carriers {
+		if len(c.Clauses) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func dedupeStrings(in []string) []string {
