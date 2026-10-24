@@ -10,7 +10,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-func TestTaskSystemCommentsIncludeResponsibilityMention(t *testing.T) {
+func TestTaskSystemCommentsDoNotManufactureAgentMentions(t *testing.T) {
 	for _, path := range []string{"fail_task", "daemon_alert"} {
 		for _, role := range []string{"agent", "squad_worker"} {
 			t.Run(path+"/"+role, func(t *testing.T) {
@@ -53,13 +53,14 @@ func TestTaskSystemCommentsIncludeResponsibilityMention(t *testing.T) {
 				})
 
 				svc := NewTaskService(db.New(pool), pool, nil, events.New())
+				sourceContent := "runtime failed [@Self](mention://agent/" + commentAgentID + ") [@Other](mention://agent/" + agentID + ")"
 				switch path {
 				case "fail_task":
-					if _, err := svc.FailTask(ctx, taskID, "runtime failed", "", "", "", "agent_error.process_failure", false, "", ""); err != nil {
+					if _, err := svc.FailTask(ctx, taskID, sourceContent, "", "", "", "agent_error.process_failure", false, "", ""); err != nil {
 						t.Fatalf("FailTask: %v", err)
 					}
 				case "daemon_alert":
-					if err := svc.AddDaemonTaskSystemComment(ctx, taskID, "watchdog warning"); err != nil {
+					if err := svc.AddDaemonTaskSystemComment(ctx, taskID, sourceContent); err != nil {
 						t.Fatalf("AddDaemonTaskSystemComment: %v", err)
 					}
 				}
@@ -70,9 +71,11 @@ func TestTaskSystemCommentsIncludeResponsibilityMention(t *testing.T) {
 				).Scan(&content, &commentType); err != nil {
 					t.Fatalf("load system comment: %v", err)
 				}
-				wantID := agentID
-				if !strings.Contains(content, "mention://agent/"+wantID) {
-					t.Fatalf("system comment = %q, want responsibility mention for %s", content, wantID)
+				if strings.Contains(content, "mention://agent/") {
+					t.Fatalf("system comment = %q, must not manufacture an agent mention", content)
+				}
+				if !strings.Contains(content, "@Self") || !strings.Contains(content, "@Other") {
+					t.Fatalf("system comment = %q, want display labels preserved", content)
 				}
 				if commentType != "system" {
 					t.Fatalf("comment type = %q, want system", commentType)
@@ -82,7 +85,7 @@ func TestTaskSystemCommentsIncludeResponsibilityMention(t *testing.T) {
 	}
 }
 
-func TestTaskSystemCommentsRejectUnavailableResponsibilityAgent(t *testing.T) {
+func TestTaskSystemCommentsStillReportWhenResponsibilityAgentIsUnavailable(t *testing.T) {
 	cases := []struct {
 		name   string
 		path   string
@@ -159,8 +162,8 @@ func TestTaskSystemCommentsRejectUnavailableResponsibilityAgent(t *testing.T) {
 			if err := pool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE source_task_id = $1`, taskID).Scan(&commentCount); err != nil {
 				t.Fatalf("count system comments: %v", err)
 			}
-			if commentCount != 0 {
-				t.Fatalf("created %d agent comments for unavailable responsibility target, want none", commentCount)
+			if commentCount != 1 {
+				t.Fatalf("created %d system comments for unavailable responsibility target, want 1", commentCount)
 			}
 		})
 	}

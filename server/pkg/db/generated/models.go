@@ -273,6 +273,9 @@ type AgentTaskQueue struct {
 	CancelActorID           pgtype.UUID        `json:"cancel_actor_id"`
 	LocalDirectoryScope     []byte             `json:"local_directory_scope"`
 	ChatModelSnapshot       pgtype.Text        `json:"chat_model_snapshot"`
+	NoActionAt              pgtype.Timestamptz `json:"no_action_at"`
+	NoActionReason          pgtype.Text        `json:"no_action_reason"`
+	CommentOutputAt         pgtype.Timestamptz `json:"comment_output_at"`
 }
 
 type AgentToLabel struct {
@@ -729,6 +732,17 @@ type ClauseInjection struct {
 	// True = recorded from the carrier snapshot fallback (dynamic computation failed or the global kill switch is on), so the row set may be the full unfiltered snapshot rather than the task_kind-filtered effective set.
 	Degraded  bool               `json:"degraded"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type ClauseInjectionObservation struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	CarrierScope      string             `json:"carrier_scope"`
+	CarrierScopeID    pgtype.UUID        `json:"carrier_scope_id"`
+	Degraded          bool               `json:"degraded"`
+	DegradationReason string             `json:"degradation_reason"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
 // Per (clause, version, UTC day) quality rollup (RUYI-751): clause-level mirror of prompt_quality_daily. Counts only — rates are derived at read time so "not measured" stays distinguishable from zero.

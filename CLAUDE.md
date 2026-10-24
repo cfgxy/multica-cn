@@ -11,6 +11,10 @@ The source of truth for code naming, i18n glossary, and Chinese product voice is
 
 Read it before editing translations in `packages/views/locales/`, naming routes/packages/files/DB columns/types, or writing Chinese UI/docs copy.
 
+## Public Repository Safety
+
+This repository is public. Do not commit internal prompt/clause governance audits, production migration records, QA evidence dumps, operational handoff runbooks, real workspace/user IDs, private host aliases, private filesystem paths, credential fingerprints, or secret-bearing examples. Maintain those records in the approved private Multica documentation repository. Public docs and ADRs describe generic product behavior only.
+
 ## Project Shape
 
 Multica is an AI-native task management platform for small teams, with agents as first-class assignees that can own issues, comment, and change status.

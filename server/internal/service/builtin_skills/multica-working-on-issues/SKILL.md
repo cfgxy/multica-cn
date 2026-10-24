@@ -86,6 +86,23 @@ In the final issue comment, include the PR URL when a PR exists. If the task did
 not produce a PR because no code changed or the user asked not to create one, say
 that explicitly.
 
+## End a no-op turn without creating another run
+
+An ordinary issue task whose trigger needs no material output, status change,
+handoff, blocker, or deliverable records that fact before exiting:
+
+```bash
+multica issue no-action <issue-id> --reason "<short reason>"
+```
+
+After the command succeeds, exit without posting a comment. Do not announce that
+you are staying silent, acknowledge another agent, or add a courtesy mention —
+those comments are the loop this command prevents. If the call fails, the silent
+exception does not apply: post exactly one short final comment instead. The
+command is only for the current non-leader issue task and is refused after that
+task has already produced or edited a comment. Squad leaders keep their separate
+`multica squad activity <issue-id> no_action` contract.
+
 ## Reading a linked PR's real state
 
 When a step depends on PR state, query Multica's link table — do not infer it

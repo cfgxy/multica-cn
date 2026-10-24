@@ -21,8 +21,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/legislation"
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/clausemark"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptscan"
 )
 
@@ -140,9 +140,10 @@ func clauseAudit(action, actorType, actorID string, extra map[string]any) []byte
 // clauseEnactOutcome carries what the asset writes produced, for the
 // proposal row and the caller's response.
 type clauseEnactOutcome struct {
-	ClauseID pgtype.UUID
-	Slug     string
-	Version  int32 // the clause_version this enactment produced (0 for remove/move)
+	ClauseID        pgtype.UUID
+	Slug            string
+	Version         int32 // the clause_version this enactment produced (0 for remove/move)
+	RenderOverrides map[carrierRef]*clauseRenderOverride
 	// Affected lists the carrier scopes whose business column must re-render.
 	Affected map[string]bool
 }
@@ -163,12 +164,59 @@ type carrierRef struct {
 	id    pgtype.UUID
 }
 
+// clauseRenderOverride supplies a not-yet-persisted version of one active
+// clause. It lets previews and gate synthesis use the same asset renderer as
+// the post-write path without requiring a speculative database write.
+type clauseRenderOverride struct {
+	ClauseID          pgtype.UUID
+	Version           int32
+	Content           string
+	SupersededContent string
+}
+
+// renderedClausesByCarrier partitions the active asset set by the complete
+// binding target. A scope alone is not enough: two project, squad, or agent
+// carriers in the same workspace must never receive each other's clauses.
+func renderedClausesByCarrier(rows []db.ListActiveWorkspaceClausesRow, override *clauseRenderOverride) map[carrierRef][]clausemark.RenderedClause {
+	byCarrier := make(map[carrierRef][]clausemark.RenderedClause)
+	for _, row := range rows {
+		version, content := row.Version, row.Content
+		var supersededBodies []string
+		if override != nil && row.ClauseID == override.ClauseID {
+			// A persisted write only needs the old body removed. A preview also
+			// supplies the prospective content and version before the write exists.
+			if override.Content != "" {
+				version, content = override.Version, override.Content
+			}
+			if override.SupersededContent != "" && override.SupersededContent != content {
+				supersededBodies = []string{override.SupersededContent}
+			}
+		}
+		ref := carrierRef{scope: row.Scope, id: row.ScopeID}
+		byCarrier[ref] = append(byCarrier[ref], clausemark.RenderedClause{
+			Slug: row.Slug, Version: int(version), Body: content, SupersededBodies: supersededBodies,
+		})
+	}
+	return byCarrier
+}
+
+func (h *Handler) renderCarrierFromActiveClausesTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, ref carrierRef, current string, override *clauseRenderOverride) (string, error) {
+	rows, err := qtx.ListActiveWorkspaceClauses(ctx, workspaceID)
+	if err != nil {
+		return "", fmt.Errorf("有效条款集读取失败: %w", err)
+	}
+	return clausemark.Static(current, renderedClausesByCarrier(rows, override)[ref]), nil
+}
+
 // enactClauseAssetsTx writes the clause-family rows for one enacted
 // proposal. The proposal row must still be flipped by EnactPromptProposal
 // afterwards — every failure here returns an error so the enclosing
 // transaction rolls the whole enactment back.
 func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, actorType, actorID string) (clauseEnactOutcome, error) {
-	out := clauseEnactOutcome{Affected: map[string]bool{}}
+	out := clauseEnactOutcome{
+		Affected:        map[string]bool{},
+		RenderOverrides: map[carrierRef]*clauseRenderOverride{},
+	}
 
 	switch p.ChangeKind {
 	case "add_clause", "migrate_clause":
@@ -229,6 +277,13 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 		if err != nil {
 			return out, fmt.Errorf("条款「%s」没有生效绑定，无法修订", clause.Title)
 		}
+		currentVersion, err := qtx.GetClauseVersion(ctx, db.GetClauseVersionParams{
+			ClauseID: clause.ID,
+			Version:  clause.Version,
+		})
+		if err != nil {
+			return out, fmt.Errorf("条款「%s」当前版本读取失败: %w", clause.Title, err)
+		}
 		next := clause.Version + 1
 		content := strings.TrimRight(p.ClauseText, "\n")
 		if _, err := qtx.CreateClauseVersion(ctx, db.CreateClauseVersionParams{
@@ -253,6 +308,10 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 		}
 		out.ClauseID, out.Slug, out.Version = clause.ID, clause.Slug, next
 		out.Affected[binding.Scope] = true
+		out.RenderOverrides[carrierRef{scope: binding.Scope, id: binding.ScopeID}] = &clauseRenderOverride{
+			ClauseID:          clause.ID,
+			SupersededContent: currentVersion.Content,
+		}
 
 	case "remove_clause":
 		clause, err := resolveProposalClauseTx(ctx, qtx, workspaceID, p.ClauseID, p.ClauseName)
@@ -312,18 +371,16 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 	return out, nil
 }
 
-// rerenderAffectedCarriersTx re-renders every carrier the enactment touched:
-// stable context kept, clause region rebuilt from the asset library (full
-// task-kind union, no condition filtering — ADR 007 §业务列渲染快照), then the
-// rendered text is secret-scanned, written into the business column AND the
-// prompt_version ledger, and the structure baseline is rebuilt from the
-// rendered result so the next gate run sees exactly what the carrier holds.
+// rerenderAffectedCarriersTx normalizes every carrier the enactment touched:
+// the business column keeps only static context, while the active clause set
+// remains in the asset library for claim-time composition. The normalized text
+// is written into the business column and prompt_version ledger together.
 //
 // texts maps each affected carrier to the text the re-render starts from —
 // the gate's synthesized text (the proposal already applied inline). Keyed by
 // the full carrier reference, not the scope name: a move_clause between two
 // entities of the same scope touches two distinct rows of one tier.
-func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, carriers []carrierRef, texts map[carrierRef]string, actorType, actorID string) error {
+func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, carriers []carrierRef, texts map[carrierRef]string, overrides map[carrierRef]*clauseRenderOverride, actorType, actorID string) error {
 	if len(carriers) == 0 {
 		return nil
 	}
@@ -331,40 +388,40 @@ func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Querie
 	if err != nil {
 		return fmt.Errorf("有效条款集读取失败: %w", err)
 	}
-	byScope := map[string][]clausemark.RenderedClause{}
-	for _, row := range allClauses {
-		byScope[row.Scope] = append(byScope[row.Scope], clausemark.RenderedClause{
-			Slug: row.Slug, Version: int(row.Version), Body: row.Content,
-		})
-	}
 	for _, c := range carriers {
 		current, ok := texts[c]
 		if !ok {
 			continue
 		}
-		rendered := clausemark.Render(current, byScope[c.scope])
-		scan, ok, reason := promptGovernanceGate(rendered)
+		static := clausemark.Static(current, renderedClausesByCarrier(allClauses, overrides[c])[c])
+		scan, ok, reason := promptGovernanceGate(static)
 		if !ok {
-			return fmt.Errorf("重渲染文本未通过内容门闸（%s）: %s", c.scope, reason)
+			return &carrierRenderValidationError{message: fmt.Sprintf("重渲染文本未通过内容门闸（%s）: %s", c.scope, reason)}
 		}
-		if _, err := persistCarrierVersionTx(ctx, qtx, workspaceID, promptVersionScope(c.scope), c.id, rendered,
-			"条款渲染快照重建", "legislation", nil, scan.Revision, scan.Findings, actorID); err != nil {
+		if _, err := persistCarrierVersionTx(ctx, qtx, workspaceID, promptVersionScope(c.scope), c.id, static,
+			"条款静态载体规范化", "legislation", nil, scan.Revision, scan.Findings, actorID); err != nil {
 			return fmt.Errorf("载体版本写入失败（%s）: %w", c.scope, err)
 		}
-		sections, clauses := legislation.ExtractStructure(rendered)
+		sections, clauses := legislation.ExtractStructure(static)
 		if _, err := qtx.UpsertPromptStructureBaseline(ctx, db.UpsertPromptStructureBaselineParams{
 			WorkspaceID:    workspaceID,
 			CarrierScope:   c.scope,
 			CarrierScopeID: c.id,
 			Sections:       mustJSON(sections),
 			Clauses:        mustJSON(clauses),
-			ContentSha256:  sha256Hex(rendered),
+			ContentSha256:  sha256Hex(static),
 		}); err != nil {
 			return fmt.Errorf("结构基线重建失败（%s）: %w", c.scope, err)
 		}
 	}
 	return nil
 }
+
+type carrierRenderValidationError struct {
+	message string
+}
+
+func (e *carrierRenderValidationError) Error() string { return e.message }
 
 // persistCarrierVersionTx is the transaction core of the governance write
 // funnel: next version number, prompt_version row, business-column copy. The

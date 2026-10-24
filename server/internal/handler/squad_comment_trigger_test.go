@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -457,16 +458,15 @@ func TestCreateComment_DualRoleAgentWorkerCommentWakesLeader(t *testing.T) {
 	}
 }
 
-// TestCreateComment_SquadLeaderMentionTaskDoesNotSelfTriggerAssignedFallback
-// pins MUL-4024's direct-mention gap:
+// TestCreateComment_AssignedSquadLeaderDirectMentionKeepsLeaderRoleAndDoesNotSelfTrigger
+// pins the direct-mention role contract and MUL-4024's self-trigger guard:
 //
 //   - A member explicitly @mentions the issue's assigned squad leader by agent
-//     id, which queues a generic mention task for L (is_leader_task=false,
-//     squad_id=NULL).
+//     id, which queues a leader task for L with the assigned squad provenance.
 //   - L posts a plain reply while running that mention task.
-//   - The assigned-squad fallback must not treat that generic mention task as a
-//     same-squad worker result and queue L again as the leader.
-func TestCreateComment_SquadLeaderMentionTaskDoesNotSelfTriggerAssignedFallback(t *testing.T) {
+//   - The assigned-squad fallback must recognize the leader role and not queue L
+//     again.
+func TestCreateComment_AssignedSquadLeaderDirectMentionKeepsLeaderRoleAndDoesNotSelfTrigger(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -526,10 +526,10 @@ func TestCreateComment_SquadLeaderMentionTaskDoesNotSelfTriggerAssignedFallback(
 	if err := testPool.QueryRow(ctx, `
 		SELECT id FROM agent_task_queue
 		WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
-		  AND is_leader_task = FALSE AND squad_id IS NULL
+		  AND is_leader_task = TRUE AND squad_id = $3
 		ORDER BY created_at DESC
 		LIMIT 1
-	`, issueID, fx.LeaderID).Scan(&mentionTaskID); err != nil {
+	`, issueID, fx.LeaderID, fx.SquadID).Scan(&mentionTaskID); err != nil {
 		t.Fatalf("load leader mention task: %v", err)
 	}
 	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running' WHERE id = $1`, mentionTaskID); err != nil {
@@ -542,7 +542,57 @@ func TestCreateComment_SquadLeaderMentionTaskDoesNotSelfTriggerAssignedFallback(
 	})
 
 	if got := countQueuedLeaderTasks(); got != 0 {
-		t.Fatalf("leader reply from generic mention task queued %d leader tasks, want 0", got)
+		t.Fatalf("leader reply from leader mention task queued %d leader tasks, want 0", got)
+	}
+}
+
+func TestCreateComment_AssignedSquadLeaderDirectMentionBlocksOnExplicitWorkerRole(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	fx := newSquadCommentTriggerFixture(t)
+	issueID := uuidToString(fx.Issue.ID)
+
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE id = $1`, fx.LeaderID).Scan(&runtimeID); err != nil {
+		t.Fatalf("load leader runtime: %v", err)
+	}
+	workerTaskID := dbfx.Task(t, fx.LeaderID, testutil.Cols{
+		"runtime_id":     runtimeID,
+		"issue_id":       issueID,
+		"status":         "queued",
+		"is_leader_task": false,
+		"squad_id":       fx.SquadID,
+	})
+
+	w := httptest.NewRecorder()
+	r := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": "[@Leader](mention://agent/" + fx.LeaderID + ") please coordinate this",
+	})
+	r = withURLParam(r, "id", issueID)
+	testHandler.CreateComment(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var created CommentResponse
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(created.TriggerOutcomes) != 1 || created.TriggerOutcomes[0].Status != DispatchBlocked || string(created.TriggerOutcomes[0].ReasonCode) != "task_role_conflict" {
+		t.Fatalf("leader role conflict outcome = %+v, want blocked/task_role_conflict", created.TriggerOutcomes)
+	}
+
+	var isLeader bool
+	var squadID *string
+	if err := testPool.QueryRow(ctx, `SELECT is_leader_task, squad_id FROM agent_task_queue WHERE id = $1`, workerTaskID).Scan(&isLeader, &squadID); err != nil {
+		t.Fatalf("load worker task role: %v", err)
+	}
+	if isLeader || squadID == nil || *squadID != fx.SquadID {
+		t.Fatalf("worker task role changed: is_leader=%v squad_id=%v", isLeader, squadID)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, fx.LeaderID); got != 1 {
+		t.Fatalf("role conflict created %d tasks, want the original worker task only", got)
 	}
 }
 

@@ -105,7 +105,7 @@ func TestGuestLeaderCannotChangeStatusOnCommentTurn(t *testing.T) {
 		"## Squad Roster",
 		"Leader (you):",
 		"Delegate by @mention",
-		"Record your evaluation",
+		"Record the final evaluation",
 	} {
 		if !strings.Contains(briefing, want) {
 			t.Fatalf("guest leader lost coordination context %q:\n%s", want, briefing)

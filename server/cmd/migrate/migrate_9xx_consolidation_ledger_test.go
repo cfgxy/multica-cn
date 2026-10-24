@@ -188,6 +188,10 @@ var postConsolidationStems = []string{
 	"984_prompt_proposal_enactment_target",               // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
 	"985_scheduling_pause_system_source",                 // RUYI-859 stage B (created_by nullable: system error-rate suppression source)
 	"985_scheduling_pause_system_source_promql_recovery", // RUYI-859 forward recovery for historical stage-A databases
+	"994_clause_injection_observation",                   // RUYI-891 (claim-time degraded carrier observations)
+	"994_clause_injection_observation_id_index",
+	"994_clause_injection_observation_task_scope_time_index",
+	"994_clause_injection_observation_workspace_time_index",
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

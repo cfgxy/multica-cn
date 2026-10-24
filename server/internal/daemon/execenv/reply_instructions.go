@@ -183,11 +183,10 @@ func BuildCommentReplyInstructions(provider, issueID, triggerCommentID string, s
 // repeating it inline at every comment-triggered step 7 would be
 // duplication, not signal.
 func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID string, squadLeader bool) string {
-	// The squad leader's `no_action` exit (recorded via `squad activity`) is
-	// the one path where posting no comment is correct — the imperative must
-	// carry its own carve-out so a later line never contradicts the
-	// no_action rule injected above it (MUL-5442 #6493 review).
-	lead := "Post your reply as a comment — always use the trigger comment ID below, "
+	// Every issue task has an explicit, durable silent path. Squad leaders record
+	// it through squad activity; ordinary tasks use issue no-action. The reply
+	// imperative carries the carve-out itself so no later line contradicts it.
+	lead := fmt.Sprintf("If `multica issue no-action %s --reason \"<short reason>\"` succeeded, exit without a comment. Otherwise: Post your reply as a comment — always use the trigger comment ID below, ", issueID)
 	if squadLeader {
 		lead = "Unless your outcome is `no_action`, post your reply as a comment — always use the trigger comment ID below, "
 	}
@@ -294,14 +293,13 @@ func BuildMultiThreadCommentReplyInstructions(issueID string, targets []ThreadRe
 		targetLines += fmt.Sprintf("%d. thread %s → reply with `--parent %s`\n", i+1, tgt.ThreadID, tgt.ParentID)
 	}
 
-	// Same carve-out as the single-thread cookbook (MUL-5442 #6493 review):
-	// the leader's no_action exit must not be contradicted by this later
-	// imperative, and the scope sentence must govern the ENTIRE fan-out
+	// Same carve-out as the single-thread cookbook: no_action must not be
+	// contradicted by this later imperative, and the scope sentence must govern
+	// the ENTIRE fan-out
 	// block — every obligation below ("multiple replies are required", the
 	// posting order, the per-thread file rule) sits under the "Otherwise" —
-	// not just the first verb. Ordinary agents keep the unconditional form
-	// byte-for-byte.
-	lead := "This run coalesced comments from %d DISTINCT threads. Post ONE reply per thread"
+	// not just the first verb.
+	lead := fmt.Sprintf("This run coalesced comments from %%d DISTINCT threads. **If `multica issue no-action %s --reason \"<short reason>\"` succeeded, skip this ENTIRE fan-out block and post no replies; everything below applies only otherwise.** Otherwise, Post ONE reply per thread", issueID)
 	if squadLeader {
 		lead = "This run coalesced comments from %d DISTINCT threads. **If your outcome is `no_action`, skip this ENTIRE fan-out block — post no replies at all and exit via `multica squad activity` as your leader rules direct; everything below applies only otherwise.** Otherwise, post ONE reply per thread"
 	}

@@ -60,6 +60,26 @@ func validClaims() jwt.MapClaims {
 	}
 }
 
+func TestTaskTokenWriteBlockedAfterNoAction(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path string
+		noAction, want     bool
+	}{
+		{"before no_action", http.MethodPost, "/api/issues/i/comments", false, false},
+		{"read after no_action", http.MethodGet, "/api/issues/i", true, false},
+		{"head after no_action", http.MethodHead, "/api/issues/i", true, false},
+		{"idempotent no_action retry", http.MethodPost, "/api/issues/i/no-action", true, false},
+		{"comment after no_action", http.MethodPost, "/api/issues/i/comments", true, true},
+		{"status after no_action", http.MethodPut, "/api/issues/i", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := taskTokenWriteBlocked(tc.noAction, tc.method, tc.path); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // authMiddleware returns the Auth middleware with nil queries and no
 // disabled gate (JWT-only tests). Tests that exercise the account-disable
 // path build Auth directly with a stub auth.DisabledLookup.

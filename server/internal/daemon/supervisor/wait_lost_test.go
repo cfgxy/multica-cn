@@ -16,6 +16,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
 // lostTestSupervisor builds a Supervisor wired for in-process convergence
@@ -194,4 +196,124 @@ func TestWaitLostConvergence(t *testing.T) {
 			t.Fatalf("probe failure must not converge, exit = %+v", stored.Exit)
 		}
 	})
+}
+
+func TestCollectedUnitRequiresTrustedExitRecord(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	newHandle := func(t *testing.T, source string) *supervisedHandle {
+		t.Helper()
+		id := "01a11d88-cd66-7399-99ea-7127ae79b3fc-1"
+		man := manifestFor(id, &ExitRecord{Code: 0, At: time.Now().UTC(), Source: source})
+		if err := mgr.WriteManifest(man); err != nil {
+			t.Fatalf("WriteManifest: %v", err)
+		}
+		sup := &Supervisor{
+			mgr: mgr,
+			unitProbe: func(context.Context, string) (bool, error) {
+				return false, ErrUnitCollected
+			},
+		}
+		return &supervisedHandle{sup: sup, man: *man}
+	}
+
+	t.Run("launcher exit plus collected unit proves cgroup stopped", func(t *testing.T) {
+		active, err := newHandle(t, ExitSourceLauncher).unitActiveOrCollected(context.Background())
+		if err != nil || active {
+			t.Fatalf("collected launcher exit = active:%v err:%v, want inactive without error", active, err)
+		}
+	})
+
+	t.Run("synthetic lost exit is not enough", func(t *testing.T) {
+		_, err := newHandle(t, ExitSourceLost).unitActiveOrCollected(context.Background())
+		if err == nil {
+			t.Fatal("collected unit with synthetic exit must remain unconfirmed")
+		}
+	})
+}
+
+func TestStopRecordsSupervisorExitAfterOwnKillCollectsUnit(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	man := manifestFor("01a11d88-cd66-7399-99ea-7127ae79b3fc-2", nil)
+	if err := mgr.WriteManifest(man); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+
+	killed := false
+	killCalls := 0
+	sup := &Supervisor{
+		mgr: mgr,
+		unitProbe: func(context.Context, string) (bool, error) {
+			if killed {
+				return false, ErrUnitCollected
+			}
+			return true, nil
+		},
+		unitKiller: func(context.Context, string) error {
+			killCalls++
+			killed = true
+			return nil
+		},
+	}
+	if err := (&supervisedHandle{sup: sup, man: *man}).Stop(); err != nil {
+		t.Fatalf("Stop after own kill and collected unit: %v", err)
+	}
+	if killCalls != 1 {
+		t.Fatalf("KillUnit calls = %d, want 1", killCalls)
+	}
+	stored, err := mgr.ReadManifest(man.RunID)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if stored.State != StateExited || stored.Exit == nil || stored.Exit.Source != ExitSourceSupervisor {
+		t.Fatalf("manifest after own kill and collection = state:%s exit:%+v, want supervisor exit", stored.State, stored.Exit)
+	}
+}
+
+func TestStopDoesNotRecordExitAfterOwnKillProbeFailure(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	man := manifestFor("01a11d88-cd66-7399-99ea-7127ae79b3fc-3", nil)
+	if err := mgr.WriteManifest(man); err != nil {
+		t.Fatalf("WriteManifest: %v", err)
+	}
+
+	killed := false
+	sup := &Supervisor{
+		mgr: mgr,
+		unitProbe: func(context.Context, string) (bool, error) {
+			if killed {
+				return false, errors.New("systemctl unavailable")
+			}
+			return true, nil
+		},
+		unitKiller: func(context.Context, string) error {
+			killed = true
+			return nil
+		},
+	}
+	if err := (&supervisedHandle{sup: sup, man: *man}).Stop(); err == nil {
+		t.Fatal("Stop accepted a generic post-kill probe failure")
+	}
+	stored, err := mgr.ReadManifest(man.RunID)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if stored.Exit != nil {
+		t.Fatalf("probe failure recorded an unproven exit: %+v", stored.Exit)
+	}
+}
+
+func TestControlDialAfterStartIsCancellationUnconfirmed(t *testing.T) {
+	err := controlDialAfterStartError("run-1", context.Canceled)
+	if !errors.Is(err, agent.ErrCancellationUnconfirmed) {
+		t.Fatalf("post-launch control dial error = %v, want ErrCancellationUnconfirmed", err)
+	}
 }

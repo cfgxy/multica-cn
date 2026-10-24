@@ -393,8 +393,8 @@ func TestBuildCommentReplyInstructionsSquadLeaderCarveOut(t *testing.T) {
 	}
 
 	ordinary := BuildCommentReplyInstructions("claude", "issue-1", "comment-1", false)
-	if !strings.Contains(ordinary, "Post your reply as a comment") {
-		t.Errorf("ordinary reply instructions missing the imperative\n---\n%s", ordinary)
+	if !strings.Contains(ordinary, "multica issue no-action issue-1 --reason") || !strings.Contains(ordinary, "Post your reply as a comment") {
+		t.Errorf("ordinary reply instructions missing the no-action-scoped imperative\n---\n%s", ordinary)
 	}
 	if strings.Contains(ordinary, "Unless your outcome is") {
 		t.Errorf("ordinary reply instructions leaked the leader carve-out\n---\n%s", ordinary)

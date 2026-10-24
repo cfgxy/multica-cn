@@ -12,6 +12,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -19,8 +20,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/clausequalityrollup"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -42,12 +45,12 @@ const squadCarrierText = `# 小队作战手册
 // enacted clause by id.
 func clauseOpBody(wsID, changeKind, clauseID, clauseName, clauseText string, extra map[string]any) map[string]any {
 	body := map[string]any{
-		"carrier_scope":        "workspace",
-		"carrier_scope_id":     wsID,
-		"target_section":       "沟通规范",
-		"change_kind":          changeKind,
-		"clause_name":          clauseName,
-		"clause_text":          clauseText,
+		"carrier_scope":         "workspace",
+		"carrier_scope_id":      wsID,
+		"target_section":        "沟通规范",
+		"change_kind":           changeKind,
+		"clause_name":           clauseName,
+		"clause_text":           clauseText,
 		"gate_answer_layer":     "workspace=跨项目协作机制",
 		"gate_answer_retention": "每轮输出都适用，留底座",
 		"gate_answer_cost":      "约 60 字符常驻",
@@ -87,8 +90,25 @@ func TestClauseReviseEnactsNextVersion(t *testing.T) {
 	f := newClauseInjectionFixture(t)
 	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 
-	id := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步",
-		"- **每日同步**：各成员开工前在任务单回报当日计划、阻塞与预计完成时间。", nil))
+	proposed := "- **每日同步**：各成员开工前在任务单回报当日计划、阻塞与预计完成时间。"
+	id := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", proposed, nil))
+	code, body := legislationCall(t, testHandler.PreviewPromptProposal,
+		legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+id+"/preview", nil, "id", id))
+	if code != http.StatusOK {
+		t.Fatalf("revise preview: expected 200, got %d: %s", code, body)
+	}
+	var preview PromptProposalPreviewResponse
+	if err := json.Unmarshal([]byte(body), &preview); err != nil {
+		t.Fatalf("decode revise preview: %v (%s)", err, body)
+	}
+	var diff strings.Builder
+	for _, line := range preview.Diff {
+		diff.WriteString(line.Text)
+		diff.WriteByte('\n')
+	}
+	if !strings.Contains(diff.String(), proposed) || strings.Contains(diff.String(), "修订请改用新增") {
+		t.Fatalf("revise preview diff = %q, want proposed clause body and no static-title synthesis error", diff.String())
+	}
 	if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusOK {
 		t.Fatalf("revise approve: expected 200, got %d: %s", code, body)
 	}
@@ -103,17 +123,341 @@ func TestClauseReviseEnactsNextVersion(t *testing.T) {
 	if since != 2 {
 		t.Fatalf("binding since_clause_version = %d, want 2", since)
 	}
-	var context string
-	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&context)
-	if !strings.Contains(context, "回报当日计划、阻塞与预计完成时间") ||
-		!strings.Contains(context, "rev=2") {
-		t.Fatalf("carrier not re-rendered at rev 2:\n%s", context)
+	var carrierContext string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrierContext)
+	if strings.Contains(carrierContext, "回报当日计划、阻塞与预计完成时间") ||
+		strings.Contains(carrierContext, "clause:id=") {
+		t.Fatalf("persisted carrier retained dynamic clause v2:\n%s", carrierContext)
 	}
 	var enactedVersion int
 	dbfx.QueryRow(t, `SELECT enacted_version FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`,
 		f.wsID, id).Scan(&enactedVersion)
 	if enactedVersion != 2 {
 		t.Fatalf("proposal enacted_version = %d, want 2", enactedVersion)
+	}
+
+	taskID, claimedContext := enqueueAndClaim(t, f)
+	if !strings.Contains(claimedContext, "rev=2") || !strings.Contains(claimedContext, "回报当日计划、阻塞与预计完成时间") {
+		t.Fatalf("new claim did not receive revised clause v2:\n%s", claimedContext)
+	}
+	var injectedVersion int32
+	var degraded bool
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT clause_version, degraded FROM clause_injection WHERE task_id = $1 AND clause_id = $2`, taskID, clauseID).
+		Scan(&injectedVersion, &degraded); err != nil {
+		t.Fatalf("new claim left no clause_injection evidence: %v", err)
+	}
+	if injectedVersion != 2 || degraded {
+		t.Fatalf("new claim injection = v%d degraded=%v, want v2 and non-degraded", injectedVersion, degraded)
+	}
+}
+
+func TestClauseReviseKeepsCarrierStaticWithoutMarker(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+
+	var before string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&before)
+	if strings.Contains(before, "clause:id=") {
+		t.Fatalf("enacted carrier unexpectedly contains a marker:\n%s", before)
+	}
+
+	proposed := "- **每日同步**：缺失 marker 时仍由资产集重建此条款。"
+	id := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", proposed, nil))
+	code, body := legislationCall(t, testHandler.PreviewPromptProposal,
+		legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+id+"/preview", nil, "id", id))
+	if code != http.StatusOK {
+		t.Fatalf("static-carrier preview: expected 200, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, proposed) {
+		t.Fatalf("static-carrier preview omitted proposed clause: %s", body)
+	}
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusOK {
+		t.Fatalf("missing-marker approve: expected 200, got %d: %s", code, body)
+	}
+
+	var after string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&after)
+	if strings.Contains(after, proposed) || strings.Contains(after, "clause:id=") {
+		t.Fatalf("revision persisted dynamic clause content:\n%s", after)
+	}
+	if strings.Contains(after, cleanClauseText) {
+		t.Fatalf("revision retained the stale dynamic clause text:\n%s", after)
+	}
+	if !strings.Contains(after, "## 沟通规范") || !strings.Contains(after, "行文基调") {
+		t.Fatalf("missing-marker revision did not preserve static context:\n%s", after)
+	}
+}
+
+func directClauseRevisionRoute(h http.HandlerFunc) http.Handler {
+	return RequireHumanOrOAuthActor(middleware.RequireWorkspaceRole(testHandler.Queries, "owner")(h))
+}
+
+func TestDirectClauseRevisionUsesPreviewTokensAndCreatesNoProposal(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+
+	var currentContent, currentHash, currentCarrier string
+	dbfx.QueryRow(t, `SELECT content, content_sha256 FROM clause_version WHERE clause_id = $1 AND version = 1`, clauseID).
+		Scan(&currentContent, &currentHash)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&currentCarrier)
+	currentCarrier = clausemark.StripMarkers(currentCarrier)
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET context = $1 WHERE id = $2`, currentCarrier, f.wsID); err != nil {
+		t.Fatalf("remove marker from direct-revision fixture carrier: %v", err)
+	}
+	proposed := "- **每日同步**：Owner 确认后由 MCP 直接写入完整最终条文。"
+	request := map[string]any{
+		"content":                        proposed,
+		"expected_clause_version":        1,
+		"expected_clause_content_sha256": currentHash,
+		"expected_carrier_sha256":        sha256Hex(currentCarrier),
+	}
+	route := directClauseRevisionRoute(testHandler.DirectReviseClause)
+	previewRoute := directClauseRevisionRoute(testHandler.PreviewDirectClauseRevision)
+	previewReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision-preview", request, "clauseId", clauseID)
+	previewReq.Header.Set("X-Actor-Source", "oauth")
+	code, body := legislationCall(t, previewRoute.ServeHTTP, previewReq)
+	if code != http.StatusOK {
+		t.Fatalf("direct revision preview: expected 200, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, proposed) || !strings.Contains(body, `"next_clause_version":2`) {
+		t.Fatalf("direct revision preview omitted canonical diff/version: %s", body)
+	}
+	var preview DirectClauseRevisionPreviewResponse
+	if err := json.Unmarshal([]byte(body), &preview); err != nil {
+		t.Fatalf("decode direct revision preview: %v (%s)", err, body)
+	}
+	if len(preview.PreviewSHA256) != 64 {
+		t.Fatalf("direct revision preview token = %q, want SHA256", preview.PreviewSHA256)
+	}
+
+	mismatched := make(map[string]any, len(request)+2)
+	for key, value := range request {
+		mismatched[key] = value
+	}
+	mismatched["content"] = "- **每日同步**：未经 Owner 预览的替换正文。"
+	mismatched["preview_sha256"] = preview.PreviewSHA256
+	mismatched["confirm_previewed"] = true
+	mismatchReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", mismatched, "clauseId", clauseID)
+	mismatchReq.Header.Set("X-Actor-Source", "oauth")
+	code, body = legislationCall(t, route.ServeHTTP, mismatchReq)
+	if code != http.StatusConflict || !strings.Contains(body, "预览与提交内容不一致") {
+		t.Fatalf("mismatched direct revision = %d: %s, want preview conflict", code, body)
+	}
+
+	request["preview_sha256"] = preview.PreviewSHA256
+	request["confirm_previewed"] = true
+	writeReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
+	writeReq.Header.Set("X-Actor-Source", "oauth")
+	code, body = legislationCall(t, route.ServeHTTP, writeReq)
+	if code != http.StatusOK {
+		t.Fatalf("direct revision write: expected 200, got %d: %s", code, body)
+	}
+	var result DirectClauseRevisionResponse
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		t.Fatalf("decode direct revision result: %v (%s)", err, body)
+	}
+
+	var versionCount, proposalCount int
+	var versionContent, audit, persistedCarrier string
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&versionCount)
+	dbfx.QueryRow(t, `SELECT content FROM clause_version WHERE clause_id = $1 AND version = 2`, clauseID).Scan(&versionContent)
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM prompt_proposal WHERE workspace_id = $1`, f.wsID).Scan(&proposalCount)
+	dbfx.QueryRow(t, `SELECT audit_log::text FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&audit)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&persistedCarrier)
+	if versionCount != 2 || versionContent != proposed {
+		t.Fatalf("direct revision versions = %d / %q, want v2 %q", versionCount, versionContent, proposed)
+	}
+	if proposalCount != 1 {
+		t.Fatalf("direct revision created a proposal: proposal count = %d, want original enact only", proposalCount)
+	}
+	if !strings.Contains(audit, "owner_direct_revision") {
+		t.Fatalf("direct revision binding audit missing action: %s", audit)
+	}
+	if strings.Contains(persistedCarrier, proposed) || strings.Contains(persistedCarrier, currentContent) || strings.Contains(persistedCarrier, "clause:id=") {
+		t.Fatalf("direct revision persisted dynamic clause content:\n%s", persistedCarrier)
+	}
+	if result.CarrierContentSHA256 != sha256Hex(persistedCarrier) {
+		t.Fatalf("direct revision response carrier hash = %s, persisted hash = %s", result.CarrierContentSHA256, sha256Hex(persistedCarrier))
+	}
+
+	staleReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
+	staleReq.Header.Set("X-Actor-Source", "oauth")
+	code, body = legislationCall(t, route.ServeHTTP, staleReq)
+	if code != http.StatusConflict || !strings.Contains(body, "changed from preview") {
+		t.Fatalf("stale direct revision = %d: %s, want version conflict", code, body)
+	}
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&versionCount)
+	if versionCount != 2 {
+		t.Fatalf("stale direct revision changed version history: %d versions", versionCount)
+	}
+
+	taskTokenReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
+	taskTokenReq.Header.Set("X-Actor-Source", "task_token")
+	code, body = legislationCall(t, route.ServeHTTP, taskTokenReq)
+	if code != http.StatusForbidden {
+		t.Fatalf("task-token direct revision = %d: %s, want 403", code, body)
+	}
+
+	cloudPATReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
+	cloudPATReq.Header.Set("X-Actor-Source", "cloud_pat")
+	code, body = legislationCall(t, route.ServeHTTP, cloudPATReq)
+	if code != http.StatusForbidden {
+		t.Fatalf("cloud-PAT direct revision = %d: %s, want 403", code, body)
+	}
+
+	nonOwnerReq := legislationReq(f.memberID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
+	nonOwnerReq.Header.Set("X-Actor-Source", "oauth")
+	code, body = legislationCall(t, route.ServeHTTP, nonOwnerReq)
+	if code != http.StatusForbidden {
+		t.Fatalf("non-owner OAuth direct revision = %d: %s, want 403", code, body)
+	}
+}
+
+func TestClauseReviseExtendsCurrentV2(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	v2 := "- **每日同步**：成员开工前回报计划与阻塞。"
+	first := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", v2, nil))
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, first); code != http.StatusOK {
+		t.Fatalf("revise to v2: expected 200, got %d: %s", code, body)
+	}
+
+	v3 := "- **每日同步**：成员开工前回报计划、阻塞和预计完成时间。"
+	second := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", v3, nil))
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, second); code != http.StatusOK {
+		t.Fatalf("revise from v2: expected 200, got %d: %s", code, body)
+	}
+
+	var v2Content, v3Content string
+	dbfx.QueryRow(t, `SELECT content FROM clause_version WHERE clause_id = $1 AND version = 2`, clauseID).Scan(&v2Content)
+	dbfx.QueryRow(t, `SELECT content FROM clause_version WHERE clause_id = $1 AND version = 3`, clauseID).Scan(&v3Content)
+	if v2Content != v2 || v3Content != v3 {
+		t.Fatalf("version history = v2 %q, v3 %q; want both sequential revisions preserved", v2Content, v3Content)
+	}
+}
+
+func TestClauseReviseRejectsStaleConcurrentProposal(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	firstText := "- **每日同步**：先批准的修订内容。"
+	secondText := "- **每日同步**：基于旧版本提交的并发修订。"
+	first := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", firstText, nil))
+	second := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", secondText, nil))
+
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, first); code != http.StatusOK {
+		t.Fatalf("first concurrent revision: expected 200, got %d: %s", code, body)
+	}
+	code, preview := legislationCall(t, testHandler.PreviewPromptProposal,
+		legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+second+"/preview", nil, "id", second))
+	if code != http.StatusConflict || !strings.Contains(preview, "版本") {
+		t.Fatalf("stale concurrent preview = %d: %s, want conflict mentioning version", code, preview)
+	}
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, second); code == http.StatusOK || !strings.Contains(body, "版本") {
+		t.Fatalf("stale concurrent approval = %d: %s, want a version conflict", code, body)
+	}
+
+	var count int
+	var latest string
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&count)
+	dbfx.QueryRow(t, `SELECT content FROM clause_version WHERE clause_id = $1 ORDER BY version DESC LIMIT 1`, clauseID).Scan(&latest)
+	if count != 2 || latest != firstText {
+		t.Fatalf("stale proposal changed clause history: versions=%d latest=%q", count, latest)
+	}
+}
+
+func TestClauseReviseRollsBackWhenCarrierRerenderFails(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	var carrierBefore string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrierBefore)
+	proposal := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步",
+		"- **每日同步**：触发重渲染失败的修订。", nil))
+
+	suffix := fmt.Sprintf("cinj%d", clauseInjectionSeq)
+	functionName := "ruyi880_fail_prompt_version_" + suffix
+	triggerName := "ruyi880_fail_prompt_version_trg_" + suffix
+	if _, err := testPool.Exec(context.Background(), fmt.Sprintf(`
+CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+	    IF NEW.workspace_id = '%s'::uuid AND NEW.change_note = '条款静态载体规范化' THEN
+        RAISE EXCEPTION 'injected clause carrier re-render failure';
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+CREATE TRIGGER %s BEFORE INSERT ON prompt_version
+FOR EACH ROW EXECUTE FUNCTION %s();`, functionName, f.wsID, triggerName, functionName)); err != nil {
+		t.Fatalf("install isolated re-render failure trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = testPool.Exec(ctx, fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON prompt_version`, triggerName))
+		_, _ = testPool.Exec(ctx, fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, functionName))
+	})
+
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, proposal); code == http.StatusOK {
+		t.Fatalf("approval succeeded despite injected post-asset failure: %s", body)
+	}
+	var versionCount, activeVersion int
+	var carrierAfter string
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&versionCount)
+	dbfx.QueryRow(t, `SELECT since_clause_version FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&activeVersion)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrierAfter)
+	if versionCount != 1 || activeVersion != 1 || carrierAfter != carrierBefore {
+		t.Fatalf("failed re-render left partial state: versions=%d active_version=%d carrier_changed=%v",
+			versionCount, activeVersion, carrierAfter != carrierBefore)
+	}
+	if status := proposalStatus(t, f.wsID, proposal); status != "pending_owner" {
+		t.Fatalf("proposal status after rolled-back write = %q, want pending_owner", status)
+	}
+}
+
+func TestClauseReviseEnactsNextVersionForSquadBinding(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	squadID := dbfx.Squad(t, "revision target squad", f.agentID,
+		testutil.Cols{"workspace_id": f.wsID, "instructions": squadCarrierText})
+
+	create := clauseOpBody(f.wsID, "add_clause", "", "小队交接", "- **小队交接**：交接时说明现状。", nil)
+	create["carrier_scope"] = "squad"
+	create["carrier_scope_id"] = squadID
+	createID := submitClauseOp(t, f, create)
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, createID); code != http.StatusOK {
+		t.Fatalf("squad clause create: expected 200, got %d: %s", code, body)
+	}
+	var clauseID string
+	dbfx.QueryRow(t, `SELECT clause_id::text FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, f.wsID, createID).Scan(&clauseID)
+	if clauseID == "" {
+		t.Fatal("squad clause create did not persist clause_id")
+	}
+
+	proposed := "- **小队交接**：交接时同步当前进度、未决风险和下一步责任人。"
+	revise := clauseOpBody(f.wsID, "revise_clause", clauseID, "小队交接", proposed, nil)
+	revise["carrier_scope"] = "squad"
+	revise["carrier_scope_id"] = squadID
+	reviseID := submitClauseOp(t, f, revise)
+	code, previewBody := legislationCall(t, testHandler.PreviewPromptProposal,
+		legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+reviseID+"/preview", nil, "id", reviseID))
+	if code != http.StatusOK || !strings.Contains(previewBody, "下一步责任人") {
+		t.Fatalf("squad clause preview: expected revised diff, got %d: %s", code, previewBody)
+	}
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, reviseID); code != http.StatusOK {
+		t.Fatalf("squad clause revise: expected 200, got %d: %s", code, body)
+	}
+
+	var since int32
+	var instructions string
+	dbfx.QueryRow(t, `SELECT since_clause_version FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&since)
+	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, squadID).Scan(&instructions)
+	if since != 2 || strings.Contains(instructions, proposed) || strings.Contains(instructions, "clause:id=") {
+		t.Fatalf("squad revision = binding v%d, instructions:\n%s", since, instructions)
 	}
 }
 
@@ -143,6 +487,276 @@ func TestClauseRemoveRetiresClauseAndCarrier(t *testing.T) {
 	}
 }
 
+func TestDirectClauseManagementEditsActiveClauseAndCarrier(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	updated := `- **每日同步**：各成员开工前回报当日计划、阻塞与预计完成时间。`
+	code, body := legislationCall(t, testHandler.UpdateClauseContent,
+		legislationReq(f.memberID, f.wsID, http.MethodPatch, "/api/clauses/"+clauseID,
+			map[string]any{"content": updated, "expected_version": 1}, "clauseId", clauseID))
+	if code != http.StatusForbidden {
+		t.Fatalf("member direct edit: expected 403, got %d: %s", code, body)
+	}
+
+	dbfx.Exec(t, `UPDATE clause_binding SET conditions = '{"task_kinds":["issue"]}'::jsonb WHERE clause_id = $1 AND status = 'active'`, clauseID)
+	code, body = legislationCall(t, testHandler.UpdateClauseContent,
+		legislationReq(f.ownerID, f.wsID, http.MethodPatch, "/api/clauses/"+clauseID,
+			map[string]any{"content": updated, "expected_version": 1}, "clauseId", clauseID))
+	if code != http.StatusNoContent {
+		t.Fatalf("direct edit with filtered binding: expected 204, got %d: %s", code, body)
+	}
+
+	var latest, bound int32
+	var source, content, carrier string
+	dbfx.QueryRow(t, `SELECT version, source, content FROM clause_version WHERE clause_id = $1 ORDER BY version DESC LIMIT 1`, clauseID).
+		Scan(&latest, &source, &content)
+	dbfx.QueryRow(t, `SELECT since_clause_version FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).
+		Scan(&bound)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrier)
+	if latest != 2 || source != "manual" || content != updated || bound != 2 {
+		t.Fatalf("direct edit version=%d source=%q content=%q binding=%d, want v2/manual/updated/v2", latest, source, content, bound)
+	}
+	var conditions []byte
+	if err := testPool.QueryRow(context.Background(), `SELECT conditions FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&conditions); err != nil {
+		t.Fatalf("read direct-edit binding conditions: %v", err)
+	}
+	var preservedConditions struct {
+		TaskKinds []string `json:"task_kinds"`
+	}
+	if err := json.Unmarshal(conditions, &preservedConditions); err != nil || len(preservedConditions.TaskKinds) != 1 || preservedConditions.TaskKinds[0] != "issue" {
+		t.Fatalf("direct edit changed binding conditions: %s (decode error: %v)", conditions, err)
+	}
+	if !strings.Contains(carrier, "预计完成时间") || strings.Contains(carrier, "当日计划与阻塞。") {
+		t.Fatalf("workspace carrier was not updated to the direct edit:\n%s", carrier)
+	}
+
+	code, body = legislationCall(t, testHandler.UpdateClauseContent,
+		legislationReq(f.ownerID, f.wsID, http.MethodPatch, "/api/clauses/"+clauseID,
+			map[string]any{"content": cleanClauseText, "expected_version": 1}, "clauseId", clauseID))
+	if code != http.StatusConflict {
+		t.Fatalf("stale direct edit: expected 409, got %d: %s", code, body)
+	}
+	dbfx.QueryRow(t, `SELECT MAX(version) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&latest)
+	if latest != 2 {
+		t.Fatalf("stale direct edit created version %d, want latest v2", latest)
+	}
+}
+
+func TestDirectClauseManagementRerendersOnlyTargetProject(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	projectA := dbfx.Project(t, "clause management project A", testutil.Cols{
+		"workspace_id": f.wsID,
+		"instructions": "# Project A\n\n## Project rules\n",
+	})
+	projectB := dbfx.Project(t, "clause management project B", testutil.Cols{
+		"workspace_id": f.wsID,
+		"instructions": "# Project B\n\n## Project rules\n",
+	})
+	clauseA := enactWorkspaceClause(t, f, "项目甲规则", "- **项目甲规则**：项目甲条款内容。")
+	clauseB := enactWorkspaceClause(t, f, "项目乙规则", "- **项目乙规则**：项目乙条款内容。")
+	dbfx.Exec(t, `UPDATE clause_binding SET scope = 'project', scope_id = $2 WHERE clause_id = $1 AND status = 'active'`, clauseA, projectA)
+	dbfx.Exec(t, `UPDATE clause_binding SET scope = 'project', scope_id = $2 WHERE clause_id = $1 AND status = 'active'`, clauseB, projectB)
+	projectBaseA := "# Project A\n\n## Project rules\n"
+	projectBaseB := "# Project B\n\n## Project rules\n"
+	dbfx.Exec(t, `UPDATE project SET instructions = $2 WHERE id = $1`, projectA, clausemark.Render(
+		projectBaseA, []clausemark.RenderedClause{{Slug: activeSlug(t, clauseA), Version: 1, Body: "- **项目甲规则**：项目甲条款内容。"}},
+	))
+	projectBBefore := clausemark.Render(projectBaseB, []clausemark.RenderedClause{{Slug: activeSlug(t, clauseB), Version: 1, Body: "- **项目乙规则**：项目乙条款内容。"}})
+	dbfx.Exec(t, `UPDATE project SET instructions = $2 WHERE id = $1`, projectB, projectBBefore)
+	dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, legislationCarrierText)
+
+	updatedA := "- **项目甲规则**：项目甲修订后的条款内容。"
+	code, body := legislationCall(t, testHandler.UpdateClauseContent,
+		legislationReq(f.ownerID, f.wsID, http.MethodPatch, "/api/clauses/"+clauseA,
+			map[string]any{"content": updatedA, "expected_version": 1}, "clauseId", clauseA))
+	if code != http.StatusNoContent {
+		t.Fatalf("edit project A clause: expected 204, got %d: %s", code, body)
+	}
+
+	var instructionsA, instructionsB string
+	dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, projectA).Scan(&instructionsA)
+	dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, projectB).Scan(&instructionsB)
+	if !strings.Contains(instructionsA, "项目甲修订后的条款内容") || strings.Contains(instructionsA, "项目乙条款内容") {
+		t.Fatalf("project A re-render contains wrong clauses:\n%s", instructionsA)
+	}
+	if instructionsB != projectBBefore {
+		t.Fatalf("project B changed during project A edit:\n--- before ---\n%s\n--- after ---\n%s", projectBBefore, instructionsB)
+	}
+}
+
+func TestClauseMigrationRollbackRerendersOnlyMatchingProject(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	projectA := dbfx.Project(t, "clause rollback project A", testutil.Cols{
+		"workspace_id": f.wsID,
+		"instructions": "# Project A\n\n## Project rules\n",
+	})
+	projectB := dbfx.Project(t, "clause rollback project B", testutil.Cols{
+		"workspace_id": f.wsID,
+		"instructions": "# Project B\n\n## Project rules\n",
+	})
+	rollbackA := enactWorkspaceClause(t, f, "项目甲迁移规则", "- **项目甲迁移规则**：项目甲迁移正文。")
+	rollbackB := enactWorkspaceClause(t, f, "项目乙迁移规则", "- **项目乙迁移规则**：项目乙迁移正文。")
+	remainingA := enactWorkspaceClause(t, f, "项目甲保留规则", "- **项目甲保留规则**：项目甲保留正文。")
+	remainingB := enactWorkspaceClause(t, f, "项目乙保留规则", "- **项目乙保留规则**：项目乙保留正文。")
+	for _, binding := range []struct{ clauseID, projectID string }{
+		{rollbackA, projectA}, {remainingA, projectA}, {rollbackB, projectB}, {remainingB, projectB},
+	} {
+		dbfx.Exec(t, `UPDATE clause_binding SET scope = 'project', scope_id = $2 WHERE clause_id = $1 AND status = 'active'`, binding.clauseID, binding.projectID)
+	}
+	projectBaseA := "# Project A\n\n## Project rules\n"
+	projectBaseB := "# Project B\n\n## Project rules\n"
+	dbfx.Exec(t, `UPDATE project SET instructions = $2 WHERE id = $1`, projectA, clausemark.Render(projectBaseA, []clausemark.RenderedClause{
+		{Slug: activeSlug(t, rollbackA), Version: 1, Body: "- **项目甲迁移规则**：项目甲迁移正文。"},
+		{Slug: activeSlug(t, remainingA), Version: 1, Body: "- **项目甲保留规则**：项目甲保留正文。"},
+	}))
+	dbfx.Exec(t, `UPDATE project SET instructions = $2 WHERE id = $1`, projectB, clausemark.Render(projectBaseB, []clausemark.RenderedClause{
+		{Slug: activeSlug(t, rollbackB), Version: 1, Body: "- **项目乙迁移规则**：项目乙迁移正文。"},
+		{Slug: activeSlug(t, remainingB), Version: 1, Body: "- **项目乙保留规则**：项目乙保留正文。"},
+	}))
+
+	if _, err := testHandler.RollbackClauseMigrationBatch(context.Background(), parseUUID(f.wsID), []ClauseMigrationRollbackItem{
+		{ClauseID: parseUUID(rollbackA), Section: "Project rules"},
+		{ClauseID: parseUUID(rollbackB), Section: "Project rules"},
+	}, "owner", f.ownerID, "回滚项目迁移条款隔离测试"); err != nil {
+		t.Fatalf("rollback project clauses: %v", err)
+	}
+
+	var instructionsA, instructionsB string
+	dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, projectA).Scan(&instructionsA)
+	dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, projectB).Scan(&instructionsB)
+	if !strings.Contains(instructionsA, "项目甲保留正文") || strings.Contains(instructionsA, "项目乙保留正文") {
+		t.Fatalf("project A rollback rendered clauses from another carrier:\n%s", instructionsA)
+	}
+	if !strings.Contains(instructionsB, "项目乙保留正文") || strings.Contains(instructionsB, "项目甲保留正文") {
+		t.Fatalf("project B rollback rendered clauses from another carrier:\n%s", instructionsB)
+	}
+}
+
+func TestDirectClauseManagementRejectsInvalidReferences(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	code, body := legislationCall(t, testHandler.UpdateClauseContent,
+		legislationReq(f.ownerID, f.wsID, http.MethodPatch, "/api/clauses/"+clauseID,
+			map[string]any{"content": `- **错误标题**：标题不匹配。`, "expected_version": 1}, "clauseId", clauseID))
+	if code != http.StatusBadRequest {
+		t.Fatalf("mismatched clause title: expected 400, got %d: %s", code, body)
+	}
+	invalid := `- **每日同步**：运行时引用不存在的规则 cls_00000000。`
+	code, body = legislationCall(t, testHandler.UpdateClauseContent,
+		legislationReq(f.ownerID, f.wsID, http.MethodPatch, "/api/clauses/"+clauseID,
+			map[string]any{"content": invalid, "expected_version": 1}, "clauseId", clauseID))
+	if code != http.StatusConflict || !strings.Contains(body, "缺失引用") {
+		t.Fatalf("invalid direct edit: expected missing-reference conflict, got %d: %s", code, body)
+	}
+	var latest int
+	dbfx.QueryRow(t, `SELECT MAX(version) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&latest)
+	if latest != 1 {
+		t.Fatalf("rejected direct edit created version %d, want v1", latest)
+	}
+}
+
+func TestDirectClauseManagementDeactivatesAndEditsDeprecatedClause(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	path := "/api/clauses/" + clauseID
+
+	code, body := legislationCall(t, testHandler.DeactivateClause,
+		legislationReq(f.ownerID, f.wsID, http.MethodPost, path+"/deactivate", nil, "clauseId", clauseID))
+	if code != http.StatusNoContent {
+		t.Fatalf("deactivate: expected 204, got %d: %s", code, body)
+	}
+	var status string
+	var active int
+	var carrier string
+	dbfx.QueryRow(t, `SELECT status FROM clause WHERE id = $1`, clauseID).Scan(&status)
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&active)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrier)
+	if status != "deprecated" || active != 0 || strings.Contains(carrier, "每日同步") || strings.Contains(carrier, "clause:id=") {
+		t.Fatalf("after deactivate: status=%q active bindings=%d carrier still contains clause:\n%s", status, active, carrier)
+	}
+
+	updated := `- **每日同步**：停用条款仍可直接修订，但不会自动恢复生效。`
+	code, body = legislationCall(t, testHandler.UpdateClauseContent,
+		legislationReq(f.ownerID, f.wsID, http.MethodPatch, path,
+			map[string]any{"content": updated, "expected_version": 1}, "clauseId", clauseID))
+	if code != http.StatusNoContent {
+		t.Fatalf("edit deprecated clause: expected 204, got %d: %s", code, body)
+	}
+	dbfx.QueryRow(t, `SELECT status FROM clause WHERE id = $1`, clauseID).Scan(&status)
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&active)
+	var latest, bindingCount int
+	dbfx.QueryRow(t, `SELECT MAX(version) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&latest)
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_binding WHERE clause_id = $1`, clauseID).Scan(&bindingCount)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrier)
+	if status != "deprecated" || active != 0 || latest != 2 || bindingCount == 0 || strings.Contains(carrier, "停用条款仍可直接修订") {
+		t.Fatalf("deprecated edit reactivated clause: status=%q active=%d latest=%d bindings=%d carrier:\n%s", status, active, latest, bindingCount, carrier)
+	}
+}
+
+func TestDirectClauseManagementRejectsReferencedDeactivation(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	var slug, carrier string
+	dbfx.QueryRow(t, `SELECT slug FROM clause WHERE id = $1`, clauseID).Scan(&slug)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrier)
+	dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, carrier+"\nReference "+slug)
+
+	code, body := legislationCall(t, testHandler.DeleteClauseAsset,
+		legislationReq(f.ownerID, f.wsID, http.MethodDelete, "/api/clauses/"+clauseID, nil, "clauseId", clauseID))
+	if code != http.StatusConflict || !strings.Contains(body, "缺失引用") {
+		t.Fatalf("referenced delete: expected missing-reference conflict, got %d: %s", code, body)
+	}
+
+	code, body = legislationCall(t, testHandler.DeactivateClause,
+		legislationReq(f.ownerID, f.wsID, http.MethodPost, "/api/clauses/"+clauseID+"/deactivate", nil, "clauseId", clauseID))
+	if code != http.StatusConflict || !strings.Contains(body, "缺失引用") {
+		t.Fatalf("referenced deactivation: expected missing-reference conflict, got %d: %s", code, body)
+	}
+	var status string
+	var active int
+	dbfx.QueryRow(t, `SELECT status FROM clause WHERE id = $1`, clauseID).Scan(&status)
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&active)
+	if status != "active" || active != 1 {
+		t.Fatalf("rejected deactivation changed lifecycle: status=%q active bindings=%d", status, active)
+	}
+}
+
+func TestDirectClauseManagementDeletesClauseAndRerendersCarrier(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	var originalCarrier string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&originalCarrier)
+	code, body := legislationCall(t, testHandler.DeactivateClause,
+		legislationReq(f.ownerID, f.wsID, http.MethodPost, "/api/clauses/"+clauseID+"/deactivate", nil, "clauseId", clauseID))
+	if code != http.StatusNoContent {
+		t.Fatalf("deactivate before delete: expected 204, got %d: %s", code, body)
+	}
+	// Restore the pre-deactivation carrier snapshot to prove deletion also
+	// heals a marker left by an older or externally restored carrier version.
+	dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, originalCarrier)
+
+	code, body = legislationCall(t, testHandler.DeleteClauseAsset,
+		legislationReq(f.ownerID, f.wsID, http.MethodDelete, "/api/clauses/"+clauseID, nil, "clauseId", clauseID))
+	if code != http.StatusNoContent {
+		t.Fatalf("delete clause: expected 204, got %d: %s", code, body)
+	}
+	var clauses, versions, bindings, quality, injections int
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause WHERE id = $1`, clauseID).Scan(&clauses)
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&versions)
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_binding WHERE clause_id = $1`, clauseID).Scan(&bindings)
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_quality_daily WHERE clause_id = $1`, clauseID).Scan(&quality)
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_injection WHERE clause_id = $1`, clauseID).Scan(&injections)
+	var carrier string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrier)
+	if clauses != 0 || versions != 0 || bindings != 0 || quality != 0 || injections != 0 {
+		t.Fatalf("deleted clause assets remain: clauses=%d versions=%d bindings=%d quality=%d injections=%d",
+			clauses, versions, bindings, quality, injections)
+	}
+	if strings.Contains(carrier, "每日同步") || strings.Contains(carrier, "clause:id=") {
+		t.Fatalf("workspace carrier still contains deleted clause:\n%s", carrier)
+	}
+}
+
 func TestClauseMoveBetweenCarriers(t *testing.T) {
 	f := newClauseInjectionFixture(t)
 	squadID := dbfx.Squad(t, "move target squad", f.agentID,
@@ -150,7 +764,7 @@ func TestClauseMoveBetweenCarriers(t *testing.T) {
 	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 
 	id := submitClauseOp(t, f, clauseOpBody(f.wsID, "move_clause", clauseID, "每日同步", "", map[string]any{
-		"move_to_scope":   "squad",
+		"move_to_scope":    "squad",
 		"move_to_scope_id": squadID,
 	}))
 	if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusOK {
@@ -173,13 +787,13 @@ func TestClauseMoveBetweenCarriers(t *testing.T) {
 
 	var squadInstructions string
 	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, squadID).Scan(&squadInstructions)
-	if !strings.Contains(squadInstructions, "每日同步") || !strings.Contains(squadInstructions, "<!-- clause:id=") {
-		t.Fatalf("destination carrier missing the clause region:\n%s", squadInstructions)
+	if strings.Contains(squadInstructions, "每日同步") || strings.Contains(squadInstructions, "<!-- clause:id=") {
+		t.Fatalf("destination carrier retained dynamic clause content:\n%s", squadInstructions)
 	}
 	var wsContext string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&wsContext)
-	if strings.Contains(wsContext, "clause:id=") {
-		t.Fatalf("source carrier still carries the clause region:\n%s", wsContext)
+	if strings.Contains(wsContext, "clause:id=") || strings.Contains(wsContext, "每日同步") {
+		t.Fatalf("source carrier retained dynamic clause content:\n%s", wsContext)
 	}
 }
 
@@ -322,8 +936,8 @@ func TestClauseReconciliationLayerViolation(t *testing.T) {
 		t.Fatalf("reconciliation 2: expected 200, got %d: %s", code, body)
 	}
 	var after struct {
-		Healthy     bool `json:"healthy"`
-		Violations  []struct {
+		Healthy    bool `json:"healthy"`
+		Violations []struct {
 			TaskID       string `json:"task_id"`
 			CarrierScope string `json:"carrier_scope"`
 		} `json:"layer_set_violations"`
@@ -336,13 +950,14 @@ func TestClauseReconciliationLayerViolation(t *testing.T) {
 	}
 }
 
-// Drift is observed per carrier: a stale rev, an orphan marker and a
-// missing segment are each flagged against the active asset set.
+// Drift observes only legacy marker data. Active clauses are assembled from
+// the asset library, so a static carrier has no missing-segment condition.
 func TestClauseReconciliationDriftKinds(t *testing.T) {
 	t.Run("stale_rev", func(t *testing.T) {
 		f := newClauseInjectionFixture(t)
 		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
-		dbfx.Exec(t, `UPDATE workspace SET context = replace(context, 'rev=1', 'rev=7') WHERE id = $1`, f.wsID)
+		dbfx.Exec(t, `UPDATE workspace SET context = context || $2 WHERE id = $1`, f.wsID,
+			"\n<!-- clause:id=cls_aaa00001 rev=7 -->\n")
 		assertSingleDriftKind(t, f, "stale_rev")
 	})
 	t.Run("orphan_marker", func(t *testing.T) {
@@ -353,14 +968,159 @@ func TestClauseReconciliationDriftKinds(t *testing.T) {
 			"\n<!-- clause:id=cls_zzzzzzzz rev=1 -->\n")
 		assertSingleDriftKind(t, f, "orphan_marker")
 	})
-	t.Run("missing_segment", func(t *testing.T) {
+	t.Run("static_carrier", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		recon := getReconciliation(t, f)
+		if !recon.Healthy || len(recon.DriftCarriers) != 0 {
+			t.Fatalf("static carrier was reported as drift: %+v", recon.DriftCarriers)
+		}
+	})
+	t.Run("snapshot_mode_static_carrier", func(t *testing.T) {
 		f := newClauseInjectionFixture(t)
 		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 		// The segment is gone but the clause is still bound — exactly what a
 		// pre-marker restore of the column looks like.
 		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, legislationCarrierText)
+		withFeatureFlag(t, testHandler, featureflags.ClauseDynamicInjectionDisabled, true)
 		assertSingleDriftKind(t, f, "missing_segment")
 	})
+	t.Run("dynamic_injection_does_not_require_snapshot_segment", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, legislationCarrierText)
+
+		code, body := legislationCall(t, testHandler.GetClauseReconciliation,
+			legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/reconciliation", nil))
+		if code != http.StatusOK {
+			t.Fatalf("reconciliation: expected 200, got %d: %s", code, body)
+		}
+		var response struct {
+			Healthy bool `json:"healthy"`
+			Drift   []struct {
+				Entries []struct {
+					Kind string `json:"kind"`
+				} `json:"entries"`
+			} `json:"drift"`
+		}
+		if err := json.Unmarshal([]byte(body), &response); err != nil {
+			t.Fatalf("decode reconciliation: %v (%s)", err, body)
+		}
+		for _, carrier := range response.Drift {
+			for _, entry := range carrier.Entries {
+				if entry.Kind == "missing_segment" {
+					t.Fatalf("dynamic injection treated the snapshot gap as drift: %s", body)
+				}
+			}
+		}
+	})
+	t.Run("dynamic_injection_ignores_stale_and_orphan_snapshot_markers", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		dbfx.Exec(t, `UPDATE workspace SET context = replace(context, 'rev=1', 'rev=7') || $2 WHERE id = $1`,
+			f.wsID, "\n<!-- clause:id=cls_zzzzzzzz rev=1 -->\n")
+
+		code, body := legislationCall(t, testHandler.GetClauseReconciliation,
+			legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/reconciliation", nil))
+		if code != http.StatusOK {
+			t.Fatalf("reconciliation: expected 200, got %d: %s", code, body)
+		}
+		var response struct {
+			Drift []struct {
+				Entries []struct {
+					Kind string `json:"kind"`
+				} `json:"entries"`
+			} `json:"drift"`
+		}
+		if err := json.Unmarshal([]byte(body), &response); err != nil {
+			t.Fatalf("decode reconciliation: %v (%s)", err, body)
+		}
+		if len(response.Drift) != 0 {
+			t.Fatalf("dynamic injection reported stale snapshot markers: %s", body)
+		}
+	})
+	t.Run("degraded_injection_still_checks_snapshot_segment", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, legislationCarrierText)
+		taskID := dbfx.Task(t, f.agentID, testutil.Cols{
+			"runtime_id":      f.runtimeID,
+			"issue_id":        f.issueID,
+			"status":          "completed",
+			"prompt_versions": `{"workspace":1}`,
+		})
+		dbfx.Exec(t, `
+			INSERT INTO clause_injection (workspace_id, task_id, clause_id, clause_version, carrier_scope, degraded)
+			VALUES ($1, $2, $3, 1, 'workspace', TRUE)`, f.wsID, taskID, clauseID)
+
+		code, body := legislationCall(t, testHandler.GetClauseReconciliation,
+			legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/reconciliation", nil))
+		if code != http.StatusOK {
+			t.Fatalf("reconciliation: expected 200, got %d: %s", code, body)
+		}
+		var response struct {
+			Drift []struct {
+				Entries []struct {
+					Kind string `json:"kind"`
+				} `json:"entries"`
+			} `json:"drift"`
+		}
+		if err := json.Unmarshal([]byte(body), &response); err != nil {
+			t.Fatalf("decode reconciliation: %v (%s)", err, body)
+		}
+		for _, carrier := range response.Drift {
+			for _, entry := range carrier.Entries {
+				if entry.Kind == "missing_segment" {
+					return
+				}
+			}
+		}
+		t.Fatalf("degraded carrier missing its snapshot segment was not reported: %s", body)
+	})
+}
+
+func TestClauseReconciliationDetectsDegradedCarrierWithoutClauseRows(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	dbfx.Exec(t, `UPDATE workspace SET context = '' WHERE id = $1`, f.wsID)
+	taskID := dbfx.Task(t, f.agentID, testutil.Cols{
+		"runtime_id":      f.runtimeID,
+		"issue_id":        f.issueID,
+		"status":          "completed",
+		"prompt_versions": `{"workspace":1}`,
+	})
+	dbfx.Exec(t, `
+		INSERT INTO clause_injection_observation (workspace_id, task_id, carrier_scope, carrier_scope_id, degraded, degradation_reason)
+		VALUES ($1, $2, 'workspace', $1, TRUE, 'parse_error')`, f.wsID, taskID)
+
+	code, body := legislationCall(t, testHandler.GetClauseReconciliation,
+		legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/reconciliation", nil))
+	if code != http.StatusOK {
+		t.Fatalf("reconciliation: expected 200, got %d: %s", code, body)
+	}
+	var response struct {
+		Drift []struct {
+			Scope   string `json:"scope"`
+			ScopeID string `json:"scope_id"`
+			Entries []struct {
+				Kind string `json:"kind"`
+			} `json:"entries"`
+		} `json:"drift"`
+	}
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		t.Fatalf("decode reconciliation: %v (%s)", err, body)
+	}
+	for _, carrier := range response.Drift {
+		if carrier.Scope != "workspace" || carrier.ScopeID != f.wsID {
+			continue
+		}
+		for _, entry := range carrier.Entries {
+			if entry.Kind == "missing_segment" {
+				return
+			}
+		}
+	}
+	t.Fatalf("degraded carrier without clause rows was not checked: %s", body)
 }
 
 func TestExpectedClausesByCarrierKeepsProjectBindingsSeparate(t *testing.T) {

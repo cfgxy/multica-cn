@@ -50,16 +50,19 @@ func TestClauseMigrationDrill(t *testing.T) {
 	// ── batch 1: draft → pending_owner → enacted ─────────────────────────
 	clauseID1 := enactMigrateEntry(t, f, pilot.Entries[0])
 	after1 := readCarrierContext(t, f.wsID)
-	if err := clausemigration.VerifySnapshot(pre, after1, batch1); err != nil {
-		t.Fatalf("batch 1 snapshot: %v", err)
+	if err := clausemigration.VerifySnapshot(pre, clausemark.Render(after1, []clausemark.RenderedClause{{Slug: activeSlug(t, clauseID1), Version: 1, Body: pilot.Entries[0].Body}}), batch1); err != nil {
+		t.Fatalf("batch 1 runtime composition: %v", err)
 	}
 	assertClauseV1Content(t, clauseID1, pilot.Entries[0].Body)
 
 	// ── batch 2, verified against the cumulative migration ───────────────
 	clauseID2 := enactMigrateEntry(t, f, pilot.Entries[1])
 	after2 := readCarrierContext(t, f.wsID)
-	if err := clausemigration.VerifySnapshot(pre, after2, both); err != nil {
-		t.Fatalf("batch 2 snapshot: %v", err)
+	if err := clausemigration.VerifySnapshot(pre, clausemark.Render(after2, []clausemark.RenderedClause{
+		{Slug: activeSlug(t, clauseID1), Version: 1, Body: pilot.Entries[0].Body},
+		{Slug: activeSlug(t, clauseID2), Version: 1, Body: pilot.Entries[1].Body},
+	}), both); err != nil {
+		t.Fatalf("batch 2 runtime composition: %v", err)
 	}
 	assertClauseV1Content(t, clauseID2, pilot.Entries[1].Body)
 
@@ -126,7 +129,7 @@ func TestClauseMigrationDrill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose expected stable: %v", err)
 	}
-	want2 := clausemark.Render(wantStable2, []clausemark.RenderedClause{
+	want2 := clausemark.Static(wantStable2, []clausemark.RenderedClause{
 		{Slug: activeSlug(t, clauseID1), Version: 1, Body: pilot.Entries[0].Body},
 	})
 	if afterRoll2 != want2 {
@@ -164,8 +167,8 @@ func TestClauseMigrationDrill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose expected stable 1: %v", err)
 	}
-	if afterRoll1 != clausemark.Render(wantStable1, nil) {
-		t.Fatalf("full rollback text mismatch:\n--- got ---\n%s\n--- want ---\n%s", afterRoll1, clausemark.Render(wantStable1, nil))
+	if afterRoll1 != clausemark.Static(wantStable1, nil) {
+		t.Fatalf("full rollback text mismatch:\n--- got ---\n%s\n--- want ---\n%s", afterRoll1, clausemark.Static(wantStable1, nil))
 	}
 	recon = getReconciliation(t, f)
 	if !recon.Healthy || len(recon.DriftCarriers) != 0 {

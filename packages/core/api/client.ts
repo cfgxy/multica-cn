@@ -4425,6 +4425,25 @@ export class ApiClient {
     });
   }
 
+  async updateClauseContent(clauseId: string, content: string, expectedVersion: number): Promise<void> {
+    await this.fetch(`/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content, expected_version: expectedVersion }),
+    });
+  }
+
+  async deactivateClause(clauseId: string): Promise<void> {
+    await this.fetch(`/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}/deactivate`, {
+      method: "POST",
+    });
+  }
+
+  async deleteClause(clauseId: string): Promise<void> {
+    await this.fetch(`/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}`, {
+      method: "DELETE",
+    });
+  }
+
   async getClauseGovernanceReconciliation(days: number): Promise<ClauseGovernanceReconciliation> {
     const query = new URLSearchParams({ days: String(days) });
     const raw = await this.fetch<unknown>(
@@ -5501,10 +5520,13 @@ export class ApiClient {
     });
   }
 
-  async previewPromptProposal(id: string): Promise<PromptProposalPreview> {
+  async previewPromptProposal(
+    id: string,
+    enactmentTarget?: "clause_library" | "static_prompt",
+  ): Promise<PromptProposalPreview> {
     const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/preview`, {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify(enactmentTarget ? { enactment_target: enactmentTarget } : {}),
     });
     return parseWithFallback(raw, PromptProposalPreviewSchema, raw as PromptProposalPreview, {
       endpoint: "POST /api/prompt-legislation/proposals/{id}/preview",

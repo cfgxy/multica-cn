@@ -20,8 +20,17 @@ import {
   promptQuizSamplesOptions,
   useCreatePromptQuizBatch,
 } from "@multica/core/self-evolution";
-import type { PromptQuizBaseline, PromptQuizSampleRow } from "@multica/core/types";
+import type {
+  PromptQuizBaseline,
+  PromptQuizItemScore,
+  PromptQuizSampleRow,
+  PromptQuizScoreSummary,
+} from "@multica/core/types";
 import { useT, useLocale } from "../../i18n";
+import { readQuizBatch, writeQuizBatch } from "./quiz-session";
+
+const QUIZ_POLL_INTERVAL = 15_000;
+const SAMPLE_POLL_WINDOW = 10 * 60 * 1000;
 
 /**
  * The graded side of the quiz (RUYI-286), owner-only like the rubrics it
@@ -52,36 +61,92 @@ export function QuizGradedPanel({
   const locale = useLocale();
   const pct = (v: number): string =>
     new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(v);
+  const signedPct = (v: number): string => `${v > 0 ? "+" : ""}${pct(v)}`;
 
   const run = useCreatePromptQuizBatch(wsId);
   const queryClient = useQueryClient();
-  const [orderedBatch, setOrderedBatch] = useState({ agentId: "", batchId: "" });
+  const [orderedBatch, setOrderedBatch] = useState(() => ({
+    agentId,
+    ...(readQuizBatch(wsId, agentId) ?? { batchId: "", orderedAt: 0, expectedRows: 0 }),
+  }));
+  const [unboundSamplePollDeadline] = useState(() => Date.now() + SAMPLE_POLL_WINDOW);
   const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
+  const orderedAt = orderedBatch.agentId === agentId ? orderedBatch.orderedAt : 0;
+  const expectedRows = orderedBatch.agentId === agentId ? orderedBatch.expectedRows : 0;
+  const batchPollDeadline = orderedAt > 0 ? orderedAt + SAMPLE_POLL_WINDOW : unboundSamplePollDeadline;
+  const samplePollDeadline = orderedAt > 0 ? orderedAt + SAMPLE_POLL_WINDOW : unboundSamplePollDeadline;
   const batch = useQuery({
     ...promptQuizBatchOptions(wsId, batchId),
-    refetchInterval: batchId !== "" ? 15_000 : false,
+    refetchInterval: (query) =>
+      batchId !== "" &&
+      !(expectedRows > 0 && (query.state.data?.rows.length ?? 0) >= expectedRows) &&
+      Date.now() < batchPollDeadline
+        ? QUIZ_POLL_INTERVAL
+        : false,
   });
+  const batchComplete =
+    expectedRows > 0 && (batch.data?.rows.length ?? 0) >= expectedRows;
   const samples = useQuery({
     ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
-    refetchInterval: batchId !== "" ? 15_000 : false,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchInterval: () =>
+      Date.now() < samplePollDeadline && (batchId === "" || !batchComplete)
+          ? QUIZ_POLL_INTERVAL
+          : false,
   });
 
   const batchGraded = batch.data?.scores?.graded ?? 0;
+  useEffect(() => {
+    setOrderedBatch({
+      agentId,
+      ...(readQuizBatch(wsId, agentId) ?? { batchId: "", orderedAt: 0, expectedRows: 0 }),
+    });
+  }, [agentId, wsId]);
+
+  useEffect(() => {
+    void queryClient.invalidateQueries({
+      queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
+    });
+  }, [agentId, queryClient, wsId]);
+
+  useEffect(() => {
+    if (!batchComplete) return;
+    void queryClient.invalidateQueries({
+      queryKey: promptQuizKeys.samples(wsId, "agent", agentId, baseline.current_version),
+    });
+  }, [agentId, baseline.current_version, batchComplete, queryClient, wsId]);
+
   useEffect(() => {
     if (batchGraded > 0) {
       void queryClient.invalidateQueries({ queryKey: promptQuizKeys.baseline(wsId, "agent", agentId) });
     }
   }, [agentId, batchGraded, queryClient, wsId]);
 
-  const scores = baseline.scores;
-  const graded = scores?.graded ?? 0;
+  const candidateScores = baseline.scores;
+  const baselineScores = baseline.baseline_scores;
+  const hasScores = candidateScores !== undefined || baselineScores !== undefined;
+  const canCompareScores =
+    (candidateScores?.graded ?? 0) > 0 && (baselineScores?.graded ?? 0) > 0;
+  const pairedItemScores = pairItemScores(baselineScores, candidateScores);
+  const scoreLabel = (scores: PromptQuizScoreSummary | undefined): string =>
+    scores !== undefined && scores.graded > 0
+      ? t(($) => $.quiz.graded.summary, { graded: scores.graded, mean: pct(scores.mean) })
+      : t(($) => $.quiz.graded.ungraded);
+  const itemScoreLabel = (score: PromptQuizItemScore | undefined): string =>
+    score !== undefined && score.graded > 0 ? pct(score.mean) : t(($) => $.quiz.graded.ungraded);
 
   const orderRuns = () => {
     run.mutate(
       { agent_ids: [agentId] },
       {
         onSuccess: (resp) => {
-          if (resp.batch_id !== "") setOrderedBatch({ agentId, batchId: resp.batch_id });
+          if (resp.batch_id !== "") {
+            const orderedAt = Date.now();
+            const expectedRows = resp.ordered;
+            setOrderedBatch({ agentId, batchId: resp.batch_id, orderedAt, expectedRows });
+            writeQuizBatch(wsId, agentId, resp.batch_id, orderedAt, expectedRows);
+          }
           const refused = resp.refused_agents?.length ?? 0;
           if (refused > 0) {
             toast.warning(t(($) => $.quiz.graded.refused, { count: refused }));
@@ -105,10 +170,28 @@ export function QuizGradedPanel({
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
-          {graded > 0 && scores !== undefined ? (
-            <Badge variant="secondary" data-testid="quiz-graded-summary">
-              {t(($) => $.quiz.graded.summary, { graded, mean: pct(scores.mean) })}
-            </Badge>
+          {hasScores ? (
+            <div className="flex flex-wrap items-center gap-2" data-testid="quiz-graded-comparison">
+              <span className="text-caption text-muted-foreground">
+                {t(($) => $.quiz.graded.candidate)}
+              </span>
+              <Badge variant="secondary" data-testid="quiz-graded-candidate-summary">
+                {scoreLabel(candidateScores)}
+              </Badge>
+              <span className="text-caption text-muted-foreground">
+                {t(($) => $.quiz.graded.baseline)}
+              </span>
+              <Badge variant="outline" data-testid="quiz-graded-baseline-summary">
+                {scoreLabel(baselineScores)}
+              </Badge>
+              <Badge variant="outline" data-testid="quiz-graded-score-delta">
+                {t(($) => $.quiz.graded.delta, {
+                  delta: canCompareScores
+                    ? signedPct(candidateScores!.mean - baselineScores!.mean)
+                    : t(($) => $.quiz.graded.ungraded),
+                })}
+              </Badge>
+            </div>
           ) : (
             <Badge variant="outline" data-testid="quiz-graded-ungraded">
               {t(($) => $.quiz.graded.ungraded)}
@@ -151,6 +234,36 @@ export function QuizGradedPanel({
           )
         ) : null}
 
+        {pairedItemScores.length > 0 ? (
+          <div className="flex flex-col gap-1" data-testid="quiz-graded-item-comparison">
+            <h4 className="text-caption font-medium">{t(($) => $.quiz.graded.itemComparisonTitle)}</h4>
+            <ul className="flex flex-col gap-1">
+              {pairedItemScores.map(({ itemId, baseline: itemBaseline, candidate }) => {
+                const canCompareItem =
+                  (itemBaseline?.graded ?? 0) > 0 && (candidate?.graded ?? 0) > 0;
+                return (
+                  <li
+                    key={itemId}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-muted-foreground"
+                    data-testid={`quiz-graded-item-${itemId}`}
+                  >
+                    <span className="min-w-0 break-all font-medium text-foreground">{itemId}</span>
+                    <span>{t(($) => $.quiz.graded.candidate)}: {itemScoreLabel(candidate)}</span>
+                    <span>{t(($) => $.quiz.graded.baseline)}: {itemScoreLabel(itemBaseline)}</span>
+                    <span>
+                      {t(($) => $.quiz.graded.delta, {
+                        delta: canCompareItem
+                          ? signedPct(candidate!.mean - itemBaseline!.mean)
+                          : t(($) => $.quiz.graded.ungraded),
+                      })}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : null}
+
         <div className="flex flex-col gap-1">
           <h4 className="text-caption font-medium">{t(($) => $.quiz.graded.samplesTitle)}</h4>
           {baseline.current_version <= 0 ? (
@@ -178,6 +291,32 @@ export function QuizGradedPanel({
       </CardContent>
     </Card>
   );
+}
+
+interface PairedItemScore {
+  itemId: string;
+  baseline?: PromptQuizItemScore;
+  candidate?: PromptQuizItemScore;
+}
+
+function pairItemScores(
+  baseline: PromptQuizScoreSummary | undefined,
+  candidate: PromptQuizScoreSummary | undefined,
+): PairedItemScore[] {
+  const paired = new Map<string, PairedItemScore>();
+  for (const score of baseline?.items ?? []) {
+    paired.set(score.item_id, { itemId: score.item_id, baseline: score });
+  }
+  for (const score of candidate?.items ?? []) {
+    const existing = paired.get(score.item_id);
+    paired.set(
+      score.item_id,
+      existing === undefined
+        ? { itemId: score.item_id, candidate: score }
+        : { ...existing, candidate: score },
+    );
+  }
+  return [...paired.values()].sort((a, b) => a.itemId.localeCompare(b.itemId));
 }
 
 /**

@@ -67,6 +67,9 @@ const (
 	AuditRunCancelled             = "run.cancelled"
 	AuditRunRetried               = "run.retried"
 	AuditRunRerun                 = "run.rerun"
+	// AuditRunTriggerSuppressed records a deliberate dispatch refusal after a
+	// comment has been accepted, such as the rapid agent-only cascade breaker.
+	AuditRunTriggerSuppressed = "run.trigger_suppressed"
 
 	// Runtime domain: daemon connection lifecycle and sweeper verdicts.
 	AuditRuntimeConnected          = "runtime.connected"

@@ -90,9 +90,19 @@ Contracts:
 - squad leader tasks append briefing to leader agent instructions
   (daemon.go:1187, 1530);
 - briefing includes operating protocol, roster, and optional instructions
-  (squad_briefing.go:104-117);
+  (`squad_briefing.go`, `buildSquadLeaderBriefing`);
+- the operating protocol requires an explicit direct/delegate/no-action choice.
+  Direct work is limited to leader-owned work, authorized micro-tasks, or an
+  active takeover rule; delegation uses one actionable roster mention and the
+  leader must not duplicate the member's work. Final activity is recorded only
+  after the selected path completes or fails (`squadOperatingProtocolHeader`,
+  `squadOperatingProtocolHardRules`);
+- quick-create uses `squadQuickCreateProtocol` through
+  `buildSquadLeaderQuickCreateBriefing`: it retains roster/instructions as
+  read-only routing context but excludes issue-bound activity, status, comment,
+  and mention commands because no issue exists yet;
 - `buildSquadLeaderBriefing` takes an `ownsIssueStatus` argument selecting
-  responsibility 6 via `squadOperatingProtocolFor`: the status grant
+  responsibility 7 via `squadOperatingProtocolFor`: the status grant
   (`squadParentStatusOwned`) only when `issue.assignee_type == "squad"` and
   `issue.assignee_id == squad.id`, otherwise an explicit prohibition
   (`squadParentStatusNotOwned`). Quick-create passes `false` — no issue exists

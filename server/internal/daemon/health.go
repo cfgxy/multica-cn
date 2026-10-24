@@ -109,6 +109,13 @@ type repoCheckoutRequest struct {
 	RetryBusy bool `json:"retry_busy,omitempty"`
 }
 
+type branchAdoptionRequest struct {
+	SourceTaskID      string `json:"source_task_id"`
+	Branch            string `json:"branch"`
+	ExpectedRemoteSHA string `json:"expected_remote_sha"`
+	WorkDir           string `json:"workdir"`
+}
+
 type activeRepoCheckoutTask struct {
 	WorkspaceID string
 	TaskID      string
@@ -288,6 +295,29 @@ func authorizeRepoCheckoutWorkDir(activeRoot, requested string) (string, error) 
 	return workdir, nil
 }
 
+// gitWorktreeRoot returns the nearest worktree containing dir. A linked
+// worktree records its Git metadata as a .git file, while a primary worktree
+// uses a directory, so any existing .git entry is treated as a boundary. This
+// intentionally fails closed for a malformed entry: creating a repository
+// checkout below it could otherwise turn that checkout into a parent gitlink.
+func gitWorktreeRoot(dir string) (string, error) {
+	for {
+		_, err := os.Lstat(filepath.Join(dir, ".git"))
+		switch {
+		case err == nil:
+			return dir, nil
+		case !errors.Is(err, os.ErrNotExist):
+			return "", fmt.Errorf("inspect Git metadata in %q: %w", dir, err)
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", nil
+		}
+		dir = parent
+	}
+}
+
 const (
 	repoCheckoutLockWaitTimeout = 10 * time.Second
 	repoCheckoutRetryAfter      = 2 * time.Second
@@ -385,6 +415,7 @@ func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt tim
 	mux.HandleFunc("/health", d.healthHandler(startedAt))
 	mux.HandleFunc("/shutdown", d.shutdownHandler())
 	mux.HandleFunc("/repo/checkout", d.repoCheckoutHandler())
+	mux.HandleFunc("/worktree/adopt", d.branchAdoptionHandler())
 
 	srv := &http.Server{Handler: mux}
 
@@ -397,6 +428,104 @@ func (d *Daemon) serveHealth(ctx context.Context, ln net.Listener, startedAt tim
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		d.logger.Warn("health server error", "error", err)
 	}
+}
+
+// branchAdoptionHandler is the localhost-only half of managed branch adoption.
+// Its bearer token binds the caller to the currently running continuation task;
+// it then asks the server to authorize the source task and finally delegates all
+// remote/Git/marker proof to execenv. No caller-selected task identity reaches
+// a persistent write.
+func (d *Daemon) branchAdoptionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		activeTask, authResult := d.activeRepoCheckoutTask(r)
+		if authResult != repoCheckoutAuthOK {
+			d.writeRepoCheckoutAuthError(w, authResult)
+			return
+		}
+		var req branchAdoptionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		req.SourceTaskID = strings.TrimSpace(req.SourceTaskID)
+		req.Branch = strings.TrimSpace(req.Branch)
+		req.ExpectedRemoteSHA = strings.TrimSpace(req.ExpectedRemoteSHA)
+		if req.SourceTaskID == "" || req.Branch == "" || req.ExpectedRemoteSHA == "" || req.WorkDir == "" {
+			http.Error(w, "source_task_id, branch, expected_remote_sha, and workdir are required", http.StatusBadRequest)
+			return
+		}
+		workDir, err := authorizeRepoCheckoutWorkDir(activeTask.WorkDir, req.WorkDir)
+		if err != nil {
+			http.Error(w, "branch adoption workdir is not owned by the active task", http.StatusForbidden)
+			return
+		}
+		if d.client == nil {
+			http.Error(w, "daemon server client is not initialized", http.StatusInternalServerError)
+			return
+		}
+		authorization, err := d.client.AuthorizeBranchAdoption(r.Context(), activeTask.TaskID, req.SourceTaskID, req.Branch)
+		if err != nil {
+			d.logger.Warn("branch adoption server authorization failed", "task_id", activeTask.TaskID, "source_task_id", req.SourceTaskID, "branch", req.Branch, "error", err)
+			http.Error(w, "branch adoption authorization failed: "+err.Error(), http.StatusForbidden)
+			return
+		}
+		if err := validateBranchAdoptionAuthorization(activeTask, req, authorization); err != nil {
+			d.logger.Warn("branch adoption authorization response rejected", "task_id", activeTask.TaskID, "source_task_id", req.SourceTaskID, "branch", req.Branch, "error", err)
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		result, err := execenv.AdoptManagedBranch(workDir, execenv.BranchAdoption{
+			Branch:            req.Branch,
+			ExpectedRemoteSHA: req.ExpectedRemoteSHA,
+			MarkerPath:        filepath.Join(activeTask.WorkDir, execenv.TaskContextMarkerRelPath),
+			SourceOwner:       branchAdoptionOwnerForExecenv(authorization.Source),
+			TargetOwner:       branchAdoptionOwnerForExecenv(authorization.Continuation),
+		})
+		if err != nil {
+			d.logger.Warn("branch adoption refused", "task_id", activeTask.TaskID, "source_task_id", req.SourceTaskID, "branch", req.Branch, "error", err)
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	}
+}
+
+func branchAdoptionOwnerForExecenv(owner BranchAdoptionOwner) execenv.BranchAdoptionOwner {
+	return execenv.BranchAdoptionOwner{
+		WorkspaceID:    owner.WorkspaceID,
+		AgentID:        owner.AgentID,
+		ConversationID: owner.ConversationID,
+		TaskID:         owner.TaskID,
+	}
+}
+
+func validateBranchAdoptionAuthorization(active activeRepoCheckoutTask, req branchAdoptionRequest, authorization *BranchAdoptionAuthorization) error {
+	if authorization == nil {
+		return errors.New("branch adoption server returned no authorization")
+	}
+	if authorization.Branch != req.Branch || !authorization.ContinuationTaskIsRunning {
+		return errors.New("branch adoption server response does not authorize this request")
+	}
+	if authorization.Source.TaskID != req.SourceTaskID {
+		return errors.New("branch adoption server response source task does not match request")
+	}
+	continuation := authorization.Continuation
+	if continuation.WorkspaceID != active.WorkspaceID || continuation.TaskID != active.TaskID ||
+		continuation.AgentID != active.AgentID || continuation.ConversationID != active.IssueID {
+		return errors.New("branch adoption server response continuation task does not match the active task")
+	}
+	if authorization.Source.WorkspaceID != active.WorkspaceID {
+		return errors.New("branch adoption server response source task is not in the active workspace")
+	}
+	if !authorization.SourceIssueSuspended && (!authorization.SourceTaskCompleted || authorization.Source.AgentID != continuation.AgentID || authorization.Source.ConversationID != continuation.ConversationID) {
+		return errors.New("branch adoption server response completed source task does not belong to the active agent and conversation")
+	}
+	return nil
 }
 
 func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
@@ -440,6 +569,16 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		authorizedWorkDir, authErr := authorizeRepoCheckoutWorkDir(activeTask.WorkDir, req.WorkDir)
 		if authErr != nil {
 			http.Error(w, "repo checkout workdir is not owned by the active task", http.StatusForbidden)
+			return
+		}
+		gitRoot, gitRootErr := gitWorktreeRoot(authorizedWorkDir)
+		if gitRootErr != nil {
+			d.logger.Error("repo checkout could not inspect workdir Git metadata", "workdir", authorizedWorkDir, "error", gitRootErr)
+			http.Error(w, "could not inspect the repo checkout workdir", http.StatusInternalServerError)
+			return
+		}
+		if gitRoot != "" {
+			http.Error(w, "repo checkout cannot run inside a Git worktree; use a task workdir outside the repository", http.StatusConflict)
 			return
 		}
 		// Identity is derived from the token-bound active task. AgentName and the
@@ -522,8 +661,8 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		// write failure degrades to the legacy marker shape and preflight
 		// reports it; it never undoes a successful checkout.
 		markerPath := filepath.Join(activeTask.WorkDir, execenv.TaskContextMarkerRelPath)
-		if regErr := execenv.RegisterTaskDeliveryContext(markerPath, result.BranchName, result.BaseCommit); regErr != nil {
-			d.logger.Warn("repo checkout: task marker delivery-context registration failed; preflight will report the missing baseline",
+		if regErr := execenv.RepairTaskDeliveryContext(markerPath, activeTask.TaskID, activeTask.AgentID, activeTask.IssueID, result.BranchName, result.BaseCommit); regErr != nil {
+			d.logger.Warn("repo checkout: task marker delivery-context repair failed; preflight will report the missing baseline",
 				"marker", markerPath, "error", regErr)
 		}
 

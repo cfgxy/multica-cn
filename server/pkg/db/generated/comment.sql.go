@@ -200,16 +200,25 @@ func (q *Queries) CountNewCommentsSince(ctx context.Context, arg CountNewComment
 }
 
 const createComment = `-- name: CreateComment :one
-WITH touched_issue AS (
+WITH active_task AS MATERIALIZED (
+    SELECT id
+    FROM agent_task_queue
+    WHERE id = $1::uuid
+      AND status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND no_action_at IS NULL
+    FOR SHARE
+), touched_issue AS (
     UPDATE issue SET
         updated_at = now(),
         revision = revision + 1,
         last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now())
-    WHERE issue.id = $1 AND issue.workspace_id = $2
+    WHERE issue.id = $2
+      AND issue.workspace_id = $3
+      AND ($1::uuid IS NULL OR EXISTS (SELECT 1 FROM active_task))
     RETURNING issue.id, issue.workspace_id, issue.revision
 ), inserted_comment AS (
     INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, source_task_id, quick_action_id, via_plugin_id, id)
-    SELECT ti.id, ti.workspace_id, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::uuid, gen_random_uuid())
+    SELECT ti.id, ti.workspace_id, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::uuid, gen_random_uuid())
     FROM touched_issue ti
     RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at
 )
@@ -219,6 +228,7 @@ JOIN touched_issue ON touched_issue.id = inserted_comment.issue_id
 `
 
 type CreateCommentParams struct {
+	ActiveTaskID  pgtype.UUID `json:"active_task_id"`
 	IssueID       pgtype.UUID `json:"issue_id"`
 	WorkspaceID   pgtype.UUID `json:"workspace_id"`
 	AuthorType    string      `json:"author_type"`
@@ -270,8 +280,11 @@ type CreateCommentRow struct {
 // Centralizing this here means every comment entrypoint inherits both
 // guarantees regardless of what a caller passes. The "Updated date" sort and
 // the daemon GC TTL both read updated_at, so this consistency is load-bearing.
+// Task-token comments lock their active task row so cancellation and comment
+// creation serialize; a NULL active_task_id preserves non-task comment paths.
 func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (CreateCommentRow, error) {
 	row := q.db.QueryRow(ctx, createComment,
+		arg.ActiveTaskID,
 		arg.IssueID,
 		arg.WorkspaceID,
 		arg.AuthorType,
