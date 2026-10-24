@@ -81,7 +81,11 @@ RETURNING *;
 -- pending_owner → approved. The caller runs the gate and either enacts or
 -- gate-fails the row inside the same transaction; this transition alone
 -- exists so a crash after approval never loses the owner's decision.
+-- RUYI-858: the enactment target (where the clause lands) is decided in
+-- THIS transition — a crash followed by the /enact recovery path enacts
+-- the same decision the owner made, never a second prompt.
 UPDATE prompt_proposal SET status = 'approved',
+    enactment_target = @enactment_target,
     audit_log = prompt_proposal.audit_log || @audit::jsonb, updated_at = now()
 WHERE prompt_proposal.id = @id AND prompt_proposal.workspace_id = @workspace_id
   AND prompt_proposal.status = 'pending_owner'

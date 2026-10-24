@@ -766,6 +766,13 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to lock project")
 		return
 	}
+	if err := qtx.DeletePromptProposalsByProjectReference(r.Context(), db.DeletePromptProposalsByProjectReferenceParams{
+		WorkspaceID: project.WorkspaceID,
+		ProjectID:   project.ID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete project proposals")
+		return
+	}
 	if err := qtx.ClearChatSessionProjectByProject(r.Context(), db.ClearChatSessionProjectByProjectParams{
 		ProjectID:   project.ID,
 		WorkspaceID: project.WorkspaceID,
