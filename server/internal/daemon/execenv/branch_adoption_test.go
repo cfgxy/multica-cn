@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -281,6 +282,108 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 		t.Fatal("deleted adopted branch left its continuation discovery ref behind")
 	}
 	finalizeOK(t, afterDeletion)
+}
+
+func TestLocalWorktreeAdoptManagedBranchMovesTrackedRuntimeConfig(t *testing.T) {
+	fixture := newRuntimeConfigAdoptionFixture(t)
+
+	result, err := fixture.worktree.AdoptManagedBranch(fixture.adoption)
+	if err != nil {
+		t.Fatalf("AdoptManagedBranch: %v", err)
+	}
+	if result.Branch != fixture.adoption.Branch {
+		t.Fatalf("adopted branch = %q, want %q", result.Branch, fixture.adoption.Branch)
+	}
+	config := readFile(t, fixture.runtimePath)
+	if !strings.Contains(config, fixture.sourceConfig) {
+		t.Fatalf("adopted runtime config did not retain source branch content:\n%s", config)
+	}
+	if strings.Contains(config, fixture.targetConfig) {
+		t.Fatalf("adopted runtime config retained target branch content:\n%s", config)
+	}
+	if !strings.Contains(config, runtimeMarkerBegin) || !strings.Contains(config, "**You are: Target Agent**") {
+		t.Fatalf("adopted runtime config did not re-inject the continuation brief:\n%s", config)
+	}
+	if fixture.worktree.runtimeConfig.context.ManagedBranch != fixture.adoption.Branch || fixture.worktree.runtimeConfig.context.BaseCommit != fixture.adoption.ExpectedRemoteSHA {
+		t.Fatalf("runtime context after adoption = %+v, want branch %q at %q", fixture.worktree.runtimeConfig.context, fixture.adoption.Branch, fixture.adoption.ExpectedRemoteSHA)
+	}
+}
+
+func TestLocalWorktreeAdoptManagedBranchRestoresTrackedRuntimeConfigAfterMarkerFailure(t *testing.T) {
+	fixture := newRuntimeConfigAdoptionFixture(t)
+	configBefore, err := os.ReadFile(fixture.runtimePath)
+	if err != nil {
+		t.Fatalf("read original runtime config: %v", err)
+	}
+	markerBefore, err := os.ReadFile(fixture.adoption.MarkerPath)
+	if err != nil {
+		t.Fatalf("read original marker: %v", err)
+	}
+	targetRecordBefore := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.worktree.Branch))
+	sourceRecordBefore := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.adoption.Branch))
+	markerDir := filepath.Dir(fixture.adoption.MarkerPath)
+	if err := os.Chmod(markerDir, 0o555); err != nil {
+		t.Fatalf("make marker directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(markerDir, 0o755) })
+
+	if _, err := fixture.worktree.AdoptManagedBranch(fixture.adoption); err == nil || !strings.Contains(err.Error(), "bind continuation task marker") {
+		t.Fatalf("AdoptManagedBranch with unwritable marker = %v, want marker write refusal", err)
+	}
+	if current := gitRun(t, fixture.repo, "branch", "--show-current"); current != fixture.worktree.Branch {
+		t.Fatalf("checkout after failed runtime adoption = %q, want %q", current, fixture.worktree.Branch)
+	}
+	if configAfter, err := os.ReadFile(fixture.runtimePath); err != nil || !bytes.Equal(configAfter, configBefore) {
+		t.Fatalf("runtime config after failed adoption = %q, error %v; want exact original bytes", configAfter, err)
+	}
+	if markerAfter, err := os.ReadFile(fixture.adoption.MarkerPath); err != nil || !bytes.Equal(markerAfter, markerBefore) {
+		t.Fatalf("marker after failed adoption = %q, error %v; want exact original bytes", markerAfter, err)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.worktree.Branch)); got != targetRecordBefore {
+		t.Fatalf("target record after failed adoption = %s, want %s", got, targetRecordBefore)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.adoption.Branch)); got != sourceRecordBefore {
+		t.Fatalf("source record after failed adoption = %s, want %s", got, sourceRecordBefore)
+	}
+	if fixture.worktree.aborted != nil {
+		t.Fatalf("verified rollback unexpectedly aborted worktree: %v", fixture.worktree.aborted)
+	}
+}
+
+func TestLocalWorktreeAdoptManagedBranchRestoresRuntimeConfigAfterReinjectFailure(t *testing.T) {
+	fixture := newRuntimeConfigAdoptionFixture(t)
+	configBefore, err := os.ReadFile(fixture.runtimePath)
+	if err != nil {
+		t.Fatalf("read original runtime config: %v", err)
+	}
+	markerBefore, err := os.ReadFile(fixture.adoption.MarkerPath)
+	if err != nil {
+		t.Fatalf("read original marker: %v", err)
+	}
+	targetRecordBefore := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.worktree.Branch))
+	sourceRecordBefore := replaceSourceRuntimeConfigWithDirectory(t, fixture)
+
+	if _, err := fixture.worktree.AdoptManagedBranch(fixture.adoption); err == nil || !strings.Contains(err.Error(), "restore runtime config on adopted branch") {
+		t.Fatalf("AdoptManagedBranch with source runtime config directory = %v, want re-injection refusal", err)
+	}
+	if current := gitRun(t, fixture.repo, "branch", "--show-current"); current != fixture.worktree.Branch {
+		t.Fatalf("checkout after failed runtime re-injection = %q, want %q", current, fixture.worktree.Branch)
+	}
+	if configAfter, err := os.ReadFile(fixture.runtimePath); err != nil || !bytes.Equal(configAfter, configBefore) {
+		t.Fatalf("runtime config after failed re-injection = %q, error %v; want exact original bytes", configAfter, err)
+	}
+	if markerAfter, err := os.ReadFile(fixture.adoption.MarkerPath); err != nil || !bytes.Equal(markerAfter, markerBefore) {
+		t.Fatalf("marker after failed re-injection = %q, error %v; want exact original bytes", markerAfter, err)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.worktree.Branch)); got != targetRecordBefore {
+		t.Fatalf("target record after failed re-injection = %s, want %s", got, targetRecordBefore)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.adoption.Branch)); got != sourceRecordBefore {
+		t.Fatalf("source record after failed re-injection = %s, want %s", got, sourceRecordBefore)
+	}
+	if fixture.worktree.aborted != nil {
+		t.Fatalf("verified re-injection rollback unexpectedly aborted worktree: %v", fixture.worktree.aborted)
+	}
 }
 
 func TestAdoptManagedBranchRefusesCompetingContinuation(t *testing.T) {
@@ -581,7 +684,7 @@ if [ "$2" = %q ] && [ "$3" = 1 ] && [ ! -e %q ]; then
   touch %q
   git -C %q worktree add --quiet %q %q
 fi
-`, fixture.tip, triggered, triggered, fixture.repo, contender, targetBranch)
+	`, targetTip, triggered, triggered, fixture.repo, contender, targetBranch)
 	if err := os.WriteFile(hookPath, []byte(hook), 0o755); err != nil {
 		t.Fatalf("write post-checkout hook: %v", err)
 	}
@@ -604,8 +707,8 @@ fi
 	if _, err := os.Stat(triggered); err != nil {
 		t.Fatalf("post-checkout competitor did not run: %v", err)
 	}
-	if current := gitRun(t, fixture.repo, "branch", "--show-current"); current != fixture.branch {
-		t.Fatalf("checkout after failed rollback = %q, want adopted source branch %q", current, fixture.branch)
+	if current := gitRun(t, fixture.repo, "branch", "--show-current"); current != "" {
+		t.Fatalf("checkout after failed rollback = %q, want detached HEAD after target reservation race", current)
 	}
 	if worktree.aborted == nil {
 		t.Fatal("failed rollback left LocalWorktree deliverable")
@@ -727,6 +830,140 @@ type branchAdoptionFixture struct {
 	sourceRecord string
 	markerPath   string
 	adoption     BranchAdoption
+}
+
+type runtimeConfigAdoptionFixture struct {
+	repo         string
+	adoption     BranchAdoption
+	worktree     *LocalWorktree
+	runtimePath  string
+	targetConfig string
+	sourceConfig string
+}
+
+func newRuntimeConfigAdoptionFixture(t *testing.T) *runtimeConfigAdoptionFixture {
+	t.Helper()
+	fixture := newBranchAdoptionFixture(t)
+	const targetBranch = "agent/target/ruyi-870"
+	const targetConfig = "target runtime config\n"
+	const sourceConfig = "source runtime config\n"
+	runtimePath := filepath.Join(fixture.repo, "CLAUDE.md")
+
+	writeFile(t, runtimePath, targetConfig)
+	gitRun(t, fixture.repo, "add", "CLAUDE.md")
+	gitRun(t, fixture.repo, "commit", "-m", "target runtime config")
+	targetTip := gitRun(t, fixture.repo, "rev-parse", "HEAD")
+	targetSnapshot := gitRun(t, fixture.repo, "commit-tree", "HEAD^{tree}")
+	if _, err := writeBranchRecord(fixture.repo, targetBranch, targetSnapshot, targetTip, adoptionRecordOwner(fixture.adoption.TargetOwner)); err != nil {
+		t.Fatalf("write target branch record: %v", err)
+	}
+
+	gitRun(t, fixture.repo, "switch", fixture.branch)
+	writeFile(t, runtimePath, sourceConfig)
+	gitRun(t, fixture.repo, "add", "CLAUDE.md")
+	gitRun(t, fixture.repo, "commit", "-m", "source runtime config")
+	sourceTip := gitRun(t, fixture.repo, "rev-parse", "HEAD")
+	gitRun(t, fixture.repo, "push", "--quiet", "origin", fixture.branch)
+	sourceSnapshot := gitRun(t, fixture.repo, "commit-tree", "HEAD^{tree}")
+	sourceRecord, err := writeBranchRecord(fixture.repo, fixture.branch, sourceSnapshot, sourceTip, adoptionRecordOwner(fixture.adoption.SourceOwner))
+	if err != nil {
+		t.Fatalf("write source branch record: %v", err)
+	}
+	fixture.tip = sourceTip
+	fixture.sourceRecord = sourceRecord
+	fixture.adoption.ExpectedRemoteSHA = sourceTip
+	gitRun(t, fixture.repo, "switch", targetBranch)
+
+	markerData, err := json.Marshal(taskContextMarkerFile{
+		ManagedBy:  TaskContextMarkerManagedBy,
+		TaskID:     fixture.adoption.TargetOwner.TaskID,
+		AgentID:    fixture.adoption.TargetOwner.AgentID,
+		IssueID:    fixture.adoption.TargetOwner.ConversationID,
+		Branch:     targetBranch,
+		BaseCommit: targetTip,
+	})
+	if err != nil {
+		t.Fatalf("marshal target marker: %v", err)
+	}
+	if err := writeMarkerFileAtomic(fixture.adoption.MarkerPath, markerData); err != nil {
+		t.Fatalf("write target marker: %v", err)
+	}
+
+	worktree := &LocalWorktree{
+		GitRoot:       fixture.repo,
+		Path:          fixture.repo,
+		WorkDir:       fixture.repo,
+		Branch:        targetBranch,
+		BaseCommit:    targetTip,
+		owner:         adoptionRecordOwner(fixture.adoption.TargetOwner),
+		createdBranch: true,
+	}
+	ctx := TaskContextForEnv{
+		TaskID:        fixture.adoption.TargetOwner.TaskID,
+		ManagedBranch: targetBranch,
+		BaseCommit:    targetTip,
+		IssueID:       fixture.adoption.TargetOwner.ConversationID,
+		AgentID:       fixture.adoption.TargetOwner.AgentID,
+		AgentName:     "Target Agent",
+	}
+	if _, err := InjectRuntimeConfig(fixture.repo, "claude", ctx); err != nil {
+		t.Fatalf("inject target runtime config: %v", err)
+	}
+	worktree.BindRuntimeConfig("claude", ctx)
+
+	return &runtimeConfigAdoptionFixture{
+		repo:         fixture.repo,
+		adoption:     fixture.adoption,
+		worktree:     worktree,
+		runtimePath:  runtimePath,
+		targetConfig: targetConfig,
+		sourceConfig: sourceConfig,
+	}
+}
+
+func replaceSourceRuntimeConfigWithDirectory(t *testing.T, fixture *runtimeConfigAdoptionFixture) string {
+	t.Helper()
+	if err := CleanupRuntimeConfig(fixture.repo, "claude"); err != nil {
+		t.Fatalf("clean target runtime config before source mutation: %v", err)
+	}
+	gitRun(t, fixture.repo, "switch", fixture.adoption.Branch)
+	gitRun(t, fixture.repo, "rm", "CLAUDE.md")
+	if err := os.Mkdir(filepath.Join(fixture.repo, "CLAUDE.md"), 0o755); err != nil {
+		t.Fatalf("create source runtime config directory: %v", err)
+	}
+	writeFile(t, filepath.Join(fixture.repo, "CLAUDE.md", "blocked"), "not a runtime config file\n")
+	gitRun(t, fixture.repo, "add", "CLAUDE.md/blocked")
+	gitRun(t, fixture.repo, "commit", "-m", "source runtime config is a directory")
+	sourceTip := gitRun(t, fixture.repo, "rev-parse", "HEAD")
+	gitRun(t, fixture.repo, "push", "--quiet", "origin", fixture.adoption.Branch)
+	sourceSnapshot := gitRun(t, fixture.repo, "commit-tree", "HEAD^{tree}")
+	sourceRecord, err := writeBranchRecord(fixture.repo, fixture.adoption.Branch, sourceSnapshot, sourceTip, adoptionRecordOwner(fixture.adoption.SourceOwner))
+	if err != nil {
+		t.Fatalf("write source branch record: %v", err)
+	}
+	fixture.adoption.ExpectedRemoteSHA = sourceTip
+	gitRun(t, fixture.repo, "switch", fixture.worktree.Branch)
+	if _, err := InjectRuntimeConfig(fixture.repo, "claude", fixture.worktree.runtimeConfig.context); err != nil {
+		t.Fatalf("restore target runtime config after source mutation: %v", err)
+	}
+	markerData, err := json.Marshal(taskContextMarkerFile{
+		ManagedBy:  TaskContextMarkerManagedBy,
+		TaskID:     fixture.adoption.TargetOwner.TaskID,
+		AgentID:    fixture.adoption.TargetOwner.AgentID,
+		IssueID:    fixture.adoption.TargetOwner.ConversationID,
+		Branch:     fixture.worktree.Branch,
+		BaseCommit: fixture.worktree.BaseCommit,
+	})
+	if err != nil {
+		t.Fatalf("marshal restored target marker: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(fixture.adoption.MarkerPath), 0o755); err != nil {
+		t.Fatalf("recreate target marker directory: %v", err)
+	}
+	if err := writeMarkerFileAtomic(fixture.adoption.MarkerPath, markerData); err != nil {
+		t.Fatalf("restore target marker after source mutation: %v", err)
+	}
+	return sourceRecord
 }
 
 func newBranchAdoptionFixture(t *testing.T) *branchAdoptionFixture {

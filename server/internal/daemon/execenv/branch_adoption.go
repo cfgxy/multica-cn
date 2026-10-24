@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,8 +71,12 @@ func (w *LocalWorktree) AdoptManagedBranch(adoption BranchAdoption) (BranchAdopt
 		owner:         w.owner,
 		createdBranch: w.createdBranch,
 	}
-	result, err := adoptManagedBranch(w.Path, adoption, retirement)
+	result, err := adoptManagedBranchWithRuntime(w.Path, adoption, retirement, w.runtimeConfig)
 	if err != nil {
+		var recoveryErr *branchAdoptionRecoveryError
+		if errors.As(err, &recoveryErr) {
+			w.AbortWithReason(fmt.Errorf("adopt branch could not verify restoration of the running worktree: %w", err))
+		}
 		// The adoption helper restores the original checkout on every failed
 		// transition. If an external linked worktree wins that restoration race,
 		// never let Finalize interpret the source checkout using target metadata.
@@ -95,11 +100,19 @@ func (w *LocalWorktree) AdoptManagedBranch(adoption BranchAdoption) (BranchAdopt
 	w.owner = adoptionRecordOwner(adoption.TargetOwner)
 	w.tracksState = true
 	w.snapshotPending = false
+	if w.runtimeConfig != nil {
+		w.runtimeConfig.context.ManagedBranch = result.Branch
+		w.runtimeConfig.context.BaseCommit = result.BaseCommit
+	}
 
 	return result, nil
 }
 
 func adoptManagedBranch(gitRoot string, adoption BranchAdoption, retirement *branchAdoptionRetirement) (BranchAdoptionResult, error) {
+	return adoptManagedBranchWithRuntime(gitRoot, adoption, retirement, nil)
+}
+
+func adoptManagedBranchWithRuntime(gitRoot string, adoption BranchAdoption, retirement *branchAdoptionRetirement, runtimeConfig *runtimeConfigBinding) (BranchAdoptionResult, error) {
 	var result BranchAdoptionResult
 	adoption.Branch = strings.TrimSpace(adoption.Branch)
 	adoption.ExpectedRemoteSHA = strings.TrimSpace(adoption.ExpectedRemoteSHA)
@@ -198,15 +211,16 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption, retirement *bra
 	if err != nil {
 		return result, fmt.Errorf("adopt branch: resolve current checkout: %w", err)
 	}
-	switched := false
-	if currentBranch != adoption.Branch {
-		if out, err := runGit(root, "checkout", adoption.Branch); err != nil {
-			return result, fmt.Errorf("adopt branch: check out %s: %s: %w", adoption.Branch, strings.TrimSpace(out), err)
-		}
-		switched = true
+	runtimeBefore, err := captureRuntimeConfig(runtimeConfig)
+	if err != nil {
+		return result, fmt.Errorf("adopt branch: capture runtime config: %w", err)
 	}
+	switched := false
+	detached := false
+	runtimeTouched := false
+	markerWritten := false
 	restoreCheckout := func() error {
-		if !switched {
+		if !switched && !detached {
 			return nil
 		}
 		args := []string{"checkout"}
@@ -220,43 +234,109 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption, retirement *bra
 		}
 		return nil
 	}
-	if err := finalizeBranchAdoptionRetirement(root, retirement); err != nil {
-		if rollbackErr := restoreCheckout(); rollbackErr != nil {
-			return result, fmt.Errorf("adopt branch: retire original continuation branch: %w (also %v)", err, rollbackErr)
-		}
-		return result, fmt.Errorf("adopt branch: retire original continuation branch: %w", err)
-	}
 	releaseRetirementReservation := func() {
 		if retirement != nil && retirement.releaseReservation != nil {
 			retirement.releaseReservation()
 			retirement.releaseReservation = nil
 		}
 	}
+	rollback := func(cause error) error {
+		var recovery []string
+		var adoptedRuntimeCleanupErr error
+		if runtimeTouched && runtimeConfig != nil {
+			if err := CleanupRuntimeConfig(runtimeConfig.workDir, runtimeConfig.provider); err != nil {
+				adoptedRuntimeCleanupErr = err
+			}
+		}
+		// A reservation itself makes the old branch unavailable for checkout, so
+		// it must be released only after the source runtime file is clean and
+		// immediately before returning this worktree to its original branch.
+		releaseRetirementReservation()
+		if err := restoreCheckout(); err != nil {
+			if adoptedRuntimeCleanupErr != nil {
+				recovery = append(recovery, fmt.Sprintf("clean adopted runtime config: %v", adoptedRuntimeCleanupErr))
+			}
+			recovery = append(recovery, err.Error())
+		}
+		if runtimeTouched {
+			if err := runtimeBefore.restore(); err != nil {
+				recovery = append(recovery, fmt.Sprintf("restore runtime config: %v", err))
+			}
+		}
+		if markerWritten {
+			if err := writeMarkerFileAtomic(adoption.MarkerPath, markerBefore); err != nil {
+				recovery = append(recovery, fmt.Sprintf("restore marker: %v", err))
+			}
+		}
+		if currentBranch == "" {
+			if head := runGitSafeTrimmed(root, "rev-parse", "HEAD"); head != currentHead {
+				recovery = append(recovery, fmt.Sprintf("restored detached HEAD is %q, want %q", head, currentHead))
+			}
+		} else if branch := runGitSafeTrimmed(root, "symbolic-ref", "--quiet", "--short", "HEAD"); branch != currentBranch {
+			recovery = append(recovery, fmt.Sprintf("restored checkout is %q, want %q", branch, currentBranch))
+		}
+		if runtimeTouched {
+			if err := runtimeBefore.matches(); err != nil {
+				recovery = append(recovery, fmt.Sprintf("verify runtime config restoration: %v", err))
+			}
+		}
+		if len(recovery) > 0 {
+			return &branchAdoptionRecoveryError{cause: cause, recovery: errors.New(strings.Join(recovery, "; "))}
+		}
+		return cause
+	}
+
+	if runtimeConfig != nil {
+		runtimeTouched = true
+		if err := CleanupRuntimeConfig(runtimeConfig.workDir, runtimeConfig.provider); err != nil {
+			return result, rollback(fmt.Errorf("adopt branch: clean current runtime config: %w", err))
+		}
+	}
+
+	// Git prevents a second linked worktree from checking out a branch, but only
+	// while this worktree is attached to it. Detach before reserving the target,
+	// then retain that reservation until the ref transaction commits or rollback
+	// verifies the original checkout. This closes the checkout-to-retirement gap.
+	if retirement != nil && retirement.branch != "" && retirement.branch != adoption.Branch && retirement.createdBranch && currentBranch == retirement.branch {
+		if tip := runGitSafeTrimmed(root, "rev-parse", "--verify", "refs/heads/"+retirement.branch); tip == retirement.baseCommit {
+			if out, err := runGit(root, "checkout", "--detach", currentHead); err != nil {
+				return result, rollback(fmt.Errorf("adopt branch: detach original continuation branch: %s: %w", strings.TrimSpace(out), err))
+			}
+			detached = true
+		}
+	}
+	if retirement != nil && retirement.branch != adoption.Branch {
+		if err := finalizeBranchAdoptionRetirement(root, retirement); err != nil {
+			return result, rollback(fmt.Errorf("adopt branch: retire original continuation branch: %w", err))
+		}
+	}
 	defer releaseRetirementReservation()
+
+	if currentBranch != adoption.Branch {
+		if out, err := runGit(root, "checkout", adoption.Branch); err != nil {
+			return result, rollback(fmt.Errorf("adopt branch: check out %s: %s: %w", adoption.Branch, strings.TrimSpace(out), err))
+		}
+		switched = true
+	}
+	if runtimeConfig != nil {
+		runtimeTouched = true
+		adoptedContext := runtimeConfig.context
+		adoptedContext.ManagedBranch = adoption.Branch
+		adoptedContext.BaseCommit = adoption.ExpectedRemoteSHA
+		if _, err := InjectRuntimeConfig(runtimeConfig.workDir, runtimeConfig.provider, adoptedContext); err != nil {
+			return result, rollback(fmt.Errorf("adopt branch: restore runtime config on adopted branch: %w", err))
+		}
+	}
 
 	// The marker is written before the ref transaction and restored on a failed
 	// transaction. The filesystem and Git ref store cannot share one primitive,
 	// so this order makes the durable branch ownership change the commit point.
 	if err := writeMarkerFileAtomic(adoption.MarkerPath, newMarker); err != nil {
-		// Restoring the checkout needs the original branch to be available. The
-		// reservation is only required through the ref transaction, which did not
-		// start when the marker write failed.
-		releaseRetirementReservation()
-		if rollbackErr := restoreCheckout(); rollbackErr != nil {
-			return result, fmt.Errorf("adopt branch: bind continuation task marker: %w (also %v)", err, rollbackErr)
-		}
-		return result, fmt.Errorf("adopt branch: bind continuation task marker: %w", err)
+		return result, rollback(fmt.Errorf("adopt branch: bind continuation task marker: %w", err))
 	}
+	markerWritten = true
 	if err := updateAdoptedBranchRecord(root, adoption.Branch, oldRecordRef, newRecord, continuation, previousContinuationRecord, retirement); err != nil {
-		// The guarded transaction failed atomically, so it is safe to release the
-		// target reservation before returning the running worktree to that branch.
-		releaseRetirementReservation()
-		markerRollbackErr := writeMarkerFileAtomic(adoption.MarkerPath, markerBefore)
-		checkoutRollbackErr := restoreCheckout()
-		if markerRollbackErr != nil || checkoutRollbackErr != nil {
-			return result, fmt.Errorf("adopt branch: update branch record: %w (restore marker: %v; restore checkout: %v)", err, markerRollbackErr, checkoutRollbackErr)
-		}
-		return result, err
+		return result, rollback(err)
 	}
 
 	return BranchAdoptionResult{
@@ -267,6 +347,113 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption, retirement *bra
 		Record:           newRecord,
 		BaseCommit:       adoption.ExpectedRemoteSHA,
 	}, nil
+}
+
+type runtimeConfigBinding struct {
+	workDir  string
+	provider string
+	context  TaskContextForEnv
+}
+
+// runtimeConfigSnapshot retains the exact pre-adoption file state. Cleanup is
+// intentionally not used for rollback: after the checkout it describes the
+// adopted branch's file, while recovery must put back the original task's bytes.
+type runtimeConfigSnapshot struct {
+	path    string
+	exists  bool
+	mode    os.FileMode
+	content []byte
+}
+
+func captureRuntimeConfig(binding *runtimeConfigBinding) (runtimeConfigSnapshot, error) {
+	if binding == nil {
+		return runtimeConfigSnapshot{}, nil
+	}
+	path := runtimeConfigPath(binding.workDir, binding.provider)
+	if path == "" {
+		return runtimeConfigSnapshot{}, nil
+	}
+	snapshot := runtimeConfigSnapshot{path: path}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return snapshot, nil
+	}
+	if err != nil {
+		return snapshot, err
+	}
+	if !info.Mode().IsRegular() {
+		return snapshot, fmt.Errorf("runtime config %s is not a regular file", path)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return snapshot, err
+	}
+	snapshot.exists = true
+	snapshot.mode = info.Mode().Perm()
+	snapshot.content = content
+	return snapshot, nil
+}
+
+func (s runtimeConfigSnapshot) restore() error {
+	if s.path == "" {
+		return nil
+	}
+	if !s.exists {
+		if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := os.WriteFile(s.path, s.content, s.mode); err != nil {
+		return err
+	}
+	return os.Chmod(s.path, s.mode)
+}
+
+func (s runtimeConfigSnapshot) matches() error {
+	if s.path == "" {
+		return nil
+	}
+	info, err := os.Lstat(s.path)
+	if !s.exists {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return errors.New("runtime config exists but did not before adoption")
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("runtime config is no longer a regular file")
+	}
+	if info.Mode().Perm() != s.mode {
+		return fmt.Errorf("runtime config mode is %o, want %o", info.Mode().Perm(), s.mode)
+	}
+	content, err := os.ReadFile(s.path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(content, s.content) {
+		return errors.New("runtime config content differs from the pre-adoption snapshot")
+	}
+	return nil
+}
+
+type branchAdoptionRecoveryError struct {
+	cause    error
+	recovery error
+}
+
+func (e *branchAdoptionRecoveryError) Error() string {
+	return fmt.Sprintf("%v (adoption rollback could not be verified: %v)", e.cause, e.recovery)
+}
+
+func (e *branchAdoptionRecoveryError) Unwrap() error {
+	return e.cause
 }
 
 // branchAdoptionRetirement describes the branch that Prepare selected before a
