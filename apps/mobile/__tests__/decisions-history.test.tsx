@@ -214,11 +214,15 @@ function list(
   };
 }
 
-function renderDecisions() {
+// RTL's render is async: setRenderResult only fires after its internal
+// act() resolves. Awaiting it here is what attaches `screen` before the
+// findBy* polls below (a non-awaited render leaves screen detached and
+// findByTestId throws `render function has not been called`).
+async function renderDecisions() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
+  await render(
     <QueryClientProvider client={queryClient}>
       <Decisions />
     </QueryClientProvider>,
@@ -250,7 +254,7 @@ describe("Decisions tab history entry (RUYI-864 rework)", () => {
     mockHistoryPages.push(
       list([makeRequest("r-approved", "2026-10-18T00:00:00Z")], { approved: 1, history: 1 }),
     );
-    renderDecisions();
+    await renderDecisions();
 
     await screen.findByTestId("decisions-history-toggle");
     // Queue absent, entry present, total from the history bucket.
@@ -295,7 +299,7 @@ describe("Decisions tab history entry (RUYI-864 rework)", () => {
         { approved: 3, history: 3 },
       ),
     );
-    renderDecisions();
+    await renderDecisions();
 
     await waitFor(() => expect(screen.getByText("· 3")).toBeTruthy());
     fireEvent.press(screen.getByTestId("decisions-history-toggle"));
@@ -323,7 +327,7 @@ describe("Decisions tab history entry (RUYI-864 rework)", () => {
         { approved: 4, history: 4 },
       ),
     );
-    renderDecisions();
+    await renderDecisions();
 
     await screen.findByTestId("decisions-history-toggle");
     fireEvent.press(screen.getByTestId("decisions-history-toggle"));
