@@ -14,6 +14,11 @@ describe("parseVoiceRejectionCode", () => {
     "capability_mismatch",
     "credential_missing",
     "credential_invalid",
+    // D2 config-gate rejections (RUYI-866): same stable codes on 409 and
+    // on error frames; every surface maps them to its own copy.
+    "voice_unconfigured",
+    "voice_provider_missing",
+    "voice_provider_disabled",
   ] as const)("maps VOICE_UNAVAILABLE:%s to the specific reason", (reason) => {
     expect(parseVoiceRejectionCode(`VOICE_UNAVAILABLE:${reason}`)).toEqual({
       kind: "voice_unavailable",
