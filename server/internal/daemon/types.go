@@ -378,6 +378,12 @@ type TaskUsageEntry struct {
 	Turns            int   `json:"turns,omitempty"`
 	Compactions      int   `json:"compactions,omitempty"`
 	MaxContextTokens int64 `json:"max_context_tokens,omitempty"`
+	// ModelCallCount is the provider-observed number of model API calls for
+	// this (provider, model) row — see agent.TokenUsage.ModelCallCount.
+	// Omitted when zero, which means the backend had no provider-original,
+	// dedupable call evidence: an older server that ignores the field stores
+	// NULL too, and NULL must never render as a real "0 calls".
+	ModelCallCount int64 `json:"model_call_count,omitempty"`
 }
 
 // TaskResult is the outcome of executing a task.

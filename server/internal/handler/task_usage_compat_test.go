@@ -107,3 +107,42 @@ func TestTaskUsagePayloadOldDaemonMissingRunStatsDecodesToZero(t *testing.T) {
 		t.Error("authoritativeMaxContextTokens(0) is Valid, want invalid/NULL for an absent field")
 	}
 }
+
+// TestTaskUsagePayloadModelCallCountDecodeAndAuthority is the migration-987
+// pair: a payload that names the call count decodes into the struct, and the
+// authority rule keeps the "0 = no provider evidence" contract — a 0 or
+// negative count must become a NULL column (unknown), while a real count
+// stays.
+func TestTaskUsagePayloadModelCallCountDecodeAndAuthority(t *testing.T) {
+	// New daemon with evidence: the count decodes and the authority
+	// conversion keeps it.
+	withEvidence := []byte(`{"provider":"anthropic","model":"claude-opus-5","model_call_count":42}`)
+	var payload TaskUsagePayload
+	if err := json.Unmarshal(withEvidence, &payload); err != nil {
+		t.Fatalf("decode with model_call_count: %v", err)
+	}
+	if payload.ModelCallCount != 42 {
+		t.Errorf("model_call_count = %d, want 42", payload.ModelCallCount)
+	}
+	if v := authoritativeModelCallCount(payload.ModelCallCount); !v.Valid || v.Int64 != 42 {
+		t.Errorf("authoritativeModelCallCount(42) = %+v, want Valid 42", v)
+	}
+
+	// Old daemon: the field is absent, the decoder zeroes it, and the
+	// authority rule turns that 0 into NULL — readers see "unknown", not a
+	// measured zero.
+	oldDaemon := []byte(`{"provider":"anthropic","model":"claude-opus-5"}`)
+	var legacy TaskUsagePayload
+	if err := json.Unmarshal(oldDaemon, &legacy); err != nil {
+		t.Fatalf("new server must not error on a pre-987 payload: %v", err)
+	}
+	if legacy.ModelCallCount != 0 {
+		t.Errorf("absent model_call_count decoded to %d, want 0", legacy.ModelCallCount)
+	}
+	if v := authoritativeModelCallCount(legacy.ModelCallCount); v.Valid {
+		t.Errorf("authoritativeModelCallCount(0) = %+v, want invalid/NULL (unknown, not zero)", v)
+	}
+	if v := authoritativeModelCallCount(-1); v.Valid {
+		t.Errorf("authoritativeModelCallCount(-1) = %+v, want invalid/NULL (negative is malformed)", v)
+	}
+}

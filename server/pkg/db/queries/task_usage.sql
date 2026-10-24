@@ -14,8 +14,11 @@
 -- turns / compactions / max_context_tokens (RUYI-154) are run-scoped stats
 -- reported exactly once, at task completion, so they are overwritten like the
 -- token counters rather than COALESCEd like context_tokens.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), now())
+-- model_call_count is NULL when the provider reported no call evidence
+-- (migration 987); overwritten like cost_usd_ticks so a corrected report
+-- replaces the previous figure, including NULLing out a bogus earlier one.
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, model_call_count, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), sqlc.narg('model_call_count'), now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -27,6 +30,7 @@ DO UPDATE SET
     turns = EXCLUDED.turns,
     compactions = EXCLUDED.compactions,
     max_context_tokens = EXCLUDED.max_context_tokens,
+    model_call_count = EXCLUDED.model_call_count,
     updated_at = now();
 
 -- name: GetTaskUsage :many
@@ -141,6 +145,12 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    -- Call counts (migration 987): the known half plus the count of rows that
+    -- have no provider call evidence. Readers must not present
+    -- model_call_count as a complete total while model_call_unknown_count is
+    -- nonzero — that would turn "N rows unknown" into "0 calls".
+    SUM(model_call_count)::bigint                       AS model_call_count,
+    SUM(model_call_unknown_count)::bigint                AS model_call_unknown_count,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
@@ -181,6 +191,10 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    -- Call counts: known half + row count without provider evidence, same
+    -- consumer contract as ListDashboardUsageDaily.
+    SUM(model_call_count)::bigint                       AS model_call_count,
+    SUM(model_call_unknown_count)::bigint                AS model_call_unknown_count,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
@@ -382,6 +396,13 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    -- Model call count: the known half only (rows with provider call
+    -- evidence), published as the lifetime sum that a Prometheus counter
+    -- requires. Rows without evidence are counted separately in the rollup
+    -- (model_call_unknown_count) and surface through the dashboard read
+    -- paths — never folded into this counter, which would turn "unknown"
+    -- into "0 calls" (migration 987).
+    SUM(model_call_count)::bigint       AS model_call_count,
     SUM(task_count)::bigint         AS task_count
 FROM task_usage_hourly
 GROUP BY workspace_id, runtime_id, LOWER(provider), model;

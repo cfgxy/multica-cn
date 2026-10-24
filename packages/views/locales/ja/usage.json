@@ -22,7 +22,9 @@
     "run_time_label": "実行時間 · {{days}}日",
     "run_time_hint": "{{tasks}} 件の作業全体",
     "tasks_label": "作業 · {{days}}日",
-    "tasks_hint": "{{failed}} 件失敗"
+    "tasks_hint": "{{failed}} 件失敗",
+    "calls_label": "呼び出し · {{days}}日",
+    "calls_unknown_hint": "{{unknown}} 行未上報"
   },
   "dim": {
     "label": "単位",
@@ -136,7 +138,8 @@
       "dim_model": "モデル",
       "tokens": "トークン/秒",
       "cost": "コスト/時",
-      "tasks": "タスク/時"
+      "tasks": "タスク/時",
+      "calls": "呼び出し/時"
     }
   },
   "error": {

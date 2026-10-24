@@ -2428,6 +2428,8 @@ type TaskUsage struct {
 	Turns            pgtype.Int4 `json:"turns"`
 	Compactions      pgtype.Int4 `json:"compactions"`
 	MaxContextTokens pgtype.Int8 `json:"max_context_tokens"`
+	// Provider-reported or provider-observed model API call count for this task, e.g. xAI modelCalls / a per-call usage event stream. NULL when the provider does not report it; history before this column is permanently NULL.
+	ModelCallCount pgtype.Int8 `json:"model_call_count"`
 }
 
 type TaskUsageHourly struct {
@@ -2452,6 +2454,10 @@ type TaskUsageHourly struct {
 	UncostedOutputTokens     pgtype.Int8 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  pgtype.Int8 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens pgtype.Int8 `json:"uncosted_cache_write_tokens"`
+	// Sum of model_call_count over the rows in this bucket that had one; 0 when none did.
+	ModelCallCount int64 `json:"model_call_count"`
+	// Rows in this bucket whose model_call_count is NULL (provider did not report it). Readers must not present model_call_count as a complete total while this is nonzero.
+	ModelCallUnknownCount int64 `json:"model_call_unknown_count"`
 }
 
 type TaskUsageHourlyDirty struct {

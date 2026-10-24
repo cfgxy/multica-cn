@@ -368,6 +368,18 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				terminalReasonError = claudeTerminalReasonFailure(msg.TerminalReason, msg.ResultText)
 				sessionID = msg.SessionID
 				if resultUsage := claudeResultUsage(msg, opts.Model); len(resultUsage) > 0 {
+					// The result event replaces the map wholesale, and its
+					// per-model totals carry no call counts — so port the
+					// counts accumulated from this run's assistant events,
+					// or a successful run would report tokens without its
+					// call evidence.
+					for model, u := range usage {
+						if u.ModelCallCount > 0 {
+							ru := resultUsage[model]
+							ru.ModelCallCount += u.ModelCallCount
+							resultUsage[model] = ru
+						}
+					}
 					usage = resultUsage
 				}
 				closeStdin()
@@ -544,6 +556,13 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		u.OutputTokens += content.Usage.OutputTokens
 		u.CacheReadTokens += content.Usage.CacheReadInputTokens
 		u.CacheWriteTokens += content.Usage.CacheCreationInputTokens
+		// One assistant event is one completed model API response to the
+		// request that produced it, so it is provider-original, dedupable
+		// call evidence (unlike a turn or session total). Count every
+		// readable event: a response that happened to move zero tokens is
+		// still a call, and a replayed session re-emitting the same
+		// response is still one call per event, matching the stream shape.
+		u.ModelCallCount++
 		usage[content.Model] = u
 
 		// Context size, in contrast, is OVERWRITTEN by each assistant event

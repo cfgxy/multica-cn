@@ -8957,7 +8957,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Convert agent usage map to task usage entries.
 	var usageEntries []TaskUsageEntry
 	for model, u := range result.Usage {
-		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 {
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 && u.ModelCallCount == 0 {
 			continue
 		}
 		usageEntries = append(usageEntries, TaskUsageEntry{
@@ -8969,6 +8969,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			CacheWriteTokens: u.CacheWriteTokens,
 			CostUSDTicks:     u.CostUSDTicks,
 			ContextTokens:    u.ContextTokens,
+			ModelCallCount:   u.ModelCallCount,
 			// Run-scoped (RUYI-154), not per-model — same values on every
 			// entry of this run; see TaskUsageEntry.Turns.
 			Turns:            result.Turns,
@@ -10018,6 +10019,11 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 		existing.CacheReadTokens += u.CacheReadTokens
 		existing.CacheWriteTokens += u.CacheWriteTokens
 		existing.CostUSDTicks += u.CostUSDTicks
+		// Each attempt's count covers that attempt's own provider calls, so
+		// the two independent attempts sum — no attempt is a replay of the
+		// other's calls (replay dedup already happens inside the backends,
+		// e.g. the ACP snapshot max-merge and per-call event counting).
+		existing.ModelCallCount += u.ModelCallCount
 		merged[model] = existing
 	}
 	return merged

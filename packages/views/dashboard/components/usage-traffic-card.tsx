@@ -78,7 +78,8 @@ export function UsageTrafficCard({ wsId }: { wsId: string }) {
         </div>
       </div>
       {query.isPending ? (
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+          <Skeleton className="aspect-[3/1] rounded-md" />
           <Skeleton className="aspect-[3/1] rounded-md" />
           <Skeleton className="aspect-[3/1] rounded-md" />
           <Skeleton className="aspect-[3/1] rounded-md" />
@@ -88,7 +89,7 @@ export function UsageTrafficCard({ wsId }: { wsId: string }) {
       ) : !hasAny ? (
         <MetricPanelMessage text={t(($) => $.metrics.no_data)} />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
           <TrafficTile
             title={t(($) => $.metrics.traffic.tokens)}
             input={series.tokens_per_second ?? []}
@@ -107,6 +108,14 @@ export function UsageTrafficCard({ wsId }: { wsId: string }) {
           <TrafficTile
             title={t(($) => $.metrics.traffic.tasks)}
             input={series.tasks_per_second ?? []}
+            nameOf={(labels) => dimLabelOf(labels)}
+            scale={3600}
+            formatY={(v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1))}
+            formatTooltipValue={(v) => `${v.toFixed(1)}/h`}
+          />
+          <TrafficTile
+            title={t(($) => $.metrics.traffic.calls)}
+            input={series.calls_per_second ?? []}
             nameOf={(labels) => dimLabelOf(labels)}
             scale={3600}
             formatY={(v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1))}

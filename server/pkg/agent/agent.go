@@ -229,6 +229,19 @@ type TokenUsage struct {
 	// resume fit in the context window". The session gate (RUYI-107) needs the
 	// latter, so it gets its own field with its own overwrite semantics.
 	ContextTokens int64
+	// ModelCallCount is the provider-observed number of model API calls made
+	// to this model in this run. Zero means "the backend has no
+	// provider-original, dedupable call evidence" — most backends never see
+	// individual provider requests (they stream a session), so 0 must not be
+	// stored or displayed as a real zero; the write path turns it into NULL.
+	//
+	// It is a SUM counter like the token fields: evidence must be either a
+	// per-call event stream (count one per event) or a provider-reported
+	// cumulative figure (merge across snapshots by max, like the token
+	// snapshots, so replays of the same session do not re-count). A
+	// session-shutdown aggregate or a daemon-report count is NOT evidence:
+	// one such record per turn would count turns, not model calls.
+	ModelCallCount int64
 }
 
 // CostUSDTicksPerUSD is the scale of the provider-reported cost unit: xAI

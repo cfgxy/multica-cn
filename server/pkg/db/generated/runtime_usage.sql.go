@@ -66,6 +66,8 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS model_call_count,
+    COUNT(*) FILTER (WHERE tu.model_call_count IS NULL)::int  AS model_call_unknown_count,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
@@ -93,6 +95,8 @@ type GetRuntimeUsageByHourRow struct {
 	UncostedOutputTokens     int64  `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64  `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64  `json:"uncosted_cache_write_tokens"`
+	ModelCallCount           int64  `json:"model_call_count"`
+	ModelCallUnknownCount    int32  `json:"model_call_unknown_count"`
 	TaskCount                int32  `json:"task_count"`
 }
 
@@ -125,6 +129,8 @@ func (q *Queries) GetRuntimeUsageByHour(ctx context.Context, arg GetRuntimeUsage
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.ModelCallCount,
+			&i.ModelCallUnknownCount,
 			&i.TaskCount,
 		); err != nil {
 			return nil, err
@@ -150,7 +156,9 @@ SELECT
     SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint           AS uncosted_input_tokens,
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
-    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens
+    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(model_call_count)::bigint         AS model_call_count,
+    SUM(model_call_unknown_count)::bigint AS model_call_unknown_count
 FROM task_usage_hourly
 WHERE runtime_id = $1
   AND bucket_hour >= $3::timestamptz
@@ -177,6 +185,8 @@ type ListRuntimeUsageRow struct {
 	UncostedOutputTokens     int64       `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64       `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64       `json:"uncosted_cache_write_tokens"`
+	ModelCallCount           int64       `json:"model_call_count"`
+	ModelCallUnknownCount    int64       `json:"model_call_unknown_count"`
 }
 
 // Reads from the UTC-bucketed `task_usage_hourly` rollup table,
@@ -212,6 +222,8 @@ func (q *Queries) ListRuntimeUsage(ctx context.Context, arg ListRuntimeUsagePara
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.ModelCallCount,
+			&i.ModelCallUnknownCount,
 		); err != nil {
 			return nil, err
 		}
@@ -237,6 +249,11 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    -- Call counts straight off the raw rows (this query has no hourly
+    -- rollup available): known half only, plus the row count without
+    -- provider evidence so readers cannot pad a partial sum to "complete".
+    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS model_call_count,
+    COUNT(*) FILTER (WHERE tu.model_call_count IS NULL)::int  AS model_call_unknown_count,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
@@ -264,6 +281,8 @@ type ListRuntimeUsageByAgentRow struct {
 	UncostedOutputTokens     int64       `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64       `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64       `json:"uncosted_cache_write_tokens"`
+	ModelCallCount           int64       `json:"model_call_count"`
+	ModelCallUnknownCount    int32       `json:"model_call_unknown_count"`
 	TaskCount                int32       `json:"task_count"`
 }
 
@@ -300,6 +319,8 @@ func (q *Queries) ListRuntimeUsageByAgent(ctx context.Context, arg ListRuntimeUs
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.ModelCallCount,
+			&i.ModelCallUnknownCount,
 			&i.TaskCount,
 		); err != nil {
 			return nil, err
