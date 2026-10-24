@@ -5604,6 +5604,7 @@ const AgentBackpressureConfigSchema = z.object({
   suppress_on_error_rate: z.boolean().default(false),
   count_model_api_failures: z.boolean().default(true),
   count_execution_failures: z.boolean().default(true),
+  promql_rule_ids: z.array(z.string()).default([]),
 }).loose();
 
 export type AgentBackpressureConfig = z.infer<typeof AgentBackpressureConfigSchema>;
@@ -5615,6 +5616,7 @@ const AgentBackpressureSchedulingSchema = z.object({
   created_by: z.string().optional(),
   created_at: z.string().optional(),
   queued_count: z.number().default(0),
+  promql_rule_paused: z.boolean().default(false),
 });
 
 const AgentBackpressureWindowSchema = z
@@ -5634,7 +5636,30 @@ const AgentBackpressureEventSchema = z.object({
   sample_count: z.number().default(0),
   error_rate_pct: z.number().default(0),
   effective_policy: z.unknown().optional(),
+  source: z.string().optional(),
+  rule_id: z.string().optional(),
+  rule_name: z.string().optional(),
+  reason: z.string().optional(),
   occurred_at: z.string().default(""),
+}).loose();
+
+const AgentPromQLRuleStateSchema = z.object({
+  firing: z.boolean().default(false),
+  pending_since: z.string().optional(),
+  last_evaluated_at: z.string().optional(),
+  last_error: z.string().optional(),
+}).loose();
+
+const AgentPromQLRuleStatusSchema = z.object({
+  id: z.string().default(""),
+  name: z.string().default(""),
+  grouping: z.string().default(""),
+  state: AgentPromQLRuleStateSchema.default({ firing: false }),
+  status: z.string().default("inactive"),
+  source_active: z.boolean().default(false),
+  reason: z.string().optional(),
+  entered_at: z.string().optional(),
+  mapping_mismatch: z.boolean().default(false),
 }).loose();
 
 export const AgentBackpressurePolicySchema = z.object({
@@ -5646,6 +5671,7 @@ export const AgentBackpressurePolicySchema = z.object({
   window: AgentBackpressureWindowSchema.nullish().catch(null),
   scheduling: AgentBackpressureSchedulingSchema.nullish().catch(null),
   events: z.array(AgentBackpressureEventSchema).default([]),
+  promql_rules: z.array(AgentPromQLRuleStatusSchema).default([]),
 }).loose();
 
 export type AgentBackpressurePolicy = z.infer<typeof AgentBackpressurePolicySchema>;

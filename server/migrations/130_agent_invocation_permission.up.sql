@@ -29,7 +29,7 @@
 -- agent.permission_mode
 -- ----------------------------------------------------------------------------
 ALTER TABLE agent
-    ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'private'
+    ADD COLUMN IF NOT EXISTS permission_mode TEXT NOT NULL DEFAULT 'private'
         CHECK (permission_mode IN ('private', 'public_to'));
 
 COMMENT ON COLUMN agent.permission_mode IS

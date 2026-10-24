@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -733,6 +734,12 @@ func runAttributionStrictHook(ctx context.Context, pool *pgxpool.Pool) error {
 // migrations against the same database. See GitHub multica-ai/multica#3647.
 const migrationAdvisoryLockKey int64 = 7244554146635925501
 
+// migrationAdvisoryLockRetryInterval keeps contenders from busy-spinning while
+// another runner owns the session-level migration lock. A blocking
+// pg_advisory_lock leaves the waiter's transaction active, which can deadlock
+// with CREATE INDEX CONCURRENTLY in the lock holder; see acquireMigrationLock.
+const migrationAdvisoryLockRetryInterval = 50 * time.Millisecond
+
 // defaultSchemaMigrationsTable is the unqualified name of the bookkeeping
 // table that tracks which migrations have been applied. Tests override
 // this so a concurrent-race harness can run against the same shared
@@ -1030,10 +1037,10 @@ func main() {
 // instead of racing each other.
 //
 // It is safe to invoke concurrently from multiple goroutines or
-// processes against the same database with the same options: every
-// caller blocks on pg_advisory_lock, and once it is their turn the
-// already-applied EXISTS check turns each finished migration into a
-// no-op skip. See GitHub multica-ai/multica#3647 / MUL-2923.
+// processes against the same database with the same options: every caller
+// waits to acquire a session-level advisory lock, and once it is their turn
+// the already-applied EXISTS check turns each finished migration into a no-op
+// skip. See GitHub multica-ai/multica#3647 / MUL-2923.
 func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) error {
 	switch opts.Direction {
 	case "up", "down":
@@ -1055,27 +1062,20 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		lockKey = migrationAdvisoryLockKey
 	}
 
-	// pg_advisory_lock is scoped to a single session, so we must pin one
-	// *pgxpool.Conn for the whole run — calling pool.Exec would attach the
-	// lock to a random connection that pgxpool could hand back out before
-	// the loop finishes, making the lock effectively a no-op. We use the
-	// blocking pg_advisory_lock (not pg_try_*) so a late-arriving runner
-	// queues behind the current one instead of crash-looping; once it
-	// acquires the lock the EXISTS checks below turn finished migrations
-	// into no-op skips.
+	// The advisory lock is scoped to a single session, so after acquiring it
+	// we must pin one *pgxpool.Conn for the whole run. Calling pool.Exec would
+	// attach the lock to a random connection that pgxpool could hand back out
+	// before the loop finishes, making the lock effectively a no-op.
 	//
 	// We deliberately do NOT wrap the loop in a single transaction: the
 	// repo already ships migrations using CREATE INDEX CONCURRENTLY,
 	// which Postgres rejects inside a transaction block.
-	conn, err := pool.Acquire(ctx)
+	conn, err := acquireMigrationLock(ctx, pool, lockKey)
 	if err != nil {
-		return fmt.Errorf("acquire migration connection: %w", err)
+		return fmt.Errorf("acquire migration advisory lock: %w", err)
 	}
 	defer conn.Release()
 
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", lockKey); err != nil {
-		return fmt.Errorf("acquire migration advisory lock: %w", err)
-	}
 	// Best-effort explicit unlock on the success path. On error returns
 	// the defer still runs; on os.Exit error paths in main() it does not,
 	// but session-level advisory locks are released automatically when
@@ -1171,6 +1171,43 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 	}
 
 	return nil
+}
+
+// acquireMigrationLock waits for a session-level advisory lock without keeping
+// a database transaction open while it waits. PostgreSQL's blocking
+// pg_advisory_lock keeps the waiting SELECT's virtual transaction active.
+// CREATE INDEX CONCURRENTLY held by the lock owner must wait for that virtual
+// transaction, producing a cycle: runner B waits for A's advisory lock while A
+// waits for B's virtual transaction. pg_try_advisory_lock completes each failed
+// SELECT before retrying, so concurrent-index migrations cannot see a waiting
+// contender as an active transaction.
+func acquireMigrationLock(ctx context.Context, pool *pgxpool.Pool, lockKey int64) (*pgxpool.Conn, error) {
+	ticker := time.NewTicker(migrationAdvisoryLockRetryInterval)
+	defer ticker.Stop()
+
+	for {
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("acquire migration connection: %w", err)
+		}
+
+		var acquired bool
+		err = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", lockKey).Scan(&acquired)
+		if err != nil {
+			conn.Release()
+			return nil, err
+		}
+		if acquired {
+			return conn, nil
+		}
+		conn.Release()
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // quoteQualifiedIdentifier safely quotes either an unqualified table

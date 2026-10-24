@@ -124,6 +124,124 @@ func (q *Queries) DeleteAgentErrorRateSchedulingPause(ctx context.Context, arg D
 	return result.RowsAffected(), nil
 }
 
+const deleteAgentPromQLRulePauses = `-- name: DeleteAgentPromQLRulePauses :many
+DELETE FROM agent_promql_rule_pause
+WHERE workspace_id = $1 AND agent_id = $2
+RETURNING workspace_id, agent_id, rule_id, rule_name, reason, entered_at
+`
+
+type DeleteAgentPromQLRulePausesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) DeleteAgentPromQLRulePauses(ctx context.Context, arg DeleteAgentPromQLRulePausesParams) ([]AgentPromqlRulePause, error) {
+	rows, err := q.db.Query(ctx, deleteAgentPromQLRulePauses, arg.WorkspaceID, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPromqlRulePause{}
+	for rows.Next() {
+		var i AgentPromqlRulePause
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.RuleID,
+			&i.RuleName,
+			&i.Reason,
+			&i.EnteredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deleteAgentPromQLRulePausesByRuleIDs = `-- name: DeleteAgentPromQLRulePausesByRuleIDs :many
+DELETE FROM agent_promql_rule_pause
+WHERE workspace_id = $1
+  AND agent_id = $2
+  AND rule_id = ANY($3::uuid[])
+RETURNING workspace_id, agent_id, rule_id, rule_name, reason, entered_at
+`
+
+type DeleteAgentPromQLRulePausesByRuleIDsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	AgentID     pgtype.UUID   `json:"agent_id"`
+	RuleIds     []pgtype.UUID `json:"rule_ids"`
+}
+
+func (q *Queries) DeleteAgentPromQLRulePausesByRuleIDs(ctx context.Context, arg DeleteAgentPromQLRulePausesByRuleIDsParams) ([]AgentPromqlRulePause, error) {
+	rows, err := q.db.Query(ctx, deleteAgentPromQLRulePausesByRuleIDs, arg.WorkspaceID, arg.AgentID, arg.RuleIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPromqlRulePause{}
+	for rows.Next() {
+		var i AgentPromqlRulePause
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.RuleID,
+			&i.RuleName,
+			&i.Reason,
+			&i.EnteredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deleteAgentPromQLRulePausesByWorkspaceRuleIDs = `-- name: DeleteAgentPromQLRulePausesByWorkspaceRuleIDs :many
+DELETE FROM agent_promql_rule_pause
+WHERE workspace_id = $1
+  AND rule_id = ANY($2::uuid[])
+RETURNING workspace_id, agent_id, rule_id, rule_name, reason, entered_at
+`
+
+type DeleteAgentPromQLRulePausesByWorkspaceRuleIDsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	RuleIds     []pgtype.UUID `json:"rule_ids"`
+}
+
+func (q *Queries) DeleteAgentPromQLRulePausesByWorkspaceRuleIDs(ctx context.Context, arg DeleteAgentPromQLRulePausesByWorkspaceRuleIDsParams) ([]AgentPromqlRulePause, error) {
+	rows, err := q.db.Query(ctx, deleteAgentPromQLRulePausesByWorkspaceRuleIDs, arg.WorkspaceID, arg.RuleIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPromqlRulePause{}
+	for rows.Next() {
+		var i AgentPromqlRulePause
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.RuleID,
+			&i.RuleName,
+			&i.Reason,
+			&i.EnteredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ensureAgentErrorRateSchedulingPause = `-- name: EnsureAgentErrorRateSchedulingPause :execrows
 INSERT INTO scheduling_pause (workspace_id, agent_id, reason)
 VALUES ($1, $2, 'error_rate_suppression')
@@ -154,9 +272,40 @@ func (q *Queries) EnsureAgentErrorRateSchedulingPause(ctx context.Context, arg E
 	return result.RowsAffected(), nil
 }
 
+const ensureAgentPromQLRulePause = `-- name: EnsureAgentPromQLRulePause :execrows
+INSERT INTO agent_promql_rule_pause (
+    workspace_id, agent_id, rule_id, rule_name, reason
+) VALUES (
+    $1, $2, $3, $4, $5
+)
+ON CONFLICT (workspace_id, agent_id, rule_id) DO NOTHING
+`
+
+type EnsureAgentPromQLRulePauseParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	RuleID      pgtype.UUID `json:"rule_id"`
+	RuleName    string      `json:"rule_name"`
+	Reason      string      `json:"reason"`
+}
+
+func (q *Queries) EnsureAgentPromQLRulePause(ctx context.Context, arg EnsureAgentPromQLRulePauseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, ensureAgentPromQLRulePause,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.RuleID,
+		arg.RuleName,
+		arg.Reason,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getAgentBackpressurePolicy = `-- name: GetAgentBackpressurePolicy :one
 
-SELECT workspace_id, agent_id, window_minutes, error_rate_threshold_pct, min_samples, recovery_window_minutes, suppress_on_error_rate, count_model_api_failures, count_execution_failures, updated_by, created_at, updated_at FROM agent_backpressure_policy
+SELECT workspace_id, agent_id, window_minutes, error_rate_threshold_pct, min_samples, recovery_window_minutes, suppress_on_error_rate, promql_rule_ids, count_model_api_failures, count_execution_failures, updated_by, created_at, updated_at FROM agent_backpressure_policy
 WHERE workspace_id = $1 AND agent_id = $2
 `
 
@@ -183,11 +332,61 @@ func (q *Queries) GetAgentBackpressurePolicy(ctx context.Context, arg GetAgentBa
 		&i.MinSamples,
 		&i.RecoveryWindowMinutes,
 		&i.SuppressOnErrorRate,
+		&i.PromqlRuleIds,
 		&i.CountModelApiFailures,
 		&i.CountExecutionFailures,
 		&i.UpdatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertAgentPromQLRuleSuppressionEvent = `-- name: InsertAgentPromQLRuleSuppressionEvent :one
+INSERT INTO agent_suppression_event (
+    workspace_id, agent_id, event_type, sample_count, error_rate_pct,
+    effective_policy, source, rule_id, rule_name, reason
+) VALUES (
+    $1, $2, $3, 0, 0,
+    $4, 'promql_rule', $5, $6, $7
+)
+RETURNING id, workspace_id, agent_id, event_type, sample_count, error_rate_pct, effective_policy, source, rule_id, rule_name, reason, occurred_at
+`
+
+type InsertAgentPromQLRuleSuppressionEventParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	AgentID         pgtype.UUID `json:"agent_id"`
+	EventType       string      `json:"event_type"`
+	EffectivePolicy []byte      `json:"effective_policy"`
+	RuleID          pgtype.UUID `json:"rule_id"`
+	RuleName        pgtype.Text `json:"rule_name"`
+	Reason          pgtype.Text `json:"reason"`
+}
+
+func (q *Queries) InsertAgentPromQLRuleSuppressionEvent(ctx context.Context, arg InsertAgentPromQLRuleSuppressionEventParams) (AgentSuppressionEvent, error) {
+	row := q.db.QueryRow(ctx, insertAgentPromQLRuleSuppressionEvent,
+		arg.WorkspaceID,
+		arg.AgentID,
+		arg.EventType,
+		arg.EffectivePolicy,
+		arg.RuleID,
+		arg.RuleName,
+		arg.Reason,
+	)
+	var i AgentSuppressionEvent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.EventType,
+		&i.SampleCount,
+		&i.ErrorRatePct,
+		&i.EffectivePolicy,
+		&i.Source,
+		&i.RuleID,
+		&i.RuleName,
+		&i.Reason,
+		&i.OccurredAt,
 	)
 	return i, err
 }
@@ -200,7 +399,7 @@ INSERT INTO agent_suppression_event (
     $1, $2, $3, $4, $5,
     $6
 )
-RETURNING id, workspace_id, agent_id, event_type, sample_count, error_rate_pct, effective_policy, occurred_at
+RETURNING id, workspace_id, agent_id, event_type, sample_count, error_rate_pct, effective_policy, source, rule_id, rule_name, reason, occurred_at
 `
 
 type InsertAgentSuppressionEventParams struct {
@@ -233,13 +432,132 @@ func (q *Queries) InsertAgentSuppressionEvent(ctx context.Context, arg InsertAge
 		&i.SampleCount,
 		&i.ErrorRatePct,
 		&i.EffectivePolicy,
+		&i.Source,
+		&i.RuleID,
+		&i.RuleName,
+		&i.Reason,
 		&i.OccurredAt,
 	)
 	return i, err
 }
 
+const listAgentBackpressurePoliciesWithPromQLRules = `-- name: ListAgentBackpressurePoliciesWithPromQLRules :many
+SELECT p.workspace_id, p.agent_id, p.window_minutes, p.error_rate_threshold_pct, p.min_samples, p.recovery_window_minutes, p.suppress_on_error_rate, p.promql_rule_ids, p.count_model_api_failures, p.count_execution_failures, p.updated_by, p.created_at, p.updated_at FROM agent_backpressure_policy p
+JOIN agent a ON a.id = p.agent_id AND a.workspace_id = p.workspace_id
+WHERE p.workspace_id = $1
+  AND cardinality(p.promql_rule_ids) > 0
+  AND a.archived_at IS NULL
+`
+
+// Only current, non-archived agents can acquire PromQL pause sources. Stale
+// holders are swept independently by ListAgentPromQLRulePausesByWorkspace.
+func (q *Queries) ListAgentBackpressurePoliciesWithPromQLRules(ctx context.Context, workspaceID pgtype.UUID) ([]AgentBackpressurePolicy, error) {
+	rows, err := q.db.Query(ctx, listAgentBackpressurePoliciesWithPromQLRules, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentBackpressurePolicy{}
+	for rows.Next() {
+		var i AgentBackpressurePolicy
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.WindowMinutes,
+			&i.ErrorRateThresholdPct,
+			&i.MinSamples,
+			&i.RecoveryWindowMinutes,
+			&i.SuppressOnErrorRate,
+			&i.PromqlRuleIds,
+			&i.CountModelApiFailures,
+			&i.CountExecutionFailures,
+			&i.UpdatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentPromQLRulePauses = `-- name: ListAgentPromQLRulePauses :many
+SELECT workspace_id, agent_id, rule_id, rule_name, reason, entered_at FROM agent_promql_rule_pause
+WHERE workspace_id = $1 AND agent_id = $2
+ORDER BY entered_at ASC, rule_id ASC
+`
+
+type ListAgentPromQLRulePausesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) ListAgentPromQLRulePauses(ctx context.Context, arg ListAgentPromQLRulePausesParams) ([]AgentPromqlRulePause, error) {
+	rows, err := q.db.Query(ctx, listAgentPromQLRulePauses, arg.WorkspaceID, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPromqlRulePause{}
+	for rows.Next() {
+		var i AgentPromqlRulePause
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.RuleID,
+			&i.RuleName,
+			&i.Reason,
+			&i.EnteredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentPromQLRulePausesByWorkspace = `-- name: ListAgentPromQLRulePausesByWorkspace :many
+SELECT workspace_id, agent_id, rule_id, rule_name, reason, entered_at FROM agent_promql_rule_pause
+WHERE workspace_id = $1
+ORDER BY agent_id ASC, rule_id ASC
+`
+
+func (q *Queries) ListAgentPromQLRulePausesByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]AgentPromqlRulePause, error) {
+	rows, err := q.db.Query(ctx, listAgentPromQLRulePausesByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentPromqlRulePause{}
+	for rows.Next() {
+		var i AgentPromqlRulePause
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.RuleID,
+			&i.RuleName,
+			&i.Reason,
+			&i.EnteredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAgentSuppressionEvents = `-- name: ListAgentSuppressionEvents :many
-SELECT id, workspace_id, agent_id, event_type, sample_count, error_rate_pct, effective_policy, occurred_at FROM agent_suppression_event
+SELECT id, workspace_id, agent_id, event_type, sample_count, error_rate_pct, effective_policy, source, rule_id, rule_name, reason, occurred_at FROM agent_suppression_event
 WHERE workspace_id = $1 AND agent_id = $2
 ORDER BY occurred_at DESC
 LIMIT $3
@@ -271,6 +589,10 @@ func (q *Queries) ListAgentSuppressionEvents(ctx context.Context, arg ListAgentS
 			&i.SampleCount,
 			&i.ErrorRatePct,
 			&i.EffectivePolicy,
+			&i.Source,
+			&i.RuleID,
+			&i.RuleName,
+			&i.Reason,
 			&i.OccurredAt,
 		); err != nil {
 			return nil, err
@@ -329,7 +651,7 @@ func (q *Queries) SelectAgentErrorRateSuppressionHolders(ctx context.Context) ([
 
 const selectArmedAgentBackpressurePolicies = `-- name: SelectArmedAgentBackpressurePolicies :many
 
-SELECT p.workspace_id, p.agent_id, p.window_minutes, p.error_rate_threshold_pct, p.min_samples, p.recovery_window_minutes, p.suppress_on_error_rate, p.count_model_api_failures, p.count_execution_failures, p.updated_by, p.created_at, p.updated_at FROM agent_backpressure_policy p
+SELECT p.workspace_id, p.agent_id, p.window_minutes, p.error_rate_threshold_pct, p.min_samples, p.recovery_window_minutes, p.suppress_on_error_rate, p.promql_rule_ids, p.count_model_api_failures, p.count_execution_failures, p.updated_by, p.created_at, p.updated_at FROM agent_backpressure_policy p
 JOIN agent a ON a.id = p.agent_id AND a.workspace_id = p.workspace_id
 WHERE p.suppress_on_error_rate = TRUE
   AND a.archived_at IS NULL
@@ -361,6 +683,7 @@ func (q *Queries) SelectArmedAgentBackpressurePolicies(ctx context.Context) ([]A
 			&i.MinSamples,
 			&i.RecoveryWindowMinutes,
 			&i.SuppressOnErrorRate,
+			&i.PromqlRuleIds,
 			&i.CountModelApiFailures,
 			&i.CountExecutionFailures,
 			&i.UpdatedBy,
@@ -381,11 +704,14 @@ const upsertAgentBackpressurePolicy = `-- name: UpsertAgentBackpressurePolicy :o
 INSERT INTO agent_backpressure_policy (
     workspace_id, agent_id, window_minutes, error_rate_threshold_pct,
     min_samples, recovery_window_minutes, suppress_on_error_rate,
-    count_model_api_failures, count_execution_failures, updated_by, updated_at
+    count_model_api_failures, count_execution_failures, promql_rule_ids,
+    updated_by, updated_at
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
-    $8, $9, $10, now()
+    $8, $9,
+    COALESCE($10::uuid[], '{}'::uuid[]),
+    $11, now()
 )
 ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
     window_minutes = EXCLUDED.window_minutes,
@@ -395,22 +721,24 @@ ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
     suppress_on_error_rate = EXCLUDED.suppress_on_error_rate,
     count_model_api_failures = EXCLUDED.count_model_api_failures,
     count_execution_failures = EXCLUDED.count_execution_failures,
+    promql_rule_ids = EXCLUDED.promql_rule_ids,
     updated_by = EXCLUDED.updated_by,
     updated_at = now()
-RETURNING workspace_id, agent_id, window_minutes, error_rate_threshold_pct, min_samples, recovery_window_minutes, suppress_on_error_rate, count_model_api_failures, count_execution_failures, updated_by, created_at, updated_at
+RETURNING workspace_id, agent_id, window_minutes, error_rate_threshold_pct, min_samples, recovery_window_minutes, suppress_on_error_rate, promql_rule_ids, count_model_api_failures, count_execution_failures, updated_by, created_at, updated_at
 `
 
 type UpsertAgentBackpressurePolicyParams struct {
-	WorkspaceID            pgtype.UUID `json:"workspace_id"`
-	AgentID                pgtype.UUID `json:"agent_id"`
-	WindowMinutes          int32       `json:"window_minutes"`
-	ErrorRateThresholdPct  float64     `json:"error_rate_threshold_pct"`
-	MinSamples             int32       `json:"min_samples"`
-	RecoveryWindowMinutes  int32       `json:"recovery_window_minutes"`
-	SuppressOnErrorRate    bool        `json:"suppress_on_error_rate"`
-	CountModelApiFailures  bool        `json:"count_model_api_failures"`
-	CountExecutionFailures bool        `json:"count_execution_failures"`
-	UpdatedBy              pgtype.UUID `json:"updated_by"`
+	WorkspaceID            pgtype.UUID   `json:"workspace_id"`
+	AgentID                pgtype.UUID   `json:"agent_id"`
+	WindowMinutes          int32         `json:"window_minutes"`
+	ErrorRateThresholdPct  float64       `json:"error_rate_threshold_pct"`
+	MinSamples             int32         `json:"min_samples"`
+	RecoveryWindowMinutes  int32         `json:"recovery_window_minutes"`
+	SuppressOnErrorRate    bool          `json:"suppress_on_error_rate"`
+	CountModelApiFailures  bool          `json:"count_model_api_failures"`
+	CountExecutionFailures bool          `json:"count_execution_failures"`
+	PromqlRuleIds          []pgtype.UUID `json:"promql_rule_ids"`
+	UpdatedBy              pgtype.UUID   `json:"updated_by"`
 }
 
 // Save or replace the agent's policy card. ON CONFLICT on the composite
@@ -429,6 +757,7 @@ func (q *Queries) UpsertAgentBackpressurePolicy(ctx context.Context, arg UpsertA
 		arg.SuppressOnErrorRate,
 		arg.CountModelApiFailures,
 		arg.CountExecutionFailures,
+		arg.PromqlRuleIds,
 		arg.UpdatedBy,
 	)
 	var i AgentBackpressurePolicy
@@ -440,6 +769,7 @@ func (q *Queries) UpsertAgentBackpressurePolicy(ctx context.Context, arg UpsertA
 		&i.MinSamples,
 		&i.RecoveryWindowMinutes,
 		&i.SuppressOnErrorRate,
+		&i.PromqlRuleIds,
 		&i.CountModelApiFailures,
 		&i.CountExecutionFailures,
 		&i.UpdatedBy,

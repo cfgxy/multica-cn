@@ -69,6 +69,21 @@ func TestValidateRules(t *testing.T) {
 	}
 }
 
+func TestValidatePersistedConfig_RequiresStableRuleIDs(t *testing.T) {
+	config := Config{Rules: []Rule{validRule()}}
+	if err := validatePersistedConfig(config); err != nil {
+		t.Fatalf("valid persisted config: %v", err)
+	}
+	config.Rules[0].ID = ""
+	if err := validatePersistedConfig(config); err == nil {
+		t.Fatal("persisted rule without an ID must be rejected before evaluation")
+	}
+	config.Rules[0].ID = "not-a-uuid"
+	if err := validatePersistedConfig(config); err == nil {
+		t.Fatal("persisted rule with an invalid ID must be rejected before evaluation")
+	}
+}
+
 func TestBuildQueryBindsWorkspaceAndOnlyUsesFixedMetrics(t *testing.T) {
 	rule := validRule()
 	query, err := BuildQuery("6e331e93-e134-40b6-8868-cb42e22fc947", rule)
@@ -184,5 +199,69 @@ func TestEvaluatePresenceRuleUsesNoDataPolicyForRecovery(t *testing.T) {
 	state, transition = Evaluate(rule, state, nil, nil, time.Now().Add(time.Second))
 	if transition != TransitionResolved || state.Firing {
 		t.Fatalf("absence should follow the configured no-data policy: %+v", state)
+	}
+}
+
+func TestEvaluateAgentRule_UsesOnlySelectedVerifiedAgentIDs(t *testing.T) {
+	rule := validRule()
+	rule.Grouping = GroupAgent
+	rule.ForSeconds = 0
+	selectedID := "11111111-1111-1111-1111-111111111111"
+	otherSelectedID := "22222222-2222-2222-2222-222222222222"
+	unknownID := "33333333-3333-3333-3333-333333333333"
+	selected := map[string]pgtype.UUID{
+		selectedID:      parseRuleUUID(selectedID),
+		otherSelectedID: parseRuleUUID(otherSelectedID),
+	}
+
+	transition := evaluateAgentRule(&rule, selected, []Sample{
+		{Labels: map[string]string{"agent_id": selectedID}, Value: 25},
+		{Labels: map[string]string{"agent_id": unknownID}, Value: 99},
+		{Labels: map[string]string{"agent_id": "not-a-uuid"}, Value: 99},
+		{Labels: map[string]string{}, Value: 99},
+	}, nil, time.Now().UTC())
+	if transition != TransitionFired || !AgentState(rule, selectedID).Firing {
+		t.Fatalf("selected agent must fire: state=%+v transition=%q", rule, transition)
+	}
+	if _, exists := rule.AgentStates[otherSelectedID]; exists {
+		t.Fatalf("selected agent without a verified sample must not acquire state: %+v", rule.AgentStates)
+	}
+	if _, exists := rule.AgentStates[unknownID]; exists {
+		t.Fatalf("unknown or cross-workspace label must not acquire state: %+v", rule.AgentStates)
+	}
+	desired := desiredRulePauses([]Rule{rule}, map[string]map[string]pgtype.UUID{rule.ID: selected})
+	if len(desired[rule.ID]) != 1 || !desired[rule.ID][selectedID].Valid {
+		t.Fatalf("only the verified selected agent may acquire a pause: %+v", desired)
+	}
+
+	transition = evaluateAgentRule(&rule, selected, []Sample{{Labels: map[string]string{"agent_id": unknownID}, Value: 99}}, nil, time.Now().UTC())
+	if transition != TransitionResolved || rule.State.Firing || len(rule.AgentStates) != 0 {
+		t.Fatalf("mapping loss must resolve only the persisted agent state: state=%+v transition=%q", rule, transition)
+	}
+	if cause := rulePauseClearCause([]Rule{rule}, map[string]map[string]pgtype.UUID{rule.ID: selected}, rule.ID, selectedID); cause != "mapping_mismatch" {
+		t.Fatalf("mapping loss clear cause = %q, want mapping_mismatch", cause)
+	}
+}
+
+func TestEvaluateAgentRule_KeepsPendingAndDoesNotCreateQueryErrorMappings(t *testing.T) {
+	rule := validRule()
+	rule.Grouping = GroupAgent
+	rule.QueryErrorPolicy = PolicyTrigger
+	rule.ForSeconds = 60
+	agentID := "11111111-1111-1111-1111-111111111111"
+	selected := map[string]pgtype.UUID{agentID: parseRuleUUID(agentID)}
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+
+	transition := evaluateAgentRule(&rule, selected, nil, errors.New("prometheus unavailable"), now)
+	if transition != TransitionNone || rule.State.Firing || len(rule.AgentStates) != 0 {
+		t.Fatalf("query error must not create a mapping or pause: state=%+v transition=%q", rule, transition)
+	}
+	transition = evaluateAgentRule(&rule, selected, []Sample{{Labels: map[string]string{"agent_id": agentID}, Value: 25}}, nil, now)
+	if transition != TransitionNone || AgentState(rule, agentID).PendingSince == nil {
+		t.Fatalf("first verified breach should be per-agent pending: state=%+v transition=%q", rule, transition)
+	}
+	transition = evaluateAgentRule(&rule, selected, []Sample{{Labels: map[string]string{"agent_id": agentID}, Value: 25}}, nil, now.Add(time.Minute))
+	if transition != TransitionFired || !AgentState(rule, agentID).Firing {
+		t.Fatalf("sustained verified breach should fire that agent: state=%+v transition=%q", rule, transition)
 	}
 }

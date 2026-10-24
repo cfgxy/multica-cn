@@ -15,6 +15,7 @@ const mockListEvents = vi.hoisted(() => vi.fn());
 const mockPutPolicy = vi.hoisted(() => vi.fn());
 const mockDeletePolicy = vi.hoisted(() => vi.fn());
 const mockMembers = vi.hoisted(() => vi.fn());
+const mockWorkspacePromQLRules = vi.hoisted(() => vi.fn());
 
 vi.mock("@multica/core/api", () => ({
   api: {
@@ -42,6 +43,13 @@ vi.mock("@multica/core/workspace/queries", () => ({
   }),
 }));
 
+vi.mock("@multica/core/workspace/promql-rules", () => ({
+  workspacePromQLRulesOptions: () => ({
+    queryKey: ["workspace-promql-rules", "ws-1"],
+    queryFn: mockWorkspacePromQLRules,
+  }),
+}));
+
 vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }));
@@ -66,6 +74,7 @@ const WINDOWED_POLICY = {
     suppress_on_error_rate: true,
     count_model_api_failures: true,
     count_execution_failures: false,
+    promql_rule_ids: ["rule-1"],
   },
   window: {
     window_minutes: 60,
@@ -84,6 +93,19 @@ const WINDOWED_POLICY = {
       error_rate_pct: 40,
       effective_policy: {},
       occurred_at: "2026-10-24T00:00:00Z",
+    },
+  ],
+  promql_rules: [
+    {
+      id: "rule-1",
+      name: "Provider failures",
+      grouping: "agent",
+      state: { firing: true },
+      status: "firing",
+      source_active: true,
+      reason: "rule_firing",
+      entered_at: "2026-10-24T00:00:00Z",
+      mapping_mismatch: false,
     },
   ],
 };
@@ -138,6 +160,7 @@ describe("BackpressureTab (RUYI-859 stage A)", () => {
     mockListEvents.mockResolvedValue([]);
     mockPutPolicy.mockResolvedValue(DEFAULT_POLICY);
     mockDeletePolicy.mockResolvedValue(DEFAULT_POLICY);
+    mockWorkspacePromQLRules.mockResolvedValue({ rules: [] });
   });
 
   it("renders the unconfigured defaults without an editor for plain members", async () => {
@@ -219,5 +242,25 @@ describe("BackpressureTab (RUYI-859 stage A)", () => {
     // Recent events, newest first.
     expect(screen.getByText("Entered")).toBeTruthy();
     expect(screen.getByText(/5 samples at 40\.0%/)).toBeTruthy();
+    expect(screen.getByText("Provider failures")).toBeTruthy();
+    expect(screen.getByText("Status: firing")).toBeTruthy();
+  });
+
+  it("lets an admin select advanced workspace rules for this agent", async () => {
+    mockWorkspacePromQLRules.mockResolvedValue({
+      rules: [{ id: "rule-1", name: "Provider failures" }],
+    });
+    renderTab("owner");
+    await waitFor(() => expect(screen.getByTestId("bp-edit")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("bp-edit"));
+    const ruleSwitch = await screen.findByRole("switch", { name: "Provider failures" });
+    fireEvent.click(ruleSwitch);
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() =>
+      expect(mockPutPolicy).toHaveBeenCalledWith(
+        "agent-1",
+        expect.objectContaining({ promql_rule_ids: ["rule-1"] }),
+      ),
+    );
   });
 });

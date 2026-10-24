@@ -19,11 +19,14 @@ WHERE workspace_id = @workspace_id AND agent_id = @agent_id;
 INSERT INTO agent_backpressure_policy (
     workspace_id, agent_id, window_minutes, error_rate_threshold_pct,
     min_samples, recovery_window_minutes, suppress_on_error_rate,
-    count_model_api_failures, count_execution_failures, updated_by, updated_at
+    count_model_api_failures, count_execution_failures, promql_rule_ids,
+    updated_by, updated_at
 ) VALUES (
     @workspace_id, @agent_id, @window_minutes, @error_rate_threshold_pct,
     @min_samples, @recovery_window_minutes, @suppress_on_error_rate,
-    @count_model_api_failures, @count_execution_failures, @updated_by, now()
+    @count_model_api_failures, @count_execution_failures,
+    COALESCE(@promql_rule_ids::uuid[], '{}'::uuid[]),
+    @updated_by, now()
 )
 ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
     window_minutes = EXCLUDED.window_minutes,
@@ -33,9 +36,19 @@ ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
     suppress_on_error_rate = EXCLUDED.suppress_on_error_rate,
     count_model_api_failures = EXCLUDED.count_model_api_failures,
     count_execution_failures = EXCLUDED.count_execution_failures,
+    promql_rule_ids = EXCLUDED.promql_rule_ids,
     updated_by = EXCLUDED.updated_by,
     updated_at = now()
 RETURNING *;
+
+-- name: ListAgentBackpressurePoliciesWithPromQLRules :many
+-- Only current, non-archived agents can acquire PromQL pause sources. Stale
+-- holders are swept independently by ListAgentPromQLRulePausesByWorkspace.
+SELECT p.* FROM agent_backpressure_policy p
+JOIN agent a ON a.id = p.agent_id AND a.workspace_id = p.workspace_id
+WHERE p.workspace_id = @workspace_id
+  AND cardinality(p.promql_rule_ids) > 0
+  AND a.archived_at IS NULL;
 
 -- name: DeleteAgentBackpressurePolicy :exec
 -- Drop the agent's explicit policy; the API reads the built-in defaults
@@ -100,6 +113,52 @@ INSERT INTO agent_suppression_event (
     @workspace_id, @agent_id, @event_type, @sample_count, @error_rate_pct,
     @effective_policy
 )
+RETURNING *;
+
+-- name: InsertAgentPromQLRuleSuppressionEvent :one
+INSERT INTO agent_suppression_event (
+    workspace_id, agent_id, event_type, sample_count, error_rate_pct,
+    effective_policy, source, rule_id, rule_name, reason
+) VALUES (
+    @workspace_id, @agent_id, @event_type, 0, 0,
+    @effective_policy, 'promql_rule', @rule_id, @rule_name, @reason
+)
+RETURNING *;
+
+-- name: EnsureAgentPromQLRulePause :execrows
+INSERT INTO agent_promql_rule_pause (
+    workspace_id, agent_id, rule_id, rule_name, reason
+) VALUES (
+    @workspace_id, @agent_id, @rule_id, @rule_name, @reason
+)
+ON CONFLICT (workspace_id, agent_id, rule_id) DO NOTHING;
+
+-- name: ListAgentPromQLRulePauses :many
+SELECT * FROM agent_promql_rule_pause
+WHERE workspace_id = @workspace_id AND agent_id = @agent_id
+ORDER BY entered_at ASC, rule_id ASC;
+
+-- name: ListAgentPromQLRulePausesByWorkspace :many
+SELECT * FROM agent_promql_rule_pause
+WHERE workspace_id = @workspace_id
+ORDER BY agent_id ASC, rule_id ASC;
+
+-- name: DeleteAgentPromQLRulePausesByRuleIDs :many
+DELETE FROM agent_promql_rule_pause
+WHERE workspace_id = @workspace_id
+  AND agent_id = @agent_id
+  AND rule_id = ANY(@rule_ids::uuid[])
+RETURNING *;
+
+-- name: DeleteAgentPromQLRulePausesByWorkspaceRuleIDs :many
+DELETE FROM agent_promql_rule_pause
+WHERE workspace_id = @workspace_id
+  AND rule_id = ANY(@rule_ids::uuid[])
+RETURNING *;
+
+-- name: DeleteAgentPromQLRulePauses :many
+DELETE FROM agent_promql_rule_pause
+WHERE workspace_id = @workspace_id AND agent_id = @agent_id
 RETURNING *;
 
 -- Stage B: the automatic suppression loop. Every judgment below is a plain
