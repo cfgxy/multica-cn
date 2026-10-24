@@ -235,6 +235,37 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 		}
 	})
 
+	t.Run("single runtime claims after the complete known window expires", func(t *testing.T) {
+		runtimeID := runtimeModelCallBudgetFixture(t, "single-window-expiry")
+		agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-single-window-expiry")
+		usageTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		completeTaskForModelCallBudget(t, ctx, usageTaskID)
+		knownCalls := int64(1)
+		seedModelCallUsage(t, ctx, usageTaskID, "claude", "known", &knownCalls)
+		queuedID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		setRuntimeModelCallBudgetForTest(t, runtimeID, true, 1, 60)
+
+		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task != nil {
+			t.Fatalf("known window before expiry claimed %s, want nil: %s", task.ID, body)
+		}
+		if got := queueStatus(t, ctx, queuedID); got != "queued" {
+			t.Fatalf("held task status = %q, want queued", got)
+		}
+
+		// Anchor the row to the database clock instead of sleeping through the
+		// minimum budget window. The handler's current-time query must then
+		// exclude this complete known usage and release the queued task.
+		if _, err := testPool.Exec(ctx, `
+			UPDATE task_usage
+			SET created_at = now() - INTERVAL '61 seconds'
+			WHERE task_id = $1`, usageTaskID); err != nil {
+			t.Fatalf("move usage outside model-call budget window: %v", err)
+		}
+		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task == nil || task.ID != queuedID {
+			t.Fatalf("expired complete known window must claim %s, got %+v: %s", queuedID, task, body)
+		}
+	})
+
 	t.Run("batch runtime holds known exhausted then releases unknown window", func(t *testing.T) {
 		runtimeID := runtimeModelCallBudgetFixture(t, "batch")
 		agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-batch")
