@@ -234,6 +234,70 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 	finalizeOK(t, afterDeletion)
 }
 
+func TestAdoptManagedBranchRefusesCompetingContinuation(t *testing.T) {
+	fixture := newBranchAdoptionFixture(t)
+	if _, err := AdoptManagedBranch(fixture.repo, fixture.adoption); err != nil {
+		t.Fatalf("first AdoptManagedBranch: %v", err)
+	}
+
+	continuation := adoptionRecordOwner(fixture.adoption.TargetOwner)
+	mappingRef := adoptedContinuationRef(continuation)
+	mappingBefore := gitRun(t, fixture.repo, "rev-parse", mappingRef)
+	firstRecordBefore := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.branch))
+	markerBefore, err := os.ReadFile(fixture.markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gitRun(t, fixture.repo, "switch", "main")
+	const secondBranch = "agent/other-source/ruyi-872"
+	gitRun(t, fixture.repo, "switch", "-c", secondBranch)
+	writeFile(t, filepath.Join(fixture.repo, "second-source.txt"), "second source delivery\n")
+	gitRun(t, fixture.repo, "add", "second-source.txt")
+	gitRun(t, fixture.repo, "commit", "-m", "second source delivery")
+	secondTip := gitRun(t, fixture.repo, "rev-parse", "HEAD")
+	gitRun(t, fixture.repo, "push", "--quiet", "origin", secondBranch)
+	secondSource := BranchAdoptionOwner{
+		WorkspaceID:    fixture.adoption.SourceOwner.WorkspaceID,
+		AgentID:        "other-source-agent",
+		ConversationID: "other-source-issue",
+		TaskID:         "other-source-task",
+	}
+	secondState := gitRun(t, fixture.repo, "commit-tree", "main^{tree}", "-p", "main", "-m", "second source snapshot")
+	secondRecord, err := writeBranchRecord(fixture.repo, secondBranch, secondState, secondTip, adoptionRecordOwner(secondSource))
+	if err != nil {
+		t.Fatalf("write second source branch record: %v", err)
+	}
+	gitRun(t, fixture.repo, "switch", "main")
+
+	secondAdoption := fixture.adoption
+	secondAdoption.Branch = secondBranch
+	secondAdoption.ExpectedRemoteSHA = secondTip
+	secondAdoption.SourceOwner = secondSource
+	if _, err := AdoptManagedBranch(fixture.repo, secondAdoption); err == nil || !strings.Contains(err.Error(), "already owns adopted branch") {
+		t.Fatalf("second AdoptManagedBranch error = %v, want competing continuation refusal", err)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", mappingRef); got != mappingBefore {
+		t.Fatalf("continuation mapping changed after refusal: got %s, want %s", got, mappingBefore)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.branch)); got != firstRecordBefore {
+		t.Fatalf("first source record changed after refusal: got %s, want %s", got, firstRecordBefore)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(secondBranch)); got != secondRecord {
+		t.Fatalf("second source record changed after refusal: got %s, want %s", got, secondRecord)
+	}
+	markerAfter, err := os.ReadFile(fixture.markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(markerAfter) != string(markerBefore) {
+		t.Fatalf("marker changed after competing continuation refusal:\n got %s\nwant %s", markerAfter, markerBefore)
+	}
+	if current := gitRun(t, fixture.repo, "branch", "--show-current"); current != "main" {
+		t.Fatalf("current branch changed after competing continuation refusal: got %q, want main", current)
+	}
+}
+
 func TestAdoptManagedBranchRefusesBeforeBinding(t *testing.T) {
 	tests := []struct {
 		name   string
