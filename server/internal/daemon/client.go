@@ -130,6 +130,41 @@ type Client struct {
 	legacyIssueGCBatchEnabled      bool
 }
 
+// BranchAdoptionOwner is the server-authoritative identity a local daemon uses
+// to verify an existing branch record and bind its continuation record.
+type BranchAdoptionOwner struct {
+	WorkspaceID    string `json:"workspace_id"`
+	AgentID        string `json:"agent_id"`
+	ConversationID string `json:"conversation_id"`
+	TaskID         string `json:"task_id"`
+}
+
+// BranchAdoptionAuthorization is returned only after the server has checked
+// task ownership, the source task's recorded branch, and source Issue
+// suspension. Git and marker validation remains local to the daemon.
+type BranchAdoptionAuthorization struct {
+	Branch                    string              `json:"branch"`
+	Source                    BranchAdoptionOwner `json:"source"`
+	Continuation              BranchAdoptionOwner `json:"continuation"`
+	SourceIssueSuspended      bool                `json:"source_issue_suspended"`
+	ContinuationTaskIsRunning bool                `json:"continuation_task_is_running"`
+}
+
+// AuthorizeBranchAdoption obtains a server-signed-by-authentication snapshot
+// for the narrow, managed continuation path. The target task is path-bound;
+// callers cannot substitute its identity through the request body.
+func (c *Client) AuthorizeBranchAdoption(ctx context.Context, continuationTaskID, sourceTaskID, branch string) (*BranchAdoptionAuthorization, error) {
+	var response BranchAdoptionAuthorization
+	path := fmt.Sprintf("/api/daemon/tasks/%s/branch-adoptions/authorize", url.PathEscape(continuationTaskID))
+	if err := c.postJSON(ctx, path, map[string]string{
+		"source_task_id": sourceTaskID,
+		"branch":         branch,
+	}, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
 // NewClient creates a new daemon API client.
 func NewClient(baseURL string) *Client {
 	return &Client{
