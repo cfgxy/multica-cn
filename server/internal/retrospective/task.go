@@ -57,10 +57,9 @@ const (
 	// carrier through the prompt.
 	maxCarrierSections  = 80
 	maxSectionNameRunes = 120
-	// maxCarrierClauses / maxClauseTitleRunes bound one carrier's active
-	// clause-asset title list (RUYI-858): the revise/remove target set and
-	// the add_clause dedup input, capped like the section list so a
-	// pathological library cannot blow up the prompt.
+	// maxCarrierClauses / maxClauseTitleRunes bound each carrier's static and
+	// structured clause title lists (RUYI-858), keeping pathological carriers
+	// and libraries from blowing up the prompt.
 	maxCarrierClauses   = 200
 	maxClauseTitleRunes = 120
 )
@@ -80,16 +79,17 @@ type TaskContextIssue struct {
 // (RUYI-723): its scope, the carrier entity id, a display name and the
 // carrier's current `## ` section list. The list is the single legal source
 // of target_section values — verbatim copy or empty (document tail).
-// Clauses (RUYI-858) lists the carrier's currently-active structured clause
-// asset titles: the target set for revise_clause / remove_clause drafts and
-// the dedup input for add_clause. Absent on pre-RUYI-858 task payloads;
-// those runs keep the static-text-only contract.
+// StaticClauses are extracted from the carrier text; Clauses are the
+// currently-active structured assets injected dynamically. Both are legal
+// revise/remove targets and inputs to add_clause dedup. These optional lists
+// are absent on pre-RUYI-858 task payloads.
 type TaskContextCarrier struct {
-	Scope    string   `json:"scope"`
-	ScopeID  string   `json:"scope_id"`
-	Name     string   `json:"name,omitempty"`
-	Sections []string `json:"sections"`
-	Clauses  []string `json:"clauses,omitempty"`
+	Scope         string   `json:"scope"`
+	ScopeID       string   `json:"scope_id"`
+	Name          string   `json:"name,omitempty"`
+	Sections      []string `json:"sections"`
+	StaticClauses []string `json:"static_clauses,omitempty"`
+	Clauses       []string `json:"clauses,omitempty"`
 }
 
 // TaskContext is the JSONB payload the enqueued task carries: everything the
@@ -165,24 +165,34 @@ func PromptFromContext(raw []byte) (string, bool) {
 			}
 			fmt.Fprintf(&b, " — sections: %s\n", strings.Join(c.Sections, " | "))
 		}
+		if hasClauseInventory(tc.Carriers) {
+			b.WriteString("\nClause inventory per carrier — static clauses are extracted from carrier text; structured clauses are active clause-library assets injected dynamically:\n")
+			for _, c := range tc.Carriers {
+				if len(c.StaticClauses) == 0 && len(c.Clauses) == 0 {
+					continue
+				}
+				fmt.Fprintf(&b, "- carrier_scope=%s, carrier_scope_id=%s", c.Scope, c.ScopeID)
+				if c.Name != "" {
+					fmt.Fprintf(&b, " (name: %s)", c.Name)
+				}
+				fmt.Fprintf(&b, " — static clauses: %s; structured clauses: %s\n",
+					clauseInventoryLabel(c.StaticClauses), clauseInventoryLabel(c.Clauses))
+			}
+		}
 		b.WriteString("Carrier targeting rules:\n")
 		b.WriteString("- carrier_scope must be exactly \"workspace\" or \"project\", and only for carriers listed above; omitting carrier_scope defaults to the workspace carrier. Squad and agent carriers, and every off-platform target (handbooks, skills, external docs), do not accept drafts this iteration — when an improvement belongs there, skip it: keep the issue under analyzed_issue_ids and propose nothing for it.\n")
 		b.WriteString("- target_section must be copied VERBATIM from the chosen carrier's section list (exact characters, no paraphrase, no invented section); use the empty string to append the clause at the carrier's document tail instead.\n")
 		b.WriteString("- gate_answers.layer must agree with carrier_scope (层次归属): a workspace-carrier draft claims the workspace layer (workspace=…), a project-carrier draft claims the project layer (proj=…). An inconsistent pair is a defect.\n")
 		b.WriteString("- The project carrier of an issue is that issue's project_id above; an issue without a project_id only supports the workspace carrier.\n")
 	}
-	// RUYI-858: the three clause actions and the active structured-clause
-	// inventory. The inventory covers BOTH the carrier's static clause text
-	// (rendered into sections above) and the active clause-asset titles
-	// (clauses lists) — a draft may revise or remove a clause that lives
-	// only in the asset library, and an add_clause is a duplicate when its
-	// title already appears in either surface.
-	if hasCarrierClauses(tc.Carriers) {
+	// RUYI-858: both static and structured inventories are explicit targets.
+	if hasClauseInventory(tc.Carriers) {
 		b.WriteString("\nThe clause library holds two kinds of rules: static clauses embedded in the carrier text, and structured clause assets injected dynamically at runtime. A draft expresses exactly one of three actions via change_kind:\n")
 		b.WriteString("- add_clause: a new rule nobody states yet; clause_name must not already exist in either surface (a duplicate is dropped by the pool dedup).\n")
-		b.WriteString("- revise_clause: rewrite an existing clause; clause_name names the clause to replace (copy it VERBATIM from the lists above) and clause_text is the full new text starting with the clause label.\n")
+		b.WriteString("- revise_clause: rewrite an existing clause; clause_name names the clause to replace (copy it VERBATIM from the static or structured clause inventory above) and clause_text is the full new text starting with the clause label.\n")
 		b.WriteString("- remove_clause: retire a clause that is obsolete or harmful; clause_name names it and clause_text stays empty.\n")
-		b.WriteString("Only revise and remove target clauses that actually appear in the lists above; an improvement that changes no existing clause is an add_clause.\n")
+		b.WriteString("Only revise and remove clauses that actually appear in one of the clause inventories above; an improvement that changes no existing clause is an add_clause.\n")
+		b.WriteString("The proposal format limits clause_name to 60 characters. Do not target a listed name that exceeds this limit or is visibly truncated with an ellipsis.\n")
 	}
 	b.WriteString("\nFor each issue worth learning from, propose at most 3 drafts. A draft must be written as final, directly-enactable clause text (no revision marks, no weak wording), carry the five content-gate answers (layer / retention / cost / conflict / dedup) and cite its evidence. If an issue yields nothing worth proposing, still list its id in analyzed_issue_ids so it is not re-read by the next run.\n\n")
 	b.WriteString(`Output contract (the server rejects output it cannot parse, and the run then fails visibly):
@@ -441,27 +451,59 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 			"issue_ids", strings.Join(foreignIDs, ","))
 	}
 
-	// Current-clause pre-check source: the workspace carrier's effective
-	// content, loaded once per report.
+	// Build a fresh, carrier-scoped inventory before dedup so changes made
+	// while the agent was running are not hidden by the enqueue snapshot.
 	current, err := r.Queries.GetWorkspacePromptContent(ctx, run.WorkspaceID)
 	if err != nil {
 		return stats, fmt.Errorf("retrospective: 读取现行载体内容: %w", err)
 	}
-	liveClauses := map[string]bool{}
-	for _, c := range legislation.Clauses(current) {
-		liveClauses[strings.ToLower(c)] = true
-	}
-	// RUYI-858: dedup must see the active structured clause assets, not just
-	// the carrier's rendered static text — a clause injected dynamically by
-	// the library is invisible in the static text when its marker is missing
-	// or the snapshot lags, and an add_clause duplicate would slip through
-	// otherwise.
-	for _, carrier := range tc.Carriers {
-		for _, c := range carrier.Clauses {
-			if c != "" {
-				liveClauses[strings.ToLower(c)] = true
-			}
+	liveClauses := map[string]map[string]bool{}
+	addLiveClauses := func(scope, scopeID string, names []string) {
+		key := carrierClauseKey(scope, scopeID)
+		if liveClauses[key] == nil {
+			liveClauses[key] = map[string]bool{}
 		}
+		for _, name := range names {
+			liveClauses[key][normalizeClauseNameForDedup(name)] = true
+		}
+	}
+	addLiveClauses("workspace", tc.WorkspaceID, legislation.Clauses(current))
+	projectIDs := make([]string, 0, len(issueProjects))
+	seenProjects := map[string]bool{}
+	for _, projectID := range issueProjects {
+		if !seenProjects[projectID] {
+			seenProjects[projectID] = true
+			projectIDs = append(projectIDs, projectID)
+		}
+	}
+	availableProjects := map[string]bool{}
+	for _, projectID := range projectIDs {
+		content, err := r.Queries.GetProjectPromptContent(ctx, db.GetProjectPromptContentParams{
+			ID:          util.MustParseUUID(projectID),
+			WorkspaceID: util.MustParseUUID(tc.WorkspaceID),
+		})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				slog.Warn("retrospective: project carrier disappeared before draft intake",
+					"workspace_id", tc.WorkspaceID, "project_id", projectID)
+				continue
+			}
+			return stats, fmt.Errorf("retrospective: 读取现行项目载体内容: %w", err)
+		}
+		availableProjects[projectID] = true
+		addLiveClauses("project", projectID, legislation.Clauses(content))
+	}
+	for issueID, projectID := range issueProjects {
+		if !availableProjects[projectID] {
+			delete(issueProjects, issueID)
+		}
+	}
+	activeClauses, err := r.Queries.ListActiveWorkspaceClauses(ctx, util.MustParseUUID(tc.WorkspaceID))
+	if err != nil {
+		return stats, fmt.Errorf("retrospective: 读取现行结构化条款: %w", err)
+	}
+	for _, clause := range activeClauses {
+		addLiveClauses(clause.Scope, util.UUIDToString(clause.ScopeID), []string{clause.Title})
 	}
 
 	// Normalize drafts into per-issue buckets: unknown change kinds and
@@ -588,7 +630,7 @@ func draftCarrier(d extractedDraft, workspaceID string, issueProjects map[string
 // issueProjects (RUYI-723) maps scanned issue ids to their project carrier
 // ids; it stays nil on legacy tasks, which pins every draft to the
 // workspace carrier.
-func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID string, d extractedDraft, liveClauses map[string]bool, stats *RunStats, watermark bool, issueProjects map[string]string) error {
+func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID string, d extractedDraft, liveClauses map[string]map[string]bool, stats *RunStats, watermark bool, issueProjects map[string]string) error {
 	scope, scopeID, ok := draftCarrier(d, workspaceID, issueProjects)
 	if !ok {
 		// 落点本期不产出（squad/agent/平台外）或 issue 无所属 project：
@@ -602,7 +644,7 @@ func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID st
 		return nil
 	}
 
-	if d.ChangeKind == "add_clause" && liveClauses[strings.ToLower(d.ClauseName)] {
+	if d.ChangeKind == "add_clause" && liveClauses[carrierClauseKey(scope, scopeID)][normalizeClauseNameForDedup(d.ClauseName)] {
 		// 现行条款重复预检: the clause already exists in the carrier.
 		stats.DuplicatesSkipped++
 		if watermark {
@@ -620,6 +662,25 @@ func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID st
 	}})
 
 	return r.withTx(ctx, func(q *db.Queries) error {
+		if scope == "project" {
+			_, err := q.LockProjectForChatSessionCreate(ctx, db.LockProjectForChatSessionCreateParams{
+				ID:          util.MustParseUUID(scopeID),
+				WorkspaceID: util.MustParseUUID(workspaceID),
+			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				stats.DuplicatesSkipped++
+				if watermark {
+					return q.InsertRetrospectiveWatermark(ctx, db.InsertRetrospectiveWatermarkParams{
+						WorkspaceID: util.MustParseUUID(workspaceID), IssueID: util.MustParseUUID(issueID), LastRunID: util.MustParseUUID(runID),
+					})
+				}
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		}
+
 		existing, err := q.FindMergablePromptProposal(ctx, db.FindMergablePromptProposalParams{
 			WorkspaceID:    util.MustParseUUID(workspaceID),
 			CarrierScope:   scope,
@@ -683,16 +744,30 @@ func (r *Runner) upsertDraft(ctx context.Context, workspaceID, runID, issueID st
 	})
 }
 
-// hasCarrierClauses reports whether the context carries any active clause
-// inventory (RUYI-858) — the prompt's three-action section and the asset
-// dedup engage only when the runner saw at least one title.
-func hasCarrierClauses(carriers []TaskContextCarrier) bool {
+func carrierClauseKey(scope, scopeID string) string {
+	return scope + "/" + scopeID
+}
+
+func normalizeClauseNameForDedup(name string) string {
+	return strings.ToLower(strings.Join(strings.Fields(name), " "))
+}
+
+// hasClauseInventory reports whether the context carries any static or
+// structured clause titles (RUYI-858).
+func hasClauseInventory(carriers []TaskContextCarrier) bool {
 	for _, c := range carriers {
-		if len(c.Clauses) > 0 {
+		if len(c.StaticClauses) > 0 || len(c.Clauses) > 0 {
 			return true
 		}
 	}
 	return false
+}
+
+func clauseInventoryLabel(clauses []string) string {
+	if len(clauses) == 0 {
+		return "(none)"
+	}
+	return strings.Join(clauses, " | ")
 }
 
 func dedupeStrings(in []string) []string {

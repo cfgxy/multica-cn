@@ -735,6 +735,11 @@ func TestRunContextCarriesCarrierSectionLists(t *testing.T) {
 		t.Fatalf("seed workspace carrier: %v", err)
 	}
 	projectID := retroProject(t, wsID, "multica 项目", "# 项目说明\n\n## 研发基础设施\n\n- 槽位固定。\n")
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE project SET instructions = $2 WHERE id = $1`, projectID,
+		"# 项目说明\n\n## 研发基础设施\n\n- **项目只读**：测试前先确认目标环境。\n"); err != nil {
+		t.Fatalf("seed project carrier: %v", err)
+	}
 	retroIssueInProject(t, wsID, projectID, "发布脚本修复")
 
 	runner, calls := newTestRunner(t)
@@ -759,12 +764,18 @@ func TestRunContextCarriesCarrierSectionLists(t *testing.T) {
 	if len(wsCarrier.Sections) != 2 || wsCarrier.Sections[0] != "沟通规范" || wsCarrier.Sections[1] != "团队纪律" {
 		t.Fatalf("workspace sections wrong: %+v", wsCarrier.Sections)
 	}
+	if len(wsCarrier.StaticClauses) != 1 || wsCarrier.StaticClauses[0] != "行文基调" {
+		t.Fatalf("workspace static clauses wrong: %+v", wsCarrier.StaticClauses)
+	}
 	prjCarrier, ok := byScope["project|"+projectID]
 	if !ok {
 		t.Fatalf("project carrier missing: %+v", tc.Carriers)
 	}
 	if len(prjCarrier.Sections) != 1 || prjCarrier.Sections[0] != "研发基础设施" {
 		t.Fatalf("project sections wrong: %+v", prjCarrier.Sections)
+	}
+	if len(prjCarrier.StaticClauses) != 1 || prjCarrier.StaticClauses[0] != "项目只读" {
+		t.Fatalf("project static clauses wrong: %+v", prjCarrier.StaticClauses)
 	}
 	if prjCarrier.Name != "multica 项目" {
 		t.Fatalf("project carrier name wrong: %q", prjCarrier.Name)
@@ -790,8 +801,8 @@ func TestPromptRendersCarrierListsAndScoringAnchors(t *testing.T) {
 		WindowEnd:   "2026-10-08T00:00:00Z",
 		Issues:      []TaskContextIssue{{ID: "22222222-2222-4222-8222-222222222222", Title: "修复了发布脚本", ProjectID: projectID}},
 		Carriers: []TaskContextCarrier{
-			{Scope: "workspace", ScopeID: wsID, Name: "Dev", Sections: []string{"沟通规范", "团队纪律"}},
-			{Scope: "project", ScopeID: projectID, Name: "multica 项目", Sections: []string{"研发基础设施"}},
+			{Scope: "workspace", ScopeID: wsID, Name: "Dev", Sections: []string{"沟通规范", "团队纪律"}, StaticClauses: []string{"单写者"}, Clauses: []string{"运行时复盘去重"}},
+			{Scope: "project", ScopeID: projectID, Name: "multica 项目", Sections: []string{"研发基础设施"}, StaticClauses: []string{"项目只读"}},
 		},
 	}
 	prompt, ok := PromptFromContext(mustJSON(t, ctx))
@@ -802,6 +813,7 @@ func TestPromptRendersCarrierListsAndScoringAnchors(t *testing.T) {
 		wsID,
 		projectID,
 		"沟通规范", "团队纪律", "研发基础设施",
+		"static clauses: 单写者", "structured clauses: 运行时复盘去重", "static clauses: 项目只读",
 		// verbatim-target rule (C)
 		"VERBATIM",
 		// scope/layer consistency rule (C)
@@ -964,12 +976,22 @@ func TestParseRunOutputToleratesLegacyShape(t *testing.T) {
 // dropped and counted, and a scope-less draft keeps the workspace default.
 func TestProcessTaskTerminalProjectCarrierScope(t *testing.T) {
 	wsID, _ := retroFixture(t)
-	projectID := retroProject(t, wsID, "scoped 项目", "")
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE workspace SET context = $2 WHERE id = $1`, wsID,
+		"# 平台协作规范\n\n## 沟通规范\n\n- **项目载体条款**：工作区同名规则。\n"); err != nil {
+		t.Fatalf("seed workspace clause: %v", err)
+	}
+	projectID := retroProject(t, wsID, "scoped 项目", "# 项目说明\n\n## 研发基础设施\n")
 	issueWithProject := retroIssueInProject(t, wsID, projectID, "带项目修复")
 	issueNoProject := retroIssue(t, wsID, "无项目修复", "")
 	runner, calls := newTestRunner(t)
 	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
 		t.Fatalf("RunWorkspace: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE project SET instructions = $2 WHERE id = $1`, projectID,
+		"# 项目说明\n\n## 研发基础设施\n\n- **运行期新增条款**：入队后写入项目的规则。\n"); err != nil {
+		t.Fatalf("update project carrier after enqueue: %v", err)
 	}
 	draft := func(issueID, scope, name string) string {
 		s := fmt.Sprintf(`"carrier_scope":%s,`, "\""+scope+"\"")
@@ -979,11 +1001,12 @@ func TestProcessTaskTerminalProjectCarrierScope(t *testing.T) {
 		return fmt.Sprintf(`{"issue_id":%q,%s"target_section":"","change_kind":"add_clause","clause_name":%q,"clause_text":"- **%s**：内容","gate_answers":{"layer":"workspace","retention":"r","cost":"c","conflict":"cf","dedup":"d"},"evidence_ref":"ref","evidence_note":"note"}`,
 			issueID, s, name, name)
 	}
-	report := fmt.Sprintf(`{"analyzed_issue_ids":[%q,%q],"drafts":[%s,%s,%s,%s]}`,
+	report := fmt.Sprintf(`{"analyzed_issue_ids":[%q,%q],"drafts":[%s,%s,%s,%s,%s]}`,
 		issueWithProject, issueNoProject,
 		draft(issueWithProject, "project", "项目载体条款"),
-		draft(issueWithProject, "squad", "小队载体条款"),
+		draft(issueWithProject, "project", "运行期新增条款"),
 		draft(issueWithProject, "", "默认工作区条款"),
+		draft(issueNoProject, "squad", "小队载体条款"),
 		draft(issueNoProject, "project", "无主项目条款"),
 	)
 	task := db.AgentTaskQueue{
@@ -994,8 +1017,8 @@ func TestProcessTaskTerminalProjectCarrierScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessTaskTerminal: %v", err)
 	}
-	if out.ProposalsCreated != 2 || out.DuplicatesSkipped != 2 {
-		t.Fatalf("expected 2 created / 2 skipped, got %+v", out)
+	if out.ProposalsCreated != 2 || out.DuplicatesSkipped != 3 {
+		t.Fatalf("expected 2 created / 3 skipped, got %+v", out)
 	}
 	status, errMsg, _ := runRecord(t, wsID)
 	if status != "succeeded" || errMsg != "" {
@@ -1020,11 +1043,82 @@ func TestProcessTaskTerminalProjectCarrierScope(t *testing.T) {
 	}
 }
 
+func TestProcessTaskTerminalContinuesAfterProjectDeletion(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	projectID := retroProject(t, wsID, "待删除项目", "# 项目说明\n\n## 研发基础设施\n")
+	projectIssue := retroIssueInProject(t, wsID, projectID, "项目载体待删除")
+	workspaceIssue := retroIssue(t, wsID, "工作区提案继续处理", "")
+	runner, calls := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID); err != nil {
+		t.Fatalf("delete project carrier: %v", err)
+	}
+	draft := func(issueID, scope, name string) string {
+		return fmt.Sprintf(`{"issue_id":%q,"carrier_scope":%q,"target_section":"","change_kind":"add_clause","clause_name":%q,"clause_text":"- **%s**：内容","gate_answers":{"layer":"workspace","retention":"r","cost":"c","conflict":"cf","dedup":"d"},"evidence_ref":"ref","evidence_note":"note"}`,
+			issueID, scope, name, name)
+	}
+	report := fmt.Sprintf(`{"analyzed_issue_ids":[%q,%q],"drafts":[%s,%s]}`,
+		projectIssue, workspaceIssue,
+		draft(projectIssue, "project", "已删除项目条款"),
+		draft(workspaceIssue, "workspace", "工作区继续条款"),
+	)
+	task := db.AgentTaskQueue{ID: util.MustParseUUID(stubTaskID), Context: (*calls)[0].params.Context}
+	out, err := runner.ProcessTaskTerminal(context.Background(), task, report, "")
+	if err != nil {
+		t.Fatalf("ProcessTaskTerminal: %v", err)
+	}
+	if out.ProposalsCreated != 1 || out.DuplicatesSkipped != 1 {
+		t.Fatalf("expected surviving workspace proposal and skipped project proposal, got %+v", out)
+	}
+	status, _, _ := runRecord(t, wsID)
+	if status != "succeeded" {
+		t.Fatalf("project deletion must not fail other drafts, got run status %q", status)
+	}
+}
+
+func TestUpsertDraftSkipsProjectDeletedAfterInventoryRead(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	projectID := retroProject(t, wsID, "复核期间删除", "")
+	issueID := retroIssueInProject(t, wsID, projectID, "项目条款复核")
+	runner, _ := newTestRunner(t)
+	if _, err := testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID); err != nil {
+		t.Fatalf("delete project after inventory read: %v", err)
+	}
+
+	stats := &RunStats{}
+	err := runner.upsertDraft(context.Background(), wsID, "33333333-3333-4333-8333-333333333333", issueID,
+		extractedDraft{
+			CarrierScope: "project",
+			ChangeKind:   "add_clause",
+			ClauseName:   "删除竞态条款",
+			ClauseText:   "- **删除竞态条款**：内容",
+		}, nil, stats, false, map[string]string{issueID: projectID})
+	if err != nil {
+		t.Fatalf("upsertDraft: %v", err)
+	}
+	if stats.ProposalsCreated != 0 || stats.ProposalsMerged != 0 || stats.DuplicatesSkipped != 1 {
+		t.Fatalf("deleted project draft should be skipped, got %+v", stats)
+	}
+	var count int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM prompt_proposal WHERE workspace_id = $1`, wsID).Scan(&count); err != nil {
+		t.Fatalf("count proposals: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("proposal persisted for deleted project: count=%d", count)
+	}
+}
+
 // retroClauseAsset seeds one active structured clause asset (clause,
 // clause_version, clause_binding) bound to the workspace carrier and
 // returns the clause id. The retroFixture cleanup does not cover the
 // clause tables (RUYI-751), so the seed owns its own teardown.
 func retroClauseAsset(t *testing.T, wsID, slug, title string) string {
+	return retroClauseAssetForCarrier(t, wsID, "workspace", wsID, slug, title)
+}
+
+func retroClauseAssetForCarrier(t *testing.T, wsID, scope, scopeID, slug, title string) string {
 	t.Helper()
 	var clauseID string
 	if err := testPool.QueryRow(context.Background(),
@@ -1035,14 +1129,14 @@ func retroClauseAsset(t *testing.T, wsID, slug, title string) string {
 	}
 	if _, err := testPool.Exec(context.Background(),
 		`INSERT INTO clause_version (clause_id, version, content, content_sha256, carrier_scope)
-		 VALUES ($1, 1, $2, $3, 'workspace')`,
-		clauseID, "- **"+title+"**：结构化条款正文", "testsha"); err != nil {
+			 VALUES ($1, 1, $2, $3, $4)`,
+		clauseID, "- **"+title+"**：结构化条款正文", "testsha", scope); err != nil {
 		t.Fatalf("create clause version: %v", err)
 	}
 	if _, err := testPool.Exec(context.Background(),
 		`INSERT INTO clause_binding (clause_id, scope, scope_id, status)
-		 VALUES ($1, 'workspace', $2, 'active')`,
-		clauseID, wsID); err != nil {
+			 VALUES ($1, $2, $3, 'active')`,
+		clauseID, scope, scopeID); err != nil {
 		t.Fatalf("create clause binding: %v", err)
 	}
 	t.Cleanup(func() {
@@ -1069,7 +1163,7 @@ func TestRunContextCarriesClauseInventory(t *testing.T) {
 	wsID, _ := retroFixture(t)
 	if _, err := testPool.Exec(context.Background(),
 		`UPDATE workspace SET context = $2 WHERE id = $1`, wsID,
-		"# 平台协作规范\n\n## 沟通规范\n\n- 单写者。\n"); err != nil {
+		"# 平台协作规范\n\n## 沟通规范\n\n- **单写者**：一项规则由一个责任方维护。\n"); err != nil {
 		t.Fatalf("seed carrier: %v", err)
 	}
 	retroClauseAsset(t, wsID, "cls_858a01", "运行时复盘去重")
@@ -1093,29 +1187,91 @@ func TestRunContextCarriesClauseInventory(t *testing.T) {
 	if !found {
 		t.Fatalf("workspace carrier missing: %+v", tc.Carriers)
 	}
+	if len(wsCarrier.StaticClauses) != 1 || wsCarrier.StaticClauses[0] != "单写者" {
+		t.Fatalf("expected the static clause title on the carrier, got %+v", wsCarrier.StaticClauses)
+	}
 	if len(wsCarrier.Clauses) != 1 || wsCarrier.Clauses[0] != "运行时复盘去重" {
-		t.Fatalf("expected the asset clause title on the carrier, got %+v", wsCarrier.Clauses)
+		t.Fatalf("expected the structured clause title on the carrier, got %+v", wsCarrier.Clauses)
 	}
 	prompt, ok := PromptFromContext(mustJSON(t, tc))
 	if !ok {
 		t.Fatalf("PromptFromContext rejected its own context")
 	}
-	if !strings.Contains(prompt, "holds two kinds of rules") {
-		t.Fatalf("three-action section must render with a non-empty clause inventory")
+	for _, want := range []string{"holds two kinds of rules", "static clauses: 单写者", "structured clauses: 运行时复盘去重", "add_clause", "revise_clause", "remove_clause"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing clause inventory/action %q", want)
+		}
 	}
 }
 
-// TestProcessTaskTerminalDedupAgainstClauseAssets (RUYI-858): an
-// add_clause draft whose name matches only an active structured clause
-// asset — the title is absent from the carrier's static text — is dropped
-// as a duplicate. Pre-RUYI-858 dedup saw the static surface alone and let
-// this duplicate through; the assertion on ProposalsCreated=0 pins the
-// asset-library surface.
+func TestRunContextCarriesClauseInventoriesWithoutSections(t *testing.T) {
+	wsID, _ := retroFixture(t)
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE workspace SET context = $2 WHERE id = $1`, wsID,
+		"# 工作区规则\n\n- **工作区静态条款**：正文条款。\n"); err != nil {
+		t.Fatalf("seed workspace carrier: %v", err)
+	}
+	projectID := retroProject(t, wsID, "无章节项目", "# 项目规则\n\n- **项目静态条款**：正文条款。\n")
+	retroClauseAssetForCarrier(t, wsID, "workspace", wsID, "cls_858a03", "工作区结构化条款")
+	retroClauseAssetForCarrier(t, wsID, "project", projectID, "cls_858a04", "项目结构化条款")
+	retroIssueInProject(t, wsID, projectID, "无章节标题复盘")
+
+	runner, calls := newTestRunner(t)
+	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
+		t.Fatalf("RunWorkspace: %v", err)
+	}
+	var tc TaskContext
+	if err := json.Unmarshal((*calls)[0].params.Context, &tc); err != nil {
+		t.Fatalf("context is not a TaskContext: %v", err)
+	}
+	if len(tc.Carriers) != 2 {
+		t.Fatalf("expected both carriers without sections, got %+v", tc.Carriers)
+	}
+	byScope := map[string]TaskContextCarrier{}
+	for _, carrier := range tc.Carriers {
+		byScope[carrier.Scope] = carrier
+		if len(carrier.Sections) != 0 {
+			t.Fatalf("carrier unexpectedly has sections: %+v", carrier)
+		}
+	}
+	for scope, wants := range map[string][2]string{
+		"workspace": {"工作区静态条款", "工作区结构化条款"},
+		"project":   {"项目静态条款", "项目结构化条款"},
+	} {
+		carrier, ok := byScope[scope]
+		if !ok {
+			t.Fatalf("%s carrier missing: %+v", scope, tc.Carriers)
+		}
+		if len(carrier.StaticClauses) != 1 || carrier.StaticClauses[0] != wants[0] {
+			t.Fatalf("%s static clauses wrong: %+v", scope, carrier.StaticClauses)
+		}
+		if len(carrier.Clauses) != 1 || carrier.Clauses[0] != wants[1] {
+			t.Fatalf("%s structured clauses wrong: %+v", scope, carrier.Clauses)
+		}
+	}
+	prompt, ok := PromptFromContext(mustJSON(t, tc))
+	if !ok {
+		t.Fatalf("PromptFromContext rejected its own context")
+	}
+	for _, want := range []string{
+		"static clauses: 工作区静态条款", "structured clauses: 工作区结构化条款",
+		"static clauses: 项目静态条款", "structured clauses: 项目结构化条款",
+		"use the empty string to append the clause at the carrier's document tail",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q", want)
+		}
+	}
+}
+
+// TestProcessTaskTerminalDedupAgainstClauseAssets (RUYI-858): an add_clause
+// name differing only by whitespace from an active structured asset is
+// dropped as a duplicate.
 func TestProcessTaskTerminalDedupAgainstClauseAssets(t *testing.T) {
 	wsID, _ := retroFixture(t)
 	if _, err := testPool.Exec(context.Background(),
 		`UPDATE workspace SET context = $2 WHERE id = $1`, wsID,
-		"# 平台协作规范\n\n## 沟通规范\n\n- 单写者。\n"); err != nil {
+		"# 平台协作规范\n\n## 沟通规范\n\n- **单写者**：一项规则由一个责任方维护。\n"); err != nil {
 		t.Fatalf("seed carrier: %v", err)
 	}
 	retroClauseAsset(t, wsID, "cls_858a02", "运行时复盘去重")
@@ -1129,7 +1285,7 @@ func TestProcessTaskTerminalDedupAgainstClauseAssets(t *testing.T) {
 		ID:      util.MustParseUUID(stubTaskID),
 		Context: (*calls)[0].params.Context,
 	}
-	out, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(issueA, "运行时复盘去重"), "")
+	out, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(issueA, "运行时复盘去重 "), "")
 	if err != nil {
 		t.Fatalf("ProcessTaskTerminal: %v", err)
 	}

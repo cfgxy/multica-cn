@@ -428,15 +428,27 @@ func (r *Runner) collectCarriers(ctx context.Context, workspaceID pgtype.UUID, s
 		}
 		return capped
 	}
+	staticClausesFor := func(content string) []string {
+		clauses := legislation.Clauses(content)
+		if len(clauses) > maxCarrierClauses {
+			clauses = clauses[:maxCarrierClauses]
+		}
+		capped := make([]string, len(clauses))
+		for i, name := range clauses {
+			capped[i] = truncateRunes(name, maxClauseTitleRunes)
+		}
+		return capped
+	}
 	if content, err := r.Queries.GetWorkspacePromptContent(ctx, workspaceID); err != nil {
 		slog.Warn("retrospective: workspace carrier read failed",
 			"workspace_id", util.UUIDToString(workspaceID), "error", err)
-	} else if sections := carrierSections(content); len(sections) > 0 {
+	} else {
 		carriers = append(carriers, TaskContextCarrier{
-			Scope:    "workspace",
-			ScopeID:  util.UUIDToString(workspaceID),
-			Sections: sections,
-			Clauses:  clausesFor("workspace", util.UUIDToString(workspaceID)),
+			Scope:         "workspace",
+			ScopeID:       util.UUIDToString(workspaceID),
+			Sections:      carrierSections(content),
+			StaticClauses: staticClausesFor(content),
+			Clauses:       clausesFor("workspace", util.UUIDToString(workspaceID)),
 		})
 	}
 
@@ -479,16 +491,13 @@ func (r *Runner) collectCarriers(ctx context.Context, workspaceID pgtype.UUID, s
 				"project_id", id, "error", err)
 			continue
 		}
-		sections := carrierSections(content)
-		if len(sections) == 0 {
-			continue
-		}
 		carriers = append(carriers, TaskContextCarrier{
-			Scope:    "project",
-			ScopeID:  id,
-			Name:     truncateRunes(names[id], maxSectionNameRunes),
-			Sections: sections,
-			Clauses:  clausesFor("project", id),
+			Scope:         "project",
+			ScopeID:       id,
+			Name:          truncateRunes(names[id], maxSectionNameRunes),
+			Sections:      carrierSections(content),
+			StaticClauses: staticClausesFor(content),
+			Clauses:       clausesFor("project", id),
 		})
 	}
 	return carriers
