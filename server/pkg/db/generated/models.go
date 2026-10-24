@@ -2289,7 +2289,7 @@ type SchedulingPause struct {
 	AgentID pgtype.UUID `json:"agent_id"`
 	// Free-text note from the operator who froze scheduling; audit trail, never interpreted.
 	Reason string `json:"reason"`
-	// member.user_id of the workspace owner/admin who froze scheduling.
+	// member.user_id of the human who froze scheduling; NULL marks the system error-rate suppression source (created_by IS NULL together with reason = 'error_rate_suppression' is the exact system row the automatic loop owns and releases — no human path ever writes NULL).
 	CreatedBy pgtype.UUID        `json:"created_by"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }

@@ -33,7 +33,6 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
-	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
 // ---- Read model (GET /api/agents/{id}/backpressure-policy) ----
@@ -50,15 +49,10 @@ type agentBackpressurePolicyCard struct {
 // terminal-sample counts split by display class, the selected numerator,
 // the total denominator, and the derived rate. All fields are present when
 // the agent has no samples yet (rate 0, counts 0) — the client renders
-// "no data", not "0% errors".
-type agentBackpressureWindowReading struct {
-	WindowMinutes        int            `json:"window_minutes"`
-	TotalTerminal        int            `json:"total_terminal"`
-	SelectedFailures     int            `json:"selected_failures"`
-	RecoveryThresholdPct float64        `json:"recovery_threshold_pct"`
-	ErrorRatePct         *float64       `json:"error_rate_pct,omitempty"`
-	ByClass              map[string]int `json:"by_class"`
-}
+// "no data", not "0% errors". The type is shared with the stage B loop's
+// judgments (service.AgentBackpressureWindowReading) so the card and the
+// automatic suppression can never disagree on the criteria.
+type agentBackpressureWindowReading = service.AgentBackpressureWindowReading
 
 // agentBackpressureSuppressionEvent is one transition row, newest first.
 type agentBackpressureSuppressionEvent struct {
@@ -128,54 +122,15 @@ func agentBackpressurePolicyFromCard(agent db.Agent, row *db.AgentBackpressurePo
 }
 
 // agentBackpressureWindowReading computes the current-window error-rate feed
-// for the effective card's entry window: terminal samples by display class
-// (taskfailure folds both selected groups), the numerator the two class
-// switches select, the denominator, and the derived rate (nil when no
-// samples). Queued rows — including runtime-backpressure holds — are
-// structurally outside the terminal set and never count here; their depth
-// is read separately through the Scheduling block.
+// for the effective card's entry window through the single shared source of
+// the criteria: service.AgentBackpressureReadingFor (stage B's entry and
+// recovery judgments classify through the same function, so the card and
+// the loop can never disagree on the numerator). Queued rows — including
+// runtime-backpressure holds — are structurally outside the terminal set
+// and never count here; their depth is read separately through the
+// Scheduling block.
 func (h *Handler) agentBackpressureWindowReading(ctx context.Context, agent db.Agent, cfg *protocol.AgentBackpressureConfig) (*agentBackpressureWindowReading, error) {
-	rows, err := h.Queries.CountAgentTerminalTasksByReasonInWindow(ctx, db.CountAgentTerminalTasksByReasonInWindowParams{
-		WorkspaceID:   agent.WorkspaceID,
-		AgentID:       agent.ID,
-		WindowMinutes: int32(cfg.WindowMinutes),
-	})
-	if err != nil {
-		return nil, err
-	}
-	reading := &agentBackpressureWindowReading{
-		WindowMinutes:        cfg.WindowMinutes,
-		RecoveryThresholdPct: cfg.ErrorRateThresholdPct * protocol.AgentBackpressureRecoveryFactor,
-		ByClass:              map[string]int{},
-	}
-	for _, row := range rows {
-		// reason '' is the succeeded bucket; taskfailure folds real
-		// reasons (including 'unclassified') into the display classes the
-		// card's two switches select over.
-		cls := taskfailure.ClassOther
-		if row.Reason != "" {
-			cls = taskfailure.DisplayClass(taskfailure.Reason(row.Reason))
-		}
-		reading.ByClass[cls] += int(row.TaskCount)
-		if row.Reason == "" {
-			continue // succeeded: denominator only
-		}
-		if (cls == taskfailure.ClassAuth || cls == taskfailure.ClassRateLimit ||
-			cls == taskfailure.ClassTimeout || cls == taskfailure.ClassProvider) && cfg.CountModelAPIFailures {
-			reading.SelectedFailures += int(row.TaskCount)
-		}
-		if (cls == taskfailure.ClassRuntime || cls == taskfailure.ClassAgent || cls == taskfailure.ClassOther) && cfg.CountExecutionFailures {
-			reading.SelectedFailures += int(row.TaskCount)
-		}
-	}
-	for _, row := range rows {
-		reading.TotalTerminal += int(row.TaskCount)
-	}
-	if reading.TotalTerminal > 0 {
-		rate := float64(reading.SelectedFailures) / float64(reading.TotalTerminal) * 100
-		reading.ErrorRatePct = &rate
-	}
-	return reading, nil
+	return service.AgentBackpressureReadingFor(ctx, h.Queries, agent.WorkspaceID, agent.ID, cfg, cfg.WindowMinutes)
 }
 
 // GetAgentBackpressurePolicy serves the Agent detail page's backpressure

@@ -622,6 +622,7 @@
       "paused_now": "一時停止中（{{scope}} スコープ）",
       "not_paused": "現在のスケジューリング一時停止はありません",
       "pause_reason_unknown": "一時停止理由が記録されていません",
+      "pause_auto_source": "自動エラー率抑制（システムによる一時停止で、人間の凍結ではありません）。解除できるのは自動ループだけです。",
       "queued_depth": "キューの深さ：{{count}}",
       "events_title": "直近の抑制イベント",
       "events_empty": "entered / cleared のイベントはまだ記録されていません",

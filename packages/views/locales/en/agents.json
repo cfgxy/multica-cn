@@ -745,6 +745,7 @@
       "paused_now": "Paused ({{scope}} scope)",
       "not_paused": "No scheduling pause is active",
       "pause_reason_unknown": "No pause reason recorded",
+      "pause_auto_source": "Automatic error-rate suppression (system, not a human freeze) — only the automatic loop can lift it.",
       "queued_depth": "Queue depth: {{count}}",
       "events_title": "Recent suppression events",
       "events_empty": "No entered / cleared events recorded yet",

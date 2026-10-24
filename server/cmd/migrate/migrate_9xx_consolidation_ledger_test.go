@@ -185,6 +185,7 @@ var postConsolidationStems = []string{
 	"980_runtime_concurrency_limit",                    // RUYI-843
 	"982_agent_backpressure_policy",                    // RUYI-859 stage A (agent error-rate policy + suppression event tables)
 	"983_agent_suppression_event_index",                // RUYI-859 stage A (CONCURRENTLY index, separate single-statement stem)
+	"985_scheduling_pause_system_source",               // RUYI-859 stage B (created_by nullable: system error-rate suppression source)
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
