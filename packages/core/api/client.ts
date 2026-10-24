@@ -3257,6 +3257,7 @@ export class ApiClient {
         window: null,
         scheduling: null,
         events: [],
+        promql_rules: [],
       },
       { endpoint: "GET /api/agents/:id/backpressure-policy" },
     );
@@ -3280,6 +3281,7 @@ export class ApiClient {
         window: null,
         scheduling: null,
         events: [],
+        promql_rules: [],
       },
       { endpoint: "PUT /api/agents/:id/backpressure-policy" },
     );
@@ -3302,6 +3304,7 @@ export class ApiClient {
         window: null,
         scheduling: null,
         events: [],
+        promql_rules: [],
       },
       { endpoint: "DELETE /api/agents/:id/backpressure-policy" },
     );

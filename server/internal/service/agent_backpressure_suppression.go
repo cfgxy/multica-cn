@@ -64,7 +64,18 @@ func BackpressureConfigFromPolicyRow(row db.AgentBackpressurePolicy) *protocol.A
 		SuppressOnErrorRate:    row.SuppressOnErrorRate,
 		CountModelAPIFailures:  row.CountModelApiFailures,
 		CountExecutionFailures: row.CountExecutionFailures,
+		PromQLRuleIDs:          promQLRuleIDsFromPolicy(row.PromqlRuleIds),
 	}
+}
+
+func promQLRuleIDsFromPolicy(ids []pgtype.UUID) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id.Valid {
+			out = append(out, util.UUIDToString(id))
+		}
+	}
+	return out
 }
 
 // AgentBackpressureWindowReading is the terminal-sample feed for one

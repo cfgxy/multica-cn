@@ -630,7 +630,15 @@
       "event_cleared": "抑制解除",
       "event_line": "{{samples}} 件・エラー率 {{rate}}% · {{when}}",
       "loading_title": "バックプレッシャーポリシーを読み込み中",
-      "loading_body": "ポリシーと現在のウィンドウ読み取り値が届くとカードが表示されます。"
+      "loading_body": "ポリシーと現在のウィンドウ読み取り値が届くとカードが表示されます。",
+      "promql_selection_title": "このエージェントに適用する高度なルール",
+      "promql_selection_empty": "選択できるワークスペースの高度なルールはありません。",
+      "promql_rules_title": "高度なルールの状態",
+      "promql_rules_empty": "このエージェントには高度なルールが選択されていません。",
+      "promql_status": "状態：{{status}}",
+      "promql_source_active": "一時停止ソースが有効：{{reason}} · {{enteredAt}}",
+      "promql_mapping_mismatch": "現在検証済みの agent_id マッピングがないため、このルールはエージェントを一時停止できません。",
+      "promql_source_clear": "このルールに有効な一時停止ソースはありません。"
     },
     "skills": {
       "assigned_title": "エージェントに割り当て済み",

@@ -638,7 +638,15 @@
       "event_cleared": "억제 해제",
       "event_line": "{{samples}}개 샘플 · 오류율 {{rate}}% · {{when}}",
       "loading_title": "백프레셔 정책을 불러오는 중",
-      "loading_body": "정책과 현재 윈도우 읽기 값이 도착하면 카드가 표시됩니다."
+      "loading_body": "정책과 현재 윈도우 읽기 값이 도착하면 카드가 표시됩니다.",
+      "promql_selection_title": "이 에이전트에 적용할 고급 규칙",
+      "promql_selection_empty": "선택할 수 있는 워크스페이스 고급 규칙이 없습니다.",
+      "promql_rules_title": "고급 규칙 상태",
+      "promql_rules_empty": "이 에이전트에는 선택된 고급 규칙이 없습니다.",
+      "promql_status": "상태: {{status}}",
+      "promql_source_active": "중단 소스 활성화됨: {{reason}} · {{enteredAt}}",
+      "promql_mapping_mismatch": "현재 검증된 agent_id 매핑이 없어 이 규칙은 이 에이전트를 중단할 수 없습니다.",
+      "promql_source_clear": "이 규칙에는 활성 중단 소스가 없습니다."
     },
     "skills": {
       "assigned_title": "에이전트에 할당됨",

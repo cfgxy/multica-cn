@@ -57,6 +57,42 @@ func validBPBody() map[string]any {
 	}
 }
 
+func backpressurePromQLFixture(t *testing.T) (workspaceID, agentID string) {
+	t.Helper()
+	workspaceID = dbfx.Workspace(t, "Agent PromQL policy", handlerTestSlug("agent-promql-policy"))
+	dbfx.Member(t, workspaceID, testUserID, "owner")
+	runtimeID := dbfx.Runtime(t, "Agent PromQL policy runtime", testutil.Cols{
+		"workspace_id": workspaceID,
+		"owner_id":     testUserID,
+	})
+	agentID = dbfx.Agent(t, "Agent PromQL policy agent", runtimeID, testutil.Cols{
+		"workspace_id": workspaceID,
+		"owner_id":     testUserID,
+		"visibility":   "workspace",
+	})
+	return workspaceID, agentID
+}
+
+func storeWorkspacePromQLRules(t *testing.T, workspaceID string, rules []map[string]any) {
+	t.Helper()
+	settings, err := json.Marshal(map[string]any{
+		"promql_rules": map[string]any{"rules": rules},
+	})
+	if err != nil {
+		t.Fatalf("encode PromQL rules: %v", err)
+	}
+	dbfx.Exec(t, `UPDATE workspace SET settings = $2::jsonb WHERE id = $1`, workspaceID, string(settings))
+}
+
+func agentBackpressurePolicyPut(t *testing.T, workspaceID, agentID string, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := newRequestAs(testUserID, http.MethodPut, "/api/agents/"+agentID+"/backpressure-policy", body)
+	req.Header.Set("X-Workspace-ID", workspaceID)
+	testHandler.PutAgentBackpressurePolicy(w, withURLParam(req, "id", agentID))
+	return w
+}
+
 func TestGetAgentBackpressurePolicy_DefaultsWhenUnconfigured(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -231,8 +267,125 @@ func TestPutAgentBackpressurePolicy_AuditsInTransaction(t *testing.T) {
 	}
 }
 
+func TestPutAgentBackpressurePolicy_ValidatesSelectionAndReleasesOnlyRemovedRule(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	workspaceID, agentID := backpressurePromQLFixture(t)
+	firstRule := validWorkspacePromQLRule()
+	secondRule := validWorkspacePromQLRule()
+	secondRule["id"] = "ad9d1473-7c2a-47b1-a2fa-59efab1130fa"
+	secondRule["name"] = "Runtime errors"
+	storeWorkspacePromQLRules(t, workspaceID, []map[string]any{firstRule, secondRule})
+	firstRuleID := firstRule["id"].(string)
+	secondRuleID := secondRule["id"].(string)
+
+	foreignWorkspaceID := dbfx.Workspace(t, "Foreign PromQL rules", handlerTestSlug("foreign-promql-policy"))
+	foreignRule := validWorkspacePromQLRule()
+	foreignRule["id"] = "6dd506ce-45cc-4dcb-8a3c-1a5e64a542ff"
+	foreignRule["name"] = "Foreign provider errors"
+	storeWorkspacePromQLRules(t, foreignWorkspaceID, []map[string]any{foreignRule})
+
+	foreignBody := validBPBody()
+	foreignBody["promql_rule_ids"] = []string{foreignRule["id"].(string)}
+	if w := agentBackpressurePolicyPut(t, workspaceID, agentID, foreignBody); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("cross-workspace rule selection: got %d; want 422 — %s", w.Code, w.Body.String())
+	}
+	var policies int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM agent_backpressure_policy WHERE workspace_id = $1 AND agent_id = $2
+	`, workspaceID, agentID).Scan(&policies); err != nil {
+		t.Fatalf("count rejected policy rows: %v", err)
+	}
+	if policies != 0 {
+		t.Fatalf("cross-workspace selection wrote %d policy rows", policies)
+	}
+
+	selectedBody := validBPBody()
+	selectedBody["promql_rule_ids"] = []string{firstRuleID, secondRuleID}
+	if w := agentBackpressurePolicyPut(t, workspaceID, agentID, selectedBody); w.Code != http.StatusOK {
+		t.Fatalf("save selected rules: got %d — %s", w.Code, w.Body.String())
+	}
+	insertPause := func(ruleID string) {
+		t.Helper()
+		dbfx.InsertNoID(t, "agent_promql_rule_pause", testutil.Cols{
+			"workspace_id": workspaceID,
+			"agent_id":     agentID,
+			"rule_id":      ruleID,
+			"rule_name":    "test rule",
+			"reason":       "rule_firing",
+		}, "workspace_id = $1 AND agent_id = $2 AND rule_id = $3", workspaceID, agentID, ruleID)
+	}
+	insertPause(firstRuleID)
+	insertPause(secondRuleID)
+	dbfx.InsertNoID(t, "scheduling_pause", testutil.Cols{
+		"workspace_id": workspaceID,
+		"agent_id":     agentID,
+		"reason":       "manual incident hold",
+		"created_by":   testUserID,
+	}, "workspace_id = $1 AND agent_id = $2", workspaceID, agentID)
+
+	retainedBody := validBPBody()
+	retainedBody["promql_rule_ids"] = []string{firstRuleID}
+	if w := agentBackpressurePolicyPut(t, workspaceID, agentID, retainedBody); w.Code != http.StatusOK {
+		t.Fatalf("remove one selected rule: got %d — %s", w.Code, w.Body.String())
+	}
+	var firstPauses, secondPauses, humanPauses int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT
+			(SELECT count(*) FROM agent_promql_rule_pause WHERE workspace_id = $1 AND agent_id = $2 AND rule_id = $3),
+			(SELECT count(*) FROM agent_promql_rule_pause WHERE workspace_id = $1 AND agent_id = $2 AND rule_id = $4),
+			(SELECT count(*) FROM scheduling_pause WHERE workspace_id = $1 AND agent_id = $2 AND created_by IS NOT NULL)
+	`, workspaceID, agentID, firstRuleID, secondRuleID).Scan(&firstPauses, &secondPauses, &humanPauses); err != nil {
+		t.Fatalf("read source isolation: %v", err)
+	}
+	if firstPauses != 1 || secondPauses != 0 || humanPauses != 1 {
+		t.Fatalf("sources after selection removal = first:%d second:%d human:%d; want 1:0:1", firstPauses, secondPauses, humanPauses)
+	}
+	var selectionClearEvents int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM agent_suppression_event
+		WHERE workspace_id = $1 AND agent_id = $2 AND source = 'promql_rule'
+		  AND rule_id = $3 AND event_type = 'cleared' AND reason = 'selection_removed'
+	`, workspaceID, agentID, secondRuleID).Scan(&selectionClearEvents); err != nil {
+		t.Fatalf("read selection removal history: %v", err)
+	}
+	if selectionClearEvents != 1 {
+		t.Fatalf("selection removal history = %d, want 1", selectionClearEvents)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequestAs(testUserID, http.MethodDelete, "/api/agents/"+agentID+"/backpressure-policy", nil)
+	req.Header.Set("X-Workspace-ID", workspaceID)
+	testHandler.DeleteAgentBackpressurePolicy(w, withURLParam(req, "id", agentID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete selected policy: got %d — %s", w.Code, w.Body.String())
+	}
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT
+			(SELECT count(*) FROM agent_promql_rule_pause WHERE workspace_id = $1 AND agent_id = $2),
+			(SELECT count(*) FROM scheduling_pause WHERE workspace_id = $1 AND agent_id = $2 AND created_by IS NOT NULL)
+	`, workspaceID, agentID).Scan(&firstPauses, &humanPauses); err != nil {
+		t.Fatalf("read sources after policy deletion: %v", err)
+	}
+	if firstPauses != 0 || humanPauses != 1 {
+		t.Fatalf("sources after policy deletion = PromQL:%d human:%d; want 0:1", firstPauses, humanPauses)
+	}
+	var deletionClearEvents int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM agent_suppression_event
+		WHERE workspace_id = $1 AND agent_id = $2 AND source = 'promql_rule'
+		  AND rule_id = $3 AND event_type = 'cleared' AND reason = 'policy_deleted'
+	`, workspaceID, agentID, firstRuleID).Scan(&deletionClearEvents); err != nil {
+		t.Fatalf("read policy deletion history: %v", err)
+	}
+	if deletionClearEvents != 1 {
+		t.Fatalf("policy deletion history = %d, want 1", deletionClearEvents)
+	}
+}
+
 // insertBPTerminalTask seeds one terminal (completed or failed) sample for
-// agentID and registers its cleanup. reason '' = a success.
+// agentID and registers its cleanup. reason ” = a success.
 func insertBPTerminalTask(t *testing.T, agentID, status, reason string) {
 	t.Helper()
 	var id string
@@ -291,8 +444,8 @@ func TestGetAgentBackpressurePolicy_WindowReadingExcludesQueued(t *testing.T) {
 	}
 	var resp struct {
 		Window struct {
-			TotalTerminal    int `json:"total_terminal"`
-			SelectedFailures int `json:"selected_failures"`
+			TotalTerminal    int      `json:"total_terminal"`
+			SelectedFailures int      `json:"selected_failures"`
 			ErrorRatePct     *float64 `json:"error_rate_pct"`
 		} `json:"window"`
 	}

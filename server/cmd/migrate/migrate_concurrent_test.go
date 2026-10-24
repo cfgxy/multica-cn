@@ -32,7 +32,8 @@ import (
 //     rows, and (since our test fixtures are deliberately non-idempotent
 //     bare CREATE TABLE / ALTER TABLE) no "relation already exists"
 //     failures from the SQL itself, which would prove the lock isn't
-//     serializing.
+//     serializing. The fixture also includes CREATE INDEX CONCURRENTLY,
+//     which verifies waiting contenders cannot deadlock the owner.
 //  2. Already applied: rerunning the same N-way race against the just-
 //     populated bookkeeping table sends every goroutine down the EXISTS
 //     no-op path; nobody re-applies anything and the underlying schema
@@ -99,13 +100,15 @@ func openTestPool(t *testing.T) *pgxpool.Pool {
 // lock key, and a temp directory full of deliberately non-idempotent
 // migration SQL files.
 type fixture struct {
-	pool       *pgxpool.Pool
-	schema     string
-	tableFQN   string // e.g. "migrate_test_xyz"."schema_migrations"
-	lockKey    int64
-	files      []string // sorted .up.sql paths
-	versions   []string // matching versions
-	tableNames []string // distinct test tables each migration creates
+	pool         *pgxpool.Pool
+	schema       string
+	tableFQN     string // e.g. "migrate_test_xyz"."schema_migrations"
+	lockKey      int64
+	files        []string // sorted .up.sql paths
+	versions     []string // matching versions
+	tableNames   []string // distinct test tables each migration creates
+	indexName    string
+	indexVersion string
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -175,16 +178,37 @@ func newFixture(t *testing.T) *fixture {
 		versions = append(versions, version)
 		tableNames = append(tableNames, tableName)
 	}
+	// A real concurrent-index migration exposes the interaction that caused
+	// the production deadlock: a runner blocked inside pg_advisory_lock holds
+	// an active virtual transaction, while CREATE INDEX CONCURRENTLY must wait
+	// for it. The side-lock test below guarantees a contender is waiting when
+	// this migration runs.
+	indexVersion := fmt.Sprintf("%03d_test_concurrent_index_%s", numFiles+1, suffix)
+	indexName := "idx_" + suffix
+	indexPath := filepath.Join(dir, indexVersion+".up.sql")
+	indexBody := fmt.Sprintf(
+		"CREATE INDEX CONCURRENTLY %s ON %s.%s (payload);\n",
+		pgx.Identifier{indexName}.Sanitize(),
+		pgx.Identifier{schema}.Sanitize(), pgx.Identifier{tableNames[0]}.Sanitize(),
+	)
+	if err := os.WriteFile(indexPath, []byte(indexBody), 0o600); err != nil {
+		t.Fatalf("write concurrent index migration: %v", err)
+	}
+	files = append(files, indexPath)
+	versions = append(versions, indexVersion)
 	sort.Strings(files)
+	sort.Strings(versions)
 
 	return &fixture{
-		pool:       pool,
-		schema:     schema,
-		tableFQN:   tableFQN,
-		lockKey:    lockKey,
-		files:      files,
-		versions:   versions,
-		tableNames: tableNames,
+		pool:         pool,
+		schema:       schema,
+		tableFQN:     tableFQN,
+		lockKey:      lockKey,
+		files:        files,
+		versions:     versions,
+		tableNames:   tableNames,
+		indexName:    indexName,
+		indexVersion: indexVersion,
 	}
 }
 

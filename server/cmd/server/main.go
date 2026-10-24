@@ -610,7 +610,6 @@ func main() {
 	}
 
 	prometheusClient := promquery.NewClientFromEnv()
-	promRulesWorker := promrules.NewWorker(pool, prometheusClient)
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		HTTPMetrics:         httpMetrics,
 		BusinessMetrics:     businessMetrics,
@@ -634,15 +633,16 @@ func main() {
 	// Start background workers.
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
 	autopilotCtx, autopilotCancel := context.WithCancel(context.Background())
-	if prometheusClient.Enabled() {
-		go promRulesWorker.Run(sweepCtx)
-	}
 	// Reuse the router's services here. In particular, the router wires the
 	// EmptyClaim cache into TaskService; constructing a second TaskService for
 	// scheduled Autopilot dispatch would send the daemon wakeup without bumping
 	// that cache's version, so an idle runtime could keep returning an empty
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
+	promRulesWorker := promrules.NewWorker(pool, prometheusClient, taskSvc)
+	if prometheusClient.Enabled() {
+		go promRulesWorker.Run(sweepCtx)
+	}
 	registerAutopilotListeners(bus, autopilotSvc)
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP

@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/promrules"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
@@ -40,6 +43,7 @@ func stripRuleState(config promrules.Config) promrules.Config {
 	out := promrules.Config{Rules: append([]promrules.Rule(nil), config.Rules...)}
 	for i := range out.Rules {
 		out.Rules[i].State = promrules.RuleState{}
+		out.Rules[i].AgentStates = nil
 	}
 	return out
 }
@@ -129,14 +133,22 @@ func (h *Handler) PutWorkspacePromQLRules(w http.ResponseWriter, r *http.Request
 	}
 	now := time.Now().UTC()
 	transitionEvents := make([]service.Event, 0)
+	ruleClearCauses := make(map[string]string)
 	for _, oldRule := range oldConfig.Rules {
 		newRule, exists := newByID[oldRule.ID]
-		if !oldRule.State.Firing || (exists && newRule.Enabled) {
-			continue
-		}
 		cause := "rule_deleted"
 		if exists {
-			cause = "rule_disabled"
+			if !newRule.Enabled {
+				cause = "rule_disabled"
+			} else if !promrules.SameDefinition(oldRule, newRule) {
+				cause = "rule_reconfigured"
+			} else {
+				continue
+			}
+		}
+		ruleClearCauses[oldRule.ID] = cause
+		if !ruleHasFiringState(oldRule) {
+			continue
 		}
 		transitionEvents = append(transitionEvents, promrules.RuleTransitionAuditEvent(
 			workspaceUUID, oldRule, promrules.TransitionResolved, now,
@@ -147,14 +159,50 @@ func (h *Handler) PutWorkspacePromQLRules(w http.ResponseWriter, r *http.Request
 		old, exists := oldByID[req.Rules[i].ID]
 		if exists && promrules.SameDefinition(old, req.Rules[i]) {
 			req.Rules[i].State = old.State
-		} else if exists && old.State.Firing && req.Rules[i].Enabled {
-			req.Rules[i].State = old.State
-			req.Rules[i].State.PendingSince = nil
-			req.Rules[i].State.LastEvaluatedAt = nil
-			req.Rules[i].State.LastError = ""
-			req.Rules[i].State.Values = nil
+			req.Rules[i].AgentStates = old.AgentStates
 		} else {
 			req.Rules[i].State = promrules.RuleState{}
+			req.Rules[i].AgentStates = nil
+		}
+	}
+	ruleIDsToClear := make([]pgtype.UUID, 0, len(ruleClearCauses))
+	for ruleID := range ruleClearCauses {
+		parsed, parseErr := util.ParseUUID(ruleID)
+		if parseErr != nil {
+			slog.Error("parse stored PromQL rule id failed", "workspace_id", workspaceID, "rule_id", ruleID, "error", parseErr)
+			writeError(w, http.StatusInternalServerError, "failed to save PromQL rules")
+			return
+		}
+		ruleIDsToClear = append(ruleIDsToClear, parsed)
+	}
+	releasedPauses := []db.AgentPromqlRulePause{}
+	if len(ruleIDsToClear) > 0 {
+		releasedPauses, err = qtx.DeleteAgentPromQLRulePausesByWorkspaceRuleIDs(ctx, db.DeleteAgentPromQLRulePausesByWorkspaceRuleIDsParams{
+			WorkspaceID: workspaceUUID,
+			RuleIds:     ruleIDsToClear,
+		})
+		if err != nil {
+			slog.Error("release changed PromQL rule pauses failed", "workspace_id", workspaceID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to save PromQL rules")
+			return
+		}
+	}
+	releaseEvents := make([]service.Event, 0, len(releasedPauses))
+	changedAgents := make(map[string]pgtype.UUID)
+	for _, pause := range releasedPauses {
+		cause := ruleClearCauses[pause.RuleID.String()]
+		if cause == "" {
+			cause = "rule_reconfigured"
+		}
+		events, changed, releaseErr := releasePromQLRulePauses(ctx, qtx, workspaceUUID, []db.AgentPromqlRulePause{pause}, cause)
+		if releaseErr != nil {
+			slog.Error("record changed PromQL rule pause release failed", "workspace_id", workspaceID, "error", releaseErr)
+			writeError(w, http.StatusInternalServerError, "failed to save PromQL rules")
+			return
+		}
+		releaseEvents = append(releaseEvents, events...)
+		for agentID, agentUUID := range changed {
+			changedAgents[agentID] = agentUUID
 		}
 	}
 	newConfig := promrules.Config{Rules: req.Rules}
@@ -171,7 +219,7 @@ func (h *Handler) PutWorkspacePromQLRules(w http.ResponseWriter, r *http.Request
 	oldForAudit := stripRuleState(oldConfig)
 	newForAudit := stripRuleState(newConfig)
 	details, _ := json.Marshal(map[string]any{"old": oldForAudit, "new": newForAudit})
-	auditEvents := make([]service.Event, 0, 1+len(transitionEvents))
+	auditEvents := make([]service.Event, 0, 1+len(transitionEvents)+len(releaseEvents))
 	auditEvents = append(auditEvents, service.Event{
 		ID:          dbid.NewV7(),
 		WorkspaceID: workspaceUUID,
@@ -183,6 +231,7 @@ func (h *Handler) PutWorkspacePromQLRules(w http.ResponseWriter, r *http.Request
 		Details:     details,
 	})
 	auditEvents = append(auditEvents, transitionEvents...)
+	auditEvents = append(auditEvents, releaseEvents...)
 	if err := service.AppendAuditEvents(ctx, qtx, auditEvents...); err != nil {
 		slog.Error("audit workspace PromQL rule update failed", "workspace_id", workspaceID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to save PromQL rules")
@@ -193,9 +242,24 @@ func (h *Handler) PutWorkspacePromQLRules(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to save PromQL rules")
 		return
 	}
+	for _, agentID := range changedAgents {
+		h.TaskService.PublishPromQLRuleSchedulingChange(ctx, workspaceUUID, agentID)
+	}
 	writeJSON(w, http.StatusOK, workspacePromQLRulesResponse{
 		Rules: newConfig.Rules, PrometheusConfigured: h.Prometheus != nil && h.Prometheus.Enabled(),
 	})
+}
+
+func ruleHasFiringState(rule promrules.Rule) bool {
+	if rule.State.Firing {
+		return true
+	}
+	for _, state := range rule.AgentStates {
+		if state.Firing {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) PreviewWorkspacePromQLRule(w http.ResponseWriter, r *http.Request) {

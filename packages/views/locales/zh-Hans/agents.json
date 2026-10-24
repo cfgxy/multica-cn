@@ -737,7 +737,15 @@
       "event_cleared": "解除抑制",
       "event_line": "{{samples}} 条样本，错误率 {{rate}}% · {{when}}",
       "loading_title": "正在加载背压策略",
-      "loading_body": "策略与当前窗口读数到达后卡片将显示。"
+      "loading_body": "策略与当前窗口读数到达后卡片将显示。",
+      "promql_selection_title": "此智能体受影响的高级规则",
+      "promql_selection_empty": "当前工作区没有可选的高级规则。",
+      "promql_rules_title": "高级规则状态",
+      "promql_rules_empty": "此智能体尚未选择高级规则。",
+      "promql_status": "状态：{{status}}",
+      "promql_source_active": "暂停来源生效中：{{reason}} · {{enteredAt}}",
+      "promql_mapping_mismatch": "没有当前已验证的 agent_id 映射；此规则无法暂停该智能体。",
+      "promql_source_clear": "此规则当前没有生效的暂停来源。"
     },
     "skills": {
       "intro": "这里展示该智能体实际拥有的全部 skill。工作区 skill 可在此管理；从 Codex 和 Claude Code 继承的 skill 也可以按智能体单独关闭。",

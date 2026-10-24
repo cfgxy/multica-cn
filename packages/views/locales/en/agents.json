@@ -753,7 +753,15 @@
       "event_cleared": "Cleared",
       "event_line": "{{samples}} samples at {{rate}}% · {{when}}",
       "loading_title": "Loading backpressure policy",
-      "loading_body": "The card appears once the policy and the current window reading arrive."
+      "loading_body": "The card appears once the policy and the current window reading arrive.",
+      "promql_selection_title": "Advanced rules for this agent",
+      "promql_selection_empty": "No advanced workspace rules are available.",
+      "promql_rules_title": "Advanced rule status",
+      "promql_rules_empty": "No advanced rules are selected for this agent.",
+      "promql_status": "Status: {{status}}",
+      "promql_source_active": "Pause source active: {{reason}} · {{enteredAt}}",
+      "promql_mapping_mismatch": "No current verified agent_id mapping; this rule cannot pause this agent.",
+      "promql_source_clear": "No active pause source for this rule."
     },
     "skills": {
       "intro": "This is the agent's effective skill set. Workspace skills are managed here; inherited Codex and Claude Code skills can also be turned off per agent.",

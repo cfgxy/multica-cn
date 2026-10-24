@@ -47,11 +47,12 @@ const (
 // workspace: whether a freeze is active, at which scope, who froze it and
 // how much queued work is currently held back.
 type SchedulingState struct {
-	Paused    bool   `json:"paused"`
-	Scope     string `json:"scope,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	CreatedBy string `json:"created_by,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
+	Paused           bool   `json:"paused"`
+	PromQLRulePaused bool   `json:"promql_rule_paused"`
+	Scope            string `json:"scope,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	CreatedBy        string `json:"created_by,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty"`
 	// QueuedCount is the frozen queue depth: queued tasks that the fence is
 	// holding back. Reported regardless of pause state (an unpaused agent's
 	// count is just its live queue length); the UI renders it as frozen
@@ -399,6 +400,25 @@ func readSchedulingState(ctx context.Context, qtx *db.Queries, workspaceID pgtyp
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("read scheduling pause: %w", err)
 		}
+		promQLPauses, err := qtx.ListAgentPromQLRulePauses(ctx, db.ListAgentPromQLRulePausesParams{
+			WorkspaceID: workspaceID,
+			AgentID:     *agentID,
+		})
+		if err != nil {
+			return fmt.Errorf("read PromQL rule pauses: %w", err)
+		}
+		if len(promQLPauses) > 0 {
+			state.PromQLRulePaused = true
+			if !state.Paused {
+				state.Paused = true
+				state.Scope = SchedulingPauseScopeAgent
+				state.Reason = "promql_rule"
+				if promQLPauses[0].EnteredAt.Valid {
+					state.CreatedAt = promQLPauses[0].EnteredAt.Time.UTC().Format(time.RFC3339)
+				}
+			}
+		}
+
 		q, err := qtx.CountQueuedTasksForAgent(ctx, *agentID)
 		if err != nil {
 			return fmt.Errorf("count queued tasks: %w", err)
@@ -418,6 +438,25 @@ func readSchedulingState(ctx context.Context, qtx *db.Queries, workspaceID pgtyp
 	}
 	state.QueuedCount = q
 	return nil
+}
+
+// PublishPromQLRuleSchedulingChange invalidates a runtime's cached empty-claim
+// verdict and publishes the effective scheduling state after a source-owned
+// PromQL pause transition. The source row itself was already committed by the
+// worker or settings transaction; this is intentionally post-commit so a
+// daemon wakeup cannot observe a half-written source.
+func (s *TaskService) PublishPromQLRuleSchedulingChange(ctx context.Context, workspaceID, agentID pgtype.UUID) {
+	state, err := s.AgentSchedulingState(ctx, workspaceID, agentID)
+	if err != nil {
+		return
+	}
+	if !state.Paused {
+		if agent, err := s.Queries.GetAgent(ctx, agentID); err == nil && agent.RuntimeID.Valid {
+			s.notifyRuntimeMayHaveWork(agent.RuntimeID, "")
+		}
+	}
+	s.broadcastSchedulingChange(ctx, workspaceID, &agentID, SchedulingPauseScopeAgent,
+		state.Paused, state.Reason, state.QueuedCount)
 }
 
 func fillStateFromRow(state *SchedulingState, row db.SchedulingPause) {
