@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/agentcontext"
@@ -518,6 +519,7 @@ type voiceSessionPlan struct {
 	advanced     map[string]json.RawMessage
 	mcp          *voiceMCPBridge
 	tools        []map[string]any
+	skillRefs    []service.AgentSkillRefData
 	issueID      pgtype.UUID
 }
 
@@ -552,7 +554,7 @@ type voiceSessionGate struct {
 	target   *voiceTarget
 }
 
-// resolveVoiceSessionGate performs only read-only identity and voice checks.
+// resolveVoiceSessionGate performs identity, invocation, and voice checks.
 // Both preflight and session creation use this exact gate chain.
 func (h *Handler) resolveVoiceSessionGate(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID) (*voiceSessionGate, *voiceHandshakeError) {
 	if workspaceID == "" {
@@ -565,6 +567,12 @@ func (h *Handler) resolveVoiceSessionGate(ctx context.Context, userID, workspace
 	agentRow, err := h.Queries.GetAgent(ctx, agentUUID)
 	if err != nil || uuidToString(agentRow.WorkspaceID) != workspaceID {
 		return nil, &voiceHandshakeError{status: http.StatusNotFound, detail: "agent not found"}
+	}
+	// A voice session lets the caller direct the agent and load its assigned
+	// skills, so it is an invocation rather than a view. Keep it on the same
+	// owner/allow-list boundary as chat, issue assignment, and @-mentions.
+	if !h.canInvokeAgent(ctx, agentRow, "member", userID, userID, workspaceID) {
+		return nil, &voiceHandshakeError{status: http.StatusForbidden, detail: "you do not have access to this agent"}
 	}
 
 	target, rejection, serverErr := h.resolveVoiceTarget(ctx, agentRow)
@@ -586,13 +594,22 @@ func (h *Handler) resolveVoiceSessionGate(ctx context.Context, userID, workspace
 }
 
 // openVoiceSession creates the gateway-relayed live session after the shared
-// read-only gate chain has passed. (RUYI-692 D1 ②: every session is gateway.)
+// authorization and voice gate chain has passed. (RUYI-692 D1 ②: every session is gateway.)
 // chatSessionRaw and issueRaw are optional. An invalid contextual link degrades
 // to the existing plain-voice behavior rather than changing the voice gate.
 func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID, chatSessionRaw, issueRaw, callerToken string) (*voiceSessionPlan, *voiceHandshakeError) {
 	gate, hsErr := h.resolveVoiceSessionGate(ctx, userID, workspaceID, agentUUID)
 	if hsErr != nil {
 		return nil, hsErr
+	}
+	if h.TaskService == nil {
+		slog.Error("voice skill catalog service is unavailable", "agent_id", uuidToString(agentUUID))
+		return nil, &voiceHandshakeError{status: http.StatusServiceUnavailable, detail: "voice session unavailable due to a server configuration problem"}
+	}
+	_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(ctx, agentUUID)
+	if err != nil {
+		slog.Error("voice skill catalog load failed", "agent_id", uuidToString(agentUUID), "error", err)
+		return nil, &voiceHandshakeError{status: http.StatusServiceUnavailable, detail: "voice session unavailable due to a server configuration problem"}
 	}
 	model := gate.target.model
 	session, err := h.Queries.CreateLiveSession(ctx, db.CreateLiveSessionParams{
@@ -614,7 +631,7 @@ func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID stri
 		slog.Error("create live session failed", "agent_id", uuidToString(agentUUID), "error", err)
 		return nil, &voiceHandshakeError{status: http.StatusInternalServerError, detail: "failed to start voice session"}
 	}
-	plan := &voiceSessionPlan{session: session, target: gate.target, apiKey: gate.target.apiKey, instructions: gate.agentRow.Instructions, model: model, advanced: gate.target.advanced, issueID: h.resolveVoiceIssueContext(ctx, userID, workspaceID, issueRaw)}
+	plan := &voiceSessionPlan{session: session, target: gate.target, apiKey: gate.target.apiKey, instructions: gate.agentRow.Instructions, model: model, advanced: gate.target.advanced, skillRefs: skillRefs, issueID: h.resolveVoiceIssueContext(ctx, userID, workspaceID, issueRaw)}
 	plan.tools = prepareVoiceToolDeclarations(ctx, plan, callerToken)
 	return plan, nil
 }
@@ -1166,12 +1183,9 @@ func (h *Handler) relayVoiceSessionConn(
 			return
 		}
 		contextInjected = true
-		// RUYI-874 link ②: a chat-linked session opens with that
-		// conversation's rich context (project, recent messages with
-		// semantic mentions, the agent's skill surface, image parts) —
-		// everything the chat input box carries, under the caller's own
-		// access. No link or nothing to render → the plain voice summary
-		// section (existing behavior, §3.6 "never invent continuity").
+		// RUYI-874 link ②: a chat-linked session opens with its conversation
+		// context (project, recent messages with semantic mentions, images),
+		// while every entry point receives the same hash-pinned skill catalog.
 		var parts []map[string]any
 		if ctx := h.composeVoiceChatContext(r.Context(), session); ctx != nil {
 			if strings.TrimSpace(ctx.Text) != "" {
@@ -1185,6 +1199,9 @@ func (h *Handler) relayVoiceSessionConn(
 			if strings.TrimSpace(ctx.Text) != "" {
 				parts = append(parts, map[string]any{"text": ctx.Text})
 			}
+		}
+		if catalog := voiceSkillCatalogContext(plan.skillRefs); catalog != "" {
+			parts = append(parts, map[string]any{"text": catalog})
 		}
 		if len(parts) == 0 {
 			section := h.loadVoiceSessionSection(r.Context(), session.WorkspaceID, session.AgentID)
@@ -1241,6 +1258,7 @@ func (h *Handler) relayVoiceSessionConn(
 				}
 			}
 			if frame.ToolCall != nil {
+				toolCallStartedAt := time.Now()
 				for _, call := range frame.ToolCall.FunctionCalls {
 					recordToolFrame(agentcontext.VoiceToolFrame{Name: call.Name, CallID: call.ID, Args: call.Args})
 				}
@@ -1262,7 +1280,7 @@ func (h *Handler) relayVoiceSessionConn(
 					markBridgeCall(call.ID)
 					var result json.RawMessage
 					if call.Name == "load_skill" {
-						result, _ = h.executeVoiceSkill(execCtx, session, call.Args)
+						result, _ = h.executeVoiceSkill(execCtx, session, plan.skillRefs, call.Args)
 					} else if plan.mcp == nil {
 						result = voiceToolError("unavailable", "Multica MCP is unavailable for this voice session")
 					} else if result, err = plan.mcp.call(execCtx, call.Name, call.Args); err != nil || result == nil {
@@ -1291,6 +1309,10 @@ func (h *Handler) relayVoiceSessionConn(
 						clientConn.Close()
 						return
 					}
+					slog.Info("voice function responses sent",
+						"session_id", uuidToString(session.ID),
+						"function_count", len(responses),
+						"latency_ms", time.Since(toolCallStartedAt).Milliseconds())
 				}
 			}
 			if content := frame.ServerContent; content != nil {

@@ -25,9 +25,6 @@ import (
 //   - the bound project (chat_session.project_id);
 //   - the recent conversation, with @agent mentions rendered SEMANTICALLY
 //     (a mention is an action, not raw markdown the model has to guess at);
-//   - the agent's skill surface (names only — the model must know the
-//     skills exist; the skill text itself is pulled on demand, the same
-//     way the task runner injects it);
 //   - the session's image attachments, as inlineData parts capped by a
 //     byte budget so one conversation cannot blow the live turn.
 //
@@ -160,16 +157,6 @@ func (h *Handler) composeVoiceChatContext(ctx context.Context, session db.LiveSe
 			fmt.Fprintf(&b, "%s: %s\n", m.Role, stripVoiceMentionLinks(m.Content))
 		}
 		b.WriteString("\n")
-	}
-
-	// 3) the agent's skill surface — names only, the injection tells the
-	// model what it can rely on without pasting every skill body.
-	if skills, serr := h.Queries.ListAgentSkills(ctx, chat.AgentID); serr == nil && len(skills) > 0 {
-		skillNames := make([]string, 0, len(skills))
-		for _, s := range skills {
-			skillNames = append(skillNames, s.Name)
-		}
-		fmt.Fprintf(&b, "The chat agent has these skills available: %s\n\n", strings.Join(skillNames, ", "))
 	}
 
 	out := &voiceChatContext{Text: strings.TrimRight(b.String(), "\n")}

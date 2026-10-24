@@ -393,7 +393,7 @@ func TestVoiceGateway_InjectsInitialContextTurnAfterSetupComplete(t *testing.T) 
 	}
 }
 
-func TestVoiceGateway_NoContextTurnWhenNothingToProject(t *testing.T) {
+func TestVoiceGateway_InjectsSkillCatalogWhenNothingElseToProject(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -408,12 +408,15 @@ func TestVoiceGateway_NoContextTurnWhenNothingToProject(t *testing.T) {
 		t.Fatalf("expected setupComplete, got %v (%v)", first, err)
 	}
 
-	// §3.6: the brief never invents content — no prior session, no turn.
-	waitFor(t, 2*time.Second, func() bool { return true })
+	waitFor(t, 5*time.Second, func() bool {
+		provider.mu.Lock()
+		defer provider.mu.Unlock()
+		return len(provider.clientMsgs) == 1
+	})
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	if len(provider.clientMsgs) != 0 {
-		t.Fatalf("provider received %d upstream frames, want 0 (nothing to project)", len(provider.clientMsgs))
+	if len(provider.clientMsgs) != 1 || !strings.Contains(string(provider.clientMsgs[0]), "### Available agent skills") {
+		t.Fatalf("provider messages = %q, want one hash-pinned skill catalog", provider.clientMsgs)
 	}
 }
 

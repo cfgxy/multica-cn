@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -151,40 +152,99 @@ func voiceSkillFunctionDeclaration() map[string]any {
 	return map[string]any{
 		"name":        "load_skill",
 		"description": "Load the complete instructions for one skill assigned to this agent before following it.",
-		"parameters":  map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string", "description": "Assigned skill name."}}, "required": []string{"name"}},
+		"parameters": map[string]any{"type": "object", "properties": map[string]any{
+			"id":     map[string]any{"type": "string", "description": "Skill id from the injected skill catalog."},
+			"source": map[string]any{"type": "string", "description": "Skill source from the injected skill catalog."},
+			"hash":   map[string]any{"type": "string", "description": "Pinned bundle hash from the injected skill catalog."},
+		}, "required": []string{"id", "source", "hash"}},
 	}
 }
 
-func (h *Handler) executeVoiceSkill(ctx context.Context, session db.LiveSession, rawArgs json.RawMessage) (json.RawMessage, error) {
+func (h *Handler) executeVoiceSkill(ctx context.Context, session db.LiveSession, catalog []service.AgentSkillRefData, rawArgs json.RawMessage) (json.RawMessage, error) {
 	var args struct {
-		Name string `json:"name"`
+		ID     string `json:"id"`
+		Source string `json:"source"`
+		Hash   string `json:"hash"`
 	}
-	if err := json.Unmarshal(rawArgs, &args); err != nil || strings.TrimSpace(args.Name) == "" {
-		return voiceToolError("invalid_arguments", "load_skill requires a skill name"), nil
+	if err := json.Unmarshal(rawArgs, &args); err != nil || strings.TrimSpace(args.ID) == "" || strings.TrimSpace(args.Source) == "" || strings.TrimSpace(args.Hash) == "" {
+		return voiceToolError("invalid_arguments", "load_skill requires a catalog id, source, and hash"), nil
 	}
-	skills, err := h.Queries.ListAgentSkills(ctx, session.AgentID)
-	if err != nil {
-		return voiceToolError("internal", "could not load assigned skills"), nil
+	if h.TaskService == nil {
+		return voiceToolError("internal", "skill loader is unavailable"), nil
 	}
-	for _, skill := range skills {
-		if skill.Name == args.Name {
-			files, err := h.Queries.ListSkillFiles(ctx, skill.ID)
-			if err != nil {
-				return voiceToolError("internal", "could not load assigned skill files"), nil
+	// The catalog was injected when the session opened, but access may be
+	// revoked while the relay remains connected. Re-read the agent and use the
+	// canonical invoke gate before exposing any assigned skill content.
+	if !session.UserID.Valid || !session.WorkspaceID.Valid {
+		return voiceToolError("forbidden", "you no longer have access to this agent"), nil
+	}
+	userID := uuidToString(session.UserID)
+	workspaceID := uuidToString(session.WorkspaceID)
+	if _, err := h.getWorkspaceMember(ctx, userID, workspaceID); err != nil {
+		return voiceToolError("forbidden", "you no longer have access to this agent"), nil
+	}
+	agent, err := h.Queries.GetAgent(ctx, session.AgentID)
+	if err != nil || uuidToString(agent.WorkspaceID) != uuidToString(session.WorkspaceID) ||
+		!h.canInvokeAgent(ctx, agent, "member", userID, userID, workspaceID) {
+		return voiceToolError("forbidden", "you no longer have access to this agent"), nil
+	}
+	advertised := false
+	for _, ref := range catalog {
+		if ref.ID == args.ID && ref.Source == args.Source {
+			if ref.Hash != args.Hash {
+				return voiceToolError("conflict", "skill bundle hash does not match the injected catalog"), nil
 			}
-			contents := make([]map[string]string, 0, len(files))
-			for _, file := range files {
-				contents = append(contents, map[string]string{"path": file.Path, "content": file.Content})
-			}
-			return json.Marshal(map[string]any{
-				"name":        skill.Name,
-				"description": skill.Description,
-				"content":     skill.Content,
-				"files":       contents,
-			})
+			advertised = true
+			break
 		}
 	}
-	return voiceToolError("not_found", "skill is not assigned to this agent"), nil
+	if !advertised {
+		return voiceToolError("not_found", "skill is not assigned to this agent"), nil
+	}
+	allowed, err := h.TaskService.LoadRequestedAgentSkillBundles(ctx, session.AgentID, []service.AgentSkillBundleRef{{
+		ID:     args.ID,
+		Source: args.Source,
+	}})
+	if err != nil {
+		return voiceToolError("internal", "could not load assigned skill bundle"), nil
+	}
+	skill, ok := allowed[service.AgentSkillBundleKey(args.Source, args.ID)]
+	if !ok {
+		return voiceToolError("not_found", "skill is not assigned to this agent"), nil
+	}
+	if skill.Hash != args.Hash {
+		return voiceToolError("conflict", "skill bundle hash does not match the injected catalog"), nil
+	}
+	return json.Marshal(map[string]any{
+		"id":          skill.ID,
+		"source":      skill.Source,
+		"hash":        skill.Hash,
+		"name":        skill.Name,
+		"description": skill.Description,
+		"content":     skill.Content,
+		"files":       skill.Files,
+	})
+}
+
+func voiceSkillCatalogContext(refs []service.AgentSkillRefData) string {
+	if len(refs) == 0 {
+		return ""
+	}
+	catalog := make([]map[string]string, 0, len(refs))
+	for _, ref := range refs {
+		catalog = append(catalog, map[string]string{
+			"id":          ref.ID,
+			"source":      ref.Source,
+			"hash":        ref.Hash,
+			"name":        ref.Name,
+			"description": ref.Description,
+		})
+	}
+	raw, err := json.Marshal(catalog)
+	if err != nil {
+		return ""
+	}
+	return "### Available agent skills\nLoad a listed skill with load_skill before following its instructions. Use its exact id, source, and hash.\n" + string(raw)
 }
 
 func voiceToolError(code, message string) json.RawMessage {

@@ -529,9 +529,10 @@ func TestVoiceChatContext_RichInjection(t *testing.T) {
 	if strings.Contains(turn, "mention://agent") {
 		t.Errorf("raw markdown mention leaked to the model: %s", turn)
 	}
-	// 3) the skill surface — the name the model must know it can rely on.
-	if !strings.Contains(turn, "voice-anchor-skill") {
-		t.Errorf("skill name missing: %s", turn)
+	// 3) the Skill catalog is assembled independently of the chat link and
+	// carries the exact identity required by load_skill.
+	if !strings.Contains(turn, "### Available agent skills") || !strings.Contains(turn, "voice-anchor-skill") || !strings.Contains(turn, `"source":"workspace"`) {
+		t.Errorf("workspace skill catalog missing or incomplete: %s", turn)
 	}
 	// 4) both images within budget, as inlineData parts.
 	if n := strings.Count(turn, "inlineData"); n != 2 {
@@ -812,6 +813,9 @@ func TestVoiceIssueContextInjection(t *testing.T) {
 		if !strings.Contains(contextTurn, want) {
 			t.Errorf("Issue context omitted %q: %s", want, contextTurn)
 		}
+	}
+	if !strings.Contains(contextTurn, "### Available agent skills") || !strings.Contains(contextTurn, `"source":"builtin"`) {
+		t.Errorf("Issue entry omitted the builtin skill catalog: %s", contextTurn)
 	}
 	conn.Close()
 }
