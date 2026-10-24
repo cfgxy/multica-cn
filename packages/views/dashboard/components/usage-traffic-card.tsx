@@ -32,7 +32,13 @@ type TrafficDim = DashboardUsageTrafficDim;
  * (the observability convention), while cost and task counts are so small
  * per-second that per-hour reads better ($12/h, not $0.0033/s).
  */
-export function UsageTrafficCard({ wsId }: { wsId: string }) {
+export function UsageTrafficCard({
+  wsId,
+  unknownCallCount,
+}: {
+  wsId: string;
+  unknownCallCount: number;
+}) {
   const { t } = useT("usage");
   const [window, setWindow] = useState<UsageMetricWindow>("1h");
   const [by, setBy] = useState<TrafficDim>("provider");
@@ -78,7 +84,8 @@ export function UsageTrafficCard({ wsId }: { wsId: string }) {
         </div>
       </div>
       {query.isPending ? (
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
+          <Skeleton className="aspect-[3/1] rounded-md" />
           <Skeleton className="aspect-[3/1] rounded-md" />
           <Skeleton className="aspect-[3/1] rounded-md" />
           <Skeleton className="aspect-[3/1] rounded-md" />
@@ -88,7 +95,7 @@ export function UsageTrafficCard({ wsId }: { wsId: string }) {
       ) : !hasAny ? (
         <MetricPanelMessage text={t(($) => $.metrics.no_data)} />
       ) : (
-        <div className="grid gap-4 lg:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-4">
           <TrafficTile
             title={t(($) => $.metrics.traffic.tokens)}
             input={series.tokens_per_second ?? []}
@@ -112,6 +119,21 @@ export function UsageTrafficCard({ wsId }: { wsId: string }) {
             formatY={(v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1))}
             formatTooltipValue={(v) => `${v.toFixed(1)}/h`}
           />
+          <TrafficTile
+            title={t(($) => $.metrics.traffic.calls)}
+            input={series.calls_per_second ?? []}
+            nameOf={(labels) => dimLabelOf(labels)}
+            scale={3600}
+            formatY={(v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1))}
+            formatTooltipValue={(v) => `${v.toFixed(1)}/h`}
+            hint={
+              unknownCallCount > 0
+                ? t(($) => $.metrics.traffic.calls_unknown_hint, {
+                    unknown: unknownCallCount,
+                  })
+                : undefined
+            }
+          />
         </div>
       )}
     </div>
@@ -125,6 +147,7 @@ function TrafficTile({
   scale = 1,
   formatY,
   formatTooltipValue,
+  hint,
 }: {
   title: string;
   input: UsageMetricSeries[];
@@ -134,6 +157,7 @@ function TrafficTile({
   scale?: number;
   formatY: (v: number) => string;
   formatTooltipValue: (v: number) => string;
+  hint?: string;
 }) {
   const { t } = useT("usage");
   const named = topNamedSeries(input, (s) => nameOf(s.labels), (s) =>
@@ -144,6 +168,7 @@ function TrafficTile({
       <div className="min-w-0">
         <p className="mb-1 text-caption font-medium text-muted-foreground">{title}</p>
         <p className="text-caption text-muted-foreground">{t(($) => $.metrics.no_data)}</p>
+        {hint ? <p className="mt-1 text-micro text-muted-foreground">{hint}</p> : null}
       </div>
     );
   const rows = mergeMetricRows(
@@ -161,6 +186,7 @@ function TrafficTile({
         formatY={formatY}
         formatTooltipValue={formatTooltipValue}
       />
+      {hint ? <p className="mt-1 text-micro text-muted-foreground">{hint}</p> : null}
     </div>
   );
 }

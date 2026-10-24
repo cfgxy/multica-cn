@@ -64,7 +64,8 @@ func runtimeHeldByBackpressure(rt db.AgentRuntime, now time.Time) bool {
 }
 
 // hydrateQueuedBackpressureReasons stamps QueuedReason on queued rows whose
-// agent's CURRENT runtime is held by a fresh backpressure report (RUYI-397).
+// agent's CURRENT runtime is held by host backpressure or a complete
+// provider-call budget (RUYI-397/RUYI-870).
 // The agent row — not the task's enqueued runtime_id — is the binding
 // authority (RUYI-224), so the resolution goes agent -> runtime in two batch
 // queries bounded by the response page. Best-effort decoration: any failure
@@ -111,16 +112,20 @@ func (h *Handler) hydrateQueuedBackpressureReasons(ctx context.Context, resp []A
 		return
 	}
 	now := time.Now()
-	held := make(map[string]bool, len(runtimes))
+	hostHeld := make(map[string]bool, len(runtimes))
 	for _, rt := range runtimes {
-		held[uuidToString(rt.ID)] = runtimeHeldByBackpressure(rt, now)
+		hostHeld[uuidToString(rt.ID)] = runtimeHeldByBackpressure(rt, now)
 	}
+	budgetHeld := h.runtimeModelCallBudgetHolds(ctx, runtimes, now)
 	for i := range resp {
 		if resp[i].Status != "queued" {
 			continue
 		}
-		if held[binding[resp[i].AgentID]] {
+		runtimeID := binding[resp[i].AgentID]
+		if hostHeld[runtimeID] {
 			resp[i].QueuedReason = string(dispatch.ReasonRuntimeBackpressure)
+		} else if budgetHeld[runtimeID] {
+			resp[i].QueuedReason = string(dispatch.ReasonRuntimeModelCallBudget)
 		}
 	}
 }

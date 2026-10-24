@@ -147,6 +147,20 @@ var concurrentMigrationPrefixGroups = map[string]struct {
 		issue: "RUYI-843",
 		stems: []string{"980_runtime_concurrency_limit"},
 	},
+	"987": {
+		issue: "RUYI-870",
+		stems: []string{
+			"987_runtime_model_call_budget",
+			"987_task_usage_model_call_count",
+			"987_task_usage_model_call_evidence_index",
+		},
+		concurrentIndexes: []string{
+			"987_task_usage_model_call_evidence_index",
+		},
+		supportingStems: []string{
+			"987_runtime_model_call_budget",
+		},
+	},
 	"994": {
 		issue: "RUYI-891",
 		stems: []string{
