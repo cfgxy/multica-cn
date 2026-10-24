@@ -44,6 +44,12 @@ ALTER TABLE task_usage_hourly
     ADD COLUMN IF NOT EXISTS model_call_count       BIGINT NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS model_call_unknown_count BIGINT NOT NULL DEFAULT 0;
 
+-- Existing buckets predate provider call evidence. Preserve their event count
+-- as unknown inputs instead of presenting the new default zeros as known data.
+UPDATE task_usage_hourly
+   SET model_call_unknown_count = event_count
+ WHERE event_count > 0;
+
 COMMENT ON COLUMN task_usage_hourly.model_call_count IS
     'Sum of model_call_count over the rows in this bucket that had one; 0 when none did.';
 COMMENT ON COLUMN task_usage_hourly.model_call_unknown_count IS
