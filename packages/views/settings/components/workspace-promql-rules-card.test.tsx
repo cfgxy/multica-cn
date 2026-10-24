@@ -126,15 +126,26 @@ describe("WorkspacePromQLRulesCard", () => {
 
   it("saves the explicit rule draft after an administrator changes it", async () => {
     const user = userEvent.setup();
+    m.response = {
+      rules: [
+        ruleFixture(),
+        ruleFixture({
+          id: "4be045a3-3503-497e-8691-7c0ddc49420f",
+          name: "Queue pressure",
+        }),
+      ],
+      prometheus_configured: true,
+    };
     mount(true);
 
-    const enabled = await screen.findByRole("switch", { name: "Enable rule" });
+    const enabled = await screen.findByRole("switch", { name: "Enable rule: Task failures" });
     await user.click(enabled);
     await user.click(screen.getByRole("button", { name: "Save rules" }));
 
     await waitFor(() => expect(m.save).toHaveBeenCalledTimes(1));
     expect(m.save).toHaveBeenCalledWith([
       expect.objectContaining({ id: "d83e82a2-3109-4a65-b272-c437a52a0f83", enabled: false }),
+      expect.objectContaining({ id: "4be045a3-3503-497e-8691-7c0ddc49420f", enabled: true }),
     ]);
   });
 });
