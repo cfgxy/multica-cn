@@ -40,6 +40,51 @@ describe("ApiClient cookie-auth transport", () => {
   });
 });
 
+describe("ApiClient workspace PromQL rules compatibility", () => {
+  it("falls back safely when a newer server returns a malformed rule response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ rules: [{ id: 7 }], prometheus_configured: "yes" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.getWorkspacePromQLRules()).resolves.toEqual({
+      rules: [],
+      prometheus_configured: false,
+    });
+  });
+
+  it("uses a safe preview fallback for a malformed preview response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ query: 9, samples: [{ value: "many" }], matches: "yes" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(
+      client.previewWorkspacePromQLRule({
+        id: "d83e82a2-3109-4a65-b272-c437a52a0f83",
+        name: "Failures",
+        enabled: true,
+        metric: "failures",
+        grouping: "workspace",
+        condition: "present",
+        lookback_seconds: 300,
+        evaluation_seconds: 30,
+        for_seconds: 0,
+        no_data_policy: "keep",
+        query_error_policy: "keep",
+      }),
+    ).resolves.toEqual({ query: "", samples: [], matches: false });
+  });
+});
+
 describe("ApiClient agent conversation-starter compatibility", () => {
   const prompt = {
     label: "Review a PR",

@@ -115,6 +115,9 @@ import type {
   SelfEvolutionModelConfigSave,
   WorkspaceBackpressureSettings,
   WorkspaceBackpressureSettingsSave,
+  WorkspacePromQLRuleSave,
+  WorkspacePromQLRules,
+  WorkspacePromQLRulePreview,
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
@@ -461,6 +464,8 @@ import {
   RuntimeHourlyActivityListSchema,
   RuntimeBackpressureSettingsSchema,
   RuntimeBackpressureEventListSchema,
+  WorkspacePromQLRulesSchema,
+  WorkspacePromQLRulePreviewSchema,
   AgentBackpressurePolicySchema,
   AgentBackpressureEventListSchema,
   RuntimeUsageByAgentListSchema,
@@ -7554,5 +7559,38 @@ export class ApiClient {
       ...save,
       custom: true,
     }, { endpoint: "PUT /api/workspace/backpressure-settings" });
+  }
+
+  async getWorkspacePromQLRules(): Promise<WorkspacePromQLRules> {
+    const raw = await this.fetch<unknown>("/api/workspace/promql-rules");
+    return parseWithFallback(raw, WorkspacePromQLRulesSchema, {
+      rules: [],
+      prometheus_configured: false,
+    }, { endpoint: "GET /api/workspace/promql-rules" });
+  }
+
+  async putWorkspacePromQLRules(rules: WorkspacePromQLRuleSave[]): Promise<WorkspacePromQLRules> {
+    const raw = await this.fetch<unknown>("/api/workspace/promql-rules", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rules }),
+    });
+    return parseWithFallback(raw, WorkspacePromQLRulesSchema, {
+      rules: rules.map((rule) => ({ ...rule, state: { firing: false } })),
+      prometheus_configured: false,
+    }, { endpoint: "PUT /api/workspace/promql-rules" });
+  }
+
+  async previewWorkspacePromQLRule(rule: WorkspacePromQLRuleSave): Promise<WorkspacePromQLRulePreview> {
+    const raw = await this.fetch<unknown>("/api/workspace/promql-rules/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rule }),
+    });
+    return parseWithFallback(raw, WorkspacePromQLRulePreviewSchema, {
+      query: "",
+      samples: [],
+      matches: false,
+    }, { endpoint: "POST /api/workspace/promql-rules/preview" });
   }
 }

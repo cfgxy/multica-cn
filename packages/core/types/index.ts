@@ -532,3 +532,16 @@ export type {
   WorkspaceBackpressureSettings,
   WorkspaceBackpressureSettingsSave,
 } from "./workspace-backpressure";
+export type {
+  PromQLRuleMetric,
+  PromQLRuleGrouping,
+  PromQLRuleCondition,
+  PromQLRuleComparison,
+  PromQLRulePolicy,
+  PromQLRuleSample,
+  PromQLRuleState,
+  WorkspacePromQLRule,
+  WorkspacePromQLRuleSave,
+  WorkspacePromQLRules,
+  WorkspacePromQLRulePreview,
+} from "./workspace-promql";

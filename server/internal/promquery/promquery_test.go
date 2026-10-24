@@ -77,6 +77,46 @@ func TestQueryRangeSurfacesPrometheusError(t *testing.T) {
 	}
 }
 
+func TestQueryInstantParsesVector(t *testing.T) {
+	var gotQuery, gotTime string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery, gotTime = r.URL.Query().Get("query"), r.URL.Query().Get("time")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[
+			{"metric":{"agent_id":"agent-1"},"value":[1760000000.125,"0.25"]},
+			{"metric":{"agent_id":"agent-2"},"value":[1760000000.125,"+Inf"]}
+		]}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	at := time.Unix(1760000000, 125000000)
+	series, err := c.QueryInstant(context.Background(), `sum(rate(foo[5m]))`, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != `sum(rate(foo[5m]))` || gotTime != "1760000000.125" {
+		t.Fatalf("request params mismatch: query=%q time=%q", gotQuery, gotTime)
+	}
+	if len(series) != 1 || series[0].Labels["agent_id"] != "agent-1" {
+		t.Fatalf("unexpected series: %+v", series)
+	}
+	if len(series[0].Points) != 1 || series[0].Points[0].Value != 0.25 {
+		t.Fatalf("unexpected sample: %+v", series[0].Points)
+	}
+}
+
+func TestQueryInstantRejectsMatrixResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+	}))
+	defer srv.Close()
+
+	if _, err := NewClient(srv.URL).QueryInstant(context.Background(), "up", time.Time{}); err == nil {
+		t.Fatal("expected non-vector response to fail")
+	}
+}
+
 func TestEscapeLabelValue(t *testing.T) {
 	for in, want := range map[string]string{
 		`plain`:  `plain`,
