@@ -163,7 +163,9 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 	} else if checkedOut && !sameAdoptionPath(path, root) {
 		return result, fmt.Errorf("adopt branch: branch %s is checked out at %s", adoption.Branch, path)
 	}
-	if err := rejectCompetingAdoptedContinuation(root, adoption.Branch, adoptionRecordOwner(adoption.TargetOwner)); err != nil {
+	continuation := adoptionRecordOwner(adoption.TargetOwner)
+	previousContinuationRecord, err := rejectCompetingAdoptedContinuation(root, adoption.Branch, continuation)
+	if err != nil {
 		return result, err
 	}
 
@@ -213,7 +215,7 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 		}
 		return result, fmt.Errorf("adopt branch: bind continuation task marker: %w", err)
 	}
-	if err := updateAdoptedBranchRecord(root, adoption.Branch, oldRecordRef, newRecord, adoptionRecordOwner(adoption.TargetOwner)); err != nil {
+	if err := updateAdoptedBranchRecord(root, adoption.Branch, oldRecordRef, newRecord, continuation, previousContinuationRecord); err != nil {
 		markerRollbackErr := writeMarkerFileAtomic(adoption.MarkerPath, markerBefore)
 		checkoutRollbackErr := restoreCheckout()
 		if markerRollbackErr != nil || checkoutRollbackErr != nil {
@@ -235,15 +237,16 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 // rejectCompetingAdoptedContinuation keeps one continuation task on one adopted
 // work line. Overwriting a live discovery mapping would leave the first branch
 // owned but unreachable to later Prepare calls.
-func rejectCompetingAdoptedContinuation(gitRoot, branch string, continuation branchOwner) error {
+func rejectCompetingAdoptedContinuation(gitRoot, branch string, continuation branchOwner) (string, error) {
+	previous := runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", adoptedContinuationRef(continuation))
 	existing := adoptedContinuationBranch(gitRoot, continuation, nil)
 	if existing == "" || existing == branch {
-		return nil
+		return previous, nil
 	}
 	if _, owned := branchOwnedBy(gitRoot, existing, continuation, nil); owned {
-		return fmt.Errorf("adopt branch: continuation already owns adopted branch %s", existing)
+		return "", fmt.Errorf("adopt branch: continuation already owns adopted branch %s", existing)
 	}
-	return nil
+	return previous, nil
 }
 
 // adoptionRecordOwner deliberately excludes TaskID. Issue branches are owned by
@@ -336,11 +339,14 @@ func writeAdoptedBranchRecord(gitRoot, oldRecord, branch, checkpoint string, con
 	return record, nil
 }
 
-func updateAdoptedBranchRecord(gitRoot, branch, oldRecord, newRecord string, continuation branchOwner) error {
-	input := "start\n" +
-		fmt.Sprintf("update %s %s %s\n", userStateRef(branch), newRecord, oldRecord) +
-		fmt.Sprintf("update %s %s\n", adoptedContinuationRef(continuation), newRecord) +
-		"prepare\ncommit\n"
+func updateAdoptedBranchRecord(gitRoot, branch, oldRecord, newRecord string, continuation branchOwner, previousContinuationRecord string) error {
+	input := "start\n" + fmt.Sprintf("update %s %s %s\n", userStateRef(branch), newRecord, oldRecord)
+	if previousContinuationRecord == "" {
+		input += fmt.Sprintf("create %s %s\n", adoptedContinuationRef(continuation), newRecord)
+	} else {
+		input += fmt.Sprintf("update %s %s %s\n", adoptedContinuationRef(continuation), newRecord, previousContinuationRecord)
+	}
+	input += "prepare\ncommit\n"
 	if out, err := runGitInput(gitRoot, input, "update-ref", "--stdin"); err != nil {
 		return fmt.Errorf("adopt branch: atomically bind branch record: %s: %w", strings.TrimSpace(out), err)
 	}

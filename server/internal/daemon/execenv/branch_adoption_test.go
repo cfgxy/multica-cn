@@ -298,6 +298,45 @@ func TestAdoptManagedBranchRefusesCompetingContinuation(t *testing.T) {
 	}
 }
 
+func TestUpdateAdoptedBranchRecordUsesContinuationMappingCAS(t *testing.T) {
+	fixture := newBranchAdoptionFixture(t)
+	continuation := adoptionRecordOwner(fixture.adoption.TargetOwner)
+	newRecord, err := writeAdoptedBranchRecord(
+		fixture.repo,
+		fixture.sourceRecord,
+		fixture.branch,
+		fixture.tip,
+		fixture.adoption.TargetOwner,
+		fixture.adoption.SourceOwner.TaskID,
+	)
+	if err != nil {
+		t.Fatalf("writeAdoptedBranchRecord: %v", err)
+	}
+
+	mappingRef := adoptedContinuationRef(continuation)
+	gitRun(t, fixture.repo, "update-ref", mappingRef, fixture.sourceRecord)
+	if err := updateAdoptedBranchRecord(fixture.repo, fixture.branch, fixture.sourceRecord, newRecord, continuation, ""); err == nil {
+		t.Fatal("updateAdoptedBranchRecord succeeded after another process created the continuation mapping")
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.branch)); got != fixture.sourceRecord {
+		t.Fatalf("source record changed after mapping create conflict: got %s, want %s", got, fixture.sourceRecord)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", mappingRef); got != fixture.sourceRecord {
+		t.Fatalf("continuation mapping changed after create conflict: got %s, want %s", got, fixture.sourceRecord)
+	}
+
+	gitRun(t, fixture.repo, "update-ref", mappingRef, fixture.tip)
+	if err := updateAdoptedBranchRecord(fixture.repo, fixture.branch, fixture.sourceRecord, newRecord, continuation, fixture.sourceRecord); err == nil {
+		t.Fatal("updateAdoptedBranchRecord succeeded after another process replaced the continuation mapping")
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", userStateRef(fixture.branch)); got != fixture.sourceRecord {
+		t.Fatalf("source record changed after mapping update conflict: got %s, want %s", got, fixture.sourceRecord)
+	}
+	if got := gitRun(t, fixture.repo, "rev-parse", mappingRef); got != fixture.tip {
+		t.Fatalf("continuation mapping changed after update conflict: got %s, want %s", got, fixture.tip)
+	}
+}
+
 func TestAdoptManagedBranchRefusesBeforeBinding(t *testing.T) {
 	tests := []struct {
 		name   string
