@@ -33,7 +33,7 @@ func TestTaskUsageModelCallCountMigrationMarksExistingBucketsUnknown(t *testing.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
 		if _, err := adminPool.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+schemaIdent+" CASCADE"); err != nil {
-			t.Logf("drop schema %s: %v", schema, err)
+			t.Errorf("drop schema %s: %v", schema, err)
 		}
 		adminPool.Close()
 	})
