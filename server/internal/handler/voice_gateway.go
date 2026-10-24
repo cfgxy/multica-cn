@@ -470,6 +470,25 @@ func (h *Handler) StartVoiceSession(w http.ResponseWriter, r *http.Request) {
 	h.startVoiceSessionFirstFrame(w, r, agentUUID)
 }
 
+// PreflightVoiceSession checks the authenticated caller and voice gate without
+// creating a live session or opening a provider connection.
+func (h *Handler) PreflightVoiceSession(w http.ResponseWriter, r *http.Request) {
+	agentUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "agent_id")
+	if !ok {
+		return
+	}
+	userID := h.voiceRequestUserID(r)
+	if userID == "" {
+		writeErrorCode(w, http.StatusUnauthorized, "VOICE_AUTH_FAILED", "authentication required")
+		return
+	}
+	if _, hsErr := h.resolveVoiceSessionGate(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID); hsErr != nil {
+		hsErr.writeHTTP(w)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // voiceSessionPlan carries everything the relay needs once the §4.4 gate
 // chain has passed and the live session row exists. The resolved target
 // rides along so a provider dial failure can record the connectivity badge
@@ -511,13 +530,14 @@ func (e *voiceHandshakeError) writeHTTP(w http.ResponseWriter) {
 	writeError(w, e.status, e.detail)
 }
 
-// openVoiceSession runs the full guard chain — workspace membership, agent
-// existence, the §4.4 rule-3 initiation recheck, the actor-vs-runtime slot
-// check — and creates the gateway-relayed live session row. Identity and
-// workspace have already been resolved by the caller. The rejection order
-// mirrors the pre-RUYI-449 header path exactly. (RUYI-692 D1 ②: the direct
-// hand-off mode is gone; every session this creates is 'gateway'.)
-func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID) (*voiceSessionPlan, *voiceHandshakeError) {
+type voiceSessionGate struct {
+	agentRow db.Agent
+	target   *voiceTarget
+}
+
+// resolveVoiceSessionGate performs only read-only identity and voice checks.
+// Both preflight and session creation use this exact gate chain.
+func (h *Handler) resolveVoiceSessionGate(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID) (*voiceSessionGate, *voiceHandshakeError) {
 	if workspaceID == "" {
 		return nil, &voiceHandshakeError{status: http.StatusBadRequest, detail: "workspace_id is required"}
 	}
@@ -545,22 +565,31 @@ func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID stri
 	if target.runtime != nil && !canUseRuntimeForAgent(member, *target.runtime) {
 		return nil, &voiceHandshakeError{status: http.StatusForbidden, detail: "you cannot use this agent's voice runtime"}
 	}
+	return &voiceSessionGate{agentRow: agentRow, target: target}, nil
+}
 
-	model := target.model
+// openVoiceSession creates the gateway-relayed live session after the shared
+// read-only gate chain has passed. (RUYI-692 D1 ②: every session is gateway.)
+func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID) (*voiceSessionPlan, *voiceHandshakeError) {
+	gate, hsErr := h.resolveVoiceSessionGate(ctx, userID, workspaceID, agentUUID)
+	if hsErr != nil {
+		return nil, hsErr
+	}
+	model := gate.target.model
 	session, err := h.Queries.CreateLiveSession(ctx, db.CreateLiveSessionParams{
-		WorkspaceID:       agentRow.WorkspaceID,
-		AgentID:           agentRow.ID,
-		RuntimeInstanceID: target.sessionEntityID(),
+		WorkspaceID:       gate.agentRow.WorkspaceID,
+		AgentID:           gate.agentRow.ID,
+		RuntimeInstanceID: gate.target.sessionEntityID(),
 		UserID:            parseUUID(userID),
 		Model:             model,
-		ContextSnapshot:   liveSessionSnapshot(agentRow, target, model),
+		ContextSnapshot:   liveSessionSnapshot(gate.agentRow, gate.target, model),
 		Mode:              voiceSessionModeGateway,
 	})
 	if err != nil {
 		slog.Error("create live session failed", "agent_id", uuidToString(agentUUID), "error", err)
 		return nil, &voiceHandshakeError{status: http.StatusInternalServerError, detail: "failed to start voice session"}
 	}
-	return &voiceSessionPlan{session: session, target: target, apiKey: target.apiKey, instructions: agentRow.Instructions, model: model, advanced: target.advanced}, nil
+	return &voiceSessionPlan{session: session, target: gate.target, apiKey: gate.target.apiKey, instructions: gate.agentRow.Instructions, model: model, advanced: gate.target.advanced}, nil
 }
 
 // voiceRequestUserID resolves the caller identity from the request's bearer
