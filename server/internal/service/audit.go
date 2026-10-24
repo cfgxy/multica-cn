@@ -120,6 +120,12 @@ const (
 	AuditIssueSuspended             = "issue.suspended"
 	AuditIssueSuspensionResumed     = "issue.suspension_resumed"
 	AuditIssueSuspensionCancelled   = "issue.suspension_cancelled"
+	// RUYI-863: question-card lifecycle. Cancel is the member-side terminal
+	// act and restore flips a cancelled card back to open — both carry the
+	// acting member + the from/to status in details so the audit surface
+	// reconstructs the card's history without the answer echo comment.
+	AuditIssueDecisionCancelled = "issue.decision_cancelled"
+	AuditIssueDecisionRestored  = "issue.decision_restored"
 
 	// Ops domain: deployment anchoring.
 	AuditOpsServerStarted = "ops.server_started"
