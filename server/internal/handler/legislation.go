@@ -389,16 +389,20 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	}
 
 	if !res.OK() {
-		if _, err := qtx.MarkPromptProposalGateFailed(ctx, db.MarkPromptProposalGateFailedParams{
-			ID: p.ID, WorkspaceID: workspaceID,
-			Audit:       gateFailedAudit,
-			Errors:      mustJSON(res.Errors),
-			Warnings:    mustJSON(res.Warnings),
-			JevAdvisory: advisory,
-		}); err != nil {
-			slog.Error("gate_failed persist failed", append(logger.RequestAttrs(r), "error", err)...)
-		}
-		return false, res
+		return h.failGateInTx(ctx, r, qtx, workspaceID, p, res, gateFailedAudit, advisory)
+	}
+
+	// Reference contract (RUYI-869): the engine gate passed, but the
+	// enactment may still break the clause reference graph — a ref to a
+	// clause that leaves the active set, a cycle the proposal closes, or a
+	// clause body pointing back at its carrier's static section. Fail-closed
+	// against the post-enact universe; the row parks in gate_failed with the
+	// findings so the author reworks the text, never a silent drift.
+	if refErrs := h.refContractGate(ctx, qtx, workspaceID, p, texts, synth); len(refErrs) > 0 {
+		return h.failGateInTx(ctx, r, qtx, workspaceID, p, legislation.Result{
+			Errors:   refErrs,
+			Warnings: res.Warnings,
+		}, gateFailedAudit, advisory)
 	}
 
 	// Asset write first (the re-render reads the asset library for the full
@@ -436,6 +440,122 @@ func mergeGateResults(a, b legislation.Result) legislation.Result {
 	errs := append(append([]legislation.Finding{}, a.Errors...), b.Errors...)
 	warns := append(append([]legislation.Finding{}, a.Warnings...), b.Warnings...)
 	return legislation.Result{Errors: errs, Warnings: warns}
+}
+
+// failGateInTx persists a gate failure and reports it to the caller: one
+// funnel for both the engine gate and the reference-contract gate so the
+// audit/error reporting of a rejection stays single-sourced.
+func (h *Handler) failGateInTx(ctx context.Context, r *http.Request, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, res legislation.Result, audit []byte, advisory []byte) (bool, legislation.Result) {
+	if _, err := qtx.MarkPromptProposalGateFailed(ctx, db.MarkPromptProposalGateFailedParams{
+		ID: p.ID, WorkspaceID: workspaceID,
+		Audit:       audit,
+		Errors:      mustJSON(res.Errors),
+		Warnings:    mustJSON(res.Warnings),
+		JevAdvisory: advisory,
+	}); err != nil {
+		slog.Error("gate_failed persist failed", append(logger.RequestAttrs(r), "error", err)...)
+	}
+	return false, res
+}
+
+// refContractGate builds the post-enact reference universe of the proposal
+// and runs the legislation reference-contract check against it (RUYI-869).
+// It returns only the gate errors; an empty slice passes.
+//
+// Universe construction, per change kind (the post-enact state the runtime
+// would see if the enactment committed):
+//
+//   - add / migrate: the library is unchanged plus the new clause under its
+//     not-yet-minted alias; the binding lands on the source carrier.
+//   - revise: the clause keeps its slug, its body becomes the proposed one.
+//   - remove: the clause leaves the library; a surviving ref to it is a
+//     缺失引用 the check reports.
+//   - move: the clause keeps its slug, its binding lands on the target.
+//
+// Every carrier text the proposal re-renders (the engine's synthesis output)
+// joins the ordering check: when a marker region sits out of ascending-slug
+// order, re-rendering is no longer byte-stable and the proposal fails
+// closed. The static heading set of each touched carrier feeds the
+// 反向静态引用 check.
+func (h *Handler) refContractGate(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, texts, synth map[carrierRef]string) []legislation.Finding {
+	// The static universe: the workspace's active clauses. A read failure is
+	// fail-closed, not a skip.
+	rows, err := qtx.ListActiveWorkspaceClauses(ctx, workspaceID)
+	if err != nil {
+		return []legislation.Finding{{Level: "error", Message: fmt.Sprintf("条款引用契约检查失败，已阻断（fail-closed）：%v", err)}}
+	}
+	bodies := map[string]string{}
+	binding := map[string]string{}
+	for _, row := range rows {
+		bodies[row.Slug] = row.Content
+		binding[row.Slug] = carrierKey(row.Scope, row.ScopeID)
+	}
+
+	selfNode := "" // the proposal's clause slug, once known
+	selfBody := ""
+	switch p.ChangeKind {
+	case "add_clause", "migrate_clause":
+		// The slug is minted at asset write; the check runs under the alias.
+		selfBody = p.ClauseText
+	case "revise_clause", "move_clause", "remove_clause":
+		clause, err := resolveProposalClauseTx(ctx, qtx, workspaceID, p.ClauseID, p.ClauseName)
+		if err != nil {
+			return []legislation.Finding{{Level: "error", Message: fmt.Sprintf("条款引用契约检查失败，已阻断（fail-closed）：%v", err)}}
+		}
+		selfNode = clause.Slug
+		if p.ChangeKind == "revise_clause" {
+			selfBody = p.ClauseText
+		}
+	}
+
+	u := &legislation.RefUniverse{
+		Bodies:       bodies,
+		Binding:      binding,
+		Headings:     map[string][]string{},
+		Texts:        map[string]string{},
+		CurrentTexts: map[string]string{},
+		SelfSlug:     selfNode,
+		SelfBody:     selfBody,
+		SelfCarrier:  carrierKey(p.CarrierScope, p.CarrierScopeID),
+	}
+	// move_clause: the clause's post-enact binding is the destination.
+	if p.ChangeKind == "move_clause" && p.MoveToScope.Valid && selfNode != "" {
+		u.Binding[selfNode] = carrierKey(p.MoveToScope.String, p.MoveToScopeID)
+		u.SelfCarrier = u.Binding[selfNode]
+	}
+	// remove_clause: the clause leaves the library.
+	if p.ChangeKind == "remove_clause" && selfNode != "" {
+		delete(bodies, selfNode)
+		delete(binding, selfNode)
+	}
+	// The touched carriers' post-enact texts carry the ordering check and
+	// their static heading set the 反向静态引用 check; their pre-proposal
+	// texts (locked above) let the check tell inherited disorder from
+	// newly introduced disorder.
+	currentByKey := map[string]string{}
+	for ref, text := range texts {
+		currentByKey[carrierKey(ref.scope, ref.id)] = text
+	}
+	for ref, text := range synth {
+		key := carrierKey(ref.scope, ref.id)
+		u.Texts[key] = text
+		u.CurrentTexts[key] = currentByKey[key]
+		u.Headings[key] = legislation.Sections(text)
+	}
+	findings := legislation.CheckClauseRefs(u)
+	errs := make([]legislation.Finding, 0, len(findings))
+	for _, f := range findings {
+		if f.Level == "error" {
+			errs = append(errs, f)
+		}
+	}
+	return errs
+}
+
+// carrierKey is the RefUniverse's carrier identity: the scope name plus the
+// owning row's uuid, the same pairing clause_injection records.
+func carrierKey(scope string, scopeID pgtype.UUID) string {
+	return scope + "\x00" + uuidToString(scopeID)
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────

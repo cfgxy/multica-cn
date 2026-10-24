@@ -4901,6 +4901,10 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// tasks, TriggerCommentID threads the fallback under the original comment;
 	// for assignment-triggered tasks it is NULL and the fallback is top-level.
 	// Chat tasks have no IssueID and are handled separately below.
+	//
+	// Exception (RUYI-867): a task whose squad leader recorded a no_action
+	// evaluation is terminal by design — the evaluation record replaces the
+	// fallback comment, and the synthetic mention would only retrigger a run.
 	if task.IssueID.Valid {
 		noAction, noActionErr := HasSquadLeaderNoActionEvaluationForTask(ctx, s.Queries, task)
 		if noActionErr != nil {
@@ -4911,20 +4915,31 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 				"error", noActionErr,
 			)
 		}
-		agentCommented, _ := s.Queries.HasAgentCommentedSince(ctx, db.HasAgentCommentedSinceParams{
-			IssueID:  task.IssueID,
-			AuthorID: task.AgentID,
-			Since:    task.StartedAt,
-		})
-		if !agentCommented {
-			var payload protocol.TaskCompletedPayload
-			_ = json.Unmarshal(result, &payload)
-			body := util.UnescapeBackslashEscapes(payload.Output)
-			if noAction || strings.TrimSpace(body) == "" || isTrivialDoneOutput(body) {
-				body = "Run completed without a substantive comment."
+		// Exception (RUYI-867): a task whose squad leader recorded a no_action
+		// evaluation is terminal by design — the evaluation record replaces the
+		// fallback comment, and the synthetic mention would only retrigger a run.
+		if noAction {
+			slog.Info("skipping completion fallback comment: squad leader no_action evaluation recorded",
+				"task_id", util.UUIDToString(task.ID),
+				"issue_id", util.UUIDToString(task.IssueID),
+				"agent_id", util.UUIDToString(task.AgentID),
+			)
+		} else {
+			agentCommented, _ := s.Queries.HasAgentCommentedSince(ctx, db.HasAgentCommentedSinceParams{
+				IssueID:  task.IssueID,
+				AuthorID: task.AgentID,
+				Since:    task.StartedAt,
+			})
+			if !agentCommented {
+				var payload protocol.TaskCompletedPayload
+				_ = json.Unmarshal(result, &payload)
+				body := util.UnescapeBackslashEscapes(payload.Output)
+				if strings.TrimSpace(body) == "" || isTrivialDoneOutput(body) {
+					body = "Run completed without a substantive comment."
+				}
+				content := truncateFallbackCommentBody(redact.Text(body), maxSynthesizedFallbackCommentRunes)
+				s.createAgentComment(ctx, task, content, "comment")
 			}
-			content := truncateFallbackCommentBody(redact.Text(body), maxSynthesizedFallbackCommentRunes)
-			s.createAgentComment(ctx, task, content, "comment")
 		}
 	}
 

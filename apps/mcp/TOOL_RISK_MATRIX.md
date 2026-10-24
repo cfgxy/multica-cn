@@ -1,7 +1,7 @@
 # MCP Tool Risk Matrix
 
 This inventory covers the complete static `TOOL_DEFINITIONS` registry exposed
-by `tools/list` (77 tools at this revision). `src/tool-risk.ts` is the runtime
+by `tools/list` (88 tools at this revision). `src/tool-risk.ts` is the runtime
 source of truth; `test/server.test.ts` verifies exact name coverage and the
 serialized annotations over an in-memory MCP client/server connection.
 
@@ -95,6 +95,17 @@ bounded metadata domain.
 | `get_decision` | read | true | false | true | false | Reads a decision card. |
 | `answer_decisions` | external | false | true | false | true | Answers a card and posts a creator-Agent mention that can resume its run. |
 | `unarchive_inbox_item` | write | false | false | true | false | Restores an item and issue siblings while preserving read state. |
+| `list_clauses` | read | true | false | true | false | Reads the workspace clause-governance overview (versions, bindings, status, injection counters). |
+| `get_clause` | read | true | false | true | false | Reads full governance detail for one clause (versions, bindings, proposals, quality ledger). |
+| `search_clauses` | read | true | false | true | false | Searches the clause inventory by keyword and status. |
+| `get_clause_reconciliation` | read | true | false | true | false | Read-only reconciliation of clause injection invariants (layer-set violations, demotion share, flag drift). |
+| `get_prompt_versions` | read | true | false | true | false | Reads the prompt-carrier version ledger for clause-versus-prompt comparison. |
+| `list_prompt_proposals` | read | true | false | true | false | Reads the prompt legislation proposal pool (lifecycle and audit records). |
+| `create_prompt_proposal` | write | false | false | false | false | Adds a clause-change draft to the proposal pool; changes no prompt or carrier before owner approval. |
+| `update_prompt_proposal` | write | false | false | true | false | Overwrites one draft's fields in the proposal pool (draft state only); no prompt or carrier changes before owner approval. |
+| `submit_prompt_proposal` | write | false | false | false | false | Moves a draft into the owner's decision queue (draft → pending_owner). |
+| `preview_prompt_proposal` | read | true | false | true | false | Read-only synthesis of a proposal's sandbox text; returns the full-carrier line diff without touching the carrier or the proposal's status. |
+| `rework_prompt_proposal` | write | false | false | false | false | Sends a gate_failed proposal back to draft for revision; the transition is audited. |
 
 ## Coverage Notes
 
