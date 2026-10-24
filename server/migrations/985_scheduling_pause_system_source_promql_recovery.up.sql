@@ -7,6 +7,14 @@
 -- bringing both the historical and clean-install shapes to the PromQL
 -- scheduling contract. There are no foreign keys or secondary indexes.
 
+-- A recorded historical 130 can likewise have a missing permission_mode after
+-- an interrupted/manual schema repair. 130 handles the inverse collision
+-- (column present before its ledger row) with IF NOT EXISTS; this forward
+-- recovery handles the ledger-recorded shape without rewriting its history.
+ALTER TABLE agent
+    ADD COLUMN IF NOT EXISTS permission_mode TEXT NOT NULL DEFAULT 'private'
+        CHECK (permission_mode IN ('private', 'public_to'));
+
 ALTER TABLE agent_backpressure_policy
     ADD COLUMN IF NOT EXISTS promql_rule_ids UUID[] NOT NULL DEFAULT '{}';
 
