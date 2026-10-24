@@ -241,7 +241,7 @@ func parseDashboardWindow(
 	}
 	// Round the division: DST makes a span's wall-clock hours land off the
 	// 24h grid, and truncation would let a 366-day window slip through.
-	spanDays := int(math.Round(end.Sub(start).Hours() / 24)) + 1
+	spanDays := int(math.Round(end.Sub(start).Hours()/24)) + 1
 	if spanDays > dashboardMaxWindowDays {
 		writeError(w, http.StatusBadRequest, "window span exceeds 365 days")
 		return dashboardWindow{}, false
@@ -277,7 +277,14 @@ type DashboardUsageDailyResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32 `json:"task_count"`
+	// Model call counts (migration 987): `ModelCallCount` is the known half —
+	// rows whose provider reported dedupable call evidence — and
+	// `ModelCallUnknownCount` is how many rows in this bucket had none. The
+	// client must not present the count as a complete total while the unknown
+	// half is nonzero. Both are 0 on rows predating the column.
+	ModelCallCount        int64 `json:"model_call_count"`
+	ModelCallUnknownCount int64 `json:"model_call_unknown_count"`
+	TaskCount             int32 `json:"task_count"`
 }
 
 // GetDashboardUsageDaily returns per-(date, model) token rows for the
@@ -338,6 +345,8 @@ func (h *Handler) listDashboardUsageDaily(
 			UncostedOutputTokens:     row.UncostedOutputTokens,
 			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
 			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
+			ModelCallCount:           row.ModelCallCount,
+			ModelCallUnknownCount:    row.ModelCallUnknownCount,
 			TaskCount:                row.TaskCount,
 		}
 	}
@@ -365,7 +374,12 @@ type DashboardUsageByAgentResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32 `json:"task_count"`
+	// Model call counts (migration 987) — same known/unknown split contract as
+	// the daily response; the client folds rows by agent and must not present
+	// a nonzero unknown count as a complete total.
+	ModelCallCount        int64 `json:"model_call_count"`
+	ModelCallUnknownCount int64 `json:"model_call_unknown_count"`
+	TaskCount             int32 `json:"task_count"`
 }
 
 // GetDashboardUsageByAgent returns per-(agent, model) token aggregates
@@ -472,6 +486,8 @@ func (h *Handler) listDashboardUsageByAgent(
 			UncostedOutputTokens:     row.UncostedOutputTokens,
 			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
 			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
+			ModelCallCount:           row.ModelCallCount,
+			ModelCallUnknownCount:    row.ModelCallUnknownCount,
 			TaskCount:                row.TaskCount,
 		}
 	}

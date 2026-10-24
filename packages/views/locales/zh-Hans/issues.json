@@ -646,6 +646,8 @@
     "status_queued": "排队中",
     "status_queued_backpressure": "排队中 · 宿主机内存紧张",
     "queued_backpressure_hint": "宿主机报告内存背压，恢复前新任务暂缓执行。",
+    "status_queued_model_call_budget": "排队中 · 模型调用预算已达上限",
+    "queued_model_call_budget_hint": "该运行时已用尽完整已知窗口中的模型调用预算；滚动窗口推进前，新任务暂缓执行。",
     "status_dispatched": "启动中",
     "status_waiting_local_directory": "等待本地目录释放",
     "status_running": "正在工作",

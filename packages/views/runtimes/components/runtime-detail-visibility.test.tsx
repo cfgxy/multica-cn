@@ -130,6 +130,12 @@ vi.mock("@multica/core/runtimes/mutations", () => ({
     isPending: false,
     mutateAsync: vi.fn(),
   }),
+  useSaveRuntimeModelCallBudget: () => ({
+    mutate: (_config: unknown, opts?: { onSuccess?: () => void }) => {
+      opts?.onSuccess?.();
+    },
+    isPending: false,
+  }),
 }));
 
 // Stubbing ProviderLogo / UsageSection avoids dragging in chart libs and
@@ -220,6 +226,18 @@ describe("RuntimeDetail visibility section", () => {
     expect(screen.getByText("Visibility")).toBeInTheDocument();
     expect(screen.getByText("Private")).toBeInTheDocument();
     expect(screen.getByText("Public")).toBeInTheDocument();
+  });
+
+  it("mounts the model-call budget for a readable daemon-less cloud runtime", () => {
+    renderDetail(
+      makeRuntime({
+        runtime_mode: "cloud",
+        daemon_id: null,
+        owner_id: "user-me",
+      }),
+    );
+
+    expect(screen.getByTestId("model-call-budget-card")).toBeInTheDocument();
   });
 
   it("keeps daemon CLI version details without rendering update controls", () => {

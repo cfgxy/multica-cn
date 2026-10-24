@@ -1,7 +1,14 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
-import { runtimeKeys, runtimeBackpressureKeys } from "./queries";
-import type { RuntimeBackpressureSettings } from "../api/schemas";
+import {
+  runtimeKeys,
+  runtimeBackpressureKeys,
+  runtimeModelCallBudgetKeys,
+} from "./queries";
+import type {
+  RuntimeBackpressureSettings,
+  RuntimeModelCallBudgetConfig,
+} from "../api/schemas";
 import { workspaceKeys } from "../workspace/queries";
 import { agentTaskSnapshotKeys } from "../agents/queries";
 
@@ -154,6 +161,19 @@ export function useResetRuntimeBackpressureSettings(runtimeId: string) {
     onSettled: () => {
       qc.invalidateQueries({ queryKey: runtimeBackpressureKeys.settings(runtimeId) });
       qc.invalidateQueries({ queryKey: runtimeBackpressureKeys.events(runtimeId) });
+    },
+  });
+}
+
+export function useSaveRuntimeModelCallBudget(runtimeId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (config: RuntimeModelCallBudgetConfig) =>
+      api.putRuntimeModelCallBudget(runtimeId, config),
+    // Invalidate on both success and failure so a response that raced a rolling
+    // boundary, or a failed save after a stale read, cannot keep the card stale.
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeModelCallBudgetKeys.budget(runtimeId) });
     },
   });
 }
