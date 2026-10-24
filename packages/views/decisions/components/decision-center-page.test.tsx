@@ -680,7 +680,13 @@ describe("DecisionCenterPage pending queue (RUYI-864)", () => {
     );
     expect(screen.queryByTestId("decision-queue")).toBeNull();
     // The history window asked the server for status=history, never pending.
-    expect(requestFiltersRef.current.filter((f) => f.status === "pending")).toHaveLength(1);
+    // The options factory re-runs on every render, so pin the DISTINCT set of
+    // request-list filters instead of the call count: exactly one pending walk
+    // (the queue's oldest-first single card), no legacy desc&limit:50 walk.
+    const distinctFilters = JSON.stringify(
+      Array.from(new Set(requestFiltersRef.current.map((f) => JSON.stringify(f)))),
+    );
+    expect(distinctFilters).toBe(JSON.stringify([JSON.stringify({ status: "pending", order: "asc", limit: 1 })]));
     expect(historyCallsRef.current).toEqual([null]);
   });
 });
