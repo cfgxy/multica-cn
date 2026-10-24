@@ -213,6 +213,46 @@ func TestIssueDoneCascadeAutoCancelsOpenDecisionCards(t *testing.T) {
 	assertCascadeEvents(t, issueID, 1)
 }
 
+func TestIssueDoneCascadeOnlyOnTransitionIntoDone(t *testing.T) {
+	issueID := dbfx.Issue(t, "done legacy card transition guard")
+	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "done"}); w.Code != http.StatusOK {
+		t.Fatalf("initial done: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	legacyCard := insertInboxCard(t, testWorkspaceID, issueID, "legacy open question", "open", "")
+	events := countDecisionUpdatedSubs(t, issueID)
+
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{name: "metadata update", body: map[string]any{"title": "updated while done"}},
+		{name: "explicit repeated done", body: map[string]any{"status": "done"}},
+		{name: "transition out of done", body: map[string]any{"status": "in_progress"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if w := updateIssueViaHandler(t, issueID, tc.body); w.Code != http.StatusOK {
+				t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			assertCardStatuses(t, map[string]string{legacyCard: "open"})
+			assertCascadeEvents(t, issueID, 0)
+			if *events != 0 {
+				t.Errorf("decision:updated events = %d, want 0", *events)
+			}
+		})
+	}
+
+	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "done"}); w.Code != http.StatusOK {
+		t.Fatalf("re-enter done: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCardStatuses(t, map[string]string{legacyCard: "cancelled"})
+	if rows := assertCascadeEvents(t, issueID, 1); len(rows[0].DecisionIDs) != 1 || rows[0].DecisionIDs[0] != legacyCard {
+		t.Errorf("re-entry audit decision_ids = %v, want [%s]", rows[0].DecisionIDs, legacyCard)
+	}
+	if *events != 1 {
+		t.Errorf("decision:updated events after entering Done = %d, want 1", *events)
+	}
+}
+
 func TestIssueDoneCascadeBatchUpdateEntry(t *testing.T) {
 	issueID := dbfx.Issue(t, "batch done cascade issue")
 	openA, openB, answered, cancelled, auth := seedDecisionCards(t, issueID)
@@ -470,6 +510,14 @@ func runDoneStatusUpdate(ctx context.Context, t *testing.T, issueID string) (par
 		}
 		qdone := db.New(tx)
 		parked <- pid
+		oldIssue, err := qdone.LockIssueForUpdate(ctx, db.LockIssueForUpdateParams{
+			ID: parseUUID(issueID), WorkspaceID: parseUUID(testWorkspaceID),
+		})
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			doneErr <- err
+			return
+		}
 		issue, err := qdone.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
 			ID: parseUUID(issueID), Status: "done", WorkspaceID: parseUUID(testWorkspaceID),
 		})
@@ -477,7 +525,7 @@ func runDoneStatusUpdate(ctx context.Context, t *testing.T, issueID string) (par
 			// Same settle the http entry point runs in this transaction:
 			// the just-committed card is seen under a fresh READ COMMITTED
 			// snapshot once the lock release unblocked the update.
-			if _, err = testHandler.settleDoneCascadeInTx(ctx, qdone, issue, "http_update_issue"); err == nil {
+			if _, err = testHandler.settleDoneCascadeInTx(ctx, qdone, oldIssue, issue, "http_update_issue"); err == nil {
 				err = tx.Commit(ctx)
 			}
 		}

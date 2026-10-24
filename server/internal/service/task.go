@@ -1745,7 +1745,7 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 		}
 		defer tx.Rollback(ctx)
 		qtx := s.Queries.WithTx(tx)
-		if _, err = qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
+		if _, err = qtx.LockIssueForUpdate(ctx, db.LockIssueForUpdateParams{
 			ID: capture.SourceIssueID, WorkspaceID: workspaceID,
 		}); err == nil {
 			var locked []pgtype.UUID
