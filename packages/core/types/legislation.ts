@@ -12,7 +12,21 @@
 
 export type PromptProposalCarrierScope = "workspace" | "project" | "squad" | "agent";
 
-export type PromptProposalChangeKind = "add_clause" | "remove_clause";
+export type PromptProposalChangeKind =
+  | "add_clause"
+  | "revise_clause"
+  | "remove_clause"
+  | "move_clause"
+  | "migrate_clause";
+
+/**
+ * RUYI-858: where the owner's approved clause lands. `clause_library` (the
+ * default) writes the structured clause assets and dynamic injection;
+ * `static_prompt` writes only the carrier's static prompt text through the
+ * version funnel. Move / migrate kinds are library-only — they carry no
+ * standalone static text — so the server rejects `static_prompt` for them.
+ */
+export type PromptProposalEnactmentTarget = "clause_library" | "static_prompt";
 
 /**
  * One gate report line, mirroring the server's legislation.Finding: the
@@ -89,6 +103,12 @@ export interface PromptProposal {
   audit_log: unknown[];
   created_at: string;
   updated_at: string;
+  /**
+   * RUYI-858: the owner's landing target, persisted at approval
+   * (default `clause_library`). Absent on pre-RUYI-858 rows; the UI
+   * renders the default for those.
+   */
+  enactment_target?: PromptProposalEnactmentTarget;
 }
 
 export interface PromptProposalDraftRequest {

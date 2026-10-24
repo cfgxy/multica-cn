@@ -1,10 +1,13 @@
 import React from "react";
+import { Alert } from "react-native";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueDecision } from "@multica/core/types";
+import { issueKeys } from "@multica/core/issues/queries";
 
 const mockAnswer = jest.fn();
 const mockCancel = jest.fn();
+const mockRestore = jest.fn();
 const mockListMembers = jest.fn();
 const mockListAgents = jest.fn();
 const mockListSquads = jest.fn();
@@ -13,6 +16,7 @@ jest.mock("@/data/api", () => ({
   api: {
     answerIssueDecision: (...args: unknown[]) => mockAnswer(...args),
     cancelIssueDecision: (...args: unknown[]) => mockCancel(...args),
+    restoreIssueDecision: (...args: unknown[]) => mockRestore(...args),
     listMembers: (...args: unknown[]) => mockListMembers(...args),
     listAgents: (...args: unknown[]) => mockListAgents(...args),
     listSquads: (...args: unknown[]) => mockListSquads(...args),
@@ -135,6 +139,7 @@ beforeEach(() => {
     Promise.resolve(card({ status: "answered", selected_indices: picks, answered_by_type: "member", answered_by_id: "member-1" })),
   );
   mockCancel.mockResolvedValue(card({ status: "cancelled" }));
+  mockRestore.mockResolvedValue(card({ status: "open" }));
 });
 
 describe("DecisionCard", () => {
@@ -323,6 +328,61 @@ describe("DecisionCard", () => {
     await waitFor(() =>
       expect(mockCancel).toHaveBeenCalledWith("issue-1", "d-1"),
     );
+  });
+
+  it("restores a cancelled card from the header more affordance (RUYI-863)", async () => {
+    const qc = await renderCard(card({ status: "cancelled" }));
+    // Seed the list cache so the upsert has a prior entry to patch.
+    qc.setQueryData<IssueDecision[]>(issueKeys.decisions("issue-1"), [
+      card({ status: "cancelled" }),
+    ]);
+
+    // The "···" affordance exists ONLY on cancelled cards.
+    expect(screen.queryByTestId("decision-card-more")).not.toBeNull();
+    // Capture the confirm button; do NOT fire it inside pressPressable's
+    // act scope — the mutation's TanStack notification batch would escape
+    // the act and break the next test's render commit (file-top note).
+    let confirmButton: { onPress?: () => void } | undefined;
+    const restoreAlert = jest.spyOn(Alert, "alert").mockImplementation(
+      (_title: string, _message?: string, buttons?: { onPress?: () => void }[]) => {
+        confirmButton = buttons?.[1];
+      },
+    );
+
+    await pressPressable("decision-card-more");
+
+    expect(restoreAlert).toHaveBeenCalled();
+    await act(async () => {
+      confirmButton?.onPress?.();
+    });
+    await waitFor(() =>
+      expect(mockRestore).toHaveBeenCalledWith("issue-1", "d-1"),
+    );
+    // The server's flipped card lands in the decisions cache.
+    await waitFor(() => {
+      const cached = qc.getQueryData<IssueDecision[]>(
+        issueKeys.decisions("issue-1"),
+      );
+      expect(cached?.[0]?.status).toBe("open");
+    });
+    restoreAlert.mockRestore();
+  });
+
+  it("hides the more affordance on open cards", async () => {
+    await renderCard(card());
+    expect(screen.queryByTestId("decision-card-more")).toBeNull();
+  });
+
+  it("hides the more affordance on answered cards", async () => {
+    await renderCard(
+      card({
+        status: "answered",
+        selected_indices: [0],
+        answered_by_type: "member",
+        answered_by_id: "member-1",
+      }),
+    );
+    expect(screen.queryByTestId("decision-card-more")).toBeNull();
   });
 });
 

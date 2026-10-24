@@ -12,6 +12,13 @@ import {
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
 import { Label } from "@multica/ui/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@multica/ui/components/ui/select";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { api, clientErrorMessage } from "@multica/core/api";
 import type { PromptProposalPreview } from "@multica/core/types";
@@ -36,12 +43,20 @@ export function ProposalPreviewDialog({
   onOpenChange: (open: boolean) => void;
   ids: string[];
   confirmLabel: string;
-  onConfirm: (confirmDiffPreviewed: boolean) => void;
+  /**
+   * Second argument: the owner's per-proposal landing target (RUYI-858) —
+   * where the approved clause is written. `clause_library` is the default
+   * everywhere; `static_prompt` writes only the carrier's static text.
+   */
+  onConfirm: (confirmDiffPreviewed: boolean, enactmentTargets: Record<string, "clause_library" | "static_prompt">) => void;
 }) {
   const { t } = useT("self-evolution");
   const [previews, setPreviews] = useState<PromptProposalPreview[] | null>(null);
   const [loadError, setLoadError] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  // Per-proposal landing target; an absent entry means the default library
+  // target, so only explicit static choices need persisting state.
+  const [targetOverrides, setTargetOverrides] = useState<Record<string, "static_prompt">>({});
 
   const key = useMemo(() => ids.join(","), [ids]);
 
@@ -49,6 +64,7 @@ export function ProposalPreviewDialog({
     setConfirmed(false);
     setPreviews(null);
     setLoadError("");
+    setTargetOverrides({});
     if (!open || ids.length === 0) return;
     let alive = true;
     Promise.all(ids.map((id) => api.previewPromptProposal(id)))
@@ -98,6 +114,54 @@ export function ProposalPreviewDialog({
                     {t(($) => $.legislation.diffEmpty)}
                   </div>
                 ) : null}
+                {/* RUYI-858 landing target: move/migrate kinds are library-only,
+                    the static option is absent for them (the server rejects
+                    them with a 400 regardless). */}
+                {p.proposal.change_kind === "move_clause" || p.proposal.change_kind === "migrate_clause" ? (
+                  <div className="text-muted-foreground text-caption">
+                    {t(($) => $.legislation.enactmentTargetLabel)}:{" "}
+                    {t(($) => $.legislation.enactmentTargetOptions.clause_library)}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <Label className="text-caption">
+                      {t(($) => $.legislation.enactmentTargetLabel)}
+                    </Label>
+                    <Select
+                      items={[
+                        { value: "clause_library", label: t(($) => $.legislation.enactmentTargetOptions.clause_library) },
+                        { value: "static_prompt", label: t(($) => $.legislation.enactmentTargetOptions.static_prompt) },
+                      ]}
+                      value={targetOverrides[p.proposal.id] ?? "clause_library"}
+                      onValueChange={(v) => {
+                        setTargetOverrides((prev) => {
+                          const next = { ...prev };
+                          if (v === "clause_library") delete next[p.proposal.id];
+                          else next[p.proposal.id] = v as "static_prompt";
+                          return next;
+                        });
+                      }}
+                    >
+                      <SelectTrigger className="w-44">
+                        <SelectValue>
+                          {t(($) =>
+                            $.legislation.enactmentTargetOptions[
+                              (targetOverrides[p.proposal.id] ?? "clause_library") as "clause_library" | "static_prompt"
+                            ]
+                          )}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="clause_library">
+                          {t(($) => $.legislation.enactmentTargetOptions.clause_library)}
+                        </SelectItem>
+                        <SelectItem value="static_prompt">
+                          {t(($) => $.legislation.enactmentTargetOptions.static_prompt)}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -120,7 +184,19 @@ export function ProposalPreviewDialog({
           <Button
             data-testid="proposal-preview-confirm"
             disabled={!loaded || !confirmed}
-            onClick={() => onConfirm(true)}
+            onClick={() => {
+              // Move/migrate rows are library-only; send an explicit target
+              // per previewed id so the batch path has no silent defaults.
+              const targets: Record<string, "clause_library" | "static_prompt"> = {};
+              for (const p of previews ?? []) {
+                if (p.proposal.change_kind === "move_clause" || p.proposal.change_kind === "migrate_clause") {
+                  targets[p.proposal.id] = "clause_library";
+                } else {
+                  targets[p.proposal.id] = targetOverrides[p.proposal.id] ?? "clause_library";
+                }
+              }
+              onConfirm(true, targets);
+            }}
           >
             {confirmLabel}
           </Button>

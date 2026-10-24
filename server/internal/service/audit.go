@@ -118,10 +118,20 @@ const (
 	AuditIssueTaskFailed           = "issue.task_failed"
 	AuditIssueSquadLeaderEvaluated = "issue.squad_leader_evaluated"
 	AuditIssueRunSuppressed        = "issue.run_suppressed"
+	// RUYI-865: the issue formally entered the done category, so its still-open
+	// question decision cards were auto-cancelled server-side (one event per
+	// transition carrying every flipped card id).
+	AuditIssueDecisionCardsAutoCancelled = "issue.decision_cards_auto_cancelled"
 	// RUYI-690: issue suspension lifecycle (orthogonal "waiting" dimension).
 	AuditIssueSuspended           = "issue.suspended"
 	AuditIssueSuspensionResumed   = "issue.suspension_resumed"
 	AuditIssueSuspensionCancelled = "issue.suspension_cancelled"
+	// RUYI-863: question-card lifecycle. Cancel is the member-side terminal
+	// act and restore flips a cancelled card back to open — both carry the
+	// acting member + the from/to status in details so the audit surface
+	// reconstructs the card's history without the answer echo comment.
+	AuditIssueDecisionCancelled = "issue.decision_cancelled"
+	AuditIssueDecisionRestored  = "issue.decision_restored"
 
 	// Ops domain: deployment anchoring.
 	AuditOpsServerStarted = "ops.server_started"

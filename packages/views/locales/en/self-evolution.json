@@ -423,7 +423,15 @@
     },
     "changeKind": {
       "add_clause": "Add clause",
-      "remove_clause": "Remove clause"
+      "revise_clause": "Revise clause",
+      "remove_clause": "Remove clause",
+      "move_clause": "Move clause",
+      "migrate_clause": "Migrate clause"
+    },
+    "enactmentTargetLabel": "Where the clause lands",
+    "enactmentTargetOptions": {
+      "clause_library": "Into the clause library",
+      "static_prompt": "Rewrite static prompt text"
     },
     "carrierScope": {
       "workspace": "Workspace",

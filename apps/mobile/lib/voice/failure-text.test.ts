@@ -70,6 +70,11 @@ describe("voiceFailureText", () => {
       ["capability_mismatch", "voice:failure.unavailable.capability_mismatch"],
       ["credential_missing", "voice:failure.unavailable.credential_missing"],
       ["credential_invalid", "voice:failure.unavailable.credential_invalid"],
+      // D2 config-gate reasons (RUYI-866 P1-3): same stable codes the
+      // gateway emits; mobile renders them through the shared resources.
+      ["voice_unconfigured", "voice:failure.unavailable.voice_unconfigured"],
+      ["voice_provider_missing", "voice:failure.unavailable.voice_provider_missing"],
+      ["voice_provider_disabled", "voice:failure.unavailable.voice_provider_disabled"],
     ];
     for (const [reason, key] of cases) {
       mockT.mockClear();

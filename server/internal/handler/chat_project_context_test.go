@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func createChatProjectTestProject(t *testing.T, workspaceID, title, description string) string {
@@ -275,6 +276,89 @@ func TestDeleteProject_ClearsChatSessionContext(t *testing.T) {
 	}
 	if storedProjectID != nil {
 		t.Fatalf("project_id = %v after project delete, want null", storedProjectID)
+	}
+}
+
+func TestDeleteProject_ClearsPromptProposalReferences(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	projectID := createChatProjectTestProject(t, testWorkspaceID, "Deleted proposal project", "")
+	projectProposalID := dbfx.Insert(t, "prompt_proposal", testutil.Cols{
+		"workspace_id":          testWorkspaceID,
+		"carrier_scope":         "project",
+		"carrier_scope_id":      projectID,
+		"change_kind":           "add_clause",
+		"clause_name":           "project carrier proposal",
+		"gate_answer_layer":     "project",
+		"gate_answer_retention": "keep",
+		"gate_answer_cost":      "none",
+		"gate_answer_conflict":  "none",
+		"gate_answer_dedup":     "none",
+		"source":                "retrospective",
+	})
+	destinationProposalID := dbfx.Insert(t, "prompt_proposal", testutil.Cols{
+		"workspace_id":          testWorkspaceID,
+		"carrier_scope":         "workspace",
+		"carrier_scope_id":      testWorkspaceID,
+		"change_kind":           "move_clause",
+		"clause_name":           "project destination proposal",
+		"gate_answer_layer":     "workspace",
+		"gate_answer_retention": "keep",
+		"gate_answer_cost":      "none",
+		"gate_answer_conflict":  "none",
+		"gate_answer_dedup":     "none",
+		"move_to_scope":         "project",
+		"move_to_scope_id":      projectID,
+		"source":                "retrospective",
+	})
+	unrelatedProposalID := dbfx.Insert(t, "prompt_proposal", testutil.Cols{
+		"workspace_id":          testWorkspaceID,
+		"carrier_scope":         "workspace",
+		"carrier_scope_id":      testWorkspaceID,
+		"change_kind":           "add_clause",
+		"clause_name":           "unrelated workspace proposal",
+		"gate_answer_layer":     "workspace",
+		"gate_answer_retention": "keep",
+		"gate_answer_cost":      "none",
+		"gate_answer_conflict":  "none",
+		"gate_answer_dedup":     "none",
+		"source":                "retrospective",
+	})
+
+	w := httptest.NewRecorder()
+	req := withURLParam(
+		newRequest(http.MethodDelete, "/api/projects/"+projectID, nil),
+		"id",
+		projectID,
+	)
+	testHandler.DeleteProject(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteProject: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var dangling int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM prompt_proposal
+		WHERE id = ANY($1::uuid[])
+		  AND ((carrier_scope = 'project' AND carrier_scope_id = $2)
+		    OR (move_to_scope = 'project' AND move_to_scope_id = $2))
+	`, []string{projectProposalID, destinationProposalID}, projectID).Scan(&dangling); err != nil {
+		t.Fatalf("count project proposal references: %v", err)
+	}
+	if dangling != 0 {
+		t.Fatalf("project deletion left %d proposal references", dangling)
+	}
+
+	var unrelated int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM prompt_proposal WHERE id = $1
+	`, unrelatedProposalID).Scan(&unrelated); err != nil {
+		t.Fatalf("count unrelated proposal: %v", err)
+	}
+	if unrelated != 1 {
+		t.Fatalf("project deletion removed unrelated workspace proposal: count=%d", unrelated)
 	}
 }
 
