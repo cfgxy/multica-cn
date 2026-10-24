@@ -150,7 +150,12 @@ export function MobileDecisionCardBrowser({
       </View>
 
       {current ? (
-        <ScrollView contentContainerClassName="flex-1 gap-3 py-3">
+        <ScrollView
+          contentContainerClassName="gap-3 py-3"
+          contentContainerStyle={{ flexGrow: 1 }}
+          keyboardShouldPersistTaps="handled"
+          testID="decision-browser-scroll"
+        >
           <View className="flex-row items-center px-4">
             <Text className="text-xs text-muted-foreground" testID="decision-browser-position">
               {currentIndex + 1} / {filtered.length}

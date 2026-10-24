@@ -179,6 +179,17 @@ describe("RUYI-863 mobile decision-card entries (shared browser)", () => {
     expect(screen.queryByTestId("decision-browser-filter-cancelled")).toBeTruthy();
   });
 
+  it("keeps the full card and navigation controls in a naturally growing scroll container", async () => {
+    await renderEntry(MoreMenuScreen, threeCards);
+
+    const scroll = screen.getByTestId("decision-browser-scroll");
+    expect(scroll.props.contentContainerStyle).toEqual({ flexGrow: 1 });
+    expect(scroll.props.contentContainerClassName).not.toContain("flex-1");
+    expect(scroll.props.keyboardShouldPersistTaps).toBe("handled");
+    expect(screen.getByTestId("browser-stub-card")).toBeTruthy();
+    expect(screen.getByTestId("decision-browser-next")).toBeTruthy();
+  });
+
   it("info-feed single-card entry pins the target card even when it is cancelled (no bounce)", async () => {
     mockGlobalParams = { cardId: "c3" };
     await renderEntry(MoreMenuScreen, threeCards);
