@@ -179,7 +179,7 @@ func TestSchedulingPauseBlocksClaim(t *testing.T) {
 	}
 
 	// Resume; the next claim takes the task again.
-	if _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
+	if _, _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	resumed, err := svc.ClaimTask(ctx, agentUUID)
@@ -224,7 +224,7 @@ func TestSchedulingPauseWorkspaceScopeAndResumeSemantics(t *testing.T) {
 	}
 
 	// Agent-level resume is a no-op against a workspace freeze...
-	if _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
+	if _, _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
 		t.Fatalf("agent resume under workspace freeze: %v", err)
 	}
 	stillBlocked, err := svc.ClaimTask(ctx, agentUUID)
@@ -300,7 +300,7 @@ func TestSchedulingPauseAuditTrail(t *testing.T) {
 	if _, _, err := svc.PauseAgentScheduling(ctx, wsUUID, agentUUID, "audit drill", ownerUUID); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
-	if _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
+	if _, _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 
@@ -348,7 +348,7 @@ func TestResumeAgentSchedulingBumpsEmptyClaimCache(t *testing.T) {
 	cache.MarkEmpty(ctx, runtimeID, 7)
 	before := cache.CurrentVersion(ctx, runtimeID)
 
-	if _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
+	if _, _, err := svc.ResumeAgentScheduling(ctx, wsUUID, agentUUID, ownerUUID); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 
