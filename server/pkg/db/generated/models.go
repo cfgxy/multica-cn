@@ -2003,6 +2003,7 @@ type PromptProposal struct {
 	Conditions []byte `json:"conditions"`
 	// RUYI-751: set on auto-generated rollback suggestion drafts — the clause version the suggestion reverts from; live rows with the same (clause_id, rollback_of_version) suppress duplicate suggestions.
 	RollbackOfVersion pgtype.Int4 `json:"rollback_of_version"`
+	EnactmentTarget   string      `json:"enactment_target"`
 }
 
 // Per (prompt scope, version, UTC day) quality rollup for RUYI-184 dimensions D1/D2/D4/D5/D6/D7. Aggregates and pointers only — no prompt text, no transcript text. Every dimension stores counts rather than rates so "not measured" stays distinguishable from zero.

@@ -1603,8 +1603,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// session cookie / bearer header, or — for header-less websocket clients
 	// (mobile) — via the first auth frame (the RUYI-429 realtime pattern).
 	// Header-auth gate rejections stay plain 409 VOICE_UNAVAILABLE:<reason>;
-	// frame-auth rejections become an error frame + close.
+	// frame-auth rejections become an error frame + close. The preflight
+	// route below always requires header identity and has no session effects.
 	r.Get("/api/agents/{id}/voice-session", h.StartVoiceSession)
+	r.Get("/api/agents/{id}/voice-session/preflight", h.PreflightVoiceSession)
 
 	// Local file serving (when using local storage). Served through the
 	// handler so /uploads/* carries the same preview security headers as the
@@ -2624,6 +2626,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/decisions/answer-batch", h.AnswerIssueDecisionsBatch)
 					r.Post("/decisions/{decisionId}/answer", h.AnswerIssueDecision)
 					r.Post("/decisions/{decisionId}/cancel", h.CancelIssueDecision)
+					// RUYI-863: the inverse of cancel — flip a cancelled card
+					// back to open. No human-actor gate here: member-only
+					// enforcement lives in the handler (agent callers are
+					// refused), matching the cancel arm above.
+					r.Post("/decisions/{decisionId}/restore", h.RestoreIssueDecision)
 
 					// Suspensions (RUYI-690): the orthogonal "waiting"
 					// dimension. Suspend/list on the issue; resume/cancel on

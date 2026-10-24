@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   CredentialConnectorListSchema,
+  CredentialConnectorSchema,
   CredentialMetadataListSchema,
   CredentialMetadataSchema,
   CredentialAuditEventListSchema,
@@ -1342,6 +1343,36 @@ export class ApiClient {
     });
   }
 
+  async createCredentialConnector(workspaceId: string, data: {
+    name: string;
+    target_url: string;
+  }): Promise<CredentialConnector | null> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialConnectorSchema, null, {
+      endpoint: "POST /api/workspaces/{id}/credential-connectors",
+      redactContent: true,
+    });
+  }
+
+  async updateCredentialConnector(workspaceId: string, connectorId: string, data: {
+    name: string;
+    target_url: string;
+    status: string;
+    revision: number;
+  }): Promise<CredentialConnector | null> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors/${connectorId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialConnectorSchema, null, {
+      endpoint: "PUT /api/workspaces/{id}/credential-connectors/{connectorId}",
+      redactContent: true,
+    });
+  }
+
   async createIssueCredential(issueId: string, data: {
     name: string;
     target_service: string;
@@ -1898,6 +1929,22 @@ export class ApiClient {
       endpoint: "POST /api/issues/:id/decisions/:decisionId/cancel",
     });
     if (!decision) throw new Error("Invalid decision cancel response");
+    return decision;
+  }
+
+  // RUYI-863: the inverse of cancel — a cancelled question card flips back to
+  // open. The server CAS refuses answered cards and authorization cards
+  // (409), so the client only mirrors the card + fails readably, same as
+  // cancel above.
+  async restoreIssueDecision(issueId: string, decisionId: string): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/${decisionId}/restore`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/restore",
+    });
+    if (!decision) throw new Error("Invalid decision restore response");
     return decision;
   }
 
@@ -5340,10 +5387,18 @@ export class ApiClient {
     });
   }
 
-  async approvePromptProposal(id: string, confirmDiffPreviewed: boolean): Promise<PromptProposal> {
+  async approvePromptProposal(
+    id: string,
+    confirmDiffPreviewed: boolean,
+    enactmentTarget?: "clause_library" | "static_prompt",
+  ): Promise<PromptProposal> {
+    const body: Record<string, unknown> = { confirm_diff_previewed: confirmDiffPreviewed };
+    // RUYI-858: the landing target is sent only when the owner chose one;
+    // absence means the server default (clause library).
+    if (enactmentTarget !== undefined) body.enactment_target = enactmentTarget;
     const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/approve`, {
       method: "POST",
-      body: JSON.stringify({ confirm_diff_previewed: confirmDiffPreviewed }),
+      body: JSON.stringify(body),
     });
     return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
       endpoint: "POST /api/prompt-legislation/proposals/{id}/approve",
@@ -5353,10 +5408,17 @@ export class ApiClient {
   async batchApprovePromptProposals(
     ids: string[],
     confirmDiffPreviewed: boolean,
+    enactmentTargets?: Record<string, "clause_library" | "static_prompt">,
   ): Promise<PromptProposalBatchOutcome[]> {
     const raw = await this.fetch<unknown>("/api/prompt-legislation/proposals/approve-batch", {
       method: "POST",
-      body: JSON.stringify({ ids, confirm_diff_previewed: confirmDiffPreviewed }),
+      body: JSON.stringify({
+        ids,
+        confirm_diff_previewed: confirmDiffPreviewed,
+        // RUYI-858: per-id landing targets; ids without an entry keep the
+        // server default (clause library).
+        ...(enactmentTargets !== undefined ? { enactment_targets: enactmentTargets } : {}),
+      }),
     });
     return parseWithFallback(raw, z.array(PromptProposalBatchOutcomeSchema), raw as PromptProposalBatchOutcome[], {
       endpoint: "POST /api/prompt-legislation/proposals/approve-batch",

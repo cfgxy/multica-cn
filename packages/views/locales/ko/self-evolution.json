@@ -422,7 +422,10 @@
     },
     "changeKind": {
       "add_clause": "조항 추가",
-      "remove_clause": "조항 삭제"
+      "revise_clause": "조항 개정",
+      "remove_clause": "조항 삭제",
+      "move_clause": "조항 이동",
+      "migrate_clause": "조항 이관"
     },
     "carrierScope": {
       "workspace": "워크스페이스",
@@ -511,7 +514,12 @@
     "jevThreshold": "임계값",
     "jevWarnFlag": "경고",
     "jevDisclaimer": "저비용 경고 참고용입니다. 확률 근거와 함께 판단하고 단독으로 처분 근거로 삼지 마세요(warn-only 우회, 게이트 판정에는 영향 없음).",
-    "jevUnavailable": "사용 불가, 건너뜀(본 흐름에는 영향 없음)"
+    "jevUnavailable": "사용 불가, 건너뜀(본 흐름에는 영향 없음)",
+    "enactmentTargetLabel": "조항 반영 대상",
+    "enactmentTargetOptions": {
+      "clause_library": "조항 라이브러리에 등록",
+      "static_prompt": "정적 프롬프트 문구로 변경"
+    }
   },
   "retrospective": {
     "title": "일일 회고",

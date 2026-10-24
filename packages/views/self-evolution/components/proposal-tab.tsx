@@ -722,14 +722,21 @@ export function ProposalTab({ wsId }: { wsId: string }) {
               </div>
               <div className="grid gap-1">
                 <Label htmlFor="leg-kind">{t(($) => $.legislation.changeKindLabel)}</Label>
+                {/* RUYI-858: the manual path offers the three content
+                    actions — add (增补), revise (修订) and remove (淘汰).
+                    Move/migrate are retrospective-only flows that carry
+                    destination carrier fields, so they stay out of the
+                    manual form; the list/detail views still render them
+                    for pool rows. */}
                 <Select
                   items={[
                     { value: "add_clause", label: t(($) => $.legislation.changeKind.add_clause) },
+                    { value: "revise_clause", label: t(($) => $.legislation.changeKind.revise_clause) },
                     { value: "remove_clause", label: t(($) => $.legislation.changeKind.remove_clause) },
                   ]}
                   value={form.change_kind}
                   onValueChange={(v) => {
-                    if (v === "add_clause" || v === "remove_clause") {
+                    if (v === "add_clause" || v === "revise_clause" || v === "remove_clause") {
                       setForm((f) => ({ ...f, change_kind: v }));
                     }
                   }}
@@ -740,6 +747,9 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                   <SelectContent>
                     <SelectItem value="add_clause">
                       {t(($) => $.legislation.changeKind.add_clause)}
+                    </SelectItem>
+                    <SelectItem value="revise_clause">
+                      {t(($) => $.legislation.changeKind.revise_clause)}
                     </SelectItem>
                     <SelectItem value="remove_clause">
                       {t(($) => $.legislation.changeKind.remove_clause)}
@@ -774,7 +784,9 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                 />
               </div>
             </div>
-            {form.change_kind === "add_clause" ? (
+            {/* RUYI-858: the clause text carries the new clause (add) or the
+                full replacement text (revise); remove writes an empty text. */}
+            {form.change_kind === "add_clause" || form.change_kind === "revise_clause" ? (
               <div className="grid gap-1">
                 <Label htmlFor="leg-clause-text">{t(($) => $.legislation.clauseTextLabel)}</Label>
                 <Textarea
@@ -855,10 +867,16 @@ export function ProposalTab({ wsId }: { wsId: string }) {
         }}
         ids={previewFor ? [previewFor.id] : []}
         confirmLabel={t(($) => $.legislation.approve)}
-        onConfirm={(flag) => {
+        onConfirm={(flag, targets) => {
           if (!previewFor) return;
           approve.mutate(
-            { id: previewFor.id, confirmDiffPreviewed: flag },
+            {
+              id: previewFor.id,
+              confirmDiffPreviewed: flag,
+              // RUYI-858: the dialog sends one explicit target per previewed
+              // proposal; single-approve takes the entry for this id.
+              enactmentTarget: targets[previewFor.id],
+            },
             {
               onError: mutationError,
               onSuccess: () => setPreviewFor(null),
@@ -873,9 +891,14 @@ export function ProposalTab({ wsId }: { wsId: string }) {
         onOpenChange={setBatchOpen}
         ids={checkedIds}
         confirmLabel={t(($) => $.legislation.approveBatch)}
-        onConfirm={(flag) => {
+        onConfirm={(flag, targets) => {
           batchApprove.mutate(
-            { ids: checkedIds, confirmDiffPreviewed: flag },
+            {
+              ids: checkedIds,
+              confirmDiffPreviewed: flag,
+              // RUYI-858: per-id landing targets from the preview dialog.
+              enactmentTargets: targets,
+            },
             {
               onSuccess: (outcomes) => {
                 setBatchOpen(false);

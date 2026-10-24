@@ -24,6 +24,10 @@ describe("probeHandshakeRejection", () => {
     "capability_mismatch",
     "credential_missing",
     "credential_invalid",
+    // D2 config-gate reasons (RUYI-866 P1-3).
+    "voice_unconfigured",
+    "voice_provider_missing",
+    "voice_provider_disabled",
   ] as const)("reads the precise reason for %s", async (reason) => {
     const f = fetchJson(409, {
       code: `VOICE_UNAVAILABLE:${reason}`,

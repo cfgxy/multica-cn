@@ -130,14 +130,25 @@ func TestVoiceChatWriteBack_SingleInsertAndReplayNoop(t *testing.T) {
 		t.Fatalf("expected setupComplete, got %s", first)
 	}
 	stubConn := provider.gatewayConn(t)
-	provider.sendDownstream(stubConn, map[string]any{
-		"serverContent": map[string]any{"inputTranscription": map[string]any{"text": "敲定，用方案二"}},
-	})
-	provider.sendDownstream(stubConn, map[string]any{
-		"serverContent": map[string]any{"outputTranscription": map[string]any{"text": "收到，已记录"}},
-	})
-	// Park both turns in the DB before the close tears down the relay.
-	waitForTranscriptParked(t, agentID, "收到，已记录")
+	wantTurns := []struct{ role, content string }{
+		{role: "user", content: "用户第一轮"},
+		{role: "assistant", content: "助手第一轮"},
+		{role: "user", content: "用户第二轮"},
+		{role: "assistant", content: "助手第二轮"},
+		{role: "user", content: "用户第三轮"},
+		{role: "assistant", content: "助手第三轮"},
+	}
+	for _, turn := range wantTurns {
+		transcriptKey := "inputTranscription"
+		if turn.role == "assistant" {
+			transcriptKey = "outputTranscription"
+		}
+		provider.sendDownstream(stubConn, map[string]any{
+			"serverContent": map[string]any{transcriptKey: map[string]any{"text": turn.content}},
+		})
+	}
+	// Park every turn before the close tears down the relay.
+	waitForTranscriptParked(t, agentID, "助手第三轮")
 	conn.Close()
 	sessionID, _ := waitForVoiceFacts(t, agentID, 2)
 
@@ -157,27 +168,25 @@ func TestVoiceChatWriteBack_SingleInsertAndReplayNoop(t *testing.T) {
 		return testPool.QueryRow(context.Background(),
 			`SELECT count(*) FROM chat_message
 			 WHERE chat_session_id = $1::uuid AND message_kind = 'voice'`, chatID).
-			Scan(&n) == nil && n == 2
+			Scan(&n) == nil && n == len(wantTurns)
 	})
 
-	// Exactly ONE user + ONE assistant row, kind 'voice', deterministic
-	// UUIDv5 ids keyed by session|role|turn-index.
+	// Every alternating turn is stored in a stable chronological order, with
+	// deterministic UUIDv5 ids keyed by session|role|turn-index.
 	var userMsgID, assistantMsgID string
-	var userContent, assistantContent string
 	if err := testPool.QueryRow(context.Background(), `
-		SELECT content, id::text FROM chat_message
+		SELECT id::text FROM chat_message
 		WHERE chat_session_id = $1::uuid AND role = 'user' AND message_kind = 'voice'
-	`, chatID).Scan(&userContent, &userMsgID); err != nil {
+		ORDER BY created_at ASC, id ASC LIMIT 1
+	`, chatID).Scan(&userMsgID); err != nil {
 		t.Fatalf("user voice row missing: %v", err)
 	}
 	if err := testPool.QueryRow(context.Background(), `
-		SELECT content, id::text FROM chat_message
+		SELECT id::text FROM chat_message
 		WHERE chat_session_id = $1::uuid AND role = 'assistant' AND message_kind = 'voice'
-	`, chatID).Scan(&assistantContent, &assistantMsgID); err != nil {
+		ORDER BY created_at ASC, id ASC LIMIT 1
+	`, chatID).Scan(&assistantMsgID); err != nil {
 		t.Fatalf("assistant voice row missing: %v", err)
-	}
-	if userContent != "敲定，用方案二" || assistantContent != "收到，已记录" {
-		t.Errorf("voice rows content wrong: user=%q assistant=%q", userContent, assistantContent)
 	}
 	if userMsgID != uuidToString(uuidv5Key(sessionID+"|user|1")) {
 		t.Errorf("user row id = %s, want UUIDv5 key %s|user|1", userMsgID, sessionID)
@@ -191,17 +200,55 @@ func TestVoiceChatWriteBack_SingleInsertAndReplayNoop(t *testing.T) {
 		chatID).Scan(&rowCount); err != nil {
 		t.Fatalf("count voice rows: %v", err)
 	}
-	if rowCount != 2 {
-		t.Errorf("want exactly 2 voice rows, got %d", rowCount)
+	if rowCount != len(wantTurns) {
+		t.Errorf("want exactly %d voice rows, got %d", len(wantTurns), rowCount)
+	}
+	rows, err := testPool.Query(context.Background(), `
+		SELECT role, content, created_at FROM chat_message
+		WHERE chat_session_id = $1::uuid AND message_kind = 'voice'
+		ORDER BY created_at ASC, id ASC
+	`, chatID)
+	if err != nil {
+		t.Fatalf("query ordered voice rows: %v", err)
+	}
+	var persisted []struct {
+		role, content string
+		createdAt     time.Time
+	}
+	for rows.Next() {
+		var row struct {
+			role, content string
+			createdAt     time.Time
+		}
+		if err := rows.Scan(&row.role, &row.content, &row.createdAt); err != nil {
+			rows.Close()
+			t.Fatalf("scan ordered voice row: %v", err)
+		}
+		persisted = append(persisted, row)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatalf("iterate ordered voice rows: %v", err)
+	}
+	rows.Close()
+	if len(persisted) != len(wantTurns) {
+		t.Fatalf("ordered voice rows = %d, want %d", len(persisted), len(wantTurns))
+	}
+	for i, want := range wantTurns {
+		if persisted[i].role != want.role || persisted[i].content != want.content {
+			t.Errorf("ordered voice row %d = %s %q, want %s %q", i, persisted[i].role, persisted[i].content, want.role, want.content)
+		}
+		if i > 0 && !persisted[i].createdAt.After(persisted[i-1].createdAt) {
+			t.Errorf("voice row %d timestamp %s is not after row %d timestamp %s", i, persisted[i].createdAt, i-1, persisted[i-1].createdAt)
+		}
 	}
 
-	// First-insert broadcast: one chat:message event per row, real payload.
+	// First-insert broadcast: one chat:message event per row, in transcript order.
 	broadcasts := chatEventsFor(chatID)
-	if len(broadcasts) != 2 {
-		t.Fatalf("want 2 chat:message broadcasts, got %d: %+v", len(broadcasts), broadcasts)
+	if len(broadcasts) != len(wantTurns) {
+		t.Fatalf("want %d chat:message broadcasts, got %d: %+v", len(wantTurns), len(broadcasts), broadcasts)
 	}
-	byRole := map[string]protocol.ChatMessagePayload{}
-	for _, e := range broadcasts {
+	for i, e := range broadcasts {
 		p, ok := e.Payload.(protocol.ChatMessagePayload)
 		if !ok {
 			t.Fatalf("chat:message payload type %T", e.Payload)
@@ -209,10 +256,9 @@ func TestVoiceChatWriteBack_SingleInsertAndReplayNoop(t *testing.T) {
 		if p.ChatSessionID != chatID || p.CreatedAt == "" {
 			t.Errorf("broadcast payload wrong: %+v", p)
 		}
-		byRole[p.Role] = p
-	}
-	if byRole["user"].Content != "敲定，用方案二" || byRole["assistant"].Content != "收到，已记录" {
-		t.Errorf("broadcast contents wrong: %+v", byRole)
+		if p.Role != wantTurns[i].role || p.Content != wantTurns[i].content {
+			t.Errorf("broadcast %d = %s %q, want %s %q", i, p.Role, p.Content, wantTurns[i].role, wantTurns[i].content)
+		}
 	}
 
 	// Reconnect visibility: the rows are ordinary, listing-visible history
@@ -224,8 +270,14 @@ func TestVoiceChatWriteBack_SingleInsertAndReplayNoop(t *testing.T) {
 	if perr != nil {
 		t.Fatalf("list chat messages: %v", perr)
 	}
-	if len(paged) != 2 {
-		t.Errorf("chat message page sees %d rows, want 2", len(paged))
+	if len(paged) != len(wantTurns) {
+		t.Errorf("chat message page sees %d rows, want %d", len(paged), len(wantTurns))
+	}
+	for i, msg := range paged {
+		want := wantTurns[len(wantTurns)-1-i]
+		if msg.Role != want.role || msg.Content != want.content {
+			t.Errorf("history page row %d = %s %q, want %s %q", i, msg.Role, msg.Content, want.role, want.content)
+		}
 	}
 
 	// REPLAY: the recovery entrypoint re-runs the write-back from the
@@ -240,11 +292,24 @@ func TestVoiceChatWriteBack_SingleInsertAndReplayNoop(t *testing.T) {
 		chatID).Scan(&after); err != nil {
 		t.Fatalf("post-replay count: %v", err)
 	}
-	if after != 2 {
+	if after != len(wantTurns) {
 		t.Errorf("replay duplicated rows: %d before, %d after", rowCount, after)
 	}
-	if got := len(chatEventsFor(chatID)); got != 2 {
-		t.Errorf("replay re-broadcast: %d events, want still 2", got)
+	if got := len(chatEventsFor(chatID)); got != len(wantTurns) {
+		t.Errorf("replay re-broadcast: %d events, want still %d", got, len(wantTurns))
+	}
+	paged, perr = testHandler.Queries.ListChatMessagesPage(context.Background(), db.ListChatMessagesPageParams{
+		ChatSessionID: parseUUID(chatID),
+		Limit:         24,
+	})
+	if perr != nil {
+		t.Fatalf("list chat messages after replay: %v", perr)
+	}
+	for i, msg := range paged {
+		want := wantTurns[len(wantTurns)-1-i]
+		if msg.Role != want.role || msg.Content != want.content {
+			t.Errorf("replayed history row %d = %s %q, want %s %q", i, msg.Role, msg.Content, want.role, want.content)
+		}
 	}
 }
 
@@ -311,7 +376,7 @@ func TestVoiceChatLink_DegradeNotReject(t *testing.T) {
 		name, link string
 	}{
 		{"not a uuid", "definitely-not-a-uuid"},
-		{"someones else session", ""}, // filled per-subtest: creator != caller
+		{"someones else session", ""},      // filled per-subtest: creator != caller
 		{"bound to a different agent", ""}, // filled per-subtest
 	}
 	for i, tc := range cases {
@@ -412,24 +477,24 @@ func TestVoiceChatContext_RichInjection(t *testing.T) {
 		t.Fatalf("upload img2: %v", err)
 	}
 	dbfx.Insert(t, "attachment", testutil.Cols{
-		"workspace_id":  testWorkspaceID,
+		"workspace_id":    testWorkspaceID,
 		"chat_session_id": chatID,
-		"uploader_type": "member",
-		"uploader_id":   testUserID,
-		"filename":      "img-1.png",
-		"url":           url1,
-		"content_type":  "image/png",
-		"size_bytes":    int64(len(img1)),
+		"uploader_type":   "member",
+		"uploader_id":     testUserID,
+		"filename":        "img-1.png",
+		"url":             url1,
+		"content_type":    "image/png",
+		"size_bytes":      int64(len(img1)),
 	})
 	dbfx.Insert(t, "attachment", testutil.Cols{
-		"workspace_id":  testWorkspaceID,
+		"workspace_id":    testWorkspaceID,
 		"chat_session_id": chatID,
-		"uploader_type": "member",
-		"uploader_id":   testUserID,
-		"filename":      "img-2.png",
-		"url":           url2,
-		"content_type":  "image/png",
-		"size_bytes":    int64(len(img2)),
+		"uploader_type":   "member",
+		"uploader_id":     testUserID,
+		"filename":        "img-2.png",
+		"url":             url2,
+		"content_type":    "image/png",
+		"size_bytes":      int64(len(img2)),
 	})
 
 	srv := voiceGatewayServer(t)
@@ -675,6 +740,9 @@ func TestVoiceMCPBridge_DirectExecution(t *testing.T) {
 
 	// 2) list_projects in the user's own workspace: the seeded project.
 	projectID := dbfx.Project(t, "Voice MCP Direct Project")
+	for _, title := range []string{"Voice MCP Page Project A", "Voice MCP Page Project B", "Voice MCP Page Project C"} {
+		dbfx.Project(t, title)
+	}
 	out, err = testHandler.executeVoiceMCPTool(ctx, session, "list_projects",
 		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID}))
 	if err != nil {
@@ -682,6 +750,66 @@ func TestVoiceMCPBridge_DirectExecution(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "Voice MCP Direct Project") || !strings.Contains(string(out), projectID) {
 		t.Errorf("list_projects missing the seeded project: %s", out)
+	}
+	allProjects, err := testHandler.Queries.ListProjects(ctx, db.ListProjectsParams{WorkspaceID: parseUUID(testWorkspaceID)})
+	if err != nil {
+		t.Fatalf("query projects for pagination assertions: %v", err)
+	}
+	if len(allProjects) < 3 {
+		t.Fatalf("pagination fixture has %d projects, want at least 3", len(allProjects))
+	}
+	out, err = testHandler.executeVoiceMCPTool(ctx, session, "list_projects",
+		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID, "limit": 2, "offset": 1}))
+	if err != nil {
+		t.Fatalf("list_projects page: %v", err)
+	}
+	var page struct {
+		Total    int `json:"total"`
+		Projects []struct {
+			ID string `json:"id"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(out, &page); err != nil {
+		t.Fatalf("decode list_projects page: %v", err)
+	}
+	if page.Total != len(allProjects) || len(page.Projects) != 2 {
+		t.Errorf("list_projects page total/items = %d/%d, want %d/2", page.Total, len(page.Projects), len(allProjects))
+	}
+	for i, want := range allProjects[1:3] {
+		if i < len(page.Projects) && page.Projects[i].ID != uuidToString(want.ID) {
+			t.Errorf("list_projects page item %d = %s, want %s", i, page.Projects[i].ID, uuidToString(want.ID))
+		}
+	}
+	out, err = testHandler.executeVoiceMCPTool(ctx, session, "list_projects",
+		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID, "offset": -1}))
+	if err != nil {
+		t.Fatalf("list_projects negative offset: %v", err)
+	}
+	var invalidOffset struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(out, &invalidOffset); err != nil {
+		t.Fatalf("decode negative offset error: %v", err)
+	}
+	if invalidOffset.Error.Code != "invalid_arguments" {
+		t.Errorf("negative offset error code = %q, want invalid_arguments: %s", invalidOffset.Error.Code, out)
+	}
+	out, err = testHandler.executeVoiceMCPTool(ctx, session, "list_projects",
+		mustToolArgs(t, map[string]any{"workspace": testWorkspaceID, "limit": 2, "offset": len(allProjects) + 10}))
+	if err != nil {
+		t.Fatalf("list_projects out-of-range offset: %v", err)
+	}
+	var emptyPage struct {
+		Total    int               `json:"total"`
+		Projects []json.RawMessage `json:"projects"`
+	}
+	if err := json.Unmarshal(out, &emptyPage); err != nil {
+		t.Fatalf("decode out-of-range page: %v", err)
+	}
+	if emptyPage.Total != len(allProjects) || len(emptyPage.Projects) != 0 {
+		t.Errorf("out-of-range page total/items = %d/%d, want %d/0", emptyPage.Total, len(emptyPage.Projects), len(allProjects))
 	}
 
 	// 3) get_project in a workspace the user is NOT a member of: the

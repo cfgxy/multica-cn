@@ -34,30 +34,55 @@ function decision(id: string, status: IssueDecision["status"]): IssueDecision {
   };
 }
 
-describe("decision entries", () => {
-  it("keeps the timeline compact and opens the complete card in a dialog", async () => {
-    renderWithI18n(<DecisionTimelineRow decision={decision("d-1", "open")} />);
+// RUYI-863: the three entries (timeline row, sidebar section, batch entry)
+// all open the SAME browser — filter, x/N position, previous/next. The
+// per-card view is mocked above; position-state matrix lives in
+// @multica/core/issues/decision-card-browser.test.ts.
 
-    expect(screen.getByTestId("decision-summary-d-1")).toHaveTextContent("Question d-1?");
-    expect(screen.queryByText("Background")).toBeNull();
-    fireEvent.click(screen.getByTestId("decision-summary-d-1"));
-    expect(await screen.findByTestId("decision-card-detail")).toHaveTextContent("Background");
+describe("decision entries", () => {
+  it("timeline row opens the browser pinned to the tapped card", async () => {
+    renderWithI18n(
+      <DecisionTimelineRow
+        decision={decision("d-2", "cancelled")}
+        decisions={[decision("d-1", "open"), decision("d-2", "cancelled")]}
+      />,
+    );
+
+    expect(screen.getByTestId("decision-summary-d-2")).toHaveTextContent("Question d-2?");
+    expect(screen.queryByTestId("decision-card-detail")).toBeNull();
+    fireEvent.click(screen.getByTestId("decision-summary-d-2"));
+
+    // A cancelled card must land exactly where the user tapped — not the
+    // first card.
+    expect(await screen.findByTestId("decision-card-detail")).toHaveTextContent(
+      "Question d-2?",
+    );
+    expect(screen.getByTestId("decision-browser-position")).toHaveTextContent(
+      "2 / 2",
+    );
   });
 
-  it("lists open, answered and cancelled cards in the sidebar entry", async () => {
+  it("sidebar entry opens the browser on the first card, and next walks forward", async () => {
     renderWithI18n(
-      <DecisionCardsSection decisions={[
-        decision("open", "open"),
-        decision("answered", "answered"),
-        decision("cancelled", "cancelled"),
-      ]} />,
+      <DecisionCardsSection
+        decisions={[decision("open", "open"), decision("answered", "answered")]}
+      />,
     );
 
     fireEvent.click(screen.getByTestId("decision-cards-sidebar-entry"));
-    expect(await screen.findByTestId("decision-list-row-open")).toBeInTheDocument();
-    expect(screen.getByTestId("decision-list-row-answered")).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("decision-list-row-cancelled"));
-    expect(await screen.findByTestId("decision-card-detail")).toHaveTextContent("Question cancelled?");
+    expect(await screen.findByTestId("decision-card-detail")).toHaveTextContent(
+      "Question open?",
+    );
+    expect(screen.getByTestId("decision-browser-position")).toHaveTextContent(
+      "1 / 2",
+    );
+    fireEvent.click(screen.getByTestId("decision-browser-next"));
+    expect(screen.getByTestId("decision-card-detail")).toHaveTextContent(
+      "Question answered?",
+    );
+    expect(screen.getByTestId("decision-browser-position")).toHaveTextContent(
+      "2 / 2",
+    );
   });
 
   // RUYI-861 named regression: the DialogContent base emits `sm:max-w-sm`

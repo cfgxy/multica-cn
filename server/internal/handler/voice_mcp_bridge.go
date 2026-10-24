@@ -193,6 +193,9 @@ func execVoiceListProjects(h *Handler, ctx context.Context, session db.LiveSessi
 	if limit < 1 || limit > 100 {
 		limit = 100
 	}
+	if offset < 0 {
+		return nil, &execVoiceToolError{Code: "invalid_arguments", Message: "offset must be greater than or equal to 0"}
+	}
 	projects, err := h.Queries.ListProjects(ctx, db.ListProjectsParams{WorkspaceID: workspaceID})
 	if err != nil {
 		return nil, &execVoiceToolError{Code: "internal", Message: "failed to list projects"}
@@ -216,11 +219,16 @@ func execVoiceListProjects(h *Handler, ctx context.Context, session db.LiveSessi
 		}
 	}
 	// The SQL list is unpaginated (workspace project counts are small);
-	// apply the MCP pagination contract in memory, matching the REST
-	// handler's behavior.
-	projects = projects[offset : min(len(projects), offset+limit)]
+	// apply the MCP pagination contract in memory.
+	total := len(projects)
+	if offset >= total {
+		projects = projects[:0]
+	} else {
+		end := min(total, offset+limit)
+		projects = projects[offset:end]
+	}
 	out := map[string]any{
-		"total":    offset + len(projects),
+		"total":    total,
 		"projects": make([]map[string]any, 0, len(projects)),
 	}
 	for _, p := range projects {
@@ -277,8 +285,8 @@ func execVoiceListAgents(h *Handler, ctx context.Context, session db.LiveSession
 		return nil, &execVoiceToolError{Code: "internal", Message: "failed to list agents"}
 	}
 	out := map[string]any{
-		"total":   len(agents),
-		"agents":  make([]map[string]any, 0, len(agents)),
+		"total":  len(agents),
+		"agents": make([]map[string]any, 0, len(agents)),
 	}
 	for _, a := range agents {
 		entry := map[string]any{

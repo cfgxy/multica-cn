@@ -60,7 +60,7 @@ func voiceChatWritebackRows(session db.LiveSession, transcript []voiceTranscript
 			RowID:     uuidv5Key(key),
 			Role:      turn.Role,
 			Content:   turn.Text,
-			CreatedAt: pgtype.Timestamptz{Time: created, Valid: true},
+			CreatedAt: pgtype.Timestamptz{Time: created.Add(time.Duration(turn.Index) * time.Microsecond), Valid: true},
 		})
 	}
 	return rows
