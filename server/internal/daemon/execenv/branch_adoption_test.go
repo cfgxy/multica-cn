@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -509,6 +510,110 @@ func TestPrepareBranchAdoptionRetirementRequiresContinuousOwnership(t *testing.T
 	}
 	if retirement.stateRecord != "" {
 		t.Fatalf("retirement recorded an unsafe target state %q", retirement.stateRecord)
+	}
+}
+
+func TestFinalizeBranchAdoptionRetirementReservesTargetBranchUntilRefTransaction(t *testing.T) {
+	fixture := newBranchAdoptionFixture(t)
+	const targetBranch = "agent/target/ruyi-870"
+	gitRun(t, fixture.repo, "switch", "main")
+	targetTip := gitRun(t, fixture.repo, "rev-parse", "refs/heads/"+targetBranch)
+	continuation := adoptionRecordOwner(fixture.adoption.TargetOwner)
+
+	retirement := &branchAdoptionRetirement{
+		branch:        targetBranch,
+		baseCommit:    targetTip,
+		createdBranch: true,
+	}
+	if err := finalizeBranchAdoptionRetirement(fixture.repo, retirement); err != nil {
+		t.Fatalf("finalizeBranchAdoptionRetirement: %v", err)
+	}
+	if retirement.releaseReservation == nil || !retirement.dropBranch {
+		t.Fatalf("retirement reservation = %+v, want an active branch reservation", retirement)
+	}
+	t.Cleanup(retirement.releaseReservation)
+
+	// The reservation is held while the ref transaction is prepared. An external
+	// linked worktree cannot win the interval between our safety check and branch
+	// deletion.
+	contender := filepath.Join(t.TempDir(), "contender")
+	if out, err := gitTry(t, fixture.repo, "worktree", "add", contender, targetBranch); err == nil {
+		t.Fatalf("external worktree attached to reserved target branch: %s", out)
+	}
+
+	newRecord, err := writeAdoptedBranchRecord(
+		fixture.repo,
+		fixture.sourceRecord,
+		fixture.branch,
+		fixture.tip,
+		fixture.adoption.TargetOwner,
+		fixture.adoption.SourceOwner.TaskID,
+		"",
+	)
+	if err != nil {
+		t.Fatalf("writeAdoptedBranchRecord: %v", err)
+	}
+	if err := updateAdoptedBranchRecord(
+		fixture.repo,
+		fixture.branch,
+		fixture.sourceRecord,
+		newRecord,
+		continuation,
+		"",
+		retirement,
+	); err != nil {
+		t.Fatalf("updateAdoptedBranchRecord: %v", err)
+	}
+	if branchExists(fixture.repo, targetBranch) {
+		t.Fatal("target branch survived its reserved retirement transaction")
+	}
+}
+
+func TestLocalWorktreeAdoptManagedBranchAbortsWhenReservationRacePreventsRollback(t *testing.T) {
+	fixture := newBranchAdoptionFixture(t)
+	const targetBranch = "agent/target/ruyi-870"
+	targetTip := gitRun(t, fixture.repo, "rev-parse", "refs/heads/"+targetBranch)
+	contender := filepath.Join(t.TempDir(), "contender")
+	triggered := filepath.Join(t.TempDir(), "post-checkout-triggered")
+	hookPath := filepath.Join(fixture.repo, ".git", "hooks", "post-checkout")
+	hook := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = %q ] && [ "$3" = 1 ] && [ ! -e %q ]; then
+  touch %q
+  git -C %q worktree add --quiet %q %q
+fi
+`, fixture.tip, triggered, triggered, fixture.repo, contender, targetBranch)
+	if err := os.WriteFile(hookPath, []byte(hook), 0o755); err != nil {
+		t.Fatalf("write post-checkout hook: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = gitTry(t, fixture.repo, "worktree", "remove", "--force", contender)
+	})
+
+	worktree := &LocalWorktree{
+		GitRoot:       fixture.repo,
+		Path:          fixture.repo,
+		WorkDir:       fixture.repo,
+		Branch:        targetBranch,
+		BaseCommit:    targetTip,
+		owner:         adoptionRecordOwner(fixture.adoption.TargetOwner),
+		createdBranch: true,
+	}
+	if _, err := worktree.AdoptManagedBranch(fixture.adoption); err == nil || !strings.Contains(err.Error(), "reserve original continuation branch") {
+		t.Fatalf("AdoptManagedBranch error = %v, want reservation refusal", err)
+	}
+	if _, err := os.Stat(triggered); err != nil {
+		t.Fatalf("post-checkout competitor did not run: %v", err)
+	}
+	if current := gitRun(t, fixture.repo, "branch", "--show-current"); current != fixture.branch {
+		t.Fatalf("checkout after failed rollback = %q, want adopted source branch %q", current, fixture.branch)
+	}
+	if worktree.aborted == nil {
+		t.Fatal("failed rollback left LocalWorktree deliverable")
+	}
+
+	outcome, err := worktree.Finalize(worktreeTestLogger())
+	if err == nil || outcome.PreservedPath != fixture.repo || outcome.Branch != "" {
+		t.Fatalf("Finalize after failed rollback = outcome %+v, error %v; want preserved worktree", outcome, err)
 	}
 }
 
