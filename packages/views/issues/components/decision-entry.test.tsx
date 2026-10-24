@@ -59,4 +59,18 @@ describe("decision entries", () => {
     fireEvent.click(screen.getByTestId("decision-list-row-cancelled"));
     expect(await screen.findByTestId("decision-card-detail")).toHaveTextContent("Question cancelled?");
   });
+
+  // RUYI-861 named regression: the DialogContent base emits `sm:max-w-sm`
+  // (384px) inside the media block Tailwind v4 writes AFTER the plain
+  // `max-w-*` utilities, so a non-important `max-w-2xl` on the caller was
+  // shadowed and the card rendered 384px-wide. Pin the width contract —
+  // the important breakpoint-scoped width clamped to the viewport gutters —
+  // on the timeline entry that owns it.
+  it("reads the card at the issue body column width, not the base 384px dialog", async () => {
+    renderWithI18n(<DecisionTimelineRow decision={decision("d-1", "open")} />);
+    fireEvent.click(screen.getByTestId("decision-summary-d-1"));
+    const content = (await screen.findByTestId("decision-card-detail"))
+      .closest('[data-slot="dialog-content"]');
+    expect(content?.className).toContain("sm:!max-w-[min(56rem,calc(100%_-_2rem))]");
+  });
 });
