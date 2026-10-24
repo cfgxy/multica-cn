@@ -5192,6 +5192,9 @@ export const PromptProposalSchema = z.object({
   enacted_version: z.number().optional(),
   rollback_of_version: z.number().optional(),
   rollback_reason: z.string(),
+  // RUYI-858: owner's landing target, persisted at approval. Absent on
+  // pre-RUYI-858 rows — the UI treats absence as the default library target.
+  enactment_target: z.enum(["clause_library", "static_prompt"]).optional(),
   merged_from: z.array(PromptProposalMergeRefSchema),
   source: z.string(),
   created_by_type: z.string(),

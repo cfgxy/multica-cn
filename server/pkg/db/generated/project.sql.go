@@ -96,6 +96,25 @@ func (q *Queries) DeleteProject(ctx context.Context, arg DeleteProjectParams) er
 	return err
 }
 
+const deletePromptProposalsByProjectReference = `-- name: DeletePromptProposalsByProjectReference :exec
+DELETE FROM prompt_proposal
+WHERE workspace_id = $1::uuid
+  AND ((carrier_scope = 'project' AND carrier_scope_id = $2::uuid)
+    OR (move_to_scope = 'project' AND move_to_scope_id = $2::uuid))
+`
+
+type DeletePromptProposalsByProjectReferenceParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+}
+
+// Project deletion removes proposals targeting that carrier as well as moves
+// whose destination is the deleted project. They cannot be enacted afterward.
+func (q *Queries) DeletePromptProposalsByProjectReference(ctx context.Context, arg DeletePromptProposalsByProjectReferenceParams) error {
+	_, err := q.db.Exec(ctx, deletePromptProposalsByProjectReference, arg.WorkspaceID, arg.ProjectID)
+	return err
+}
+
 const getProjectInWorkspace = `-- name: GetProjectInWorkspace :one
 SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, instructions, revision FROM project
 WHERE id = $1 AND workspace_id = $2

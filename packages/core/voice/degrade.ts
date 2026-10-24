@@ -14,7 +14,13 @@ export type VoiceDegradeReason =
   | "instance_not_active"
   | "capability_mismatch"
   | "credential_missing"
-  | "credential_invalid";
+  | "credential_invalid"
+  // D2 config-gate rejections (RUYI-866): the gateway answers them as
+  // HTTP 409 pre-upgrade on the cookie/token path and as an error frame on
+  // the first-frame path — same stable codes, so every surface maps them.
+  | "voice_unconfigured"
+  | "voice_provider_missing"
+  | "voice_provider_disabled";
 
 export const VOICE_UNAVAILABLE_PREFIX = "VOICE_UNAVAILABLE:";
 
@@ -53,7 +59,10 @@ function isVoiceDegradeReason(value: string): value is VoiceDegradeReason {
     value === "instance_not_active" ||
     value === "capability_mismatch" ||
     value === "credential_missing" ||
-    value === "credential_invalid"
+    value === "credential_invalid" ||
+    value === "voice_unconfigured" ||
+    value === "voice_provider_missing" ||
+    value === "voice_provider_disabled"
   );
 }
 

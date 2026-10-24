@@ -1600,13 +1600,12 @@ describe("ChatInput revoked-access placeholder", () => {
 // clearing restores the mic. Voice never displaces text — the slot swap is
 // driven by exactly the same emptiness signal the send button already uses.
 describe("ChatInput voice three-state slot", () => {
-  it("renders the stage-1 disabled mic instead of the send arrow when empty and an agent is bound", () => {
+  it("shows the mic instead of the send arrow when empty and an agent is bound", () => {
     renderInput({ agentId: "agent-1" });
 
-    // RUYI-626 stage 1: desktop/web entries say they are mobile-only
-    // instead of silently starting the retired relay path.
-    const mic = screen.getByRole("button", { name: enVoice.button.disabled_stage1 });
-    expect(mic).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Start voice conversation" }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
   });
 
@@ -1617,7 +1616,7 @@ describe("ChatInput voice three-state slot", () => {
 
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: enVoice.button.disabled_stage1 }),
+      screen.queryByRole("button", { name: "Start voice conversation" }),
     ).not.toBeInTheDocument();
   });
 
@@ -1627,12 +1626,12 @@ describe("ChatInput voice three-state slot", () => {
 
     fireEvent.change(editor, { target: { value: "hello" } });
     expect(
-      screen.queryByRole("button", { name: enVoice.button.disabled_stage1 }),
+      screen.queryByRole("button", { name: "Start voice conversation" }),
     ).not.toBeInTheDocument();
 
     fireEvent.change(editor, { target: { value: "" } });
     expect(
-      screen.getByRole("button", { name: enVoice.button.disabled_stage1 }),
+      screen.getByRole("button", { name: "Start voice conversation" }),
     ).toBeInTheDocument();
   });
 
@@ -1641,11 +1640,11 @@ describe("ChatInput voice three-state slot", () => {
 
     expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: enVoice.button.disabled_stage1 }),
+      screen.queryByRole("button", { name: "Start voice conversation" }),
     ).not.toBeInTheDocument();
   });
 
-  it("keeps the stage-1 mic inert — no voice session starts from desktop/web", () => {
+  it("opens the voice overlay on mic click without touching the draft", () => {
     setApiInstance({
       getBaseUrl: () => "http://localhost:3000",
     } as unknown as ApiClient);
@@ -1657,13 +1656,10 @@ describe("ChatInput voice three-state slot", () => {
       </I18nProvider>,
     );
 
-    const mic = screen.getByRole("button", { name: enVoice.button.disabled_stage1 });
-    expect(mic).toBeDisabled();
-    // The disabled entry never opens the overlay — the entry says why
-    // instead of starting (RUYI-626: no silent failure).
-    fireEvent.click(mic);
+    fireEvent.click(screen.getByRole("button", { name: "Start voice conversation" }));
+
     expect(
-      screen.queryByRole("dialog", { name: "Voice conversation" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("dialog", { name: "Voice conversation" }),
+    ).toBeInTheDocument();
   });
 });

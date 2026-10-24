@@ -166,11 +166,17 @@ export class VoiceSessionController {
     try {
       await this.transport.connect(this.url);
     } catch (error) {
+      // Aborted while the handshake was in flight: no degrade, no terminal
+      // state — the caller owns the visible outcome (RUYI-866 P1).
+      if (this.finished) return;
       // A transport that recovered the gateway's code (mobile HTTP probe)
       // reports it via VoiceRejectionError; anything else stays generic.
       this.fail(rejectionFromError(error));
       return;
     }
+    // Late handshake settle after an abort must not resurrect the session:
+    // no auth frame, no direct setup frame queued onto a closing socket.
+    if (this.finished) return;
     if (this.mode === "direct") {
       // The provider key rode the connect headers (never the URL); the setup
       // frame is the first in-protocol message, gateway-composed until now.
@@ -191,17 +197,30 @@ export class VoiceSessionController {
     }
   }
 
-  /** Upstream audio — ignored unless the session is live. */
+  /** Upstream audio — ignored unless the session is live and un-aborted. */
   sendAudio(pcmBase64: string): void {
-    if (this.state !== "live" || !pcmBase64) return;
+    if (this.state !== "live" || this.finished || !pcmBase64) return;
     this.transport.send(voiceAudioInputFrame(pcmBase64));
   }
 
   /** Graceful local hang-up. */
   end(): void {
-    if (this.state === "ended" || this.state === "failed") return;
+    if (this.state === "ended" || this.state === "failed" || this.finished) return;
     this.transport.close();
     this.finish("ended");
+  }
+
+  /**
+   * Local abort that keeps a non-terminal state in place (RUYI-866 P1):
+   * closes the socket so any late handshake settles into a no-op, but does
+   * NOT emit a terminal transition — callers that already marked the
+   * session failed (permission overlay, dismissed start) keep that state
+   * and clear it themselves. Idempotent.
+   */
+  abort(): void {
+    if (this.finished || this.state === "ended" || this.state === "failed") return;
+    this.finished = true;
+    this.transport.close();
   }
 
   /**
@@ -217,6 +236,10 @@ export class VoiceSessionController {
   }
 
   private handleFrame(data: string): void {
+    // Aborted sessions are dead ends: late frames (a handshake that
+    // settles after a dismiss/agent-switch) must not resurrect state or
+    // re-enter the degrade path.
+    if (this.finished) return;
     const frame = parseVoiceServerFrame(data);
     if (!frame) return;
 
@@ -285,6 +308,9 @@ export class VoiceSessionController {
 
   private handleClose(_code: number): void {
     if (this.state === "ended" || this.state === "failed") return;
+    // An aborted session is dead: its own close callback must not turn the
+    // abort into a degrade or a terminal transition.
+    if (this.finished) return;
     // Closed before setupComplete (or without a prior error frame): a
     // degraded start unless the caller already ended the session cleanly.
     if (this.state === "connecting") {

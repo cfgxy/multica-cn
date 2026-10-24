@@ -463,7 +463,39 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	created, err := h.Queries.CreateIssueDecision(r.Context(), db.CreateIssueDecisionParams{
+	// RUYI-865: the create runs inside a transaction that takes the issue
+	// row FOR UPDATE first (LockIssueForDecisionCreate). The insert's
+	// done guard is only as linear as the lock that serialises it against
+	// the done side: a done status write is a plain row UPDATE, which
+	// row-locks the issue as FOR UPDATE (issue carries a primary key),
+	// so the two writers cannot interleave on the row. Whichever writer
+	// wins the row lock, the loser's own commit is guaranteed to observe
+	// the winner's state — create-first, the done settle (post-commit,
+	// fresh READ COMMITTED snapshot) cancels the card that just
+	// committed; done-first, the guard's post-lock re-read sees done and
+	// refuses with 409. Without the lock the two snapshots pass each
+	// other and an open question card survives the done transition.
+	tx, txErr := h.TxStarter.Begin(r.Context())
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start decision card create")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	qtx := h.Queries.WithTx(tx)
+
+	if _, lockErr := qtx.LockIssueForDecisionCreate(r.Context(), db.LockIssueForDecisionCreateParams{
+		ID:          issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+	}); lockErr != nil {
+		if errors.Is(lockErr, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "issue not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to lock issue for decision create")
+		return
+	}
+
+	created, err := qtx.CreateIssueDecision(r.Context(), db.CreateIssueDecisionParams{
 		ID:                 dbid.NewV7(),
 		WorkspaceID:        issue.WorkspaceID,
 		IssueID:            issue.ID,
@@ -477,6 +509,23 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		CreatedByID:        parseUUID(authorID),
 		ClientRequestID:    keyParam,
 	})
+	if errors.Is(err, sql.ErrNoRows) {
+		// The insert's atomic done guard (RUYI-865) missed: a concurrent
+		// done transition committed while this request held the row lock.
+		// Re-read the row and check against the CURRENT state — the
+		// request-start snapshot is stale by definition in that race, and
+		// a foreign no-row miss (a concurrent delete) stays a 500 with a
+		// log either way.
+		fresh, freshErr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+			ID:          issue.ID,
+			WorkspaceID: issue.WorkspaceID,
+		})
+		if freshErr == nil && !h.decisionCardsAllowedWhileDone(r.Context(), fresh) {
+			writeError(w, http.StatusConflict,
+				"decision cards can no longer be raised: the issue has entered the done category; reopen it first")
+			return
+		}
+	}
 	if err != nil {
 		// Same-key retry: the insert lost the race against the original
 		// create, which by then must be committed (READ COMMITTED waits on
@@ -508,6 +557,14 @@ func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Commit before the publish: the card is not a fact until the create
+	// transaction lands, and only then may a concurrent done settle see it.
+	if commitErr := tx.Commit(r.Context()); commitErr != nil {
+		slog.Error("issue decision create commit failed", append(logger.RequestAttrs(r),
+			"error", commitErr, "issue_id", uuidToString(issue.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to create decision card")
+		return
+	}
 	resp := decisionToResponse(created)
 	h.publish(protocol.EventDecisionUpdated, uuidToString(issue.WorkspaceID), authorType, authorID, map[string]any{
 		"decision":    resp,

@@ -1,14 +1,58 @@
 -- name: CreateIssueDecision :one
+-- RUYI-865: the insert is refused in one atomic statement when the issue
+-- sits in the done category (built-in 'done' or a custom done key resolved
+-- through the status catalog): a card raised after the done transition has
+-- no cascade left to clear it, so it must not enter the backlog. The guard
+-- makes the create a no-op RETURNING 0 rows (sql.ErrNoRows) in that case;
+-- the handler maps the miss onto the 409 contract.
 INSERT INTO issue_decisions (
     id, workspace_id, issue_id, source_comment_id,
     question, context, options, multi_select, recommended_indices,
     created_by_type, created_by_id, client_request_id
-) VALUES (
-    @id, @workspace_id, @issue_id, @source_comment_id,
-    @question, @context::jsonb, @options::jsonb, @multi_select, @recommended_indices::jsonb,
-    @created_by_type, @created_by_id, @client_request_id
+)
+SELECT
+    @id::uuid, @workspace_id::uuid, @issue_id::uuid, @source_comment_id::uuid,
+    @question::text, @context::jsonb, @options::jsonb, @multi_select::bool, @recommended_indices::jsonb,
+    @created_by_type::text, @created_by_id::uuid, @client_request_id
+WHERE NOT EXISTS (
+    SELECT 1 FROM issue i
+    WHERE i.id = @issue_id::uuid AND i.workspace_id = @workspace_id::uuid
+      AND (
+        i.status = 'done'
+        OR EXISTS (
+            SELECT 1 FROM issue_status s
+            WHERE s.workspace_id = i.workspace_id
+              AND s.key = i.status
+              AND s.category = 'done'
+        )
+      )
 )
 RETURNING *;
+
+-- name: LockIssueForDecisionCreate :one
+-- RUYI-865: the create-side half of the done-race lock protocol. Taking the
+-- issue row FOR UPDATE inside the card-create transaction serialises the
+-- insert's done guard against every formal done status write. A done status
+-- write is a plain `UPDATE issue SET status = ...`, which locks the same
+-- row (FOR UPDATE / ROW EXCLUSIVE, or at least FOR NO KEY UPDATE when the
+-- table has no unique constraint); FOR UPDATE conflicts with BOTH, so the
+-- two writers cannot interleave on the row regardless of the table's
+-- constraints. Outcomes:
+--   - the done write commits first -> the guarded insert's post-lock re-read
+--     (a fresh READ COMMITTED snapshot once the lock is granted) sees done
+--     and the INSERT ... WHERE NOT EXISTS yields 0 rows -> the handler maps
+--     it to a 409;
+--   - the card commits first -> the done write's UPDATE is still queued
+--     behind the FOR UPDATE lock, so once it lands its post-commit cancel
+--     batch (a fresh READ COMMITTED snapshot) sees the just-committed card
+--     and cancels it.
+-- Either way no open question card survives a done transition. Mirrors
+-- LockIssueForDelete (issue.sql): the side that must not slip past the
+-- writer holds the exclusive row lock the writer conflicts with. Lock
+-- order is the single issue row, so no deadlock cycle is possible.
+SELECT id FROM issue
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE;
 
 -- name: GetIssueDecision :one
 SELECT * FROM issue_decisions
@@ -68,6 +112,24 @@ UPDATE issue_decisions SET
     status = 'cancelled',
     updated_at = now()
 WHERE id = @id AND workspace_id = @workspace_id AND status = 'open'
+RETURNING *;
+
+-- name: CancelOpenIssueDecisionsForIssue :many
+-- RUYI-865: when an issue formally enters the done category, every one of
+-- its still-open question cards is auto-cancelled in a single CAS batch so
+-- it cannot re-enter the decision-center backlog. The status guard makes
+-- the batch idempotent (re-running on an already-cleaned issue is a no-op)
+-- and races an in-flight answer safely: whichever of {answer, cancel} wins
+-- the open->terminal flip first leaves a consistent row, and only cards
+-- actually flipped are returned so events and audit rows cover exactly
+-- what changed. Authorization cards keep their request-owned lifecycle
+-- (RUYI-630 decision_requests surface) and are excluded here on purpose.
+UPDATE issue_decisions SET
+    status = 'cancelled',
+    updated_at = now()
+WHERE issue_id = @issue_id AND workspace_id = @workspace_id
+  AND status = 'open'
+  AND decision_kind = 'question'
 RETURNING *;
 
 -- name: RestoreIssueDecision :one
