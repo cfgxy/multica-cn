@@ -284,18 +284,18 @@ const updateProject = `-- name: UpdateProject :one
 UPDATE project SET
     title = COALESCE($2, title),
     description = $3,
-    instructions = $4,
-    icon = $5,
-    status = COALESCE($6, status),
-    priority = COALESCE($7, priority),
-    lead_type = $8,
-    lead_id = $9,
-    start_date = $10,
-    due_date = $11,
+    instructions = CASE WHEN $4::boolean THEN $5 ELSE instructions END,
+    icon = $6,
+    status = COALESCE($7, status),
+    priority = COALESCE($8, priority),
+    lead_type = $9,
+    lead_id = $10,
+    start_date = $11,
+    due_date = $12,
     updated_at = now(),
     revision = revision + 1
 WHERE id = $1
-  AND ($12::bigint IS NULL OR revision = $12::bigint)
+  AND ($13::bigint IS NULL OR revision = $13::bigint)
 RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, instructions, revision
 `
 
@@ -303,6 +303,7 @@ type UpdateProjectParams struct {
 	ID               pgtype.UUID `json:"id"`
 	Title            pgtype.Text `json:"title"`
 	Description      pgtype.Text `json:"description"`
+	InstructionsSet  bool        `json:"instructions_set"`
 	Instructions     pgtype.Text `json:"instructions"`
 	Icon             pgtype.Text `json:"icon"`
 	Status           pgtype.Text `json:"status"`
@@ -324,6 +325,7 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		arg.ID,
 		arg.Title,
 		arg.Description,
+		arg.InstructionsSet,
 		arg.Instructions,
 		arg.Icon,
 		arg.Status,
