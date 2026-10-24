@@ -168,7 +168,7 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 	if err != nil {
 		return result, err
 	}
-	newRecord, err := writeAdoptedBranchRecord(root, oldRecordRef, adoption.ExpectedRemoteSHA, adoption.TargetOwner, adoption.SourceOwner.TaskID)
+	newRecord, err := writeAdoptedBranchRecord(root, oldRecordRef, adoption.Branch, adoption.ExpectedRemoteSHA, adoption.TargetOwner, adoption.SourceOwner.TaskID)
 	if err != nil {
 		return result, err
 	}
@@ -210,7 +210,7 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 		}
 		return result, fmt.Errorf("adopt branch: bind continuation task marker: %w", err)
 	}
-	if err := updateAdoptedBranchRecord(root, adoption.Branch, oldRecordRef, newRecord); err != nil {
+	if err := updateAdoptedBranchRecord(root, adoption.Branch, oldRecordRef, newRecord, adoptionRecordOwner(adoption.TargetOwner)); err != nil {
 		markerRollbackErr := writeMarkerFileAtomic(adoption.MarkerPath, markerBefore)
 		checkoutRollbackErr := restoreCheckout()
 		if markerRollbackErr != nil || checkoutRollbackErr != nil {
@@ -305,11 +305,12 @@ func adoptedMarker(marker taskContextMarkerFile, branch, baseCommit string) ([]b
 	return data, nil
 }
 
-func writeAdoptedBranchRecord(gitRoot, oldRecord, checkpoint string, continuation BranchAdoptionOwner, sourceTaskID string) (string, error) {
+func writeAdoptedBranchRecord(gitRoot, oldRecord, branch, checkpoint string, continuation BranchAdoptionOwner, sourceTaskID string) (string, error) {
 	owner := adoptionRecordOwner(continuation)
 	message := branchRecordMessage(owner) + "\nmultica: authorized continuation branch adoption\n\n"
 	message += fmt.Sprintf("Source task: %s\n", sourceTaskID)
 	message += fmt.Sprintf("Continuation task: %s\n", continuation.TaskID)
+	message += fmt.Sprintf("%s: %s\n", ownerTrailerContinuation, branch)
 	args := append(commitIdentityArgs(gitRoot), "commit-tree", oldRecord+"^{tree}", "-p", oldRecord, "-p", checkpoint, "-m", message)
 	record, err := runGitTrimmed(gitRoot, args...)
 	if err != nil {
@@ -318,9 +319,10 @@ func writeAdoptedBranchRecord(gitRoot, oldRecord, checkpoint string, continuatio
 	return record, nil
 }
 
-func updateAdoptedBranchRecord(gitRoot, branch, oldRecord, newRecord string) error {
+func updateAdoptedBranchRecord(gitRoot, branch, oldRecord, newRecord string, continuation branchOwner) error {
 	input := "start\n" +
 		fmt.Sprintf("update %s %s %s\n", userStateRef(branch), newRecord, oldRecord) +
+		fmt.Sprintf("update %s %s\n", adoptedContinuationRef(continuation), newRecord) +
 		"prepare\ncommit\n"
 	if out, err := runGitInput(gitRoot, input, "update-ref", "--stdin"); err != nil {
 		return fmt.Errorf("adopt branch: atomically bind branch record: %s: %w", strings.TrimSpace(out), err)
