@@ -719,6 +719,34 @@ func TestVoiceTranscription_ProviderFailureSemantics(t *testing.T) {
 		}
 	})
 
+	t.Run("provider status matrix keeps failures private and classifies the probe badge", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			status    int
+			wantBadge string
+		}{
+			{name: "forbidden key", status: http.StatusForbidden, wantBadge: "invalid"},
+			{name: "rate limited", status: http.StatusTooManyRequests, wantBadge: "unreachable"},
+			{name: "provider server error", status: http.StatusInternalServerError, wantBadge: "unreachable"},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				wsID, providerID := seedFullASRWorkspace(t, "asr-"+tc.name, nil)
+				startStubASRProvider(t, tc.status, `{"error":"provider detail must not reach the client"}`)
+
+				w := postVoiceTranscription(t, wsID, contentType, body)
+				expectTranscriptionRejection(t, w, http.StatusBadGateway, "VOICE_PROVIDER_UNREACHABLE")
+				if strings.Contains(w.Body.String(), "provider detail") || strings.Contains(w.Body.String(), voiceASRTestAPIKey) {
+					t.Fatal("provider response details and API keys must not reach the client")
+				}
+				if badge := probeBadge(t, providerID); badge != tc.wantBadge {
+					t.Fatalf("badge = %q, want %q", badge, tc.wantBadge)
+				}
+			})
+		}
+	})
+
 	t.Run("unusable 2xx answer is a provider fault with the badge untouched", func(t *testing.T) {
 		wsID, providerID := seedFullASRWorkspace(t, "asr-garbage", nil)
 		startStubASRProvider(t, http.StatusOK, `not-json-at-all`)

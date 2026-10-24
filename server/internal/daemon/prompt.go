@@ -362,11 +362,14 @@ func buildQuickCreatePrompt(task Task) string {
 	b.WriteString("- **title**: required. A concise but semantically rich summary. If the input references external resources (PRs, issues, URLs), use your judgment on whether fetching the resource would produce a meaningfully better title — e.g. \"review PR #123\" → \"Review PR #123: Refactor auth module to OAuth2\". Strip filler words but preserve key semantic information.\n\n")
 
 	// description — the core optimization
-	b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use a two-section structure:\n\n")
-	b.WriteString("  1. **User request** — Faithfully restate what the user wants in their own words. Preserve specific names, identifiers, file paths, code snippets, and technical terms verbatim. Strip non-spec material before writing it (this is removal, not paraphrasing): verbal routing wrappers about creating the issue or routing it (e.g. \"create an issue\", \"分配给 X\", \"让 @X 处理\") and pure conversational fillers (e.g. \"对吧？\"). When in doubt, keep it.\n\n")
-	b.WriteString("     CC exception: `multica issue create` has no `--subscriber` flag, and the platform auto-subscribes members whose `[@Name](mention://member/<uuid>)` link appears in the description. When the user wrote \"cc @Y\", strip the verbal \"cc\" wrapper from the User request body and append a final `CC: <mention link(s)>` line to the description so the cc routing still fires.\n\n")
-	b.WriteString("  2. **Context** — include ONLY when the input cited external resources AND you successfully fetched them AND they produced verifiable facts worth recording. Summarize facts only (e.g. \"PR #45 changes auth to JWT\"), not interpretation or unsolicited reference implementations. If you have nothing factual to add, omit the section entirely — never use it as an apology log for resources you could not fetch.\n\n")
-	b.WriteString("  Hard rules: never invent requirements, implementation details, or acceptance criteria the user did not express; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
+	b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use all five sections below, in this exact order; do not omit an empty section. When a section has no support in the user input, read-only captured source context, or successfully verified facts from a cited external resource, write `Not provided in the user input or verified source context.` rather than inventing content:\n\n")
+	b.WriteString("  1. **Original request** — Begin with `Task source: user input captured by quick-create.` Then reproduce the complete raw user input verbatim in a Markdown block quote. This quote is the authoritative record of what the user entered, including conversational or routing wrappers; do not treat a wrapper in the quote as an additional product requirement. After the quote, faithfully restate the substantive request in the user's own words when doing so adds clarity. Preserve specific names, identifiers, file paths, code snippets, and technical terms verbatim. Strip non-spec material from that restatement (this is removal, not paraphrasing): verbal routing wrappers about creating the issue or routing it (e.g. \"create an issue\", \"分配给 X\", \"让 @X 处理\") and pure conversational fillers (e.g. \"对吧？\"). When in doubt, keep it.\n\n")
+	b.WriteString("     CC exception: `multica issue create` has no `--subscriber` flag, and the platform auto-subscribes members whose `[@Name](mention://member/<uuid>)` link appears in the description. When the user wrote \"cc @Y\", preserve the complete raw input in the Original request quote, strip the verbal \"cc\" wrapper from the substantive restatement, and append a final `CC: <mention link(s)>` line to the description so the cc routing still fires.\n\n")
+	b.WriteString("  2. **Background** — Explain why the task is needed using only facts the user supplied or facts successfully verified from cited resources. Summarize facts, not interpretation or unsolicited reference implementations. Do not use this section as an apology log for resources you could not fetch.\n\n")
+	b.WriteString("  3. **User stories** — Write one or more plain-language product user stories only when the user supplied enough actor, need, and outcome information to support them. Do not invent a role, user, workflow, or benefit merely to fill this section.\n\n")
+	b.WriteString("  4. **Acceptance criteria** — List explicit, testable boundaries expressed by the user or verified source context. Do not turn implementation guesses into criteria, and do not invent acceptance criteria.\n\n")
+	b.WriteString("  5. **Original attachments** — Preserve every attachment supplied through quick-create here. When no such attachment was supplied, state `No original attachments were provided.` The attachment-specific rules below tell you how to render each attachment.\n\n")
+	b.WriteString("  Hard rules: never invent requirements, implementation details, user stories, background, or acceptance criteria the user did not express or you could not verify; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
 	b.WriteString("  Passing the description: a short, single-line body with no code, quotes, backticks, `$()`, or other special characters may go inline via `--description \"...\"`. Anything multi-line, or containing code snippets / file paths / quotes / backticks / `$()` / special characters, or otherwise long — which quick-create descriptions usually are — MUST be written to `./description.md` and passed with `--description-file ./description.md`; passing rich text inline lets the shell rewrite or truncate it (MUL-2904). That file MUST live inside your current working directory (e.g. `./description.md`) — never `/tmp` or any machine-shared path, where a different run may have left a stale file that would silently become this issue's description. If the file write fails for any reason, stop and fix it; never run `--description-file` against a file whose write did not succeed.\n\n")
 
 	// priority
@@ -445,12 +448,17 @@ func buildQuickCreatePrompt(task Task) string {
 	// and quick-create forbids non-create CLI calls, so no download or
 	// --attachment-id instruction belongs here.
 	if len(task.QuickCreateAttachments) > 0 {
-		b.WriteString("Attachments uploaded in the quick-create modal (bound to the new issue automatically — pass no extra flags for them and do not download them):\n")
+		b.WriteString("Attachments uploaded in the quick-create modal (bound to the new issue automatically — preserve every one in the **Original attachments** section, pass no extra flags for them, and do not download them):\n")
 		for _, a := range task.QuickCreateAttachments {
 			if strings.HasPrefix(a.ContentType, "image/") {
-				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s — IMAGE: embed this markdown image inline in the description so it renders in the issue body: `![%s](%s)`\n", a.ID, a.Filename, a.ContentType, a.Filename, a.MarkdownURL)
+				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s — IMAGE: embed this Markdown image in the Original attachments section so it renders in the issue body: `![%s](%s)`\n", a.ID, a.Filename, a.ContentType, a.Filename, a.MarkdownURL)
 			} else {
-				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s — FILE: mention the filename in the description where relevant; the file itself lands in the issue's attachment area\n", a.ID, a.Filename, a.ContentType)
+				// RUYI-857: the UI renders non-image attachments as a dedicated
+				// download block only from the standalone-line file-card syntax
+				// `!file[name](url)` (packages/ui/markdown/file-cards.ts); a
+				// plain `[name](url)` line renders as an ordinary link. Ship
+				// the label pre-escaped so the agent copies it verbatim.
+				fmt.Fprintf(&b, "- id=%s filename=%q content_type=%s — FILE: put this file-card line on its own single line in the Original attachments section so the issue UI renders the dedicated download card for it: `!file[%s](%s)`. Copy it verbatim; the filename label is already backslash-escaped where needed.\n", a.ID, a.Filename, a.ContentType, escapeFileCardLabel(a.Filename), a.MarkdownURL)
 			}
 		}
 		b.WriteString("\n")
@@ -464,6 +472,26 @@ func buildQuickCreatePrompt(task Task) string {
 	b.WriteString("- Do NOT call `multica issue get` or `multica issue comment add` — there is no issue to query or comment on.\n")
 	b.WriteString("- On CLI error or JSON parse error, exit with the error as the only output. The platform writes a failure notification automatically.\n")
 	return b.String()
+}
+
+// escapeFileCardLabel backslashes the filename characters that would break a
+// `!file[name](url)` file-card line out of the renderer's grammar so the line
+// survives preprocessFileCards in packages/ui/markdown/file-cards.ts. Only `\`
+// and `]` are required for the line to match (a bare `\` swallows the next
+// char, a bare `]` terminates the label early); `[`, `(`, `)` are escaped too
+// because their escaped forms are the well-defined ones the renderer unescapes.
+// A bare `"` is deliberately NOT escaped: the renderer's label char class
+// swallows it fine, but its unescape (\\([[\]\\()]) -> $1) does not cover `"`,
+// so escaping it would corrupt the filename back into the card.
+func escapeFileCardLabel(filename string) string {
+	replacer := strings.NewReplacer(
+		`\`, `\\`,
+		`]`, `\]`,
+		`[`, `\[`,
+		`(`, `\(`,
+		`)`, `\)`,
+	)
+	return replacer.Replace(filename)
 }
 
 // buildCommentPrompt constructs a prompt for comment-triggered tasks.

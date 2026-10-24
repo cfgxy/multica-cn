@@ -23,8 +23,18 @@ func TestBuildQuickCreatePromptRules(t *testing.T) {
 	out := buildQuickCreatePrompt(Task{QuickCreatePrompt: "fix the login button color"})
 
 	mustContain := []string{
+		"Use all five sections below, in this exact order",
+		"**Original request**",
+		"Task source: user input captured by quick-create.",
+		"complete raw user input verbatim",
+		"**Background**",
+		"**User stories**",
+		"**Acceptance criteria**",
+		"**Original attachments**",
+		"Not provided in the user input or verified source context.",
+		"No original attachments were provided.",
 		// high-fidelity invariant
-		"Faithfully restate what the user wants",
+		"faithfully restate the substantive request",
 		"Preserve specific names, identifiers, file paths",
 		// strip non-spec material: verbal routing wrappers + conversational fillers
 		"verbal routing wrappers about creating the issue",
@@ -33,9 +43,10 @@ func TestBuildQuickCreatePromptRules(t *testing.T) {
 		// auto-subscribe path fires (multica issue create has no --subscriber flag)
 		"CC exception",
 		"auto-subscribes members",
-		// context section is conditional and must not be an apology log
-		"include ONLY when the input cited external resources",
-		"never use it as an apology log",
+		"using only facts the user supplied",
+		"Do not use this section as an apology log",
+		"Do not invent a role, user, workflow, or benefit",
+		"Do not turn implementation guesses into criteria",
 		// output/reporting must be workspace-prefix agnostic. Workspaces can
 		// use custom issue prefixes, so a successful issue creation should
 		// not look failed merely because the identifier does not match one
@@ -64,6 +75,79 @@ func TestBuildQuickCreatePromptRules(t *testing.T) {
 
 	if strings.Contains(out, "do NOT pass `--attachment`") {
 		t.Errorf("buildQuickCreatePrompt carries the unconditional --attachment ban that conflicts with the quick-create ## Output delivery channel (MUL-5696)\n--- output ---\n%s", out)
+	}
+}
+
+func TestBuildQuickCreatePromptPreservesUploadedAttachmentsInOriginalAttachments(t *testing.T) {
+	out := buildQuickCreatePrompt(Task{
+		QuickCreatePrompt: "document the attachment behavior",
+		QuickCreateAttachments: []QuickCreateAttachmentMeta{
+			{
+				ID:          "image-id",
+				Filename:    "diagram.png",
+				ContentType: "image/png",
+				MarkdownURL: "https://example.test/attachments/image-id/download",
+			},
+			{
+				ID:          "file-id",
+				Filename:    "requirements.pdf",
+				ContentType: "application/pdf",
+				MarkdownURL: "https://example.test/attachments/file-id/download",
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"preserve every one in the **Original attachments** section",
+		"![diagram.png](https://example.test/attachments/image-id/download)",
+		"!file[requirements.pdf](https://example.test/attachments/file-id/download)",
+		"pass no extra flags for them, and do not download them",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("buildQuickCreatePrompt attachment rule missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+
+	// RUYI-857: a plain `[name](url)` line renders as an ordinary link, not
+	// the dedicated file-card download block the UI wants for non-image
+	// attachments (packages/ui/markdown/file-cards.ts). The old plain-link
+	// directive ("preserve its filename and durable Markdown link") must be
+	// gone; note the card line is a superset of the plain link, so the
+	// negative check targets the directive wording, not the link itself.
+	if strings.Contains(out, "preserve its filename and durable Markdown link") {
+		t.Errorf("non-image attachment still carries the plain-link directive instead of a !file card line\n--- output ---\n%s", out)
+	}
+	if !strings.Contains(out, "on its own single line") {
+		t.Errorf("file-card directive does not state the standalone-line requirement\n--- output ---\n%s", out)
+	}
+}
+
+// RUYI-857: filenames carrying Markdown label characters must ship
+// backslash-escaped so the `!file[name](url)` line stays inside the
+// renderer's file-card grammar (mirror of escapeMarkdownLabel / the
+// preprocessFileCards unescape in packages).
+func TestBuildQuickCreatePromptEscapesFileCardLabels(t *testing.T) {
+	out := buildQuickCreatePrompt(Task{
+		QuickCreatePrompt: "attachments",
+		QuickCreateAttachments: []QuickCreateAttachmentMeta{
+			{
+				ID:          "file-id",
+				Filename:    `spec [draft] (v2).pdf`,
+				ContentType: "application/pdf",
+				MarkdownURL: "https://example.test/attachments/file-id/download",
+			},
+		},
+	})
+
+	// Every label character that can break the file-card line is escaped;
+	// the card line the prompt ships must round-trip back to the filename.
+	want := `!file[spec \[draft\] \(v2\).pdf](https://example.test/attachments/file-id/download)`
+	if !strings.Contains(out, want) {
+		t.Errorf("buildQuickCreatePrompt file-card label not escaped\n--- output ---\n%s", out)
+	}
+	// The un-escaped plain label must not leak through as the directive.
+	if strings.Contains(out, "!file[spec [draft] (v2).pdf]") {
+		t.Errorf("unescaped file-card label leaked into the directive\n--- output ---\n%s", out)
 	}
 }
 
@@ -2094,6 +2178,10 @@ func TestBuildQuickCreatePromptAttachmentMetas(t *testing.T) {
 		// the image is inlined via its durable markdown URL so it renders
 		// in the created issue's body
 		"![1000013602.jpg](https://multica.example.com/api/attachments/019aff3c-1111-7000-8000-000000000001/download)",
+		// RUYI-857: the non-image attachment ships as a standalone !file
+		// card line so the issue UI renders the dedicated download block
+		// (packages/ui/markdown/file-cards.ts), not a plain link
+		"!file[spec.pdf](https://multica.example.com/api/attachments/019aff3c-1111-7000-8000-000000000002/download)",
 		// binding already happens server-side via MULTICA_QUICK_CREATE_ATTACHMENT_IDS
 		"automatically",
 	}
