@@ -123,6 +123,9 @@ type activeRepoCheckoutTask struct {
 	IssueID     string
 	AgentName   string
 	WorkDir     string
+	// LocalWorktree is populated only for a task running in local worktree
+	// mode. Branch adoption must use it so Finalize observes the adopted state.
+	LocalWorktree *execenv.LocalWorktree
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -435,8 +438,7 @@ func (d *Daemon) branchAdoptionHandler() http.HandlerFunc {
 			http.Error(w, "source_task_id, branch, expected_remote_sha, and workdir are required", http.StatusBadRequest)
 			return
 		}
-		workDir, err := authorizeRepoCheckoutWorkDir(activeTask.WorkDir, req.WorkDir)
-		if err != nil {
+		if _, err := authorizeRepoCheckoutWorkDir(activeTask.WorkDir, req.WorkDir); err != nil {
 			http.Error(w, "branch adoption workdir is not owned by the active task", http.StatusForbidden)
 			return
 		}
@@ -455,7 +457,11 @@ func (d *Daemon) branchAdoptionHandler() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusForbidden)
 			return
 		}
-		result, err := execenv.AdoptManagedBranch(workDir, execenv.BranchAdoption{
+		if activeTask.LocalWorktree == nil {
+			http.Error(w, "branch adoption requires a managed local worktree", http.StatusConflict)
+			return
+		}
+		result, err := activeTask.LocalWorktree.AdoptManagedBranch(execenv.BranchAdoption{
 			Branch:            req.Branch,
 			ExpectedRemoteSHA: req.ExpectedRemoteSHA,
 			MarkerPath:        filepath.Join(activeTask.WorkDir, execenv.TaskContextMarkerRelPath),
