@@ -118,6 +118,22 @@ JOIN agent a ON a.id = p.agent_id AND a.workspace_id = p.workspace_id
 WHERE p.suppress_on_error_rate = TRUE
   AND a.archived_at IS NULL;
 
+-- name: SelectAgentErrorRateSuppressionHolders :many
+-- The sweep cohort alongside the armed candidate set: every agent that
+-- HOLDS the loop's own system source row (created_by NULL + the fixed
+-- reason, 985). The join to agent deliberately omits the archived_at
+-- filter — an archived agent that still carries a system row must stay
+-- reachable so the loop can release it; an archived agent with no row is
+-- simply absent. When the holder's policy row has vanished (switch off,
+-- DELETE) or was never armed, the row is an orphan the armed set can no
+-- longer release; the tick releases it exactly once with the built-in
+-- default-card judgment.
+SELECT sp.* FROM scheduling_pause sp
+JOIN agent a ON a.id = sp.agent_id AND a.workspace_id = sp.workspace_id
+WHERE sp.agent_id IS NOT NULL
+  AND sp.created_by IS NULL
+  AND sp.reason = 'error_rate_suppression';
+
 -- name: EnsureAgentErrorRateSchedulingPause :execrows
 -- The loop's only way into scheduling_pause. ON CONFLICT DO NOTHING against
 -- the agent-level partial unique index (idx_scheduling_pause_agent_level,

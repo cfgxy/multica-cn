@@ -169,12 +169,22 @@ func errorRateSuppressionRow(row db.SchedulingPause) bool {
 // written only where an actual insert/delete happened. Per-candidate
 // failures log and skip so one bad agent cannot stall the sweep. Returns
 // the transition counts so the caller can log real state changes only.
+//
+// RUYI-859 stage B rework: alongside the armed candidate set, the tick also
+// sweeps the system-row holders — agents that hold the loop's own
+// system source row while their policy is off, deleted, or the agent is
+// archived, and therefore dropped OUT of the armed set. Each such row is
+// released exactly once by its source owner with system identity; the
+// human paths are source-guarded and never lift it.
 func (s *TaskService) TickAgentBackpressureSuppression(ctx context.Context) (entered, cleared int, err error) {
 	policies, err := s.Queries.SelectArmedAgentBackpressurePolicies(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("select armed backpressure policies: %w", err)
 	}
+	armed := make(map[string]struct{}, len(policies))
 	for _, p := range policies {
+		key := util.UUIDToString(p.WorkspaceID) + "/" + util.UUIDToString(p.AgentID)
+		armed[key] = struct{}{}
 		switch s.suppressAgentTick(ctx, p) {
 		case AgentSuppressionEventEntered:
 			entered++
@@ -182,7 +192,38 @@ func (s *TaskService) TickAgentBackpressureSuppression(ctx context.Context) (ent
 			cleared++
 		}
 	}
+
+	// Sweep cohort: every holder of a system source row that no armed
+	// policy above owns. These are the orphan rows — the switch was turned
+	// off, the policy row was deleted, or the agent was archived — that the
+	// armed-only candidate set can no longer reach and that a human resume
+	// may no longer lift either. Each is released precisely once; a second
+	// tick finds no row and owes nothing.
+	holders, err := s.Queries.SelectAgentErrorRateSuppressionHolders(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("select system pause holders: %w", err)
+	}
+	for _, h := range holders {
+		key := util.UUIDToString(h.WorkspaceID) + "/" + util.UUIDToString(h.AgentID)
+		if _, inArmed := armed[key]; inArmed {
+			continue // already judged as an armed candidate above
+		}
+		if s.sweepSystemPauseRelease(ctx, h) {
+			cleared++
+		}
+	}
 	return entered, cleared, nil
+}
+
+// sweepSystemPauseRelease releases one orphan system source row with the
+// source owner's identity: the built-in default card is the judgment the
+// snapshot records, and the release is unconditional — an ownerless row
+// (policy off, deleted, agent archived) has no judgment that can keep it
+// alive. It returns whether the actual delete happened, so the tick counts
+// it exactly once.
+func (s *TaskService) sweepSystemPauseRelease(ctx context.Context, h db.SchedulingPause) bool {
+	row := db.AgentBackpressurePolicy{WorkspaceID: h.WorkspaceID, AgentID: h.AgentID}
+	return s.releaseErrorRateSchedulingPause(ctx, row, protocol.DefaultAgentBackpressureConfig(), nil) == AgentSuppressionEventCleared
 }
 
 // suppressAgentTick re-judges one armed policy and returns the transition
@@ -330,6 +371,13 @@ func (s *TaskService) releaseErrorRateSchedulingPause(ctx context.Context, p db.
 		runtimeID pgtype.UUID
 		rate      float64
 	)
+	// A nil recovery reading is the sweep release: the row was released by
+	// its source owner with no judgment window to sample, so the event
+	// records sample_count 0 / rate 0. The zero reading also keeps the
+	// TotalTerminal dereference below safe.
+	if recovery == nil {
+		recovery = &AgentBackpressureWindowReading{}
+	}
 	if recovery.ErrorRatePct != nil {
 		rate = *recovery.ErrorRatePct
 	}

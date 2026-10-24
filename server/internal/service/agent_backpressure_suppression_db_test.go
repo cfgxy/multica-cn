@@ -548,3 +548,241 @@ func TestAgentBackpressureSuppression_RestartRecomputesFromDatabase(t *testing.T
 		t.Fatalf("restart process resumed broadcasts: got %d, want 1", len(second.resumed))
 	}
 }
+
+// ---- RUYI-859 stage B review P1-2: the sweep cohort ----
+//
+// Once the policy is off, deleted, or the agent is archived, the holder
+// drops out of the ARMED candidate set — but its system source row must
+// still be released exactly once by the source owner (system identity, one
+// cleared audit + event + broadcast), and a second tick must owe nothing.
+
+// seedEnteredSystemPause drives the loop's entry transition once (armed
+// policy + a failure-heavy window) and asserts the full entered trail, so
+// every sweep test starts from the same held-row state.
+func seedEnteredSystemPause(t *testing.T, h *bpSuppressionHarness, pool *pgxpool.Pool, workspaceID, agentID, ownerID, runtimeID string) {
+	t.Helper()
+	ctx := context.Background()
+	seedBPPolicy(t, pool, workspaceID, agentID, ownerID)
+	insertBPTerminalSamples(t, pool, agentID, runtimeID, 7, []string{
+		string(taskfailure.ReasonAgentProviderCapacityOrRateLimit),
+		string(taskfailure.ReasonAgentProviderCapacityOrRateLimit),
+		string(taskfailure.ReasonAgentProviderCapacityOrRateLimit),
+	})
+	entered, cleared, err := h.svc.TickAgentBackpressureSuppression(ctx)
+	if err != nil || entered != 1 || cleared != 0 {
+		t.Fatalf("seed entry: entered=%d cleared=%d err=%v, want 1/0", entered, cleared, err)
+	}
+	if !isSystemErrorRatePause(t, pool, workspaceID, agentID) {
+		t.Fatal("seed entry: system row missing")
+	}
+	if len(h.paused) != 1 || len(h.resumed) != 0 {
+		t.Fatalf("seed entry broadcasts: paused=%d resumed=%d, want 1/0", len(h.paused), len(h.resumed))
+	}
+}
+
+// assertSystemClearedOnce asserts the sweep release's full owed trail
+// against the pre-release baselines (each counted exactly ONCE on top of
+// what the entry transition already owed).
+func assertSystemClearedOnce(t *testing.T, pool *pgxpool.Pool, h *bpSuppressionHarness, workspaceID, agentID string) {
+	t.Helper()
+	if isSystemErrorRatePause(t, pool, workspaceID, agentID) {
+		t.Fatalf("system row still present after the sweep tick")
+	}
+	if got := countAuditTransitions(t, pool, workspaceID, agentID, "agent.scheduling_resumed"); got != 1 {
+		t.Fatalf("system resumed audit rows: got %d, want exactly 1 (the sweep release)", got)
+	}
+	assertSystemAuditActor(t, pool, workspaceID, agentID, "agent.scheduling_resumed")
+	if got := countSuppressionEvents(t, pool, agentID, AgentSuppressionEventCleared); got != 1 {
+		t.Fatalf("cleared suppression events: got %d, want exactly 1", got)
+	}
+	if len(h.resumed) != 1 {
+		t.Fatalf("resumed broadcasts: got %d, want exactly 1", len(h.resumed))
+	}
+}
+
+// assertQuietSecondTick proves the "released exactly once" idempotency: a
+// second tick over the empty slot writes nothing and owes nothing.
+func assertQuietSecondTick(t *testing.T, h *bpSuppressionHarness, pool *pgxpool.Pool, workspaceID, agentID string) {
+	t.Helper()
+	entered, cleared, err := h.svc.TickAgentBackpressureSuppression(context.Background())
+	if err != nil {
+		t.Fatalf("second tick: %v", err)
+	}
+	if entered != 0 || cleared != 0 {
+		t.Fatalf("second tick transitions: entered=%d cleared=%d, want 0/0 (the row was released exactly once)", entered, cleared)
+	}
+	if got := countSuppressionEvents(t, pool, agentID, AgentSuppressionEventCleared); got != 1 {
+		t.Fatalf("cleared events after second tick: got %d, want still 1", got)
+	}
+	if len(h.resumed) != 1 {
+		t.Fatalf("resumed broadcasts after second tick: got %d, want still 1", len(h.resumed))
+	}
+}
+
+// P1-2 (switch off): the owner PUTs the policy with the automatic switch
+// disabled. The holder leaves the armed set; the sweep still must release
+// its system row exactly once with system identity.
+func TestSystemPauseReleasedOnceWhenSwitchDisabled(t *testing.T) {
+	pool, workspaceID, agentID, ownerID, runtimeID := seedBPFixture(t)
+	requireStageBTables(t, pool)
+	h := newBPSuppressionHarness(t, pool)
+	seedEnteredSystemPause(t, h, pool, workspaceID, agentID, ownerID, runtimeID)
+
+	// The owner disables the switch — the policy row survives, disarmed, so
+	// it leaves the armed candidate set and the holder becomes ownerless.
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE agent_backpressure_policy SET suppress_on_error_rate = false WHERE workspace_id = $1 AND agent_id = $2`,
+		workspaceID, agentID); err != nil {
+		t.Fatalf("disable switch: %v", err)
+	}
+
+	entered, cleared, err := h.svc.TickAgentBackpressureSuppression(context.Background())
+	if err != nil {
+		t.Fatalf("sweep tick: %v", err)
+	}
+	if entered != 0 || cleared != 1 {
+		t.Fatalf("sweep tick: entered=%d cleared=%d, want 0/1 (the ownerless row is released by its source)", entered, cleared)
+	}
+	assertSystemClearedOnce(t, pool, h, workspaceID, agentID)
+}
+
+// P1-2 (policy deleted): the owner DELETEs the policy row. Same owed
+// release, by the sweep, exactly once.
+func TestSystemPauseReleasedOnceWhenPolicyDeleted(t *testing.T) {
+	pool, workspaceID, agentID, ownerID, runtimeID := seedBPFixture(t)
+	requireStageBTables(t, pool)
+	h := newBPSuppressionHarness(t, pool)
+	seedEnteredSystemPause(t, h, pool, workspaceID, agentID, ownerID, runtimeID)
+
+	if err := db.New(pool).DeleteAgentBackpressurePolicy(context.Background(), db.DeleteAgentBackpressurePolicyParams{
+		WorkspaceID: util.MustParseUUID(workspaceID),
+		AgentID:     util.MustParseUUID(agentID),
+	}); err != nil {
+		t.Fatalf("delete policy: %v", err)
+	}
+	var rows int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM agent_backpressure_policy WHERE agent_id = $1`, agentID).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("policy rows after delete: got %d (err=%v), want 0", rows, err)
+	}
+
+	entered, cleared, err := h.svc.TickAgentBackpressureSuppression(context.Background())
+	if err != nil {
+		t.Fatalf("sweep tick: %v", err)
+	}
+	if entered != 0 || cleared != 1 {
+		t.Fatalf("sweep tick: entered=%d cleared=%d, want 0/1", entered, cleared)
+	}
+	assertSystemClearedOnce(t, pool, h, workspaceID, agentID)
+}
+
+// P1-2 (agent archived): the archived_at stamp drops the holder out of the
+// armed set even though its policy row still reads armed. The sweep join
+// (no archived filter) keeps it reachable and releases the row exactly
+// once.
+func TestSystemPauseReleasedOnceWhenAgentArchived(t *testing.T) {
+	pool, workspaceID, agentID, ownerID, runtimeID := seedBPFixture(t)
+	requireStageBTables(t, pool)
+	h := newBPSuppressionHarness(t, pool)
+	seedEnteredSystemPause(t, h, pool, workspaceID, agentID, ownerID, runtimeID)
+
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE agent SET archived_at = now(), archived_by = $2 WHERE id = $1`,
+		agentID, ownerID); err != nil {
+		t.Fatalf("archive agent: %v", err)
+	}
+
+	// Armed set join filters archived agents out — prove the holder is
+	// visible only through the sweep cohort, not the armed one.
+	armed, err := db.New(pool).SelectArmedAgentBackpressurePolicies(context.Background())
+	if err != nil {
+		t.Fatalf("select armed: %v", err)
+	}
+	if len(armed) != 0 {
+		t.Fatalf("armed candidates after archive: got %d, want 0 (archived agents drop out)", len(armed))
+	}
+
+	entered, cleared, err := h.svc.TickAgentBackpressureSuppression(context.Background())
+	if err != nil {
+		t.Fatalf("sweep tick: %v", err)
+	}
+	if entered != 0 || cleared != 1 {
+		t.Fatalf("sweep tick: entered=%d cleared=%d, want 0/1", entered, cleared)
+	}
+	assertSystemClearedOnce(t, pool, h, workspaceID, agentID)
+}
+
+// P1-2 (second tick): after the sweep release, the slot is empty and no
+// cohort re-selects the holder — nothing further is owed. Folded into each
+// release test via assertQuietSecondTick so the "exactly once" claim is
+// pinned, not implied: the 0/0 no-op tick is the counter-evidence.
+func TestSystemPauseSweepReleaseIsExactlyOnce(t *testing.T) {
+	pool, workspaceID, agentID, ownerID, runtimeID := seedBPFixture(t)
+	requireStageBTables(t, pool)
+	h := newBPSuppressionHarness(t, pool)
+	seedEnteredSystemPause(t, h, pool, workspaceID, agentID, ownerID, runtimeID)
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM agent_backpressure_policy WHERE agent_id = $1`, agentID); err != nil {
+		t.Fatalf("delete policy: %v", err)
+	}
+	if _, cleared, err := h.svc.TickAgentBackpressureSuppression(context.Background()); err != nil || cleared != 1 {
+		t.Fatalf("sweep release tick: cleared=%d err=%v, want 1", cleared, err)
+	}
+	assertQuietSecondTick(t, h, pool, workspaceID, agentID)
+}
+
+// P1-2 (human rows stay out of the sweep): with no armed policy at all,
+// a HUMAN agent-level row (created_by set) is invisible to the sweep
+// cohort's WHERE (created_by IS NULL + fixed reason): the loop neither
+// releases nor reports it — no cleared event, no resumed audit, no
+// broadcast — whatever the error-rate windows say.
+func TestSweepNeverReleasesHumanRows(t *testing.T) {
+	pool, workspaceID, agentID, ownerID, runtimeID := seedBPFixture(t)
+	requireStageBTables(t, pool)
+	// Armed-looking windows, but NO policy row and a HUMAN-held slot:
+	// the sweep cohort's WHERE selects system rows only.
+	insertBPTerminalSamples(t, pool, agentID, runtimeID, 0, []string{
+		string(taskfailure.ReasonAgentProviderCapacityOrRateLimit),
+		string(taskfailure.ReasonAgentProviderCapacityOrRateLimit),
+		string(taskfailure.ReasonAgentProviderCapacityOrRateLimit),
+		string(taskfailure.ReasonAgentProviderCapacityOrRateLimit),
+		string(taskfailure.ReasonAgentProviderCapacityOrRateLimit),
+	})
+	foreignAgentPause(t, pool, workspaceID, agentID, ownerID, "manual_freeze")
+	h := newBPSuppressionHarness(t, pool)
+
+	entered, cleared, err := h.svc.TickAgentBackpressureSuppression(context.Background())
+	if err != nil {
+		t.Fatalf("sweep tick: %v", err)
+	}
+	if entered != 0 || cleared != 0 {
+		t.Fatalf("sweep tick over a human row: entered=%d cleared=%d, want 0/0 (human rows are never loop-released)", entered, cleared)
+	}
+	if !isForeignRowIntact(t, pool, workspaceID, agentID) {
+		t.Fatal("human agent-level row mutated or lifted by the sweep")
+	}
+	if got := countAuditTransitions(t, pool, workspaceID, agentID, "agent.scheduling_resumed"); got != 0 {
+		t.Fatalf("system resumed audit rows owed on a human row: got %d, want 0", got)
+	}
+	if got := countSuppressionEvents(t, pool, agentID, AgentSuppressionEventCleared); got != 0 {
+		t.Fatalf("cleared suppression events owed on a human row: got %d, want 0", got)
+	}
+	if len(h.resumed) != 0 || len(h.paused) != 0 {
+		t.Fatalf("broadcasts owed on a human row: paused=%d resumed=%d, want 0/0", len(h.paused), len(h.resumed))
+	}
+}
+
+// isForeignRowIntact reports whether the agent-level slot still holds the
+// test's human row (created_by set, reason 'manual_freeze').
+func isForeignRowIntact(t *testing.T, pool *pgxpool.Pool, workspaceID, agentID string) bool {
+	t.Helper()
+	var createdByValid bool
+	var reason string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT created_by IS NOT NULL, reason FROM scheduling_pause WHERE workspace_id = $1 AND agent_id = $2`,
+		workspaceID, agentID).Scan(&createdByValid, &reason); err != nil {
+		t.Fatalf("read slot row: %v", err)
+		return false
+	}
+	return createdByValid && reason == "manual_freeze"
+}

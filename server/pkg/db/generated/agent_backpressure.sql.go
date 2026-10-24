@@ -283,6 +283,50 @@ func (q *Queries) ListAgentSuppressionEvents(ctx context.Context, arg ListAgentS
 	return items, nil
 }
 
+const selectAgentErrorRateSuppressionHolders = `-- name: SelectAgentErrorRateSuppressionHolders :many
+SELECT sp.id, sp.workspace_id, sp.agent_id, sp.reason, sp.created_by, sp.created_at FROM scheduling_pause sp
+JOIN agent a ON a.id = sp.agent_id AND a.workspace_id = sp.workspace_id
+WHERE sp.agent_id IS NOT NULL
+  AND sp.created_by IS NULL
+  AND sp.reason = 'error_rate_suppression'
+`
+
+// The sweep cohort alongside the armed candidate set: every agent that
+// HOLDS the loop's own system source row (created_by NULL + the fixed
+// reason, 985). The join to agent deliberately omits the archived_at
+// filter — an archived agent that still carries a system row must stay
+// reachable so the loop can release it; an archived agent with no row is
+// simply absent. When the holder's policy row has vanished (switch off,
+// DELETE) or was never armed, the row is an orphan the armed set can no
+// longer release; the tick releases it exactly once with the built-in
+// default-card judgment.
+func (q *Queries) SelectAgentErrorRateSuppressionHolders(ctx context.Context) ([]SchedulingPause, error) {
+	rows, err := q.db.Query(ctx, selectAgentErrorRateSuppressionHolders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SchedulingPause{}
+	for rows.Next() {
+		var i SchedulingPause
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.AgentID,
+			&i.Reason,
+			&i.CreatedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const selectArmedAgentBackpressurePolicies = `-- name: SelectArmedAgentBackpressurePolicies :many
 
 SELECT p.workspace_id, p.agent_id, p.window_minutes, p.error_rate_threshold_pct, p.min_samples, p.recovery_window_minutes, p.suppress_on_error_rate, p.count_model_api_failures, p.count_execution_failures, p.updated_by, p.created_at, p.updated_at FROM agent_backpressure_policy p
