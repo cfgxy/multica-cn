@@ -537,6 +537,104 @@ func TestVoiceChatContext_RichInjection(t *testing.T) {
 	conn.Close()
 }
 
+// TestVoiceChatContext_SemanticIssueAndProjectMentions proves the chat
+// composer contract for link ②: Issue and project mentions are resolved under
+// the live session user's current workspace membership. Valid rows become
+// entity context; malformed or foreign references degrade without passing a
+// raw link or foreign data to the model. A fresh voice session re-reads the
+// conversation so mentions added after the first session also reach setup.
+func TestVoiceChatContext_SemanticIssueAndProjectMentions(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, _ := seedUsableVoiceSetup(t, "Mention Context", `{"model":"stubby-live-1"}`)
+	chatID := dbfx.ChatSession(t, agentID)
+	issueID := dbfx.Issue(t, "Voice Mention Issue", testutil.Cols{
+		"description": "local issue context",
+	})
+	projectID := dbfx.Project(t, "Voice Mention Project", testutil.Cols{
+		"description": "local project context",
+	})
+	foreignWorkspaceID := dbfx.Workspace(t, "Voice Mention Foreign", "voice-mention-foreign")
+	foreignIssueID := dbfx.Issue(t, "Foreign Issue Secret", testutil.Cols{
+		"workspace_id": foreignWorkspaceID,
+		"description":  "foreign issue description",
+	})
+	foreignProjectID := dbfx.Project(t, "Foreign Project Secret", testutil.Cols{
+		"workspace_id": foreignWorkspaceID,
+		"description":  "foreign project description",
+	})
+	dbfx.Insert(t, "chat_message", testutil.Cols{
+		"chat_session_id": chatID,
+		"role":            "user",
+		"content": "[Issue label](mention://issue/" + issueID + ") " +
+			"[Project label](mention://project/" + projectID + ") " +
+			"[Foreign issue label](mention://issue/" + foreignIssueID + ") " +
+			"[Foreign project label](mention://project/" + foreignProjectID + ") " +
+			"[Malformed issue](mention://issue/not-a-uuid) " +
+			"malformed mention://issue/not-a-uuid",
+	})
+
+	provider := newStubVoiceProvider(t)
+	srv := voiceGatewayServer(t)
+	conn := dialVoiceSessionChatLinked(t, srv, agentID, "?chat_session_id="+chatID)
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, first, err := conn.ReadMessage(); err != nil {
+		t.Fatalf("read setupComplete: %v", err)
+	} else if !strings.Contains(string(first), "setupComplete") {
+		t.Fatalf("expected setupComplete, got %s", first)
+	}
+	provider.gatewayConn(t)
+	turn := waitProviderFrame(t, provider, "clientContent")
+	for _, want := range []string{
+		"user references issue", "Voice Mention Issue", "local issue context",
+		"user references project", "Voice Mention Project", "local project context",
+	} {
+		if !strings.Contains(turn, want) {
+			t.Errorf("resolved mention context missing %q: %s", want, turn)
+		}
+	}
+	for _, forbidden := range []string{
+		"mention://issue", "mention://project", "Foreign Issue Secret",
+		"foreign issue description", "Foreign Project Secret", "foreign project description",
+	} {
+		if strings.Contains(turn, forbidden) {
+			t.Errorf("unavailable mention leaked %q: %s", forbidden, turn)
+		}
+	}
+	if got := strings.Count(turn, "unavailable"); got < 4 {
+		t.Errorf("want structured degradation for foreign and malformed references, got %d: %s", got, turn)
+	}
+	conn.Close()
+
+	// The next voice initialization must re-read persisted chat context rather
+	// than caching the first setup frame, so a post-session mention is included.
+	updatedProjectID := dbfx.Project(t, "Voice Mention Updated Project", testutil.Cols{
+		"description": "added before reconnect",
+	})
+	dbfx.Insert(t, "chat_message", testutil.Cols{
+		"chat_session_id": chatID,
+		"role":            "user",
+		"content":         "[Updated project](mention://project/" + updatedProjectID + ")",
+	})
+	updatedProvider := newStubVoiceProvider(t)
+	updatedConn := dialVoiceSessionChatLinked(t, srv, agentID, "?chat_session_id="+chatID)
+	updatedConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, first, err := updatedConn.ReadMessage(); err != nil {
+		t.Fatalf("read reconnect setupComplete: %v", err)
+	} else if !strings.Contains(string(first), "setupComplete") {
+		t.Fatalf("expected reconnect setupComplete, got %s", first)
+	}
+	updatedProvider.gatewayConn(t)
+	updatedTurn := waitProviderFrame(t, updatedProvider, "clientContent")
+	for _, want := range []string{"Voice Mention Updated Project", "added before reconnect"} {
+		if !strings.Contains(updatedTurn, want) {
+			t.Errorf("reconnect context missing %q: %s", want, updatedTurn)
+		}
+	}
+	updatedConn.Close()
+}
+
 // TestVoiceChatContext_PlainVoiceFallback: with NO chat link the injection
 // stays the existing plain-voice summary section — rich context must not be
 // invented for a plain voice session (§3.6 "never invent continuity").
