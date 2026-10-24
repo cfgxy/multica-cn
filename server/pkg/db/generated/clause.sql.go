@@ -856,7 +856,7 @@ func (q *Queries) ListClauseOverview(ctx context.Context, workspaceID pgtype.UUI
 }
 
 const listClauseProposals = `-- name: ListClauseProposals :many
-SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version FROM prompt_proposal
+SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version, enactment_target FROM prompt_proposal
 WHERE prompt_proposal.clause_id = $1::uuid
 ORDER BY prompt_proposal.created_at DESC
 LIMIT 50
@@ -909,6 +909,7 @@ func (q *Queries) ListClauseProposals(ctx context.Context, clauseID pgtype.UUID)
 			&i.MoveToScopeID,
 			&i.Conditions,
 			&i.RollbackOfVersion,
+			&i.EnactmentTarget,
 		); err != nil {
 			return nil, err
 		}
@@ -1336,7 +1337,7 @@ func (q *Queries) ListProjectBusinessColumns(ctx context.Context, arg ListProjec
 }
 
 const listRollbackSuggestions = `-- name: ListRollbackSuggestions :many
-SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version FROM prompt_proposal
+SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version, enactment_target FROM prompt_proposal
 WHERE prompt_proposal.workspace_id = $1::uuid
   AND prompt_proposal.rollback_of_version IS NOT NULL
 ORDER BY prompt_proposal.created_at DESC
@@ -1391,6 +1392,7 @@ func (q *Queries) ListRollbackSuggestions(ctx context.Context, workspaceID pgtyp
 			&i.MoveToScopeID,
 			&i.Conditions,
 			&i.RollbackOfVersion,
+			&i.EnactmentTarget,
 		); err != nil {
 			return nil, err
 		}

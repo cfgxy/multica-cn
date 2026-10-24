@@ -422,7 +422,15 @@
     },
     "changeKind": {
       "add_clause": "新增条款",
-      "remove_clause": "移除条款"
+      "revise_clause": "修订条款",
+      "remove_clause": "移除条款",
+      "move_clause": "移动条款",
+      "migrate_clause": "迁移条款"
+    },
+    "enactmentTargetLabel": "条款落地目标",
+    "enactmentTargetOptions": {
+      "clause_library": "进入条款库",
+      "static_prompt": "改写静态条款"
     },
     "carrierScope": {
       "workspace": "工作区",

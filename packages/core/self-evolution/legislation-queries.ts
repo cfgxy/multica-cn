@@ -64,8 +64,13 @@ export function useSubmitPromptProposal(wsId: string) {
 export function useApprovePromptProposal(wsId: string) {
   const invalidate = useInvalidateProposalPool(wsId);
   return useMutation({
-    mutationFn: (input: { id: string; confirmDiffPreviewed: boolean }) =>
-      api.approvePromptProposal(input.id, input.confirmDiffPreviewed),
+    mutationFn: (input: {
+      id: string;
+      confirmDiffPreviewed: boolean;
+      /** RUYI-858: landing target; undefined keeps the server default. */
+      enactmentTarget?: "clause_library" | "static_prompt";
+    }) =>
+      api.approvePromptProposal(input.id, input.confirmDiffPreviewed, input.enactmentTarget),
     onSuccess: invalidate,
   });
 }
@@ -73,8 +78,13 @@ export function useApprovePromptProposal(wsId: string) {
 export function useBatchApprovePromptProposals(wsId: string) {
   const invalidate = useInvalidateProposalPool(wsId);
   return useMutation({
-    mutationFn: (input: { ids: string[]; confirmDiffPreviewed: boolean }) =>
-      api.batchApprovePromptProposals(input.ids, input.confirmDiffPreviewed),
+    mutationFn: (input: {
+      ids: string[];
+      confirmDiffPreviewed: boolean;
+      /** RUYI-858: per-id landing targets; absent ids keep the default. */
+      enactmentTargets?: Record<string, "clause_library" | "static_prompt">;
+    }) =>
+      api.batchApprovePromptProposals(input.ids, input.confirmDiffPreviewed, input.enactmentTargets),
     onSuccess: invalidate,
   });
 }
