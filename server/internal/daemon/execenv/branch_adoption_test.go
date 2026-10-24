@@ -92,7 +92,8 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 	// fixture structurally identical so the follow-up Prepare exercises normal
 	// replay semantics rather than an impossible parentless snapshot.
 	sourceState := gitRun(t, repo, "commit-tree", "main^{tree}", "-p", "main", "-m", "source snapshot")
-	if _, err := writeBranchRecord(repo, sourceBranch, sourceState, sourceTip, adoptionRecordOwner(sourceOwner)); err != nil {
+	sourceRecord, err := writeBranchRecord(repo, sourceBranch, sourceState, sourceTip, adoptionRecordOwner(sourceOwner))
+	if err != nil {
 		t.Fatalf("write source branch record: %v", err)
 	}
 	gitRun(t, repo, "switch", "main")
@@ -145,13 +146,34 @@ func TestLocalWorktreeAdoptManagedBranchFinalizesContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := worktree.AdoptManagedBranch(BranchAdoption{
+	adoption := BranchAdoption{
 		Branch:            sourceBranch,
 		ExpectedRemoteSHA: sourceTip,
 		MarkerPath:        markerPath,
 		SourceOwner:       sourceOwner,
 		TargetOwner:       targetOwner,
-	})
+	}
+	markerDir := filepath.Dir(markerPath)
+	if err := os.Chmod(markerDir, 0o555); err != nil {
+		t.Fatalf("make marker directory read-only: %v", err)
+	}
+	if _, err := worktree.AdoptManagedBranch(adoption); err == nil || !strings.Contains(err.Error(), "bind continuation task marker") {
+		t.Fatalf("AdoptManagedBranch with unwritable marker = %v, want marker write refusal", err)
+	}
+	if err := os.Chmod(markerDir, 0o755); err != nil {
+		t.Fatalf("restore marker directory permission: %v", err)
+	}
+	if current := gitRun(t, worktree.WorkDir, "branch", "--show-current"); current != originalTargetBranch {
+		t.Fatalf("failed adoption left running worktree on %q, want %q", current, originalTargetBranch)
+	}
+	if got := gitRun(t, repo, "rev-parse", userStateRef(originalTargetBranch)); got != originalTargetRecord {
+		t.Fatalf("failed adoption changed target record: got %s, want %s", got, originalTargetRecord)
+	}
+	if got := gitRun(t, repo, "rev-parse", userStateRef(sourceBranch)); got != sourceRecord {
+		t.Fatalf("failed adoption changed source record: got %s, want %s", got, sourceRecord)
+	}
+
+	result, err := worktree.AdoptManagedBranch(adoption)
 	if err != nil {
 		t.Fatalf("AdoptManagedBranch: %v", err)
 	}

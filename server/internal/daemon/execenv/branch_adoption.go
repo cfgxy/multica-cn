@@ -220,20 +220,31 @@ func adoptManagedBranch(gitRoot string, adoption BranchAdoption, retirement *bra
 		}
 		return result, fmt.Errorf("adopt branch: retire original continuation branch: %w", err)
 	}
-	if retirement != nil && retirement.releaseReservation != nil {
-		defer retirement.releaseReservation()
+	releaseRetirementReservation := func() {
+		if retirement != nil && retirement.releaseReservation != nil {
+			retirement.releaseReservation()
+			retirement.releaseReservation = nil
+		}
 	}
+	defer releaseRetirementReservation()
 
 	// The marker is written before the ref transaction and restored on a failed
 	// transaction. The filesystem and Git ref store cannot share one primitive,
 	// so this order makes the durable branch ownership change the commit point.
 	if err := writeMarkerFileAtomic(adoption.MarkerPath, newMarker); err != nil {
+		// Restoring the checkout needs the original branch to be available. The
+		// reservation is only required through the ref transaction, which did not
+		// start when the marker write failed.
+		releaseRetirementReservation()
 		if rollbackErr := restoreCheckout(); rollbackErr != nil {
 			return result, fmt.Errorf("adopt branch: bind continuation task marker: %w (also %v)", err, rollbackErr)
 		}
 		return result, fmt.Errorf("adopt branch: bind continuation task marker: %w", err)
 	}
 	if err := updateAdoptedBranchRecord(root, adoption.Branch, oldRecordRef, newRecord, continuation, previousContinuationRecord, retirement); err != nil {
+		// The guarded transaction failed atomically, so it is safe to release the
+		// target reservation before returning the running worktree to that branch.
+		releaseRetirementReservation()
 		markerRollbackErr := writeMarkerFileAtomic(adoption.MarkerPath, markerBefore)
 		checkoutRollbackErr := restoreCheckout()
 		if markerRollbackErr != nil || checkoutRollbackErr != nil {
