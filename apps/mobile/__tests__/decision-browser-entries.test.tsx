@@ -70,6 +70,18 @@ jest.mock("@/components/ui/button", () => {
     ),
   };
 });
+jest.mock("@/components/ui/dropdown-menu", () => {
+  const { Pressable, View } = jest.requireActual<typeof import("react-native")>("react-native");
+  return {
+    DropdownMenu: ({ children }: { children: React.ReactNode }) => <View>{children}</View>,
+    DropdownMenuTrigger: ({ children }: { children: React.ReactNode }) => <View>{children}</View>,
+    DropdownMenuContent: ({ children }: { children: React.ReactNode }) => <View>{children}</View>,
+    DropdownMenuItem: ({ children, ...props }: React.ComponentProps<typeof Pressable>) => <Pressable {...props}>{children}</Pressable>,
+  };
+});
+jest.mock("@expo/vector-icons", () => ({
+  Ionicons: () => null,
+}));
 jest.mock("@/lib/use-color-scheme", () => ({
   useColorScheme: () => ({ colorScheme: "light" }),
 }));
@@ -158,10 +170,11 @@ describe("RUYI-863 mobile decision-card entries (shared browser)", () => {
     // No pin, no filter → "all" and the FIRST card in created_at order.
     expect(question()).toBe("First card");
     expect(screen.getByText("1 / 3")).toBeTruthy();
+    expect(screen.getByTestId("decision-browser-filter")).toBeTruthy();
     expect(screen.getByTestId("decision-browser-filter-all").props.accessibilityState).toMatchObject({
       selected: true,
     });
-    // The filter chips expose the three statuses plus all.
+    // The dropdown exposes the three statuses plus all.
     expect(screen.queryByTestId("decision-browser-filter-open")).toBeTruthy();
     expect(screen.queryByTestId("decision-browser-filter-cancelled")).toBeTruthy();
   });

@@ -17,6 +17,7 @@
  */
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import {
   decisionBrowserNeighbor,
   filterDecisionCards,
@@ -27,10 +28,14 @@ import {
 import type { IssueDecision } from "@multica/core/types";
 import { Button } from "@/components/ui/button";
 import { Text } from "@/components/ui/text";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { DecisionCard } from "./decision-card";
-import { useColorScheme } from "@/lib/use-color-scheme";
 import { useT } from "@/lib/use-t";
-import { cn } from "@/lib/utils";
 
 const FILTER_OPTIONS: readonly DecisionCardFilter[] = [
   "all",
@@ -65,7 +70,6 @@ export function MobileDecisionCardBrowser({
   initialCardId,
 }: MobileDecisionCardBrowserProps) {
   const { t } = useT("issues");
-  const { colorScheme } = useColorScheme();
   const [filter, setFilter] = useState<DecisionCardFilter>(initialFilter);
   const [cardId, setCardId] = useState(() =>
     initialDecisionBrowserCardId(decisions, initialFilter, initialCardId),
@@ -91,36 +95,58 @@ export function MobileDecisionCardBrowser({
 
   return (
     <View className="flex-1 bg-background" testID="decision-card-browser">
-      {/* Status filter — a horizontal chip row (mobile idiom) over the
-          web's dropdown select; options and semantics are identical. */}
-      <View className="flex-row gap-2 px-4 py-2" testID="decision-browser-filter">
-        {FILTER_OPTIONS.map((f) => {
-          const active = f === filter;
-          return (
+      <View className="flex-row px-4 py-2">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
             <Pressable
-              key={f}
-              onPress={() => setFilter(f)}
               accessibilityRole="button"
-              accessibilityState={{ selected: active }}
-              testID={`decision-browser-filter-${f}`}
-              className={cn(
-                "rounded-full border px-3 py-1",
-                active
-                  ? "border-brand bg-accent/40"
-                  : "border-border bg-transparent",
-              )}
+              accessibilityLabel={t("decisions.filter_label", "Filter decision cards")}
+              testID="decision-browser-filter"
+              className="flex-row items-center gap-1 rounded-md border border-border px-3 py-1.5"
             >
-              <Text
-                className={cn(
-                  "text-xs font-medium",
-                  active ? "text-brand" : "text-muted-foreground",
+              <Text className="text-xs font-medium text-foreground">
+                {t(
+                  `decisions.${filterLabelKey(filter)}`,
+                  filter === "all"
+                    ? "All"
+                    : filter === "open"
+                      ? "Pending"
+                      : filter === "answered"
+                        ? "Answered"
+                        : "Cancelled",
                 )}
-              >
-                {t(`decisions.${filterLabelKey(f)}`, f === "all" ? "All" : f === "open" ? "Pending" : f === "answered" ? "Answered" : "Cancelled")}
               </Text>
+              <Ionicons name="chevron-down" size={14} />
             </Pressable>
-          );
-        })}
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="min-w-36">
+            {FILTER_OPTIONS.map((f) => {
+              const active = f === filter;
+              return (
+                <DropdownMenuItem
+                  key={f}
+                  onPress={() => setFilter(f)}
+                  accessibilityState={{ selected: active }}
+                  testID={`decision-browser-filter-${f}`}
+                >
+                  <Text className="flex-1">
+                    {t(
+                      `decisions.${filterLabelKey(f)}`,
+                      f === "all"
+                        ? "All"
+                        : f === "open"
+                          ? "Pending"
+                          : f === "answered"
+                            ? "Answered"
+                            : "Cancelled",
+                    )}
+                  </Text>
+                  {active ? <Ionicons name="checkmark" size={16} /> : null}
+                </DropdownMenuItem>
+              );
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </View>
 
       {current ? (
