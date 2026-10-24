@@ -159,6 +159,8 @@ export const TOOL_RISK_MATRIX: Record<string, ToolRiskEntry> = {
   get_clause: read("读取单条条款的完整治理详情（版本/绑定/提案/质量日表）"),
   search_clauses: read("按关键词与状态检索工作区条款资产库"),
   get_clause_reconciliation: read("只读对账条款注入不变量：层集违规、降级占比、标记漂移"),
+  preview_clause_revision: read("预览 Owner 直修条款后的全载体 diff（不写 Clause、binding、载体或 proposal）"),
+  direct_revise_clause: destructive("Owner 确认后立即创建新 Clause 版本、更新 binding 审计并重渲染载体"),
   get_prompt_versions: read("读取提示词载体版本台账（对照条款与现行提示词的载体文本）"),
   list_prompt_proposals: read("读取提示词立法提案池（生命周期与审计记录）"),
   create_prompt_proposal: write("向提案池新增一条条款变更草案（owner 批准前不改变任何提示词或载体）"),

@@ -73,6 +73,7 @@ const (
 	taskSlotWaitTimeout      = 2 * time.Second
 	taskSlotCapacityBackoff  = 5 * time.Second
 	repoCheckoutModeEnv      = "MULTICA_REPO_CHECKOUT_MODE"
+	repoCheckoutRootEnv      = "MULTICA_REPO_CHECKOUT_ROOT"
 	repoCheckoutModeIsolated = "isolated"
 	// defaultTaskPrepareTimeout is a hard liveness bound for everything after
 	// claim and before StartTask succeeds: runtime resolution, skill bundles,
@@ -5729,6 +5730,10 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	case <-cancelledByPoll:
 		taskLog.Info("task cancelled during execution, discarding result",
 			"branch_name", result.BranchName, "error", err)
+		if errors.Is(err, agent.ErrCancellationUnconfirmed) || errors.Is(err, agent.ErrDetached) {
+			taskLog.Error("cancel acknowledgement withheld: worker stop is unconfirmed", "error", err)
+			return
+		}
 		// runner.run has returned, so the transcript flush is complete —
 		// tell the server it can settle its deferred chat finalization
 		// (#5219). The sweeper grace period covers a lost ack's chat settle,
@@ -5750,6 +5755,15 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 		}
 		return
 	default:
+	}
+
+	// A stop failure can arrive without the polling goroutine having observed
+	// cancel_requested. Do not route it through FailTask: that callback's
+	// cancel-race guard would otherwise settle the server row as cancelled
+	// despite a live worker or descendant.
+	if errors.Is(err, agent.ErrCancellationUnconfirmed) || errors.Is(err, agent.ErrDetached) {
+		taskLog.Error("terminal callback withheld: worker stop is unconfirmed", "error", err)
+		return
 	}
 
 	if err != nil {
@@ -8253,7 +8267,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}); err != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("record snapshot ledger: %w", err))
 		}
-		defer execenv.FinalizeSnapshot(resolvedRoot, task.ID, true)
+		defer func() {
+			if errors.Is(returnErr, agent.ErrCancellationUnconfirmed) || errors.Is(returnErr, agent.ErrDetached) {
+				taskLog.Warn("preserving snapshot because worker is not confirmed stopped")
+				return
+			}
+			execenv.FinalizeSnapshot(resolvedRoot, task.ID, true)
+		}()
 		selfPath, err := os.Executable()
 		if err != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("resolve daemon executable for snapshot worker: %w", err))
@@ -8284,6 +8304,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// duplicating the same path under two lifecycle meanings.
 	if env.LocalWorktree != nil {
 		defer func() {
+			if errors.Is(returnErr, agent.ErrCancellationUnconfirmed) || errors.Is(returnErr, agent.ErrDetached) {
+				taskLog.Warn("preserving worktree because worker is not confirmed stopped")
+				return
+			}
 			if taskResult.WorkDir == "" {
 				taskResult.WorkDir = env.WorkDir
 			}
@@ -8357,6 +8381,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// in place, leave them behind in the user's tree.
 	if env.LocalDirectory || env.LocalWorktree != nil {
 		defer func() {
+			if errors.Is(returnErr, agent.ErrCancellationUnconfirmed) || errors.Is(returnErr, agent.ErrDetached) {
+				return
+			}
 			var cleanupErr error
 			// Snapshot mode wrote the brief into the task's upper layer, which
 			// dies with the snapshot tree: the pristine file was never
@@ -8404,6 +8431,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("prepare task temp dir: %w", err)
 	}
 	defer func() {
+		if errors.Is(returnErr, agent.ErrCancellationUnconfirmed) || errors.Is(returnErr, agent.ErrDetached) {
+			taskLog.Warn("preserving task temp directory because worker is not confirmed stopped", "path", taskTempDir)
+			return
+		}
 		// Drop the execution lock before removing the directory: while it is
 		// held the GC sweep correctly refuses to touch this directory, so a
 		// removal that fails here (a file inside still open — the Windows case
@@ -8495,6 +8526,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, err
 	}
 	agentEnv := taskMulticaEnvironment(task, agentName, agentToken, env.MulticaConfigRoot, d.cfg.WorkspacesRoot, d.cfg.ServerBaseURL, d.cfg.HealthPort, slot, taskTempDir)
+	if env.RootDir != "" {
+		// Repo checkout must target the task-owned env root rather than the
+		// provider's cwd, which can itself be a Git worktree for local resources.
+		agentEnv[repoCheckoutRootEnv] = env.RootDir
+	}
 	if checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS); checkoutMode != "" {
 		agentEnv[repoCheckoutModeEnv] = checkoutMode
 	}
@@ -8572,6 +8608,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	applySnapshotSandboxEnvironment(agentEnv, agentSnapWrap)
 	if provider == "codex" {
 		cacheRoot, cacheErr := os.UserCacheDir()
 		if cacheErr != nil {
@@ -8817,7 +8854,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AgentID:     task.AgentID,
 		IssueID:     task.IssueID,
 		AgentName:   task.Agent.Name,
-		WorkDir:     env.WorkDir,
+		WorkDir:     env.RootDir,
 	})
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
@@ -8826,6 +8863,25 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Attempt 1: the segmented-continuation retry below takes attempt 2 with
 	// its own run id — one worker per Execute.
 	execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 1)
+	if execOpts.Supervision != nil && execOpts.Supervision.Supervisor != nil && execOpts.Supervision.RunID != "" {
+		// This defer runs before cleanup/finalize defers. A cancellation racing
+		// the result path must preserve the worktree until the complete cgroup
+		// stop is proven; the backend result alone is not lifecycle evidence.
+		defer func() {
+			if returnErr != nil {
+				return
+			}
+			if err := execOpts.Supervision.CancellationFailureError(); err != nil {
+				returnErr = err
+				return
+			}
+			if ctx.Err() != nil {
+				if err := execOpts.Supervision.CancellationConfirmationError(); err != nil {
+					returnErr = err
+				}
+			}
+		}()
+	}
 
 	taskLog.Debug("invoking backend",
 		"provider", provider,
@@ -8913,6 +8969,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
 		if retryErr != nil {
 			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
+			if errors.Is(retryErr, agent.ErrCancellationUnconfirmed) {
+				return TaskResult{}, retryErr
+			}
 		} else if retryResult.Status != "completed" && retryResult.SessionID == "" {
 			taskLog.Warn("fresh session retry also failed without establishing a new session; keeping the original poisoned result",
 				"retry_status", retryResult.Status,
@@ -9838,9 +9897,27 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		return msg
 	}
 
+	isSupervised := opts.Supervision != nil && opts.Supervision.Supervisor != nil && opts.Supervision.RunID != ""
+	waitForSupervisedStop := func() error {
+		if !isSupervised {
+			return nil
+		}
+		// Do not inherit drainCtx here. Its cancellation asks the worker to stop;
+		// it must not also abandon the proof that the worker and its cgroup did.
+		return opts.Supervision.WaitForWorkerStopResolution(context.Background())
+	}
+	startSupervisedStopWait := func() <-chan error {
+		resolved := make(chan error, 1)
+		go func() { resolved <- waitForSupervisedStop() }()
+		return resolved
+	}
+
 	select {
 	case result := <-session.Result:
 		waitForDrain()
+		if err := waitForSupervisedStop(); err != nil {
+			return result, toolCount.Load(), err
+		}
 		if idleWatchdogFired.Load() {
 			// The backend's wait goroutine (e.g. claude.go) translates the
 			// SIGKILL we delivered via agentCancel into Status="aborted".
@@ -9864,6 +9941,22 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		// classifiers so a watchdog-induced stop isn't misreported as
 		// "task cancelled by server".
 		if idleWatchdogFired.Load() {
+			if isSupervised {
+				resolved := startSupervisedStopWait()
+				select {
+				case err := <-resolved:
+					if err != nil {
+						return agent.Result{}, toolCount.Load(), err
+					}
+				case result, ok := <-session.Result:
+					if !ok {
+						return agent.Result{}, toolCount.Load(), fmt.Errorf("%w: backend closed result channel without worker exit", agent.ErrCancellationUnconfirmed)
+					}
+					if err := <-resolved; err != nil {
+						return result, toolCount.Load(), err
+					}
+				}
+			}
 			return agent.Result{
 				Status: "idle_watchdog",
 				Error:  watchdogTerminalError(),
@@ -9875,10 +9968,31 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		// upstream runCtx fired runCancel(); context.DeadlineExceeded is the
 		// drain deadline expiring on its own.
 		if errors.Is(drainCtx.Err(), context.Canceled) {
-			return agent.Result{
-				Status: "cancelled",
-				Error:  "task cancelled by upstream context (server cancel or daemon shutdown)",
-			}, toolCount.Load(), nil
+			// The cancellation context only starts the worker stop sequence. A
+			// supervised run must not return to handleTask (and send cancel-ack)
+			// until the backend observes a proven worker exit. Legacy direct-child
+			// backends retain their established synthetic cancellation behavior.
+			if opts.Supervision == nil || opts.Supervision.Supervisor == nil || opts.Supervision.RunID == "" {
+				return agent.Result{Status: "cancelled", Error: "task cancelled by server"}, toolCount.Load(), nil
+			}
+			resolved := startSupervisedStopWait()
+			select {
+			case err := <-resolved:
+				if err != nil {
+					return agent.Result{}, toolCount.Load(), err
+				}
+			case result, ok := <-session.Result:
+				if !ok {
+					return agent.Result{}, toolCount.Load(), fmt.Errorf("%w: backend closed result channel without worker exit", agent.ErrCancellationUnconfirmed)
+				}
+				if err := <-resolved; err != nil {
+					return result, toolCount.Load(), err
+				}
+			}
+			return agent.Result{Status: "cancelled", Error: "task cancelled by server"}, toolCount.Load(), nil
+		}
+		if err := waitForSupervisedStop(); err != nil {
+			return agent.Result{}, toolCount.Load(), err
 		}
 		return agent.Result{
 			Status: "timeout",
@@ -10480,6 +10594,16 @@ func layerCustomEnvAndHermesHome(agentEnv, customEnv map[string]string, overlayH
 	}
 	if overlayHome != "" {
 		agentEnv["HERMES_HOME"] = overlayHome
+	}
+}
+
+// applySnapshotSandboxEnvironment marks only task processes that enter the
+// snapshot worker as sandboxed. The worker maps the daemon user to namespace
+// root so it can mount OverlayFS; Claude Code uses this marker to distinguish
+// that scoped namespace identity from a daemon running as host root.
+func applySnapshotSandboxEnvironment(agentEnv map[string]string, snapshot *agent.SnapshotWrap) {
+	if snapshot != nil {
+		agentEnv["IS_SANDBOX"] = "1"
 	}
 }
 

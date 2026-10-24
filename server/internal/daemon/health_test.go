@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -365,6 +366,47 @@ func TestRepoCheckoutUsesTaskScopedProjectRefByDefault(t *testing.T) {
 	}
 }
 
+func TestRepoCheckoutRepairsIncompleteCurrentTaskMarker(t *testing.T) {
+	t.Parallel()
+
+	const workspaceID = "ws-checkout"
+	const repoURL = "https://github.com/org/repo.git"
+	cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
+	workDir := t.TempDir()
+	d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, workDir, cache)
+	markerPath := filepath.Join(workDir, execenv.TaskContextMarkerRelPath)
+	if err := os.WriteFile(markerPath, []byte(`{"managed_by":"multica-daemon-task","agent_id":"agent-1","issue_id":"issue-1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + workDir + `","task_id":"task-1"}`)
+	d.repoCheckoutHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marker struct {
+		TaskID     string `json:"task_id"`
+		AgentID    string `json:"agent_id"`
+		IssueID    string `json:"issue_id"`
+		Branch     string `json:"branch"`
+		BaseCommit string `json:"base_commit"`
+	}
+	if err := json.Unmarshal(data, &marker); err != nil {
+		t.Fatal(err)
+	}
+	if marker.TaskID != "task-1" || marker.AgentID != "agent-1" || marker.IssueID != "issue-1" {
+		t.Fatalf("marker identity = %+v, want active task identity", marker)
+	}
+	if marker.Branch != "agent/test" || marker.BaseCommit != strings.Repeat("a", 40) {
+		t.Fatalf("marker delivery fields = %+v, want checkout branch and base", marker)
+	}
+}
+
 // A request with no Authorization header can only come from a CLI older than
 // repoCheckoutMinCLIVersion, which is a permanent failure. The rejection has to
 // say so: the agent sees this string and nothing else (#7520).
@@ -525,6 +567,290 @@ func TestRepoCheckoutRejectsAnotherTaskWorkdir(t *testing.T) {
 	if got := cache.lastCreateParams(); got != (repocache.WorktreeParams{}) {
 		t.Fatalf("cross-task workdir checkout reached repo cache: %+v", got)
 	}
+}
+
+func TestRepoCheckoutRejectsWorkdirInsideGitWorktree(t *testing.T) {
+	const workspaceID = "ws-checkout"
+	const repoURL = "https://github.com/org/repo.git"
+
+	gitRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(gitRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("create Git metadata directory: %v", err)
+	}
+	descendant := filepath.Join(gitRoot, "service")
+	if err := os.Mkdir(descendant, 0o755); err != nil {
+		t.Fatalf("create repository descendant: %v", err)
+	}
+	linkedWorktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(linkedWorktree, ".git"), []byte("gitdir: /git/worktrees/task\n"), 0o644); err != nil {
+		t.Fatalf("create linked worktree gitdir file: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		workDir string
+	}{
+		{name: "repository root", workDir: gitRoot},
+		{name: "repository descendant", workDir: descendant},
+		{name: "linked worktree root", workDir: linkedWorktree},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
+			d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, tc.workDir, cache)
+
+			rec := httptest.NewRecorder()
+			body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + tc.workDir + `","task_id":"task-1"}`)
+			d.repoCheckoutHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(body))
+
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "inside a Git worktree") {
+				t.Fatalf("rejection should explain the Git worktree boundary: %s", rec.Body.String())
+			}
+			if got := cache.lastCreateParams(); got != (repocache.WorktreeParams{}) {
+				t.Fatalf("Git worktree checkout reached repo cache: %+v", got)
+			}
+		})
+	}
+}
+
+func TestRepoCheckoutUsesTaskRootWhenAgentWorkDirIsGitWorktree(t *testing.T) {
+	t.Parallel()
+
+	const workspaceID = "ws-checkout"
+	const repoURL = "https://github.com/org/repo.git"
+	checkoutRoot := t.TempDir()
+	agentWorkDir := filepath.Join(checkoutRoot, "existing-repository")
+	if err := os.Mkdir(agentWorkDir, 0o755); err != nil {
+		t.Fatalf("create agent workdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentWorkDir, ".git"), []byte("gitdir: /git/worktrees/agent\n"), 0o644); err != nil {
+		t.Fatalf("create linked worktree metadata: %v", err)
+	}
+
+	cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
+	d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, checkoutRoot, cache)
+
+	t.Run("repairs marker through task root", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + checkoutRoot + `","task_id":"task-1"}`)
+		d.repoCheckoutHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(body))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := cache.lastCreateParams().WorkDir; got != checkoutRoot {
+			t.Fatalf("checkout workdir = %q, want task root %q", got, checkoutRoot)
+		}
+		data, err := os.ReadFile(filepath.Join(checkoutRoot, execenv.TaskContextMarkerRelPath))
+		if err != nil {
+			t.Fatalf("read repaired task marker: %v", err)
+		}
+		var marker struct {
+			TaskID     string `json:"task_id"`
+			Branch     string `json:"branch"`
+			BaseCommit string `json:"base_commit"`
+		}
+		if err := json.Unmarshal(data, &marker); err != nil {
+			t.Fatalf("decode repaired task marker: %v", err)
+		}
+		if marker.TaskID != "task-1" || marker.Branch != "agent/test" || marker.BaseCommit != strings.Repeat("a", 40) {
+			t.Fatalf("marker = %+v, want task delivery context", marker)
+		}
+	})
+
+	t.Run("rejects agent Git worktree", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + agentWorkDir + `","task_id":"task-1"}`)
+		d.repoCheckoutHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(body))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestBranchAdoptionHandlerRejectsUnauthenticatedAndForeignWorkdir(t *testing.T) {
+	const workspaceID = "ws-branch-adoption"
+	workDir := t.TempDir()
+	d := newRepoCheckoutTestDaemon(t, workspaceID, "https://github.com/org/repo.git", workDir, &recordingRepoCache{})
+	body := `{"source_task_id":"source-task","branch":"agent/source/ruyi-871","expected_remote_sha":"` + strings.Repeat("a", 40) + `","workdir":"` + workDir + `"}`
+
+	t.Run("missing credential", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		d.branchAdoptionHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/worktree/adopt", strings.NewReader(body)))
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("workdir outside active task", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		foreignBody := strings.Replace(body, workDir, t.TempDir(), 1)
+		d.branchAdoptionHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(strings.NewReader(foreignBody)))
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestBranchAdoptionHandlerRejectsServerSnapshotBeforeMarkerWrite(t *testing.T) {
+	const workspaceID = "ws-branch-adoption"
+	workDir := t.TempDir()
+	d := newRepoCheckoutTestDaemon(t, workspaceID, "https://github.com/org/repo.git", workDir, &recordingRepoCache{})
+	markerPath := filepath.Join(workDir, execenv.TaskContextMarkerRelPath)
+	markerBefore, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/daemon/tasks/task-1/branch-adoptions/authorize" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branch":"agent/source/ruyi-871","source":{"workspace_id":"ws-branch-adoption","agent_id":"source-agent","conversation_id":"source-issue","task_id":"source-task"},"continuation":{"workspace_id":"ws-branch-adoption","agent_id":"wrong-agent","conversation_id":"issue-1","task_id":"task-1"},"source_issue_suspended":true,"continuation_task_is_running":true}`))
+	}))
+	defer authServer.Close()
+	d.client = NewClient(authServer.URL)
+
+	rec := httptest.NewRecorder()
+	body := `{"source_task_id":"source-task","branch":"agent/source/ruyi-871","expected_remote_sha":"` + strings.Repeat("a", 40) + `","workdir":"` + workDir + `"}`
+	d.branchAdoptionHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(strings.NewReader(body)))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	markerAfter, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(markerBefore, markerAfter) {
+		t.Fatalf("server snapshot rejection changed marker:\n got %s\nwant %s", markerAfter, markerBefore)
+	}
+}
+
+func TestValidateBranchAdoptionAuthorizationAllowsCompletedSourceTaskForSameConversationAndAgent(t *testing.T) {
+	active := activeRepoCheckoutTask{
+		WorkspaceID: "workspace-id",
+		TaskID:      "continuation-task",
+		AgentID:     "continuation-agent",
+		IssueID:     "continuation-issue",
+	}
+	req := branchAdoptionRequest{
+		SourceTaskID: "source-task",
+		Branch:       "agent/source/ruyi-905",
+	}
+	authorization := &BranchAdoptionAuthorization{
+		Branch: req.Branch,
+		Source: BranchAdoptionOwner{
+			WorkspaceID:    "workspace-id",
+			AgentID:        active.AgentID,
+			ConversationID: active.IssueID,
+			TaskID:         req.SourceTaskID,
+		},
+		Continuation: BranchAdoptionOwner{
+			WorkspaceID:    active.WorkspaceID,
+			TaskID:         active.TaskID,
+			AgentID:        active.AgentID,
+			ConversationID: active.IssueID,
+		},
+		SourceTaskCompleted:       true,
+		ContinuationTaskIsRunning: true,
+	}
+	if err := validateBranchAdoptionAuthorization(active, req, authorization); err != nil {
+		t.Fatalf("validate completed source authorization: %v", err)
+	}
+}
+
+func TestValidateBranchAdoptionAuthorizationRejectsCompletedSourceTaskFromExternalContinuation(t *testing.T) {
+	active := activeRepoCheckoutTask{
+		WorkspaceID: "workspace-id",
+		TaskID:      "continuation-task",
+		AgentID:     "continuation-agent",
+		IssueID:     "continuation-issue",
+	}
+	req := branchAdoptionRequest{SourceTaskID: "source-task", Branch: "agent/source/ruyi-905"}
+	authorization := &BranchAdoptionAuthorization{
+		Branch: req.Branch,
+		Source: BranchAdoptionOwner{
+			WorkspaceID:    active.WorkspaceID,
+			AgentID:        "source-agent",
+			ConversationID: "source-issue",
+			TaskID:         req.SourceTaskID,
+		},
+		Continuation: BranchAdoptionOwner{
+			WorkspaceID:    active.WorkspaceID,
+			TaskID:         active.TaskID,
+			AgentID:        active.AgentID,
+			ConversationID: active.IssueID,
+		},
+		SourceTaskCompleted:       true,
+		ContinuationTaskIsRunning: true,
+	}
+	if err := validateBranchAdoptionAuthorization(active, req, authorization); err == nil {
+		t.Fatal("external continuation was authorized to adopt a completed source task")
+	}
+}
+
+func TestBranchAdoptionHandlerRejectsExternalCompletedSourceBeforeMarkerWrite(t *testing.T) {
+	const workspaceID = "ws-branch-adoption"
+	const branch = "agent/source/ruyi-871"
+	const recordRef = "refs/multica/local-state/agent/source/ruyi-871"
+	workDir := t.TempDir()
+	d := newRepoCheckoutTestDaemon(t, workspaceID, "https://github.com/org/repo.git", workDir, &recordingRepoCache{})
+	recordBefore := writeBranchAdoptionTestRecord(t, workDir, recordRef)
+	markerPath := filepath.Join(workDir, execenv.TaskContextMarkerRelPath)
+	markerBefore, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branch":"` + branch + `","source":{"workspace_id":"ws-branch-adoption","agent_id":"source-agent","conversation_id":"source-issue","task_id":"source-task"},"continuation":{"workspace_id":"ws-branch-adoption","agent_id":"agent-1","conversation_id":"issue-1","task_id":"task-1"},"source_task_completed":true,"continuation_task_is_running":true}`))
+	}))
+	defer authServer.Close()
+	d.client = NewClient(authServer.URL)
+
+	rec := httptest.NewRecorder()
+	body := `{"source_task_id":"source-task","branch":"` + branch + `","expected_remote_sha":"` + strings.Repeat("a", 40) + `","workdir":"` + workDir + `"}`
+	d.branchAdoptionHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(strings.NewReader(body)))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	markerAfter, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(markerBefore, markerAfter) {
+		t.Fatalf("external completed-source rejection changed marker:\n got %s\nwant %s", markerAfter, markerBefore)
+	}
+	if recordAfter := branchAdoptionTestGit(t, workDir, "rev-parse", recordRef); recordAfter != recordBefore {
+		t.Fatalf("external completed-source rejection changed branch record: got %s, want %s", recordAfter, recordBefore)
+	}
+}
+
+func writeBranchAdoptionTestRecord(t *testing.T, workDir, recordRef string) string {
+	t.Helper()
+	branchAdoptionTestGit(t, workDir, "init", "--initial-branch=main")
+	branchAdoptionTestGit(t, workDir, "config", "user.name", "Multica Test")
+	branchAdoptionTestGit(t, workDir, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(workDir, "branch-adoption-probe.txt"), []byte("probe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	branchAdoptionTestGit(t, workDir, "add", "branch-adoption-probe.txt")
+	branchAdoptionTestGit(t, workDir, "commit", "-m", "branch adoption probe")
+	record := branchAdoptionTestGit(t, workDir, "rev-parse", "HEAD")
+	branchAdoptionTestGit(t, workDir, "update-ref", recordRef, record)
+	return record
+}
+
+func branchAdoptionTestGit(t *testing.T, workDir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", workDir}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func TestRepoCheckoutExplicitRefOverridesProjectDefault(t *testing.T) {

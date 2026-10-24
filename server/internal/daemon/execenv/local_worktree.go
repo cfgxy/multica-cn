@@ -1455,6 +1455,9 @@ func captureUserSnapshotAt(gitRoot, envRoot, headSHA string, logger *slog.Logger
 			return "", err
 		}
 	}
+	if err := rejectNewGitlinks(gitRoot, env, headSHA); err != nil {
+		return "", err
+	}
 	// Gitlink children are opaque to every step above: `git add` does not
 	// descend into a nested repository, so a checkout of this tree would
 	// materialise each child as an empty directory and the agent would review
@@ -1501,6 +1504,50 @@ func seedSnapshotIndex(gitRoot, path string) bool {
 type stagedGitlink struct {
 	commit string
 	path   string
+}
+
+// rejectNewGitlinks permits only Git links already recorded by the task's
+// base commit. An untracked nested checkout becomes a mode-160000 entry during
+// `git add -A`; embedding it would copy the child repository's complete tree
+// into the parent snapshot and delivery branch. Intentional topology changes
+// must be committed before the task starts, making their scope explicit.
+func rejectNewGitlinks(gitRoot string, env []string, headSHA string) error {
+	baseline, err := gitlinkPathsAtCommit(gitRoot, headSHA)
+	if err != nil {
+		return err
+	}
+	staged, err := stagedGitlinks(gitRoot, env)
+	if err != nil {
+		return err
+	}
+	for _, link := range staged {
+		if _, alreadyTracked := baseline[link.path]; !alreadyTracked {
+			return fmt.Errorf("execenv: refusing to snapshot newly introduced gitlink %q; commit intentional gitlinks before starting the task", link.path)
+		}
+	}
+	return nil
+}
+
+// gitlinkPathsAtCommit returns every gitlink path in a committed tree. It
+// reads the base commit rather than the user's mutable index so staging an
+// untracked nested checkout cannot make it look like existing project layout.
+func gitlinkPathsAtCommit(gitRoot, commit string) (map[string]struct{}, error) {
+	out, err := runGitStdout(gitRoot, "ls-tree", "-r", "-z", commit)
+	if err != nil {
+		return nil, fmt.Errorf("git ls-tree %s: %w", commit, err)
+	}
+	paths := make(map[string]struct{})
+	for _, record := range strings.Split(out, "\x00") {
+		parts := strings.SplitN(record, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		meta := strings.Fields(parts[0])
+		if len(meta) == 3 && meta[0] == "160000" {
+			paths[parts[1]] = struct{}{}
+		}
+	}
+	return paths, nil
 }
 
 // trackedGitlinkDirs lists the repository-root directories of the gitlinks

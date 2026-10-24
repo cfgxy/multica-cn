@@ -367,11 +367,8 @@ func synthesizeAdd(current string, p ProposalInput, name string) (string, error)
 }
 
 func synthesizeRevise(current string, p ProposalInput, name string) (string, error) {
-	if t := firstClauseName(p.ClauseText); t != "" && !clauseNamesEqual(t, name) {
-		return "", fmt.Errorf("条款文本首行标签「%s」与条款名「%s」不一致", t, name)
-	}
-	if strings.TrimSpace(p.ClauseText) == "" {
-		return "", fmt.Errorf("修订条款的条款文本为空")
+	if err := ValidateRevisionText(name, p.ClauseText); err != nil {
+		return "", err
 	}
 	lines := splitLines(current)
 	s, e := clauseSpan(lines, name)
@@ -391,6 +388,22 @@ func synthesizeRevise(current string, p ProposalInput, name string) (string, err
 		}
 	}
 	return "", fmt.Errorf("条款「%s」在当前内容中不存在，修订请改用新增", name)
+}
+
+// ValidateRevisionText enforces the content contract shared by carrier-text
+// and Clause-ID-addressed revisions.
+func ValidateRevisionText(clauseName, clauseText string) error {
+	name := normalizeClauseName(clauseName)
+	if name == "" {
+		return fmt.Errorf("条款名为空")
+	}
+	if t := firstClauseName(clauseText); t != "" && !clauseNamesEqual(t, name) {
+		return fmt.Errorf("条款文本首行标签「%s」与条款名「%s」不一致", t, name)
+	}
+	if strings.TrimSpace(clauseText) == "" {
+		return fmt.Errorf("修订条款的条款文本为空")
+	}
+	return nil
 }
 
 func synthesizeRemove(current string, p ProposalInput, name string) (string, error) {
@@ -540,6 +553,30 @@ func firstSectionName(block string) string {
 // is Synthesize's output; baseline may be nil (structure check downgrades to
 // a warning).
 func RunGate(current, synthesized string, baseline *Baseline, p ProposalInput) Result {
+	res := RunStructuralGate(current, synthesized, baseline, p)
+
+	// Proposal content gate: every proposal must explain the five required
+	// review dimensions. Owner-confirmed direct revisions use RunStructuralGate
+	// after their separate reviewed-preview authorization instead.
+	answers := []struct{ label, value string }{
+		{"层次归属理由", p.GateAnswerLayer},
+		{"去留判据", p.GateAnswerRetention},
+		{"代价声明", p.GateAnswerCost},
+		{"同主题冲突裁决", p.GateAnswerConflict},
+		{"重复检查结论", p.GateAnswerDedup},
+	}
+	for _, a := range answers {
+		if strings.TrimSpace(a.value) == "" {
+			res.Errors = append(res.Errors, Finding{Level: "error", Message: fmt.Sprintf("内容闸五答缺「%s」", a.label)})
+		}
+	}
+	return res
+}
+
+// RunStructuralGate validates synthesized text without the proposal-only
+// questionnaire. It is for flows that authorize a reviewed final carrier by a
+// separate, stronger protocol and still must preserve carrier structure.
+func RunStructuralGate(current, synthesized string, baseline *Baseline, p ProposalInput) Result {
 	res := Result{Errors: []Finding{}, Warnings: []Finding{}}
 
 	// 结构基线: the synthesized text must preserve the approved section
@@ -564,19 +601,6 @@ func RunGate(current, synthesized string, baseline *Baseline, p ProposalInput) R
 		}
 	}
 
-	// 内容闸五答齐全性.
-	answers := []struct{ label, value string }{
-		{"层次归属理由", p.GateAnswerLayer},
-		{"去留判据", p.GateAnswerRetention},
-		{"代价声明", p.GateAnswerCost},
-		{"同主题冲突裁决", p.GateAnswerConflict},
-		{"重复检查结论", p.GateAnswerDedup},
-	}
-	for _, a := range answers {
-		if strings.TrimSpace(a.value) == "" {
-			res.Errors = append(res.Errors, Finding{Level: "error", Message: fmt.Sprintf("内容闸五答缺「%s」", a.label)})
-		}
-	}
 	return res
 }
 

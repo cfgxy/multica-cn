@@ -4,8 +4,10 @@ VALUES ($1, $2, $3, $4, $5, $6, COALESCE(sqlc.narg('id')::uuid, gen_random_uuid(
 RETURNING *;
 
 -- name: GetTaskTokenByHash :one
-SELECT * FROM task_token
-WHERE token_hash = $1 AND expires_at > now();
+SELECT token.*, task.no_action_at
+FROM task_token AS token
+JOIN agent_task_queue AS task ON task.id = token.task_id
+WHERE token.token_hash = $1 AND token.expires_at > now();
 
 -- name: DeleteTaskTokensByTask :exec
 DELETE FROM task_token WHERE task_id = $1;

@@ -34,6 +34,12 @@ type fakePatcherQueries struct {
 	created             []CreateOutboundCardMessageParams
 	createReturn        OutboundCardMessage
 	statusUpdates       []UpdateOutboundCardStatusParams
+	provenanceUpdates   []db.SetChatMessageChannelOutboundProvenanceByTaskParams
+	provenanceErr       error
+	provenanceRows      int64
+	provenanceRowsSet   bool
+	outboundMessages    []db.RecordChannelOutboundMessageParams
+	outboundMessageErr  error
 	// Attachment lookup, exercised by outbound_media_test.go.
 	// attachmentLookups counts the calls so the "no object storage
 	// configured" case can assert the query never ran at all.
@@ -58,7 +64,7 @@ func (f *fakePatcherQueries) GetChannelTaskDelivery(context.Context, pgtype.UUID
 			ChannelType: channelTypeFeishu, ChannelChatID: f.binding.ChannelChatID,
 			ChatType:         f.binding.ChatType,
 			ChannelMessageID: f.binding.LastMessageID, ChannelThreadID: f.binding.LastThreadID,
-			Config: f.binding.Config,
+			RouteRevision: f.delivery.RouteRevision, Config: f.binding.Config,
 		}, f.deliveryErr
 	}
 	return f.delivery, f.deliveryErr
@@ -91,6 +97,26 @@ func (f *fakePatcherQueries) UpdateLarkOutboundCardStatus(ctx context.Context, a
 	return nil
 }
 
+func (f *fakePatcherQueries) SetChatMessageChannelOutboundProvenanceByTask(_ context.Context, arg db.SetChatMessageChannelOutboundProvenanceByTaskParams) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.provenanceUpdates = append(f.provenanceUpdates, arg)
+	if f.provenanceErr != nil {
+		return 0, f.provenanceErr
+	}
+	if f.provenanceRowsSet {
+		return f.provenanceRows, nil
+	}
+	return 1, nil
+}
+
+func (f *fakePatcherQueries) RecordChannelOutboundMessage(_ context.Context, arg db.RecordChannelOutboundMessageParams) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.outboundMessages = append(f.outboundMessages, arg)
+	return f.outboundMessageErr
+}
+
 type fakeCredentials struct{ secret string }
 
 func (f fakeCredentials) DecryptAppSecret(inst Installation) (string, error) {
@@ -98,14 +124,14 @@ func (f fakeCredentials) DecryptAppSecret(inst Installation) (string, error) {
 }
 
 type fakeAPIClient struct {
-	mu             sync.Mutex
-	sent           []SendCardParams
-	patched        []PatchCardParams
-	textSent       []SendTextParams
-	mdCardSent     []SendMarkdownCardParams
-	sendReturn     string
-	sendErr        error
-	patchErr       error
+	mu         sync.Mutex
+	sent       []SendCardParams
+	patched    []PatchCardParams
+	textSent   []SendTextParams
+	mdCardSent []SendMarkdownCardParams
+	sendReturn string
+	sendErr    error
+	patchErr   error
 	// patchRateLimitFailures, when > 0, makes the next N patch attempts
 	// answer with a 230020 rate limit. Unlike patchErr it needs no mid-run
 	// mutation — which a finalize running outside the event's goroutine
@@ -118,7 +144,7 @@ type fakeAPIClient struct {
 	patchTransportFailures int
 	// patchOutcomes records the error each patch attempt returned, so a test
 	// can tell a landed retry from a recorded-but-failed attempt.
-	patchOutcomes []error
+	patchOutcomes  []error
 	textSendErr    error
 	textSendReturn string
 	mdCardErr      error
@@ -377,6 +403,118 @@ func TestPatcherRoutesMarkdownReplyToCard(t *testing.T) {
 	}
 	if len(api.sent) != 0 || len(api.patched) != 0 {
 		t.Errorf("ChatDone must NOT use legacy card paths; sent=%d patched=%d", len(api.sent), len(api.patched))
+	}
+}
+
+func TestPatcherRecordsPlainReplyProvenance(t *testing.T) {
+	p, q, _ := newTestPatcher(t)
+	taskID := uuidFromString(t, "ee666666-ee66-ee66-ee66-eeeeeeeeeeee")
+	q.delivery.RouteRevision = 7
+
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        uuidString(taskID),
+		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{
+			TaskID:        uuidString(taskID),
+			ChatSessionID: uuidString(q.binding.ChatSessionID),
+			Content:       "verified plain reply",
+		},
+	})
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.provenanceUpdates) != 1 {
+		t.Fatalf("provenance updates = %d, want 1", len(q.provenanceUpdates))
+	}
+	provenance := q.provenanceUpdates[0]
+	if provenance.TaskID != taskID || provenance.InstallationID != q.binding.InstallationID ||
+		provenance.ChannelChatID.String != q.binding.ChannelChatID || provenance.ChannelType.String != channelTypeFeishu ||
+		!equalStrings(provenance.MessageIds, []string{"lark_text_msg_1"}) {
+		t.Errorf("provenance = %+v", provenance)
+	}
+	if len(q.outboundMessages) != 1 {
+		t.Fatalf("outbound ledger records = %d, want 1", len(q.outboundMessages))
+	}
+	ledger := q.outboundMessages[0]
+	if ledger.OutboundTaskID != taskID || ledger.OutboundInstallationID != q.binding.InstallationID ||
+		ledger.OutboundBindingID != q.binding.ID || ledger.OutboundChannelType != channelTypeFeishu ||
+		ledger.OutboundMessageID != "lark_text_msg_1" || ledger.OutboundKind != "task_reply" || ledger.OutboundRouteRevision != 7 {
+		t.Errorf("outbound ledger = %+v", ledger)
+	}
+}
+
+func TestPatcherRecordsMarkdownReplyProvenance(t *testing.T) {
+	p, q, api := newTestPatcher(t)
+	api.mdCardReturn = "lark_markdown_card_1"
+	taskID := uuidFromString(t, "ee777777-ee77-ee77-ee77-eeeeeeeeeeee")
+
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        uuidString(taskID),
+		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{
+			TaskID:        uuidString(taskID),
+			ChatSessionID: uuidString(q.binding.ChatSessionID),
+			Content:       "# verified markdown reply",
+		},
+	})
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.provenanceUpdates) != 1 || !equalStrings(q.provenanceUpdates[0].MessageIds, []string{"lark_markdown_card_1"}) {
+		t.Errorf("markdown provenance = %+v", q.provenanceUpdates)
+	}
+	if len(q.outboundMessages) != 1 || q.outboundMessages[0].OutboundMessageID != "lark_markdown_card_1" {
+		t.Errorf("markdown ledger = %+v", q.outboundMessages)
+	}
+}
+
+func TestPatcherRecordsTopicConversationKeyButSendsToRawChat(t *testing.T) {
+	p, q, api := newTestPatcher(t)
+	q.binding.ChannelChatID = "oc_topic:th_1"
+	q.binding.Config = []byte(`{"chat_id":"oc_topic"}`)
+	taskID := uuidFromString(t, "ee888888-ee88-ee88-ee88-eeeeeeeeeeee")
+
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        uuidString(taskID),
+		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{
+			TaskID: uuidString(taskID), ChatSessionID: uuidString(q.binding.ChatSessionID), Content: "topic reply",
+		},
+	})
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.textSent) != 1 || api.textSent[0].ChatID != "oc_topic" {
+		t.Errorf("topic reply must send to raw chat ID, got %+v", api.textSent)
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.provenanceUpdates) != 1 || q.provenanceUpdates[0].ChannelChatID.String != "oc_topic:th_1" {
+		t.Errorf("topic provenance must retain conversation key, got %+v", q.provenanceUpdates)
+	}
+}
+
+func TestPatcherDoesNotRecordProvenanceAfterFailedReply(t *testing.T) {
+	p, q, api := newTestPatcher(t)
+	api.textSendErr = errors.New("lark send failed")
+	taskID := uuidFromString(t, "ee888888-ee88-ee88-ee88-eeeeeeeeeeee")
+
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        uuidString(taskID),
+		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{
+			TaskID: uuidString(taskID), ChatSessionID: uuidString(q.binding.ChatSessionID), Content: "unproven reply",
+		},
+	})
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.provenanceUpdates) != 0 || len(q.outboundMessages) != 0 {
+		t.Errorf("failed send must not persist provenance: updates=%+v ledger=%+v", q.provenanceUpdates, q.outboundMessages)
 	}
 }
 

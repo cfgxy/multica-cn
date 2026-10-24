@@ -349,7 +349,7 @@ SELECT
     $5, $6,
     'retrospective', 'retrospective_run', $7
 WHERE lock_task_owner_rows($1, NULL::uuid, $2)
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id, local_directory_scope, chat_model_snapshot
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id, local_directory_scope, chat_model_snapshot, no_action_at, no_action_reason, comment_output_at
 `
 
 type CreateRetrospectiveTaskParams struct {
@@ -450,6 +450,9 @@ func (q *Queries) CreateRetrospectiveTask(ctx context.Context, arg CreateRetrosp
 		&i.CancelActorID,
 		&i.LocalDirectoryScope,
 		&i.ChatModelSnapshot,
+		&i.NoActionAt,
+		&i.NoActionReason,
+		&i.CommentOutputAt,
 	)
 	return i, err
 }
@@ -753,6 +756,62 @@ func (q *Queries) GetPromptProposal(ctx context.Context, arg GetPromptProposalPa
 	return i, err
 }
 
+const getPromptProposalForUpdate = `-- name: GetPromptProposalForUpdate :one
+SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version, enactment_target FROM prompt_proposal
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type GetPromptProposalForUpdateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetPromptProposalForUpdate(ctx context.Context, arg GetPromptProposalForUpdateParams) (PromptProposal, error) {
+	row := q.db.QueryRow(ctx, getPromptProposalForUpdate, arg.ID, arg.WorkspaceID)
+	var i PromptProposal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CarrierScope,
+		&i.CarrierScopeID,
+		&i.TargetSection,
+		&i.ChangeKind,
+		&i.ClauseName,
+		&i.ClauseText,
+		&i.GateAnswerLayer,
+		&i.GateAnswerRetention,
+		&i.GateAnswerCost,
+		&i.GateAnswerConflict,
+		&i.GateAnswerDedup,
+		&i.EvidenceAnchors,
+		&i.Status,
+		&i.GateErrors,
+		&i.GateWarnings,
+		&i.EnactedVersion,
+		&i.RollbackReason,
+		&i.MergedFrom,
+		&i.Source,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.AuditLog,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.JevAdvisory,
+		&i.Problem,
+		&i.ExpectedEffect,
+		&i.ExpectedGain,
+		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
+		&i.EnactmentTarget,
+	)
+	return i, err
+}
+
 const getPromptStructureBaseline = `-- name: GetPromptStructureBaseline :one
 SELECT id, workspace_id, carrier_scope, carrier_scope_id, sections, clauses, content_sha256, updated_at FROM prompt_structure_baseline
 WHERE prompt_structure_baseline.carrier_scope = $1
@@ -847,11 +906,9 @@ func (q *Queries) GetSquadPromptContent(ctx context.Context, arg GetSquadPromptC
 }
 
 const getWorkspacePromptContent = `-- name: GetWorkspacePromptContent :one
-
 SELECT COALESCE(context, '')::text AS effective_content FROM workspace WHERE id = $1
 `
 
-// --- Structure baseline (E4) ---
 // Read-only effective content of the workspace carrier (no row lock): the
 // legislation preview and the retrospective's duplicate pre-check read the
 // live clause set against it. Write paths must use the Lock*ForPromptVersion
@@ -1257,6 +1314,128 @@ func (q *Queries) ListRetrospectiveRuns(ctx context.Context, workspaceID pgtype.
 		return nil, err
 	}
 	return items, nil
+}
+
+const listWorkspaceCarrierTexts = `-- name: ListWorkspaceCarrierTexts :many
+SELECT id AS scope_id, COALESCE(context, '')::text AS effective_content, 'workspace'::text AS scope
+FROM workspace WHERE id = $1::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'project'
+FROM project WHERE workspace_id = $1::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'squad'
+FROM squad WHERE workspace_id = $1::uuid
+UNION ALL
+SELECT id, COALESCE(instructions, '')::text, 'agent'
+FROM agent WHERE workspace_id = $1::uuid
+ORDER BY scope, scope_id
+`
+
+type ListWorkspaceCarrierTextsRow struct {
+	ScopeID          pgtype.UUID `json:"scope_id"`
+	EffectiveContent string      `json:"effective_content"`
+	Scope            string      `json:"scope"`
+}
+
+// The reference-contract universe (RUYI-869): every carrier tier in the
+// workspace — the one workspace row, every project/squad row and every
+// agent row. The legislation gate reads it inside the enactment
+// transaction: the carriers it row-locks see a consistent snapshot, and
+// the ones it does not lock are exactly the tiers whose static text a
+// remove could orphan without the gate ever seeing it. No condition
+// filtering (this is the reference check, not the injection set) and no
+// LIMIT (a truncated scan would leave a fail-closed check incomplete).
+func (q *Queries) ListWorkspaceCarrierTexts(ctx context.Context, workspaceID pgtype.UUID) ([]ListWorkspaceCarrierTextsRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceCarrierTexts, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceCarrierTextsRow{}
+	for rows.Next() {
+		var i ListWorkspaceCarrierTextsRow
+		if err := rows.Scan(&i.ScopeID, &i.EffectiveContent, &i.Scope); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkspaceCarrierTextsBatch = `-- name: ListWorkspaceCarrierTextsBatch :many
+SELECT scope_id, effective_content, scope
+FROM (
+    SELECT id AS scope_id, COALESCE(context, '')::text AS effective_content, 'workspace'::text AS scope
+    FROM workspace WHERE id = $1::uuid
+    UNION ALL
+    SELECT id, COALESCE(instructions, '')::text, 'project'
+    FROM project WHERE workspace_id = $1::uuid
+    UNION ALL
+    SELECT id, COALESCE(instructions, '')::text, 'squad'
+    FROM squad WHERE workspace_id = $1::uuid
+    UNION ALL
+    SELECT id, COALESCE(instructions, '')::text, 'agent'
+    FROM agent WHERE workspace_id = $1::uuid
+) AS carriers
+WHERE $2::text IS NULL
+   OR scope > $2::text
+   OR (scope = $2::text AND scope_id > $3::uuid)
+ORDER BY scope, scope_id
+LIMIT $4::int
+`
+
+type ListWorkspaceCarrierTextsBatchParams struct {
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	AfterScope   pgtype.Text `json:"after_scope"`
+	AfterScopeID pgtype.UUID `json:"after_scope_id"`
+	RowLimit     int32       `json:"row_limit"`
+}
+
+type ListWorkspaceCarrierTextsBatchRow struct {
+	ScopeID          pgtype.UUID `json:"scope_id"`
+	EffectiveContent string      `json:"effective_content"`
+	Scope            string      `json:"scope"`
+}
+
+func (q *Queries) ListWorkspaceCarrierTextsBatch(ctx context.Context, arg ListWorkspaceCarrierTextsBatchParams) ([]ListWorkspaceCarrierTextsBatchRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceCarrierTextsBatch,
+		arg.WorkspaceID,
+		arg.AfterScope,
+		arg.AfterScopeID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceCarrierTextsBatchRow{}
+	for rows.Next() {
+		var i ListWorkspaceCarrierTextsBatchRow
+		if err := rows.Scan(&i.ScopeID, &i.EffectiveContent, &i.Scope); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockClauseReferenceWorkspace = `-- name: LockClauseReferenceWorkspace :exec
+
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 869))
+`
+
+// --- Structure baseline (E4) ---
+// All writes that can change the active clause universe or four-tier static
+// text acquire this transaction lock before taking carrier row locks.
+func (q *Queries) LockClauseReferenceWorkspace(ctx context.Context, workspaceID string) error {
+	_, err := q.db.Exec(ctx, lockClauseReferenceWorkspace, workspaceID)
+	return err
 }
 
 const markPromptProposalGateFailed = `-- name: MarkPromptProposalGateFailed :one

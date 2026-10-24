@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -146,6 +147,142 @@ func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r 
 		return db.AgentTaskQueue{}, "", false
 	}
 	return task, wsID, true
+}
+
+// BranchAdoptionAuthorizationRequest names the authorized source task whose
+// already-delivered branch a running continuation task requests to adopt.
+// The continuation task is path-bound and is never accepted from the body.
+type BranchAdoptionAuthorizationRequest struct {
+	SourceTaskID string `json:"source_task_id"`
+	Branch       string `json:"branch"`
+}
+
+// BranchAdoptionOwner is the server-authoritative ownership snapshot returned
+// only after the daemon token's workspace gate and every adoption rule passes.
+// ConversationID deliberately follows the record trailer identity, rather than
+// a human-facing issue key which is not globally unique.
+type BranchAdoptionOwner struct {
+	WorkspaceID    string `json:"workspace_id"`
+	AgentID        string `json:"agent_id"`
+	ConversationID string `json:"conversation_id"`
+	TaskID         string `json:"task_id"`
+}
+
+type BranchAdoptionAuthorizationResponse struct {
+	Branch                    string              `json:"branch"`
+	Source                    BranchAdoptionOwner `json:"source"`
+	Continuation              BranchAdoptionOwner `json:"continuation"`
+	SourceIssueSuspended      bool                `json:"source_issue_suspended"`
+	SourceTaskCompleted       bool                `json:"source_task_completed"`
+	ContinuationTaskIsRunning bool                `json:"continuation_task_is_running"`
+}
+
+// AuthorizeBranchAdoption proves the database-side part of an intentional,
+// one-way continuation mapping. The localhost daemon combines this snapshot
+// with its task-token-bound workdir identity and execenv's Git proof; neither
+// a CLI field nor a daemon workspace token can independently select a branch.
+func (h *Handler) AuthorizeBranchAdoption(w http.ResponseWriter, r *http.Request) {
+	continuationTaskID := chi.URLParam(r, "taskId")
+	continuation, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, continuationTaskID)
+	if !ok {
+		return
+	}
+	if continuation.Status != "running" {
+		writeError(w, http.StatusConflict, "continuation task is not running")
+		return
+	}
+	if !continuation.IssueID.Valid || !continuation.AgentID.Valid {
+		writeError(w, http.StatusConflict, "continuation task has no issue or agent identity")
+		return
+	}
+
+	var req BranchAdoptionAuthorizationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.SourceTaskID = strings.TrimSpace(req.SourceTaskID)
+	req.Branch = strings.TrimSpace(req.Branch)
+	if req.SourceTaskID == "" || req.Branch == "" {
+		writeError(w, http.StatusBadRequest, "source_task_id and branch are required")
+		return
+	}
+	if req.SourceTaskID == continuationTaskID {
+		writeError(w, http.StatusConflict, "source task and continuation task must differ")
+		return
+	}
+	sourceTaskUUID, ok := parseUUIDOrBadRequest(w, req.SourceTaskID, "source_task_id")
+	if !ok {
+		return
+	}
+	source, err := h.Queries.GetAgentTask(r.Context(), sourceTaskUUID)
+	if err != nil {
+		if isNotFound(err) {
+			writeError(w, http.StatusNotFound, "source task not found")
+			return
+		}
+		slog.Warn("load branch adoption source task failed", "source_task_id", req.SourceTaskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load source task")
+		return
+	}
+	sourceWorkspaceID := h.TaskService.ResolveTaskWorkspaceID(r.Context(), source)
+	if sourceWorkspaceID == "" || sourceWorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "source task not found")
+		return
+	}
+	if !source.BranchName.Valid || source.BranchName.String != req.Branch {
+		writeError(w, http.StatusConflict, "source task does not own the requested branch")
+		return
+	}
+	if !source.IssueID.Valid || !source.AgentID.Valid {
+		writeError(w, http.StatusConflict, "source task has no issue or agent identity")
+		return
+	}
+	sourceIssue, err := h.Queries.GetIssue(r.Context(), source.IssueID)
+	if err != nil {
+		if isNotFound(err) {
+			writeError(w, http.StatusNotFound, "source issue not found")
+			return
+		}
+		slog.Warn("load branch adoption source issue failed", "source_task_id", req.SourceTaskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load source issue")
+		return
+	}
+	if uuidToString(sourceIssue.WorkspaceID) != workspaceID {
+		writeError(w, http.StatusNotFound, "source issue not found")
+		return
+	}
+	sourceIssueSuspended := sourceIssue.SuspendedAt.Valid
+	sourceTaskCompleted := source.Status == "completed"
+	sourceOwner := BranchAdoptionOwner{
+		WorkspaceID:    workspaceID,
+		AgentID:        uuidToString(source.AgentID),
+		ConversationID: uuidToString(source.IssueID),
+		TaskID:         req.SourceTaskID,
+	}
+	continuationOwner := BranchAdoptionOwner{
+		WorkspaceID:    workspaceID,
+		AgentID:        uuidToString(continuation.AgentID),
+		ConversationID: uuidToString(continuation.IssueID),
+		TaskID:         continuationTaskID,
+	}
+	if !branchAdoptionSourceCanContinue(sourceIssueSuspended, sourceTaskCompleted, sourceOwner, continuationOwner) {
+		writeError(w, http.StatusConflict, "source issue is not suspended and completed source task cannot continue across agents or conversations")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, BranchAdoptionAuthorizationResponse{
+		Branch:                    req.Branch,
+		Source:                    sourceOwner,
+		Continuation:              continuationOwner,
+		SourceIssueSuspended:      sourceIssueSuspended,
+		SourceTaskCompleted:       sourceTaskCompleted,
+		ContinuationTaskIsRunning: true,
+	})
+}
+
+func branchAdoptionSourceCanContinue(sourceIssueSuspended, sourceTaskCompleted bool, source, continuation BranchAdoptionOwner) bool {
+	return sourceIssueSuspended || (sourceTaskCompleted && source.AgentID == continuation.AgentID && source.ConversationID == continuation.ConversationID)
 }
 
 // verifyDaemonWorkspaceAccess checks workspace access without writing an HTTP error.
@@ -2257,12 +2394,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	taskKind := claimTaskKind(task)
 	claimWorkspaceID := parseUUID(runtimeWorkspaceID)
 	var clauseInjections []clauseInjectionRecord
+	var clauseObservations []clauseInjectionObservation
 	filterClauses := func(scope promptVersionScope, scopeID pgtype.UUID, text string) string {
 		res := h.applyDynamicClauses(r.Context(), claimWorkspaceID, scope, scopeID, taskKind, text)
 		for i := range res.Injections {
 			res.Injections[i].Scope = string(scope)
 		}
 		clauseInjections = append(clauseInjections, res.Injections...)
+		clauseObservations = append(clauseObservations, res.Observations...)
 		return res.Text
 	}
 	// Claim-only capability: this server resolves the squad-leader role on the
@@ -2468,7 +2607,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// Composing here covers every task kind, because this is the single
 	// place a claimed task's agent payload is assembled.
 	if agent.SystemKey.String == service.MikaSystemKey {
-		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agent.Instructions)
+		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agentInstructions)
 	}
 	if useSkillRefs {
 		_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID)
@@ -3383,10 +3522,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 
 			// Squad-leader briefing injection for quick-create tasks. When
 			// the user picked a squad in the modal, the task runs on the
-			// squad's leader agent (resolved by the handler). Surface the
-			// same Operating Protocol + Roster + user Instructions that
-			// issue-bound squad tasks see, so the leader can decide to
-			// delegate before opening the issue.
+			// squad's leader agent (resolved by the handler). Quick-create
+			// has no issue yet, so it receives a dedicated create-only
+			// protocol plus the roster and user instructions; issue-bound
+			// activity, status, comment, and mention rules do not apply.
 			if resp.Agent != nil && qc.SquadID != "" {
 				wsUUID, wsErr := util.ParseUUID(qc.WorkspaceID)
 				squadUUID, sqErr := util.ParseUUID(qc.SquadID)
@@ -3400,7 +3539,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						// issue with the squad as assignee, the issue-bound
 						// claim path above grants ownership.
 						squad.Instructions = filterClauses(promptVersionScopeSquad, squad.ID, squad.Instructions)
-						briefing := buildSquadLeaderBriefing(r.Context(), h.Queries, squad, false)
+						briefing := buildSquadLeaderQuickCreateBriefing(r.Context(), h.Queries, squad)
 						if strings.TrimSpace(resp.Agent.Instructions) == "" {
 							resp.Agent.Instructions = briefing
 						} else {
@@ -3490,14 +3629,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if issueNumber > 0 {
 			resp.IssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, issueNumber)
 		}
-		if ws.Context.Valid {
-			// The workspace tier's business column goes through the dynamic
-			// clause filter before it reaches the response (ADR 007 §5).
-			wsContext := filterClauses(promptVersionScopeWorkspace, ws.ID, ws.Context.String)
-			resp.WorkspaceContext = wsContext
-			if strings.TrimSpace(wsContext) != "" {
-				promptVersionScopeIDs["workspace"] = uuidToString(ws.ID)
-			}
+		// The workspace tier's business column goes through the dynamic clause
+		// filter before it reaches the response (ADR 007 §5). A NULL context is
+		// an empty static carrier, not an absent carrier: effective clauses may
+		// still bind to this workspace and must reach the claimed task.
+		wsContext := filterClauses(promptVersionScopeWorkspace, ws.ID, ws.Context.String)
+		resp.WorkspaceContext = wsContext
+		if strings.TrimSpace(wsContext) != "" {
+			promptVersionScopeIDs["workspace"] = uuidToString(ws.ID)
 		}
 	} else {
 		slog.Warn("task claim: failed to load workspace for context injection",
@@ -3605,7 +3744,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// Clause injection events (RUYI-751 §6): computed-selected = injected, so
 	// the accumulated records are the run's call-count basis. Scope strings
 	// were stamped by filterClauses at each read point.
-	h.recordClauseInjectionEvents(r.Context(), claimWorkspaceID, task.ID, promptVersionScopeIDs, clauseInjections)
+	h.recordClauseInjectionEvents(r.Context(), claimWorkspaceID, task.ID, promptVersionScopeIDs, clauseInjections, clauseObservations)
 
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
 }
@@ -4612,6 +4751,7 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		}
 		triggers, _ := h.computeCommentAgentTriggers(ctx, issue, c.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
 			ExcludeTriggerCommentID: c.ID,
+			SourceTaskID:            c.SourceTaskID,
 			OriginatorUserID:        originatorUserID,
 		})
 		// For an AGENT author, compensate ONLY explicit @agent/@squad mentions.
@@ -4644,7 +4784,15 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		// task and is not in its planned ids), so dropping the failure here is
 		// exactly how a promised follow-up is lost. Hand the obligation to that
 		// blocker instead, keeping it alive until some run provably covers it.
-		if res := h.enqueueCommentAgentTriggers(ctx, issue, c.ID, scoped)[agentID]; res.status == DispatchBlocked {
+		if res := h.enqueueCommentAgentTriggers(ctx, issue, c, scoped)[agentID]; res.status == DispatchBlocked {
+			// A cascade refusal is a deliberate terminal admission decision, with
+			// its own durable suppression audit. Unlike an enqueue collision, it
+			// does not leave an uncovered delivery obligation to hand to another
+			// task; doing so would re-enqueue the very cascade the circuit breaker
+			// rejected.
+			if res.reason == ReasonAgentOnlyCascadeBlocked || res.reason == ReasonTaskRoleConflict {
+				continue
+			}
 			headSha := h.TaskService.ResolveIssueReviewSHAParam(ctx, task.IssueID)
 			if h.propagateUncoveredCommentObligation(ctx, issue, scoped[0], c.ID, headSha) {
 				slog.Info("reconcile comments on completion: replay blocked, obligation handed to the active task",
@@ -5371,11 +5519,10 @@ type TaskCancelAckRequest struct {
 	// preserved worktree is the only pointer left to the agent's work.
 	ErrorMessage  string `json:"error_message,omitempty"`
 	FailureReason string `json:"failure_reason,omitempty"`
-	// Confirmed: true when the daemon interrupted a live process tree for
-	// this stop (RUYI-292 two-phase cancel). Observability only — the flip to
-	// cancelled is driven by the ack itself, flag or not: a daemon that acks
-	// without it (older build, or the task-gone pre-completion check) has
-	// still reported the run as stopped.
+	// Confirmed attests that the daemon has a proven worker exit or stopped
+	// unit cgroup for this cancellation. The server rejects acknowledgements
+	// without it so a cancelled execution context cannot terminalize a task
+	// while a supervised worker remains alive.
 	Confirmed bool `json:"confirmed,omitempty"`
 }
 
@@ -5385,10 +5532,23 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Body is optional: older daemons send `{}`, and a decode failure must not
-	// break the cancellation contract this endpoint exists for.
 	var req TaskCancelAckRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid cancellation acknowledgement")
+		return
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid cancellation acknowledgement")
+		return
+	}
+	// An acknowledgement is the transition from cancel_requested to cancelled.
+	// Refuse a daemon that cannot attest to a proven worker exit; otherwise a
+	// cancelled context alone can terminalize a task while its unit still runs.
+	if !req.Confirmed {
+		writeError(w, http.StatusConflict, "cancel acknowledgement requires confirmed worker stop")
+		return
+	}
 	// Same persistence hazard as /fail and /complete: these strings go straight
 	// into TEXT columns, and this endpoint fails LOUD on write errors, so an
 	// unsanitized NUL here turns a cancelled task's only pointer to its work

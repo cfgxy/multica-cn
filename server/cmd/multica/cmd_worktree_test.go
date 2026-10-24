@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -133,6 +136,77 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 			t.Fatalf("preflight = %#v, error = %v; want missing context failure", got, err)
 		}
 	})
+}
+
+func TestWorktreeAdoptCLISendsTaskBoundLocalRequest(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/worktree/adopt" {
+			t.Errorf("request = %s %s, want POST /worktree/adopt", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer task-token" {
+			t.Errorf("Authorization = %q", got)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body["source_task_id"] != "source-task" || body["branch"] != "agent/source/ruyi-871" || body["expected_remote_sha"] != strings.Repeat("a", 40) {
+			t.Errorf("request body = %#v", body)
+		}
+		if body["workdir"] == "" {
+			t.Error("workdir must come from the current directory")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branch":"agent/source/ruyi-871","remote_sha":"` + strings.Repeat("a", 40) + `","source_task_id":"source-task","continuation_task_id":"target-task","record":"record","base_commit":"` + strings.Repeat("a", 40) + `"}`))
+	}))
+	srv.Listener = listener
+	srv.Start()
+	defer srv.Close()
+
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MULTICA_DAEMON_PORT", port)
+	t.Setenv("MULTICA_TOKEN", "task-token")
+	previousSource, previousBranch, previousSHA := worktreeAdoptSourceTask, worktreeAdoptBranch, worktreeAdoptExpectedRemoteSHA
+	t.Cleanup(func() {
+		worktreeAdoptSourceTask, worktreeAdoptBranch, worktreeAdoptExpectedRemoteSHA = previousSource, previousBranch, previousSHA
+	})
+	worktreeAdoptSourceTask = "source-task"
+	worktreeAdoptBranch = "agent/source/ruyi-871"
+	worktreeAdoptExpectedRemoteSHA = strings.Repeat("a", 40)
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := runWorktreeAdopt(cmd, nil); err != nil {
+		t.Fatalf("runWorktreeAdopt: %v", err)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode command output: %v", err)
+	}
+	if result["continuation_task_id"] != "target-task" || result["record"] != "record" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestWorktreeAdoptCLIRequiresFlagsAndIsRegistered(t *testing.T) {
+	previousSource, previousBranch, previousSHA := worktreeAdoptSourceTask, worktreeAdoptBranch, worktreeAdoptExpectedRemoteSHA
+	t.Cleanup(func() {
+		worktreeAdoptSourceTask, worktreeAdoptBranch, worktreeAdoptExpectedRemoteSHA = previousSource, previousBranch, previousSHA
+	})
+	worktreeAdoptSourceTask, worktreeAdoptBranch, worktreeAdoptExpectedRemoteSHA = "", "", ""
+	if err := runWorktreeAdopt(&cobra.Command{}, nil); err == nil || !strings.Contains(err.Error(), "--source-task is required") {
+		t.Fatalf("missing flags error = %v", err)
+	}
+	if _, _, err := rootCmd.Find([]string{"worktree", "adopt"}); err != nil {
+		t.Fatalf("worktree adopt is not registered on the root CLI: %v", err)
+	}
 }
 
 // A marker in the pre-RUYI-848 shape (task_id only, no branch/base_commit -

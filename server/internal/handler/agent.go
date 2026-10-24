@@ -1736,6 +1736,13 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, wsUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create agent")
+		return
+	}
+	if !allowStaticClauseRefsWrite(w, r.Context(), qtx, wsUUID, map[carrierRef]string{{scope: "agent", id: wsUUID}: req.Instructions}) {
+		return
+	}
 
 	created, err := qtx.CreateAgent(r.Context(), db.CreateAgentParams{
 		WorkspaceID:              wsUUID,
@@ -2577,8 +2584,13 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// agent-row write and the queued/deferred row migration commit atomically
 	// (RUYI-224).
 	rebinding := params.RuntimeID.Valid && params.RuntimeID != existing.RuntimeID
-	updated, migratedTasks, err := h.updateAgentPersisted(r.Context(), params, rebinding)
+	updated, migratedTasks, err := h.updateAgentPersisted(r.Context(), params, existing.WorkspaceID, rebinding, targetProvider)
 	if err != nil {
+		var refErr *staticClauseReferenceError
+		if errors.As(err, &refErr) {
+			writeError(w, http.StatusConflict, refErr.Error())
+			return
+		}
 		// 0 rows with an expected_revision means a concurrent config write
 		// won the race between the handler's read and the UPDATE — same
 		// recovery as UpdateProject: reload and answer with the actual
@@ -2793,14 +2805,15 @@ func (h *Handler) resolveAgentProviderForContext(ctx context.Context, workspaceI
 
 // updateAgentPersisted writes the agent row via UpdateAgent. When the update
 // rebinds the agent onto a different runtime, the queued/deferred queue-row
-// migration commits in the SAME transaction (RUYI-224): claim eligibility
-// follows the agent's current runtime, so a torn rebind that left a queued
-// row on the old runtime would strand it forever — invisible to the new
-// runtime's claim candidates, with no error and no log. Returns the number of
-// queue rows migrated (always 0 when not rebinding). Runtime rebinds lock all
-// chat sessions first, matching the chat model save and enqueue lock order.
-func (h *Handler) updateAgentPersisted(ctx context.Context, params db.UpdateAgentParams, rebinding bool) (db.Agent, int64, error) {
-	if !rebinding {
+// migration and same-provider runtime-skill policy migration commit in the
+// SAME transaction: claim eligibility and inherited-skill visibility must
+// follow the new binding together. Cross-provider skills are deliberately not
+// guessed equivalent. Returns the number of queue rows migrated (always 0
+// when not rebinding). Runtime rebinds lock all chat sessions first, matching
+// the chat model save and enqueue lock order.
+func (h *Handler) updateAgentPersisted(ctx context.Context, params db.UpdateAgentParams, workspaceID pgtype.UUID, rebinding bool, targetProvider string) (db.Agent, int64, error) {
+	writeInstructions := params.Instructions.Valid
+	if !rebinding && !writeInstructions {
 		updated, err := h.Queries.UpdateAgent(ctx, params)
 		return updated, 0, err
 	}
@@ -2810,12 +2823,50 @@ func (h *Handler) updateAgentPersisted(ctx context.Context, params db.UpdateAgen
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
-	if _, err := qtx.LockChatSessionsForAgentRuntimeBind(ctx, params.ID); err != nil {
-		return db.Agent{}, 0, fmt.Errorf("lock chat sessions for runtime rebind: %w", err)
+	if writeInstructions {
+		if err := lockClauseReferenceWorkspaceTx(ctx, qtx, workspaceID); err != nil {
+			return db.Agent{}, 0, fmt.Errorf("lock clause-reference workspace: %w", err)
+		}
+		if err := validateStaticClauseRefsTx(ctx, qtx, workspaceID, map[carrierRef]string{{scope: "agent", id: params.ID}: params.Instructions.String}); err != nil {
+			var refErr *staticClauseReferenceError
+			if errors.As(err, &refErr) {
+				return db.Agent{}, 0, err
+			}
+			return db.Agent{}, 0, fmt.Errorf("validate clause references: %w", err)
+		}
+	}
+	if rebinding {
+		if _, err := qtx.LockChatSessionsForAgentRuntimeBind(ctx, params.ID); err != nil {
+			return db.Agent{}, 0, fmt.Errorf("lock chat sessions for runtime rebind: %w", err)
+		}
+	}
+	locked, err := qtx.GetAgentForUpdate(ctx, params.ID)
+	if err != nil {
+		return db.Agent{}, 0, fmt.Errorf("lock agent for runtime rebind: %w", err)
 	}
 	updated, err := qtx.UpdateAgent(ctx, params)
 	if err != nil {
 		return db.Agent{}, 0, err
+	}
+	if rebinding && locked.RuntimeID.Valid && locked.RuntimeID != params.RuntimeID {
+		if next, changed := migrateDisabledRuntimeSkillsForRebind(
+			decodeDisabledRuntimeSkills(locked.DisabledRuntimeSkills),
+			uuidToString(locked.RuntimeID),
+			uuidToString(params.RuntimeID),
+			targetProvider,
+		); changed {
+			payload, err := json.Marshal(next)
+			if err != nil {
+				return db.Agent{}, 0, fmt.Errorf("encode runtime skill migration: %w", err)
+			}
+			updated, err = qtx.UpdateAgentDisabledRuntimeSkills(ctx, db.UpdateAgentDisabledRuntimeSkillsParams{
+				ID:                    updated.ID,
+				DisabledRuntimeSkills: payload,
+			})
+			if err != nil {
+				return db.Agent{}, 0, fmt.Errorf("migrate disabled runtime skills: %w", err)
+			}
+		}
 	}
 	migrated, err := qtx.MigrateAgentTaskQueueOnRuntimeRebind(ctx, db.MigrateAgentTaskQueueOnRuntimeRebindParams{
 		AgentID:      params.ID,

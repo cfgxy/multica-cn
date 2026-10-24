@@ -153,6 +153,8 @@ type PatcherQueries interface {
 	GetLarkOutboundCardByTask(ctx context.Context, taskID pgtype.UUID) (OutboundCardMessage, error)
 	CreateLarkOutboundCardMessage(ctx context.Context, arg CreateOutboundCardMessageParams) (OutboundCardMessage, error)
 	UpdateLarkOutboundCardStatus(ctx context.Context, arg UpdateOutboundCardStatusParams) error
+	SetChatMessageChannelOutboundProvenanceByTask(ctx context.Context, arg db.SetChatMessageChannelOutboundProvenanceByTaskParams) (int64, error)
+	RecordChannelOutboundMessage(ctx context.Context, arg db.RecordChannelOutboundMessageParams) error
 	// ListAttachmentsByChatMessage reads the files the agent bound to one
 	// assistant message. Only reached on a deployment that wired object
 	// storage; see outbound_media.go.
@@ -425,7 +427,10 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 	// the stop runs on finalizeLater's own budget.
 	switch e.Type {
 	case protocol.EventChatDone:
-		replyErr := p.sendChatReply(ctx, target.creds, target.binding, e.Payload)
+		messageID, replyErr := p.sendChatReply(ctx, target.creds, target.binding, e.Payload)
+		if replyErr == nil && messageID != "" {
+			replyErr = p.recordChatReplyProvenance(ctx, target, messageID)
+		}
 		// The files leave on a goroutine of their own, and deliberately
 		// regardless of what the words did. A turn with no text at all is the
 		// ordinary shape of "here is the file you asked for" — sendChatReply
@@ -450,10 +455,11 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 // rather than cached, so a credential rotation or a rebound session between
 // two frames is picked up, and no decrypted secret outlives the call.
 type outboundTarget struct {
-	taskID    pgtype.UUID
-	binding   ChatSessionBinding
-	creds     InstallationCredentials
-	agentName string
+	taskID        pgtype.UUID
+	binding       ChatSessionBinding
+	creds         InstallationCredentials
+	agentName     string
+	routeRevision int64
 	// chatSessionID is the owning session, read from the agent task row that
 	// resolveOutboundTarget loads anyway. Task-scoped events reach this package
 	// without session identity — handler.publishTask stamps only a TaskID hint
@@ -526,7 +532,7 @@ func (p *Patcher) resolveOutboundTarget(ctx context.Context, taskID pgtype.UUID)
 		agentName = agent.Name
 	}
 	return &outboundTarget{
-		taskID: taskID, binding: binding, creds: creds, agentName: agentName,
+		taskID: taskID, binding: binding, creds: creds, agentName: agentName, routeRevision: delivery.RouteRevision,
 		chatSessionID: task.ChatSessionID,
 	}, nil
 }
@@ -553,32 +559,64 @@ func (p *Patcher) resolveOutboundTarget(ctx context.Context, taskID pgtype.UUID)
 // the task without producing visible output, which only happens for
 // edge cases like a chat task that just acknowledged a system event;
 // not emitting a message there is the right product call.
-func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentials, binding ChatSessionBinding, payload any) error {
+func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentials, binding ChatSessionBinding, payload any) (string, error) {
 	content := chatDoneContent(payload)
 	if content == "" {
-		return nil
+		return "", nil
 	}
 	target := threadReplyTarget(binding)
 	if containsMarkdown(content) {
-		return sendWithThreadFallback(p.cfg.Logger, "send markdown card", target, func(t ReplyTarget) error {
-			_, err := p.client.SendMarkdownCard(ctx, SendMarkdownCardParams{
+		return sendWithThreadFallbackMessageID(p.cfg.Logger, "send markdown card", target, func(t ReplyTarget) (string, error) {
+			return p.client.SendMarkdownCard(ctx, SendMarkdownCardParams{
 				InstallationID: creds,
 				ChatID:         outboundChatID(binding),
 				Markdown:       content,
 				ReplyTarget:    t,
 			})
-			return err
 		})
 	}
-	return sendWithThreadFallback(p.cfg.Logger, "send text message", target, func(t ReplyTarget) error {
-		_, err := p.client.SendTextMessage(ctx, SendTextParams{
+	return sendWithThreadFallbackMessageID(p.cfg.Logger, "send text message", target, func(t ReplyTarget) (string, error) {
+		return p.client.SendTextMessage(ctx, SendTextParams{
 			InstallationID: creds,
 			ChatID:         outboundChatID(binding),
 			Text:           content,
 			ReplyTarget:    t,
 		})
-		return err
 	})
+}
+
+// recordChatReplyProvenance records the provider message ID twice: on the
+// assistant message and in the append-only outbound ledger. The inbound
+// resolver requires both records, so a partial failure remains fail-closed.
+func (p *Patcher) recordChatReplyProvenance(ctx context.Context, target *outboundTarget, messageID string) error {
+	if target == nil || messageID == "" {
+		return errors.New("lark patcher: missing task reply provenance")
+	}
+	updated, err := p.queries.SetChatMessageChannelOutboundProvenanceByTask(ctx, db.SetChatMessageChannelOutboundProvenanceByTaskParams{
+		ChannelType:    pgtype.Text{String: channelTypeFeishu, Valid: true},
+		InstallationID: target.binding.InstallationID,
+		ChannelChatID:  pgtype.Text{String: target.binding.ChannelChatID, Valid: true},
+		MessageIds:     []string{messageID},
+		TaskID:         target.taskID,
+	})
+	if err != nil {
+		return fmt.Errorf("record assistant reply provenance: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("record assistant reply provenance: updated %d rows", updated)
+	}
+	if err := p.queries.RecordChannelOutboundMessage(ctx, db.RecordChannelOutboundMessageParams{
+		OutboundInstallationID: target.binding.InstallationID,
+		OutboundChannelType:    channelTypeFeishu,
+		OutboundMessageID:      messageID,
+		OutboundBindingID:      target.binding.ID,
+		OutboundRouteRevision:  target.routeRevision,
+		OutboundTaskID:         target.taskID,
+		OutboundKind:           "task_reply",
+	}); err != nil {
+		return fmt.Errorf("record outbound reply ledger: %w", err)
+	}
+	return nil
 }
 
 // outboundChatID recovers the real Lark chat id from the chat binding. The
@@ -646,6 +684,33 @@ func sendWithThreadFallback(log *slog.Logger, op string, target ReplyTarget, sen
 	return fmt.Errorf("%s: %w", op, err)
 }
 
+func sendWithThreadFallbackMessageID(log *slog.Logger, op string, target ReplyTarget, send func(ReplyTarget) (string, error)) (string, error) {
+	messageID, err := send(target)
+	if err == nil {
+		if messageID == "" {
+			return "", fmt.Errorf("%s: empty message ID", op)
+		}
+		return messageID, nil
+	}
+	if target.IsSet() && isThreadReplyUnsupported(err) {
+		log.Warn("lark: thread reply unsupported for target, retrying at chat level",
+			"op", op, "reply_message_id", target.MessageID, "error", err)
+		messageID, fallbackErr := send(ReplyTarget{})
+		if fallbackErr != nil {
+			return "", fmt.Errorf("%s (chat-level fallback after thread-unsupported reply: %v): %w", op, err, fallbackErr)
+		}
+		if messageID == "" {
+			return "", fmt.Errorf("%s: empty message ID", op)
+		}
+		return messageID, nil
+	}
+	if target.IsSet() {
+		log.Warn("lark: thread reply failed; not falling back (non-classified error)",
+			"op", op, "reply_message_id", target.MessageID, "error", err)
+	}
+	return "", fmt.Errorf("%s: %w", op, err)
+}
+
 func (p *Patcher) installationCredentials(inst Installation) (InstallationCredentials, error) {
 	if p.credentials == nil {
 		return InstallationCredentials{}, errors.New("lark patcher: credentials resolver missing")
@@ -655,9 +720,10 @@ func (p *Patcher) installationCredentials(inst Installation) (InstallationCreden
 		return InstallationCredentials{}, fmt.Errorf("decrypt app_secret: %w", err)
 	}
 	creds := InstallationCredentials{
-		AppID:     inst.AppID,
-		AppSecret: secret,
-		Region:    RegionOrDefault(inst.Region),
+		InstallationID: inst.ID,
+		AppID:          inst.AppID,
+		AppSecret:      secret,
+		Region:         RegionOrDefault(inst.Region),
 	}
 	if inst.TenantKey.Valid {
 		creds.TenantKey = inst.TenantKey.String

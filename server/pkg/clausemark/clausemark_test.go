@@ -59,6 +59,65 @@ func TestParseNegativeCases(t *testing.T) {
 	}
 }
 
+func TestReplaceSegmentPreservesInjectionSnapshot(t *testing.T) {
+	current := Render(stableFixture, []RenderedClause{clauseA(2), clauseB(4)})
+	before, err := Parse(current)
+	if err != nil {
+		t.Fatalf("parse current carrier: %v", err)
+	}
+	proposed := "- **每日同步**：修订后的规则。"
+
+	got, err := ReplaceSegment(current, clauseA(2).Slug, 2, proposed)
+	if err != nil {
+		t.Fatalf("replace clause segment: %v", err)
+	}
+	doc, err := Parse(got)
+	if err != nil {
+		t.Fatalf("parse synthesized carrier: %v", err)
+	}
+	if doc.Stable != before.Stable {
+		t.Fatalf("stable text changed: %q, want %q", doc.Stable, before.Stable)
+	}
+	if len(doc.Segments) != 2 || doc.Segments[0].Slug != clauseA(2).Slug || doc.Segments[0].Rev != 3 || strings.TrimSpace(doc.Segments[0].Body) != proposed {
+		t.Fatalf("revised segment = %+v", doc.Segments)
+	}
+	if doc.Segments[1] != (Segment{Slug: clauseB(4).Slug, Rev: 4, Body: clauseB(4).Body + "\n"}) {
+		t.Fatalf("unrelated segment changed: %+v", doc.Segments[1])
+	}
+
+	want := Render(stableFixture, []RenderedClause{
+		{Slug: clauseA(2).Slug, Version: 3, Body: proposed}, clauseB(4),
+	})
+	if got != want {
+		t.Fatalf("synthesized carrier differs from injection render:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestReplaceSegmentFailsClosed(t *testing.T) {
+	base := Render(stableFixture, []RenderedClause{clauseA(2)})
+	duplicate := base + "\n" + Render("", []RenderedClause{clauseA(2)})
+	malformed := base + "\n<!-- clause:id=cls_aaa00001 rev= -->\n- Stale body.\n<!-- /clause -->\n"
+	cases := []struct {
+		name, current string
+		version       int32
+	}{
+		{name: "missing segment", current: stableFixture, version: 2},
+		{name: "stale marker", current: base, version: 1},
+		{name: "duplicate segment", current: duplicate, version: 2},
+		{name: "malformed marker", current: malformed, version: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ReplaceSegment(tc.current, clauseA(2).Slug, tc.version, "- Proposed body."); err == nil {
+				t.Fatal("expected fail-closed error")
+			}
+		})
+	}
+	if _, err := ReplaceSegment(base, clauseA(2).Slug, 2, " \n"); err == nil {
+		t.Fatal("expected empty replacement body to fail closed")
+	}
+}
+
 func TestParseEmptyDocument(t *testing.T) {
 	doc, err := Parse("")
 	if err != nil {
@@ -117,9 +176,137 @@ func TestRenderRemovesInlineClauseBlocks(t *testing.T) {
 	}
 }
 
+func TestStaticRemovesManagedClausesWithoutRenderingMarkers(t *testing.T) {
+	inline := "# 规范\n\n## 纪律\n\n- **每日同步**：开工前回报计划与阻塞。\n- **其他条款**：保持不动。\n"
+	legacySnapshot := Render(inline, []RenderedClause{clauseA(1)})
+
+	static := Static(legacySnapshot, []RenderedClause{clauseA(1)})
+	if strings.Contains(static, "每日同步") || strings.Contains(static, "clause:id=") {
+		t.Fatalf("static carrier retained a managed clause or marker:\n%s", static)
+	}
+	if !strings.Contains(static, "其他条款") {
+		t.Fatalf("static carrier lost unrelated content:\n%s", static)
+	}
+	claimed := Render(static, []RenderedClause{clauseA(1)})
+	if strings.Count(claimed, "每日同步") != 1 || !strings.Contains(claimed, OpenTag(clauseA(1).Slug, 1)) {
+		t.Fatalf("runtime render did not inject exactly one clause:\n%s", claimed)
+	}
+}
+
+func TestStaticPreservesSameLabelWithDifferentBody(t *testing.T) {
+	asset := RenderedClause{Slug: "cls_aaa00001", Version: 1, Body: "- **每日同步**：开工前回报计划。"}
+	staticRule := "- **每日同步**：仅本空间的交接例外。"
+	carrier := "# 规范\n\n" + staticRule + "\n\n- **其他条款**：保持不动。\n"
+
+	static := Static(carrier, []RenderedClause{asset})
+	if !strings.Contains(static, staticRule) {
+		t.Fatalf("static carrier removed a same-label rule with different content:\n%s", static)
+	}
+	if !strings.Contains(static, "其他条款") {
+		t.Fatalf("static carrier lost unrelated content:\n%s", static)
+	}
+}
+
+func TestStaticRemovesExactManagedClauseBlock(t *testing.T) {
+	asset := RenderedClause{Slug: "cls_aaa00001", Version: 1, Body: "- **每日同步**：开工前回报计划。\n  - 遇到阻塞立即说明。"}
+	carrier := "# 规范\n\n" + asset.Body + "\n\n- **其他条款**：保持不动。\n"
+
+	static := Static(carrier, []RenderedClause{asset})
+	if strings.Contains(static, "每日同步") || strings.Contains(static, "遇到阻塞") {
+		t.Fatalf("static carrier retained the exact managed clause block:\n%s", static)
+	}
+	if !strings.Contains(static, "其他条款") {
+		t.Fatalf("static carrier lost unrelated content:\n%s", static)
+	}
+}
+
+func TestStaticPreservesSameSectionHeadingWithDifferentBody(t *testing.T) {
+	asset := RenderedClause{Slug: "cls_aaa00001", Version: 1, Body: "## 交接\n\n- 动态规则。"}
+	staticSection := "## 交接\n\n- 仅本空间的静态例外。"
+	carrier := "# 规范\n\n" + staticSection + "\n\n## 其他规则\n\n- 保持不动。\n"
+
+	static := Static(carrier, []RenderedClause{asset})
+	if !strings.Contains(static, staticSection) {
+		t.Fatalf("静态载体删除了同标题但正文不同的章节：\n%s", static)
+	}
+	if !strings.Contains(static, "其他规则") {
+		t.Fatalf("静态载体删除了无关内容：\n%s", static)
+	}
+}
+
+func TestStaticRemovesExactManagedSectionBlock(t *testing.T) {
+	asset := RenderedClause{Slug: "cls_aaa00001", Version: 1, Body: "## 交接\n\n- 动态规则。"}
+	carrier := "# 规范\n\n" + asset.Body + "\n\n## 其他规则\n\n- 保持不动。\n"
+
+	static := Static(carrier, []RenderedClause{asset})
+	if strings.Contains(static, "动态规则") || strings.Contains(static, "## 交接") {
+		t.Fatalf("静态载体保留了完整匹配的托管章节：\n%s", static)
+	}
+	if !strings.Contains(static, "其他规则") {
+		t.Fatalf("静态载体删除了无关内容：\n%s", static)
+	}
+}
+
+func TestStaticPreservesClauseWithStaticContinuation(t *testing.T) {
+	asset := RenderedClause{Slug: "cls_aaa00001", Version: 1, Body: "- **每日同步**：开工前回报计划。"}
+	staticRule := asset.Body + "\n  - 仅本空间的交接例外。"
+	carrier := "# 规范\n\n" + staticRule + "\n\n- **其他条款**：保持不动。\n"
+
+	static := Static(carrier, []RenderedClause{asset})
+	if !strings.Contains(static, staticRule) {
+		t.Fatalf("静态载体删除了带独有续写的条款前缀：\n%s", static)
+	}
+	if !strings.Contains(static, "其他条款") {
+		t.Fatalf("静态载体删除了无关内容：\n%s", static)
+	}
+}
+
+func TestStaticRemovesUnlabelledManagedClause(t *testing.T) {
+	plain := "Always record the target revision before making changes."
+	inline := "# 规范\n\n" + plain + "\n\n- **其他条款**：保持不动。\n"
+
+	static := Static(inline, []RenderedClause{{Slug: "cls_aaa00001", Version: 1, Body: plain}})
+	if strings.Contains(static, plain) {
+		t.Fatalf("static carrier retained an unlabelled managed clause:\n%s", static)
+	}
+	if !strings.Contains(static, "其他条款") {
+		t.Fatalf("static carrier lost unrelated content:\n%s", static)
+	}
+
+	claimed := Render(static, []RenderedClause{{Slug: "cls_aaa00001", Version: 1, Body: plain}})
+	if got := strings.Count(claimed, plain); got != 1 {
+		t.Fatalf("runtime render contains the unlabelled clause %d times, want once:\n%s", got, claimed)
+	}
+}
+
+func TestRenderRemovesSupersededInlineClauseBlocks(t *testing.T) {
+	oldBody := "- **每日同步**：开工前回报计划与阻塞。"
+	newBody := "- **每日同步**：开工前回报计划、阻塞和预计完成时间。"
+	inline := "# 规范\n\n## 纪律\n\n" + oldBody + "\n- **其他条款**：保持不动。\n"
+
+	out := Render(inline, []RenderedClause{{
+		Slug:             "cls_aaa00001",
+		Version:          2,
+		Body:             newBody,
+		SupersededBodies: []string{oldBody},
+	}})
+
+	if strings.Contains(out, oldBody) || strings.Count(out, "**每日同步**") != 1 {
+		t.Fatalf("superseded inline clause remained outside the managed region:\n%s", out)
+	}
+	if !strings.Contains(out, newBody) || !strings.Contains(out, "**其他条款**") {
+		t.Fatalf("render lost the new or unrelated clause:\n%s", out)
+	}
+}
+
 func TestRenderRemovesLegacySectionBlocks(t *testing.T) {
 	legacy := "# 规范\n\n## 交接\n\n- 旧规则。\n\n## 保留章节\n\n- 保留规则。\n"
-	section := RenderedClause{Slug: "cls_ccc00003", Version: 2, Body: "## 交接\n\n- 新规则。"}
+	section := RenderedClause{
+		Slug:             "cls_ccc00003",
+		Version:          2,
+		Body:             "## 交接\n\n- 新规则。",
+		SupersededBodies: []string{"## 交接\n\n- 旧规则。"},
+	}
 	out := Render(legacy, []RenderedClause{section})
 	if strings.Contains(out, "旧规则") || strings.Count(out, "## 交接") != 1 {
 		t.Fatalf("legacy section remained outside the managed region:\n%s", out)

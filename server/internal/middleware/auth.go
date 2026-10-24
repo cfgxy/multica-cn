@@ -121,6 +121,12 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				if rejectDisabledUser(w, r, disabled, userID, "task_token") {
 					return
 				}
+				if taskTokenWriteBlocked(tt.NoActionAt.Valid, r.Method, r.URL.Path) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusConflict)
+					_, _ = w.Write([]byte(`{"error":"task already recorded no_action; writes are no longer allowed"}`))
+					return
+				}
 				r.Header.Set("X-User-ID", userID)
 				r.Header.Set("X-Agent-ID", uuidToString(tt.AgentID))
 				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
@@ -372,6 +378,13 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func taskTokenWriteBlocked(noAction bool, method, path string) bool {
+	if !noAction || method == http.MethodGet || method == http.MethodHead {
+		return false
+	}
+	return !strings.HasSuffix(path, "/no-action")
 }
 
 // isRS256Token reports whether tokenString is a JWS whose header declares

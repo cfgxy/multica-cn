@@ -208,12 +208,13 @@ func encodePromptApplyState(state promptApplyState) ([]byte, error) {
 // promptTarget is a resolved apply target: its persisted prompt text, its apply
 // state, and the kind of asset that may be applied to it.
 type promptTarget struct {
-	targetType string
-	kind       string
-	id         pgtype.UUID
-	content    string
-	state      promptApplyState
-	updatedAt  pgtype.Timestamptz
+	targetType  string
+	kind        string
+	id          pgtype.UUID
+	workspaceID pgtype.UUID
+	content     string
+	state       promptApplyState
+	updatedAt   pgtype.Timestamptz
 }
 
 // loadPromptTarget resolves a target and checks, live, that the caller may
@@ -244,12 +245,13 @@ func (h *Handler) loadPromptTarget(w http.ResponseWriter, r *http.Request, targe
 			return promptTarget{}, false
 		}
 		return promptTarget{
-			targetType: promptSourceAgent,
-			kind:       kind,
-			id:         agent.ID,
-			content:    agent.Instructions,
-			state:      decodePromptApplyState(agent.MarketplacePromptState),
-			updatedAt:  agent.UpdatedAt,
+			targetType:  promptSourceAgent,
+			kind:        kind,
+			id:          agent.ID,
+			workspaceID: agent.WorkspaceID,
+			content:     agent.Instructions,
+			state:       decodePromptApplyState(agent.MarketplacePromptState),
+			updatedAt:   agent.UpdatedAt,
 		}, true
 
 	case promptSourceSquad:
@@ -270,12 +272,13 @@ func (h *Handler) loadPromptTarget(w http.ResponseWriter, r *http.Request, targe
 			return promptTarget{}, false
 		}
 		return promptTarget{
-			targetType: promptSourceSquad,
-			kind:       kind,
-			id:         squad.ID,
-			content:    squad.Instructions,
-			state:      decodePromptApplyState(squad.MarketplacePromptState),
-			updatedAt:  squad.UpdatedAt,
+			targetType:  promptSourceSquad,
+			kind:        kind,
+			id:          squad.ID,
+			workspaceID: squad.WorkspaceID,
+			content:     squad.Instructions,
+			state:       decodePromptApplyState(squad.MarketplacePromptState),
+			updatedAt:   squad.UpdatedAt,
 		}, true
 	}
 	writeError(w, http.StatusBadRequest, `target_type must be "agent" or "squad"`)
@@ -729,6 +732,10 @@ func (h *Handler) ApplyPrompt(w http.ResponseWriter, r *http.Request) {
 			"this prompt has been withdrawn by its publisher and can no longer be applied")
 		return
 	}
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, target.workspaceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to apply the prompt")
+		return
+	}
 
 	// Re-read the target under a row lock. Everything below decides against
 	// THIS text, not the copy read during permission checking.
@@ -739,6 +746,9 @@ func (h *Handler) ApplyPrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.stillManageable(r, target.targetType, locked) {
 		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+	if !allowStaticClauseRefsWrite(w, r.Context(), qtx, locked.workspaceID, map[carrierRef]string{{scope: target.targetType, id: target.id}: version.Content}) {
 		return
 	}
 	currentHash := sha256Hex(locked.content)
@@ -992,6 +1002,10 @@ func (h *Handler) RestorePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, target.workspaceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to restore the prompt")
+		return
+	}
 
 	locked, ok := h.lockPromptTarget(r, qtx, target.targetType, target.id)
 	if !ok {
@@ -1000,6 +1014,9 @@ func (h *Handler) RestorePrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.stillManageable(r, target.targetType, locked) {
 		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+	if !allowStaticClauseRefsWrite(w, r.Context(), qtx, locked.workspaceID, map[carrierRef]string{{scope: target.targetType, id: target.id}: locked.state.PreviousText}) {
 		return
 	}
 	state := locked.state

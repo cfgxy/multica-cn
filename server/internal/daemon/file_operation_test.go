@@ -211,7 +211,7 @@ func TestSSHConfigDeclaresOnlyExactExplicitAlias(t *testing.T) {
 	if err := os.WriteFile(config, []byte("Host *.example\n  User ignored\nInclude conf.d/*.conf\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(include, []byte("Host devbox gti-readonly\n  HostName gti\n"), 0o600); err != nil {
+	if err := os.WriteFile(include, []byte("Host devbox readonly-box\n  HostName devbox.example.internal\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if !sshConfigDeclaresAlias("devbox", []string{config}) {

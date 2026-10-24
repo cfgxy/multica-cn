@@ -2614,6 +2614,68 @@ func TestPrepareLocalWorktreeEmbedsGitlinkChildren(t *testing.T) {
 	}
 }
 
+func TestPrepareLocalWorktreeRejectsNewNestedRepository(t *testing.T) {
+	parent := newTestRepo(t)
+	child := filepath.Join(parent, "checked-out-repo")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("mkdir nested repository: %v", err)
+	}
+	gitRun(t, child, "init", "-b", "main")
+	gitRun(t, child, "config", "user.name", "Nested User")
+	gitRun(t, child, "config", "user.email", "nested@test.com")
+	writeFile(t, filepath.Join(child, "nested.txt"), "nested source\n")
+	gitRun(t, child, "add", ".")
+	gitRun(t, child, "commit", "-m", "nested initial")
+
+	assertPrepareRejectsNewGitlink(t, parent)
+}
+
+func TestPrepareLocalWorktreeRejectsNewNestedLinkedWorktree(t *testing.T) {
+	parent := newTestRepo(t)
+	childSource := newTestRepo(t)
+	child := filepath.Join(parent, "checked-out-worktree")
+	gitRun(t, childSource, "worktree", "add", "-b", "nested-worktree", child)
+	info, err := os.Stat(filepath.Join(child, ".git"))
+	if err != nil {
+		t.Fatalf("stat linked worktree gitdir: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("linked worktree .git mode = %v, want regular gitdir file", info.Mode())
+	}
+
+	assertPrepareRejectsNewGitlink(t, parent)
+}
+
+func assertPrepareRejectsNewGitlink(t *testing.T, parent string) {
+	t.Helper()
+	head := gitRun(t, parent, "rev-parse", "HEAD")
+	status := gitRun(t, parent, "status", "--porcelain")
+	_, err := PrepareLocalWorktree(LocalWorktreeParams{
+		LocalPath: parent,
+		EnvRoot:   t.TempDir(),
+		AgentName: "J",
+		TaskID:    "task-new-gitlink",
+	}, worktreeTestLogger())
+	if err == nil {
+		t.Fatal("expected prepare to reject a newly introduced gitlink")
+	}
+	if !strings.Contains(err.Error(), "newly introduced gitlink") {
+		t.Fatalf("error should explain the gitlink rejection, got: %v", err)
+	}
+	if got := gitRun(t, parent, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("prepare changed parent HEAD: got %s, want %s", got, head)
+	}
+	if got := gitRun(t, parent, "status", "--porcelain"); got != status {
+		t.Fatalf("prepare changed the parent index: got %q, want %q", got, status)
+	}
+	if list := gitRun(t, parent, "worktree", "list"); strings.Count(list, "\n") != 0 {
+		t.Errorf("rejected prepare left a task worktree registered:\n%s", list)
+	}
+	if branches := gitRun(t, parent, "branch", "--list", "agent/*"); branches != "" {
+		t.Errorf("rejected prepare left task branches:\n%s", branches)
+	}
+}
+
 // Edits the agent makes inside an embedded child are ordinary files from
 // git's point of view, so finalize delivers them on the task branch like any
 // other change — nothing about the delivery contract needs to know the embed

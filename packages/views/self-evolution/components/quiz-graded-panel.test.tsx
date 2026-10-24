@@ -49,12 +49,12 @@ const row: PromptQuizSampleRow = {
   score_detail: [{ id: "rule-1", kind: "includes", passed: true, evidence: "matched" }],
 };
 
-function mount() {
+function mount(baselineData: PromptQuizBaseline = baseline) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" resources={{ en: { common: enCommon, "self-evolution": enSelfEvolution } }}>
-        <QuizGradedPanel wsId="ws-1" agentId="agent-1" baseline={baseline} />
+        <QuizGradedPanel wsId="ws-1" agentId="agent-1" baseline={baselineData} />
       </I18nProvider>
     </QueryClientProvider>,
   );
@@ -64,9 +64,62 @@ function mount() {
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  sessionStorage.clear();
 });
 
 describe("QuizGradedPanel", () => {
+  it("compares candidate and baseline scores without treating ungraded items as zero", async () => {
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    mount({
+      ...baseline,
+      scores: {
+        graded: 4,
+        mean: 0.75,
+        items: [
+          { item_id: "item-shared", graded: 2, mean: 0.75 },
+          { item_id: "item-candidate-only", graded: 2, mean: 0.5 },
+          { item_id: "item-ungraded", graded: 0, mean: 0 },
+        ],
+      },
+      baseline_scores: {
+        graded: 3,
+        mean: 0.5,
+        items: [
+          { item_id: "item-shared", graded: 2, mean: 0.5 },
+          { item_id: "item-baseline-only", graded: 1, mean: 1 },
+          { item_id: "item-ungraded", graded: 1, mean: 0.25 },
+        ],
+      },
+    });
+
+    expect(await screen.findByTestId("quiz-graded-comparison")).toBeInTheDocument();
+    expect(screen.getByTestId("quiz-graded-candidate-summary")).toHaveTextContent("4 graded · mean 75%");
+    expect(screen.getByTestId("quiz-graded-baseline-summary")).toHaveTextContent("3 graded · mean 50%");
+    expect(screen.getByTestId("quiz-graded-score-delta")).toHaveTextContent("Delta +25%");
+
+    expect(screen.getByTestId("quiz-graded-item-item-shared")).toHaveTextContent("Delta +25%");
+    expect(screen.getByTestId("quiz-graded-item-item-candidate-only")).toHaveTextContent("Baseline: Not graded yet");
+    expect(screen.getByTestId("quiz-graded-item-item-candidate-only")).toHaveTextContent("Delta Not graded yet");
+    expect(screen.getByTestId("quiz-graded-item-item-baseline-only")).toHaveTextContent("Candidate: Not graded yet");
+    expect(screen.getByTestId("quiz-graded-item-item-ungraded")).toHaveTextContent("Candidate: Not graded yet");
+    expect(screen.getByTestId("quiz-graded-item-item-ungraded")).not.toHaveTextContent("Candidate: 0%");
+  });
+
+  it("keeps an ungraded aggregate score out of the comparison", async () => {
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    mount({
+      ...baseline,
+      scores: { graded: 0, mean: 0, items: [] },
+      baseline_scores: { graded: 3, mean: 0.5, items: [] },
+    });
+
+    expect(await screen.findByTestId("quiz-graded-comparison")).toBeInTheDocument();
+    expect(screen.getByTestId("quiz-graded-candidate-summary")).toHaveTextContent("Not graded yet");
+    expect(screen.getByTestId("quiz-graded-candidate-summary")).not.toHaveTextContent("0%");
+    expect(screen.getByTestId("quiz-graded-baseline-summary")).toHaveTextContent("3 graded · mean 50%");
+    expect(screen.getByTestId("quiz-graded-score-delta")).toHaveTextContent("Delta Not graded yet");
+  });
+
   it("identifies each sample's run and both timestamps beside its evidence", async () => {
     api.getPromptQuizSamples.mockResolvedValue([row]);
     mount();
@@ -90,7 +143,7 @@ describe("QuizGradedPanel", () => {
       counts: latest.length > 0 ? { answered: 1 } : {},
       scores: { graded: latest.length, mean: 0.5 },
     }));
-    api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
+    api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 2 });
     // Positive advance: react-query's notifyManager schedules observer
     // notifications via setTimeout(0), which a 0ms tick does not run.
     const flush = async () => {
@@ -108,5 +161,107 @@ describe("QuizGradedPanel", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("1 graded");
     expect(within(screen.getByTestId("quiz-graded-batch")).getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent(row.task_id);
+
+    const second = { ...row, task_id: "0199abcd-0000-7000-8000-000000000002" };
+    latest = [row, second];
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("2 graded");
+    expect(within(screen.getByTestId("quiz-graded-batch")).getByTestId(`quiz-sample-${second.task_id}`)).toHaveTextContent(second.task_id);
+  });
+
+  it("restores the ordered batch after the panel unmounts and remounts", async () => {
+    vi.useFakeTimers();
+    let latest: PromptQuizSampleRow[] = [];
+    api.getPromptQuizSamples.mockImplementation(async () => latest);
+    api.getPromptQuizBatch.mockImplementation(async () => ({
+      batch_id: "batch-1",
+      rows: latest,
+      counts: latest.length > 0 ? { answered: latest.length } : {},
+      scores: { graded: latest.length, mean: latest.length > 0 ? 0.5 : 0 },
+    }));
+    api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+
+    const first = mount();
+    await flush();
+    fireEvent.click(screen.getByTestId("quiz-graded-run"));
+    await flush();
+    await flush();
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("0 graded");
+
+    first.unmount();
+    mount();
+    await flush();
+    expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("batch-1");
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("0 graded");
+
+    latest = [row];
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("1 graded");
+    expect(screen.getAllByTestId(`quiz-sample-${row.task_id}`)).toHaveLength(2);
+  });
+
+  it("stops batch and sample polling when the window expires without results", async () => {
+    vi.useFakeTimers();
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    api.getPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      rows: [],
+      counts: {},
+      scores: { graded: 0, mean: 0 },
+    });
+    api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+
+    mount();
+    await flush();
+    fireEvent.click(screen.getByTestId("quiz-graded-run"));
+    await flush();
+    await flush();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60 * 1000); });
+    const batchCallsAtDeadline = api.getPromptQuizBatch.mock.calls.length;
+    const sampleCallsAtDeadline = api.getPromptQuizSamples.mock.calls.length;
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(batchCallsAtDeadline);
+    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(sampleCallsAtDeadline);
+  });
+
+  it("does not restart sample polling after remounting an expired ordered batch", async () => {
+    vi.useFakeTimers();
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    api.getPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      rows: [],
+      counts: {},
+      scores: { graded: 0, mean: 0 },
+    });
+    api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+
+    const first = mount();
+    await flush();
+    fireEvent.click(screen.getByTestId("quiz-graded-run"));
+    await flush();
+    await flush();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60 * 1000); });
+
+    first.unmount();
+    const sampleCallsBeforeRemount = api.getPromptQuizSamples.mock.calls.length;
+    mount();
+    await flush();
+    const sampleCallsAfterRemount = api.getPromptQuizSamples.mock.calls.length;
+    expect(sampleCallsAfterRemount).toBe(sampleCallsBeforeRemount + 1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(sampleCallsAfterRemount);
   });
 });

@@ -346,6 +346,9 @@ var concurrentIndexCleanups = map[string][]string{
 	"979_credential_audit_id_index":                             {"credential_audit_id_uidx"},
 	"979_credential_audit_workspace_created_index":              {"credential_audit_workspace_created_idx"},
 	"983_agent_suppression_event_index":                         {"idx_agent_suppression_event_agent"},
+	"994_clause_injection_observation_id_index":                 {"idx_clause_injection_observation_id"},
+	"994_clause_injection_observation_task_scope_time_index":    {"idx_clause_injection_observation_task_scope_time"},
+	"994_clause_injection_observation_workspace_time_index":     {"idx_clause_injection_observation_workspace_time"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

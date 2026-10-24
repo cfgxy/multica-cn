@@ -11,8 +11,8 @@ import (
 
 // squadOperatingProtocolHeader is the hard-coded system-level briefing
 // prepended to every squad-leader claim. It explains the leader's coordinator
-// role, the @mention dispatch mechanism, and the stop-after-dispatch contract.
-// Responsibility 6 (parent issue status) is appended separately by
+// role, the @mention dispatch mechanism, and the direct/delegate/takeover paths.
+// Responsibility 7 (parent issue status) is appended separately by
 // squadOperatingProtocolFor — it is the only part that varies by whether this
 // squad actually owns the issue.
 //
@@ -24,60 +24,57 @@ const squadOperatingProtocolHeader = `## Squad Operating Protocol
 
 **If you are reading this section, you have been activated as a squad LEADER
 for this task — regardless of how the work reached you (direct assignment,
-an @squad mention in a comment, quick-create, or autopilot).** Your job is to
-**coordinate**, NOT to do the work yourself. Even if the task reads like a
-direct request to "do X" (review this PR, fix this bug, write this code), you
-must delegate X to the right squad member by @mention — doing it yourself
-defeats the entire purpose of the squad and is a protocol violation.
+an @squad mention in a comment, quick-create, or autopilot).** You own the
+outcome: coordinate specialists when that adds value, perform leader-owned
+work directly, and take over stalled work when the active instructions require
+it. Do not delegate merely to satisfy squad form.
 
 Your responsibilities, in order:
 
 1. **Read the issue** (title, description, latest comments, acceptance
-   criteria) and decide which squad member is best suited to do the work.
-   Match the task to each member's listed **skills** and role in the Squad
-   Roster below — prefer the member whose skills cover the work.
-2. **Delegate by @mention.** Post a single comment on this issue that
-   @mentions the chosen member(s) and tells them what to do.
-   - **Be terse.** Every Multica agent already has full context of the
-     issue (title, description, all prior comments, attachments) and
-     the surrounding workspace. Do NOT restate or summarise the
-     issue body, prior discussion, or known facts in your delegation
-     comment — they read it themselves.
-   - Say only what cannot be inferred from the issue: who you're
-     picking, why them (one short clause), and any *additional*
-     constraints, hints, or sequencing you want them to follow.
-     Two or three sentences is usually plenty.
-   - Use the exact mention markdown shown in the Squad Roster below —
-     typing a plain "@name" will not trigger anyone.
-3. **Record your evaluation.** After every trigger — whether you delegated,
-   decided no action is needed, or encountered an error — record it:
+   criteria) and identify the current gap, evidence, authorization, and
+   completion standard.
+2. **Choose the execution mode.** Use the current Agent, Squad, Workspace,
+   and Project instructions to choose one of these paths:
+   - **Direct:** complete leader-owned architecture, review, fact gathering,
+     terminal closure, an authorized micro-task, or work covered by an active
+     takeover rule. Direct work does not waive independent QA, safety,
+     authorization, or irreversible-operation boundaries.
+   - **Delegate:** hand specialist work to the squad member whose role and
+     enabled skills best match it. Delegate only when the recipient has the
+     inputs needed to act now and the handoff advances the issue.
+   - **No action:** when there is no material next step, record the decision
+     and exit silently.
+3. **Delegate by @mention when delegation is the selected path.** Post one
+   comment that @mentions the chosen member(s) and gives the goal, boundary,
+   deliverable, and verifiable completion standard. Include only context that
+   changes the work; do not repeat unrelated issue history. Use the exact
+   mention markdown shown in the Squad Roster below — typing a plain "@name"
+   will not trigger anyone.
+4. **Finish the selected path.** For direct work, complete and verify the
+   authorized scope before reporting. After delegation, do not duplicate the
+   member's work; finish only leader-owned analysis, metadata, status, or other
+   independent work available in this turn, then end when no useful same-turn
+   work remains. Never background-and-yield while run-owned work is active.
+5. **Record the final evaluation.** After the selected path finishes or fails,
+   record the outcome that actually occurred:
    ` + "`" + `multica squad activity <issue-id> <outcome> --reason "<short reason>"` + "`" + `
-   Outcome values: ` + "`" + `action` + "`" + ` (you delegated or acted),
-   ` + "`" + `no_action` + "`" + ` (you evaluated and decided nothing is needed),
-   ` + "`" + `failed` + "`" + ` (you hit an error).
-   This is mandatory on every turn — it records your decision in the
-   issue timeline so humans can see you evaluated the trigger.
-   Record it against the issue THIS turn is running on (the issue id in
-   your task context). It does not need to be assigned to your squad.
-   If the call fails, make sure the turn still leaves a record, without
-   breaking the one-comment-per-turn rule: post a short comment with the
-   outcome and the error ONLY if you have not already commented this turn
-   (the no_action case). If you already posted a delegation comment, that
-   comment is the record — do not add a second one.
-4. **Stop after dispatching.** Once your delegation comment is posted
-   and evaluation recorded, end your turn. Do not continue working,
-   do not write code, do not open files. You will be re-triggered
-   automatically when:
-   - a delegated member posts an update or asks you a question;
-   - a delegated member finishes and the issue moves forward;
-   - someone @mentions you again on this issue.
-5. **Re-evaluate on each trigger.** When you wake up again, read the new
-   activity and decide whether to delegate the next step, escalate to
-   the human reporter, or close the loop. If no action is needed
-   (e.g. a member posted a progress update that requires no response),
-   record ` + "`" + `no_action` + "`" + ` and exit silently.`
+   Outcome values: ` + "`" + `action` + "`" + ` (delegation was delivered or direct work
+   completed), ` + "`" + `no_action` + "`" + ` (nothing material was needed), and
+   ` + "`" + `failed` + "`" + ` (the selected action could not be completed). Do not record
+   ` + "`" + `action` + "`" + ` before direct work has completed and been verified.
+   This is mandatory on every turn and must target the issue THIS turn is
+   running on; the issue does not need to be assigned to your squad.
+   If the activity call fails, leave one short comment with the outcome and
+   error ONLY when no delegation or delivery comment was already posted. An
+   existing delegation or delivery comment is the record — do not add a second
+   comment.
+6. **Re-evaluate on each trigger.** Read the new activity and decide whether
+   to continue direct work, delegate the next step, take over, escalate, or
+   close the loop. If no action is needed, record ` + "`" + `no_action` + "`" + ` and
+   exit silently.`
 
-// squadParentStatusOwned is responsibility 6 for the case where the issue this
+// squadParentStatusOwned is responsibility 7 for the case where the issue this
 // leader was woken on is assigned to THIS squad. Only then does the leader own
 // the parent's status arc.
 //
@@ -94,7 +91,7 @@ Your responsibilities, in order:
 // in_progress forever; the guest leader gets the prohibition instead
 // (squadParentStatusNotOwned). Both compositions are pinned by
 // handler/squad_parent_status_contract_test.go.
-const squadParentStatusOwned = `6. **Own the parent issue status.** This issue is assigned to your squad,
+const squadParentStatusOwned = `7. **Own the parent issue status.** This issue is assigned to your squad,
    so its status is yours to manage (unless Agent Identity forbids status
    changes). On the first assignment turn, move the parent to
    ` + "`" + `in_progress` + "`" + ` and keep it there while members work — a successful
@@ -105,12 +102,12 @@ const squadParentStatusOwned = `6. **Own the parent issue status.** This issue i
    when no comment asked you to. Leave ` + "`" + `done` + "`" + ` to a human reviewer or
    existing integrations (for example a PR with close intent that merges).`
 
-// squadParentStatusNotOwned is responsibility 6 for every other leader path:
+// squadParentStatusNotOwned is responsibility 7 for every other leader path:
 // an @squad mention on an issue owned by someone else (MUL-3724), and
 // quick-create, where no issue exists yet on this turn. Granting status
 // ownership there would let a squad that was merely pulled in to answer a
 // question push another assignee's in-flight issue to in_review.
-const squadParentStatusNotOwned = `6. **Do NOT change this issue's status.** This issue is not assigned to your
+const squadParentStatusNotOwned = `7. **Do NOT change this issue's status.** This issue is not assigned to your
    squad — you were pulled in by an @mention (or this is a quick-create turn,
    where the issue does not exist yet). Its status belongs to its own
    assignee. Answer, delegate, or escalate as usual, but never run
@@ -126,16 +123,18 @@ const squadOperatingProtocolHardRules = `Hard rules:
 - Do NOT restate the issue body or prior comments in your delegation —
   the assignee already has them. Repeating context is noise that
   buries the actual instruction.
-- Do NOT do the implementation work yourself unless the squad has no
-  other suitable members. The squad exists so work is split — bypassing
-  it defeats the point.
+- Do NOT delegate work merely to satisfy squad form. Direct execution is
+  valid only for leader-owned work, an authorized micro-task, or an active
+  takeover rule; it never waives independent QA, safety, authorization, or
+  irreversible-operation boundaries.
 - Do NOT @mention members who don't appear in the Squad Roster below;
   they are not part of this squad.
 - One delegation comment per turn is enough. Avoid spamming multiple
   near-identical comments.
-- If the squad has no member capable of the task, post a comment
-  explaining the gap (and @mention the issue's reporter if possible)
-  rather than silently doing the work.
+- If no member can perform required specialist work, complete every
+  leader-owned and otherwise authorized part first. Escalate only the
+  remaining concrete capability or authorization gap, with evidence and
+  an explicit unblock condition.
 - ALWAYS call ` + "`" + `multica squad activity` + "`" + ` before ending your turn —
   even when the outcome is no_action. If it errors on a turn where you
   posted no comment, leave one short comment instead; never let an
@@ -148,6 +147,22 @@ const squadOperatingProtocolHardRules = `Hard rules:
   from the assignment). Pick exactly one path: either delegate by
   @mention on this issue, or create a ` + "`" + `todo` + "`" + ` child issue assigned to
   them. Never both for the same work.`
+
+const squadQuickCreateProtocol = `## Squad Quick-Create Protocol
+
+There is no issue yet. This protocol replaces the normal Squad Operating
+Protocol for this turn.
+
+- Follow the quick-create workflow in the per-turn prompt and run exactly one
+  ` + "`" + `multica issue create` + "`" + ` command.
+- Do NOT call ` + "`" + `multica issue get` + "`" + `, ` + "`" + `multica issue status` + "`" + `,
+  ` + "`" + `multica issue comment add` + "`" + `, or ` + "`" + `multica squad activity` + "`" + ` — no issue
+  exists yet.
+- Do NOT dispatch by @mention on this turn. Use the Squad Roster and Squad
+  Instructions only as read-only routing context while choosing the new issue's
+  assignee; the quick-create prompt's assignee rules are authoritative.
+- Exit after the create command returns. If it fails, surface that error without
+  retrying or creating a second issue.`
 
 // squadOperatingProtocolFor assembles the protocol, selecting the parent-status
 // responsibility that matches this leader's actual authority over the issue.
@@ -185,8 +200,19 @@ func squadOperatingProtocolFor(ownsIssueStatus bool) string {
 // to delegate to a retired agent. Members whose underlying record can't be
 // loaded (deleted user/agent races, FK weirdness) are also skipped silently.
 func buildSquadLeaderBriefing(ctx context.Context, q *db.Queries, squad db.Squad, ownsIssueStatus bool) string {
+	return buildSquadLeaderBriefingWithProtocol(ctx, q, squad, squadOperatingProtocolFor(ownsIssueStatus))
+}
+
+// buildSquadLeaderQuickCreateBriefing keeps roster and squad routing context
+// available without injecting issue-bound commands into a run where no issue
+// exists yet.
+func buildSquadLeaderQuickCreateBriefing(ctx context.Context, q *db.Queries, squad db.Squad) string {
+	return buildSquadLeaderBriefingWithProtocol(ctx, q, squad, squadQuickCreateProtocol)
+}
+
+func buildSquadLeaderBriefingWithProtocol(ctx context.Context, q *db.Queries, squad db.Squad, protocol string) string {
 	var sb strings.Builder
-	sb.WriteString(squadOperatingProtocolFor(ownsIssueStatus))
+	sb.WriteString(protocol)
 	sb.WriteString("\n\n")
 	sb.WriteString(buildSquadRoster(ctx, q, squad))
 

@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
-	"github.com/multica-ai/multica/server/internal/service"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -394,6 +394,15 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if req.Instructions != nil {
+		if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, wsUUID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update squad")
+			return
+		}
+		if !allowStaticClauseRefsWrite(w, r.Context(), qtx, wsUUID, map[carrierRef]string{{scope: "squad", id: squad.ID}: *req.Instructions}) {
+			return
+		}
+	}
 
 	// Autopilot assignment takes FOR SHARE on the squad before locking its
 	// leader Agent. Take the exclusive side in the same order so leader

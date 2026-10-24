@@ -23,14 +23,27 @@ const TaskContextMarkerRelPath = ".multica/daemon_task_context.json"
 // treating TaskContextMarkerRelPath as daemon-owned.
 const TaskContextMarkerManagedBy = "multica-daemon-task"
 
+const maxTaskContextMarkerBytes = 1 << 20
+
 type taskContextMarkerFile struct {
-	ManagedBy     string `json:"managed_by"`
-	TaskID        string `json:"task_id,omitempty"`
-	AgentID       string `json:"agent_id,omitempty"`
-	IssueID       string `json:"issue_id,omitempty"`
-	ChatSessionID string `json:"chat_session_id,omitempty"`
-	Branch        string `json:"branch,omitempty"`
-	BaseCommit    string `json:"base_commit,omitempty"`
+	ManagedBy        string                  `json:"managed_by"`
+	TaskID           string                  `json:"task_id,omitempty"`
+	AgentID          string                  `json:"agent_id,omitempty"`
+	IssueID          string                  `json:"issue_id,omitempty"`
+	ChatSessionID    string                  `json:"chat_session_id,omitempty"`
+	Branch           string                  `json:"branch,omitempty"`
+	BaseCommit       string                  `json:"base_commit,omitempty"`
+	PreparedReanchor *preparedReanchorMarker `json:"prepared_reanchor,omitempty"`
+}
+
+// preparedReanchorMarker records the exact refs a reanchor was prepared
+// against. The marker write and the Git ref transaction cannot be atomic, so a
+// retry must prove that it is resuming the same transaction rather than moving
+// refs that changed while the marker was prepared.
+type preparedReanchorMarker struct {
+	Target           string `json:"target"`
+	BranchTip        string `json:"branch_tip"`
+	LocalStateRecord string `json:"local_state_record"`
 }
 
 // EnsureWorkspacesRootMarker writes a persistent daemon-task marker at
@@ -168,6 +181,59 @@ func RegisterTaskDeliveryContext(markerPath, branch, baseCommit string) error {
 		return fmt.Errorf("marshal task context marker: %w", err)
 	}
 	return writeMarkerFileAtomic(markerPath, out)
+}
+
+// RepairTaskDeliveryContext restores an authenticated task's delivery proof
+// after checkout. Foreign, corrupt, root-shaped, cross-task, and unsafe marker
+// paths are rejected without modification.
+func RepairTaskDeliveryContext(markerPath, taskID, agentID, issueID, branch, baseCommit string) error {
+	if strings.TrimSpace(taskID) == "" {
+		return errors.New("execenv: task id is required to repair task delivery context")
+	}
+	return repairTaskContextMarkerFile(markerPath, func(data []byte) ([]byte, error) {
+		var marker taskContextMarkerFile
+		if err := json.Unmarshal(data, &marker); err != nil {
+			return nil, fmt.Errorf("task context marker %s is not a parseable daemon marker; refusing to repair", markerPath)
+		}
+		if marker.ManagedBy != TaskContextMarkerManagedBy {
+			return nil, fmt.Errorf("task context marker %s is not managed by Multica; refusing to repair", markerPath)
+		}
+		if marker.TaskID != "" {
+			// A matching task ID is globally unique and proves ownership even when
+			// an earlier handoff left stale agent or issue fields behind.
+			if marker.TaskID != taskID {
+				return nil, fmt.Errorf("task context marker %s belongs to task %s, not active task %s", markerPath, marker.TaskID, taskID)
+			}
+		} else {
+			// Without the unique task ID, both fields are required to distinguish
+			// this task from another task executed by the same agent.
+			if marker.AgentID == "" || marker.IssueID == "" || agentID == "" || issueID == "" {
+				return nil, fmt.Errorf("task context marker %s lacks task_id and matching agent_id and issue_id; refusing to repair", markerPath)
+			}
+			if marker.AgentID != agentID || marker.IssueID != issueID {
+				return nil, fmt.Errorf("task context marker %s does not belong to the active agent and issue", markerPath)
+			}
+		}
+
+		marker.TaskID = taskID
+		if agentID != "" {
+			marker.AgentID = agentID
+		}
+		if issueID != "" {
+			marker.IssueID = issueID
+		}
+		if branch != "" {
+			marker.Branch = branch
+		}
+		if baseCommit != "" {
+			marker.BaseCommit = baseCommit
+		}
+		out, err := json.MarshalIndent(marker, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("marshal task context marker: %w", err)
+		}
+		return out, nil
+	})
 }
 
 // writeContextFiles renders and writes .agent_context/issue_context.md and

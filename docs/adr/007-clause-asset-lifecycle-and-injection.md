@@ -31,7 +31,7 @@
 3. `agent_task_queue.prompt_versions` JSONB 在 claim 组装完成点由 `recordClaimedPromptVersions` 写入，失败 log-and-swallow——「attribution is observability, not a claim precondition」（`daemon.go:3501-3513`）。
 4. `prompt_quality_daily` 按 `(scope, scope_id, version, day)` 聚合七维质量，遵守「分子分母分开存，unmeasured ≠ 0」；`injected_tokens` 是版本属性。
 5. `prompt_proposal` 提案池：条款粒度提案 + 内容闸五答 + 状态机 `draft → pending_owner → (gate) → enacted/gate_failed/rejected` + `audit_log` append-only；`change_kind` 带 CHECK 约束。现有条款识别是标题行正则（`server/internal/legislation/engine.go:185`）；enacted 事务持载体行锁、可 re-gate re-enact（`server/internal/handler/legislation.go:288,716`）。
-6. `prompt_structure_baseline` 双轨（平台表 + ruyi 仓 `tools/check_prompts.py + prompt-structure.json`），平台↔仓经 `snapshot.sh/restore.sh` 同步。
+6. `prompt_structure_baseline` 与仓库内通用扫描测试共同保护结构契约；活动 prompt/Clause 的权威状态始终由平台业务列和版本表维护，外部文件不作为发布或恢复入口。
 7. 复盘自进化产出 draft 进提案池；jev advisory warn-only 不阻断。claim 存在 reclaim 重投递与重试 attempt，`prompt_quiz_result` 以 `UNIQUE(task_id)` 解决同类幂等。
 8. 注入文本是复合物：agent 层经 Mika 合成、leader 任务把 `squad.Instructions` 经 `buildSquadLeaderBriefing` 拼进 `resp.Agent.Instructions`——resp 组装后的文本无法事后从 `prompt_version` 单行还原。
 
@@ -42,14 +42,14 @@
 - G3 作用域不可独立管理：跨层迁移 = remove + add 两个提案，非原子。
 - G4 计量粒度：注入归因到层，条款级调用次数只能靠关键词反推（AC 明确禁止）。
 - G5 质量不可比：质量聚合按载体版本，条款 V1/V2 无法对照。
-- G6 双轨基线：平台与仓侧结构基线并存，条款化后同步语义需重定义。
+- G6 基线分工：平台保存运行时权威状态，仓库测试只校验通用结构契约，二者职责需明确。
 - G7 静态注入：注入内容不随 run 上下文变化——Issue 原字面目标（Owner 决策 2 确认为第一期目标）。
 
 ## 方案
 
 ### 方案 A：条款独立一等资产 + 运行时动态组装（本 ADR 采纳的核心）
 
-新增 `clause`/`clause_version`/`clause_binding`/`clause_injection` 四表，条款正文事实源移入资产库；claim 热路径按上下文计算 Effective Clause Set 并动态渲染注入；载体业务列退化为「稳定上下文 + 渲染快照」，快照兼作降级兜底。优点：G1–G7 全解；token 可按上下文裁剪。风险：热路径重写、渲染一致性、仓侧工具链适配——由「快照兜底 + 确定性计算 + 全局降级开关」三道缓解（见详细设计与权衡）。
+新增 `clause`/`clause_version`/`clause_binding`/`clause_injection` 四表，条款正文事实源移入资产库；claim 热路径按上下文计算 Effective Clause Set 并动态渲染注入；载体业务列退化为「稳定上下文 + 渲染快照」，快照兼作降级兜底。优点：G1–G7 全解；token 可按上下文裁剪。风险：热路径重写、渲染一致性、治理工具链适配——由「快照兜底 + 确定性计算 + 全局降级开关」三道缓解（见详细设计与权衡）。
 
 ### 方案 B：条款内嵌标记 + 解析层资产化（注入路径不变）
 
@@ -101,12 +101,12 @@ prompt_proposal (既有表) --→ enacted 时在单事务内写 clause_version/b
 
 ### 3. 升级/降级语义
 
-`move_clause` 提案原子变更绑定（agent→project→workspace 为升级，反向为降级），审批通过即单事务完成「旧层移除 + 新层生效 + 两侧业务列重渲染 + 重建结构基线」。clause_id 与版本线不变，历史归因连续。
+`move_clause` 提案原子变更绑定（agent→project→workspace 为升级，反向为降级），审批通过即单事务完成「旧层移除 + 新层生效 + 两侧业务列重渲染 + 更新平台结构基线」。clause_id 与版本线不变，历史归因连续。
 
 ### 4. 继承、覆盖、冲突、去重
 
 - Effective Clause Set 计算 = 纯函数：①取四层 active 绑定及其条款版本 → ②条件过滤（binding.conditions 匹配当前 task_kind）→ ③同 clause_id 去重（近端层优先，agent > project > squad > workspace）→ ④按 workspace→squad→project→agent 固定序输出渲染。
-- 语义冲突是立法期责任：内容闸五答 + 双轨结构基线在提案门闸拦截；运行时不做语义消解，只做确定性排序与去重。
+- 语义冲突是立法期责任：内容闸五答 + 平台结构基线与通用扫描测试在提案门闸拦截；运行时不做语义消解，只做确定性排序与去重。
 - 条件维度 scope 显式回答：第一期条件仅 task_kind；标签/运行时长等不做（§1）。
 
 ### 5. Effective Clause Set 的计算位置、确定性与降级（第一期核心）
@@ -117,7 +117,7 @@ prompt_proposal (既有表) --→ enacted 时在单事务内写 clause_version/b
   1. 降级兜底：计算异常/超时 → 注入业务列渲染快照（= 最近一次全量渲染的有效集合，经标记段解析照常打点），写降级告警，绝不阻塞 claim——与 `recordClaimedPromptVersions` log-and-swallow 同一哲学。
   2. 全局降级开关：配置开启后所有 run 走快照注入模式（等价旧静态形态），作为动态链路故障的止损开关与灰度发布手段。
   3. 观测：动态计算延迟、失败率、降级次数进入治理视图（对应 Issue 观测指标）。
-- 直编/回退旁路：业务列条款段是只读渲染区——Owner 手工直编稳定上下文（标记段外）合法；直编条款段或 revert/restore 拉回旧文本 → 漂移告警（claim 时比对条款体 sha 与 clause_version），下次重渲染幂等恢复条款段；restore.sh 回写须触发立即重渲染（governed 漏斗内完成）。前提核实项（实施单）：restore 回写必须走 governed 漏斗，直写 DB 路径须先堵漏。
+- 直编/回退旁路：业务列条款段是只读渲染区——Owner 手工直编稳定上下文（标记段外）合法；直编条款段或平台版本恢复拉回旧文本 → 漂移告警（claim 时比对条款体 sha 与 clause_version），下次重渲染幂等恢复条款段。所有写入与回退必须走平台治理漏斗；受控数据库维护仅在明确授权、版本断言、单事务和独立回读条件下使用。
 
 ### 6. 调用次数口径（打点位置）
 

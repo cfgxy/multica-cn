@@ -62,6 +62,11 @@ const (
 	// ReasonAlreadyActive: a run is already active/pending for this target and
 	// this trigger did not coalesce.
 	ReasonAlreadyActive ReasonCode = "already_active"
+	// ReasonTaskRoleConflict: a task for this (issue, agent) pair already owns the
+	// pending slot under a different execution role, squad, or reviewed HEAD. The
+	// comment is saved, but no run is promised: merging would execute it under the
+	// wrong briefing and manufacturing a deferred success would hide that fact.
+	ReasonTaskRoleConflict ReasonCode = "task_role_conflict"
 	// ReasonSelfTriggerSuppressed: the target was intentionally not (re-)triggered
 	// because doing so would be a self-trigger the guard suppresses, and no active
 	// run remains to cover it — e.g. a squad leader's own @mention of its squad
@@ -69,6 +74,12 @@ const (
 	// success: nothing new runs. (Named to avoid implying the NEW comment was
 	// already processed.)
 	ReasonSelfTriggerSuppressed ReasonCode = "self_trigger_suppressed"
+	// ReasonAgentOnlyCascadeBlocked: an automatic agent-to-agent comment
+	// lineage reached the rapid-cascade threshold or repeated a source task.
+	// It is distinct from self_trigger_suppressed: the latter describes a
+	// target mentioning itself, while this code identifies a broader lineage
+	// guard without exposing any private target details.
+	ReasonAgentOnlyCascadeBlocked ReasonCode = "agent_only_cascade_blocked"
 	// ReasonIssueStatusNotDispatchable: the issue's current status category
 	// does not admit comment-triggered runs (RUYI-391). The comment itself is
 	// saved; the trigger is refused before any run is created or queued. The

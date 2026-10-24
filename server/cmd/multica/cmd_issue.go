@@ -2139,9 +2139,30 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
+		warnUnhandledCommentTriggers(result)
 		return nil
 	}
 	return cli.PrintJSON(os.Stdout, result)
+}
+
+func warnUnhandledCommentTriggers(result map[string]any) {
+	raw, ok := result["trigger_outcomes"].([]any)
+	if !ok {
+		return
+	}
+	for _, item := range raw {
+		outcome, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		status := strVal(outcome, "status")
+		if status == "queued" || status == "coalesced" || status == "deferred" {
+			continue
+		}
+		fmt.Fprintf(os.Stderr,
+			"Warning: comment was saved, but %s %s was not triggered (%s).\n",
+			strVal(outcome, "target_type"), strVal(outcome, "target_id"), strVal(outcome, "reason_code"))
+	}
 }
 
 func runIssueCommentDelete(cmd *cobra.Command, args []string) error {
