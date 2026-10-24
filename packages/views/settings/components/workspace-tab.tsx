@@ -38,6 +38,7 @@ import { LongTextEditor } from "../../common/long-text-editor";
 import { useNavigation } from "../../navigation";
 import { DeleteWorkspaceDialog } from "./delete-workspace-dialog";
 import { WorkspaceBackpressureCard } from "./workspace-backpressure-card";
+import { WorkspacePromQLRulesCard } from "./workspace-promql-rules-card";
 import { useT } from "../../i18n";
 import {
   SettingsCard,
@@ -520,6 +521,13 @@ export function WorkspaceTab() {
 
       <SettingsSection title={t(($) => $.workspace.bp_title)}>
         <WorkspaceBackpressureCard wsId={workspace.id} canManage={isOwner} />
+      </SettingsSection>
+
+      <SettingsSection title={t(($) => $.workspace.promql_title)}>
+        <WorkspacePromQLRulesCard
+          wsId={workspace.id}
+          canManage={canManageWorkspace}
+        />
       </SettingsSection>
 
       {/* Danger Zone — gated on the member query settling so the owner-only

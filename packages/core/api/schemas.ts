@@ -5495,6 +5495,46 @@ export const WorkspaceBackpressureSettingsSchema = z.object({
   custom: z.boolean().default(false),
 });
 
+export const WorkspacePromQLRuleSampleSchema = z.object({
+  labels: z.record(z.string(), z.string()).nullish().transform((value) => value ?? {}),
+  value: z.number().default(0),
+}).loose();
+
+export const WorkspacePromQLRuleSchema = z.object({
+  id: z.string().default(""),
+  name: z.string().default(""),
+  enabled: z.boolean().default(false),
+  metric: z.enum(["failures", "failure_rate"]).default("failure_rate"),
+  grouping: z.enum(["workspace", "agent"]).default("workspace"),
+  condition: z.enum(["threshold", "present"]).default("threshold"),
+  comparison: z.enum([">", ">=", "<", "<="]).optional(),
+  threshold: z.number().optional(),
+  recovery_threshold: z.number().optional(),
+  lookback_seconds: z.number().default(300),
+  evaluation_seconds: z.number().default(30),
+  for_seconds: z.number().default(0),
+  no_data_policy: z.enum(["keep", "trigger", "resolve"]).default("keep"),
+  query_error_policy: z.enum(["keep", "trigger", "resolve"]).default("keep"),
+  state: z.object({
+    firing: z.boolean().default(false),
+    pending_since: z.string().optional(),
+    last_evaluated_at: z.string().optional(),
+    last_error: z.string().optional(),
+    values: z.array(WorkspacePromQLRuleSampleSchema).optional(),
+  }).loose().default({ firing: false }),
+}).loose();
+
+export const WorkspacePromQLRulesSchema = z.object({
+  rules: z.array(WorkspacePromQLRuleSchema).default([]),
+  prometheus_configured: z.boolean().default(false),
+}).loose();
+
+export const WorkspacePromQLRulePreviewSchema = z.object({
+  query: z.string().default(""),
+  samples: z.array(WorkspacePromQLRuleSampleSchema).default([]),
+  matches: z.boolean().default(false),
+}).loose();
+
 // ---- Daemon host backpressure settings + event history (RUYI-729) ----
 // The daemon-host override card (Runtime detail page) and its report/event
 // shapes. Coexists with the workspace card above: the workspace settings are

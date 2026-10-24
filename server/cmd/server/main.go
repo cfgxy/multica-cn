@@ -25,6 +25,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/profiling"
 	"github.com/multica-ai/multica/server/internal/promquery"
+	"github.com/multica-ai/multica/server/internal/promrules"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/scheduler"
@@ -608,6 +609,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	prometheusClient := promquery.NewClientFromEnv()
+	promRulesWorker := promrules.NewWorker(pool, prometheusClient)
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		HTTPMetrics:         httpMetrics,
 		BusinessMetrics:     businessMetrics,
@@ -621,7 +624,7 @@ func main() {
 		WecomRelayOutbound:  wecomRelayOutbound,
 		FeatureFlags:        flags,
 		HeartbeatScheduler:  heartbeatScheduler,
-		Prometheus:          promquery.NewClientFromEnv(),
+		Prometheus:          prometheusClient,
 		LLMMaxRetries:       llmMaxRetries,
 	})
 
@@ -631,6 +634,9 @@ func main() {
 	// Start background workers.
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
 	autopilotCtx, autopilotCancel := context.WithCancel(context.Background())
+	if prometheusClient.Enabled() {
+		go promRulesWorker.Run(sweepCtx)
+	}
 	// Reuse the router's services here. In particular, the router wires the
 	// EmptyClaim cache into TaskService; constructing a second TaskService for
 	// scheduled Autopilot dispatch would send the daemon wakeup without bumping

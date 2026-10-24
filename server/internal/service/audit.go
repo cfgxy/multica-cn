@@ -119,9 +119,9 @@ const (
 	AuditIssueSquadLeaderEvaluated = "issue.squad_leader_evaluated"
 	AuditIssueRunSuppressed        = "issue.run_suppressed"
 	// RUYI-690: issue suspension lifecycle (orthogonal "waiting" dimension).
-	AuditIssueSuspended             = "issue.suspended"
-	AuditIssueSuspensionResumed     = "issue.suspension_resumed"
-	AuditIssueSuspensionCancelled   = "issue.suspension_cancelled"
+	AuditIssueSuspended           = "issue.suspended"
+	AuditIssueSuspensionResumed   = "issue.suspension_resumed"
+	AuditIssueSuspensionCancelled = "issue.suspension_cancelled"
 
 	// Ops domain: deployment anchoring.
 	AuditOpsServerStarted = "ops.server_started"
@@ -147,6 +147,9 @@ const (
 	// daemon_id and the full old→new cards.
 	AuditOpsBackpressureSettingsUpdated = "ops.backpressure_settings_updated"
 	AuditOpsBackpressureSettingsRemoved = "ops.backpressure_settings_removed"
+	AuditOpsPromQLRulesUpdated          = "ops.promql_rules_updated"
+	AuditOpsPromQLRuleFired             = "ops.promql_rule_fired"
+	AuditOpsPromQLRuleResolved          = "ops.promql_rule_resolved"
 
 	AuditMCPInvocationStarted  = "mcp.invocation_started"
 	AuditMCPInvocationFinished = "mcp.invocation_finished"

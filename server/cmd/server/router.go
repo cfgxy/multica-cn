@@ -2568,6 +2568,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 		})
 
+		// PromQL rules are generated from a fixed server-side metric catalog.
+		// Members can inspect state; only owners and admins can edit or preview.
+		r.Route("/api/workspace/promql-rules", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/", h.GetWorkspacePromQLRules)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner", "admin"))
+				r.Put("/", h.PutWorkspacePromQLRules)
+				r.Post("/preview", h.PreviewWorkspacePromQLRule)
+			})
+		})
+
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
