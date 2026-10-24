@@ -251,7 +251,7 @@
   "pickers": {
     "concurrency_tooltip": "并发 · 最多 {{value}} 个并行 task",
     "concurrency_range": "最大并行 task 数（{{min}}–{{max}}）",
-    "concurrency_hint": "填 -1 可取消该智能体的个人上限，但仍受运行时上限约束。",
+    "concurrency_hint": "填 0 可取消该智能体的个人上限，但仍受运行时上限约束。",
     "concurrency_unlimited": "不限个人上限",
     "session_max_context_tokens_range": "上下文上限 token 数（{{min}}–{{max}}），填 0 表示关闭",
     "session_compact_pct_range": "达到上限的该百分比时开启新会话（{{min}}–{{max}}）；切换不会低于 50,000 token，实际阈值为 {{threshold}} token",

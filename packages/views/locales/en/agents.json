@@ -265,7 +265,7 @@
   "pickers": {
     "concurrency_tooltip": "Concurrency · {{value}} max concurrent tasks",
     "concurrency_range": "Max concurrent tasks ({{min}}–{{max}})",
-    "concurrency_hint": "Use -1 to disable this agent's cap; the runtime cap still applies.",
+    "concurrency_hint": "Use 0 to disable this agent's cap; the runtime cap still applies.",
     "concurrency_unlimited": "Unlimited",
     "session_max_context_tokens_range": "Context ceiling in tokens ({{min}}–{{max}}), or 0 to turn this off",
     "session_compact_pct_range": "Start a fresh session at this percentage of the ceiling ({{min}}–{{max}}) — actually at {{threshold}} tokens, since the switch never fires below 50,000",
