@@ -57,6 +57,22 @@ function stubFetchResponses(responses: Response[]) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("legislation approve endpoints (RUYI-858)", () => {
+  it("preserves the structured revision clause id in preview responses", async () => {
+    stubFetchResponses([
+      new Response(JSON.stringify({
+        proposal: { ...validProposal, change_kind: "revise_clause", clause_id: "clause-1" },
+        diff: [],
+        current_sha256: "",
+        baseline_used: false,
+      })),
+    ]);
+    const client = new ApiClient("https://api.example.test");
+
+    const preview = await client.previewPromptProposal("p-1");
+
+    expect(preview.proposal.clause_id).toEqual("clause-1");
+  });
+
   it("sends the selected landing target to preview", async () => {
     stubFetchResponses([new Response(JSON.stringify({ proposal: validProposal, diff: [], current_sha256: "", baseline_used: false }))]);
     const client = new ApiClient("https://api.example.test");

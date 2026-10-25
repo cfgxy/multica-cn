@@ -5157,6 +5157,7 @@ export const PromptProposalSchema = z.object({
   carrier_scope_id: z.string(),
   target_section: z.string(),
   change_kind: z.string(),
+  clause_id: z.string().optional(),
   clause_name: z.string(),
   clause_text: z.string(),
   gate_answer_layer: z.string(),

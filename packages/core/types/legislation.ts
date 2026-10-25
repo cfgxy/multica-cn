@@ -71,6 +71,7 @@ export interface PromptProposal {
   carrier_scope_id: string;
   target_section: string;
   change_kind: PromptProposalChangeKind;
+  clause_id?: string;
   clause_name: string;
   clause_text: string;
   /** The content-gate five answers, all required before submission. */
