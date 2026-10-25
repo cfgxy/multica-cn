@@ -248,6 +248,19 @@ func safeRunGate(current, synthesized string, baseline *legislation.Baseline, p 
 	return legislation.RunGate(current, synthesized, baseline, p)
 }
 
+// safeRunStructuralGate keeps the direct-revision path fail-closed while it
+// validates the structural checks that apply independently of proposal review.
+func safeRunStructuralGate(current, synthesized string, baseline *legislation.Baseline, p legislation.ProposalInput) (res legislation.Result) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			res = legislation.Result{Errors: []legislation.Finding{{
+				Level: "error", Message: fmt.Sprintf("门闸内部异常，已阻断（fail-closed）：%v", rec),
+			}}, Warnings: []legislation.Finding{}}
+		}
+	}()
+	return legislation.RunStructuralGate(current, synthesized, baseline, p)
+}
+
 func errorResult(err error) legislation.Result {
 	return legislation.Result{Errors: []legislation.Finding{{
 		Level: "error", Message: fmt.Sprintf("沙箱合成失败，已阻断：%v", err),
@@ -457,7 +470,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		return false, true, errorResult(err)
 	}
 	affected := outcome.carrierRefs(p)
-	if err := h.rerenderAffectedCarriersTx(ctx, qtx, workspaceID, affected, synth, p.CreatedByType, uuidToString(p.CreatedByID)); err != nil {
+	if err := h.rerenderAffectedCarriersTx(ctx, qtx, workspaceID, affected, synth, outcome.RenderOverrides, p.CreatedByType, uuidToString(p.CreatedByID)); err != nil {
 		slog.Error("clause re-render failed", append(logger.RequestAttrs(r), "error", err)...)
 		return false, true, errorResult(err)
 	}
@@ -513,12 +526,17 @@ func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries
 	if err := legislation.ValidateRevisionText(clause.Title, p.ClauseText); err != nil {
 		return "", err
 	}
+	currentVersion, err := qtx.GetClauseVersion(ctx, db.GetClauseVersionParams{ClauseID: clause.ID, Version: clause.Version})
+	if err != nil {
+		return "", fmt.Errorf("条款「%s」当前版本读取失败: %w", clause.Title, err)
+	}
 	content := strings.TrimRight(p.ClauseText, "\n")
 	synthesized, err := h.renderCarrierFromActiveClausesTx(ctx, qtx, workspaceID,
 		carrierRef{scope: binding.Scope, id: binding.ScopeID}, current, &clauseRenderOverride{
-			ClauseID: clause.ID,
-			Version:  clause.Version + 1,
-			Content:  content,
+			ClauseID:          clause.ID,
+			Version:           clause.Version + 1,
+			Content:           content,
+			SupersededContent: currentVersion.Content,
 		})
 	if err != nil {
 		return "", fmt.Errorf("条款「%s」资产渲染失败，已阻断：%w", clause.Title, err)
