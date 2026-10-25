@@ -123,7 +123,7 @@ function proposal(overrides: Partial<PromptProposal> = {}): PromptProposal {
 
 afterEach(cleanup);
 
-function mount(opts: { run?: string } = {}) {
+function mount(opts: { run?: string; hash?: string } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const searchParams = new URLSearchParams();
   if (opts.run) searchParams.set("run", opts.run);
@@ -133,10 +133,11 @@ function mount(opts: { run?: string } = {}) {
     back: vi.fn(),
     pathname: "/acme/self-evolution/proposals",
     searchParams,
-    hash: "",
+    hash: opts.hash ?? "",
     getShareableUrl: (path) => path,
   };
-  return render(
+  return {
+    ...render(
     <QueryClientProvider client={client}>
       <WorkspaceSlugProvider slug="test-workspace">
         <I18nProvider locale="en" resources={TEST_RESOURCES}>
@@ -146,7 +147,9 @@ function mount(opts: { run?: string } = {}) {
         </I18nProvider>
       </WorkspaceSlugProvider>
     </QueryClientProvider>,
-  );
+    ),
+    navigation,
+  };
 }
 
 function retroRun(overrides: Partial<RetrospectiveRun> = {}): RetrospectiveRun {
@@ -383,12 +386,15 @@ it("updates the scoped run when the filter changes", async () => {
   state.proposals = [proposal({ id: "prop-x" })];
   state.retroRuns = [retroRun()];
   state.proposalCalls = [];
-  mount();
+  const view = mount({ hash: "#proposal-anchor" });
   await waitFor(() => expect(screen.getByTestId("legislation-run-filter")).toBeTruthy());
   await user.click(screen.getByTestId("legislation-run-filter"));
   await user.click(await screen.findByRole("option", { name: /Daily retrospective/ }));
   await waitFor(() =>
     expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-1" }),
+  );
+  expect(view.navigation.replace).toHaveBeenCalledWith(
+    "/acme/self-evolution/proposals?run=run-1#proposal-anchor",
   );
 });
 

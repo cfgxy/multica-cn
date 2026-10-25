@@ -218,7 +218,8 @@ export function ProposalTab({ wsId }: { wsId: string }) {
     if (next) params.set("run", next);
     else params.delete("run");
     const qs = params.toString();
-    navigation.replace(qs ? `${navigation.pathname}?${qs}` : navigation.pathname);
+    const path = qs ? `${navigation.pathname}?${qs}` : navigation.pathname;
+    navigation.replace(`${path}${navigation.hash}`);
   };
 
   const openCreate = () => {

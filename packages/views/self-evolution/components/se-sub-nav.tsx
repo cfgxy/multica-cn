@@ -8,9 +8,8 @@ import { useWorkspacePaths } from "@multica/core/paths";
 import { selfEvolutionOverviewOptions } from "@multica/core/self-evolution";
 
 /**
- * The module's URL-driven left sub-navigation (RUYI-551 §2.1): 9 sub-nav
- * pages in 4 groups, one route per page, plus a detail route that
- * deliberately stays out of this list. Counts come from the overview
+ * The module's URL-driven left sub-navigation: six destinations in three
+ * groups, plus detail routes that deliberately stay out of this list. Counts come from the overview
  * aggregate — whatever it has filled, the rest render without a badge
  * rather than with a fake zero.
  */
@@ -20,17 +19,12 @@ export type SeNavKey =
   | "skills"
   | "quality"
   | "clauseGovernance"
-  | "quiz"
-  | "proposals"
-  | "versions"
-  | "retrospective"
-  | "config";
+  | "retrospective";
 
-export const SE_NAV_GROUPS: { labelKey: "groupKnowledgeAssets" | "groupMeasures" | "groupLoop" | "groupConfig"; items: SeNavKey[] }[] = [
+export const SE_NAV_GROUPS: { labelKey: "groupKnowledgeAssets" | "groupQualityGovernance" | "groupWorkflow"; items: SeNavKey[] }[] = [
   { labelKey: "groupKnowledgeAssets", items: ["knowledge", "skills"] },
-  { labelKey: "groupMeasures", items: ["quality", "clauseGovernance", "quiz"] },
-  { labelKey: "groupLoop", items: ["proposals", "versions", "retrospective"] },
-  { labelKey: "groupConfig", items: ["config"] },
+  { labelKey: "groupQualityGovernance", items: ["quality", "clauseGovernance"] },
+  { labelKey: "groupWorkflow", items: ["retrospective"] },
 ];
 
 export function SeSubNav({ wsId }: { wsId: string }) {
@@ -54,16 +48,8 @@ export function SeSubNav({ wsId }: { wsId: string }) {
         return p.selfEvolutionQuality();
       case "clauseGovernance":
         return p.selfEvolutionClauseGovernance();
-      case "quiz":
-        return p.selfEvolutionQuiz();
-      case "proposals":
-        return p.selfEvolutionProposals();
-      case "versions":
-        return p.selfEvolutionVersions();
       case "retrospective":
         return p.selfEvolutionRetrospective();
-      case "config":
-        return p.selfEvolutionConfig();
     }
   };
 
@@ -86,7 +72,7 @@ export function SeSubNav({ wsId }: { wsId: string }) {
   return (
     <nav
       aria-label={t(($) => $.nav.label)}
-      className="flex w-52 shrink-0 flex-col gap-5"
+      className="flex w-40 shrink-0 flex-col gap-4 lg:w-52 lg:gap-5"
       data-testid="se-sub-nav"
     >
       <SeNavItem

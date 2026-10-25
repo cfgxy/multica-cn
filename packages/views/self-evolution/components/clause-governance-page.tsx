@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowLeft, Bot, Building2, CheckCircle2, FolderKanban, RefreshCw, Scale, Users } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { CartesianGrid, Line, LineChart, ReferenceLine, XAxis, YAxis } from "recharts";
@@ -36,6 +36,7 @@ import { AppLink, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { SelfEvolutionShell } from "./self-evolution-shell";
 import { diffPromptText } from "../../market/prompt-diff";
+import { ProposalTab } from "./proposal-tab";
 
 const WINDOW_OPTIONS = [7, 30, 90, 365] as const;
 type ClauseStatusFilter = "all" | "active" | "deprecated" | "revoked";
@@ -86,6 +87,43 @@ function enumLabel<Key extends string>(value: string, keys: readonly Key[], labe
 
 export function ClauseGovernancePage() {
   const wsId = useWorkspaceId();
+  const navigation = useNavigation();
+  const { t } = useT("self-evolution");
+  const tab = navigation.searchParams.get("tab") === "proposals" ? "proposals" : "clauses";
+  const [visitedTabs, setVisitedTabs] = useState(() => new Set([tab]));
+
+  useEffect(() => {
+    setVisitedTabs((current) => current.has(tab) ? current : new Set(current).add(tab));
+  }, [tab]);
+
+  const selectTab = (value: string) => {
+    if (value !== "clauses" && value !== "proposals") return;
+    setVisitedTabs((current) => current.has(value) ? current : new Set(current).add(value));
+    const params = new URLSearchParams(navigation.searchParams);
+    params.set("tab", value);
+    navigation.push(`${navigation.pathname}?${params.toString()}${navigation.hash}`);
+  };
+
+  return (
+    <SelfEvolutionShell>
+      <Tabs value={tab} onValueChange={(value) => { if (typeof value === "string") selectTab(value); }} className="min-w-0">
+        <TabsList aria-label={t(($) => $.nav.governanceTabs)} className="max-w-full flex-wrap justify-start">
+          <TabsTrigger value="clauses">{t(($) => $.nav.clauses)}</TabsTrigger>
+          <TabsTrigger value="proposals">{t(($) => $.nav.proposals)}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="clauses" keepMounted className="min-w-0">
+          {visitedTabs.has("clauses") ? <ClauseGovernanceContent /> : null}
+        </TabsContent>
+        <TabsContent value="proposals" keepMounted className="min-w-0">
+          {visitedTabs.has("proposals") ? <ProposalTab wsId={wsId} /> : null}
+        </TabsContent>
+      </Tabs>
+    </SelfEvolutionShell>
+  );
+}
+
+function ClauseGovernanceContent() {
+  const wsId = useWorkspaceId();
   const { t } = useT("self-evolution");
   const navigation = useNavigation();
   const paths = useWorkspacePaths();
@@ -112,7 +150,7 @@ export function ClauseGovernancePage() {
   const setDays = (nextDays: number) => {
     const params = new URLSearchParams(navigation.searchParams);
     params.set("days", String(nextDays));
-    navigation.replace(`${navigation.pathname}?${params.toString()}`);
+    navigation.replace(`${navigation.pathname}?${params.toString()}${navigation.hash}`);
   };
   const refresh = () => {
     void overview.refetch();
@@ -129,7 +167,6 @@ export function ClauseGovernancePage() {
   const healthy = reconciliationData?.healthy === true;
 
   return (
-    <SelfEvolutionShell>
       <main className="flex min-w-0 flex-col gap-4 px-1 pb-8" data-testid="clause-governance-page">
         <header className="flex flex-wrap items-end justify-between gap-3">
           <div className="flex items-start gap-3">
@@ -267,7 +304,6 @@ export function ClauseGovernancePage() {
           </>
         )}
       </main>
-    </SelfEvolutionShell>
   );
 }
 

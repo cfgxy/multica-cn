@@ -806,7 +806,7 @@ function TaskRow({
             <TooltipTrigger
               render={
                 <AppLink
-                  href={`${paths.selfEvolutionProposals()}?run=${task.retrospective_run_id}`}
+                  href={paths.selfEvolutionProposalRun(task.retrospective_run_id)}
                 />
               }
               aria-label={t(($) => $.tab_body.activity.view_results_tooltip)}

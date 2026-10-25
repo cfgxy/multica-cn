@@ -358,7 +358,7 @@ export function RetrospectiveTab({ wsId }: { wsId: string }) {
                     <TooltipTrigger
                       render={
                         <AppLink
-                          href={`${paths.selfEvolutionProposals()}?run=${run.id}`}
+                          href={paths.selfEvolutionProposalRun(run.id)}
                           aria-label={t(($) => $.retrospective.viewResults)}
                           className="flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
                         >

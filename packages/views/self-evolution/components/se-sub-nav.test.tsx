@@ -12,8 +12,8 @@ import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { SE_NAV_GROUPS, SeSubNav } from "./se-sub-nav";
 
 /**
- * The module's URL-driven left sub-navigation (RUYI-551 §2.1): 9 pages in
- * 4 groups plus Overview, one route each. What only a mount can show: the
+ * The module's URL-driven left sub-navigation: six destinations in 3 groups.
+ * What only a mount can show: the
  * group structure exists, counts ride the overview aggregate (no fake
  * zeros), and the detail route lights its list parent — /skills/<id>
  * belongs to Skill evolution, so a refresh on a detail page keeps its
@@ -96,7 +96,7 @@ beforeEach(() => {
 });
 
 describe("SeSubNav", () => {
-  it("shows Overview, all 4 groups with their items, and honest counts", async () => {
+  it("shows the six destinations in three groups with honest counts", async () => {
     mount();
     const nav = await screen.findByTestId("se-sub-nav");
     const links = Array.from(nav.querySelectorAll("a")).map((a) => a.textContent);
@@ -106,32 +106,37 @@ describe("SeSubNav", () => {
       "Overview",
       "Knowledge",
       "Skill evolution",
-      "Quality",
+      "Quality & measures",
       "Clause governance",
-      "Quiz",
-      "Proposals",
-      "Versions",
       "Daily retrospective",
-      "Module config",
     ]);
-    // The group headings sit between the items.
     expect(screen.getByText("Knowledge assets")).toBeTruthy();
-    expect(screen.getByText("Measures")).toBeTruthy();
-    expect(screen.getByText("Evolution loop")).toBeTruthy();
-    expect(screen.getByText("Configuration")).toBeTruthy();
+    expect(screen.getByText("Quality & governance")).toBeTruthy();
+    expect(screen.getByText("Self-evolution workflow")).toBeTruthy();
     // Counts ride the overview aggregate, which resolves after the nav.
     await waitFor(() => expect(screen.getByText("2")).toBeTruthy()); // knowledge entries
     expect(screen.getByText("7")).toBeTruthy(); // skills
-    expect(SE_NAV_GROUPS).toHaveLength(4);
+    expect(SE_NAV_GROUPS).toHaveLength(3);
   });
 
-  it("marks only the current page active", async () => {
+  it("does not add configuration as a sidebar destination", async () => {
     mount("/test-workspace/self-evolution/config");
     await screen.findByTestId("se-sub-nav");
     const active = Array.from(
       screen.getByTestId("se-sub-nav").querySelectorAll("a[data-active]"),
     ).map((a) => a.textContent);
-    expect(active).toEqual(["Module config"]);
+    expect(active).toEqual([]);
+  });
+
+  it("highlights the consolidated quality and clause destinations for their tabs and details", async () => {
+    const { unmount } = mount("/test-workspace/self-evolution/quality");
+    await screen.findByTestId("se-sub-nav");
+    expect(screen.getByRole("link", { name: "Quality & measures" }).hasAttribute("data-active")).toBe(true);
+    unmount();
+
+    mount("/test-workspace/self-evolution/clause-governance/clause-9");
+    await screen.findByTestId("se-sub-nav");
+    expect(screen.getByRole("link", { name: "Clause governance" }).hasAttribute("data-active")).toBe(true);
   });
 
   it("lights the skills list parent from the detail route", async () => {
