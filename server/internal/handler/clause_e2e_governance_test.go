@@ -184,6 +184,9 @@ func TestClauseReviseRepairsMissingMarker(t *testing.T) {
 	if !strings.Contains(after, proposed) || !strings.Contains(after, "clause:id=") || !strings.Contains(after, "rev=2") {
 		t.Fatalf("missing-marker revision did not restore canonical asset marker:\n%s", after)
 	}
+	if strings.Count(after, proposed) != 1 || strings.Contains(after, cleanClauseText) {
+		t.Fatalf("missing-marker revision retained stale or duplicate clause text:\n%s", after)
+	}
 	if !strings.Contains(after, "## 沟通规范") || !strings.Contains(after, "行文基调") {
 		t.Fatalf("missing-marker revision did not preserve static context:\n%s", after)
 	}
@@ -201,6 +204,10 @@ func TestDirectClauseRevisionUsesPreviewTokensAndCreatesNoProposal(t *testing.T)
 	dbfx.QueryRow(t, `SELECT content, content_sha256 FROM clause_version WHERE clause_id = $1 AND version = 1`, clauseID).
 		Scan(&currentContent, &currentHash)
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&currentCarrier)
+	currentCarrier = clausemark.StripMarkers(currentCarrier)
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET context = $1 WHERE id = $2`, currentCarrier, f.wsID); err != nil {
+		t.Fatalf("remove marker from direct-revision fixture carrier: %v", err)
+	}
 	proposed := "- **每日同步**：Owner 确认后由 MCP 直接写入完整最终条文。"
 	request := map[string]any{
 		"content":                        proposed,
@@ -220,7 +227,30 @@ func TestDirectClauseRevisionUsesPreviewTokensAndCreatesNoProposal(t *testing.T)
 	if !strings.Contains(body, proposed) || !strings.Contains(body, `"next_clause_version":2`) {
 		t.Fatalf("direct revision preview omitted canonical diff/version: %s", body)
 	}
+	var preview DirectClauseRevisionPreviewResponse
+	if err := json.Unmarshal([]byte(body), &preview); err != nil {
+		t.Fatalf("decode direct revision preview: %v (%s)", err, body)
+	}
+	if len(preview.PreviewSHA256) != 64 {
+		t.Fatalf("direct revision preview token = %q, want SHA256", preview.PreviewSHA256)
+	}
 
+	mismatched := make(map[string]any, len(request)+2)
+	for key, value := range request {
+		mismatched[key] = value
+	}
+	mismatched["content"] = "- **每日同步**：未经 Owner 预览的替换正文。"
+	mismatched["preview_sha256"] = preview.PreviewSHA256
+	mismatched["confirm_previewed"] = true
+	mismatchReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", mismatched, "clauseId", clauseID)
+	mismatchReq.Header.Set("X-Actor-Source", "oauth")
+	code, body = legislationCall(t, route.ServeHTTP, mismatchReq)
+	if code != http.StatusConflict || !strings.Contains(body, "预览与提交内容不一致") {
+		t.Fatalf("mismatched direct revision = %d: %s, want preview conflict", code, body)
+	}
+
+	request["preview_sha256"] = preview.PreviewSHA256
 	request["confirm_previewed"] = true
 	writeReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
 		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
@@ -229,13 +259,18 @@ func TestDirectClauseRevisionUsesPreviewTokensAndCreatesNoProposal(t *testing.T)
 	if code != http.StatusOK {
 		t.Fatalf("direct revision write: expected 200, got %d: %s", code, body)
 	}
+	var result DirectClauseRevisionResponse
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		t.Fatalf("decode direct revision result: %v (%s)", err, body)
+	}
 
 	var versionCount, proposalCount int
-	var versionContent, audit string
+	var versionContent, audit, persistedCarrier string
 	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&versionCount)
 	dbfx.QueryRow(t, `SELECT content FROM clause_version WHERE clause_id = $1 AND version = 2`, clauseID).Scan(&versionContent)
 	dbfx.QueryRow(t, `SELECT COUNT(*) FROM prompt_proposal WHERE workspace_id = $1`, f.wsID).Scan(&proposalCount)
 	dbfx.QueryRow(t, `SELECT audit_log::text FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&audit)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&persistedCarrier)
 	if versionCount != 2 || versionContent != proposed {
 		t.Fatalf("direct revision versions = %d / %q, want v2 %q", versionCount, versionContent, proposed)
 	}
@@ -244,6 +279,12 @@ func TestDirectClauseRevisionUsesPreviewTokensAndCreatesNoProposal(t *testing.T)
 	}
 	if !strings.Contains(audit, "owner_direct_revision") {
 		t.Fatalf("direct revision binding audit missing action: %s", audit)
+	}
+	if strings.Count(persistedCarrier, proposed) != 1 || strings.Contains(persistedCarrier, currentContent) {
+		t.Fatalf("direct revision retained stale or duplicate clause text:\n%s", persistedCarrier)
+	}
+	if result.CarrierContentSHA256 != sha256Hex(persistedCarrier) {
+		t.Fatalf("direct revision response carrier hash = %s, persisted hash = %s", result.CarrierContentSHA256, sha256Hex(persistedCarrier))
 	}
 
 	staleReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,

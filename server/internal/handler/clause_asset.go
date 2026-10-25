@@ -140,9 +140,10 @@ func clauseAudit(action, actorType, actorID string, extra map[string]any) []byte
 // clauseEnactOutcome carries what the asset writes produced, for the
 // proposal row and the caller's response.
 type clauseEnactOutcome struct {
-	ClauseID pgtype.UUID
-	Slug     string
-	Version  int32 // the clause_version this enactment produced (0 for remove/move)
+	ClauseID        pgtype.UUID
+	Slug            string
+	Version         int32 // the clause_version this enactment produced (0 for remove/move)
+	RenderOverrides map[carrierRef]*clauseRenderOverride
 	// Affected lists the carrier scopes whose business column must re-render.
 	Affected map[string]bool
 }
@@ -167,9 +168,10 @@ type carrierRef struct {
 // clause. It lets previews and gate synthesis use the same asset renderer as
 // the post-write path without requiring a speculative database write.
 type clauseRenderOverride struct {
-	ClauseID pgtype.UUID
-	Version  int32
-	Content  string
+	ClauseID          pgtype.UUID
+	Version           int32
+	Content           string
+	SupersededContent string
 }
 
 // renderedClausesByCarrier partitions the active asset set by the complete
@@ -179,12 +181,20 @@ func renderedClausesByCarrier(rows []db.ListActiveWorkspaceClausesRow, override 
 	byCarrier := make(map[carrierRef][]clausemark.RenderedClause)
 	for _, row := range rows {
 		version, content := row.Version, row.Content
+		var supersededBodies []string
 		if override != nil && row.ClauseID == override.ClauseID {
-			version, content = override.Version, override.Content
+			// A persisted write only needs the old body removed. A preview also
+			// supplies the prospective content and version before the write exists.
+			if override.Content != "" {
+				version, content = override.Version, override.Content
+			}
+			if override.SupersededContent != "" && override.SupersededContent != content {
+				supersededBodies = []string{override.SupersededContent}
+			}
 		}
 		ref := carrierRef{scope: row.Scope, id: row.ScopeID}
 		byCarrier[ref] = append(byCarrier[ref], clausemark.RenderedClause{
-			Slug: row.Slug, Version: int(version), Body: content,
+			Slug: row.Slug, Version: int(version), Body: content, SupersededBodies: supersededBodies,
 		})
 	}
 	return byCarrier
@@ -203,7 +213,10 @@ func (h *Handler) renderCarrierFromActiveClausesTx(ctx context.Context, qtx *db.
 // afterwards — every failure here returns an error so the enclosing
 // transaction rolls the whole enactment back.
 func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, actorType, actorID string) (clauseEnactOutcome, error) {
-	out := clauseEnactOutcome{Affected: map[string]bool{}}
+	out := clauseEnactOutcome{
+		Affected:        map[string]bool{},
+		RenderOverrides: map[carrierRef]*clauseRenderOverride{},
+	}
 
 	switch p.ChangeKind {
 	case "add_clause", "migrate_clause":
@@ -264,6 +277,13 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 		if err != nil {
 			return out, fmt.Errorf("条款「%s」没有生效绑定，无法修订", clause.Title)
 		}
+		currentVersion, err := qtx.GetClauseVersion(ctx, db.GetClauseVersionParams{
+			ClauseID: clause.ID,
+			Version:  clause.Version,
+		})
+		if err != nil {
+			return out, fmt.Errorf("条款「%s」当前版本读取失败: %w", clause.Title, err)
+		}
 		next := clause.Version + 1
 		content := strings.TrimRight(p.ClauseText, "\n")
 		if _, err := qtx.CreateClauseVersion(ctx, db.CreateClauseVersionParams{
@@ -288,6 +308,10 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 		}
 		out.ClauseID, out.Slug, out.Version = clause.ID, clause.Slug, next
 		out.Affected[binding.Scope] = true
+		out.RenderOverrides[carrierRef{scope: binding.Scope, id: binding.ScopeID}] = &clauseRenderOverride{
+			ClauseID:          clause.ID,
+			SupersededContent: currentVersion.Content,
+		}
 
 	case "remove_clause":
 		clause, err := resolveProposalClauseTx(ctx, qtx, workspaceID, p.ClauseID, p.ClauseName)
@@ -358,7 +382,7 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 // the gate's synthesized text (the proposal already applied inline). Keyed by
 // the full carrier reference, not the scope name: a move_clause between two
 // entities of the same scope touches two distinct rows of one tier.
-func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, carriers []carrierRef, texts map[carrierRef]string, actorType, actorID string) error {
+func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, carriers []carrierRef, texts map[carrierRef]string, overrides map[carrierRef]*clauseRenderOverride, actorType, actorID string) error {
 	if len(carriers) == 0 {
 		return nil
 	}
@@ -366,13 +390,12 @@ func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Querie
 	if err != nil {
 		return fmt.Errorf("有效条款集读取失败: %w", err)
 	}
-	byCarrier := renderedClausesByCarrier(allClauses, nil)
 	for _, c := range carriers {
 		current, ok := texts[c]
 		if !ok {
 			continue
 		}
-		rendered := clausemark.Render(current, byCarrier[c])
+		rendered := clausemark.Render(current, renderedClausesByCarrier(allClauses, overrides[c])[c])
 		scan, ok, reason := promptGovernanceGate(rendered)
 		if !ok {
 			return fmt.Errorf("重渲染文本未通过内容门闸（%s）: %s", c.scope, reason)
