@@ -81,9 +81,11 @@ func TestApprovedEnactAndApproveRecoveryUseConsistentLockOrder(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT clause_id::text FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, initialID).Scan(&clauseID)
 
 	revisionID := createDraft(t, wsID, memberID, "恢复锁序条款", cleanClauseFor("恢复锁序条款"))
+	dbfx.Exec(t, `UPDATE prompt_proposal SET change_kind = 'revise_clause', clause_id = $3
+		WHERE workspace_id = $1 AND id = $2`, wsID, revisionID, clauseID)
 	submitDraft(t, wsID, memberID, revisionID)
-	dbfx.Exec(t, `UPDATE prompt_proposal SET status = 'approved', change_kind = 'revise_clause', clause_id = $3,
-		enactment_target = 'clause_library' WHERE workspace_id = $1 AND id = $2`, wsID, revisionID, clauseID)
+	dbfx.Exec(t, `UPDATE prompt_proposal SET status = 'approved', enactment_target = 'clause_library'
+		WHERE workspace_id = $1 AND id = $2`, wsID, revisionID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -157,17 +159,15 @@ func TestSubmitRevisionCapturesBaselineAfterConcurrentEnact(t *testing.T) {
 	revisionID := createDraft(t, wsID, memberID, "并发修订条款", cleanClauseFor("并发修订条款"))
 	dbfx.Exec(t, `UPDATE prompt_proposal SET change_kind = 'revise_clause', clause_id = $3 WHERE workspace_id = $1 AND id = $2`, wsID, revisionID, clauseID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	req := legislationReq(memberID, wsID, http.MethodPost,
+		"/api/prompt-legislation/proposals/"+revisionID+"/submit", nil, "id", revisionID)
+	ctx, cancel := context.WithTimeout(req.Context(), 15*time.Second)
 	defer cancel()
 	blocker, err := testPool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin enact transaction: %v", err)
 	}
 	defer blocker.Rollback(context.Background())
-	var blockerPID int32
-	if err := blocker.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
-		t.Fatalf("read enact backend pid: %v", err)
-	}
 	if err := lockClauseReferenceWorkspaceTx(ctx, testHandler.Queries.WithTx(blocker), parseUUID(wsID)); err != nil {
 		t.Fatalf("lock clause references: %v", err)
 	}
@@ -177,14 +177,19 @@ func TestSubmitRevisionCapturesBaselineAfterConcurrentEnact(t *testing.T) {
 		body string
 	}
 	result := make(chan response, 1)
-	req := legislationReq(memberID, wsID, http.MethodPost,
-		"/api/prompt-legislation/proposals/"+revisionID+"/submit", nil, "id", revisionID)
 	req = req.WithContext(ctx)
 	go func() {
 		res := testutil.Call(t, testHandler.SubmitPromptProposal, req)
 		result <- response{code: res.Code, body: res.Text()}
 	}()
-	waitForBlockedDatabaseQuery(t, ctx, "pg_advisory_xact_lock", blockerPID)
+	if err := waitForClauseReferenceLockWaiters(wsID, 1); err != nil {
+		select {
+		case got := <-result:
+			t.Fatalf("submit returned without waiting on the workspace lock: %d %s; %v", got.code, got.body, err)
+		default:
+			t.Fatalf("submit did not wait on the workspace lock: %v", err)
+		}
+	}
 
 	if _, err := blocker.Exec(ctx, `INSERT INTO clause_version (
 		clause_id, version, content, content_sha256, source, carrier_scope, carrier_version, created_by_type, created_by_id
