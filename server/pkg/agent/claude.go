@@ -1216,6 +1216,7 @@ var claudeBlockedArgs = map[string]blockedArgMode{
 	"--session-id":       blockedWithValue,      // cannot bind a run to an arbitrary session
 	"--from-pr":          blockedOptionalValue,  // can select an existing session
 	"--teleport":         blockedOptionalValue,  // can select an existing session
+	"--cloud":            blockedOptionalValue,  // can attach to an existing cloud session
 	"--fork-session":     blockedStandalone,     // only meaningful with a session selector
 	"--settings":         blockedWithValue,      // builder chooses exactly one settings source
 	// `--effort` is owned by the per-agent thinking_level picker so a
