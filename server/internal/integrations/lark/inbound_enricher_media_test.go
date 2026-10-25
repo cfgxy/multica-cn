@@ -147,6 +147,35 @@ func TestFeishuMediaResolver_CapsTotalMediaResources(t *testing.T) {
 	}
 }
 
+func TestFeishuMediaResolver_PreservesForwardedImageWhenRecentMediaExceedsBudget(t *testing.T) {
+	sender := &fakeSender{downloaded: DownloadedResource{Data: []byte("image"), ContentType: "image/png"}}
+	storage := &fakeMediaStorage{}
+	ledger := &fakeMediaLedger{}
+	resolver := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, storage, ledger, newDiscardLogger(), nil)
+	lm := InboundMessage{
+		MessageID:   "om_forward",
+		MessageType: "merge_forward",
+		ForwardMedia: []EnrichedMediaMessage{{
+			MessageID: "om_explicit_image", MessageType: "image", Content: `{"image_key":"key_explicit"}`,
+		}},
+	}
+	for i := 0; i < maxMediaResourcesPerMessage+10; i++ {
+		lm.RecentMedia = append(lm.RecentMedia, EnrichedMediaMessage{
+			MessageID: "om_recent_" + strconv.Itoa(i), MessageType: "image",
+			Content: `{"image_key":"key_recent_` + strconv.Itoa(i) + `"}`,
+		})
+	}
+
+	got := resolver.ResolveMedia(context.Background(), testMediaInstallation(t), engine.ResolvedIdentity{},
+		uuidFromString(t, "22222222-2222-2222-2222-222222222222"), uuidFromString(t, "33333333-3333-4333-8333-333333333333"), channelMessageFromLark(lm))
+	if len(sender.downloadCalls) != maxMediaResourcesPerMessage || len(got.MediaRefs) != maxMediaResourcesPerMessage {
+		t.Fatalf("downloads=%d refs=%d, want budget %d", len(sender.downloadCalls), len(got.MediaRefs), maxMediaResourcesPerMessage)
+	}
+	if got := sender.downloadCalls[0]; got.MessageID != "om_explicit_image" || got.FileKey != "key_explicit" {
+		t.Fatalf("first download = %+v, want explicit forwarded image before recent context", got)
+	}
+}
+
 func TestEnrichRecentMediaIsolation(t *testing.T) {
 	tests := []struct {
 		name   string
