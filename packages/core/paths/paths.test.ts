@@ -38,6 +38,16 @@ describe("paths.workspace(slug)", () => {
     expect(ws.attachmentPreview("att_42")).toBe("/acme/attachments/att_42/preview");
   });
 
+  it("builds the consolidated self-evolution tab destinations", () => {
+    expect(ws.selfEvolutionQuality()).toBe("/acme/self-evolution/quality");
+    expect(ws.selfEvolutionVersions()).toBe("/acme/self-evolution/quality?tab=versions");
+    expect(ws.selfEvolutionQuiz()).toBe("/acme/self-evolution/quality?tab=quiz");
+    expect(ws.selfEvolutionProposals()).toBe("/acme/self-evolution/clause-governance?tab=proposals");
+    expect(ws.selfEvolutionProposalRun("run / 1")).toBe(
+      "/acme/self-evolution/clause-governance?tab=proposals&run=run%20%2F%201",
+    );
+  });
+
   it("URL-encodes special characters in ids", () => {
     expect(ws.issueDetail("id with space")).toBe("/acme/issues/id%20with%20space");
   });

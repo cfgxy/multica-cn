@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import { selfEvolutionModelConfigOptions } from "@multica/core/self-evolution";
@@ -11,6 +12,10 @@ import { DataSourceStatusCard } from "./data-source-status-card";
 import { QualityTab } from "./quality-tab";
 import { SelfEvolutionShell } from "./self-evolution-shell";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
+import { VersionsTab } from "./versions-tab";
+import { QuizTab } from "./quiz-tab";
+import { useNavigation } from "../../navigation";
 
 /**
  * The quality page (RUYI-551 §2.5, fig 7): the existing measure surface,
@@ -27,11 +32,47 @@ import { useWorkspaceId } from "@multica/core/hooks";
  */
 export function QualityPage() {
   const wsId = useWorkspaceId();
+  const navigation = useNavigation();
+  const { t } = useT("self-evolution");
+  const tab = qualityTab(navigation.searchParams.get("tab"));
+  const [visitedTabs, setVisitedTabs] = useState(() => new Set([tab]));
+
+  useEffect(() => {
+    setVisitedTabs((current) => current.has(tab) ? current : new Set(current).add(tab));
+  }, [tab]);
+
+  const selectTab = (value: string) => {
+    if (value !== "quality" && value !== "versions" && value !== "quiz") return;
+    setVisitedTabs((current) => current.has(value) ? current : new Set(current).add(value));
+    const params = new URLSearchParams(navigation.searchParams);
+    params.set("tab", value);
+    navigation.push(`${navigation.pathname}?${params.toString()}${navigation.hash}`);
+  };
+
   return (
     <SelfEvolutionShell>
-      <QualityPageBody wsId={wsId} />
+      <Tabs value={tab} onValueChange={(value) => { if (typeof value === "string") selectTab(value); }} className="min-w-0">
+        <TabsList aria-label={t(($) => $.nav.qualityTabs)} className="max-w-full flex-wrap justify-start">
+          <TabsTrigger value="quality">{t(($) => $.nav.quality)}</TabsTrigger>
+          <TabsTrigger value="versions">{t(($) => $.nav.versions)}</TabsTrigger>
+          <TabsTrigger value="quiz">{t(($) => $.nav.quiz)}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="quality" keepMounted className="min-w-0">
+          {visitedTabs.has("quality") ? <QualityPageBody wsId={wsId} /> : null}
+        </TabsContent>
+        <TabsContent value="versions" keepMounted className="min-w-0">
+          {visitedTabs.has("versions") ? <VersionsTab wsId={wsId} /> : null}
+        </TabsContent>
+        <TabsContent value="quiz" keepMounted className="min-w-0">
+          {visitedTabs.has("quiz") ? <QuizTab wsId={wsId} /> : null}
+        </TabsContent>
+      </Tabs>
     </SelfEvolutionShell>
   );
+}
+
+function qualityTab(value: string | null): "quality" | "versions" | "quiz" {
+  return value === "versions" || value === "quiz" ? value : "quality";
 }
 
 export function QualityPageBody({ wsId }: { wsId: string }) {

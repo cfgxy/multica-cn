@@ -123,20 +123,20 @@ function proposal(overrides: Partial<PromptProposal> = {}): PromptProposal {
 
 afterEach(cleanup);
 
-function mount(opts: { run?: string } = {}) {
+function mount(opts: { run?: string; hash?: string; pathname?: string } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const searchParams = new URLSearchParams();
+  const searchParams = new URLSearchParams("tab=proposals");
   if (opts.run) searchParams.set("run", opts.run);
-  const navigation: NavigationAdapter = {
+  let navigation: NavigationAdapter = {
     push: vi.fn(),
     replace: vi.fn(),
     back: vi.fn(),
-    pathname: "/acme/self-evolution/proposals",
+    pathname: opts.pathname ?? "/acme/self-evolution/clause-governance",
     searchParams,
-    hash: "",
+    hash: opts.hash ?? "",
     getShareableUrl: (path) => path,
   };
-  return render(
+  const tree = () => (
     <QueryClientProvider client={client}>
       <WorkspaceSlugProvider slug="test-workspace">
         <I18nProvider locale="en" resources={TEST_RESOURCES}>
@@ -145,8 +145,21 @@ function mount(opts: { run?: string } = {}) {
           </NavigationProvider>
         </I18nProvider>
       </WorkspaceSlugProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const view = render(tree());
+  return {
+    ...view,
+    get navigation() {
+      return navigation;
+    },
+    navigateToRun(run?: string) {
+      const searchParams = new URLSearchParams(navigation.searchParams);
+      if (run) searchParams.set("run", run);
+      navigation = { ...navigation, searchParams };
+      view.rerender(tree());
+    },
+  };
 }
 
 function retroRun(overrides: Partial<RetrospectiveRun> = {}): RetrospectiveRun {
@@ -383,13 +396,35 @@ it("updates the scoped run when the filter changes", async () => {
   state.proposals = [proposal({ id: "prop-x" })];
   state.retroRuns = [retroRun()];
   state.proposalCalls = [];
-  mount();
+  const view = mount({ hash: "#proposal-anchor" });
   await waitFor(() => expect(screen.getByTestId("legislation-run-filter")).toBeTruthy());
   await user.click(screen.getByTestId("legislation-run-filter"));
   await user.click(await screen.findByRole("option", { name: /Daily retrospective/ }));
   await waitFor(() =>
     expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-1" }),
   );
+  expect(view.navigation.replace).toHaveBeenCalledWith(
+    "/acme/self-evolution/clause-governance?tab=proposals&run=run-1#proposal-anchor",
+  );
+});
+
+it("syncs the run filter when browser navigation changes the URL", async () => {
+  state.role = "owner";
+  state.proposals = [proposal({ id: "prop-x" })];
+  state.retroRuns = [retroRun(), retroRun({ id: "run-0", window_end: "2026-10-10T00:00:00Z" })];
+  state.proposalCalls = [];
+  const view = mount({ run: "run-1" });
+  await waitFor(() => expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-1" }));
+
+  view.navigateToRun("run-0");
+
+  await waitFor(() => expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-0" }));
+  expect(view.navigation.searchParams.get("tab")).toBe("proposals");
+  expect(screen.getByTestId("legislation-run-filter").textContent).toContain("20261010");
+
+  view.navigateToRun("run-1");
+  await waitFor(() => expect(state.proposalCalls.at(-1)).toEqual({ runId: "run-1" }));
+  expect(screen.getByTestId("legislation-run-filter").textContent).toContain("20261011");
 });
 
 // RUYI-723 A: evidence anchors render as issue chips and retain task-level
