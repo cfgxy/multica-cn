@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -144,7 +144,8 @@ export function ProposalTab({ wsId }: { wsId: string }) {
   // detail page's retrospective run rows and the retrospective page's run
   // list) land on the same scoped results view; changes are written back
   // so the URL keeps sharing the exact view.
-  const [runId, setRunId] = useState(() => navigation.searchParams.get("run") ?? "");
+  const urlRunId = navigation.searchParams.get("run") ?? "";
+  const [runId, setRunId] = useState(urlRunId);
   const [selectedId, setSelectedId] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<PromptProposal | null>(null);
@@ -154,6 +155,10 @@ export function ProposalTab({ wsId }: { wsId: string }) {
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [rejectFor, setRejectFor] = useState<PromptProposal | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+
+  useEffect(() => {
+    setRunId(urlRunId);
+  }, [urlRunId]);
 
   const runsQuery = useQuery(retrospectiveRunsOptions(wsId));
   const list = useQuery(promptProposalListOptions(wsId, status, runId));

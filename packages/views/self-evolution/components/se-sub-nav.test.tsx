@@ -9,6 +9,10 @@ import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 import type { SelfEvolutionOverview } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
+import jaCommon from "../../locales/ja/common.json";
+import jaSelfEvolution from "../../locales/ja/self-evolution.json";
+import koCommon from "../../locales/ko/common.json";
+import koSelfEvolution from "../../locales/ko/self-evolution.json";
 import { SE_NAV_GROUPS, SeSubNav } from "./se-sub-nav";
 
 /**
@@ -20,7 +24,11 @@ import { SE_NAV_GROUPS, SeSubNav } from "./se-sub-nav";
  * section highlighted.
  */
 
-const TEST_RESOURCES = { en: { common: enCommon, "self-evolution": enSelfEvolution } };
+const TEST_RESOURCES = {
+  en: { common: enCommon, "self-evolution": enSelfEvolution },
+  ja: { common: jaCommon, "self-evolution": jaSelfEvolution },
+  ko: { common: koCommon, "self-evolution": koSelfEvolution },
+};
 
 const state = vi.hoisted(() => ({
   overview: null as SelfEvolutionOverview | null,
@@ -76,13 +84,16 @@ function overviewFixture(): SelfEvolutionOverview {
   } as unknown as SelfEvolutionOverview;
 }
 
-function mount(pathname = "/test-workspace/self-evolution") {
+function mount(
+  pathname = "/test-workspace/self-evolution",
+  locale: "en" | "ja" | "ko" = "en",
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <WorkspaceSlugProvider slug="test-workspace">
         <NavigationProvider value={makeAdapter({ pathname })}>
-          <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <I18nProvider locale={locale} resources={TEST_RESOURCES}>
             <SeSubNav wsId="ws-1" />
           </I18nProvider>
         </NavigationProvider>
@@ -146,6 +157,15 @@ describe("SeSubNav", () => {
       screen.getByTestId("se-sub-nav").querySelectorAll("a[data-active]"),
     ).map((a) => a.textContent);
     expect(active).toEqual(["Skill evolution"]);
+  });
+
+  it("labels the consolidated quality destination in Japanese and Korean", async () => {
+    const { unmount: unmountJapanese } = mount("/test-workspace/self-evolution/quality", "ja");
+    expect(await screen.findByRole("link", { name: "品質と計測" })).toBeTruthy();
+    unmountJapanese();
+
+    mount("/test-workspace/self-evolution/quality", "ko");
+    expect(await screen.findByRole("link", { name: "품질 및 측정" })).toBeTruthy();
   });
 
   it("renders without a badge while the aggregate is still loading", async () => {
