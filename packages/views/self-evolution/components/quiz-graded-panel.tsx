@@ -124,7 +124,7 @@ export function QuizGradedPanel({
     if (baseline.current_version <= 0) return;
     if (firstObservationSettled) {
       if (samplesIsFetching && samplesDataUpdatedAt === 0) {
-        void refetchSamples().then(refetchSamples);
+        void refetchSamples().then(() => refetchSamples());
       } else {
         void refetchSamples();
       }
