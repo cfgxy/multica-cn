@@ -18,9 +18,10 @@ import (
 func TestClient_ClaimTasks_PostsRuntimeSetAndParsesTasks(t *testing.T) {
 	var gotPath string
 	var gotBody struct {
-		DaemonID   string   `json:"daemon_id"`
-		RuntimeIDs []string `json:"runtime_ids"`
-		MaxTasks   int      `json:"max_tasks"`
+		DaemonID         string   `json:"daemon_id"`
+		RuntimeIDs       []string `json:"runtime_ids"`
+		MaxTasks         int      `json:"max_tasks"`
+		SessionPublicKey string   `json:"session_public_key"`
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +39,7 @@ func TestClient_ClaimTasks_PostsRuntimeSetAndParsesTasks(t *testing.T) {
 	c := NewClient(srv.URL)
 	c.SetToken("tok")
 
-	tasks, err := c.ClaimTasks(context.Background(), "daemon-x", []string{"rt-a", "rt-b", "rt-c"}, 3, nil)
+	tasks, err := c.ClaimTasks(context.Background(), "daemon-x", []string{"rt-a", "rt-b", "rt-c"}, 3, "session-public-key", nil)
 	if err != nil {
 		t.Fatalf("ClaimTasks: %v", err)
 	}
@@ -51,6 +52,9 @@ func TestClient_ClaimTasks_PostsRuntimeSetAndParsesTasks(t *testing.T) {
 	}
 	if len(gotBody.RuntimeIDs) != 3 || gotBody.RuntimeIDs[0] != "rt-a" || gotBody.MaxTasks != 3 {
 		t.Errorf("posted body = %+v, want runtime_ids=[rt-a rt-b rt-c] max_tasks=3", gotBody)
+	}
+	if gotBody.SessionPublicKey != "session-public-key" {
+		t.Errorf("posted session_public_key = %q, want session-public-key", gotBody.SessionPublicKey)
 	}
 	if len(tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2", len(tasks))
@@ -75,7 +79,7 @@ func TestClient_ClaimTasks_EmptyResult(t *testing.T) {
 	c := NewClient(srv.URL)
 	c.SetToken("tok")
 
-	tasks, err := c.ClaimTasks(context.Background(), "daemon-x", []string{"rt-a"}, 1, nil)
+	tasks, err := c.ClaimTasks(context.Background(), "daemon-x", []string{"rt-a"}, 1, "", nil)
 	if err != nil {
 		t.Fatalf("ClaimTasks: %v", err)
 	}
@@ -104,7 +108,7 @@ func TestClient_ClaimTasks_BackpressureReportSerialization(t *testing.T) {
 	c.SetToken("tok")
 
 	// nil report: key omitted.
-	if _, err := c.ClaimTasks(context.Background(), "daemon-x", []string{"rt-a"}, 1, nil); err != nil {
+	if _, err := c.ClaimTasks(context.Background(), "daemon-x", []string{"rt-a"}, 1, "", nil); err != nil {
 		t.Fatalf("ClaimTasks(nil): %v", err)
 	}
 	if _, ok := gotRaw["backpressure"]; ok {
@@ -112,7 +116,7 @@ func TestClient_ClaimTasks_BackpressureReportSerialization(t *testing.T) {
 	}
 
 	// Non-nil report: full payload serialized.
-	if _, err := c.ClaimTasks(context.Background(), "daemon-x", []string{"rt-a"}, 1, &protocol.DaemonBackpressureReport{
+	if _, err := c.ClaimTasks(context.Background(), "daemon-x", []string{"rt-a"}, 1, "", &protocol.DaemonBackpressureReport{
 		Active:             true,
 		Reason:             "mem",
 		MemAvailablePct:    12.3,

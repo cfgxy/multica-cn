@@ -24,6 +24,7 @@ const credentialCapabilityFirstUseTTL = 30 * time.Minute
 
 type credentialCapabilityGrant struct {
 	CredentialID     pgtype.UUID
+	CredentialName   string
 	GrantID          pgtype.UUID
 	WorkspaceID      pgtype.UUID
 	IssueID          pgtype.UUID
@@ -42,6 +43,7 @@ type credentialCapabilityGrant struct {
 	ConnectorRev     int64
 	ConnectorStatus  string
 	ConnectorTarget  string
+	DirectDelivery   bool
 	EncryptedValue   []byte
 	TaskStatus       string
 	IssueCategory    string
@@ -50,16 +52,20 @@ type credentialCapabilityGrant struct {
 
 type credentialControlGrant struct {
 	Capability        string    `json:"capability"`
-	ConnectorID       string    `json:"connector_id"`
-	ConnectorRevision int64     `json:"connector_revision"`
-	TargetURL         string    `json:"target_url"`
+	CredentialID      string    `json:"credential_id,omitempty"`
+	CredentialName    string    `json:"credential_name,omitempty"`
+	Purpose           string    `json:"purpose,omitempty"`
+	ConnectorID       string    `json:"connector_id,omitempty"`
+	ConnectorRevision int64     `json:"connector_revision,omitempty"`
+	TargetURL         string    `json:"target_url,omitempty"`
 	ExpiresAt         time.Time `json:"expires_at"`
 }
 
 type credentialResolveRequest struct {
 	Capability        string `json:"capability"`
-	ConnectorID       string `json:"connector_id"`
-	ConnectorRevision int64  `json:"connector_revision"`
+	CredentialID      string `json:"credential_id,omitempty"`
+	ConnectorID       string `json:"connector_id,omitempty"`
+	ConnectorRevision int64  `json:"connector_revision,omitempty"`
 }
 
 type credentialResolveResponse struct {
@@ -81,7 +87,8 @@ func mintCredentialCapabilities(ctx context.Context, tx pgx.Tx, daemonID, taskID
 	selected := selectTaskCredentialGrants(grants)
 	capabilities := make([]credentialControlGrant, 0, len(selected))
 	for _, grant := range selected {
-		if grant.DaemonID != daemonID || grant.ConnectorStatus != "active" || grant.ConnectorRev < 1 || grant.TaskStatus != "dispatched" {
+		if grant.DaemonID != daemonID || grant.TaskStatus != "dispatched" ||
+			(!grant.DirectDelivery && (grant.ConnectorStatus != "active" || grant.ConnectorRev < 1)) {
 			continue
 		}
 		capabilityBytes := make([]byte, 32)
@@ -105,11 +112,37 @@ func mintCredentialCapabilities(ctx context.Context, tx pgx.Tx, daemonID, taskID
 		if err != nil {
 			return nil, err
 		}
-		capabilities = append(capabilities, credentialControlGrant{Capability: capability,
-			ConnectorID: uuidToString(grant.ConnectorID), ConnectorRevision: grant.ConnectorRev,
-			TargetURL: grant.ConnectorTarget, ExpiresAt: expiresAt})
+		control := credentialControlGrant{Capability: capability, ExpiresAt: expiresAt}
+		if grant.DirectDelivery {
+			control.CredentialID = uuidToString(grant.CredentialID)
+			control.CredentialName = grant.CredentialName
+			control.Purpose = grant.Purpose
+		} else {
+			control.ConnectorID = uuidToString(grant.ConnectorID)
+			control.ConnectorRevision = grant.ConnectorRev
+			control.TargetURL = grant.ConnectorTarget
+		}
+		capabilities = append(capabilities, control)
 	}
 	return capabilities, nil
+}
+
+func (h *Handler) taskRequiresCredentialMCP(ctx context.Context, taskID string) (bool, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	grants, err := findTaskCredentialGrants(ctx, tx, taskID)
+	if err != nil {
+		return false, err
+	}
+	for _, grant := range selectTaskCredentialGrants(grants) {
+		if grant.DirectDelivery {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // findTaskCredentialGrants evaluates both authorization dimensions from the
@@ -119,8 +152,8 @@ func findTaskCredentialGrants(ctx context.Context, tx pgx.Tx, taskID string) ([]
 	taskUUID := parseUUID(taskID)
 	query := `
 		SELECT c.id, g.id, i.workspace_id, q.issue_id, q.agent_id, i.project_id, q.squad_id,
-		       g.resource_scope, g.resource_id, g.subject_type, g.subject_id, g.effect, c.purpose,
-		       c.status, g.expires_at, c.connector_id, c.connector_revision, cc.status, cc.target_url,
+		       g.resource_scope, g.resource_id, g.subject_type, g.subject_id, g.effect, c.name, c.purpose,
+		       c.status, g.expires_at, c.connector_id, c.connector_revision, COALESCE(cc.status, ''), COALESCE(cc.target_url, ''), c.id = c.connector_id,
 		       c.encrypted_value, q.status, COALESCE(s.category, i.status), COALESCE(rt.daemon_id, '')
 		FROM agent_task_queue q
 		JOIN issue i ON i.id = q.issue_id
@@ -128,13 +161,13 @@ func findTaskCredentialGrants(ctx context.Context, tx pgx.Tx, taskID string) ([]
 		JOIN agent_runtime rt ON rt.id = q.runtime_id AND rt.workspace_id = i.workspace_id
 		JOIN credential_grant g ON g.workspace_id = i.workspace_id
 		JOIN credential_vault c ON c.id = g.credential_id AND c.workspace_id = i.workspace_id
-		JOIN credential_connector cc ON cc.id = c.connector_id AND cc.workspace_id = c.workspace_id
+		LEFT JOIN credential_connector cc ON cc.id = c.connector_id AND cc.workspace_id = c.workspace_id
 		WHERE q.id = $1 AND q.status IN ('dispatched', 'running')
 		  AND g.status = 'active' AND c.status = 'active'
 		  AND (g.expires_at IS NULL OR g.expires_at > clock_timestamp())
-		  AND c.connector_revision = cc.revision AND cc.status = 'active'
+		  AND (c.id = c.connector_id OR (c.connector_revision = cc.revision AND cc.status = 'active'))
 		  AND (COALESCE(rt.daemon_id, '') <> '')`
-	rows, err := tx.Query(ctx, query+` ORDER BY c.id, g.id FOR SHARE OF q, i, rt, g, c, cc`, taskUUID)
+	rows, err := tx.Query(ctx, query+` ORDER BY c.id, g.id FOR SHARE OF q, i, rt, g, c`, taskUUID)
 	if err != nil {
 		return nil, err
 	}
@@ -145,8 +178,8 @@ func findTaskCredentialGrants(ctx context.Context, tx pgx.Tx, taskID string) ([]
 		if err := rows.Scan(&candidate.CredentialID, &candidate.GrantID, &candidate.WorkspaceID,
 			&candidate.IssueID, &candidate.AgentID, &candidate.ProjectID, &candidate.SquadID,
 			&candidate.ResourceScope, &candidate.ResourceID, &candidate.SubjectType, &candidate.SubjectID,
-			&candidate.Effect, &candidate.Purpose, &candidate.CredentialStatus, &candidate.ExpiresAt, &candidate.ConnectorID,
-			&candidate.ConnectorRev, &candidate.ConnectorStatus, &candidate.ConnectorTarget, &candidate.EncryptedValue,
+			&candidate.Effect, &candidate.CredentialName, &candidate.Purpose, &candidate.CredentialStatus, &candidate.ExpiresAt, &candidate.ConnectorID,
+			&candidate.ConnectorRev, &candidate.ConnectorStatus, &candidate.ConnectorTarget, &candidate.DirectDelivery, &candidate.EncryptedValue,
 			&candidate.TaskStatus, &candidate.IssueCategory, &candidate.DaemonID); err != nil {
 			return nil, err
 		}
@@ -248,11 +281,19 @@ func credentialGrantMatchesTask(g credentialCapabilityGrant) bool {
 func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID string, req credentialResolveRequest) (credentialResolveResponse, error) {
 	var rejected credentialResolveResponse
 	capabilityBytes, decodeErr := base64.RawURLEncoding.Strict().DecodeString(req.Capability)
-	if daemonID == "" || decodeErr != nil || len(capabilityBytes) != 32 || req.ConnectorRevision < 1 {
+	if daemonID == "" || decodeErr != nil || len(capabilityBytes) != 32 {
 		return rejected, errors.New("credential capability rejected")
 	}
 	defer zeroCredentialBytes(capabilityBytes)
-	connectorUUID, err := parseUUIDString(req.ConnectorID)
+	generic := req.CredentialID != ""
+	if generic == (req.ConnectorID != "") || (generic && req.ConnectorRevision != 0) || (!generic && req.ConnectorRevision < 1) {
+		return rejected, errors.New("credential capability rejected")
+	}
+	selectorID := req.ConnectorID
+	if generic {
+		selectorID = req.CredentialID
+	}
+	connectorUUID, err := parseUUIDString(selectorID)
 	if err != nil {
 		return rejected, errors.New("credential capability rejected")
 	}
@@ -295,7 +336,7 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 	if consumedAt.Valid {
 		return deny("capability_replayed", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
-	if capabilityConnector != connectorUUID || capabilityRevision != req.ConnectorRevision {
+	if capabilityConnector != connectorUUID || (!generic && capabilityRevision != req.ConnectorRevision) {
 		return deny("connector_mismatch", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
 	candidates, err := findTaskCredentialGrants(ctx, tx, uuidToString(taskID))
@@ -305,7 +346,8 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 	var grant credentialCapabilityGrant
 	matches := 0
 	for _, candidate := range selectTaskCredentialGrants(candidates) {
-		if candidate.ConnectorID == capabilityConnector && candidate.ConnectorRev == capabilityRevision {
+		if generic && candidate.DirectDelivery && candidate.CredentialID == connectorUUID ||
+			!generic && !candidate.DirectDelivery && candidate.ConnectorID == capabilityConnector && candidate.ConnectorRev == capabilityRevision {
 			grant = candidate
 			matches++
 		}
@@ -314,8 +356,9 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 		return deny("grant_missing_or_ambiguous", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
 	if grant.DaemonID != daemonID || grant.WorkspaceID != workspaceID || grant.AgentID != agentID || grant.IssueID != issueID ||
-		grant.ConnectorID != capabilityConnector || grant.ConnectorID != connectorUUID || grant.ConnectorRev != capabilityRevision ||
-		grant.ConnectorStatus != "active" || (grant.TaskStatus != "dispatched" && grant.TaskStatus != "running") {
+		(!generic && (grant.ConnectorID != capabilityConnector || grant.ConnectorID != connectorUUID || grant.ConnectorRev != capabilityRevision || grant.ConnectorStatus != "active")) ||
+		(generic && (!grant.DirectDelivery || grant.CredentialID != connectorUUID)) ||
+		(grant.TaskStatus != "dispatched" && grant.TaskStatus != "running") {
 		return deny("task_or_connector_binding_mismatch", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
 	// findTaskCredentialGrants can wait for authorization locks, so enforce the
@@ -332,8 +375,11 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 	}
 	storageContext := credentialcrypto.Context{
 		WorkspaceID: uuidToString(workspaceID), ResourceType: "credential", ResourceID: uuidToString(grant.CredentialID),
-		SubjectType: grant.SubjectType, SubjectID: uuidToString(grant.SubjectID), ConnectorID: req.ConnectorID,
-		ConnectorRev: capabilityRevision, Purpose: "credential.storage", Version: credentialcrypto.ProtocolVersion,
+		SubjectType: grant.SubjectType, SubjectID: uuidToString(grant.SubjectID), Purpose: "credential.storage", Version: credentialcrypto.ProtocolVersion,
+	}
+	if !generic {
+		storageContext.ConnectorID = req.ConnectorID
+		storageContext.ConnectorRev = capabilityRevision
 	}
 	storageAAD, err := storageContext.AssociatedData()
 	if err != nil {
@@ -370,14 +416,22 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 		return rejected, errors.New("credential capability rejected")
 	}
 	envelopeExpiresAt := time.Now().UTC().Add(30 * time.Second)
-	aad, err := json.Marshal(struct {
+	context := struct {
 		TaskID            string    `json:"task_id"`
 		WorkspaceID       string    `json:"workspace_id"`
 		DaemonID          string    `json:"daemon_id"`
-		ConnectorID       string    `json:"connector_id"`
-		ConnectorRevision int64     `json:"connector_revision"`
+		CredentialID      string    `json:"credential_id,omitempty"`
+		ConnectorID       string    `json:"connector_id,omitempty"`
+		ConnectorRevision int64     `json:"connector_revision,omitempty"`
 		ExpiresAt         time.Time `json:"expires_at"`
-	}{uuidToString(taskID), uuidToString(workspaceID), daemonID, req.ConnectorID, capabilityRevision, envelopeExpiresAt})
+	}{TaskID: uuidToString(taskID), WorkspaceID: uuidToString(workspaceID), DaemonID: daemonID, ExpiresAt: envelopeExpiresAt}
+	if generic {
+		context.CredentialID = req.CredentialID
+	} else {
+		context.ConnectorID = req.ConnectorID
+		context.ConnectorRevision = capabilityRevision
+	}
+	aad, err := json.Marshal(context)
 	if err != nil {
 		return deny("execution_context_invalid", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
