@@ -389,6 +389,7 @@
       "ungraded": "Not graded yet",
       "run": "Run one grading batch",
       "ordered": "Ordered {{ordered}} quiz runs",
+      "orderedUnknown": "Quiz runs ordered",
       "refused": "{{count}} agent(s) were refused; the rest were ordered",
       "runError": "No grading batch was ordered.",
       "batchLines": "This batch: {{answered}} answered · {{errored}} errored · {{graded}} graded",
