@@ -367,11 +367,8 @@ func synthesizeAdd(current string, p ProposalInput, name string) (string, error)
 }
 
 func synthesizeRevise(current string, p ProposalInput, name string) (string, error) {
-	if t := firstClauseName(p.ClauseText); t != "" && !clauseNamesEqual(t, name) {
-		return "", fmt.Errorf("条款文本首行标签「%s」与条款名「%s」不一致", t, name)
-	}
-	if strings.TrimSpace(p.ClauseText) == "" {
-		return "", fmt.Errorf("修订条款的条款文本为空")
+	if err := ValidateRevisionText(name, p.ClauseText); err != nil {
+		return "", err
 	}
 	lines := splitLines(current)
 	s, e := clauseSpan(lines, name)
@@ -391,6 +388,22 @@ func synthesizeRevise(current string, p ProposalInput, name string) (string, err
 		}
 	}
 	return "", fmt.Errorf("条款「%s」在当前内容中不存在，修订请改用新增", name)
+}
+
+// ValidateRevisionText enforces the content contract shared by carrier-text
+// and Clause-ID-addressed revisions.
+func ValidateRevisionText(clauseName, clauseText string) error {
+	name := normalizeClauseName(clauseName)
+	if name == "" {
+		return fmt.Errorf("条款名为空")
+	}
+	if t := firstClauseName(clauseText); t != "" && !clauseNamesEqual(t, name) {
+		return fmt.Errorf("条款文本首行标签「%s」与条款名「%s」不一致", t, name)
+	}
+	if strings.TrimSpace(clauseText) == "" {
+		return fmt.Errorf("修订条款的条款文本为空")
+	}
+	return nil
 }
 
 func synthesizeRemove(current string, p ProposalInput, name string) (string, error) {

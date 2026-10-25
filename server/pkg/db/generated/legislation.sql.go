@@ -753,6 +753,62 @@ func (q *Queries) GetPromptProposal(ctx context.Context, arg GetPromptProposalPa
 	return i, err
 }
 
+const getPromptProposalForUpdate = `-- name: GetPromptProposalForUpdate :one
+SELECT id, workspace_id, carrier_scope, carrier_scope_id, target_section, change_kind, clause_name, clause_text, gate_answer_layer, gate_answer_retention, gate_answer_cost, gate_answer_conflict, gate_answer_dedup, evidence_anchors, status, gate_errors, gate_warnings, enacted_version, rollback_reason, merged_from, source, created_by_type, created_by_id, audit_log, created_at, updated_at, jev_advisory, problem, expected_effect, expected_gain, value_score, clause_id, move_to_scope, move_to_scope_id, conditions, rollback_of_version, enactment_target FROM prompt_proposal
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type GetPromptProposalForUpdateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) GetPromptProposalForUpdate(ctx context.Context, arg GetPromptProposalForUpdateParams) (PromptProposal, error) {
+	row := q.db.QueryRow(ctx, getPromptProposalForUpdate, arg.ID, arg.WorkspaceID)
+	var i PromptProposal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.CarrierScope,
+		&i.CarrierScopeID,
+		&i.TargetSection,
+		&i.ChangeKind,
+		&i.ClauseName,
+		&i.ClauseText,
+		&i.GateAnswerLayer,
+		&i.GateAnswerRetention,
+		&i.GateAnswerCost,
+		&i.GateAnswerConflict,
+		&i.GateAnswerDedup,
+		&i.EvidenceAnchors,
+		&i.Status,
+		&i.GateErrors,
+		&i.GateWarnings,
+		&i.EnactedVersion,
+		&i.RollbackReason,
+		&i.MergedFrom,
+		&i.Source,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.AuditLog,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.JevAdvisory,
+		&i.Problem,
+		&i.ExpectedEffect,
+		&i.ExpectedGain,
+		&i.ValueScore,
+		&i.ClauseID,
+		&i.MoveToScope,
+		&i.MoveToScopeID,
+		&i.Conditions,
+		&i.RollbackOfVersion,
+		&i.EnactmentTarget,
+	)
+	return i, err
+}
+
 const getPromptStructureBaseline = `-- name: GetPromptStructureBaseline :one
 SELECT id, workspace_id, carrier_scope, carrier_scope_id, sections, clauses, content_sha256, updated_at FROM prompt_structure_baseline
 WHERE prompt_structure_baseline.carrier_scope = $1
