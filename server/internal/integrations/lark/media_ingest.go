@@ -35,7 +35,10 @@ type messageResourceStreamer interface {
 	DownloadMessageResourceStream(ctx context.Context, creds InstallationCredentials, p DownloadResourceParams) (DownloadedResourceStream, error)
 }
 
-const maxMediaResourcesPerMessage = 100
+// Media resolution is serial and shares the router's 45-second deadline with
+// queueing and attachment binding. Eight items leave time for those stages
+// even when each item's download and upload take about 500ms.
+const maxMediaResourcesPerMessage = 8
 
 type feishuMediaResolver struct {
 	api     APIClient
@@ -97,11 +100,6 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 		return msg
 	}
 	resources := mediaResourcesFromMessage(lm)
-	for _, recent := range lm.RecentMedia {
-		resources = append(resources, mediaResourcesFromMessage(InboundMessage{
-			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
-		})...)
-	}
 	// Quoted-parent media rides the same download/upload path; the object
 	// key is derived from (chat message, resource message, key), so quoted
 	// and trigger resources never collide even when both reference the same
@@ -121,20 +119,27 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 			}
 		}
 	}
+	// Explicit media from this turn wins the bounded budget over automatically
+	// prefetched history, which must not displace a forwarded or quoted image.
+	for _, recent := range lm.RecentMedia {
+		resources = append(resources, mediaResourcesFromMessage(InboundMessage{
+			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
+		})...)
+	}
 	resources = dedupeMediaResources(resources)
 	// Share links ride the same ledger→download→upload→MediaRef chain
 	// (RUYI-572): scanned from the trigger's own text/post body and from
 	// the recent/quoted descriptors. Deduped across sources so a link
 	// surfaced by both the trigger and its quoted parent resolves once.
 	links := shareLinkResources(lm)
-	for _, recent := range lm.RecentMedia {
-		links = append(links, shareLinkResources(InboundMessage{
-			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
-		})...)
-	}
 	for _, quoted := range lm.QuotedMedia {
 		links = append(links, shareLinkResources(InboundMessage{
 			MessageID: quoted.MessageID, MessageType: quoted.MessageType, Content: quoted.Content,
+		})...)
+	}
+	for _, recent := range lm.RecentMedia {
+		links = append(links, shareLinkResources(InboundMessage{
+			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
 		})...)
 	}
 	links = dedupeLinkResources(links)
