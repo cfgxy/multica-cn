@@ -246,7 +246,9 @@ describe("AgentRunConfig (RUYI-624)", () => {
     async (concurrency) => {
       mockAgentOverrides = { max_concurrent_tasks: concurrency };
       await render(<AgentRunConfig />);
-      await waitFor(() => expect(screen.getByDisplayValue("0")).toBeTruthy());
+      await waitFor(() =>
+        expect(screen.getByDisplayValue(String(concurrency))).toBeTruthy(),
+      );
 
       await fireEvent.press(screen.getByText("Runtime Two"));
       await fireEvent.press(screen.getByLabelText("Save"));
