@@ -61,6 +61,7 @@ const (
 	ReasonAttributionBlocked         = dispatch.ReasonAttributionBlocked
 	ReasonAlreadyActive              = dispatch.ReasonAlreadyActive
 	ReasonSelfTriggerSuppressed      = dispatch.ReasonSelfTriggerSuppressed
+	ReasonAgentOnlyCascadeBlocked    = dispatch.ReasonAgentOnlyCascadeBlocked
 	ReasonIssueStatusNotDispatchable = dispatch.ReasonIssueStatusNotDispatchable
 	ReasonIssueSuspended             = dispatch.ReasonIssueSuspended
 	ReasonInternalError              = dispatch.ReasonInternalError

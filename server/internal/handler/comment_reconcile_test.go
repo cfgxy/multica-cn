@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -218,43 +219,122 @@ func TestAgentOnlyCommentCascadeBlocked(t *testing.T) {
 		"assignee_type": "agent",
 		"assignee_id":   agentID,
 	})
+	sourceIssueID := dbfx.Issue(t, "agent-only cascade source", testutil.Cols{
+		"status":        "in_progress",
+		"number":        999014,
+		"assignee_type": "agent",
+		"assignee_id":   agentID,
+	})
 	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
-		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM audit_event WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = ANY($1::uuid[])`, []string{issueID, sourceIssueID})
+		testPool.Exec(ctx, `DELETE FROM comment WHERE issue_id = ANY($1::uuid[])`, []string{issueID, sourceIssueID})
 	})
 
-	parentID := dbfx.Comment(t, issueID, "member starts the work", testutil.Cols{
-		"created_at": testutil.Raw("now() - interval '1 minute'"),
-	})
-	appendHop := func() string {
+	appendHop := func(parentID string, createdAt time.Time) (string, string) {
 		t.Helper()
-		var taskID, commentID string
-		dbfx.QueryRow(t, `
-			INSERT INTO agent_task_queue (
-				agent_id, runtime_id, issue_id, trigger_comment_id, status, priority,
-				originator_user_id, accountable_user_id, created_at
-			)
-			VALUES ($1, $2, $3, $4, 'completed', 0, $5, $5, now() - interval '1 minute')
-			RETURNING id
-		`, agentID, runtimeID, issueID, parentID, testUserID).Scan(&taskID)
-		dbfx.QueryRow(t, `
-			INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, source_task_id, created_at)
-			VALUES ($1, $2, 'agent', $3, $4, 'comment', $5, now())
-			RETURNING id
-		`, issueID, testWorkspaceID, agentID, "handoff", taskID).Scan(&commentID)
-		parentID = commentID
-		return commentID
+		taskID := dbfx.Task(t, agentID, testutil.Cols{
+			"runtime_id":          runtimeID,
+			"issue_id":            sourceIssueID,
+			"trigger_comment_id":  parentID,
+			"status":              "completed",
+			"originator_user_id":  testUserID,
+			"accountable_user_id": testUserID,
+			"created_at":          createdAt,
+		})
+		commentID := dbfx.Comment(t, sourceIssueID, "handoff", testutil.Cols{
+			"author_type":    "agent",
+			"author_id":      agentID,
+			"source_task_id": taskID,
+			"created_at":     createdAt,
+		})
+		return commentID, taskID
 	}
 
+	now := time.Now()
+	parentID := dbfx.Comment(t, sourceIssueID, "member starts the work", testutil.Cols{
+		"created_at": now.Add(-time.Minute),
+	})
+	sourceTaskID := ""
 	for range maxRapidAgentOnlyCommentCascadeHops - 1 {
-		appendHop()
+		parentID, sourceTaskID = appendHop(parentID, now.Add(-time.Minute))
 	}
 	if testHandler.agentOnlyCommentCascadeBlocked(ctx, parseUUID(parentID)) {
 		t.Fatalf("%d rapid agent-only hops must remain available for a legitimate handoff", maxRapidAgentOnlyCommentCascadeHops-1)
 	}
-	appendHop()
+	parentID, sourceTaskID = appendHop(parentID, now.Add(-time.Minute))
 	if !testHandler.agentOnlyCommentCascadeBlocked(ctx, parseUUID(parentID)) {
 		t.Fatalf("%d rapid agent-only hops must open the circuit", maxRapidAgentOnlyCommentCascadeHops)
+	}
+	// This completed task is the reconciliation target. The blocked comment is
+	// newer than it, so it will be replayed when the completion path runs.
+	reconcileTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":          runtimeID,
+		"issue_id":            issueID,
+		"status":              "completed",
+		"originator_user_id":  testUserID,
+		"accountable_user_id": testUserID,
+		"created_at":          now.Add(-2 * time.Minute),
+	})
+	blockedCommentID := dbfx.Comment(t, issueID, "[@agent](mention://agent/"+agentID+") cross-issue handoff", testutil.Cols{
+		"author_type":    "agent",
+		"author_id":      agentID,
+		"source_task_id": sourceTaskID,
+		"created_at":     now,
+	})
+	results := testHandler.enqueueCommentAgentTriggers(ctx, db.Issue{
+		ID:          parseUUID(issueID),
+		WorkspaceID: parseUUID(testWorkspaceID),
+	}, db.Comment{
+		ID:           parseUUID(blockedCommentID),
+		AuthorType:   "agent",
+		SourceTaskID: parseUUID(sourceTaskID),
+	}, []commentAgentTrigger{{
+		Agent: db.Agent{ID: parseUUID(agentID)},
+	}})
+	if got := results[agentID]; got.status != DispatchBlocked || got.reason != ReasonAgentOnlyCascadeBlocked {
+		t.Fatalf("rapid cascade result = %+v, want blocked/agent_only_cascade_blocked", got)
+	}
+	var auditCount int
+	dbfx.QueryRow(t, `
+		SELECT count(*) FROM audit_event
+		WHERE event_type = $1
+		  AND issue_id = $2
+		  AND trigger_kind = 'comment'
+		  AND trigger_ref = $3
+		  AND reason = $4
+		  AND details->>'reason_code' = $5
+		  AND details->>'target_agent_id' = $6
+	`, service.AuditRunTriggerSuppressed, issueID, blockedCommentID, string(ReasonAgentOnlyCascadeBlocked), string(ReasonAgentOnlyCascadeBlocked), agentID).Scan(&auditCount)
+	if auditCount != 1 {
+		t.Fatalf("rapid cascade suppression audits = %d, want 1", auditCount)
+	}
+	reconcileTask, err := testHandler.Queries.GetAgentTask(ctx, parseUUID(reconcileTaskID))
+	if err != nil {
+		t.Fatalf("load completed reconciliation task: %v", err)
+	}
+	testHandler.reconcileCommentsOnCompletion(ctx, &reconcileTask)
+	if n := pendingTaskCountForAgentIssue(t, issueID, agentID); n != 0 {
+		t.Fatalf("cascade-blocked comment must not be re-enqueued by completion reconciliation, got %d pending task(s)", n)
+	}
+
+	// A substantive chain may legitimately revisit roles over a longer period.
+	// Its lifetime depth alone must not suppress the next explicit handoff.
+	parentID = dbfx.Comment(t, sourceIssueID, "member restarts the work", testutil.Cols{
+		"created_at": now.Add(-30 * time.Minute),
+	})
+	for i := 0; i < maxRapidAgentOnlyCommentCascadeHops+4; i++ {
+		parentID, _ = appendHop(parentID, now.Add(-time.Duration(maxRapidAgentOnlyCommentCascadeHops+3-i)*3*time.Minute))
+	}
+	if testHandler.agentOnlyCommentCascadeBlocked(ctx, parseUUID(parentID)) {
+		t.Fatal("a long-lived agent-only handoff chain must not trip the rapid cascade breaker")
+	}
+
+	var cycleTaskID string
+	dbfx.QueryRow(t, `SELECT source_task_id FROM comment WHERE id = $1`, parentID).Scan(&cycleTaskID)
+	testPool.Exec(ctx, `UPDATE agent_task_queue SET trigger_comment_id = $1 WHERE id = $2`, parentID, cycleTaskID)
+	if !testHandler.agentOnlyCommentCascadeBlocked(ctx, parseUUID(parentID)) {
+		t.Fatal("a task lineage cycle must remain blocked even when it is older than the rapid window")
 	}
 }
 

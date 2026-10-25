@@ -4770,7 +4770,15 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		// task and is not in its planned ids), so dropping the failure here is
 		// exactly how a promised follow-up is lost. Hand the obligation to that
 		// blocker instead, keeping it alive until some run provably covers it.
-		if res := h.enqueueCommentAgentTriggers(ctx, issue, c.ID, scoped)[agentID]; res.status == DispatchBlocked {
+		if res := h.enqueueCommentAgentTriggers(ctx, issue, c, scoped)[agentID]; res.status == DispatchBlocked {
+			// A cascade refusal is a deliberate terminal admission decision, with
+			// its own durable suppression audit. Unlike an enqueue collision, it
+			// does not leave an uncovered delivery obligation to hand to another
+			// task; doing so would re-enqueue the very cascade the circuit breaker
+			// rejected.
+			if res.reason == ReasonAgentOnlyCascadeBlocked {
+				continue
+			}
 			headSha := h.TaskService.ResolveIssueReviewSHAParam(ctx, task.IssueID)
 			if h.propagateUncoveredCommentObligation(ctx, issue, scoped[0], c.ID, headSha) {
 				slog.Info("reconcile comments on completion: replay blocked, obligation handed to the active task",
