@@ -7800,6 +7800,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var agentMcpConfig json.RawMessage
 	var effectiveMcpConfig json.RawMessage
 	var cursorMcpAuthSource string
+	if taskHasDirectCredentialCapability(task.CredentialCapabilities) && !agent.SupportsTaskMCP(provider) {
+		return TaskResult{}, fmt.Errorf("provider %q does not support task MCP credentials", provider)
+	}
 	remoteMCPConnections := append([]remotemcp.Connection(nil), task.RemoteMCPConnections...)
 	for _, candidate := range task.CredentialCapabilities {
 		capability, ok := credentialCapabilityForConnector(task.CredentialCapabilities, candidate.ConnectorID)
@@ -7844,6 +7847,26 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	for _, diagnostic := range remoteMCPDiagnostics {
 		taskLog.Warn("Remote MCP degraded", "reason", diagnostic)
+	}
+	credentialMCPConfig, credentialMCPServer, credentialMCPErr := startTaskCredentialMCP(
+		ctx, task.ID, task.CredentialCapabilities,
+		func(resolveCtx context.Context, capability CredentialCapability) ([]byte, error) {
+			return d.resolveCredentialCapability(resolveCtx, &task, capability)
+		},
+		taskLog,
+	)
+	if credentialMCPErr != nil {
+		return TaskResult{}, fmt.Errorf("prepare credential MCP server: %w", credentialMCPErr)
+	}
+	if credentialMCPServer != nil {
+		defer credentialMCPServer.Close()
+	}
+	if len(credentialMCPConfig) > 0 {
+		merged, mergeErr := mergeTaskRemoteMCPConfig(remoteMCPConfig, credentialMCPConfig)
+		if mergeErr != nil {
+			return TaskResult{}, fmt.Errorf("merge credential MCP configuration: %w", mergeErr)
+		}
+		remoteMCPConfig = merged
 	}
 
 	// Agent-trigger plugin hooks, as a second local MCP server beside the
@@ -8805,7 +8828,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		return TaskResult{Status: "completed", Comment: "", WorkDir: env.WorkDir, EnvRoot: env.RootDir}, nil
 	}
-
 	// Authenticate the localhost repo-checkout endpoint with the same
 	// task-scoped token the child receives. The endpoint derives identity and
 	// branch ownership from this in-memory record instead of trusting request

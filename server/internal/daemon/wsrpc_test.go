@@ -107,23 +107,51 @@ func TestResolveCredentialCapabilitySendsRPCAfterClaimExpiry(t *testing.T) {
 	zeroCredentialBytes(plaintext)
 }
 
-func TestWSRPCSessionKeyIsAvailableOnlyOnActiveConnection(t *testing.T) {
+func TestWSRPCSessionKeyIsAvailableOnlyAfterRPCV1Negotiation(t *testing.T) {
 	client := newWSRPCClient(time.Second)
 	key, err := credentialcrypto.NewSessionKey()
 	if err != nil {
 		t.Fatal("generate session key")
 	}
 	client.setSessionKey(key)
-	if _, ok := client.sessionPublicKey(); ok {
+	if _, _, ok := client.sessionKeyForClaim(); ok {
 		t.Fatal("session public key available without a control connection")
 	}
-	client.attach(func([]byte) (*wsOutbound, error) { return &wsOutbound{}, nil })
-	if publicKey, ok := client.sessionPublicKey(); !ok || publicKey == "" {
-		t.Fatal("session public key unavailable on active control connection")
+	generation := client.attach(func([]byte) (*wsOutbound, error) { return &wsOutbound{}, nil })
+	if _, _, ok := client.sessionKeyForClaim(); ok {
+		t.Fatal("session public key available before rpc-v1 negotiation")
+	}
+	client.markRPCV1Supported(generation)
+	if claimKey, publicKey, ok := client.sessionKeyForClaim(); !ok || publicKey == "" || claimKey != key {
+		t.Fatal("session public key unavailable on negotiated control connection")
 	}
 	client.attach(nil)
-	if _, ok := client.sessionPublicKey(); ok {
+	if _, _, ok := client.sessionKeyForClaim(); ok {
 		t.Fatal("session public key survived control connection teardown")
+	}
+}
+
+func TestCredentialSessionEnvelopeUsesClaimSessionKeyAfterReconnect(t *testing.T) {
+	claimKey, err := credentialcrypto.NewSessionKey()
+	if err != nil {
+		t.Fatal("generate claim session key")
+	}
+	reconnectedKey, err := credentialcrypto.NewSessionKey()
+	if err != nil {
+		t.Fatal("generate reconnect session key")
+	}
+	aad := []byte("credential-aad")
+	envelope, err := credentialcrypto.SealForSession(claimKey.PublicKey().Bytes(), []byte("synthetic-secret"), aad)
+	if err != nil {
+		t.Fatal("seal credential envelope")
+	}
+	plaintext, err := openCredentialSessionEnvelope(claimKey, envelope, aad)
+	if err != nil || string(plaintext) != "synthetic-secret" {
+		t.Fatalf("claim session key did not open capability envelope: %q, %v", plaintext, err)
+	}
+	zeroCredentialBytes(plaintext)
+	if _, err := openCredentialSessionEnvelope(reconnectedKey, envelope, aad); err == nil {
+		t.Fatal("reconnected session key opened an envelope for the claim key")
 	}
 }
 

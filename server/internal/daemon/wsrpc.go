@@ -138,27 +138,20 @@ func (c *wsRPCClient) setSessionKey(key *ecdh.PrivateKey) {
 	c.mu.Unlock()
 }
 
-func (c *wsRPCClient) sessionPublicKey() (string, bool) {
+func (c *wsRPCClient) sessionKeyForClaim() (*ecdh.PrivateKey, string, bool) {
 	if c == nil {
-		return "", false
+		return nil, "", false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.sendFrame == nil || c.sessionKey == nil {
-		return "", false
+	if c.sendFrame == nil || !c.rpcV1Supported || c.sessionKey == nil {
+		return nil, "", false
 	}
-	return base64.RawURLEncoding.EncodeToString(c.sessionKey.PublicKey().Bytes()), true
+	return c.sessionKey, base64.RawURLEncoding.EncodeToString(c.sessionKey.PublicKey().Bytes()), true
 }
 
-func (c *wsRPCClient) openSessionEnvelope(envelope credentialcrypto.ExecutionEnvelope, aad []byte) ([]byte, error) {
-	if c == nil {
-		return nil, errWSRPCUnavailable
-	}
-	c.mu.Lock()
-	key := c.sessionKey
-	connected := c.sendFrame != nil
-	c.mu.Unlock()
-	if !connected || key == nil {
+func openCredentialSessionEnvelope(key *ecdh.PrivateKey, envelope credentialcrypto.ExecutionEnvelope, aad []byte) ([]byte, error) {
+	if key == nil {
 		return nil, errWSRPCUnavailable
 	}
 	return credentialcrypto.OpenForSession(key, envelope, aad)
@@ -409,13 +402,19 @@ func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		if bp := d.backpressureReportForClaim(runtimeIDs); bp != nil {
 			body["backpressure"] = bp
 		}
-		if sessionPublicKey, ok := d.wsRPC.sessionPublicKey(); ok {
+		claimSessionKey, sessionPublicKey, hasSessionKey := d.wsRPC.sessionKeyForClaim()
+		if hasSessionKey {
 			body["session_public_key"] = sessionPublicKey
 		}
 		// batchClaimRequestTimeout is the server-side execution budget; the
 		// daemon waits that plus the client's grace margin for the response.
 		_, err := d.wsRPC.CallIfRPCV1Supported(ctx, "tasks.claim", batchClaimRequestTimeout, body, &resp)
 		if err == nil {
+			for _, task := range resp.Tasks {
+				for index := range task.CredentialCapabilities {
+					task.CredentialCapabilities[index].sessionKey = claimSessionKey
+				}
+			}
 			return resp.Tasks, nil
 		}
 		if errors.Is(err, errWSRPCUncertain) {
@@ -435,8 +434,17 @@ func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		}
 		d.logger.Debug("ws claim failed; falling back to http", "error", err)
 	}
-	tasks, err := d.client.ClaimTasks(ctx, daemonID, runtimeIDs, maxTasks, d.backpressureReportForClaim(runtimeIDs))
+	claimSessionKey, sessionPublicKey, hasSessionKey := d.wsRPC.sessionKeyForClaim()
+	if !hasSessionKey {
+		sessionPublicKey = ""
+	}
+	tasks, err := d.client.ClaimTasks(ctx, daemonID, runtimeIDs, maxTasks, sessionPublicKey, d.backpressureReportForClaim(runtimeIDs))
 	if err == nil {
+		for _, task := range tasks {
+			for index := range task.CredentialCapabilities {
+				task.CredentialCapabilities[index].sessionKey = claimSessionKey
+			}
+		}
 		return tasks, nil
 	}
 	// Server has no batch route (404): freeze the old API contract by falling
@@ -454,17 +462,23 @@ func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtime
 // returned plaintext remains in daemon memory and is never copied into a task
 // environment, prompt, or generic task response.
 func (d *Daemon) resolveCredentialCapability(ctx context.Context, task *Task, capability CredentialCapability) ([]byte, error) {
-	if task == nil || task.ID == "" || capability.Capability == "" || capability.ConnectorID == "" || capability.ConnectorRevision < 1 {
+	if task == nil || task.ID == "" || capability.Capability == "" {
+		return nil, errors.New("credential capability unavailable")
+	}
+	generic := capability.CredentialID != ""
+	if generic == (capability.ConnectorID != "") || (generic && capability.ConnectorRevision != 0) || (!generic && capability.ConnectorRevision < 1) {
 		return nil, errors.New("credential capability unavailable")
 	}
 	var response struct {
 		Envelope  credentialcrypto.ExecutionEnvelope `json:"envelope"`
 		ExpiresAt time.Time                          `json:"expires_at"`
 	}
-	body := map[string]any{
-		"capability":         capability.Capability,
-		"connector_id":       capability.ConnectorID,
-		"connector_revision": capability.ConnectorRevision,
+	body := map[string]any{"capability": capability.Capability}
+	if generic {
+		body["credential_id"] = capability.CredentialID
+	} else {
+		body["connector_id"] = capability.ConnectorID
+		body["connector_revision"] = capability.ConnectorRevision
 	}
 	if _, err := d.wsRPC.CallIfRPCV1Supported(ctx, "credentials.resolve", 10*time.Second, body, &response); err != nil {
 		return nil, errors.New("credential capability rejected")
@@ -472,18 +486,26 @@ func (d *Daemon) resolveCredentialCapability(ctx context.Context, task *Task, ca
 	if response.ExpiresAt.IsZero() || !time.Now().Before(response.ExpiresAt) {
 		return nil, errors.New("credential capability rejected")
 	}
-	aad, err := json.Marshal(struct {
+	context := struct {
 		TaskID            string    `json:"task_id"`
 		WorkspaceID       string    `json:"workspace_id"`
 		DaemonID          string    `json:"daemon_id"`
-		ConnectorID       string    `json:"connector_id"`
-		ConnectorRevision int64     `json:"connector_revision"`
+		CredentialID      string    `json:"credential_id,omitempty"`
+		ConnectorID       string    `json:"connector_id,omitempty"`
+		ConnectorRevision int64     `json:"connector_revision,omitempty"`
 		ExpiresAt         time.Time `json:"expires_at"`
-	}{task.ID, task.WorkspaceID, d.cfg.DaemonID, capability.ConnectorID, capability.ConnectorRevision, response.ExpiresAt})
+	}{TaskID: task.ID, WorkspaceID: task.WorkspaceID, DaemonID: d.cfg.DaemonID, ExpiresAt: response.ExpiresAt}
+	if generic {
+		context.CredentialID = capability.CredentialID
+	} else {
+		context.ConnectorID = capability.ConnectorID
+		context.ConnectorRevision = capability.ConnectorRevision
+	}
+	aad, err := json.Marshal(context)
 	if err != nil {
 		return nil, errors.New("credential capability rejected")
 	}
-	return d.wsRPC.openSessionEnvelope(response.Envelope, aad)
+	return openCredentialSessionEnvelope(capability.sessionKey, response.Envelope, aad)
 }
 
 func credentialCapabilityForConnector(capabilities []CredentialCapability, connectorID string) (CredentialCapability, bool) {
