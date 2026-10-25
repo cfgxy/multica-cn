@@ -279,7 +279,8 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 		t.Fatal("generate daemon session key")
 	}
 	identity := daemonws.ClientIdentity{DaemonID: batchClaimTestDaemonID, UserID: testUserID,
-		WorkspaceID: testWorkspaceID, WorkspaceIDs: []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID}}
+		WorkspaceID: testWorkspaceID, WorkspaceIDs: []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID},
+		Capabilities: "credential-mcp-v1"}
 	claimBody, err := json.Marshal(map[string]any{
 		"daemon_id": batchClaimTestDaemonID, "runtime_ids": []string{runtimeID}, "max_tasks": 1,
 		"session_public_key": base64.RawURLEncoding.EncodeToString(sessionKey.PublicKey().Bytes()),
