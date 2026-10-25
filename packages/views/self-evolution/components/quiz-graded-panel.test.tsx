@@ -85,12 +85,19 @@ describe("QuizGradedPanel", () => {
   // invisible to vi.advanceTimersByTimeAsync.
   it("refreshes an ordered batch and its samples after asynchronous grading", async () => {
     vi.useFakeTimers();
-    let latest: PromptQuizSampleRow[] = [];
-    api.getPromptQuizSamples.mockImplementation(async () => latest);
+    let latestSamples: PromptQuizSampleRow[] = [];
+    const pendingRow = {
+      ...row,
+      task_id: "0199abcd-0000-7000-8000-000000000002",
+      outcome: "" as const,
+      score: null,
+      task_status: "running",
+    };
+    api.getPromptQuizSamples.mockImplementation(async () => latestSamples);
     api.getPromptQuizBatch.mockImplementation(async () => ({
-      batch_id: "batch-1", rows: latest,
-      counts: latest.length > 0 ? { answered: 1 } : {},
-      scores: { graded: latest.length, mean: 0.5 },
+      batch_id: "batch-1", rows: [row, pendingRow],
+      counts: { answered: 1 },
+      scores: { graded: latestSamples.length, mean: 0.5 },
     }));
     api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
     // Positive advance: react-query's notifyManager schedules observer
@@ -106,7 +113,7 @@ describe("QuizGradedPanel", () => {
     await flush();
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("0 graded");
 
-    latest = [row];
+    latestSamples = [row];
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("1 graded");
     expect(within(screen.getByTestId("quiz-graded-batch")).getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent(row.task_id);
@@ -114,6 +121,11 @@ describe("QuizGradedPanel", () => {
     await flush();
     expect(screen.getAllByTestId(`quiz-sample-${row.task_id}`)).toHaveLength(2);
     expect(api.getPromptQuizSamples.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    const secondRow = { ...row, task_id: pendingRow.task_id, item_title: "Second question" };
+    latestSamples = [row, secondRow];
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(screen.getAllByTestId(`quiz-sample-${secondRow.task_id}`)).toHaveLength(2);
   });
 
   it("restores the ordered batch after the panel unmounts and remounts", async () => {
@@ -147,7 +159,7 @@ describe("QuizGradedPanel", () => {
 
   it("marks terminal tasks without a measured version and stops polling them", async () => {
     vi.useFakeTimers();
-    writeQuizBatch("ws-1", "agent-1", "batch-1", Date.now());
+    writeQuizBatch("ws-1", "agent-1", "batch-1");
     api.getPromptQuizSamples.mockResolvedValue([]);
     api.getPromptQuizBatch.mockResolvedValue({
       batch_id: "batch-1",
@@ -164,5 +176,44 @@ describe("QuizGradedPanel", () => {
     expect(screen.getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent("Not measured");
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues polling a restored batch after the former polling window", async () => {
+    vi.useFakeTimers();
+    sessionStorage.setItem(
+      "multica:quiz:ws-1:agent:agent-1:batch",
+      JSON.stringify({ batchId: "batch-1", orderedAt: Date.now() - 71 * 60 * 1000 }),
+    );
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    api.getPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      rows: [{ ...row, outcome: "", score: null, task_status: "running" }],
+      counts: {},
+      scores: { graded: 0, mean: 0 },
+    });
+
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+    mount();
+    await flush();
+    expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(api.getPromptQuizBatch.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("does not refetch samples twice when an already completed batch mounts", async () => {
+    writeQuizBatch("ws-1", "agent-1", "batch-1");
+    api.getPromptQuizSamples.mockResolvedValue([row]);
+    api.getPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      rows: [row],
+      counts: { answered: 1 },
+      scores: { graded: 1, mean: 0.5 },
+    });
+
+    mount();
+    await screen.findAllByTestId(`quiz-sample-${row.task_id}`);
+    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(1);
   });
 });
