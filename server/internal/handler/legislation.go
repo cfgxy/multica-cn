@@ -1008,6 +1008,10 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, actorType, _ := h.legislationActor(w, r)
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	if p.Status != "draft" {
+		writeError(w, http.StatusConflict, "only draft proposals can be submitted")
+		return
+	}
 	advisoryText := p.ClauseText
 	// The advisory service is best-effort but external; call it before opening
 	// the transaction so a slow response cannot hold the proposal row lock.
@@ -1019,6 +1023,10 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context()) //nolint:errcheck
 	qtx := h.Queries.WithTx(tx)
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, workspaceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to submit proposal")
+		return
+	}
 	p, err = qtx.GetPromptProposalForUpdate(r.Context(), db.GetPromptProposalForUpdateParams{
 		ID: p.ID, WorkspaceID: workspaceID,
 	})
@@ -1037,15 +1045,6 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 	if p.ClauseText != advisoryText {
 		writeError(w, http.StatusConflict, "proposal changed while the advisory was running; retry submission")
 		return
-	}
-	if p.ChangeKind == "revise_clause" && p.ClauseID.Valid {
-		// Enact takes the same workspace clause-reference lock before reading
-		// or changing clause versions. This makes the captured baseline describe
-		// the state immediately following any in-flight enactment.
-		if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, workspaceID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to submit proposal")
-			return
-		}
 	}
 	baseline, err := h.captureClauseRevisionBaseline(r.Context(), qtx, workspaceID, p)
 	if err != nil {
@@ -1254,6 +1253,31 @@ func (h *Handler) approveOne(w http.ResponseWriter, r *http.Request, id string, 
 	if !ok {
 		return
 	}
+	userID, _, _ := h.legislationActor(w, r)
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to approve proposal")
+		return
+	}
+	defer tx.Rollback(r.Context()) //nolint:errcheck
+	qtx := h.Queries.WithTx(tx)
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, workspaceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to approve proposal")
+		return
+	}
+	p, err = qtx.GetPromptProposalForUpdate(r.Context(), db.GetPromptProposalForUpdateParams{
+		ID: p.ID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "proposal not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to approve proposal")
+		return
+	}
 	if p.Status != "pending_owner" && p.Status != "approved" {
 		writeError(w, http.StatusConflict, "only pending_owner (or an approved row left by a crash) can be approved")
 		return
@@ -1273,16 +1297,6 @@ func (h *Handler) approveOne(w http.ResponseWriter, r *http.Request, id string, 
 		writeError(w, http.StatusBadRequest, targetErr)
 		return
 	}
-	userID, _, _ := h.legislationActor(w, r)
-	workspaceID := parseUUID(h.resolveWorkspaceID(r))
-
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to approve proposal")
-		return
-	}
-	defer tx.Rollback(r.Context()) //nolint:errcheck
-	qtx := h.Queries.WithTx(tx)
 
 	audit := legislationAudit("approved", "member", userID, map[string]any{"enactment_target": target})
 	if p.Status == "pending_owner" {
@@ -1348,6 +1362,10 @@ func (h *Handler) EnactPromptProposal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context()) //nolint:errcheck
 	qtx := h.Queries.WithTx(tx)
+	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, workspaceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to enact proposal")
+		return
+	}
 	p, err = qtx.GetPromptProposalForUpdate(r.Context(), db.GetPromptProposalForUpdateParams{
 		ID: p.ID, WorkspaceID: workspaceID,
 	})
@@ -1365,6 +1383,24 @@ func (h *Handler) EnactPromptProposal(w http.ResponseWriter, r *http.Request) {
 	}
 	target, targetErr := normalizeProposalEnactmentTarget(p.EnactmentTarget, p)
 	if targetErr != "" {
+		failedAudit := legislationAudit("gate_failed", "member", userID, map[string]any{
+			"path":   "recovery",
+			"reason": targetErr,
+		})
+		failedResult := errorResult(errors.New(targetErr))
+		if _, err := qtx.MarkPromptProposalGateFailed(r.Context(), db.MarkPromptProposalGateFailedParams{
+			ID: p.ID, WorkspaceID: workspaceID, Audit: failedAudit,
+			Errors: mustJSON(failedResult.Errors), Warnings: mustJSON(failedResult.Warnings),
+			JevAdvisory: p.JevAdvisory,
+		}); err != nil {
+			slog.Error("invalid recovery target audit failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to record invalid recovery target")
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to record invalid recovery target")
+			return
+		}
 		writeError(w, http.StatusConflict, targetErr)
 		return
 	}

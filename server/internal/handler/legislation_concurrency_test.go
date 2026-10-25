@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/legislation"
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestEnactRecoveryRejectsStructuredStaticTarget(t *testing.T) {
@@ -19,11 +21,11 @@ func TestEnactRecoveryRejectsStructuredStaticTarget(t *testing.T) {
 	initialID := createDraft(t, wsID, memberID, "恢复修订条款", cleanClauseFor("恢复修订条款"))
 	submitDraft(t, wsID, memberID, initialID)
 	ownerApprove := ownerRoute(http.HandlerFunc(testHandler.ApprovePromptProposal))
-	code, body := legislationCall(t, ownerApprove.ServeHTTP,
+	createResponse := testutil.Call(t, http.HandlerFunc(ownerApprove.ServeHTTP),
 		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+initialID+"/approve",
 			map[string]any{"confirm_diff_previewed": true}, "id", initialID))
-	if code != http.StatusOK {
-		t.Fatalf("create clause: expected 200, got %d: %s", code, body)
+	if createResponse.Code != http.StatusOK {
+		t.Fatalf("create clause: expected 200, got %d: %s", createResponse.Code, createResponse.Text())
 	}
 	var clauseID string
 	dbfx.QueryRow(t, `SELECT clause_id::text FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, initialID).Scan(&clauseID)
@@ -37,13 +39,13 @@ func TestEnactRecoveryRejectsStructuredStaticTarget(t *testing.T) {
 	var carrierBefore string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, wsID).Scan(&carrierBefore)
 	ownerEnact := ownerRoute(http.HandlerFunc(testHandler.EnactPromptProposal))
-	code, body = legislationCall(t, ownerEnact.ServeHTTP,
+	enactResponse := testutil.Call(t, http.HandlerFunc(ownerEnact.ServeHTTP),
 		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+revisionID+"/enact", nil, "id", revisionID))
-	if code != http.StatusConflict {
-		t.Fatalf("structured static recovery: expected 409, got %d: %s", code, body)
+	if enactResponse.Code != http.StatusConflict {
+		t.Fatalf("structured static recovery: expected 409, got %d: %s", enactResponse.Code, enactResponse.Text())
 	}
-	if got := proposalStatus(t, wsID, revisionID); got != "approved" {
-		t.Fatalf("invalid recovery changed proposal status to %q", got)
+	if got := proposalStatus(t, wsID, revisionID); got != "gate_failed" {
+		t.Fatalf("invalid recovery status = %q, want gate_failed", got)
 	}
 	var clauseVersions int
 	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&clauseVersions)
@@ -54,6 +56,86 @@ func TestEnactRecoveryRejectsStructuredStaticTarget(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, wsID).Scan(&carrierAfter)
 	if carrierAfter != carrierBefore {
 		t.Fatal("invalid recovery changed the static carrier")
+	}
+	rework := testutil.Call(t, testHandler.ReworkPromptProposal,
+		legislationReq(memberID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+revisionID+"/rework", nil, "id", revisionID))
+	if rework.Code != http.StatusOK || proposalStatus(t, wsID, revisionID) != "draft" {
+		t.Fatalf("invalid structured row could not be reworked: %d %s", rework.Code, rework.Text())
+	}
+}
+
+func TestApprovedEnactAndApproveRecoveryUseConsistentLockOrder(t *testing.T) {
+	wsID, ownerID, memberID := legislationFixture(t)
+	withJevAdvisory(t, &legislation.AdvisoryClient{})
+
+	initialID := createDraft(t, wsID, memberID, "恢复锁序条款", cleanClauseFor("恢复锁序条款"))
+	submitDraft(t, wsID, memberID, initialID)
+	ownerApprove := ownerRoute(http.HandlerFunc(testHandler.ApprovePromptProposal))
+	created := testutil.Call(t, http.HandlerFunc(ownerApprove.ServeHTTP),
+		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+initialID+"/approve",
+			map[string]any{"confirm_diff_previewed": true}, "id", initialID))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create clause: expected 200, got %d: %s", created.Code, created.Text())
+	}
+	var clauseID string
+	dbfx.QueryRow(t, `SELECT clause_id::text FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, initialID).Scan(&clauseID)
+
+	revisionID := createDraft(t, wsID, memberID, "恢复锁序条款", cleanClauseFor("恢复锁序条款"))
+	submitDraft(t, wsID, memberID, revisionID)
+	dbfx.Exec(t, `UPDATE prompt_proposal SET status = 'approved', change_kind = 'revise_clause', clause_id = $3,
+		enactment_target = 'clause_library' WHERE workspace_id = $1 AND id = $2`, wsID, revisionID, clauseID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	blocker, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin lock barrier: %v", err)
+	}
+	defer blocker.Rollback(context.Background())
+	var blockerPID int32
+	if err := blocker.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatalf("read lock barrier pid: %v", err)
+	}
+	if err := lockClauseReferenceWorkspaceTx(ctx, testHandler.Queries.WithTx(blocker), parseUUID(wsID)); err != nil {
+		t.Fatalf("hold workspace clause lock: %v", err)
+	}
+
+	type response struct {
+		res *testutil.Response
+	}
+	results := make(chan response, 2)
+	ownerEnact := ownerRoute(http.HandlerFunc(testHandler.EnactPromptProposal))
+	go func() {
+		results <- response{testutil.Call(t, http.HandlerFunc(ownerEnact.ServeHTTP),
+			legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+revisionID+"/enact", nil, "id", revisionID))}
+	}()
+	waitForBlockedDatabaseQuery(t, ctx, "pg_advisory_xact_lock", blockerPID)
+	go func() {
+		results <- response{testutil.Call(t, http.HandlerFunc(ownerApprove.ServeHTTP),
+			legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+revisionID+"/approve",
+				map[string]any{"confirm_diff_previewed": true}, "id", revisionID))}
+	}()
+	if err := waitForClauseReferenceLockWaiters(wsID, 2); err != nil {
+		t.Fatalf("both recovery requests did not wait on the workspace lock: %v", err)
+	}
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatalf("release lock barrier: %v", err)
+	}
+
+	seen := map[int]int{}
+	for range 2 {
+		select {
+		case got := <-results:
+			seen[got.res.Code]++
+			if got.res.Code != http.StatusOK && got.res.Code != http.StatusConflict {
+				t.Fatalf("recovery returned %d: %s", got.res.Code, got.res.Text())
+			}
+		case <-ctx.Done():
+			t.Fatalf("recovery requests deadlocked or timed out: %v", ctx.Err())
+		}
+	}
+	if seen[http.StatusOK] != 1 || seen[http.StatusConflict] != 1 || proposalStatus(t, wsID, revisionID) != "enacted" {
+		t.Fatalf("recovery did not enact exactly once; statuses=%v proposal=%s", seen, proposalStatus(t, wsID, revisionID))
 	}
 }
 
@@ -99,9 +181,8 @@ func TestSubmitRevisionCapturesBaselineAfterConcurrentEnact(t *testing.T) {
 		"/api/prompt-legislation/proposals/"+revisionID+"/submit", nil, "id", revisionID)
 	req = req.WithContext(ctx)
 	go func() {
-		w := httptest.NewRecorder()
-		testHandler.SubmitPromptProposal(w, req)
-		result <- response{code: w.Code, body: w.Body.String()}
+		res := testutil.Call(t, testHandler.SubmitPromptProposal, req)
+		result <- response{code: res.Code, body: res.Text()}
 	}()
 	waitForBlockedDatabaseQuery(t, ctx, "pg_advisory_xact_lock", blockerPID)
 
@@ -156,9 +237,8 @@ func TestSubmitAdvisoryRunsOutsideProposalLockAndRejectsStaleInput(t *testing.T)
 	result := make(chan response, 1)
 	req := legislationReq(memberID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+id+"/submit", nil, "id", id)
 	go func() {
-		w := httptest.NewRecorder()
-		testHandler.SubmitPromptProposal(w, req)
-		result <- response{code: w.Code, body: w.Body.String()}
+		res := testutil.Call(t, testHandler.SubmitPromptProposal, req)
+		result <- response{code: res.Code, body: res.Text()}
 	}()
 	select {
 	case <-started:
@@ -209,5 +289,35 @@ func TestSubmitAdvisoryRunsOutsideProposalLockAndRejectsStaleInput(t *testing.T)
 		if entry["action"] == "submitted" {
 			t.Fatal("stale advisory submission appended a submitted audit entry")
 		}
+	}
+}
+
+func TestSubmitNonDraftDoesNotCallAdvisory(t *testing.T) {
+	wsID, _, memberID := legislationFixture(t)
+	id := createDraft(t, wsID, memberID, "重复提交草案", cleanClauseFor("重复提交草案"))
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task":"kev_local","p_success":0.8,"p_failure":0.2,"threshold":0.3,"warn":false,"decision":"pass","engine":"test","threshold_source":"default"}`))
+	}))
+	defer server.Close()
+	withJevAdvisory(t, &legislation.AdvisoryClient{BaseURL: server.URL, Timeout: 10 * time.Second})
+	path := "/api/prompt-legislation/proposals/" + id + "/submit"
+	first := testutil.Call(t, testHandler.SubmitPromptProposal,
+		legislationReq(memberID, wsID, http.MethodPost, path, nil, "id", id))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first submit: expected 200, got %d: %s", first.Code, first.Text())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("first submit advisory calls = %d, want 1", got)
+	}
+	second := testutil.Call(t, testHandler.SubmitPromptProposal,
+		legislationReq(memberID, wsID, http.MethodPost, path, nil, "id", id))
+	if second.Code != http.StatusConflict {
+		t.Fatalf("duplicate submit: expected 409, got %d: %s", second.Code, second.Text())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("non-draft retry called advisory; total calls = %d, want 1", got)
 	}
 }
