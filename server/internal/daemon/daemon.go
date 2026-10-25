@@ -8477,7 +8477,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		d.logger.Warn("execenv: read runtime config for audit failed (non-fatal)", "error", configReadErr)
 		runtimeConfigFile = nil
 	}
-	runtimeBriefForAudit := auditableRuntimeBrief(runtimeBrief, err == nil, providerNeedsInlineSystemPrompt(provider), runtimeConfigFile != nil || configReadErr != nil)
+	runtimeBriefForAudit := auditableRuntimeBrief(runtimeBrief, err == nil, providerNeedsInlineSystemPrompt(provider), runtimeConfigFile, configReadErr)
 	// An exempt turn runs in the user's directory without having queued for it,
 	// so a sibling coding task may be writing to the same tree right now. That
 	// is the one thing it cannot work out from its own context — tell it.
@@ -8928,7 +8928,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			taskLog.Warn("execenv: read refreshed runtime config for audit failed (non-fatal)", "error", readErr)
 			runtimeConfigFile = nil
 		}
-		runtimeBriefForAudit = auditableRuntimeBrief(runtimeBrief, briefErr == nil, providerNeedsInlineSystemPrompt(provider), runtimeConfigFile != nil || readErr != nil)
+		runtimeBriefForAudit = auditableRuntimeBrief(runtimeBrief, briefErr == nil, providerNeedsInlineSystemPrompt(provider), runtimeConfigFile, readErr)
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
 		executionAudit = buildTaskExecutionAudit(agentToken, priorSessionID, freshPrompt, runtimeBriefForAudit, string(runtimeConfigFile), execOpts.SystemPrompt)
 		if firstResult.ResumeRejected || firstResult.ResumeRejectedTransient {
@@ -9305,8 +9305,8 @@ func buildTaskExecutionAudit(key, priorSessionID, prompt, runtimeConfig, runtime
 	}
 }
 
-func auditableRuntimeBrief(brief string, injectionSucceeded, inline, hasFileTarget bool) string {
-	if inline || (injectionSucceeded && hasFileTarget) {
+func auditableRuntimeBrief(brief string, injectionSucceeded, inline bool, runtimeConfigFile []byte, configReadErr error) string {
+	if inline || (injectionSucceeded && configReadErr == nil && runtimeConfigFile != nil) {
 		return brief
 	}
 	return ""

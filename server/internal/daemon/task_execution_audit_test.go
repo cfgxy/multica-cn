@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,14 +54,26 @@ func TestBuildTaskExecutionAuditWithoutPriorSession(t *testing.T) {
 func TestAuditableRuntimeBriefOmitsFailedFileInjection(t *testing.T) {
 	const brief = "generated runtime brief"
 
-	if got := auditableRuntimeBrief(brief, false, false, true); got != "" {
+	if got := auditableRuntimeBrief(brief, false, false, []byte("runtime config"), nil); got != "" {
 		t.Fatalf("failed file injection brief = %q, want omitted", got)
 	}
-	if got := auditableRuntimeBrief(brief, true, false, true); got != brief {
+	if got := auditableRuntimeBrief(brief, true, false, []byte("runtime config"), nil); got != brief {
 		t.Fatalf("successful file injection brief = %q, want %q", got, brief)
 	}
-	if got := auditableRuntimeBrief(brief, false, true, false); got != brief {
+	if got := auditableRuntimeBrief(brief, false, true, nil, errors.New("runtime config read failed")); got != brief {
 		t.Fatalf("failed inline injection brief = %q, want inline-delivered %q", got, brief)
+	}
+}
+
+func TestAuditableRuntimeBriefOmitsUnreadableFile(t *testing.T) {
+	const brief = "generated runtime brief"
+	readErr := errors.New("runtime config read failed")
+
+	if got := auditableRuntimeBrief(brief, true, false, nil, readErr); got != "" {
+		t.Fatalf("unreadable file brief = %q, want omitted", got)
+	}
+	if got := auditableRuntimeBrief(brief, true, false, []byte("partial config"), readErr); got != "" {
+		t.Fatalf("failed read with partial bytes brief = %q, want omitted", got)
 	}
 }
 
@@ -74,7 +87,7 @@ func TestFailedRuntimeConfigInjectionIsNotAuditedAsPromptInput(t *testing.T) {
 	if err == nil {
 		t.Fatal("InjectRuntimeConfig() error = nil, want file write failure")
 	}
-	audit := buildTaskExecutionAudit("task-token", "", "prompt", auditableRuntimeBrief(brief, err == nil, false, true), "", "")
+	audit := buildTaskExecutionAudit("task-token", "", "prompt", auditableRuntimeBrief(brief, err == nil, false, nil, nil), "", "")
 	for _, segment := range audit.PromptSegments {
 		if segment.Source == "execenv.InjectRuntimeConfig" {
 			t.Fatalf("failed file injection was included in prompt audit: %+v", segment)
@@ -102,7 +115,7 @@ func TestDeerFlowRuntimeBriefIsNotAuditedWithoutDelivery(t *testing.T) {
 		t.Fatalf("DeerFlow runtime config file = %q, want no file target", runtimeConfigFile)
 	}
 
-	auditedBrief := auditableRuntimeBrief(brief, true, false, runtimeConfigFile != nil || readErr != nil)
+	auditedBrief := auditableRuntimeBrief(brief, true, false, runtimeConfigFile, readErr)
 	audit := buildTaskExecutionAudit("task-token", "", "prompt", auditedBrief, string(runtimeConfigFile), "")
 	for _, segment := range audit.PromptSegments {
 		if segment.Source == "execenv.InjectRuntimeConfig" {
