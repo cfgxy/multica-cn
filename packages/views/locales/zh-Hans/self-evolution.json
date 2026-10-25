@@ -388,6 +388,7 @@
       "ungraded": "尚未评分",
       "run": "运行一轮评分",
       "ordered": "已下单 {{ordered}} 条测验 run",
+      "orderedUnknown": "测验 run 已下单",
       "refused": "{{count}} 个代理未能下单，其余已执行",
       "runError": "评分批次未下单。",
       "batchLines": "本轮：已回答 {{answered}} · 出错 {{errored}} · 已评分 {{graded}}",

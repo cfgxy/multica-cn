@@ -25,8 +25,8 @@ import { useT, useLocale } from "../../i18n";
 import { readQuizBatch, writeQuizBatch } from "./quiz-session";
 
 const QUIZ_POLL_INTERVAL = 15_000;
-const LEGACY_BATCH_POLL_WINDOW = 10 * 60 * 1000;
-const SAMPLE_POLL_WINDOW = 10 * 60 * 1000;
+const COMPATIBILITY_QUIZ_POLL_INTERVAL = 60_000;
+const COMPATIBILITY_BATCH_POLL_WINDOW = 24 * 60 * 60 * 1000;
 
 /**
  * The graded side of the quiz (RUYI-286), owner-only like the rubrics it
@@ -64,20 +64,23 @@ export function QuizGradedPanel({
     agentId: string;
     batchId: string;
     expectedRows: number | null;
-  }>({ agentId, batchId: "", expectedRows: null });
-  const [samplePollDeadline] = useState(() => Date.now() + SAMPLE_POLL_WINDOW);
+    orderedAt: number;
+  }>({ agentId, batchId: "", expectedRows: null, orderedAt: Date.now() });
   const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
   const expectedRows = orderedBatch.agentId === agentId ? orderedBatch.expectedRows : null;
-  const legacyBatchPollDeadline = useRef(Date.now() + LEGACY_BATCH_POLL_WINDOW);
-  const legacyBatchPollExpired = () =>
-    expectedRows === null && Date.now() >= legacyBatchPollDeadline.current;
+  const compatibilityBatchPollExpired =
+    expectedRows === null && Date.now() >= orderedBatch.orderedAt + COMPATIBILITY_BATCH_POLL_WINDOW;
   const batch = useQuery({
     ...promptQuizBatchOptions(wsId, batchId),
     refetchInterval: (query) => {
       const rows = query.state.data?.rows ?? [];
       const batchComplete = isQuizBatchComplete(rows, expectedRows);
-      return batchId !== "" && !batchComplete && !legacyBatchPollExpired()
-        ? QUIZ_POLL_INTERVAL
+      const shouldPoll =
+        batchId !== "" &&
+        !batchComplete &&
+        !compatibilityBatchPollExpired;
+      return shouldPoll
+        ? expectedRows === null ? COMPATIBILITY_QUIZ_POLL_INTERVAL : QUIZ_POLL_INTERVAL
         : false;
     },
   });
@@ -87,13 +90,14 @@ export function QuizGradedPanel({
     ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
     staleTime: 0,
     refetchOnMount: "always",
-    refetchInterval: () => batchId !== ""
-      ? !batchSettled && !legacyBatchPollExpired()
-        ? QUIZ_POLL_INTERVAL
-        : false
-      : Date.now() < samplePollDeadline
-        ? QUIZ_POLL_INTERVAL
-        : false,
+    refetchOnWindowFocus: true,
+    refetchInterval: () => {
+      const shouldPoll =
+        batchId !== "" && !batchSettled && !compatibilityBatchPollExpired;
+      return shouldPoll
+        ? expectedRows === null ? COMPATIBILITY_QUIZ_POLL_INTERVAL : QUIZ_POLL_INTERVAL
+        : false;
+    },
   });
   const {
     dataUpdatedAt: samplesDataUpdatedAt,
@@ -105,18 +109,15 @@ export function QuizGradedPanel({
   const batchGraded = batch.data?.scores?.graded ?? 0;
   useEffect(() => {
     const storedBatch = readQuizBatch(wsId, agentId);
-    legacyBatchPollDeadline.current = Date.now() + LEGACY_BATCH_POLL_WINDOW;
-    if (storedBatch?.expectedRows === null) {
-      const orderedAt = storedBatch.orderedAt ?? Date.now();
-      legacyBatchPollDeadline.current = orderedAt + LEGACY_BATCH_POLL_WINDOW;
-      if (storedBatch.orderedAt === undefined) {
-        writeQuizBatch(wsId, agentId, storedBatch.batchId, null, orderedAt);
-      }
+    const orderedAt = storedBatch?.orderedAt ?? Date.now();
+    if (storedBatch?.orderedAt === undefined && storedBatch !== null) {
+      writeQuizBatch(wsId, agentId, storedBatch.batchId, storedBatch.expectedRows, orderedAt);
     }
     setOrderedBatch({
       agentId,
       batchId: storedBatch?.batchId ?? "",
       expectedRows: storedBatch ? storedBatch.expectedRows : null,
+      orderedAt,
     });
   }, [agentId, wsId]);
 
@@ -179,17 +180,16 @@ export function QuizGradedPanel({
           if (resp.batch_id !== "") {
             const orderedAt = Date.now();
             const expectedRows = resp.ordered ?? null;
-            if (expectedRows === null) {
-              legacyBatchPollDeadline.current = orderedAt + LEGACY_BATCH_POLL_WINDOW;
-            }
-            setOrderedBatch({ agentId, batchId: resp.batch_id, expectedRows });
+            setOrderedBatch({ agentId, batchId: resp.batch_id, expectedRows, orderedAt });
             writeQuizBatch(wsId, agentId, resp.batch_id, expectedRows, orderedAt);
           }
           const refused = resp.refused_agents?.length ?? 0;
           if (refused > 0) {
             toast.warning(t(($) => $.quiz.graded.refused, { count: refused }));
-          } else {
+          } else if (resp.ordered !== undefined) {
             toast.success(t(($) => $.quiz.graded.ordered, { ordered: resp.ordered ?? 0 }));
+          } else {
+            toast.success(t(($) => $.quiz.graded.orderedUnknown));
           }
         },
         onError: (e) =>

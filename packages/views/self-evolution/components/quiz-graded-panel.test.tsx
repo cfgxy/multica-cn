@@ -113,7 +113,7 @@ describe("QuizGradedPanel", () => {
 
     const second = { ...row, task_id: "0199abcd-0000-7000-8000-000000000002" };
     latest = [row, second];
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("2 graded");
     expect(within(screen.getByTestId("quiz-graded-batch")).getByTestId(`quiz-sample-${second.task_id}`)).toHaveTextContent(second.task_id);
   });
@@ -168,11 +168,11 @@ describe("QuizGradedPanel", () => {
     expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(1);
   });
 
-  it("continues polling a restored batch after the former polling window", async () => {
+  it("continues polling a compatibility batch after the former ten-minute polling window", async () => {
     vi.useFakeTimers();
     sessionStorage.setItem(
       "multica:quiz:ws-1:agent:agent-1:batch",
-      JSON.stringify({ batchId: "batch-1", expectedRows: 1, orderedAt: Date.now() - 71 * 60 * 1000 }),
+      JSON.stringify({ batchId: "batch-1", orderedAt: Date.now() - 71 * 60 * 1000 }),
     );
     api.getPromptQuizSamples.mockResolvedValue([]);
     api.getPromptQuizBatch.mockResolvedValue({
@@ -190,6 +190,33 @@ describe("QuizGradedPanel", () => {
     expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(api.getPromptQuizBatch.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("stops polling a compatibility batch after its one-day fallback window", async () => {
+    vi.useFakeTimers();
+    sessionStorage.setItem(
+      "multica:quiz:ws-1:agent:agent-1:batch",
+      JSON.stringify({ batchId: "batch-1", orderedAt: Date.now() - 25 * 60 * 60 * 1000 }),
+    );
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    api.getPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      rows: [{ ...row, outcome: "", score: null, task_status: "running" }],
+      counts: {},
+      scores: { graded: 0, mean: 0 },
+    });
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+
+    mount();
+    await flush();
+    const batchCalls = api.getPromptQuizBatch.mock.calls.length;
+    const sampleCalls = api.getPromptQuizSamples.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+
+    expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(batchCalls);
+    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(sampleCalls);
   });
 
   it("refreshes samples after an already completed batch mounts", async () => {
@@ -309,38 +336,19 @@ describe("QuizGradedPanel", () => {
     expect(api.getPromptQuizSamples.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("stops samples polling after the legacy batch deadline", async () => {
+  it("does not poll samples when no batch was restored", async () => {
     vi.useFakeTimers();
-    sessionStorage.setItem(
-      "multica:quiz:ws-1:agent:agent-1:batch",
-      JSON.stringify({ batchId: "batch-1" }),
-    );
     api.getPromptQuizSamples.mockResolvedValue([]);
-    api.getPromptQuizBatch.mockResolvedValue({
-      batch_id: "batch-1",
-      rows: [{ ...row, outcome: "answered", score: null, graded_at: undefined }],
-      counts: { answered: 1 },
-      scores: { graded: 0, mean: 0 },
-    });
     const flush = async () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(1); });
     };
 
-    const first = mount();
-    await flush();
-    await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60 * 1000); });
-    first.unmount();
     mount();
     await flush();
-    await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 15_000); });
-    const batchCallsAtDeadline = api.getPromptQuizBatch.mock.calls.length;
-    const sampleCallsAtDeadline = api.getPromptQuizSamples.mock.calls.length;
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
 
-    expect(batchCallsAtDeadline).toBeGreaterThan(1);
-    expect(sampleCallsAtDeadline).toBeGreaterThan(1);
-    expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(batchCallsAtDeadline);
-    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(sampleCallsAtDeadline);
+    expect(api.getPromptQuizBatch).not.toHaveBeenCalled();
+    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(1);
   });
 
   it("does not poll a batch that ordered no rows", async () => {

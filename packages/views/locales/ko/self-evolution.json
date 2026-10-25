@@ -388,6 +388,7 @@
       "ungraded": "미채점",
       "run": "채점 배치 실행",
       "ordered": "퀴즈 run {{ordered}}건을 발행했습니다",
+      "orderedUnknown": "퀴즈 run을 발행했습니다",
       "refused": "{{count}}개 에이전트는 발행되지 않았습니다",
       "runError": "채점 배치가 발행되지 않았습니다.",
       "batchLines": "이 배치: 답변 {{answered}} · 오류 {{errored}} · 채점 {{graded}}",

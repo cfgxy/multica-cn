@@ -388,6 +388,7 @@
       "ungraded": "未採点",
       "run": "採点バッチを実行",
       "ordered": "{{ordered}} 件のクイズ run を発行しました",
+      "orderedUnknown": "クイズ run を発行しました",
       "refused": "{{count}} 件のエージェントは発行できませんでした",
       "runError": "採点バッチは発行されませんでした。",
       "batchLines": "このバッチ：回答 {{answered}} · エラー {{errored}} · 採点 {{graded}}",
