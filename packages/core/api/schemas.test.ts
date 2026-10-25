@@ -1256,10 +1256,10 @@ describe("agent runtime concurrency schema", () => {
     expect(AgentRuntimeSchema.parse({}).max_concurrent_tasks).toBe(0);
   });
 
-  it("accepts non-negative runtime limits and falls back on malformed values", () => {
+  it("accepts non-negative runtime limits and rejects malformed values", () => {
     expect(AgentRuntimeSchema.parse({ max_concurrent_tasks: 8 }).max_concurrent_tasks).toBe(8);
-    expect(AgentRuntimeSchema.parse({ max_concurrent_tasks: -1 }).max_concurrent_tasks).toBe(0);
-    expect(AgentRuntimeSchema.parse({ max_concurrent_tasks: "8" }).max_concurrent_tasks).toBe(0);
+    expect(AgentRuntimeSchema.safeParse({ max_concurrent_tasks: -1 }).success).toBe(false);
+    expect(AgentRuntimeSchema.safeParse({ max_concurrent_tasks: "8" }).success).toBe(false);
   });
 });
 
