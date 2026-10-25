@@ -8,6 +8,7 @@ import type { PromptQuizBaseline, PromptQuizSampleRow } from "@multica/core/type
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { QuizGradedPanel } from "./quiz-graded-panel";
+import { writeQuizBatch } from "./quiz-session";
 
 const api = vi.hoisted(() => ({
   createPromptQuizBatch: vi.fn(),
@@ -64,6 +65,7 @@ function mount() {
 afterEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  sessionStorage.clear();
 });
 
 describe("QuizGradedPanel", () => {
@@ -108,5 +110,59 @@ describe("QuizGradedPanel", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("1 graded");
     expect(within(screen.getByTestId("quiz-graded-batch")).getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent(row.task_id);
+    await flush();
+    await flush();
+    expect(screen.getAllByTestId(`quiz-sample-${row.task_id}`)).toHaveLength(2);
+    expect(api.getPromptQuizSamples.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("restores the ordered batch after the panel unmounts and remounts", async () => {
+    vi.useFakeTimers();
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    api.getPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      rows: [{ ...row, outcome: "", score: null, task_status: "running" }],
+      counts: {},
+      scores: { graded: 0, mean: 0 },
+    });
+    api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+
+    const first = mount();
+    await flush();
+    fireEvent.click(screen.getByTestId("quiz-graded-run"));
+    await flush();
+    await flush();
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("Running");
+
+    first.unmount();
+    mount();
+    await flush();
+    expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("batch-1");
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("Running");
+  });
+
+  it("marks terminal tasks without a measured version and stops polling them", async () => {
+    vi.useFakeTimers();
+    writeQuizBatch("ws-1", "agent-1", "batch-1", Date.now());
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    api.getPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      rows: [{ ...row, version: 0, outcome: "", score: null, task_status: "completed" }],
+      counts: {},
+      scores: { graded: 0, mean: 0 },
+    });
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+
+    mount();
+    await flush();
+    expect(screen.getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent("Not measured");
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(1);
   });
 });

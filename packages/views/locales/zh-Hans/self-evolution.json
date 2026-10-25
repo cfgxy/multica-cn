@@ -399,6 +399,12 @@
       "version": "v{{version}}",
       "answered": "已回答",
       "errored": "出错",
+      "taskQueued": "排队中",
+      "taskRunning": "运行中",
+      "taskAwaitingGrade": "等待收集结果",
+      "taskPending": "待处理",
+      "taskNotMeasured": "未纳入测量",
+      "refresh": "刷新批次结果",
       "checkPassed": "{{id}}（{{kind}}）通过：{{evidence}}",
       "checkFailed": "{{id}}（{{kind}}）未过：{{evidence}}",
       "notAGate": "评分是读数不是闸门：发布路径不读取它。"

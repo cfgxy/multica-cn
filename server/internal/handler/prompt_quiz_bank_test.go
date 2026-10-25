@@ -325,6 +325,62 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 		t.Fatalf("ordered = %d, want 2", created.Ordered)
 	}
 
+	readBatch := func() struct {
+		BatchID string `json:"batch_id"`
+		Rows    []struct {
+			TaskID     string          `json:"task_id"`
+			ItemID     string          `json:"item_id"`
+			Outcome    string          `json:"outcome"`
+			Score      *float64        `json:"score"`
+			Detail     json.RawMessage `json:"score_detail"`
+			TaskStatus string          `json:"task_status"`
+		} `json:"rows"`
+		Counts map[string]int `json:"counts"`
+		Scores struct {
+			Graded int     `json:"graded"`
+			Mean   float64 `json:"mean"`
+			Items  []struct {
+				ItemID string `json:"item_id"`
+				Graded int    `json:"graded"`
+			} `json:"items"`
+		} `json:"scores"`
+	} {
+		var batch struct {
+			BatchID string `json:"batch_id"`
+			Rows    []struct {
+				TaskID     string          `json:"task_id"`
+				ItemID     string          `json:"item_id"`
+				Outcome    string          `json:"outcome"`
+				Score      *float64        `json:"score"`
+				Detail     json.RawMessage `json:"score_detail"`
+				TaskStatus string          `json:"task_status"`
+			} `json:"rows"`
+			Counts map[string]int `json:"counts"`
+			Scores struct {
+				Graded int     `json:"graded"`
+				Mean   float64 `json:"mean"`
+				Items  []struct {
+					ItemID string `json:"item_id"`
+					Graded int    `json:"graded"`
+				} `json:"items"`
+			} `json:"scores"`
+		}
+		req := newRequest("GET", "/api/prompt-quiz/batches/"+created.BatchID, nil)
+		testutil.Call(t, testHandler.GetPromptQuizBatch, withURLParam(req, "batchId", created.BatchID)).
+			Want(200).JSON(&batch)
+		return batch
+	}
+
+	queued := readBatch()
+	if len(queued.Rows) != 2 {
+		t.Fatalf("queued batch rows = %d, want 2", len(queued.Rows))
+	}
+	for _, row := range queued.Rows {
+		if row.TaskStatus != "queued" || row.Outcome != "" || row.Score != nil {
+			t.Errorf("uncollected run should be visible without fabricated result: %+v", row)
+		}
+	}
+
 	// The batch id is IN the payload the daemon will receive, next to the
 	// item id — the field set the sweep's payload test pins.
 	var contexts []string
@@ -350,20 +406,35 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 		}
 	}
 
-	// One answered-and-graded run, one errored run, both on the batch.
+	// The batch read starts from its task rows, then gains result data when the
+	// collector writes the task's measurement.
 	gradedScore := 0.75
-	for _, outcome := range []string{promptquiz.OutcomeAnswered, promptquiz.OutcomeErrored} {
-		taskID := dbfx.Task(t, agentID, map[string]any{
-			"status": "completed", "originator_source": promptquiz.OriginatorSource,
-			"completed_at": testutil.Raw("now()"),
-		})
+	for _, result := range []struct {
+		itemID  string
+		status  string
+		outcome string
+	}{
+		{itemID: itemA, status: "completed", outcome: promptquiz.OutcomeAnswered},
+		{itemID: itemB, status: "failed", outcome: promptquiz.OutcomeErrored},
+	} {
+		var taskID string
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT id::text FROM agent_task_queue WHERE agent_id = $1::uuid AND context->>'quiz_item_id' = $2`,
+			agentID, result.itemID).Scan(&taskID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := testPool.Exec(context.Background(),
+			`UPDATE agent_task_queue SET status = $2, completed_at = now() WHERE id = $1::uuid`,
+			taskID, result.status); err != nil {
+			t.Fatal(err)
+		}
 		cols := map[string]any{
 			"workspace_id": testWorkspaceID, "scope": "agent", "scope_id": agentID,
-			"version": 1, "item_id": itemA, "item_revision": 1,
+			"version": 1, "item_id": result.itemID, "item_revision": 1,
 			"item_body_sha256": promptquiz.BodyDigest("anchor"),
-			"batch_id":         created.BatchID, "task_id": taskID, "outcome": outcome,
+			"batch_id":         created.BatchID, "task_id": taskID, "outcome": result.outcome,
 		}
-		if outcome == promptquiz.OutcomeAnswered {
+		if result.outcome == promptquiz.OutcomeAnswered {
 			detail, _ := json.Marshal([]map[string]any{{"id": "c1", "kind": "includes_all", "passed": true, "weight": 1}})
 			cols["score"] = gradedScore
 			cols["score_detail"] = testutil.Raw("'" + strings.ReplaceAll(string(detail), "'", "''") + "'::jsonb")
@@ -372,29 +443,7 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 		dbfx.Insert(t, "prompt_quiz_result", cols)
 	}
 
-	req := newRequest("GET", "/api/prompt-quiz/batches/"+created.BatchID, nil)
-	var batch struct {
-		BatchID string `json:"batch_id"`
-		Rows    []struct {
-			TaskID     string          `json:"task_id"`
-			ItemID     string          `json:"item_id"`
-			Outcome    string          `json:"outcome"`
-			Score      *float64        `json:"score"`
-			Detail     json.RawMessage `json:"score_detail"`
-			TaskStatus string          `json:"task_status"`
-		} `json:"rows"`
-		Counts map[string]int `json:"counts"`
-		Scores struct {
-			Graded int     `json:"graded"`
-			Mean   float64 `json:"mean"`
-			Items  []struct {
-				ItemID string `json:"item_id"`
-				Graded int    `json:"graded"`
-			} `json:"items"`
-		} `json:"scores"`
-	}
-	testutil.Call(t, testHandler.GetPromptQuizBatch, withURLParam(req, "batchId", created.BatchID)).
-		Want(200).JSON(&batch)
+	batch := readBatch()
 
 	if batch.BatchID != created.BatchID || len(batch.Rows) != 2 {
 		t.Fatalf("batch read-back = %d rows, want 2 for %s", len(batch.Rows), created.BatchID)

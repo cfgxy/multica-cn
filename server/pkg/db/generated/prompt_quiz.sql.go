@@ -948,13 +948,13 @@ func (q *Queries) ListPromptQuizItems(ctx context.Context, arg ListPromptQuizIte
 
 const listPromptQuizResultsForBatch = `-- name: ListPromptQuizResultsForBatch :many
 SELECT
-    r.task_id,
-    r.scope,
-    r.scope_id,
-    r.version,
-    r.item_id,
-    r.item_revision,
-    r.outcome,
+    atq.id AS task_id,
+    'agent'::text AS scope,
+    atq.agent_id AS scope_id,
+    COALESCE(r.version, NULLIF(atq.prompt_versions->>'agent', '')::int, 0)::int AS version,
+    COALESCE(r.item_id, atq.trigger_evidence_ref_id) AS item_id,
+    COALESCE(r.item_revision, i.revision, 0)::int AS item_revision,
+    COALESCE(r.outcome, '')::text AS outcome,
     r.score,
     r.score_detail,
     r.graded_at,
@@ -963,18 +963,26 @@ SELECT
     i.slug AS item_slug,
     i.title AS item_title,
     atq.status AS task_status
-FROM prompt_quiz_result r
-LEFT JOIN prompt_quiz_item i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
-JOIN agent_task_queue atq ON atq.id = r.task_id
-WHERE r.workspace_id = $1::uuid
-  AND r.batch_id = $2::uuid
-ORDER BY r.measured_at DESC
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+LEFT JOIN prompt_quiz_result r
+  ON r.task_id = atq.id
+ AND r.workspace_id = a.workspace_id
+ AND r.batch_id = $1::uuid
+LEFT JOIN prompt_quiz_item i
+  ON i.id = COALESCE(r.item_id, atq.trigger_evidence_ref_id)
+ AND i.workspace_id = a.workspace_id
+WHERE a.workspace_id = $2::uuid
+  AND atq.originator_source = 'quiz'
+  AND atq.issue_id IS NULL
+  AND atq.context->>'quiz_batch_id' = $1::text
+ORDER BY COALESCE(r.measured_at, atq.created_at) DESC
 LIMIT $3::int
 `
 
 type ListPromptQuizResultsForBatchParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	BatchID     pgtype.UUID `json:"batch_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	RowLimit    int32       `json:"row_limit"`
 }
 
@@ -996,16 +1004,16 @@ type ListPromptQuizResultsForBatchRow struct {
 	TaskStatus   string             `json:"task_status"`
 }
 
-// One batch's rows for the traceability view (RUYI-286): per sample — which
-// item, which agent/version, outcome, score, and the task id that joins back
-// to the run. Owner-only at the route: it exposes score_detail's assertion
-// evidence, which is the private half's grading output.
+// One batch's rows for the traceability view (RUYI-286): queue rows remain
+// visible before the periodic collector writes their result. Owner-only at the
+// route: it exposes score_detail's assertion evidence, the private half's
+// grading output.
 //
 // LEFT JOIN, not JOIN: an item hard-deleted after the batch ran must not erase
 // the batch's history — the reading stays interpretable through item_revision
 // and item_body_sha256, which is exactly why the item is not a version table.
 func (q *Queries) ListPromptQuizResultsForBatch(ctx context.Context, arg ListPromptQuizResultsForBatchParams) ([]ListPromptQuizResultsForBatchRow, error) {
-	rows, err := q.db.Query(ctx, listPromptQuizResultsForBatch, arg.WorkspaceID, arg.BatchID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listPromptQuizResultsForBatch, arg.BatchID, arg.WorkspaceID, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
