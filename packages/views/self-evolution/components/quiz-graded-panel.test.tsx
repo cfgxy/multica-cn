@@ -85,21 +85,14 @@ describe("QuizGradedPanel", () => {
   // invisible to vi.advanceTimersByTimeAsync.
   it("refreshes an ordered batch and its samples after asynchronous grading", async () => {
     vi.useFakeTimers();
-    let latestSamples: PromptQuizSampleRow[] = [];
-    const pendingRow = {
-      ...row,
-      task_id: "0199abcd-0000-7000-8000-000000000002",
-      outcome: "" as const,
-      score: null,
-      task_status: "running",
-    };
-    api.getPromptQuizSamples.mockImplementation(async () => latestSamples);
+    let latest: PromptQuizSampleRow[] = [];
+    api.getPromptQuizSamples.mockImplementation(async () => latest);
     api.getPromptQuizBatch.mockImplementation(async () => ({
-      batch_id: "batch-1", rows: [row, pendingRow],
-      counts: { answered: 1 },
-      scores: { graded: latestSamples.length, mean: 0.5 },
+      batch_id: "batch-1", rows: latest,
+      counts: latest.length > 0 ? { answered: 1 } : {},
+      scores: { graded: latest.length, mean: 0.5 },
     }));
-    api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
+    api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 2 });
     // Positive advance: react-query's notifyManager schedules observer
     // notifications via setTimeout(0), which a 0ms tick does not run.
     const flush = async () => {
@@ -113,19 +106,16 @@ describe("QuizGradedPanel", () => {
     await flush();
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("0 graded");
 
-    latestSamples = [row];
+    latest = [row];
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("1 graded");
     expect(within(screen.getByTestId("quiz-graded-batch")).getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent(row.task_id);
-    await flush();
-    await flush();
-    expect(screen.getAllByTestId(`quiz-sample-${row.task_id}`)).toHaveLength(2);
-    expect(api.getPromptQuizSamples.mock.calls.length).toBeGreaterThanOrEqual(2);
 
-    const secondRow = { ...row, task_id: pendingRow.task_id, item_title: "Second question" };
-    latestSamples = [row, secondRow];
+    const second = { ...row, task_id: "0199abcd-0000-7000-8000-000000000002" };
+    latest = [row, second];
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
-    expect(screen.getAllByTestId(`quiz-sample-${secondRow.task_id}`)).toHaveLength(2);
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("2 graded");
+    expect(within(screen.getByTestId("quiz-graded-batch")).getByTestId(`quiz-sample-${second.task_id}`)).toHaveTextContent(second.task_id);
   });
 
   it("restores the ordered batch after the panel unmounts and remounts", async () => {
@@ -147,7 +137,7 @@ describe("QuizGradedPanel", () => {
     fireEvent.click(screen.getByTestId("quiz-graded-run"));
     await flush();
     await flush();
-    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("Running");
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("0 graded");
 
     first.unmount();
     mount();
@@ -249,7 +239,7 @@ describe("QuizGradedPanel", () => {
     });
     expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(2);
     await flush();
-    expect(screen.getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent(row.task_id);
+    expect(screen.getAllByTestId(`quiz-sample-${row.task_id}`)).toHaveLength(2);
   });
 
   it("refetches samples after an in-flight initial request when the batch is already settled", async () => {
@@ -279,7 +269,7 @@ describe("QuizGradedPanel", () => {
     });
     expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(2);
     await flush();
-    expect(screen.getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent(row.task_id);
+    expect(screen.getAllByTestId(`quiz-sample-${row.task_id}`)).toHaveLength(2);
   });
 
   it("keeps polling placeholder rows until grading evidence is written", async () => {

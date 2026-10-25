@@ -285,9 +285,7 @@ func (h *Handler) GetPromptQuizBatch(w http.ResponseWriter, r *http.Request) {
 	sample := promptquiz.Sample{Scores: []promptquiz.ScoredReading{}}
 	for _, row := range rows {
 		resp.Rows = appendQuizBatchRow(resp.Rows, row)
-		if row.Outcome != "" {
-			resp.Counts[row.Outcome]++
-		}
+		resp.Counts[row.Outcome]++
 		if row.Score.Valid {
 			sample.Scores = append(sample.Scores, promptquiz.ScoredReading{
 				ItemID: uuidToString(row.ItemID), Score: float64(row.Score.Float32),

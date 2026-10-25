@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
@@ -27,6 +26,7 @@ import { readQuizBatch, writeQuizBatch } from "./quiz-session";
 
 const QUIZ_POLL_INTERVAL = 15_000;
 const LEGACY_BATCH_POLL_WINDOW = 10 * 60 * 1000;
+const SAMPLE_POLL_WINDOW = 10 * 60 * 1000;
 
 /**
  * The graded side of the quiz (RUYI-286), owner-only like the rubrics it
@@ -65,6 +65,7 @@ export function QuizGradedPanel({
     batchId: string;
     expectedRows: number | null;
   }>({ agentId, batchId: "", expectedRows: null });
+  const [samplePollDeadline] = useState(() => Date.now() + SAMPLE_POLL_WINDOW);
   const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
   const expectedRows = orderedBatch.agentId === agentId ? orderedBatch.expectedRows : null;
   const legacyBatchPollDeadline = useRef(Date.now() + LEGACY_BATCH_POLL_WINDOW);
@@ -86,12 +87,22 @@ export function QuizGradedPanel({
     ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
     staleTime: 0,
     refetchOnMount: "always",
-    refetchInterval: batchId !== "" && !batchSettled && !legacyBatchPollExpired()
-      ? QUIZ_POLL_INTERVAL
-      : false,
+    refetchInterval: () => batchId !== ""
+      ? !batchSettled && !legacyBatchPollExpired()
+        ? QUIZ_POLL_INTERVAL
+        : false
+      : Date.now() < samplePollDeadline
+        ? QUIZ_POLL_INTERVAL
+        : false,
   });
+  const {
+    dataUpdatedAt: samplesDataUpdatedAt,
+    isFetching: samplesIsFetching,
+    refetch: refetchSamples,
+  } = samples;
 
   const previousBatchState = useRef({ batchId: "", settled: false });
+  const batchGraded = batch.data?.scores?.graded ?? 0;
   useEffect(() => {
     const storedBatch = readQuizBatch(wsId, agentId);
     legacyBatchPollDeadline.current = Date.now() + LEGACY_BATCH_POLL_WINDOW;
@@ -113,7 +124,7 @@ export function QuizGradedPanel({
     void queryClient.invalidateQueries({
       queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
     });
-  }, [agentId, baseline.current_version, queryClient, wsId]);
+  }, [agentId, queryClient, wsId]);
 
   useEffect(() => {
     if (!batch.isSuccess || batchId === "") return;
@@ -127,11 +138,10 @@ export function QuizGradedPanel({
     });
     if (baseline.current_version <= 0) return;
     if (firstObservationSettled) {
-      const refreshSamples = () => samples.refetch();
-      if (samples.isFetching && samples.dataUpdatedAt === 0) {
-        void samples.refetch().then(refreshSamples);
+      if (samplesIsFetching && samplesDataUpdatedAt === 0) {
+        void refetchSamples().then(() => refetchSamples());
       } else {
-        void refreshSamples();
+        void refetchSamples();
       }
     } else {
       void queryClient.invalidateQueries({
@@ -146,11 +156,17 @@ export function QuizGradedPanel({
     batchId,
     batchSettled,
     queryClient,
-    samples.dataUpdatedAt,
-    samples.isFetching,
-    samples.refetch,
+    refetchSamples,
+    samplesDataUpdatedAt,
+    samplesIsFetching,
     wsId,
   ]);
+
+  useEffect(() => {
+    if (batchGraded > 0 && !batchSettled) {
+      void queryClient.invalidateQueries({ queryKey: promptQuizKeys.baseline(wsId, "agent", agentId) });
+    }
+  }, [agentId, batchGraded, batchSettled, queryClient, wsId]);
 
   const scores = baseline.scores;
   const graded = scores?.graded ?? 0;
@@ -219,22 +235,7 @@ export function QuizGradedPanel({
             <p className="text-caption text-muted-foreground">{t(($) => $.quiz.reading.error)}</p>
           ) : (
             <div className="flex flex-col gap-1" data-testid="quiz-graded-batch">
-              <div className="flex items-start justify-between gap-2">
-                <p className="break-all text-caption text-muted-foreground">{batchId}</p>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  aria-label={t(($) => $.quiz.graded.refresh)}
-                  title={t(($) => $.quiz.graded.refresh)}
-                  disabled={batch.isFetching || samples.isFetching}
-                  onClick={() => {
-                    void batch.refetch();
-                    void samples.refetch();
-                  }}
-                >
-                  <RefreshCw aria-hidden="true" />
-                </Button>
-              </div>
+              <p className="break-all text-caption text-muted-foreground">{batchId}</p>
               <p className="text-caption text-muted-foreground">
                 {t(($) => $.quiz.graded.batchLines, {
                   answered: batch.data?.counts.answered ?? 0,
