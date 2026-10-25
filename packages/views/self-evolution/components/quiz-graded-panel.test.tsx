@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { promptQuizKeys } from "@multica/core/self-evolution";
 import type { PromptQuizBaseline, PromptQuizSampleRow } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
@@ -50,8 +51,7 @@ const row: PromptQuizSampleRow = {
   score_detail: [{ id: "rule-1", kind: "includes", passed: true, evidence: "matched" }],
 };
 
-function mount() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function mount(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   const view = render(
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" resources={{ en: { common: enCommon, "self-evolution": enSelfEvolution } }}>
@@ -202,7 +202,7 @@ describe("QuizGradedPanel", () => {
     expect(api.getPromptQuizBatch.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("does not refetch samples twice when an already completed batch mounts", async () => {
+  it("refreshes samples after an already completed batch mounts", async () => {
     writeQuizBatch("ws-1", "agent-1", "batch-1");
     api.getPromptQuizSamples.mockResolvedValue([row]);
     api.getPromptQuizBatch.mockResolvedValue({
@@ -214,6 +214,71 @@ describe("QuizGradedPanel", () => {
 
     mount();
     await screen.findAllByTestId(`quiz-sample-${row.task_id}`);
+    await waitFor(() => expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(2));
+  });
+
+  it("refreshes cached samples when a restored batch is already settled", async () => {
+    vi.useFakeTimers();
+    writeQuizBatch("ws-1", "agent-1", "batch-1");
+    api.getPromptQuizSamples
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([row]);
+    let resolveBatch: (batch: unknown) => void = () => {};
+    api.getPromptQuizBatch.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveBatch = resolve; }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(promptQuizKeys.samples("ws-1", "agent", "agent-1", 2), []);
+
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+    mount(client);
+    await flush();
     expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId(`quiz-sample-${row.task_id}`)).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveBatch({
+        batch_id: "batch-1",
+        rows: [row],
+        counts: { answered: 1 },
+        scores: { graded: 1, mean: 0.5 },
+      });
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(2);
+    await flush();
+    expect(screen.getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent(row.task_id);
+  });
+
+  it("refetches samples after an in-flight initial request when the batch is already settled", async () => {
+    vi.useFakeTimers();
+    writeQuizBatch("ws-1", "agent-1", "batch-1");
+    let resolveInitialSamples: (samples: PromptQuizSampleRow[]) => void = () => {};
+    api.getPromptQuizSamples
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveInitialSamples = resolve; }))
+      .mockResolvedValueOnce([row]);
+    api.getPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      rows: [row],
+      counts: { answered: 1 },
+      scores: { graded: 1, mean: 0.5 },
+    });
+
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+    mount();
+    await flush();
+    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveInitialSamples([]);
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(2);
+    await flush();
+    expect(screen.getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent(row.task_id);
   });
 });
