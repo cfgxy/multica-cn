@@ -685,6 +685,8 @@
       "source_autopilot_run": "오토파일럿 실행",
       "source_retrospective": "일일 회고",
       "retro_title": "일일 회고 {{stamp}}",
+      "source_quiz": "문제 은행 평가",
+      "quiz_title": "{{title}} · 배치 {{batch}}",
       "view_results_tooltip": "회고 결과 보기",
       "adaptation_title": "작업 경험 기록",
       "adaptation_applied": "적용됨",

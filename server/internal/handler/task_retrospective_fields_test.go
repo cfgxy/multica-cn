@@ -79,6 +79,32 @@ func TestTaskToResponseRetrospectiveFields(t *testing.T) {
 	})
 }
 
+func TestTaskToResponseQuizFields(t *testing.T) {
+	const itemID = "5b0e0000-0000-4000-8000-000000000001"
+	const batchID = "8a1f0000-0000-4000-8000-000000000001"
+	resp := taskToResponse(db.AgentTaskQueue{
+		OriginatorSource: pgtype.Text{String: "quiz", Valid: true},
+		Context: []byte(`{"kind":"quiz","quiz_item_id":"` + itemID +
+			`","quiz_item_title":"稳定性题目","quiz_batch_id":"` + batchID + `"}`),
+	}, "ws-1")
+	if resp.Kind != "quiz" {
+		t.Fatalf("kind = %q, want quiz", resp.Kind)
+	}
+	if resp.QuizItemID != itemID || resp.QuizItemTitle != "稳定性题目" || resp.QuizBatchID != batchID {
+		t.Errorf("quiz fields = %q/%q/%q, want item ID/title/batch ID",
+			resp.QuizItemID, resp.QuizItemTitle, resp.QuizBatchID)
+	}
+
+	resp = taskToResponse(db.AgentTaskQueue{
+		OriginatorSource: pgtype.Text{String: "quiz", Valid: true},
+		Context:          []byte(`{"kind":"quiz","quiz_item_id":"bad","quiz_batch_id":"bad"}`),
+	}, "ws-1")
+	if resp.QuizItemID != "" || resp.QuizItemTitle != "" || resp.QuizBatchID != "" {
+		t.Errorf("invalid quiz context leaked fields: %q/%q/%q",
+			resp.QuizItemID, resp.QuizItemTitle, resp.QuizBatchID)
+	}
+}
+
 func TestTaskToResponseExposesOnlyMatchingAdaptationReceipt(t *testing.T) {
 	const taskID = "8fcd3a5f-14e9-4d5b-95b9-79b70bb0a146"
 	taskContext := []byte(`{"capability_adaptation":{"policy_id":"policy-a","policy_version":"v2","scope":"current_task","trigger":"large task","current_strategy":"one pass","suggested_strategy":"small verified steps","allowed_actions":["checkpoint"]}}`)

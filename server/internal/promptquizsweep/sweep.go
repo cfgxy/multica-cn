@@ -328,7 +328,7 @@ func (r Runner) enqueue(ctx context.Context, budget int) (int, error) {
 // field, so this function could not send the answer key even by mistake.
 // sweep_test.go asserts the payload's field set rather than trusting that.
 func taskContext(item db.ListActivePromptQuizItemsForProfileRow, batch pgtype.UUID) ([]byte, error) {
-	return TaskContextPayload(uuid.UUID(item.ID.Bytes).String(), item.Body, batch)
+	return TaskContextPayload(uuid.UUID(item.ID.Bytes).String(), item.Title, item.Body, batch)
 }
 
 // TaskContextPayload builds the payload a quiz run's daemon receives, exported
@@ -338,13 +338,14 @@ func taskContext(item db.ListActivePromptQuizItemsForProfileRow, batch pgtype.UU
 // prior measurement, and none of the item's private halves. That is what makes
 // two measurements of the same item comparable — the run's whole input is the
 // prompt under test plus a fixed string. The guarantee is the caller's to keep
-// on this path: pass the body and the ids, nothing more.
-func TaskContextPayload(itemID, body string, batch pgtype.UUID) ([]byte, error) {
+// on this path: pass the body and identity/display metadata, never the rubric.
+func TaskContextPayload(itemID, itemTitle, body string, batch pgtype.UUID) ([]byte, error) {
 	payload, err := json.Marshal(map[string]any{
-		"kind":          promptquiz.TaskKind,
-		"quiz_batch_id": uuid.UUID(batch.Bytes).String(),
-		"quiz_item_id":  itemID,
-		"quiz_prompt":   body,
+		"kind":            promptquiz.TaskKind,
+		"quiz_batch_id":   uuid.UUID(batch.Bytes).String(),
+		"quiz_item_id":    itemID,
+		"quiz_item_title": itemTitle,
+		"quiz_prompt":     body,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode quiz context: %w", err)

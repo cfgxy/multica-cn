@@ -803,6 +803,8 @@
       "source_autopilot_run": "Autopilot run",
       "source_retrospective": "Daily retrospective",
       "retro_title": "Daily retrospective {{stamp}}",
+      "source_quiz": "Quiz scoring",
+      "quiz_title": "{{title}} · Batch {{batch}}",
       "view_results_tooltip": "View retrospective results",
       "adaptation_title": "Task experience receipt",
       "adaptation_applied": "applied",

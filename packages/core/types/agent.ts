@@ -437,7 +437,7 @@ export interface AgentTask {
    * tasks that have no linked issue (so e.g. quick-create tasks render
    * with a meaningful title instead of falling through to "Untracked").
    */
-  kind?: "comment" | "autopilot" | "chat" | "quick_create" | "direct" | "retrospective";
+  kind?: "comment" | "autopilot" | "chat" | "quick_create" | "direct" | "retrospective" | "quiz";
   /**
    * Daily-retrospective runs (kind="retrospective") only: the
    * retrospective_run row this task serves, from the task's context
@@ -449,6 +449,10 @@ export interface AgentTask {
    * moment the readable title stamps (`每日复盘YYYYMMDD_HHmmss`).
    */
   retrospective_window_end?: string;
+  /** Prompt-quiz runs only: the measured bank item and its batch identity. */
+  quiz_item_id?: string;
+  quiz_item_title?: string;
+  quiz_batch_id?: string;
   /**
    * Local working directory pinned for this task by the daemon. Empty until
    * the daemon reports a work_dir (typically once execution starts). This is
