@@ -45,6 +45,9 @@ function stubFetchResponses(responses: Response[]) {
       const key = url.endsWith("/approve") ? "single" : "batch";
       bodies[key] = JSON.parse(String(init?.body ?? "{}"));
     }
+    if (typeof url === "string" && url.includes("/preview")) {
+      bodies.preview = JSON.parse(String(init?.body ?? "{}"));
+    }
     return Promise.resolve(responses.shift() ?? new Response("{}", { status: 500 }));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -54,6 +57,15 @@ function stubFetchResponses(responses: Response[]) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("legislation approve endpoints (RUYI-858)", () => {
+  it("sends the selected landing target to preview", async () => {
+    stubFetchResponses([new Response(JSON.stringify({ proposal: validProposal, diff: [], current_sha256: "", baseline_used: false }))]);
+    const client = new ApiClient("https://api.example.test");
+
+    await client.previewPromptProposal("p-1", "static_prompt");
+
+    expect(capturedBody("preview")).toEqual({ enactment_target: "static_prompt" });
+  });
+
   it("omits the landing target from the body when the default is kept", async () => {
     stubFetchResponses([new Response(JSON.stringify(validProposal))]);
     const client = new ApiClient("https://api.example.test");

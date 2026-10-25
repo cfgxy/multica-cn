@@ -42,12 +42,12 @@ const squadCarrierText = `# 小队作战手册
 // enacted clause by id.
 func clauseOpBody(wsID, changeKind, clauseID, clauseName, clauseText string, extra map[string]any) map[string]any {
 	body := map[string]any{
-		"carrier_scope":        "workspace",
-		"carrier_scope_id":     wsID,
-		"target_section":       "沟通规范",
-		"change_kind":          changeKind,
-		"clause_name":          clauseName,
-		"clause_text":          clauseText,
+		"carrier_scope":         "workspace",
+		"carrier_scope_id":      wsID,
+		"target_section":        "沟通规范",
+		"change_kind":           changeKind,
+		"clause_name":           clauseName,
+		"clause_text":           clauseText,
 		"gate_answer_layer":     "workspace=跨项目协作机制",
 		"gate_answer_retention": "每轮输出都适用，留底座",
 		"gate_answer_cost":      "约 60 字符常驻",
@@ -87,8 +87,25 @@ func TestClauseReviseEnactsNextVersion(t *testing.T) {
 	f := newClauseInjectionFixture(t)
 	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 
-	id := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步",
-		"- **每日同步**：各成员开工前在任务单回报当日计划、阻塞与预计完成时间。", nil))
+	proposed := "- **每日同步**：各成员开工前在任务单回报当日计划、阻塞与预计完成时间。"
+	id := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", proposed, nil))
+	code, body := legislationCall(t, testHandler.PreviewPromptProposal,
+		legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+id+"/preview", nil, "id", id))
+	if code != http.StatusOK {
+		t.Fatalf("revise preview: expected 200, got %d: %s", code, body)
+	}
+	var preview PromptProposalPreviewResponse
+	if err := json.Unmarshal([]byte(body), &preview); err != nil {
+		t.Fatalf("decode revise preview: %v (%s)", err, body)
+	}
+	var diff strings.Builder
+	for _, line := range preview.Diff {
+		diff.WriteString(line.Text)
+		diff.WriteByte('\n')
+	}
+	if !strings.Contains(diff.String(), proposed) || strings.Contains(diff.String(), "修订请改用新增") {
+		t.Fatalf("revise preview diff = %q, want proposed clause body and no static-title synthesis error", diff.String())
+	}
 	if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusOK {
 		t.Fatalf("revise approve: expected 200, got %d: %s", code, body)
 	}
@@ -114,6 +131,47 @@ func TestClauseReviseEnactsNextVersion(t *testing.T) {
 		f.wsID, id).Scan(&enactedVersion)
 	if enactedVersion != 2 {
 		t.Fatalf("proposal enacted_version = %d, want 2", enactedVersion)
+	}
+}
+
+func TestClauseReviseEnactsNextVersionForSquadBinding(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	squadID := dbfx.Squad(t, "revision target squad", f.agentID,
+		testutil.Cols{"workspace_id": f.wsID, "instructions": squadCarrierText})
+
+	create := clauseOpBody(f.wsID, "add_clause", "", "小队交接", "- **小队交接**：交接时说明现状。", nil)
+	create["carrier_scope"] = "squad"
+	create["carrier_scope_id"] = squadID
+	createID := submitClauseOp(t, f, create)
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, createID); code != http.StatusOK {
+		t.Fatalf("squad clause create: expected 200, got %d: %s", code, body)
+	}
+	var clauseID string
+	dbfx.QueryRow(t, `SELECT clause_id::text FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, f.wsID, createID).Scan(&clauseID)
+	if clauseID == "" {
+		t.Fatal("squad clause create did not persist clause_id")
+	}
+
+	proposed := "- **小队交接**：交接时同步当前进度、未决风险和下一步责任人。"
+	revise := clauseOpBody(f.wsID, "revise_clause", clauseID, "小队交接", proposed, nil)
+	revise["carrier_scope"] = "squad"
+	revise["carrier_scope_id"] = squadID
+	reviseID := submitClauseOp(t, f, revise)
+	code, previewBody := legislationCall(t, testHandler.PreviewPromptProposal,
+		legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+reviseID+"/preview", nil, "id", reviseID))
+	if code != http.StatusOK || !strings.Contains(previewBody, "下一步责任人") {
+		t.Fatalf("squad clause preview: expected revised diff, got %d: %s", code, previewBody)
+	}
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, reviseID); code != http.StatusOK {
+		t.Fatalf("squad clause revise: expected 200, got %d: %s", code, body)
+	}
+
+	var since int32
+	var instructions string
+	dbfx.QueryRow(t, `SELECT since_clause_version FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&since)
+	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, squadID).Scan(&instructions)
+	if since != 2 || !strings.Contains(instructions, proposed) || !strings.Contains(instructions, "rev=2") {
+		t.Fatalf("squad revision = binding v%d, instructions:\n%s", since, instructions)
 	}
 }
 
@@ -150,7 +208,7 @@ func TestClauseMoveBetweenCarriers(t *testing.T) {
 	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 
 	id := submitClauseOp(t, f, clauseOpBody(f.wsID, "move_clause", clauseID, "每日同步", "", map[string]any{
-		"move_to_scope":   "squad",
+		"move_to_scope":    "squad",
 		"move_to_scope_id": squadID,
 	}))
 	if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusOK {
@@ -322,8 +380,8 @@ func TestClauseReconciliationLayerViolation(t *testing.T) {
 		t.Fatalf("reconciliation 2: expected 200, got %d: %s", code, body)
 	}
 	var after struct {
-		Healthy     bool `json:"healthy"`
-		Violations  []struct {
+		Healthy    bool `json:"healthy"`
+		Violations []struct {
 			TaskID       string `json:"task_id"`
 			CarrierScope string `json:"carrier_scope"`
 		} `json:"layer_set_violations"`

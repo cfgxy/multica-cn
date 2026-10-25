@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -43,6 +44,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -374,7 +376,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		}
 	} else {
 		ref := refs[0]
-		synthText, synthErr := legislation.Synthesize(texts[ref], input)
+		synthText, synthErr := h.synthesizeProposalCarrier(ctx, qtx, workspaceID, p, texts[ref])
 		if synthErr != nil {
 			res = errorResult(synthErr)
 		} else {
@@ -470,6 +472,42 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		return false, errorResult(fmt.Errorf("enact 落账失败: %w", err))
 	}
 	return true, res
+}
+
+// synthesizeProposalCarrier applies a proposal to the carrier representation
+// that the selected landing target actually changes. Structured revisions are
+// addressed by Clause ID and replace its rendered asset segment; static and
+// legacy name-only proposals retain the text-engine path.
+func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, current string) (string, error) {
+	if p.EnactmentTarget != "clause_library" || p.ChangeKind != "revise_clause" || !p.ClauseID.Valid {
+		return legislation.Synthesize(current, proposalInputFromRow(p))
+	}
+
+	clause, err := resolveProposalClauseTx(ctx, qtx, workspaceID, p.ClauseID, p.ClauseName)
+	if err != nil {
+		return "", err
+	}
+	if clause.Status != "active" {
+		return "", fmt.Errorf("条款「%s」当前状态为 %s，仅 active 条款可修订", clause.Title, clause.Status)
+	}
+	binding, err := qtx.GetActiveClauseBinding(ctx, clause.ID)
+	if err != nil {
+		return "", fmt.Errorf("条款「%s」没有生效绑定，无法修订", clause.Title)
+	}
+	if binding.Scope != p.CarrierScope || binding.ScopeID != p.CarrierScopeID {
+		return "", fmt.Errorf("条款「%s」的生效绑定与提案载体不一致", clause.Title)
+	}
+	if binding.SinceClauseVersion != clause.Version {
+		return "", fmt.Errorf("条款「%s」的 active binding 版本已漂移，请重新核对后提交", clause.Title)
+	}
+	if err := legislation.ValidateRevisionText(clause.Title, p.ClauseText); err != nil {
+		return "", err
+	}
+	synthesized, err := clausemark.ReplaceSegment(current, clause.Slug, binding.SinceClauseVersion, p.ClauseText)
+	if err != nil {
+		return "", fmt.Errorf("条款「%s」载体结构校验失败，已阻断：%w", clause.Title, err)
+	}
+	return synthesized, nil
 }
 
 // landStaticCarrierTx is the static-prompt landing branch (RUYI-858): the
@@ -923,6 +961,10 @@ type PromptProposalPreviewResponse struct {
 	BaselineUsed  bool                   `json:"baseline_used"`
 }
 
+type PromptProposalPreviewRequest struct {
+	EnactmentTarget string `json:"enactment_target"`
+}
+
 // PreviewPromptProposal — POST /api/prompt-legislation/proposals/{id}/preview
 // Synthesizes the sandbox text and returns the full-carrier line diff. Read-
 // only against the carrier (no row lock): previews may interleave with other
@@ -932,18 +974,28 @@ func (h *Handler) PreviewPromptProposal(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	var req PromptProposalPreviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid preview request")
+		return
+	}
+	if p.Status == "approved" {
+		req.EnactmentTarget = p.EnactmentTarget
+	}
+	target, targetErr := normalizeEnactmentTarget(req.EnactmentTarget, p.ChangeKind)
+	if targetErr != "" {
+		writeError(w, http.StatusBadRequest, targetErr)
+		return
+	}
+	p.EnactmentTarget = target
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 	current, ok := h.readScopeEffectiveContent(w, r, promptVersionScope(p.CarrierScope), workspaceID, p.CarrierScopeID)
 	if !ok {
 		return
 	}
-	synth, err := legislation.Synthesize(current, proposalInputFromRow(p))
+	synth, err := h.synthesizeProposalCarrier(r.Context(), h.Queries, workspaceID, p, current)
 	if err != nil {
-		writeJSON(w, http.StatusOK, PromptProposalPreviewResponse{
-			Proposal:      proposalToResponse(p),
-			Diff:          []legislation.DiffLine{{Kind: "context", Text: fmt.Sprintf("草案无法合成：%v", err)}},
-			CurrentSha256: sha256Hex(current),
-		})
+		writeError(w, http.StatusConflict, fmt.Sprintf("草案无法合成，已阻断：%v", err))
 		return
 	}
 	baselineUsed := true

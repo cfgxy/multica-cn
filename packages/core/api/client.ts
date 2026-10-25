@@ -5377,10 +5377,13 @@ export class ApiClient {
     });
   }
 
-  async previewPromptProposal(id: string): Promise<PromptProposalPreview> {
+  async previewPromptProposal(
+    id: string,
+    enactmentTarget?: "clause_library" | "static_prompt",
+  ): Promise<PromptProposalPreview> {
     const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/preview`, {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify(enactmentTarget ? { enactment_target: enactmentTarget } : {}),
     });
     return parseWithFallback(raw, PromptProposalPreviewSchema, raw as PromptProposalPreview, {
       endpoint: "POST /api/prompt-legislation/proposals/{id}/preview",

@@ -59,15 +59,29 @@ export function ProposalPreviewDialog({
   const [targetOverrides, setTargetOverrides] = useState<Record<string, "static_prompt">>({});
 
   const key = useMemo(() => ids.join(","), [ids]);
+  const targetKey = useMemo(
+    () => ids.map((id) => `${id}:${targetOverrides[id] ?? "clause_library"}`).join(","),
+    [ids, targetOverrides],
+  );
 
   useEffect(() => {
     setConfirmed(false);
     setPreviews(null);
     setLoadError("");
     setTargetOverrides({});
+  }, [open, key]);
+
+  useEffect(() => {
     if (!open || ids.length === 0) return;
+    setConfirmed(false);
+    setPreviews(null);
+    setLoadError("");
     let alive = true;
-    Promise.all(ids.map((id) => api.previewPromptProposal(id)))
+    Promise.all(
+      ids.map((id) =>
+        api.previewPromptProposal(id, targetOverrides[id] ?? "clause_library"),
+      ),
+    )
       .then((all) => {
         if (alive) setPreviews(all);
       })
@@ -78,7 +92,7 @@ export function ProposalPreviewDialog({
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, key]);
+  }, [open, key, targetKey]);
 
   const loaded = previews != null;
 
