@@ -559,12 +559,16 @@ function TaskRow({
   // badge, and a jump to the run's results view. Without this branch they
   // used to fall through to the "Untracked" label.
   const isRetro = task.kind === "retrospective";
+  const isQuiz = task.kind === "quiz";
   const retroStamp = isRetro
     ? formatRetrospectiveStamp(
         task.retrospective_window_end ?? task.completed_at ?? task.created_at,
       )
     : "";
-  const sourceFallback = !hasIssue && !isRetro
+  const quizBatchStamp = task.quiz_batch_id?.slice(0, 8) ?? "";
+  const quizItemStamp = task.quiz_item_id?.slice(0, 8) ?? "";
+  const quizRunStamp = [quizBatchStamp, quizItemStamp].filter(Boolean).join("/");
+  const sourceFallback = !hasIssue && !isRetro && !isQuiz
     ? task.kind === "quick_create"
       ? isTerminalStatus
         ? t(($) => $.tab_body.activity.source_quick_create)
@@ -580,6 +584,8 @@ function TaskRow({
     ? Hash
     : isRetro
       ? History
+      : isQuiz
+        ? ClipboardList
       : task.chat_session_id
         ? MessageSquare
         : task.autopilot_run_id
@@ -589,6 +595,8 @@ function TaskRow({
     ? t(($) => $.tab_body.activity.source_issue)
     : isRetro
       ? t(($) => $.tab_body.activity.source_retrospective)
+      : isQuiz
+        ? t(($) => $.tab_body.activity.source_quiz)
       : task.chat_session_id
         ? t(($) => $.tab_body.activity.source_chat)
         : task.autopilot_run_id
@@ -606,6 +614,13 @@ function TaskRow({
         ? (retroStamp
             ? t(($) => $.tab_body.activity.retro_title, { stamp: retroStamp })
             : t(($) => $.tab_body.activity.source_retrospective))
+        : isQuiz
+          ? (task.quiz_item_title?.trim()
+              ? t(($) => $.tab_body.activity.quiz_title, {
+                  title: task.quiz_item_title,
+                  batch: quizRunStamp,
+                })
+              : t(($) => $.tab_body.activity.source_quiz))
         : (sourceFallback ?? t(($) => $.tab_body.activity.source_untracked)));
 
   const timeText =
@@ -728,6 +743,14 @@ function TaskRow({
                   an identifiable marker on the row itself. */}
               <Badge variant="outline" className="px-1.5 text-micro">
                 {t(($) => $.tab_body.activity.source_retrospective)}
+              </Badge>
+            </>
+          )}
+          {isQuiz && (
+            <>
+              <Sep />
+              <Badge variant="outline" className="px-1.5 text-micro">
+                {t(($) => $.tab_body.activity.source_quiz)}
               </Badge>
             </>
           )}

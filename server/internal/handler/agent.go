@@ -697,7 +697,7 @@ type AgentTaskResponse struct {
 	InitiatorID    string `json:"initiator_id,omitempty"`    // user UUID (member) or agent UUID
 	InitiatorName  string `json:"initiator_name,omitempty"`  // display name of the initiator
 	InitiatorEmail string `json:"initiator_email,omitempty"` // member email; empty for agent initiators
-	Kind           string `json:"kind"`                      // discriminator: "comment" | "autopilot" | "chat" | "quick_create" | "direct" — used by the activity row to label tasks that have no linked issue
+	Kind           string `json:"kind"`                      // source discriminator used by activity rows, including no-issue task kinds
 	// RetrospectiveRunID / RetrospectiveWindowEnd (RUYI-673) ride only on
 	// daily-retrospective tasks (kind="retrospective"): the retrospective_run
 	// row the task serves and the window end (= trigger moment) the UI stamps
@@ -706,6 +706,11 @@ type AgentTaskResponse struct {
 	// valid retrospective payload.
 	RetrospectiveRunID     string `json:"retrospective_run_id,omitempty"`
 	RetrospectiveWindowEnd string `json:"retrospective_window_end,omitempty"`
+	// Quiz item identity is presentation metadata for activity rows; it is read
+	// from the quiz task context without changing the grading/result linkage.
+	QuizItemID    string `json:"quiz_item_id,omitempty"`
+	QuizItemTitle string `json:"quiz_item_title,omitempty"`
+	QuizBatchID   string `json:"quiz_batch_id,omitempty"`
 	// Attribution is the resolved accountable-human provenance for this run
 	// (MUL-4302 §9): the source label + precise flag, the initiator (accountable)
 	// and originator refs, the evidence pointer, and lineage. Always present (the
@@ -1072,6 +1077,24 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		if tc, ok := retrospective.ParseTaskContext(t.Context); ok {
 			resp.RetrospectiveRunID = tc.RunID
 			resp.RetrospectiveWindowEnd = tc.WindowEnd
+		}
+	}
+	if resp.Kind == promptquiz.TaskKind {
+		var quizContext struct {
+			ItemID    string `json:"quiz_item_id"`
+			ItemTitle string `json:"quiz_item_title"`
+			BatchID   string `json:"quiz_batch_id"`
+		}
+		if json.Unmarshal(t.Context, &quizContext) == nil {
+			if _, err := util.ParseUUID(quizContext.ItemID); err == nil {
+				resp.QuizItemID = quizContext.ItemID
+			}
+			if strings.TrimSpace(quizContext.ItemTitle) != "" {
+				resp.QuizItemTitle = quizContext.ItemTitle
+			}
+			if _, err := util.ParseUUID(quizContext.BatchID); err == nil {
+				resp.QuizBatchID = quizContext.BatchID
+			}
 		}
 	}
 	return resp

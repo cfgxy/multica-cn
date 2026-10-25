@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -524,7 +525,7 @@ func TestQuizPayloadCarriesNoRubric(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload), &fields); err != nil {
 		t.Fatalf("payload is not an object: %v", err)
 	}
-	want := []string{"kind", "quiz_batch_id", "quiz_item_id", "quiz_prompt"}
+	want := []string{"kind", "quiz_batch_id", "quiz_item_id", "quiz_item_title", "quiz_prompt"}
 	if len(fields) != len(want) {
 		t.Errorf("payload has fields %v, want exactly %v", keysOf(fields), want)
 	}
@@ -532,6 +533,9 @@ func TestQuizPayloadCarriesNoRubric(t *testing.T) {
 		if _, ok := fields[k]; !ok {
 			t.Errorf("payload is missing %q", k)
 		}
+	}
+	if got, ok := fields["quiz_item_title"].(string); !ok || got != "Sweep item" {
+		t.Errorf("quiz item title = %v, want %q", fields["quiz_item_title"], "Sweep item")
 	}
 	if strings.Contains(payload, secret) {
 		t.Error("the payload sent to the measured run contains the item's rubric")
@@ -563,6 +567,25 @@ func TestQuizPayloadCarriesNoRubric(t *testing.T) {
 		if strings.EqualFold(rowType.Field(i).Name, "Rubric") {
 			t.Error("ListActivePromptQuizItemsForProfileRow now carries Rubric: the sweep can reach the answer key, and only this test's payload check stands between it and the run")
 		}
+	}
+}
+
+func TestTaskContextPayloadIncludesItemTitle(t *testing.T) {
+	payload, err := TaskContextPayload(
+		"5b0e0000-0000-4000-8000-000000000001",
+		"Stability question",
+		"Describe the stability risks.",
+		pgtype.UUID{},
+	)
+	if err != nil {
+		t.Fatalf("build quiz context: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatalf("decode quiz context: %v", err)
+	}
+	if fields["quiz_item_title"] != "Stability question" {
+		t.Errorf("quiz_item_title = %v, want %q", fields["quiz_item_title"], "Stability question")
 	}
 }
 

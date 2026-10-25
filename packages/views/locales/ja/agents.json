@@ -677,6 +677,8 @@
       "source_autopilot_run": "オートパイロット実行",
       "source_retrospective": "毎日のふりかえり",
       "retro_title": "毎日のふりかえり{{stamp}}",
+      "source_quiz": "問題バンクの評価",
+      "quiz_title": "{{title}} · バッチ {{batch}}",
       "view_results_tooltip": "ふりかえりの成果を見る",
       "adaptation_title": "タスク経験の記録",
       "adaptation_applied": "適用",
