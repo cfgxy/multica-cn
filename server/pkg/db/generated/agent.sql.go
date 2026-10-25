@@ -5450,9 +5450,9 @@ WITH RECURSIVE source AS (
         task.runtime_id AS source_task_runtime_id
     FROM comment source
     JOIN agent_task_queue task ON task.id = source.source_task_id
-    JOIN issue task_issue
-        ON task_issue.id = task.issue_id
-        AND task_issue.workspace_id = $1
+    JOIN agent task_agent
+        ON task_agent.id = task.agent_id
+        AND task_agent.workspace_id = $1
     WHERE source.id = $2
       AND source.workspace_id = $1
       AND source.author_type = 'agent'
@@ -5464,9 +5464,9 @@ rapid AS (
         1::integer AS hops
     FROM source
     JOIN agent_task_queue task ON task.id = source.source_task_id
-    JOIN issue task_issue
-        ON task_issue.id = task.issue_id
-        AND task_issue.workspace_id = $1
+    JOIN agent task_agent
+        ON task_agent.id = task.agent_id
+        AND task_agent.workspace_id = $1
     LEFT JOIN comment parent
         ON parent.id = task.trigger_comment_id
         AND parent.author_type = 'agent'
@@ -5481,9 +5481,9 @@ rapid AS (
         rapid.hops + 1
     FROM rapid
     JOIN agent_task_queue task ON task.id = rapid.parent_source_task_id
-    JOIN issue task_issue
-        ON task_issue.id = task.issue_id
-        AND task_issue.workspace_id = $1
+    JOIN agent task_agent
+        ON task_agent.id = task.agent_id
+        AND task_agent.workspace_id = $1
     LEFT JOIN comment parent
         ON parent.id = task.trigger_comment_id
         AND parent.author_type = 'agent'
@@ -5509,9 +5509,9 @@ cycle_walk AS (
     LEFT JOIN LATERAL (
         SELECT parent.source_task_id AS parent_source_task_id
         FROM agent_task_queue task
-        JOIN issue task_issue
-            ON task_issue.id = task.issue_id
-            AND task_issue.workspace_id = $1
+        JOIN agent task_agent
+            ON task_agent.id = task.agent_id
+            AND task_agent.workspace_id = $1
         JOIN comment parent
             ON parent.id = task.trigger_comment_id
             AND parent.author_type = 'agent'
@@ -5521,9 +5521,9 @@ cycle_walk AS (
     LEFT JOIN LATERAL (
         SELECT parent.source_task_id AS parent_source_task_id
         FROM agent_task_queue task
-        JOIN issue task_issue
-            ON task_issue.id = task.issue_id
-            AND task_issue.workspace_id = $1
+        JOIN agent task_agent
+            ON task_agent.id = task.agent_id
+            AND task_agent.workspace_id = $1
         JOIN comment parent
             ON parent.id = task.trigger_comment_id
             AND parent.author_type = 'agent'
@@ -5533,9 +5533,9 @@ cycle_walk AS (
     LEFT JOIN LATERAL (
         SELECT parent.source_task_id AS parent_source_task_id
         FROM agent_task_queue task
-        JOIN issue task_issue
-            ON task_issue.id = task.issue_id
-            AND task_issue.workspace_id = $1
+        JOIN agent task_agent
+            ON task_agent.id = task.agent_id
+            AND task_agent.workspace_id = $1
         JOIN comment parent
             ON parent.id = task.trigger_comment_id
             AND parent.author_type = 'agent'
