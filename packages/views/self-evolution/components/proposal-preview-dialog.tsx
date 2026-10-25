@@ -137,7 +137,9 @@ export function ProposalPreviewDialog({
                 {/* Structured revisions and move/migrate proposals are library-only. */}
                 {p.proposal.change_kind === "move_clause" ||
                 p.proposal.change_kind === "migrate_clause" ||
-                (p.proposal.change_kind === "revise_clause" && Boolean(p.proposal.clause_id)) ? (
+                (p.proposal.change_kind === "revise_clause" &&
+                  "clause_id" in p.proposal &&
+                  Boolean(p.proposal.clause_id)) ? (
                   <div className="text-muted-foreground text-caption">
                     {t(($) => $.legislation.enactmentTargetLabel)}:{" "}
                     {t(($) => $.legislation.enactmentTargetOptions.clause_library)}
@@ -212,7 +214,9 @@ export function ProposalPreviewDialog({
                 if (
                   p.proposal.change_kind === "move_clause" ||
                   p.proposal.change_kind === "migrate_clause" ||
-                  (p.proposal.change_kind === "revise_clause" && Boolean(p.proposal.clause_id))
+                  (p.proposal.change_kind === "revise_clause" &&
+                    "clause_id" in p.proposal &&
+                    Boolean(p.proposal.clause_id))
                 ) {
                   targets[p.proposal.id] = "clause_library";
                 } else {
