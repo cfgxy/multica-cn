@@ -255,8 +255,25 @@ func TestAgentOnlyCommentCascadeBlocked(t *testing.T) {
 	parentID := dbfx.Comment(t, sourceIssueID, "member starts the work", testutil.Cols{
 		"created_at": now.Add(-time.Minute),
 	})
+	// A run-only task may create or coordinate work on an issue, so it is a
+	// valid agent-only lineage hop even though it has no issue_id itself.
+	runOnlyTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":          runtimeID,
+		"trigger_comment_id":  parentID,
+		"status":              "completed",
+		"originator_user_id":  testUserID,
+		"accountable_user_id": testUserID,
+		"created_at":          now.Add(-time.Minute),
+	})
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, runOnlyTaskID) })
+	parentID = dbfx.Comment(t, sourceIssueID, "run-only handoff", testutil.Cols{
+		"author_type":    "agent",
+		"author_id":      agentID,
+		"source_task_id": runOnlyTaskID,
+		"created_at":     now.Add(-time.Minute),
+	})
 	sourceTaskID := ""
-	for range maxRapidAgentOnlyCommentCascadeHops - 1 {
+	for range maxRapidAgentOnlyCommentCascadeHops - 2 {
 		parentID, sourceTaskID = appendHop(parentID, now.Add(-time.Minute))
 	}
 	if testHandler.agentOnlyCommentCascadeBlocked(ctx, parseUUID(parentID)) {
