@@ -96,13 +96,25 @@ export function QuizGradedPanel({
     if (!batch.isSuccess || batchId === "") return;
     const previous = previousBatchState.current;
     previousBatchState.current = { batchId, settled: batchSettled };
-    if (previous.batchId !== batchId || previous.settled || !batchSettled) return;
+    const firstObservationSettled = previous.batchId !== batchId && batchSettled;
+    const becameSettled = previous.batchId === batchId && !previous.settled && batchSettled;
+    if (!firstObservationSettled && !becameSettled) return;
     void queryClient.invalidateQueries({
       queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
     });
-    void queryClient.invalidateQueries({
-      queryKey: promptQuizKeys.samples(wsId, "agent", agentId, baseline.current_version),
-    });
+    if (baseline.current_version <= 0) return;
+    if (firstObservationSettled) {
+      const refreshSamples = () => samples.refetch();
+      if (samples.isFetching && samples.dataUpdatedAt === 0) {
+        void samples.refetch().then(refreshSamples);
+      } else {
+        void refreshSamples();
+      }
+    } else {
+      void queryClient.invalidateQueries({
+        queryKey: promptQuizKeys.samples(wsId, "agent", agentId, baseline.current_version),
+      });
+    }
   }, [
     agentId,
     baseline.current_version,
@@ -111,6 +123,9 @@ export function QuizGradedPanel({
     batchId,
     batchSettled,
     queryClient,
+    samples.dataUpdatedAt,
+    samples.isFetching,
+    samples.refetch,
     wsId,
   ]);
 
