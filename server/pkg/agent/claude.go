@@ -1198,11 +1198,27 @@ func trySend(ch chan<- Message, msg Message) {
 // overridden by user-configured custom_args. Overriding these would break
 // the daemon↔Claude communication protocol.
 var claudeBlockedArgs = map[string]blockedArgMode{
-	"-p":                blockedStandalone, // non-interactive mode
-	"--output-format":   blockedWithValue,  // stream-json protocol
-	"--input-format":    blockedWithValue,  // stream-json protocol
-	"--permission-mode": blockedWithValue,  // bypassPermissions for autonomous operation
-	"--mcp-config":      blockedWithValue,  // set by daemon from agent.mcp_config
+	"-p":                 blockedStandalone,     // non-interactive mode
+	"--output-format":    blockedWithValue,      // stream-json protocol
+	"--input-format":     blockedWithValue,      // stream-json protocol
+	"--permission-mode":  blockedWithValue,      // bypassPermissions for autonomous operation
+	"--mcp-config":       blockedWithValue,      // set by daemon from agent.mcp_config
+	"--disallowedTools":  blockedVariadicValues, // daemon-owned tool deny policy
+	"--disallowed-tools": blockedVariadicValues, // CLI alias
+	"--allowedTools":     blockedVariadicValues, // cannot re-expose daemon-denied tools
+	"--allowed-tools":    blockedVariadicValues, // CLI alias
+	"--tools":            blockedVariadicValues, // cannot replace the daemon-owned tool set
+	"--brief":            blockedStandalone,     // cannot enable SendUserMessage in an unattended run
+	"--continue":         blockedStandalone,     // only the daemon may resume a session
+	"-c":                 blockedStandalone,     // CLI alias
+	"--resume":           blockedOptionalValue,  // CLI accepts an optional session ID
+	"-r":                 blockedOptionalValue,  // CLI alias
+	"--session-id":       blockedWithValue,      // cannot bind a run to an arbitrary session
+	"--from-pr":          blockedOptionalValue,  // can select an existing session
+	"--teleport":         blockedOptionalValue,  // can select an existing session
+	"--cloud":            blockedOptionalValue,  // can attach to an existing cloud session
+	"--fork-session":     blockedStandalone,     // only meaningful with a session selector
+	"--settings":         blockedWithValue,      // builder chooses exactly one settings source
 	// `--effort` is owned by the per-agent thinking_level picker so a
 	// user-supplied custom_arg cannot silently outvote it. The daemon
 	// injects --effort only when opts.ThinkingLevel is set; if a user
@@ -1219,13 +1235,6 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 		"--input-format", "stream-json",
 		"--verbose",
 		"--permission-mode", "bypassPermissions",
-		// AskUserQuestion is Claude Code's built-in interactive question tool.
-		// The daemon runs Claude in non-interactive stream-json mode and has
-		// no UI for the prompt to render in, so a call returns an empty
-		// answer and the agent ends up "inferring" silently — the user
-		// never sees the question (see GitHub #2588). User-facing
-		// clarification belongs in an issue comment instead.
-		"--disallowedTools", "AskUserQuestion",
 	}
 	if hasManagedMcpConfig(opts.McpConfig) {
 		// A saved agent-level config is authoritative, including an explicitly
@@ -1256,22 +1265,21 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)
 	}
-	blockedArgs := claudeBlockedArgs
-	if opts.ClaudeSettingsPath != "" {
-		// The daemon-owned --settings file is the enforcement layer for disabled
-		// inherited skills. Drop competing per-agent/default flags only while that
-		// policy is active, then append the managed file last.
-		blockedArgs = make(map[string]blockedArgMode, len(claudeBlockedArgs)+1)
-		for key, mode := range claudeBlockedArgs {
-			blockedArgs[key] = mode
-		}
-		blockedArgs["--settings"] = blockedWithValue
-	}
-	args = append(args, filterCustomArgs(opts.ExtraArgs, blockedArgs, logger)...)
-	args = append(args, filterCustomArgs(opts.CustomArgs, blockedArgs, logger)...)
+	// Claude Code resolves --settings to one source. Keep the last configured
+	// value, matching the previous CLI ordering (ExtraArgs before CustomArgs),
+	// then append it once after filtering the competing occurrences.
+	userSettingsPath, hasUserSettingsPath := lastFlagValue("--settings", opts.ExtraArgs, opts.CustomArgs)
+	args = append(args, filterCustomArgs(opts.ExtraArgs, claudeBlockedArgs, logger)...)
+	args = append(args, filterCustomArgs(opts.CustomArgs, claudeBlockedArgs, logger)...)
 	if opts.ClaudeSettingsPath != "" {
 		args = append(args, "--settings", opts.ClaudeSettingsPath)
+	} else if hasUserSettingsPath {
+		args = append(args, "--settings", userSettingsPath)
 	}
+	// Put the daemon-owned deny list after every caller-controlled argument.
+	// AskUserQuestion has no UI in a non-interactive stream-json run; SendMessage
+	// targets local Claude sessions rather than Multica's Issue comment channel.
+	args = append(args, "--disallowedTools", "AskUserQuestion", "SendMessage")
 	return args
 }
 
@@ -1503,9 +1511,10 @@ func isFilteredChildEnvKey(key string) bool {
 type blockedArgMode int
 
 const (
-	blockedWithValue     blockedArgMode = iota // flag takes a value (next arg or =value)
-	blockedStandalone                          // flag is boolean, no value
-	blockedOptionalValue                       // flag may take the next non-flag arg or =value
+	blockedWithValue      blockedArgMode = iota // flag takes a value (next arg or =value)
+	blockedStandalone                           // flag is boolean, no value
+	blockedOptionalValue                        // flag may take the next non-flag arg or =value
+	blockedVariadicValues                       // flag takes zero or more following non-flag args
 )
 
 // filterCustomArgs removes protocol-critical flags from user-configured custom
@@ -1546,12 +1555,42 @@ func filterCustomArgs(args []string, blocked map[string]blockedArgMode, logger *
 				// another flag, so a boolean form cannot swallow an unrelated
 				// option.
 				i++
+			} else if mode == blockedVariadicValues && !hasInlineValue {
+				for i+1 < len(args) && !strings.HasPrefix(unshellQuoteArg(args[i+1]), "-") {
+					i++
+				}
 			}
 			continue
 		}
 		filtered = append(filtered, arg)
 	}
 	return filtered
+}
+
+// lastFlagValue returns the effective value of a single-value CLI option after
+// the argument sets are appended in order. CLI options are normalized here so
+// a shell-quoted value has the same behavior as filterCustomArgs.
+func lastFlagValue(flag string, argSets ...[]string) (string, bool) {
+	var value string
+	found := false
+	for _, args := range argSets {
+		for i := 0; i < len(args); i++ {
+			arg := unshellQuoteArg(args[i])
+			if arg == flag {
+				if i+1 < len(args) && !strings.HasPrefix(unshellQuoteArg(args[i+1]), "-") {
+					value = unshellQuoteArg(args[i+1])
+					found = true
+					i++
+				}
+				continue
+			}
+			if strings.HasPrefix(arg, flag+"=") {
+				value = strings.TrimPrefix(arg, flag+"=")
+				found = true
+			}
+		}
+	}
+	return value, found
 }
 
 // unshellQuoteArg strips a single layer of shell-style single or double quotes
