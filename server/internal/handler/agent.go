@@ -653,7 +653,7 @@ type AgentTaskResponse struct {
 	QuickCreatePriority      string                      `json:"quick_create_priority,omitempty"`       // explicit priority selected in quick-create
 	QuickCreateDueDate       string                      `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create
 	QuickCreateAttachmentIDs []string                    `json:"quick_create_attachment_ids,omitempty"` // attachment ids uploaded in the quick-create prompt and bound on issue create
-	QuickCreateAttachments   []QuickCreateAttachmentMeta `json:"quick_create_attachments,omitempty"`    // full rows behind the ids above — filenames + durable markdown URLs so the create-run can inline images into the description (RUYI-478)
+	QuickCreateAttachments   []QuickCreateAttachmentMeta `json:"quick_create_attachments,omitempty"`    // full rows behind the ids above; filenames and content types provide context without repeating attachments in the description
 	QuickCreateSourceContext json.RawMessage             `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
 	QuizPrompt               string                      `json:"quiz_prompt,omitempty"`                 // item under test for prompt-quiz measurement runs; the run's entire assignment
 	RetrospectivePrompt      string                      `json:"retrospective_prompt,omitempty"`        // daily-retrospective window prompt (RUYI-552 direction 3); the run's entire assignment — read issues, submit drafts, create nothing
