@@ -120,15 +120,17 @@ func TestScopeForRequestPinsTheMCPSurface(t *testing.T) {
 		{"GET", "/api/issues/quick-create", ScopeNeedRead},
 
 		// Prompt legislation (RUYI-868): governance reads are read-only on the
-		// wire; the member proposal actions ride mcp:write; the owner's
-		// decide-and-execute endpoints stay off-surface so no OAuth scope can
-		// reach them.
+		// wire; member proposal actions and the Owner's hash-guarded direct
+		// revision pair ride mcp:write. Proposal decide-and-execute endpoints
+		// remain off-surface so no OAuth scope can reach them.
 		{"GET", "/api/prompt-legislation/governance/clauses", ScopeNeedRead},
 		{"POST", "/api/prompt-legislation/governance/clauses", ScopeUnknown},
 		// Note: the caller passes r.URL.Path (middleware/auth.go), so query
 		// strings such as the get_clause window (?days=N) never reach this
 		// classifier — only the path shape is ever matched.
 		{"GET", "/api/prompt-legislation/governance/clauses/c-1", ScopeNeedRead},
+		{"POST", "/api/prompt-legislation/governance/clauses/c-1/direct-revision-preview", ScopeNeedWrite},
+		{"POST", "/api/prompt-legislation/governance/clauses/c-1/direct-revision", ScopeNeedWrite},
 		{"GET", "/api/prompt-legislation/governance/clauses/search?q=mention", ScopeNeedRead},
 		{"GET", "/api/prompt-legislation/governance/reconciliation", ScopeNeedRead},
 		{"POST", "/api/prompt-legislation/proposals", ScopeNeedWrite},

@@ -1119,3 +1119,39 @@ export interface PromptProposalPreview {
   current_sha256: string;
   baseline_used: boolean;
 }
+
+/**
+ * The owner-only direct revision preview is deliberately separate from the
+ * proposal lifecycle. Its version and hash values must be echoed unchanged by
+ * the confirmed write, so a preview cannot be applied to a changed clause or
+ * carrier.
+ */
+export interface DirectClauseRevisionBody {
+  content: string;
+  expected_clause_version: number;
+  expected_clause_content_sha256: string;
+  expected_carrier_sha256: string;
+  confirm_previewed?: boolean;
+}
+
+export interface DirectClauseRevisionPreview {
+  clause_id: string;
+  slug: string;
+  carrier_scope: string;
+  carrier_scope_id: string;
+  current_clause_version: number;
+  next_clause_version: number;
+  current_clause_content_sha256: string;
+  current_carrier_sha256: string;
+  diff: PromptDiffLine[];
+}
+
+export interface DirectClauseRevisionResult {
+  clause_id: string;
+  slug: string;
+  enacted_clause_version: number;
+  clause_content_sha256: string;
+  carrier_scope: string;
+  carrier_scope_id: string;
+  carrier_content_sha256: string;
+}
