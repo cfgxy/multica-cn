@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -91,6 +91,7 @@ export function QuizGradedPanel({
           : false,
   });
 
+  const previousBatchState = useRef({ batchId: "", settled: false });
   const batchGraded = batch.data?.scores?.graded ?? 0;
   useEffect(() => {
     setOrderedBatch({
@@ -106,17 +107,47 @@ export function QuizGradedPanel({
   }, [agentId, queryClient, wsId]);
 
   useEffect(() => {
-    if (!batchComplete) return;
+    if (!batch.isSuccess || batchId === "") return;
+    const previous = previousBatchState.current;
+    previousBatchState.current = { batchId, settled: batchComplete };
+    const firstObservationSettled = previous.batchId !== batchId && batchComplete;
+    const becameSettled = previous.batchId === batchId && !previous.settled && batchComplete;
+    if (!firstObservationSettled && !becameSettled) return;
     void queryClient.invalidateQueries({
-      queryKey: promptQuizKeys.samples(wsId, "agent", agentId, baseline.current_version),
+      queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
     });
-  }, [agentId, baseline.current_version, batchComplete, queryClient, wsId]);
+    if (baseline.current_version <= 0) return;
+    if (firstObservationSettled) {
+      const refreshSamples = () => samples.refetch();
+      if (samples.isFetching && samples.dataUpdatedAt === 0) {
+        void samples.refetch().then(refreshSamples);
+      } else {
+        void refreshSamples();
+      }
+    } else {
+      void queryClient.invalidateQueries({
+        queryKey: promptQuizKeys.samples(wsId, "agent", agentId, baseline.current_version),
+      });
+    }
+  }, [
+    agentId,
+    baseline.current_version,
+    batch.dataUpdatedAt,
+    batch.isSuccess,
+    batchId,
+    batchComplete,
+    queryClient,
+    samples.dataUpdatedAt,
+    samples.isFetching,
+    samples.refetch,
+    wsId,
+  ]);
 
   useEffect(() => {
-    if (batchGraded > 0) {
+    if (batchGraded > 0 && !batchComplete) {
       void queryClient.invalidateQueries({ queryKey: promptQuizKeys.baseline(wsId, "agent", agentId) });
     }
-  }, [agentId, batchGraded, queryClient, wsId]);
+  }, [agentId, batchComplete, batchGraded, queryClient, wsId]);
 
   const scores = baseline.scores;
   const graded = scores?.graded ?? 0;
