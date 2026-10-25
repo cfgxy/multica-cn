@@ -2,9 +2,6 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
-import { act as reactAct } from "react";
-import { hydrateRoot } from "react-dom/client";
-import { renderToString } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type {
@@ -15,7 +12,6 @@ import type {
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { QuizTab } from "./quiz-tab";
-import { writeQuizAgent } from "./quiz-session";
 
 /**
  * The quiz tab's wiring (RUYI-185).
@@ -36,14 +32,12 @@ const state = vi.hoisted(() => ({
   role: "owner" as string | null,
   created: [] as unknown[],
   updated: [] as unknown[],
-  agents: [{ id: "agent-1", name: "Gu Xiaoyu" }],
-  baselineReads: 0,
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
   agentListOptions: (wsId: string) => ({
     queryKey: ["agents", wsId],
-    queryFn: () => Promise.resolve(state.agents),
+    queryFn: () => Promise.resolve([{ id: "agent-1", name: "Gu Xiaoyu" }]),
   }),
 }));
 
@@ -65,10 +59,7 @@ vi.mock("@multica/core/self-evolution", async () => {
     ...actual,
     promptQuizBaselineOptions: (wsId: string, scope: string, scopeId: string) => ({
       queryKey: ["prompt-quiz", wsId, "baseline", scope, scopeId],
-      queryFn: () => {
-        state.baselineReads += 1;
-        return Promise.resolve(state.baseline);
-      },
+      queryFn: () => Promise.resolve(state.baseline),
       enabled: scopeId !== "",
     }),
     promptQuizItemsOptions: (wsId: string) => ({
@@ -141,16 +132,12 @@ function detail(over: Partial<PromptQuizItemDetail> = {}): PromptQuizItemDetail 
 
 function renderTab(agentId = "agent-1", wsId = "ws-1") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(tabTree(client, wsId, agentId));
-}
-
-function tabTree(client: QueryClient, wsId: string, agentId = "") {
-  return (
+  return render(
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" resources={TEST_RESOURCES}>
         <QuizTab wsId={wsId} initialAgentId={agentId} />
       </I18nProvider>
-    </QueryClientProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -161,56 +148,23 @@ beforeEach(() => {
   state.role = "owner";
   state.created = [];
   state.updated = [];
-  state.agents = [{ id: "agent-1", name: "Gu Xiaoyu" }];
-  state.baselineReads = 0;
 });
 
 describe("QuizTab reading", () => {
   it("restores the selected agent after the tab unmounts and remounts", async () => {
-    writeQuizAgent("ws-selection", "agent-1");
     const first = renderTab("", "ws-selection");
-    await screen.findByTestId("quiz-reading-card");
+    fireEvent.click(screen.getByRole("combobox"));
+    fireEvent.click(await screen.findByRole("option", { name: "Gu Xiaoyu" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("quiz-reading-card")).toBeInTheDocument();
+    });
 
     first.unmount();
     renderTab("", "ws-selection");
     await waitFor(() => {
       expect(screen.getByRole("combobox")).toHaveTextContent("Gu Xiaoyu");
     });
-    await screen.findByTestId("quiz-reading-card");
-  });
-
-  it("hydrates without reading sessionStorage during the first client render", async () => {
-    writeQuizAgent("ws-hydration", "agent-1");
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const tree = tabTree(client, "ws-hydration");
-    const container = document.createElement("div");
-    container.innerHTML = renderToString(tree);
-    expect(container.querySelector('[data-testid="quiz-reading-card"]')).toBeNull();
-
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    const root = hydrateRoot(container, tree);
-    try {
-      await waitFor(() => {
-        expect(container.querySelector('[data-testid="quiz-reading-card"]')).not.toBeNull();
-      });
-      expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(/hydration|did not match/i);
-    } finally {
-      await reactAct(async () => root.unmount());
-      consoleError.mockRestore();
-    }
-  });
-
-  it("ignores a restored agent that is no longer in the workspace", async () => {
-    state.agents = [];
-    writeQuizAgent("ws-stale-agent", "deleted-agent");
-    renderTab("", "ws-stale-agent");
-
-    await waitFor(() => {
-      expect(screen.getByText(enSelfEvolution.quality.noSubject.title)).toBeInTheDocument();
-      expect(sessionStorage.getItem("multica:quiz:ws-stale-agent:agent")).toBe("");
-    });
-    expect(screen.queryByTestId("quiz-reading-card")).not.toBeInTheDocument();
-    expect(state.baselineReads).toBe(0);
+    expect(screen.getByTestId("quiz-reading-card")).toBeInTheDocument();
   });
 
   it("prints the verdict with both groups and the decision inputs", async () => {

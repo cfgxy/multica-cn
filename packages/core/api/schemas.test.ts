@@ -2582,13 +2582,13 @@ describe("prompt quiz schemas (RUYI-185)", () => {
     expect(parsed.ordered).toBeUndefined();
   });
 
-  it("rejects invalid batch order counts", () => {
+  it("rejects invalid batch order counts without capping compatible server values", () => {
     expect(PromptQuizBatchCreateResponseSchema.safeParse({ batch_id: "batch-1", ordered: -1 }).success)
       .toBe(false);
     expect(PromptQuizBatchCreateResponseSchema.safeParse({ batch_id: "batch-1", ordered: 1.5 }).success)
       .toBe(false);
     expect(PromptQuizBatchCreateResponseSchema.safeParse({ batch_id: "batch-1", ordered: 51 }).success)
-      .toBe(false);
+      .toBe(true);
   });
 
   it("falls back to an unmeasured reading, never to a clean one", () => {
