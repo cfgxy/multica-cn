@@ -5071,7 +5071,7 @@ export const PromptQuizSampleRowSchema = z.object({
 
 export const PromptQuizBatchCreateResponseSchema = z.object({
   batch_id: z.string().default(""),
-  ordered: z.number().default(0),
+  ordered: z.number().int().nonnegative().max(50).optional(),
   refused_agents: z
     .array(z.object({ agent_id: z.string(), reason: z.string() }))
     .optional(),

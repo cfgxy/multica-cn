@@ -25,6 +25,7 @@ import { useT, useLocale } from "../../i18n";
 import { readQuizBatch, writeQuizBatch } from "./quiz-session";
 
 const QUIZ_POLL_INTERVAL = 15_000;
+const LEGACY_BATCH_POLL_WINDOW = 10 * 60 * 1000;
 const SAMPLE_POLL_WINDOW = 10 * 60 * 1000;
 
 /**
@@ -59,36 +60,40 @@ export function QuizGradedPanel({
 
   const run = useCreatePromptQuizBatch(wsId);
   const queryClient = useQueryClient();
-  const [orderedBatch, setOrderedBatch] = useState(() => ({
-    agentId,
-    ...(readQuizBatch(wsId, agentId) ?? { batchId: "", orderedAt: 0, expectedRows: 0 }),
-  }));
+  const [orderedBatch, setOrderedBatch] = useState<{
+    agentId: string;
+    batchId: string;
+    expectedRows: number | null;
+  }>({ agentId, batchId: "", expectedRows: null });
   const [samplePollDeadline] = useState(() => Date.now() + SAMPLE_POLL_WINDOW);
   const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
-  const orderedAt = orderedBatch.agentId === agentId ? orderedBatch.orderedAt : 0;
-  const expectedRows = orderedBatch.agentId === agentId ? orderedBatch.expectedRows : 0;
-  const legacyBatchPollDeadline = orderedAt > 0 ? orderedAt + SAMPLE_POLL_WINDOW : samplePollDeadline;
+  const expectedRows = orderedBatch.agentId === agentId ? orderedBatch.expectedRows : null;
+  const legacyBatchPollDeadline = useRef(Date.now() + LEGACY_BATCH_POLL_WINDOW);
+  const legacyBatchPollExpired = () =>
+    expectedRows === null && Date.now() >= legacyBatchPollDeadline.current;
   const batch = useQuery({
     ...promptQuizBatchOptions(wsId, batchId),
-    refetchInterval: (query) =>
-      batchId !== "" &&
-      !(expectedRows > 0 && (query.state.data?.rows.length ?? 0) >= expectedRows)
-      && (expectedRows > 0 || Date.now() < legacyBatchPollDeadline)
+    refetchInterval: (query) => {
+      const rows = query.state.data?.rows ?? [];
+      const batchComplete = isQuizBatchComplete(rows, expectedRows);
+      return batchId !== "" && !batchComplete && !legacyBatchPollExpired()
         ? QUIZ_POLL_INTERVAL
-        : false,
+        : false;
+    },
   });
-  const batchComplete =
-    expectedRows > 0 && (batch.data?.rows.length ?? 0) >= expectedRows;
+  const batchRows = batch.data?.rows ?? [];
+  const batchSettled = isQuizBatchComplete(batchRows, expectedRows);
   const samples = useQuery({
     ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
     staleTime: 0,
     refetchOnMount: "always",
-    refetchInterval: () =>
-      batchId !== "" && !batchComplete
+    refetchInterval: () => batchId !== ""
+      ? !batchSettled && !legacyBatchPollExpired()
         ? QUIZ_POLL_INTERVAL
-        : batchId === "" && Date.now() < samplePollDeadline
-          ? QUIZ_POLL_INTERVAL
-          : false,
+        : false
+      : Date.now() < samplePollDeadline
+        ? QUIZ_POLL_INTERVAL
+        : false,
   });
   const {
     dataUpdatedAt: samplesDataUpdatedAt,
@@ -99,9 +104,19 @@ export function QuizGradedPanel({
   const previousBatchState = useRef({ batchId: "", settled: false });
   const batchGraded = batch.data?.scores?.graded ?? 0;
   useEffect(() => {
+    const storedBatch = readQuizBatch(wsId, agentId);
+    legacyBatchPollDeadline.current = Date.now() + LEGACY_BATCH_POLL_WINDOW;
+    if (storedBatch?.expectedRows === null) {
+      const orderedAt = storedBatch.orderedAt ?? Date.now();
+      legacyBatchPollDeadline.current = orderedAt + LEGACY_BATCH_POLL_WINDOW;
+      if (storedBatch.orderedAt === undefined) {
+        writeQuizBatch(wsId, agentId, storedBatch.batchId, null, orderedAt);
+      }
+    }
     setOrderedBatch({
       agentId,
-      ...(readQuizBatch(wsId, agentId) ?? { batchId: "", orderedAt: 0, expectedRows: 0 }),
+      batchId: storedBatch?.batchId ?? "",
+      expectedRows: storedBatch ? storedBatch.expectedRows : null,
     });
   }, [agentId, wsId]);
 
@@ -114,9 +129,9 @@ export function QuizGradedPanel({
   useEffect(() => {
     if (!batch.isSuccess || batchId === "") return;
     const previous = previousBatchState.current;
-    previousBatchState.current = { batchId, settled: batchComplete };
-    const firstObservationSettled = previous.batchId !== batchId && batchComplete;
-    const becameSettled = previous.batchId === batchId && !previous.settled && batchComplete;
+    previousBatchState.current = { batchId, settled: batchSettled };
+    const firstObservationSettled = previous.batchId !== batchId && batchSettled;
+    const becameSettled = previous.batchId === batchId && !previous.settled && batchSettled;
     if (!firstObservationSettled && !becameSettled) return;
     void queryClient.invalidateQueries({
       queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
@@ -139,7 +154,7 @@ export function QuizGradedPanel({
     batch.dataUpdatedAt,
     batch.isSuccess,
     batchId,
-    batchComplete,
+    batchSettled,
     queryClient,
     refetchSamples,
     samplesDataUpdatedAt,
@@ -148,10 +163,10 @@ export function QuizGradedPanel({
   ]);
 
   useEffect(() => {
-    if (batchGraded > 0 && !batchComplete) {
+    if (batchGraded > 0 && !batchSettled) {
       void queryClient.invalidateQueries({ queryKey: promptQuizKeys.baseline(wsId, "agent", agentId) });
     }
-  }, [agentId, batchComplete, batchGraded, queryClient, wsId]);
+  }, [agentId, batchGraded, batchSettled, queryClient, wsId]);
 
   const scores = baseline.scores;
   const graded = scores?.graded ?? 0;
@@ -163,15 +178,18 @@ export function QuizGradedPanel({
         onSuccess: (resp) => {
           if (resp.batch_id !== "") {
             const orderedAt = Date.now();
-            const expectedRows = resp.ordered;
-            setOrderedBatch({ agentId, batchId: resp.batch_id, orderedAt, expectedRows });
-            writeQuizBatch(wsId, agentId, resp.batch_id, orderedAt, expectedRows);
+            const expectedRows = resp.ordered ?? null;
+            if (expectedRows === null) {
+              legacyBatchPollDeadline.current = orderedAt + LEGACY_BATCH_POLL_WINDOW;
+            }
+            setOrderedBatch({ agentId, batchId: resp.batch_id, expectedRows });
+            writeQuizBatch(wsId, agentId, resp.batch_id, expectedRows, orderedAt);
           }
           const refused = resp.refused_agents?.length ?? 0;
           if (refused > 0) {
             toast.warning(t(($) => $.quiz.graded.refused, { count: refused }));
           } else {
-            toast.success(t(($) => $.quiz.graded.ordered, { ordered: resp.ordered }));
+            toast.success(t(($) => $.quiz.graded.ordered, { ordered: resp.ordered ?? 0 }));
           }
         },
         onError: (e) =>
@@ -288,11 +306,15 @@ function SampleRow({
     >
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-caption font-medium">{row.item_title ?? row.item_slug ?? row.item_id}</span>
-        <Badge variant="outline">{t(($) => $.quiz.graded.version, { version: row.version })}</Badge>
+        {row.version > 0 ? (
+          <Badge variant="outline">{t(($) => $.quiz.graded.version, { version: row.version })}</Badge>
+        ) : null}
         <Badge variant={row.outcome === "answered" ? "secondary" : "outline"}>
           {row.outcome === "answered"
             ? t(($) => $.quiz.graded.answered)
-            : t(($) => $.quiz.graded.errored)}
+            : row.outcome === "errored"
+              ? t(($) => $.quiz.graded.errored)
+              : t(($) => $.quiz.graded[taskStatusKey(row)])}
         </Badge>
         {row.score !== null && row.score !== undefined ? (
           <Badge variant="secondary" data-testid="quiz-sample-score">
@@ -340,6 +362,42 @@ function SampleRow({
       ) : null}
     </li>
   );
+}
+
+function taskStatusKey(row: PromptQuizSampleRow):
+  | "taskQueued"
+  | "taskRunning"
+  | "taskAwaitingGrade"
+  | "taskPending"
+  | "taskNotMeasured" {
+  switch (row.task_status) {
+    case "queued":
+    case "dispatched":
+      return "taskQueued";
+    case "running":
+      return "taskRunning";
+    case "completed":
+    case "failed":
+    case "cancelled":
+      return row.version <= 0 ? "taskNotMeasured" : "taskAwaitingGrade";
+    default:
+      return "taskPending";
+  }
+}
+
+function isAwaitingQuizResult(row: PromptQuizSampleRow): boolean {
+  if (row.outcome === "answered") {
+    return row.score == null && !row.graded_at;
+  }
+  if (row.outcome !== "") return false;
+  const terminal = ["completed", "failed", "cancelled"].includes(row.task_status ?? "");
+  return !(terminal && row.version <= 0);
+}
+
+function isQuizBatchComplete(rows: PromptQuizSampleRow[], expectedRows: number | null): boolean {
+  return expectedRows !== null
+    && rows.length >= expectedRows
+    && rows.every((row) => !isAwaitingQuizResult(row));
 }
 
 interface ParsedCheck {
