@@ -173,6 +173,13 @@ into existing work. Check `trigger_outcomes` after any successful send.
   from the same comment being edited, because save cancels those old tasks
   before it re-computes triggers. It is still comment-scoped, not an agent-wide
   bypass.
+- **A rapid agent-only handoff chain.** Eight agent-authored handoffs within
+  ten minutes, or a repeated task anywhere in that lineage, pauses the next
+  automatic agent trigger with `agent_only_cascade_blocked`. This prevents
+  rapid ping-pong without imposing a lifetime depth cap: a substantive
+  cross-role chain that spans the window remains available. The saved comment's
+  `trigger_outcomes` names the refusal, and the server records a
+  `run.trigger_suppressed` audit event on that comment's issue.
 - **An archived agent, or one with no runtime bound** (likewise a squad whose
   leader is): blocked with `target_unavailable` and `runtime_offline`
   respectively. Both are checked only AFTER the invoke gate, so a caller who may

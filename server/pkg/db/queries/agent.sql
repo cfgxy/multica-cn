@@ -998,6 +998,121 @@ RETURNING *;
 SELECT * FROM agent_task_queue
 WHERE id = $1;
 
+-- name: GetAgentOnlyCommentCascadeVerdict :one
+-- Computes the agent-only cascade decision in one snapshot. The rapid walk is
+-- bounded at eight hops, while the cycle walk uses tortoise/hare pointers and
+-- returns one aggregate verdict instead of materializing the full lineage to Go.
+WITH RECURSIVE source AS (
+    SELECT
+        task.id AS source_task_id,
+        task.agent_id AS source_task_agent_id,
+        task.runtime_id AS source_task_runtime_id
+    FROM comment source
+    JOIN agent_task_queue task ON task.id = source.source_task_id
+    JOIN issue task_issue
+        ON task_issue.id = task.issue_id
+        AND task_issue.workspace_id = @workspace_id
+    WHERE source.id = @comment_id
+      AND source.workspace_id = @workspace_id
+      AND source.author_type = 'agent'
+),
+rapid AS (
+    SELECT
+        source.source_task_id AS task_id,
+        parent.source_task_id AS parent_source_task_id,
+        1::integer AS hops
+    FROM source
+    JOIN agent_task_queue task ON task.id = source.source_task_id
+    JOIN issue task_issue
+        ON task_issue.id = task.issue_id
+        AND task_issue.workspace_id = @workspace_id
+    LEFT JOIN comment parent
+        ON parent.id = task.trigger_comment_id
+        AND parent.author_type = 'agent'
+        AND parent.workspace_id = @workspace_id
+    WHERE task.created_at >= now() - make_interval(secs => @rapid_window_seconds::double precision)
+
+    UNION ALL
+
+    SELECT
+        task.id,
+        parent.source_task_id AS parent_source_task_id,
+        rapid.hops + 1
+    FROM rapid
+    JOIN agent_task_queue task ON task.id = rapid.parent_source_task_id
+    JOIN issue task_issue
+        ON task_issue.id = task.issue_id
+        AND task_issue.workspace_id = @workspace_id
+    LEFT JOIN comment parent
+        ON parent.id = task.trigger_comment_id
+        AND parent.author_type = 'agent'
+        AND parent.workspace_id = @workspace_id
+    WHERE rapid.hops < @max_rapid_hops::integer
+      AND task.created_at >= now() - make_interval(secs => @rapid_window_seconds::double precision)
+),
+cycle_walk AS (
+    SELECT
+        source.source_task_id AS tortoise_id,
+        source.source_task_id AS hare_id,
+        FALSE AS has_cycle
+    FROM source
+    WHERE NOT EXISTS (SELECT 1 FROM rapid WHERE hops >= @max_rapid_hops::integer)
+
+    UNION ALL
+
+    SELECT
+        tortoise_next.parent_source_task_id,
+        hare_second.parent_source_task_id,
+        COALESCE(tortoise_next.parent_source_task_id = hare_second.parent_source_task_id, FALSE)
+    FROM cycle_walk
+    LEFT JOIN LATERAL (
+        SELECT parent.source_task_id AS parent_source_task_id
+        FROM agent_task_queue task
+        JOIN issue task_issue
+            ON task_issue.id = task.issue_id
+            AND task_issue.workspace_id = @workspace_id
+        JOIN comment parent
+            ON parent.id = task.trigger_comment_id
+            AND parent.author_type = 'agent'
+            AND parent.workspace_id = @workspace_id
+        WHERE task.id = cycle_walk.tortoise_id
+    ) AS tortoise_next ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT parent.source_task_id AS parent_source_task_id
+        FROM agent_task_queue task
+        JOIN issue task_issue
+            ON task_issue.id = task.issue_id
+            AND task_issue.workspace_id = @workspace_id
+        JOIN comment parent
+            ON parent.id = task.trigger_comment_id
+            AND parent.author_type = 'agent'
+            AND parent.workspace_id = @workspace_id
+        WHERE task.id = cycle_walk.hare_id
+    ) AS hare_first ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT parent.source_task_id AS parent_source_task_id
+        FROM agent_task_queue task
+        JOIN issue task_issue
+            ON task_issue.id = task.issue_id
+            AND task_issue.workspace_id = @workspace_id
+        JOIN comment parent
+            ON parent.id = task.trigger_comment_id
+            AND parent.author_type = 'agent'
+            AND parent.workspace_id = @workspace_id
+        WHERE task.id = hare_first.parent_source_task_id
+    ) AS hare_second ON TRUE
+    WHERE NOT cycle_walk.has_cycle
+      AND cycle_walk.tortoise_id IS NOT NULL
+      AND cycle_walk.hare_id IS NOT NULL
+)
+SELECT
+    source.source_task_id,
+    source.source_task_agent_id,
+    source.source_task_runtime_id,
+    COALESCE((SELECT max(hops) FROM rapid), 0)::integer AS rapid_hops,
+    EXISTS (SELECT 1 FROM cycle_walk WHERE has_cycle) AS has_cycle
+FROM source;
+
 -- name: GetAgentTaskForDelegatedFailureUpdate :one
 -- Serializes the idempotent delegated-failure recovery signal for one failed
 -- task. FailTask and the stale-task sweepers can converge on the same row; the
