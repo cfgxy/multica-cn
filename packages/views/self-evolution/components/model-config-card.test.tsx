@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -29,9 +29,16 @@ const m = vi.hoisted(() => ({
   validateResult: { ok: true, error_kind: "", message: "" },
   modelListResult: { ok: true, models: ["gpt-4o-mini"], error_kind: "", message: "" },
   validateMutate: vi.fn(),
+  validatePending: false,
   listModelsMutate: vi.fn(),
   saveMutate: vi.fn(),
+  savePending: false,
+  holdSave: false,
+  saveOptions: null as { onSuccess?: () => void } | null,
   restoreMutate: vi.fn(),
+  restorePending: false,
+  holdRestore: false,
+  restoreOptions: null as { onSuccess?: () => void } | null,
   push: vi.fn(),
 }));
 
@@ -66,7 +73,7 @@ vi.mock("@multica/core/self-evolution", async () => {
       mutate: m.validateMutate.mockImplementation((_vars, opts) => {
         opts?.onSuccess?.(m.validateResult);
       }),
-      isPending: false,
+      isPending: m.validatePending,
     }),
     useListSelfEvolutionModelConfigModels: () => ({
       mutate: m.listModelsMutate.mockImplementation((_vars, opts) => {
@@ -76,15 +83,23 @@ vi.mock("@multica/core/self-evolution", async () => {
     }),
     useSaveSelfEvolutionModelConfig: () => ({
       mutate: m.saveMutate.mockImplementation((_vars, opts) => {
-        opts?.onSuccess?.();
+        if (m.holdSave) {
+          m.saveOptions = opts ?? null;
+        } else {
+          opts?.onSuccess?.();
+        }
       }),
-      isPending: false,
+      isPending: m.savePending,
     }),
     useRestoreSelfEvolutionModelDefault: () => ({
       mutate: m.restoreMutate.mockImplementation((_vars, opts) => {
-        opts?.onSuccess?.();
+        if (m.holdRestore) {
+          m.restoreOptions = opts ?? null;
+        } else {
+          opts?.onSuccess?.();
+        }
       }),
-      isPending: false,
+      isPending: m.restorePending,
     }),
   };
 });
@@ -145,13 +160,22 @@ async function fillAndSave(baseUrl: string, model: string) {
 beforeEach(() => {
   m.config = configFixture();
   m.validateResult = { ok: true, error_kind: "", message: "" };
+  m.validatePending = false;
   m.modelListResult = { ok: true, models: ["gpt-4o-mini"], error_kind: "", message: "" };
   m.validateMutate.mockReset();
   m.listModelsMutate.mockReset();
   m.saveMutate.mockReset();
+  m.savePending = false;
+  m.holdSave = false;
+  m.saveOptions = null;
   m.restoreMutate.mockReset();
+  m.restorePending = false;
+  m.holdRestore = false;
+  m.restoreOptions = null;
   m.push.mockClear();
 });
+
+afterEach(cleanup);
 
 describe("ModelConfigCard", () => {
   it("never persists a config that failed its connectivity check", async () => {
@@ -204,18 +228,70 @@ describe("ModelConfigCard", () => {
   });
 
   it("ignores a pending save result after switching workspaces", async () => {
-    let saveOptions: { onSuccess?: () => void } | undefined;
-    m.saveMutate.mockImplementation((_vars: unknown, options: { onSuccess?: () => void }) => {
-      saveOptions = options;
-    });
+    m.holdSave = true;
     const view = mount();
     await fillAndSave("https://gw.example.com/v1", "gpt-4o-mini");
-    expect(saveOptions?.onSuccess).toBeTypeOf("function");
+    expect(m.saveOptions?.onSuccess).toBeTypeOf("function");
 
     view.rerender(cardTree("ws-2"));
-    saveOptions?.onSuccess?.();
+    act(() => m.saveOptions?.onSuccess?.());
 
     expect(screen.queryByTestId("model-config-validation-ok")).toBeNull();
+  });
+
+  it("does not allow stored-config revalidation to invalidate an in-flight save", async () => {
+    m.config = configFixture({
+      override: {
+        base_url: "https://gw.example.com/v1",
+        model: "old-model",
+        has_api_key: true,
+        scoring_enabled: true,
+      },
+    });
+    m.holdSave = true;
+    const view = mount();
+    await userEvent.clear(await screen.findByLabelText("Model"));
+    await userEvent.type(screen.getByLabelText("Model"), "new-model");
+    await userEvent.click(screen.getByRole("button", { name: "Validate and save" }));
+    expect(m.saveOptions?.onSuccess).toBeTypeOf("function");
+
+    m.savePending = true;
+    view.rerender(cardTree("ws-1"));
+    const recheck = screen.getByRole("button", { name: "Re-check" });
+    expect(recheck.hasAttribute("disabled")).toBe(true);
+    await userEvent.click(recheck);
+    expect(m.validateMutate).toHaveBeenCalledTimes(1);
+
+    act(() => m.saveOptions?.onSuccess?.());
+    expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("");
+    expect(screen.getByTestId("model-config-validation-ok")).toBeTruthy();
+  });
+
+  it("does not allow stored-config revalidation to invalidate an in-flight restore", async () => {
+    m.config = configFixture({
+      override: {
+        base_url: "https://gw.example.com/v1",
+        model: "gpt-4o-mini",
+        has_api_key: true,
+        scoring_enabled: true,
+      },
+    });
+    m.holdRestore = true;
+    const view = mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Restore deploy default" }));
+    await userEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Restore deploy default" }));
+    expect(m.restoreOptions?.onSuccess).toBeTypeOf("function");
+
+    m.restorePending = true;
+    view.rerender(cardTree("ws-1"));
+    const recheck = screen.getByRole("button", { name: "Re-check", hidden: true });
+    expect(recheck.hasAttribute("disabled")).toBe(true);
+    expect(m.validateMutate).not.toHaveBeenCalled();
+
+    act(() => m.restoreOptions?.onSuccess?.());
+    expect((screen.getByLabelText("Base URL") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe("");
+    expect(m.restoreMutate).toHaveBeenCalledTimes(1);
   });
 
   it("never echoes the stored key and marks the emptiness as 'keep existing'", async () => {
@@ -336,7 +412,7 @@ describe("ModelConfigCard", () => {
     mount();
     await userEvent.click(await screen.findByRole("button", { name: "Load models" }));
 
-    expect(await screen.findByRole("alert").textContent).toContain("invalid or expired credentials");
+    expect(await screen.findByText(/invalid or expired credentials/)).toBeTruthy();
     const modelInput = screen.getByLabelText("Model");
     await userEvent.clear(modelInput);
     await userEvent.type(modelInput, "custom-model");
