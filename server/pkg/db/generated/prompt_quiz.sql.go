@@ -318,6 +318,37 @@ func (q *Queries) DeletePromptQuizItem(ctx context.Context, arg DeletePromptQuiz
 	return result.RowsAffected(), nil
 }
 
+const findCurrentOrLatestPromptQuizBatchForAgent = `-- name: FindCurrentOrLatestPromptQuizBatchForAgent :one
+SELECT CAST(q.context->>'quiz_batch_id' AS text) AS batch_id
+FROM agent_task_queue q
+JOIN agent a ON a.id = q.agent_id
+LEFT JOIN prompt_quiz_result r ON r.task_id = q.id AND r.workspace_id = a.workspace_id
+WHERE a.workspace_id = $1::uuid
+  AND q.agent_id = $2::uuid
+  AND q.originator_source = 'quiz'
+  AND q.context->>'quiz_batch_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+GROUP BY q.context->>'quiz_batch_id'
+ORDER BY bool_or(q.status NOT IN ('completed', 'failed', 'cancelled') OR r.task_id IS NULL OR r.graded_at IS NULL) DESC,
+    max(q.created_at) DESC
+LIMIT 1
+`
+
+type FindCurrentOrLatestPromptQuizBatchForAgentParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// Prefer the newest batch with running work or an uncollected terminal task;
+// otherwise return the newest settled batch for traceability after a reload.
+// The queue remains the source of truth, so a browser does not infer this from
+// session storage or a time window.
+func (q *Queries) FindCurrentOrLatestPromptQuizBatchForAgent(ctx context.Context, arg FindCurrentOrLatestPromptQuizBatchForAgentParams) (string, error) {
+	row := q.db.QueryRow(ctx, findCurrentOrLatestPromptQuizBatchForAgent, arg.WorkspaceID, arg.AgentID)
+	var batch_id string
+	err := row.Scan(&batch_id)
+	return batch_id, err
+}
+
 const getPromptQuizItem = `-- name: GetPromptQuizItem :one
 SELECT id, workspace_id, slug, title, body, revision, runtime_profile, active, created_by_user_id, created_at, updated_at, rubric, tags, difficulty, rubric_checks
 FROM prompt_quiz_item
@@ -736,7 +767,7 @@ type ListPromptQuizGradedSamplesRow struct {
 // score on this question, when, and on what evidence". Owner-only at the
 // route for the same reason as the batch list above.
 //
-// Like ListPromptQuizResultsForBatch: LEFT JOIN so deleting an item keeps its
+// Like ListPromptQuizTasksForBatch: LEFT JOIN so deleting an item keeps its
 // readings readable; errored rows return with their outcome intact so "not
 // graded because the run errored" stays visible rather than collapsing into
 // the graded population.
@@ -946,100 +977,6 @@ func (q *Queries) ListPromptQuizItems(ctx context.Context, arg ListPromptQuizIte
 	return items, nil
 }
 
-const listPromptQuizResultsForBatch = `-- name: ListPromptQuizResultsForBatch :many
-SELECT
-    r.task_id,
-    r.scope,
-    r.scope_id,
-    r.version,
-    r.item_id,
-    r.item_revision,
-    r.outcome,
-    r.score,
-    r.score_detail,
-    r.graded_at,
-    r.measured_at,
-    r.run_tokens,
-    i.slug AS item_slug,
-    i.title AS item_title,
-    atq.status AS task_status
-FROM prompt_quiz_result r
-LEFT JOIN prompt_quiz_item i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
-JOIN agent_task_queue atq ON atq.id = r.task_id
-WHERE r.workspace_id = $1::uuid
-  AND r.batch_id = $2::uuid
-ORDER BY r.measured_at DESC
-LIMIT $3::int
-`
-
-type ListPromptQuizResultsForBatchParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	BatchID     pgtype.UUID `json:"batch_id"`
-	RowLimit    int32       `json:"row_limit"`
-}
-
-type ListPromptQuizResultsForBatchRow struct {
-	TaskID       pgtype.UUID        `json:"task_id"`
-	Scope        string             `json:"scope"`
-	ScopeID      pgtype.UUID        `json:"scope_id"`
-	Version      int32              `json:"version"`
-	ItemID       pgtype.UUID        `json:"item_id"`
-	ItemRevision int32              `json:"item_revision"`
-	Outcome      string             `json:"outcome"`
-	Score        pgtype.Float4      `json:"score"`
-	ScoreDetail  []byte             `json:"score_detail"`
-	GradedAt     pgtype.Timestamptz `json:"graded_at"`
-	MeasuredAt   pgtype.Timestamptz `json:"measured_at"`
-	RunTokens    pgtype.Int8        `json:"run_tokens"`
-	ItemSlug     pgtype.Text        `json:"item_slug"`
-	ItemTitle    pgtype.Text        `json:"item_title"`
-	TaskStatus   string             `json:"task_status"`
-}
-
-// One batch's rows for the traceability view (RUYI-286): per sample — which
-// item, which agent/version, outcome, score, and the task id that joins back
-// to the run. Owner-only at the route: it exposes score_detail's assertion
-// evidence, which is the private half's grading output.
-//
-// LEFT JOIN, not JOIN: an item hard-deleted after the batch ran must not erase
-// the batch's history — the reading stays interpretable through item_revision
-// and item_body_sha256, which is exactly why the item is not a version table.
-func (q *Queries) ListPromptQuizResultsForBatch(ctx context.Context, arg ListPromptQuizResultsForBatchParams) ([]ListPromptQuizResultsForBatchRow, error) {
-	rows, err := q.db.Query(ctx, listPromptQuizResultsForBatch, arg.WorkspaceID, arg.BatchID, arg.RowLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListPromptQuizResultsForBatchRow{}
-	for rows.Next() {
-		var i ListPromptQuizResultsForBatchRow
-		if err := rows.Scan(
-			&i.TaskID,
-			&i.Scope,
-			&i.ScopeID,
-			&i.Version,
-			&i.ItemID,
-			&i.ItemRevision,
-			&i.Outcome,
-			&i.Score,
-			&i.ScoreDetail,
-			&i.GradedAt,
-			&i.MeasuredAt,
-			&i.RunTokens,
-			&i.ItemSlug,
-			&i.ItemTitle,
-			&i.TaskStatus,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listPromptQuizSamples = `-- name: ListPromptQuizSamples :many
 SELECT
     r.item_id,
@@ -1175,6 +1112,104 @@ func (q *Queries) ListPromptQuizScopesForSweep(ctx context.Context, rowLimit int
 			&i.Version,
 			&i.WorkspaceID,
 			&i.RuntimeID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPromptQuizTasksForBatch = `-- name: ListPromptQuizTasksForBatch :many
+SELECT
+    q.id AS task_id,
+    COALESCE(r.scope, 'agent') AS scope,
+    q.agent_id AS scope_id,
+    COALESCE(r.version, 0) AS version,
+    COALESCE(r.item_id, CASE
+        WHEN q.context->>'quiz_item_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            THEN (q.context->>'quiz_item_id')::uuid
+    END) AS item_id,
+    COALESCE(r.item_revision, i.revision, 0) AS item_revision,
+    COALESCE(r.outcome, '') AS outcome,
+    r.score,
+    r.score_detail,
+    r.graded_at,
+    r.measured_at,
+    r.run_tokens,
+    i.slug AS item_slug,
+    i.title AS item_title,
+    q.status AS task_status
+FROM agent_task_queue q
+JOIN agent a ON a.id = q.agent_id
+LEFT JOIN prompt_quiz_result r ON r.task_id = q.id AND r.workspace_id = a.workspace_id
+LEFT JOIN prompt_quiz_item i ON i.id = COALESCE(r.item_id, CASE
+    WHEN q.context->>'quiz_item_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN (q.context->>'quiz_item_id')::uuid
+END) AND i.workspace_id = a.workspace_id
+WHERE a.workspace_id = $1::uuid
+  AND q.originator_source = 'quiz'
+  AND q.context->>'quiz_batch_id' = $2::text
+ORDER BY q.created_at DESC
+LIMIT $3::int
+`
+
+type ListPromptQuizTasksForBatchParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	BatchID     string      `json:"batch_id"`
+	RowLimit    int32       `json:"row_limit"`
+}
+
+type ListPromptQuizTasksForBatchRow struct {
+	TaskID       pgtype.UUID        `json:"task_id"`
+	Scope        string             `json:"scope"`
+	ScopeID      pgtype.UUID        `json:"scope_id"`
+	Version      int32              `json:"version"`
+	ItemID       pgtype.UUID        `json:"item_id"`
+	ItemRevision int32              `json:"item_revision"`
+	Outcome      string             `json:"outcome"`
+	Score        pgtype.Float4      `json:"score"`
+	ScoreDetail  []byte             `json:"score_detail"`
+	GradedAt     pgtype.Timestamptz `json:"graded_at"`
+	MeasuredAt   pgtype.Timestamptz `json:"measured_at"`
+	RunTokens    pgtype.Int8        `json:"run_tokens"`
+	ItemSlug     pgtype.Text        `json:"item_slug"`
+	ItemTitle    pgtype.Text        `json:"item_title"`
+	TaskStatus   string             `json:"task_status"`
+}
+
+// The queue is the source of truth for a batch. A collector can write the
+// prompt_quiz_result well after a task reaches a terminal state, so starting
+// from results would hide queued/running work and make a completed task appear
+// to disappear during that interval.
+func (q *Queries) ListPromptQuizTasksForBatch(ctx context.Context, arg ListPromptQuizTasksForBatchParams) ([]ListPromptQuizTasksForBatchRow, error) {
+	rows, err := q.db.Query(ctx, listPromptQuizTasksForBatch, arg.WorkspaceID, arg.BatchID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPromptQuizTasksForBatchRow{}
+	for rows.Next() {
+		var i ListPromptQuizTasksForBatchRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.Scope,
+			&i.ScopeID,
+			&i.Version,
+			&i.ItemID,
+			&i.ItemRevision,
+			&i.Outcome,
+			&i.Score,
+			&i.ScoreDetail,
+			&i.GradedAt,
+			&i.MeasuredAt,
+			&i.RunTokens,
+			&i.ItemSlug,
+			&i.ItemTitle,
+			&i.TaskStatus,
 		); err != nil {
 			return nil, err
 		}

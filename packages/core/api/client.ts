@@ -4616,8 +4616,21 @@ export class ApiClient {
     return parseWithFallback(
       raw,
       PromptQuizBatchResponseSchema,
-      { batch_id: batchId, rows: [], counts: {} },
+      { batch_id: batchId, ordered: 0, settled: true, rows: [], counts: {} },
       { endpoint: "GET /api/prompt-quiz/batches/{id}" },
+    );
+  }
+
+  /** The agent's active batch, or its latest settled traceability view. */
+  async getCurrentPromptQuizBatch(agentId: string): Promise<PromptQuizBatchResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-quiz/batches/current?agent_id=${encodeURIComponent(agentId)}`,
+    );
+    return parseWithFallback(
+      raw,
+      PromptQuizBatchResponseSchema,
+      { batch_id: "", ordered: 0, settled: true, rows: [], counts: {} },
+      { endpoint: "GET /api/prompt-quiz/batches/current" },
     );
   }
 

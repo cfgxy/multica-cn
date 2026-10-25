@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -15,18 +15,15 @@ import {
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { clientErrorMessage } from "@multica/core/api";
 import {
-  promptQuizBatchOptions,
+  promptQuizCurrentBatchOptions,
   promptQuizKeys,
   promptQuizSamplesOptions,
   useCreatePromptQuizBatch,
 } from "@multica/core/self-evolution";
 import type { PromptQuizBaseline, PromptQuizSampleRow } from "@multica/core/types";
 import { useT, useLocale } from "../../i18n";
-import { readQuizBatch, writeQuizBatch } from "./quiz-session";
-
 const QUIZ_POLL_INTERVAL = 15_000;
-const COMPATIBILITY_QUIZ_POLL_INTERVAL = 60_000;
-const COMPATIBILITY_BATCH_POLL_WINDOW = 24 * 60 * 60 * 1000;
+
 
 /**
  * The graded side of the quiz (RUYI-286), owner-only like the rubrics it
@@ -60,43 +57,22 @@ export function QuizGradedPanel({
 
   const run = useCreatePromptQuizBatch(wsId);
   const queryClient = useQueryClient();
-  const [orderedBatch, setOrderedBatch] = useState<{
-    agentId: string;
-    batchId: string;
-    expectedRows: number | null;
-    orderedAt: number;
-  }>({ agentId, batchId: "", expectedRows: null, orderedAt: Date.now() });
-  const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
-  const expectedRows = orderedBatch.agentId === agentId ? orderedBatch.expectedRows : null;
-  const compatibilityBatchPollExpired =
-    expectedRows === null && Date.now() >= orderedBatch.orderedAt + COMPATIBILITY_BATCH_POLL_WINDOW;
   const batch = useQuery({
-    ...promptQuizBatchOptions(wsId, batchId),
+    ...promptQuizCurrentBatchOptions(wsId, agentId),
     refetchInterval: (query) => {
-      const rows = query.state.data?.rows ?? [];
-      const batchComplete = isQuizBatchComplete(rows, expectedRows);
-      const shouldPoll =
-        batchId !== "" &&
-        !batchComplete &&
-        !compatibilityBatchPollExpired;
-      return shouldPoll
-        ? expectedRows === null ? COMPATIBILITY_QUIZ_POLL_INTERVAL : QUIZ_POLL_INTERVAL
-        : false;
+      const data = query.state.data;
+      return data?.batch_id !== "" && data?.settled !== true ? QUIZ_POLL_INTERVAL : false;
     },
   });
-  const batchRows = batch.data?.rows ?? [];
-  const batchSettled = isQuizBatchComplete(batchRows, expectedRows);
+  const batchId = batch.data?.batch_id ?? "";
+  const batchSettled = batch.data?.settled === true;
   const samples = useQuery({
     ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
     staleTime: 0,
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
     refetchInterval: () => {
-      const shouldPoll =
-        batchId !== "" && !batchSettled && !compatibilityBatchPollExpired;
-      return shouldPoll
-        ? expectedRows === null ? COMPATIBILITY_QUIZ_POLL_INTERVAL : QUIZ_POLL_INTERVAL
-        : false;
+      return batchId !== "" && !batchSettled ? QUIZ_POLL_INTERVAL : false;
     },
   });
   const {
@@ -107,20 +83,6 @@ export function QuizGradedPanel({
 
   const previousBatchState = useRef({ batchId: "", settled: false });
   const batchGraded = batch.data?.scores?.graded ?? 0;
-  useEffect(() => {
-    const storedBatch = readQuizBatch(wsId, agentId);
-    const orderedAt = storedBatch?.orderedAt ?? Date.now();
-    if (storedBatch?.orderedAt === undefined && storedBatch !== null) {
-      writeQuizBatch(wsId, agentId, storedBatch.batchId, storedBatch.expectedRows, orderedAt);
-    }
-    setOrderedBatch({
-      agentId,
-      batchId: storedBatch?.batchId ?? "",
-      expectedRows: storedBatch ? storedBatch.expectedRows : null,
-      orderedAt,
-    });
-  }, [agentId, wsId]);
-
   useEffect(() => {
     void queryClient.invalidateQueries({
       queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
@@ -178,10 +140,9 @@ export function QuizGradedPanel({
       {
         onSuccess: (resp) => {
           if (resp.batch_id !== "") {
-            const orderedAt = Date.now();
-            const expectedRows = resp.ordered ?? null;
-            setOrderedBatch({ agentId, batchId: resp.batch_id, expectedRows, orderedAt });
-            writeQuizBatch(wsId, agentId, resp.batch_id, expectedRows, orderedAt);
+            void queryClient.invalidateQueries({
+              queryKey: promptQuizKeys.currentBatch(wsId, agentId),
+            });
           }
           const refused = resp.refused_agents?.length ?? 0;
           if (refused > 0) {
@@ -228,12 +189,11 @@ export function QuizGradedPanel({
           </Button>
         </div>
 
-        {batchId !== "" ? (
-          batch.isPending ? (
-            <Skeleton className="h-16 w-full rounded-lg" />
-          ) : batch.isError ? (
-            <p className="text-caption text-muted-foreground">{t(($) => $.quiz.reading.error)}</p>
-          ) : (
+        {batch.isPending ? (
+          <Skeleton className="h-16 w-full rounded-lg" />
+        ) : batch.isError ? (
+          <p className="text-caption text-muted-foreground">{t(($) => $.quiz.reading.error)}</p>
+        ) : batchId !== "" ? (
             <div className="flex flex-col gap-1" data-testid="quiz-graded-batch">
               <p className="break-all text-caption text-muted-foreground">{batchId}</p>
               <p className="text-caption text-muted-foreground">
@@ -251,7 +211,6 @@ export function QuizGradedPanel({
                 </ul>
               ) : null}
             </div>
-          )
         ) : null}
 
         <div className="flex flex-col gap-1">
@@ -383,21 +342,6 @@ function taskStatusKey(row: PromptQuizSampleRow):
     default:
       return "taskPending";
   }
-}
-
-function isAwaitingQuizResult(row: PromptQuizSampleRow): boolean {
-  if (row.outcome === "answered") {
-    return row.score == null && !row.graded_at;
-  }
-  if (row.outcome !== "") return false;
-  const terminal = ["completed", "failed", "cancelled"].includes(row.task_status ?? "");
-  return !(terminal && row.version <= 0);
-}
-
-function isQuizBatchComplete(rows: PromptQuizSampleRow[], expectedRows: number | null): boolean {
-  return expectedRows !== null
-    && rows.length >= expectedRows
-    && rows.every((row) => !isAwaitingQuizResult(row));
 }
 
 interface ParsedCheck {

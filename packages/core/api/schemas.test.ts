@@ -9,6 +9,7 @@ import {
   PromptQuizItemListSchema,
   PromptQuizBaselineSchema,
   PromptQuizBatchCreateResponseSchema,
+  PromptQuizBatchResponseSchema,
   EMPTY_PROMPT_QUIZ_ITEM,
   EMPTY_PROMPT_QUIZ_BASELINE,
   WecomInstallationSchema,
@@ -2589,6 +2590,16 @@ describe("prompt quiz schemas (RUYI-185)", () => {
       .toBe(false);
     expect(PromptQuizBatchCreateResponseSchema.safeParse({ batch_id: "batch-1", ordered: 51 }).success)
       .toBe(true);
+  });
+
+  it("falls back to an empty settled current batch for malformed batch responses", () => {
+    const parsed = parseWithFallback(
+      { batch_id: 42, ordered: -1, settled: "no", rows: "not rows" },
+      PromptQuizBatchResponseSchema,
+      { batch_id: "", ordered: 0, settled: true, rows: [], counts: {} },
+      { endpoint: "GET /api/prompt-quiz/batches/current" },
+    );
+    expect(parsed).toEqual({ batch_id: "", ordered: 0, settled: true, rows: [], counts: {} });
   });
 
   it("falls back to an unmeasured reading, never to a clean one", () => {

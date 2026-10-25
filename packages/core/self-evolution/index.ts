@@ -32,6 +32,7 @@ export {
   promptQuizBaselineOptions,
   promptQuizSamplesOptions,
   promptQuizBatchOptions,
+  promptQuizCurrentBatchOptions,
   useCreatePromptQuizItem,
   useUpdatePromptQuizItem,
   useDeletePromptQuizItem,

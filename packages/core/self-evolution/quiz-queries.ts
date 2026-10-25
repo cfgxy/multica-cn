@@ -30,6 +30,8 @@ export const promptQuizKeys = {
     [...promptQuizKeys.all(wsId), "samples", scope, scopeId, version] as const,
   batch: (wsId: string, batchId: string) =>
     [...promptQuizKeys.all(wsId), "batch", batchId] as const,
+  currentBatch: (wsId: string, agentId: string) =>
+    [...promptQuizKeys.all(wsId), "current-batch", agentId] as const,
 };
 
 export function promptQuizItemsOptions(wsId: string, activeOnly = false) {
@@ -102,6 +104,15 @@ export function promptQuizBatchOptions(wsId: string, batchId: string) {
     queryKey: promptQuizKeys.batch(wsId, batchId),
     queryFn: () => api.getPromptQuizBatch(batchId),
     enabled: wsId !== "" && batchId !== "",
+  });
+}
+
+/** The selected agent's active batch, or its latest settled traceability view. */
+export function promptQuizCurrentBatchOptions(wsId: string, agentId: string) {
+  return queryOptions({
+    queryKey: promptQuizKeys.currentBatch(wsId, agentId),
+    queryFn: () => api.getCurrentPromptQuizBatch(agentId),
+    enabled: wsId !== "" && agentId !== "",
   });
 }
 
