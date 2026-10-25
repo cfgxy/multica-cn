@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, AgentTask } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -182,8 +182,8 @@ describe("ActivityTab daily-retrospective runs (RUYI-673)", () => {
 });
 
 describe("ActivityTab prompt-quiz runs", () => {
-  it("shows the quiz source, item title, and distinct batch/item identifiers", async () => {
-    agentTasksRef.current = () => Promise.resolve([
+  it("shows quiz source, item title, and distinct batch/item identifiers for active and completed runs", async () => {
+    snapshotRef.current = () => Promise.resolve([
       {
         id: "task-quiz-1",
         agent_id: "agent-1",
@@ -194,24 +194,34 @@ describe("ActivityTab prompt-quiz runs", () => {
         quiz_item_id: "5b0e0000-0000-4000-8000-000000000001",
         quiz_item_title: "稳定性题目",
         quiz_batch_id: "8a1f0000-0000-4000-8000-000000000001",
-      },
+      } as unknown as AgentTask,
+    ]);
+    agentTasksRef.current = () => Promise.resolve([
       {
         id: "task-quiz-2",
         agent_id: "agent-1",
         issue_id: "",
         status: "completed",
         created_at: "2026-10-11T00:01:00Z",
+        completed_at: "2026-10-11T00:03:00Z",
         kind: "quiz",
-        quiz_item_id: "5b0e0000-0000-4000-8000-000000000002",
+        quiz_item_id: "7c3a0000-0000-4000-8000-000000000002",
         quiz_item_title: "错误处理题目",
         quiz_batch_id: "9b2f0000-0000-4000-8000-000000000001",
       },
     ] as unknown as AgentTask[]);
     renderTab();
 
-    expect(await screen.findByText("稳定性题目 · 批次 8a1f0000/5b0e0000")).toBeInTheDocument();
-    expect(screen.getByText("错误处理题目 · 批次 9b2f0000/5b0e0000")).toBeInTheDocument();
-    expect(screen.getAllByText("Quiz scoring")).toHaveLength(2);
+    const activeTitle = await screen.findByText(
+      "稳定性题目 · Batch 8a1f0000/5b0e0000",
+    );
+    const completedTitle = screen.getByText(
+      "错误处理题目 · Batch 9b2f0000/7c3a0000",
+    );
+    expect(within(activeTitle.closest(".group")!).getByText("Quiz scoring"))
+      .toBeInTheDocument();
+    expect(within(completedTitle.closest(".group")!).getByText("Quiz scoring"))
+      .toBeInTheDocument();
     expect(screen.queryByText("Untracked")).not.toBeInTheDocument();
   });
 });
