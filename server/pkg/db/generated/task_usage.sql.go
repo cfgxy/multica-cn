@@ -827,6 +827,24 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 	return items, nil
 }
 
+const markTaskUsageModelCallsUnknown = `-- name: MarkTaskUsageModelCallsUnknown :exec
+INSERT INTO task_usage (task_id, provider, model, model_call_count, updated_at)
+VALUES ($1, $2, $3, NULL, now())
+ON CONFLICT (task_id, provider, model)
+DO UPDATE SET model_call_count = NULL, updated_at = now()
+`
+
+type MarkTaskUsageModelCallsUnknownParams struct {
+	TaskID   pgtype.UUID `json:"task_id"`
+	Provider string      `json:"provider"`
+	Model    string      `json:"model"`
+}
+
+func (q *Queries) MarkTaskUsageModelCallsUnknown(ctx context.Context, arg MarkTaskUsageModelCallsUnknownParams) error {
+	_, err := q.db.Exec(ctx, markTaskUsageModelCallsUnknown, arg.TaskID, arg.Provider, arg.Model)
+	return err
+}
+
 const sumTaskFailuresForMetrics = `-- name: SumTaskFailuresForMetrics :many
 SELECT
     a.workspace_id::text AS workspace_id,

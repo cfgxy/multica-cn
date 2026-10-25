@@ -3,12 +3,18 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
+
+func TestReportTaskModelCallEvidenceRequiresDaemonCredential(t *testing.T) {
+	req := withURLParam(newRequestAs(testUserID, http.MethodPost, "/api/daemon/tasks/not-a-uuid/usage/evidence", nil), "taskId", "not-a-uuid")
+	testutil.Call(t, (&Handler{}).ReportTaskModelCallEvidence, req).Want(http.StatusForbidden)
+}
 
 func TestModelCallBudgetActive_RequiresCompleteKnownWindow(t *testing.T) {
 	config := runtimeModelCallBudgetConfig{Enabled: true, MaxCalls: 3, WindowSeconds: 3600}
@@ -62,6 +68,7 @@ func TestValidateRuntimeModelCallBudgetConfig(t *testing.T) {
 func runtimeModelCallBudgetFixture(t *testing.T, name string) string {
 	t.Helper()
 	runtimeID := dbfx.Runtime(t, "model-call-budget-"+name, testutil.Cols{
+		"daemon_id":    "model-call-budget-daemon-" + name,
 		"runtime_mode": "local",
 		"visibility":   "public",
 	})
@@ -73,6 +80,21 @@ func runtimeModelCallBudgetFixture(t *testing.T, name string) string {
 			  AND details->>'runtime_id' = $2`, testWorkspaceID, runtimeID)
 	})
 	return runtimeID
+}
+
+func modelCallEvidenceRequest(t *testing.T, runtimeID, taskID, body string) *http.Request {
+	t.Helper()
+	var daemonID string
+	if err := testPool.QueryRow(context.Background(), `SELECT daemon_id FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&daemonID); err != nil {
+		t.Fatalf("load runtime daemon id: %v", err)
+	}
+	return modelCallEvidenceRequestAs(t, taskID, body, daemonID)
+}
+
+func modelCallEvidenceRequestAs(t *testing.T, taskID, body, daemonID string) *http.Request {
+	t.Helper()
+	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/usage/evidence", json.RawMessage(body), testWorkspaceID, daemonID)
+	return withURLParam(req, "taskId", taskID)
 }
 
 func modelCallBudgetBody(enabled bool, maxCalls int64, windowSeconds int32) map[string]any {
@@ -104,6 +126,15 @@ func seedModelCallUsage(t *testing.T, ctx context.Context, taskID, provider, mod
 		INSERT INTO task_usage (task_id, provider, model, input_tokens, model_call_count)
 		VALUES ($1, $2, $3, 1, $4)`, taskID, provider, model, calls); err != nil {
 		t.Fatalf("seed model-call usage: %v", err)
+	}
+	if calls != nil {
+		for i := int64(0); i < *calls; i++ {
+			if _, err := testPool.Exec(ctx, `
+				INSERT INTO task_usage_model_call_evidence (task_id, provider, model, evidence_id)
+				VALUES ($1, $2, $3, $4)`, taskID, provider, model, fmt.Sprintf("budget-seed-%s-%d", model, i)); err != nil {
+				t.Fatalf("seed model-call evidence: %v", err)
+			}
+		}
 	}
 }
 
@@ -256,13 +287,75 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 		// minimum budget window. The handler's current-time query must then
 		// exclude this complete known usage and release the queued task.
 		if _, err := testPool.Exec(ctx, `
-			UPDATE task_usage
-			SET created_at = now() - INTERVAL '61 seconds'
-			WHERE task_id = $1`, usageTaskID); err != nil {
-			t.Fatalf("move usage outside model-call budget window: %v", err)
+				UPDATE task_usage_model_call_evidence
+				SET created_at = now() - INTERVAL '61 seconds'
+				WHERE task_id = $1`, usageTaskID); err != nil {
+			t.Fatalf("move evidence outside model-call budget window: %v", err)
 		}
 		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task == nil || task.ID != queuedID {
 			t.Fatalf("expired complete known window must claim %s, got %+v: %s", queuedID, task, body)
+		}
+	})
+
+	t.Run("running task evidence holds then expires without terminal usage", func(t *testing.T) {
+		runtimeID := runtimeModelCallBudgetFixture(t, "running-evidence")
+		agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-running-evidence")
+		usageTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, usageTaskID); err != nil {
+			t.Fatalf("mark source task running: %v", err)
+		}
+		queuedID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		setRuntimeModelCallBudgetForTest(t, runtimeID, true, 1, 60)
+		crossDaemonReq := modelCallEvidenceRequestAs(t, usageTaskID,
+			`{"provider":"claude","model":"budget-live","evidence_id":"cross-daemon-call"}`, "another-daemon")
+		testutil.Call(t, testHandler.ReportTaskModelCallEvidence, crossDaemonReq).Want(http.StatusForbidden)
+		req := modelCallEvidenceRequest(t, runtimeID, usageTaskID,
+			`{"provider":"claude","model":"budget-live","evidence_id":"live-call-1"}`)
+		testutil.Call(t, testHandler.ReportTaskModelCallEvidence, req).Want(http.StatusOK)
+
+		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task != nil {
+			t.Fatalf("running evidence did not hold runtime: claimed %s: %s", task.ID, body)
+		}
+		var evidenceCount, usageCount int
+		if err := testPool.QueryRow(ctx, `SELECT count(*) FROM task_usage_model_call_evidence WHERE task_id = $1`, usageTaskID).Scan(&evidenceCount); err != nil {
+			t.Fatalf("count running evidence: %v", err)
+		}
+		if err := testPool.QueryRow(ctx, `SELECT count(*) FROM task_usage WHERE task_id = $1`, usageTaskID).Scan(&usageCount); err != nil {
+			t.Fatalf("count terminal usage: %v", err)
+		}
+		if evidenceCount != 1 || usageCount != 0 {
+			t.Fatalf("running persistence = %d evidence / %d usage rows, want 1 / 0", evidenceCount, usageCount)
+		}
+		if _, err := testPool.Exec(ctx, `UPDATE task_usage_model_call_evidence SET created_at = now() - INTERVAL '61 seconds' WHERE task_id = $1`, usageTaskID); err != nil {
+			t.Fatalf("expire live evidence: %v", err)
+		}
+		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task == nil || task.ID != queuedID {
+			t.Fatalf("expired running evidence must release queued task %s, got %+v: %s", queuedID, task, body)
+		}
+	})
+
+	t.Run("running incomplete evidence fails open across a task retry", func(t *testing.T) {
+		runtimeID := runtimeModelCallBudgetFixture(t, "running-incomplete")
+		agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-running-incomplete")
+		knownTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		completeTaskForModelCallBudget(t, ctx, knownTaskID)
+		knownCalls := int64(1)
+		seedModelCallUsage(t, ctx, knownTaskID, "claude", "known", &knownCalls)
+		incompleteTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, incompleteTaskID); err != nil {
+			t.Fatalf("mark incomplete source task running: %v", err)
+		}
+		queuedID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		setRuntimeModelCallBudgetForTest(t, runtimeID, true, 1, 60)
+
+		req := modelCallEvidenceRequest(t, runtimeID, incompleteTaskID,
+			`{"provider":"claude","model":"unknown-live","incomplete":true}`)
+		testutil.Call(t, testHandler.ReportTaskModelCallEvidence, req).Want(http.StatusOK)
+		if _, err := testPool.Exec(ctx, `UPDATE task_usage SET created_at = now() - INTERVAL '2 hours' WHERE task_id = $1`, incompleteTaskID); err != nil {
+			t.Fatalf("age incomplete usage creation time: %v", err)
+		}
+		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task == nil || task.ID != queuedID {
+			t.Fatalf("recent incomplete evidence must fail open and claim %s, got %+v: %s", queuedID, task, body)
 		}
 	})
 

@@ -54,7 +54,9 @@ type copilotEventState struct {
 	shutdownUsage map[string]TokenUsage
 	// resumed marks a run that continued an existing Copilot session, which is
 	// what disqualifies the session.shutdown totals — see resolveUsage.
-	resumed bool
+	resumed                       bool
+	onModelCallEvidence           func(model, evidenceID string)
+	onModelCallEvidenceIncomplete func(model string)
 }
 
 // resolveUsage picks the single best usage source this run produced, most
@@ -276,6 +278,13 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		callUsage := st.callUsage[model]
 		callUsage = appendModelCallEvidence(callUsage, evt.ID)
 		st.callUsage[model] = callUsage
+		if evidenceID := strings.TrimSpace(evt.ID); evidenceID != "" {
+			if st.onModelCallEvidence != nil {
+				st.onModelCallEvidence(model, evidenceID)
+			}
+		} else if st.onModelCallEvidenceIncomplete != nil {
+			st.onModelCallEvidenceIncomplete(model)
+		}
 
 	case "session.shutdown":
 		// Session-wide per-model totals, emitted once as the session tears down.
@@ -426,6 +435,8 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			seedModel = "copilot"
 		}
 		st := newCopilotEventState(seedModel, opts.ResumeSessionID != "")
+		st.onModelCallEvidence = b.cfg.OnModelCallEvidence
+		st.onModelCallEvidenceIncomplete = b.cfg.OnModelCallEvidenceIncomplete
 
 		go func() {
 			<-runCtx.Done()
