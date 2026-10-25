@@ -69,6 +69,12 @@ const (
 	// success: nothing new runs. (Named to avoid implying the NEW comment was
 	// already processed.)
 	ReasonSelfTriggerSuppressed ReasonCode = "self_trigger_suppressed"
+	// ReasonAgentOnlyCascadeBlocked: an automatic agent-to-agent comment
+	// lineage reached the rapid-cascade threshold or repeated a source task.
+	// It is distinct from self_trigger_suppressed: the latter describes a
+	// target mentioning itself, while this code identifies a broader lineage
+	// guard without exposing any private target details.
+	ReasonAgentOnlyCascadeBlocked ReasonCode = "agent_only_cascade_blocked"
 	// ReasonIssueStatusNotDispatchable: the issue's current status category
 	// does not admit comment-triggered runs (RUYI-391). The comment itself is
 	// saved; the trigger is refused before any run is created or queued. The
