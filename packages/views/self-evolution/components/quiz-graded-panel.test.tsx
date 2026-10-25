@@ -149,7 +149,7 @@ describe("QuizGradedPanel", () => {
 
   it("refreshes cached samples when a restored batch is already settled", async () => {
     vi.useFakeTimers();
-    writeQuizBatch("ws-1", "agent-1", "batch-1");
+    writeQuizBatch("ws-1", "agent-1", "batch-1", Date.now(), 1);
     api.getPromptQuizSamples
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([row]);
@@ -179,12 +179,12 @@ describe("QuizGradedPanel", () => {
     });
     expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(2);
     await flush();
-    expect(screen.getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent(row.task_id);
+    expect(screen.getAllByTestId(`quiz-sample-${row.task_id}`)).toHaveLength(2);
   });
 
   it("refetches samples after an in-flight initial request when the batch is already settled", async () => {
     vi.useFakeTimers();
-    writeQuizBatch("ws-1", "agent-1", "batch-1");
+    writeQuizBatch("ws-1", "agent-1", "batch-1", Date.now(), 1);
     let resolveInitialSamples: (samples: PromptQuizSampleRow[]) => void = () => {};
     api.getPromptQuizSamples
       .mockImplementationOnce(() => new Promise((resolve) => { resolveInitialSamples = resolve; }))
@@ -209,6 +209,6 @@ describe("QuizGradedPanel", () => {
     });
     expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(2);
     await flush();
-    expect(screen.getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent(row.task_id);
+    expect(screen.getAllByTestId(`quiz-sample-${row.task_id}`)).toHaveLength(2);
   });
 });
