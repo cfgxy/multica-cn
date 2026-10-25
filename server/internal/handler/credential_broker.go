@@ -295,9 +295,6 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 	if consumedAt.Valid {
 		return deny("capability_replayed", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
-	if !time.Now().Before(expiresAt) {
-		return deny("capability_expired", pgtype.UUID{}, pgtype.UUID{}, "")
-	}
 	if capabilityConnector != connectorUUID || capabilityRevision != req.ConnectorRevision {
 		return deny("connector_mismatch", pgtype.UUID{}, pgtype.UUID{}, "")
 	}

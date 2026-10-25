@@ -175,7 +175,7 @@ func TestCredentialConnectorProxyUsesClaimBoundHeaderWithoutReplayingCapability(
 }
 
 func TestRemoteMCPProviderMatrixAndConfigMerge(t *testing.T) {
-	for _, provider := range []string{"codex", "claude", "hermes", "qoder", "mcode"} {
+	for _, provider := range []string{"codex", "claude", "hermes", "qoder", "mcode", "omp"} {
 		if !providerSupportsRemoteMCPBroker(provider) {
 			t.Fatalf("provider %s must support Remote MCP", provider)
 		}
