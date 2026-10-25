@@ -54,7 +54,8 @@ type copilotEventState struct {
 	shutdownUsage map[string]TokenUsage
 	// resumed marks a run that continued an existing Copilot session, which is
 	// what disqualifies the session.shutdown totals — see resolveUsage.
-	resumed bool
+	resumed             bool
+	onModelCallEvidence func(model, evidenceID string)
 }
 
 // resolveUsage picks the single best usage source this run produced, most
@@ -167,8 +168,8 @@ func (st *copilotEventState) finalOutput() string {
 	return st.output.String()
 }
 
-func newCopilotEventState(seedModel string, resumed bool) *copilotEventState {
-	return &copilotEventState{
+func newCopilotEventState(seedModel string, resumed bool, evidenceCallbacks ...func(model, evidenceID string)) *copilotEventState {
+	st := &copilotEventState{
 		activeModel:   seedModel,
 		finalStatus:   "completed",
 		callUsage:     make(map[string]TokenUsage),
@@ -176,6 +177,10 @@ func newCopilotEventState(seedModel string, resumed bool) *copilotEventState {
 		shutdownUsage: make(map[string]TokenUsage),
 		resumed:       resumed,
 	}
+	if len(evidenceCallbacks) > 0 {
+		st.onModelCallEvidence = evidenceCallbacks[0]
+	}
+	return st
 }
 
 // handleCopilotEvent processes a single parsed copilotEvent, updates state,
@@ -276,6 +281,9 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		callUsage := st.callUsage[model]
 		callUsage = appendModelCallEvidence(callUsage, evt.ID)
 		st.callUsage[model] = callUsage
+		if st.onModelCallEvidence != nil && evt.ID != "" && strings.TrimSpace(evt.ID) == evt.ID && !strings.ContainsRune(evt.ID, '\x00') {
+			st.onModelCallEvidence(model, evt.ID)
+		}
 
 	case "session.shutdown":
 		// Session-wide per-model totals, emitted once as the session tears down.
@@ -425,7 +433,7 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		if seedModel == "" {
 			seedModel = "copilot"
 		}
-		st := newCopilotEventState(seedModel, opts.ResumeSessionID != "")
+		st := newCopilotEventState(seedModel, opts.ResumeSessionID != "", opts.OnModelCallEvidence)
 
 		go func() {
 			<-runCtx.Done()

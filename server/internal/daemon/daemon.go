@@ -9433,6 +9433,17 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	// drain, leaving the subprocess running.
 	agentCtx, agentCancel := context.WithCancel(ctx)
 	defer agentCancel()
+	evidenceEvents := make(chan TaskUsageModelCallEvidenceEntry, 256)
+	previousEvidenceCallback := opts.OnModelCallEvidence
+	opts.OnModelCallEvidence = func(model, evidenceID string) {
+		if previousEvidenceCallback != nil {
+			previousEvidenceCallback(model, evidenceID)
+		}
+		select {
+		case evidenceEvents <- TaskUsageModelCallEvidenceEntry{Provider: provider, Model: model, EvidenceID: evidenceID}:
+		case <-agentCtx.Done():
+		}
+	}
 
 	session, err := backend.Execute(agentCtx, prompt, opts)
 	if err != nil {
@@ -9506,6 +9517,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	// byte-for-byte on its pre-round behavior.
 	var mu sync.Mutex
 	var batch []TaskMessageData
+	var evidenceBatch []TaskUsageModelCallEvidenceEntry
 	watchTracker := newToolCallTracker()
 	emitWatchdogEvent := func(input map[string]any, tool string) {
 		s := msgSeq.Add(1)
@@ -9608,17 +9620,39 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			}
 			toSend := batch
 			batch = nil
+			toReportEvidence := evidenceBatch
+			evidenceBatch = nil
 			mu.Unlock()
 
+			var reports sync.WaitGroup
 			if len(toSend) > 0 {
-				sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := d.client.ReportTaskMessages(sendCtx, taskID, toSend); err != nil {
-					taskLog.Debug("failed to report task messages", "error", err)
-				} else {
-					taskLog.Debug("reported task messages", "count", len(toSend), "last_seq", toSend[len(toSend)-1].Seq)
-				}
-				cancel()
+				reports.Add(1)
+				go func(messages []TaskMessageData) {
+					defer reports.Done()
+					sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if err := d.client.ReportTaskMessages(sendCtx, taskID, messages); err != nil {
+						taskLog.Debug("failed to report task messages", "error", err)
+					} else {
+						taskLog.Debug("reported task messages", "count", len(messages), "last_seq", messages[len(messages)-1].Seq)
+					}
+				}(toSend)
 			}
+			if len(toReportEvidence) > 0 {
+				reports.Add(1)
+				go func(evidence []TaskUsageModelCallEvidenceEntry) {
+					defer reports.Done()
+					evidenceCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if err := d.client.ReportTaskUsageModelCallEvidence(evidenceCtx, taskID, evidence); err != nil {
+						taskLog.Warn("report live task usage evidence failed", "count", len(evidence), "error", err)
+						mu.Lock()
+						evidenceBatch = append(evidence, evidenceBatch...)
+						mu.Unlock()
+					}
+				}(toReportEvidence)
+			}
+			reports.Wait()
 		}
 
 		ticker := time.NewTicker(500 * time.Millisecond)
@@ -9641,6 +9675,10 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		var sessionPinned atomic.Bool
 		for {
 			select {
+			case evidence := <-evidenceEvents:
+				mu.Lock()
+				evidenceBatch = append(evidenceBatch, evidence)
+				mu.Unlock()
 			case msg, ok := <-session.Messages:
 				if !ok {
 					goto drainDone
@@ -9805,6 +9843,15 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		// in flight would otherwise keep posting batches after this goroutine
 		// signalled that the transcript tail was persisted.
 		<-tickerDone
+		for {
+			select {
+			case evidence := <-evidenceEvents:
+				evidenceBatch = append(evidenceBatch, evidence)
+			default:
+				goto evidenceDrained
+			}
+		}
+	evidenceDrained:
 		flush()
 	}()
 

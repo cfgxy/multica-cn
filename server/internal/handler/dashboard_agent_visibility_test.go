@@ -89,7 +89,7 @@ func TestDashboardPerAgentRollupsFoldRestrictedAgents(t *testing.T) {
 	// One completed + one failed run per agent, each with usage, so all three
 	// endpoints have something to fold: tokens/cost, run time, and a failure
 	// reason alongside its succeeded denominator.
-	seedRun := func(agentID, status, failureReason string, tokens int64) {
+	seedRun := func(agentID, status, failureReason string, tokens int64, modelCalls *int64) {
 		var taskID string
 		if err := testPool.QueryRow(ctx, `
 			INSERT INTO agent_task_queue (
@@ -105,16 +105,18 @@ func TestDashboardPerAgentRollupsFoldRestrictedAgents(t *testing.T) {
 			testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
 		})
 		if _, err := testPool.Exec(ctx, `
-			INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, created_at)
-			VALUES ($1, 'claude', 'agent-visibility-model', $2, 0, now())
-		`, taskID, tokens); err != nil {
+				INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, model_call_count, created_at)
+				VALUES ($1, 'claude', 'agent-visibility-model', $2, 0, $3, now())
+			`, taskID, tokens, modelCalls); err != nil {
 			t.Fatalf("insert task_usage: %v", err)
 		}
 	}
-	seedRun(privateAgentID, "completed", "", 1000)
-	seedRun(privateAgentID, "failed", "runtime_offline", 200)
-	seedRun(publicAgentID, "completed", "", 300)
-	seedRun(publicAgentID, "failed", "timeout", 50)
+	knownPrivateCalls := int64(3)
+	knownPublicCalls := int64(4)
+	seedRun(privateAgentID, "completed", "", 1000, &knownPrivateCalls)
+	seedRun(privateAgentID, "failed", "runtime_offline", 200, nil)
+	seedRun(publicAgentID, "completed", "", 300, &knownPublicCalls)
+	seedRun(publicAgentID, "failed", "timeout", 50, nil)
 
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(),
@@ -159,10 +161,12 @@ func TestDashboardPerAgentRollupsFoldRestrictedAgents(t *testing.T) {
 	// ---- usage/by-agent ----------------------------------------------------
 
 	type usageRow struct {
-		AgentID      string `json:"agent_id"`
-		Model        string `json:"model"`
-		InputTokens  int64  `json:"input_tokens"`
-		CostUSDTicks int64  `json:"cost_usd_ticks"`
+		AgentID               string `json:"agent_id"`
+		Model                 string `json:"model"`
+		InputTokens           int64  `json:"input_tokens"`
+		CostUSDTicks          int64  `json:"cost_usd_ticks"`
+		ModelCallCount        int64  `json:"model_call_count"`
+		ModelCallUnknownCount int32  `json:"model_call_unknown_count"`
 	}
 	var ownerUsage, memberUsage []usageRow
 	const usagePath = "/api/dashboard/usage/by-agent?days=7"
@@ -175,24 +179,31 @@ func TestDashboardPerAgentRollupsFoldRestrictedAgents(t *testing.T) {
 	assertDashboardAgentPresence(t, "usage/by-agent (member)", dashboardAgentIDSet(memberUsage, usageID),
 		dashboardAgentPresence{privateAgent: false, publicAgent: true, sentinel: true}, privateAgentID, publicAgentID)
 
-	sumUsage := func(rows []usageRow) (tokens, ticks int64) {
+	sumUsage := func(rows []usageRow) (tokens, ticks, modelCalls int64, unknownCalls int32) {
 		for _, r := range rows {
 			tokens += r.InputTokens
 			ticks += r.CostUSDTicks
+			modelCalls += r.ModelCallCount
+			unknownCalls += r.ModelCallUnknownCount
 		}
 		return
 	}
-	ownerTokens, ownerTicks := sumUsage(ownerUsage)
-	memberTokens, memberTicks := sumUsage(memberUsage)
-	if ownerTokens != memberTokens || ownerTicks != memberTicks {
-		t.Errorf("usage/by-agent: folding changed the totals — owner (%d tokens, %d ticks), member (%d tokens, %d ticks)",
-			ownerTokens, ownerTicks, memberTokens, memberTicks)
+	ownerTokens, ownerTicks, ownerCalls, ownerUnknown := sumUsage(ownerUsage)
+	memberTokens, memberTicks, memberCalls, memberUnknown := sumUsage(memberUsage)
+	if ownerTokens != memberTokens || ownerTicks != memberTicks || ownerCalls != memberCalls || ownerUnknown != memberUnknown {
+		t.Errorf("usage/by-agent: folding changed the totals — owner (%d tokens, %d ticks, %d known calls, %d unknown), member (%d tokens, %d ticks, %d known calls, %d unknown)",
+			ownerTokens, ownerTicks, ownerCalls, ownerUnknown, memberTokens, memberTicks, memberCalls, memberUnknown)
 	}
 	// The restricted bucket must stay split by (provider, model) or the client
 	// cannot price it, and the leaderboard stops summing to the Cost KPI.
 	for _, r := range memberUsage {
 		if r.AgentID == restrictedAgentsRowID && r.Model == "" {
 			t.Errorf("usage/by-agent: restricted bucket lost its model dimension: %+v", r)
+		}
+		if r.AgentID == restrictedAgentsRowID && r.Model == "agent-visibility-model" &&
+			(r.ModelCallCount != knownPrivateCalls || r.ModelCallUnknownCount != 1) {
+			t.Errorf("usage/by-agent: restricted call totals = %d known / %d unknown, want %d / 1",
+				r.ModelCallCount, r.ModelCallUnknownCount, knownPrivateCalls)
 		}
 	}
 
@@ -283,6 +294,24 @@ func TestDashboardPerAgentRollupsFoldRestrictedAgents(t *testing.T) {
 	// bucket — just not be attributable to it.
 	if ownerByReason["runtime_offline"] < 1 {
 		t.Fatalf("test setup: expected the private agent's runtime_offline failure in the owner view, got %v", ownerByReason)
+	}
+}
+
+func TestFoldRestrictedUsageByAgentAccumulatesModelCallCounts(t *testing.T) {
+	rows := []DashboardUsageByAgentResponse{
+		{AgentID: "private-agent-a", Provider: "claude", Model: "claude-opus-5", ModelCallCount: 2, ModelCallUnknownCount: 1},
+		{AgentID: "private-agent-b", Provider: "claude", Model: "claude-opus-5", ModelCallCount: 3, ModelCallUnknownCount: 4},
+	}
+	got := foldRestrictedUsageByAgent(rows, map[string]struct{}{
+		"private-agent-a": {},
+		"private-agent-b": {},
+	})
+	if len(got) != 1 {
+		t.Fatalf("folded rows = %d, want one provider/model aggregate: %+v", len(got), got)
+	}
+	if row := got[0]; row.AgentID != restrictedAgentsRowID || row.Provider != "claude" || row.Model != "claude-opus-5" ||
+		row.ModelCallCount != 5 || row.ModelCallUnknownCount != 5 {
+		t.Fatalf("folded model-call row = %+v, want restricted claude/claude-opus-5 with 5 known and 5 unknown calls", row)
 	}
 }
 

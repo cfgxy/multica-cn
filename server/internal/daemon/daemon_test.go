@@ -2649,6 +2649,65 @@ func (b sessionBackend) Execute(_ context.Context, _ string, _ agent.ExecOptions
 	return b.session, nil
 }
 
+type modelCallEvidenceBackend struct {
+	session *agent.Session
+}
+
+func (b modelCallEvidenceBackend) Execute(_ context.Context, _ string, opts agent.ExecOptions) (*agent.Session, error) {
+	go opts.OnModelCallEvidence("claude-opus-5", "provider-response-1")
+	return b.session, nil
+}
+
+func TestExecuteAndDrain_PersistsModelCallEvidenceBeforeTerminalResult(t *testing.T) {
+	t.Parallel()
+
+	reported := make(chan []TaskUsageModelCallEvidenceEntry, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/usage") {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			Evidence []TaskUsageModelCallEvidenceEntry `json:"model_call_evidence"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		reported <- body.Evidence
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	d := &Daemon{client: NewClient(srv.URL), logger: slog.Default()}
+	messages := make(chan agent.Message)
+	results := make(chan agent.Result, 1)
+	backend := modelCallEvidenceBackend{session: &agent.Session{Messages: messages, Result: results}}
+	finished := make(chan error, 1)
+	go func() {
+		_, _, err := d.executeAndDrain(context.Background(), backend, "p", agent.ExecOptions{}, slog.Default(), "task-live-evidence", "", "claude", new(atomic.Int32))
+		finished <- err
+	}()
+
+	select {
+	case evidence := <-reported:
+		if len(evidence) != 1 || evidence[0] != (TaskUsageModelCallEvidenceEntry{
+			Provider: "claude", Model: "claude-opus-5", EvidenceID: "provider-response-1",
+		}) {
+			t.Fatalf("reported evidence = %+v, want the provider response identity", evidence)
+		}
+	case err := <-finished:
+		t.Fatalf("executeAndDrain returned before live evidence was reported: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for live model-call evidence report")
+	}
+
+	close(messages)
+	results <- agent.Result{Status: "completed"}
+	if err := <-finished; err != nil {
+		t.Fatalf("executeAndDrain: %v", err)
+	}
+}
+
 // TestExecuteAndDrain_ContextCancelled_FlushesPendingTranscript pins the same
 // flush-before-return contract for the drainCtx.Done() terminal: when a
 // cancellation (or timeout/watchdog) ends the run with a message still

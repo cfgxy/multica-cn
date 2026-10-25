@@ -13,12 +13,17 @@ import (
 
 const getRuntimeModelCallBudgetUsage = `-- name: GetRuntimeModelCallBudgetUsage :one
 SELECT
-    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS known_calls,
-    COUNT(tu.task_id) FILTER (WHERE tu.model_call_count IS NULL)::bigint AS unknown_usage_rows
-FROM task_usage tu
-JOIN agent_task_queue atq ON atq.id = tu.task_id
-WHERE atq.runtime_id = $1
-  AND tu.created_at >= $2::timestamptz
+	(SELECT COUNT(*)::bigint
+	 FROM task_usage_model_call_evidence e
+	 JOIN agent_task_queue atq ON atq.id = e.task_id
+	 WHERE atq.runtime_id = $1
+	   AND e.created_at >= $2::timestamptz) AS known_calls,
+	(SELECT COUNT(*)::bigint
+	 FROM task_usage tu
+	 JOIN agent_task_queue atq ON atq.id = tu.task_id
+	 WHERE atq.runtime_id = $1
+	   AND tu.model_call_count IS NULL
+	   AND tu.created_at >= $2::timestamptz) AS unknown_usage_rows
 `
 
 type GetRuntimeModelCallBudgetUsageParams struct {
@@ -31,10 +36,9 @@ type GetRuntimeModelCallBudgetUsageRow struct {
 	UnknownUsageRows int64 `json:"unknown_usage_rows"`
 }
 
-// Rolling, raw usage for one Runtime's provider-call admission budget. Rows
-// with NULL model_call_count are intentionally counted separately: a partial
-// known sum must not be treated as the whole window and therefore cannot hold
-// a Runtime.
+// Rolling provider-call admission budget. Provider evidence is timestamped when
+// observed, not when the task's final aggregate is reported. Unknown usage rows
+// remain fail-open because a partial known sum cannot hold a Runtime.
 func (q *Queries) GetRuntimeModelCallBudgetUsage(ctx context.Context, arg GetRuntimeModelCallBudgetUsageParams) (GetRuntimeModelCallBudgetUsageRow, error) {
 	row := q.db.QueryRow(ctx, getRuntimeModelCallBudgetUsage, arg.RuntimeID, arg.Since)
 	var i GetRuntimeModelCallBudgetUsageRow
@@ -177,16 +181,29 @@ func (q *Queries) GetRuntimeUsageByHour(ctx context.Context, arg GetRuntimeUsage
 const listRuntimeModelCallBudgetUsage = `-- name: ListRuntimeModelCallBudgetUsage :many
 SELECT
     rt.id AS runtime_id,
-    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS known_calls,
-    COUNT(tu.task_id) FILTER (WHERE tu.task_id IS NOT NULL AND tu.model_call_count IS NULL)::bigint AS unknown_usage_rows
+	COALESCE(evidence.known_calls, 0)::bigint AS known_calls,
+	COALESCE(unknown_usage.rows, 0)::bigint AS unknown_usage_rows
 FROM agent_runtime rt
-LEFT JOIN agent_task_queue atq ON atq.runtime_id = rt.id
-LEFT JOIN task_usage tu ON tu.task_id = atq.id
-	AND tu.created_at >= to_timestamp(
+LEFT JOIN LATERAL (
+	SELECT COUNT(*)::bigint AS known_calls
+	FROM task_usage_model_call_evidence e
+	JOIN agent_task_queue atq ON atq.id = e.task_id
+	WHERE atq.runtime_id = rt.id
+	  AND e.created_at >= to_timestamp(
 		EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
-	)
+	  )
+) evidence ON true
+LEFT JOIN LATERAL (
+	SELECT COUNT(*)::bigint AS rows
+	FROM task_usage tu
+	JOIN agent_task_queue atq ON atq.id = tu.task_id
+	WHERE atq.runtime_id = rt.id
+	  AND tu.model_call_count IS NULL
+	  AND tu.created_at >= to_timestamp(
+		EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
+	  )
+) unknown_usage ON true
 WHERE rt.id = ANY($2::uuid[])
-GROUP BY rt.id
 `
 
 type ListRuntimeModelCallBudgetUsageParams struct {

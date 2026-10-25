@@ -51,6 +51,10 @@ type ExecOptions struct {
 	CompactWindowTokens       int64
 	CompactWindowPct          int32
 	Timeout                   time.Duration
+	// OnModelCallEvidence reports one provider-original model-call identity as
+	// soon as the backend observes it. It must return promptly; the daemon
+	// buffers these events and persists them independently of final usage.
+	OnModelCallEvidence func(model, evidenceID string)
 	SemanticInactivityTimeout time.Duration
 	// FirstTurnNoProgressTimeout optionally overrides the Codex first-turn
 	// no-progress ceiling — the window a turn may stay completely silent after

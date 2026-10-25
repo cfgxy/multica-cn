@@ -5095,6 +5095,12 @@ type TaskUsagePayload struct {
 	ModelCallCount int64 `json:"model_call_count,omitempty"`
 }
 
+type taskUsageModelCallEvidencePayload struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	EvidenceID string `json:"evidence_id"`
+}
+
 // authoritativeContextTokens converts a reported context size into the nullable
 // column. Same rule as the cost figure and for the same reason: 0 is what a
 // daemon that cannot measure the conversation sends, and storing it as a real
@@ -5179,7 +5185,8 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Usage []TaskUsagePayload `json:"usage"`
+		Usage             []TaskUsagePayload                    `json:"usage"`
+		ModelCallEvidence []taskUsageModelCallEvidencePayload `json:"model_call_evidence"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -5194,6 +5201,10 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	runtimeProviderLoaded := false
 	type normalizedUsage struct {
 		payload  TaskUsagePayload
+		provider string
+	}
+	type normalizedEvidence struct {
+		payload  taskUsageModelCallEvidencePayload
 		provider string
 	}
 	usage := make([]normalizedUsage, 0, len(req.Usage))
@@ -5213,8 +5224,29 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		}
 		usage = append(usage, normalizedUsage{payload: u, provider: provider})
 	}
+	evidence := make([]normalizedEvidence, 0, len(req.ModelCallEvidence))
+	for _, e := range req.ModelCallEvidence {
+		provider := normalizeProvider(e.Provider)
+		if provider == "" {
+			if !runtimeProviderLoaded {
+				if rt, err := h.getAgentRuntime(r.Context(), obsmetrics.RuntimeLookupSourceTask, task.RuntimeID); err == nil {
+					runtimeProvider = normalizeProvider(rt.Provider)
+				} else {
+					slog.Warn("load runtime provider for usage evidence backfill failed",
+						"task_id", taskID, "runtime_id", uuidToString(task.RuntimeID), "error", err)
+				}
+				runtimeProviderLoaded = true
+			}
+			provider = runtimeProvider
+		}
+		if strings.TrimSpace(e.EvidenceID) == "" || strings.IndexByte(e.EvidenceID, 0) >= 0 {
+			writeError(w, http.StatusBadRequest, "invalid model call evidence")
+			return
+		}
+		evidence = append(evidence, normalizedEvidence{payload: e, provider: provider})
+	}
 
-	if len(usage) == 0 {
+	if len(usage) == 0 && len(evidence) == 0 {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		return
 	}
@@ -5228,6 +5260,19 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
 	parsedTaskID := parseUUID(taskID)
+	for _, entry := range evidence {
+		e := entry.payload
+		if err := qtx.InsertTaskUsageModelCallEvidence(r.Context(), db.InsertTaskUsageModelCallEvidenceParams{
+			TaskID:     parsedTaskID,
+			Provider:   entry.provider,
+			Model:      e.Model,
+			EvidenceID: e.EvidenceID,
+		}); err != nil {
+			slog.Warn("insert task usage call evidence failed", "task_id", taskID, "model", e.Model, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to store task usage")
+			return
+		}
+	}
 
 	for _, entry := range usage {
 		u := entry.payload

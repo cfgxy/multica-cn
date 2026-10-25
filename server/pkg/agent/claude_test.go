@@ -49,6 +49,54 @@ func TestClaudeHandleAssistantText(t *testing.T) {
 	}
 }
 
+func TestClaudeHandleAssistantReportsModelCallEvidence(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		evidenceID string
+		wantCall   bool
+	}{
+		{name: "valid identity", evidenceID: "msg-123", wantCall: true},
+		{name: "empty identity", evidenceID: "", wantCall: false},
+		{name: "leading whitespace", evidenceID: " msg-123", wantCall: false},
+		{name: "trailing whitespace", evidenceID: "msg-123 ", wantCall: false},
+		{name: "NUL identity", evidenceID: "msg-\x00123", wantCall: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotModel, gotEvidenceID string
+			calls := 0
+			callback := func(model, evidenceID string) {
+				calls++
+				gotModel, gotEvidenceID = model, evidenceID
+			}
+			msg := claudeSDKMessage{
+				Type: "assistant",
+				Message: mustMarshal(t, claudeMessageContent{
+					Role:  "assistant",
+					Model: "claude-sonnet-4.5",
+					ID:    tc.evidenceID,
+					Usage: &claudeUsage{InputTokens: 1},
+				}),
+			}
+
+			b := &claudeBackend{cfg: Config{Logger: slog.Default()}}
+			b.handleAssistant(msg, make(chan Message, 1), make(map[string]TokenUsage), make(map[string]int64), callback)
+
+			wantCalls := 0
+			if tc.wantCall {
+				wantCalls = 1
+			}
+			if calls != wantCalls {
+				t.Fatalf("evidence callback calls = %d, want %d", calls, wantCalls)
+			}
+			if tc.wantCall && (gotModel != "claude-sonnet-4.5" || gotEvidenceID != tc.evidenceID) {
+				t.Fatalf("evidence callback = (%q, %q), want (%q, %q)", gotModel, gotEvidenceID, "claude-sonnet-4.5", tc.evidenceID)
+			}
+		})
+	}
+}
+
 func TestClaudeHandleAssistantToolUse(t *testing.T) {
 	t.Parallel()
 

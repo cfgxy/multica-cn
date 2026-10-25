@@ -1155,6 +1155,32 @@ func TestCopilotCallCountPerAssistantUsageEvent(t *testing.T) {
 	})
 }
 
+func TestCopilotAssistantUsageReportsModelCallEvidence(t *testing.T) {
+	t.Parallel()
+
+	var gotModel, gotEvidenceID string
+	var calls int
+	st := newCopilotEventState("copilot", false, func(model, evidenceID string) {
+		calls++
+		gotModel, gotEvidenceID = model, evidenceID
+	})
+	for _, evidenceID := range []string{"u-1", "", " u-2", "u-3 ", "u-\x004"} {
+		event := copilotEvent{
+			Type: "assistant.usage",
+			ID:   evidenceID,
+			Data: json.RawMessage(`{"model":"claude-sonnet-4.5","inputTokens":100,"outputTokens":10}`),
+		}
+		handleCopilotEvent(event, st)
+	}
+
+	if calls != 1 {
+		t.Fatalf("evidence callback calls = %d, want 1", calls)
+	}
+	if gotModel != "claude-sonnet-4.5" || gotEvidenceID != "u-1" {
+		t.Fatalf("evidence callback = (%q, %q), want (%q, %q)", gotModel, gotEvidenceID, "claude-sonnet-4.5", "u-1")
+	}
+}
+
 func TestCopilotTokenlessCallStillCounts(t *testing.T) {
 	t.Parallel()
 	// A model call that reports no tokens at all still happened: the count is

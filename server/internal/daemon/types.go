@@ -392,6 +392,14 @@ type TaskUsageEntry struct {
 	ModelCallCount int64 `json:"model_call_count,omitempty"`
 }
 
+// TaskUsageModelCallEvidenceEntry is one provider-original model-call identity
+// reported before task completion so Runtime budgets can use the event time.
+type TaskUsageModelCallEvidenceEntry struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	EvidenceID string `json:"evidence_id"`
+}
+
 // TaskResult is the outcome of executing a task.
 type TaskResult struct {
 	Status     string `json:"status"`

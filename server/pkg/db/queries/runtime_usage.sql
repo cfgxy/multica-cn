@@ -32,17 +32,21 @@ GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), LOWER(provider), m
 ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provider), model;
 
 -- name: GetRuntimeModelCallBudgetUsage :one
--- Rolling, raw usage for one Runtime's provider-call admission budget. Rows
--- with NULL model_call_count are intentionally counted separately: a partial
--- known sum must not be treated as the whole window and therefore cannot hold
--- a Runtime.
+-- Rolling provider-call admission budget. Provider evidence is timestamped when
+-- observed, not when the task's final aggregate is reported. Unknown usage rows
+-- remain fail-open because a partial known sum cannot hold a Runtime.
 SELECT
-    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS known_calls,
-    COUNT(tu.task_id) FILTER (WHERE tu.model_call_count IS NULL)::bigint AS unknown_usage_rows
-FROM task_usage tu
-JOIN agent_task_queue atq ON atq.id = tu.task_id
-WHERE atq.runtime_id = @runtime_id
-  AND tu.created_at >= @since::timestamptz;
+	(SELECT COUNT(*)::bigint
+	 FROM task_usage_model_call_evidence e
+	 JOIN agent_task_queue atq ON atq.id = e.task_id
+	 WHERE atq.runtime_id = @runtime_id
+	   AND e.created_at >= @since::timestamptz) AS known_calls,
+	(SELECT COUNT(*)::bigint
+	 FROM task_usage tu
+	 JOIN agent_task_queue atq ON atq.id = tu.task_id
+	 WHERE atq.runtime_id = @runtime_id
+	   AND tu.model_call_count IS NULL
+	   AND tu.created_at >= @since::timestamptz) AS unknown_usage_rows;
 
 -- name: ListRuntimeModelCallBudgetUsage :many
 -- Batch equivalent for queued-reason decoration and multi-runtime claims. The
@@ -50,16 +54,30 @@ WHERE atq.runtime_id = @runtime_id
 -- config, keeping a mixed set of windows correct in one round trip.
 SELECT
     rt.id AS runtime_id,
-    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS known_calls,
-    COUNT(tu.task_id) FILTER (WHERE tu.task_id IS NOT NULL AND tu.model_call_count IS NULL)::bigint AS unknown_usage_rows
+	COALESCE(evidence.known_calls, 0)::bigint AS known_calls,
+	COALESCE(unknown_usage.rows, 0)::bigint AS unknown_usage_rows
 FROM agent_runtime rt
-LEFT JOIN agent_task_queue atq ON atq.runtime_id = rt.id
-LEFT JOIN task_usage tu ON tu.task_id = atq.id
-	AND tu.created_at >= to_timestamp(
+LEFT JOIN LATERAL (
+	SELECT COUNT(*)::bigint AS known_calls
+	FROM task_usage_model_call_evidence e
+	JOIN agent_task_queue atq ON atq.id = e.task_id
+	WHERE atq.runtime_id = rt.id
+	  AND e.created_at >= to_timestamp(
 		EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
-	)
+	  )
+) evidence ON true
+LEFT JOIN LATERAL (
+	SELECT COUNT(*)::bigint AS rows
+	FROM task_usage tu
+	JOIN agent_task_queue atq ON atq.id = tu.task_id
+	WHERE atq.runtime_id = rt.id
+	  AND tu.model_call_count IS NULL
+	  AND tu.created_at >= to_timestamp(
+		EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
+	  )
+) unknown_usage ON true
 WHERE rt.id = ANY(@runtime_ids::uuid[])
-GROUP BY rt.id;
+;
 
 -- name: GetRuntimeTaskHourlyActivity :many
 -- Hour-of-day distribution for queue starts. Bucketed in the viewer's

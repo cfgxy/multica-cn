@@ -40,9 +40,30 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 		testutil.Call(t, testHandler.ReportTaskUsage, req).Want(http.StatusOK)
 	}
 
-	// A successful provider response with stable evidence is known. Replaying the
-	// daemon report must not add a second count; a later retry with a distinct
-	// provider ID must add one.
+	// The evidence-only request persists while the task is still executing, before
+	// any terminal usage aggregate exists.
+	report(`{"model_call_evidence":[{"provider":"claude","model":"model-call-count-known","evidence_id":"success-1"}]}`)
+	var liveEvidenceRows, liveUsageRows int
+	if err := testPool.QueryRow(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM task_usage_model_call_evidence WHERE task_id = $1),
+			(SELECT COUNT(*) FROM task_usage WHERE task_id = $1)`, taskID).Scan(&liveEvidenceRows, &liveUsageRows); err != nil {
+		t.Fatalf("read live evidence state: %v", err)
+	}
+	if liveEvidenceRows != 1 || liveUsageRows != 0 {
+		t.Fatalf("mid-run persisted evidence=%d usage rows=%d, want 1 / 0", liveEvidenceRows, liveUsageRows)
+	}
+	// Backdate the evidence to model a call that has since left the rolling
+	// window. Terminal aggregate replay must not move its first-observed time.
+	if _, err := testPool.Exec(ctx, `
+		UPDATE task_usage_model_call_evidence
+		SET created_at = now() - interval '2 hours'
+		WHERE task_id = $1 AND evidence_id = 'success-1'`, taskID); err != nil {
+		t.Fatalf("backdate evidence for replay assertion: %v", err)
+	}
+
+	// Replaying the terminal report must not add a second count or refresh the
+	// first-observed timestamp; a later retry with a distinct provider ID adds one.
 	report(`{"usage":[{"provider":"claude","model":"model-call-count-known","input_tokens":1000,"output_tokens":100,"model_call_evidence_complete":true,"model_call_evidence_ids":["success-1"]}]}`)
 	report(`{"usage":[{"provider":"claude","model":"model-call-count-known","input_tokens":1000,"output_tokens":100,"model_call_evidence_complete":true,"model_call_evidence_ids":["success-1"]}]}`)
 	report(`{"usage":[{"provider":"claude","model":"model-call-count-known","input_tokens":1200,"output_tokens":120,"model_call_evidence_complete":true,"model_call_evidence_ids":["success-2"]}]}`)
@@ -80,6 +101,15 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 	}
 	if evidenceRows != 3 {
 		t.Errorf("durable evidence rows = %d, want 3 after one replay and three distinct IDs", evidenceRows)
+	}
+	var replayedAt time.Time
+	if err := testPool.QueryRow(ctx, `
+		SELECT created_at FROM task_usage_model_call_evidence
+		WHERE task_id = $1 AND provider = 'claude' AND evidence_id = 'success-1'`, taskID).Scan(&replayedAt); err != nil {
+		t.Fatalf("read replayed evidence timestamp: %v", err)
+	}
+	if age := time.Since(replayedAt); age < 2*time.Hour {
+		t.Errorf("terminal replay refreshed first evidence timestamp; age=%s, want at least 2h", age)
 	}
 
 	// Drive the rollup window function over the last hour — the production

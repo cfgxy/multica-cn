@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -104,6 +105,15 @@ func seedModelCallUsage(t *testing.T, ctx context.Context, taskID, provider, mod
 		INSERT INTO task_usage (task_id, provider, model, input_tokens, model_call_count)
 		VALUES ($1, $2, $3, 1, $4)`, taskID, provider, model, calls); err != nil {
 		t.Fatalf("seed model-call usage: %v", err)
+	}
+	if calls != nil {
+		for i := int64(0); i < *calls; i++ {
+			if _, err := testPool.Exec(ctx, `
+				INSERT INTO task_usage_model_call_evidence (task_id, provider, model, evidence_id)
+				VALUES ($1, $2, $3, $4)`, taskID, provider, model, fmt.Sprintf("fixture-%s-%d", model, i)); err != nil {
+				t.Fatalf("seed model-call evidence: %v", err)
+			}
+		}
 	}
 }
 
@@ -256,13 +266,55 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 		// minimum budget window. The handler's current-time query must then
 		// exclude this complete known usage and release the queued task.
 		if _, err := testPool.Exec(ctx, `
-			UPDATE task_usage
-			SET created_at = now() - INTERVAL '61 seconds'
-			WHERE task_id = $1`, usageTaskID); err != nil {
-			t.Fatalf("move usage outside model-call budget window: %v", err)
+				UPDATE task_usage_model_call_evidence
+				SET created_at = now() - INTERVAL '61 seconds'
+				WHERE task_id = $1`, usageTaskID); err != nil {
+			t.Fatalf("move evidence outside model-call budget window: %v", err)
 		}
 		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task == nil || task.ID != queuedID {
 			t.Fatalf("expired complete known window must claim %s, got %+v: %s", queuedID, task, body)
+		}
+	})
+
+	t.Run("live evidence is counted by observation time, not task or final usage time", func(t *testing.T) {
+		runtimeID := runtimeModelCallBudgetFixture(t, "live-evidence-window")
+		agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-live-evidence-window")
+		usageTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		if _, err := testPool.Exec(ctx, `
+				UPDATE agent_task_queue
+				SET status = 'running', started_at = now() - interval '2 hours',
+				    created_at = now() - interval '2 hours'
+				WHERE id = $1`, usageTaskID); err != nil {
+			t.Fatalf("backdate execution task: %v", err)
+		}
+		if _, err := testPool.Exec(ctx, `
+				INSERT INTO task_usage_model_call_evidence (task_id, provider, model, evidence_id)
+				VALUES ($1, 'claude', 'live-window', 'observed-live')`, usageTaskID); err != nil {
+			t.Fatalf("insert live evidence: %v", err)
+		}
+		queuedID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		setRuntimeModelCallBudgetForTest(t, runtimeID, true, 1, 60)
+
+		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task != nil {
+			t.Fatalf("in-window evidence from an old running task claimed %s, want held: %s", task.ID, body)
+		}
+
+		// Simulate the final aggregate arriving after the evidence has aged out.
+		// Its recent task_usage.created_at must not resurrect the old call.
+		if _, err := testPool.Exec(ctx, `
+				INSERT INTO task_usage (task_id, provider, model, input_tokens, model_call_count)
+				VALUES ($1, 'claude', 'live-window', 1, 1)`, usageTaskID); err != nil {
+			t.Fatalf("insert terminal usage aggregate: %v", err)
+		}
+		completeTaskForModelCallBudget(t, ctx, usageTaskID)
+		if _, err := testPool.Exec(ctx, `
+				UPDATE task_usage_model_call_evidence
+				SET created_at = now() - interval '61 seconds'
+				WHERE task_id = $1`, usageTaskID); err != nil {
+			t.Fatalf("expire live evidence: %v", err)
+		}
+		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task == nil || task.ID != queuedID {
+			t.Fatalf("expired evidence must release queued task %s despite recent aggregate, got %+v: %s", queuedID, task, body)
 		}
 	})
 

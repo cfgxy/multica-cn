@@ -329,7 +329,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			switch msg.Type {
 			case "assistant":
 				assistantEventCount++
-				turn := b.handleAssistant(msg, msgCh, usage, contextTokens)
+				turn := b.handleAssistant(msg, msgCh, usage, contextTokens, opts.OnModelCallEvidence)
 				toolUseCount += turn.toolUses
 				if !turn.understood {
 					unreadableAssistantCount++
@@ -544,7 +544,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	return &Session{Messages: msgCh, Result: resCh}, nil
 }
 
-func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage, contextTokens map[string]int64) assistantTurn {
+func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage, contextTokens map[string]int64, evidenceCallbacks ...func(model, evidenceID string)) assistantTurn {
 	var content claudeMessageContent
 	if err := json.Unmarshal(msg.Message, &content); err != nil {
 		// Unreadable body: understood stays false so the caller drops any
@@ -567,6 +567,9 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		// replay; a readable response without that ID leaves this model unknown.
 		u = appendModelCallEvidence(u, content.ID)
 		usage[content.Model] = u
+		if len(evidenceCallbacks) > 0 && evidenceCallbacks[0] != nil && content.ID != "" && strings.TrimSpace(content.ID) == content.ID && !strings.ContainsRune(content.ID, '\x00') {
+			evidenceCallbacks[0](content.Model, content.ID)
+		}
 
 		// Context size, in contrast, is OVERWRITTEN by each assistant event
 		// rather than summed: the conversation the next resume would inherit
