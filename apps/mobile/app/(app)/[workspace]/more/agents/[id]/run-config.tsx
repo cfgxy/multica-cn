@@ -81,7 +81,6 @@ import {
 } from "@/lib/model-capability";
 import { useT } from "@/lib/use-t";
 import {
-  agentConcurrencyDraft,
   buildProfilePatch,
   parseBounded,
 } from "@/lib/agent-profile-patch";
@@ -136,7 +135,7 @@ export default function AgentRunConfig() {
     setModel(agent.model);
     setThinking(agent.thinking_level ?? "");
     setTier(agent.service_tier ?? "");
-    setConcurrency(agentConcurrencyDraft(agent.max_concurrent_tasks));
+    setConcurrency(String(agent.max_concurrent_tasks));
     setMaxContext(
       String(
         agent.session_max_context_tokens ??

@@ -15,7 +15,6 @@
  *   - agentKeys.detail(wsId, id)     → `Agent` (skills array lives here)
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback } from "react";
 import type {
   Agent,
   CreateAgentRequest,
@@ -29,7 +28,6 @@ import { agentTaskSnapshotKeys } from "@/data/queries/agent-task-snapshot";
 import { agentTasksKeys } from "@/data/queries/agent-tasks";
 import { issueKeys } from "@/data/queries/issue-keys";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { preserveUnlimitedAgentConcurrencyPatch } from "@/lib/agent-profile-patch";
 
 /** Write the server-authoritative Agent into both the list row and the
  *  detail cache. Shared by every mutation whose endpoint returns an Agent. */
@@ -69,7 +67,7 @@ export function useUpdateAgent(agentId: string) {
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
 
-  const mutation = useMutation({
+  return useMutation({
     mutationKey: ["updateAgent", agentId] as const,
     mutationFn: (patch: UpdateAgentRequest) => api.updateAgent(agentId, patch),
     onMutate: async (patch) => {
@@ -110,26 +108,6 @@ export function useUpdateAgent(agentId: string) {
       qc.invalidateQueries({ queryKey: agentKeys.all(wsId) });
     },
   });
-
-  const normalizePatch = useCallback(
-    (patch: UpdateAgentRequest) => {
-      const agent =
-        qc.getQueryData<Agent>(agentKeys.detail(wsId, agentId)) ??
-        qc.getQueryData<Agent[]>(agentKeys.list(wsId))?.find((item) => item.id === agentId);
-      return preserveUnlimitedAgentConcurrencyPatch(agent, patch);
-    },
-    [agentId, qc, wsId],
-  );
-  const mutate: typeof mutation.mutate = useCallback(
-    (patch, options) => mutation.mutate(normalizePatch(patch), options),
-    [mutation.mutate, normalizePatch],
-  );
-  const mutateAsync: typeof mutation.mutateAsync = useCallback(
-    (patch, options) => mutation.mutateAsync(normalizePatch(patch), options),
-    [mutation.mutateAsync, normalizePatch],
-  );
-
-  return { ...mutation, mutate, mutateAsync };
 }
 
 // Archive / restore: await the server, write the returned Agent everywhere,

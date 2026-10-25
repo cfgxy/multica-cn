@@ -350,16 +350,14 @@ describe("deriveAgentPresenceDetail", () => {
     expect(detail.capacity).toBe(3);
   });
 
-  it("mirrors both unlimited sentinels (0 and legacy -1) into capacity", () => {
-    for (const maxConcurrentTasks of [0, -1]) {
-      const detail = deriveAgentPresenceDetail({
-        agent: makeAgent({ max_concurrent_tasks: maxConcurrentTasks }),
-        runtime: makeRuntime(),
-        tasks: [],
-        now: NOW,
-      });
-      expect(detail.capacity).toBe(maxConcurrentTasks);
-    }
+  it("mirrors the unlimited value 0 into capacity", () => {
+    const detail = deriveAgentPresenceDetail({
+      agent: makeAgent({ max_concurrent_tasks: 0 }),
+      runtime: makeRuntime(),
+      tasks: [],
+      now: NOW,
+    });
+    expect(detail.capacity).toBe(0);
   });
 
   it("reports archived over any runtime/task signal for an archived agent", () => {

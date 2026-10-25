@@ -175,12 +175,10 @@ func runAgentCopy(cmd *cobra.Command, args []string) error {
 		body["custom_args"] = ca
 	}
 
-	// max_concurrent_tasks: a valid source value (0 or 1-50) is portable. The
-	// legacy unlimited sentinel (-1) from historical rows is read as unlimited
-	// and written as 0, never dropped. Other historical values are omitted so
-	// create applies its default instead of turning Duplicate into a 400. An
-	// explicit flag is validated before any API request and remains
-	// authoritative.
+	// max_concurrent_tasks: a valid source value (0 or 1-50) is portable.
+	// Invalid source values are omitted so create applies its default instead
+	// of turning Duplicate into a 400. An explicit flag is validated before
+	// any API request and remains authoritative.
 	if maxConcurrentTasksOverride != nil {
 		body["max_concurrent_tasks"] = *maxConcurrentTasksOverride
 	} else if v, ok := copiedAgentMaxConcurrentTasks(src["max_concurrent_tasks"]); ok {
@@ -296,21 +294,13 @@ func runAgentCopy(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// copiedAgentMaxConcurrentTasks maps a source agent's stored value onto the
-// copy. The source row may predate the RUYI-843 semantic revision and hold
-// the legacy unlimited sentinel (-1); read paths treat it as unlimited, so a
-// copy of such an agent is written with the current sentinel (0) instead of
-// dropping the value back to the default. Any other negative value is not
-// portable and is left to the default.
+// copiedAgentMaxConcurrentTasks returns a valid source value for the copy.
 func copiedAgentMaxConcurrentTasks(value any) (int32, bool) {
 	number, ok := value.(float64)
-	if !ok || number != math.Trunc(number) {
+	if !ok || number != math.Trunc(number) || number < 0 || number > float64(agentconfig.MaxMaxConcurrentTasks) {
 		return 0, false
 	}
 	value32 := int32(number)
-	if agentconfig.IsUnlimitedMaxConcurrentTasks(value32) {
-		return agentconfig.UnlimitedMaxConcurrentTasks, true
-	}
 	if !agentconfig.IsValidMaxConcurrentTasks(value32) {
 		return 0, false
 	}

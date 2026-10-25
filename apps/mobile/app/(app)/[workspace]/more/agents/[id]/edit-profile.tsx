@@ -50,7 +50,6 @@ import { useAvatarUploader } from "@/lib/avatar";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useT } from "@/lib/use-t";
 import {
-  agentConcurrencyDraft,
   buildProfilePatch,
 } from "@/lib/agent-profile-patch";
 
@@ -92,7 +91,7 @@ export default function EditAgentProfile() {
         runtimeId: agent.runtime_id,
         thinking: agent.thinking_level ?? "",
         tier: agent.service_tier ?? "",
-        concurrency: agentConcurrencyDraft(agent.max_concurrent_tasks),
+        concurrency: String(agent.max_concurrent_tasks),
         maxContext: String(
           agent.session_max_context_tokens ??
             AGENT_SESSION_MAX_CONTEXT_TOKENS_DEFAULT,
