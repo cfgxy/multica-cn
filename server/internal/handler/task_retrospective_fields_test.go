@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 
 	"github.com/multica-ai/multica/server/internal/retrospective"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
@@ -97,11 +99,60 @@ func TestTaskToResponseQuizFields(t *testing.T) {
 
 	resp = taskToResponse(db.AgentTaskQueue{
 		OriginatorSource: pgtype.Text{String: "quiz", Valid: true},
+		Context:          []byte(`{"kind":"quiz","quiz_item_id":"` + itemID + `","quiz_batch_id":"` + batchID + `"}`),
+	}, "ws-1")
+	if resp.Kind != "quiz" || resp.QuizItemID != itemID || resp.QuizBatchID != batchID || resp.QuizItemTitle != "" {
+		t.Errorf("legacy quiz context = %q/%q/%q/%q, want kind and IDs preserved without title",
+			resp.Kind, resp.QuizItemID, resp.QuizBatchID, resp.QuizItemTitle)
+	}
+
+	resp = taskToResponse(db.AgentTaskQueue{
+		OriginatorSource: pgtype.Text{String: "quiz", Valid: true},
 		Context:          []byte(`{"kind":"quiz","quiz_item_id":"bad","quiz_batch_id":"bad"}`),
 	}, "ws-1")
 	if resp.QuizItemID != "" || resp.QuizItemTitle != "" || resp.QuizBatchID != "" {
 		t.Errorf("invalid quiz context leaked fields: %q/%q/%q",
 			resp.QuizItemID, resp.QuizItemTitle, resp.QuizBatchID)
+	}
+}
+
+func TestHydrateQuizItemTitlesForLegacyTask(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const slug = "legacy-quiz-task-title-read"
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM prompt_quiz_item WHERE workspace_id = $1 AND slug = $2`, testWorkspaceID, slug)
+	})
+
+	var created map[string]any
+	testutil.Call(t, testHandler.CreatePromptQuizItem,
+		newRequest("POST", "/api/prompt-quiz/items", map[string]any{
+			"slug": slug, "title": "旧任务对应的真实题目", "body": "题面",
+		})).Want(200).JSON(&created)
+	itemID, ok := created["id"].(string)
+	if !ok || itemID == "" {
+		t.Fatalf("created item id = %v, want string ID", created["id"])
+	}
+
+	tasks := []AgentTaskResponse{{
+		Kind: "quiz", QuizItemID: itemID,
+	}}
+	testHandler.hydrateQuizItemTitles(context.Background(), testWorkspaceID, tasks)
+	if tasks[0].QuizItemTitle != "旧任务对应的真实题目" {
+		t.Fatalf("hydrated title = %q, want current item title", tasks[0].QuizItemTitle)
+	}
+
+	if _, err := testPool.Exec(context.Background(),
+		`DELETE FROM prompt_quiz_item WHERE workspace_id = $1 AND id = $2::uuid`, testWorkspaceID, itemID); err != nil {
+		t.Fatalf("delete quiz item: %v", err)
+	}
+	tasks[0].QuizItemTitle = ""
+	testHandler.hydrateQuizItemTitles(context.Background(), testWorkspaceID, tasks)
+	if tasks[0].QuizItemID != itemID || tasks[0].QuizItemTitle != "" {
+		t.Errorf("unreadable item metadata = %q/%q, want ID retained and no fabricated title",
+			tasks[0].QuizItemID, tasks[0].QuizItemTitle)
 	}
 }
 

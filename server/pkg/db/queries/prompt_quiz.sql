@@ -78,6 +78,12 @@ FROM prompt_quiz_item
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid;
 
+-- name: ListPromptQuizItemTitles :many
+SELECT id, title
+FROM prompt_quiz_item
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND id = ANY(sqlc.arg('ids')::uuid[]);
+
 -- name: GetPromptQuizItemWorkspace :one
 -- Workspace resolution for quiz runs (RUYI-286 rework). ResolveTaskWorkspaceID
 -- knows only the task, so this is the one item read that cannot be
