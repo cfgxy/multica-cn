@@ -9691,6 +9691,20 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 							}
 						}()
 					}
+				case agent.MessageModelCallEvidence:
+					usageCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					err := d.client.ReportTaskUsage(usageCtx, taskID, []TaskUsageEntry{{
+						Provider:                  provider,
+						Model:                     msg.Model,
+						ModelCallEvidenceIDs:      msg.ModelCallEvidenceIDs,
+						ModelCallEvidenceComplete: msg.ModelCallEvidenceComplete,
+					}})
+					cancel()
+					if err != nil {
+						taskLog.Warn("failed to persist live model-call evidence", "model", msg.Model, "error", err)
+					} else {
+						taskLog.Debug("persisted live model-call evidence", "model", msg.Model, "evidence_ids", len(msg.ModelCallEvidenceIDs), "complete", msg.ModelCallEvidenceComplete)
+					}
 				case agent.MessageToolUse:
 					n := toolCount.Add(1)
 					inFlightTools.Add(1)

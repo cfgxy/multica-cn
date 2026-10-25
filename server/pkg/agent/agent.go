@@ -174,26 +174,30 @@ type Session struct {
 type MessageType string
 
 const (
-	MessageText       MessageType = "text"
-	MessageThinking   MessageType = "thinking"
-	MessageToolUse    MessageType = "tool-use"
-	MessageToolResult MessageType = "tool-result"
-	MessageStatus     MessageType = "status"
-	MessageError      MessageType = "error"
-	MessageLog        MessageType = "log"
+	MessageText              MessageType = "text"
+	MessageThinking          MessageType = "thinking"
+	MessageToolUse           MessageType = "tool-use"
+	MessageToolResult        MessageType = "tool-result"
+	MessageStatus            MessageType = "status"
+	MessageError             MessageType = "error"
+	MessageLog               MessageType = "log"
+	MessageModelCallEvidence MessageType = "model-call-evidence"
 )
 
 // Message is a unified event emitted by an agent during execution.
 type Message struct {
-	Type      MessageType
-	Content   string         // text content (Text, Error, Log)
-	Tool      string         // tool name (ToolUse, ToolResult)
-	CallID    string         // tool call ID (ToolUse, ToolResult)
-	Input     map[string]any // tool input (ToolUse)
-	Output    string         // tool output (ToolResult)
-	Status    string         // agent status string (Status)
-	Level     string         // log level (Log)
-	SessionID string         // backend session id (Status), for early resume-pointer pinning
+	Type                      MessageType
+	Content                   string         // text content (Text, Error, Log)
+	Tool                      string         // tool name (ToolUse, ToolResult)
+	CallID                    string         // tool call ID (ToolUse, ToolResult)
+	Input                     map[string]any // tool input (ToolUse)
+	Output                    string         // tool output (ToolResult)
+	Status                    string         // agent status string (Status)
+	Level                     string         // log level (Log)
+	SessionID                 string         // backend session id (Status), for early resume-pointer pinning
+	Model                     string         // provider model name (ModelCallEvidence)
+	ModelCallEvidenceIDs      []string       // observed provider-original call IDs (ModelCallEvidence)
+	ModelCallEvidenceComplete bool           // whether the IDs cover every call for the model (ModelCallEvidence)
 	// IsError is the backend's own verdict on a tool result (ToolResult), and is
 	// three-valued: nil means this backend did not say. Not every runtime
 	// reports it, and a backend that stays silent must not be read as reporting

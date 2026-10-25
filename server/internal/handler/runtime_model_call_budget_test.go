@@ -105,6 +105,15 @@ func seedModelCallUsage(t *testing.T, ctx context.Context, taskID, provider, mod
 		VALUES ($1, $2, $3, 1, $4)`, taskID, provider, model, calls); err != nil {
 		t.Fatalf("seed model-call usage: %v", err)
 	}
+	if calls == nil {
+		return
+	}
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO task_usage_model_call_evidence (task_id, provider, model, evidence_id)
+		SELECT $1, $2, $3, 'fixture-' || n::text
+		FROM generate_series(1, $4::int) AS n`, taskID, provider, model, *calls); err != nil {
+		t.Fatalf("seed model-call evidence: %v", err)
+	}
 }
 
 func completeTaskForModelCallBudget(t *testing.T, ctx context.Context, taskID string) {
@@ -252,14 +261,31 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 			t.Fatalf("held task status = %q, want queued", got)
 		}
 
-		// Anchor the row to the database clock instead of sleeping through the
-		// minimum budget window. The handler's current-time query must then
-		// exclude this complete known usage and release the queued task.
+		// Aging the summary row must not expire calls while their evidence is
+		// still inside the rolling window.
 		if _, err := testPool.Exec(ctx, `
 			UPDATE task_usage
 			SET created_at = now() - INTERVAL '61 seconds'
 			WHERE task_id = $1`, usageTaskID); err != nil {
-			t.Fatalf("move usage outside model-call budget window: %v", err)
+			t.Fatalf("age usage summary row: %v", err)
+		}
+		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task != nil {
+			t.Fatalf("fresh evidence must hold despite aged usage row; claimed %s: %s", task.ID, body)
+		}
+		if got := queueStatus(t, ctx, queuedID); got != "queued" {
+			t.Fatalf("task status after aging usage row = %q, want queued", got)
+		}
+
+		// Expire the provider-call evidence while making the summary row fresh.
+		// Admission must follow evidence time rather than the aggregate row.
+		if _, err := testPool.Exec(ctx, `
+				UPDATE task_usage_model_call_evidence
+				SET created_at = now() - INTERVAL '61 seconds'
+				WHERE task_id = $1`, usageTaskID); err != nil {
+			t.Fatalf("age call evidence and refresh usage summary: %v", err)
+		}
+		if _, err := testPool.Exec(ctx, `UPDATE task_usage SET created_at = now() WHERE task_id = $1`, usageTaskID); err != nil {
+			t.Fatalf("refresh usage summary row: %v", err)
 		}
 		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task == nil || task.ID != queuedID {
 			t.Fatalf("expired complete known window must claim %s, got %+v: %s", queuedID, task, body)
@@ -287,13 +313,48 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 			t.Fatalf("batch held task status = %q, want queued", got)
 		}
 
+		if _, err := testPool.Exec(ctx, `
+				UPDATE task_usage SET created_at = now() - INTERVAL '61 seconds'
+				WHERE task_id = $1`, usageTaskID); err != nil {
+			t.Fatalf("age batch usage summary row: %v", err)
+		}
+		w = postBatchClaim(t, testWorkspaceID, []string{runtimeID}, 5)
+		if w.Code != http.StatusOK {
+			t.Fatalf("batch claim with aged summary: got %d: %s", w.Code, w.Body.String())
+		}
+		if resp := decodeBatchClaim(t, w); len(resp.Tasks) != 0 {
+			t.Fatalf("fresh batch evidence must hold despite aged usage row, claimed %+v", resp.Tasks)
+		}
+		if got := queueStatus(t, ctx, queuedID); got != "queued" {
+			t.Fatalf("batch task status after aging usage row = %q, want queued", got)
+		}
+
+		if _, err := testPool.Exec(ctx, `
+				UPDATE task_usage_model_call_evidence
+				SET created_at = now() - INTERVAL '3601 seconds'
+				WHERE task_id = $1`, usageTaskID); err != nil {
+			t.Fatalf("age batch evidence and refresh usage summary: %v", err)
+		}
+		if _, err := testPool.Exec(ctx, `UPDATE task_usage SET created_at = now() WHERE task_id = $1`, usageTaskID); err != nil {
+			t.Fatalf("refresh batch usage summary row: %v", err)
+		}
+		w = postBatchClaim(t, testWorkspaceID, []string{runtimeID}, 5)
+		if w.Code != http.StatusOK {
+			t.Fatalf("batch claim after evidence expiry: got %d: %s", w.Code, w.Body.String())
+		}
+		resp := decodeBatchClaim(t, w)
+		if len(resp.Tasks) != 1 || resp.Tasks[0].ID != queuedID {
+			t.Fatalf("expired batch evidence must release runtime, got %+v", resp.Tasks)
+		}
+
+		unknownQueuedID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
 		seedModelCallUsage(t, ctx, usageTaskID, "copilot", "unknown", nil)
 		w = postBatchClaim(t, testWorkspaceID, []string{runtimeID}, 5)
 		if w.Code != http.StatusOK {
 			t.Fatalf("batch unknown release: got %d: %s", w.Code, w.Body.String())
 		}
-		resp := decodeBatchClaim(t, w)
-		if len(resp.Tasks) != 1 || resp.Tasks[0].ID != queuedID {
+		resp = decodeBatchClaim(t, w)
+		if len(resp.Tasks) != 1 || resp.Tasks[0].ID != unknownQueuedID {
 			t.Fatalf("unknown batch window must fail open, got %+v", resp.Tasks)
 		}
 	})

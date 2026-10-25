@@ -123,8 +123,8 @@ func TestTaskUsagePayloadEvidenceCompatibility(t *testing.T) {
 	if !payload.ModelCallEvidenceComplete || len(payload.ModelCallEvidenceIDs) != 2 {
 		t.Fatalf("decoded evidence = complete=%v ids=%v, want complete msg_01/msg_02", payload.ModelCallEvidenceComplete, payload.ModelCallEvidenceIDs)
 	}
-	if ids := completeModelCallEvidenceIDs(payload); len(ids) != 2 || ids[0] != "msg_01" || ids[1] != "msg_02" {
-		t.Errorf("complete evidence ids = %v, want [msg_01 msg_02]", ids)
+	if ids := modelCallEvidenceIDs(payload); len(ids) != 2 || ids[0] != "msg_01" || ids[1] != "msg_02" {
+		t.Errorf("evidence ids = %v, want [msg_01 msg_02]", ids)
 	}
 
 	oldDaemon := []byte(`{"provider":"anthropic","model":"claude-opus-5","model_call_count":42}`)
@@ -138,12 +138,12 @@ func TestTaskUsagePayloadEvidenceCompatibility(t *testing.T) {
 	if legacy.ModelCallEvidenceComplete || len(legacy.ModelCallEvidenceIDs) != 0 {
 		t.Errorf("old daemon evidence = complete=%v ids=%v, want unknown", legacy.ModelCallEvidenceComplete, legacy.ModelCallEvidenceIDs)
 	}
-	if ids := completeModelCallEvidenceIDs(legacy); ids != nil {
+	if ids := modelCallEvidenceIDs(legacy); ids != nil {
 		t.Errorf("aggregate-only old daemon produced evidence ids %v, want nil", ids)
 	}
 
 	partial := TaskUsagePayload{ModelCallEvidenceIDs: []string{"msg_01"}}
-	if ids := completeModelCallEvidenceIDs(partial); ids != nil {
-		t.Errorf("incomplete evidence ids = %v, want nil", ids)
+	if ids := modelCallEvidenceIDs(partial); len(ids) != 1 || ids[0] != "msg_01" {
+		t.Errorf("incomplete evidence ids = %v, want retained [msg_01]", ids)
 	}
 }

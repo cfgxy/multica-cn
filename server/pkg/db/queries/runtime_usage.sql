@@ -37,29 +37,57 @@ ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provide
 -- known sum must not be treated as the whole window and therefore cannot hold
 -- a Runtime.
 SELECT
-    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS known_calls,
-    COUNT(tu.task_id) FILTER (WHERE tu.model_call_count IS NULL)::bigint AS unknown_usage_rows
-FROM task_usage tu
-JOIN agent_task_queue atq ON atq.id = tu.task_id
-WHERE atq.runtime_id = @runtime_id
-  AND tu.created_at >= @since::timestamptz;
+    COALESCE((
+        SELECT COUNT(*)
+        FROM task_usage_model_call_evidence e
+        JOIN task_usage tu ON tu.task_id = e.task_id
+            AND tu.provider = e.provider AND tu.model = e.model
+        JOIN agent_task_queue atq ON atq.id = e.task_id
+        WHERE atq.runtime_id = @runtime_id
+          AND tu.model_call_count IS NOT NULL
+          AND e.created_at >= @since::timestamptz
+    ), 0)::bigint AS known_calls,
+    COALESCE((
+        SELECT COUNT(*)
+        FROM task_usage tu
+        JOIN agent_task_queue atq ON atq.id = tu.task_id
+        WHERE atq.runtime_id = @runtime_id
+          AND tu.model_call_count IS NULL
+          AND tu.created_at >= @since::timestamptz
+    ), 0)::bigint AS unknown_usage_rows;
 
 -- name: ListRuntimeModelCallBudgetUsage :many
 -- Batch equivalent for queued-reason decoration and multi-runtime claims. The
 -- time predicate derives its rolling boundary from each runtime's persisted
 -- config, keeping a mixed set of windows correct in one round trip.
-SELECT
-    rt.id AS runtime_id,
-    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS known_calls,
-    COUNT(tu.task_id) FILTER (WHERE tu.task_id IS NOT NULL AND tu.model_call_count IS NULL)::bigint AS unknown_usage_rows
-FROM agent_runtime rt
-LEFT JOIN agent_task_queue atq ON atq.runtime_id = rt.id
-LEFT JOIN task_usage tu ON tu.task_id = atq.id
-	AND tu.created_at >= to_timestamp(
-		EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
-	)
-WHERE rt.id = ANY(@runtime_ids::uuid[])
-GROUP BY rt.id;
+WITH runtime_windows AS (
+    SELECT id AS runtime_id,
+           to_timestamp(EXTRACT(EPOCH FROM @now::timestamptz) - model_call_budget_window_seconds) AS since
+    FROM agent_runtime
+    WHERE id = ANY(@runtime_ids::uuid[])
+), known_counts AS (
+    SELECT rw.runtime_id, COUNT(*)::bigint AS known_calls
+    FROM runtime_windows rw
+    JOIN agent_task_queue atq ON atq.runtime_id = rw.runtime_id
+    JOIN task_usage_model_call_evidence e ON e.task_id = atq.id AND e.created_at >= rw.since
+    JOIN task_usage tu ON tu.task_id = e.task_id
+        AND tu.provider = e.provider AND tu.model = e.model
+        AND tu.model_call_count IS NOT NULL
+    GROUP BY rw.runtime_id
+), unknown_counts AS (
+    SELECT rw.runtime_id, COUNT(*)::bigint AS unknown_usage_rows
+    FROM runtime_windows rw
+    JOIN agent_task_queue atq ON atq.runtime_id = rw.runtime_id
+    JOIN task_usage tu ON tu.task_id = atq.id
+        AND tu.model_call_count IS NULL AND tu.created_at >= rw.since
+    GROUP BY rw.runtime_id
+)
+SELECT rw.runtime_id,
+       COALESCE(kc.known_calls, 0)::bigint AS known_calls,
+       COALESCE(uc.unknown_usage_rows, 0)::bigint AS unknown_usage_rows
+FROM runtime_windows rw
+LEFT JOIN known_counts kc ON kc.runtime_id = rw.runtime_id
+LEFT JOIN unknown_counts uc ON uc.runtime_id = rw.runtime_id;
 
 -- name: GetRuntimeTaskHourlyActivity :many
 -- Hour-of-day distribution for queue starts. Bucketed in the viewer's

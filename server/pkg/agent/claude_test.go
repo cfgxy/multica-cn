@@ -30,7 +30,7 @@ func TestClaudeHandleAssistantText(t *testing.T) {
 		}),
 	}
 
-	turn := b.handleAssistant(msg, ch, make(map[string]TokenUsage), make(map[string]int64))
+	turn := b.handleAssistant(context.Background(), msg, ch, make(map[string]TokenUsage), make(map[string]int64))
 	output, tools := turn.text, turn.toolUses
 
 	if output != "Hello world" {
@@ -46,6 +46,44 @@ func TestClaudeHandleAssistantText(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected message on channel")
+	}
+}
+
+func TestClaudeHandleAssistantEmitsModelCallEvidence(t *testing.T) {
+	t.Parallel()
+
+	b := &claudeBackend{cfg: Config{Logger: slog.Default()}}
+	ch := make(chan Message, 10)
+	msg := claudeSDKMessage{
+		Type: "assistant",
+		Message: mustMarshal(t, claudeMessageContent{
+			Role:  "assistant",
+			ID:    "provider-call-1",
+			Model: "claude-sonnet-5",
+			Usage: &claudeUsage{InputTokens: 100, OutputTokens: 20},
+		}),
+	}
+
+	b.handleAssistant(context.Background(), msg, ch, make(map[string]TokenUsage), make(map[string]int64))
+	for len(ch) > 0 {
+		got := <-ch
+		if got.Type == MessageModelCallEvidence {
+			if got.Model != "claude-sonnet-5" || len(got.ModelCallEvidenceIDs) != 1 || got.ModelCallEvidenceIDs[0] != "provider-call-1" || !got.ModelCallEvidenceComplete {
+				t.Fatalf("model-call evidence = %+v, want complete provider-call-1 for claude-sonnet-5", got)
+			}
+			return
+		}
+	}
+	t.Fatal("assistant usage did not emit model-call evidence")
+}
+
+func TestSendModelCallEvidenceDoesNotBlockOnFullMessageStream(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan Message, 1)
+	ch <- Message{Type: MessageText}
+	if !sendModelCallEvidence(context.Background(), ch, Message{Type: MessageModelCallEvidence}) {
+		t.Fatal("a full optional message stream must not stop execution")
 	}
 }
 
@@ -70,7 +108,7 @@ func TestClaudeHandleAssistantToolUse(t *testing.T) {
 		}),
 	}
 
-	turn := b.handleAssistant(msg, ch, make(map[string]TokenUsage), make(map[string]int64))
+	turn := b.handleAssistant(context.Background(), msg, ch, make(map[string]TokenUsage), make(map[string]int64))
 	output, tools := turn.text, turn.toolUses
 
 	if output != "" {
@@ -334,7 +372,7 @@ func TestClaudeHandleAssistantInvalidJSON(t *testing.T) {
 	}
 
 	// Should not panic
-	turn := b.handleAssistant(msg, ch, make(map[string]TokenUsage), make(map[string]int64))
+	turn := b.handleAssistant(context.Background(), msg, ch, make(map[string]TokenUsage), make(map[string]int64))
 	output, tools := turn.text, turn.toolUses
 
 	if output != "" {

@@ -329,7 +329,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			switch msg.Type {
 			case "assistant":
 				assistantEventCount++
-				turn := b.handleAssistant(msg, msgCh, usage, contextTokens)
+				turn := b.handleAssistant(runCtx, msg, msgCh, usage, contextTokens)
 				toolUseCount += turn.toolUses
 				if !turn.understood {
 					unreadableAssistantCount++
@@ -544,7 +544,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	return &Session{Messages: msgCh, Result: resCh}, nil
 }
 
-func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage, contextTokens map[string]int64) assistantTurn {
+func (b *claudeBackend) handleAssistant(ctx context.Context, msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage, contextTokens map[string]int64) assistantTurn {
 	var content claudeMessageContent
 	if err := json.Unmarshal(msg.Message, &content); err != nil {
 		// Unreadable body: understood stays false so the caller drops any
@@ -567,6 +567,14 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		// replay; a readable response without that ID leaves this model unknown.
 		u = appendModelCallEvidence(u, content.ID)
 		usage[content.Model] = u
+		if !sendModelCallEvidence(ctx, ch, Message{
+			Type:                      MessageModelCallEvidence,
+			Model:                     content.Model,
+			ModelCallEvidenceIDs:      u.ModelCallEvidenceIDs(),
+			ModelCallEvidenceComplete: len(u.ModelCallEvidenceIDs()) > 0 && !u.ModelCallEvidenceIncomplete,
+		}) {
+			return turn
+		}
 
 		// Context size, in contrast, is OVERWRITTEN by each assistant event
 		// rather than summed: the conversation the next resume would inherit
@@ -1214,6 +1222,24 @@ func trySend(ch chan<- Message, msg Message) {
 	default:
 		// Channel full — drop message. Result.Output is finalized independently,
 		// so only live transcript consumers are affected.
+	}
+}
+
+func sendModelCallEvidence(ctx context.Context, ch chan<- Message, msg Message) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	default:
+	}
+
+	select {
+	case ch <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	default:
+		// Session.Messages is optional; a full stream must not stall execution.
+		return true
 	}
 }
 

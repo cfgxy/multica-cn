@@ -276,6 +276,13 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		callUsage := st.callUsage[model]
 		callUsage = appendModelCallEvidence(callUsage, evt.ID)
 		st.callUsage[model] = callUsage
+		evidenceIDs := callUsage.ModelCallEvidenceIDs()
+		msgs = append(msgs, Message{
+			Type:                      MessageModelCallEvidence,
+			Model:                     model,
+			ModelCallEvidenceIDs:      evidenceIDs,
+			ModelCallEvidenceComplete: len(evidenceIDs) > 0 && !callUsage.ModelCallEvidenceIncomplete,
+		})
 
 	case "session.shutdown":
 		// Session-wide per-model totals, emitted once as the session tears down.
@@ -447,6 +454,12 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			}
 
 			for _, m := range handleCopilotEvent(evt, st) {
+				if m.Type == MessageModelCallEvidence {
+					if !sendModelCallEvidence(runCtx, msgCh, m) {
+						break
+					}
+					continue
+				}
 				trySend(msgCh, m)
 			}
 		}

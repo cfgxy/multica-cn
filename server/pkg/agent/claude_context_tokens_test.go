@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 
@@ -41,7 +42,7 @@ func TestClaudeContextTokensSnapshotsLastRequestNotTheSum(t *testing.T) {
 				Content: []claudeContentBlock{{Type: "text", Text: "ok"}},
 			}),
 		}
-		b.handleAssistant(msg, ch, usage, contextTokens)
+		b.handleAssistant(context.Background(), msg, ch, usage, contextTokens)
 	}
 
 	// Billing counters accumulate: 100+120+140 input, 1000+2000+3000 cache read.
@@ -104,7 +105,7 @@ func TestClaudeContextTokensCountTheTurnsOwnOutput(t *testing.T) {
 			ch := make(chan Message, 8)
 			contextTokens := make(map[string]int64)
 
-			b.handleAssistant(claudeSDKMessage{
+			b.handleAssistant(context.Background(), claudeSDKMessage{
 				Type: "assistant",
 				Message: mustMarshal(t, claudeMessageContent{
 					Role:  "assistant",
@@ -147,7 +148,7 @@ func TestClaudeContextTokensAbsentWhenNothingReported(t *testing.T) {
 	usage := make(map[string]TokenUsage)
 	contextTokens := make(map[string]int64)
 
-	b.handleAssistant(claudeSDKMessage{
+	b.handleAssistant(context.Background(), claudeSDKMessage{
 		Type: "assistant",
 		Message: mustMarshal(t, claudeMessageContent{
 			Role:    "assistant",

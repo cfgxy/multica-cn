@@ -5145,12 +5145,11 @@ func authoritativeCostTicks(ticks int64) pgtype.Int8 {
 	return pgtype.Int8{Int64: ticks, Valid: true}
 }
 
-// completeModelCallEvidenceIDs validates and locally deduplicates a complete
-// provider evidence set before it reaches the database. Malformed or partial
-// evidence is unknown, not a client error: the daemon already completed work
-// and the only safe accounting result is a nullable count.
-func completeModelCallEvidenceIDs(usage TaskUsagePayload) []string {
-	if !usage.ModelCallEvidenceComplete || len(usage.ModelCallEvidenceIDs) == 0 {
+// modelCallEvidenceIDs validates and locally deduplicates provider evidence
+// before it reaches the database. Partial evidence is retained for its original
+// timestamps, while the nullable aggregate remains unknown until complete.
+func modelCallEvidenceIDs(usage TaskUsagePayload) []string {
+	if len(usage.ModelCallEvidenceIDs) == 0 {
 		return nil
 	}
 
@@ -5232,23 +5231,22 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range usage {
 		u := entry.payload
 		modelCallCount := pgtype.Int8{}
-		if evidenceIDs := completeModelCallEvidenceIDs(u); len(evidenceIDs) > 0 {
-			for _, evidenceID := range evidenceIDs {
-				if err := qtx.InsertTaskUsageModelCallEvidence(r.Context(), db.InsertTaskUsageModelCallEvidenceParams{
-					TaskID:     parsedTaskID,
-					Provider:   entry.provider,
-					Model:      u.Model,
-					EvidenceID: evidenceID,
-				}); err != nil {
-					slog.Warn("insert task usage call evidence failed", "task_id", taskID, "model", u.Model, "error", err)
-					writeError(w, http.StatusInternalServerError, "failed to store task usage")
-					return
-				}
+		evidenceIDs := modelCallEvidenceIDs(u)
+		for _, evidenceID := range evidenceIDs {
+			if err := qtx.InsertTaskUsageModelCallEvidence(r.Context(), db.InsertTaskUsageModelCallEvidenceParams{
+				TaskID:     parsedTaskID,
+				Provider:   entry.provider,
+				Model:      u.Model,
+				EvidenceID: evidenceID,
+			}); err != nil {
+				slog.Warn("insert task usage call evidence failed", "task_id", taskID, "model", u.Model, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to store task usage")
+				return
 			}
+		}
+		if u.ModelCallEvidenceComplete && len(evidenceIDs) > 0 {
 			count, err := qtx.CountTaskUsageModelCallEvidence(r.Context(), db.CountTaskUsageModelCallEvidenceParams{
-				TaskID:   parsedTaskID,
-				Provider: entry.provider,
-				Model:    u.Model,
+				TaskID: parsedTaskID, Provider: entry.provider, Model: u.Model,
 			})
 			if err != nil {
 				slog.Warn("count task usage call evidence failed", "task_id", taskID, "model", u.Model, "error", err)

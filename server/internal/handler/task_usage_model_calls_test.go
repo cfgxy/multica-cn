@@ -28,7 +28,7 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 	taskID := dbfx.Task(t, agentID, testutil.Cols{
 		"issue_id":   issueID,
 		"runtime_id": runtimeID,
-		"status":     "completed",
+		"status":     "running",
 	})
 	dbfx.Cleanup(t, `DELETE FROM task_usage_model_call_evidence WHERE task_id = $1`, taskID)
 	dbfx.Cleanup(t, `DELETE FROM task_usage WHERE task_id = $1`, taskID)
@@ -40,11 +40,28 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 		testutil.Call(t, testHandler.ReportTaskUsage, req).Want(http.StatusOK)
 	}
 
-	// A successful provider response with stable evidence is known. Replaying the
-	// daemon report must not add a second count; a later retry with a distinct
-	// provider ID must add one.
+	// A successful provider response is persisted while its task is still running.
+	// A replay of the same provider ID must preserve its original timestamp and
+	// not add a second count; a later retry with a distinct ID adds one.
 	report(`{"usage":[{"provider":"claude","model":"model-call-count-known","input_tokens":1000,"output_tokens":100,"model_call_evidence_complete":true,"model_call_evidence_ids":["success-1"]}]}`)
+	fixedEvidenceAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	if _, err := testPool.Exec(ctx, `
+		UPDATE task_usage_model_call_evidence SET created_at = $1
+		WHERE task_id = $2 AND provider = 'claude' AND model = 'model-call-count-known' AND evidence_id = 'success-1'
+	`, fixedEvidenceAt, taskID); err != nil {
+		t.Fatalf("age first evidence row: %v", err)
+	}
 	report(`{"usage":[{"provider":"claude","model":"model-call-count-known","input_tokens":1000,"output_tokens":100,"model_call_evidence_complete":true,"model_call_evidence_ids":["success-1"]}]}`)
+	var replayedEvidenceAt time.Time
+	if err := testPool.QueryRow(ctx, `
+		SELECT created_at FROM task_usage_model_call_evidence
+		WHERE task_id = $1 AND provider = 'claude' AND model = 'model-call-count-known' AND evidence_id = 'success-1'
+	`, taskID).Scan(&replayedEvidenceAt); err != nil {
+		t.Fatalf("read replayed evidence timestamp: %v", err)
+	}
+	if !replayedEvidenceAt.Equal(fixedEvidenceAt) {
+		t.Fatalf("replay changed evidence created_at to %s, want original %s", replayedEvidenceAt, fixedEvidenceAt)
+	}
 	report(`{"usage":[{"provider":"claude","model":"model-call-count-known","input_tokens":1200,"output_tokens":120,"model_call_evidence_complete":true,"model_call_evidence_ids":["success-2"]}]}`)
 
 	// ReportTaskUsage runs before the terminal callback. A provider request that

@@ -1155,6 +1155,30 @@ func TestCopilotCallCountPerAssistantUsageEvent(t *testing.T) {
 	})
 }
 
+func TestCopilotUsageEventsEmitModelCallEvidence(t *testing.T) {
+	t.Parallel()
+
+	usage1 := `{"type":"assistant.usage","data":{"model":"claude-sonnet-4.5","inputTokens":100,"outputTokens":10},"id":"u-1","timestamp":"2026-08-04T08:00:01.000Z"}`
+	usageWithoutID := `{"type":"assistant.usage","data":{"model":"claude-sonnet-4.5","inputTokens":50,"outputTokens":5},"timestamp":"2026-08-04T08:00:05.000Z"}`
+	msgs, _, _, _ := simulateCopilotEventLoop(t, []string{fixtureSessionStart, usage1, usageWithoutID, fixtureResult})
+
+	var evidence []Message
+	for _, msg := range msgs {
+		if msg.Type == MessageModelCallEvidence {
+			evidence = append(evidence, msg)
+		}
+	}
+	if len(evidence) != 2 {
+		t.Fatalf("model-call evidence events = %d, want 2: %+v", len(evidence), evidence)
+	}
+	if evidence[0].Model != "claude-sonnet-4.5" || len(evidence[0].ModelCallEvidenceIDs) != 1 || evidence[0].ModelCallEvidenceIDs[0] != "u-1" || !evidence[0].ModelCallEvidenceComplete {
+		t.Errorf("first model-call evidence = %+v, want complete u-1", evidence[0])
+	}
+	if evidence[1].Model != "claude-sonnet-4.5" || len(evidence[1].ModelCallEvidenceIDs) != 1 || evidence[1].ModelCallEvidenceIDs[0] != "u-1" || evidence[1].ModelCallEvidenceComplete {
+		t.Errorf("missing-ID evidence = %+v, want retained u-1 marked incomplete for claude-sonnet-4.5", evidence[1])
+	}
+}
+
 func TestCopilotTokenlessCallStillCounts(t *testing.T) {
 	t.Parallel()
 	// A model call that reports no tokens at all still happened: the count is
