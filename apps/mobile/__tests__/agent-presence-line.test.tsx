@@ -1,7 +1,12 @@
 // @ts-nocheck
 import React from "react";
-import { render, screen } from "@testing-library/react-native";
+import { render } from "@testing-library/react-native";
 import { AgentPresenceLine } from "@/components/agents/agent-presence-line";
+
+jest.mock("@/components/ui/text", () => {
+  const { Text } = jest.requireActual("react-native");
+  return { Text };
+});
 
 jest.mock("@/lib/use-t", () => ({
   useT: () => ({
@@ -16,8 +21,8 @@ jest.mock("@/lib/use-t", () => ({
 }));
 
 describe("AgentPresenceLine", () => {
-  it("shows only the running count for an unlimited agent", () => {
-    render(
+  it("shows only the running count for an unlimited agent", async () => {
+    const screen = await render(
       <AgentPresenceLine
         detail={{
           availability: "online",
