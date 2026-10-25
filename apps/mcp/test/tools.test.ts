@@ -2442,9 +2442,9 @@ describe("workspace run view + agent/squad management tools", () => {
   });
 
   it.each(["create_agent", "update_agent"] as const)(
-    "%s rejects negative concurrency before calling the API",
+    "%s rejects concurrency outside 0-50 before calling the API",
     async (toolName) => {
-      for (const value of [-1, -2]) {
+      for (const value of [-1, -2, 51]) {
         const client = fakeClient({
           createAgent: async (...args: unknown[]) => {
             callsOf(client).push({ method: "createAgent", args });
@@ -2461,6 +2461,16 @@ describe("workspace run view + agent/squad management tools", () => {
         await expect(findTool(toolName)?.handler(args, client)).rejects.toThrow(ToolInputError);
         expect(callsOf(client)).toEqual([]);
       }
+    },
+  );
+
+  it.each(["create_agent", "update_agent"] as const)(
+    "%s declares the concurrency upper bound in its input schema",
+    (toolName) => {
+      expect(findTool(toolName)?.inputSchema.properties.max_concurrent_tasks).toMatchObject({
+        minimum: 0,
+        maximum: 50,
+      });
     },
   );
 

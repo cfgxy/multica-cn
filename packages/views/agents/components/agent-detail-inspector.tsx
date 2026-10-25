@@ -809,6 +809,10 @@ function ConcurrencyField({
   useEffect(() => setDraft(String(value)), [value]);
 
   const commit = () => {
+    if (draft.trim() === "") {
+      setDraft(String(value));
+      return;
+    }
     const next = Number(draft);
     if (
       !Number.isInteger(next) ||
