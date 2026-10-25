@@ -46,4 +46,15 @@ describe("ConcurrencyPicker", () => {
 
     expect(onChange).toHaveBeenCalledWith(value);
   });
+
+  it("does not convert an empty draft to unlimited", () => {
+    const { onChange } = renderPicker();
+    fireEvent.click(screen.getByRole("button"));
+    fireEvent.change(screen.getByRole("spinbutton"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByText("Save"));
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });
