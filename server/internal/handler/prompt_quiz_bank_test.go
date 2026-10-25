@@ -327,41 +327,44 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 
 	// The batch id is IN the payload the daemon will receive, next to the
 	// item id — the field set the sweep's payload test pins.
-	var contexts []string
+	type queuedTask struct {
+		ID      string
+		Context string
+	}
+	var queuedTasks []queuedTask
 	rows, err := testPool.Query(context.Background(),
-		`SELECT context FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
+		`SELECT id::text, context FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for rows.Next() {
-		var c []byte
-		if err := rows.Scan(&c); err != nil {
+		var task queuedTask
+		if err := rows.Scan(&task.ID, &task.Context); err != nil {
 			t.Fatal(err)
 		}
-		contexts = append(contexts, string(c))
+		queuedTasks = append(queuedTasks, task)
 	}
 	rows.Close()
-	if len(contexts) != 2 {
-		t.Fatalf("%d task rows, want 2", len(contexts))
+	if len(queuedTasks) != 2 {
+		t.Fatalf("%d task rows, want 2", len(queuedTasks))
 	}
-	for _, c := range contexts {
-		if !strings.Contains(c, created.BatchID) || !strings.Contains(c, "quiz_item_id") || !strings.Contains(c, "quiz_prompt") {
-			t.Fatalf("payload is missing the batch/item/prompt fields: %s", c)
+	for _, task := range queuedTasks {
+		if !strings.Contains(task.Context, created.BatchID) || !strings.Contains(task.Context, "quiz_item_id") || !strings.Contains(task.Context, "quiz_prompt") {
+			t.Fatalf("payload is missing the batch/item/prompt fields: %s", task.Context)
 		}
 	}
 
 	// One answered-and-graded run, one errored run, both on the batch.
 	gradedScore := 0.75
-	for _, outcome := range []string{promptquiz.OutcomeAnswered, promptquiz.OutcomeErrored} {
-		taskID := dbfx.Task(t, agentID, map[string]any{
-			"status": "completed", "originator_source": promptquiz.OriginatorSource,
-			"completed_at": testutil.Raw("now()"),
-		})
+	for i, outcome := range []string{promptquiz.OutcomeAnswered, promptquiz.OutcomeErrored} {
+		taskID := queuedTasks[i].ID
+		testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1::uuid`, taskID)
 		cols := map[string]any{
 			"workspace_id": testWorkspaceID, "scope": "agent", "scope_id": agentID,
 			"version": 1, "item_id": itemA, "item_revision": 1,
 			"item_body_sha256": promptquiz.BodyDigest("anchor"),
 			"batch_id":         created.BatchID, "task_id": taskID, "outcome": outcome,
+			"graded_at": testutil.Raw("now()"),
 		}
 		if outcome == promptquiz.OutcomeAnswered {
 			detail, _ := json.Marshal([]map[string]any{{"id": "c1", "kind": "includes_all", "passed": true, "weight": 1}})
@@ -375,6 +378,8 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 	req := newRequest("GET", "/api/prompt-quiz/batches/"+created.BatchID, nil)
 	var batch struct {
 		BatchID string `json:"batch_id"`
+		Ordered int    `json:"ordered"`
+		Settled bool   `json:"settled"`
 		Rows    []struct {
 			TaskID     string          `json:"task_id"`
 			ItemID     string          `json:"item_id"`
@@ -396,7 +401,7 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 	testutil.Call(t, testHandler.GetPromptQuizBatch, withURLParam(req, "batchId", created.BatchID)).
 		Want(200).JSON(&batch)
 
-	if batch.BatchID != created.BatchID || len(batch.Rows) != 2 {
+	if batch.BatchID != created.BatchID || batch.Ordered != 2 || !batch.Settled || len(batch.Rows) != 2 {
 		t.Fatalf("batch read-back = %d rows, want 2 for %s", len(batch.Rows), created.BatchID)
 	}
 	if batch.Counts[promptquiz.OutcomeAnswered] != 1 || batch.Counts[promptquiz.OutcomeErrored] != 1 {

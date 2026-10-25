@@ -5083,6 +5083,8 @@ export const PromptQuizSampleListSchema = z.object({
 
 export const PromptQuizBatchResponseSchema = z.object({
   batch_id: z.string().default(""),
+  ordered: z.number().int().nonnegative().default(0),
+  settled: z.boolean().default(true),
   rows: z.array(PromptQuizSampleRowSchema).default([]),
   counts: z.record(z.string(), z.number()).default({}),
   scores: PromptQuizScoreSummarySchema.optional(),

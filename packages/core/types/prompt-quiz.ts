@@ -189,6 +189,10 @@ export interface PromptQuizBatchCreateResponse {
 /** One batch's read-back: per-run rows, outcome counts, graded summary. */
 export interface PromptQuizBatchResponse {
   batch_id: string;
+  /** Exact queue-row count for this batch. */
+  ordered: number;
+  /** False while a task runs or its terminal result is still being collected. */
+  settled: boolean;
   rows: PromptQuizSampleRow[];
   /** Per-outcome counts ("answered"/"errored") — never a pass rate. */
   counts: Record<string, number>;
