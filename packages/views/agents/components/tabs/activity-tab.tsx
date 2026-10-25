@@ -565,9 +565,15 @@ function TaskRow({
         task.retrospective_window_end ?? task.completed_at ?? task.created_at,
       )
     : "";
-  const quizBatchStamp = task.quiz_batch_id?.slice(0, 8) ?? "";
-  const quizItemStamp = task.quiz_item_id?.slice(0, 8) ?? "";
-  const quizRunStamp = [quizBatchStamp, quizItemStamp].filter(Boolean).join("/");
+  const quizBatchStamp = task.quiz_batch_id?.slice(-8) ?? "";
+  const quizItemStamp = task.quiz_item_id?.slice(-8) ?? "";
+  const quizRunStamp = [
+    quizBatchStamp && t(($) => $.tab_body.activity.quiz_batch_id, { id: quizBatchStamp }),
+    quizItemStamp && t(($) => $.tab_body.activity.quiz_item_id, { id: quizItemStamp }),
+  ].filter(Boolean).join(" / ");
+  const quizDisplayTitle = task.quiz_item_title?.trim()
+    ? task.quiz_item_title
+    : t(($) => $.tab_body.activity.source_quiz);
   const sourceFallback = !hasIssue && !isRetro && !isQuiz
     ? task.kind === "quick_create"
       ? isTerminalStatus
@@ -615,12 +621,12 @@ function TaskRow({
             ? t(($) => $.tab_body.activity.retro_title, { stamp: retroStamp })
             : t(($) => $.tab_body.activity.source_retrospective))
         : isQuiz
-          ? (task.quiz_item_title?.trim()
+          ? (quizRunStamp
               ? t(($) => $.tab_body.activity.quiz_title, {
-                  title: task.quiz_item_title,
-                  batch: quizRunStamp,
+                  title: quizDisplayTitle,
+                  identity: quizRunStamp,
                 })
-              : t(($) => $.tab_body.activity.source_quiz))
+              : quizDisplayTitle)
         : (sourceFallback ?? t(($) => $.tab_body.activity.source_untracked)));
 
   const timeText =
