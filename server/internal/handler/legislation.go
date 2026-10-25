@@ -44,7 +44,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/util"
-	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -478,8 +477,9 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 
 // synthesizeProposalCarrier applies a proposal to the carrier representation
 // that the selected landing target actually changes. Structured revisions are
-// addressed by Clause ID and replace its rendered asset segment; static and
-// legacy name-only proposals retain the text-engine path.
+// addressed by Clause ID and deterministically rebuild their carrier from the
+// active asset set; static and legacy name-only proposals retain the text-
+// engine path.
 func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, current string) (string, error) {
 	if p.EnactmentTarget != "clause_library" || p.ChangeKind != "revise_clause" || !p.ClauseID.Valid {
 		return legislation.Synthesize(current, proposalInputFromRow(p))
@@ -513,9 +513,15 @@ func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries
 	if err := legislation.ValidateRevisionText(clause.Title, p.ClauseText); err != nil {
 		return "", err
 	}
-	synthesized, err := clausemark.ReplaceSegment(current, clause.Slug, binding.SinceClauseVersion, p.ClauseText)
+	content := strings.TrimRight(p.ClauseText, "\n")
+	synthesized, err := h.renderCarrierFromActiveClausesTx(ctx, qtx, workspaceID,
+		carrierRef{scope: binding.Scope, id: binding.ScopeID}, current, &clauseRenderOverride{
+			ClauseID: clause.ID,
+			Version:  clause.Version + 1,
+			Content:  content,
+		})
 	if err != nil {
-		return "", fmt.Errorf("条款「%s」载体结构校验失败，已阻断：%w", clause.Title, err)
+		return "", fmt.Errorf("条款「%s」资产渲染失败，已阻断：%w", clause.Title, err)
 	}
 	return synthesized, nil
 }

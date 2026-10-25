@@ -99,6 +99,8 @@ bounded metadata domain.
 | `get_clause` | read | true | false | true | false | Reads full governance detail for one clause (versions, bindings, proposals, quality ledger). |
 | `search_clauses` | read | true | false | true | false | Searches the clause inventory by keyword and status. |
 | `get_clause_reconciliation` | read | true | false | true | false | Read-only reconciliation of clause injection invariants (layer-set violations, demotion share, flag drift). |
+| `preview_clause_revision` | read | true | false | true | false | Owner-only preview of a direct Clause revision; returns the full-carrier diff and writes no Clause, binding, carrier, or proposal. |
+| `direct_revise_clause` | destructive | false | true | false | false | Owner-confirmed direct Clause revision: creates a version, audits the binding, and re-renders its carrier without creating a proposal. |
 | `get_prompt_versions` | read | true | false | true | false | Reads the prompt-carrier version ledger for clause-versus-prompt comparison. |
 | `list_prompt_proposals` | read | true | false | true | false | Reads the prompt legislation proposal pool (lifecycle and audit records). |
 | `create_prompt_proposal` | write | false | false | false | false | Adds a clause-change draft to the proposal pool; changes no prompt or carrier before owner approval. |
