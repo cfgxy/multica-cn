@@ -70,7 +70,9 @@ describe("legislation approve endpoints (RUYI-858)", () => {
 
     const preview = await client.previewPromptProposal("p-1");
 
-    expect(preview.proposal.clause_id).toEqual("clause-1");
+    expect(
+      "clause_id" in preview.proposal ? preview.proposal.clause_id : undefined,
+    ).toEqual("clause-1");
   });
 
   it("sends the selected landing target to preview", async () => {
