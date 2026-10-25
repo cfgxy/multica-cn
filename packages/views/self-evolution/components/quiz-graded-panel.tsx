@@ -90,6 +90,11 @@ export function QuizGradedPanel({
           ? QUIZ_POLL_INTERVAL
           : false,
   });
+  const {
+    dataUpdatedAt: samplesDataUpdatedAt,
+    isFetching: samplesIsFetching,
+    refetch: refetchSamples,
+  } = samples;
 
   const previousBatchState = useRef({ batchId: "", settled: false });
   const batchGraded = batch.data?.scores?.graded ?? 0;
@@ -118,11 +123,10 @@ export function QuizGradedPanel({
     });
     if (baseline.current_version <= 0) return;
     if (firstObservationSettled) {
-      const refreshSamples = () => samples.refetch();
-      if (samples.isFetching && samples.dataUpdatedAt === 0) {
-        void samples.refetch().then(refreshSamples);
+      if (samplesIsFetching && samplesDataUpdatedAt === 0) {
+        void refetchSamples().then(refetchSamples);
       } else {
-        void refreshSamples();
+        void refetchSamples();
       }
     } else {
       void queryClient.invalidateQueries({
@@ -137,9 +141,9 @@ export function QuizGradedPanel({
     batchId,
     batchComplete,
     queryClient,
-    samples.dataUpdatedAt,
-    samples.isFetching,
-    samples.refetch,
+    refetchSamples,
+    samplesDataUpdatedAt,
+    samplesIsFetching,
     wsId,
   ]);
 
