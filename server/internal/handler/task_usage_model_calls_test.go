@@ -22,7 +22,10 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	runtimeID := handlerTestRuntimeID(t)
+	runtimeID := dbfx.Runtime(t, "ModelCallCountDBRuntime", testutil.Cols{
+		"daemon_id":    "model-call-count-daemon",
+		"runtime_mode": "local",
+	})
 	agentID := dbfx.Agent(t, "ModelCallCountDBAgent", runtimeID)
 	issueID := dbfx.Issue(t, "model-call-count-issue")
 	taskID := dbfx.Task(t, agentID, testutil.Cols{
@@ -80,6 +83,47 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 	}
 	if evidenceRows != 3 {
 		t.Errorf("durable evidence rows = %d, want 3 after one replay and three distinct IDs", evidenceRows)
+	}
+
+	liveEvidence := func() {
+		req := modelCallEvidenceRequest(t, runtimeID, taskID,
+			`{"provider":"claude","model":"model-call-count-live","evidence_id":"live-call-1"}`)
+		testutil.Call(t, testHandler.ReportTaskModelCallEvidence, req).Want(http.StatusOK)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running' WHERE id = $1`, taskID); err != nil {
+		t.Fatalf("mark task running before live evidence: %v", err)
+	}
+	liveEvidence()
+	if _, err := testPool.Exec(ctx, `
+		UPDATE task_usage_model_call_evidence SET created_at = now() - INTERVAL '2 hours'
+		WHERE task_id = $1 AND provider = 'claude' AND evidence_id = 'live-call-1'`, taskID); err != nil {
+		t.Fatalf("age evidence timestamp fixture: %v", err)
+	}
+	var agedEvidenceAt time.Time
+	if err := testPool.QueryRow(ctx, `
+		SELECT created_at FROM task_usage_model_call_evidence
+		WHERE task_id = $1 AND provider = 'claude' AND evidence_id = 'live-call-1'`, taskID).Scan(&agedEvidenceAt); err != nil {
+		t.Fatalf("read aged evidence timestamp: %v", err)
+	}
+	liveEvidence()
+	var replayedEvidenceAt time.Time
+	if err := testPool.QueryRow(ctx, `
+		SELECT created_at FROM task_usage_model_call_evidence
+		WHERE task_id = $1 AND provider = 'claude' AND evidence_id = 'live-call-1'`, taskID).Scan(&replayedEvidenceAt); err != nil {
+		t.Fatalf("read replayed evidence timestamp: %v", err)
+	}
+	if !replayedEvidenceAt.Equal(agedEvidenceAt) {
+		t.Fatalf("replay changed first evidence timestamp: got %s, want %s", replayedEvidenceAt, agedEvidenceAt)
+	}
+	report(`{"usage":[{"provider":"claude","model":"model-call-count-live","input_tokens":10,"model_call_evidence_complete":true,"model_call_evidence_ids":["live-call-1"]}]}`)
+	var liveCalls int64
+	if err := testPool.QueryRow(ctx, `
+		SELECT model_call_count FROM task_usage
+		WHERE task_id = $1 AND provider = 'claude' AND model = 'model-call-count-live'`, taskID).Scan(&liveCalls); err != nil {
+		t.Fatalf("read replayed terminal usage count: %v", err)
+	}
+	if liveCalls != 1 {
+		t.Fatalf("terminal replay call count = %d, want 1", liveCalls)
 	}
 
 	// Drive the rollup window function over the last hour — the production

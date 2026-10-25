@@ -18,6 +18,20 @@ type dashboardAgentPresence struct {
 	sentinel     bool
 }
 
+func TestFoldRestrictedUsageByAgentSumsModelCallCounts(t *testing.T) {
+	rows := []DashboardUsageByAgentResponse{
+		{AgentID: "hidden-a", Provider: "claude", Model: "same-model", ModelCallCount: 2, ModelCallUnknownCount: 1},
+		{AgentID: "hidden-b", Provider: "claude", Model: "same-model", ModelCallCount: 3, ModelCallUnknownCount: 2},
+	}
+	got := foldRestrictedUsageByAgent(rows, map[string]struct{}{"hidden-a": {}, "hidden-b": {}})
+	if len(got) != 1 {
+		t.Fatalf("folded rows = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].ModelCallCount != 5 || got[0].ModelCallUnknownCount != 3 {
+		t.Fatalf("folded call counts = known %d unknown %d, want 5 / 3", got[0].ModelCallCount, got[0].ModelCallUnknownCount)
+	}
+}
+
 // TestDashboardPerAgentRollupsFoldRestrictedAgents is the regression guard for
 // MUL-5409: the three per-agent dashboard rollups used to authorize on
 // workspace membership alone and return a bare agent_id for EVERY agent in the

@@ -567,6 +567,13 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		// replay; a readable response without that ID leaves this model unknown.
 		u = appendModelCallEvidence(u, content.ID)
 		usage[content.Model] = u
+		if evidenceID := strings.TrimSpace(content.ID); evidenceID != "" {
+			if b.cfg.OnModelCallEvidence != nil {
+				b.cfg.OnModelCallEvidence(content.Model, evidenceID)
+			}
+		} else if b.cfg.OnModelCallEvidenceIncomplete != nil {
+			b.cfg.OnModelCallEvidenceIncomplete(content.Model)
+		}
 
 		// Context size, in contrast, is OVERWRITTEN by each assistant event
 		// rather than summed: the conversation the next resume would inherit

@@ -358,10 +358,16 @@ type Config struct {
 	CLIVersion     string            // detected version paired with ExecutablePath; observation only, never used to choose behavior
 	Env            map[string]string // extra environment variables
 	Logger         *slog.Logger
-	TaskID         string
-	RuntimeID      string
-	DaemonVersion  string
-	CodexVersion   string
+	// OnModelCallEvidence reports one provider-original call identity as soon as
+	// the provider event is observed. The daemon persists it before the run ends.
+	OnModelCallEvidence func(model, evidenceID string)
+	// OnModelCallEvidenceIncomplete reports a call whose provider event lacks a
+	// stable evidence identity, so the daemon can fail the live budget open.
+	OnModelCallEvidenceIncomplete func(model string)
+	TaskID                        string
+	RuntimeID                     string
+	DaemonVersion                 string
+	CodexVersion                  string
 	// BuiltinRuntime reports that ExecutablePath is the provider's own
 	// discovered binary rather than a custom runtime profile's command. A
 	// custom profile keeps its protocol family as the provider, so the

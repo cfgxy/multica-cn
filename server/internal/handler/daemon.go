@@ -5190,6 +5190,73 @@ func completeModelCallEvidenceIDs(usage TaskUsagePayload) []string {
 	return ids
 }
 
+func (h *Handler) ReportTaskModelCallEvidence(w http.ResponseWriter, r *http.Request) {
+	daemonID := middleware.DaemonIDFromContext(r.Context())
+	if middleware.DaemonWorkspaceIDFromContext(r.Context()) == "" || daemonID == "" {
+		writeError(w, http.StatusForbidden, "daemon credential required")
+		return
+	}
+	taskID := chi.URLParam(r, "taskId")
+	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	if !ok {
+		return
+	}
+	if task.Status != "running" {
+		writeError(w, http.StatusConflict, "task is not running")
+		return
+	}
+	runtime, ok := h.requireDaemonRuntimeAccess(w, r, uuidToString(task.RuntimeID))
+	if !ok {
+		return
+	}
+	if !runtime.DaemonID.Valid || runtime.DaemonID.String != daemonID {
+		writeError(w, http.StatusForbidden, "daemon does not own task runtime")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+
+	var req struct {
+		Provider   string `json:"provider"`
+		Model      string `json:"model"`
+		EvidenceID string `json:"evidence_id"`
+		Incomplete bool   `json:"incomplete"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	provider := normalizeProvider(req.Provider)
+	model := req.Model
+	evidenceID := strings.TrimSpace(req.EvidenceID)
+	if provider == "" || strings.TrimSpace(model) == "" || strings.IndexByte(model, 0) >= 0 ||
+		(req.Incomplete && evidenceID != "") || (!req.Incomplete && (evidenceID == "" || strings.IndexByte(evidenceID, 0) >= 0)) {
+		writeError(w, http.StatusBadRequest, "provider and model are required with either evidence_id or incomplete=true")
+		return
+	}
+	if req.Incomplete {
+		if err := h.Queries.MarkTaskUsageModelCallsUnknown(r.Context(), db.MarkTaskUsageModelCallsUnknownParams{
+			TaskID: task.ID, Provider: provider, Model: model,
+		}); err != nil {
+			slog.Warn("mark live task model-call usage unknown failed", "task_id", taskID, "model", model, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to store task usage evidence")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+	if err := h.Queries.InsertTaskUsageModelCallEvidence(r.Context(), db.InsertTaskUsageModelCallEvidenceParams{
+		TaskID:     task.ID,
+		Provider:   provider,
+		Model:      model,
+		EvidenceID: evidenceID,
+	}); err != nil {
+		slog.Warn("insert live task usage call evidence failed", "task_id", taskID, "model", model, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage evidence")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 

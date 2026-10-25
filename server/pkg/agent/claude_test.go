@@ -49,6 +49,42 @@ func TestClaudeHandleAssistantText(t *testing.T) {
 	}
 }
 
+func TestClaudeHandleAssistantReportsCallEvidence(t *testing.T) {
+	t.Parallel()
+
+	var gotModel, gotID string
+	var incompleteModel string
+	b := &claudeBackend{cfg: Config{
+		Logger: slog.Default(),
+		OnModelCallEvidence: func(model, evidenceID string) {
+			gotModel, gotID = model, evidenceID
+		},
+		OnModelCallEvidenceIncomplete: func(model string) {
+			incompleteModel = model
+		},
+	}}
+	msg := claudeSDKMessage{
+		Type: "assistant",
+		Message: mustMarshal(t, claudeMessageContent{
+			ID:    "msg-call-1",
+			Model: "claude-sonnet-4.5",
+			Usage: &claudeUsage{InputTokens: 10, OutputTokens: 2},
+		}),
+	}
+	b.handleAssistant(msg, make(chan Message, 1), make(map[string]TokenUsage), make(map[string]int64))
+	if gotModel != "claude-sonnet-4.5" || gotID != "msg-call-1" {
+		t.Fatalf("evidence callback = (%q, %q), want model and provider message ID", gotModel, gotID)
+	}
+	msg.Message = mustMarshal(t, claudeMessageContent{
+		Model: "claude-sonnet-4.5",
+		Usage: &claudeUsage{InputTokens: 1},
+	})
+	b.handleAssistant(msg, make(chan Message, 1), make(map[string]TokenUsage), make(map[string]int64))
+	if incompleteModel != "claude-sonnet-4.5" {
+		t.Fatalf("incomplete evidence callback = %q, want model", incompleteModel)
+	}
+}
+
 func TestClaudeHandleAssistantToolUse(t *testing.T) {
 	t.Parallel()
 
