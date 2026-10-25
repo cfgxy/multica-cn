@@ -1008,6 +1008,10 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, actorType, _ := h.legislationActor(w, r)
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	advisoryText := p.ClauseText
+	// The advisory service is best-effort but external; call it before opening
+	// the transaction so a slow response cannot hold the proposal row lock.
+	advisory := h.jevAdvisory().Assess(r.Context(), "submit", advisoryText).JSON()
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to submit proposal")
@@ -1030,6 +1034,19 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "only draft proposals can be submitted")
 		return
 	}
+	if p.ClauseText != advisoryText {
+		writeError(w, http.StatusConflict, "proposal changed while the advisory was running; retry submission")
+		return
+	}
+	if p.ChangeKind == "revise_clause" && p.ClauseID.Valid {
+		// Enact takes the same workspace clause-reference lock before reading
+		// or changing clause versions. This makes the captured baseline describe
+		// the state immediately following any in-flight enactment.
+		if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, workspaceID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to submit proposal")
+			return
+		}
+	}
 	baseline, err := h.captureClauseRevisionBaseline(r.Context(), qtx, workspaceID, p)
 	if err != nil {
 		writeError(w, http.StatusConflict, fmt.Sprintf("条款修订无法提交，已阻断：%v", err))
@@ -1039,10 +1056,6 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 	if baseline != nil {
 		extra = map[string]any{"revision_baseline": baseline}
 	}
-	// Warn-only precheck (RUYI-347): the clause text is judged before the
-	// row leaves draft. A disabled layer persists NULL (未检/关态); any fault
-	// degrades into the stored skip report and never fails the submit.
-	advisory := h.jevAdvisory().Assess(r.Context(), "submit", p.ClauseText).JSON()
 	submitted, err := qtx.SubmitPromptProposal(r.Context(), db.SubmitPromptProposalParams{
 		ID:          p.ID,
 		WorkspaceID: workspaceID,
@@ -1335,6 +1348,27 @@ func (h *Handler) EnactPromptProposal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context()) //nolint:errcheck
 	qtx := h.Queries.WithTx(tx)
+	p, err = qtx.GetPromptProposalForUpdate(r.Context(), db.GetPromptProposalForUpdateParams{
+		ID: p.ID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "proposal not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to enact proposal")
+		return
+	}
+	if p.Status != "approved" {
+		writeError(w, http.StatusConflict, "only an approved proposal can be enacted (approve is the normal path)")
+		return
+	}
+	target, targetErr := normalizeProposalEnactmentTarget(p.EnactmentTarget, p)
+	if targetErr != "" {
+		writeError(w, http.StatusConflict, targetErr)
+		return
+	}
+	p.EnactmentTarget = target
 
 	gateFailedAudit := legislationAudit("gate_failed", "member", userID, map[string]any{"path": "recovery"})
 	enactedAudit := legislationAudit("enacted", "member", userID, map[string]any{"path": "recovery"})
