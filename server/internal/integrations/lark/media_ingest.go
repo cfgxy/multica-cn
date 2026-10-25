@@ -35,6 +35,8 @@ type messageResourceStreamer interface {
 	DownloadMessageResourceStream(ctx context.Context, creds InstallationCredentials, p DownloadResourceParams) (DownloadedResourceStream, error)
 }
 
+const maxMediaResourcesPerMessage = 100
+
 type feishuMediaResolver struct {
 	api     APIClient
 	creds   CredentialsResolver
@@ -119,6 +121,7 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 			}
 		}
 	}
+	resources = dedupeMediaResources(resources)
 	// Share links ride the same ledger→download→upload→MediaRef chain
 	// (RUYI-572): scanned from the trigger's own text/post body and from
 	// the recent/quoted descriptors. Deduped across sources so a link
@@ -135,6 +138,12 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 		})...)
 	}
 	links = dedupeLinkResources(links)
+	if len(resources) > maxMediaResourcesPerMessage {
+		resources = resources[:maxMediaResourcesPerMessage]
+	}
+	if remaining := maxMediaResourcesPerMessage - len(resources); len(links) > remaining {
+		links = links[:remaining]
+	}
 	if len(resources) == 0 && len(links) == 0 {
 		return msg
 	}
@@ -298,6 +307,28 @@ type larkMediaResource struct {
 	mimeType  string
 	sizeBytes int64
 	messageID string
+}
+
+func dedupeMediaResources(resources []larkMediaResource) []larkMediaResource {
+	if len(resources) <= 1 {
+		return resources
+	}
+	type resourceKey struct {
+		messageID string
+		fetchType string
+		key       string
+	}
+	seen := make(map[resourceKey]struct{}, len(resources))
+	result := make([]larkMediaResource, 0, len(resources))
+	for _, resource := range resources {
+		key := resourceKey{messageID: resource.messageID, fetchType: resource.fetchType, key: resource.key}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, resource)
+	}
+	return result
 }
 
 // larkLinkResource is one share link harvested from message text, tagged

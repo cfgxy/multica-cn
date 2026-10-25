@@ -3,6 +3,7 @@ package lark
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -102,6 +103,47 @@ func TestEnrichMergeForwardImageBecomesAttachment(t *testing.T) {
 	}
 	if len(got.MediaRefs) != 2 || got.MediaRefs[0].Filename != "forwarded.png" || got.MediaRefs[1].Filename != "forwarded-post.png" {
 		t.Fatalf("MediaRefs = %+v, want both forwarded image attachments", got.MediaRefs)
+	}
+}
+
+func TestFeishuMediaResolver_DeduplicatesAcrossRecentAndForwardMedia(t *testing.T) {
+	sender := &fakeSender{downloaded: DownloadedResource{Data: []byte("image"), ContentType: "image/png"}}
+	storage := &fakeMediaStorage{}
+	ledger := &fakeMediaLedger{}
+	resolver := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, storage, ledger, newDiscardLogger(), nil)
+	media := EnrichedMediaMessage{MessageID: "om_image", MessageType: "image", Content: `{"image_key":"same_key"}`}
+	lm := InboundMessage{
+		MessageID:    "om_forward",
+		MessageType:  "merge_forward",
+		RecentMedia:  []EnrichedMediaMessage{media},
+		ForwardMedia: []EnrichedMediaMessage{media},
+	}
+
+	got := resolver.ResolveMedia(context.Background(), testMediaInstallation(t), engine.ResolvedIdentity{},
+		uuidFromString(t, "22222222-2222-2222-2222-222222222222"), uuidFromString(t, "33333333-3333-4333-8333-333333333333"), channelMessageFromLark(lm))
+	if len(sender.downloadCalls) != 1 || len(storage.uploads) != 1 || len(ledger.records) != 1 || len(got.MediaRefs) != 1 {
+		t.Fatalf("downloads=%d uploads=%d intents=%d refs=%d, want 1 each", len(sender.downloadCalls), len(storage.uploads), len(ledger.records), len(got.MediaRefs))
+	}
+}
+
+func TestFeishuMediaResolver_CapsTotalMediaResources(t *testing.T) {
+	sender := &fakeSender{downloaded: DownloadedResource{Data: []byte("image"), ContentType: "image/png"}}
+	storage := &fakeMediaStorage{}
+	ledger := &fakeMediaLedger{}
+	resolver := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, storage, ledger, newDiscardLogger(), nil)
+	lm := InboundMessage{MessageID: "om_forward", MessageType: "merge_forward"}
+	for i := 0; i < maxMediaResourcesPerMessage+1; i++ {
+		lm.ForwardMedia = append(lm.ForwardMedia, EnrichedMediaMessage{
+			MessageID: "om_image_" + strconv.Itoa(i), MessageType: "image",
+			Content: `{"image_key":"key_` + strconv.Itoa(i) + `"}`,
+		})
+	}
+
+	got := resolver.ResolveMedia(context.Background(), testMediaInstallation(t), engine.ResolvedIdentity{},
+		uuidFromString(t, "22222222-2222-2222-2222-222222222222"), uuidFromString(t, "33333333-3333-4333-8333-333333333333"), channelMessageFromLark(lm))
+	if len(sender.downloadCalls) != maxMediaResourcesPerMessage || len(storage.uploads) != maxMediaResourcesPerMessage ||
+		len(ledger.records) != maxMediaResourcesPerMessage || len(got.MediaRefs) != maxMediaResourcesPerMessage {
+		t.Fatalf("downloads=%d uploads=%d intents=%d refs=%d, want capped at %d", len(sender.downloadCalls), len(storage.uploads), len(ledger.records), len(got.MediaRefs), maxMediaResourcesPerMessage)
 	}
 }
 

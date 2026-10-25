@@ -100,9 +100,9 @@ type CardActionEvent struct {
 }
 
 // EnrichedMediaMessage is one media-bearing message the enricher surfaced
-// alongside the trigger — either a recent group message (RecentMedia) or
-// the quoted reply parent (QuotedMedia). Content is the raw msg_type-
-// specific JSON the media resolver parses for image_key/file_key.
+// alongside the trigger from recent context, a quoted parent, or a forwarded
+// child. Content is the raw msg_type-specific JSON the media resolver parses
+// for image_key/file_key.
 type EnrichedMediaMessage struct {
 	MessageID   string
 	MessageType string
