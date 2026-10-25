@@ -182,7 +182,7 @@ export interface CreatePromptQuizBatchRequest {
 /** What a batch order actually did. */
 export interface PromptQuizBatchCreateResponse {
   batch_id: string;
-  ordered: number;
+  ordered?: number;
   refused_agents?: { agent_id: string; reason: string }[];
 }
 
