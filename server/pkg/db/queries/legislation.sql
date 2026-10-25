@@ -77,6 +77,11 @@ WHERE prompt_proposal.id = @id AND prompt_proposal.workspace_id = @workspace_id
   AND prompt_proposal.status = 'draft'
 RETURNING *;
 
+-- name: GetPromptProposalForUpdate :one
+SELECT * FROM prompt_proposal
+WHERE id = @id AND workspace_id = @workspace_id
+FOR UPDATE;
+
 -- name: ApprovePromptProposal :one
 -- pending_owner → approved. The caller runs the gate and either enacts or
 -- gate-fails the row inside the same transaction; this transition alone
