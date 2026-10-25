@@ -9,6 +9,7 @@ import type { PromptQuizBaseline, PromptQuizSampleRow } from "@multica/core/type
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { QuizGradedPanel } from "./quiz-graded-panel";
+import { writeQuizBatch } from "./quiz-session";
 
 const api = vi.hoisted(() => ({
   createPromptQuizBatch: vi.fn(),
