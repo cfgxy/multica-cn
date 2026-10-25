@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,80 @@ func TestCredentialCapabilityForConnectorSelectsOnlyMatchingUniqueCapability(t *
 	if _, ok := credentialCapabilityForConnector(capabilities, "connector-b"); ok {
 		t.Fatal("ambiguous connector capabilities must fail closed")
 	}
+}
+
+func TestResolveCredentialCapabilitySendsRPCAfterClaimExpiry(t *testing.T) {
+	client := newWSRPCClient(time.Second)
+	sessionKey, err := credentialcrypto.NewSessionKey()
+	if err != nil {
+		t.Fatal("generate session key")
+	}
+	client.setSessionKey(sessionKey)
+
+	const taskID = "task-1"
+	const workspaceID = "workspace-1"
+	const daemonID = "daemon-1"
+	const connectorID = "connector-1"
+	const connectorRevision = int64(2)
+	envelopeExpiresAt := time.Now().UTC().Add(30 * time.Second)
+	aad, err := json.Marshal(struct {
+		TaskID            string    `json:"task_id"`
+		WorkspaceID       string    `json:"workspace_id"`
+		DaemonID          string    `json:"daemon_id"`
+		ConnectorID       string    `json:"connector_id"`
+		ConnectorRevision int64     `json:"connector_revision"`
+		ExpiresAt         time.Time `json:"expires_at"`
+	}{taskID, workspaceID, daemonID, connectorID, connectorRevision, envelopeExpiresAt})
+	if err != nil {
+		t.Fatal("marshal execution AAD")
+	}
+	sealed, err := credentialcrypto.SealForSession(sessionKey.PublicKey().Bytes(), []byte("synthetic-credential"), aad)
+	if err != nil {
+		t.Fatal("seal execution envelope")
+	}
+	responseBody, err := json.Marshal(map[string]any{
+		"envelope": sealed, "expires_at": envelopeExpiresAt,
+	})
+	if err != nil {
+		t.Fatal("marshal resolve response")
+	}
+	var resolveCalls int
+	generation := client.attach(func(frame []byte) (*wsOutbound, error) {
+		var message protocol.Message
+		if err := json.Unmarshal(frame, &message); err != nil {
+			return nil, err
+		}
+		var request protocol.RPCRequestPayload
+		if err := json.Unmarshal(message.Payload, &request); err != nil {
+			return nil, err
+		}
+		if request.Method != "credentials.resolve" {
+			t.Errorf("method = %q, want credentials.resolve", request.Method)
+		}
+		resolveCalls++
+		go client.deliver(protocol.RPCResponsePayload{
+			RequestID: request.RequestID,
+			Status:    http.StatusOK,
+			Body:      responseBody,
+		})
+		return &wsOutbound{data: frame}, nil
+	})
+	client.markRPCV1Supported(generation)
+	daemon := &Daemon{cfg: Config{DaemonID: daemonID}, wsRPC: client}
+	task := &Task{ID: taskID, WorkspaceID: workspaceID}
+	capability := CredentialCapability{
+		Capability: "opaque-capability", ConnectorID: connectorID, ConnectorRevision: connectorRevision,
+		ExpiresAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano),
+	}
+
+	plaintext, err := daemon.resolveCredentialCapability(context.Background(), task, capability)
+	if err != nil || string(plaintext) != "synthetic-credential" {
+		t.Fatalf("resolve expired claim capability = %q, %v; want credential from server", plaintext, err)
+	}
+	if resolveCalls != 1 {
+		t.Fatalf("resolve RPC calls = %d, want 1", resolveCalls)
+	}
+	zeroCredentialBytes(plaintext)
 }
 
 func TestWSRPCSessionKeyIsAvailableOnlyOnActiveConnection(t *testing.T) {

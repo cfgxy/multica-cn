@@ -422,6 +422,10 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 	secondResolveBody, _ := json.Marshal(credentialResolveRequest{
 		Capability: secondCapability.Capability, ConnectorID: secondConnectorID, ConnectorRevision: 1,
 	})
+	secondCapabilityHash := sha256.Sum256([]byte(secondCapability.Capability))
+	if _, err := testPool.Exec(ctx, `UPDATE credential_capability SET expires_at = now() - interval '1 minute' WHERE capability_hash = $1`, secondCapabilityHash[:]); err != nil {
+		t.Fatal("expire unused capability before first resolve")
+	}
 	secondStatus, secondBody, secondResolveErr := h.DaemonRPCHandler(ctx, identity, "credentials.resolve", secondResolveBody)
 	if secondStatus != http.StatusOK || secondResolveErr != nil {
 		t.Fatalf("second connector resolve status=%d err=%v body=%s", secondStatus, secondResolveErr, secondBody)
