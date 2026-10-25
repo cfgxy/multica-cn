@@ -2566,6 +2566,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Put("/model-config", h.PutSelfEvolutionModelConfig)
 				r.Delete("/model-config", h.DeleteSelfEvolutionModelConfig)
 				r.Post("/model-config/validate", h.ValidateSelfEvolutionModelConfig)
+				r.Post("/model-config/models", h.ListSelfEvolutionModelConfigModels)
 			})
 		})
 
