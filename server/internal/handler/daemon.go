@@ -2190,13 +2190,12 @@ func (h *Handler) rejectClaimOnWorkspaceMismatch(ctx context.Context, task *db.A
 	}
 }
 
-// quickCreateAttachmentMetas loads the attachment rows behind a quick-create
-// context's attachment ids so the delegated create-run can inline pasted
-// images into the new issue's description (RUYI-478). MarkdownURL follows
-// the same buildMarkdownURL contract as the attachment API responses —
-// durable, no TTL — because quick-create runs cannot call
-// `multica attachment download`. Strictly additive: an id that no longer
-// resolves, a workspace parse failure, or a query error degrades to omitting
+// quickCreateAttachmentMetas loads attachment metadata for a quick-create
+// context. The create-run uses filenames and content types as context; the
+// attachment IDs are bound when the issue is created, not inlined into its
+// description. MarkdownURL follows the same buildMarkdownURL contract as the
+// attachment API responses — durable, no TTL. Strictly additive: an id that
+// no longer resolves, a workspace parse failure, or a query error degrades to omitting
 // the meta (binding via the raw ids is unaffected), never to a failed claim.
 func (h *Handler) quickCreateAttachmentMetas(ctx context.Context, ids []string, workspaceID string) []QuickCreateAttachmentMeta {
 	if len(ids) == 0 {
@@ -3393,10 +3392,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.QuickCreatePriority = qc.Priority
 			resp.QuickCreateDueDate = qc.DueDate
 			resp.QuickCreateAttachmentIDs = append([]string(nil), qc.AttachmentIDs...)
-			// RUYI-478: surface the full attachment rows (filename + durable
-			// markdown URL) so the delegated create-run can inline pasted
-			// images into the description instead of leaving them invisible
-			// outside the attachment area. Degradation only: a lookup
+			// Surface attachment metadata so the delegated create-run can
+			// understand the uploaded files without repeating them in the
+			// description. Degradation only: a lookup
 			// failure keeps the ids (binding never regresses), the meta is
 			// simply absent.
 			resp.QuickCreateAttachments = h.quickCreateAttachmentMetas(r.Context(), qc.AttachmentIDs, qc.WorkspaceID)

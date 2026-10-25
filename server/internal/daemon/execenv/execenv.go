@@ -205,8 +205,8 @@ type TaskContextForEnv struct {
 	QuickCreatePrompt       string // non-empty for quick-create tasks
 	// QuickCreateAttachments carries the uploaded attachment rows. issue_context.md
 	// exposes filenames and content types for context, but does not repeat them
-	// in the description because the issue already binds them. Task-static: safe
-	// for the prompt-cache prefix.
+	// in the description; the IDs are bound by the issue-create call. Task-static:
+	// safe for the prompt-cache prefix.
 	QuickCreateAttachments []QuickCreateAttachmentForEnv
 	QuizPrompt             string // item under test for prompt-quiz runs; rendered verbatim into the prompt and issue_context.md
 	RetrospectivePrompt    string // daily-retrospective window prompt (RUYI-552 direction 3); rendered verbatim into the prompt and issue_context.md

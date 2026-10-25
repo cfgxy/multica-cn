@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/multica-ai/multica/server/internal/daemon/promptutil"
 	skillpkg "github.com/multica-ai/multica/server/internal/skill"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"gopkg.in/yaml.v3"
@@ -1166,15 +1167,14 @@ func renderQuickCreateContext(ctx TaskContextForEnv) string {
 	b.WriteString("# Quick Create\n\n")
 	b.WriteString("**Trigger:** Quick-create modal\n\n")
 	b.WriteString("## User input\n\n")
-	b.WriteString("> ")
-	b.WriteString(ctx.QuickCreatePrompt)
-	b.WriteString("\n\n")
+	b.WriteString(promptutil.QuoteMarkdownLines(ctx.QuickCreatePrompt))
+	b.WriteString("\n")
 
-	// Uploaded attachments are already bound to the issue. Surface their names
-	// for context without duplicating them in the generated description.
+	// Attachment IDs are bound when the issue is created. Surface filenames for
+	// context without duplicating the attachments in the generated description.
 	if len(ctx.QuickCreateAttachments) > 0 {
 		b.WriteString("## 原始附件\n\n")
-		b.WriteString("已上传附件（随新任务自动绑定）：\n\n")
+		b.WriteString("已上传附件（创建新任务时自动关联）：\n\n")
 		for _, a := range ctx.QuickCreateAttachments {
 			fmt.Fprintf(&b, "- 文件名=%q，类型=%s\n", a.Filename, a.ContentType)
 		}

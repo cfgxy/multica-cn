@@ -228,9 +228,9 @@ type ChatAttachmentMeta struct {
 }
 
 // QuickCreateAttachmentMeta mirrors the server-side quick-create attachment
-// row behind QuickCreateAttachmentIDs. Quick-create attachments are already
-// bound to the created issue; the prompt uses filenames and content types for
-// context but does not repeat their URLs in the description.
+// row behind QuickCreateAttachmentIDs. The IDs are bound when the issue is
+// created; the prompt uses filenames and content types for context but does
+// not repeat their URLs in the description.
 type QuickCreateAttachmentMeta struct {
 	ID          string `json:"id"`
 	Filename    string `json:"filename"`
