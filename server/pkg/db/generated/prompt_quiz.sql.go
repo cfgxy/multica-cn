@@ -863,6 +863,43 @@ func (q *Queries) ListPromptQuizItemDiscrimination(ctx context.Context, workspac
 	return items, nil
 }
 
+const listPromptQuizItemTitles = `-- name: ListPromptQuizItemTitles :many
+SELECT id, title
+FROM prompt_quiz_item
+WHERE workspace_id = $1::uuid
+  AND id = ANY($2::uuid[])
+`
+
+type ListPromptQuizItemTitlesParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+type ListPromptQuizItemTitlesRow struct {
+	ID    pgtype.UUID `json:"id"`
+	Title string      `json:"title"`
+}
+
+func (q *Queries) ListPromptQuizItemTitles(ctx context.Context, arg ListPromptQuizItemTitlesParams) ([]ListPromptQuizItemTitlesRow, error) {
+	rows, err := q.db.Query(ctx, listPromptQuizItemTitles, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPromptQuizItemTitlesRow{}
+	for rows.Next() {
+		var i ListPromptQuizItemTitlesRow
+		if err := rows.Scan(&i.ID, &i.Title); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPromptQuizItems = `-- name: ListPromptQuizItems :many
 SELECT
     id,

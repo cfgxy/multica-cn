@@ -3225,6 +3225,7 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 	for i, t := range tasks {
 		resp[i] = taskToResponse(t, workspaceID)
 	}
+	h.hydrateQuizItemTitles(r.Context(), workspaceID, resp)
 	// RUYI-397/700: same admission decoration as the execution-log read — a
 	// queued row whose agent's bound runtime sits under a fresh backpressure
 	// hold carries the reason, so the mobile task history renders "waiting
@@ -3506,6 +3507,7 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 		}
 		resp = append(resp, taskToResponse(t, workspaceID))
 	}
+	h.hydrateQuizItemTitles(r.Context(), workspaceID, resp)
 	// RUYI-700: the mobile task history renders active queued rows straight
 	// from this snapshot, so apply the same backpressure decoration as the
 	// list reads — otherwise those queued rows stall silently.
@@ -3513,4 +3515,59 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// hydrateQuizItemTitles fills presentation metadata missing from older quiz
+// task contexts. The item read is workspace-scoped and failures leave the
+// persisted item identity intact without inventing a title.
+func (h *Handler) hydrateQuizItemTitles(ctx context.Context, workspaceID string, tasks []AgentTaskResponse) {
+	workspaceUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return
+	}
+	itemIDs := make([]pgtype.UUID, 0, len(tasks))
+	seen := make(map[pgtype.UUID]struct{}, len(tasks))
+	for i := range tasks {
+		task := &tasks[i]
+		if task.Kind != promptquiz.TaskKind || task.QuizItemTitle != "" || task.QuizItemID == "" {
+			continue
+		}
+		itemUUID, err := util.ParseUUID(task.QuizItemID)
+		if err != nil {
+			continue
+		}
+		if _, ok := seen[itemUUID]; !ok {
+			itemIDs = append(itemIDs, itemUUID)
+			seen[itemUUID] = struct{}{}
+		}
+	}
+	if len(itemIDs) == 0 {
+		return
+	}
+	items, err := h.Queries.ListPromptQuizItemTitles(ctx, db.ListPromptQuizItemTitlesParams{
+		WorkspaceID: workspaceUUID,
+		Ids:         itemIDs,
+	})
+	if err != nil {
+		return
+	}
+	titles := make(map[string]string, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.Title) != "" {
+			titles[uuidToString(item.ID)] = item.Title
+		}
+	}
+	for i := range tasks {
+		task := &tasks[i]
+		if task.Kind != promptquiz.TaskKind || task.QuizItemTitle != "" {
+			continue
+		}
+		itemUUID, err := util.ParseUUID(task.QuizItemID)
+		if err != nil {
+			continue
+		}
+		if title := titles[uuidToString(itemUUID)]; title != "" {
+			task.QuizItemTitle = title
+		}
+	}
 }
