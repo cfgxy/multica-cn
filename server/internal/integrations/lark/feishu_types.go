@@ -41,8 +41,8 @@ type InboundMessage struct {
 	// /new must NOT inherit), quoted media is explicitly attached by the
 	// user and survives a fresh-session start.
 	QuotedMedia []EnrichedMediaMessage
-	// ForwardMedia carries images from the visible direct children of a
-	// merge_forward message for the media resolver to attach to this turn.
+	// ForwardMedia carries images from visible direct children of a
+	// merge_forward message, including images embedded in post messages.
 	ForwardMedia []EnrichedMediaMessage
 	// ForceFreshSession marks this dispatch as a one-off fresh start: the
 	// daemon should skip prior session resume when it claims the resulting

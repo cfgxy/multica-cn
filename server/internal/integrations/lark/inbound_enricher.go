@@ -280,6 +280,11 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 		}()
 	}
 	fetches.Wait()
+	var visibleForwardChildren []LarkMessage
+	var forwardChildCount, truncatedForwardChildren int
+	if isForward && forwardErr == nil {
+		visibleForwardChildren, forwardChildCount, truncatedForwardChildren = forwardedChildren(forwardItems, msg.MessageID, e.maxForwardChildren)
+	}
 
 	if wantRecent {
 		if recentErr != nil {
@@ -333,9 +338,10 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 			e.hints.ObserveDenied(ctx, creds, msg.ChatID, CapabilityReadHistory, forwardErr)
 		} else {
 			e.hints.ObserveSuccess(creds.AppID, msg.ChatID, CapabilityReadHistory)
-			for _, child := range forwardedChildren(forwardItems, msg.MessageID, e.maxForwardChildren) {
-				if child.Deleted || child.MessageType != "image" || child.MessageID == "" ||
-					!messageCarriesMediaOrLinks(InboundMessage{MessageID: child.MessageID, MessageType: child.MessageType, Content: child.Content}) {
+			for _, child := range visibleForwardChildren {
+				childMessage := InboundMessage{MessageID: child.MessageID, MessageType: child.MessageType, Content: child.Content}
+				if child.Deleted || (child.MessageType != "image" && child.MessageType != "post") || child.MessageID == "" ||
+					!messageHasImageResource(childMessage) {
 					continue
 				}
 				msg.ForwardMedia = append(msg.ForwardMedia, EnrichedMediaMessage{
@@ -383,7 +389,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 			e.logger.Warn("lark enricher: forward fetch failed", "message_id", msg.MessageID, "err", forwardErr)
 			core = forwardedErrorBlock()
 		} else {
-			core = e.renderForwardedItems(forwardItems, msg.MessageID, names)
+			core = e.renderForwardedChildren(visibleForwardChildren, forwardChildCount, truncatedForwardChildren, names)
 		}
 	} else {
 		core = msg.Body
@@ -827,6 +833,10 @@ func feishuShareLinkNote(text string) string {
 // fan-out on the ACK-latency-sensitive inbound path stays bounded.
 func (e *inboundEnricher) renderForwardedItems(items []LarkMessage, forwardID string, names map[string]string) string {
 	children, total, truncated := forwardedChildren(items, forwardID, e.maxForwardChildren)
+	return e.renderForwardedChildren(children, total, truncated, names)
+}
+
+func (e *inboundEnricher) renderForwardedChildren(children []LarkMessage, total, truncated int, names map[string]string) string {
 	if total == 0 {
 		return "<forwarded_messages count=\"0\">\n[no forwarded content available]\n</forwarded_messages>"
 	}

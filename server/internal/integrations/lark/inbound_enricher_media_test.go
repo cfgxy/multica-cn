@@ -60,6 +60,8 @@ func TestEnrichMergeForwardImageBecomesAttachment(t *testing.T) {
 		{MessageID: "om_forward", MessageType: "merge_forward", Content: `{"content":"Merged and Forwarded Message"}`},
 		{MessageID: "om_image", MessageType: "image", Content: `{"image_key":"key_forward_image"}`,
 			SenderID: "ou_sender", SenderType: "user", CreateTime: "1000"},
+		{MessageID: "om_post", MessageType: "post", Content: `{"content":[[{"tag":"img","image_key":"key_post_image"},{"tag":"media","file_key":"key_post_video"}]]}`,
+			SenderID: "ou_sender", SenderType: "user", CreateTime: "2000"},
 	}
 	trigger := InboundMessage{
 		MessageID: "om_forward", MessageType: "merge_forward", ChatID: "oc_group",
@@ -67,12 +69,14 @@ func TestEnrichMergeForwardImageBecomesAttachment(t *testing.T) {
 	}
 
 	enriched := enrich(t, fake, trigger, groupCfg())
-	if len(enriched.ForwardMedia) != 1 || enriched.ForwardMedia[0].MessageID != "om_image" {
+	if len(enriched.ForwardMedia) != 2 || enriched.ForwardMedia[0].MessageID != "om_image" || enriched.ForwardMedia[1].MessageID != "om_post" {
 		t.Fatalf("ForwardMedia = %+v, want forwarded child image descriptor", enriched.ForwardMedia)
 	}
 
 	sender := &fakeSender{downloadedByKey: map[string]DownloadedResource{
 		"key_forward_image": {Data: []byte("image"), ContentType: "image/png", Filename: "forwarded.png"},
+		"key_post_image":    {Data: []byte("post image"), ContentType: "image/png", Filename: "forwarded-post.png"},
+		"key_post_video":    {Data: []byte("video"), ContentType: "video/mp4", Filename: "forwarded.mp4"},
 	}}
 	storage := &fakeMediaStorage{}
 	ledger := &fakeMediaLedger{}
@@ -84,13 +88,20 @@ func TestEnrichMergeForwardImageBecomesAttachment(t *testing.T) {
 
 	got := media.ResolveMedia(context.Background(), testMediaInstallation(t), engine.ResolvedIdentity{},
 		uuidFromString(t, "22222222-2222-2222-2222-222222222222"), uuidFromString(t, "33333333-3333-4333-8333-333333333333"), message)
-	if len(sender.downloadCalls) != 1 || sender.downloadCalls[0] != (DownloadResourceParams{
-		MessageID: "om_image", FileKey: "key_forward_image", Type: "image",
-	}) {
+	wantDownloads := map[string]DownloadResourceParams{
+		"key_forward_image": {MessageID: "om_image", FileKey: "key_forward_image", Type: "image"},
+		"key_post_image":    {MessageID: "om_post", FileKey: "key_post_image", Type: "image"},
+	}
+	if len(sender.downloadCalls) != len(wantDownloads) {
 		t.Fatalf("forwarded image download = %+v", sender.downloadCalls)
 	}
-	if len(got.MediaRefs) != 1 || got.MediaRefs[0].Filename != "forwarded.png" {
-		t.Fatalf("MediaRefs = %+v, want forwarded image attachment", got.MediaRefs)
+	for _, call := range sender.downloadCalls {
+		if call != wantDownloads[call.FileKey] {
+			t.Errorf("forwarded image download = %+v, want %+v", call, wantDownloads[call.FileKey])
+		}
+	}
+	if len(got.MediaRefs) != 2 || got.MediaRefs[0].Filename != "forwarded.png" || got.MediaRefs[1].Filename != "forwarded-post.png" {
+		t.Fatalf("MediaRefs = %+v, want both forwarded image attachments", got.MediaRefs)
 	}
 }
 

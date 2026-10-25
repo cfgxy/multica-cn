@@ -110,9 +110,14 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 		})...)
 	}
 	for _, forwarded := range lm.ForwardMedia {
-		resources = append(resources, mediaResourcesFromMessage(InboundMessage{
+		forwardedResources := mediaResourcesFromMessage(InboundMessage{
 			MessageID: forwarded.MessageID, MessageType: forwarded.MessageType, Content: forwarded.Content,
-		})...)
+		})
+		for _, resource := range forwardedResources {
+			if resource.fetchType == "image" {
+				resources = append(resources, resource)
+			}
+		}
 	}
 	// Share links ride the same ledger→download→upload→MediaRef chain
 	// (RUYI-572): scanned from the trigger's own text/post body and from
@@ -568,6 +573,15 @@ func mediaResourcesFromMessage(lm InboundMessage) []larkMediaResource {
 	default:
 		return nil
 	}
+}
+
+func messageHasImageResource(lm InboundMessage) bool {
+	for _, resource := range mediaResourcesFromMessage(lm) {
+		if resource.fetchType == "image" {
+			return true
+		}
+	}
+	return false
 }
 
 func mediaResourcesFromPost(lm InboundMessage) []larkMediaResource {
