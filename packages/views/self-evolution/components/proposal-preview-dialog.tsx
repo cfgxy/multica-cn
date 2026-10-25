@@ -52,6 +52,7 @@ export function ProposalPreviewDialog({
 }) {
   const { t } = useT("self-evolution");
   const [previews, setPreviews] = useState<PromptProposalPreview[] | null>(null);
+  const [previewTargetKey, setPreviewTargetKey] = useState<string | null>(null);
   const [loadError, setLoadError] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   // Per-proposal landing target; an absent entry means the default library
@@ -67,6 +68,7 @@ export function ProposalPreviewDialog({
   useEffect(() => {
     setConfirmed(false);
     setPreviews(null);
+    setPreviewTargetKey(null);
     setLoadError("");
     setTargetOverrides({});
   }, [open, key]);
@@ -74,7 +76,7 @@ export function ProposalPreviewDialog({
   useEffect(() => {
     if (!open || ids.length === 0) return;
     setConfirmed(false);
-    setPreviews(null);
+    setPreviewTargetKey(null);
     setLoadError("");
     let alive = true;
     Promise.all(
@@ -83,7 +85,10 @@ export function ProposalPreviewDialog({
       ),
     )
       .then((all) => {
-        if (alive) setPreviews(all);
+        if (alive) {
+          setPreviews(all);
+          setPreviewTargetKey(targetKey);
+        }
       })
       .catch((e: unknown) => {
         if (alive) setLoadError(clientErrorMessage(e) ?? t(($) => $.legislation.diffLoadError));
@@ -94,7 +99,8 @@ export function ProposalPreviewDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, key, targetKey]);
 
-  const loaded = previews != null;
+  const currentPreviews = previewTargetKey === targetKey ? previews : null;
+  const loaded = currentPreviews != null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -107,14 +113,14 @@ export function ProposalPreviewDialog({
           <div className="text-destructive text-body" data-testid="proposal-preview-error">
             {loadError}
           </div>
-        ) : !loaded ? (
+        ) : currentPreviews == null ? (
           <div className="flex flex-col gap-3" data-testid="proposal-preview-loading">
             <div className="text-muted-foreground text-body">{t(($) => $.legislation.batchLoading)}</div>
             <Skeleton className="h-24 w-full" />
           </div>
         ) : (
           <div className="flex flex-col gap-4" data-testid="proposal-preview-diffs">
-            {previews.map((p, i) => (
+            {currentPreviews.map((p, i) => (
               <div key={p.proposal.id} className="grid gap-1">
                 <div className="text-body font-medium">
                   {i + 1}. {p.proposal.clause_name}
@@ -128,10 +134,10 @@ export function ProposalPreviewDialog({
                     {t(($) => $.legislation.diffEmpty)}
                   </div>
                 ) : null}
-                {/* RUYI-858 landing target: move/migrate kinds are library-only,
-                    the static option is absent for them (the server rejects
-                    them with a 400 regardless). */}
-                {p.proposal.change_kind === "move_clause" || p.proposal.change_kind === "migrate_clause" ? (
+                {/* Structured revisions and move/migrate proposals are library-only. */}
+                {p.proposal.change_kind === "move_clause" ||
+                p.proposal.change_kind === "migrate_clause" ||
+                (p.proposal.change_kind === "revise_clause" && Boolean(p.proposal.clause_id)) ? (
                   <div className="text-muted-foreground text-caption">
                     {t(($) => $.legislation.enactmentTargetLabel)}:{" "}
                     {t(($) => $.legislation.enactmentTargetOptions.clause_library)}
@@ -202,8 +208,12 @@ export function ProposalPreviewDialog({
               // Move/migrate rows are library-only; send an explicit target
               // per previewed id so the batch path has no silent defaults.
               const targets: Record<string, "clause_library" | "static_prompt"> = {};
-              for (const p of previews ?? []) {
-                if (p.proposal.change_kind === "move_clause" || p.proposal.change_kind === "migrate_clause") {
+              for (const p of currentPreviews ?? []) {
+                if (
+                  p.proposal.change_kind === "move_clause" ||
+                  p.proposal.change_kind === "migrate_clause" ||
+                  (p.proposal.change_kind === "revise_clause" && Boolean(p.proposal.clause_id))
+                ) {
                   targets[p.proposal.id] = "clause_library";
                 } else {
                   targets[p.proposal.id] = targetOverrides[p.proposal.id] ?? "clause_library";

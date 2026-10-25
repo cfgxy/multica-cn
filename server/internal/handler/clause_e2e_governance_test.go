@@ -12,6 +12,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -120,17 +121,131 @@ func TestClauseReviseEnactsNextVersion(t *testing.T) {
 	if since != 2 {
 		t.Fatalf("binding since_clause_version = %d, want 2", since)
 	}
-	var context string
-	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&context)
-	if !strings.Contains(context, "回报当日计划、阻塞与预计完成时间") ||
-		!strings.Contains(context, "rev=2") {
-		t.Fatalf("carrier not re-rendered at rev 2:\n%s", context)
+	var carrierContext string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrierContext)
+	if !strings.Contains(carrierContext, "回报当日计划、阻塞与预计完成时间") ||
+		!strings.Contains(carrierContext, "rev=2") {
+		t.Fatalf("carrier not re-rendered at rev 2:\n%s", carrierContext)
 	}
 	var enactedVersion int
 	dbfx.QueryRow(t, `SELECT enacted_version FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`,
 		f.wsID, id).Scan(&enactedVersion)
 	if enactedVersion != 2 {
 		t.Fatalf("proposal enacted_version = %d, want 2", enactedVersion)
+	}
+
+	taskID, claimedContext := enqueueAndClaim(t, f)
+	if !strings.Contains(claimedContext, "rev=2") || !strings.Contains(claimedContext, "回报当日计划、阻塞与预计完成时间") {
+		t.Fatalf("new claim did not receive revised clause v2:\n%s", claimedContext)
+	}
+	var injectedVersion int32
+	var degraded bool
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT clause_version, degraded FROM clause_injection WHERE task_id = $1 AND clause_id = $2`, taskID, clauseID).
+		Scan(&injectedVersion, &degraded); err != nil {
+		t.Fatalf("new claim left no clause_injection evidence: %v", err)
+	}
+	if injectedVersion != 2 || degraded {
+		t.Fatalf("new claim injection = v%d degraded=%v, want v2 and non-degraded", injectedVersion, degraded)
+	}
+}
+
+func TestClauseReviseExtendsCurrentV2(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	v2 := "- **每日同步**：成员开工前回报计划与阻塞。"
+	first := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", v2, nil))
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, first); code != http.StatusOK {
+		t.Fatalf("revise to v2: expected 200, got %d: %s", code, body)
+	}
+
+	v3 := "- **每日同步**：成员开工前回报计划、阻塞和预计完成时间。"
+	second := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", v3, nil))
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, second); code != http.StatusOK {
+		t.Fatalf("revise from v2: expected 200, got %d: %s", code, body)
+	}
+
+	var v2Content, v3Content string
+	dbfx.QueryRow(t, `SELECT content FROM clause_version WHERE clause_id = $1 AND version = 2`, clauseID).Scan(&v2Content)
+	dbfx.QueryRow(t, `SELECT content FROM clause_version WHERE clause_id = $1 AND version = 3`, clauseID).Scan(&v3Content)
+	if v2Content != v2 || v3Content != v3 {
+		t.Fatalf("version history = v2 %q, v3 %q; want both sequential revisions preserved", v2Content, v3Content)
+	}
+}
+
+func TestClauseReviseRejectsStaleConcurrentProposal(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	firstText := "- **每日同步**：先批准的修订内容。"
+	secondText := "- **每日同步**：基于旧版本提交的并发修订。"
+	first := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", firstText, nil))
+	second := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", secondText, nil))
+
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, first); code != http.StatusOK {
+		t.Fatalf("first concurrent revision: expected 200, got %d: %s", code, body)
+	}
+	code, preview := legislationCall(t, testHandler.PreviewPromptProposal,
+		legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+second+"/preview", nil, "id", second))
+	if code != http.StatusConflict || !strings.Contains(preview, "版本") {
+		t.Fatalf("stale concurrent preview = %d: %s, want conflict mentioning version", code, preview)
+	}
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, second); code == http.StatusOK || !strings.Contains(body, "版本") {
+		t.Fatalf("stale concurrent approval = %d: %s, want a version conflict", code, body)
+	}
+
+	var count int
+	var latest string
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&count)
+	dbfx.QueryRow(t, `SELECT content FROM clause_version WHERE clause_id = $1 ORDER BY version DESC LIMIT 1`, clauseID).Scan(&latest)
+	if count != 2 || latest != firstText {
+		t.Fatalf("stale proposal changed clause history: versions=%d latest=%q", count, latest)
+	}
+}
+
+func TestClauseReviseRollsBackWhenCarrierRerenderFails(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	var carrierBefore string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrierBefore)
+	proposal := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步",
+		"- **每日同步**：触发重渲染失败的修订。", nil))
+
+	suffix := fmt.Sprintf("cinj%d", clauseInjectionSeq)
+	functionName := "ruyi880_fail_prompt_version_" + suffix
+	triggerName := "ruyi880_fail_prompt_version_trg_" + suffix
+	if _, err := testPool.Exec(context.Background(), fmt.Sprintf(`
+CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF NEW.workspace_id = '%s'::uuid AND NEW.change_note = '条款渲染快照重建' THEN
+        RAISE EXCEPTION 'injected clause carrier re-render failure';
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+CREATE TRIGGER %s BEFORE INSERT ON prompt_version
+FOR EACH ROW EXECUTE FUNCTION %s();`, functionName, f.wsID, triggerName, functionName)); err != nil {
+		t.Fatalf("install isolated re-render failure trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		_, _ = testPool.Exec(ctx, fmt.Sprintf(`DROP TRIGGER IF EXISTS %s ON prompt_version`, triggerName))
+		_, _ = testPool.Exec(ctx, fmt.Sprintf(`DROP FUNCTION IF EXISTS %s()`, functionName))
+	})
+
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, proposal); code == http.StatusOK {
+		t.Fatalf("approval succeeded despite injected post-asset failure: %s", body)
+	}
+	var versionCount, activeVersion int
+	var carrierAfter string
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&versionCount)
+	dbfx.QueryRow(t, `SELECT since_clause_version FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&activeVersion)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrierAfter)
+	if versionCount != 1 || activeVersion != 1 || carrierAfter != carrierBefore {
+		t.Fatalf("failed re-render left partial state: versions=%d active_version=%d carrier_changed=%v",
+			versionCount, activeVersion, carrierAfter != carrierBefore)
+	}
+	if status := proposalStatus(t, f.wsID, proposal); status != "pending_owner" {
+		t.Fatalf("proposal status after rolled-back write = %q, want pending_owner", status)
 	}
 }
 

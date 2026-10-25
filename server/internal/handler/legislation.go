@@ -313,9 +313,9 @@ func mustJSON(v any) []byte {
 // or gate_failed (report stored), all inside the caller's transaction. The
 // response for a gate failure is written by the caller from the returned
 // result.
-func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, gateFailedAudit, enactedAudit []byte) (bool, legislation.Result) {
+func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, gateFailedAudit, enactedAudit []byte) (bool, bool, legislation.Result) {
 	if err := lockClauseReferenceWorkspaceTx(ctx, qtx, workspaceID); err != nil {
-		return false, errorResult(fmt.Errorf("条款引用 workspace 锁获取失败: %w", err))
+		return false, true, errorResult(fmt.Errorf("条款引用 workspace 锁获取失败: %w", err))
 	}
 
 	// Carrier references this enactment touches: plain proposals touch one,
@@ -324,7 +324,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	isMove := p.ChangeKind == "move_clause"
 	if isMove {
 		if !p.MoveToScope.Valid || !p.MoveToScopeID.Valid {
-			return false, errorResult(errors.New("move_clause 提案缺少目标载体"))
+			return false, true, errorResult(errors.New("move_clause 提案缺少目标载体"))
 		}
 		refs = append(refs, carrierRef{scope: p.MoveToScope.String, id: p.MoveToScopeID})
 		sort.Slice(refs, func(i, j int) bool {
@@ -343,11 +343,11 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	for _, ref := range refs {
 		current, err := lockScopeEntityResult(ctx, qtx, promptVersionScope(ref.scope), workspaceID, ref.id)
 		if err != nil {
-			return false, errorResult(errors.New("carrier not found in this workspace"))
+			return false, true, errorResult(errors.New("carrier not found in this workspace"))
 		}
 		baseline, err := ensureBaselineTx(ctx, qtx, workspaceID, promptVersionScope(ref.scope), ref.id, current)
 		if err != nil {
-			return false, errorResult(fmt.Errorf("结构基线读取失败: %w", err))
+			return false, true, errorResult(fmt.Errorf("结构基线读取失败: %w", err))
 		}
 		texts[ref] = current
 		baselines[ref] = baseline
@@ -400,7 +400,8 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	}
 
 	if !res.OK() {
-		return h.failGateInTx(ctx, r, qtx, workspaceID, p, res, gateFailedAudit, advisory)
+		_, failed := h.failGateInTx(ctx, r, qtx, workspaceID, p, res, gateFailedAudit, advisory)
+		return false, false, failed
 	}
 
 	// Reference contract (RUYI-869): the engine gate passed, but the
@@ -410,10 +411,11 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	// against the post-enact universe; the row parks in gate_failed with the
 	// findings so the author reworks the text, never a silent drift.
 	if refErrs := h.refContractGate(ctx, qtx, workspaceID, p, texts, synth); len(refErrs) > 0 {
-		return h.failGateInTx(ctx, r, qtx, workspaceID, p, legislation.Result{
+		_, failed := h.failGateInTx(ctx, r, qtx, workspaceID, p, legislation.Result{
 			Errors:   refErrs,
 			Warnings: res.Warnings,
 		}, gateFailedAudit, advisory)
+		return false, false, failed
 	}
 
 	// RUYI-858: the owner's landing decision (persisted at the approval
@@ -428,12 +430,12 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		ref := refs[0]
 		text, ok := synth[ref]
 		if !ok {
-			return false, errorResult(errors.New("静态落地目标缺少合成文本"))
+			return false, true, errorResult(errors.New("静态落地目标缺少合成文本"))
 		}
 		createdVersion, err := h.landStaticCarrierTx(ctx, qtx, workspaceID, ref, text, p.CreatedByType, uuidToString(p.CreatedByID))
 		if err != nil {
 			slog.Error("static carrier landing failed", append(logger.RequestAttrs(r), "error", err)...)
-			return false, errorResult(err)
+			return false, true, errorResult(err)
 		}
 		if _, err := qtx.EnactPromptProposal(ctx, db.EnactPromptProposalParams{
 			ID: p.ID, WorkspaceID: workspaceID, Audit: enactedAudit, Warnings: mustJSON(res.Warnings),
@@ -441,9 +443,9 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 			EnactedVersion: pgtype.Int4{Int32: createdVersion, Valid: createdVersion > 0},
 		}); err != nil {
 			slog.Error("enact persist failed", append(logger.RequestAttrs(r), "error", err)...)
-			return false, errorResult(fmt.Errorf("enact 落账失败: %w", err))
+			return false, true, errorResult(fmt.Errorf("enact 落账失败: %w", err))
 		}
-		return true, res
+		return true, false, res
 	}
 
 	// Asset write first (the re-render reads the asset library for the full
@@ -453,12 +455,12 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	outcome, err := h.enactClauseAssetsTx(ctx, qtx, workspaceID, p, p.CreatedByType, uuidToString(p.CreatedByID))
 	if err != nil {
 		slog.Error("clause asset write failed", append(logger.RequestAttrs(r), "error", err)...)
-		return false, errorResult(err)
+		return false, true, errorResult(err)
 	}
 	affected := outcome.carrierRefs(p)
 	if err := h.rerenderAffectedCarriersTx(ctx, qtx, workspaceID, affected, synth, p.CreatedByType, uuidToString(p.CreatedByID)); err != nil {
 		slog.Error("clause re-render failed", append(logger.RequestAttrs(r), "error", err)...)
-		return false, errorResult(err)
+		return false, true, errorResult(err)
 	}
 	var enactedVersion pgtype.Int4
 	if outcome.Version > 0 {
@@ -469,9 +471,9 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		JevAdvisory: advisory, ClauseID: outcome.ClauseID, EnactedVersion: enactedVersion,
 	}); err != nil {
 		slog.Error("enact persist failed", append(logger.RequestAttrs(r), "error", err)...)
-		return false, errorResult(fmt.Errorf("enact 落账失败: %w", err))
+		return false, true, errorResult(fmt.Errorf("enact 落账失败: %w", err))
 	}
-	return true, res
+	return true, false, res
 }
 
 // synthesizeProposalCarrier applies a proposal to the carrier representation
@@ -500,6 +502,14 @@ func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries
 	if binding.SinceClauseVersion != clause.Version {
 		return "", fmt.Errorf("条款「%s」的 active binding 版本已漂移，请重新核对后提交", clause.Title)
 	}
+	baseline, ok := clauseRevisionBaselineFromAudit(p.AuditLog)
+	if !ok {
+		return "", fmt.Errorf("条款「%s」的提案缺少提交时版本基线，无法安全预览或批准；请先拒绝并恢复为草案后重新提交", clause.Title)
+	}
+	if !clauseRevisionBaselineMatches(baseline, uuidToString(clause.ID), uuidToString(binding.ID),
+		clause.Version, binding.SinceClauseVersion) {
+		return "", fmt.Errorf("条款「%s」自提案提交后版本或绑定已变化，请重新核对并提交", clause.Title)
+	}
 	if err := legislation.ValidateRevisionText(clause.Title, p.ClauseText); err != nil {
 		return "", err
 	}
@@ -508,6 +518,72 @@ func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries
 		return "", fmt.Errorf("条款「%s」载体结构校验失败，已阻断：%w", clause.Title, err)
 	}
 	return synthesized, nil
+}
+
+type clauseRevisionBaseline struct {
+	ClauseID           string `json:"clause_id"`
+	BindingID          string `json:"binding_id"`
+	ClauseVersion      int32  `json:"clause_version"`
+	SinceClauseVersion int32  `json:"since_clause_version"`
+}
+
+func clauseRevisionBaselineFromAudit(audit []byte) (clauseRevisionBaseline, bool) {
+	var entries []struct {
+		Action           string                  `json:"action"`
+		RevisionBaseline *clauseRevisionBaseline `json:"revision_baseline"`
+	}
+	if json.Unmarshal(audit, &entries) != nil {
+		return clauseRevisionBaseline{}, false
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Action != "submitted" || entries[i].RevisionBaseline == nil {
+			continue
+		}
+		baseline := *entries[i].RevisionBaseline
+		if baseline.ClauseID == "" || baseline.BindingID == "" ||
+			baseline.ClauseVersion <= 0 || baseline.SinceClauseVersion <= 0 {
+			return clauseRevisionBaseline{}, false
+		}
+		return baseline, true
+	}
+	return clauseRevisionBaseline{}, false
+}
+
+func clauseRevisionBaselineMatches(baseline clauseRevisionBaseline, clauseID, bindingID string, clauseVersion, sinceClauseVersion int32) bool {
+	return baseline.ClauseID == clauseID && baseline.BindingID == bindingID &&
+		baseline.ClauseVersion == clauseVersion && baseline.SinceClauseVersion == sinceClauseVersion
+}
+
+func (h *Handler) captureClauseRevisionBaseline(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal) (*clauseRevisionBaseline, error) {
+	if p.ChangeKind != "revise_clause" || !p.ClauseID.Valid {
+		return nil, nil
+	}
+	clause, err := resolveProposalClauseTx(ctx, qtx, workspaceID, p.ClauseID, p.ClauseName)
+	if err != nil {
+		return nil, err
+	}
+	if clause.Status != "active" {
+		return nil, fmt.Errorf("条款「%s」当前状态为 %s，仅 active 条款可修订", clause.Title, clause.Status)
+	}
+	if clause.Version <= 0 {
+		return nil, fmt.Errorf("条款「%s」没有可用版本，无法修订", clause.Title)
+	}
+	binding, err := qtx.GetActiveClauseBinding(ctx, clause.ID)
+	if err != nil {
+		return nil, fmt.Errorf("条款「%s」没有生效绑定，无法修订", clause.Title)
+	}
+	if binding.Scope != p.CarrierScope || binding.ScopeID != p.CarrierScopeID {
+		return nil, fmt.Errorf("条款「%s」的生效绑定与提案载体不一致", clause.Title)
+	}
+	if binding.SinceClauseVersion != clause.Version {
+		return nil, fmt.Errorf("条款「%s」的 active binding 版本已漂移，请重新核对后提交", clause.Title)
+	}
+	return &clauseRevisionBaseline{
+		ClauseID:           uuidToString(clause.ID),
+		BindingID:          uuidToString(binding.ID),
+		ClauseVersion:      clause.Version,
+		SinceClauseVersion: binding.SinceClauseVersion,
+	}, nil
 }
 
 // landStaticCarrierTx is the static-prompt landing branch (RUYI-858): the
@@ -931,14 +1007,46 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID, actorType, _ := h.legislationActor(w, r)
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to submit proposal")
+		return
+	}
+	defer tx.Rollback(r.Context()) //nolint:errcheck
+	qtx := h.Queries.WithTx(tx)
+	p, err = qtx.GetPromptProposalForUpdate(r.Context(), db.GetPromptProposalForUpdateParams{
+		ID: p.ID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "proposal not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to submit proposal")
+		return
+	}
+	if p.Status != "draft" {
+		writeError(w, http.StatusConflict, "only draft proposals can be submitted")
+		return
+	}
+	baseline, err := h.captureClauseRevisionBaseline(r.Context(), qtx, workspaceID, p)
+	if err != nil {
+		writeError(w, http.StatusConflict, fmt.Sprintf("条款修订无法提交，已阻断：%v", err))
+		return
+	}
+	extra := map[string]any(nil)
+	if baseline != nil {
+		extra = map[string]any{"revision_baseline": baseline}
+	}
 	// Warn-only precheck (RUYI-347): the clause text is judged before the
 	// row leaves draft. A disabled layer persists NULL (未检/关态); any fault
 	// degrades into the stored skip report and never fails the submit.
 	advisory := h.jevAdvisory().Assess(r.Context(), "submit", p.ClauseText).JSON()
-	submitted, err := h.Queries.SubmitPromptProposal(r.Context(), db.SubmitPromptProposalParams{
+	submitted, err := qtx.SubmitPromptProposal(r.Context(), db.SubmitPromptProposalParams{
 		ID:          p.ID,
-		WorkspaceID: parseUUID(h.resolveWorkspaceID(r)),
-		Audit:       legislationAudit("submitted", actorType, userID, nil),
+		WorkspaceID: workspaceID,
+		Audit:       legislationAudit("submitted", actorType, userID, extra),
 		JevAdvisory: advisory,
 	})
 	if err != nil {
@@ -946,6 +1054,10 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "only draft proposals can be submitted")
 			return
 		}
+		writeError(w, http.StatusInternalServerError, "failed to submit proposal")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to submit proposal")
 		return
 	}
@@ -982,7 +1094,7 @@ func (h *Handler) PreviewPromptProposal(w http.ResponseWriter, r *http.Request) 
 	if p.Status == "approved" {
 		req.EnactmentTarget = p.EnactmentTarget
 	}
-	target, targetErr := normalizeEnactmentTarget(req.EnactmentTarget, p.ChangeKind)
+	target, targetErr := normalizeProposalEnactmentTarget(req.EnactmentTarget, p)
 	if targetErr != "" {
 		writeError(w, http.StatusBadRequest, targetErr)
 		return
@@ -1036,6 +1148,17 @@ func normalizeEnactmentTarget(target, changeKind string) (string, string) {
 	}
 	if target == "static_prompt" && (changeKind == "move_clause" || changeKind == "migrate_clause") {
 		return "", "static_prompt target is not available for " + changeKind
+	}
+	return target, ""
+}
+
+func normalizeProposalEnactmentTarget(target string, p db.PromptProposal) (string, string) {
+	target, message := normalizeEnactmentTarget(target, p.ChangeKind)
+	if message != "" {
+		return "", message
+	}
+	if target == "static_prompt" && p.ChangeKind == "revise_clause" && p.ClauseID.Valid {
+		return "", "static_prompt is not available for structured clause revisions"
 	}
 	return target, ""
 }
@@ -1132,7 +1255,7 @@ func (h *Handler) approveOne(w http.ResponseWriter, r *http.Request, id string, 
 	if p.Status == "approved" {
 		enactmentTarget = p.EnactmentTarget
 	}
-	target, targetErr := normalizeEnactmentTarget(enactmentTarget, p.ChangeKind)
+	target, targetErr := normalizeProposalEnactmentTarget(enactmentTarget, p)
 	if targetErr != "" {
 		writeError(w, http.StatusBadRequest, targetErr)
 		return
@@ -1166,7 +1289,11 @@ func (h *Handler) approveOne(w http.ResponseWriter, r *http.Request, id string, 
 
 	gateFailedAudit := legislationAudit("gate_failed", "member", userID, nil)
 	enactedAudit := legislationAudit("enacted", "member", userID, nil)
-	enacted, res := h.runGateAndEnactTx(r.Context(), r, qtx, workspaceID, p, gateFailedAudit, enactedAudit)
+	enacted, rollback, res := h.runGateAndEnactTx(r.Context(), r, qtx, workspaceID, p, gateFailedAudit, enactedAudit)
+	if rollback {
+		writeError(w, http.StatusInternalServerError, "failed to approve proposal")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to approve proposal")
 		return
@@ -1211,7 +1338,11 @@ func (h *Handler) EnactPromptProposal(w http.ResponseWriter, r *http.Request) {
 
 	gateFailedAudit := legislationAudit("gate_failed", "member", userID, map[string]any{"path": "recovery"})
 	enactedAudit := legislationAudit("enacted", "member", userID, map[string]any{"path": "recovery"})
-	enacted, res := h.runGateAndEnactTx(r.Context(), r, qtx, workspaceID, p, gateFailedAudit, enactedAudit)
+	enacted, rollback, res := h.runGateAndEnactTx(r.Context(), r, qtx, workspaceID, p, gateFailedAudit, enactedAudit)
+	if rollback {
+		writeError(w, http.StatusInternalServerError, "failed to enact proposal")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to enact proposal")
 		return
