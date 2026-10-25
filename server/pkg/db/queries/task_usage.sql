@@ -39,6 +39,12 @@ INSERT INTO task_usage_model_call_evidence (task_id, provider, model, evidence_i
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (task_id, provider, evidence_id) DO NOTHING;
 
+-- name: MarkTaskUsageModelCallsUnknown :exec
+INSERT INTO task_usage (task_id, provider, model, model_call_count, updated_at)
+VALUES ($1, $2, $3, NULL, now())
+ON CONFLICT (task_id, provider, model)
+DO UPDATE SET model_call_count = NULL, updated_at = now();
+
 -- name: CountTaskUsageModelCallEvidence :one
 SELECT COUNT(*)::bigint
 FROM task_usage_model_call_evidence
