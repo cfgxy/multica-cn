@@ -450,6 +450,8 @@ func foldRestrictedUsageByAgent(
 			dst.UncostedOutputTokens += src.UncostedOutputTokens
 			dst.UncostedCacheReadTokens += src.UncostedCacheReadTokens
 			dst.UncostedCacheWriteTokens += src.UncostedCacheWriteTokens
+			dst.ModelCallCount += src.ModelCallCount
+			dst.ModelCallUnknownCount += src.ModelCallUnknownCount
 			dst.TaskCount += src.TaskCount
 			return dst
 		},

@@ -392,6 +392,13 @@ type TaskUsageEntry struct {
 	ModelCallCount int64 `json:"model_call_count,omitempty"`
 }
 
+type TaskModelCallEvidence struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	EvidenceID string `json:"evidence_id,omitempty"`
+	Incomplete bool   `json:"incomplete,omitempty"`
+}
+
 // TaskResult is the outcome of executing a task.
 type TaskResult struct {
 	Status     string `json:"status"`

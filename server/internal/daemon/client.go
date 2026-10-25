@@ -622,6 +622,13 @@ func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []Tas
 	}, nil)
 }
 
+func (c *Client) ReportTaskModelCallEvidence(ctx context.Context, taskID string, evidence TaskModelCallEvidence) error {
+	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage/evidence", taskID), evidence, nil, []time.Duration{
+		250 * time.Millisecond,
+		750 * time.Millisecond,
+	})
+}
+
 func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
 	body := map[string]any{"error": errMsg}
 	if sessionID != "" {
