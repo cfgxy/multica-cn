@@ -121,12 +121,7 @@ func (h *Handler) RollbackClauseMigrationBatch(ctx context.Context, workspaceID 
 	if err != nil {
 		return nil, fmt.Errorf("有效条款集读取失败: %w", err)
 	}
-	byScope := map[string][]clausemark.RenderedClause{}
-	for _, row := range allClauses {
-		byScope[row.Scope] = append(byScope[row.Scope], clausemark.RenderedClause{
-			Slug: row.Slug, Version: int(row.Version), Body: row.Content,
-		})
-	}
+	byCarrier := renderedClausesByCarrier(allClauses, nil)
 	result := map[string]string{}
 	for _, c := range locks {
 		stable := clausemark.StripMarkers(texts[c])
@@ -139,7 +134,7 @@ func (h *Handler) RollbackClauseMigrationBatch(ctx context.Context, workspaceID 
 				return nil, fmt.Errorf("条款「%s」还原失败: %w", r.title, err)
 			}
 		}
-		rendered := clausemark.Render(stable, byScope[c.scope])
+		rendered := clausemark.Render(stable, byCarrier[c])
 		scan, ok, reason := promptGovernanceGate(rendered)
 		if !ok {
 			return nil, fmt.Errorf("回滚重渲染未通过内容门闸（%s）: %s", c.scope, reason)
