@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -89,6 +90,34 @@ func TestListModelsUsesConfiguredGatewayAndCredentials(t *testing.T) {
 	}
 	if len(models) != 2 || models[0] != "model-a" || models[1] != "model-b" {
 		t.Fatalf("models=%v", models)
+	}
+}
+
+func TestListModelsReturnsAtMost100NonEmptyIDs(t *testing.T) {
+	var data strings.Builder
+	data.WriteString(`{"data":[{"id":"  "}`)
+	for i := 0; i < 101; i++ {
+		data.WriteString(`,{"id":"model-`)
+		data.WriteString(strconv.Itoa(i))
+		data.WriteString(`"}`)
+	}
+	data.WriteString(`]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, data.String())
+	}))
+	t.Cleanup(srv.Close)
+
+	models, err := New(Config{BaseURL: srv.URL}).ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	if len(models) != 100 {
+		t.Fatalf("got %d models, want 100", len(models))
+	}
+	if models[0] != "model-0" || models[99] != "model-99" {
+		t.Fatalf("unexpected model boundaries: first=%q last=%q", models[0], models[99])
 	}
 }
 

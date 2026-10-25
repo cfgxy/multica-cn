@@ -406,7 +406,7 @@ function WorkspaceModelConfigCard({
             <Button
               size="sm"
               variant="outline"
-              disabled={validate.isPending}
+              disabled={busy}
               onClick={revalidateStored}
             >
               {t(($) => $.modelConfig.revalidate)}

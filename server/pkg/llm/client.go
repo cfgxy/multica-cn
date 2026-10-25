@@ -417,10 +417,13 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	models := make([]string, 0, len(page.Data))
+	models := make([]string, 0, 100)
 	for _, model := range page.Data {
 		if id := strings.TrimSpace(model.ID); id != "" {
 			models = append(models, id)
+			if len(models) == 100 {
+				break
+			}
 		}
 	}
 	return models, nil
