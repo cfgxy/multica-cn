@@ -784,6 +784,8 @@
       "source_autopilot_run": "自动化运行",
       "source_retrospective": "每日复盘",
       "retro_title": "每日复盘{{stamp}}",
+      "source_quiz": "题库测验/评分",
+      "quiz_title": "{{title}} · 批次 {{batch}}",
       "view_results_tooltip": "查看本次复盘成果",
       "adaptation_title": "任务经验回执",
       "adaptation_applied": "已采用",
