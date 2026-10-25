@@ -53,13 +53,13 @@ func TestBuildTaskExecutionAuditWithoutPriorSession(t *testing.T) {
 func TestAuditableRuntimeBriefOmitsFailedFileInjection(t *testing.T) {
 	const brief = "generated runtime brief"
 
-	if got := auditableRuntimeBrief(brief, false, false); got != "" {
+	if got := auditableRuntimeBrief(brief, false, false, true); got != "" {
 		t.Fatalf("failed file injection brief = %q, want omitted", got)
 	}
-	if got := auditableRuntimeBrief(brief, true, false); got != brief {
+	if got := auditableRuntimeBrief(brief, true, false, true); got != brief {
 		t.Fatalf("successful file injection brief = %q, want %q", got, brief)
 	}
-	if got := auditableRuntimeBrief(brief, false, true); got != brief {
+	if got := auditableRuntimeBrief(brief, false, true, false); got != brief {
 		t.Fatalf("failed inline injection brief = %q, want inline-delivered %q", got, brief)
 	}
 }
@@ -74,10 +74,39 @@ func TestFailedRuntimeConfigInjectionIsNotAuditedAsPromptInput(t *testing.T) {
 	if err == nil {
 		t.Fatal("InjectRuntimeConfig() error = nil, want file write failure")
 	}
-	audit := buildTaskExecutionAudit("task-token", "", "prompt", auditableRuntimeBrief(brief, err == nil, false), "", "")
+	audit := buildTaskExecutionAudit("task-token", "", "prompt", auditableRuntimeBrief(brief, err == nil, false, true), "", "")
 	for _, segment := range audit.PromptSegments {
 		if segment.Source == "execenv.InjectRuntimeConfig" {
 			t.Fatalf("failed file injection was included in prompt audit: %+v", segment)
+		}
+	}
+}
+
+func TestDeerFlowRuntimeBriefIsNotAuditedWithoutDelivery(t *testing.T) {
+	workDir := t.TempDir()
+	brief, err := execenv.InjectRuntimeConfig(workDir, "deerflow", execenv.TaskContextForEnv{IssueID: "issue-1"})
+	if err != nil {
+		t.Fatalf("InjectRuntimeConfig() error = %v, want nil", err)
+	}
+	if brief == "" {
+		t.Fatal("InjectRuntimeConfig() brief is empty, want generated brief")
+	}
+	if providerNeedsInlineSystemPrompt("deerflow") {
+		t.Fatal("DeerFlow unexpectedly requires inline system prompt")
+	}
+	runtimeConfigFile, readErr := execenv.ReadRuntimeConfigFile(workDir, "", "deerflow")
+	if readErr != nil {
+		t.Fatalf("ReadRuntimeConfigFile() error = %v, want nil", readErr)
+	}
+	if runtimeConfigFile != nil {
+		t.Fatalf("DeerFlow runtime config file = %q, want no file target", runtimeConfigFile)
+	}
+
+	auditedBrief := auditableRuntimeBrief(brief, true, false, runtimeConfigFile != nil || readErr != nil)
+	audit := buildTaskExecutionAudit("task-token", "", "prompt", auditedBrief, string(runtimeConfigFile), "")
+	for _, segment := range audit.PromptSegments {
+		if segment.Source == "execenv.InjectRuntimeConfig" {
+			t.Fatalf("undelivered DeerFlow brief was included in prompt audit: %+v", segment)
 		}
 	}
 }
