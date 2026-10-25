@@ -176,7 +176,7 @@ type Task struct {
 	QuickCreatePriority       string                      `json:"quick_create_priority,omitempty"`        // explicit priority selected in quick-create
 	QuickCreateDueDate        string                      `json:"quick_create_due_date,omitempty"`        // explicit calendar due date selected in quick-create
 	QuickCreateAttachmentIDs  []string                    `json:"quick_create_attachment_ids,omitempty"`  // attachments uploaded in the quick-create prompt and bound by issue create
-	QuickCreateAttachments    []QuickCreateAttachmentMeta `json:"quick_create_attachments,omitempty"`     // full attachment rows behind the ids above — filenames + durable markdown URLs so images can be inlined into the description (RUYI-478)
+	QuickCreateAttachments    []QuickCreateAttachmentMeta `json:"quick_create_attachments,omitempty"`     // full attachment rows behind the ids above; filenames and content types provide context without repeating attachments in the description
 	QuickCreateSourceContext  json.RawMessage             `json:"quick_create_source_context,omitempty"`  // immutable historical context, separate from the new instruction
 	QuizPrompt                string                      `json:"quiz_prompt,omitempty"`                  // item under test for prompt-quiz measurement runs; the run's entire assignment
 	RetrospectivePrompt       string                      `json:"retrospective_prompt,omitempty"`         // daily-retrospective window prompt (RUYI-552 direction 3); the run's entire assignment — analyze completed issues, submit drafts, create nothing
@@ -228,13 +228,9 @@ type ChatAttachmentMeta struct {
 }
 
 // QuickCreateAttachmentMeta mirrors the server-side quick-create attachment
-// row behind QuickCreateAttachmentIDs. Unlike chat attachments these are NOT
-// fetched via `multica attachment download`: quick-create hard-guardrails
-// forbid every CLI call other than `issue create`, so the row must be
-// self-contained. MarkdownURL is the server-computed durable URL (same
-// buildMarkdownURL contract as the attachment API responses) that the agent
-// inlines into the new issue's description so pasted images render in the
-// body, not just in the attachment area (RUYI-478).
+// row behind QuickCreateAttachmentIDs. Quick-create attachments are already
+// bound to the created issue; the prompt uses filenames and content types for
+// context but does not repeat their URLs in the description.
 type QuickCreateAttachmentMeta struct {
 	ID          string `json:"id"`
 	Filename    string `json:"filename"`
