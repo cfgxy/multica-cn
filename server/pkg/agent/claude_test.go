@@ -380,7 +380,7 @@ func TestBuildClaudeArgsInheritsMCPByDefault(t *testing.T) {
 		"--input-format", "stream-json",
 		"--verbose",
 		"--permission-mode", "bypassPermissions",
-		"--disallowedTools", "AskUserQuestion",
+		"--disallowedTools", "AskUserQuestion", "SendMessage",
 	}
 
 	if len(args) != len(expected) {
@@ -1499,5 +1499,74 @@ func TestBuildClaudeArgsManagedSkillSettingsWins(t *testing.T) {
 	}
 	if !strings.Contains(joined, "--max-turns 7") {
 		t.Fatalf("unrelated custom arg was dropped: %v", args)
+	}
+}
+
+func TestBuildClaudeArgsUsesLastUserSettingsWithoutManagedPolicy(t *testing.T) {
+	args := buildClaudeArgs(ExecOptions{
+		ExtraArgs:  []string{"--settings", "/tmp/default.json"},
+		CustomArgs: []string{"--settings=/tmp/agent.json"},
+	}, slog.Default())
+	settingsCount := 0
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--settings" {
+			settingsCount++
+			if args[i+1] != "/tmp/agent.json" {
+				t.Fatalf("settings path = %q, want custom arg winner: %v", args[i+1], args)
+			}
+		}
+	}
+	if settingsCount != 1 || slices.Contains(args, "/tmp/default.json") {
+		t.Fatalf("expected exactly the custom settings source, got %v", args)
+	}
+}
+
+func TestBuildClaudeArgsBlocksToolAndSessionOverrides(t *testing.T) {
+	args := buildClaudeArgs(ExecOptions{
+		ResumeSessionID: "multica-session",
+		ExtraArgs: []string{
+			"--disallowedTools", "AskUserQuestion", "SendMessage",
+			"--allowed-tools", "SendMessage",
+			"--tools", "Read", "SendMessage",
+			"--brief",
+			"--resume", "owner-session",
+			"--continue",
+			"--session-id", "00000000-0000-0000-0000-000000000001",
+			"--from-pr", "42",
+			"--teleport", "owner-session",
+			"--fork-session",
+		},
+		CustomArgs: []string{
+			"--disallowed-tools=SendMessage",
+			"--allowedTools", "SendMessage",
+			"-r", "owner-session",
+			"-c",
+		},
+	}, slog.Default())
+
+	for _, blocked := range []string{
+		"--disallowed-tools", "--allowedTools", "--allowed-tools", "--tools",
+		"--brief", "--continue", "-c", "--session-id", "--from-pr", "--teleport", "--fork-session", "-r",
+	} {
+		if slices.Contains(args, blocked) {
+			t.Fatalf("blocked override %q leaked into args: %v", blocked, args)
+		}
+	}
+	resumeCount := 0
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--resume" {
+			resumeCount++
+			if args[i+1] != "multica-session" {
+				t.Fatalf("resume session = %q, want daemon-selected session: %v", args[i+1], args)
+			}
+		}
+	}
+	if resumeCount != 1 || slices.Contains(args, "owner-session") {
+		t.Fatalf("custom session selector leaked into args: %v", args)
+	}
+
+	denyIndex := slices.Index(args, "--disallowedTools")
+	if denyIndex == -1 || denyIndex+2 != len(args)-1 || args[denyIndex+1] != "AskUserQuestion" || args[denyIndex+2] != "SendMessage" {
+		t.Fatalf("daemon tool deny list missing or split: %v", args)
 	}
 }
