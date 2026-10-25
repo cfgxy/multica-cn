@@ -43,6 +43,7 @@ import type {
   DecisionInboxItemInfo,
   DecisionInboxResult,
   DirectClauseRevisionBody,
+  DirectClauseRevisionCommitBody,
   DirectClauseRevisionPreview,
   DirectClauseRevisionResult,
   ExecutionProfileActivationInfo,
@@ -1158,7 +1159,7 @@ export class MulticaClient {
   async directReviseClause(
     workspace: string,
     clauseId: string,
-    body: DirectClauseRevisionBody,
+    body: DirectClauseRevisionCommitBody,
   ): Promise<DirectClauseRevisionResult> {
     return this.request(
       "POST",

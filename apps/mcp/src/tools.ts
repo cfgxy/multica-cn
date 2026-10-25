@@ -415,6 +415,7 @@ function directClauseRevisionBody(args: Record<string, unknown>): DirectClauseRe
     expected_clause_version: expectedClauseVersion,
     expected_clause_content_sha256: requireString(args, "expected_clause_content_sha256"),
     expected_carrier_sha256: requireString(args, "expected_carrier_sha256"),
+    ...(args.preview_sha256 === undefined ? {} : { preview_sha256: requireString(args, "preview_sha256") }),
   };
 }
 
@@ -5499,7 +5500,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description:
       "Preview an Owner's direct revision of one active structured clause without writing it. " +
       "First read the clause and its bound carrier to obtain the current clause version and both SHA256 values; then provide the complete final clause text here. " +
-      "The response contains the exact full-carrier diff and next version that direct_revise_clause will validate again. " +
+      "The response contains the exact full-carrier diff, next version, and preview_sha256 token that direct_revise_clause must echo unchanged. " +
       "Read-only, but Owner-only because its tokens authorize the matching direct write; it never creates or advances a prompt proposal.",
     inputSchema: {
       type: "object",
@@ -5543,7 +5544,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description:
       "Immediately commit an Owner-confirmed direct revision of one active structured clause. " +
       "Use preview_clause_revision first, present that full-carrier diff to the Owner, and call this only after the Owner explicitly confirms in the current conversation. " +
-      "The version and SHA256 values are rechecked under transaction locks; a stale preview is rejected. " +
+      "The version and SHA256 values plus preview_sha256 are rechecked under transaction locks; a stale or altered preview is rejected. " +
       "SIDE EFFECT: creates a new Clause version, audits and advances its active binding, then re-renders the bound carrier. It does not create or advance a prompt proposal.",
     inputSchema: {
       type: "object",
@@ -5566,6 +5567,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description: "SHA256 from the reviewed preview's current full carrier.",
           pattern: "^[0-9a-fA-F]{64}$",
         },
+        preview_sha256: {
+          type: "string",
+          description: "The preview_sha256 token returned by the exact preview the Owner reviewed.",
+          pattern: "^[0-9a-f]{64}$",
+        },
         confirm_previewed: {
           type: "boolean",
           description: "Must be true only after the Owner explicitly confirmed the reviewed preview in this conversation.",
@@ -5578,6 +5584,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         "expected_clause_version",
         "expected_clause_content_sha256",
         "expected_carrier_sha256",
+        "preview_sha256",
         "confirm_previewed",
       ],
     },
@@ -5589,6 +5596,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       }
       return client.directReviseClause(workspace, clauseId, {
         ...directClauseRevisionBody(args),
+        preview_sha256: requireString(args, "preview_sha256"),
         confirm_previewed: true,
       });
     },
