@@ -457,10 +457,6 @@ func (d *Daemon) resolveCredentialCapability(ctx context.Context, task *Task, ca
 	if task == nil || task.ID == "" || capability.Capability == "" || capability.ConnectorID == "" || capability.ConnectorRevision < 1 {
 		return nil, errors.New("credential capability unavailable")
 	}
-	expiresAt, err := time.Parse(time.RFC3339Nano, capability.ExpiresAt)
-	if err != nil || !time.Now().Before(expiresAt) {
-		return nil, errors.New("credential capability unavailable")
-	}
 	var response struct {
 		Envelope  credentialcrypto.ExecutionEnvelope `json:"envelope"`
 		ExpiresAt time.Time                          `json:"expires_at"`
