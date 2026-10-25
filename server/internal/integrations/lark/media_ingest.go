@@ -65,7 +65,7 @@ func (r *feishuMediaResolver) HasMedia(msg channel.InboundMessage) bool {
 	if err != nil {
 		return false
 	}
-	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0 || len(lm.QuotedMedia) > 0 || hasShareLinks(lm)
+	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0 || len(lm.QuotedMedia) > 0 || len(lm.ForwardMedia) > 0 || hasShareLinks(lm)
 }
 
 // hasShareLinks mirrors HasMedia's coverage for links only: the trigger's
@@ -107,6 +107,11 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 	for _, quoted := range lm.QuotedMedia {
 		resources = append(resources, mediaResourcesFromMessage(InboundMessage{
 			MessageID: quoted.MessageID, MessageType: quoted.MessageType, Content: quoted.Content,
+		})...)
+	}
+	for _, forwarded := range lm.ForwardMedia {
+		resources = append(resources, mediaResourcesFromMessage(InboundMessage{
+			MessageID: forwarded.MessageID, MessageType: forwarded.MessageType, Content: forwarded.Content,
 		})...)
 	}
 	// Share links ride the same ledger→download→upload→MediaRef chain

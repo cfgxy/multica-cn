@@ -54,6 +54,46 @@ func TestEnrichRecentMediaUsesOriginalMessageID(t *testing.T) {
 	}
 }
 
+func TestEnrichMergeForwardImageBecomesAttachment(t *testing.T) {
+	fake := newEnricherFake()
+	fake.byID["om_forward"] = []LarkMessage{
+		{MessageID: "om_forward", MessageType: "merge_forward", Content: `{"content":"Merged and Forwarded Message"}`},
+		{MessageID: "om_image", MessageType: "image", Content: `{"image_key":"key_forward_image"}`,
+			SenderID: "ou_sender", SenderType: "user", CreateTime: "1000"},
+	}
+	trigger := InboundMessage{
+		MessageID: "om_forward", MessageType: "merge_forward", ChatID: "oc_group",
+		ChatType: ChatTypeGroup, AddressedToBot: true,
+	}
+
+	enriched := enrich(t, fake, trigger, groupCfg())
+	if len(enriched.ForwardMedia) != 1 || enriched.ForwardMedia[0].MessageID != "om_image" {
+		t.Fatalf("ForwardMedia = %+v, want forwarded child image descriptor", enriched.ForwardMedia)
+	}
+
+	sender := &fakeSender{downloadedByKey: map[string]DownloadedResource{
+		"key_forward_image": {Data: []byte("image"), ContentType: "image/png", Filename: "forwarded.png"},
+	}}
+	storage := &fakeMediaStorage{}
+	ledger := &fakeMediaLedger{}
+	media := NewFeishuMediaResolver(sender, fakeCreds{secret: "plain"}, storage, ledger, newDiscardLogger(), nil)
+	message := channelMessageFromLark(enriched)
+	if !media.HasMedia(message) {
+		t.Fatal("转发子消息图片未进入媒体解析器")
+	}
+
+	got := media.ResolveMedia(context.Background(), testMediaInstallation(t), engine.ResolvedIdentity{},
+		uuidFromString(t, "22222222-2222-2222-2222-222222222222"), uuidFromString(t, "33333333-3333-4333-8333-333333333333"), message)
+	if len(sender.downloadCalls) != 1 || sender.downloadCalls[0] != (DownloadResourceParams{
+		MessageID: "om_image", FileKey: "key_forward_image", Type: "image",
+	}) {
+		t.Fatalf("forwarded image download = %+v", sender.downloadCalls)
+	}
+	if len(got.MediaRefs) != 1 || got.MediaRefs[0].Filename != "forwarded.png" {
+		t.Fatalf("MediaRefs = %+v, want forwarded image attachment", got.MediaRefs)
+	}
+}
+
 func TestEnrichRecentMediaIsolation(t *testing.T) {
 	tests := []struct {
 		name   string
