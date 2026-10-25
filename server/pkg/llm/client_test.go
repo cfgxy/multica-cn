@@ -70,6 +70,73 @@ func TestConfiguredDefaultModel(t *testing.T) {
 	}
 }
 
+func TestListModelsUsesConfiguredGatewayAndCredentials(t *testing.T) {
+	var gotAuth, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"model-a","object":"model","created":1,"owned_by":"test"},{"id":" model-b ","object":"model","created":1,"owned_by":"test"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	models, err := New(Config{APIKey: "test-key", BaseURL: srv.URL}).ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	if gotPath != "/models" || gotAuth != "Bearer test-key" {
+		t.Fatalf("request path=%q auth=%q", gotPath, gotAuth)
+	}
+	if len(models) != 2 || models[0] != "model-a" || models[1] != "model-b" {
+		t.Fatalf("models=%v", models)
+	}
+}
+
+func TestKeylessClientDoesNotInheritAmbientAPIKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "ambient-secret")
+	t.Setenv("OPENAI_CUSTOM_HEADERS", "X-Deployment-Secret: ambient-header-secret")
+	var gotAuth, gotSecret string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotSecret = r.Header.Get("X-Deployment-Secret")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	if _, err := New(Config{BaseURL: srv.URL, IsolateAmbientCredentials: true}).ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	if gotAuth != "" {
+		t.Fatalf("keyless client leaked ambient credentials: Authorization=%q", gotAuth)
+	}
+	if gotSecret != "" {
+		t.Fatalf("client leaked an ambient custom header: X-Deployment-Secret=%q", gotSecret)
+	}
+}
+
+func TestWorkspaceAPIKeyOverridesAmbientAuthorizationHeader(t *testing.T) {
+	t.Setenv("OPENAI_CUSTOM_HEADERS", "Authorization: Bearer ambient-secret")
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	if _, err := New(Config{
+		APIKey:                    "workspace-key",
+		BaseURL:                   srv.URL,
+		IsolateAmbientCredentials: true,
+	}).ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	if gotAuth != "Bearer workspace-key" {
+		t.Fatalf("Authorization=%q, want workspace key", gotAuth)
+	}
+}
+
 func TestChatAppliesDefaultModel(t *testing.T) {
 	var gotModel string
 	srv := stubUpstream(t, func(w http.ResponseWriter, body map[string]any) {

@@ -51,13 +51,13 @@
 //     sends no end-user chat content; it does send instruction text the
 //     workspace authored, after email addresses are masked and a credential
 //     scan has refused the whole call on any finding.
-//   - Model-config save-time validation ping (RUYI-551) —
+//   - Model-config model discovery and save-time validation (RUYI-551 / RUYI-893) —
 //     server/internal/selfevconfig/resolver.go. When a workspace owner saves
 //     a per-workspace model service, sends one minimal completion to the just
 //     saved base URL with the just saved key — the fixed health-check phrase
 //     ("reply with pong"), no workspace content — to prove connectivity
-//     before anything persists. Failure text is masked before storage or
-//     display.
+//     before anything persists. Model discovery sends only an authenticated
+//     GET /models request. Failure text is masked before storage or display.
 //
 // The first two consumers send private chat content, which is why an
 // unconfigured deployment making zero upstream requests is a contract rather
@@ -90,6 +90,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -122,6 +123,9 @@ var ErrNotConfigured = errors.New("llm: no API key or base URL configured")
 type Config struct {
 	// APIKey authenticates against the upstream. Maps to MULTICA_LLM_API_KEY.
 	APIKey string
+	// IsolateAmbientCredentials prevents environment defaults from being sent to
+	// a caller-selected upstream.
+	IsolateAmbientCredentials bool
 	// BaseURL points at OpenAI or any OpenAI-compatible gateway. When empty the
 	// SDK's default (https://api.openai.com/v1) is used. Maps to
 	// MULTICA_LLM_BASE_URL.
@@ -241,7 +245,21 @@ type Client struct {
 // is simply not set up on a given deployment).
 func New(cfg Config) *Client {
 	opts := make([]option.RequestOption, 0, 4)
-	if key := strings.TrimSpace(cfg.APIKey); key != "" {
+	if cfg.IsolateAmbientCredentials {
+		// Workspace-selected upstreams must not inherit deployment secrets from
+		// the SDK's environment defaults.
+		opts = append(opts,
+			option.WithAdminAPIKey(""),
+			option.WithHeaderDel("OpenAI-Organization"),
+			option.WithHeaderDel("OpenAI-Project"),
+		)
+		for _, name := range ambientCustomHeaderNames() {
+			opts = append(opts, option.WithHeaderDel(name))
+		}
+		// Apply the workspace key after deleting ambient Authorization overrides
+		// so the SDK's bearer-auth option remains active.
+		opts = append(opts, option.WithAPIKey(strings.TrimSpace(cfg.APIKey)))
+	} else if key := strings.TrimSpace(cfg.APIKey); key != "" {
 		opts = append(opts, option.WithAPIKey(key))
 	}
 	if base := strings.TrimSpace(cfg.BaseURL); base != "" {
@@ -279,6 +297,24 @@ func New(cfg Config) *Client {
 		enabled: strings.TrimSpace(cfg.APIKey) != "" || strings.TrimSpace(cfg.BaseURL) != "",
 		retry:   retry,
 	}
+}
+
+func ambientCustomHeaderNames() []string {
+	value, ok := os.LookupEnv("OPENAI_CUSTOM_HEADERS")
+	if !ok {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(value, "\n") {
+		colon := strings.IndexByte(line, ':')
+		if colon <= 0 {
+			continue
+		}
+		if name := strings.TrimSpace(line[:colon]); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // RetryBudget returns the effective transport retry policy, for startup
@@ -368,6 +404,26 @@ func (c *Client) GenerateText(ctx context.Context, model, systemPrompt, userProm
 		return "", errors.New("llm: upstream returned no choices")
 	}
 	return completion.Choices[0].Message.Content, nil
+}
+
+// ListModels returns up to 100 model IDs exposed by the configured gateway.
+func (c *Client) ListModels(ctx context.Context) ([]string, error) {
+	if !c.Enabled() {
+		return nil, ErrNotConfigured
+	}
+	ctx, cancel := withDefaultTimeout(ctx)
+	defer cancel()
+	page, err := c.sdk.Models.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	models := make([]string, 0, len(page.Data))
+	for _, model := range page.Data {
+		if id := strings.TrimSpace(model.ID); id != "" {
+			models = append(models, id)
+		}
+	}
+	return models, nil
 }
 
 // GenerateJSON is GenerateText's structured sibling, for internal callers whose

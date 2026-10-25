@@ -27,7 +27,9 @@ const m = vi.hoisted(() => ({
   role: "owner" as string | null,
   config: null as SelfEvolutionModelConfig | null,
   validateResult: { ok: true, error_kind: "", message: "" },
+  modelListResult: { ok: true, models: ["gpt-4o-mini"], error_kind: "", message: "" },
   validateMutate: vi.fn(),
+  listModelsMutate: vi.fn(),
   saveMutate: vi.fn(),
   restoreMutate: vi.fn(),
   push: vi.fn(),
@@ -63,6 +65,12 @@ vi.mock("@multica/core/self-evolution", async () => {
     useValidateSelfEvolutionModelConfig: () => ({
       mutate: m.validateMutate.mockImplementation((_vars, opts) => {
         opts?.onSuccess?.(m.validateResult);
+      }),
+      isPending: false,
+    }),
+    useListSelfEvolutionModelConfigModels: () => ({
+      mutate: m.listModelsMutate.mockImplementation((_vars, opts) => {
+        opts?.onSuccess?.(m.modelListResult);
       }),
       isPending: false,
     }),
@@ -108,19 +116,23 @@ function configFixture(
   };
 }
 
-function mount(showConsumers = false) {
+function cardTree(wsId: string, showConsumers = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  return (
     <QueryClientProvider client={client}>
       <WorkspaceSlugProvider slug="test-workspace">
         <NavigationProvider value={makeAdapter()}>
           <I18nProvider locale="en" resources={TEST_RESOURCES}>
-            <ModelConfigCard wsId="ws-1" showConsumers={showConsumers} />
+            <ModelConfigCard wsId={wsId} showConsumers={showConsumers} />
           </I18nProvider>
         </NavigationProvider>
       </WorkspaceSlugProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+}
+
+function mount(showConsumers = false) {
+  return render(cardTree("ws-1", showConsumers));
 }
 
 async function fillAndSave(baseUrl: string, model: string) {
@@ -133,7 +145,9 @@ async function fillAndSave(baseUrl: string, model: string) {
 beforeEach(() => {
   m.config = configFixture();
   m.validateResult = { ok: true, error_kind: "", message: "" };
+  m.modelListResult = { ok: true, models: ["gpt-4o-mini"], error_kind: "", message: "" };
   m.validateMutate.mockReset();
+  m.listModelsMutate.mockReset();
   m.saveMutate.mockReset();
   m.restoreMutate.mockReset();
   m.push.mockClear();
@@ -189,6 +203,21 @@ describe("ModelConfigCard", () => {
     expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("");
   });
 
+  it("ignores a pending save result after switching workspaces", async () => {
+    let saveOptions: { onSuccess?: () => void } | undefined;
+    m.saveMutate.mockImplementation((_vars: unknown, options: { onSuccess?: () => void }) => {
+      saveOptions = options;
+    });
+    const view = mount();
+    await fillAndSave("https://gw.example.com/v1", "gpt-4o-mini");
+    expect(saveOptions?.onSuccess).toBeTypeOf("function");
+
+    view.rerender(cardTree("ws-2"));
+    saveOptions?.onSuccess?.();
+
+    expect(screen.queryByTestId("model-config-validation-ok")).toBeNull();
+  });
+
   it("never echoes the stored key and marks the emptiness as 'keep existing'", async () => {
     m.config = configFixture({
       override: {
@@ -211,16 +240,122 @@ describe("ModelConfigCard", () => {
     expect(key.placeholder).toBe("Leave empty to keep the existing value");
   });
 
+  it("validates and saves a model change with an empty key field", async () => {
+    m.config = configFixture({
+      override: {
+        base_url: "https://gw.example.com/v1",
+        model: "old-model",
+        has_api_key: true,
+        scoring_enabled: true,
+      },
+    });
+    mount();
+    const modelInput = await screen.findByLabelText("Model");
+    await userEvent.clear(modelInput);
+    await userEvent.type(modelInput, "new-model");
+    await userEvent.click(screen.getByRole("button", { name: "Validate and save" }));
+
+    await waitFor(() => expect(m.saveMutate).toHaveBeenCalledTimes(1));
+    expect(m.validateMutate).toHaveBeenCalledWith(
+      { base_url: "https://gw.example.com/v1", api_key: "", model: "new-model" },
+      expect.anything(),
+    );
+    expect(m.saveMutate).toHaveBeenCalledWith(
+      {
+        base_url: "https://gw.example.com/v1",
+        api_key: "",
+        model: "new-model",
+        scoring_enabled: true,
+      },
+      expect.anything(),
+    );
+    expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("");
+  });
+
+  it("requires a replacement key before saving a changed endpoint", async () => {
+    m.config = configFixture({
+      override: {
+        base_url: "https://gw.example.com/v1",
+        model: "old-model",
+        has_api_key: true,
+        scoring_enabled: true,
+      },
+    });
+    mount();
+
+    await userEvent.clear(await screen.findByLabelText("Base URL"));
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://another-gateway.example/v1");
+
+    expect(screen.getByRole("note").textContent).toContain("Enter a new API key when changing the Base URL");
+    expect(screen.getByRole("button", { name: "Validate and save" }).hasAttribute("disabled")).toBe(true);
+    expect(m.validateMutate).not.toHaveBeenCalled();
+  });
+
+  it("loads model options using the current base URL and typed key", async () => {
+    m.config = configFixture({
+      override: {
+        base_url: "https://gw.example.com/v1",
+        model: "old-model",
+        has_api_key: true,
+        scoring_enabled: true,
+      },
+    });
+    mount();
+    await userEvent.type(await screen.findByLabelText("API key"), "replacement-key");
+    await userEvent.click(screen.getByRole("button", { name: "Load models" }));
+
+    expect(m.listModelsMutate).toHaveBeenCalledWith(
+      { base_url: "https://gw.example.com/v1", api_key: "replacement-key" },
+      expect.anything(),
+    );
+    expect(document.querySelector('#model-config-model-options option[value="gpt-4o-mini"]')).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("1 models available");
+
+    const baseUrl = screen.getByLabelText("Base URL");
+    await userEvent.clear(baseUrl);
+    await userEvent.type(baseUrl, "https://another-gateway.example/v1");
+    expect(document.querySelector('#model-config-model-options option[value="gpt-4o-mini"]')).toBeNull();
+    expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("");
+  });
+
+  it("reports model-list failure while keeping manual model entry available", async () => {
+    m.modelListResult = {
+      ok: false,
+      models: [],
+      error_kind: "credentials",
+      message: "Gateway rejected credentials (HTTP 401)",
+    };
+    m.config = configFixture({
+      override: {
+        base_url: "https://gw.example.com/v1",
+        model: "old-model",
+        has_api_key: true,
+        scoring_enabled: true,
+      },
+    });
+    mount();
+    await userEvent.click(await screen.findByRole("button", { name: "Load models" }));
+
+    expect(await screen.findByRole("alert").textContent).toContain("invalid or expired credentials");
+    const modelInput = screen.getByLabelText("Model");
+    await userEvent.clear(modelInput);
+    await userEvent.type(modelInput, "custom-model");
+    expect((modelInput as HTMLInputElement).value).toBe("custom-model");
+  });
+
   it("restores the deployment default only through the confirmation", async () => {
     m.config = configFixture({
       override: {
         base_url: "https://gw.example.com/v1",
         model: "gpt-4o-mini",
         has_api_key: true,
-        scoring_enabled: true,
+        scoring_enabled: false,
       },
     });
-    mount();
+    mount(true);
+
+    const scoringSwitch = await screen.findByRole("switch", { name: "Quality scoring" });
+    expect(scoringSwitch.getAttribute("aria-checked")).toBe("false");
 
     await userEvent.click(
       await screen.findByRole("button", { name: "Restore deploy default" }),
@@ -236,6 +371,7 @@ describe("ModelConfigCard", () => {
       within(confirm).getByRole("button", { name: "Restore deploy default" }),
     );
     expect(m.restoreMutate).toHaveBeenCalledTimes(1);
+    expect(scoringSwitch.getAttribute("aria-checked")).toBe("true");
   });
 
   it("names the scoring consumer only on the module-config variant", async () => {
