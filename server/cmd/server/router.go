@@ -2469,6 +2469,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/clauses/search", h.SearchClauseGovernance)
 			r.Get("/clauses/{clauseId}", h.GetClauseGovernanceDetail)
 			r.Get("/reconciliation", h.GetClauseReconciliation)
+			r.Group(func(r chi.Router) {
+				// Owner-confirmed direct revisions are the narrow OAuth exception to
+				// proposal decisions: an MCP client may call them only through an
+				// owner-scoped OAuth token, and the handler requires a preview's
+				// exact version and content hashes before committing.
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Post("/clauses/{clauseId}/direct-revision-preview", h.PreviewDirectClauseRevision)
+				r.Post("/clauses/{clauseId}/direct-revision", h.DirectReviseClause)
+			})
 		})
 
 		r.Route("/api/prompt-legislation/proposals", func(r chi.Router) {

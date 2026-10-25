@@ -87,6 +87,7 @@ import type {
   CommentInfo,
   CreateProjectResourceBody,
   DecisionCardInfo,
+  DirectClauseRevisionBody,
   ExecutionProfileEntryInfo,
   ExecutionProfileInfo,
   IssueInfo,
@@ -402,6 +403,19 @@ async function buildProposalEditBody(
     ...(anchors.length > 0 ? { evidence_anchors: anchors } : {}),
   };
   return body;
+}
+
+function directClauseRevisionBody(args: Record<string, unknown>): DirectClauseRevisionBody {
+  const expectedClauseVersion = optionalInt(args, "expected_clause_version", { min: 1 });
+  if (expectedClauseVersion === undefined) {
+    throw new ToolInputError("direct clause revision requires `expected_clause_version`");
+  }
+  return {
+    content: requireString(args, "content"),
+    expected_clause_version: expectedClauseVersion,
+    expected_clause_content_sha256: requireString(args, "expected_clause_content_sha256"),
+    expected_carrier_sha256: requireString(args, "expected_carrier_sha256"),
+  };
 }
 
 function issueProperty(): JsonSchemaProperty {
@@ -5478,6 +5492,105 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         days: optionalInt(args, "days", { min: 1, max: 365 }),
       });
       return result;
+    },
+  },
+  {
+    name: "preview_clause_revision",
+    description:
+      "Preview an Owner's direct revision of one active structured clause without writing it. " +
+      "First read the clause and its bound carrier to obtain the current clause version and both SHA256 values; then provide the complete final clause text here. " +
+      "The response contains the exact full-carrier diff and next version that direct_revise_clause will validate again. " +
+      "Read-only, but Owner-only because its tokens authorize the matching direct write; it never creates or advances a prompt proposal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        clause_id: { type: "string", description: "Active Clause UUID from get_clause." },
+        content: { type: "string", description: "Complete final Clause text to render into its carrier." },
+        expected_clause_version: {
+          type: "integer",
+          description: "Current Clause version read before this preview.",
+          minimum: 1,
+        },
+        expected_clause_content_sha256: {
+          type: "string",
+          description: "SHA256 of that current Clause version's content.",
+          pattern: "^[0-9a-fA-F]{64}$",
+        },
+        expected_carrier_sha256: {
+          type: "string",
+          description: "SHA256 of the current full carrier content before rendering.",
+          pattern: "^[0-9a-fA-F]{64}$",
+        },
+      },
+      required: [
+        "workspace",
+        "clause_id",
+        "content",
+        "expected_clause_version",
+        "expected_clause_content_sha256",
+        "expected_carrier_sha256",
+      ],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const clauseId = requireString(args, "clause_id");
+      return client.previewDirectClauseRevision(workspace, clauseId, directClauseRevisionBody(args));
+    },
+  },
+  {
+    name: "direct_revise_clause",
+    description:
+      "Immediately commit an Owner-confirmed direct revision of one active structured clause. " +
+      "Use preview_clause_revision first, present that full-carrier diff to the Owner, and call this only after the Owner explicitly confirms in the current conversation. " +
+      "The version and SHA256 values are rechecked under transaction locks; a stale preview is rejected. " +
+      "SIDE EFFECT: creates a new Clause version, audits and advances its active binding, then re-renders the bound carrier. It does not create or advance a prompt proposal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        clause_id: { type: "string", description: "Active Clause UUID previewed with preview_clause_revision." },
+        content: { type: "string", description: "The complete final Clause text shown in the preview." },
+        expected_clause_version: {
+          type: "integer",
+          description: "Current Clause version used by the reviewed preview.",
+          minimum: 1,
+        },
+        expected_clause_content_sha256: {
+          type: "string",
+          description: "SHA256 from the reviewed preview's current Clause version.",
+          pattern: "^[0-9a-fA-F]{64}$",
+        },
+        expected_carrier_sha256: {
+          type: "string",
+          description: "SHA256 from the reviewed preview's current full carrier.",
+          pattern: "^[0-9a-fA-F]{64}$",
+        },
+        confirm_previewed: {
+          type: "boolean",
+          description: "Must be true only after the Owner explicitly confirmed the reviewed preview in this conversation.",
+        },
+      },
+      required: [
+        "workspace",
+        "clause_id",
+        "content",
+        "expected_clause_version",
+        "expected_clause_content_sha256",
+        "expected_carrier_sha256",
+        "confirm_previewed",
+      ],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const clauseId = requireString(args, "clause_id");
+      if (optionalBoolean(args, "confirm_previewed") !== true) {
+        throw new ToolInputError("direct_revise_clause requires `confirm_previewed: true` after the Owner reviews the preview");
+      }
+      return client.directReviseClause(workspace, clauseId, {
+        ...directClauseRevisionBody(args),
+        confirm_previewed: true,
+      });
     },
   },
   {

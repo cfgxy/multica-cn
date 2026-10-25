@@ -42,6 +42,9 @@ import type {
   DecisionCardInfo,
   DecisionInboxItemInfo,
   DecisionInboxResult,
+  DirectClauseRevisionBody,
+  DirectClauseRevisionPreview,
+  DirectClauseRevisionResult,
   ExecutionProfileActivationInfo,
   ExecutionProfileEntryInfo,
   ExecutionProfileInfo,
@@ -1090,8 +1093,9 @@ export class MulticaClient {
   // The MCP read/write surface over the clause asset library and the
   // proposal pool. Every path below is pinned in the backend's OAuth scope
   // table (server/internal/oauth/scope_request.go) so an OAuth token can
-  // only reach the tiers these methods declare; the owner's decide-and-
-  // execute endpoints never appear here, by design.
+  // only reach the tiers these methods declare. Proposal decide-and-execute
+  // endpoints never appear here; the direct-revision pair is the narrow Owner
+  // exception, protected by preview-bound version and content hashes.
 
   /** GET /api/prompt-legislation/governance/clauses?days=N */
   async listClauseGovernance(workspace: string, params?: { days?: number }): Promise<ClauseGovernanceOverview> {
@@ -1125,6 +1129,42 @@ export class MulticaClient {
       workspace,
       query: params?.days ? { days: params.days } : undefined,
     });
+  }
+
+  /**
+   * POST /api/prompt-legislation/governance/clauses/{clauseId}/direct-revision-preview
+   *
+   * Owner-only, read-only simulation of a direct Clause revision. The caller
+   * must use the current Clause and carrier tokens it read before this call.
+   */
+  async previewDirectClauseRevision(
+    workspace: string,
+    clauseId: string,
+    body: DirectClauseRevisionBody,
+  ): Promise<DirectClauseRevisionPreview> {
+    return this.request(
+      "POST",
+      `/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}/direct-revision-preview`,
+      { workspace, body },
+    );
+  }
+
+  /**
+   * POST /api/prompt-legislation/governance/clauses/{clauseId}/direct-revision
+   *
+   * Owner-only confirmed write. The backend creates a new Clause version,
+   * audits the binding and re-renders its carrier; it never creates a proposal.
+   */
+  async directReviseClause(
+    workspace: string,
+    clauseId: string,
+    body: DirectClauseRevisionBody,
+  ): Promise<DirectClauseRevisionResult> {
+    return this.request(
+      "POST",
+      `/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}/direct-revision`,
+      { workspace, body },
+    );
   }
 
   /** GET /api/prompt-legislation/governance/reconciliation?days=N */

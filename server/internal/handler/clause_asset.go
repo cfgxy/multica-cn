@@ -21,8 +21,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/legislation"
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/clausemark"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptscan"
 )
 
@@ -161,6 +161,41 @@ func (o clauseEnactOutcome) carrierRefs(p db.PromptProposal) []carrierRef {
 type carrierRef struct {
 	scope string
 	id    pgtype.UUID
+}
+
+// clauseRenderOverride supplies a not-yet-persisted version of one active
+// clause. It lets previews and gate synthesis use the same asset renderer as
+// the post-write path without requiring a speculative database write.
+type clauseRenderOverride struct {
+	ClauseID pgtype.UUID
+	Version  int32
+	Content  string
+}
+
+// renderedClausesByCarrier partitions the active asset set by the complete
+// binding target. A scope alone is not enough: two project, squad, or agent
+// carriers in the same workspace must never receive each other's clauses.
+func renderedClausesByCarrier(rows []db.ListActiveWorkspaceClausesRow, override *clauseRenderOverride) map[carrierRef][]clausemark.RenderedClause {
+	byCarrier := make(map[carrierRef][]clausemark.RenderedClause)
+	for _, row := range rows {
+		version, content := row.Version, row.Content
+		if override != nil && row.ClauseID == override.ClauseID {
+			version, content = override.Version, override.Content
+		}
+		ref := carrierRef{scope: row.Scope, id: row.ScopeID}
+		byCarrier[ref] = append(byCarrier[ref], clausemark.RenderedClause{
+			Slug: row.Slug, Version: int(version), Body: content,
+		})
+	}
+	return byCarrier
+}
+
+func (h *Handler) renderCarrierFromActiveClausesTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, ref carrierRef, current string, override *clauseRenderOverride) (string, error) {
+	rows, err := qtx.ListActiveWorkspaceClauses(ctx, workspaceID)
+	if err != nil {
+		return "", fmt.Errorf("有效条款集读取失败: %w", err)
+	}
+	return clausemark.Render(current, renderedClausesByCarrier(rows, override)[ref]), nil
 }
 
 // enactClauseAssetsTx writes the clause-family rows for one enacted
@@ -331,18 +366,13 @@ func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Querie
 	if err != nil {
 		return fmt.Errorf("有效条款集读取失败: %w", err)
 	}
-	byScope := map[string][]clausemark.RenderedClause{}
-	for _, row := range allClauses {
-		byScope[row.Scope] = append(byScope[row.Scope], clausemark.RenderedClause{
-			Slug: row.Slug, Version: int(row.Version), Body: row.Content,
-		})
-	}
+	byCarrier := renderedClausesByCarrier(allClauses, nil)
 	for _, c := range carriers {
 		current, ok := texts[c]
 		if !ok {
 			continue
 		}
-		rendered := clausemark.Render(current, byScope[c.scope])
+		rendered := clausemark.Render(current, byCarrier[c])
 		scan, ok, reason := promptGovernanceGate(rendered)
 		if !ok {
 			return fmt.Errorf("重渲染文本未通过内容门闸（%s）: %s", c.scope, reason)
