@@ -4699,6 +4699,49 @@ func TestHandleTask_BareErrorReportsFailureWithCancelledParent(t *testing.T) {
 	}
 }
 
+func TestHandleTask_RunnerErrorPreservesExecutionAudit(t *testing.T) {
+	t.Parallel()
+
+	var failBody atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if !strings.HasSuffix(req.URL.Path, "/fail") {
+			t.Errorf("unexpected daemon call: %s %s", req.Method, req.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Errorf("decode fail callback: %v", err)
+		}
+		failBody.Store(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	audit := &TaskExecutionAudit{
+		Version: 1, ResumeOutcome: "unknown_or_failed", SessionSelectorCounts: map[string]int{"resume": 1},
+		PromptSegments:    []TaskPromptAuditSegment{{Source: "daemon.BuildPrompt", Version: "1", LengthBytes: 6, Digest: strings.Repeat("a", 64)}},
+		FinalPromptDigest: strings.Repeat("b", 64),
+	}
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runtimeIndex:       map[string]Runtime{"rt-1": {ID: "rt-1", Provider: "codex"}},
+		cancelPollInterval: time.Hour,
+	}
+	d.runner = taskRunnerFunc(func(context.Context, Task, string, int, *slog.Logger) (TaskResult, error) {
+		return TaskResult{ExecutionAudit: audit}, errors.New("provider executable missing")
+	})
+
+	d.handleTask(context.Background(), Task{ID: "task-runner-error-audit", RuntimeID: "rt-1"}, 0)
+
+	body, _ := failBody.Load().(map[string]any)
+	if body == nil {
+		t.Fatal("runner error did not report task failure")
+	}
+	if _, ok := body["execution_audit"].(map[string]any); !ok {
+		t.Fatalf("failure callback execution_audit = %#v, want audit object", body["execution_audit"])
+	}
+}
+
 // TestHandleTask_UntrackedRuntimeFailsBackForRetry covers the window between a
 // batch claim leaving with a runtime ID and the claimed task arriving here.
 //

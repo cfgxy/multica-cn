@@ -5783,6 +5783,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 			workDir:        result.WorkDir,
 			durableWorkDir: result.DurableWorkDir,
 			failureReason:  taskRunFailureReason(err),
+			executionAudit: result.ExecutionAudit,
 		}); failErr != nil {
 			taskLog.Error("fail task callback failed", "error", failErr)
 		}
@@ -8471,6 +8472,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
+	runtimeBriefForAudit := auditableRuntimeBrief(runtimeBrief, err == nil, providerNeedsInlineSystemPrompt(provider))
 	runtimeConfigFile, configReadErr := execenv.ReadRuntimeConfigFile(env.WorkDir, snapshotPrimaryUpper, provider)
 	if configReadErr != nil {
 		d.logger.Warn("execenv: read runtime config for audit failed (non-fatal)", "error", configReadErr)
@@ -8856,7 +8858,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// keep ascending seq values for the same task.
 	var msgSeq atomic.Int32
 	priorSessionID := task.PriorSessionID
-	executionAudit := buildTaskExecutionAudit(agentToken, priorSessionID, prompt, runtimeBrief, string(runtimeConfigFile), execOpts.SystemPrompt)
+	executionAudit := buildTaskExecutionAudit(agentToken, priorSessionID, prompt, runtimeBriefForAudit, string(runtimeConfigFile), execOpts.SystemPrompt)
 	defer func() { taskResult.ExecutionAudit = executionAudit }()
 	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
 	if err != nil {
@@ -8919,6 +8921,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				execOpts.SystemPrompt = runtimeBrief
 			}
 		}
+		runtimeBriefForAudit = auditableRuntimeBrief(runtimeBrief, briefErr == nil, providerNeedsInlineSystemPrompt(provider))
 		if refreshedConfig, readErr := execenv.ReadRuntimeConfigFile(env.WorkDir, snapshotPrimaryUpper, provider); readErr == nil {
 			runtimeConfigFile = refreshedConfig
 		} else {
@@ -8926,7 +8929,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			runtimeConfigFile = nil
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
-		executionAudit = buildTaskExecutionAudit(agentToken, priorSessionID, freshPrompt, runtimeBrief, string(runtimeConfigFile), execOpts.SystemPrompt)
+		executionAudit = buildTaskExecutionAudit(agentToken, priorSessionID, freshPrompt, runtimeBriefForAudit, string(runtimeConfigFile), execOpts.SystemPrompt)
 		if firstResult.ResumeRejected || firstResult.ResumeRejectedTransient {
 			executionAudit.ResumeOutcome = "rejected_new_session"
 		}
@@ -9299,6 +9302,13 @@ func buildTaskExecutionAudit(key, priorSessionID, prompt, runtimeConfig, runtime
 		SessionSelectorCounts: counts, PromptSegments: segments,
 		FinalPromptDigest: taskAuditDigest(key, finalPrompt),
 	}
+}
+
+func auditableRuntimeBrief(brief string, injectionSucceeded, inline bool) string {
+	if injectionSucceeded || inline {
+		return brief
+	}
+	return ""
 }
 
 func taskAuditDigest(key, value string) string {

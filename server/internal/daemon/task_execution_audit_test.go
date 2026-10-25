@@ -1,6 +1,12 @@
 package daemon
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+)
 
 func TestBuildTaskExecutionAuditUsesKeyedDigestsAndOnlyMetadata(t *testing.T) {
 	priorSessionID := "sensitive-session-id"
@@ -41,5 +47,37 @@ func TestBuildTaskExecutionAuditWithoutPriorSession(t *testing.T) {
 	}
 	if audit.SessionSelectorCounts["resume"] != 0 || len(audit.PromptSegments) != 3 {
 		t.Fatalf("unexpected fresh-session selectors or prompt segments: %+v", audit)
+	}
+}
+
+func TestAuditableRuntimeBriefOmitsFailedFileInjection(t *testing.T) {
+	const brief = "generated runtime brief"
+
+	if got := auditableRuntimeBrief(brief, false, false); got != "" {
+		t.Fatalf("failed file injection brief = %q, want omitted", got)
+	}
+	if got := auditableRuntimeBrief(brief, true, false); got != brief {
+		t.Fatalf("successful file injection brief = %q, want %q", got, brief)
+	}
+	if got := auditableRuntimeBrief(brief, false, true); got != brief {
+		t.Fatalf("failed inline injection brief = %q, want inline-delivered %q", got, brief)
+	}
+}
+
+func TestFailedRuntimeConfigInjectionIsNotAuditedAsPromptInput(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(workDir, []byte("block directory creation"), 0o600); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+
+	brief, err := execenv.InjectRuntimeConfig(workDir, "claude", execenv.TaskContextForEnv{IssueID: "issue-1"})
+	if err == nil {
+		t.Fatal("InjectRuntimeConfig() error = nil, want file write failure")
+	}
+	audit := buildTaskExecutionAudit("task-token", "", "prompt", auditableRuntimeBrief(brief, err == nil, false), "", "")
+	for _, segment := range audit.PromptSegments {
+		if segment.Source == "execenv.InjectRuntimeConfig" {
+			t.Fatalf("failed file injection was included in prompt audit: %+v", segment)
+		}
 	}
 }
