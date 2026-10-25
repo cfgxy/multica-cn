@@ -2,8 +2,8 @@
 
 interface StoredQuizBatch {
   batchId: string;
-  orderedAt: number;
-  expectedRows: number;
+  expectedRows: number | null;
+  orderedAt?: number;
 }
 
 function storage(): Storage | null {
@@ -35,7 +35,7 @@ export function writeQuizAgent(wsId: string, agentId: string): void {
   try {
     storage()?.setItem(selectedAgentKey(wsId), agentId);
   } catch {
-    // sessionStorage 为尽力而为，当前视图仍可继续使用。
+    // Session storage is best-effort; the current view remains usable.
   }
 }
 
@@ -47,13 +47,14 @@ export function readQuizBatch(wsId: string, agentId: string): StoredQuizBatch | 
     if (value === null || typeof value !== "object") return null;
     const record = value as Record<string, unknown>;
     if (typeof record.batchId !== "string" || record.batchId === "") return null;
+    const expectedRows = record.expectedRows;
     return {
       batchId: record.batchId,
-      orderedAt: typeof record.orderedAt === "number" ? record.orderedAt : 0,
       expectedRows:
-        typeof record.expectedRows === "number" && record.expectedRows > 0
-          ? record.expectedRows
-          : 0,
+        typeof expectedRows === "number" && Number.isInteger(expectedRows) && expectedRows >= 0
+          ? expectedRows
+          : null,
+      ...(typeof record.orderedAt === "number" ? { orderedAt: record.orderedAt } : {}),
     };
   } catch {
     return null;
@@ -64,15 +65,12 @@ export function writeQuizBatch(
   wsId: string,
   agentId: string,
   batchId: string,
-  orderedAt: number,
-  expectedRows: number,
+  expectedRows: number | null = null,
+  orderedAt = Date.now(),
 ): void {
   try {
-    storage()?.setItem(
-      batchKey(wsId, agentId),
-      JSON.stringify({ batchId, orderedAt, expectedRows }),
-    );
+    storage()?.setItem(batchKey(wsId, agentId), JSON.stringify({ batchId, expectedRows, orderedAt }));
   } catch {
-    // sessionStorage 为尽力而为，当前视图仍可继续使用。
+    // Session storage is best-effort; the current view remains usable.
   }
 }
