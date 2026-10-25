@@ -1534,6 +1534,8 @@ func TestBuildClaudeArgsBlocksToolAndSessionOverrides(t *testing.T) {
 			"--session-id", "00000000-0000-0000-0000-000000000001",
 			"--from-pr", "42",
 			"--teleport", "owner-session",
+			"--cloud",
+			"--cloud", "owner-cloud-session",
 			"--fork-session",
 		},
 		CustomArgs: []string{
@@ -1541,12 +1543,14 @@ func TestBuildClaudeArgsBlocksToolAndSessionOverrides(t *testing.T) {
 			"--allowedTools", "SendMessage",
 			"-r", "owner-session",
 			"-c",
+			"--cloud=",
+			"--cloud=https://claude.ai/chat/owner-cloud-session",
 		},
 	}, slog.Default())
 
 	for _, blocked := range []string{
 		"--disallowed-tools", "--allowedTools", "--allowed-tools", "--tools",
-		"--brief", "--continue", "-c", "--session-id", "--from-pr", "--teleport", "--fork-session", "-r",
+		"--brief", "--continue", "-c", "--session-id", "--from-pr", "--teleport", "--cloud", "--fork-session", "-r",
 	} {
 		if slices.Contains(args, blocked) {
 			t.Fatalf("blocked override %q leaked into args: %v", blocked, args)
@@ -1561,7 +1565,7 @@ func TestBuildClaudeArgsBlocksToolAndSessionOverrides(t *testing.T) {
 			}
 		}
 	}
-	if resumeCount != 1 || slices.Contains(args, "owner-session") {
+	if resumeCount != 1 || slices.Contains(args, "owner-session") || slices.Contains(args, "owner-cloud-session") || slices.Contains(args, "https://claude.ai/chat/owner-cloud-session") {
 		t.Fatalf("custom session selector leaked into args: %v", args)
 	}
 
