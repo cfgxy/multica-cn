@@ -123,9 +123,10 @@ func StripMarkers(text string) string {
 
 // RenderedClause is one clause the renderer emits into the snapshot region.
 type RenderedClause struct {
-	Slug    string
-	Version int
-	Body    string
+	Slug             string
+	Version          int
+	Body             string
+	SupersededBodies []string
 }
 
 // Render rebuilds a carrier business column: the stable context with every
@@ -143,8 +144,10 @@ type RenderedClause struct {
 func Render(text string, clauses []RenderedClause) string {
 	stable := StripMarkers(text)
 	for _, c := range clauses {
-		stable = removeClauseBlock(stable, c.Body)
-		stable = removeSectionBlock(stable, c.Body)
+		for _, body := range append([]string{c.Body}, c.SupersededBodies...) {
+			stable = removeClauseBlock(stable, body)
+			stable = removeSectionBlock(stable, body)
+		}
 	}
 	stable = strings.TrimRight(stable, "\n")
 

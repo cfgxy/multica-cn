@@ -1131,7 +1131,11 @@ export interface DirectClauseRevisionBody {
   expected_clause_version: number;
   expected_clause_content_sha256: string;
   expected_carrier_sha256: string;
-  confirm_previewed?: boolean;
+}
+
+export interface DirectClauseRevisionCommitBody extends DirectClauseRevisionBody {
+  preview_sha256: string;
+  confirm_previewed: true;
 }
 
 export interface DirectClauseRevisionPreview {
@@ -1143,6 +1147,7 @@ export interface DirectClauseRevisionPreview {
   next_clause_version: number;
   current_clause_content_sha256: string;
   current_carrier_sha256: string;
+  preview_sha256: string;
   diff: PromptDiffLine[];
 }
 

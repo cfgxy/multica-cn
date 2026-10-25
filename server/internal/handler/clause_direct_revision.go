@@ -2,6 +2,9 @@ package handler
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/legislation"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -24,14 +28,16 @@ type DirectClauseRevisionRequest struct {
 	ExpectedClauseVersion       int32  `json:"expected_clause_version"`
 	ExpectedClauseContentSHA256 string `json:"expected_clause_content_sha256"`
 	ExpectedCarrierSHA256       string `json:"expected_carrier_sha256"`
+	PreviewSHA256               string `json:"preview_sha256"`
 	ConfirmPreviewed            bool   `json:"confirm_previewed"`
 }
 
 type directClauseRevisionPrepared struct {
-	clause  resolvedClause
-	binding db.ClauseBinding
-	current string
-	next    string
+	clause               resolvedClause
+	binding              db.ClauseBinding
+	current              string
+	currentClauseContent string
+	next                 string
 }
 
 // DirectClauseRevisionPreviewResponse contains the canonical carrier diff and
@@ -45,6 +51,7 @@ type DirectClauseRevisionPreviewResponse struct {
 	NextClauseVersion          int32                  `json:"next_clause_version"`
 	CurrentClauseContentSHA256 string                 `json:"current_clause_content_sha256"`
 	CurrentCarrierSHA256       string                 `json:"current_carrier_sha256"`
+	PreviewSHA256              string                 `json:"preview_sha256"`
 	Diff                       []legislation.DiffLine `json:"diff"`
 }
 
@@ -77,6 +84,9 @@ func (r DirectClauseRevisionRequest) validate(requireConfirmation bool) string {
 	if requireConfirmation && !r.ConfirmPreviewed {
 		return "confirm_previewed must be true after the Owner has reviewed the preview"
 	}
+	if requireConfirmation && len(r.PreviewSHA256) != 64 {
+		return "preview_sha256 must be the 64-character token returned by the reviewed preview"
+	}
 	return ""
 }
 
@@ -100,6 +110,34 @@ func checkDirectRevisionExpectation(req DirectClauseRevisionRequest, clause reso
 		return fmt.Errorf("carrier content changed from preview; preview again")
 	}
 	return nil
+}
+
+const directRevisionPreviewKeyDomain = "direct-clause-revision-preview:v1"
+
+func directRevisionPreviewSigningKey() []byte {
+	sum := sha256.Sum256(append([]byte(directRevisionPreviewKeyDomain), auth.JWTSecret()...))
+	return sum[:]
+}
+
+func directRevisionPreviewSHA256(prepared directClauseRevisionPrepared, req DirectClauseRevisionRequest, actorID string) string {
+	content := strings.TrimRight(req.Content, "\n")
+	mac := hmac.New(sha256.New, directRevisionPreviewSigningKey())
+	for _, part := range []string{
+		uuidToString(prepared.clause.ID),
+		fmt.Sprintf("%d", prepared.clause.Version),
+		sha256Hex(prepared.current),
+		sha256Hex(content),
+		sha256Hex(prepared.next),
+		actorID,
+	} {
+		mac.Write([]byte(part))
+		mac.Write([]byte("\n"))
+	}
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func matchesDirectRevisionPreview(req DirectClauseRevisionRequest, prepared directClauseRevisionPrepared, actorID string) bool {
+	return hmac.Equal([]byte(req.PreviewSHA256), []byte(directRevisionPreviewSHA256(prepared, req, actorID)))
 }
 
 func (h *Handler) prepareDirectClauseRevision(ctx context.Context, qtx *db.Queries, workspaceID, clauseID pgtype.UUID, req DirectClauseRevisionRequest, lockCarrier bool) (directClauseRevisionPrepared, error) {
@@ -154,14 +192,21 @@ func (h *Handler) prepareDirectClauseRevision(ctx context.Context, qtx *db.Queri
 		return directClauseRevisionPrepared{}, err
 	}
 	next, err := h.renderCarrierFromActiveClausesTx(ctx, qtx, workspaceID, carrierRef{scope: binding.Scope, id: binding.ScopeID}, current, &clauseRenderOverride{
-		ClauseID: clause.ID,
-		Version:  clause.Version + 1,
-		Content:  content,
+		ClauseID:          clause.ID,
+		Version:           clause.Version + 1,
+		Content:           content,
+		SupersededContent: version.Content,
 	})
 	if err != nil {
 		return directClauseRevisionPrepared{}, err
 	}
-	return directClauseRevisionPrepared{clause: clause, binding: binding, current: current, next: next}, nil
+	return directClauseRevisionPrepared{
+		clause:               clause,
+		binding:              binding,
+		current:              current,
+		currentClauseContent: version.Content,
+		next:                 next,
+	}, nil
 }
 
 // PreviewDirectClauseRevision — POST /api/prompt-legislation/governance/clauses/{clauseId}/direct-revision-preview
@@ -175,6 +220,10 @@ func (h *Handler) PreviewDirectClauseRevision(w http.ResponseWriter, r *http.Req
 	}
 	if message := req.validate(false); message != "" {
 		writeError(w, http.StatusBadRequest, message)
+		return
+	}
+	actorID, _, ok := h.legislationActor(w, r)
+	if !ok {
 		return
 	}
 	clauseID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "clauseId"), "clause_id")
@@ -196,6 +245,7 @@ func (h *Handler) PreviewDirectClauseRevision(w http.ResponseWriter, r *http.Req
 		NextClauseVersion:          prepared.clause.Version + 1,
 		CurrentClauseContentSHA256: req.ExpectedClauseContentSHA256,
 		CurrentCarrierSHA256:       sha256Hex(prepared.current),
+		PreviewSHA256:              directRevisionPreviewSHA256(prepared, req, actorID),
 		Diff:                       legislation.DiffLines(prepared.current, prepared.next),
 	})
 }
@@ -237,6 +287,29 @@ func (h *Handler) DirectReviseClause(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Sprintf("直接修订已过期或无效：%v", err))
 		return
 	}
+	if !matchesDirectRevisionPreview(req, prepared, actorID) {
+		writeError(w, http.StatusConflict, "直接修订预览与提交内容不一致；请重新预览并由 Owner 确认")
+		return
+	}
+	baseline, err := ensureBaselineTx(r.Context(), qtx, workspaceID, promptVersionScope(prepared.binding.Scope), prepared.binding.ScopeID, prepared.current)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("直接修订结构基线读取失败：%v", err))
+		return
+	}
+	content := strings.TrimRight(req.Content, "\n")
+	gate := safeRunStructuralGate(prepared.current, prepared.next, baseline, legislation.ProposalInput{
+		ChangeKind: "revise_clause",
+		ClauseName: prepared.clause.Title,
+		ClauseText: content,
+	})
+	if !gate.OK() {
+		message := "结构门闸拒绝此次修订"
+		if len(gate.Errors) > 0 {
+			message = gate.Errors[0].Message
+		}
+		writeError(w, http.StatusConflict, fmt.Sprintf("直接修订未通过结构门闸：%s", message))
+		return
+	}
 	if scan, allowed, reason := promptGovernanceGate(prepared.next); !allowed {
 		_ = scan
 		writeError(w, http.StatusConflict, fmt.Sprintf("直接修订未通过内容门闸：%s", reason))
@@ -248,7 +321,7 @@ func (h *Handler) DirectReviseClause(w http.ResponseWriter, r *http.Request) {
 		CarrierScopeID: prepared.binding.ScopeID,
 		ChangeKind:     "revise_clause",
 		ClauseName:     prepared.clause.Title,
-		ClauseText:     strings.TrimRight(req.Content, "\n"),
+		ClauseText:     content,
 		ClauseID:       prepared.clause.ID,
 	}
 	ref := carrierRef{scope: prepared.binding.Scope, id: prepared.binding.ScopeID}
@@ -258,7 +331,6 @@ func (h *Handler) DirectReviseClause(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nextVersion := prepared.clause.Version + 1
-	content := strings.TrimRight(req.Content, "\n")
 	if _, err := qtx.CreateClauseVersion(r.Context(), db.CreateClauseVersionParams{
 		ClauseID:      prepared.clause.ID,
 		Version:       nextVersion,
@@ -284,7 +356,9 @@ func (h *Handler) DirectReviseClause(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update clause binding")
 		return
 	}
-	if err := h.rerenderAffectedCarriersTx(r.Context(), qtx, workspaceID, []carrierRef{ref}, map[carrierRef]string{ref: prepared.current}, actorType, actorID); err != nil {
+	if err := h.rerenderAffectedCarriersTx(r.Context(), qtx, workspaceID, []carrierRef{ref}, map[carrierRef]string{ref: prepared.current}, map[carrierRef]*clauseRenderOverride{
+		ref: {ClauseID: prepared.clause.ID, SupersededContent: prepared.currentClauseContent},
+	}, actorType, actorID); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to re-render clause carrier: %v", err))
 		return
 	}

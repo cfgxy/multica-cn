@@ -156,6 +156,7 @@ describe("tool surface", () => {
         "delete_execution_profile",
         "delete_project_resource",
         "delete_quick_reply",
+        "direct_revise_clause",
         "dispatch_agent",
         "edit_comment",
         "get_agent",
@@ -206,6 +207,7 @@ describe("tool surface", () => {
         "mark_all_inbox_read",
         "mark_inbox_item_read",
         "mark_inbox_item_unread",
+        "preview_clause_revision",
         "preview_prompt_proposal",
         "progress_digest",
         "read_file_chunk",
@@ -3037,6 +3039,7 @@ describe("prompt legislation proposal lifecycle tools", () => {
           clause_id: clauseId,
           current_clause_version: body.expected_clause_version,
           next_clause_version: Number(body.expected_clause_version) + 1,
+          preview_sha256: "c".repeat(64),
           diff: [{ kind: "add", text: "+ revised clause" }],
         };
       },
@@ -3266,7 +3269,7 @@ describe("prompt legislation proposal lifecycle tools", () => {
   it("direct_revise_clause forwards the confirmed complete revision without a proposal", async () => {
     const client = proposalClient();
     const result = (await findTool("direct_revise_clause")?.handler(
-      { ...directRevisionArgs, confirm_previewed: true },
+      { ...directRevisionArgs, preview_sha256: "c".repeat(64), confirm_previewed: true },
       client,
     )) as Record<string, unknown>;
     expect(callsOf(client)).toEqual([{
@@ -3276,6 +3279,7 @@ describe("prompt legislation proposal lifecycle tools", () => {
         expected_clause_version: 3,
         expected_clause_content_sha256: "a".repeat(64),
         expected_carrier_sha256: "b".repeat(64),
+        preview_sha256: "c".repeat(64),
         confirm_previewed: true,
       }],
     }]);
