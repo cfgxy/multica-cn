@@ -26,6 +26,7 @@ import { useT, useLocale } from "../../i18n";
 import { readQuizBatch, writeQuizBatch } from "./quiz-session";
 
 const QUIZ_POLL_INTERVAL = 15_000;
+const LEGACY_BATCH_POLL_WINDOW = 10 * 60 * 1000;
 
 /**
  * The graded side of the quiz (RUYI-286), owner-only like the rubrics it
@@ -59,30 +60,52 @@ export function QuizGradedPanel({
 
   const run = useCreatePromptQuizBatch(wsId);
   const queryClient = useQueryClient();
-  const [orderedBatch, setOrderedBatch] = useState({ agentId, batchId: "" });
+  const [orderedBatch, setOrderedBatch] = useState<{
+    agentId: string;
+    batchId: string;
+    expectedRows: number | null;
+  }>({ agentId, batchId: "", expectedRows: null });
   const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
+  const expectedRows = orderedBatch.agentId === agentId ? orderedBatch.expectedRows : null;
+  const legacyBatchPollDeadline = useRef(Date.now() + LEGACY_BATCH_POLL_WINDOW);
+  const legacyBatchPollExpired = () =>
+    expectedRows === null && Date.now() >= legacyBatchPollDeadline.current;
   const batch = useQuery({
     ...promptQuizBatchOptions(wsId, batchId),
     refetchInterval: (query) => {
       const rows = query.state.data?.rows ?? [];
-      const awaitingResults = rows.length === 0 || rows.some(isAwaitingQuizResult);
-      return batchId !== "" && awaitingResults ? QUIZ_POLL_INTERVAL : false;
+      const batchComplete = isQuizBatchComplete(rows, expectedRows);
+      return batchId !== "" && !batchComplete && !legacyBatchPollExpired()
+        ? QUIZ_POLL_INTERVAL
+        : false;
     },
   });
   const batchRows = batch.data?.rows ?? [];
-  const batchSettled = batchRows.length > 0 && batchRows.every((row) => !isAwaitingQuizResult(row));
+  const batchSettled = isQuizBatchComplete(batchRows, expectedRows);
   const samples = useQuery({
     ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
     staleTime: 0,
     refetchOnMount: "always",
-    refetchInterval: batchId !== "" && !batchSettled ? QUIZ_POLL_INTERVAL : false,
+    refetchInterval: batchId !== "" && !batchSettled && !legacyBatchPollExpired()
+      ? QUIZ_POLL_INTERVAL
+      : false,
   });
 
   const previousBatchState = useRef({ batchId: "", settled: false });
   useEffect(() => {
+    const storedBatch = readQuizBatch(wsId, agentId);
+    legacyBatchPollDeadline.current = Date.now() + LEGACY_BATCH_POLL_WINDOW;
+    if (storedBatch?.expectedRows === null) {
+      const orderedAt = storedBatch.orderedAt ?? Date.now();
+      legacyBatchPollDeadline.current = orderedAt + LEGACY_BATCH_POLL_WINDOW;
+      if (storedBatch.orderedAt === undefined) {
+        writeQuizBatch(wsId, agentId, storedBatch.batchId, null, orderedAt);
+      }
+    }
     setOrderedBatch({
       agentId,
-      batchId: readQuizBatch(wsId, agentId)?.batchId ?? "",
+      batchId: storedBatch?.batchId ?? "",
+      expectedRows: storedBatch ? storedBatch.expectedRows : null,
     });
   }, [agentId, wsId]);
 
@@ -138,14 +161,19 @@ export function QuizGradedPanel({
       {
         onSuccess: (resp) => {
           if (resp.batch_id !== "") {
-            setOrderedBatch({ agentId, batchId: resp.batch_id });
-            writeQuizBatch(wsId, agentId, resp.batch_id);
+            const orderedAt = Date.now();
+            const expectedRows = resp.ordered ?? null;
+            if (expectedRows === null) {
+              legacyBatchPollDeadline.current = orderedAt + LEGACY_BATCH_POLL_WINDOW;
+            }
+            setOrderedBatch({ agentId, batchId: resp.batch_id, expectedRows });
+            writeQuizBatch(wsId, agentId, resp.batch_id, expectedRows, orderedAt);
           }
           const refused = resp.refused_agents?.length ?? 0;
           if (refused > 0) {
             toast.warning(t(($) => $.quiz.graded.refused, { count: refused }));
           } else {
-            toast.success(t(($) => $.quiz.graded.ordered, { ordered: resp.ordered }));
+            toast.success(t(($) => $.quiz.graded.ordered, { ordered: resp.ordered ?? 0 }));
           }
         },
         onError: (e) =>
@@ -357,9 +385,18 @@ function taskStatusKey(row: PromptQuizSampleRow):
 }
 
 function isAwaitingQuizResult(row: PromptQuizSampleRow): boolean {
+  if (row.outcome === "answered") {
+    return row.score == null && !row.graded_at;
+  }
   if (row.outcome !== "") return false;
   const terminal = ["completed", "failed", "cancelled"].includes(row.task_status ?? "");
   return !(terminal && row.version <= 0);
+}
+
+function isQuizBatchComplete(rows: PromptQuizSampleRow[], expectedRows: number | null): boolean {
+  return expectedRows !== null
+    && rows.length >= expectedRows
+    && rows.every((row) => !isAwaitingQuizResult(row));
 }
 
 interface ParsedCheck {
