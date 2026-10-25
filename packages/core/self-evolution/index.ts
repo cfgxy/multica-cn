@@ -78,6 +78,7 @@ export {
   useSaveSelfEvolutionModelConfig,
   useRestoreSelfEvolutionModelDefault,
   useValidateSelfEvolutionModelConfig,
+  useListSelfEvolutionModelConfigModels,
 } from "./model-config-queries";
 export {
   jevConfigKeys,

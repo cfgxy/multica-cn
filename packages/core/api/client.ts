@@ -116,6 +116,7 @@ import type {
   SelfEvolutionJevConfigSave,
   SelfEvolutionModelConfig,
   SelfEvolutionModelConfigSave,
+  SelfEvolutionModelListResult,
   WorkspaceBackpressureSettings,
   WorkspaceBackpressureSettingsSave,
   WorkspacePromQLRuleSave,
@@ -679,6 +680,7 @@ import {
   SelfEvolutionConfigValidationSchema,
   SelfEvolutionJevConfigSchema,
   SelfEvolutionModelConfigSchema,
+  SelfEvolutionModelListResultSchema,
   WorkspaceBackpressureSettingsSchema,
   EMPTY_SELF_EVOLUTION_OVERVIEW,
   PromptGovernanceVersionSchema,
@@ -4606,6 +4608,20 @@ export class ApiClient {
       has_api_key: false,
       encryption_ready: true,
     }, { endpoint: "POST /api/self-evolution/jev-config/recheck" });
+  }
+
+  async listSelfEvolutionModelConfigModels(input: Pick<SelfEvolutionModelConfigSave, "base_url" | "api_key">): Promise<SelfEvolutionModelListResult> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return parseWithFallback(raw, SelfEvolutionModelListResultSchema, {
+      ok: false,
+      models: [],
+      error_kind: "other",
+      message: "",
+    }, { endpoint: "POST /api/self-evolution/model-config/models" });
   }
 
   /**

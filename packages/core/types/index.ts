@@ -527,6 +527,7 @@ export type {
   SelfEvolutionModelConfigOverride,
   SelfEvolutionModelConfigResolved,
   SelfEvolutionModelConfigSave,
+  SelfEvolutionModelListResult,
 } from "./self-evolution-model-config";
 export type {
   SelfEvolutionJevConfig,
