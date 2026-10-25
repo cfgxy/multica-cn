@@ -47,10 +47,6 @@ export function QuizTab({
   const { t } = useT("self-evolution");
   const [agentId, setAgentId] = useState(initialAgentId);
 
-  useEffect(() => {
-    setAgentId(initialAgentId || readQuizAgent(wsId));
-  }, [initialAgentId, wsId]);
-
   const currentMember = useCurrentMember(wsId);
   // Bank writes are owner-only on the server; admin is deliberately not
   // included, because editing a question body changes what every future
@@ -59,6 +55,17 @@ export function QuizTab({
 
   const agents = useQuery(agentListOptions(wsId));
   const baseline = useQuery(promptQuizBaselineOptions(wsId, "agent", agentId));
+
+  useEffect(() => {
+    if (!agents.isSuccess) return;
+    const validIds = new Set((agents.data ?? []).map((agent: Agent) => agent.id));
+    if (agentId !== "" && validIds.has(agentId)) return;
+
+    const restoredAgentId = initialAgentId || readQuizAgent(wsId);
+    const nextAgentId = validIds.has(restoredAgentId) ? restoredAgentId : "";
+    setAgentId(nextAgentId);
+    if (nextAgentId !== restoredAgentId) writeQuizAgent(wsId, nextAgentId);
+  }, [agentId, agents.data, agents.isSuccess, initialAgentId, wsId]);
 
   const agentItems = useMemo(
     () => (agents.data ?? []).map((a: Agent) => ({ value: a.id, label: a.name })),

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -26,7 +26,6 @@ import { useT, useLocale } from "../../i18n";
 import { readQuizBatch, writeQuizBatch } from "./quiz-session";
 
 const QUIZ_POLL_INTERVAL = 15_000;
-const BATCH_POLL_WINDOW = 70 * 60 * 1000;
 
 /**
  * The graded side of the quiz (RUYI-286), owner-only like the rubrics it
@@ -60,34 +59,30 @@ export function QuizGradedPanel({
 
   const run = useCreatePromptQuizBatch(wsId);
   const queryClient = useQueryClient();
-  const [orderedBatch, setOrderedBatch] = useState({ agentId, batchId: "", orderedAt: 0 });
+  const [orderedBatch, setOrderedBatch] = useState({ agentId, batchId: "" });
   const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
-  const orderedAt = orderedBatch.agentId === agentId ? orderedBatch.orderedAt : 0;
   const batch = useQuery({
     ...promptQuizBatchOptions(wsId, batchId),
     refetchInterval: (query) => {
       const rows = query.state.data?.rows ?? [];
       const awaitingResults = rows.length === 0 || rows.some(isAwaitingQuizResult);
-      return batchId !== "" &&
-        orderedAt > 0 &&
-        Date.now() - orderedAt < BATCH_POLL_WINDOW &&
-        awaitingResults
-        ? QUIZ_POLL_INTERVAL
-        : false;
+      return batchId !== "" && awaitingResults ? QUIZ_POLL_INTERVAL : false;
     },
   });
+  const batchRows = batch.data?.rows ?? [];
+  const batchSettled = batchRows.length > 0 && batchRows.every((row) => !isAwaitingQuizResult(row));
   const samples = useQuery({
     ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
     staleTime: 0,
     refetchOnMount: "always",
+    refetchInterval: batchId !== "" && !batchSettled ? QUIZ_POLL_INTERVAL : false,
   });
 
-  const batchRows = batch.data?.rows ?? [];
-  const batchSettled = batchRows.length > 0 && batchRows.every((row) => !isAwaitingQuizResult(row));
+  const previousBatchState = useRef({ batchId: "", settled: false });
   useEffect(() => {
     setOrderedBatch({
       agentId,
-      ...(readQuizBatch(wsId, agentId) ?? { batchId: "", orderedAt: 0 }),
+      batchId: readQuizBatch(wsId, agentId)?.batchId ?? "",
     });
   }, [agentId, wsId]);
 
@@ -95,20 +90,29 @@ export function QuizGradedPanel({
     void queryClient.invalidateQueries({
       queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
     });
-    void queryClient.invalidateQueries({
-      queryKey: promptQuizKeys.samples(wsId, "agent", agentId, baseline.current_version),
-    });
   }, [agentId, baseline.current_version, queryClient, wsId]);
 
   useEffect(() => {
-    if (!batchSettled) return;
+    if (!batch.isSuccess || batchId === "") return;
+    const previous = previousBatchState.current;
+    previousBatchState.current = { batchId, settled: batchSettled };
+    if (previous.batchId !== batchId || previous.settled || !batchSettled) return;
     void queryClient.invalidateQueries({
       queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
     });
     void queryClient.invalidateQueries({
       queryKey: promptQuizKeys.samples(wsId, "agent", agentId, baseline.current_version),
     });
-  }, [agentId, baseline.current_version, batchSettled, queryClient, wsId]);
+  }, [
+    agentId,
+    baseline.current_version,
+    batch.dataUpdatedAt,
+    batch.isSuccess,
+    batchId,
+    batchSettled,
+    queryClient,
+    wsId,
+  ]);
 
   const scores = baseline.scores;
   const graded = scores?.graded ?? 0;
@@ -119,9 +123,8 @@ export function QuizGradedPanel({
       {
         onSuccess: (resp) => {
           if (resp.batch_id !== "") {
-            const orderedAt = Date.now();
-            setOrderedBatch({ agentId, batchId: resp.batch_id, orderedAt });
-            writeQuizBatch(wsId, agentId, resp.batch_id, orderedAt);
+            setOrderedBatch({ agentId, batchId: resp.batch_id });
+            writeQuizBatch(wsId, agentId, resp.batch_id);
           }
           const refused = resp.refused_agents?.length ?? 0;
           if (refused > 0) {

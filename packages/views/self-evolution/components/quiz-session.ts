@@ -2,7 +2,6 @@
 
 interface StoredQuizBatch {
   batchId: string;
-  orderedAt: number;
 }
 
 function storage(): Storage | null {
@@ -46,10 +45,7 @@ export function readQuizBatch(wsId: string, agentId: string): StoredQuizBatch | 
     if (value === null || typeof value !== "object") return null;
     const record = value as Record<string, unknown>;
     if (typeof record.batchId !== "string" || record.batchId === "") return null;
-    return {
-      batchId: record.batchId,
-      orderedAt: typeof record.orderedAt === "number" ? record.orderedAt : 0,
-    };
+    return { batchId: record.batchId };
   } catch {
     return null;
   }
@@ -59,10 +55,9 @@ export function writeQuizBatch(
   wsId: string,
   agentId: string,
   batchId: string,
-  orderedAt: number,
 ): void {
   try {
-    storage()?.setItem(batchKey(wsId, agentId), JSON.stringify({ batchId, orderedAt }));
+    storage()?.setItem(batchKey(wsId, agentId), JSON.stringify({ batchId }));
   } catch {
     // Session storage is best-effort; the current view remains usable.
   }

@@ -2,6 +2,9 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act as reactAct } from "react";
+import { hydrateRoot } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type {
@@ -33,12 +36,14 @@ const state = vi.hoisted(() => ({
   role: "owner" as string | null,
   created: [] as unknown[],
   updated: [] as unknown[],
+  agents: [{ id: "agent-1", name: "Gu Xiaoyu" }],
+  baselineReads: 0,
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
   agentListOptions: (wsId: string) => ({
     queryKey: ["agents", wsId],
-    queryFn: () => Promise.resolve([{ id: "agent-1", name: "Gu Xiaoyu" }]),
+    queryFn: () => Promise.resolve(state.agents),
   }),
 }));
 
@@ -60,7 +65,10 @@ vi.mock("@multica/core/self-evolution", async () => {
     ...actual,
     promptQuizBaselineOptions: (wsId: string, scope: string, scopeId: string) => ({
       queryKey: ["prompt-quiz", wsId, "baseline", scope, scopeId],
-      queryFn: () => Promise.resolve(state.baseline),
+      queryFn: () => {
+        state.baselineReads += 1;
+        return Promise.resolve(state.baseline);
+      },
       enabled: scopeId !== "",
     }),
     promptQuizItemsOptions: (wsId: string) => ({
@@ -133,12 +141,16 @@ function detail(over: Partial<PromptQuizItemDetail> = {}): PromptQuizItemDetail 
 
 function renderTab(agentId = "agent-1", wsId = "ws-1") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  return render(tabTree(client, wsId, agentId));
+}
+
+function tabTree(client: QueryClient, wsId: string, agentId = "") {
+  return (
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" resources={TEST_RESOURCES}>
         <QuizTab wsId={wsId} initialAgentId={agentId} />
       </I18nProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
 }
 
@@ -149,6 +161,8 @@ beforeEach(() => {
   state.role = "owner";
   state.created = [];
   state.updated = [];
+  state.agents = [{ id: "agent-1", name: "Gu Xiaoyu" }];
+  state.baselineReads = 0;
 });
 
 describe("QuizTab reading", () => {
@@ -163,6 +177,40 @@ describe("QuizTab reading", () => {
       expect(screen.getByRole("combobox")).toHaveTextContent("Gu Xiaoyu");
     });
     await screen.findByTestId("quiz-reading-card");
+  });
+
+  it("hydrates without reading sessionStorage during the first client render", async () => {
+    writeQuizAgent("ws-hydration", "agent-1");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = tabTree(client, "ws-hydration");
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(tree);
+    expect(container.querySelector('[data-testid="quiz-reading-card"]')).toBeNull();
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const root = hydrateRoot(container, tree);
+    try {
+      await waitFor(() => {
+        expect(container.querySelector('[data-testid="quiz-reading-card"]')).not.toBeNull();
+      });
+      expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(/hydration|did not match/i);
+    } finally {
+      await reactAct(async () => root.unmount());
+      consoleError.mockRestore();
+    }
+  });
+
+  it("ignores a restored agent that is no longer in the workspace", async () => {
+    state.agents = [];
+    writeQuizAgent("ws-stale-agent", "deleted-agent");
+    renderTab("", "ws-stale-agent");
+
+    await waitFor(() => {
+      expect(screen.getByText(enSelfEvolution.quality.noSubject.title)).toBeInTheDocument();
+      expect(sessionStorage.getItem("multica:quiz:ws-stale-agent:agent")).toBe("");
+    });
+    expect(screen.queryByTestId("quiz-reading-card")).not.toBeInTheDocument();
+    expect(state.baselineReads).toBe(0);
   });
 
   it("prints the verdict with both groups and the decision inputs", async () => {
