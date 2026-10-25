@@ -59,6 +59,65 @@ func TestParseNegativeCases(t *testing.T) {
 	}
 }
 
+func TestReplaceSegmentPreservesInjectionSnapshot(t *testing.T) {
+	current := Render(stableFixture, []RenderedClause{clauseA(2), clauseB(4)})
+	before, err := Parse(current)
+	if err != nil {
+		t.Fatalf("parse current carrier: %v", err)
+	}
+	proposed := "- **每日同步**：修订后的规则。"
+
+	got, err := ReplaceSegment(current, clauseA(2).Slug, 2, proposed)
+	if err != nil {
+		t.Fatalf("replace clause segment: %v", err)
+	}
+	doc, err := Parse(got)
+	if err != nil {
+		t.Fatalf("parse synthesized carrier: %v", err)
+	}
+	if doc.Stable != before.Stable {
+		t.Fatalf("stable text changed: %q, want %q", doc.Stable, before.Stable)
+	}
+	if len(doc.Segments) != 2 || doc.Segments[0].Slug != clauseA(2).Slug || doc.Segments[0].Rev != 3 || strings.TrimSpace(doc.Segments[0].Body) != proposed {
+		t.Fatalf("revised segment = %+v", doc.Segments)
+	}
+	if doc.Segments[1] != (Segment{Slug: clauseB(4).Slug, Rev: 4, Body: clauseB(4).Body + "\n"}) {
+		t.Fatalf("unrelated segment changed: %+v", doc.Segments[1])
+	}
+
+	want := Render(stableFixture, []RenderedClause{
+		{Slug: clauseA(2).Slug, Version: 3, Body: proposed}, clauseB(4),
+	})
+	if got != want {
+		t.Fatalf("synthesized carrier differs from injection render:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestReplaceSegmentFailsClosed(t *testing.T) {
+	base := Render(stableFixture, []RenderedClause{clauseA(2)})
+	duplicate := base + "\n" + Render("", []RenderedClause{clauseA(2)})
+	malformed := base + "\n<!-- clause:id=cls_aaa00001 rev= -->\n- Stale body.\n<!-- /clause -->\n"
+	cases := []struct {
+		name, current string
+		version       int32
+	}{
+		{name: "missing segment", current: stableFixture, version: 2},
+		{name: "stale marker", current: base, version: 1},
+		{name: "duplicate segment", current: duplicate, version: 2},
+		{name: "malformed marker", current: malformed, version: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ReplaceSegment(tc.current, clauseA(2).Slug, tc.version, "- Proposed body."); err == nil {
+				t.Fatal("expected fail-closed error")
+			}
+		})
+	}
+	if _, err := ReplaceSegment(base, clauseA(2).Slug, 2, " \n"); err == nil {
+		t.Fatal("expected empty replacement body to fail closed")
+	}
+}
+
 func TestParseEmptyDocument(t *testing.T) {
 	doc, err := Parse("")
 	if err != nil {
