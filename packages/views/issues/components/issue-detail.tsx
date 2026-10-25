@@ -2721,7 +2721,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           time rather than by a silently shorter list. */}
       <QuickActionsSection issueId={issue.id} />
       <PluginPanelSection issueId={issue.id} />
-      <CredentialManager key={issue.id} issue={issue} />
 
       {/* Parent issue — standalone section, only when the issue has a
           parent. Setting a parent is reachable via the issue actions menu;
@@ -2788,6 +2787,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           {pullRequestsOpen && <div className="pl-2"><PullRequestList issueId={id} showGitHub={githubSettings.prSidebar} /></div>}
         </div>
       )}
+
+	      <CredentialManager key={issue.id} issue={issue} />
 
       {/* Execution log — active runs + collapsed past runs, each carrying its
           own token spend, with the issue total on the section header.

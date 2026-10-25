@@ -1375,9 +1375,6 @@ export class ApiClient {
 
   async createIssueCredential(issueId: string, data: {
     name: string;
-    target_service: string;
-    connector_id: string;
-    connector_revision: number;
     purpose: string;
     subject_type: "agent" | "squad";
     subject_id: string;
@@ -1398,9 +1395,6 @@ export class ApiClient {
 
   async replaceIssueCredential(issueId: string, credentialId: string, data: {
     name: string;
-    target_service: string;
-    connector_id: string;
-    connector_revision: number;
     purpose: string;
     subject_type: "agent" | "squad";
     subject_id: string;
