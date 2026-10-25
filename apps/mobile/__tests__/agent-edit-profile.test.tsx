@@ -91,12 +91,9 @@ beforeEach(() => {
 });
 
 describe("EditAgentProfile concurrency preservation", () => {
-  it.each([
-    [0, { name: "Updated" }],
-    [-1, { name: "Updated", max_concurrent_tasks: 0 }],
-  ])(
-    "keeps unlimited concurrency %s when saving the profile",
-    async (concurrency, patch) => {
+  it.each([0, 4])(
+    "keeps saved concurrency %s when saving the profile",
+    async (concurrency) => {
       mockConcurrency = concurrency;
       await render(<EditAgentProfile />);
       await waitFor(() =>
@@ -106,7 +103,7 @@ describe("EditAgentProfile concurrency preservation", () => {
       await fireEvent.changeText(screen.getByDisplayValue("Coder"), "Updated");
       await fireEvent.press(screen.getByLabelText("Save"));
 
-      expect(mockMutate).toHaveBeenCalledWith(patch, expect.anything());
+      expect(mockMutate).toHaveBeenCalledWith({ name: "Updated" }, expect.anything());
     },
   );
 });

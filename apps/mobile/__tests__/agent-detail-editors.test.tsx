@@ -327,7 +327,8 @@ describe("AgentDetailPage editor entries (RUYI-624)", () => {
     expect(screen.getByText("Alice")).toBeTruthy();
   });
 
-  it.each([0, -1])("shows concurrency %s as unlimited", async (concurrency) => {
+  it("shows 0 concurrency as unlimited", async () => {
+    const concurrency = 0;
     mockCurrentAgent = { ...mockAgent, max_concurrent_tasks: concurrency };
     await render(<AgentDetailPage />);
 

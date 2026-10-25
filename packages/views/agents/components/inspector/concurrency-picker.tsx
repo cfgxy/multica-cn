@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import {
-  AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED,
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
   AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
@@ -39,10 +38,8 @@ export function ConcurrencyPicker({
     if (open) setDraft(String(value));
   }, [open, value]);
 
-  // Read side: both 0 and the legacy -1 sentinel mean unlimited.
   const displayValue =
-    value === AGENT_MAX_CONCURRENT_TASKS_UNLIMITED ||
-    value === AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED
+    value === AGENT_MAX_CONCURRENT_TASKS_UNLIMITED
       ? t(($) => $.pickers.concurrency_unlimited)
       : value;
 
@@ -56,8 +53,7 @@ export function ConcurrencyPicker({
 
   const commit = async () => {
     const n = Number(draft);
-    // New writes must never be negative: 0 = unlimited, 1-50 = cap. A
-    // legacy -1 read back from the source row normalizes to 0 on save.
+    // 0 = unlimited, 1-50 = cap; negative values are invalid.
     if (
       !Number.isInteger(n) ||
       (n !== AGENT_MAX_CONCURRENT_TASKS_UNLIMITED &&

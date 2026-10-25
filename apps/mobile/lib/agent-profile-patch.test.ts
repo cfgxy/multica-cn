@@ -14,10 +14,8 @@ import {
   AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED,
 } from "@multica/core/agents/constants";
 import {
-  agentConcurrencyDraft,
   buildProfilePatch,
   parseBounded,
-  preserveUnlimitedAgentConcurrencyPatch,
 } from "./agent-profile-patch";
 
 function agent(overrides: Partial<Agent> = {}): Agent {
@@ -91,30 +89,6 @@ describe("parseBounded", () => {
     expect(parseBounded("999", AGENT_MAX_CONCURRENT_TASKS_MIN, AGENT_MAX_CONCURRENT_TASKS_MAX)).toBeNull();
   });
 
-  it("seeds both unlimited values as 0 in editor drafts", () => {
-    expect(agentConcurrencyDraft(0)).toBe("0");
-    expect(agentConcurrencyDraft(-1)).toBe("0");
-  });
-
-  it.each([-1, 0])("preserves unlimited concurrency %s on partial updates", (value) => {
-    expect(
-      preserveUnlimitedAgentConcurrencyPatch(
-        agent({ max_concurrent_tasks: value }),
-        { instructions: "updated" },
-      ),
-    ).toEqual({ instructions: "updated", max_concurrent_tasks: 0 });
-  });
-
-  it("preserves an explicitly supplied concurrency value", () => {
-    const patch = { max_concurrent_tasks: 4 };
-    expect(
-      preserveUnlimitedAgentConcurrencyPatch(
-        agent({ max_concurrent_tasks: -1 }),
-        patch,
-      ),
-    ).toBe(patch);
-  });
-
   it("admits the extra sentinel outside the range (0 = gate disabled)", () => {
     expect(
       parseBounded("0", 1000, 10000000, AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED),
@@ -135,20 +109,12 @@ describe("buildProfilePatch", () => {
     expect(patch).toEqual({ model: "glm-5.3-flash", max_concurrent_tasks: 6 });
   });
 
-  it("saves another profile field while normalizing legacy unlimited to 0", () => {
+  it.each([0, 7])("does not change saved concurrency %i on profile-only updates", (value) => {
     const patch = buildProfilePatch(
-      agent({ max_concurrent_tasks: -1 }),
-      draft({ description: "updated", concurrency: agentConcurrencyDraft(-1) }),
+      agent({ max_concurrent_tasks: value }),
+      draft({ description: "updated", concurrency: String(value) }),
     );
-    expect(patch).toEqual({ description: "updated", max_concurrent_tasks: 0 });
-  });
-
-  it("normalizes legacy unlimited even when the concurrency draft is invalid", () => {
-    const patch = buildProfilePatch(
-      agent({ max_concurrent_tasks: -1 }),
-      draft({ description: "updated", concurrency: "" }),
-    );
-    expect(patch).toEqual({ description: "updated", max_concurrent_tasks: 0 });
+    expect(patch).toEqual({ description: "updated" });
   });
 
   it("writes 0 when an operator explicitly selects unlimited", () => {

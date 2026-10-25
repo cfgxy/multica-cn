@@ -102,8 +102,7 @@ multica agent copy <source-agent-id> --runtime-id <target> --model <model>  # cr
   `max_concurrent_tasks`, invocation permission (`permission_mode` +
   allow-list), and assigned workspace skills.
 - A copied `max_concurrent_tasks` is included when the source value is 0 or
-  within 1–50; the legacy -1 sentinel is read as unlimited and written as 0.
-  Other historical out-of-range values are omitted so the new agent receives
+  within 1–50. Invalid source values are omitted so the new agent receives
   the server default (`6`); an explicit out-of-range `--max-concurrent-tasks`
   override is rejected before any API request.
 - Runtime-specific fields (`model`, `thinking_level`, `service_tier`) are copied
@@ -146,12 +145,10 @@ are typed `[]string`/`any` and marshaled as-is — the JSON-shape rejection
 happens in the CLI, not the create handler.
 
 The `0` (unlimited) / 1–50 concurrency range applies consistently to create and
-update: every negative value — including the historical `-1` sentinel — is
-rejected on write, while read paths still treat a legacy `-1` row as
-unlimited. On create, an omitted field defaults to 6 while an explicitly
-supplied 0 disables the agent-level cap; on update, omission preserves the
-current value. The CLI performs the same range check before sending create or
-update requests.
+update: every negative value is invalid. On create, an omitted field defaults
+to 6 while an explicitly supplied 0 disables the agent-level cap; on update,
+omission preserves the current value. The CLI performs the same range check
+before sending create or update requests.
 
 `thinking_level` is validated only at the provider level: fixed-vocabulary
 providers reject an unrecognized literal, while dynamic-vocabulary providers

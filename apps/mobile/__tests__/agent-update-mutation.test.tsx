@@ -35,7 +35,7 @@ function agent(overrides = {}) {
     model: "gpt-x",
     thinking_level: null,
     service_tier: null,
-    max_concurrent_tasks: -1,
+    max_concurrent_tasks: 0,
     session_max_context_tokens: null,
     session_compact_pct: null,
     runtime_config: {},
@@ -44,12 +44,12 @@ function agent(overrides = {}) {
   };
 }
 
-describe("useUpdateAgent concurrency normalization", () => {
+describe("useUpdateAgent optimistic rollback", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  it("normalizes before an awaited optimistic update can replace the legacy cache value", async () => {
+  it("rolls back a failed concurrent update without changing the saved cap", async () => {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
@@ -95,7 +95,7 @@ describe("useUpdateAgent concurrency normalization", () => {
       ).rejects.toThrow("concurrent update failed");
     });
 
-    expect(queryClient.getQueryData(detailKey).max_concurrent_tasks).toBe(-1);
+    expect(queryClient.getQueryData(detailKey).max_concurrent_tasks).toBe(0);
     releaseFirstDetailCancel();
 
     await act(async () => {
@@ -104,7 +104,6 @@ describe("useUpdateAgent concurrency normalization", () => {
 
     expect(mockUpdateAgent).toHaveBeenNthCalledWith(2, "agent-1", {
       instructions: "updated",
-      max_concurrent_tasks: 0,
     });
     await waitFor(() =>
       expect(queryClient.getQueryData(detailKey).max_concurrent_tasks).toBe(0),

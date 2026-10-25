@@ -14,7 +14,6 @@
  */
 import {
   AGENT_MAX_CONCURRENT_TASKS_MAX,
-  AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
   AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
   AGENT_SESSION_COMPACT_PCT_DEFAULT,
@@ -51,38 +50,6 @@ export interface AgentProfileDraft {
   voiceModel: string;
   /** Raw JSON text of the advanced object; "" = none. */
   voiceAdvanced: string;
-}
-
-export function agentConcurrencyDraft(value: number): string {
-  return String(
-    value === AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED
-      ? AGENT_MAX_CONCURRENT_TASKS_UNLIMITED
-      : value,
-  );
-}
-
-export function isUnlimitedAgentConcurrency(value: number): boolean {
-  return (
-    value === AGENT_MAX_CONCURRENT_TASKS_UNLIMITED ||
-    value === AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED
-  );
-}
-
-export function preserveUnlimitedAgentConcurrencyPatch(
-  agent: Pick<Agent, "max_concurrent_tasks"> | null | undefined,
-  patch: UpdateAgentRequest,
-): UpdateAgentRequest {
-  if (
-    (agent?.max_concurrent_tasks !== AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED &&
-      agent?.max_concurrent_tasks !== AGENT_MAX_CONCURRENT_TASKS_UNLIMITED) ||
-    patch.max_concurrent_tasks !== undefined
-  ) {
-    return patch;
-  }
-  return {
-    ...patch,
-    max_concurrent_tasks: AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
-  };
 }
 
 /**
@@ -142,10 +109,6 @@ export function buildProfilePatch(
   );
   if (conc !== null && conc !== agent.max_concurrent_tasks)
     next.max_concurrent_tasks = conc;
-  else if (
-    agent.max_concurrent_tasks === AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED
-  )
-    next.max_concurrent_tasks = AGENT_MAX_CONCURRENT_TASKS_UNLIMITED;
   const ctx = parseBounded(
     draft.maxContext,
     AGENT_SESSION_MAX_CONTEXT_TOKENS_MIN,

@@ -9,7 +9,6 @@ import type {
 } from "../types";
 import {
   AGENT_DESCRIPTION_MAX_LENGTH,
-  AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED,
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
   AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
@@ -251,16 +250,10 @@ export function buildCreateAgentRequest(options: {
     if (
       Number.isInteger(sourceConcurrency) &&
       (sourceConcurrency === AGENT_MAX_CONCURRENT_TASKS_UNLIMITED ||
-      // Historical rows may still hold the pre-revision -1 sentinel; read
-      // it as unlimited and write the current sentinel, never the -1.
-      sourceConcurrency === AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED ||
       (sourceConcurrency >= AGENT_MAX_CONCURRENT_TASKS_MIN &&
         sourceConcurrency <= AGENT_MAX_CONCURRENT_TASKS_MAX))
     ) {
-      request.max_concurrent_tasks =
-        sourceConcurrency === AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED
-          ? AGENT_MAX_CONCURRENT_TASKS_UNLIMITED
-          : sourceConcurrency;
+      request.max_concurrent_tasks = sourceConcurrency;
     }
     const sourceWeight = duplicateSource.resource_weight;
     if (

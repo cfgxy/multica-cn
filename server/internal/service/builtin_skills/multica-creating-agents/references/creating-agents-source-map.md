@@ -42,7 +42,7 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | Reads source via `GET /api/agents/<id>` | 95 | Composes over existing endpoints — no dedicated copy API | read `runAgentCopy` |
 | Conversation starters copied without an override flag | `runAgentCopy` conversation-starter body assembly | Copies `conversation_starters` when the source response contains an array; `registerAgentCopyFlags` intentionally exposes no conversation-starter override | `multica agent copy --help` |
 | Same-runtime vs cross-runtime rule | 114, 187 | `sameRuntime` copies `model`/`thinking_level`/`service_tier`; a different `--runtime-id` drops them and requires `--model` (empty allowed) | `multica agent copy --help` |
-| Concurrency copy compatibility | `runAgentCopy`, `copiedAgentMaxConcurrentTasks` | Explicit `--max-concurrent-tasks` is validated before any request; a valid source value (0 or 1–50) is copied, the legacy -1 sentinel is read as unlimited and written as 0, while other historical values are omitted so create defaults to 6 | read the concurrency body assembly |
+| Concurrency copy validation | `runAgentCopy`, `copiedAgentMaxConcurrentTasks` | Explicit `--max-concurrent-tasks` is validated before any request; valid source values (0 or 1–50) are copied, while invalid values including negatives are omitted so create defaults to 6 | read the concurrency body assembly |
 | Skills copied in the create transaction | 239 | Source skill ids sent as `skill_ids`, bound in the same `POST /api/agents` tx (267); `--no-skills` opts out | read `runAgentCopy` |
 | Secrets never copied | 240–266 | `custom_env`/`mcp_config`/`runtime_config` set only from explicit secret-safe flags, never read from the source | `multica agent copy --help` |
 

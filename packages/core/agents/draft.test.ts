@@ -203,8 +203,8 @@ describe("agent draft execution overrides", () => {
     expect(request.thinking_level).toBe("high");
   });
 
-  it.each([0, -1])(
-    "carries unlimited duplicate concurrency of %i onto the copy as 0",
+  it.each([0])(
+    "carries unlimited duplicate concurrency of %i onto the copy",
     (maxConcurrentTasks) => {
       const request = buildCreateAgentRequest({
         draft: draft(),
@@ -214,14 +214,12 @@ describe("agent draft execution overrides", () => {
         }),
       });
 
-      // 0 is the current unlimited sentinel; -1 is the legacy one from
-      // historical rows, read as unlimited and never written back.
       expect(request.max_concurrent_tasks).toBe(0);
     },
   );
 
-  it.each([-2, 51])(
-    "omits an invalid historical duplicate concurrency of %i",
+  it.each([-1, -2, 51])(
+    "omits invalid duplicate concurrency of %i",
     (maxConcurrentTasks) => {
       const request = buildCreateAgentRequest({
         draft: draft(),

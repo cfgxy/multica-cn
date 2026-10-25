@@ -176,7 +176,7 @@ export const AgentRuntimeSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).default({}),
   owner_id: z.string().nullable().default(null),
   visibility: z.enum(["private", "public"]).catch("private"),
-  max_concurrent_tasks: z.number().int().nonnegative().catch(0).default(0),
+  max_concurrent_tasks: z.number().int().nonnegative().default(0),
   profile_id: z.string().nullable().optional(),
   registration_source: z.string().optional(),
   credential_status: z.string().optional(),

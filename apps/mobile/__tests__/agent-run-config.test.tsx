@@ -241,8 +241,8 @@ describe("AgentRunConfig (RUYI-624)", () => {
     );
   });
 
-  it.each([0, -1])(
-    "preserves unlimited concurrency %s while saving a runtime change (legacy -1 normalizes)",
+  it.each([0, 3])(
+    "preserves saved concurrency %s while saving a runtime change",
     async (concurrency) => {
       mockAgentOverrides = { max_concurrent_tasks: concurrency };
       await render(<AgentRunConfig />);
@@ -255,7 +255,6 @@ describe("AgentRunConfig (RUYI-624)", () => {
         {
           runtime_id: "runtime-2",
           model: "",
-          ...(concurrency === -1 ? { max_concurrent_tasks: 0 } : {}),
         },
         expect.anything(),
       );

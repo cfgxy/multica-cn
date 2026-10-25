@@ -780,8 +780,7 @@ func TestAgentMaxConcurrentTasksFlagValidation(t *testing.T) {
 		return cmd
 	}
 
-	// New negative writes must be stably rejected, including the legacy -1
-	// sentinel, which is only tolerated on the read side.
+	// Negative writes are rejected before any HTTP request.
 	for _, value := range []string{"-1", "-2", "51"} {
 		t.Run("create rejects "+value, func(t *testing.T) {
 			before := requestCount

@@ -38,7 +38,8 @@ import { Label } from "@multica/ui/components/ui/label";
 import { toast } from "sonner";
 import {
   AGENT_DESCRIPTION_MAX_LENGTH,
-  AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED,
+  AGENT_MAX_CONCURRENT_TASKS_MAX,
+  AGENT_MAX_CONCURRENT_TASKS_MIN,
   AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
   VISIBILITY_DESCRIPTION,
   VISIBILITY_LABEL,
@@ -271,16 +272,15 @@ export function CreateAgentDialog({
         // dialog's create call still accepts custom_env at create
         // time, but the source values aren't available here.
         if (template.custom_args.length) data.custom_args = template.custom_args;
-        // 0 is a meaningful value (unlimited), so forward it explicitly.
-        // A legacy -1 source row is read as unlimited and written as 0.
-        if (
-          template.max_concurrent_tasks === AGENT_MAX_CONCURRENT_TASKS_UNLIMITED ||
-          template.max_concurrent_tasks ===
-            AGENT_MAX_CONCURRENT_TASKS_LEGACY_UNLIMITED
+        const concurrency = template.max_concurrent_tasks;
+        if (concurrency === AGENT_MAX_CONCURRENT_TASKS_UNLIMITED) {
+          data.max_concurrent_tasks = concurrency;
+        } else if (
+          Number.isInteger(concurrency) &&
+          concurrency >= AGENT_MAX_CONCURRENT_TASKS_MIN &&
+          concurrency <= AGENT_MAX_CONCURRENT_TASKS_MAX
         ) {
-          data.max_concurrent_tasks = AGENT_MAX_CONCURRENT_TASKS_UNLIMITED;
-        } else if (template.max_concurrent_tasks) {
-          data.max_concurrent_tasks = template.max_concurrent_tasks;
+          data.max_concurrent_tasks = concurrency;
         }
       }
       const createdAgent = await onCreate(data);

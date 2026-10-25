@@ -11,23 +11,14 @@ const (
 	UnlimitedMaxConcurrentTasks int32 = 0
 )
 
-// LegacyUnlimitedMaxConcurrentTasks is the pre-revision sentinel (-1, merged
-// via PR #466) that still exists in historical agent rows. No data
-// migration rewrites those rows (9xx numbering is reserved to the original
-// RUYI-843 delivery); read paths treat -1 as unlimited so in-flight
-// schedules keep running, while every write path rejects all negatives.
-const LegacyUnlimitedMaxConcurrentTasks int32 = -1
-
 func IsValidMaxConcurrentTasks(value int32) bool {
 	return value == UnlimitedMaxConcurrentTasks ||
 		(value >= MinMaxConcurrentTasks && value <= MaxMaxConcurrentTasks)
 }
 
-// IsUnlimitedMaxConcurrentTasks is the read-side check: both the current
-// sentinel (0) and the pre-revision legacy sentinel (-1) mean "no
-// agent-level cap".
+// IsUnlimitedMaxConcurrentTasks reports whether the agent-level cap is disabled.
 func IsUnlimitedMaxConcurrentTasks(value int32) bool {
-	return value == UnlimitedMaxConcurrentTasks || value == LegacyUnlimitedMaxConcurrentTasks
+	return value == UnlimitedMaxConcurrentTasks
 }
 
 func ValidateMaxConcurrentTasks(value int32) error {

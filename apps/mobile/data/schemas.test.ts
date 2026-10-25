@@ -10,6 +10,18 @@ describe("AgentSchema skill assignments", () => {
   });
 });
 
+describe("AgentSchema concurrency", () => {
+  it("accepts 0 and positive integer limits", () => {
+    expect(AgentSchema.parse({ id: "a1", max_concurrent_tasks: 0 }).max_concurrent_tasks).toBe(0);
+    expect(AgentSchema.parse({ id: "a1", max_concurrent_tasks: 8 }).max_concurrent_tasks).toBe(8);
+  });
+
+  it("rejects negative and fractional limits", () => {
+    expect(AgentSchema.safeParse({ id: "a1", max_concurrent_tasks: -1 }).success).toBe(false);
+    expect(AgentSchema.safeParse({ id: "a1", max_concurrent_tasks: 1.5 }).success).toBe(false);
+  });
+});
+
 /**
  * RUYI-33 — run-detail entry gating and failure classification read the
  * parsed AgentTask, so the wire schema must not lose fields the detail

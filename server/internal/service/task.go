@@ -3911,8 +3911,8 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		if weight < 1 {
 			weight = 1
 		}
-		// Unlimited (0) and the pre-migration legacy sentinel (-1) both skip
-		// the agent-level gate; the runtime-level gate above still applies.
+		// Unlimited (0) skips the agent-level gate; the runtime-level gate
+		// above still applies.
 		if !agentconfig.IsUnlimitedMaxConcurrentTasks(agent.MaxConcurrentTasks) &&
 			running*weight >= int64(agent.MaxConcurrentTasks) {
 			slog.Debug("task claim: no capacity", "agent_id", util.UUIDToString(agentID), "running", running, "weight", weight, "max", agent.MaxConcurrentTasks)
