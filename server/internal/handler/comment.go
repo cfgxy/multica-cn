@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -2171,7 +2172,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 		return commentSuspensionBlockedOutcomes(targets)
 	}
 	h.noteBlockedRuntimeTargets(ctx, issue, targets)
-	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
+	enqueued := h.enqueueCommentAgentTriggers(ctx, issue, comment, triggers)
 	return commentTriggerOutcomes(targets, enqueued)
 }
 
@@ -2307,7 +2308,7 @@ type commentEnqueueResult struct {
 // target that resolved to the agent, so coalescing a run never drops a named
 // target's outcome. queued / coalesced / deferred are success-shaped (the run
 // was handled, no duplicate task); only a real enqueue failure is blocked.
-func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, triggers []commentAgentTrigger) map[string]commentEnqueueResult {
+func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issue, triggerComment db.Comment, triggers []commentAgentTrigger) map[string]commentEnqueueResult {
 	var escalationDelay time.Duration
 	escalationDelayLoaded := false
 	getEscalationDelay := func() time.Duration {
@@ -2317,6 +2318,7 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 		}
 		return escalationDelay
 	}
+	cascade := h.agentOnlyCommentCascadeCheck(ctx, issue.WorkspaceID, triggerComment)
 	results := make(map[string]commentEnqueueResult, len(triggers))
 	record := func(trigger commentAgentTrigger, status DispatchStatus, reason DispatchReasonCode) {
 		execSquadID := ""
@@ -2325,16 +2327,20 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 		}
 		results[uuidToString(trigger.Agent.ID)] = commentEnqueueResult{status: status, reason: reason, execSquadID: execSquadID}
 	}
-	for _, trigger := range triggers {
-		if h.agentOnlyCommentCascadeBlocked(ctx, triggerCommentID) {
-			slog.Warn("comment trigger circuit breaker blocked agent-only cascade",
-				"issue_id", uuidToString(issue.ID),
-				"comment_id", uuidToString(triggerCommentID),
-				"agent_id", uuidToString(trigger.Agent.ID))
-			record(trigger, DispatchBlocked, ReasonSelfTriggerSuppressed)
-			continue
+	if cascade.blocked {
+		if h.auditAgentOnlyCommentCascadeBlocked(ctx, issue, triggerComment.ID, cascade, triggers) {
+			for _, trigger := range triggers {
+				slog.Warn("comment trigger circuit breaker blocked agent-only cascade",
+					"issue_id", uuidToString(issue.ID),
+					"comment_id", uuidToString(triggerComment.ID),
+					"agent_id", uuidToString(trigger.Agent.ID))
+				record(trigger, DispatchBlocked, ReasonAgentOnlyCascadeBlocked)
+			}
+			return results
 		}
-		status, reason := h.resolveCommentTriggerEnqueue(ctx, issue, trigger, triggerCommentID, getEscalationDelay)
+	}
+	for _, trigger := range triggers {
+		status, reason := h.resolveCommentTriggerEnqueue(ctx, issue, trigger, triggerComment.ID, getEscalationDelay)
 		record(trigger, status, reason)
 	}
 	return results
@@ -2342,58 +2348,88 @@ func (h *Handler) enqueueCommentAgentTriggers(ctx context.Context, issue db.Issu
 
 const (
 	// An agent-only handoff chain without a fresh member comment is allowed to
-	// coordinate, but it must not consume unbounded runs. The short-window
-	// limit catches rapid ping-pong; the depth limit catches a slower loop.
-	maxAgentOnlyCommentCascadeHops      = 12
-	maxRapidAgentOnlyCommentCascadeHops = 8
-	agentOnlyCommentCascadeWindow       = 10 * time.Minute
+	// coordinate, but it must not consume unbounded rapid runs. Do not impose a
+	// lifetime depth cap: legitimate work can cross several roles over hours,
+	// while a fixed cap would silently strand its next substantive handoff.
+	maxRapidAgentOnlyCommentCascadeHops = dispatch.MaxRapidAgentOnlyCommentCascadeHops
 )
 
-// agentOnlyCommentCascadeBlocked follows comment.source_task_id back through
-// each source task's trigger comment. A member-authored comment has no source
-// task, so it deliberately terminates the chain and represents fresh external
-// input. The comment and task rows are already durable audit evidence; this
-// function merely bounds their automatic re-dispatch effect.
+type agentOnlyCommentCascadeResult struct {
+	blocked             bool
+	sourceTaskID        pgtype.UUID
+	sourceTaskAgentID   pgtype.UUID
+	sourceTaskRuntimeID pgtype.UUID
+}
+
+// agentOnlyCommentCascadeCheck evaluates an agent comment's source-task lineage.
+// A member-authored comment has no source task, so it deliberately terminates
+// the chain and represents fresh external input. The query reads the source
+// comment and its verdict in one snapshot, retaining the source task observed
+// with the dispatch decision for the audit event's causal anchor.
+func (h *Handler) agentOnlyCommentCascadeCheck(ctx context.Context, workspaceID pgtype.UUID, comment db.Comment) agentOnlyCommentCascadeResult {
+	if comment.AuthorType != "agent" || !comment.SourceTaskID.Valid {
+		return agentOnlyCommentCascadeResult{}
+	}
+	verdict, err := h.Queries.GetAgentOnlyCommentCascadeVerdict(ctx, db.GetAgentOnlyCommentCascadeVerdictParams{
+		CommentID:          comment.ID,
+		WorkspaceID:        workspaceID,
+		RapidWindowSeconds: dispatch.AgentOnlyCommentCascadeWindow.Seconds(),
+		MaxRapidHops:       int32(dispatch.MaxRapidAgentOnlyCommentCascadeHops),
+	})
+	if err != nil {
+		return agentOnlyCommentCascadeResult{}
+	}
+	return agentOnlyCommentCascadeResult{
+		blocked:             dispatch.AgentOnlyCommentCascadeBlocked(verdict.RapidHops, verdict.HasCycle),
+		sourceTaskID:        verdict.SourceTaskID,
+		sourceTaskAgentID:   verdict.SourceTaskAgentID,
+		sourceTaskRuntimeID: verdict.SourceTaskRuntimeID,
+	}
+}
+
 func (h *Handler) agentOnlyCommentCascadeBlocked(ctx context.Context, commentID pgtype.UUID) bool {
 	comment, err := h.Queries.GetComment(ctx, commentID)
-	if err != nil || comment.AuthorType != "agent" || !comment.SourceTaskID.Valid {
+	if err != nil {
 		return false
 	}
+	return h.agentOnlyCommentCascadeCheck(ctx, comment.WorkspaceID, comment).blocked
+}
 
-	depth := 0
-	oldest := comment.CreatedAt
-	sourceTaskID := comment.SourceTaskID
-	seen := make(map[string]struct{}, maxAgentOnlyCommentCascadeHops)
-	for sourceTaskID.Valid {
-		key := uuidToString(sourceTaskID)
-		if _, duplicate := seen[key]; duplicate {
-			return true
-		}
-		seen[key] = struct{}{}
-
-		task, err := h.Queries.GetAgentTask(ctx, sourceTaskID)
-		if err != nil {
-			return false
-		}
-		depth++
-		if task.CreatedAt.Valid && (!oldest.Valid || task.CreatedAt.Time.Before(oldest.Time)) {
-			oldest = task.CreatedAt
-		}
-		if depth >= maxAgentOnlyCommentCascadeHops {
-			return true
-		}
-		if !task.TriggerCommentID.Valid {
-			break
-		}
-
-		parent, err := h.Queries.GetComment(ctx, task.TriggerCommentID)
-		if err != nil || parent.AuthorType != "agent" || !parent.SourceTaskID.Valid {
-			break
-		}
-		sourceTaskID = parent.SourceTaskID
+// auditAgentOnlyCommentCascadeBlocked leaves a durable explanation for a
+// deliberate trigger refusal. Trigger outcomes are response-only, so they are
+// unavailable when an operator later reads the comment timeline. All target
+// events share the source task dimensions captured with the cascade decision
+// and append in one batch, avoiding N redundant reads and writes for a
+// multi-target comment. Events belong to the issue containing the blocked
+// comment, even when the source task was executing on another issue. If the
+// audit write fails, admission fails open so a blocked result never lacks its
+// durable explanation.
+func (h *Handler) auditAgentOnlyCommentCascadeBlocked(ctx context.Context, issue db.Issue, commentID pgtype.UUID, cascade agentOnlyCommentCascadeResult, triggers []commentAgentTrigger) bool {
+	reason := string(ReasonAgentOnlyCascadeBlocked)
+	baseEvent := service.Event{
+		WorkspaceID: issue.WorkspaceID,
+		Domain:      service.AuditDomainRun,
+		EventType:   service.AuditRunTriggerSuppressed,
+		OccurredAt:  time.Now().UTC(),
+		ActorType:   service.AuditActorSystem,
+		Reason:      &reason,
+		IssueID:     issue.ID,
+		TaskID:      cascade.sourceTaskID,
+		AgentID:     cascade.sourceTaskAgentID,
+		RuntimeID:   cascade.sourceTaskRuntimeID,
+	}.WithTrigger("comment", uuidToString(commentID))
+	events := make([]service.Event, 0, len(triggers))
+	for _, trigger := range triggers {
+		events = append(events, baseEvent.WithDetails(service.JSONDetails(map[string]string{
+			"reason_code":     string(ReasonAgentOnlyCascadeBlocked),
+			"target_agent_id": uuidToString(trigger.Agent.ID),
+		})))
 	}
-	return depth >= maxRapidAgentOnlyCommentCascadeHops && oldest.Valid &&
-		time.Since(oldest.Time) <= agentOnlyCommentCascadeWindow
+	if err := service.AppendAuditEvents(ctx, h.Queries, events...); err != nil {
+		slog.Warn("agent-only cascade audit failed; allowing trigger", "issue_id", uuidToString(issue.ID), "comment_id", uuidToString(commentID), "error", err)
+		return false
+	}
+	return true
 }
 
 // resolveCommentTriggerEnqueue resolves ONE trigger into its final dispatch
@@ -4015,7 +4051,7 @@ func (h *Handler) retriggerCancelledTaskSurvivors(ctx context.Context, issue db.
 			}
 		}
 		if len(scoped) > 0 {
-			h.enqueueCommentAgentTriggers(ctx, issue, comment.ID, scoped)
+			h.enqueueCommentAgentTriggers(ctx, issue, comment, scoped)
 		}
 	}
 }

@@ -5442,6 +5442,155 @@ func (q *Queries) GetAgentInWorkspace(ctx context.Context, arg GetAgentInWorkspa
 	return i, err
 }
 
+const getAgentOnlyCommentCascadeVerdict = `-- name: GetAgentOnlyCommentCascadeVerdict :one
+WITH RECURSIVE source AS (
+    SELECT
+        task.id AS source_task_id,
+        task.agent_id AS source_task_agent_id,
+        task.runtime_id AS source_task_runtime_id
+    FROM comment source
+    JOIN agent_task_queue task ON task.id = source.source_task_id
+    JOIN issue task_issue
+        ON task_issue.id = task.issue_id
+        AND task_issue.workspace_id = $1
+    WHERE source.id = $2
+      AND source.workspace_id = $1
+      AND source.author_type = 'agent'
+),
+rapid AS (
+    SELECT
+        source.source_task_id AS task_id,
+        parent.source_task_id AS parent_source_task_id,
+        1::integer AS hops
+    FROM source
+    JOIN agent_task_queue task ON task.id = source.source_task_id
+    JOIN issue task_issue
+        ON task_issue.id = task.issue_id
+        AND task_issue.workspace_id = $1
+    LEFT JOIN comment parent
+        ON parent.id = task.trigger_comment_id
+        AND parent.author_type = 'agent'
+        AND parent.workspace_id = $1
+    WHERE task.created_at >= now() - make_interval(secs => $3::double precision)
+
+    UNION ALL
+
+    SELECT
+        task.id,
+        parent.source_task_id AS parent_source_task_id,
+        rapid.hops + 1
+    FROM rapid
+    JOIN agent_task_queue task ON task.id = rapid.parent_source_task_id
+    JOIN issue task_issue
+        ON task_issue.id = task.issue_id
+        AND task_issue.workspace_id = $1
+    LEFT JOIN comment parent
+        ON parent.id = task.trigger_comment_id
+        AND parent.author_type = 'agent'
+        AND parent.workspace_id = $1
+    WHERE rapid.hops < $4::integer
+      AND task.created_at >= now() - make_interval(secs => $3::double precision)
+),
+cycle_walk AS (
+    SELECT
+        source.source_task_id AS tortoise_id,
+        source.source_task_id AS hare_id,
+        FALSE AS has_cycle
+    FROM source
+    WHERE NOT EXISTS (SELECT 1 FROM rapid WHERE hops >= $4::integer)
+
+    UNION ALL
+
+    SELECT
+        tortoise_next.parent_source_task_id,
+        hare_second.parent_source_task_id,
+        COALESCE(tortoise_next.parent_source_task_id = hare_second.parent_source_task_id, FALSE)
+    FROM cycle_walk
+    LEFT JOIN LATERAL (
+        SELECT parent.source_task_id AS parent_source_task_id
+        FROM agent_task_queue task
+        JOIN issue task_issue
+            ON task_issue.id = task.issue_id
+            AND task_issue.workspace_id = $1
+        JOIN comment parent
+            ON parent.id = task.trigger_comment_id
+            AND parent.author_type = 'agent'
+            AND parent.workspace_id = $1
+        WHERE task.id = cycle_walk.tortoise_id
+    ) AS tortoise_next ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT parent.source_task_id AS parent_source_task_id
+        FROM agent_task_queue task
+        JOIN issue task_issue
+            ON task_issue.id = task.issue_id
+            AND task_issue.workspace_id = $1
+        JOIN comment parent
+            ON parent.id = task.trigger_comment_id
+            AND parent.author_type = 'agent'
+            AND parent.workspace_id = $1
+        WHERE task.id = cycle_walk.hare_id
+    ) AS hare_first ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT parent.source_task_id AS parent_source_task_id
+        FROM agent_task_queue task
+        JOIN issue task_issue
+            ON task_issue.id = task.issue_id
+            AND task_issue.workspace_id = $1
+        JOIN comment parent
+            ON parent.id = task.trigger_comment_id
+            AND parent.author_type = 'agent'
+            AND parent.workspace_id = $1
+        WHERE task.id = hare_first.parent_source_task_id
+    ) AS hare_second ON TRUE
+    WHERE NOT cycle_walk.has_cycle
+      AND cycle_walk.tortoise_id IS NOT NULL
+      AND cycle_walk.hare_id IS NOT NULL
+)
+SELECT
+    source.source_task_id,
+    source.source_task_agent_id,
+    source.source_task_runtime_id,
+    COALESCE((SELECT max(hops) FROM rapid), 0)::integer AS rapid_hops,
+    EXISTS (SELECT 1 FROM cycle_walk WHERE has_cycle) AS has_cycle
+FROM source
+`
+
+type GetAgentOnlyCommentCascadeVerdictParams struct {
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	CommentID          pgtype.UUID `json:"comment_id"`
+	RapidWindowSeconds float64     `json:"rapid_window_seconds"`
+	MaxRapidHops       int32       `json:"max_rapid_hops"`
+}
+
+type GetAgentOnlyCommentCascadeVerdictRow struct {
+	SourceTaskID        pgtype.UUID `json:"source_task_id"`
+	SourceTaskAgentID   pgtype.UUID `json:"source_task_agent_id"`
+	SourceTaskRuntimeID pgtype.UUID `json:"source_task_runtime_id"`
+	RapidHops           int32       `json:"rapid_hops"`
+	HasCycle            bool        `json:"has_cycle"`
+}
+
+// Computes the agent-only cascade decision in one snapshot. The rapid walk is
+// bounded at eight hops, while the cycle walk uses tortoise/hare pointers and
+// returns one aggregate verdict instead of materializing the full lineage to Go.
+func (q *Queries) GetAgentOnlyCommentCascadeVerdict(ctx context.Context, arg GetAgentOnlyCommentCascadeVerdictParams) (GetAgentOnlyCommentCascadeVerdictRow, error) {
+	row := q.db.QueryRow(ctx, getAgentOnlyCommentCascadeVerdict,
+		arg.WorkspaceID,
+		arg.CommentID,
+		arg.RapidWindowSeconds,
+		arg.MaxRapidHops,
+	)
+	var i GetAgentOnlyCommentCascadeVerdictRow
+	err := row.Scan(
+		&i.SourceTaskID,
+		&i.SourceTaskAgentID,
+		&i.SourceTaskRuntimeID,
+		&i.RapidHops,
+		&i.HasCycle,
+	)
+	return i, err
+}
+
 const getAgentRuntimeBindings = `-- name: GetAgentRuntimeBindings :many
 SELECT id, runtime_id FROM agent
 WHERE id = ANY($1::uuid[])

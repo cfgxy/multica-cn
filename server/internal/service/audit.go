@@ -67,6 +67,9 @@ const (
 	AuditRunCancelled             = "run.cancelled"
 	AuditRunRetried               = "run.retried"
 	AuditRunRerun                 = "run.rerun"
+	// AuditRunTriggerSuppressed records a deliberate dispatch refusal after a
+	// comment has been accepted, such as the rapid agent-only cascade breaker.
+	AuditRunTriggerSuppressed = "run.trigger_suppressed"
 
 	// Runtime domain: daemon connection lifecycle and sweeper verdicts.
 	AuditRuntimeConnected          = "runtime.connected"
@@ -117,9 +120,9 @@ const (
 	// transition carrying every flipped card id).
 	AuditIssueDecisionCardsAutoCancelled = "issue.decision_cards_auto_cancelled"
 	// RUYI-690: issue suspension lifecycle (orthogonal "waiting" dimension).
-	AuditIssueSuspended             = "issue.suspended"
-	AuditIssueSuspensionResumed     = "issue.suspension_resumed"
-	AuditIssueSuspensionCancelled   = "issue.suspension_cancelled"
+	AuditIssueSuspended           = "issue.suspended"
+	AuditIssueSuspensionResumed   = "issue.suspension_resumed"
+	AuditIssueSuspensionCancelled = "issue.suspension_cancelled"
 	// RUYI-863: question-card lifecycle. Cancel is the member-side terminal
 	// act and restore flips a cancelled card back to open — both carry the
 	// acting member + the from/to status in details so the audit surface

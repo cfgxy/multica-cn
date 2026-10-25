@@ -57,6 +57,17 @@ describe("blocked trigger copy", () => {
     );
   });
 
+  it("names an agent-only cascade separately from target availability", () => {
+    const cascade = blockedReasonLabel("agent_only_cascade_blocked", t);
+    const unavailable = blockedReasonLabel("target_unavailable", t);
+
+    expect(cascade).not.toBe(unavailable);
+    expect(cascade).toBe(en.comment.trigger_blocked_agent_only_cascade_blocked);
+    expect(blockedShortReasonLabel("agent_only_cascade_blocked", t)).toBe(
+      en.comment.trigger_blocked_short_agent_only_cascade_blocked,
+    );
+  });
+
   it("degrades an unknown code to the generic label", () => {
     expect(blockedReasonLabel("some_future_code", t)).toBe(en.comment.trigger_blocked_generic);
     expect(blockedShortReasonLabel("some_future_code", t)).toBe(
