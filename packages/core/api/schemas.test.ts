@@ -706,6 +706,77 @@ describe("AgentTaskListSchema", () => {
     expect(parsed[0]?.delivered_comment_ids).toBeUndefined();
   });
 
+  it("accepts privacy-safe execution audit metadata and old task rows", () => {
+    const audit = {
+      version: 1,
+      resume_outcome: "accepted",
+      prior_session_digest: "a".repeat(64),
+      session_selector_counts: { resume: 1 },
+      prompt_segments: [{
+        source: "daemon.BuildPrompt",
+        version: "1",
+        length_bytes: 42,
+        digest: "b".repeat(64),
+      }],
+      final_prompt_digest: "c".repeat(64),
+    };
+
+    expect(AgentTaskListSchema.parse([{ ...task, execution_audit: audit }])[0]
+      ?.execution_audit).toEqual(audit);
+    expect(AgentTaskListSchema.parse([task])[0]?.execution_audit).toBeUndefined();
+  });
+
+  it("drops malformed optional execution audit without dropping task history", () => {
+    const parsed = AgentTaskListSchema.parse([
+      {
+        ...task,
+        execution_audit: {
+          version: 1,
+          resume_outcome: "accepted",
+          prior_session_digest: "d".repeat(64),
+          session_selector_counts: { resume: -1 },
+          prompt_segments: [{
+            source: "daemon.BuildPrompt",
+            version: "1",
+            length_bytes: 42,
+            digest: "b".repeat(64),
+          }],
+          final_prompt_digest: "bad",
+        },
+      },
+      { ...task, id: "task-2" },
+    ]);
+
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]?.execution_audit).toBeUndefined();
+    expect(parsed[1]?.id).toBe("task-2");
+  });
+
+  it("rejects non-canonical uppercase audit digests without dropping task history", () => {
+    const parsed = AgentTaskListSchema.parse([
+      {
+        ...task,
+        execution_audit: {
+          version: 1,
+          resume_outcome: "not_requested",
+          session_selector_counts: { resume: 0 },
+          prompt_segments: [{
+            source: "daemon.BuildPrompt",
+            version: "1",
+            length_bytes: 42,
+            digest: "A".repeat(64),
+          }],
+          final_prompt_digest: "c".repeat(64),
+        },
+      },
+      { ...task, id: "task-2" },
+    ]);
+
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]?.execution_audit).toBeUndefined();
+    expect(parsed[1]?.id).toBe("task-2");
+  });
+
   it("degrades malformed optional coverage without dropping task rows", () => {
     const parsed = AgentTaskListSchema.parse([
       {

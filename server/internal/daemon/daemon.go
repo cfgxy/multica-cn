@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -265,6 +268,7 @@ type terminalTaskReport struct {
 	// still reference it.
 	retiredSessionID           string
 	capabilityAdaptationResult *taskadaptation.Outcome
+	executionAudit             *TaskExecutionAudit
 }
 
 type executionEnvironmentCommand func() ([]string, error)
@@ -6325,6 +6329,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			durableWorkDir:             result.DurableWorkDir,
 			sessionRolloutMissing:      result.SessionRolloutMissing,
 			retiredSessionID:           result.RetiredSessionID,
+			executionAudit:             result.ExecutionAudit,
 		})
 		if err == nil {
 			return
@@ -6368,6 +6373,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			failureReason:         taskfailure.Classify(fallbackErrMsg).String(),
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
+			executionAudit:        result.ExecutionAudit,
 		}); failErr != nil {
 			taskLog.Error("fail task fallback also failed", "error", failErr)
 		}
@@ -6406,6 +6412,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			failureReason:         failureReason,
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
+			executionAudit:        result.ExecutionAudit,
 		}); err != nil {
 			taskLog.Error("report failed task failed", "error", err)
 		}
@@ -6423,9 +6430,9 @@ func (d *Daemon) reportTerminalTask(parentCtx context.Context, report terminalTa
 
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.CompleteTask(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.capabilityAdaptationResult)
+		return d.client.CompleteTaskWithAudit(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.capabilityAdaptationResult, report.executionAudit)
 	case terminalTaskReportFail:
-		return d.client.FailTask(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir)
+		return d.client.FailTaskWithAudit(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.executionAudit)
 	default:
 		return fmt.Errorf("unsupported terminal task report kind %d", report.kind)
 	}
@@ -8464,6 +8471,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
+	runtimeConfigFile, configReadErr := execenv.ReadRuntimeConfigFile(env.WorkDir, snapshotPrimaryUpper, provider)
+	if configReadErr != nil {
+		d.logger.Warn("execenv: read runtime config for audit failed (non-fatal)", "error", configReadErr)
+		runtimeConfigFile = nil
+	}
 	// An exempt turn runs in the user's directory without having queued for it,
 	// so a sibling coding task may be writing to the same tree right now. That
 	// is the one thing it cannot work out from its own context — tell it.
@@ -8843,6 +8855,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Shared across the resume-retry below so the retry's transcript rows
 	// keep ascending seq values for the same task.
 	var msgSeq atomic.Int32
+	priorSessionID := task.PriorSessionID
+	executionAudit := buildTaskExecutionAudit(agentToken, priorSessionID, prompt, runtimeBrief, string(runtimeConfigFile), execOpts.SystemPrompt)
+	defer func() { taskResult.ExecutionAudit = executionAudit }()
 	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
 	if err != nil {
 		return TaskResult{}, err
@@ -8904,7 +8919,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				execOpts.SystemPrompt = runtimeBrief
 			}
 		}
+		if refreshedConfig, readErr := execenv.ReadRuntimeConfigFile(env.WorkDir, snapshotPrimaryUpper, provider); readErr == nil {
+			runtimeConfigFile = refreshedConfig
+		} else {
+			taskLog.Warn("execenv: read refreshed runtime config for audit failed (non-fatal)", "error", readErr)
+			runtimeConfigFile = nil
+		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
+		executionAudit = buildTaskExecutionAudit(agentToken, priorSessionID, freshPrompt, runtimeBrief, string(runtimeConfigFile), execOpts.SystemPrompt)
+		if firstResult.ResumeRejected || firstResult.ResumeRejectedTransient {
+			executionAudit.ResumeOutcome = "rejected_new_session"
+		}
 		// The previous supervised worker exited with its budget stop recorded
 		// in its manifest; planSupervisedRun steps to the next generation so
 		// this retry launches a fresh unit instead of reentering the old one.
@@ -8926,6 +8951,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// session keeps firstResult so the bad session stays excluded rather
 		// than being relabeled resumable by a benign-looking second error.
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
+	}
+	if priorSessionID == "" {
+		executionAudit.ResumeOutcome = "not_requested"
+	} else if executionAudit.ResumeOutcome != "rejected_new_session" {
+		switch {
+		case result.ResumeRejected:
+			executionAudit.ResumeOutcome = "unknown_or_failed"
+		case result.SessionID == priorSessionID:
+			executionAudit.ResumeOutcome = "accepted"
+		default:
+			executionAudit.ResumeOutcome = "unknown_or_failed"
+		}
 	}
 
 	// Snapshot lifecycle (RUYI-669): the agent process is done, so the mounts
@@ -9224,6 +9261,50 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			FailureReason: failureReason,
 		}, nil
 	}
+}
+
+func buildTaskExecutionAudit(key, priorSessionID, prompt, runtimeConfig, runtimeConfigFile, inlineSystemPrompt string) *TaskExecutionAudit {
+	segments := []TaskPromptAuditSegment{
+		{Source: "daemon.BuildPrompt", Version: "1", LengthBytes: len(prompt), Digest: taskAuditDigest(key, prompt)},
+	}
+	finalPrompt := prompt + "\x00daemon.BuildPrompt\x00"
+	if runtimeConfig != "" {
+		segments = append(segments, TaskPromptAuditSegment{
+			Source: "execenv.InjectRuntimeConfig", Version: "1", LengthBytes: len(runtimeConfig), Digest: taskAuditDigest(key, runtimeConfig),
+		})
+		finalPrompt += runtimeConfig + "\x00execenv.InjectRuntimeConfig\x00"
+	}
+	if runtimeConfigFile != "" {
+		segments = append(segments, TaskPromptAuditSegment{
+			Source: "execenv.RuntimeConfigFile", Version: "1", LengthBytes: len(runtimeConfigFile), Digest: taskAuditDigest(key, runtimeConfigFile),
+		})
+		finalPrompt += runtimeConfigFile + "\x00execenv.RuntimeConfigFile\x00"
+	}
+	if inlineSystemPrompt != "" {
+		segments = append(segments, TaskPromptAuditSegment{
+			Source: "agent.ExecOptions.SystemPrompt", Version: "1", LengthBytes: len(inlineSystemPrompt), Digest: taskAuditDigest(key, inlineSystemPrompt),
+		})
+		finalPrompt += inlineSystemPrompt + "\x00agent.ExecOptions.SystemPrompt\x00"
+	}
+	counts := map[string]int{"resume": 0}
+	outcome := "not_requested"
+	var priorDigest string
+	if priorSessionID != "" {
+		counts["resume"] = 1
+		outcome = "unknown_or_failed"
+		priorDigest = taskAuditDigest(key, priorSessionID)
+	}
+	return &TaskExecutionAudit{
+		Version: 1, ResumeOutcome: outcome, PriorSessionDigest: priorDigest,
+		SessionSelectorCounts: counts, PromptSegments: segments,
+		FinalPromptDigest: taskAuditDigest(key, finalPrompt),
+	}
+}
+
+func taskAuditDigest(key, value string) string {
+	mac := hmac.New(sha256.New, []byte(key))
+	_, _ = mac.Write([]byte(value))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // shouldRetryWithFreshSession reports whether a failed run that requested

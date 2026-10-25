@@ -73,6 +73,32 @@ func TestInjectRuntimeConfigSnapshotWritesUpperHostUntouched(t *testing.T) {
 	}
 }
 
+func TestReadRuntimeConfigFilePrefersSnapshotUpperAndFallsBackToView(t *testing.T) {
+	t.Parallel()
+	viewDir := t.TempDir()
+	upperDir := t.TempDir()
+	const viewContent = "view instructions"
+	const upperContent = "upper instructions"
+	if err := os.WriteFile(filepath.Join(viewDir, "AGENTS.md"), []byte(viewContent), 0o644); err != nil {
+		t.Fatalf("write view config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(upperDir, "AGENTS.md"), []byte(upperContent), 0o644); err != nil {
+		t.Fatalf("write upper config: %v", err)
+	}
+
+	got, err := ReadRuntimeConfigFile(viewDir, upperDir, "codex")
+	if err != nil || string(got) != upperContent {
+		t.Fatalf("read snapshot upper = %q, %v; want %q", got, err, upperContent)
+	}
+	if err := os.Remove(filepath.Join(upperDir, "AGENTS.md")); err != nil {
+		t.Fatalf("remove upper config: %v", err)
+	}
+	got, err = ReadRuntimeConfigFile(viewDir, upperDir, "codex")
+	if err != nil || string(got) != viewContent {
+		t.Fatalf("read view fallback = %q, %v; want %q", got, err, viewContent)
+	}
+}
+
 func TestInjectRuntimeConfigSnapshotNoBaseCreatesUpperOnly(t *testing.T) {
 	t.Parallel()
 	viewDir := t.TempDir()

@@ -588,7 +588,18 @@ func (c *Client) AddTaskComment(ctx context.Context, taskID, content string) err
 }
 
 func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, adaptationResults ...*taskadaptation.Outcome) error {
+	return c.completeTask(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, nil, adaptationResults...)
+}
+
+func (c *Client) CompleteTaskWithAudit(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, adaptationResult *taskadaptation.Outcome, executionAudit *TaskExecutionAudit) error {
+	return c.completeTask(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, executionAudit, adaptationResult)
+}
+
+func (c *Client) completeTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, executionAudit *TaskExecutionAudit, adaptationResults ...*taskadaptation.Outcome) error {
 	body := map[string]any{"output": output}
+	if executionAudit != nil {
+		body["execution_audit"] = executionAudit
+	}
 	if len(adaptationResults) > 0 && adaptationResults[0] != nil {
 		body["capability_adaptation_result"] = adaptationResults[0]
 	}
@@ -623,7 +634,18 @@ func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []Tas
 }
 
 func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
+	return c.failTask(ctx, taskID, errMsg, sessionID, workDir, branchName, failureReason, sessionRolloutMissing, retiredSessionID, durableWorkDir, nil)
+}
+
+func (c *Client) FailTaskWithAudit(ctx context.Context, taskID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, executionAudit *TaskExecutionAudit) error {
+	return c.failTask(ctx, taskID, errMsg, sessionID, workDir, branchName, failureReason, sessionRolloutMissing, retiredSessionID, durableWorkDir, executionAudit)
+}
+
+func (c *Client) failTask(ctx context.Context, taskID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, executionAudit *TaskExecutionAudit) error {
 	body := map[string]any{"error": errMsg}
+	if executionAudit != nil {
+		body["execution_audit"] = executionAudit
+	}
 	if sessionID != "" {
 		body["session_id"] = sessionID
 	}

@@ -357,6 +357,7 @@ export interface AgentTask {
   started_at: string | null;
   completed_at: string | null;
   result: unknown;
+  execution_audit?: TaskExecutionAudit;
   capability_adaptation?: {
     task_id: string;
     policy_id: string;
@@ -545,6 +546,24 @@ export interface AgentTask {
    */
   rerun_of_task_id?: string;
   retry_of_task_id?: string;
+}
+
+export interface TaskExecutionAudit {
+  version: 1;
+  resume_outcome:
+    | "not_requested"
+    | "accepted"
+    | "rejected_new_session"
+    | "unknown_or_failed";
+  prior_session_digest?: string;
+  session_selector_counts: Record<string, number>;
+  prompt_segments: Array<{
+    source: string;
+    version: string;
+    length_bytes: number;
+    digest: string;
+  }>;
+  final_prompt_digest: string;
 }
 
 /**

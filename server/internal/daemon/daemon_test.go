@@ -4302,12 +4302,18 @@ func TestReportTaskResult_CompletedHitsCompleteEndpoint(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	d := &Daemon{client: NewClient(srv.URL), logger: slog.Default()}
+	audit := &TaskExecutionAudit{
+		Version: 1, ResumeOutcome: "not_requested", SessionSelectorCounts: map[string]int{"resume": 0},
+		PromptSegments:    []TaskPromptAuditSegment{{Source: "daemon.BuildPrompt", Version: "1", LengthBytes: 4, Digest: strings.Repeat("a", 64)}},
+		FinalPromptDigest: strings.Repeat("b", 64),
+	}
 	d.reportTaskResult(context.Background(), "task-1", TaskResult{
-		Status:     "completed",
-		Comment:    "all good",
-		BranchName: "agent/foo",
-		SessionID:  "ses-1",
-		WorkDir:    "/tmp/foo",
+		Status:         "completed",
+		Comment:        "all good",
+		BranchName:     "agent/foo",
+		SessionID:      "ses-1",
+		WorkDir:        "/tmp/foo",
+		ExecutionAudit: audit,
 	}, slog.Default())
 
 	rec.mu.Lock()
@@ -4323,6 +4329,39 @@ func TestReportTaskResult_CompletedHitsCompleteEndpoint(t *testing.T) {
 	}
 	if rec.payload["session_id"] != "ses-1" {
 		t.Errorf("session_id: got %v", rec.payload["session_id"])
+	}
+	if rec.payload["execution_audit"] == nil {
+		t.Fatal("execution_audit was not sent to the completion endpoint")
+	}
+}
+
+func TestReportTaskResult_FailedTaskSendsExecutionAudit(t *testing.T) {
+	t.Parallel()
+
+	rec := &reportTaskResultRecorder{}
+	srv := httptest.NewServer(rec.handler(t))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{client: NewClient(srv.URL), logger: slog.Default()}
+	audit := &TaskExecutionAudit{
+		Version: 1, ResumeOutcome: "unknown_or_failed", PriorSessionDigest: strings.Repeat("a", 64),
+		SessionSelectorCounts: map[string]int{"resume": 1},
+		PromptSegments:        []TaskPromptAuditSegment{{Source: "daemon.BuildPrompt", Version: "1", LengthBytes: 4, Digest: strings.Repeat("b", 64)}},
+		FinalPromptDigest:     strings.Repeat("c", 64),
+	}
+	d.reportTaskResult(context.Background(), "task-failed", TaskResult{
+		Status:         "failed",
+		Comment:        "provider failed",
+		ExecutionAudit: audit,
+	}, slog.Default())
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if rec.path != "/api/daemon/tasks/task-failed/fail" {
+		t.Fatalf("expected /fail endpoint, got %s", rec.path)
+	}
+	if rec.payload["execution_audit"] == nil {
+		t.Fatal("execution_audit was not sent to the failure endpoint")
 	}
 }
 

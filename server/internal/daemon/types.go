@@ -402,8 +402,27 @@ type TaskResult struct {
 	// abandoned as unresumable (GH #6066). Forwarded on every terminal path,
 	// including the completed one: a fresh-session retry that SUCCEEDS is
 	// precisely when the abandoned id would otherwise stay selectable.
-	RetiredSessionID string           `json:"-"`
-	Usage            []TaskUsageEntry `json:"usage,omitempty"` // per-model token usage
+	RetiredSessionID string              `json:"-"`
+	Usage            []TaskUsageEntry    `json:"usage,omitempty"` // per-model token usage
+	ExecutionAudit   *TaskExecutionAudit `json:"execution_audit,omitempty"`
+}
+
+// TaskExecutionAudit contains privacy-safe evidence about session selection and
+// the prompt assembled for a task. Digests are keyed with the task-scoped token.
+type TaskExecutionAudit struct {
+	Version               int                      `json:"version"`
+	ResumeOutcome         string                   `json:"resume_outcome"`
+	PriorSessionDigest    string                   `json:"prior_session_digest,omitempty"`
+	SessionSelectorCounts map[string]int           `json:"session_selector_counts"`
+	PromptSegments        []TaskPromptAuditSegment `json:"prompt_segments"`
+	FinalPromptDigest     string                   `json:"final_prompt_digest"`
+}
+
+type TaskPromptAuditSegment struct {
+	Source      string `json:"source"`
+	Version     string `json:"version"`
+	LengthBytes int    `json:"length_bytes"`
+	Digest      string `json:"digest"`
 }
 
 // PluginHookTool is one agent-trigger plugin hook, as the agent will see it.

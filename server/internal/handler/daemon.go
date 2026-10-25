@@ -4367,14 +4367,14 @@ type TaskCompleteRequest struct {
 	// daemons omit it, which is exactly the pre-fix behaviour.
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
 	// CapabilityAdaptationResult is accepted only for the matching claim snapshot.
-	CapabilityAdaptationResult *taskadaptation.Outcome `json:"capability_adaptation_result,omitempty"`
+	CapabilityAdaptationResult *taskadaptation.Outcome     `json:"capability_adaptation_result,omitempty"`
+	ExecutionAudit             *TaskExecutionAuditResponse `json:"execution_audit,omitempty"`
 }
 
 // sanitizeTaskCompleteRequest / sanitizeTaskFailRequest scrub every
-// caller-supplied string on a terminal task callback. Both request types are
-// flat bags of strings, so this is exhaustive by construction — but that also
-// means a NEW string field must be added here, or it reopens GH #7098 through a
-// fresh door. The task-row columns these feed (error, work_dir,
+// caller-supplied string on a terminal task callback. The requests are
+// otherwise flat bags of strings, so a NEW string field must be added here, or
+// it reopens GH #7098 through a fresh door. The task-row columns these feed (error, work_dir,
 // durable_work_dir, branch_name, session_id) are all TEXT, and result is
 // JSONB; neither tolerates a NUL.
 func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
@@ -4410,6 +4410,9 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
+	}
+	if !validTaskExecutionAudit(req.ExecutionAudit) {
+		req.ExecutionAudit = nil
 	}
 	// Strip bytes PostgreSQL cannot store BEFORE anything reads this payload
 	// (GH #7098). The whole request is marshalled into agent_task_queue.result,
@@ -4458,6 +4461,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 			BranchName:            req.BranchName,
 			SessionRolloutMissing: req.SessionRolloutMissing,
 			RetiredSessionID:      req.RetiredSessionID,
+			ExecutionAudit:        req.ExecutionAudit,
 		})
 		return
 	}
@@ -5232,7 +5236,8 @@ type TaskFailRequest struct {
 	// (GH #6066). Distinct from an empty SessionID, which only means "nothing
 	// to report" — this says "never hand this id to a later run". Older
 	// daemons omit it, which is exactly the pre-fix behaviour.
-	RetiredSessionID string `json:"retired_session_id,omitempty"`
+	RetiredSessionID string                      `json:"retired_session_id,omitempty"`
+	ExecutionAudit   *TaskExecutionAuditResponse `json:"execution_audit,omitempty"`
 }
 
 // AddTaskComment posts a daemon-authored system comment on the task's issue —
@@ -5278,6 +5283,9 @@ func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if !validTaskExecutionAudit(req.ExecutionAudit) {
+		req.ExecutionAudit = nil
+	}
 	// TaskService.FailTask normalizes req.Error itself, but every other field
 	// here lands in a TEXT column too and a NUL in any one of them fails the
 	// same transaction (GH #7098).
@@ -5297,7 +5305,11 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 	// keep a stale mid-flight pin) and flagging the row in the same commit that
 	// creates and wakes the auto-retry, so the retry can never claim the withheld
 	// pointer or miss the continuity gap.
-	task, err := h.TaskService.FailTask(r.Context(), parseUUID(taskID), req.Error, req.SessionID, req.WorkDir, req.BranchName, req.FailureReason, req.SessionRolloutMissing, req.RetiredSessionID, req.DurableWorkDir)
+	var auditResult []byte
+	if req.ExecutionAudit != nil {
+		auditResult, _ = json.Marshal(map[string]any{"execution_audit": req.ExecutionAudit})
+	}
+	task, err := h.TaskService.FailTask(r.Context(), parseUUID(taskID), req.Error, req.SessionID, req.WorkDir, req.BranchName, req.FailureReason, req.SessionRolloutMissing, req.RetiredSessionID, req.DurableWorkDir, auditResult)
 	if err != nil {
 		// A FailTask error is an infrastructure failure (the terminal
 		// transaction that also clears the withheld session, writes the

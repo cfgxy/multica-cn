@@ -1688,6 +1688,7 @@ LIMIT 1;
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
+    result = COALESCE(sqlc.narg('result'), result),
     error = $2,
     failure_reason = COALESCE(sqlc.narg('failure_reason'), 'agent_error'),
     session_id = CASE WHEN sqlc.arg('session_rollout_missing') THEN NULL ELSE COALESCE(sqlc.narg('session_id'), session_id) END,

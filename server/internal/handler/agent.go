@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -529,18 +530,19 @@ type AgentTaskResponse struct {
 	// IssueStatusesOmitted is how many active custom statuses were dropped by
 	// the cap, so the brief can say the list is incomplete instead of
 	// presenting a truncated catalog as the whole one.
-	IssueStatusesOmitted       int                     `json:"issue_statuses_omitted,omitempty"`
-	ActiveSiblingRuns          []ActiveSiblingRunData  `json:"active_sibling_runs,omitempty"`
-	ThreadName                 string                  `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
-	Status                     string                  `json:"status"`
-	Priority                   int32                   `json:"priority"`
-	DispatchedAt               *string                 `json:"dispatched_at"`
-	StartedAt                  *string                 `json:"started_at"`
-	CompletedAt                *string                 `json:"completed_at"`
-	Result                     any                     `json:"result"`
-	CapabilityAdaptationResult *taskadaptation.Outcome `json:"capability_adaptation_result,omitempty"`
-	Error                      *string                 `json:"error"`
-	FailureReason              string                  `json:"failure_reason,omitempty"` // see TaskService.MaybeRetryFailedTask
+	IssueStatusesOmitted       int                         `json:"issue_statuses_omitted,omitempty"`
+	ActiveSiblingRuns          []ActiveSiblingRunData      `json:"active_sibling_runs,omitempty"`
+	ThreadName                 string                      `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
+	Status                     string                      `json:"status"`
+	Priority                   int32                       `json:"priority"`
+	DispatchedAt               *string                     `json:"dispatched_at"`
+	StartedAt                  *string                     `json:"started_at"`
+	CompletedAt                *string                     `json:"completed_at"`
+	Result                     any                         `json:"result"`
+	ExecutionAudit             *TaskExecutionAuditResponse `json:"execution_audit,omitempty"`
+	CapabilityAdaptationResult *taskadaptation.Outcome     `json:"capability_adaptation_result,omitempty"`
+	Error                      *string                     `json:"error"`
+	FailureReason              string                      `json:"failure_reason,omitempty"` // see TaskService.MaybeRetryFailedTask
 	// QueuedReason explains why a queued row is not moving yet (RUYI-397),
 	// from the dispatch.ReasonCode vocabulary: "runtime_backpressure" means
 	// the target runtime's host reported memory backpressure, so the claim is
@@ -746,6 +748,22 @@ type AgentTaskResponse struct {
 	// owning user; the daemon must not fall back to its own credential. See
 	// MUL-3292.
 	AuthToken string `json:"auth_token,omitempty"`
+}
+
+type TaskExecutionAuditResponse struct {
+	Version               int                          `json:"version"`
+	ResumeOutcome         string                       `json:"resume_outcome"`
+	PriorSessionDigest    string                       `json:"prior_session_digest,omitempty"`
+	SessionSelectorCounts map[string]int               `json:"session_selector_counts"`
+	PromptSegments        []TaskPromptAuditSegmentData `json:"prompt_segments"`
+	FinalPromptDigest     string                       `json:"final_prompt_digest"`
+}
+
+type TaskPromptAuditSegmentData struct {
+	Source      string `json:"source"`
+	Version     string `json:"version"`
+	LengthBytes int    `json:"length_bytes"`
+	Digest      string `json:"digest"`
 }
 
 // TaskAttribution is the wire shape of a run's accountable-human provenance
@@ -989,6 +1007,19 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 	if t.Result != nil {
 		json.Unmarshal(t.Result, &result)
 	}
+	if resultMap, ok := result.(map[string]any); ok {
+		delete(resultMap, "session_id")
+		delete(resultMap, "execution_audit")
+	}
+	var executionAudit *TaskExecutionAuditResponse
+	if t.Result != nil {
+		var envelope struct {
+			ExecutionAudit *TaskExecutionAuditResponse `json:"execution_audit"`
+		}
+		if json.Unmarshal(t.Result, &envelope) == nil && validTaskExecutionAudit(envelope.ExecutionAudit) {
+			executionAudit = envelope.ExecutionAudit
+		}
+	}
 	failureReason := ""
 	if t.FailureReason.Valid {
 		failureReason = t.FailureReason.String
@@ -1021,6 +1052,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		StartedAt:               timestampToPtr(t.StartedAt),
 		CompletedAt:             timestampToPtr(t.CompletedAt),
 		Result:                  result,
+		ExecutionAudit:          executionAudit,
 		Error:                   textToPtr(t.Error),
 		FailureReason:           failureReason,
 		BranchName:              branchName,
@@ -1075,6 +1107,50 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		}
 	}
 	return resp
+}
+
+func validTaskExecutionAudit(audit *TaskExecutionAuditResponse) bool {
+	if audit == nil || audit.Version != 1 || !validTaskAuditDigest(audit.FinalPromptDigest) || len(audit.PromptSegments) == 0 {
+		return false
+	}
+	if audit.PriorSessionDigest != "" && !validTaskAuditDigest(audit.PriorSessionDigest) {
+		return false
+	}
+	switch audit.ResumeOutcome {
+	case "not_requested", "accepted", "rejected_new_session", "unknown_or_failed":
+	default:
+		return false
+	}
+	for selector, count := range audit.SessionSelectorCounts {
+		if selector == "" || strings.ContainsRune(selector, '\x00') || count < 0 {
+			return false
+		}
+	}
+	resumeCount, hasResumeCount := audit.SessionSelectorCounts["resume"]
+	if !hasResumeCount {
+		return false
+	}
+	if audit.ResumeOutcome == "not_requested" {
+		if audit.PriorSessionDigest != "" || resumeCount != 0 {
+			return false
+		}
+	} else if audit.PriorSessionDigest == "" || resumeCount != 1 {
+		return false
+	}
+	for _, segment := range audit.PromptSegments {
+		if segment.Source == "" || segment.Version == "" || strings.ContainsRune(segment.Source, '\x00') || strings.ContainsRune(segment.Version, '\x00') || segment.LengthBytes < 0 || !validTaskAuditDigest(segment.Digest) {
+			return false
+		}
+	}
+	return true
+}
+
+func validTaskAuditDigest(value string) bool {
+	if len(value) != 64 || value != strings.ToLower(value) {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32
 }
 
 // relativeWorkDir produces a privacy-safe display form of the daemon-reported

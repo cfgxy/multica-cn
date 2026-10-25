@@ -4646,14 +4646,15 @@ const failAgentTask = `-- name: FailAgentTask :one
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
+    result = COALESCE($3, result),
     error = $2,
-    failure_reason = COALESCE($3, 'agent_error'),
-    session_id = CASE WHEN $4 THEN NULL ELSE COALESCE($5, session_id) END,
-    work_dir = COALESCE($6, work_dir),
-    durable_work_dir = COALESCE($7, durable_work_dir),
-    branch_name = COALESCE($8, branch_name),
-    session_rollout_missing = $4,
-    retired_session_id = COALESCE($9, retired_session_id),
+    failure_reason = COALESCE($4, 'agent_error'),
+    session_id = CASE WHEN $5 THEN NULL ELSE COALESCE($6, session_id) END,
+    work_dir = COALESCE($7, work_dir),
+    durable_work_dir = COALESCE($8, durable_work_dir),
+    branch_name = COALESCE($9, branch_name),
+    session_rollout_missing = $5,
+    retired_session_id = COALESCE($10, retired_session_id),
     prepare_lease_expires_at = NULL
 WHERE id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id, local_directory_scope, chat_model_snapshot
@@ -4662,6 +4663,7 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 type FailAgentTaskParams struct {
 	ID                    pgtype.UUID `json:"id"`
 	Error                 pgtype.Text `json:"error"`
+	Result                []byte      `json:"result"`
 	FailureReason         pgtype.Text `json:"failure_reason"`
 	SessionRolloutMissing bool        `json:"session_rollout_missing"`
 	SessionID             pgtype.Text `json:"session_id"`
@@ -4690,6 +4692,7 @@ func (q *Queries) FailAgentTask(ctx context.Context, arg FailAgentTaskParams) (A
 	row := q.db.QueryRow(ctx, failAgentTask,
 		arg.ID,
 		arg.Error,
+		arg.Result,
 		arg.FailureReason,
 		arg.SessionRolloutMissing,
 		arg.SessionID,

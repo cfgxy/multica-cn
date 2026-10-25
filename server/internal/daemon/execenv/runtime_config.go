@@ -195,6 +195,27 @@ func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (strin
 	return content, writeRuntimeConfigFile(path, content)
 }
 
+func ReadRuntimeConfigFile(workDir, upperDir, provider string) ([]byte, error) {
+	rel := runtimeConfigRelPath(provider)
+	if rel == "" {
+		return nil, nil
+	}
+	if upperDir != "" {
+		content, err := os.ReadFile(filepath.Join(upperDir, rel))
+		if err == nil {
+			return content, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+	}
+	content, err := os.ReadFile(filepath.Join(workDir, rel))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return content, err
+}
+
 // runtimeConfigPath returns the absolute path to the runtime config file that
 // InjectRuntimeConfig writes for the given provider, or "" when the provider
 // has no file-based config target. Centralising the mapping keeps Inject /

@@ -2283,6 +2283,30 @@ export const AgentTaskSchema = z.object({
   started_at: z.string().nullable().default(null),
   completed_at: z.string().nullable().default(null),
   result: z.unknown().default(null),
+  execution_audit: z.object({
+    version: z.literal(1),
+    resume_outcome: z.enum([
+      "not_requested",
+      "accepted",
+      "rejected_new_session",
+      "unknown_or_failed",
+    ]),
+    prior_session_digest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    session_selector_counts: z.record(z.string(), z.number().int().nonnegative()),
+    prompt_segments: z.array(z.object({
+      source: z.string().min(1),
+      version: z.string().min(1),
+      length_bytes: z.number().int().nonnegative(),
+      digest: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict()).min(1),
+    final_prompt_digest: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict().refine((audit) => {
+    const resumeCount = audit.session_selector_counts.resume;
+    if (audit.resume_outcome === "not_requested") {
+      return audit.prior_session_digest === undefined && resumeCount === 0;
+    }
+    return audit.prior_session_digest !== undefined && resumeCount === 1;
+  }).optional().catch(undefined),
   capability_adaptation: z.object({
     task_id: z.string(),
     policy_id: z.string(),
