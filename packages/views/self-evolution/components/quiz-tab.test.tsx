@@ -12,6 +12,7 @@ import type {
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { QuizTab } from "./quiz-tab";
+import { writeQuizAgent } from "./quiz-session";
 
 /**
  * The quiz tab's wiring (RUYI-185).
@@ -130,12 +131,12 @@ function detail(over: Partial<PromptQuizItemDetail> = {}): PromptQuizItemDetail 
   return { ...item(), rubric: "Names all three constraints.", ...over };
 }
 
-function renderTab(agentId = "agent-1") {
+function renderTab(agentId = "agent-1", wsId = "ws-1") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <QuizTab wsId="ws-1" initialAgentId={agentId} />
+        <QuizTab wsId={wsId} initialAgentId={agentId} />
       </I18nProvider>
     </QueryClientProvider>,
   );
@@ -151,6 +152,19 @@ beforeEach(() => {
 });
 
 describe("QuizTab reading", () => {
+  it("restores the selected agent after the tab unmounts and remounts", async () => {
+    writeQuizAgent("ws-selection", "agent-1");
+    const first = renderTab("", "ws-selection");
+    await screen.findByTestId("quiz-reading-card");
+
+    first.unmount();
+    renderTab("", "ws-selection");
+    await waitFor(() => {
+      expect(screen.getByRole("combobox")).toHaveTextContent("Gu Xiaoyu");
+    });
+    await screen.findByTestId("quiz-reading-card");
+  });
+
   it("prints the verdict with both groups and the decision inputs", async () => {
     renderTab();
     await waitFor(() => {

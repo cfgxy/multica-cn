@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Empty,
@@ -24,6 +24,7 @@ import { useT } from "../../i18n";
 import { QuizBankPanel } from "./quiz-bank-panel";
 import { QuizGradedPanel } from "./quiz-graded-panel";
 import { QuizReadingCard } from "./quiz-reading-card";
+import { readQuizAgent, writeQuizAgent } from "./quiz-session";
 
 /**
  * The quiz tab (RUYI-185).
@@ -45,6 +46,10 @@ export function QuizTab({
 }) {
   const { t } = useT("self-evolution");
   const [agentId, setAgentId] = useState(initialAgentId);
+
+  useEffect(() => {
+    setAgentId(initialAgentId || readQuizAgent(wsId));
+  }, [initialAgentId, wsId]);
 
   const currentMember = useCurrentMember(wsId);
   // Bank writes are owner-only on the server; admin is deliberately not
@@ -70,7 +75,10 @@ export function QuizTab({
           items={agentItems}
           value={agentId}
           onValueChange={(next) => {
-            if (typeof next === "string") setAgentId(next);
+            if (typeof next === "string") {
+              setAgentId(next);
+              writeQuizAgent(wsId, next);
+            }
           }}
         >
           <SelectTrigger size="sm" className="w-56">
