@@ -1665,6 +1665,10 @@ type commentAgentTrigger struct {
 
 type commentTriggerComputeOptions struct {
 	ExcludeTriggerCommentID pgtype.UUID
+	// SourceTaskID is the trusted task that authored this agent comment. It lets
+	// explicit mention routing distinguish a same-issue self-mention from a
+	// legitimate cross-issue handoff by the same agent.
+	SourceTaskID pgtype.UUID
 	// OriginatorUserID is the top-of-chain human user id for this trigger
 	// (MUL-3963). Only consulted for AGENT actors — canInvokeAgent judges A2A
 	// by the originator, not the immediate agent principal. Members are their
@@ -1794,6 +1798,7 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "failed to validate comment mentions")
 		return
 	}
+	opts.SourceTaskID = h.commentSourceTaskID(r)
 	triggers, targets := h.computeCommentAgentTriggers(r.Context(), issue, content, parentComment, actorType, actorID, opts)
 	if len(invalid) > 0 {
 		triggers = nil
@@ -2151,6 +2156,7 @@ func (h *Handler) triggerTasksForComment(ctx context.Context, issue db.Issue, co
 	}
 	triggers, targets := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
 		ExcludeTriggerCommentID: comment.ID,
+		SourceTaskID:            comment.SourceTaskID,
 		OriginatorUserID:        originatorUserID,
 	})
 	triggers = filterSuppressedCommentAgentTriggers(triggers, suppressAgentIDs)
@@ -3401,6 +3407,21 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 		targetSeen[key] = struct{}{}
 		targets = append(targets, t)
 	}
+	var sourceTask *db.AgentTaskQueue
+	var sourceTaskErr error
+	sourceTaskLoaded := false
+	loadSourceTask := func() (*db.AgentTaskQueue, error) {
+		if !sourceTaskLoaded {
+			sourceTaskLoaded = true
+			task, err := h.Queries.GetAgentTask(ctx, opts.SourceTaskID)
+			if err != nil {
+				sourceTaskErr = err
+			} else {
+				sourceTask = &task
+			}
+		}
+		return sourceTask, sourceTaskErr
+	}
 	// blockTarget records a mention that will not fire. The invoke gate is
 	// evaluated BEFORE any archived/runtime state is read, so a caller who
 	// cannot invoke a private target learns only the generic
@@ -3509,6 +3530,22 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			blockTarget("agent", m.ID, ReasonTargetUnavailable)
 			continue
 		}
+		if authorType == "agent" && authorID == uuidToString(agentUUID) && opts.SourceTaskID.Valid {
+			sourceTask, sourceErr := loadSourceTask()
+			if sourceErr != nil && !errors.Is(sourceErr, pgx.ErrNoRows) {
+				blockTarget("agent", m.ID, ReasonInternalError)
+				continue
+			}
+			if sourceErr == nil && sourceTask.IssueID.Valid && sourceTask.IssueID == issue.ID && sourceTask.AgentID == agentUUID {
+				addTarget(commentMentionTarget{
+					TargetType: "agent",
+					TargetID:   m.ID,
+					Status:     DispatchBlocked,
+					ReasonCode: ReasonSelfTriggerSuppressed,
+				})
+				continue
+			}
+		}
 		// Load the agent scoped to the current issue's workspace. Using the
 		// bare GetAgent here would let a mention resolve to an agent in a
 		// different workspace, and the visibility check below would then be
@@ -3555,6 +3592,10 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 	return triggers, targets
 }
 
+// sameIssueAgentSelfMention reports whether a task-authored comment explicitly
+// targets its own executing agent on that same issue. A task may legitimately
+// post to another issue and wake itself there, so the source task's issue is
+// the boundary rather than the comment author alone.
 func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	commentId := chi.URLParam(r, "commentId")
 
@@ -4041,6 +4082,7 @@ func (h *Handler) retriggerCancelledTaskSurvivors(ctx context.Context, issue db.
 		}
 		triggers, _ := h.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
 			ExcludeTriggerCommentID: comment.ID,
+			SourceTaskID:            comment.SourceTaskID,
 			OriginatorUserID:        originatorUserID,
 		})
 		targets := targetsByComment[uuidToString(comment.ID)]

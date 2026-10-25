@@ -4738,6 +4738,7 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		}
 		triggers, _ := h.computeCommentAgentTriggers(ctx, issue, c.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
 			ExcludeTriggerCommentID: c.ID,
+			SourceTaskID:            c.SourceTaskID,
 			OriginatorUserID:        originatorUserID,
 		})
 		// For an AGENT author, compensate ONLY explicit @agent/@squad mentions.
