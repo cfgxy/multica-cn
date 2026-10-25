@@ -169,6 +169,51 @@ func Render(text string, clauses []RenderedClause) string {
 	return sb.String()
 }
 
+// ReplaceSegment revises one rendered asset segment only when its marker
+// carries the expected active version. Parse rejects malformed or duplicate
+// markers; a missing or stale target also fails closed.
+func ReplaceSegment(text, slug string, expectedVersion int32, body string) (string, error) {
+	if strings.TrimSpace(body) == "" {
+		return "", fmt.Errorf("clausemark: replacement body is empty")
+	}
+	for i, line := range splitLines(text) {
+		trimmed := strings.TrimSpace(line)
+		if strings.Contains(trimmed, "<!-- clause:id=") && !openLine.MatchString(trimmed) {
+			return "", fmt.Errorf("clausemark: malformed clause opener on line %d", i+1)
+		}
+		if strings.Contains(trimmed, "<!-- /clause") && !closeLine.MatchString(trimmed) {
+			return "", fmt.Errorf("clausemark: malformed clause closer on line %d", i+1)
+		}
+	}
+	doc, err := Parse(text)
+	if err != nil {
+		return "", err
+	}
+	found := false
+	for i := range doc.Segments {
+		if doc.Segments[i].Slug != slug {
+			continue
+		}
+		if doc.Segments[i].Rev != int(expectedVersion) {
+			return "", fmt.Errorf("clausemark: clause %s marker version %d does not match active version %d", slug, doc.Segments[i].Rev, expectedVersion)
+		}
+		doc.Segments[i].Rev++
+		doc.Segments[i].Body = strings.TrimRight(body, "\n")
+		found = true
+	}
+	if !found {
+		return "", fmt.Errorf("clausemark: clause %s segment is missing", slug)
+	}
+
+	rendered := make([]RenderedClause, 0, len(doc.Segments))
+	for _, segment := range doc.Segments {
+		rendered = append(rendered, RenderedClause{
+			Slug: segment.Slug, Version: segment.Rev, Body: segment.Body,
+		})
+	}
+	return Render(doc.Stable, rendered), nil
+}
+
 // OpenTag renders the canonical opener for a clause version.
 func OpenTag(slug string, version int) string {
 	return fmt.Sprintf("<!-- clause:id=%s rev=%d -->", slug, version)
