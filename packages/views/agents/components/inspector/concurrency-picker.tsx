@@ -52,6 +52,7 @@ export function ConcurrencyPicker({
   }
 
   const commit = async () => {
+    if (draft.trim() === "") return;
     const n = Number(draft);
     // 0 = unlimited, 1-50 = cap; negative values are invalid.
     if (
