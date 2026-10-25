@@ -62,6 +62,28 @@ func TestEnactRecoveryRejectsStructuredStaticTarget(t *testing.T) {
 	if rework.Code != http.StatusOK || proposalStatus(t, wsID, revisionID) != "draft" {
 		t.Fatalf("invalid structured row could not be reworked: %d %s", rework.Code, rework.Text())
 	}
+	submitDraft(t, wsID, memberID, revisionID)
+	dbfx.Exec(t, `UPDATE prompt_proposal SET status = 'approved', enactment_target = 'static_prompt'
+		WHERE workspace_id = $1 AND id = $2`, wsID, revisionID)
+	approveResponse := testutil.Call(t, http.HandlerFunc(ownerApprove.ServeHTTP),
+		legislationReq(ownerID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+revisionID+"/approve",
+			map[string]any{"confirm_diff_previewed": true}, "id", revisionID))
+	if approveResponse.Code != http.StatusConflict {
+		t.Fatalf("invalid approved target through approve recovery: expected 409, got %d: %s", approveResponse.Code, approveResponse.Text())
+	}
+	if got := proposalStatus(t, wsID, revisionID); got != "gate_failed" {
+		t.Fatalf("approve recovery invalid-target status = %q, want gate_failed", got)
+	}
+	var auditJSON string
+	dbfx.QueryRow(t, `SELECT audit_log::text FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`, wsID, revisionID).Scan(&auditJSON)
+	if !strings.Contains(auditJSON, "approve_recovery") {
+		t.Fatalf("approve recovery failure was not audited: %s", auditJSON)
+	}
+	rework = testutil.Call(t, testHandler.ReworkPromptProposal,
+		legislationReq(memberID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+revisionID+"/rework", nil, "id", revisionID))
+	if rework.Code != http.StatusOK || proposalStatus(t, wsID, revisionID) != "draft" {
+		t.Fatalf("invalid approved target through approve recovery could not be reworked: %d %s", rework.Code, rework.Text())
+	}
 }
 
 func TestApprovedEnactAndApproveRecoveryUseConsistentLockOrder(t *testing.T) {
@@ -324,5 +346,39 @@ func TestSubmitNonDraftDoesNotCallAdvisory(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("non-draft retry called advisory; total calls = %d, want 1", got)
+	}
+}
+
+func TestSubmitAddClauseDoesNotWaitOnClauseReferenceLock(t *testing.T) {
+	wsID, _, memberID := legislationFixture(t)
+	withJevAdvisory(t, &legislation.AdvisoryClient{})
+	id := createDraft(t, wsID, memberID, "不受条款锁影响的提案", cleanClauseFor("不受条款锁影响的提案"))
+	blocker, err := testPool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin workspace lock barrier: %v", err)
+	}
+	defer blocker.Rollback(context.Background())
+	if err := lockClauseReferenceWorkspaceTx(context.Background(), testHandler.Queries.WithTx(blocker), parseUUID(wsID)); err != nil {
+		t.Fatalf("hold workspace clause lock: %v", err)
+	}
+
+	req := legislationReq(memberID, wsID, http.MethodPost,
+		"/api/prompt-legislation/proposals/"+id+"/submit", nil, "id", id)
+	ctx, cancel := context.WithTimeout(req.Context(), 3*time.Second)
+	defer cancel()
+	result := make(chan *testutil.Response, 1)
+	go func() {
+		result <- testutil.Call(t, testHandler.SubmitPromptProposal, req.WithContext(ctx))
+	}()
+	select {
+	case got := <-result:
+		if got.Code != http.StatusOK {
+			t.Fatalf("add_clause submit while workspace lock is held: expected 200, got %d: %s", got.Code, got.Text())
+		}
+	case <-ctx.Done():
+		t.Fatalf("add_clause submit waited on unrelated workspace lock: %v", ctx.Err())
+	}
+	if err := blocker.Commit(context.Background()); err != nil {
+		t.Fatalf("release workspace clause lock: %v", err)
 	}
 }

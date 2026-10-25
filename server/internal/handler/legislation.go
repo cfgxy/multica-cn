@@ -1012,6 +1012,9 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "only draft proposals can be submitted")
 		return
 	}
+	submissionChangeKind := p.ChangeKind
+	submissionClauseID := p.ClauseID
+	needsRevisionLock := submissionChangeKind == "revise_clause" && submissionClauseID.Valid
 	advisoryText := p.ClauseText
 	// The advisory service is best-effort but external; call it before opening
 	// the transaction so a slow response cannot hold the proposal row lock.
@@ -1023,9 +1026,11 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context()) //nolint:errcheck
 	qtx := h.Queries.WithTx(tx)
-	if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, workspaceID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to submit proposal")
-		return
+	if needsRevisionLock {
+		if err := lockClauseReferenceWorkspaceTx(r.Context(), qtx, workspaceID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to submit proposal")
+			return
+		}
 	}
 	p, err = qtx.GetPromptProposalForUpdate(r.Context(), db.GetPromptProposalForUpdateParams{
 		ID: p.ID, WorkspaceID: workspaceID,
@@ -1043,6 +1048,10 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.ClauseText != advisoryText {
+		writeError(w, http.StatusConflict, "proposal changed while the advisory was running; retry submission")
+		return
+	}
+	if p.ChangeKind != submissionChangeKind || p.ClauseID != submissionClauseID {
 		writeError(w, http.StatusConflict, "proposal changed while the advisory was running; retry submission")
 		return
 	}
@@ -1294,6 +1303,28 @@ func (h *Handler) approveOne(w http.ResponseWriter, r *http.Request, id string, 
 	}
 	target, targetErr := normalizeProposalEnactmentTarget(enactmentTarget, p)
 	if targetErr != "" {
+		if p.Status == "approved" {
+			failedAudit := legislationAudit("gate_failed", "member", userID, map[string]any{
+				"path":   "approve_recovery",
+				"reason": targetErr,
+			})
+			failedResult := errorResult(errors.New(targetErr))
+			if _, err := qtx.MarkPromptProposalGateFailed(r.Context(), db.MarkPromptProposalGateFailedParams{
+				ID: p.ID, WorkspaceID: workspaceID, Audit: failedAudit,
+				Errors: mustJSON(failedResult.Errors), Warnings: mustJSON(failedResult.Warnings),
+				JevAdvisory: p.JevAdvisory,
+			}); err != nil {
+				slog.Error("invalid approve recovery target audit failed", append(logger.RequestAttrs(r), "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to record invalid recovery target")
+				return
+			}
+			if err := tx.Commit(r.Context()); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to record invalid recovery target")
+				return
+			}
+			writeError(w, http.StatusConflict, targetErr)
+			return
+		}
 		writeError(w, http.StatusBadRequest, targetErr)
 		return
 	}
