@@ -2594,7 +2594,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// Composing here covers every task kind, because this is the single
 	// place a claimed task's agent payload is assembled.
 	if agent.SystemKey.String == service.MikaSystemKey {
-		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agent.Instructions)
+		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agentInstructions)
 	}
 	if useSkillRefs {
 		_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID)
@@ -3616,14 +3616,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		if issueNumber > 0 {
 			resp.IssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, issueNumber)
 		}
-		if ws.Context.Valid {
-			// The workspace tier's business column goes through the dynamic
-			// clause filter before it reaches the response (ADR 007 §5).
-			wsContext := filterClauses(promptVersionScopeWorkspace, ws.ID, ws.Context.String)
-			resp.WorkspaceContext = wsContext
-			if strings.TrimSpace(wsContext) != "" {
-				promptVersionScopeIDs["workspace"] = uuidToString(ws.ID)
-			}
+		// The workspace tier's business column goes through the dynamic clause
+		// filter before it reaches the response (ADR 007 §5). A NULL context is
+		// an empty static carrier, not an absent carrier: effective clauses may
+		// still bind to this workspace and must reach the claimed task.
+		wsContext := filterClauses(promptVersionScopeWorkspace, ws.ID, ws.Context.String)
+		resp.WorkspaceContext = wsContext
+		if strings.TrimSpace(wsContext) != "" {
+			promptVersionScopeIDs["workspace"] = uuidToString(ws.ID)
 		}
 	} else {
 		slog.Warn("task claim: failed to load workspace for context injection",

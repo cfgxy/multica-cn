@@ -138,6 +138,18 @@ func enactWorkspaceClause(t *testing.T, f *clauseInjectionFixture, name, text st
 // it through the real daemon route, returning the claim payload.
 func enqueueAndClaim(t *testing.T, f *clauseInjectionFixture) (taskID, workspaceContext string) {
 	t.Helper()
+	claim := enqueueAndClaimResponse(t, f)
+	return claim.taskID, claim.workspaceContext
+}
+
+type clauseInjectionClaim struct {
+	taskID            string
+	workspaceContext  string
+	agentInstructions string
+}
+
+func enqueueAndClaimResponse(t *testing.T, f *clauseInjectionFixture) clauseInjectionClaim {
+	t.Helper()
 	var rawTaskID string
 	dbfx.QueryRow(t, `
 		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
@@ -154,6 +166,9 @@ func enqueueAndClaim(t *testing.T, f *clauseInjectionFixture) (taskID, workspace
 			ID               string `json:"id"`
 			WorkspaceContext string `json:"workspace_context"`
 		} `json:"task"`
+		Agent *struct {
+			Instructions string `json:"instructions"`
+		} `json:"agent"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode claim: %v (%s)", err, w.Body.String())
@@ -164,7 +179,14 @@ func enqueueAndClaim(t *testing.T, f *clauseInjectionFixture) (taskID, workspace
 	if resp.Task.ID != rawTaskID {
 		t.Fatalf("claimed task id = %s, want %s", resp.Task.ID, rawTaskID)
 	}
-	return rawTaskID, resp.Task.WorkspaceContext
+	if resp.Agent == nil {
+		t.Fatalf("expected claimed agent payload: %s", w.Body.String())
+	}
+	return clauseInjectionClaim{
+		taskID:            rawTaskID,
+		workspaceContext:  resp.Task.WorkspaceContext,
+		agentInstructions: resp.Agent.Instructions,
+	}
 }
 
 func TestClaimDynamicClauseInjectionHappyPath(t *testing.T) {
@@ -220,6 +242,60 @@ func TestClaimDynamicClauseInjectionHappyPath(t *testing.T) {
 		`SELECT COUNT(*) FROM clause_injection WHERE task_id = $1`, taskID).Scan(&n)
 	if n != 1 {
 		t.Fatalf("duplicate recording produced %d rows, want 1", n)
+	}
+}
+
+func TestClaimDynamicClauseInjectionFromNilWorkspaceContext(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	dbfx.Exec(t, `UPDATE workspace SET context = NULL WHERE id = $1`, f.wsID)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+
+	var persistedCarrier pgtype.Text
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&persistedCarrier)
+	if persistedCarrier.Valid {
+		t.Fatalf("persisted workspace context = %q, want NULL static carrier", persistedCarrier.String)
+	}
+
+	taskID, wsContext := enqueueAndClaim(t, f)
+	if !strings.Contains(wsContext, cleanClauseText) ||
+		!strings.Contains(wsContext, "<!-- clause:id=") ||
+		!strings.Contains(wsContext, clausemark.CloseTag()) {
+		t.Fatalf("claimed empty static carrier missing rendered clause:\n%s", wsContext)
+	}
+
+	var gotClauseID, scope string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT clause_id::text, carrier_scope FROM clause_injection WHERE task_id = $1`, taskID).
+		Scan(&gotClauseID, &scope); err != nil {
+		t.Fatalf("claim left no injection row: %v", err)
+	}
+	if gotClauseID != clauseID || scope != "workspace" {
+		t.Fatalf("injection row = clause %s scope %s, want clause %s workspace", gotClauseID, scope, clauseID)
+	}
+}
+
+func TestClaimDynamicClauseInjectionMikaAgent(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	dbfx.Exec(t, `UPDATE agent SET system_key = $2, instructions = '' WHERE id = $1`, f.agentID, service.MikaSystemKey)
+	dbfx.Exec(t, `UPDATE clause_binding SET scope = 'agent', scope_id = $2 WHERE clause_id = $1`, clauseID, f.agentID)
+
+	claim := enqueueAndClaimResponse(t, f)
+	if got := strings.Count(claim.agentInstructions, cleanClauseText); got != 1 {
+		t.Fatalf("Mika instructions contain the effective clause %d times, want once:\n%s", got, claim.agentInstructions)
+	}
+	if got := strings.Count(claim.agentInstructions, "<!-- clause:id="); got != 1 {
+		t.Fatalf("Mika instructions contain %d clause markers, want one:\n%s", got, claim.agentInstructions)
+	}
+
+	var gotClauseID, scope string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT clause_id::text, carrier_scope FROM clause_injection WHERE task_id = $1`, claim.taskID).
+		Scan(&gotClauseID, &scope); err != nil {
+		t.Fatalf("claim left no Mika injection row: %v", err)
+	}
+	if gotClauseID != clauseID || scope != "agent" {
+		t.Fatalf("Mika injection row = clause %s scope %s, want clause %s agent", gotClauseID, scope, clauseID)
 	}
 }
 
