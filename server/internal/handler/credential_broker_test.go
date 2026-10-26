@@ -59,6 +59,25 @@ func TestCredentialGrantMatchesTaskRequiresBothDimensions(t *testing.T) {
 	}
 }
 
+func TestCredentialCapabilityFirstUseDeadline(t *testing.T) {
+	now := time.Date(2026, time.October, 26, 0, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name      string
+		expiresAt time.Time
+		expired   bool
+	}{
+		{name: "before deadline", expiresAt: now.Add(time.Nanosecond), expired: false},
+		{name: "at deadline", expiresAt: now, expired: true},
+		{name: "after deadline", expiresAt: now.Add(-time.Nanosecond), expired: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := credentialCapabilityExpired(now, test.expiresAt); got != test.expired {
+				t.Fatalf("credentialCapabilityExpired(%s) = %t, want %t", test.expiresAt, got, test.expired)
+			}
+		})
+	}
+}
+
 func TestSelectTaskCredentialGrantsGroupsDeniesByCredentialAndConnector(t *testing.T) {
 	connectorA := util.MustParseUUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 	connectorB := util.MustParseUUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
@@ -423,10 +442,6 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 	secondResolveBody, _ := json.Marshal(credentialResolveRequest{
 		Capability: secondCapability.Capability, ConnectorID: secondConnectorID, ConnectorRevision: 1,
 	})
-	secondCapabilityHash := sha256.Sum256([]byte(secondCapability.Capability))
-	if _, err := testPool.Exec(ctx, `UPDATE credential_capability SET expires_at = now() - interval '1 minute' WHERE capability_hash = $1`, secondCapabilityHash[:]); err != nil {
-		t.Fatal("expire unused capability before first resolve")
-	}
 	secondStatus, secondBody, secondResolveErr := h.DaemonRPCHandler(ctx, identity, "credentials.resolve", secondResolveBody)
 	if secondStatus != http.StatusOK || secondResolveErr != nil {
 		t.Fatalf("second connector resolve status=%d err=%v body=%s", secondStatus, secondResolveErr, secondBody)
@@ -531,10 +546,34 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 		t.Fatalf("commit revocation-race capabilities: count=%d err=%v", len(raceCapabilities), err)
 	}
 	var raceCapability credentialControlGrant
+	var expiredRaceCapability credentialControlGrant
 	for _, candidate := range raceCapabilities {
 		if candidate.ConnectorID == connectorID {
 			raceCapability = candidate
 		}
+		if candidate.ConnectorID == secondConnectorID {
+			expiredRaceCapability = candidate
+		}
+	}
+	if raceCapability.Capability == "" || expiredRaceCapability.Capability == "" {
+		t.Fatal("minted capabilities did not cover both connectors")
+	}
+	expiredRaceHash := sha256.Sum256([]byte(expiredRaceCapability.Capability))
+	if _, err := testPool.Exec(ctx, `UPDATE credential_capability SET expires_at = now() - interval '1 minute' WHERE capability_hash = $1`, expiredRaceHash[:]); err != nil {
+		t.Fatal("expire unused capability before first resolve")
+	}
+	expiredRaceBody, _ := json.Marshal(credentialResolveRequest{
+		Capability: expiredRaceCapability.Capability, ConnectorID: secondConnectorID, ConnectorRevision: 1,
+	})
+	if code, _, resolveErr := h.DaemonRPCHandler(ctx, identity, "credentials.resolve", expiredRaceBody); code != http.StatusForbidden {
+		t.Fatalf("expired capability resolve status=%d err=%v, want 403", code, resolveErr)
+	}
+	var expiredAuditCount int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM credential_audit WHERE task_id = $1 AND event_type = 'credential.broker_resolved' AND result = 'denied' AND reason_code = 'capability_expired'`, taskID).Scan(&expiredAuditCount); err != nil {
+		t.Fatal("count expired capability audits")
+	}
+	if expiredAuditCount != 1 {
+		t.Fatalf("expired capability audit count = %d, want 1", expiredAuditCount)
 	}
 	raceBody, _ := json.Marshal(credentialResolveRequest{
 		Capability: raceCapability.Capability, ConnectorID: connectorID, ConnectorRevision: 1,
