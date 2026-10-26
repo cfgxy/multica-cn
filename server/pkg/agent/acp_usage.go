@@ -82,7 +82,6 @@ func (a *acpUsageAccumulator) merge(next acpUsageSnapshot) {
 	if next.has(acpUsageCost) && (!a.has(acpUsageCost) || next.CostUSDTicks > a.CostUSDTicks) {
 		a.CostUSDTicks = next.CostUSDTicks
 	}
-
 	a.fields |= next.fields
 	a.resolveInput()
 }
@@ -135,7 +134,6 @@ func (s acpUsageSnapshot) withFallback(fallback acpUsageSnapshot) acpUsageSnapsh
 	if fallback.has(acpUsageCost) && (!result.has(acpUsageCost) || fallback.CostUSDTicks > result.CostUSDTicks) {
 		result.CostUSDTicks = fallback.CostUSDTicks
 	}
-
 	result.fields |= fallback.fields
 	if inputFromFallback && fallback.inputNormalized {
 		result.totalTokens = fallback.totalTokens

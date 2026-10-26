@@ -54,7 +54,9 @@ type copilotEventState struct {
 	shutdownUsage map[string]TokenUsage
 	// resumed marks a run that continued an existing Copilot session, which is
 	// what disqualifies the session.shutdown totals — see resolveUsage.
-	resumed bool
+	resumed                       bool
+	onModelCallEvidence           func(model, evidenceID string)
+	onModelCallEvidenceIncomplete func(model string)
 }
 
 // resolveUsage picks the single best usage source this run produced, most
@@ -73,16 +75,45 @@ type copilotEventState struct {
 // letting it win over a source with the full breakdown would silently drop the
 // input and cache tiers.
 func (st *copilotEventState) resolveUsage() map[string]TokenUsage {
-	if !st.resumed && hasTokens(st.shutdownUsage) {
-		return st.shutdownUsage
+	var usage map[string]TokenUsage
+	// Pick the token source by completeness only. Per-call evidence must not
+	// promote a tokenless assistant.usage source above one that actually
+	// carries tokens: the identities ride onto whichever source wins, and a
+	// count-only entry never shadows a real token report.
+	switch {
+	case !st.resumed && hasTokens(st.shutdownUsage):
+		usage = st.shutdownUsage
+	case hasTokens(st.callUsage):
+		usage = st.callUsage
+	case hasTokens(st.msgUsage):
+		usage = st.msgUsage
+	default:
+		usage = map[string]TokenUsage{}
 	}
-	if hasTokens(st.callUsage) {
-		return st.callUsage
+	// Per-call evidence is independent of which token source wins:
+	// assistant.usage identifies calls from this run even when the final token
+	// total comes from session.shutdown. Models named only by a session total
+	// remain unknown because that aggregate has no per-call identity.
+	st.attachCallEvidence(usage)
+	return usage
+}
+
+func (st *copilotEventState) attachCallEvidence(usage map[string]TokenUsage) {
+	for model, callUsage := range st.callUsage {
+		evidenceIDs := callUsage.ModelCallEvidenceIDs()
+		if len(evidenceIDs) == 0 && !callUsage.ModelCallEvidenceIncomplete {
+			continue
+		}
+		u := usage[model]
+		for _, evidenceID := range evidenceIDs {
+			u = appendModelCallEvidence(u, evidenceID)
+		}
+		if callUsage.ModelCallEvidenceIncomplete {
+			u.ModelCallEvidenceIncomplete = true
+			u.ModelCallCount = 0
+		}
+		usage[model] = u
 	}
-	if hasTokens(st.msgUsage) {
-		return st.msgUsage
-	}
-	return map[string]TokenUsage{}
 }
 
 // hasTokens reports whether a source carries any real numbers. Presence alone
@@ -241,6 +272,19 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 			st.activeModel = model
 		}
 		addUsage(st.callUsage, model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)
+		// This event is one model API call. Its envelope ID is the stable
+		// provider-original identity persisted by the accounting path; an event
+		// without one makes the model's total unknown rather than partial.
+		callUsage := st.callUsage[model]
+		callUsage = appendModelCallEvidence(callUsage, evt.ID)
+		st.callUsage[model] = callUsage
+		if evidenceID := strings.TrimSpace(evt.ID); evidenceID != "" {
+			if st.onModelCallEvidence != nil {
+				st.onModelCallEvidence(model, evidenceID)
+			}
+		} else if st.onModelCallEvidenceIncomplete != nil {
+			st.onModelCallEvidenceIncomplete(model)
+		}
 
 	case "session.shutdown":
 		// Session-wide per-model totals, emitted once as the session tears down.
@@ -391,6 +435,8 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			seedModel = "copilot"
 		}
 		st := newCopilotEventState(seedModel, opts.ResumeSessionID != "")
+		st.onModelCallEvidence = b.cfg.OnModelCallEvidence
+		st.onModelCallEvidenceIncomplete = b.cfg.OnModelCallEvidenceIncomplete
 
 		go func() {
 			<-runCtx.Done()

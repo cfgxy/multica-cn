@@ -1113,3 +1113,113 @@ func TestBuildCopilotArgsBlocksResumeAndACP(t *testing.T) {
 		}
 	}
 }
+
+// ── Model call counts (migration 987) ──────────────────────────────────────
+// Each assistant.usage event is one model API call. The count is attached to
+// whichever token source wins and must stay 0 when no such event was seen:
+// the absence is an unknown, not a measured zero.
+
+func TestCopilotCallCountPerAssistantUsageEvent(t *testing.T) {
+	t.Parallel()
+	usage1 := `{"type":"assistant.usage","data":{"model":"claude-sonnet-4.5","inputTokens":100,"outputTokens":10},"id":"u-1","timestamp":"2026-08-04T08:00:01.000Z"}`
+	usage2 := `{"type":"assistant.usage","data":{"model":"claude-sonnet-4.5","inputTokens":50,"outputTokens":5},"id":"u-2","timestamp":"2026-08-04T08:00:05.000Z"}`
+
+	t.Run("one event counts one call", func(t *testing.T) {
+		t.Parallel()
+		lines := []string{fixtureSessionStart, fixtureTurnStart, usage1, fixtureResult}
+		_, _, _, usage := simulateCopilotEventLoop(t, lines)
+		if u := usage["claude-sonnet-4.5"]; u.ModelCallCount != 1 {
+			t.Fatalf("expected 1 model call, got %#v", u)
+		}
+	})
+
+	t.Run("two events count two calls on the same model", func(t *testing.T) {
+		t.Parallel()
+		lines := []string{fixtureSessionStart, fixtureTurnStart, usage1, usage2, fixtureResult}
+		_, _, _, usage := simulateCopilotEventLoop(t, lines)
+		if u := usage["claude-sonnet-4.5"]; u.ModelCallCount != 2 {
+			t.Fatalf("expected 2 model calls, got %#v", u)
+		}
+	})
+
+	t.Run("no usage event leaves the count unknown", func(t *testing.T) {
+		t.Parallel()
+		lines := []string{fixtureSessionStart, fixtureTurnStart, fixtureAssistantMessage, fixtureResult}
+		_, _, _, usage := simulateCopilotEventLoop(t, lines)
+		// Legacy assistant.message path: tokens land under the session's
+		// selected model, and no per-call evidence exists, so the count stays
+		// unknown (0) while the legacy tokens still report.
+		if u := usage["claude-sonnet-4"]; u.ModelCallCount != 0 || u.OutputTokens != 5 {
+			t.Fatalf("expected unknown calls with legacy tokens, got %#v", usage)
+		}
+	})
+}
+
+func TestCopilotAssistantUsageReportsCallEvidence(t *testing.T) {
+	t.Parallel()
+	evt := copilotEvent{
+		Type: "assistant.usage",
+		ID:   "usage-call-1",
+		Data: json.RawMessage(`{"model":"claude-sonnet-4.5","inputTokens":10,"outputTokens":2}`),
+	}
+	var gotModel, gotID string
+	var incompleteModel string
+	st := newCopilotEventState("copilot", false)
+	st.onModelCallEvidence = func(model, evidenceID string) {
+		gotModel, gotID = model, evidenceID
+	}
+	st.onModelCallEvidenceIncomplete = func(model string) {
+		incompleteModel = model
+	}
+	handleCopilotEvent(evt, st)
+	if gotModel != "claude-sonnet-4.5" || gotID != "usage-call-1" {
+		t.Fatalf("evidence callback = (%q, %q), want model and provider event ID", gotModel, gotID)
+	}
+	evt.ID = ""
+	handleCopilotEvent(evt, st)
+	if incompleteModel != "claude-sonnet-4.5" {
+		t.Fatalf("incomplete evidence callback = %q, want model", incompleteModel)
+	}
+}
+
+func TestCopilotTokenlessCallStillCounts(t *testing.T) {
+	t.Parallel()
+	// A model call that reports no tokens at all still happened: the count is
+	// attached as a count-only entry, independent of the token source.
+	tokenless := `{"type":"assistant.usage","data":{"model":"claude-sonnet-4.5","duration":900},"id":"u-0","timestamp":"2026-08-04T08:00:01.000Z"}`
+	lines := []string{fixtureSessionStart, fixtureTurnStart, tokenless, fixtureShutdown, fixtureResult}
+	_, _, _, usage := simulateCopilotEventLoop(t, lines)
+	if u := usage["claude-sonnet-4.5"]; u.ModelCallCount != 1 {
+		t.Fatalf("tokenless call must still count, got %#v", u)
+	}
+	// The session totals still carry the tokens.
+	if u := usage["claude-sonnet-4.5"]; u.OutputTokens != 900 {
+		t.Fatalf("session totals must survive a tokenless usage event, got %#v", u)
+	}
+}
+
+func TestCopilotCallCountAttachesRegardlessOfTokenSource(t *testing.T) {
+	t.Parallel()
+	// session.shutdown wins the tokens, but the two per-call events observed
+	// during THIS run are still this run's call evidence.
+	usage1 := `{"type":"assistant.usage","data":{"model":"claude-sonnet-4.5","inputTokens":100,"outputTokens":10},"id":"u-1","timestamp":"2026-08-04T08:00:01.000Z"}`
+	usage2 := `{"type":"assistant.usage","data":{"model":"claude-sonnet-4.5","inputTokens":200,"outputTokens":20},"id":"u-2","timestamp":"2026-08-04T08:00:05.000Z"}`
+	lines := []string{fixtureSessionStart, fixtureTurnStart, usage1, usage2, fixtureShutdown, fixtureResult}
+	_, _, _, usage := simulateCopilotEventLoop(t, lines)
+	if u := usage["claude-sonnet-4.5"]; u.ModelCallCount != 2 {
+		t.Fatalf("expected 2 calls attached to the winning token source, got %#v", u)
+	}
+}
+
+func TestCopilotResumedRunCountsPerCallEvidenceOnly(t *testing.T) {
+	t.Parallel()
+	// A resumed run disqualifies the shutdown totals but not the per-call
+	// events: each assistant.usage seen during this run counts.
+	usage1 := `{"type":"assistant.usage","data":{"model":"claude-sonnet-4.5","inputTokens":30000,"outputTokens":900},"id":"u-1","timestamp":"2026-08-04T08:00:01.000Z"}`
+	lines := []string{fixtureTurnStart, usage1, fixtureResult}
+	_, st := runCopilotEventLoop(t, lines, "copilot", true)
+	usage := st.resolveUsage()
+	if u := usage["claude-sonnet-4.5"]; u.ModelCallCount != 1 {
+		t.Fatalf("expected 1 call on a resumed run, got %#v", u)
+	}
+}

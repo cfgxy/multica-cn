@@ -229,6 +229,59 @@ type TokenUsage struct {
 	// resume fit in the context window". The session gate (RUYI-107) needs the
 	// latter, so it gets its own field with its own overwrite semantics.
 	ContextTokens int64
+	// modelCallEvidence stores provider-original call identities as NUL-delimited
+	// text. Keeping TokenUsage comparable preserves existing backend tests and
+	// map-value comparisons; NUL is rejected at the network boundary and cannot
+	// be a valid identity. ModelCallEvidenceIDs exposes the decoded IDs to the
+	// daemon without making this struct contain a slice.
+	modelCallEvidence string
+	// ModelCallEvidenceIncomplete marks a model whose event stream included a
+	// call without a stable provider-original ID. Its collected IDs are useful
+	// for diagnostics but must not be sent to the accounting path: a partial
+	// total is unknown, never a lower known count.
+	ModelCallEvidenceIncomplete bool
+	// ModelCallCount is a local diagnostic derived from ModelCallEvidenceIDs for
+	// providers with stable evidence. It remains for internal compatibility only;
+	// the server never accepts it as an accounting input.
+	ModelCallCount int64
+}
+
+// ModelCallEvidenceIDs returns the provider-original model-call identities
+// observed during this run. The handler persists them with a database-enforced
+// unique key, so a retried daemon report cannot bill the same request twice.
+func (usage TokenUsage) ModelCallEvidenceIDs() []string {
+	if usage.modelCallEvidence == "" {
+		return nil
+	}
+	return strings.Split(usage.modelCallEvidence, "\x00")
+}
+
+// WithModelCallEvidence adds one provider-original event identity once. A
+// duplicate line in a CLI stream must not inflate the daemon's own diagnostic
+// count before the database receives its replay-safe copy.
+func (usage TokenUsage) WithModelCallEvidence(evidenceID string) TokenUsage {
+	evidenceID = strings.TrimSpace(evidenceID)
+	if evidenceID == "" || strings.IndexByte(evidenceID, 0) >= 0 {
+		usage.ModelCallEvidenceIncomplete = true
+		usage.ModelCallCount = 0
+		return usage
+	}
+	ids := usage.ModelCallEvidenceIDs()
+	for _, existing := range ids {
+		if existing == evidenceID {
+			return usage
+		}
+	}
+	ids = append(ids, evidenceID)
+	usage.modelCallEvidence = strings.Join(ids, "\x00")
+	if !usage.ModelCallEvidenceIncomplete {
+		usage.ModelCallCount = int64(len(ids))
+	}
+	return usage
+}
+
+func appendModelCallEvidence(usage TokenUsage, evidenceID string) TokenUsage {
+	return usage.WithModelCallEvidence(evidenceID)
 }
 
 // CostUSDTicksPerUSD is the scale of the provider-reported cost unit: xAI
@@ -305,10 +358,16 @@ type Config struct {
 	CLIVersion     string            // detected version paired with ExecutablePath; observation only, never used to choose behavior
 	Env            map[string]string // extra environment variables
 	Logger         *slog.Logger
-	TaskID         string
-	RuntimeID      string
-	DaemonVersion  string
-	CodexVersion   string
+	// OnModelCallEvidence reports one provider-original call identity as soon as
+	// the provider event is observed. The daemon persists it before the run ends.
+	OnModelCallEvidence func(model, evidenceID string)
+	// OnModelCallEvidenceIncomplete reports a call whose provider event lacks a
+	// stable evidence identity, so the daemon can fail the live budget open.
+	OnModelCallEvidenceIncomplete func(model string)
+	TaskID                        string
+	RuntimeID                     string
+	DaemonVersion                 string
+	CodexVersion                  string
 	// BuiltinRuntime reports that ExecutablePath is the provider's own
 	// discovered binary rather than a custom runtime profile's command. A
 	// custom profile keeps its protocol family as the provider, so the

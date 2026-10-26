@@ -220,6 +220,7 @@ func (h *Handler) GetDashboardUsageTraffic(w http.ResponseWriter, r *http.Reques
 		{"tokens_per_second", fmt.Sprintf("sum by (%s) (rate(multica_task_usage_tokens_total{%s}[%s]))", dim.by, ws, durationProm(plan.RateWindow))},
 		{"cost_usd_per_second", fmt.Sprintf("sum by (%s) (rate(multica_task_usage_cost_usd_total{%s}[%s]))", dim.by, ws, durationProm(plan.RateWindow))},
 		{"tasks_per_second", fmt.Sprintf("sum by (%s) (rate(multica_task_usage_tasks_total{%s}[%s]))", dim.by, ws, durationProm(plan.RateWindow))},
+		{"calls_per_second", fmt.Sprintf("sum by (%s) (rate(multica_task_usage_model_calls_total{%s}[%s]))", dim.by, ws, durationProm(plan.RateWindow))},
 	}
 	series, err := h.runUsageQueries(r.Context(), queries, plan)
 	if err != nil {

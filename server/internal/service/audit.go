@@ -152,8 +152,9 @@ const (
 	// that pauses task claims on a host. Scheduling-affecting config gets
 	// the same fail-closed trail as the freeze switch; details carry the
 	// daemon_id and the full old→new cards.
-	AuditOpsBackpressureSettingsUpdated = "ops.backpressure_settings_updated"
-	AuditOpsBackpressureSettingsRemoved = "ops.backpressure_settings_removed"
+	AuditOpsBackpressureSettingsUpdated   = "ops.backpressure_settings_updated"
+	AuditOpsBackpressureSettingsRemoved   = "ops.backpressure_settings_removed"
+	AuditOpsRuntimeModelCallBudgetUpdated = "ops.runtime_model_call_budget_updated"
 
 	AuditMCPInvocationStarted  = "mcp.invocation_started"
 	AuditMCPInvocationFinished = "mcp.invocation_finished"
