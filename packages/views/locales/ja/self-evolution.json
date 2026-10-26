@@ -402,7 +402,7 @@
       "errored": "エラー",
       "taskQueued": "待機中",
       "taskRunning": "実行中",
-      "taskAwaitingGrade": "結果収集待ち",
+      "taskAwaitingGrade": "採点待ち",
       "taskPending": "保留中",
       "taskNotMeasured": "未測定",
       "checkPassed": "{{id}}（{{kind}}）合格：{{evidence}}",

@@ -402,7 +402,7 @@
       "errored": "出错",
       "taskQueued": "排队中",
       "taskRunning": "运行中",
-      "taskAwaitingGrade": "等待收集结果",
+      "taskAwaitingGrade": "等待评分",
       "taskPending": "待处理",
       "taskNotMeasured": "未纳入测量",
       "checkPassed": "{{id}}（{{kind}}）通过：{{evidence}}",
