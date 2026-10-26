@@ -7,8 +7,8 @@ package handler
 // never parses carrier markers: the effective clause set comes straight from
 // the asset library (active bindings + task_kind condition filter, ADR §4),
 // and only the stable context is split off the business column. Two
-// fallbacks feed the snapshot path, where the carrier's rendered clause
-// region is parsed and injected verbatim:
+// fallbacks feed the snapshot path, where only rendered clauses whose current
+// active binding still targets the carrier are retained:
 //
 //  1. the global kill switch (feature flag clause_dynamic_injection_disabled,
 //     ADR §5 defense 2) — fleet-wide stop-loss / rollout lever;
@@ -20,21 +20,22 @@ package handler
 // Degraded snapshot runs still get counted: the snapshot's marker segments
 // resolve to (clause, version) pairs recorded with degraded=true, so the
 // governance view can separate filtered from unfiltered traffic. A snapshot
-// that cannot even be parsed is a counted MISS — logged, never silent
-// (ADR §6: 缺计不可静默).
+// that cannot be parsed is a counted MISS and contributes no text, preventing
+// malformed stale markers from bypassing the active-binding check.
 
 import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/clausemark"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Clause task kinds — the closed value domain binding conditions may
@@ -86,11 +87,19 @@ type clauseInjectionRecord struct {
 	Degraded      bool
 }
 
+type clauseInjectionObservation struct {
+	Scope    string
+	ScopeID  pgtype.UUID
+	Degraded bool
+	Reason   string
+}
+
 // dynamicClauseResult is what one carrier read point yields: the text to
 // inject and the injection rows it produced.
 type dynamicClauseResult struct {
-	Text      string
-	Injections []clauseInjectionRecord
+	Text         string
+	Injections   []clauseInjectionRecord
+	Observations []clauseInjectionObservation
 }
 
 // applyDynamicClauses filters one carrier business column down to the clause
@@ -98,11 +107,13 @@ type dynamicClauseResult struct {
 // fails: every failure mode degrades to the snapshot path and the claim
 // proceeds (ADR 007 §5).
 func (h *Handler) applyDynamicClauses(ctx context.Context, workspaceID pgtype.UUID, scope promptVersionScope, scopeID pgtype.UUID, taskKind, text string) dynamicClauseResult {
-	if text == "" {
-		return dynamicClauseResult{Text: text}
-	}
 	degrade := func(reason string) dynamicClauseResult {
-		return dynamicClauseResult{Text: text, Injections: h.snapshotFallbackInjections(ctx, workspaceID, scope, scopeID, text, reason)}
+		fallbackText, injections := h.snapshotFallback(ctx, workspaceID, scope, scopeID, taskKind, text, reason)
+		return dynamicClauseResult{
+			Text:         fallbackText,
+			Injections:   injections,
+			Observations: []clauseInjectionObservation{{Scope: string(scope), ScopeID: scopeID, Degraded: true, Reason: reason}},
+		}
 	}
 
 	if h.clauseDynamicInjectionDisabled(ctx) {
@@ -121,10 +132,9 @@ func (h *Handler) applyDynamicClauses(ctx context.Context, workspaceID pgtype.UU
 	}
 	doc, err := clausemark.Parse(text)
 	if err != nil {
-		// The carrier's rendered region is malformed — Owner hand-edit or a
-		// pre-render carrier. Inject as-is; the snapshot parse below still
-		// attempts per-segment accounting.
-		slog.Warn("clause injection: carrier snapshot parse failed; degrading to raw injection",
+		// The carrier's rendered region is malformed, so the degraded path
+		// will fail closed on its text.
+		slog.Warn("clause injection: carrier snapshot parse failed; filtering degraded text",
 			"scope", string(scope), "error", err)
 		return degrade("parse_error")
 	}
@@ -140,44 +150,112 @@ func (h *Handler) applyDynamicClauses(ctx context.Context, workspaceID pgtype.UU
 			ClauseVersion: row.Version,
 		})
 	}
-	return dynamicClauseResult{Text: clausemark.Render(doc.Stable, rendered), Injections: injections}
+	return dynamicClauseResult{
+		Text:       clausemark.Render(doc.Stable, rendered),
+		Injections: injections,
+	}
 }
 
-// snapshotFallbackInjections accounts a degraded run: parse the carrier's
-// rendered clause region and record each segment as a degraded injection
-// (ADR 007 §6 — a degraded run is counted, from the snapshot; a parse
-// failure is a counted miss with a warning, never silent).
-func (h *Handler) snapshotFallbackInjections(ctx context.Context, workspaceID pgtype.UUID, scope promptVersionScope, scopeID pgtype.UUID, text, reason string) []clauseInjectionRecord {
+// snapshotFallbackInjections returns the injection accounting from a filtered
+// degraded snapshot.
+func (h *Handler) snapshotFallbackInjections(ctx context.Context, workspaceID pgtype.UUID, scope promptVersionScope, scopeID pgtype.UUID, taskKind, text, reason string) []clauseInjectionRecord {
+	_, injections := h.snapshotFallback(ctx, workspaceID, scope, scopeID, taskKind, text, reason)
+	return injections
+}
+
+// snapshotFallback keeps only marker segments whose clause and active binding
+// still authorize injection from this carrier. A malformed snapshot fails
+// closed because its segment boundaries cannot be trusted.
+func (h *Handler) snapshotFallback(ctx context.Context, workspaceID pgtype.UUID, scope promptVersionScope, scopeID pgtype.UUID, taskKind, text, reason string) (string, []clauseInjectionRecord) {
 	doc, err := clausemark.Parse(text)
-	if err != nil {
+	stableMarkers := strings.Join(strings.Fields(doc.Stable), "")
+	if err != nil || strings.Contains(stableMarkers, "<!--clause") || strings.Contains(stableMarkers, "<!--/clause") {
 		slog.Warn("clause injection: degraded run snapshot unparseable; clause-level count missing (reconciliation will flag)",
 			"scope", string(scope), "reason", reason, "error", err)
-		return nil
+		return "", nil
 	}
 	out := make([]clauseInjectionRecord, 0, len(doc.Segments))
+	rendered := make([]clausemark.RenderedClause, 0, len(doc.Segments))
 	for _, seg := range doc.Segments {
 		clause, err := h.Queries.GetClauseBySlug(ctx, db.GetClauseBySlugParams{Slug: seg.Slug, WorkspaceID: workspaceID})
-		if err != nil {
+		if err != nil || clause.Status != "active" {
 			slog.Warn("clause injection: snapshot segment slug not in asset library; count missing for it",
 				"scope", string(scope), "slug", seg.Slug, "reason", reason)
 			continue
 		}
+		binding, err := h.Queries.GetActiveClauseBinding(ctx, clause.ID)
+		if err != nil {
+			slog.Warn("clause injection: snapshot segment has no current active binding; skipping it",
+				"scope", string(scope), "slug", seg.Slug, "reason", reason, "error", err)
+			continue
+		}
+		if binding.Scope != string(scope) || binding.ScopeID != scopeID {
+			continue
+		}
+		if !clauseBindingAllowsTaskKind(binding.Conditions, taskKind) {
+			continue
+		}
+		rendered = append(rendered, clausemark.RenderedClause{Slug: seg.Slug, Version: seg.Rev, Body: seg.Body})
 		out = append(out, clauseInjectionRecord{
 			ClauseID:      clause.ID,
 			ClauseVersion: int32(seg.Rev),
 			Degraded:      true,
 		})
 	}
-	return out
+	return clausemark.Render(doc.Stable, rendered), out
 }
 
-// recordClauseInjectionEvents persists one claim's injection rows. Failures
-// are logged and swallowed: attribution is observability, never a claim
-// precondition (the prompt_versions record above follows the same contract).
-// The (task_id, clause_id, clause_version) unique index makes a re-claimed
-// task's duplicate writes no-ops. carrier_version is resolved per scope at
-// write time — the version the carrier had when the run was injected.
-func (h *Handler) recordClauseInjectionEvents(ctx context.Context, workspaceID, taskID pgtype.UUID, scopeIDs map[string]string, injections []clauseInjectionRecord) {
+func clauseBindingAllowsTaskKind(conditions []byte, taskKind string) bool {
+	if len(conditions) == 0 {
+		return true
+	}
+	var raw any
+	if err := json.Unmarshal(conditions, &raw); err != nil {
+		return false
+	}
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return true
+	}
+	taskKinds, ok := object["task_kinds"]
+	if !ok || taskKinds == nil {
+		return true
+	}
+	allowed, ok := taskKinds.([]any)
+	if !ok {
+		return true
+	}
+	for _, value := range allowed {
+		if allowedKind, ok := value.(string); ok && allowedKind == taskKind {
+			return true
+		}
+	}
+	return false
+}
+
+// recordClauseInjectionEvents persists one claim's injection rows and degraded
+// carrier observations. Failures are logged and swallowed: attribution is
+// observability, never a claim precondition. Injection rows are idempotent by
+// task, clause, and version; observations are append-only per degraded claim.
+// carrier_version is resolved per scope at write time — the version the
+// carrier had when the run was injected.
+func (h *Handler) recordClauseInjectionEvents(ctx context.Context, workspaceID, taskID pgtype.UUID, scopeIDs map[string]string, injections []clauseInjectionRecord, observations []clauseInjectionObservation) {
+	for _, observation := range observations {
+		if !observation.Degraded {
+			continue
+		}
+		if err := h.Queries.InsertClauseInjectionObservation(ctx, db.InsertClauseInjectionObservationParams{
+			WorkspaceID:       workspaceID,
+			TaskID:            taskID,
+			CarrierScope:      observation.Scope,
+			CarrierScopeID:    observation.ScopeID,
+			Degraded:          observation.Degraded,
+			DegradationReason: observation.Reason,
+		}); err != nil {
+			slog.Warn("clause injection: observation persist failed (attribution is observability, not a claim precondition)",
+				"task_id", uuidToString(taskID), "scope", observation.Scope, "error", err)
+		}
+	}
 	if len(injections) == 0 {
 		return
 	}
