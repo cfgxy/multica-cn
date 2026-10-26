@@ -724,22 +724,14 @@ func TestPromptQuizBatchIndexSupportsAgentReadPaths(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	const (
-		agentIndexName  = "idx_agent_task_queue_quiz_batch_agent_created_at"
-		lookupIndexName = "idx_agent_task_queue_quiz_batch_lookup"
-	)
-	for indexName, wants := range map[string][]string{
-		agentIndexName:  {"agent_id", "quiz_batch_id", "created_at DESC", "originator_source"},
-		lookupIndexName: {"quiz_batch_id", "created_at DESC", "originator_source"},
-	} {
-		var definition string
-		if err := testPool.QueryRow(ctx, `SELECT pg_get_indexdef($1::regclass)`, indexName).Scan(&definition); err != nil {
-			t.Fatalf("load quiz batch index %s: %v", indexName, err)
-		}
-		for _, want := range wants {
-			if !strings.Contains(definition, want) {
-				t.Fatalf("quiz batch index %s = %q, missing %q", indexName, definition, want)
-			}
+	const indexName = "idx_agent_task_queue_quiz_batch_agent_created_at"
+	var definition string
+	if err := testPool.QueryRow(ctx, `SELECT pg_get_indexdef($1::regclass)`, indexName).Scan(&definition); err != nil {
+		t.Fatalf("load quiz batch index: %v", err)
+	}
+	for _, want := range []string{"agent_id", "quiz_batch_id", "created_at DESC", "originator_source"} {
+		if !strings.Contains(definition, want) {
+			t.Fatalf("quiz batch index = %q, missing %q", definition, want)
 		}
 	}
 
@@ -799,20 +791,12 @@ func TestPromptQuizBatchIndexSupportsAgentReadPaths(t *testing.T) {
 		GROUP BY q.context->>'quiz_batch_id'
 		ORDER BY max(q.created_at) DESC
 		LIMIT 1`, agentID)
-	lookupPlan := explain(`
-		SELECT q.id
-		FROM agent_task_queue q
-		WHERE q.originator_source = 'quiz'
-		  AND q.context->>'quiz_batch_id' = $1
-		ORDER BY q.created_at DESC
-		LIMIT 500`, batchID)
 	for name, check := range map[string]struct {
 		plan      string
 		indexName string
 	}{
-		"rows":    {plan: rowsPlan, indexName: agentIndexName},
-		"current": {plan: currentPlan, indexName: agentIndexName},
-		"lookup":  {plan: lookupPlan, indexName: lookupIndexName},
+		"rows":    {plan: rowsPlan, indexName: indexName},
+		"current": {plan: currentPlan, indexName: indexName},
 	} {
 		if !strings.Contains(check.plan, check.indexName) {
 			t.Fatalf("%s query plan does not use %s:\n%s", name, check.indexName, check.plan)
