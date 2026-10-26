@@ -3727,7 +3727,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
-	h.recordClaimedPromptVersions(r.Context(), task.ID, promptVersionScopeIDs)
+	isQuizTask := task.OriginatorSource.Valid && task.OriginatorSource.String == promptquiz.OriginatorSource
+	h.recordClaimedPromptVersions(r.Context(), task.ID, promptVersionScopeIDs, isQuizTask)
 	// Clause injection events (RUYI-751 §6): computed-selected = injected, so
 	// the accumulated records are the run's call-count basis. Scope strings
 	// were stamped by filterClauses at each read point.
@@ -3748,8 +3749,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 // and swallowed because attribution is not a claim precondition. A failed
 // agent-tier lookup leaves a quiz task's attribution_pending marker intact so
 // collection cannot mistake it for a permanent absence.
-func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype.UUID, scopeIDs map[string]string) {
-	if len(scopeIDs) == 0 {
+func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype.UUID, scopeIDs map[string]string, isQuizTask bool) {
+	if len(scopeIDs) == 0 && !isQuizTask {
 		return
 	}
 	versions := make(map[string]int32, len(scopeIDs))
