@@ -299,6 +299,32 @@ func TestPromptQuizBatchCreateValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("UUID case variants order one task", func(t *testing.T) {
+		agentID := dbfx.Agent(t, "quiz-batch-case-dedupe-agent", handlerTestRuntimeID(t))
+		itemID := seedQuizItem(t, "quiz-batch-case-dedupe-item")
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
+			testPool.Exec(context.Background(), `DELETE FROM prompt_quiz_item WHERE id = $1::uuid`, itemID)
+			testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1::uuid`, agentID)
+		})
+
+		var resp struct {
+			BatchID string `json:"batch_id"`
+			Ordered int    `json:"ordered"`
+		}
+		testutil.Call(t, testHandler.CreatePromptQuizBatch, newRequest("POST", "/api/prompt-quiz/batches", map[string]any{
+			"agent_ids": []string{agentID, strings.ToUpper(agentID)},
+			"item_ids":  []string{itemID, strings.ToUpper(itemID)},
+		})).Want(200).JSON(&resp)
+		if resp.Ordered != 1 {
+			t.Fatalf("ordered = %d, want 1", resp.Ordered)
+		}
+		if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue
+			WHERE agent_id = $1::uuid AND context ->> 'quiz_batch_id' = $2`, agentID, resp.BatchID); n != 1 {
+			t.Fatalf("queue tasks for case-variant UUIDs = %d, want 1", n)
+		}
+	})
+
 	t.Run("combined cap refuses a batch that would order past 50", func(t *testing.T) {
 		agents := make([]string, 6)
 		for i := range agents {

@@ -106,13 +106,16 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 	}
 	agents := make([]agentRef, 0, len(req.AgentIDs))
 	var refused []QuizBatchRefusedAgent
-	seen := map[string]bool{}
+	seen := map[uuid.UUID]struct{}{}
 	for _, raw := range req.AgentIDs {
 		id, err := uuid.Parse(raw)
-		if err != nil || seen[raw] {
+		if err != nil {
 			continue
 		}
-		seen[raw] = true
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
 		agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
 			ID:          pgtype.UUID{Bytes: id, Valid: true},
 			WorkspaceID: workspaceID,
@@ -234,13 +237,16 @@ func (h *Handler) resolveBatchItems(r *http.Request, workspaceID pgtype.UUID, it
 		return out, nil
 	}
 
-	seen := map[string]bool{}
+	seen := map[uuid.UUID]struct{}{}
 	for _, raw := range itemIDs {
 		id, err := uuid.Parse(raw)
-		if err != nil || seen[raw] {
+		if err != nil {
 			continue
 		}
-		seen[raw] = true
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
 		item, err := h.Queries.GetPromptQuizItem(r.Context(), db.GetPromptQuizItemParams{
 			ID:          pgtype.UUID{Bytes: id, Valid: true},
 			WorkspaceID: workspaceID,
