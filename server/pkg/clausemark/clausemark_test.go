@@ -176,6 +176,26 @@ func TestRenderRemovesInlineClauseBlocks(t *testing.T) {
 	}
 }
 
+func TestRenderRemovesSupersededInlineClauseBlocks(t *testing.T) {
+	oldBody := "- **每日同步**：开工前回报计划与阻塞。"
+	newBody := "- **每日同步**：开工前回报计划、阻塞和预计完成时间。"
+	inline := "# 规范\n\n## 纪律\n\n" + oldBody + "\n- **其他条款**：保持不动。\n"
+
+	out := Render(inline, []RenderedClause{{
+		Slug:             "cls_aaa00001",
+		Version:          2,
+		Body:             newBody,
+		SupersededBodies: []string{oldBody},
+	}})
+
+	if strings.Contains(out, oldBody) || strings.Count(out, "**每日同步**") != 1 {
+		t.Fatalf("superseded inline clause remained outside the managed region:\n%s", out)
+	}
+	if !strings.Contains(out, newBody) || !strings.Contains(out, "**其他条款**") {
+		t.Fatalf("render lost the new or unrelated clause:\n%s", out)
+	}
+}
+
 func TestRenderRemovesLegacySectionBlocks(t *testing.T) {
 	legacy := "# 规范\n\n## 交接\n\n- 旧规则。\n\n## 保留章节\n\n- 保留规则。\n"
 	section := RenderedClause{Slug: "cls_ccc00003", Version: 2, Body: "## 交接\n\n- 新规则。"}
