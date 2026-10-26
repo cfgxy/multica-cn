@@ -27,8 +27,8 @@ func insertPromptVersionRow(t *testing.T, ctx context.Context, scope, scopeID st
 }
 
 // claimPromptVersionsForTest claims the next queued task for runtimeID and
-// returns the persisted agent_task_queue.prompt_versions for that task.
-func claimPromptVersionsForTest(t *testing.T, ctx context.Context, runtimeID string) map[string]int32 {
+// returns its ID and persisted agent_task_queue.prompt_versions.
+func claimPromptVersionsForTest(t *testing.T, ctx context.Context, runtimeID string) (string, map[string]int32) {
 	t.Helper()
 
 	w := httptest.NewRecorder()
@@ -62,7 +62,7 @@ func claimPromptVersionsForTest(t *testing.T, ctx context.Context, runtimeID str
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("decode prompt_versions: %v (raw=%s)", err, raw)
 	}
-	return out
+	return claimResp.Task.ID, out
 }
 
 // TestClaim_PromptVersionAttribution_OnlyInjectedTiersGetKeys is the core RUYI-183
@@ -117,7 +117,7 @@ func TestClaim_PromptVersionAttribution_OnlyInjectedTiersGetKeys(t *testing.T) {
 	}
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
 
-	got := claimPromptVersionsForTest(t, ctx, runtimeID)
+	_, got := claimPromptVersionsForTest(t, ctx, runtimeID)
 	want := map[string]int32{"workspace": 3, "project": 2, "squad": 5, "agent": 4}
 	if len(got) != len(want) {
 		t.Fatalf("prompt_versions = %v, want %v", got, want)
@@ -166,8 +166,46 @@ func TestClaim_PromptVersionAttribution_SkipsTiersWithNoHistoryOrEmptyContent(t 
 	}
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
 
-	got := claimPromptVersionsForTest(t, ctx, runtimeID)
+	_, got := claimPromptVersionsForTest(t, ctx, runtimeID)
 	if len(got) != 0 {
 		t.Fatalf("expected no attributable tier (empty agent instructions, no project history, no squad, workspace context untouched), got %v", got)
+	}
+}
+
+func TestClaim_PromptVersionAttributionClearsQuizPendingMarker(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	runtimeID := createClaimReclaimRuntime(t, ctx, "pv-quiz-marker runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "pv-quiz-marker agent")
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET instructions = 'agent body' WHERE id = $1`, agentID); err != nil {
+		t.Fatalf("set agent instructions: %v", err)
+	}
+	insertPromptVersionRow(t, ctx, "agent", agentID, 1)
+
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":        runtimeID,
+		"issue_id":          issueID,
+		"originator_source": "quiz",
+		"context":           testutil.Raw(`'{"quiz_measurement_status":"attribution_pending"}'::jsonb`),
+	})
+
+	claimedID, versions := claimPromptVersionsForTest(t, ctx, runtimeID)
+	if claimedID != taskID {
+		t.Fatalf("claimed task = %s, want %s", claimedID, taskID)
+	}
+	if versions["agent"] != 1 {
+		t.Fatalf("agent prompt version = %d, want 1", versions["agent"])
+	}
+	var status *string
+	if err := testPool.QueryRow(ctx,
+		`SELECT context->>'quiz_measurement_status' FROM agent_task_queue WHERE id = $1`, taskID,
+	).Scan(&status); err != nil {
+		t.Fatalf("reload quiz measurement status: %v", err)
+	}
+	if status != nil {
+		t.Errorf("quiz_measurement_status = %q, want cleared after attribution", *status)
 	}
 }

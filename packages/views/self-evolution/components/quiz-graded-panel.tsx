@@ -61,11 +61,17 @@ export function QuizGradedPanel({
     ...promptQuizCurrentBatchOptions(wsId, agentId),
     refetchInterval: (query) => {
       const data = query.state.data;
+      if (query.state.status === "error") return QUIZ_POLL_INTERVAL;
       return data?.batch_id !== "" && data?.settled !== true ? QUIZ_POLL_INTERVAL : false;
     },
   });
   const batchId = batch.data?.batch_id ?? "";
   const batchSettled = batch.data?.settled === true;
+  const {
+    dataUpdatedAt: batchDataUpdatedAt,
+    isSuccess: batchIsSuccess,
+    refetch: refetchBatch,
+  } = batch;
   const samples = useQuery({
     ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
     staleTime: 0,
@@ -90,7 +96,7 @@ export function QuizGradedPanel({
   }, [agentId, queryClient, wsId]);
 
   useEffect(() => {
-    if (!batch.isSuccess || batchId === "") return;
+    if (!batchIsSuccess || batchId === "") return;
     const previous = previousBatchState.current;
     previousBatchState.current = { batchId, settled: batchSettled };
     const firstObservationSettled = previous.batchId !== batchId && batchSettled;
@@ -111,14 +117,19 @@ export function QuizGradedPanel({
         queryKey: promptQuizKeys.samples(wsId, "agent", agentId, baseline.current_version),
       });
     }
+    // A newer batch can settle while an older batch is still active. Refresh
+    // current once so the server can select that active batch before polling
+    // stops for the settled one.
+    void refetchBatch();
   }, [
     agentId,
     baseline.current_version,
-    batch.dataUpdatedAt,
-    batch.isSuccess,
+    batchDataUpdatedAt,
+    batchIsSuccess,
     batchId,
     batchSettled,
     queryClient,
+    refetchBatch,
     refetchSamples,
     samplesDataUpdatedAt,
     samplesIsFetching,
@@ -140,9 +151,8 @@ export function QuizGradedPanel({
       {
         onSuccess: (resp) => {
           if (resp.batch_id !== "") {
-            void queryClient.invalidateQueries({
-              queryKey: promptQuizKeys.currentBatch(wsId, agentId),
-            });
+            void queryClient.cancelQueries({ queryKey: promptQuizKeys.currentBatch(wsId, agentId) })
+              .then(() => refetchBatch());
           }
           const refused = resp.refused_agents?.length ?? 0;
           if (refused > 0) {
@@ -329,6 +339,9 @@ function taskStatusKey(row: PromptQuizSampleRow):
   | "taskAwaitingGrade"
   | "taskPending"
   | "taskNotMeasured" {
+  if (row.measurement_status === "not_measured") return "taskNotMeasured";
+  if (row.measurement_status === "awaiting_grade") return "taskAwaitingGrade";
+  if (row.measurement_status === "pending") return "taskPending";
   switch (row.task_status) {
     case "queued":
     case "dispatched":

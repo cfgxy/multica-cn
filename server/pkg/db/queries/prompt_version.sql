@@ -108,8 +108,16 @@ LIMIT 1;
 -- name: SetAgentTaskQueuePromptVersions :exec
 -- Run-level attribution (RUYI-183 T2): records which prompt_version.version
 -- of each injected tier a claimed run executed with. Written once at claim
--- time; absent keys mean "tier not injected", never version 0.
-UPDATE agent_task_queue SET prompt_versions = $2
+-- time; absent keys mean "tier not injected", never version 0. A quiz task
+-- starts with an attribution_pending marker in context; clear it atomically
+-- with this write so the collector never mistakes an attribution outage for a
+-- permanently unmeasurable run.
+UPDATE agent_task_queue
+SET prompt_versions = $2,
+    context = CASE
+        WHEN originator_source = 'quiz' THEN COALESCE(context, '{}'::jsonb) - 'quiz_measurement_status'
+        ELSE context
+    END
 WHERE id = $1;
 
 -- name: SummarizePromptVersionsByWorkspace :many

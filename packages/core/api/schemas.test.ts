@@ -2602,6 +2602,17 @@ describe("prompt quiz schemas (RUYI-185)", () => {
     expect(parsed).toEqual({ batch_id: "", ordered: 0, settled: true, rows: [], counts: {} });
   });
 
+  it("accepts an explicit terminal not-measured batch row", () => {
+    const parsed = PromptQuizBatchResponseSchema.parse({
+      batch_id: "batch-1",
+      ordered: 1,
+      settled: true,
+      rows: [{ task_id: "task-1", task_status: "completed", measurement_status: "not_measured" }],
+      counts: {},
+    });
+    expect(parsed.rows[0]?.measurement_status).toBe("not_measured");
+  });
+
   it("falls back to an unmeasured reading, never to a clean one", () => {
     const parsed = parseWithFallback(
       { current_version: "three", comparison: { verdict: 9 } },

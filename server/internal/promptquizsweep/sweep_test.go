@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -59,6 +60,47 @@ func TestMain(m *testing.M) {
 	_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, fixtureEmail)
 	pool.Close()
 	os.Exit(code)
+}
+
+func TestTaskContextPayloadStartsAttributionPending(t *testing.T) {
+	batch := newUUID()
+	payload, err := TaskContextPayload("11111111-2222-3333-4444-555555555555", "question", batch)
+	if err != nil {
+		t.Fatalf("build task context: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("decode task context: %v", err)
+	}
+	if got := decoded["quiz_measurement_status"]; got != "attribution_pending" {
+		t.Errorf("quiz_measurement_status = %#v, want attribution_pending", got)
+	}
+	if got := decoded["quiz_batch_source"]; got != "manual" {
+		t.Errorf("quiz_batch_source = %#v, want manual", got)
+	}
+}
+
+func TestAttributionPendingExpiry(t *testing.T) {
+	now := time.Date(2026, time.October, 26, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name        string
+		completedAt time.Time
+		valid       bool
+		want        bool
+	}{
+		{name: "missing completion time", want: true},
+		{name: "within grace period", completedAt: now.Add(-AttributionPendingGracePeriod + time.Second), valid: true, want: false},
+		{name: "at grace period", completedAt: now.Add(-AttributionPendingGracePeriod), valid: true, want: true},
+		{name: "after grace period", completedAt: now.Add(-AttributionPendingGracePeriod - time.Second), valid: true, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := attributionPendingExpired(pgtype.Timestamptz{Time: tc.completedAt, Valid: tc.valid}, now)
+			if got != tc.want {
+				t.Errorf("attributionPendingExpired() = %t, want %t", got, tc.want)
+			}
+		})
+	}
 }
 
 func seed(ctx context.Context, pool *pgxpool.Pool) error {
@@ -254,18 +296,61 @@ func TestSweepCollectsEachRunExactlyOnce(t *testing.T) {
 	}
 }
 
-// TestSweepSkipsRunsWithNoAgentTierVersion covers migration 917's convention:
-// an absent tier key is not version 0. Such a run measured no version and must
-// be left uncollected rather than attributed to one.
-func TestSweepSkipsRunsWithNoAgentTierVersion(t *testing.T) {
+// TestSweepMarksRunsWithNoAgentTierVersionNotMeasured covers migration 917's
+// convention: an absent tier key is not version 0. Such a run measured no
+// version, so it must be marked final without being attributed to one.
+func TestSweepMarksRunsWithNoAgentTierVersionNotMeasured(t *testing.T) {
 	b := newBank(t)
-	b.finishedRun(t, `{"workspace": 4}`)
+	taskID := b.finishedRun(t, `{"workspace": 4}`)
 
 	if out := b.run(t); out.Collected != 0 {
 		t.Errorf("collected %d runs with no agent-tier version, want 0", out.Collected)
 	}
 	if got := b.results(t); got != 0 {
 		t.Errorf("%d measurements stored, want 0", got)
+	}
+	var status string
+	b.f.QueryRow(t, `SELECT context->>'quiz_measurement_status' FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status)
+	if status != "not_measured" {
+		t.Errorf("measurement status = %q, want not_measured", status)
+	}
+	if out := b.run(t); out.Collected != 0 {
+		t.Errorf("second tick collected %d, want 0 after terminal marker", out.Collected)
+	}
+}
+
+func TestSweepDefersRunsWithPendingAttribution(t *testing.T) {
+	b := newBank(t)
+	taskID := b.finishedRun(t, `{"workspace": 4}`)
+	b.f.Exec(t, `UPDATE agent_task_queue
+		SET context = jsonb_set(context, '{quiz_measurement_status}', '"attribution_pending"'::jsonb)
+		WHERE id = $1`, taskID)
+
+	if out := b.run(t); out.Collected != 0 {
+		t.Errorf("collected %d runs with pending attribution, want 0", out.Collected)
+	}
+	var status string
+	b.f.QueryRow(t, `SELECT context->>'quiz_measurement_status' FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status)
+	if status != "attribution_pending" {
+		t.Errorf("measurement status = %q, want attribution_pending", status)
+	}
+}
+
+func TestSweepMarksExpiredPendingAttributionNotMeasured(t *testing.T) {
+	b := newBank(t)
+	taskID := b.finishedRun(t, `{"workspace": 4}`)
+	b.f.Exec(t, `UPDATE agent_task_queue
+		SET context = jsonb_set(context, '{quiz_measurement_status}', '"attribution_pending"'::jsonb),
+			completed_at = now() - interval '16 minutes'
+		WHERE id = $1`, taskID)
+
+	if out := b.run(t); out.Collected != 0 {
+		t.Errorf("collected %d runs with expired pending attribution, want 0", out.Collected)
+	}
+	var status string
+	b.f.QueryRow(t, `SELECT context->>'quiz_measurement_status' FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status)
+	if status != "not_measured" {
+		t.Errorf("measurement status = %q, want not_measured", status)
 	}
 }
 
@@ -394,7 +479,7 @@ func TestQuizPayloadCarriesNoRubric(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload), &fields); err != nil {
 		t.Fatalf("payload is not an object: %v", err)
 	}
-	want := []string{"kind", "quiz_batch_id", "quiz_item_id", "quiz_prompt"}
+	want := []string{"kind", "quiz_batch_id", "quiz_item_id", "quiz_batch_source", "quiz_measurement_status", "quiz_prompt"}
 	if len(fields) != len(want) {
 		t.Errorf("payload has fields %v, want exactly %v", keysOf(fields), want)
 	}

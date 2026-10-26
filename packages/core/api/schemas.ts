@@ -5067,6 +5067,7 @@ export const PromptQuizSampleRowSchema = z.object({
   measured_at: z.string().optional(),
   run_tokens: z.number().nullable().optional(),
   task_status: z.string().optional(),
+  measurement_status: z.string().optional(),
 });
 
 export const PromptQuizBatchCreateResponseSchema = z.object({
