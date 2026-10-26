@@ -286,8 +286,9 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 		"encrypted_value": testutil.Raw(fmt.Sprintf("'%s'::jsonb", strings.ReplaceAll(string(secondStoredJSON), "'", "''"))),
 		"created_by":      testUserID,
 	})
+	secondGrantID := uuidToString(dbid.NewV7())
 	dbfx.Insert(t, "credential_grant", testutil.Cols{
-		"id": uuidToString(dbid.NewV7()), "credential_id": secondCredentialID, "workspace_id": testWorkspaceID,
+		"id": secondGrantID, "credential_id": secondCredentialID, "workspace_id": testWorkspaceID,
 		"resource_scope": "issue", "resource_id": issueID, "subject_type": "agent", "subject_id": agentID,
 		"effect": "allow", "status": "active", "granted_by": testUserID,
 	})
@@ -559,14 +560,43 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 		t.Fatal("minted capabilities did not cover both connectors")
 	}
 	expiredRaceHash := sha256.Sum256([]byte(expiredRaceCapability.Capability))
-	if _, err := testPool.Exec(ctx, `UPDATE credential_capability SET expires_at = now() - interval '1 minute' WHERE capability_hash = $1`, expiredRaceHash[:]); err != nil {
-		t.Fatal("expire unused capability before first resolve")
+	var capabilityExpiry time.Time
+	if err := testPool.QueryRow(ctx, `UPDATE credential_capability SET expires_at = now() + interval '2 seconds' WHERE capability_hash = $1 RETURNING expires_at`, expiredRaceHash[:]).Scan(&capabilityExpiry); err != nil {
+		t.Fatal("set short capability expiry")
 	}
 	expiredRaceBody, _ := json.Marshal(credentialResolveRequest{
 		Capability: expiredRaceCapability.Capability, ConnectorID: secondConnectorID, ConnectorRevision: 1,
 	})
-	if code, _, resolveErr := h.DaemonRPCHandler(ctx, identity, "credentials.resolve", expiredRaceBody); code != http.StatusForbidden {
-		t.Fatalf("expired capability resolve status=%d err=%v, want 403", code, resolveErr)
+	capabilityExpiryLock, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal("begin capability-expiry lock")
+	}
+	if err := capabilityExpiryLock.QueryRow(ctx, `SELECT id FROM credential_grant WHERE id = $1 FOR UPDATE`, secondGrantID).Scan(new(string)); err != nil {
+		_ = capabilityExpiryLock.Rollback(ctx)
+		t.Fatal("lock grant for capability expiry race")
+	}
+	capabilityExpiryResolve := make(chan int, 1)
+	go func() {
+		code, _, _ := h.DaemonRPCHandler(ctx, identity, "credentials.resolve", expiredRaceBody)
+		capabilityExpiryResolve <- code
+	}()
+	waitForCredentialResolveLock(t, ctx)
+	if !time.Now().Before(capabilityExpiry) {
+		t.Fatal("resolve did not reach the authorization lock before the capability deadline")
+	}
+	time.Sleep(time.Until(capabilityExpiry) + 25*time.Millisecond)
+	if err := capabilityExpiryLock.Commit(ctx); err != nil {
+		t.Fatal("release capability-expiry lock")
+	}
+	if code := <-capabilityExpiryResolve; code != http.StatusForbidden {
+		t.Fatalf("resolve waiting across capability expiry returned %d, want 403", code)
+	}
+	var capabilityConsumed bool
+	if err := testPool.QueryRow(ctx, `SELECT consumed_at IS NOT NULL FROM credential_capability WHERE capability_hash = $1`, expiredRaceHash[:]).Scan(&capabilityConsumed); err != nil {
+		t.Fatal("read expired capability consumption")
+	}
+	if capabilityConsumed {
+		t.Fatal("capability consumed after first-use deadline")
 	}
 	var expiredAuditCount int
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM credential_audit WHERE task_id = $1 AND event_type = 'credential.broker_resolved' AND result = 'denied' AND reason_code = 'capability_expired'`, taskID).Scan(&expiredAuditCount); err != nil {
