@@ -424,6 +424,7 @@ WHERE atq.originator_source = 'quiz'
   AND atq.issue_id IS NULL
   AND atq.status IN ('completed', 'failed', 'cancelled')
   AND atq.completed_at IS NOT NULL
+  AND atq.context->>'quiz_measurement_status' IS DISTINCT FROM 'not_measured'
   AND NOT EXISTS (
     SELECT 1 FROM prompt_quiz_result r
     WHERE r.task_id = atq.id
@@ -431,6 +432,21 @@ WHERE atq.originator_source = 'quiz'
   )
 ORDER BY atq.completed_at
 LIMIT sqlc.arg('row_limit')::int;
+
+-- name: MarkPromptQuizTaskNotMeasured :exec
+-- A collector can only set this after determining that a terminal quiz task
+-- cannot safely be attributed to a prompt version. The durable marker keeps the
+-- batch pending until that decision exists without fabricating a baseline row.
+UPDATE agent_task_queue
+SET context = jsonb_set(
+    COALESCE(context, '{}'::jsonb),
+    '{quiz_measurement_status}',
+    '"not_measured"'::jsonb,
+    true
+)
+WHERE id = sqlc.arg('task_id')::uuid
+  AND originator_source = 'quiz'
+  AND status IN ('completed', 'failed', 'cancelled');
 
 -- name: CountActivePromptQuizTasks :one
 -- Back-pressure: a sweep does not enqueue while its predecessor's runs are
@@ -532,7 +548,18 @@ SELECT
     r.run_tokens,
     i.slug AS item_slug,
     i.title AS item_title,
-    q.status AS task_status
+    q.status AS task_status,
+    CASE
+        -- Only the collector's durable decision makes a task final without a
+        -- measurement. A terminal task without this marker may still be waiting
+        -- for the collector and must keep the batch pending.
+        WHEN q.context->>'quiz_measurement_status' = 'not_measured' THEN 'not_measured'
+        -- An old collector may have persisted a score before grading stamps
+        -- existed. That is already a completed measurement, not pending work.
+        WHEN r.task_id IS NOT NULL AND r.graded_at IS NULL AND r.score IS NULL THEN 'awaiting_grade'
+        WHEN r.task_id IS NOT NULL THEN 'measured'
+        ELSE 'pending'
+    END AS measurement_status
 FROM agent_task_queue q
 JOIN agent a ON a.id = q.agent_id
 LEFT JOIN prompt_quiz_result r ON r.task_id = q.id AND r.workspace_id = a.workspace_id
@@ -543,12 +570,39 @@ END) AND i.workspace_id = a.workspace_id
 WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid
   AND q.originator_source = 'quiz'
   AND q.context->>'quiz_batch_id' = sqlc.arg('batch_id')::text
+  AND (sqlc.narg('agent_id')::uuid IS NULL OR q.agent_id = sqlc.narg('agent_id')::uuid)
 ORDER BY q.created_at DESC
 LIMIT sqlc.arg('row_limit')::int;
 
+-- name: GetPromptQuizBatchProgress :one
+-- The displayed list is deliberately bounded. This aggregate, rather than that
+-- viewport, is the authority for batch size and collection convergence.
+SELECT
+    count(*)::int AS ordered,
+    count(*) FILTER (
+        WHERE q.context->>'quiz_measurement_status' IS DISTINCT FROM 'not_measured'
+          AND (
+                q.status NOT IN ('completed', 'failed', 'cancelled')
+             OR (r.task_id IS NOT NULL AND r.graded_at IS NULL AND r.score IS NULL)
+             OR (
+                    q.status IN ('completed', 'failed', 'cancelled')
+                    AND r.task_id IS NULL
+                )
+          )
+    )::int AS pending
+FROM agent_task_queue q
+JOIN agent a ON a.id = q.agent_id
+LEFT JOIN prompt_quiz_result r ON r.task_id = q.id AND r.workspace_id = a.workspace_id
+WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND q.originator_source = 'quiz'
+  AND q.context->>'quiz_batch_id' = sqlc.arg('batch_id')::text
+  AND (sqlc.narg('agent_id')::uuid IS NULL OR q.agent_id = sqlc.narg('agent_id')::uuid);
+
 -- name: FindCurrentOrLatestPromptQuizBatchForAgent :one
--- Prefer the newest batch with running work or an uncollected terminal task;
--- otherwise return the newest settled batch for traceability after a reload.
+-- Prefer a manually ordered batch over cadence sweep work. Within either
+-- source, prefer the newest batch with running work, a task awaiting
+-- collection, or a result pending a grading pass; otherwise return the newest
+-- settled batch for traceability after a reload.
 -- The queue remains the source of truth, so a browser does not infer this from
 -- session storage or a time window.
 SELECT CAST(q.context->>'quiz_batch_id' AS text) AS batch_id
@@ -560,7 +614,18 @@ WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid
   AND q.originator_source = 'quiz'
   AND q.context->>'quiz_batch_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 GROUP BY q.context->>'quiz_batch_id'
-ORDER BY bool_or(q.status NOT IN ('completed', 'failed', 'cancelled') OR r.task_id IS NULL OR r.graded_at IS NULL) DESC,
+ORDER BY bool_or(COALESCE(q.context->>'quiz_batch_source', 'manual') = 'manual') DESC,
+    bool_or(
+        q.context->>'quiz_measurement_status' IS DISTINCT FROM 'not_measured'
+        AND (
+            q.status NOT IN ('completed', 'failed', 'cancelled')
+            OR (r.task_id IS NOT NULL AND r.graded_at IS NULL AND r.score IS NULL)
+            OR (
+                q.status IN ('completed', 'failed', 'cancelled')
+                AND r.task_id IS NULL
+            )
+        )
+    ) DESC,
     max(q.created_at) DESC
 LIMIT 1;
 

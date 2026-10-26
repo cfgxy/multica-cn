@@ -28,8 +28,6 @@ export const promptQuizKeys = {
     [...promptQuizKeys.all(wsId), "baseline", scope, scopeId] as const,
   samples: (wsId: string, scope: string, scopeId: string, version?: number) =>
     [...promptQuizKeys.all(wsId), "samples", scope, scopeId, version] as const,
-  batch: (wsId: string, batchId: string) =>
-    [...promptQuizKeys.all(wsId), "batch", batchId] as const,
   currentBatch: (wsId: string, agentId: string) =>
     [...promptQuizKeys.all(wsId), "current-batch", agentId] as const,
 };
@@ -91,19 +89,6 @@ export function promptQuizSamplesOptions(
       }),
     staleTime: 60 * 1000,
     enabled: wsId !== "" && scope !== "" && scopeId !== "" && (version ?? 0) > 0,
-  });
-}
-
-/**
- * One batch's read-back (RUYI-286): per-run rows with score_detail, outcome
- * counts, and the batch's graded mean. Owner-only server-side; disabled until
- * a batch id exists, and only fetched while the reader is looking at it.
- */
-export function promptQuizBatchOptions(wsId: string, batchId: string) {
-  return queryOptions({
-    queryKey: promptQuizKeys.batch(wsId, batchId),
-    queryFn: () => api.getPromptQuizBatch(batchId),
-    enabled: wsId !== "" && batchId !== "",
   });
 }
 

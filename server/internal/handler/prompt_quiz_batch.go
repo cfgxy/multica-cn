@@ -74,8 +74,9 @@ type QuizBatchRefusedAgent struct {
 // Orders one real run per (valid agent × selected item) under a fresh batch id
 // written into each task payload. Enqueueing mirrors the sweep's exactly: the
 // CreatePromptQuizTask fence may refuse (agent being deleted), and a refusal
-// counts the row as not ordered rather than failing the batch — partial
-// progress is the sweep's semantics and stays the batch's.
+// counts the row as not ordered rather than failing the batch. Other failures
+// roll the entire batch back, so a client never retries after an invisible
+// partially ordered batch.
 func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) {
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 
@@ -124,6 +125,10 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusInternalServerError, "failed to read the agent")
 			return
 		}
+		if agent.ArchivedAt.Valid {
+			refused = append(refused, QuizBatchRefusedAgent{AgentID: raw, Reason: "not_found"})
+			continue
+		}
 		if !agent.RuntimeID.Valid {
 			refused = append(refused, QuizBatchRefusedAgent{AgentID: raw, Reason: "no_runtime"})
 			continue
@@ -152,6 +157,14 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 	}
 
 	batch := newQuizBatchID()
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start the quiz batch")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
 	ordered := 0
 	for _, agent := range agents {
 		for _, item := range items {
@@ -160,7 +173,7 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 				writeError(w, http.StatusInternalServerError, "failed to encode the quiz context")
 				return
 			}
-			_, err = h.Queries.CreatePromptQuizTask(r.Context(), db.CreatePromptQuizTaskParams{
+			_, err = qtx.CreatePromptQuizTask(r.Context(), db.CreatePromptQuizTaskParams{
 				AgentID:   agent.id,
 				RuntimeID: agent.runtimeID,
 				// Same standing as sweep-ordered runs: below everything a
@@ -180,6 +193,10 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 			}
 			ordered++
 		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit the quiz batch")
+		return
 	}
 
 	resp := PromptQuizBatchCreateResponse{BatchID: uuidToString(batch), Ordered: ordered, RefusedAgents: refused}
@@ -252,8 +269,9 @@ type PromptQuizBatchResponse struct {
 	BatchID string `json:"batch_id"`
 	// Ordered is the exact queue-row count, not a client-side estimate.
 	Ordered int `json:"ordered"`
-	// Settled means every queued run has reached a terminal status and has a
-	// collector result. A null score is still a settled, ungraded result.
+	// Settled means no task is still running or awaiting collection or grading.
+	// The collector explicitly marks an unassignable terminal task not_measured so
+	// that it does not leave the batch pending forever.
 	Settled bool                    `json:"settled"`
 	Rows    []PromptQuizSampleRow   `json:"rows"`
 	Counts  map[string]int          `json:"counts"`
@@ -272,7 +290,7 @@ func (h *Handler) GetPromptQuizBatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	resp, err := h.readPromptQuizBatch(r, workspaceID, uuidToString(batchID))
+	resp, err := h.readPromptQuizBatch(r, workspaceID, pgtype.UUID{}, uuidToString(batchID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read the batch")
 		return
@@ -303,7 +321,7 @@ func (h *Handler) GetCurrentPromptQuizBatch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	resp, err := h.readPromptQuizBatch(r, workspaceID, batchID)
+	resp, err := h.readPromptQuizBatch(r, workspaceID, agentID, batchID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read the current batch")
 		return
@@ -319,10 +337,19 @@ func emptyPromptQuizBatch() PromptQuizBatchResponse {
 	}
 }
 
-func (h *Handler) readPromptQuizBatch(r *http.Request, workspaceID pgtype.UUID, batchID string) (PromptQuizBatchResponse, error) {
+func (h *Handler) readPromptQuizBatch(r *http.Request, workspaceID, agentID pgtype.UUID, batchID string) (PromptQuizBatchResponse, error) {
+	progress, err := h.Queries.GetPromptQuizBatchProgress(r.Context(), db.GetPromptQuizBatchProgressParams{
+		WorkspaceID: workspaceID,
+		BatchID:     batchID,
+		AgentID:     agentID,
+	})
+	if err != nil {
+		return PromptQuizBatchResponse{}, err
+	}
 	rows, err := h.Queries.ListPromptQuizTasksForBatch(r.Context(), db.ListPromptQuizTasksForBatchParams{
 		WorkspaceID: workspaceID,
 		BatchID:     batchID,
+		AgentID:     agentID,
 		RowLimit:    quizSampleLimit,
 	})
 	if err != nil {
@@ -331,8 +358,8 @@ func (h *Handler) readPromptQuizBatch(r *http.Request, workspaceID pgtype.UUID, 
 
 	resp := emptyPromptQuizBatch()
 	resp.BatchID = batchID
-	resp.Ordered = len(rows)
-	resp.Settled = len(rows) > 0
+	resp.Ordered = int(progress.Ordered)
+	resp.Settled = progress.Pending == 0
 	sample := promptquiz.Sample{Scores: []promptquiz.ScoredReading{}}
 	for _, row := range rows {
 		resp.Rows = appendQuizBatchRow(resp.Rows, row)
@@ -344,44 +371,30 @@ func (h *Handler) readPromptQuizBatch(r *http.Request, workspaceID pgtype.UUID, 
 				ItemID: uuidToString(row.ItemID), Score: float64(row.Score.Float32),
 			})
 		}
-		if !promptQuizTaskSettled(row) {
-			resp.Settled = false
-		}
 	}
 	resp.Scores = promptquiz.SummarizeScores(sample)
 	return resp, nil
 }
 
-func promptQuizTaskSettled(row db.ListPromptQuizTasksForBatchRow) bool {
-	switch row.TaskStatus {
-	case "completed", "failed", "cancelled":
-		// A terminal task awaits either its first result or the current grader's
-		// judgement. Old score-incapable results are intentionally re-collected
-		// until graded_at is present, even when their score stays null.
-		return row.Version > 0 && row.GradedAt.Valid
-	default:
-		return false
-	}
-}
-
 // appendQuizBatchRow maps one batch row onto the wire shape, in place.
 func appendQuizBatchRow(dst []PromptQuizSampleRow, row db.ListPromptQuizTasksForBatchRow) []PromptQuizSampleRow {
 	return append(dst, PromptQuizSampleRow{
-		TaskID:       uuidToString(row.TaskID),
-		Scope:        row.Scope,
-		ScopeID:      uuidToString(row.ScopeID),
-		Version:      row.Version,
-		ItemID:       uuidToString(row.ItemID),
-		ItemRevision: row.ItemRevision,
-		ItemSlug:     row.ItemSlug.String,
-		ItemTitle:    row.ItemTitle.String,
-		Outcome:      row.Outcome,
-		Score:        quizScorePtr(row.Score),
-		ScoreDetail:  json.RawMessage(row.ScoreDetail),
-		GradedAt:     quizTimePtr(row.GradedAt),
-		MeasuredAt:   quizTimePtr(row.MeasuredAt),
-		RunTokens:    quizTokensPtr(row.RunTokens),
-		TaskStatus:   row.TaskStatus,
+		TaskID:            uuidToString(row.TaskID),
+		Scope:             row.Scope,
+		ScopeID:           uuidToString(row.ScopeID),
+		Version:           row.Version,
+		ItemID:            uuidToString(row.ItemID),
+		ItemRevision:      row.ItemRevision,
+		ItemSlug:          row.ItemSlug.String,
+		ItemTitle:         row.ItemTitle.String,
+		Outcome:           row.Outcome,
+		Score:             quizScorePtr(row.Score),
+		ScoreDetail:       json.RawMessage(row.ScoreDetail),
+		GradedAt:          quizTimePtr(row.GradedAt),
+		MeasuredAt:        quizTimePtr(row.MeasuredAt),
+		RunTokens:         quizTokensPtr(row.RunTokens),
+		TaskStatus:        row.TaskStatus,
+		MeasurementStatus: row.MeasurementStatus,
 	})
 }
 
@@ -411,6 +424,9 @@ type PromptQuizSampleRow struct {
 	// TaskStatus is the agent_task_queue row's status, so "ordered but not
 	// yet picked up" stays visible instead of looking like a missing sample.
 	TaskStatus string `json:"task_status"`
+	// MeasurementStatus distinguishes a terminal task explicitly found
+	// unmeasurable from one still awaiting collection.
+	MeasurementStatus string `json:"measurement_status,omitempty"`
 }
 
 // GetPromptQuizSamples — GET /api/prompt-quiz/samples (Owner-only).

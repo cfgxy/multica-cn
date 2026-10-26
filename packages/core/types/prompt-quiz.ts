@@ -82,6 +82,8 @@ export interface PromptQuizSampleRow {
   measured_at?: string;
   run_tokens?: number;
   task_status?: string;
+  /** "pending" | "awaiting_grade" | "measured" | "not_measured", server-driven. */
+  measurement_status?: string;
 }
 
 /**
@@ -191,7 +193,7 @@ export interface PromptQuizBatchResponse {
   batch_id: string;
   /** Exact queue-row count for this batch. */
   ordered: number;
-  /** False while a task runs or its terminal result is still being collected. */
+  /** False while a task runs, awaits collection, or a stored result awaits grading. */
   settled: boolean;
   rows: PromptQuizSampleRow[];
   /** Per-outcome counts ("answered"/"errored") — never a pass rate. */

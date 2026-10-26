@@ -3744,9 +3744,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 //
 // A tier with no prompt_version row yet (never saved/edited since the
 // governance table shipped) is skipped rather than recorded as version 0 —
-// absent means "not attributable", never "version zero". Failure here is
-// logged and swallowed: attribution is observability, not a claim
-// precondition, so it must never turn a successful claim into a retry.
+// absent means "not attributable", never "version zero". Failures are logged
+// and swallowed because attribution is not a claim precondition. A failed
+// agent-tier lookup leaves a quiz task's attribution_pending marker intact so
+// collection cannot mistake it for a permanent absence.
 func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype.UUID, scopeIDs map[string]string) {
 	if len(scopeIDs) == 0 {
 		return
@@ -3755,19 +3756,24 @@ func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype
 	for scope, scopeID := range scopeIDs {
 		parsedScopeID, err := util.ParseUUID(scopeID)
 		if err != nil {
-			continue
+			slog.Warn("task claim: invalid prompt version scope id", "task_id", uuidToString(taskID), "scope", scope, "error", err)
+			return
 		}
 		v, err := h.Queries.GetLatestPromptVersion(ctx, db.GetLatestPromptVersionParams{
 			Scope:   scope,
 			ScopeID: parsedScopeID,
 		})
 		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				slog.Warn("task claim: failed to read prompt version attribution", "task_id", uuidToString(taskID), "scope", scope, "error", err)
+				if scope == "agent" {
+					return
+				}
+				continue
+			}
 			continue
 		}
 		versions[scope] = v.Version
-	}
-	if len(versions) == 0 {
-		return
 	}
 	payload, err := json.Marshal(versions)
 	if err != nil {
