@@ -147,6 +147,20 @@ var concurrentMigrationPrefixGroups = map[string]struct {
 		issue: "RUYI-843",
 		stems: []string{"980_runtime_concurrency_limit"},
 	},
+	"994": {
+		issue: "RUYI-891",
+		stems: []string{
+			"994_clause_injection_observation",
+			"994_clause_injection_observation_id_index",
+			"994_clause_injection_observation_task_scope_time_index",
+			"994_clause_injection_observation_workspace_time_index",
+		},
+		concurrentIndexes: []string{
+			"994_clause_injection_observation_id_index",
+			"994_clause_injection_observation_task_scope_time_index",
+			"994_clause_injection_observation_workspace_time_index",
+		},
+	},
 }
 
 var concurrentIndexUpPattern = regexp.MustCompile(`(?is)^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b[^;]*;?\s*$`)

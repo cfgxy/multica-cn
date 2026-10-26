@@ -1362,6 +1362,66 @@ func (q *Queries) ListWorkspaceCarrierTexts(ctx context.Context, workspaceID pgt
 	return items, nil
 }
 
+const listWorkspaceCarrierTextsBatch = `-- name: ListWorkspaceCarrierTextsBatch :many
+SELECT scope_id, effective_content, scope
+FROM (
+    SELECT id AS scope_id, COALESCE(context, '')::text AS effective_content, 'workspace'::text AS scope
+    FROM workspace WHERE id = $1::uuid
+    UNION ALL
+    SELECT id, COALESCE(instructions, '')::text, 'project'
+    FROM project WHERE workspace_id = $1::uuid
+    UNION ALL
+    SELECT id, COALESCE(instructions, '')::text, 'squad'
+    FROM squad WHERE workspace_id = $1::uuid
+    UNION ALL
+    SELECT id, COALESCE(instructions, '')::text, 'agent'
+    FROM agent WHERE workspace_id = $1::uuid
+) AS carriers
+WHERE $2::text IS NULL
+   OR scope > $2::text
+   OR (scope = $2::text AND scope_id > $3::uuid)
+ORDER BY scope, scope_id
+LIMIT $4::int
+`
+
+type ListWorkspaceCarrierTextsBatchParams struct {
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	AfterScope   pgtype.Text `json:"after_scope"`
+	AfterScopeID pgtype.UUID `json:"after_scope_id"`
+	RowLimit     int32       `json:"row_limit"`
+}
+
+type ListWorkspaceCarrierTextsBatchRow struct {
+	ScopeID          pgtype.UUID `json:"scope_id"`
+	EffectiveContent string      `json:"effective_content"`
+	Scope            string      `json:"scope"`
+}
+
+func (q *Queries) ListWorkspaceCarrierTextsBatch(ctx context.Context, arg ListWorkspaceCarrierTextsBatchParams) ([]ListWorkspaceCarrierTextsBatchRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceCarrierTextsBatch,
+		arg.WorkspaceID,
+		arg.AfterScope,
+		arg.AfterScopeID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceCarrierTextsBatchRow{}
+	for rows.Next() {
+		var i ListWorkspaceCarrierTextsBatchRow
+		if err := rows.Scan(&i.ScopeID, &i.EffectiveContent, &i.Scope); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockClauseReferenceWorkspace = `-- name: LockClauseReferenceWorkspace :exec
 
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 869))
