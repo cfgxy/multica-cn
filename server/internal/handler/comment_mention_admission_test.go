@@ -144,6 +144,38 @@ func TestAgentCommentsRequireWorkspaceResponsibilityMention(t *testing.T) {
 	}
 }
 
+func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := dbfx.Runtime(t, "assigned-agent-reply-runtime")
+	agentID := dbfx.Agent(t, "assigned-agent-reply-author", runtimeID)
+	issueID := dbfx.Issue(t, "assigned agent can close member thread", testutil.Cols{
+		"assignee_type": "agent",
+		"assignee_id":   agentID,
+	})
+	parentID := dbfx.Comment(t, issueID, "please complete this", testutil.Cols{
+		"author_type": "member",
+		"author_id":   testUserID,
+	})
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID, "trigger_comment_id": parentID,
+		"status": "running", "started_at": testutil.Raw("now()"),
+	})
+
+	req := commentRequest(http.MethodPost, issueID, "", map[string]any{
+		"content":   "The requested work is complete; no follow-up action is assigned.",
+		"parent_id": parentID,
+	})
+	req.Header.Set("X-Agent-ID", agentID)
+	req.Header.Set("X-Task-ID", taskID)
+	var created CommentResponse
+	testutil.Call(t, testHandler.CreateComment, req).Want(http.StatusCreated).JSON(&created)
+	if len(created.TriggerOutcomes) != 0 {
+		t.Fatalf("terminal reply triggered agents: %+v", created.TriggerOutcomes)
+	}
+}
+
 func TestCommentMentionAdmissionNormalizedSpansAndPreview(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
