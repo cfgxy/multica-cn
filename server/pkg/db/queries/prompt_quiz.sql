@@ -599,10 +599,9 @@ WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid
   AND (sqlc.narg('agent_id')::uuid IS NULL OR q.agent_id = sqlc.narg('agent_id')::uuid);
 
 -- name: FindCurrentOrLatestPromptQuizBatchForAgent :one
--- Prefer a manually ordered batch over cadence sweep work. Within either
--- source, prefer the newest batch with running work, a task awaiting
--- collection, or a result pending a grading pass; otherwise return the newest
--- settled batch for traceability after a reload.
+-- Prefer an active batch over settled history. Within the same lifecycle state,
+-- prefer manually ordered work over cadence sweep work; otherwise return the
+-- newest settled batch for traceability after a reload.
 -- The queue remains the source of truth, so a browser does not infer this from
 -- session storage or a time window.
 SELECT CAST(q.context->>'quiz_batch_id' AS text) AS batch_id
@@ -614,8 +613,7 @@ WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid
   AND q.originator_source = 'quiz'
   AND q.context->>'quiz_batch_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 GROUP BY q.context->>'quiz_batch_id'
-ORDER BY bool_or(COALESCE(q.context->>'quiz_batch_source', 'manual') = 'manual') DESC,
-    bool_or(
+ORDER BY bool_or(
         q.context->>'quiz_measurement_status' IS DISTINCT FROM 'not_measured'
         AND (
             q.status NOT IN ('completed', 'failed', 'cancelled')
@@ -626,6 +624,7 @@ ORDER BY bool_or(COALESCE(q.context->>'quiz_batch_source', 'manual') = 'manual')
             )
         )
     ) DESC,
+    bool_or(COALESCE(q.context->>'quiz_batch_source', 'manual') = 'manual') DESC,
     max(q.created_at) DESC
 LIMIT 1;
 

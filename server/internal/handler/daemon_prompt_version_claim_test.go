@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/promptquiz"
 )
 
 // insertPromptVersionRow inserts a minimal prompt_version row for scope/scopeID
@@ -207,5 +208,38 @@ func TestClaim_PromptVersionAttributionClearsQuizPendingMarker(t *testing.T) {
 	}
 	if status != nil {
 		t.Errorf("quiz_measurement_status = %q, want cleared after attribution", *status)
+	}
+}
+
+func TestRecordClaimedPromptVersionsClearsQuizPendingMarkerWithoutScopes(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	runtimeID := createClaimReclaimRuntime(t, ctx, "pv-empty-quiz-marker runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "pv-empty-quiz-marker agent")
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":        runtimeID,
+		"issue_id":          issueID,
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           testutil.Raw(`'{"quiz_measurement_status":"attribution_pending"}'::jsonb`),
+	})
+
+	testHandler.recordClaimedPromptVersions(ctx, parseUUID(taskID), nil, true)
+	var promptVersions []byte
+	var status *string
+	if err := testPool.QueryRow(ctx, `
+		SELECT prompt_versions, context->>'quiz_measurement_status'
+		FROM agent_task_queue
+		WHERE id = $1`, taskID,
+	).Scan(&promptVersions, &status); err != nil {
+		t.Fatalf("reload quiz attribution: %v", err)
+	}
+	if string(promptVersions) != "{}" {
+		t.Errorf("prompt_versions = %s, want {}", promptVersions)
+	}
+	if status != nil {
+		t.Errorf("quiz_measurement_status = %q, want cleared after empty attribution", *status)
 	}
 }

@@ -636,7 +636,7 @@ func TestCurrentPromptQuizBatchIsAgentScoped(t *testing.T) {
 	}
 }
 
-func TestCurrentPromptQuizBatchPrefersManualBatchOverSweep(t *testing.T) {
+func TestCurrentPromptQuizBatchPrefersActiveBatchThenManual(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -672,8 +672,111 @@ func TestCurrentPromptQuizBatchPrefersManualBatchOverSweep(t *testing.T) {
 	}
 	testutil.Call(t, testHandler.GetCurrentPromptQuizBatch,
 		newRequest("GET", "/api/prompt-quiz/batches/current?agent_id="+agentID, nil)).Want(200).JSON(&batch)
+	if batch.BatchID != sweepBatchID || batch.Settled {
+		t.Fatalf("current batch = %+v, want active sweep batch %s", batch, sweepBatchID)
+	}
+
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue
+		SET status = 'completed', completed_at = now(),
+			context = jsonb_set(context, '{quiz_measurement_status}', '"not_measured"')
+		WHERE agent_id = $1::uuid AND context->>'quiz_batch_id' = $2`, agentID, sweepBatchID); err != nil {
+		t.Fatalf("settle sweep batch: %v", err)
+	}
+	testutil.Call(t, testHandler.GetCurrentPromptQuizBatch,
+		newRequest("GET", "/api/prompt-quiz/batches/current?agent_id="+agentID, nil)).Want(200).JSON(&batch)
 	if batch.BatchID != manualBatchID || !batch.Settled {
 		t.Fatalf("current batch = %+v, want settled manual batch %s", batch, manualBatchID)
+	}
+
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue
+		SET status = 'queued', completed_at = NULL,
+			context = context - 'quiz_measurement_status'
+		WHERE agent_id = $1::uuid`, agentID); err != nil {
+		t.Fatalf("activate matching batches: %v", err)
+	}
+	testutil.Call(t, testHandler.GetCurrentPromptQuizBatch,
+		newRequest("GET", "/api/prompt-quiz/batches/current?agent_id="+agentID, nil)).Want(200).JSON(&batch)
+	if batch.BatchID != manualBatchID || batch.Settled {
+		t.Fatalf("current batch = %+v, want active manual batch %s", batch, manualBatchID)
+	}
+}
+
+func TestPromptQuizBatchIndexSupportsAgentReadPaths(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	const indexName = "idx_agent_task_queue_quiz_batch_agent_created_at"
+	var definition string
+	if err := testPool.QueryRow(ctx, `SELECT pg_get_indexdef($1::regclass)`, indexName).Scan(&definition); err != nil {
+		t.Fatalf("load quiz batch index: %v", err)
+	}
+	for _, want := range []string{"agent_id", "quiz_batch_id", "created_at DESC", "originator_source"} {
+		if !strings.Contains(definition, want) {
+			t.Fatalf("quiz batch index = %q, missing %q", definition, want)
+		}
+	}
+
+	agentID := dbfx.Agent(t, "quiz-batch-index", handlerTestRuntimeID(t))
+	batchID := newQuizUUID(t)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
+		testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1::uuid`, agentID)
+	})
+	dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           testutil.Raw(`jsonb_build_object('quiz_batch_id', '` + batchID + `')`),
+	})
+
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin index plan transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("disable sequential scans: %v", err)
+	}
+	explain := func(query string, args ...any) string {
+		rows, err := tx.Query(ctx, "EXPLAIN (COSTS OFF) "+query, args...)
+		if err != nil {
+			t.Fatalf("explain quiz batch query: %v", err)
+		}
+		defer rows.Close()
+		var lines []string
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatalf("scan quiz batch plan: %v", err)
+			}
+			lines = append(lines, line)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read quiz batch plan: %v", err)
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	rowsPlan := explain(`
+		SELECT q.id
+		FROM agent_task_queue q
+		WHERE q.agent_id = $1::uuid
+		  AND q.originator_source = 'quiz'
+		  AND q.context->>'quiz_batch_id' = $2
+		ORDER BY q.created_at DESC
+		LIMIT 500`, agentID, batchID)
+	currentPlan := explain(`
+		SELECT q.context->>'quiz_batch_id'
+		FROM agent_task_queue q
+		WHERE q.agent_id = $1::uuid
+		  AND q.originator_source = 'quiz'
+		  AND q.context->>'quiz_batch_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+		GROUP BY q.context->>'quiz_batch_id'
+		ORDER BY max(q.created_at) DESC
+		LIMIT 1`, agentID)
+	for name, plan := range map[string]string{"rows": rowsPlan, "current": currentPlan} {
+		if !strings.Contains(plan, indexName) {
+			t.Fatalf("%s query plan does not use %s:\n%s", name, indexName, plan)
+		}
 	}
 }
 
