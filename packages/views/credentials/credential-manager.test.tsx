@@ -142,10 +142,11 @@ describe("CredentialManager", () => {
 
   it("opens delivery from the Settings workspace mode without an issue prop", async () => {
     apiMock.memberRole = "owner";
+    const user = userEvent.setup();
     renderManager(true, false);
-    fireEvent.click(await screen.findByRole("combobox", { name: "Task filter" }));
-    fireEvent.click(await screen.findByRole("option", { name: "ABC-12 · Build" }));
-    fireEvent.click(await screen.findByRole("button", { name: /deliver credential/i }));
+    await user.click(await screen.findByRole("combobox", { name: "Task" }));
+    await user.click(await screen.findByRole("option", { name: "ABC-12 · Build" }));
+    await user.click(await screen.findByRole("button", { name: /deliver credential/i }));
     expect(screen.getByLabelText("Name")).toBeInTheDocument();
   });
 });

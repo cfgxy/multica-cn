@@ -167,6 +167,67 @@ func TestBatchClaimRequeuesDirectCredentialWhenCapabilityMintFails(t *testing.T)
 	}
 }
 
+func TestBatchClaimRequeuesDirectCredentialWithoutCredentialMCPCapability(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Direct credential capability gate runtime")
+	dbfx.Exec(t, `UPDATE agent_runtime SET daemon_id = $2 WHERE id = $1`, runtimeID, batchClaimTestDaemonID)
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Direct credential capability gate agent")
+	taskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+	credentialID := uuidToString(dbid.NewV7())
+	dbfx.Insert(t, "credential_vault", testutil.Cols{
+		"id": credentialID, "workspace_id": testWorkspaceID, "name": "direct capability gate fixture",
+		"target_service": "fixture", "purpose": "require credential MCP capability", "connector_id": credentialID,
+		"connector_revision": 1, "credential_type": "machine", "status": "active",
+		"encrypted_value": testutil.Raw("'{}'::jsonb"), "created_by": testUserID,
+	})
+	dbfx.Insert(t, "credential_grant", testutil.Cols{
+		"id": uuidToString(dbid.NewV7()), "credential_id": credentialID, "workspace_id": testWorkspaceID,
+		"resource_scope": "issue", "resource_id": issueID, "subject_type": "agent", "subject_id": agentID,
+		"effect": "allow", "status": "active", "granted_by": testUserID,
+	})
+	sessionKey, err := credentialcrypto.NewSessionKey()
+	if err != nil {
+		t.Fatal("generate credential session key")
+	}
+	body, err := json.Marshal(map[string]any{
+		"daemon_id": batchClaimTestDaemonID, "runtime_ids": []string{runtimeID}, "max_tasks": 1,
+		"session_public_key": base64.RawURLEncoding.EncodeToString(sessionKey.PublicKey().Bytes()),
+	})
+	if err != nil {
+		t.Fatal("marshal batch claim")
+	}
+	status, response, err := testHandler.DaemonRPCHandler(ctx, daemonws.ClientIdentity{
+		DaemonID: batchClaimTestDaemonID, UserID: testUserID, WorkspaceID: testWorkspaceID,
+		WorkspaceIDs: []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID},
+	}, "tasks.claim", body)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("claim status=%d err=%v body=%s", status, err, response)
+	}
+	var claim struct {
+		Tasks []json.RawMessage `json:"tasks"`
+	}
+	if err := json.Unmarshal(response, &claim); err != nil || len(claim.Tasks) != 0 {
+		t.Fatalf("daemon without credential-mcp-v1 received direct credential task: err=%v body=%s", err, response)
+	}
+	var taskStatus string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&taskStatus); err != nil {
+		t.Fatal("read task status after capability gate")
+	}
+	if taskStatus != "queued" {
+		t.Fatalf("task status after capability gate = %q, want queued", taskStatus)
+	}
+	var capabilityCount int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM credential_capability WHERE task_id = $1`, taskID).Scan(&capabilityCount); err != nil {
+		t.Fatal("count capability rows")
+	}
+	if capabilityCount != 0 {
+		t.Fatalf("daemon without credential-mcp-v1 minted %d credential capabilities", capabilityCount)
+	}
+}
+
 func TestBatchClaimDoesNotMintDirectCredentialWithoutRuntimeOwner(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -546,8 +607,8 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `SELECT expires_at FROM credential_capability WHERE capability_hash = $1`, directCapabilityHash[:]).Scan(&directCapabilityExpiresAt); err != nil {
 		t.Fatal("read direct credential capability expiry")
 	}
-	if !directCapabilityExpiresAt.After(time.Now().Add(connectorCredentialCapabilityTTL)) {
-		t.Fatalf("direct capability expiry = %v, want later than the legacy five-minute window", directCapabilityExpiresAt)
+	if remaining := time.Until(directCapabilityExpiresAt); remaining > credentialCapabilityFirstUseTTL || remaining < credentialCapabilityFirstUseTTL-time.Minute {
+		t.Fatalf("direct capability remaining lifetime = %v, want approximately %v", remaining, credentialCapabilityFirstUseTTL)
 	}
 	resolveBody, _ := json.Marshal(credentialResolveRequest{
 		Capability: capability.Capability, ConnectorID: connectorID, ConnectorRevision: 1,
@@ -772,8 +833,8 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 	}
 	expiredRaceHash := sha256.Sum256([]byte(expiredRaceCapability.Capability))
 	var capabilityExpiry time.Time
-	if err := testPool.QueryRow(ctx, `UPDATE credential_capability SET expires_at = now() + interval '2 seconds' WHERE capability_hash = $1 RETURNING expires_at`, expiredRaceHash[:]).Scan(&capabilityExpiry); err != nil {
-		t.Fatal("set short capability expiry")
+	if err := testPool.QueryRow(ctx, `UPDATE credential_capability SET expires_at = now() + interval '8 seconds' WHERE capability_hash = $1 RETURNING expires_at`, expiredRaceHash[:]).Scan(&capabilityExpiry); err != nil {
+		t.Fatal("set capability expiry after lock observation budget")
 	}
 	expiredRaceBody, _ := json.Marshal(credentialResolveRequest{
 		Capability: expiredRaceCapability.Capability, ConnectorID: secondConnectorID, ConnectorRevision: 1,
@@ -850,29 +911,6 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 	}
 	if bytes.Contains(capturedLogs.Bytes(), []byte(marker)) {
 		t.Fatal("synthetic credential marker appeared in service logs")
-	}
-}
-
-func TestCredentialCapabilityTTL(t *testing.T) {
-	tests := map[string]struct {
-		directDelivery bool
-		want           time.Duration
-	}{
-		"connector credential": {want: connectorCredentialCapabilityTTL},
-		"direct credential": {
-			directDelivery: true,
-			want:           directCredentialCapabilityTTL,
-		},
-	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			if got := credentialCapabilityTTL(test.directDelivery); got != test.want {
-				t.Fatalf("credentialCapabilityTTL(%t) = %v, want %v", test.directDelivery, got, test.want)
-			}
-		})
-	}
-	if directCredentialCapabilityTTL != 24*time.Hour {
-		t.Fatalf("direct credential capability TTL = %v, want task token lifetime %v", directCredentialCapabilityTTL, 24*time.Hour)
 	}
 }
 
