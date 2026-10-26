@@ -1,0 +1,3 @@
+[submodule "guxy-resource-pool-mcp"]
+	path = guxy-resource-pool-mcp
+	url = https://github.com/cfgxy/guxy-resource-pool-mcp.git
