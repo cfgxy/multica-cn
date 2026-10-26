@@ -94,7 +94,7 @@ func TestResolveCredentialCapabilitySendsRPCAfterClaimExpiry(t *testing.T) {
 	task := &Task{ID: taskID, WorkspaceID: workspaceID}
 	capability := CredentialCapability{
 		Capability: "opaque-capability", ConnectorID: connectorID, ConnectorRevision: connectorRevision,
-		ExpiresAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano),
+		ExpiresAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano), sessionKey: sessionKey,
 	}
 
 	plaintext, err := daemon.resolveCredentialCapability(context.Background(), task, capability)
