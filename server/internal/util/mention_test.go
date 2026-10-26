@@ -1,6 +1,7 @@
 package util
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -95,6 +96,27 @@ func TestHasMentionAll(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := HasMentionAll(tt.mentions); got != tt.want {
 				t.Errorf("HasMentionAll() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsAgentSelfMention(t *testing.T) {
+	const agentID = "11111111-1111-1111-1111-111111111111"
+	const otherID = "22222222-2222-2222-2222-222222222222"
+
+	for _, tt := range []struct {
+		name, content string
+		want          bool
+	}{
+		{"different display name", "[@负责人](mention://agent/" + agentID + ")", true},
+		{"role alias with uppercase UUID", "[@Leader](mention://agent/" + strings.ToUpper(agentID) + ")", true},
+		{"same display name, different agent", "[@负责人](mention://agent/" + otherID + ")", false},
+		{"member mention", "[@负责人](mention://member/" + agentID + ")", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsAgentSelfMention(tt.content, agentID); got != tt.want {
+				t.Fatalf("IsAgentSelfMention(%q, %q) = %t, want %t", tt.content, agentID, got, tt.want)
 			}
 		})
 	}
