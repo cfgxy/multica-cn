@@ -44,7 +44,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/util"
-	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -247,6 +246,19 @@ func safeRunGate(current, synthesized string, baseline *legislation.Baseline, p 
 		}
 	}()
 	return legislation.RunGate(current, synthesized, baseline, p)
+}
+
+// safeRunStructuralGate keeps the direct-revision path fail-closed while it
+// validates the structural checks that apply independently of proposal review.
+func safeRunStructuralGate(current, synthesized string, baseline *legislation.Baseline, p legislation.ProposalInput) (res legislation.Result) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			res = legislation.Result{Errors: []legislation.Finding{{
+				Level: "error", Message: fmt.Sprintf("门闸内部异常，已阻断（fail-closed）：%v", rec),
+			}}, Warnings: []legislation.Finding{}}
+		}
+	}()
+	return legislation.RunStructuralGate(current, synthesized, baseline, p)
 }
 
 func errorResult(err error) legislation.Result {
@@ -458,7 +470,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		return false, true, errorResult(err)
 	}
 	affected := outcome.carrierRefs(p)
-	if err := h.rerenderAffectedCarriersTx(ctx, qtx, workspaceID, affected, synth, p.CreatedByType, uuidToString(p.CreatedByID)); err != nil {
+	if err := h.rerenderAffectedCarriersTx(ctx, qtx, workspaceID, affected, synth, outcome.RenderOverrides, p.CreatedByType, uuidToString(p.CreatedByID)); err != nil {
 		slog.Error("clause re-render failed", append(logger.RequestAttrs(r), "error", err)...)
 		return false, true, errorResult(err)
 	}
@@ -478,8 +490,9 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 
 // synthesizeProposalCarrier applies a proposal to the carrier representation
 // that the selected landing target actually changes. Structured revisions are
-// addressed by Clause ID and replace its rendered asset segment; static and
-// legacy name-only proposals retain the text-engine path.
+// addressed by Clause ID and deterministically rebuild their carrier from the
+// active asset set; static and legacy name-only proposals retain the text-
+// engine path.
 func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, current string) (string, error) {
 	if p.EnactmentTarget != "clause_library" || p.ChangeKind != "revise_clause" || !p.ClauseID.Valid {
 		return legislation.Synthesize(current, proposalInputFromRow(p))
@@ -513,9 +526,20 @@ func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries
 	if err := legislation.ValidateRevisionText(clause.Title, p.ClauseText); err != nil {
 		return "", err
 	}
-	synthesized, err := clausemark.ReplaceSegment(current, clause.Slug, binding.SinceClauseVersion, p.ClauseText)
+	currentVersion, err := qtx.GetClauseVersion(ctx, db.GetClauseVersionParams{ClauseID: clause.ID, Version: clause.Version})
 	if err != nil {
-		return "", fmt.Errorf("条款「%s」载体结构校验失败，已阻断：%w", clause.Title, err)
+		return "", fmt.Errorf("条款「%s」当前版本读取失败: %w", clause.Title, err)
+	}
+	content := strings.TrimRight(p.ClauseText, "\n")
+	synthesized, err := h.renderCarrierFromActiveClausesTx(ctx, qtx, workspaceID,
+		carrierRef{scope: binding.Scope, id: binding.ScopeID}, current, &clauseRenderOverride{
+			ClauseID:          clause.ID,
+			Version:           clause.Version + 1,
+			Content:           content,
+			SupersededContent: currentVersion.Content,
+		})
+	if err != nil {
+		return "", fmt.Errorf("条款「%s」资产渲染失败，已阻断：%w", clause.Title, err)
 	}
 	return synthesized, nil
 }

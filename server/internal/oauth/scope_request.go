@@ -182,13 +182,15 @@ var surfaceShapes = []scopeShape{
 	// Prompt legislation (RUYI-868): clause governance reads and the proposal
 	// pool. The governance views are read-only on the wire; the member write
 	// actions on the proposal pool (create, draft edit, submit, preview,
-	// rework) ride mcp:write. The owner's decide-and-execute endpoints
-	// (approve / reject / restore / enact / approve-batch) are deliberately
-	// off-surface AND keep the router's human-actor guard — they are the
-	// platform's confirmation mechanism for high-risk prompt changes and an
-	// OAuth client must never reach them, whatever its scope.
+	// rework) ride mcp:write. Proposal owner decisions (approve / reject /
+	// restore / enact / approve-batch) remain deliberately off-surface and
+	// human-only. The two direct-revision shapes are the narrow exception:
+	// their route also requires the workspace Owner role, and their handler
+	// requires preview-bound version and content hashes before it writes.
 	{[]string{"prompt-legislation", "governance", "clauses"}, shapeReadOnly},
 	{[]string{"prompt-legislation", "governance", "clauses", "*"}, shapeReadOnly},
+	{[]string{"prompt-legislation", "governance", "clauses", "*", "direct-revision-preview"}, shapeReadWrite},
+	{[]string{"prompt-legislation", "governance", "clauses", "*", "direct-revision"}, shapeReadWrite},
 	{[]string{"prompt-legislation", "governance", "reconciliation"}, shapeReadOnly},
 	{[]string{"prompt-legislation", "proposals"}, shapeReadWrite},
 	{[]string{"prompt-legislation", "proposals", "*"}, shapeReadWrite},
