@@ -79,12 +79,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// workspace (DeleteWorkspaceClauseAssets). The rollup watermark is a
 	// global singleton keyed to no workspace and is kept, like its
 	// prompt-quality twin (task_usage_hourly_rollup_state).
-	"clause":                      workspaceDelete,
-	"clause_binding":              workspaceDelete,
-	"clause_injection":            workspaceDelete,
-	"clause_quality_daily":        workspaceDelete,
-	"clause_quality_rollup_state": workspaceDeleteKeep,
-	"clause_version":              workspaceDelete,
+	"clause":                       workspaceDelete,
+	"clause_binding":               workspaceDelete,
+	"clause_injection":             workspaceDelete,
+	"clause_injection_observation": workspaceDelete,
+	"clause_quality_daily":         workspaceDelete,
+	"clause_quality_rollup_state":  workspaceDeleteKeep,
+	"clause_version":               workspaceDelete,
 	// RUYI-729: daemon-host backpressure tables (no FK, house rule). Event
 	// history dies with the workspace; a settings row is swept only once no
 	// runtime anywhere still points at its daemon_id, so a shared daemon
