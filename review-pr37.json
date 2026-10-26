@@ -1,0 +1,16 @@
+[
+  {
+    "severity": "P1",
+    "file": "internal/provider/docker/compose_runtime.go",
+    "line": 237,
+    "title": "Parse Compose's JSON array before checking PostgreSQL health",
+    "body": "`docker compose ps --format json postgres` emits a JSON array, but this decoder targets a single struct and therefore rejects the leading `[`. On the first scoped operation after a service restart, `ValidateScope` turns that parse failure into `errScopeValidationIncompatible`; `ScopeManager.Ensure` then kills and removes the recovered Multica QA scope, including its volume, before recreating it. A normal restart consequently discards the lease's PostgreSQL data and interrupts the active QA environment. Decode the array and require exactly one healthy PostgreSQL record (or use an output format that is explicitly JSONL)."
+  },
+  {
+    "severity": "P1",
+    "file": "internal/store/store.go",
+    "line": 499,
+    "title": "Do not freeze a legacy profile onto non-Docker leases",
+    "body": "v5 allowed a template to declare `scope_profile_id` while selecting a non-Docker provider; the new config validation closes that gap, but existing leases can still have been created that way. `migrateV5` copies the template profile to every lease without checking `ProviderKind`. When such an active stub/Hyper-V/etc. lease is later released or expires, `revokeLeaseScopeLocked` sees the frozen non-empty profile and requires that non-Docker provider to implement `ScopedExecutionProvider`, so release and reaping fail forever and the resource remains leased. Only freeze a scope profile for Docker leases, or make the reclaim path skip profiles that were never backed by Docker scope resources."
+  }
+]
