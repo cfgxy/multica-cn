@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -771,13 +772,30 @@ func TestPromptQuizBatchIndexSupportsAgentReadPaths(t *testing.T) {
 
 	agentID := dbfx.Agent(t, "quiz-batch-index", handlerTestRuntimeID(t))
 	batchID := newQuizUUID(t)
+	itemID := seedQuizItem(t, "quiz-batch-index-item")
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           testutil.Raw(`jsonb_build_object('quiz_batch_id', '` + batchID + `', 'quiz_item_id', '` + itemID + `')`),
+	})
+	dbfx.Insert(t, "prompt_quiz_result", testutil.Cols{
+		"workspace_id":     testWorkspaceID,
+		"scope":            "agent",
+		"scope_id":         agentID,
+		"version":          1,
+		"item_id":          itemID,
+		"item_revision":    1,
+		"item_body_sha256": promptquiz.BodyDigest("quiz-batch-index"),
+		"batch_id":         batchID,
+		"task_id":          taskID,
+		"outcome":          promptquiz.OutcomeAnswered,
+		"measured_at":      testutil.Raw("now()"),
+		"graded_at":        testutil.Raw("now()"),
+	})
 	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM prompt_quiz_result WHERE task_id = $1::uuid`, taskID)
 		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
 		testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1::uuid`, agentID)
-	})
-	dbfx.Task(t, agentID, testutil.Cols{
-		"originator_source": promptquiz.OriginatorSource,
-		"context":           testutil.Raw(`jsonb_build_object('quiz_batch_id', '` + batchID + `')`),
+		testPool.Exec(ctx, `DELETE FROM prompt_quiz_item WHERE id = $1::uuid`, itemID)
 	})
 
 	tx, err := testPool.Begin(ctx)
@@ -825,25 +843,55 @@ func TestPromptQuizBatchIndexSupportsAgentReadPaths(t *testing.T) {
 		GROUP BY q.context->>'quiz_batch_id'
 		ORDER BY max(q.created_at) DESC
 		LIMIT 1`, agentID)
-	lookupPlan := explain(`
-		SELECT q.id
-		FROM agent_task_queue q
-		WHERE q.originator_source = 'quiz'
-		  AND q.context->>'quiz_batch_id' = $1
-		ORDER BY q.created_at DESC
-		LIMIT 500`, batchID)
+	progressPlan := explain(promptQuizProductionQuery(t, "GetPromptQuizBatchProgress"), testWorkspaceID, batchID, nil)
+	lookupPlan := explain(promptQuizProductionQuery(t, "ListPromptQuizTasksForBatch"), testWorkspaceID, batchID, nil, false, 500)
 	for name, check := range map[string]struct {
 		plan      string
 		indexName string
 	}{
-		"rows":    {plan: rowsPlan, indexName: agentIndexName},
-		"current": {plan: currentPlan, indexName: agentIndexName},
-		"lookup":  {plan: lookupPlan, indexName: lookupIndexName},
+		"rows":     {plan: rowsPlan, indexName: agentIndexName},
+		"current":  {plan: currentPlan, indexName: agentIndexName},
+		"progress": {plan: progressPlan, indexName: lookupIndexName},
+		"lookup":   {plan: lookupPlan, indexName: lookupIndexName},
 	} {
 		if !strings.Contains(check.plan, check.indexName) {
 			t.Fatalf("%s query plan does not use %s:\n%s", name, check.indexName, check.plan)
 		}
 	}
+}
+
+// promptQuizProductionQuery loads the named source query so the EXPLAIN checks
+// above cannot silently diverge from the SQLC query an API handler executes.
+func promptQuizProductionQuery(t *testing.T, name string) string {
+	t.Helper()
+
+	body, err := os.ReadFile("../../pkg/db/queries/prompt_quiz.sql")
+	if err != nil {
+		t.Fatalf("read prompt quiz query source: %v", err)
+	}
+	marker := "-- name: " + name + " "
+	start := strings.Index(string(body), marker)
+	if start < 0 {
+		t.Fatalf("query source does not contain %s", name)
+	}
+	query := string(body[start+len(marker):])
+	if lineEnd := strings.IndexByte(query, '\n'); lineEnd >= 0 {
+		query = query[lineEnd+1:]
+	}
+	if next := strings.Index(query, "\n-- name: "); next >= 0 {
+		query = query[:next]
+	}
+	query = strings.NewReplacer(
+		"sqlc.arg('workspace_id')", "$1",
+		"sqlc.arg('batch_id')", "$2",
+		"sqlc.narg('agent_id')", "$3",
+		"sqlc.arg('include_pending')", "$4",
+		"sqlc.arg('row_limit')", "$5",
+	).Replace(query)
+	if strings.Contains(query, "sqlc.") {
+		t.Fatalf("query %s still contains SQLC arguments: %s", name, query)
+	}
+	return query
 }
 
 // TestPromptQuizBatchProgressIsWorkspaceScoped keeps a shared batch id from
