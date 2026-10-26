@@ -3754,10 +3754,12 @@ func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype
 		return
 	}
 	versions := make(map[string]int32, len(scopeIDs))
-	for scope, scopeID := range scopeIDs {
+	clearQuizAttributionPending := true
+	recordScope := func(scope, scopeID string) {
 		parsedScopeID, err := util.ParseUUID(scopeID)
 		if err != nil {
 			slog.Warn("task claim: invalid prompt version scope id", "task_id", uuidToString(taskID), "scope", scope, "error", err)
+			clearQuizAttributionPending = false
 			return
 		}
 		v, err := h.Queries.GetLatestPromptVersion(ctx, db.GetLatestPromptVersionParams{
@@ -3767,23 +3769,33 @@ func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype
 		if err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
 				slog.Warn("task claim: failed to read prompt version attribution", "task_id", uuidToString(taskID), "scope", scope, "error", err)
-				if scope == "agent" {
-					return
-				}
-				continue
+				clearQuizAttributionPending = false
+				return
 			}
-			continue
+			return
 		}
 		versions[scope] = v.Version
+	}
+	for scope, scopeID := range scopeIDs {
+		if scope != "agent" {
+			recordScope(scope, scopeID)
+		}
+	}
+	if agentID, ok := scopeIDs["agent"]; ok {
+		recordScope("agent", agentID)
 	}
 	payload, err := json.Marshal(versions)
 	if err != nil {
 		slog.Warn("task claim: failed to marshal prompt version attribution", "task_id", uuidToString(taskID), "error", err)
 		return
 	}
+	if len(versions) == 0 && !isQuizTask {
+		return
+	}
 	if err := h.Queries.SetAgentTaskQueuePromptVersions(ctx, db.SetAgentTaskQueuePromptVersionsParams{
-		ID:             taskID,
-		PromptVersions: payload,
+		ID:                          taskID,
+		PromptVersions:              payload,
+		ClearQuizAttributionPending: !isQuizTask || clearQuizAttributionPending,
 	}); err != nil {
 		slog.Warn("task claim: failed to persist prompt version attribution", "task_id", uuidToString(taskID), "error", err)
 	}

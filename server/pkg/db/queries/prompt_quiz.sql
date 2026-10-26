@@ -529,7 +529,9 @@ LIMIT 1;
 -- The queue is the source of truth for a batch. A collector can write the
 -- prompt_quiz_result well after a task reaches a terminal state, so starting
 -- from results would hide queued/running work and make a completed task appear
--- to disappear during that interval.
+-- to disappear during that interval. Only the current-batch recovery endpoint
+-- requests uncollected rows; the established explicit batch endpoint keeps its
+-- result-only wire contract for installed clients.
 SELECT
     q.id AS task_id,
     COALESCE(r.scope, 'agent') AS scope,
@@ -571,6 +573,7 @@ WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid
   AND q.originator_source = 'quiz'
   AND q.context->>'quiz_batch_id' = sqlc.arg('batch_id')::text
   AND (sqlc.narg('agent_id')::uuid IS NULL OR q.agent_id = sqlc.narg('agent_id')::uuid)
+  AND (sqlc.arg('include_pending')::boolean OR r.task_id IS NOT NULL)
 ORDER BY q.created_at DESC
 LIMIT sqlc.arg('row_limit')::int;
 

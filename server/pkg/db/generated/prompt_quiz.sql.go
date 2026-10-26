@@ -1221,15 +1221,17 @@ WHERE a.workspace_id = $1::uuid
   AND q.originator_source = 'quiz'
   AND q.context->>'quiz_batch_id' = $2::text
   AND ($3::uuid IS NULL OR q.agent_id = $3::uuid)
+  AND ($4::boolean OR r.task_id IS NOT NULL)
 ORDER BY q.created_at DESC
-LIMIT $4::int
+LIMIT $5::int
 `
 
 type ListPromptQuizTasksForBatchParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	BatchID     string      `json:"batch_id"`
-	AgentID     pgtype.UUID `json:"agent_id"`
-	RowLimit    int32       `json:"row_limit"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	BatchID        string      `json:"batch_id"`
+	AgentID        pgtype.UUID `json:"agent_id"`
+	IncludePending bool        `json:"include_pending"`
+	RowLimit       int32       `json:"row_limit"`
 }
 
 type ListPromptQuizTasksForBatchRow struct {
@@ -1254,12 +1256,15 @@ type ListPromptQuizTasksForBatchRow struct {
 // The queue is the source of truth for a batch. A collector can write the
 // prompt_quiz_result well after a task reaches a terminal state, so starting
 // from results would hide queued/running work and make a completed task appear
-// to disappear during that interval.
+// to disappear during that interval. Only the current-batch recovery endpoint
+// requests uncollected rows; the established explicit batch endpoint keeps its
+// result-only wire contract for installed clients.
 func (q *Queries) ListPromptQuizTasksForBatch(ctx context.Context, arg ListPromptQuizTasksForBatchParams) ([]ListPromptQuizTasksForBatchRow, error) {
 	rows, err := q.db.Query(ctx, listPromptQuizTasksForBatch,
 		arg.WorkspaceID,
 		arg.BatchID,
 		arg.AgentID,
+		arg.IncludePending,
 		arg.RowLimit,
 	)
 	if err != nil {

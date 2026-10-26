@@ -405,7 +405,6 @@
       "taskAwaitingGrade": "결과 수집 대기 중",
       "taskPending": "보류 중",
       "taskNotMeasured": "측정되지 않음",
-      "refresh": "배치 결과 새로 고침",
       "checkPassed": "{{id}}({{kind}}) 통과: {{evidence}}",
       "checkFailed": "{{id}}({{kind}}) 미통과: {{evidence}}",
       "notAGate": "채점은 읽기 값이지 게이트가 아닙니다: 게시 경로는 읽지 않습니다."
