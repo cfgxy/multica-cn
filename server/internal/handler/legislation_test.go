@@ -24,7 +24,6 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
-	"github.com/multica-ai/multica/server/pkg/clausemark"
 	"github.com/multica-ai/multica/server/pkg/taskadaptation"
 )
 
@@ -193,9 +192,9 @@ func proposalStatus(t *testing.T, wsID, id string) string {
 
 // TestLegislationStateMachineHappyPath walks draft → pending_owner →
 // preview → approve → enacted and pins the ADR 007 §8 enact contract: one
-// transaction writes the clause asset, re-renders the carrier business
-// column (marker-wrapped clause region) through the version funnel, rebuilds
-// the baseline and lands the row with clause_id + enacted_version.
+// transaction writes the clause asset, normalizes the carrier's static
+// business column through the version funnel, rebuilds the baseline and lands
+// the row with clause_id + enacted_version.
 func TestLegislationStateMachineHappyPath(t *testing.T) {
 	wsID, ownerID, memberID := legislationFixture(t)
 
@@ -270,15 +269,15 @@ func TestLegislationStateMachineHappyPath(t *testing.T) {
 		t.Fatalf("clause binding = %s/%s, want active workspace binding", bindingScope, bindingStatus)
 	}
 
-	// The carrier business column now carries the marker-wrapped clause
-	// region (stable context kept, clause region rebuilt from the library).
+	// The carrier business column now keeps only static context. The clause
+	// remains in the asset library for claim-time composition.
 	var contextAfter string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, wsID).Scan(&contextAfter)
 	if contextAfter == contextBefore {
 		t.Fatalf("enact contract broken: workspace carrier content unchanged")
 	}
-	if !strings.Contains(contextAfter, "每日同步") || !strings.Contains(contextAfter, "<!-- clause:id=") || !strings.Contains(contextAfter, clausemark.CloseTag()) {
-		t.Fatalf("carrier re-render missing the clause region: %.200s", contextAfter)
+	if strings.Contains(contextAfter, "每日同步") || strings.Contains(contextAfter, "<!-- clause:id=") {
+		t.Fatalf("carrier retained dynamic clause content: %.200s", contextAfter)
 	}
 
 	// The write went through the prompt_version funnel, not a bare column
@@ -289,12 +288,11 @@ func TestLegislationStateMachineHappyPath(t *testing.T) {
 		t.Fatalf("carrier write bypassed the prompt_version funnel")
 	}
 
-	// The gate rebuilt the structure baseline from the rendered text —
-	// the new clause is part of it.
+	// The gate rebuilt the structure baseline from static text only.
 	var clauses string
 	dbfx.QueryRow(t, `SELECT clauses::text FROM prompt_structure_baseline WHERE carrier_scope = 'workspace' AND carrier_scope_id = $1`, wsID).Scan(&clauses)
-	if !strings.Contains(clauses, "每日同步") {
-		t.Fatalf("baseline rebuild missing the enacted clause: %s", clauses)
+	if strings.Contains(clauses, "每日同步") {
+		t.Fatalf("baseline retained a dynamic clause: %s", clauses)
 	}
 }
 
@@ -723,8 +721,8 @@ func TestLegislationEnactmentTargets(t *testing.T) {
 	var contextBefore string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, wsID).Scan(&contextBefore)
 
-	// Default (no target in the body): the library path is unchanged —
-	// clause assets written, carrier re-rendered with the clause region.
+	// Default (no target in the body): the library path writes clause assets
+	// and normalizes the carrier's static content.
 	libID := createDraft(t, wsID, memberID, "默认入条款库", cleanClauseFor("默认入条款库"))
 	submitDraft(t, wsID, memberID, libID)
 	ownerApprove := ownerRoute(http.HandlerFunc(testHandler.ApprovePromptProposal))

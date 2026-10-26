@@ -129,9 +129,28 @@ type RenderedClause struct {
 	SupersededBodies []string
 }
 
-// Render rebuilds a carrier business column: the stable context with every
-// clause region and every asset-managed clause block removed, followed by the
-// deterministic snapshot region built from the rendered clauses.
+// Static removes every clause region and every asset-managed clause block from
+// a carrier business column, leaving only the owner-editable static context.
+// It is the only representation persisted back to a carrier business column.
+// Dynamic clauses are composed for a claimed task with Render instead.
+func Static(text string, clauses []RenderedClause) string {
+	stable := StripMarkers(text)
+	for _, c := range clauses {
+		remove := func(body string) {
+			stable = removeClauseBlock(stable, body)
+			stable = removeSectionBlock(stable, body)
+		}
+		remove(c.Body)
+		for _, body := range c.SupersededBodies {
+			remove(body)
+		}
+	}
+	return strings.TrimRight(stable, "\n")
+}
+
+// Render builds a claim-time context: the owner-editable static context with
+// the deterministic snapshot region built from the effective dynamic clauses.
+// Its output is runtime-only and must not be persisted as a carrier column.
 //
 // removeInline lists the clause titles whose bold-label blocks must leave the
 // stable text — the asset-managed set. Without this, a clause would be
@@ -142,14 +161,7 @@ type RenderedClause struct {
 // second pass finds no inline blocks left to remove and re-emits the same
 // segment. Both properties are pinned by tests.
 func Render(text string, clauses []RenderedClause) string {
-	stable := StripMarkers(text)
-	for _, c := range clauses {
-		for _, body := range append([]string{c.Body}, c.SupersededBodies...) {
-			stable = removeClauseBlock(stable, body)
-			stable = removeSectionBlock(stable, body)
-		}
-	}
-	stable = strings.TrimRight(stable, "\n")
+	stable := Static(text, clauses)
 
 	var sb strings.Builder
 	sb.WriteString(stable)

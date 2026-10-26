@@ -205,7 +205,7 @@ func (h *Handler) renderCarrierFromActiveClausesTx(ctx context.Context, qtx *db.
 	if err != nil {
 		return "", fmt.Errorf("有效条款集读取失败: %w", err)
 	}
-	return clausemark.Render(current, renderedClausesByCarrier(rows, override)[ref]), nil
+	return clausemark.Static(current, renderedClausesByCarrier(rows, override)[ref]), nil
 }
 
 // enactClauseAssetsTx writes the clause-family rows for one enacted
@@ -371,12 +371,10 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 	return out, nil
 }
 
-// rerenderAffectedCarriersTx re-renders every carrier the enactment touched:
-// stable context kept, clause region rebuilt from the asset library (full
-// task-kind union, no condition filtering — ADR 007 §业务列渲染快照), then the
-// rendered text is secret-scanned, written into the business column AND the
-// prompt_version ledger, and the structure baseline is rebuilt from the
-// rendered result so the next gate run sees exactly what the carrier holds.
+// rerenderAffectedCarriersTx normalizes every carrier the enactment touched:
+// the business column keeps only static context, while the active clause set
+// remains in the asset library for claim-time composition. The normalized text
+// is written into the business column and prompt_version ledger together.
 //
 // texts maps each affected carrier to the text the re-render starts from —
 // the gate's synthesized text (the proposal already applied inline). Keyed by
@@ -395,23 +393,23 @@ func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Querie
 		if !ok {
 			continue
 		}
-		rendered := clausemark.Render(current, renderedClausesByCarrier(allClauses, overrides[c])[c])
-		scan, ok, reason := promptGovernanceGate(rendered)
+		static := clausemark.Static(current, renderedClausesByCarrier(allClauses, overrides[c])[c])
+		scan, ok, reason := promptGovernanceGate(static)
 		if !ok {
 			return fmt.Errorf("重渲染文本未通过内容门闸（%s）: %s", c.scope, reason)
 		}
-		if _, err := persistCarrierVersionTx(ctx, qtx, workspaceID, promptVersionScope(c.scope), c.id, rendered,
-			"条款渲染快照重建", "legislation", nil, scan.Revision, scan.Findings, actorID); err != nil {
+		if _, err := persistCarrierVersionTx(ctx, qtx, workspaceID, promptVersionScope(c.scope), c.id, static,
+			"条款静态载体规范化", "legislation", nil, scan.Revision, scan.Findings, actorID); err != nil {
 			return fmt.Errorf("载体版本写入失败（%s）: %w", c.scope, err)
 		}
-		sections, clauses := legislation.ExtractStructure(rendered)
+		sections, clauses := legislation.ExtractStructure(static)
 		if _, err := qtx.UpsertPromptStructureBaseline(ctx, db.UpsertPromptStructureBaselineParams{
 			WorkspaceID:    workspaceID,
 			CarrierScope:   c.scope,
 			CarrierScopeID: c.id,
 			Sections:       mustJSON(sections),
 			Clauses:        mustJSON(clauses),
-			ContentSha256:  sha256Hex(rendered),
+			ContentSha256:  sha256Hex(static),
 		}); err != nil {
 			return fmt.Errorf("结构基线重建失败（%s）: %w", c.scope, err)
 		}

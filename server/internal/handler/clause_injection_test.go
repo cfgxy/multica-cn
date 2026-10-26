@@ -8,8 +8,8 @@ package handler
 //     (task, clause, version) with the carrier version it rode on;
 //   - re-recording the same claim's events is a no-op (the unique index —
 //     a re-claimed task must not double-count);
-//   - the global kill switch degrades to snapshot injection: the carrier
-//     text passes through untouched and the rows land flagged degraded;
+//   - the global kill switch passes the carrier text through untouched; legacy
+//     snapshots, when present, still record rows flagged degraded;
 //   - a malformed carrier (hand-edited marker) degrades the same way, and
 //     an unparseable snapshot is a counted miss, never a claim failure.
 //
@@ -173,6 +173,12 @@ func TestClaimDynamicClauseInjectionHappyPath(t *testing.T) {
 
 	taskID, wsContext := enqueueAndClaim(t, f)
 
+	var persistedCarrier string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&persistedCarrier)
+	if strings.Contains(persistedCarrier, cleanClauseText) || strings.Contains(persistedCarrier, "clause:id=") {
+		t.Fatalf("persisted carrier retained dynamic clause content:\n%s", persistedCarrier)
+	}
+
 	// The claimed workspace context carries the rendered clause region —
 	// marker-wrapped, in the target section.
 	if !strings.Contains(wsContext, "每日同步") ||
@@ -221,8 +227,8 @@ func TestClaimDynamicClauseInjectionKillSwitch(t *testing.T) {
 	f := newClauseInjectionFixture(t)
 	enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 
-	// The carrier as the switch-off claim must see it: the enacted segment
-	// is already in the column, and the claim must not touch it.
+	// The switch-off claim returns the static carrier unchanged. New carriers
+	// do not retain a legacy snapshot, so there is no degraded injection row.
 	var carrierBefore string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrierBefore)
 
@@ -234,17 +240,10 @@ func TestClaimDynamicClauseInjectionKillSwitch(t *testing.T) {
 			carrierBefore, wsContext)
 	}
 
-	// The degraded run is still counted, from the snapshot.
-	var degraded bool
-	var version int32
-	err := testPool.QueryRow(context.Background(),
-		`SELECT degraded, clause_version FROM clause_injection WHERE task_id = $1`, taskID).
-		Scan(&degraded, &version)
-	if err != nil {
-		t.Fatalf("kill-switch claim left no injection row: %v", err)
-	}
-	if !degraded || version != 1 {
-		t.Fatalf("degraded row = degraded=%v v%d, want true/1", degraded, version)
+	var n int
+	testPool.QueryRow(context.Background(), `SELECT COUNT(*) FROM clause_injection WHERE task_id = $1`, taskID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("static carrier produced %d fallback injection rows, want 0", n)
 	}
 }
 
@@ -252,15 +251,12 @@ func TestClaimDynamicClauseInjectionBadCarrierDegrades(t *testing.T) {
 	f := newClauseInjectionFixture(t)
 	enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 
-	// An Owner hand-edit that breaks the marker: the open tag's rev stops
-	// being a number, so neither the fast path nor the snapshot parse can
-	// read the carrier. The claim must still succeed and inject verbatim.
+	// An Owner hand-edit adds a malformed legacy marker. Neither the normal
+	// path nor the snapshot parser can read it, but the claim must still
+	// succeed and inject the raw carrier verbatim.
 	var carrier string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrier)
-	broken := strings.Replace(carrier, "rev=1 -->", "rev=oops -->", 1)
-	if broken == carrier {
-		t.Fatalf("fixture carrier has no marker to break:\n%s", carrier)
-	}
+	broken := carrier + "\n<!-- clause:id=cls_aaa00001 rev=oops -->\n"
 	dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, broken)
 
 	taskID, wsContext := enqueueAndClaim(t, f)
@@ -287,9 +283,14 @@ func TestSnapshotFallbackInjectionsResolveSegments(t *testing.T) {
 
 	var carrier string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrier)
+	var slug string
+	dbfx.QueryRow(t, `SELECT slug FROM clause WHERE id = $1`, clauseID).Scan(&slug)
+	legacySnapshot := clausemark.Render(carrier, []clausemark.RenderedClause{{
+		Slug: slug, Version: 1, Body: cleanClauseText,
+	}})
 
 	records := testHandler.snapshotFallbackInjections(context.Background(),
-		parseUUID(f.wsID), promptVersionScopeWorkspace, parseUUID(f.wsID), carrier, "kill_switch")
+		parseUUID(f.wsID), promptVersionScopeWorkspace, parseUUID(f.wsID), legacySnapshot, "kill_switch")
 	if len(records) != 1 {
 		t.Fatalf("fallback records = %d, want 1", len(records))
 	}
