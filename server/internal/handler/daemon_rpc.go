@@ -103,7 +103,7 @@ func (h *Handler) rpcClaimTasks(ctx context.Context, identity daemonws.ClientIde
 		status = http.StatusOK
 	}
 	responseBody := append([]byte(nil), rec.body.Bytes()...)
-	if len(sessionPublicKey) == 32 && identity.DaemonID != "" && status >= 200 && status < 300 {
+	if len(sessionPublicKey) == 32 && identity.DaemonID != "" && requestHasClientCapability(req, "credential-mcp-v1") && status >= 200 && status < 300 {
 		responseBody = h.attachCredentialCapabilities(ctx, identity.DaemonID, sessionPublicKey, responseBody)
 	}
 	return status, json.RawMessage(responseBody), nil

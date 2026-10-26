@@ -295,9 +295,6 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 	if consumedAt.Valid {
 		return deny("capability_replayed", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
-	if credentialCapabilityExpired(time.Now().UTC(), expiresAt) {
-		return deny("capability_expired", pgtype.UUID{}, pgtype.UUID{}, "")
-	}
 	if capabilityConnector != connectorUUID || capabilityRevision != req.ConnectorRevision {
 		return deny("connector_mismatch", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
@@ -321,6 +318,11 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 		grant.ConnectorStatus != "active" || (grant.TaskStatus != "dispatched" && grant.TaskStatus != "running") {
 		return deny("task_or_connector_binding_mismatch", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
+	// findTaskCredentialGrants can wait for authorization locks, so enforce the
+	// first-use deadline only after that query has completed.
+	if credentialCapabilityExpired(time.Now().UTC(), expiresAt) {
+		return deny("capability_expired", grant.CredentialID, grant.GrantID, grant.Purpose)
+	}
 	if len(h.CredentialStorageKeys.MasterKeys) == 0 {
 		return deny("storage_key_unavailable", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
@@ -342,12 +344,17 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 		return deny("stored_envelope_rejected", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
 	defer zeroCredentialBytes(plaintext)
-	consumed, err := tx.Exec(ctx, `UPDATE credential_capability SET consumed_at = now() WHERE capability_hash = $1 AND consumed_at IS NULL`, hash[:])
+	consumed, err := tx.Exec(ctx, `
+		UPDATE credential_capability
+		SET consumed_at = now()
+		WHERE capability_hash = $1
+		  AND consumed_at IS NULL
+		  AND expires_at > clock_timestamp()`, hash[:])
 	if err != nil {
 		return rejected, errors.New("credential capability rejected")
 	}
 	if consumed.RowsAffected() != 1 {
-		return deny("capability_replayed", grant.CredentialID, grant.GrantID, grant.Purpose)
+		return deny("capability_expired", grant.CredentialID, grant.GrantID, grant.Purpose)
 	}
 	if grant.ResourceScope == "single_use" {
 		if _, err := tx.Exec(ctx, `UPDATE credential_grant SET status = 'exhausted', updated_at = now() WHERE id = $1`, grant.GrantID); err != nil {
