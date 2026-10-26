@@ -2468,6 +2468,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/clauses", h.ListClauseGovernance)
 			r.Get("/clauses/search", h.SearchClauseGovernance)
 			r.Get("/clauses/{clauseId}", h.GetClauseGovernanceDetail)
+			r.Patch("/clauses/{clauseId}", h.UpdateClauseContent)
+			r.Post("/clauses/{clauseId}/deactivate", h.DeactivateClause)
+			r.Delete("/clauses/{clauseId}", h.DeleteClauseAsset)
 			r.Get("/reconciliation", h.GetClauseReconciliation)
 			r.Group(func(r chi.Router) {
 				// Owner-confirmed direct revisions are the narrow OAuth exception to

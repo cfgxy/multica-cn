@@ -5687,6 +5687,7 @@ const ClauseDriftEntrySchema = z.object({
 const ClauseDriftCarrierSchema = z.object({
   scope: z.string().default(""),
   scope_id: z.string().default(""),
+  scope_name: z.string().optional(),
   entries: z.array(ClauseDriftEntrySchema).default([]),
 }).loose();
 
