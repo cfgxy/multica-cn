@@ -1611,13 +1611,28 @@ func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue 
 }
 
 // assignedAgentMayReplyToMemberWithoutMention allows the direct agent assignee
-// to close a member's thread without manufacturing a dispatch. Every other
-// agent-authored comment still requires a responsibility mention.
-func assignedAgentMayReplyToMemberWithoutMention(issue db.Issue, parent *db.Comment, actorID string) bool {
-	return parent != nil &&
-		parent.AuthorType == "member" &&
-		issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" &&
-		issue.AssigneeID.Valid && uuidToString(issue.AssigneeID) == actorID
+// or assigned squad leader to close a member's thread without manufacturing a
+// dispatch. Every other agent-authored comment still requires a responsibility
+// mention.
+func (h *Handler) assignedAgentMayReplyToMemberWithoutMention(ctx context.Context, issue db.Issue, parent *db.Comment, actorID string) (bool, error) {
+	if parent == nil || parent.AuthorType != "member" || !issue.AssigneeType.Valid || !issue.AssigneeID.Valid {
+		return false, nil
+	}
+	switch issue.AssigneeType.String {
+	case "agent":
+		return uuidToString(issue.AssigneeID) == actorID, nil
+	case "squad":
+		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return uuidToString(squad.LeaderID) == actorID, nil
+	default:
+		return false, nil
+	}
 }
 
 type CommentTriggerAgentResponse struct {
@@ -1945,7 +1960,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
 			return
 		}
-		if !valid && !assignedAgentMayReplyToMemberWithoutMention(issue, parentComment, authorID) {
+		mayReplyWithoutMention, err := h.assignedAgentMayReplyToMemberWithoutMention(r.Context(), issue, parentComment, authorID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
+			return
+		}
+		if !valid && !mayReplyWithoutMention {
 			writeError(w, http.StatusUnprocessableEntity, "agent comments must mention a responsible workspace agent; squad workers must mention their leader")
 			return
 		}
