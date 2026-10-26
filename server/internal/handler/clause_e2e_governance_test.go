@@ -22,6 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/clausequalityrollup"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -147,6 +148,179 @@ func TestClauseReviseEnactsNextVersion(t *testing.T) {
 	}
 	if injectedVersion != 2 || degraded {
 		t.Fatalf("new claim injection = v%d degraded=%v, want v2 and non-degraded", injectedVersion, degraded)
+	}
+}
+
+func TestClauseReviseRepairsMissingMarker(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+
+	var before string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&before)
+	withoutMarker := clausemark.StripMarkers(before)
+	if withoutMarker == before {
+		t.Fatal("fixture carrier did not contain a Clause marker to remove")
+	}
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET context = $1 WHERE id = $2`, withoutMarker, f.wsID); err != nil {
+		t.Fatalf("remove marker from fixture carrier: %v", err)
+	}
+
+	proposed := "- **每日同步**：缺失 marker 时仍由资产集重建此条款。"
+	id := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", proposed, nil))
+	code, body := legislationCall(t, testHandler.PreviewPromptProposal,
+		legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+id+"/preview", nil, "id", id))
+	if code != http.StatusOK {
+		t.Fatalf("missing-marker preview: expected 200, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, proposed) {
+		t.Fatalf("missing-marker preview omitted proposed clause: %s", body)
+	}
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusOK {
+		t.Fatalf("missing-marker approve: expected 200, got %d: %s", code, body)
+	}
+
+	var after string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&after)
+	if !strings.Contains(after, proposed) || !strings.Contains(after, "clause:id=") || !strings.Contains(after, "rev=2") {
+		t.Fatalf("missing-marker revision did not restore canonical asset marker:\n%s", after)
+	}
+	if strings.Count(after, proposed) != 1 || strings.Contains(after, cleanClauseText) {
+		t.Fatalf("missing-marker revision retained stale or duplicate clause text:\n%s", after)
+	}
+	if !strings.Contains(after, "## 沟通规范") || !strings.Contains(after, "行文基调") {
+		t.Fatalf("missing-marker revision did not preserve static context:\n%s", after)
+	}
+}
+
+func directClauseRevisionRoute(h http.HandlerFunc) http.Handler {
+	return RequireHumanOrOAuthActor(middleware.RequireWorkspaceRole(testHandler.Queries, "owner")(h))
+}
+
+func TestDirectClauseRevisionUsesPreviewTokensAndCreatesNoProposal(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+
+	var currentContent, currentHash, currentCarrier string
+	dbfx.QueryRow(t, `SELECT content, content_sha256 FROM clause_version WHERE clause_id = $1 AND version = 1`, clauseID).
+		Scan(&currentContent, &currentHash)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&currentCarrier)
+	currentCarrier = clausemark.StripMarkers(currentCarrier)
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET context = $1 WHERE id = $2`, currentCarrier, f.wsID); err != nil {
+		t.Fatalf("remove marker from direct-revision fixture carrier: %v", err)
+	}
+	proposed := "- **每日同步**：Owner 确认后由 MCP 直接写入完整最终条文。"
+	request := map[string]any{
+		"content":                        proposed,
+		"expected_clause_version":        1,
+		"expected_clause_content_sha256": currentHash,
+		"expected_carrier_sha256":        sha256Hex(currentCarrier),
+	}
+	route := directClauseRevisionRoute(testHandler.DirectReviseClause)
+	previewRoute := directClauseRevisionRoute(testHandler.PreviewDirectClauseRevision)
+	previewReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision-preview", request, "clauseId", clauseID)
+	previewReq.Header.Set("X-Actor-Source", "oauth")
+	code, body := legislationCall(t, previewRoute.ServeHTTP, previewReq)
+	if code != http.StatusOK {
+		t.Fatalf("direct revision preview: expected 200, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, proposed) || !strings.Contains(body, `"next_clause_version":2`) {
+		t.Fatalf("direct revision preview omitted canonical diff/version: %s", body)
+	}
+	var preview DirectClauseRevisionPreviewResponse
+	if err := json.Unmarshal([]byte(body), &preview); err != nil {
+		t.Fatalf("decode direct revision preview: %v (%s)", err, body)
+	}
+	if len(preview.PreviewSHA256) != 64 {
+		t.Fatalf("direct revision preview token = %q, want SHA256", preview.PreviewSHA256)
+	}
+
+	mismatched := make(map[string]any, len(request)+2)
+	for key, value := range request {
+		mismatched[key] = value
+	}
+	mismatched["content"] = "- **每日同步**：未经 Owner 预览的替换正文。"
+	mismatched["preview_sha256"] = preview.PreviewSHA256
+	mismatched["confirm_previewed"] = true
+	mismatchReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", mismatched, "clauseId", clauseID)
+	mismatchReq.Header.Set("X-Actor-Source", "oauth")
+	code, body = legislationCall(t, route.ServeHTTP, mismatchReq)
+	if code != http.StatusConflict || !strings.Contains(body, "预览与提交内容不一致") {
+		t.Fatalf("mismatched direct revision = %d: %s, want preview conflict", code, body)
+	}
+
+	request["preview_sha256"] = preview.PreviewSHA256
+	request["confirm_previewed"] = true
+	writeReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
+	writeReq.Header.Set("X-Actor-Source", "oauth")
+	code, body = legislationCall(t, route.ServeHTTP, writeReq)
+	if code != http.StatusOK {
+		t.Fatalf("direct revision write: expected 200, got %d: %s", code, body)
+	}
+	var result DirectClauseRevisionResponse
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		t.Fatalf("decode direct revision result: %v (%s)", err, body)
+	}
+
+	var versionCount, proposalCount int
+	var versionContent, audit, persistedCarrier string
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&versionCount)
+	dbfx.QueryRow(t, `SELECT content FROM clause_version WHERE clause_id = $1 AND version = 2`, clauseID).Scan(&versionContent)
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM prompt_proposal WHERE workspace_id = $1`, f.wsID).Scan(&proposalCount)
+	dbfx.QueryRow(t, `SELECT audit_log::text FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&audit)
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&persistedCarrier)
+	if versionCount != 2 || versionContent != proposed {
+		t.Fatalf("direct revision versions = %d / %q, want v2 %q", versionCount, versionContent, proposed)
+	}
+	if proposalCount != 1 {
+		t.Fatalf("direct revision created a proposal: proposal count = %d, want original enact only", proposalCount)
+	}
+	if !strings.Contains(audit, "owner_direct_revision") {
+		t.Fatalf("direct revision binding audit missing action: %s", audit)
+	}
+	if strings.Count(persistedCarrier, proposed) != 1 || strings.Contains(persistedCarrier, currentContent) {
+		t.Fatalf("direct revision retained stale or duplicate clause text:\n%s", persistedCarrier)
+	}
+	if result.CarrierContentSHA256 != sha256Hex(persistedCarrier) {
+		t.Fatalf("direct revision response carrier hash = %s, persisted hash = %s", result.CarrierContentSHA256, sha256Hex(persistedCarrier))
+	}
+
+	staleReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
+	staleReq.Header.Set("X-Actor-Source", "oauth")
+	code, body = legislationCall(t, route.ServeHTTP, staleReq)
+	if code != http.StatusConflict || !strings.Contains(body, "changed from preview") {
+		t.Fatalf("stale direct revision = %d: %s, want version conflict", code, body)
+	}
+	dbfx.QueryRow(t, `SELECT COUNT(*) FROM clause_version WHERE clause_id = $1`, clauseID).Scan(&versionCount)
+	if versionCount != 2 {
+		t.Fatalf("stale direct revision changed version history: %d versions", versionCount)
+	}
+
+	taskTokenReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
+	taskTokenReq.Header.Set("X-Actor-Source", "task_token")
+	code, body = legislationCall(t, route.ServeHTTP, taskTokenReq)
+	if code != http.StatusForbidden {
+		t.Fatalf("task-token direct revision = %d: %s, want 403", code, body)
+	}
+
+	cloudPATReq := legislationReq(f.ownerID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
+	cloudPATReq.Header.Set("X-Actor-Source", "cloud_pat")
+	code, body = legislationCall(t, route.ServeHTTP, cloudPATReq)
+	if code != http.StatusForbidden {
+		t.Fatalf("cloud-PAT direct revision = %d: %s, want 403", code, body)
+	}
+
+	nonOwnerReq := legislationReq(f.memberID, f.wsID, http.MethodPost,
+		"/api/prompt-legislation/governance/clauses/"+clauseID+"/direct-revision", request, "clauseId", clauseID)
+	nonOwnerReq.Header.Set("X-Actor-Source", "oauth")
+	code, body = legislationCall(t, route.ServeHTTP, nonOwnerReq)
+	if code != http.StatusForbidden {
+		t.Fatalf("non-owner OAuth direct revision = %d: %s, want 403", code, body)
 	}
 }
 

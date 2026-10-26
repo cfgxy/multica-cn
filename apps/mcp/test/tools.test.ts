@@ -156,6 +156,7 @@ describe("tool surface", () => {
         "delete_execution_profile",
         "delete_project_resource",
         "delete_quick_reply",
+        "direct_revise_clause",
         "dispatch_agent",
         "edit_comment",
         "get_agent",
@@ -206,6 +207,7 @@ describe("tool surface", () => {
         "mark_all_inbox_read",
         "mark_inbox_item_read",
         "mark_inbox_item_unread",
+        "preview_clause_revision",
         "preview_prompt_proposal",
         "progress_digest",
         "read_file_chunk",
@@ -3027,6 +3029,28 @@ describe("prompt legislation proposal lifecycle tools", () => {
         calls.push({ method: "getClauseGovernanceDetail", args: [clauseId, params] });
         return { id: clauseId, days: params?.days ?? null };
       },
+      previewDirectClauseRevision: async (
+        _ws: string,
+        clauseId: string,
+        body: Record<string, unknown>,
+      ) => {
+        calls.push({ method: "previewDirectClauseRevision", args: [clauseId, body] });
+        return {
+          clause_id: clauseId,
+          current_clause_version: body.expected_clause_version,
+          next_clause_version: Number(body.expected_clause_version) + 1,
+          preview_sha256: "c".repeat(64),
+          diff: [{ kind: "add", text: "+ revised clause" }],
+        };
+      },
+      directReviseClause: async (_ws: string, clauseId: string, body: Record<string, unknown>) => {
+        calls.push({ method: "directReviseClause", args: [clauseId, body] });
+        return {
+          clause_id: clauseId,
+          enacted_clause_version: Number(body.expected_clause_version) + 1,
+          clause_content_sha256: "next-content",
+        };
+      },
       ...overrides,
     } as unknown as MulticaClient;
     (client as unknown as { __calls: unknown }).__calls = calls;
@@ -3202,5 +3226,63 @@ describe("prompt legislation proposal lifecycle tools", () => {
     // the REST client drops undefined query values, so no days param reaches
     // the wire when the argument is omitted.
     expect(params).toEqual({ days: undefined });
+  });
+
+  const directRevisionArgs = {
+    workspace: WS,
+    clause_id: "cl-1",
+    content: "- **每日同步**：Owner 确认后的完整最终条文。",
+    expected_clause_version: 3,
+    expected_clause_content_sha256: "a".repeat(64),
+    expected_carrier_sha256: "b".repeat(64),
+  };
+
+  it("preview_clause_revision forwards the complete preview-bound revision body", async () => {
+    const client = proposalClient();
+    const result = (await findTool("preview_clause_revision")?.handler(directRevisionArgs, client)) as Record<string, unknown>;
+    expect(callsOf(client)).toEqual([{
+      method: "previewDirectClauseRevision",
+      args: ["cl-1", {
+        content: directRevisionArgs.content,
+        expected_clause_version: 3,
+        expected_clause_content_sha256: "a".repeat(64),
+        expected_carrier_sha256: "b".repeat(64),
+      }],
+    }]);
+    expect(result.next_clause_version).toBe(4);
+  });
+
+  it("direct_revise_clause requires confirmation before reaching the client", async () => {
+    const client = proposalClient();
+    await expect(
+      findTool("direct_revise_clause")?.handler(directRevisionArgs, client),
+    ).rejects.toThrow(/confirm_previewed: true/);
+    await expect(
+      findTool("direct_revise_clause")?.handler(
+        { ...directRevisionArgs, confirm_previewed: false },
+        client,
+      ),
+    ).rejects.toThrow(/confirm_previewed: true/);
+    expect(callsOf(client)).toEqual([]);
+  });
+
+  it("direct_revise_clause forwards the confirmed complete revision without a proposal", async () => {
+    const client = proposalClient();
+    const result = (await findTool("direct_revise_clause")?.handler(
+      { ...directRevisionArgs, preview_sha256: "c".repeat(64), confirm_previewed: true },
+      client,
+    )) as Record<string, unknown>;
+    expect(callsOf(client)).toEqual([{
+      method: "directReviseClause",
+      args: ["cl-1", {
+        content: directRevisionArgs.content,
+        expected_clause_version: 3,
+        expected_clause_content_sha256: "a".repeat(64),
+        expected_carrier_sha256: "b".repeat(64),
+        preview_sha256: "c".repeat(64),
+        confirm_previewed: true,
+      }],
+    }]);
+    expect(result.enacted_clause_version).toBe(4);
   });
 });
