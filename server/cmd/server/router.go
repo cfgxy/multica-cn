@@ -2571,6 +2571,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 		})
 
+		// PromQL rules are generated from a fixed server-side metric catalog.
+		// Members can inspect state; only owners and admins can edit or preview.
+		r.Route("/api/workspace/promql-rules", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/", h.GetWorkspacePromQLRules)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner", "admin"))
+				r.Put("/", h.PutWorkspacePromQLRules)
+				r.Post("/preview", h.PreviewWorkspacePromQLRule)
+			})
+		})
+
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
@@ -2908,6 +2921,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/scheduling-pause", h.PauseAgentScheduling)
 					r.Delete("/scheduling-pause", h.ResumeAgentScheduling)
 					r.Get("/scheduling-pause", h.GetAgentSchedulingPause)
+					// Agent-level error-rate backpressure policy (RUYI-859
+					// stage A): config surface + read-only visibility.
+					// Writes are workspace owner/admin, human-only (the
+					// same gate as the scheduling freeze); reads follow the
+					// agent's visibility. Stage A does not pause anything —
+					// the automatic loop is stage B.
+					r.Get("/backpressure-policy", h.GetAgentBackpressurePolicy)
+					r.Put("/backpressure-policy", h.PutAgentBackpressurePolicy)
+					r.Delete("/backpressure-policy", h.DeleteAgentBackpressurePolicy)
+					r.Get("/backpressure-events", h.ListAgentBackpressureEvents)
 				})
 			})
 
@@ -3046,6 +3069,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/backpressure-settings", h.PutRuntimeBackpressureSettings)
 					r.Delete("/backpressure-settings", h.DeleteRuntimeBackpressureSettings)
 					r.Get("/backpressure-events", h.ListRuntimeBackpressureEvents)
+					// Per-daemon host resources (RUYI-859): the usage
+					// panel narrowed to this runtime's daemon host.
+					r.Get("/resources", h.GetRuntimeResources)
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)

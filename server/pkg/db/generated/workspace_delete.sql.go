@@ -534,6 +534,15 @@ deleted_issue_decisions AS (
 ),
 deleted_decision_requests AS (
     DELETE FROM decision_requests WHERE workspace_id = $1
+),
+deleted_agent_promql_rule_pauses AS (
+    DELETE FROM agent_promql_rule_pause WHERE workspace_id = $1
+),
+deleted_agent_backpressure_policies AS (
+    DELETE FROM agent_backpressure_policy WHERE workspace_id = $1
+),
+deleted_agent_suppression_events AS (
+    DELETE FROM agent_suppression_event WHERE workspace_id = $1
 )
 UPDATE channel_media_pending_object
 SET state = CASE
@@ -583,6 +592,10 @@ WHERE channel_media_pending_object.workspace_id = $1
 // linked issue_decisions card is swept by the CTE above. Cascade directly.
 // Cross-space groups are revoked whole first — see
 // RevokeInFlightCrossSpaceDecisionRequests, which must run before this CTE.
+// Agent-level error-rate backpressure policy + suppression history
+// (RUYI-859 stage A): both are workspace-scoped with no FK and no
+// dependents outside this database, same treatment as
+// daemon_backpressure_event — swept explicitly with the workspace.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler

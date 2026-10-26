@@ -156,3 +156,37 @@ export function agentBuilderSessionListOptions(wsId: string) {
     staleTime: 0,
   });
 }
+
+// ---- Agent-level error-rate backpressure policy (RUYI-859 stage A) ----
+// The detail-page card reads one policy snapshot plus the current window
+// reading and the live pause state in a single response, so a short stale
+// time keeps the rate figures fresh without hammering on focus.
+
+export const agentBackpressureKeys = {
+  all: (wsId: string) => ["workspaces", wsId, "agent-backpressure"] as const,
+  policy: (wsId: string, agentId: string) =>
+    [...agentBackpressureKeys.all(wsId), agentId] as const,
+  events: (wsId: string, agentId: string) =>
+    [...agentBackpressureKeys.all(wsId), agentId, "events"] as const,
+};
+
+export function agentBackpressurePolicyOptions(wsId: string, agentId: string) {
+  return queryOptions({
+    queryKey: agentBackpressureKeys.policy(wsId, agentId),
+    queryFn: () => api.getAgentBackpressurePolicy(agentId),
+    enabled: wsId.length > 0 && agentId.length > 0,
+    staleTime: 30 * 1000,
+  });
+}
+
+export function agentBackpressureEventsOptions(
+  wsId: string,
+  agentId: string,
+) {
+  return queryOptions({
+    queryKey: agentBackpressureKeys.events(wsId, agentId),
+    queryFn: () => api.listAgentBackpressureEvents(agentId, { limit: 50 }),
+    enabled: wsId.length > 0 && agentId.length > 0,
+    staleTime: 30 * 1000,
+  });
+}

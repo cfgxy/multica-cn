@@ -39,13 +39,21 @@ func writeDownMigrations(t *testing.T, f *fixture) []string {
 	dir := t.TempDir()
 	// Reverse order: that is the order migrations.Files("down") produces
 	// and the order runMigrations walks, i.e. the true execution order.
-	files := make([]string, 0, len(f.tableNames))
-	for i := len(f.tableNames) - 1; i >= 0; i-- {
+	files := make([]string, 0, len(f.versions))
+	for i := len(f.versions) - 1; i >= 0; i-- {
 		version := f.versions[i]
-		body := fmt.Sprintf(
-			"DROP TABLE %s.%s;\n",
-			pgxIdentifier(f.schema), pgxIdentifier(f.tableNames[i]),
-		)
+		body := ""
+		if version == f.indexVersion {
+			body = fmt.Sprintf(
+				"DROP INDEX CONCURRENTLY %s.%s;\n",
+				pgxIdentifier(f.schema), pgxIdentifier(f.indexName),
+			)
+		} else {
+			body = fmt.Sprintf(
+				"DROP TABLE %s.%s;\n",
+				pgxIdentifier(f.schema), pgxIdentifier(f.tableNames[i]),
+			)
+		}
 		path := filepath.Join(dir, version+".down.sql")
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatalf("write down migration: %v", err)

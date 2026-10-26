@@ -2007,6 +2007,15 @@ WHERE id = (
           WHERE sp.workspace_id = (SELECT ca.workspace_id FROM agent ca WHERE ca.id = $3)
             AND (sp.agent_id IS NULL OR sp.agent_id = atq.agent_id)
       )
+      -- Advanced PromQL rules own independent pause rows so one rule's
+      -- resolve can never release a human, error-rate, or sibling-rule pause.
+      -- Like scheduling_pause, this fence is claim-only: queued rows stay
+      -- intact and dispatched/running work drains through completion paths.
+      AND NOT EXISTS (
+          SELECT 1 FROM agent_promql_rule_pause prp
+          WHERE prp.workspace_id = (SELECT ca.workspace_id FROM agent ca WHERE ca.id = $3)
+            AND prp.agent_id = atq.agent_id
+      )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
