@@ -23,6 +23,26 @@ SELECT * FROM clause WHERE clause.id = $1;
 UPDATE clause SET status = @status WHERE clause.id = @id AND clause.workspace_id = @workspace_id
 RETURNING *;
 
+-- name: LockClauseForDirectManagement :one
+SELECT * FROM clause
+WHERE clause.id = @id AND clause.workspace_id = @workspace_id
+FOR UPDATE;
+
+-- name: DeleteClauseBindings :exec
+DELETE FROM clause_binding WHERE clause_id = $1;
+
+-- name: DeleteClauseVersions :exec
+DELETE FROM clause_version WHERE clause_id = $1;
+
+-- name: DeleteClauseQuality :exec
+DELETE FROM clause_quality_daily WHERE clause_id = $1;
+
+-- name: DeleteClauseInjections :exec
+DELETE FROM clause_injection WHERE clause_id = $1;
+
+-- name: DeleteClause :execrows
+DELETE FROM clause WHERE id = $1 AND workspace_id = $2;
+
 -- name: ListClausesForWorkspace :many
 SELECT * FROM clause WHERE clause.workspace_id = $1 ORDER BY clause.created_at, clause.slug;
 
@@ -160,6 +180,15 @@ INSERT INTO clause_injection (
     @workspace_id, @task_id, @clause_id, @clause_version, @carrier_scope, @carrier_version, @degraded
 )
 ON CONFLICT (task_id, clause_id, clause_version) DO NOTHING;
+
+-- name: InsertClauseInjectionObservation :exec
+-- One durable row per degraded carrier claim, including snapshots that cannot
+-- be parsed and therefore produce no clause_injection rows.
+INSERT INTO clause_injection_observation (
+    workspace_id, task_id, carrier_scope, carrier_scope_id, degraded, degradation_reason
+) VALUES (
+    @workspace_id, @task_id, @carrier_scope, @carrier_scope_id, @degraded, @degradation_reason
+);
 
 -- name: CountClauseInjections :one
 -- Injection calls + covered runs over a trailing window, for the governance
@@ -349,12 +378,16 @@ WHERE prompt_proposal.clause_id = sqlc.arg('clause_id')::uuid
 
 -- name: ListCarrierBusinessColumns :many
 -- Reconciliation input: every agent-tier business column in the workspace.
--- The workspace/project/squad tiers are single/few rows; the agent tier can
--- be large, hence the caller-side LIMIT.
-SELECT id AS scope_id, instructions AS business_column, 'agent'::text AS scope
+SELECT id AS scope_id, name AS carrier_name, instructions AS business_column, 'agent'::text AS scope
 FROM agent
 WHERE agent.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND (sqlc.narg('after_id')::uuid IS NULL OR agent.id > sqlc.narg('after_id')::uuid)
+ORDER BY agent.id
 LIMIT sqlc.arg('row_limit')::int;
+
+-- name: CountWorkspaceAgents :one
+SELECT COUNT(*)::bigint FROM agent
+WHERE agent.workspace_id = sqlc.arg('workspace_id')::uuid;
 
 -- name: ListWorkspaceContextRow :many
 SELECT id AS scope_id, COALESCE(context, '') AS business_column, 'workspace'::text AS scope
@@ -393,11 +426,25 @@ ORDER BY c.slug;
 
 -- name: CountWorkspaceInjections :one
 -- Dynamic-path health over a trailing window: total injections, covered
--- runs, and the degraded subset (snapshot-fallback rows carry the flag).
+-- runs, and degraded counts. Carrier observations also count degraded runs
+-- when fallback parsing yielded no clause-level rows.
+WITH degraded_tasks AS (
+    SELECT task_id
+    FROM clause_injection
+    WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+      AND created_at > sqlc.arg('since')::timestamptz
+      AND degraded
+    UNION
+    SELECT task_id
+    FROM clause_injection_observation
+    WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+      AND created_at > sqlc.arg('since')::timestamptz
+      AND degraded
+)
 SELECT COUNT(*)::bigint AS injections,
        COUNT(DISTINCT task_id)::bigint AS runs,
        COUNT(*) FILTER (WHERE degraded)::bigint AS degraded_rows,
-       COUNT(DISTINCT task_id) FILTER (WHERE degraded)::bigint AS degraded_runs
+       (SELECT COUNT(*)::bigint FROM degraded_tasks) AS degraded_runs
 FROM clause_injection
 WHERE clause_injection.workspace_id = sqlc.arg('workspace_id')::uuid
   AND clause_injection.created_at > sqlc.arg('since')::timestamptz;
@@ -443,6 +490,41 @@ WHERE ci.workspace_id = sqlc.arg('workspace_id')::uuid
   AND ci.created_at > sqlc.arg('since')::timestamptz
   AND (atq.prompt_versions -> ci.carrier_scope) IS NULL
 LIMIT sqlc.arg('row_limit')::int;
+
+-- name: ListDegradedClauseCarrierScopes :many
+-- The observation table is authoritative. The second arm covers legacy rows
+-- only where the historical carrier ID is stable on the task. Project IDs are
+-- intentionally omitted: legacy task rows do not retain which project was
+-- read during claim, and current issue/session/autopilot relations may move.
+SELECT DISTINCT scope, scope_id
+FROM (
+    SELECT cio.carrier_scope AS scope, cio.carrier_scope_id::text AS scope_id
+    FROM clause_injection_observation cio
+    WHERE cio.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND cio.created_at > sqlc.arg('since')::timestamptz
+      AND cio.degraded = TRUE
+    UNION ALL
+    SELECT ci.carrier_scope AS scope,
+           CASE ci.carrier_scope
+             WHEN 'workspace' THEN a.workspace_id
+             WHEN 'project' THEN NULL::uuid
+             WHEN 'squad' THEN atq.squad_id
+             WHEN 'agent' THEN atq.agent_id
+           END::text AS scope_id
+    FROM clause_injection ci
+    JOIN agent_task_queue atq ON atq.id = ci.task_id
+    JOIN agent a ON a.id = atq.agent_id
+    WHERE ci.workspace_id = sqlc.arg('workspace_id')::uuid
+      AND ci.created_at > sqlc.arg('since')::timestamptz
+      AND ci.degraded = TRUE
+      AND NOT EXISTS (
+          SELECT 1 FROM clause_injection_observation cio
+          WHERE cio.task_id = ci.task_id
+            AND cio.carrier_scope = ci.carrier_scope
+            AND cio.degraded
+      )
+) degraded_carriers
+WHERE scope_id IS NOT NULL;
 
 -- name: SumClauseInjectionStatsByClause :many
 -- Per-clause window stats for the governance list, one pass instead of one
