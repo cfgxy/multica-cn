@@ -152,7 +152,6 @@ func TestGetRunActivityReadsSparseTaskMessages(t *testing.T) {
 		"task_id": taskID,
 		"seq":     1,
 		"type":    "tool_use",
-		"tool":    "Bash",
 		"input":   testutil.Raw(`'{"command":"pwd"}'::jsonb`),
 	})
 
@@ -171,8 +170,8 @@ func TestGetRunActivityReadsSparseTaskMessages(t *testing.T) {
 		t.Fatalf("messages = %+v, want one sparse tool_use message", response.SemanticActivity.Messages)
 	}
 	message := response.SemanticActivity.Messages[0]
-	if message.Tool != "Bash" || message.Content != "" || message.Output != "" {
-		t.Fatalf("sparse message = %+v, want tool only with empty absent text fields", message)
+	if message.Tool != "" || message.Content != "" || message.Output != "" {
+		t.Fatalf("sparse message = %+v, want empty absent text fields", message)
 	}
 }
 
