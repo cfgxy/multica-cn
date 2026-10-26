@@ -79,6 +79,41 @@ func sameDisabledRuntimeSkill(a, b DisabledRuntimeSkill) bool {
 		a.Root == b.Root && a.Key == b.Key && a.Plugin == b.Plugin
 }
 
+// migrateDisabledRuntimeSkillsForRebind carries a runtime-local decision to a
+// replacement runtime only when both runtimes use the same provider. The key,
+// root, and plugin identity are provider-native, so copying across providers
+// would falsely claim an equivalent skill exists. The old entry remains for a
+// later switch back, and an existing target entry always wins.
+func migrateDisabledRuntimeSkillsForRebind(
+	current []DisabledRuntimeSkill,
+	oldRuntimeID, newRuntimeID, targetProvider string,
+) ([]DisabledRuntimeSkill, bool) {
+	if oldRuntimeID == "" || newRuntimeID == "" || oldRuntimeID == newRuntimeID || targetProvider == "" {
+		return current, false
+	}
+	next := append([]DisabledRuntimeSkill(nil), current...)
+	changed := false
+	for _, skill := range current {
+		if skill.RuntimeID != oldRuntimeID || skill.Provider != targetProvider {
+			continue
+		}
+		candidate := skill
+		candidate.RuntimeID = newRuntimeID
+		alreadyPresent := false
+		for _, existing := range next {
+			if sameDisabledRuntimeSkill(existing, candidate) {
+				alreadyPresent = true
+				break
+			}
+		}
+		if !alreadyPresent {
+			next = append(next, candidate)
+			changed = true
+		}
+	}
+	return next, changed
+}
+
 // SetAgentRuntimeSkillEnabled persists a per-agent override for a skill that
 // is discovered from the agent's currently assigned local runtime.
 func (h *Handler) SetAgentRuntimeSkillEnabled(w http.ResponseWriter, r *http.Request) {

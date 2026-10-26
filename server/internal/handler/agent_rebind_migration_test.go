@@ -9,8 +9,10 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -189,5 +191,125 @@ func TestUpdateAgentSameRuntimeSkipsRebindNotify(t *testing.T) {
 	}
 	if woken := rec.recorded(); len(woken) != 0 {
 		t.Fatalf("daemon wakeups = %v for same-runtime update, want none", woken)
+	}
+}
+
+func disabledRuntimeSkillsColumn(t *testing.T, agentID string) []DisabledRuntimeSkill {
+	t.Helper()
+	var raw []byte
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT disabled_runtime_skills FROM agent WHERE id = $1`, agentID).Scan(&raw); err != nil {
+		t.Fatalf("load disabled runtime skills for %s: %v", agentID, err)
+	}
+	var skills []DisabledRuntimeSkill
+	if err := json.Unmarshal(raw, &skills); err != nil {
+		t.Fatalf("decode disabled runtime skills: %v", err)
+	}
+	return skills
+}
+
+func TestMigrateDisabledRuntimeSkillsForRebind(t *testing.T) {
+	oldRuntimeID := "old-runtime"
+	newRuntimeID := "new-runtime"
+	original := []DisabledRuntimeSkill{
+		{RuntimeID: oldRuntimeID, Provider: "codex", Root: "provider", Key: "review"},
+		{RuntimeID: oldRuntimeID, Provider: "codex", Root: "provider", Key: "lint"},
+		{RuntimeID: oldRuntimeID, Provider: "claude", Root: "plugin", Key: "review", Plugin: "plugin@latest"},
+		{RuntimeID: newRuntimeID, Provider: "codex", Root: "provider", Key: "review", Name: "target choice"},
+	}
+
+	got, changed := migrateDisabledRuntimeSkillsForRebind(original, oldRuntimeID, newRuntimeID, "codex")
+	if !changed {
+		t.Fatal("same-provider source policy should be migrated")
+	}
+	want := []DisabledRuntimeSkill{
+		original[0], original[1], original[2], original[3],
+		{RuntimeID: newRuntimeID, Provider: "codex", Root: "provider", Key: "lint"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("same-provider policy migration = %#v, want %#v", got, want)
+	}
+
+	got, changed = migrateDisabledRuntimeSkillsForRebind(original, oldRuntimeID, newRuntimeID, "claude")
+	if !changed {
+		t.Fatal("same-provider plugin policy should be migrated")
+	}
+	if len(got) != len(original)+1 || got[len(got)-1].Provider != "claude" {
+		t.Fatalf("claude-only policy migration = %#v", got)
+	}
+
+	got, changed = migrateDisabledRuntimeSkillsForRebind(original, oldRuntimeID, newRuntimeID, "reasonix")
+	if changed || !reflect.DeepEqual(got, original) {
+		t.Fatalf("unknown provider changed policy: got %#v, changed=%v", got, changed)
+	}
+}
+
+func TestUpdateAgentRebindMigratesSameProviderRuntimeSkillPolicies(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID, oldRT, newRT := rebindAgentFixture(t, "rebind-runtime-skills")
+	initial := []DisabledRuntimeSkill{
+		{RuntimeID: oldRT, Provider: "claude", Root: "provider", Key: "review", Name: "Review"},
+		{RuntimeID: oldRT, Provider: "codex", Root: "provider", Key: "foreign"},
+		{RuntimeID: newRT, Provider: "claude", Root: "provider", Key: "already-there"},
+	}
+	payload, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE agent SET disabled_runtime_skills = $2 WHERE id = $1`, agentID, payload); err != nil {
+		t.Fatalf("seed disabled runtime skills: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateAgent(w, withURLParam(newRequest(
+		http.MethodPut, "/api/agents/"+agentID,
+		map[string]any{"runtime_id": newRT},
+	), "id", agentID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgent rebind: got %d: %s", w.Code, w.Body.String())
+	}
+
+	got := disabledRuntimeSkillsColumn(t, agentID)
+	want := []DisabledRuntimeSkill{
+		initial[0], initial[1], initial[2],
+		{RuntimeID: newRT, Provider: "claude", Root: "provider", Key: "review", Name: "Review"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("disabled runtime skills = %#v, want %#v", got, want)
+	}
+}
+
+func TestUpdateAgentRebindDoesNotMapPoliciesAcrossProviders(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	agentID, oldRT, newRT := rebindAgentFixture(t, "rebind-runtime-skills-cross-provider")
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE agent_runtime SET provider = 'codex' WHERE id = $1`, newRT); err != nil {
+		t.Fatalf("make target runtime codex: %v", err)
+	}
+	initial := []DisabledRuntimeSkill{{RuntimeID: oldRT, Provider: "claude", Root: "plugin", Key: "review", Plugin: "plugin@latest"}}
+	payload, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE agent SET disabled_runtime_skills = $2 WHERE id = $1`, agentID, payload); err != nil {
+		t.Fatalf("seed disabled runtime skills: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateAgent(w, withURLParam(newRequest(
+		http.MethodPut, "/api/agents/"+agentID,
+		map[string]any{"runtime_id": newRT},
+	), "id", agentID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgent cross-provider rebind: got %d: %s", w.Code, w.Body.String())
+	}
+	if got := disabledRuntimeSkillsColumn(t, agentID); !reflect.DeepEqual(got, initial) {
+		t.Fatalf("disabled runtime skills = %#v, want unchanged %#v", got, initial)
 	}
 }
