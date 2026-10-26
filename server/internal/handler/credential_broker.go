@@ -20,7 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
-const credentialCapabilityTTL = 5 * time.Minute
+const credentialCapabilityFirstUseTTL = 30 * time.Minute
 
 type credentialCapabilityGrant struct {
 	CredentialID     pgtype.UUID
@@ -95,7 +95,7 @@ func mintCredentialCapabilities(ctx context.Context, tx pgx.Tx, daemonID, taskID
 		if _, err := rand.Read(nonce); err != nil {
 			return nil, errors.New("credential capability generation failed")
 		}
-		expiresAt := time.Now().UTC().Add(credentialCapabilityTTL)
+		expiresAt := time.Now().UTC().Add(credentialCapabilityFirstUseTTL)
 		_, err = tx.Exec(ctx, `
 			INSERT INTO credential_capability
 			(id, capability_hash, daemon_id, task_id, agent_id, issue_id, workspace_id, connector_id, connector_revision, session_public_key, nonce, expires_at)
@@ -295,6 +295,9 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 	if consumedAt.Valid {
 		return deny("capability_replayed", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
+	if credentialCapabilityExpired(time.Now().UTC(), expiresAt) {
+		return deny("capability_expired", pgtype.UUID{}, pgtype.UUID{}, "")
+	}
 	if capabilityConnector != connectorUUID || capabilityRevision != req.ConnectorRevision {
 		return deny("connector_mismatch", pgtype.UUID{}, pgtype.UUID{}, "")
 	}
@@ -379,6 +382,10 @@ func (h *Handler) resolveCredentialCapability(ctx context.Context, daemonID stri
 		return rejected, errors.New("credential capability rejected")
 	}
 	return credentialResolveResponse{Envelope: envelope, ExpiresAt: envelopeExpiresAt}, nil
+}
+
+func credentialCapabilityExpired(now, expiresAt time.Time) bool {
+	return !now.Before(expiresAt)
 }
 
 func zeroCredentialBytes(value []byte) {
