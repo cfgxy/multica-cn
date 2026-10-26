@@ -457,7 +457,7 @@ describe("QuizGradedPanel", () => {
     mount();
 
     const batch = await screen.findByTestId("quiz-graded-batch");
-    expect(within(batch).getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent("Awaiting result collection");
+    expect(within(batch).getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent("Awaiting grading");
     expect(within(batch).getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent("errored");
   });
 

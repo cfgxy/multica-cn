@@ -403,7 +403,7 @@
       "errored": "errored",
       "taskQueued": "Queued",
       "taskRunning": "Running",
-      "taskAwaitingGrade": "Awaiting result collection",
+      "taskAwaitingGrade": "Awaiting grading",
       "taskPending": "Pending",
       "taskNotMeasured": "Not measured",
       "checkPassed": "{{id}} ({{kind}}) passed: {{evidence}}",
