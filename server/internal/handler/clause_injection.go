@@ -33,8 +33,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/clausemark"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Clause task kinds — the closed value domain binding conditions may
@@ -89,7 +89,7 @@ type clauseInjectionRecord struct {
 // dynamicClauseResult is what one carrier read point yields: the text to
 // inject and the injection rows it produced.
 type dynamicClauseResult struct {
-	Text      string
+	Text       string
 	Injections []clauseInjectionRecord
 }
 
@@ -98,9 +98,6 @@ type dynamicClauseResult struct {
 // fails: every failure mode degrades to the snapshot path and the claim
 // proceeds (ADR 007 §5).
 func (h *Handler) applyDynamicClauses(ctx context.Context, workspaceID pgtype.UUID, scope promptVersionScope, scopeID pgtype.UUID, taskKind, text string) dynamicClauseResult {
-	if text == "" {
-		return dynamicClauseResult{Text: text}
-	}
 	degrade := func(reason string) dynamicClauseResult {
 		return dynamicClauseResult{Text: text, Injections: h.snapshotFallbackInjections(ctx, workspaceID, scope, scopeID, text, reason)}
 	}
