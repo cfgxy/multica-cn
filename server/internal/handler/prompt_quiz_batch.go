@@ -194,6 +194,10 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 			ordered++
 		}
 	}
+	if ordered == 0 {
+		writeErrorCode(w, http.StatusConflict, "quiz_batch_fenced", "every quiz run was refused by the task ownership fence")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit the quiz batch")
 		return
@@ -290,7 +294,7 @@ func (h *Handler) GetPromptQuizBatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	resp, err := h.readPromptQuizBatch(r, workspaceID, pgtype.UUID{}, uuidToString(batchID))
+	resp, err := h.readPromptQuizBatch(r, workspaceID, pgtype.UUID{}, uuidToString(batchID), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read the batch")
 		return
@@ -321,7 +325,7 @@ func (h *Handler) GetCurrentPromptQuizBatch(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	resp, err := h.readPromptQuizBatch(r, workspaceID, agentID, batchID)
+	resp, err := h.readPromptQuizBatch(r, workspaceID, agentID, batchID, true)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read the current batch")
 		return
@@ -337,7 +341,7 @@ func emptyPromptQuizBatch() PromptQuizBatchResponse {
 	}
 }
 
-func (h *Handler) readPromptQuizBatch(r *http.Request, workspaceID, agentID pgtype.UUID, batchID string) (PromptQuizBatchResponse, error) {
+func (h *Handler) readPromptQuizBatch(r *http.Request, workspaceID, agentID pgtype.UUID, batchID string, includePending bool) (PromptQuizBatchResponse, error) {
 	progress, err := h.Queries.GetPromptQuizBatchProgress(r.Context(), db.GetPromptQuizBatchProgressParams{
 		WorkspaceID: workspaceID,
 		BatchID:     batchID,
@@ -347,10 +351,11 @@ func (h *Handler) readPromptQuizBatch(r *http.Request, workspaceID, agentID pgty
 		return PromptQuizBatchResponse{}, err
 	}
 	rows, err := h.Queries.ListPromptQuizTasksForBatch(r.Context(), db.ListPromptQuizTasksForBatchParams{
-		WorkspaceID: workspaceID,
-		BatchID:     batchID,
-		AgentID:     agentID,
-		RowLimit:    quizSampleLimit,
+		WorkspaceID:    workspaceID,
+		BatchID:        batchID,
+		AgentID:        agentID,
+		IncludePending: includePending,
+		RowLimit:       quizSampleLimit,
 	})
 	if err != nil {
 		return PromptQuizBatchResponse{}, err

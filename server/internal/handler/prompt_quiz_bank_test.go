@@ -236,6 +236,24 @@ func TestPromptQuizBatchCreateValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("task fence refusing every run returns conflict and stores nothing", func(t *testing.T) {
+		fencedAgent := dbfx.Agent(t, "quiz-batch-fenced", newQuizUUID(t))
+		itemID := seedQuizItem(t, "quiz-batch-fenced-item")
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE agent_id = $1::uuid`, fencedAgent)
+			testPool.Exec(context.Background(), `DELETE FROM prompt_quiz_item WHERE id = $1::uuid`, itemID)
+			testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1::uuid`, fencedAgent)
+		})
+
+		resp := post(map[string]any{"agent_ids": []string{fencedAgent}, "item_ids": []string{itemID}}).Want(409)
+		if !strings.Contains(resp.Body.String(), "quiz_batch_fenced") {
+			t.Fatalf("body does not name the fence refusal: %s", resp.Body.String())
+		}
+		if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id = $1::uuid`, fencedAgent); n != 0 {
+			t.Fatalf("%d rows stored after all quiz runs were fence-refused", n)
+		}
+	})
+
 	t.Run("mixed validity orders for the valid agent and names the refusals", func(t *testing.T) {
 		itemID := seedQuizItem(t, "quiz-batch-validation-item")
 		t.Cleanup(func() {
@@ -555,9 +573,9 @@ func TestPromptQuizBatchProgressUsesTheWholeQueue(t *testing.T) {
 		return batch
 	}
 
-	batch := read("batch")
+	batch := read("current")
 	if batch.Ordered != 502 || batch.Settled || len(batch.Rows) != quizSampleLimit {
-		t.Fatalf("bounded batch = ordered=%d settled=%t rows=%d, want 502 false %d", batch.Ordered, batch.Settled, len(batch.Rows), quizSampleLimit)
+		t.Fatalf("bounded current batch = ordered=%d settled=%t rows=%d, want 502 false %d", batch.Ordered, batch.Settled, len(batch.Rows), quizSampleLimit)
 	}
 	states := map[string]string{}
 	for _, row := range batch.Rows {
@@ -571,8 +589,8 @@ func TestPromptQuizBatchProgressUsesTheWholeQueue(t *testing.T) {
 		states[notMeasuredTask] != "not_measured" {
 		t.Fatalf("live task states = %v", states)
 	}
-	if current := read("current"); current.BatchID != batchID || current.Settled {
-		t.Fatalf("current batch = %+v, want active %s", current, batchID)
+	if explicit := read("batch"); explicit.Ordered != 502 || explicit.Settled || len(explicit.Rows) != 2 {
+		t.Fatalf("explicit batch = ordered=%d settled=%t rows=%d, want 502 false 2 collected rows", explicit.Ordered, explicit.Settled, len(explicit.Rows))
 	}
 
 	testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'completed', completed_at = now()
@@ -706,14 +724,22 @@ func TestPromptQuizBatchIndexSupportsAgentReadPaths(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	const indexName = "idx_agent_task_queue_quiz_batch_agent_created_at"
-	var definition string
-	if err := testPool.QueryRow(ctx, `SELECT pg_get_indexdef($1::regclass)`, indexName).Scan(&definition); err != nil {
-		t.Fatalf("load quiz batch index: %v", err)
-	}
-	for _, want := range []string{"agent_id", "quiz_batch_id", "created_at DESC", "originator_source"} {
-		if !strings.Contains(definition, want) {
-			t.Fatalf("quiz batch index = %q, missing %q", definition, want)
+	const (
+		agentIndexName  = "idx_agent_task_queue_quiz_batch_agent_created_at"
+		lookupIndexName = "idx_agent_task_queue_quiz_batch_lookup"
+	)
+	for indexName, wants := range map[string][]string{
+		agentIndexName:  {"agent_id", "quiz_batch_id", "created_at DESC", "originator_source"},
+		lookupIndexName: {"quiz_batch_id", "created_at DESC", "originator_source"},
+	} {
+		var definition string
+		if err := testPool.QueryRow(ctx, `SELECT pg_get_indexdef($1::regclass)`, indexName).Scan(&definition); err != nil {
+			t.Fatalf("load quiz batch index %s: %v", indexName, err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(definition, want) {
+				t.Fatalf("quiz batch index %s = %q, missing %q", indexName, definition, want)
+			}
 		}
 	}
 
@@ -773,9 +799,23 @@ func TestPromptQuizBatchIndexSupportsAgentReadPaths(t *testing.T) {
 		GROUP BY q.context->>'quiz_batch_id'
 		ORDER BY max(q.created_at) DESC
 		LIMIT 1`, agentID)
-	for name, plan := range map[string]string{"rows": rowsPlan, "current": currentPlan} {
-		if !strings.Contains(plan, indexName) {
-			t.Fatalf("%s query plan does not use %s:\n%s", name, indexName, plan)
+	lookupPlan := explain(`
+		SELECT q.id
+		FROM agent_task_queue q
+		WHERE q.originator_source = 'quiz'
+		  AND q.context->>'quiz_batch_id' = $1
+		ORDER BY q.created_at DESC
+		LIMIT 500`, batchID)
+	for name, check := range map[string]struct {
+		plan      string
+		indexName string
+	}{
+		"rows":    {plan: rowsPlan, indexName: agentIndexName},
+		"current": {plan: currentPlan, indexName: agentIndexName},
+		"lookup":  {plan: lookupPlan, indexName: lookupIndexName},
+	} {
+		if !strings.Contains(check.plan, check.indexName) {
+			t.Fatalf("%s query plan does not use %s:\n%s", name, check.indexName, check.plan)
 		}
 	}
 }

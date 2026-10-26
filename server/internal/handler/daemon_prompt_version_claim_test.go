@@ -3,11 +3,17 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/multica-ai/multica/server/internal/promptquizsweep"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptquiz"
 )
 
@@ -211,22 +217,43 @@ func TestClaim_PromptVersionAttributionClearsQuizPendingMarker(t *testing.T) {
 	}
 }
 
-func TestRecordClaimedPromptVersionsClearsQuizPendingMarkerWithoutScopes(t *testing.T) {
+func TestClaim_PromptVersionAttributionClearsQuizPendingMarkerWithoutScopes(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
 
 	runtimeID := createClaimReclaimRuntime(t, ctx, "pv-empty-quiz-marker runtime")
-	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "pv-empty-quiz-marker agent")
+	agentID, _ := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "pv-empty-quiz-marker agent")
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET instructions = '' WHERE id = $1`, agentID); err != nil {
+		t.Fatalf("clear agent instructions: %v", err)
+	}
+
+	var originalWorkspaceContext []byte
+	if err := testPool.QueryRow(ctx, `SELECT context FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&originalWorkspaceContext); err != nil {
+		t.Fatalf("read workspace context: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE workspace SET context = '' WHERE id = $1`, testWorkspaceID); err != nil {
+		t.Fatalf("clear workspace context: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `UPDATE workspace SET context = $2 WHERE id = $1`, testWorkspaceID, originalWorkspaceContext)
+	})
+
 	taskID := dbfx.Task(t, agentID, testutil.Cols{
 		"runtime_id":        runtimeID,
-		"issue_id":          issueID,
 		"originator_source": promptquiz.OriginatorSource,
 		"context":           testutil.Raw(`'{"quiz_measurement_status":"attribution_pending"}'::jsonb`),
 	})
 
-	testHandler.recordClaimedPromptVersions(ctx, parseUUID(taskID), nil, true)
+	claimedID, versions := claimPromptVersionsForTest(t, ctx, runtimeID)
+	if claimedID != taskID {
+		t.Fatalf("claimed task = %s, want %s", claimedID, taskID)
+	}
+	if len(versions) != 0 {
+		t.Fatalf("prompt_versions = %v, want empty mapping", versions)
+	}
+
 	var promptVersions []byte
 	var status *string
 	if err := testPool.QueryRow(ctx, `
@@ -242,4 +269,84 @@ func TestRecordClaimedPromptVersionsClearsQuizPendingMarkerWithoutScopes(t *test
 	if status != nil {
 		t.Errorf("quiz_measurement_status = %q, want cleared after empty attribution", *status)
 	}
+
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET status = 'completed', started_at = now() - interval '1 minute', completed_at = now()
+		WHERE id = $1`, taskID); err != nil {
+		t.Fatalf("complete claimed quiz task: %v", err)
+	}
+	if _, err := (promptquizsweep.Runner{Queries: db.New(testPool)}).Run(ctx); err != nil {
+		t.Fatalf("collect completed empty-attribution quiz task: %v", err)
+	}
+	if err := testPool.QueryRow(ctx,
+		`SELECT context->>'quiz_measurement_status' FROM agent_task_queue WHERE id = $1`, taskID,
+	).Scan(&status); err != nil {
+		t.Fatalf("reload collected quiz measurement status: %v", err)
+	}
+	if status == nil || *status != "not_measured" {
+		t.Errorf("quiz_measurement_status = %v, want not_measured after first collector sweep", status)
+	}
+}
+
+func TestRecordClaimedPromptVersionsKeepsQuizPendingMarkerOnAgentReadFailure(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	runtimeID := createClaimReclaimRuntime(t, ctx, "pv-failed-quiz-marker runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "pv-failed-quiz-marker agent")
+	insertPromptVersionRow(t, ctx, "workspace", testWorkspaceID, 3)
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":        runtimeID,
+		"issue_id":          issueID,
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           testutil.Raw(`'{"quiz_measurement_status":"attribution_pending"}'::jsonb`),
+	})
+
+	brokenHandler := *testHandler
+	brokenHandler.Queries = db.New(&failSecondPromptVersionReadDBTX{
+		DBTX:           testPool,
+		remainingReads: 1,
+		err:            errors.New("prompt version read unavailable"),
+	})
+	brokenHandler.recordClaimedPromptVersions(ctx, parseUUID(taskID), map[string]string{
+		"workspace": testWorkspaceID,
+		"agent":     agentID,
+	}, true)
+
+	var promptVersions []byte
+	var status *string
+	if err := testPool.QueryRow(ctx,
+		`SELECT prompt_versions, context->>'quiz_measurement_status' FROM agent_task_queue WHERE id = $1`, taskID,
+	).Scan(&promptVersions, &status); err != nil {
+		t.Fatalf("reload failed attribution status: %v", err)
+	}
+	var versions map[string]int32
+	if err := json.Unmarshal(promptVersions, &versions); err != nil {
+		t.Fatalf("decode partial prompt versions: %v", err)
+	}
+	if versions["workspace"] != 3 || len(versions) != 1 {
+		t.Errorf("prompt_versions = %v, want only resolved workspace version", versions)
+	}
+	if status == nil || *status != "attribution_pending" {
+		t.Errorf("quiz_measurement_status = %v, want attribution_pending after agent read failure", status)
+	}
+}
+
+type failSecondPromptVersionReadDBTX struct {
+	db.DBTX
+	remainingReads int
+	err            error
+}
+
+func (f *failSecondPromptVersionReadDBTX) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if strings.Contains(sql, "FROM prompt_version") {
+		if f.remainingReads == 0 {
+			return errRow{err: f.err}
+		}
+		f.remainingReads--
+	}
+	return f.DBTX.QueryRow(ctx, sql, args...)
 }
