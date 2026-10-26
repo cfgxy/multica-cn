@@ -1,0 +1,3419 @@
+diff --git a/cmd/resource-pool-mcp/main.go b/cmd/resource-pool-mcp/main.go
+index 6d57743..f77d8f2 100644
+--- a/cmd/resource-pool-mcp/main.go
++++ b/cmd/resource-pool-mcp/main.go
+@@ -75,0 +76 @@ func run(cfgPath string) error {
++	var dockerProvider *docker.Provider
+@@ -80,0 +82,3 @@ func run(cfgPath string) error {
++		if dp, ok := prov.(*docker.Provider); ok {
++			dockerProvider = dp
++		}
+@@ -84,6 +88,5 @@ func run(cfgPath string) error {
+-	if configured, err := p.ProviderFor(docker.Kind); err == nil {
+-		dp, ok := configured.(*docker.Provider)
+-		if !ok {
+-			return fail(logger, fmt.Errorf("docker Provider 类型错误"))
+-		}
+-		if err := dp.ConfigureScopeAuthorizer(func(ctx context.Context, scope docker.ScopeIdentity) error {
++	if err := validateRetainedDockerScopes(st.Snapshot(), dockerProvider); err != nil {
++		return fail(logger, err)
++	}
++	if dockerProvider != nil {
++		if err := dockerProvider.ConfigureScopeAuthorizer(func(ctx context.Context, scope docker.ScopeIdentity) error {
+@@ -207,0 +211,26 @@ func awaitShutdown(ctx context.Context, stop context.CancelFunc, errCh <-chan er
++// validateRetainedDockerScopes prevents provider removal from orphaning any
++// Docker instance or lease that still needs lifecycle ownership.
++func validateRetainedDockerScopes(state store.State, dockerProvider *docker.Provider) error {
++	if dockerProvider != nil {
++		return dockerProvider.ValidateRetainedScopeProfiles(state)
++	}
++	for _, lease := range state.Leases {
++		if lease.ProviderKind != docker.Kind {
++			continue
++		}
++		if len(lease.PublishedPorts) > 0 {
++			return fmt.Errorf("存量 Docker 租约 %s（%s）仍有端口映射待回收，拒绝移除 Docker provider 后启动", lease.ID, lease.State)
++		}
++		if lease.State != store.LeasePending && lease.State != store.LeaseActive && lease.State != store.LeaseExpired {
++			continue
++		}
++		return fmt.Errorf("存量 Docker 租约 %s（%s）仍需实例或 scope 回收，拒绝移除 Docker provider 后启动", lease.ID, lease.State)
++	}
++	for _, inst := range state.Instances {
++		if inst.ProviderKind == docker.Kind && inst.State != store.InstanceDestroyed {
++			return fmt.Errorf("存量 Docker 实例 %s（%s）仍需生命周期处置，拒绝移除 Docker provider 后启动", inst.ID, inst.State)
++		}
++	}
++	return nil
++}
++
+diff --git a/cmd/resource-pool-mcp/main_test.go b/cmd/resource-pool-mcp/main_test.go
+index 95db79d..b26ce3a 100644
+--- a/cmd/resource-pool-mcp/main_test.go
++++ b/cmd/resource-pool-mcp/main_test.go
+@@ -284,0 +285,68 @@ var errSentinel = errors.New("http 故障哨兵")
++func TestValidateRetainedDockerScopesRejectsProviderRemoval(t *testing.T) {
++	for _, tc := range []struct {
++		name    string
++		state   store.State
++		wantErr bool
++	}{
++		{
++			name: "active frozen profile",
++			state: store.State{Leases: []store.Lease{{
++				ID: "ls-active", ProviderKind: "docker", State: store.LeaseActive,
++				ScopeProfileID: "multica-qa", ScopeProfileKnown: true,
++			}}},
++			wantErr: true,
++		},
++		{
++			name: "expired unknown profile",
++			state: store.State{Leases: []store.Lease{{
++				ID: "ls-expired", ProviderKind: "docker", State: store.LeaseExpired,
++			}}},
++			wantErr: true,
++		},
++		{
++			name: "active known unscoped lease",
++			state: store.State{Leases: []store.Lease{{
++				ID: "ls-unscoped", ProviderKind: "docker", State: store.LeaseActive,
++				ScopeProfileKnown: true,
++			}}},
++			wantErr: true,
++		},
++		{
++			name: "pending lease",
++			state: store.State{Leases: []store.Lease{{
++				ID: "ls-pending", ProviderKind: "docker", State: store.LeasePending,
++			}}},
++			wantErr: true,
++		},
++		{
++			name: "idle instance",
++			state: store.State{Instances: []store.ResourceInstance{{
++				ID: "ri-idle", ProviderKind: "docker", State: store.InstanceIdle,
++			}}},
++			wantErr: true,
++		},
++		{
++			name: "terminal scoped lease",
++			state: store.State{Leases: []store.Lease{{
++				ID: "ls-reclaimed", ProviderKind: "docker", State: store.LeaseReclaimed,
++				ScopeProfileID: "multica-qa", ScopeProfileKnown: true,
++			}}},
++		},
++		{
++			name: "terminal lease with published port",
++			state: store.State{Leases: []store.Lease{{
++				ID: "ls-port-debt", ProviderKind: "docker", State: store.LeaseReleased,
++				PublishedPorts: []store.PublishedPort{{GuestPort: 5432, HostPort: 15432, Protocol: "tcp"}},
++			}}},
++			wantErr: true,
++		},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			err := validateRetainedDockerScopes(tc.state, nil)
++			if (err != nil) != tc.wantErr {
++				t.Fatalf("validateRetainedDockerScopes() error = %v, wantErr %t", err, tc.wantErr)
++			}
++		})
++	}
++}
++
+diff --git a/docs/05-security-reliability.md b/docs/05-security-reliability.md
+index 9a6f6c9..f89c415 100644
+--- a/docs/05-security-reliability.md
++++ b/docs/05-security-reliability.md
+@@ -15 +15 @@
+-- `acquire_lease` 返回公开的 `lease_id`、`phase` 与 `generation`。所有租约、execution、artifact、managed-app 与 `/files` 操作必须显式传入非秘密 `expected_generation`，服务在进入 Manager 或 Provider 前以持久化状态做 CAS；缺参不会回退到当前 generation。状态 v5 显式区分 selector 已知与未知：v1-v4 历史 lease 没有原始 selector，若其带 `request_id`，重放一律拒绝并要求新的 `request_id`，不得从 `provider_kind` 推断。
++- `acquire_lease` 返回公开的 `lease_id`、`phase` 与 `generation`。所有租约、execution、artifact、managed-app 与 `/files` 操作必须显式传入非秘密 `expected_generation`，服务在进入 Manager 或 Provider 前以持久化状态做 CAS；缺参不会回退到当前 generation。状态 v5 显式区分 selector 已知与未知：v1-v4 历史 lease 没有原始 selector，若其带 `request_id`，重放一律拒绝并要求新的 `request_id`，不得从 `provider_kind` 推断。状态 v6 仅将 Docker acquire 时的 `scope_profile_id`（空值也显式标记为已知）冻结在 lease 上，后续 Docker scope 授权、阶段切换、exec 与回收不依赖模板仍然存在；非 Docker lease 不冻结或要求 Docker scope capability。
+@@ -18,2 +18,2 @@
+-- Docker Provider 的 RUYI-783 路径由固定 `harbor.json` 与 `sub2api.json` profile 装载；启动时校验文件名、Compose SHA256、每个 image 的不可变 OCI digest、服务白名单、runner 服务及数据面类型。Compose 仅启用对应 profile，并以 lease/resource/profile/phase/generation 派生 project、internal network、volume、DB/schema/role、Redis namespace 与对象存储命名空间。
+-- Docker scope issuer 使用管理员配置的 32 字节以上密钥按完整 scope tuple 派生 DB、Redis 与对象存储密码。明文仅写入 scope 私有目录中的 0600 环境文件供固定 Compose 输入消费；不写入 state、Issue 或日志。阶段切换、release、TTL 与管理回收先停止 runner、撤销 scope 并移除 Compose 项目和数据资源；清理失败时保持隔离并拒绝回池，过期清理可由回收器重试。当前进程会为已撤销 scope ID 保留终态 fencing，迟到的 Ensure 不得重建旧代际；新代际使用不同 scope ID。
++- Docker Provider 的 RUYI-783 路径由固定 `harbor.json`、`sub2api.json` 与可选的 `multica-qa.json` profile 装载；启动时校验文件名、Compose SHA256、每个 image 的不可变 OCI digest、服务白名单、runner 服务及数据面类型。既有部署只要求前两个 profile，`multica-qa` 必须在启用相应模板前由受控变更原子加入。`multica-qa` 只允许固定 PostgreSQL 服务与同一 scope 的测试 runner，二者逐服务绑定受控制品目录验证的 OCI digest，且只连接由 lease/resource/profile/phase/generation 派生的 internal network；Compose 不发布宿主端口。resolved Compose 必须实际将 scope 派生的数据库、角色和 `DB_PASSWORD` 注入 PostgreSQL，并将同一值用于 runner 的数据库连接。所有 profile 以该完整 scope tuple 派生 project、internal network、volume 和相应的数据命名空间。
++- Docker scope issuer 使用管理员配置的 32 字节以上密钥按完整 scope tuple 派生 DB、Redis 与对象存储密码。明文仅写入 scope 私有目录中的 0600 环境文件供固定 Compose 输入消费；不写入 state、Issue 或日志。阶段切换、release、TTL 与管理回收先停止 runner、撤销 scope 并移除 Compose 项目和数据资源；清理失败时保持隔离并拒绝回池，过期清理可由回收器重试。当前进程会为已撤销 scope ID 保留终态 fencing，迟到的 Ensure 不得重建旧代际；新代际使用不同 scope ID。`docker compose ps --format json` 的 PostgreSQL 状态必须是只含一个 `State=running`、`Health=healthy` 条目的 JSON array，或等价的单对象 JSONL；空输出、空数组、多条目、非 JSON 或非健康状态均拒绝恢复。
+@@ -21 +21 @@
+-- **Docker scope 启动与回退输入**：config.json 的 docker.scope_profiles_dir 指向仅服务管理员可写的固定 profile 目录，内含 harbor.json 与 sub2api.json；docker.scope_root 指向服务账户私有的 scope 数据根目录；docker.scope_credential_key 使用外部密钥系统注入且至少 32 字节，不进入仓库、Issue 或日志。Docker 模板的 scope_profile_id 必须对应已加载清单，缺目录、profile 校验失败或密钥不足时服务启动拒绝。升级先部署配置与 profile，再启用绑定 profile 的 Docker 模板；本功能不引入状态文件 schema migration。回退前停止新租约并收敛活动 scope；回退期间保留 profile、issuer key 与 scope 根目录，直到旧代际 Compose、环境文件及卷均完成回收，禁止把删除这些输入当作回滚步骤。
++- **Docker scope 启动、升级与回退边界**：config.json 的 docker.scope_profiles_dir 指向仅服务管理员可写的固定 profile 目录，必须包含 harbor.json 与 sub2api.json，可在启用相应模板前原子加入 multica-qa.json；docker.scope_root 指向服务账户私有的 scope 数据根目录；docker.scope_credential_key 使用外部密钥系统注入且至少 32 字节，不进入仓库、Issue 或日志。`multica-qa.json` 的 PostgreSQL 和 runner image 都必须是受控制品目录已验证的 OCI digest，禁止用 tag、临时 build 或外网拉取结果替代。Docker 模板的 scope_profile_id 必须对应已加载清单，缺目录、必需 profile 校验失败或密钥不足时服务启动拒绝。升级先原子部署 profile、模板配置和支持它的服务二进制，再启用模板。v5→v6 先检查历史 Docker lease：存在 `pending`、`active` 或 `expired` 时新二进制拒绝启动且不改写 state；必须先用 v5 二进制的 `release_lease` 或 reaper 收敛为 `failed`、`released` 或 `reclaimed`。终态 Docker lease 与任意非 Docker lease 可迁移，首次 v6 写盘前会保留 `state.json.v5.bak`；已由旧 v6 实现写入的非 Docker profile 会在加载时清空，并随下一次状态变更持久化。一旦创建或改变 v6 状态，旧二进制将拒载；没有手工编辑、复制或降版本 state 文件的受支持旁路。回退必须走受控事故恢复流程，且只能在没有 v6 专有状态需要保留的边界进行；整个过程中保留 profile、issuer key 与 scope 根目录，直到旧代际 Compose、环境文件及卷均完成回收，禁止把删除这些输入当作回滚步骤。
+@@ -96 +96 @@ acquire 前置闸门：available ≥ 请求规格，三维分别校验，任一
+-- **状态文件版本闸与备份（RUYI-708、RUYI-878）**：加载前自动备份 `state.json.bak`，备份失败拒启动；v1 加载按实例补齐租约 `provider_kind`，v1-v4 加载时原始 provider selector 均标记为未知，首次写盘升 v5；这些历史 lease 的 `request_id` 不可重放。更新版本拒载（防新旧二进制混跑互写），与「损坏状态文件拒启动」同一 fail-closed 原则。
++- **状态文件版本闸与备份（RUYI-708、RUYI-878、RUYI-880）**：加载前自动备份 `state.json.bak`，备份失败拒启动；v1 加载按实例补齐租约 `provider_kind`，v1-v4 加载时原始 provider selector 均标记为未知，首次写盘升 v5；这些历史 lease 的 `request_id` 不可重放。v5→v6 只会在 Docker 非终态已由旧版本收敛后迁移；迁移输入另以原子写入保留为 `state.json.v5.bak`，v6 首次写盘仅冻结 Docker lease 的 scope profile，非 Docker lease 保持 scope profile unknown 并在 release/reaper 中不要求 Docker scope capability；历史 v6 的非 Docker profile 同样会在加载时归一化为空。更新版本拒载（防新旧二进制混跑互写），与「损坏状态文件拒启动」同一 fail-closed 原则；`state.json*` 均不是可手工改写的恢复接口。
+diff --git a/internal/admin/admin_test.go b/internal/admin/admin_test.go
+index a0b8a67..1bc80ac 100644
+--- a/internal/admin/admin_test.go
++++ b/internal/admin/admin_test.go
+@@ -123,0 +124,2 @@ func TestAdminPoolViewFieldConsistency(t *testing.T) {
++	// 新建路径异步受理；管理视图断言的是完成供应后的 active 租约事实。
++	waitLeaseActive(t, e.p, res.LeaseID)
+diff --git a/internal/config/config.go b/internal/config/config.go
+index 130a0a4..3d37f95 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -850,0 +851,3 @@ func (c *Config) Validate() error {
++		if t.ScopeProfileID != "" && t.ProviderKind != "docker" {
++			return fmt.Errorf("模板 %s 声明 scope_profile_id 时 provider_kind 必须为 docker", t.ID)
++		}
+diff --git a/internal/config/config_test.go b/internal/config/config_test.go
+index 627fe5c..2a60ce1 100644
+--- a/internal/config/config_test.go
++++ b/internal/config/config_test.go
+@@ -339,0 +340,11 @@ func TestDockerConfigValidation(t *testing.T) {
++	cfg = valid()
++	cfg.Providers = []string{"docker", "stub"}
++	cfg.Templates = []store.ResourceTemplate{{
++		ID: "scoped-stub-template", CPUCores: 1, RAMMB: 1024, DiskGB: 1,
++		ImageRef:       "fixture@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
++		ProviderKind:   "stub",
++		ScopeProfileID: "sub2api",
++	}}
++	if err := cfg.Validate(); err == nil {
++		t.Fatal("绑定 scope profile 的模板必须固定使用 Docker Provider")
++	}
+diff --git a/internal/exec/artifact.go b/internal/exec/artifact.go
+index b0e6625..33731d9 100644
+--- a/internal/exec/artifact.go
++++ b/internal/exec/artifact.go
+@@ -56 +56 @@ func (m *Manager) collectArtifacts(prov provider.Provider, executionID, leaseID
+-		scoped, ok := prov.(provider.ScopedArtifactCollector)
++		scoped, ok := provider.ProviderForCapabilities(prov).(provider.ScopedArtifactCollector)
+diff --git a/internal/exec/managed_app.go b/internal/exec/managed_app.go
+index 43a6442..618416a 100644
+--- a/internal/exec/managed_app.go
++++ b/internal/exec/managed_app.go
+@@ -67 +67 @@ func (m *Manager) managedLease(req ManagedAppRequest) (store.Lease, config.Manag
+-	if inst.ProviderKind != "docker" || lease.TemplateID != app.TemplateID || m.pool.ScopeProfileForTemplate(lease.TemplateID) != app.ScopeProfileID {
++	if inst.ProviderKind != "docker" || lease.TemplateID != app.TemplateID || lease.ScopeProfileID != app.ScopeProfileID {
+@@ -246 +246 @@ func (m *Manager) ManagedAppWebContent(ctx context.Context, leaseID string, expe
+-	bridge, ok := prov.(provider.ManagedWebBridge)
++	bridge, ok := provider.ProviderForCapabilities(prov).(provider.ManagedWebBridge)
+diff --git a/internal/exec/managed_app_test.go b/internal/exec/managed_app_test.go
+new file mode 100644
+index 0000000..bfb2fbf
+--- /dev/null
++++ b/internal/exec/managed_app_test.go
+@@ -0,0 +1,72 @@
++package exec
++
++import (
++	"context"
++	"testing"
++
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/config"
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/provider"
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/provider/faultinject"
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/store"
++)
++
++type managedWebTestProvider struct {
++	*fakeProvider
++	called bool
++}
++
++func (p *managedWebTestProvider) ManagedWebGet(_ context.Context, _ provider.ProviderRef, scope provider.ExecutionScope, service string, port int, requestPath string) ([]byte, error) {
++	p.called = true
++	if scope.ProfileID != "qa-profile" || service != "app" || port != 8080 || requestPath != "/" {
++		return nil, &managedWebTestError{}
++	}
++	return []byte("ok"), nil
++}
++
++type managedWebTestError struct{}
++
++func (*managedWebTestError) Error() string { return "managed web bridge 参数不符" }
++
++func TestManagedAppWebContentThroughListFailure(t *testing.T) {
++	e := newEnv(t)
++	e.cfg.ManagedApps = []config.ManagedAppConfig{{
++		ID:             managedAppID,
++		TemplateID:     "tpl-small",
++		ScopeProfileID: "qa-profile",
++		ServiceName:    "app",
++		ServicePort:    8080,
++		WebPath:        "/",
++	}}
++	lease, err := e.pl.GetLease(e.leaseID)
++	if err != nil {
++		t.Fatalf("读取租约: %v", err)
++	}
++	if err := e.pl.MutateState(func(st *store.State) {
++		for i := range st.Instances {
++			if st.Instances[i].ID == lease.InstanceID {
++				st.Instances[i].ProviderKind = "docker"
++			}
++		}
++		for i := range st.Leases {
++			if st.Leases[i].ID == lease.ID {
++				st.Leases[i].ScopeProfileID = "qa-profile"
++				st.Leases[i].ScopeProfileKnown = true
++			}
++		}
++		st.ManagedApplications = append(st.ManagedApplications, store.ManagedApplication{
++			ID: managedAppID, LeaseID: lease.ID, Phase: lease.Phase, Generation: lease.Generation, State: "started",
++		})
++	}); err != nil {
++		t.Fatalf("准备 Docker managed-app 状态: %v", err)
++	}
++	bridge := &managedWebTestProvider{fakeProvider: e.prov}
++	e.pl.SetProviderForTest("docker", faultinject.NewListFailure(bridge))
++
++	body, err := e.m.ManagedAppWebContent(context.Background(), lease.ID, lease.Generation, "/")
++	if err != nil {
++		t.Fatalf("ListFailure 包装后 managed web 应抵达底层 bridge: %v", err)
++	}
++	if string(body) != "ok" || !bridge.called {
++		t.Fatalf("底层 ManagedWebBridge 未被调用: body=%q called=%t", body, bridge.called)
++	}
++}
+diff --git a/internal/exec/manager.go b/internal/exec/manager.go
+index f3836c9..23b14ec 100644
+--- a/internal/exec/manager.go
++++ b/internal/exec/manager.go
+@@ -124 +124 @@ func (m *Manager) workspacePusher(inst *store.ResourceInstance) (provider.Worksp
+-	p, ok := prov.(provider.WorkspacePusher)
++	p, ok := provider.ProviderForCapabilities(prov).(provider.WorkspacePusher)
+diff --git a/internal/exec/package.go b/internal/exec/package.go
+index f3bac86..8e2f406 100644
+--- a/internal/exec/package.go
++++ b/internal/exec/package.go
+@@ -276 +276 @@ func (m *Manager) prepareWorkspace(ctx context.Context, leaseID string, expected
+-		if _, ok := prov.(provider.ScopedWorkspacePusher); !ok {
++		if _, ok := provider.ProviderForCapabilities(prov).(provider.ScopedWorkspacePusher); !ok {
+@@ -507 +507,2 @@ func (m *Manager) pushWorkspace(ctx context.Context, lease store.Lease, inst sto
+-		sp, ok := p.(provider.ScopedWorkspacePusher)
++		capabilityProvider := provider.ProviderForCapabilities(p)
++		sp, ok := capabilityProvider.(provider.ScopedWorkspacePusher)
+@@ -511,2 +512,2 @@ func (m *Manager) pushWorkspace(ctx context.Context, lease store.Lease, inst sto
+-		scope := provider.ExecutionScope{LeaseID: lease.ID, ResourceID: lease.InstanceID, ProfileID: templateScopeProfile(m.pool, lease.TemplateID), Phase: lease.Phase, Generation: lease.Generation, UID: lease.ExecutionUID}
+-		if scopedPath, ok := p.(provider.ScopedWorkspacePath); ok {
++		scope := provider.ExecutionScope{LeaseID: lease.ID, ResourceID: lease.InstanceID, ProfileID: lease.ScopeProfileID, Phase: lease.Phase, Generation: lease.Generation, UID: lease.ExecutionUID}
++		if scopedPath, ok := capabilityProvider.(provider.ScopedWorkspacePath); ok {
+@@ -540 +541 @@ func (m *Manager) provisionTemplateCache(ctx context.Context, lease store.Lease,
+-		} else if sp, ok := p.(provider.ScopedWorkspacePusher); !ok {
++		} else if sp, ok := provider.ProviderForCapabilities(p).(provider.ScopedWorkspacePusher); !ok {
+@@ -543 +544 @@ func (m *Manager) provisionTemplateCache(ctx context.Context, lease store.Lease,
+-			scope := provider.ExecutionScope{LeaseID: lease.ID, ResourceID: lease.InstanceID, ProfileID: templateScopeProfile(m.pool, lease.TemplateID), Phase: lease.Phase, Generation: lease.Generation, UID: lease.ExecutionUID}
++			scope := provider.ExecutionScope{LeaseID: lease.ID, ResourceID: lease.InstanceID, ProfileID: lease.ScopeProfileID, Phase: lease.Phase, Generation: lease.Generation, UID: lease.ExecutionUID}
+diff --git a/internal/exec/package_test.go b/internal/exec/package_test.go
+index 9d060cf..1592b62 100644
+--- a/internal/exec/package_test.go
++++ b/internal/exec/package_test.go
+@@ -12,0 +13 @@ import (
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/provider/faultinject"
+@@ -205,0 +207,14 @@ func TestPrepareWorkspaceHappyPathAndPush(t *testing.T) {
++func TestPrepareWorkspacePushesThroughListFailure(t *testing.T) {
++	e := newEnv(t)
++	e.pl.SetProviderForTest("fake", faultinject.NewListFailure(e.prov))
++	blob := makeTarGz(t, []tarEntry{{name: "a.txt", body: "hello"}})
++	mustUpload(t, e, "pkg.tgz", blob)
++
++	if _, err := e.m.PrepareWorkspace(context.Background(), e.leaseID, "pkg.tgz", 0); err != nil {
++		t.Fatalf("ListFailure 包装后 workspace push 应抵达底层 Provider: %v", err)
++	}
++	if _, pushes, _ := e.prov.calls(); pushes != 1 {
++		t.Fatalf("底层 WorkspacePusher 应收到一次调用，得到 %d", pushes)
++	}
++}
++
+diff --git a/internal/exec/run.go b/internal/exec/run.go
+index bcd6b82..84456da 100644
+--- a/internal/exec/run.go
++++ b/internal/exec/run.go
+@@ -21 +20,0 @@ import (
+-	"github.com/cfgxy/guxy-resource-pool-mcp/internal/pool"
+@@ -103,4 +101,0 @@ func resolveCWD(cwd string) string {
+-func templateScopeProfile(p *pool.Pool, templateID string) string {
+-	return p.ScopeProfileForTemplate(templateID)
+-}
+-
+@@ -158 +153,2 @@ func (m *Manager) Exec(ctx context.Context, req ExecRequest) (ExecStart, error)
+-		if restricted, ok := prov.(provider.ScopedExecutionProvider); !ok || !restricted.SupportsCapabilityExecution() {
++		capabilityProvider := provider.ProviderForCapabilities(prov)
++		if restricted, ok := capabilityProvider.(provider.ScopedExecutionProvider); !ok || !restricted.SupportsCapabilityExecution() {
+@@ -161,3 +157,3 @@ func (m *Manager) Exec(ctx context.Context, req ExecRequest) (ExecStart, error)
+-		profiled, ok := prov.(provider.ScopeProfileProvider)
+-		if !ok || !profiled.SupportsScopeProfile(m.pool.ScopeProfileForTemplate(lease.TemplateID)) {
+-			return ExecStart{}, fmt.Errorf("lease 模板未绑定已装载 scope profile，exec 已 fail-closed")
++		profiled, ok := capabilityProvider.(provider.ScopeProfileProvider)
++		if !ok || !profiled.SupportsScopeProfile(lease.ScopeProfileID) {
++			return ExecStart{}, fmt.Errorf("lease 未绑定已装载 scope profile，exec 已 fail-closed")
+@@ -279 +275 @@ func (m *Manager) Exec(ctx context.Context, req ExecRequest) (ExecStart, error)
+-		Scope:          provider.ExecutionScope{LeaseID: lease.ID, ResourceID: lease.InstanceID, ProfileID: templateScopeProfile(m.pool, lease.TemplateID), Phase: lease.Phase, Generation: lease.Generation, UID: lease.ExecutionUID},
++		Scope:          provider.ExecutionScope{LeaseID: lease.ID, ResourceID: lease.InstanceID, ProfileID: lease.ScopeProfileID, Phase: lease.Phase, Generation: lease.Generation, UID: lease.ExecutionUID},
+@@ -334 +330 @@ func (m *Manager) runExecution(runCtx context.Context, run *execRun, prov provid
+-	if scoped, ok := prov.(provider.ScopedExecutionProvider); ok && scoped.SupportsCapabilityExecution() {
++	if scoped, ok := provider.ProviderForCapabilities(prov).(provider.ScopedExecutionProvider); ok && scoped.SupportsCapabilityExecution() {
+diff --git a/internal/exec/staged.go b/internal/exec/staged.go
+index 6c6c5d2..3a5dc63 100644
+--- a/internal/exec/staged.go
++++ b/internal/exec/staged.go
+@@ -266 +266 @@ func (m *Manager) FetchStagedArtifact(ctx context.Context, leaseID, stageID stri
+-		pusher, ok := prov.(provider.ScopedWorkspacePusher)
++		pusher, ok := provider.ProviderForCapabilities(prov).(provider.ScopedWorkspacePusher)
+@@ -270 +270 @@ func (m *Manager) FetchStagedArtifact(ctx context.Context, leaseID, stageID stri
+-		scope := provider.ExecutionScope{LeaseID: l.ID, ResourceID: l.InstanceID, ProfileID: templateScopeProfile(m.pool, l.TemplateID), Phase: l.Phase, Generation: l.Generation, UID: l.ExecutionUID}
++		scope := provider.ExecutionScope{LeaseID: l.ID, ResourceID: l.InstanceID, ProfileID: l.ScopeProfileID, Phase: l.Phase, Generation: l.Generation, UID: l.ExecutionUID}
+diff --git a/internal/pool/admin.go b/internal/pool/admin.go
+index fc36a63..5c221b5 100644
+--- a/internal/pool/admin.go
++++ b/internal/pool/admin.go
+@@ -40 +40 @@ func (p *Pool) AdminReclaimLease(ctx context.Context, leaseID string) (store.Lea
+-		oldPhase, oldGeneration, oldUID, err = p.beginReleaseFenceLocked(&snap, l, now)
++		oldPhase, oldGeneration, oldUID, err = p.beginAdminReclaimFenceLocked(&snap, l, now)
+@@ -47 +47 @@ func (p *Pool) AdminReclaimLease(ctx context.Context, leaseID string) (store.Lea
+-	if err := p.revokeLeaseScopeLocked(ctx, &snap, l, oldPhase, oldGeneration, oldUID, l.Generation); err != nil {
++	if err := p.revokeLeaseScopesLocked(ctx, &snap, l, oldPhase, oldGeneration, oldUID, l.Generation); err != nil {
+@@ -51,0 +52,6 @@ func (p *Pool) AdminReclaimLease(ctx context.Context, leaseID string) (store.Lea
++	p.unpublishLeasePortsLocked(ctx, &snap, l)
++	if len(l.PublishedPorts) > 0 {
++		l.PhaseError = "端口映射解除失败，等待管理端重试"
++		p.applyLocked(&snap)
++		return store.Lease{}, fmt.Errorf("管理回收端口解除失败，资源保持占用")
++	}
+@@ -58,0 +65 @@ func (p *Pool) AdminReclaimLease(ctx context.Context, leaseID string) (store.Lea
++	l.PhaseError = ""
+@@ -146 +153,4 @@ func (p *Pool) AdminDestroyInstance(ctx context.Context, id string) error {
+-	// 连带租约回收：active/expired 一并收敛，记账立即释放
++	// 连带租约回收：active/expired 一并收敛，记账立即释放。
++	// Pending provisioning is only cancelled here; its callback owns the eventual
++	// provider destroy because Create may still be in flight.
++	pendingCancellation := false
+@@ -148,0 +159,18 @@ func (p *Pool) AdminDestroyInstance(ctx context.Context, id string) error {
++		if l.InstanceID == id && l.State == store.LeaseReleased && l.Phase == store.LeasePhaseReleased &&
++			inst.CurrentLeaseID == l.ID && (inst.State == store.InstanceCreating || inst.State == store.InstanceStarting) {
++			// A prior destroy already cancelled this in-flight provision. Its callback
++			// remains the sole owner of the provider-side Create/Start cleanup.
++			pendingCancellation = true
++			continue
++		}
++		if l.InstanceID == id && l.State == store.LeasePending {
++			l.State = store.LeaseReleased
++			l.Phase = store.LeasePhaseReleased
++			l.Generation++
++			l.ReleasedAt = now
++			l.ReleaseReason = store.ReleaseAdminForce
++			l.PhaseError = "管理销毁已取消供应，等待供应回调完成清理"
++			pendingCancellation = true
++			p.log.Info("admin destroy：取消供应中的租约", slog.String("lease", l.ID), slog.String("instance", id))
++			continue
++		}
+@@ -153 +181 @@ func (p *Pool) AdminDestroyInstance(ctx context.Context, id string) error {
+-				oldPhase, oldGeneration, oldUID, err = p.beginReleaseFenceLocked(&snap, l, now)
++				oldPhase, oldGeneration, oldUID, err = p.beginAdminReclaimFenceLocked(&snap, l, now)
+@@ -160 +188 @@ func (p *Pool) AdminDestroyInstance(ctx context.Context, id string) error {
+-			if err := p.revokeLeaseScopeLocked(ctx, &snap, l, oldPhase, oldGeneration, oldUID, l.Generation); err != nil {
++			if err := p.revokeLeaseScopesLocked(ctx, &snap, l, oldPhase, oldGeneration, oldUID, l.Generation); err != nil {
+@@ -164,0 +193,6 @@ func (p *Pool) AdminDestroyInstance(ctx context.Context, id string) error {
++			p.unpublishLeasePortsLocked(ctx, &snap, l)
++			if len(l.PublishedPorts) > 0 {
++				l.PhaseError = "端口映射解除失败，等待管理端重试"
++				p.applyLocked(&snap)
++				return fmt.Errorf("管理销毁端口解除失败，资源保持占用")
++			}
+@@ -166,0 +201 @@ func (p *Pool) AdminDestroyInstance(ctx context.Context, id string) error {
++			l.PhaseError = ""
+@@ -171,0 +207,4 @@ func (p *Pool) AdminDestroyInstance(ctx context.Context, id string) error {
++	if pendingCancellation {
++		p.applyLocked(&snap)
++		return fmt.Errorf("实例 %s 的供应已取消，等待供应回调销毁 Provider 资源", id)
++	}
+diff --git a/internal/pool/admin_test.go b/internal/pool/admin_test.go
+index 234aa60..d19ddeb 100644
+--- a/internal/pool/admin_test.go
++++ b/internal/pool/admin_test.go
+@@ -4,0 +5 @@ import (
++	"errors"
+@@ -7,0 +9,2 @@ import (
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/config"
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/provider"
+@@ -10,0 +14,17 @@ import (
++type failUnpublishProvider struct {
++	provider.Provider
++	remaining int
++}
++
++func (p *failUnpublishProvider) PublishPort(ctx context.Context, ref provider.ProviderRef, guestPort int, protocol string) (int, error) {
++	return p.Provider.(provider.PortPublisher).PublishPort(ctx, ref, guestPort, protocol)
++}
++
++func (p *failUnpublishProvider) UnpublishPort(ctx context.Context, ref provider.ProviderRef, guestPort int, protocol string) error {
++	if p.remaining > 0 {
++		p.remaining--
++		return errors.New("simulated port cleanup failure")
++	}
++	return p.Provider.(provider.PortPublisher).UnpublishPort(ctx, ref, guestPort, protocol)
++}
++
+@@ -91,0 +112,427 @@ func TestAdminReclaimLeaseTerminalIdempotent(t *testing.T) {
++func setupExpiredDockerHandoff(t *testing.T, e *testEnv) (*phaseTestProvider, string, string) {
++	t.Helper()
++	bindSub2APIProfile(t, e)
++	leaseID := acquire(t, e, "agent-a")
++	instID := e.pool.ListInstances("", "")[0].ID
++	adapter := &phaseTestProvider{Provider: e.stub}
++	e.pool.SetProviderForTest("docker", adapter)
++	if err := e.pool.MutateState(func(st *store.State) {
++		lease := &st.Leases[0]
++		lease.ProviderKind = "docker"
++		lease.State = store.LeaseExpired
++		lease.Phase = store.LeasePhaseExpired
++		lease.PhaseFrom = store.LeasePhaseDEV
++		lease.PhaseFromGeneration = 1
++		lease.PhaseFromUID = 0
++		lease.PhaseTarget = store.LeasePhaseQA
++		lease.Generation = 2
++	}); err != nil {
++		t.Fatal(err)
++	}
++	return adapter, leaseID, instID
++}
++
++func setupActiveDockerHandoff(t *testing.T, e *testEnv) (*phaseTestProvider, string, string) {
++	t.Helper()
++	bindSub2APIProfile(t, e)
++	leaseID := acquire(t, e, "agent-a")
++	instID := e.pool.ListInstances("", "")[0].ID
++	adapter := &phaseTestProvider{Provider: e.stub}
++	e.pool.SetProviderForTest("docker", adapter)
++	if err := e.pool.MutateState(func(st *store.State) {
++		lease := &st.Leases[0]
++		lease.ProviderKind = "docker"
++		lease.State = store.LeaseActive
++		lease.Phase = store.LeasePhaseHandoffToQA
++		lease.PhaseFrom = store.LeasePhaseDEV
++		lease.PhaseFromGeneration = 1
++		lease.PhaseFromUID = 0
++		lease.PhaseTarget = store.LeasePhaseQA
++		lease.Generation = 2
++	}); err != nil {
++		t.Fatal(err)
++	}
++	return adapter, leaseID, instID
++}
++
++func assertDockerHandoffScopesRevoked(t *testing.T, adapter *phaseTestProvider, targetGeneration uint64) {
++	t.Helper()
++	if len(adapter.revocations) != 2 {
++		t.Fatalf("Docker handoff 应清理 source 与 target scope，得到 %d 次：%+v", len(adapter.revocations), adapter.revocations)
++	}
++	want := []provider.ExecutionScope{
++		{ProfileID: "sub2api", Phase: store.LeasePhaseDEV, Generation: 1},
++		{ProfileID: "sub2api", Phase: store.LeasePhaseQA, Generation: targetGeneration},
++	}
++	for i, scope := range want {
++		got := adapter.revocations[i][0]
++		if got.ProfileID != scope.ProfileID || got.Phase != scope.Phase || got.Generation != scope.Generation {
++			t.Fatalf("第 %d 个 scope 清理不正确：得到 %+v，期望 %+v", i, got, scope)
++		}
++	}
++}
++
++func TestAdminReclaimLeaseRevokesDockerHandoffSourceAndTargetScopes(t *testing.T) {
++	e := newEnv(t)
++	adapter, leaseID, _ := setupExpiredDockerHandoff(t, e)
++
++	lease, err := e.pool.AdminReclaimLease(context.Background(), leaseID)
++	if err != nil {
++		t.Fatalf("AdminReclaimLease: %v", err)
++	}
++	if lease.State != store.LeaseReclaimed {
++		t.Fatalf("租约应完成回收，得到 %+v", lease)
++	}
++	assertDockerHandoffScopesRevoked(t, adapter, 1)
++}
++
++func TestAdminDestroyInstanceRevokesDockerHandoffSourceAndTargetScopes(t *testing.T) {
++	e := newEnv(t)
++	adapter, leaseID, instID := setupExpiredDockerHandoff(t, e)
++
++	if err := e.pool.AdminDestroyInstance(context.Background(), instID); err != nil {
++		t.Fatalf("AdminDestroyInstance: %v", err)
++	}
++	lease, err := e.pool.GetLease(leaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if lease.State != store.LeaseReclaimed {
++		t.Fatalf("租约应完成回收，得到 %+v", lease)
++	}
++	assertDockerHandoffScopesRevoked(t, adapter, 1)
++}
++
++func TestAdminTerminalPathsRetainExpiredDockerHandoffWhenScopeCleanupFails(t *testing.T) {
++	cases := []struct {
++		name string
++		run  func(context.Context, *Pool, string, string) error
++	}{
++		{
++			name: "reclaim lease",
++			run: func(ctx context.Context, p *Pool, leaseID, _ string) error {
++				_, err := p.AdminReclaimLease(ctx, leaseID)
++				return err
++			},
++		},
++		{
++			name: "destroy instance",
++			run: func(ctx context.Context, p *Pool, _, instID string) error {
++				return p.AdminDestroyInstance(ctx, instID)
++			},
++		},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			e := newEnv(t)
++			adapter, leaseID, instID := setupExpiredDockerHandoff(t, e)
++			adapter.revokeErrs = 1
++
++			if err := tc.run(context.Background(), e.pool, leaseID, instID); err == nil {
++				t.Fatal("scope 清理失败必须阻止管理端终结")
++			}
++			lease, err := e.pool.GetLease(leaseID)
++			if err != nil {
++				t.Fatalf("GetLease: %v", err)
++			}
++			if lease.State != store.LeaseExpired || lease.PhaseError == "" {
++				t.Fatalf("失败后租约必须保持 expired 并记录错误，得到 %+v", lease)
++			}
++			assertDockerHandoffScopesRevoked(t, adapter, 1)
++		})
++	}
++}
++
++func TestAdminTerminalPathsFenceActiveDockerHandoffBeforeScopeCleanup(t *testing.T) {
++	cases := []struct {
++		name string
++		run  func(context.Context, *Pool, string, string) error
++	}{
++		{
++			name: "reclaim lease",
++			run: func(ctx context.Context, p *Pool, leaseID, _ string) error {
++				_, err := p.AdminReclaimLease(ctx, leaseID)
++				return err
++			},
++		},
++		{
++			name: "destroy instance",
++			run: func(ctx context.Context, p *Pool, _, instID string) error {
++				return p.AdminDestroyInstance(ctx, instID)
++			},
++		},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			e := newEnv(t)
++			adapter, leaseID, instID := setupActiveDockerHandoff(t, e)
++
++			if err := tc.run(context.Background(), e.pool, leaseID, instID); err != nil {
++				t.Fatalf("管理端终结失败: %v", err)
++			}
++			lease, err := e.pool.GetLease(leaseID)
++			if err != nil {
++				t.Fatalf("GetLease: %v", err)
++			}
++			if lease.State != store.LeaseReclaimed || lease.ReleaseReason != store.ReleaseAdminForce {
++				t.Fatalf("租约应完成管理回收，得到 %+v", lease)
++			}
++			assertDockerHandoffScopesRevoked(t, adapter, 2)
++			if got := adapter.revocations[1][0]; got.Phase != store.LeasePhaseQA || got.Generation != 2 {
++				t.Fatalf("target scope 应以 handoff generation 回收，得到 %+v", got)
++			}
++			for _, revocation := range adapter.revocations {
++				if revocation[1].Generation != 3 {
++					t.Fatalf("scope 清理必须使用管理端 fencing generation，得到 %+v", revocation[1])
++				}
++			}
++		})
++	}
++}
++
++func TestAdminTerminalPathsRetainActiveDockerHandoffWhenScopeCleanupFails(t *testing.T) {
++	cases := []struct {
++		name string
++		run  func(context.Context, *Pool, string, string) error
++	}{
++		{
++			name: "reclaim lease",
++			run: func(ctx context.Context, p *Pool, leaseID, _ string) error {
++				_, err := p.AdminReclaimLease(ctx, leaseID)
++				return err
++			},
++		},
++		{
++			name: "destroy instance",
++			run: func(ctx context.Context, p *Pool, _, instID string) error {
++				return p.AdminDestroyInstance(ctx, instID)
++			},
++		},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			e := newEnv(t)
++			adapter, leaseID, instID := setupActiveDockerHandoff(t, e)
++			adapter.revokeErrs = 1
++
++			if err := tc.run(context.Background(), e.pool, leaseID, instID); err == nil {
++				t.Fatal("scope 清理失败必须阻止管理端终结")
++			}
++			lease, err := e.pool.GetLease(leaseID)
++			if err != nil {
++				t.Fatalf("GetLease: %v", err)
++			}
++			if lease.State != store.LeaseExpired || lease.Phase != store.LeasePhaseExpired || lease.Generation != 3 || lease.PhaseError == "" {
++				t.Fatalf("失败后租约必须保留 expired fencing 与错误，得到 %+v", lease)
++			}
++			assertDockerHandoffScopesRevoked(t, adapter, 2)
++		})
++	}
++}
++
++func TestAdminTerminalPathsUnpublishLeasePorts(t *testing.T) {
++	cases := []struct {
++		name string
++		run  func(context.Context, *Pool, string, string) error
++	}{
++		{
++			name: "reclaim lease",
++			run: func(ctx context.Context, p *Pool, leaseID, _ string) error {
++				_, err := p.AdminReclaimLease(ctx, leaseID)
++				return err
++			},
++		},
++		{
++			name: "destroy instance",
++			run: func(ctx context.Context, p *Pool, _, instID string) error {
++				return p.AdminDestroyInstance(ctx, instID)
++			},
++		},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			e := newEnvWithCfg(t, func(c *config.Config) { c.Templates = append(c.Templates, portsTpl()) })
++			result, err := e.acquireRequest(context.Background(), AcquireRequest{TemplateID: "tpl-port", Owner: "agent-a"})
++			if err != nil {
++				t.Fatalf("acquire: %v", err)
++			}
++			lease := e.awaitLease(t, result.LeaseID, store.LeaseActive)
++			instRef := provider.ProviderRef(e.leaseInstanceRef(t, result.LeaseID))
++			if len(lease.PublishedPorts) == 0 || len(e.stub.PublishedPortsFor(instRef)) == 0 {
++				t.Fatalf("测试前端口映射应已发布：lease=%+v stub=%v", lease.PublishedPorts, e.stub.PublishedPortsFor(instRef))
++			}
++
++			if err := tc.run(context.Background(), e.pool, result.LeaseID, lease.InstanceID); err != nil {
++				t.Fatalf("管理端终结失败: %v", err)
++			}
++			lease, err = e.pool.GetLease(result.LeaseID)
++			if err != nil {
++				t.Fatalf("GetLease: %v", err)
++			}
++			if len(lease.PublishedPorts) != 0 || len(e.stub.PublishedPortsFor(instRef)) != 0 {
++				t.Fatalf("管理端终结后端口映射必须解除：lease=%+v stub=%v", lease.PublishedPorts, e.stub.PublishedPortsFor(instRef))
++			}
++		})
++	}
++}
++
++func TestAdminTerminalPathsRetainLeaseUntilPortsAreUnpublished(t *testing.T) {
++	cases := []struct {
++		name string
++		run  func(context.Context, *Pool, string, string) error
++	}{
++		{
++			name: "reclaim lease",
++			run: func(ctx context.Context, p *Pool, leaseID, _ string) error {
++				_, err := p.AdminReclaimLease(ctx, leaseID)
++				return err
++			},
++		},
++		{
++			name: "destroy instance",
++			run: func(ctx context.Context, p *Pool, _, instID string) error {
++				return p.AdminDestroyInstance(ctx, instID)
++			},
++		},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			e := newEnvWithCfg(t, func(c *config.Config) { c.Templates = append(c.Templates, portsTpl()) })
++			result, err := e.acquireRequest(context.Background(), AcquireRequest{TemplateID: "tpl-port", Owner: "agent-a"})
++			if err != nil {
++				t.Fatalf("acquire: %v", err)
++			}
++			lease := e.awaitLease(t, result.LeaseID, store.LeaseActive)
++			instRef := provider.ProviderRef(e.leaseInstanceRef(t, result.LeaseID))
++			e.pool.SetProviderForTest("stub", &failUnpublishProvider{Provider: e.stub, remaining: 1})
++
++			if err := tc.run(context.Background(), e.pool, result.LeaseID, lease.InstanceID); err == nil {
++				t.Fatal("端口解除失败必须阻止管理端终结")
++			}
++			lease, err = e.pool.GetLease(result.LeaseID)
++			if err != nil {
++				t.Fatalf("GetLease: %v", err)
++			}
++			if lease.State != store.LeaseActive || len(lease.PublishedPorts) == 0 || lease.PhaseError == "" {
++				t.Fatalf("失败后租约须保留可重试状态与端口审计：%+v", lease)
++			}
++			if len(e.stub.PublishedPortsFor(instRef)) == 0 {
++				t.Fatal("失败后 provider 端口映射不应被提前遗失")
++			}
++
++			if err := tc.run(context.Background(), e.pool, result.LeaseID, lease.InstanceID); err != nil {
++				t.Fatalf("端口重试后管理端终结失败: %v", err)
++			}
++			lease, err = e.pool.GetLease(result.LeaseID)
++			if err != nil {
++				t.Fatalf("GetLease: %v", err)
++			}
++			if lease.State != store.LeaseReclaimed || lease.PhaseError != "" || len(lease.PublishedPorts) != 0 || len(e.stub.PublishedPortsFor(instRef)) != 0 {
++				t.Fatalf("重试后端口与租约应收敛：lease=%+v ports=%v", lease, e.stub.PublishedPortsFor(instRef))
++			}
++		})
++	}
++}
++
++func TestReleaseRetainsLeaseUntilPortsAreUnpublished(t *testing.T) {
++	e := newEnvWithCfg(t, func(c *config.Config) { c.Templates = append(c.Templates, portsTpl()) })
++	result, err := e.acquireRequest(context.Background(), AcquireRequest{TemplateID: "tpl-port", Owner: "agent-a"})
++	if err != nil {
++		t.Fatalf("acquire: %v", err)
++	}
++	lease := e.awaitLease(t, result.LeaseID, store.LeaseActive)
++	instRef := provider.ProviderRef(e.leaseInstanceRef(t, result.LeaseID))
++	e.pool.SetProviderForTest("stub", &failUnpublishProvider{Provider: e.stub, remaining: 1})
++
++	if _, err := e.pool.Release(context.Background(), result.LeaseID); err == nil {
++		t.Fatal("端口解除失败必须阻止 release 终态化")
++	}
++	lease, err = e.pool.GetLease(result.LeaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if lease.State != store.LeaseActive || len(lease.PublishedPorts) == 0 || lease.PhaseError == "" {
++		t.Fatalf("release 失败后租约须保留可重试状态：%+v", lease)
++	}
++
++	if _, err := e.pool.Release(context.Background(), result.LeaseID); err != nil {
++		t.Fatalf("端口重试后 release 失败: %v", err)
++	}
++	lease, err = e.pool.GetLease(result.LeaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if lease.State != store.LeaseReleased || len(lease.PublishedPorts) != 0 || len(e.stub.PublishedPortsFor(instRef)) != 0 {
++		t.Fatalf("release 重试后端口与租约应收敛：lease=%+v ports=%v", lease, e.stub.PublishedPortsFor(instRef))
++	}
++}
++
++func TestTerminalReleaseReportsUnpublishFailure(t *testing.T) {
++	e := newEnvWithCfg(t, func(c *config.Config) { c.Templates = append(c.Templates, portsTpl()) })
++	result, err := e.acquireRequest(context.Background(), AcquireRequest{TemplateID: "tpl-port", Owner: "agent-a"})
++	if err != nil {
++		t.Fatalf("acquire: %v", err)
++	}
++	lease := e.awaitLease(t, result.LeaseID, store.LeaseActive)
++	ref := provider.ProviderRef(e.leaseInstanceRef(t, result.LeaseID))
++	if err := e.pool.MutateState(func(st *store.State) {
++		st.Leases[0].State = store.LeaseReleased
++		st.Leases[0].Phase = store.LeasePhaseReleased
++	}); err != nil {
++		t.Fatal(err)
++	}
++	e.pool.SetProviderForTest("stub", &failUnpublishProvider{Provider: e.stub, remaining: 1})
++
++	if _, err := e.pool.Release(context.Background(), result.LeaseID); err == nil {
++		t.Fatal("终态租约端口解除失败必须向调用方返回错误")
++	}
++	lease, err = e.pool.GetLease(result.LeaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if len(lease.PublishedPorts) == 0 || lease.PhaseError == "" || len(e.stub.PublishedPortsFor(ref)) == 0 {
++		t.Fatalf("终态失败必须保留端口审计：lease=%+v ports=%v", lease, e.stub.PublishedPortsFor(ref))
++	}
++
++	if _, err := e.pool.Release(context.Background(), result.LeaseID); err != nil {
++		t.Fatalf("终态租约端口重试失败: %v", err)
++	}
++	lease, err = e.pool.GetLease(result.LeaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if len(lease.PublishedPorts) != 0 || lease.PhaseError != "" || len(e.stub.PublishedPortsFor(ref)) != 0 {
++		t.Fatalf("终态端口重试后应收敛：lease=%+v ports=%v", lease, e.stub.PublishedPortsFor(ref))
++	}
++}
++
++func TestReaperRetainsLeaseUntilPortsAreUnpublished(t *testing.T) {
++	e := newEnvWithCfg(t, func(c *config.Config) { c.Templates = append(c.Templates, portsTpl()) })
++	result, err := e.acquireRequest(context.Background(), AcquireRequest{TemplateID: "tpl-port", Owner: "agent-a"})
++	if err != nil {
++		t.Fatalf("acquire: %v", err)
++	}
++	lease := e.awaitLease(t, result.LeaseID, store.LeaseActive)
++	instRef := provider.ProviderRef(e.leaseInstanceRef(t, result.LeaseID))
++	e.pool.SetProviderForTest("stub", &failUnpublishProvider{Provider: e.stub, remaining: 1})
++	e.clock.Advance(time.Hour)
++
++	e.pool.ReaperRound(context.Background())
++	lease, err = e.pool.GetLease(result.LeaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if lease.State != store.LeaseExpired || len(lease.PublishedPorts) == 0 || lease.PhaseError == "" {
++		t.Fatalf("reaper 端口失败后租约须保持 expired：%+v", lease)
++	}
++
++	e.pool.ReaperRound(context.Background())
++	lease, err = e.pool.GetLease(result.LeaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if lease.State != store.LeaseReclaimed || len(lease.PublishedPorts) != 0 || len(e.stub.PublishedPortsFor(instRef)) != 0 {
++		t.Fatalf("reaper 重试后端口与租约应收敛：lease=%+v ports=%v", lease, e.stub.PublishedPortsFor(instRef))
++	}
++}
++
+@@ -154,0 +602,46 @@ func TestAdminDestroyInstanceReclaimsLeaseAndDestroys(t *testing.T) {
++func TestAdminDestroyInstanceCancelsPendingLease(t *testing.T) {
++	e := newEnv(t)
++	leaseID := acquire(t, e, "agent-a")
++	instID := e.pool.ListInstances("", "")[0].ID
++	if err := e.pool.MutateState(func(st *store.State) {
++		st.Leases[0].State = store.LeasePending
++	}); err != nil {
++		t.Fatal(err)
++	}
++
++	if err := e.pool.AdminDestroyInstance(context.Background(), instID); err == nil {
++		t.Fatal("pending 供应只能取消，不能在回调清理前宣称实例已销毁")
++	}
++	lease, err := e.pool.GetLease(leaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if lease.State != store.LeaseReleased || lease.Phase != store.LeasePhaseReleased || lease.ReleaseReason != store.ReleaseAdminForce || lease.PhaseError == "" {
++		t.Fatalf("pending 租约必须先取消，防止完成回调重新激活：%+v", lease)
++	}
++}
++
++func TestAdminDestroyInstanceRetainsPendingCancellationFenceOnRetry(t *testing.T) {
++	e := newEnv(t)
++	if err := e.pool.MutateState(func(st *store.State) {
++		st.Instances = append(st.Instances, store.ResourceInstance{
++			ID: "ri-000906", ProviderKind: "stub", State: store.InstanceCreating, CurrentLeaseID: "ls-000906",
++		})
++		st.Leases = append(st.Leases, store.Lease{
++			ID: "ls-000906", InstanceID: "ri-000906", State: store.LeasePending,
++		})
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if err := e.pool.AdminDestroyInstance(context.Background(), "ri-000906"); err == nil {
++		t.Fatal("第一次取消 pending provisioning 应等待供应回调")
++	}
++	if err := e.pool.AdminDestroyInstance(context.Background(), "ri-000906"); err == nil {
++		t.Fatal("重试不得绕过 pending provisioning 取消栅栏")
++	}
++	inst := e.st.Snapshot().Instances[0]
++	if inst.State != store.InstanceCreating || inst.CurrentLeaseID != "ls-000906" {
++		t.Fatalf("重试必须保留供应回调所有权: %+v", inst)
++	}
++}
++
+diff --git a/internal/pool/lifecycle.go b/internal/pool/lifecycle.go
+index c5c3c8c..ad9423a 100644
+--- a/internal/pool/lifecycle.go
++++ b/internal/pool/lifecycle.go
+@@ -193 +193 @@ func (p *Pool) lifecycleTargetLocked(leaseID string, expectedGeneration ...uint6
+-	lifecycle, ok := prov.(provider.LeaseLifecycleProvider)
++	lifecycle, ok := provider.ProviderForCapabilities(prov).(provider.LeaseLifecycleProvider)
+diff --git a/internal/pool/lifecycle_test.go b/internal/pool/lifecycle_test.go
+index e15193c..1223bb0 100644
+--- a/internal/pool/lifecycle_test.go
++++ b/internal/pool/lifecycle_test.go
+@@ -10,0 +11 @@ import (
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/provider/faultinject"
+@@ -211,0 +213,19 @@ func TestSuspendAndResumeLeaseAreIdempotentAndKeepQuota(t *testing.T) {
++func TestSuspendResumeThroughListFailurePreservesLifecycleCapability(t *testing.T) {
++	e := newEnv(t)
++	lease, _, prov := lifecycleLease(t, e)
++	e.pool.SetProviderForTest("stub", faultinject.NewListFailure(prov))
++
++	if _, err := e.pool.Suspend(context.Background(), lease.ID, provider.SuspendModePause, lease.Generation); err != nil {
++		t.Fatalf("ListFailure 包装后 suspend 应抵达底层 capability: %v", err)
++	}
++	if _, err := e.pool.Resume(context.Background(), lease.ID, lease.Generation); err != nil {
++		t.Fatalf("ListFailure 包装后 resume 应抵达底层 capability: %v", err)
++	}
++	prov.mu.Lock()
++	suspendCalls, resumeCalls := prov.suspendCalls, prov.resumeCalls
++	prov.mu.Unlock()
++	if suspendCalls != 1 || resumeCalls != 1 {
++		t.Fatalf("底层 lifecycle 未被完整调用：suspend=%d resume=%d", suspendCalls, resumeCalls)
++	}
++}
++
+diff --git a/internal/pool/phase.go b/internal/pool/phase.go
+index 86630f0..775d04a 100644
+--- a/internal/pool/phase.go
++++ b/internal/pool/phase.go
+@@ -47,3 +47 @@ func (p *Pool) TransitionPhase(ctx context.Context, leaseID, target string, expe
+-	if tpl, ok := templateLocked(&snap, l.TemplateID); ok {
+-		profileID = tpl.ScopeProfileID
+-	}
++	profileID = l.ScopeProfileID
+@@ -55 +53,2 @@ func (p *Pool) TransitionPhase(ctx context.Context, leaseID, target string, expe
+-	adapter, ok := prov.(provider.ScopedExecutionProvider)
++	capabilityProvider := provider.ProviderForCapabilities(prov)
++	adapter, ok := capabilityProvider.(provider.ScopedExecutionProvider)
+@@ -60 +59 @@ func (p *Pool) TransitionPhase(ctx context.Context, leaseID, target string, expe
+-	profiled, ok := prov.(provider.ScopeProfileProvider)
++	profiled, ok := capabilityProvider.(provider.ScopeProfileProvider)
+@@ -63 +62 @@ func (p *Pool) TransitionPhase(ctx context.Context, leaseID, target string, expe
+-		return PhaseTransitionResult{}, fmt.Errorf("模板 scope profile %q 未在 Provider 固定装载，阶段切换拒绝且状态不变", profileID)
++		return PhaseTransitionResult{}, fmt.Errorf("租约 scope profile %q 未在 Provider 固定装载，阶段切换拒绝且状态不变", profileID)
+diff --git a/internal/pool/phase_test.go b/internal/pool/phase_test.go
+index f8ba1eb..1455d62 100644
+--- a/internal/pool/phase_test.go
++++ b/internal/pool/phase_test.go
+@@ -51,0 +52 @@ func bindSub2APIProfile(t *testing.T, e *testEnv) {
++	e.pool.SetProviderForTest("stub", &phaseTestProvider{Provider: e.stub})
+@@ -112,0 +114,20 @@ func TestAcquireDockerOverrideRequiresLoadedScopeProfile(t *testing.T) {
++func TestAcquireScopeProfileRequiresProviderCapability(t *testing.T) {
++	e := newEnv(t)
++	if err := e.pool.MutateState(func(st *store.State) {
++		for i := range st.Templates {
++			if st.Templates[i].ID == "tpl-small" {
++				st.Templates[i].ScopeProfileID = "sub2api"
++			}
++		}
++	}); err != nil {
++		t.Fatal(err)
++	}
++	_, err := e.acquireRequest(context.Background(), AcquireRequest{TemplateID: "tpl-small", Provider: "stub", Owner: "agent", IssueID: "RUYI-878"})
++	if err == nil {
++		t.Fatal("scope profile 不能经由未声明 capability 的 Provider 获取")
++	}
++	if len(e.st.Snapshot().Leases) != 0 {
++		t.Fatal("scope capability 预检拒绝不得创建租约")
++	}
++}
++
+@@ -217 +238 @@ func TestLeaseExpiryRejectsPhaseSwitch(t *testing.T) {
+-func TestAuthorizeExecutionScopeMatchesPersistentLeaseAndTemplateProfile(t *testing.T) {
++func TestAuthorizeExecutionScopeMatchesPersistentLeaseProfile(t *testing.T) {
+@@ -218,0 +240,10 @@ func TestAuthorizeExecutionScopeMatchesPersistentLeaseAndTemplateProfile(t *test
++	bindSub2APIProfile(t, e)
++	acquired := e.acquire(t, "tpl-small")
++	e.awaitLease(t, acquired.LeaseID, store.LeaseActive)
++	valid := provider.ExecutionScope{
++		LeaseID: acquired.LeaseID, ResourceID: acquired.InstanceID, ProfileID: "sub2api",
++		Phase: store.LeasePhaseDEV, Generation: 1,
++	}
++	if err := e.pool.AuthorizeExecutionScope(valid); err != nil {
++		t.Fatalf("当前 lease scope 应授权: %v", err)
++	}
+@@ -222 +253 @@ func TestAuthorizeExecutionScopeMatchesPersistentLeaseAndTemplateProfile(t *test
+-				st.Templates[i].ScopeProfileID = "sub2api"
++				st.Templates[i].ScopeProfileID = ""
+@@ -228,6 +258,0 @@ func TestAuthorizeExecutionScopeMatchesPersistentLeaseAndTemplateProfile(t *test
+-	acquired := e.acquire(t, "tpl-small")
+-	e.awaitLease(t, acquired.LeaseID, store.LeaseActive)
+-	valid := provider.ExecutionScope{
+-		LeaseID: acquired.LeaseID, ResourceID: acquired.InstanceID, ProfileID: "sub2api",
+-		Phase: store.LeasePhaseDEV, Generation: 1,
+-	}
+@@ -235 +260 @@ func TestAuthorizeExecutionScopeMatchesPersistentLeaseAndTemplateProfile(t *test
+-		t.Fatalf("当前 lease scope 应授权: %v", err)
++		t.Fatalf("模板移除 profile 后仍必须按 lease 冻结 profile 授权: %v", err)
+@@ -250,9 +275 @@ func TestReleaseRevokesScopeBeforeReturningResource(t *testing.T) {
+-	if err := e.pool.MutateState(func(st *store.State) {
+-		for i := range st.Templates {
+-			if st.Templates[i].ID == "tpl-small" {
+-				st.Templates[i].ScopeProfileID = "sub2api"
+-			}
+-		}
+-	}); err != nil {
+-		t.Fatal(err)
+-	}
++	bindSub2APIProfile(t, e)
+@@ -275,6 +292,10 @@ func TestReleaseRevokesScopeBeforeReturningResource(t *testing.T) {
+-func TestReleaseScopeCleanupFailureKeepsLeaseAndResourceOccupied(t *testing.T) {
+-	e := newEnv(t)
+-	if err := e.pool.MutateState(func(st *store.State) {
+-		for i := range st.Templates {
+-			if st.Templates[i].ID == "tpl-small" {
+-				st.Templates[i].ScopeProfileID = "sub2api"
++func TestLegacyNonDockerProfileDoesNotRequireScopeCleanup(t *testing.T) {
++	t.Run("release", func(t *testing.T) {
++		e := newEnv(t)
++		acquired := e.acquire(t, "tpl-small")
++		e.awaitLease(t, acquired.LeaseID, store.LeaseActive)
++		if err := e.pool.MutateState(func(st *store.State) {
++			for i := range st.Templates {
++				if st.Templates[i].ID == "tpl-small" {
++					st.Templates[i].ScopeProfileID = "multica-qa"
++				}
+@@ -281,0 +303,4 @@ func TestReleaseScopeCleanupFailureKeepsLeaseAndResourceOccupied(t *testing.T) {
++			leaseByID(st, acquired.LeaseID).ScopeProfileID = ""
++			leaseByID(st, acquired.LeaseID).ScopeProfileKnown = false
++		}); err != nil {
++			t.Fatal(err)
+@@ -283,2 +308,61 @@ func TestReleaseScopeCleanupFailureKeepsLeaseAndResourceOccupied(t *testing.T) {
+-	}); err != nil {
+-		t.Fatal(err)
++
++		if _, err := e.pool.Release(context.Background(), acquired.LeaseID, acquired.Generation); err != nil {
++			t.Fatalf("legacy non-Docker lease release 不得要求 scope capability: %v", err)
++		}
++	})
++
++	t.Run("reaper", func(t *testing.T) {
++		e := newEnv(t)
++		acquired := e.acquire(t, "tpl-small")
++		e.awaitLease(t, acquired.LeaseID, store.LeaseActive)
++		if err := e.pool.MutateState(func(st *store.State) {
++			for i := range st.Templates {
++				if st.Templates[i].ID == "tpl-small" {
++					st.Templates[i].ScopeProfileID = "multica-qa"
++				}
++			}
++			leaseByID(st, acquired.LeaseID).ScopeProfileID = ""
++			leaseByID(st, acquired.LeaseID).ScopeProfileKnown = false
++		}); err != nil {
++			t.Fatal(err)
++		}
++
++		e.clock.Advance(61 * time.Minute)
++		e.pool.ReaperRound(context.Background())
++		lease, err := e.pool.GetLease(acquired.LeaseID)
++		if err != nil || lease.State != store.LeaseReclaimed {
++			t.Fatalf("legacy non-Docker lease reaper 不得要求 scope capability: lease=%+v err=%v", lease, err)
++		}
++	})
++}
++
++func TestScopeCleanupUsesLeaseProfileAfterTemplateProfileRemoval(t *testing.T) {
++	for _, mode := range []string{"release", "reaper"} {
++		t.Run(mode, func(t *testing.T) {
++			e := newEnv(t)
++			bindSub2APIProfile(t, e)
++			acquired := e.acquire(t, "tpl-small")
++			e.awaitLease(t, acquired.LeaseID, store.LeaseActive)
++			adapter := &phaseTestProvider{Provider: e.stub}
++			e.pool.SetProviderForTest("stub", adapter)
++			if err := e.pool.MutateState(func(st *store.State) {
++				for i := range st.Templates {
++					if st.Templates[i].ID == "tpl-small" {
++						st.Templates[i].ScopeProfileID = ""
++					}
++				}
++			}); err != nil {
++				t.Fatal(err)
++			}
++			if mode == "release" {
++				if _, err := e.pool.Release(context.Background(), acquired.LeaseID, acquired.Generation); err != nil {
++					t.Fatal(err)
++				}
++			} else {
++				e.clock.Advance(61 * time.Minute)
++				e.pool.ReaperRound(context.Background())
++			}
++			if len(adapter.revocations) != 1 || adapter.revocations[0][0].ProfileID != "sub2api" {
++				t.Fatalf("%s 必须使用 lease 冻结 profile 回收 scope: %+v", mode, adapter.revocations)
++			}
++		})
+@@ -285,0 +370,5 @@ func TestReleaseScopeCleanupFailureKeepsLeaseAndResourceOccupied(t *testing.T) {
++}
++
++func TestReleaseScopeCleanupFailureKeepsLeaseAndResourceOccupied(t *testing.T) {
++	e := newEnv(t)
++	bindSub2APIProfile(t, e)
+@@ -312,9 +401 @@ func TestExpiredScopeCleanupFailureStaysFencedAndRetries(t *testing.T) {
+-	if err := e.pool.MutateState(func(st *store.State) {
+-		for i := range st.Templates {
+-			if st.Templates[i].ID == "tpl-small" {
+-				st.Templates[i].ScopeProfileID = "sub2api"
+-			}
+-		}
+-	}); err != nil {
+-		t.Fatal(err)
+-	}
++	bindSub2APIProfile(t, e)
+@@ -364,0 +446,32 @@ func TestExpiredRetryPreservesOriginalScopeAfterReleaseHandoff(t *testing.T) {
++
++func TestExpiredRetryPreservesOriginalScopeAfterPhaseHandoff(t *testing.T) {
++	e := newEnv(t)
++	bindSub2APIProfile(t, e)
++	acquired := e.acquire(t, "tpl-small")
++	e.awaitLease(t, acquired.LeaseID, store.LeaseActive)
++	adapter := &phaseTestProvider{Provider: e.stub, revokeErrs: 1}
++	e.pool.SetProviderForTest("stub", adapter)
++	if _, err := e.pool.TransitionPhase(context.Background(), acquired.LeaseID, store.LeasePhaseQA, acquired.Generation); err == nil {
++		t.Fatal("首次 phase scope 清理失败应保持 phase handoff")
++	}
++	if err := e.pool.MutateState(func(st *store.State) {
++		st.Leases[0].ProviderKind = "docker"
++	}); err != nil {
++		t.Fatal(err)
++	}
++	e.pool.SetProviderForTest("docker", adapter)
++	e.clock.Advance(61 * time.Minute)
++	e.pool.ReaperRound(context.Background())
++	reclaimed, err := e.pool.GetLease(acquired.LeaseID)
++	if err != nil || reclaimed.State != store.LeaseReclaimed || len(adapter.revocations) != 3 {
++		t.Fatalf("过期清理应从 phase handoff 使用原 scope 收敛: lease=%+v calls=%d err=%v", reclaimed, len(adapter.revocations), err)
++	}
++	for _, call := range adapter.revocations[:2] {
++		if call[0].Phase != store.LeasePhaseDEV || call[0].Generation != 1 {
++			t.Fatalf("phase handoff 后的清理必须指向原运行 scope: %+v", call)
++		}
++	}
++	if target := adapter.revocations[2][0]; target.Phase != store.LeasePhaseQA || target.Generation != 2 {
++		t.Fatalf("phase handoff 到期必须同时清理目标 scope: %+v", adapter.revocations)
++	}
++}
+diff --git a/internal/pool/pool.go b/internal/pool/pool.go
+index 225053c..0c6591a 100644
+--- a/internal/pool/pool.go
++++ b/internal/pool/pool.go
+@@ -342 +342 @@ func (p *Pool) publishPorts(ctx context.Context, prov provider.Provider, ref pro
+-	pub := prov.(provider.PortPublisher)
++	pub := provider.ProviderForCapabilities(prov).(provider.PortPublisher)
+@@ -348,2 +348 @@ func (p *Pool) publishPorts(ctx context.Context, prov provider.Provider, ref pro
+-			p.unpublishPorts(ctx, prov, ref, out)
+-			return nil, fmt.Errorf("端口发布失败（guest %d/%s）: %w", tp.GuestPort, proto, err)
++			return p.unpublishPorts(ctx, prov, ref, out), fmt.Errorf("端口发布失败（guest %d/%s）: %w", tp.GuestPort, proto, err)
+@@ -361 +360 @@ func (p *Pool) unpublishPorts(ctx context.Context, prov provider.Provider, ref p
+-	pub, ok := prov.(provider.PortPublisher)
++	pub, ok := provider.ProviderForCapabilities(prov).(provider.PortPublisher)
+@@ -389,5 +388,4 @@ func (p *Pool) unpublishLeasePortsLocked(ctx context.Context, snap *store.State,
+-		// 实例缺失或 kind 未启用：映射无从附着（Provider 侧对象不存在），清空记账防幽灵条目。
+-		l.PublishedPorts = nil
+-		if perr != nil {
+-			p.log.Warn("租约 kind 未启用，端口映射仅清记账", slog.String("lease", l.ID), slog.String("kind", l.ProviderKind))
+-		}
++		// A missing provider or instance ref cannot prove the mapping disappeared.
++		// Some implementations forward ports independently of instance lifecycle.
++		p.log.Warn("租约端口映射暂不可解除，保留审计等待重试",
++			slog.String("lease", l.ID), slog.String("kind", l.ProviderKind))
+@@ -543,0 +542,7 @@ func (p *Pool) Acquire(ctx context.Context, req AcquireRequest) (AcquireResult,
++	capabilityProvider := provider.ProviderForCapabilities(prov)
++	if tpl.ScopeProfileID != "" {
++		profiled, ok := capabilityProvider.(provider.ScopeProfileProvider)
++		if !ok || !profiled.SupportsScopeProfile(tpl.ScopeProfileID) {
++			return AcquireResult{}, fmt.Errorf("租约模板绑定的 scope profile 未由目标 Provider 装载")
++		}
++	}
+@@ -545,2 +550 @@ func (p *Pool) Acquire(ctx context.Context, req AcquireRequest) (AcquireResult,
+-		profiled, ok := prov.(provider.ScopeProfileProvider)
+-		if tpl.ScopeProfileID == "" || !ok || !profiled.SupportsScopeProfile(tpl.ScopeProfileID) {
++		if tpl.ScopeProfileID == "" {
+@@ -553 +557 @@ func (p *Pool) Acquire(ctx context.Context, req AcquireRequest) (AcquireResult,
+-		if _, ok := prov.(provider.PortPublisher); !ok {
++		if _, ok := capabilityProvider.(provider.PortPublisher); !ok {
+@@ -606,0 +611,12 @@ func (p *Pool) Acquire(ctx context.Context, req AcquireRequest) (AcquireResult,
++			if len(ports) > 0 {
++				// Persist the residual mappings directly as failed. A caller never sees
++				// an active lease for this path, so no active record may hit disk.
++				failed := p.newLeaseLocked(&snap, inst, &tpl, kind, req, ttl, now, ports)
++				failed.State = store.LeaseFailed
++				failed.Phase = store.LeasePhaseReleased
++				failed.LastError = perr.Error()
++				failed.ReleasedAt = now
++				failed.ReleaseReason = store.ReleaseProvisionFailed
++				failed.RequestID = ""
++				snap.Leases = append(snap.Leases, failed)
++			}
+@@ -645,0 +662,2 @@ func (p *Pool) Acquire(ctx context.Context, req AcquireRequest) (AcquireResult,
++		ScopeProfileID:        tpl.ScopeProfileID,
++		ScopeProfileKnown:     true,
+@@ -693,12 +710,0 @@ func (p *Pool) Acquire(ctx context.Context, req AcquireRequest) (AcquireResult,
+-// ScopeProfileForTemplate returns the operator-fixed runtime profile attached to a template.
+-func (p *Pool) ScopeProfileForTemplate(templateID string) string {
+-	p.mu.Lock()
+-	defer p.mu.Unlock()
+-	snap := p.st.Snapshot()
+-	tpl, ok := templateLocked(&snap, templateID)
+-	if !ok {
+-		return ""
+-	}
+-	return tpl.ScopeProfileID
+-}
+-
+@@ -724,3 +730,2 @@ func (p *Pool) AuthorizeExecutionScope(scope provider.ExecutionScope) error {
+-		tpl, ok := templateLocked(&snap, lease.TemplateID)
+-		if !ok || tpl.ScopeProfileID == "" || tpl.ScopeProfileID != scope.ProfileID {
+-			return fmt.Errorf("租约模板未绑定该固定 scope profile")
++		if lease.ScopeProfileID == "" || lease.ScopeProfileID != scope.ProfileID {
++			return fmt.Errorf("租约未绑定该固定 scope profile")
+@@ -839 +844 @@ func (p *Pool) finishProvision(kind, leaseID string, ref provider.ProviderRef, p
+-				p.unpublishPorts(context.Background(), prov, ref, ports)
++				l.PublishedPorts = p.unpublishPorts(context.Background(), prov, ref, ports)
+@@ -924 +929,23 @@ func (p *Pool) bindNewLeaseLocked(snap *store.State, inst *store.ResourceInstanc
+-	lease := store.Lease{
++	lease := p.newLeaseLocked(snap, inst, tpl, kind, req, ttl, now, ports)
++	snap.Leases = append(snap.Leases, lease)
++	inst.State = store.InstanceLeased
++	inst.CurrentLeaseID = lease.ID
++	inst.LastError = ""
++	inst.RuntimeState = string(provider.StatusRunning)
++	inst.RuntimeObservedAt = now
++	snap.Leases[len(snap.Leases)-1].RuntimeState = string(provider.StatusRunning)
++	snap.Leases[len(snap.Leases)-1].RuntimeObservedAt = now
++	if err := p.persistLocked(snap); err != nil {
++		return AcquireResult{}, fmt.Errorf("租约原子提交失败: %w", err)
++	}
++	p.log.Info("acquire",
++		slog.String("lease", lease.ID), slog.String("instance", inst.ID),
++		slog.String("template", tpl.ID), slog.String("provider", kind),
++		slog.String("owner", req.Owner),
++		slog.String("issue_id", req.IssueID), slog.Int("ttl_minutes", ttl),
++		slog.Bool("reused", inst.ProviderRef != ""))
++	return p.acquireResultLocked(snap, &lease), nil
++}
++
++func (p *Pool) newLeaseLocked(snap *store.State, inst *store.ResourceInstance, tpl *store.ResourceTemplate, kind string, req AcquireRequest, ttl int, now time.Time, ports []store.PublishedPort) store.Lease {
++	return store.Lease{
+@@ -928,0 +956,2 @@ func (p *Pool) bindNewLeaseLocked(snap *store.State, inst *store.ResourceInstanc
++		ScopeProfileID:        tpl.ScopeProfileID,
++		ScopeProfileKnown:     true,
+@@ -948,18 +976,0 @@ func (p *Pool) bindNewLeaseLocked(snap *store.State, inst *store.ResourceInstanc
+-	snap.Leases = append(snap.Leases, lease)
+-	inst.State = store.InstanceLeased
+-	inst.CurrentLeaseID = lease.ID
+-	inst.LastError = ""
+-	inst.RuntimeState = string(provider.StatusRunning)
+-	inst.RuntimeObservedAt = now
+-	snap.Leases[len(snap.Leases)-1].RuntimeState = string(provider.StatusRunning)
+-	snap.Leases[len(snap.Leases)-1].RuntimeObservedAt = now
+-	if err := p.persistLocked(snap); err != nil {
+-		return AcquireResult{}, fmt.Errorf("租约原子提交失败: %w", err)
+-	}
+-	p.log.Info("acquire",
+-		slog.String("lease", lease.ID), slog.String("instance", inst.ID),
+-		slog.String("template", tpl.ID), slog.String("provider", kind),
+-		slog.String("owner", req.Owner),
+-		slog.String("issue_id", req.IssueID), slog.Int("ttl_minutes", ttl),
+-		slog.Bool("reused", inst.ProviderRef != ""))
+-	return p.acquireResultLocked(snap, &lease), nil
+@@ -1080,0 +1092,6 @@ func (p *Pool) Release(ctx context.Context, leaseID string, expectedGeneration .
++			if len(l.PublishedPorts) > 0 {
++				l.PhaseError = "端口映射解除失败，等待 release 重试"
++				p.applyLocked(&snap)
++				return *l, fmt.Errorf("租约端口解除失败，资源保持占用")
++			}
++			l.PhaseError = ""
+@@ -1095,0 +1113,6 @@ func (p *Pool) Release(ctx context.Context, leaseID string, expectedGeneration .
++	p.unpublishLeasePortsLocked(ctx, &snap, l)
++	if len(l.PublishedPorts) > 0 {
++		l.PhaseError = "端口映射解除失败，等待 release 重试"
++		p.applyLocked(&snap)
++		return store.Lease{}, fmt.Errorf("租约端口解除失败，release 拒绝且资源保持占用")
++	}
+@@ -1097 +1119,0 @@ func (p *Pool) Release(ctx context.Context, leaseID string, expectedGeneration .
+-		p.unpublishLeasePortsLocked(ctx, &snap, l)
+@@ -1101 +1122,0 @@ func (p *Pool) Release(ctx context.Context, leaseID string, expectedGeneration .
+-		l.PublishedPorts = nil
+@@ -1116 +1137 @@ func (p *Pool) beginReleaseFenceLocked(snap *store.State, lease *store.Lease, no
+-	if lease.Phase == store.LeasePhaseHandoffToQA || lease.Phase == store.LeasePhaseHandoffToDEV {
++	if isPhaseHandoff(lease.Phase) {
+@@ -1143,0 +1165,25 @@ func (p *Pool) beginReleaseFenceLocked(snap *store.State, lease *store.Lease, no
++// beginAdminReclaimFenceLocked converts a failed phase handoff into the same
++// persisted expiry fence used by the TTL reaper, so both scope generations can
++// be revoked before an administrator terminalizes the lease.
++func (p *Pool) beginAdminReclaimFenceLocked(snap *store.State, lease *store.Lease, now time.Time) (string, uint64, uint32, error) {
++	if !isPhaseHandoff(lease.Phase) {
++		return p.beginReleaseFenceLocked(snap, lease, now)
++	}
++	if lease.PhaseFrom == "" || lease.PhaseFromGeneration == 0 || (lease.PhaseTarget != store.LeasePhaseDEV && lease.PhaseTarget != store.LeasePhaseQA) {
++		return "", 0, 0, fmt.Errorf("阶段交接 scope 身份不完整，拒绝管理回收")
++	}
++	lease.State = store.LeaseExpired
++	lease.Phase = store.LeasePhaseExpired
++	lease.Generation++
++	lease.PhaseUpdatedAt = now
++	lease.PhaseError = ""
++	if err := p.persistLocked(snap); err != nil {
++		return "", 0, 0, fmt.Errorf("管理回收 fencing 持久化失败: %w", err)
++	}
++	return lease.PhaseFrom, lease.PhaseFromGeneration, lease.PhaseFromUID, nil
++}
++
++func isPhaseHandoff(phase string) bool {
++	return phase == store.LeasePhaseHandoffToQA || phase == store.LeasePhaseHandoffToDEV
++}
++
+@@ -1147,2 +1193,4 @@ func (p *Pool) revokeLeaseScopeLocked(ctx context.Context, snap *store.State, le
+-	tpl, ok := templateLocked(snap, lease.TemplateID)
+-	if !ok || tpl.ScopeProfileID == "" {
++	if lease.ScopeProfileID == "" {
++		if lease.ProviderKind == "docker" && !lease.ScopeProfileKnown {
++			return fmt.Errorf("Docker 租约 %s 的 scope profile 无法确定，拒绝跳过 scope 回收", lease.ID)
++		}
+@@ -1155 +1203,2 @@ func (p *Pool) revokeLeaseScopeLocked(ctx context.Context, snap *store.State, le
+-	adapter, ok := prov.(provider.ScopedExecutionProvider)
++	capabilityProvider := provider.ProviderForCapabilities(prov)
++	adapter, ok := capabilityProvider.(provider.ScopedExecutionProvider)
+@@ -1159,3 +1208,3 @@ func (p *Pool) revokeLeaseScopeLocked(ctx context.Context, snap *store.State, le
+-	profiled, ok := prov.(provider.ScopeProfileProvider)
+-	if !ok || !profiled.SupportsScopeProfile(tpl.ScopeProfileID) {
+-		return fmt.Errorf("scope profile %s 未装载", tpl.ScopeProfileID)
++	profiled, ok := capabilityProvider.(provider.ScopeProfileProvider)
++	if !ok || !profiled.SupportsScopeProfile(lease.ScopeProfileID) {
++		return fmt.Errorf("scope profile %s 未装载", lease.ScopeProfileID)
+@@ -1167 +1216 @@ func (p *Pool) revokeLeaseScopeLocked(ctx context.Context, snap *store.State, le
+-	oldScope := provider.ExecutionScope{LeaseID: lease.ID, ResourceID: lease.InstanceID, ProfileID: tpl.ScopeProfileID, Phase: oldPhase, Generation: oldGeneration, UID: oldUID}
++	oldScope := provider.ExecutionScope{LeaseID: lease.ID, ResourceID: lease.InstanceID, ProfileID: lease.ScopeProfileID, Phase: oldPhase, Generation: oldGeneration, UID: oldUID}
+@@ -1172,0 +1222,12 @@ func (p *Pool) revokeLeaseScopeLocked(ctx context.Context, snap *store.State, le
++// revokeLeaseScopesLocked removes every scope that can exist for a terminating lease.
++// A failed Docker phase handoff can create its target scope before the final state
++// write succeeds, so expiry and administrative terminal paths must revoke both
++// generations before releasing the lease.
++func (p *Pool) revokeLeaseScopesLocked(ctx context.Context, snap *store.State, lease *store.Lease, oldPhase string, oldGeneration uint64, oldUID uint32, nextGeneration uint64) error {
++	cleanupErr := p.revokeLeaseScopeLocked(ctx, snap, lease, oldPhase, oldGeneration, oldUID, nextGeneration)
++	if lease.ProviderKind != "docker" || lease.State != store.LeaseExpired || lease.Phase != store.LeasePhaseExpired || (lease.PhaseTarget != store.LeasePhaseDEV && lease.PhaseTarget != store.LeasePhaseQA) || lease.Generation == 0 {
++		return cleanupErr
++	}
++	return errors.Join(cleanupErr, p.revokeLeaseScopeLocked(ctx, snap, lease, lease.PhaseTarget, lease.Generation-1, lease.ExecutionUID, nextGeneration))
++}
++
+diff --git a/internal/pool/pool_e1e4_test.go b/internal/pool/pool_e1e4_test.go
+index 22cc59c..cba8aa6 100644
+--- a/internal/pool/pool_e1e4_test.go
++++ b/internal/pool/pool_e1e4_test.go
+@@ -14,0 +15 @@ import (
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/provider/faultinject"
+@@ -200,0 +202,24 @@ func TestE4PortsPublishedAndReleasedWithLease(t *testing.T) {
++func TestE4PortsPublishThroughListFailure(t *testing.T) {
++	e := newEnvWithCfg(t, func(c *config.Config) { c.Templates = append(c.Templates, portsTpl()) })
++	e.pool.SetProviderForTest("stub", faultinject.NewListFailure(e.stub))
++
++	res, err := e.acquireRequest(context.Background(), AcquireRequest{TemplateID: "tpl-port", Owner: "x"})
++	if err != nil {
++		t.Fatalf("ListFailure 包装后 acquire 应抵达底层 PortPublisher: %v", err)
++	}
++	l := e.awaitLease(t, res.LeaseID, store.LeaseActive)
++	if len(l.PublishedPorts) != 2 {
++		t.Fatalf("ListFailure 包装后端口映射缺失: %+v", l.PublishedPorts)
++	}
++	ref := provider.ProviderRef(e.leaseInstanceRef(t, res.LeaseID))
++	if got := e.stub.PublishedPortsFor(ref); len(got) != 2 {
++		t.Fatalf("底层 PortPublisher 未收到发布调用: %v", got)
++	}
++	if _, err := e.pool.Release(context.Background(), res.LeaseID); err != nil {
++		t.Fatalf("ListFailure 包装后 release 应抵达底层 PortPublisher: %v", err)
++	}
++	if got := e.stub.PublishedPortsFor(ref); len(got) != 0 {
++		t.Fatalf("底层 PortPublisher 未收到回收调用: %v", got)
++	}
++}
++
+@@ -246,0 +272,24 @@ func TestE4FailClosedWithoutPortPublisher(t *testing.T) {
++func TestE4ListFailureRetainsPortCapabilityPreflight(t *testing.T) {
++	e := newEnvWithCfg(t, func(c *config.Config) { c.Templates = append(c.Templates, portsTpl()) })
++	// ListFailure affects only List; capability discovery retains noPortProv's true shape.
++	e.pool = New(e.st, faultinject.NewListFailure(&noPortProv{Provider: e.stub}), e.cfg, quietLogger())
++	e.pool.clock = e.clock
++	e.pools = append(e.pools, e.pool)
++	instancesBefore := len(e.pool.ListInstances("", ""))
++
++	_, err := e.acquireRequest(context.Background(), AcquireRequest{TemplateID: "tpl-port", Owner: "x"})
++	if err == nil || !strings.Contains(err.Error(), "PortPublisher") {
++		t.Fatalf("list_fail 下未实现端口能力应在供应前 fail-closed：err=%v", err)
++	}
++	leases, err := e.pool.ListLeases("")
++	if err != nil {
++		t.Fatalf("列出租约: %v", err)
++	}
++	if len(leases) != 0 {
++		t.Fatalf("能力预检失败不应写入 pending lease: %+v", leases)
++	}
++	if got := len(e.pool.ListInstances("", "")); got != instancesBefore {
++		t.Fatalf("能力预检失败不应创建实例: before=%d after=%d", instancesBefore, got)
++	}
++}
++
+@@ -269,0 +319,94 @@ func TestE4PublishFailureFailsLeaseAndCleansUp(t *testing.T) {
++func TestE4PublishRollbackFailurePersistsPortsForReaperRetry(t *testing.T) {
++	bad := portsTpl()
++	bad.Ports = append(bad.Ports, store.TemplatePort{Name: "broken", GuestPort: 0})
++	e := newEnvWithCfg(t, func(c *config.Config) { c.Templates = append(c.Templates, bad) })
++	e.pool.SetProviderForTest("stub", &failUnpublishProvider{Provider: e.stub, remaining: 4})
++	ctx := context.Background()
++
++	res, err := e.acquireRequest(ctx, AcquireRequest{TemplateID: "tpl-port", Owner: "x"})
++	if err != nil {
++		t.Fatalf("acquire: %v", err)
++	}
++	l := e.awaitLease(t, res.LeaseID, store.LeaseFailed)
++	ref := provider.ProviderRef(e.leaseInstanceRef(t, res.LeaseID))
++	if len(l.PublishedPorts) != 2 || len(e.stub.PublishedPortsFor(ref)) != 2 {
++		t.Fatalf("发布回滚失败必须保留端口审计供重试：lease=%+v ports=%v", l.PublishedPorts, e.stub.PublishedPortsFor(ref))
++	}
++
++	e.pool.ReaperRound(ctx)
++	l, err = e.pool.GetLease(res.LeaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if len(l.PublishedPorts) != 0 || len(e.stub.PublishedPortsFor(ref)) != 0 {
++		t.Fatalf("reaper 应收敛供应失败的端口残留：lease=%+v ports=%v", l.PublishedPorts, e.stub.PublishedPortsFor(ref))
++	}
++	instances := e.pool.ListInstances("tpl-port", "")
++	if len(instances) != 1 || instances[0].State != store.InstanceDestroyed {
++		t.Fatalf("端口清理成功后失败实例必须销毁: %+v", instances)
++	}
++}
++
++func TestE4CancelledProvisionPortCleanupRetriesInReaper(t *testing.T) {
++	e := newEnv(t)
++	leaseID := acquire(t, e, "agent-a")
++	ref := provider.ProviderRef(e.leaseInstanceRef(t, leaseID))
++	hostPort, err := e.stub.PublishPort(context.Background(), ref, 21801, "tcp")
++	if err != nil {
++		t.Fatalf("PublishPort: %v", err)
++	}
++	if err := e.pool.MutateState(func(st *store.State) {
++		st.Leases[0].State = store.LeaseReleased
++		st.Leases[0].Phase = store.LeasePhaseReleased
++	}); err != nil {
++		t.Fatal(err)
++	}
++	e.pool.SetProviderForTest("stub", &failUnpublishProvider{Provider: e.stub, remaining: 1})
++
++	e.pool.finishProvision("stub", leaseID, ref, nil, []store.PublishedPort{{Name: "api", GuestPort: 21801, HostPort: hostPort, Protocol: "tcp"}})
++	lease, err := e.pool.GetLease(leaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if len(lease.PublishedPorts) != 1 || len(e.stub.PublishedPortsFor(ref)) != 1 {
++		t.Fatalf("取消供应时端口解除失败必须保留审计：lease=%+v ports=%v", lease.PublishedPorts, e.stub.PublishedPortsFor(ref))
++	}
++
++	e.pool.ReaperRound(context.Background())
++	lease, err = e.pool.GetLease(leaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if len(lease.PublishedPorts) != 0 || len(e.stub.PublishedPortsFor(ref)) != 0 {
++		t.Fatalf("reaper 应收敛取消供应后的端口残留：lease=%+v ports=%v", lease.PublishedPorts, e.stub.PublishedPortsFor(ref))
++	}
++}
++
++func TestE4ReaperRetainsPortsWhenInstanceRecordIsMissing(t *testing.T) {
++	e := newEnvWithCfg(t, func(c *config.Config) { c.Templates = append(c.Templates, portsTpl()) })
++	res, err := e.acquireRequest(context.Background(), AcquireRequest{TemplateID: "tpl-port", Owner: "x"})
++	if err != nil {
++		t.Fatalf("acquire: %v", err)
++	}
++	lease := e.awaitLease(t, res.LeaseID, store.LeaseActive)
++	if err := e.pool.MutateState(func(st *store.State) {
++		for i := range st.Leases {
++			if st.Leases[i].ID == lease.ID {
++				st.Leases[i].State = store.LeaseExpired
++				st.Leases[i].InstanceID = "ri-missing"
++			}
++		}
++	}); err != nil {
++		t.Fatal(err)
++	}
++
++	e.pool.ReaperRound(context.Background())
++	after, err := e.pool.GetLease(lease.ID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if after.State != store.LeaseExpired || len(after.PublishedPorts) == 0 {
++		t.Fatalf("实例账本缺失时必须保留端口账本并等待重试: %+v", after)
++	}
++}
++
+diff --git a/internal/pool/reaper.go b/internal/pool/reaper.go
+index 11e192f..68b6d56 100644
+--- a/internal/pool/reaper.go
++++ b/internal/pool/reaper.go
+@@ -51 +51,2 @@ func (p *Pool) ReaperRound(ctx context.Context) {
+-			if l.Phase != store.LeasePhaseHandoffToRelease {
++			phaseHandoff := isPhaseHandoff(l.Phase)
++			if l.Phase != store.LeasePhaseHandoffToRelease && !phaseHandoff {
+@@ -56 +57,3 @@ func (p *Pool) ReaperRound(ctx context.Context) {
+-			l.PhaseTarget = store.LeasePhaseExpired
++			if !phaseHandoff {
++				l.PhaseTarget = store.LeasePhaseExpired
++			}
+@@ -71,0 +75,14 @@ func (p *Pool) ReaperRound(ctx context.Context) {
++	// 1.5) Retry published-port cleanup for terminal leases. Provisioning can fail
++	// or be cancelled after ports are published, bypassing expired-lease cleanup.
++	for i := range snap.Leases {
++		l := &snap.Leases[i]
++		if len(l.PublishedPorts) == 0 || (l.State != store.LeaseFailed && l.State != store.LeaseReleased && l.State != store.LeaseReclaimed) {
++			continue
++		}
++		before := len(l.PublishedPorts)
++		p.unpublishLeasePortsLocked(ctx, &snap, l)
++		if len(l.PublishedPorts) != before {
++			changed = true
++		}
++	}
++
+@@ -79,3 +96,4 @@ func (p *Pool) ReaperRound(ctx context.Context) {
+-			if err := p.revokeLeaseScopeLocked(ctx, &snap, l, l.PhaseFrom, l.PhaseFromGeneration, l.PhaseFromUID, l.Generation); err != nil {
+-				l.PhaseError = err.Error()
+-				p.log.Warn("过期租约 scope 清理失败，资源保持隔离且不回池", slog.String("lease", l.ID), slog.String("error", err.Error()))
++			cleanupErr := p.revokeLeaseScopesLocked(ctx, &snap, l, l.PhaseFrom, l.PhaseFromGeneration, l.PhaseFromUID, l.Generation)
++			if cleanupErr != nil {
++				l.PhaseError = cleanupErr.Error()
++				p.log.Warn("过期租约 scope 清理失败，资源保持隔离且不回池", slog.String("lease", l.ID), slog.String("error", cleanupErr.Error()))
+@@ -86,0 +105,7 @@ func (p *Pool) ReaperRound(ctx context.Context) {
++		p.unpublishLeasePortsLocked(ctx, &snap, l)
++		if len(l.PublishedPorts) > 0 {
++			l.PhaseError = "端口映射解除失败，等待回收器重试"
++			p.log.Warn("过期租约端口解除失败，资源保持占用", slog.String("lease", l.ID))
++			changed = true
++			continue
++		}
+@@ -88 +112,0 @@ func (p *Pool) ReaperRound(ctx context.Context) {
+-			p.unpublishLeasePortsLocked(ctx, &snap, l)
+@@ -92 +115,0 @@ func (p *Pool) ReaperRound(ctx context.Context) {
+-			l.PublishedPorts = nil
+@@ -107,0 +131,6 @@ func (p *Pool) ReaperRound(ctx context.Context) {
++		if leaseHasPublishedPortsForInstance(&snap, inst.ID) {
++			// Port forwarding can outlive its instance. Keep the instance available
++			// for a later unpublish retry instead of destroying its cleanup anchor.
++			p.log.Warn("异常实例仍有待解除端口映射，延后销毁", slog.String("instance", inst.ID))
++			continue
++		}
+@@ -151,0 +181,10 @@ func (p *Pool) ReaperRound(ctx context.Context) {
++
++func leaseHasPublishedPortsForInstance(snap *store.State, instanceID string) bool {
++	for i := range snap.Leases {
++		lease := &snap.Leases[i]
++		if lease.InstanceID == instanceID && len(lease.PublishedPorts) > 0 {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/internal/pool/reconcile.go b/internal/pool/reconcile.go
+index 77519f0..12cc130 100644
+--- a/internal/pool/reconcile.go
++++ b/internal/pool/reconcile.go
+@@ -25,0 +26,2 @@ func (p *Pool) Reconcile(ctx context.Context) error {
++	p.phaseMu.Lock()
++	defer p.phaseMu.Unlock()
+@@ -62,0 +65,8 @@ func (p *Pool) Reconcile(ctx context.Context) error {
++		if pi.Status != provider.StatusProviderMissing && instanceHasTerminalLeaseOwnership(&snap, inst) {
++			// A pending cancellation can race Create. The terminal lease still owns
++			// this ref, so it must be destroyed rather than returned to the idle pool.
++			inst.State = store.InstanceError
++			inst.LastError = "terminal lease still owns Provider resource; waiting for reaper cleanup"
++			changed = true
++			continue
++		}
+@@ -65,5 +75,40 @@ func (p *Pool) Reconcile(ctx context.Context) error {
+-			// 矩阵第 3 行：实例 → destroyed；其 active 租约 → reclaimed（provider_missing）。
+-			inst.State = store.InstanceDestroyed
+-			inst.LastError = "provider_missing: Provider 侧实例已不存在"
+-			p.observeRuntimeLocked(inst, activeLeaseForLocked(&snap, inst.ID), pi.Status)
+-			if l := activeLeaseForLocked(&snap, inst.ID); l != nil {
++			// Matrix row 3: reclaim a live lease only after scope revocation. Docker
++			// scopes outlive their host instance and cannot be skipped when it vanishes.
++			var l *store.Lease
++			for j := range snap.Leases {
++				candidate := &snap.Leases[j]
++				if candidate.InstanceID == inst.ID && (candidate.State == store.LeaseActive || candidate.State == store.LeaseExpired) {
++					l = candidate
++					break
++				}
++			}
++			if l != nil {
++				oldPhase, oldGeneration, oldUID := l.Phase, l.Generation, l.ExecutionUID
++				if l.State == store.LeaseActive {
++					var err error
++					oldPhase, oldGeneration, oldUID, err = p.beginAdminReclaimFenceLocked(&snap, l, now)
++					if err != nil {
++						inst.State = store.InstanceError
++						inst.LastError = fmt.Sprintf("provider_missing scope fencing 失败: %v", err)
++						l.PhaseError = err.Error()
++						changed = true
++						continue
++					}
++				} else if l.PhaseFrom != "" {
++					oldPhase, oldGeneration, oldUID = l.PhaseFrom, l.PhaseFromGeneration, l.PhaseFromUID
++				}
++				if err := p.revokeLeaseScopesLocked(ctx, &snap, l, oldPhase, oldGeneration, oldUID, l.Generation); err != nil {
++					inst.State = store.InstanceError
++					inst.LastError = fmt.Sprintf("provider_missing scope 清理失败: %v", err)
++					l.PhaseError = err.Error()
++					changed = true
++					continue
++				}
++				p.unpublishLeasePortsLocked(ctx, &snap, l)
++				if len(l.PublishedPorts) > 0 {
++					inst.State = store.InstanceError
++					inst.LastError = "provider_missing port cleanup failed; waiting for retry"
++					l.PhaseError = "端口映射解除失败，等待对账重试"
++					changed = true
++					continue
++				}
+@@ -70,0 +116,2 @@ func (p *Pool) Reconcile(ctx context.Context) error {
++				l.Phase = store.LeasePhaseReleased
++				l.PhaseError = ""
+@@ -74,0 +122,4 @@ func (p *Pool) Reconcile(ctx context.Context) error {
++			inst.State = store.InstanceDestroyed
++			inst.CurrentLeaseID = ""
++			inst.LastError = "provider_missing: Provider 侧实例已不存在"
++			p.observeRuntimeLocked(inst, activeLeaseForLocked(&snap, inst.ID), pi.Status)
+@@ -141,0 +193,4 @@ func (p *Pool) Reconcile(ctx context.Context) error {
++		if inst := instanceLocked(&snap, l.InstanceID); inst != nil && inst.State == store.InstanceCreating {
++			inst.State = store.InstanceError
++			inst.LastError = "服务重启中断供应流程，等待回收器销毁"
++		}
+@@ -150 +205,2 @@ func (p *Pool) Reconcile(ctx context.Context) error {
+-			if instanceLocked(&snap, instID) != nil {
++			existing := instanceLocked(&snap, instID)
++			if existing != nil && existing.State != store.InstanceDestroyed {
+@@ -165 +221,17 @@ func (p *Pool) Reconcile(ctx context.Context) error {
+-			snap.Instances = append(snap.Instances, inst)
++			if existing != nil {
++				for i := range snap.Leases {
++					lease := &snap.Leases[i]
++					if lease.InstanceID != instID || (lease.State != store.LeaseFailed && lease.State != store.LeaseReleased && lease.State != store.LeaseReclaimed) {
++						continue
++					}
++					// A resource that appeared after its lease reached a terminal state
++					// belongs to the cancelled provision, not to the idle pool.
++					inst.TemplateID = existing.TemplateID
++					inst.State = store.InstanceError
++					inst.LastError = "Provider resource appeared after terminal lease; waiting for reaper cleanup"
++					break
++				}
++				*existing = inst
++			} else {
++				snap.Instances = append(snap.Instances, inst)
++			}
+@@ -182,0 +255,16 @@ func (p *Pool) Reconcile(ctx context.Context) error {
++func instanceHasTerminalLeaseOwnership(snap *store.State, inst *store.ResourceInstance) bool {
++	for i := range snap.Leases {
++		lease := &snap.Leases[i]
++		if lease.InstanceID == inst.ID && len(lease.PublishedPorts) > 0 &&
++			(lease.State == store.LeaseFailed || lease.State == store.LeaseReleased || lease.State == store.LeaseReclaimed) {
++			return true
++		}
++	}
++	if inst.CurrentLeaseID == "" {
++		return false
++	}
++	lease := leaseByID(snap, inst.CurrentLeaseID)
++	return lease != nil && lease.InstanceID == inst.ID &&
++		(lease.State == store.LeaseFailed || lease.State == store.LeaseReleased || lease.State == store.LeaseReclaimed)
++}
++
+diff --git a/internal/pool/reconcile_test.go b/internal/pool/reconcile_test.go
+index 0da8149..c380626 100644
+--- a/internal/pool/reconcile_test.go
++++ b/internal/pool/reconcile_test.go
+@@ -12,0 +13,13 @@ import (
++type provisioningListProvider struct{ provider.Provider }
++
++func (p provisioningListProvider) List(ctx context.Context) ([]provider.ProviderInstance, error) {
++	instances, err := p.Provider.List(ctx)
++	if err != nil {
++		return nil, err
++	}
++	for i := range instances {
++		instances[i].Status = provider.StatusProvisioning
++	}
++	return instances, nil
++}
++
+@@ -92,0 +106,33 @@ func TestReconcileVanishedDestroysAndReclaims(t *testing.T) {
++func TestReconcileVanishedDockerRevokesScopeBeforeReclaim(t *testing.T) {
++	e := newEnv(t)
++	bindSub2APIProfile(t, e)
++	leaseID := acquire(t, e, "agent-a")
++	adapter := &phaseTestProvider{Provider: e.stub}
++	e.pool.SetProviderForTest("docker", adapter)
++	if err := e.pool.MutateState(func(st *store.State) {
++		st.Instances[0].ProviderKind = "docker"
++		st.Leases[0].ProviderKind = "docker"
++	}); err != nil {
++		t.Fatal(err)
++	}
++	ref := provider.ProviderRef("rpm-ri-000001")
++	e.stub.Vanish(ref)
++
++	if err := e.pool.Reconcile(context.Background()); err != nil {
++		t.Fatalf("Reconcile: %v", err)
++	}
++	lease, err := e.pool.GetLease(leaseID)
++	if err != nil {
++		t.Fatalf("GetLease: %v", err)
++	}
++	if lease.State != store.LeaseReclaimed || lease.ReleaseReason != store.ReleaseProviderMissng || lease.PhaseError != "" {
++		t.Fatalf("实例缺失后租约应在 scope 回收后终态化：%+v", lease)
++	}
++	if len(adapter.revocations) != 1 {
++		t.Fatalf("Docker scope 应在租约终态化前回收，得到 %+v", adapter.revocations)
++	}
++	if got := adapter.revocations[0][0]; got.Phase != store.LeasePhaseDEV || got.Generation != 1 {
++		t.Fatalf("回收 scope 身份错误：%+v", got)
++	}
++}
++
+@@ -253,0 +300,137 @@ func TestReconcileFailsOrphanedPendingLease(t *testing.T) {
++
++func TestReconcileMakesInterruptedProvisioningInstanceReapable(t *testing.T) {
++	e := newEnv(t)
++	ref, err := e.stub.Create(context.Background(), provider.InstanceSpec{SpecID: "ri-000901"})
++	if err != nil {
++		t.Fatalf("Create: %v", err)
++	}
++	if err := e.st.Mutate(func(st *store.State) {
++		st.Instances = append(st.Instances, store.ResourceInstance{
++			ID: "ri-000901", TemplateID: "tpl-small", ProviderKind: "stub", ProviderRef: string(ref),
++			State: store.InstanceCreating, CreatedAt: e.clock.Now(),
++		})
++		st.Leases = append(st.Leases, store.Lease{
++			ID: "ls-000901", InstanceID: "ri-000901", TemplateID: "tpl-small", Owner: "x", State: store.LeasePending,
++			Quota: store.Quota{CPUCores: 2, RAMMB: 8192, DiskGB: 40}, CreatedAt: e.clock.Now(), ExpiresAt: e.clock.Now().Add(time.Hour),
++		})
++	}); err != nil {
++		t.Fatal(err)
++	}
++	e.pool.SetProviderForTest("stub", provisioningListProvider{Provider: e.stub})
++	if err := e.pool.Reconcile(context.Background()); err != nil {
++		t.Fatalf("Reconcile: %v", err)
++	}
++	snap := e.st.Snapshot()
++	if snap.Instances[0].State != store.InstanceError || snap.Leases[0].State != store.LeaseFailed {
++		t.Fatalf("中断 provisioning 必须转为可回收 error/failed: instances=%+v leases=%+v", snap.Instances, snap.Leases)
++	}
++	e.pool.ReaperRound(context.Background())
++	if got := e.st.Snapshot().Instances[0].State; got != store.InstanceDestroyed {
++		t.Fatalf("reaper 必须销毁中断 provisioning 实例，得到 %s", got)
++	}
++}
++
++func TestReconcileReadoptsProviderResourceOverDestroyedRecord(t *testing.T) {
++	e := newEnv(t)
++	ref, err := e.stub.Create(context.Background(), provider.InstanceSpec{SpecID: "ri-000902"})
++	if err != nil {
++		t.Fatalf("Create: %v", err)
++	}
++	if err := e.st.Mutate(func(st *store.State) {
++		st.Instances = append(st.Instances, store.ResourceInstance{
++			ID: "ri-000902", ProviderKind: "stub", ProviderRef: "old-ref", State: store.InstanceDestroyed,
++		})
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if err := e.pool.Reconcile(context.Background()); err != nil {
++		t.Fatalf("Reconcile: %v", err)
++	}
++	inst := e.st.Snapshot().Instances[0]
++	if inst.State != store.InstanceIdle || inst.ProviderRef != string(ref) {
++		t.Fatalf("destroyed 账本行必须由真实资源重新收养: %+v", inst)
++	}
++}
++
++func TestReconcileReapsLateResourceForTerminalProvision(t *testing.T) {
++	e := newEnv(t)
++	ref, err := e.stub.Create(context.Background(), provider.InstanceSpec{SpecID: "ri-000903"})
++	if err != nil {
++		t.Fatalf("Create: %v", err)
++	}
++	if err := e.st.Mutate(func(st *store.State) {
++		st.Instances = append(st.Instances, store.ResourceInstance{
++			ID: "ri-000903", TemplateID: "tpl-small", ProviderKind: "stub", State: store.InstanceDestroyed,
++		})
++		st.Leases = append(st.Leases, store.Lease{
++			ID: "ls-000903", InstanceID: "ri-000903", TemplateID: "tpl-small", State: store.LeaseReleased,
++		})
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if err := e.pool.Reconcile(context.Background()); err != nil {
++		t.Fatalf("Reconcile: %v", err)
++	}
++	inst := e.st.Snapshot().Instances[0]
++	if inst.ProviderRef != string(ref) || inst.State != store.InstanceError {
++		t.Fatalf("终态供应的延迟资源必须进入 reaper 清理路径: %+v", inst)
++	}
++	e.pool.ReaperRound(context.Background())
++	if got := e.st.Snapshot().Instances[0].State; got != store.InstanceDestroyed {
++		t.Fatalf("reaper 必须销毁终态供应的延迟资源，得到 %s", got)
++	}
++}
++
++func TestReconcileReapsTerminalLeaseResourceAlreadyInState(t *testing.T) {
++	e := newEnv(t)
++	ref, err := e.stub.Create(context.Background(), provider.InstanceSpec{SpecID: "ri-000904"})
++	if err != nil {
++		t.Fatalf("Create: %v", err)
++	}
++	if err := e.st.Mutate(func(st *store.State) {
++		st.Instances = append(st.Instances, store.ResourceInstance{
++			ID: "ri-000904", TemplateID: "tpl-small", ProviderKind: "stub", ProviderRef: string(ref),
++			State: store.InstanceCreating, CurrentLeaseID: "ls-000904",
++		})
++		st.Leases = append(st.Leases, store.Lease{
++			ID: "ls-000904", InstanceID: "ri-000904", TemplateID: "tpl-small", State: store.LeaseReleased,
++		})
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if err := e.pool.Reconcile(context.Background()); err != nil {
++		t.Fatalf("Reconcile: %v", err)
++	}
++	if got := e.st.Snapshot().Instances[0].State; got != store.InstanceError {
++		t.Fatalf("终态 lease 仍拥有资源时必须进入清理状态，得到 %s", got)
++	}
++	e.pool.ReaperRound(context.Background())
++	if got := e.st.Snapshot().Instances[0].State; got != store.InstanceDestroyed {
++		t.Fatalf("reaper 必须销毁终态 lease 资源，得到 %s", got)
++	}
++}
++
++func TestReconcileKeepsFailedLeasePortCleanupAnchorOutOfIdlePool(t *testing.T) {
++	e := newEnv(t)
++	ref, err := e.stub.Create(context.Background(), provider.InstanceSpec{SpecID: "ri-000905"})
++	if err != nil {
++		t.Fatalf("Create: %v", err)
++	}
++	if err := e.st.Mutate(func(st *store.State) {
++		st.Instances = append(st.Instances, store.ResourceInstance{
++			ID: "ri-000905", TemplateID: "tpl-small", ProviderKind: "stub", ProviderRef: string(ref), State: store.InstanceError,
++		})
++		st.Leases = append(st.Leases, store.Lease{
++			ID: "ls-000905", InstanceID: "ri-000905", State: store.LeaseFailed,
++			PublishedPorts: []store.PublishedPort{{GuestPort: 5432, HostPort: 15432, Protocol: "tcp"}},
++		})
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if err := e.pool.Reconcile(context.Background()); err != nil {
++		t.Fatalf("Reconcile: %v", err)
++	}
++	if got := e.st.Snapshot().Instances[0].State; got != store.InstanceError {
++		t.Fatalf("端口清理债务存在时不得将实例收养为 idle，得到 %s", got)
++	}
++}
+diff --git a/internal/provider/docker/compose_runtime.go b/internal/provider/docker/compose_runtime.go
+index 1994b56..2bedf1c 100644
+--- a/internal/provider/docker/compose_runtime.go
++++ b/internal/provider/docker/compose_runtime.go
+@@ -25,0 +26,5 @@ import (
++var (
++	errScopeValidationIncompatible = errors.New("scope profile 与已恢复运行时不兼容")
++	errScopeValidationTransient    = errors.New("已恢复 scope 运行时暂未就绪")
++)
++
+@@ -152 +157 @@ func (r *ComposeRuntime) Create(ctx context.Context, object ScopeObject, credent
+-		args := []string{"compose", "--project-name", object.Name, "--profile", object.ProfileID, "--file", composePath, "--env-file", filepath.Join(dir, "scope.env"), "up", "--detach", "--no-build", "--pull", "never"}
++		args := []string{"compose", "--project-name", object.Name, "--profile", object.ProfileID, "--file", composePath, "--env-file", filepath.Join(dir, "scope.env"), "up", "--detach", "--wait", "--no-build", "--pull", "never"}
+@@ -160 +165 @@ func (r *ComposeRuntime) Create(ctx context.Context, object ScopeObject, credent
+-		if err = validateResolvedCompose([]byte(resolved), object); err != nil {
++		if err = validateResolvedCompose([]byte(resolved), object, credential); err != nil {
+@@ -181,0 +187,102 @@ func (r *ComposeRuntime) Create(ctx context.Context, object ScopeObject, credent
++// ValidateScope re-resolves the persisted Compose project against the currently
++// loaded profile before a recovered scope is accepted as ready.
++func (r *ComposeRuntime) ValidateScope(ctx context.Context, object ScopeObject) error {
++	if object.Kind != ScopeCompose {
++		return errors.New("仅能校验 Compose scope 对象")
++	}
++	if err := validateRuntimeObject(object); err != nil {
++		return err
++	}
++	dir, err := r.scopeDir(object.Labels)
++	if err != nil {
++		return err
++	}
++	composePath := filepath.Join(dir, "compose.yaml")
++	persistedTemplate, err := os.ReadFile(composePath)
++	if err != nil {
++		return fmt.Errorf("读取已恢复 scope Compose 模板: %w", err)
++	}
++	if !bytes.Equal(persistedTemplate, object.ComposeTemplate) {
++		return fmt.Errorf("%w: 已恢复 Compose 模板与当前 profile 不一致", errScopeValidationIncompatible)
++	}
++	resolved, err := r.run(ctx, []string{"compose", "--project-name", object.Name, "--profile", object.ProfileID, "--file", composePath, "--env-file", filepath.Join(dir, "scope.env"), "config", "--format", "json"})
++	if err != nil {
++		return err
++	}
++	if err := validateResolvedCompose([]byte(resolved), object); err != nil {
++		return fmt.Errorf("%w: %v", errScopeValidationIncompatible, err)
++	}
++	if object.ProfileID == "multica-qa" {
++		running, err := r.run(ctx, []string{"compose", "--project-name", object.Name, "--profile", object.ProfileID, "--file", composePath, "--env-file", filepath.Join(dir, "scope.env"), "ps", "--status", "running", "--services"})
++		if err != nil {
++			return err
++		}
++		services := strings.Fields(running)
++		if !containsService(services, "postgres") {
++			_, err := r.run(ctx, []string{"compose", "--project-name", object.Name, "--profile", object.ProfileID, "--file", composePath, "--env-file", filepath.Join(dir, "scope.env"), "up", "--detach", "--no-build", "--pull", "never", "postgres"})
++			if err != nil {
++				return fmt.Errorf("%w: 重启 Multica QA PostgreSQL 失败: %v", errScopeValidationTransient, err)
++			}
++			return fmt.Errorf("%w: Multica QA PostgreSQL 已重启，等待 healthcheck", errScopeValidationTransient)
++		}
++		postgres, err := r.run(ctx, []string{"compose", "--project-name", object.Name, "--profile", object.ProfileID, "--file", composePath, "--env-file", filepath.Join(dir, "scope.env"), "ps", "--format", "json", "postgres"})
++		if err != nil {
++			return err
++		}
++		if err := validateMulticaQAPostgresHealth([]byte(postgres)); err != nil {
++			return fmt.Errorf("%w: %v", errScopeValidationTransient, err)
++		}
++		if !containsService(services, "runner") {
++			_, err := r.run(ctx, []string{"compose", "--project-name", object.Name, "--profile", object.ProfileID, "--file", composePath, "--env-file", filepath.Join(dir, "scope.env"), "up", "--detach", "--no-deps", "--no-build", "--pull", "never", "runner"})
++			if err != nil {
++				return fmt.Errorf("%w: 重启 Multica QA runner 失败: %v", errScopeValidationTransient, err)
++			}
++			return fmt.Errorf("%w: Multica QA runner 已重启，等待 healthcheck", errScopeValidationTransient)
++		}
++	}
++	return nil
++}
++
++func validateMulticaQARuntimeHealth(running string, postgresJSON []byte) error {
++	services := strings.Fields(running)
++	if !containsService(services, "postgres") || !containsService(services, "runner") {
++		return errors.New("Multica QA PostgreSQL 或 runner 未运行")
++	}
++	return validateMulticaQAPostgresHealth(postgresJSON)
++}
++
++func validateMulticaQAPostgresHealth(postgresJSON []byte) error {
++	type composeServiceStatus struct {
++		State  string `json:"State"`
++		Health string `json:"Health"`
++	}
++	var statuses []composeServiceStatus
++	trimmed := bytes.TrimSpace(postgresJSON)
++	if len(trimmed) > 0 && trimmed[0] == '[' {
++		if err := json.Unmarshal(trimmed, &statuses); err != nil {
++			return errors.New("Multica QA PostgreSQL 状态格式无效")
++		}
++	} else {
++		decoder := json.NewDecoder(bytes.NewReader(trimmed))
++		for {
++			var status composeServiceStatus
++			err := decoder.Decode(&status)
++			if err == io.EOF {
++				break
++			}
++			if err != nil {
++				return errors.New("Multica QA PostgreSQL 状态格式无效")
++			}
++			statuses = append(statuses, status)
++		}
++	}
++	if len(statuses) != 1 {
++		return errors.New("Multica QA PostgreSQL 状态数量异常")
++	}
++	status := statuses[0]
++	if !strings.EqualFold(status.State, "running") || !strings.EqualFold(status.Health, "healthy") {
++		return errors.New("Multica QA PostgreSQL 未处于 healthy 状态")
++	}
++	return nil
++}
++
+@@ -201,2 +308,7 @@ type resolvedCompose struct {
+-		Networks     map[string]any    `json:"networks"`
+-		Volumes      []struct {
++		Environment  map[string]string `json:"environment"`
++		Healthcheck  json.RawMessage   `json:"healthcheck"`
++		DependsOn    map[string]struct {
++			Condition string `json:"condition"`
++		} `json:"depends_on"`
++		Networks map[string]any `json:"networks"`
++		Volumes  []struct {
+@@ -217 +329 @@ type resolvedCompose struct {
+-func validateResolvedCompose(data []byte, object ScopeObject) error {
++func validateResolvedCompose(data []byte, object ScopeObject, credentials ...ScopedCredential) error {
+@@ -233,0 +346,3 @@ func validateResolvedCompose(data []byte, object ScopeObject) error {
++		if expectedDigest, constrained := object.ServiceImageDigests[name]; constrained && service.Image[imageAt+1:] != expectedDigest {
++			return fmt.Errorf("Compose resolved service %s 未使用 profile 声明的固定 digest", name)
++		}
+@@ -278,0 +394,47 @@ func validateResolvedCompose(data []byte, object ScopeObject) error {
++	if object.ProfileID == "multica-qa" {
++		if len(credentials) > 1 {
++			return errors.New("Multica QA profile 收到多个 resolved 数据库绑定凭据")
++		}
++		var credential *ScopedCredential
++		if len(credentials) == 1 {
++			credential = &credentials[0]
++		}
++		if err := validateMulticaQAResolved(resolved, object, credential); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++func validateMulticaQAResolved(resolved resolvedCompose, object ScopeObject, credential *ScopedCredential) error {
++	if len(resolved.Services) != 2 {
++		return errors.New("Multica QA resolved profile 必须且只能包含 postgres 与 runner 服务")
++	}
++	postgres, hasPostgres := resolved.Services["postgres"]
++	runner, hasRunner := resolved.Services["runner"]
++	if !hasPostgres || !hasRunner {
++		return errors.New("Multica QA resolved profile 缺少 postgres 或 runner 服务")
++	}
++	var healthcheck struct {
++		Disable bool     `json:"disable"`
++		Test    []string `json:"test"`
++	}
++	if len(postgres.Healthcheck) == 0 || json.Unmarshal(postgres.Healthcheck, &healthcheck) != nil || healthcheck.Disable || len(healthcheck.Test) == 0 ||
++		strings.EqualFold(healthcheck.Test[0], "NONE") || runner.DependsOn["postgres"].Condition != "service_healthy" {
++		return errors.New("Multica QA runner 未等待 PostgreSQL healthcheck")
++	}
++	password := postgres.Environment["POSTGRES_PASSWORD"]
++	if password == "" || postgres.Environment["POSTGRES_DB"] != object.DataNamespaces.Database ||
++		postgres.Environment["POSTGRES_USER"] != object.DataNamespaces.DBRole {
++		return errors.New("Multica QA PostgreSQL 未绑定当前 scope 的数据库、角色或凭据")
++	}
++	urlPrefix := "postgres://" + object.DataNamespaces.DBRole + ":"
++	urlSuffix := "@postgres:5432/" + object.DataNamespaces.Database + "?sslmode=disable"
++	databaseURL := runner.Environment["DATABASE_URL"]
++	if !strings.HasPrefix(databaseURL, urlPrefix) || !strings.HasSuffix(databaseURL, urlSuffix) ||
++		strings.TrimSuffix(strings.TrimPrefix(databaseURL, urlPrefix), urlSuffix) != password {
++		return errors.New("Multica QA runner 未绑定当前 scope 的 PostgreSQL URL")
++	}
++	if credential != nil && credential.Values["DB_PASSWORD"] != password {
++		return errors.New("Multica QA PostgreSQL 未使用本次签发的 scope 凭据")
++	}
+@@ -419 +581,4 @@ func (r *ComposeRuntime) FindByLabels(ctx context.Context, labels map[string]str
+-			if runErr == nil && containsService(strings.Fields(running), meta.RunnerService) {
++			// A recovered Multica QA project owns its runner even while Compose
++			// restarts it. Surface that state to ValidateScope as a transient health
++			// failure instead of treating the data-bearing scope as partial.
++			if isMulticaQAMetadata(meta) || (runErr == nil && containsService(strings.Fields(running), meta.RunnerService)) {
+@@ -428,0 +594,4 @@ func (r *ComposeRuntime) FindByLabels(ctx context.Context, labels map[string]str
++func isMulticaQAMetadata(meta scopeMetadata) bool {
++	return meta.ProfileID == string(DataPlaneMulticaQA) || (meta.RunnerService == "runner" && containsService(meta.Services, "postgres") && containsService(meta.Services, "runner"))
++}
++
+diff --git a/internal/provider/docker/docker.go b/internal/provider/docker/docker.go
+index cd71ecc..ad583e4 100644
+--- a/internal/provider/docker/docker.go
++++ b/internal/provider/docker/docker.go
+@@ -85,0 +86,3 @@ func New(cfg *config.Config) (*Provider, error) {
++	if err := validateEnabledTemplateProfiles(cfg.Templates, profiles); err != nil {
++		return nil, fmt.Errorf("docker: %w", err)
++	}
+diff --git a/internal/provider/docker/scope_contract.go b/internal/provider/docker/scope_contract.go
+index 3f54b90..439c77f 100644
+--- a/internal/provider/docker/scope_contract.go
++++ b/internal/provider/docker/scope_contract.go
+@@ -15,2 +15,3 @@ const (
+-	DataPlaneHarbor  DataPlane = "harbor"
+-	DataPlaneSub2API DataPlane = "sub2api"
++	DataPlaneHarbor    DataPlane = "harbor"
++	DataPlaneSub2API   DataPlane = "sub2api"
++	DataPlaneMulticaQA DataPlane = "multica-qa"
+@@ -29,10 +30,11 @@ type ScopeProfile struct {
+-	ID                 string
+-	ImageDigest        string
+-	ComposeTemplate    []byte
+-	ComposeSHA256      string
+-	AllowedServices    []string
+-	RunnerService      string
+-	DataPlane          DataPlane
+-	PortPolicy         PortPolicy
+-	CredentialIssuerID string
+-	TestFixture        bool
++	ID                  string
++	ImageDigest         string
++	ServiceImageDigests map[string]string
++	ComposeTemplate     []byte
++	ComposeSHA256       string
++	AllowedServices     []string
++	RunnerService       string
++	DataPlane           DataPlane
++	PortPolicy          PortPolicy
++	CredentialIssuerID  string
++	TestFixture         bool
+@@ -119 +121 @@ func (p ScopeProfile) Validate() error {
+-	case DataPlaneHarbor, DataPlaneSub2API:
++	case DataPlaneHarbor, DataPlaneSub2API, DataPlaneMulticaQA:
+@@ -122,0 +125,17 @@ func (p ScopeProfile) Validate() error {
++	if p.DataPlane == DataPlaneMulticaQA {
++		if len(p.AllowedServices) != 2 || !containsService(p.AllowedServices, "postgres") || p.RunnerService != "runner" {
++			return errors.New("Multica QA profile 必须且只能包含 postgres 与 runner 服务，runner_service 必须为 runner")
++		}
++		if len(p.ServiceImageDigests) != 2 {
++			return errors.New("Multica QA profile 必须为 postgres 与 runner 分别声明固定 image digest")
++		}
++		for _, service := range []string{"postgres", "runner"} {
++			digest := p.ServiceImageDigests[service]
++			if !digestPattern.MatchString(digest) {
++				return fmt.Errorf("Multica QA profile 服务 %s 缺少固定 OCI digest", service)
++			}
++			if !strings.Contains(string(p.ComposeTemplate), digest) {
++				return fmt.Errorf("Multica QA profile 服务 %s 的 OCI digest 未出现在固定 Compose 模板中", service)
++			}
++		}
++	}
+@@ -161,2 +180,5 @@ func validateComposeTemplate(template []byte, plane DataPlane) error {
+-	required := []string{"RPM_SCOPE_ID", "RPM_LEASE_ID", "RPM_RESOURCE_ID", "RPM_PHASE", "RPM_GENERATION", "RPM_SCOPE_NETWORK", "RPM_SCOPE_VOLUME", "RPM_DATABASE", "RPM_DB_ROLE", "RPM_REDIS_USER", "RPM_REDIS_PREFIX", "DB_PASSWORD", "REDIS_PASSWORD"}
+-	if plane == DataPlaneSub2API {
++	required := []string{"RPM_SCOPE_ID", "RPM_LEASE_ID", "RPM_RESOURCE_ID", "RPM_PHASE", "RPM_GENERATION", "RPM_SCOPE_NETWORK", "RPM_SCOPE_VOLUME", "RPM_DATABASE", "RPM_DB_ROLE", "DB_PASSWORD"}
++	switch plane {
++	case DataPlaneHarbor:
++		required = append(required, "RPM_REDIS_USER", "RPM_REDIS_PREFIX", "REDIS_PASSWORD")
++	case DataPlaneSub2API:
+@@ -163,0 +186,5 @@ func validateComposeTemplate(template []byte, plane DataPlane) error {
++		required = append(required, "RPM_REDIS_USER", "RPM_REDIS_PREFIX", "REDIS_PASSWORD")
++	case DataPlaneMulticaQA:
++		if !strings.Contains(content, "healthcheck:") || !strings.Contains(content, "condition: service_healthy") {
++			return errors.New("Multica QA Compose profile 必须等待 PostgreSQL healthcheck 后再启动 runner")
++		}
+@@ -190 +217 @@ func (s ScopeIdentity) Names() (ScopeNames, error) {
+-		DataNamespaces: DataNamespaces{RedisUser: id, RedisPrefix: id + ":"},
++		DataNamespaces: DataNamespaces{},
+@@ -206,0 +234 @@ func (p ScopeProfile) Namespaces(s ScopeIdentity) (ScopeNames, error) {
++		d.RedisUser, d.RedisPrefix = n.ID, n.ID+":"
+@@ -208,0 +237 @@ func (p ScopeProfile) Namespaces(s ScopeIdentity) (ScopeNames, error) {
++		d.RedisUser, d.RedisPrefix = n.ID, n.ID+":"
+@@ -209,0 +239,2 @@ func (p ScopeProfile) Namespaces(s ScopeIdentity) (ScopeNames, error) {
++	case DataPlaneMulticaQA:
++		d.Database, d.DBRole = n.ID, n.ID
+diff --git a/internal/provider/docker/scope_contract_test.go b/internal/provider/docker/scope_contract_test.go
+index 6943145..384403b 100644
+--- a/internal/provider/docker/scope_contract_test.go
++++ b/internal/provider/docker/scope_contract_test.go
+@@ -10,0 +11,2 @@ import (
++
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/store"
+@@ -14,0 +17,12 @@ func fixtureProfile(plane DataPlane) ScopeProfile {
++	if plane == DataPlaneMulticaQA {
++		postgresDigest := "sha256:" + digest
++		runnerDigest := "sha256:" + strings.Repeat("1", 64)
++		template := []byte("services:\n  postgres:\n    image: postgres@" + postgresDigest + "\n    profiles: [fixture]\n    labels:\n      rpm.managed: \"true\"\n      rpm.scope_id: \"${RPM_SCOPE_ID}\"\n      rpm.lease_id: \"${RPM_LEASE_ID}\"\n      rpm.resource_id: \"${RPM_RESOURCE_ID}\"\n      rpm.profile_id: \"${RPM_PROFILE_ID}\"\n      rpm.phase: \"${RPM_PHASE}\"\n      rpm.generation: \"${RPM_GENERATION}\"\n    environment:\n      POSTGRES_DB: ${RPM_DATABASE}\n      POSTGRES_USER: ${RPM_DB_ROLE}\n      POSTGRES_PASSWORD: ${DB_PASSWORD}\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U ${RPM_DB_ROLE} -d ${RPM_DATABASE}\"]\n    networks: [scope]\n    volumes:\n      - data:/var/lib/postgresql/data\n  runner:\n    image: runner@" + runnerDigest + "\n    profiles: [fixture]\n    labels:\n      rpm.managed: \"true\"\n      rpm.scope_id: \"${RPM_SCOPE_ID}\"\n      rpm.lease_id: \"${RPM_LEASE_ID}\"\n      rpm.resource_id: \"${RPM_RESOURCE_ID}\"\n      rpm.profile_id: \"${RPM_PROFILE_ID}\"\n      rpm.phase: \"${RPM_PHASE}\"\n      rpm.generation: \"${RPM_GENERATION}\"\n    environment:\n      DATABASE_URL: postgres://${RPM_DB_ROLE}:${DB_PASSWORD}@postgres:5432/${RPM_DATABASE}?sslmode=disable\n    depends_on:\n      postgres:\n        condition: service_healthy\n    networks: [scope]\n    volumes:\n      - data:/workspace\nnetworks:\n  scope:\n    external: true\n    name: ${RPM_SCOPE_NETWORK}\nvolumes:\n  data:\n    external: true\n    name: ${RPM_SCOPE_VOLUME}\n")
++		sum := sha256.Sum256(template)
++		return ScopeProfile{
++			ID: "fixture", ImageDigest: postgresDigest, ServiceImageDigests: map[string]string{"postgres": postgresDigest, "runner": runnerDigest},
++			ComposeTemplate: template, ComposeSHA256: hex.EncodeToString(sum[:]),
++			AllowedServices: []string{"postgres", "runner"}, RunnerService: "runner", DataPlane: plane,
++			PortPolicy: PortsDisabled, TestFixture: true,
++		}
++	}
+@@ -103,0 +118,112 @@ func TestSub2APINamespacesAreGenerationBound(t *testing.T) {
++func TestMulticaQANamespacesAreGenerationBound(t *testing.T) {
++	p := fixtureProfile(DataPlaneMulticaQA)
++	n, err := p.Namespaces(ScopeIdentity{LeaseID: "lease-3", ResourceID: "resource-3", ProfileID: p.ID, Phase: "QA", Generation: 5})
++	if err != nil {
++		t.Fatal(err)
++	}
++	d := n.DataNamespaces
++	if d.Database != n.ID || d.DBRole != n.ID {
++		t.Fatalf("Multica QA PostgreSQL namespace 未按 scope 隔离: %+v", d)
++	}
++	if d.Schema != "" || d.RedisUser != "" || d.RedisPrefix != "" || d.Bucket != "" || d.ObjectPrefix != "" {
++		t.Fatalf("Multica QA profile 不得引入未声明的数据面: %+v", d)
++	}
++}
++
++func TestMulticaQAProfileRequiresFixedServiceShapeAndDigests(t *testing.T) {
++	p := fixtureProfile(DataPlaneMulticaQA)
++	p.AllowedServices = []string{"postgres", "api"}
++	if err := p.Validate(); err == nil {
++		t.Fatal("Multica QA profile 未固定 postgres/runner 服务时必须拒绝")
++	}
++	p = fixtureProfile(DataPlaneMulticaQA)
++	delete(p.ServiceImageDigests, "runner")
++	if err := p.Validate(); err == nil {
++		t.Fatal("Multica QA profile 未为 runner 固定 digest 时必须拒绝")
++	}
++}
++
++func TestValidateResolvedComposeRequiresMulticaQAScopeBindings(t *testing.T) {
++	p := fixtureProfile(DataPlaneMulticaQA)
++	p.ID = "multica-qa"
++	p.ComposeTemplate = []byte(strings.ReplaceAll(string(p.ComposeTemplate), "profiles: [fixture]", "profiles: [multica-qa]"))
++	sum := sha256.Sum256(p.ComposeTemplate)
++	p.ComposeSHA256 = hex.EncodeToString(sum[:])
++	names, err := p.Namespaces(ScopeIdentity{LeaseID: "lease-qa", ResourceID: "resource-qa", ProfileID: p.ID, Phase: "QA", Generation: 3})
++	if err != nil {
++		t.Fatal(err)
++	}
++	object := ScopeObject{
++		Kind: ScopeCompose, Name: names.Project, Labels: func() map[string]string {
++			labels := cloneLabels(names.Labels)
++			labels["rpm.kind"] = string(ScopeCompose)
++			return labels
++		}(),
++		ProfileID: p.ID, ImageDigest: p.ImageDigest, ServiceImageDigests: p.ServiceImageDigests,
++		AllowedServices: p.AllowedServices, RunnerService: p.RunnerService, DataNamespaces: names.DataNamespaces,
++	}
++	credential := ScopedCredential{Values: map[string]string{"DB_PASSWORD": "scope-password"}}
++	service := func(image string, environment map[string]string) map[string]any {
++		return map[string]any{
++			"profiles": []string{p.ID}, "image": image, "labels": labelsWithoutKind(object.Labels),
++			"environment": environment, "networks": map[string]any{"scope": nil},
++			"volumes": []map[string]string{{"type": "volume", "source": "data", "target": "/scope"}},
++		}
++	}
++	postgres := service("postgres@"+p.ServiceImageDigests["postgres"], map[string]string{
++		"POSTGRES_DB": names.DataNamespaces.Database, "POSTGRES_USER": names.DataNamespaces.DBRole, "POSTGRES_PASSWORD": credential.Values["DB_PASSWORD"],
++	})
++	runner := service("runner@"+p.ServiceImageDigests["runner"], map[string]string{
++		"DATABASE_URL": "postgres://" + names.DataNamespaces.DBRole + ":" + credential.Values["DB_PASSWORD"] + "@postgres:5432/" + names.DataNamespaces.Database + "?sslmode=disable",
++	})
++	postgres["healthcheck"] = map[string]any{"test": []string{"CMD-SHELL", "pg_isready"}}
++	runner["depends_on"] = map[string]any{"postgres": map[string]string{"condition": "service_healthy"}}
++	config := map[string]any{
++		"services": map[string]any{"postgres": postgres, "runner": runner},
++		"networks": map[string]any{"scope": map[string]any{"name": names.Network, "external": true}},
++		"volumes":  map[string]any{"data": map[string]any{"name": names.Volumes[0], "external": true}},
++	}
++	data, err := json.Marshal(config)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := validateResolvedCompose(data, object, credential); err != nil {
++		t.Fatalf("正确的 Multica QA resolved Compose 必须通过: %v", err)
++	}
++	runner["image"] = "runner@sha256:" + strings.Repeat("2", 64)
++	data, err = json.Marshal(config)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := validateResolvedCompose(data, object, credential); err == nil {
++		t.Fatal("未匹配受控 runner digest 的 resolved Compose 必须拒绝")
++	}
++	runner["image"] = "runner@" + p.ServiceImageDigests["runner"]
++	postgres["environment"].(map[string]string)["POSTGRES_DB"] = "shared_database"
++	data, err = json.Marshal(config)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := validateResolvedCompose(data, object, credential); err == nil {
++		t.Fatal("未使用 scope 数据库的 PostgreSQL resolved Compose 必须拒绝")
++	}
++	postgres["environment"].(map[string]string)["POSTGRES_DB"] = names.DataNamespaces.Database
++	runner["environment"].(map[string]string)["DATABASE_URL"] = "postgres://shared"
++	data, err = json.Marshal(config)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := validateResolvedCompose(data, object, credential); err == nil {
++		t.Fatal("未使用 scope PostgreSQL URL 的 runner resolved Compose 必须拒绝")
++	}
++	runner["environment"].(map[string]string)["DATABASE_URL"] = "postgres://" + names.DataNamespaces.DBRole + ":" + credential.Values["DB_PASSWORD"] + "@postgres:5432/" + names.DataNamespaces.Database + "?sslmode=disable"
++	postgres["healthcheck"] = map[string]any{"disable": true}
++	data, err = json.Marshal(config)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := validateResolvedCompose(data, object, credential); err == nil {
++		t.Fatal("被禁用的 PostgreSQL healthcheck 必须拒绝")
++	}
++}
++
+@@ -128 +254 @@ func TestLoadScopeProfilesVerifiesFixedManifestAndDigest(t *testing.T) {
+-			ComposeSHA256: profile.ComposeSHA256, AllowedServices: profile.AllowedServices,
++			ComposeSHA256: profile.ComposeSHA256, ServiceImageDigests: profile.ServiceImageDigests, AllowedServices: profile.AllowedServices,
+@@ -142,0 +269 @@ func TestLoadScopeProfilesVerifiesFixedManifestAndDigest(t *testing.T) {
++	writeProfile("multica-qa", DataPlaneMulticaQA)
+@@ -146,0 +274,8 @@ func TestLoadScopeProfilesVerifiesFixedManifestAndDigest(t *testing.T) {
++	if err := os.Remove(filepath.Join(dir, "multica-qa.json")); err != nil {
++		t.Fatal(err)
++	}
++	loaded, err = LoadScopeProfiles(dir)
++	if err != nil || len(loaded) != 2 {
++		t.Fatalf("升级前仅有既有 profile 的部署必须仍可启动: loaded=%v err=%v", len(loaded), err)
++	}
++	writeProfile("multica-qa", DataPlaneMulticaQA)
+@@ -155,0 +291,72 @@ func TestLoadScopeProfilesVerifiesFixedManifestAndDigest(t *testing.T) {
++
++func TestValidateEnabledTemplateProfilesRejectsMissingProfile(t *testing.T) {
++	profiles := map[string]ScopeProfile{"harbor": fixtureProfile(DataPlaneHarbor), "sub2api": fixtureProfile(DataPlaneSub2API)}
++	if err := validateEnabledTemplateProfiles([]store.ResourceTemplate{{ID: "qa", Enabled: true, ScopeProfileID: "multica-qa"}}, profiles); err == nil {
++		t.Fatal("已启用模板绑定未装载 profile 时 Provider 启动必须拒绝")
++	}
++	if err := validateEnabledTemplateProfiles([]store.ResourceTemplate{{ID: "qa", Enabled: false, ScopeProfileID: "multica-qa"}}, profiles); err != nil {
++		t.Fatalf("未启用模板不应阻止既有 profile 部署启动: %v", err)
++	}
++}
++
++func TestValidateRetainedScopeProfilesRejectsRemovalUntilActiveAndExpiredLeasesAreReclaimed(t *testing.T) {
++	profiles := map[string]ScopeProfile{"harbor": fixtureProfile(DataPlaneHarbor), "sub2api": fixtureProfile(DataPlaneSub2API)}
++	provider := &Provider{profiles: profiles}
++	for _, state := range []string{store.LeaseActive, store.LeaseExpired} {
++		t.Run(state, func(t *testing.T) {
++			state := store.State{
++				Leases: []store.Lease{{
++					ID: state + "-lease", TemplateID: "deleted-template", ProviderKind: Kind,
++					ScopeProfileID: "multica-qa", State: state,
++				}},
++			}
++			if err := provider.ValidateRetainedScopeProfiles(state); err == nil {
++				t.Fatalf("%s 存量 lease 仍需 profile 时必须拒绝移除后重启", state.Leases[0].State)
++			}
++		})
++	}
++	missingProfile := store.State{Leases: []store.Lease{{
++		ID: "unmigrated-docker-lease", ProviderKind: Kind, State: store.LeaseActive,
++	}}}
++	if err := provider.ValidateRetainedScopeProfiles(missingProfile); err == nil {
++		t.Fatal("活跃 Docker lease 缺少冻结 profile 时必须拒绝启动")
++	}
++	unmanagedDocker := store.State{Leases: []store.Lease{{
++		ID: "unmanaged-docker-lease", ProviderKind: Kind, ScopeProfileKnown: true, State: store.LeaseActive,
++	}}}
++	if err := provider.ValidateRetainedScopeProfiles(unmanagedDocker); err != nil {
++		t.Fatalf("已知未绑定 scope profile 的 Docker lease 应允许启动并按原语义回收: %v", err)
++	}
++	state := store.State{
++		Leases: []store.Lease{
++			{ID: "released-lease", ProviderKind: Kind, ScopeProfileID: "multica-qa", State: store.LeaseReleased},
++			{ID: "reclaimed-lease", ProviderKind: Kind, ScopeProfileID: "multica-qa", State: store.LeaseReclaimed},
++		},
++	}
++	if err := provider.ValidateRetainedScopeProfiles(state); err != nil {
++		t.Fatalf("全部 scope 已终态后可移除 profile: %v", err)
++	}
++}
++
++func TestValidateMulticaQARuntimeHealth(t *testing.T) {
++	healthyArray := []byte(`[{"State":"running","Health":"healthy"}]`)
++	if err := validateMulticaQARuntimeHealth("postgres\nrunner\n", healthyArray); err != nil {
++		t.Fatalf("Compose JSON array 中运行且 healthy 的 PostgreSQL 必须通过恢复探测: %v", err)
++	}
++	healthyJSONL := []byte("{\"State\":\"running\",\"Health\":\"healthy\"}\n")
++	if err := validateMulticaQARuntimeHealth("postgres\nrunner\n", healthyJSONL); err != nil {
++		t.Fatalf("兼容 JSONL 中运行且 healthy 的 PostgreSQL 必须通过恢复探测: %v", err)
++	}
++	if err := validateMulticaQARuntimeHealth("runner\n", healthyArray); err == nil {
++		t.Fatal("未运行的 PostgreSQL 必须拒绝恢复")
++	}
++	if err := validateMulticaQARuntimeHealth("postgres\nrunner\n", []byte(`[{"State":"running","Health":"unhealthy"}]`)); err == nil {
++		t.Fatal("JSON array 中 unhealthy PostgreSQL 必须拒绝恢复")
++	}
++	if err := validateMulticaQARuntimeHealth("postgres\nrunner\n", []byte("{\"State\":\"running\",\"Health\":\"unhealthy\"}\n")); err == nil {
++		t.Fatal("unhealthy PostgreSQL 必须拒绝恢复")
++	}
++	if err := validateMulticaQARuntimeHealth("postgres\nrunner\n", []byte("{\"State\":\"running\",\"Health\":\"healthy\"}\n{\"State\":\"running\",\"Health\":\"healthy\"}\n")); err == nil {
++		t.Fatal("多个 PostgreSQL 状态对象必须拒绝恢复")
++	}
++}
+diff --git a/internal/provider/docker/scope_profile.go b/internal/provider/docker/scope_profile.go
+index e4614f5..d77cf3e 100644
+--- a/internal/provider/docker/scope_profile.go
++++ b/internal/provider/docker/scope_profile.go
+@@ -11,0 +12,2 @@ import (
++
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/store"
+@@ -15,0 +18,44 @@ const maxScopeProfileBytes = 1 << 20
++var fixedScopeProfiles = map[string]DataPlane{
++	"harbor":     DataPlaneHarbor,
++	"sub2api":    DataPlaneSub2API,
++	"multica-qa": DataPlaneMulticaQA,
++}
++
++func validateEnabledTemplateProfiles(templates []store.ResourceTemplate, profiles map[string]ScopeProfile) error {
++	for _, template := range templates {
++		if template.Enabled && template.ScopeProfileID != "" && profiles[template.ScopeProfileID].ID == "" {
++			return fmt.Errorf("已启用模板 %s 绑定的 scope profile %s 未装载", template.ID, template.ScopeProfileID)
++		}
++	}
++	return nil
++}
++
++// ValidateRetainedScopeProfiles prevents a configuration shrink from making
++// persisted scopes impossible to revoke after a restart. The lease freezes its
++// profile identity so this check remains valid after its template is removed.
++func (p *Provider) ValidateRetainedScopeProfiles(state store.State) error {
++	for _, lease := range state.Leases {
++		if lease.State != store.LeaseActive && lease.State != store.LeaseExpired {
++			continue
++		}
++		if lease.ProviderKind != Kind {
++			continue
++		}
++		if lease.ScopeProfileID == "" {
++			if !lease.ScopeProfileKnown {
++				return fmt.Errorf("存量 Docker 租约 %s（%s）的 scope profile 无法确定，拒绝启动", lease.ID, lease.State)
++			}
++			continue
++		}
++		if p.profiles[lease.ScopeProfileID].ID == "" {
++			return fmt.Errorf("存量租约 %s（%s）仍需 scope profile %s，拒绝移除 profile 后重启", lease.ID, lease.State, lease.ScopeProfileID)
++		}
++	}
++	return nil
++}
++
++var requiredScopeProfiles = map[string]DataPlane{
++	"harbor":  DataPlaneHarbor,
++	"sub2api": DataPlaneSub2API,
++}
++
+@@ -17,9 +63,10 @@ type scopeProfileManifest struct {
+-	ID                 string     `json:"id"`
+-	ImageDigest        string     `json:"image_digest"`
+-	ComposeTemplate    string     `json:"compose_template"`
+-	ComposeSHA256      string     `json:"compose_sha256"`
+-	AllowedServices    []string   `json:"allowed_services"`
+-	RunnerService      string     `json:"runner_service"`
+-	DataPlane          DataPlane  `json:"data_plane"`
+-	PortPolicy         PortPolicy `json:"port_policy"`
+-	CredentialIssuerID string     `json:"credential_issuer_id"`
++	ID                  string            `json:"id"`
++	ImageDigest         string            `json:"image_digest"`
++	ServiceImageDigests map[string]string `json:"service_image_digests"`
++	ComposeTemplate     string            `json:"compose_template"`
++	ComposeSHA256       string            `json:"compose_sha256"`
++	AllowedServices     []string          `json:"allowed_services"`
++	RunnerService       string            `json:"runner_service"`
++	DataPlane           DataPlane         `json:"data_plane"`
++	PortPolicy          PortPolicy        `json:"port_policy"`
++	CredentialIssuerID  string            `json:"credential_issuer_id"`
+@@ -61,2 +108,3 @@ func LoadScopeProfiles(dir string) (map[string]ScopeProfile, error) {
+-		if (raw.ID != "harbor" && raw.ID != "sub2api") || entry.Name() != raw.ID+".json" {
+-			return nil, fmt.Errorf("profile id 仅允许 harbor/sub2api 且必须与文件名一致")
++		expectedPlane, supported := fixedScopeProfiles[raw.ID]
++		if !supported || entry.Name() != raw.ID+".json" {
++			return nil, fmt.Errorf("profile id 未受支持或未与文件名一致: %q", raw.ID)
+@@ -64 +112 @@ func LoadScopeProfiles(dir string) (map[string]ScopeProfile, error) {
+-		if (raw.ID == "harbor" && raw.DataPlane != DataPlaneHarbor) || (raw.ID == "sub2api" && raw.DataPlane != DataPlaneSub2API) {
++		if raw.DataPlane != expectedPlane {
+@@ -71 +119 @@ func LoadScopeProfiles(dir string) (map[string]ScopeProfile, error) {
+-			CredentialIssuerID: raw.CredentialIssuerID,
++			CredentialIssuerID: raw.CredentialIssuerID, ServiceImageDigests: raw.ServiceImageDigests,
+@@ -81,2 +129,4 @@ func LoadScopeProfiles(dir string) (map[string]ScopeProfile, error) {
+-	if len(profiles) != 2 || profiles["harbor"].ID == "" || profiles["sub2api"].ID == "" {
+-		return nil, errors.New("固定 profile 必须同时包含 harbor 与 sub2api")
++	for id := range requiredScopeProfiles {
++		if profiles[id].ID == "" {
++			return nil, fmt.Errorf("固定 profile 缺失: %s", id)
++		}
+diff --git a/internal/provider/docker/scope_runtime.go b/internal/provider/docker/scope_runtime.go
+index 39af260..0f08557 100644
+--- a/internal/provider/docker/scope_runtime.go
++++ b/internal/provider/docker/scope_runtime.go
+@@ -30,16 +30,17 @@ type ScopeObject struct {
+-	Kind              ScopeObjectKind
+-	Name              string
+-	Labels            map[string]string
+-	ProfileID         string
+-	ImageDigest       string
+-	AllowedServices   []string
+-	RunnerService     string
+-	ComposeTemplate   []byte
+-	DataNamespaces    DataNamespaces
+-	CredentialHandles []string
+-	NoDockerSocket    bool
+-	NoPrivileged      bool
+-	NoHostPID         bool
+-	NoHostNetwork     bool
+-	NoHostMounts      bool
+-	NoExternalNetwork bool
++	Kind                ScopeObjectKind
++	Name                string
++	Labels              map[string]string
++	ProfileID           string
++	ImageDigest         string
++	ServiceImageDigests map[string]string
++	AllowedServices     []string
++	RunnerService       string
++	ComposeTemplate     []byte
++	DataNamespaces      DataNamespaces
++	CredentialHandles   []string
++	NoDockerSocket      bool
++	NoPrivileged        bool
++	NoHostPID           bool
++	NoHostNetwork       bool
++	NoHostMounts        bool
++	NoExternalNetwork   bool
+@@ -66,0 +68,6 @@ type ScopeRuntime interface {
++// ScopeValidationRuntime verifies a recovered runtime object before it can be
++// reused after process restart or profile replacement.
++type ScopeValidationRuntime interface {
++	ValidateScope(context.Context, ScopeObject) error
++}
++
+@@ -154 +161,12 @@ func (m *ScopeManager) Ensure(ctx context.Context, scope ScopeIdentity) error {
+-		if completeScopeObjects(objects, existing) {
++		complete := completeScopeObjects(objects, existing)
++		if complete {
++			if validator, ok := m.runtime.(ScopeValidationRuntime); ok {
++				if err := validator.ValidateScope(ctx, scopeComposeObject(objects)); err != nil {
++					if !errors.Is(err, errScopeValidationIncompatible) {
++						return fmt.Errorf("校验已恢复 scope 失败，保留现有资源: %w", err)
++					}
++					complete = false
++				}
++			}
++		}
++		if complete {
+@@ -213,0 +232,9 @@ func (m *ScopeManager) Ensure(ctx context.Context, scope ScopeIdentity) error {
++func scopeComposeObject(objects []ScopeObject) ScopeObject {
++	for _, object := range objects {
++		if object.Kind == ScopeCompose {
++			return object
++		}
++	}
++	return ScopeObject{}
++}
++
+@@ -362 +389 @@ func (m *ScopeManager) objects(names ScopeNames) []ScopeObject {
+-			ImageDigest: m.profile.ImageDigest, AllowedServices: append([]string(nil), m.profile.AllowedServices...),
++			ImageDigest: m.profile.ImageDigest, ServiceImageDigests: cloneStringMap(m.profile.ServiceImageDigests), AllowedServices: append([]string(nil), m.profile.AllowedServices...),
+diff --git a/internal/provider/docker/scope_runtime_test.go b/internal/provider/docker/scope_runtime_test.go
+index 59d3377..7eba7c3 100644
+--- a/internal/provider/docker/scope_runtime_test.go
++++ b/internal/provider/docker/scope_runtime_test.go
+@@ -4,0 +5,2 @@ import (
++	"crypto/sha256"
++	"encoding/hex"
+@@ -6,0 +9 @@ import (
++	"fmt"
+@@ -68,0 +72,23 @@ type fakeScopeRuntime struct {
++func privateScopeRoot(t *testing.T) string {
++	t.Helper()
++	root := filepath.Join(t.TempDir(), "scope-root")
++	if err := os.Mkdir(root, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	return root
++}
++
++type validatingScopeRuntime struct {
++	*fakeScopeRuntime
++	validationErr   error
++	validationCalls int
++}
++
++func (r *validatingScopeRuntime) ValidateScope(_ context.Context, object ScopeObject) error {
++	if object.Kind != ScopeCompose {
++		return errors.New("recovery validation must target compose object")
++	}
++	r.validationCalls++
++	return r.validationErr
++}
++
+@@ -239 +265 @@ func TestComposeRuntimeUsesPinnedScopeAndCleansItOnRevoke(t *testing.T) {
+-	runtime, err := NewComposeRuntime(runner, t.TempDir())
++	runtime, err := NewComposeRuntime(runner, privateScopeRoot(t))
+@@ -310 +336 @@ func TestComposeRuntimeRejectsMissingRunnerInScopeProject(t *testing.T) {
+-	runtime, err := NewComposeRuntime(runner, t.TempDir())
++	runtime, err := NewComposeRuntime(runner, privateScopeRoot(t))
+@@ -348,0 +375,47 @@ func TestComposeRuntimeRejectsMissingRunnerInScopeProject(t *testing.T) {
++func TestComposeRuntimeFindRetainsMissingMulticaQARunnerForValidation(t *testing.T) {
++	profile := fixtureProfile(DataPlaneMulticaQA)
++	runner := &fakeRunner{}
++	runtime, err := NewComposeRuntime(runner, privateScopeRoot(t))
++	if err != nil {
++		t.Fatal(err)
++	}
++	identity := ScopeIdentity{LeaseID: "lease-recovering-runner", ResourceID: "resource-recovering-runner", ProfileID: profile.ID, Phase: "QA", Generation: 2}
++	names, err := profile.Namespaces(identity)
++	if err != nil {
++		t.Fatal(err)
++	}
++	dir := filepath.Join(runtime.root, names.ID)
++	if err := os.MkdirAll(dir, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	metadata, err := json.Marshal(scopeMetadata{Labels: names.Labels, ProfileID: profile.ID, RunnerService: profile.RunnerService, Services: profile.AllowedServices})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(dir, "scope.json"), metadata, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(dir, "scope.env"), []byte("DB_PASSWORD=\"test\"\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), profile.ComposeTemplate, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	network, _ := json.Marshal(map[string]any{"Labels": names.Labels, "Internal": true})
++	volume, _ := json.Marshal(names.Labels)
++	// The runner is temporarily absent while Compose restarts it.
++	runner.add(string(network)).add(string(volume)).add("postgres\n")
++
++	recovered, err := runtime.FindByLabels(context.Background(), names.Labels)
++	if err != nil {
++		t.Fatalf("恢复中 runner 的对象发现不应失败: %v", err)
++	}
++	manager, err := NewScopeManager(profile, &fakeScopeIssuer{}, runtime, func(context.Context, ScopeIdentity) error { return nil })
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !completeScopeObjects(manager.objects(names), recovered) {
++		t.Fatalf("恢复中 runner 必须进入 validation 路径而非被当作不完整 scope: %+v", recovered)
++	}
++}
++
+@@ -351 +424 @@ func TestComposeRuntimeExecPersistsOutputAndReturnsNonzeroExitCode(t *testing.T)
+-	runtime, err := NewComposeRuntime(runner, t.TempDir())
++	runtime, err := NewComposeRuntime(runner, privateScopeRoot(t))
+@@ -387 +460 @@ func TestComposeRuntimeDoesNotKillNonexistentProjectDuringRecovery(t *testing.T)
+-	runtime, err := NewComposeRuntime(runner, t.TempDir())
++	runtime, err := NewComposeRuntime(runner, privateScopeRoot(t))
+@@ -414 +487 @@ func TestComposeRuntimeInspectFailureDoesNotLookLikeMissingScope(t *testing.T) {
+-	runtime, err := NewComposeRuntime(runner, t.TempDir())
++	runtime, err := NewComposeRuntime(runner, privateScopeRoot(t))
+@@ -434 +507 @@ func TestComposeRuntimeRejectsUnownedNetworkNameCollision(t *testing.T) {
+-	runtime, err := NewComposeRuntime(runner, t.TempDir())
++	runtime, err := NewComposeRuntime(runner, privateScopeRoot(t))
+@@ -527,0 +601,254 @@ func TestScopeManagerRecoveryRevokesPartialScopeBeforeRecreating(t *testing.T) {
++func TestScopeManagerRecoveryRecreatesScopeWhenProfileValidationFails(t *testing.T) {
++	base := &fakeScopeRuntime{}
++	runtime := &validatingScopeRuntime{fakeScopeRuntime: base, validationErr: fmt.Errorf("%w: stale profile digest", errScopeValidationIncompatible)}
++	issuer := &fakeScopeIssuer{}
++	profile := fixtureProfile(DataPlaneSub2API)
++	profile.CredentialIssuerID = "fake-issuer"
++	manager, err := NewScopeManager(profile, issuer, runtime, func(context.Context, ScopeIdentity) error { return nil })
++	if err != nil {
++		t.Fatal(err)
++	}
++	scope := ScopeIdentity{LeaseID: "lease-recovery", ResourceID: "resource-recovery", ProfileID: profile.ID, Phase: "QA", Generation: 2}
++	names, err := profile.Namespaces(scope)
++	if err != nil {
++		t.Fatal(err)
++	}
++	base.objects = manager.objects(names)
++	if err := manager.Ensure(context.Background(), scope); err != nil {
++		t.Fatalf("恢复时 profile 校验失败后应清理并重建 scope: %v", err)
++	}
++	if runtime.validationCalls != 1 || base.cancelled != 1 || issuer.revoked != 1 || len(base.created) != 6 {
++		t.Fatalf("恢复 profile 校验失败必须撤销旧 scope 并重建: validation=%d cancelled=%d revoked=%d created=%v", runtime.validationCalls, base.cancelled, issuer.revoked, base.created)
++	}
++}
++
++func TestScopeManagerRecoveryPreservesScopeOnValidationFailure(t *testing.T) {
++	base := &fakeScopeRuntime{}
++	runtime := &validatingScopeRuntime{fakeScopeRuntime: base, validationErr: errors.New("docker daemon unavailable")}
++	issuer := &fakeScopeIssuer{}
++	profile := fixtureProfile(DataPlaneSub2API)
++	profile.CredentialIssuerID = "fake-issuer"
++	manager, err := NewScopeManager(profile, issuer, runtime, func(context.Context, ScopeIdentity) error { return nil })
++	if err != nil {
++		t.Fatal(err)
++	}
++	scope := ScopeIdentity{LeaseID: "lease-transient", ResourceID: "resource-transient", ProfileID: profile.ID, Phase: "QA", Generation: 2}
++	names, err := profile.Namespaces(scope)
++	if err != nil {
++		t.Fatal(err)
++	}
++	base.objects = manager.objects(names)
++	if err := manager.Ensure(context.Background(), scope); err == nil {
++		t.Fatal("恢复校验暂态失败必须向调用方返回错误")
++	}
++	if runtime.validationCalls != 1 || base.cancelled != 0 || issuer.revoked != 0 || len(base.created) != 0 {
++		t.Fatalf("恢复校验暂态失败不得销毁或重建健康 scope: validation=%d cancelled=%d revoked=%d created=%v", runtime.validationCalls, base.cancelled, issuer.revoked, base.created)
++	}
++}
++
++func TestScopeManagerRecoveryPreservesHealthyMulticaQAScope(t *testing.T) {
++	base := &fakeScopeRuntime{}
++	healthErr := validateMulticaQARuntimeHealth(
++		"postgres\nrunner\n",
++		[]byte("[{\"State\":\"running\",\"Health\":\"healthy\"}]\n"),
++	)
++	if healthErr != nil {
++		t.Fatalf("Compose JSON array 健康状态应通过恢复校验: %v", healthErr)
++	}
++	runtime := &validatingScopeRuntime{fakeScopeRuntime: base, validationErr: healthErr}
++	issuer := &fakeScopeIssuer{}
++	profile := fixtureProfile(DataPlaneMulticaQA)
++	profile.CredentialIssuerID = "fake-issuer"
++	manager, err := NewScopeManager(profile, issuer, runtime, func(context.Context, ScopeIdentity) error { return nil })
++	if err != nil {
++		t.Fatal(err)
++	}
++	scope := ScopeIdentity{LeaseID: "lease-healthy-multica", ResourceID: "resource-healthy-multica", ProfileID: profile.ID, Phase: "QA", Generation: 2}
++	names, err := profile.Namespaces(scope)
++	if err != nil {
++		t.Fatal(err)
++	}
++	base.objects = manager.objects(names)
++
++	if err := manager.Ensure(context.Background(), scope); err != nil {
++		t.Fatalf("健康 Multica QA scope 恢复不应失败: %v", err)
++	}
++	if runtime.validationCalls != 1 || base.cancelled != 0 || issuer.revoked != 0 || issuer.issued != 0 || len(base.removed) != 0 || len(base.created) != 0 {
++		t.Fatalf("JSON array 健康 scope 不得触发清理或重建: validation=%d cancelled=%d revoked=%d issued=%d removed=%v created=%v", runtime.validationCalls, base.cancelled, issuer.revoked, issuer.issued, base.removed, base.created)
++	}
++}
++
++func TestScopeManagerRecoveryPreservesMulticaQAScopeDuringTransientHealthFailures(t *testing.T) {
++	cases := []struct {
++		name     string
++		running  string
++		postgres []byte
++	}{
++		{name: "unhealthy postgres", running: "postgres\nrunner\n", postgres: []byte("{\"State\":\"running\",\"Health\":\"unhealthy\"}\n")},
++		{name: "missing postgres service", running: "runner\n", postgres: []byte("{\"State\":\"running\",\"Health\":\"healthy\"}\n")},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			base := &fakeScopeRuntime{}
++			healthErr := validateMulticaQARuntimeHealth(tc.running, tc.postgres)
++			if healthErr == nil {
++				t.Fatal("测试前提无效：暂态 health 状态必须被拒绝")
++			}
++			runtime := &validatingScopeRuntime{fakeScopeRuntime: base, validationErr: fmt.Errorf("%w: %v", errScopeValidationTransient, healthErr)}
++			issuer := &fakeScopeIssuer{}
++			profile := fixtureProfile(DataPlaneMulticaQA)
++			profile.CredentialIssuerID = "fake-issuer"
++			manager, err := NewScopeManager(profile, issuer, runtime, func(context.Context, ScopeIdentity) error { return nil })
++			if err != nil {
++				t.Fatal(err)
++			}
++			scope := ScopeIdentity{LeaseID: "lease-transient-health", ResourceID: "resource-transient-health", ProfileID: profile.ID, Phase: "QA", Generation: 2}
++			names, err := profile.Namespaces(scope)
++			if err != nil {
++				t.Fatal(err)
++			}
++			base.objects = manager.objects(names)
++
++			if err := manager.Ensure(context.Background(), scope); err == nil {
++				t.Fatal("暂态 health 失败必须向调用方返回可重试错误")
++			}
++			if runtime.validationCalls != 1 || base.cancelled != 0 || issuer.revoked != 0 || issuer.issued != 0 || len(base.removed) != 0 || len(base.created) != 0 {
++				t.Fatalf("暂态 health 失败不得取消、撤销或重建 scope: validation=%d cancelled=%d revoked=%d issued=%d removed=%v created=%v", runtime.validationCalls, base.cancelled, issuer.revoked, issuer.issued, base.removed, base.created)
++			}
++		})
++	}
++}
++
++func TestComposeRuntimeClassifiesMulticaQAHealthAsTransient(t *testing.T) {
++	profile := fixtureProfile(DataPlaneMulticaQA)
++	profile.ID = "multica-qa"
++	profile.ComposeTemplate = []byte(strings.ReplaceAll(string(profile.ComposeTemplate), "profiles: [fixture]", "profiles: [multica-qa]"))
++	sum := sha256.Sum256(profile.ComposeTemplate)
++	profile.ComposeSHA256 = hex.EncodeToString(sum[:])
++	profile.CredentialIssuerID = "fixture-issuer"
++	scope := ScopeIdentity{LeaseID: "lease-healthy", ResourceID: "resource-healthy", ProfileID: profile.ID, Phase: "QA", Generation: 2}
++	names, err := profile.Namespaces(scope)
++	if err != nil {
++		t.Fatal(err)
++	}
++	labels := cloneLabels(names.Labels)
++	labels["rpm.kind"] = string(ScopeCompose)
++	object := ScopeObject{
++		Kind: ScopeCompose, Name: names.Project, Labels: labels, ProfileID: profile.ID,
++		ImageDigest: profile.ImageDigest, ServiceImageDigests: profile.ServiceImageDigests,
++		AllowedServices: profile.AllowedServices, RunnerService: profile.RunnerService, ComposeTemplate: profile.ComposeTemplate,
++		DataNamespaces: names.DataNamespaces, NoDockerSocket: true, NoPrivileged: true, NoHostPID: true,
++		NoHostNetwork: true, NoHostMounts: true, NoExternalNetwork: true,
++	}
++	service := func(image string, environment map[string]string) map[string]any {
++		return map[string]any{
++			"profiles": []string{profile.ID}, "image": image, "labels": labelsWithoutKind(object.Labels),
++			"environment": environment, "networks": map[string]any{"scope": nil},
++			"volumes": []map[string]string{{"type": "volume", "source": "data", "target": "/scope"}},
++		}
++	}
++	postgres := service("postgres@"+profile.ServiceImageDigests["postgres"], map[string]string{
++		"POSTGRES_DB": names.DataNamespaces.Database, "POSTGRES_USER": names.DataNamespaces.DBRole, "POSTGRES_PASSWORD": "scope-password",
++	})
++	postgres["healthcheck"] = map[string]any{"test": []string{"CMD-SHELL", "pg_isready"}}
++	runner := service("runner@"+profile.ServiceImageDigests["runner"], map[string]string{
++		"DATABASE_URL": "postgres://" + names.DataNamespaces.DBRole + ":scope-password@postgres:5432/" + names.DataNamespaces.Database + "?sslmode=disable",
++	})
++	runner["depends_on"] = map[string]any{"postgres": map[string]string{"condition": "service_healthy"}}
++	resolved, err := json.Marshal(map[string]any{
++		"services": map[string]any{"postgres": postgres, "runner": runner},
++		"networks": map[string]any{"scope": map[string]any{"name": names.Network, "external": true}},
++		"volumes":  map[string]any{"data": map[string]any{"name": names.Volumes[0], "external": true}},
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	cases := []struct {
++		name           string
++		running        string
++		postgres       string
++		wantErr        bool
++		restartService string
++		wantCallCount  int
++	}{
++		{name: "healthy array", running: "postgres\nrunner\n", postgres: `[{"State":"running","Health":"healthy"}]`, wantCallCount: 3},
++		{name: "unhealthy array", running: "postgres\nrunner\n", postgres: `[{"State":"running","Health":"unhealthy"}]`, wantErr: true, wantCallCount: 3},
++		{name: "missing postgres", running: "runner\n", wantErr: true, restartService: "postgres", wantCallCount: 3},
++		{name: "missing runner", running: "postgres\n", postgres: `[{"State":"running","Health":"healthy"}]`, wantErr: true, restartService: "runner", wantCallCount: 4},
++		{name: "missing runner with unhealthy postgres", running: "postgres\n", postgres: `[{"State":"running","Health":"unhealthy"}]`, wantErr: true, wantCallCount: 3},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			runner := (&fakeRunner{}).add(string(resolved)).add(tc.running).add(tc.postgres)
++			runtime, err := NewComposeRuntime(runner, privateScopeRoot(t))
++			if err != nil {
++				t.Fatal(err)
++			}
++			dir := filepath.Join(runtime.root, names.ID)
++			if err := os.MkdirAll(dir, 0o700); err != nil {
++				t.Fatal(err)
++			}
++			if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), profile.ComposeTemplate, 0o600); err != nil {
++				t.Fatal(err)
++			}
++			if err := os.WriteFile(filepath.Join(dir, "scope.env"), nil, 0o600); err != nil {
++				t.Fatal(err)
++			}
++			err = runtime.ValidateScope(context.Background(), object)
++			if tc.wantErr {
++				if !errors.Is(err, errScopeValidationTransient) {
++					t.Fatalf("暂态健康失败必须保留 transient 分类，得 %v", err)
++				}
++				if tc.restartService != "" {
++					got := strings.Join(runner.argAt(t, tc.wantCallCount-1), " ")
++					if !strings.Contains(got, " up --detach") || !strings.HasSuffix(got, " "+tc.restartService) {
++						t.Fatalf("服务缺席时必须只重启对应 service，得 %s", got)
++					}
++					if tc.restartService == "runner" && !strings.Contains(got, "--no-deps") {
++						t.Fatalf("runner 重启不得同时拉起依赖服务，得 %s", got)
++					}
++				}
++				if runner.callCount() != tc.wantCallCount {
++					t.Fatalf("暂态路径调用数不符：得到 %d，期望 %d", runner.callCount(), tc.wantCallCount)
++				}
++				return
++			}
++			if err != nil {
++				t.Fatalf("标准 JSON array 的 healthy 状态必须允许恢复: %v", err)
++			}
++			if runner.callCount() != tc.wantCallCount {
++				t.Fatalf("健康路径调用数不符：得到 %d，期望 %d", runner.callCount(), tc.wantCallCount)
++			}
++		})
++	}
++}
++
++func TestComposeRuntimeRecoveryRejectsPreviousProfileTemplate(t *testing.T) {
++	profile := fixtureProfile(DataPlaneSub2API)
++	profile.CredentialIssuerID = "fixture-issuer"
++	runtime, err := NewComposeRuntime(&fakeRunner{}, privateScopeRoot(t))
++	if err != nil {
++		t.Fatal(err)
++	}
++	manager, err := NewScopeManager(profile, &fakeScopeIssuer{}, runtime, func(context.Context, ScopeIdentity) error { return nil })
++	if err != nil {
++		t.Fatal(err)
++	}
++	scope := ScopeIdentity{LeaseID: "lease-profile", ResourceID: "resource-profile", ProfileID: profile.ID, Phase: "QA", Generation: 3}
++	names, err := profile.Namespaces(scope)
++	if err != nil {
++		t.Fatal(err)
++	}
++	object := scopeComposeObject(manager.objects(names))
++	dir := filepath.Join(runtime.root, names.ID)
++	if err := os.MkdirAll(dir, 0o700); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := runtime.ValidateScope(context.Background(), object); !errors.Is(err, errScopeValidationIncompatible) {
++		t.Fatalf("持久化模板与当前 profile 不一致时必须拒绝恢复: %v", err)
++	}
++}
++
+@@ -684 +1011 @@ func TestComposeRuntimeRevokeCanRetryFailedComposeDown(t *testing.T) {
+-	root := t.TempDir()
++	root := privateScopeRoot(t)
+diff --git a/internal/provider/faultinject/faultinject.go b/internal/provider/faultinject/faultinject.go
+index 3f9d9fd..ad53ea6 100644
+--- a/internal/provider/faultinject/faultinject.go
++++ b/internal/provider/faultinject/faultinject.go
+@@ -23 +23,2 @@ var ErrInjected = errors.New("faultinject: 注入列举失败")
+-// （NewListFailure 直接构造）即首次列举失败。其余方法经嵌入透传。
++// （NewListFailure 直接构造）即首次列举失败。其余主接口经嵌入透传；可选
++// capability 通过透明装饰器标记由控制面从底层 Provider 探测。
+@@ -35,0 +37,4 @@ func NewListFailure(next provider.Provider) *ListFailure {
++// CapabilityProvider 声明本装饰器只改变 List 的结果。它不会自行实现任何可选
++// capability，防止底层未实现的能力被静态方法集错误地伪装为可用。
++func (w *ListFailure) CapabilityProvider() provider.Provider { return w.Provider }
++
+diff --git a/internal/provider/faultinject/faultinject_test.go b/internal/provider/faultinject/faultinject_test.go
+index fcba883..25de752 100644
+--- a/internal/provider/faultinject/faultinject_test.go
++++ b/internal/provider/faultinject/faultinject_test.go
+@@ -4,0 +5 @@ import (
++	"reflect"
+@@ -7,0 +9,3 @@ import (
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/provider"
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/provider/docker"
++	"github.com/cfgxy/guxy-resource-pool-mcp/internal/provider/hyperv"
+@@ -33,0 +38,89 @@ func TestListFailureOnlyAffectsList(t *testing.T) {
++
++type capabilityMatrix struct {
++	portPublisher           bool
++	leaseLifecycle          bool
++	workspacePusher         bool
++	scopedExecution         bool
++	scopedWorkspacePusher   bool
++	scopedWorkspacePath     bool
++	scopedArtifactCollector bool
++	capabilityExec          bool
++	scopeProfile            bool
++	managedWebBridge        bool
++}
++
++func capabilitiesOf(p provider.Provider) capabilityMatrix {
++	p = provider.ProviderForCapabilities(p)
++	_, portPublisher := p.(provider.PortPublisher)
++	_, leaseLifecycle := p.(provider.LeaseLifecycleProvider)
++	_, workspacePusher := p.(provider.WorkspacePusher)
++	_, scopedExecution := p.(provider.ScopedExecutionProvider)
++	_, scopedWorkspacePusher := p.(provider.ScopedWorkspacePusher)
++	_, scopedWorkspacePath := p.(provider.ScopedWorkspacePath)
++	_, scopedArtifactCollector := p.(provider.ScopedArtifactCollector)
++	_, capabilityExec := p.(provider.CapabilityExecProvider)
++	_, scopeProfile := p.(provider.ScopeProfileProvider)
++	_, managedWebBridge := p.(provider.ManagedWebBridge)
++	return capabilityMatrix{
++		portPublisher: portPublisher, leaseLifecycle: leaseLifecycle, workspacePusher: workspacePusher,
++		scopedExecution: scopedExecution, scopedWorkspacePusher: scopedWorkspacePusher,
++		scopedWorkspacePath: scopedWorkspacePath, scopedArtifactCollector: scopedArtifactCollector,
++		capabilityExec: capabilityExec, scopeProfile: scopeProfile, managedWebBridge: managedWebBridge,
++	}
++}
++
++// ListFailure 只改变 List 结果；resolver 必须恢复底层 Provider 实际实现的全部可选
++// capability，同时不得把底层未实现的接口误报为可用。
++func TestListFailurePreservesCapabilityMatrix(t *testing.T) {
++	cfg, err := config.Load("-")
++	if err != nil {
++		t.Fatalf("默认参数: %v", err)
++	}
++	stb, err := stub.New(cfg, nil)
++	if err != nil {
++		t.Fatalf("stub 构造: %v", err)
++	}
++	cases := []struct {
++		name string
++		base provider.Provider
++		want capabilityMatrix
++	}{
++		{
++			name: "stub", base: stb,
++			want: capabilityMatrix{portPublisher: true, workspacePusher: true},
++		},
++		{
++			name: "hyperv", base: &hyperv.Provider{},
++			want: capabilityMatrix{portPublisher: true, leaseLifecycle: true, workspacePusher: true, scopedExecution: true, scopedWorkspacePusher: true, scopedWorkspacePath: true, scopedArtifactCollector: true, capabilityExec: true},
++		},
++		{
++			name: "docker", base: &docker.Provider{},
++			want: capabilityMatrix{workspacePusher: true, scopedExecution: true, scopedWorkspacePusher: true, scopedWorkspacePath: true, scopedArtifactCollector: true, capabilityExec: true, scopeProfile: true, managedWebBridge: true},
++		},
++		{
++			name: "no-optional-capability", base: providerOnly{Provider: stb},
++			want: capabilityMatrix{},
++		},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			wrapped := NewListFailure(tc.base)
++			if got := provider.ProviderForCapabilities(wrapped); got != tc.base {
++				t.Fatalf("resolver 未返回底层 Provider: %T", got)
++			}
++			if got := capabilitiesOf(wrapped); !reflect.DeepEqual(got, tc.want) {
++				t.Fatalf("capability 矩阵不一致：得到 %+v，期望 %+v", got, tc.want)
++			}
++			if _, ok := any(wrapped).(provider.PortPublisher); ok {
++				t.Fatal("装饰器自身不得静态声称实现 PortPublisher")
++			}
++			if _, ok := any(wrapped).(provider.ManagedWebBridge); ok {
++				t.Fatal("装饰器自身不得静态声称实现 ManagedWebBridge")
++			}
++		})
++	}
++}
++
++// providerOnly 有意不公开任何可选 capability，用于证明透明解包不凭空增加能力。
++type providerOnly struct{ provider.Provider }
+diff --git a/internal/provider/provider.go b/internal/provider/provider.go
+index b1ae03e..41498a2 100644
+--- a/internal/provider/provider.go
++++ b/internal/provider/provider.go
+@@ -167,0 +168,22 @@ type Provider interface {
++// CapabilityProvider 是仅改变观测行为的透明装饰器标记。可选 capability 必须从
++// 底层 Provider 探测，避免装饰器因静态方法集而把未实现的能力误报为可用。
++type CapabilityProvider interface {
++	CapabilityProvider() Provider
++}
++
++// ProviderForCapabilities 返回 capability 探测和调用应使用的真实 Provider。
++// 非透明装饰器不会实现 CapabilityProvider，因此仍按自身公开的方法集 fail-closed。
++func ProviderForCapabilities(p Provider) Provider {
++	for {
++		transparent, ok := p.(CapabilityProvider)
++		if !ok {
++			return p
++		}
++		next := transparent.CapabilityProvider()
++		if next == nil {
++			return nil
++		}
++		p = next
++	}
++}
++
+diff --git a/internal/store/store.go b/internal/store/store.go
+index 40b6adc..f49c532 100644
+--- a/internal/store/store.go
++++ b/internal/store/store.go
+@@ -23 +23,2 @@ import (
+-const StateVersion = 5
++// v6（RUYI-880）：Docker Lease 冻结 scope profile，避免模板被删除后遗留 scope 无法授权或回收。
++const StateVersion = 6
+@@ -29,0 +31 @@ const (
++	stateVersionV5 = 5
+@@ -163,0 +166,2 @@ type Lease struct {
++	ScopeProfileID        string           `json:"scope_profile_id,omitempty"`        // acquire 时冻结的 scope profile，回收不依赖模板存续
++	ScopeProfileKnown     bool             `json:"scope_profile_known,omitempty"`     // 模板中的 scope profile（含空值）是否已被冻结
+@@ -289,2 +293,2 @@ type Store struct {
+-// 加载既有状态文件前自动复制为 <path>.bak（v2 起，docs/09 D5 回滚路径：停新服务 →
+-// 恢复 .bak → 起旧二进制）；备份失败拒启动——磁盘/权限异常下后续落盘同样不可信。
++// 加载既有状态文件前自动复制为 <path>.bak。v5 → v6 另会保存 <path>.v5.bak，作为
++// 收敛完成但尚未创建 v6 租约时的旧版本回退输入；备份失败拒启动。
+@@ -323,0 +328,9 @@ func Load(path string) (*Store, error) {
++		normalizeNonDockerScopeProfiles(&s.st)
++	case stateVersionV5:
++		if err := validateV5Migration(&s.st); err != nil {
++			return nil, err
++		}
++		if err := backupV5Migration(path, data); err != nil {
++			return nil, err
++		}
++		migrateV5(&s.st)
+@@ -325,0 +339,4 @@ func Load(path string) (*Store, error) {
++		if err := validateV5Migration(&s.st); err != nil {
++			return nil, err
++		}
++		migrateV5(&s.st)
+@@ -328,0 +346,4 @@ func Load(path string) (*Store, error) {
++		if err := validateV5Migration(&s.st); err != nil {
++			return nil, err
++		}
++		migrateV5(&s.st)
+@@ -332,0 +354,4 @@ func Load(path string) (*Store, error) {
++		if err := validateV5Migration(&s.st); err != nil {
++			return nil, err
++		}
++		migrateV5(&s.st)
+@@ -337,0 +363,4 @@ func Load(path string) (*Store, error) {
++		if err := validateV5Migration(&s.st); err != nil {
++			return nil, err
++		}
++		migrateV5(&s.st)
+@@ -346,0 +376,31 @@ func Load(path string) (*Store, error) {
++// backupV5Migration 为真正的 v5 输入留下独立回退副本。只在迁移安全检查通过后
++// 调用，因此被拒绝的旧 Docker 租约不会得到任何 v6 侧写入。
++func backupV5Migration(path string, data []byte) error {
++	backupPath := path + ".v5.bak"
++	tmp, err := os.CreateTemp(filepath.Dir(backupPath), "."+filepath.Base(backupPath)+".tmp-*")
++	if err != nil {
++		return fmt.Errorf("创建 v5 迁移备份临时文件: %w", err)
++	}
++	tmpName := tmp.Name()
++	defer func() { _ = os.Remove(tmpName) }()
++	if err := tmp.Chmod(0o600); err != nil {
++		_ = tmp.Close()
++		return fmt.Errorf("设置 v5 迁移备份权限: %w", err)
++	}
++	if _, err := tmp.Write(data); err != nil {
++		_ = tmp.Close()
++		return fmt.Errorf("写入 v5 迁移备份: %w", err)
++	}
++	if err := tmp.Sync(); err != nil {
++		_ = tmp.Close()
++		return fmt.Errorf("同步 v5 迁移备份: %w", err)
++	}
++	if err := tmp.Close(); err != nil {
++		return fmt.Errorf("关闭 v5 迁移备份: %w", err)
++	}
++	if err := os.Rename(tmpName, backupPath); err != nil {
++		return fmt.Errorf("原子替换 v5 迁移备份: %w", err)
++	}
++	return nil
++}
++
+@@ -412,0 +473,38 @@ func migrateV4(st *State) {
++	st.Version = stateVersionV5
++}
++
++// validateV5Migration 不允许当前二进制接管仍需 Docker runtime 清理的旧 lease。
++// v5 未冻结 profile 身份，直接升 v6 后 release/reaper 可能对错误 scope 操作；必须先
++// 用 v5 服务执行 release_lease 或 reaper，直到这些 lease 进入终态。
++func validateV5Migration(st *State) error {
++	for _, lease := range st.Leases {
++		if lease.ProviderKind != "docker" {
++			continue
++		}
++		switch lease.State {
++		case LeasePending, LeaseActive, LeaseExpired:
++			return fmt.Errorf("状态 v5 存在 Docker 租约 %s（state=%s）；请使用 v5 版本执行 release_lease 或运行 reaper 将其收敛为 failed、released 或 reclaimed 后，再启动当前版本", lease.ID, lease.State)
++		}
++	}
++	return nil
++}
++
++// migrateV5 v5 → v6 只将当前模板的 scope profile 冻结到 Docker lease。已通过
++// validateV5Migration 的 Docker lease 均为终态；非 Docker lease 不具有 Docker scope
++// 清理契约，即使历史模板带有 profile 也必须保持 unknown。模板缺失时同样保持 unknown，
++// 后续 Docker scope 操作继续 fail-closed。
++func migrateV5(st *State) {
++	profilesByTemplate := make(map[string]string, len(st.Templates))
++	for _, template := range st.Templates {
++		profilesByTemplate[template.ID] = template.ScopeProfileID
++	}
++	for i := range st.Leases {
++		if st.Leases[i].ProviderKind != "docker" {
++			continue
++		}
++		profileID, known := profilesByTemplate[st.Leases[i].TemplateID]
++		if known {
++			st.Leases[i].ScopeProfileID = profileID
++			st.Leases[i].ScopeProfileKnown = true
++		}
++	}
+@@ -415,0 +514,14 @@ func migrateV4(st *State) {
++// normalizeNonDockerScopeProfiles 清理旧 v6 二进制写入的非 Docker profile。
++// scope_profile_id 仅属于 Docker Compose scope；保留该字段会使 release/reaper
++// 错误要求非 Docker Provider 实现 Docker scope capability。该归一化在内存中完成，
++// 由下一次状态变更原子持久化，避免 Load 期间额外写盘。
++func normalizeNonDockerScopeProfiles(st *State) {
++	for i := range st.Leases {
++		if st.Leases[i].ProviderKind == "docker" {
++			continue
++		}
++		st.Leases[i].ScopeProfileID = ""
++		st.Leases[i].ScopeProfileKnown = false
++	}
++}
++
+diff --git a/internal/store/store_test.go b/internal/store/store_test.go
+index 000a496..d063176 100644
+--- a/internal/store/store_test.go
++++ b/internal/store/store_test.go
+@@ -6,0 +7 @@ import (
++	"strings"
+@@ -25,0 +27,136 @@ func TestLoadMissingFileFreshState(t *testing.T) {
++func v5StateData(t *testing.T, providerKind, leaseState string) []byte {
++	t.Helper()
++	data, err := json.Marshal(map[string]any{
++		"version": stateVersionV5,
++		"templates": []any{map[string]any{
++			"id": "tpl-small", "scope_profile_id": "multica-qa",
++		}},
++		"instances": []any{},
++		"leases": []any{map[string]any{
++			"id": "ls-000001", "instance_id": "ri-000001", "template_id": "tpl-small",
++			"provider_kind": providerKind, "state": leaseState,
++		}},
++		"executions":           []any{},
++		"artifacts":            []any{},
++		"staged_artifacts":     []any{},
++		"managed_applications": []any{},
++		"sequences":            map[string]any{},
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	return data
++}
++
++func TestLoadV5RejectsDockerLeaseAwaitingLegacyConvergence(t *testing.T) {
++	for _, state := range []string{LeasePending, LeaseActive, LeaseExpired} {
++		t.Run(state, func(t *testing.T) {
++			path := filepath.Join(t.TempDir(), "state.json")
++			original := v5StateData(t, "docker", state)
++			if err := os.WriteFile(path, original, 0o600); err != nil {
++				t.Fatal(err)
++			}
++
++			_, err := Load(path)
++			if err == nil || !strings.Contains(err.Error(), "使用 v5 版本执行 release_lease 或运行 reaper") {
++				t.Fatalf("应给出旧版本收敛诊断，得到: %v", err)
++			}
++			persisted, readErr := os.ReadFile(path)
++			if readErr != nil {
++				t.Fatal(readErr)
++			}
++			if string(persisted) != string(original) {
++				t.Fatalf("拒绝迁移不得改写 v5 state：得到 %s，期望 %s", persisted, original)
++			}
++			if _, statErr := os.Stat(path + ".v5.bak"); !os.IsNotExist(statErr) {
++				t.Fatalf("安全检查失败前不得生成 v5 迁移副本: %v", statErr)
++			}
++		})
++	}
++}
++
++func TestLoadV5MigratesTerminalDockerAndLeavesNonDockerScopeUnknown(t *testing.T) {
++	cases := []struct {
++		name         string
++		providerKind string
++		state        string
++	}{
++		{name: "docker-failed", providerKind: "docker", state: LeaseFailed},
++		{name: "docker-released", providerKind: "docker", state: LeaseReleased},
++		{name: "docker-reclaimed", providerKind: "docker", state: LeaseReclaimed},
++		{name: "stub-pending", providerKind: "stub", state: LeasePending},
++		{name: "stub-active", providerKind: "stub", state: LeaseActive},
++		{name: "stub-expired", providerKind: "stub", state: LeaseExpired},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			path := filepath.Join(t.TempDir(), "state.json")
++			original := v5StateData(t, tc.providerKind, tc.state)
++			if err := os.WriteFile(path, original, 0o600); err != nil {
++				t.Fatal(err)
++			}
++			s, err := Load(path)
++			if err != nil {
++				t.Fatalf("v5 state 应可迁移: %v", err)
++			}
++			snap := s.Snapshot()
++			if snap.Version != StateVersion || len(snap.Leases) != 1 {
++				t.Fatalf("v5 migration 结果异常: %+v", snap)
++			}
++			lease := snap.Leases[0]
++			if tc.providerKind == "docker" && (!lease.ScopeProfileKnown || lease.ScopeProfileID != "multica-qa") {
++				t.Fatalf("Docker v5 migration 未冻结 profile: %+v", lease)
++			}
++			if tc.providerKind != "docker" && (lease.ScopeProfileKnown || lease.ScopeProfileID != "") {
++				t.Fatalf("非 Docker v5 migration 不得冻结 profile: %+v", lease)
++			}
++			if err := s.Mutate(func(*State) {}); err != nil {
++				t.Fatalf("首次写入 v6 state: %v", err)
++			}
++			persisted, err := os.ReadFile(path)
++			if err != nil {
++				t.Fatal(err)
++			}
++			var roundtrip State
++			if err := json.Unmarshal(persisted, &roundtrip); err != nil {
++				t.Fatal(err)
++			}
++			if roundtrip.Version != StateVersion {
++				t.Fatalf("首次写入应升级至 v6，得到 %d", roundtrip.Version)
++			}
++			backup, err := os.ReadFile(path + ".v5.bak")
++			if err != nil || string(backup) != string(original) {
++				t.Fatalf("迁移副本应保留原始 v5 输入: %v", err)
++			}
++		})
++	}
++}
++
++func TestLoadV6ClearsLegacyNonDockerScopeProfile(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "state.json")
++	data := v5StateData(t, "stub", LeaseActive)
++	var persisted map[string]any
++	if err := json.Unmarshal(data, &persisted); err != nil {
++		t.Fatal(err)
++	}
++	persisted["version"] = StateVersion
++	persisted["leases"].([]any)[0].(map[string]any)["scope_profile_id"] = "multica-qa"
++	persisted["leases"].([]any)[0].(map[string]any)["scope_profile_known"] = true
++	data, err := json.Marshal(persisted)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(path, data, 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	s, err := Load(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	lease := s.Snapshot().Leases[0]
++	if lease.ScopeProfileKnown || lease.ScopeProfileID != "" {
++		t.Fatalf("旧 v6 非 Docker scope profile 必须清理: %+v", lease)
++	}
++}
++
+diff --git a/internal/store/store_v2_test.go b/internal/store/store_v2_test.go
+index 5f422a9..3895e95 100644
+--- a/internal/store/store_v2_test.go
++++ b/internal/store/store_v2_test.go
+@@ -106,0 +107,77 @@ func TestLoadV2AllocatesUniqueExecutionUIDs(t *testing.T) {
++func TestLoadV5FreezesScopeProfileOnLease(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "state.json")
++	data := []byte(`{"version":5,"templates":[{"id":"qa","scope_profile_id":"multica-qa"}],"instances":[],"leases":[{"id":"ls-000001","template_id":"qa","provider_kind":"docker","state":"released"}],"executions":[],"artifacts":[],"staged_artifacts":[],"managed_applications":[],"sequences":{}}`)
++	if err := os.WriteFile(path, data, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	s, err := Load(path)
++	if err != nil {
++		t.Fatalf("v5 状态文件应可迁移加载: %v", err)
++	}
++	lease := s.Snapshot().Leases[0]
++	if lease.ScopeProfileID != "multica-qa" || !lease.ScopeProfileKnown || s.Snapshot().Version != StateVersion {
++		t.Fatalf("v5 migration 必须冻结模板 profile 并升级版本: %+v", lease)
++	}
++}
++
++func TestLoadV5RetainsPreMigrationBackupForRollback(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "state.json")
++	v5 := []byte(`{"version":5,"templates":[{"id":"qa","scope_profile_id":"multica-qa"}],"instances":[],"leases":[{"id":"ls-000001","template_id":"qa","provider_kind":"docker","state":"released"}],"executions":[],"artifacts":[],"staged_artifacts":[],"managed_applications":[],"sequences":{}}`)
++	staleGenericBackup := []byte(`{"version":5,"templates":[],"instances":[],"leases":[],"executions":[],"artifacts":[],"staged_artifacts":[],"managed_applications":[],"sequences":{}}`)
++	if err := os.WriteFile(path, v5, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.WriteFile(path+".bak", staleGenericBackup, 0o600); err != nil {
++		t.Fatal(err)
++	}
++	s, err := Load(path)
++	if err != nil {
++		t.Fatalf("v5 状态文件应可迁移加载: %v", err)
++	}
++	if err := s.Mutate(func(*State) {}); err != nil {
++		t.Fatalf("迁移后的状态应可写入: %v", err)
++	}
++	persisted, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !containsVersion(persisted, `"version": `+strconv.Itoa(StateVersion)) {
++		t.Fatalf("迁移后应写入当前版本: %s", persisted)
++	}
++	backup, err := os.ReadFile(path + ".v5.bak")
++	if err != nil {
++		t.Fatalf("v5 回退备份必须保留: %v", err)
++	}
++	if string(backup) != string(v5) {
++		t.Fatalf("回退备份必须保留升级前 v5 状态: %s", backup)
++	}
++	if _, err := Load(path); err != nil {
++		t.Fatalf("v6 持久化后的重启应成功: %v", err)
++	}
++	backup, err = os.ReadFile(path + ".v5.bak")
++	if err != nil {
++		t.Fatalf("重启后读取 v5 回退备份: %v", err)
++	}
++	if string(backup) != string(v5) {
++		t.Fatalf("v6 重启不得覆盖 v5 回退备份: %s", backup)
++	}
++	v5AfterRollback := []byte(`{"version":5,"templates":[{"id":"qa","scope_profile_id":"multica-qa"}],"instances":[],"leases":[{"id":"ls-000001","template_id":"qa","provider_kind":"docker","state":"released"}],"executions":[],"artifacts":[],"staged_artifacts":[],"managed_applications":[],"sequences":{}}`)
++	if err := os.WriteFile(path, v5AfterRollback, 0o600); err != nil {
++		t.Fatalf("模拟回退后的 v5 状态写入: %v", err)
++	}
++	s, err = Load(path)
++	if err != nil {
++		t.Fatalf("再次从 v5 升级应成功: %v", err)
++	}
++	if err := s.Mutate(func(*State) {}); err != nil {
++		t.Fatalf("再次升级后的状态应可写入: %v", err)
++	}
++	backup, err = os.ReadFile(path + ".v5.bak")
++	if err != nil {
++		t.Fatalf("读取第二次升级回退备份: %v", err)
++	}
++	if string(backup) != string(v5AfterRollback) {
++		t.Fatalf("再次升级必须替换为当前 v5 回退输入: %s", backup)
++	}
++}
++
