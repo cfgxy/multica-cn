@@ -434,6 +434,33 @@ describe("QuizGradedPanel", () => {
     expect(api.getPromptQuizSamples.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("keeps a collected row's task outcome while showing pending grading", async () => {
+    const awaitingGrade = {
+      ...row,
+      outcome: "errored",
+      score: null,
+      graded_at: undefined,
+      score_detail: undefined,
+      task_status: "completed",
+      measurement_status: "awaiting_grade",
+    };
+    api.getPromptQuizSamples.mockResolvedValue([awaitingGrade]);
+    api.getCurrentPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      ordered: 1,
+      settled: false,
+      rows: [awaitingGrade],
+      counts: { errored: 1 },
+      scores: { graded: 0, mean: 0 },
+    });
+
+    mount();
+
+    const batch = await screen.findByTestId("quiz-graded-batch");
+    expect(within(batch).getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent("Awaiting result collection");
+    expect(within(batch).getByTestId(`quiz-sample-${row.task_id}`)).toHaveTextContent("errored");
+  });
+
   it("does not poll samples when the server has no current batch", async () => {
     vi.useFakeTimers();
     api.getPromptQuizSamples.mockResolvedValue([]);

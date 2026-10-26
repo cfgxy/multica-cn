@@ -267,6 +267,9 @@ function SampleRow({
 }) {
   const { t } = useT("self-evolution");
   const checks = parseChecks(row.score_detail);
+  const awaitingGradeStatus = row.measurement_status === "awaiting_grade"
+    ? taskStatusKey(row)
+    : null;
 
   return (
     <li
@@ -285,6 +288,9 @@ function SampleRow({
               ? t(($) => $.quiz.graded.errored)
               : t(($) => $.quiz.graded[taskStatusKey(row)])}
         </Badge>
+        {awaitingGradeStatus !== null ? (
+          <Badge variant="outline">{t(($) => $.quiz.graded[awaitingGradeStatus])}</Badge>
+        ) : null}
         {row.score !== null && row.score !== undefined ? (
           <Badge variant="secondary" data-testid="quiz-sample-score">
             {pct(row.score)}
