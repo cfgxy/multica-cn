@@ -616,9 +616,8 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 
 	// Hold the grant row while resolve starts before expiry, then release it
 	// only after expiry. Authorization must use wall-clock time after waiting.
-	var grantExpiry time.Time
-	if err := testPool.QueryRow(ctx, `UPDATE credential_grant SET expires_at = now() + interval '500 milliseconds' WHERE id = $1 RETURNING expires_at`, grantID).Scan(&grantExpiry); err != nil {
-		t.Fatal("set short grant expiry")
+	if _, err := testPool.Exec(ctx, `UPDATE credential_grant SET expires_at = now() + interval '1 hour' WHERE id = $1`, grantID); err != nil {
+		t.Fatal("set grant expiry after lock observation")
 	}
 	grantLock, err := testPool.Begin(ctx)
 	if err != nil {
@@ -634,7 +633,17 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 		expiryResolve <- code
 	}()
 	waitForCredentialResolveLock(t, ctx)
-	time.Sleep(time.Until(grantExpiry) + 25*time.Millisecond)
+	var grantStillValid bool
+	if err := testPool.QueryRow(ctx, `SELECT expires_at > clock_timestamp() FROM credential_grant WHERE id = $1`, grantID).Scan(&grantStillValid); err != nil {
+		t.Fatal("check grant expiry before advancing deadline")
+	}
+	if !grantStillValid {
+		t.Fatal("resolve did not reach the authorization lock before the grant deadline")
+	}
+	if _, err := grantLock.Exec(ctx, `UPDATE credential_grant SET expires_at = clock_timestamp() - interval '1 millisecond' WHERE id = $1`, grantID); err != nil {
+		_ = grantLock.Rollback(ctx)
+		t.Fatal("expire grant while resolve is waiting")
+	}
 	if err := grantLock.Commit(ctx); err != nil {
 		t.Fatal("release grant-expiry lock")
 	}
