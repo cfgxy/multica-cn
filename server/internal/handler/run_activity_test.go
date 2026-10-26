@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/redact"
 )
@@ -139,6 +140,39 @@ func TestGetRunActivityFailsClosedWhenRejectionAuditFails(t *testing.T) {
 	h.GetRunActivity(w, req)
 	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "messages") || strings.Contains(w.Body.String(), taskID) {
 		t.Fatalf("audit failure response = %d %q, want body-free 503", w.Code, w.Body.String())
+	}
+}
+
+func TestGetRunActivityReadsSparseTaskMessages(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	issueID, taskID := createRunActivityTestIssueTask(t)
+	dbfx.Insert(t, "task_message", testutil.Cols{
+		"task_id": taskID,
+		"seq":     1,
+		"type":    "tool_use",
+		"tool":    "Bash",
+		"input":   testutil.Raw(`'{"command":"pwd"}'::jsonb`),
+	})
+
+	w := httptest.NewRecorder()
+	req := newRequestAs(testUserID, http.MethodGet, "/api/issues/"+issueID+"/tasks/"+taskID+"/activity", nil)
+	req = withURLParams(req, "id", issueID, "taskId", taskID)
+	testHandler.GetRunActivity(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("run activity response = %d: %s", w.Code, w.Body.String())
+	}
+	var response runActivityResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode run activity response: %v", err)
+	}
+	if len(response.SemanticActivity.Messages) != 1 {
+		t.Fatalf("messages = %+v, want one sparse tool_use message", response.SemanticActivity.Messages)
+	}
+	message := response.SemanticActivity.Messages[0]
+	if message.Tool != "Bash" || message.Content != "" || message.Output != "" {
+		t.Fatalf("sparse message = %+v, want tool only with empty absent text fields", message)
 	}
 }
 

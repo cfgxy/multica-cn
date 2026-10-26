@@ -268,10 +268,10 @@ const listTaskMessagesPage = `-- name: ListTaskMessagesPage :many
 SELECT
     id, task_id, seq,
     left(type, 64) AS type,
-    left(tool, 256) AS tool,
-    left(content, 2048) AS content,
+    COALESCE(left(tool, 256), '') AS tool,
+    COALESCE(left(content, 2048), '') AS content,
     CASE WHEN input IS NULL OR octet_length(input::text) <= 2048 THEN input::jsonb ELSE NULL::jsonb END AS input,
-    left(output, 2048) AS output,
+    COALESCE(left(output, 2048), '') AS output,
     created_at, is_error,
     (octet_length(type) > octet_length(left(type, 64))
       OR coalesce(octet_length(tool) > octet_length(left(tool, 256)), false)
