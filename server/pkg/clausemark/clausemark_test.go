@@ -176,6 +176,23 @@ func TestRenderRemovesInlineClauseBlocks(t *testing.T) {
 	}
 }
 
+func TestStaticRemovesManagedClausesWithoutRenderingMarkers(t *testing.T) {
+	inline := "# 规范\n\n## 纪律\n\n- **每日同步**：开工前回报计划与阻塞。\n- **其他条款**：保持不动。\n"
+	legacySnapshot := Render(inline, []RenderedClause{clauseA(1)})
+
+	static := Static(legacySnapshot, []RenderedClause{clauseA(1)})
+	if strings.Contains(static, "每日同步") || strings.Contains(static, "clause:id=") {
+		t.Fatalf("static carrier retained a managed clause or marker:\n%s", static)
+	}
+	if !strings.Contains(static, "其他条款") {
+		t.Fatalf("static carrier lost unrelated content:\n%s", static)
+	}
+	claimed := Render(static, []RenderedClause{clauseA(1)})
+	if strings.Count(claimed, "每日同步") != 1 || !strings.Contains(claimed, OpenTag(clauseA(1).Slug, 1)) {
+		t.Fatalf("runtime render did not inject exactly one clause:\n%s", claimed)
+	}
+}
+
 func TestRenderRemovesSupersededInlineClauseBlocks(t *testing.T) {
 	oldBody := "- **每日同步**：开工前回报计划与阻塞。"
 	newBody := "- **每日同步**：开工前回报计划、阻塞和预计完成时间。"

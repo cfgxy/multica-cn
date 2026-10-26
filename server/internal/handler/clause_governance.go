@@ -89,14 +89,14 @@ type clauseGovernanceMigration struct {
 }
 
 type clauseGovernanceOverview struct {
-	WorkspaceID        string                   `json:"workspace_id"`
-	Since              string                   `json:"since"`
-	DynamicDisabled    bool                     `json:"dynamic_injection_disabled"`
-	Clauses            []clauseGovernanceClause `json:"clauses"`
-	StatusCounts       map[string]int64         `json:"status_counts"`
-	Totals             clauseGovernanceTotals   `json:"totals"`
-	Migration          clauseGovernanceMigration `json:"migration"`
-	RollbackSuggestions []PromptProposalResponse `json:"rollback_suggestions"`
+	WorkspaceID         string                    `json:"workspace_id"`
+	Since               string                    `json:"since"`
+	DynamicDisabled     bool                      `json:"dynamic_injection_disabled"`
+	Clauses             []clauseGovernanceClause  `json:"clauses"`
+	StatusCounts        map[string]int64          `json:"status_counts"`
+	Totals              clauseGovernanceTotals    `json:"totals"`
+	Migration           clauseGovernanceMigration `json:"migration"`
+	RollbackSuggestions []PromptProposalResponse  `json:"rollback_suggestions"`
 }
 
 // ListClauseGovernance — GET /api/prompt-legislation/governance/clauses?days=N
@@ -231,7 +231,7 @@ func (h *Handler) ListClauseGovernance(w http.ResponseWriter, r *http.Request) {
 
 type clauseGovernanceSearch struct {
 	Query   string                   `json:"query"`
-	Matched int                     `json:"matched"`
+	Matched int                      `json:"matched"`
 	Clauses []clauseGovernanceClause `json:"clauses"`
 }
 
@@ -339,13 +339,13 @@ type clauseVersionEntry struct {
 }
 
 type clauseBindingEntry struct {
-	ID                  string          `json:"id"`
-	Scope               string          `json:"scope"`
-	ScopeID             string          `json:"scope_id"`
-	Status              string          `json:"status"`
-	Conditions          json.RawMessage `json:"conditions,omitempty"`
-	SinceClauseVersion  int32           `json:"since_clause_version"`
-	CreatedAt           string          `json:"created_at"`
+	ID                 string          `json:"id"`
+	Scope              string          `json:"scope"`
+	ScopeID            string          `json:"scope_id"`
+	Status             string          `json:"status"`
+	Conditions         json.RawMessage `json:"conditions,omitempty"`
+	SinceClauseVersion int32           `json:"since_clause_version"`
+	CreatedAt          string          `json:"created_at"`
 }
 
 type clauseQualityDayEntry struct {
@@ -359,18 +359,18 @@ type clauseQualityDayEntry struct {
 }
 
 type clauseGovernanceDetail struct {
-	ID            string                   `json:"id"`
-	Slug          string                   `json:"slug"`
-	Title         string                   `json:"title"`
-	Status        string                   `json:"status"`
-	LatestVersion int32                    `json:"latest_version"`
-	Versions      []clauseVersionEntry     `json:"versions"`
-	Bindings      []clauseBindingEntry     `json:"bindings"`
-	Proposals     []PromptProposalResponse `json:"proposals"`
-	Quality       []clauseQualityDayEntry  `json:"quality_daily"`
-	Injections    int64                    `json:"injections"`
-	Runs          int64                    `json:"runs"`
-	InjectedTokens int64                   `json:"injected_tokens"`
+	ID             string                   `json:"id"`
+	Slug           string                   `json:"slug"`
+	Title          string                   `json:"title"`
+	Status         string                   `json:"status"`
+	LatestVersion  int32                    `json:"latest_version"`
+	Versions       []clauseVersionEntry     `json:"versions"`
+	Bindings       []clauseBindingEntry     `json:"bindings"`
+	Proposals      []PromptProposalResponse `json:"proposals"`
+	Quality        []clauseQualityDayEntry  `json:"quality_daily"`
+	Injections     int64                    `json:"injections"`
+	Runs           int64                    `json:"runs"`
+	InjectedTokens int64                    `json:"injected_tokens"`
 }
 
 // GetClauseGovernanceDetail — GET /api/prompt-legislation/governance/clauses/{clauseId}?days=N
@@ -512,8 +512,9 @@ type clauseLayerViolation struct {
 }
 
 type clauseDriftEntry struct {
-	// Kind: stale_rev (marker behind the asset), orphan_marker (no live
-	// bound clause), missing_segment (bound clause without a marker).
+	// Kind: stale_rev (legacy marker behind the asset), orphan_marker (legacy
+	// marker without a live bound clause). Active clauses are assembled at
+	// claim time, so a static carrier without a marker is not drift.
 	Kind        string `json:"kind"`
 	Slug        string `json:"slug"`
 	MarkerRev   int    `json:"marker_rev,omitempty"`
@@ -521,8 +522,8 @@ type clauseDriftEntry struct {
 }
 
 type clauseDriftCarrier struct {
-	Scope   string            `json:"scope"`
-	ScopeID string            `json:"scope_id"`
+	Scope   string             `json:"scope"`
+	ScopeID string             `json:"scope_id"`
 	Entries []clauseDriftEntry `json:"entries"`
 }
 
@@ -544,12 +545,12 @@ func expectedClausesByCarrier(rows []db.ListActiveWorkspaceClausesRow) map[claus
 }
 
 type clauseReconciliation struct {
-	Since             string                 `json:"since"`
-	Healthy           bool                   `json:"healthy"`
+	Since              string                 `json:"since"`
+	Healthy            bool                   `json:"healthy"`
 	LayerSetViolations []clauseLayerViolation `json:"layer_set_violations"`
-	Totals            clauseGovernanceTotals `json:"totals"`
-	DriftCarriers     []clauseDriftCarrier   `json:"drift"`
-	CarriersScanned   int                    `json:"carriers_scanned"`
+	Totals             clauseGovernanceTotals `json:"totals"`
+	DriftCarriers      []clauseDriftCarrier   `json:"drift"`
+	CarriersScanned    int                    `json:"carriers_scanned"`
 }
 
 // GetClauseReconciliation — GET /api/prompt-legislation/governance/reconciliation?days=N
@@ -612,8 +613,8 @@ func (h *Handler) GetClauseReconciliation(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, clauseReconciliation{
-		Since: since.Time.UTC().Format(time.RFC3339),
-		Healthy: healthy,
+		Since:              since.Time.UTC().Format(time.RFC3339),
+		Healthy:            healthy,
 		LayerSetViolations: violations,
 		Totals: clauseGovernanceTotals{
 			Injections:   wsTotals.Injections,
@@ -627,10 +628,9 @@ func (h *Handler) GetClauseReconciliation(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// scanClauseDrift compares every non-empty carrier business column's clause
-// markers against the workspace's active asset set — the same full-union set
-// the re-render builds from, so "in sync" here means "a re-render would be a
-// no-op".
+// scanClauseDrift observes legacy markers left in carrier business columns.
+// Active clauses live in the asset library and are composed at claim time, so
+// an absent marker never means a dynamic clause is missing.
 func (h *Handler) scanClauseDrift(ctx context.Context, workspaceID pgtype.UUID) ([]clauseDriftCarrier, int, error) {
 	activeRows, err := h.Queries.ListActiveWorkspaceClauses(ctx, workspaceID)
 	if err != nil {
@@ -684,19 +684,12 @@ func (h *Handler) scanClauseDrift(ctx context.Context, workspaceID pgtype.UUID) 
 		markers := clausemark.ScanMarkers(c.text)
 		want := expected[clauseCarrierKey{Scope: c.scope, ScopeID: c.id}]
 		var entries []clauseDriftEntry
-		seen := map[string]bool{}
 		for _, mk := range markers {
-			seen[mk.Slug] = true
 			exp, ok := want[mk.Slug]
 			if !ok {
 				entries = append(entries, clauseDriftEntry{Kind: "orphan_marker", Slug: mk.Slug, MarkerRev: mk.Rev})
 			} else if mk.Rev != exp {
 				entries = append(entries, clauseDriftEntry{Kind: "stale_rev", Slug: mk.Slug, MarkerRev: mk.Rev, ExpectedRev: exp})
-			}
-		}
-		for slug, exp := range want {
-			if !seen[slug] {
-				entries = append(entries, clauseDriftEntry{Kind: "missing_segment", Slug: slug, ExpectedRev: exp})
 			}
 		}
 		if len(entries) > 0 {
