@@ -144,6 +144,73 @@ func TestAgentCommentsRequireWorkspaceResponsibilityMention(t *testing.T) {
 	}
 }
 
+func TestAgentCommentSelfMentionGateRejectsBeforeWrites(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := dbfx.Runtime(t, "self-mention-gate-runtime")
+	authorID := dbfx.Agent(t, "self-mention-gate-author", runtimeID)
+	otherID := dbfx.Agent(t, "self-mention-gate-other", runtimeID)
+	issueID := dbfx.Issue(t, "agent self mention gate")
+	commentID := dbfx.Comment(t, issueID, "original body")
+	taskID := dbfx.Task(t, authorID, testutil.Cols{
+		"runtime_id":         runtimeID,
+		"issue_id":           issueID,
+		"originator_user_id": testUserID,
+		"status":             "running",
+		"started_at":         testutil.Raw("now()"),
+	})
+
+	selfContent := fmt.Sprintf("[@负责人](mention://agent/%s) [@另一个别名](mention://agent/%s)", strings.ToUpper(authorID), authorID)
+	request := func(method, targetCommentID, content string) *http.Request {
+		req := commentRequest(method, issueID, targetCommentID, map[string]any{"content": content})
+		req.Header.Set("X-Agent-ID", authorID)
+		req.Header.Set("X-Task-ID", taskID)
+		return req
+	}
+
+	for _, tc := range []struct {
+		name, method, targetCommentID string
+	}{
+		{"create", http.MethodPost, ""},
+		{"content edit", http.MethodPut, commentID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var result map[string]string
+			h := testHandler.CreateComment
+			if tc.method == http.MethodPut {
+				h = testHandler.UpdateComment
+			}
+			testutil.Call(t, h, request(tc.method, tc.targetCommentID, selfContent)).Want(http.StatusUnprocessableEntity).JSON(&result)
+			if result["error"] != "agents cannot mention themselves in comments" {
+				t.Fatalf("self-mention rejection = %+v", result)
+			}
+		})
+	}
+
+	if got := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, issueID); got != 1 {
+		t.Fatalf("comments = %d, want original only", got)
+	}
+	var content string
+	dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, commentID).Scan(&content)
+	if content != "original body" {
+		t.Fatalf("rejected edit changed comment to %q", content)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, authorID); got != 1 {
+		t.Fatalf("author tasks = %d, want only the running author task", got)
+	}
+
+	allowedContent := fmt.Sprintf("[@%s](mention://member/%s) [@负责人](mention://agent/%s)", "Member", testUserID, otherID)
+	var created CommentResponse
+	testutil.Call(t, testHandler.CreateComment, request(http.MethodPost, "", allowedContent)).Want(http.StatusCreated).JSON(&created)
+	if len(created.TriggerOutcomes) != 1 || created.TriggerOutcomes[0].TargetType != "agent" || created.TriggerOutcomes[0].TargetID != otherID {
+		t.Fatalf("same-label cross-agent handoff = %+v", created.TriggerOutcomes)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, otherID); got != 1 {
+		t.Fatalf("cross-agent handoff tasks = %d, want 1", got)
+	}
+}
+
 func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
