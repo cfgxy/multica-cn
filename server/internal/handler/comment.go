@@ -1610,6 +1610,16 @@ func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue 
 	return true, nil
 }
 
+// assignedAgentMayReplyToMemberWithoutMention allows the direct agent assignee
+// to close a member's thread without manufacturing a dispatch. Every other
+// agent-authored comment still requires a responsibility mention.
+func assignedAgentMayReplyToMemberWithoutMention(issue db.Issue, parent *db.Comment, actorID string) bool {
+	return parent != nil &&
+		parent.AuthorType == "member" &&
+		issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" &&
+		issue.AssigneeID.Valid && uuidToString(issue.AssigneeID) == actorID
+}
+
 type CommentTriggerAgentResponse struct {
 	ID        string  `json:"id"`
 	Name      string  `json:"name"`
@@ -1935,7 +1945,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
 			return
 		}
-		if !valid {
+		if !valid && !assignedAgentMayReplyToMemberWithoutMention(issue, parentComment, authorID) {
 			writeError(w, http.StatusUnprocessableEntity, "agent comments must mention a responsible workspace agent; squad workers must mention their leader")
 			return
 		}
