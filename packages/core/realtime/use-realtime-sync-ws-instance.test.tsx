@@ -10,6 +10,7 @@ import { defaultStorage } from "../platform/storage";
 import { issueKeys } from "../issues/queries";
 import { chatKeys } from "../chat/queries";
 import { workspaceWorkingAgentsKeys } from "../agents/queries";
+import { projectResourceKeys } from "../projects/resource-queries";
 import { workspaceKeys } from "../workspace/queries";
 import { issueStatusKeys } from "../issue-statuses/queries";
 import {
@@ -261,6 +262,30 @@ describe("useRealtimeSync — ws instance change", () => {
     // connected client. (MUL-6458)
     expect(invalidateSpy).not.toHaveBeenCalledWith({
       queryKey: issueKeys.all("ws-1"),
+    });
+  });
+
+  it.each([
+    "project_resource:created",
+    "project_resource:updated",
+    "project_resource:deleted",
+  ] as const)("invalidates only the changed project's resources for %s", (event) => {
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), {
+      wrapper: createWrapper(qc),
+    });
+    const handler = vi
+      .mocked(ws.on)
+      .mock.calls.find(([registeredEvent]) => registeredEvent === event)?.[1];
+    expect(handler).toBeDefined();
+
+    (handler as (payload: unknown) => void)({ project_id: "project-1" });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: projectResourceKeys.list("ws-1", "project-1"),
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({
+      queryKey: projectResourceKeys.list("ws-1", "project-2"),
     });
   });
 
