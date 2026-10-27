@@ -28,6 +28,43 @@ func TestAuthorizeBranchAdoptionReturnsTrustedSnapshot(t *testing.T) {
 	}
 }
 
+func TestAuthorizeBranchAdoptionAllowsCompletedSourceTask(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fixture := newBranchAdoptionAuthorizationFixture(t)
+	dbfx.Exec(t, `UPDATE issue SET suspended_at = NULL WHERE id = $1`, fixture.sourceIssueID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, fixture.sourceTaskID)
+
+	w := testutil.Call(t, testHandler.AuthorizeBranchAdoption,
+		branchAdoptionAuthorizationRequest(fixture.continuationTaskID, fixture.sourceTaskID, fixture.branch, testWorkspaceID)).Want(http.StatusOK)
+	var response BranchAdoptionAuthorizationResponse
+	w.JSON(&response)
+	if response.SourceIssueSuspended || !response.SourceTaskCompleted || !response.ContinuationTaskIsRunning {
+		t.Fatalf("completed source authorization response = %+v", response)
+	}
+}
+
+func TestBranchAdoptionSourceCanContinue(t *testing.T) {
+	tests := []struct {
+		name                 string
+		sourceIssueSuspended bool
+		sourceTaskCompleted  bool
+		want                 bool
+	}{
+		{name: "suspended issue", sourceIssueSuspended: true, want: true},
+		{name: "completed source task", sourceTaskCompleted: true, want: true},
+		{name: "neither", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := branchAdoptionSourceCanContinue(tt.sourceIssueSuspended, tt.sourceTaskCompleted); got != tt.want {
+				t.Fatalf("branchAdoptionSourceCanContinue(%v, %v) = %v, want %v", tt.sourceIssueSuspended, tt.sourceTaskCompleted, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAuthorizeBranchAdoptionRejectsInvalidMappings(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
