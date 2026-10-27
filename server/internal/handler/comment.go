@@ -1556,7 +1556,7 @@ func (h *Handler) validateExplicitAgentMentions(ctx context.Context, issue db.Is
 }
 
 const (
-	agentCommentMentionPolicy    = "Agent comments may contain at most one valid responsibility mention in the standard [@Label](mention://agent/<uuid>) form; agents cannot mention themselves; a non-leader member of the squad currently assigned to the issue must mention exactly that squad's leader; a directly assigned agent may reply to a member parent without a valid responsibility mention; /note skips explicit target admission but does not bypass responsibility rules; plain text and malformed or unsupported mention links do not count."
+	agentCommentMentionPolicy    = "Agent comments may contain at most one valid responsibility mention in the standard [@Label](mention://agent/<uuid>) form; agents cannot mention themselves; a non-leader member of the squad currently assigned to the issue must mention exactly that squad's leader; a directly assigned agent may reply to a member parent, and that squad's leader may reply to a member or squad-worker parent, without a valid responsibility mention; /note skips explicit target admission but does not bypass responsibility rules; plain text and malformed or unsupported mention links do not count."
 	noResponsibilityMentionError = "agent comments must mention one valid responsibility agent"
 )
 
@@ -1649,14 +1649,42 @@ func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue 
 	return "", nil
 }
 
-// assignedAgentMayReplyToMemberWithoutMention allows the direct agent assignee
-// to close a member's thread without manufacturing a dispatch. Every other
-// agent-authored comment still requires a responsibility mention.
-func assignedAgentMayReplyToMemberWithoutMention(issue db.Issue, parent *db.Comment, actorID string) bool {
-	return parent != nil &&
-		parent.AuthorType == "member" &&
-		issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" &&
-		issue.AssigneeID.Valid && uuidToString(issue.AssigneeID) == actorID
+// agentMayReplyWithoutResponsibilityMention allows a direct agent assignee to
+// close a member's thread and an assigned squad's leader to close a member or
+// squad-worker thread without manufacturing a dispatch. Callers use it only
+// after confirming that no valid responsibility mention was supplied; every
+// other responsibility rule still applies.
+func (h *Handler) agentMayReplyWithoutResponsibilityMention(ctx context.Context, issue db.Issue, parent *db.Comment, actorID string) (bool, error) {
+	if parent == nil || !issue.AssigneeType.Valid || !issue.AssigneeID.Valid {
+		return false, nil
+	}
+	if issue.AssigneeType.String == "agent" {
+		return parent.AuthorType == "member" && uuidToString(issue.AssigneeID) == actorID, nil
+	}
+	if issue.AssigneeType.String != "squad" {
+		return false, nil
+	}
+	squad, err := h.Queries.GetSquadByAssignee(ctx, db.GetSquadByAssigneeParams{
+		ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if uuidToString(squad.LeaderID) != actorID {
+		return false, nil
+	}
+	if parent.AuthorType == "member" {
+		return true, nil
+	}
+	if parent.AuthorType != "agent" || uuidToString(parent.AuthorID) == actorID {
+		return false, nil
+	}
+	return h.Queries.IsSquadMember(ctx, db.IsSquadMemberParams{
+		SquadID: squad.ID, MemberType: "agent", MemberID: parent.AuthorID,
+	})
 }
 
 func (h *Handler) admitEditedAgentResponsibilityMention(w http.ResponseWriter, r *http.Request, issue db.Issue, existing db.Comment, content, actorID string) bool {
@@ -1680,8 +1708,15 @@ func (h *Handler) admitEditedAgentResponsibilityMention(w http.ResponseWriter, r
 			parentComment = &parent
 		}
 	}
-	if reason == noResponsibilityMentionError && assignedAgentMayReplyToMemberWithoutMention(issue, parentComment, actorID) {
-		return true
+	if reason == noResponsibilityMentionError {
+		allowed, allowedErr := h.agentMayReplyWithoutResponsibilityMention(r.Context(), issue, parentComment, actorID)
+		if allowedErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
+			return false
+		}
+		if allowed {
+			return true
+		}
 	}
 
 	writeAgentCommentMentionError(w, reason)
@@ -2012,7 +2047,15 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
 			return
 		}
-		if reason != "" && !(reason == noResponsibilityMentionError && assignedAgentMayReplyToMemberWithoutMention(issue, parentComment, authorID)) {
+		allowedWithoutMention := false
+		if reason == noResponsibilityMentionError {
+			allowedWithoutMention, err = h.agentMayReplyWithoutResponsibilityMention(r.Context(), issue, parentComment, authorID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
+				return
+			}
+		}
+		if reason != "" && !allowedWithoutMention {
 			writeAgentCommentMentionError(w, reason)
 			return
 		}
