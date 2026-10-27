@@ -1,0 +1,892 @@
+{
+  "title": "自己進化",
+  "description": "エージェントとスクワッドのプロンプトが時間とともにどう変化したか、その変化の要因を確認します。",
+  "overview": {
+    "loading": "概要を読み込み中",
+    "error": "概要の読み込みに失敗しました",
+    "retry": "再試行",
+    "versions": {
+      "title": "プロンプトバージョン活動",
+      "empty": "どの階層にもバージョン履歴はまだありません。",
+      "currentVersion": "現在 v{{version}}",
+      "currentUnset": "{{count}} 件の対象がそれぞれ前進",
+      "count": "{{subjects}} 対象・全 {{count}} バージョン",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "品質読み取り（過去 {{days}} 日）",
+      "empty": "この期間に測定されたランはありません。",
+      "runs": "{{count}} ラン",
+      "subjects": "読み取りありエージェント {{count}}",
+      "excluded": "環境またはプロバイダ障害により {{count}} ランを除外"
+    },
+    "quiz": {
+      "title": "問題バンクの結論",
+      "empty": "記録された測定はまだありません。",
+      "versions": "ベースライン v{{baseline}} → v{{current}}",
+      "singleVersion": "現在 v{{current}}（初バージョン、ベースラインなし）",
+      "insufficientSample": "サンプル不足（ベースラインに {{baseline}} 件、現在に {{current}} 件の有効読み取りが必要）",
+      "lastMeasured": "最終測定 {{date}}"
+    },
+    "proposals": {
+      "title": "提案プール",
+      "intro": "提案は日次ふりかえりの自動分析でプールに入り、手動での起草も可能です。",
+      "counts": "提案 {{total}} 件 · オーナー承認待ち {{pending}} 件",
+      "lastAuto": "最新の自動提案（日次ふりかえり）：{{date}}",
+      "noneAuto": "自動提案はまだありません。",
+      "empty": "プールは空です。日次ふりかえりを設定すると、毎日の分析で提案が自動的にプールに入ります。"
+    },
+    "experiences": {
+      "title": "タスク経験候補",
+      "loading": "タスク経験を読み込み中",
+      "error": "タスク経験を読み込めませんでした",
+      "retry": "再試行",
+      "empty": "検証済みの適応パターンはまだありません。",
+      "proposalsLink": "提案ガバナンスを確認",
+      "sourceCount": "完了したタスク {{count}} 件で確認",
+      "sourceTask": "タスク {{task}} · {{policy}} · {{date}}",
+      "currentStrategy": "現在の方法：{{strategy}}",
+      "scope": "適用範囲 {{scope}}",
+      "allowedActions": "許可された操作：{{actions}}",
+      "limitation": "証拠の制限",
+      "repeatedLimit": "繰り返し観測されたタスク単位の証拠は、承認済みの workspace ポリシーではありません。提案はガバナンス、クイズ、適用の各ゲートを完了するまで下書きです。",
+      "draftProposal": "提案の下書きを作成",
+      "creatingProposal": "下書きを作成中…",
+      "proposalCreated": "下書きを作成 · 提案プールを開く",
+      "createFailed": "提案の下書きを作成できませんでした。候補は未適用のままです。",
+      "proposalName": "反復適応候補 {{candidate}}（{{count}} 件）",
+      "proposalBody": "トリガー：{{trigger}}\n適用範囲：{{scope}}\n提案する方針：{{strategy}}\n許可する操作：{{actions}}\nソースタスク：{{tasks}}\n制限：{{limitation}} ガバナンスによる承認・適用まで有効な方針は変わりません。"
+    },
+    "knowledge": {
+      "title": "ナレッジミラー",
+      "empty": "登録ディレクトリはまだありません。",
+      "dirs": "ディレクトリ {{count}} 件",
+      "entries": "エントリ {{count}} 件",
+      "lastScan": "前回スキャン：{{result}} · {{date}}",
+      "neverScanned": "未スキャン"
+    },
+    "skills": {
+      "title": "Skill 観測",
+      "empty": "登録された skill はまだありません。",
+      "count": "skill {{count}} 件",
+      "invocations": "累計明示呼び出し {{count}} 回"
+    },
+    "viewAll": "表示"
+  },
+  "skills": {
+    "choose": "skill を選択",
+    "manage": "skill を管理",
+    "empty": "skill はまだありません。",
+    "history": "バージョン履歴",
+    "noVersions": "バージョン履歴がありません。",
+    "usage": "観測された利用",
+    "allTime": "累計",
+    "last30": "直近30日",
+    "assigned": "割り当て済みエージェント",
+    "invocations_other": "明示的な呼び出し {{count}} 件",
+    "observedSince": "最初に確認した呼び出し：{{date}}。以前の利用は不明です。",
+    "noObserved": "明示的な呼び出しの記録はありません。以前の利用は不明です。",
+    "versionCost": "バージョン別 token 消費量",
+    "measuredRuns": "実行 {{count}} 件、token データあり {{samples}} 件",
+    "notCollected": "実行データ未収集",
+    "noCostData": "token データなし",
+    "insufficientCost": "サンプル不足",
+    "medianTokens": "中央値 {{count}} token",
+    "versionComparison": "バージョン別の測定値",
+    "compareTo": "比較対象",
+    "noComparison": "比較には2つ以上のバージョンが必要です。",
+    "metric": "測定値",
+    "change": "差分",
+    "tokenMetric": "実行 token の中央値",
+    "retryMetric": "再試行した実行の割合",
+    "noComparisonData": "実行データなし",
+    "comparisonCaveat": "明示的な呼び出しのみを集計します。バージョン間の差は観測値であり、skill が変化を引き起こした証拠ではありません。差分の表示には両側でそれぞれ5件以上の有効な実行が必要です。",
+    "useVsControl": "使用グループ vs 対照グループ",
+    "useGroup": "使用グループ",
+    "controlGroup": "対照グループ",
+    "perplexityMetric": "プロンプトパープレキシティ（D3）",
+    "perplexityNotScored": "未スコア",
+    "notComparable": "両側同じプロンプトのため比較不可",
+    "perplexitySamePrompt": "パープレキシティはプロンプトバージョン単位で評価され、両グループは同じプロンプトを読むため差は比較できません。",
+    "firstPassMetric": "一発通過率（D7）",
+    "noReviewData": "レビューデータなし",
+    "useControlCaveat": "対照グループは計測期間内に同ロール・同プロジェクトでスキルを呼び出していない終了済み run です。差分は両側それぞれ 5 サンプル以上で表示されます。",
+    "versionEvents": "バージョンイベント",
+    "noVersionEvents": "バージョンイベントはまだありません（初版はイベントに含まれません）。",
+    "versionEventTitle": "v{{from}} → v{{version}}",
+    "eventBefore": "イベント前 {{count}} run",
+    "eventAfter": "イベント後 {{count}} run",
+    "windowModeDays": "{{days}} 日ウィンドウ",
+    "windowModeUses": "{{uses}} 回使用ウィンドウ",
+    "windowModeNone": "ウィンドウ内の使用なし",
+    "recent": "最近の呼び出し",
+    "chatRun": "チャット実行",
+    "observational": "呼び出し回数は観測値であり、skill の効果を示すものではありません。",
+    "version": "バージョン v{{version}}",
+    "usedAt": "{{date}} · バージョン {{version}}",
+    "diff": "前バージョンとの差分",
+    "restore": "このバージョンを復元",
+    "restoreConfirm": "v{{version}} を新しい v{{next}} として復元します。割り当ては変わりません。",
+    "restoreError": "バージョンを復元できませんでした。",
+    "ownerOnly": "復元できるのはワークスペースのオーナーのみです。",
+    "cancel": "キャンセル",
+    "error": "skill の履歴を読み込めませんでした。",
+    "retry": "再試行",
+    "sources": {
+      "create": "作成",
+      "revision": "改訂",
+      "edit": "編集",
+      "restore": "復元"
+    },
+    "catalogSearchLabel": "検索",
+    "catalogSearchPlaceholder": "名前でスキルを検索",
+    "catalogSourceFilter": "ソース",
+    "catalogSourceAll": "すべてのソース",
+    "catalogSourceWorkspace": "ワークスペース",
+    "catalogSourceRuntime": "ランタイム",
+    "catalogSourcePlugin": "プラグイン",
+    "catalogSelectableHint": "選択可能な行はこのワークスペースにインポート済みのスキルです。下のランタイム/プラグインの検出は表示のみで、インポート後に選択できます。",
+    "catalogNoMatch": "現在の検索またはソース絞り込みに一致する検出結果はありません。",
+    "discoveriesTitle": "ランタイムで検出",
+    "discoveryImport": "インポート",
+    "discoveryImporting": "インポート中…",
+    "discoveryExists": "スキル登録済み",
+    "discoveryLastSeen": "最終検出 {{date}}",
+    "discoveryImportedToast": "スキルをインポートしました。独自のバージョン履歴付きで選択できます。",
+    "discoveryImportFailedToast": "インポートに失敗しました。ランタイム接続を確認して再試行してください。"
+  },
+  "quality": {
+    "scopePicker": {
+      "label": "プロンプト階層",
+      "agent": "エージェント",
+      "squad": "スクワッド",
+      "project": "プロジェクト",
+      "workspace": "ワークスペース",
+      "subjectLabel": "対象",
+      "subjectPlaceholder": "エージェントを選択"
+    },
+    "range": {
+      "label": "期間",
+      "days": "直近 {{count}} 日"
+    },
+    "since": "{{date}} 以降を集計しています。それ以前の実行には計測が入っておらず、分母に含まれません。",
+    "noSubject": {
+      "title": "対象を選択してください",
+      "description": "7 つの次元はプロンプト階層ごとに集計されます。エージェントを選ぶとダッシュボードを読み込みます。"
+    },
+    "loading": "計測値を読み込んでいます",
+    "error": {
+      "title": "ダッシュボードを読み込めませんでした",
+      "retry": "再試行"
+    },
+    "window": {
+      "title": "期間内の全バージョン",
+      "runs": "{{count}} 回の実行",
+      "days": "{{count}} 日"
+    },
+    "timeline": {
+      "title": "バージョン",
+      "version": "v{{version}}",
+      "span": "{{first}} — {{last}}",
+      "compare": "比較",
+      "compareHint": "2 つのバージョンを選択して比較します",
+      "clear": "選択を解除",
+      "empty": "この期間に計測済みの実行を持つバージョンはありません。"
+    },
+    "compare": {
+      "title": "バージョン比較",
+      "description": "7 つの次元を並べて表示します。どちらか一方でもデータがない次元は差分を算出しません。",
+      "dimension": "次元",
+      "delta": "Δ",
+      "noDelta": "—",
+      "close": "閉じる"
+    },
+    "dimensions": {
+      "injected_tokens": {
+        "label": "D1 注入コスト",
+        "hint": "1 回の実行で注入された合成プロンプトのトークン中央値。"
+      },
+      "run_tokens_median": {
+        "label": "D1 実行コスト",
+        "hint": "1 回の実行が消費した総トークンの中央値。"
+      },
+      "discipline": {
+        "label": "D2 規律性",
+        "hint": "規律性スコアの中央値（100 点満点）。各実行は 100 点から始まり、機械的に判定できる条項に違反するごとに減点されます。"
+      },
+      "tool_failure_rate": {
+        "label": "D4 ターン失敗率",
+        "hint": "エージェントがエラーとして受け取ったツール結果の割合。"
+      },
+      "retry_rate": {
+        "label": "D5 リトライ",
+        "hint": "2 回以上の試行を要した実行の割合。"
+      },
+      "failure_attribution": {
+        "label": "D6 プロンプト起因の失敗",
+        "hint": "原因がプロンプトを指す失敗の件数。環境・プロバイダー起因の失敗は数えません。"
+      },
+      "first_pass_rate": {
+        "label": "D7 一発通過率",
+        "hint": "レビューで手戻りなく受け入れられた Issue の割合。"
+      }
+    },
+    "measure": {
+      "ofRuns": "{{count}} 回の実行に基づく",
+      "ratio": "{{numerator}} / {{denominator}}",
+      "excluded": "環境・プロバイダー起因として {{count}} 件を除外",
+      "noData": "データなし",
+      "insufficient": "サンプル不足",
+      "insufficientDetail": "{{sample}} / 必要 {{threshold}}",
+      "reason": {
+        "no_finished_runs": "この期間に完了した実行がありません。",
+        "not_instrumented": "この期間の実行は計測の導入より前のものです。",
+        "no_covered_runs": "この期間にこの計測を持つ実行がありません。",
+        "no_version_content": "このバージョンにはプロンプト本文の記録がありません。",
+        "no_reviewed_issues": "この期間にレビューへ進んだ Issue がありません。",
+        "below_sample_floor": "実行数が宣言された下限を下回っています。",
+        "unknown": "サーバーは理由を示しませんでした。"
+      },
+      "coverage": "{{total}} 回のうち {{covered}} 回を検査",
+      "deductions": "減点明細（{{count}}）"
+    },
+    "perplexity": {
+      "title": "D3 ルール困惑度",
+      "description": "合成後のプロンプトの曖昧性リスクを、ランタイム形態ごとに評価します。",
+      "open": "根拠を表示",
+      "profile": {
+        "label": "ランタイム形態",
+        "member": "一般メンバー実行",
+        "leader_task": "リーダータスク実行",
+        "unknown": "{{key}}"
+      },
+      "profileNote": "各形態は異なる合成ドキュメントに対して評価されるため、統合も平均もしません。",
+      "band": {
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "unknown": "未評価"
+      },
+      "range": "{{low}}% — {{high}}%",
+      "scoredAt": "{{date}} に {{model}} が評価",
+      "reproducibility": "同じバージョンを繰り返し採点しても band は安定し、区間の端点の変動は実測で 10 パーセントポイント以内でした（gpt-6-luna、temperature 0.2、ランタイムごとに 5 回）。",
+      "empty": {
+        "title": "未評価",
+        "description": "このプロンプトはまだどのバージョンも評価されていません。評価がないことは中立の評価ではありません。"
+      },
+      "sheet": {
+        "title": "D3 の根拠",
+        "description": "7 つのサブ次元。それぞれに重みと引用箇所があります。",
+        "score": "スコア",
+        "weight": "重み {{percent}}%",
+        "evidence": "根拠",
+        "evidenceCount": "{{count}} 件",
+        "conflictsWith": "{{target}} と矛盾",
+        "noEvidence": "この項目には jsonl の根拠がありません（ランタイムがオフライン）。",
+        "subDimensions": {
+          "tier_placement": "注入階層の妥当性",
+          "cross_tier_conflict": "階層間のルール衝突",
+          "literal_actionability": "字義どおりの実行可能性",
+          "internal_consistency": "前後の論理整合性",
+          "precedence_clarity": "優先順位の明確さ",
+          "scope_boundary": "責務境界の明確さ",
+          "role_rule_completeness": "役割ルールの網羅性",
+          "unknown": "{{key}}"
+        }
+      }
+    },
+    "reasons": {
+      "title": "D6 失敗理由の内訳",
+      "excluded": "環境・プロバイダー起因の {{count}} 件を除外済み",
+      "empty": "この期間に失敗した実行はありません。"
+    },
+    "sources": {
+      "langfuse": "Langfuse エクスポートは無効です",
+      "scoring_model": "評価モデルを利用できません",
+      "unknown": "{{kind}} を利用できません",
+      "note": "ダッシュボードのデータに影響はありません。"
+    }
+  },
+  "quiz": {
+    "noSubject": "読み取り値はプロンプト階層ごとです。エージェントを選ぶとそのクイズ履歴を読み込みます。",
+    "reading": {
+      "title": "回帰の読み取り値",
+      "description": "同一の固定問題バンクをすべてのプロンプトバージョンに対して繰り返し実行します。読み取り値は単一のスコアではなく分布です。",
+      "error": "読み取り値を取得できませんでした",
+      "noVersion": "このプロンプトには記録されたバージョンがなく、まだ何も測定されていません。",
+      "accumulating": "v{{version}} の有効な読み取り値は {{need}} 回中 {{have}} 回です。グループが揃うまで比較は出ません。",
+      "noBaseline": "v{{version}} は {{count}} 回の実行で測定済み（中央値 {{median}}、四分位範囲 {{iqr}}）で、このプロンプト最初のバージョンです。比較できる以前のバージョンはありません。次のバージョンの基準線になります。",
+      "versions": "基準線 v{{baseline}}、読み取り対象 v{{current}}。",
+      "outcomes": "{{answered}} 回の実行が回答を返し、{{errored}} 回がエラーになりました。どちらの件数も採点ではありません。回答内容の正誤は評価しません。",
+      "incomparable": "{{count}} 件の測定値はこのグループから除外されています。別の問題文、または別のランタイムやモデルで取得されたものです。",
+      "baselineIncomparable": "ベースライングループでも同じ理由で {{count}} 件が除外されています。",
+      "notAGate": "クイズがプロンプトバージョンの公開を止めることはありません。品質の変化を記録するだけです。",
+      "verdict": {
+        "insufficient": "読み取り値なし",
+        "steady": "横ばい",
+        "improved": "改善",
+        "regressed": "回帰"
+      },
+      "stats": {
+        "baseline": "基準線グループ",
+        "current": "現在のグループ",
+        "statistic": "Mann-Whitney z",
+        "threshold": "ノイズ線",
+        "group": "中央値 {{median}}、四分位範囲 {{iqr}}、n={{n}}"
+      }
+    },
+    "bank": {
+      "title": "問題バンク",
+      "description": "すべてのバージョンで同じ問題を使います。本文を編集すると新しいリビジョンになります。",
+      "add": "問題を追加",
+      "revision": "リビジョン {{revision}}",
+      "active": "有効",
+      "retired": "停止中",
+      "discrimination": {
+        "pending": "未判定",
+        "no_signal": "測定値なし",
+        "flat": "現在は識別力なし",
+        "ok": "識別力あり"
+      },
+      "edit": "編集",
+      "delete": "削除",
+      "error": {
+        "title": "問題バンクを取得できませんでした",
+        "write": "問題バンクは変更されていません。"
+      },
+      "empty": {
+        "title": "問題がまだありません",
+        "description": "問題がなければどのバージョンも測定できません。1 問追加して最初の読み取り値を作ります。"
+      },
+      "dialog": {
+        "addTitle": "問題を追加",
+        "editTitle": "問題を編集",
+        "description": "問題文は本番エンティティを指してはいけません。課題キー、ID、リンクは不可です。サーバーは違反する本文を拒否し、どの参照を削除すべきかを示します。",
+        "slug": "スラッグ",
+        "questionTitle": "タイトル",
+        "body": "問題文",
+        "bodyHint": "4000 文字以内。問題文は自己完結させます。クイズ実行の背後に課題はありません。",
+        "rubric": "模範解答と評価項目",
+        "rubricHint": "オーナーのみ閲覧でき、測定対象の実行には送信されません。保存するとこの欄の内容で既存の模範解答を全置換します。",
+        "cancel": "キャンセル",
+        "save": "保存"
+      },
+      "difficulty": {
+        "easy": "易",
+        "medium": "中",
+        "hard": "難"
+      },
+      "import": "標準問題セットを取り込む",
+      "importDone": "{{imported}} 件を取り込みました",
+      "importError": "標準問題セットは取り込まれませんでした。"
+    },
+    "graded": {
+      "title": "採点",
+      "description": "収集済み run の回答を問題ごとの模範解答で項目別に検証し、断言単位の根拠を示します。",
+      "summary": "採点 {{graded}} 件 · 平均 {{mean}}",
+      "ungraded": "未採点",
+      "run": "採点バッチを実行",
+      "ordered": "{{ordered}} 件のクイズ run を発行しました",
+      "refused": "{{count}} 件のエージェントは発行できませんでした",
+      "runError": "採点バッチは発行されませんでした。",
+      "batchLines": "このバッチ：回答 {{answered}} · エラー {{errored}} · 採点 {{graded}}",
+      "samplesTitle": "最近の採点サンプル",
+      "samplesEmpty": "採点サンプルはまだありません。採点バッチを実行すると、run 完了後に根拠が表示されます。",
+      "taskId": "task_id",
+      "measuredAt": "測定日時",
+      "gradedAt": "採点日時",
+      "version": "v{{version}}",
+      "answered": "回答済み",
+      "errored": "エラー",
+      "checkPassed": "{{id}}（{{kind}}）合格：{{evidence}}",
+      "checkFailed": "{{id}}（{{kind}}）不合格：{{evidence}}",
+      "notAGate": "採点は読み取り値でありゲートではありません：公開経路は参照しません。"
+    }
+  },
+  "legislation": {
+    "title": "プロンプト 立法提案",
+    "description": "提案は日次ふりかえりの自動分析でプールに入り、手動での起草も可能です。4 つのプロンプトキャリアに対する条項レベルの草案：送信するとワークスペースオーナーの承認に回され、承認時はサンドボックスで全文を合成して立法ゲートを実行、クリア時のみ発効します。",
+    "filterAll": "すべて",
+    "sourceFilterLabel": "ソースで絞り込む",
+    "sourceFilterAll": "すべてのソース",
+    "runFilterLabel": "実行バッチ",
+    "runFilterAll": "すべての実行",
+    "status": {
+      "draft": "下書き",
+      "pending_owner": "承認待ち",
+      "approved": "承認済み",
+      "enacted": "発効済み",
+      "gate_failed": "ゲート不通過",
+      "rejected": "却下済み"
+    },
+    "changeKind": {
+      "add_clause": "条項追加",
+      "revise_clause": "条項改訂",
+      "remove_clause": "条項削除",
+      "move_clause": "条項移動",
+      "migrate_clause": "条項移行"
+    },
+    "enactmentTargetLabel": "条項の反映先",
+    "enactmentTargetOptions": {
+      "clause_library": "条項ライブラリへ",
+      "static_prompt": "静的プロンプト書き換え"
+    },
+    "carrierScope": {
+      "workspace": "ワークスペース",
+      "project": "プロジェクト",
+      "squad": "Squad",
+      "agent": "エージェント"
+    },
+    "create": "新しい提案",
+    "createTitle": "新しいプロンプト立法提案",
+    "createDescription": "内容ゲートの 5 つの回答が揃って初めて送信できます。各回答は具体的に。",
+    "carrierLabel": "キャリア",
+    "sectionLabel": "対象セクション",
+    "changeKindLabel": "変更種別",
+    "clauseNameLabel": "条項名",
+    "clauseTextLabel": "条項の最終テキスト",
+    "clauseTextPlaceholder": "発効させる条項の原文。削除の場合は空。",
+    "gateAnswersTitle": "内容ゲート — 5 つの回答",
+    "gateLayer": "階層",
+    "gateLayerPlaceholder": "この条項が属する指示階層。",
+    "gateRetention": "存続理由",
+    "gateRetentionPlaceholder": "この条項が存在すべき理由。",
+    "gateCost": "コスト",
+    "gateCostPlaceholder": "これを運ぶ各ランが払う代償。",
+    "gateConflict": "競合",
+    "gateConflictPlaceholder": "触れるまたは置き換える既存条項。",
+    "gateDedup": "重複",
+    "gateDedupPlaceholder": "既存条項の重複ではない理由。",
+    "evidenceLabel": "エビデンスアンカー",
+    "evidenceAdd": "エビデンスアンカーを追加",
+    "evidenceIssue": "Issue ID",
+    "evidenceQuote": "引用",
+    "sourceIssuesLabel": "ソース Issue",
+    "problemLabel": "解決する問題",
+    "expectedEffectLabel": "期待する効果",
+    "expectedGainLabel": "期待する向上",
+    "valueScoreLabel": "価値スコア",
+    "cancel": "キャンセル",
+    "saveDraft": "下書き保存",
+    "submit": "承認に送信",
+    "edit": "下書きを編集",
+    "list": "提案一覧",
+    "detailTitle": "提案詳細",
+    "createdAt": "作成日時",
+    "enactedVersion": "発効バージョン",
+    "mergedFrom": "統合された草案",
+    "gateErrors": "ゲートエラー",
+    "gateWarnings": "ゲート警告",
+    "rejectReason": "却下理由",
+    "baselineUsed": "サンドボックス基準",
+    "preview": "diff をプレビュー",
+    "previewTitle": "全文 diff レビュー",
+    "previewDescription": "承認するとサンドボックスでキャリア全体を合成し立法ゲートを実行します。下の diff を確認してください——明示的な確認なしでは承認されません。",
+    "diffEmpty": "合成後のテキスト変更はありません。",
+    "diffLoadError": "プレビューの読み込みに失敗しました。",
+    "confirmPreviewed": "全文 diff を確認しました",
+    "approve": "承認",
+    "approveBatch": "一括承認",
+    "batchPreviewTitle": "一括承認 — 全文 diff",
+    "batchLoading": "diff を読み込み中…",
+    "selectHint": "一括承認する承認待ち提案を選択（最大 20 件）。",
+    "batchResult": "一括結果",
+    "reject": "却下",
+    "restore": "下書きに戻す",
+    "rework": "手直し",
+    "enact": "発効",
+    "enactHint": "ゲートを再実行。クリア時のみ発効します。",
+    "rejectDialogTitle": "提案を却下",
+    "rejectPlaceholder": "却下理由は記録に残ります。",
+    "rejectConfirm": "却下する",
+    "ownerOnly": "オーナーのみ",
+    "source": {
+      "manual": "手動",
+      "retrospective": "日次ふりかえり",
+      "merged": "統合"
+    },
+    "empty": "提案はまだありません。",
+    "emptyHint": "実際の実行エビデンスから起草するか、日次ふりかえりに任せてください。",
+    "emptyConfig": "日次ふりかえりを設定",
+    "error": "書き込みに失敗しました。入力を確認して再試行してください。",
+    "batchPartial": "一括処理で発効しなかった提案があります——各結果を確認してください。",
+    "jevAdvisoryLabel": "ローカルモデル警告",
+    "jevStage": {
+      "submit": "提出時プリチェック",
+      "gate": "ゲートソフト判定"
+    },
+    "jevThreshold": "しきい値",
+    "jevWarnFlag": "警告",
+    "jevDisclaimer": "低コストの警告参考値です。確率根拠と合わせて判断し、単独で処理判断の根拠にしないでください（warn-only 副背路、ゲート判定には影響しません）。",
+    "jevUnavailable": "利用不可、スキップしました（本体フローには影響しません）"
+  },
+  "retrospective": {
+    "title": "日次ふりかえり",
+    "description": "実行エージェントを選択：そのエージェントの 1 回のランが、振り返り期間内の完了 Issue の実行内容を読み取り、Prompt 改善ドラフトを立法プールへ登録します。ランは Issue を作成せず、Issue コメントも投稿しません。",
+    "enabled": "定期実行を有効化",
+    "includeInReview": "in_review の Issue も対象にする",
+    "windowDays": "参照ウィンドウ（日）",
+    "save": "設定を保存",
+    "runs": "実行履歴",
+    "runTitle": "毎日のふりかえり{{stamp}}",
+    "viewResults": "成果を見る",
+    "trigger": "今すぐ実行",
+    "status": {
+      "succeeded": "成功",
+      "failed": "失敗",
+      "running": "実行中"
+    },
+    "window": "ウィンドウ",
+    "scanned": "スキャン",
+    "analyzed": "分析",
+    "created": "作成",
+    "merged": "統合",
+    "duplicates": "重複スキップ",
+    "errorLabel": "エラー",
+    "empty": "実行履歴はまだありません。",
+    "saveOk": "ふりかえり設定を保存しました。",
+    "triggerOk": "振り返りランを開始しました。",
+    "rerun": "再実行",
+    "agentTitle": "実行エージェント",
+    "agentDescription": "毎日の総振り返りは選択したエージェントの 1 回のランとして実行されます：期間内の完了 Issue を読み取り改善ドラフトを抽出します。Issue の作成もコメントも行いません。",
+    "agentLabel": "実行エージェント",
+    "agentPlaceholder": "エージェントを選択",
+    "agentArchivedSuffix": "（アーカイブ済み）",
+    "agentArchivedHint": "このエージェントはアーカイブ済みです。ランが失敗するため、他のエージェントを選択してください。",
+    "agentTriggerBlocked": "実行可能なエージェントが未設定です：上の設定でエージェントを選択してから実行してください。",
+    "emptyDescription": "定時または手動の実行後に、ここにランの記録が表示されます。",
+    "viewDetail": "詳細",
+    "detailTitle": "ランの詳細",
+    "triggerLabel": "トリガー",
+    "triggerSource": {
+      "schedule": "定時",
+      "manual": "手動"
+    },
+    "windowLabel": "参照ウィンドウ",
+    "startedAt": "開始時刻",
+    "finishedAt": "終了時刻",
+    "duration": "所要時間",
+    "durationRunning": "実行中…",
+    "statsLabel": "統計",
+    "failureLabel": "失敗理由",
+    "scannedIssues": "スキャンした Issue",
+    "analyzedIssues": "分析した Issue",
+    "noIssues": "なし",
+    "viewLog": "実行ログを見る",
+    "run_errors": {
+      "agent_not_configured": "実行エージェントが設定されていません：上の設定でエージェントを選択し、保存してから再実行してください。",
+      "agent_missing": "設定された実行エージェントが見つかりません：上の設定で別のエージェントを選び直し、保存してください。",
+      "agent_archived": "設定された実行エージェントはアーカイブ済みです：上の設定で別のエージェントを選び直し、保存してください。",
+      "agent_runtime_missing": "設定された実行エージェントにランタイムがありません：エージェント設定でランタイムを割り当ててから、再実行してください。",
+      "window_scan_failed": "ルックバックウィンドウの走査に失敗したため、この実行は中断されました。次回の実行で自動的に再試行されます。",
+      "watermark_check_failed": "分析済み Issue の確認に失敗したため、この実行は中断されました。次回の実行で自動的に再試行されます。",
+      "scan_scope_record_failed": "走査した Issue 一覧の記録に失敗したため、この実行は中断されました。次回の実行で自動的に再試行されます。",
+      "task_enqueue_failed": "エージェント実行のキュー投入に失敗したため、この実行は中断されました。次回の実行で自動的に再試行されます。",
+      "agent_report_invalid": "エージェントの最終メッセージが有効なレトロスペクティブ報告ではなかったため、この実行の結果は破棄されました。次回の実行で同じウィンドウを再走査します。",
+      "agent_no_report": "エージェントの実行は終了しましたが、レトロスペクティブ報告は生成されませんでした。次回の実行で同じウィンドウを再走査します。",
+      "agent_run_failed": "エージェントの実行が報告前に失敗しました。次回の実行で同じウィンドウを再走査します。",
+      "report_out_of_scope": "エージェントがこの実行のウィンドウ外の Issue（{{issue_id}}）を分析したため、報告全体を拒否し、何も記録していません。",
+      "draft_out_of_scope": "エージェントがこの実行のウィンドウ外の Issue（{{issue_id}}）を草案で参照したため、報告全体を拒否し、何も記録していません。",
+      "task_not_completed": "エージェントのプラットフォーム実行が完了しませんでした（失敗・キャンセル・期限切れ）。この実行は失敗として終了しました。次回の実行で同じウィンドウを再走査します。",
+      "task_never_enqueued": "エージェント実行がキューに到達しませんでした（ワークスペースまたはエージェントが利用不可）。この回は終了しました。次回の実行で自動的に再試行されます。"
+    },
+    "run_error_fallback": "この実行は失敗しました。詳細はありません。次回の実行で自動的に再試行されます。"
+  },
+  "knowledge": {
+    "title": "ナレッジライブラリ",
+    "description": "bd memories ディレクトリは接続済みプロジェクトから自動検出されるか、下から手動追加します。エントリは読み取り専用でミラーされ、採用するとバックグラウンドでナレッジハブへ転送されます。",
+    "register": "ディレクトリを登録",
+    "registerTitle": "ナレッジディレクトリを登録",
+    "registerDescription": "このパスを手動追加ソースとして登録します。初回の読み取り専用スキャンはバックグラウンドで実行されます。ナレッジハブは別途指定し、ここでは登録しません。",
+    "kindLabel": "ディレクトリ種別",
+    "kind": {
+      "ultimate": "ナレッジハブ",
+      "candidate_cli": "手動追加",
+      "candidate_auto": "自動検出"
+    },
+    "pathLabel": "ディレクトリパス",
+    "labelLabel": "表示ラベル",
+    "labelPlaceholder": "任意",
+    "cancel": "キャンセル",
+    "registerSubmit": "登録",
+    "dirsTitle": "登録済みディレクトリ",
+    "entriesTitle": "エントリーミラー",
+    "entryCount": "{{n}} 件",
+    "lastScan": "前回スキャン（{{result}}）：追加 {{added}}、更新 {{updated}}、削除 {{removed}}",
+    "neverScanned": "未スキャン",
+    "scanRequested": "スキャン待ち",
+    "health": {
+      "ok": "正常",
+      "unhealthy": "異常"
+    },
+    "scanResult": {
+      "noop": "変化なし",
+      "changed": "変化あり",
+      "failed": "失敗"
+    },
+    "scan": "今すぐスキャン",
+    "unregister": "登録解除",
+    "advancedTitle": "詳細：外部ソースを追加",
+    "advancedDescription": "このマシン上の bd memories ディレクトリを指定します。表示名は任意です。",
+    "allDirs": "すべてのディレクトリ",
+    "searchPlaceholder": "キーまたは内容を検索",
+    "mirrorState": {
+      "synced": "同期済み",
+      "source_deleted": "ソース削除済み",
+      "source_removed": "ソース解除済み"
+    },
+    "adoptionState": {
+      "pending": "未採用",
+      "transferring": "転送中",
+      "adopted": "採用済み",
+      "failed": "採用失敗"
+    },
+    "adopt": "採用",
+    "adoptedFrom": "{{key}} から採用",
+    "emptyDirs": {
+      "title": "登録済みディレクトリはありません",
+      "description": "接続済みデーモンが bd memories を持つプロジェクトを検出すると自動的にここに表示されます。「詳細」から手動追加もできます。"
+    },
+    "emptyEntries": "現在のフィルターではエントリーがありません。",
+    "error": {
+      "read": "ナレッジの読み込みに失敗しました",
+      "write": "操作は完了しませんでした。",
+      "retry": "再試行"
+    },
+    "ownerOnly": "登録・スキャン・解除・採用はワークスペースのオーナーのみ実行できます。"
+  },
+  "versions": {
+    "title": "バージョン履歴",
+    "manage": "バージョン管理",
+    "description": "有効な変更はすべて新バージョンとして追記され、履歴は書き換えられません。",
+    "bindingNote": "品質評価は実行が取得したバージョンに紐付きます。バッジは各バージョンが処理した実行数を示します。",
+    "subjectTypeLabel": "対象タイプ",
+    "subjectEntityLabel": "対象",
+    "subjectEntityPlaceholder": "対象を選択",
+    "workspaceEntity": "このワークスペース",
+    "typeWorkspace": "ワークスペース",
+    "typeProject": "プロジェクト",
+    "typeSquad": "スクワッド",
+    "typeAgent": "エージェント",
+    "typeAutopilot": "オートパイロット",
+    "typeSkill": "スキル",
+    "snapshot": "スナップショット",
+    "snapshotTitle": "現在有効な内容をスナップショットしますか？",
+    "snapshotBody": "スナップショットは対象の現在有効な設定を新バージョンとして記録します。対象自体の内容は変更されません。",
+    "snapshotConfirm": "スナップショットを作成",
+    "snapshotFailed": "スナップショットに失敗しました",
+    "clearSelection": "選択を解除",
+    "emptyTitle": "バージョンはまだありません",
+    "emptyDescription": "この対象の現在有効な内容から最初のバージョンをスナップショットしてください。",
+    "error": "バージョンの読み込みに失敗しました",
+    "retry": "再試行",
+    "sourceImport": "基線",
+    "sourceEdit": "編集",
+    "sourceRevert": "ロールバック",
+    "sourceAuto": "自動スナップショット",
+    "sourceSnapshot": "スナップショット",
+    "fromVersion": "v{{version}} から",
+    "latest": "最新",
+    "runs": "{{n}} 回の実行",
+    "noRuns": "品質データなし",
+    "activate": "このバージョンに切替",
+    "activateTitle": "v{{version}} を有効化しますか？",
+    "activateBody": "有効化すると、この内容の新バージョンが追記され即時有効になります。履歴は書き換えられません。",
+    "cancel": "キャンセル",
+    "confirmActivate": "確認",
+    "compareTitle": "v{{from}} → v{{to}} を比較",
+    "secretBlocked": "未保存：プロンプトに認証情報が含まれている可能性があります。",
+    "findingLine": "{{line}} 行目"
+  },
+  "clauseGovernance": {
+    "title": "条項ガバナンス", "description": "立法から注入までの条項資産を表示", "window": "集計期間", "d7": "過去 7 日", "d30": "過去 30 日", "d90": "過去 90 日", "d365": "過去 365 日", "refresh": "更新",
+    "banner": { "dynamicOffTitle": "グローバル縮退スイッチが有効です", "dynamicOffBody": "すべての実行でスナップショット注入（静的注入相当）を使用しています", "healthyTitle": "動的注入は正常です", "healthyBody": "{{total}} 回中 {{degraded}} 回が縮退経路で注入されました", "findingsTitle": "照合またはドリフトの検出 {{count}} 件", "findingsBody": "下の「照合とドリフト」セクションを確認してください" },
+    "metrics": { "injections": "注入回数", "runs": "対象実行数", "runsUnit": "{{count}} 回の実行", "clauseTokens": "条項トークン", "clauseTokensNote": "注入された条項のレンダリングから推定", "degraded": "縮退注入", "migration": "移行カバー率" },
+    "scope": { "workspace": "ワークスペース", "project": "プロジェクト", "squad": "チーム", "agent": "エージェント" },
+    "recon": { "title": "照合とドリフト", "healthy": "すべての検査に合格", "findings": "検出 {{count}} 件", "scanned": "スキャン済みキャリア {{count}} 件", "violationsTitle": "レイヤー集合の違反", "violationsEmpty": "期間内にレイヤー集合の違反はありません", "colTime": "時刻", "colTask": "タスク", "colClause": "条項", "colVersion": "バージョン", "colScope": "スコープ", "colInjection": "注入方式", "truncated": "先頭 100 件のみ表示", "degradedFlag": "縮退スナップショット", "driftTitle": "キャリアのドリフト", "driftEmpty": "キャリアのマーカーと資産ライブラリは一致しています（{{count}} 件をスキャン）", "unnamedCarrier": "名前のないキャリア" },
+    "driftKind": { "stale_rev": "リビジョン遅延", "orphan_marker": "孤立マーカー", "missing_segment": "レンダリング区間の欠落" },
+    "driftDesc": { "staleRev": "スナップショット rev {{marker}} → 資産 rev {{expected}}", "orphanMarker": "マーカーはありますが、有効なバインド済み条項がありません", "missingSegment": "スナップショット注入時に有効な条項のレンダリング区間がありません（期待 rev {{expected}}）" },
+    "rollback": { "title": "ロールバック提案", "empty": "処理待ちのロールバック提案はありません", "rollbackTo": "V{{version}} に戻す", "viewProposal": "提案を表示" },
+    "list": { "title": "条項一覧", "filter_all": "すべて", "filter_active": "有効", "filter_deprecated": "停止済み", "filter_revoked": "廃止", "colStatus": "状態", "colClause": "条項", "colVersion": "現在のバージョン", "colScope": "バインドスコープ", "colInjections": "注入", "colRuns": "実行", "colTokens": "トークン", "colAction": "操作", "unbound": "未バインド", "tokensPending": "計測待ち", "tokensPendingHint": "選択期間にこの条項の計測データはありません", "emptyTitle": "条項資産はまだありません", "emptyBody": "立法提案から最初の条項を作成してください", "emptyCta": "提案へ", "openDetail": "詳細を表示", "noFilterResults": "条件に一致する条項はありません" },
+    "detail": { "back": "条項ガバナンスに戻る", "versions": "バージョン", "bindings": "バインド", "proposals": "提案の追跡", "quality": "品質と注入", "latest": "最新", "notFound": "条項が見つからないか削除されています" },
+    "manage": { "title": "条項を管理", "edit": "本文を編集", "content": "条項の本文", "save": "新しいバージョンとして保存", "cancel": "キャンセル", "deactivate": "停止", "deactivateConfirm": "有効なバインドを解除し、キャリアから条項を削除します。条項の記録は後から管理できるよう残ります。", "delete": "条項を削除", "deleteConfirm": "条項、バージョン、バインド、条項の計測データを完全に削除し、キャリアから条項を取り除きます。この操作は取り消せません。", "failure": "操作に失敗しました。権限を確認して再試行してください。" },
+    "version": { "sha": "コンテンツ指紋", "showContent": "本文を展開", "hideContent": "本文を折りたたむ", "compare": "バージョン比較" },
+    "compare": { "title": "V{{a}} ↔ V{{b}} を比較", "sampleInsufficient": "サンプル不足のため、割合による結論は表示しません", "attributableRuns": "帰属可能な実行", "windowRuns": "期間内の帰属可能な実行 {{count}} 件" },
+    "binding": { "scope": "スコープ", "status": "状態", "conditions": "適用条件", "conditionsAll": "すべてのタスク種別", "sinceVersion": "V{{version}} 以降", "createdAt": "有効化日時", "empty": "バインド履歴はありません" },
+    "bindingStatus": { "active": "有効", "superseded": "置換済み", "withdrawn": "撤回済み" },
+    "proposals": { "empty": "関連する提案はありません", "gates": { "layer": "レイヤー", "retention": "保持", "cost": "コスト", "conflict": "競合", "dedup": "重複排除" } },
+    "quality": { "chartTitle": "注入と品質の推移", "chartAria": "過去 {{days}} 日間の完了実行と帰属可能な失敗。下の表に全データを表示", "colDay": "日付", "colVersion": "バージョン", "colFinishedRuns": "完了実行", "colFailed": "帰属可能な失敗", "colExcluded": "除外された失敗", "colTokens": "注入トークン", "colMedianRun": "実行トークン中央値", "unmeasured": "未計測", "emptyWindow": "期間内に注入データはありません" },
+    "status": { "active": "有効", "deprecated": "停止済み", "revoked": "廃止" },
+    "error": { "title": "読み込みに失敗しました", "retry": "再試行" }
+  },
+  "nav": {
+    "label": "自己進化セクション",
+    "overview": "概要",
+    "groupKnowledgeAssets": "ナレッジ資産",
+    "groupMeasures": "計測",
+    "groupLoop": "進化ループ",
+    "groupConfig": "設定",
+    "knowledge": "ナレッジ",
+    "skills": "スキル進化",
+    "quality": "品質",
+    "clauseGovernance": "条項ガバナンス",
+    "quiz": "クイズ",
+    "proposals": "提案",
+    "versions": "バージョン",
+    "retrospective": "毎日の振り返り",
+    "config": "モジュール設定"
+  },
+  "configSource": {
+    "prefix": "適用元：",
+    "module": "モジュール設定",
+    "deploy": "デプロイ既定",
+    "system": "システムレベル"
+  },
+  "sources": {
+    "states": {
+      "ok": "利用可能",
+      "unconfigured": "未設定",
+      "error": "設定エラー",
+      "disabled": "無効"
+    },
+    "reason": "原因：",
+    "impact": "影響："
+  },
+  "secretField": {
+    "placeholder": "新しい値を入力",
+    "keepExisting": "空欄で現在の値を維持"
+  },
+  "segToolbar": {
+    "filters": "フィルター"
+  },
+  "attention": {
+    "title": "要対応",
+    "hint": "対応済みの項目はリストから消えます",
+    "modelUnconfigured": {
+      "title": "モデルサービスが未設定",
+      "description": "品質スコアリングに利用可能な LLM がありません",
+      "action": "設定する"
+    },
+    "modelError": {
+      "title": "モデルサービスの検証に失敗",
+      "action": "設定を確認"
+    },
+    "retrospectiveOff": {
+      "title": "日次ふりかえりが有効ではありません",
+      "description": "提案ループは自動では回らず、プールは手動の起草だけで伸びます",
+      "action": "設定する"
+    },
+    "retrospectiveNoAgent": {
+      "title": "日次ふりかえりに実行エージェントが未選択",
+      "description": "有効でも実行者がいなければ実行は始まりません",
+      "action": "設定する"
+    },
+    "discoveries": {
+      "title": "インポート待ちのスキル発見が {{count}} 件",
+      "action": "確認"
+    }
+  },
+  "knowledgeSeg": {
+    "entries": "エントリ",
+    "dirs": "ディレクトリ",
+    "external": "外部ソース",
+    "addSource": "外部ソースを追加",
+    "entryDrawerSubtitle": "{{dir}} のミラー",
+    "attrDir": "ディレクトリ",
+    "attrMirror": "ミラー状態",
+    "attrAdoption": "取り込み状態",
+    "attrSource": "ソースキー",
+    "attrUpdated": "最終確認",
+    "attrKind": "種別",
+    "attrEntries": "エントリ数",
+    "attrCreated": "登録日",
+    "scanHistory": "スキャン履歴",
+    "viewEntries": "エントリを表示",
+    "unregisterConfirm": "「{{label}}」を登録解除しますか？ミラーされたエントリは保持されますが更新されません。",
+    "emptyExternal": "外部ソースはまだ登録されていません。",
+    "jumpToDirs": "ディレクトリへ移動",
+    "colKey": "キー",
+    "colActions": "操作",
+    "colSource": "ソース",
+    "colPath": "パス",
+    "colHealth": "健全性",
+    "colLastScan": "最終スキャン"
+  },
+  "skillsSeg": {
+    "managed": "管理中のスキル",
+    "discoveries": "発見",
+    "colSkill": "スキル",
+    "colSource": "ソース",
+    "colLatestVersion": "最新版",
+    "colInvocations30d": "過去 30 日",
+    "invocationsValue": "{{count}} 回",
+    "emptyDiscoveries": "ランタイムの発見はまだありません — ランタイムで観測されたスキルがここに表示され、インポートを待ちます。"
+  },
+  "qualityCards": {
+    "title": "データソース状態",
+    "scoringModel": "スコアリングモデル",
+    "langfuse": "Langfuse",
+    "banner": "一部のデータソースが劣化しています — 直近の数値は不完全な場合があります。",
+    "viewSources": "データソース状態を見る",
+    "reasons": {
+      "okValidated": "接続チェックに合格しました（{{date}}）。",
+      "okModule": "モジュール設定を保存済み（未再検証）。",
+      "okDeploy": "デプロイ時に注入された既定値を検出（事前検証なし）。",
+      "error": "接続チェックに失敗しました。",
+      "errorDetail": "接続チェックに失敗：{{error}}",
+      "disabled": "ソースは正常ですが、ワークスペースのスイッチがオフです。",
+      "unconfigured": "このソースの設定が見つかりません。",
+      "langfuseOk": "デプロイ時に注入されたエクスポート認証情報を検出（システムレベル）。",
+      "langfuseMissing": "このデプロイには Langfuse エクスポート認証情報がありません。"
+    },
+    "impacts": {
+      "ok": "すべての指標が正常に収集されています。",
+      "error": "最後に成功したデータを時刻付きで保持中。新規収集は失敗しています。",
+      "disabled": "新規データの収集を停止。履歴は照会可能です。",
+      "unconfigured": "対象の指標にはデータがなく、ガイド状態になります。",
+      "langfuseOk": "会話エクスポートを実行できます。",
+      "langfuseMissing": "会話エクスポートは行われません。"
+    },
+    "actions": {
+      "configure": "設定する",
+      "viewConfig": "設定を見る",
+      "viewError": "エラーを見る",
+      "enable": "有効にする",
+      "deployNotes": "デプロイ側でのみ設定可能"
+    }
+  },
+  "modelConfig": {
+    "title": "モデルサービス",
+    "description": "このワークスペースの品質スコアリング専用の LLM エンドポイント。キーは暗号化して保存され、再表示されません。",
+    "baseUrl": "Base URL",
+    "apiKey": "API キー",
+    "model": "モデル",
+    "consumersTitle": "このエンドポイントの利用者",
+    "scoringConsumer": "品質スコアリング",
+    "saveAndValidate": "検証して保存",
+    "busy": "処理中…",
+    "revalidate": "再チェック",
+    "lastValidated": "最終検証 {{date}}",
+    "neverValidated": "未検証",
+    "validationOk": "接続チェックに合格しました。",
+    "validationFailed": "検証に失敗 — 何も保存されていません",
+    "saveOk": "モデルサービスを保存しました。",
+    "restoreDefault": "デプロイ既定に戻す",
+    "restoreConfirm": "このワークスペースの上書きを削除し、デプロイ既定値を再度適用します。続行しますか？",
+    "restoreOk": "デプロイ既定に戻しました。",
+    "encryptionNotReady": "このデプロイにはワークスペース単位の暗号化キーがないため、保存できません — デプロイ既定値が適用されます。",
+    "errorKind": {
+      "credentials": "認証情報が無効または期限切れ",
+      "model": "モデルが利用不可または拒否",
+      "connection": "接続失敗またはタイムアウト",
+      "notConfigured": "必須フィールドが不足",
+      "other": "その他のエラー"
+    }
+  },
+  "configPage": {
+    "title": "モジュール設定",
+    "description": "以下のモデルサービスが品質スコアリングを支えます。Langfuse はインスタンス単位のため、ここでは読み取り専用です。"
+  },
+  "mobile": { "title": "自己進化", "overview": "概要", "versions": "バージョン", "proposals": "提案", "proposal_count_label": "件の提案", "pending_owner": "オーナーの確認待ち", "skills": "Skills", "review_diff": "提案の差分を確認", "empty_diff": "差分なし", "cancel": "キャンセル", "approve": "承認", "approving": "承認中…", "reject": "却下", "rejecting": "却下中…", "action_failed": "操作に失敗しました。変更は保存されていません。内容を確認して再試行してください。", "reject_reason": "却下理由", "reject_unavailable": "この端末では理由を入力できません。", "error": "提案プレビューを読み込めません", "load_error": "一部データを読み込めません。タップして再試行してください。", "review_approve": "確認して承認", "no_proposals": "提案はありません", "clauses": "条項ガバナンス", "injections": "回使用", "no_clauses": "管理対象の条項はありません", "retrospective": "振り返り実行", "issues_analyzed": "件を分析", "no_retrospectives": "振り返り記録はありません" }
+}

@@ -1,0 +1,65 @@
+{
+  "button": {
+    "start": "음성 대화 시작",
+    "stop": "음성 대화 종료",
+    "disabled_no_target": "음성 대화에는 대상 에이전트가 필요합니다. 에이전트를 선택한 뒤 말해 주세요. 텍스트 입력에는 영향이 없습니다.",
+    "disabled_squad": "음성 대화는 단일 에이전트를 대상으로 하며, 스퀘드는 리더에게 전달됩니다. 텍스트 입력에는 영향이 없습니다."
+  },
+  "overlay": {
+    "title": "음성 대화",
+    "connecting": "연결 중…",
+    "live": "듣고 있습니다. 편하게 말씀하세요",
+    "user_label": "나",
+    "assistant_label": "에이전트",
+    "end": "종료",
+    "dismiss": "닫기",
+    "permission_denied": "음성 대화에는 마이크 권한이 필요합니다. 시스템 설정에서 허용한 후 다시 시도해 주세요.",
+    "use_prompt": "말씀하신 내용은 종료 후 입력란에 채워집니다."
+  },
+  "failure": {
+    "connection_failed": "지금은 음성에 연결할 수 없습니다. 문자 전송은 평소와 같이 이용할 수 있습니다.",
+    "unavailable": {
+      "no_voice_runtime": "이 에이전트에는 음성 런타임이 아직 연결되지 않았습니다. 워크스페이스 관리자에게 설정을 요청해 주세요. 문자 전송은 영향을 받지 않습니다.",
+      "instance_disabled": "이 에이전트의 음성 런타임은 음성이 비활성화되어 있습니다. 문자 전송은 평소와 같이 이용할 수 있습니다.",
+      "instance_not_active": "이 에이전트의 음성 런타임이 현재 활성 상태가 아닙니다. 잠시 후 다시 시도하거나 문자를 계속 이용해 주세요.",
+      "capability_mismatch": "이 에이전트의 모델은 음성 대화를 지원하지 않습니다. 문자 전송은 평소와 같이 이용할 수 있습니다.",
+      "credential_missing": "이 에이전트의 음성 자격 증명이 아직 설정되지 않았습니다. 워크스페이스 관리자가 설정을 완료해야 합니다.",
+      "credential_invalid": "이 에이전트의 음성 자격 증명이 잘못되었거나 만료되었습니다. 워크스페이스 관리자가 갱신해야 합니다.",
+      "voice_unconfigured": "아직 이 에이전트에 음성이 설정되지 않았습니다. 워크스페이스 관리자에게 음성 공급자 설정을 요청해 주세요. 문자 전송에는 영향이 없습니다.",
+      "voice_provider_missing": "이 에이전트의 음성 공급자가 더 이상 존재하지 않습니다. 워크스페이스 관리자가 음성을 다시 설정해야 합니다. 문자 전송에는 영향이 없습니다.",
+      "voice_provider_disabled": "이 에이전트의 음성 공급자가 비활성화되어 있습니다. 워크스페이스 관리자가 다시 활성화할 수 있습니다. 문자 전송에는 영향이 없습니다."
+    }
+  },
+  "dictation": {
+    "open": "받아쓰기",
+    "close": "받아쓰기 닫기",
+    "hold_to_talk": "길게 눌러 말하기",
+    "release_to_cancel": "놓아서 취소",
+    "release_to_transcribe": "놓으면 변환 시작",
+    "transcribing": "변환 중…",
+    "transcribe_failed": "변환에 실패했습니다. 다시 시도해 주세요",
+    "not_recognized": "음성이 인식되지 않았습니다",
+    "listening": "듣고 있어요…",
+    "stop_agent": "에이전트 중지"
+  },
+  "orb": {
+    "connecting": "연결 중…",
+    "listening": "듣고 있어요",
+    "user_speaking": "말씀해 주세요",
+    "thinking": "생각 중",
+    "speaking": "응답 중",
+    "interrupted": "중단됨",
+    "disconnected": "연결 끊김",
+    "failed": "음성을 사용할 수 없어요",
+    "mute": "마이크 음소거",
+    "unmute": "음소거 해제",
+    "immerse": "전체 화면",
+    "collapse": "미니 오브로 축소",
+    "reconnect": "다시 연결",
+    "hangup": "통화 종료",
+    "disconnect_hint": "연결이 끊겼어요. 다시 연결하거나 종료하세요.",
+    "toast_saved": "음성 대화가 저장되었어요",
+    "toast_saved_idle": "음성 대화가 저장되었어요 (유휴 시간 초과)",
+    "toast_saved_background": "음성 대화가 저장되었어요 (백그라운드 시간 초과)"
+  }
+}

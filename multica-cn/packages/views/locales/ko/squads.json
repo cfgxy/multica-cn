@@ -1,0 +1,229 @@
+{
+  "page": {
+    "title": "스쿼드",
+    "new_button": "새 스쿼드",
+    "empty_no_squads": "아직 스쿼드가 없습니다. 하나 만들어 시작하세요.",
+    "empty_no_match": "필터와 일치하는 스쿼드가 없습니다.",
+    "table": {
+      "name": "스쿼드",
+      "leader": "리더",
+      "members": "멤버",
+      "creator": "생성자",
+      "created": "생성일"
+    },
+    "no_matches": "일치하는 스쿼드가 없습니다",
+    "row_menu": "스쿼드 작업",
+    "archive_action": "보관"
+  },
+  "inspector": {
+    "details_section": "세부 정보",
+    "archive_button": "보관"
+  },
+  "member_type": {
+    "agent": "에이전트",
+    "member": "멤버"
+  },
+  "archive_dialog": {
+    "title": "이 스쿼드를 보관할까요?",
+    "description": "\"{{name}}\"이(가) 보관됩니다. 현재 이 스쿼드에 할당된 태스크는 리더에게 이전됩니다. 이 작업은 되돌릴 수 없습니다. 라우팅을 다시 쓰려면 새 스쿼드를 만드세요.",
+    "cancel": "취소",
+    "confirm": "보관",
+    "archiving": "보관하는 중...",
+    "success": "스쿼드를 보관했습니다"
+  },
+  "name_editor": {
+    "title": "스쿼드 이름 변경",
+    "placeholder": "스쿼드 이름",
+    "required": "이름을 입력하세요",
+    "cancel": "취소",
+    "save": "저장",
+    "saved": "저장했습니다",
+    "save_failed": "저장하지 못했습니다"
+  },
+  "add_member_dialog": {
+    "title": "멤버 추가",
+    "description": "워크스페이스 멤버 또는 에이전트를 이 스쿼드에 추가합니다.",
+    "label_member": "멤버",
+    "label_role": "역할",
+    "label_optional": "(선택 사항)",
+    "cancel": "취소",
+    "select_target": "멤버 또는 에이전트 선택",
+    "search_placeholder": "멤버 또는 에이전트 검색...",
+    "members_section": "멤버",
+    "agents_section": "에이전트",
+    "role_placeholder": "예: 리뷰어, 프런트엔드 리드",
+    "add": "추가"
+  },
+  "role_editor": {
+    "empty": "역할 추가...",
+    "placeholder": "역할(예: 리뷰어)"
+  },
+  "description_dialog": {
+    "title": "설명 수정",
+    "placeholder_empty": "설명 추가",
+    "cancel": "취소",
+    "responsibility_placeholder": "이 스쿼드는 무엇을 담당하나요?",
+    "save": "저장"
+  },
+  "discard_changes_dialog": {
+    "title": "저장하지 않은 변경사항을 버릴까요?",
+    "description": "이 탭에 저장하지 않은 변경사항이 있습니다. 탭을 전환하면 변경사항이 사라집니다.",
+    "keep_editing": "계속 편집",
+    "discard_button": "버리기"
+  },
+  "members_tab": {
+    "section_title": "멤버",
+    "section_count_other": "이 스쿼드의 멤버 {{count}}명",
+    "add_member_button": "멤버 추가",
+    "create_agent_button": "에이전트 만들기",
+    "leader_chip": "리더",
+    "view_agent_tooltip": "에이전트 상세 열기",
+    "make_leader_tooltip": "스쿼드 리더로 지정",
+    "remove_member_tooltip": "스쿼드에서 제거",
+    "status_working": "작업 중",
+    "status_idle": "유휴",
+    "status_offline": "오프라인",
+    "status_unstable": "불안정",
+    "status_archived": "보관됨",
+    "issue_status_blocked": "막힘",
+    "active_issue_more": "외 {{count}}개",
+    "last_active_label": "마지막 활동 {{time}}"
+  },
+  "execution_profile": {
+    "trigger_prefix": "Profile",
+    "none_label": "미적용",
+    "loading_label": "불러오는 중",
+    "switching_label": "전환 중",
+    "active_tooltip": "적용 중인 프로필: {{name}}",
+    "entry_count_other": "멤버 {{count}}명",
+    "empty_hint": "아직 프로필이 없습니다",
+    "empty_title": "아직 프로필이 없습니다",
+    "empty_description": "멤버별 런타임과 모델을 저장하는 프로필을 만들면 한 번에 전환할 수 있습니다.",
+    "create_action": "프로필 만들기",
+    "manage_action": "프로필 관리",
+    "default_new_name": "새 프로필",
+    "load_failed": "프로필을 불러오지 못했습니다",
+    "create_failed": "프로필을 만들지 못했습니다",
+    "activate_failed": "프로필을 적용하지 못했습니다",
+    "rename_failed": "이름을 변경하지 못했습니다",
+    "delete_failed": "프로필을 삭제하지 못했습니다",
+    "entry_save_failed": "멤버 설정을 저장하지 못했습니다",
+    "entry_remove_failed": "멤버를 프로필에서 제외하지 못했습니다",
+    "retry": "다시 시도",
+    "close": "닫기",
+    "cancel": "취소",
+    "confirm_title": "‘{{name}}’을(를) 적용할까요?",
+    "confirm_overwrite_other": "프로필이 지정한 멤버 {{count}}명의 런타임, 모델, 사고 수준을 덮어씁니다. 지정되지 않은 멤버는 그대로 유지됩니다.",
+    "confirm_running_tasks": "실행 중인 작업은 중단되지 않으며, 새 설정은 다음 실행부터 적용됩니다.",
+    "confirm_audit": "덮어쓰기 전 설정은 활동 로그에 기록됩니다.",
+    "confirm_empty_hint": "이 프로필에는 멤버 설정이 없어 적용할 수 없습니다.",
+    "confirm_activate": "적용",
+    "activating": "적용 중",
+    "activated_toast": "‘{{name}}’을(를) 적용했습니다 — 멤버 {{applied}}/{{total}}명 업데이트",
+    "result_partial_title": "일부 멤버가 업데이트되지 않았습니다",
+    "result_partial_description": "총 {{total}}명 중 {{applied}}명이 업데이트되었습니다. 멤버별 결과는 다음과 같습니다.",
+    "result_failed_title": "적용되지 않았습니다",
+    "result_failed_description": "업데이트된 멤버가 없습니다. 적용 중인 프로필은 그대로이며 설정도 기록되지 않았습니다.",
+    "reason_agent_not_found": "더 이상 이 워크스페이스의 멤버가 아닙니다",
+    "reason_agent_archived": "보관된 멤버입니다",
+    "reason_runtime_unavailable": "지정된 런타임을 사용할 수 없습니다",
+    "reason_runtime_forbidden": "이 런타임은 현재 비공개이며 소유자만 사용할 수 있습니다",
+    "reason_thinking_unsupported": "현재 모델이 해당 사고 수준을 지원하지 않습니다",
+    "reason_update_failed": "쓰기에 실패했습니다",
+    "active_badge": "적용 중",
+    "sheet_title": "프로필 관리",
+    "sheet_description": "멤버 페이지에서 전환할 실행 프로필을 관리합니다.",
+    "sheet_edit_title": "프로필 편집",
+    "sheet_edit_description": "멤버별로 런타임, 모델, 사고 수준을 설정합니다.",
+    "back_to_list": "목록으로",
+    "name_label": "프로필 이름",
+    "members_hint": "설정을 저장한 멤버만 적용 시 덮어쓰며, 나머지는 그대로 유지됩니다.",
+    "no_agents": "이 워크스페이스에는 아직 에이전트가 없습니다",
+    "thinking_label": "사고 수준",
+    "entry_save": "저장",
+    "entry_remove": "프로필에서 제외",
+    "entry_incomplete_hint": "런타임과 모델을 모두 선택하세요",
+    "delete_action": "프로필 삭제",
+    "delete_confirm_title": "‘{{name}}’을(를) 삭제할까요?",
+    "delete_confirm_description": "프로필과 멤버 설정이 삭제되며, 이 작업은 되돌릴 수 없습니다.",
+    "delete_active_warning": "이 프로필은 현재 적용 중입니다. 삭제해도 적용 표시만 지워지며, 멤버에 기록된 설정은 되돌아가지 않습니다.",
+    "thinking_default": "런타임 기본값"
+  },
+  "detail_tabs": {
+    "members": "멤버",
+    "instructions": "지침"
+  },
+  "details": {
+    "leader": "리더",
+    "members": "멤버",
+    "created_by": "생성자",
+    "created": "생성일",
+    "updated": "수정일"
+  },
+  "toasts": {
+    "member_added": "멤버를 추가했습니다",
+    "member_add_failed": "멤버를 추가하지 못했습니다",
+    "member_removed": "멤버를 제거했습니다",
+    "member_remove_failed": "멤버를 제거하지 못했습니다",
+    "role_updated": "역할을 업데이트했습니다",
+    "role_update_failed": "역할을 업데이트하지 못했습니다",
+    "leader_updated": "리더를 업데이트했습니다",
+    "leader_update_failed": "리더를 업데이트하지 못했습니다",
+    "archive_failed": "스쿼드를 보관하지 못했습니다",
+    "instructions_saved": "지침을 저장했습니다"
+  },
+  "profile_card": {
+    "unavailable": "스쿼드를 사용할 수 없습니다",
+    "detail_link": "자세히 →",
+    "archived": "보관됨",
+    "member_count_other": "멤버 {{count}}명",
+    "members_section": "멤버",
+    "more_members_other": "+{{count}}명 더 보기"
+  },
+  "instructions_tab": {
+    "description": "스쿼드에 할당된 태스크를 리더 에이전트가 처리할 때마다 스쿼드 지침이 리더 프롬프트에 포함됩니다. 스쿼드 전체의 방향, 협업 규칙, 매 작업마다 따라야 할 맥락을 리더에게 전달할 때 사용하세요.",
+    "unsaved_changes": "저장하지 않은 변경사항",
+    "save_button": "저장",
+    "placeholder": "예: 항상 실패하는 테스트부터 작성합니다. 커밋은 작고 독립적으로 유지합니다."
+  },
+  "scope": {
+    "mine": "내 스쿼드",
+    "all": "전체"
+  },
+  "toolbar": {
+    "display": "표시",
+    "sort_by": "정렬",
+    "direction_asc": "오름차순",
+    "direction_desc": "내림차순",
+    "section_columns": "열",
+    "result_count_title": "일치하는 스쿼드 / 전체 스쿼드",
+    "filter_label": "필터",
+    "filter_active_count_other": "필터 {{count}}개",
+    "clear_filters": "필터 지우기"
+  },
+  "mobile": {
+    "page": {
+      "search_placeholder": "스쿼드 검색…"
+    },
+    "create": {
+      "avatar_add": "아바타 설정",
+      "avatar_hint": "선택 사항입니다. 스쿼드가 표시되는 모든 곳에 표시됩니다.",
+      "search_placeholder": "에이전트 검색…",
+      "search_empty": "일치하는 에이전트가 없습니다.",
+      "group_my": "내 에이전트",
+      "group_workspace": "워크스페이스 에이전트"
+    },
+    "detail": {
+      "unsaved_title": "저장되지 않은 변경 사항이 있음",
+      "unsaved_keep": "계속 편집",
+      "unsaved_discard": "버리기",
+      "unsaved_body": "지침에 대한 변경 사항이 아직 저장되지 않았습니다.",
+      "instructions_empty": "아직 지침이 없습니다",
+      "instructions_edit": "지침 편집"
+    },
+    "execution": {
+      "add_member": "멤버 추가",
+      "no_candidates": "활성 에이전트가 모두 등록되어 있습니다."
+    }
+  }
+}

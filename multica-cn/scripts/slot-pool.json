@@ -1,0 +1,18 @@
+{
+  "$comment": "RUYI-820: phase-to-template mapping for deployment-only pool leases; RUYI-780 alignment (RUYI-783 contract): deploy maps to the pool DEV template tpl-multica-dev, qa keeps tpl-multica-qa. Capacity is admitted by the VM Resource MCP from requested CPU/RAM/storage; this file does not define project slot counts. deploy and qa are consecutive phases of one Issue lease, not developer-local environments. Phase handoff is pool-side (transition_lease_phase CAS); the local manifest only mirrors pool state. ttl_minutes are client-side defaults until E1 lands per-template TTL server-side. guest_ports mirror local development ports only inside the lease VM. inline_limit_bytes matches the pool inline threshold.",
+  "deploy": {
+    "template": "tpl-multica-dev",
+    "ttl_minutes": 480
+  },
+  "qa": {
+    "template": "tpl-multica-qa",
+    "ttl_minutes": 60
+  },
+  "guest_ports": {
+    "api": 21801,
+    "web": 13801,
+    "desktop": 57801,
+    "mcp": 13001
+  },
+  "inline_limit_bytes": 16777216
+}

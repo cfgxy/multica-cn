@@ -1,0 +1,239 @@
+---
+title: Contributing
+description: Set up a local Multica development environment, run tests, and submit changes using the repository conventions.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Multica is a Go backend and pnpm monorepo. The simplest way to start locally is `make dev`; it prepares the environment, database, and migrations for the current checkout, then starts Web and API.
+
+## Requirements
+
+- Node.js 22
+- pnpm 10.28.2
+- Go 1.26.6
+- Docker Engine or Docker Desktop
+- Git and Make
+
+Treat the root `package.json`, `server/go.mod`, and CI workflows as the source of truth for versions.
+
+## First start
+
+```bash
+git clone https://github.com/multica-ai/multica.git
+cd multica
+make dev
+```
+
+The primary checkout uses `.env`. If the file does not exist, `make dev` creates it from `.env.example`, then starts the shared PostgreSQL instance, installs dependencies, runs migrations, and starts API and Web.
+
+Default addresses:
+
+```text
+Web: http://localhost:3000
+API: http://localhost:8080
+```
+
+The fixed local verification code comes from the development configuration. Do not use a local `.env` for an internet-facing deployment.
+
+## Developing in a worktree
+
+The repository supports running the primary checkout and multiple worktrees at the same time. They share the PostgreSQL container and the main database `multica`, while using separate ports and process profiles.
+
+```bash
+git worktree add ../multica-feature -b feat/my-change main
+cd ../multica-feature
+make setup-worktree
+make start-worktree
+```
+
+`make setup-worktree` generates `.env.worktree`; ports and process identity are derived from the path, while `POSTGRES_DB` remains `multica`. To start it again:
+
+```bash
+make start-worktree
+```
+
+To stop Web and API for the current worktree:
+
+```bash
+make stop-worktree
+```
+
+You may also run `make dev` directly. The script detects a worktree through its `.git` file and selects `.env.worktree`.
+
+<Callout type="info">
+Different worktrees intentionally share the PostgreSQL container and `multica`. Do not start a new Compose project for every worktree. Check `PORT` and `FRONTEND_PORT` in `.env.worktree`, and use a disposable database for destructive tests.
+</Callout>
+
+## Common commands
+
+### Full workflow
+
+```bash
+make up SLOT=dev1      # Start slot dev1's environment (C=api,web,daemon,desktop)
+make status SLOT=dev1  # Show what is running and prove it is this environment
+make list              # List every fixed slot on this machine (dev1, dev2)
+make down SLOT=dev1    # Stop the processes, keep the database
+make destroy SLOT=dev1 # Stop, then drop the slot database and free the slot
+make orphans SLOT=dev1 # Acceptance: nothing of this slot survives down/destroy
+make gc                # Collect expired qa-phase slots
+make dev               # Prepare and start the current checkout in the foreground
+make check             # Run the complete local verification workflow
+make build             # Build the server, CLI, and migrate binaries
+```
+
+There are exactly two fixed slots (dev1, dev2); QA verification reuses the
+issue's own slot rather than a dedicated QA slot. `make up SLOT=<slot>` treats
+an environment as a fixed slot: the slot's ports, database (`multica_<slot>`),
+account (`<slot>_app`) and directories are fixed facts in `scripts/slots.json`,
+so two environments can never drift into sharing a database. The slot's env
+file is generated under `~/.multica/slots/<slot>/` and re-verified before every
+start; write commands require the owning issue via `MULTICA_CALLER_OWNER`, and
+a slot held by an in-progress issue refuses takeover (`lock-status` /
+`lock-recover` manage the handover). It verifies the database through
+`DATABASE_URL` and the backend through `GET /health`, which reports `pid`,
+`commit` and `started_at` — a 200 alone would also come from a leftover
+process on the same port. The slot lease carries a role phase:
+`scripts/dev-env.sh <slot> handoff --to qa` moves it atomically from
+development to QA verification (and back with `--to dev`) within the same
+issue. Only the qa phase has a TTL (24h idle, collected by `make gc`), and it
+closes its verification window with `lock-release` the moment verification
+ends — while the issue is still in progress, and without waiting for issue
+closure (a dual-server test window may even hold both slots at once). The dev
+phase keeps the closure-only rule: it is handed back at issue closure via
+`lock-release` (`--force` overrides). `make destroy
+SLOT=<slot>` removes the database, CLI profile, daemon workspaces, Desktop
+userData and slot directory; a failed deletion keeps the manifest for retry,
+and `make orphans SLOT=<slot>` afterwards proves nothing of the slot survives
+(processes, ports, worktrees, containers — exit 1 lists what is left). Each
+slot runs inside the resource budget from `scripts/slots.json`
+(`resource_budget`): 4 pinned CPU cores per slot, api ≤ 768MB, web ≤ 8192MB,
+daemon/desktop ≤ 256MB, enforced at launch (`GOMEMLIMIT` / `NODE_OPTIONS`) and
+by a per-slot watchdog (`scripts/slot-watchdog.sh`) that resamples each
+component's real process tree plus its proven port listener every tick and
+kills it after two consecutive RSS breaches. web's 8192MB covers the measured
+post-compile idle steady state (peaks 6356/6434MB across two independent
+soaks) with ≥25% headroom; a fully-loaded dual-slot projection stays under
+~21GB on a 30GB host. The shared PostgreSQL
+container is capped in `docker-compose.yml` (2g memory / 4 cpus).
+
+### Frontend
+
+```bash
+pnpm install
+pnpm dev:web
+pnpm dev:desktop
+pnpm build
+pnpm typecheck
+pnpm lint
+pnpm test
+```
+
+Root commands exclude Mobile by default. Mobile has separate scripts and CI; read `apps/mobile/CLAUDE.md` before changing it.
+
+### Backend
+
+```bash
+make server
+make daemon
+make test
+make migrate-up
+make migrate-down
+make sqlc
+```
+
+To run a CLI command from source:
+
+```bash
+make cli ARGS="issue list"
+```
+
+## Changing frontend features
+
+Place features needed by both Web and Desktop according to responsibility:
+
+1. Put API types, queries, mutations, and platform-independent logic in `packages/core/`.
+2. Put foundational UI in `packages/ui/`; it must not depend on business code.
+3. Put business pages and components in `packages/views/`.
+4. Keep Next.js, Electron, and routing adapters in the corresponding app.
+5. Wire shared pages into both Web and Desktop.
+
+TanStack Query owns server data. Zustand owns client state such as filters, drafts, and layout. See [Project architecture](/developers/architecture) and the root `CLAUDE.md` for the exact boundary.
+
+When adding or changing an API, update the zod schema in `packages/core/api/` and add parsing tests for missing fields, unknown enum values, and malformed data.
+
+## Changing the database
+
+Migrations live in `server/migrations/`, and queries live in `server/pkg/db/queries/`.
+
+1. Use the next unused numeric prefix and create both `.up.sql` and `.down.sql`.
+2. Do not add database foreign keys, cascade deletes, or cascade updates. Enforce relationships and cleanup in the application layer.
+3. Every new index must use `CREATE INDEX CONCURRENTLY` or `CREATE UNIQUE INDEX CONCURRENTLY`.
+4. Put each concurrent index in a migration file containing only that statement.
+5. Run `make sqlc` after changing queries and commit the generated changes in `server/pkg/db/generated/`.
+6. Do not edit sqlc-generated files directly.
+
+Use an application transaction in the service layer when multiple writes must succeed or roll back together.
+
+## Test locations
+
+| Change | Test location |
+| --- | --- |
+| Shared business logic, queries, stores | `packages/core/*.test.ts` |
+| Shared pages and components | `packages/views/*.test.tsx` |
+| Web or Desktop platform wiring | Corresponding `apps/*` directory |
+| End-to-end workflows | `e2e/*.spec.ts` |
+| Backend | `*_test.go` in the relevant Go package |
+
+Run the check closest to the change first, then expand the scope. For a Docs-only change:
+
+```bash
+pnpm --filter @multica/docs typecheck
+```
+
+For shared frontend changes:
+
+```bash
+pnpm typecheck
+pnpm test
+```
+
+For backend changes:
+
+```bash
+make test
+```
+
+Before submitting:
+
+```bash
+make check
+```
+
+`make check` runs TypeScript typechecking and unit tests, Go tests, and Playwright E2E. CI also builds and lints according to the changed scope and runs platform- or installer-specific tests.
+
+## Resetting the current development database
+
+When you need clean data, reset the database named by the **current checkout's environment file**:
+
+```bash
+make stop
+make db-reset
+make start
+```
+
+`make db-reset` drops and recreates the current `POSTGRES_DB` and refuses to connect to a remote database. Before running it, check `.env` or `.env.worktree` and confirm the target database.
+
+## Before submitting
+
+- Read the root `CLAUDE.md` and relevant nested instructions.
+- Change only the scope required by the task.
+- Write code comments in English.
+- Do not commit `.env`, tokens, build artifacts, or local paths.
+- Use conventional commits such as `feat(scope)`, `fix(scope)`, or `docs`.
+- Describe behavior changes and the verification commands actually run in the PR.
+
+## Next steps
+
+- [Development conventions](/developers/conventions) — Repository contracts for naming, terminology, and Chinese copy.
+- [Project architecture](/developers/architecture) — Layers, shared packages, and the code path for one execution.

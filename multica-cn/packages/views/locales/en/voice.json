@@ -1,0 +1,65 @@
+{
+  "button": {
+    "start": "Start voice conversation",
+    "stop": "End voice conversation",
+    "disabled_no_target": "Voice needs an agent as its target. Pick an agent to start speaking — typing still works.",
+    "disabled_squad": "Voice targets a single agent, and a squad routes to its leader. Pick an agent to start speaking — typing still works."
+  },
+  "overlay": {
+    "title": "Voice conversation",
+    "connecting": "Connecting…",
+    "live": "Listening — speak naturally",
+    "user_label": "You",
+    "assistant_label": "Agent",
+    "end": "End",
+    "dismiss": "Dismiss",
+    "permission_denied": "Microphone access is required for voice. Enable it in your system settings and try again.",
+    "use_prompt": "What you say will be added to the message box when you're done."
+  },
+  "failure": {
+    "connection_failed": "Voice couldn't connect right now. Text messaging still works as usual.",
+    "unavailable": {
+      "no_voice_runtime": "This agent has no voice runtime bound yet. Ask a workspace admin to configure one — text messaging still works.",
+      "instance_disabled": "Voice is turned off for this agent's voice runtime. Text messaging still works as usual.",
+      "instance_not_active": "The voice runtime for this agent isn't active right now. Try again later, or keep using text.",
+      "capability_mismatch": "This agent's model doesn't support voice conversations. Text messaging still works as usual.",
+      "credential_missing": "Voice isn't fully configured for this agent (missing credentials). A workspace admin needs to finish setup.",
+      "credential_invalid": "The voice credentials for this agent are invalid or expired. A workspace admin needs to update them.",
+      "voice_unconfigured": "Voice isn't set up for this agent yet. A workspace admin needs to configure a voice provider — text messaging still works.",
+      "voice_provider_missing": "The voice provider for this agent no longer exists. A workspace admin needs to reconfigure voice — text messaging still works.",
+      "voice_provider_disabled": "Voice is turned off for this agent's voice provider. A workspace admin can turn it back on — text messaging still works."
+    }
+  },
+  "dictation": {
+    "open": "Dictation",
+    "close": "Close dictation",
+    "hold_to_talk": "Hold to talk",
+    "release_to_cancel": "Release to cancel",
+    "release_to_transcribe": "Release to transcribe",
+    "transcribing": "Transcribing…",
+    "transcribe_failed": "Transcription failed, try again",
+    "not_recognized": "No speech detected",
+    "listening": "Listening…",
+    "stop_agent": "Stop agent"
+  },
+  "orb": {
+    "connecting": "Connecting…",
+    "listening": "Listening",
+    "user_speaking": "Listening to you",
+    "thinking": "Thinking",
+    "speaking": "Responding",
+    "interrupted": "Interrupted",
+    "disconnected": "Disconnected",
+    "failed": "Voice isn't available",
+    "mute": "Mute microphone",
+    "unmute": "Unmute microphone",
+    "immerse": "Immersive view",
+    "collapse": "Collapse to mini orb",
+    "reconnect": "Reconnect",
+    "hangup": "Hang up",
+    "disconnect_hint": "Connection lost — reconnect or hang up.",
+    "toast_saved": "Voice conversation saved",
+    "toast_saved_idle": "Voice conversation saved (idle timeout)",
+    "toast_saved_background": "Voice conversation saved (backgrounded too long)"
+  }
+}

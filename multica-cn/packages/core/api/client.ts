@@ -1,0 +1,7495 @@
+import { z } from "zod";
+import {
+  CredentialConnectorListSchema,
+  CredentialConnectorSchema,
+  CredentialMetadataListSchema,
+  CredentialMetadataSchema,
+  CredentialAuditEventListSchema,
+  CredentialTransportKeySchema,
+  type CredentialConnector,
+  type CredentialAuditEvent,
+  type CredentialMetadata,
+  type CredentialTransportKey,
+} from "../credentials/api";
+import type { CredentialTransportEnvelope } from "../credentials/envelope";
+import { configStore } from "../config";
+import type { ListAuditEventsParams, AuditEventsPage } from "../types/audit";
+import type {
+  RuntimeBackpressureSettings,
+  RuntimeBackpressureEvent,
+} from "./schemas";
+import type {
+  Issue,
+  DecisionRequest,
+  DecisionRequestDetail,
+  DecisionRequestsList,
+  IssueDecision,
+  BatchDecisionAnswerResult,
+  BatchIssueDecisionAnswer,
+  WorkspaceDecisionInbox,
+  IssueSuspension,
+  WorkspaceSuspensionList,
+  IssueSuspensionMutation,
+  IssuePriority,
+  CreateIssueRequest,
+  MoveIssueRequest,
+  UpdateIssueRequest,
+  GroupedIssuesResponse,
+  ListIssuesResponse,
+  IssueRelationsResponse,
+  SearchIssuesResponse,
+  SearchProjectsResponse,
+  UpdateMeRequest,
+  CreateMemberRequest,
+  UpdateMemberRequest,
+  ListIssuesParams,
+  ListGroupedIssuesParams,
+  IssueTableFacetsRequest,
+  IssueTableFacetsResponse,
+  IssueTableGroupsRequest,
+  IssueTableGroupsResponse,
+  IssueTableRowsRequest,
+  IssueTableRowsResponse,
+  Agent,
+  MikaBootstrapResponse,
+  SchedulingPauseState,
+  CreateAgentRequest,
+  AgentBuilderRuntimeSwitch,
+  AgentBuilderSession,
+  AgentBuilderSessionSummary,
+  StoredAgentDraft,
+  UpdateAgentRequest,
+  AgentEnvResponse,
+  UpdateAgentEnvRequest,
+  AgentTask,
+  AgentActivityBucket,
+  AgentRunCount,
+  WorkspaceWorkingAgent,
+  WorkspaceWorkingAgentMineRelation,
+  WorkspaceWorkingAgentType,
+  RunDetail,
+  CancelRunResult,
+  AgentRuntime,
+  RuntimeProfile,
+  CreateRuntimeProfileRequest,
+  UpdateRuntimeProfileRequest,
+  ExecutionProfile,
+  ExecutionProfileEntry,
+  ExecutionProfileListResponse,
+  ExecutionProfileActivationResponse,
+  CreateExecutionProfileRequest,
+  UpdateExecutionProfileRequest,
+  UpsertExecutionProfileEntryRequest,
+  InboxItem,
+  InboxWorkspaceUnread,
+  IssueSubscriber,
+  Comment,
+  CommentAnchor,
+  CommentTriggerPreview,
+  IssueTriggerPreview,
+  IssueTriggerPreviewParams,
+  Reaction,
+  IssueReaction,
+  Workspace,
+  WorkspaceRepo,
+  WorkspaceMcpServer,
+  MarketplaceItem,
+  PromptApplyPreview,
+  PromptApplyResult,
+  PromptInstall,
+  PromptMarketItem,
+  PromptRestoreResult,
+  PromptScanResult,
+  PromptTargetState,
+  PromptVersion,
+  PromptQualityDashboard,
+  ClauseGovernanceOverview,
+  ClauseGovernanceDetail,
+  ClauseGovernanceReconciliation,
+  SelfEvolutionOverview,
+  SelfEvolutionConfigValidation,
+  SelfEvolutionModelConfig,
+  SelfEvolutionModelConfigSave,
+  WorkspaceBackpressureSettings,
+  WorkspaceBackpressureSettingsSave,
+  PromptQuizItem,
+  PromptQuizItemDetail,
+  PromptQuizBaseline,
+  PromptQuizSampleRow,
+  PromptQuizBatchCreateResponse,
+  PromptQuizBatchResponse,
+  PromptQuizBankImportResponse,
+  CreatePromptQuizItemRequest,
+  UpdatePromptQuizItemRequest,
+  PromptGovernanceVersion,
+  PromptGovernanceVersionList,
+  SnapshotPromptGovernanceVersionRequest,
+  CreatePromptQuizBatchRequest,
+  MarketplaceListing,
+  MarketplacePlaceholder,
+  MemberWithUser,
+  User,
+  Skill,
+  SkillSummary,
+  SkillCatalogEntry,
+  SkillVersion,
+  SkillVersionSummary,
+  SkillUsage,
+  PromptProposal,
+  PromptProposalDraftRequest,
+  PromptProposalPreview,
+  PromptProposalBatchOutcome,
+  RetrospectiveConfig,
+  RetrospectiveRun,
+  KnowledgeScanBatch,
+  KnowledgeDir,
+  RegisterKnowledgeDirRequest,
+  KnowledgeEntry,
+  SkillEffect,
+  CreateSkillRequest,
+  UpdateSkillRequest,
+  SetAgentSkillsRequest,
+  SetAgentRuntimeSkillEnabledRequest,
+  PersonalAccessToken,
+  CreatePersonalAccessTokenRequest,
+  CreatePersonalAccessTokenResponse,
+  RuntimeUsage,
+  IssueUsageSummary,
+  RuntimeHourlyActivity,
+  RuntimeUsageByAgent,
+  RuntimeUsageByHour,
+  DashboardUsageDaily,
+  DashboardUsageResources,
+  DashboardUsageTraffic,
+  DashboardUsageTrafficDim,
+  DashboardUsageByAgent,
+  DashboardAgentRunTime,
+  DashboardRunTimeDaily,
+  DashboardFailureDaily,
+  DashboardFailureByAgent,
+  RuntimeUpdate,
+  RuntimeModelListRequest,
+  RuntimeLocalSkillListRequest,
+  CreateRuntimeLocalSkillImportRequest,
+  RuntimeLocalSkillImportRequest,
+  CreateRuntimeOpsCommandRequest,
+  RuntimeOpsCommand,
+  RuntimeOpsInventory,
+  AssigneeFrequencyEntry,
+  TaskMessagePayload,
+  Attachment,
+  ChatSession,
+  ChatPinnedAgent,
+  ChatMessage,
+  ChatMessagesPage,
+  ChatDraftRestoresResponse,
+  ChatPendingTask,
+  PrioritizeQueuedChatTaskResponse,
+  PendingChatTasksResponse,
+  HasPendingChatTasksResponse,
+  SendChatMessageResponse,
+  StartMikaOnboardingResponse,
+  CancelTaskResponse,
+  Project,
+  CreateProjectRequest,
+  UpdateProjectRequest,
+  ListProjectsResponse,
+  ProjectResource,
+  CreateProjectResourceRequest,
+  UpdateProjectResourceRequest,
+  ListProjectResourcesResponse,
+  Label,
+  IssueProperty,
+  IssuePropertyValue,
+  CreatePropertyRequest,
+  QuickAction,
+  CreateQuickActionRequest,
+  UpdateQuickActionRequest,
+  ListQuickActionsResponse,
+  QuickReply,
+  ListQuickRepliesResponse,
+  CreateQuickReplyRequest,
+  UpdateQuickReplyRequest,
+  UpdatePropertyRequest,
+  ListPropertiesResponse,
+  IssuePropertiesResponse,
+  CreateLabelRequest,
+  UpdateLabelRequest,
+  ListLabelsResponse,
+  ListIssueStatusesResponse,
+  IssueStatusCategory,
+  IssueStatusEntry,
+  CreateIssueStatusRequest,
+  UpdateIssueStatusRequest,
+  IssueLabelsResponse,
+  LabelResourceType,
+  ResourceLabelsResponse,
+  PinnedItem,
+  CreatePinRequest,
+  PinnedItemType,
+  ReorderPinsRequest,
+  Invitation,
+  ShareLink,
+  ShareLinkInfo,
+  Autopilot,
+  AutopilotTrigger,
+  AutopilotRun,
+  AutopilotQuotaUsage,
+  CreateAutopilotRequest,
+  UpdateAutopilotRequest,
+  CreateAutopilotTriggerRequest,
+  UpdateAutopilotTriggerRequest,
+  ListAutopilotsResponse,
+  CronPreviewResponse,
+  GetAutopilotResponse,
+  AutopilotCollaboratorsResponse,
+  AutopilotParamsResponse,
+  AutopilotParamInput,
+  ListAutopilotRunsResponse,
+  ListWebhookDeliveriesResponse,
+  WebhookDelivery,
+  NotificationPreferenceResponse,
+  NotificationPreferences,
+  PluginHookResult,
+  PluginInstallation,
+  PluginInstallationListResponse,
+  PluginPackage,
+  PluginPackageListResponse,
+  PluginSurfaceLaunch,
+  PluginInvocation,
+  PluginMCPTool,
+  PluginPreview,
+  PluginTokenIssue,
+  PluginPreviewRequest,
+  PluginInstallRequest,
+  PluginConfigRequest,
+  GitHubPullRequest,
+  ListGitHubInstallationsResponse,
+  ListGitHubRepositoriesResponse,
+  GitHubConnectResponse,
+  ListVCSConnectionsResponse,
+  ListGitLabRepositoriesResponse,
+  ConnectVCSRequest,
+  ConnectVCSResponse,
+  ListLarkInstallationsResponse,
+  BeginLarkInstallResponse,
+  LarkInstallStatusResponse,
+  RedeemLarkBindingTokenResponse,
+  LarkPermissionCatalogResponse,
+  RecheckLarkPermissionsResponse,
+  ComposioToolkit,
+  ComposioConnection,
+  ComposioConnectInitResponse,
+  SlackInstallation,
+  ListSlackInstallationsResponse,
+  RegisterSlackBYORequest,
+  RedeemSlackBindingTokenResponse,
+  DingTalkInstallation,
+  ListDingTalkInstallationsResponse,
+  ListDingTalkGroupsResponse,
+  ListDingTalkGroupsParams,
+  RegisterDingTalkBYORequest,
+  RedeemDingTalkBindingTokenResponse,
+  WecomInstallation,
+  ListWecomInstallationsResponse,
+  RegisterWecomBYORequest,
+  RedeemWecomBindingTokenResponse,
+  TelegramInstallation,
+  ListTelegramInstallationsResponse,
+  RegisterTelegramRequest,
+  RedeemTelegramBindingTokenResponse,
+  Squad,
+  SquadMember,
+  SquadMemberStatusListResponse,
+  BillingBalance,
+  BillingTransactionsPage,
+  BillingBatchesPage,
+  BillingTopupsPage,
+  BillingPriceTier,
+  CreateBillingCheckoutSessionRequest,
+  CreateBillingCheckoutSessionResponse,
+  BillingCheckoutSessionStatus,
+  CreateBillingPortalSessionResponse,
+  WorkspaceSubscriptionSummary,
+  IssueLimitUsage,
+  WorkspaceSubscriptionPrices,
+  CreateWorkspaceSubscriptionCheckoutRequest,
+  CreateWorkspaceSubscriptionCheckoutResponse,
+  WorkspaceSubscriptionSeatReconcileResult,
+  PreviewWorkspaceSeatPurchaseRequest,
+  WorkspaceSeatPurchasePreview,
+  PurchaseWorkspaceSeatsRequest,
+  PurchaseWorkspaceSeatsResponse,
+  CreateWorkspaceSubscriptionPortalResponse,
+  SourceContextPreview,
+  CreateCommentSubIssueManualRequest,
+  CreateCommentSubIssueAgentRequest,
+  CreateCommentSubIssueRequest,
+  VoiceProvider,
+} from "../types";
+import type { OnboardingCompletionPath } from "../onboarding/types";
+import type {
+  AdminFileReadPolicy,
+  AdminUserList,
+  AdminWorkspaceList,
+  ImpersonationResponse,
+} from "../admin/types";
+import type {
+  AdminMCPStatus,
+  AdminOAuthClientList,
+  AdminOAuthGrantList,
+  MyOAuthGrantList,
+  OAuthClientSecretReveal,
+  OAuthConsentInfo,
+  OAuthRedirectResponse,
+} from "../oauth-admin/types";
+import type {
+  CreateFeedbackResponse,
+  FeedbackContext,
+  FeedbackKind,
+} from "../feedback/types";
+import type {
+  CloudRuntimeNode,
+  CreateCloudRuntimeNodeRequest,
+  ListCloudRuntimeNodesParams,
+} from "../runtimes/cloud-runtime";
+import { type Logger, noopLogger } from "../logger";
+import { createRequestId, createSafeId } from "../utils";
+import { getCurrentSlug } from "../platform/workspace-storage";
+import {
+  parseTimelineTruncatedKinds,
+  type TimelineQueryData,
+} from "../issues/timeline-query";
+import { parseWithFallback } from "./schema";
+import {
+  AdminFileReadPolicySchema,
+  AgentTaskListSchema,
+  AgentRuntimeSchema,
+  EMPTY_AGENT_RUNTIME,
+  AttachmentResponseSchema,
+  CancelTaskResponseSchema,
+  ChatDraftRestoresResponseSchema,
+  ChatMessageListSchema,
+  ChatMessagesPageSchema,
+  ChatPendingTaskSchema,
+  ChatSessionListSchema,
+  ChatSessionSchema,
+  PrioritizeQueuedChatTaskResponseSchema,
+  SendChatMessageResponseSchema,
+  StartMikaOnboardingResponseSchema,
+  ChildIssuesResponseSchema,
+  IssueRelationsResponseSchema,
+  EMPTY_ISSUE_RELATIONS,
+  ChildIssueProgressResponseSchema,
+  CommentsListSchema,
+  IssueDecisionsListSchema,
+  DecisionRequestDetailSchema,
+  DecisionRequestSchema,
+  DecisionRequestsListSchema,
+  IssueDecisionSchema,
+  WorkspaceDecisionInboxSchema,
+  IssueSuspensionsListSchema,
+  IssueSuspensionMutationSchema,
+  WorkspaceSuspensionsSchema,
+  BatchDecisionAnswersSchema,
+  CommentTriggerPreviewSchema,
+  IssueTriggerPreviewSchema,
+  CloudRuntimeNodeListSchema,
+  CloudRuntimeNodeSchema,
+  AgentBuilderRuntimeSwitchSchema,
+  AgentBuilderSessionSchema,
+  AgentBuilderSessionListSchema,
+  EMPTY_AGENT_BUILDER_SESSION_LIST,
+  agentBuilderRuntimeSwitchFallback,
+  DashboardAgentRunTimeListSchema,
+  DashboardRunTimeDailyListSchema,
+  DashboardFailureDailyListSchema,
+  DashboardFailureByAgentListSchema,
+  DashboardUsageByAgentListSchema,
+  DashboardUsageDailyListSchema,
+  DashboardUsageResourcesSchema,
+  DashboardUsageTrafficSchema,
+  EMPTY_APP_CONFIG,
+  EMPTY_ATTACHMENT,
+  EMPTY_CHAT_MESSAGE_LIST,
+  EMPTY_CHAT_PENDING_TASK,
+  EMPTY_CHAT_SESSION,
+  EMPTY_CHAT_SESSION_LIST,
+  EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
+  EMPTY_CLOUD_RUNTIME_NODE,
+  EMPTY_CLOUD_RUNTIME_NODE_LIST,
+  EMPTY_AGENT_BUILDER_SESSION,
+  EMPTY_GROUPED_ISSUES_RESPONSE,
+  EMPTY_ISSUE_TABLE_FACETS_RESPONSE,
+  EMPTY_ISSUE_TABLE_GROUPS_RESPONSE,
+  EMPTY_ISSUE_TABLE_ROWS_RESPONSE,
+  EMPTY_LIST_ISSUES_RESPONSE,
+  EMPTY_SEARCH_ISSUES_RESPONSE,
+  EMPTY_SEARCH_PROJECTS_RESPONSE,
+  EMPTY_SQUAD,
+  EMPTY_SQUAD_LIST,
+  EMPTY_SQUAD_MEMBER_STATUS_LIST,
+  EMPTY_TIMELINE_ENTRIES,
+  EMPTY_USER,
+  EMPTY_LIST_WEBHOOK_DELIVERIES_RESPONSE,
+  EMPTY_WEBHOOK_DELIVERY,
+  AppConfigSchema,
+  type AppConfigResponse,
+  GroupedIssuesResponseSchema,
+  IssueTableFacetsResponseSchema,
+  IssueTableGroupsResponseSchema,
+  IssueTableRowsResponseSchema,
+  ListAutopilotsResponseSchema,
+  EMPTY_LIST_AUTOPILOTS_RESPONSE,
+  AutopilotRunSchema,
+  AutopilotQuotaUsageSchema,
+  FALLBACK_AUTOPILOT_RUN,
+  CronPreviewResponseSchema,
+  UNREADABLE_CRON_PREVIEW_RESPONSE,
+  ListIssuesResponseSchema,
+  CreateIssueResponseSchema,
+  IssueSchema,
+  AgentTaskSchema,
+  SourceContextPreviewSchema,
+  CommentSubIssueTaskResponseSchema,
+  ListWebhookDeliveriesResponseSchema,
+  RuntimeHourlyActivityListSchema,
+  RuntimeBackpressureSettingsSchema,
+  RuntimeBackpressureEventListSchema,
+  RuntimeUsageByAgentListSchema,
+  RuntimeUsageByHourListSchema,
+  RuntimeUsageListSchema,
+  ExecutionProfileSchema,
+  ExecutionProfileEntrySchema,
+  ExecutionProfileListResponseSchema,
+  ExecutionProfileActivationResponseSchema,
+  EMPTY_EXECUTION_PROFILE,
+  EMPTY_EXECUTION_PROFILE_LIST,
+  EMPTY_EXECUTION_PROFILE_ACTIVATION,
+  SearchIssuesResponseSchema,
+  SearchProjectsResponseSchema,
+  SquadSchema,
+  SquadListSchema,
+  SquadMemberStatusListResponseSchema,
+  SubscribersListSchema,
+  TimelineEntriesSchema,
+  UserSchema,
+  AdminUserListSchema,
+  AdminWorkspaceListSchema,
+  ImpersonationResponseSchema,
+  EMPTY_ADMIN_USER_LIST,
+  EMPTY_ADMIN_FILE_READ_POLICY,
+  EMPTY_ADMIN_WORKSPACE_LIST,
+  EMPTY_IMPERSONATION_RESPONSE,
+  AdminMCPStatusSchema,
+  AdminOAuthClientListSchema,
+  AdminOAuthGrantListSchema,
+  MyOAuthGrantListSchema,
+  OAuthClientSecretRevealSchema,
+  OAuthConsentInfoSchema,
+  OAuthRedirectResponseSchema,
+  EMPTY_ADMIN_MCP_STATUS,
+  EMPTY_ADMIN_OAUTH_CLIENT_LIST,
+  EMPTY_ADMIN_OAUTH_GRANT_LIST,
+  EMPTY_MY_OAUTH_GRANT_LIST,
+  EMPTY_OAUTH_SECRET_REVEAL,
+  EMPTY_OAUTH_CONSENT_INFO,
+  EMPTY_OAUTH_REDIRECT,
+  WebhookDeliveryResponseSchema,
+  BillingBalanceSchema,
+  BillingTransactionsPageSchema,
+  BillingBatchesPageSchema,
+  BillingTopupsPageSchema,
+  BillingPriceTierListSchema,
+  CreateBillingCheckoutSessionResponseSchema,
+  BillingCheckoutSessionStatusSchema,
+  CreateBillingPortalSessionResponseSchema,
+  WorkspaceSubscriptionSummarySchema,
+  IssueLimitUsageSchema,
+  WorkspaceSubscriptionPricesSchema,
+  CreateWorkspaceSubscriptionCheckoutResponseSchema,
+  WorkspaceSubscriptionSeatReconcileResultSchema,
+  WorkspaceSeatPurchasePreviewSchema,
+  PurchaseWorkspaceSeatsResponseSchema,
+  CreateWorkspaceSubscriptionPortalResponseSchema,
+  DingTalkInstallationSchema,
+  ListDingTalkInstallationsResponseSchema,
+  ListDingTalkGroupsResponseSchema,
+  RedeemDingTalkBindingTokenResponseSchema,
+  EMPTY_DINGTALK_INSTALLATION,
+  EMPTY_LIST_DINGTALK_INSTALLATIONS_RESPONSE,
+  EMPTY_LIST_DINGTALK_GROUPS_RESPONSE,
+  EMPTY_REDEEM_DINGTALK_BINDING_TOKEN_RESPONSE,
+  WecomInstallationSchema,
+  ListWecomInstallationsResponseSchema,
+  RedeemWecomBindingTokenResponseSchema,
+  EMPTY_WECOM_INSTALLATION,
+  EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
+  EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
+  TelegramInstallationSchema,
+  ListTelegramInstallationsResponseSchema,
+  RedeemTelegramBindingTokenResponseSchema,
+  EMPTY_TELEGRAM_INSTALLATION,
+  EMPTY_LIST_TELEGRAM_INSTALLATIONS_RESPONSE,
+  EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE,
+  EMPTY_BILLING_BALANCE,
+  EMPTY_BILLING_TRANSACTIONS_PAGE,
+  EMPTY_BILLING_BATCHES_PAGE,
+  EMPTY_BILLING_TOPUPS_PAGE,
+  EMPTY_BILLING_PRICE_TIER_LIST,
+  EMPTY_CREATE_BILLING_CHECKOUT_SESSION_RESPONSE,
+  EMPTY_BILLING_CHECKOUT_SESSION_STATUS,
+  EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE,
+  EMPTY_CANCEL_TASK_RESPONSE,
+  EMPTY_CHAT_DRAFT_RESTORES,
+  CreateFeedbackResponseSchema,
+  EMPTY_CREATE_FEEDBACK_RESPONSE,
+  InboxUnreadSummarySchema,
+  EMPTY_INBOX_UNREAD_SUMMARY,
+  InboxItemListSchema,
+  EMPTY_INBOX_ITEMS,
+  NotificationPreferenceResponseSchema,
+  EMPTY_NOTIFICATION_PREFERENCE_RESPONSE,
+  LabelSchema,
+  ListLabelsResponseSchema,
+  ListIssueStatusesResponseSchema,
+  IssueStatusEntrySchema,
+  IssuePropertySchema,
+  ListPropertiesResponseSchema,
+  IssuePropertiesResponseSchema,
+  QuickActionSchema,
+  ListQuickActionsResponseSchema,
+  QuickActionRenderSchema,
+  EMPTY_QUICK_ACTION,
+  EMPTY_LIST_QUICK_ACTIONS_RESPONSE,
+  QuickReplySchema,
+  ListQuickRepliesResponseSchema,
+  EMPTY_QUICK_REPLY,
+  EMPTY_LIST_QUICK_REPLIES_RESPONSE,
+  CommentSchema,
+  EMPTY_COMMENT,
+  EMPTY_ISSUE_PROPERTY,
+  EMPTY_LIST_PROPERTIES_RESPONSE,
+  EMPTY_ISSUE_PROPERTIES_RESPONSE,
+  EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+  EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+  IssuePullRequestsResponseSchema,
+  PullRequestLookupResponseSchema,
+  ResourceLabelsResponseSchema,
+  EMPTY_LABEL,
+  EMPTY_LIST_LABELS_RESPONSE,
+  EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
+  EMPTY_ISSUE_STATUS_ENTRY,
+  EMPTY_RESOURCE_LABELS_RESPONSE,
+  GitHubConnectResponseSchema,
+  ListGitHubInstallationsResponseSchema,
+  ListGitHubRepositoriesResponseSchema,
+  ListGitLabRepositoriesResponseSchema,
+  EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
+  EMPTY_GITHUB_CONNECT_RESPONSE,
+  EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE,
+  EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
+  RuntimeModelListRequestSchema,
+  MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+  SkillSchema,
+  SkillSummaryListSchema,
+  EMPTY_SKILL,
+  SkillVersionListSchema,
+  SkillVersionSchema,
+  EMPTY_SKILL_VERSION,
+  SkillRestoreResultSchema,
+  SkillUsageSchema,
+  SkillEffectSchema,
+  PromptProposalListSchema,
+  PromptProposalSchema,
+  PromptProposalPreviewSchema,
+  PromptProposalBatchOutcomeSchema,
+  RetrospectiveConfigSchema,
+  RetrospectiveRunListSchema,
+  RetrospectiveRunSchema,
+  KnowledgeDirListSchema,
+  KnowledgeEntryListSchema,
+  SkillImportResultSchema,
+  EMPTY_SKILL_IMPORT_RESULT,
+  IssueViewSchema,
+  IssueViewListSchema,
+  IssueViewPreferenceSchema,
+  EMPTY_ISSUE_VIEW_PREFERENCE,
+  EMPTY_PLUGIN_INSTALLATION,
+  EMPTY_WORKSPACE_MCP_SERVER,
+  EMPTY_PLUGIN_INSTALLATION_LIST,
+  EMPTY_PLUGIN_PREVIEW,
+  EMPTY_PLUGIN_PACKAGE,
+  EMPTY_PLUGIN_PACKAGE_LIST,
+  EMPTY_PLUGIN_SURFACE_LAUNCH,
+  PluginHookResultSchema,
+  PluginInstallationListResponseSchema,
+  PluginPackageListResponseSchema,
+  PluginPackageSchema,
+  PluginSurfaceLaunchSchema,
+  PluginInvocationListSchema,
+  PluginMCPToolListSchema,
+  PluginTokenIssueSchema,
+  PluginInstallationSchema,
+  PluginPreviewSchema,
+  WorkspaceMcpServerListSchema,
+  WorkspaceMcpServerSchema,
+  MarketplaceItemListSchema,
+  PromptApplyPreviewSchema,
+  PromptApplyResultSchema,
+  PromptInstallListSchema,
+  PromptInstallSchema,
+  PromptMarketItemListSchema,
+  PromptRestoreResultSchema,
+  PromptScanResultSchema,
+  PromptTargetStateSchema,
+  PromptVersionListSchema,
+  PromptVersionSchema,
+  EMPTY_PROMPT_APPLY_PREVIEW,
+  EMPTY_PROMPT_APPLY_RESULT,
+  EMPTY_PROMPT_INSTALL,
+  EMPTY_PROMPT_RESTORE_RESULT,
+  EMPTY_PROMPT_SCAN_RESULT,
+  EMPTY_PROMPT_TARGET_STATE,
+  EMPTY_PROMPT_VERSION,
+  PromptQualityDashboardSchema,
+  EMPTY_PROMPT_QUALITY_DASHBOARD,
+  ClauseGovernanceOverviewSchema,
+  EMPTY_CLAUSE_GOVERNANCE_OVERVIEW,
+  ClauseGovernanceDetailSchema,
+  EMPTY_CLAUSE_GOVERNANCE_DETAIL,
+  ClauseGovernanceReconciliationSchema,
+  EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION,
+  SelfEvolutionOverviewSchema,
+  SelfEvolutionConfigValidationSchema,
+  SelfEvolutionModelConfigSchema,
+  WorkspaceBackpressureSettingsSchema,
+  EMPTY_SELF_EVOLUTION_OVERVIEW,
+  PromptGovernanceVersionSchema,
+  PromptGovernanceVersionListSchema,
+  EMPTY_PROMPT_GOVERNANCE_VERSION,
+  EMPTY_PROMPT_GOVERNANCE_VERSION_LIST,
+  PromptQuizItemDetailSchema,
+  PromptQuizItemListSchema,
+  PromptQuizBaselineSchema,
+  PromptQuizSampleListSchema,
+  PromptQuizBatchResponseSchema,
+  PromptQuizBatchCreateResponseSchema,
+  PromptQuizBankImportResponseSchema,
+  EMPTY_PROMPT_QUIZ_ITEM,
+  EMPTY_PROMPT_QUIZ_BASELINE,
+  AuditEventsPageSchema,
+  EMPTY_AUDIT_EVENTS_PAGE,
+  MarketplaceListingSchema,
+  MarketplaceListingListSchema,
+  ShareLinkSchema,
+  ShareLinkListResponseSchema,
+  ShareLinkInfoSchema,
+  JoinShareLinkResponseSchema,
+  EMPTY_SHARE_LINK,
+  EMPTY_SHARE_LINK_INFO,
+  EMPTY_JOIN_SHARE_LINK_RESPONSE,
+  type IssueView,
+  type IssueViewPreference,
+  type CreateIssueViewRequest,
+} from "./schemas";
+
+/** Identifies the calling client to the server.
+ *  Sent on every HTTP request as X-Client-Platform / X-Client-Version /
+ *  X-Client-OS so the backend can log, gate, or split metrics by client.
+ *  See server/internal/middleware/client.go for the receiving end. */
+export interface ApiClientIdentity {
+  /** Logical client kind. Server expects: "web" | "desktop" | "cli" | "daemon". */
+  platform?: string;
+  /** Client/app version string (e.g. "0.1.0", git tag, commit). */
+  version?: string;
+  /** Coarse operating-system bucket (for example "macos", "windows", or "linux"). */
+  os?: string;
+}
+
+export interface ApiClientOptions {
+  logger?: Logger;
+  onUnauthorized?: () => void;
+  /** Identifies the client to the server. Sent as X-Client-* headers. */
+  identity?: ApiClientIdentity;
+}
+
+export interface ClientRuntimeSnapshot {
+  probe_result: "success" | "error";
+  runtime_count?: number;
+  provider_summary?: Record<string, number>;
+  online_count?: number;
+  offline_count?: number;
+}
+
+export interface ClientUsageRequest {
+  install_id: string;
+  runtime?: ClientRuntimeSnapshot;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: User;
+}
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly statusText: string;
+  // Raw decoded JSON body (when the server returned one). Carries structured
+  // error fields like `code` so callers can branch on machine-readable
+  // identifiers instead of pattern-matching the human-readable message.
+  readonly body?: unknown;
+
+  constructor(message: string, status: number, statusText: string, body?: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.statusText = statusText;
+    this.body = body;
+  }
+}
+
+function assertAgentConversationStartersWriteSupported(data: {
+  conversation_starters?: unknown;
+}): void {
+  if (
+    Object.prototype.hasOwnProperty.call(data, "conversation_starters") &&
+    !configStore.getState().agentConversationStartersSupported
+  ) {
+    throw new Error(
+      "This server version does not support agent conversation starters. Update the server before saving them.",
+    );
+  }
+}
+
+// errorCode extracts the stable `code` a handler attaches to a failure
+// (writeErrorCode), so a caller can render its own localized sentence instead
+// of toasting the server's English one. Returns undefined for a non-ApiError,
+// or a server that did not send one — the caller then falls back to
+// err.message, which is what every endpoint that has not adopted this yet
+// produces.
+export function errorCode(err: unknown): string | undefined {
+  if (err instanceof ApiError && err.body && typeof err.body === "object") {
+    const code = (err.body as { code?: unknown }).code;
+    if (typeof code === "string" && code.length > 0) return code;
+  }
+  return undefined;
+}
+
+// dispatchReasonCode extracts the stable, machine-readable admission reason
+// (MUL-4525) from a blocked-trigger error's structured body, when present. UI
+// callers localize a blocked/partial trigger from this code instead of pattern
+// matching the human-readable message. Returns undefined for non-ApiErrors or
+// bodies without a reason_code (older servers), so callers fall back to their
+// generic failure toast.
+export function dispatchReasonCode(err: unknown): string | undefined {
+  if (err instanceof ApiError && err.body && typeof err.body === "object") {
+    const code = (err.body as { reason_code?: unknown }).reason_code;
+    if (typeof code === "string" && code.length > 0) return code;
+  }
+  return undefined;
+}
+
+// clientErrorMessage returns the server's message only when it is a CLIENT
+// error (4xx). Handlers write those for the user — "autopilot is not active",
+// "Idempotency-Key is too long" — so they are worth rendering. A 5xx message is
+// internal detail (Go error chains, pgx table/constraint names, internal ids)
+// that must never reach a toast (MUL-6472), and a non-ApiError is a transport
+// failure whose message ("Failed to fetch") says nothing a user can act on.
+// Both return undefined so the caller falls back to its own localized sentence.
+export function clientErrorMessage(err: unknown): string | undefined {
+  if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+    return err.message || undefined;
+  }
+  return undefined;
+}
+
+// Thrown by getAttachmentTextContent when the server refuses to inline a
+// file because it exceeds the 2 MB cap. UI maps to a "too large, please
+// download" affordance with the Download CTA still available.
+export class PreviewTooLargeError extends Error {
+  constructor() {
+    super("attachment too large for inline preview");
+    this.name = "PreviewTooLargeError";
+  }
+}
+
+// Thrown by getAttachmentTextContent when the server's text whitelist
+// rejects the content type. Normally the client's isPreviewable() guard
+// catches this earlier, but the two whitelists can drift — surfacing the
+// 415 as a typed error makes the drift visible.
+export class PreviewUnsupportedError extends Error {
+  constructor() {
+    super("attachment type not supported for inline preview");
+    this.name = "PreviewUnsupportedError";
+  }
+}
+
+function remapSkillImportError(err: unknown): unknown {
+  if (!(err instanceof ApiError) || !err.body || typeof err.body !== "object") {
+    return err;
+  }
+  const body = err.body as { reason?: unknown; error?: unknown };
+  const reason = typeof body.reason === "string" && body.reason ? body.reason : "";
+  const error = typeof body.error === "string" && body.error ? body.error : "";
+  const message = reason || error;
+  if (!message || message === err.message) return err;
+  return new ApiError(message, err.status, err.statusText, err.body);
+}
+
+function skillFromImportResult(raw: unknown, endpoint: string): Skill {
+  const result = parseWithFallback(
+    raw,
+    SkillImportResultSchema,
+    EMPTY_SKILL_IMPORT_RESULT,
+    { endpoint },
+  );
+  if (
+    (result.status === "created" || result.status === "updated") &&
+    result.skill
+  ) {
+    const skill = parseWithFallback(result.skill, SkillSchema, EMPTY_SKILL, {
+      endpoint,
+    });
+    if (skill.id) return skill;
+  }
+  throw new Error(result.reason || "Import failed");
+}
+
+/**
+ * Advertised in X-Client-Capabilities so the server knows this client can
+ * recover a cancelled prompt from the durable draft-restore row (#5219).
+ * Must stay in sync with protocol.AppCapabilityChatDraftRestoreV1.
+ */
+export const CHAT_DRAFT_RESTORE_CAPABILITY = "chat-draft-restore-v1";
+
+/**
+ * Body shared by both unsubscribe endpoints: an omitted target means "the
+ * caller", which the server resolves from the request actor.
+ */
+function subscriberTarget(
+  userId?: string,
+  userType?: string,
+): Record<string, string> {
+  const body: Record<string, string> = {};
+  if (userId) body.user_id = userId;
+  if (userType) body.user_type = userType;
+  return body;
+}
+
+/**
+ * Per-call override for the workspace a request targets.
+ *
+ * `authHeaders()` normally stamps `X-Workspace-Slug` from the global
+ * current-workspace singleton, and the server resolves the workspace from that
+ * header BEFORE any `workspace_id` query param. Anything that acts on a
+ * workspace the user is not currently "in" — notably the create-workspace flow,
+ * which provisions a workspace it has not navigated to yet — must say so
+ * explicitly, or a concurrent writer of that singleton silently redirects the
+ * write to the wrong workspace.
+ */
+function workspaceHeader(
+  slug?: string,
+): Record<string, string> | undefined {
+  return slug ? { "X-Workspace-Slug": slug } : undefined;
+}
+
+function dingTalkGroupSearch(params: ListDingTalkGroupsParams): string {
+  const search = new URLSearchParams();
+  if (params.activity) search.set("activity", params.activity);
+  if (params.installationId) search.set("installation_id", params.installationId);
+  if (params.offset !== undefined) search.set("offset", String(params.offset));
+  if (params.limit !== undefined) search.set("limit", String(params.limit));
+  const encoded = search.toString();
+  return encoded ? `?${encoded}` : "";
+}
+
+export class ApiClient {
+  private baseUrl: string;
+  private token: string | null = null;
+  private logger: Logger;
+  private options: ApiClientOptions;
+
+  constructor(baseUrl: string, options?: ApiClientOptions) {
+    this.baseUrl = baseUrl;
+    this.options = options ?? {};
+    this.logger = options?.logger ?? noopLogger;
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  setToken(token: string | null) {
+    this.token = token;
+  }
+
+  private readCsrfToken(): string | null {
+    if (typeof document === "undefined") return null;
+    const match = document.cookie
+      .split("; ")
+      .find((c) => c.startsWith("multica_csrf="));
+    return match ? match.split("=")[1] ?? null : null;
+  }
+
+  private authHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+    const slug = getCurrentSlug();
+    if (slug) headers["X-Workspace-Slug"] = slug;
+    const csrf = this.readCsrfToken();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+    const id = this.options.identity;
+    if (id?.platform) headers["X-Client-Platform"] = id.platform;
+    if (id?.version) headers["X-Client-Version"] = id.version;
+    if (id?.os) headers["X-Client-OS"] = id.os;
+    return headers;
+  }
+
+  private handleUnauthorized() {
+    this.token = null;
+    // Workspace id is owned by the URL-driven workspace-storage singleton
+    // (set by [workspaceSlug]/layout.tsx). On 401, the auth flow navigates
+    // to /login which leaves the workspace route, and the next workspace
+    // entry will overwrite the id. No clear needed here.
+    this.options.onUnauthorized?.();
+  }
+
+  private async parseErrorMessage(res: Response, fallback: string): Promise<string> {
+    try {
+      const data = await res.json() as { error?: string };
+      if (typeof data.error === "string" && data.error) return data.error;
+    } catch {
+      // Ignore non-JSON error bodies.
+    }
+    return fallback;
+  }
+
+  // Reads the response body once for both human-readable error message and
+  // structured fields. The Response stream can only be consumed once, so
+  // both pieces have to come from a single read.
+  private async parseErrorBody(res: Response, fallback: string): Promise<{ message: string; body: unknown }> {
+    try {
+      const data = await res.json() as { error?: string };
+      const message = typeof data.error === "string" && data.error ? data.error : fallback;
+      return { message, body: data };
+    } catch {
+      return { message: fallback, body: undefined };
+    }
+  }
+
+  // Sends the request with the standard headers (auth, CSRF, request id,
+  // client identity) and runs the shared error path (401 → handleUnauthorized,
+  // structured ApiError, status-aware log level). Returns the raw Response so
+  // callers can decide how to decode the body — JSON for the typed `fetch<T>`
+  // path, plain text for the attachment-preview proxy, etc.
+  private async fetchRaw(
+    path: string,
+    init?: RequestInit & { extraHeaders?: Record<string, string> },
+  ): Promise<Response> {
+    const rid = createRequestId();
+    const start = Date.now();
+    const method = init?.method ?? "GET";
+
+    const headers: Record<string, string> = {
+      "X-Request-ID": rid,
+      ...this.authHeaders(),
+      ...(init?.extraHeaders ?? {}),
+      ...((init?.headers as Record<string, string>) ?? {}),
+    };
+
+    this.logger.info(`→ ${method} ${path}`, { rid });
+
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      ...init,
+      headers,
+      credentials: "include",
+    });
+
+    if (!res.ok) {
+      if (res.status === 401) this.handleUnauthorized();
+      const { message, body } = await this.parseErrorBody(res, `API error: ${res.status} ${res.statusText}`);
+      const logLevel = res.status === 404 ? "warn" : "error";
+      this.logger[logLevel](`← ${res.status} ${path}`, { rid, duration: `${Date.now() - start}ms`, error: message });
+      throw new ApiError(message, res.status, res.statusText, body);
+    }
+
+    this.logger.info(`← ${res.status} ${path}`, { rid, duration: `${Date.now() - start}ms` });
+    return res;
+  }
+
+  private async fetch<T>(path: string, init?: RequestInit): Promise<T> {
+    const res = await this.fetchRaw(path, {
+      ...init,
+      extraHeaders: { "Content-Type": "application/json" },
+    });
+    // Handle 204 No Content
+    if (res.status === 204) {
+      return undefined as T;
+    }
+    return res.json() as Promise<T>;
+  }
+
+  // Auth
+  async sendCode(email: string): Promise<void> {
+    await this.fetch("/auth/send-code", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+  }
+
+  async verifyCode(email: string, code: string): Promise<LoginResponse> {
+    return this.fetch("/auth/verify-code", {
+      method: "POST",
+      body: JSON.stringify({ email, code }),
+    });
+  }
+
+  async googleLogin(code: string, redirectUri: string): Promise<LoginResponse> {
+    return this.fetch("/auth/google", {
+      method: "POST",
+      body: JSON.stringify({ code, redirect_uri: redirectUri }),
+    });
+  }
+
+  async logout(): Promise<void> {
+    await this.fetch("/auth/logout", { method: "POST" });
+  }
+
+  async issueCliToken(): Promise<{ token: string }> {
+    return this.fetch("/api/cli-token", { method: "POST" });
+  }
+
+  async getMe(): Promise<User> {
+    const raw = await this.fetch<unknown>("/api/me");
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "GET /api/me",
+    });
+  }
+
+  async markOnboardingComplete(payload?: {
+    completion_path?: OnboardingCompletionPath;
+    workspace_id?: string;
+  }): Promise<User> {
+    const raw = await this.fetch<unknown>("/api/me/onboarding/complete", {
+      method: "POST",
+      body: payload ? JSON.stringify(payload) : undefined,
+    });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "POST /api/me/onboarding/complete",
+    });
+  }
+
+  async joinCloudWaitlist(payload: {
+    email: string;
+    reason?: string;
+  }): Promise<User> {
+    const raw = await this.fetch<unknown>("/api/me/onboarding/cloud-waitlist", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "POST /api/me/onboarding/cloud-waitlist",
+    });
+  }
+
+  async patchOnboarding(payload: {
+    questionnaire?: Record<string, unknown>;
+  }): Promise<User> {
+    const raw = await this.fetch<unknown>("/api/me/onboarding", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "PATCH /api/me/onboarding",
+    });
+  }
+
+  async updateMe(data: UpdateMeRequest): Promise<User> {
+    const raw = await this.fetch<unknown>("/api/me", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "PATCH /api/me",
+    });
+  }
+
+  // Admin (RUYI-47) — instance-level user & workspace management. Every
+  // endpoint 403s server-side unless the caller is a live super admin.
+  async adminListUsers(params?: { query?: string; limit?: number; offset?: number }): Promise<AdminUserList> {
+    const search = new URLSearchParams();
+    if (params?.query) search.set("query", params.query);
+    if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.offset) search.set("offset", String(params.offset));
+    const qs = search.toString();
+    const raw = await this.fetch<unknown>(`/api/admin/users${qs ? `?${qs}` : ""}`);
+    return parseWithFallback(raw, AdminUserListSchema, EMPTY_ADMIN_USER_LIST, {
+      endpoint: "GET /api/admin/users",
+    });
+  }
+
+  async adminGetFileReadPolicy(): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy");
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "GET /api/admin/file-read-policy",
+    });
+  }
+
+  async adminUpdateFileReadPolicy(policy: AdminFileReadPolicy): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy", {
+      method: "PUT",
+      body: JSON.stringify(policy),
+    });
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "PUT /api/admin/file-read-policy",
+    });
+  }
+
+  async adminRestoreFileReadPolicy(version: number): Promise<AdminFileReadPolicy> {
+    const raw = await this.fetch<unknown>("/api/admin/file-read-policy/restore-defaults", {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    });
+    return parseWithFallback(raw, AdminFileReadPolicySchema, EMPTY_ADMIN_FILE_READ_POLICY, {
+      endpoint: "POST /api/admin/file-read-policy/restore-defaults",
+    });
+  }
+
+  async adminSetUserDisabled(userId: string, disabled: boolean, reason?: string): Promise<User> {
+    const raw = await this.fetch<unknown>(`/api/admin/users/${userId}/disabled`, {
+      method: "PATCH",
+      body: JSON.stringify({ disabled, reason: reason || undefined }),
+    });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "PATCH /api/admin/users/:id/disabled",
+    });
+  }
+
+  async adminSetUserSuperAdmin(userId: string, granted: boolean, reason?: string): Promise<User> {
+    const raw = await this.fetch<unknown>(`/api/admin/users/${userId}/super-admin`, {
+      method: "PATCH",
+      body: JSON.stringify({ granted, reason: reason || undefined }),
+    });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "PATCH /api/admin/users/:id/super-admin",
+    });
+  }
+
+  async adminImpersonate(userId: string, reason?: string): Promise<ImpersonationResponse> {
+    const raw = await this.fetch<unknown>(`/api/admin/users/${userId}/impersonate`, {
+      method: "POST",
+      body: JSON.stringify({ reason: reason || undefined }),
+    });
+    return parseWithFallback(raw, ImpersonationResponseSchema, EMPTY_IMPERSONATION_RESPONSE, {
+      endpoint: "POST /api/admin/users/:id/impersonate",
+    });
+  }
+
+  async adminListWorkspaces(params?: { query?: string; limit?: number; offset?: number }): Promise<AdminWorkspaceList> {
+    const search = new URLSearchParams();
+    if (params?.query) search.set("query", params.query);
+    if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.offset) search.set("offset", String(params.offset));
+    const qs = search.toString();
+    const raw = await this.fetch<unknown>(`/api/admin/workspaces${qs ? `?${qs}` : ""}`);
+    return parseWithFallback(raw, AdminWorkspaceListSchema, EMPTY_ADMIN_WORKSPACE_LIST, {
+      endpoint: "GET /api/admin/workspaces",
+    });
+  }
+
+  async adminAddWorkspaceMember(
+    workspaceId: string,
+    data: { email?: string; user_id?: string; role: "member" | "admin"; reason?: string },
+  ): Promise<void> {
+    await this.fetch(`/api/admin/workspaces/${workspaceId}/members`, {
+      method: "POST",
+      body: JSON.stringify({ ...data, reason: data.reason || undefined }),
+    });
+  }
+
+  // OAuth management (RUYI-420) — MCP clients, grants, and the MCP status
+  // panel. Same instance-level super-admin surface as the methods above;
+  // the plaintext secret exists only in the create/rotate responses below.
+  async adminListOAuthClients(): Promise<AdminOAuthClientList> {
+    const raw = await this.fetch<unknown>("/api/admin/oauth/clients");
+    return parseWithFallback(raw, AdminOAuthClientListSchema, EMPTY_ADMIN_OAUTH_CLIENT_LIST, {
+      endpoint: "GET /api/admin/oauth/clients",
+    });
+  }
+
+  async adminCreateOAuthClient(body: { name: string; redirect_uris: string[] }): Promise<OAuthClientSecretReveal> {
+    const raw = await this.fetch<unknown>("/api/admin/oauth/clients", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseWithFallback(raw, OAuthClientSecretRevealSchema, EMPTY_OAUTH_SECRET_REVEAL, {
+      endpoint: "POST /api/admin/oauth/clients",
+    });
+  }
+
+  async adminUpdateOAuthClient(id: string, body: { name: string; redirect_uris: string[] }): Promise<void> {
+    await this.fetch(`/api/admin/oauth/clients/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async adminSetOAuthClientDisabled(id: string, disabled: boolean, reason?: string): Promise<void> {
+    await this.fetch(`/api/admin/oauth/clients/${id}/disabled`, {
+      method: "PATCH",
+      body: JSON.stringify({ disabled, reason: reason || undefined }),
+    });
+  }
+
+  async adminRotateOAuthClientSecret(id: string, reason?: string): Promise<OAuthClientSecretReveal> {
+    const raw = await this.fetch<unknown>(`/api/admin/oauth/clients/${id}/rotate?reason=${encodeURIComponent(reason ?? "")}`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, OAuthClientSecretRevealSchema, EMPTY_OAUTH_SECRET_REVEAL, {
+      endpoint: "POST /api/admin/oauth/clients/:id/rotate",
+    });
+  }
+
+  async adminDeleteOAuthClient(id: string, reason?: string): Promise<void> {
+    await this.fetch(`/api/admin/oauth/clients/${id}?reason=${encodeURIComponent(reason ?? "")}`, {
+      method: "DELETE",
+    });
+  }
+
+  async adminListOAuthGrants(): Promise<AdminOAuthGrantList> {
+    const raw = await this.fetch<unknown>("/api/admin/oauth/grants");
+    return parseWithFallback(raw, AdminOAuthGrantListSchema, EMPTY_ADMIN_OAUTH_GRANT_LIST, {
+      endpoint: "GET /api/admin/oauth/grants",
+    });
+  }
+
+  async adminRevokeOAuthGrant(id: string, reason?: string): Promise<void> {
+    await this.fetch(`/api/admin/oauth/grants/${id}?reason=${encodeURIComponent(reason ?? "")}`, {
+      method: "DELETE",
+    });
+  }
+
+  async adminMCPServerStatus(): Promise<AdminMCPStatus> {
+    const raw = await this.fetch<unknown>("/api/admin/mcp/status");
+    return parseWithFallback(raw, AdminMCPStatusSchema, EMPTY_ADMIN_MCP_STATUS, {
+      endpoint: "GET /api/admin/mcp/status",
+    });
+  }
+
+  // The signed-in user's own MCP authorizations (Settings → 我的授权).
+  async listMyOAuthGrants(): Promise<MyOAuthGrantList> {
+    const raw = await this.fetch<unknown>("/api/oauth/grants");
+    return parseWithFallback(raw, MyOAuthGrantListSchema, EMPTY_MY_OAUTH_GRANT_LIST, {
+      endpoint: "GET /api/oauth/grants",
+    });
+  }
+
+  async revokeMyOAuthGrant(id: string): Promise<void> {
+    await this.fetch(`/api/oauth/grants/${id}`, {
+      method: "DELETE",
+    });
+  }
+
+  // MCP OAuth consent confirmation page (RUYI-420). The {id} is the opaque
+  // consent ticket the authorize endpoint parked; 401/404 surface as ApiError.
+  async getOAuthConsent(id: string): Promise<OAuthConsentInfo> {
+    const raw = await this.fetch<unknown>(`/auth/oauth/consent/${id}`);
+    return parseWithFallback(raw, OAuthConsentInfoSchema, EMPTY_OAUTH_CONSENT_INFO, {
+      endpoint: "GET /auth/oauth/consent/{id}",
+    });
+  }
+
+  async approveOAuthConsent(id: string): Promise<OAuthRedirectResponse> {
+    const raw = await this.fetch<unknown>(`/auth/oauth/consent/${id}/approve`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, OAuthRedirectResponseSchema, EMPTY_OAUTH_REDIRECT, {
+      endpoint: "POST /auth/oauth/consent/{id}/approve",
+    });
+  }
+
+  async denyOAuthConsent(id: string): Promise<OAuthRedirectResponse> {
+    const raw = await this.fetch<unknown>(`/auth/oauth/consent/${id}/deny`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, OAuthRedirectResponseSchema, EMPTY_OAUTH_REDIRECT, {
+      endpoint: "POST /auth/oauth/consent/{id}/deny",
+    });
+  }
+
+  async stopImpersonation(): Promise<ImpersonationResponse> {
+    const raw = await this.fetch<unknown>("/api/impersonation/stop", {
+      method: "POST",
+    });
+    return parseWithFallback(raw, ImpersonationResponseSchema, EMPTY_IMPERSONATION_RESPONSE, {
+      endpoint: "POST /api/impersonation/stop",
+    });
+  }
+
+  async getCredentialTransportKey(): Promise<CredentialTransportKey | null> {
+    const raw = await this.fetch<unknown>("/api/credentials/transport-key");
+    return parseWithFallback(raw, CredentialTransportKeySchema, null, {
+      endpoint: "GET /api/credentials/transport-key",
+      redactContent: true,
+    });
+  }
+
+  async listCredentialConnectors(workspaceId: string): Promise<CredentialConnector[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors`);
+    return parseWithFallback(raw, CredentialConnectorListSchema, [], {
+      endpoint: "GET /api/workspaces/{id}/credential-connectors",
+      redactContent: true,
+    });
+  }
+
+  async createCredentialConnector(workspaceId: string, data: {
+    name: string;
+    target_url: string;
+  }): Promise<CredentialConnector | null> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialConnectorSchema, null, {
+      endpoint: "POST /api/workspaces/{id}/credential-connectors",
+      redactContent: true,
+    });
+  }
+
+  async updateCredentialConnector(workspaceId: string, connectorId: string, data: {
+    name: string;
+    target_url: string;
+    status: string;
+    revision: number;
+  }): Promise<CredentialConnector | null> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/credential-connectors/${connectorId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialConnectorSchema, null, {
+      endpoint: "PUT /api/workspaces/{id}/credential-connectors/{connectorId}",
+      redactContent: true,
+    });
+  }
+
+  async createIssueCredential(issueId: string, data: {
+    name: string;
+    target_service: string;
+    connector_id: string;
+    connector_revision: number;
+    purpose: string;
+    subject_type: "agent" | "squad";
+    subject_id: string;
+    resource_scope: "single_use" | "issue" | "project" | "workspace" | "global";
+    resource_id?: string;
+    expires_at: string | null;
+    envelope: CredentialTransportEnvelope;
+  }): Promise<CredentialMetadata | null> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialMetadataSchema, null, {
+      endpoint: "POST /api/issues/{id}/credentials",
+      redactContent: true,
+    });
+  }
+
+  async replaceIssueCredential(issueId: string, credentialId: string, data: {
+    name: string;
+    target_service: string;
+    connector_id: string;
+    connector_revision: number;
+    purpose: string;
+    subject_type: "agent" | "squad";
+    subject_id: string;
+    resource_scope: "single_use" | "issue" | "project" | "workspace" | "global";
+    resource_id?: string;
+    expires_at: string | null;
+    envelope: CredentialTransportEnvelope;
+  }): Promise<CredentialMetadata | null> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials/${credentialId}/replace`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CredentialMetadataSchema, null, {
+      endpoint: "POST /api/issues/{id}/credentials/{credentialId}/replace",
+      redactContent: true,
+    });
+  }
+
+  async listCredentialAudit(workspaceId: string): Promise<CredentialAuditEvent[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/credential-audit`);
+    return parseWithFallback(raw, CredentialAuditEventListSchema, [], {
+      endpoint: "GET /api/workspaces/{id}/credential-audit",
+      redactContent: true,
+    });
+  }
+
+  async listIssueCredentials(issueId: string): Promise<CredentialMetadata[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials`);
+    return parseWithFallback(raw, CredentialMetadataListSchema, [], {
+      endpoint: "GET /api/issues/{id}/credentials",
+      redactContent: true,
+    });
+  }
+
+  async revokeIssueCredential(issueId: string, credentialId: string): Promise<{ status: string } | null> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials/${credentialId}/revoke`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, z.object({ status: z.string() }), null, {
+      endpoint: "POST /api/issues/{id}/credentials/{credentialId}/revoke",
+      redactContent: true,
+    });
+  }
+
+  // Issues
+  async listIssues(params?: ListIssuesParams): Promise<ListIssuesResponse> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.offset) search.set("offset", String(params.offset));
+    if (params?.workspace_id) search.set("workspace_id", params.workspace_id);
+    if (params?.q?.trim()) search.set("q", params.q.trim());
+    if (params?.status) search.set("status", params.status);
+    if (params?.statuses?.length) search.set("statuses", params.statuses.join(","));
+    if (params?.priority) search.set("priority", params.priority);
+    if (params?.priorities?.length) search.set("priorities", params.priorities.join(","));
+    if (params?.assignee_id) search.set("assignee_id", params.assignee_id);
+    if (params?.assignee_ids?.length) search.set("assignee_ids", params.assignee_ids.join(","));
+    if (params?.assignee_types?.length) search.set("assignee_types", params.assignee_types.join(","));
+    if (params?.creator_id) search.set("creator_id", params.creator_id);
+    if (params?.project_id) search.set("project_id", params.project_id);
+    if (params?.assignee_filters?.length) {
+      search.set("assignee_filters", params.assignee_filters.map((f) => `${f.type}:${f.id}`).join(","));
+    }
+    if (params?.include_no_assignee) search.set("include_no_assignee", "true");
+    if (params?.creator_filters?.length) {
+      search.set("creator_filters", params.creator_filters.map((f) => `${f.type}:${f.id}`).join(","));
+    }
+    if (params?.project_ids?.length) search.set("project_ids", params.project_ids.join(","));
+    if (params?.include_no_project) search.set("include_no_project", "true");
+    if (params?.label_ids?.length) search.set("label_ids", params.label_ids.join(","));
+    if (params?.top_level_only) search.set("top_level_only", "true");
+    // No `.length` guard on purpose: an empty ids array must still send
+    // `ids=` — the server treats a PRESENT-but-empty list as an empty window
+    // (nothing running), while an absent param means no restriction.
+    if (params?.ids) search.set("ids", params.ids.join(","));
+    if (params?.involves_user_id) search.set("involves_user_id", params.involves_user_id);
+    if (params?.metadata && Object.keys(params.metadata).length > 0) {
+      search.set("metadata", JSON.stringify(params.metadata));
+    }
+    if (params?.properties && Object.keys(params.properties).length > 0) {
+      search.set("properties", JSON.stringify(params.properties));
+    }
+    if (params?.open_only) search.set("open_only", "true");
+    if (params?.scheduled) search.set("scheduled", "true");
+    if (params?.date_field) search.set("date_field", params.date_field);
+    if (params?.date_start) search.set("date_start", params.date_start);
+    if (params?.date_end) search.set("date_end", params.date_end);
+    if (params?.sort_by) search.set("sort", params.sort_by);
+    if (params?.sort_direction) search.set("direction", params.sort_direction);
+    // An ids facet can carry hundreds of UUIDs (agents-working filter) —
+    // enough to blow the ~8 KB request-line cap of common reverse proxies.
+    // Route those windows through the POST twin, which takes the SAME
+    // key/value pairs as a JSON body.
+    if (params?.ids) {
+      const raw = await this.fetch<unknown>("/api/issues/query", {
+        method: "POST",
+        body: JSON.stringify(Object.fromEntries(search)),
+      });
+      return parseWithFallback(raw, ListIssuesResponseSchema, EMPTY_LIST_ISSUES_RESPONSE, {
+        endpoint: "POST /api/issues/query",
+      });
+    }
+    const path = `/api/issues?${search}`;
+    const raw = await this.fetch<unknown>(path);
+    return parseWithFallback(raw, ListIssuesResponseSchema, EMPTY_LIST_ISSUES_RESPONSE, {
+      endpoint: "GET /api/issues",
+    });
+  }
+
+  async listGroupedIssues(params: ListGroupedIssuesParams): Promise<GroupedIssuesResponse> {
+    const search = new URLSearchParams({ group_by: params.group_by });
+    if (params.limit) search.set("limit", String(params.limit));
+    if (params.offset) search.set("offset", String(params.offset));
+    if (params.workspace_id) search.set("workspace_id", params.workspace_id);
+    if (params.statuses?.length) search.set("statuses", params.statuses.join(","));
+    if (params.priorities?.length) search.set("priorities", params.priorities.join(","));
+    if (params.assignee_types?.length) search.set("assignee_types", params.assignee_types.join(","));
+    if (params.assignee_id) search.set("assignee_id", params.assignee_id);
+    if (params.assignee_ids?.length) search.set("assignee_ids", params.assignee_ids.join(","));
+    if (params.creator_id) search.set("creator_id", params.creator_id);
+    if (params.project_id) search.set("project_id", params.project_id);
+    if (params.involves_user_id) search.set("involves_user_id", params.involves_user_id);
+    if (params.metadata && Object.keys(params.metadata).length > 0) {
+      search.set("metadata", JSON.stringify(params.metadata));
+    }
+    if (params.properties && Object.keys(params.properties).length > 0) {
+      search.set("properties", JSON.stringify(params.properties));
+    }
+    if (params.assignee_filters?.length) {
+      search.set("assignee_filters", params.assignee_filters.map((f) => `${f.type}:${f.id}`).join(","));
+    }
+    if (params.include_no_assignee) search.set("include_no_assignee", "true");
+    if (params.creator_filters?.length) {
+      search.set("creator_filters", params.creator_filters.map((f) => `${f.type}:${f.id}`).join(","));
+    }
+    if (params.project_ids?.length) search.set("project_ids", params.project_ids.join(","));
+    if (params.include_no_project) search.set("include_no_project", "true");
+    if (params.label_ids?.length) search.set("label_ids", params.label_ids.join(","));
+    if (params.group_assignee_type) search.set("group_assignee_type", params.group_assignee_type);
+    if (params.group_assignee_id) search.set("group_assignee_id", params.group_assignee_id);
+    if (params.date_field) search.set("date_field", params.date_field);
+    if (params.date_start) search.set("date_start", params.date_start);
+    if (params.date_end) search.set("date_end", params.date_end);
+    if (params.sort_by) search.set("sort", params.sort_by);
+    if (params.sort_direction) search.set("direction", params.sort_direction);
+    const raw = await this.fetch<unknown>(`/api/issues/grouped?${search}`);
+    return parseWithFallback(raw, GroupedIssuesResponseSchema, EMPTY_GROUPED_ISSUES_RESPONSE, {
+      endpoint: "GET /api/issues/grouped",
+    });
+  }
+
+  async listIssueTableGroups(params: IssueTableGroupsRequest): Promise<IssueTableGroupsResponse> {
+    const raw = await this.fetch<unknown>("/api/issues/table/groups", {
+      method: "POST",
+      body: JSON.stringify(params),
+    });
+    return parseWithFallback(
+      raw,
+      IssueTableGroupsResponseSchema,
+      EMPTY_ISSUE_TABLE_GROUPS_RESPONSE,
+      { endpoint: "POST /api/issues/table/groups" },
+    );
+  }
+
+  async listIssueTableRows(params: IssueTableRowsRequest): Promise<IssueTableRowsResponse> {
+    const raw = await this.fetch<unknown>("/api/issues/table/rows", {
+      method: "POST",
+      body: JSON.stringify(params),
+    });
+    return parseWithFallback(
+      raw,
+      IssueTableRowsResponseSchema,
+      EMPTY_ISSUE_TABLE_ROWS_RESPONSE,
+      { endpoint: "POST /api/issues/table/rows" },
+    );
+  }
+
+  async listIssueTableFacets(params: IssueTableFacetsRequest): Promise<IssueTableFacetsResponse> {
+    const raw = await this.fetch<unknown>("/api/issues/table/facets", {
+      method: "POST",
+      body: JSON.stringify(params),
+    });
+    return parseWithFallback(
+      raw,
+      IssueTableFacetsResponseSchema,
+      EMPTY_ISSUE_TABLE_FACETS_RESPONSE,
+      { endpoint: "POST /api/issues/table/facets" },
+    );
+  }
+
+  async searchIssues(params: { q: string; limit?: number; offset?: number; include_closed?: boolean; signal?: AbortSignal }): Promise<SearchIssuesResponse> {
+    const search = new URLSearchParams({ q: params.q });
+    if (params.limit !== undefined) search.set("limit", String(params.limit));
+    if (params.offset !== undefined) search.set("offset", String(params.offset));
+    if (params.include_closed) search.set("include_closed", "true");
+    const raw = await this.fetch<unknown>(
+      `/api/issues/search?${search}`,
+      params.signal ? { signal: params.signal } : undefined,
+    );
+    return parseWithFallback(raw, SearchIssuesResponseSchema, EMPTY_SEARCH_ISSUES_RESPONSE, {
+      endpoint: "GET /api/issues/search",
+    });
+  }
+
+  async searchProjects(params: { q: string; limit?: number; offset?: number; include_closed?: boolean; signal?: AbortSignal }): Promise<SearchProjectsResponse> {
+    const search = new URLSearchParams({ q: params.q });
+    if (params.limit !== undefined) search.set("limit", String(params.limit));
+    if (params.offset !== undefined) search.set("offset", String(params.offset));
+    if (params.include_closed) search.set("include_closed", "true");
+    const raw = await this.fetch<unknown>(
+      `/api/projects/search?${search}`,
+      params.signal ? { signal: params.signal } : undefined,
+    );
+    return parseWithFallback(raw, SearchProjectsResponseSchema, EMPTY_SEARCH_PROJECTS_RESPONSE, {
+      endpoint: "GET /api/projects/search",
+    });
+  }
+
+  /**
+   * Fetch one issue by UUID **or** by bare identifier ("MUL-123"): the server
+   * resolves `PREFIX-NUMBER` against the workspace's own prefix through the
+   * unique `(workspace_id, number)` index, and 404s on a wrong prefix or a
+   * missing number.
+   *
+   * `signal` is optional so cancel-on-unmount callers (identifier autolink
+   * resolution) can abort an in-flight lookup the same way search does.
+   *
+   * The 2xx body is validated, not cast. A single issue is not a list: there
+   * is no safe-empty shape to degrade to, and the identifier-autolink caller
+   * caches this result for 5 minutes, so a field-missing or type-drifted 200
+   * must not become a truthy issue with an `undefined` id. Like createIssue,
+   * an unusable body fails the call — and it fails with a plain Error, never
+   * an ApiError 404, so `issueIdentifierOptions` propagates it instead of
+   * caching it as "no such issue".
+   */
+  async getIssue(id: string, options?: { signal?: AbortSignal }): Promise<Issue> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${encodeURIComponent(id)}`,
+      options?.signal ? { signal: options.signal } : undefined,
+    );
+    const issue = parseWithFallback<Issue | null>(raw, IssueSchema, null, {
+      endpoint: "GET /api/issues/:id",
+    });
+    if (!issue) {
+      // parseWithFallback already logged the zod issues + raw payload.
+      throw new Error("GET /api/issues/:id returned a malformed issue");
+    }
+    return issue;
+  }
+
+  async createIssue(data: CreateIssueRequest): Promise<Issue> {
+    // Parse through a schema (not a raw cast): the create modal keys its
+    // label-attach compatibility fallback off `labels` being absent vs a
+    // validated Label[], so an unvalidated wrong shape must not slip through.
+    // Unlike list endpoints, a create that returns an unusable body is a
+    // FAILED mutation, not a safe-empty read: fall back to null and reject so
+    // the modal keeps the draft and shows a failure toast instead of a blank
+    // "created" card pointing at an empty issue id. parseWithFallback already
+    // logged the schema issues + raw payload; the empty message lets the modal
+    // render its localized "failed to create" toast.
+    const raw = await this.fetch<unknown>("/api/issues", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    const issue = parseWithFallback<Issue | null>(raw, CreateIssueResponseSchema, null, {
+      endpoint: "POST /api/issues",
+    });
+    if (!issue) {
+      throw new Error();
+    }
+    return issue;
+  }
+
+  async quickCreateIssue(data: {
+    agent_id?: string;
+    squad_id?: string;
+    prompt: string;
+    priority?: IssuePriority;
+    due_date?: string;
+    project_id?: string | null;
+    parent_issue_id?: string | null;
+    attachment_ids?: string[];
+  }): Promise<{ task_id: string }> {
+    return this.fetch("/api/issues/quick-create", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getCommentSubIssuePreview(anchorCommentId: string): Promise<SourceContextPreview> {
+    const raw = await this.fetch<unknown>(`/api/comments/${anchorCommentId}/sub-issue-preview`);
+    const preview = parseWithFallback<SourceContextPreview | null>(
+      raw,
+      SourceContextPreviewSchema,
+      null,
+      { endpoint: "GET /api/comments/:id/sub-issue-preview" },
+    );
+    if (!preview) throw new Error("Invalid source context preview response");
+    return preview;
+  }
+
+  async createCommentSubIssue(
+    anchorCommentId: string,
+    data: CreateCommentSubIssueManualRequest,
+  ): Promise<Issue>;
+  async createCommentSubIssue(
+    anchorCommentId: string,
+    data: CreateCommentSubIssueAgentRequest,
+  ): Promise<{ task_id: string }>;
+  async createCommentSubIssue(
+    anchorCommentId: string,
+    data: CreateCommentSubIssueRequest,
+  ): Promise<Issue | { task_id: string }> {
+    try {
+      const raw = await this.fetch<unknown>(`/api/comments/${anchorCommentId}/sub-issues`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+      if (data.mode === "manual") {
+        const issue = parseWithFallback<Issue | null>(raw, CreateIssueResponseSchema, null, {
+          endpoint: "POST /api/comments/:id/sub-issues (manual)",
+        });
+        if (!issue) throw new Error("Invalid sub-issue response");
+        return issue;
+      }
+      const task = parseWithFallback<{ task_id: string } | null>(
+        raw,
+        CommentSubIssueTaskResponseSchema,
+        null,
+        { endpoint: "POST /api/comments/:id/sub-issues (agent)" },
+      );
+      if (!task) throw new Error("Invalid quick-create response");
+      return task;
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 404 || error.status === 405)) {
+        throw new ApiError(
+          "Source-context sub-issues require a newer server",
+          error.status,
+          error.statusText,
+          { code: "source_context_server_unsupported" },
+        );
+      }
+      throw error;
+    }
+  }
+
+  async createFeedback(data: {
+    message: string;
+    url?: string;
+    workspace_id?: string;
+    kind?: FeedbackKind;
+    context?: FeedbackContext;
+  }): Promise<CreateFeedbackResponse> {
+    const raw = await this.fetch<unknown>("/api/feedback", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, CreateFeedbackResponseSchema, EMPTY_CREATE_FEEDBACK_RESPONSE, {
+      endpoint: "POST /api/feedback",
+    });
+  }
+
+  async upsertClientUsage(data: ClientUsageRequest): Promise<void> {
+    await this.fetch("/api/client-usage", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateIssue(id: string, data: UpdateIssueRequest): Promise<Issue> {
+    return this.fetch(`/api/issues/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async moveIssue(id: string, data: MoveIssueRequest): Promise<Issue> {
+    return this.fetch(`/api/issues/${id}/move`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listChildIssues(id: string): Promise<{ issues: Issue[] }> {
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/children`);
+    return parseWithFallback(raw, ChildIssuesResponseSchema, { issues: [] }, {
+      endpoint: "GET /api/issues/:id/children",
+    });
+  }
+
+  /** Structured relations: parent + the five edge views (RUYI-689).
+   *  Read-only — creating/deleting edges is a server-side/API concern;
+   *  no write counterpart exists in this client by design. */
+  async getIssueRelations(id: string): Promise<IssueRelationsResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${id}/relations`);
+    return parseWithFallback(raw, IssueRelationsResponseSchema, EMPTY_ISSUE_RELATIONS, {
+      endpoint: "GET /api/issues/:id/relations",
+    });
+  }
+
+  /** Batched variant — returns children for multiple parents in one request.
+   *  Avoids an N-request fan-out in Swimlane (one per visible parent lane).
+   *  parentIds must be non-empty; pass a sorted, deduplicated list so the
+   *  React Query cache key is stable across renders. */
+  async listChildrenByParents(parentIds: string[]): Promise<{ issues: Issue[] }> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/children?parent_ids=${parentIds.join(",")}`,
+    );
+    return parseWithFallback(raw, ChildIssuesResponseSchema, { issues: [] }, {
+      endpoint: "GET /api/issues/children",
+    });
+  }
+
+  async getChildIssueProgress(): Promise<{
+    progress: { parent_issue_id: string; total: number; done: number }[];
+  }> {
+    const raw = await this.fetch<unknown>("/api/issues/child-progress");
+    return parseWithFallback(
+      raw,
+      ChildIssueProgressResponseSchema,
+      { progress: [] },
+      { endpoint: "GET /api/issues/child-progress" },
+    );
+  }
+
+  async getIssueLimitUsage(): Promise<IssueLimitUsage | null> {
+    const raw = await this.fetch<unknown>("/api/issues/limit-usage");
+    if (raw == null) return null;
+    return parseWithFallback<IssueLimitUsage | null>(
+      raw,
+      IssueLimitUsageSchema,
+      null,
+      { endpoint: "GET /api/issues/limit-usage" },
+    );
+  }
+
+  async deleteIssue(id: string): Promise<void> {
+    await this.fetch(`/api/issues/${id}`, { method: "DELETE" });
+  }
+
+  async batchUpdateIssues(issueIds: string[], updates: UpdateIssueRequest): Promise<{ updated: number }> {
+    return this.fetch("/api/issues/batch-update", {
+      method: "POST",
+      body: JSON.stringify({ issue_ids: issueIds, updates }),
+    });
+  }
+
+  async batchDeleteIssues(issueIds: string[]): Promise<{ deleted: number }> {
+    return this.fetch("/api/issues/batch-delete", {
+      method: "POST",
+      body: JSON.stringify({ issue_ids: issueIds }),
+    });
+  }
+
+  // Comments
+  async listComments(issueId: string): Promise<Comment[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/comments`);
+    return parseWithFallback(raw, CommentsListSchema, [], {
+      endpoint: "GET /api/issues/:id/comments",
+    });
+  }
+
+  async createComment(
+    issueId: string,
+    content: string,
+    type?: string,
+    parentId?: string,
+    attachmentIds?: string[],
+    suppressAgentIds?: string[],
+  ): Promise<Comment> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/comments`, {
+      method: "POST",
+      body: JSON.stringify({
+        content,
+        type: type ?? "comment",
+        ...(parentId ? { parent_id: parentId } : {}),
+        ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+        ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
+      }),
+    });
+    const comment = parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, { endpoint: "POST /api/issues/:id/comments" });
+    if (!comment.id) throw new Error("Invalid comment response");
+    return comment;
+  }
+
+  // Decision cards (RUYI-345). Answering is a human act in the UI; the
+  // server refuses agent callers regardless of what the client sends.
+  async listIssueDecisions(issueId: string): Promise<IssueDecision[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions`);
+    return parseWithFallback(raw, IssueDecisionsListSchema, [], {
+      endpoint: "GET /api/issues/:id/decisions",
+    });
+  }
+
+  async answerIssueDecision(issueId: string, decisionId: string, selectedIndices: number[]): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/${decisionId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ selected_indices: selectedIndices }),
+    });
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/answer",
+    });
+    if (!decision) throw new Error("Invalid decision answer response");
+    return decision;
+  }
+
+  // Batch answer (RUYI-471): several open cards in one request. The server
+  // answers each card through the same CAS as the single endpoint and reports
+  // per-card outcomes — callers must inspect `results`, not just the HTTP code.
+  async answerIssueDecisionsBatch(issueId: string, answers: BatchIssueDecisionAnswer[]): Promise<BatchDecisionAnswerResult> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/answer-batch`, {
+      method: "POST",
+      body: JSON.stringify({ answers }),
+    });
+    return parseWithFallback(raw, BatchDecisionAnswersSchema, { results: [] }, {
+      endpoint: "POST /api/issues/:id/decisions/answer-batch",
+    });
+  }
+
+  async cancelIssueDecision(issueId: string, decisionId: string): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/${decisionId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/cancel",
+    });
+    if (!decision) throw new Error("Invalid decision cancel response");
+    return decision;
+  }
+
+  // RUYI-863: the inverse of cancel — a cancelled question card flips back to
+  // open. The server CAS refuses answered cards and authorization cards
+  // (409), so the client only mirrors the card + fails readably, same as
+  // cancel above.
+  async restoreIssueDecision(issueId: string, decisionId: string): Promise<IssueDecision> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/decisions/${decisionId}/restore`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const decision = parseWithFallback(raw, IssueDecisionSchema, null, {
+      endpoint: "POST /api/issues/:id/decisions/:decisionId/restore",
+    });
+    if (!decision) throw new Error("Invalid decision restore response");
+    return decision;
+  }
+
+  // Workspace decision inbox (RUYI-494): the Decision Center's aggregation —
+  // every card in the workspace, one row per card, with issue context. Read
+  // only; answering/cancelling stays on the issue-scoped endpoints above.
+  async listWorkspaceDecisionInbox(
+    workspaceId: string,
+    params?: { status?: IssueDecision["status"]; limit?: number },
+  ): Promise<WorkspaceDecisionInbox> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-inbox${query}`);
+    const inbox = parseWithFallback(raw, WorkspaceDecisionInboxSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-inbox",
+    });
+    if (!inbox) throw new Error("Invalid decision inbox response");
+    return inbox;
+  }
+
+  // Issue suspension (RUYI-690): "waiting" as a dimension orthogonal to the
+  // lifecycle status. Suspend inserts one audit row + flips the
+  // issue.suspended_at snapshot; resume/cancel release it (CAS on the active
+  // row) and return the suspension plus the refreshed issue snapshot.
+  async suspendIssue(
+    issueId: string,
+    body: {
+      reason: string;
+      note?: string;
+      waiting_on_type: "external" | "manual" | "issue" | "decision";
+      waiting_on_issue_id?: string;
+      waiting_on_decision_id?: string;
+      resume_condition?: string;
+    },
+  ): Promise<IssueSuspensionMutation> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/suspensions`, {
+      method: "POST",
+      body: JSON.stringify({
+        reason: body.reason,
+        ...(body.note ? { note: body.note } : {}),
+        waiting_on_type: body.waiting_on_type,
+        ...(body.waiting_on_issue_id ? { waiting_on_issue_id: body.waiting_on_issue_id } : {}),
+        ...(body.waiting_on_decision_id ? { waiting_on_decision_id: body.waiting_on_decision_id } : {}),
+        ...(body.resume_condition ? { resume_condition: body.resume_condition } : {}),
+      }),
+    });
+    const result = parseWithFallback(raw, IssueSuspensionMutationSchema, null, {
+      endpoint: "POST /api/issues/:id/suspensions",
+    });
+    if (!result) throw new Error("Invalid suspension response");
+    return result as IssueSuspensionMutation;
+  }
+
+  async listIssueSuspensions(issueId: string, params?: { status?: string; limit?: number }): Promise<IssueSuspension[]> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/suspensions${query}`);
+    const parsed = parseWithFallback(
+      raw,
+      IssueSuspensionsListSchema,
+      { suspensions: [] },
+      { endpoint: "GET /api/issues/:id/suspensions" },
+    );
+    return parsed.suspensions;
+  }
+
+  async listWorkspaceSuspensions(
+    workspaceId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<WorkspaceSuspensionList> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/suspensions${query}`);
+    const list = parseWithFallback(raw, WorkspaceSuspensionsSchema, null, {
+      endpoint: "GET /api/workspaces/:id/suspensions",
+    });
+    if (!list) throw new Error("Invalid workspace suspensions response");
+    return list;
+  }
+
+  async resumeIssueSuspension(issueId: string, suspensionId: string, note?: string): Promise<IssueSuspensionMutation> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/suspensions/${suspensionId}/resume`, {
+      method: "POST",
+      body: JSON.stringify(note ? { note } : {}),
+    });
+    const result = parseWithFallback(raw, IssueSuspensionMutationSchema, null, {
+      endpoint: "POST /api/issues/:id/suspensions/:suspensionId/resume",
+    });
+    if (!result) throw new Error("Invalid suspension resume response");
+    return result as IssueSuspensionMutation;
+  }
+
+  async cancelIssueSuspension(issueId: string, suspensionId: string, note?: string): Promise<IssueSuspensionMutation> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/suspensions/${suspensionId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify(note ? { note } : {}),
+    });
+    const result = parseWithFallback(raw, IssueSuspensionMutationSchema, null, {
+      endpoint: "POST /api/issues/:id/suspensions/:suspensionId/cancel",
+    });
+    if (!result) throw new Error("Invalid suspension cancel response");
+    return result as IssueSuspensionMutation;
+  }
+
+  // Agent authorization requests (RUYI-630). Listing/detail are the
+  // decision-center's summary surface; answering/cancelling are human acts —
+  // the server refuses agent callers regardless of what the client sends.
+  async listDecisionRequests(
+    workspaceId: string,
+    params?: { status?: string; limit?: number },
+  ): Promise<DecisionRequestsList> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.set("status", params.status);
+    if (params?.limit != null) qs.set("limit", String(params.limit));
+    const query = qs.size > 0 ? `?${qs.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests${query}`);
+    const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests",
+    });
+    if (!list) throw new Error("Invalid decision requests response");
+    return list;
+  }
+
+  async getDecisionRequest(workspaceId: string, requestId: string): Promise<DecisionRequestDetail> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}`);
+    const detail = parseWithFallback(raw, DecisionRequestDetailSchema, null, {
+      endpoint: "GET /api/workspaces/:id/decision-requests/:requestId",
+    });
+    if (!detail) throw new Error("Invalid decision request response");
+    return detail;
+  }
+
+  async answerDecisionRequest(workspaceId: string, requestId: string, decision: "approve" | "deny"): Promise<DecisionRequest> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}/answer`, {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    });
+    const request = parseWithFallback(raw, DecisionRequestSchema, null, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/answer",
+    });
+    if (!request) throw new Error("Invalid decision request answer response");
+    return request;
+  }
+
+  async cancelDecisionRequest(workspaceId: string, requestId: string): Promise<{ status: string }> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests/${requestId}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, z.object({ status: z.string() }).loose(), { status: "" }, {
+      endpoint: "POST /api/workspaces/:id/decision-requests/:requestId/cancel",
+    });
+  }
+
+  async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/comments/trigger-preview`, {
+      method: "POST",
+      body: JSON.stringify({
+        content,
+        ...(parentId ? { parent_id: parentId } : {}),
+        ...(editingCommentId ? { editing_comment_id: editingCommentId } : {}),
+      }),
+    });
+    return parseWithFallback(raw, CommentTriggerPreviewSchema, { agents: [] }, {
+      endpoint: "POST /api/issues/:id/comments/trigger-preview",
+    });
+  }
+
+  /** Dry-run the unified run-enqueue predicate for a prospective issue write
+   *  (create / single assign / single status / batch). Returns the runs that
+   *  would start; no side effect. The four entry points consult this instead
+   *  of re-implementing the rule (MUL-3375). */
+  async previewIssueTrigger(params: IssueTriggerPreviewParams): Promise<IssueTriggerPreview> {
+    const raw = await this.fetch<unknown>("/api/issues/preview-trigger", {
+      method: "POST",
+      body: JSON.stringify({
+        ...(params.issueIds?.length ? { issue_ids: params.issueIds } : {}),
+        ...(params.isCreate ? { is_create: true } : {}),
+        ...(params.assigneeType ? { assignee_type: params.assigneeType } : {}),
+        ...(params.assigneeId ? { assignee_id: params.assigneeId } : {}),
+        ...(params.status ? { status: params.status } : {}),
+      }),
+    });
+    return parseWithFallback(raw, IssueTriggerPreviewSchema, { triggers: [], total_count: 0 }, {
+      endpoint: "POST /api/issues/preview-trigger",
+    });
+  }
+
+  async listTimeline(
+    issueId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<TimelineQueryData> {
+    const response = await this.fetchRaw(`/api/issues/${issueId}/timeline`, {
+      signal: options?.signal,
+      extraHeaders: { "Content-Type": "application/json" },
+    });
+    const raw = await response.json() as unknown;
+    return {
+      entries: parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
+        endpoint: "GET /api/issues/:id/timeline",
+      }),
+      truncatedKinds: parseTimelineTruncatedKinds(
+        response.headers.get("X-Timeline-Truncated"),
+      ),
+    };
+  }
+
+  async getAssigneeFrequency(): Promise<AssigneeFrequencyEntry[]> {
+    return this.fetch("/api/assignee-frequency");
+  }
+
+  async updateComment(commentId: string, content: string, attachmentIds?: string[], suppressAgentIds?: string[], contentBase?: string, expectedRevision?: number): Promise<Comment> {
+    const raw = await this.fetch<unknown>(`/api/comments/${commentId}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        content,
+        attachment_ids: attachmentIds,
+        ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
+        ...(contentBase !== undefined ? { content_base: contentBase } : {}),
+        ...(expectedRevision !== undefined ? { expected_revision: expectedRevision } : {}),
+      }),
+    });
+    const comment = parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, { endpoint: "PUT /api/comments/:id" });
+    if (!comment.id) throw new Error("Invalid comment response");
+    return comment;
+  }
+
+  async deleteComment(commentId: string): Promise<void> {
+    await this.fetch(`/api/comments/${commentId}`, { method: "DELETE" });
+  }
+
+  async resolveComment(commentId: string): Promise<Comment> {
+    return this.fetch(`/api/comments/${commentId}/resolve`, { method: "POST" });
+  }
+
+  /**
+   * Resolve which issue hosts a comment and how to label a jump to it
+   * (RUYI-643). Backs cross-issue `mention://comment/<id>` chips: the local
+   * render context only knows the current issue's comments, so a miss there
+   * probes this endpoint. 404 covers every miss uniformly — unknown, deleted,
+   * or hosted by another workspace.
+   */
+  async getCommentAnchor(commentId: string, options?: { signal?: AbortSignal }): Promise<CommentAnchor> {
+    return this.fetch<CommentAnchor>(`/api/comments/${commentId}/anchor`, {
+      signal: options?.signal,
+    });
+  }
+
+  async unresolveComment(commentId: string): Promise<Comment> {
+    return this.fetch(`/api/comments/${commentId}/resolve`, { method: "DELETE" });
+  }
+
+  async addReaction(commentId: string, emoji: string): Promise<Reaction> {
+    return this.fetch(`/api/comments/${commentId}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ emoji }),
+    });
+  }
+
+  async removeReaction(commentId: string, emoji: string): Promise<void> {
+    await this.fetch(`/api/comments/${commentId}/reactions`, {
+      method: "DELETE",
+      body: JSON.stringify({ emoji }),
+    });
+  }
+
+  async addIssueReaction(issueId: string, emoji: string): Promise<IssueReaction> {
+    return this.fetch(`/api/issues/${issueId}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ emoji }),
+    });
+  }
+
+  async removeIssueReaction(issueId: string, emoji: string): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/reactions`, {
+      method: "DELETE",
+      body: JSON.stringify({ emoji }),
+    });
+  }
+
+  // Subscribers
+  async listIssueSubscribers(issueId: string): Promise<IssueSubscriber[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/subscribers`);
+    return parseWithFallback(raw, SubscribersListSchema, [], {
+      endpoint: "GET /api/issues/:id/subscribers",
+    });
+  }
+
+  async subscribeToIssue(issueId: string, userId?: string, userType?: string): Promise<void> {
+    const body: Record<string, string> = {};
+    if (userId) body.user_id = userId;
+    if (userType) body.user_type = userType;
+    await this.fetch(`/api/issues/${issueId}/subscribe`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async unsubscribeFromIssue(
+    issueId: string,
+    userId?: string,
+    userType?: string,
+  ): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/unsubscribe`, {
+      method: "POST",
+      body: JSON.stringify(subscriberTarget(userId, userType)),
+    });
+  }
+
+  /**
+   * Leaves this issue and every descendant, and keeps future children of the
+   * tree from re-subscribing the user — the escape hatch for an agent-built
+   * tree that keeps growing (MUL-5483).
+   *
+   * Deliberately its own endpoint rather than a `subtree` flag on
+   * `unsubscribeFromIssue`. Web/desktop staging ships on merge while the
+   * backend is deployed by hand, so this client regularly runs against an
+   * older server; one that predates the feature would ignore an unknown body
+   * field, unsubscribe only the root, and still answer 200. A distinct path
+   * 404s there, which surfaces as a failed mutation instead of a silent lie.
+   */
+  async unsubscribeFromIssueSubtree(
+    issueId: string,
+    userId?: string,
+    userType?: string,
+  ): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/unsubscribe/subtree`, {
+      method: "POST",
+      body: JSON.stringify(subscriberTarget(userId, userType)),
+    });
+  }
+
+  // Agents
+  async listAgents(params?: { workspace_id?: string; include_archived?: boolean }): Promise<Agent[]> {
+    const search = new URLSearchParams();
+    if (params?.workspace_id) search.set("workspace_id", params.workspace_id);
+    if (params?.include_archived) search.set("include_archived", "true");
+    return this.fetch(`/api/agents?${search}`);
+  }
+
+  async getAgent(id: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}`);
+  }
+
+  async createAgent(data: CreateAgentRequest): Promise<Agent> {
+    assertAgentConversationStartersWriteSupported(data);
+    return this.fetch("/api/agents", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  /**
+   * Provisions the workspace's built-in Chief of Staff, or returns the
+   * existing one.
+   *
+   * Only a runtime and a language are sent: name, description, avatar,
+   * permissions, and the system instruction layer are server constants, so a
+   * client cannot mint an agent that would claim them. The server is also the
+   * idempotency boundary — calling twice yields the same agent.
+   */
+  async createMikaAgent(
+    data: {
+      runtime_id: string;
+      language: "en" | "zh" | "ko" | "ja";
+      /** Empty means "whatever the runtime defaults to". */
+      model?: string;
+      /** Label for the onboarding conversation, used only if this call is the
+       *  one that creates it. The session's identity is the member and Mika,
+       *  never this string — it is localized. */
+      session_title?: string;
+    },
+    workspaceSlug?: string,
+  ): Promise<MikaBootstrapResponse> {
+    return this.fetch("/api/agents/mika", {
+      method: "POST",
+      headers: workspaceHeader(workspaceSlug),
+      body: JSON.stringify(data),
+    });
+  }
+
+  async createAgentBuilderSession(data: {
+    runtime_id: string;
+    model?: string;
+  }): Promise<AgentBuilderSession> {
+    const raw = await this.fetch<unknown>("/api/agent-builder/sessions", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(
+      raw,
+      AgentBuilderSessionSchema,
+      EMPTY_AGENT_BUILDER_SESSION,
+      { endpoint: "POST /api/agent-builder/sessions" },
+    );
+  }
+
+  /**
+   * The caller's unfinished agent-creation conversations.
+   *
+   * Builder sessions are hidden from every chat list (their carrier agent is
+   * `kind = 'system'`), so this is the only route back to one. A 404 means the
+   * backend predates the endpoint: degrade to "no drafts" instead of erroring
+   * the Agents page, exactly as listChatDraftRestores does.
+   */
+  async listAgentBuilderSessions(): Promise<AgentBuilderSessionSummary[]> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>("/api/agent-builder/sessions");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return [];
+      throw err;
+    }
+    return parseWithFallback(
+      raw,
+      AgentBuilderSessionListSchema,
+      EMPTY_AGENT_BUILDER_SESSION_LIST,
+      { endpoint: "GET /api/agent-builder/sessions" },
+    ).sessions;
+  }
+
+  /**
+   * Stores the configuration a creation conversation has arrived at, including
+   * edits the user typed but has not sent. Whole-object last-write-wins: one
+   * conversation has one editor, so a field-level merge could only reconstruct
+   * a state nobody saw. Read back through `listAgentBuilderSessions`.
+   */
+  async saveAgentBuilderDraft(
+    sessionId: string,
+    draft: StoredAgentDraft,
+  ): Promise<void> {
+    await this.fetch(`/api/agent-builder/sessions/${sessionId}/draft`, {
+      method: "PUT",
+      body: JSON.stringify({ draft }),
+    });
+  }
+
+  /** Rebinds a live builder conversation to another runtime. Callers must not
+   *  show the new runtime as selected until this resolves — the whole point is
+   *  that the UI's runtime and the executing runtime agree.
+   *
+   *  A non-2xx throws before we get here and nothing was committed. Reaching the
+   *  parse means the server bound `data.runtime_id`, so that is the fallback for
+   *  an unparseable body — see agentBuilderRuntimeSwitchFallback. */
+  async switchAgentBuilderRuntime(
+    sessionId: string,
+    data: { runtime_id: string },
+  ): Promise<AgentBuilderRuntimeSwitch> {
+    const raw = await this.fetch<unknown>(
+      `/api/agent-builder/sessions/${sessionId}/runtime`,
+      { method: "PATCH", body: JSON.stringify(data) },
+    );
+    return parseWithFallback(
+      raw,
+      AgentBuilderRuntimeSwitchSchema,
+      agentBuilderRuntimeSwitchFallback(data.runtime_id),
+      { endpoint: "PATCH /api/agent-builder/sessions/{id}/runtime" },
+    );
+  }
+
+  async updateAgent(id: string, data: UpdateAgentRequest): Promise<Agent> {
+    assertAgentConversationStartersWriteSupported(data);
+    return this.fetch(`/api/agents/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async archiveAgent(id: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/archive`, { method: "POST" });
+  }
+
+  /**
+   * Returns the plaintext `custom_env` map for an agent. Admits the
+   * agent's owner or a workspace owner/admin (MUL-5438); calls from
+   * agent-actor sessions get a 403. Every successful call writes an
+   * `agent_env_revealed` activity_log row server-side. MUL-2600.
+   */
+  async getAgentEnv(id: string): Promise<AgentEnvResponse> {
+    return this.fetch(`/api/agents/${id}/env`);
+  }
+
+  /**
+   * Replaces an agent's `custom_env` wholesale. Values equal to
+   * `"****"` are preserved server-side (the **** guard) so a partial
+   * UI edit doesn't overwrite real secrets with the masked
+   * placeholder. Admits the agent's owner or a workspace owner/admin
+   * (MUL-5438); agent actors get a 403. Every successful call writes an
+   * `agent_env_updated` activity_log row. MUL-2600.
+   */
+  async updateAgentEnv(id: string, data: UpdateAgentEnvRequest): Promise<AgentEnvResponse> {
+    return this.fetch(`/api/agents/${id}/env`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async restoreAgent(id: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/restore`, { method: "POST" });
+  }
+
+  // Bulk-cancel every active task (queued/dispatched/running) for the agent.
+  // Permission: agent owner or workspace admin/owner. Server returns the
+  // count of cancelled rows; broadcasts task:cancelled for each so other
+  // surfaces can clear their live cards.
+  async cancelAgentTasks(id: string): Promise<{ cancelled: number }> {
+    return this.fetch(`/api/agents/${id}/cancel-tasks`, { method: "POST" });
+  }
+
+  /**
+   * Freezes this agent's task claiming (RUYI-608). Queued tasks keep
+   * coalescing and running tasks drain; nothing new is claimed until
+   * {@link resumeAgentScheduling}. Idempotent — re-pausing a paused agent
+   * keeps the original freeze row. Workspace owner/admin ONLY: agent owners
+   * without the workspace role, plain members, and every machine credential
+   * (including the agent itself) get 403.
+   */
+  async pauseAgentScheduling(id: string, reason = ""): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/agents/${id}/scheduling-pause`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  /**
+   * Lifts an agent-level scheduling freeze (RUYI-608). The server
+   * invalidates the runtime's cached empty-claim verdict, so queued tasks
+   * flow on the agent's next poll. No-op success when not paused; still
+   * returns the queue depth. A workspace-level freeze is NOT lifted here.
+   * Same owner/admin-only permission as pause.
+   */
+  async resumeAgentScheduling(id: string): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/agents/${id}/scheduling-pause`, { method: "DELETE" });
+  }
+
+  /**
+   * Freezes task claiming for EVERY agent in the workspace (RUYI-608).
+   * Workspace owner/admin only. See {@link pauseAgentScheduling} for the
+   * frozen-state semantics; an agent-level resume does not lift this.
+   */
+  async pauseWorkspaceScheduling(workspaceId: string, reason = ""): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/workspaces/${workspaceId}/scheduling-pause`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  /**
+   * Lifts the workspace-level scheduling freeze (RUYI-608) and invalidates
+   * every runtime's empty-claim cache in the workspace, so all agents pick
+   * queued tasks back up on their next poll. No-op success when not paused.
+   * Workspace owner/admin only.
+   */
+  async resumeWorkspaceScheduling(workspaceId: string): Promise<SchedulingPauseState> {
+    return this.fetch(`/api/workspaces/${workspaceId}/scheduling-pause`, { method: "DELETE" });
+  }
+
+  async listRuntimes(
+    params?: { workspace_id?: string; owner?: "me" },
+    workspaceSlug?: string,
+  ): Promise<AgentRuntime[]> {
+    const search = new URLSearchParams();
+    if (params?.workspace_id) search.set("workspace_id", params.workspace_id);
+    if (params?.owner) search.set("owner", params.owner);
+    // workspace_id alone is not enough: the server resolves the workspace from
+    // the slug header first, so a caller listing another workspace's runtimes
+    // must override the header too.
+    const raw = await this.fetch<unknown>(`/api/runtimes?${search}`, {
+      headers: workspaceHeader(workspaceSlug),
+    });
+    return parseWithFallback(raw, z.array(AgentRuntimeSchema), [], {
+      endpoint: "/api/runtimes",
+    });
+  }
+
+  async listCloudRuntimeNodes(
+    params?: ListCloudRuntimeNodesParams,
+  ): Promise<CloudRuntimeNode[]> {
+    const search = new URLSearchParams();
+    if (params?.limit !== undefined) search.set("limit", String(params.limit));
+    if (params?.offset !== undefined) search.set("offset", String(params.offset));
+    const query = search.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/cloud-runtime/nodes${query ? `?${query}` : ""}`,
+    );
+    return parseWithFallback(
+      raw,
+      CloudRuntimeNodeListSchema,
+      EMPTY_CLOUD_RUNTIME_NODE_LIST,
+      { endpoint: "GET /api/cloud-runtime/nodes" },
+    );
+  }
+
+  async createCloudRuntimeNode(
+    data: CreateCloudRuntimeNodeRequest,
+  ): Promise<CloudRuntimeNode> {
+    const res = await this.fetchRaw("/api/cloud-runtime/nodes", {
+      method: "POST",
+      body: JSON.stringify(data),
+      extraHeaders: { "Content-Type": "application/json" },
+    });
+    const raw = await res.json() as unknown;
+    return parseWithFallback(
+      raw,
+      CloudRuntimeNodeSchema,
+      EMPTY_CLOUD_RUNTIME_NODE,
+      { endpoint: "POST /api/cloud-runtime/nodes" },
+    );
+  }
+
+  async deleteCloudRuntimeNode(instanceId: string): Promise<void> {
+    await this.fetchRaw("/api/cloud-runtime/nodes", {
+      method: "DELETE",
+      body: JSON.stringify({ instance_id: instanceId }),
+      extraHeaders: { "Content-Type": "application/json" },
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Cloud Billing — proxies to multica-cloud /api/v1/billing/*. The
+  // multica-api server stamps X-User-ID and forwards bytes; everything
+  // here is upstream-shaped. See packages/core/types/billing.ts for the
+  // response field documentation.
+  // ---------------------------------------------------------------------
+
+  async getCloudBillingBalance(): Promise<BillingBalance> {
+    const raw = await this.fetch<unknown>("/api/cloud-billing/balance");
+    return parseWithFallback(raw, BillingBalanceSchema, EMPTY_BILLING_BALANCE, {
+      endpoint: "GET /api/cloud-billing/balance",
+    });
+  }
+
+  async listCloudBillingTransactions(
+    params?: { page?: number; page_size?: number },
+  ): Promise<BillingTransactionsPage> {
+    const search = new URLSearchParams();
+    if (params?.page !== undefined) search.set("page", String(params.page));
+    if (params?.page_size !== undefined) search.set("page_size", String(params.page_size));
+    const query = search.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/cloud-billing/transactions${query ? `?${query}` : ""}`,
+    );
+    return parseWithFallback(
+      raw,
+      BillingTransactionsPageSchema,
+      EMPTY_BILLING_TRANSACTIONS_PAGE,
+      { endpoint: "GET /api/cloud-billing/transactions" },
+    );
+  }
+
+  async listCloudBillingBatches(
+    params?: { page?: number; page_size?: number },
+  ): Promise<BillingBatchesPage> {
+    const search = new URLSearchParams();
+    if (params?.page !== undefined) search.set("page", String(params.page));
+    if (params?.page_size !== undefined) search.set("page_size", String(params.page_size));
+    const query = search.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/cloud-billing/batches${query ? `?${query}` : ""}`,
+    );
+    return parseWithFallback(
+      raw,
+      BillingBatchesPageSchema,
+      EMPTY_BILLING_BATCHES_PAGE,
+      { endpoint: "GET /api/cloud-billing/batches" },
+    );
+  }
+
+  async listCloudBillingTopups(
+    params?: { page?: number; page_size?: number },
+  ): Promise<BillingTopupsPage> {
+    const search = new URLSearchParams();
+    if (params?.page !== undefined) search.set("page", String(params.page));
+    if (params?.page_size !== undefined) search.set("page_size", String(params.page_size));
+    const query = search.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/cloud-billing/topups${query ? `?${query}` : ""}`,
+    );
+    return parseWithFallback(
+      raw,
+      BillingTopupsPageSchema,
+      EMPTY_BILLING_TOPUPS_PAGE,
+      { endpoint: "GET /api/cloud-billing/topups" },
+    );
+  }
+
+  async listCloudBillingPriceTiers(): Promise<BillingPriceTier[]> {
+    const raw = await this.fetch<unknown>("/api/cloud-billing/price-tiers");
+    return parseWithFallback(
+      raw,
+      BillingPriceTierListSchema,
+      EMPTY_BILLING_PRICE_TIER_LIST,
+      { endpoint: "GET /api/cloud-billing/price-tiers" },
+    );
+  }
+
+  async createCloudBillingCheckoutSession(
+    data: CreateBillingCheckoutSessionRequest,
+  ): Promise<CreateBillingCheckoutSessionResponse> {
+    const res = await this.fetchRaw("/api/cloud-billing/checkout-sessions", {
+      method: "POST",
+      body: JSON.stringify(data),
+      extraHeaders: { "Content-Type": "application/json" },
+    });
+    const raw = (await res.json()) as unknown;
+    return parseWithFallback(
+      raw,
+      CreateBillingCheckoutSessionResponseSchema,
+      EMPTY_CREATE_BILLING_CHECKOUT_SESSION_RESPONSE,
+      { endpoint: "POST /api/cloud-billing/checkout-sessions" },
+    );
+  }
+
+  async getCloudBillingCheckoutSession(
+    sessionId: string,
+  ): Promise<BillingCheckoutSessionStatus> {
+    // Stripe session ids are `cs_<base62>` so they're URL-safe by
+    // construction; encodeURIComponent is paranoia for the case where a
+    // future Stripe format change adds a non-alphanumeric character. The
+    // server has its own allow-list rejection for unsafe ids.
+    const raw = await this.fetch<unknown>(
+      `/api/cloud-billing/checkout-sessions/${encodeURIComponent(sessionId)}`,
+    );
+    return parseWithFallback(
+      raw,
+      BillingCheckoutSessionStatusSchema,
+      EMPTY_BILLING_CHECKOUT_SESSION_STATUS,
+      { endpoint: "GET /api/cloud-billing/checkout-sessions/{sessionId}" },
+    );
+  }
+
+  async createCloudBillingPortalSession(): Promise<CreateBillingPortalSessionResponse> {
+    const res = await this.fetchRaw("/api/cloud-billing/portal-sessions", {
+      method: "POST",
+      // Body is intentionally absent — the upstream endpoint requires no
+      // payload today. fetchRaw with no body skips the Content-Type
+      // default; that's fine because there's nothing to declare.
+    });
+    const raw = (await res.json()) as unknown;
+    return parseWithFallback(
+      raw,
+      CreateBillingPortalSessionResponseSchema,
+      EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE,
+      { endpoint: "POST /api/cloud-billing/portal-sessions" },
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Workspace subscriptions — the server resolves the workspace from the
+  // authenticated request context, so no caller names one.
+  //
+  // Two distinct failure paths, both of which a caller must render as
+  // "unavailable" and neither of which may look like Free:
+  //
+  //   - non-2xx (older cloud without the route, 403, 503) throws ApiError from
+  //     `fetch`, so a React Query caller sees `isError`;
+  //   - a 2xx body that does not match the contract returns null here.
+  // ---------------------------------------------------------------------
+
+  async getWorkspaceSubscriptionSummary(): Promise<WorkspaceSubscriptionSummary | null> {
+    const raw = await this.fetch<unknown>("/api/cloud-subscriptions/summary");
+    return parseWithFallback<WorkspaceSubscriptionSummary | null>(
+      raw,
+      WorkspaceSubscriptionSummarySchema,
+      null,
+      { endpoint: "GET /api/cloud-subscriptions/summary" },
+    );
+  }
+
+  async getWorkspaceSubscriptionPrices(): Promise<WorkspaceSubscriptionPrices | null> {
+    const raw = await this.fetch<unknown>("/api/cloud-subscriptions/prices");
+    return parseWithFallback<WorkspaceSubscriptionPrices | null>(
+      raw,
+      WorkspaceSubscriptionPricesSchema,
+      null,
+      { endpoint: "GET /api/cloud-subscriptions/prices" },
+    );
+  }
+
+  async createWorkspaceSubscriptionCheckout(
+    data: CreateWorkspaceSubscriptionCheckoutRequest,
+  ): Promise<CreateWorkspaceSubscriptionCheckoutResponse | null> {
+    const res = await this.fetchRaw(
+      "/api/cloud-subscriptions/checkout-sessions",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          interval: data.interval,
+          idempotency_key: data.idempotencyKey,
+        }),
+        extraHeaders: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": data.idempotencyKey,
+        },
+      },
+    );
+    const raw = (await res.json()) as unknown;
+    return parseWithFallback<CreateWorkspaceSubscriptionCheckoutResponse | null>(
+      raw,
+      CreateWorkspaceSubscriptionCheckoutResponseSchema,
+      null,
+      { endpoint: "POST /api/cloud-subscriptions/checkout-sessions" },
+    );
+  }
+
+  async reconcileWorkspaceSubscriptionSeats(): Promise<
+    WorkspaceSubscriptionSeatReconcileResult | null
+  > {
+    const res = await this.fetchRaw("/api/cloud-subscriptions/seats/reconcile", {
+      method: "POST",
+    });
+    const raw = (await res.json()) as unknown;
+    return parseWithFallback<WorkspaceSubscriptionSeatReconcileResult | null>(
+      raw,
+      WorkspaceSubscriptionSeatReconcileResultSchema,
+      null,
+      { endpoint: "POST /api/cloud-subscriptions/seats/reconcile" },
+    );
+  }
+
+  async previewWorkspaceSeatPurchase(
+    data: PreviewWorkspaceSeatPurchaseRequest,
+  ): Promise<WorkspaceSeatPurchasePreview | null> {
+    const res = await this.fetchRaw(
+      "/api/cloud-subscriptions/seats/purchase-preview",
+      {
+        method: "POST",
+        body: JSON.stringify({ additional_seats: data.additionalSeats }),
+        extraHeaders: { "Content-Type": "application/json" },
+      },
+    );
+    const raw = (await res.json()) as unknown;
+    return parseWithFallback<WorkspaceSeatPurchasePreview | null>(
+      raw,
+      WorkspaceSeatPurchasePreviewSchema,
+      null,
+      { endpoint: "POST /api/cloud-subscriptions/seats/purchase-preview" },
+    );
+  }
+
+  async purchaseWorkspaceSeats(
+    data: PurchaseWorkspaceSeatsRequest,
+  ): Promise<PurchaseWorkspaceSeatsResponse | null> {
+    const res = await this.fetchRaw(
+      "/api/cloud-subscriptions/seats/purchases",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          additional_seats: data.additionalSeats,
+          expected_current_seats: data.expectedCurrentSeats,
+          expected_purchase_version: data.expectedPurchaseVersion,
+          accepted_proration_amount: data.acceptedProrationAmount,
+          currency: data.currency,
+          idempotency_key: data.idempotencyKey,
+        }),
+        extraHeaders: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": data.idempotencyKey,
+        },
+      },
+    );
+    const raw = (await res.json()) as unknown;
+    return parseWithFallback<PurchaseWorkspaceSeatsResponse | null>(
+      raw,
+      PurchaseWorkspaceSeatsResponseSchema,
+      null,
+      { endpoint: "POST /api/cloud-subscriptions/seats/purchases" },
+    );
+  }
+
+  async createWorkspaceSubscriptionPortal(
+    idempotencyKey: string,
+  ): Promise<CreateWorkspaceSubscriptionPortalResponse | null> {
+    const res = await this.fetchRaw("/api/cloud-subscriptions/portal-sessions", {
+      method: "POST",
+      extraHeaders: { "Idempotency-Key": idempotencyKey },
+    });
+    const raw = (await res.json()) as unknown;
+    return parseWithFallback<CreateWorkspaceSubscriptionPortalResponse | null>(
+      raw,
+      CreateWorkspaceSubscriptionPortalResponseSchema,
+      null,
+      { endpoint: "POST /api/cloud-subscriptions/portal-sessions" },
+    );
+  }
+
+  async deleteRuntime(runtimeId: string): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}`, { method: "DELETE" });
+  }
+
+  // Confirmed variant of deleteRuntime. The strict DELETE refuses with
+  // structured 409 (`code: "runtime_has_active_agents"`, body carries the
+  // blocking agents) when active agents are bound; the front-end then opens
+  // the confirmation dialog and submits the user-confirmed active agent set
+  // here. Server compares the snapshot to the live set inside the transaction
+  // and refuses with `code: "runtime_delete_plan_changed"` (same shape, fresh
+  // `active_agents`) if they don't match — caller should re-render the agent
+  // list and force the user to re-confirm.
+  //
+  // The agents are UNBOUND, not archived or deleted (MUL-5559): they keep their
+  // configuration, chats and task history and need a new runtime to run again.
+  // `agents_archived` is the server's deprecated mirror of `agents_unbound`,
+  // kept because installed clients read it; prefer `agents_unbound`.
+  async unbindAgentsAndDeleteRuntime(
+    runtimeId: string,
+    expectedActiveAgentIds: string[],
+  ): Promise<{
+    status: string;
+    agents_unbound?: number;
+    agents_archived?: number;
+    tasks_cancelled: number;
+    autopilots_paused?: number;
+  }> {
+    return this.fetch(`/api/runtimes/${runtimeId}/unbind-agents-and-delete`, {
+      method: "POST",
+      body: JSON.stringify({ expected_active_agent_ids: expectedActiveAgentIds }),
+    });
+  }
+
+  /**
+   * RUYI-425 §4.5 (stage 2): stores or rotates a runtime instance credential.
+   * The value travels once in the request body and is NEVER returned — the
+   * response carries only the badge plus the §4.3 connectivity-probe outcome.
+   * Server returns 503 when the deployment has no credential encryption key.
+   */
+  async putRuntimeCredential(
+    runtimeId: string,
+    credentialKey: string,
+    value: string,
+  ): Promise<{
+    runtime_id: string;
+    credential_key: string;
+    credential_status: string;
+    probe?: { status: string; http_status?: number; checked_at?: string };
+  }> {
+    return this.fetch(
+      `/api/runtimes/${runtimeId}/credentials/${credentialKey}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ value }),
+      },
+    );
+  }
+
+  /**
+   * RUYI-425 §4.5 (stage 2): removes the stored credential value. Idempotent
+   * server-side (204 even when nothing was stored).
+   */
+  async deleteRuntimeCredential(
+    runtimeId: string,
+    credentialKey: string,
+  ): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}/credentials/${credentialKey}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * RUYI-425 §4.3 (stage 3): manually registers a voice instance. Names may
+   * duplicate; capabilities derive server-side from the profile's protocol
+   * family; the instance is born online/public and structurally invisible to
+   * daemon probing. The API key is NOT part of this call — store it right
+   * after via putRuntimeCredential, which also triggers the connectivity
+   * probe.
+   */
+  async createManualRuntime(body: {
+    name: string;
+    profile_id: string;
+    model?: string;
+    advanced?: Record<string, unknown>;
+  }): Promise<AgentRuntime> {
+    return this.fetch("/api/runtimes", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async updateRuntime(
+    runtimeId: string,
+    patch: {
+      visibility?: "private" | "public";
+      /** Runtime-wide parallel task cap; zero means unlimited. */
+      max_concurrent_tasks?: number;
+      /**
+       * Custom display name. Pass an empty string to clear it (the server
+       * reverts to the default name). Omit to leave it unchanged — a JSON
+       * `null` is treated as "unchanged", not "clear". See MUL-4217.
+       */
+      custom_name?: string;
+      /** Apply custom_name to every runtime on the same machine. */
+      apply_to_machine?: boolean;
+      /**
+       * RUYI-425 §4.3 voice instance settings (stage 2). Only accepted on
+       * manually registered instances; the server merges them into the
+       * instance metadata without touching other keys. `model: ""` clears;
+       * `advanced: {}` clears; `disabled: false` clears the flag.
+       */
+      model?: string;
+      advanced?: Record<string, unknown>;
+      disabled?: boolean;
+    },
+  ): Promise<AgentRuntime> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+    return parseWithFallback(raw, AgentRuntimeSchema, EMPTY_AGENT_RUNTIME, {
+      endpoint: `/api/runtimes/${runtimeId}`,
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Custom runtime profiles (MUL-3284). All workspace-scoped: the caller
+  // passes the workspace id the same way the runtimes list resolves it.
+  // ---------------------------------------------------------------------
+
+  async listRuntimeProfiles(workspaceId: string): Promise<RuntimeProfile[]> {
+    const res = await this.fetch<{ runtime_profiles?: RuntimeProfile[] }>(
+      `/api/workspaces/${workspaceId}/runtime-profiles`,
+    );
+    return res.runtime_profiles ?? [];
+  }
+
+  async getRuntimeProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<RuntimeProfile> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/runtime-profiles/${profileId}`,
+    );
+  }
+
+  async createRuntimeProfile(
+    workspaceId: string,
+    body: CreateRuntimeProfileRequest,
+  ): Promise<RuntimeProfile> {
+    return this.fetch(`/api/workspaces/${workspaceId}/runtime-profiles`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async updateRuntimeProfile(
+    workspaceId: string,
+    profileId: string,
+    patch: UpdateRuntimeProfileRequest,
+  ): Promise<RuntimeProfile> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/runtime-profiles/${profileId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      },
+    );
+  }
+
+  async deleteRuntimeProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/runtime-profiles/${profileId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // --- Execution profiles (RUYI-57) ---------------------------------------
+  //
+  // Named per-agent execution configuration for the whole workspace. All
+  // responses are schema-parsed: the activation response in particular must
+  // never be read optimistically, so its fallback is the all-failed shape.
+
+  async listExecutionProfiles(
+    workspaceId: string,
+  ): Promise<ExecutionProfileListResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles`,
+    );
+    return parseWithFallback<ExecutionProfileListResponse>(
+      raw,
+      ExecutionProfileListResponseSchema,
+      EMPTY_EXECUTION_PROFILE_LIST,
+      { endpoint: "GET /api/workspaces/:id/execution-profiles" },
+    );
+  }
+
+  async getExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<ExecutionProfile> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}`,
+    );
+    return parseWithFallback<ExecutionProfile>(
+      raw,
+      ExecutionProfileSchema,
+      EMPTY_EXECUTION_PROFILE,
+      { endpoint: "GET /api/workspaces/:id/execution-profiles/:profileId" },
+    );
+  }
+
+  async createExecutionProfile(
+    workspaceId: string,
+    body: CreateExecutionProfileRequest,
+  ): Promise<ExecutionProfile> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    return parseWithFallback<ExecutionProfile>(
+      raw,
+      ExecutionProfileSchema,
+      EMPTY_EXECUTION_PROFILE,
+      { endpoint: "POST /api/workspaces/:id/execution-profiles" },
+    );
+  }
+
+  async updateExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+    patch: UpdateExecutionProfileRequest,
+  ): Promise<ExecutionProfile> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    );
+    return parseWithFallback<ExecutionProfile>(
+      raw,
+      ExecutionProfileSchema,
+      EMPTY_EXECUTION_PROFILE,
+      { endpoint: "PATCH /api/workspaces/:id/execution-profiles/:profileId" },
+    );
+  }
+
+  async deleteExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async upsertExecutionProfileEntry(
+    workspaceId: string,
+    profileId: string,
+    body: UpsertExecutionProfileEntryRequest,
+  ): Promise<ExecutionProfileEntry> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}/entries`,
+      { method: "PUT", body: JSON.stringify(body) },
+    );
+    return parseWithFallback<ExecutionProfileEntry>(
+      raw,
+      ExecutionProfileEntrySchema,
+      { agent_id: body.agent_id, runtime_id: "", model: "", thinking_level: null, updated_at: "" },
+      {
+        endpoint:
+          "PUT /api/workspaces/:id/execution-profiles/:profileId/entries",
+      },
+    );
+  }
+
+  async deleteExecutionProfileEntry(
+    workspaceId: string,
+    profileId: string,
+    agentId: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}/entries/${agentId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async activateExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<ExecutionProfileActivationResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}/activate`,
+      { method: "POST" },
+    );
+    return parseWithFallback<ExecutionProfileActivationResponse>(
+      raw,
+      ExecutionProfileActivationResponseSchema,
+      EMPTY_EXECUTION_PROFILE_ACTIVATION,
+      {
+        endpoint:
+          "POST /api/workspaces/:id/execution-profiles/:profileId/activate",
+      },
+    );
+  }
+
+  // ---- Daemon host backpressure settings + event history (RUYI-729) ----
+
+  async getRuntimeBackpressureSettings(
+    runtimeId: string,
+  ): Promise<RuntimeBackpressureSettings> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-settings`,
+    );
+    return parseWithFallback<RuntimeBackpressureSettings>(
+      raw,
+      RuntimeBackpressureSettingsSchema,
+      {
+        daemon_id: "",
+        configured: false,
+        config: null,
+        report: null,
+      },
+      { endpoint: "GET /api/runtimes/:id/backpressure-settings" },
+    );
+  }
+
+  async putRuntimeBackpressureSettings(
+    runtimeId: string,
+    config: RuntimeBackpressureSettings["config"],
+  ): Promise<RuntimeBackpressureSettings> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-settings`,
+      { method: "PUT", body: JSON.stringify(config) },
+    );
+    return parseWithFallback<RuntimeBackpressureSettings>(
+      raw,
+      RuntimeBackpressureSettingsSchema,
+      {
+        daemon_id: "",
+        configured: false,
+        config: null,
+        report: null,
+      },
+      { endpoint: "PUT /api/runtimes/:id/backpressure-settings" },
+    );
+  }
+
+  async deleteRuntimeBackpressureSettings(
+    runtimeId: string,
+  ): Promise<RuntimeBackpressureSettings> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-settings`,
+      { method: "DELETE" },
+    );
+    return parseWithFallback<RuntimeBackpressureSettings>(
+      raw,
+      RuntimeBackpressureSettingsSchema,
+      {
+        daemon_id: "",
+        configured: false,
+        config: null,
+        report: null,
+      },
+      { endpoint: "DELETE /api/runtimes/:id/backpressure-settings" },
+    );
+  }
+
+  async listRuntimeBackpressureEvents(
+    runtimeId: string,
+    params?: { limit?: number },
+  ): Promise<RuntimeBackpressureEvent[]> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", String(params.limit));
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/backpressure-events?${search}`,
+    );
+    return parseWithFallback<RuntimeBackpressureEvent[]>(
+      raw,
+      RuntimeBackpressureEventListSchema,
+      [],
+      { endpoint: "GET /api/runtimes/:id/backpressure-events" },
+    );
+  }
+
+  async getRuntimeUsage(
+    runtimeId: string,
+    params?: { days?: number; tz?: string },
+  ): Promise<RuntimeUsage[]> {
+    const search = new URLSearchParams();
+    if (params?.days) search.set("days", String(params.days));
+    // `tz` drives the calendar-day boundary for the trend chart (Viewing
+    // layer). Caller-supplied; the backend falls back to user.timezone /
+    // UTC if omitted.
+    if (params?.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/usage?${search}`,
+    );
+    return parseWithFallback<RuntimeUsage[]>(raw, RuntimeUsageListSchema, [], {
+      endpoint: "GET /api/runtimes/:id/usage",
+    });
+  }
+
+  async getRuntimeTaskActivity(
+    runtimeId: string,
+    params?: { tz?: string },
+  ): Promise<RuntimeHourlyActivity[]> {
+    // Hour-of-day heatmap follows the viewer's tz, like the other reports on
+    // this page. Pass the viewer's IANA zone so the server buckets correctly.
+    const search = new URLSearchParams();
+    if (params?.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/activity?${search}`,
+    );
+    return parseWithFallback<RuntimeHourlyActivity[]>(
+      raw,
+      RuntimeHourlyActivityListSchema,
+      [],
+      { endpoint: "GET /api/runtimes/:id/activity" },
+    );
+  }
+
+  async getRuntimeUsageByAgent(
+    runtimeId: string,
+    params?: { days?: number; tz?: string },
+  ): Promise<RuntimeUsageByAgent[]> {
+    const search = new URLSearchParams();
+    if (params?.days) search.set("days", String(params.days));
+    if (params?.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/usage/by-agent?${search}`,
+    );
+    return parseWithFallback<RuntimeUsageByAgent[]>(
+      raw,
+      RuntimeUsageByAgentListSchema,
+      [],
+      { endpoint: "GET /api/runtimes/:id/usage/by-agent" },
+    );
+  }
+
+  async getRuntimeUsageByHour(
+    runtimeId: string,
+    params?: { days?: number; tz?: string },
+  ): Promise<RuntimeUsageByHour[]> {
+    const search = new URLSearchParams();
+    if (params?.days) search.set("days", String(params.days));
+    if (params?.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/usage/by-hour?${search}`,
+    );
+    return parseWithFallback<RuntimeUsageByHour[]>(
+      raw,
+      RuntimeUsageByHourListSchema,
+      [],
+      { endpoint: "GET /api/runtimes/:id/usage/by-hour" },
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Workspace dashboard — three independent rollups for `/{slug}/dashboard`.
+  // Each accepts an optional `project_id` to narrow the scope to one project.
+  // Cost is computed client-side from the model pricing table (same contract
+  // as the per-runtime endpoints above).
+  // ---------------------------------------------------------------------------
+
+  async getDashboardUsageDaily(
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
+  ): Promise<DashboardUsageDaily[]> {
+    const search = new URLSearchParams();
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
+    if (params.project_id) search.set("project_id", params.project_id);
+    if (params.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/daily?${search}`);
+    return parseWithFallback<DashboardUsageDaily[]>(
+      raw,
+      DashboardUsageDailyListSchema,
+      [],
+      { endpoint: "GET /api/dashboard/usage/daily" },
+    );
+  }
+
+  // System-resource panel (RUYI-618): Prometheus-proxied per-daemon series
+  // for the usage page. A 200 with configured=false is the "no observability
+  // stack" normal state, not an error.
+  async getDashboardUsageResources(
+    params: { window?: string },
+  ): Promise<DashboardUsageResources> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/resources?${search}`);
+    return parseWithFallback<DashboardUsageResources>(
+      raw,
+      DashboardUsageResourcesSchema,
+      { configured: false, series: {} },
+      { endpoint: "GET /api/dashboard/usage/resources" },
+    );
+  }
+
+  // Model-traffic panel (RUYI-618): token/cost/task rates by runtime,
+  // provider, or model, aggregated server-side from the task-usage
+  // exposition.
+  async getDashboardUsageTraffic(
+    params: { window?: string; by?: DashboardUsageTrafficDim },
+  ): Promise<DashboardUsageTraffic> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    if (params.by) search.set("by", params.by);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/traffic?${search}`);
+    return parseWithFallback<DashboardUsageTraffic>(
+      raw,
+      DashboardUsageTrafficSchema,
+      { configured: false, series: {} },
+      { endpoint: "GET /api/dashboard/usage/traffic" },
+    );
+  }
+
+  async getDashboardUsageByAgent(
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
+  ): Promise<DashboardUsageByAgent[]> {
+    const search = new URLSearchParams();
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
+    if (params.project_id) search.set("project_id", params.project_id);
+    if (params.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/by-agent?${search}`);
+    return parseWithFallback<DashboardUsageByAgent[]>(
+      raw,
+      DashboardUsageByAgentListSchema,
+      [],
+      { endpoint: "GET /api/dashboard/usage/by-agent" },
+    );
+  }
+
+  async getDashboardAgentRunTime(
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
+  ): Promise<DashboardAgentRunTime[]> {
+    const search = new URLSearchParams();
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
+    if (params.project_id) search.set("project_id", params.project_id);
+    // `tz` aligns the "last N days" cutoff with the viewer's calendar,
+    // matching the per-agent token card.
+    if (params.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(`/api/dashboard/agent-runtime?${search}`);
+    return parseWithFallback<DashboardAgentRunTime[]>(
+      raw,
+      DashboardAgentRunTimeListSchema,
+      [],
+      { endpoint: "GET /api/dashboard/agent-runtime" },
+    );
+  }
+
+  async getDashboardRunTimeDaily(
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
+  ): Promise<DashboardRunTimeDaily[]> {
+    const search = new URLSearchParams();
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
+    if (params.project_id) search.set("project_id", params.project_id);
+    // `tz` cuts the day buckets in the viewer's calendar so Time / Tasks
+    // align with the Cost / Tokens charts.
+    if (params.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(`/api/dashboard/runtime/daily?${search}`);
+    return parseWithFallback<DashboardRunTimeDaily[]>(
+      raw,
+      DashboardRunTimeDailyListSchema,
+      [],
+      { endpoint: "GET /api/dashboard/runtime/daily" },
+    );
+  }
+
+  async getDashboardFailuresDaily(
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
+  ): Promise<DashboardFailureDaily[]> {
+    const search = new URLSearchParams();
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
+    if (params.project_id) search.set("project_id", params.project_id);
+    // `tz` cuts the day buckets in the viewer's calendar so the Errors chart
+    // shares an x-axis with the other four metrics.
+    if (params.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(`/api/dashboard/failures/daily?${search}`);
+    return parseWithFallback<DashboardFailureDaily[]>(
+      raw,
+      DashboardFailureDailyListSchema,
+      [],
+      { endpoint: "GET /api/dashboard/failures/daily" },
+    );
+  }
+
+  async getDashboardFailuresByAgent(
+    params: {
+      days?: number; start?: string; end?: string; project_id?: string | null; tz?: string;
+    },
+  ): Promise<DashboardFailureByAgent[]> {
+    const search = new URLSearchParams();
+    // Explicit start/end (inclusive calendar days in the viewer's tz) takes
+    // priority over the legacy relative `days` window — the server parses them
+    // as one or the other, never both. Historical dashboards send the pair;
+    // callers that omit it fall back to `days`.
+    if (params.start && params.end) {
+      search.set("start", params.start);
+      search.set("end", params.end);
+    } else if (params.days) {
+      search.set("days", String(params.days));
+    }
+    if (params.project_id) search.set("project_id", params.project_id);
+    if (params.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(`/api/dashboard/failures/by-agent?${search}`);
+    return parseWithFallback<DashboardFailureByAgent[]>(
+      raw,
+      DashboardFailureByAgentListSchema,
+      [],
+      { endpoint: "GET /api/dashboard/failures/by-agent" },
+    );
+  }
+
+  async initiateUpdate(
+    runtimeId: string,
+    targetVersion: string,
+  ): Promise<RuntimeUpdate> {
+    return this.fetch(`/api/runtimes/${runtimeId}/update`, {
+      method: "POST",
+      body: JSON.stringify({ target_version: targetVersion }),
+    });
+  }
+
+  async getUpdateResult(
+    runtimeId: string,
+    updateId: string,
+  ): Promise<RuntimeUpdate> {
+    return this.fetch(`/api/runtimes/${runtimeId}/update/${updateId}`);
+  }
+
+  // Both discovery endpoints feed a UI state machine (poll while
+  // pending/running, then render or fail), so the response is validated rather
+  // than cast: an unparseable body degrades to an explicit "failed" record that
+  // shows the discovery error and keeps manual model entry usable, instead of a
+  // fabricated empty catalog or an endless spinner (MUL-5444).
+  async initiateListModels(runtimeId: string): Promise<RuntimeModelListRequest> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/models`, {
+      method: "POST",
+    });
+    return parseWithFallback<RuntimeModelListRequest>(
+      raw,
+      RuntimeModelListRequestSchema,
+      { ...MALFORMED_RUNTIME_MODEL_LIST_REQUEST, runtime_id: runtimeId },
+      { endpoint: "POST /api/runtimes/{id}/models" },
+    );
+  }
+
+  async getListModelsResult(
+    runtimeId: string,
+    requestId: string,
+  ): Promise<RuntimeModelListRequest> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/models/${requestId}`,
+    );
+    return parseWithFallback<RuntimeModelListRequest>(
+      raw,
+      RuntimeModelListRequestSchema,
+      {
+        ...MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+        id: requestId,
+        runtime_id: runtimeId,
+      },
+      { endpoint: "GET /api/runtimes/{id}/models/{requestId}" },
+    );
+  }
+
+  async initiateListLocalSkills(
+    runtimeId: string,
+  ): Promise<RuntimeLocalSkillListRequest> {
+    return this.fetch(`/api/runtimes/${runtimeId}/local-skills`, {
+      method: "POST",
+    });
+  }
+
+  async getListLocalSkillsResult(
+    runtimeId: string,
+    requestId: string,
+  ): Promise<RuntimeLocalSkillListRequest> {
+    return this.fetch(`/api/runtimes/${runtimeId}/local-skills/${requestId}`);
+  }
+
+  async initiateImportLocalSkill(
+    runtimeId: string,
+    data: CreateRuntimeLocalSkillImportRequest,
+  ): Promise<RuntimeLocalSkillImportRequest> {
+    return this.fetch(`/api/runtimes/${runtimeId}/local-skills/import`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getImportLocalSkillResult(
+    runtimeId: string,
+    requestId: string,
+  ): Promise<RuntimeLocalSkillImportRequest> {
+    return this.fetch(`/api/runtimes/${runtimeId}/local-skills/import/${requestId}`);
+  }
+
+  async getRuntimeOpsInventory(runtimeId: string): Promise<RuntimeOpsInventory> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/inventory`);
+  }
+
+  async submitRuntimeOpsCommand(
+    runtimeId: string,
+    data: CreateRuntimeOpsCommandRequest,
+  ): Promise<RuntimeOpsCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listRuntimeOpsCommands(runtimeId: string): Promise<RuntimeOpsCommand[]> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands?limit=50`);
+  }
+
+  async getRuntimeOpsCommand(
+    runtimeId: string,
+    commandId: string,
+  ): Promise<RuntimeOpsCommand> {
+    return this.fetch(`/api/runtimes/${runtimeId}/ops/commands/${commandId}`);
+  }
+
+  async listAgentTasks(agentId: string): Promise<AgentTask[]> {
+    return this.fetch(`/api/agents/${agentId}/tasks`);
+  }
+
+  // Workspace-scoped agent task snapshot: every active task
+  // (queued/dispatched/running) plus each agent's most recent terminal task.
+  // Powers the front-end's "active wins, else latest terminal" presence
+  // derivation; one fetch backs every per-agent presence read in the app.
+  // Workspace is resolved server-side from the X-Workspace-Slug header.
+  async getAgentTaskSnapshot(): Promise<AgentTask[]> {
+    return this.fetch(`/api/agent-task-snapshot`);
+  }
+
+  // Independent workspace-level projection. Unlike the task snapshot, this
+  // already deduplicates running agents and returns only the display fields
+  // consumers need. Callers may narrow the projection by task source and, for
+  // issue work, the authenticated member's My Issues relation.
+  // `parentIssueId` narrows the projection to that issue's direct children,
+  // which is how the sub-issue header on issue detail reads the same source
+  // as the Issues list header. The server rejects combining it with `scope`,
+  // so callers pass one or the other.
+  async getWorkspaceWorkingAgents(
+    type?: WorkspaceWorkingAgentType,
+    mineRelation?: WorkspaceWorkingAgentMineRelation,
+    parentIssueId?: string,
+  ): Promise<WorkspaceWorkingAgent[]> {
+    const search = new URLSearchParams();
+    if (type) search.set("type", type);
+    if (mineRelation) {
+      search.set("scope", "mine");
+      search.set("relation", mineRelation);
+    } else if (parentIssueId) {
+      search.set("parent", parentIssueId);
+    }
+    const query = search.toString();
+    return this.fetch(`/api/working-agents${query ? `?${query}` : ""}`);
+  }
+
+  // Per-agent daily activity for the last 30 days, anchored on
+  // completed_at. One workspace-wide fetch backs both the Agents-list
+  // sparkline (uses trailing 7 buckets) and the agent detail "Last 30
+  // days" panel (uses all 30).
+  async getWorkspaceAgentActivity30d(): Promise<AgentActivityBucket[]> {
+    return this.fetch(`/api/agent-activity-30d`);
+  }
+
+  // Per-agent 30-day total run count for the Agents-list RUNS column.
+  async getWorkspaceAgentRunCounts(): Promise<AgentRunCount[]> {
+    return this.fetch(`/api/agent-run-counts`);
+  }
+
+  async getActiveTasksForIssue(issueId: string): Promise<{ tasks: AgentTask[] }> {
+    return this.fetch(`/api/issues/${issueId}/active-task`);
+  }
+
+  async listTaskMessages(taskId: string): Promise<TaskMessagePayload[]> {
+    return this.fetch(`/api/tasks/${taskId}/messages`);
+  }
+
+  async listTasksByIssue(issueId: string): Promise<AgentTask[]> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/task-runs`);
+    return parseWithFallback<AgentTask[]>(raw, AgentTaskListSchema, [], {
+      endpoint: "GET /api/issues/:id/task-runs",
+    });
+  }
+
+  // ---- run lifecycle (RUYI-292) -------------------------------------------
+
+  // Filtered run list: status takes a comma-separated list of raw statuses
+  // ("pending" expands server-side to the queued-family display bucket),
+  // trigger takes the user-facing source buckets. Unknown values match
+  // nothing and answer an empty list under 200.
+  async listIssueRuns(
+    issueId: string,
+    params: { status?: string; trigger?: string; limit?: number } = {},
+  ): Promise<{ tasks: AgentTask[] }> {
+    const query = new URLSearchParams();
+    if (params.status) query.set("status", params.status);
+    if (params.trigger) query.set("trigger", params.trigger);
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    const qs = query.toString();
+    return this.fetch<{ tasks: AgentTask[] }>(
+      `/api/issues/${issueId}/task-runs${qs ? `?${qs}` : ""}`,
+    );
+  }
+
+  // One run plus its full retry chain (both lineage columns) for the detail
+  // drawer — no second call needed to draw cancelled→retried→completed.
+  async getIssueRun(issueId: string, runId: string): Promise<RunDetail> {
+    return this.fetch<RunDetail>(
+      `/api/issues/${issueId}/tasks/${runId}`,
+    );
+  }
+
+  // The cancel matrix answer: `code` is the machine-readable outcome, `task`
+  // the row as it stands after the call. A 409 not_cancellable still resolves
+  // to the envelope in the response body.
+  async cancelIssueRun(issueId: string, runId: string): Promise<CancelRunResult> {
+    return this.fetch<CancelRunResult>(
+      `/api/issues/${issueId}/tasks/${runId}/cancel`,
+      { method: "POST" },
+    );
+  }
+
+  // Re-attempt one finished run as a NEW run on the source run's agent with
+  // its current configuration, in a fresh session. 202 = this call enqueued
+  // the retry; 200 = an identical in-window retry already created the child
+  // and the response carries it.
+  async retryIssueRun(issueId: string, runId: string): Promise<AgentTask> {
+    return this.fetch<AgentTask>(
+      `/api/issues/${issueId}/tasks/${runId}/retry`,
+      { method: "POST" },
+    );
+  }
+
+  async getIssueUsage(issueId: string): Promise<IssueUsageSummary> {
+    return this.fetch(`/api/issues/${issueId}/usage`);
+  }
+
+  // The single-run cancel now answers with the RUYI-292 cancel matrix:
+  // in-flight rows are accepted for stop (status → cancel_requested), and
+  // completed/failed rows answer 409 not_cancellable. Both shapes ride the
+  // {code, message, task} envelope — unwrap to the row for the existing
+  // callers; cancelIssueRun exposes the full envelope.
+  async cancelTask(issueId: string, taskId: string): Promise<AgentTask> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/tasks/${taskId}/cancel`, {
+      method: "POST",
+    });
+    const envelope = raw as { code?: string; task?: unknown } | null;
+    const taskRaw = envelope && typeof envelope === "object" && "task" in envelope ? envelope.task : raw;
+    const parsed = parseWithFallback<AgentTask | null>(taskRaw, AgentTaskSchema, null, {
+      endpoint: "POST /api/issues/:id/tasks/:taskId/cancel",
+    });
+    if (!parsed) throw new Error("Invalid cancel task response");
+    return parsed;
+  }
+
+  async rerunIssue(issueId: string, taskId?: string): Promise<AgentTask> {
+    return this.fetch(`/api/issues/${issueId}/rerun`, {
+      method: "POST",
+      body: JSON.stringify(taskId ? { task_id: taskId } : {}),
+    });
+  }
+
+  async retrySourceContextQuickCreate(taskId: string): Promise<AgentTask> {
+    const raw = await this.fetch<unknown>(`/api/tasks/${taskId}/retry-source-context`, {
+      method: "POST",
+    });
+    const task = parseWithFallback<AgentTask | null>(raw, AgentTaskSchema, null, {
+      endpoint: "POST /api/tasks/:id/retry-source-context",
+    });
+    if (!task) throw new Error("Invalid source-context retry response");
+    return task;
+  }
+
+  // Inbox
+  async listInbox(): Promise<InboxItem[]> {
+    const raw = await this.fetch<unknown>("/api/inbox");
+    return parseWithFallback(raw, InboxItemListSchema, EMPTY_INBOX_ITEMS, {
+      endpoint: "GET /api/inbox",
+    });
+  }
+
+  async markInboxRead(id: string): Promise<InboxItem> {
+    return this.fetch(`/api/inbox/${id}/read`, { method: "POST" });
+  }
+
+  async markInboxUnread(id: string): Promise<InboxItem> {
+    return this.fetch(`/api/inbox/${id}/unread`, { method: "POST" });
+  }
+
+  async archiveInbox(id: string): Promise<InboxItem> {
+    return this.fetch(`/api/inbox/${id}/archive`, { method: "POST" });
+  }
+
+  // Archived notifications, backing the inbox's "Archived" sub-view. Capped
+  // server-side (no pagination in v1). Schema-guarded so a contract drift
+  // renders an empty archive instead of taking the inbox down with it.
+  async listArchivedInbox(): Promise<InboxItem[]> {
+    const raw = await this.fetch<unknown>("/api/inbox/archived");
+    return parseWithFallback(raw, InboxItemListSchema, EMPTY_INBOX_ITEMS, {
+      endpoint: "GET /api/inbox/archived",
+    });
+  }
+
+  async unarchiveInbox(id: string): Promise<InboxItem> {
+    return this.fetch(`/api/inbox/${id}/unarchive`, { method: "POST" });
+  }
+
+  async getUnreadInboxCount(): Promise<{ count: number }> {
+    return this.fetch("/api/inbox/unread-count");
+  }
+
+  // Cross-workspace unread summary: one entry per workspace the user belongs
+  // to that has unread inbox items. Backs the workspace-switcher dot for
+  // OTHER workspaces. Schema-guarded so a contract drift hides the dot rather
+  // than crashing the sidebar.
+  async getInboxUnreadSummary(): Promise<InboxWorkspaceUnread[]> {
+    const raw = await this.fetch<unknown>("/api/inbox/unread-summary");
+    return parseWithFallback(raw, InboxUnreadSummarySchema, EMPTY_INBOX_UNREAD_SUMMARY, {
+      endpoint: "GET /api/inbox/unread-summary",
+    });
+  }
+
+  async markAllInboxRead(): Promise<{ count: number }> {
+    return this.fetch("/api/inbox/mark-all-read", { method: "POST" });
+  }
+
+  async archiveAllInbox(): Promise<{ count: number }> {
+    return this.fetch("/api/inbox/archive-all", { method: "POST" });
+  }
+
+  async archiveAllReadInbox(): Promise<{ count: number }> {
+    return this.fetch("/api/inbox/archive-all-read", { method: "POST" });
+  }
+
+  async archiveCompletedInbox(): Promise<{ count: number }> {
+    return this.fetch("/api/inbox/archive-completed", { method: "POST" });
+  }
+
+  // Notification preferences
+  //
+  // `workspaceSlug` overrides the default `X-Workspace-Slug` header (which
+  // follows the active workspace) so a caller can read a SPECIFIC workspace's
+  // preferences — e.g. honoring the mute setting of the workspace an inbox
+  // notification came from while the user is viewing a different one (#3766).
+  async getNotificationPreferences(workspaceSlug?: string): Promise<NotificationPreferenceResponse> {
+    const raw = await this.fetch<unknown>(
+      "/api/notification-preferences",
+      workspaceSlug ? { headers: { "X-Workspace-Slug": workspaceSlug } } : undefined,
+    );
+    return parseWithFallback(
+      raw,
+      NotificationPreferenceResponseSchema,
+      EMPTY_NOTIFICATION_PREFERENCE_RESPONSE,
+      { endpoint: "GET /api/notification-preferences" },
+    );
+  }
+
+  async updateNotificationPreferences(
+    preferences: NotificationPreferences,
+    workspaceSlug?: string,
+  ): Promise<NotificationPreferenceResponse> {
+    const raw = await this.fetch<unknown>("/api/notification-preferences", {
+      method: "PATCH",
+      headers: workspaceHeader(workspaceSlug),
+      body: JSON.stringify({ preferences }),
+    });
+    return parseWithFallback(
+      raw,
+      NotificationPreferenceResponseSchema,
+      EMPTY_NOTIFICATION_PREFERENCE_RESPONSE,
+      { endpoint: "PATCH /api/notification-preferences" },
+    );
+  }
+
+  // App Config
+  async getConfig(): Promise<AppConfigResponse> {
+    const raw = await this.fetch<unknown>("/api/config");
+    return parseWithFallback<AppConfigResponse>(raw, AppConfigSchema, EMPTY_APP_CONFIG, {
+      endpoint: "GET /api/config",
+    });
+  }
+
+  // Workspaces
+  async listWorkspaces(): Promise<Workspace[]> {
+    return this.fetch("/api/workspaces");
+  }
+
+  async getWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}`);
+  }
+
+  async createWorkspace(data: { name: string; slug: string; description?: string; context?: string; issue_prefix?: string }): Promise<Workspace> {
+    return this.fetch("/api/workspaces", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string }): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Voice provider pool (RUYI-693 D2). Reads are member-visible; writes are
+  // workspace-admin state, enforced server-side. No plaintext key ever
+  // round-trips: it enters through putVoiceProviderCredential (which probes
+  // on save) and is only ever read back as the coarse credential_status
+  // badge plus the last probe verdict.
+  // -------------------------------------------------------------------------
+
+  async listVoiceProviders(workspaceId: string): Promise<VoiceProvider[]> {
+    return this.fetch<VoiceProvider[]>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+    );
+  }
+
+  async createVoiceProvider(
+    workspaceId: string,
+    data: { display_name: string; provider_type: string },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers`,
+      { method: "POST", body: JSON.stringify(data) },
+    );
+  }
+
+  async updateVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+    data: { display_name?: string; enabled?: boolean },
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}`,
+      { method: "PATCH", body: JSON.stringify(data) },
+    );
+  }
+
+  /** Delete unbinds rather than blocks: the server clears referencing agent
+   *  overrides and the workspace settings' voice refs in one transaction. */
+  async deleteVoiceProvider(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ id: string; cleared_agents: number }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/voice-providers/${providerId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /** Stores/rotates the key and runs the server-side connectivity probe
+   *  (保存即探针); the response is the refreshed pool row. */
+  async putVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+    value: string,
+  ): Promise<VoiceProvider> {
+    return this.fetch<VoiceProvider>(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "PUT", body: JSON.stringify({ value }) },
+    );
+  }
+
+  async deleteVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+    credentialKey: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credentials/${credentialKey}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /** Re-runs the server-side probe and records the outcome on the badge. */
+  async probeVoiceProviderCredential(
+    workspaceId: string,
+    providerId: string,
+  ): Promise<{ voice_provider_id: string; probe: { status: string; http_status?: number; checked_at: string } }> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/voice-providers/${providerId}/credential-probe`,
+      { method: "POST" },
+    );
+  }
+
+  async listPluginInstallations(workspaceId: string): Promise<PluginInstallationListResponse> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins`);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return EMPTY_PLUGIN_INSTALLATION_LIST;
+      throw error;
+    }
+    return parseWithFallback(raw, PluginInstallationListResponseSchema, EMPTY_PLUGIN_INSTALLATION_LIST, {
+      endpoint: "GET /api/workspaces/{id}/plugins",
+    });
+  }
+
+  /**
+   * The workspace's MCP server library. The response carries identity and
+   * transport only — the stored entries are write-only server-side, so there
+   * is nothing here to redact.
+   */
+  async listWorkspaceMcpServers(workspaceId: string): Promise<WorkspaceMcpServer[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/mcp-servers`);
+    return parseWithFallback(raw, WorkspaceMcpServerListSchema, [] as WorkspaceMcpServer[], {
+      endpoint: "GET /api/workspaces/{id}/mcp-servers",
+    });
+  }
+
+  /**
+   * Adds a server to the library. It is assigned to NO agent — an agent gets
+   * it only through addAgentMcpServer.
+   */
+  async createWorkspaceMcpServer(
+    workspaceId: string,
+    name: string,
+    config: Record<string, unknown>,
+  ): Promise<WorkspaceMcpServer> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/mcp-servers`, {
+      method: "POST",
+      body: JSON.stringify({ name, config }),
+    });
+    return parseWithFallback(raw, WorkspaceMcpServerSchema, EMPTY_WORKSPACE_MCP_SERVER, {
+      endpoint: "POST /api/workspaces/{id}/mcp-servers",
+    });
+  }
+
+  /**
+   * Renames a library entry, replaces its configuration, or both. Agents keep
+   * their assignment across a rename because assignments key off the id.
+   */
+  async updateWorkspaceMcpServer(
+    workspaceId: string,
+    serverId: string,
+    update: { name?: string; config?: Record<string, unknown> },
+  ): Promise<WorkspaceMcpServer> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/mcp-servers/${encodeURIComponent(serverId)}`,
+      { method: "PUT", body: JSON.stringify(update) },
+    );
+    return parseWithFallback(raw, WorkspaceMcpServerSchema, EMPTY_WORKSPACE_MCP_SERVER, {
+      endpoint: "PUT /api/workspaces/{id}/mcp-servers/{serverId}",
+    });
+  }
+
+  /** Removes a library entry and every assignment to it. */
+  async deleteWorkspaceMcpServer(workspaceId: string, serverId: string): Promise<void> {
+    await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/mcp-servers/${encodeURIComponent(serverId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  /**
+   * The unified marketplace catalog, annotated with what this workspace has
+   * already installed. Filtering is server-side so the listing stays correct
+   * as the catalog grows.
+   */
+  async listMarketplaceItems(
+    filter: { kind?: string; q?: string } = {},
+  ): Promise<MarketplaceItem[]> {
+    const params = new URLSearchParams();
+    if (filter.kind) params.set("kind", filter.kind);
+    if (filter.q) params.set("q", filter.q);
+    const query = params.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/items${query ? `?${query}` : ""}`,
+    );
+    return parseWithFallback(raw, MarketplaceItemListSchema, [] as MarketplaceItem[], {
+      endpoint: "GET /api/marketplace/items",
+    });
+  }
+
+  /**
+   * Installs a catalog entry into the workspace.
+   *
+   * `values` carries the placeholder values an MCP entry needs, secrets
+   * included — it goes up and is never read back. The response is
+   * intentionally left unparsed here: a skill install answers with an import
+   * envelope and an MCP install with a server summary, and the caller knows
+   * which it asked for.
+   */
+  async installMarketplaceItem(input: {
+    key: string;
+    name?: string;
+    values?: Record<string, string>;
+  }): Promise<unknown> {
+    return this.fetch<unknown>(`/api/marketplace/install`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  // ── Prompt marketplace (RUYI-100) ─────────────────────────────────────────
+
+  /**
+   * The prompt catalog: the latest published version of each series, annotated
+   * with what this workspace has installed. The prompt body is omitted here —
+   * a listing shows metadata, and the text arrives with the detail read.
+   */
+  async listPromptVersions(
+    filter: { kind?: string; q?: string } = {},
+  ): Promise<PromptMarketItem[]> {
+    const params = new URLSearchParams();
+    if (filter.kind) params.set("kind", filter.kind);
+    if (filter.q) params.set("q", filter.q);
+    const query = params.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions${query ? `?${query}` : ""}`,
+    );
+    return parseWithFallback(raw, PromptMarketItemListSchema, [] as PromptMarketItem[], {
+      endpoint: "GET /api/marketplace/prompt-versions",
+    });
+  }
+
+  /** One version, including its prompt body. */
+  async getPromptVersion(versionId: string): Promise<PromptVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions/${encodeURIComponent(versionId)}`,
+    );
+    return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
+      endpoint: "GET /api/marketplace/prompt-versions/{id}",
+    });
+  }
+
+  /**
+   * The versions published from one agent or squad — the publisher's own
+   * history for that source object, drafts included.
+   */
+  async listPromptVersionsBySource(
+    sourceType: string,
+    sourceId: string,
+  ): Promise<PromptVersion[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-sources/${encodeURIComponent(sourceType)}/${encodeURIComponent(sourceId)}/versions`,
+    );
+    return parseWithFallback(raw, PromptVersionListSchema, [] as PromptVersion[], {
+      endpoint: "GET /api/marketplace/prompt-sources/{type}/{id}/versions",
+    });
+  }
+
+  /**
+   * Opens a draft from a source object.
+   *
+   * There is no `content` parameter by design: the server snapshots the source
+   * object's own persisted prompt, so a draft can only describe a prompt the
+   * publisher actually controls.
+   */
+  async createPromptVersion(input: {
+    source_type: string;
+    source_id: string;
+    /** Set to append the next version to an existing line. */
+    series_id?: string;
+    name: string;
+    summary?: string;
+    audience?: string;
+    categories?: string[];
+    license_code: string;
+    usage_notes?: string;
+    companions?: string;
+  }): Promise<PromptVersion> {
+    const raw = await this.fetch<unknown>(`/api/marketplace/prompt-versions`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
+      endpoint: "POST /api/marketplace/prompt-versions",
+    });
+  }
+
+  /** Edits a draft. Published versions are immutable and the server refuses. */
+  async updatePromptVersion(
+    versionId: string,
+    input: {
+      name?: string;
+      summary?: string;
+      audience?: string;
+      categories?: string[];
+      license_code?: string;
+      usage_notes?: string;
+      companions?: string;
+      /** Re-snapshots the source object's current text. */
+      refresh_content?: boolean;
+    },
+  ): Promise<PromptVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions/${encodeURIComponent(versionId)}`,
+      { method: "PUT", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
+      endpoint: "PUT /api/marketplace/prompt-versions/{id}",
+    });
+  }
+
+  /**
+   * Runs the publish gate's secret scan without publishing.
+   *
+   * The publish wizard shows the scan result before asking whether the version
+   * should be public, and this is what lets it: the draft stays a draft, still
+   * editable, and nothing about it is frozen. A hit throws the same ApiError
+   * with status 422 and a PromptSecretScanBlockedSchema body that publishing
+   * would throw, so one renderer handles both.
+   *
+   * A pass here is an early answer, not a permit — publishing scans again on
+   * the text it is about to freeze.
+   */
+  async scanPromptVersion(versionId: string): Promise<PromptScanResult> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions/${encodeURIComponent(versionId)}/scan`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, PromptScanResultSchema, EMPTY_PROMPT_SCAN_RESULT, {
+      endpoint: "POST /api/marketplace/prompt-versions/{id}/scan",
+    });
+  }
+
+  /**
+   * Publishes a draft: freezes the snapshot, assigns a version number, and
+   * makes it discoverable across workspaces.
+   *
+   * A secret-scan hit throws ApiError with status 422 and a body matching
+   * PromptSecretScanBlockedSchema. There is no override parameter — the caller
+   * shows the findings and the publisher edits the prompt.
+   *
+   * `public` is sent explicitly on every call, false included. The server
+   * decodes a required body, and defaulting it here rather than omitting it
+   * keeps "publish privately" from depending on how a JSON decoder treats a
+   * missing field.
+   */
+  async publishPromptVersion(
+    versionId: string,
+    input: { public: boolean } = { public: false },
+  ): Promise<PromptVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions/${encodeURIComponent(versionId)}/publish`,
+      { method: "POST", body: JSON.stringify({ public: input.public }) },
+    );
+    return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
+      endpoint: "POST /api/marketplace/prompt-versions/{id}/publish",
+    });
+  }
+
+  /**
+   * Withdraws a published version. Not a delete: workspaces that already
+   * applied it keep their text, and only new installs and applies are refused.
+   */
+  async withdrawPromptVersion(versionId: string): Promise<PromptVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions/${encodeURIComponent(versionId)}/withdraw`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
+      endpoint: "POST /api/marketplace/prompt-versions/{id}/withdraw",
+    });
+  }
+
+  /**
+   * The seven prompt quality dimensions for one prompt tier, split per version.
+   *
+   * `days` is a window length in calendar days; the server clamps it and
+   * decides the range, so an out-of-range value here degrades to the server
+   * default rather than erroring.
+   */
+  async getPromptQualityDashboard(
+    scope: string,
+    scopeId: string,
+    params?: { days?: number },
+  ): Promise<PromptQualityDashboard> {
+    const query = new URLSearchParams();
+    if (params?.days !== undefined) query.set("days", String(params.days));
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/quality${suffix}`,
+    );
+    return parseWithFallback(raw, PromptQualityDashboardSchema, EMPTY_PROMPT_QUALITY_DASHBOARD, {
+      endpoint: "GET /api/prompt-governance/{scope}/{id}/quality",
+    });
+  }
+
+  async getClauseGovernanceOverview(days: number): Promise<ClauseGovernanceOverview> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/governance/clauses?${query.toString()}`);
+    return parseWithFallback(raw, ClauseGovernanceOverviewSchema, EMPTY_CLAUSE_GOVERNANCE_OVERVIEW, {
+      endpoint: "GET /api/prompt-legislation/governance/clauses",
+      redactContent: true,
+    });
+  }
+
+  async getClauseGovernanceDetail(clauseId: string, days: number): Promise<ClauseGovernanceDetail> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}?${query.toString()}`,
+    );
+    return parseWithFallback(raw, ClauseGovernanceDetailSchema, EMPTY_CLAUSE_GOVERNANCE_DETAIL, {
+      endpoint: "GET /api/prompt-legislation/governance/clauses/{clauseId}",
+      redactContent: true,
+    });
+  }
+
+  async updateClauseContent(clauseId: string, content: string, expectedVersion: number): Promise<void> {
+    await this.fetch(`/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content, expected_version: expectedVersion }),
+    });
+  }
+
+  async deactivateClause(clauseId: string): Promise<void> {
+    await this.fetch(`/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}/deactivate`, {
+      method: "POST",
+    });
+  }
+
+  async deleteClause(clauseId: string): Promise<void> {
+    await this.fetch(`/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async getClauseGovernanceReconciliation(days: number): Promise<ClauseGovernanceReconciliation> {
+    const query = new URLSearchParams({ days: String(days) });
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-legislation/governance/reconciliation?${query.toString()}`,
+    );
+    return parseWithFallback(raw, ClauseGovernanceReconciliationSchema, EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION, {
+      endpoint: "GET /api/prompt-legislation/governance/reconciliation",
+      redactContent: true,
+    });
+  }
+
+  /**
+   * The workspace-level self-evolution overview (RUYI-284): one read-only
+   * aggregate across the six data planes the tabs serve. Member-visible on the
+   * server; the route has no non-GET method and this client adds none.
+   *
+   * `days` is the quality window length; the server clamps it exactly as the
+   * per-agent dashboard does, so both read the same rows.
+   */
+  async getSelfEvolutionOverview(params?: { days?: number }): Promise<SelfEvolutionOverview> {
+    const query = new URLSearchParams();
+    if (params?.days !== undefined) query.set("days", String(params.days));
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(`/api/self-evolution/overview${suffix}`);
+    return parseWithFallback(raw, SelfEvolutionOverviewSchema, EMPTY_SELF_EVOLUTION_OVERVIEW, {
+      endpoint: "GET /api/self-evolution/overview",
+    });
+  }
+
+  /**
+   * The workspace's model-service config view (RUYI-551): the stored
+   * override (key never echoed — only `has_api_key`), the resolved state a
+   * run would use right now, and whether the deployment can take saves at
+   * all. Available member-up on the server.
+   */
+  async getSelfEvolutionModelConfig(): Promise<SelfEvolutionModelConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config");
+    return parseWithFallback(raw, SelfEvolutionModelConfigSchema, {
+      override: null,
+      resolved: { status: "unconfigured", source: "" },
+      scoring_enabled: true,
+      encryption_ready: true,
+    }, { endpoint: "GET /api/self-evolution/model-config" });
+  }
+
+  /**
+   * Save the workspace's model-service override. Validation is mandatory
+   * whenever credentials are present: a 422 carries the classified, masked
+   * reason and nothing was persisted.
+   */
+  async putSelfEvolutionModelConfig(save: SelfEvolutionModelConfigSave): Promise<SelfEvolutionModelConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        base_url: save.base_url,
+        api_key: save.api_key,
+        model: save.model,
+        ...(save.scoring_enabled === undefined ? {} : { scoring_enabled: save.scoring_enabled }),
+      }),
+    });
+    return parseWithFallback(raw, SelfEvolutionModelConfigSchema, {
+      override: null,
+      resolved: { status: "unconfigured", source: "" },
+      scoring_enabled: true,
+      encryption_ready: true,
+    }, { endpoint: "PUT /api/self-evolution/model-config" });
+  }
+
+  /** Drop the workspace override — the "restore deploy default" action. */
+  async deleteSelfEvolutionModelConfig(): Promise<SelfEvolutionModelConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config", {
+      method: "DELETE",
+    });
+    return parseWithFallback(raw, SelfEvolutionModelConfigSchema, {
+      override: null,
+      resolved: { status: "unconfigured", source: "" },
+      scoring_enabled: true,
+      encryption_ready: true,
+    }, { endpoint: "DELETE /api/self-evolution/model-config" });
+  }
+
+  /**
+   * Validate a model-service config. An all-empty payload revalidates the
+   * stored config (the status card's re-check); a payload carrying values
+   * previews a not-yet-saved config without touching the store.
+   */
+  async validateSelfEvolutionModelConfig(save?: Partial<SelfEvolutionModelConfigSave>): Promise<SelfEvolutionConfigValidation> {
+    const hasBody = save && (save.base_url || save.model || save.api_key);
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(hasBody ? {
+        base_url: save?.base_url ?? "",
+        api_key: save?.api_key ?? "",
+        model: save?.model ?? "",
+      } : {}),
+    });
+    return parseWithFallback(raw, SelfEvolutionConfigValidationSchema, {
+      ok: false,
+      error_kind: "other",
+      message: "",
+    }, { endpoint: "POST /api/self-evolution/model-config/validate" });
+  }
+
+  /**
+   * The prompt tier's version line, newest first, each row with full content.
+   *
+   * The server includes content on every row on purpose (this is a private,
+   * workspace-scoped audit surface): the editor preloads the current draft
+   * from it, and the version comparison diffs two list rows client-side, so
+   * no second fetch is needed to compare a pair.
+   */
+  async listPromptGovernanceVersions(
+    scope: string,
+    scopeId: string,
+    params?: { limit?: number; offset?: number },
+  ): Promise<PromptGovernanceVersionList> {
+    const query = new URLSearchParams();
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    if (params?.offset !== undefined) query.set("offset", String(params.offset));
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/versions${suffix}`,
+    );
+    return parseWithFallback(
+      raw,
+      PromptGovernanceVersionListSchema,
+      EMPTY_PROMPT_GOVERNANCE_VERSION_LIST,
+      { endpoint: "GET /api/prompt-governance/{scope}/{id}/versions" },
+    );
+  }
+
+  async listAuditEvents(workspaceId: string, params: ListAuditEventsParams = {}): Promise<AuditEventsPage> {
+    const query = new URLSearchParams();
+    for (const key of [
+      "domain", "since", "until", "time_basis", "actor_id", "actor_type", "client_name", "client_version",
+      "tool_name", "result_status", "result_error_code", "target_type", "target_id",
+    ] as const) {
+      const value = params[key];
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.cursor !== undefined && params.cursor_id !== undefined) {
+      query.set("cursor", params.cursor);
+      query.set("cursor_id", params.cursor_id);
+    }
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events${suffix}`);
+    return parseWithFallback(raw, AuditEventsPageSchema, EMPTY_AUDIT_EVENTS_PAGE, {
+      endpoint: "GET /api/workspaces/{id}/audit-events",
+    });
+  }
+
+  /**
+   * Snapshots the carrier's currently effective content as a new version row
+   * (RUYI-285 rework): the server reads the live text, appends the row with
+   * source "snapshot", and never touches the business column. The caller does
+   * not supply content — only an optional change note.
+   *
+   * A secret-scan hit on the live text throws ApiError with status 422 and a
+   * PromptSecretScanBlockedSchema body (`code: "prompt_secret_detected"`);
+   * a carrier with no effective content is a 400. There is no override for
+   * either — the caller shows the findings (or the guard message).
+   */
+  async snapshotPromptGovernanceVersion(
+    scope: string,
+    scopeId: string,
+    input: SnapshotPromptGovernanceVersionRequest = {},
+  ): Promise<PromptGovernanceVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/versions/snapshot`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, PromptGovernanceVersionSchema, EMPTY_PROMPT_GOVERNANCE_VERSION, {
+      endpoint: "POST /api/prompt-governance/{scope}/{id}/versions/snapshot",
+    });
+  }
+
+  /**
+   * Activates a historical version by copy-forward: the server appends a new
+   * row with the target's content (source "revert", source_version set) and
+   * makes it effective. Rollback and switch are the same call — history is
+   * never rewritten.
+   */
+  async switchPromptGovernanceVersion(
+    scope: string,
+    scopeId: string,
+    version: number,
+  ): Promise<PromptGovernanceVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/versions/${encodeURIComponent(version)}/switch`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, PromptGovernanceVersionSchema, EMPTY_PROMPT_GOVERNANCE_VERSION, {
+      endpoint: "POST /api/prompt-governance/{scope}/{id}/versions/{version}/switch",
+    });
+  }
+
+  /**
+   * The quiz bank for the current workspace.
+   *
+   * One bank is replayed against every prompt scope, so this endpoint takes no
+   * scope: a per-scope bank would make two versions of different tiers
+   * incomparable, which is the whole point of a fixed bank.
+   */
+  async listPromptQuizItems(params?: { activeOnly?: boolean }): Promise<PromptQuizItem[]> {
+    const suffix = params?.activeOnly === true ? "?active=true" : "";
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/items${suffix}`);
+    return parseWithFallback(raw, PromptQuizItemListSchema, [] as PromptQuizItem[], {
+      endpoint: "GET /api/prompt-quiz/items",
+    });
+  }
+
+  /**
+   * One bank entry including its rubric — the only read that returns it, and
+   * owner-only server-side for that reason.
+   *
+   * The editor needs it because an update replaces the rubric wholesale: saving
+   * a form seeded from a list row, which has no rubric, would clear the stored
+   * answer key.
+   */
+  async getPromptQuizItem(itemId: string): Promise<PromptQuizItemDetail> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-quiz/items/${encodeURIComponent(itemId)}`,
+    );
+    return parseWithFallback(raw, PromptQuizItemDetailSchema, EMPTY_PROMPT_QUIZ_ITEM, {
+      endpoint: "GET /api/prompt-quiz/items/{id}",
+    });
+  }
+
+  async createPromptQuizItem(body: CreatePromptQuizItemRequest): Promise<PromptQuizItemDetail> {
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/items`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseWithFallback(raw, PromptQuizItemDetailSchema, EMPTY_PROMPT_QUIZ_ITEM, {
+      endpoint: "POST /api/prompt-quiz/items",
+    });
+  }
+
+  async updatePromptQuizItem(
+    itemId: string,
+    body: UpdatePromptQuizItemRequest,
+  ): Promise<PromptQuizItemDetail> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-quiz/items/${encodeURIComponent(itemId)}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    );
+    return parseWithFallback(raw, PromptQuizItemDetailSchema, EMPTY_PROMPT_QUIZ_ITEM, {
+      endpoint: "PATCH /api/prompt-quiz/items/{id}",
+    });
+  }
+
+  async deletePromptQuizItem(itemId: string): Promise<void> {
+    await this.fetch(`/api/prompt-quiz/items/${encodeURIComponent(itemId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * The regression reading for one prompt scope: the distribution comparison
+   * between its two newest measured versions.
+   *
+   * A reading, never a gate. No write method on this client consults it, and
+   * the server's publish path does not either (Owner Q10).
+   */
+  async getPromptQuizBaseline(scope: string, scopeId: string): Promise<PromptQuizBaseline> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/quiz`,
+    );
+    return parseWithFallback(raw, PromptQuizBaselineSchema, EMPTY_PROMPT_QUIZ_BASELINE, {
+      endpoint: "GET /api/prompt-governance/{scope}/{id}/quiz",
+    });
+  }
+
+  /**
+   * Owner actions for the graded side of the quiz (RUYI-286). All four sit
+   * behind the server's owner route guard, because the read-backs expose
+   * score_detail — the grading output of the private half of each item.
+   */
+
+  /** Imports the shipped benchmark bank (idempotent per slug). */
+  async importPromptQuizBank(): Promise<PromptQuizBankImportResponse> {
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/bank/import`, { method: "POST" });
+    return parseWithFallback(raw, PromptQuizBankImportResponseSchema, { imported: 0, slugs: [] }, {
+      endpoint: "POST /api/prompt-quiz/bank/import",
+    });
+  }
+
+  /**
+   * Orders real quiz runs — the same agent_task_queue rows the sweep creates —
+   * for the named agents against the active member-profile bank.
+   */
+  async createPromptQuizBatch(body: CreatePromptQuizBatchRequest): Promise<PromptQuizBatchCreateResponse> {
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/batches`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseWithFallback(
+      raw,
+      PromptQuizBatchCreateResponseSchema,
+      { batch_id: "", ordered: 0 },
+      { endpoint: "POST /api/prompt-quiz/batches" },
+    );
+  }
+
+  /** One batch's read-back: per-run rows, outcome counts, and the graded mean. */
+  async getPromptQuizBatch(batchId: string): Promise<PromptQuizBatchResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-quiz/batches/${encodeURIComponent(batchId)}`,
+    );
+    return parseWithFallback(
+      raw,
+      PromptQuizBatchResponseSchema,
+      { batch_id: batchId, rows: [], counts: {} },
+      { endpoint: "GET /api/prompt-quiz/batches/{id}" },
+    );
+  }
+
+  /**
+   * The workspace's newest graded samples. score may be null — unmeasured is
+   * not zero, and the schema keeps that distinction for an older backend.
+   */
+  async getPromptQuizSamples(params?: {
+    scope?: string;
+    scopeId?: string;
+    version?: number;
+    limit?: number;
+  }): Promise<PromptQuizSampleRow[]> {
+    const query = new URLSearchParams();
+    if (params?.scope !== undefined) query.set("scope", params.scope);
+    if (params?.scopeId !== undefined) query.set("scope_id", params.scopeId);
+    if (params?.version !== undefined) query.set("version", String(params.version));
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/samples${suffix}`);
+    const parsed = await parseWithFallback(
+      raw,
+      PromptQuizSampleListSchema,
+      { rows: [] as PromptQuizSampleRow[] },
+      { endpoint: "GET /api/prompt-quiz/samples" },
+    );
+    return parsed.rows;
+  }
+
+  /** The workspace's install library. Holding a row changes no prompt. */
+  async listPromptInstalls(): Promise<PromptInstall[]> {
+    const raw = await this.fetch<unknown>(`/api/marketplace/prompt-installations`);
+    return parseWithFallback(raw, PromptInstallListSchema, [] as PromptInstall[], {
+      endpoint: "GET /api/marketplace/prompt-installations",
+    });
+  }
+
+  /**
+   * Adds a version to the workspace library — and does nothing else. Applying
+   * it to an agent or squad is a separate, confirmed step.
+   *
+   * Installing a newer version of an already-installed series IS the update
+   * path: it refreshes the same row rather than creating a second.
+   */
+  async installPrompt(versionId: string): Promise<PromptInstall> {
+    const raw = await this.fetch<unknown>(`/api/marketplace/prompt-installations`, {
+      method: "POST",
+      body: JSON.stringify({ version_id: versionId }),
+    });
+    return parseWithFallback(raw, PromptInstallSchema, EMPTY_PROMPT_INSTALL, {
+      endpoint: "POST /api/marketplace/prompt-installations",
+    });
+  }
+
+  /**
+   * Renders the diff and mints the confirmation token.
+   *
+   * The token must be echoed back on apply. It expires, and it stops matching
+   * if the target's prompt changes in the meantime — which is what forces a
+   * re-preview instead of overwriting an edit the user never saw.
+   */
+  async previewPromptApply(
+    installId: string,
+    target: { target_type: string; target_id: string },
+  ): Promise<PromptApplyPreview> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-installations/${encodeURIComponent(installId)}/preview`,
+      { method: "POST", body: JSON.stringify(target) },
+    );
+    return parseWithFallback(raw, PromptApplyPreviewSchema, EMPTY_PROMPT_APPLY_PREVIEW, {
+      endpoint: "POST /api/marketplace/prompt-installations/{id}/preview",
+    });
+  }
+
+  /**
+   * Writes an installed prompt into a target.
+   *
+   * `strategy` defaults to preserve server-side, so omitting it cannot
+   * overwrite; `replace` is the explicit overwrite. `operation_id` makes a
+   * retry safe — without it a retried apply would capture the just-applied text
+   * as the restore point and destroy the undo. A stale preview answers 409.
+   */
+  async applyPrompt(
+    installId: string,
+    input: {
+      target_type: string;
+      target_id: string;
+      strategy?: string;
+      preview_token: string;
+      expected_sha256?: string;
+      operation_id: string;
+    },
+  ): Promise<PromptApplyResult> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-installations/${encodeURIComponent(installId)}/apply`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, PromptApplyResultSchema, EMPTY_PROMPT_APPLY_RESULT, {
+      endpoint: "POST /api/marketplace/prompt-installations/{id}/apply",
+    });
+  }
+
+  /** What the status strip on an agent or squad reads. */
+  async getPromptTargetState(
+    targetType: string,
+    targetId: string,
+  ): Promise<PromptTargetState> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-targets/${encodeURIComponent(targetType)}/${encodeURIComponent(targetId)}`,
+    );
+    return parseWithFallback(raw, PromptTargetStateSchema, EMPTY_PROMPT_TARGET_STATE, {
+      endpoint: "GET /api/marketplace/prompt-targets/{type}/{id}",
+    });
+  }
+
+  /**
+   * Steps the target back to the prompt it had before the apply.
+   *
+   * One step, not a stack. Refused with 409 when the prompt has been
+   * hand-edited since — restoring would silently discard that edit.
+   */
+  async restorePrompt(
+    targetType: string,
+    targetId: string,
+    input: { operation_id: string; expected_sha256?: string },
+  ): Promise<PromptRestoreResult> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-targets/${encodeURIComponent(targetType)}/${encodeURIComponent(targetId)}/restore`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, PromptRestoreResultSchema, EMPTY_PROMPT_RESTORE_RESULT, {
+      endpoint: "POST /api/marketplace/prompt-targets/{type}/{id}/restore",
+    });
+  }
+
+  /**
+   * The listings this workspace has published (RUYI-99), tombstones included:
+   * a withdrawn row still shows here because republishing acts on it.
+   */
+  async listMarketplaceListings(): Promise<MarketplaceListing[]> {
+    const raw = await this.fetch<unknown>(`/api/marketplace/listings`);
+    return parseWithFallback(
+      raw,
+      MarketplaceListingListSchema,
+      [] as MarketplaceListing[],
+      { endpoint: "GET /api/marketplace/listings" },
+    );
+  }
+
+  /**
+   * Publishes a skill or MCP entry to the platform-wide marketplace.
+   *
+   * For an MCP listing `config_template` is authored by the publisher, not read
+   * from an installed server: the workspace MCP config column is write-only and
+   * this path never crosses it. Every credential-bearing field must be a
+   * registered `${placeholder}`; a literal is refused with 422 and a scan
+   * report, which the caller reads off `ApiError.body`.
+   */
+  async publishMarketplaceListing(input: {
+    kind: string;
+    name: string;
+    summary?: string;
+    description?: string;
+    homepage_url?: string;
+    categories?: string[];
+    source_url?: string;
+    config_template?: unknown;
+    placeholders?: MarketplacePlaceholder[];
+  }): Promise<MarketplaceListing> {
+    const raw = await this.fetch<unknown>(`/api/marketplace/listings`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return MarketplaceListingSchema.parse(raw);
+  }
+
+  /**
+   * Edits a published listing.
+   *
+   * `revision` is the value the caller last read. The server guards the update
+   * on it, so a concurrent edit surfaces as 409 rather than as one editor's
+   * changes silently disappearing.
+   */
+  async updateMarketplaceListing(
+    id: string,
+    input: {
+      revision: number;
+      name?: string;
+      summary?: string;
+      description?: string;
+      homepage_url?: string;
+      categories?: string[];
+      source_url?: string;
+      config_template?: unknown;
+      placeholders?: MarketplacePlaceholder[];
+    },
+  ): Promise<MarketplaceListing> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/listings/${encodeURIComponent(id)}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    );
+    return MarketplaceListingSchema.parse(raw);
+  }
+
+  /**
+   * Withdraws a listing from the catalog.
+   *
+   * The row is kept as a tombstone: the name stays reserved so no other
+   * publisher can take it, and copies already installed elsewhere keep working
+   * (D4-A). Guarded on `revision` like an update, so a repeat withdrawal or a
+   * stale token answers 409.
+   */
+  async withdrawMarketplaceListing(
+    id: string,
+    revision: number,
+  ): Promise<MarketplaceListing> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/listings/${encodeURIComponent(id)}/withdraw`,
+      { method: "POST", body: JSON.stringify({ revision }) },
+    );
+    return MarketplaceListingSchema.parse(raw);
+  }
+
+  /** The workspace MCP servers assigned to this agent, with their toggles. */
+  async listAgentMcpServers(agentId: string): Promise<WorkspaceMcpServer[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/mcp-servers`);
+    return parseWithFallback(raw, WorkspaceMcpServerListSchema, [] as WorkspaceMcpServer[], {
+      endpoint: "GET /api/agents/{id}/mcp-servers",
+    });
+  }
+
+  /**
+   * Gives one workspace server to this agent. Every write returns the
+   * resulting assignment list, so the client never has to guess the state.
+   */
+  async addAgentMcpServer(agentId: string, serverId: string): Promise<WorkspaceMcpServer[]> {
+    const raw = await this.fetch<unknown>(`/api/agents/${agentId}/mcp-servers`, {
+      method: "POST",
+      body: JSON.stringify({ server_id: serverId }),
+    });
+    return parseWithFallback(raw, WorkspaceMcpServerListSchema, [] as WorkspaceMcpServer[], {
+      endpoint: "POST /api/agents/{id}/mcp-servers",
+    });
+  }
+
+  async setAgentMcpServerEnabled(
+    agentId: string,
+    serverId: string,
+    enabled: boolean,
+  ): Promise<WorkspaceMcpServer[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/mcp-servers/${encodeURIComponent(serverId)}/enabled`,
+      { method: "PUT", body: JSON.stringify({ enabled }) },
+    );
+    return parseWithFallback(raw, WorkspaceMcpServerListSchema, [] as WorkspaceMcpServer[], {
+      endpoint: "PUT /api/agents/{id}/mcp-servers/{serverId}/enabled",
+    });
+  }
+
+  async removeAgentMcpServer(agentId: string, serverId: string): Promise<WorkspaceMcpServer[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/mcp-servers/${encodeURIComponent(serverId)}`,
+      { method: "DELETE" },
+    );
+    return parseWithFallback(raw, WorkspaceMcpServerListSchema, [] as WorkspaceMcpServer[], {
+      endpoint: "DELETE /api/agents/{id}/mcp-servers/{serverId}",
+    });
+  }
+
+  /** Everything published into this workspace, with its versions. */
+  async listPluginPackages(workspaceId: string): Promise<PluginPackageListResponse> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins/packages`);
+    return parseWithFallback(raw, PluginPackageListResponseSchema, EMPTY_PLUGIN_PACKAGE_LIST, {
+      endpoint: "GET /api/workspaces/{id}/plugins/packages",
+    });
+  }
+
+  /**
+   * Publishes an artifact bundle: a zip holding the manifest and every file it
+   * names. This is the whole publishing path — a plugin author needs no server
+   * of their own, and nothing about a published version changes afterwards.
+   *
+   * Not routed through `this.fetch`, for the same reason uploadFile is not: the
+   * browser has to set the multipart boundary itself.
+   */
+  async publishPluginPackage(workspaceId: string, bundle: File): Promise<PluginPackage> {
+    const formData = new FormData();
+    formData.append("bundle", bundle);
+
+    const res = await fetch(`${this.baseUrl}/api/workspaces/${workspaceId}/plugins/packages`, {
+      method: "POST",
+      headers: this.authHeaders(),
+      body: formData,
+      credentials: "include",
+    });
+    if (!res.ok) {
+      if (res.status === 401) this.handleUnauthorized();
+      throw new Error(await this.parseErrorMessage(res, `Publishing failed: ${res.status}`));
+    }
+    const raw = (await res.json()) as unknown;
+    return parseWithFallback(raw, PluginPackageSchema, EMPTY_PLUGIN_PACKAGE, {
+      endpoint: "POST /api/workspaces/{id}/plugins/packages",
+    });
+  }
+
+  /**
+   * Publishes from a directory the operator hosts (MULTICA_PLUGIN_DIR) — the
+   * development channel, so iterating on a surface does not mean zipping and
+   * uploading after every edit. It still produces an immutable version.
+   */
+  async publishLocalPluginPackage(workspaceId: string, name: string): Promise<PluginPackage> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins/packages/local`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+    return parseWithFallback(raw, PluginPackageSchema, EMPTY_PLUGIN_PACKAGE, {
+      endpoint: "POST /api/workspaces/{id}/plugins/packages/local",
+    });
+  }
+
+  /**
+   * The instance directory: what every workspace on this deployment has listed.
+   *
+   * Workspace-scoped in the URL even though the listing spans workspaces —
+   * membership is what authorizes the read, and each version's `installed` flag
+   * answers "do we already run this one" for the workspace asking.
+   */
+  async listPublicPluginPackages(workspaceId: string): Promise<PluginPackageListResponse> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins/directory`);
+    return parseWithFallback(raw, PluginPackageListResponseSchema, EMPTY_PLUGIN_PACKAGE_LIST, {
+      endpoint: "GET /api/workspaces/{id}/plugins/directory",
+    });
+  }
+
+  /** Lists this workspace's package on the directory, or takes it off. */
+  async setPluginPackageVisibility(workspaceId: string, packageId: string, isPublic: boolean): Promise<PluginPackage> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/packages/${packageId}/visibility`,
+      { method: "PUT", body: JSON.stringify({ public: isPublic }) },
+    );
+    return parseWithFallback(raw, PluginPackageSchema, EMPTY_PLUGIN_PACKAGE, {
+      endpoint: "PUT /api/workspaces/{id}/plugins/packages/{packageId}/visibility",
+    });
+  }
+
+  /**
+   * Withdraws one published version from the directory, or restores it.
+   *
+   * Not a delete: the artifact stays readable so the workspaces that consented
+   * to it keep loading their surfaces, and restoring is this same call rather
+   * than a re-publish, which immutability would refuse.
+   */
+  async setPluginVersionWithdrawn(workspaceId: string, versionId: string, withdrawn: boolean): Promise<PluginPackage> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/versions/${versionId}/withdrawn`,
+      { method: "PUT", body: JSON.stringify({ withdrawn }) },
+    );
+    return parseWithFallback(raw, PluginPackageSchema, EMPTY_PLUGIN_PACKAGE, {
+      endpoint: "PUT /api/workspaces/{id}/plugins/versions/{versionId}/withdrawn",
+    });
+  }
+
+  async deletePluginPackage(workspaceId: string, packageId: string): Promise<void> {
+    await this.fetch<void>(`/api/workspaces/${workspaceId}/plugins/packages/${packageId}`, { method: "DELETE" });
+  }
+
+  /** Mint one hosted document URL and its single-use bridge proof. */
+  async getPluginSurfaceLaunch(workspaceId: string, installationId: string, surfaceKey: string): Promise<PluginSurfaceLaunch> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/${installationId}/surfaces/${encodeURIComponent(surfaceKey)}/launch`,
+    );
+    return parseWithFallback(raw, PluginSurfaceLaunchSchema, EMPTY_PLUGIN_SURFACE_LAUNCH, {
+      endpoint: "GET /api/workspaces/{id}/plugins/{installationId}/surfaces/{surfaceKey}/launch",
+    });
+  }
+
+  /**
+   * Step one of the two-step install. Nothing is written: the response is what
+   * the consent screen shows before an installation exists.
+   */
+  async previewPlugin(workspaceId: string, request: PluginPreviewRequest): Promise<PluginPreview> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins/preview`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+    return parseWithFallback(raw, PluginPreviewSchema, EMPTY_PLUGIN_PREVIEW, {
+      endpoint: "POST /api/workspaces/{id}/plugins/preview",
+    });
+  }
+
+  async installPlugin(workspaceId: string, request: PluginInstallRequest): Promise<PluginInstallation> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+    return parseWithFallback(raw, PluginInstallationSchema, EMPTY_PLUGIN_INSTALLATION, {
+      endpoint: "POST /api/workspaces/{id}/plugins",
+    });
+  }
+
+  async configurePlugin(workspaceId: string, installationId: string, request: PluginConfigRequest): Promise<PluginInstallation> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins/${installationId}/config`, {
+      method: "PUT",
+      body: JSON.stringify(request),
+    });
+    return parseWithFallback(raw, PluginInstallationSchema, EMPTY_PLUGIN_INSTALLATION, {
+      endpoint: "PUT /api/workspaces/{id}/plugins/{installationId}/config",
+    });
+  }
+
+  async setPluginEnabled(workspaceId: string, installationId: string, enabled: boolean): Promise<PluginInstallation> {
+    const action = enabled ? "enable" : "disable";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins/${installationId}/${action}`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, PluginInstallationSchema, EMPTY_PLUGIN_INSTALLATION, {
+      endpoint: `POST /api/workspaces/{id}/plugins/{installationId}/${action}`,
+    });
+  }
+
+  /**
+   * Performs one Action API call on behalf of a plugin surface.
+   *
+   * The surface has no credential — it asked the host over postMessage, and
+   * this re-issues the call on the signed-in user's session. The installation
+   * travels in a header the iframe cannot set for itself; the server derives
+   * the workspace from it rather than trusting anything the client sends.
+   */
+  async callPluginAction(
+    installationId: string,
+    request: { method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE"; path: string; body?: unknown; issueId?: string },
+  ): Promise<unknown> {
+    const query = request.path === "/context" && request.issueId
+      ? `?issue_id=${encodeURIComponent(request.issueId)}`
+      : "";
+    return this.fetch<unknown>(`/api/plugin-bridge/v1${request.path}${query}`, {
+      method: request.method,
+      headers: { "X-Multica-Plugin-Installation": installationId },
+      body: request.body === undefined ? undefined : JSON.stringify(request.body),
+    });
+  }
+
+  /**
+   * Invokes one hook on behalf of a person.
+   *
+   * `ui` comes from a button inside a surface, `manual` from the issue actions
+   * menu or the command palette. Both block this request and only this request:
+   * somebody is waiting for the answer. The `event` trigger never comes through
+   * here — the host dispatches it, so no client can ask for one and inherit an
+   * identity that is supposed to be the plugin's.
+   */
+  async invokePluginHook(
+    installationId: string,
+    hookKey: string,
+    request: { trigger: "ui" | "manual"; issueId?: string; input?: unknown },
+  ): Promise<PluginHookResult> {
+    const raw = await this.fetch<unknown>(`/api/plugin-bridge/v1/hooks/${encodeURIComponent(hookKey)}`, {
+      method: "POST",
+      headers: { "X-Multica-Plugin-Installation": installationId },
+      body: JSON.stringify({ trigger: request.trigger, issue_id: request.issueId, input: request.input }),
+    });
+    return parseWithFallback(raw, PluginHookResultSchema, {
+      status: "ok",
+      hook_key: hookKey,
+      trigger: request.trigger,
+      latency_ms: 0,
+      attempts: 1,
+    }, { endpoint: "POST /api/plugin-bridge/v1/hooks/{key}" });
+  }
+
+  async listPluginInvocations(workspaceId: string, installationId: string): Promise<PluginInvocation[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins/${installationId}/invocations`);
+    return parseWithFallback(raw, PluginInvocationListSchema, { invocations: [] }, {
+      endpoint: "GET /api/workspaces/{id}/plugins/{installationId}/invocations",
+    }).invocations;
+  }
+
+  async rotatePluginToken(workspaceId: string, installationId: string): Promise<PluginTokenIssue> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins/${installationId}/token`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, PluginTokenIssueSchema, { token: "", signing_secret: "" }, {
+      endpoint: "POST /api/workspaces/{id}/plugins/{installationId}/token",
+    });
+  }
+
+  async revokePluginToken(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/plugins/${installationId}/token`, { method: "DELETE" });
+  }
+
+  /**
+   * Lists what an `mcp`-transport hook's server currently offers.
+   *
+   * Read-only: discovering a tool adopts nothing. approvePluginMCPTools is the
+   * grant, which is the difference from an `http` hook — that one declares a
+   * single endpoint in a manifest an administrator already read, while an MCP
+   * server decides its own tool list at runtime and can change it later.
+   */
+  async listPluginMCPTools(workspaceId: string, installationId: string, hookKey: string): Promise<PluginMCPTool[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/${installationId}/mcp/${encodeURIComponent(hookKey)}/tools`,
+    );
+    return parseWithFallback(raw, PluginMCPToolListSchema, { tools: [] }, {
+      endpoint: "GET /api/workspaces/{id}/plugins/{installationId}/mcp/{hookKey}/tools",
+    }).tools;
+  }
+
+  /**
+   * Pins the approved tool set for one hook.
+   *
+   * `tools` is the COMPLETE set, not a delta — removing one is the same request
+   * shape as adding one, so there is no way to think you revoked something and
+   * have it stay. An empty array withdraws the hook entirely.
+   */
+  async approvePluginMCPTools(
+    workspaceId: string,
+    installationId: string,
+    hookKey: string,
+    tools: string[],
+  ): Promise<PluginInstallation> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/${installationId}/mcp/${encodeURIComponent(hookKey)}/tools`,
+      { method: "PUT", body: JSON.stringify({ tools }) },
+    );
+    return parseWithFallback(raw, PluginInstallationSchema, EMPTY_PLUGIN_INSTALLATION, {
+      endpoint: "PUT /api/workspaces/{id}/plugins/{installationId}/mcp/{hookKey}/tools",
+    });
+  }
+
+  async uninstallPlugin(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/plugins/${installationId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Removes one stored secret by name.
+   *
+   * Outlives plugins_v1 alongside uninstall: writing config is refused once the
+   * flag is off, so this is what lets an operator take a leaked credential out
+   * of the database without removing the whole installation.
+   */
+  async clearPluginSecret(workspaceId: string, installationId: string, key: string): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/plugins/${installationId}/secrets/${encodeURIComponent(key)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // Members
+  async listMembers(workspaceId: string): Promise<MemberWithUser[]> {
+    return this.fetch(`/api/workspaces/${workspaceId}/members`);
+  }
+
+  async createMember(workspaceId: string, data: CreateMemberRequest): Promise<Invitation> {
+    return this.fetch(`/api/workspaces/${workspaceId}/members`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateMember(workspaceId: string, memberId: string, data: UpdateMemberRequest): Promise<MemberWithUser> {
+    return this.fetch(`/api/workspaces/${workspaceId}/members/${memberId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteMember(workspaceId: string, memberId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/members/${memberId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async leaveWorkspace(workspaceId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/leave`, {
+      method: "POST",
+    });
+  }
+
+  // Invitations
+  async listWorkspaceInvitations(workspaceId: string): Promise<Invitation[]> {
+    return this.fetch(`/api/workspaces/${workspaceId}/invitations`);
+  }
+
+  async revokeInvitation(workspaceId: string, invitationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/invitations/${invitationId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async listMyInvitations(): Promise<Invitation[]> {
+    return this.fetch("/api/invitations");
+  }
+
+  async getInvitation(invitationId: string): Promise<Invitation> {
+    return this.fetch(`/api/invitations/${invitationId}`);
+  }
+
+  async acceptInvitation(invitationId: string): Promise<MemberWithUser> {
+    return this.fetch(`/api/invitations/${invitationId}/accept`, {
+      method: "POST",
+    });
+  }
+
+  async declineInvitation(invitationId: string): Promise<void> {
+    await this.fetch(`/api/invitations/${invitationId}/decline`, {
+      method: "POST",
+    });
+  }
+
+  async createShareLink(workspaceId: string, data: { role?: string; expires_in?: number; max_uses?: number }): Promise<ShareLink> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/share-links`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ShareLinkSchema, EMPTY_SHARE_LINK, {
+      endpoint: "POST /api/workspaces/{id}/share-links",
+    });
+  }
+
+  async listShareLinks(workspaceId: string): Promise<ShareLink[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/share-links`);
+    return parseWithFallback(raw, ShareLinkListResponseSchema, [], {
+      endpoint: "GET /api/workspaces/{id}/share-links",
+    });
+  }
+
+  async revokeShareLink(workspaceId: string, linkId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/share-links/${linkId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async joinByShareLink(code: string): Promise<{ member: MemberWithUser; workspace_id: string; workspace_slug: string }> {
+    const raw = await this.fetch<unknown>("/api/share-links/join", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    });
+    return parseWithFallback(raw, JoinShareLinkResponseSchema, EMPTY_JOIN_SHARE_LINK_RESPONSE, {
+      endpoint: "POST /api/share-links/join",
+    });
+  }
+
+  async getShareLinkInfo(code: string): Promise<ShareLinkInfo> {
+    const raw = await this.fetch<unknown>(`/api/share-links/${encodeURIComponent(code)}`);
+    return parseWithFallback(raw, ShareLinkInfoSchema, EMPTY_SHARE_LINK_INFO, {
+      endpoint: "GET /api/share-links/{code}",
+    });
+  }
+
+  async deleteWorkspace(workspaceId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // Skills
+  async listSkills(): Promise<SkillSummary[]> {
+    const raw = await this.fetch<unknown>("/api/skills");
+    return parseWithFallback<SkillSummary[]>(raw, SkillSummaryListSchema, [], {
+      endpoint: "GET /api/skills",
+    });
+  }
+
+  // Workspace skill catalog (RUYI-288): authored skills unioned with
+  // metadata-only runtime discovery sightings.
+  async listSkillCatalog(): Promise<SkillCatalogEntry[]> {
+    return this.fetch<SkillCatalogEntry[]>("/api/skills/catalog");
+  }
+
+  async syncSkillCatalog(): Promise<{ triggered: number }> {
+    return this.fetch("/api/skills/catalog/sync", { method: "POST" });
+  }
+
+  async getSkill(id: string): Promise<Skill> {
+    return this.fetch(`/api/skills/${id}`);
+  }
+
+  async listSkillVersions(id: string): Promise<SkillVersionSummary[]> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/versions`);
+    return parseWithFallback(raw, SkillVersionListSchema, [] as SkillVersionSummary[], {
+      endpoint: "GET /api/skills/{id}/versions",
+    });
+  }
+
+  async getSkillVersion(id: string, version: number): Promise<SkillVersion> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/versions/${version}`);
+    return parseWithFallback(raw, SkillVersionSchema, EMPTY_SKILL_VERSION, {
+      endpoint: "GET /api/skills/{id}/versions/{version}",
+    });
+  }
+
+  async restoreSkillVersion(id: string, version: number): Promise<{ version: number }> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/versions/${version}/restore`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, SkillRestoreResultSchema, { version: 0 }, {
+      endpoint: "POST /api/skills/{id}/versions/{version}/restore",
+    });
+  }
+
+  async getSkillUsage(id: string): Promise<SkillUsage | null> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/usage`);
+    return parseWithFallback<SkillUsage | null>(raw, SkillUsageSchema, null, {
+      endpoint: "GET /api/skills/{id}/usage",
+    });
+  }
+
+
+  async getSkillEffect(id: string): Promise<SkillEffect | null> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/effect`);
+    return parseWithFallback<SkillEffect | null>(raw, SkillEffectSchema, null, {
+      endpoint: "GET /api/skills/{id}/effect",
+    });
+  }
+
+  async listPromptProposals(params?: { status?: string; runId?: string }): Promise<PromptProposal[]> {
+    const query = new URLSearchParams();
+    if (params?.status) query.set("status", params.status);
+    // RUYI-673: scope the pool to one retrospective run's batch.
+    if (params?.runId) query.set("run_id", params.runId);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals${suffix}`);
+    return parseWithFallback(raw, PromptProposalListSchema, [], {
+      endpoint: "GET /api/prompt-legislation/proposals",
+    });
+  }
+
+  async createPromptProposal(data: PromptProposalDraftRequest): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>("/api/prompt-legislation/proposals", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals",
+    });
+  }
+
+  async updatePromptProposalDraft(id: string, data: PromptProposalDraftRequest): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "PATCH /api/prompt-legislation/proposals/{id}",
+    });
+  }
+
+  async submitPromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/submit`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/submit",
+    });
+  }
+
+  async previewPromptProposal(
+    id: string,
+    enactmentTarget?: "clause_library" | "static_prompt",
+  ): Promise<PromptProposalPreview> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/preview`, {
+      method: "POST",
+      body: JSON.stringify(enactmentTarget ? { enactment_target: enactmentTarget } : {}),
+    });
+    return parseWithFallback(raw, PromptProposalPreviewSchema, raw as PromptProposalPreview, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/preview",
+    });
+  }
+
+  async approvePromptProposal(
+    id: string,
+    confirmDiffPreviewed: boolean,
+    enactmentTarget?: "clause_library" | "static_prompt",
+  ): Promise<PromptProposal> {
+    const body: Record<string, unknown> = { confirm_diff_previewed: confirmDiffPreviewed };
+    // RUYI-858: the landing target is sent only when the owner chose one;
+    // absence means the server default (clause library).
+    if (enactmentTarget !== undefined) body.enactment_target = enactmentTarget;
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/approve`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/approve",
+    });
+  }
+
+  async batchApprovePromptProposals(
+    ids: string[],
+    confirmDiffPreviewed: boolean,
+    enactmentTargets?: Record<string, "clause_library" | "static_prompt">,
+  ): Promise<PromptProposalBatchOutcome[]> {
+    const raw = await this.fetch<unknown>("/api/prompt-legislation/proposals/approve-batch", {
+      method: "POST",
+      body: JSON.stringify({
+        ids,
+        confirm_diff_previewed: confirmDiffPreviewed,
+        // RUYI-858: per-id landing targets; ids without an entry keep the
+        // server default (clause library).
+        ...(enactmentTargets !== undefined ? { enactment_targets: enactmentTargets } : {}),
+      }),
+    });
+    return parseWithFallback(raw, z.array(PromptProposalBatchOutcomeSchema), raw as PromptProposalBatchOutcome[], {
+      endpoint: "POST /api/prompt-legislation/proposals/approve-batch",
+    });
+  }
+
+  async rejectPromptProposal(id: string, reason: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/reject",
+    });
+  }
+
+  async restorePromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/restore`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/restore",
+    });
+  }
+
+  async reworkPromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/rework`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/rework",
+    });
+  }
+
+  async enactPromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/enact`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/enact",
+    });
+  }
+
+  async getRetrospectiveConfig(): Promise<RetrospectiveConfig> {
+    const raw = await this.fetch<unknown>("/api/retrospective/config");
+    return parseWithFallback(raw, RetrospectiveConfigSchema, raw as RetrospectiveConfig, {
+      endpoint: "GET /api/retrospective/config",
+    });
+  }
+
+  async updateRetrospectiveConfig(patch: Partial<RetrospectiveConfig>): Promise<RetrospectiveConfig> {
+    const raw = await this.fetch<unknown>("/api/retrospective/config", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    });
+    return parseWithFallback(raw, RetrospectiveConfigSchema, raw as RetrospectiveConfig, {
+      endpoint: "PUT /api/retrospective/config",
+    });
+  }
+
+  async listRetrospectiveRuns(): Promise<RetrospectiveRun[]> {
+    const raw = await this.fetch<unknown>("/api/retrospective/runs");
+    return parseWithFallback(raw, RetrospectiveRunListSchema, [], {
+      endpoint: "GET /api/retrospective/runs",
+    });
+  }
+
+  async triggerRetrospectiveRun(): Promise<RetrospectiveRun> {
+    const raw = await this.fetch<unknown>("/api/retrospective/run", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, RetrospectiveRunSchema, raw as RetrospectiveRun, {
+      endpoint: "POST /api/retrospective/run",
+    });
+  }
+
+  async listKnowledgeDirs(): Promise<KnowledgeDir[]> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/dirs`);
+    return parseWithFallback(raw, KnowledgeDirListSchema, [], {
+      endpoint: "GET /api/knowledge/dirs",
+    });
+  }
+
+  async registerKnowledgeDir(data: RegisterKnowledgeDirRequest): Promise<{ id: string; status: string }> {
+    return this.fetch("/api/knowledge/dirs", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async scanKnowledgeDir(id: string): Promise<KnowledgeScanBatch> {
+    return this.fetch(`/api/knowledge/dirs/${encodeURIComponent(id)}/scan`, { method: "POST" });
+  }
+
+  async unregisterKnowledgeDir(id: string): Promise<{ status: string }> {
+    return this.fetch(`/api/knowledge/dirs/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  async listKnowledgeEntries(params?: { dir_id?: string; q?: string }): Promise<KnowledgeEntry[]> {
+    const query = new URLSearchParams();
+    if (params?.dir_id) query.set("dir_id", params.dir_id);
+    if (params?.q) query.set("q", params.q);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries${suffix}`);
+    return parseWithFallback(raw, KnowledgeEntryListSchema, [], {
+      endpoint: "GET /api/knowledge/entries",
+    });
+  }
+
+  async adoptKnowledgeEntry(id: string): Promise<{ status: string }> {
+    return this.fetch(`/api/knowledge/entries/${encodeURIComponent(id)}/adopt`, { method: "POST" });
+  }
+
+  async createSkill(data: CreateSkillRequest): Promise<Skill> {
+    return this.fetch("/api/skills", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateSkill(id: string, data: UpdateSkillRequest): Promise<Skill> {
+    return this.fetch(`/api/skills/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteSkill(id: string): Promise<void> {
+    await this.fetch(`/api/skills/${id}`, { method: "DELETE" });
+  }
+
+  async importSkill(data: { url: string }): Promise<Skill> {
+    return this.fetch("/api/skills/import", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  /**
+   * Imports a skill from a local .skill / .zip archive. Not routed through
+   * `this.fetch`: the browser has to set the multipart boundary itself.
+   *
+   * The archive path always returns a structured `{ status, skill, reason }`
+   * body. Created/updated responses yield the skill; anything else throws
+   * with the server's reason (or `error`) so the dialog can show it.
+   */
+  async importSkillArchive(
+    file: File,
+    onConflict?: "fail" | "overwrite" | "rename" | "skip",
+  ): Promise<Skill> {
+    const formData = new FormData();
+    formData.append("file", file, file.name || "skill.zip");
+    if (onConflict) formData.append("on_conflict", onConflict);
+
+    let res: Response;
+    try {
+      res = await this.fetchRaw("/api/skills/import", {
+        method: "POST",
+        body: formData,
+      });
+    } catch (err) {
+      throw remapSkillImportError(err);
+    }
+
+    const raw = (await res.json()) as unknown;
+    return skillFromImportResult(raw, "POST /api/skills/import");
+  }
+
+  // Re-downloads the skill from its stored config.origin source, replacing
+  // name/description/content/files in place while preserving the skill id and
+  // its agent bindings.
+  async refreshSkill(id: string): Promise<Skill> {
+    const raw = await this.fetch<unknown>(`/api/skills/${id}/refresh`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, SkillSchema, EMPTY_SKILL, {
+      endpoint: "POST /api/skills/:id/refresh",
+    });
+  }
+
+  async listAgentSkills(agentId: string): Promise<SkillSummary[]> {
+    return this.fetch(`/api/agents/${agentId}/skills`);
+  }
+
+  async setAgentSkills(agentId: string, data: SetAgentSkillsRequest): Promise<void> {
+    await this.fetch(`/api/agents/${agentId}/skills`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  // Incremental attach: POST /skills/add only inserts the given ids (the
+  // server upserts with ON CONFLICT DO NOTHING), so callers don't need to
+  // read the agent's current skill set first.
+  async addAgentSkills(agentId: string, data: SetAgentSkillsRequest): Promise<void> {
+    await this.fetch(`/api/agents/${agentId}/skills/add`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+	async setAgentSkillEnabled(agentId: string, skillId: string, enabled: boolean): Promise<void> {
+		await this.fetch(`/api/agents/${agentId}/skills/${skillId}/enabled`, {
+			method: "PUT",
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
+  async setAgentRuntimeSkillEnabled(
+    agentId: string,
+    data: SetAgentRuntimeSkillEnabledRequest,
+  ): Promise<void> {
+    await this.fetch(`/api/agents/${agentId}/runtime-skills/enabled`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+	async removeAgentSkill(agentId: string, skillId: string): Promise<void> {
+		await this.fetch(`/api/agents/${agentId}/skills/${skillId}`, {
+			method: "DELETE",
+		});
+	}
+
+  // Personal Access Tokens
+  async listPersonalAccessTokens(): Promise<PersonalAccessToken[]> {
+    return this.fetch("/api/tokens");
+  }
+
+  async createPersonalAccessToken(data: CreatePersonalAccessTokenRequest): Promise<CreatePersonalAccessTokenResponse> {
+    return this.fetch("/api/tokens", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async revokePersonalAccessToken(id: string): Promise<void> {
+    await this.fetch(`/api/tokens/${id}`, { method: "DELETE" });
+  }
+
+  // File Upload & Attachments
+  async uploadFile(
+    file: File,
+    opts?: { issueId?: string; commentId?: string; chatSessionId?: string },
+    // Optional abort signal so a module-level upload coordinator (MUL-5181)
+    // can cancel an in-flight upload on logout. When aborted, `fetch` rejects
+    // with an AbortError, which the coordinator distinguishes from a real
+    // failure via `signal.aborted` / `err.name === "AbortError"`.
+    signal?: AbortSignal,
+  ): Promise<Attachment> {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (opts?.issueId) formData.append("issue_id", opts.issueId);
+    if (opts?.commentId) formData.append("comment_id", opts.commentId);
+    if (opts?.chatSessionId) formData.append("chat_session_id", opts.chatSessionId);
+
+    const rid = createRequestId();
+    const start = Date.now();
+    this.logger.info("→ POST /api/upload-file", { rid });
+
+    const res = await fetch(`${this.baseUrl}/api/upload-file`, {
+      method: "POST",
+      headers: this.authHeaders(),
+      body: formData,
+      credentials: "include",
+      signal,
+    });
+
+    if (!res.ok) {
+      if (res.status === 401) this.handleUnauthorized();
+      const message = await this.parseErrorMessage(res, `Upload failed: ${res.status}`);
+      this.logger.error(`← ${res.status} /api/upload-file`, { rid, duration: `${Date.now() - start}ms`, error: message });
+      throw new Error(message);
+    }
+
+    this.logger.info(`← ${res.status} /api/upload-file`, { rid, duration: `${Date.now() - start}ms` });
+    const raw = (await res.json()) as unknown;
+    return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
+      endpoint: "POST /api/upload-file",
+    });
+  }
+
+  // Chat Sessions
+  async listChatSessions(
+    params?: { status?: string },
+    workspaceSlug?: string,
+  ): Promise<ChatSession[]> {
+    const query = params?.status ? `?status=${params.status}` : "";
+    const raw: unknown = await this.fetch(`/api/chat/sessions${query}`, {
+      headers: workspaceHeader(workspaceSlug),
+    });
+    return parseWithFallback(raw, ChatSessionListSchema, EMPTY_CHAT_SESSION_LIST, {
+      endpoint: "GET /api/chat/sessions",
+    });
+  }
+
+  async getChatSession(id: string): Promise<ChatSession> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}`);
+    return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
+      endpoint: "GET /api/chat/sessions/:id",
+    });
+  }
+
+  async createChatSession(
+    data: {
+      agent_id: string;
+      title?: string;
+      project_id?: string | null;
+    },
+    workspaceSlug?: string,
+  ): Promise<ChatSession> {
+    return this.fetch("/api/chat/sessions", {
+      method: "POST",
+      headers: workspaceHeader(workspaceSlug),
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteChatSession(id: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
+  }
+
+  // Refresh the quick-action suggestions for a session's latest assistant turn.
+  // Fire-and-forget: the server enqueues a background regeneration pass and the
+  // refreshed pills arrive over the chat:quick_actions realtime event, so the
+  // caller anchors its pending placeholder on the turn it already knows rather
+  // than on this response.
+  // Refresh the quick actions for the given assistant turn. Sends the message
+  // id the caller is refreshing so the server can atomically confirm it is still
+  // the session's latest turn (409 otherwise) — that keeps the client's pending
+  // marker aligned with the turn chat:quick_actions will resolve, with no
+  // response reconciliation needed even under a WS-before-HTTP race (MUL-5149).
+  async regenerateChatQuickActions(
+    sessionId: string,
+    messageId: string,
+  ): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/quick-actions/regenerate`, {
+      method: "POST",
+      body: JSON.stringify({ message_id: messageId }),
+    });
+  }
+
+  async updateChatSession(
+    id: string,
+    data: { title: string } | { project_id: string | null },
+  ): Promise<ChatSession> {
+    return this.fetch(`/api/chat/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async setChatSessionModel(
+    id: string,
+    modelOverride: string | null,
+  ): Promise<ChatSession> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${id}/model`, {
+      method: "PATCH",
+      body: JSON.stringify({ model_override: modelOverride }),
+    });
+    return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
+      endpoint: "PATCH /api/chat/sessions/:id/model",
+    });
+  }
+
+  async setChatSessionPinned(id: string, pinned: boolean): Promise<ChatSession> {
+    return this.fetch(`/api/chat/sessions/${id}/pin`, {
+      method: "PATCH",
+      body: JSON.stringify({ pinned }),
+    });
+  }
+
+  async setChatSessionArchived(id: string, archived: boolean): Promise<ChatSession> {
+    return this.fetch(`/api/chat/sessions/${id}/archive`, {
+      method: "PATCH",
+      body: JSON.stringify({ archived }),
+    });
+  }
+
+  // Quick-agent bar: per-user pinned agents.
+  async listChatPinnedAgents(): Promise<ChatPinnedAgent[]> {
+    return this.fetch("/api/chat/pinned-agents");
+  }
+
+  async pinChatAgent(agentId: string): Promise<ChatPinnedAgent> {
+    return this.fetch("/api/chat/pinned-agents", {
+      method: "POST",
+      body: JSON.stringify({ agent_id: agentId }),
+    });
+  }
+
+  async unpinChatAgent(agentId: string): Promise<void> {
+    await this.fetch(`/api/chat/pinned-agents/${agentId}`, { method: "DELETE" });
+  }
+
+  async listChatMessages(sessionId: string): Promise<ChatMessage[]> {
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${sessionId}/messages`);
+    return parseWithFallback(raw, ChatMessageListSchema, EMPTY_CHAT_MESSAGE_LIST, {
+      endpoint: "GET /api/chat/sessions/:id/messages",
+    });
+  }
+
+  async listChatMessagesPage(
+    sessionId: string,
+    params: { before?: { created_at: string; id: string } | null; limit?: number } = {},
+  ): Promise<ChatMessagesPage> {
+    const limit = params.limit ?? 50;
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (params.before) {
+      query.set("before_created_at", params.before.created_at);
+      query.set("before_id", params.before.id);
+    }
+    try {
+      const raw: unknown = await this.fetch(
+        `/api/chat/sessions/${sessionId}/messages/page?${query.toString()}`,
+      );
+      return parseWithFallback(
+        raw,
+        ChatMessagesPageSchema,
+        { messages: [], limit, has_more: false, next_cursor: null },
+        {
+          endpoint: "GET /api/chat/sessions/:id/messages/page",
+        },
+      );
+    } catch (err) {
+      // Deployment-order compatibility: a backend deployed before this endpoint
+      // existed returns 404 for the unknown route. Fall back to the legacy
+      // full-list endpoint so chat never white-screens regardless of whether
+      // the server or the client deploys first. Only the initial (cursorless)
+      // page falls back — the legacy endpoint returns every message at once, so
+      // the fallback page reports has_more: false and there is no follow-up
+      // request to translate. A 404 on a cursor request is an unexpected state
+      // and propagates instead of duplicating the whole list.
+      if (err instanceof ApiError && err.status === 404 && !params.before) {
+        const messages = await this.listChatMessages(sessionId);
+        return { messages, limit, has_more: false, next_cursor: null };
+      }
+      throw err;
+    }
+  }
+
+  async sendChatMessage(
+    sessionId: string,
+    content: string,
+    attachmentIds?: string[],
+  ): Promise<SendChatMessageResponse> {
+    const body: {
+      content: string;
+      attachment_ids?: string[];
+    } = { content };
+    if (attachmentIds && attachmentIds.length > 0) {
+      body.attachment_ids = attachmentIds;
+    }
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/messages`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    const response = parseWithFallback<SendChatMessageResponse | null>(
+      raw,
+      SendChatMessageResponseSchema,
+      null,
+      { endpoint: "POST /api/chat/sessions/:id/messages" },
+    );
+    if (!response) throw new Error("invalid send chat message response");
+    return response;
+  }
+
+  async startMikaOnboarding(
+    sessionId: string,
+    data: {
+      language: "en" | "zh" | "ko" | "ja";
+    },
+    workspaceSlug?: string,
+  ): Promise<StartMikaOnboardingResponse> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/onboarding`, {
+      method: "POST",
+      headers: workspaceHeader(workspaceSlug),
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(
+      raw,
+      StartMikaOnboardingResponseSchema,
+      { started: false },
+      { endpoint: "POST /api/chat/sessions/:id/onboarding" },
+    );
+  }
+
+  async getPendingChatTask(sessionId: string): Promise<ChatPendingTask> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/pending-task`);
+    return parseWithFallback(raw, ChatPendingTaskSchema, EMPTY_CHAT_PENDING_TASK, {
+      endpoint: "GET /api/chat/sessions/:id/pending-task",
+    });
+  }
+
+  async prioritizeQueuedChatTask(
+    sessionId: string,
+    taskId: string,
+  ): Promise<PrioritizeQueuedChatTaskResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/queued-tasks/${taskId}/prioritize`,
+      { method: "POST" },
+    );
+    return parseWithFallback(
+      raw,
+      PrioritizeQueuedChatTaskResponseSchema,
+      EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE,
+      { endpoint: "POST /api/chat/sessions/:id/queued-tasks/:taskId/prioritize" },
+    );
+  }
+
+  async clearQueuedChatTasks(sessionId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/queued-tasks`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Pending deferred-cancellation draft restores for a session (#5219).
+   * A 404 means the backend predates the endpoint — treat as "nothing
+   * pending" so older servers never error the composer.
+   */
+  async listChatDraftRestores(sessionId: string): Promise<ChatDraftRestoresResponse> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/draft-restores`);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        return { restores: [] };
+      }
+      throw err;
+    }
+    return parseWithFallback(raw, ChatDraftRestoresResponseSchema, EMPTY_CHAT_DRAFT_RESTORES, {
+      endpoint: "GET /api/chat/sessions/{id}/draft-restores",
+    });
+  }
+
+  /** Idempotent consume — deleting an already-consumed restore is a 204 no-op. */
+  async consumeChatDraftRestore(sessionId: string, restoreId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/draft-restores/${restoreId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async listPendingChatTasks(): Promise<PendingChatTasksResponse> {
+    return this.fetch(`/api/chat/pending-tasks`);
+  }
+
+  async hasAnyPendingChatTasks(): Promise<HasPendingChatTasksResponse> {
+    return this.fetch(`/api/chat/pending-tasks/has-any`);
+  }
+
+  async markChatSessionRead(sessionId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/read`, { method: "POST" });
+  }
+
+  // Advertises the durable draft-restore capability (#5219). The server only
+  // defers the empty-transcript judgment — and therefore only withholds the
+  // synchronous restore from the response — for clients that send this; without
+  // it we would be treated as a pre-#5219 client and get the legacy behaviour.
+  async cancelTaskById(
+    taskId: string,
+    options?: { queuedAction?: "edit" | "remove"; sessionId?: string },
+  ): Promise<CancelTaskResponse> {
+    const params = new URLSearchParams();
+    if (options?.queuedAction) {
+      if (!options.sessionId) throw new Error("sessionId is required for queued-only cancellation");
+      params.set("expected_status", "queued");
+      params.set("chat_session_id", options.sessionId);
+      params.set("queue_action", options.queuedAction);
+    }
+    const query = params.size > 0 ? `?${params}` : "";
+    const raw = await this.fetch<unknown>(`/api/tasks/${taskId}/cancel${query}`, {
+      method: "POST",
+      headers: { "X-Client-Capabilities": CHAT_DRAFT_RESTORE_CAPABILITY },
+    });
+    return parseWithFallback(raw, CancelTaskResponseSchema, EMPTY_CANCEL_TASK_RESPONSE, {
+      endpoint: "POST /api/tasks/{taskId}/cancel",
+    });
+  }
+
+  async listAttachments(issueId: string): Promise<Attachment[]> {
+    return this.fetch(`/api/issues/${issueId}/attachments`);
+  }
+
+  // Fetches a fresh attachment metadata record. The server re-signs
+  // `download_url` on every call, with a deployment-configured expiry
+  // (ATTACHMENT_DOWNLOAD_URL_TTL — see defaultAttachmentDownloadURLTTL in
+  // server/internal/handler/file.go), so the click-time download flow uses
+  // this endpoint to avoid handing the user a stale signed URL cached in
+  // TanStack Query. Deliberately not restating the number here: RUYI-103
+  // changed it and this copy went stale unnoticed.
+  async getAttachment(id: string): Promise<Attachment> {
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
+    return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
+      endpoint: "GET /api/attachments/{id}",
+    });
+  }
+
+  async deleteAttachment(id: string): Promise<void> {
+    await this.fetch(`/api/attachments/${id}`, { method: "DELETE" });
+  }
+
+  // Fetches the raw bytes of a text-previewable attachment.
+  //
+  // The endpoint sidesteps CloudFront CORS (not configured on the CDN) and
+  // bypasses Content-Disposition: attachment for the `text/*` family, both
+  // of which would otherwise prevent the renderer from getting the body.
+  // The server always replies with `text/plain; charset=utf-8` for safety;
+  // the original MIME ships back in the `X-Original-Content-Type` header so
+  // the preview dispatcher can choose between markdown / html / plain code.
+  //
+  // Routes through `fetchRaw` so it inherits the standard auth headers,
+  // 401 → handleUnauthorized recovery, request-id logging, and ApiError
+  // shape. 413 / 415 are translated to typed `Preview*Error` instances so
+  // the modal can render specific fallbacks instead of generic failure.
+  async getAttachmentTextContent(
+    id: string,
+  ): Promise<{ text: string; originalContentType: string }> {
+    let res: Response;
+    try {
+      res = await this.fetchRaw(`/api/attachments/${id}/content`);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 413) throw new PreviewTooLargeError();
+        if (err.status === 415) throw new PreviewUnsupportedError();
+      }
+      throw err;
+    }
+    return {
+      text: await res.text(),
+      originalContentType: res.headers.get("X-Original-Content-Type") ?? "",
+    };
+  }
+
+  // Fetches the raw bytes of an attachment through the unified download
+  // endpoint.
+  //
+  // This is the last-resort inline-media path for deployments where the
+  // server has no natively-loadable URL to offer. `GET /api/attachments/{id}`
+  // only upgrades `download_url` to a signed storage URL under CloudFront
+  // signing or presign mode; in **proxy** mode (self-hosted MinIO or any
+  // storage endpoint on an internal host, which the default `auto` mode
+  // classifies as proxy) it returns the auth-gated API path again. Clients
+  // that cannot ride the session cookie on a native `<img>` resource fetch —
+  // Desktop's file:// renderer, the mobile webview, split-origin web — get
+  // the bytes here and render them from an object URL instead.
+  //
+  // Routes through `fetchRaw` so it inherits the standard auth headers,
+  // 401 → handleUnauthorized recovery, request-id logging and ApiError shape.
+  // Callers must only reach for this once the metadata refresh has shown
+  // there is no signed URL: in the other modes the endpoint 302s to storage,
+  // where CORS is not configured for a JS fetch.
+  async getAttachmentBlob(id: string): Promise<Blob> {
+    const res = await this.fetchRaw(`/api/attachments/${id}/download`);
+    return res.blob();
+  }
+
+  // Projects
+  async listProjects(params?: { status?: string }): Promise<ListProjectsResponse> {
+    const search = new URLSearchParams();
+    if (params?.status) search.set("status", params.status);
+    return this.fetch(`/api/projects?${search}`);
+  }
+
+  async getProject(id: string): Promise<Project> {
+    return this.fetch(`/api/projects/${id}`);
+  }
+
+  async createProject(data: CreateProjectRequest): Promise<Project> {
+    return this.fetch("/api/projects", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateProject(id: string, data: UpdateProjectRequest): Promise<Project> {
+    return this.fetch(`/api/projects/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    await this.fetch(`/api/projects/${id}`, { method: "DELETE" });
+  }
+
+  // Project resources
+  async listProjectResources(
+    projectId: string,
+  ): Promise<ListProjectResourcesResponse> {
+    return this.fetch(`/api/projects/${projectId}/resources`);
+  }
+
+  async createProjectResource(
+    projectId: string,
+    data: CreateProjectResourceRequest,
+  ): Promise<ProjectResource> {
+    return this.fetch(`/api/projects/${projectId}/resources`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateProjectResource(
+    projectId: string,
+    resourceId: string,
+    data: UpdateProjectResourceRequest,
+  ): Promise<ProjectResource> {
+    return this.fetch(`/api/projects/${projectId}/resources/${resourceId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteProjectResource(
+    projectId: string,
+    resourceId: string,
+  ): Promise<void> {
+    await this.fetch(`/api/projects/${projectId}/resources/${resourceId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // Labels
+  async listLabels(resourceType: LabelResourceType = "issue"): Promise<ListLabelsResponse> {
+    const raw = await this.fetch<unknown>(`/api/labels?resource_type=${resourceType}`);
+    return parseWithFallback(raw, ListLabelsResponseSchema, EMPTY_LIST_LABELS_RESPONSE, {
+      endpoint: "GET /api/labels",
+    });
+  }
+
+  async getLabel(id: string): Promise<Label> {
+    const raw = await this.fetch<unknown>(`/api/labels/${id}`);
+    return parseWithFallback(raw, LabelSchema, EMPTY_LABEL, {
+      endpoint: "GET /api/labels/{id}",
+    });
+  }
+
+  async createLabel(data: CreateLabelRequest): Promise<Label> {
+    const raw = await this.fetch<unknown>(`/api/labels`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, LabelSchema, EMPTY_LABEL, {
+      endpoint: "POST /api/labels",
+    });
+  }
+
+  async updateLabel(id: string, data: UpdateLabelRequest): Promise<Label> {
+    const raw = await this.fetch<unknown>(`/api/labels/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, LabelSchema, EMPTY_LABEL, {
+      endpoint: "PUT /api/labels/{id}",
+    });
+  }
+
+  async deleteLabel(id: string): Promise<void> {
+    await this.fetch(`/api/labels/${id}`, { method: "DELETE" });
+  }
+
+  // Issue status catalog (MUL-6243). Reads are open to any workspace member;
+  // the mutations below are owner/admin only and return 403 otherwise.
+  async listIssueStatuses(includeArchived = false): Promise<ListIssueStatusesResponse> {
+    const query = includeArchived ? "?include_archived=true" : "";
+    const raw = await this.fetch<unknown>(`/api/issue-statuses${query}`);
+    return parseWithFallback(raw, ListIssueStatusesResponseSchema, EMPTY_LIST_ISSUE_STATUSES_RESPONSE, {
+      endpoint: "GET /api/issue-statuses",
+    });
+  }
+
+  async createIssueStatus(data: CreateIssueStatusRequest): Promise<IssueStatusEntry> {
+    const raw = await this.fetch<unknown>(`/api/issue-statuses`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, IssueStatusEntrySchema, EMPTY_ISSUE_STATUS_ENTRY, {
+      endpoint: "POST /api/issue-statuses",
+    });
+  }
+
+  async updateIssueStatus(id: string, data: UpdateIssueStatusRequest): Promise<IssueStatusEntry> {
+    const raw = await this.fetch<unknown>(`/api/issue-statuses/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, IssueStatusEntrySchema, EMPTY_ISSUE_STATUS_ENTRY, {
+      endpoint: "PATCH /api/issue-statuses/{id}",
+    });
+  }
+
+  /**
+   * Rewrites one category's custom-status order in a single server-side
+   * statement. Not expressible as a sequence of `updateIssueStatus` calls: a
+   * row rejected mid-sequence would leave the earlier rows already reordered
+   * while the caller sees a failure. (MUL-6243)
+   */
+  async reorderIssueStatuses(
+    category: IssueStatusCategory,
+    ids: string[],
+  ): Promise<ListIssueStatusesResponse> {
+    const raw = await this.fetch<unknown>(`/api/issue-statuses/reorder`, {
+      method: "PATCH",
+      body: JSON.stringify({ category, ids }),
+    });
+    return parseWithFallback(raw, ListIssueStatusesResponseSchema, EMPTY_LIST_ISSUE_STATUSES_RESPONSE, {
+      endpoint: "PATCH /api/issue-statuses/reorder",
+    });
+  }
+
+  /**
+   * Archives a custom status, retiring it from future use. Issues already on it
+   * keep it and keep behaving as their category prescribes; only new
+   * assignments are refused. Built-in statuses return 403.
+   */
+  async archiveIssueStatus(id: string): Promise<IssueStatusEntry> {
+    const raw = await this.fetch<unknown>(`/api/issue-statuses/${id}`, { method: "DELETE" });
+    return parseWithFallback(raw, IssueStatusEntrySchema, EMPTY_ISSUE_STATUS_ENTRY, {
+      endpoint: "DELETE /api/issue-statuses/{id}",
+    });
+  }
+
+  // Workspace quick replies (RUYI-435). Reads are open to any workspace
+  // member (the composer menu); the writes below are owner/admin only and
+  // answer 403 to plain members.
+  async listQuickReplies(): Promise<ListQuickRepliesResponse> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies`);
+    return parseWithFallback(raw, ListQuickRepliesResponseSchema, EMPTY_LIST_QUICK_REPLIES_RESPONSE, {
+      endpoint: "GET /api/quick-replies",
+    });
+  }
+
+  async createQuickReply(data: CreateQuickReplyRequest): Promise<QuickReply> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, QuickReplySchema, EMPTY_QUICK_REPLY, {
+      endpoint: "POST /api/quick-replies",
+    });
+  }
+
+  async updateQuickReply(id: string, data: UpdateQuickReplyRequest): Promise<QuickReply> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, QuickReplySchema, EMPTY_QUICK_REPLY, {
+      endpoint: "PATCH /api/quick-replies/{id}",
+    });
+  }
+
+  async deleteQuickReply(id: string): Promise<void> {
+    await this.fetch<unknown>(`/api/quick-replies/${id}`, { method: "DELETE" });
+  }
+
+  async reorderQuickReplies(ids: string[]): Promise<ListQuickRepliesResponse> {
+    const raw = await this.fetch<unknown>(`/api/quick-replies/reorder`, {
+      method: "PATCH",
+      body: JSON.stringify({ ids }),
+    });
+    return parseWithFallback(raw, ListQuickRepliesResponseSchema, EMPTY_LIST_QUICK_REPLIES_RESPONSE, {
+      endpoint: "PATCH /api/quick-replies/reorder",
+    });
+  }
+
+  // Custom issue properties
+  async listProperties(includeArchived = false): Promise<ListPropertiesResponse> {
+    const suffix = includeArchived ? "?include_archived=true" : "";
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/properties${suffix}`);
+    } catch (error) {
+      // A backend predating custom properties 404s here (e.g. after a
+      // server-only rollback). Treat it as an empty catalog: the property
+      // UI sections disappear and the active-catalog reconciliation strips
+      // persisted property sorts/filters, so no property params ever reach
+      // the old server. Other errors keep normal query-error semantics.
+      if (error instanceof Error && "status" in error && (error as { status?: number }).status === 404) {
+        return EMPTY_LIST_PROPERTIES_RESPONSE;
+      }
+      throw error;
+    }
+    return parseWithFallback(raw, ListPropertiesResponseSchema, EMPTY_LIST_PROPERTIES_RESPONSE, {
+      endpoint: "GET /api/properties",
+    });
+  }
+
+  /**
+   * Quick actions catalog — one projection for every caller.
+   *
+   * The server hides nothing beyond `private` ownership; whether the caller
+   * may RUN an action is answered by runQuickAction, not here. There is
+   * deliberately no "runnable only" mode: filtering the sidebar by permission
+   * made two people looking at one issue see different sidebars with no
+   * explanation.
+   *
+   * A backend predating quick actions 404s here; treat that as an empty
+   * catalog so the sidebar section and settings tab simply do not render.
+   */
+  async listQuickActions(opts?: { includeArchived?: boolean }): Promise<ListQuickActionsResponse> {
+    const suffix = opts?.includeArchived === true ? "?include_archived=true" : "";
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/quick-actions${suffix}`);
+    } catch (error) {
+      if (error instanceof Error && "status" in error && (error as { status?: number }).status === 404) {
+        return EMPTY_LIST_QUICK_ACTIONS_RESPONSE;
+      }
+      throw error;
+    }
+    return parseWithFallback(raw, ListQuickActionsResponseSchema, EMPTY_LIST_QUICK_ACTIONS_RESPONSE, {
+      endpoint: "GET /api/quick-actions",
+    });
+  }
+
+  async createQuickAction(data: CreateQuickActionRequest): Promise<QuickAction> {
+    const raw = await this.fetch<unknown>(`/api/quick-actions`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, QuickActionSchema, EMPTY_QUICK_ACTION, {
+      endpoint: "POST /api/quick-actions",
+    });
+  }
+
+  async updateQuickAction(id: string, data: UpdateQuickActionRequest): Promise<QuickAction> {
+    const raw = await this.fetch<unknown>(`/api/quick-actions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, QuickActionSchema, EMPTY_QUICK_ACTION, {
+      endpoint: "PATCH /api/quick-actions/{id}",
+    });
+  }
+
+  async deleteQuickAction(id: string): Promise<void> {
+    await this.fetch<void>(`/api/quick-actions/${id}`, { method: "DELETE" });
+  }
+
+  /**
+   * Run a quick action against one issue. The response is a Comment carrying
+   * `trigger_outcomes` — the same shape POST /comments returns — so callers
+   * reuse one result handler and inherit `queued` / `coalesced` / `deferred` /
+   * `blocked` instead of a parallel vocabulary that would drift.
+   */
+  async runQuickAction(issueId: string, quickActionId: string): Promise<Comment> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/quick-actions/${quickActionId}/run`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, {
+      endpoint: "POST /api/issues/{id}/quick-actions/{quickActionId}/run",
+    });
+  }
+
+  /**
+   * What a quick action WOULD post, without posting it. Backs the composer
+   * hand-off (⌥-click and the `/` menu) so the user can edit before sending.
+   * Returns "" when the response cannot be read — callers must treat an empty
+   * string as "insert nothing" rather than clearing the composer.
+   */
+  async renderQuickAction(issueId: string, quickActionId: string): Promise<string> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/quick-actions/${quickActionId}/render`, {
+      method: "POST",
+    });
+    const parsed = parseWithFallback(raw, QuickActionRenderSchema, { content: "" }, {
+      endpoint: "POST /api/issues/{id}/quick-actions/{quickActionId}/render",
+    });
+    return parsed.content;
+  }
+
+  async createProperty(data: CreatePropertyRequest): Promise<IssueProperty> {
+    const raw = await this.fetch<unknown>(`/api/properties`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, IssuePropertySchema, EMPTY_ISSUE_PROPERTY, {
+      endpoint: "POST /api/properties",
+    });
+  }
+
+  async updateProperty(id: string, data: UpdatePropertyRequest): Promise<IssueProperty> {
+    const raw = await this.fetch<unknown>(`/api/properties/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, IssuePropertySchema, EMPTY_ISSUE_PROPERTY, {
+      endpoint: "PATCH /api/properties/{id}",
+    });
+  }
+
+  async setIssueProperty(issueId: string, propertyId: string, value: IssuePropertyValue): Promise<IssuePropertiesResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/properties/${propertyId}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    });
+    return parseWithFallback(raw, IssuePropertiesResponseSchema, EMPTY_ISSUE_PROPERTIES_RESPONSE, {
+      endpoint: "PUT /api/issues/{id}/properties/{propertyId}",
+    });
+  }
+
+  async unsetIssueProperty(issueId: string, propertyId: string): Promise<IssuePropertiesResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/properties/${propertyId}`, {
+      method: "DELETE",
+    });
+    return parseWithFallback(raw, IssuePropertiesResponseSchema, EMPTY_ISSUE_PROPERTIES_RESPONSE, {
+      endpoint: "DELETE /api/issues/{id}/properties/{propertyId}",
+    });
+  }
+
+  async listLabelsForIssue(issueId: string): Promise<IssueLabelsResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/labels`);
+    return parseWithFallback(raw, ResourceLabelsResponseSchema, EMPTY_RESOURCE_LABELS_RESPONSE, {
+      endpoint: "GET /api/issues/{id}/labels",
+    });
+  }
+
+  async attachLabel(issueId: string, labelId: string): Promise<IssueLabelsResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/labels`, {
+      method: "POST",
+      body: JSON.stringify({ label_id: labelId }),
+    });
+    return parseWithFallback(raw, ResourceLabelsResponseSchema, EMPTY_RESOURCE_LABELS_RESPONSE, {
+      endpoint: "POST /api/issues/{id}/labels",
+    });
+  }
+
+  async detachLabel(issueId: string, labelId: string): Promise<IssueLabelsResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/labels/${labelId}`, {
+      method: "DELETE",
+    });
+    return parseWithFallback(raw, ResourceLabelsResponseSchema, EMPTY_RESOURCE_LABELS_RESPONSE, {
+      endpoint: "DELETE /api/issues/{id}/labels/{labelId}",
+    });
+  }
+
+  async listLabelsForResource(
+    resourceType: "agent" | "skill",
+    resourceId: string,
+  ): Promise<ResourceLabelsResponse> {
+    const raw = await this.fetch<unknown>(`/api/${resourceType === "agent" ? "agents" : "skills"}/${resourceId}/labels`);
+    return parseWithFallback(raw, ResourceLabelsResponseSchema, EMPTY_RESOURCE_LABELS_RESPONSE, {
+      endpoint: `GET /api/${resourceType === "agent" ? "agents" : "skills"}/{id}/labels`,
+    });
+  }
+
+  async attachLabelToResource(
+    resourceType: "agent" | "skill",
+    resourceId: string,
+    labelId: string,
+  ): Promise<ResourceLabelsResponse> {
+    const raw = await this.fetch<unknown>(`/api/${resourceType === "agent" ? "agents" : "skills"}/${resourceId}/labels`, {
+      method: "POST",
+      body: JSON.stringify({ label_id: labelId }),
+    });
+    return parseWithFallback(raw, ResourceLabelsResponseSchema, EMPTY_RESOURCE_LABELS_RESPONSE, {
+      endpoint: `POST /api/${resourceType === "agent" ? "agents" : "skills"}/{id}/labels`,
+    });
+  }
+
+  async detachLabelFromResource(
+    resourceType: "agent" | "skill",
+    resourceId: string,
+    labelId: string,
+  ): Promise<ResourceLabelsResponse> {
+    const raw = await this.fetch<unknown>(`/api/${resourceType === "agent" ? "agents" : "skills"}/${resourceId}/labels/${labelId}`, {
+      method: "DELETE",
+    });
+    return parseWithFallback(raw, ResourceLabelsResponseSchema, EMPTY_RESOURCE_LABELS_RESPONSE, {
+      endpoint: `DELETE /api/${resourceType === "agent" ? "agents" : "skills"}/{id}/labels/{labelId}`,
+    });
+  }
+
+  // Saved issue views (MUL-4796). Responses go through zod so installed
+  // desktop builds survive backend drift; a malformed list degrades to []
+  // (selector shows only built-ins) rather than blanking the page.
+  async listIssueViews(params: {
+    scope_type: string;
+    scope_id?: string | null;
+  }): Promise<IssueView[]> {
+    const qs = new URLSearchParams({ scope_type: params.scope_type });
+    if (params.scope_id) qs.set("scope_id", params.scope_id);
+    const raw = await this.fetch<unknown>(`/api/issue-views?${qs.toString()}`);
+    return parseWithFallback(raw, IssueViewListSchema, [], {
+      endpoint: "GET /api/issue-views",
+    });
+  }
+
+  async createIssueView(data: CreateIssueViewRequest): Promise<IssueView | null> {
+    const raw = await this.fetch<unknown>("/api/issue-views", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    // null fallback: the create itself succeeded server-side; a response we
+    // cannot parse must not crash the dialog — callers refetch the list.
+    return parseWithFallback(raw, IssueViewSchema.nullable(), null, {
+      endpoint: "POST /api/issue-views",
+    });
+  }
+
+  async updateIssueView(
+    id: string,
+    data: {
+      name?: string;
+      visibility?: "private" | "workspace";
+      scope_variant?: string | null;
+      query?: Record<string, unknown>;
+      display?: Record<string, unknown>;
+      expected_revision: number;
+    },
+  ): Promise<IssueView | null> {
+    const raw = await this.fetch<unknown>(`/api/issue-views/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, IssueViewSchema.nullable(), null, {
+      endpoint: "PATCH /api/issue-views/{id}",
+    });
+  }
+
+  async getIssueView(id: string): Promise<IssueView | null> {
+    const raw = await this.fetch<unknown>(`/api/issue-views/${id}`);
+    return parseWithFallback(raw, IssueViewSchema.nullable(), null, {
+      endpoint: "GET /api/issue-views/{id}",
+    });
+  }
+
+  async deleteIssueView(id: string): Promise<void> {
+    await this.fetch(`/api/issue-views/${id}`, { method: "DELETE" });
+  }
+
+  async getIssueViewPreference(params: {
+    scope_type: string;
+    scope_id?: string | null;
+  }): Promise<IssueViewPreference> {
+    const qs = new URLSearchParams({ scope_type: params.scope_type });
+    if (params.scope_id) qs.set("scope_id", params.scope_id);
+    const raw = await this.fetch<unknown>(`/api/issue-view-preferences?${qs.toString()}`);
+    return parseWithFallback(raw, IssueViewPreferenceSchema, EMPTY_ISSUE_VIEW_PREFERENCE, {
+      endpoint: "GET /api/issue-view-preferences",
+    });
+  }
+
+  async putIssueViewPreference(data: {
+    scope_type: string;
+    scope_id?: string | null;
+    prefs: { hidden: string[]; order: string[] };
+  }): Promise<IssueViewPreference> {
+    const raw = await this.fetch<unknown>("/api/issue-view-preferences", {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, IssueViewPreferenceSchema, EMPTY_ISSUE_VIEW_PREFERENCE, {
+      endpoint: "PUT /api/issue-view-preferences",
+    });
+  }
+
+  // Pins
+  async listPins(): Promise<PinnedItem[]> {
+    // include=view is the capability opt-in: the server withholds view pins
+    // from clients that don't declare support (old builds treated any
+    // non-issue pin as a project pin and auto-deleted it on 404).
+    return this.fetch("/api/pins?include=view");
+  }
+
+  async createPin(data: CreatePinRequest): Promise<PinnedItem> {
+    return this.fetch("/api/pins", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deletePin(itemType: PinnedItemType, itemId: string): Promise<void> {
+    await this.fetch(`/api/pins/${itemType}/${itemId}`, { method: "DELETE" });
+  }
+
+  async reorderPins(data: ReorderPinsRequest): Promise<void> {
+    await this.fetch("/api/pins/reorder", {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  // Squads
+  async listSquads(): Promise<Squad[]> {
+    const raw = await this.fetch<unknown>(`/api/squads`);
+    return parseWithFallback(raw, SquadListSchema, EMPTY_SQUAD_LIST, {
+      endpoint: "GET /api/squads",
+    }) as Squad[];
+  }
+
+  async getSquad(id: string): Promise<Squad> {
+    const raw = await this.fetch<unknown>(`/api/squads/${id}`);
+    return parseWithFallback(raw, SquadSchema, EMPTY_SQUAD, {
+      endpoint: "GET /api/squads/:id",
+    }) as Squad;
+  }
+
+  async createSquad(data: { name: string; description?: string; leader_id: string; avatar_url?: string }): Promise<Squad> {
+    const raw = await this.fetch<unknown>("/api/squads", { method: "POST", body: JSON.stringify(data) });
+    return parseWithFallback(raw, SquadSchema, EMPTY_SQUAD, {
+      endpoint: "POST /api/squads",
+    }) as Squad;
+  }
+
+  async updateSquad(id: string, data: { name?: string; description?: string; instructions?: string; leader_id?: string; avatar_url?: string }): Promise<Squad> {
+    const raw = await this.fetch<unknown>(`/api/squads/${id}`, { method: "PUT", body: JSON.stringify(data) });
+    return parseWithFallback(raw, SquadSchema, EMPTY_SQUAD, {
+      endpoint: "PUT /api/squads/:id",
+    }) as Squad;
+  }
+
+  async deleteSquad(id: string): Promise<void> {
+    await this.fetch(`/api/squads/${id}`, { method: "DELETE" });
+  }
+
+  async listSquadMembers(squadId: string): Promise<SquadMember[]> {
+    return this.fetch(`/api/squads/${squadId}/members`);
+  }
+
+  async addSquadMember(squadId: string, data: { member_type: string; member_id: string; role?: string }): Promise<SquadMember> {
+    return this.fetch(`/api/squads/${squadId}/members`, { method: "POST", body: JSON.stringify(data) });
+  }
+
+  async removeSquadMember(squadId: string, data: { member_type: string; member_id: string }): Promise<void> {
+    await this.fetch(`/api/squads/${squadId}/members`, { method: "DELETE", body: JSON.stringify(data) });
+  }
+
+  async updateSquadMemberRole(squadId: string, data: { member_type: string; member_id: string; role: string }): Promise<SquadMember> {
+    return this.fetch(`/api/squads/${squadId}/members/role`, { method: "PATCH", body: JSON.stringify(data) });
+  }
+
+  // Per-squad members status snapshot: one row per member with derived
+  // working/idle/offline/unstable plus the issues each agent is currently
+  // running. Parsed with a lenient schema so a new server-side status
+  // value or extra field can't white-screen the Squad page (#2143).
+  async getSquadMemberStatus(squadId: string): Promise<SquadMemberStatusListResponse> {
+    const raw = await this.fetch<unknown>(`/api/squads/${squadId}/members/status`);
+    return parseWithFallback(raw, SquadMemberStatusListResponseSchema, EMPTY_SQUAD_MEMBER_STATUS_LIST, {
+      endpoint: "GET /api/squads/:id/members/status",
+    }) as SquadMemberStatusListResponse;
+  }
+
+  // Autopilots
+  async listAutopilots(params?: { status?: string }): Promise<ListAutopilotsResponse> {
+    const search = new URLSearchParams();
+    if (params?.status) search.set("status", params.status);
+    const raw = await this.fetch<unknown>(`/api/autopilots?${search}`);
+    return parseWithFallback(
+      raw,
+      ListAutopilotsResponseSchema,
+      EMPTY_LIST_AUTOPILOTS_RESPONSE as ListAutopilotsResponse,
+      { endpoint: "GET /api/autopilots" },
+    );
+  }
+
+  async getAutopilot(id: string): Promise<GetAutopilotResponse> {
+    return this.fetch(`/api/autopilots/${id}`);
+  }
+
+  async createAutopilot(data: CreateAutopilotRequest): Promise<Autopilot> {
+    return this.fetch("/api/autopilots", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateAutopilot(id: string, data: UpdateAutopilotRequest): Promise<Autopilot> {
+    return this.fetch(`/api/autopilots/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteAutopilot(id: string): Promise<void> {
+    await this.fetch(`/api/autopilots/${id}`, { method: "DELETE" });
+  }
+
+  // Parameter definitions (RUYI-641): read by any member who can view the
+  // autopilot; replaced as a whole set by writers. A validation rejection is
+  // a 400 whose error message names the offending parameter (never a value).
+  async listAutopilotParams(id: string): Promise<AutopilotParamsResponse> {
+    return this.fetch(`/api/autopilots/${id}/params`);
+  }
+
+  async replaceAutopilotParams(id: string, params: AutopilotParamInput[]): Promise<AutopilotParamsResponse> {
+    return this.fetch(`/api/autopilots/${id}/params`, {
+      method: "PUT",
+      body: JSON.stringify({ params }),
+    });
+  }
+
+  // Grant a workspace member explicit write access to the autopilot. Both
+  // grant and revoke return the full updated collaborator list so callers can
+  // refresh without a second round-trip.
+  async grantAutopilotAccess(id: string, userId: string): Promise<AutopilotCollaboratorsResponse> {
+    return this.fetch(`/api/autopilots/${id}/collaborators`, {
+      method: "POST",
+      body: JSON.stringify({ user_id: userId }),
+    });
+  }
+
+  async revokeAutopilotAccess(id: string, userId: string): Promise<AutopilotCollaboratorsResponse> {
+    return this.fetch(`/api/autopilots/${id}/collaborators/${userId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async triggerAutopilot(id: string): Promise<AutopilotRun> {
+    // Manual "run now" usually returns a run, including downstream admission
+    // failures. Quota rejection is the exception and returns 429. The UI
+    // handles both paths without presenting a false-success toast.
+    const raw = await this.fetch<unknown>(`/api/autopilots/${id}/trigger`, {
+      method: "POST",
+      headers: { "Idempotency-Key": createSafeId() },
+    });
+    return parseWithFallback(raw, AutopilotRunSchema, FALLBACK_AUTOPILOT_RUN, {
+      endpoint: "POST /api/autopilots/:id/trigger",
+    });
+  }
+
+  async getAutopilotQuotaUsage(): Promise<AutopilotQuotaUsage> {
+    const raw = await this.fetch<unknown>("/api/autopilots/usage");
+    return parseWithFallback(
+      raw,
+      AutopilotQuotaUsageSchema,
+      {
+        action: "off",
+        used: null,
+        reserved: null,
+        total: null,
+        limit: null,
+        reached: null,
+        period_start: null,
+        period_end: null,
+        reset_at: null,
+        blocked_counts: null,
+      },
+      { endpoint: "GET /api/autopilots/usage" },
+    );
+  }
+
+  async listAutopilotRuns(id: string, params?: { limit?: number; offset?: number }): Promise<ListAutopilotRunsResponse> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", params.limit.toString());
+    if (params?.offset) search.set("offset", params.offset.toString());
+    return this.fetch(`/api/autopilots/${id}/runs?${search}`);
+  }
+
+  // Returns a single run including its full trigger_payload. List responses
+  // omit trigger_payload to keep them small (a webhook envelope can be
+  // up to 256 KiB × limit rows), so the detail view fetches via this route.
+  async getAutopilotRun(autopilotId: string, runId: string): Promise<AutopilotRun> {
+    return this.fetch(`/api/autopilots/${autopilotId}/runs/${runId}`);
+  }
+
+  async createAutopilotTrigger(autopilotId: string, data: CreateAutopilotTriggerRequest): Promise<AutopilotTrigger> {
+    return this.fetch(`/api/autopilots/${autopilotId}/triggers`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateAutopilotTrigger(autopilotId: string, triggerId: string, data: UpdateAutopilotTriggerRequest): Promise<AutopilotTrigger> {
+    return this.fetch(`/api/autopilots/${autopilotId}/triggers/${triggerId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteAutopilotTrigger(autopilotId: string, triggerId: string): Promise<void> {
+    await this.fetch(`/api/autopilots/${autopilotId}/triggers/${triggerId}`, { method: "DELETE" });
+  }
+
+  async cronPreview(params: { expr: string; tz: string }): Promise<CronPreviewResponse> {
+    const search = new URLSearchParams();
+    search.set("expr", params.expr);
+    search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(`/api/autopilots/cron-preview?${search}`);
+    return parseWithFallback(
+      raw,
+      CronPreviewResponseSchema,
+      UNREADABLE_CRON_PREVIEW_RESPONSE,
+      { endpoint: "GET /api/autopilots/cron-preview" },
+    );
+  }
+
+  async rotateAutopilotTriggerWebhookToken(
+    autopilotId: string,
+    triggerId: string,
+  ): Promise<AutopilotTrigger> {
+    return this.fetch(
+      `/api/autopilots/${autopilotId}/triggers/${triggerId}/rotate-webhook-token`,
+      { method: "POST" },
+    );
+  }
+
+  // Webhook deliveries — list is slim (no raw_body / selected_headers /
+  // response_body); detail returns the full row. Both responses are parsed
+  // through a lenient schema so an unknown server-side `status` /
+  // `signature_status` value degrades to a generic row instead of dropping
+  // the whole list.
+  async listAutopilotDeliveries(
+    autopilotId: string,
+    params?: { limit?: number; offset?: number },
+  ): Promise<ListWebhookDeliveriesResponse> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", params.limit.toString());
+    if (params?.offset) search.set("offset", params.offset.toString());
+    const raw = await this.fetch<unknown>(
+      `/api/autopilots/${autopilotId}/deliveries?${search}`,
+    );
+    return parseWithFallback(
+      raw,
+      ListWebhookDeliveriesResponseSchema,
+      EMPTY_LIST_WEBHOOK_DELIVERIES_RESPONSE,
+      { endpoint: "GET /api/autopilots/:id/deliveries" },
+    );
+  }
+
+  async getAutopilotDelivery(
+    autopilotId: string,
+    deliveryId: string,
+  ): Promise<WebhookDelivery> {
+    const raw = await this.fetch<unknown>(
+      `/api/autopilots/${autopilotId}/deliveries/${deliveryId}`,
+    );
+    return parseWithFallback(
+      raw,
+      WebhookDeliveryResponseSchema,
+      { ...EMPTY_WEBHOOK_DELIVERY, id: deliveryId, autopilot_id: autopilotId },
+      { endpoint: "GET /api/autopilots/:id/deliveries/:deliveryId" },
+    );
+  }
+
+  // Replay creates a NEW delivery row referencing the original via
+  // `replayed_from_delivery_id`. Server rejects replays of
+  // signature-invalid / rejected deliveries with 400 — the UI keeps the
+  // button disabled for those rows, but the server is the source of truth.
+  async replayAutopilotDelivery(
+    autopilotId: string,
+    deliveryId: string,
+  ): Promise<WebhookDelivery> {
+    const raw = await this.fetch<unknown>(
+      `/api/autopilots/${autopilotId}/deliveries/${deliveryId}/replay`,
+      { method: "POST", headers: { "Idempotency-Key": createSafeId() } },
+    );
+    return parseWithFallback(
+      raw,
+      WebhookDeliveryResponseSchema,
+      { ...EMPTY_WEBHOOK_DELIVERY, autopilot_id: autopilotId },
+      { endpoint: "POST /api/autopilots/:id/deliveries/:deliveryId/replay" },
+    );
+  }
+
+  // GitHub integration
+  async getGitHubConnectURL(
+    workspaceId: string,
+    returnTo?: "github" | "repositories",
+  ): Promise<GitHubConnectResponse> {
+    const search = new URLSearchParams();
+    if (returnTo) search.set("return_to", returnTo);
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/github/connect${suffix}`,
+    );
+    return parseWithFallback(
+      raw,
+      GitHubConnectResponseSchema,
+      EMPTY_GITHUB_CONNECT_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/github/connect" },
+    );
+  }
+
+  async listGitHubInstallations(workspaceId: string): Promise<ListGitHubInstallationsResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/github/installations`,
+    );
+    return parseWithFallback(
+      raw,
+      ListGitHubInstallationsResponseSchema,
+      EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/github/installations" },
+    );
+  }
+
+  async listGitHubInstallationRepositories(
+    workspaceId: string,
+    installationId: string,
+    params: { page?: number; per_page?: number } = {},
+  ): Promise<ListGitHubRepositoriesResponse> {
+    const search = new URLSearchParams();
+    if (params.page !== undefined) search.set("page", String(params.page));
+    if (params.per_page !== undefined) search.set("per_page", String(params.per_page));
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/github/installations/${installationId}/repositories${suffix}`,
+    );
+    return parseWithFallback(
+      raw,
+      ListGitHubRepositoriesResponseSchema,
+      EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/github/installations/:installationId/repositories" },
+    );
+  }
+
+  async deleteGitHubInstallation(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/github/installations/${installationId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async listIssuePullRequests(issueId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/pull-requests`);
+    return parseWithFallback(
+      raw,
+      IssuePullRequestsResponseSchema,
+      EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+      { endpoint: "GET /api/issues/:id/pull-requests" },
+    );
+  }
+
+  async unlinkIssuePullRequest(issueId: string, pullRequestId: string): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/pull-requests/${pullRequestId}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * Resolve one `owner/repo#N` text reference to the workspace's snapshot of
+   * that PR (RUYI-635 增量, reference tail). A 404 — the platform has never
+   * seen this PR — returns `null` so the tail degrades the token to plain
+   * text, the same miss-reads-as-typed contract the issue tail follows.
+   */
+  async lookupPullRequest(
+    workspaceId: string,
+    owner: string,
+    repo: string,
+    number: number,
+    options?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    const params = new URLSearchParams({ owner, repo, number: String(number) });
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup?${params.toString()}`,
+        { signal: options?.signal },
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+    const parsed = parseWithFallback(
+      raw,
+      PullRequestLookupResponseSchema,
+      EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/pull-requests/lookup" },
+    );
+    return parsed.pull_request;
+  }
+
+  /**
+   * Resolve one `MR !N` text reference to a PR in the workspace snapshot by
+   * number alone (RUYI-728, body autolink + reference tail). A 404 — the
+   * platform has never seen this number — and a 409 — the number is
+   * ambiguous across repos — both return `null` so the token degrades to
+   * plain text, the same miss-reads-as-typed contract the issue tail follows.
+   */
+  async lookupPullRequestByNumber(
+    workspaceId: string,
+    number: number,
+    options?: { signal?: AbortSignal },
+  ): Promise<GitHubPullRequest | null> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(
+        `/api/workspaces/${workspaceId}/pull-requests/lookup-by-number?number=${number}`,
+        { signal: options?.signal },
+      );
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
+        return null;
+      }
+      throw err;
+    }
+    const parsed = parseWithFallback(
+      raw,
+      PullRequestLookupResponseSchema,
+      EMPTY_PULL_REQUEST_LOOKUP_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/pull-requests/lookup-by-number" },
+    );
+    return parsed.pull_request;
+  }
+
+  // VCS integration (Forgejo / Gitea / GitLab)
+  async listVCSConnections(workspaceId: string): Promise<ListVCSConnectionsResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/vcs/connections`);
+  }
+
+  async listGitLabRepositories(
+    workspaceId: string,
+    connectionId: string,
+    page = 1,
+  ): Promise<ListGitLabRepositoriesResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/vcs/connections/${connectionId}/repositories?page=${page}&per_page=100`,
+    );
+    return parseWithFallback(
+      raw,
+      ListGitLabRepositoriesResponseSchema,
+      EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/vcs/connections/:connectionId/repositories", redactContent: true },
+    );
+  }
+
+  async connectVCS(
+    workspaceId: string,
+    body: ConnectVCSRequest,
+  ): Promise<ConnectVCSResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/vcs/connections`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async deleteVCSConnection(workspaceId: string, connectionId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/vcs/connections/${connectionId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async rotateVCSWebhook(
+    workspaceId: string,
+    connectionId: string,
+  ): Promise<ConnectVCSResponse> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/vcs/connections/${connectionId}/rotate-webhook`,
+      { method: "POST" },
+    );
+  }
+
+  // Lark integration
+  async listLarkInstallations(workspaceId: string): Promise<ListLarkInstallationsResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/lark/installations`);
+  }
+
+  async beginLarkInstall(
+    workspaceId: string,
+    agentId: string,
+    region: "feishu" | "lark",
+  ): Promise<BeginLarkInstallResponse> {
+    // The user picks the cloud explicitly in the UI ("Bind to Feishu"
+    // vs "Bind to Lark"), and the backend POSTs the device-flow `begin`
+    // against the corresponding accounts host (accounts.feishu.cn vs
+    // accounts.larksuite.com) so the QR renders against the right
+    // cloud up front. Empty / omitted region still resolves to Feishu
+    // server-side (RegionOrDefault) — we surface region as a required
+    // arg here so every call site is forced to make a deliberate
+    // choice rather than silently defaulting to mainland.
+    const search = new URLSearchParams({ agent_id: agentId, region });
+    return this.fetch(`/api/workspaces/${workspaceId}/lark/install/begin?${search.toString()}`, {
+      method: "POST",
+    });
+  }
+
+  async getLarkInstallStatus(workspaceId: string, sessionId: string): Promise<LarkInstallStatusResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/lark/install/${sessionId}/status`);
+  }
+
+  async deleteLarkInstallation(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/lark/installations/${installationId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async redeemLarkBindingToken(token: string): Promise<RedeemLarkBindingTokenResponse> {
+    return this.fetch(`/api/lark/binding/redeem`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  }
+
+  /** The static capability→scope catalog (RUYI-400). Member-visible,
+   * read-only: the bind dialog's upfront permission declaration reads
+   * this so what the user is told matches what the probe later tests. */
+  async getLarkPermissionCatalog(workspaceId: string): Promise<LarkPermissionCatalogResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/lark/permission-catalog`);
+  }
+
+  /** Re-runs the capability probe for an installation NOW and returns
+   * the fresh verdicts (RUYI-400). Server persists them, so a refetch
+   * of the installations list carries the same states. 409 for revoked
+   * installations, 503 when the Lark integration is not configured. */
+  async recheckLarkPermissions(
+    workspaceId: string,
+    installationId: string,
+  ): Promise<RecheckLarkPermissionsResponse> {
+    return this.fetch(
+      `/api/workspaces/${workspaceId}/lark/installations/${installationId}/recheck-permissions`,
+      { method: "POST" },
+    );
+  }
+
+  // Composio integration (MUL-3720). All routes are user-scoped (a connection
+  // belongs to a user, not a workspace), so none take a workspaceId.
+
+  /** The project's connectable Composio toolkits (those with an enabled auth
+   * config). Since MUL-4009 the backend filters out non-connectable toolkits,
+   * so every entry has `connectable: true`. A resolver/upstream failure is a
+   * 502 rather than an empty list. */
+  async listComposioToolkits(): Promise<ComposioToolkit[]> {
+    return this.fetch(`/api/integrations/composio/toolkits`);
+  }
+
+  /** The caller's active Composio connections. */
+  async listComposioConnections(): Promise<ComposioConnection[]> {
+    return this.fetch(`/api/integrations/composio/connections`);
+  }
+
+  /** Starts a hosted Composio connect flow for a toolkit and returns the
+   * redirect URL the browser should be sent to. */
+  async beginComposioConnect(toolkitSlug: string): Promise<ComposioConnectInitResponse> {
+    return this.fetch(`/api/integrations/composio/connect/init`, {
+      method: "POST",
+      body: JSON.stringify({ toolkit_slug: toolkitSlug }),
+    });
+  }
+
+  /** Disconnects a Composio connection the caller owns. */
+  async deleteComposioConnection(connectionId: string): Promise<void> {
+    await this.fetch(`/api/integrations/composio/connections/${connectionId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // Slack integration (MUL-3666)
+  async listSlackInstallations(workspaceId: string): Promise<ListSlackInstallationsResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/slack/installations`);
+  }
+
+  // registerSlackBYO performs a bring-your-own-app install: the admin pastes the
+  // bot token (xoxb-) + app-level token (xapp-) of the Slack app they created,
+  // and the backend validates + persists it, returning the new installation.
+  async registerSlackBYO(
+    workspaceId: string,
+    agentId: string,
+    body: RegisterSlackBYORequest,
+  ): Promise<SlackInstallation> {
+    const search = new URLSearchParams({ agent_id: agentId });
+    return this.fetch(`/api/workspaces/${workspaceId}/slack/install/byo?${search.toString()}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async deleteSlackInstallation(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/slack/installations/${installationId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async redeemSlackBindingToken(token: string): Promise<RedeemSlackBindingTokenResponse> {
+    return this.fetch(`/api/slack/binding/redeem`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+  }
+
+  // DingTalk integration
+  async listDingTalkInstallations(
+    workspaceId: string,
+  ): Promise<ListDingTalkInstallationsResponse> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/dingtalk/installations`);
+    return parseWithFallback(
+      raw,
+      ListDingTalkInstallationsResponseSchema,
+      EMPTY_LIST_DINGTALK_INSTALLATIONS_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/dingtalk/installations" },
+    );
+  }
+
+  async listDingTalkGroups(
+    workspaceId: string,
+    params: ListDingTalkGroupsParams = {},
+  ): Promise<ListDingTalkGroupsResponse> {
+    let raw: unknown;
+    try {
+      const search = dingTalkGroupSearch(params);
+      raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/dingtalk/groups${search}`);
+    } catch (error) {
+      // Installed clients can be newer than the server they reconnect to. A
+      // backend predating group discovery 404s this additive endpoint. The
+      // first admin-only version returns 403 to members; both mean this client
+      // cannot use the workspace inventory, while real failures stay visible.
+      if (
+        error instanceof ApiError &&
+        (error.status === 404 || error.status === 403)
+      ) {
+        return EMPTY_LIST_DINGTALK_GROUPS_RESPONSE;
+      }
+      throw error;
+    }
+    return parseWithFallback(
+      raw,
+      ListDingTalkGroupsResponseSchema,
+      EMPTY_LIST_DINGTALK_GROUPS_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/dingtalk/groups" },
+    );
+  }
+
+  async listAgentDingTalkGroups(
+    agentId: string,
+    params: ListDingTalkGroupsParams = {},
+  ): Promise<ListDingTalkGroupsResponse> {
+    let raw: unknown;
+    try {
+      const search = dingTalkGroupSearch(params);
+      raw = await this.fetch<unknown>(`/api/agents/${agentId}/dingtalk/groups${search}`);
+    } catch (error) {
+      // Keep installed clients compatible with servers that predate agent-
+      // scoped group discovery. Authorization failures must remain visible.
+      if (error instanceof ApiError && error.status === 404) {
+        return EMPTY_LIST_DINGTALK_GROUPS_RESPONSE;
+      }
+      throw error;
+    }
+    return parseWithFallback(
+      raw,
+      ListDingTalkGroupsResponseSchema,
+      EMPTY_LIST_DINGTALK_GROUPS_RESPONSE,
+      { endpoint: "GET /api/agents/:id/dingtalk/groups" },
+    );
+  }
+
+  async forgetDingTalkGroup(
+    workspaceId: string,
+    installationId: string,
+    conversationId: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/dingtalk/installations/${installationId}/groups/${encodeURIComponent(conversationId)}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // registerDingTalkBYO performs a bring-your-own-app install: the agent owner
+  // or a workspace owner/admin pastes the AppKey (client id) + AppSecret
+  // (client secret) of the DingTalk Stream-mode robot they created, and the
+  // backend validates + persists it, returning the new installation.
+  async registerDingTalkBYO(
+    workspaceId: string,
+    agentId: string,
+    body: RegisterDingTalkBYORequest,
+  ): Promise<DingTalkInstallation> {
+    const search = new URLSearchParams({ agent_id: agentId });
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/dingtalk/install/byo?${search.toString()}`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+    return parseWithFallback(raw, DingTalkInstallationSchema, EMPTY_DINGTALK_INSTALLATION, {
+      endpoint: "POST /api/workspaces/:id/dingtalk/install/byo",
+    });
+  }
+
+  async deleteDingTalkInstallation(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/dingtalk/installations/${installationId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async redeemDingTalkBindingToken(
+    token: string,
+  ): Promise<RedeemDingTalkBindingTokenResponse> {
+    const raw = await this.fetch<unknown>(`/api/dingtalk/binding/redeem`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+    return parseWithFallback(
+      raw,
+      RedeemDingTalkBindingTokenResponseSchema,
+      EMPTY_REDEEM_DINGTALK_BINDING_TOKEN_RESPONSE,
+      { endpoint: "POST /api/dingtalk/binding/redeem" },
+    );
+  }
+  // WeCom smart-bot ("智能机器人" / aibot) integration. The bot dials a
+  // WebSocket long connection to wss://openws.work.weixin.qq.com and stays
+  // authenticated with (bot_id, secret); no public callback URL is required.
+  // These three methods drive the Settings-page BYO Connect dialog + list +
+  // disconnect only — the inbound WebSocket loop runs entirely server-side.
+  async listWecomInstallations(workspaceId: string): Promise<ListWecomInstallationsResponse> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/wecom/installations`);
+    return parseWithFallback(
+      raw,
+      ListWecomInstallationsResponseSchema,
+      EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/wecom/installations" },
+    );
+  }
+
+  // registerWecomBYO performs a bring-your-own-app install: the admin pastes
+  // the bot id and long-connection secret from the WeCom admin console,
+  // and the backend seals the secret with MULTICA_WECOM_SECRET_KEY before
+  // persisting, returning the new installation.
+  async registerWecomBYO(
+    workspaceId: string,
+    agentId: string,
+    body: RegisterWecomBYORequest,
+  ): Promise<WecomInstallation> {
+    const search = new URLSearchParams({ agent_id: agentId });
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/wecom/install/byo?${search.toString()}`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+    return parseWithFallback(raw, WecomInstallationSchema, EMPTY_WECOM_INSTALLATION, {
+      endpoint: "POST /api/workspaces/:id/wecom/install/byo",
+    });
+  }
+
+  async deleteWecomInstallation(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/wecom/installations/${installationId}`, {
+      method: "DELETE",
+    });
+  }
+
+  // redeemWecomBindingToken binds the WeCom aibot userid carried by the
+  // token to the logged-in Multica user. Called by the /wecom/bind redeem
+  // page after the user clicks through the "link your Multica account"
+  // prompt the bot sent in WeCom. Status codes:
+  //   410 Gone      → invalid / expired / already consumed
+  //   409 Conflict  → the WeCom user is already bound to a different user
+  //   403 Forbidden → the logged-in user is not a workspace member
+  async redeemWecomBindingToken(token: string): Promise<RedeemWecomBindingTokenResponse> {
+    const raw = await this.fetch<unknown>(`/api/wecom/binding/redeem`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+    return parseWithFallback(
+      raw,
+      RedeemWecomBindingTokenResponseSchema,
+      EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE,
+      { endpoint: "POST /api/wecom/binding/redeem" },
+    );
+  }
+
+  async listTelegramInstallations(
+    workspaceId: string,
+  ): Promise<ListTelegramInstallationsResponse> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/telegram/installations`);
+    return parseWithFallback(
+      raw,
+      ListTelegramInstallationsResponseSchema,
+      EMPTY_LIST_TELEGRAM_INSTALLATIONS_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/telegram/installations" },
+    );
+  }
+
+  async registerTelegramBot(
+    workspaceId: string,
+    agentId: string,
+    body: RegisterTelegramRequest,
+  ): Promise<TelegramInstallation> {
+    const search = new URLSearchParams({ agent_id: agentId });
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/telegram/install?${search.toString()}`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+    return parseWithFallback(raw, TelegramInstallationSchema, EMPTY_TELEGRAM_INSTALLATION, {
+      endpoint: "POST /api/workspaces/:id/telegram/install",
+    });
+  }
+
+  async deleteTelegramInstallation(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/telegram/installations/${installationId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async redeemTelegramBindingToken(token: string): Promise<RedeemTelegramBindingTokenResponse> {
+    const raw = await this.fetch<unknown>(`/api/telegram/binding/redeem`, {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    });
+    return parseWithFallback(
+      raw,
+      RedeemTelegramBindingTokenResponseSchema,
+      EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE,
+      { endpoint: "POST /api/telegram/binding/redeem" },
+    );
+  }
+
+  /**
+   * The workspace's effective host-backpressure card (RUYI-618): the saved
+   * settings when an owner ever saved the form, the daemon code defaults
+   * (custom=false) otherwise.
+   */
+  async getWorkspaceBackpressureSettings(): Promise<WorkspaceBackpressureSettings> {
+    const raw = await this.fetch<unknown>("/api/workspace/backpressure-settings");
+    return parseWithFallback(raw, WorkspaceBackpressureSettingsSchema, {
+      enabled: true,
+      mem_high_pct: 15,
+      mem_recovery_pct: 25,
+      swap_high_pct: 80,
+      swap_recovery_pct: 60,
+      psi_high_pct: 50,
+      psi_recovery_pct: 20,
+      sample_interval_seconds: 5,
+      window_size: 6,
+      custom: false,
+    }, { endpoint: "GET /api/workspace/backpressure-settings" });
+  }
+
+  /**
+   * Save the workspace's backpressure card (owner-only server-side). A 422
+   * carries the shared hysteresis-validation message and nothing persisted —
+   * surface it through the mutation error so the form can show the reason.
+   */
+  async putWorkspaceBackpressureSettings(save: WorkspaceBackpressureSettingsSave): Promise<WorkspaceBackpressureSettings> {
+    const raw = await this.fetch<unknown>("/api/workspace/backpressure-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: save.enabled,
+        mem_high_pct: save.mem_high_pct,
+        mem_recovery_pct: save.mem_recovery_pct,
+        swap_high_pct: save.swap_high_pct,
+        swap_recovery_pct: save.swap_recovery_pct,
+        psi_high_pct: save.psi_high_pct,
+        psi_recovery_pct: save.psi_recovery_pct,
+        sample_interval_seconds: save.sample_interval_seconds,
+        window_size: save.window_size,
+      }),
+    });
+    return parseWithFallback(raw, WorkspaceBackpressureSettingsSchema, {
+      ...save,
+      custom: true,
+    }, { endpoint: "PUT /api/workspace/backpressure-settings" });
+  }
+}

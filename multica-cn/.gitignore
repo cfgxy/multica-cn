@@ -1,0 +1,109 @@
+node_modules
+dist
+*.log
+.DS_Store
+.envrc
+
+# build outputs
+.turbo
+.next
+out
+build
+bin
+dist-electron
+*.tsbuildinfo
+# ...except electron-builder's source resources dir, which holds tracked
+# config files (entitlements, icons) — not build output.
+!apps/desktop/build/
+!apps/desktop/build/**
+
+# env
+.env*
+!.env.example
+# Desktop production config is public (backend URL, etc.) — track it so
+# `pnpm package` produces a release-ready build without extra setup.
+!apps/desktop/.env.production
+# Desktop staging config is public (staging API/web URLs) — track it so
+# `pnpm dev:desktop:staging` works from a fresh checkout instead of relying
+# on a hand-written local env file (MUL-5025: a misnamed VITE_ var there
+# silently broke copy-link URLs).
+!apps/desktop/.env.staging
+# Mobile staging config is public (staging API URL) — track it so a fresh
+# checkout can run `pnpm dev:mobile:staging` / `ios:mobile*:staging` without
+# the user having to copy `.env.example` first.
+!apps/mobile/.env.staging
+# Mobile production config is public (production API URL) — track it so
+# external users can run `pnpm ios:mobile:device:prod:release` against
+# multica.ai's production backend without copying templates first.
+!apps/mobile/.env.production
+
+# test coverage
+coverage
+
+# Go
+server/bin/
+server/tmp/
+server/migrate
+server/daemon
+server/multica
+
+# Test artifacts
+test-results/
+apps/web/test-results/
+
+# context (agent workspace)
+.context
+.agent_context/
+.multica/
+
+# local settings
+.claude/
+.tool-versions
+
+# feature tracking
+_features/
+
+# runtime
+*.pid
+
+# platform specific
+*.dmg
+*.app
+server/server
+data/
+.kilo
+.zcode
+.omc
+.idea
+.gstack/
+
+# Python (agent tooling)
+__pycache__/
+*.pyc
+
+# 临时截图（验证用），不入库
+screenshot_*.png
+
+# 本机 agent 工具与救援脚本的临时目录，不入库
+.deer-flow/
+.rescue-ruyi132/
+
+# QA 阶段产物（2026-09-30：agent 基线提交曾把 QA 证据目录卷进分支），不入库：
+# 验证证据、截图目录、接口/页面转储一律留在 QA 根（~/.multica/qa）或被忽略
+qa*-evidence/
+qa-ruyi*/
+shots/
+shots-*/
+evidence/
+comments_all.json
+pat.txt
+
+# APK deliverables are handed off out-of-repo (qa-build/), never committed (RUYI-415)
+/*.apk
+
+# RUYI-563: 自测产物禁止入库
+/.r563-cli/
+/shot-*.png
+
+# RUYI-632: E2E release-entry artifacts (manifest + per-file hashes), runtime-local
+e2e-artifacts/

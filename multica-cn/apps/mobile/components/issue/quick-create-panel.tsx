@@ -1,0 +1,577 @@
+/**
+ * Smart-mode (agent quick-create) panel — the mobile counterpart of web's
+ * AgentCreatePanel (`packages/views/modals/quick-create-issue.tsx`): one
+ * prompt + a "Created by" agent/squad pick, server derives title and
+ * description, submit goes to POST /api/issues/quick-create.
+ *
+ * Semantic parity with web (apps/mobile/CLAUDE.md §Behavioral parity):
+ *   - Actor visibility: `visibleQuickCreateActors` (same rules as web's
+ *     panel filters), seed chain draft → last-actor → first visible agent
+ *     (`resolveQuickCreateActor`).
+ *   - Daemon CLI version gate: same pure checks as web
+ *     (`@multica/core/runtimes/cli-version`), fields gate applies only when
+ *     an explicit priority/due date is set.
+ *   - Structured submit failures surfaced in-flow: issue_limit_reached
+ *     opens the shared recovery dialog (components/billing/
+ *     issue-limit-recovery.tsx); agent_unavailable /
+ *     daemon_version_unsupported stay alerts.
+ *   - Shared fields (project / priority / due date) live in the same
+ *     new-issue draft store the manual form reads, so picks carry across a
+ *     mode switch — web's unified-draft semantics.
+ *
+ * Deliberate mobile divergences (UI/interaction layer only):
+ *   - No keep-open "create another" toggle: the mobile screen closes on
+ *     submit like the manual form does.
+ *   - The typed prompt is local to this panel — a mode switch carries the
+ *     shared fields (project/priority/due) but not the prompt text. Web
+ *     copies the prompt into the manual description on switch; mobile v1
+ *     doesn't.
+ *   - Mentions render as removable chips and serialize before the visible
+ *     prompt because RN TextInput cannot host web's inline mention nodes.
+ *   - Success closes the screen without a toast (the manual form does the
+ *     same); web shows a "sent" toast in its long-lived dialog.
+ */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Pressable, ScrollView, View } from "react-native";
+import { useFocusEffect } from "@react-navigation/native";
+import { Ionicons } from "@expo/vector-icons";
+import { useQuery } from "@tanstack/react-query";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { Stack, router } from "expo-router";
+import { ApiError } from "@/data/api";
+import {
+  checkQuickCreateCliVersion,
+  checkQuickCreateFieldsCliVersion,
+  readRuntimeCliVersion,
+} from "@multica/core/runtimes/cli-version";
+import { ActorAvatar } from "@/components/ui/actor-avatar";
+import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
+import { Text } from "@/components/ui/text";
+import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
+import { QuickCreateAttributeRow } from "@/components/issue/quick-create-attribute-row";
+import { AttachmentZone } from "@/components/issue/attachment-zone";
+import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
+import { MarkdownToolbar } from "@/components/editor/markdown-toolbar";
+import { VoiceSessionOverlay } from "@/components/voice/voice-session-overlay";
+import { useFileAttach } from "@/components/editor/use-file-attach";
+import { useSharedIntentStore } from "@/data/stores/shared-intent-store";
+import { assetFromSharedFile } from "@/lib/picked-asset";
+import { runtimeListOptions } from "@/data/queries/runtimes";
+import { memberListOptions } from "@/data/queries/members";
+import { agentListOptions } from "@/data/queries/agents";
+import { squadListOptions } from "@/data/queries/squads";
+import { useAuthStore } from "@/data/auth-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { useQuickCreateIssue } from "@/data/mutations/issues";
+import {
+  getNewIssueSubmissionContextGeneration,
+  useNewIssueDraftStore,
+} from "@/data/stores/new-issue-draft-store";
+import {
+  ensureQuickCreateActorMemoryHydrated,
+  rememberQuickCreateActorAfterSuccess,
+  useQuickCreateActorMemoryHydrationStore,
+  useQuickCreateActorMemoryStore,
+} from "@/data/stores/quick-create-prefs-store";
+import { useServerStore } from "@/data/server-store";
+import {
+  buildQuickCreateBody,
+  resolveQuickCreateActor,
+  visibleQuickCreateActors,
+} from "@/lib/quick-create";
+import { useActorLookup } from "@/data/use-actor-name";
+import { completedAttachmentIds } from "@/lib/attachment-zone";
+import { useMentionInput } from "@/lib/use-mention-input";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
+import { IssueLimitRecoveryDialog } from "@/components/billing/issue-limit-recovery";
+import { useT } from "@/lib/use-t";
+
+/**
+ * Bounded retries for the persisted last-actor read. A transient
+ * AsyncStorage failure is worth one more attempt; a persistent one must not
+ * spin the effect, and the flow stays usable either way (the user picks the
+ * actor explicitly).
+ */
+const MEMORY_HYDRATION_ATTEMPTS = 2;
+
+export function QuickCreatePanel() {
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const userId = useAuthStore((s) => s.user?.id);
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const { data: agents = [], isSuccess: agentsLoaded } = useQuery(
+    agentListOptions(wsId),
+  );
+  const { data: squads = [], isSuccess: squadsLoaded } = useQuery(
+    squadListOptions(wsId),
+  );
+  const { data: runtimes = [] } = useQuery(runtimeListOptions(wsId));
+
+  // The persisted actor memory hydrates asynchronously from AsyncStorage.
+  // Opening this panel before it lands would read an empty map, i.e. the
+  // same "no history" fall-through the loading gate below prevents for the
+  // query lists (RUYI-130).
+  //
+  // A read that FAILS is not "no history": zustand resolves rehydrate()
+  // either way and only reports the difference through hasHydrated(), so the
+  // helper returns an explicit status. A failed read keeps the seed chain's
+  // tail closed — the user picks explicitly instead of silently filing as
+  // the first visible agent — and is retried a bounded number of times.
+  const memoryStatus = useQuickCreateActorMemoryHydrationStore(
+    (s) => s.status,
+  );
+  const hydrationAttempts = useRef(0);
+  useEffect(() => {
+    if (memoryStatus === "ready") return;
+    if (hydrationAttempts.current >= MEMORY_HYDRATION_ATTEMPTS) return;
+    hydrationAttempts.current += 1;
+    // The helper publishes the outcome to the hydration store itself, so
+    // there is no component state to guard against a late resolution.
+    void ensureQuickCreateActorMemoryHydrated();
+  }, [memoryStatus]);
+
+  const actorsLoaded = agentsLoaded && squadsLoaded;
+  // The seed chain's "first visible agent" tail additionally requires the
+  // persisted memory to have actually resolved — otherwise an absent or
+  // unreadable memory is indistinguishable from "no history" and re-seeds
+  // the very downgrade RUYI-130 reported.
+  const historyResolved = memoryStatus === "ready";
+
+  const memberRole = useMemo(
+    () => members.find((m) => m.user_id === userId)?.role ?? null,
+    [members, userId],
+  );
+
+  const visible = useMemo(
+    () => visibleQuickCreateActors(agents, squads, { userId, memberRole }),
+    [agents, squads, userId, memberRole],
+  );
+
+  const draftActor = useNewIssueDraftStore((s) => s.smartActor);
+  const setSmartActor = useNewIssueDraftStore((s) => s.setSmartActor);
+  // Persisted server × workspace memory (RUYI-130). Subscribing to the map
+  // rather than reading it once is what makes the seed effect re-run when
+  // AsyncStorage hydration lands after this panel mounted.
+  const actorMemory = useQuickCreateActorMemoryStore((s) => s.byServer);
+  const activeServerId = useServerStore((s) => s.activeServerId);
+  const lastActor = useMemo(
+    () => (wsSlug ? actorMemory[activeServerId]?.[wsSlug] ?? null : null),
+    [actorMemory, activeServerId, wsSlug],
+  );
+  const priority = useNewIssueDraftStore((s) => s.priority);
+  const dueDate = useNewIssueDraftStore((s) => s.dueDate);
+  const project = useNewIssueDraftStore((s) => s.project);
+  // Draft-store reset ownership lives in the new-issue screen shell (once
+  // per visit) so a smart↔manual mode flip preserves in-progress picks —
+  // web's unified-draft semantics.
+
+  // Re-seed whenever the visible sets resolve or the draft empties — same
+  // chain web runs in seedActor + its re-seed effect. Persisting the
+  // resolution into the store keeps the actor formSheet route (a sibling
+  // Stack screen) in sync with what the panel would submit.
+  useEffect(() => {
+    const resolved = resolveQuickCreateActor(
+      [draftActor, lastActor],
+      visible.agents,
+      visible.squads,
+      actorsLoaded,
+      historyResolved,
+    );
+    if (
+      resolved &&
+      (draftActor?.type !== resolved.type || draftActor?.id !== resolved.id)
+    ) {
+      setSmartActor(resolved);
+    }
+  }, [
+    draftActor,
+    lastActor,
+    visible,
+    actorsLoaded,
+    historyResolved,
+    setSmartActor,
+  ]);
+
+  const actorName = useActorLookup();
+  const actor = useMemo(
+    () =>
+      resolveQuickCreateActor(
+        [draftActor],
+        visible.agents,
+        visible.squads,
+        actorsLoaded,
+        historyResolved,
+      ),
+    [draftActor, visible, actorsLoaded, historyResolved],
+  );
+
+  const prompt = useMentionInput({ mentionMode: "chips" });
+  const {
+    attachments,
+    pickAndUploadFiles,
+    // RUYI-477: 贴图按钮改为「拍照 / 相册」源选择弹层入口。
+    chooseImageSource,
+    imageSourceModalProps,
+    removeAttachment,
+    retryAttachment,
+    enqueueAssets,
+    uploading,
+  } = useFileAttach();
+
+  // RUYI-463: 系统分享 → Issue。面板获焦即 one-shot take；目的地是
+  // chat 时 takeFor 返回 null，payload 原样留给 chat 消费。用焦点语义
+  // 而非挂载 effect：落地页 router.replace 进来时 new-issue 屏可能被
+  // 复用（不重挂载），挂载 effect 会漏 take；focus 每次回到本屏都会
+  // 触发，takeFor 幂等保证不重复注入。
+  useFocusEffect(
+    useCallback(() => {
+      const taken = useSharedIntentStore.getState().takeFor("issue");
+      if (!taken) return;
+      enqueueAssets(taken.files.map(assetFromSharedFile));
+    }, [enqueueAssets]),
+  );
+
+  // Daemon CLI version gate — same pure checks web runs pre-submit (the
+  // server re-validates as the trust boundary). The fields gate only
+  // applies when the user set an explicit priority or due date, mirroring
+  // web's usesExplicitFields switch. A squad pick routes to its leader on
+  // the backend, so the leader's runtime gates the squad — same as web's
+  // selectedAgent resolution.
+  const effectiveAgent = useMemo(() => {
+    if (!actor) return undefined;
+    if (actor.type === "agent") {
+      return visible.agents.find((a) => a.id === actor.id);
+    }
+    const squad = visible.squads.find((s) => s.id === actor.id);
+    if (!squad) return undefined;
+    return visible.agents.find((a) => a.id === squad.leader_id);
+  }, [actor, visible]);
+  const selectedRuntime = useMemo(
+    () =>
+      effectiveAgent?.runtime_id
+        ? runtimes.find((r) => r.id === effectiveAgent.runtime_id)
+        : undefined,
+    [runtimes, effectiveAgent],
+  );
+  const runtimeCliVersion = readRuntimeCliVersion(selectedRuntime?.metadata);
+  const baseVersionCheck = useMemo(
+    () => checkQuickCreateCliVersion(runtimeCliVersion),
+    [runtimeCliVersion],
+  );
+  const fieldsVersionCheck = useMemo(
+    () => checkQuickCreateFieldsCliVersion(runtimeCliVersion),
+    [runtimeCliVersion],
+  );
+  const usesExplicitFields = priority !== "none" || dueDate !== null;
+  const versionCheck = usesExplicitFields ? fieldsVersionCheck : baseVersionCheck;
+  const versionBlocked =
+    baseVersionCheck.state !== "ok" ||
+    (usesExplicitFields && fieldsVersionCheck.state !== "ok");
+
+  const quickCreate = useQuickCreateIssue();
+  const isSubmitting = quickCreate.isPending;
+
+  const { t } = useT("modals");
+  const { t: tCommon } = useT("common");
+  // RUYI-605 delta: an issue-limit rejection opens the shared recovery
+  // dialog (desktop IssueLimitUpgradeDialog semantics) instead of the bare
+  // title alert.
+  const [issueLimitOpen, setIssueLimitOpen] = useState(false);
+  // RUYI-449: 语音入口仅对 agent 生效（squad 无客户端可指定的 agent id，
+  // 与 web AgentCreatePanel 同边界）。口述轮次回填进 prompt，由用户自行
+  // 确认后提交，本面板不做任何自动发送。
+  const [voiceOpen, setVoiceOpen] = useState(false);
+  const voiceAgentId = actor?.type === "agent" ? actor.id : null;
+
+  const canSubmit =
+    !isSubmitting &&
+    !uploading &&
+    !versionBlocked &&
+    prompt.text.trim().length > 0 &&
+    actor !== null;
+
+  const onSubmit = useCallback(async () => {
+    if (!actor || versionBlocked || uploading) return;
+    if (prompt.text.trim().length === 0) return;
+    const serializedPrompt = prompt.serialize().trim();
+    // Capture the context the request is sent from — the user can dismiss
+    // this screen and switch account or workspace before the response
+    // arrives (manual form parity, see ManualCreatePanel.onSubmit).
+    const submittedServerId = useServerStore.getState().activeServerId;
+    const submittedWorkspaceSlug =
+      useWorkspaceStore.getState().currentWorkspaceSlug;
+    const submittedUserId = useAuthStore.getState().user?.id;
+    const submittedGeneration = getNewIssueSubmissionContextGeneration();
+    try {
+      await quickCreate.mutateAsync(
+        buildQuickCreateBody({
+          actor,
+          prompt: serializedPrompt,
+          projectId: project?.id ?? null,
+          priority,
+          dueDate,
+          attachmentIds: completedAttachmentIds(attachments),
+        }),
+      );
+      // RUYI-130: remember the SUBMITTED actor per server × workspace, only
+      // after the server accepted the create and only if that context is
+      // still the active one.
+      const currentServerId = useServerStore.getState().activeServerId;
+      const currentWorkspaceSlug =
+        useWorkspaceStore.getState().currentWorkspaceSlug;
+      const currentUserId = useAuthStore.getState().user?.id;
+      if (
+        submittedWorkspaceSlug &&
+        submittedUserId &&
+        currentWorkspaceSlug &&
+        currentUserId
+      ) {
+        // Awaited, and awaited BEFORE the screen closes: an unawaited
+        // AsyncStorage write can be outlived by the process (iOS background
+        // reclaim right after a create), and the next cold start would then
+        // restore the older pick — the reported defect.
+        //
+        // Its own try/catch, because the create already succeeded. A storage
+        // failure here must not reach the submit catch below: that one
+        // reports "failed to submit" and would invite the user to file the
+        // same issue twice.
+        try {
+          await rememberQuickCreateActorAfterSuccess(
+            {
+              serverId: submittedServerId,
+              workspaceSlug: submittedWorkspaceSlug,
+              userId: submittedUserId,
+              generation: submittedGeneration,
+            },
+            {
+              serverId: currentServerId,
+              workspaceSlug: currentWorkspaceSlug,
+              userId: currentUserId,
+              generation: getNewIssueSubmissionContextGeneration(),
+            },
+            actor,
+          );
+        } catch {
+          // Losing the preference is strictly less harmful than blocking or
+          // re-reporting a create the server already accepted; the next
+          // successful create overwrites it.
+        }
+      }
+      router.back();
+    } catch (err) {
+      // Structured 4xx bodies mirror web's in-modal error mapping; the
+      // server is the authoritative trust boundary for every gate.
+      const code =
+        err instanceof ApiError &&
+        err.body &&
+        typeof err.body === "object" &&
+        "code" in err.body
+          ? String((err.body as { code: unknown }).code)
+          : null;
+      if (code === "issue_limit_reached") {
+        // Same key as web's upgrade prompt; the shared dialog carries the
+        // per-state description and the cloud-authorized billing action.
+        setIssueLimitOpen(true);
+        return;
+      }
+      if (code === "agent_unavailable") {
+        const reason =
+          err instanceof ApiError &&
+          err.body &&
+          typeof err.body === "object" &&
+          "reason" in err.body
+            ? String((err.body as { reason: unknown }).reason)
+            : null;
+        Alert.alert(
+          reason ||
+            t(
+              "create_issue.agent.error_agent_unavailable_fallback",
+              "Agent is unavailable. Pick another agent.",
+            ),
+        );
+        return;
+      }
+      if (code === "daemon_version_unsupported") {
+        Alert.alert(
+          t("create_issue.agent.error_daemon_version", "This agent's daemon CLI ({{current}}) is below the required {{min}}. Update the daemon to continue.", {
+            current: versionCheck.current,
+            min: versionCheck.min,
+          }),
+        );
+        return;
+      }
+      Alert.alert(
+        err instanceof Error && err.message
+          ? err.message
+          : t("create_issue.agent.error_unknown", "Failed to submit. Try again."),
+      );
+    }
+  }, [
+    actor,
+    versionBlocked,
+    uploading,
+    prompt,
+    attachments,
+    project,
+    priority,
+    dueDate,
+    quickCreate,
+    t,
+    versionCheck,
+  ]);
+
+  const headerRight = useCallback(
+    () => (
+      <SubmitIssueButton
+        disabled={!canSubmit}
+        loading={isSubmitting}
+        onPress={onSubmit}
+      />
+    ),
+    [canSubmit, isSubmitting, onSubmit],
+  );
+
+  const openActorPicker = useCallback(() => {
+    if (!wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/new-issue-picker/actor",
+      params: { workspace: wsSlug },
+    });
+  }, [wsSlug]);
+
+  return (
+    <>
+      <Stack.Screen
+        options={{
+          title: t("create_issue.sr_agent", "Quick create issue"),
+          headerRight,
+        }}
+      />
+      <KeyboardAvoidingView
+        className="flex-1 bg-background"
+        behavior="padding"
+      >
+        <ScrollView
+          className="flex-1"
+          contentContainerClassName="px-4 pt-4 pb-6 gap-4"
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* "Created by" row — opens the agent/squad formSheet picker. Same
+              list the picker route renders from, so the label always matches
+              what a submit would use. */}
+          <Pressable
+            onPress={openActorPicker}
+            className="flex-row items-center gap-2 py-1 active:opacity-60"
+            accessibilityLabel={t("create_issue.agent.select_agent_aria", "Select agent")}
+          >
+            <Text className="text-sm text-muted-foreground">
+              {t("create_issue.agent.created_by", "Created by")}
+            </Text>
+            {actor ? (
+              <View className="flex-row items-center gap-1.5">
+                <ActorAvatar type={actor.type} id={actor.id} size={20} />
+                <Text className="text-sm font-medium text-foreground">
+                  {actorName.getName(actor.type, actor.id)}
+                </Text>
+              </View>
+            ) : (
+              <Text className="text-sm text-muted-foreground">
+                {t("create_issue.agent.pick_an_agent", "Pick an agent…")}
+              </Text>
+            )}
+            <View className="flex-1" />
+            <Ionicons
+              name="chevron-forward"
+              size={16}
+              color="#a1a1aa"
+            />
+          </Pressable>
+
+          {actor && versionBlocked && (
+            <View className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2">
+              <Text className="text-xs text-warning">
+                {versionCheck.state === "missing"
+                  ? t("create_issue.agent.version_missing", "This agent's daemon doesn't report a CLI version. Create with agent needs a daemon running CLI {{min}} or newer.", { min: versionCheck.min })
+                  : t("create_issue.agent.version_below", "This agent's daemon CLI is {{current}} — Create with agent needs ≥ {{min}}. Update the daemon to continue.", {
+                      current: versionCheck.current,
+                      min: versionCheck.min,
+                    })}
+              </Text>
+            </View>
+          )}
+
+          <AutosizeTextArea
+            value={prompt.text}
+            onChangeText={prompt.handlers.onChangeText}
+            selection={prompt.selection}
+            onSelectionChange={prompt.handlers.onSelectionChange}
+            placeholder={t(
+              "create_issue.agent.prompt_placeholder",
+              'Tell the agent what to do, e.g. "let Bohan fix the inbox loading slowness"',
+            )}
+            className="text-lg leading-6"
+            minHeight={96}
+            maxHeight={240}
+            editable={!isSubmitting && !uploading}
+            autoFocus
+          />
+
+          <AttachmentZone
+            mentions={prompt.markers}
+            attachments={attachments}
+            onRemoveMention={prompt.removeMention}
+            onRemoveAttachment={removeAttachment}
+            onRetryAttachment={retryAttachment}
+          />
+
+          <MarkdownToolbar
+            onAt={prompt.handlers.onAtButtonPress}
+            onImage={chooseImageSource}
+            onFile={pickAndUploadFiles}
+            disabled={isSubmitting || uploading}
+          />
+
+          {voiceAgentId !== null && !voiceOpen && (
+            <Pressable
+              onPress={() => setVoiceOpen(true)}
+              className="flex-row items-center gap-2 self-start rounded-full border border-border px-3 py-1.5 active:opacity-60"
+              disabled={isSubmitting}
+              accessibilityRole="button"
+              accessibilityLabel={t("voice:button.start", "Start voice conversation")}
+            >
+              <Ionicons name="mic-outline" size={16} color="#a1a1aa" />
+              <Text className="text-xs text-muted-foreground">
+                {t("voice:overlay.use_prompt", "What you say will be added to the message box when you're done.")}
+              </Text>
+            </Pressable>
+          )}
+
+          <QuickCreateAttributeRow />
+
+          <Text className="text-xs text-muted-foreground">
+            {tCommon("mobile.create_issue.smart_hint", "The agent drafts the title and description — you'll get an inbox notification when it's done.")}
+          </Text>
+        </ScrollView>
+        <MentionSuggestionBar {...prompt.suggestionBar} />
+
+        {/* RUYI-477: Android 侧「拍照/相册」弹层为 RN Modal，必须显式挂载。 */}
+        <ActionSheetModal {...imageSourceModalProps} />
+        <IssueLimitRecoveryDialog
+          visible={issueLimitOpen}
+          onClose={() => setIssueLimitOpen(false)}
+        />
+        <VoiceSessionOverlay
+          agentId={voiceOpen && voiceAgentId !== null ? voiceAgentId : null}
+          workspaceSlug={wsSlug ?? ""}
+          onClose={() => setVoiceOpen(false)}
+          onUserTurn={(spoken) =>
+            prompt.setText((prev) => {
+              const trimmed = prev.trimEnd();
+              return trimmed ? `${trimmed}\n\n${spoken}` : spoken;
+            })
+          }
+        />
+      </KeyboardAvoidingView>
+    </>
+  );
+}

@@ -1,0 +1,9 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.empty-contributes",
+  "name": "Contributes nothing",
+  "version": "1.0.0",
+  "author": { "name": "Example" },
+  "scopes": ["issues:read"],
+  "contributes": {}
+}

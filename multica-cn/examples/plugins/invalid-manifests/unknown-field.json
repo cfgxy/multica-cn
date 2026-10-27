@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.unknown-field",
+  "name": "Unknown field",
+  "version": "1.0.0",
+  "author": { "name": "Example" },
+  "scopes": ["issues:read"],
+  "permissions": ["issues:write"],
+  "contributes": {
+    "surfaces": [
+      { "key": "panel", "type": "issue_panel", "name": "Panel", "entry": "ui/main.js" }
+    ]
+  }
+}

@@ -1,0 +1,292 @@
+import { useMemo } from "react";
+import {
+  Alert,
+  FlatList,
+  Pressable,
+  View,
+} from "react-native";
+import { useQuery } from "@tanstack/react-query";
+import { router } from "expo-router";
+import { Ionicons } from "@expo/vector-icons";
+import type { InboxItem } from "@multica/core/types";
+import { Text } from "@/components/ui/text";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Header } from "@/components/ui/header";
+import { IconButton } from "@/components/ui/icon-button";
+import { HeaderActions } from "@/components/ui/app-header-actions";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { SwipeableInboxRow } from "@/components/inbox/swipeable-inbox-row";
+import { archivedInboxOptions, inboxListOptions } from "@/data/queries/inbox";
+import { agentTaskSnapshotOptions } from "@/data/queries/agent-task-snapshot";
+import { deriveIssueActivityMap } from "@/lib/issue-agent-activity";
+import {
+  useArchiveAllInbox,
+  useArchiveAllReadInbox,
+  useArchiveCompletedInbox,
+  useArchiveInbox,
+  useMarkAllInboxRead,
+  useMarkInboxRead,
+} from "@/data/mutations/inbox";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { THEME } from "@/lib/theme";
+import {
+  deduplicateArchivedInboxItems,
+  deduplicateInboxItems,
+  getInboxNavigationTarget,
+} from "@/lib/inbox-display";
+import { useT } from "@/lib/use-t";
+
+export default function Inbox() {
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const { colorScheme } = useColorScheme();
+  const { t } = useT("inbox");
+  const { data: rawItems, isLoading, error, refetch, isRefetching } = useQuery(
+    inboxListOptions(wsId),
+  );
+  // Dedup + drop archived to match web/desktop. See CLAUDE.md
+  // "Behavioral parity" → inbox dedup incident.
+  const data = useMemo(
+    () => deduplicateInboxItems(rawItems ?? []),
+    [rawItems],
+  );
+  // RUYI-532 archived sub-view. Fetched on the main list too — the entry's
+  // count label needs the archived cache before the user ever goes there
+  // (same reason web fetches both: inbox-page.tsx archivedInboxListOptions).
+  const { data: rawArchivedItems = [] } = useQuery(
+    archivedInboxOptions(wsId),
+  );
+  const archivedCount = useMemo(
+    () => deduplicateArchivedInboxItems(rawArchivedItems).length,
+    [rawArchivedItems],
+  );
+  // RUYI-76 ③: per-issue agent activity (running/queued runs), sliced from
+  // the ONE shared workspace snapshot — the same query the presence
+  // prefetch warms at workspace entry and use-presence-realtime keeps
+  // fresh, so this adds no new fetch on the hot path. Screen-level
+  // derivation (one pass) instead of web's per-row useQuery(select):
+  // same visibility, without N query observers on a long list.
+  const { data: activitySnapshot = [] } = useQuery(
+    agentTaskSnapshotOptions(wsId),
+  );
+  const activityByIssue = useMemo(
+    () => deriveIssueActivityMap(activitySnapshot),
+    [activitySnapshot],
+  );
+  const markRead = useMarkInboxRead();
+  const markAllRead = useMarkAllInboxRead();
+  const archive = useArchiveInbox();
+  const archiveAll = useArchiveAllInbox();
+  const archiveAllRead = useArchiveAllReadInbox();
+  const archiveCompleted = useArchiveCompletedInbox();
+
+  const onPressItem = (item: InboxItem) => {
+    if (!item.read) {
+      // Optimistic read flip lives in useMarkInboxRead.onMutate — fires
+      // setQueryData synchronously before the cancelQueries await, so the
+      // row is already styled "read" by the time iOS captures the source
+      // snapshot for the native stack push transition.
+      markRead.mutate(item.id);
+    }
+    const target = getInboxNavigationTarget(item, wsSlug, String(Date.now()));
+    if (target) router.push(target);
+  };
+
+  // Trailing batch menu — mirrors web's dropdown
+  // (packages/views/inbox/components/inbox-page.tsx). "Mark all read" is
+  // first (most common batch op); "Archive all" is destructive so it gets
+  // the iOS red treatment + Alert confirm.
+  const onMarkAllRead = () => markAllRead.mutate();
+  const onArchiveAllRead = () => archiveAllRead.mutate();
+  const onArchiveCompleted = () => archiveCompleted.mutate();
+  const openArchived = () => {
+    if (!wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/inbox/archived",
+      params: { workspace: wsSlug },
+    });
+  };
+  const onArchiveAll = () => {
+    Alert.alert(
+      t("menu.archive_all", "Archive all"),
+      t(
+        "mobile.page.archive_all_body",
+        "This archives every inbox item, read or unread. You can still find them via the issue pages.",
+      ),
+      [
+        // 绑定的是 inbox ns，cancel 在 common 里，用 ns 前缀跨取即可——
+        // t 就在作用域内，不需要 i18n 对象（i18next 默认 nsSeparator 是 ":"）。
+        { text: t("common:cancel", "Cancel"), style: "cancel" },
+        {
+          text: t("menu.archive_all", "Archive all"),
+          style: "destructive",
+          onPress: () => archiveAll.mutate(),
+        },
+      ],
+    );
+  };
+
+  return (
+    <View className="flex-1 bg-background">
+      <Header
+        title={t("page.title", "Inbox")}
+        right={
+          <>
+            {/* RUYI-51: the ⋯ menu moved AFTER the utility buttons so the
+                "More" affordance sits rightmost — the unified position rule
+                shared with the chat / issue / project headers. */}
+            <HeaderActions />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <IconButton
+                  name="ellipsis-horizontal"
+                  accessibilityLabel={t(
+                    "mobile.page.actions_a11y",
+                    "Inbox actions",
+                  )}
+                />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem onPress={onMarkAllRead}>
+                  <Text>{t("menu.mark_all_read", "Mark all as read")}</Text>
+                </DropdownMenuItem>
+                <DropdownMenuItem onPress={onArchiveAllRead}>
+                  <Text>{t("menu.archive_all_read", "Archive all read")}</Text>
+                </DropdownMenuItem>
+                <DropdownMenuItem onPress={onArchiveCompleted}>
+                  <Text>{t("menu.archive_completed", "Archive completed")}</Text>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onPress={onArchiveAll}>
+                  <Text>{t("menu.archive_all", "Archive all")}</Text>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      />
+      {isLoading ? (
+        <InboxLoading />
+      ) : error ? (
+        <View className="px-4 gap-3 pt-4">
+          <Text className="text-sm text-destructive">
+            {t("mobile.page.load_failed", "Failed to load inbox: {{reason}}", {
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : t("common:mobile.common.unknown_error", "unknown error"),
+            })}
+          </Text>
+          <Button variant="outline" onPress={() => refetch()}>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
+          </Button>
+        </View>
+      ) : !data || data.length === 0 ? (
+        // PC parity (inbox-list.tsx): still offer the archive when the main
+        // list is empty — that is exactly when a user goes looking for what
+        // they filed away.
+        <View className="flex-1">
+          <InboxEmpty iconColor={THEME[colorScheme].mutedForeground} />
+          {archivedCount > 0 ? (
+            <ArchivedEntry count={archivedCount} onPress={openArchived} />
+          ) : null}
+        </View>
+      ) : (
+        <FlatList
+          data={data}
+          keyExtractor={(item) => item.id}
+          ItemSeparatorComponent={() => (
+            <View className="h-px bg-border ml-16" />
+          )}
+          ListFooterComponent={
+            archivedCount > 0 ? (
+              <ArchivedEntry count={archivedCount} onPress={openArchived} />
+            ) : null
+          }
+          contentContainerClassName="pb-2"
+          renderItem={({ item }) => (
+            <SwipeableInboxRow
+              item={item}
+              activity={
+                item.issue_id ? activityByIssue.get(item.issue_id) : undefined
+              }
+              onPress={() => onPressItem(item)}
+              onArchive={() => archive.mutate(item.id)}
+            />
+          )}
+          refreshing={isRefetching}
+          onRefresh={refetch}
+        />
+      )}
+    </View>
+  );
+}
+
+// The entry into the archived sub-view (RUYI-532) — mirrors web's footer
+// button in inbox-list.tsx: archive glyph, localized title, count, chevron.
+// Sits below the last row of the main list (and below the empty state, where
+// web renders it for the same reason).
+function ArchivedEntry({ count, onPress }: { count: number; onPress: () => void }) {
+  const { t } = useT("inbox");
+  const { colorScheme } = useColorScheme();
+  const muted = THEME[colorScheme].mutedForeground;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={t("list.archived_title", "Archived")}
+      className="flex-row items-center gap-3 px-4 py-3 border-t border-border active:bg-secondary"
+    >
+      <Ionicons name="archive-outline" size={20} color={muted} />
+      <Text className="flex-1 text-sm font-medium text-muted-foreground">
+        {t("list.archived_title", "Archived")}
+      </Text>
+      <Text className="text-sm text-muted-foreground tabular-nums">
+        {count}
+      </Text>
+      <Ionicons name="chevron-forward" size={16} color={muted} />
+    </Pressable>
+  );
+}
+
+// Loading state — 6 row-shaped Skeletons matching InboxRow's layout
+// (avatar circle + two text lines). Perceived perf wins over a centered
+// spinner because the eye immediately sees the list-like structure.
+function InboxLoading() {
+  return (
+    <View className="px-4 pt-4 gap-4">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <View key={i} className="flex-row gap-3">
+          <Skeleton className="size-9 rounded-full" />
+          <View className="flex-1 gap-2 pt-1">
+            <Skeleton className="h-3.5 w-3/4" />
+            <Skeleton className="h-3 w-1/2" />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function InboxEmpty({ iconColor }: { iconColor: string }) {
+  const { t } = useT("inbox");
+  return (
+    <View className="flex-1 items-center justify-center px-8 gap-3">
+      <Ionicons name="mail-open-outline" size={42} color={iconColor} />
+      <Text className="text-base font-medium text-foreground text-center">
+        {t("list.empty", "No notifications")}
+      </Text>
+      <Text className="text-sm text-muted-foreground text-center">
+        {t("detail.empty", "Your inbox is empty")}
+      </Text>
+    </View>
+  );
+}

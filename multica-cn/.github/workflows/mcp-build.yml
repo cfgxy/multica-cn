@@ -1,0 +1,108 @@
+name: MCP Server Build
+
+# RUYI-82: Owner 决策「像 mobile 那样放到同一个仓库，push 时自动构建」。
+# apps/mcp 变更即自动构建 npm 包（tarball）并上传为 Actions artifact，
+# 供 QA/使用方下载核验。与 mobile-android-build.yml 的分阶语义一致：
+# - push main / workflow_dispatch：构建并上传 artifact（含 SHA256 校验值）。
+# - Draft PR：需显式 dispatch 精确 head SHA，不产生自动运行或发布动作。
+#
+# 该 workflow 不做发布（npm registry 发布另行决策）；构建结果由 Leader
+# 在 push 后核对。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/mcp/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/mcp-build.yml"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR number
+        required: false
+        type: string
+      expected_sha:
+        description: Exact 40-character PR head SHA to validate
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify manual PR head
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.pr_number != '' || inputs.expected_sha != '') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[(.state), (.base.ref), (.head.sha), (.head.ref), (.head.repo.full_name)] | join("|")')"
+          expected="open|main|$EXPECTED_SHA|$GITHUB_REF_NAME|$GITHUB_REPOSITORY"
+          test "$pr" = "$expected" || {
+            echo "::error::PR is not open on main at the selected branch and expected SHA"
+            exit 1
+          }
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec turbo typecheck --filter=@multica/mcp
+
+      - name: Lint
+        run: pnpm exec turbo lint --filter=@multica/mcp
+
+      - name: Test
+        run: pnpm exec turbo test --filter=@multica/mcp
+
+      - name: Build
+        run: pnpm exec turbo build --filter=@multica/mcp
+
+      - name: Pack
+        run: pnpm --filter @multica/mcp pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Checksum
+        working-directory: ${{ runner.temp }}
+        run: |
+          for f in multica-mcp-*.tgz; do
+            sha256sum "$f" | tee "$f.sha256"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multica-mcp-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/multica-mcp-*.tgz
+            ${{ runner.temp }}/multica-mcp-*.tgz.sha256
+          if-no-files-found: error

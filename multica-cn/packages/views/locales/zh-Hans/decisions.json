@@ -1,0 +1,125 @@
+{
+  "page": {
+    "breadcrumb": "决策中心",
+    "empty_title": "暂无决策卡",
+    "empty_description": "智能体或成员发起的决策卡会聚合在这里，待你决策的事项不再被遗漏。",
+    "load_failed": "决策卡加载失败"
+  },
+  "section": {
+    "open": "待决策",
+    "answered": "已决策",
+    "cancelled": "已失效"
+  },
+  "badge": {
+    "recommended": "有推荐"
+  },
+  "mobile": {
+    "tab": {
+      "title": "决策"
+    },
+    "tabs": {
+      "all": "全部",
+      "open": "待决策",
+      "answered": "已决策",
+      "cancelled": "已失效"
+    },
+    "filters": {
+      "title": "筛选",
+      "reset": "重置",
+      "a11y": "筛选",
+      "recommended_only": "仅看有推荐",
+      "agent_created_only": "仅看 Agent 发起"
+    },
+    "page": {
+      "title": "决策中心",
+      "load_failed": "决策卡加载失败：{{reason}}",
+      "empty_filtered": "没有符合当前页签或筛选条件的决策卡"
+    }
+  },
+  "view": {
+    "section": "视图",
+    "list": "列表",
+    "board": "看板",
+    "tooltip_list": "列表视图",
+    "tooltip_board": "看板视图"
+  },
+  "filter": {
+    "tooltip": "筛选",
+    "active_count_other": "{{count}} 个筛选",
+    "reset": "重置"
+  },
+  "board": {
+    "empty_column": "暂无卡片"
+  },
+  "filtered_empty": {
+    "title": "没有符合筛选条件的决策卡",
+    "hint": "调整或清除筛选，查看此视图中的决策卡。",
+    "clear_button": "清除筛选"
+  },
+  "requests": {
+    "section_title": "授权请求",
+    "action_workspace_info_read": "读取工作区信息",
+    "action_prompt_restore": "恢复提示词",
+    "action_project_prompt_sync": "同步项目提示词",
+    "action_single_issue_create": "创建单一事项",
+    "action_script_review": "审阅脚本",
+    "issue_created": "目标 Issue {{identifier}} · {{status}}",
+    "review_prompt_content": "查看待授权提示词",
+    "hide_prompt_content": "收起待授权提示词",
+    "risk_read": "只读",
+    "risk_write_low": "低风险写入",
+    "status_pending": "待授权",
+    "status_approved": "已同意",
+    "status_denied": "已拒绝",
+    "status_expired": "已过期",
+    "status_revoked": "已撤销",
+    "status_executed": "已执行",
+    "status_reviewed": "已审阅",
+    "status_execute_failed": "执行失败",
+    "kind_cli": "白名单操作",
+    "kind_script": "受限脚本",
+    "kind_script_review": "仅脚本审阅",
+    "kind_issue": "单事项建单",
+    "execution_in_progress": "审批完成，执行中",
+    "result_unknown": "结果待核实，请勿重试此请求",
+    "no_side_effect": "已确认未产生副作用",
+    "side_effect_completed": "已确认完成",
+    "receipt_step": "{{handler}}：{{status}}（{{effect}}）",
+    "receipt_completed": "完成",
+    "receipt_failed": "失败",
+    "approved_by": "由 {{actor}} 审批",
+    "origin_label": "{{agent}} 发起",
+    "source_issue": "来自 Issue：{{title}}",
+    "approve": "同意",
+    "deny": "拒绝",
+    "cancel": "撤销请求",
+    "projection_hint": "此行是状态投影，请在目标空间操作",
+    "script_review_details": "查看脚本快照",
+    "copy_script_hash": "复制脚本哈希",
+    "script_hash": "脚本 SHA-256",
+    "script_interpreter": "解释器",
+    "script_arguments": "参数",
+    "script_body": "脚本正文",
+    "script_details_loading": "正在加载脚本快照",
+    "script_details_error": "无法加载脚本快照",
+    "hash_copied": "已复制哈希",
+    "open_target_workspace": "前往目标空间处理",
+    "executed_failed": "执行失败：{{reason}}",
+    "steps_title": "各空间步骤",
+    "step_origin": "发起空间",
+    "step_target": "目标空间",
+    "detail_error": "步骤详情加载失败",
+    "answer_failed": "授权操作失败",
+    "cancel_failed": "撤销失败"
+  },
+  "detail": {
+    "read_only": "只读决策详情",
+    "no_context": "未提供补充背景。",
+    "options": "候选方案",
+    "recommended": "推荐",
+    "selected": "已选择",
+    "single_select": "选择一个方案",
+    "multi_select": "可选择一个或多个方案",
+    "open_task": "前往任务作答"
+  }
+}

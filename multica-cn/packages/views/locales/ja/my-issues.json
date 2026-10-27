@@ -1,0 +1,59 @@
+{
+  "page": {
+    "breadcrumb": "マイタスク",
+    "workspace_fallback": "ワークスペース",
+    "empty_title": "あなたに割り当てられたタスクはありません",
+    "empty_description": "あなたが作成したタスクや割り当てられたタスクがここに表示されます。"
+  },
+  "header": {
+    "scope": {
+      "all_label": "すべて",
+      "all_description": "自分に割り当て、自分が作成、または自分のエージェントやスクワッドが関わるタスク",
+      "assigned_label": "割り当て済み",
+      "assigned_description": "自分に割り当てられたタスク",
+      "created_label": "作成済み",
+      "created_description": "自分が作成したタスク",
+      "agents_label": "自分のエージェントとスクワッド",
+      "agents_description": "自分のエージェントに割り当てられたタスク",
+      "actionable_label": "要対応"
+    },
+    "filter_button": "フィルター",
+    "filter_status": "ステータス",
+    "filter_priority": "優先度",
+    "issue_count_other": "{{count}} 件のタスク",
+    "reset_filters": "すべてのフィルターをリセット",
+    "display_settings": "表示設定",
+    "grouping": "グループ化",
+    "group_status": "ステータス",
+    "group_assignee": "担当者",
+    "ordering": "並び順",
+    "ascending": "昇順",
+    "descending": "降順",
+    "card_properties": "カードのプロパティ",
+    "view_board": "ボード表示",
+    "view_list": "リスト表示",
+    "view_swimlane": "スイムレーン表示",
+    "view_label": "表示",
+    "view_board_short": "ボード",
+    "view_list_short": "リスト",
+    "view_swimlane_short": "スイムレーン",
+    "sort_manual": "手動"
+  },
+  "errors": {
+    "move_failed": "タスクを移動できませんでした"
+  },
+  "mobile": {
+    "page": {
+      "title": "自分のタスク",
+      "filter_a11y": "絞り込み",
+      "load_failed": "タスクを読み込めませんでした：{{reason}}"
+    },
+    "empty": {
+      "assigned": "あなたに割り当てられたタスクはありません。",
+      "created": "まだタスクを作成していません。",
+      "agents": "エージェントまたはスクワッドに割り当てられたタスクはまだありません。",
+      "filtered": "現在のフィルター条件に一致するタスクはありません。",
+      "actionable": "あなたの対応待ちのタスクはありません。"
+    }
+  }
+}

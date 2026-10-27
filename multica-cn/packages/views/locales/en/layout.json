@@ -1,0 +1,133 @@
+{
+  "nav": {
+    "inbox": "Inbox",
+    "chat": "Chat",
+    "my_issues": "My Issues",
+    "issues": "Issues",
+    "decisions": "Decisions",
+    "suspensions": "Suspensions",
+    "projects": "Projects",
+    "autopilots": "Autopilot",
+    "agents": "Agents",
+    "squads": "Squads",
+    "usage": "Analytics",
+    "management": "Management",
+    "self_evolution": "Self-Evolution",
+    "runtimes": "Runtimes",
+    "voice_runtimes": "Voice Runtimes",
+    "skills": "Skills",
+    "settings": "Settings",
+    "audit": "MCP audit",
+
+    "admin": "Admin"
+  },
+  "tab": {
+    "issue": "Issue",
+    "project": "Project",
+    "autopilot": "Autopilot",
+    "agent": "Agent",
+    "member": "Member",
+    "squad": "Squad",
+    "skill": "Skill",
+    "machine": "Machine",
+    "runtime": "Runtime",
+    "attachment": "Attachment",
+    "create_agent": "Create Agent",
+    "unknown": "Unknown page"
+  },
+  "help": {
+    "trigger": "Help",
+    "download_desktop": "Desktop app",
+    "docs": "Docs",
+    "changelog": "Change log",
+    "discord": "Discord",
+    "feedback": "Feedback",
+    "server_version": "Server version {{version}}"
+  },
+  "workspace_loader": {
+    "loading_workspace": "Loading workspace…",
+    "loading_named_prefix": "Loading"
+  },
+  "sidebar": {
+    "unpin_tooltip": "Unpin",
+    "servers_label": "Servers",
+    "manage_servers": "Manage servers",
+    "workspaces_label": "Workspaces",
+    "create_workspace": "Create workspace",
+    "pending_invitations_label": "Pending invitations",
+    "invitation_workspace_fallback": "Workspace",
+    "invitation_join": "Join",
+    "invitation_decline": "Decline",
+    "stop_impersonation": "Stop impersonating",
+    "log_out": "Log out",
+    "admin_area": "Admin",
+    "new_issue": "New Issue",
+    "new_issue_shortcut": "C",
+    "pinned_label": "Pinned",
+    "workspace_group": "Workspace",
+    "configure_group": "Configure",
+    "unread_overflow": "99+",
+    "discord_card": {
+      "title": "Join our Discord",
+      "dismiss": "Dismiss"
+    }
+  },
+  "audit_view": {
+    "title": "MCP audit", "description": "Recorded MCP calls, including denied and failed requests.", "since": "Since", "since_placeholder": "Since (RFC3339)", "until": "Until", "until_placeholder": "Until (RFC3339)", "tool": "Tool", "actor": "Actor", "actor_id": "Actor ID", "client": "Client", "client_name": "Client name", "client_version": "Client version", "result": "Result", "all_results": "All results", "result_success": "Success", "result_failure": "Failure", "result_refused": "Refused", "target": "Target", "target_type": "Target type", "target_id": "Target ID", "all_targets": "All targets", "target_workspace": "Workspace", "target_issue": "Issue", "target_host": "Host", "filters": "Filters", "apply": "Apply", "clear": "Clear filters", "loading": "Loading audit events...", "loading_more": "Loading more...", "load_more": "Load more", "load_failed_title": "Could not load audit events", "load_failed": "Unable to load audit events.", "retry": "Retry", "permission_title": "You do not have access to audit records", "permission_description": "Ask a workspace owner or admin for access.", "unavailable_title": "Audit service is temporarily unavailable", "unavailable_description": "Records may be incomplete until the service recovers.", "empty": "No audit records yet.", "empty_filtered": "No records match these filters.", "time": "Time", "event_type": "Event", "reason": "Reason", "duration": "Duration", "error_code": "Error code", "invocation_id": "Invocation ID", "not_provided": "Not provided", "back_to_mcp": "Back to MCP settings", "started": "Started"
+  },
+  "mobile": {
+    "agents": {
+      "coming_soon": "Agents coming soon."
+    },
+    "pins": {
+      "load_failed": "Failed to load pins: {{reason}}",
+      "empty": "No pins yet. Pin an issue or project from its actions menu to surface it here.",
+      "type_issue": "issue",
+      "type_project": "project",
+      "unavailable_a11y": "Unavailable {{type}}, tap to unpin",
+      "unavailable": "Unavailable {{type}} — tap to unpin"
+    },
+    "audit": {
+      "title": "MCP audit",
+      "all": "All",
+      "apply_filters": "Apply filters",
+      "load_failed": "Unable to load audit events.",
+      "empty": "No audit events match this filter.",
+      "tool": "Tool",
+      "actor_id": "Actor ID",
+      "host_target_id": "Host target ID",
+      "since": "Since (RFC3339)",
+      "until": "Until (RFC3339)",
+      "time_basis": "Time basis (invocation_start)",
+      "occurred_at": "Event time",
+      "any": "Any",
+      "cancel": "Cancel",
+      "actor_type": "Actor type",
+      "client_name": "Client name",
+      "client_version": "Client version",
+      "result": "Result",
+      "target": "Target",
+      "result_status": "Result status (success/failure/refused)",
+      "result_error_code": "Result error code",
+      "target_type": "Target type (workspace/issue/host)",
+      "target_id": "Target ID",
+      "target_pair_required": "Choose both a target type and target ID, or clear both.",
+      "permission_denied": "You do not have permission to view workspace audit events.",
+      "service_failed": "The audit service is unavailable. Try again.",
+      "retry": "Retry",
+      "time_filters": "Time",
+      "user_filters": "User",
+      "client_filters": "Client",
+      "load_more": "Load more",
+      "detail": "Audit event",
+      "detail_unavailable": "This audit event is no longer available in the current results.",
+      "close": "Close",
+      "event_type": "Event",
+      "event_id": "Event ID",
+      "domain": "Domain",
+      "time": "Time",
+      "actor": "Actor",
+      "reason": "Reason"
+    }
+  }
+}

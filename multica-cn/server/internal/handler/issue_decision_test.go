@@ -1,0 +1,1125 @@
+package handler
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+// --- pure validation -------------------------------------------------------
+
+func TestValidateDecisionInput(t *testing.T) {
+	t.Run("accepts two options", func(t *testing.T) {
+		options, recs, err := validateDecisionInput("Which DB?", []string{"Postgres", "SQLite"}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(options) != 2 || recs == nil || len(recs) != 0 {
+			t.Fatalf("got options=%v recs=%v, want 2 options and empty recs", options, recs)
+		}
+	})
+	t.Run("accepts four options with recommendations", func(t *testing.T) {
+		_, recs, err := validateDecisionInput("Pick", []string{"a", "b", "c", "d"}, []int{1, 3})
+		if err != nil || len(recs) != 2 {
+			t.Fatalf("got recs=%v err=%v, want 2 recommendations accepted", recs, err)
+		}
+	})
+	t.Run("rejects fewer than two options", func(t *testing.T) {
+		for _, n := range []int{0, 1} {
+			labels := make([]string, n)
+			for i := range labels {
+				labels[i] = fmt.Sprintf("opt%d", i)
+			}
+			if _, _, err := validateDecisionInput("q", labels, nil); err == nil {
+				t.Fatalf("%d options: expected rejection", n)
+			}
+		}
+	})
+	t.Run("rejects more than four options", func(t *testing.T) {
+		if _, _, err := validateDecisionInput("q", []string{"a", "b", "c", "d", "e"}, nil); err == nil {
+			t.Fatal("5 options: expected rejection")
+		}
+	})
+	t.Run("rejects empty question", func(t *testing.T) {
+		if _, _, err := validateDecisionInput("  ", []string{"a", "b"}, nil); err == nil {
+			t.Fatal("empty question: expected rejection")
+		}
+	})
+	t.Run("rejects empty and duplicate labels", func(t *testing.T) {
+		if _, _, err := validateDecisionInput("q", []string{"a", "  "}, nil); err == nil {
+			t.Fatal("blank label: expected rejection")
+		}
+		if _, _, err := validateDecisionInput("q", []string{"a", "a"}, nil); err == nil {
+			t.Fatal("duplicate labels: expected rejection")
+		}
+	})
+	t.Run("rejects out-of-range recommendation", func(t *testing.T) {
+		if _, _, err := validateDecisionInput("q", []string{"a", "b"}, []int{2}); err == nil {
+			t.Fatal("recommendation index 2 of 2 options: expected rejection")
+		}
+	})
+	t.Run("question is sanitized of NUL bytes", func(t *testing.T) {
+		options, _, err := validateDecisionInput("q\x00?", []string{"a", "b"}, nil)
+		if err != nil || options == nil {
+			t.Fatalf("NUL-containing question rejected: %v", err)
+		}
+	})
+}
+
+func TestValidateDecisionAnswer(t *testing.T) {
+	t.Run("empty selection rejected", func(t *testing.T) {
+		if err := validateDecisionAnswer(2, false, nil); err == nil {
+			t.Fatal("empty selection: expected rejection")
+		}
+	})
+	t.Run("single-select takes exactly one", func(t *testing.T) {
+		if err := validateDecisionAnswer(3, false, []int{0, 1}); err == nil {
+			t.Fatal("single-select with two picks: expected rejection")
+		}
+		if err := validateDecisionAnswer(3, false, []int{1}); err != nil {
+			t.Fatalf("single-select with one pick: unexpected error %v", err)
+		}
+	})
+	t.Run("multi-select takes one up to all", func(t *testing.T) {
+		if err := validateDecisionAnswer(3, true, []int{0, 2}); err != nil {
+			t.Fatalf("multi-select two picks: unexpected error %v", err)
+		}
+		if err := validateDecisionAnswer(3, true, []int{0, 1, 2}); err != nil {
+			t.Fatalf("multi-select all picks: unexpected error %v", err)
+		}
+	})
+	t.Run("out-of-range and duplicate rejected", func(t *testing.T) {
+		if err := validateDecisionAnswer(2, true, []int{2}); err == nil {
+			t.Fatal("out-of-range index: expected rejection")
+		}
+		if err := validateDecisionAnswer(3, true, []int{1, 1}); err == nil {
+			t.Fatal("duplicate indices: expected rejection")
+		}
+		if err := validateDecisionAnswer(2, true, []int{-1}); err == nil {
+			t.Fatal("negative index: expected rejection")
+		}
+	})
+}
+
+// --- handler lifecycle (DB-backed) ------------------------------------------
+
+// decisionFixture seeds an issue plus a workspace-invocable agent with a
+// running task, so a task-token request classifies as the agent actor
+// (resolveActor's task_token branch) and a bare request classifies as the
+// member actor.
+type decisionFixture struct {
+	IssueID string
+	AgentID string
+	TaskID  string
+}
+
+func newDecisionFixture(t *testing.T) decisionFixture {
+	t.Helper()
+	issueID := dbfx.Issue(t, "decision card fixture")
+	agentID := createHandlerTestAgent(t, "decision-card-agent", nil)
+	taskID := createHandlerTestTaskForAgentOnIssue(t, agentID, issueID)
+	t.Cleanup(func() {
+		// issue_decisions has no FK (repo rule), and the echo comment's
+		// trigger may enqueue task rows — sweep both before the issue goes.
+		testPool.Exec(context.Background(), `DELETE FROM issue_decisions WHERE issue_id = $1`, issueID)
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+	})
+	return decisionFixture{IssueID: issueID, AgentID: agentID, TaskID: taskID}
+}
+
+// agentIdentityHeaders mirror what the auth middleware stamps from a mat_
+// task token; resolveActor's task_token branch trusts exactly this triple.
+func agentIdentityHeaders(req *http.Request, f decisionFixture) *http.Request {
+	req.Header.Set("X-Actor-Source", "task_token")
+	req.Header.Set("X-Agent-ID", f.AgentID)
+	req.Header.Set("X-Task-ID", f.TaskID)
+	return req
+}
+
+func createDecisionCard(t *testing.T, f decisionFixture, asAgent bool, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions", body)
+	req = withURLParam(req, "id", f.IssueID)
+	if asAgent {
+		req = agentIdentityHeaders(req, f)
+	}
+	testHandler.CreateIssueDecision(w, req)
+	return w
+}
+
+func decodeDecision(t *testing.T, w *httptest.ResponseRecorder) IssueDecisionResponse {
+	t.Helper()
+	var resp IssueDecisionResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode decision response: %v", err)
+	}
+	return resp
+}
+
+func TestIssueDecisionCreateValidation(t *testing.T) {
+	f := newDecisionFixture(t)
+
+	t.Run("fewer than two options rejected over the API", func(t *testing.T) {
+		w := createDecisionCard(t, f, false, map[string]any{"question": "q", "options": []string{"only"}})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("1 option: expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("missing question rejected over the API", func(t *testing.T) {
+		w := createDecisionCard(t, f, false, map[string]any{"options": []string{"Yes", "No"}})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("missing question: expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("more than four options rejected over the API", func(t *testing.T) {
+		w := createDecisionCard(t, f, false, map[string]any{"question": "q", "options": []string{"a", "b", "c", "d", "e"}})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("5 options: expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("minimum card creates without optional context", func(t *testing.T) {
+		w := createDecisionCard(t, f, false, map[string]any{"question": "Ship?", "options": []string{"Yes", "No"}})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("minimum create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		card := decodeDecision(t, w)
+		if card.Question != "Ship?" || len(card.Options) != 2 || card.Context != nil {
+			t.Fatalf("minimum card = %+v, want question/options and no context", card)
+		}
+	})
+	t.Run("empty context creates as absent context", func(t *testing.T) {
+		w := createDecisionCard(t, f, false, map[string]any{
+			"question": "Ship?",
+			"options":  []string{"Yes", "No"},
+			"context":  map[string]any{},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("empty context create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		if card := decodeDecision(t, w); card.Context != nil {
+			t.Fatalf("empty context normalized to %+v, want nil", card.Context)
+		}
+	})
+	t.Run("agent identity recorded on create", func(t *testing.T) {
+		w := createDecisionCard(t, f, true, map[string]any{
+			"question": "Ship which day?",
+			"options":  []string{"Monday", "Tuesday"},
+			"context": map[string]any{
+				"why_now":               "The window closes Friday.",
+				"facts":                 []map[string]any{{"statement": "The staging build passed.", "evidence": []string{"CI run 123"}}},
+				"impact":                "A delay moves launch by one week.",
+				"recommendation_reason": "Monday leaves rollback time.",
+				"unknowns":              []string{"External review timing"},
+			},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("agent create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		card := decodeDecision(t, w)
+		if card.Status != "open" || card.CreatedByType != "agent" || card.CreatedByID != f.AgentID {
+			t.Fatalf("card = %+v, want open card created by agent %s", card, f.AgentID)
+		}
+		if len(card.Options) != 2 || card.Options[0].Label != "Monday" {
+			t.Fatalf("options = %+v, want Monday/Tuesday", card.Options)
+		}
+		if card.Context == nil || card.Context.WhyNow != "The window closes Friday." || card.Context.Facts[0].Evidence[0] != "CI run 123" {
+			t.Fatalf("context = %+v, want the structured context from create", card.Context)
+		}
+	})
+	t.Run("list returns created cards", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		req := withURLParam(newRequest("GET", "/api/issues/"+f.IssueID+"/decisions", nil), "id", f.IssueID)
+		testHandler.ListIssueDecisions(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var cards []IssueDecisionResponse
+		if err := json.NewDecoder(w.Body).Decode(&cards); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		if len(cards) < 1 {
+			t.Fatal("list returned no cards")
+		}
+		foundContext := false
+		for _, card := range cards {
+			if card.Context != nil {
+				foundContext = card.Context.RecommendationReason == "Monday leaves rollback time."
+			}
+		}
+		if !foundContext {
+			t.Fatal("list response dropped the structured decision context")
+		}
+	})
+}
+
+func TestValidateDecisionContext(t *testing.T) {
+	tests := []struct {
+		name    string
+		context *DecisionContext
+		wantErr bool
+	}{
+		{name: "absent remains valid"},
+		{name: "structured fields", context: &DecisionContext{WhyNow: "now", Facts: []DecisionContextFact{{Statement: "known", Evidence: []string{"source"}}}, Impact: "impact", RecommendationReason: "reason", Unknowns: []string{"unknown"}}},
+		{name: "empty context normalizes to absent", context: &DecisionContext{}},
+		{name: "fact requires a statement", context: &DecisionContext{Facts: []DecisionContextFact{{Evidence: []string{"source"}}}}, wantErr: true},
+		{name: "context text is bounded", context: &DecisionContext{WhyNow: strings.Repeat("x", decisionMaxContextTextLen+1)}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := validateDecisionContext(tc.context)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateDecisionContext() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestIssueDecisionAnswerAuthorization(t *testing.T) {
+	f := newDecisionFixture(t)
+
+	w := createDecisionCard(t, f, true, map[string]any{
+		"question": "Which option ships?",
+		"options":  []string{"Alpha", "Beta", "Gamma"},
+		"context":  map[string]any{"why_now": "The release window closes Friday."},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	card := decodeDecision(t, w)
+
+	answer := func(asAgent bool, indices []int) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/answer", map[string]any{
+			"selected_indices": indices,
+		})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+		if asAgent {
+			req = agentIdentityHeaders(req, f)
+		}
+		testHandler.AnswerIssueDecision(w, req)
+		return w
+	}
+
+	t.Run("agent identity is refused for answering", func(t *testing.T) {
+		w := answer(true, []int{0})
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("agent answer: expected 403, got %d: %s", w.Code, w.Body.String())
+		}
+		var still db.IssueDecision
+		if err := testPool.QueryRow(t.Context(), `SELECT status FROM issue_decisions WHERE id = $1`, parseUUID(card.ID)).Scan(&still.Status); err != nil {
+			t.Fatalf("reload card: %v", err)
+		}
+		if still.Status != "open" {
+			t.Fatalf("card status = %q after refused agent answer, want open", still.Status)
+		}
+	})
+
+	t.Run("single-select rejects two picks and out-of-range", func(t *testing.T) {
+		if w := answer(false, []int{0, 1}); w.Code != http.StatusBadRequest {
+			t.Fatalf("two picks on single-select: expected 400, got %d", w.Code)
+		}
+		if w := answer(false, []int{5}); w.Code != http.StatusBadRequest {
+			t.Fatalf("out-of-range pick: expected 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("member answer succeeds and echoes a mention comment", func(t *testing.T) {
+		w := answer(false, []int{1})
+		if w.Code != http.StatusOK {
+			t.Fatalf("member answer: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		got := decodeDecision(t, w)
+		if got.Status != "answered" || got.AnsweredByType == nil || *got.AnsweredByType != "member" || got.AnsweredByID == nil {
+			t.Fatalf("card after answer = %+v, want answered by member", got)
+		}
+		if len(got.SelectedIndices) != 1 || got.SelectedIndices[0] != 1 {
+			t.Fatalf("selected_indices = %v, want [1]", got.SelectedIndices)
+		}
+		if got.AnswerCommentID == nil {
+			t.Fatal("answer comment id not linked")
+		}
+		if got.Context == nil || got.Context.WhyNow != "The release window closes Friday." {
+			t.Fatalf("answer response context = %+v, want context retained", got.Context)
+		}
+		var content string
+		if err := testPool.QueryRow(t.Context(), `SELECT content FROM comment WHERE id = $1`, parseUUID(*got.AnswerCommentID)).Scan(&content); err != nil {
+			t.Fatalf("load echo comment: %v", err)
+		}
+		if !strings.Contains(content, "mention://agent/"+f.AgentID) {
+			t.Fatalf("echo comment lacks agent mention: %q", content)
+		}
+		if !strings.Contains(content, "Option 2: Beta") {
+			t.Fatalf("echo comment lacks chosen option line: %q", content)
+		}
+	})
+
+	t.Run("second answer conflicts", func(t *testing.T) {
+		if w := answer(false, []int{2}); w.Code != http.StatusConflict {
+			t.Fatalf("re-answer: expected 409, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("multi-select card accepts multiple picks", func(t *testing.T) {
+		w := createDecisionCard(t, f, false, map[string]any{
+			"question":     "Which modules?",
+			"options":      []string{"API", "Web", "CLI"},
+			"multi_select": true,
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("multi create: expected 201, got %d", w.Code)
+		}
+		multi := decodeDecision(t, w)
+		w = httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+multi.ID+"/answer", map[string]any{
+			"selected_indices": []int{0, 2},
+		})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", multi.ID)
+		testHandler.AnswerIssueDecision(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("multi answer: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		got := decodeDecision(t, w)
+		if len(got.SelectedIndices) != 2 || got.SelectedIndices[0] != 0 || got.SelectedIndices[1] != 2 {
+			t.Fatalf("multi selected_indices = %v, want [0 2]", got.SelectedIndices)
+		}
+	})
+}
+
+func TestIssueDecisionCancel(t *testing.T) {
+	f := newDecisionFixture(t)
+
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Cancel me",
+		"options":  []string{"yes", "no"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d", w.Code)
+	}
+	card := decodeDecision(t, w)
+
+	cancel := func(asAgent bool) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+		if asAgent {
+			req = agentIdentityHeaders(req, f)
+		}
+		testHandler.CancelIssueDecision(w, req)
+		return w
+	}
+
+	if w := cancel(true); w.Code != http.StatusForbidden {
+		t.Fatalf("agent cancel: expected 403, got %d", w.Code)
+	}
+	if w := cancel(false); w.Code != http.StatusOK {
+		t.Fatalf("member cancel: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := cancel(false); w.Code != http.StatusConflict {
+		t.Fatalf("re-cancel: expected 409, got %d", w.Code)
+	}
+}
+
+// RUYI-863: restore flips a cancelled card back to open with its content
+// intact; answered cards can never be resurrected; agents are refused; the
+// cancel/restore pair leaves an audit trail row each.
+func TestIssueDecisionRestore(t *testing.T) {
+	f := newDecisionFixture(t)
+
+	restore := func(asAgent bool, id string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+id+"/restore", map[string]any{})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", id)
+		if asAgent {
+			req = agentIdentityHeaders(req, f)
+		}
+		testHandler.RestoreIssueDecision(w, req)
+		return w
+	}
+
+	// Cancelled card: member restore flips it back, content untouched.
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Restore me",
+		"options":  []string{"yes", "no"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	card := decodeDecision(t, w)
+	cancelled := func() IssueDecisionResponse {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+		testHandler.CancelIssueDecision(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("cancel: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		return decodeDecision(t, w)
+	}()
+	if cancelled.Status != "cancelled" {
+		t.Fatalf("cancel: status = %q, want cancelled", cancelled.Status)
+	}
+
+	if w := restore(true, card.ID); w.Code != http.StatusForbidden {
+		t.Fatalf("agent restore: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	rw := restore(false, card.ID)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("restore: expected 200, got %d: %s", rw.Code, rw.Body.String())
+	}
+	restored := decodeDecision(t, rw)
+	if restored.Status != "open" {
+		t.Fatalf("restore: status = %q, want open", restored.Status)
+	}
+	if len(restored.Options) != 2 || restored.Options[0].Label != "yes" {
+		t.Fatalf("restore lost card content: options = %+v", restored.Options)
+	}
+	if restored.AnsweredByID != nil && *restored.AnsweredByID != "" {
+		t.Fatalf("restore: answered_by_id = %q, want empty", *restored.AnsweredByID)
+	}
+	// Second restore is a conflict: the card is open again, not cancelled.
+	if w := restore(false, card.ID); w.Code != http.StatusConflict {
+		t.Fatalf("re-restore: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Answered cards are terminal: cancel is refused, restore too.
+	w = createDecisionCard(t, f, false, map[string]any{
+		"question": "Answered, not restorable",
+		"options":  []string{"a", "b"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create 2: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	answered := decodeDecision(t, w)
+	aw := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+answered.ID+"/answer", map[string]any{
+		"selected_indices": []int{0},
+	})
+	req = withURLParams(req, "id", f.IssueID, "decisionId", answered.ID)
+	testHandler.AnswerIssueDecision(aw, req)
+	if aw.Code != http.StatusOK {
+		t.Fatalf("answer: expected 200, got %d: %s", aw.Code, aw.Body.String())
+	}
+	if w := restore(false, answered.ID); w.Code != http.StatusConflict {
+		t.Fatalf("restore answered card: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Cancel and restore each leave one audit row with the acting member.
+	row := func(eventType, id string) string {
+		t.Helper()
+		var raw string
+		if err := testPool.QueryRow(t.Context(),
+			`SELECT details FROM audit_event WHERE event_type = $1 AND details->>'decision_id' = $2 ORDER BY occurred_at DESC LIMIT 1`,
+			eventType, id).Scan(&raw); err != nil {
+			t.Fatalf("load audit row (%s): %v", eventType, err)
+		}
+		return raw
+	}
+	if details := row("issue.decision_cancelled", card.ID); !strings.Contains(details, "cancelled") {
+		t.Fatalf("cancel audit details = %s, want from/to statuses", details)
+	}
+	if details := row("issue.decision_restored", card.ID); !strings.Contains(details, "open") {
+		t.Fatalf("restore audit details = %s, want from/to statuses", details)
+	}
+}
+
+// RUYI-863 rework: a cancelled card on a TERMINAL issue must not be
+// resurrected. The terminal classification is the authoritative
+// issuestatus.Effective one — built-in done/cancelled and custom statuses
+// whose category is done/cancelled — not the raw status string. Every case
+// asserts the full refusal contract: 409, the card stays cancelled, no
+// restore audit row, no decision:updated event, and the SQL CAS itself
+// carries the terminal predicate so an issue that turns terminal in the
+// race still loses instead of resurrecting the card.
+func TestRestoreRefusedOnTerminalIssue(t *testing.T) {
+	// terminalRestoreCase runs one terminal classification: it builds the
+	// fixture, cancels the card, points the issue at the classification,
+	// and proves the refusal contract end to end.
+	terminalRestoreCase := func(classification string, terminalize func(f decisionFixture)) func(t *testing.T) {
+		return func(t *testing.T) {
+			f := newDecisionFixture(t)
+			w := createDecisionCard(t, f, false, map[string]any{
+				"question": "Terminal " + classification,
+				"options":  []string{"yes", "no"},
+			})
+			if w.Code != http.StatusCreated {
+				t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+			}
+			card := decodeDecision(t, w)
+			cw := httptest.NewRecorder()
+			creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+			creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+			testHandler.CancelIssueDecision(cw, creq)
+			if cw.Code != http.StatusOK {
+				t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+			}
+			terminalize(f)
+
+			// A fresh bus proves the refusal happens BEFORE any publish —
+			// a terminal restore must not surface to the decision inbox.
+			h := *testHandler
+			h.Bus = events.New()
+			eventsSeen := 0
+			h.Bus.Subscribe(protocol.EventDecisionUpdated, func(event events.Event) {
+				t.Helper()
+				eventsSeen++
+			})
+
+			rw := httptest.NewRecorder()
+			req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/restore", map[string]any{})
+			req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+			h.RestoreIssueDecision(rw, req)
+			if rw.Code != http.StatusConflict {
+				t.Fatalf("restore on %s issue: expected 409, got %d: %s", classification, rw.Code, rw.Body.String())
+			}
+			if eventsSeen != 0 {
+				t.Fatalf("restore on %s issue published %d decision:updated event(s), want 0", classification, eventsSeen)
+			}
+
+			var status string
+			if err := testPool.QueryRow(t.Context(),
+				`SELECT status FROM issue_decisions WHERE id = $1`, parseUUID(card.ID)).Scan(&status); err != nil {
+				t.Fatalf("load card status: %v", err)
+			}
+			if status != "cancelled" {
+				t.Fatalf("card on %s issue = %q, want cancelled (restore must not resurrect it)", classification, status)
+			}
+
+			// No audit row: the refusal is pre-audit, so the trail keeps
+			// only the cancel, never a restore that never happened.
+			var auditRows int
+			if err := testPool.QueryRow(t.Context(),
+				`SELECT count(*) FROM audit_event
+				 WHERE event_type = 'issue.decision_restored' AND details->>'decision_id' = $1`,
+				card.ID).Scan(&auditRows); err != nil {
+				t.Fatalf("count restore audits: %v", err)
+			}
+			if auditRows != 0 {
+				t.Fatalf("%d restore audit rows on a terminal issue, want 0", auditRows)
+			}
+
+			// The CAS is the race half of the rule: even a direct query
+			// (no handler pre-check in front) must not flip the card.
+			_, err := testHandler.Queries.RestoreIssueDecision(t.Context(), db.RestoreIssueDecisionParams{
+				ID:          parseUUID(card.ID),
+				WorkspaceID: parseUUID(testWorkspaceID),
+			})
+			if !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("terminal CAS expected sql.ErrNoRows, got %v", err)
+			}
+		}
+	}
+
+	t.Run("built-in done", terminalRestoreCase("done", func(f decisionFixture) {
+		terminalizeIssue(t, f.IssueID, "done")
+	}))
+	t.Run("built-in cancelled", terminalRestoreCase("cancelled", func(f decisionFixture) {
+		terminalizeIssue(t, f.IssueID, "cancelled")
+	}))
+	t.Run("custom done-category status", terminalRestoreCase("custom done-category", func(f decisionFixture) {
+		customKey := seedCustomStatusCategory(t, "done")
+		terminalizeIssue(t, f.IssueID, customKey)
+	}))
+
+	// Control: a custom status whose category is NOT terminal must keep the
+	// normal restore path open, so the gate refuses the right set and only.
+	t.Run("custom in_progress-category status still restores", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		w := createDecisionCard(t, f, false, map[string]any{
+			"question": "Non-terminal custom",
+			"options":  []string{"yes", "no"},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		card := decodeDecision(t, w)
+		cw := httptest.NewRecorder()
+		creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+		creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+		testHandler.CancelIssueDecision(cw, creq)
+		if cw.Code != http.StatusOK {
+			t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+		}
+		customKey := seedCustomStatusCategory(t, "in_progress")
+		terminalizeIssue(t, f.IssueID, customKey)
+
+		rw := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/restore", map[string]any{})
+		req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+		testHandler.RestoreIssueDecision(rw, req)
+		if rw.Code != http.StatusOK {
+			t.Fatalf("restore on non-terminal custom issue: expected 200, got %d: %s", rw.Code, rw.Body.String())
+		}
+		got := decodeDecision(t, rw)
+		if got.Status != "open" {
+			t.Fatalf("restore: status = %q, want open", got.Status)
+		}
+	})
+}
+
+// terminalizeIssue points the fixture's issue at an arbitrary status key
+// (built-in or custom) for terminal-state case work.
+func terminalizeIssue(t *testing.T, issueID, status string) {
+	t.Helper()
+	if _, err := testPool.Exec(t.Context(), `UPDATE issue SET status = $1 WHERE id = $2`, status, issueID); err != nil {
+		t.Fatalf("terminalize issue: %v", err)
+	}
+}
+
+// seedCustomStatusCategory inserts a workspace status key whose behavior
+// class is the given built-in category and returns its key; the row is
+// removed with the test.
+func seedCustomStatusCategory(t *testing.T, category string) string {
+	t.Helper()
+	// Key is bounded to 32 characters by the issue_status CHECK — the 8-digit
+	// millisecond tail keeps qa863_<category>_<ts> under the ceiling for the
+	// longest category (in_progress).
+	key := fmt.Sprintf("qa863_%s_%d", category, time.Now().UnixMilli())
+	if _, err := testPool.Exec(t.Context(),
+		`INSERT INTO issue_status (workspace_id, key, name, description, category, color, position)
+		 VALUES ($1, $2, $2, '', $3, '#ff0000', 1)`,
+		testWorkspaceID, key, category); err != nil {
+		t.Fatalf("seed custom status: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(),
+			`DELETE FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, key)
+	})
+	return key
+}
+
+// --- two-connection concurrency regression (RUYI-863 P1) -------------------
+//
+// Both tests drive the REAL restore SQL and the REAL UpdateIssueStatus on
+// two separate connections, parked on each other's issue-row lock so the
+// interleaving is observed, never guessed. waitForWaiterBlockedBy's PID
+// attribution is the false-green guard: if the path under test never takes
+// the lock, the probe finds no waiter and the test fails.
+
+// TestRestoreRaceLosesToCommittedTerminalWrite: the terminal status write
+// commits BEFORE the restore statement finishes. The terminal write parks
+// the restore's CTE on the issue row; once it commits, the restore must
+// lose — 409, card stays cancelled, no restore audit row, no
+// decision:updated event. This is the exact window the snapshot-only CAS
+// (pre-fix) could not survive.
+func TestRestoreRaceLosesToCommittedTerminalWrite(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	f := newDecisionFixture(t)
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Race card",
+		"options":  []string{"yes", "no"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	card := decodeDecision(t, w)
+	cw := httptest.NewRecorder()
+	creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+	creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+	testHandler.CancelIssueDecision(cw, creq)
+	if cw.Code != http.StatusOK {
+		t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+	}
+
+	// Fresh bus: a losing restore must publish nothing.
+	h := *testHandler
+	h.Bus = events.New()
+	eventsSeen := 0
+	h.Bus.Subscribe(protocol.EventDecisionUpdated, func(event events.Event) {
+		t.Helper()
+		eventsSeen++
+	})
+
+	// Connection B: the terminal write, uncommitted. UpdateIssueStatus
+	// takes the issue row lock; the commit is deferred until the restore
+	// has been observed parked on it.
+	txB, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin terminal-write tx: %v", err)
+	}
+	if _, err := h.Queries.WithTx(txB).UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+		ID:          parseUUID(f.IssueID),
+		Status:      "done",
+		WorkspaceID: parseUUID(testWorkspaceID),
+	}); err != nil {
+		txB.Rollback(ctx)
+		t.Fatalf("terminal write: %v", err)
+	}
+	pidB := holderBackendPID(t, ctx, txB)
+
+	// Connection A: the real handler restore on its own pool connection.
+	// Its CAS statement reaches FOR UPDATE OF issue and parks behind B.
+	restoreRW := httptest.NewRecorder()
+	restoreReq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/restore", map[string]any{})
+	restoreReq = withURLParams(restoreReq, "id", f.IssueID, "decisionId", card.ID)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h.RestoreIssueDecision(restoreRW, restoreReq)
+	}()
+	if !waitForWaiterBlockedBy(t, pidB, 10*time.Second) {
+		t.Fatalf("restore CAS is not parked on the terminal write's issue-row lock — the CTE never took the lock")
+	}
+
+	// The terminal write commits first; the parked restore then re-reads
+	// the locked row under EPQ, sees done, and flips nothing.
+	if err := txB.Commit(ctx); err != nil {
+		t.Fatalf("commit terminal write: %v", err)
+	}
+	wg.Wait()
+	if restoreRW.Code != http.StatusConflict {
+		t.Fatalf("restore after committed terminal write: expected 409, got %d: %s", restoreRW.Code, restoreRW.Body.String())
+	}
+
+	var status string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status FROM issue_decisions WHERE id = $1`, parseUUID(card.ID)).Scan(&status); err != nil {
+		t.Fatalf("load card status: %v", err)
+	}
+	if status != "cancelled" {
+		t.Fatalf("card = %q after losing the race, want cancelled (no resurrection)", status)
+	}
+
+	var auditRows int
+	if err := testPool.QueryRow(ctx,
+		`SELECT count(*) FROM audit_event
+		 WHERE event_type = 'issue.decision_restored' AND details->>'decision_id' = $1`,
+		card.ID).Scan(&auditRows); err != nil {
+		t.Fatalf("count restore audits: %v", err)
+	}
+	if auditRows != 0 {
+		t.Fatalf("%d restore audit rows on a lost race, want 0", auditRows)
+	}
+	if eventsSeen != 0 {
+		t.Fatalf("losing restore published %d decision:updated event(s), want 0", eventsSeen)
+	}
+}
+
+// TestRestoreRaceWinsBeforeTerminalWrite: the positive boundary. The
+// restore linearizes first — its card flip lands on the locked, still
+// non-terminal issue row and its transaction commits; the terminal status
+// write parked behind it then commits as a legal, independent transition.
+// Nothing may be rejected or rolled back.
+func TestRestoreRaceWinsBeforeTerminalWrite(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	f := newDecisionFixture(t)
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Race card",
+		"options":  []string{"yes", "no"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	card := decodeDecision(t, w)
+	cw := httptest.NewRecorder()
+	creq := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/cancel", map[string]any{})
+	creq = withURLParams(creq, "id", f.IssueID, "decisionId", card.ID)
+	testHandler.CancelIssueDecision(cw, creq)
+	if cw.Code != http.StatusOK {
+		t.Fatalf("setup cancel: expected 200, got %d: %s", cw.Code, cw.Body.String())
+	}
+
+	// Connection A: the real restore SQL inside an uncommitted tx — the
+	// handler's CAS statement, paused before commit so its issue-row lock
+	// outlives the statement.
+	txA, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin restore tx: %v", err)
+	}
+	if _, err := testHandler.Queries.WithTx(txA).RestoreIssueDecision(ctx, db.RestoreIssueDecisionParams{
+		ID:          parseUUID(card.ID),
+		WorkspaceID: parseUUID(testWorkspaceID),
+	}); err != nil {
+		txA.Rollback(ctx)
+		t.Fatalf("restore within tx: %v", err)
+	}
+	pidA := holderBackendPID(t, ctx, txA)
+
+	// Connection B: the terminal write parks on A's issue-row lock.
+	txB, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin terminal-write tx: %v", err)
+	}
+	writeErr := make(chan error, 1)
+	go func() {
+		_, err := testHandler.Queries.WithTx(txB).UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+			ID:          parseUUID(f.IssueID),
+			Status:      "done",
+			WorkspaceID: parseUUID(testWorkspaceID),
+		})
+		writeErr <- err
+	}()
+	if !waitForWaiterBlockedBy(t, pidA, 10*time.Second) {
+		t.Fatalf("terminal write is not parked on the restore's issue-row lock — the restore CTE never took the lock")
+	}
+
+	// The restore commits first: the card is linearly open, and only then
+	// does the parked terminal write land behind it.
+	if err := txA.Commit(ctx); err != nil {
+		t.Fatalf("commit restore: %v", err)
+	}
+	if err := <-writeErr; err != nil {
+		txB.Rollback(ctx)
+		t.Fatalf("parked terminal write after restore commit: %v", err)
+	}
+	if err := txB.Commit(ctx); err != nil {
+		t.Fatalf("commit terminal write: %v", err)
+	}
+
+	var status string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status FROM issue_decisions WHERE id = $1`, parseUUID(card.ID)).Scan(&status); err != nil {
+		t.Fatalf("load card status: %v", err)
+	}
+	if status != "open" {
+		t.Fatalf("card = %q after winning the race, want open (no rollback of a committed restore)", status)
+	}
+	var issueStatus string
+	if err := testPool.QueryRow(ctx,
+		`SELECT status FROM issue WHERE id = $1`, parseUUID(f.IssueID)).Scan(&issueStatus); err != nil {
+		t.Fatalf("load issue status: %v", err)
+	}
+	if issueStatus != "done" {
+		t.Fatalf("issue = %q after the terminal write, want done (legal transition after a committed restore)", issueStatus)
+	}
+}
+
+// answerEchoForMemberCard keeps a member-created card mention-free: no agent
+// to wake, so the echo is a plain record.
+func TestAnswerEchoForMemberCardHasNoMention(t *testing.T) {
+	f := newDecisionFixture(t)
+
+	w := createDecisionCard(t, f, false, map[string]any{
+		"question": "Member card",
+		"options":  []string{"one", "two"},
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup create: expected 201, got %d", w.Code)
+	}
+	card := decodeDecision(t, w)
+	if card.CreatedByType != "member" {
+		t.Fatalf("created_by_type = %q, want member", card.CreatedByType)
+	}
+
+	w = httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions/"+card.ID+"/answer", map[string]any{
+		"selected_indices": []int{0},
+	})
+	req = withURLParams(req, "id", f.IssueID, "decisionId", card.ID)
+	testHandler.AnswerIssueDecision(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("answer: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	got := decodeDecision(t, w)
+	var content string
+	if err := testPool.QueryRow(t.Context(), `SELECT content FROM comment WHERE id = $1`, parseUUID(*got.AnswerCommentID)).Scan(&content); err != nil {
+		t.Fatalf("load echo comment: %v", err)
+	}
+	if strings.Contains(content, "mention://agent/") {
+		t.Fatalf("member-card echo must not mention an agent: %q", content)
+	}
+}
+
+// --- idempotent create (RUYI-514) -------------------------------------------
+
+// decisionCardBody builds a create payload; key=="" omits client_request_id.
+func decisionCardBody(question, key string) map[string]any {
+	body := map[string]any{
+		"question": question,
+		"options":  []string{"Now", "Later"},
+	}
+	if key != "" {
+		body["client_request_id"] = key
+	}
+	return body
+}
+
+func decisionCardCount(t *testing.T, issueID string) int {
+	t.Helper()
+	var n int
+	if err := testPool.QueryRow(t.Context(),
+		`SELECT count(*) FROM issue_decisions WHERE issue_id = $1`, parseUUID(issueID)).Scan(&n); err != nil {
+		t.Fatalf("count cards: %v", err)
+	}
+	return n
+}
+
+func TestIssueDecisionIdempotentReplay(t *testing.T) {
+	t.Run("same-key retry returns the original card with 200", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		w := createDecisionCard(t, f, true, decisionCardBody("Which plan ships?", "retry-key-1"))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("first create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		first := decodeDecision(t, w)
+		if first.IdempotentReplay {
+			t.Fatal("fresh create must not be flagged idempotent_replay")
+		}
+
+		// The RUYI-495 retry rewrote flags (added --recommended): a same-key
+		// retry with a different payload still collapses onto the original
+		// card — the key owner vouches for the retry.
+		retryBody := decisionCardBody("Which plan ships?", "retry-key-1")
+		retryBody["recommended_indices"] = []int{0}
+		w = createDecisionCard(t, f, true, retryBody)
+		if w.Code != http.StatusOK {
+			t.Fatalf("same-key retry: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		replay := decodeDecision(t, w)
+		if replay.ID != first.ID {
+			t.Fatalf("replay ID = %s, want original %s", replay.ID, first.ID)
+		}
+		if !replay.IdempotentReplay {
+			t.Fatal("replay response must set idempotent_replay")
+		}
+		if n := decisionCardCount(t, f.IssueID); n != 1 {
+			t.Fatalf("same-key retry left %d cards, want 1", n)
+		}
+	})
+
+	t.Run("different key creates a second card", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		if w := createDecisionCard(t, f, true, decisionCardBody("Same question?", "key-a")); w.Code != http.StatusCreated {
+			t.Fatalf("key-a create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		w := createDecisionCard(t, f, true, decisionCardBody("Same question?", "key-b"))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("key-b create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		second := decodeDecision(t, w)
+		if second.IdempotentReplay {
+			t.Fatal("new-key create must not be flagged idempotent_replay")
+		}
+		if n := decisionCardCount(t, f.IssueID); n != 2 {
+			t.Fatalf("distinct keys produced %d cards, want 2", n)
+		}
+	})
+
+	t.Run("no key keeps the legacy create-always behavior", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		w := createDecisionCard(t, f, true, decisionCardBody("Legacy path", ""))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("first keyless create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		first := decodeDecision(t, w)
+		w = createDecisionCard(t, f, true, decisionCardBody("Legacy path", ""))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("second keyless create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		second := decodeDecision(t, w)
+		if first.ID == second.ID {
+			t.Fatal("keyless creates must produce distinct cards")
+		}
+		if second.IdempotentReplay {
+			t.Fatal("keyless create must not be flagged idempotent_replay")
+		}
+		if n := decisionCardCount(t, f.IssueID); n != 2 {
+			t.Fatalf("keyless retries produced %d cards, want 2", n)
+		}
+	})
+
+	t.Run("key scope is per creator", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		// A second agent on the same issue.
+		agent2 := createHandlerTestAgent(t, "decision-card-agent-b", nil)
+		task2 := createHandlerTestTaskForAgentOnIssue(t, agent2, f.IssueID)
+		f2 := decisionFixture{IssueID: f.IssueID, AgentID: agent2, TaskID: task2}
+
+		if w := createDecisionCard(t, f, true, decisionCardBody("Shared key string", "cross-actor-key")); w.Code != http.StatusCreated {
+			t.Fatalf("agent A create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		// Same key string from agent B: independent scope, new card.
+		if w := createDecisionCard(t, f2, true, decisionCardBody("Shared key string", "cross-actor-key")); w.Code != http.StatusCreated {
+			t.Fatalf("agent B create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		// Same key string from the member actor: also independent.
+		if w := createDecisionCard(t, f, false, decisionCardBody("Shared key string", "cross-actor-key")); w.Code != http.StatusCreated {
+			t.Fatalf("member create: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		if n := decisionCardCount(t, f.IssueID); n != 3 {
+			t.Fatalf("cross-actor same-key created %d cards, want 3", n)
+		}
+	})
+
+	t.Run("oversized key is rejected", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		long := strings.Repeat("k", 256)
+		w := createDecisionCard(t, f, true, decisionCardBody("Too long key", long))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("oversized key: expected 400, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestIssueDecisionConcurrentCreate(t *testing.T) {
+	f := newDecisionFixture(t)
+	const racers = 8
+	start := make(chan struct{})
+	results := make(chan *httptest.ResponseRecorder, racers)
+	for i := 0; i < racers; i++ {
+		go func() {
+			<-start
+			w := httptest.NewRecorder()
+			req := newRequest("POST", "/api/issues/"+f.IssueID+"/decisions", decisionCardBody("Concurrent card", "double-click-key"))
+			req = withURLParam(req, "id", f.IssueID)
+			req = agentIdentityHeaders(req, f)
+			testHandler.CreateIssueDecision(w, req)
+			results <- w
+		}()
+	}
+	close(start)
+
+	created, replayed := 0, 0
+	ids := map[string]bool{}
+	for i := 0; i < racers; i++ {
+		w := <-results
+		if w.Code != http.StatusCreated && w.Code != http.StatusOK {
+			t.Fatalf("racer: unexpected status %d: %s", w.Code, w.Body.String())
+		}
+		resp := decodeDecision(t, w)
+		ids[resp.ID] = true
+		if w.Code == http.StatusCreated {
+			created++
+			if resp.IdempotentReplay {
+				t.Fatal("the single 201 must not be flagged idempotent_replay")
+			}
+		} else {
+			replayed++
+			if !resp.IdempotentReplay {
+				t.Fatal("every replayed racer must be flagged idempotent_replay and share the winner's ID")
+			}
+		}
+	}
+	if created != 1 || replayed != racers-1 {
+		t.Fatalf("created=%d replayed=%d, want 1/%d", created, replayed, racers-1)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("racers saw %d distinct card IDs, want 1", len(ids))
+	}
+	if n := decisionCardCount(t, f.IssueID); n != 1 {
+		t.Fatalf("double-click left %d cards, want 1", n)
+	}
+}

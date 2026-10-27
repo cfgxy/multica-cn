@@ -1,0 +1,65 @@
+{
+  "button": {
+    "start": "开始语音对话",
+    "stop": "结束语音对话",
+    "disabled_no_target": "语音对话需要先选定智能体作为对象。选择智能体后即可开始，文字输入不受影响。",
+    "disabled_squad": "语音对话只支持单个智能体目标，小队会由队长接收。选择智能体后即可开始，文字输入不受影响。"
+  },
+  "overlay": {
+    "title": "语音对话",
+    "connecting": "连接中…",
+    "live": "正在聆听，请自然说话",
+    "user_label": "你",
+    "assistant_label": "智能体",
+    "end": "结束",
+    "dismiss": "关闭",
+    "permission_denied": "语音对话需要麦克风权限。请在系统设置中开启后重试。",
+    "use_prompt": "你说的话会在结束后填入输入框。"
+  },
+  "failure": {
+    "connection_failed": "语音暂时无法连接。文字发送不受影响，可正常使用。",
+    "unavailable": {
+      "no_voice_runtime": "该智能体尚未绑定语音运行时，请联系工作区管理员配置。文字发送不受影响。",
+      "instance_disabled": "该智能体的语音运行时已停用语音。文字发送不受影响，可正常使用。",
+      "instance_not_active": "该智能体的语音运行时当前未激活。请稍后再试，或继续使用文字。",
+      "capability_mismatch": "该智能体的模型不支持语音对话。文字发送不受影响，可正常使用。",
+      "credential_missing": "该智能体的语音凭据尚未配置完成，请联系工作区管理员补全。",
+      "credential_invalid": "该智能体的语音凭据无效或已过期，请联系工作区管理员更新。",
+      "voice_unconfigured": "该智能体尚未配置语音，请联系工作区管理员配置语音 Provider。文字发送不受影响，可正常使用。",
+      "voice_provider_missing": "该智能体对应的语音 Provider 已不存在，请联系工作区管理员重新配置语音。文字发送不受影响，可正常使用。",
+      "voice_provider_disabled": "该智能体的语音 Provider 已停用，工作区管理员可将其重新开启。文字发送不受影响，可正常使用。"
+    }
+  },
+  "dictation": {
+    "open": "听写",
+    "close": "关闭听写",
+    "hold_to_talk": "按住 说话",
+    "release_to_cancel": "松开取消",
+    "release_to_transcribe": "松开后转写",
+    "transcribing": "转写中…",
+    "transcribe_failed": "转写失败，请重试",
+    "not_recognized": "未识别到语音",
+    "listening": "正在聆听…",
+    "stop_agent": "停止 Agent"
+  },
+  "orb": {
+    "connecting": "正在连接…",
+    "listening": "聆听中",
+    "user_speaking": "正在听你说",
+    "thinking": "思考中",
+    "speaking": "正在回应",
+    "interrupted": "已打断",
+    "disconnected": "连接已断开",
+    "failed": "语音暂不可用",
+    "mute": "静音麦克风",
+    "unmute": "取消静音",
+    "immerse": "沉浸视图",
+    "collapse": "收起为迷你球",
+    "reconnect": "重连",
+    "hangup": "挂断",
+    "disconnect_hint": "连接已断开，可重连或挂断。",
+    "toast_saved": "语音对话已保存",
+    "toast_saved_idle": "语音对话已保存（空闲超时自动挂断）",
+    "toast_saved_background": "语音对话已保存（切后台超时自动挂断）"
+  }
+}

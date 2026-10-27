@@ -1,0 +1,55 @@
+# Dependencies — unlike .gitignore, patterns here are anchored at the
+# context root unless prefixed with **/, so nested node_modules/.next need
+# the **/ form.
+**/node_modules
+.pnpm-store
+
+# Build outputs
+**/.next
+**/dist
+server/bin
+server/tmp
+**/.turbo
+**/*.tsbuildinfo
+.beads
+
+# Git
+.git
+.gitignore
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+e2e/test-results
+coverage
+
+# Docs
+/docs/
+*.md
+
+# Default-exclude app workspaces so a new one does not silently enter the
+# build context. Dockerfile.web / Dockerfile.mcp each ship their own
+# <Dockerfile>.dockerignore whitelist, which BuildKit uses INSTEAD of this
+# file; the two entries below keep the same workspaces reachable for any
+# build that falls back to this shared file.
+/apps/*
+!/apps/web/
+!/apps/mcp/
+
+# Repository-only tooling
+/.github/
+/deploy/
+/scripts/

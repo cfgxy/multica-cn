@@ -1,0 +1,824 @@
+package lark
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+// CardStatus mirrors lark_outbound_card_message.status. Kept as a typed
+// alias so callers can't pass arbitrary strings into the status column.
+type CardStatus string
+
+const (
+	CardStatusPending   CardStatus = "pending"
+	CardStatusStreaming CardStatus = "streaming"
+	CardStatusFinal     CardStatus = "final"
+	CardStatusError     CardStatus = "error"
+)
+
+// CardKind enumerates the small set of card variants the patcher
+// renders. The Renderer is plug-replaceable so the on-wire card
+// template can evolve without touching the patcher's transport / DB
+// logic.
+type CardKind string
+
+const (
+	CardKindThinking CardKind = "thinking"
+	CardKindRunning  CardKind = "running"
+	CardKindFinal    CardKind = "final"
+	CardKindError    CardKind = "error"
+)
+
+// CardRender is the rendered card body the Renderer produces. The
+// patcher serializes the JSON before handing it to APIClient.
+type CardRender struct {
+	JSON string
+}
+
+// RenderInput is the (typed) snapshot the Renderer sees when building
+// or patching a card. Fields are populated as they become available
+// during a task lifecycle — IssueNumber is set for `/issue` flows,
+// Content is set for completed chat tasks, ErrorMessage for failed.
+type RenderInput struct {
+	Kind         CardKind
+	AgentName    string
+	IssueNumber  int32
+	IssueID      pgtype.UUID
+	TaskID       pgtype.UUID
+	Content      string
+	ErrorMessage string
+}
+
+// Renderer turns a typed RenderInput into the actual Lark card JSON.
+// Centralizing this lets us swap card templates (or A/B them) without
+// touching event subscription or persistence code.
+type Renderer interface {
+	Render(in RenderInput) (CardRender, error)
+}
+
+// defaultRenderer produces minimal text-only cards that work against
+// Lark's generic interactive-card schema. The exact JSON layout will
+// be refined when the real product card design lands; this default
+// keeps the wiring real (the JSON deserializes against Lark's schema)
+// without committing the product to a particular template.
+type defaultRenderer struct{}
+
+// NewDefaultRenderer returns the production-default Renderer. Override
+// via PatcherConfig.Renderer when a custom template is needed.
+func NewDefaultRenderer() Renderer { return &defaultRenderer{} }
+
+func (defaultRenderer) Render(in RenderInput) (CardRender, error) {
+	header := "Multica"
+	if in.AgentName != "" {
+		header = in.AgentName
+	}
+	var body string
+	switch in.Kind {
+	case CardKindThinking:
+		body = "Thinking…"
+	case CardKindRunning:
+		body = "Working on it…"
+	case CardKindFinal:
+		body = in.Content
+		if body == "" {
+			body = "Done."
+		}
+	case CardKindError:
+		body = "Run failed."
+		if in.ErrorMessage != "" {
+			body = "Run failed: " + in.ErrorMessage
+		}
+	default:
+		return CardRender{}, fmt.Errorf("unknown card kind %q", in.Kind)
+	}
+	// update_multi MUST be true on every render: Lark refuses to apply
+	// PatchInteractiveCard to a card whose config does not declare it
+	// a "shared, updatable" card. Since this renderer drives the
+	// thinking → streaming → final/error lifecycle (the card is sent
+	// once and patched multiple times), an absent update_multi causes
+	// every patch after the first send to silently no-op on the
+	// Lark side while the local outbound status row still flips to
+	// streaming/final. Keep this on every kind — including thinking
+	// and error — because that initial JSON IS the body Lark stores
+	// and consults for subsequent patches.
+	doc := map[string]any{
+		"config": map[string]any{
+			"wide_screen_mode": true,
+			"update_multi":     true,
+		},
+		"header": map[string]any{
+			"template": "blue",
+			"title":    map[string]any{"tag": "plain_text", "content": header},
+		},
+		"elements": []any{
+			map[string]any{
+				"tag": "div",
+				"text": map[string]any{
+					"tag":     "plain_text",
+					"content": body,
+				},
+			},
+		},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return CardRender{}, err
+	}
+	return CardRender{JSON: string(raw)}, nil
+}
+
+// PatcherQueries is the narrow subset of *db.Queries the Patcher
+// needs. Declared as an interface so the patcher is unit-testable
+// without a real Postgres connection.
+type PatcherQueries interface {
+	GetAgentTask(ctx context.Context, id pgtype.UUID) (db.AgentTaskQueue, error)
+	TaskHasChannelIngestedMessages(ctx context.Context, taskID pgtype.UUID) (bool, error)
+	GetChannelTaskDelivery(ctx context.Context, taskID pgtype.UUID) (db.ChannelTaskDelivery, error)
+	GetChatSession(ctx context.Context, id pgtype.UUID) (db.ChatSession, error)
+	GetAgent(ctx context.Context, id pgtype.UUID) (db.Agent, error)
+	GetLarkInstallation(ctx context.Context, id pgtype.UUID) (Installation, error)
+	GetLarkChatSessionBindingBySession(ctx context.Context, chatSessionID pgtype.UUID) (ChatSessionBinding, error)
+	GetLarkOutboundCardByTask(ctx context.Context, taskID pgtype.UUID) (OutboundCardMessage, error)
+	CreateLarkOutboundCardMessage(ctx context.Context, arg CreateOutboundCardMessageParams) (OutboundCardMessage, error)
+	UpdateLarkOutboundCardStatus(ctx context.Context, arg UpdateOutboundCardStatusParams) error
+	SetChatMessageChannelOutboundProvenanceByTask(ctx context.Context, arg db.SetChatMessageChannelOutboundProvenanceByTaskParams) (int64, error)
+	RecordChannelOutboundMessage(ctx context.Context, arg db.RecordChannelOutboundMessageParams) error
+	// ListAttachmentsByChatMessage reads the files the agent bound to one
+	// assistant message. Only reached on a deployment that wired object
+	// storage; see outbound_media.go.
+	ListAttachmentsByChatMessage(ctx context.Context, arg db.ListAttachmentsByChatMessageParams) ([]db.Attachment, error)
+}
+
+// CredentialsResolver decrypts an installation's app_secret for the
+// transport layer. *InstallationService satisfies it directly; tests
+// substitute a fake.
+type CredentialsResolver interface {
+	DecryptAppSecret(inst Installation) (string, error)
+}
+
+// PatcherConfig tunes the outbound Patcher. Defaults via withDefaults;
+// tests typically override Renderer / Now / Logger.
+type PatcherConfig struct {
+	// Renderer drives the error card template used on the EventTaskFailed
+	// path. The success path (EventChatDone) bypasses the renderer
+	// entirely — it sends the raw assistant reply as a plain text IM
+	// message — so this only matters for the failure branch.
+	Renderer Renderer
+	// ProgressRenderer drives the streaming process card (progress_card.go).
+	// Separate from Renderer because the two are different card generations:
+	// the error card is schema 1.0, the process card schema 2.0.
+	ProgressRenderer ProgressRenderer
+	Now              func() time.Time
+	// Wait is how the progress scheduler sleeps out a throttle interval or a
+	// rate-limit backoff. Injected so tests drive the schedule from a fake
+	// clock instead of real time.
+	Wait   func(ctx context.Context, d time.Duration) error
+	Logger *slog.Logger
+}
+
+func (c PatcherConfig) withDefaults() PatcherConfig {
+	if c.Renderer == nil {
+		c.Renderer = NewDefaultRenderer()
+	}
+	if c.ProgressRenderer == nil {
+		c.ProgressRenderer = NewDefaultProgressRenderer()
+	}
+	if c.Now == nil {
+		c.Now = time.Now
+	}
+	if c.Wait == nil {
+		c.Wait = progressWait
+	}
+	if c.Logger == nil {
+		c.Logger = slog.Default()
+	}
+	return c
+}
+
+// Patcher reacts to task-lifecycle events on the event bus and forwards
+// chat replies to Lark as plain text IM messages. It is the outbound
+// side of §4.5 — but the original "thinking → streaming → final card"
+// lifecycle was reduced to a single plain-text reply on EventChatDone
+// after Bohan reported the card chrome made replies feel like system
+// notifications. The error path is the one survivor of card rendering:
+// failed runs surface as a short error card on EventTaskFailed because
+// the visual distinction from a normal reply is genuinely useful.
+//
+// Scope:
+//
+//   - Only tasks whose chat_session has a lark_chat_session_binding
+//     produce outbound. Tasks born from the web UI or autopilot pass
+//     through unchanged.
+//
+//   - Each EventChatDone yields one Lark text message; there is no
+//     streaming, no throttling, no DB row to track card-state.
+//
+//   - Multi-replica safety is inherited from the inbound WS lease: at
+//     most one replica holds the installation lease at a time, the
+//     event bus is per-process, so exactly one Patcher reacts per run.
+type Patcher struct {
+	queries         PatcherQueries
+	credentials     CredentialsResolver
+	client          APIClient
+	typingIndicator *TypingIndicatorManager
+	progress        *progressCards
+	cfg             PatcherConfig
+
+	// objects is nil unless WithAttachments wired object storage, and nil is
+	// what turns file delivery off — the same condition the router uses to
+	// decide whether to declare the capability to the agent.
+	objects mediaObjectStore
+	metrics Metrics
+
+	// spawn starts the attachment delivery goroutine. A seam, not a strategy:
+	// tests substitute a synchronous run so a delivery's outcome is observable
+	// without sleeping.
+	spawn func(func())
+
+	// Attachment-delivery admission counters. See outbound_media.go for why
+	// there are two of them and what each one bounds.
+	pendingMu           sync.Mutex
+	pendingAttachments  int
+	admittedAttachments int
+}
+
+// NewPatcher constructs a Patcher bound to its dependencies. The
+// patcher does not subscribe to the bus until Register is called.
+func NewPatcher(queries PatcherQueries, credentials CredentialsResolver, client APIClient, cfg PatcherConfig, opts ...PatcherOption) *Patcher {
+	cfg = cfg.withDefaults()
+	p := &Patcher{
+		queries:     queries,
+		credentials: credentials,
+		client:      client,
+		cfg:         cfg,
+		metrics:     nopMetrics{},
+		spawn:       func(f func()) { go f() },
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	p.progress = newProgressCards(p)
+	return p
+}
+
+// SetTypingIndicatorManager wires the typing-indicator manager into the
+// patcher so that replies clear the "processing" reaction before they
+// are sent. Call once at boot after both the patcher and manager are
+// constructed. Nil disables the clear step.
+func (p *Patcher) SetTypingIndicatorManager(m *TypingIndicatorManager) {
+	p.typingIndicator = m
+}
+
+// Register subscribes the patcher to the task-lifecycle events it
+// cares about on the supplied bus. Idempotent only if you call it
+// against a fresh bus; call sites should invoke it exactly once
+// during server boot (after the bus + patcher are constructed and
+// before HTTP traffic starts).
+//
+// Subscriptions are deliberately minimal:
+//
+//   - EventChatDone — the agent finished replying. The Patcher sends
+//     the reply as a plain text IM message (Lark's `msg_type=text`),
+//     not as an interactive card. The earlier card-based design (with
+//     thinking → running → final patches) made every reply look like
+//     a system notification nested in card chrome; flipping to plain
+//     text makes free-form chat feel native.
+//
+//   - EventTaskFailed — the run failed; surface a short error card
+//     so the failure is visually distinct from a successful reply.
+//
+//   - EventTaskCancelled — the run ended without an answer. Nothing is
+//     sent for it; the subscription exists so the Typing reaction comes
+//     off. A cancellation publishes no chat-done and no task-failed, so
+//     without this the badge sits on the user's message for good.
+//     task:cancelled is broadcast once per cancelled row by CancelTask,
+//     the queued follow-up cancel behind it, the agent- and issue-level
+//     bulk cancels, the runtime and member revocations, and deleting the
+//     chat session. The delete is the one that used to publish nothing:
+//     BroadcastCancelledTasks resolved each task's workspace through its
+//     chat_session, the same row its transaction had just deleted, and an
+//     event with no workspace is dropped before it reaches the bus. It now
+//     takes the workspace from its caller. Two holes are left, neither of
+//     them a missing subscription: archiving an agent stays silent by
+//     choice — agent:archived invalidates every client's task list
+//     instead — and no list refresh removes a Lark reaction; and an
+//     ending that arrives while the reaction is still being added clears
+//     nothing, because Add records its state only after the Lark call
+//     returns, so the badge lands after the clear with nothing left to
+//     take it off. That second one predates task:cancelled — chat-done
+//     and task-failed race the add the same way — and closing it needs a
+//     per-session generation the add can check when its call returns.
+//
+//   - EventTaskMessage — the run's process frames, which drive the separate
+//     streaming progress card (progress_card.go). Added on the Owner's
+//     instruction of 2026-09-26 ("流式卡片的形态；参考我改版的 CCConnect 形态",
+//     RUYI-221) after a Feishu run was reported as giving no feedback at all
+//     until the answer landed.
+//
+//     This does NOT restore the removed card lifecycle. What made that one
+//     unwanted was that the REPLY lived inside card chrome; here the reply is
+//     still the plain text message sendChatReply posts, and the progress card
+//     is a second, process-only artifact whose footer states it has stopped
+//     and that the answer is the next message — the same split ccconnect uses
+//     (platform/feishu/feishu.go progressStateMeta).
+//
+// We deliberately do NOT subscribe to EventTaskQueued / EventTaskRunning
+// (a queued/running card frame carries no process information the task
+// messages do not already carry) or to EventTaskCompleted (chat tasks always
+// emit EventChatDone first, which is what we care about; non-chat tasks have
+// no Lark binding anyway and would early-return). Leaving EventTaskCompleted
+// unsubscribed also avoids the prior "Done." overwrite regression where the
+// no-content EventTaskCompleted payload would wipe the real reply.
+func (p *Patcher) Register(bus *events.Bus) {
+	bus.Subscribe(protocol.EventTaskMessage, p.handleTaskMessage)
+	bus.Subscribe(protocol.EventTaskFailed, p.handleEvent)
+	bus.Subscribe(protocol.EventChatDone, p.handleEvent)
+	bus.Subscribe(protocol.EventTaskCancelled, p.handleEvent)
+}
+
+func (p *Patcher) handleEvent(e events.Event) {
+	// Use a fresh background ctx with a tight timeout: bus delivery is
+	// synchronous so a stuck Lark HTTP call would otherwise wedge the
+	// whole publish call site. The terminal progress-card frame is the one
+	// deliberate exception: it finalizes on its own bounded budget
+	// (finalizeLater) because its retry schedule must outlive rate-limit
+	// backoffs this event budget cannot cover.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := p.processEvent(ctx, e); err != nil {
+		p.cfg.Logger.Warn("lark patcher: event handling failed",
+			"event_type", e.Type,
+			"task_id", e.TaskID,
+			"chat_session_id", e.ChatSessionID,
+			"error", err,
+		)
+	}
+}
+
+func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
+	taskID, chatSessionID, ok := taskAndSessionFromEvent(e)
+	if !ok {
+		return nil
+	}
+	if !chatSessionID.Valid {
+		// Issue / autopilot tasks have no chat_session.
+		return nil
+	}
+	// A cancelled run has no reply to place, so the only thing owed to the user
+	// is taking the Typing badge off. That runs before every lookup below,
+	// because each of them can answer "no" for a run that still has a badge on
+	// screen:
+	//
+	//   - the binding is gone by the time a session delete's cancels are
+	//     broadcast (they fire after the transaction that dropped it commits);
+	//
+	//   - the origin classification answers "does this answer belong on Lark",
+	//     and a task cancelled for owning an empty input batch — the failure
+	//     #6611 fixed the cause of — reports no channel-ingested messages, so a
+	//     clear behind it would be skipped on exactly the run that most needs
+	//     it. A cancellation has no answer to misroute, so the question does not
+	//     arise.
+	//
+	// Nothing is posted here, so neither gate is protecting anything: the badge
+	// is Lark's own, and Clear only touches sessions this process put one on.
+	// The clear is keyed by session rather than by turn, so cancelling one of
+	// two turns in a session takes the badge off both; the worst that costs is a
+	// missing badge on a turn still running.
+	if e.Type == protocol.EventTaskCancelled {
+		if p.typingIndicator != nil {
+			p.typingIndicator.Clear(ctx, chatSessionID)
+		}
+		// A cancelled run leaves a running progress card on screen with nothing
+		// behind it, so its last frame is the one that says so. No-op when the
+		// run never produced a card.
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateCancelled)
+		return nil
+	}
+
+	target, err := p.resolveOutboundTarget(ctx, taskID)
+	if err != nil || target == nil {
+		return err
+	}
+
+	// Clear the "processing" reaction before the reply is visible so the
+	// user sees a clean transition. Best-effort: a failure here is logged
+	// but does not block the actual reply. The progress card's first frame
+	// already clears it; this stays as the safety net for a run whose card
+	// never landed, and Clear on an untracked session is a no-op.
+	if p.typingIndicator != nil {
+		p.typingIndicator.Clear(ctx, chatSessionID)
+	}
+
+	// The answer goes out FIRST, then the card is stopped: the terminal card
+	// frame may have to wait out a rate-limit backoff, and neither the reply
+	// nor this synchronous publish call site must inherit that latency — so
+	// the stop runs on finalizeLater's own budget.
+	switch e.Type {
+	case protocol.EventChatDone:
+		messageID, replyErr := p.sendChatReply(ctx, target.creds, target.binding, e.Payload)
+		if replyErr == nil && messageID != "" {
+			replyErr = p.recordChatReplyProvenance(ctx, target, messageID)
+		}
+		// The files leave on a goroutine of their own, and deliberately
+		// regardless of what the words did. A turn with no text at all is the
+		// ordinary shape of "here is the file you asked for" — sendChatReply
+		// drops empty content and returns nil — so gating the attachment on a
+		// non-empty reply would silently lose exactly those turns. A text send
+		// that failed is no reason to withhold the file either.
+		if p.mayCarryAttachments(e) {
+			p.deliverAttachments(e, attachmentTarget{Creds: target.creds, Binding: target.binding})
+		}
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateCompleted)
+		return replyErr
+	case protocol.EventTaskFailed:
+		failErr := p.fail(ctx, target.creds, target.binding, taskID, target.agentName, e.Payload)
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateFailed)
+		return failErr
+	}
+	return nil
+}
+
+// outboundTarget is everything one outbound write needs: where the message
+// goes and which app credentials send it. It is resolved per event/frame
+// rather than cached, so a credential rotation or a rebound session between
+// two frames is picked up, and no decrypted secret outlives the call.
+type outboundTarget struct {
+	taskID        pgtype.UUID
+	binding       ChatSessionBinding
+	creds         InstallationCredentials
+	agentName     string
+	routeRevision int64
+	// chatSessionID is the owning session, read from the agent task row that
+	// resolveOutboundTarget loads anyway. Task-scoped events reach this package
+	// without session identity — handler.publishTask stamps only a TaskID hint
+	// and TaskMessagePayload has no chat_session_id field — so the delivery
+	// path is where the card writes get theirs.
+	chatSessionID pgtype.UUID
+}
+
+// resolveOutboundTarget answers "does this task's output belong on Feishu, and
+// through which app". A nil target with a nil error means no — the task is not
+// channel-routed, its installation is revoked, or its input did not come from
+// the channel.
+//
+// The channel gate reads the delivery row's immutable ChannelType snapshot,
+// which is routing ("this task's output was addressed to Feishu"), not a
+// capability claim about the adapter. Capability stays where the
+// ChannelCarriesFiles comment in execenv/channel_type.go says it belongs: in
+// what the injected APIClient can actually do.
+func (p *Patcher) resolveOutboundTarget(ctx context.Context, taskID pgtype.UUID) (*outboundTarget, error) {
+	delivery, err := p.queries.GetChannelTaskDelivery(ctx, taskID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Direct Multica task or violated snapshot invariant — fail closed.
+			return nil, nil
+		}
+		return nil, fmt.Errorf("lookup lark task delivery: %w", err)
+	}
+	if delivery.ChannelType != channelTypeFeishu {
+		return nil, nil
+	}
+	binding := ChatSessionBinding{
+		ID: delivery.BindingID, InstallationID: delivery.InstallationID,
+		ChannelChatID: delivery.ChannelChatID, ChatType: delivery.ChatType, Config: delivery.Config,
+		LastMessageID: delivery.ChannelMessageID, LastThreadID: delivery.ChannelThreadID,
+	}
+
+	// Only bound sessions reach here, so classify the task origin before
+	// spending any send work. Web/mobile direct-chat tasks can reuse a session
+	// that originated in Lark, but their replies belong only in Multica.
+	// Sealed channel tasks own an input batch just like direct tasks, so the
+	// discriminator is the immutable channel_ingested provenance of that
+	// batch, not chat_input_task_id presence (which #5645 originally used).
+	task, err := p.queries.GetAgentTask(ctx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("load agent task: %w", err)
+	}
+	deliver, err := engine.TaskInputIsChannelIngested(ctx, p.queries, task)
+	if err != nil {
+		return nil, fmt.Errorf("classify task input origin: %w", err)
+	}
+	if !deliver {
+		return nil, nil
+	}
+
+	inst, err := p.queries.GetLarkInstallation(ctx, binding.InstallationID)
+	if err != nil {
+		return nil, fmt.Errorf("load installation: %w", err)
+	}
+	if InstallationStatus(inst.Status) != InstallationActive {
+		// Revoked between trigger and event; nothing to patch.
+		return nil, nil
+	}
+	creds, err := p.installationCredentials(inst)
+	if err != nil {
+		return nil, err
+	}
+
+	agentName := ""
+	if agent, agentErr := p.queries.GetAgent(ctx, inst.AgentID); agentErr == nil {
+		agentName = agent.Name
+	}
+	return &outboundTarget{
+		taskID: taskID, binding: binding, creds: creds, agentName: agentName, routeRevision: delivery.RouteRevision,
+		chatSessionID: task.ChatSessionID,
+	}, nil
+}
+
+// sendChatReply turns ChatDonePayload.Content into a Lark message.
+// The wire shape is chosen per-reply based on whether the body
+// contains any markdown syntax:
+//
+//   - Plain prose (no markdown) → `msg_type=text`. A one-line "Hi!"
+//     reply should feel like a normal IM message, not a notification
+//     card with chrome around it.
+//
+//   - Anything with markdown (headings, lists, code blocks, tables,
+//     bold/italic, links) → schema-2.0 interactive card with a
+//     `tag: "markdown"` body element so Lark's client renders the
+//     formatting instead of leaving raw `**bold**` characters in
+//     the transcript. The card is visually subtler than the legacy
+//     binding-prompt template — just a single markdown block, no
+//     header / icon / CTA buttons.
+//
+// Empty content is silently dropped: we'd rather show nothing than
+// "Done." (the prior card fallback that confused Bohan in the live
+// dev env). In practice an empty Content means the daemon completed
+// the task without producing visible output, which only happens for
+// edge cases like a chat task that just acknowledged a system event;
+// not emitting a message there is the right product call.
+func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentials, binding ChatSessionBinding, payload any) (string, error) {
+	content := chatDoneContent(payload)
+	if content == "" {
+		return "", nil
+	}
+	target := threadReplyTarget(binding)
+	if containsMarkdown(content) {
+		return sendWithThreadFallbackMessageID(p.cfg.Logger, "send markdown card", target, func(t ReplyTarget) (string, error) {
+			return p.client.SendMarkdownCard(ctx, SendMarkdownCardParams{
+				InstallationID: creds,
+				ChatID:         outboundChatID(binding),
+				Markdown:       content,
+				ReplyTarget:    t,
+			})
+		})
+	}
+	return sendWithThreadFallbackMessageID(p.cfg.Logger, "send text message", target, func(t ReplyTarget) (string, error) {
+		return p.client.SendTextMessage(ctx, SendTextParams{
+			InstallationID: creds,
+			ChatID:         outboundChatID(binding),
+			Text:           content,
+			ReplyTarget:    t,
+		})
+	})
+}
+
+// recordChatReplyProvenance records the provider message ID twice: on the
+// assistant message and in the append-only outbound ledger. The inbound
+// resolver requires both records, so a partial failure remains fail-closed.
+func (p *Patcher) recordChatReplyProvenance(ctx context.Context, target *outboundTarget, messageID string) error {
+	if target == nil || messageID == "" {
+		return errors.New("lark patcher: missing task reply provenance")
+	}
+	updated, err := p.queries.SetChatMessageChannelOutboundProvenanceByTask(ctx, db.SetChatMessageChannelOutboundProvenanceByTaskParams{
+		ChannelType:    pgtype.Text{String: channelTypeFeishu, Valid: true},
+		InstallationID: target.binding.InstallationID,
+		ChannelChatID:  pgtype.Text{String: target.binding.ChannelChatID, Valid: true},
+		MessageIds:     []string{messageID},
+		TaskID:         target.taskID,
+	})
+	if err != nil {
+		return fmt.Errorf("record assistant reply provenance: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("record assistant reply provenance: updated %d rows", updated)
+	}
+	if err := p.queries.RecordChannelOutboundMessage(ctx, db.RecordChannelOutboundMessageParams{
+		OutboundInstallationID: target.binding.InstallationID,
+		OutboundChannelType:    channelTypeFeishu,
+		OutboundMessageID:      messageID,
+		OutboundBindingID:      target.binding.ID,
+		OutboundRouteRevision:  target.routeRevision,
+		OutboundTaskID:         target.taskID,
+		OutboundKind:           "task_reply",
+	}); err != nil {
+		return fmt.Errorf("record outbound reply ledger: %w", err)
+	}
+	return nil
+}
+
+// outboundChatID recovers the real Lark chat id from the chat binding. The
+// channel_chat_id may be a composite "chat:thread" topic-isolation key, so
+// the real chat id is read from the binding config (larkBindingConfig);
+// pre-topic rows (config "{}") route by the key itself, which for them IS the
+// real chat id.
+func outboundChatID(b ChatSessionBinding) ChatID {
+	if len(b.Config) > 0 {
+		var cfg larkBindingConfig
+		if err := json.Unmarshal(b.Config, &cfg); err == nil && cfg.ChatID != "" {
+			return ChatID(cfg.ChatID)
+		}
+	}
+	return ChatID(b.ChannelChatID)
+}
+
+// threadReplyTarget derives the outbound reply target from the chat
+// binding's most-recent inbound trigger. We thread the reply ONLY when
+// that trigger was itself inside a Lark topic (last_lark_thread_id
+// present): normal group / p2p chats keep the unchanged chat-level send
+// path, and only an @-mention that happened inside a thread gets a
+// threaded reply (replying to last_lark_message_id with reply_in_thread).
+// The zero ReplyTarget means "send at the chat level".
+func threadReplyTarget(binding ChatSessionBinding) ReplyTarget {
+	if binding.LastThreadID.Valid && binding.LastThreadID.String != "" &&
+		binding.LastMessageID.Valid && binding.LastMessageID.String != "" {
+		return ReplyTarget{MessageID: binding.LastMessageID.String, InThread: true}
+	}
+	return ReplyTarget{}
+}
+
+// sendWithThreadFallback runs send with the thread reply target and,
+// ONLY when the threaded attempt fails with a Lark error that means the
+// topic reply legitimately cannot land (trigger message recalled, topic
+// gone, topics disabled, aggregated message — see
+// threadReplyUnsupportedCodes), retries once at the chat level so the
+// reply is not silently lost. Any other failure — transport error,
+// 5xx, timeout, rate limit, or an ambiguous "the server may have
+// received it" error — is logged and returned as a failure rather than
+// retried: a blind chat-level retry could duplicate the reply or leak a
+// thread-only reply into the main group chat. When target is already
+// chat-level there is nothing to fall back to and the error is returned.
+//
+// It is a package-level function (rather than a Patcher method) so the
+// event-driven Patcher and the immediate OutcomeReplier share one
+// classified fallback path.
+func sendWithThreadFallback(log *slog.Logger, op string, target ReplyTarget, send func(ReplyTarget) error) error {
+	err := send(target)
+	if err == nil {
+		return nil
+	}
+	if target.IsSet() && isThreadReplyUnsupported(err) {
+		log.Warn("lark: thread reply unsupported for target, retrying at chat level",
+			"op", op, "reply_message_id", target.MessageID, "error", err)
+		if fallbackErr := send(ReplyTarget{}); fallbackErr != nil {
+			return fmt.Errorf("%s (chat-level fallback after thread-unsupported reply: %v): %w", op, err, fallbackErr)
+		}
+		return nil
+	}
+	if target.IsSet() {
+		log.Warn("lark: thread reply failed; not falling back (non-classified error)",
+			"op", op, "reply_message_id", target.MessageID, "error", err)
+	}
+	return fmt.Errorf("%s: %w", op, err)
+}
+
+func sendWithThreadFallbackMessageID(log *slog.Logger, op string, target ReplyTarget, send func(ReplyTarget) (string, error)) (string, error) {
+	messageID, err := send(target)
+	if err == nil {
+		if messageID == "" {
+			return "", fmt.Errorf("%s: empty message ID", op)
+		}
+		return messageID, nil
+	}
+	if target.IsSet() && isThreadReplyUnsupported(err) {
+		log.Warn("lark: thread reply unsupported for target, retrying at chat level",
+			"op", op, "reply_message_id", target.MessageID, "error", err)
+		messageID, fallbackErr := send(ReplyTarget{})
+		if fallbackErr != nil {
+			return "", fmt.Errorf("%s (chat-level fallback after thread-unsupported reply: %v): %w", op, err, fallbackErr)
+		}
+		if messageID == "" {
+			return "", fmt.Errorf("%s: empty message ID", op)
+		}
+		return messageID, nil
+	}
+	if target.IsSet() {
+		log.Warn("lark: thread reply failed; not falling back (non-classified error)",
+			"op", op, "reply_message_id", target.MessageID, "error", err)
+	}
+	return "", fmt.Errorf("%s: %w", op, err)
+}
+
+func (p *Patcher) installationCredentials(inst Installation) (InstallationCredentials, error) {
+	if p.credentials == nil {
+		return InstallationCredentials{}, errors.New("lark patcher: credentials resolver missing")
+	}
+	secret, err := p.credentials.DecryptAppSecret(inst)
+	if err != nil {
+		return InstallationCredentials{}, fmt.Errorf("decrypt app_secret: %w", err)
+	}
+	creds := InstallationCredentials{
+		InstallationID: inst.ID,
+		AppID:          inst.AppID,
+		AppSecret:      secret,
+		Region:         RegionOrDefault(inst.Region),
+	}
+	if inst.TenantKey.Valid {
+		creds.TenantKey = inst.TenantKey.String
+	}
+	return creds, nil
+}
+
+// fail surfaces a short error card on task failure. Unlike the
+// success path (plain text via sendChatReply), failures stay as cards
+// because the user benefits from the visual distinction — a red /
+// header-styled card is much harder to miss than a regular bubble,
+// and these are rare enough that the card chrome isn't noisy.
+//
+// One-shot send (no patching, no DB row): if the task fails a second
+// time we'd just send a second card, which is fine — failure is
+// usually a single terminal event.
+func (p *Patcher) fail(ctx context.Context, creds InstallationCredentials, binding ChatSessionBinding, taskID pgtype.UUID, agentName string, payload any) error {
+	render, err := p.cfg.Renderer.Render(RenderInput{
+		Kind:         CardKindError,
+		AgentName:    agentName,
+		TaskID:       taskID,
+		ErrorMessage: errorMessageFromPayload(payload),
+	})
+	if err != nil {
+		return fmt.Errorf("render error card: %w", err)
+	}
+	return sendWithThreadFallback(p.cfg.Logger, "send error card", threadReplyTarget(binding), func(t ReplyTarget) error {
+		_, err := p.client.SendInteractiveCard(ctx, SendCardParams{
+			InstallationID: creds,
+			ChatID:         outboundChatID(binding),
+			CardJSON:       render.JSON,
+			ReplyTarget:    t,
+		})
+		return err
+	})
+}
+
+// taskAndSessionFromEvent parses the typed-ish payload the task publishers
+// emit — a map[string]any with `task_id` (always) and
+// `chat_session_id` (chat tasks only). EventChatDone carries a
+// ChatDonePayload struct instead.
+func taskAndSessionFromEvent(e events.Event) (taskID, chatSessionID pgtype.UUID, ok bool) {
+	if e.TaskID != "" {
+		if err := taskID.Scan(e.TaskID); err != nil {
+			taskID = pgtype.UUID{}
+		}
+	}
+	if e.ChatSessionID != "" {
+		if err := chatSessionID.Scan(e.ChatSessionID); err != nil {
+			chatSessionID = pgtype.UUID{}
+		}
+	}
+	switch p := e.Payload.(type) {
+	case map[string]any:
+		if !taskID.Valid {
+			if s, _ := p["task_id"].(string); s != "" {
+				_ = taskID.Scan(s)
+			}
+		}
+		if !chatSessionID.Valid {
+			if s, _ := p["chat_session_id"].(string); s != "" {
+				_ = chatSessionID.Scan(s)
+			}
+		}
+	case protocol.ChatDonePayload:
+		if !taskID.Valid {
+			_ = taskID.Scan(p.TaskID)
+		}
+		if !chatSessionID.Valid {
+			_ = chatSessionID.Scan(p.ChatSessionID)
+		}
+	}
+	return taskID, chatSessionID, taskID.Valid
+}
+
+func chatDoneContent(payload any) string {
+	switch p := payload.(type) {
+	case protocol.ChatDonePayload:
+		return p.Content
+	case map[string]any:
+		if s, ok := p["content"].(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func errorMessageFromPayload(payload any) string {
+	if m, ok := payload.(map[string]any); ok {
+		if s, ok := m["error"].(string); ok {
+			return s
+		}
+		if s, ok := m["error_message"].(string); ok {
+			return s
+		}
+	}
+	return ""
+}

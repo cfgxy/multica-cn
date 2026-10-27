@@ -1,0 +1,132 @@
+{
+  "nav": {
+    "inbox": "인박스",
+    "chat": "채팅",
+    "my_issues": "내 태스크",
+    "issues": "태스크",
+    "decisions": "결정",
+    "suspensions": "보류 센터",
+    "projects": "프로젝트",
+    "autopilots": "오토파일럿",
+    "agents": "에이전트",
+    "squads": "스쿼드",
+    "usage": "분석",
+    "management": "관리",
+    "self_evolution": "자기 진화",
+    "runtimes": "런타임",
+    "voice_runtimes": "음성 런타임",
+    "skills": "스킬",
+    "settings": "설정",
+    "audit": "MCP 감사",
+    "admin": "관리"
+  },
+  "tab": {
+    "issue": "태스크",
+    "project": "프로젝트",
+    "autopilot": "오토파일럿",
+    "agent": "에이전트",
+    "member": "멤버",
+    "squad": "스쿼드",
+    "skill": "스킬",
+    "machine": "머신",
+    "runtime": "런타임",
+    "attachment": "첨부파일",
+    "create_agent": "에이전트 만들기",
+    "unknown": "알 수 없는 페이지"
+  },
+  "help": {
+    "trigger": "도움말",
+    "download_desktop": "데스크톱 앱",
+    "docs": "문서",
+    "changelog": "변경 로그",
+    "discord": "Discord",
+    "feedback": "피드백",
+    "server_version": "서버 버전 {{version}}"
+  },
+  "workspace_loader": {
+    "loading_workspace": "워크스페이스 로딩 중...",
+    "loading_named_prefix": "로딩 중"
+  },
+  "sidebar": {
+    "unpin_tooltip": "고정 해제",
+    "servers_label": "서버",
+    "manage_servers": "서버 관리",
+    "workspaces_label": "워크스페이스",
+    "create_workspace": "워크스페이스 만들기",
+    "pending_invitations_label": "대기 중인 초대",
+    "invitation_workspace_fallback": "워크스페이스",
+    "invitation_join": "참가",
+    "invitation_decline": "거절",
+    "stop_impersonation": "가장 종료",
+    "log_out": "로그아웃",
+    "admin_area": "관리",
+    "new_issue": "새 태스크",
+    "new_issue_shortcut": "C",
+    "pinned_label": "고정됨",
+    "workspace_group": "워크스페이스",
+    "configure_group": "설정",
+    "unread_overflow": "99+",
+    "discord_card": {
+      "title": "Discord 참여하기",
+      "dismiss": "닫기"
+    }
+  },
+  "audit_view": {
+    "title": "MCP 감사", "description": "거부 및 실패한 요청을 포함한 MCP 호출을 기록합니다.", "since": "시작 시간", "since_placeholder": "시작 시간(RFC3339)", "until": "종료 시간", "until_placeholder": "종료 시간(RFC3339)", "tool": "도구", "actor": "호출자", "actor_id": "호출자 ID", "client": "클라이언트", "client_name": "클라이언트 이름", "client_version": "클라이언트 버전", "result": "결과", "all_results": "모든 결과", "result_success": "성공", "result_failure": "실패", "result_refused": "거부됨", "target": "대상", "target_type": "대상 유형", "target_id": "대상 ID", "all_targets": "모든 대상", "target_workspace": "워크스페이스", "target_issue": "태스크", "target_host": "호스트", "filters": "필터", "apply": "적용", "clear": "필터 지우기", "loading": "감사 이벤트를 불러오는 중...", "loading_more": "더 불러오는 중...", "load_more": "더 불러오기", "load_failed_title": "감사 기록을 불러올 수 없습니다", "load_failed": "감사 이벤트를 불러올 수 없습니다.", "retry": "다시 시도", "permission_title": "감사 기록을 볼 권한이 없습니다", "permission_description": "워크스페이스 owner 또는 admin에게 액세스를 요청하세요.", "unavailable_title": "감사 서비스를 일시적으로 사용할 수 없습니다", "unavailable_description": "서비스가 복구될 때까지 기록이 불완전할 수 있습니다.", "empty": "아직 감사 기록이 없습니다.", "empty_filtered": "이 필터와 일치하는 기록이 없습니다.", "time": "시간", "event_type": "이벤트", "reason": "사유", "duration": "소요 시간", "error_code": "오류 코드", "invocation_id": "호출 ID", "not_provided": "제공되지 않음", "back_to_mcp": "MCP 설정으로 돌아가기", "started": "시작됨"
+  },
+  "mobile": {
+    "agents": {
+      "coming_soon": "에이전트 기능은 곧 제공될 예정입니다."
+    },
+    "pins": {
+      "load_failed": "고정 항목을 불러오지 못했습니다: {{reason}}",
+      "empty": "고정된 항목이 없습니다. 태스크나 프로젝트의 작업 메뉴에서 고정하면 여기에 표시됩니다.",
+      "type_issue": "태스크",
+      "type_project": "프로젝트",
+      "unavailable_a11y": "사용할 수 없는 {{type}}, 탭하여 고정 해제",
+      "unavailable": "사용할 수 없는 {{type}} — 탭하여 고정 해제"
+    },
+    "audit": {
+      "title": "MCP 감사",
+      "all": "전체",
+      "apply_filters": "필터 적용",
+      "load_failed": "감사 이벤트를 불러올 수 없습니다.",
+      "empty": "현재 필터와 일치하는 감사 이벤트가 없습니다.",
+      "tool": "도구",
+      "actor_id": "호출자 ID",
+      "host_target_id": "호스트 대상 ID",
+      "since": "시작 시간(RFC3339)",
+      "until": "종료 시간(RFC3339)",
+      "time_basis": "시간 기준(invocation_start)",
+      "occurred_at": "이벤트 시간",
+      "any": "전체",
+      "cancel": "취소",
+      "actor_type": "호출자 유형",
+      "client_name": "클라이언트 이름",
+      "client_version": "클라이언트 버전",
+      "result": "결과",
+      "target": "대상",
+      "result_status": "결과 상태(success/failure/refused)",
+      "result_error_code": "결과 오류 코드",
+      "target_type": "대상 유형(workspace/issue/host)",
+      "target_id": "대상 ID",
+      "target_pair_required": "대상 유형과 대상 ID를 모두 선택하거나 둘 다 지우세요.",
+      "permission_denied": "워크스페이스 감사 이벤트를 볼 권한이 없습니다.",
+      "service_failed": "감사 서비스를 사용할 수 없습니다. 다시 시도하세요.",
+      "retry": "다시 시도",
+      "time_filters": "시간",
+      "user_filters": "사용자",
+      "client_filters": "클라이언트",
+      "load_more": "더 불러오기",
+      "detail": "감사 이벤트",
+      "detail_unavailable": "이 감사 이벤트는 현재 결과에서 더 이상 사용할 수 없습니다.",
+      "close": "닫기",
+      "event_type": "이벤트",
+      "event_id": "이벤트 ID",
+      "domain": "도메인",
+      "time": "시간",
+      "actor": "호출자",
+      "reason": "사유"
+    }
+  }
+}

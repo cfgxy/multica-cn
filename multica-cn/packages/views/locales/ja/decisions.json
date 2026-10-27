@@ -1,0 +1,125 @@
+{
+  "page": {
+    "breadcrumb": "ディシジョンセンター",
+    "empty_title": "意思決定カードはまだありません",
+    "empty_description": "エージェントやメンバーが作成した意思決定カードがここに集約され、判断待ちの項目を見逃しません。",
+    "load_failed": "意思決定カードの読み込みに失敗しました"
+  },
+  "section": {
+    "open": "未決定",
+    "answered": "決定済み",
+    "cancelled": "無効"
+  },
+  "badge": {
+    "recommended": "推奨あり"
+  },
+  "mobile": {
+    "tab": {
+      "title": "決定"
+    },
+    "tabs": {
+      "all": "すべて",
+      "open": "未決定",
+      "answered": "決定済み",
+      "cancelled": "無効"
+    },
+    "filters": {
+      "title": "フィルター",
+      "reset": "リセット",
+      "a11y": "フィルター",
+      "recommended_only": "推奨ありのみ",
+      "agent_created_only": "エージェント作成のみ"
+    },
+    "page": {
+      "title": "決定センター",
+      "load_failed": "意思決定カードの読み込みに失敗しました: {{reason}}",
+      "empty_filtered": "現在のタブやフィルターに一致する意思決定カードはありません"
+    }
+  },
+  "view": {
+    "section": "ビュー",
+    "list": "リスト",
+    "board": "ボード",
+    "tooltip_list": "リストビュー",
+    "tooltip_board": "ボードビュー"
+  },
+  "filter": {
+    "tooltip": "フィルター",
+    "active_count_other": "フィルター {{count}} 件",
+    "reset": "リセット"
+  },
+  "board": {
+    "empty_column": "カードはありません"
+  },
+  "filtered_empty": {
+    "title": "フィルターに一致する意思決定カードはありません",
+    "hint": "フィルターを調整またはクリアして、このビューのカードを表示してください。",
+    "clear_button": "フィルターをクリア"
+  },
+  "requests": {
+    "section_title": "承認リクエスト",
+    "action_workspace_info_read": "ワークスペース情報の読み取り",
+    "action_prompt_restore": "プロンプトの復元",
+    "action_project_prompt_sync": "プロジェクトプロンプトの同期",
+    "action_single_issue_create": "単一の Issue を作成",
+    "action_script_review": "スクリプトをレビュー",
+    "issue_created": "対象 Issue {{identifier}} · {{status}}",
+    "review_prompt_content": "承認対象のプロンプトを確認",
+    "hide_prompt_content": "承認対象のプロンプトを閉じる",
+    "risk_read": "読み取り専用",
+    "risk_write_low": "低リスク書き込み",
+    "status_pending": "承認待ち",
+    "status_approved": "承認済み",
+    "status_denied": "却下済み",
+    "status_expired": "期限切れ",
+    "status_revoked": "取り下げ済み",
+    "status_executed": "実行済み",
+    "status_reviewed": "レビュー済み",
+    "status_execute_failed": "実行失敗",
+    "kind_cli": "許可済み操作",
+    "kind_script": "制限付きスクリプト",
+    "kind_script_review": "スクリプトのレビューのみ",
+    "kind_issue": "単一 Issue の作成",
+    "execution_in_progress": "承認完了、実行中",
+    "result_unknown": "結果の確認が必要です。このリクエストを再試行しないでください",
+    "no_side_effect": "副作用なしを確認",
+    "side_effect_completed": "完了を確認",
+    "receipt_step": "{{handler}}：{{status}}（{{effect}}）",
+    "receipt_completed": "完了",
+    "receipt_failed": "失敗",
+    "approved_by": "承認者：{{actor}}",
+    "origin_label": "{{agent}} がリクエスト",
+    "source_issue": "Issue：{{title}}",
+    "approve": "承認",
+    "deny": "却下",
+    "cancel": "リクエストを取り下げ",
+    "projection_hint": "この行は状態の投影です。対象ワークスペースで操作してください",
+    "script_review_details": "スクリプトのスナップショットを確認",
+    "copy_script_hash": "スクリプトのハッシュをコピー",
+    "script_hash": "スクリプト SHA-256",
+    "script_interpreter": "インタープリター",
+    "script_arguments": "引数",
+    "script_body": "スクリプト",
+    "script_details_loading": "スクリプトのスナップショットを読み込み中",
+    "script_details_error": "スクリプトのスナップショットを読み込めません",
+    "hash_copied": "ハッシュをコピーしました",
+    "open_target_workspace": "対象ワークスペースで開く",
+    "executed_failed": "実行失敗：{{reason}}",
+    "steps_title": "ワークスペース別のステップ",
+    "step_origin": "発信元",
+    "step_target": "対象",
+    "detail_error": "ステップ詳細の読み込みに失敗しました",
+    "answer_failed": "承認操作に失敗しました",
+    "cancel_failed": "取り下げに失敗しました"
+  },
+  "detail": {
+    "read_only": "読み取り専用の判断詳細",
+    "no_context": "追加の背景はありません。",
+    "options": "選択肢",
+    "recommended": "推奨",
+    "selected": "選択済み",
+    "single_select": "選択肢を1つ選んでください",
+    "multi_select": "1つ以上選択できます",
+    "open_task": "タスクを開いて回答"
+  }
+}

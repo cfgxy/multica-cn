@@ -1,0 +1,1162 @@
+/**
+ * Minimal wire shapes for the Multica REST API subset the MCP server uses.
+ *
+ * These mirror the Go handler response types (`server/internal/handler/*`)
+ * for the fields this server actually surfaces. Fields not listed here are
+ * ignored — the client never re-serializes the full payload.
+ */
+
+export interface WorkspaceInfo {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  issue_prefix?: string;
+}
+
+export interface AgentInfo {
+  id: string;
+  name: string;
+  description?: string;
+  runtime_bound?: boolean;
+}
+
+export interface ProjectInfo {
+  id: string;
+  workspace_id?: string;
+  title: string;
+  description?: string;
+  /** Project-level prompt text injected into every task brief in the project. */
+  instructions?: string;
+  icon?: string;
+  status?: string;
+  priority?: string;
+  lead_type?: string;
+  lead_id?: string;
+  start_date?: string;
+  due_date?: string;
+  created_at?: string;
+  updated_at?: string;
+  issue_count?: number;
+  done_count?: number;
+  resource_count?: number;
+  /** Optimistic-lock token: send back as expected_revision on update. */
+  revision?: number;
+}
+
+export interface CreateProjectBody {
+  title: string;
+  description?: string;
+  instructions?: string;
+  icon?: string;
+  status?: string;
+  priority?: string;
+  lead_type?: string;
+  lead_id?: string;
+  start_date?: string;
+  due_date?: string;
+}
+
+// PATCH semantics mirror the Go handler's rawFields contract: an omitted key
+// keeps the current value, an explicit JSON null clears a nullable field.
+// The nulls must survive serialization (same rule as UpdateIssueBody).
+export interface UpdateProjectBody {
+  expected_revision?: number;
+  title?: string;
+  description?: string | null;
+  instructions?: string | null;
+  icon?: string | null;
+  status?: string;
+  priority?: string;
+  lead_type?: string | null;
+  lead_id?: string | null;
+  start_date?: string | null;
+  due_date?: string | null;
+}
+
+// ---- project resource bindings ---------------------------------
+// Mirrors packages/core/types/project.ts and the Go handler
+// (server/internal/handler/project_resource.go). resource_type is immutable
+// server-side; only the shapes below exist today.
+
+export type ProjectResourceType = "github_repo" | "local_directory";
+
+export interface GithubRepoResourceRef {
+  url: string;
+  ref?: string;
+  default_branch_hint?: string;
+}
+
+export interface LocalDirectoryResourceRef {
+  local_path: string;
+  daemon_id: string;
+  label?: string;
+  execution_mode?: "in_place" | "worktree";
+}
+
+export type ProjectResourceRef =
+  | GithubRepoResourceRef
+  | LocalDirectoryResourceRef
+  | Record<string, unknown>;
+
+export interface ProjectResourceInfo {
+  id: string;
+  project_id: string;
+  workspace_id: string;
+  resource_type: ProjectResourceType;
+  resource_ref: ProjectResourceRef;
+  label: string | null;
+  position: number;
+  created_at: string;
+  created_by: string | null;
+}
+
+export interface CreateProjectResourceBody {
+  resource_type: ProjectResourceType;
+  resource_ref: ProjectResourceRef;
+  label?: string;
+  position?: number;
+}
+
+// Partial-update body: omitted keys keep the current value, an explicit null
+// label clears it. resource_type is deliberately absent — the server rejects
+// it and the tool schema never declares it.
+export interface UpdateProjectResourceBody {
+  resource_ref?: ProjectResourceRef;
+  label?: string | null;
+  position?: number;
+}
+
+export interface ProjectResourceListResult {
+  resources: ProjectResourceInfo[];
+  total: number;
+}
+
+export interface IssueInfo {
+  id: string;
+  workspace_id?: string;
+  number: number;
+  identifier: string;
+  title: string;
+  description?: string;
+  status: string;
+  status_category?: string;
+  status_name?: string;
+  priority?: string;
+  assignee_type?: string;
+  assignee_id?: string;
+  creator_type?: string;
+  creator_id?: string;
+  parent_issue_id?: string;
+  project_id?: string;
+  stage?: number;
+  start_date?: string;
+  due_date?: string;
+  created_at?: string;
+  updated_at?: string;
+  last_activity_at?: string;
+  revision?: number;
+  /** True while the last run-triggering write was suppressed. */
+  run_suppressed?: boolean;
+}
+
+export interface SearchIssueInfo extends IssueInfo {
+  match_source?: string;
+  matched_snippet?: string;
+  matched_comment_snippet?: string;
+}
+
+export interface CommentInfo {
+  id: string;
+  issue_id?: string;
+  author_type?: string;
+  author_id?: string;
+  content: string;
+  type?: string;
+  parent_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  /**
+   * Optimistic-lock counter, bumped on every content edit. revision > 1 (or
+   * updated_at > created_at) marks an edited comment — the recognizable
+   * audit trail; there is no per-edit content history beyond this.
+   */
+  revision?: number;
+  /**
+   * Summary-mode listings only: the server clipped this body to ~200
+   * characters; absent on full reads.
+   */
+  content_truncated?: boolean;
+  /** roots_only listings only: orientation stats for the thread under this root. */
+  reply_count?: number;
+  last_activity_at?: string;
+  /** Present on create/edit: per-explicit-@ dispatch outcome for mentioned agents. */
+  trigger_outcomes?: Array<{
+    target_type?: string;
+    target_id?: string;
+    status?: string;
+    reason_code?: string;
+  }>;
+}
+
+export interface IssueListParams {
+  status?: string;
+  statuses?: string;
+  status_categories?: string;
+  project_id?: string;
+  assignee_id?: string;
+  open_only?: boolean;
+  sort?: string;
+  direction?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface IssueListResult {
+  issues: IssueInfo[];
+  total: number;
+}
+
+export interface CommentListParams {
+  since?: string;
+  thread?: string;
+  recent?: number;
+  tail?: number;
+  roots_only?: boolean;
+  summary?: boolean;
+  fold?: boolean;
+}
+
+export interface CreateIssueBody {
+  title: string;
+  description?: string;
+  status?: string;
+  priority?: string;
+  project_id?: string;
+  parent_issue_id?: string;
+  assignee_type?: string;
+  assignee_id?: string;
+  start_date?: string;
+  due_date?: string;
+}
+
+export interface QuickCreateBody {
+  agent_id?: string;
+  squad_id?: string;
+  prompt: string;
+  priority?: string;
+  due_date?: string;
+  project_id?: string;
+  parent_issue_id?: string;
+}
+
+export interface CreateCommentBody {
+  content: string;
+  parent_id?: string;
+}
+
+export interface UpdateCommentBody {
+  content: string;
+  /**
+   * Optimistic lock: the edit lands only when the stored revision still
+   * equals this value; otherwise the server answers 409 revision_conflict
+   * carrying the current revision.
+   */
+  expected_revision?: number;
+  /**
+   * Agent/squad ids whose dispatch is suppressed when the edit re-runs the
+   * comment's trigger computation (content-changing edits recompute the
+   * trigger surface of the new body).
+   */
+  suppress_agent_ids?: string[];
+}
+
+export interface UpdateIssueBody {
+  status?: string;
+  // Core field edit. PATCH semantics: an omitted key
+  // keeps the current value. For the four nullable fields an EXPLICIT null
+  // clears the value — the null must survive serialization, because the
+  // server decides "clear" by rawFields key presence (server/internal/handler/
+  // issue.go), exactly like the assignee nulls below. title/description/
+  // priority are plain writes: the server models them as *string, so a JSON
+  // null decodes to nil and means "keep" — the tool layer never sends null
+  // for them. bulk_update_issues shares this body type but its
+  // items only ever assign plain strings, so omitted keys keep the current
+  // value there.
+  title?: string;
+  description?: string;
+  priority?: string;
+  project_id?: string | null;
+  start_date?: string | null;
+  due_date?: string | null;
+  expected_revision?: number;
+  suppress_run?: boolean;
+  // Assignee change. A string pair assigns/reassigns; explicit nulls clear
+  // the assignee. The nulls must survive serialization — the server decides
+  // unassign by rawFields ("key present as null"), so omitted keys and empty
+  // strings both mean "keep the current assignee" (server/internal/handler/
+  // issue.go, refreshUntouchedNullableIssueParams).
+  assignee_type?: string | null;
+  assignee_id?: string | null;
+  // Injected into the triggered run's opening context; dropped when the
+  // write starts no run (suppress_run, backlog parking, member/unassign).
+  handoff_note?: string;
+  // Parent change. A string re-parents the issue (server walks
+  // the ancestor chain for cycles); explicit null clears the parent. The
+  // null must survive serialization — same rawFields rule as the assignee.
+  parent_issue_id?: string | null;
+}
+
+// Structured issue relations. The five caller-facing types; the
+// server stores one canonical row per edge, so blocked_by / superseded_by
+// writes land as their forward counterpart and relates_to is symmetric.
+export type IssueRelationType =
+  | "blocks"
+  | "blocked_by"
+  | "relates_to"
+  | "supersedes"
+  | "superseded_by";
+
+export interface IssueRelationRef {
+  id: string;
+  identifier?: string;
+  title?: string;
+  status?: string;
+}
+
+export interface IssueRelationsInfo {
+  issue_id: string;
+  identifier?: string;
+  revision?: number;
+  parent?: IssueRelationRef | null;
+  blocks: IssueRelationRef[];
+  blocked_by: IssueRelationRef[];
+  relates_to: IssueRelationRef[];
+  supersedes: IssueRelationRef[];
+  superseded_by: IssueRelationRef[];
+}
+
+export interface AddIssueRelationBody {
+  type: IssueRelationType;
+  target_issue_id: string;
+  expected_revision?: number;
+}
+
+export interface AddIssueRelationResult {
+  added: true;
+  relation: {
+    id?: string;
+    type: IssueRelationType;
+    source_issue_id: string;
+    target_issue_id: string;
+  };
+  issue: { id: string; revision: number };
+}
+
+export interface RemoveIssueRelationResult {
+  removed: true;
+  relation: {
+    type: IssueRelationType;
+    source_issue_id: string;
+    target_issue_id: string;
+  };
+  issue: { id: string; revision: number };
+}
+
+export interface ActiveTaskInfo {
+  id?: string;
+  status?: string;
+  agent_id?: string;
+  agent_name?: string;
+  queued_at?: string;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+// Run lifecycle. status is the raw server value: queued, dispatched,
+// deferred, waiting_local_directory, running, cancel_requested, completed,
+// failed, cancelled. Raw values, not display buckets — callers merge for
+// display (queued/dispatched/deferred/waiting_local_directory → "pending").
+export interface RunInfo {
+  id: string;
+  status: string;
+  agent_id?: string;
+  issue_id?: string;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  error?: string;
+  failure_reason?: string;
+  attempt?: number;
+  rerun_of_task_id?: string;
+  retry_of_task_id?: string;
+  cancel_requested_at?: string;
+  cancel_requested_by_user_id?: string;
+  [key: string]: unknown;
+}
+
+// One node of a run's retry chain (get_run detail): manual-rerun and
+// system-retry edges both visible, so cancelled→retried→completed history
+// reads as one chain even when the edge kinds differ.
+export interface RunLineageEntry {
+  id: string;
+  agent_id: string;
+  status: string;
+  created_at?: string;
+  completed_at?: string;
+  attempt: number;
+  failure_reason?: string;
+  rerun_of_task_id?: string;
+  retry_of_task_id?: string;
+  cancel_requested_by_user_id?: string;
+}
+
+export interface RunDetail {
+  task: RunInfo;
+  ancestors: RunLineageEntry[];
+  descendants: RunLineageEntry[];
+}
+
+export interface RunActivity {
+  run_state: {
+    status: string;
+    created_at: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+    elapsed_ms: number | null;
+    wait_reason: string | null;
+  };
+  semantic_activity: {
+    messages: Array<{
+      seq: number;
+      type: string;
+      tool?: string;
+      content?: string;
+      input?: Record<string, unknown>;
+      output?: string;
+      created_at: string | null;
+      is_error?: boolean;
+      truncated: boolean;
+    }>;
+    next_after_seq: number;
+    has_more: boolean;
+    last_activity_at: string | null;
+  };
+  worker_evidence: {
+    log_available: boolean;
+    unavailable_reason: "" | "not_supervised" | "expired" | "not_found" | "daemon_unreachable";
+    stdout_tail: string | null;
+    stderr_tail: string | null;
+    next_cursor: string | null;
+    last_activity_at: string | null;
+    process_liveness: "alive" | "exited" | "unknown";
+  };
+  progress_assessment: {
+    status: "advancing" | "waiting" | "no_recent_evidence" | "finished" | "unknown";
+    basis: string[];
+  };
+}
+
+// Server cancel-matrix answer: code ∈ cancelled | cancel_requested |
+// already_cancelling | already_cancelled | not_cancellable (409).
+export interface CancelRunResult {
+  code: string;
+  message?: string;
+  task: RunInfo;
+}
+
+// ---- execution-config management ------------------------------
+// Wire shapes mirroring the Go handlers (AgentRuntimeResponse, ModelListRequest,
+// AgentResponse, ExecutionProfileResponse, SquadResponse). Fields not listed
+// are ignored, never re-serialized.
+
+export interface RuntimeInfo {
+  id: string;
+  workspace_id?: string;
+  /** Daemon instance this runtime belongs to; null for cloud runtimes. */
+  daemon_id?: string | null;
+  name: string;
+  custom_name?: string | null;
+  runtime_mode?: string;
+  provider?: string;
+  status?: string;
+  device_info?: string;
+  owner_id?: string | null;
+  visibility?: string;
+  profile_id?: string | null;
+  last_seen_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface ModelThinkingInfo {
+  supported_levels?: Array<{ value: string; label?: string; description?: string }>;
+  [key: string]: unknown;
+}
+
+export interface ModelEntryInfo {
+  id: string;
+  label?: string;
+  default?: boolean;
+  thinking?: ModelThinkingInfo;
+  [key: string]: unknown;
+}
+
+export interface UnavailableModelEntryInfo {
+  id?: string;
+  reason?: string;
+  [key: string]: unknown;
+}
+
+/** One model-list discovery round trip: initiate returns it pending or (cache
+ * hit) completed; polling the same shape until status leaves pending/running. */
+export interface ModelListRequestInfo {
+  id: string;
+  runtime_id: string;
+  status: string;
+  models?: ModelEntryInfo[];
+  unavailable_models?: UnavailableModelEntryInfo[];
+  supported?: boolean;
+  error?: string;
+  created_at?: string;
+  updated_at?: string;
+  cached?: boolean;
+  cached_at?: string;
+}
+
+export interface AgentConfigInfo {
+  id: string;
+  name: string;
+  description?: string;
+  /** null = the agent is not bound to any runtime. */
+  runtime_id?: string | null;
+  runtime_mode?: string;
+  model?: string;
+  /** Runtime-native reasoning token; empty = runtime default. */
+  thinking_level?: string;
+  service_tier?: string;
+  status?: string;
+  max_concurrent_tasks?: number;
+  owner_id?: string | null;
+  archived_at?: string | null;
+  updated_at?: string;
+  /** Optimistic-lock token for execution-config writes. */
+  revision: number;
+}
+
+export interface UpdateAgentConfigBody {
+  expected_revision?: number;
+  runtime_id?: string;
+  /** Empty string clears the model (fall back to the runtime default). */
+  model?: string;
+  /** Tri-state: omitted = keep, "" = explicit clear, value = set. */
+  thinking_level?: string;
+}
+
+export interface ExecutionProfileEntryInfo {
+  agent_id: string;
+  runtime_id: string;
+  model: string;
+  /** null = no opinion, "" = clear on activation, value = write as-is. */
+  thinking_level?: string | null;
+  updated_at?: string;
+}
+
+export interface ExecutionProfileInfo {
+  id: string;
+  workspace_id?: string;
+  name: string;
+  description?: string | null;
+  is_active: boolean;
+  entry_count: number;
+  last_activated_at?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  /** Full detail only on the single-profile endpoints; the list endpoint
+   * always answers with an empty array (entry_count carries the size). */
+  entries: ExecutionProfileEntryInfo[];
+  /** Optimistic-lock token, including entry upserts/deletes. */
+  revision: number;
+}
+
+/** Wire shape of the execution-profile list endpoint: unlike the
+ * single-profile reads, the list comes back enveloped with the workspace's
+ * active-profile pointer. */
+export interface ExecutionProfileListResponse {
+  execution_profiles: ExecutionProfileInfo[];
+  active_execution_profile_id: string | null;
+}
+
+export interface CreateExecutionProfileBody {
+  name: string;
+  description?: string;
+}
+
+export interface UpdateExecutionProfileBody {
+  name?: string;
+  description?: string | null;
+  expected_revision?: number;
+}
+
+export interface UpsertExecutionProfileEntryBody {
+  agent_id: string;
+  runtime_id: string;
+  model: string;
+  thinking_level?: string | null;
+  expected_revision?: number;
+}
+
+export interface ExecutionProfileActivationResultInfo {
+  agent_id: string;
+  status: string;
+  reason?: string;
+}
+
+export interface ExecutionProfileActivationInfo {
+  profile: ExecutionProfileInfo;
+  applied: number;
+  skipped: number;
+  failed: number;
+  results: ExecutionProfileActivationResultInfo[];
+}
+
+export interface SquadMemberInfo {
+  id: string;
+  squad_id?: string;
+  member_type: string;
+  member_id: string;
+  role?: string;
+  created_at?: string;
+}
+
+// One audit_event row. Dimensions the event does not name come
+// back as null so a timeline renders absence, not zero UUIDs. details is the
+// raw JSONB payload — key names and metadata only, never secret values.
+export interface AuditEventInfo {
+  id: string;
+  workspace_id: string;
+  domain: string;
+  event_type: string;
+  occurred_at: string;
+  actor_type: string;
+  actor_id: string | null;
+  trigger_kind: string | null;
+  trigger_ref: string | null;
+  issue_id: string | null;
+  task_id: string | null;
+  agent_id: string | null;
+  runtime_id: string | null;
+  reason: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface AuditEventListParams {
+  domain?: string;
+  event_type?: string;
+  actor_type?: string;
+  actor_id?: string;
+  issue_id?: string;
+  task_id?: string;
+  agent_id?: string;
+  runtime_id?: string;
+  reason?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+  cursor_id?: string;
+}
+
+export interface AuditEventListResult {
+  events: AuditEventInfo[];
+  next_cursor: string | null;
+  next_cursor_id: string | null;
+}
+
+// ---- workspace management surface -----------------------------
+
+// One row of the workspace-wide run view (GET /api/task-runs). Same execution
+// row as RunInfo plus the cross-issue fields the issue-scoped read gets from
+// its path parameter: which issue the run belongs to (identifier + title) and
+// the derived trigger source (autopilot > system_retry > rerun > comment >
+// other — the same precedence list_issue_runs documents).
+export interface WorkspaceRunInfo {
+  id: string;
+  status: string;
+  agent_id?: string;
+  issue_id?: string;
+  issue_identifier?: string;
+  issue_title?: string;
+  trigger?: string;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  error?: string;
+  failure_reason?: string;
+  attempt?: number;
+  rerun_of_task_id?: string;
+  retry_of_task_id?: string;
+  cancel_requested_at?: string;
+  cancel_requested_by_user_id?: string;
+  [key: string]: unknown;
+}
+
+export interface WorkspaceRunListResult {
+  runs: WorkspaceRunInfo[];
+  count: number;
+  has_more: boolean;
+  next_offset?: number;
+}
+
+export interface WorkspaceRunListParams {
+  status?: string;
+  agent_id?: string;
+  project_id?: string;
+  issue?: string;
+  trigger?: string;
+  created_after?: string;
+  created_before?: string;
+  limit?: number;
+  offset?: number;
+}
+
+// Agent detail as this server surfaces it. Deliberately narrower than the Go
+// AgentResponse: runtime_config, mcp_config and custom_env VALUES never cross
+// this layer (secrets/credentials) — only the coarse redaction indicators the
+// Go response already carries (has_custom_env, custom_env_key_count,
+// mcp_config_redacted). archived_at non-null = archived (list_agents and
+// dispatch exclude it until restored).
+export interface AgentDetailInfo {
+  id: string;
+  workspace_id?: string;
+  name: string;
+  description?: string;
+  instructions?: string;
+  runtime_id?: string;
+  runtime_bound?: boolean;
+  model?: string;
+  thinking_level?: string;
+  service_tier?: string;
+  max_concurrent_tasks?: number;
+  visibility?: string;
+  permission_mode?: string;
+  status?: string;
+  owner_id?: string;
+  system_key?: string;
+  has_custom_env?: boolean;
+  custom_env_key_count?: number;
+  mcp_config_redacted?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  archived_at?: string | null;
+  [key: string]: unknown;
+}
+
+// Create/update bodies expose the safe metadata subset only. The server
+// rejects a PUT body carrying custom_env and agent creation
+// requires runtime_id; secrets (runtime_config, mcp_config, custom_env,
+// composio allowlist) are configured in the product UI, not through MCP.
+export interface CreateAgentBody {
+  name: string;
+  runtime_id: string;
+  description?: string;
+  instructions?: string;
+  model?: string;
+  thinking_level?: string;
+  max_concurrent_tasks?: number;
+}
+
+export interface UpdateAgentBody {
+  name?: string;
+  description?: string;
+  instructions?: string;
+  model?: string;
+  thinking_level?: string;
+  service_tier?: string;
+  max_concurrent_tasks?: number;
+  runtime_id?: string;
+}
+
+export interface AgentRuntimeInfo {
+  id: string;
+  name: string;
+  custom_name?: string | null;
+  runtime_mode?: string;
+  provider?: string;
+  status?: string;
+  visibility?: string;
+  owner_id?: string | null;
+  last_seen_at?: string | null;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface SquadMemberPreview {
+  member_type?: string;
+  member_id?: string;
+  role?: string;
+}
+
+export interface SquadInfo {
+  id: string;
+  workspace_id?: string;
+  name: string;
+  description?: string;
+  instructions?: string;
+  leader_id?: string;
+  creator_id?: string;
+  member_count?: number;
+  member_preview?: SquadMemberPreview[];
+  created_at?: string;
+  updated_at?: string;
+  /** Non-null = archived (soft-deleted; there is no squad restore). */
+  archived_at?: string | null;
+  archived_by?: string | null;
+  [key: string]: unknown;
+}
+
+export interface CreateSquadBody {
+  name: string;
+  leader_id: string;
+  description?: string;
+}
+
+export interface UpdateSquadBody {
+  name?: string;
+  description?: string;
+  instructions?: string;
+  leader_id?: string;
+}
+
+export interface QuickReplyInfo {
+  id: string;
+  workspace_id?: string;
+  /** Menu label, unique within the workspace (the backend answers 409 otherwise). */
+  name: string;
+  /** Template body the composer inserts on selection — never auto-sent. */
+  content: string;
+  /** Display order, ascending. */
+  position?: number;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+/** Decision cards (RUYI-345): structured questions a run raised, answered by
+ * human members. Options are labels in display order — option letter A is
+ * index 0, matching the product's "1A 2B" answer convention. */
+export interface DecisionCardInfo {
+  id: string;
+  issue_id: string;
+  source_comment_id?: string | null;
+  question: string;
+  context?: {
+    why_now?: string;
+    facts?: Array<{ statement: string; evidence?: string[] }>;
+    impact?: string;
+    recommendation_reason?: string;
+    unknowns?: string[];
+  } | null;
+  /** Option labels in display order; the letter for label[i] is A+i. */
+  options: string[];
+  multi_select: boolean;
+  /** 0-based indices into options the card recommends; empty when none. */
+  recommended_indices: number[];
+  /** open | answered | cancelled. */
+  status: string;
+  /** 0-based indices picked when answered; empty otherwise. */
+  selected_indices: number[];
+  answered_by_type?: string | null;
+  answered_by_id?: string | null;
+  answered_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  [key: string]: unknown;
+}
+
+export interface DecisionBatchAnswerBody {
+  decision_id: string;
+  selected_indices: number[];
+}
+
+export interface DecisionBatchResult {
+  results: Array<{
+    decision_id: string;
+    /** answered | conflict | invalid | not_found. */
+    status: string;
+    error?: string;
+    decision?: DecisionCardInfo;
+  }>;
+  echo_comment_id?: string;
+  trigger_outcomes?: Array<{
+    target_type?: string;
+    target_id?: string;
+    status?: string;
+    reason_code?: string;
+  }>;
+}
+
+/** GET /decision-inbox row: one card plus its issue context — one row PER
+ * card, never grouped by issue (an issue with three cards yields three rows). */
+export interface DecisionInboxItemInfo extends DecisionCardInfo {
+  workspace_id: string;
+  issue_number: number;
+  issue_identifier: string;
+  issue_title: string;
+}
+
+export interface DecisionInboxResult {
+  items: DecisionInboxItemInfo[];
+  counts: { open: number; answered: number; cancelled: number };
+}
+
+/** The existing inbox API projection, including issue-less system notices. */
+export interface InboxItemInfo {
+  id: string;
+  workspace_id: string;
+  recipient_type: "member" | "agent";
+  recipient_id: string;
+  type: string;
+  severity: string;
+  issue_id: string | null;
+  title: string;
+  body: string | null;
+  read: boolean;
+  archived: boolean;
+  created_at: string;
+  issue_status: string | null;
+  issue_priority: string | null;
+  issue_identifier: string | null;
+  actor_type: string | null;
+  actor_id: string | null;
+  details: unknown;
+}
+
+export interface InboxWorkspaceUnreadInfo {
+  workspace_id: string;
+  count: number;
+}
+
+/**
+ * Clause governance (RUYI-868): the read surfaces of the clause asset
+ * library and the proposal pool under /api/prompt-legislation, plus the
+ * prompt-governance version ledger a clause-versus-prompt comparison reads
+ * carrier text from. These mirror the backend's own JSON contracts
+ * (server/internal/handler/clause_governance.go, legislation.go,
+ * prompt_version.go); optional fields track `omitempty` and stay nullable.
+ */
+export interface ClauseGovernanceOverview {
+  workspace_id: string;
+  since: string;
+  dynamic_injection_disabled: boolean;
+  clauses: {
+    id: string;
+    slug: string;
+    title: string;
+    status: string;
+    latest_version: number;
+    bound_scope?: string;
+    bound_scope_id?: string;
+    injections: number;
+    runs: number;
+    injected_tokens: number;
+    tokens_pending: boolean;
+  }[];
+  status_counts: Record<string, number>;
+  migration: {
+    total_carriers: number;
+    bound_carriers: number;
+  };
+}
+
+export interface ClauseGovernanceSearchResult {
+  query: string;
+  matched: number;
+  clauses: {
+    id: string;
+    slug: string;
+    title: string;
+    status: string;
+    latest_version: number;
+    bound_scope?: string;
+    bound_scope_id?: string;
+  }[];
+}
+
+export interface ClauseGovernanceDetail {
+  id: string;
+  slug: string;
+  title: string;
+  status: string;
+  latest_version: number;
+  versions: {
+    version: number;
+    content: string;
+    content_sha256: string;
+    source: string;
+    created_at: string;
+  }[];
+  bindings: {
+    id: string;
+    scope: string;
+    scope_id: string;
+    status: string;
+    since_clause_version: number;
+  }[];
+  proposals: PromptProposalInfo[];
+  injections: number;
+  runs: number;
+  injected_tokens: number;
+}
+
+export interface ClauseReconciliation {
+  since: string;
+  healthy: boolean;
+  layer_set_violations: {
+    task_id: string;
+    clause_id: string;
+    clause_version: number;
+    degraded: boolean;
+    created_at: string;
+  }[];
+  drift: {
+    scope: string;
+    scope_id: string;
+    entries: {
+      kind: "stale_rev" | "orphan_marker" | "missing_segment";
+      slug: string;
+      marker_rev?: number;
+      expected_rev?: number;
+    }[];
+  }[];
+  carriers_scanned: number;
+}
+
+export interface PromptVersionInfo {
+  id: string;
+  scope: string;
+  scope_id: string;
+  version: number;
+  content: string;
+  content_sha256: string;
+  source: string;
+  change_note: string;
+  created_at?: string;
+}
+
+export interface PromptVersionListResult {
+  versions: PromptVersionInfo[];
+  total: number;
+}
+
+export interface PromptProposalInfo {
+  id: string;
+  workspace_id: string;
+  carrier_scope: string;
+  carrier_scope_id: string;
+  target_section: string;
+  change_kind: string;
+  clause_name: string;
+  clause_text: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  enacted_version?: number;
+  clause_id?: string;
+}
+
+export interface CreatePromptProposalBody {
+  carrier_scope: string;
+  carrier_scope_id: string;
+  target_section: string;
+  change_kind: string;
+  clause_name: string;
+  clause_text: string;
+  gate_answer_layer: string;
+  gate_answer_retention: string;
+  gate_answer_cost: string;
+  gate_answer_conflict: string;
+  gate_answer_dedup: string;
+  evidence_anchors?: { issue_id: string; ref: string }[];
+}
+
+/**
+ * PATCH /api/prompt-legislation/proposals/{id} — the draft edit is a
+ * full-body overwrite (the backend re-validates and persists every field),
+ * so the tool ships the complete state, not a patch of changed keys.
+ * move_to_* apply only to change_kind=move_clause; conditions are the
+ * draft's effectiveness conditions.
+ */
+export interface UpdatePromptProposalBody {
+  carrier_scope: string;
+  carrier_scope_id: string;
+  target_section: string;
+  change_kind: string;
+  clause_name: string;
+  clause_text: string;
+  clause_id?: string;
+  move_to_scope?: string;
+  move_to_scope_id?: string;
+  conditions?: unknown;
+  gate_answer_layer: string;
+  gate_answer_retention: string;
+  gate_answer_cost: string;
+  gate_answer_conflict: string;
+  gate_answer_dedup: string;
+  evidence_anchors?: { issue_id: string; ref: string }[];
+}
+
+export interface PromptDiffLine {
+  kind: "context" | "add" | "del";
+  text: string;
+}
+
+/** POST /api/prompt-legislation/proposals/{id}/preview — the approval-facing diff. */
+export interface PromptProposalPreview {
+  proposal: PromptProposalInfo;
+  diff: PromptDiffLine[];
+  current_sha256: string;
+  baseline_used: boolean;
+}
+
+/**
+ * The owner-only direct revision preview is deliberately separate from the
+ * proposal lifecycle. Its version and hash values must be echoed unchanged by
+ * the confirmed write, so a preview cannot be applied to a changed clause or
+ * carrier.
+ */
+export interface DirectClauseRevisionBody {
+  content: string;
+  expected_clause_version: number;
+  expected_clause_content_sha256: string;
+  expected_carrier_sha256: string;
+}
+
+export interface DirectClauseRevisionCommitBody extends DirectClauseRevisionBody {
+  preview_sha256: string;
+  confirm_previewed: true;
+}
+
+export interface DirectClauseRevisionPreview {
+  clause_id: string;
+  slug: string;
+  carrier_scope: string;
+  carrier_scope_id: string;
+  current_clause_version: number;
+  next_clause_version: number;
+  current_clause_content_sha256: string;
+  current_carrier_sha256: string;
+  preview_sha256: string;
+  diff: PromptDiffLine[];
+}
+
+export interface DirectClauseRevisionResult {
+  clause_id: string;
+  slug: string;
+  enacted_clause_version: number;
+  clause_content_sha256: string;
+  carrier_scope: string;
+  carrier_scope_id: string;
+  carrier_content_sha256: string;
+}

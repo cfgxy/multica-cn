@@ -1,0 +1,126 @@
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+} from "recharts";
+import {
+  useBarSelection,
+  dailyBarSpans,
+  type BarSelection,
+} from "./bar-selection";
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@multica/ui/components/ui/chart";
+import { useLocale, useT } from "../../../i18n";
+import type { DailyTasksData } from "@multica/core/dashboard";
+
+// Three-segment stack — completed runs at the bottom (chart-1, primary
+// brand), then cancelled (chart-3, muted: a manual stop is an outcome, not
+// an error), failed on top (chart-5 for distinct emphasis). Lets the user
+// see day-over-day failure-rate trend without a separate chart.
+const tasksChartConfig = {
+  completed: { label: "Completed", color: "var(--chart-1)" },
+  cancelled: { label: "Cancelled", color: "var(--chart-3)" },
+  failed: { label: "Failed", color: "var(--chart-5)" },
+} satisfies ChartConfig;
+
+export type { DailyTasksData } from "@multica/core/dashboard";
+
+export function DailyTasksChart({
+  data,
+  selection,
+  onSelectionChange,
+}: {
+  data: DailyTasksData[];
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
+}) {
+  const { t } = useT("runtimes");
+  const locale = useLocale();
+  const barSel = useBarSelection({
+    spans: dailyBarSpans(data),
+    selection,
+    onSelectionChange,
+  });
+  const barCells = barSel.cells(data.length, {
+    keyOf: (i) => data[i]?.date ?? String(i),
+  });
+
+  return (
+    <ChartContainer config={tasksChartConfig} className="aspect-[3/1] w-full">
+      <BarChart
+        data={data}
+        margin={{ left: 0, right: 0, top: 4, bottom: 0 }}
+        {...barSel.chartProps}
+      >
+        <CartesianGrid vertical={false} />
+        <XAxis
+          dataKey="label"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          interval="preserveStartEnd"
+        />
+        <YAxis
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          allowDecimals={false}
+          width="auto"
+        />
+        <ChartTooltip
+          content={
+            <ChartTooltipContent
+              formatter={(value, name) => `${value} ${name}`}
+              footer={(payload) => {
+                const total = payload.reduce(
+                  (sum, item) =>
+                    sum +
+                    (typeof item.value === "number" ? item.value : 0),
+                  0,
+                );
+                return (
+                  <div className="flex items-center justify-between gap-2 font-medium">
+                    <span>{t(($) => $.charts.tooltip_total)}</span>
+                    <span className="font-mono tabular-nums">
+                      {total.toLocaleString(locale)}
+                    </span>
+                  </div>
+                );
+              }}
+            />
+          }
+        />
+        <Bar
+          dataKey="completed"
+          stackId="tasks"
+          fill="var(--color-completed)"
+          radius={[0, 0, 0, 0]}
+        >
+          {barCells}
+        </Bar>
+        <Bar
+          dataKey="cancelled"
+          stackId="tasks"
+          fill="var(--color-cancelled)"
+          radius={[0, 0, 0, 0]}
+        >
+          {barCells}
+        </Bar>
+        <Bar
+          dataKey="failed"
+          stackId="tasks"
+          fill="var(--color-failed)"
+          radius={[3, 3, 0, 0]}
+        >
+          {barCells}
+        </Bar>
+      </BarChart>
+    </ChartContainer>
+  );
+}

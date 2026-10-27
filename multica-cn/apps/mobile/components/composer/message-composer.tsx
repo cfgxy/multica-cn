@@ -1,0 +1,747 @@
+/**
+ * Shared message composer used by both the issue-comment thread and the
+ * chat tab. Two visual states:
+ *
+ *   collapsed → pill button (configurable label / icon). Minimal vertical
+ *               footprint so the list above gets the full screen.
+ *   expanded  → optional reply chip → attachment zone (@ + image + file) →
+ *               plain TextInput → toolbar (`@ 📷 📎 ──── [➤ or Stop]`).
+ *
+ * Mentions / images / files all live in the attachment zone OUTSIDE the text
+ * input. The input itself is a plain RN `<TextInput multiline>` — no
+ * controlled selection, no inline overlays. On submit the composer
+ * prepends mention markdown links to the typed text and attaches
+ * `attachmentIds`. Server-side mention regex
+ * (`server/internal/util/mention.go:16`) parses them as if they were
+ * inline.
+ *
+ * Mention picker is a formSheet route, pushed via `mentionPickerPath`.
+ * That route writes selections into `useMentionDraftStore`; this composer
+ * reads from the same store. Two ways in (RUYI-232):
+ *   - toolbar `@` button → push with `token = null` (nothing to strip);
+ *   - typing `@` at a word boundary (whitespace / line start before it,
+ *     never `a@b` emails — `mentionTriggerFromInput`) → push with the
+ *     token recorded in the store, so the strip effect removes the raw
+ *     `@<query>` text from the draft once the single-select pick lands.
+ * The picker inserts one chip per session and closes itself; picks
+ * accumulate across sessions in the store's `mentions` array.
+ *
+ * Why a shared component:
+ *   - Comment and chat composers want byte-identical UI / interaction.
+ *   - Chat-specific differences are slim: controlled draft text (parent
+ *     owns the value for cross-session persistence), Stop button during
+ *     agent execution. Both addressed via optional props.
+ *
+ * What this component does NOT own:
+ *   - The submit action — `onSubmit` is the caller's escape hatch (it
+ *     wires `useCreateComment` on the comment side, the chat send burst
+ *     on the chat side).
+ *   - Reply target lifecycle — comment passes in `replyTarget` +
+ *     `onClearReplyTarget` from its store; chat doesn't.
+ *   - Stop visual / animation — chat passes a `renderStop()` slot when
+ *     `isSending` is true.
+ *
+ * Cleanup: mention draft store cleared on unmount so navigating away
+ * from comment-A's draft doesn't leak `@张三` into comment-B's composer.
+ */
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  Keyboard,
+  Pressable,
+  TextInput,
+  View,
+  type NativeSyntheticEvent,
+  type TextInputSelectionChangeEventData,
+  type TextInputKeyPressEventData,
+} from "react-native";
+import { KeyboardStickyView } from "react-native-keyboard-controller";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
+import { router, type Href } from "expo-router";
+import * as Haptics from "expo-haptics";
+import {
+  useActionSheet,
+  ActionSheetModal,
+} from "@/components/ui/action-sheet";
+import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
+import { useSkillDraftStore } from "@/data/stores/skill-draft-store";
+import { insertSkillReference, serializeSkillReference, skillTriggerFromInput } from "@/lib/skill-reference";
+import {
+  canSubmitMessageDraft,
+  completedAttachmentIds,
+} from "@/lib/attachment-zone";
+import {
+  serializeMentionChips,
+  type MentionMarker,
+} from "@/lib/mention-serialize";
+import { mentionTriggerFromInput } from "@/lib/mention-trigger";
+import { useFileAttach } from "@/components/editor/use-file-attach";
+import { assetFromSharedFile } from "@/lib/picked-asset";
+import type { SharedFile } from "@/lib/share-payload";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { stripMarkdown } from "@/lib/strip-markdown";
+import { useT } from "@/lib/use-t";
+import { THEME } from "@/lib/theme";
+import { Text } from "@/components/ui/text";
+import { IconButton } from "@/components/ui/icon-button";
+import { MessageSquareTextIcon } from "@/components/ui/message-square-text-icon";
+import { AttachmentZone } from "@/components/issue/attachment-zone";
+
+export interface MessageComposerReplyTarget {
+  actorName: string;
+  preview: string;
+}
+
+interface Props {
+  /** Submit callback. Composer awaits this; on rejection it restores text,
+   *  attachments, and mentions so the user can retry without losing
+   *  context. Resolved promise → text + chips cleared, composer collapses
+   *  back to pill. */
+  onSubmit: (args: {
+    content: string;
+    attachmentIds: string[];
+    mentions: MentionMarker[];
+  }) => Promise<void>;
+
+  /** Push target for the `@` button. The picker route reads /
+   *  writes `useMentionDraftStore` directly. */
+  mentionPickerPath: Href;
+  /** Issue comments may pick a skill; chat keeps its existing input behavior. */
+  skillPickerPath?: Href;
+
+  /** Workspace quick replies (RUYI-435). When non-empty the toolbar shows a
+   *  quick-reply button that opens an ActionSheet; the pick APPENDS the
+   *  template body to the draft (never sends) and focuses the input so the
+   *  user can edit before sending. Comment passes the workspace catalog;
+   *  chat doesn't. */
+  quickReplies?: Array<{ id: string; name: string; content: string }>;
+
+  /** Attachment upload context — forwarded to `api.uploadFile`. Comment
+   *  passes `issueId`; chat omits both (uploads are session-scoped via
+   *  the message id assigned by the server post-send). */
+  uploadContext?: { issueId?: string; commentId?: string };
+
+  /** 省略时回退到 `common:composer.placeholder`（走 t()，随语言切换）。
+   *  不写成默认参数值：默认参数是模块加载期求值的裸英文串，语言切换后
+   *  不会重算，也会绕过 i18n 覆盖率防线。 */
+  placeholder?: string;
+  pillLabel?: string;
+  pillIcon?: keyof typeof Ionicons.glyphMap;
+
+  /** Optional controlled-text mode. When `value` + `onChangeText` are
+   *  both provided, the parent owns the draft (chat: persists to its
+   *  draft store across sessions). When omitted, composer manages its
+   *  own internal text state (comment). */
+  value?: string;
+  onChangeText?: (next: string) => void;
+
+  /** Optional reply chip (comment only). */
+  replyTarget?: MessageComposerReplyTarget | null;
+  onClearReplyTarget?: () => void;
+
+  /** Composer enters "auto-expanded + focused" mode when this changes to
+   *  a truthy stable key. Comment uses it to react to long-press → reply
+   *  flow. Chat doesn't pass it. */
+  expandTrigger?: string | null;
+
+  /** When `isSending` is true AND `renderStop` is provided, the trailing
+   *  send button is replaced by whatever `renderStop` returns. Chat uses
+   *  this to show a Stop affordance while the agent is running. */
+  isSending?: boolean;
+  renderStop?: () => ReactNode;
+
+  /** RUYI-449 three-state input: when the draft is EMPTY and this render
+   *  prop is provided, the trailing send button is replaced by the mic —
+   *  typed content swaps it straight back to send. Chat passes it (voice
+   *  session entry); comments don't. A disabled composer keeps the send
+   *  arrow so the no-agent placeholder state stays honest. */
+  renderVoiceWhenEmpty?: () => ReactNode;
+
+  /** Hard-disable. Used when chat has no usable agent. The pill shows
+   *  `disabledReason` instead of `pillLabel`, and the pill is
+   *  non-interactive (cannot expand). */
+  disabled?: boolean;
+  disabledReason?: string;
+
+  /** Issue comments require visible body text because the server rejects an
+   * empty comment body. Mentions and completed attachments never bypass it. */
+  requireVisibleText?: boolean;
+
+  /** When true the composer renders flush at the bottom of its parent
+   *  WITHOUT the KeyboardStickyView keyboard-aware lift + safe-area
+   *  inset. Chat's parent owns its own KeyboardAvoidingView and
+   *  bottom-inset handling (chat.tsx), so the composer must not also
+   *  apply them. Comment's parent does NOT handle keyboard, so the
+   *  composer keeps the default `true`. */
+  manageKeyboard?: boolean;
+
+  /** RUYI-463: 系统分享带来的文件。非空时 composer 在 effect 里经
+   *  `assetFromSharedFile` 转成 PickedAsset 走既有 `enqueueAssets` 上传
+   *  通道（沿用尺寸/类型上限），本组件不感知 shared-intent-store ——
+   *  父层（chat.tsx / 建单面板）take 后传入。 */
+  incomingSharedFiles?: SharedFile[];
+  /** 分享文件入队完成后回调；父层借此清空 `incomingSharedFiles` 闭环。 */
+  onIncomingSharedFilesConsumed?: () => void;
+}
+
+export function MessageComposer({
+  onSubmit,
+  mentionPickerPath,
+  skillPickerPath,
+  quickReplies,
+  uploadContext,
+  placeholder,
+  pillLabel,
+  pillIcon = "chatbubble-ellipses-outline",
+  value: controlledValue,
+  onChangeText: controlledOnChange,
+  replyTarget = null,
+  onClearReplyTarget,
+  expandTrigger,
+  isSending = false,
+  renderStop,
+  renderVoiceWhenEmpty,
+  disabled = false,
+  disabledReason,
+  requireVisibleText = false,
+  manageKeyboard = true,
+  incomingSharedFiles,
+  onIncomingSharedFilesConsumed,
+}: Props) {
+  const { t } = useT("common");
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+  const insets = useSafeAreaInsets();
+  const inputRef = useRef<TextInput>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [internalText, setInternalText] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const focusInputAfterPick = useCallback(() => {
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
+  const {
+    attachments,
+    pickAndUploadFiles,
+    // RUYI-477: 贴图按钮改为「拍照 / 相册」源选择弹层入口。
+    chooseImageSource,
+    imageSourceModalProps,
+    removeAttachment,
+    retryAttachment,
+    clearAttachments,
+    restoreAttachments,
+    enqueueAssets,
+    uploading,
+  } = useFileAttach({
+    uploadContext,
+    alertOnError: false,
+    onAttachmentsEnqueued: focusInputAfterPick,
+  });
+
+  // RUYI-463: 系统分享的文件一次性入队（沿用 pick 工具栏同一条上传
+  // 通道与上限）。ref 记录已处理引用——父层回调若是内联箭头函数，
+  // 其身份随渲染变化会把 effect 再触发一遍导致重复入队。
+  const consumedSharedRef = useRef<SharedFile[] | null>(null);
+  useEffect(() => {
+    if (!incomingSharedFiles || incomingSharedFiles.length === 0) return;
+    if (consumedSharedRef.current === incomingSharedFiles) return;
+    consumedSharedRef.current = incomingSharedFiles;
+    enqueueAssets(incomingSharedFiles.map(assetFromSharedFile));
+    onIncomingSharedFilesConsumed?.();
+  }, [incomingSharedFiles, onIncomingSharedFilesConsumed, enqueueAssets]);
+
+  // RUYI-463: 附件区只渲染在展开卡片里，pill 折叠态看不到。入队后的
+  // 展开原本靠 focusInputAfterPick 的键盘 focus，但分享注入发生在导航
+  // 转场窗口里，rAF 聚焦会被转场吞掉（冷启动实测芯片进了折叠 composer
+  // 而不可见）。附件非空即展开；onBlur 的收起条件要求 attachments 为
+  // 空，不会把带附件的展开态折回去。
+  const attachmentCount = attachments.length;
+  useEffect(() => {
+    if (attachmentCount > 0) setExpanded(true);
+  }, [attachmentCount]);
+
+  // Hybrid controlled / uncontrolled pattern (React-canonical). Chat
+  // passes `value`/`onChangeText` for cross-session draft persistence;
+  // comment omits both and the composer manages local state.
+  const defaultLabel = t("composer.placeholder", "Type a message…");
+  const resolvedPlaceholder = placeholder ?? defaultLabel;
+  const resolvedPillLabel = pillLabel ?? defaultLabel;
+
+  const isControlled =
+    controlledValue !== undefined && controlledOnChange !== undefined;
+  const text = isControlled ? controlledValue : internalText;
+  const setText = useCallback(
+    (next: string) => {
+      if (isControlled) {
+        controlledOnChange(next);
+      } else {
+        setInternalText(next);
+      }
+    },
+    [isControlled, controlledOnChange],
+  );
+
+  // Quick replies (RUYI-435): the sheet captures the draft text at open
+  // time — both presentations are modal, so the text cannot move between
+  // open and pick — and appends the template body, never replacing it.
+  const quickReplySheet = useActionSheet();
+  const onQuickReplyPress = useCallback(() => {
+    const replies = quickReplies ?? [];
+    if (replies.length === 0) return;
+    const current = text;
+    quickReplySheet.show({
+      title: t("composer.quick_replies_title", "Quick replies"),
+      options: [...replies.map((reply) => reply.name), t("cancel", "Cancel")],
+      cancelButtonIndex: replies.length,
+      onSelect: (index) => {
+        const picked = replies[index];
+        if (!picked) return;
+        setText(current ? `${current}\n\n${picked.content}` : picked.content);
+        focusInputAfterPick();
+      },
+    });
+  }, [quickReplies, quickReplySheet, text, setText, t, focusInputAfterPick]);
+
+  const mentions = useMentionDraftStore((s) => s.mentions);
+  const removeMention = useMentionDraftStore((s) => s.remove);
+  const clearMentions = useMentionDraftStore((s) => s.clear);
+  // The `@` token recorded when typing opened the picker (RUYI-232).
+  // Consumed once a pick lands; see the strip effect below.
+  const pendingToken = useMentionDraftStore((s) => s.token);
+  const selectedSkill = useSkillDraftStore((s) => s.selected);
+  const slashTypedRef = useRef(false);
+  const hasSkillPicker = !!skillPickerPath;
+
+  useEffect(() => {
+    if (!hasSkillPicker) return;
+    return () => useSkillDraftStore.getState().clear();
+  }, [hasSkillPicker]);
+
+  // Caret mirror for the typing-trigger predicate. Written from
+  // onSelectionChange only — never triggers a re-render.
+  const selectionRef = useRef<{ start: number; end: number }>({
+    start: 0,
+    end: 0,
+  });
+  const onSelectionChange = useCallback(
+    (e: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
+      selectionRef.current = e.nativeEvent.selection;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!selectedSkill || !hasSkillPicker) return;
+    const store = useSkillDraftStore.getState();
+    store.setSelected(null);
+    const token = store.token;
+    store.setToken(null);
+    let next: string;
+    let cursor: number;
+    if (token) {
+      next = insertSkillReference(text, token, selectedSkill);
+      if (next === text) return;
+      cursor = token.start + serializeSkillReference(selectedSkill).length + 1;
+    } else {
+      const selection = selectionRef.current;
+      const reference = serializeSkillReference(selectedSkill) + " ";
+      next = text.slice(0, selection.start) + reference + text.slice(selection.end);
+      cursor = selection.start + reference.length;
+    }
+    setText(next);
+    selectionRef.current = { start: cursor, end: cursor };
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setNativeProps({ selection: { start: cursor, end: cursor } });
+    });
+  }, [selectedSkill, hasSkillPicker, text, setText]);
+
+  // Drop mention draft on composer unmount so navigating away doesn't
+  // leak chips into the next composer's session.
+  useEffect(() => {
+    return () => {
+      clearMentions();
+      useMentionDraftStore.getState().setToken(null);
+    };
+  }, [clearMentions]);
+
+  // RUYI-232: a pick landed while a typing-triggered token is pending →
+  // strip the raw `@<query>` slice from the draft (the chip now carries
+  // the mention; serializeMentionChips prepends it on send) and refocus
+  // the input. Content-matched against the recorded token, so a stale
+  // token from an abandoned sheet can never delete the wrong text —
+  // and every composer-initiated push rewrites the token first anyway.
+  const prevMentionsLenRef = useRef(mentions.length);
+  useEffect(() => {
+    const prevLen = prevMentionsLenRef.current;
+    prevMentionsLenRef.current = mentions.length;
+    if (!pendingToken || mentions.length <= prevLen) return;
+
+    const { start, query } = pendingToken;
+    useMentionDraftStore.getState().setToken(null);
+    const expected = `@${query}`;
+    if (text.slice(start, start + expected.length) !== expected) return;
+    const next = text.slice(0, start) + text.slice(start + expected.length);
+    selectionRef.current = { start, end: start };
+    setText(next);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [pendingToken, mentions.length, text, setText]);
+
+  // Auto-expand + focus when an `expandTrigger` changes. Comment uses
+  // this to react to the long-press → reply flow setting a reply target.
+  const triggerSeen = useRef<string | null>(null);
+  if (expandTrigger && triggerSeen.current !== expandTrigger && !disabled) {
+    triggerSeen.current = expandTrigger;
+    setExpanded(true);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
+  const canSend = canSubmitMessageDraft({
+    text,
+    mentions,
+    attachments,
+    disabled,
+    isSending,
+    submitting,
+    requireVisibleText,
+  });
+  const toolsDisabled = disabled || submitting || uploading;
+
+  const expand = useCallback(() => {
+    if (disabled) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setExpanded(true);
+    // Tapping the pill = "I want to write a new message". Drop any
+    // lingering reply target so a stale chip from a prior long-press →
+    // dismiss-without-send cycle doesn't bleed into the fresh draft.
+    onClearReplyTarget?.();
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [disabled, onClearReplyTarget]);
+
+  const handleSubmit = useCallback(async () => {
+    if (!canSend) return;
+    // Sending invalidates any pending typing-trigger token: the submit
+    // rollback re-adds chips (mentions length grows) and must not be
+    // mistaken for a fresh pick landing on an old `@` token.
+    useMentionDraftStore.getState().setToken(null);
+    useSkillDraftStore.getState().setToken(null);
+    const textSnap = text;
+    const mentionsSnap = mentions;
+    const attachmentsSnap = attachments;
+
+    const trimmed = textSnap.trim();
+    const content = serializeMentionChips(trimmed, mentionsSnap);
+    const activeIds = completedAttachmentIds(attachmentsSnap);
+
+    // Optimistic clear: text + chips empty out immediately so the next
+    // typing tick doesn't double-include them. Restored on rejection.
+    setText("");
+    clearAttachments();
+    clearMentions();
+    setSubmitting(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+
+    try {
+      await onSubmit({
+        content,
+        attachmentIds: activeIds,
+        mentions: mentionsSnap,
+      });
+      // Success → fully exit composing mode. Explicit triple-step
+      // because a missing blur leaves the keyboard up; missing
+      // Keyboard.dismiss races on iOS when focus is in-flight; missing
+      // setExpanded(false) leaves the expanded card on screen.
+      inputRef.current?.blur();
+      Keyboard.dismiss();
+      setExpanded(false);
+    } catch {
+      setText(textSnap);
+      restoreAttachments(attachmentsSnap);
+      mentionsSnap.forEach((m) => useMentionDraftStore.getState().toggle(m));
+    } finally {
+      setSubmitting(false);
+    }
+  }, [
+    canSend,
+    text,
+    mentions,
+    attachments,
+    setText,
+    clearAttachments,
+    clearMentions,
+    onSubmit,
+    restoreAttachments,
+  ]);
+
+  const handleChangeText = useCallback(
+    (next: string) => {
+      const skillToken = skillPickerPath
+        ? skillTriggerFromInput(text, next, selectionRef.current.end, slashTypedRef.current)
+        : null;
+      slashTypedRef.current = false;
+      // Typing `@` at a word boundary (whitespace / line start before
+      // it — never `a@b` emails) opens the picker (RUYI-232). The store
+      // carries the token so the strip effect knows which `@<query>`
+      // slice to remove once a pick lands. The toolbar-button path
+      // sets the token to null instead — nothing typed to strip.
+      const token = mentionTriggerFromInput(
+        text,
+        next,
+        selectionRef.current.end,
+      );
+      setText(next);
+      if (skillToken && skillPickerPath) {
+        useSkillDraftStore.getState().setToken(skillToken);
+        router.push(skillPickerPath);
+      } else if (token) {
+        useMentionDraftStore.getState().setToken(token);
+        router.push(mentionPickerPath);
+      }
+    },
+    [text, setText, mentionPickerPath, skillPickerPath],
+  );
+
+  const onSlashPress = useCallback(() => {
+    if (!skillPickerPath) return;
+    Haptics.selectionAsync().catch(() => {});
+    useSkillDraftStore.getState().setToken(null);
+    router.push(skillPickerPath);
+  }, [skillPickerPath]);
+
+  const onAtPress = useCallback(() => {
+    Haptics.selectionAsync().catch(() => {});
+    // Toolbar path inserts no `@` into the draft — nothing to strip on pick.
+    useMentionDraftStore.getState().setToken(null);
+    router.push(mentionPickerPath);
+  }, [mentionPickerPath]);
+
+  /** Auto-collapse to pill when input loses focus AND nothing's worth
+   *  keeping the composer expanded for. Deferred one tick so a toolbar
+   *  IconButton tap (which briefly resigns first responder) doesn't
+   *  trigger a collapse before its onPress runs. */
+  const onBlur = useCallback(() => {
+    setTimeout(() => {
+      const empty =
+        text.trim().length === 0 &&
+        attachments.length === 0 &&
+        mentions.length === 0;
+      if (empty && !inputRef.current?.isFocused()) {
+        setExpanded(false);
+        onClearReplyTarget?.();
+      }
+    }, 80);
+  }, [text, attachments.length, mentions.length, onClearReplyTarget]);
+
+  const pillContent = (
+    <View
+      className="border-t border-border bg-background px-3 pt-2"
+      style={{ paddingBottom: (manageKeyboard ? insets.bottom : 0) + 8 }}
+    >
+      <Pressable
+        onPress={expand}
+        disabled={disabled}
+        accessibilityRole="button"
+        accessibilityLabel={resolvedPillLabel}
+        accessibilityState={{ disabled }}
+        className="flex-row items-center gap-2 h-11 px-4 rounded-full bg-secondary active:opacity-80"
+      >
+        <Ionicons name={pillIcon} size={18} color={theme.mutedForeground} />
+        <Text className="text-base text-muted-foreground">
+          {disabled && disabledReason ? disabledReason : resolvedPillLabel}
+        </Text>
+      </Pressable>
+    </View>
+  );
+
+  const expandedContent = (
+    <View
+      className="bg-background px-3 pt-2 gap-2"
+      style={{ paddingBottom: (manageKeyboard ? insets.bottom : 0) + 4 }}
+    >
+      {replyTarget && (
+        <View className="px-3 py-1.5 rounded-md bg-secondary/60 gap-0.5">
+          <View className="flex-row items-center gap-2">
+            <Ionicons
+              name="return-up-back"
+              size={14}
+              color={theme.mutedForeground}
+            />
+            <Text
+              className="flex-1 text-xs font-medium text-muted-foreground"
+              numberOfLines={1}
+            >
+              {t("composer.replying_to", "Replying to {{name}}", {
+                name: replyTarget.actorName,
+              })}
+            </Text>
+            <Pressable
+              onPress={onClearReplyTarget}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={t("composer.cancel_reply", "Cancel reply")}
+            >
+              <Ionicons
+                name="close-circle"
+                size={16}
+                color={theme.mutedForeground}
+              />
+            </Pressable>
+          </View>
+          {replyTarget.preview ? (
+            <Text
+              className="text-xs text-muted-foreground pl-5"
+              numberOfLines={2}
+            >
+              {stripMarkdown(replyTarget.preview)}
+            </Text>
+          ) : null}
+        </View>
+      )}
+
+      <View
+        className="rounded-3xl border border-border bg-secondary"
+        style={{ borderCurve: "continuous" }}
+      >
+        {mentions.length > 0 || attachments.length > 0 ? (
+          <View className="px-2 pt-2 pb-1">
+            <AttachmentZone
+              mentions={mentions}
+              attachments={attachments}
+              onRemoveMention={removeMention}
+              onRemoveAttachment={removeAttachment}
+              onRetryAttachment={retryAttachment}
+            />
+          </View>
+        ) : null}
+
+        <TextInput
+          ref={inputRef}
+          value={text}
+          onChangeText={handleChangeText}
+          onKeyPress={(event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
+            slashTypedRef.current = event.nativeEvent.key === "/";
+          }}
+          onSelectionChange={onSelectionChange}
+          onBlur={onBlur}
+          placeholder={resolvedPlaceholder}
+          placeholderTextColor={theme.mutedForeground}
+          multiline
+          editable={!disabled && !submitting && !uploading}
+          className="px-4 pt-3 pb-1 text-base text-foreground"
+          style={{ minHeight: 28, maxHeight: 140, textAlignVertical: "top" }}
+        />
+
+        <View className="flex-row items-center px-2 pb-2 pt-1">
+          {/* @ leads the toolbar — highest-signal attachment (only one
+           *  that drives notifications) and cross-resource (people +
+           *  issues), pride-of-place left. */}
+          <IconButton
+            name="at"
+            iconSize={20}
+            color={mentions.length > 0 ? theme.primary : undefined}
+            onPress={onAtPress}
+            disabled={toolsDisabled}
+            accessibilityLabel={t(
+              "composer.mention_hint",
+              "Mention someone or an issue",
+            )}
+            className="h-8 w-8"
+          />
+          {skillPickerPath ? (
+            <IconButton
+              name="code-slash-outline"
+              iconSize={20}
+              onPress={onSlashPress}
+              disabled={toolsDisabled}
+              accessibilityLabel={t("composer.skill_hint", "Choose a skill")}
+              className="h-8 w-8"
+            />
+          ) : null}
+          {(quickReplies?.length ?? 0) > 0 ? (
+            <IconButton
+              // RUYI-550: same glyph as the desktop composer's quick-reply
+              // entry (lucide MessageSquareText) so both clients read as the
+              // same control — Ionicons had no same-shape equivalent.
+              icon={<MessageSquareTextIcon size={20} />}
+              onPress={onQuickReplyPress}
+              disabled={toolsDisabled}
+              accessibilityLabel={t(
+                "composer.quick_reply_hint",
+                "Insert a quick reply",
+              )}
+              className="h-8 w-8"
+            />
+          ) : null}
+          <IconButton
+            name="image-outline"
+            iconSize={20}
+            onPress={chooseImageSource}
+            disabled={toolsDisabled}
+            accessibilityLabel={t("composer.upload_image", "Upload image")}
+            className="h-8 w-8"
+          />
+          <IconButton
+            name="attach-outline"
+            iconSize={20}
+            onPress={pickAndUploadFiles}
+            disabled={toolsDisabled}
+            accessibilityLabel={t("composer.upload_file", "Upload file")}
+            className="h-8 w-8"
+          />
+          <View className="flex-1" />
+          {isSending && renderStop ? (
+            renderStop()
+          ) : renderVoiceWhenEmpty && !text.trim() && !disabled ? (
+            renderVoiceWhenEmpty()
+          ) : (
+            <IconButton
+              name="arrow-up"
+              iconSize={18}
+              color={theme.primaryForeground}
+              variant="default"
+              onPress={handleSubmit}
+              disabled={!canSend}
+              hitSlop={12}
+              className="h-8 w-8 rounded-full"
+              accessibilityLabel={t("send", "Send")}
+              accessibilityState={{ disabled: !canSend }}
+            />
+          )}
+        </View>
+      </View>
+    </View>
+  );
+
+  const body = expanded ? expandedContent : pillContent;
+
+  // Android presents the quick-reply sheet through this in-tree modal; iOS
+  // uses ActionSheetIOS from show() and ignores it.
+  const quickReplyModal = <ActionSheetModal {...quickReplySheet.modalProps} />;
+  // RUYI-477: 贴图「拍照/相册」源选择弹层，同 quickReplyModal 挂载模式。
+  const imageSourceModal = <ActionSheetModal {...imageSourceModalProps} />;
+
+  // When the parent owns keyboard handling (chat.tsx wraps in
+  // KeyboardAvoidingView + SafeAreaView), skip the KeyboardStickyView —
+  // double-stacking causes the composer to jump twice on keyboard show.
+  if (!manageKeyboard)
+    return (
+      <>
+        {body}
+        {quickReplyModal}
+        {imageSourceModal}
+      </>
+    );
+
+  return (
+    <KeyboardStickyView offset={{ closed: 0, opened: insets.bottom }}>
+      {body}
+      {quickReplyModal}
+      {imageSourceModal}
+    </KeyboardStickyView>
+  );
+}

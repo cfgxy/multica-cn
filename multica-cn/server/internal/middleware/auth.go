@@ -1,0 +1,465 @@
+package middleware
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/oauth"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
+
+// Auth middleware validates JWT tokens or Personal Access Tokens.
+// Token sources (in priority order):
+//  1. Authorization: Bearer <token> header (PAT or JWT)
+//  2. multica_auth HttpOnly cookie (JWT) — requires valid CSRF token for state-changing requests
+//
+// Sets X-User-ID and X-User-Email headers on the request for downstream
+// handlers. When the JWT carries an impersonation claim (imp, RUYI-47) the
+// impersonator's user ID is stamped into X-Impersonator-ID; like
+// X-Actor-Source that header is server-set only — any client-supplied value
+// is discarded before the auth branches run.
+//
+// disabled is the account-state gate backed by user.disabled_at (RUYI-47);
+// nil skips the check (JWT-only unit tests). Every credential branch
+// consults it, so a disabled account loses JWT, PAT, task-token, and
+// cloud-PAT access within the same short TTL window.
+//
+// patCache is optional; when non-nil, PAT lookups are cached with a short
+// TTL (auth.AuthCacheTTL). On cache hit the middleware skips both the DB
+// SELECT and the last_used_at UPDATE — last_used_at is therefore refreshed
+// at most once per TTL window per token, not per request.
+//
+// oauthSigner is optional; when non-nil, an RS256 bearer token is verified as
+// an MCP OAuth access token (RUYI-209). Nil — the shape a deployment without
+// OAUTH_SIGNING_KEY has — leaves an RS256 token to fall through to the HMAC JWT
+// branch, which rejects it, so the OAuth surface is simply absent rather than
+// half-open. The prefixed branches above are reached first and are untouched:
+// an OAuth token carries no mat_/mcn_/mul_ prefix, and a Multica session JWT is
+// HS256, so no existing credential changes paths because of this branch.
+//
+// cloudPAT is optional; when non-nil, tokens with the mcn_ prefix are
+// validated by calling the Multica Cloud Fleet service rather than the
+// local DB. When nil (Fleet URL unset) mcn_ tokens are rejected at the
+// prefix branch — we don't fall through to the mul_ / JWT paths, since
+// an mcn_ string is by construction not a valid mul_ PAT or JWT.
+//
+// oauthGate is optional. When non-nil, an OAuth access token whose claims
+// bind it to a grant (cid/gid, RUYI-420) must resolve to a live grant and
+// an enabled client after signature verification. A token minted before the
+// grant table carries neither claim and skips the gate — it keeps working
+// until natural expiry, which is the documented upgrade path. The gate's nil
+// semantics are fail-closed, not a skip: a gid-carrying token under a nil
+// gate is rejected 401 (Check reports the gate unavailable), and the MCP
+// scope-surface check below runs for every OAuth token regardless of the
+// gate. Only gid-less legacy tokens see JWT-only behaviour — the shape the
+// JWT-only unit tests exercise.
+func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, disabled auth.DisabledLookup, oauthSigner *oauth.Signer, oauthGate *auth.OAuthGate) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// X-Actor-Source and X-Impersonator-ID are server-set only —
+			// any value supplied by the client is untrusted and discarded
+			// before the auth branches run. Only the mat_ branch below
+			// re-sets X-Actor-Source, and only the JWT branch re-sets
+			// X-Impersonator-ID (from a signed impersonation claim). This
+			// is what prevents a client from sending a normal mul_ PAT
+			// plus a forged `X-Actor-Source: member` or a forged
+			// X-Impersonator-ID to convince a downstream handler that its
+			// request came from another identity.
+			r.Header.Del("X-Actor-Source")
+			r.Header.Del("X-Impersonator-ID")
+			r.Header.Del("X-Impersonation-Session")
+
+			tokenString, fromCookie := extractToken(r)
+			if tokenString == "" {
+				slog.Debug("auth: no token found", "path", r.URL.Path)
+				http.Error(w, `{"error":"missing authorization"}`, http.StatusUnauthorized)
+				return
+			}
+
+			// Cookie-based auth requires CSRF validation for state-changing methods.
+			if fromCookie && !auth.ValidateCSRF(r) {
+				slog.Debug("auth: CSRF validation failed", "path", r.URL.Path)
+				http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
+				return
+			}
+
+			// Agent task token: "mat_" prefix. Minted by the server at
+			// task-claim time and injected by the daemon into the agent
+			// process. Authoritative for actor identity — the bound
+			// (user_id, agent_id, task_id, workspace_id) triple is
+			// written into request headers here, OVERRIDING whatever the
+			// client sent, so a downstream actor-resolver cannot be
+			// tricked by a client that strips or forges X-Agent-ID /
+			// X-Task-ID. Human-only endpoints (e.g. agent env
+			// management) reject requests authenticated this way; see
+			// `actorSourceFromRequest`. MUL-2600.
+			if strings.HasPrefix(tokenString, "mat_") {
+				if queries == nil {
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					return
+				}
+				hash := auth.HashToken(tokenString)
+				tt, err := queries.GetTaskTokenByHash(r.Context(), hash)
+				if err != nil {
+					slog.Warn("auth: invalid task token", "path", r.URL.Path, "error", err)
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					return
+				}
+				userID := uuidToString(tt.UserID)
+				if rejectDisabledUser(w, r, disabled, userID, "task_token") {
+					return
+				}
+				r.Header.Set("X-User-ID", userID)
+				r.Header.Set("X-Agent-ID", uuidToString(tt.AgentID))
+				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
+				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
+				// X-Actor-Source flags the auth path so resolveActor and
+				// any owner-only handler can deny without re-querying the
+				// token table. The value "task_token" is the only signal
+				// this header is allowed to carry — strip anything else a
+				// client tried to send.
+				r.Header.Set("X-Actor-Source", "task_token")
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Cloud Node PAT: "mcn_" prefix. Verified by calling the
+			// Multica Cloud Fleet service — Cloud (not us) is the
+			// authoritative owner of the token's status and owner_id
+			// binding. We never look at the local
+			// personal_access_tokens table for this prefix; an mcn_
+			// string is not a valid mul_ value, so falling through
+			// would just be a redundant DB miss. When the verifier
+			// is unconfigured (no MULTICA_CLOUD_URL) we reject
+			// at this branch rather than treating the token as a
+			// JWT/PAT — failing closed avoids a misconfigured prod
+			// silently downgrading auth.
+			//
+			// After Cloud confirms the token, we also confirm that
+			// the returned owner_id maps to a real local user. The
+			// Cloud `owner_id` and our `users.id` share the same UUID
+			// space by contract, so this is a defense in depth: a
+			// missing user means the local row was deleted out from
+			// under a still-active node, or something is forging
+			// owner_ids — either way we must not let the request
+			// pass with a phantom X-User-ID.
+			if strings.HasPrefix(tokenString, auth.CloudPATPrefix) {
+				if cloudPAT == nil {
+					slog.Warn("auth: mcn_ token presented but cloud verifier not configured", "path", r.URL.Path)
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					return
+				}
+				identity, err := cloudPAT.Verify(r.Context(), tokenString, ownerLookupFor(queries))
+				if err != nil {
+					if errors.Is(err, auth.ErrCloudPATInvalid) {
+						slog.Warn("auth: cloud rejected mcn_ token", "path", r.URL.Path, "error", err)
+						http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+						return
+					}
+					// Cloud unreachable / 5xx / decode error. We surface
+					// 503 so callers (CLI / daemon) can retry — a 401
+					// here would tell them to throw out a valid token.
+					slog.Warn("auth: cloud pat verify unavailable", "path", r.URL.Path, "error", err)
+					http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
+					return
+				}
+				if rejectDisabledUser(w, r, disabled, identity.OwnerID, "cloud_pat") {
+					return
+				}
+				r.Header.Set("X-User-ID", identity.OwnerID)
+				// Tag the auth path so account-level guards (e.g.
+				// handler.RequireHumanActor on /api/cloud-billing/*)
+				// can distinguish a cloud-node machine credential
+				// from a human PAT/JWT. Mirrors the mat_ branch's
+				// stamp of "task_token" — both are server-set,
+				// authoritative, and stripped from any client-
+				// supplied value at the top of this middleware. Same
+				// rationale as MUL-2600: a machine credential
+				// (running agent or running cloud node) must not be
+				// treated as the owner having approved an account-
+				// level action.
+				r.Header.Set("X-Actor-Source", "cloud_pat")
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// PAT: tokens starting with "mul_"
+			if strings.HasPrefix(tokenString, "mul_") {
+				hash := auth.HashToken(tokenString)
+
+				// Cache hit: TTL has not expired, the token was valid the
+				// last time we looked, and nothing has invalidated the
+				// entry since. Skip the DB SELECT and the last_used_at
+				// UPDATE — last_used_at is bumped once per TTL window.
+				if userID, ok := patCache.Get(r.Context(), hash); ok {
+					if rejectDisabledUser(w, r, disabled, userID, "pat_cache") {
+						return
+					}
+					r.Header.Set("X-User-ID", userID)
+					next.ServeHTTP(w, r)
+					return
+				}
+
+				if queries == nil {
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					return
+				}
+				pat, err := queries.GetPersonalAccessTokenByHash(r.Context(), hash)
+				if err != nil {
+					slog.Warn("auth: invalid PAT", "path", r.URL.Path, "error", err)
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					return
+				}
+
+				userID := uuidToString(pat.UserID)
+				if rejectDisabledUser(w, r, disabled, userID, "pat") {
+					return
+				}
+				r.Header.Set("X-User-ID", userID)
+
+				// Clamp cache TTL to the token's remaining lifetime so a
+				// PAT expiring in <AuthCacheTTL can't continue passing
+				// auth on a cache hit after expires_at.
+				var expiresAt time.Time
+				if pat.ExpiresAt.Valid {
+					expiresAt = pat.ExpiresAt.Time
+				}
+				patCache.Set(r.Context(), hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
+
+				// Cache miss = TTL expired (or first use after revoke /
+				// process restart). Refresh last_used_at; subsequent hits
+				// within the TTL window skip this write entirely.
+				go queries.UpdatePersonalAccessTokenLastUsed(context.Background(), pat.ID)
+
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// MCP OAuth access token (RUYI-209): an RS256 JWT minted by
+			// this deployment's authorization server. Selected by the
+			// token's own `alg`, which is safe here only because the
+			// verifier below pins RS256 and the key — the header chooses
+			// which BRANCH runs, never which key or algorithm verifies.
+			// Multica session JWTs are HS256 and therefore never enter
+			// here; an RS256 token with the signer unconfigured falls
+			// through to the HMAC branch and is rejected there.
+			if oauthSigner != nil && isRS256Token(tokenString) {
+				claims, err := oauthSigner.VerifyAccessToken(tokenString)
+				if err != nil {
+					// Error type only — never the token, and the path is
+					// already free of credential material.
+					slog.Warn("auth: invalid oauth access token", "path", r.URL.Path, "reason", oauthFailureReason(err))
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					return
+				}
+				if rejectDisabledUser(w, r, disabled, claims.Subject, "oauth") {
+					return
+				}
+				// Grant gate (RUYI-420): signature proves the token was
+				// minted here; the gate proves the authorization behind it
+				// still lives. Tokens without a gid predate the grant table
+				// and stay valid to natural expiry — that is the upgrade
+				// path, not an escape: they cannot be re-minted without a
+				// consented grant.
+				if claims.GrantID != "" {
+					grantID, gidErr := util.ParseUUID(claims.GrantID)
+					if gidErr != nil {
+						// A token whose gid is not a UUID was not minted by
+						// this server's token endpoint; reject at the gate.
+						slog.Warn("auth: oauth token carries malformed grant id", "path", r.URL.Path)
+						http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+						return
+					}
+					if rejectDeadGrant(w, r, oauthGate, grantID) {
+						return
+					}
+					// Cache-miss lookups refresh the grant's last_used_at
+					// at most once per gate TTL window, the same throttle
+					// the PAT branch applies to its tokens.
+					go queries.TouchOAuthGrantLastUsed(context.Background(), grantID)
+				}
+				// Scope surface (RUYI-420): an OAuth token authorizes the
+				// MCP service, not the user's whole API. Requests outside
+				// the mapped surface are rejected for every scope — fail
+				// closed — and within it the token's scope must cover the
+				// required tier. 403 (not 401): the credential is valid,
+				// the authority is not.
+				if req := oauth.ScopeForRequest(r.Method, r.URL.Path); req == oauth.ScopeUnknown ||
+					!oauth.ScopeCovers(claims.Scope, req.Scope()) {
+					slog.Warn("auth: oauth scope rejected", "path", r.URL.Path, "method", r.Method)
+					w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope"`)
+					http.Error(w, `{"error":"insufficient_scope"}`, http.StatusForbidden)
+					return
+				}
+				r.Header.Set("X-User-ID", claims.Subject)
+				// Same rationale as task_token / cloud_pat above: this
+				// credential is handed to an external MCP client (ChatGPT)
+				// at authorization time, so it must never stand in for the
+				// human owner approving an account-level action — minting a
+				// PAT above all, which would escape the 90-day window that is
+				// this design's only revocation boundary.
+				r.Header.Set("X-Actor-Source", "oauth")
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// JWT
+			token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
+				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+					return nil, jwt.ErrSignatureInvalid
+				}
+				return auth.JWTSecret(), nil
+			})
+			if err != nil || !token.Valid {
+				slog.Warn("auth: invalid token", "path", r.URL.Path, "error", err)
+				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+				return
+			}
+
+			claims, ok := token.Claims.(jwt.MapClaims)
+			if !ok {
+				slog.Warn("auth: invalid claims", "path", r.URL.Path)
+				http.Error(w, `{"error":"invalid claims"}`, http.StatusUnauthorized)
+				return
+			}
+
+			sub, ok := claims["sub"].(string)
+			if !ok || strings.TrimSpace(sub) == "" {
+				slog.Warn("auth: invalid claims", "path", r.URL.Path)
+				http.Error(w, `{"error":"invalid claims"}`, http.StatusUnauthorized)
+				return
+			}
+			email, _ := claims["email"].(string)
+			if rejectDisabledUser(w, r, disabled, sub, "jwt") {
+				return
+			}
+			r.Header.Set("X-User-ID", sub)
+			if email != "" {
+				r.Header.Set("X-User-Email", email)
+			}
+			// Impersonation claim (RUYI-47): a shadow JWT acts as sub but
+			// stays attributable to the super admin who minted it. The
+			// impersonator's account state is checked too — disabling the
+			// admin must not leave pre-minted shadow tokens alive past
+			// this request. Handlers see the pair through X-User-ID (the
+			// acting identity) + X-Impersonator-ID (the accountable one).
+			// The sid claim carries the audit session id, relayed as
+			// X-Impersonation-Session (server-set only, stripped above)
+			// so the stop endpoint closes exactly the session in the
+			// token.
+			if impID, _ := claims["imp"].(string); strings.TrimSpace(impID) != "" {
+				if rejectDisabledUser(w, r, disabled, impID, "jwt_impersonator") {
+					return
+				}
+				r.Header.Set("X-Impersonator-ID", impID)
+				if sid, _ := claims["sid"].(string); strings.TrimSpace(sid) != "" {
+					r.Header.Set("X-Impersonation-Session", sid)
+				}
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// isRS256Token reports whether tokenString is a JWS whose header declares
+// RS256. It reads the header only to CHOOSE a branch — the branch it selects
+// then pins the algorithm and the key itself, so a forged header can at most
+// route a token to a verifier that rejects it.
+func isRS256Token(tokenString string) bool {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	header, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return false
+	}
+	var parsed struct {
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(header, &parsed); err != nil {
+		return false
+	}
+	return parsed.Alg == "RS256"
+}
+
+// oauthFailureReason maps a verification error to a short, non-revealing label
+// for the log. The token, its claims and the Authorization header never appear.
+func oauthFailureReason(err error) string {
+	switch {
+	case errors.Is(err, oauth.ErrAudienceMismatch):
+		return "audience_mismatch"
+	case errors.Is(err, oauth.ErrNoSigningKey):
+		return "signing_key_unavailable"
+	default:
+		return "invalid_token"
+	}
+}
+
+// rejectDeadGrant consults the OAuth grant gate and writes the 401 itself
+// when the grant or its client is no longer live (same convention as
+// rejectDisabledUser: true = request rejected). Unavailable counts as dead —
+// a revocation gate that cannot answer must not default to "alive", the
+// same fail-closed direction the token endpoint applies to its stores.
+func rejectDeadGrant(w http.ResponseWriter, r *http.Request, gate *auth.OAuthGate, grantID pgtype.UUID) bool {
+	state, found, _, err := gate.Check(r.Context(), util.UUIDToString(grantID))
+	if err == nil && found && state.Live() {
+		return false
+	}
+	slog.Warn("auth: oauth grant rejected",
+		"path", r.URL.Path,
+		"reason", grantRejectReason(err, found, state),
+	)
+	http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+	return true
+}
+
+// grantRejectReason labels the rejection for the log. Error details stay out
+// — the gate's lookup internals are not credential material, but the auth
+// log's discipline is reason strings only.
+func grantRejectReason(err error, found bool, state auth.OAuthGrantState) string {
+	switch {
+	case err != nil:
+		return "gate_unavailable"
+	case !found:
+		return "grant_not_found"
+	case !state.ClientFound:
+		return "client_deleted"
+	case state.ClientDisabled:
+		return "client_disabled"
+	case state.GrantRevoked:
+		return "grant_revoked"
+	default:
+		return "grant_not_live"
+	}
+}
+
+// extractToken returns the bearer token and whether it came from a cookie.
+// Priority: Authorization header > multica_auth cookie.
+func extractToken(r *http.Request) (token string, fromCookie bool) {
+	if authHeader := r.Header.Get("Authorization"); authHeader != "" {
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		if tokenString != authHeader {
+			return tokenString, false
+		}
+	}
+
+	if cookie, err := r.Cookie(auth.AuthCookieName); err == nil && cookie.Value != "" {
+		return cookie.Value, true
+	}
+
+	return "", false
+}

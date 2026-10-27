@@ -1,0 +1,1010 @@
+{
+  "title": "自演化",
+  "description": "查看智能体与小队 prompt 随时间的变化，以及变化的来源。",
+  "overview": {
+    "loading": "正在加载总览",
+    "error": "总览加载失败",
+    "retry": "重试",
+    "versions": {
+      "title": "Prompt 版本活动",
+      "empty": "各层级暂无版本记录。",
+      "currentVersion": "当前 v{{version}}",
+      "currentUnset": "{{count}} 个对象各自推进",
+      "count": "{{count}} 个版本 / {{subjects}} 个对象",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "质量读数（最近 {{days}} 天）",
+      "empty": "窗口内没有任何已度量的运行。",
+      "runs": "{{count}} 次运行",
+      "subjects": "{{count}} 个智能体有读数",
+      "excluded": "已剔除 {{count}} 次环境或供应商故障"
+    },
+    "quiz": {
+      "title": "题库测验结论",
+      "empty": "尚无任何已记录的测量。",
+      "versions": "基线 v{{baseline}} → v{{current}}",
+      "singleVersion": "当前 v{{current}}（首个版本，暂无基线）",
+      "insufficientSample": "样本不足（基线需 {{baseline}}、当前需 {{current}} 条可用读数）",
+      "lastMeasured": "最近测量 {{date}}"
+    },
+    "proposals": {
+      "title": "提案池动态",
+      "intro": "提案由每日总复盘自动分析入池，也可人工起草。",
+      "counts": "{{total}} 条提案 · {{pending}} 条待 Owner 审批",
+      "lastAuto": "最近自动提案（每日总复盘）：{{date}}",
+      "noneAuto": "尚无自动提案。",
+      "empty": "提案池为空。配置每日总复盘后，提案将随每日分析自动入池。"
+    },
+    "experiences": {
+      "title": "任务经验候选",
+      "loading": "正在加载任务经验",
+      "error": "任务经验加载失败",
+      "retry": "重试",
+      "empty": "暂无经过核验的重复适配模式。",
+      "proposalsLink": "查看提案治理",
+      "sourceCount": "在 {{count}} 个已完成任务中观察到",
+      "sourceTask": "任务 {{task}} · {{policy}} · {{date}}",
+      "currentStrategy": "当前做法：{{strategy}}",
+      "scope": "适用范围 {{scope}}",
+      "allowedActions": "允许动作：{{actions}}",
+      "limitation": "证据限制",
+      "repeatedLimit": "重复观察到的任务级证据仍不是已审批的 workspace 策略。提案在完成治理、题库和生效门禁前始终只是草稿。",
+      "draftProposal": "转为提案草稿",
+      "creatingProposal": "正在创建草稿…",
+      "proposalCreated": "提案草稿已创建 · 查看提案池",
+      "createFailed": "创建提案草稿失败。候选仍保持未生效状态。",
+      "proposalName": "重复适配候选 {{candidate}}（{{count}} 个任务）",
+      "proposalBody": "触发条件：{{trigger}}\n适用范围：{{scope}}\n建议策略：{{strategy}}\n允许动作：{{actions}}\n来源任务：{{tasks}}\n限制：{{limitation}} 经治理审批并正式生效前，不会改变当前策略。"
+    },
+    "knowledge": {
+      "title": "知识库沉淀",
+      "empty": "暂无注册目录。",
+      "dirs": "{{count}} 个目录",
+      "entries": "{{count}} 条条目",
+      "lastScan": "最近扫描：{{result}} · {{date}}",
+      "neverScanned": "尚未扫描"
+    },
+    "skills": {
+      "title": "Skill 观测",
+      "empty": "暂无注册 skill。",
+      "count": "共 {{count}} 个 skill",
+      "invocations": "累计显式调用 {{count}} 次"
+    },
+    "viewAll": "查看"
+  },
+  "skills": {
+    "choose": "选择 skill",
+    "manage": "管理 skill",
+    "empty": "暂无 skill。",
+    "history": "版本记录",
+    "noVersions": "该 skill 暂无版本记录。",
+    "usage": "已观测使用",
+    "allTime": "累计",
+    "last30": "最近 30 天",
+    "assigned": "已分配智能体",
+    "invocations_other": "显式调用 {{count}} 次",
+    "observedSince": "最早观测到的调用：{{date}}；此前的使用无法回填。",
+    "noObserved": "暂无显式调用记录；此前的使用情况未知。",
+    "versionCost": "各版本 token 消耗",
+    "measuredRuns": "{{count}} 次运行，{{samples}} 次有 token 数据",
+    "notCollected": "运行数据未采集",
+    "noCostData": "无 token 数据",
+    "insufficientCost": "样本不足",
+    "medianTokens": "中位数 {{count}} token",
+    "versionComparison": "版本读数对照",
+    "compareTo": "对比版本",
+    "noComparison": "需要至少两个版本才能对照。",
+    "metric": "读数",
+    "change": "差值",
+    "tokenMetric": "运行 token 中位数",
+    "retryMetric": "重试运行占比",
+    "noComparisonData": "无运行数据",
+    "comparisonCaveat": "仅统计显式调用。版本差异是观察性数据，不能证明由 skill 引起；两侧各至少 5 个有效运行样本才展示差值。",
+    "useVsControl": "使用组 vs 对照组",
+    "useGroup": "使用组",
+    "controlGroup": "对照组",
+    "perplexityMetric": "提示词困惑分（D3）",
+    "perplexityNotScored": "未评分",
+    "notComparable": "两组同源，不可比",
+    "perplexitySamePrompt": "困惑分按提示词版本评分，两组读取同一份提示词，分差不可比。",
+    "firstPassMetric": "一次通过率（D7）",
+    "noReviewData": "无评审数据",
+    "useControlCaveat": "对照组为埋点期内同角色、同项目且未调用该 skill 的终态 run；两组各至少 5 个样本才展示差值。",
+    "versionEvents": "版本事件",
+    "noVersionEvents": "暂无版本事件（首个版本不算事件）。",
+    "versionEventTitle": "v{{from}} → v{{version}}",
+    "eventBefore": "事件前 {{count}} 次运行",
+    "eventAfter": "事件后 {{count}} 次运行",
+    "windowModeDays": "按 {{days}} 天窗口",
+    "windowModeUses": "按 {{uses}} 次使用窗口",
+    "windowModeNone": "窗口内无使用",
+    "recent": "最近调用",
+    "chatRun": "聊天运行",
+    "observational": "调用次数属于观测数据，不代表 skill 的效果。",
+    "version": "版本 v{{version}}",
+    "usedAt": "{{date}} · 版本 {{version}}",
+    "diff": "与上一版对比",
+    "restore": "恢复此版本",
+    "restoreConfirm": "将 v{{version}} 的内容恢复为新版本 v{{next}}；分配关系不变。",
+    "restoreError": "恢复版本失败。",
+    "ownerOnly": "仅工作空间 Owner 可恢复版本。",
+    "cancel": "取消",
+    "error": "加载 skill 历史失败。",
+    "retry": "重试",
+    "sources": {
+      "create": "创建",
+      "revision": "修订",
+      "edit": "编辑",
+      "restore": "恢复"
+    },
+    "catalogSearchLabel": "搜索",
+    "catalogSearchPlaceholder": "按名称搜索技能",
+    "catalogSourceFilter": "来源",
+    "catalogSourceAll": "全部来源",
+    "catalogSourceWorkspace": "工作区",
+    "catalogSourceRuntime": "运行时",
+    "catalogSourcePlugin": "插件",
+    "catalogSelectableHint": "可选项是已导入本工作区的技能；下方运行时与插件发现仅可见，导入后才可选择。",
+    "catalogNoMatch": "没有发现项匹配当前搜索或来源筛选。",
+    "discoveriesTitle": "运行时发现",
+    "discoveryImport": "导入",
+    "discoveryImporting": "导入中…",
+    "discoveryExists": "已是技能",
+    "discoveryLastSeen": "最近发现于 {{date}}",
+    "discoveryImportedToast": "技能已导入，现在可选择并带独立版本历史。",
+    "discoveryImportFailedToast": "导入失败，请检查运行时连接后重试。"
+  },
+  "quality": {
+    "scopePicker": {
+      "label": "Prompt 层级",
+      "agent": "智能体",
+      "squad": "小队",
+      "project": "项目",
+      "workspace": "工作空间",
+      "subjectLabel": "对象",
+      "subjectPlaceholder": "选择一个智能体"
+    },
+    "range": {
+      "label": "时间窗",
+      "days": "最近 {{count}} 天"
+    },
+    "since": "统计自 {{date}}。该日期之前的运行没有埋点，不计入分母。",
+    "noSubject": {
+      "title": "请选择统计对象",
+      "description": "七个维度按 prompt 层级分别取数。选择一个智能体以加载其看板。"
+    },
+    "loading": "正在加载度量数据",
+    "error": {
+      "title": "看板加载失败",
+      "retry": "重试"
+    },
+    "window": {
+      "title": "窗口内全部版本",
+      "runs": "{{count}} 次运行",
+      "days": "{{count}} 天"
+    },
+    "timeline": {
+      "title": "版本",
+      "version": "v{{version}}",
+      "span": "{{first}} — {{last}}",
+      "compare": "对比",
+      "compareHint": "选择两个版本进行对比",
+      "clear": "清除选择",
+      "empty": "该窗口内没有任何版本存在已度量的运行。"
+    },
+    "compare": {
+      "title": "版本对比",
+      "description": "七个维度逐项对照。任一侧无数据的维度不计算差值。",
+      "dimension": "维度",
+      "delta": "Δ",
+      "noDelta": "—",
+      "close": "关闭"
+    },
+    "dimensions": {
+      "injected_tokens": {
+        "label": "D1 注入成本",
+        "hint": "每次运行注入的拼接提示词 token 中位数。"
+      },
+      "run_tokens_median": {
+        "label": "D1 运行成本",
+        "hint": "单次运行消耗的总 token 中位数。"
+      },
+      "discipline": {
+        "label": "D2 纪律性",
+        "hint": "纪律性中位分，满分 100。每次运行从 100 分起算，违反一条可机械判定的条款扣一次分。"
+      },
+      "tool_failure_rate": {
+        "label": "D4 轮次失败率",
+        "hint": "智能体收到的工具结果中判定为错误的占比。"
+      },
+      "retry_rate": {
+        "label": "D5 重试次数",
+        "hint": "需要一次以上尝试才完成的运行占比。"
+      },
+      "failure_attribution": {
+        "label": "D6 错误根因（Prompt 归因）",
+        "hint": "原因指向 prompt 的失败次数。环境与供应商类失败不计入。"
+      },
+      "first_pass_rate": {
+        "label": "D7 一次过率",
+        "hint": "进入评审后无返工即通过的 Issue 占比。"
+      }
+    },
+    "measure": {
+      "ofRuns": "基于 {{count}} 次运行",
+      "ratio": "{{numerator}} / {{denominator}}",
+      "excluded": "{{count}} 次因环境或供应商故障被剔除",
+      "noData": "无数据",
+      "insufficient": "样本不足",
+      "insufficientDetail": "{{sample}} / 需 {{threshold}}",
+      "reason": {
+        "no_finished_runs": "该窗口内没有运行结束。",
+        "not_instrumented": "该窗口内的运行早于埋点上线。",
+        "no_covered_runs": "该窗口内没有运行携带此项度量。",
+        "no_version_content": "该版本没有记录 prompt 正文。",
+        "no_reviewed_issues": "该窗口内没有 Issue 进入评审。",
+        "below_sample_floor": "运行数低于声明阈值。",
+        "unknown": "服务端未说明原因。"
+      },
+      "coverage": "{{total}} 次运行中可评 {{covered}} 次",
+      "deductions": "扣分明细（{{count}}）"
+    },
+    "perplexity": {
+      "title": "D3 规则困惑度",
+      "description": "对拼接后提示词的歧义风险评分，按运行态分别评定。",
+      "open": "查看证据",
+      "profile": {
+        "label": "运行态",
+        "member": "普通成员态",
+        "leader_task": "Leader task 态",
+        "unknown": "{{key}}"
+      },
+      "profileNote": "各运行态针对不同的拼接文档评分，不合并、不平均。",
+      "band": {
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "unknown": "未评定"
+      },
+      "range": "{{low}}% — {{high}}%",
+      "scoredAt": "{{date}} 由 {{model}} 评分",
+      "reproducibility": "同一版本重复评分时，band 保持稳定，区间端点实测波动不超过 10 个百分点（gpt-6-luna，temperature 0.2，每个运行态 5 次）。",
+      "empty": {
+        "title": "尚未评分",
+        "description": "该 prompt 还没有任何版本被评分。缺少评分不等于中性评分。"
+      },
+      "sheet": {
+        "title": "D3 证据",
+        "description": "七个子维度，各自带权重与引用位置。",
+        "score": "得分",
+        "weight": "权重 {{percent}}%",
+        "evidence": "证据",
+        "evidenceCount": "{{count}} 条",
+        "conflictsWith": "与 {{target}} 冲突",
+        "noEvidence": "本条无 jsonl 证据（runtime 离线）。",
+        "subDimensions": {
+          "tier_placement": "注入层级正确性",
+          "cross_tier_conflict": "跨层规则冲突",
+          "literal_actionability": "字面可执行性",
+          "internal_consistency": "前后逻辑一致性",
+          "precedence_clarity": "优先级裁决明确性",
+          "scope_boundary": "职责边界清晰度",
+          "role_rule_completeness": "角色规则完整性",
+          "unknown": "{{key}}"
+        }
+      }
+    },
+    "reasons": {
+      "title": "D6 失败原因分布",
+      "excluded": "已剔除 {{count}} 次环境或供应商故障",
+      "empty": "该窗口内没有失败的运行。"
+    },
+    "sources": {
+      "langfuse": "Langfuse 导出已关闭",
+      "scoring_model": "评分模型不可用",
+      "unknown": "{{kind}} 不可用",
+      "note": "看板数据不受影响。"
+    }
+  },
+  "quiz": {
+    "noSubject": "读数按 Prompt 层级给出。选择一个 Agent 以载入其测验历史。",
+    "reading": {
+      "title": "防回归读数",
+      "description": "同一套固定题库对每个 Prompt 版本重复跑。读数是分布，不是单一分数。",
+      "error": "读数加载失败",
+      "noVersion": "该 Prompt 没有已记录的版本，尚未产生任何测量。",
+      "accumulating": "v{{version}} 已有 {{have}} 次可用读数，需要 {{need}} 次。样本未满不给对比。",
+      "noBaseline": "v{{version}} 已在 {{count}} 次运行上测量（中位数 {{median}}，四分位距 {{iqr}}），且是该 Prompt 的首个版本——没有更早的版本可比。它将成为下一个版本的基线。",
+      "versions": "基线 v{{baseline}}，被读版本 v{{current}}。",
+      "outcomes": "{{answered}} 次运行给出了回答，{{errored}} 次出错。两个计数都不是评分：系统不判定回答内容的对错。",
+      "incomparable": "{{count}} 条读数被排除在本组之外：它们取自另一版题面，或另一套运行时、模型。",
+      "baselineIncomparable": "基线组同样因此排除了 {{count}} 条读数。",
+      "notAGate": "测验从不阻断 Prompt 版本发布，只记录质量如何变化。",
+      "verdict": {
+        "insufficient": "无读数",
+        "steady": "持平",
+        "improved": "改善",
+        "regressed": "回归"
+      },
+      "stats": {
+        "baseline": "基线组",
+        "current": "当前组",
+        "statistic": "Mann-Whitney z",
+        "threshold": "噪声线",
+        "group": "中位数 {{median}}，四分位距 {{iqr}}，n={{n}}"
+      }
+    },
+    "bank": {
+      "title": "题库",
+      "description": "每个版本用同一组题目。修改题面会开启新的修订号。",
+      "add": "新增题目",
+      "revision": "修订 {{revision}}",
+      "active": "启用",
+      "retired": "已停用",
+      "discrimination": {
+        "pending": "未判定",
+        "no_signal": "无读数",
+        "flat": "当前无区分度",
+        "ok": "有区分度"
+      },
+      "edit": "编辑",
+      "delete": "删除",
+      "error": {
+        "title": "题库加载失败",
+        "write": "题库未被修改。"
+      },
+      "empty": {
+        "title": "暂无题目",
+        "description": "没有题目就无法测量任何版本。新增一题以产生首个读数。"
+      },
+      "dialog": {
+        "addTitle": "新增题目",
+        "editTitle": "编辑题目",
+        "description": "题面不得引用任何生产实体——不含 Issue 编号、ID 或链接。服务端会拒绝违规题面，并指出需要移除的引用类型。",
+        "slug": "标识",
+        "questionTitle": "标题",
+        "body": "题面",
+        "bodyHint": "不超过 4000 字符。题面须自足：测验 run 背后没有任何 Issue。",
+        "rubric": "标准答案与评分项",
+        "rubricHint": "仅所有者可见，绝不随题面发送给被测 run。保存时会用本字段的内容整体替换已存的标准答案。",
+        "cancel": "取消",
+        "save": "保存"
+      },
+      "difficulty": {
+        "easy": "简单",
+        "medium": "中等",
+        "hard": "困难"
+      },
+      "import": "导入标准题库",
+      "importDone": "已导入 {{imported}} 道题",
+      "importError": "标准题库未导入。"
+    },
+    "graded": {
+      "title": "评分",
+      "description": "按题目的标准答案逐项核对已采集 run 的回答；逐条证据可反查到具体断言。",
+      "summary": "已评分 {{graded}} 条 · 均分 {{mean}}",
+      "ungraded": "尚未评分",
+      "run": "运行一轮评分",
+      "ordered": "已下单 {{ordered}} 条测验 run",
+      "refused": "{{count}} 个代理未能下单，其余已执行",
+      "runError": "评分批次未下单。",
+      "batchLines": "本轮：已回答 {{answered}} · 出错 {{errored}} · 已评分 {{graded}}",
+      "samplesTitle": "最近评分样本",
+      "samplesEmpty": "暂无评分样本。先运行一轮评分，等 run 完成后这里会出现逐条证据。",
+      "taskId": "task_id",
+      "measuredAt": "测量时间",
+      "gradedAt": "评分时间",
+      "version": "v{{version}}",
+      "answered": "已回答",
+      "errored": "出错",
+      "checkPassed": "{{id}}（{{kind}}）通过：{{evidence}}",
+      "checkFailed": "{{id}}（{{kind}}）未过：{{evidence}}",
+      "notAGate": "评分是读数不是闸门：发布路径不读取它。"
+    }
+  },
+  "legislation": {
+    "title": "Prompt 立法提案",
+    "description": "提案由每日总复盘自动分析入池，也可人工起草。条款级草案针对四个 Prompt 载体：提交后进入 Owner 审批，批准时在沙箱合成全文跑立法门闸，只有干净通过才生效。",
+    "filterAll": "全部",
+    "sourceFilterLabel": "按来源筛选",
+    "sourceFilterAll": "全部来源",
+    "runFilterLabel": "运行批次",
+    "runFilterAll": "全部运行",
+    "status": {
+      "draft": "草稿",
+      "pending_owner": "待 Owner 审批",
+      "approved": "已批准",
+      "enacted": "已生效",
+      "gate_failed": "门闸未过",
+      "rejected": "已驳回"
+    },
+    "changeKind": {
+      "add_clause": "新增条款",
+      "revise_clause": "修订条款",
+      "remove_clause": "移除条款",
+      "move_clause": "移动条款",
+      "migrate_clause": "迁移条款"
+    },
+    "enactmentTargetLabel": "条款落地目标",
+    "enactmentTargetOptions": {
+      "clause_library": "进入条款库",
+      "static_prompt": "改写静态条款"
+    },
+    "carrierScope": {
+      "workspace": "工作区",
+      "project": "项目",
+      "squad": "Squad",
+      "agent": "Agent"
+    },
+    "source": {
+      "manual": "人工",
+      "retrospective": "每日总复盘",
+      "merged": "合并"
+    },
+    "create": "新建提案",
+    "createTitle": "新建 Prompt 立法提案",
+    "createDescription": "内容闸五答齐全才能提交，每一答请写具体。",
+    "carrierLabel": "载体",
+    "sectionLabel": "目标章节",
+    "changeKindLabel": "变更类型",
+    "clauseNameLabel": "条款名",
+    "clauseTextLabel": "条款最终文本",
+    "clauseTextPlaceholder": "要生效的条款原文；移除类留空。",
+    "gateAnswersTitle": "内容闸——五答",
+    "gateLayer": "层次归属",
+    "gateLayerPlaceholder": "该条款属于哪一层指令。",
+    "gateRetention": "去留判据",
+    "gateRetentionPlaceholder": "为什么这条条款必须存在。",
+    "gateCost": "代价声明",
+    "gateCostPlaceholder": "携带它的每一轮 run 付出什么。",
+    "gateConflict": "冲突裁决",
+    "gateConflictPlaceholder": "它触碰或替代了哪条既有条款。",
+    "gateDedup": "重复检查",
+    "gateDedupPlaceholder": "它为什么不是既有条款的重复。",
+    "evidenceLabel": "证据锚",
+    "evidenceAdd": "添加证据锚",
+    "evidenceIssue": "Issue 编号",
+    "evidenceQuote": "引文",
+    "sourceIssuesLabel": "来源 Issue",
+    "problemLabel": "要解决的问题",
+    "expectedEffectLabel": "预期效果",
+    "expectedGainLabel": "预期提升",
+    "valueScoreLabel": "价值分",
+    "cancel": "取消",
+    "saveDraft": "保存草稿",
+    "submit": "提交审批",
+    "edit": "编辑草稿",
+    "list": "提案列表",
+    "detailTitle": "提案详情",
+    "createdAt": "创建时间",
+    "enactedVersion": "生效版本",
+    "mergedFrom": "合并的草稿",
+    "gateErrors": "门闸错误",
+    "gateWarnings": "门闸警告",
+    "rejectReason": "驳回理由",
+    "baselineUsed": "沙箱基线",
+    "preview": "预览 diff",
+    "previewTitle": "全文 diff 审核",
+    "previewDescription": "批准会在沙箱合成整个载体并运行立法门闸。请先审阅下方 diff——未显式确认不予批准。",
+    "diffEmpty": "合成后无文本变化。",
+    "diffLoadError": "预览加载失败。",
+    "confirmPreviewed": "我已审阅全文 diff",
+    "approve": "批准",
+    "approveBatch": "批量批准",
+    "batchPreviewTitle": "批量批准——全文 diff",
+    "batchLoading": "正在加载 diff…",
+    "selectHint": "勾选待审批提案一次通过（最多 20 条）。",
+    "batchResult": "批量结果",
+    "reject": "驳回",
+    "restore": "恢复为草稿",
+    "rework": "返工",
+    "enact": "执行生效",
+    "enactHint": "重新运行门闸；只有干净通过才生效。",
+    "rejectDialogTitle": "驳回提案",
+    "rejectPlaceholder": "驳回理由将留档可查。",
+    "rejectConfirm": "确认驳回",
+    "ownerOnly": "仅 Owner",
+    "empty": "这里还没有提案。",
+    "emptyHint": "从真实执行证据起草一条，或让每日总复盘来提案。",
+    "emptyConfig": "配置每日总复盘",
+    "error": "写入失败。请检查输入后重试。",
+    "batchPartial": "批量中有提案未生效——请查看逐条结果。",
+    "jevAdvisoryLabel": "本地模型预警",
+    "jevStage": {
+      "submit": "提交预检",
+      "gate": "门闸软判据"
+    },
+    "jevThreshold": "阈值",
+    "jevWarnFlag": "预警",
+    "jevDisclaimer": "仅低成本预警参考，须结合概率依据判断，不单独作为处置依据（warn-only 旁路，不影响门闸判定）。",
+    "jevUnavailable": "不可用，已跳过（不影响主流程）"
+  },
+  "retrospective": {
+    "title": "每日总复盘",
+    "description": "选定一个执行智能体：由它的一轮 Run 定时读取窗口内已完成 Issue 的真实执行内容，提炼 Prompt 改进草案批量入立法池。运行全程不创建 Issue、不产生任何 Issue 评论。",
+    "enabled": "启用定时运行",
+    "includeInReview": "同时扫描 in_review 的 Issue",
+    "windowDays": "回看窗口（天）",
+    "save": "保存配置",
+    "runs": "运行记录",
+    "runTitle": "每日复盘{{stamp}}",
+    "viewResults": "查看成果",
+    "trigger": "立即运行",
+    "status": {
+      "succeeded": "成功",
+      "failed": "失败",
+      "running": "运行中"
+    },
+    "window": "窗口",
+    "scanned": "扫描",
+    "analyzed": "分析",
+    "created": "新建",
+    "merged": "合并",
+    "duplicates": "去重跳过",
+    "errorLabel": "错误",
+    "empty": "还没有运行记录。",
+    "saveOk": "总复盘配置已保存。",
+    "triggerOk": "总复盘运行已启动。",
+    "rerun": "重跑",
+    "agentTitle": "执行智能体",
+    "agentDescription": "每日总复盘由所选智能体的一轮 Run 执行：读取回看窗口内已完成 Issue 并提炼改进草案，全程不创建 Issue、不产生评论。",
+    "agentLabel": "执行智能体",
+    "agentPlaceholder": "选择智能体",
+    "agentArchivedSuffix": "（已归档）",
+    "agentArchivedHint": "该智能体已归档；请改选其他智能体，否则运行会失败。",
+    "agentTriggerBlocked": "未配置可用的执行智能体：请先在上方配置中选择一个智能体再运行。",
+    "emptyDescription": "定时或手动触发后，这里会显示每次运行的记录。",
+    "viewDetail": "详情",
+    "detailTitle": "运行详情",
+    "triggerLabel": "触发方式",
+    "triggerSource": {
+      "schedule": "定时",
+      "manual": "手动"
+    },
+    "windowLabel": "回看窗口",
+    "startedAt": "开始时间",
+    "finishedAt": "结束时间",
+    "duration": "耗时",
+    "durationRunning": "运行中…",
+    "statsLabel": "统计",
+    "failureLabel": "失败原因",
+    "scannedIssues": "扫描的 Issue",
+    "analyzedIssues": "已分析的 Issue",
+    "noIssues": "无",
+    "viewLog": "查看运行日志",
+    "run_errors": {
+      "agent_not_configured": "未配置执行智能体：请在上方配置中选择一个智能体，保存后重试。",
+      "agent_missing": "配置的执行智能体不存在：请在上方配置中重新选择并保存。",
+      "agent_archived": "配置的执行智能体已归档：请在上方配置中重新选择并保存。",
+      "agent_runtime_missing": "配置的执行智能体没有可用运行时：请先为该智能体配置运行时，再重试。",
+      "window_scan_failed": "扫描回看窗口失败，本轮已终止；下一轮会自动重试。",
+      "watermark_check_failed": "检查已分析记录失败，本轮已终止；下一轮会自动重试。",
+      "scan_scope_record_failed": "记录本轮扫描范围失败，本轮已终止；下一轮会自动重试。",
+      "task_enqueue_failed": "复盘任务入列失败，本轮已终止；下一轮会自动重试。",
+      "agent_report_invalid": "智能体的最终输出不是有效的复盘报告，本轮结果已丢弃；下一轮会重新扫描同一窗口。",
+      "agent_no_report": "智能体运行已结束，但未产出复盘报告；下一轮会重新扫描同一窗口。",
+      "agent_run_failed": "智能体运行失败，未产出报告；下一轮会重新扫描同一窗口。",
+      "report_out_of_scope": "智能体分析了本轮窗口之外的 Issue（{{issue_id}}），整份报告已拒绝，未记录任何数据。",
+      "draft_out_of_scope": "智能体在草案中引用了本轮窗口之外的 Issue（{{issue_id}}），整份报告已拒绝，未记录任何数据。",
+      "task_not_completed": "关联的智能体运行未正常完成（失败、被取消或已过期），本轮已按失败收口；下一轮会重新扫描同一窗口。",
+      "task_never_enqueued": "复盘任务未能入列（工作空间或智能体已不可用），本轮已终止；下一轮会自动重试。"
+    },
+    "run_error_fallback": "本轮运行失败，暂无详细信息；下一轮会自动重试。"
+  },
+  "knowledge": {
+    "title": "知识库",
+    "description": "自动发现或手动添加的 bd memories 目录以只读方式镜像；Owner 采纳后由后台转移到知识总库。",
+    "register": "注册目录",
+    "registerTitle": "注册知识目录",
+    "registerDescription": "登记为手动添加的外部来源，首次只读扫描在后台执行。知识总库另行指定，不在此登记。",
+    "kindLabel": "目录类型",
+    "kind": {
+      "ultimate": "知识总库",
+      "candidate_cli": "手动添加",
+      "candidate_auto": "自动发现"
+    },
+    "pathLabel": "目录路径",
+    "labelLabel": "显示名",
+    "labelPlaceholder": "可选",
+    "cancel": "取消",
+    "registerSubmit": "注册",
+    "dirsTitle": "已注册目录",
+    "entriesTitle": "条目镜像",
+    "entryCount": "{{n}} 条",
+    "lastScan": "上次扫描（{{result}}）：新增 {{added}}，更新 {{updated}}，移除 {{removed}}",
+    "neverScanned": "尚未扫描",
+    "scanRequested": "扫描待执行",
+    "health": {
+      "ok": "健康",
+      "unhealthy": "异常"
+    },
+    "scanResult": {
+      "noop": "无变化",
+      "changed": "有变化",
+      "failed": "失败"
+    },
+    "scan": "立即扫描",
+    "unregister": "注销",
+    "advancedTitle": "高级：添加外部来源",
+    "advancedDescription": "指向本机上的 bd memories 目录，显示名为可选项。",
+    "allDirs": "全部目录",
+    "searchPlaceholder": "搜索 key 或内容",
+    "mirrorState": {
+      "synced": "已同步",
+      "source_deleted": "源已删除",
+      "source_removed": "源已移除"
+    },
+    "adoptionState": {
+      "pending": "待采纳",
+      "transferring": "转移中",
+      "adopted": "已采纳",
+      "failed": "采纳失败"
+    },
+    "adopt": "采纳",
+    "adoptedFrom": "采纳自 {{key}}",
+    "emptyDirs": {
+      "title": "暂无注册目录",
+      "description": "已连接的守护进程发现项目自带的 bd memories 后会自动出现在这里；也可以在下方「高级」中手动添加外部来源。"
+    },
+    "emptyEntries": "当前筛选下没有条目。",
+    "error": {
+      "read": "知识库加载失败",
+      "write": "操作未完成。",
+      "retry": "重试"
+    },
+    "ownerOnly": "注册、扫描、注销与采纳仅工作空间 Owner 可操作。"
+  },
+  "versions": {
+    "title": "版本历史",
+    "manage": "管理版本",
+    "description": "每次生效变更都会追加一个版本，历史永不改写。",
+    "bindingNote": "质量评测把每次运行绑定到其领取时的版本。角标显示每个版本承载的运行次数。",
+    "subjectTypeLabel": "对象类型",
+    "subjectEntityLabel": "统计对象",
+    "subjectEntityPlaceholder": "选择统计对象",
+    "workspaceEntity": "本工作空间",
+    "typeWorkspace": "工作空间",
+    "typeProject": "项目",
+    "typeSquad": "小队",
+    "typeAgent": "智能体",
+    "typeAutopilot": "自动化",
+    "typeSkill": "技能",
+    "snapshot": "建立快照",
+    "snapshotTitle": "快照当前生效内容？",
+    "snapshotBody": "快照会把该统计对象当前生效的配置记录为一个新版本，不改变对象本身的内容。",
+    "snapshotConfirm": "建立快照",
+    "snapshotFailed": "快照失败",
+    "clearSelection": "清除选择",
+    "emptyTitle": "暂无版本",
+    "emptyDescription": "从该统计对象当前生效的内容快照第一个版本。",
+    "error": "版本加载失败",
+    "retry": "重试",
+    "sourceImport": "基线",
+    "sourceEdit": "编辑",
+    "sourceRevert": "回滚",
+    "sourceAuto": "自动快照",
+    "sourceSnapshot": "快照",
+    "fromVersion": "来自 v{{version}}",
+    "latest": "最新",
+    "runs": "{{n}} 次运行",
+    "noRuns": "无质量数据",
+    "activate": "切换到此版本",
+    "activateTitle": "激活 v{{version}}？",
+    "activateBody": "激活会以该内容追加一个新版本并立即生效，历史永不改写。",
+    "cancel": "取消",
+    "confirmActivate": "确认激活",
+    "compareTitle": "比较 v{{from}} → v{{to}}",
+    "secretBlocked": "未保存：提示词疑似包含凭据。",
+    "findingLine": "第 {{line}} 行"
+  },
+  "clauseGovernance": {
+    "title": "条款治理",
+    "description": "从立法到注入的条款资产全链视图",
+    "window": "统计窗口",
+    "d7": "近 7 天",
+    "d30": "近 30 天",
+    "d90": "近 90 天",
+    "d365": "近 365 天",
+    "refresh": "刷新",
+    "banner": {
+      "dynamicOffTitle": "全局降级开关已开启",
+      "dynamicOffBody": "所有运行均以快照注入模式运行（等价静态注入）",
+      "healthyTitle": "动态注入正常",
+      "healthyBody": "窗口内降级注入 {{degraded}}/{{total}} 次",
+      "findingsTitle": "发现 {{count}} 项对账或漂移问题",
+      "findingsBody": "详见下方「对账与漂移」区块"
+    },
+    "metrics": {
+      "injections": "注入次数",
+      "runs": "覆盖运行",
+      "runsUnit": "{{count}} 次运行",
+      "clauseTokens": "条款 token",
+      "clauseTokensNote": "条款渲染注入估算",
+      "degraded": "降级注入",
+      "migration": "迁移覆盖"
+    },
+    "scope": { "workspace": "工作区", "project": "项目", "squad": "小队", "agent": "智能体" },
+    "recon": {
+      "title": "对账与漂移",
+      "healthy": "对账通过",
+      "findings": "{{count}} 项发现",
+      "scanned": "已扫描 {{count}} 个载体",
+      "violationsTitle": "层集合违规",
+      "violationsEmpty": "窗口内无层集合违规",
+      "colTime": "时间",
+      "colTask": "任务",
+      "colClause": "条款",
+      "colVersion": "版本",
+      "colScope": "作用域",
+      "colInjection": "注入方式",
+      "truncated": "仅显示前 100 条",
+      "degradedFlag": "降级快照",
+      "driftTitle": "载体漂移",
+      "driftEmpty": "载体标记与资产库一致（已扫描 {{count}} 个载体）",
+      "unnamedCarrier": "未命名载体"
+    },
+    "driftKind": { "stale_rev": "版本滞后", "orphan_marker": "孤儿标记", "missing_segment": "缺失渲染段" },
+    "driftDesc": {
+      "staleRev": "快照版本 {{marker}} → 资产版本 {{expected}}",
+      "orphanMarker": "载体存在标记，资产库无此生效条款",
+      "missingSegment": "快照注入模式下，载体缺少生效条款渲染段（期望版本 {{expected}}）"
+    },
+    "rollback": {
+      "title": "回滚建议",
+      "empty": "无待处理回滚建议",
+      "rollbackTo": "回滚至 V{{version}}",
+      "viewProposal": "查看提案"
+    },
+    "list": {
+      "title": "条款列表",
+      "filter_all": "全部",
+      "filter_active": "生效中",
+      "filter_deprecated": "已停用",
+      "filter_revoked": "已废止",
+      "colStatus": "状态",
+      "colClause": "条款",
+      "colVersion": "当前版本",
+      "colScope": "绑定作用域",
+      "colInjections": "注入",
+      "colRuns": "运行",
+      "colTokens": "Token",
+      "colAction": "操作",
+      "unbound": "未绑定",
+      "tokensPending": "待计量",
+      "tokensPendingHint": "该条款窗口内尚无计量数据",
+      "emptyTitle": "尚无条款资产",
+      "emptyBody": "通过立法提案创建第一批条款",
+      "emptyCta": "前往立法提案",
+      "openDetail": "查看详情",
+      "noFilterResults": "没有符合此筛选条件的条款"
+    },
+    "detail": {
+      "back": "返回条款治理",
+      "versions": "版本",
+      "bindings": "绑定",
+      "proposals": "提案溯源",
+      "quality": "质量与注入",
+      "latest": "最新",
+      "notFound": "条款不存在或已被删除"
+    },
+    "manage": {
+      "title": "管理条款",
+      "edit": "编辑内容",
+      "content": "条款内容",
+      "save": "保存为新版本",
+      "cancel": "取消",
+      "deactivate": "停用",
+      "deactivateConfirm": "此操作会撤销生效绑定并从载体中移除条款，条款记录仍保留以供后续管理。",
+      "delete": "删除条款",
+      "deleteConfirm": "此操作会永久删除条款、版本、绑定和条款计量数据，并从载体中移除条款，且无法撤销。",
+      "failure": "操作失败，请检查权限后重试。"
+    },
+    "version": { "sha": "内容指纹", "showContent": "展开正文", "hideContent": "收起正文", "compare": "对比版本" },
+    "compare": {
+      "title": "版本对比 V{{a}} ↔ V{{b}}",
+      "sampleInsufficient": "样本不足，不出百分比结论",
+      "attributableRuns": "可归因运行",
+      "windowRuns": "窗口内可归因运行 {{count}} 次"
+    },
+    "binding": {
+      "scope": "作用域",
+      "status": "状态",
+      "conditions": "生效条件",
+      "conditionsAll": "全适用",
+      "sinceVersion": "自 V{{version}} 起",
+      "createdAt": "生效时间",
+      "empty": "暂无绑定记录"
+    },
+    "bindingStatus": { "active": "生效中", "superseded": "已更替", "withdrawn": "已撤回" },
+    "proposals": {
+      "empty": "暂无关联提案",
+      "gates": { "layer": "层级", "retention": "保留", "cost": "成本", "conflict": "冲突", "dedup": "去重" }
+    },
+    "quality": {
+      "chartTitle": "注入与质量趋势",
+      "chartAria": "近 {{days}} 天完成运行与可归因失败趋势；下表提供完整数据",
+      "colDay": "日期",
+      "colVersion": "版本",
+      "colFinishedRuns": "完成运行",
+      "colFailed": "可归因失败",
+      "colExcluded": "排除失败",
+      "colTokens": "注入 token",
+      "colMedianRun": "运行 token 中位数",
+      "unmeasured": "未计量",
+      "emptyWindow": "窗口内无注入数据"
+    },
+    "status": { "active": "生效中", "deprecated": "已停用", "revoked": "已废止" },
+    "error": { "title": "加载失败", "retry": "重试" }
+  },
+  "nav": {
+    "label": "自演化分区",
+    "overview": "总览",
+    "groupKnowledgeAssets": "知识资产",
+    "groupMeasures": "度量",
+    "groupLoop": "演进闭环",
+    "groupConfig": "配置",
+    "knowledge": "知识库",
+    "skills": "技能演进",
+    "quality": "质量度量",
+    "clauseGovernance": "条款治理",
+    "quiz": "题库测验",
+    "proposals": "立法提案",
+    "versions": "版本",
+    "retrospective": "每日总复盘",
+    "config": "模块配置"
+  },
+  "configSource": {
+    "prefix": "生效来源：",
+    "module": "模块配置",
+    "deploy": "部署默认",
+    "system": "系统级"
+  },
+  "sources": {
+    "states": {
+      "ok": "已配置可用",
+      "unconfigured": "未配置",
+      "error": "配置错误",
+      "disabled": "功能关闭"
+    },
+    "reason": "原因：",
+    "impact": "影响："
+  },
+  "secretField": {
+    "placeholder": "输入新值",
+    "keepExisting": "留空保持现有值"
+  },
+  "segToolbar": {
+    "filters": "筛选"
+  },
+  "attention": {
+    "title": "需要关注",
+    "hint": "处理后自动从列表消失",
+    "modelUnconfigured": {
+      "title": "模型服务未配置",
+      "description": "质量评分没有可用的 LLM",
+      "action": "去配置"
+    },
+    "modelError": {
+      "title": "模型服务校验失败",
+      "action": "查看配置"
+    },
+    "retrospectiveOff": {
+      "title": "每日总复盘未启用",
+      "description": "提案闭环不会自动运转，提案池只能人工起草",
+      "action": "去配置"
+    },
+    "retrospectiveNoAgent": {
+      "title": "每日总复盘未选执行智能体",
+      "description": "已启用但没有执行者，运行不会发生",
+      "action": "去配置"
+    },
+    "discoveries": {
+      "title": "有 {{count}} 条技能发现待导入",
+      "action": "查看"
+    }
+  },
+  "knowledgeSeg": {
+    "entries": "知识条目",
+    "dirs": "知识目录",
+    "external": "外部来源",
+    "addSource": "添加外部来源",
+    "entryDrawerSubtitle": "{{dir}} 的镜像",
+    "attrDir": "所属目录",
+    "attrMirror": "镜像状态",
+    "attrAdoption": "采纳状态",
+    "attrSource": "来源键",
+    "attrUpdated": "最近确认",
+    "attrKind": "类型",
+    "attrEntries": "条目数",
+    "attrCreated": "注册时间",
+    "scanHistory": "扫描历史",
+    "viewEntries": "查看条目",
+    "unregisterConfirm": "注销「{{label}}」？其镜像条目会保留，但不再更新。",
+    "emptyExternal": "尚未注册任何外部来源。",
+    "jumpToDirs": "前往知识目录",
+    "colKey": "键",
+    "colActions": "操作",
+    "colSource": "来源",
+    "colPath": "路径",
+    "colHealth": "健康",
+    "colLastScan": "最近扫描"
+  },
+  "skillsSeg": {
+    "managed": "已管理 Skill",
+    "discoveries": "待导入发现",
+    "colSkill": "技能",
+    "colSource": "来源",
+    "colLatestVersion": "最新版本",
+    "colInvocations30d": "近 30 天",
+    "invocationsValue": "{{count}} 次调用",
+    "emptyDiscoveries": "暂无运行时发现——在运行时观察到的技能会出现在这里等待导入。"
+  },
+  "qualityCards": {
+    "title": "数据源状态",
+    "scoringModel": "评分模型",
+    "langfuse": "Langfuse",
+    "banner": "部分数据源降级——近期数据可能不完整。",
+    "viewSources": "查看数据源状态",
+    "reasons": {
+      "okValidated": "连通性校验通过（{{date}}）。",
+      "okModule": "已保存模块配置（尚未重新校验）。",
+      "okDeploy": "检测到部署注入的默认值（未主动校验）。",
+      "error": "连通性校验失败。",
+      "errorDetail": "连通性校验失败：{{error}}",
+      "disabled": "来源健康，但已被本工作区开关停用。",
+      "unconfigured": "未检测到该来源的任何配置。",
+      "langfuseOk": "检测到部署注入的导出凭据（系统级）。",
+      "langfuseMissing": "本部署未配置 Langfuse 导出凭据。"
+    },
+    "impacts": {
+      "ok": "全维度正常采集。",
+      "error": "保留最近一次成功数据并标注时间；新采集正在失败。",
+      "disabled": "停止采集新数据，历史保留可查。",
+      "unconfigured": "相关维度无数据，页面进引导态。",
+      "langfuseOk": "对话导出可以运行。",
+      "langfuseMissing": "不进行对话导出。"
+    },
+    "actions": {
+      "configure": "去配置",
+      "viewConfig": "查看配置",
+      "viewError": "查看错误",
+      "enable": "启用",
+      "deployNotes": "仅部署侧可配"
+    }
+  },
+  "modelConfig": {
+    "title": "模型服务",
+    "description": "本工作区质量评分专用的 LLM 端点。Key 加密存储，保存后不再回显。",
+    "baseUrl": "Base URL",
+    "apiKey": "API Key",
+    "model": "模型",
+    "consumersTitle": "此端点的消费方",
+    "scoringConsumer": "质量评分",
+    "saveAndValidate": "校验并保存",
+    "busy": "处理中…",
+    "revalidate": "重新校验",
+    "lastValidated": "最近校验 {{date}}",
+    "neverValidated": "尚未校验",
+    "validationOk": "连通性校验通过。",
+    "validationFailed": "校验未通过，未保存任何更改",
+    "saveOk": "模型服务已保存。",
+    "restoreDefault": "恢复部署默认",
+    "restoreConfirm": "将移除本工作区的覆盖配置，恢复为部署注入的默认值。确定继续？",
+    "restoreOk": "已恢复部署默认。",
+    "encryptionNotReady": "本部署未配置工作区级加密密钥，无法保存工作区覆盖——当前生效部署默认值。",
+    "errorKind": {
+      "credentials": "凭据无效或已过期",
+      "model": "模型不可用或被拒绝",
+      "connection": "连接失败或超时",
+      "notConfigured": "必填字段缺失",
+      "other": "其他错误"
+    }
+  },
+  "configPage": {
+    "title": "模块配置",
+    "description": "下方模型服务支撑质量评分；Langfuse 为实例级配置，此处只读。"
+  },
+  "mobile": { "title": "自演化", "overview": "总览", "versions": "版本", "proposals": "提案", "proposal_count_label": "项提案", "pending_owner": "待所有者处理", "skills": "技能", "review_diff": "查看提案差异", "empty_diff": "无差异行", "cancel": "取消", "approve": "批准", "approving": "正在批准…", "reject": "驳回", "rejecting": "正在驳回…", "action_failed": "操作失败，修改未保存。请检查后重试。", "reject_reason": "驳回原因", "reject_unavailable": "此设备暂不支持输入驳回原因。", "error": "无法加载提案预览", "load_error": "部分数据加载失败，点击重试。", "review_approve": "查看并批准", "no_proposals": "暂无提案", "clauses": "条款治理", "injections": "次使用", "no_clauses": "暂无治理条款", "retrospective": "复盘运行记录", "issues_analyzed": "个任务已分析", "no_retrospectives": "暂无复盘记录" }
+}

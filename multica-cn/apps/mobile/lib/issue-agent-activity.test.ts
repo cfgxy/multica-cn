@@ -1,0 +1,313 @@
+/**
+ * Pure-selector tests for the workspace agent-task snapshot slices that
+ * power the "agent is working on this issue" cue (inbox rows, RUYI-76 ③)
+ * and the per-agent running-task view (more/agents, RUYI-76 ②).
+ *
+ * Semantics mirrored from web `packages/views/issues/surface/activity.ts`
+ * (`selectIssueTasks` / `isQueuedTaskStatus`) — the same-status-bucketing
+ * parity rule in apps/mobile/CLAUDE.md.
+ */
+import { describe, expect, it } from "vitest";
+import type { AgentTask } from "@multica/core/types";
+import {
+  agentTaskActivityState,
+  canCancelAgentTask,
+  deriveIssueActivityMap,
+  isActiveTaskStatus,
+  selectActorActivity,
+  selectAgentActiveTasks,
+  selectIssueActivity,
+  selectIssueOtherAgentsActivity,
+} from "./issue-agent-activity";
+
+let seq = 0;
+function task(overrides: Partial<AgentTask> = {}): AgentTask {
+  seq += 1;
+  return {
+    id: `task-${seq}`,
+    agent_id: "agent-1",
+    runtime_id: "runtime-1",
+    issue_id: "issue-1",
+    status: "running",
+    priority: 0,
+    dispatched_at: null,
+    started_at: "2026-09-05T10:00:00Z",
+    completed_at: null,
+    result: null,
+    error: null,
+    created_at: "2026-09-05T09:59:00Z",
+    ...overrides,
+  } as AgentTask;
+}
+
+describe("isActiveTaskStatus", () => {
+  it("treats queued/dispatched/waiting_local_directory/running as active", () => {
+    expect(isActiveTaskStatus("queued")).toBe(true);
+    expect(isActiveTaskStatus("dispatched")).toBe(true);
+    expect(isActiveTaskStatus("waiting_local_directory")).toBe(true);
+    expect(isActiveTaskStatus("running")).toBe(true);
+  });
+
+  it("treats terminal statuses as inactive", () => {
+    expect(isActiveTaskStatus("completed")).toBe(false);
+    expect(isActiveTaskStatus("failed")).toBe(false);
+    expect(isActiveTaskStatus("cancelled")).toBe(false);
+  });
+});
+
+describe("selectIssueActivity", () => {
+  it("buckets one issue's tasks into running vs queued", () => {
+    const running = task({ status: "running" });
+    const dispatched = task({ status: "dispatched" });
+    const parked = task({ status: "waiting_local_directory" });
+    const queued = task({ status: "queued" });
+
+    const groups = selectIssueActivity(
+      [running, dispatched, parked, queued],
+      "issue-1",
+    );
+
+    expect(groups.running).toEqual([running]);
+    expect(groups.queued).toEqual([dispatched, parked, queued]);
+  });
+
+  it("drops terminal tasks and other issues' tasks", () => {
+    const done = task({ status: "completed" });
+    const failed = task({ status: "failed" });
+    const otherIssue = task({ issue_id: "issue-2" });
+
+    const groups = selectIssueActivity([done, failed, otherIssue], "issue-1");
+
+    expect(groups.running).toEqual([]);
+    expect(groups.queued).toEqual([]);
+  });
+
+  it("never matches chat/autopilot tasks with no issue", () => {
+    const chatTask = task({ issue_id: "", chat_session_id: "chat-1" });
+    const groups = selectIssueActivity([chatTask], "issue-1");
+    expect(groups.running).toEqual([]);
+    expect(groups.queued).toEqual([]);
+  });
+});
+
+describe("deriveIssueActivityMap", () => {
+  it("maps every issue that has at least one active task", () => {
+    const aRunning = task({ issue_id: "issue-a" });
+    const bQueued = task({ issue_id: "issue-b", status: "queued" });
+    const map = deriveIssueActivityMap([aRunning, bQueued]);
+
+    expect(map.get("issue-a")?.running).toEqual([aRunning]);
+    expect(map.get("issue-a")?.queued).toEqual([]);
+    expect(map.get("issue-b")?.queued).toEqual([bQueued]);
+  });
+
+  it("omits issues whose tasks are all terminal and skips issue-less tasks", () => {
+    const done = task({ status: "completed" });
+    const chatTask = task({ issue_id: "" });
+    const map = deriveIssueActivityMap([done, chatTask]);
+
+    expect(map.size).toBe(0);
+  });
+});
+
+describe("selectAgentActiveTasks", () => {
+  it("returns only that agent's active tasks, terminal dropped", () => {
+    const mine = task({ agent_id: "agent-1" });
+    const others = task({ agent_id: "agent-2" });
+    const mineDone = task({ agent_id: "agent-1", status: "completed" });
+
+    const out = selectAgentActiveTasks([mine, others, mineDone], "agent-1");
+    expect(out).toEqual([mine]);
+  });
+
+  it("orders running first, then queued — newest first within each group", () => {
+    const olderRunning = task({
+      status: "running",
+      started_at: "2026-09-05T10:00:00Z",
+      created_at: "2026-09-05T09:59:00Z",
+    });
+    const newerRunning = task({
+      status: "running",
+      started_at: "2026-09-05T10:05:00Z",
+      created_at: "2026-09-05T10:04:00Z",
+    });
+    const newerQueued = task({
+      status: "queued",
+      started_at: null,
+      created_at: "2026-09-05T10:06:00Z",
+    });
+    const olderQueued = task({
+      status: "dispatched",
+      dispatched_at: "2026-09-05T10:01:00Z",
+      created_at: "2026-09-05T10:00:30Z",
+    });
+
+    const out = selectAgentActiveTasks(
+      [olderQueued, newerQueued, olderRunning, newerRunning],
+      "agent-1",
+    );
+
+    expect(out).toEqual([newerRunning, olderRunning, newerQueued, olderQueued]);
+  });
+
+  it("includes issue-less chat/autopilot runs — they are the agent's runs too", () => {
+    const chatRun = task({ issue_id: "", chat_session_id: "chat-1" });
+    const out = selectAgentActiveTasks([chatRun], "agent-1");
+    expect(out).toEqual([chatRun]);
+  });
+});
+
+describe("canCancelAgentTask", () => {
+  it("offers cancel across every non-terminal status", () => {
+    expect(canCancelAgentTask(task({ status: "queued" }))).toBe(true);
+    expect(canCancelAgentTask(task({ status: "dispatched" }))).toBe(true);
+    expect(
+      canCancelAgentTask(task({ status: "waiting_local_directory" })),
+    ).toBe(true);
+    expect(canCancelAgentTask(task({ status: "running" }))).toBe(true);
+  });
+
+  it("keeps cancel available while a stop is pending (repeat nudge)", () => {
+    expect(canCancelAgentTask(task({ status: "cancel_requested" }))).toBe(true);
+  });
+
+  it("never offers cancel on terminal rows", () => {
+    expect(canCancelAgentTask(task({ status: "completed" }))).toBe(false);
+    expect(canCancelAgentTask(task({ status: "failed" }))).toBe(false);
+    expect(canCancelAgentTask(task({ status: "cancelled" }))).toBe(false);
+  });
+});
+
+// RUYI-554 unified status language: per-actor slice that drives the avatar's
+// three-state treatment (running → breathing, queued → grayed, none → static).
+describe("selectActorActivity", () => {
+  it("returns running when the actor has a running task", () => {
+    const activity = selectIssueActivity([task({ status: "running" })], "issue-1");
+    expect(selectActorActivity(activity, "agent-1")).toBe("running");
+  });
+
+  it("running wins over queued when the actor holds both", () => {
+    const activity = selectIssueActivity(
+      [task({ status: "running" }), task({ status: "queued" })],
+      "issue-1",
+    );
+    expect(selectActorActivity(activity, "agent-1")).toBe("running");
+  });
+
+  it("returns queued for queued-side statuses (queued/dispatched/waiting)", () => {
+    for (const status of ["queued", "dispatched", "waiting_local_directory"] as const) {
+      const activity = selectIssueActivity([task({ status })], "issue-1");
+      expect(selectActorActivity(activity, "agent-1")).toBe("queued");
+    }
+  });
+
+  it("returns null when the actor has no active task", () => {
+    const activity = selectIssueActivity(
+      [task({ status: "completed" })],
+      "issue-1",
+    );
+    expect(selectActorActivity(activity, "agent-1")).toBeNull();
+  });
+
+  it("returns null for other actors' tasks and absent actors", () => {
+    const activity = selectIssueActivity([task({ status: "running" })], "issue-1");
+    expect(selectActorActivity(activity, "agent-other")).toBeNull();
+    expect(selectActorActivity(activity, null)).toBeNull();
+    expect(selectActorActivity(activity, undefined)).toBeNull();
+    expect(selectActorActivity(undefined, "agent-1")).toBeNull();
+  });
+
+  it("does not match member actors — activity is agent-scoped data", () => {
+    // A member actor id can never appear in AgentTask.agent_id, but spell the
+    // guarantee out: the slice keys on the actor id only, so a member id that
+    // collides with an agent id (different id spaces in practice) still reads
+    // as active — callers only pass the prop for agent avatars via type check.
+    const activity = selectIssueActivity([task({ status: "running" })], "issue-1");
+    expect(selectActorActivity(activity, "agent-1")).toBe("running");
+  });
+});
+
+describe("agentTaskActivityState (RUYI-700 row visual bucket)", () => {
+  it("puts running and cancel_requested on the breathing (running) side", () => {
+    expect(agentTaskActivityState("running")).toBe("running");
+    expect(agentTaskActivityState("cancel_requested")).toBe("running");
+  });
+
+  it("keeps the queued-side trio on the grayed side", () => {
+    for (const status of [
+      "queued",
+      "dispatched",
+      "waiting_local_directory",
+    ] as const) {
+      expect(agentTaskActivityState(status)).toBe("queued");
+    }
+  });
+});
+
+describe("selectIssueOtherAgentsActivity (RUYI-700 row-3 avatar stack)", () => {
+  it("excludes the row's own agent and dedupes repeat tasks", () => {
+    const result = selectIssueOtherAgentsActivity(
+      [
+        task({ agent_id: "agent-2", status: "running" }),
+        task({ agent_id: "agent-2", status: "queued" }),
+        task({ agent_id: "agent-1" }),
+      ],
+      "issue-1",
+      "agent-1",
+    );
+    expect(result.agents).toEqual([{ type: "agent", id: "agent-2" }]);
+    expect(result.activity).toBe("running");
+  });
+
+  it("counts cancel_requested as still-running for other agents", () => {
+    const result = selectIssueOtherAgentsActivity(
+      [task({ agent_id: "agent-2", status: "cancel_requested" })],
+      "issue-1",
+      "agent-1",
+    );
+    expect(result.activity).toBe("running");
+    expect(result.agents).toHaveLength(1);
+  });
+
+  it("running wins over queued for the single stack bucket", () => {
+    const result = selectIssueOtherAgentsActivity(
+      [
+        task({ agent_id: "agent-2", status: "queued" }),
+        task({ agent_id: "agent-3", status: "running" }),
+      ],
+      "issue-1",
+      "agent-1",
+    );
+    expect(result.activity).toBe("running");
+    // The stack renders ONE activity for all its avatars, so with a running
+    // agent present only running-side others are listed — a queued avatar
+    // must never breathe (that would lie about its task state).
+    expect(result.agents).toEqual([{ type: "agent", id: "agent-3" }]);
+  });
+
+  it("answers queued-only when no other agent is running", () => {
+    const result = selectIssueOtherAgentsActivity(
+      [task({ agent_id: "agent-2", status: "dispatched" })],
+      "issue-1",
+      "agent-1",
+    );
+    expect(result.activity).toBe("queued");
+  });
+
+  it("ignores terminal tasks, other issues and absent self id", () => {
+    expect(
+      selectIssueOtherAgentsActivity(
+        [task({ agent_id: "agent-2", status: "completed" })],
+        "issue-1",
+        "agent-1",
+      ),
+    ).toEqual({ agents: [], activity: null });
+    expect(
+      selectIssueOtherAgentsActivity(
+        [task({ agent_id: "agent-2", issue_id: "issue-2" })],
+        "issue-1",
+        "agent-1",
+      ),
+    ).toEqual({ agents: [], activity: null });
+  });
+});

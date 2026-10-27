@@ -1,0 +1,81 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.oncall-handoff",
+  "name": "On-call Handoff",
+  "description": "Opens a handoff form from the issue menu, files it with the team's rota service, and posts the resulting summary on the issue. Demonstrates the modal surface, the manual trigger, and a write-only secret.",
+  "version": "1.0.0",
+  "author": { "name": "Example Platform Team", "url": "https://example.com" },
+
+  "scopes": [
+    "issues:read",
+    "comments:write",
+    "storage:workspace",
+    "net:rota.example.com"
+  ],
+
+  "config": {
+    "rota_name": {
+      "type": "string",
+      "label": "Rota name",
+      "description": "Which rota this workspace hands off. Non-secret: the surface reads it from context.",
+      "required": true,
+      "placeholder": "platform-primary"
+    },
+    "handoff_window_hours": {
+      "type": "number",
+      "label": "Handoff window (hours)",
+      "description": "How far back the summary reaches for open incidents.",
+      "required": true
+    },
+    "rota_token": {
+      "type": "secret",
+      "label": "Rota service API token",
+      "description": "Write-only. Multica encrypts it and never returns it — not to this form, not to a surface, and not in an http hook body. It is your own credential for your own service; your handler already holds it.",
+      "required": true
+    },
+    "roster_credential": {
+      "type": "secret",
+      "label": "Roster MCP server token",
+      "description": "Write-only. Named <hookKey>_credential for the roster hook, which is the ONLY way Multica ever presents a secret to an endpoint: as the Authorization header on the mcp transport."
+    }
+  },
+
+  "contributes": {
+    "surfaces": [
+      {
+        "key": "handoff",
+        "type": "modal",
+        "name": "Start on-call handoff",
+        "entry": "ui/main.js",
+        "platforms": ["web", "desktop"]
+      }
+    ],
+
+    "hooks": [
+      {
+        "key": "file_handoff",
+        "name": "File the handoff",
+        "description": "Records a handoff with the rota service and returns the summary text to post. Called by the modal via the ui trigger, and available to a person from the issue menu via manual.",
+        "input_schema": {
+          "type": "object",
+          "required": ["to", "notes"],
+          "properties": {
+            "to": { "type": "string", "description": "Who is taking over." },
+            "notes": { "type": "string", "description": "What the incoming engineer needs to know." }
+          }
+        },
+        "triggers": ["ui", "manual"],
+        "transport": { "type": "http", "url": "https://rota.example.com/hooks/handoff" },
+        "timeout_ms": 15000
+      },
+      {
+        "key": "roster",
+        "name": "Roster lookups",
+        "description": "Tools from the team's roster MCP server: who is on call, and when the next rotation starts.",
+        "triggers": ["agent"],
+        "transport": { "type": "mcp", "url": "https://rota.example.com/mcp" },
+        "timeout_ms": 30000
+      }
+    ]
+  }
+}

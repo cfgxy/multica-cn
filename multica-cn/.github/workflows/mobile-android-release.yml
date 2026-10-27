@@ -1,0 +1,65 @@
+name: Mobile Android Release
+
+# Android 正式发布通道（RUYI-573）：push tag `mobile-android-vX.Y.Z` 触发，
+# 构建并发布与 tag 同名的正式 Release（版本 X.Y.Z，无任何 dev 后缀）。
+#
+# 版本一致性 fail-closed：tag 里的 X.Y.Z 必须与 apps/mobile/app.config.ts 的
+# version 完全一致（发版流程 = 先改 version、提交、再打 tag），不一致直接
+# 拒绝，避免出现「tag 说 0.3.0、安装包其实是 0.2.0」的错位。
+#
+# 构建与发布逻辑复用 mobile-android-build.yml（workflow_call），本文件只做
+# 通道封装；日常开发构建走该文件的 push main 通道，互不重叠。
+#
+# 该 tag 形态与 desktop-release.yml 的 `v*.*.*`、release.yml 的 `v*.*.*`
+# 互不匹配，不会连带触发服务端/桌面发布。
+
+on:
+  push:
+    tags:
+      - "mobile-android-v*.*.*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mobile-android-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify tag matches app version
+        id: meta
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#mobile-android-v}"
+          if [[ ! "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::正式发布 tag 必须是 mobile-android-vX.Y.Z，得到 '${GITHUB_REF_NAME}'"
+            exit 1
+          fi
+          # 解析 version 行的兜底字面量：该行既可能是 `version: "X.Y.Z"`，
+          # 也可能是 `version: process.env.MULTICA_APP_VERSION || "X.Y.Z"`
+          # （dev 通道注入形态），统一取行内最后一个引号串。
+          base=$(sed -n 's/^ *version:.*"\([^"]*\)",*$/\1/p' apps/mobile/app.config.ts | head -n 1)
+          if [[ "$base" != "$tag" ]]; then
+            echo "::error::tag 版本 $tag 与 app.config.ts 的 version $base 不一致；发版需先更新 version 再打 tag"
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+  build-release:
+    needs: verify
+    uses: ./.github/workflows/mobile-android-build.yml
+    with:
+      release_mode: formal
+      app_version: ${{ needs.verify.outputs.version }}
+      release_tag: ${{ github.ref_name }}
+      app_env: production
+    permissions:
+      contents: write

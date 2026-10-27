@@ -1,0 +1,81 @@
+/**
+ * Chat sessions list-level realtime — Layer 3.
+ *
+ * Mounted globally in workspace `_layout.tsx` via `<RealtimeSubscriptions />`.
+ * Keeps the chatKeys.sessions(wsId) cache fresh regardless of which tab
+ * the user is on — so when they DO open Chat tab, the dropdown / sheet
+ * already reflects reality (latest titles, has_unread flags, deletions).
+ *
+ * Events handled here are listing-level only — per-session events
+ * (chat:message, task:*) belong in `use-chat-session-realtime.ts` because
+ * they target a specific session id known only inside the chat screen.
+ */
+import { useQueryClient } from "@tanstack/react-query";
+import { chatKeys } from "@/data/queries/chat";
+import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
+import {
+  applyChatSessionUpdatedToCache,
+  dropSessionFromList,
+} from "./chat-ws-updaters";
+
+export function useChatSessionsRealtime() {
+  const qc = useQueryClient();
+
+  useWSSubscriptions(
+    (ws, wsId) => {
+      const invalidateSessions = () =>
+        qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+
+      return [
+        // chat:done flips `has_unread` server-side; refetch so the dot shows
+        // even when the user isn't in the chat screen.
+        ws.on("chat:done", invalidateSessions),
+        // Cancellation may delete a queued prompt or append "Stopped.", both
+        // of which change the session preview.
+        ws.on("task:cancelled", invalidateSessions),
+        // chat:session_read clears the unread flag (could be triggered from
+        // web/desktop on the same account).
+        ws.on("chat:session_read", invalidateSessions),
+        // A channel /new creates a visible session without navigating this
+        // device; refresh the list and leave the current screen untouched.
+        ws.on("chat:session_created", (payload) => {
+          if (payload.workspace_id === wsId) invalidateSessions();
+        }),
+        // chat:session_updated has no formal payload type in
+        // packages/core/types/events.ts (`unknown`). Server emits
+        // {chat_session_id, title, updated_at} plus `pinned?` (pin/unpin
+        // path) and `status?` ("active"|"archived", archive path) — see
+        // protocol.ChatSessionUpdatedPayload. Narrow inline; `status` is
+        // clamped to the two known values so an unknown server value
+        // leaves the row untouched (enum drift defense).
+        ws.on("chat:session_updated", (p) => {
+          const payload = p as {
+            chat_session_id: string;
+            title?: string;
+            model_override?: string | null;
+            pinned?: boolean;
+            status?: string;
+            updated_at?: string;
+          };
+          applyChatSessionUpdatedToCache(qc, wsId, {
+            chat_session_id: payload.chat_session_id,
+            title: payload.title,
+            ...("model_override" in payload ? { model_override: payload.model_override } : {}),
+            pinned: payload.pinned,
+            status:
+              payload.status === "active" || payload.status === "archived"
+                ? payload.status
+                : undefined,
+            updated_at: payload.updated_at,
+          });
+        }),
+        ws.on("chat:session_deleted", (payload) => {
+          dropSessionFromList(qc, wsId, payload);
+        }),
+        // Reconnect: we may have missed events while disconnected.
+        ws.onReconnect(invalidateSessions),
+      ];
+    },
+    [qc],
+  );
+}

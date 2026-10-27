@@ -1,0 +1,208 @@
+{
+  "avatar_upload": {
+    "change": "アバターを変更",
+    "remove": "削除",
+    "select_image": "画像ファイルを選択してください。",
+    "updated": "アバターを更新しました",
+    "failed": "アバターのアップロードに失敗しました",
+    "upload_image": "画像をアップロード",
+    "emoji_label": "絵文字",
+    "more_emojis": "他の絵文字…",
+    "emoji_loading": "読み込み中…"
+  },
+  "avatar_crop": {
+    "title": "アバターを編集",
+    "zoom": "ズーム",
+    "zoom_in": "拡大",
+    "zoom_out": "縮小",
+    "rotate": "回転",
+    "reset": "リセット",
+    "cancel": "キャンセル",
+    "apply": "保存",
+    "uploading": "アップロード中…",
+    "loading": "読み込み中…",
+    "load_failed": "画像を読み込めませんでした"
+  },
+  "color_picker": {
+    "saturation": "彩度と明度",
+    "hue": "色相",
+    "hex": "16進カラー",
+    "eyedropper": "画面から色を取得",
+    "presets": "プリセット",
+    "random": "ランダム"
+  },
+  "save": "保存",
+  "cancel": "キャンセル",
+  "delete": "削除",
+  "confirm": "確認",
+  "loading": "読み込み中...",
+  "time": {
+    "just_now": "たった今",
+    "minutes_ago": "{{count}}分前",
+    "hours_ago": "{{count}}時間前",
+    "days_ago": "{{count}}日前",
+    "weeks_ago": "{{count}}週間前"
+  },
+  "lark_bind": {
+    "page_title": "Lark アカウントを連携",
+    "redeeming": "バインディングトークンを使用しています…",
+    "needs_auth_description": "連携を完了するには Multica にログインしてください。リンク内のトークンが Lark アカウントを現在の Multica ユーザーに紐付けるため、先にログインが必要です。",
+    "sign_in": "ログイン",
+    "done_title": "連携が完了しました。",
+    "done_description": "次回 Lark でボットに送ったメッセージは、そのままエージェントに届きます。このタブは閉じても問題ありません。",
+    "error_title": "連携を完了できませんでした",
+    "error_admin_hint": "問題が続く場合は、ワークスペース管理者に Lark から連携リンクを再送してもらってください。",
+    "error_missing_token": "リンクにバインディングトークンが含まれていません。Lark のボットに新しいリンクを送ってもらってください。",
+    "error_expired": "この連携リンクは無効か期限切れです（有効期間は 15 分）。ボットに新しいリンクを送ってもらってください。",
+    "error_already_bound": "この Lark アカウントはすでに別の Multica ユーザーに連携されています。アカウントを移すには、まず明示的に連携を解除する必要があります。",
+    "error_not_member": "現在ログイン中の Multica アカウントは、このワークスペースのメンバーではありません。",
+    "error_unknown": "問題が発生しました。もう一度試し、それでも解決しない場合はワークスペース管理者にお問い合わせください。"
+  },
+  "slack_bind": {
+    "page_title": "Slack アカウントを連携",
+    "redeeming": "アカウントを連携しています…",
+    "needs_auth_description": "連携を完了するには Multica にサインインしてください。リンク内のトークンが、あなたの Slack アカウントをこの Multica ユーザーに紐付けるため、先にログインが必要です。",
+    "sign_in": "サインイン",
+    "done_title": "連携が完了しました。",
+    "done_description": "次に Slack でボットへ送るメッセージは、そのままエージェントに届きます。このタブは閉じて構いません。",
+    "error_title": "連携を完了できませんでした",
+    "error_admin_hint": "繰り返し発生する場合は、Slack でボットにもう一度メッセージを送って新しいリンクを取得してください。",
+    "error_missing_token": "リンクにトークンがありません。Slack でボットにもう一度メッセージを送って新しいリンクを取得してください。",
+    "error_expired": "このリンクは無効か期限切れです（有効期限は 15 分）。ボットにもう一度メッセージを送って新しいリンクを取得してください。",
+    "error_already_bound": "この Slack アカウントは別の Multica ユーザーに連携済みです。移行するにはまず明示的に解除する必要があります。",
+    "error_not_member": "サインインしている Multica アカウントはこのワークスペースのメンバーではありません。",
+    "error_unknown": "問題が発生しました。もう一度試し、それでも解決しない場合はワークスペース管理者にお問い合わせください。"
+  },
+  "dingtalk_bind": {
+    "page_title": "DingTalk アカウントを連携",
+    "redeeming": "アカウントを連携しています…",
+    "needs_auth_description": "連携を完了するには Multica にサインインしてください。リンク内のトークンが、あなたの DingTalk アカウントをこの Multica ユーザーに紐付けるため、先にログインが必要です。",
+    "sign_in": "サインイン",
+    "done_title": "連携が完了しました。",
+    "done_description": "次に DingTalk でボットへ送るメッセージは、そのままエージェントに届きます。このタブは閉じて構いません。",
+    "error_title": "連携を完了できませんでした",
+    "error_admin_hint": "繰り返し発生する場合は、DingTalk でボットにもう一度メッセージを送って新しいリンクを取得してください。",
+    "error_missing_token": "リンクにトークンがありません。DingTalk でボットにもう一度メッセージを送って新しいリンクを取得してください。",
+    "error_expired": "このリンクは無効か期限切れです（有効期限は 15 分）。ボットにもう一度メッセージを送って新しいリンクを取得してください。",
+    "error_already_bound": "この DingTalk アカウントは別の Multica ユーザーに連携済みです。移行するにはまず明示的に解除する必要があります。",
+    "error_not_member": "サインインしている Multica アカウントはこのワークスペースのメンバーではありません。",
+    "error_unknown": "問題が発生しました。もう一度試し、それでも解決しない場合はワークスペース管理者にお問い合わせください。"
+  },
+  "telegram_bind": {
+    "page_title": "Telegram アカウントをリンク",
+    "redeeming": "アカウントをリンクしています…",
+    "needs_auth_description": "リンクを完了するには Multica にサインインしてください。リンク内のトークンはあなたの Telegram アカウントをこの Multica ユーザーに紐付けるため、先にログインが必要です。",
+    "sign_in": "サインイン",
+    "done_title": "リンクが完了しました。",
+    "done_description": "Telegram でボットに送る次のメッセージは、そのままエージェントに届きます。このタブは閉じて構いません。",
+    "error_title": "リンクを完了できませんでした",
+    "error_admin_hint": "問題が続く場合は、Telegram でボットに再度メッセージを送り、新しいリンクを取得してください。",
+    "error_missing_token": "リンクにトークンがありません。Telegram でボットに再度メッセージを送り、新しいリンクを取得してください。",
+    "error_expired": "このリンクは無効か期限切れです（有効期間は 15 分）。ボットに再度メッセージを送って新しいリンクを取得してください。",
+    "error_already_bound": "この Telegram アカウントは別の Multica ユーザーにリンク済みです。アカウントの移行には先に明示的なリンク解除が必要です。",
+    "error_not_member": "サインイン中の Multica アカウントはこのワークスペースのメンバーではありません。",
+    "error_unknown": "問題が発生しました。再試行しても解決しない場合は、ワークスペース管理者にお問い合わせください。"
+  },
+  "expandable_description": {
+    "expand": "詳細を表示",
+    "collapse": "折りたたむ"
+  },
+  "wecom_bind": {
+    "page_title": "Multica アカウントをリンク",
+    "redeeming": "アカウントをリンク中…",
+    "needs_auth_description": "リンクを完了するには Multica にサインインしてください。トークンは WeCom の ID を、サインイン中の Multica ユーザーに紐付けます。",
+    "sign_in": "サインイン",
+    "done_title": "リンクされました。",
+    "done_description": "次回 WeCom でスマートボットに送るメッセージはそのままエージェントに届きます。このタブは閉じて構いません。",
+    "error_title": "リンクを完了できませんでした",
+    "error_admin_hint": "繰り返し失敗する場合は、WeCom でボットに再度メッセージを送って新しいリンクを取得してください。",
+    "error_missing_token": "リンクにトークンがありません。WeCom でボットに再度メッセージを送って新しいリンクを取得してください。",
+    "error_expired": "リンクが無効または期限切れです（有効期限は 15 分）。ボットに再度メッセージを送って新しいリンクを取得してください。",
+    "error_already_bound": "この WeCom ID は別の Multica ユーザーにリンクされています。アカウントの移行には明示的な解除が必要です。",
+    "error_not_member": "サインインしている Multica アカウントはこのワークスペースのメンバーではありません。",
+    "error_unknown": "問題が発生しました。もう一度試し、それでも解決しない場合はワークスペース管理者にお問い合わせください。"
+  },
+  "navigation": {
+    "open_in_new_tab": "新しいタブで開く"
+  },
+  "saving": "保存中…",
+  "creating": "作成中…",
+  "create": "作成",
+  "attach": "追加",
+  "attaching": "追加中…",
+  "unknown_error": "不明なエラー",
+  "discard_dialog": {
+    "changes_title": "変更を破棄しますか？",
+    "keep_editing": "編集を続ける",
+    "discard": "破棄"
+  },
+  "field": {
+    "title": "タイトル",
+    "description": "説明"
+  },
+  "send": "送信",
+  "composer": {
+    "placeholder": "メッセージを入力…",
+    "replying_to": "{{name}} に返信",
+    "cancel_reply": "返信をキャンセル",
+    "mention_hint": "メンバーまたは課題をメンション",
+    "skill_hint": "スキルを選択",
+    "upload_image": "画像をアップロード",
+    "upload_file": "ファイルをアップロード",
+    "file_too_large_title": "ファイルサイズが大きすぎます",
+    "file_too_large_message": "ファイルは {{size}} MB 未満である必要があります。",
+    "upload_failed_title": "アップロードに失敗しました",
+    "quick_replies_title": "クイック返信",
+    "quick_reply_hint": "クイック返信を挿入",
+    "more_tooltip": "その他",
+    "camera_permission_title": "カメラの権限が必要です",
+    "camera_permission_message": "Multica が添付用の写真を撮影するにはカメラへのアクセスが必要です。システム設定で許可してください。",
+    "image_source_camera": "写真を撮る",
+    "image_source_library": "ライブラリから選択",
+    "cancel": "キャンセル"
+  },
+  "mobile": {
+    "share": {
+      "select_workspace": "ワークスペースを選択",
+      "select_destination": "送信先を選択",
+      "select_agent": "エージェントを選択",
+      "close": "閉じる",
+      "attached_count_other": "添付予定のファイルが {{count}} 件あります",
+      "dest_chat": "チャット",
+      "dest_chat_desc": "エージェントにファイルを送ります",
+      "no_agent": "このワークスペースには呼び出し可能なエージェントがありません。",
+      "dest_issue": "タスク",
+      "dest_issue_desc": "ファイルから新しいタスクを作成します",
+      "load_failed": "ワークスペースの読み込みに失敗しました：{{reason}}",
+      "retry": "再試行",
+      "no_workspaces": "まだワークスペースに参加していません。"
+    },
+    "actor": {
+      "system": "システム",
+      "unknown_member": "不明",
+      "unknown_agent": "不明なエージェント",
+      "unknown_squad": "スクワッド"
+    },
+    "common": {
+      "no_matches": "一致する項目がありません。",
+      "back": "戻る",
+      "retry": "再試行",
+      "unknown_error": "不明なエラー",
+      "search": "検索",
+      "close": "閉じる",
+      "request_timeout": "リクエストがタイムアウトしました（{{seconds}} 秒）",
+      "upload_timeout": "アップロードがタイムアウトしました（{{seconds}} 秒）"
+    },
+    "create_issue": {
+      "mode_smart": "スマート",
+      "mode_manual": "手動",
+      "smart_hint": "エージェントがタイトルと説明を作成します。完了すると受信箱に通知が届きます。"
+    }
+  },
+  "long_text_editor": {
+    "expand": "エディターを拡大",
+    "edit": "編集",
+    "preview": "プレビュー",
+    "done": "完了"
+  }
+}

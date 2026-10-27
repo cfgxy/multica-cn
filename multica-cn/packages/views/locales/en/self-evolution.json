@@ -1,0 +1,893 @@
+{
+  "title": "Self-Evolution",
+  "description": "How agent and squad prompts change over time, and what changed them.",
+  "overview": {
+    "loading": "Loading the overview",
+    "error": "Failed to load the overview",
+    "retry": "Retry",
+    "versions": {
+      "title": "Prompt version activity",
+      "empty": "No version history on any tier yet.",
+      "currentVersion": "Current v{{version}}",
+      "currentUnset": "{{count}} subjects advancing on their own",
+      "count": "{{count}} versions across {{subjects}} subjects",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "Quality readings (last {{days}} days)",
+      "empty": "No measured runs in this window.",
+      "runs": "{{count}} runs",
+      "subjects": "{{count}} agents with readings",
+      "excluded": "{{count}} runs excluded for environment or provider failures"
+    },
+    "quiz": {
+      "title": "Quiz conclusion",
+      "empty": "No recorded measurements yet.",
+      "versions": "Baseline v{{baseline}} → v{{current}}",
+      "singleVersion": "Current v{{current}} (first version, no baseline yet)",
+      "insufficientSample": "Insufficient sample (baseline needs {{baseline}}, current needs {{current}} usable readings)",
+      "lastMeasured": "Last measured {{date}}"
+    },
+    "proposals": {
+      "title": "Proposal pool",
+      "intro": "Proposals enter the pool automatically from the daily retrospective's analysis; drafting one by hand stays available.",
+      "counts": "{{total}} proposals · {{pending}} awaiting owner approval",
+      "lastAuto": "Latest automatic proposal (daily retrospective): {{date}}",
+      "noneAuto": "No automatic proposals yet.",
+      "empty": "The pool is empty. Once the daily retrospective is configured, proposals enter the pool automatically from each day's analysis."
+    },
+    "experiences": {
+      "title": "Task experience candidates",
+      "loading": "Loading task experiences",
+      "error": "Could not load task experiences",
+      "retry": "Retry",
+      "empty": "No repeated, verified adaptation pattern yet.",
+      "proposalsLink": "Review proposal governance",
+      "sourceCount": "Observed in {{count}} completed tasks",
+      "sourceTask": "Task {{task}} · {{policy}} · {{date}}",
+      "currentStrategy": "Current approach: {{strategy}}",
+      "scope": "Applicability {{scope}}",
+      "allowedActions": "Allowed actions: {{actions}}",
+      "limitation": "Evidence limit",
+      "repeatedLimit": "Repeated task-level evidence is not an approved workspace policy. A proposal remains a draft until governance, quiz, and enactment gates complete.",
+      "draftProposal": "Draft a proposal",
+      "creatingProposal": "Creating draft…",
+      "proposalCreated": "Draft created · Open proposal pool",
+      "createFailed": "Could not create a proposal draft. The candidate remains inactive.",
+      "proposalName": "Repeated adaptation candidate {{candidate}} ({{count}} tasks)",
+      "proposalBody": "Trigger: {{trigger}}\nApplicability: {{scope}}\nSuggested strategy: {{strategy}}\nAllowed actions: {{actions}}\nSource tasks: {{tasks}}\nLimit: {{limitation}} Effective policy remains unchanged until proposal governance approves and enacts the change."
+    },
+    "knowledge": {
+      "title": "Knowledge mirror",
+      "empty": "No registered directories yet.",
+      "dirs": "{{count}} directories",
+      "entries": "{{count}} entries",
+      "lastScan": "Last scan: {{result}} · {{date}}",
+      "neverScanned": "Never scanned"
+    },
+    "skills": {
+      "title": "Skill observations",
+      "empty": "No registered skills yet.",
+      "count": "{{count}} skills",
+      "invocations": "{{count}} explicit invocations in total"
+    },
+    "viewAll": "View"
+  },
+  "skills": {
+    "choose": "Skill",
+    "manage": "Manage skills",
+    "empty": "No skills yet.",
+    "history": "Version history",
+    "noVersions": "No version history for this skill.",
+    "usage": "Observed usage",
+    "allTime": "All time",
+    "last30": "Last 30 days",
+    "assigned": "Assigned agents",
+    "invocations_one": "{{count}} explicit invocation",
+    "invocations_other": "{{count}} explicit invocations",
+    "observedSince": "First observed invocation: {{date}}. Earlier use cannot be inferred.",
+    "noObserved": "No explicit invocations recorded. Earlier use is unknown.",
+    "versionCost": "Token cost by version",
+    "measuredRuns": "{{count}} runs, {{samples}} with token data",
+    "notCollected": "Run data not collected",
+    "noCostData": "No token data",
+    "insufficientCost": "Insufficient samples",
+    "medianTokens": "Median {{count}} tokens",
+    "versionComparison": "Version measurements",
+    "compareTo": "Compare with",
+    "noComparison": "A second version is needed for comparison.",
+    "metric": "Measurement",
+    "change": "Difference",
+    "tokenMetric": "Median run tokens",
+    "retryMetric": "Retried runs",
+    "noComparisonData": "No runs",
+    "comparisonCaveat": "Based on explicit invocations. Differences across versions are observational, not evidence that the skill caused a change; at least five measured runs on each side are required to show a difference.",
+    "useVsControl": "Use group vs control group",
+    "useGroup": "Use group",
+    "controlGroup": "Control group",
+    "perplexityMetric": "Prompt perplexity (D3)",
+    "perplexityNotScored": "Not scored",
+    "notComparable": "Same prompt both sides",
+    "perplexitySamePrompt": "Perplexity is scored per prompt version and both groups read the same prompt, so the difference is not comparable.",
+    "firstPassMetric": "First-pass review rate (D7)",
+    "noReviewData": "No review data",
+    "useControlCaveat": "The control group holds terminal runs by the same roles on the same project that never invoked the skill inside the instrumentation window. Deltas appear only when both sides have at least 5 samples.",
+    "versionEvents": "Version events",
+    "noVersionEvents": "No version events yet (the first version is not an event).",
+    "versionEventTitle": "v{{from}} → v{{version}}",
+    "eventBefore": "Before: {{count}} runs",
+    "eventAfter": "After: {{count}} runs",
+    "windowModeDays": "{{days}}-day window",
+    "windowModeUses": "{{uses}}-use window",
+    "windowModeNone": "No uses in window",
+    "recent": "Recent invocations",
+    "chatRun": "Chat run",
+    "observational": "Invocation counts are observed calls, not measured skill outcomes.",
+    "version": "Version v{{version}}",
+    "usedAt": "{{date}} · version {{version}}",
+    "diff": "Changes from previous version",
+    "restore": "Restore version",
+    "restoreConfirm": "Restore v{{version}} as v{{next}}? Assignments remain unchanged.",
+    "restoreError": "Could not restore this version.",
+    "ownerOnly": "Only the workspace owner can restore versions.",
+    "cancel": "Cancel",
+    "error": "Could not load skill history.",
+    "retry": "Retry",
+    "sources": {
+      "create": "Created",
+      "revision": "Revised",
+      "edit": "Edited",
+      "restore": "Restored"
+    },
+    "catalogSearchLabel": "Search",
+    "catalogSearchPlaceholder": "Search skills by name",
+    "catalogSourceFilter": "Source",
+    "catalogSourceAll": "All sources",
+    "catalogSourceWorkspace": "Workspace",
+    "catalogSourceRuntime": "Runtime",
+    "catalogSourcePlugin": "Plugin",
+    "catalogSelectableHint": "Selectable rows are skills already imported into this workspace. Runtime and plugin discoveries below are visible but not selectable until imported.",
+    "catalogNoMatch": "No discovered skills match the current search or source filter.",
+    "discoveriesTitle": "Discovered on runtimes",
+    "discoveryImport": "Import",
+    "discoveryImporting": "Importing…",
+    "discoveryExists": "Already a skill",
+    "discoveryLastSeen": "Last seen {{date}}",
+    "discoveryImportedToast": "Skill imported. It is now selectable with its own version history.",
+    "discoveryImportFailedToast": "Import failed. Check the runtime connection and try again."
+  },
+  "quality": {
+    "scopePicker": {
+      "label": "Prompt tier",
+      "agent": "Agent",
+      "squad": "Squad",
+      "project": "Project",
+      "workspace": "Workspace",
+      "subjectLabel": "Subject",
+      "subjectPlaceholder": "Pick an agent"
+    },
+    "range": {
+      "label": "Window",
+      "days": "Last {{count}} days"
+    },
+    "since": "Measured from {{date}}. Runs before that date carry no instrumentation and are not counted.",
+    "noSubject": {
+      "title": "Pick a subject",
+      "description": "The seven dimensions are read per prompt tier. Choose an agent to load its dashboard."
+    },
+    "loading": "Loading measurements",
+    "error": {
+      "title": "Could not load the dashboard",
+      "retry": "Retry"
+    },
+    "window": {
+      "title": "All versions in window",
+      "runs": "{{count}} runs",
+      "days": "{{count}} days"
+    },
+    "timeline": {
+      "title": "Versions",
+      "version": "v{{version}}",
+      "span": "{{first}} — {{last}}",
+      "compare": "Compare",
+      "compareHint": "Select two versions to compare",
+      "clear": "Clear selection",
+      "empty": "No version carries measured runs in this window."
+    },
+    "compare": {
+      "title": "Version comparison",
+      "description": "Seven dimensions, side by side. A dimension with no data on either side shows no delta.",
+      "dimension": "Dimension",
+      "delta": "Δ",
+      "noDelta": "—",
+      "close": "Close"
+    },
+    "dimensions": {
+      "injected_tokens": {
+        "label": "D1 Injected cost",
+        "hint": "Median tokens of assembled prompt injected per run."
+      },
+      "run_tokens_median": {
+        "label": "D1 Run cost",
+        "hint": "Median total tokens a run consumed."
+      },
+      "discipline": {
+        "label": "D2 Discipline",
+        "hint": "Median discipline score out of 100. A run starts at 100 and loses points for each mechanically checkable clause it broke."
+      },
+      "tool_failure_rate": {
+        "label": "D4 Turn failure rate",
+        "hint": "Share of tool results the agent received as errors."
+      },
+      "retry_rate": {
+        "label": "D5 Retries",
+        "hint": "Share of runs that needed more than one attempt."
+      },
+      "failure_attribution": {
+        "label": "D6 Prompt-attributed failures",
+        "hint": "How many failures had a cause pointing at the prompt. Environment and provider failures are not counted."
+      },
+      "first_pass_rate": {
+        "label": "D7 First-pass rate",
+        "hint": "Share of reviewed issues accepted without rework."
+      }
+    },
+    "measure": {
+      "ofRuns": "over {{count}} runs",
+      "ratio": "{{numerator}} / {{denominator}}",
+      "excluded": "{{count}} excluded as environment or provider failures",
+      "noData": "No data",
+      "insufficient": "Sample too small",
+      "insufficientDetail": "{{sample}} of {{threshold}} needed",
+      "reason": {
+        "no_finished_runs": "No run finished in this window.",
+        "not_instrumented": "Runs in this window predate the instrumentation.",
+        "no_covered_runs": "No run in this window carried this measurement.",
+        "no_version_content": "This version has no recorded prompt body.",
+        "no_reviewed_issues": "No issue reached review in this window.",
+        "below_sample_floor": "Fewer runs than the declared floor.",
+        "unknown": "The server did not say why."
+      },
+      "coverage": "covered {{covered}} of {{total}} runs",
+      "deductions": "Deduction detail ({{count}})"
+    },
+    "perplexity": {
+      "title": "D3 Rule perplexity",
+      "description": "An ambiguity score for the assembled prompt, judged per runtime profile.",
+      "open": "View evidence",
+      "profile": {
+        "label": "Runtime profile",
+        "member": "Member run",
+        "leader_task": "Leader task run",
+        "unknown": "{{key}}"
+      },
+      "profileNote": "Profiles are scored against different assembled documents and are never merged or averaged.",
+      "band": {
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "unknown": "Unrated"
+      },
+      "range": "{{low}}% — {{high}}%",
+      "scoredAt": "Scored {{date}} by {{model}}",
+      "reproducibility": "Re-scoring the same version keeps the band stable; the interval endpoints were measured to move by no more than 10 percentage points (gpt-6-luna, temperature 0.2, 5 runs per runtime profile).",
+      "empty": {
+        "title": "Not scored",
+        "description": "No version of this prompt has been scored yet. A missing score is not a neutral score."
+      },
+      "sheet": {
+        "title": "D3 evidence",
+        "description": "Seven sub-dimensions, each with its own weight and the locations it cites.",
+        "score": "Score",
+        "weight": "Weight {{percent}}%",
+        "evidence": "Evidence",
+        "evidenceCount": "{{count}} entries",
+        "conflictsWith": "conflicts with {{target}}",
+        "noEvidence": "No session-log evidence for this entry (runtime offline).",
+        "subDimensions": {
+          "tier_placement": "Tier placement",
+          "cross_tier_conflict": "Cross-tier conflict",
+          "literal_actionability": "Literal actionability",
+          "internal_consistency": "Internal consistency",
+          "precedence_clarity": "Precedence clarity",
+          "scope_boundary": "Scope boundary",
+          "role_rule_completeness": "Role rule completeness",
+          "unknown": "{{key}}"
+        }
+      }
+    },
+    "reasons": {
+      "title": "D6 Failure reasons",
+      "excluded": "{{count}} environment or provider failures excluded",
+      "empty": "No failed run in this window."
+    },
+    "sources": {
+      "langfuse": "Langfuse export is off",
+      "scoring_model": "Scoring model is unavailable",
+      "unknown": "{{kind}} is unavailable",
+      "note": "Dashboard data is unaffected."
+    }
+  },
+  "quiz": {
+    "noSubject": "The reading is per prompt tier. Choose an agent to load its quiz history.",
+    "reading": {
+      "title": "Regression reading",
+      "description": "One fixed question bank replayed against every prompt version. The reading is a distribution, not a single score.",
+      "error": "Could not load the reading",
+      "noVersion": "This prompt has no recorded version, so nothing has been measured.",
+      "accumulating": "v{{version}} has {{have}} of {{need}} usable readings. No comparison until the group is complete.",
+      "noBaseline": "v{{version}} is measured over {{count}} runs (median {{median}}, IQR {{iqr}}), and is the first version of this prompt — there is no earlier version to compare against. It becomes the baseline for the next one.",
+      "versions": "v{{baseline}} as baseline, v{{current}} as the version under reading.",
+      "outcomes": "{{answered}} runs produced an answer, {{errored}} errored. Neither count is a score: nothing grades what an answer said.",
+      "incomparable": "{{count}} readings are excluded from this group: they were taken at another question wording, or on another runtime or model.",
+      "baselineIncomparable": "{{count}} readings are excluded from the baseline group for the same reason.",
+      "notAGate": "A quiz never blocks a prompt version from being published. It records how the quality changed.",
+      "verdict": {
+        "insufficient": "No reading",
+        "steady": "Steady",
+        "improved": "Improved",
+        "regressed": "Regressed"
+      },
+      "stats": {
+        "baseline": "Baseline",
+        "current": "Current",
+        "statistic": "Mann-Whitney z",
+        "threshold": "Noise line",
+        "group": "median {{median}}, IQR {{iqr}}, n={{n}}"
+      }
+    },
+    "bank": {
+      "title": "Question bank",
+      "description": "The same questions for every version. Editing a body starts a new revision.",
+      "add": "Add question",
+      "revision": "rev {{revision}}",
+      "active": "Active",
+      "retired": "Retired",
+      "discrimination": {
+        "pending": "Not judged",
+        "no_signal": "No readings",
+        "flat": "No discrimination",
+        "ok": "Discriminating"
+      },
+      "edit": "Edit",
+      "delete": "Delete",
+      "error": {
+        "title": "Could not load the bank",
+        "write": "The bank was not changed."
+      },
+      "empty": {
+        "title": "No questions yet",
+        "description": "Without questions no version can be measured. Add one to start the first reading."
+      },
+      "dialog": {
+        "addTitle": "Add question",
+        "editTitle": "Edit question",
+        "description": "A question must not name any production entity — no issue key, no id, no link. The server refuses a body that does and says which reference to remove.",
+        "slug": "Slug",
+        "questionTitle": "Title",
+        "body": "Question",
+        "bodyHint": "Up to 4000 characters. Keep it self-contained: a quiz run has no issue behind it.",
+        "rubric": "Answer key and grading points",
+        "rubricHint": "Owner-only, and never sent to the run being measured. Saving replaces the stored answer key with whatever this field holds.",
+        "cancel": "Cancel",
+        "save": "Save"
+      },
+      "difficulty": {
+        "easy": "Easy",
+        "medium": "Medium",
+        "hard": "Hard"
+      },
+      "import": "Import benchmark bank",
+      "importDone": "Imported {{imported}} items",
+      "importError": "The benchmark bank was not imported."
+    },
+    "graded": {
+      "title": "Grading",
+      "description": "Checks each collected run's answer against the item's answer key, assertion by assertion, with per-check evidence.",
+      "summary": "{{graded}} graded · mean {{mean}}",
+      "ungraded": "Not graded yet",
+      "run": "Run one grading batch",
+      "ordered": "Ordered {{ordered}} quiz runs",
+      "refused": "{{count}} agent(s) were refused; the rest were ordered",
+      "runError": "No grading batch was ordered.",
+      "batchLines": "This batch: {{answered}} answered · {{errored}} errored · {{graded}} graded",
+      "samplesTitle": "Recent graded samples",
+      "samplesEmpty": "No graded samples yet. Run one grading batch; per-check evidence appears here once the runs finish.",
+      "taskId": "task_id",
+      "measuredAt": "Measured",
+      "gradedAt": "Graded",
+      "version": "v{{version}}",
+      "answered": "answered",
+      "errored": "errored",
+      "checkPassed": "{{id}} ({{kind}}) passed: {{evidence}}",
+      "checkFailed": "{{id}} ({{kind}}) failed: {{evidence}}",
+      "notAGate": "Grading is a reading, not a gate: no publish path reads it."
+    }
+  },
+  "legislation": {
+    "title": "Prompt legislation proposals",
+    "description": "Proposals enter the pool automatically from the daily retrospective's analysis, and drafting one by hand stays available. Each is a clause-level draft for one of the four prompt carriers: submitting sends it to the workspace owner, approval runs the legislation gate on a sandbox synthesis, and only a clean pass enacts.",
+    "filterAll": "All",
+    "sourceFilterLabel": "Filter by source",
+    "sourceFilterAll": "All sources",
+    "runFilterLabel": "Run",
+    "runFilterAll": "All runs",
+    "status": {
+      "draft": "Draft",
+      "pending_owner": "Pending owner",
+      "approved": "Approved",
+      "enacted": "Enacted",
+      "gate_failed": "Gate failed",
+      "rejected": "Rejected"
+    },
+    "changeKind": {
+      "add_clause": "Add clause",
+      "revise_clause": "Revise clause",
+      "remove_clause": "Remove clause",
+      "move_clause": "Move clause",
+      "migrate_clause": "Migrate clause"
+    },
+    "enactmentTargetLabel": "Where the clause lands",
+    "enactmentTargetOptions": {
+      "clause_library": "Into the clause library",
+      "static_prompt": "Rewrite static prompt text"
+    },
+    "carrierScope": {
+      "workspace": "Workspace",
+      "project": "Project",
+      "squad": "Squad",
+      "agent": "Agent"
+    },
+    "source": {
+      "manual": "Manual",
+      "retrospective": "Daily retrospective",
+      "merged": "Merged"
+    },
+    "create": "New proposal",
+    "createTitle": "New prompt legislation proposal",
+    "createDescription": "A draft needs the content-gate five answers before it can be submitted — keep each answer concrete.",
+    "carrierLabel": "Carrier",
+    "sectionLabel": "Target section",
+    "changeKindLabel": "Change kind",
+    "clauseNameLabel": "Clause name",
+    "clauseTextLabel": "Final clause text",
+    "clauseTextPlaceholder": "The exact clause text to enact; empty for a removal.",
+    "gateAnswersTitle": "Content gate — five answers",
+    "gateLayer": "Layer",
+    "gateLayerPlaceholder": "Which instruction tier this clause belongs to.",
+    "gateRetention": "Retention",
+    "gateRetentionPlaceholder": "Why this clause must exist.",
+    "gateCost": "Cost",
+    "gateCostPlaceholder": "What every run carrying it pays.",
+    "gateConflict": "Conflict",
+    "gateConflictPlaceholder": "Which existing clause it touches or replaces.",
+    "gateDedup": "Dedup",
+    "gateDedupPlaceholder": "Why it is not a duplicate of an existing clause.",
+    "evidenceLabel": "Evidence anchors",
+    "evidenceAdd": "Add evidence anchor",
+    "evidenceIssue": "Issue id",
+    "evidenceQuote": "Quote",
+    "sourceIssuesLabel": "Source issues",
+    "problemLabel": "Problem",
+    "expectedEffectLabel": "Expected effect",
+    "expectedGainLabel": "Expected gain",
+    "valueScoreLabel": "Value score",
+    "cancel": "Cancel",
+    "saveDraft": "Save draft",
+    "submit": "Submit for approval",
+    "edit": "Edit draft",
+    "list": "Proposals",
+    "detailTitle": "Proposal detail",
+    "createdAt": "Created",
+    "enactedVersion": "Enacted version",
+    "mergedFrom": "Merged drafts",
+    "gateErrors": "Gate errors",
+    "gateWarnings": "Gate warnings",
+    "rejectReason": "Rejection reason",
+    "baselineUsed": "Sandbox baseline",
+    "preview": "Preview diff",
+    "previewTitle": "Full-text diff review",
+    "previewDescription": "Approving synthesizes the whole carrier in a sandbox and runs the legislation gate. Review the diff below — approval is refused without the explicit confirmation.",
+    "diffEmpty": "No textual change after synthesis.",
+    "diffLoadError": "Failed to load the preview.",
+    "confirmPreviewed": "I have reviewed the full-text diff",
+    "approve": "Approve",
+    "approveBatch": "Approve selected",
+    "batchPreviewTitle": "Batch approval — full-text diffs",
+    "batchLoading": "Loading diffs…",
+    "selectHint": "Select pending proposals to approve in one pass (max 20).",
+    "batchResult": "Batch result",
+    "reject": "Reject",
+    "restore": "Restore to draft",
+    "rework": "Rework",
+    "enact": "Enact",
+    "enactHint": "Re-runs the gate; enacts only on a clean pass.",
+    "rejectDialogTitle": "Reject proposal",
+    "rejectPlaceholder": "Why this proposal is rejected — the reason stays on the record.",
+    "rejectConfirm": "Reject proposal",
+    "ownerOnly": "Owner only",
+    "empty": "No proposals here yet.",
+    "emptyHint": "Draft one from real execution evidence, or let the daily retrospective propose.",
+    "emptyConfig": "Configure the daily retrospective",
+    "error": "The write failed. Check your inputs and retry.",
+    "batchPartial": "Some proposals in the batch did not enact — check the per-item results.",
+    "jevAdvisoryLabel": "Local model advisory",
+    "jevStage": {
+      "submit": "submit precheck",
+      "gate": "gate advisory"
+    },
+    "jevThreshold": "threshold",
+    "jevWarnFlag": "warn",
+    "jevDisclaimer": "Low-cost advisory only — read it together with its probability basis; never a disposition basis on its own (warn-only sidecar, gate verdicts unaffected).",
+    "jevUnavailable": "unavailable, skipped (main flow unaffected)"
+  },
+  "retrospective": {
+    "title": "Daily retrospective",
+    "description": "Pick an execution agent: a scheduled run of that agent reads the real execution content of completed issues inside the lookback window and distills prompt-improvement drafts into the legislation pool. Runs never create issues or post issue comments.",
+    "enabled": "Scheduled run enabled",
+    "includeInReview": "Also scan in_review issues",
+    "windowDays": "Lookback window (days)",
+    "save": "Save config",
+    "runs": "Runs",
+    "runTitle": "Daily retrospective {{stamp}}",
+    "viewResults": "View results",
+    "trigger": "Run now",
+    "status": {
+      "succeeded": "Succeeded",
+      "failed": "Failed",
+      "running": "Running"
+    },
+    "window": "Window",
+    "scanned": "Scanned",
+    "analyzed": "Analyzed",
+    "created": "Created",
+    "merged": "Merged",
+    "duplicates": "Duplicates skipped",
+    "errorLabel": "Error",
+    "empty": "No runs yet.",
+    "saveOk": "Retrospective config saved.",
+    "triggerOk": "Retrospective run started.",
+    "rerun": "Run again",
+    "agentTitle": "Execution agent",
+    "agentDescription": "The daily retrospective runs as a single run of the selected agent: it reads completed issues inside the lookback window and distills improvement drafts — no issues created, no comments posted.",
+    "agentLabel": "Execution agent",
+    "agentPlaceholder": "Select an agent",
+    "agentArchivedSuffix": " (archived)",
+    "agentArchivedHint": "This agent is archived; pick another one or runs will fail.",
+    "agentTriggerBlocked": "No execution agent configured: select an agent in the configuration above, then run again.",
+    "emptyDescription": "Runs appear here after a scheduled or manual trigger.",
+    "viewDetail": "Details",
+    "detailTitle": "Run details",
+    "triggerLabel": "Trigger",
+    "triggerSource": {
+      "schedule": "Schedule",
+      "manual": "Manual"
+    },
+    "windowLabel": "Lookback window",
+    "startedAt": "Started",
+    "finishedAt": "Finished",
+    "duration": "Duration",
+    "durationRunning": "Running…",
+    "statsLabel": "Statistics",
+    "failureLabel": "Failure reason",
+    "scannedIssues": "Scanned issues",
+    "analyzedIssues": "Analyzed issues",
+    "noIssues": "None",
+    "viewLog": "View run log",
+    "run_errors": {
+      "agent_not_configured": "No execution agent is configured: select an agent in the configuration above, save, then run again.",
+      "agent_missing": "The configured execution agent no longer exists: pick another agent in the configuration above, then save.",
+      "agent_archived": "The configured execution agent is archived: pick another agent in the configuration above, then save.",
+      "agent_runtime_missing": "The configured execution agent has no runtime: assign a runtime to the agent in the agent settings, then run again.",
+      "window_scan_failed": "Scanning the lookback window failed; this run stopped. The next run will retry automatically.",
+      "watermark_check_failed": "Checking which issues were already analyzed failed; this run stopped. The next run will retry automatically.",
+      "scan_scope_record_failed": "Recording the scanned issue list failed; this run stopped. The next run will retry automatically.",
+      "task_enqueue_failed": "Queueing the agent run failed; this run stopped. The next run will retry automatically.",
+      "agent_report_invalid": "The agent's final message was not a valid retrospective report; this run's result was discarded. The next run will re-scan the same window.",
+      "agent_no_report": "The agent run finished without producing a retrospective report. The next run will re-scan the same window.",
+      "agent_run_failed": "The agent's run failed before it could report. The next run will re-scan the same window.",
+      "report_out_of_scope": "The agent analyzed Issue {{issue_id}}, which is outside this run's window; the whole report was rejected and nothing was recorded.",
+      "draft_out_of_scope": "The agent referenced Issue {{issue_id}}, which is outside this run's window, in a draft; the whole report was rejected and nothing was recorded.",
+      "task_not_completed": "The agent's platform run did not complete (failed, cancelled, or expired); this run was closed as failed. The next run will re-scan the same window.",
+      "task_never_enqueued": "The agent's run never reached the queue (the workspace or agent became unavailable); this round was closed. The next run will retry automatically."
+    },
+    "run_error_fallback": "This run failed. No detail is available; the next run will retry automatically."
+  },
+  "knowledge": {
+    "title": "Knowledge library",
+    "description": "bd memories directories are discovered automatically from connected projects or added manually below; entries mirror read-only, and adoption transfers them into the knowledge hub in the background.",
+    "register": "Register directory",
+    "registerTitle": "Register knowledge directory",
+    "registerDescription": "Registers the path as a manually added source; the first read-only scan runs in the background. The knowledge hub is designated separately and is not registered here.",
+    "kindLabel": "Directory kind",
+    "kind": {
+      "ultimate": "Knowledge hub",
+      "candidate_cli": "Manually added",
+      "candidate_auto": "Auto-discovered"
+    },
+    "pathLabel": "Directory path",
+    "labelLabel": "Display label",
+    "labelPlaceholder": "Optional",
+    "cancel": "Cancel",
+    "registerSubmit": "Register",
+    "dirsTitle": "Registered directories",
+    "entriesTitle": "Entry mirror",
+    "entryCount": "{{n}} entries",
+    "lastScan": "Last scan ({{result}}): +{{added}}, ~{{updated}}, -{{removed}}",
+    "neverScanned": "Never scanned",
+    "scanRequested": "Scan queued",
+    "health": {
+      "ok": "Healthy",
+      "unhealthy": "Unhealthy"
+    },
+    "scanResult": {
+      "noop": "no change",
+      "changed": "changed",
+      "failed": "failed"
+    },
+    "scan": "Scan now",
+    "unregister": "Unregister",
+    "advancedTitle": "Advanced: add an external source",
+    "advancedDescription": "Point at a bd memories directory on this machine. Label is optional.",
+    "allDirs": "All directories",
+    "searchPlaceholder": "Search key or content",
+    "mirrorState": {
+      "synced": "Synced",
+      "source_deleted": "Source deleted",
+      "source_removed": "Source removed"
+    },
+    "adoptionState": {
+      "pending": "Pending",
+      "transferring": "Transferring",
+      "adopted": "Adopted",
+      "failed": "Failed"
+    },
+    "adopt": "Adopt",
+    "adoptedFrom": "Adopted from {{key}}",
+    "emptyDirs": {
+      "title": "No registered directories",
+      "description": "Sources appear here automatically when a connected daemon discovers a project with bd memories; you can also add one manually under Advanced below."
+    },
+    "emptyEntries": "No entries under the current filter.",
+    "error": {
+      "read": "Failed to load knowledge",
+      "write": "The action did not complete.",
+      "retry": "Retry"
+    },
+    "ownerOnly": "Registering, scanning, unregistering and adopting are workspace-owner only."
+  },
+  "versions": {
+    "title": "Version history",
+    "manage": "Manage versions",
+    "description": "Every effective change appends a version; history is never rewritten.",
+    "bindingNote": "Quality evaluation binds each run to the version it claimed. The badge shows how many runs each version served.",
+    "subjectTypeLabel": "Carrier type",
+    "subjectEntityLabel": "Carrier",
+    "subjectEntityPlaceholder": "Pick a carrier",
+    "workspaceEntity": "This workspace",
+    "typeWorkspace": "Workspace",
+    "typeProject": "Project",
+    "typeSquad": "Squad",
+    "typeAgent": "Agent",
+    "typeAutopilot": "Autopilot",
+    "typeSkill": "Skill",
+    "snapshot": "Snapshot",
+    "snapshotTitle": "Snapshot the current effective content?",
+    "snapshotBody": "A snapshot records the carrier's currently effective configuration as a new version. The carrier's own content is not changed.",
+    "snapshotConfirm": "Take snapshot",
+    "snapshotFailed": "Snapshot failed",
+    "clearSelection": "Clear selection",
+    "emptyTitle": "No versions yet",
+    "emptyDescription": "Snapshot the first version from this carrier's currently effective content.",
+    "error": "Failed to load versions",
+    "retry": "Retry",
+    "sourceImport": "Baseline",
+    "sourceEdit": "Edit",
+    "sourceRevert": "Rollback",
+    "sourceAuto": "Auto snapshot",
+    "sourceSnapshot": "Snapshot",
+    "fromVersion": "from v{{version}}",
+    "latest": "Latest",
+    "runs": "{{n}} runs",
+    "noRuns": "No quality data",
+    "activate": "Activate",
+    "activateTitle": "Activate v{{version}}?",
+    "activateBody": "Activating appends a new version with this content and makes it effective. History is never rewritten.",
+    "cancel": "Cancel",
+    "confirmActivate": "Confirm",
+    "compareTitle": "Compare v{{from}} → v{{to}}",
+    "secretBlocked": "Not saved: the prompt appears to contain credentials.",
+    "findingLine": "line {{line}}"
+  },
+  "clauseGovernance": {
+    "title": "Clause governance", "description": "Clause assets from legislation through injection", "window": "Stats window", "d7": "Last 7 days", "d30": "Last 30 days", "d90": "Last 90 days", "d365": "Last 365 days", "refresh": "Refresh",
+    "banner": { "dynamicOffTitle": "Global degradation switch is on", "dynamicOffBody": "All runs use snapshot injection (static-equivalent mode)", "healthyTitle": "Dynamic injection is healthy", "healthyBody": "{{degraded}} of {{total}} injections used the degraded path", "findingsTitle": "{{count}} reconciliation or drift findings", "findingsBody": "See the reconciliation and drift section below" },
+    "metrics": { "injections": "Injections", "runs": "Runs covered", "runsUnit": "{{count}} runs", "clauseTokens": "Clause tokens", "clauseTokensNote": "Estimated from injected clause renders", "degraded": "Degraded injections", "migration": "Migration coverage" },
+    "scope": { "workspace": "Workspace", "project": "Project", "squad": "Squad", "agent": "Agent" },
+    "recon": { "title": "Reconciliation & drift", "healthy": "All checks pass", "findings": "{{count}} findings", "scanned": "{{count}} carriers scanned", "violationsTitle": "Layer-set violations", "violationsEmpty": "No layer-set violations in this window", "colTime": "Time", "colTask": "Task", "colClause": "Clause", "colVersion": "Version", "colScope": "Scope", "colInjection": "Injection path", "truncated": "Showing first 100 only", "degradedFlag": "Degraded snapshot", "driftTitle": "Carrier drift", "driftEmpty": "Carrier markers match the asset library ({{count}} carriers scanned)", "unnamedCarrier": "Unnamed carrier" },
+    "driftKind": { "stale_rev": "Stale revision", "orphan_marker": "Orphan marker", "missing_segment": "Missing rendered segment" },
+    "driftDesc": { "staleRev": "Snapshot rev {{marker}} → asset rev {{expected}}", "orphanMarker": "Marker present but no live bound clause", "missingSegment": "Snapshot-mode clause has no rendered segment (expected rev {{expected}})" },
+    "rollback": { "title": "Rollback suggestions", "empty": "No pending rollback suggestions", "rollbackTo": "Roll back to v{{version}}", "viewProposal": "View proposal" },
+    "list": { "title": "Clause list", "filter_all": "All", "filter_active": "Active", "filter_deprecated": "Deprecated", "filter_revoked": "Revoked", "colStatus": "Status", "colClause": "Clause", "colVersion": "Current version", "colScope": "Bound scope", "colInjections": "Injections", "colRuns": "Runs", "colTokens": "Tokens", "colAction": "Action", "unbound": "Unbound", "tokensPending": "Pending", "tokensPendingHint": "No measurement data for this clause in the selected window", "emptyTitle": "No clause assets yet", "emptyBody": "Create the first clauses through a legislation proposal", "emptyCta": "Go to proposals", "openDetail": "View detail", "noFilterResults": "No clauses match this filter" },
+    "detail": { "back": "Back to clause governance", "versions": "Versions", "bindings": "Bindings", "proposals": "Proposal lineage", "quality": "Quality & injection", "latest": "Latest", "notFound": "Clause not found or removed" },
+    "manage": { "title": "Manage clause", "edit": "Edit content", "content": "Clause content", "save": "Save new version", "cancel": "Cancel", "deactivate": "Deactivate", "deactivateConfirm": "This withdraws the active binding and removes the clause from its carrier. The clause remains available for later management.", "delete": "Delete clause", "deleteConfirm": "This permanently deletes the clause, versions, bindings, and clause metrics, and removes it from the carrier. This cannot be undone.", "failure": "The operation failed. Check your permissions and try again." },
+    "version": { "sha": "Content fingerprint", "showContent": "Expand content", "hideContent": "Collapse content", "compare": "Compare versions" },
+    "compare": { "title": "Compare v{{a}} ↔ v{{b}}", "sampleInsufficient": "Insufficient sample — no percentage conclusions", "attributableRuns": "Attributable runs", "windowRuns": "{{count}} attributable runs in window" },
+    "binding": { "scope": "Scope", "status": "Status", "conditions": "Conditions", "conditionsAll": "All task kinds", "sinceVersion": "Since v{{version}}", "createdAt": "Effective at", "empty": "No binding history" },
+    "bindingStatus": { "active": "Active", "superseded": "Superseded", "withdrawn": "Withdrawn" },
+    "proposals": { "empty": "No linked proposals", "gates": { "layer": "Layer", "retention": "Retention", "cost": "Cost", "conflict": "Conflict", "dedup": "Deduplication" } },
+    "quality": { "chartTitle": "Injection & quality trend", "chartAria": "Finished runs and attributable failures over the last {{days}} days; the table below contains the full data", "colDay": "Day", "colVersion": "Version", "colFinishedRuns": "Finished runs", "colFailed": "Attributable failures", "colExcluded": "Excluded failures", "colTokens": "Injected tokens", "colMedianRun": "Median run tokens", "unmeasured": "Unmeasured", "emptyWindow": "No injection data in this window" },
+    "status": { "active": "Active", "deprecated": "Deprecated", "revoked": "Revoked" },
+    "error": { "title": "Failed to load", "retry": "Retry" }
+  },
+  "nav": {
+    "label": "Self-evolution sections",
+    "overview": "Overview",
+    "groupKnowledgeAssets": "Knowledge assets",
+    "groupMeasures": "Measures",
+    "groupLoop": "Evolution loop",
+    "groupConfig": "Configuration",
+    "knowledge": "Knowledge",
+    "skills": "Skill evolution",
+    "quality": "Quality",
+    "clauseGovernance": "Clause governance",
+    "quiz": "Quiz",
+    "proposals": "Proposals",
+    "versions": "Versions",
+    "retrospective": "Daily retrospective",
+    "config": "Module config"
+  },
+  "configSource": {
+    "prefix": "Source: ",
+    "module": "Module config",
+    "deploy": "Deploy default",
+    "system": "System-level"
+  },
+  "sources": {
+    "states": {
+      "ok": "Available",
+      "unconfigured": "Unconfigured",
+      "error": "Config error",
+      "disabled": "Switched off"
+    },
+    "reason": "Why:",
+    "impact": "Impact:"
+  },
+  "secretField": {
+    "placeholder": "Enter a new value",
+    "keepExisting": "Leave empty to keep the existing value"
+  },
+  "segToolbar": {
+    "filters": "Filters"
+  },
+  "attention": {
+    "title": "Needs attention",
+    "hint": "Handled items disappear from this list",
+    "modelUnconfigured": {
+      "title": "Model service is not configured",
+      "description": "Quality scoring has no LLM to run on",
+      "action": "Configure"
+    },
+    "modelError": {
+      "title": "Model service validation failed",
+      "action": "Review config"
+    },
+    "retrospectiveOff": {
+      "title": "The daily retrospective is not enabled",
+      "description": "The proposal loop does not run on its own; the pool only grows by manual drafts",
+      "action": "Configure"
+    },
+    "retrospectiveNoAgent": {
+      "title": "The daily retrospective has no executor agent",
+      "description": "Enabled, but with no agent to run it, no run can start",
+      "action": "Configure"
+    },
+    "discoveries": {
+      "title": "{{count}} skill discoveries awaiting import",
+      "action": "Review"
+    }
+  },
+  "knowledgeSeg": {
+    "entries": "Entries",
+    "dirs": "Directories",
+    "external": "External sources",
+    "addSource": "Add external source",
+    "entryDrawerSubtitle": "Mirror of {{dir}}",
+    "attrDir": "Directory",
+    "attrMirror": "Mirror",
+    "attrAdoption": "Adoption",
+    "attrSource": "Source key",
+    "attrUpdated": "Last confirmed",
+    "attrKind": "Kind",
+    "attrEntries": "Entries",
+    "attrCreated": "Registered",
+    "scanHistory": "Scan history",
+    "viewEntries": "View entries",
+    "unregisterConfirm": "Unregister \"{{label}}\"? Its mirrored entries are kept but stop updating.",
+    "emptyExternal": "No external sources registered yet.",
+    "jumpToDirs": "Go to Directories",
+    "colKey": "Key",
+    "colActions": "Actions",
+    "colSource": "Source",
+    "colPath": "Path",
+    "colHealth": "Health",
+    "colLastScan": "Last scan"
+  },
+  "skillsSeg": {
+    "managed": "Managed skills",
+    "discoveries": "Discoveries",
+    "colSkill": "Skill",
+    "colSource": "Source",
+    "colLatestVersion": "Latest version",
+    "colInvocations30d": "Last 30 days",
+    "invocationsValue": "{{count}} invocations",
+    "emptyDiscoveries": "No runtime discoveries yet — skills observed in runtimes show up here for import."
+  },
+  "qualityCards": {
+    "title": "Data sources",
+    "scoringModel": "Scoring model",
+    "langfuse": "Langfuse",
+    "banner": "Some data sources are degraded — recent numbers may be incomplete.",
+    "viewSources": "View data sources",
+    "reasons": {
+      "okValidated": "Connectivity check passed at {{date}}.",
+      "okModule": "Module config saved (not yet revalidated).",
+      "okDeploy": "A deployment-injected default is in effect (not proactively validated).",
+      "error": "The connectivity check failed.",
+      "errorDetail": "The connectivity check failed: {{error}}",
+      "disabled": "The source is healthy but the workspace switch is off.",
+      "unconfigured": "No configuration found for this source.",
+      "langfuseOk": "Deployment-injected export credentials detected (system-level).",
+      "langfuseMissing": "No Langfuse export credentials in this deployment."
+    },
+    "impacts": {
+      "ok": "All dimensions collect normally.",
+      "error": "The last successful data is kept and marked with its time; new collection is failing.",
+      "disabled": "No new data is collected; history stays queryable.",
+      "unconfigured": "Affected dimensions have no data and show a guidance state.",
+      "langfuseOk": "Conversation export can run.",
+      "langfuseMissing": "No conversation export."
+    },
+    "actions": {
+      "configure": "Configure",
+      "viewConfig": "View config",
+      "viewError": "View error",
+      "enable": "Enable",
+      "deployNotes": "Deployment config only"
+    }
+  },
+  "modelConfig": {
+    "title": "Model service",
+    "description": "One LLM endpoint dedicated to this workspace's quality scoring. The key is encrypted at rest and never shown again.",
+    "baseUrl": "Base URL",
+    "apiKey": "API key",
+    "model": "Model",
+    "consumersTitle": "Consumers of this endpoint",
+    "scoringConsumer": "Quality scoring",
+    "saveAndValidate": "Validate and save",
+    "busy": "Working…",
+    "revalidate": "Re-check",
+    "lastValidated": "Last validated {{date}}",
+    "neverValidated": "Never validated",
+    "validationOk": "Connectivity check passed.",
+    "validationFailed": "Validation failed — nothing was saved",
+    "saveOk": "Model service saved.",
+    "restoreDefault": "Restore deploy default",
+    "restoreConfirm": "This removes this workspace's override; the deployment default applies again. Continue?",
+    "restoreOk": "Restored the deployment default.",
+    "encryptionNotReady": "This deployment has no per-workspace encryption key, so saving is unavailable — the deploy default applies.",
+    "errorKind": {
+      "credentials": "invalid or expired credentials",
+      "model": "model unavailable or refused",
+      "connection": "connection failed or timed out",
+      "notConfigured": "required fields missing",
+      "other": "other error"
+    }
+  },
+  "configPage": {
+    "title": "Module configuration",
+    "description": "The model service below backs quality scoring; Langfuse is instance-level and read-only here."
+  },
+  "mobile": { "title": "Self-Evolution", "overview": "Overview", "versions": "Versions", "proposals": "Proposals", "proposal_count_label": "proposals", "pending_owner": "Awaiting owner", "skills": "Skills", "review_diff": "Review proposal diff", "empty_diff": "No diff lines", "cancel": "Cancel", "approve": "Approve", "approving": "Approving…", "reject": "Reject", "rejecting": "Rejecting…", "action_failed": "Action failed. Your changes were not saved. Review and try again.", "reject_reason": "Reason for rejection", "reject_unavailable": "Rejection reason entry is not available on this device.", "error": "Could not load proposal preview", "load_error": "Some data could not be loaded. Tap to retry.", "review_approve": "Review and approve", "no_proposals": "No proposals", "clauses": "Clause governance", "injections": "uses", "no_clauses": "No governed clauses", "retrospective": "Retrospective runs", "issues_analyzed": "tasks analyzed", "no_retrospectives": "No retrospective runs" }
+}

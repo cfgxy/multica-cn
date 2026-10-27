@@ -1,0 +1,86 @@
+name: Mobile Verify
+
+# Runs lint + typecheck for apps/mobile only, parallel to the main CI
+# workflow. Path-filtered so PRs that don't touch mobile (or anything
+# mobile transitively depends on) pay zero cost.
+#
+# Path scope rationale — mobile transitively depends on:
+# - apps/mobile/**                — the app itself
+# - packages/core/**              — mobile imports types AND pure functions
+#                                   (agents, markdown, permissions, api/schemas, …),
+#                                   not only @multica/core/types
+# - package.json / pnpm-lock.yaml — install graph
+# - pnpm-workspace.yaml           — catalog versions
+# - turbo.json                    — turbo task pipeline
+#
+# Mobile's Vitest suite stays narrow (Node env, pure-function tests under
+# apps/mobile/lib/*.test.ts — see apps/mobile/vitest.config.ts). The package
+# test script additionally runs the isolated jest-expo/RNTL component suite.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/mobile/**"
+      - "packages/core/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/mobile-verify.yml"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR number
+        required: true
+        type: string
+      expected_sha:
+        description: Exact 40-character PR head SHA to validate
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mobile:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify manual PR head
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '[(.state), (.base.ref), (.head.sha), (.head.ref), (.head.repo.full_name)] | join("|")')"
+          expected="open|main|$EXPECTED_SHA|$GITHUB_REF_NAME|$GITHUB_REPOSITORY"
+          test "$pr" = "$expected" || {
+            echo "::error::PR is not open on main at the selected branch and expected SHA"
+            exit 1
+          }
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Type check, lint, and test
+        run: pnpm exec turbo typecheck lint test --filter=@multica/mobile

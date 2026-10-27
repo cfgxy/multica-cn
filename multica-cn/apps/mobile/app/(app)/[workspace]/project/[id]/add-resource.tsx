@@ -1,0 +1,114 @@
+/**
+ * Add-resource (GitHub repo) sheet for a project — presented as a formSheet
+ * by the parent Stack. Self-contained: takes the URL + optional label,
+ * fires useCreateProjectResource, surfaces errors with Alert.
+ *
+ * v1 only supports `github_repo` resource type. Loose client-side
+ * validation: URL must look like `https://github.com/owner/repo`. Server
+ * is the canonical validator (validateAndNormalizeResourceRef in Go).
+ */
+import { SheetHeader } from "@/components/ui/sheet-header";
+import { useCallback, useState } from "react";
+import { Alert, Pressable, View } from "react-native";
+// RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
+// keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
+import { useLocalSearchParams, router } from "expo-router";
+import { Text } from "@/components/ui/text";
+import { TextField } from "@/components/ui/text-field";
+import { useCreateProjectResource } from "@/data/mutations/projects";
+import { useT } from "@/lib/use-t";
+
+const GITHUB_PATTERN = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(\/|$)/i;
+
+export default function AddResourceRoute() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const createResource = useCreateProjectResource(id);
+  const { t } = useT("common");
+  const { t: tProjects } = useT("projects");
+
+  const [url, setUrl] = useState("");
+  const [label, setLabel] = useState("");
+
+  const valid = GITHUB_PATTERN.test(url.trim());
+  const submitting = createResource.isPending;
+
+  const onSubmit = useCallback(() => {
+    if (!valid || submitting) return;
+    createResource.mutate(
+      {
+        resource_type: "github_repo",
+        resource_ref: { url: url.trim() },
+        label: label.trim() || undefined,
+      },
+      {
+        onSuccess: () => router.back(),
+        onError: (err) => {
+          Alert.alert(
+            tProjects(
+              "mobile.resource.attach_failed",
+              "Failed to attach resource",
+            ),
+            err instanceof Error
+              ? err.message
+              : t("unknown_error", "Unknown error"),
+          );
+        },
+      },
+    );
+  }, [valid, submitting, createResource, url, label, t, tProjects]);
+
+  return (
+    <KeyboardAvoidingView className="flex-1" behavior="padding">
+      <View className="flex-1">
+        {/* 状态栏避让仅最大档存在（RUYI-698，见 SheetHeader）。 */}
+        <SheetHeader className="flex-row items-center justify-between px-4 pb-2" gap={16}>
+          <Text className="text-base font-semibold text-foreground">
+            {tProjects("mobile.resource.attach_title", "Attach repository")}
+          </Text>
+          <Pressable
+            onPress={onSubmit}
+            disabled={!valid || submitting}
+            hitSlop={6}
+            className={`px-3 py-1.5 rounded-md ${
+              !valid || submitting ? "opacity-50" : "active:bg-secondary"
+            }`}
+          >
+            <Text className="text-sm font-semibold text-primary">
+              {submitting ? t("attaching", "Attaching…") : t("attach", "Attach")}
+            </Text>
+          </Pressable>
+        </SheetHeader>
+        <View className="px-4 pt-4 gap-4">
+          <View className="gap-1">
+            <Text className="text-xs text-muted-foreground">
+              {tProjects("mobile.resource.url_label", "Repository URL")}
+            </Text>
+            <TextField
+              value={url}
+              onChangeText={setUrl}
+              placeholder="https://github.com/owner/repo"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              autoFocus
+            />
+          </View>
+          <View className="gap-1">
+            <Text className="text-xs text-muted-foreground">
+              {tProjects("mobile.resource.label_optional", "Label (optional)")}
+            </Text>
+            <TextField
+              value={label}
+              onChangeText={setLabel}
+              placeholder={tProjects(
+                "mobile.resource.label_placeholder",
+                "e.g. Backend",
+              )}
+            />
+          </View>
+        </View>
+      </View>
+    </KeyboardAvoidingView>
+  );
+}

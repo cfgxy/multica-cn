@@ -1,0 +1,38 @@
+{
+  "name": "@multica/docs",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 4000",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "mdx": "fumadocs-mdx",
+    "postinstall": "fumadocs-mdx"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist-mono": "^5.3.0",
+    "@fontsource-variable/inter": "^5.2.5",
+    "@fontsource-variable/source-serif-4": "^5.2.9",
+    "@multica/ui": "workspace:*",
+    "fumadocs-core": "^15.5.2",
+    "fumadocs-mdx": "^12.0.3",
+    "fumadocs-ui": "^15.5.2",
+    "lucide-react": "catalog:",
+    "mermaid": "^11.14.0",
+    "next": "^15.5.16",
+    "next-themes": "^0.4.6",
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

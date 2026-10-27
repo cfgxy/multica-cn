@@ -1,0 +1,432 @@
+/**
+ * Issue detail screen.
+ *
+ * Read-mostly timeline with an inline comment composer pinned to the
+ * bottom (`<InlineCommentComposer>`). The composer is a single
+ * `<TextInput>` + mention suggestion bar — no modal route, no toolbar,
+ * no draft persistence. Sticks to the keyboard via `KeyboardStickyView`.
+ *
+ * Header note: the parent _layout.tsx already declares the `issue/[id]`
+ * Stack.Screen with title "Issue". We override that here once the data
+ * lands so the navigation bar shows `MUL-123` (Linear-style).
+ *
+ * Right-top "…" menu uses @rn-primitives DropdownMenu (pure JS, cross-
+ * platform). Previous ActionSheetIOS implementation crashed on Android.
+ */
+import { useCallback, useEffect, useRef } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  InteractionManager,
+  Linking,
+  View,
+} from "react-native";
+import { Stack, router, useLocalSearchParams } from "expo-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import * as Clipboard from "expo-clipboard";
+import type { Issue } from "@multica/core/types";
+import { effectiveTruncatedKinds } from "@multica/core/issues/timeline-query";
+import { issueKeys as coreIssueKeys } from "@multica/core/issues/queries";
+import { Text } from "@/components/ui/text";
+import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import {
+  TimelineList,
+  type TimelineListHandle,
+} from "@/components/issue/timeline-list";
+import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
+import { IssueMenuFieldItems } from "@/components/issue/issue-menu-field-items";
+import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
+import {
+  issueDetailOptions,
+  issueKeys,
+  issueTimelineOptions,
+} from "@/data/queries/issues";
+import { githubKeys } from "@/data/queries/github";
+import { useDeleteIssue } from "@/data/mutations/issues";
+import { pinListOptions } from "@/data/queries/pins";
+import { useCreatePin, useDeletePin } from "@/data/mutations/pins";
+import { useAuthStore } from "@/data/auth-store";
+import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { getWebUrl } from "@/data/server-store";
+import { useViewedIssuesStore } from "@/data/viewed-issues-store";
+import { useCommentSelectStore } from "@/data/comment-select-store";
+import { useReplyTargetStore } from "@/data/stores/reply-target-store";
+import { useTimelineSortStore } from "@/data/stores/timeline-sort-store";
+import {
+  issuePickerHref,
+  type IssuePickerField,
+} from "@/lib/issue-picker-routes";
+import i18n from "i18next";
+import { useT } from "@/lib/use-t";
+import { CurrentIssueIdProvider } from "@/lib/current-issue-context";
+
+export default function IssueDetail() {
+  const { t } = useT("issues");
+  // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
+  // [workspace]/(tabs)/inbox.tsx). `highlight` is the target comment id;
+  // `h` is a per-tap nonce so re-tapping the same row re-fires the
+  // scroll-and-flash effect. `decision` comes from the 决策中心 tab
+  // (RUYI-494) — same `h` nonce idiom, target is a decision card id.
+  const { id, workspace: wsSlug, highlight, decision: decisionParam, h } = useLocalSearchParams<{
+    id: string;
+    workspace: string;
+    highlight?: string;
+    decision?: string;
+    h?: string;
+  }>();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const qc = useQueryClient();
+
+  const detail = useQuery(issueDetailOptions(wsId, id));
+  const timeline = useQuery(issueTimelineOptions(wsId, id));
+  const truncatedKinds = effectiveTruncatedKinds(timeline.data);
+  const timelineSortMode = useTimelineSortStore((state) => state.mode);
+  const setTimelineSortMode = useTimelineSortStore((state) => state.setMode);
+
+  // Subscribe to per-issue WS events: status/priority/assignee/label
+  // changes, comments, activity, reactions, agent task progress.
+  // Mounted with `id` — cleans up automatically on navigate-away.
+  // If another client deletes the issue we're viewing, pop back so the
+  // user isn't stranded on a 404 detail page.
+  useIssueRealtime(id, () => router.back());
+
+  // Track viewed issues so the chat composer's `@` suggestion bar can
+  // surface "Recent" — the user just looked at MUL-123, likely wants to
+  // ask the agent about it next. Workspace-scoped + in-memory; see
+  // data/viewed-issues-store.ts.
+  useEffect(() => {
+    if (wsId && id) {
+      useViewedIssuesStore.getState().push(wsId, id);
+    }
+  }, [wsId, id]);
+
+  // Screen-scoped composer state — clear on unmount so re-entering the
+  // issue starts from a clean slate (no stale text-selection comment id,
+  // no stale "Replying to X" target). Both stores are singletons used by
+  // the long-press action sheet.
+  useEffect(() => {
+    return () => {
+      useCommentSelectStore.getState().clear();
+      useReplyTargetStore.getState().clear();
+    };
+  }, []);
+
+  const onRefresh = useCallback(async () => {
+    await Promise.all([
+      detail.refetch(),
+      qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, id) }),
+      // Decision cards live on core's per-issue keys — see
+      // data/queries/decisions.ts; refresh catches events missed while WS
+      // was down (same role as the decisionsAll invalidate on web reconnect).
+      qc.invalidateQueries({
+        queryKey: coreIssueKeys.decisions(id),
+      }),
+      // Timeline PR cards (RUYI-634) read the same github cache as the
+      // pull-requests modal; the PR list has no WS subscription on mobile,
+      // so refresh is its only in-place freshness path.
+      qc.invalidateQueries({ queryKey: githubKeys.pullRequests(id) }),
+    ]);
+  }, [detail, qc, wsId, id]);
+
+  const issue = detail.data;
+  const deleteIssue = useDeleteIssue();
+  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const { data: pins } = useQuery(pinListOptions(wsId, userId));
+  const isPinned =
+    !!issue &&
+    !!pins?.some((p) => p.item_type === "issue" && p.item_id === issue.id);
+  const createPin = useCreatePin();
+  const deletePin = useDeletePin();
+
+  // Three-dot menu: Pin/Unpin / Edit details / Copy title / Copy
+  // description / Copy link / Open on web / Related PRs / Relations /
+  // Delete.
+  // Cross-platform: uses @rn-primitives DropdownMenu (pure JS, no native deps).
+  const issueLink = issue && wsSlug
+    ? `${getWebUrl()}/${wsSlug}/issue/${issue.identifier}`
+    : "";
+  const onTogglePin = useCallback(() => {
+    if (!issue) return;
+    if (isPinned) {
+      deletePin.mutate({ itemType: "issue", itemId: issue.id });
+    } else {
+      createPin.mutate({ item_type: "issue", item_id: issue.id });
+    }
+  }, [issue, isPinned, createPin, deletePin]);
+  const onEditDetails = useCallback(() => {
+    if (wsSlug && issue) router.push(`/${wsSlug}/issue/${issue.id}/edit`);
+  }, [wsSlug, issue]);
+  const onCopyLink = useCallback(() => {
+    if (issueLink) Clipboard.setStringAsync(issueLink);
+  }, [issueLink]);
+  // 复制标题/正文原文（raw markdown，与评论 Copy 同口径——web 端
+  // comment 菜单的 copy 也是 copyText(entry.content) 原样复制）。
+  const onCopyTitle = useCallback(() => {
+    if (issue?.title) Clipboard.setStringAsync(issue.title);
+  }, [issue]);
+  const onCopyDescription = useCallback(() => {
+    if (issue?.description) Clipboard.setStringAsync(issue.description);
+  }, [issue]);
+  const onOpenOnWeb = useCallback(() => {
+    if (issueLink) Linking.openURL(issueLink);
+  }, [issueLink]);
+  // Related PRs (RUYI-43) — mobile counterpart of the web sidebar's
+  // "Pull requests" section (same endpoint, data/queries/github.ts).
+  const onOpenPullRequests = useCallback(() => {
+    if (wsSlug && issue) {
+      router.push(`/${wsSlug}/issue/${issue.id}/pull-requests`);
+    }
+  }, [wsSlug, issue]);
+  // Structured relations (RUYI-689) — mobile counterpart of the web
+  // sidebar's Relations section (blocks/blocked_by/relates_to/supersedes/
+  // superseded_by + parent/children). Markdown @mentions aggregate in the
+  // timeline tail instead; the two never mix (acceptance 6).
+  const onOpenRelations = useCallback(() => {
+    if (wsSlug && issue) {
+      router.push(`/${wsSlug}/issue/${issue.id}/relations`);
+    }
+  }, [wsSlug, issue]);
+  const onOpenDecisionCards = useCallback(() => {
+    if (!wsSlug || !issue) return;
+    InteractionManager.runAfterInteractions(() =>
+      router.push(`/${wsSlug}/issue/${issue.id}/decisions`),
+    );
+  }, [wsSlug, issue]);
+  // Quick property setters (RUYI-129). The header menu reuses the very
+  // same formSheet picker routes the attribute chip row opens — one route
+  // table (`lib/issue-picker-routes.ts`), so both entry points can never
+  // drift apart on status catalog, assignee polymorphism, or priority
+  // enum coverage. Mirrors web, where the 3-dot menu and the detail
+  // sidebar drive the same pickers
+  // (packages/views/issues/actions/issue-actions-menu-items.tsx).
+  //
+  // Why deferred: @rn-primitives' DropdownMenuItem calls
+  // `onOpenChange(false)` synchronously before our `onPress`, so the
+  // popover unmount and the formSheet presentation would land in the same
+  // frame — iOS drops the presentation when its presenting hierarchy is
+  // mid-teardown. `runAfterInteractions` pushes once the dismiss finishes,
+  // the same ordering `project/new.tsx` uses after `router.back()`.
+  const openPicker = useCallback(
+    (field: IssuePickerField) => {
+      const href = issuePickerHref(field, wsSlug, issue?.id);
+      if (!href) return;
+      InteractionManager.runAfterInteractions(() => router.push(href));
+    },
+    [wsSlug, issue?.id],
+  );
+
+  const onDelete = useCallback(() => {
+    if (!issue) return;
+    confirmDelete(issue, () =>
+      deleteIssue.mutate(issue.id, {
+        onSuccess: () => router.back(),
+      }),
+    );
+  }, [issue, deleteIssue]);
+
+  // Timeline imperative handle (RUYI-28): reporting the server comment id
+  // of THIS user's just-published comment lets the timeline expand the
+  // owning root without guessing from last-row diffs (which also fired for
+  // other users' realtime arrivals).
+  const timelineRef = useRef<TimelineListHandle>(null);
+  const onCommentPublished = useCallback((commentId: string) => {
+    timelineRef.current?.expandPublished(commentId);
+  }, []);
+
+  // RUYI-731: the detail screen is the only mount that owns the current
+  // issue's identity — the provider scopes the reference tail's self-filter
+  // to this tree (description + timeline); chat/inbox render without it.
+  return (
+    <CurrentIssueIdProvider value={id}>
+    <View className="flex-1 bg-background">
+      <Stack.Screen
+        options={{
+          // 兜底串走 i18n：`_layout.tsx` 的同名路由 title 已本地化，这里
+          // 若留英文硬编码，加载期非英文用户会先闪一下 "Issue" 再变。
+          // `Stack.Screen` 在组件 return 内，求值时机晚于 initI18n()。
+          title: issue?.identifier ?? i18n.t("layout:tab.issue", "Issue"),
+          // 原生标题在窄屏或大系统字号下会被省略号截断（RUYI-468 截图：
+          // 只剩 "RUYI-..."），标识符是详情页唯一稳定锚点，必须恒定完整
+          // 可读——自绘标题锁定字号且不随系统字号放大。
+          headerTitle: () => (
+            <Text
+              numberOfLines={1}
+              maxFontSizeMultiplier={1}
+              className="text-base font-semibold text-foreground"
+            >
+              {issue?.identifier ?? i18n.t("layout:tab.issue", "Issue")}
+            </Text>
+          ),
+          headerBackTitle: "Back",
+          headerRight: issue
+            ? () => (
+                <View className="flex-row items-center gap-2">
+                  {/* Ambient agent-working badge — renders null when no
+                   *  active tasks, so it doesn't crowd the header in the
+                   *  common case. See agent-header-badge.tsx. */}
+                  <AgentHeaderBadge issueId={id} />
+                  {/* Comments directory (RUYI-28) — browse/filter root
+                   *  comments; tapping an entry expands + locates that
+                   *  thread in the timeline below. */}
+                  <IconButton
+                    name="list"
+                    accessibilityLabel={t(
+                      "mobile.detail.comments_open_a11y",
+                      "Browse comments",
+                    )}
+                    onPress={
+                      wsSlug
+                        ? () =>
+                            router.push(`/${wsSlug}/issue/${issue.id}/comments`)
+                        : undefined
+                    }
+                  />
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <IconButton
+                          name="ellipsis-horizontal"
+                          accessibilityLabel={t(
+                            "mobile.detail.actions_a11y",
+                            "Issue actions",
+                          )}
+                        />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-44">
+                        {/* Quick property setters with live values
+                         *  (RUYI-697) — same value sources as the attribute
+                         *  chip row; pressing still opens the same picker
+                         *  routes (RUYI-129). Group ordering mirrors web's
+                         *  menu. */}
+                        <IssueMenuFieldItems
+                          issue={issue}
+                          onOpenPicker={openPicker}
+                        />
+                        <DropdownMenuSeparator />
+                        {/*
+                          Labels below stretch to the row (flex-1) instead of
+                          shrink-to-fit: with Fabric on Android, a shrink-to-fit
+                          Text measured at its exact-fit width can drop its
+                          final word at render time while keeping the reserved
+                          space (facebook/react-native#57110). Full-row width
+                          leaves slack, so measurement and layout agree;
+                          left-aligned single-line rendering is unchanged.
+                        */}
+                        <DropdownMenuItem onPress={onTogglePin}>
+                          <Text className="flex-1">{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onEditDetails}>
+                          <Text className="flex-1">
+                            {t("mobile.detail.edit_details", "Edit details")}
+                          </Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onCopyTitle}>
+                          <Text className="flex-1">{t("mobile.detail.copy_title", "Copy title")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onCopyDescription}>
+                          <Text className="flex-1">{t("mobile.detail.copy_description", "Copy description")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onCopyLink}>
+                          <Text className="flex-1">{t("actions.copy_link", "Copy link")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenOnWeb}>
+                          <Text className="flex-1">
+                            {t("mobile.detail.open_on_web", "Open on web")}
+                          </Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenPullRequests}>
+                          <Text className="flex-1">
+                            {t(
+                              "detail.section_pull_requests",
+                              "Pull requests",
+                            )}
+                          </Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenRelations}>
+                          <Text>
+                            {t("detail.section_relations", "Relations")}
+                          </Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenDecisionCards}>
+                          <Text className="flex-1">{t("decisions.section_all", "Decision cards")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem variant="destructive" onPress={onDelete}>
+                          <Text className="flex-1">{t("actions.delete_issue", "Delete issue")}</Text>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                </View>
+              )
+            : undefined,
+        }}
+      />
+      {detail.isLoading ? (
+        <View className="flex-1 items-center justify-center">
+          <ActivityIndicator />
+        </View>
+      ) : detail.error || !issue ? (
+        <View className="flex-1 items-center justify-center px-6 gap-3">
+          <Text className="text-sm text-destructive text-center">
+            {/* 同 select-workspace：整句插值，不做「失败：<详情>」拼接。 */}
+            {t("mobile.detail.load_failed", "Failed to load issue: {{reason}}", {
+              reason:
+                detail.error instanceof Error
+                  ? detail.error.message
+                  : t("mobile.detail.not_found", "not found"),
+            })}
+          </Text>
+          <Button variant="outline" onPress={() => detail.refetch()}>
+            <Text>{t("mobile.detail.retry", "Retry")}</Text>
+          </Button>
+        </View>
+      ) : (
+        <View className="flex-1">
+          <TimelineList
+            ref={timelineRef}
+            issue={issue}
+            entries={timeline.data?.entries}
+            mode={timelineSortMode}
+            onModeChange={setTimelineSortMode}
+            truncatedKinds={truncatedKinds}
+            timelineLoading={timeline.isLoading}
+            refreshing={detail.isRefetching || timeline.isRefetching}
+            onRefresh={onRefresh}
+            highlightCommentId={highlight}
+            highlightDecisionId={decisionParam}
+            highlightNonce={h}
+            onOpenDecision={(decisionId) => router.push(`/${wsSlug}/issue/${id}/decisions/${decisionId}`)}
+            onOpenDecisionBatch={() => router.push(`/${wsSlug}/issue/${id}/decisions/batch`)}
+            onCommentPublished={onCommentPublished}
+          />
+          <InlineCommentComposer
+            issueId={id}
+            voiceAgentId={issue.assignee_type === "agent" ? issue.assignee_id : null}
+            onPublished={onCommentPublished}
+          />
+        </View>
+      )}
+    </View>
+    </CurrentIssueIdProvider>
+  );
+}
+
+function confirmDelete(issue: Issue, onConfirm: () => void) {
+  // 普通函数（由 onDelete 回调调用），不能调 Hook——直接用 i18n.t("ns:key")。
+  Alert.alert(
+    i18n.t("modals:delete_issue.title", "Delete issue"),
+    `${issue.identifier} ` + i18n.t("modals:delete_issue.description", "This will permanently delete this issue and all its comments. This action cannot be undone."),
+    [
+      { text: i18n.t("common:cancel", "Cancel"), style: "cancel" },
+      { text: i18n.t("modals:delete_issue.confirm", "Delete"), style: "destructive", onPress: onConfirm },
+    ],
+  );
+}

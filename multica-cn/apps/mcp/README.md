@@ -1,0 +1,302 @@
+# @multica/mcp
+
+Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / ChatGPT
+等 MCP 客户端读写 Multica——查项目、聊需求、聊进度、灵感即时落成 issue。
+
+- 双 transport：`stdio`（本地 MCP 客户端直连）与 `streamable HTTP`（远程 connector）。
+- 鉴权仅经 Multica PAT（`mul_…`，与 `multica` CLI 同源；凭据不落日志）。
+- 一律经后端 REST API，不直连数据库。
+
+## v1 工具面
+
+| 类别 | 工具 | 说明 |
+| --- | --- | --- |
+| 读 | `list_workspaces` | 当前用户所属工作区 |
+| 读 | `get_autopilot` | 读取 Autopilot 配置与状态 |
+| 读 | `list_autopilot_runs` | 按状态、来源和时间过滤原生 Autopilot run，支持分页 |
+| 读 | `get_autopilot_run` | 读取单次原生运行、关联 task 生命周期及脱敏输出/采样摘要 |
+| 读 | `get_autopilot_run_diagnostics` | 读取原生 Autopilot run，并按其 task ID 查询关联运行审计 |
+| 写 | `trigger_autopilot` | 通过原生 Autopilot 调度链路立即执行；支持 current 与历史 payload replay，需提供幂等键 |
+| 读 | `list_agents` | 工作区内可派发的 agent |
+| 读 | `list_projects` | 工作区项目清单 |
+| 读 | `get_project` | 单个项目完整元数据与 revision |
+| 读 | `list_project_resources` | 项目资源绑定清单：类型/ref/label/顺序 |
+| 读 | `list_issues` | 按状态/项目/负责人过滤 |
+| 读 | `get_issue` | 单条 issue（默认含评论线程） |
+| 读 | `search_issues` | 关键词检索 |
+| 读 | `progress_digest` | 进度摘要（状态计数 + 逾期/临期 + 最近活跃） |
+| 读 | `list_comments` | 评论有界读：线程/最近活跃/仅根/since/summary/fold |
+| 读 | `get_comment` | 单条评论全文（含 revision，可辨认编辑痕迹） |
+| 读 | `get_issue_relations` | 单条 issue 结构化关系：parent 与 blocks/blocked_by/relates_to/supersedes/superseded_by 五向视图 |
+| 读 | `list_issue_runs` | 单条 issue 全部执行 run：状态/agent/触发源/耗时/失败摘要，status 与 trigger 过滤 |
+| 读 | `get_run` | 单个 run 详情：状态、耗时、失败原因、取消归因与完整重试链 |
+| 读 | `get_run_activity` | 单个 run 的有界语义消息增量与状态诊断；worker 证据仅经已认证且绑定 runtime 的 daemon 读取 |
+| 读 | `list_runs` | workspace 级全部 run 视图：status/agent/project/issue/trigger/时间窗过滤，limit 1–200（默认 50）+ offset 分页，返回 issue 编号/标题与失败摘要等定位字段 |
+| 读 | `get_agent` | 单个 agent 管理视图：元数据与运行配置指示器（`has_custom_env`/`custom_env_key_count`/`mcp_config_redacted`），秘密值永不过此层 |
+| 读 | `list_runtimes` | 工作区运行时清单（admin 全量、普通成员可见子集） |
+| 读 | `list_squads` | 工作区 squad 清单（含成员数与前 3 名预览；已归档不返回） |
+| 读 | `get_squad` | 单个 squad 完整视图：说明/指令/leader/成员预览 |
+| 写 | `create_issue` | 通用创建：任意空间、任意项目 |
+| 写 | `create_project` | 创建项目（纯元数据，不触发 run） |
+| 写 | `update_project` | PATCH 更新项目元数据，`expected_revision` 乐观锁 |
+| 写 | `create_project_resource` | 绑定 github_repo / local_directory 资源到项目；重复绑定返回结构化 already_attached |
+| 写 | `update_project_resource` | PATCH 更新绑定 label/position/resource_ref；resource_type 不可变 |
+| 写 | `delete_project_resource` | 仅解绑：不删除真实 GitHub 仓库或本地目录 |
+| 写 | `create_agent` | 创建 agent（name + runtime_id 必填；任意成员可建，不触发 run） |
+| 写 | `update_agent` | PATCH 更新 agent 元数据；agent/squad 无 revision 字段，last-write-wins；不接受任何秘密键 |
+| 写 | `archive_agent` | 停用 agent（=归档）：WARNING 取消该 agent 全部活跃 run；恢复用 `restore_agent` |
+| 写 | `restore_agent` | 恢复已归档 agent |
+| 写 | `create_squad` | 创建 squad（name + leader_id；leader 须为工作区 agent） |
+| 写 | `update_squad` | PATCH 更新 squad：改名/说明/指令/leader 轮换（轮换会暂停成员 autopilot 并转给原 leader） |
+| 写 | `archive_squad` | 归档 squad：成员指派与 autopilot 转给 leader；无恢复路径 |
+| 写 | `add_comment` | 追加评论（@agent 会触发真实派发） |
+| 写 | `edit_comment` | 编辑评论（作者/admin 权限；`expected_revision` 乐观锁；内容变更按新内容重算触发面，mention 副作用经 `trigger_outcomes` 回报） |
+| 写 | `delete_comment` | 删除评论（作者/admin 权限；级联删除回复子树；连带取消该评论触发的排队 run） |
+| 写 | `update_issue_status` | 状态流转（`suppress_run` 可避免连带派发） |
+| 写 | `update_issue` | 就地编辑已有 issue 核心字段（标题/描述/优先级/项目/父单/起止日期），纯元数据不触发 run |
+| 写 | `assign_issue` | 已有 issue 的指派/改派/取消指派（agent/squad 指派触发真实 run） |
+| 写 | `manage_issue_relations` | 管理 issue 结构化关系：set_parent/clear_parent/add_relation/remove_relation，`expected_revision` 乐观锁，不触发 run |
+| 写 | `bulk_update_issues` | 批量按项更新已有 issue：逐项结果与失败分类、逐项 `expected_revision`、`suppress_run` 分层控制、上限 50 项 |
+| 写 | `cancel_run` | 按 run id 停止单个 run：执行中转 `cancel_requested` 待运行时确认，排队 run 立即取消 |
+| 派发 | `dispatch_agent` | 一句话建 issue 并派发 agent run（消耗配额） |
+| 派发 | `retry_run` | 重试已完成的 run：同一 agent 以当前配置新建 run 入队（消耗配额） |
+| 配置读 | `list_daemon_instances` | 工作区 daemon 实例发现：按 daemon 聚合在线状态与 runtime 清单 |
+| 配置读 | `get_daemon_instance` | 单个 daemon 实例详情与其全部 runtime |
+| 配置读 | `list_runtimes` | runtime 清单：provider/mode/在线状态/可见性/owner |
+| 配置读 | `get_runtime` | 单 runtime 详情 + `used_by` 绑定 agent 清单 |
+| 配置读 | `get_runtime_models` | runtime 模型目录发现：模型清单/不可用项/默认项/每模型 thinking 档位，缓存命中即答、冷目录轮询 |
+
+`get_run_activity` requires `workspace`, `issue`, and `run_id`. `after_seq` is an optional non-negative sequence cursor; `semantic_limit` accepts 1–100 (default 50). `stream` accepts `stdout`, `stderr`, or `both`; `tail_bytes` accepts 1–65536 (default 16384); `worker_cursor` is opaque and limited to 512 bytes. The response separates `run_state`, `semantic_activity`, `worker_evidence`, and `progress_assessment`; the initial read is a baseline, and `running` alone never means `advancing`. A caller is limited to one read per run every 10 seconds. The server records the activity read synchronously and returns no activity body when audit persistence fails. Worker evidence uses a bounded reverse request on the authenticated daemon connection (up to 65536 bytes per selected stream; the complete response is capped at 160 KiB); the daemon resolves the run through its owned manifest and never accepts a path. Cursors are signed and bound to this daemon, run, and exact stream selection; they expire after 24 hours or daemon restart. Missing supervision is `not_supervised`; expired cursors or evidence past its retention deadline are `expired`; missing logs within retention are `not_found`; unavailable connections are `daemon_unreachable`. Before deleting an expired run directory, GC writes a 0600 marker containing only `expires_at`, with a SHA-256-derived filename and no task/run identity. Markers remain for 30 days after evidence expiry, then a later retention GC removes them; malformed markers are conservatively retained. Beyond this classification window, past expiry cannot be distinguished from never-supervised evidence. If marker creation fails, GC keeps the run directory. No server-side filesystem fallback is used.
+| 配置读 | `get_agent_runtime_config` | 单 agent 执行配置读回：runtime/model/thinking/revision（乐观锁令牌） |
+| 配置读 | `list_execution_profiles` | 执行 profile 清单：entry 数/是否激活/revision |
+| 配置读 | `get_execution_profile` | 单 profile 完整读回：全部 entry + revision |
+| 配置读 | `get_execution_topology` | 执行面一图流：runtime→agent 绑定、daemon 聚合、激活 profile 与逐 agent 漂移标记 |
+| 配置写 | `update_agent_runtime_config` | 单 agent 执行配置就地修改（runtime/model/thinking），`expected_revision` 乐观锁；目录命中严格拒绝 400 `unsupported_model`、目录未命中放行；不触发 run |
+| 配置写 | `bulk_update_agent_runtime_config` | 批量（≤50）按项修改 agent 执行配置：逐项结果/失败分类/逐项 `expected_revision`、`on_error` continue/stop |
+| 配置写 | `create_execution_profile` | 创建空 profile（纯存储，不激活） |
+| 配置写 | `update_execution_profile` | PATCH profile 元数据 + 可选批量 upsert entry（自动链接 revision），`expected_revision` 乐观锁 |
+| 配置写 | `delete_execution_profile` | 删除 profile（激活中删除同步清空 workspace 指针；不改 agent 现有配置），`expected_revision` 乐观锁 |
+| 配置写 | `apply_execution_profile` | 激活 profile：把 entry 落写到各 agent 并指向 workspace 激活指针；支持 `squad`→agent 成员→entry 映射（花名册一次性物化，后续 squad 变动不自动跟随）与 `replace_entries`；逐 agent applied/skipped/failed 结果 |
+
+执行配置面统一读-改-写契约：从 read 工具拿 `revision`，写时以
+`expected_revision` 回传；并发竞争以结构化 `revision_conflict`（带
+`actual_revision`）返回，目录拒绝以 `unsupported_model` 返回。除
+`apply_execution_profile`（激活会把 entry 落写到 agent 的下一次运行）外，其余
+配置工具均不触发 agent run。已知例外：rebind 且未显式给 model 时，服务端保留
+既有「跨族静默清空 model」语义（UI 依赖，本面未改）。
+
+### 执行配置典型调用
+
+```jsonc
+// ① 发现：哪个 runtime、有哪些模型与 thinking 档位
+{"tool": "list_runtimes", "arguments": {"workspace": "my-ws"}}
+{"tool": "get_runtime_models", "arguments": {"workspace": "my-ws", "runtime_id": "<uuid>", "wait_ms": 20000}}
+
+// ② 读回当前配置 + revision
+{"tool": "get_agent_runtime_config", "arguments": {"workspace": "my-ws", "agent": "my-agent"}}
+
+// ③ 带乐观锁修改（并发竞争 → code=revision_conflict + actual_revision）
+{"tool": "update_agent_runtime_config", "arguments": {
+  "workspace": "my-ws", "agent": "my-agent",
+  "model": "claude-opus-5", "thinking_level": "high",
+  "expected_revision": 7}}
+
+// ④ 批量（≤50，逐项结果；on_error 默认 continue）
+{"tool": "bulk_update_agent_runtime_config", "arguments": {
+  "workspace": "my-ws", "on_error": "stop",
+  "updates": [
+    {"agent": "alpha", "model": "claude-opus-5", "expected_revision": 3},
+    {"agent": "beta",  "model": "gpt-5.2"}
+  ]}}
+
+// ⑤ squad → profile 一键映射并激活（决策 1 语义：花名册一次性物化为 entry）
+{"tool": "apply_execution_profile", "arguments": {
+  "workspace": "my-ws", "profile_id": "<uuid>",
+  "squad": "dev-squad", "runtime_id": "<uuid>", "model": "claude-opus-5",
+  "thinking_level": null, "replace_entries": true, "expected_revision": 4}}
+
+// ⑥ 拓扑总览（谁在哪个 runtime、跑什么模型、与激活 profile 的漂移）
+{"tool": "get_execution_topology", "arguments": {"workspace": "my-ws"}}
+```
+
+评论编辑/删除沿用产品自身的作者-or-管理员权限闸与服务端审计
+（revision + updated_at）；定义内的失败（权限拒绝、revision 冲突、已删除、
+mention 准入拒绝）以结构化 `code` 返回，不复用异常字符串。仍然不暴露：
+权限/成员变更、跨用户管理。
+
+## 凭据解析（与 CLI 同源）
+
+优先级从高到低：
+
+1. `--token` / `--server-url` 命令行参数
+2. `MULTICA_TOKEN` / `MULTICA_SERVER_URL` 环境变量
+3. CLI 配置文件：`~/.multica/config.json`（命名 profile：`~/.multica/profiles/<name>/config.json`，
+   由 `--profile` / `MULTICA_PROFILE` 选择；daemon 任务沙箱内为
+   `$MULTICA_TASK_CONFIG_ROOT/config.json`）
+
+默认后端地址为 Multica Cloud（`https://api.multica.ai`）；自托管部署用
+`--server-url` 或 `MULTICA_SERVER_URL` 覆盖。
+
+Inbox 工具通过后端现有的 MCP invocation audit 端点记录调用。部署时须在 MCP
+进程和 API 进程配置同一个 `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL`。MCP 进程优先用
+`--audit-credential-file` 从用户私有凭据文件读取该值；未传该参数时直接读取
+`MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL` 环境变量——同栈部署（自托管 compose）在
+.env 里配一个固定值即同时覆盖两侧，无需凭据文件。两者都未配置时 MCP 服务正常
+启动但审计上报禁用，Inbox 操作会在执行前失败关闭。审计只记录操作者、工具、
+工作区、耗时和结果，不记录通知正文、认证头或凭据。
+
+### 只读文件工具装配
+
+`list_files`、`get_file_metadata` 和 `read_file_chunk` 还需要一个受管 MCP
+instance 身份。为同一个 instance 配置 ID 和独立凭据：
+
+- API 进程设置 `MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIALS` 为 JSON 对象，键为
+  instance ID，值为 instance 凭据；并继续配置
+  `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL`。
+- stdio MCP 进程使用 `--file-access-instance-id` 和
+  `--file-access-credential-file`；HTTP MCP 进程使用
+  `MULTICA_MCP_INSTANCE_ID` 和
+  `MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE`。凭据文件只放凭据内容并设为
+  `chmod 600` 或 `chmod 400`。HTTP systemd unit 默认只加载审计凭据；部署 HTTP 文件
+  工具时，须另用受限 systemd credential 加载 instance 凭据，并将凭据文件路径传给
+  `MULTICA_MCP_FILE_ACCESS_INSTANCE_CREDENTIAL_FILE`，不要把凭据值写入 unit 或日志。
+- 两侧的 instance ID 与凭据必须匹配。instance ID 只允许 ASCII 字母、数字、`-`、`_`，
+  最长 64 字符；凭据最长 512 字节。
+
+在目标 runtime 上先以 owner/admin 身份注册文件目标：
+
+```text
+PUT /api/runtimes/{runtimeId}/file-access-target
+{"id":"<target-id>","enabled":true,"roots":["/allowed/root"],"workspace_ids":["<workspace-uuid>"],"member_ids":["<member-uuid>"]}
+```
+
+`roots` 必须是绝对路径；`workspace_ids` 限定工作区，`member_ids` 非空时限定到所列成员。
+
+远程只读目标使用 `ssh:<OpenSSH-alias>` 作为 `<target-id>`，例如 `ssh:gti-server`。alias 仅允许 ASCII 字母、数字、`_`、`-`，且必须在承载该 runtime 的 daemon 用户或系统 OpenSSH 配置（含 `Include`）中以精确 `Host <alias>` 条目预先定义；`Host *` 或其他通配符不会授权连接。MCP 调用者不能传入 hostname、用户、端口、密钥或命令。daemon 通过 SFTP v3 在该既有 SSH 连接上执行路径解析、目录列表、元数据和分块读取，单次远程操作最长 15 秒，仍受同一目标根目录、ACL 与拒绝策略约束。不要以 `ssh:` 前缀登记未配置的 alias。
+随后把 instance 绑定到目标：
+
+```text
+PUT /api/runtimes/{runtimeId}/file-access-instance-bindings/{instanceId}
+{"target_id":"<target-id>","enabled":true}
+```
+
+MCP 工具的 `host` 可省略；省略时只使用上述已启用的 instance binding。显式传入
+`host` 也只会解析到服务端已登记、并通过 workspace、runtime、member 与 path-root
+校验的目标，不会让 MCP 进程直接读取本地文件或建立 SSH 连接。数据库迁移须先按
+部署仓库的标准流程应用，再启动 API 和 MCP 进程。客户端名称与版本取自 MCP
+initialize 的 peer `clientInfo`，是可伪造的审计观测值，不参与鉴权或授权。
+
+## 用法
+
+stdio（claude code 示例，`.mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "multica": {
+      "command": "node",
+      "args": ["/path/to/apps/mcp/dist/index.js", "--audit-credential-file", "/home/user/.config/multica/mcp-audit-credential"],
+      "env": { "MULTICA_TOKEN": "mul_..." }
+    }
+  }
+}
+```
+
+生产建议不写 PAT env，直接复用 CLI 登录态（`multica login`）；审计凭据文件需单独准备并限制为当前用户可读。
+
+streamable HTTP：
+
+```bash
+node apps/mcp/dist/index.js --transport http --port 8080 --host 127.0.0.1 --audit-credential-file ~/.config/multica/mcp-audit-credential
+# 探活：curl http://127.0.0.1:8080/healthz
+# MCP 端点：POST /mcp，Authorization: Bearer mul_...
+```
+
+HTTP 模式无状态：每个请求自带 PAT，服务端不保存会话。默认只绑定
+loopback；对外暴露请置于 TLS 反代之后。
+
+## 客户端注册（`make mcp-*`）
+
+在仓库根目录用 Makefile 把这份 checkout 构建的 `dist/index.js` 注册进本机已安装的
+MCP 客户端（Claude Code / Codex / Kimi / ZCode / Cursor / OpenCode），语义对齐
+`daemon-*` 六件套：
+
+```bash
+make mcp-build      # 只构建 dist/，不碰任何客户端配置
+make mcp-install     # 构建 + 向每个检测到的客户端写入/更新 multica 条目
+make mcp-update      # 构建 + 仅刷新已注册客户端指向的 dist 路径（checkout 挪动/重建后用它修复，不会新注册未装过的客户端）
+make mcp-status      # 只读：哪些客户端已注册、指向哪个 dist 路径、路径是否已失效
+make mcp-uninstall   # 从每个检测到的客户端配置中移除 multica 条目，不影响其他 server 条目和文件原有格式
+```
+
+- 未检测到的客户端自动跳过；`mcp-uninstall` 对未安装 multica 的客户端同样跳过，不改动其文件。
+- 配置文件解析失败（如手工改坏的 JSON/TOML）时，`mcp-update` / `mcp-uninstall` 都会跳过并保留原文件不动，不会覆盖或删除。
+- `mcp-status` 的“失效”指该客户端记录的 dist 路径在磁盘上已不存在（通常是 checkout 被移动或删除），此时应 `make mcp-update`（已注册）或 `make mcp-install`（重新登记）。
+- 以上流程全程不读取、不打印、不持久化任何 Multica PAT。
+- MCP 统一审计凭据单独存放在 `~/.config/multica/mcp-audit-credential`，文件内容只放凭据本身，并设置 `chmod 600 ~/.config/multica/mcp-audit-credential`。安装配置只记录该文件路径，不复制凭据；自定义位置可用 `MCP_AUDIT_CREDENTIAL_FILE=/绝对路径 make mcp-install`，之后重启 MCP 客户端进程。
+- 首次配置可先运行 `mkdir -p ~/.config/multica && install -m 600 /dev/null ~/.config/multica/mcp-audit-credential`，再用本机安全方式把与 API 相同的服务凭据写入该文件；不要将凭据作为命令参数或粘贴到客户端配置。
+- 全部命令均为用户级配置写入，不需要 `sudo`。
+
+## HTTP 常驻服务（`make mcp-http-*`）
+
+把 `streamable HTTP` transport 托管为 `systemd --user` 服务，供远程 connector（如
+ChatGPT）长期连接；与上面 `mcp-*`（stdio，注册进本机客户端）是两类互不影响
+的形态，可同时存在：
+
+```bash
+make mcp-http-install    # 构建 + 安装并启用 systemd --user 服务（可选 MCP_HTTP_PORT=、MCP_HTTP_HOST=，默认 127.0.0.1:8080）
+make mcp-http-status     # 只读：systemd --user 单元状态
+make mcp-http-update     # 只重建 dist/，重启服务；不改端口/host/单元文件
+make mcp-http-uninstall  # 只移除本服务单元，绝不触碰 multica-daemon*/multica-oom-guard 或其他 systemd --user 单元
+```
+
+- **零 sudo、用户级单元**：单元文件装在 `~/.config/systemd/user/`，由
+  `systemctl --user` 管理，进程以执行 `make` 的当前用户运行，全程不需要 root
+  密码或 `sudo`。
+- **注销后是否常驻取决于 Linger**：`loginctl show-user <user> -p Linger` 为
+  `yes` 时，该用户注销/机器重启后此服务仍随 `systemd --user` 自动拉起；未开启
+  时 `mcp-http-install` 会打印 WARN，需要有权限者执行一次
+  `loginctl enable-linger <user>`（这是本机唯一残留的、超出当前用户自身权限的
+  前置步骤，且只需执行一次）。
+- **按请求鉴权，审计凭据受限注入**：每个 `POST /mcp` 自带
+  `Authorization: Bearer <PAT>`，服务端逐请求转发；统一 MCP 审计还需要一份
+  服务凭据。将其单独写入用户私有文件并设为 `chmod 600`，再运行
+  `make mcp-http-install MCP_AUDIT_CREDENTIAL_FILE=/绝对路径`。systemd 通过
+  `LoadCredential` 投递到运行时凭据目录，unit 与日志只包含源文件路径，不包含凭据。
+- **自托管 compose 形态不需要凭据文件**：`docker-compose.selfhost.local.yml` 把
+  同一个 `MULTICA_MCP_AUDIT_SERVICE_CREDENTIAL` 传给 backend 与 mcp 两个服务；
+  .env 里一个固定值即同时覆盖两侧，mcp 进程未收到 `--audit-credential-file`
+  时从该环境变量读取；留空则审计上报禁用、服务正常启动。
+- 默认绑定 `127.0.0.1`；`MCP_HTTP_HOST` 传入非 loopback 值时 `mcp-http-install`
+  会打印警告——对外暴露前必须置于 TLS 反代之后，不建议直接暴露明文 HTTP。
+- 单实例（非 `@` 模板）：一台机器通常只需一个 HTTP 端点；需要多端口并存时用不同
+  `MCP_HTTP_PORT` 重复 `install` 会覆盖同一个单元，如确有多端口共存需求需手工
+  改造为模板实例。
+
+## 开发
+
+```bash
+pnpm install
+pnpm --filter @multica/mcp build      # tsc -> dist/
+pnpm --filter @multica/mcp test       # vitest
+pnpm --filter @multica/mcp typecheck
+pnpm --filter @multica/mcp lint
+```
+
+push 到 main（或 PR）时 `.github/workflows/mcp-build.yml` 自动构建并上传
+npm tarball artifact（附 SHA256）。
+
+## 安全语义（Owner 拍板生效）
+
+- 凭据仅 PAT，存储与 CLI 同源，不新增明文存储面。
+- 日志脱敏：不含 token 与评论正文；REST 客户端只记录方法、路径模板、状态码与耗时。
+- `dispatch_agent` / 评论 @agent / 状态流转 / `assign_issue` 对 agent 或 squad 的
+  指派均可能触发真实 agent run，消耗 token 所属用户的配额——工具描述中已显式提示。
+- `assign_issue` 的 run 触发语义与后端单一判定源一致
+  （`server/internal/service/issue_trigger.go`）：指派/改派给 agent 或 squad 时，
+  issue 处于 backlog 则静默停放不触发；改派不取消已在排队/执行的任务，新旧 run
+  并行，同一 agent 不会重复入队；指派给 member 与取消指派从不触发 run；
+  `suppress_run=true` 应用指派但不启动本次触发的 run（issue 标记
+  `run_suppressed`，可稍后手动运行）；`handoff_note` 仅在实际触发 run 时注入。
+- 取消指派以显式 JSON `null` 表达（`assignee_type: null` + `assignee_id: null`），
+  与字段省略、空串严格区分——与服务端 rawFields 判定一致。

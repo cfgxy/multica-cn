@@ -1,0 +1,20 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.schedule-too-frequent",
+  "name": "Schedule runs every minute",
+  "version": "1.0.0",
+  "author": { "name": "Example" },
+  "scopes": ["issues:read", "net:hooks.example.com"],
+  "contributes": {
+    "hooks": [
+      {
+        "key": "pulse",
+        "name": "Pulse",
+        "description": "Asks to run once a minute, which the host refuses.",
+        "triggers": ["schedule"],
+        "schedule": { "cron": "* * * * *", "timezone": "UTC" },
+        "transport": { "type": "http", "url": "https://hooks.example.com/pulse" }
+      }
+    ]
+  }
+}

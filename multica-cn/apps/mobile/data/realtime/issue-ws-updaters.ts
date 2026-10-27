@@ -1,0 +1,950 @@
+/**
+ * Mobile-owned WS cache patchers for the issue domain. These are pure
+ * functions over `QueryClient` — no React, no WS plumbing. The hooks in
+ * `use-issue-realtime.ts` and `use-my-issues-realtime.ts` translate WS
+ * events into calls into this module.
+ *
+ * Why mobile-owned (and not importing from packages/core/issues/ws-updaters):
+ *   - Web's updaters reference `issueKeys` from `packages/core/issues/queries`,
+ *     a different runtime instance than mobile's `data/queries/issue-keys.ts`.
+ *     TanStack Query keys are compared structurally so this would *appear*
+ *     to work, but binding cache mutation to a foreign key factory invites
+ *     drift the moment either side adjusts its key shape.
+ *   - Mobile cache shapes are simpler: no status-bucketed list, no children
+ *     subtree, no childProgress, no label-byIssue cache. A direct mirror
+ *     would be ~120 lines of conditional dead-code paths.
+ *
+ * Cache shapes (the design contract here):
+ *   - Issue detail:    Issue                                  (keyed by detail(wsId, id))
+ *   - Issue timeline:  TimelineQueryData                      (keyed by timeline(wsId, id))
+ *                      Raw entries stay ASC oldest-first; header state is fetch-owned.
+ *   - My Issues list:  Issue[]                                (keyed by myList(wsId, scope, filter))
+ *                      Multiple list caches per wsId (one per scope/filter combo).
+ *                      Patch ALL of them via setQueriesData on myAll(wsId).
+ *   - Workspace list:  Issue[]                                (keyed by list(wsId))
+ *                      Single cache per wsId (no scope/filter in the key —
+ *                      filtering happens client-side off the same list).
+ */
+import type { QueryClient } from "@tanstack/react-query";
+import type {
+  Comment,
+  Issue,
+  IssueReaction,
+  Label,
+  Reaction,
+  TimelineEntry,
+} from "@multica/core/types";
+import {
+  crossedTimelineHardCap,
+  updateTimelineEntries,
+  type TimelineQueryData,
+  type TimelineTruncationKind,
+} from "@multica/core/issues/timeline-query";
+import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
+import { issueKeys } from "@/data/queries/issue-keys";
+
+type TimelinePredicate = (entry: TimelineEntry) => boolean;
+type TimelineMutate = (entry: TimelineEntry) => TimelineEntry;
+type MobileTimelineQueryData = TimelineQueryData & {
+  observedCreatedComments?: TimelineEntry[];
+};
+
+const auxiliaryIssueRevisions = new WeakMap<QueryClient, Map<string, number>>();
+
+type AuxiliaryIssueProjection = "generic" | "labels" | "issue_reactions";
+
+function auxiliaryIssueRevisionPrefix(wsId: string, issueId: string) {
+  return `${wsId}:${issueId}:`;
+}
+
+function auxiliaryIssueRevisionKey(
+  wsId: string,
+  issueId: string,
+  projection: AuxiliaryIssueProjection,
+) {
+  return `${auxiliaryIssueRevisionPrefix(wsId, issueId)}${projection}`;
+}
+
+function recordAuxiliaryIssueRevision(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  revision: number,
+  projection: AuxiliaryIssueProjection,
+) {
+  let revisions = auxiliaryIssueRevisions.get(qc);
+  if (!revisions) {
+    revisions = new Map();
+    auxiliaryIssueRevisions.set(qc, revisions);
+  }
+  const key = auxiliaryIssueRevisionKey(wsId, issueId, projection);
+  if ((revisions.get(key) ?? 0) < revision) revisions.set(key, revision);
+}
+
+function isOlderThanRecordedAuxiliaryProjection(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  revision: number | undefined,
+  projection: AuxiliaryIssueProjection,
+) {
+  if (revision === undefined) return false;
+  const recorded = auxiliaryIssueRevisions
+    .get(qc)
+    ?.get(auxiliaryIssueRevisionKey(wsId, issueId, projection));
+  return recorded !== undefined && revision < recorded;
+}
+
+export function reconcileIssueFullSnapshotRevision(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  fullRevision: number | undefined,
+) {
+  if (fullRevision === undefined) return;
+  const revisions = auxiliaryIssueRevisions.get(qc);
+  if (!revisions) return;
+  const prefix = auxiliaryIssueRevisionPrefix(wsId, issueId);
+  let newestAuxiliaryRevision: number | undefined;
+  for (const [key, revision] of revisions) {
+    if (!key.startsWith(prefix)) continue;
+    if (fullRevision >= revision) {
+      revisions.delete(key);
+    } else if (
+      newestAuxiliaryRevision === undefined ||
+      revision > newestAuxiliaryRevision
+    ) {
+      newestAuxiliaryRevision = revision;
+    }
+  }
+  if (newestAuxiliaryRevision !== undefined) {
+    invalidateStaleIssueOwnerProjections(
+      qc,
+      wsId,
+      issueId,
+      newestAuxiliaryRevision,
+    );
+  }
+}
+
+function acceptsRevision(current: number | undefined, incoming: number | undefined) {
+  if (current === undefined) return true;
+  return incoming !== undefined && incoming >= current;
+}
+
+// =====================================================
+// Issue detail cache (single Issue per id)
+// =====================================================
+
+export function patchIssueDetail(
+  qc: QueryClient,
+  wsId: string,
+  partial: Partial<Issue> & { id: string },
+) {
+  if (partial.revision === undefined) {
+    qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, partial.id) });
+  }
+  qc.setQueryData<Issue>(issueKeys.detail(wsId, partial.id), (old) =>
+    old && acceptsRevision(old.revision, partial.revision)
+      ? { ...old, ...partial }
+      : old,
+  );
+  reconcileIssueFullSnapshotRevision(qc, wsId, partial.id, partial.revision);
+}
+
+export function onIssueAuxiliaryRevision(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  revision: number | undefined,
+  projection: AuxiliaryIssueProjection = "generic",
+) {
+  if (revision === undefined) return;
+  recordAuxiliaryIssueRevision(qc, wsId, issueId, revision, projection);
+  invalidateStaleIssueOwnerProjections(qc, wsId, issueId, revision);
+}
+
+function invalidateStaleIssueOwnerProjections(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  revision: number,
+) {
+  const isStale = (issue: Issue | undefined) =>
+    issue !== undefined &&
+    (issue.revision === undefined || issue.revision < revision);
+  const detailKey = issueKeys.detail(wsId, issueId);
+  if (isStale(qc.getQueryData<Issue>(detailKey))) {
+    qc.invalidateQueries({ queryKey: detailKey, exact: true });
+  }
+  for (const [key, data] of qc.getQueriesData<Issue[]>({
+    queryKey: issueKeys.myAll(wsId),
+  })) {
+    if (data?.some((issue) => issue.id === issueId && isStale(issue))) {
+      qc.invalidateQueries({ queryKey: key, exact: true });
+    }
+  }
+  const listKey = issueKeys.list(wsId);
+  if (qc.getQueryData<Issue[]>(listKey)?.some(
+    (issue) => issue.id === issueId && isStale(issue),
+  )) {
+    qc.invalidateQueries({ queryKey: listKey, exact: true });
+  }
+}
+
+export function clearIssueDetail(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+) {
+  qc.removeQueries({ queryKey: issueKeys.detail(wsId, issueId) });
+  qc.removeQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+}
+
+export function invalidateIssueAfterReconnect(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+) {
+  qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, issueId) });
+  qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  qc.invalidateQueries({ queryKey: issueKeys.attachments(wsId, issueId) });
+  qc.invalidateQueries({ queryKey: issueKeys.activeTasks(wsId, issueId) });
+  qc.invalidateQueries({ queryKey: issueKeys.tasks(wsId, issueId) });
+}
+
+// =====================================================
+// Issue timeline (flat TimelineEntry[], ASC oldest-first)
+// =====================================================
+
+export function appendTimelineEntry(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  entry: TimelineEntry,
+) {
+  let crossedKind: TimelineTruncationKind | null = null;
+  qc.setQueryData<TimelineQueryData>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old) return old;
+      // Skip if the entry is already present — backend can re-emit on
+      // reconnect or two clients can echo the same comment.
+      if (old.entries.some((existing) => existing.id === entry.id && existing.type === entry.type)) {
+        return old;
+      }
+      const next = sortTimelineEntriesAsc([...old.entries, entry]);
+      const kind = entry.type === "comment" || entry.type === "activity" ? entry.type : null;
+      if (
+        kind &&
+        !old.truncatedKinds.includes(kind) &&
+        crossedTimelineHardCap(old.entries, next, kind)
+      ) {
+        crossedKind = kind;
+      }
+      return updateTimelineEntries(old, () => next);
+    },
+  );
+  if (crossedKind) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  }
+}
+
+/** Replace one matching pending comment with its server-backed entry. */
+export function reconcileCreatedComment(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  entry: TimelineEntry,
+  optimisticId?: string,
+  failedIds: ReadonlySet<string> = new Set(),
+): string[] {
+  let crossedKind = false;
+  const clearedFailedIds: string[] = [];
+  qc.setQueryData<MobileTimelineQueryData>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old) return old;
+
+      const serverIndex = old.entries.findIndex(
+        (existing) => existing.type === entry.type && existing.id === entry.id,
+      );
+      if (serverIndex !== -1) {
+        if (!optimisticId) return old;
+        const pendingIndex = old.entries.findIndex(
+          (existing) => existing.type === "comment" && existing.id === optimisticId,
+        );
+        if (pendingIndex === -1) return old;
+        return removeObservedCreatedComment(
+          updateTimelineEntries(old, (entries) =>
+            entries.filter((_, index) => index !== pendingIndex),
+          ),
+          entry.id,
+        );
+      }
+
+      if (
+        !optimisticId &&
+        (old.observedCreatedComments ?? []).some(
+          (existing) => existing.type === entry.type && existing.id === entry.id,
+        )
+      ) {
+        return old;
+      }
+
+      const matchesPending = (existing: TimelineEntry) => {
+        if (existing.type !== "comment" || !existing.id.startsWith("optimistic-")) {
+          return false;
+        }
+        if (optimisticId) return existing.id === optimisticId;
+        return (
+          existing.actor_type === entry.actor_type &&
+          existing.actor_id === entry.actor_id &&
+          typeof existing.content === "string" &&
+          typeof entry.content === "string" &&
+          normalizeCommentContentForMatch(existing.content) ===
+            normalizeCommentContentForMatch(entry.content) &&
+          existing.parent_id === entry.parent_id
+        );
+      };
+      const pendingIndexes = old.entries
+        .map((existing, index) => (matchesPending(existing) ? index : -1))
+        .filter((index) => index !== -1);
+
+      // A realtime event has no client mutation id. Keep ambiguous successes
+      // staged while any matching request is still in flight. Once every
+      // matching request has failed, each server event must consume one failed
+      // row because no later HTTP callback can reconcile the staged event.
+      const hasInFlightMatch = pendingIndexes.some(
+        (index) => !failedIds.has(old.entries[index].id),
+      );
+      if (!optimisticId && pendingIndexes.length > 1 && hasInFlightMatch) {
+        return {
+          ...old,
+          observedCreatedComments: [...(old.observedCreatedComments ?? []), entry],
+        };
+      }
+
+      const next = [...old.entries];
+      const pendingIndex = pendingIndexes[0] ?? -1;
+      if (pendingIndex === -1) {
+        next.push(entry);
+      } else {
+        next[pendingIndex] = entry;
+      }
+      let consumedObservedId: string | undefined;
+      if (optimisticId && pendingIndex !== -1) {
+        const failedIndex = next.findIndex(
+          (existing) =>
+            existing.type === "comment" &&
+            failedIds.has(existing.id) &&
+            existing.actor_type === entry.actor_type &&
+            existing.actor_id === entry.actor_id &&
+            typeof existing.content === "string" &&
+            typeof entry.content === "string" &&
+            normalizeCommentContentForMatch(existing.content) ===
+              normalizeCommentContentForMatch(entry.content) &&
+            existing.parent_id === entry.parent_id,
+        );
+        const observed = (old.observedCreatedComments ?? []).find(
+          (candidate) =>
+            candidate.type === "comment" &&
+            candidate.id !== entry.id &&
+            candidate.actor_type === entry.actor_type &&
+            candidate.actor_id === entry.actor_id &&
+            typeof candidate.content === "string" &&
+            typeof entry.content === "string" &&
+            normalizeCommentContentForMatch(candidate.content) ===
+              normalizeCommentContentForMatch(entry.content) &&
+            candidate.parent_id === entry.parent_id,
+        );
+        if (failedIndex !== -1 && observed) {
+          clearedFailedIds.push(next[failedIndex].id);
+          next[failedIndex] = observed;
+          consumedObservedId = observed.id;
+        }
+      }
+      const sorted = sortTimelineEntriesAsc(next);
+      crossedKind =
+        !old.truncatedKinds.includes("comment") &&
+        crossedTimelineHardCap(old.entries, sorted, "comment");
+      const updated = updateTimelineEntries(old, () => sorted);
+      if (!optimisticId && pendingIndex !== -1 && failedIds.has(old.entries[pendingIndex].id)) {
+        clearedFailedIds.push(old.entries[pendingIndex].id);
+      }
+      if (!optimisticId) return updated;
+      return consumedObservedId
+        ? removeObservedCreatedComment(
+            removeObservedCreatedComment(updated, entry.id),
+            consumedObservedId,
+          )
+        : removeObservedCreatedComment(updated, entry.id);
+    },
+  );
+  if (crossedKind) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  }
+  return clearedFailedIds;
+}
+
+/** Consume one ambiguous realtime success when its matching request fails. */
+export function reconcileFailedCreatedComment(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  optimisticId: string,
+  expected: Pick<TimelineEntry, "actor_type" | "actor_id" | "content" | "parent_id">,
+  failedIds: ReadonlySet<string> = new Set(),
+) {
+  const reconciledIds: string[] = [];
+  let crossedKind = false;
+  qc.setQueryData<MobileTimelineQueryData>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old) return old;
+      const matchesExpected = (entry: TimelineEntry) =>
+        entry.actor_type === expected.actor_type &&
+        entry.actor_id === expected.actor_id &&
+        typeof entry.content === "string" &&
+        typeof expected.content === "string" &&
+        normalizeCommentContentForMatch(entry.content) ===
+          normalizeCommentContentForMatch(expected.content) &&
+        entry.parent_id === expected.parent_id;
+      const observedComments = (old.observedCreatedComments ?? []).filter(
+        (entry, index, entries) =>
+          matchesExpected(entry) &&
+          entries.findIndex((candidate) => candidate.id === entry.id) === index,
+      );
+      const matchingPendingIds = old.entries
+        .filter((entry) =>
+          entry.type === "comment" &&
+          entry.id.startsWith("optimistic-") &&
+          matchesExpected(entry),
+        )
+        .map(({ id }) => id);
+      const allMatchingRequestsFailed = matchingPendingIds.every(
+        (id) => id === optimisticId || failedIds.has(id),
+      );
+      if (
+        observedComments.length < matchingPendingIds.length &&
+        !allMatchingRequestsFailed
+      ) {
+        return old;
+      }
+      if (allMatchingRequestsFailed && observedComments.length > 0) {
+        const observedIds = new Set(observedComments.map(({ id }) => id));
+        const targets = matchingPendingIds.filter(
+          (id) => id === optimisticId || failedIds.has(id),
+        );
+        const nextEntries = [...old.entries];
+        const consumedIds = new Set<string>();
+        const remainingObserved = new Set(observedIds);
+        for (const observed of observedComments) {
+          const targetId = targets.find((id) => !consumedIds.has(id));
+          if (!targetId) break;
+          const targetIndex = nextEntries.findIndex((entry) => entry.id === targetId);
+          if (targetIndex === -1) continue;
+          nextEntries[targetIndex] = observed;
+          consumedIds.add(targetId);
+          remainingObserved.delete(observed.id);
+          reconciledIds.push(targetId);
+        }
+        for (const observed of observedComments) {
+          if (remainingObserved.has(observed.id)) nextEntries.push(observed);
+        }
+        const observedCreatedComments = (old.observedCreatedComments ?? []).filter(
+          (entry) => !observedIds.has(entry.id),
+        );
+        const withoutObserved = observedCreatedComments.length
+          ? { ...old, observedCreatedComments }
+          : omitObservedCreatedComments({ ...old, observedCreatedComments });
+        const sorted = sortTimelineEntriesAsc(nextEntries);
+        crossedKind =
+          !old.truncatedKinds.includes("comment") &&
+          crossedTimelineHardCap(old.entries, sorted, "comment");
+        return updateTimelineEntries(withoutObserved, () => sorted);
+      }
+      const observedIndex = (old.observedCreatedComments ?? []).findIndex(
+        (entry) => matchesExpected(entry),
+      );
+      if (observedIndex === -1) return old;
+      const observedCreatedComments = [...(old.observedCreatedComments ?? [])];
+      const [observed] = observedCreatedComments.splice(observedIndex, 1);
+      const withoutObserved = observedCreatedComments.length
+        ? { ...old, observedCreatedComments }
+        : omitObservedCreatedComments({ ...old, observedCreatedComments });
+      const hasServerEntry = old.entries.some(
+        (entry) => entry.type === "comment" && entry.id === observed.id,
+      );
+      const targetOptimisticId =
+        observedComments.length < matchingPendingIds.length && allMatchingRequestsFailed
+          ? matchingPendingIds.find((id) => id !== optimisticId && failedIds.has(id)) ?? optimisticId
+          : optimisticId;
+      reconciledIds.push(targetOptimisticId);
+      const nextEntries = hasServerEntry
+        ? old.entries.filter((entry) => entry.id !== targetOptimisticId)
+        : old.entries.some((entry) => entry.id === targetOptimisticId)
+          ? old.entries.map((entry) => entry.id === targetOptimisticId ? observed : entry)
+          : [...old.entries, observed];
+      const sorted = sortTimelineEntriesAsc(nextEntries);
+      crossedKind =
+        !old.truncatedKinds.includes("comment") &&
+        crossedTimelineHardCap(old.entries, sorted, "comment");
+      return updateTimelineEntries(withoutObserved, () => sorted);
+    },
+  );
+  if (crossedKind) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  }
+  return reconciledIds;
+}
+
+function removeObservedCreatedComment(
+  data: MobileTimelineQueryData | undefined,
+  commentId: string,
+) {
+  if (!data || !("observedCreatedComments" in data)) return data;
+  const observedCreatedComments = data.observedCreatedComments?.filter(
+    (entry) => entry.id !== commentId,
+  );
+  return observedCreatedComments?.length
+    ? { ...data, observedCreatedComments }
+    : omitObservedCreatedComments(data);
+}
+
+function omitObservedCreatedComments(data: MobileTimelineQueryData) {
+  const { observedCreatedComments: _observed, ...rest } = data;
+  return rest;
+}
+
+function normalizeCommentContentForMatch(content: string) {
+  return content.replace(/\u0000/g, "");
+}
+
+export function patchTimelineEntry(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  predicate: TimelinePredicate,
+  mutate: TimelineMutate,
+) {
+  qc.setQueryData<TimelineQueryData>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => updateTimelineEntries(
+      old,
+      (entries) => entries.map((entry) => (predicate(entry) ? mutate(entry) : entry)),
+    ),
+  );
+}
+
+export function replaceCommentTimelineEntry(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  entry: TimelineEntry,
+) {
+  if (entry.revision === undefined) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  }
+  patchTimelineEntry(
+    qc,
+    wsId,
+    issueId,
+    (current) => current.type === "comment" && current.id === entry.id,
+    (current) =>
+      acceptsRevision(current.revision, entry.revision)
+        ? {
+            ...entry,
+            actor_name: entry.actor_name ?? current.actor_name,
+            actor_avatar_url:
+              entry.actor_avatar_url ?? current.actor_avatar_url,
+          }
+        : current,
+  );
+}
+
+export function advanceCommentRevision(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  commentId: string,
+  revision: number | undefined,
+) {
+  if (revision === undefined) return;
+  patchTimelineEntry(
+    qc,
+    wsId,
+    issueId,
+    (entry) => entry.type === "comment" && entry.id === commentId,
+    (entry) => entry.revision === undefined || revision > entry.revision
+      ? { ...entry, revision }
+      : entry,
+  );
+}
+
+export function removeTimelineEntry(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  predicate: TimelinePredicate,
+) {
+  qc.setQueryData<TimelineQueryData>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => updateTimelineEntries(
+      old,
+      (entries) => entries.filter((entry) => !predicate(entry)),
+    ),
+  );
+}
+
+/**
+ * Cascade-delete a comment and every descendant reply (reply-to-reply
+ * chains included). Mirrors the server's cascade in `comment.go:DeleteComment`
+ * and web's `comment:deleted` handler at
+ * `packages/views/issues/hooks/use-issue-timeline.ts:164-194`.
+ *
+ * Without this, removing only the root entry leaves the replies as
+ * "orphans" — `buildTimelineRows` then promotes them to top-level rows
+ * (its orphan-rescue branch), so the user would see ghost replies after a
+ * thread delete on another client. Same-N rule violation.
+ *
+ * BFS rather than recursive Set-union: cheaper for arbitrary depth chains
+ * and avoids recursion-depth concerns on large threads.
+ */
+export function removeCommentCascade(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  commentId: string,
+) {
+  qc.setQueryData<TimelineQueryData>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old) return old;
+      const removed = new Set<string>([commentId]);
+      // Iterate to fixed point — a single forward pass catches direct
+      // children; later passes catch reply-to-reply chains. Bounded by
+      // the timeline length, so worst case O(N²) on a degenerate chain
+      // but N is p99 30 and chains are typically depth 1-2.
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const entry of old.entries) {
+          if (
+            entry.type === "comment" &&
+            entry.parent_id &&
+            removed.has(entry.parent_id) &&
+            !removed.has(entry.id)
+          ) {
+            removed.add(entry.id);
+            changed = true;
+          }
+        }
+      }
+      return updateTimelineEntries(
+        old,
+        (entries) => entries.filter(
+          (entry) => !(entry.type === "comment" && removed.has(entry.id)),
+        ),
+      );
+    },
+  );
+}
+
+// =====================================================
+// My Issues list (flat Issue[] across many keys)
+// =====================================================
+
+export function patchMyIssuesList(
+  qc: QueryClient,
+  wsId: string,
+  partial: Partial<Issue> & { id: string },
+) {
+  if (partial.revision === undefined) {
+    qc.invalidateQueries({ queryKey: issueKeys.myAll(wsId) });
+  }
+  // myList is keyed by (wsId, scope, filter); we don't know which entries
+  // the issue belongs to, so update every cached one. Any not-yet-loaded
+  // list will fetch fresh on mount.
+  qc.setQueriesData<Issue[]>({ queryKey: issueKeys.myAll(wsId) }, (old) =>
+    old ? old.map((i) =>
+      i.id === partial.id && acceptsRevision(i.revision, partial.revision)
+        ? { ...i, ...partial }
+        : i,
+    ) : old,
+  );
+  reconcileIssueFullSnapshotRevision(qc, wsId, partial.id, partial.revision);
+}
+
+export function removeFromMyIssuesList(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+) {
+  qc.setQueriesData<Issue[]>({ queryKey: issueKeys.myAll(wsId) }, (old) =>
+    old ? old.filter((i) => i.id !== issueId) : old,
+  );
+}
+
+// =====================================================
+// Workspace Issues list (flat Issue[] under list(wsId))
+// =====================================================
+
+export function patchIssuesList(
+  qc: QueryClient,
+  wsId: string,
+  partial: Partial<Issue> & { id: string },
+) {
+  if (partial.revision === undefined) {
+    qc.invalidateQueries({ queryKey: issueKeys.list(wsId) });
+  }
+  // setQueriesData prefix-matches, so this covers BOTH the legacy exact
+  // `list(wsId)` entry AND the parametrized Tasks-tab entries
+  // (`taskList(wsId, filter)`, RUYI-344) in one pass.
+  qc.setQueriesData<Issue[]>({ queryKey: issueKeys.list(wsId) }, (old) =>
+    old ? old.map((i) =>
+      i.id === partial.id && acceptsRevision(i.revision, partial.revision)
+        ? { ...i, ...partial }
+        : i,
+    ) : old,
+  );
+  reconcileIssueFullSnapshotRevision(qc, wsId, partial.id, partial.revision);
+}
+
+export function prependToIssuesList(
+  qc: QueryClient,
+  wsId: string,
+  issue: Issue,
+) {
+  qc.setQueryData<Issue[]>(issueKeys.list(wsId), (old) => {
+    if (!old) return old;
+    if (old.some((i) => i.id === issue.id)) return old;
+    return [issue, ...old];
+  });
+  // The parametrized Tasks-tab entries can't take a blind prepend — whether
+  // the new issue belongs in a filtered/sorted window is the server's call.
+  // Invalidate only the parametrized family (key length > the exact entry's),
+  // leaving the legacy exact list to the cheap prepend above.
+  qc.invalidateQueries({
+    queryKey: issueKeys.list(wsId),
+    predicate: (query) => query.queryKey.length > 3,
+  });
+}
+
+export function removeFromIssuesList(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+) {
+  qc.setQueriesData<Issue[]>({ queryKey: issueKeys.list(wsId) }, (old) =>
+    old ? old.filter((i) => i.id !== issueId) : old,
+  );
+}
+
+// =====================================================
+// Reactions
+// =====================================================
+
+export function addCommentReaction(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  commentId: string,
+  reaction: Reaction,
+  commentRevision?: number,
+) {
+  if (commentRevision === undefined) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  }
+  patchTimelineEntry(
+    qc,
+    wsId,
+    issueId,
+    (e) => e.type === "comment" && e.id === commentId,
+    (e) => acceptsRevision(e.revision, commentRevision) ? ({
+      ...e,
+      revision: commentRevision ?? e.revision,
+      reactions: [...(e.reactions ?? []).filter((r) => r.id !== reaction.id), reaction],
+    }) : e,
+  );
+}
+
+export function removeCommentReaction(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  commentId: string,
+  emoji: string,
+  actorId: string,
+  commentRevision?: number,
+) {
+  if (commentRevision === undefined) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  }
+  patchTimelineEntry(
+    qc,
+    wsId,
+    issueId,
+    (e) => e.type === "comment" && e.id === commentId,
+    (e) => acceptsRevision(e.revision, commentRevision) ? ({
+      ...e,
+      revision: commentRevision ?? e.revision,
+      reactions: (e.reactions ?? []).filter(
+        (r) => !(r.emoji === emoji && r.actor_id === actorId),
+      ),
+    }) : e,
+  );
+}
+
+export function addIssueReaction(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  reaction: IssueReaction,
+  issueRevision?: number,
+) {
+  if (
+    isOlderThanRecordedAuxiliaryProjection(
+      qc,
+      wsId,
+      issueId,
+      issueRevision,
+      "issue_reactions",
+    )
+  ) {
+    return;
+  }
+  if (issueRevision === undefined) {
+    qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, issueId) });
+  }
+  qc.setQueryData<Issue>(issueKeys.detail(wsId, issueId), (old) => {
+    if (!old) return old;
+    if (!acceptsRevision(old.revision, issueRevision)) return old;
+    const existing = old.reactions ?? [];
+    if (existing.some((r) => r.id === reaction.id)) {
+      return old;
+    }
+    return { ...old, reactions: [...existing, reaction] };
+  });
+  onIssueAuxiliaryRevision(
+    qc,
+    wsId,
+    issueId,
+    issueRevision,
+    "issue_reactions",
+  );
+}
+
+export function removeIssueReaction(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  emoji: string,
+  actorId: string,
+  issueRevision?: number,
+) {
+  if (
+    isOlderThanRecordedAuxiliaryProjection(
+      qc,
+      wsId,
+      issueId,
+      issueRevision,
+      "issue_reactions",
+    )
+  ) {
+    return;
+  }
+  if (issueRevision === undefined) {
+    qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, issueId) });
+  }
+  qc.setQueryData<Issue>(issueKeys.detail(wsId, issueId), (old) =>
+    old && acceptsRevision(old.revision, issueRevision)
+      ? {
+          ...old,
+          reactions: (old.reactions ?? []).filter(
+            (r) => !(r.emoji === emoji && r.actor_id === actorId),
+          ),
+        }
+      : old,
+  );
+  onIssueAuxiliaryRevision(
+    qc,
+    wsId,
+    issueId,
+    issueRevision,
+    "issue_reactions",
+  );
+}
+
+// =====================================================
+// Labels
+// =====================================================
+
+export function patchIssueLabels(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  labels: Label[],
+  issueRevision?: number,
+) {
+  if (
+    isOlderThanRecordedAuxiliaryProjection(
+      qc,
+      wsId,
+      issueId,
+      issueRevision,
+      "labels",
+    )
+  ) {
+    return;
+  }
+  const applyLabels = (issue: Issue) =>
+    issue.id === issueId && acceptsRevision(issue.revision, issueRevision)
+      ? { ...issue, labels }
+      : issue;
+  qc.setQueryData<Issue>(issueKeys.detail(wsId, issueId), (old) =>
+    old ? applyLabels(old) : old,
+  );
+  qc.setQueriesData<Issue[]>({ queryKey: issueKeys.myAll(wsId) }, (old) =>
+    old?.map(applyLabels),
+  );
+  qc.setQueryData<Issue[]>(issueKeys.list(wsId), (old) =>
+    old?.map(applyLabels),
+  );
+  onIssueAuxiliaryRevision(qc, wsId, issueId, issueRevision, "labels");
+}
+
+// =====================================================
+// Helpers — payload normalization
+// =====================================================
+
+/**
+ * Convert a Comment WS payload into a TimelineEntry. The two types share
+ * most fields but use different actor-key names (Comment uses
+ * `author_type/author_id`; TimelineEntry uses `actor_type/actor_id`).
+ */
+export function commentToTimelineEntry(comment: Comment): TimelineEntry {
+  return {
+    type: "comment",
+    id: comment.id,
+    actor_type: comment.author_type,
+    actor_id: comment.author_id,
+    created_at: comment.created_at,
+    content: comment.content,
+    parent_id: comment.parent_id,
+    updated_at: comment.updated_at,
+    comment_type: comment.type,
+    reactions: comment.reactions,
+    attachments: comment.attachments,
+    // Carry resolve state through. Web's commentToTimelineEntry includes
+    // these (`packages/views/issues/hooks/use-issue-timeline.ts:42-58`); the
+    // earlier mobile copy dropped them, so a `comment:updated` event on a
+    // resolved comment would silently strip the resolved flag from the
+    // cache and the UI would un-dim.
+    resolved_at: comment.resolved_at,
+    resolved_by_type: comment.resolved_by_type,
+    resolved_by_id: comment.resolved_by_id,
+    source_task_id: comment.source_task_id,
+    revision: comment.revision,
+  };
+}

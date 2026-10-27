@@ -1,0 +1,316 @@
+/**
+ * Shared picker and upload state for issue-create and message-composer
+ * attachment zones. Every picked asset is rendered immediately, then moves
+ * through uploading -> completed/failed without changing its join order.
+ *
+ * `inFlight` remains a count rather than a boolean so concurrent uploads cannot
+ * unblock submit when only the first request settles. Removing an uploading
+ * item abandons that result and removes it from the effective count; a late
+ * response is ignored instead of re-inserting the attachment.
+ */
+import { useCallback, useRef, useState } from "react";
+import { Alert } from "react-native";
+import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
+import { api, MAX_FILE_SIZE, type FileAsset } from "@/data/api";
+import {
+  assetFromDocumentPicker,
+  assetFromImagePicker,
+  partitionOversize,
+  type PickedAsset,
+} from "@/lib/picked-asset";
+import { useActionSheet } from "@/components/ui/action-sheet";
+import {
+  removeAttachmentZoneItem,
+  updateAttachmentZoneItem,
+  type AttachmentZoneItem,
+} from "@/lib/attachment-zone";
+import { useT } from "@/lib/use-t";
+
+export interface UploadContext {
+  issueId?: string;
+  commentId?: string;
+}
+
+interface UseFileAttachOptions {
+  uploadContext?: UploadContext;
+  alertOnError?: boolean;
+  onAttachmentsEnqueued?: () => void;
+}
+
+function makeLocalId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// RUYI-477: expo-image-picker ~55 在 iOS 上默认
+// preferredAssetRepresentationMode=.current，选 HEIC（实况照片静态帧、
+// 高效格式拍摄）时原样透出 HEIC 容器，Chromium/Android 渲染端无法解码。
+// compatible 让 PHPicker 直接给出 JPEG 兼容表示，从选择段根修。
+const IMAGE_PICKER_OPTIONS = {
+  mediaTypes: ["images"] as ["images"],
+  quality: 1,
+  preferredAssetRepresentationMode:
+    ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+};
+const LIBRARY_PICKER_OPTIONS = {
+  ...IMAGE_PICKER_OPTIONS,
+  // RUYI-42 multi-select: 相册一次可多选，拍照单张。
+  allowsMultipleSelection: true,
+};
+
+/** One alert for the oversize part of a multi-pick. Filenames are user
+ * content and follow the translated size-limit sentence. */
+export function useOversizeAlert() {
+  const { t } = useT("common");
+  return useCallback(
+    (oversized: PickedAsset[]) => {
+      if (oversized.length === 0) return;
+      const names = oversized.map((asset) => asset.name).join("\n");
+      Alert.alert(
+        t("composer.file_too_large_title", "File too large"),
+        t(
+          "composer.file_too_large_message",
+          "Files must be smaller than {{size}} MB.",
+          { size: Math.floor(MAX_FILE_SIZE / (1024 * 1024)) },
+        ) + (names ? `\n${names}` : ""),
+      );
+    },
+    [t],
+  );
+}
+
+export function useFileAttach({
+  uploadContext,
+  alertOnError = true,
+  onAttachmentsEnqueued,
+}: UseFileAttachOptions = {}) {
+  const { t } = useT("common");
+  const onOversize = useOversizeAlert();
+  // RUYI-477: 贴图按钮的「相册/拍照」源选择弹层（顺序相册在前，
+  // RUYI-553）；消费方挂载 <ActionSheetModal {...imageSourceModalProps} />
+  // （Android 为 RN Modal，iOS 走 ActionSheetIOS 命令式路径）。
+  const imageSourceSheet = useActionSheet();
+  const [attachments, setAttachments] = useState<AttachmentZoneItem[]>([]);
+  const attachmentsRef = useRef(attachments);
+  const activeUploadsRef = useRef(new Set<string>());
+  const [inFlight, setInFlight] = useState(0);
+
+  const updateAttachments = useCallback(
+    (update: (current: AttachmentZoneItem[]) => AttachmentZoneItem[]) => {
+      setAttachments((current) => {
+        const next = update(current);
+        attachmentsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const finishUpload = useCallback((localId: string) => {
+    if (!activeUploadsRef.current.delete(localId)) return;
+    setInFlight((count) => Math.max(0, count - 1));
+  }, []);
+
+  const startUpload = useCallback(
+    async (localId: string, asset: FileAsset) => {
+      if (activeUploadsRef.current.has(localId)) return;
+      activeUploadsRef.current.add(localId);
+      setInFlight((count) => count + 1);
+      try {
+        const result = await api.uploadFile(asset, uploadContext);
+        if (!activeUploadsRef.current.has(localId)) return;
+        updateAttachments((current) =>
+          updateAttachmentZoneItem(current, localId, (item) => ({
+            ...item,
+            filename: result.filename,
+            mimeType: result.content_type || item.mimeType,
+            status: "completed",
+            id: result.id,
+            url: result.url,
+            downloadUrl: result.download_url,
+            error: undefined,
+          })),
+        );
+      } catch (err) {
+        if (!activeUploadsRef.current.has(localId)) return;
+        const message =
+          err instanceof Error ? err.message : t("unknown_error", "Unknown error");
+        updateAttachments((current) =>
+          updateAttachmentZoneItem(current, localId, (item) => ({
+            ...item,
+            status: "failed",
+            error: message,
+          })),
+        );
+        if (alertOnError) {
+          Alert.alert(
+            t("composer.upload_failed_title", "Upload failed"),
+            message,
+          );
+        }
+      } finally {
+        finishUpload(localId);
+      }
+    },
+    [alertOnError, finishUpload, t, updateAttachments, uploadContext],
+  );
+
+  const enqueueAssets = useCallback(
+    (assets: PickedAsset[]) => {
+      const entries = assets.map((asset) => ({
+        localId: makeLocalId(),
+        asset,
+      }));
+      updateAttachments((current) => [
+        ...current,
+        ...entries.map(({ localId, asset }) => ({
+          localId,
+          localUri: asset.uri,
+          filename: asset.name,
+          mimeType: asset.type,
+          status: "uploading" as const,
+        })),
+      ]);
+      onAttachmentsEnqueued?.();
+      for (const { localId, asset } of entries) {
+        void startUpload(localId, asset);
+      }
+    },
+    [onAttachmentsEnqueued, startUpload, updateAttachments],
+  );
+
+  // RUYI-477: 相册/拍照共用 IMAGE_PICKER_OPTIONS（见模块头注释）。
+  const pickAndUploadImages = useCallback(async () => {
+    const result = await ImagePicker.launchImageLibraryAsync(
+      LIBRARY_PICKER_OPTIONS,
+    );
+    if (result.canceled) return;
+    const assets = (result.assets ?? []).map(assetFromImagePicker);
+    const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
+    onOversize(oversized);
+    if (ok.length > 0) enqueueAssets(ok);
+  }, [enqueueAssets, onOversize]);
+
+  const takeAndUploadPhoto = useCallback(async () => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert(
+        t("composer.camera_permission_title", "Camera permission needed"),
+        t(
+          "composer.camera_permission_message",
+          "Multica needs camera access to take photos for attachments. Enable it in system settings.",
+        ),
+      );
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync(IMAGE_PICKER_OPTIONS);
+    if (result.canceled) return;
+    const assets = (result.assets ?? []).map(assetFromImagePicker);
+    const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
+    onOversize(oversized);
+    if (ok.length > 0) enqueueAssets(ok);
+  }, [enqueueAssets, onOversize, t]);
+
+  const chooseImageSource = useCallback(() => {
+    // RUYI-553: 相册在前、拍照在后（Owner 指定顺序）。iOS ActionSheetIOS
+    // 与 Android ActionSheetModal 共用本数组，顺序一处改动两端一致；
+    // onSelect 的索引映射与 options 顺序耦合，file-attach-camera.test.tsx
+    // 两侧都锁。
+    imageSourceSheet.show({
+      options: [
+        t("composer.image_source_library", "Choose from Library"),
+        t("composer.image_source_camera", "Take Photo"),
+        t("composer.cancel", "Cancel"),
+      ],
+      cancelButtonIndex: 2,
+      onSelect: (index) => {
+        if (index === 0) void pickAndUploadImages();
+        else if (index === 1) void takeAndUploadPhoto();
+      },
+    });
+  }, [imageSourceSheet, pickAndUploadImages, t, takeAndUploadPhoto]);
+
+  const pickAndUploadFiles = useCallback(async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: "*/*",
+      copyToCacheDirectory: true,
+      multiple: true,
+    });
+    if (result.canceled) return;
+    const assets = (result.assets ?? []).map(assetFromDocumentPicker);
+    const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
+    onOversize(oversized);
+    if (ok.length > 0) enqueueAssets(ok);
+  }, [enqueueAssets, onOversize]);
+
+  const removeAttachment = useCallback(
+    (localId: string) => {
+      if (activeUploadsRef.current.delete(localId)) {
+        setInFlight((count) => Math.max(0, count - 1));
+      }
+      updateAttachments((current) => removeAttachmentZoneItem(current, localId));
+    },
+    [updateAttachments],
+  );
+
+  const retryAttachment = useCallback(
+    (localId: string) => {
+      const item = attachmentsRef.current.find(
+        (candidate) => candidate.localId === localId,
+      );
+      if (!item || item.status !== "failed") return;
+      updateAttachments((current) =>
+        updateAttachmentZoneItem(current, localId, (candidate) => ({
+          ...candidate,
+          status: "uploading",
+          error: undefined,
+        })),
+      );
+      void startUpload(localId, {
+        uri: item.localUri,
+        name: item.filename,
+        type: item.mimeType,
+      });
+    },
+    [startUpload, updateAttachments],
+  );
+
+  const clearAttachments = useCallback(() => {
+    const abandonedCount = activeUploadsRef.current.size;
+    activeUploadsRef.current.clear();
+    if (abandonedCount > 0) {
+      setInFlight((count) => Math.max(0, count - abandonedCount));
+    }
+    updateAttachments(() => []);
+  }, [updateAttachments]);
+
+  const restoreAttachments = useCallback(
+    (snapshot: AttachmentZoneItem[]) => {
+      activeUploadsRef.current.clear();
+      setInFlight(0);
+      updateAttachments(() => snapshot);
+    },
+    [updateAttachments],
+  );
+
+  return {
+    attachments,
+    pickAndUploadImages,
+    // RUYI-694 板2「+」面板：相机大按钮直启拍照（原 RUYI-477 只经
+    // chooseImageSource 的源选择弹层可达）。
+    takeAndUploadPhoto,
+    pickAndUploadFiles,
+    // RUYI-477: 贴图按钮入口——弹出「相册 / 拍照」源选择（相册在前，
+    // RUYI-553）；imageSourceModalProps 供消费方挂载 <ActionSheetModal />。
+    chooseImageSource,
+    imageSourceModalProps: imageSourceSheet.modalProps,
+    removeAttachment,
+    retryAttachment,
+    clearAttachments,
+    restoreAttachments,
+    // RUYI-463: 供系统分享路径复用同一条入队/上传通道（原生选 paper 的
+    // pickAndUpload* 只覆盖系统选择器入口）。
+    enqueueAssets,
+    uploading: inFlight > 0,
+  };
+}

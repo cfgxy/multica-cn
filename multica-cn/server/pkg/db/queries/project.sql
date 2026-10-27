@@ -1,0 +1,80 @@
+-- name: ListProjects :many
+SELECT * FROM project
+WHERE workspace_id = $1
+  AND (sqlc.narg('status')::text IS NULL OR status = sqlc.narg('status'))
+  AND (sqlc.narg('priority')::text IS NULL OR priority = sqlc.narg('priority'))
+ORDER BY created_at DESC;
+
+-- name: GetProjectInWorkspace :one
+SELECT * FROM project
+WHERE id = $1 AND workspace_id = $2;
+
+-- name: LockProjectForChatSessionCreate :one
+-- Conflicts with project deletion so a chat session cannot commit a soft
+-- project reference after the delete transaction has swept existing sessions.
+SELECT id FROM project
+WHERE id = $1 AND workspace_id = $2
+FOR KEY SHARE;
+
+-- name: LockProjectForDelete :one
+-- Serializes project deletion with chat-session creation. The handler locks,
+-- clears every soft chat reference, and deletes the project in one transaction.
+SELECT id FROM project
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE;
+
+-- name: DeletePromptProposalsByProjectReference :exec
+-- Project deletion removes proposals targeting that carrier as well as moves
+-- whose destination is the deleted project. They cannot be enacted afterward.
+DELETE FROM prompt_proposal
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND ((carrier_scope = 'project' AND carrier_scope_id = sqlc.arg('project_id')::uuid)
+    OR (move_to_scope = 'project' AND move_to_scope_id = sqlc.arg('project_id')::uuid));
+
+-- name: CreateProject :one
+INSERT INTO project (
+    workspace_id, title, description, instructions, icon, status,
+    lead_type, lead_id, priority, start_date, due_date
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+) RETURNING *;
+
+-- name: UpdateProject :one
+-- expected_revision is the optimistic lock (RUYI-354): when set, the write
+-- only lands if the row still carries the revision the caller read. The
+-- predicate lives in the UPDATE's own WHERE (not just the handler pre-check)
+-- so a concurrent writer between the handler's read and this statement loses
+-- the race with 0 rows instead of silently overwriting.
+UPDATE project SET
+    title = COALESCE(sqlc.narg('title'), title),
+    description = sqlc.narg('description'),
+    instructions = CASE WHEN @instructions_set::boolean THEN sqlc.narg('instructions') ELSE instructions END,
+    icon = sqlc.narg('icon'),
+    status = COALESCE(sqlc.narg('status'), status),
+    priority = COALESCE(sqlc.narg('priority'), priority),
+    lead_type = sqlc.narg('lead_type'),
+    lead_id = sqlc.narg('lead_id'),
+    start_date = sqlc.narg('start_date'),
+    due_date = sqlc.narg('due_date'),
+    updated_at = now(),
+    revision = revision + 1
+WHERE id = $1
+  AND (sqlc.narg('expected_revision')::bigint IS NULL OR revision = sqlc.narg('expected_revision')::bigint)
+RETURNING *;
+
+-- name: DeleteProject :exec
+-- Defense-in-depth: workspace_id is a SQL-layer tenant guard. See DeleteIssue.
+DELETE FROM project WHERE id = $1 AND workspace_id = $2;
+
+-- name: CountIssuesByProject :one
+SELECT count(*) FROM issue
+WHERE project_id = $1;
+
+-- name: GetProjectIssueStats :many
+SELECT project_id,
+       count(*)::bigint AS total_count,
+       count(*) FILTER (WHERE status = ANY(sqlc.arg('terminal_status_keys')::text[]))::bigint AS done_count
+FROM issue
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND project_id = ANY(sqlc.arg('project_ids')::uuid[])
+GROUP BY project_id;

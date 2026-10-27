@@ -1,0 +1,121 @@
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+} from "recharts";
+import {
+  useBarSelection,
+  dailyBarSpans,
+  type BarSelection,
+} from "./bar-selection";
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "@multica/ui/components/ui/chart";
+import { useT } from "../../../i18n";
+import {
+  activeFailureClasses,
+  formatRate,
+  labelOf,
+  useFailureClassConfig,
+} from "./failure-class-visuals";
+import type { DailyErrorsData } from "@multica/core/dashboard";
+
+// Data shape lives with its producer: `@multica/core/dashboard/aggregate`
+// (RUYI-638 moved the dashboard aggregators to core so mobile shares them).
+export type { DailyErrorsData } from "@multica/core/dashboard";
+
+/**
+ * Failed tasks per day, stacked by failure class.
+ *
+ * Bar height is the absolute failure count — a spike is what an operator
+ * scans for. The rate lives in the tooltip instead of on the y-axis: as a
+ * chart series it would be dominated by low-volume days, where a single
+ * failure out of one task reads as a 100% outage.
+ */
+export function DailyErrorsChart({
+  data,
+  selection,
+  onSelectionChange,
+}: {
+  data: DailyErrorsData[];
+  selection?: BarSelection | null;
+  onSelectionChange?: (next: BarSelection | null) => void;
+}) {
+  const { t } = useT("usage");
+  const config = useFailureClassConfig();
+  const classes = activeFailureClasses(data);
+  const barSel = useBarSelection({
+    spans: dailyBarSpans(data),
+    selection,
+    onSelectionChange,
+  });
+  const barCells = barSel.cells(data.length, {
+    keyOf: (i) => data[i]?.date ?? String(i),
+  });
+
+
+  return (
+    <ChartContainer config={config} className="aspect-[3/1] w-full">
+      <BarChart
+        data={data}
+        margin={{ left: 0, right: 0, top: 4, bottom: 0 }}
+        {...barSel.chartProps}
+      >
+        <CartesianGrid vertical={false} />
+        <XAxis
+          dataKey="label"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          interval="preserveStartEnd"
+        />
+        <YAxis
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          allowDecimals={false}
+          width="auto"
+        />
+        <ChartTooltip
+          content={
+            <ChartTooltipContent
+              // `name` is the Recharts dataKey — the raw class id
+              // ("rate_limit"). Resolve it through the chart config so the
+              // tooltip shows the translated label the legend already uses.
+              formatter={(value, name) => `${value} ${labelOf(config, name)}`}
+              footer={(payload) => {
+                const row = payload[0]?.payload as DailyErrorsData | undefined;
+                if (!row) return null;
+                return (
+                  <div className="flex items-center justify-between gap-2 font-medium">
+                    <span>{t(($) => $.errors.tooltip_rate)}</span>
+                    <span className="font-mono tabular-nums">
+                      {formatRate(row.failed, row.total)}
+                    </span>
+                  </div>
+                );
+              }}
+            />
+          }
+        />
+        {classes.map((c, i) => (
+          <Bar
+            key={c}
+            dataKey={c}
+            stackId="errors"
+            fill={`var(--color-${c})`}
+            // Only the topmost segment gets rounded corners, so the stack
+            // reads as one bar rather than a pile of pills.
+            radius={i === classes.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
+          >
+            {barCells}
+          </Bar>
+        ))}
+      </BarChart>
+    </ChartContainer>
+  );
+}

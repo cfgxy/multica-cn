@@ -1,0 +1,892 @@
+{
+  "title": "자기 진화",
+  "description": "에이전트와 스쿼드 프롬프트가 시간에 따라 어떻게 바뀌었는지, 무엇이 그 변화를 만들었는지 확인합니다.",
+  "overview": {
+    "loading": "개요를 불러오는 중",
+    "error": "개요를 불러오지 못했습니다",
+    "retry": "다시 시도",
+    "versions": {
+      "title": "프롬프트 버전 활동",
+      "empty": "어떤 계층에도 버전 기록이 아직 없습니다.",
+      "currentVersion": "현재 v{{version}}",
+      "currentUnset": "{{count}}개 대상이 각자 진행 중",
+      "count": "{{subjects}}개 대상 · 총 {{count}}개 버전",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "품질 측정값(최근 {{days}}일)",
+      "empty": "이 기간에 측정된 실행이 없습니다.",
+      "runs": "{{count}}회 실행",
+      "subjects": "측정값이 있는 에이전트 {{count}}개",
+      "excluded": "환경 또는 공급자 장애로 {{count}}회 실행 제외"
+    },
+    "quiz": {
+      "title": "문제은행 결론",
+      "empty": "기록된 측정이 아직 없습니다.",
+      "versions": "베이스라인 v{{baseline}} → v{{current}}",
+      "singleVersion": "현재 v{{current}}(첫 버전, 베이스라인 없음)",
+      "insufficientSample": "샘플 부족(베이스라인 {{baseline}}건, 현재 {{current}}건의 유효 측정 필요)",
+      "lastMeasured": "마지막 측정 {{date}}"
+    },
+    "proposals": {
+      "title": "제안 풀",
+      "intro": "제안은 일일 회고의 자동 분석으로 풀에 들어가며, 수동 작성도 가능합니다.",
+      "counts": "제안 {{total}}건 · 오너 승인 대기 {{pending}}건",
+      "lastAuto": "최근 자동 제안(일일 회고): {{date}}",
+      "noneAuto": "아직 자동 제안이 없습니다.",
+      "empty": "풀이 비어 있습니다. 일일 회고를 설정하면 매일의 분석으로 제안이 자동으로 풀에 들어갑니다."
+    },
+    "experiences": {
+      "title": "작업 경험 후보",
+      "loading": "작업 경험을 불러오는 중",
+      "error": "작업 경험을 불러오지 못했습니다",
+      "retry": "다시 시도",
+      "empty": "검증된 반복 적응 패턴이 아직 없습니다.",
+      "proposalsLink": "제안 거버넌스 검토",
+      "sourceCount": "완료된 작업 {{count}}건에서 확인",
+      "sourceTask": "작업 {{task}} · {{policy}} · {{date}}",
+      "currentStrategy": "현재 방식: {{strategy}}",
+      "scope": "적용 범위 {{scope}}",
+      "allowedActions": "허용된 동작: {{actions}}",
+      "limitation": "증거 한계",
+      "repeatedLimit": "반복된 작업 단위 증거는 승인된 workspace 정책이 아닙니다. 제안은 거버넌스, 퀴즈, 적용 게이트를 통과하기 전까지 초안입니다.",
+      "draftProposal": "제안 초안 작성",
+      "creatingProposal": "초안 작성 중…",
+      "proposalCreated": "초안 생성 · 제안 풀 열기",
+      "createFailed": "제안 초안을 만들지 못했습니다. 후보는 비활성 상태로 유지됩니다.",
+      "proposalName": "반복 적응 후보 {{candidate}} ({{count}}건)",
+      "proposalBody": "트리거: {{trigger}}\n적용 범위: {{scope}}\n제안 전략: {{strategy}}\n허용 동작: {{actions}}\n출처 작업: {{tasks}}\n제한: {{limitation}} 거버넌스 승인 및 적용 전까지 유효 정책은 변경되지 않습니다."
+    },
+    "knowledge": {
+      "title": "지식 미러",
+      "empty": "등록된 디렉터리가 아직 없습니다.",
+      "dirs": "디렉터리 {{count}}개",
+      "entries": "항목 {{count}}건",
+      "lastScan": "마지막 스캔: {{result}} · {{date}}",
+      "neverScanned": "스캔 없음"
+    },
+    "skills": {
+      "title": "Skill 관측",
+      "empty": "등록된 skill이 아직 없습니다.",
+      "count": "skill {{count}}개",
+      "invocations": "누적 명시 호출 {{count}}회"
+    },
+    "viewAll": "보기"
+  },
+  "skills": {
+    "choose": "skill 선택",
+    "manage": "skill 관리",
+    "empty": "아직 skill이 없습니다.",
+    "history": "버전 기록",
+    "noVersions": "이 skill의 버전 기록이 없습니다.",
+    "usage": "관측된 사용",
+    "allTime": "누적",
+    "last30": "최근 30일",
+    "assigned": "할당된 에이전트",
+    "invocations_other": "명시적 호출 {{count}}회",
+    "observedSince": "처음 관측된 호출: {{date}}. 이전 사용은 알 수 없습니다.",
+    "noObserved": "명시적 호출 기록이 없습니다. 이전 사용은 알 수 없습니다.",
+    "versionCost": "버전별 token 사용량",
+    "measuredRuns": "실행 {{count}}건, token 데이터 {{samples}}건",
+    "notCollected": "실행 데이터 미수집",
+    "noCostData": "token 데이터 없음",
+    "insufficientCost": "표본 부족",
+    "medianTokens": "중앙값 {{count}} token",
+    "versionComparison": "버전별 측정값",
+    "compareTo": "비교 버전",
+    "noComparison": "비교하려면 버전이 두 개 이상 필요합니다.",
+    "metric": "측정값",
+    "change": "차이",
+    "tokenMetric": "실행 token 중앙값",
+    "retryMetric": "재시도 실행 비율",
+    "noComparisonData": "실행 데이터 없음",
+    "comparisonCaveat": "명시적 호출만 집계합니다. 버전 간 차이는 관측값이며 skill의 인과 효과를 증명하지 않습니다. 차이를 표시하려면 양쪽에 각각 유효한 실행 표본이 5건 이상 필요합니다.",
+    "useVsControl": "사용 그룹 vs 대조 그룹",
+    "useGroup": "사용 그룹",
+    "controlGroup": "대조 그룹",
+    "perplexityMetric": "프롬프트 퍼플렉시티(D3)",
+    "perplexityNotScored": "평가 없음",
+    "notComparable": "양쪽 같은 프롬프트",
+    "perplexitySamePrompt": "퍼플렉시티는 프롬프트 버전 단위로 평가되며 두 그룹이 같은 프롬프트를 읽으므로 차이를 비교할 수 없습니다.",
+    "firstPassMetric": "일차 통과율(D7)",
+    "noReviewData": "리뷰 데이터 없음",
+    "useControlCaveat": "대조 그룹은 계측 기간 내 같은 역할·같은 프로젝트에서 스킬을 호출하지 않은 종료 run입니다. 차이는 양쪽 각 5샘플 이상일 때 표시됩니다.",
+    "versionEvents": "버전 이벤트",
+    "noVersionEvents": "아직 버전 이벤트가 없습니다(첫 버전은 이벤트가 아님).",
+    "versionEventTitle": "v{{from}} → v{{version}}",
+    "eventBefore": "이벤트 전 {{count}}회 실행",
+    "eventAfter": "이벤트 후 {{count}}회 실행",
+    "windowModeDays": "{{days}}일 윈도우",
+    "windowModeUses": "{{uses}}회 사용 윈도우",
+    "windowModeNone": "윈도우 내 사용 없음",
+    "recent": "최근 호출",
+    "chatRun": "채팅 실행",
+    "observational": "호출 횟수는 관측치이며 skill의 효과를 뜻하지 않습니다.",
+    "version": "버전 v{{version}}",
+    "usedAt": "{{date}} · 버전 {{version}}",
+    "diff": "이전 버전과 비교",
+    "restore": "이 버전 복원",
+    "restoreConfirm": "v{{version}}을 새 버전 v{{next}}로 복원합니다. 할당은 그대로 유지됩니다.",
+    "restoreError": "버전을 복원하지 못했습니다.",
+    "ownerOnly": "워크스페이스 Owner만 버전을 복원할 수 있습니다.",
+    "cancel": "취소",
+    "error": "skill 기록을 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "sources": {
+      "create": "생성",
+      "revision": "개정",
+      "edit": "편집",
+      "restore": "복원"
+    },
+    "catalogSearchLabel": "검색",
+    "catalogSearchPlaceholder": "이름으로 스킬 검색",
+    "catalogSourceFilter": "소스",
+    "catalogSourceAll": "모든 소스",
+    "catalogSourceWorkspace": "워크스페이스",
+    "catalogSourceRuntime": "런타임",
+    "catalogSourcePlugin": "플러그인",
+    "catalogSelectableHint": "선택 가능한 항목은 이 워크스페이스에 가져온 스킬입니다. 아래 런타임/플러그인 발견 항목은 표시만 되며 가져온 후에 선택할 수 있습니다.",
+    "catalogNoMatch": "현재 검색 또는 소스 필터와 일치하는 발견 항목이 없습니다.",
+    "discoveriesTitle": "런타임에서 발견",
+    "discoveryImport": "가져오기",
+    "discoveryImporting": "가져오는 중…",
+    "discoveryExists": "스킬 등록됨",
+    "discoveryLastSeen": "마지막 발견 {{date}}",
+    "discoveryImportedToast": "스킬을 가져왔습니다. 이제 자체 버전 기록과 함께 선택할 수 있습니다.",
+    "discoveryImportFailedToast": "가져오기에 실패했습니다. 런타임 연결을 확인한 후 다시 시도하세요."
+  },
+  "quality": {
+    "scopePicker": {
+      "label": "프롬프트 계층",
+      "agent": "에이전트",
+      "squad": "스쿼드",
+      "project": "프로젝트",
+      "workspace": "워크스페이스",
+      "subjectLabel": "대상",
+      "subjectPlaceholder": "에이전트를 선택하세요"
+    },
+    "range": {
+      "label": "기간",
+      "days": "최근 {{count}}일"
+    },
+    "since": "{{date}}부터 집계합니다. 그 이전 실행에는 계측이 없어 분모에 포함되지 않습니다.",
+    "noSubject": {
+      "title": "대상을 선택하세요",
+      "description": "일곱 개 차원은 프롬프트 계층별로 집계됩니다. 에이전트를 고르면 대시보드를 불러옵니다."
+    },
+    "loading": "측정값을 불러오는 중",
+    "error": {
+      "title": "대시보드를 불러오지 못했습니다",
+      "retry": "다시 시도"
+    },
+    "window": {
+      "title": "기간 내 전체 버전",
+      "runs": "실행 {{count}}회",
+      "days": "{{count}}일"
+    },
+    "timeline": {
+      "title": "버전",
+      "version": "v{{version}}",
+      "span": "{{first}} — {{last}}",
+      "compare": "비교",
+      "compareHint": "비교할 버전 두 개를 선택하세요",
+      "clear": "선택 해제",
+      "empty": "이 기간에 측정된 실행을 가진 버전이 없습니다."
+    },
+    "compare": {
+      "title": "버전 비교",
+      "description": "일곱 개 차원을 나란히 보여줍니다. 한쪽이라도 데이터가 없는 차원은 차이를 계산하지 않습니다.",
+      "dimension": "차원",
+      "delta": "Δ",
+      "noDelta": "—",
+      "close": "닫기"
+    },
+    "dimensions": {
+      "injected_tokens": {
+        "label": "D1 주입 비용",
+        "hint": "실행 한 번에 주입된 조합 프롬프트 토큰의 중앙값."
+      },
+      "run_tokens_median": {
+        "label": "D1 실행 비용",
+        "hint": "실행 한 번이 소비한 총 토큰의 중앙값."
+      },
+      "discipline": {
+        "label": "D2 규율성",
+        "hint": "규율성 점수 중앙값(100점 만점). 각 실행은 100점에서 시작하며, 기계적으로 판정 가능한 조항을 위반할 때마다 감점됩니다."
+      },
+      "tool_failure_rate": {
+        "label": "D4 턴 실패율",
+        "hint": "에이전트가 오류로 받은 도구 결과의 비율."
+      },
+      "retry_rate": {
+        "label": "D5 재시도",
+        "hint": "두 번 이상 시도해야 했던 실행의 비율."
+      },
+      "failure_attribution": {
+        "label": "D6 프롬프트 귀인 실패",
+        "hint": "원인이 프롬프트를 가리키는 실패 건수. 환경·공급자 실패는 세지 않습니다."
+      },
+      "first_pass_rate": {
+        "label": "D7 일회 통과율",
+        "hint": "리뷰에서 재작업 없이 승인된 이슈의 비율."
+      }
+    },
+    "measure": {
+      "ofRuns": "실행 {{count}}회 기준",
+      "ratio": "{{numerator}} / {{denominator}}",
+      "excluded": "환경·공급자 실패 {{count}}건 제외",
+      "noData": "데이터 없음",
+      "insufficient": "표본 부족",
+      "insufficientDetail": "{{sample}} / 필요 {{threshold}}",
+      "reason": {
+        "no_finished_runs": "이 기간에 끝난 실행이 없습니다.",
+        "not_instrumented": "이 기간의 실행은 계측 도입 이전입니다.",
+        "no_covered_runs": "이 기간에 이 측정을 가진 실행이 없습니다.",
+        "no_version_content": "이 버전에는 프롬프트 본문 기록이 없습니다.",
+        "no_reviewed_issues": "이 기간에 리뷰로 넘어간 이슈가 없습니다.",
+        "below_sample_floor": "실행 수가 선언된 하한보다 적습니다.",
+        "unknown": "서버가 이유를 알리지 않았습니다."
+      },
+      "coverage": "총 {{total}}회 중 {{covered}}회 검사됨",
+      "deductions": "감점 내역 ({{count}})"
+    },
+    "perplexity": {
+      "title": "D3 규칙 난해도",
+      "description": "조합된 프롬프트의 모호성 위험을 런타임 형태별로 평가합니다.",
+      "open": "근거 보기",
+      "profile": {
+        "label": "런타임 형태",
+        "member": "일반 멤버 실행",
+        "leader_task": "리더 태스크 실행",
+        "unknown": "{{key}}"
+      },
+      "profileNote": "각 형태는 서로 다른 조합 문서를 대상으로 평가하므로 합치거나 평균내지 않습니다.",
+      "band": {
+        "low": "낮음",
+        "medium": "보통",
+        "high": "높음",
+        "unknown": "미평가"
+      },
+      "range": "{{low}}% — {{high}}%",
+      "scoredAt": "{{date}}에 {{model}}이(가) 평가",
+      "reproducibility": "같은 버전을 반복 채점해도 band는 안정적이며, 구간 양 끝값의 변동은 실측 기준 10퍼센트포인트 이내였습니다(gpt-6-luna, temperature 0.2, 런타임별 5회).",
+      "empty": {
+        "title": "평가되지 않음",
+        "description": "이 프롬프트는 아직 어떤 버전도 평가되지 않았습니다. 평가 없음은 중립 평가가 아닙니다."
+      },
+      "sheet": {
+        "title": "D3 근거",
+        "description": "일곱 개 하위 차원. 각각 가중치와 인용 위치를 가집니다.",
+        "score": "점수",
+        "weight": "가중치 {{percent}}%",
+        "evidence": "근거",
+        "evidenceCount": "{{count}}건",
+        "conflictsWith": "{{target}}와(과) 충돌",
+        "noEvidence": "이 항목에는 jsonl 근거가 없습니다(런타임 오프라인).",
+        "subDimensions": {
+          "tier_placement": "주입 계층 적절성",
+          "cross_tier_conflict": "계층 간 규칙 충돌",
+          "literal_actionability": "문자 그대로의 실행 가능성",
+          "internal_consistency": "전후 논리 일관성",
+          "precedence_clarity": "우선순위 판정 명확성",
+          "scope_boundary": "책임 경계 명확성",
+          "role_rule_completeness": "역할 규칙 완결성",
+          "unknown": "{{key}}"
+        }
+      }
+    },
+    "reasons": {
+      "title": "D6 실패 원인 분포",
+      "excluded": "환경·공급자 실패 {{count}}건 제외됨",
+      "empty": "이 기간에 실패한 실행이 없습니다."
+    },
+    "sources": {
+      "langfuse": "Langfuse 내보내기가 꺼져 있습니다",
+      "scoring_model": "평가 모델을 사용할 수 없습니다",
+      "unknown": "{{kind}}을(를) 사용할 수 없습니다",
+      "note": "대시보드 데이터에는 영향이 없습니다."
+    }
+  },
+  "quiz": {
+    "noSubject": "판독값은 프롬프트 계층별로 제공됩니다. 에이전트를 선택하면 해당 퀴즈 이력을 불러옵니다.",
+    "reading": {
+      "title": "회귀 판독값",
+      "description": "동일한 고정 문제 은행을 모든 프롬프트 버전에 반복 실행합니다. 판독값은 단일 점수가 아니라 분포입니다.",
+      "error": "판독값을 불러올 수 없습니다",
+      "noVersion": "이 프롬프트에는 기록된 버전이 없어 측정된 것이 없습니다.",
+      "accumulating": "v{{version}}의 유효 판독값은 {{need}}회 중 {{have}}회입니다. 그룹이 채워질 때까지 비교가 없습니다.",
+      "noBaseline": "v{{version}}은 {{count}}회 실행으로 측정되었고(중앙값 {{median}}, 사분위 범위 {{iqr}}) 이 프롬프트의 첫 버전입니다. 비교할 이전 버전이 없으며 다음 버전의 기준선이 됩니다.",
+      "versions": "기준선 v{{baseline}}, 판독 대상 v{{current}}.",
+      "outcomes": "{{answered}}회 실행이 답변을 냈고 {{errored}}회는 오류로 끝났습니다. 두 수치 모두 점수가 아닙니다. 답변 내용의 정답 여부는 채점하지 않습니다.",
+      "incomparable": "{{count}}건의 측정값은 이 그룹에서 제외되었습니다. 다른 문항 문구, 또는 다른 런타임이나 모델에서 측정된 값입니다.",
+      "baselineIncomparable": "기준 그룹에서도 같은 이유로 {{count}}건이 제외되었습니다.",
+      "notAGate": "퀴즈는 프롬프트 버전 배포를 막지 않습니다. 품질이 어떻게 변했는지만 기록합니다.",
+      "verdict": {
+        "insufficient": "판독값 없음",
+        "steady": "유지",
+        "improved": "개선",
+        "regressed": "회귀"
+      },
+      "stats": {
+        "baseline": "기준선 그룹",
+        "current": "현재 그룹",
+        "statistic": "Mann-Whitney z",
+        "threshold": "노이즈 선",
+        "group": "중앙값 {{median}}, 사분위 범위 {{iqr}}, n={{n}}"
+      }
+    },
+    "bank": {
+      "title": "문제 은행",
+      "description": "모든 버전에 같은 문제를 사용합니다. 본문을 편집하면 새 리비전이 시작됩니다.",
+      "add": "문제 추가",
+      "revision": "리비전 {{revision}}",
+      "active": "사용",
+      "retired": "중지",
+      "discrimination": {
+        "pending": "미판정",
+        "no_signal": "측정값 없음",
+        "flat": "현재 변별력 없음",
+        "ok": "변별력 있음"
+      },
+      "edit": "편집",
+      "delete": "삭제",
+      "error": {
+        "title": "문제 은행을 불러올 수 없습니다",
+        "write": "문제 은행이 변경되지 않았습니다."
+      },
+      "empty": {
+        "title": "아직 문제가 없습니다",
+        "description": "문제가 없으면 어떤 버전도 측정할 수 없습니다. 하나를 추가해 첫 판독값을 만드세요."
+      },
+      "dialog": {
+        "addTitle": "문제 추가",
+        "editTitle": "문제 편집",
+        "description": "문제 본문은 운영 엔티티를 지목할 수 없습니다. 이슈 키, ID, 링크는 금지입니다. 서버는 위반 본문을 거부하고 어떤 참조를 지워야 하는지 알려줍니다.",
+        "slug": "슬러그",
+        "questionTitle": "제목",
+        "body": "문제 본문",
+        "bodyHint": "최대 4000자. 본문은 자체적으로 완결되어야 합니다. 퀴즈 실행 뒤에는 이슈가 없습니다.",
+        "rubric": "표준 답안과 채점 항목",
+        "rubricHint": "소유자만 볼 수 있으며 측정 대상 실행에는 전달되지 않습니다. 저장하면 이 항목의 내용으로 기존 표준 답안을 전체 교체합니다.",
+        "cancel": "취소",
+        "save": "저장"
+      },
+      "difficulty": {
+        "easy": "쉬움",
+        "medium": "보통",
+        "hard": "어려움"
+      },
+      "import": "표준 문제 은행 가져오기",
+      "importDone": "{{imported}}개 항목을 가져왔습니다",
+      "importError": "표준 문제 은행을 가져오지 못했습니다."
+    },
+    "graded": {
+      "title": "채점",
+      "description": "수집된 run의 답변을 문제별 모범 답안으로 항목 단위로 검증하고 각 확인의 근거를 보여줍니다.",
+      "summary": "채점 {{graded}}건 · 평균 {{mean}}",
+      "ungraded": "미채점",
+      "run": "채점 배치 실행",
+      "ordered": "퀴즈 run {{ordered}}건을 발행했습니다",
+      "refused": "{{count}}개 에이전트는 발행되지 않았습니다",
+      "runError": "채점 배치가 발행되지 않았습니다.",
+      "batchLines": "이 배치: 답변 {{answered}} · 오류 {{errored}} · 채점 {{graded}}",
+      "samplesTitle": "최근 채점 샘플",
+      "samplesEmpty": "아직 채점 샘플이 없습니다. 채점 배치를 실행하면 run 완료 후 근거가 표시됩니다.",
+      "taskId": "task_id",
+      "measuredAt": "측정 시간",
+      "gradedAt": "채점 시간",
+      "version": "v{{version}}",
+      "answered": "답변",
+      "errored": "오류",
+      "checkPassed": "{{id}}({{kind}}) 통과: {{evidence}}",
+      "checkFailed": "{{id}}({{kind}}) 미통과: {{evidence}}",
+      "notAGate": "채점은 읽기 값이지 게이트가 아닙니다: 게시 경로는 읽지 않습니다."
+    }
+  },
+  "legislation": {
+    "title": "프롬프트 입법 제안",
+    "description": "제안은 일일 회고의 자동 분석으로 풀에 들어가며, 수동 작성도 가능합니다. 네 가지 프롬프트 캐리어에 대한 조항 수준 초안: 제출하면 워크스페이스 오너의 승인으로 넘어가며, 승인 시 샌드박스에서 전문을 합성해 입법 게이트를 실행하고 통과한 경우에만 발효됩니다.",
+    "filterAll": "전체",
+    "sourceFilterLabel": "출처별 필터",
+    "sourceFilterAll": "모든 출처",
+    "runFilterLabel": "실행 배치",
+    "runFilterAll": "전체 실행",
+    "status": {
+      "draft": "초안",
+      "pending_owner": "승인 대기",
+      "approved": "승인됨",
+      "enacted": "발효됨",
+      "gate_failed": "게이트 미통과",
+      "rejected": "반려됨"
+    },
+    "changeKind": {
+      "add_clause": "조항 추가",
+      "revise_clause": "조항 개정",
+      "remove_clause": "조항 삭제",
+      "move_clause": "조항 이동",
+      "migrate_clause": "조항 이관"
+    },
+    "carrierScope": {
+      "workspace": "워크스페이스",
+      "project": "프로젝트",
+      "squad": "Squad",
+      "agent": "에이전트"
+    },
+    "source": {
+      "manual": "수동",
+      "retrospective": "일일 회고",
+      "merged": "병합"
+    },
+    "create": "새 제안",
+    "createTitle": "새 프롬프트 입법 제안",
+    "createDescription": "내용 게이트 다섯 답변이 갖춰져야 제출할 수 있습니다. 각 답변은 구체적으로.",
+    "carrierLabel": "캐리어",
+    "sectionLabel": "대상 섹션",
+    "changeKindLabel": "변경 유형",
+    "clauseNameLabel": "조항 이름",
+    "clauseTextLabel": "조항 최종 텍스트",
+    "clauseTextPlaceholder": "발효시킬 조항 원문. 삭제인 경우 비워 둡니다.",
+    "gateAnswersTitle": "내용 게이트 — 다섯 답변",
+    "gateLayer": "계층",
+    "gateLayerPlaceholder": "이 조항이 속하는 지시 계층.",
+    "gateRetention": "존재 이유",
+    "gateRetentionPlaceholder": "이 조항이 존재해야 하는 이유.",
+    "gateCost": "비용",
+    "gateCostPlaceholder": "이것을 싣는 매 실행이 치르는 대가.",
+    "gateConflict": "충돌",
+    "gateConflictPlaceholder": "걸치거나 대체하는 기존 조항.",
+    "gateDedup": "중복",
+    "gateDedupPlaceholder": "기존 조항의 중복이 아닌 이유.",
+    "evidenceLabel": "근거 앵커",
+    "evidenceAdd": "근거 앵커 추가",
+    "evidenceIssue": "이슈 ID",
+    "evidenceQuote": "인용",
+    "sourceIssuesLabel": "소스 Issue",
+    "problemLabel": "해결할 문제",
+    "expectedEffectLabel": "기대 효과",
+    "expectedGainLabel": "기대 향상",
+    "valueScoreLabel": "가치 점수",
+    "cancel": "취소",
+    "saveDraft": "초안 저장",
+    "submit": "승인 요청",
+    "edit": "초안 편집",
+    "list": "제안 목록",
+    "detailTitle": "제안 상세",
+    "createdAt": "생성 시각",
+    "enactedVersion": "발효 버전",
+    "mergedFrom": "병합된 초안",
+    "gateErrors": "게이트 오류",
+    "gateWarnings": "게이트 경고",
+    "rejectReason": "반려 사유",
+    "baselineUsed": "샌드박스 기준선",
+    "preview": "diff 미리보기",
+    "previewTitle": "전문 diff 검토",
+    "previewDescription": "승인하면 샌드박스에서 캐리어 전체를 합성해 입법 게이트를 실행합니다. 아래 diff를 검토하세요——명시적 확인 없이는 승인되지 않습니다.",
+    "diffEmpty": "합성 후 텍스트 변경이 없습니다.",
+    "diffLoadError": "미리보기를 불러오지 못했습니다.",
+    "confirmPreviewed": "전문 diff를 검토했습니다",
+    "approve": "승인",
+    "approveBatch": "일괄 승인",
+    "batchPreviewTitle": "일괄 승인 — 전문 diff",
+    "batchLoading": "diff를 불러오는 중…",
+    "selectHint": "일괄 승인할 승인 대기 제안을 선택하세요(최대 20건).",
+    "batchResult": "일괄 결과",
+    "reject": "반려",
+    "restore": "초안으로 복원",
+    "rework": "재작업",
+    "enact": "발효",
+    "enactHint": "게이트를 다시 실행. 통과한 경우에만 발효됩니다.",
+    "rejectDialogTitle": "제안 반려",
+    "rejectPlaceholder": "반려 사유는 기록에 남습니다.",
+    "rejectConfirm": "반려하기",
+    "ownerOnly": "오너 전용",
+    "empty": "아직 제안이 없습니다.",
+    "emptyHint": "실제 실행 근거로 초안을 만들거나 일일 회고에 맡기세요.",
+    "emptyConfig": "일일 회고 설정",
+    "error": "쓰기에 실패했습니다. 입력을 확인하고 다시 시도하세요.",
+    "batchPartial": "일괄 처리에서 발효되지 않은 제안이 있습니다——항목별 결과를 확인하세요.",
+    "jevAdvisoryLabel": "로컬 모델 경고",
+    "jevStage": {
+      "submit": "제출 사전검사",
+      "gate": "게이트 소프트 판정"
+    },
+    "jevThreshold": "임계값",
+    "jevWarnFlag": "경고",
+    "jevDisclaimer": "저비용 경고 참고용입니다. 확률 근거와 함께 판단하고 단독으로 처분 근거로 삼지 마세요(warn-only 우회, 게이트 판정에는 영향 없음).",
+    "jevUnavailable": "사용 불가, 건너뜀(본 흐름에는 영향 없음)",
+    "enactmentTargetLabel": "조항 반영 대상",
+    "enactmentTargetOptions": {
+      "clause_library": "조항 라이브러리에 등록",
+      "static_prompt": "정적 프롬프트 문구로 변경"
+    }
+  },
+  "retrospective": {
+    "title": "일일 회고",
+    "description": "실행 에이전트를 선택하세요: 해당 에이전트의 한 번의 런이 회고 기간 내 완료된 Issue의 실제 실행 내용을 읽고 프롬프트 개선 초안을 입법 풀에 등록합니다. 런은 Issue를 만들거나 댓글을 달지 않습니다.",
+    "enabled": "정기 실행 사용",
+    "includeInReview": "in_review 이슈도 스캔",
+    "windowDays": "조회 기간(일)",
+    "save": "설정 저장",
+    "runs": "실행 기록",
+    "runTitle": "일일 회고 {{stamp}}",
+    "viewResults": "성과 보기",
+    "trigger": "지금 실행",
+    "status": {
+      "succeeded": "성공",
+      "failed": "실패",
+      "running": "실행 중"
+    },
+    "window": "윈도우",
+    "scanned": "스캔",
+    "analyzed": "분석",
+    "created": "생성",
+    "merged": "병합",
+    "duplicates": "중복 건너뜀",
+    "errorLabel": "오류",
+    "empty": "실행 기록이 아직 없습니다.",
+    "saveOk": "회고 설정을 저장했습니다.",
+    "triggerOk": "회고 런이 시작되었습니다.",
+    "rerun": "다시 실행",
+    "agentTitle": "실행 에이전트",
+    "agentDescription": "매일의 총회고는 선택한 에이전트의 한 번의 런으로 실행됩니다: 기간 내 완료된 Issue를 읽고 개선 초안을 추출합니다. Issue 생성이나 댓글 없이 진행됩니다.",
+    "agentLabel": "실행 에이전트",
+    "agentPlaceholder": "에이전트 선택",
+    "agentArchivedSuffix": " (보관됨)",
+    "agentArchivedHint": "이 에이전트는 보관되었습니다. 런이 실패하므로 다른 에이전트를 선택하세요.",
+    "agentTriggerBlocked": "실행 가능한 에이전트가 설정되지 않았습니다: 위 설정에서 에이전트를 선택한 후 실행하세요.",
+    "emptyDescription": "예약 또는 수동 실행 후 여기에 런 기록이 표시됩니다.",
+    "viewDetail": "상세",
+    "detailTitle": "런 상세",
+    "triggerLabel": "트리거",
+    "triggerSource": {
+      "schedule": "예약",
+      "manual": "수동"
+    },
+    "windowLabel": "조회 기간",
+    "startedAt": "시작 시간",
+    "finishedAt": "종료 시간",
+    "duration": "소요 시간",
+    "durationRunning": "실행 중…",
+    "statsLabel": "통계",
+    "failureLabel": "실패 이유",
+    "scannedIssues": "스캔한 Issue",
+    "analyzedIssues": "분석한 Issue",
+    "noIssues": "없음",
+    "viewLog": "실행 로그 보기",
+    "run_errors": {
+      "agent_not_configured": "실행 에이전트가 구성되지 않았습니다: 위 구성에서 에이전트를 선택하고 저장한 후 다시 실행하세요.",
+      "agent_missing": "구성된 실행 에이전트를 찾을 수 없습니다: 위 구성에서 다른 에이전트를 다시 선택하고 저장하세요.",
+      "agent_archived": "구성된 실행 에이전트가 보관되었습니다: 위 구성에서 다른 에이전트를 다시 선택하고 저장하세요.",
+      "agent_runtime_missing": "구성된 실행 에이전트에 런타임이 없습니다: 에이전트 설정에서 런타임을 할당한 후 다시 실행하세요.",
+      "window_scan_failed": "되돌아보기 창 스캔이 실패하여 이번 실행이 중단되었습니다. 다음 실행이 자동으로 재시도합니다.",
+      "watermark_check_failed": "분석 기록 확인이 실패하여 이번 실행이 중단되었습니다. 다음 실행이 자동으로 재시도합니다.",
+      "scan_scope_record_failed": "스캔 목록 기록이 실패하여 이번 실행이 중단되었습니다. 다음 실행이 자동으로 재시도합니다.",
+      "task_enqueue_failed": "에이전트 실행 대기열 등록이 실패하여 이번 실행이 중단되었습니다. 다음 실행이 자동으로 재시도합니다.",
+      "agent_report_invalid": "에이전트의 최종 메시지가 유효한 회고 보고서가 아니어서 이번 실행 결과는 폐기되었습니다. 다음 실행이 같은 창을 다시 스캔합니다.",
+      "agent_no_report": "에이전트 실행은 종료되었지만 회고 보고서가 생성되지 않았습니다. 다음 실행이 같은 창을 다시 스캔합니다.",
+      "agent_run_failed": "에이전트 실행이 보고 전에 실패했습니다. 다음 실행이 같은 창을 다시 스캔합니다.",
+      "report_out_of_scope": "에이전트가 이번 실행 창 밖의 Issue({{issue_id}})를 분석하여 보고서 전체가 거부되었으며 기록된 데이터는 없습니다.",
+      "draft_out_of_scope": "에이전트가 이번 실행 창 밖의 Issue({{issue_id}})를 초안에서 참조하여 보고서 전체가 거부되었으며 기록된 데이터는 없습니다.",
+      "task_not_completed": "에이전트의 플랫폼 실행이 완료되지 않았습니다(실패, 취소 또는 만료). 이번 실행은 실패로 종료되었습니다. 다음 실행이 같은 창을 다시 스캔합니다.",
+      "task_never_enqueued": "에이전트 실행이 대기열에 등록되지 않았습니다(워크스페이스 또는 에이전트 사용 불가). 이번 회차는 종료되었습니다. 다음 실행이 자동으로 재시도합니다."
+    },
+    "run_error_fallback": "이번 실행이 실패했습니다. 사용 가능한 세부 정보가 없으며 다음 실행이 자동으로 재시도합니다."
+  },
+  "knowledge": {
+    "title": "지식 라이브러리",
+    "description": "bd memories 디렉터리는 연결된 프로젝트에서 자동으로 발견되거나 아래에서 수동 추가됩니다. 항목은 읽기 전용으로 미러링되며, 채택 시 백그라운드에서 지식 허브로 전송됩니다.",
+    "register": "디렉터리 등록",
+    "registerTitle": "지식 디렉터리 등록",
+    "registerDescription": "이 경로를 수동 추가 소스로 등록합니다. 최초 읽기 전용 스캔은 백그라운드에서 실행됩니다. 지식 허브는 별도로 지정하며 여기서 등록하지 않습니다.",
+    "kindLabel": "디렉터리 유형",
+    "kind": {
+      "ultimate": "지식 허브",
+      "candidate_cli": "수동 추가",
+      "candidate_auto": "자동 발견"
+    },
+    "pathLabel": "디렉터리 경로",
+    "labelLabel": "표시 라벨",
+    "labelPlaceholder": "선택",
+    "cancel": "취소",
+    "registerSubmit": "등록",
+    "dirsTitle": "등록된 디렉터리",
+    "entriesTitle": "항목 미러",
+    "entryCount": "{{n}}개",
+    "lastScan": "마지막 스캔({{result}}): +{{added}}, ~{{updated}}, -{{removed}}",
+    "neverScanned": "스캔 안 됨",
+    "scanRequested": "스캔 대기 중",
+    "health": {
+      "ok": "정상",
+      "unhealthy": "비정상"
+    },
+    "scanResult": {
+      "noop": "변화 없음",
+      "changed": "변화 있음",
+      "failed": "실패"
+    },
+    "scan": "지금 스캔",
+    "unregister": "등록 해제",
+    "advancedTitle": "고급: 외부 소스 추가",
+    "advancedDescription": "이 머신의 bd memories 디렉터리를 가리킵니다. 표시명은 선택입니다.",
+    "allDirs": "모든 디렉터리",
+    "searchPlaceholder": "키 또는 내용 검색",
+    "mirrorState": {
+      "synced": "동기화됨",
+      "source_deleted": "원본 삭제됨",
+      "source_removed": "원본 제거됨"
+    },
+    "adoptionState": {
+      "pending": "대기 중",
+      "transferring": "전송 중",
+      "adopted": "채택됨",
+      "failed": "실패"
+    },
+    "adopt": "채택",
+    "adoptedFrom": "{{key}}에서 채택",
+    "emptyDirs": {
+      "title": "등록된 디렉터리 없음",
+      "description": "연결된 데몬이 bd memories 가 있는 프로젝트를 발견하면 자동으로 여기에 표시됩니다. 아래 '고급'에서 수동으로 추가할 수도 있습니다."
+    },
+    "emptyEntries": "현재 필터에 해당하는 항목이 없습니다.",
+    "error": {
+      "read": "지식을 불러오지 못했습니다",
+      "write": "작업이 완료되지 않았습니다.",
+      "retry": "재시도"
+    },
+    "ownerOnly": "등록·스캔·해제·채택은 워크스페이스 소유자만 수행할 수 있습니다."
+  },
+  "versions": {
+    "title": "버전 기록",
+    "manage": "버전 관리",
+    "description": "유효한 변경은 모두 새 버전으로 추가되며 기록은 절대 다시 쓰이지 않습니다.",
+    "bindingNote": "품질 평가는 각 실행이 가져간 버전에 묶입니다. 배지는 각 버전이 처리한 실행 수를 보여줍니다.",
+    "subjectTypeLabel": "대상 유형",
+    "subjectEntityLabel": "대상",
+    "subjectEntityPlaceholder": "대상을 선택하세요",
+    "workspaceEntity": "이 워크스페이스",
+    "typeWorkspace": "워크스페이스",
+    "typeProject": "프로젝트",
+    "typeSquad": "스쿼드",
+    "typeAgent": "에이전트",
+    "typeAutopilot": "오토파일럿",
+    "typeSkill": "스킬",
+    "snapshot": "스냅샷",
+    "snapshotTitle": "현재 유효한 내용을 스냅샷으로 기록할까요?",
+    "snapshotBody": "스냅샷은 대상의 현재 유효한 설정을 새 버전으로 기록합니다. 대상 자체의 내용은 변경되지 않습니다.",
+    "snapshotConfirm": "스냅샷 만들기",
+    "snapshotFailed": "스냅샷 실패",
+    "clearSelection": "선택 해제",
+    "emptyTitle": "아직 버전이 없습니다",
+    "emptyDescription": "이 대상의 현재 유효한 내용으로 첫 버전을 스냅샷하세요.",
+    "error": "버전을 불러오지 못했습니다",
+    "retry": "재시도",
+    "sourceImport": "베이스라인",
+    "sourceEdit": "편집",
+    "sourceRevert": "롤백",
+    "sourceAuto": "자동 스냅샷",
+    "sourceSnapshot": "스냅샷",
+    "fromVersion": "v{{version}}에서",
+    "latest": "최신",
+    "runs": "{{n}}회 실행",
+    "noRuns": "품질 데이터 없음",
+    "activate": "이 버전으로 전환",
+    "activateTitle": "v{{version}}을(를) 활성화할까요?",
+    "activateBody": "활성화하면 이 내용의 새 버전이 추가되고 즉시 적용됩니다. 기록은 다시 쓰이지 않습니다.",
+    "cancel": "취소",
+    "confirmActivate": "확인",
+    "compareTitle": "v{{from}} → v{{to}} 비교",
+    "secretBlocked": "저장되지 않음: 프롬프트에 자격 증명이 포함된 것으로 보입니다.",
+    "findingLine": "{{line}}행"
+  },
+  "clauseGovernance": {
+    "title": "조항 거버넌스", "description": "입법부터 주입까지 조항 자산 전 과정을 확인합니다", "window": "집계 기간", "d7": "최근 7일", "d30": "최근 30일", "d90": "최근 90일", "d365": "최근 365일", "refresh": "새로고침",
+    "banner": { "dynamicOffTitle": "전역 성능 저하 스위치가 켜져 있습니다", "dynamicOffBody": "모든 실행에서 스냅샷 주입(정적 주입과 동등한 방식)을 사용합니다", "healthyTitle": "동적 주입이 정상입니다", "healthyBody": "{{total}}회 중 {{degraded}}회가 성능 저하 경로로 주입되었습니다", "findingsTitle": "대사 또는 드리프트 발견 {{count}}건", "findingsBody": "아래 대사 및 드리프트 영역을 확인하세요" },
+    "metrics": { "injections": "주입 횟수", "runs": "대상 실행", "runsUnit": "실행 {{count}}회", "clauseTokens": "조항 토큰", "clauseTokensNote": "주입된 조항 렌더링을 바탕으로 추정", "degraded": "성능 저하 주입", "migration": "마이그레이션 적용률" },
+    "scope": { "workspace": "워크스페이스", "project": "프로젝트", "squad": "스쿼드", "agent": "에이전트" },
+    "recon": { "title": "대사 및 드리프트", "healthy": "모든 검사 통과", "findings": "발견 {{count}}건", "scanned": "캐리어 {{count}}개 검사", "violationsTitle": "레이어 집합 위반", "violationsEmpty": "기간 내 레이어 집합 위반이 없습니다", "colTime": "시간", "colTask": "작업", "colClause": "조항", "colVersion": "버전", "colScope": "범위", "colInjection": "주입 방식", "truncated": "처음 100건만 표시", "degradedFlag": "성능 저하 스냅샷", "driftTitle": "캐리어 드리프트", "driftEmpty": "캐리어 마커가 자산 라이브러리와 일치합니다(캐리어 {{count}}개 검사)", "unnamedCarrier": "이름 없는 캐리어" },
+    "driftKind": { "stale_rev": "리비전 지연", "orphan_marker": "고아 마커", "missing_segment": "렌더링 구간 누락" },
+    "driftDesc": { "staleRev": "스냅샷 rev {{marker}} → 자산 rev {{expected}}", "orphanMarker": "마커는 있지만 활성 바인딩 조항이 없습니다", "missingSegment": "스냅샷 주입 중 활성 조항의 렌더링 구간이 없습니다(기대 rev {{expected}})" },
+    "rollback": { "title": "롤백 제안", "empty": "대기 중인 롤백 제안이 없습니다", "rollbackTo": "V{{version}}(으)로 롤백", "viewProposal": "제안 보기" },
+    "list": { "title": "조항 목록", "filter_all": "전체", "filter_active": "활성", "filter_deprecated": "중지됨", "filter_revoked": "폐기됨", "colStatus": "상태", "colClause": "조항", "colVersion": "현재 버전", "colScope": "바인딩 범위", "colInjections": "주입", "colRuns": "실행", "colTokens": "토큰", "colAction": "작업", "unbound": "바인딩 안 됨", "tokensPending": "측정 대기", "tokensPendingHint": "선택한 기간에 이 조항의 측정 데이터가 없습니다", "emptyTitle": "아직 조항 자산이 없습니다", "emptyBody": "입법 제안에서 첫 조항을 만드세요", "emptyCta": "제안으로 이동", "openDetail": "세부 정보 보기", "noFilterResults": "필터에 맞는 조항이 없습니다" },
+    "detail": { "back": "조항 거버넌스로 돌아가기", "versions": "버전", "bindings": "바인딩", "proposals": "제안 추적", "quality": "품질 및 주입", "latest": "최신", "notFound": "조항을 찾을 수 없거나 삭제되었습니다" },
+    "manage": { "title": "조항 관리", "edit": "내용 편집", "content": "조항 내용", "save": "새 버전으로 저장", "cancel": "취소", "deactivate": "중지", "deactivateConfirm": "활성 바인딩을 철회하고 캐리어에서 조항을 제거합니다. 조항 기록은 이후 관리를 위해 유지됩니다.", "delete": "조항 삭제", "deleteConfirm": "조항, 버전, 바인딩 및 조항 측정 데이터를 영구 삭제하고 캐리어에서 조항을 제거합니다. 이 작업은 되돌릴 수 없습니다.", "failure": "작업에 실패했습니다. 권한을 확인한 뒤 다시 시도하세요." },
+    "version": { "sha": "콘텐츠 지문", "showContent": "본문 펼치기", "hideContent": "본문 접기", "compare": "버전 비교" },
+    "compare": { "title": "V{{a}} ↔ V{{b}} 비교", "sampleInsufficient": "표본이 부족해 백분율 결론을 표시하지 않습니다", "attributableRuns": "귀속 가능한 실행", "windowRuns": "기간 내 귀속 가능한 실행 {{count}}회" },
+    "binding": { "scope": "범위", "status": "상태", "conditions": "적용 조건", "conditionsAll": "모든 작업 종류", "sinceVersion": "V{{version}}부터", "createdAt": "적용 시각", "empty": "바인딩 기록이 없습니다" },
+    "bindingStatus": { "active": "활성", "superseded": "대체됨", "withdrawn": "철회됨" },
+    "proposals": { "empty": "연결된 제안이 없습니다", "gates": { "layer": "레이어", "retention": "보존", "cost": "비용", "conflict": "충돌", "dedup": "중복 제거" } },
+    "quality": { "chartTitle": "주입 및 품질 추이", "chartAria": "최근 {{days}}일 완료 실행 및 귀속 가능한 실패 추이. 아래 표에서 전체 데이터 제공", "colDay": "날짜", "colVersion": "버전", "colFinishedRuns": "완료 실행", "colFailed": "귀속 가능한 실패", "colExcluded": "제외된 실패", "colTokens": "주입 토큰", "colMedianRun": "실행 토큰 중앙값", "unmeasured": "미측정", "emptyWindow": "기간 내 주입 데이터가 없습니다" },
+    "status": { "active": "활성", "deprecated": "중지됨", "revoked": "폐기됨" },
+    "error": { "title": "불러오지 못했습니다", "retry": "다시 시도" }
+  },
+  "nav": {
+    "label": "자기진화 섹션",
+    "overview": "개요",
+    "groupKnowledgeAssets": "지식 자산",
+    "groupMeasures": "측정",
+    "groupLoop": "진화 루프",
+    "groupConfig": "설정",
+    "knowledge": "지식",
+    "skills": "스킬 진화",
+    "quality": "품질",
+    "clauseGovernance": "조항 거버넌스",
+    "quiz": "퀴즈",
+    "proposals": "제안",
+    "versions": "버전",
+    "retrospective": "매일의 회고",
+    "config": "모듈 설정"
+  },
+  "configSource": {
+    "prefix": "적용 출처: ",
+    "module": "모듈 설정",
+    "deploy": "배포 기본값",
+    "system": "시스템 수준"
+  },
+  "sources": {
+    "states": {
+      "ok": "사용 가능",
+      "unconfigured": "미설정",
+      "error": "설정 오류",
+      "disabled": "비활성화"
+    },
+    "reason": "원인:",
+    "impact": "영향:"
+  },
+  "secretField": {
+    "placeholder": "새 값 입력",
+    "keepExisting": "비워 두면 기존 값 유지"
+  },
+  "segToolbar": {
+    "filters": "필터"
+  },
+  "attention": {
+    "title": "주의 필요",
+    "hint": "처리하면 목록에서 사라집니다",
+    "modelUnconfigured": {
+      "title": "모델 서비스가 설정되지 않음",
+      "description": "품질 스코어링에 사용할 LLM이 없습니다",
+      "action": "설정하기"
+    },
+    "modelError": {
+      "title": "모델 서비스 검증 실패",
+      "action": "설정 확인"
+    },
+    "retrospectiveOff": {
+      "title": "일일 회고가 활성화되지 않았습니다",
+      "description": "제안 루프가 자동으로 돌지 않고 풀은 수동 작성으로만 늘어납니다",
+      "action": "설정하기"
+    },
+    "retrospectiveNoAgent": {
+      "title": "일일 회고에 실행 에이전트가 선택되지 않았습니다",
+      "description": "활성화되어도 실행자가 없으면 실행이 시작되지 않습니다",
+      "action": "설정하기"
+    },
+    "discoveries": {
+      "title": "가져오기 대기 중인 스킬 발견 {{count}}건",
+      "action": "확인"
+    }
+  },
+  "knowledgeSeg": {
+    "entries": "항목",
+    "dirs": "디렉터리",
+    "external": "외부 소스",
+    "addSource": "외부 소스 추가",
+    "entryDrawerSubtitle": "{{dir}}의 미러",
+    "attrDir": "디렉터리",
+    "attrMirror": "미러 상태",
+    "attrAdoption": "채택 상태",
+    "attrSource": "소스 키",
+    "attrUpdated": "마지막 확인",
+    "attrKind": "종류",
+    "attrEntries": "항목 수",
+    "attrCreated": "등록일",
+    "scanHistory": "스캔 이력",
+    "viewEntries": "항목 보기",
+    "unregisterConfirm": "\"{{label}}\"을(를) 등록 해제할까요? 미러된 항목은 유지되지만 더 이상 갱신되지 않습니다.",
+    "emptyExternal": "아직 등록된 외부 소스가 없습니다.",
+    "jumpToDirs": "디렉터리로 이동",
+    "colKey": "키",
+    "colActions": "작업",
+    "colSource": "소스",
+    "colPath": "경로",
+    "colHealth": "상태",
+    "colLastScan": "마지막 스캔"
+  },
+  "skillsSeg": {
+    "managed": "관리 중인 스킬",
+    "discoveries": "발견",
+    "colSkill": "스킬",
+    "colSource": "소스",
+    "colLatestVersion": "최신 버전",
+    "colInvocations30d": "최근 30일",
+    "invocationsValue": "{{count}}회 호출",
+    "emptyDiscoveries": "런타임 발견이 아직 없습니다 — 런타임에서 관찰된 스킬이 여기에 표시되어 가져오기를 기다립니다."
+  },
+  "qualityCards": {
+    "title": "데이터 소스 상태",
+    "scoringModel": "스코어링 모델",
+    "langfuse": "Langfuse",
+    "banner": "일부 데이터 소스가 저하되었습니다 — 최근 수치는 불완전할 수 있습니다.",
+    "viewSources": "데이터 소스 상태 보기",
+    "reasons": {
+      "okValidated": "연결 확인 통과 ({{date}}).",
+      "okModule": "모듈 설정 저장됨 (미재검증).",
+      "okDeploy": "배포 시 주입된 기본값 감지 (사전 검증 없음).",
+      "error": "연결 확인에 실패했습니다.",
+      "errorDetail": "연결 확인 실패: {{error}}",
+      "disabled": "소스는 정상이지만 워크스페이스 스위치가 꺼져 있습니다.",
+      "unconfigured": "이 소스에 대한 설정이 없습니다.",
+      "langfuseOk": "배포 시 주입된 내보내기 자격 증명 감지 (시스템 수준).",
+      "langfuseMissing": "이 배포에는 Langfuse 내보내기 자격 증명이 없습니다."
+    },
+    "impacts": {
+      "ok": "모든 지표가 정상 수집 중입니다.",
+      "error": "마지막 성공 데이터를 시각과 함께 보관 중; 신규 수집은 실패 중.",
+      "disabled": "새 데이터 수집 중단; 이력은 조회 가능.",
+      "unconfigured": "해당 지표에는 데이터가 없으며 안내 상태가 표시됩니다.",
+      "langfuseOk": "대화 내보내기를 실행할 수 있습니다.",
+      "langfuseMissing": "대화 내보내기가 수행되지 않습니다."
+    },
+    "actions": {
+      "configure": "설정하기",
+      "viewConfig": "설정 보기",
+      "viewError": "오류 보기",
+      "enable": "활성화",
+      "deployNotes": "배포 측에서만 설정 가능"
+    }
+  },
+  "modelConfig": {
+    "title": "모델 서비스",
+    "description": "이 워크스페이스의 품질 스코어링 전용 LLM 엔드포인트. 키는 암호화되어 저장되며 다시 표시되지 않습니다.",
+    "baseUrl": "Base URL",
+    "apiKey": "API 키",
+    "model": "모델",
+    "consumersTitle": "이 엔드포인트의 소비자",
+    "scoringConsumer": "품질 스코어링",
+    "saveAndValidate": "검증 후 저장",
+    "busy": "처리 중…",
+    "revalidate": "다시 확인",
+    "lastValidated": "마지막 검증 {{date}}",
+    "neverValidated": "검증되지 않음",
+    "validationOk": "연결 확인에 통과했습니다.",
+    "validationFailed": "검증 실패 — 아무것도 저장되지 않았습니다",
+    "saveOk": "모델 서비스가 저장되었습니다.",
+    "restoreDefault": "배포 기본값으로 복원",
+    "restoreConfirm": "이 워크스페이스의 재정의를 제거하고 배포 기본값을 다시 적용합니다. 계속할까요?",
+    "restoreOk": "배포 기본값으로 복원되었습니다.",
+    "encryptionNotReady": "이 배포에는 워크스페이스 단위 암호화 키가 없어 저장할 수 없습니다 — 배포 기본값이 적용됩니다.",
+    "errorKind": {
+      "credentials": "자격 증명이 무효 또는 만료",
+      "model": "모델을 사용할 수 없거나 거부됨",
+      "connection": "연결 실패 또는 시간 초과",
+      "notConfigured": "필수 필드 누락",
+      "other": "기타 오류"
+    }
+  },
+  "configPage": {
+    "title": "모듈 설정",
+    "description": "아래 모델 서비스가 품질 스코어링을 지원합니다. Langfuse는 인스턴스 수준 설정이므로 여기서는 읽기 전용입니다."
+  },
+  "mobile": { "title": "자기 진화", "overview": "개요", "versions": "버전", "proposals": "제안", "proposal_count_label": "개 제안", "pending_owner": "소유자 검토 대기", "skills": "Skills", "review_diff": "제안 변경 사항 검토", "empty_diff": "변경 사항 없음", "cancel": "취소", "approve": "승인", "approving": "승인 중…", "reject": "거부", "rejecting": "거부 중…", "action_failed": "작업에 실패했습니다. 변경 사항은 저장되지 않았습니다. 확인 후 다시 시도하세요.", "reject_reason": "거부 사유", "reject_unavailable": "이 기기에서는 사유 입력을 지원하지 않습니다.", "error": "제안 미리보기를 불러올 수 없습니다", "load_error": "일부 데이터를 불러오지 못했습니다. 탭하여 다시 시도하세요.", "review_approve": "검토 및 승인", "no_proposals": "제안 없음", "clauses": "조항 거버넌스", "injections": "회 사용", "no_clauses": "관리 조항 없음", "retrospective": "회고 실행", "issues_analyzed": "개 작업 분석", "no_retrospectives": "회고 기록 없음" }
+}

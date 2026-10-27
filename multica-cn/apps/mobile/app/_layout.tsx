@@ -1,0 +1,150 @@
+import "../global.css";
+
+import { useEffect, useRef } from "react";
+import { Stack, router } from "expo-router";
+import { StatusBar } from "expo-status-bar";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import { KeyboardProvider } from "react-native-keyboard-controller";
+import { QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ThemeProvider } from "@react-navigation/native";
+import { PortalHost } from "@rn-primitives/portal";
+import { I18nextProvider } from "react-i18next";
+import i18n from "i18next";
+import { api } from "@/data/api";
+import { appConfigOptions } from "@/data/queries/billing";
+// RUYI-567: wire AppState into the API client (foreground deadline
+// re-check). Side-effect import, keep next to the onUnauthorized wiring.
+import "@/data/api-app-state";
+import { queryClient } from "@/data/query-client";
+import { useAuthStore } from "@/data/auth-store";
+import { useStartupServerStore } from "@/data/startup-server-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { shouldHandleUnauthorized } from "@/lib/auth-route";
+import { LightboxProvider, prewarmHighlighter } from "@/lib/markdown";
+import { NotificationResponseNavigator } from "@/components/notifications/notification-response-navigator";
+import { ShareIntentNavigator } from "@/components/share/share-intent-navigator";
+import { NAV_THEME } from "@/lib/theme";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { initI18n } from "@/lib/i18n";
+
+// 在模块顶层初始化 i18n（同步，initAsync: false）。
+// 必须在 I18nextProvider 渲染之前调用一次。
+initI18n();
+
+function FeatureFlagsRefresher() {
+  useQuery(appConfigOptions());
+  return null;
+}
+
+// Kick off Shiki highlighter init at module load — fires once per process,
+// finishes before the user navigates to any screen with a code block. If
+// init fails (engine unavailable) the highlighter falls back to plain
+// text; nothing here is allowed to throw.
+prewarmHighlighter();
+
+function AuthInitializer({ children }: { children: React.ReactNode }) {
+  const initialize = useAuthStore((s) => s.initialize);
+  const phase = useStartupServerStore((s) => s.phase);
+  const begin = useStartupServerStore((s) => s.begin);
+  const qc = useQueryClient();
+  // Idempotent guard: 401 on multiple in-flight requests would otherwise
+  // logout/navigate repeatedly during the same session-expire moment.
+  const signingOutRef = useRef(false);
+  const startupStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (startupStartedRef.current) return;
+    startupStartedRef.current = true;
+    void begin().catch(() => useStartupServerStore.setState({ phase: "ready" }));
+  }, [begin]);
+
+  useEffect(() => {
+    // Wire 401 handling onto the shared ApiClient singleton. Must be set
+    // before any request fires — initialize() below kicks off the first
+    // getMe() call, so do this synchronously first.
+    api.setOptions({
+      onUnauthorized: () => {
+        // A target server may reject its own stale token while a notification
+        // switch is deciding whether to restore the previous session. That
+        // scoped transition owns the eventual route; a global login here
+        // would bypass its rollback path.
+        if (
+          !shouldHandleUnauthorized(
+            useAuthStore.getState().isServerSwitching,
+          )
+        ) {
+          return;
+        }
+        if (signingOutRef.current) return;
+        signingOutRef.current = true;
+        void (async () => {
+          await useAuthStore.getState().logout();
+          await useWorkspaceStore.getState().clear();
+          qc.clear();
+          router.replace("/login");
+          // Reset on next tick so a fresh session can hit 401 again later
+          // without being silently swallowed.
+          setTimeout(() => {
+            signingOutRef.current = false;
+          }, 0);
+        })();
+      },
+    });
+    if (phase === "ready") void initialize();
+  }, [initialize, qc, phase]);
+
+  return <>{children}</>;
+}
+
+export default function RootLayout() {
+  const { colorScheme, isDarkColorScheme } = useColorScheme();
+  const phase = useStartupServerStore((s) => s.phase);
+  const isAuthLoading = useAuthStore((s) => s.isLoading);
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        {/* RN 0.83 起 Android 强制 edge-to-edge（窗口不再随键盘 resize），
+            keyboard-controller 计算键盘动画时须把状态栏/导航栏视为
+            translucent，否则 KeyboardStickyView 等 offset 偏一个系统栏
+            高度。回退：删去这两个 prop 即恢复旧行为。RUYI-30。 */}
+        <KeyboardProvider
+          statusBarTranslucent
+          navigationBarTranslucent
+        >
+          <QueryClientProvider client={queryClient}>
+            <ThemeProvider value={NAV_THEME[colorScheme]}>
+              <I18nextProvider i18n={i18n}>
+              <AuthInitializer>
+                {phase === "ready" ? <FeatureFlagsRefresher /> : null}
+                <LightboxProvider>
+                  <StatusBar style={isDarkColorScheme ? "light" : "dark"} />
+                  <Stack screenOptions={{ headerShown: false }}>
+                    <Stack.Screen name="index" />
+                    <Stack.Screen name="(auth)" />
+                    <Stack.Screen name="(app)" />
+                    {/* RUYI-463: Android 分享落地页 —— 只由 ShareIntentNavigator
+                        在鉴权与导航树就绪后 push，不进常规导航路径。 */}
+                    <Stack.Screen name="share-target" />
+                    {/* 登录前后都可达 —— 未登录用户连自建后端是核心场景。 */}
+                    <Stack.Screen name="server-settings" />
+                    {/* app/servers/ 无 _layout.tsx，路由被扁平化为 "servers/select"；
+                        声明不存在的 "servers" 会让根 Stack 每次渲染都打出
+                        [Layout children] 告警（启动窗内 3 次）。 */}
+                    <Stack.Screen name="servers/select" />
+                  </Stack>
+                  {/* RUYI-37: 系统通知点击 → 对应 Issue（冷启动与运行时两条入口）。 */}
+                  {phase === "ready" && !isAuthLoading && <NotificationResponseNavigator />}
+                  {/* RUYI-463: 系统分享 → 落地页（冷启动与运行时两条入口）。 */}
+                  {phase === "ready" && !isAuthLoading && <ShareIntentNavigator />}
+                  <PortalHost />
+                </LightboxProvider>
+              </AuthInitializer>
+              </I18nextProvider>
+            </ThemeProvider>
+          </QueryClientProvider>
+        </KeyboardProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
+  );
+}

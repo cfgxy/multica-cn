@@ -1,0 +1,389 @@
+{
+  "page": {
+    "title": "聊天",
+    "select_prompt": "选择一个对话，或点 + 新建",
+    "agent_link_no_access": "你没有权限与该智能体聊天。"
+  },
+  "fab": {
+    "running": "Multica 正在工作...",
+    "unread_other": "{{count}} 条未读对话",
+    "default": "问 Multica"
+  },
+  "input": {
+    "placeholder_no_agent": "创建一个智能体后才能开始对话",
+    "placeholder_archived": "此会话已归档",
+    "placeholder_archived_agent": "该智能体已归档",
+    "placeholder_runtime_required": "绑定运行时后继续",
+    "placeholder_access_revoked": "你已没有运行该智能体的权限",
+    "placeholder_named": "给 {{name}} 发消息…",
+    "placeholder_default": "输入消息…",
+    "send_tooltip": "发送",
+    "queue_send_tooltip": "排队发送",
+    "stop_tooltip": "停止",
+    "send_failed_toast": "发送消息失败",
+    "send_blocked_toast": "消息未发送——你已没有该智能体的使用权限",
+    "runtime_required_toast": "消息未发送——请先为该智能体绑定运行时",
+    "attachment_bind_failed_toast": "消息已发送，但文件未能附加。请稍后重试。",
+    "add_tooltip": "添加",
+    "upload_file": "图片或文件",
+    "no_quick_replies": "尚未配置快速回复",
+    "project_context": "项目上下文",
+    "change_project_context": "更改项目上下文",
+    "remove_project_context": "移除项目上下文",
+    "no_projects": "还没有项目",
+    "project_context_unsupported": "项目描述不会生效——该智能体的守护进程版本过旧，需要升级",
+    "project_context_failed": "无法更新项目上下文",
+    "project_context_loading": "项目仍在加载，请稍后重试。",
+    "project_context_load_failed": "无法加载项目，请稍后重试。",
+    "project_context_no_projects": "此工作区暂无项目。"
+  },
+  "queue": {
+    "title_other": "{{count}} 条排队消息",
+    "title_single": "{{number}} 条排队消息",
+    "title_multiple": "{{number}} 条排队消息",
+    "clear": "全部清空",
+    "clear_confirm_title": "清空排队消息？",
+    "clear_confirm_body": "仅清空排队中的消息，当前任务会继续运行。",
+    "steer": "立即发送",
+    "steer_unavailable": "当前回复开始后才能引导",
+    "steer_no_permission": "你已没有运行该智能体的权限",
+    "steer_unavailable_toast": "暂时无法引导，正在刷新队列。",
+    "more_actions": "排队消息 {{position}} 的更多操作",
+    "edit": "编辑排队消息",
+    "remove": "移除排队消息",
+    "more": "更多队列操作",
+    "more_actions": "第 {{position}} 条排队消息的更多操作",
+    "fallback": "排队消息",
+    "action_failed_toast": "无法更新排队消息"
+  },
+  "composer": {
+    "quick_replies_title": "快捷回复"
+  },
+  "message_list": {
+    "show_details": "查看详情",
+    "replied_in": "{{elapsed}} 内回复",
+    "failed_after": "{{elapsed}} 后失败",
+    "finished_in": "{{elapsed}} 内结束",
+    "no_response": "本轮已结束，智能体没有返回文字回复。",
+    "failure": {
+      "agent_error": "智能体运行时出错，没能完成回复。请重试。",
+      "timeout": "智能体处理超时，未能完成。可以重试，或把需求拆得更小一些。",
+      "codex_semantic_inactivity": "智能体长时间无响应，已停止。请重试。",
+      "runtime_offline": "智能体当前离线，暂时无法回复。等它恢复在线后再试。",
+      "runtime_recovery": "智能体在完成前重启了。请重试。",
+      "manual": "这次回复已取消。",
+      "skill_bundle_unavailable": "没能下载到智能体的 skill，这次回复没有启动。通常是网络连接问题，请重试。",
+      "runtime_cli_timeout": "本机 OpenClaw CLI 没能在超时时间内响应，这次运行没有启动。这是本地启动超时，不是网络问题——除非 CLI 变快或调大超时（MULTICA_OPENCLAW_CLI_TIMEOUT），否则重试也不会成功。",
+      "environment_prepare_failed": "运行智能体的那台机器没能把这次运行准备好，任务没有启动。下方的原始错误会说明是哪一步失败——常见的是磁盘空间、权限、目录仍被占用，或本地配置读不出来。与智能体和模型厂商无关。",
+      "delivery_guard": "任务已跑完，但任务分支无法再证明本次运行从哪里开始——运行期间分支历史被改写，通常是会话为丢掉构建产物而重置了自己的 checkpoint。全部工作已保留在任务工作树中。重试即可修复：当被丢弃的只有守护进程自身的 checkpoint 时，下一次运行会自动把分支重新锚定。",
+      "provider_network": "与模型服务的连接中断，回复没能完成。检查网络后重试。",
+      "provider_auth_or_access": "智能体的模型账号登录已失效。重新登录后再试。",
+      "provider_quota_limit": "智能体的模型账号额度已用尽。充值或更换账号后再试。",
+      "provider_capacity_or_rate_limit": "模型服务繁忙或触发了限流。稍后再试。",
+      "context_overflow": "这次对话超出了模型的上下文长度。开一个新会话，或把需求拆得更小一些。",
+      "runtime_missing_executable": "无法在这台设备上运行智能体的 CLI。确认已正确安装并且在 PATH 中，然后重试。",
+      "runtime_version_unsupported": "智能体的 CLI 版本过低。升级后重试。",
+      "fallback": "出了点问题，智能体未能完成回复。请重试。"
+    },
+    "tools_other": "{{count}} 个工具",
+    "tool_result_named": "{{tool}} 结果：",
+    "tool_result_unnamed": "结果：",
+    "process_steps_other": "{{count}} 步",
+    "copy_action": "复制",
+    "copied_toast": "已复制",
+    "copy_failed_toast": "复制失败",
+    "loading_older": "正在加载更早的消息…",
+    "quick_actions_heading": "后续提问",
+    "quick_actions_aria": "后续提问建议",
+    "quick_actions_regenerate": "重新生成建议",
+    "quick_actions_regenerate_failed": "无法重新生成建议，请重试。"
+  },
+  "session_history": {
+    "untitled": "无标题",
+    "time": {
+      "just_now": "刚刚",
+      "minutes": "{{count}} 分钟前",
+      "hours": "{{count}} 小时前",
+      "days": "{{count}} 天前"
+    },
+    "row_delete_aria": "删除对话",
+    "row_rename_aria": "重命名对话",
+    "row_stop_aria": "停止当前运行",
+    "stop_action": "停止",
+    "row_subtitle": {
+      "working": "处理中",
+      "completed": "已完成",
+      "new_reply": "新回复"
+    },
+    "stop_dialog": {
+      "title": "停止这次运行？",
+      "description_with_title": "这会取消 \"{{title}}\" 里的当前智能体 task。已产生的内容会保留在对话里。",
+      "description_default": "这会取消当前智能体 task。已产生的内容会保留在对话里。",
+      "cancel": "继续运行",
+      "confirm": "停止运行",
+      "confirming": "停止中..."
+    },
+    "delete_dialog": {
+      "title": "删除对话",
+      "description_with_title": "\"{{title}}\" 及其消息会被永久删除，无法撤销。",
+      "description_default": "此对话及其消息会被永久删除，无法撤销。",
+      "cancel": "取消",
+      "confirm": "删除",
+      "confirming": "删除中..."
+    },
+    "row_actions_aria": "聊天操作"
+  },
+  "window": {
+    "new_chat_tooltip": "新对话",
+    "restore_tooltip": "还原",
+    "expand_tooltip": "展开",
+    "minimize_tooltip": "最小化",
+    "another_running": "另一个对话正在运行",
+    "another_unread": "另一个对话有未读回复",
+    "running": "运行中",
+    "unread": "未读",
+    "no_previous": "暂无历史对话",
+    "untitled": "新对话",
+    "my_agents": "我的智能体",
+    "others": "其他",
+    "no_agents": "暂无智能体",
+    "history_group": "历史对话",
+    "agent_filter_placeholder": "搜索智能体...",
+    "agent_needs_runtime": "需绑定运行时",
+    "agent_needs_runtime_hint": "请先绑定运行时，再与该智能体开始对话"
+  },
+  "empty_state": {
+    "first_time_title": "和你的智能体对话",
+    "first_time_intro": "✨ 它们了解你的工作区——",
+    "first_time_pillars": "任务、项目、skill",
+    "first_time_pillars_suffix": "。",
+    "first_time_actions": "让它做一份总结、规划你的一天，或交给它一个小任务。",
+    "returning_title_named": "你好，我是 {{name}}",
+    "returning_title_default": "欢迎使用 Multica",
+    "returning_subtitle": "试试问",
+    "chat_with_named": "与 {{name}} 对话"
+  },
+  "conversation_starters": {
+    "aria_label": "对话开场建议",
+    "capabilities": {
+      "label": "你能帮我做什么？",
+      "prompt": "你最擅长帮我做什么？请简要介绍。"
+    },
+    "first_task": {
+      "label": "建议第一个任务",
+      "prompt": "建议三个适合交给你的实用任务。"
+    },
+    "recommend": {
+      "label": "推荐一个操作",
+      "prompt": "根据你对我的工作区的了解，推荐一个有用的初始操作。"
+    },
+    "customize": "自定义开场建议"
+  },
+  "onboarding_cards": {
+    "aria_label": "开始方式",
+    "cta": "开始",
+    "board": {
+      "title": "几分钟搭好任务看板",
+      "desc": "告诉我目标，我来建项目、拆任务、排好优先级。",
+      "prompt": "把我们的目标整理成一个项目看板"
+    },
+    "delegate": {
+      "title": "先交给我一件事",
+      "desc": "比如一次调研——结果会变成任务和报告交回来。",
+      "prompt": "先交给你一件事：帮我做一次调研，把结果整理成报告交回来"
+    },
+    "digest": {
+      "title": "让日报自己写好",
+      "desc": "每天自动汇总工作区进展，发到你的收件箱。",
+      "prompt": "帮我建一个每天早上自动汇总工作区进展的日报自动化"
+    },
+    "digest_badge": "每天 9:00"
+  },
+  "no_agent_banner": "需要先有一个智能体才能开始对话。",
+  "archived_agent_banner": "{{name}} 已归档——此会话为只读。",
+  "agent_access_revoked_banner": "你已没有运行 {{name}} 的权限——此会话为只读。",
+  "runtime_required_banner": {
+    "fallback_name": "该智能体",
+    "message": "{{name}} 需要绑定运行时后才能回复。",
+    "action": "绑定运行时"
+  },
+  "offline_banner": {
+    "fallback_name": "智能体",
+    "unstable": "{{name}} 的连接不稳定——回复可能延迟。",
+    "offline": "{{name}} 离线——你的消息将在它上线后发送。"
+  },
+  "status_pill": {
+    "stages": {
+      "offline": "离线",
+      "reconnecting": "重连中",
+      "retrying": "重试中",
+      "queued": "排队中",
+      "waiting_local_directory": "等待本地目录释放",
+      "waiting_local_directory_reason": "等待 {{reason}}",
+      "starting_up": "启动中",
+      "thinking": "思考中",
+      "typing": "输入中"
+    },
+    "tools": {
+      "running_command": "执行命令",
+      "reading_files": "读取文件",
+      "searching_code": "搜索代码",
+      "making_edits": "修改文件",
+      "searching_web": "搜索网页",
+      "fallback": "处理中"
+    }
+  },
+  "list": {
+    "typing": "正在输入…",
+    "failed": "发送失败",
+    "you_prefix": "你：",
+    "no_messages": "还没有消息",
+    "no_response_preview": "无文字回复",
+    "quick_agents": "常用智能体",
+    "add": "添加",
+    "add_agent": "添加常用智能体",
+    "unpin_agent": "移出常用",
+    "waiting": "等待回复",
+    "pin": "置顶",
+    "unpin": "取消置顶",
+    "pinned": "已置顶",
+    "archive": "归档",
+    "unarchive": "取消归档",
+    "archived_title": "已归档",
+    "row_actions_aria": "聊天操作"
+  },
+  "header": {
+    "view_profile": "查看智能体资料",
+    "rename": "重命名会话",
+    "delete": "删除会话",
+    "archive": "归档会话",
+    "unarchive": "取消归档"
+  },
+  "mobile": {
+    "model": {
+      "agent_default": "智能体默认模型",
+      "current": "当前模型：{{model}}",
+      "runtime_default": "运行时默认模型",
+      "save_failed_title": "模型未更改",
+      "loading": "正在加载模型…",
+      "load_failed": "无法加载模型",
+      "unsupported": "此运行时不支持模型选择",
+      "unavailable": "模型或会话已不可用",
+      "save_failed": "无法保存模型选择",
+      "save_failed_title": "模型未变更",
+      "current": "当前模型：{{model}}",
+      "runtime_default": "运行时默认模型"
+    },
+    "send_blocked": {
+      "no_permission_title": "无权运行此 Agent",
+      "no_permission_message": "你已不再拥有运行此 Agent 的权限，消息未发送。请向其所有者申请访问权限。",
+      "runtime_required_title": "需要绑定运行时",
+      "runtime_required_message": "请先在网页版或桌面端为此 Agent 绑定运行时，然后再发送消息。",
+      "failed_title": "消息未发送"
+    },
+    "composer": {
+      "placeholder": "发消息…",
+      "agent_working": "Agent 处理中…",
+      "unavailable": "聊天不可用",
+      "stop_agent": "停止 Agent",
+      "stop_failed_title": "无法停止 Agent",
+      "stop_failed": "请重试。当前消息已保留。",
+      "quick_replies_title": "快捷回复"
+    },
+    "send_failure": {
+      "no_permission": "你已不再拥有运行此 Agent 的权限，消息未发送。",
+      "runtime_required": "请先为此 Agent 绑定运行时，然后再发送消息。",
+      "generic": "消息发送失败，请重试。"
+    },
+    "queue": {
+      "action_failed_title": "队列已变化",
+      "stale": "这条排队消息已变化，队列已刷新。",
+      "action_failed": "无法更新队列，请重试。"
+    },
+    "disabled_reason": {
+      "no_agent": "未选择 Agent",
+      "access_revoked": "你已不能运行此 Agent",
+      "no_agents_in_workspace": "此工作空间没有 Agent",
+      "archived": "此聊天已归档",
+      "runtime_missing": "Agent 需要绑定运行时"
+    },
+    "failure_reason": {
+      "queued_expired": "在队列中已过期",
+      "runtime_offline": "守护进程离线",
+      "runtime_recovery": "守护进程已重启",
+      "timeout": "task 已超时",
+      "iteration_limit": "达到迭代次数上限",
+      "agent_blocked": "等待人工输入",
+      "api_invalid_request": "被模型 API 拒绝",
+      "skill_bundle_unavailable": "无法下载智能体的技能包",
+      "runtime_cli_timeout": "本地运行时 CLI 超时",
+      "environment_prepare_failed": "无法准备执行环境",
+      "delivery_guard": "交付守护拦下了任务分支",
+      "agent_error__provider_auth_or_access": "服务商鉴权失败",
+      "agent_error__provider_quota_limit": "服务商配额已用尽",
+      "agent_error__provider_capacity_or_rate_limit": "被服务商限流",
+      "agent_error__provider_server_error": "服务商服务端错误",
+      "agent_error__provider_network": "连接服务商网络出错",
+      "agent_error__process_failure": "智能体进程崩溃",
+      "agent_error__empty_or_unparseable_output": "智能体没有返回可用输出",
+      "agent_error__agent_timeout": "智能体超时",
+      "agent_error__context_overflow": "超出上下文窗口",
+      "agent_error__missing_config": "缺少 API key 或配置",
+      "agent_error__model_not_found_or_unavailable": "模型不可用",
+      "agent_error__runtime_version_unsupported": "运行器 CLI 版本不受支持",
+      "agent_error__runtime_missing_executable": "未安装运行器 CLI",
+      "agent_error__unknown": "智能体执行出错",
+      "agent_error": "智能体执行出错",
+      "codex_semantic_inactivity": "Codex 语义静默超时",
+      "manual": "用户取消",
+      "fallback": "失败"
+    },
+    "sessions": {
+      "untitled": "未命名聊天",
+      "delete_title": "删除此聊天？",
+      "title": "聊天",
+      "empty": "还没有聊天。",
+      "archived": "已归档",
+      "actions_a11y": "会话操作",
+      "title_button_a11y": "会话与 Agent 选择器"
+    },
+    "agent_picker": {
+      "title": "选择 Agent",
+      "empty": "没有可用的 Agent。"
+    },
+    "no_agent_banner": {
+      "a11y": "没有可用的 Agent，打开 Agent 设置",
+      "title": "没有可用的 Agent",
+      "hint": "在\"更多 → 智能体\"中添加或启用一个智能体后即可开始聊天。"
+    },
+    "offline_banner": {
+      "fallback_name": "此 Agent",
+      "unstable": "{{name}} 可能刚刚断开连接 —— 你的消息会先排队。",
+      "offline": "{{name}} 已离线。消息会等到其运行时恢复后再发送。"
+    },
+    "runtime_required_banner": {
+      "fallback_name": "此 Agent",
+      "message": "{{name}} 需要先绑定运行时才能运行。请在网页版或桌面端绑定。"
+    },
+    "message_list": {
+      "menu_copy": "复制",
+      "menu_select_text": "选择文本",
+      "quick_actions_a11y": "推荐的后续提问",
+      "show_error_details_a11y": "查看错误详情"
+    },
+    "timeline": {
+      "truncated": "…（已截断）"
+    },
+    "plus": {
+      "open": "添加",
+      "title": "添加内容",
+      "camera": "拍照",
+      "image": "图片",
+      "files": "文件",
+      "mention": "@提及",
+      "skill": "技能指令",
+      "quick_replies": "快捷回复",
+      "close": "关闭"
+    }
+  }
+}

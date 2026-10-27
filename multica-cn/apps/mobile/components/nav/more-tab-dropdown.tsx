@@ -1,0 +1,470 @@
+/**
+ * MoreTabDropdownAnchor — the popover that opens when the More tab is
+ * tapped. Mounted as a sibling to the Tabs view, NOT as the tab button
+ * itself: that way the real More tab button stays a standard React
+ * Navigation `PlatformPressable` (icon + "More" label, full visual
+ * parity with Inbox / My Issues / Chat).
+ *
+ * The wrapper View is absolute-positioned over the More tab's screen
+ * rect (right 25%, bottom = safe-area, height = tab bar). It uses
+ * `pointerEvents="box-none"` so taps pass through to the real tab
+ * button underneath; we open the dropdown imperatively from the tab's
+ * `listeners.tabPress` via the exposed `TriggerRef.open()`. The
+ * @rn-primitives Trigger measures its own layout inside `open()`, so
+ * the popover anchors to this invisible Pressable's rect — i.e.
+ * directly above the More tab.
+ *
+ * Why ref-controlled instead of `asChild` on the tab button: a previous
+ * attempt wrapped a custom tabBarButton in `<DropdownMenu.Root>` +
+ * Trigger asChild. RN's BottomTabItem wraps the returned button in
+ * `<View style={{flex:1}}>` and expects a single Pressable child. Our
+ * Root introduced an extra wrapping `View` with no flex:1, collapsing
+ * the More cell and stripping the label. The Option B pattern here
+ * leaves the real tab button entirely alone.
+ *
+ * Visual conventions inside the popover (apps/mobile/CLAUDE.md):
+ *   - All glyphs are SF Symbols rendered via expo-image (`sf:` source),
+ *     so they share the visual language of the bottom tab bar icons.
+ *   - All colours route through THEME tokens (foreground /
+ *     mutedForeground / secondary), so dark mode is automatic.
+ *   - Workspace is collapsed to a single `<WorkspaceCard>` row (icon +
+ *     current workspace name + chevron). Tapping it dismisses the popover
+ *     and pushes `/${slug}/switch-workspace`, a formSheet that lists every
+ *     workspace and triggers an iOS `Alert.alert` confirm before switching.
+ *     Earlier shape (every workspace inlined here) made the popover long
+ *     and offered no friction against accidental taps.
+ */
+import { type ComponentProps, useMemo } from "react";
+import { Image, Platform, Pressable, View } from "react-native";
+import { Image as ExpoImage } from "expo-image";
+import { Ionicons } from "@expo/vector-icons";
+import { router, usePathname } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import type { TriggerRef } from "@rn-primitives/dropdown-menu";
+import type { User, Workspace } from "@multica/core/types";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { Text } from "@/components/ui/text";
+import { WorkspaceAvatar } from "@/components/workspace/workspace-avatar";
+import { workspaceListOptions } from "@/data/queries/workspaces";
+import { pickActiveServer, type ServerEntry } from "@/data/server-config";
+import { useAuthStore } from "@/data/auth-store";
+import { useServerStore } from "@/data/server-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { useAppUpdate } from "@/lib/use-check-app-update";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { THEME } from "@/lib/theme";
+import { cn } from "@/lib/utils";
+import i18n from "i18next";
+
+// iOS bottom tab bar default height (above safe-area). React Navigation
+// doesn't expose this as a layout constant, but the value is stable
+// across Expo Router 55 / RN Screens 4 — see BottomTabBar.tsx in
+// @react-navigation/bottom-tabs (`styles.tab` has no explicit height;
+// the container settles at 49 from the inner padding + icon size).
+const TAB_BAR_HEIGHT = 49;
+
+interface NavItem {
+  label: string;
+  /** SF Symbol name for iOS (rendered via expo-image `source: "sf:<name>"`). */
+  icon: string;
+  /** Ionicons name for Android. */
+  androidIcon: ComponentProps<typeof Ionicons>["name"];
+  /** Path under /:slug/ — final href is `/${slug}${path}`. */
+  path: string;
+}
+
+/**
+ * `navItems` 刻意放在组件体内,不要提回模块顶层的 `const NAV_ITEMS`。
+ * `initI18n()` 在 `app/_layout.tsx` 的模块体里调用,而本模块由它间接
+ * import,模块顶层的 `i18n.t()` 因此在 i18n 初始化之前求值,拿到空串 ——
+ * 下拉里三个条目只剩图标、标签全空,四语全中(RUYI-25 批次 14 实测)。
+ * 同仓库正例是 `app/(app)/[workspace]/(tabs)/_layout.tsx` 的 Tab title:
+ * 那几个 `i18n.t()` 写在 `TabsLayout()` 函数体内,渲染时才求值,所以一直
+ * 正常 —— 同一份代码里正反两例并存,属范式误用而非环境问题。
+ */
+export function MoreTabDropdownAnchor({
+  triggerRef,
+}: {
+  triggerRef: React.RefObject<TriggerRef | null>;
+}) {
+  const navItems: NavItem[] = [
+    { label: i18n.t("layout:sidebar.pinned_label", "Pinned"), icon: "pin", androidIcon: "pin", path: "/more/pins" },
+    // RUYI-344: the full-space list moved into the bottom Tasks tab; the
+    // dropdown entry now opens the preserved personal view (more/my-issues).
+    { label: i18n.t("layout:nav.my_issues", "My Issues"), icon: "checklist", androidIcon: "checkbox-outline", path: "/more/my-issues" },
+    // RUYI-690: 挂起中心入口（可发现的挂起筛选）。
+    { label: i18n.t("layout:nav.suspensions", "Suspensions"), icon: "pause.circle", androidIcon: "pause-outline", path: "/more/suspensions" },
+    { label: i18n.t("layout:nav.projects", "Projects"), icon: "square.stack", androidIcon: "layers-outline", path: "/more/projects" },
+    // RUYI-346: 智能体与小队管理入口（P0）。
+    { label: i18n.t("layout:nav.agents", "Agents"), icon: "cpu", androidIcon: "hardware-chip-outline", path: "/more/agents" },
+    { label: i18n.t("layout:nav.squads", "Squads"), icon: "person.3", androidIcon: "people-outline", path: "/more/squads" },
+    // RUYI-748 retired the legacy runtime-instance screens; voice management
+    // now lives in the localized workspace voice settings screen.
+    { label: i18n.t("settings:page.tabs.voice", "Voice"), icon: "waveform", androidIcon: "mic-outline", path: "/more/settings/voice" },
+    // RUYI-638 阶段3: workspace usage 统计入口。键与 web sidebar 同源
+    // （layout:nav.usage，"Analytics"），可达性不做角色过滤——web 端
+    // usage 入口对全部工作区成员可见（views app-sidebar 静态 nav 数组），
+    // 权限面由服务端六个 dashboard rollup 接口一致裁决（A2 parity）。
+    { label: i18n.t("layout:nav.usage", "Analytics"), icon: "chart.bar", androidIcon: "stats-chart-outline", path: "/more/stats" },
+    { label: i18n.t("layout:nav.management", "Management"), icon: "slider.horizontal.3", androidIcon: "options-outline", path: "/more/management" },
+    { label: i18n.t("layout:nav.audit", "MCP audit"), icon: "checkmark.shield", androidIcon: "shield-checkmark-outline", path: "/more/audit" },
+  ];
+  const insets = useSafeAreaInsets();
+  const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const user = useAuthStore((s) => s.user);
+  const pathname = usePathname();
+  const { colorScheme } = useColorScheme();
+  const t = THEME[colorScheme];
+  const currentWorkspace = useCurrentWorkspace(slug);
+  const { currentVersion, checkForUpdates } = useAppUpdate();
+  const servers = useServerStore((s) => s.servers);
+  const activeServerId = useServerStore((s) => s.activeServerId);
+  const activeServer = pickActiveServer(servers, activeServerId);
+
+  const isActive = (path: string) => {
+    if (!slug) return false;
+    const target = `/${slug}${path}`;
+    return pathname === target || pathname.startsWith(target + "/");
+  };
+
+  return (
+    <View
+      pointerEvents="box-none"
+      style={{
+        position: "absolute",
+        right: 0,
+        bottom: insets.bottom,
+        width: "25%",
+        height: TAB_BAR_HEIGHT,
+      }}
+    >
+      <DropdownMenu>
+        <DropdownMenuTrigger ref={triggerRef} asChild>
+          {/* Invisible, non-tappable: the real tab button below catches
+              all touches; we open this trigger imperatively via ref.
+              The Pressable just provides a measurable rect for the
+              popover to anchor against. */}
+          <Pressable
+            pointerEvents="none"
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={{ width: "100%", height: "100%" }}
+          />
+        </DropdownMenuTrigger>
+
+        <DropdownMenuContent
+          side="top"
+          align="end"
+          sideOffset={6}
+          className="w-72 p-2"
+        >
+          <UserCard
+            user={user}
+            onPress={() => slug && router.push(`/${slug}/more/settings`)}
+            chevronTint={t.mutedForeground}
+          />
+
+          <DropdownMenuSeparator />
+
+          <ServerCard
+            server={activeServer}
+            onPress={() => router.push("/server-settings")}
+            iconTint={t.foreground}
+            chevronTint={t.mutedForeground}
+          />
+
+          <DropdownMenuSeparator />
+
+          <WorkspaceCard
+            currentWorkspaceName={currentWorkspace?.name}
+            currentWorkspaceAvatarUrl={currentWorkspace?.avatar_url}
+            onPress={() =>
+              slug && router.push(`/${slug}/switch-workspace`)
+            }
+            chevronTint={t.mutedForeground}
+          />
+
+          <DropdownMenuSeparator />
+
+          {navItems.map((item) => (
+            <DropdownMenuItem
+              key={item.path}
+              onPress={() => slug && router.push(`/${slug}${item.path}`)}
+              accessibilityLabel={item.label}
+              className={cn(
+                "h-9 gap-3",
+                isActive(item.path) && "bg-secondary",
+              )}
+            >
+              {Platform.OS === "ios" ? (
+                <ExpoImage
+                  source={`sf:${item.icon}`}
+                  tintColor={t.foreground}
+                  style={{ width: 18, height: 18 }}
+                />
+              ) : (
+                <Ionicons
+                  name={item.androidIcon}
+                  size={18}
+                  color={t.foreground}
+                />
+              )}
+              <Text className="text-sm text-foreground">{item.label}</Text>
+            </DropdownMenuItem>
+          ))}
+
+          <DropdownMenuSeparator />
+
+          {/* 检查更新（RUYI-36）：Owner 定案入口在更多面板一级；右侧展示
+              当前版本号。点击后在面板关闭状态下执行匿名 GitHub Release
+              检查，结果以系统 Alert 三态反馈（见 useAppUpdate）。 */}
+          <DropdownMenuItem
+            onPress={checkForUpdates}
+            accessibilityLabel={i18n.t(
+              "settings:mobile.update.action",
+              "Check for Updates",
+            )}
+            className="h-9 gap-3"
+          >
+            {Platform.OS === "ios" ? (
+              <ExpoImage
+                source="sf:arrow.down.circle"
+                tintColor={t.foreground}
+                style={{ width: 18, height: 18 }}
+              />
+            ) : (
+              <Ionicons name="cloud-download-outline" size={18} color={t.foreground} />
+            )}
+            <Text className="flex-1 text-sm text-foreground">
+              {i18n.t("settings:mobile.update.action", "Check for Updates")}
+            </Text>
+            {currentVersion ? (
+              <Text className="text-xs text-muted-foreground">
+                {currentVersion}
+              </Text>
+            ) : null}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </View>
+  );
+}
+
+/**
+ * iOS-list-row identity card. Right-side `chevron.right` is the standard
+ * disclosure indicator (UITableViewCellAccessoryDisclosureIndicator);
+ * this row navigates into settings, so the chevron is idiomatic even
+ * though menu items elsewhere in the popover don't use it.
+ */
+function UserCard({
+  user,
+  onPress,
+  chevronTint,
+}: {
+  user: User | null;
+  onPress: () => void;
+  chevronTint: string;
+}) {
+  const initial = (user?.name ?? user?.email ?? "U").charAt(0).toUpperCase();
+  return (
+    <DropdownMenuItem
+      onPress={onPress}
+      className="h-12 gap-3"
+      accessibilityLabel={i18n.t("settings:page.my_account", "My Account")}
+    >
+      {user?.avatar_url ? (
+        <Image
+          source={{ uri: user.avatar_url }}
+          className="size-8 rounded-full bg-muted"
+        />
+      ) : (
+        <View className="size-8 rounded-full bg-muted items-center justify-center">
+          <Text className="text-xs font-medium text-muted-foreground">
+            {initial}
+          </Text>
+        </View>
+      )}
+      <View className="flex-1 min-w-0">
+        <Text
+          className="text-sm font-medium text-foreground"
+          numberOfLines={1}
+        >
+          {user?.name ?? "—"}
+        </Text>
+        {user?.email ? (
+          <Text
+            className="text-xs text-muted-foreground"
+            numberOfLines={1}
+          >
+            {user.email}
+          </Text>
+        ) : null}
+      </View>
+      {Platform.OS === "ios" ? (
+        <ExpoImage
+          source="sf:chevron.right"
+          tintColor={chevronTint}
+          style={{ width: 12, height: 12 }}
+        />
+      ) : (
+        <Ionicons name="chevron-forward" size={12} color={chevronTint} />
+      )}
+    </DropdownMenuItem>
+  );
+}
+
+/**
+ * Active-server disclosure row (RUYI-542). Two-line shape mirrors
+ * `UserCard` (title + muted URL subtitle); the 18pt leading glyph follows
+ * the `navItems` convention so the row reads as a sibling of both groups.
+ *
+ * Pushes `/server-settings`, not `/servers/select`: the picker is the
+ * pre-auth startup gate — its 5s countdown auto-reconnects `previousId`
+ * and `connect()` routes through `/`, both wrong for an in-app entry.
+ * The management screen already owns selection semantics for a signed-in
+ * user (confirm alert → `switchServer` with session restore, add/edit/
+ * delete), and is where the settings page's Server group points too.
+ */
+function ServerCard({
+  server,
+  onPress,
+  iconTint,
+  chevronTint,
+}: {
+  server: ServerEntry;
+  onPress: () => void;
+  iconTint: string;
+  chevronTint: string;
+}) {
+  return (
+    <DropdownMenuItem
+      onPress={onPress}
+      className="h-12 gap-3"
+      accessibilityLabel={i18n.t(
+        "settings:mobile.page.server_section",
+        "Server",
+      )}
+    >
+      {Platform.OS === "ios" ? (
+        <ExpoImage
+          source="sf:server.rack"
+          tintColor={iconTint}
+          style={{ width: 18, height: 18 }}
+        />
+      ) : (
+        <Ionicons name="server-outline" size={18} color={iconTint} />
+      )}
+      <View className="flex-1 min-w-0">
+        <Text
+          className="text-sm font-medium text-foreground"
+          numberOfLines={1}
+        >
+          {server.name || server.apiUrl}
+        </Text>
+        <Text
+          className="text-xs text-muted-foreground"
+          numberOfLines={1}
+        >
+          {server.apiUrl}
+        </Text>
+      </View>
+      {Platform.OS === "ios" ? (
+        <ExpoImage
+          source="sf:chevron.right"
+          tintColor={chevronTint}
+          style={{ width: 12, height: 12 }}
+        />
+      ) : (
+        <Ionicons name="chevron-forward" size={12} color={chevronTint} />
+      )}
+    </DropdownMenuItem>
+  );
+}
+
+/**
+ * Collapsed single-row entry that shows the current workspace name and
+ * pushes the switch-workspace formSheet on tap. Same shape as `UserCard`
+ * above — `chevron.right` disclosure indicator signals "tap to descend".
+ * Auto-closes the popover because `DropdownMenuItem.onPress` dismisses
+ * the menu before our handler runs.
+ *
+ * When the workspaces query hasn't resolved yet, we still render the row
+ * using the slug-derived name from the store so the popover doesn't
+ * jump-resize on first open; the row remains tappable because the
+ * switch-workspace sheet has its own loading state.
+ *
+ * Single-workspace users: handled in `MoreTabDropdownAnchor` by passing
+ * `disabled` — the row renders with no chevron and no press effect.
+ */
+function WorkspaceCard({
+  currentWorkspaceName,
+  currentWorkspaceAvatarUrl,
+  onPress,
+  chevronTint,
+}: {
+  currentWorkspaceName: string | undefined;
+  currentWorkspaceAvatarUrl: string | null | undefined;
+  onPress: () => void;
+  chevronTint: string;
+}) {
+  const { data } = useQuery(workspaceListOptions());
+  const canSwitch = (data?.length ?? 0) > 1;
+  // 本文件按既有范式用 i18n.t() 取绝对 key（模块级 MORE_ITEMS 也这么写）。
+  const workspaceFallbackName = i18n.t(
+    "layout:sidebar.workspace_group",
+    "Workspace",
+  );
+
+  return (
+    <DropdownMenuItem
+      onPress={onPress}
+      disabled={!canSwitch}
+      className="h-12 gap-3"
+      accessibilityLabel={
+        canSwitch
+          ? "Switch workspace" /* mobile-only string */
+          : currentWorkspaceName ?? workspaceFallbackName
+      }
+    >
+      <WorkspaceAvatar
+        name={currentWorkspaceName ?? workspaceFallbackName}
+        avatarUrl={currentWorkspaceAvatarUrl}
+        size={32}
+      />
+      <View className="flex-1 min-w-0">
+        <Text
+          className="text-sm font-medium text-foreground"
+          numberOfLines={1}
+        >
+          {currentWorkspaceName ?? workspaceFallbackName}
+        </Text>
+      </View>
+      {canSwitch ? (
+        Platform.OS === "ios" ? (
+          <ExpoImage
+            source="sf:chevron.right"
+            tintColor={chevronTint}
+            style={{ width: 12, height: 12 }}
+          />
+        ) : (
+          <Ionicons name="chevron-forward" size={12} color={chevronTint} />
+        )
+      ) : null}
+    </DropdownMenuItem>
+  );
+}
+
+function useCurrentWorkspace(slug: string | null): Workspace | undefined {
+  const { data } = useQuery(workspaceListOptions());
+  return useMemo(
+    () => (slug ? data?.find((w) => w.slug === slug) : undefined),
+    [data, slug],
+  );
+}

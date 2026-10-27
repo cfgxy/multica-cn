@@ -1,0 +1,1039 @@
+import { act, fireEvent, render } from "@testing-library/react";
+import { createRef, type ReactNode } from "react";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "@multica/core/i18n/react";
+import { workspaceKeys } from "@multica/core/workspace/queries";
+import type { Agent, MemberWithUser, SkillSummary } from "@multica/core/types";
+import type { QueryClient } from "@tanstack/react-query";
+import enEditor from "../../locales/en/editor.json";
+
+const TEST_RESOURCES = {
+  en: { editor: enEditor },
+};
+
+function I18nWrapper({ children }: { children: ReactNode }) {
+  return (
+    <I18nProvider locale="en" resources={TEST_RESOURCES}>
+      {children}
+    </I18nProvider>
+  );
+}
+
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn();
+});
+
+vi.mock("@multica/core/platform", () => ({
+  getCurrentWsId: () => "ws-1",
+}));
+
+const authState = { user: { id: "u1" } as { id: string } | null };
+vi.mock("@multica/core/auth", () => ({
+  useAuthStore: { getState: () => authState },
+}));
+
+const chatState = { selectedAgentId: "agent-1" as string | null };
+vi.mock("@multica/core/chat", () => ({
+  useChatStore: { getState: () => chatState },
+}));
+
+vi.mock("../../common/actor-avatar", () => ({
+  ActorAvatar: ({ name }: { name: string }) => (
+    <span data-testid="actor-avatar">{name}</span>
+  ),
+}));
+
+import {
+  SlashCommandList,
+  type SlashCommandListRef,
+  createSlashCommandSuggestion,
+  type SlashCommandItem,
+  buildBuiltinCommandItems,
+  BUILTIN_COMMANDS,
+  createBuiltinCommandSuggestion,
+  QUICK_ACTION_ITEM_PREFIX,
+  buildIssueCommandItems,
+} from "./slash-command-suggestion";
+import { createEditorExtensions } from "./index";
+
+function agent(overrides: Partial<Agent>): Agent {
+  return {
+    id: "agent-1",
+    workspace_id: "ws-1",
+    runtime_id: "runtime-1",
+    name: "Agent",
+    description: "",
+    instructions: "",
+    avatar_url: null,
+    runtime_mode: "local",
+    runtime_config: {},
+    custom_args: [],
+    visibility: "workspace",
+    permission_mode: "public_to",
+    invocation_targets: [{ target_type: "workspace", target_id: null }],
+    status: "idle",
+    max_concurrent_tasks: 1,
+    model: "",
+    owner_id: null,
+    skills: [],
+    created_at: "",
+    updated_at: "",
+    archived_at: null,
+    archived_by: null,
+    ...overrides,
+  };
+}
+
+function fakeQc(data: {
+  members?: Array<Pick<MemberWithUser, "user_id" | "name" | "role">>;
+  agents?: Agent[];
+  /** Omit to simulate a never-fetched (cold) skills cache. */
+  skills?: Array<Pick<SkillSummary, "id" | "name" | "description">>;
+}): QueryClient & { fetchCalls: Array<readonly unknown[]> } {
+  const fetchCalls: Array<readonly unknown[]> = [];
+  const map = new Map<string, unknown>();
+  map.set(JSON.stringify(workspaceKeys.members("ws-1")), data.members ?? []);
+  map.set(JSON.stringify(workspaceKeys.agents("ws-1")), data.agents ?? []);
+  if (data.skills !== undefined) {
+    map.set(JSON.stringify(workspaceKeys.skills("ws-1")), data.skills);
+  }
+  return {
+    getQueryData: (key: readonly unknown[]) => map.get(JSON.stringify(key)),
+    fetchQuery: (options: { queryKey: readonly unknown[] }) => {
+      fetchCalls.push(options.queryKey);
+      return Promise.resolve(map.get(JSON.stringify(options.queryKey)));
+    },
+    fetchCalls,
+  } as unknown as QueryClient & { fetchCalls: Array<readonly unknown[]> };
+}
+
+function libSkill(id: string, name: string, description = "") {
+  return { id, name, description };
+}
+
+function items(qc: QueryClient, query = ""): SlashCommandItem[] {
+  const config = createSlashCommandSuggestion(qc);
+  return config.items!({
+    query,
+    editor: {} as never,
+    signal: new AbortController().signal,
+  }) as SlashCommandItem[];
+}
+
+describe("issue skill and command menu", () => {
+  it("keeps slash suggestions disabled when the editor switch is off", () => {
+    const disabled = createEditorExtensions({ enableSlashCommands: false, slashCommandMode: "command", queryClient: fakeQc({}) });
+    const slash = disabled.find((extension) => extension.name === "slashCommand");
+    expect(slash?.options.suggestion.allow({} as never)).toBe(false);
+  });
+  it("lists workspace skills first with enabled supporting agents, then /note and quick actions", () => {
+    const qc = fakeQc({ agents: [
+      agent({ id: "a1", skills: [{ id: "s1", name: "Review", description: "Check changes" }] }),
+      agent({ id: "a2", skills: [{ id: "s1", name: "Review", description: "Check changes", enabled: false }] }),
+    ] });
+    const result = buildIssueCommandItems(qc, "", [{ id: "s1", name: "Review", description: "Check changes" }], "a1", [{ id: "q1", name: "fix" }]);
+    expect(result.map((item) => item.id)).toEqual(["s1", "quick-action:q1", "note"]);
+    expect(result[0]?.supportingAgents?.map((a) => a.id)).toEqual(["a1"]);
+    expect(result[0]?.assignedAgentId).toBe("a1");
+    expect(buildIssueCommandItems(qc, "fix", [], null, [{ id: "q1", name: "fix" }]).map((item) => item.id)).toEqual(["quick-action:q1"]);
+  });
+
+  it("keeps /note available with large skill and quick-action catalogs", () => {
+    const qc = fakeQc({ agents: [] });
+    const skills = Array.from({ length: 40 }, (_, n) => ({ id: `s${n}`, name: `Skill ${n}`, description: "" }));
+    const actions = Array.from({ length: 30 }, (_, n) => ({ id: `q${n}`, name: `Action ${n}` }));
+    const result = buildIssueCommandItems(qc, "", skills, null, actions);
+    expect(result).toHaveLength(20);
+    expect(result[0]?.kind).toBe("skill");
+    expect(result.at(-1)?.id).toBe("note");
+    expect(buildBuiltinCommandItems("", actions).at(-1)?.id).toBe("note");
+  });
+
+  it("distinguishes all active agents from a partial or empty support set", () => {
+    const skill = { id: "s1", name: "Review", description: "Inspect changes" };
+    const supports = (id: string) => [{ id, name: "Review", description: "" }];
+    const qc = fakeQc({ agents: [
+      agent({ id: "a1", skills: supports("s1") }),
+      agent({ id: "a2", skills: supports("s1") }),
+      agent({ id: "a3", archived_at: "2026-01-01", skills: [] }),
+    ] });
+    const all = buildIssueCommandItems(qc, "", [skill], "a1")[0];
+    expect(all?.allAgentsSupport).toBe(true);
+    expect(all?.supportingAgents?.map((a) => a.id)).toEqual(["a1", "a2"]);
+
+    const partial = fakeQc({ agents: [
+      agent({ id: "a1", skills: supports("s1") }),
+      agent({ id: "a2", skills: [] }),
+      agent({ id: "a3", skills: [] }),
+      agent({ id: "a4", skills: [] }),
+      agent({ id: "a5", skills: [] }),
+    ] });
+    expect(buildIssueCommandItems(partial, "", [skill], "a1")[0]?.allAgentsSupport).toBe(false);
+    expect(buildIssueCommandItems(fakeQc({ agents: [] }), "", [skill], null)[0]?.allAgentsSupport).toBe(false);
+  });
+});
+
+describe("slash command suggestion items", () => {
+  // RUYI-288: the chat `/` picker draws from the WORKSPACE skill library, not
+  // the active agent's attachment list. Library skills the agent has not
+  // attached still appear — marked `attached: false` so the renderer shows
+  // them disabled with a reason — because hiding them made the picker read as
+  // a curated subset ("only the pattern skills") of the real library.
+  it("lists the whole library with attached skills first and selectable", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [{ id: "s1", name: "deploy", description: "Ship changes" }],
+        }),
+      ],
+      skills: [
+        libSkill("s1", "deploy", "Ship changes"),
+        libSkill("s2", "review", "Review code"),
+        libSkill("s3", "patterns", "Design patterns"),
+      ],
+    });
+
+    const result = items(qc);
+    expect(result.map((i) => [i.id, i.attached])).toEqual([
+      ["s1", true],
+      ["s2", false],
+      ["s3", false],
+    ]);
+  });
+
+  it("searches across unattached skills too", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [{ id: "s1", name: "deploy", description: "" }],
+        }),
+      ],
+      skills: [
+        libSkill("s1", "deploy", ""),
+        libSkill("s2", "review", "Read a pull request"),
+      ],
+    });
+
+    expect(items(qc, "pull").map((i) => [i.id, i.attached])).toEqual([["s2", false]]);
+  });
+
+  it("keeps the attached block ahead of the unattached block, library order within each", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [
+            { id: "s2", name: "beta", description: "" },
+            { id: "s1", name: "alpha", description: "" },
+          ],
+        }),
+      ],
+      skills: [
+        libSkill("s1", "alpha", ""),
+        libSkill("s2", "beta", ""),
+        libSkill("s3", "gamma", ""),
+      ],
+    });
+
+    expect(items(qc).map((i) => i.id)).toEqual(["s1", "s2", "s3"]);
+    expect(items(qc).map((i) => i.attached)).toEqual([true, true, false]);
+  });
+
+  it("treats an enabled:false assignment as unattached", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [{ id: "s1", name: "deploy", description: "", enabled: false }],
+        }),
+      ],
+      skills: [libSkill("s1", "deploy", "")],
+    });
+
+    expect(items(qc).map((i) => i.attached)).toEqual([false]);
+  });
+
+  it("caps results at 20 without dropping attached skills in favor of unattached ones", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [
+            { id: "a1", name: "mine-1", description: "" },
+            { id: "a2", name: "mine-2", description: "" },
+          ],
+        }),
+      ],
+      skills: [
+        libSkill("a1", "mine-1", ""),
+        libSkill("a2", "mine-2", ""),
+        ...Array.from({ length: 25 }, (_, i) => libSkill(`s${i}`, `skill-${i}`, "")),
+      ],
+    });
+
+    const result = items(qc);
+    expect(result).toHaveLength(20);
+    expect(result.slice(0, 2).map((i) => i.id)).toEqual(["a1", "a2"]);
+    expect(result.slice(2).every((i) => !i.attached)).toBe(true);
+  });
+
+  it("ranks name prefix matches above description-only matches", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [agent({ id: "agent-1", skills: [] })],
+      skills: [
+        libSkill("s1", "grilling", "Grill the user about a plan"),
+        libSkill("s2", "prototype", "Build a throwaway prototype"),
+        libSkill("s3", "wayfinder", "Plan a huge chunk of work"),
+      ],
+    });
+
+    expect(items(qc, "wa").map((i) => i.id)).toEqual(["s3", "s2"]);
+  });
+
+  it("ranks an exact name match ahead of a longer prefix match", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [agent({ id: "agent-1", skills: [] })],
+      skills: [libSkill("s1", "reviewer", ""), libSkill("s2", "review", "")],
+    });
+
+    expect(items(qc, "review").map((i) => i.id)).toEqual(["s2", "s1"]);
+  });
+
+  it("filters skills by name case-insensitively", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [agent({ id: "agent-1", skills: [] })],
+      skills: [libSkill("s1", "Deploy", ""), libSkill("s2", "Review", "")],
+    });
+
+    expect(items(qc, "dep").map((i) => i.id)).toEqual(["s1"]);
+  });
+
+  it("keeps a name match inside the 20-item cap when description hits fill it", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [agent({ id: "agent-1", skills: [] })],
+      skills: [
+        ...Array.from({ length: 25 }, (_, i) =>
+          libSkill(`d${i}`, `skill-${i}`, "Build a throwaway prototype"),
+        ),
+        libSkill("s-named", "wayfinder", ""),
+      ],
+    });
+
+    const result = items(qc, "wa");
+    expect(result).toHaveLength(20);
+    expect(result[0]?.id).toBe("s-named");
+  });
+
+  it("tolerates skills with missing descriptions from cached API data", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [{ id: "s1", name: "deploy" } as Agent["skills"][number]],
+        }),
+      ],
+      skills: [{ id: "s1", name: "deploy" } as Pick<SkillSummary, "id" | "name" | "description">],
+    });
+
+    expect(() => items(qc, "dep")).not.toThrow();
+    const [first] = items(qc, "dep");
+    expect(first).toMatchObject({ id: "s1", label: "deploy", description: "", attached: true });
+  });
+
+  it("populates supporting agents and rings the chat agent", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [{ id: "s1", name: "deploy", description: "" }],
+        }),
+        agent({ id: "agent-2", skills: [] }),
+      ],
+      skills: [libSkill("s1", "deploy", "")],
+    });
+
+    const [first] = items(qc);
+    expect(first?.kind).toBe("skill");
+    expect(first?.supportingAgents?.map((a) => a.id)).toEqual(["agent-1"]);
+    expect(first?.assignedAgentId).toBe("agent-1");
+    expect(first?.allAgentsSupport).toBe(false);
+  });
+
+  it("warms a cold skills cache and returns no items for that keystroke", async () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [agent({ id: "agent-1", skills: [] })],
+    });
+
+    expect(items(qc)).toEqual([]);
+    expect(qc.fetchCalls).toEqual([workspaceKeys.skills("ws-1")]);
+  });
+
+  it("does not refetch when the cache holds an already-fetched empty library", () => {
+    chatState.selectedAgentId = "agent-1";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [agent({ id: "agent-1", skills: [] })],
+      skills: [],
+    });
+
+    expect(items(qc)).toEqual([]);
+    expect(qc.fetchCalls).toEqual([]);
+  });
+
+  it("returns empty when no agents exist", () => {
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [],
+      skills: [libSkill("s1", "deploy", "")],
+    });
+
+    expect(items(qc)).toEqual([]);
+    expect(qc.fetchCalls).toEqual([]);
+  });
+
+  it("falls back to the first available agent when selectedAgentId is stale", () => {
+    chatState.selectedAgentId = "missing";
+    const qc = fakeQc({
+      members: [{ user_id: "u1", name: "Alice", role: "member" }],
+      agents: [
+        agent({
+          id: "agent-1",
+          skills: [{ id: "s1", name: "deploy", description: "" }],
+        }),
+      ],
+      skills: [libSkill("s1", "deploy", "")],
+    });
+
+    expect(items(qc).map((i) => [i.id, i.attached])).toEqual([["s1", true]]);
+  });
+
+  it("excludes skills from private agents the user cannot access", () => {
+    chatState.selectedAgentId = "private-agent";
+    const qc = fakeQc({
+      members: [
+        { user_id: "u1", name: "Alice", role: "member" },
+        { user_id: "u2", name: "Bob", role: "member" },
+      ],
+      agents: [
+        agent({
+          id: "private-agent",
+          visibility: "private",
+          permission_mode: "private",
+          invocation_targets: [],
+          owner_id: "u2",
+          skills: [{ id: "private-skill", name: "secret", description: "" }],
+        }),
+      ],
+      skills: [libSkill("private-skill", "secret", "")],
+    });
+
+    expect(items(qc)).toEqual([]);
+  });
+});
+
+describe("SlashCommandList keyboard handling", () => {
+  it("lets Enter and arrow keys fall through when there are no selectable items", () => {
+    const ref = createRef<SlashCommandListRef>();
+
+    render(
+      <I18nWrapper>
+        <SlashCommandList ref={ref} items={[]} query="" command={vi.fn()} />
+      </I18nWrapper>,
+    );
+
+    expect(
+      ref.current?.onKeyDown({
+        event: new KeyboardEvent("keydown", { key: "Enter" }),
+      }),
+    ).toBe(false);
+    expect(
+      ref.current?.onKeyDown({
+        event: new KeyboardEvent("keydown", { key: "Enter", metaKey: true }),
+      }),
+    ).toBe(false);
+    expect(
+      ref.current?.onKeyDown({
+        event: new KeyboardEvent("keydown", { key: "ArrowUp" }),
+      }),
+    ).toBe(false);
+    expect(
+      ref.current?.onKeyDown({
+        event: new KeyboardEvent("keydown", { key: "ArrowDown" }),
+      }),
+    ).toBe(false);
+  });
+
+  it("handles Enter and arrow keys when selectable items exist", () => {
+    const ref = createRef<SlashCommandListRef>();
+    const command = vi.fn();
+    const selectableItems: SlashCommandItem[] = [
+      { id: "s1", label: "deploy", description: "Ship changes" },
+      { id: "s2", label: "review", description: "Review code" },
+    ];
+
+    render(
+      <I18nWrapper>
+        <SlashCommandList
+          ref={ref}
+          items={selectableItems}
+          query=""
+          command={command}
+        />
+      </I18nWrapper>,
+    );
+
+    expect(
+      ref.current?.onKeyDown({
+        event: new KeyboardEvent("keydown", { key: "ArrowUp" }),
+      }),
+    ).toBe(true);
+    expect(
+      ref.current?.onKeyDown({
+        event: new KeyboardEvent("keydown", { key: "ArrowDown" }),
+      }),
+    ).toBe(true);
+    expect(
+      ref.current?.onKeyDown({
+        event: new KeyboardEvent("keydown", { key: "Enter" }),
+      }),
+    ).toBe(true);
+    expect(command).toHaveBeenCalledWith(selectableItems[0]);
+  });
+
+  // MUL-5495: same Ctrl aliases the command bar (cmdk) accepts, so the slash
+  // picker navigates like every other list in the product.
+  it("navigates with Ctrl+N/J and Ctrl+P/K, and leaves the bare letters alone", () => {
+    const ref = createRef<SlashCommandListRef>();
+    const command = vi.fn();
+    const selectableItems: SlashCommandItem[] = [
+      { id: "s1", label: "deploy", description: "Ship changes" },
+      { id: "s2", label: "review", description: "Review code" },
+      { id: "s3", label: "note", description: "Leave a note" },
+    ];
+
+    render(
+      <I18nWrapper>
+        <SlashCommandList
+          ref={ref}
+          items={selectableItems}
+          query=""
+          command={command}
+        />
+      </I18nWrapper>,
+    );
+
+    const highlightedLabel = () => {
+      const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"));
+      return buttons.find((b) => b.classList.contains("bg-accent"))?.textContent ?? "";
+    };
+    let handled: boolean | undefined;
+    const press = (init: KeyboardEventInit) =>
+      act(() => {
+        handled = ref.current?.onKeyDown({ event: new KeyboardEvent("keydown", init) });
+      });
+
+    press({ key: "n", ctrlKey: true });
+    expect(handled).toBe(true);
+    expect(highlightedLabel()).toContain("/review");
+
+    press({ key: "j", ctrlKey: true });
+    expect(highlightedLabel()).toContain("/note");
+
+    press({ key: "p", ctrlKey: true });
+    expect(highlightedLabel()).toContain("/review");
+
+    press({ key: "k", ctrlKey: true });
+    expect(highlightedLabel()).toContain("/deploy");
+
+    // Bare letters stay query characters — "/note" must remain typeable.
+    press({ key: "n" });
+    expect(handled).toBe(false);
+    expect(highlightedLabel()).toContain("/deploy");
+
+    press({ key: "Enter" });
+    expect(command).toHaveBeenCalledWith(selectableItems[0]);
+  });
+
+  // MUL-3685: plain Tab accepts the highlighted item like Enter; Shift+Tab and
+  // modifier+Tab fall through so reverse focus / OS switching are preserved.
+  it("accepts the highlighted item on plain Tab, ignoring Shift/modifier+Tab", () => {
+    const ref = createRef<SlashCommandListRef>();
+    const command = vi.fn();
+    const selectableItems: SlashCommandItem[] = [
+      { id: "s1", label: "deploy", description: "Ship changes" },
+      { id: "s2", label: "review", description: "Review code" },
+    ];
+
+    render(
+      <I18nWrapper>
+        <SlashCommandList
+          ref={ref}
+          items={selectableItems}
+          query=""
+          command={command}
+        />
+      </I18nWrapper>,
+    );
+
+    const press = (init: KeyboardEventInit) =>
+      ref.current?.onKeyDown({ event: new KeyboardEvent("keydown", init) });
+
+    expect(press({ key: "Tab", shiftKey: true })).toBe(false);
+    expect(press({ key: "Tab", metaKey: true })).toBe(false);
+    expect(command).not.toHaveBeenCalled();
+
+    expect(press({ key: "Tab" })).toBe(true);
+    expect(command).toHaveBeenCalledWith(selectableItems[0]);
+  });
+
+  it("lets Tab fall through when there are no selectable items, like Enter", () => {
+    const ref = createRef<SlashCommandListRef>();
+
+    render(
+      <I18nWrapper>
+        <SlashCommandList ref={ref} items={[]} query="" command={vi.fn()} />
+      </I18nWrapper>,
+    );
+
+    expect(
+      ref.current?.onKeyDown({
+        event: new KeyboardEvent("keydown", { key: "Tab" }),
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("SlashCommandList empty states", () => {
+  it("shows a configured-skills empty state before search text is entered", () => {
+    const { getByText } = render(
+      <I18nWrapper>
+        <SlashCommandList items={[]} query="" command={vi.fn()} />
+      </I18nWrapper>,
+    );
+
+    expect(getByText("No skills configured")).toBeInTheDocument();
+  });
+
+  it("shows a no-results empty state when search text has no matches", () => {
+    const { getByText } = render(
+      <I18nWrapper>
+        <SlashCommandList items={[]} query="deploy" command={vi.fn()} />
+      </I18nWrapper>,
+    );
+
+    expect(getByText("No matching skills")).toBeInTheDocument();
+  });
+
+  it("renders nothing on empty items when hideOnEmpty is set (command menu)", () => {
+    const { container } = render(
+      <I18nWrapper>
+        <SlashCommandList items={[]} query="6" command={vi.fn()} hideOnEmpty />
+      </I18nWrapper>,
+    );
+
+    // No popup box on a non-matching `/` (e.g. typing a date like 6/8).
+    expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("buildBuiltinCommandItems", () => {
+  it("returns the full built-in command set for an empty query", () => {
+    expect(buildBuiltinCommandItems("")).toEqual(BUILTIN_COMMANDS);
+  });
+
+  it("includes /note while the query is a prefix of the label", () => {
+    expect(buildBuiltinCommandItems("no").map((c) => c.id)).toEqual(["note"]);
+    expect(buildBuiltinCommandItems("NOTE").map((c) => c.id)).toEqual(["note"]);
+  });
+
+  it("matches the label as a prefix only — not the description", () => {
+    // "agent" appears in the description but is not a label prefix.
+    expect(buildBuiltinCommandItems("agent")).toEqual([]);
+    // A non-prefix substring of the label does not match either.
+    expect(buildBuiltinCommandItems("ote")).toEqual([]);
+  });
+
+  it("returns nothing for a query that matches no command", () => {
+    expect(buildBuiltinCommandItems("deploy")).toEqual([]);
+  });
+});
+
+describe("SlashCommandList built-in command rendering", () => {
+  it("renders the localized description for a built-in command", () => {
+    const { getByText } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={buildBuiltinCommandItems("")}
+          query=""
+          command={vi.fn()}
+          hideOnEmpty
+        />
+      </I18nWrapper>,
+    );
+
+    expect(getByText("/note")).toBeInTheDocument();
+    expect(
+      getByText("Add a note — won't trigger any agents"),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("SlashCommandList skill agent-support rendering", () => {
+  function skillItem(overrides: Partial<SlashCommandItem>): SlashCommandItem {
+    return {
+      id: "s1",
+      label: "Review",
+      description: "Inspect changes",
+      kind: "skill",
+      supportingAgents: [],
+      assignedAgentId: null,
+      allAgentsSupport: false,
+      ...overrides,
+    };
+  }
+
+  it("renders the all-agents tier as an avatar group with a full-support label instead of an All text chip", () => {
+    const { getAllByTestId, queryByText, getByLabelText } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={[skillItem({
+            allAgentsSupport: true,
+            supportingAgents: [
+              agent({ id: "a1", name: "Alpha" }),
+              agent({ id: "a2", name: "Beta" }),
+            ],
+          })]}
+          query=""
+          command={vi.fn()}
+        />
+      </I18nWrapper>,
+    );
+
+    expect(getAllByTestId("actor-avatar")).toHaveLength(2);
+    expect(queryByText("All")).not.toBeInTheDocument();
+    expect(getByLabelText("All")).toBeInTheDocument();
+  });
+
+  it("keeps the avatar cap of three with an overflow count and the assigned-agent highlight", () => {
+    const { getAllByTestId, getByText, getByTitle } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={[skillItem({
+            assignedAgentId: "a2",
+            supportingAgents: [
+              agent({ id: "a1", name: "Alpha" }),
+              agent({ id: "a2", name: "Beta" }),
+              agent({ id: "a3", name: "Gamma" }),
+              agent({ id: "a4", name: "Delta" }),
+            ],
+          })]}
+          query=""
+          command={vi.fn()}
+        />
+      </I18nWrapper>,
+    );
+
+    expect(getAllByTestId("actor-avatar")).toHaveLength(3);
+    expect(getByText("+1")).toBeInTheDocument();
+    expect(getByTitle("Beta").className).toContain("ring-primary");
+  });
+});
+
+describe("SlashCommandList attached/unattached rendering", () => {
+  function skillItem(overrides: Partial<SlashCommandItem>): SlashCommandItem {
+    return {
+      id: "s1",
+      label: "Review",
+      description: "Inspect changes",
+      kind: "skill",
+      supportingAgents: [],
+      assignedAgentId: null,
+      allAgentsSupport: false,
+      ...overrides,
+    };
+  }
+
+  it("renders unattached skills disabled with a reason and ignores their clicks", () => {
+    const command = vi.fn();
+    const { getByText, getByRole } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={[
+            skillItem({ id: "s1", label: "attached-one", attached: true }),
+            skillItem({ id: "s2", label: "library-only", attached: false }),
+          ]}
+          query=""
+          command={command}
+        />
+      </I18nWrapper>,
+    );
+
+    const row = getByRole("button", { name: /library-only/ });
+    expect(row).toBeDisabled();
+    expect(getByText(/attach it to this agent/i)).toBeInTheDocument();
+
+    fireEvent.click(row);
+    expect(command).not.toHaveBeenCalled();
+
+    fireEvent.click(getByRole("button", { name: /attached-one/ }));
+    expect(command).toHaveBeenCalledWith(expect.objectContaining({ id: "s1" }));
+  });
+
+  it("splits the skills block into attached and unattached group headers", () => {
+    const { getByText } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={[
+            skillItem({ id: "s1", label: "attached-one", attached: true }),
+            skillItem({ id: "s2", label: "library-only", attached: false }),
+          ]}
+          query=""
+          command={vi.fn()}
+        />
+      </I18nWrapper>,
+    );
+
+    expect(getByText("Attached to this agent")).toBeInTheDocument();
+    expect(getByText("Not attached")).toBeInTheDocument();
+  });
+
+  it("keeps the legacy single Skills header for pickers without attachment data", () => {
+    const { getByText, queryByText } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={[skillItem({ id: "s1", label: "review" })]}
+          query=""
+          command={vi.fn()}
+        />
+      </I18nWrapper>,
+    );
+
+    expect(getByText("Skills")).toBeInTheDocument();
+    expect(queryByText("Attached to this agent")).not.toBeInTheDocument();
+  });
+
+  it("skips disabled rows when navigating and swallows Enter on them", () => {
+    const ref = createRef<SlashCommandListRef>();
+    const command = vi.fn();
+
+    render(
+      <I18nWrapper>
+        <SlashCommandList
+          ref={ref}
+          items={[
+            skillItem({ id: "s1", label: "attached-one", attached: true }),
+            skillItem({ id: "s2", label: "library-only", attached: false }),
+            skillItem({ id: "s3", label: "attached-two", attached: true }),
+          ]}
+          query=""
+          command={command}
+        />
+      </I18nWrapper>,
+    );
+
+    const highlightedLabel = () => {
+      const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>("button"));
+      return buttons.find((b) => b.classList.contains("bg-accent"))?.textContent ?? "";
+    };
+    let handled: boolean | undefined;
+    const press = (init: KeyboardEventInit) => {
+      act(() => {
+        handled = ref.current?.onKeyDown({ event: new KeyboardEvent("keydown", init) });
+      });
+      return handled;
+    };
+
+    // Start on the first selectable row (attached-one); ArrowDown skips the
+    // disabled library-only row and lands on attached-two.
+    expect(press({ key: "ArrowDown" })).toBe(true);
+    expect(highlightedLabel()).toContain("/attached-two");
+
+    // Enter on a selectable row fires the command.
+    press({ key: "Enter" });
+    expect(command).toHaveBeenCalledWith(expect.objectContaining({ id: "s3" }));
+
+    // Wrap backwards from the top lands on attached-two again, not the
+    // disabled row above it.
+    command.mockClear();
+    expect(press({ key: "ArrowUp" })).toBe(true);
+    expect(highlightedLabel()).toContain("/attached-one");
+    expect(press({ key: "ArrowUp" })).toBe(true);
+    expect(highlightedLabel()).toContain("/attached-two");
+  });
+
+  it("falls through with arrows and swallows Enter when every skill is disabled", () => {
+    const ref = createRef<SlashCommandListRef>();
+    const command = vi.fn();
+
+    render(
+      <I18nWrapper>
+        <SlashCommandList
+          ref={ref}
+          items={[skillItem({ id: "s2", label: "library-only", attached: false })]}
+          query=""
+          command={command}
+        />
+      </I18nWrapper>,
+    );
+
+    const press = (init: KeyboardEventInit) => {
+      let out: boolean | undefined;
+      act(() => {
+        out = ref.current?.onKeyDown({ event: new KeyboardEvent("keydown", init) });
+      });
+      return out;
+    };
+
+    expect(press({ key: "ArrowDown" })).toBe(false);
+    expect(press({ key: "ArrowUp" })).toBe(false);
+    // Enter must not leak into the composer (would send the message).
+    expect(press({ key: "Enter" })).toBe(true);
+    expect(command).not.toHaveBeenCalled();
+  });
+});
+
+
+// Async quick-action rendering in the `/` menu (MUL-5465, review finding #4).
+//
+// The render request resolves after an arbitrary delay, during which the user
+// keeps typing. Three behaviours have to hold, and each one was a real bug at
+// some point in this PR:
+//   - a rejection must not destroy what the user typed
+//   - a success must replace the ORIGINAL command, not wherever the caret is
+//   - a command edited mid-flight must be left alone, not overwritten
+describe("builtin `/` menu — async quick action rendering", () => {
+  // Minimal editor stand-in: enough ProseMirror surface for the command to
+  // read the range text and issue its chain.
+  function fakeEditor(text: string) {
+    const calls: { from: number; to: number; content: string; contentType?: string }[] = [];
+    let docText = text;
+    const chain = {
+      focus: () => chain,
+      insertContentAt: (
+        range: { from: number; to: number },
+        content: string,
+        opts?: { contentType?: string },
+      ) => {
+        calls.push({ from: range.from, to: range.to, content, contentType: opts?.contentType });
+        return chain;
+      },
+      insertContent: (content: string) => {
+        calls.push({ from: -1, to: -1, content });
+        return chain;
+      },
+      deleteRange: () => chain,
+      run: () => true,
+    };
+    return {
+      calls,
+      setText: (next: string) => {
+        docText = next;
+      },
+      editor: {
+        chain: () => chain,
+        state: {
+          doc: {
+            get content() {
+              return { size: docText.length + 1 };
+            },
+            textBetween: (from: number, to: number) => docText.slice(from, to),
+          },
+        },
+        view: { state: { selection: { $to: { nodeAfter: null } } } },
+      },
+    };
+  }
+
+  const range = { from: 0, to: 7 };
+  const item = { id: `${QUICK_ACTION_ITEM_PREFIX}qa-1`, label: "review" };
+
+  it("leaves the typed command intact and reports the failure when render rejects", async () => {
+    const { editor, calls } = fakeEditor("/review");
+    const onRenderError = vi.fn();
+    const suggestion = createBuiltinCommandSuggestion({
+      renderQuickAction: () => Promise.reject(new Error("boom")),
+      onRenderError,
+    });
+
+    suggestion.command!({ editor, range, props: item } as never);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(calls).toHaveLength(0);
+    expect(onRenderError).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces the original range once a delayed render resolves", async () => {
+    const { editor, calls } = fakeEditor("/review");
+    let resolve!: (v: string) => void;
+    const suggestion = createBuiltinCommandSuggestion({
+      renderQuickAction: () => new Promise<string>((r) => { resolve = r; }),
+    });
+
+    suggestion.command!({ editor, range, props: item } as never);
+    expect(calls).toHaveLength(0); // nothing destroyed while in flight
+
+    await act(async () => {
+      resolve("rendered body");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // contentType must be "markdown": inserted as a plain string, the
+    // server-rendered `[@Name](mention://…)` lands as literal text and
+    // serialises back out with escaped brackets, so the mention never becomes
+    // a node and renders as raw markup in the thread.
+    expect(calls).toEqual([
+      { from: 0, to: 7, content: "rendered body", contentType: "markdown" },
+    ]);
+  });
+
+  it("abandons the insert when the command was edited while the request was open", async () => {
+    const { editor, calls, setText } = fakeEditor("/review");
+    let resolve!: (v: string) => void;
+    const suggestion = createBuiltinCommandSuggestion({
+      renderQuickAction: () => new Promise<string>((r) => { resolve = r; }),
+    });
+
+    suggestion.command!({ editor, range, props: item } as never);
+    // The user rewrites the command; a prefix-only check would still see a
+    // leading "/" here and clobber it.
+    setText("/fixnow");
+
+    await act(async () => {
+      resolve("rendered body");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(calls).toHaveLength(0);
+  });
+});

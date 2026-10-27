@@ -1,0 +1,539 @@
+/**
+ * Decision card (RUYI-345) — RN port of
+ * packages/views/issues/components/decision-card.tsx.
+ *
+ * An agent run's structured question rendered in the issue comment stream.
+ * Open cards take picks from human members; the server refuses agent
+ * callers, so the UI only needs to fail readably — the card is the gate,
+ * the server is the authority.
+ *
+ * Semantics mirror the DOM card exactly: single-select replaces the pick,
+ * multi-select toggles, answered/cancelled cards render read-only with the
+ * picked options marked. Answers go through the mobile-owned api wrapper;
+ * the returned card patches the shared core-keyed decisions cache.
+ *
+ * Directory-backed name resolution uses the mobile queries + core's pure
+ * `buildActorNameResolver` — core's `useActorName` hook is NOT reused
+ * because its query options call core's unconfigured api singleton.
+ *
+ * Option rows render the same index letters as DecisionBatchBar (RUYI-588)
+ * and strip the label's embedded letter prefix / trailing （推荐） marker
+ * (decisionOptionDisplayLabel) so letter and badge each show once (RUYI-620).
+ */
+import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Alert, Pressable, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
+import { buildActorNameResolver } from "@multica/core/workspace/hooks";
+import { decisionOptionDisplayLabel, upsertDecisionInCache } from "@multica/core/issues/decisions";
+import { issueKeys } from "@multica/core/issues/queries";
+import type { IssueDecision } from "@multica/core/types";
+import { agentListOptions } from "@/data/queries/agents";
+import { memberListOptions } from "@/data/queries/members";
+import { squadListOptions } from "@/data/queries/squads";
+import { api } from "@/data/api";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Text } from "@/components/ui/text";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { THEME } from "@/lib/theme";
+import { timeAgo } from "@/lib/time-ago";
+import { useT } from "@/lib/use-t";
+import { cn } from "@/lib/utils";
+
+const EMPTY_MEMBERS: { user_id: string; name: string }[] = [];
+const EMPTY_AGENTS: { id: string; name: string }[] = [];
+const EMPTY_SQUADS: { id: string; name: string }[] = [];
+
+const OPTION_LETTERS = ["A", "B", "C", "D"] as const;
+
+/**
+ * Authorization card face (RUYI-630) — RN port of the web AuthorizationCard.
+ * Shares the issue thread with question cards but takes two fixed buttons
+ * (approve/deny), no free picks, no cancel here (lifecycle lives in the
+ * decisions tab's authorization section). The server enforces tier, window
+ * and CAS — the card only needs to fail readably.
+ */
+function AuthorizationCard({ decision }: { decision: IssueDecision }) {
+  const { t } = useT("issues");
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+
+  const { data: members = EMPTY_MEMBERS } = useQuery(memberListOptions(wsId));
+  const { data: agents = EMPTY_AGENTS } = useQuery(agentListOptions(wsId));
+  const { data: squads = EMPTY_SQUADS } = useQuery(squadListOptions(wsId));
+  const getActorName = useMemo(
+    () => buildActorNameResolver({ members, agents, squads }),
+    [members, agents, squads],
+  );
+  const creatorName = getActorName(decision.created_by_type, decision.created_by_id);
+  const answeredName = decision.answered_by_type
+    ? getActorName(decision.answered_by_type, decision.answered_by_id ?? "")
+    : null;
+
+  const answer = useMutation({
+    mutationFn: (index: 0 | 1) =>
+      api.answerIssueDecision(decision.issue_id, decision.id, [index]),
+    onSuccess: (updated) => {
+      upsertDecisionInCache(qc, updated.issue_id, updated);
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
+    },
+    onError: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
+      Alert.alert(
+        t("decisions.auth_answer_failed", "Failed to record your answer"),
+      );
+    },
+  });
+
+  const isOpen = decision.status === "open";
+  const optionLabel = (idx: 0 | 1) => {
+    const named = idx === 0 ? decision.approve_label : decision.deny_label;
+    if (named) return decisionOptionDisplayLabel(named);
+    const opt = decision.options[idx];
+    if (opt?.label) return decisionOptionDisplayLabel(opt.label);
+    return idx === 0
+      ? t("decisions.auth_approve_default", "Approve")
+      : t("decisions.auth_deny_default", "Deny");
+  };
+  const projectResults = decision.action_type === "project_prompt_sync"
+    && decision.execution_result && typeof decision.execution_result === "object"
+    && Array.isArray((decision.execution_result as { projects?: unknown }).projects)
+    ? (decision.execution_result as { projects: Array<{ project_id?: unknown; status?: unknown; version?: unknown }> }).projects
+        .filter((item) => typeof item.project_id === "string" && typeof item.status === "string" && typeof item.version === "number")
+    : [];
+  const sideEffectStatus = decision.execution_result && typeof decision.execution_result === "object"
+    ? (decision.execution_result as { side_effect_status?: unknown }).side_effect_status
+    : null;
+  const createdIssue = decision.action_type === "single_issue_create" && decision.execution_result && typeof decision.execution_result === "object"
+    ? decision.execution_result as { target_identifier?: unknown; target_issue_status?: unknown }
+    : null;
+  const scriptHash = decision.action_type === "script_review" && decision.execution_result && typeof decision.execution_result === "object"
+    ? (decision.execution_result as { script_sha256?: unknown }).script_sha256
+    : null;
+
+  return (
+    <View className="px-4" testID="decision-card">
+      <Card>
+        <View className="flex-row items-start gap-2">
+          <Ionicons
+            name="shield-checkmark-outline"
+            size={16}
+            color={theme.brand}
+            style={{ marginTop: 2 }}
+          />
+          <View className="flex-1">
+            <View className="flex-row flex-wrap items-center gap-2">
+              <Text className="text-xs font-medium text-muted-foreground">
+                {t("decisions.auth_title", "Authorization request")}
+              </Text>
+              {decision.status === "cancelled" && (
+                <Text className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                  {t("decisions.status_cancelled", "Cancelled")}
+                </Text>
+              )}
+              {decision.auth_state === "approved" && (
+                <Text className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
+                  {t("decisions.auth_state_approved", "Approved")}
+                </Text>
+              )}
+              {decision.auth_state === "denied" && (
+                <Text className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                  {t("decisions.auth_state_denied", "Denied")}
+                </Text>
+              )}
+              {decision.executed_at && !decision.execution_error && (
+                <Text className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
+                  {decision.action_type === "script_review"
+                    ? t("decisions.auth_state_reviewed", "Reviewed")
+                    : t("decisions.auth_state_executed", "Executed")}
+                </Text>
+              )}
+              {decision.execution_error && (
+                <Text className="rounded-full border border-destructive px-2 py-0.5 text-xs text-destructive">
+                  {t("decisions.auth_state_execute_failed", "Execution failed")}
+                </Text>
+              )}
+            </View>
+            <Text className="mt-1 text-sm font-medium">{decision.question}</Text>
+            {decision.action_type === "project_prompt_sync" ? (
+              <Text className="mt-1 text-xs text-muted-foreground">
+                {t("decisions.auth_action_project_prompt_sync", "Sync selected project prompts")}
+              </Text>
+            ) : null}
+            {decision.action_type === "single_issue_create" ? (
+              <Text className="mt-1 text-xs text-muted-foreground">
+                {t("decisions.auth_action_single_issue_create", "Create one target issue")}
+              </Text>
+            ) : null}
+            {decision.action_type === "script_review" ? (
+              <Text className="mt-1 text-xs text-muted-foreground">
+                {t("decisions.auth_action_script_review", "Script review only")}
+              </Text>
+            ) : null}
+            <Text className="mt-0.5 text-xs text-muted-foreground">
+              {creatorName} · {timeAgo(decision.created_at)}
+            </Text>
+          </View>
+        </View>
+
+        {isOpen ? (
+          <View className="mt-3 flex-row items-center gap-2">
+            <Button
+              size="sm"
+              disabled={answer.isPending}
+              onPress={() => answer.mutate(0)}
+              testID="decision-auth-approve"
+            >
+              <Text>{optionLabel(0)}</Text>
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={answer.isPending}
+              onPress={() => answer.mutate(1)}
+              testID="decision-auth-deny"
+            >
+              <Text>{optionLabel(1)}</Text>
+            </Button>
+          </View>
+        ) : null}
+
+        {decision.status === "answered" ? (
+          <View className="mt-3 flex-row items-center gap-2">
+            <Ionicons
+              name="checkmark-done-outline"
+              size={14}
+              color={theme.mutedForeground}
+            />
+            <Text className="text-xs text-muted-foreground">
+              {answeredName ?? ""}
+              {decision.answered_at ? ` · ${timeAgo(decision.answered_at)}` : ""}
+            </Text>
+          </View>
+        ) : null}
+
+        {decision.execution_error ? (
+          <Text className="mt-2 text-xs text-destructive">
+            {t("decisions.auth_execute_failed", "Execution failed; it was not retried")}
+          </Text>
+        ) : null}
+        {sideEffectStatus === "unknown" ? (
+          <Text className="mt-2 text-xs font-medium text-destructive" accessibilityRole="text" accessibilityLiveRegion="polite">
+            {t("decisions.auth_result_unknown", "Result needs verification. Do not retry this request.")}
+          </Text>
+        ) : null}
+        {projectResults.map((result) => (
+          <Text key={String(result.project_id)} className="mt-1 text-xs text-muted-foreground" testID="decision-auth-project-result">
+            {String(result.project_id)} · {String(result.status)} · v{String(result.version)}
+          </Text>
+        ))}
+      {typeof createdIssue?.target_identifier === "string" ? (
+        <Text className="mt-1 text-xs text-muted-foreground" testID="decision-auth-created-issue">
+          {t("decisions.auth_issue_created", "Created {{identifier}} · {{status}}", {
+            identifier: createdIssue.target_identifier,
+            status: typeof createdIssue.target_issue_status === "string" ? createdIssue.target_issue_status : "in_progress",
+          })}
+        </Text>
+      ) : null}
+      {typeof scriptHash === "string" ? (
+        <View className="mt-2 flex-row flex-wrap items-center gap-2" testID="decision-auth-script-receipt">
+          <Text selectable className="flex-1 break-all text-xs text-muted-foreground">
+            {t("decisions.script_hash", "SHA-256")}: {scriptHash}
+          </Text>
+          <Pressable
+            onPress={() => void Clipboard.setStringAsync(scriptHash)}
+            accessibilityRole="button"
+            accessibilityLabel={t("decisions.copy_script_hash", "Copy script hash")}
+            testID="decision-auth-copy-script-hash"
+          >
+            <Ionicons name="copy-outline" size={16} color={theme.brand} />
+          </Pressable>
+        </View>
+      ) : null}
+      </Card>
+    </View>
+  );
+}
+
+function ContextField({ label, value }: { label: string; value: string }) {
+  return (
+    <View>
+      <Text className="text-xs font-medium text-muted-foreground">{label}</Text>
+      <Text className="mt-0.5 text-sm">{value}</Text>
+    </View>
+  );
+}
+
+export function DecisionCard({ decision }: { decision: IssueDecision }) {
+  if (decision.decision_kind === "authorization") {
+    return <AuthorizationCard decision={decision} />;
+  }
+  return <AnswerableDecisionCard decision={decision} />;
+}
+
+/**
+ * Question-card face — every card that takes free picks. Split from the
+ * dispatcher above because hooks must run unconditionally per component:
+ * returning <AuthorizationCard /> before these calls is a render-phase
+ * branch between two components, not an early return inside one
+ * (react-hooks/rules-of-hooks).
+ */
+function AnswerableDecisionCard({ decision }: { decision: IssueDecision }) {
+  const { t } = useT("issues");
+  const { t: tCommon } = useT("common");
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+  const [selected, setSelected] = useState<number[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+
+  const { data: members = EMPTY_MEMBERS } = useQuery(
+    memberListOptions(wsId),
+  );
+  const { data: agents = EMPTY_AGENTS } = useQuery(agentListOptions(wsId));
+  const { data: squads = EMPTY_SQUADS } = useQuery(squadListOptions(wsId));
+  const getActorName = useMemo(
+    () => buildActorNameResolver({ members, agents, squads }),
+    [members, agents, squads],
+  );
+
+  const creatorName = getActorName(decision.created_by_type, decision.created_by_id);
+  const answeredName = decision.answered_by_type
+    ? getActorName(decision.answered_by_type, decision.answered_by_id ?? "")
+    : null;
+
+  const recommended = useMemo(
+    () => new Set(decision.recommended_indices),
+    [decision.recommended_indices],
+  );
+
+  const toggle = (idx: number) => {
+    if (decision.status !== "open" || submitting) return;
+    setSelected((prev) => {
+      if (prev.includes(idx)) return prev.filter((i) => i !== idx);
+      return decision.multi_select ? [...prev, idx] : [idx];
+    });
+  };
+
+  const answer = useMutation({
+    mutationFn: () =>
+      api.answerIssueDecision(decision.issue_id, decision.id, selected),
+    onSuccess: (updated) => {
+      upsertDecisionInCache(qc, updated.issue_id, updated);
+      setSelected([]);
+    },
+    onError: () => {
+      // 409 (someone answered/cancelled first) is the common race — refetch
+      // so the card flips to its terminal state instead of sitting stale-open.
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
+      Alert.alert(t("decisions.answer_failed", "Failed to submit answer"));
+    },
+    onSettled: () => setSubmitting(false),
+  });
+
+  const cancel = useMutation({
+    mutationFn: () => api.cancelIssueDecision(decision.issue_id, decision.id),
+    onSuccess: (updated) => {
+      upsertDecisionInCache(qc, updated.issue_id, updated);
+    },
+    onError: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
+      Alert.alert(t("decisions.cancel_failed", "Failed to cancel card"));
+    },
+  });
+
+  // RUYI-863: a cancelled card restores to open from the card's more
+  // affordance — the header's "···" asks via a native confirm (the
+  // waterfall: Alert.alert beats a hand-rolled sheet for a single
+  // confirm), then the mutation mirrors the server's flipped card.
+  const restore = useMutation({
+    mutationFn: () => api.restoreIssueDecision(decision.issue_id, decision.id),
+    onSuccess: (updated) => {
+      upsertDecisionInCache(qc, updated.issue_id, updated);
+    },
+    onError: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.decisions(decision.issue_id) });
+      Alert.alert(t("decisions.restore_failed", "Failed to restore card"));
+    },
+  });
+
+  const confirmRestore = () => {
+    Alert.alert(
+      t("decisions.restore_card", "Restore decision card"),
+      undefined,
+      [
+        { text: tCommon("cancel", "Cancel"), style: "cancel" },
+        {
+          text: t("decisions.restore_card", "Restore decision card"),
+          onPress: () => restore.mutate(),
+        },
+      ],
+    );
+  };
+
+  const isOpen = decision.status === "open";
+  const interactive = isOpen && !submitting;
+  const canSubmit = isOpen && selected.length > 0 && !submitting && !answer.isPending;
+
+  return (
+    <View className="px-4" testID="decision-card">
+      <Card>
+        <View className="flex-row items-start gap-2">
+          <Ionicons
+            name="help-circle-outline"
+            size={16}
+            color={theme.brand}
+            style={{ marginTop: 2 }}
+          />
+          <View className="flex-1">
+            <View className="flex-row flex-wrap items-center gap-2">
+              <Text className="text-xs font-medium text-muted-foreground">
+                {t("decisions.title", "Decision card")}
+              </Text>
+              {decision.status === "answered" && (
+                <Text className="rounded-full bg-secondary px-2 py-0.5 text-xs text-secondary-foreground">
+                  {t("decisions.status_answered", "Answered")}
+                </Text>
+              )}
+              {decision.status === "cancelled" && (
+                <Text className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                  {t("decisions.status_cancelled", "Cancelled")}
+                </Text>
+              )}
+              {decision.status === "cancelled" && (
+                // RUYI-863: the card's only more action — restore to open.
+                // Native "···" affordance in the header (not a primary
+                // button, matching the web card's more menu).
+                <Pressable
+                  onPress={confirmRestore}
+                  disabled={restore.isPending}
+                  accessibilityRole="button"
+                  accessibilityLabel={t("decisions.restore_card", "Restore decision card")}
+                  testID="decision-card-more"
+                  className="self-center p-1"
+                >
+                  <Ionicons name="ellipsis-horizontal" size={18} color={theme.mutedForeground} />
+                </Pressable>
+              )}
+            </View>
+            <Text className="mt-1 text-sm font-medium">{decision.question}</Text>
+            {decision.context && (
+              <View className="mt-2 gap-2 border-l-2 border-brand/40 pl-3" testID="decision-context">
+                <Text className="text-xs font-semibold">{t("decisions.context_title", "Decision context")}</Text>
+                {decision.context.why_now ? <ContextField label={t("decisions.context_why_now", "Why now")} value={decision.context.why_now} /> : null}
+                {decision.context.facts?.map((fact, index) => (
+                  <ContextField key={`${fact.statement}-${index}`} label={t("decisions.context_facts", "Confirmed facts and evidence")} value={[fact.statement, ...(fact.evidence ?? [])].join("\n")} />
+                ))}
+                {decision.context.impact ? <ContextField label={t("decisions.context_impact", "Impact")} value={decision.context.impact} /> : null}
+                {decision.context.recommendation_reason ? <ContextField label={t("decisions.context_recommendation", "Recommendation rationale")} value={decision.context.recommendation_reason} /> : null}
+                {decision.context.unknowns?.length ? <ContextField label={t("decisions.context_unknowns", "Unknowns")} value={decision.context.unknowns.join("\n")} /> : null}
+              </View>
+            )}
+            <Text className="mt-0.5 text-xs text-muted-foreground">
+              {creatorName} · {timeAgo(decision.created_at)}
+            </Text>
+          </View>
+        </View>
+
+        <View
+          className="mt-3 gap-1.5"
+          accessibilityLabel={decision.question}
+        >
+          {decision.options.map((opt, idx) => {
+            const isSelected = isOpen
+              ? selected.includes(idx)
+              : decision.selected_indices.includes(idx);
+            return (
+              <Pressable
+                key={idx}
+                testID={`decision-option-${idx}`}
+                accessibilityRole={decision.multi_select ? "checkbox" : "radio"}
+                accessibilityState={{ checked: isSelected, disabled: !interactive }}
+                disabled={!interactive}
+                onPress={() => toggle(idx)}
+                className={cn(
+                  "flex-row items-start gap-2 rounded-md border px-3 py-2",
+                  isSelected ? "border-brand bg-accent/40" : "border-border",
+                  !isOpen && "opacity-70",
+                )}
+              >
+                <View
+                  className={cn(
+                    "mt-0.5 h-4 w-4 shrink-0 border",
+                    decision.multi_select ? "rounded-sm" : "rounded-full",
+                    isSelected ? "border-brand bg-brand" : "border-muted-foreground/50",
+                  )}
+                />
+                <Text
+                  className={cn(
+                    "shrink-0 font-medium",
+                    isSelected ? "text-brand" : "text-muted-foreground",
+                  )}
+                >
+                  {OPTION_LETTERS[idx] ?? idx + 1}
+                </Text>
+                <Text className="flex-1">{decisionOptionDisplayLabel(opt.label)}</Text>
+                {recommended.has(idx) && (
+                  <Text className="shrink-0 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                    {t("decisions.recommended", "Recommended")}
+                  </Text>
+                )}
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {isOpen && (
+          <View className="mt-3 flex-row items-center gap-2">
+            <Button
+              size="sm"
+              disabled={!canSubmit}
+              onPress={() => {
+                setSubmitting(true);
+                answer.mutate();
+              }}
+              testID="decision-submit"
+            >
+              <Text>
+                {answer.isPending || submitting
+                  ? t("decisions.submitting", "Submitting…")
+                  : decision.multi_select
+                    ? t("decisions.submit_multi", "Submit selection")
+                    : t("decisions.submit_single", "Submit answer")}
+              </Text>
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={cancel.isPending || submitting}
+              onPress={() => cancel.mutate()}
+              testID="decision-cancel"
+            >
+              <Text>{t("decisions.cancel_card", "Cancel card")}</Text>
+            </Button>
+          </View>
+        )}
+
+        {decision.status === "answered" && (
+          <View className="mt-3 flex-row items-center gap-2">
+            <Ionicons
+              name="checkmark-done-outline"
+              size={14}
+              color={theme.mutedForeground}
+            />
+            <Text className="text-xs text-muted-foreground">
+              {answeredName ?? ""}
+              {decision.answered_at ? ` · ${timeAgo(decision.answered_at)}` : ""}
+            </Text>
+          </View>
+        )}
+      </Card>
+    </View>
+  );
+}

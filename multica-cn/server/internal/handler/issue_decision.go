@@ -1,0 +1,1003 @@
+package handler
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
+	"github.com/multica-ai/multica/server/pkg/protocol"
+)
+
+// Decision cards (RUYI-345): a run raises a structured question with 2-4
+// options; a human member answers by picking options; the platform echoes the
+// answer as a comment that mentions the creating agent so the standard
+// mention pipeline resumes the run. Agents are hard-blocked from answering —
+// the card exists to gate agent work on a human decision, so an agent
+// answering its own card would bypass that gate.
+
+const (
+	decisionMinOptions        = 2
+	decisionMaxOptions        = 4
+	decisionMaxQuestionLen    = 500
+	decisionMaxOptionLabelLen = 200
+	decisionMaxContextTextLen = 4000
+	decisionMaxContextItems   = 20
+	decisionMaxContextBytes   = 64 * 1024
+	// RUYI-514: caller-supplied idempotency keys are opaque strings; 255
+	// chars is the same ceiling cloud_billing puts on Idempotency-Key.
+	decisionMaxClientRequestIDLen = 255
+)
+
+type DecisionOption struct {
+	Label string `json:"label"`
+}
+
+type DecisionContextFact struct {
+	Statement string   `json:"statement"`
+	Evidence  []string `json:"evidence,omitempty"`
+}
+
+type DecisionContext struct {
+	WhyNow               string                `json:"why_now,omitempty"`
+	Facts                []DecisionContextFact `json:"facts,omitempty"`
+	Impact               string                `json:"impact,omitempty"`
+	RecommendationReason string                `json:"recommendation_reason,omitempty"`
+	Unknowns             []string              `json:"unknowns,omitempty"`
+}
+
+type IssueDecisionResponse struct {
+	ID                 string                  `json:"id"`
+	IssueID            string                  `json:"issue_id"`
+	SourceCommentID    *string                 `json:"source_comment_id"`
+	Question           string                  `json:"question"`
+	Context            *DecisionContext        `json:"context,omitempty"`
+	Options            []DecisionOption        `json:"options"`
+	MultiSelect        bool                    `json:"multi_select"`
+	RecommendedIndices []int                   `json:"recommended_indices"`
+	Status             string                  `json:"status"`
+	SelectedIndices    []int                   `json:"selected_indices"`
+	AnsweredByType     *string                 `json:"answered_by_type"`
+	AnsweredByID       *string                 `json:"answered_by_id"`
+	AnsweredAt         *time.Time              `json:"answered_at"`
+	AnswerCommentID    *string                 `json:"answer_comment_id"`
+	CreatedByType      string                  `json:"created_by_type"`
+	CreatedByID        string                  `json:"created_by_id"`
+	CreatedAt          time.Time               `json:"created_at"`
+	UpdatedAt          time.Time               `json:"updated_at"`
+	TriggerOutcomes    []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
+	// IdempotentReplay (RUYI-514) marks a 200 response that returned the
+	// original card because the create was a same-key retry; fresh creates
+	// are 201 with the field omitted.
+	IdempotentReplay bool `json:"idempotent_replay,omitempty"`
+	// RUYI-630 authorization face. decision_kind discriminates "question"
+	// (the original surface) from "authorization" (the origin step of a
+	// decision request: two fixed buttons, card-click only, tiers enforced).
+	// answer_source records which channel answered (card_click / text_token
+	// / batch); on authorization cards it is authorization-grade truth.
+	DecisionKind     string          `json:"decision_kind"`
+	VisibleTier      string          `json:"visible_tier"`
+	OperatorTier     string          `json:"operator_tier"`
+	NamedApproverIDs []string        `json:"named_approver_ids"`
+	ApproveLabel     *string         `json:"approve_label"`
+	DenyLabel        *string         `json:"deny_label"`
+	ExpiresAt        *time.Time      `json:"expires_at"`
+	AnswerSource     *string         `json:"answer_source"`
+	AuthState        *string         `json:"auth_state"`
+	RequestGroupID   *string         `json:"request_group_id"`
+	ActionType       *string         `json:"action_type"`
+	ExecutedAt       *time.Time      `json:"executed_at"`
+	ExecutionResult  json.RawMessage `json:"execution_result,omitempty"`
+	ExecutionError   *string         `json:"execution_error"`
+}
+
+type CreateIssueDecisionRequest struct {
+	Question           string           `json:"question"`
+	Context            *DecisionContext `json:"context,omitempty"`
+	Options            []string         `json:"options"`
+	MultiSelect        bool             `json:"multi_select"`
+	RecommendedIndices []int            `json:"recommended_indices"`
+	SourceCommentID    *string          `json:"source_comment_id"`
+	// ClientRequestID is the optional idempotency key. Absent/empty keeps
+	// the legacy behavior: every call creates a new card. There is
+	// deliberately no question-text dedup (RUYI-514 验收 5) — legitimate
+	// same-question re-asks must keep working; only the explicit key
+	// collapses retries.
+	ClientRequestID string `json:"client_request_id,omitempty"`
+}
+
+type AnswerIssueDecisionRequest struct {
+	SelectedIndices []int `json:"selected_indices"`
+}
+
+// errDecisionValidation marks input-shape rejections (400), as opposed to
+// state or permission rejections.
+type errDecisionValidation struct{ msg string }
+
+func (e errDecisionValidation) Error() string { return e.msg }
+
+// validateDecisionInput normalizes and validates card creation input.
+// Returned slice copies are what the caller persists.
+func validateDecisionInput(question string, labels []string, recommended []int) ([]DecisionOption, []int, error) {
+	question = strings.TrimSpace(sanitizeNullBytes(question))
+	if question == "" {
+		return nil, nil, errDecisionValidation{"question is required"}
+	}
+	if len([]rune(question)) > decisionMaxQuestionLen {
+		return nil, nil, errDecisionValidation{fmt.Sprintf("question must be at most %d characters", decisionMaxQuestionLen)}
+	}
+	if len(labels) < decisionMinOptions || len(labels) > decisionMaxOptions {
+		return nil, nil, errDecisionValidation{fmt.Sprintf("options must contain between %d and %d items", decisionMinOptions, decisionMaxOptions)}
+	}
+	options := make([]DecisionOption, 0, len(labels))
+	seen := make(map[string]struct{}, len(labels))
+	for _, label := range labels {
+		label = strings.TrimSpace(sanitizeNullBytes(label))
+		if label == "" {
+			return nil, nil, errDecisionValidation{"option labels must not be empty"}
+		}
+		if len([]rune(label)) > decisionMaxOptionLabelLen {
+			return nil, nil, errDecisionValidation{fmt.Sprintf("option labels must be at most %d characters", decisionMaxOptionLabelLen)}
+		}
+		if _, dup := seen[label]; dup {
+			return nil, nil, errDecisionValidation{"option labels must be unique"}
+		}
+		seen[label] = struct{}{}
+		options = append(options, DecisionOption{Label: label})
+	}
+	recs, err := validateIndices(recommended, len(options), true)
+	if err != nil {
+		return nil, nil, err
+	}
+	return options, recs, nil
+}
+
+func validateDecisionContext(value *DecisionContext) (*DecisionContext, error) {
+	if value == nil {
+		return nil, nil
+	}
+	cleanText := func(field, text string) (string, error) {
+		text = strings.TrimSpace(sanitizeNullBytes(text))
+		if len([]rune(text)) > decisionMaxContextTextLen {
+			return "", errDecisionValidation{fmt.Sprintf("context %s must be at most %d characters", field, decisionMaxContextTextLen)}
+		}
+		return text, nil
+	}
+	var err error
+	if value.WhyNow, err = cleanText("why_now", value.WhyNow); err != nil {
+		return nil, err
+	}
+	if value.Impact, err = cleanText("impact", value.Impact); err != nil {
+		return nil, err
+	}
+	if value.RecommendationReason, err = cleanText("recommendation_reason", value.RecommendationReason); err != nil {
+		return nil, err
+	}
+	if len(value.Facts) > decisionMaxContextItems || len(value.Unknowns) > decisionMaxContextItems {
+		return nil, errDecisionValidation{fmt.Sprintf("context facts and unknowns must contain at most %d items", decisionMaxContextItems)}
+	}
+	for i := range value.Facts {
+		value.Facts[i].Statement, err = cleanText(fmt.Sprintf("facts[%d].statement", i), value.Facts[i].Statement)
+		if err != nil {
+			return nil, err
+		}
+		if value.Facts[i].Statement == "" {
+			return nil, errDecisionValidation{fmt.Sprintf("context facts[%d].statement is required", i)}
+		}
+		if len(value.Facts[i].Evidence) > decisionMaxContextItems {
+			return nil, errDecisionValidation{fmt.Sprintf("context facts[%d].evidence must contain at most %d items", i, decisionMaxContextItems)}
+		}
+		for j, evidence := range value.Facts[i].Evidence {
+			value.Facts[i].Evidence[j], err = cleanText(fmt.Sprintf("facts[%d].evidence[%d]", i, j), evidence)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	for i := range value.Unknowns {
+		value.Unknowns[i], err = cleanText(fmt.Sprintf("unknowns[%d]", i), value.Unknowns[i])
+		if err != nil {
+			return nil, err
+		}
+		if value.Unknowns[i] == "" {
+			return nil, errDecisionValidation{fmt.Sprintf("context unknowns[%d] is required", i)}
+		}
+	}
+	if value.WhyNow == "" && len(value.Facts) == 0 && value.Impact == "" && value.RecommendationReason == "" && len(value.Unknowns) == 0 {
+		return nil, nil
+	}
+	return value, nil
+}
+
+// validateDecisionAnswer checks the picked indices against the card's option
+// count and select mode. Single-select takes exactly one option; multi-select
+// takes between one and all of them, without duplicates.
+func validateDecisionAnswer(numOptions int, multiSelect bool, selected []int) error {
+	if len(selected) == 0 {
+		return errDecisionValidation{"selected_indices must not be empty"}
+	}
+	if !multiSelect && len(selected) != 1 {
+		return errDecisionValidation{"this card is single-select: exactly one option must be chosen"}
+	}
+	seen := make(map[int]struct{}, len(selected))
+	for _, idx := range selected {
+		if idx < 0 || idx >= numOptions {
+			return errDecisionValidation{fmt.Sprintf("selected_indices contains out-of-range index %d (options: %d)", idx, numOptions)}
+		}
+		if _, dup := seen[idx]; dup {
+			return errDecisionValidation{"selected_indices must not repeat an option"}
+		}
+		seen[idx] = struct{}{}
+	}
+	return nil
+}
+
+// validateIndices range-checks an index list against numOptions. allowAll
+// permits the full range (recommendations); otherwise at least one and at
+// most numOptions-1 entries are accepted (answers). Duplicates are always
+// rejected.
+func validateIndices(indices []int, numOptions int, allowEmpty bool) ([]int, error) {
+	if len(indices) == 0 && !allowEmpty {
+		return nil, errDecisionValidation{"at least one index is required"}
+	}
+	if len(indices) > numOptions {
+		return nil, errDecisionValidation{"too many indices"}
+	}
+	seen := make(map[int]struct{}, len(indices))
+	out := make([]int, 0, len(indices))
+	for _, idx := range indices {
+		if idx < 0 || idx >= numOptions {
+			return nil, errDecisionValidation{fmt.Sprintf("index %d out of range (options: %d)", idx, numOptions)}
+		}
+		if _, dup := seen[idx]; dup {
+			return nil, errDecisionValidation{"indices must not repeat"}
+		}
+		seen[idx] = struct{}{}
+		out = append(out, idx)
+	}
+	return out, nil
+}
+
+func parseDecisionOptions(raw []byte) []DecisionOption {
+	var options []DecisionOption
+	if err := json.Unmarshal(raw, &options); err != nil {
+		// Rows are only written through validateDecisionInput, so a decode
+		// failure means hand-edited data; render an empty card rather than 500.
+		return []DecisionOption{}
+	}
+	return options
+}
+
+func parseDecisionIndices(raw []byte) []int {
+	if len(raw) == 0 {
+		return []int{}
+	}
+	var indices []int
+	if err := json.Unmarshal(raw, &indices); err != nil {
+		return []int{}
+	}
+	return indices
+}
+
+func decisionToResponse(d db.IssueDecision) IssueDecisionResponse {
+	resp := IssueDecisionResponse{
+		ID:                 uuidToString(d.ID),
+		IssueID:            uuidToString(d.IssueID),
+		Question:           d.Question,
+		Options:            parseDecisionOptions(d.Options),
+		MultiSelect:        d.MultiSelect,
+		RecommendedIndices: parseDecisionIndices(d.RecommendedIndices),
+		Status:             d.Status,
+		SelectedIndices:    parseDecisionIndices(d.SelectedIndices),
+		CreatedByType:      d.CreatedByType,
+		CreatedByID:        uuidToString(d.CreatedByID),
+		CreatedAt:          d.CreatedAt.Time,
+		UpdatedAt:          d.UpdatedAt.Time,
+	}
+	if d.SourceCommentID.Valid {
+		v := uuidToString(d.SourceCommentID)
+		resp.SourceCommentID = &v
+	}
+	if len(d.Context) > 0 && string(d.Context) != "null" {
+		var context DecisionContext
+		if err := json.Unmarshal(d.Context, &context); err == nil {
+			resp.Context = &context
+		}
+	}
+	if d.AnsweredByType.Valid {
+		v := d.AnsweredByType.String
+		resp.AnsweredByType = &v
+	}
+	if d.AnsweredByID.Valid {
+		v := uuidToString(d.AnsweredByID)
+		resp.AnsweredByID = &v
+	}
+	if d.AnsweredAt.Valid {
+		v := d.AnsweredAt.Time
+		resp.AnsweredAt = &v
+	}
+	if d.AnswerCommentID.Valid {
+		v := uuidToString(d.AnswerCommentID)
+		resp.AnswerCommentID = &v
+	}
+	// RUYI-630: authorization-face columns. question cards carry the
+	// defaults (kind=question, members tier, no window); authorization
+	// cards carry the request linkage and execution outcome.
+	resp.DecisionKind = d.DecisionKind
+	resp.VisibleTier = d.VisibleTier
+	resp.OperatorTier = d.OperatorTier
+	resp.NamedApproverIDs = parseUUIDJSONArray(d.NamedApproverIds)
+	if d.ApproveLabel.Valid {
+		v := d.ApproveLabel.String
+		resp.ApproveLabel = &v
+	}
+	if d.DenyLabel.Valid {
+		v := d.DenyLabel.String
+		resp.DenyLabel = &v
+	}
+	if d.ExpiresAt.Valid {
+		v := d.ExpiresAt.Time
+		resp.ExpiresAt = &v
+	}
+	if d.AnswerSource.Valid {
+		v := d.AnswerSource.String
+		resp.AnswerSource = &v
+	}
+	if d.AuthState.Valid {
+		v := d.AuthState.String
+		resp.AuthState = &v
+	}
+	if d.PendingRequestGroupID.Valid {
+		v := uuidToString(d.PendingRequestGroupID)
+		resp.RequestGroupID = &v
+	}
+	if d.PendingActionType.Valid {
+		v := d.PendingActionType.String
+		resp.ActionType = &v
+	}
+	if d.ExecutedAt.Valid {
+		v := d.ExecutedAt.Time
+		resp.ExecutedAt = &v
+	}
+	if d.PendingActionType.Valid &&
+		(d.PendingActionType.String == DecisionActionProjectPromptSync || d.PendingActionType.String == DecisionActionSingleIssueCreate) &&
+		len(d.ExecutionResult) > 0 {
+		resp.ExecutionResult = json.RawMessage(d.ExecutionResult)
+	}
+	if d.ExecutionError.Valid {
+		v := d.ExecutionError.String
+		resp.ExecutionError = &v
+	}
+	return resp
+}
+
+// CreateIssueDecision handles POST /api/issues/{id}/decisions. Any actor may
+// raise a card — agents do it from a run via the CLI, members from scripts —
+// the recorded creator is what the answer echo mentions.
+func (h *Handler) CreateIssueDecision(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+
+	var req CreateIssueDecisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	options, recommended, err := validateDecisionInput(req.Question, req.Options, req.RecommendedIndices)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	decisionContext, err := validateDecisionContext(req.Context)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var sourceCommentID pgtype.UUID
+	if req.SourceCommentID != nil && *req.SourceCommentID != "" {
+		var valid bool
+		sourceCommentID, valid = parseUUIDOrBadRequest(w, *req.SourceCommentID, "source_comment_id")
+		if !valid {
+			return
+		}
+	}
+
+	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+
+	// RUYI-514: the optional idempotency key is scoped to (workspace, creator
+	// type, creator id) by the unique index, so an empty key (the default)
+	// keeps the legacy create-always behavior and a key is only ever compared
+	// against the same actor's own cards.
+	clientRequestID := strings.TrimSpace(sanitizeNullBytes(req.ClientRequestID))
+	if len(clientRequestID) > decisionMaxClientRequestIDLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("client_request_id must be at most %d characters", decisionMaxClientRequestIDLen))
+		return
+	}
+	var keyParam pgtype.Text
+	if clientRequestID != "" {
+		keyParam = pgtype.Text{String: clientRequestID, Valid: true}
+	}
+
+	optionsJSON, err := json.Marshal(options)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode options")
+		return
+	}
+	recommendedJSON, err := json.Marshal(recommended)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode recommendations")
+		return
+	}
+	var contextJSON []byte
+	if decisionContext != nil {
+		contextJSON, err = json.Marshal(decisionContext)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to encode context")
+			return
+		}
+		if len(contextJSON) > decisionMaxContextBytes {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("context must be at most %d bytes", decisionMaxContextBytes))
+			return
+		}
+	}
+
+	// RUYI-865: the create runs inside a transaction that takes the issue
+	// row FOR UPDATE first (LockIssueForDecisionCreate). The insert's
+	// done guard is only as linear as the lock that serialises it against
+	// the done side: a done status write is a plain row UPDATE, which
+	// row-locks the issue as FOR UPDATE (issue carries a primary key),
+	// so the two writers cannot interleave on the row. Whichever writer
+	// wins the row lock, the loser's own commit is guaranteed to observe
+	// the winner's state — create-first, the done settle (post-commit,
+	// fresh READ COMMITTED snapshot) cancels the card that just
+	// committed; done-first, the guard's post-lock re-read sees done and
+	// refuses with 409. Without the lock the two snapshots pass each
+	// other and an open question card survives the done transition.
+	tx, txErr := h.TxStarter.Begin(r.Context())
+	if txErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start decision card create")
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	qtx := h.Queries.WithTx(tx)
+
+	if _, lockErr := qtx.LockIssueForDecisionCreate(r.Context(), db.LockIssueForDecisionCreateParams{
+		ID:          issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+	}); lockErr != nil {
+		if errors.Is(lockErr, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "issue not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to lock issue for decision create")
+		return
+	}
+
+	created, err := qtx.CreateIssueDecision(r.Context(), db.CreateIssueDecisionParams{
+		ID:                 dbid.NewV7(),
+		WorkspaceID:        issue.WorkspaceID,
+		IssueID:            issue.ID,
+		SourceCommentID:    sourceCommentID,
+		Question:           sanitizeNullBytes(req.Question),
+		Options:            optionsJSON,
+		MultiSelect:        req.MultiSelect,
+		RecommendedIndices: recommendedJSON,
+		Context:            contextJSON,
+		CreatedByType:      authorType,
+		CreatedByID:        parseUUID(authorID),
+		ClientRequestID:    keyParam,
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		// The insert's atomic done guard (RUYI-865) missed: a concurrent
+		// done transition committed while this request held the row lock.
+		// Re-read the row and check against the CURRENT state — the
+		// request-start snapshot is stale by definition in that race, and
+		// a foreign no-row miss (a concurrent delete) stays a 500 with a
+		// log either way.
+		fresh, freshErr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+			ID:          issue.ID,
+			WorkspaceID: issue.WorkspaceID,
+		})
+		if freshErr == nil && !h.decisionCardsAllowedWhileDone(r.Context(), fresh) {
+			writeError(w, http.StatusConflict,
+				"decision cards can no longer be raised: the issue has entered the done category; reopen it first")
+			return
+		}
+	}
+	if err != nil {
+		// Same-key retry: the insert lost the race against the original
+		// create, which by then must be committed (READ COMMITTED waits on
+		// the conflicting index entry before reporting 23505), so the
+		// replay lookup sees it. Return the original card with 200 — the
+		// retry was not a new decision, and the caller gets the same ID the
+		// first call produced. No WS publish: replay adds no state.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "uidx_issue_decisions_client_request" {
+			existing, replayErr := h.Queries.GetIssueDecisionByIdempotencyKey(r.Context(), db.GetIssueDecisionByIdempotencyKeyParams{
+				WorkspaceID:     issue.WorkspaceID,
+				CreatedByType:   authorType,
+				CreatedByID:     parseUUID(authorID),
+				ClientRequestID: keyParam,
+			})
+			if replayErr == nil {
+				resp := decisionToResponse(existing)
+				resp.IdempotentReplay = true
+				slog.Info("issue decision idempotent replay", append(logger.RequestAttrs(r),
+					"decision_id", resp.ID, "issue_id", resp.IssueID, "created_by", authorType)...)
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+			slog.Warn("issue decision replay lookup failed", append(logger.RequestAttrs(r),
+				"error", replayErr, "issue_id", uuidToString(issue.ID))...)
+		}
+		slog.Warn("create issue decision failed", append(logger.RequestAttrs(r), "error", err, "issue_id", uuidToString(issue.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to create decision card")
+		return
+	}
+
+	// Commit before the publish: the card is not a fact until the create
+	// transaction lands, and only then may a concurrent done settle see it.
+	if commitErr := tx.Commit(r.Context()); commitErr != nil {
+		slog.Error("issue decision create commit failed", append(logger.RequestAttrs(r),
+			"error", commitErr, "issue_id", uuidToString(issue.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to create decision card")
+		return
+	}
+	resp := decisionToResponse(created)
+	h.publish(protocol.EventDecisionUpdated, uuidToString(issue.WorkspaceID), authorType, authorID, map[string]any{
+		"decision":    resp,
+		"issue_id":    uuidToString(issue.ID),
+		"issue_title": issue.Title,
+	})
+	slog.Info("issue decision created", append(logger.RequestAttrs(r),
+		"decision_id", resp.ID, "issue_id", resp.IssueID, "created_by", authorType)...)
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// ListIssueDecisions handles GET /api/issues/{id}/decisions.
+func (h *Handler) ListIssueDecisions(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	decisions, err := h.Queries.ListIssueDecisionsForIssue(r.Context(), db.ListIssueDecisionsForIssueParams{
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list decision cards")
+		return
+	}
+	resp := make([]IssueDecisionResponse, 0, len(decisions))
+	for _, d := range decisions {
+		if !h.decisionCardVisibleToCaller(r, uuidToString(issue.WorkspaceID), d) {
+			continue
+		}
+		resp = append(resp, decisionToResponse(d))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// decisionCardVisibleToCaller applies the card's visible tier (RUYI-630
+// 第一节: restricted cards show to owners and named approvers only). The
+// creating agent always sees its own card. Legacy rows default to the
+// members tier and are unaffected.
+func (h *Handler) decisionCardVisibleToCaller(r *http.Request, workspaceID string, card db.IssueDecision) bool {
+	if card.VisibleTier != "restricted" {
+		return true
+	}
+	userID := requestUserID(r)
+	authorType, authorID := h.resolveActor(r, userID, workspaceID)
+	if authorType == "agent" {
+		return uuidToString(card.CreatedByID) == authorID
+	}
+	if role, ok := h.workspaceRole(r, userID, workspaceID); ok && role == "owner" {
+		return true
+	}
+	return containsUUIDString(parseUUIDJSONArray(card.NamedApproverIds), userID)
+}
+
+// workspaceRole resolves the caller's role without writing a response.
+func (h *Handler) workspaceRole(r *http.Request, userID, workspaceID string) (string, bool) {
+	member, err := h.getWorkspaceMember(r.Context(), userID, workspaceID)
+	if err != nil {
+		return "", false
+	}
+	return member.Role, true
+}
+
+// loadDecisionForIssue fetches a card and verifies it belongs to the issue in
+// the URL — the same tenant scoping ListIssueDecisionsForIssue enforces.
+func (h *Handler) loadDecisionForIssue(w http.ResponseWriter, r *http.Request, issue db.Issue) (db.IssueDecision, bool) {
+	decisionID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "decisionId"), "decision id")
+	if !ok {
+		return db.IssueDecision{}, false
+	}
+	decision, err := h.Queries.GetIssueDecision(r.Context(), db.GetIssueDecisionParams{
+		ID:          decisionID,
+		WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "decision card not found")
+			return db.IssueDecision{}, false
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load decision card")
+		return db.IssueDecision{}, false
+	}
+	if uuidToString(decision.IssueID) != uuidToString(issue.ID) {
+		writeError(w, http.StatusNotFound, "decision card not found")
+		return db.IssueDecision{}, false
+	}
+	return decision, true
+}
+
+// AnswerIssueDecision handles POST /api/issues/{id}/decisions/{decisionId}/answer.
+// Member-only by design: the card gates agent work on a human decision, so an
+// agent answering its own card would bypass that gate (resolveActor classifies
+// the caller; task-token traffic classifies as "agent" and is refused here).
+//
+// On success the platform posts an echo comment authored by the answerer that
+// mentions the creating agent, then hands it to the standard comment trigger
+// pipeline — that mention is what resumes the creating run.
+func (h *Handler) AnswerIssueDecision(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	if authorType != "member" {
+		writeError(w, http.StatusForbidden, "decision cards can only be answered by human members")
+		return
+	}
+
+	decision, ok := h.loadDecisionForIssue(w, r, issue)
+	if !ok {
+		return
+	}
+
+	var req AnswerIssueDecisionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// RUYI-630: authorization cards answer through their own CAS, tier gate,
+	// origin-row sync, and group advance — they never reach the question-card
+	// CAS below, and their echo never mentions the agent (the requesting run
+	// is woken once, at terminal).
+	if decision.DecisionKind == "authorization" {
+		h.answerAuthorizationCard(w, r, issue, decision, req.SelectedIndices, authorID)
+		return
+	}
+
+	if err := validateDecisionAnswer(len(parseDecisionOptions(decision.Options)), decision.MultiSelect, req.SelectedIndices); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	selectedJSON, err := json.Marshal(req.SelectedIndices)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to encode answer")
+		return
+	}
+
+	// CAS first: the echo comment is only posted for the request that wins the
+	// card. A concurrent answer (double click) or a cancel racing the answer
+	// loses here with ErrNoRows.
+	answered, err := h.Queries.AnswerIssueDecision(r.Context(), db.AnswerIssueDecisionParams{
+		ID:              decision.ID,
+		WorkspaceID:     issue.WorkspaceID,
+		SelectedIndices: selectedJSON,
+		AnsweredByType:  pgtype.Text{String: "member", Valid: true},
+		AnsweredByID:    parseUUID(authorID),
+		AnswerSource:    decisionSourceCardClick,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusConflict, "decision card is no longer open")
+			return
+		}
+		slog.Warn("answer issue decision failed", append(logger.RequestAttrs(r), "error", err, "decision_id", uuidToString(decision.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to answer decision card")
+		return
+	}
+
+	// RUYI-690: machine predicate decision_answered — resume suspensions
+	// waiting on this card BEFORE the echo comment runs the trigger pipeline,
+	// so an issue suspended on its own card's decision is unsuspended (and
+	// its assignee woken) by the time the echo reaches the admission gate.
+	// Only the answer arm grants the question; the cancel arm never reaches
+	// this code.
+	h.ResumeSuspensionsWaitingOnDecision(r.Context(), answered)
+
+	resp := decisionToResponse(answered)
+	resp.TriggerOutcomes = h.postDecisionAnswerEcho(r, issue, answered, req.SelectedIndices, authorID, &resp)
+
+	h.publish(protocol.EventDecisionUpdated, uuidToString(issue.WorkspaceID), "member", authorID, map[string]any{
+		"decision":    resp,
+		"issue_id":    uuidToString(issue.ID),
+		"issue_title": issue.Title,
+	})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// postDecisionAnswerEcho posts the answer echo comment as the answering
+// member and runs it through the standard trigger pipeline. Best-effort on
+// the linkage: the card is already answered once the CAS wins, so a failed
+// echo leaves an answered card without its comment rather than failing the
+// answer the user just submitted.
+func (h *Handler) postDecisionAnswerEcho(r *http.Request, issue db.Issue, answered db.IssueDecision, selected []int, authorID string, resp *IssueDecisionResponse) []CommentTriggerOutcome {
+	options := parseDecisionOptions(answered.Options)
+	content := h.buildDecisionAnswerContent(r.Context(), answered, options, selected)
+	if content == "" {
+		return nil
+	}
+
+	created, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
+		ID:          dbid.NewV7(),
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+		AuthorType:  "member",
+		AuthorID:    parseUUID(authorID),
+		Content:     content,
+		Type:        "comment",
+	})
+	if err != nil {
+		slog.Warn("decision answer echo comment failed", append(logger.RequestAttrs(r),
+			"error", err, "decision_id", uuidToString(answered.ID))...)
+		return nil
+	}
+	comment := created.Comment()
+
+	// Pointer fill; the returned row refreshes the response so the answerer
+	// sees the linked echo immediately.
+	if linked, err := h.Queries.SetIssueDecisionAnswerComment(r.Context(), db.SetIssueDecisionAnswerCommentParams{
+		ID:              answered.ID,
+		WorkspaceID:     issue.WorkspaceID,
+		AnswerCommentID: comment.ID,
+	}); err != nil {
+		slog.Warn("decision answer comment link failed", append(logger.RequestAttrs(r),
+			"error", err, "decision_id", uuidToString(answered.ID))...)
+	} else {
+		refreshed := decisionToResponse(linked)
+		resp.AnswerCommentID = refreshed.AnswerCommentID
+		resp.UpdatedAt = refreshed.UpdatedAt
+	}
+
+	commentResp := commentToResponse(comment, nil, nil)
+	commentResp.IssueRevision = created.IssueRevision
+	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "member", authorID, map[string]any{
+		"comment":             commentResp,
+		"issue_title":         issue.Title,
+		"issue_assignee_type": textToPtr(issue.AssigneeType),
+		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
+		"issue_status":        issue.Status,
+		"issue_revision":      created.IssueRevision,
+	})
+
+	return h.triggerTasksForComment(r.Context(), issue, comment, nil, "member", authorID, "", nil)
+}
+
+// CancelIssueDecision handles POST /api/issues/{id}/decisions/{decisionId}/cancel.
+// Member-only: closing a card is the same human-side lifecycle act as
+// answering it. No echo comment — a cancelled card asked nothing.
+func (h *Handler) CancelIssueDecision(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	if authorType != "member" {
+		writeError(w, http.StatusForbidden, "decision cards can only be cancelled by human members")
+		return
+	}
+
+	decision, ok := h.loadDecisionForIssue(w, r, issue)
+	if !ok {
+		return
+	}
+
+	// RUYI-630: an authorization card's lifecycle belongs to its decision
+	// request — cancelling here would strand the request's other rows and
+	// steps. The request cancel endpoint (decision-requests/{id}/cancel)
+	// settles the whole group.
+	if decision.DecisionKind == "authorization" {
+		writeError(w, http.StatusConflict, "authorization cards are cancelled through the decision request, not this endpoint")
+		return
+	}
+
+	cancelled, err := h.Queries.CancelIssueDecision(r.Context(), db.CancelIssueDecisionParams{
+		ID:          decision.ID,
+		WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusConflict, "decision card is no longer open")
+			return
+		}
+		slog.Warn("cancel issue decision failed", append(logger.RequestAttrs(r), "error", err, "decision_id", uuidToString(decision.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to cancel decision card")
+		return
+	}
+
+	// RUYI-863: the cancel is the card's only pre-terminal act that is not an
+	// answer, and it leaves no echo comment — the audit row is the only
+	// record of who closed it and when. Best-effort, like every issue-domain
+	// audit write: the CAS flip already committed, the trail must not block it.
+	h.recordDecisionLifecycleAudit(r.Context(), issue, service.AuditIssueDecisionCancelled,
+		"open", "cancelled", authorID, cancelled)
+
+	resp := decisionToResponse(cancelled)
+	h.publish(protocol.EventDecisionUpdated, uuidToString(issue.WorkspaceID), "member", authorID, map[string]any{
+		"decision":    resp,
+		"issue_id":    uuidToString(issue.ID),
+		"issue_title": issue.Title,
+	})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// RestoreIssueDecision handles POST /api/issues/{id}/decisions/{decisionId}/restore.
+// RUYI-863: the inverse of cancel — a cancelled card flips back to open with
+// its question, options, context and recommendations untouched. Member-only,
+// no time limit (a cancel days later is still restorable), and the CAS in
+// the SQL is the state machine's guard: only status='cancelled' matches, so
+// answered cards can never be resurrected and a racing restore/answer loses
+// with 409 instead of double-flipping. No echo comment — restoring asks
+// nothing, it only re-opens the card, so the audit row carries the trail.
+//
+// The issue's terminal state is the other half of that rule: when the issue
+// has reached a done/cancelled-class terminal state — built-in or a custom
+// status whose category is done/cancelled, judged by the authoritative
+// issuestatus.Effective, the same classification other terminal gates use —
+// the card is refused with 409 instead of being revived on a closed issue.
+// The check runs before the CAS and before any audit/event write, and the
+// SQL CAS itself carries the same terminal predicate so an issue that turns
+// terminal in the race still loses instead of resurrecting the card.
+func (h *Handler) RestoreIssueDecision(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	if authorType != "member" {
+		writeError(w, http.StatusForbidden, "decision cards can only be restored by human members")
+		return
+	}
+
+	decision, ok := h.loadDecisionForIssue(w, r, issue)
+	if !ok {
+		return
+	}
+
+	// Same carve-out as the cancel arm (RUYI-630): an authorization card's
+	// lifecycle belongs to its decision request; flipping a cancelled auth
+	// card back to open here would strand the group and re-wake nothing.
+	if decision.DecisionKind == "authorization" {
+		writeError(w, http.StatusConflict, "authorization cards are restored through the decision request, not this endpoint")
+		return
+	}
+
+	// Terminal-issue gate: a done/cancelled-class issue no longer accepts
+	// revived decisions, so refuse before writing any audit row or event.
+	// Effective keeps built-in keys intact and maps a custom key to its
+	// category, so a workspace's own terminal status is classified here.
+	if cat := issuestatus.Effective(r.Context(), h.issueStatusCatalog(), issue.WorkspaceID, issue.Status); cat == "done" || cat == "cancelled" {
+		writeError(w, http.StatusConflict, "the issue is in a terminal state, its decision cards cannot be restored")
+		return
+	}
+
+	restored, err := h.Queries.RestoreIssueDecision(r.Context(), db.RestoreIssueDecisionParams{
+		ID:          decision.ID,
+		WorkspaceID: issue.WorkspaceID,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusConflict, "only cancelled decision cards on a non-terminal issue can be restored")
+			return
+		}
+		slog.Warn("restore issue decision failed", append(logger.RequestAttrs(r), "error", err, "decision_id", uuidToString(decision.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to restore decision card")
+		return
+	}
+
+	h.recordDecisionLifecycleAudit(r.Context(), issue, service.AuditIssueDecisionRestored,
+		"cancelled", "open", authorID, restored)
+
+	resp := decisionToResponse(restored)
+	h.publish(protocol.EventDecisionUpdated, uuidToString(issue.WorkspaceID), "member", authorID, map[string]any{
+		"decision":    resp,
+		"issue_id":    uuidToString(issue.ID),
+		"issue_title": issue.Title,
+	})
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// recordDecisionLifecycleAudit writes the cancel/restore audit trail row
+// (RUYI-863) best-effort — a failed audit must never block the card
+// transition that already committed. details carries the acting member and
+// the from/to status so the card's full history is reconstructable.
+func (h *Handler) recordDecisionLifecycleAudit(
+	ctx context.Context,
+	issue db.Issue,
+	eventType, fromStatus, toStatus, actorID string,
+	card db.IssueDecision,
+) {
+	details, err := json.Marshal(map[string]any{
+		"decision_id": uuidToString(card.ID),
+		"from_status": fromStatus,
+		"to_status":   toStatus,
+		"actor_id":    actorID,
+		"actor_type":  "member",
+	})
+	if err != nil {
+		slog.Warn("marshal decision lifecycle audit details", "decision_id", uuidToString(card.ID), "error", err)
+		return
+	}
+	service.TryAppendAuditEvents(ctx, h.Queries,
+		service.IssueEvent(eventType, service.AuditActorMember, parseUUID(actorID),
+			issue.WorkspaceID, issue.ID, details))
+}
+
+// buildDecisionAnswerContent renders the echo comment body. Cards created by
+// an agent get a mention link so the pipeline wakes that agent; member-created
+// cards are answered with a plain record (no run to resume).
+func (h *Handler) buildDecisionAnswerContent(ctx context.Context, answered db.IssueDecision, options []DecisionOption, selected []int) string {
+	var picked []string
+	for _, idx := range selected {
+		if idx < 0 || idx >= len(options) {
+			continue
+		}
+		picked = append(picked, fmt.Sprintf("- Option %d: %s", idx+1, options[idx].Label))
+	}
+	if len(picked) == 0 {
+		return ""
+	}
+
+	head := fmt.Sprintf("Decision card answered: \"%s\"", answered.Question)
+	if answered.CreatedByType == "agent" {
+		// A missing or deleted creator agent still leaves the record; the
+		// echo just loses its wake-up mention.
+		if agent, err := h.Queries.GetAgent(ctx, answered.CreatedByID); err == nil && agent.Name != "" {
+			head = fmt.Sprintf("[@%s](mention://agent/%s) — decision card answered: \"%s\"", agent.Name, uuidToString(answered.CreatedByID), answered.Question)
+		}
+	}
+	body := head + "\n\n"
+	for _, line := range picked {
+		body += line + "\n"
+	}
+	return body
+}

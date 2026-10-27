@@ -1,0 +1,229 @@
+{
+  "page": {
+    "title": "スクワッド",
+    "new_button": "新規スクワッド",
+    "empty_no_squads": "スクワッドはまだありません。作成して始めましょう。",
+    "empty_no_match": "フィルターに一致するスクワッドはありません。",
+    "table": {
+      "name": "スカッド",
+      "leader": "リーダー",
+      "members": "メンバー",
+      "creator": "作成者",
+      "created": "作成日時"
+    },
+    "no_matches": "該当するスカッドはありません",
+    "row_menu": "スカッドの操作",
+    "archive_action": "アーカイブ"
+  },
+  "inspector": {
+    "details_section": "詳細",
+    "archive_button": "アーカイブ"
+  },
+  "member_type": {
+    "agent": "エージェント",
+    "member": "メンバー"
+  },
+  "archive_dialog": {
+    "title": "このスクワッドをアーカイブしますか？",
+    "description": "\"{{name}}\" がアーカイブされます。現在このスクワッドに割り当てられているタスクはリーダーに引き継がれます。この操作は取り消せません。ルーティングを元に戻すには、新しいスクワッドを作成してください。",
+    "cancel": "キャンセル",
+    "confirm": "アーカイブ",
+    "archiving": "アーカイブ中…",
+    "success": "スカッドをアーカイブしました"
+  },
+  "name_editor": {
+    "title": "スクワッド名を変更",
+    "placeholder": "スクワッド名",
+    "required": "名前を入力してください",
+    "cancel": "キャンセル",
+    "save": "保存",
+    "saved": "保存しました",
+    "save_failed": "保存できませんでした"
+  },
+  "add_member_dialog": {
+    "title": "メンバーを追加",
+    "description": "ワークスペースのメンバーまたはエージェントをこのスクワッドに追加します。",
+    "label_member": "メンバー",
+    "label_role": "役割",
+    "label_optional": "（任意）",
+    "cancel": "キャンセル",
+    "select_target": "メンバーまたはエージェントを選択",
+    "search_placeholder": "メンバーまたはエージェントを検索...",
+    "members_section": "メンバー",
+    "agents_section": "エージェント",
+    "role_placeholder": "例：レビュアー、フロントエンドリード",
+    "add": "追加"
+  },
+  "role_editor": {
+    "empty": "役割を追加…",
+    "placeholder": "役割（例：レビュアー）"
+  },
+  "description_dialog": {
+    "title": "説明を編集",
+    "placeholder_empty": "説明を追加",
+    "cancel": "キャンセル",
+    "responsibility_placeholder": "このスクワッドの担当は何ですか？",
+    "save": "保存"
+  },
+  "discard_changes_dialog": {
+    "title": "保存していない変更を破棄しますか？",
+    "description": "このタブに保存していない変更があります。タブを切り替えると変更は破棄されます。",
+    "keep_editing": "編集を続ける",
+    "discard_button": "破棄"
+  },
+  "members_tab": {
+    "section_title": "メンバー",
+    "section_count_other": "このスクワッドのメンバー {{count}}名",
+    "add_member_button": "メンバーを追加",
+    "create_agent_button": "エージェントを作成",
+    "leader_chip": "リーダー",
+    "view_agent_tooltip": "エージェントの詳細を開く",
+    "make_leader_tooltip": "スクワッドリーダーに指定",
+    "remove_member_tooltip": "スクワッドから削除",
+    "status_working": "作業中",
+    "status_idle": "アイドル",
+    "status_offline": "オフライン",
+    "status_unstable": "不安定",
+    "issue_status_blocked": "ブロック中",
+    "active_issue_more": "他 {{count}}件",
+    "last_active_label": "最終アクティブ {{time}}",
+    "status_archived": "アーカイブ済み"
+  },
+  "execution_profile": {
+    "trigger_prefix": "Profile",
+    "none_label": "未適用",
+    "loading_label": "読み込み中",
+    "switching_label": "切り替え中",
+    "active_tooltip": "適用中のプロファイル：{{name}}",
+    "entry_count_other": "メンバー {{count}}名",
+    "empty_hint": "プロファイルがまだありません",
+    "empty_title": "プロファイルがまだありません",
+    "empty_description": "メンバーごとにランタイムとモデルを保存するプロファイルを作成すると、ワンクリックでまとめて切り替えられます。",
+    "create_action": "プロファイルを作成",
+    "manage_action": "プロファイルを管理",
+    "default_new_name": "新しいプロファイル",
+    "load_failed": "プロファイルを読み込めませんでした",
+    "create_failed": "プロファイルを作成できませんでした",
+    "activate_failed": "プロファイルを適用できませんでした",
+    "rename_failed": "名前を変更できませんでした",
+    "delete_failed": "プロファイルを削除できませんでした",
+    "entry_save_failed": "メンバーの設定を保存できませんでした",
+    "entry_remove_failed": "メンバーをプロファイルから外せませんでした",
+    "retry": "再試行",
+    "close": "閉じる",
+    "cancel": "キャンセル",
+    "confirm_title": "「{{name}}」を適用しますか？",
+    "confirm_overwrite_other": "プロファイルが指定するメンバー {{count}}名のランタイム、モデル、思考レベルを上書きします。指定されていないメンバーは変更されません。",
+    "confirm_running_tasks": "実行中のタスクは中断されません。新しい設定は次回の実行から有効になります。",
+    "confirm_audit": "上書き前の設定はアクティビティログに記録されます。",
+    "confirm_empty_hint": "このプロファイルにはメンバー設定がないため、適用できません。",
+    "confirm_activate": "適用する",
+    "activating": "適用中",
+    "activated_toast": "「{{name}}」を適用しました（{{applied}}/{{total}} 名を更新）",
+    "result_partial_title": "一部のメンバーは更新されませんでした",
+    "result_partial_description": "{{total}}名中 {{applied}}名を更新しました。各メンバーの結果は次のとおりです。",
+    "result_failed_title": "適用されませんでした",
+    "result_failed_description": "更新されたメンバーはありません。適用中のプロファイルは変更されず、設定も書き込まれていません。",
+    "reason_agent_not_found": "このワークスペースのメンバーではありません",
+    "reason_agent_archived": "メンバーはアーカイブ済みです",
+    "reason_runtime_unavailable": "指定されたランタイムは利用できません",
+    "reason_runtime_forbidden": "このランタイムは現在プライベートで、所有者のみが使用できます",
+    "reason_thinking_unsupported": "現在のモデルはこの思考レベルに対応していません",
+    "reason_update_failed": "書き込みに失敗しました",
+    "active_badge": "適用中",
+    "sheet_title": "プロファイルを管理",
+    "sheet_description": "メンバーページから切り替える実行プロファイルを管理します。",
+    "sheet_edit_title": "プロファイルを編集",
+    "sheet_edit_description": "メンバーごとにランタイム、モデル、思考レベルを設定します。",
+    "back_to_list": "一覧に戻る",
+    "name_label": "プロファイル名",
+    "members_hint": "設定を保存したメンバーだけが適用時に上書きされ、それ以外は変更されません。",
+    "no_agents": "このワークスペースにはまだエージェントがありません",
+    "thinking_label": "思考レベル",
+    "entry_save": "保存",
+    "entry_remove": "プロファイルから外す",
+    "entry_incomplete_hint": "ランタイムとモデルの両方を選択してください",
+    "delete_action": "プロファイルを削除",
+    "delete_confirm_title": "「{{name}}」を削除しますか？",
+    "delete_confirm_description": "プロファイルとそのメンバー設定が削除されます。この操作は取り消せません。",
+    "delete_active_warning": "このプロファイルは現在適用中です。削除しても適用マークが消えるだけで、メンバーに書き込まれた設定は元に戻りません。",
+    "thinking_default": "ランタイムのデフォルト"
+  },
+  "detail_tabs": {
+    "members": "メンバー",
+    "instructions": "指示"
+  },
+  "details": {
+    "leader": "リーダー",
+    "members": "メンバー",
+    "created_by": "作成者",
+    "created": "作成日時",
+    "updated": "更新日時"
+  },
+  "toasts": {
+    "member_added": "メンバーを追加しました",
+    "member_add_failed": "メンバーを追加できませんでした",
+    "member_removed": "メンバーを削除しました",
+    "member_remove_failed": "メンバーを削除できませんでした",
+    "role_updated": "役割を更新しました",
+    "role_update_failed": "役割を更新できませんでした",
+    "leader_updated": "リーダーを更新しました",
+    "leader_update_failed": "リーダーを更新できませんでした",
+    "archive_failed": "スクワッドをアーカイブできませんでした",
+    "instructions_saved": "指示を保存しました"
+  },
+  "profile_card": {
+    "unavailable": "スクワッドを利用できません",
+    "detail_link": "詳細 →",
+    "archived": "アーカイブ済み",
+    "member_count_other": "メンバー {{count}}名",
+    "members_section": "メンバー",
+    "more_members_other": "他 {{count}}名"
+  },
+  "instructions_tab": {
+    "description": "スクワッドの指示は、リーダーエージェントがこのスクワッドに割り当てられたタスクに取り組むたびに、そのプロンプトに挿入されます。スクワッド全体の方針、進め方の取り決め、リーダーがすべての作業で従うべきコンテキストを伝えるために使用します。",
+    "unsaved_changes": "保存していない変更",
+    "save_button": "保存",
+    "placeholder": "例：必ず失敗するテストから始める。コミットは小さく独立させる。"
+  },
+  "scope": {
+    "mine": "自分",
+    "all": "すべて"
+  },
+  "toolbar": {
+    "display": "表示",
+    "sort_by": "並び替え",
+    "direction_asc": "昇順",
+    "direction_desc": "降順",
+    "section_columns": "列",
+    "result_count_title": "該当スカッド / すべてのスカッド",
+    "filter_label": "フィルター",
+    "filter_active_count_other": "{{count}} 件のフィルター",
+    "clear_filters": "フィルターをクリア"
+  },
+  "mobile": {
+    "page": {
+      "search_placeholder": "スクワッドを検索…"
+    },
+    "create": {
+      "avatar_add": "アイコンを設定",
+      "avatar_hint": "任意。スクワッドが表示されるすべての場所に表示されます。",
+      "search_placeholder": "エージェントを検索…",
+      "search_empty": "検索に一致するエージェントがありません。",
+      "group_my": "マイエージェント",
+      "group_workspace": "ワークスペースのエージェント"
+    },
+    "detail": {
+      "unsaved_title": "未保存の変更があります",
+      "unsaved_keep": "編集を続ける",
+      "unsaved_discard": "破棄",
+      "unsaved_body": "指示への変更はまだ保存されていません。",
+      "instructions_empty": "指示はまだありません",
+      "instructions_edit": "指示を編集"
+    },
+    "execution": {
+      "add_member": "メンバーを追加",
+      "no_candidates": "アクティブなエージェントはすべて追加済みです。"
+    }
+  }
+}

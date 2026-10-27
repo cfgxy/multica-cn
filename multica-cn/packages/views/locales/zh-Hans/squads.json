@@ -1,0 +1,229 @@
+{
+  "page": {
+    "title": "小队",
+    "new_button": "新建小队",
+    "empty_no_squads": "还没有小队，创建一个开始吧。",
+    "empty_no_match": "没有匹配筛选条件的小队。",
+    "table": {
+      "name": "小队",
+      "leader": "队长",
+      "members": "成员",
+      "creator": "创建者",
+      "created": "创建时间"
+    },
+    "no_matches": "没有匹配的小队",
+    "row_menu": "小队操作",
+    "archive_action": "归档"
+  },
+  "inspector": {
+    "details_section": "详情",
+    "archive_button": "归档"
+  },
+  "member_type": {
+    "agent": "智能体",
+    "member": "成员"
+  },
+  "archive_dialog": {
+    "title": "归档这个小队？",
+    "description": "“{{name}}” 将被归档，该小队当前承接的任务会转交给小队负责人。此操作无法撤销，如需恢复路由请新建小队。",
+    "cancel": "取消",
+    "confirm": "归档",
+    "archiving": "归档中…",
+    "success": "已归档小队"
+  },
+  "name_editor": {
+    "title": "重命名小队",
+    "placeholder": "小队名称",
+    "required": "名称不能为空",
+    "cancel": "取消",
+    "save": "保存",
+    "saved": "已保存",
+    "save_failed": "保存失败"
+  },
+  "add_member_dialog": {
+    "title": "添加成员",
+    "description": "添加工作区成员或智能体到这个小队。",
+    "label_member": "成员",
+    "label_role": "角色",
+    "label_optional": "（可选）",
+    "cancel": "取消",
+    "select_target": "选择成员或智能体",
+    "search_placeholder": "搜索成员或智能体...",
+    "members_section": "成员",
+    "agents_section": "智能体",
+    "role_placeholder": "例如：审查者、前端负责人",
+    "add": "添加"
+  },
+  "role_editor": {
+    "empty": "添加角色…",
+    "placeholder": "角色（例如：审查者）"
+  },
+  "description_dialog": {
+    "title": "编辑描述",
+    "placeholder_empty": "添加描述",
+    "cancel": "取消",
+    "responsibility_placeholder": "这个小队负责什么？",
+    "save": "保存"
+  },
+  "discard_changes_dialog": {
+    "title": "放弃未保存的修改？",
+    "description": "当前标签页有未保存的修改，切换标签会丢弃这些修改。",
+    "keep_editing": "继续编辑",
+    "discard_button": "放弃"
+  },
+  "members_tab": {
+    "section_title": "成员",
+    "section_count_other": "该小队有 {{count}} 名成员",
+    "add_member_button": "添加成员",
+    "create_agent_button": "创建智能体",
+    "leader_chip": "队长",
+    "view_agent_tooltip": "打开智能体详情",
+    "make_leader_tooltip": "设为小队负责人",
+    "remove_member_tooltip": "从小队移除",
+    "status_working": "工作中",
+    "status_idle": "空闲",
+    "status_offline": "离线",
+    "status_unstable": "不稳定",
+    "status_archived": "已归档",
+    "issue_status_blocked": "已阻塞",
+    "active_issue_more": "还有 {{count}} 个",
+    "last_active_label": "最近活动 {{time}}"
+  },
+  "execution_profile": {
+    "trigger_prefix": "Profile",
+    "none_label": "未激活",
+    "loading_label": "加载中",
+    "switching_label": "切换中",
+    "active_tooltip": "当前激活方案：{{name}}",
+    "entry_count_other": "{{count}} 名成员",
+    "empty_hint": "尚未创建任何 Profile",
+    "empty_title": "尚未创建任何 Profile",
+    "empty_description": "创建一个 Profile，为每位成员保存一套运行时与模型配置，之后可一键切换。",
+    "create_action": "新建 Profile",
+    "manage_action": "管理 Profile",
+    "default_new_name": "新建 Profile",
+    "load_failed": "Profile 列表加载失败",
+    "create_failed": "创建 Profile 失败",
+    "activate_failed": "激活 Profile 失败",
+    "rename_failed": "重命名失败",
+    "delete_failed": "删除 Profile 失败",
+    "entry_save_failed": "保存成员配置失败",
+    "entry_remove_failed": "移除成员配置失败",
+    "retry": "重试",
+    "close": "关闭",
+    "cancel": "取消",
+    "confirm_title": "激活 Profile「{{name}}」？",
+    "confirm_overwrite_other": "将覆盖该方案中 {{count}} 名成员的运行时、模型和思考等级；方案外的成员不受影响。",
+    "confirm_running_tasks": "正在运行的任务不会中断，新配置在下一次运行时生效。",
+    "confirm_audit": "覆盖前的旧配置会记入活动日志。",
+    "confirm_empty_hint": "该 Profile 尚未配置任何成员，无法激活。",
+    "confirm_activate": "确认激活",
+    "activating": "激活中",
+    "activated_toast": "已激活「{{name}}」，{{applied}}/{{total}} 名成员配置已更新",
+    "result_partial_title": "部分成员未更新",
+    "result_partial_description": "共 {{total}} 名成员，{{applied}} 名已更新；以下成员的结果如下。",
+    "result_failed_title": "激活未生效",
+    "result_failed_description": "没有任何成员被更新，激活标识保持不变，成员配置未发生改变。",
+    "reason_agent_not_found": "成员已不在当前空间",
+    "reason_agent_archived": "成员已归档",
+    "reason_runtime_unavailable": "指定的运行时已不可用",
+    "reason_runtime_forbidden": "该运行时现为私有，仅其所有者可使用",
+    "reason_thinking_unsupported": "当前模型不支持该思考等级",
+    "reason_update_failed": "写入失败",
+    "active_badge": "已激活",
+    "sheet_title": "管理 Profile",
+    "sheet_description": "维护本空间的执行配置方案，供成员页一键切换。",
+    "sheet_edit_title": "编辑 Profile",
+    "sheet_edit_description": "为每位成员设置运行时、模型和思考等级。",
+    "back_to_list": "返回列表",
+    "name_label": "方案名称",
+    "members_hint": "仅保存了配置的成员会在激活时被覆盖，其余成员保持不变。",
+    "no_agents": "当前空间还没有智能体",
+    "thinking_label": "思考等级",
+    "entry_save": "保存",
+    "entry_remove": "移出方案",
+    "entry_incomplete_hint": "需同时选择运行时和模型",
+    "delete_action": "删除 Profile",
+    "delete_confirm_title": "删除 Profile「{{name}}」？",
+    "delete_confirm_description": "该方案及其成员配置将被删除，此操作不可撤销。",
+    "delete_active_warning": "该方案当前处于激活状态。删除仅清除激活标识，已覆盖到成员的执行配置不会回滚。",
+    "thinking_default": "运行时默认"
+  },
+  "detail_tabs": {
+    "members": "成员",
+    "instructions": "指引"
+  },
+  "details": {
+    "leader": "队长",
+    "members": "成员",
+    "created_by": "创建者",
+    "created": "创建时间",
+    "updated": "更新时间"
+  },
+  "toasts": {
+    "member_added": "已添加成员",
+    "member_add_failed": "添加成员失败",
+    "member_removed": "已移除成员",
+    "member_remove_failed": "移除成员失败",
+    "role_updated": "角色已更新",
+    "role_update_failed": "更新角色失败",
+    "leader_updated": "队长已更新",
+    "leader_update_failed": "更新队长失败",
+    "archive_failed": "归档小队失败",
+    "instructions_saved": "指引已保存"
+  },
+  "profile_card": {
+    "unavailable": "小队不可用",
+    "detail_link": "详情 →",
+    "archived": "已归档",
+    "member_count_other": "{{count}} 名成员",
+    "members_section": "成员",
+    "more_members_other": "还有 {{count}} 人"
+  },
+  "instructions_tab": {
+    "description": "小队指引会在队长智能体处理分配给该小队的任务时注入到它的 prompt 中。可用来给队长提供贯穿全队的指导、协作规范，或每次 task 都应遵循的上下文。",
+    "unsaved_changes": "有未保存的修改",
+    "save_button": "保存",
+    "placeholder": "例如：始终先编写失败测试。提交应保持小而独立。"
+  },
+  "scope": {
+    "mine": "我的",
+    "all": "全部"
+  },
+  "toolbar": {
+    "display": "显示",
+    "sort_by": "排序",
+    "direction_asc": "升序",
+    "direction_desc": "降序",
+    "section_columns": "列",
+    "result_count_title": "当前结果 / 全部小队",
+    "filter_label": "筛选",
+    "filter_active_count_other": "{{count}} 项筛选",
+    "clear_filters": "清除筛选"
+  },
+  "mobile": {
+    "page": {
+      "search_placeholder": "搜索小队…"
+    },
+    "create": {
+      "avatar_add": "设置头像",
+      "avatar_hint": "可选。显示在小队出现的所有位置。",
+      "search_placeholder": "搜索智能体…",
+      "search_empty": "没有符合条件的智能体。",
+      "group_my": "我的智能体",
+      "group_workspace": "工作区智能体"
+    },
+    "detail": {
+      "unsaved_title": "有未保存的修改",
+      "unsaved_keep": "继续编辑",
+      "unsaved_discard": "放弃",
+      "unsaved_body": "你对指令的修改尚未保存。",
+      "instructions_empty": "暂无指引",
+      "instructions_edit": "编辑指引"
+    },
+    "execution": {
+      "add_member": "添加成员",
+      "no_candidates": "所有活跃智能体均已在列。"
+    }
+  }
+}

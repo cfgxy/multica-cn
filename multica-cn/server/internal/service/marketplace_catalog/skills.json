@@ -1,0 +1,48 @@
+{
+  "items": [
+    {
+      "key": "skill:anthropics/skills/pdf",
+      "kind": "skill",
+      "name": "pdf",
+      "summary": "Read, fill, and generate PDF documents.",
+      "description": "Anthropic's document skill for working with PDF files: extracting text and tables, filling forms, and producing new documents. Installs through the workspace's normal skill import path.",
+      "publisher": "Anthropic",
+      "homepage_url": "https://github.com/anthropics/skills",
+      "categories": ["documents"],
+      "source_url": "https://github.com/anthropics/skills/tree/main/skills/pdf"
+    },
+    {
+      "key": "skill:anthropics/skills/docx",
+      "kind": "skill",
+      "name": "docx",
+      "summary": "Create and edit Word documents.",
+      "description": "Anthropic's document skill for reading and authoring .docx files while preserving tracked changes, comments, and formatting.",
+      "publisher": "Anthropic",
+      "homepage_url": "https://github.com/anthropics/skills",
+      "categories": ["documents"],
+      "source_url": "https://github.com/anthropics/skills/tree/main/skills/docx"
+    },
+    {
+      "key": "skill:anthropics/skills/xlsx",
+      "kind": "skill",
+      "name": "xlsx",
+      "summary": "Read and write spreadsheets with formulas intact.",
+      "description": "Anthropic's document skill for Excel workbooks: reading sheets, recalculating formulas, and writing results back without flattening the workbook.",
+      "publisher": "Anthropic",
+      "homepage_url": "https://github.com/anthropics/skills",
+      "categories": ["documents", "data"],
+      "source_url": "https://github.com/anthropics/skills/tree/main/skills/xlsx"
+    },
+    {
+      "key": "skill:anthropics/skills/pptx",
+      "kind": "skill",
+      "name": "pptx",
+      "summary": "Build and revise PowerPoint decks.",
+      "description": "Anthropic's document skill for PowerPoint presentations, covering slide creation, layout reuse, and speaker notes.",
+      "publisher": "Anthropic",
+      "homepage_url": "https://github.com/anthropics/skills",
+      "categories": ["documents"],
+      "source_url": "https://github.com/anthropics/skills/tree/main/skills/pptx"
+    }
+  ]
+}

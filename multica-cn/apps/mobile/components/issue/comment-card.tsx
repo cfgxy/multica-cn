@@ -1,0 +1,1181 @@
+/**
+ * Comment timeline row. Rounded gray bubble containing the parent comment
+ * plus, when applicable, every descendant reply stacked inline. The bubble
+ * boundary itself is the thread indicator — no "↪ Replying to" header, no
+ * recursive indentation. This matches the user's design call: "放在一个 card
+ * 内部就行了 / no need for the Replying to label".
+ *
+ * Mobile flat-list rule (apps/mobile/CLAUDE.md): same comments as web,
+ * different layout — web shows recursive tree, mobile shows one bubble per
+ * thread. Counts agree (no comment is dropped or duplicated).
+ *
+ * Interaction: long-press inside a bubble fires a cross-platform action
+ * sheet (`useActionSheet`: native `ActionSheetIOS` on iOS, Modal bottom
+ * sheet on Android) with the comment's actions (Reply, React…, Copy,
+ * Select Text, Copy Link, Resolve, Edit, Delete). While the sheet is on
+ * screen the targeted bubble's border highlights. See `useCommentLongPress`
+ * in `./comment-context-menu.tsx`; Edit opens `CommentEditModal`.
+ *
+ * Resolved threads render in a collapsed `<ResolvedThreadBar>` by default —
+ * mirrors the same state language web uses (`packages/views/issues/
+ * components/resolved-thread-bar.tsx`), but the visual is a single-line
+ * tap-to-expand bar at iOS section-row scale. Tap expands the bar in place;
+ * when expanded the resolved indicator stays at the top of the body so the
+ * user keeps the "this thread is resolved" signal even while reading.
+ */
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  Fragment,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { Pressable, View } from "react-native";
+import Animated, {
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withSequence,
+  withTiming,
+} from "react-native-reanimated";
+import { Ionicons } from "@expo/vector-icons";
+import type { Attachment, Reaction, TimelineEntry } from "@multica/core/types";
+import {
+  COMMENT_HIGHLIGHT_FADE_MS,
+  COMMENT_HIGHLIGHT_TOTAL_MS,
+} from "@multica/core/issues/comment-highlight";
+import { latestThreadComment } from "@multica/core/issues/timeline-sort";
+import { Text } from "@/components/ui/text";
+import { ActorAvatar } from "@/components/ui/actor-avatar";
+import { useActorLookup } from "@/data/use-actor-name";
+import { timeAgo } from "@/lib/time-ago";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { SelectableMarkdown } from "@/components/ui/selectable-markdown";
+import { IssueReferenceTailVisibilityContext } from "@/lib/markdown/markdown";
+import {
+  hasPotentialIssueReference,
+  getIssueCommentBodyHeight,
+  setIssueCommentBodyHeight,
+  useIssueCommentBodyVisible,
+  useIssueReferenceTailVisible,
+} from "@/lib/issue-reference-visibility";
+import { CommentAttachmentList } from "@/components/issue/comment-attachment-list";
+import { TaskRetryStrip } from "@/components/issue/task-retry-strip";
+import {
+  discardFailedComment,
+  type CreateCommentVars,
+  type ToggleCommentReactionVars,
+  useCreateComment,
+  useToggleCommentReaction,
+} from "@/data/mutations/issues";
+import { retryableAgentFailureComment } from "@/lib/task-retry";
+import { useAuthStore } from "@/data/auth-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { issueAttachmentsOptions } from "@/data/queries/issues";
+import { useFailedCommentsStore } from "@/data/stores/failed-comments-store";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { THEME } from "@/lib/theme";
+import { cn } from "@/lib/utils";
+import { useT } from "@/lib/use-t";
+import { ReactionBar } from "./reaction-bar";
+import { useCommentLongPress } from "./comment-context-menu";
+import { CommentEditModal } from "./comment-edit-modal";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
+import { useCommentSelectStore } from "@/data/comment-select-store";
+import { useCommentFocusStore } from "@/data/stores/comment-focus-store";
+import { commentSummary } from "@/lib/comment-summary";
+import { useCommentAnchor } from "@/lib/comment-anchor-context";
+import { RowGeometryReporter } from "@/lib/comment-geometry";
+
+interface Props {
+  entry: TimelineEntry;
+  /** Flattened descendant replies. Rendered inline below the parent inside
+   *  the same bubble, separated by a hairline divider. */
+  replies?: TimelineEntry[];
+  /** Plumbed through so each CommentBody can wire its reaction toggle to
+   *  the correct issue's mutation key. */
+  issueId: string;
+  /** Human-readable identifier (e.g. `MUL-123`) used to build the shareable
+   *  web URL for the long-press "Copy Link" item. Optional — that item
+   *  hides when missing. */
+  issueIdentifier: string | undefined;
+  /** Inbox deep-link flash target. When this matches the root entry id we
+   *  flash the outer bubble (ring + bg). When it matches a reply id we
+   *  flash that reply's wrapper (bg only). Mirrors web's distinction at
+   *  packages/views/issues/components/comment-card.tsx:498-682. */
+  highlightedCommentId?: string | null;
+  /** RUYI-28 controlled expansion. When true the root renders expanded
+   *  regardless of its default collapsed state (deep-link target, focus
+   *  intent from the comments modal, or just-published). The expansion
+   *  set lives in the per-issue session store because FlashList recycles
+   *  rows — per-row useState resets when the row scrolls out of view. */
+  forceExpanded?: boolean;
+  /** Same channel the composer uses (RUYI-28): fired with the SERVER
+   *  comment id when a Retry of THIS row's failed optimistic comment
+   *  succeeds, so the owning root expands exactly like a composer
+   *  publish. Optional — the just-published auto-expand is a nicety, not
+   *  required for correctness. */
+  onCommentPublished?: (commentId: string) => void;
+  /** Unique visibility-store scope for this mounted timeline. */
+  referenceTailVisibilityScope?: string;
+}
+
+export const CommentCard = memo(function CommentCard({
+  entry,
+  replies = [],
+  issueId,
+  issueIdentifier,
+  highlightedCommentId,
+  forceExpanded = false,
+  onCommentPublished,
+  referenceTailVisibilityScope,
+}: Props) {
+  // Resolved threads default to a single-line bar; tap expands in place for
+  // the current session. Unmount (scroll out of viewport) resets — same
+  // behavior as iOS Mail's "tap to expand a thread" pattern. Replies cannot
+  // themselves be resolved (server enforces root-only), so the resolved flag
+  // on the root is the single source of truth for this card.
+  const resolved = !!entry.resolved_at;
+  const [expanded, setExpanded] = useState(false);
+  // RUYI-28 root collapse: normal (unresolved) roots default to a compact
+  // single-line summary bar; the store-controlled set (session-scoped per
+  // issue) overrides. The SAME store gate now also applies to resolved
+  // roots: a directory focus intent (or deep link / just-published) that
+  // targets a resolved thread must land on the FULL thread, not a bar the
+  // user has to tap again. Manual collapse (either path) removes the id
+  // from the store, so the user's collapse choice still wins afterwards.
+  const collapseStore = useCommentFocusStore((s) => s.collapseRoot);
+  const expandStore = useCommentFocusStore((s) => s.expandRoot);
+  const storeExpanded = useCommentFocusStore((s) =>
+    s.expandedRoots[issueId]?.has(entry.id),
+  );
+  const isRootExpanded = forceExpanded || storeExpanded || expanded;
+  // Highlight ring while a long-press action sheet is on screen — child
+  // CommentBody flips this via onPressChange so the outer bubble shell can
+  // visually bind the sheet to the targeted entry.
+  const [pressedEntryId, setPressedEntryId] = useState<string | null>(null);
+  const handlePressChange = useCallback(
+    (entryId: string, pressed: boolean) => {
+      setPressedEntryId((cur) => {
+        if (pressed) return entryId;
+        return cur === entryId ? null : cur;
+      });
+    },
+    [],
+  );
+  const isHighlighted =
+    pressedEntryId === entry.id ||
+    replies.some((r) => r.id === pressedEntryId);
+  const lastComment = useMemo(
+    () => latestThreadComment([entry, ...replies]) ?? entry,
+    [entry, replies],
+  );
+  // Translucent primary-tinted background while ANY body inside this card
+  // is in text-selection mode. Subtle visual cue that replaces the prior
+  // Done pill — exit is via scroll / tab switch / selecting another body.
+  const selectingId = useCommentSelectStore((s) => s.selectingId);
+  const isSelectingHere =
+    selectingId === entry.id || replies.some((r) => r.id === selectingId);
+
+  // Inbox deep-link target inside a resolved thread expands automatically —
+  // otherwise tapping a notification would just reveal a bar with no content
+  // and force the user to tap again. RUYI-28 extends the same rule to
+  // NORMAL roots, which now also default to collapsed. The expansion is
+  // ALSO written to the per-issue store so it survives FlashList recycling
+  // (a deep-linked row that scrolls out of view mid-read must not
+  // re-collapse when it remounts).
+  //
+  // RUYI-78 one-shot guard: `replies` gets a new array identity on every
+  // timeline data change, so inside the highlight window any WS event or
+  // refetch re-ran this effect and re-expanded a root the user had just
+  // manually collapsed — one of the "该折叠的不折叠" sources. The guard
+  // pins the effect to fire at most once per mounted target id; a fresh
+  // mount (recycled row scrolling back into view) re-arms it, preserving
+  // the flash-plays-on-mount deep-link design.
+  const appliedHighlightRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!highlightedCommentId) return;
+    if (appliedHighlightRef.current === highlightedCommentId) return;
+    if (
+      highlightedCommentId === entry.id ||
+      replies.some((r) => r.id === highlightedCommentId)
+    ) {
+      appliedHighlightRef.current = highlightedCommentId;
+      setExpanded(true);
+      expandStore(issueId, entry.id);
+    }
+  }, [highlightedCommentId, entry.id, replies, issueId, expandStore]);
+
+  // ── RUYI-108 行内几何上报 ─────────────────────────────────────────────
+  // 每条回复登记自己在**所属 FlashList 行**内的纵向偏移，定位控制器据此判断
+  // 被引用的回复是否真的入屏、并在需要时二次滚动。测量的合并、基准迟到重算
+  // 和集合差集清理都在 `RowGeometryReporter` 里（lib/comment-geometry.ts，
+  // node lane 有单测）；这里只负责把 `onLayout` 事件喂给它。
+  const { reportGeometry, forgetGeometry } = useCommentAnchor();
+  const reporterRef = useRef<RowGeometryReporter | null>(null);
+  if (!reporterRef.current) {
+    reporterRef.current = new RowGeometryReporter(
+      entry.id,
+      reportGeometry,
+      forgetGeometry,
+    );
+  }
+  const reporter = reporterRef.current;
+  // FlashList v2 回收的是**视图**：行滚出渲染窗口时这个组件实例不卸载，而是
+  // 带着另一个 root 的数据继续渲染，上面那个 ref 里的上报器会一路活过去。
+  // 不重绑，新 root 的回复就会登记到旧 root 名下，二次滚动按旧行的行顶换算，
+  // 跳进错误的线程。身份未变时 `rebindRoot` 是空操作（同一行的普通重渲染远
+  // 多于回收），身份变了才释放旧行测量并作废旧基准。
+  //
+  // 用 layout effect 而不是渲染期直接调用：登记表的写入是组件外的副作用，且
+  // 这里必须早于两件事——下面按新集合跑的 `syncReplies`（普通 effect，天然
+  // 靠后）和新行的 `onLayout`（原生布局后才派发，晚于 layout effect）。
+  useLayoutEffect(() => {
+    reporter.rebindRoot(entry.id);
+  }, [reporter, entry.id]);
+  const measureBubble = useCallback(
+    (layout: { y: number }) => reporter.setBubbleOffset(layout.y),
+    [reporter],
+  );
+  const measureReply = useCallback(
+    (replyId: string, layout: { y: number; height: number }) =>
+      reporter.measureReply(replyId, layout),
+    [reporter],
+  );
+  // 回复集合变化时只丢弃**真正消失**的那些。原实现在这里删掉旧集合的全部
+  // 测量值而不重新上报，导致线程新增一条回复后仍然挂载的老回复永久量不到
+  // （RN 只在布局真的变化时才再派发 onLayout），定位空转到重试耗尽后失败。
+  const replyIds = replies.map((r) => r.id).join(",");
+  useEffect(() => {
+    if (!isRootExpanded) return;
+    reporter.syncReplies(replyIds ? replyIds.split(",") : []);
+  }, [isRootExpanded, replyIds, reporter]);
+  // 折叠或整行卸载（FlashList 回收）时才清空：wrapper 已经不渲染了，留着
+  // 旧坐标会让二次滚动按一份不再成立的布局跳走。
+  useEffect(() => {
+    if (!isRootExpanded) {
+      reporter.release();
+      return;
+    }
+    return () => reporter.release();
+  }, [isRootExpanded, reporter]);
+
+  // ── RUYI-28 collapsed root (normal, unresolved) ────────────────────────
+  // Default collapsed; expansion is session-scoped per issue. The bar shows
+  // a 120-cp / 2-line summary (see lib/comment-summary.ts). Deep-link /
+  // focus-intent / just-published paths come in via `forceExpanded`.
+  if (!resolved && !isRootExpanded) {
+    return (
+      <CollapsedRootBar
+        entry={entry}
+        replies={replies}
+        onExpand={() => {
+          // Write BOTH the local state (this render) and the per-issue
+          // session store (survives FlashList cell recycling — a per-row
+          // useState alone would re-collapse when the row scrolls out of
+          // the recycle window and remounts).
+          setExpanded(true);
+          expandStore(issueId, entry.id);
+        }}
+      />
+    );
+  }
+
+  if (resolved && !isRootExpanded) {
+    return (
+      <ResolvedThreadBar
+        entry={entry}
+        replies={replies}
+        onExpand={() => {
+          setExpanded(true);
+          expandStore(issueId, entry.id);
+        }}
+      />
+    );
+  }
+
+  return (
+    <View className="px-4">
+      <View className="rounded-2xl">
+        {/* Bubble uses `surface-1` (L 98%) — extremely subtle elevation
+         *  above the page, visible mostly through the rounded edge rather
+         *  than the fill (iOS settings cell feel; see Refactoring UI #4
+         *  "cards subtle from page"). Internal markdown elements (table
+         *  headers / code blocks via markdown-style.ts) use `surface-2`
+         *  (L 90%), 8% darker than the bubble — well over the 5%
+         *  perceptibility threshold so the inner box is clearly framed.
+         *  Border (L 84%) adds 6% on top for the outline. See global.css
+         *  for the full 5-tier elevation scale.
+         *
+         *  Resolved-and-expanded path dims the bubble to 70% so the
+         *  "this is settled" signal persists even while reading the
+         *  body — mirrors web's muted resolved card visual. */}
+        <View
+          onLayout={(e) => measureBubble(e.nativeEvent.layout)}
+          className={cn(
+            "bg-surface-1 rounded-2xl px-4 py-3 gap-3 border-2 border-transparent transition-colors",
+            resolved && "opacity-70",
+            isHighlighted && "border-primary/30",
+            isSelectingHere && "bg-primary/5 border-primary/30",
+          )}
+        >
+          {resolved ? (
+            <ResolvedIndicator
+              entry={entry}
+              onCollapse={() => {
+                setExpanded(false);
+                // Clear the store gate too — a directory/deep-link focus
+                // wrote this root into the session expansion set, and a
+                // manual collapse must win over it (same contract as the
+                // unresolved CollapseRow below).
+                collapseStore(issueId, entry.id);
+              }}
+            />
+          ) : (
+            // RUYI-28: expanded normal root carries a subtle collapse
+            // affordance so the collapsed-by-default state is reachable
+            // without scrolling away. Same self-contained-Pressable shape
+            // as ResolvedIndicator's collapse link.
+            <CollapseRow
+              onCollapse={() => {
+                setExpanded(false);
+                collapseStore(issueId, entry.id);
+              }}
+            />
+          )}
+          <ExpandedCommentBodies
+            entry={entry}
+            replies={replies}
+            threadLastComment={lastComment}
+            issueId={issueId}
+            issueIdentifier={issueIdentifier}
+            highlightedCommentId={highlightedCommentId}
+            activeCommentId={pressedEntryId ?? selectingId}
+            onPressChange={handlePressChange}
+            onCommentPublished={onCommentPublished}
+            onMeasureReply={measureReply}
+            referenceTailVisibilityScope={referenceTailVisibilityScope}
+          />
+        </View>
+        {highlightedCommentId === entry.id ? (
+          <RootHighlightOverlay active />
+        ) : null}
+      </View>
+    </View>
+  );
+});
+
+/**
+ * Compact "thread is resolved" bar — substitutes the full card when a
+ * resolved root is collapsed (default state). Tap anywhere to expand.
+ *
+ * Mirrors web's `<ResolvedThreadBar>` (`packages/views/issues/components/
+ * resolved-thread-bar.tsx`): checkmark + N participant authors + reply
+ * count + chevron. On mobile we drop the dedicated <Card> chrome and use
+ * the same `bg-surface-1` bubble so the resolved bar reads as the same
+ * "row" rhythm as the full card it stands in for.
+ */
+function ResolvedThreadBar({
+  entry,
+  replies,
+  onExpand,
+}: {
+  entry: TimelineEntry;
+  replies: TimelineEntry[];
+  onExpand: () => void;
+}) {
+  const { getName } = useActorLookup();
+  const { t } = useT("issues");
+  const { colorScheme } = useColorScheme();
+  const mutedFg = THEME[colorScheme].mutedForeground;
+
+  // Unique participant set across root + replies, preserving chronological
+  // order of first appearance. Up to two authors are named; the rest are
+  // rolled into "+N more" so the bar stays a single line on a narrow phone.
+  const authorsLabel = useMemo(() => {
+    const MAX_NAMED = 2;
+    const seen = new Set<string>();
+    const ordered: { type: string | null; id: string | null; name?: string }[] =
+      [];
+    for (const e of [entry, ...replies]) {
+      const key = `${e.actor_type}:${e.actor_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ordered.push({ type: e.actor_type, id: e.actor_id, name: e.actor_name });
+    }
+    const named = ordered
+      .slice(0, MAX_NAMED)
+      .map((a) =>
+        a.name ||
+        getName(a.type as "member" | "agent" | null | undefined, a.id),
+      )
+      .join(", ");
+    const remaining = ordered.length - MAX_NAMED;
+    return remaining > 0 ? `${named} +${remaining}` : named;
+  }, [entry, replies, getName]);
+
+  const total = 1 + replies.length;
+  const lastComment = latestThreadComment([entry, ...replies]) ?? entry;
+  const lastCommentName =
+    lastComment.actor_name ||
+    getName(
+      lastComment.actor_type as "member" | "agent" | null | undefined,
+      lastComment.actor_id,
+    );
+
+  return (
+    <View className="px-4">
+      <Pressable
+        onPress={onExpand}
+        className="flex-row items-center gap-2.5 px-4 py-3 rounded-2xl bg-surface-1 active:opacity-70"
+        accessibilityRole="button"
+        accessibilityLabel={t(
+          "mobile.comment.resolved_bar_a11y",
+          "Resolved thread by {{authors}}, {{count}} messages. Tap to expand.",
+          { count: total, authors: authorsLabel },
+        )}
+      >
+        <Ionicons name="checkmark-circle" size={18} color={mutedFg} />
+        <View className="flex-1 gap-0.5">
+          <Text className="text-sm text-muted-foreground" numberOfLines={1}>
+            {/* Plurals use the i18next count rules instead of manual branching. */}
+            {t(
+              "mobile.comment.resolved_bar",
+              "Resolved · {{count}} messages by {{authors}}",
+              { count: total, authors: authorsLabel },
+            )}
+          </Text>
+          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+            {t("comment.thread.last_comment", "Last comment: {{name}} · {{time}}", {
+              name: lastCommentName,
+              time: timeAgo(lastComment.created_at),
+            })}
+          </Text>
+        </View>
+        <Ionicons name="chevron-down" size={14} color={mutedFg} />
+      </Pressable>
+    </View>
+  );
+}
+
+/**
+ * Compact collapsed bar for a NORMAL (unresolved) root comment (RUYI-28).
+ * Author + time + 120-cp / 2-line summary + reply count. Tap anywhere to
+ * expand for this page session.
+ *
+ * Deliberately mirrors the shape of <ResolvedThreadBar> above (same
+ * `bg-surface-1` bubble rhythm) so collapsed rows — resolved or not —
+ * read as the same "row" idiom while scrolling.
+ */
+function CollapsedRootBar({
+  entry,
+  replies,
+  onExpand,
+}: {
+  entry: TimelineEntry;
+  replies: TimelineEntry[];
+  onExpand: () => void;
+}) {
+  const { getName } = useActorLookup();
+  const { t } = useT("issues");
+  const { colorScheme } = useColorScheme();
+  const mutedFg = THEME[colorScheme].mutedForeground;
+
+  const name = getName(
+    entry.actor_type as "member" | "agent" | null | undefined,
+    entry.actor_id,
+  );
+  const summary = commentSummary(entry.content);
+  const total = 1 + replies.length;
+  const lastComment = latestThreadComment([entry, ...replies]) ?? entry;
+  const lastCommentName =
+    lastComment.actor_name ||
+    getName(
+      lastComment.actor_type as "member" | "agent" | null | undefined,
+      lastComment.actor_id,
+    );
+
+  return (
+    <View className="px-4">
+      <Pressable
+        onPress={onExpand}
+        className="px-4 py-3 rounded-2xl bg-surface-1 gap-1 active:opacity-70"
+        accessibilityRole="button"
+        accessibilityLabel={t(
+          "mobile.comment.root_collapsed_a11y",
+          "Comment by {{authors}}, {{count}} messages. Tap to expand.",
+          { authors: name, count: total },
+        )}
+      >
+        <View className="flex-row items-center gap-2">
+          <ActorAvatar
+            type={entry.actor_type as "member" | "agent"}
+            id={entry.actor_id}
+            size={18}
+          />
+          <Text
+            className="text-sm font-medium text-foreground flex-1"
+            numberOfLines={1}
+          >
+            {name}
+          </Text>
+          <Text className="text-xs text-muted-foreground">
+            · {timeAgo(entry.created_at)}
+          </Text>
+          <Ionicons name="chevron-down" size={14} color={mutedFg} />
+        </View>
+        {summary ? (
+          <Text className="text-sm text-muted-foreground" numberOfLines={2}>
+            {summary}
+          </Text>
+        ) : null}
+        {replies.length > 0 ? (
+          <Text className="text-xs text-muted-foreground">
+            {/* Plurals go through i18next's count rules (zh/ja/ko only
+                carry the _other branch). */}
+            {t("mobile.comment.reply_count", "{{count}} replies", {
+              count: replies.length,
+            })}
+          </Text>
+        ) : null}
+        <Text className="text-xs text-muted-foreground">
+          {t("comment.thread.last_comment", "Last comment: {{name}} · {{time}}", {
+            name: lastCommentName,
+            time: timeAgo(lastComment.created_at),
+          })}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+/**
+ * Minimal collapse affordance at the top of an expanded NORMAL root
+ * (RUYI-28). Right-aligned "Collapse" text at the same scale as
+ * ResolvedIndicator's collapse link — no icon, no chrome; the summary bar
+ * below (after collapse) already carries the identity row.
+ */
+function CollapseRow({ onCollapse }: { onCollapse: () => void }) {
+  const { t } = useT("issues");
+  return (
+    <Pressable
+      onPress={onCollapse}
+      className="self-end active:opacity-60"
+      hitSlop={6}
+      accessibilityRole="button"
+      accessibilityLabel={t(
+        "mobile.comment.collapse_root_a11y",
+        "Collapse comment",
+      )}
+    >
+      <Text className="text-xs text-muted-foreground">
+        {t("mobile.comment.collapse", "Collapse")}
+      </Text>
+    </Pressable>
+  );
+}
+
+/**
+ * Resolved indicator row that sits at the top of an expanded resolved
+ * thread. Carries the "who resolved + when" attribution and a collapse
+ * affordance — equivalent to web's "Mark as resolved" header bar
+ * (`packages/views/issues/components/comment-card.tsx:519-532`).
+ *
+ * Tap collapses the thread back to the bar without firing the
+ * <CommentBody> long-press action sheet (the row is a self-contained
+ * Pressable, sits above CommentBody in the bubble's gap-3 layout).
+ */
+function ResolvedIndicator({
+  entry,
+  onCollapse,
+}: {
+  entry: TimelineEntry;
+  onCollapse: () => void;
+}) {
+  const { getName } = useActorLookup();
+  const { t } = useT("issues");
+  const { colorScheme } = useColorScheme();
+  const mutedFg = THEME[colorScheme].mutedForeground;
+  const resolverName = getName(
+    entry.resolved_by_type as "member" | "agent" | null | undefined,
+    entry.resolved_by_id,
+  );
+
+  return (
+    <Pressable
+      onPress={onCollapse}
+      className="flex-row items-center gap-2 active:opacity-60"
+      accessibilityRole="button"
+      accessibilityLabel={t(
+        "mobile.comment.collapse_a11y",
+        "Collapse resolved thread",
+      )}
+    >
+      <Ionicons name="checkmark-circle" size={14} color={mutedFg} />
+      <Text className="text-xs text-muted-foreground flex-1" numberOfLines={1}>
+        {/* 名字嵌在句中要保留独立字号/字重，不能整句插值，所以 label 与
+            名字分成两段。中日韩「解决者 / 解決者 / 해결한 사람」放在名字
+            前同样成立，语序不需要倒置。 */}
+        {t("mobile.comment.resolved_by", "Resolved by")}{" "}
+        <Text className="text-xs text-foreground font-medium">
+          {resolverName}
+        </Text>
+        {entry.resolved_at ? ` · ${timeAgo(entry.resolved_at)}` : ""}
+      </Text>
+      <Text className="text-xs text-muted-foreground">
+        {t("mobile.comment.collapse", "Collapse")}
+      </Text>
+    </Pressable>
+  );
+}
+
+/**
+ * Animated highlight overlay for a root comment bubble. Sits absolute-
+ * positioned over the parent <View className="rounded-2xl">, no pointer
+ * capture (long-press still works through it). Border + background wash
+ * — equivalent to web's `ring-2 ring-brand/50 bg-brand/5`.
+ *
+ * Reflow note: animating `borderWidth` would push children every frame,
+ * so we keep it constant at 2 and animate `opacity` 0→1→0. Same trick
+ * for the wash. Single shared value, one animated style.
+ */
+function RootHighlightOverlay({ active }: { active: boolean }) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    if (!active) return;
+    // FADE in → hold → FADE out, summing to COMMENT_HIGHLIGHT_TOTAL_MS. Same
+    // schedule web runs (RUYI-108): both clients used to spend 3.2s on the
+    // wash, well past the 1-2s the reader can still tie to their own tap.
+    progress.value = withSequence(
+      withTiming(1, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      withDelay(
+        COMMENT_HIGHLIGHT_TOTAL_MS - 2 * COMMENT_HIGHLIGHT_FADE_MS,
+        withTiming(0, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      ),
+    );
+    // `active` flipping false mid-sequence must not leave the overlay stuck
+    // at an intermediate opacity — a frozen brand frame/wash reads as text
+    // pressed under a tinted layer at the comment seam (defect: 接缝文字叠压).
+    return () => {
+      cancelAnimation(progress);
+      progress.value = 0;
+    };
+  }, [active, progress]);
+
+  const style = useAnimatedStyle(() => ({ opacity: progress.value }));
+
+  // Brand colour comes from the `brand` token; alpha via NativeWind `/50`
+  // syntax mirrors web's `ring-brand/50 bg-brand/5`. Only opacity is
+  // animated — the borderColor / backgroundColor stay constant, so
+  // className is safe here (animating those channels via className isn't).
+  return (
+    <Animated.View
+      pointerEvents="none"
+      className="absolute inset-0 rounded-2xl border-2 border-brand/50 bg-brand/5"
+      style={style}
+    />
+  );
+}
+
+/**
+ * Animated wash overlay for a reply row. Same timing as root, but no
+ * border — mirrors web's reply branch which applies only `bg-brand/5`
+ * (packages/views/issues/components/comment-card.tsx:682).
+ */
+function ReplyHighlightOverlay({ active }: { active: boolean }) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    if (!active) return;
+    progress.value = withSequence(
+      withTiming(1, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      withDelay(
+        COMMENT_HIGHLIGHT_TOTAL_MS - 2 * COMMENT_HIGHLIGHT_FADE_MS,
+        withTiming(0, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      ),
+    );
+    // Same mid-sequence reset as RootHighlightOverlay.
+    return () => {
+      cancelAnimation(progress);
+      progress.value = 0;
+    };
+  }, [active, progress]);
+
+  const style = useAnimatedStyle(() => ({ opacity: progress.value }));
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      className="absolute inset-0 bg-brand/5"
+      style={style}
+    />
+  );
+}
+
+function ExpandedCommentBodies({
+  entry,
+  replies,
+  threadLastComment,
+  issueId,
+  issueIdentifier,
+  highlightedCommentId,
+  activeCommentId,
+  onPressChange,
+  onCommentPublished,
+  onMeasureReply,
+  referenceTailVisibilityScope,
+}: {
+  entry: TimelineEntry;
+  replies: TimelineEntry[];
+  threadLastComment?: TimelineEntry;
+  issueId: string;
+  issueIdentifier: string | undefined;
+  highlightedCommentId?: string | null;
+  activeCommentId?: string | null;
+  onPressChange?: (entryId: string, pressed: boolean) => void;
+  onCommentPublished?: (commentId: string) => void;
+  onMeasureReply: (
+    replyId: string,
+    layout: { y: number; height: number },
+  ) => void;
+  referenceTailVisibilityScope?: string;
+}) {
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  // One expanded thread shares the same attachment and actor metadata.
+  const { data: attachments } = useQuery(
+    issueAttachmentsOptions(wsId, issueId),
+  );
+  const { getName } = useActorLookup();
+  const userId = useAuthStore((s) => s.user?.id);
+  const createComment = useCreateComment(issueId);
+  const toggleCommentReaction = useToggleCommentReaction(issueId);
+  const retryFailedComment = useCallback(
+    (vars: CreateCommentVars) => {
+      void createComment
+        .mutateAsync(vars)
+        .then((created) => {
+          if (created?.id) onCommentPublished?.(created.id);
+        })
+        .catch(() => {});
+    },
+    [createComment.mutateAsync, onCommentPublished],
+  );
+
+  return (
+    <>
+      <CommentBody
+        entry={entry}
+        threadLastComment={threadLastComment}
+        issueId={issueId}
+        issueIdentifier={issueIdentifier}
+        attachments={attachments}
+        getName={getName}
+        userId={userId}
+        wsId={wsId}
+        toggleCommentReaction={toggleCommentReaction.mutate}
+        retryFailedComment={retryFailedComment}
+        onPressChange={onPressChange}
+        referenceTailVisibilityScope={referenceTailVisibilityScope}
+      />
+      {replies.map((reply) => (
+        <ReplyBodySlot
+          key={reply.id}
+          commentId={reply.id}
+          referenceTailVisibilityScope={referenceTailVisibilityScope}
+          windowBody={hasPotentialIssueReference(reply.content ?? "")}
+          forceVisible={
+            highlightedCommentId === reply.id || activeCommentId === reply.id
+          }
+          onMeasureReply={onMeasureReply}
+        >
+          <CommentBody
+            entry={reply}
+            issueId={issueId}
+            issueIdentifier={issueIdentifier}
+            attachments={attachments}
+            getName={getName}
+            userId={userId}
+            wsId={wsId}
+            toggleCommentReaction={toggleCommentReaction.mutate}
+            retryFailedComment={retryFailedComment}
+            onPressChange={onPressChange}
+            referenceTailVisibilityScope={referenceTailVisibilityScope}
+          />
+          {highlightedCommentId === reply.id ? (
+            <ReplyHighlightOverlay active />
+          ) : null}
+        </ReplyBodySlot>
+      ))}
+    </>
+  );
+}
+
+function ReplyBodySlot({
+  commentId,
+  referenceTailVisibilityScope,
+  windowBody,
+  forceVisible,
+  onMeasureReply,
+  children,
+}: {
+  commentId: string;
+  referenceTailVisibilityScope?: string;
+  windowBody: boolean;
+  forceVisible: boolean;
+  onMeasureReply: (
+    replyId: string,
+    layout: { y: number; height: number },
+  ) => void;
+  children: ReactNode;
+}) {
+  const visible = useIssueCommentBodyVisible(
+    referenceTailVisibilityScope,
+    commentId,
+  );
+  const [measuredHeight, setMeasuredHeight] = useState<number | null>(() =>
+    referenceTailVisibilityScope
+      ? getIssueCommentBodyHeight(referenceTailVisibilityScope, commentId)
+      : null,
+  );
+  const handleBodyLayout = useCallback(
+    (event: { nativeEvent: { layout: { height: number } } }) => {
+      const height = event.nativeEvent.layout.height;
+      if (height <= 0) return;
+      if (referenceTailVisibilityScope) {
+        setIssueCommentBodyHeight(
+          referenceTailVisibilityScope,
+          commentId,
+          height,
+        );
+      }
+      setMeasuredHeight((current) => (current === height ? current : height));
+    },
+    [commentId, referenceTailVisibilityScope],
+  );
+
+  return (
+    <View
+      className="border-t border-border/60 pt-3"
+      onLayout={(e) => onMeasureReply(commentId, e.nativeEvent.layout)}
+    >
+      {!windowBody || visible || forceVisible || measuredHeight === null ? (
+        <View onLayout={handleBodyLayout}>{children}</View>
+      ) : (
+        <View style={{ height: measuredHeight }} />
+      )}
+    </View>
+  );
+}
+
+const CommentBody = memo(function CommentBody({
+  entry,
+  threadLastComment,
+  issueId,
+  issueIdentifier,
+  attachments,
+  getName,
+  userId,
+  wsId,
+  toggleCommentReaction,
+  retryFailedComment,
+  onPressChange,
+  referenceTailVisibilityScope,
+}: {
+  entry: TimelineEntry;
+  threadLastComment?: TimelineEntry;
+  issueId: string;
+  issueIdentifier: string | undefined;
+  attachments: Attachment[] | undefined;
+  getName: ReturnType<typeof useActorLookup>["getName"];
+  userId: string | undefined;
+  wsId: string | null;
+  toggleCommentReaction: (vars: ToggleCommentReactionVars) => void;
+  retryFailedComment: (vars: CreateCommentVars) => void;
+  onPressChange?: (entryId: string, pressed: boolean) => void;
+  referenceTailVisibilityScope?: string;
+}) {
+  // When this comment is the active selection target, drop the long-press
+  // wrapper AND make the markdown selectable — so the next long-press
+  // routes to UIKit's native text-selection magnifier instead of our
+  // gesture handler. Selection mode is exited via the Done pill, scrolling
+  // the timeline, or unmounting the issue screen.
+  const isSelecting = useCommentSelectStore(
+    (s) => s.selectingId === entry.id,
+  );
+  const { t } = useT("issues");
+  const qc = useQueryClient();
+  // Failed-comment state for THIS entry — undefined when the entry is a
+  // normal server-backed comment OR an in-flight optimistic. Only set when
+  // the matching `useCreateComment` mutation errored and the entry was
+  // intentionally left in the cache to surface inline retry.
+  const failed = useFailedCommentsStore((s) => s.failed[entry.id]);
+  const hasReferenceCandidate = hasPotentialIssueReference(entry.content ?? "");
+
+  const name =
+    entry.actor_name ||
+    getName(
+      entry.actor_type as "member" | "agent" | null | undefined,
+      entry.actor_id,
+    );
+  const threadLastCommentName = threadLastComment
+    ? threadLastComment.actor_name ||
+      getName(
+        threadLastComment.actor_type as "member" | "agent" | null | undefined,
+        threadLastComment.actor_id,
+      )
+    : null;
+  const edited =
+    entry.updated_at &&
+    entry.created_at &&
+    entry.updated_at !== entry.created_at;
+
+  // Reactions live on TimelineEntry.reactions (mirrored from Comment).
+  // Pass through to the bar; toggle finds existing match by emoji + actor.
+  const reactions: Reaction[] = (entry.reactions ?? []) as Reaction[];
+
+  const onToggleReaction = useCallback(
+    (emoji: string) => {
+      const existing = reactions.find(
+        (r) =>
+          r.emoji === emoji &&
+          r.actor_type === "member" &&
+          r.actor_id === userId,
+      );
+      toggleCommentReaction({ commentId: entry.id, emoji, existing });
+    },
+    [reactions, userId, toggleCommentReaction, entry.id],
+  );
+
+  const handleRetry = useCallback(() => {
+    if (!failed || !wsId) return;
+    // Remove the stale optimistic + failed marker BEFORE re-firing so the
+    // mutation's own optimistic insert lands on a clean slate instead of
+    // creating a duplicate row. The new attempt mints a fresh optimistic id.
+    discardFailedComment(qc, wsId, issueId, entry.id);
+    retryFailedComment({
+      content: failed.content,
+      parentId: failed.parentId,
+      attachmentIds: failed.attachmentIds,
+    });
+  }, [
+    failed,
+    qc,
+    wsId,
+    issueId,
+    entry.id,
+    retryFailedComment,
+  ]);
+
+  const handleDiscard = useCallback(() => {
+    if (!wsId) return;
+    discardFailedComment(qc, wsId, issueId, entry.id);
+  }, [qc, wsId, issueId, entry.id]);
+
+  // Per-comment attachments render in two complementary places:
+  //   - inline via the markdown renderer when the content references
+  //     them with `![](url)` (typical for web/desktop comments authored
+  //     in the rich editor)
+  //   - via <CommentAttachmentList> below the body when they exist but
+  //     aren't referenced in markdown (mobile-authored comments take this
+  //     path — see inline-comment-composer.tsx for why mobile doesn't
+  //     inline-insert).
+  // Mirrors web's split: comment-card.tsx:124 `AttachmentList`.
+  //
+  // When NOT selecting: long-press fires the cross-platform action sheet
+  // via useCommentLongPress (native ActionSheetIOS on iOS, Modal bottom
+  // sheet on Android). Markdown is non-selectable so the long-press
+  // gesture doesn't race UIKit's text selection.
+  //
+  // When selecting: long-press wrapper is gone, markdown is selectable.
+  // The next long-press fires UIKit's native text-selection magnifier
+  // + handles + Copy/Look Up callout. The outer bubble shell carries a
+  // translucent primary-tint background as the mode cue (no Done pill).
+  // Exit: scroll the timeline, leave the issue, or long-press another body.
+  // The SelectableMarkdown key swap remounts the pipeline so the native
+  // views are BORN selectable — flipping the live Android TextView through
+  // setTextIsSelectable can land its selection pipeline in the select-all
+  // state instead (RUYI-416).
+  const longPress = useCommentLongPress(entry, issueId, issueIdentifier);
+
+  useEffect(() => {
+    if (isSelecting) return;
+    onPressChange?.(entry.id, longPress.isPressed);
+  }, [longPress.isPressed, entry.id, isSelecting, onPressChange]);
+
+  const body = (
+    <View className="gap-2">
+      <View className="flex-row items-center gap-2">
+        <ActorAvatar
+          type={entry.actor_type as "member" | "agent"}
+          id={entry.actor_id}
+          name={entry.actor_name}
+          avatarUrl={entry.actor_avatar_url}
+          size={24}
+          showPresence
+        />
+        <Text className="text-sm font-medium text-foreground">{name}</Text>
+        <Text className="text-xs text-muted-foreground">
+          · {timeAgo(entry.created_at)}
+          {edited ? t("mobile.comment.edited_suffix", " · (edited)") : ""}
+        </Text>
+      </View>
+      {threadLastComment && threadLastCommentName ? (
+        <Text className="text-xs text-muted-foreground">
+          {t("comment.thread.last_comment", "Last comment: {{name}} · {{time}}", {
+            name: threadLastCommentName,
+            time: timeAgo(threadLastComment.created_at),
+          })}
+        </Text>
+      ) : null}
+      {entry.content ? (
+        hasReferenceCandidate && referenceTailVisibilityScope ? (
+          <ReferenceTailVisibilityProvider
+            scope={referenceTailVisibilityScope}
+            commentId={entry.id}
+          >
+            <SelectableMarkdown
+              content={entry.content}
+              attachments={attachments}
+              selectable={isSelecting}
+              renderReferenceTail
+            />
+          </ReferenceTailVisibilityProvider>
+        ) : (
+          <SelectableMarkdown
+            content={entry.content}
+            attachments={attachments}
+            selectable={isSelecting}
+            renderReferenceTail={hasReferenceCandidate}
+          />
+        )
+      ) : null}
+      <CommentAttachmentList
+        attachments={entry.attachments}
+        content={entry.content}
+      />
+      {!failed && retryableAgentFailureComment(entry) && (
+        <TaskRetryStrip issueId={issueId} taskId={entry.source_task_id} />
+      )}
+      {failed ? (
+        <FailedActions
+          error={failed.error}
+          onRetry={handleRetry}
+          onDiscard={handleDiscard}
+        />
+      ) : (
+        <ReactionBar
+          reactions={reactions}
+          currentUserId={userId}
+          onToggle={onToggleReaction}
+        />
+      )}
+    </View>
+  );
+
+  if (isSelecting) return body;
+
+  return (
+    <Fragment>
+      <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
+        {body}
+      </Pressable>
+      {/* One <ActionSheetModal> per sheet — the main menu and the nested
+       *  React… sheet each own their modal props; spreading them into a
+       *  single modal bound it to the react sheet only, so the main menu
+       *  never rendered on Android. */}
+      <ActionSheetModal {...longPress.mainModalProps} />
+      <ActionSheetModal {...longPress.reactModalProps} />
+      {longPress.isEditing ? (
+        <CommentEditModal
+          issueId={issueId}
+          commentId={entry.id}
+          initialContent={entry.content ?? ""}
+          onClose={longPress.closeEdit}
+        />
+      ) : null}
+    </Fragment>
+  );
+});
+
+function ReferenceTailVisibilityProvider({
+  scope,
+  commentId,
+  children,
+}: {
+  scope: string;
+  commentId: string;
+  children: ReactNode;
+}) {
+  const visible = useIssueReferenceTailVisible(scope, commentId);
+  return (
+    <IssueReferenceTailVisibilityContext.Provider value={visible}>
+      {children}
+    </IssueReferenceTailVisibilityContext.Provider>
+  );
+}
+
+/**
+ * Inline retry strip shown beneath a failed optimistic comment body. Sits
+ * where ReactionBar normally lives — same vertical rhythm, but the slot
+ * carries the error message + Retry/Discard buttons. Single source of the
+ * error surface (no parallel toast), so the user always lands on the row
+ * they typed if they come back later.
+ */
+function FailedActions({
+  error,
+  onRetry,
+  onDiscard,
+}: {
+  error: string;
+  onRetry: () => void;
+  onDiscard: () => void;
+}) {
+  const { t } = useT("issues");
+  const { colorScheme } = useColorScheme();
+  const destructive = THEME[colorScheme].destructive;
+  return (
+    <View className="flex-row items-center gap-2 mt-0.5">
+      <Ionicons name="alert-circle" size={14} color={destructive} />
+      <Text
+        className="flex-1 text-xs text-destructive"
+        numberOfLines={1}
+      >
+        {/* `error` 来自服务端/网络层，本身可能是英文；这里只兜底空值。
+            服务端消息的本地化不在本批次范围内。 */}
+        {error || t("mobile.comment.send_failed", "Couldn't send")}
+      </Text>
+      <Pressable
+        onPress={onRetry}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel={t(
+          "mobile.comment.retry_a11y",
+          "Retry sending comment",
+        )}
+      >
+        <Text className="text-xs text-primary font-medium">
+          {t("mobile.comment.retry", "Retry")}
+        </Text>
+      </Pressable>
+      <Pressable
+        onPress={onDiscard}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel={t(
+          "mobile.comment.discard_a11y",
+          "Discard failed comment",
+        )}
+      >
+        <Text className="text-xs text-muted-foreground font-medium">
+          {t("mobile.comment.discard", "Discard")}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}

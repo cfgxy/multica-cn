@@ -1,0 +1,130 @@
+/**
+ * Self-evolution workspace overview types (RUYI-284).
+ *
+ * One read-only aggregate across the six data planes the tabs serve. Every
+ * section keeps the honesty rules of the tab it mirrors: a count is a count, a
+ * missing reading stays "insufficient" rather than becoming a grade, and a
+ * measure keeps the server's state field so the view can never divide a
+ * nothing-measured fold into a percentage. The overview adds no writer — the
+ * wire type has no mutation fields for the same reason the route has no
+ * non-GET method.
+ */
+
+import type { PromptQualityMeasures } from "./prompt-quality";
+
+/** One prompt tier's version activity as the API returns it. */
+export interface SelfEvolutionOverviewTier {
+  /** "workspace" | "project" | "squad" | "agent", server-driven. */
+  scope: string;
+  version_count: number;
+  subject_count: number;
+  /**
+   * The tier's current version, set only when the tier has a single subject.
+   * Across N subjects the highest version belongs to one of them and must not
+   * read as a fleet-wide state.
+   */
+  current_version?: number;
+  last_change_at?: string;
+  /** The most recent change's author; unattributed snapshots have none. */
+  last_actor?: string;
+}
+
+/** The folded quality window across every measured agent in the workspace. */
+export interface SelfEvolutionOverviewQuality {
+  since: string;
+  days: number;
+  runs: number;
+  /** How many agents carry rollup rows in the window; 0 is an empty window. */
+  subjects_measured: number;
+  measures: PromptQualityMeasures;
+  excluded_failed_runs: number;
+}
+
+/**
+ * The quiz conclusion for the most recently measured scope in the workspace.
+ *
+ * `verdict` stays a plain string for the same reason the per-scope reading's
+ * does: server-driven, and an unknown verdict must parse as the branch that
+ * claims nothing.
+ */
+export interface SelfEvolutionOverviewQuiz {
+  scope_id?: string;
+  scope_name?: string;
+  current_version?: number;
+  baseline_version?: number;
+  verdict: string;
+  /** Whether the current version has any comparable reading at all. */
+  measured: boolean;
+  required_sample: number;
+  required_baseline: number;
+  last_measured_at?: string;
+}
+
+export interface SelfEvolutionOverviewScan {
+  /** "noop" | "changed" | "failed", server-driven. */
+  result: string;
+  trigger_source: string;
+  started_at: string;
+}
+
+export interface SelfEvolutionOverviewKnowledge {
+  /** Live directories only; removed ones are gone, not hidden. */
+  dirs: number;
+  entries: number;
+  last_scan?: SelfEvolutionOverviewScan;
+}
+
+export interface SelfEvolutionOverviewSkills {
+  count: number;
+  /** Explicit Skill tool invocations only, per the usage reader's rule. */
+  invocations: number;
+}
+
+/**
+ * The newest retrospective-sourced proposal in the pool (RUYI-551 wiring of
+ * the RUYI-305 pool): the visible signature that the daily loop is actually
+ * proposing. `source` is "retrospective" by construction.
+ */
+export interface SelfEvolutionOverviewLastAutoProposal {
+  source: string;
+  created_at: string;
+}
+
+/** The proposal pool (RUYI-305 E2) as the overview card reads it. */
+export interface SelfEvolutionOverviewProposals {
+  /** The whole pool — the rows the legislation tab's "all" filter lists. */
+  total: number;
+  /** The owner-approval queue depth (status pending_owner). */
+  pending_owner: number;
+  /** The newest retrospective-proposed row; absent when the loop has none. */
+  last_auto_proposal?: SelfEvolutionOverviewLastAutoProposal;
+}
+
+export interface SelfEvolutionOverviewExperience {
+	candidate_id: string;
+  trigger: string;
+  current_strategy: string;
+  suggested_strategy: string;
+  allowed_actions: string[];
+  applicability: string;
+  evidence: string;
+  limitation: string;
+	source_tasks: {
+		task_id: string;
+		issue_id?: string;
+		policy_id: string;
+		policy_version: string;
+		outcome: string;
+		completed_at: string;
+	}[];
+}
+
+export interface SelfEvolutionOverview {
+  versions: SelfEvolutionOverviewTier[];
+  quality: SelfEvolutionOverviewQuality;
+  quiz: SelfEvolutionOverviewQuiz;
+  knowledge: SelfEvolutionOverviewKnowledge;
+  skills: SelfEvolutionOverviewSkills;
+  proposals: SelfEvolutionOverviewProposals;
+  experiences: SelfEvolutionOverviewExperience[];
+}

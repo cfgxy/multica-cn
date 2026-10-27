@@ -1,0 +1,353 @@
+/**
+ * Taps on an inbox system notification → navigate to the issue (RUYI-37).
+ *
+ * Two entry paths, both deduplicated by notification request identifier:
+ *   - cold start (app was killed, user launched it via the notification):
+ *     probed READYNESS-DRIVEN — see below;
+ *   - runtime tap (app foreground/background with JS alive): the response
+ *     listener fires immediately.
+ *
+ * Cold start, D3 round 2: a RN cold start takes 7–14s on the QA device
+ * before expo-router's tree mounts, while `getLastNotificationResponseAsync`
+ * answers null until the native bridge is up. The first cut probed on mount
+ * with a fixed 4×400ms window — it burned out long before readiness and the
+ * launch response was missed permanently (two QA rounds landed on the
+ * inbox). Now the probe STARTS from the readiness event instead: before
+ * `useRootNavigationState()` reports a mounted tree we don't probe at all
+ * (idle), and once ready the native side is necessarily up — a short
+ * bounded retry there is a jitter safety net, not the wake-up mechanism.
+ * The launch response is cached natively, so probing late loses nothing.
+ * RUYI-415 retest: the post-ready window itself could still burn out on a
+ * slow/degraded device (bridge init lagging seconds behind the tree), so
+ * the schedule lives in `lib/launch-response-probe.ts` — a fast 6×500ms
+ * net followed by a slow 2s tail up to a 30s total window.
+ *
+ * Navigation is gated on the same readiness: a `router.push` issued before
+ * the tree exists is a silent no-op. Responses arriving early (or probing
+ * while signed out) park in a single pending slot and re-flush when BOTH
+ * the auth session and the navigation tree are ready. Runtime taps with
+ * everything ready navigate immediately.
+ *
+ * Signed-out taps are dropped on flush: the (app) layout would bounce to
+ * login anyway, and silently dropping beats a login-then-surprise-
+ * navigation. The workspace slug travels in the notification data (captured
+ * at post time) so the tap lands in the workspace the event belonged to.
+ *
+ * RUYI-131 — identity bridge. The slug alone isn't enough: the notification
+ * was posted under one server + workspace, and the app may sit on another
+ * by tap time. Navigating blind loads the issue under the wrong identity
+ * and lands on the issue screen's error state (the reported "404"). So the
+ * tap now routes through `lib/notification-target.ts`, which compares the
+ * payload identity against the live one and returns one of: navigate
+ * directly, confirm a workspace switch, confirm a server switch, or report
+ * the source server as gone. Confirmation uses RN's `Alert` (system dialog
+ * on both platforms, per `apps/mobile/CLAUDE.md`'s native-first waterfall)
+ * — there is no visible bridge screen: declining simply doesn't navigate,
+ * which leaves the user exactly where they were reading, and on a cold
+ * start "where they were" is the entry redirect's own landing (inbox /
+ * select-workspace / login).
+ *
+ * Render-less by design; mounted once in the root layout.
+ */
+import { useEffect, useRef } from "react";
+import { Alert } from "react-native";
+import { router, useRootNavigationState } from "expo-router";
+import * as Notifications from "expo-notifications";
+import { useQueryClient } from "@tanstack/react-query";
+import { useAuthStore } from "@/data/auth-store";
+import { freshWorkspaceListOptions } from "@/data/queries/workspaces";
+import { probeServer } from "@/data/probe-server";
+import { useServerStore } from "@/data/server-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { switchServer } from "@/data/switch-server";
+import {
+  executeNotificationAction,
+  type WorkspaceActivationResult,
+} from "@/lib/notification-action";
+import { probeLaunchResponse } from "@/lib/launch-response-probe";
+import { useT } from "@/lib/use-t";
+import {
+  parseNotificationTarget,
+  resolveNotificationTap,
+  type InboxNotificationData,
+  type NotificationAction,
+} from "@/lib/notification-target";
+
+/** Bounded so a pathological session can't grow it forever. */
+const HANDLED_CAPACITY = 20;
+
+export function NotificationResponseNavigator() {
+  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const isAuthLoading = useAuthStore((s) => s.isLoading);
+  const isServerSwitching = useAuthStore((s) => s.isServerSwitching);
+  const qc = useQueryClient();
+  const { t } = useT("inbox");
+  // Read through a ref inside offer(): the listener is registered once and
+  // must see the CURRENT translator after a language change.
+  const tRef = useRef(t);
+  tRef.current = t;
+  // undefined until expo-router has mounted its navigation container — the
+  // D3 readiness signal.
+  const rootNavigationState = useRootNavigationState();
+  const navReady = Boolean(rootNavigationState?.key);
+  const navReadyRef = useRef(navReady);
+  navReadyRef.current = navReady;
+
+  const handledRef = useRef<Set<string>>(new Set());
+  const pendingRef = useRef<Notifications.NotificationResponse | null>(null);
+  /** Launch response consumed (navigated, parked, or confirmed absent). */
+  const initialResolvedRef = useRef(false);
+
+  const markHandled = (identifier: string): void => {
+    handledRef.current.add(identifier);
+    if (handledRef.current.size > HANDLED_CAPACITY) {
+      // Set iteration order is insertion order — drop the oldest.
+      handledRef.current.delete(handledRef.current.values().next().value!);
+    }
+  };
+
+  /** Best-effort navigation — a router hiccup must never crash the app. */
+  const navigate = (kind: "push" | "replace", route: string): void => {
+    try {
+      if (kind === "replace") router.replace(route);
+      else router.push(route);
+    } catch (err) {
+      // The alert stays reachable via the inbox tab.
+      console.warn("[notifications] tap navigation failed", err);
+    }
+  };
+
+  const run = (action: NotificationAction, onRetryAvailable: () => void): void => {
+    const t = tRef.current;
+    const activateWorkspace = async (
+      workspaceSlug: string,
+    ): Promise<WorkspaceActivationResult> => {
+      try {
+        // Membership can change while this confirmation is visible. Recheck
+        // before setting the request header or routing to the target issue.
+        const workspaces = await qc.fetchQuery(freshWorkspaceListOptions());
+        const workspace = workspaces.find((item) => item.slug === workspaceSlug);
+        if (!workspace) return { kind: "not-member" };
+        // setCurrentWorkspace updates the in-memory route mirror before its
+        // persistence promise settles, so the first issue query uses the
+        // target workspace header rather than the page the user came from.
+        void useWorkspaceStore
+          .getState()
+          .setCurrentWorkspace(workspace.id, workspace.slug)
+          .catch((error) =>
+            console.warn("[notifications] workspace persistence failed", error),
+          );
+        return { kind: "ready" };
+      } catch (error) {
+        return { kind: "failed", error };
+      }
+    };
+
+    void executeNotificationAction(action, {
+      navigate,
+      activateWorkspace,
+      switchServer: (serverId) => switchServer(serverId, qc),
+      probeTargetServer: async (serverId) => {
+        const entry = useServerStore
+          .getState()
+          .servers.find((item) => item.id === serverId);
+        if (!entry) return false;
+        return probeServer(entry.apiUrl, new AbortController().signal);
+      },
+      requestWorkspaceConfirmation: (workspaceAction, onConfirm) =>
+        Alert.alert(
+          t("mobile.bridge.cross_workspace_title", "Switch workspace?"),
+          t("mobile.bridge.cross_workspace_message", {
+            name: workspaceAction.workspaceLabel,
+          }),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.confirm_switch", "Switch"),
+              onPress: () => void onConfirm(),
+            },
+          ],
+        ),
+      requestServerConfirmation: (serverAction, onConfirm) =>
+        Alert.alert(
+          t("mobile.bridge.cross_server_title", "Switch server?"),
+          t("mobile.bridge.cross_server_message", {
+            server: serverAction.serverLabel,
+            workspace: serverAction.workspaceLabel,
+          }),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.confirm_switch", "Switch"),
+              onPress: () => void onConfirm(),
+            },
+          ],
+        ),
+      showServerUnreachable: (serverAction, onRetry) =>
+        Alert.alert(
+          t("mobile.bridge.server_unreachable_title", "Can't reach the server"),
+          t("mobile.bridge.server_unreachable_message", {
+            server: serverAction.serverLabel,
+          }),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.retry", "Retry"),
+              onPress: () => void onRetry(),
+            },
+          ],
+        ),
+      showUnavailable: (unavailableAction) =>
+        Alert.alert(
+          t("mobile.bridge.unavailable_title", "Can't open notification"),
+          unavailableAction.reason === "missing-server-id"
+            ? t(
+                "mobile.bridge.legacy_unavailable_message",
+                "This older notification doesn't identify its source server. Find the task in Inbox.",
+              )
+            : t(
+                "mobile.bridge.unavailable_message",
+                "The server this notification came from is no longer in the server list.",
+              ),
+        ),
+      showWorkspaceFailed: (_error, onRetry) =>
+        Alert.alert(
+          t("mobile.bridge.workspace_failed_title", "Can't open notification"),
+          t(
+            "mobile.bridge.workspace_failed_message",
+            "Could not switch workspaces.",
+          ),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.retry", "Retry"),
+              onPress: () => void onRetry(),
+            },
+          ],
+        ),
+      showServerFailed: (_error, onRetry) =>
+        Alert.alert(
+          t("mobile.bridge.switch_failed_title", "Switch failed"),
+          t(
+            "mobile.bridge.switch_failed_message",
+            "Could not switch servers.",
+          ),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.retry", "Retry"),
+              onPress: () => void onRetry(),
+            },
+          ],
+        ),
+      onRetryAvailable,
+    });
+  };
+
+  const offer = (response: Notifications.NotificationResponse): void => {
+    if (handledRef.current.has(response.notification.request.identifier)) {
+      return;
+    }
+    const data = response.notification.request.content
+      .data as InboxNotificationData;
+    // Malformed / issue-less notification: nothing to navigate to. Checked
+    // before the park branches so a junk payload can't occupy the single
+    // pending slot ahead of a real tap.
+    if (!parseNotificationTarget(data)) {
+      markHandled(response.notification.request.identifier);
+      return;
+    }
+    // Signed-out taps (or taps during session restore) park; a settled
+    // signed-out state drops the parked tap on the next flush.
+    const authState = useAuthStore.getState();
+    if (!authState.user?.id || authState.isServerSwitching) {
+      if (authState.isLoading || authState.isServerSwitching) {
+        pendingRef.current = response;
+      } else {
+        markHandled(response.notification.request.identifier);
+      }
+      return;
+    }
+    // Navigation tree not mounted yet (tap raced the cold start): park —
+    // the flush effect re-fires when navReady flips true.
+    if (!navReadyRef.current) {
+      pendingRef.current = response;
+      return;
+    }
+    // RUYI-131: compare the posting identity against the live one. Resolved
+    // here rather than at park time — the identity can still change while a
+    // response is parked (session restore picks the last-used server).
+    const action = resolveNotificationTap(data, {
+      activeServerId: useServerStore.getState().activeServerId,
+      currentWorkspaceSlug:
+        useWorkspaceStore.getState().currentWorkspaceSlug,
+      servers: useServerStore.getState().servers,
+    });
+    markHandled(response.notification.request.identifier);
+    run(action, () =>
+      handledRef.current.delete(response.notification.request.identifier),
+    );
+  };
+
+  // Flush condition: a parked response + session restored + tree mounted.
+  // Both readiness inputs are deps, so a tap that parked during startup is
+  // re-offered as soon as the last of them lands — no polling involved.
+  const canFlush = Boolean(userId && navReady && !isServerSwitching);
+  useEffect(() => {
+    if (!navReady || !pendingRef.current) return;
+    const parked = pendingRef.current;
+    if (canFlush) {
+      pendingRef.current = null;
+      offer(parked);
+      return;
+    }
+    if (!isAuthLoading && !isServerSwitching) {
+      pendingRef.current = null;
+      markHandled(parked.notification.request.identifier);
+    }
+    // offer reads auth via getState() and nav via navReadyRef; canFlush is
+    // the actual gate.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canFlush, isAuthLoading, isServerSwitching, navReady]);
+
+  // Readiness-driven initial probe (cold-start tap path). Idle until the
+  // tree is mounted — probing earlier is guaranteed-null by D3 evidence.
+  // The launch response is cached natively, so this late probe recovers
+  // the full launch intent; the schedule (fast net + slow tail, bounded
+  // window) lives in lib/launch-response-probe.ts. offer() parks if the
+  // session isn't restored yet; the flush effect above completes the
+  // navigation once it is.
+  useEffect(() => {
+    if (!navReady || initialResolvedRef.current) return;
+    let cancelled = false;
+
+    void probeLaunchResponse(
+      () => Notifications.getLastNotificationResponseAsync(),
+      { shouldStop: () => cancelled || initialResolvedRef.current },
+    ).then((result) => {
+      if (cancelled || initialResolvedRef.current) return;
+      // Confirmed no launch response for this session (plain app open).
+      initialResolvedRef.current = true;
+      if (result.found) {
+        offer(result.response as Notifications.NotificationResponse);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // offer reads nav via navReadyRef; navReady is the actual trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navReady]);
+
+  // Runtime taps (app alive): registered once — offer reads the CURRENT
+  // readiness via navReadyRef, so no resubscription is needed.
+  useEffect(() => {
+    const subscription =
+      Notifications.addNotificationResponseReceivedListener(offer);
+    return () => subscription.remove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return null;
+}

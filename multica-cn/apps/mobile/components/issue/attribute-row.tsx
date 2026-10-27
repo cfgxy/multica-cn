@@ -1,0 +1,214 @@
+/**
+ * Issue-detail attribute chip row. Linear iOS-inspired layout: each
+ * editable attribute renders as a tappable chip; tapping pushes a
+ * formSheet picker route. The route reads the issue from the TanStack
+ * Query detail cache and fires its own mutation — no onChange callback
+ * round-trip back to AttributeRow.
+ *
+ * Picker route map (every entry is registered in `_layout.tsx` with
+ * shared SHEET_OPTIONS — formSheet + iOS native grabber + explicit
+ * numeric detents):
+ *   status    →  issue/[id]/picker/status
+ *   priority  →  issue/[id]/picker/priority
+ *   assignee  →  issue/[id]/picker/assignee
+ *   labels    →  issue/[id]/picker/label   (multi-select, stays open)
+ *   project   →  issue/[id]/picker/project
+ *   due_date  →  issue/[id]/picker/due-date
+ */
+import { useMemo } from "react";
+import { View } from "react-native";
+import { router } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
+import type {
+  Issue,
+  IssuePriority,
+} from "@multica/core/types";
+import { formatDateOnly } from "@multica/core/issues/date";
+import { Text } from "@/components/ui/text";
+import { StatusIcon } from "@/components/ui/status-icon";
+import { PriorityIcon } from "@/components/ui/priority-icon";
+import { ActorAvatar } from "@/components/ui/actor-avatar";
+import { ProjectIcon } from "@/components/ui/project-icon";
+import { AttributeChip } from "./attribute-chip";
+import { useActorLookup } from "@/data/use-actor-name";
+import { findProject, projectListOptions } from "@/data/queries/projects";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { displayLocale } from "@/lib/display-locale";
+import {
+  issuePickerHref,
+  type IssuePickerField,
+} from "@/lib/issue-picker-routes";
+import { localizedStatusLabel, priorityLabel } from "@/lib/issue-status";
+import { useIssueStatuses } from "@/lib/use-issue-statuses";
+import { useT } from "@/lib/use-t";
+
+type TFn = ReturnType<typeof useT>["t"];
+
+// Chip placeholder shortens `none` from "No priority" → "Priority" so the
+// unset chip reads as a placeholder, not as a confusing assigned value.
+// 纯函数不持有 i18n 状态，由调用侧把 `t` 传进来。传入实例绑定的 ns 在这里
+// 看不见（静态检查器只能按调用点位置猜，会猜成 common），故用绝对 key。
+function priorityChipLabel(priority: IssuePriority, t: TFn): string {
+  return priority === "none"
+    ? t("issues:detail.prop_priority", "Priority")
+    : priorityLabel(priority);
+}
+
+// due_date is a calendar day — format timezone-safely so the day never shifts
+// with the viewer's offset. Mirrors web's formatDate in list-row/board-card.
+function formatDueDate(iso: string | null): string | null {
+  if (!iso) return null;
+  return (
+    formatDateOnly(iso, { month: "short", day: "numeric" }, displayLocale()) ||
+    null
+  );
+}
+
+export function AttributeRow({ issue }: { issue: Issue }) {
+  const { t } = useT("issues");
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const { getName } = useActorLookup();
+  // The chip shows the issue's own status, which may be a custom one — name
+  // and colour come from the workspace catalog, the glyph from its category.
+  // (MUL-6243)
+  // `labelOf` 换成 `localizedStatusLabel(catalog, ...)`：内置状态走 i18n，
+  // 自定义状态仍取目录 `name`，分支判据与 `labelOf` 一致。
+  const catalog = useIssueStatuses();
+  const { categoryOf, colorOf } = catalog;
+
+  // Project read-only — fetch list to look up the title + icon. Cheap
+  // (cached after first issue-detail visit).
+  const { data: projects = [] } = useQuery(projectListOptions(wsId));
+  const project = useMemo(
+    () => findProject(projects, issue.project_id),
+    [projects, issue.project_id],
+  );
+
+  const labels = issue.labels ?? [];
+
+  const assigneeValue =
+    issue.assignee_type && issue.assignee_id
+      ? { type: issue.assignee_type, id: issue.assignee_id }
+      : null;
+
+  const assigneeName = assigneeValue
+    ? getName(assigneeValue.type, assigneeValue.id)
+    : null;
+  const dueLabel = formatDueDate(issue.due_date);
+
+  const openPicker = (field: IssuePickerField) => {
+    const href = issuePickerHref(field, wsSlug, issue.id);
+    if (href) router.push(href);
+  };
+
+  return (
+    <View className="flex-row flex-wrap gap-2">
+      {/* Status — always shown */}
+      <AttributeChip
+        icon={
+          <StatusIcon
+            status={issue.status}
+            category={categoryOf(issue.status)}
+            color={colorOf(issue.status)}
+            size={14}
+          />
+        }
+        label={localizedStatusLabel(catalog, issue.status)}
+        variant="filled"
+        onPress={() => openPicker("status")}
+      />
+
+      {/* Priority */}
+      <AttributeChip
+        icon={<PriorityIcon priority={issue.priority} size={14} />}
+        label={priorityChipLabel(issue.priority, t)}
+        variant={issue.priority === "none" ? "dimmed" : "filled"}
+        onPress={() => openPicker("priority")}
+      />
+
+      {/* Assignee */}
+      {assigneeValue ? (
+        <AttributeChip
+          icon={
+            <ActorAvatar
+              type={assigneeValue.type}
+              id={assigneeValue.id}
+              size={16}
+              showPresence
+            />
+          }
+          label={
+            assigneeName ??
+            t("common:mobile.actor.unknown_member", "Unknown")
+          }
+          variant="filled"
+          onPress={() => openPicker("assignee")}
+        />
+      ) : (
+        <AttributeChip
+          icon={
+            <View className="size-4 rounded-full border border-dashed border-muted-foreground/40" />
+          }
+          label={t("detail.prop_assignee", "Assignee")}
+          variant="dimmed"
+          onPress={() => openPicker("assignee")}
+        />
+      )}
+
+      {/* Each existing label renders as its own chip. Tap opens the
+          label picker (multi-select toggle). No quick-detach gesture
+          on the chip itself in v1 — Linear iOS uses long-press for
+          that, deferred until requested. */}
+      {labels.map((label) => (
+        <AttributeChip
+          key={label.id}
+          icon={
+            <View
+              className="size-2.5 rounded-full"
+              style={{ backgroundColor: label.color }}
+            />
+          }
+          label={label.name}
+          variant="filled"
+          onPress={() => openPicker("label")}
+        />
+      ))}
+      {labels.length === 0 ? (
+        <AttributeChip
+          icon={<Text className="text-xs text-muted-foreground/70">◯</Text>}
+          label={t("filters.section_label", "Label")}
+          variant="dimmed"
+          onPress={() => openPicker("label")}
+        />
+      ) : null}
+
+      {/* Project */}
+      {project ? (
+        <AttributeChip
+          icon={<ProjectIcon icon={project.icon} size="sm" />}
+          label={project.title}
+          variant="filled"
+          onPress={() => openPicker("project")}
+        />
+      ) : (
+        <AttributeChip
+          icon={
+            <View className="size-3.5 rounded-sm border border-dashed border-muted-foreground/40" />
+          }
+          label={t("detail.prop_project", "Project")}
+          variant="dimmed"
+          onPress={() => openPicker("project")}
+        />
+      )}
+
+      {/* Due date */}
+      <AttributeChip
+        icon={<Text className="text-xs text-muted-foreground/80">📅</Text>}
+        label={dueLabel ?? t("detail.prop_due_date", "Due date")}
+        variant={dueLabel ? "filled" : "dimmed"}
+        onPress={() => openPicker("due-date")}
+      />
+    </View>
+  );
+}

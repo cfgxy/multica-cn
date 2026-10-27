@@ -1,0 +1,458 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { Workspace } from "../types";
+import { api } from "../api";
+import { defaultStorage } from "../platform/storage";
+import { clearWorkspaceStorage } from "../platform/storage-cleanup";
+import { workspaceKeys } from "./queries";
+import {
+  markWorkspaceDeletePending,
+  unmarkWorkspaceDeletePending,
+} from "./pending-delete";
+
+export function useCreateWorkspace() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      name: string;
+      slug: string;
+      description?: string;
+      /** Omit to let the server derive it from the slug. */
+      issue_prefix?: string;
+    }) => api.createWorkspace(data),
+    // Seed the workspace list cache BEFORE callers navigate to /{newWs.slug}/issues.
+    // The destination [workspaceSlug]/layout queries by slug from this cache;
+    // without seeding, it would briefly show "loading" before the background
+    // invalidation completes. TanStack Query guarantees this onSuccess runs
+    // before mutateAsync's resolver / before any callback-style onSuccess
+    // passed to mutate(), so any caller that navigates after the mutation
+    // resolves will see the seeded data synchronously. Switching workspaces
+    // is pure navigation now — no imperative store writes needed.
+    onSuccess: (newWs) => {
+      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] = []) => [...old, newWs]);
+    },
+    // A failed create should not have changed server state, but invalidate the
+    // list once to reconcile ambiguous transport failures where the server may
+    // have committed before the client lost the response. Keep this off the
+    // success path so the canonical response seeded above is not fetched again.
+    onError: () => {
+      qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+    },
+  });
+}
+
+export function useLeaveWorkspace() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (workspaceId: string) => api.leaveWorkspace(workspaceId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+    },
+  });
+}
+
+export function useDeleteWorkspace() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (workspaceId: string) => api.deleteWorkspace(workspaceId),
+    // No optimistic removal: the delete flow awaits this mutation with the
+    // confirm dialog in a loading state and only navigates on success, so
+    // the cache staying truthful (server still has the row until commit)
+    // is correct, and a failed DELETE needs no rollback.
+    onMutate: (workspaceId) => {
+      // Mark the delete as self-initiated so the realtime `workspace:deleted`
+      // handler no-ops instead of racing this flow's navigation with its own
+      // full-page relocate. See pending-delete.ts for lifetime rules.
+      markWorkspaceDeletePending(workspaceId);
+      // Capture the slug for onSuccess's storage cleanup — cheap here, and
+      // the row is guaranteed to still be in the list pre-mutation.
+      const slug = qc
+        .getQueryData<Workspace[]>(workspaceKeys.list())
+        ?.find((w) => w.id === workspaceId)?.slug;
+      return { slug };
+    },
+    // Success is the only path that clears the deleted workspace's persisted
+    // `${key}:${slug}` namespace — a failed DELETE means the workspace still
+    // exists and its drafts/view state must survive. The realtime handler
+    // skips self-initiated deletes, so cleanup has to happen here.
+    onSuccess: (_data, _workspaceId, ctx) => {
+      if (ctx?.slug) clearWorkspaceStorage(defaultStorage, ctx.slug);
+    },
+    // The workspace still exists after a failed DELETE, so a later external
+    // delete of the same ID must be handled by the realtime handler again.
+    onError: (_err, workspaceId) => {
+      unmarkWorkspaceDeletePending(workspaceId);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: workspaceKeys.list() });
+    },
+  });
+}
+
+/**
+ * Adds a server to the workspace library. It is assigned to no agent: an
+ * agent owner gives it to their agent separately.
+ */
+export function useCreateWorkspaceMcpServer(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, config }: { name: string; config: Record<string, unknown> }) =>
+      api.createWorkspaceMcpServer(wsId, name, config),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.mcpServers(wsId) }),
+  });
+}
+
+export function useUpdateWorkspaceMcpServer(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ serverId, ...update }: {
+      serverId: string;
+      name?: string;
+      config?: Record<string, unknown>;
+    }) => api.updateWorkspaceMcpServer(wsId, serverId, update),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.mcpServers(wsId) }),
+  });
+}
+
+export function useDeleteWorkspaceMcpServer(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (serverId: string) => api.deleteWorkspaceMcpServer(wsId, serverId),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.mcpServers(wsId) });
+      // Deleting a library entry drops it from every agent that had it, so
+      // no agent's assignment list can be trusted afterwards.
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
+/**
+ * Installs a marketplace entry.
+ *
+ * An install lands in the same library a hand-created entry does, so it
+ * invalidates the skill and MCP caches alongside the catalog — otherwise the
+ * newly installed thing would be missing from the very list the user is about
+ * to bind it from.
+ */
+export function useInstallMarketplaceItem(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { key: string; name?: string; values?: Record<string, string> }) =>
+      api.installMarketplaceItem(input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["workspaces", wsId, "marketplace"] });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.mcpServers(wsId) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.skills(wsId) });
+    },
+  });
+}
+
+// ── Prompt marketplace (RUYI-100) ───────────────────────────────────────────
+
+/** Every prompt-market cache for this workspace. */
+function promptMarketRoot(wsId: string) {
+  return ["workspaces", wsId, "prompt-market"] as const;
+}
+
+/** Opens a draft from an agent or squad the caller manages. */
+export function useCreatePromptVersion(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      source_type: string;
+      source_id: string;
+      series_id?: string;
+      name: string;
+      summary?: string;
+      audience?: string;
+      categories?: string[];
+      license_code: string;
+      usage_notes?: string;
+      companions?: string;
+    }) => api.createPromptVersion(input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+    },
+  });
+}
+
+/** Edits a draft. Published versions are immutable; the server refuses. */
+export function useUpdatePromptVersion(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      versionId,
+      ...input
+    }: {
+      versionId: string;
+      name?: string;
+      summary?: string;
+      audience?: string;
+      categories?: string[];
+      license_code?: string;
+      usage_notes?: string;
+      companions?: string;
+      refresh_content?: boolean;
+    }) => api.updatePromptVersion(versionId, input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+    },
+  });
+}
+
+/**
+ * Runs the secret scan on a draft without publishing it.
+ *
+ * Nothing is invalidated on settle because nothing changed: the draft is still
+ * a draft and still editable. That is the whole point of the endpoint — the
+ * wizard used to scan by publishing privately, which froze the draft before the
+ * publisher had chosen anything.
+ *
+ * A hit rejects with the same 422 ApiError publishing rejects with.
+ */
+export function useScanPromptVersion() {
+  return useMutation({
+    mutationFn: (versionId: string) => api.scanPromptVersion(versionId),
+  });
+}
+
+/**
+ * Publishes a draft.
+ *
+ * A secret-scan hit rejects with an ApiError carrying status 422 and the
+ * findings in its body. There is no override to pass here — the caller renders
+ * the findings and the publisher edits the prompt.
+ */
+export function usePublishPromptVersion(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      versionId,
+      ...input
+    }: {
+      versionId: string;
+      public: boolean;
+    }) => api.publishPromptVersion(versionId, input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+    },
+  });
+}
+
+/**
+ * Withdraws a published version: no new installs or applies, while workspaces
+ * that already applied it keep their text.
+ */
+export function useWithdrawPromptVersion(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (versionId: string) => api.withdrawPromptVersion(versionId),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+    },
+  });
+}
+
+/**
+ * Adds a version to the workspace library.
+ *
+ * This changes no agent and no squad — applying is a separate step. It only
+ * invalidates prompt-market caches for that reason: invalidating agents here
+ * would imply a prompt moved, which is exactly the confusion the two-phase
+ * design exists to avoid.
+ */
+export function useInstallPrompt(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (versionId: string) => api.installPrompt(versionId),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+    },
+  });
+}
+
+/**
+ * Renders the diff and mints the confirmation token.
+ *
+ * A mutation rather than a query on purpose: the token it returns is bound to
+ * the target's text at this instant, so a cached preview would authorise an
+ * apply against a diff the user is no longer looking at.
+ */
+export function usePreviewPromptApply() {
+  return useMutation({
+    mutationFn: ({
+      installId,
+      ...target
+    }: {
+      installId: string;
+      target_type: string;
+      target_id: string;
+    }) => api.previewPromptApply(installId, target),
+  });
+}
+
+/**
+ * Writes an installed prompt into an agent or squad.
+ *
+ * Invalidates the agent and squad caches as well as the prompt-market ones:
+ * this is the one prompt-market operation that does change a prompt, and the
+ * detail view the user returns to must not show the pre-apply text.
+ */
+export function useApplyPrompt(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      installId,
+      ...input
+    }: {
+      installId: string;
+      target_type: string;
+      target_id: string;
+      strategy?: string;
+      preview_token: string;
+      expected_sha256?: string;
+      operation_id: string;
+    }) => api.applyPrompt(installId, input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.squads(wsId) });
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
+/** Steps a target back to the prompt it had before the apply. One step only. */
+export function useRestorePrompt(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      targetType,
+      targetId,
+      ...input
+    }: {
+      targetType: string;
+      targetId: string;
+      operation_id: string;
+      expected_sha256?: string;
+    }) => api.restorePrompt(targetType, targetId, input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.squads(wsId) });
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
+/**
+ * Invalidates everything a publish, update or withdrawal can move.
+ *
+ * Both caches, always: the management list is the obvious one, and the catalog
+ * is the one that is easy to forget — a published listing joins the catalog
+ * every workspace reads, and a withdrawal takes it back out, so leaving the
+ * catalog cached would show the user a listing that no longer exists.
+ *
+ * The management list belongs to the publishing workspace, so it is dropped by
+ * exact key. The catalog does not: it is global, and keyed per workspace only
+ * because the installed flag is. Any workspace the user has already opened the
+ * marketplace in is holding a copy of the pre-publish catalog, so those are
+ * matched by key shape rather than by this workspace's id.
+ */
+function invalidateMarketplaceListingCaches(
+  queryClient: ReturnType<typeof useQueryClient>,
+  wsId: string,
+): void {
+  queryClient.invalidateQueries({
+    queryKey: workspaceKeys.marketplaceListings(wsId),
+  });
+  queryClient.invalidateQueries({ predicate: isMarketplaceCatalogQuery });
+}
+
+/** Matches `workspaceKeys.marketplace(...)` for ANY workspace. */
+function isMarketplaceCatalogQuery(query: { queryKey: readonly unknown[] }): boolean {
+  const key = query.queryKey;
+  return key[0] === "workspaces" && key[2] === "marketplace";
+}
+
+/**
+ * Publishes a skill or MCP entry to the marketplace.
+ *
+ * A 422 carries the secret-scan report on `ApiError.body`; the caller renders
+ * its findings, which name a field and a line and never the matched text.
+ */
+export function usePublishMarketplaceListing(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof api.publishMarketplaceListing>[0]) =>
+      api.publishMarketplaceListing(input),
+    onSettled: () => invalidateMarketplaceListingCaches(queryClient, wsId),
+  });
+}
+
+/**
+ * Edits a published listing.
+ *
+ * `revision` must be the value the form was loaded with. A concurrent edit
+ * answers 409, and refetching on settle is what gives the user the winning
+ * revision to retry from.
+ */
+export function useUpdateMarketplaceListing(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      ...input
+    }: { id: string } & Parameters<typeof api.updateMarketplaceListing>[1]) =>
+      api.updateMarketplaceListing(id, input),
+    onSettled: () => invalidateMarketplaceListingCaches(queryClient, wsId),
+  });
+}
+
+/**
+ * Withdraws a listing.
+ *
+ * Installed copies are untouched (D4-A) — nothing in any other workspace's
+ * skill or MCP library changes — so only the marketplace caches are dropped.
+ */
+export function useWithdrawMarketplaceListing(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, revision }: { id: string; revision: number }) =>
+      api.withdrawMarketplaceListing(id, revision),
+    onSettled: () => invalidateMarketplaceListingCaches(queryClient, wsId),
+  });
+}
+
+/**
+ * Assignment writes all return the agent's resulting list, so the cache is
+ * updated from the server's answer rather than a guess.
+ */
+function useAgentMcpMutation<TVariables>(
+  agentId: string,
+  mutationFn: (variables: TVariables) => Promise<unknown>,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: ["agents", agentId, "mcp-servers"] }),
+  });
+}
+
+export function useAddAgentMcpServer(agentId: string) {
+  return useAgentMcpMutation(agentId, (serverId: string) =>
+    api.addAgentMcpServer(agentId, serverId));
+}
+
+export function useSetAgentMcpServerEnabled(agentId: string) {
+  return useAgentMcpMutation(agentId, ({ serverId, enabled }: { serverId: string; enabled: boolean }) =>
+    api.setAgentMcpServerEnabled(agentId, serverId, enabled));
+}
+
+export function useRemoveAgentMcpServer(agentId: string) {
+  return useAgentMcpMutation(agentId, (serverId: string) =>
+    api.removeAgentMcpServer(agentId, serverId));
+}

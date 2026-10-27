@@ -1,0 +1,126 @@
+{
+  "page": {
+    "breadcrumb": "Decision Inbox",
+    "empty_title": "No decision cards yet",
+    "empty_description": "Decision cards raised by agents or members will be aggregated here, so nothing waiting on you slips through.",
+    "load_failed": "Failed to load decision cards"
+  },
+  "section": {
+    "open": "Pending decisions",
+    "answered": "Decided",
+    "cancelled": "Voided"
+  },
+  "badge": {
+    "recommended": "Has recommendation"
+  },
+  "mobile": {
+    "tab": {
+      "title": "Decisions"
+    },
+    "tabs": {
+      "all": "All",
+      "open": "Pending",
+      "answered": "Decided",
+      "cancelled": "Voided"
+    },
+    "filters": {
+      "title": "Filter",
+      "reset": "Reset",
+      "a11y": "Filter",
+      "recommended_only": "Recommended only",
+      "agent_created_only": "Agent-created only"
+    },
+    "page": {
+      "title": "Decisions",
+      "load_failed": "Failed to load decision cards: {{reason}}",
+      "empty_filtered": "No decision cards match the current TAB or filters"
+    }
+  },
+  "view": {
+    "section": "View",
+    "list": "List",
+    "board": "Board",
+    "tooltip_list": "List view",
+    "tooltip_board": "Board view"
+  },
+  "filter": {
+    "tooltip": "Filter",
+    "active_count_one": "{{count}} filter",
+    "active_count_other": "{{count}} filters",
+    "reset": "Reset"
+  },
+  "board": {
+    "empty_column": "No cards"
+  },
+  "filtered_empty": {
+    "title": "No decision cards match these filters",
+    "hint": "Adjust or clear the filters to see the cards in this view.",
+    "clear_button": "Clear filters"
+  },
+  "requests": {
+    "section_title": "Authorization requests",
+    "action_workspace_info_read": "Read workspace info",
+    "action_prompt_restore": "Restore prompt",
+    "action_project_prompt_sync": "Sync project prompt",
+    "action_single_issue_create": "Create one issue",
+    "action_script_review": "Review script",
+    "issue_created": "Target issue {{identifier}} · {{status}}",
+    "review_prompt_content": "Review approved prompt",
+    "hide_prompt_content": "Hide approved prompt",
+    "risk_read": "Read-only",
+    "risk_write_low": "Low-risk write",
+    "status_pending": "Pending",
+    "status_approved": "Approved",
+    "status_denied": "Denied",
+    "status_expired": "Expired",
+    "status_revoked": "Revoked",
+    "status_executed": "Executed",
+    "status_reviewed": "Reviewed",
+    "status_execute_failed": "Execution failed",
+    "kind_cli": "Whitelisted operation",
+    "kind_script": "Restricted script",
+    "kind_script_review": "Script review only",
+    "kind_issue": "Single issue task",
+    "execution_in_progress": "Approvals complete; execution in progress",
+    "result_unknown": "Result needs verification. Do not retry this request.",
+    "no_side_effect": "No side effect confirmed",
+    "side_effect_completed": "Completion confirmed",
+    "receipt_step": "{{handler}}: {{status}} ({{effect}})",
+    "receipt_completed": "Completed",
+    "receipt_failed": "Failed",
+    "approved_by": "Approved by {{actor}}",
+    "origin_label": "Requested by {{agent}}",
+    "source_issue": "From issue: {{title}}",
+    "approve": "Approve",
+    "deny": "Deny",
+    "cancel": "Revoke request",
+    "projection_hint": "This row is a read-only projection — act in the target workspace",
+    "script_review_details": "Review script snapshot",
+    "copy_script_hash": "Copy script hash",
+    "script_hash": "SHA-256",
+    "script_interpreter": "Interpreter",
+    "script_arguments": "Arguments",
+    "script_body": "Script",
+    "script_details_loading": "Loading script snapshot",
+    "script_details_error": "Unable to load the script snapshot",
+    "hash_copied": "Hash copied",
+    "open_target_workspace": "Open target workspace",
+    "executed_failed": "Execution failed: {{reason}}",
+    "steps_title": "Per-workspace steps",
+    "step_origin": "Origin",
+    "step_target": "Target",
+    "detail_error": "Failed to load step details",
+    "answer_failed": "Failed to record your answer",
+    "cancel_failed": "Failed to revoke"
+  },
+  "detail": {
+    "read_only": "Read-only decision details",
+    "no_context": "No additional context was provided.",
+    "options": "Options",
+    "recommended": "Recommended",
+    "selected": "Selected",
+    "single_select": "Select one option",
+    "multi_select": "Select one or more options",
+    "open_task": "Open task to answer"
+  }
+}

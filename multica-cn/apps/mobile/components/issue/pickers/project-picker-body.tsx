@@ -1,0 +1,158 @@
+/**
+ * Pure picker body for an issue's project — single-select. Mirrors the
+ * assignee picker pattern: header + search bar are the iOS native nav
+ * header (registered in `app/(app)/[workspace]/_layout.tsx`); the route
+ * wires `headerSearchBarOptions.onChangeText` to a local `query` state
+ * via `useNativeSearchBar` and passes it in as `query`. Body is a pure
+ * FlatList — no chrome.
+ */
+import { useMemo } from "react";
+import { FlatList, Pressable, View } from "react-native";
+import { useQuery } from "@tanstack/react-query";
+import { Ionicons } from "@expo/vector-icons";
+import { useColorScheme } from "nativewind";
+import type { Project } from "@multica/core/types";
+import { Text } from "@/components/ui/text";
+import { ProjectIcon } from "@/components/ui/project-icon";
+import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
+import { projectListOptions } from "@/data/queries/projects";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import {
+  recordProjectSelection,
+  sortProjectsByRecency,
+  useProjectRecencyStore,
+} from "@/data/stores/project-recency-store";
+import { useScrollToTopOnChange } from "@/lib/use-scroll-to-top-on-change";
+import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
+
+type Row = { kind: "none" } | { kind: "project"; project: Project };
+
+interface Props {
+  value: Project | null;
+  query: string;
+  onChange: (next: Project | null) => void;
+}
+
+export function ProjectPickerBody({ value, query, onChange }: Props) {
+  const { t } = useT("projects");
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { data: projects = [] } = useQuery(projectListOptions(wsId));
+  // RUYI-413: device-local "picked last, when" memory — recent projects
+  // float to the top of the browse list and survive a cold start.
+  const lastSelectedAt = useProjectRecencyStore((s) => s.lastSelectedAt);
+  const listRef = useScrollToTopOnChange(query);
+  const { colorScheme } = useColorScheme();
+  const checkColor =
+    colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
+
+  const rows = useMemo<Row[]>(() => {
+    const q = query.trim().toLowerCase();
+    const matchName = (n: string) => !q || n.toLowerCase().includes(q);
+    if (q) {
+      // Search results stay alphabetical — the user is looking up a known
+      // name, not browsing; recency ordering is a browse-list concern.
+      return projects
+        .filter((p) => matchName(p.title))
+        .sort((a, b) => a.title.localeCompare(b.title))
+        .map((p) => ({ kind: "project" as const, project: p }));
+    }
+
+    // Browse list (RUYI-413): last-selected first, never-selected after in
+    // title order (`sortProjectsByRecency`).
+    const sorted = sortProjectsByRecency(
+      projects.filter((p) => matchName(p.title)),
+      lastSelectedAt,
+      wsId,
+    ).map((p) => ({ kind: "project" as const, project: p }));
+
+    // Pin selected project to the top (below "No project") — unchanged
+    // product choice mirroring the assignee picker. In the common flow the
+    // selection is also the most recent, so the pin and the recency order
+    // agree; it only shows when the current value was never picked here
+    // (e.g. set from web).
+    const selected = sorted.find(
+      (r) => r.kind === "project" && r.project.id === value?.id,
+    );
+    return [
+      { kind: "none" },
+      ...(selected ? [selected] : []),
+      ...sorted.filter(
+        (r) => !(r.kind === "project" && r.project.id === value?.id),
+      ),
+    ];
+  }, [projects, query, value, lastSelectedAt, wsId]);
+
+  const isSelected = (row: Row) => {
+    if (row.kind === "none") return value === null;
+    return value !== null && row.project.id === value.id;
+  };
+
+  return (
+    <FlatList
+      ref={listRef}
+      data={rows}
+      className="flex-1"
+      // RUYI-476: Android 默认不派发嵌套滚动，sheet 的 BottomSheetBehavior
+      // 会在列表未到顶时也抢走下滑手势（列表不回滚、弹层跟手收层）。开启后
+      // 列表在最大 detent 下独占纵向滚动，到顶才交还 sheet。
+      nestedScrollEnabled
+      keyboardShouldPersistTaps="handled"
+      automaticallyAdjustKeyboardInsets
+      contentInsetAdjustmentBehavior="automatic"
+      keyExtractor={(row) =>
+        row.kind === "none" ? "none" : `p:${row.project.id}`
+      }
+      renderItem={({ item }) => (
+        <Pressable
+          onPress={() => {
+            if (item.kind === "none") {
+              onChange(null);
+              return;
+            }
+            // Record for the recency order before handing the pick to the
+            // route. Not awaited: the in-memory map is what this session's
+            // next open reads, and the disk write flushes long before any
+            // realistic cold start (RUYI-413 store doc).
+            void recordProjectSelection(wsId, item.project.id);
+            onChange(item.project);
+          }}
+          className="flex-row items-center gap-3 px-4 py-3 active:bg-secondary"
+        >
+          {item.kind === "none" ? (
+            <Ionicons
+              name="close-circle-outline"
+              size={28}
+              color={MOBILE_PLACEHOLDER_COLOR}
+            />
+          ) : (
+            <ProjectIcon icon={item.project.icon} size="md" />
+          )}
+          <Text
+            className="flex-1 text-base text-foreground"
+            numberOfLines={1}
+          >
+            {item.kind === "none"
+              ? t("picker.no_project", "No project")
+              : item.project.title}
+          </Text>
+          {isSelected(item) ? (
+            <Ionicons name="checkmark" size={20} color={checkColor} />
+          ) : null}
+        </Pressable>
+      )}
+      ListEmptyComponent={
+        <View className="px-3 py-8 items-center">
+          <Text className="text-sm text-muted-foreground text-center">
+            {query
+              ? t("common:mobile.common.no_matches", "No matches.")
+              : t(
+                  "mobile.picker.no_projects",
+                  "No projects in this workspace yet.\nCreate them on web.",
+                )}
+          </Text>
+        </View>
+      }
+    />
+  );
+}

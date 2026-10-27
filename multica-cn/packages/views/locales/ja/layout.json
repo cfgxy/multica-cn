@@ -1,0 +1,132 @@
+{
+  "nav": {
+    "inbox": "インボックス",
+    "chat": "チャット",
+    "my_issues": "マイタスク",
+    "issues": "タスク",
+    "decisions": "ディシジョン",
+    "suspensions": "保留センター",
+    "projects": "プロジェクト",
+    "autopilots": "オートパイロット",
+    "agents": "エージェント",
+    "squads": "スクワッド",
+    "usage": "分析",
+    "management": "管理",
+    "self_evolution": "自己進化",
+    "runtimes": "ランタイム",
+    "voice_runtimes": "音声ランタイム",
+    "skills": "スキル",
+    "settings": "設定",
+    "audit": "MCP 監査",
+    "admin": "管理"
+  },
+  "tab": {
+    "issue": "タスク",
+    "project": "プロジェクト",
+    "autopilot": "オートパイロット",
+    "agent": "エージェント",
+    "member": "メンバー",
+    "squad": "スクワッド",
+    "skill": "スキル",
+    "machine": "マシン",
+    "runtime": "ランタイム",
+    "attachment": "添付ファイル",
+    "create_agent": "エージェントを作成",
+    "unknown": "不明なページ"
+  },
+  "help": {
+    "trigger": "ヘルプ",
+    "download_desktop": "デスクトップ版",
+    "docs": "ドキュメント",
+    "changelog": "変更ログ",
+    "discord": "Discord",
+    "feedback": "フィードバック",
+    "server_version": "サーバーバージョン {{version}}"
+  },
+  "workspace_loader": {
+    "loading_workspace": "ワークスペースを読み込み中…",
+    "loading_named_prefix": "読み込み中"
+  },
+  "sidebar": {
+    "unpin_tooltip": "ピン留めを解除",
+    "servers_label": "サーバー",
+    "manage_servers": "サーバーを管理",
+    "workspaces_label": "ワークスペース",
+    "create_workspace": "ワークスペースを作成",
+    "pending_invitations_label": "保留中の招待",
+    "invitation_workspace_fallback": "ワークスペース",
+    "invitation_join": "参加",
+    "invitation_decline": "辞退",
+    "stop_impersonation": "なりすましを終了",
+    "log_out": "ログアウト",
+    "admin_area": "管理",
+    "new_issue": "新規タスク",
+    "new_issue_shortcut": "C",
+    "pinned_label": "ピン留め済み",
+    "workspace_group": "ワークスペース",
+    "configure_group": "設定",
+    "unread_overflow": "99+",
+    "discord_card": {
+      "title": "Discord に参加",
+      "dismiss": "閉じる"
+    }
+  },
+  "audit_view": {
+    "title": "MCP 監査", "description": "拒否および失敗したリクエストを含む MCP 呼び出しを記録します。", "since": "開始時刻", "since_placeholder": "開始時刻（RFC3339）", "until": "終了時刻", "until_placeholder": "終了時刻（RFC3339）", "tool": "ツール", "actor": "呼び出し元", "actor_id": "呼び出し元 ID", "client": "クライアント", "client_name": "クライアント名", "client_version": "クライアントバージョン", "result": "結果", "all_results": "すべての結果", "result_success": "成功", "result_failure": "失敗", "result_refused": "拒否", "target": "対象", "target_type": "対象タイプ", "target_id": "対象 ID", "all_targets": "すべての対象", "target_workspace": "ワークスペース", "target_issue": "タスク", "target_host": "ホスト", "filters": "フィルター", "apply": "適用", "clear": "フィルターをクリア", "loading": "監査イベントを読み込み中...", "loading_more": "さらに読み込み中...", "load_more": "さらに読み込む", "load_failed_title": "監査記録を読み込めません", "load_failed": "監査イベントを読み込めません。", "retry": "再試行", "permission_title": "監査記録を表示する権限がありません", "permission_description": "ワークスペースの owner または admin にアクセスを依頼してください。", "unavailable_title": "監査サービスを一時的に利用できません", "unavailable_description": "サービスが復旧するまで記録が不完全な可能性があります。", "empty": "監査記録はまだありません。", "empty_filtered": "このフィルターに一致する記録はありません。", "time": "時刻", "event_type": "イベント", "reason": "理由", "duration": "所要時間", "error_code": "エラーコード", "invocation_id": "呼び出し ID", "not_provided": "未提供", "back_to_mcp": "MCP 設定に戻る", "started": "開始済み"
+  },
+  "mobile": {
+    "agents": {
+      "coming_soon": "エージェント機能は近日公開予定です。"
+    },
+    "pins": {
+      "load_failed": "ピン留めを読み込めませんでした：{{reason}}",
+      "empty": "ピン留めはまだありません。タスクやプロジェクトの操作メニューからピン留めすると、ここに表示されます。",
+      "type_issue": "タスク",
+      "type_project": "プロジェクト",
+      "unavailable_a11y": "利用できない{{type}}。タップしてピン留めを解除",
+      "unavailable": "利用できない{{type}} — タップしてピン留めを解除"
+    },
+    "audit": {
+      "title": "MCP 監査",
+      "all": "すべて",
+      "apply_filters": "フィルターを適用",
+      "load_failed": "監査イベントを読み込めません。",
+      "empty": "このフィルターに一致する監査イベントはありません。",
+      "tool": "ツール",
+      "actor_id": "呼び出し元 ID",
+      "host_target_id": "ホスト対象 ID",
+      "since": "開始時刻（RFC3339）",
+      "until": "終了時刻（RFC3339）",
+      "time_basis": "時刻の基準（invocation_start）",
+      "occurred_at": "イベント時刻",
+      "any": "すべて",
+      "cancel": "キャンセル",
+      "actor_type": "呼び出し元タイプ",
+      "client_name": "クライアント名",
+      "client_version": "クライアントバージョン",
+      "result": "結果",
+      "target": "対象",
+      "result_status": "結果の状態（success/failure/refused）",
+      "result_error_code": "結果のエラーコード",
+      "target_type": "対象タイプ（workspace/issue/host）",
+      "target_id": "対象 ID",
+      "target_pair_required": "対象タイプと対象 ID の両方を選択するか、両方をクリアしてください。",
+      "permission_denied": "ワークスペースの監査イベントを表示する権限がありません。",
+      "service_failed": "監査サービスを利用できません。もう一度お試しください。",
+      "retry": "再試行",
+      "time_filters": "時刻",
+      "user_filters": "ユーザー",
+      "client_filters": "クライアント",
+      "load_more": "さらに読み込む",
+      "detail": "監査イベント",
+      "detail_unavailable": "この監査イベントは現在の検索結果にありません。",
+      "close": "閉じる",
+      "event_type": "イベント",
+      "event_id": "イベント ID",
+      "domain": "ドメイン",
+      "time": "時刻",
+      "actor": "呼び出し元",
+      "reason": "理由"
+    }
+  }
+}
