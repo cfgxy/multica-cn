@@ -586,6 +586,37 @@ func TestBranchAdoptionHandlerRejectsServerSnapshotBeforeMarkerWrite(t *testing.
 	}
 }
 
+func TestValidateBranchAdoptionAuthorizationAllowsCompletedSourceTask(t *testing.T) {
+	active := activeRepoCheckoutTask{
+		WorkspaceID: "workspace-id",
+		TaskID:      "continuation-task",
+		AgentID:     "continuation-agent",
+		IssueID:     "continuation-issue",
+	}
+	req := branchAdoptionRequest{
+		SourceTaskID: "source-task",
+		Branch:       "agent/source/ruyi-905",
+	}
+	authorization := &BranchAdoptionAuthorization{
+		Branch: req.Branch,
+		Source: BranchAdoptionOwner{
+			WorkspaceID: "workspace-id",
+			TaskID:      req.SourceTaskID,
+		},
+		Continuation: BranchAdoptionOwner{
+			WorkspaceID:    active.WorkspaceID,
+			TaskID:         active.TaskID,
+			AgentID:        active.AgentID,
+			ConversationID: active.IssueID,
+		},
+		SourceTaskCompleted:       true,
+		ContinuationTaskIsRunning: true,
+	}
+	if err := validateBranchAdoptionAuthorization(active, req, authorization); err != nil {
+		t.Fatalf("validate completed source authorization: %v", err)
+	}
+}
+
 func TestRepoCheckoutExplicitRefOverridesProjectDefault(t *testing.T) {
 	t.Parallel()
 

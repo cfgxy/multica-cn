@@ -485,7 +485,7 @@ func validateBranchAdoptionAuthorization(active activeRepoCheckoutTask, req bran
 	if authorization == nil {
 		return errors.New("branch adoption server returned no authorization")
 	}
-	if authorization.Branch != req.Branch || !authorization.SourceIssueSuspended || !authorization.ContinuationTaskIsRunning {
+	if authorization.Branch != req.Branch || (!authorization.SourceIssueSuspended && !authorization.SourceTaskCompleted) || !authorization.ContinuationTaskIsRunning {
 		return errors.New("branch adoption server response does not authorize this request")
 	}
 	if authorization.Source.TaskID != req.SourceTaskID {
