@@ -74,7 +74,8 @@ func TestWSConnectorEnrichesBeforeEmit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- c.Run(ctx, Installation{AppID: "test_app"}, emit) }()
+	installationID := uuidFromString(t, "1111aaaa-1111-1111-1111-111111111111")
+	go func() { done <- c.Run(ctx, Installation{ID: installationID, AppID: "test_app"}, emit) }()
 
 	pushDataFrame(conn, []byte("evt-1"), "m1")
 
@@ -112,5 +113,8 @@ func TestWSConnectorEnrichesBeforeEmit(t *testing.T) {
 	}
 	if len(enr.creds) != 1 || enr.creds[0].AppID != "test_app" || enr.creds[0].AppSecret != "secret" {
 		t.Errorf("enricher got wrong creds: %+v", enr.creds)
+	}
+	if len(enr.creds) != 1 || enr.creds[0].InstallationID != installationID {
+		t.Errorf("enricher got installation IDs %+v, want %v", enr.creds, installationID)
 	}
 }
