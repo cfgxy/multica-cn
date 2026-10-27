@@ -77,6 +77,13 @@ Saving `worktree` is also refused (HTTP 422, code `daemon_version_unsupported`) 
 not advertise the capability — the fix is updating the Multica app there, then retrying. Pass an empty value to clear
 it back to the default.
 
+To recover a delivered branch in a new managed task, use `multica worktree adopt` rather than moving the branch
+directly. It requires a running continuation, an exact expected remote SHA, and either a source task whose Issue is
+suspended or a completed source task continuing under the same agent and conversation. Authorization binds the source
+branch/task identity; the daemon then verifies the remote and local tip, recorded ownership checkpoint, delivery-guard
+state, and linked-worktree occupancy before atomically recording the continuation. It rejects any failed proof without
+changing the marker or branch record.
+
 For `github_repo`, non-JSON `--ref` sets `resource_ref.ref`, the default checkout branch/tag/SHA for future tasks in that project. JSON `--ref '<json>'` remains the escape hatch for full payloads or resource types not covered by shortcuts.
 
 The bound `url` is the canonical writable repository. `resource_ref.upstream` / `--upstream` is an explicit maintainer confirmation for a fork parent and accepts only a GitHub repository URL different from the canonical URL; it is stored as normalized `owner/repo`. Do not infer the parent from remote names or GitHub metadata. When the parent is unknown, omit `--upstream`; normal write guards then reject any remote not matching the canonical repository. Codex task startup materializes the versioned RUYI-401 `gh-pr-guard` and RUYI-403 `git-push-guard` with one task-scoped policy file.
