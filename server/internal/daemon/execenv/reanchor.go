@@ -152,6 +152,11 @@ func reanchorBranchWithOperations(gitRoot, branch, target, expectedBase, markerP
 	if oldRecord == "" {
 		return result, fmt.Errorf("reanchor: branch %s has no Multica branch record", branch)
 	}
+	markerPath, markerAfter, writeMarkerNow, err := reanchoredTaskMarker(gitRoot, markerPath, branch, oldTip, oldRecord, resolvedTarget)
+	if err != nil {
+		return result, err
+	}
+
 	userState, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", oldRecord+"^1")
 	if err != nil || userState == "" {
 		return result, fmt.Errorf("reanchor: branch record %s has no user-state parent; refusing to guess one", shortID(oldRecord))
@@ -169,11 +174,6 @@ func reanchorBranchWithOperations(gitRoot, branch, target, expectedBase, markerP
 	newRecord, err := runGitTrimmed(gitRoot, args...)
 	if err != nil {
 		return result, fmt.Errorf("reanchor: git commit-tree: %w", err)
-	}
-
-	markerPath, markerAfter, writeMarkerNow, err := reanchoredTaskMarker(gitRoot, markerPath, branch, oldTip, resolvedTarget)
-	if err != nil {
-		return result, err
 	}
 
 	archiveTipRef, archiveStateRef, err := newReanchorArchiveRefs(branch)
@@ -203,7 +203,7 @@ func reanchorBranchWithOperations(gitRoot, branch, target, expectedBase, markerP
 	return result, writeReanchorAudit(gitRoot, &result, note)
 }
 
-func reanchoredTaskMarker(gitRoot, markerPath, branch, oldTip, target string) (string, []byte, bool, error) {
+func reanchoredTaskMarker(gitRoot, markerPath, branch, oldTip, oldRecord, target string) (string, []byte, bool, error) {
 	markerPath = strings.TrimSpace(markerPath)
 	if markerPath == "" {
 		root, err := runGitTrimmed(gitRoot, "rev-parse", "--show-toplevel")
@@ -233,15 +233,33 @@ func reanchoredTaskMarker(gitRoot, markerPath, branch, oldTip, target string) (s
 		return "", nil, false, fmt.Errorf("reanchor: task marker %s has no base_commit", markerPath)
 	}
 	if marker.BaseCommit == target {
-		// The initial marker write succeeded but the ref transaction did not.
-		// Its exact target is the durable recovery proof; retry the guarded ref
-		// transaction without another marker write that could fail independently.
+		prepared := marker.PreparedReanchor
+		if prepared == nil {
+			return "", nil, false, fmt.Errorf("reanchor: task marker is prepared for %s but lacks the original ref snapshot; refusing an unprovable recovery", shortID(target))
+		}
+		if prepared.Target != target {
+			return "", nil, false, fmt.Errorf("reanchor: prepared marker target %s does not match requested target %s", shortID(prepared.Target), shortID(target))
+		}
+		if prepared.BranchTip != oldTip {
+			return "", nil, false, fmt.Errorf("reanchor: prepared marker branch tip %s no longer matches branch %s at %s", shortID(prepared.BranchTip), branch, shortID(oldTip))
+		}
+		if prepared.LocalStateRecord != oldRecord {
+			return "", nil, false, fmt.Errorf("reanchor: prepared marker local-state record %s no longer matches branch %s record %s", shortID(prepared.LocalStateRecord), branch, shortID(oldRecord))
+		}
+		// The initial marker write succeeded but the ref transaction did not. The
+		// immutable ref snapshot proves that this retry resumes that exact guarded
+		// transaction without another filesystem write.
 		return markerPath, before, false, nil
 	}
 	if _, err := runGit(gitRoot, "merge-base", "--is-ancestor", marker.BaseCommit, oldTip); err != nil {
 		return "", nil, false, fmt.Errorf("reanchor: task marker base %s is not an ancestor of branch %s at %s: %w", shortID(marker.BaseCommit), branch, shortID(oldTip), err)
 	}
 	marker.BaseCommit = target
+	marker.PreparedReanchor = &preparedReanchorMarker{
+		Target:           target,
+		BranchTip:        oldTip,
+		LocalStateRecord: oldRecord,
+	}
 	after, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
 		return "", nil, false, fmt.Errorf("reanchor: marshal task marker: %w", err)

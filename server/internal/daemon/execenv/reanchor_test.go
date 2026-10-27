@@ -541,6 +541,8 @@ func TestReanchorBranchResumesAfterRefTransactionFailureWithoutMarkerRollback(t 
 	}
 	if marker := readReanchorTestMarker(t, markerPath); marker.BaseCommit != content {
 		t.Fatalf("prepared marker base_commit = %s, want target %s", marker.BaseCommit, content)
+	} else if marker.PreparedReanchor == nil || marker.PreparedReanchor.Target != content || marker.PreparedReanchor.BranchTip != m2 || marker.PreparedReanchor.LocalStateRecord != recordBefore {
+		t.Fatalf("prepared marker snapshot = %+v, want target=%s branch_tip=%s local_state_record=%s", marker.PreparedReanchor, content, m2, recordBefore)
 	}
 
 	gitRun(t, repo, "checkout", branch)
@@ -570,6 +572,126 @@ func TestReanchorBranchResumesAfterRefTransactionFailureWithoutMarkerRollback(t 
 	preflight, preflightErr = PreflightWorktree(repo)
 	if preflightErr != nil || preflight.Status != "pass" {
 		t.Fatalf("PreflightWorktree after recovery retry = %+v, error = %v; want pass", preflight, preflightErr)
+	}
+}
+
+func TestReanchorBranchRejectsPreparedRecoveryWhenRefsChanged(t *testing.T) {
+	for _, change := range []string{"branch", "record"} {
+		t.Run(change, func(t *testing.T) {
+			repo := newTestRepo(t)
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
+			m2 := gitRun(t, repo, "rev-parse", "HEAD")
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "main")
+			mainTip := gitRun(t, repo, "rev-parse", "HEAD")
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
+			content := gitRun(t, repo, "rev-parse", "HEAD")
+			branch := "agent/j/mul-prepared-" + change
+			gitRun(t, repo, "update-ref", "refs/heads/"+branch, m2)
+			markerPath := prepareReanchorFixture(t, repo, branch)
+
+			_, err := reanchorBranchWithOperations(repo, branch, content, mainTip, markerPath, ReanchorNote{}, func() {}, writeMarkerFileAtomic, func(string, string, string, string, string, string, string, string) error {
+				return errors.New("simulated ref transaction rejection")
+			})
+			if err == nil || !strings.Contains(err.Error(), "simulated ref transaction rejection") {
+				t.Fatalf("initial reanchor error = %v, want ref transaction rejection", err)
+			}
+
+			gitRun(t, repo, "checkout", "--detach", m2)
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "unrelated")
+			unrelated := gitRun(t, repo, "rev-parse", "HEAD")
+			gitRun(t, repo, "checkout", "main")
+			if change == "branch" {
+				gitRun(t, repo, "update-ref", "refs/heads/"+branch, unrelated)
+			} else {
+				gitRun(t, repo, "update-ref", userStateRef(branch), unrelated)
+			}
+			branchBeforeRetry := gitRun(t, repo, "rev-parse", "refs/heads/"+branch)
+			recordBeforeRetry := gitRun(t, repo, "rev-parse", userStateRef(branch))
+			markerBeforeRetry, err := os.ReadFile(markerPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refUpdates := 0
+			_, err = reanchorBranchWithOperations(repo, branch, content, mainTip, markerPath, ReanchorNote{}, func() {}, func(string, []byte) error {
+				t.Fatal("prepared recovery unexpectedly rewrote task marker")
+				return nil
+			}, func(string, string, string, string, string, string, string, string) error {
+				refUpdates++
+				return nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "prepared marker") {
+				t.Fatalf("prepared recovery error = %v, want fail-closed snapshot mismatch", err)
+			}
+			if refUpdates != 0 {
+				t.Fatalf("prepared recovery attempted %d ref updates after snapshot mismatch", refUpdates)
+			}
+			if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != branchBeforeRetry {
+				t.Errorf("branch changed after prepared recovery refusal: got %s, want %s", got, branchBeforeRetry)
+			}
+			if got := gitRun(t, repo, "rev-parse", userStateRef(branch)); got != recordBeforeRetry {
+				t.Errorf("record changed after prepared recovery refusal: got %s, want %s", got, recordBeforeRetry)
+			}
+			markerAfterRetry, err := os.ReadFile(markerPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(markerAfterRetry) != string(markerBeforeRetry) {
+				t.Fatal("marker changed after prepared recovery refusal")
+			}
+			if refs := gitRun(t, repo, "for-each-ref", "--format=%(refname)", "refs/multica/reanchor/"+branch); refs != "" {
+				t.Fatalf("prepared recovery created archive refs after refusal: %s", refs)
+			}
+		})
+	}
+}
+
+func TestReanchorBranchRejectsPreparedMarkerWithoutSnapshot(t *testing.T) {
+	repo := newTestRepo(t)
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
+	m2 := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "main")
+	mainTip := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
+	content := gitRun(t, repo, "rev-parse", "HEAD")
+	branch := "agent/j/mul-legacy-prepared"
+	gitRun(t, repo, "update-ref", "refs/heads/"+branch, m2)
+	markerPath := prepareReanchorFixture(t, repo, branch)
+	writeReanchorTestMarker(t, repo, branch, content)
+
+	recordBefore := gitRun(t, repo, "rev-parse", userStateRef(branch))
+	markerBefore, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refUpdates := 0
+	_, err = reanchorBranchWithOperations(repo, branch, content, mainTip, markerPath, ReanchorNote{}, func() {}, func(string, []byte) error {
+		t.Fatal("legacy prepared marker recovery unexpectedly rewrote task marker")
+		return nil
+	}, func(string, string, string, string, string, string, string, string) error {
+		refUpdates++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "lacks the original ref snapshot") {
+		t.Fatalf("legacy prepared marker recovery error = %v, want fail-closed snapshot refusal", err)
+	}
+	if refUpdates != 0 {
+		t.Fatalf("legacy prepared marker recovery attempted %d ref updates", refUpdates)
+	}
+	if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != m2 {
+		t.Errorf("branch changed after legacy prepared marker refusal: got %s, want %s", got, m2)
+	}
+	if got := gitRun(t, repo, "rev-parse", userStateRef(branch)); got != recordBefore {
+		t.Errorf("record changed after legacy prepared marker refusal: got %s, want %s", got, recordBefore)
+	}
+	markerAfter, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(markerAfter) != string(markerBefore) {
+		t.Fatal("marker changed after legacy prepared marker refusal")
+	}
+	if refs := gitRun(t, repo, "for-each-ref", "--format=%(refname)", "refs/multica/reanchor/"+branch); refs != "" {
+		t.Fatalf("legacy prepared marker recovery created archive refs: %s", refs)
 	}
 }
 
