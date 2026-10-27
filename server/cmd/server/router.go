@@ -784,7 +784,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Registering the Factory (connect/send) + ResolverSet
 				// (inbound pipeline seams) is all it takes to add the platform
 				// to the engine — no engine edit.
-				connector, connectorLabel := buildLarkConnector(installSvc, larkClient)
+				connector, connectorLabel := buildLarkConnector(queries, installSvc, larkClient)
 				lark.RegisterFeishu(channelRegistry, lark.FeishuChannelDeps{
 					Connector:   connector,
 					APIClient:   larkClient,
@@ -3243,7 +3243,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 //
 // Returns the connector plus a short label for the boot log:
 // "ws-long-conn" in the healthy case, "noop" in the fallback case.
-func buildLarkConnector(installSvc *lark.InstallationService, apiClient lark.APIClient) (lark.EventConnector, string) {
+func buildLarkConnector(queries *db.Queries, installSvc *lark.InstallationService, apiClient lark.APIClient) (lark.EventConnector, string) {
 	endpointFetcher, err := lark.NewHTTPConnectionTokenFetcher(lark.HTTPConnectionTokenConfig{
 		BaseURL: strings.TrimSpace(os.Getenv("MULTICA_LARK_CALLBACK_BASE_URL")),
 		Logger:  slog.Default(),
@@ -3278,9 +3278,10 @@ func buildLarkConnector(installSvc *lark.InstallationService, apiClient lark.API
 	// connector's resolved credentials and runs under the connector's
 	// EnrichTimeout so it cannot overrun the Lark long-conn ACK budget.
 	enricher := lark.NewInboundEnricher(apiClient, lark.InboundEnricherConfig{
-		RecentContextSize: lark.DefaultRecentContextSize,
-		Logger:            slog.Default(),
-		Hints:             lark.NewPermissionHintSender(apiClient, slog.Default()),
+		RecentContextSize:            lark.DefaultRecentContextSize,
+		Logger:                       slog.Default(),
+		Hints:                        lark.NewPermissionHintSender(apiClient, slog.Default()),
+		VerifiedAgentResultsResolver: lark.NewVerifiedAgentResultsResolver(queries),
 	})
 	conn, err := lark.NewWSLongConnConnector(lark.WSConnectorConfig{
 		Dialer:              dialer,

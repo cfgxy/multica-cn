@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // APIClient is the narrow surface this package needs from the Lark Open
@@ -422,9 +424,13 @@ type SendFileParams struct {
 // The plaintext app_secret lives inside this struct exactly while a
 // call is in flight; callers MUST NOT log or persist it.
 type InstallationCredentials struct {
-	AppID     string
-	AppSecret string
-	TenantKey string
+	// InstallationID is set by the long-connection owner after resolving the
+	// transport credentials. It scopes database-backed enrichments to one
+	// concrete Feishu installation; it is not sent to the Lark API.
+	InstallationID pgtype.UUID
+	AppID          string
+	AppSecret      string
+	TenantKey      string
 	// Region selects the Lark open-platform host (Feishu mainland vs
 	// Lark international) for every call made with these credentials.
 	// Empty defaults to Feishu. Credential-build sites copy it from

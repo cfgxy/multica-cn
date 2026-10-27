@@ -432,6 +432,7 @@ func (c *WSLongConnConnector) Run(ctx context.Context, inst Installation, emit E
 		// immediately without any network call.
 		if c.cfg.Enricher != nil {
 			enrichCtx, cancelEnrich := context.WithTimeout(ctx, c.cfg.EnrichTimeout)
+			creds.InstallationID = inst.ID
 			msg = c.cfg.Enricher.Enrich(enrichCtx, msg, creds)
 			cancelEnrich()
 		}
