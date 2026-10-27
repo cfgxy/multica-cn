@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestTaskStatusAllowsComment(t *testing.T) {
+func TestTaskStatusAllowsWrite(t *testing.T) {
 	for _, tc := range []struct {
 		status string
 		want   bool
@@ -22,8 +22,8 @@ func TestTaskStatusAllowsComment(t *testing.T) {
 		{status: "failed", want: false},
 		{status: "deferred", want: false},
 	} {
-		if got := taskStatusAllowsComment(tc.status); got != tc.want {
-			t.Errorf("taskStatusAllowsComment(%q) = %t, want %t", tc.status, got, tc.want)
+		if got := taskStatusAllowsWrite(tc.status); got != tc.want {
+			t.Errorf("taskStatusAllowsWrite(%q) = %t, want %t", tc.status, got, tc.want)
 		}
 	}
 }
