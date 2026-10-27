@@ -114,9 +114,8 @@ func (h *Handler) RollbackClauseMigrationBatch(ctx context.Context, workspaceID 
 		texts[c] = current
 	}
 
-	// Pass 3 — restore bodies into the stable context, then re-render the
-	// carrier with the remaining active clause set through the version
-	// funnel (fail-closed gate + version row + business column + baseline).
+	// Pass 3 — restore withdrawn bodies into static context and normalize the
+	// carrier before writing it through the version funnel.
 	allClauses, err := qtx.ListActiveWorkspaceClauses(ctx, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("有效条款集读取失败: %w", err)
@@ -134,27 +133,27 @@ func (h *Handler) RollbackClauseMigrationBatch(ctx context.Context, workspaceID 
 				return nil, fmt.Errorf("条款「%s」还原失败: %w", r.title, err)
 			}
 		}
-		rendered := clausemark.Render(stable, byCarrier[c])
-		scan, ok, reason := promptGovernanceGate(rendered)
+		normalized := clausemark.Static(stable, byCarrier[c])
+		scan, ok, reason := promptGovernanceGate(normalized)
 		if !ok {
 			return nil, fmt.Errorf("回滚重渲染未通过内容门闸（%s）: %s", c.scope, reason)
 		}
-		if _, err := persistCarrierVersionTx(ctx, qtx, workspaceID, promptVersionScope(c.scope), c.id, rendered,
+		if _, err := persistCarrierVersionTx(ctx, qtx, workspaceID, promptVersionScope(c.scope), c.id, normalized,
 			changeNote, "legislation", nil, scan.Revision, scan.Findings, actorID); err != nil {
 			return nil, fmt.Errorf("载体版本写入失败（%s）: %w", c.scope, err)
 		}
-		sections, clauses := legislation.ExtractStructure(rendered)
+		sections, clauses := legislation.ExtractStructure(normalized)
 		if _, err := qtx.UpsertPromptStructureBaseline(ctx, db.UpsertPromptStructureBaselineParams{
 			WorkspaceID:    workspaceID,
 			CarrierScope:   c.scope,
 			CarrierScopeID: c.id,
 			Sections:       mustJSON(sections),
 			Clauses:        mustJSON(clauses),
-			ContentSha256:  sha256Hex(rendered),
+			ContentSha256:  sha256Hex(normalized),
 		}); err != nil {
 			return nil, fmt.Errorf("结构基线重建失败（%s）: %w", c.scope, err)
 		}
-		result[c.scope+"/"+uuidToString(c.id)] = sha256Hex(rendered)
+		result[c.scope+"/"+uuidToString(c.id)] = sha256Hex(normalized)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

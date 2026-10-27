@@ -125,9 +125,9 @@ func TestClauseReviseEnactsNextVersion(t *testing.T) {
 	}
 	var carrierContext string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrierContext)
-	if !strings.Contains(carrierContext, "回报当日计划、阻塞与预计完成时间") ||
-		!strings.Contains(carrierContext, "rev=2") {
-		t.Fatalf("carrier not re-rendered at rev 2:\n%s", carrierContext)
+	if strings.Contains(carrierContext, "回报当日计划、阻塞与预计完成时间") ||
+		strings.Contains(carrierContext, "clause:id=") {
+		t.Fatalf("persisted carrier retained dynamic clause v2:\n%s", carrierContext)
 	}
 	var enactedVersion int
 	dbfx.QueryRow(t, `SELECT enacted_version FROM prompt_proposal WHERE workspace_id = $1 AND id = $2`,
@@ -152,18 +152,14 @@ func TestClauseReviseEnactsNextVersion(t *testing.T) {
 	}
 }
 
-func TestClauseReviseRepairsMissingMarker(t *testing.T) {
+func TestClauseReviseKeepsCarrierStaticWithoutMarker(t *testing.T) {
 	f := newClauseInjectionFixture(t)
 	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 
 	var before string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&before)
-	withoutMarker := clausemark.StripMarkers(before)
-	if withoutMarker == before {
-		t.Fatal("fixture carrier did not contain a Clause marker to remove")
-	}
-	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET context = $1 WHERE id = $2`, withoutMarker, f.wsID); err != nil {
-		t.Fatalf("remove marker from fixture carrier: %v", err)
+	if strings.Contains(before, "clause:id=") {
+		t.Fatalf("enacted carrier unexpectedly contains a marker:\n%s", before)
 	}
 
 	proposed := "- **每日同步**：缺失 marker 时仍由资产集重建此条款。"
@@ -171,10 +167,10 @@ func TestClauseReviseRepairsMissingMarker(t *testing.T) {
 	code, body := legislationCall(t, testHandler.PreviewPromptProposal,
 		legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+id+"/preview", nil, "id", id))
 	if code != http.StatusOK {
-		t.Fatalf("missing-marker preview: expected 200, got %d: %s", code, body)
+		t.Fatalf("static-carrier preview: expected 200, got %d: %s", code, body)
 	}
 	if !strings.Contains(body, proposed) {
-		t.Fatalf("missing-marker preview omitted proposed clause: %s", body)
+		t.Fatalf("static-carrier preview omitted proposed clause: %s", body)
 	}
 	if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusOK {
 		t.Fatalf("missing-marker approve: expected 200, got %d: %s", code, body)
@@ -182,11 +178,11 @@ func TestClauseReviseRepairsMissingMarker(t *testing.T) {
 
 	var after string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&after)
-	if !strings.Contains(after, proposed) || !strings.Contains(after, "clause:id=") || !strings.Contains(after, "rev=2") {
-		t.Fatalf("missing-marker revision did not restore canonical asset marker:\n%s", after)
+	if strings.Contains(after, proposed) || strings.Contains(after, "clause:id=") {
+		t.Fatalf("revision persisted dynamic clause content:\n%s", after)
 	}
-	if strings.Count(after, proposed) != 1 || strings.Contains(after, cleanClauseText) {
-		t.Fatalf("missing-marker revision retained stale or duplicate clause text:\n%s", after)
+	if strings.Contains(after, cleanClauseText) {
+		t.Fatalf("revision retained the stale dynamic clause text:\n%s", after)
 	}
 	if !strings.Contains(after, "## 沟通规范") || !strings.Contains(after, "行文基调") {
 		t.Fatalf("missing-marker revision did not preserve static context:\n%s", after)
@@ -281,8 +277,8 @@ func TestDirectClauseRevisionUsesPreviewTokensAndCreatesNoProposal(t *testing.T)
 	if !strings.Contains(audit, "owner_direct_revision") {
 		t.Fatalf("direct revision binding audit missing action: %s", audit)
 	}
-	if strings.Count(persistedCarrier, proposed) != 1 || strings.Contains(persistedCarrier, currentContent) {
-		t.Fatalf("direct revision retained stale or duplicate clause text:\n%s", persistedCarrier)
+	if strings.Contains(persistedCarrier, proposed) || strings.Contains(persistedCarrier, currentContent) || strings.Contains(persistedCarrier, "clause:id=") {
+		t.Fatalf("direct revision persisted dynamic clause content:\n%s", persistedCarrier)
 	}
 	if result.CarrierContentSHA256 != sha256Hex(persistedCarrier) {
 		t.Fatalf("direct revision response carrier hash = %s, persisted hash = %s", result.CarrierContentSHA256, sha256Hex(persistedCarrier))
@@ -391,7 +387,7 @@ func TestClauseReviseRollsBackWhenCarrierRerenderFails(t *testing.T) {
 	if _, err := testPool.Exec(context.Background(), fmt.Sprintf(`
 CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $fn$
 BEGIN
-    IF NEW.workspace_id = '%s'::uuid AND NEW.change_note = '条款渲染快照重建' THEN
+	    IF NEW.workspace_id = '%s'::uuid AND NEW.change_note = '条款静态载体规范化' THEN
         RAISE EXCEPTION 'injected clause carrier re-render failure';
     END IF;
     RETURN NEW;
@@ -460,7 +456,7 @@ func TestClauseReviseEnactsNextVersionForSquadBinding(t *testing.T) {
 	var instructions string
 	dbfx.QueryRow(t, `SELECT since_clause_version FROM clause_binding WHERE clause_id = $1 AND status = 'active'`, clauseID).Scan(&since)
 	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, squadID).Scan(&instructions)
-	if since != 2 || !strings.Contains(instructions, proposed) || !strings.Contains(instructions, "rev=2") {
+	if since != 2 || strings.Contains(instructions, proposed) || strings.Contains(instructions, "clause:id=") {
 		t.Fatalf("squad revision = binding v%d, instructions:\n%s", since, instructions)
 	}
 }
@@ -791,13 +787,13 @@ func TestClauseMoveBetweenCarriers(t *testing.T) {
 
 	var squadInstructions string
 	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, squadID).Scan(&squadInstructions)
-	if !strings.Contains(squadInstructions, "每日同步") || !strings.Contains(squadInstructions, "<!-- clause:id=") {
-		t.Fatalf("destination carrier missing the clause region:\n%s", squadInstructions)
+	if strings.Contains(squadInstructions, "每日同步") || strings.Contains(squadInstructions, "<!-- clause:id=") {
+		t.Fatalf("destination carrier retained dynamic clause content:\n%s", squadInstructions)
 	}
 	var wsContext string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&wsContext)
-	if strings.Contains(wsContext, "clause:id=") {
-		t.Fatalf("source carrier still carries the clause region:\n%s", wsContext)
+	if strings.Contains(wsContext, "clause:id=") || strings.Contains(wsContext, "每日同步") {
+		t.Fatalf("source carrier retained dynamic clause content:\n%s", wsContext)
 	}
 }
 
@@ -954,13 +950,14 @@ func TestClauseReconciliationLayerViolation(t *testing.T) {
 	}
 }
 
-// Drift is observed per carrier: a stale rev, an orphan marker and a
-// missing segment are each flagged against the active asset set.
+// Drift observes only legacy marker data. Active clauses are assembled from
+// the asset library, so a static carrier has no missing-segment condition.
 func TestClauseReconciliationDriftKinds(t *testing.T) {
 	t.Run("stale_rev", func(t *testing.T) {
 		f := newClauseInjectionFixture(t)
 		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
-		dbfx.Exec(t, `UPDATE workspace SET context = replace(context, 'rev=1', 'rev=7') WHERE id = $1`, f.wsID)
+		dbfx.Exec(t, `UPDATE workspace SET context = context || $2 WHERE id = $1`, f.wsID,
+			"\n<!-- clause:id=cls_aaa00001 rev=7 -->\n")
 		assertSingleDriftKind(t, f, "stale_rev")
 	})
 	t.Run("orphan_marker", func(t *testing.T) {
@@ -971,7 +968,15 @@ func TestClauseReconciliationDriftKinds(t *testing.T) {
 			"\n<!-- clause:id=cls_zzzzzzzz rev=1 -->\n")
 		assertSingleDriftKind(t, f, "orphan_marker")
 	})
-	t.Run("missing_segment", func(t *testing.T) {
+	t.Run("static_carrier", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		recon := getReconciliation(t, f)
+		if !recon.Healthy || len(recon.DriftCarriers) != 0 {
+			t.Fatalf("static carrier was reported as drift: %+v", recon.DriftCarriers)
+		}
+	})
+	t.Run("snapshot_mode_static_carrier", func(t *testing.T) {
 		f := newClauseInjectionFixture(t)
 		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 		// The segment is gone but the clause is still bound — exactly what a

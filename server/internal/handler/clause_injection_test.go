@@ -164,6 +164,18 @@ func enactWorkspaceClause(t *testing.T, f *clauseInjectionFixture, name, text st
 // it through the real daemon route, returning the claim payload.
 func enqueueAndClaim(t *testing.T, f *clauseInjectionFixture) (taskID, workspaceContext string) {
 	t.Helper()
+	claim := enqueueAndClaimResponse(t, f)
+	return claim.taskID, claim.workspaceContext
+}
+
+type clauseInjectionClaim struct {
+	taskID            string
+	workspaceContext  string
+	agentInstructions string
+}
+
+func enqueueAndClaimResponse(t *testing.T, f *clauseInjectionFixture) clauseInjectionClaim {
+	t.Helper()
 	var rawTaskID string
 	dbfx.QueryRow(t, `
 		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
@@ -180,6 +192,9 @@ func enqueueAndClaim(t *testing.T, f *clauseInjectionFixture) (taskID, workspace
 			ID               string `json:"id"`
 			WorkspaceContext string `json:"workspace_context"`
 		} `json:"task"`
+		Agent *struct {
+			Instructions string `json:"instructions"`
+		} `json:"agent"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode claim: %v (%s)", err, w.Body.String())
@@ -190,7 +205,14 @@ func enqueueAndClaim(t *testing.T, f *clauseInjectionFixture) (taskID, workspace
 	if resp.Task.ID != rawTaskID {
 		t.Fatalf("claimed task id = %s, want %s", resp.Task.ID, rawTaskID)
 	}
-	return rawTaskID, resp.Task.WorkspaceContext
+	if resp.Agent == nil {
+		t.Fatalf("expected claimed agent payload: %s", w.Body.String())
+	}
+	return clauseInjectionClaim{
+		taskID:            rawTaskID,
+		workspaceContext:  resp.Task.WorkspaceContext,
+		agentInstructions: resp.Agent.Instructions,
+	}
 }
 
 func TestClaimDynamicClauseInjectionHappyPath(t *testing.T) {
@@ -198,6 +220,12 @@ func TestClaimDynamicClauseInjectionHappyPath(t *testing.T) {
 	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 
 	taskID, wsContext := enqueueAndClaim(t, f)
+
+	var persistedCarrier string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&persistedCarrier)
+	if strings.Contains(persistedCarrier, cleanClauseText) || strings.Contains(persistedCarrier, "clause:id=") {
+		t.Fatalf("persisted carrier retained dynamic clause content:\n%s", persistedCarrier)
+	}
 
 	// The claimed workspace context carries the rendered clause region —
 	// marker-wrapped, in the target section.
@@ -313,12 +341,66 @@ func TestClaimDynamicClauseInjectionRendersIntoNullCarrier(t *testing.T) {
 	}
 }
 
+func TestClaimDynamicClauseInjectionFromNilWorkspaceContext(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	dbfx.Exec(t, `UPDATE workspace SET context = NULL WHERE id = $1`, f.wsID)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+
+	var persistedCarrier pgtype.Text
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&persistedCarrier)
+	if persistedCarrier.Valid {
+		t.Fatalf("persisted workspace context = %q, want NULL static carrier", persistedCarrier.String)
+	}
+
+	taskID, wsContext := enqueueAndClaim(t, f)
+	if !strings.Contains(wsContext, cleanClauseText) ||
+		!strings.Contains(wsContext, "<!-- clause:id=") ||
+		!strings.Contains(wsContext, clausemark.CloseTag()) {
+		t.Fatalf("claimed empty static carrier missing rendered clause:\n%s", wsContext)
+	}
+
+	var gotClauseID, scope string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT clause_id::text, carrier_scope FROM clause_injection WHERE task_id = $1`, taskID).
+		Scan(&gotClauseID, &scope); err != nil {
+		t.Fatalf("claim left no injection row: %v", err)
+	}
+	if gotClauseID != clauseID || scope != "workspace" {
+		t.Fatalf("injection row = clause %s scope %s, want clause %s workspace", gotClauseID, scope, clauseID)
+	}
+}
+
+func TestClaimDynamicClauseInjectionMikaAgent(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	dbfx.Exec(t, `UPDATE agent SET system_key = $2, instructions = '' WHERE id = $1`, f.agentID, service.MikaSystemKey)
+	dbfx.Exec(t, `UPDATE clause_binding SET scope = 'agent', scope_id = $2 WHERE clause_id = $1`, clauseID, f.agentID)
+
+	claim := enqueueAndClaimResponse(t, f)
+	if got := strings.Count(claim.agentInstructions, cleanClauseText); got != 1 {
+		t.Fatalf("Mika instructions contain the effective clause %d times, want once:\n%s", got, claim.agentInstructions)
+	}
+	if got := strings.Count(claim.agentInstructions, "<!-- clause:id="); got != 1 {
+		t.Fatalf("Mika instructions contain %d clause markers, want one:\n%s", got, claim.agentInstructions)
+	}
+
+	var gotClauseID, scope string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT clause_id::text, carrier_scope FROM clause_injection WHERE task_id = $1`, claim.taskID).
+		Scan(&gotClauseID, &scope); err != nil {
+		t.Fatalf("claim left no Mika injection row: %v", err)
+	}
+	if gotClauseID != clauseID || scope != "agent" {
+		t.Fatalf("Mika injection row = clause %s scope %s, want clause %s agent", gotClauseID, scope, clauseID)
+	}
+}
+
 func TestClaimDynamicClauseInjectionKillSwitch(t *testing.T) {
 	f := newClauseInjectionFixture(t)
 	enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 
-	// The carrier as the switch-off claim must see it: the enacted segment
-	// is already in the column, and the claim must not touch it.
+	// The switch-off claim returns the static carrier unchanged. New carriers
+	// do not retain a legacy snapshot, so there is no degraded injection row.
 	var carrierBefore string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrierBefore)
 
@@ -330,17 +412,10 @@ func TestClaimDynamicClauseInjectionKillSwitch(t *testing.T) {
 			carrierBefore, wsContext)
 	}
 
-	// The degraded run is still counted, from the snapshot.
-	var degraded bool
-	var version int32
-	err := testPool.QueryRow(context.Background(),
-		`SELECT degraded, clause_version FROM clause_injection WHERE task_id = $1`, taskID).
-		Scan(&degraded, &version)
-	if err != nil {
-		t.Fatalf("kill-switch claim left no injection row: %v", err)
-	}
-	if !degraded || version != 1 {
-		t.Fatalf("degraded row = degraded=%v v%d, want true/1", degraded, version)
+	var n int
+	testPool.QueryRow(context.Background(), `SELECT COUNT(*) FROM clause_injection WHERE task_id = $1`, taskID).Scan(&n)
+	if n != 0 {
+		t.Fatalf("static carrier produced %d fallback injection rows, want 0", n)
 	}
 }
 
@@ -391,9 +466,14 @@ func TestSnapshotFallbackInjectionsResolveSegments(t *testing.T) {
 
 	var carrier string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrier)
+	var slug string
+	dbfx.QueryRow(t, `SELECT slug FROM clause WHERE id = $1`, clauseID).Scan(&slug)
+	legacySnapshot := clausemark.Render(carrier, []clausemark.RenderedClause{{
+		Slug: slug, Version: 1, Body: cleanClauseText,
+	}})
 
 	records := testHandler.snapshotFallbackInjections(context.Background(),
-		parseUUID(f.wsID), promptVersionScopeWorkspace, parseUUID(f.wsID), "issue", carrier, "kill_switch")
+		parseUUID(f.wsID), promptVersionScopeWorkspace, parseUUID(f.wsID), "issue", legacySnapshot, "kill_switch")
 	if len(records) != 1 {
 		t.Fatalf("fallback records = %d, want 1", len(records))
 	}

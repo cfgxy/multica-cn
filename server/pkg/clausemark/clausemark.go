@@ -129,9 +129,34 @@ type RenderedClause struct {
 	SupersededBodies []string
 }
 
-// Render rebuilds a carrier business column: the stable context with every
-// clause region and every asset-managed clause block removed, followed by the
-// deterministic snapshot region built from the rendered clauses.
+// Static removes every clause region and every asset-managed clause block from
+// a carrier business column, leaving only the owner-editable static context.
+// It is the only representation persisted back to a carrier business column.
+// Dynamic clauses are composed for a claimed task with Render instead.
+func Static(text string, clauses []RenderedClause) string {
+	stable := StripMarkers(text)
+	for _, c := range clauses {
+		remove := func(body string) {
+			switch {
+			case firstSectionHeading(body) != "":
+				stable = removeSectionBlock(stable, body)
+			case firstClauseLabel(body) != "":
+				stable = removeClauseBlock(stable, body)
+			default:
+				stable = removeExactBlock(stable, body)
+			}
+		}
+		remove(c.Body)
+		for _, body := range c.SupersededBodies {
+			remove(body)
+		}
+	}
+	return strings.TrimRight(stable, "\n")
+}
+
+// Render builds a claim-time context: the owner-editable static context with
+// the deterministic snapshot region built from the effective dynamic clauses.
+// Its output is runtime-only and must not be persisted as a carrier column.
 //
 // removeInline lists the clause titles whose bold-label blocks must leave the
 // stable text — the asset-managed set. Without this, a clause would be
@@ -142,14 +167,7 @@ type RenderedClause struct {
 // second pass finds no inline blocks left to remove and re-emits the same
 // segment. Both properties are pinned by tests.
 func Render(text string, clauses []RenderedClause) string {
-	stable := StripMarkers(text)
-	for _, c := range clauses {
-		for _, body := range append([]string{c.Body}, c.SupersededBodies...) {
-			stable = removeClauseBlock(stable, body)
-			stable = removeSectionBlock(stable, body)
-		}
-	}
-	stable = strings.TrimRight(stable, "\n")
+	stable := Static(text, clauses)
 
 	var sb strings.Builder
 	sb.WriteString(stable)
@@ -269,63 +287,104 @@ func ScanMarkers(text string) []MarkerRef {
 	return out
 }
 
-// removeClauseBlock removes the bold-label clause block whose first line
-// matches the label of block (the asset body), using the same span rules as
-// the legislation engine: from the matching clause line to the next clause
-// line, any heading, or EOF. Text with no such block is returned unchanged.
+// removeClauseBlock removes a bold-label clause block only when the complete
+// candidate body equals block. Candidates use the legislation engine's span
+// rules: from a matching clause line to the next clause line, any heading, or
+// EOF. A same-label rule with different content remains static text.
 func removeClauseBlock(text, block string) string {
 	label := firstClauseLabel(block)
 	if label == "" {
 		return text
 	}
 	lines := splitLines(text)
+	target := strings.TrimRight(strings.ReplaceAll(block, "\r\n", "\n"), "\n")
 	out := make([]string, 0, len(lines))
-	skipping := false
-	for _, line := range lines {
-		if skipping {
-			if isClauseStart(line) || isHeading(line) {
-				skipping = false
-			} else {
-				continue
-			}
-		}
-		if !skipping && isClauseStart(line) && strings.EqualFold(clauseLabel(line), label) {
-			skipping = true
+	for start := 0; start < len(lines); {
+		if !isClauseStart(lines[start]) || !strings.EqualFold(clauseLabel(lines[start]), label) {
+			out = append(out, lines[start])
+			start++
 			continue
 		}
-		out = append(out, line)
+
+		end := start + 1
+		for end < len(lines) && !isClauseStart(lines[end]) && !isHeading(lines[end]) {
+			end++
+		}
+		candidate := strings.TrimRight(strings.Join(lines[start:end], "\n"), "\n")
+		if candidate == target {
+			start = end
+			continue
+		}
+		out = append(out, lines[start:end]...)
+		start = end
 	}
 	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
 
-// removeSectionBlock moves a legacy section-sized clause asset out of stable
-// text before it is rendered in the managed region. New clause assets use
-// bold labels, but the initial inventory also contains whole ## sections.
+// removeSectionBlock 仅在同名章节的完整正文与资产相同时移除遗留章节资产。
 func removeSectionBlock(text, block string) string {
 	section := firstSectionHeading(block)
 	if section == "" {
 		return text
 	}
 	lines := splitLines(text)
-	start := -1
-	end := len(lines)
-	for i, line := range lines {
-		heading := sectionHeading(line)
-		if heading == "" {
+	target := strings.TrimRight(strings.ReplaceAll(block, "\r\n", "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	for start := 0; start < len(lines); {
+		if sectionHeading(lines[start]) != section {
+			out = append(out, lines[start])
+			start++
 			continue
 		}
-		if start >= 0 {
-			end = i
-			break
+
+		end := start + 1
+		for end < len(lines) && sectionHeading(lines[end]) == "" {
+			end++
 		}
-		if heading == section {
-			start = i
+		candidate := strings.TrimRight(strings.Join(lines[start:end], "\n"), "\n")
+		if candidate == target {
+			start = end
+			continue
 		}
+		out = append(out, lines[start:end]...)
+		start = end
 	}
-	if start < 0 {
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
+}
+
+// removeExactBlock removes full-line occurrences of an asset body. Some valid
+// clause assets are plain prose rather than a bold-label rule or a ## section;
+// those shapes must still leave the persisted static carrier when the asset is
+// promoted to runtime-only injection.
+func removeExactBlock(text, block string) string {
+	block = strings.TrimRight(block, "\n")
+	if strings.TrimSpace(block) == "" {
 		return text
 	}
-	out := append(lines[:start:start], lines[end:]...)
+	needle := splitLines(block)
+	lines := splitLines(text)
+	if len(needle) == 0 || len(needle) > len(lines) {
+		return text
+	}
+
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); {
+		if i+len(needle) <= len(lines) {
+			matched := true
+			for j := range needle {
+				if lines[i+j] != needle[j] {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				i += len(needle)
+				continue
+			}
+		}
+		out = append(out, lines[i])
+		i++
+	}
 	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
 
