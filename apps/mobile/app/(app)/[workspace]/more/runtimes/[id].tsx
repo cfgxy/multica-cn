@@ -70,9 +70,10 @@ export default function RuntimeNodeDetailPage() {
   const removeRuntime = () => {
     if (!canEdit || isDeleting) return;
     const names = boundAgents.map((agent) => agent.name).slice(0, 6).join("\n");
-    const detail = boundAgents.length > 0
+    const deleteDescription = boundAgents.length > 0
       ? t("mobile_nodes.delete_bound_description", "Bound agents will be kept but unbound; queued and running tasks will be cancelled.") + `\n\n${names}`
       : t("mobile_nodes.delete_description", "This action cannot be undone.");
+    const detail = [runtimeDisplayLabel(runtime), deleteDescription].join("\n\n");
     Alert.alert(
       boundAgents.length > 0
         ? t("mobile_nodes.delete_bound_title", "Unbind agents and delete runtime?")
