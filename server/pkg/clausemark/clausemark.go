@@ -282,31 +282,36 @@ func ScanMarkers(text string) []MarkerRef {
 	return out
 }
 
-// removeClauseBlock removes the bold-label clause block whose first line
-// matches the label of block (the asset body), using the same span rules as
-// the legislation engine: from the matching clause line to the next clause
-// line, any heading, or EOF. Text with no such block is returned unchanged.
+// removeClauseBlock removes a bold-label clause block only when the complete
+// candidate body equals block. Candidates use the legislation engine's span
+// rules: from a matching clause line to the next clause line, any heading, or
+// EOF. A same-label rule with different content remains static text.
 func removeClauseBlock(text, block string) string {
 	label := firstClauseLabel(block)
 	if label == "" {
 		return text
 	}
 	lines := splitLines(text)
+	target := strings.TrimRight(strings.ReplaceAll(block, "\r\n", "\n"), "\n")
 	out := make([]string, 0, len(lines))
-	skipping := false
-	for _, line := range lines {
-		if skipping {
-			if isClauseStart(line) || isHeading(line) {
-				skipping = false
-			} else {
-				continue
-			}
-		}
-		if !skipping && isClauseStart(line) && strings.EqualFold(clauseLabel(line), label) {
-			skipping = true
+	for start := 0; start < len(lines); {
+		if !isClauseStart(lines[start]) || !strings.EqualFold(clauseLabel(lines[start]), label) {
+			out = append(out, lines[start])
+			start++
 			continue
 		}
-		out = append(out, line)
+
+		end := start + 1
+		for end < len(lines) && !isClauseStart(lines[end]) && !isHeading(lines[end]) {
+			end++
+		}
+		candidate := strings.TrimRight(strings.Join(lines[start:end], "\n"), "\n")
+		if candidate == target {
+			start = end
+			continue
+		}
+		out = append(out, lines[start:end]...)
+		start = end
 	}
 	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
