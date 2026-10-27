@@ -139,6 +139,7 @@ func Static(text string, clauses []RenderedClause) string {
 		remove := func(body string) {
 			stable = removeClauseBlock(stable, body)
 			stable = removeSectionBlock(stable, body)
+			stable = removeExactBlock(stable, body)
 		}
 		remove(c.Body)
 		for _, body := range c.SupersededBodies {
@@ -338,6 +339,42 @@ func removeSectionBlock(text, block string) string {
 		return text
 	}
 	out := append(lines[:start:start], lines[end:]...)
+	return strings.TrimRight(strings.Join(out, "\n"), "\n")
+}
+
+// removeExactBlock removes full-line occurrences of an asset body. Some valid
+// clause assets are plain prose rather than a bold-label rule or a ## section;
+// those shapes must still leave the persisted static carrier when the asset is
+// promoted to runtime-only injection.
+func removeExactBlock(text, block string) string {
+	block = strings.TrimRight(block, "\n")
+	if strings.TrimSpace(block) == "" {
+		return text
+	}
+	needle := splitLines(block)
+	lines := splitLines(text)
+	if len(needle) == 0 || len(needle) > len(lines) {
+		return text
+	}
+
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); {
+		if i+len(needle) <= len(lines) {
+			matched := true
+			for j := range needle {
+				if lines[i+j] != needle[j] {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				i += len(needle)
+				continue
+			}
+		}
+		out = append(out, lines[i])
+		i++
+	}
 	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
 
