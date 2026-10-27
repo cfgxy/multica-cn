@@ -193,6 +193,24 @@ func TestStaticRemovesManagedClausesWithoutRenderingMarkers(t *testing.T) {
 	}
 }
 
+func TestStaticRemovesUnlabelledManagedClause(t *testing.T) {
+	plain := "Always record the target revision before making changes."
+	inline := "# 规范\n\n" + plain + "\n\n- **其他条款**：保持不动。\n"
+
+	static := Static(inline, []RenderedClause{{Slug: "cls_aaa00001", Version: 1, Body: plain}})
+	if strings.Contains(static, plain) {
+		t.Fatalf("static carrier retained an unlabelled managed clause:\n%s", static)
+	}
+	if !strings.Contains(static, "其他条款") {
+		t.Fatalf("static carrier lost unrelated content:\n%s", static)
+	}
+
+	claimed := Render(static, []RenderedClause{{Slug: "cls_aaa00001", Version: 1, Body: plain}})
+	if got := strings.Count(claimed, plain); got != 1 {
+		t.Fatalf("runtime render contains the unlabelled clause %d times, want once:\n%s", got, claimed)
+	}
+}
+
 func TestRenderRemovesSupersededInlineClauseBlocks(t *testing.T) {
 	oldBody := "- **每日同步**：开工前回报计划与阻塞。"
 	newBody := "- **每日同步**：开工前回报计划、阻塞和预计完成时间。"
