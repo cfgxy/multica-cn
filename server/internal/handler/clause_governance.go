@@ -33,6 +33,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -89,14 +90,14 @@ type clauseGovernanceMigration struct {
 }
 
 type clauseGovernanceOverview struct {
-	WorkspaceID        string                   `json:"workspace_id"`
-	Since              string                   `json:"since"`
-	DynamicDisabled    bool                     `json:"dynamic_injection_disabled"`
-	Clauses            []clauseGovernanceClause `json:"clauses"`
-	StatusCounts       map[string]int64         `json:"status_counts"`
-	Totals             clauseGovernanceTotals   `json:"totals"`
-	Migration          clauseGovernanceMigration `json:"migration"`
-	RollbackSuggestions []PromptProposalResponse `json:"rollback_suggestions"`
+	WorkspaceID         string                    `json:"workspace_id"`
+	Since               string                    `json:"since"`
+	DynamicDisabled     bool                      `json:"dynamic_injection_disabled"`
+	Clauses             []clauseGovernanceClause  `json:"clauses"`
+	StatusCounts        map[string]int64          `json:"status_counts"`
+	Totals              clauseGovernanceTotals    `json:"totals"`
+	Migration           clauseGovernanceMigration `json:"migration"`
+	RollbackSuggestions []PromptProposalResponse  `json:"rollback_suggestions"`
 }
 
 // ListClauseGovernance — GET /api/prompt-legislation/governance/clauses?days=N
@@ -231,7 +232,7 @@ func (h *Handler) ListClauseGovernance(w http.ResponseWriter, r *http.Request) {
 
 type clauseGovernanceSearch struct {
 	Query   string                   `json:"query"`
-	Matched int                     `json:"matched"`
+	Matched int                      `json:"matched"`
 	Clauses []clauseGovernanceClause `json:"clauses"`
 }
 
@@ -296,6 +297,8 @@ type governanceCarrierCounts struct {
 	byScope map[string]int64
 }
 
+const clauseGovernanceAgentBatchSize = 500
+
 // countGovernanceCarriers sizes the migration-coverage denominator: one
 // workspace-tier carrier, plus every live project, squad and agent business
 // column. The rows double as the reconciliation drift scan's input, but this
@@ -310,16 +313,14 @@ func (h *Handler) countGovernanceCarriers(ctx context.Context, workspaceID pgtyp
 	if err != nil {
 		return out, err
 	}
-	agentRows, err := h.Queries.ListCarrierBusinessColumns(ctx, db.ListCarrierBusinessColumnsParams{
-		WorkspaceID: workspaceID, RowLimit: 5000,
-	})
+	agentCount, err := h.Queries.CountWorkspaceAgents(ctx, workspaceID)
 	if err != nil {
 		return out, err
 	}
 	out.byScope["workspace"] = 1
 	out.byScope["project"] = int64(len(projects))
 	out.byScope["squad"] = int64(len(squads))
-	out.byScope["agent"] = int64(len(agentRows))
+	out.byScope["agent"] = agentCount
 	for _, n := range out.byScope {
 		out.total += n
 	}
@@ -339,13 +340,13 @@ type clauseVersionEntry struct {
 }
 
 type clauseBindingEntry struct {
-	ID                  string          `json:"id"`
-	Scope               string          `json:"scope"`
-	ScopeID             string          `json:"scope_id"`
-	Status              string          `json:"status"`
-	Conditions          json.RawMessage `json:"conditions,omitempty"`
-	SinceClauseVersion  int32           `json:"since_clause_version"`
-	CreatedAt           string          `json:"created_at"`
+	ID                 string          `json:"id"`
+	Scope              string          `json:"scope"`
+	ScopeID            string          `json:"scope_id"`
+	Status             string          `json:"status"`
+	Conditions         json.RawMessage `json:"conditions,omitempty"`
+	SinceClauseVersion int32           `json:"since_clause_version"`
+	CreatedAt          string          `json:"created_at"`
 }
 
 type clauseQualityDayEntry struct {
@@ -359,18 +360,18 @@ type clauseQualityDayEntry struct {
 }
 
 type clauseGovernanceDetail struct {
-	ID            string                   `json:"id"`
-	Slug          string                   `json:"slug"`
-	Title         string                   `json:"title"`
-	Status        string                   `json:"status"`
-	LatestVersion int32                    `json:"latest_version"`
-	Versions      []clauseVersionEntry     `json:"versions"`
-	Bindings      []clauseBindingEntry     `json:"bindings"`
-	Proposals     []PromptProposalResponse `json:"proposals"`
-	Quality       []clauseQualityDayEntry  `json:"quality_daily"`
-	Injections    int64                    `json:"injections"`
-	Runs          int64                    `json:"runs"`
-	InjectedTokens int64                   `json:"injected_tokens"`
+	ID             string                   `json:"id"`
+	Slug           string                   `json:"slug"`
+	Title          string                   `json:"title"`
+	Status         string                   `json:"status"`
+	LatestVersion  int32                    `json:"latest_version"`
+	Versions       []clauseVersionEntry     `json:"versions"`
+	Bindings       []clauseBindingEntry     `json:"bindings"`
+	Proposals      []PromptProposalResponse `json:"proposals"`
+	Quality        []clauseQualityDayEntry  `json:"quality_daily"`
+	Injections     int64                    `json:"injections"`
+	Runs           int64                    `json:"runs"`
+	InjectedTokens int64                    `json:"injected_tokens"`
 }
 
 // GetClauseGovernanceDetail — GET /api/prompt-legislation/governance/clauses/{clauseId}?days=N
@@ -521,9 +522,10 @@ type clauseDriftEntry struct {
 }
 
 type clauseDriftCarrier struct {
-	Scope   string            `json:"scope"`
-	ScopeID string            `json:"scope_id"`
-	Entries []clauseDriftEntry `json:"entries"`
+	Scope     string             `json:"scope"`
+	ScopeID   string             `json:"scope_id"`
+	ScopeName string             `json:"scope_name"`
+	Entries   []clauseDriftEntry `json:"entries"`
 }
 
 type clauseCarrierKey struct {
@@ -544,12 +546,12 @@ func expectedClausesByCarrier(rows []db.ListActiveWorkspaceClausesRow) map[claus
 }
 
 type clauseReconciliation struct {
-	Since             string                 `json:"since"`
-	Healthy           bool                   `json:"healthy"`
+	Since              string                 `json:"since"`
+	Healthy            bool                   `json:"healthy"`
 	LayerSetViolations []clauseLayerViolation `json:"layer_set_violations"`
-	Totals            clauseGovernanceTotals `json:"totals"`
-	DriftCarriers     []clauseDriftCarrier   `json:"drift"`
-	CarriersScanned   int                    `json:"carriers_scanned"`
+	Totals             clauseGovernanceTotals `json:"totals"`
+	DriftCarriers      []clauseDriftCarrier   `json:"drift"`
+	CarriersScanned    int                    `json:"carriers_scanned"`
 }
 
 // GetClauseReconciliation — GET /api/prompt-legislation/governance/reconciliation?days=N
@@ -597,7 +599,7 @@ func (h *Handler) GetClauseReconciliation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	drift, scanned, err := h.scanClauseDrift(ctx, workspaceID)
+	drift, scanned, err := h.scanClauseDrift(ctx, workspaceID, since, h.clauseDynamicInjectionDisabled(ctx))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to scan carrier drift")
 		return
@@ -612,8 +614,8 @@ func (h *Handler) GetClauseReconciliation(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, clauseReconciliation{
-		Since: since.Time.UTC().Format(time.RFC3339),
-		Healthy: healthy,
+		Since:              since.Time.UTC().Format(time.RFC3339),
+		Healthy:            healthy,
 		LayerSetViolations: violations,
 		Totals: clauseGovernanceTotals{
 			Injections:   wsTotals.Injections,
@@ -627,35 +629,87 @@ func (h *Handler) GetClauseReconciliation(w http.ResponseWriter, r *http.Request
 	})
 }
 
-// scanClauseDrift compares every non-empty carrier business column's clause
-// markers against the workspace's active asset set — the same full-union set
-// the re-render builds from, so "in sync" here means "a re-render would be a
-// no-op".
-func (h *Handler) scanClauseDrift(ctx context.Context, workspaceID pgtype.UUID) ([]clauseDriftCarrier, int, error) {
+// scanClauseDrift compares fallback snapshot markers against active assets.
+// In the normal path clauses are rendered dynamically at claim time, so a
+// missing snapshot segment is only a finding while snapshot injection is on.
+func (h *Handler) scanClauseDrift(ctx context.Context, workspaceID pgtype.UUID, since pgtype.Timestamptz, snapshotMode bool) ([]clauseDriftCarrier, int, error) {
 	activeRows, err := h.Queries.ListActiveWorkspaceClauses(ctx, workspaceID)
 	if err != nil {
 		return nil, 0, err
 	}
 	expected := expectedClausesByCarrier(activeRows)
+	degradedRows, err := h.Queries.ListDegradedClauseCarrierScopes(ctx, db.ListDegradedClauseCarrierScopesParams{
+		WorkspaceID: workspaceID,
+		Since:       since,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	degradedCarriers := make(map[clauseCarrierKey]bool, len(degradedRows))
+	for _, row := range degradedRows {
+		scopeID, err := util.ParseUUID(row.ScopeID)
+		if err != nil {
+			continue
+		}
+		degradedCarriers[clauseCarrierKey{Scope: row.Scope, ScopeID: scopeID}] = true
+	}
 
 	type driftCarrier struct {
 		scope string
 		id    pgtype.UUID
+		name  string
 		text  string
 	}
-	carriers := []driftCarrier{}
+	shouldScan := func(scope string, id pgtype.UUID, text string) bool {
+		key := clauseCarrierKey{Scope: scope, ScopeID: id}
+		return strings.TrimSpace(text) != "" || len(expected[key]) > 0 || degradedCarriers[key]
+	}
+	out := []clauseDriftCarrier{}
+	scanned := 0
+	scan := func(c driftCarrier) {
+		scanned++
+		markers := clausemark.ScanMarkers(c.text)
+		want := expected[clauseCarrierKey{Scope: c.scope, ScopeID: c.id}]
+		checkSnapshot := snapshotMode || degradedCarriers[clauseCarrierKey{Scope: c.scope, ScopeID: c.id}]
+		var entries []clauseDriftEntry
+		seen := map[string]bool{}
+		for _, mk := range markers {
+			seen[mk.Slug] = true
+			if checkSnapshot {
+				exp, ok := want[mk.Slug]
+				if !ok {
+					entries = append(entries, clauseDriftEntry{Kind: "orphan_marker", Slug: mk.Slug, MarkerRev: mk.Rev})
+				} else if mk.Rev != exp {
+					entries = append(entries, clauseDriftEntry{Kind: "stale_rev", Slug: mk.Slug, MarkerRev: mk.Rev, ExpectedRev: exp})
+				}
+			}
+		}
+		for slug, exp := range want {
+			if checkSnapshot && !seen[slug] {
+				entries = append(entries, clauseDriftEntry{Kind: "missing_segment", Slug: slug, ExpectedRev: exp})
+			}
+		}
+		if len(entries) > 0 {
+			out = append(out, clauseDriftCarrier{
+				Scope: c.scope, ScopeID: uuidToString(c.id), ScopeName: c.name, Entries: entries,
+			})
+		}
+	}
 
 	ws, err := h.Queries.GetWorkspace(ctx, workspaceID)
-	if err == nil && ws.Context.Valid && ws.Context.String != "" {
-		carriers = append(carriers, driftCarrier{"workspace", workspaceID, ws.Context.String})
+	if err != nil {
+		return nil, 0, err
+	}
+	if shouldScan("workspace", workspaceID, ws.Context.String) {
+		scan(driftCarrier{"workspace", workspaceID, ws.Name, ws.Context.String})
 	}
 	projects, err := h.Queries.ListProjects(ctx, db.ListProjectsParams{WorkspaceID: workspaceID})
 	if err != nil {
 		return nil, 0, err
 	}
 	for _, p := range projects {
-		if p.Instructions.Valid && strings.TrimSpace(p.Instructions.String) != "" {
-			carriers = append(carriers, driftCarrier{"project", p.ID, p.Instructions.String})
+		if shouldScan("project", p.ID, p.Instructions.String) {
+			scan(driftCarrier{"project", p.ID, p.Title, p.Instructions.String})
 		}
 	}
 	squads, err := h.Queries.ListSquads(ctx, workspaceID)
@@ -663,49 +717,29 @@ func (h *Handler) scanClauseDrift(ctx context.Context, workspaceID pgtype.UUID) 
 		return nil, 0, err
 	}
 	for _, s := range squads {
-		if strings.TrimSpace(s.Instructions) != "" {
-			carriers = append(carriers, driftCarrier{"squad", s.ID, s.Instructions})
+		if shouldScan("squad", s.ID, s.Instructions) {
+			scan(driftCarrier{"squad", s.ID, s.Name, s.Instructions})
 		}
 	}
-	agentRows, err := h.Queries.ListCarrierBusinessColumns(ctx, db.ListCarrierBusinessColumnsParams{
-		WorkspaceID: workspaceID, RowLimit: 5000,
-	})
-	if err != nil {
-		return nil, 0, err
-	}
-	for _, a := range agentRows {
-		if strings.TrimSpace(a.BusinessColumn) != "" {
-			carriers = append(carriers, driftCarrier{a.Scope, a.ScopeID, a.BusinessColumn})
+	var afterID pgtype.UUID
+	for {
+		agentRows, err := h.Queries.ListCarrierBusinessColumns(ctx, db.ListCarrierBusinessColumnsParams{
+			WorkspaceID: workspaceID,
+			AfterID:     afterID,
+			RowLimit:    clauseGovernanceAgentBatchSize,
+		})
+		if err != nil {
+			return nil, 0, err
 		}
-	}
-
-	out := []clauseDriftCarrier{}
-	for _, c := range carriers {
-		markers := clausemark.ScanMarkers(c.text)
-		want := expected[clauseCarrierKey{Scope: c.scope, ScopeID: c.id}]
-		var entries []clauseDriftEntry
-		seen := map[string]bool{}
-		for _, mk := range markers {
-			seen[mk.Slug] = true
-			exp, ok := want[mk.Slug]
-			if !ok {
-				entries = append(entries, clauseDriftEntry{Kind: "orphan_marker", Slug: mk.Slug, MarkerRev: mk.Rev})
-			} else if mk.Rev != exp {
-				entries = append(entries, clauseDriftEntry{Kind: "stale_rev", Slug: mk.Slug, MarkerRev: mk.Rev, ExpectedRev: exp})
+		for _, a := range agentRows {
+			if shouldScan(a.Scope, a.ScopeID, a.BusinessColumn) {
+				scan(driftCarrier{a.Scope, a.ScopeID, a.CarrierName, a.BusinessColumn})
 			}
 		}
-		for slug, exp := range want {
-			if !seen[slug] {
-				entries = append(entries, clauseDriftEntry{Kind: "missing_segment", Slug: slug, ExpectedRev: exp})
-			}
+		if len(agentRows) < clauseGovernanceAgentBatchSize {
+			break
 		}
-		if len(entries) > 0 {
-			out = append(out, clauseDriftCarrier{
-				Scope:   c.scope,
-				ScopeID: uuidToString(c.id),
-				Entries: entries,
-			})
-		}
+		afterID = agentRows[len(agentRows)-1].ScopeID
 	}
-	return out, len(carriers), nil
+	return out, scanned, nil
 }

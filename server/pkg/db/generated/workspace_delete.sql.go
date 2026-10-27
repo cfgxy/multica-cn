@@ -192,6 +192,9 @@ const deleteWorkspaceClauseAssets = `-- name: DeleteWorkspaceClauseAssets :exec
 WITH deleted_clause_injections AS (
     DELETE FROM clause_injection WHERE clause_injection.workspace_id = $1
 ),
+deleted_clause_injection_observations AS (
+    DELETE FROM clause_injection_observation WHERE clause_injection_observation.workspace_id = $1
+),
 deleted_clause_quality_daily AS (
     DELETE FROM clause_quality_daily WHERE clause_quality_daily.workspace_id = $1
 ),
