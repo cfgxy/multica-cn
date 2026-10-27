@@ -193,6 +193,33 @@ func TestStaticRemovesManagedClausesWithoutRenderingMarkers(t *testing.T) {
 	}
 }
 
+func TestStaticPreservesSameLabelWithDifferentBody(t *testing.T) {
+	asset := RenderedClause{Slug: "cls_aaa00001", Version: 1, Body: "- **每日同步**：开工前回报计划。"}
+	staticRule := "- **每日同步**：仅本空间的交接例外。"
+	carrier := "# 规范\n\n" + staticRule + "\n\n- **其他条款**：保持不动。\n"
+
+	static := Static(carrier, []RenderedClause{asset})
+	if !strings.Contains(static, staticRule) {
+		t.Fatalf("static carrier removed a same-label rule with different content:\n%s", static)
+	}
+	if !strings.Contains(static, "其他条款") {
+		t.Fatalf("static carrier lost unrelated content:\n%s", static)
+	}
+}
+
+func TestStaticRemovesExactManagedClauseBlock(t *testing.T) {
+	asset := RenderedClause{Slug: "cls_aaa00001", Version: 1, Body: "- **每日同步**：开工前回报计划。\n  - 遇到阻塞立即说明。"}
+	carrier := "# 规范\n\n" + asset.Body + "\n\n- **其他条款**：保持不动。\n"
+
+	static := Static(carrier, []RenderedClause{asset})
+	if strings.Contains(static, "每日同步") || strings.Contains(static, "遇到阻塞") {
+		t.Fatalf("static carrier retained the exact managed clause block:\n%s", static)
+	}
+	if !strings.Contains(static, "其他条款") {
+		t.Fatalf("static carrier lost unrelated content:\n%s", static)
+	}
+}
+
 func TestStaticRemovesUnlabelledManagedClause(t *testing.T) {
 	plain := "Always record the target revision before making changes."
 	inline := "# 规范\n\n" + plain + "\n\n- **其他条款**：保持不动。\n"
