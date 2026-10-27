@@ -144,6 +144,71 @@ func TestAgentCommentsRequireWorkspaceResponsibilityMention(t *testing.T) {
 	}
 }
 
+func TestAgentResponsibilityMentionUsesCurrentIssueSquadAssignment(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := handlerTestRuntimeID(t)
+	leaderID := createHandlerTestAgent(t, "responsibility-squad-leader", nil)
+	workerID := createHandlerTestAgent(t, "responsibility-squad-worker", nil)
+	otherID := createHandlerTestAgent(t, "responsibility-squad-other", nil)
+	outsiderID := createHandlerTestAgent(t, "responsibility-squad-outsider", nil)
+	squadID := dbfx.Squad(t, "responsibility assignment squad", leaderID)
+	dbfx.Exec(t, `
+		INSERT INTO squad_member (squad_id, member_type, member_id, role)
+		VALUES ($1, 'agent', $2, 'worker')
+	`, squadID, workerID)
+	issueID := dbfx.Issue(t, "squad responsibility mention", testutil.Cols{
+		"assignee_type": "squad",
+		"assignee_id":   squadID,
+	})
+	parentID := dbfx.Comment(t, issueID, "coordinate this work")
+
+	newTask := func(agentID string) string {
+		return dbfx.Task(t, agentID, testutil.Cols{
+			"runtime_id": runtimeID, "issue_id": issueID, "trigger_comment_id": parentID,
+			"status": "running", "started_at": testutil.Raw("now()"),
+		})
+	}
+	request := func(method, agentID, taskID, commentID, content string) *http.Request {
+		req := commentRequest(method, issueID, commentID, map[string]any{
+			"content": content, "parent_id": parentID,
+		})
+		req.Header.Set("X-Agent-ID", agentID)
+		req.Header.Set("X-Task-ID", taskID)
+		return req
+	}
+	assertRejected := func(method, agentID, taskID, commentID, content, wantError string) {
+		t.Helper()
+		var got map[string]string
+		h := testHandler.CreateComment
+		if method == http.MethodPut {
+			h = testHandler.UpdateComment
+		}
+		testutil.Call(t, h, request(method, agentID, taskID, commentID, content)).Want(http.StatusUnprocessableEntity).JSON(&got)
+		if got["error"] != wantError || got["code"] != "invalid_agent_comment_mention" || got["agent_comment_mention_policy"] != agentCommentMentionPolicy {
+			t.Fatalf("responsibility mention rejection = %+v", got)
+		}
+	}
+
+	workerTaskID := newTask(workerID)
+	leaderMention := fmt.Sprintf("[@Leader](mention://agent/%s)", leaderID)
+	otherMention := fmt.Sprintf("[@Other](mention://agent/%s)", otherID)
+	assertRejected(http.MethodPost, workerID, workerTaskID, "", leaderMention+" "+otherMention, "agent comments may mention only one valid responsibility agent")
+	assertRejected(http.MethodPost, workerID, workerTaskID, "", otherMention, "non-leader members of the issue's assigned squad must mention that squad's leader")
+	assertRejected(http.MethodPost, workerID, workerTaskID, "", "handoff to "+leaderID, "agent comments must mention one valid responsibility agent")
+
+	var workerComment CommentResponse
+	testutil.Call(t, testHandler.CreateComment, request(http.MethodPost, workerID, workerTaskID, "", leaderMention)).Want(http.StatusCreated).JSON(&workerComment)
+	assertRejected(http.MethodPut, workerID, workerTaskID, workerComment.ID, leaderMention+" "+otherMention, "agent comments may mention only one valid responsibility agent")
+
+	leaderTaskID := newTask(leaderID)
+	testutil.Call(t, testHandler.CreateComment, request(http.MethodPost, leaderID, leaderTaskID, "", otherMention)).Want(http.StatusCreated)
+
+	outsiderTaskID := newTask(outsiderID)
+	testutil.Call(t, testHandler.CreateComment, request(http.MethodPost, outsiderID, outsiderTaskID, "", otherMention)).Want(http.StatusCreated)
+}
+
 func TestAgentCommentSelfMentionGateRejectsBeforeWrites(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -186,6 +251,12 @@ func TestAgentCommentSelfMentionGateRejectsBeforeWrites(t *testing.T) {
 				t.Fatalf("self-mention rejection = %+v", result)
 			}
 		})
+	}
+	var noteResult map[string]string
+	noteSelfContent := "/note " + selfContent
+	testutil.Call(t, testHandler.CreateComment, request(http.MethodPost, "", noteSelfContent)).Want(http.StatusUnprocessableEntity).JSON(&noteResult)
+	if noteResult["error"] != "agents cannot mention themselves in comments" || noteResult["code"] != "invalid_agent_comment_mention" || noteResult["agent_comment_mention_policy"] != agentCommentMentionPolicy {
+		t.Fatalf("note self-mention rejection = %+v", noteResult)
 	}
 
 	if got := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, issueID); got != 1 {

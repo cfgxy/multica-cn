@@ -1555,9 +1555,19 @@ func (h *Handler) validateExplicitAgentMentions(ctx context.Context, issue db.Is
 	return invalid, nil
 }
 
+const agentCommentMentionPolicy = "Agent comments may contain at most one valid responsibility mention in the standard [@Label](mention://agent/<uuid>) form; agents cannot mention themselves; a non-leader member of the squad currently assigned to the issue must mention exactly that squad's leader; a directly assigned agent may reply to a member parent without a mention; /note skips explicit target admission but does not bypass responsibility rules; plain text and malformed or unsupported mention links do not count."
+
+func writeAgentCommentMentionError(w http.ResponseWriter, message string) {
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		"error":                        message,
+		"code":                         "invalid_agent_comment_mention",
+		"agent_comment_mention_policy": agentCommentMentionPolicy,
+	})
+}
+
 func (h *Handler) admitExplicitAgentMentions(w http.ResponseWriter, r *http.Request, issue db.Issue, content, actorType, actorID string) bool {
-	if actorType == "agent" && !isNoteComment(content) && util.IsAgentSelfMention(content, actorID) {
-		writeError(w, http.StatusUnprocessableEntity, "agents cannot mention themselves in comments")
+	if actorType == "agent" && util.IsAgentSelfMention(content, actorID) {
+		writeAgentCommentMentionError(w, "agents cannot mention themselves in comments")
 		return false
 	}
 	invalid, err := h.validateExplicitAgentMentions(r.Context(), issue, content, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID))
@@ -1567,16 +1577,17 @@ func (h *Handler) admitExplicitAgentMentions(w http.ResponseWriter, r *http.Requ
 	}
 	if len(invalid) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"error":            "one or more agent mentions cannot be invoked",
-			"code":             "invalid_agent_mentions",
-			"invalid_mentions": invalid,
+			"error":                        "one or more agent mentions cannot be invoked",
+			"code":                         "invalid_agent_mentions",
+			"invalid_mentions":             invalid,
+			"agent_comment_mention_policy": agentCommentMentionPolicy,
 		})
 		return false
 	}
 	return true
 }
 
-func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue db.Issue, content, actorID string, task *db.AgentTaskQueue) (bool, error) {
+func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue db.Issue, content, actorID string) (string, error) {
 	mentions := util.ParseMentions(content)
 	validAgentMentions := make(map[string]struct{})
 	for _, mention := range mentions {
@@ -1592,26 +1603,47 @@ func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue 
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue
 			}
-			return false, err
+			return "", err
 		}
 		if !agent.ArchivedAt.Valid {
 			validAgentMentions[uuidToString(agent.ID)] = struct{}{}
 		}
 	}
 	if len(validAgentMentions) == 0 {
-		return false, nil
+		return "agent comments must mention one valid responsibility agent", nil
 	}
-	if task != nil && task.SquadID.Valid {
-		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: task.SquadID, WorkspaceID: issue.WorkspaceID})
+	if len(validAgentMentions) > 1 {
+		return "agent comments may mention only one valid responsibility agent", nil
+	}
+	if issue.AssigneeType.Valid && issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid {
+		squad, err := h.Queries.GetSquadByAssignee(ctx, db.GetSquadByAssigneeParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
 		if err != nil {
-			return false, err
+			if errors.Is(err, pgx.ErrNoRows) {
+				return "the issue's assigned squad is unavailable", nil
+			}
+			return "", err
 		}
-		if uuidToString(squad.LeaderID) != actorID {
-			_, mentionedLeader := validAgentMentions[uuidToString(squad.LeaderID)]
-			return mentionedLeader, nil
+		if uuidToString(squad.LeaderID) == actorID {
+			return "", nil
+		}
+		actorUUID, err := util.ParseUUID(actorID)
+		if err != nil {
+			return "agent identity is invalid", nil
+		}
+		isMember, err := h.Queries.IsSquadMember(ctx, db.IsSquadMemberParams{
+			SquadID: squad.ID, MemberType: "agent", MemberID: actorUUID,
+		})
+		if err != nil {
+			return "", err
+		}
+		if isMember {
+			leaderID := uuidToString(squad.LeaderID)
+			if _, mentionedLeader := validAgentMentions[leaderID]; !mentionedLeader {
+				return "non-leader members of the issue's assigned squad must mention that squad's leader", nil
+			}
 		}
 	}
-	return true, nil
+	return "", nil
 }
 
 // assignedAgentMayReplyToMemberWithoutMention allows the direct agent assignee
@@ -1943,14 +1975,13 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// Determine author identity: agent (via X-Agent-ID header) or member.
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	if authorType == "agent" {
-		task, _ := h.taskFromRequestHeader(r)
-		valid, err := h.validateAgentResponsibilityMention(r.Context(), issue, req.Content, authorID, &task)
+		reason, err := h.validateAgentResponsibilityMention(r.Context(), issue, req.Content, authorID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
 			return
 		}
-		if !valid && !assignedAgentMayReplyToMemberWithoutMention(issue, parentComment, authorID) {
-			writeError(w, http.StatusUnprocessableEntity, "agent comments must mention a responsible workspace agent; squad workers must mention their leader")
+		if reason != "" && !assignedAgentMayReplyToMemberWithoutMention(issue, parentComment, authorID) {
+			writeAgentCommentMentionError(w, reason)
 			return
 		}
 	}
@@ -3757,14 +3788,13 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			}
 			issue = &loaded
 		}
-		task, _ := h.taskFromRequestHeader(r)
-		valid, mentionErr := h.validateAgentResponsibilityMention(r.Context(), *issue, req.Content, actorID, &task)
+		reason, mentionErr := h.validateAgentResponsibilityMention(r.Context(), *issue, req.Content, actorID)
 		if mentionErr != nil {
 			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
 			return
 		}
-		if !valid {
-			writeError(w, http.StatusUnprocessableEntity, "agent comments must mention a responsible workspace agent; squad workers must mention their leader")
+		if reason != "" {
+			writeAgentCommentMentionError(w, reason)
 			return
 		}
 	}
