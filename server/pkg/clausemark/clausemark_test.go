@@ -220,6 +220,47 @@ func TestStaticRemovesExactManagedClauseBlock(t *testing.T) {
 	}
 }
 
+func TestStaticPreservesSameSectionHeadingWithDifferentBody(t *testing.T) {
+	asset := RenderedClause{Slug: "cls_aaa00001", Version: 1, Body: "## 交接\n\n- 动态规则。"}
+	staticSection := "## 交接\n\n- 仅本空间的静态例外。"
+	carrier := "# 规范\n\n" + staticSection + "\n\n## 其他规则\n\n- 保持不动。\n"
+
+	static := Static(carrier, []RenderedClause{asset})
+	if !strings.Contains(static, staticSection) {
+		t.Fatalf("静态载体删除了同标题但正文不同的章节：\n%s", static)
+	}
+	if !strings.Contains(static, "其他规则") {
+		t.Fatalf("静态载体删除了无关内容：\n%s", static)
+	}
+}
+
+func TestStaticRemovesExactManagedSectionBlock(t *testing.T) {
+	asset := RenderedClause{Slug: "cls_aaa00001", Version: 1, Body: "## 交接\n\n- 动态规则。"}
+	carrier := "# 规范\n\n" + asset.Body + "\n\n## 其他规则\n\n- 保持不动。\n"
+
+	static := Static(carrier, []RenderedClause{asset})
+	if strings.Contains(static, "动态规则") || strings.Contains(static, "## 交接") {
+		t.Fatalf("静态载体保留了完整匹配的托管章节：\n%s", static)
+	}
+	if !strings.Contains(static, "其他规则") {
+		t.Fatalf("静态载体删除了无关内容：\n%s", static)
+	}
+}
+
+func TestStaticPreservesClauseWithStaticContinuation(t *testing.T) {
+	asset := RenderedClause{Slug: "cls_aaa00001", Version: 1, Body: "- **每日同步**：开工前回报计划。"}
+	staticRule := asset.Body + "\n  - 仅本空间的交接例外。"
+	carrier := "# 规范\n\n" + staticRule + "\n\n- **其他条款**：保持不动。\n"
+
+	static := Static(carrier, []RenderedClause{asset})
+	if !strings.Contains(static, staticRule) {
+		t.Fatalf("静态载体删除了带独有续写的条款前缀：\n%s", static)
+	}
+	if !strings.Contains(static, "其他条款") {
+		t.Fatalf("静态载体删除了无关内容：\n%s", static)
+	}
+}
+
 func TestStaticRemovesUnlabelledManagedClause(t *testing.T) {
 	plain := "Always record the target revision before making changes."
 	inline := "# 规范\n\n" + plain + "\n\n- **其他条款**：保持不动。\n"
@@ -260,7 +301,12 @@ func TestRenderRemovesSupersededInlineClauseBlocks(t *testing.T) {
 
 func TestRenderRemovesLegacySectionBlocks(t *testing.T) {
 	legacy := "# 规范\n\n## 交接\n\n- 旧规则。\n\n## 保留章节\n\n- 保留规则。\n"
-	section := RenderedClause{Slug: "cls_ccc00003", Version: 2, Body: "## 交接\n\n- 新规则。"}
+	section := RenderedClause{
+		Slug:             "cls_ccc00003",
+		Version:          2,
+		Body:             "## 交接\n\n- 新规则。",
+		SupersededBodies: []string{"## 交接\n\n- 旧规则。"},
+	}
 	out := Render(legacy, []RenderedClause{section})
 	if strings.Contains(out, "旧规则") || strings.Count(out, "## 交接") != 1 {
 		t.Fatalf("legacy section remained outside the managed region:\n%s", out)
