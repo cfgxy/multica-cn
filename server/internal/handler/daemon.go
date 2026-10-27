@@ -2383,12 +2383,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	taskKind := claimTaskKind(task)
 	claimWorkspaceID := parseUUID(runtimeWorkspaceID)
 	var clauseInjections []clauseInjectionRecord
+	var clauseObservations []clauseInjectionObservation
 	filterClauses := func(scope promptVersionScope, scopeID pgtype.UUID, text string) string {
 		res := h.applyDynamicClauses(r.Context(), claimWorkspaceID, scope, scopeID, taskKind, text)
 		for i := range res.Injections {
 			res.Injections[i].Scope = string(scope)
 		}
 		clauseInjections = append(clauseInjections, res.Injections...)
+		clauseObservations = append(clauseObservations, res.Observations...)
 		return res.Text
 	}
 	// Claim-only capability: this server resolves the squad-leader role on the
@@ -3731,7 +3733,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// Clause injection events (RUYI-751 §6): computed-selected = injected, so
 	// the accumulated records are the run's call-count basis. Scope strings
 	// were stamped by filterClauses at each read point.
-	h.recordClauseInjectionEvents(r.Context(), claimWorkspaceID, task.ID, promptVersionScopeIDs, clauseInjections)
+	h.recordClauseInjectionEvents(r.Context(), claimWorkspaceID, task.ID, promptVersionScopeIDs, clauseInjections, clauseObservations)
 
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
 }

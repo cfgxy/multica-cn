@@ -57,4 +57,36 @@ describe("clause governance API", () => {
     );
     expect(detail).toMatchObject({ id: "", versions: [], bindings: [], proposals: [], quality_daily: [] });
   });
+
+  it("falls back when a carrier name has an incompatible type", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        ...emptyReconciliation,
+        drift: [{ scope: "workspace", scope_id: "ws-1", scope_name: 42, entries: [] }],
+      })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    const reconciliation = await client.getClauseGovernanceReconciliation(30);
+
+    expect(reconciliation.healthy).toBe(false);
+    expect(reconciliation.drift).toEqual([]);
+  });
+
+  it("sends clause management requests with encoded identifiers", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await client.updateClauseContent("clause/1", "Revised text", 4);
+    await client.deactivateClause("clause/1");
+    await client.deleteClause("clause/1");
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+      ["https://api.example.test/api/prompt-legislation/governance/clauses/clause%2F1", "PATCH", JSON.stringify({ content: "Revised text", expected_version: 4 })],
+      ["https://api.example.test/api/prompt-legislation/governance/clauses/clause%2F1/deactivate", "POST", undefined],
+      ["https://api.example.test/api/prompt-legislation/governance/clauses/clause%2F1", "DELETE", undefined],
+    ]);
+  });
 });

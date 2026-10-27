@@ -184,6 +184,10 @@ var postConsolidationStems = []string{
 	"979_credential_audit_workspace_created_index",     // RUYI-837
 	"980_runtime_concurrency_limit",                    // RUYI-843
 	"984_prompt_proposal_enactment_target",             // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
+	"994_clause_injection_observation",                 // RUYI-891 (claim-time degraded carrier observations)
+	"994_clause_injection_observation_id_index",
+	"994_clause_injection_observation_task_scope_time_index",
+	"994_clause_injection_observation_workspace_time_index",
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
