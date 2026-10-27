@@ -8572,6 +8572,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	applySnapshotSandboxEnvironment(agentEnv, agentSnapWrap)
 	if provider == "codex" {
 		cacheRoot, cacheErr := os.UserCacheDir()
 		if cacheErr != nil {
@@ -10480,6 +10481,16 @@ func layerCustomEnvAndHermesHome(agentEnv, customEnv map[string]string, overlayH
 	}
 	if overlayHome != "" {
 		agentEnv["HERMES_HOME"] = overlayHome
+	}
+}
+
+// applySnapshotSandboxEnvironment marks only task processes that enter the
+// snapshot worker as sandboxed. The worker maps the daemon user to namespace
+// root so it can mount OverlayFS; Claude Code uses this marker to distinguish
+// that scoped namespace identity from a daemon running as host root.
+func applySnapshotSandboxEnvironment(agentEnv map[string]string, snapshot *agent.SnapshotWrap) {
+	if snapshot != nil {
+		agentEnv["IS_SANDBOX"] = "1"
 	}
 }
 
