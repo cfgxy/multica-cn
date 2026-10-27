@@ -89,6 +89,11 @@ type InboundEnricherConfig struct {
 	// silent-degrade); a successful call re-arms it. Nil disables the
 	// feature entirely.
 	Hints *PermissionHintSender
+	// VerifiedAgentResultsResolver optionally resolves app interactive cards
+	// that the current recent window already returned to completed assistant
+	// results with durable Feishu provenance. Nil retains the existing policy
+	// of dropping every app interactive card.
+	VerifiedAgentResultsResolver VerifiedAgentResultsResolver
 }
 
 type inboundEnricher struct {
@@ -98,6 +103,7 @@ type inboundEnricher struct {
 	logger             *slog.Logger
 	hints              *PermissionHintSender
 	names              *userNameCache
+	verifiedResults    VerifiedAgentResultsResolver
 }
 
 // userNameCache memoizes open_id -> display name per app, mirroring
@@ -164,6 +170,7 @@ func NewInboundEnricher(client APIClient, cfg InboundEnricherConfig) Enricher {
 		logger:             cfg.Logger,
 		hints:              cfg.Hints,
 		names:              newUserNameCache(),
+		verifiedResults:    cfg.VerifiedAgentResultsResolver,
 	}
 }
 
@@ -250,7 +257,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	// can resolve display names for EVERY speaker across ALL blocks in
 	// one pass — otherwise a quoted/forwarded sender that isn't in the
 	// recent window would fall back to "User N".
-	var recentItems []LarkMessage
+	var recentItems recentContextItems
 	var recentErr error
 	var quotedItems []LarkMessage
 	var quotedErr error
@@ -290,7 +297,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	}
 	if recentErr == nil && wantRecent && msg.SenderOpenID != "" {
 		triggerTime := parseLarkMillis(msg.CreateTime)
-		for _, item := range recentItems {
+		for _, item := range recentItems.messages {
 			itemTime := parseLarkMillis(item.CreateTime)
 			if triggerTime == 0 || itemTime == 0 || itemTime >= triggerTime ||
 				item.MessageID == "" || item.SenderType != "user" || item.SenderID != string(msg.SenderOpenID) ||
@@ -300,6 +307,28 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 			media := EnrichedMediaMessage{MessageID: item.MessageID, MessageType: item.MessageType, Content: item.Content}
 			if messageCarriesMediaOrLinks(InboundMessage{MessageID: media.MessageID, MessageType: media.MessageType, Content: media.Content}) {
 				msg.RecentMedia = append(msg.RecentMedia, media)
+			}
+		}
+	}
+
+	var verifiedResults []VerifiedAgentResult
+	if recentErr == nil && wantRecent && creds.InstallationID.Valid && e.verifiedResults != nil && len(recentItems.interactiveCards) > 0 {
+		candidates := make([]string, 0, len(recentItems.interactiveCards))
+		for _, item := range recentItems.interactiveCards {
+			if item.MessageID != "" {
+				candidates = append(candidates, item.MessageID)
+			}
+		}
+		if len(candidates) > 0 {
+			resolved, err := e.verifiedResults.ResolveVerifiedAgentResults(ctx, VerifiedAgentResultsLookup{
+				InstallationID:      creds.InstallationID,
+				ConversationKey:     larkConversationKey(msg),
+				CandidateMessageIDs: candidates,
+			})
+			if err != nil {
+				e.logger.Warn("lark enricher: verified agent results lookup failed", "chat_id", string(msg.ChatID), "message_id", msg.MessageID, "err", err)
+			} else {
+				verifiedResults = verifiedResultsInWindow(recentItems.interactiveCards, resolved)
 			}
 		}
 	}
@@ -343,7 +372,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	// "User N" per speakerLabeler.
 	var names map[string]string
 	if msg.ChatType == ChatTypeGroup {
-		ids := senderOpenIDs(recentItems)
+		ids := senderOpenIDs(recentItems.messages)
 		ids = append(ids, senderOpenIDs(quotedItems)...)
 		ids = append(ids, senderOpenIDs(forwardItems)...)
 		if msg.SenderOpenID != "" {
@@ -357,9 +386,15 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	if wantRecent {
 		if recentErr != nil {
 			b.WriteString(recentContextUnavailableLine(classifyRecentContextFetchError(recentErr).category))
-		} else if len(recentItems) > 0 {
-			b.WriteString(e.renderRecentContextBlock(recentItems, names))
+		} else if len(recentItems.messages) > 0 {
+			b.WriteString(e.renderRecentContextBlock(recentItems.messages, names))
 		}
+	}
+	if len(verifiedResults) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(renderVerifiedAgentResultsBlock(verifiedResults))
 	}
 	if msg.ParentID != "" {
 		if b.Len() > 0 {
@@ -518,11 +553,16 @@ func (e *inboundEnricher) resolveNames(ctx context.Context, creds InstallationCr
 // failure degrades exactly like the chat path and NEVER falls back to a
 // chat-wide fetch (that would re-open the leak). Outside a topic the chat
 // path is unchanged: anchored to the trigger time via end_time.
-func (e *inboundEnricher) fetchRecentItems(ctx context.Context, creds InstallationCredentials, msg InboundMessage) ([]LarkMessage, error) {
+type recentContextItems struct {
+	messages         []LarkMessage
+	interactiveCards []LarkMessage
+}
+
+func (e *inboundEnricher) fetchRecentItems(ctx context.Context, creds InstallationCredentials, msg InboundMessage) (recentContextItems, error) {
 	if msg.ChatID == "" {
 		classified := classifyRecentContextFetchError(errRecentContextChannelUnbound)
 		e.logRecentContextFetchFailure(msg, errRecentContextChannelUnbound, classified, 0)
-		return nil, errRecentContextChannelUnbound
+		return recentContextItems{}, errRecentContextChannelUnbound
 	}
 
 	// Lark sends create_time as epoch millis; a missing/unparseable time
@@ -565,7 +605,7 @@ func (e *inboundEnricher) fetchRecentItems(ctx context.Context, creds Installati
 		// request. This is why a first-attempt deadline never "recovers".
 		if !classified.retryable || attempt == recentContextMaxFetchAttempts || ctx.Err() != nil {
 			e.logRecentContextFetchFailure(msg, err, classified, attempt)
-			return nil, err
+			return recentContextItems{}, err
 		}
 		e.logger.Warn("lark enricher: recent context fetch failed; retrying",
 			"layer", "lark_inbound_enricher",
@@ -586,14 +626,9 @@ func (e *inboundEnricher) fetchRecentItems(ctx context.Context, creds Installati
 	}
 	inThread := msg.ThreadID != ""
 	kept := make([]LarkMessage, 0, len(items))
+	interactiveCards := make([]LarkMessage, 0)
 	for _, it := range items {
 		if exclude[it.MessageID] {
-			continue
-		}
-		// The Bot's markdown replies are sent as schema-2.0 interactive
-		// cards, which flatten to a zero-signal "[interactive card]"
-		// placeholder — drop them rather than render noise (#5835).
-		if it.SenderType == "app" && it.MessageType == "interactive" {
 			continue
 		}
 		if inThread {
@@ -611,6 +646,16 @@ func (e *inboundEnricher) fetchRecentItems(ctx context.Context, creds Installati
 				continue
 			}
 		}
+		// The Bot's markdown replies are sent as schema-2.0 interactive
+		// cards, which flatten to a zero-signal "[interactive card]"
+		// placeholder. Keep candidates private for the provenance resolver;
+		// all unknown cards remain excluded from rendered recent context.
+		if it.SenderType == "app" && it.MessageType == "interactive" {
+			if triggerMillis == 0 || parseLarkMillis(it.CreateTime) <= triggerMillis {
+				interactiveCards = append(interactiveCards, it)
+			}
+			continue
+		}
 		kept = append(kept, it)
 	}
 
@@ -619,7 +664,10 @@ func (e *inboundEnricher) fetchRecentItems(ctx context.Context, creds Installati
 	sort.SliceStable(kept, func(i, j int) bool {
 		return parseLarkMillis(kept[i].CreateTime) < parseLarkMillis(kept[j].CreateTime)
 	})
-	return kept, nil
+	sort.SliceStable(interactiveCards, func(i, j int) bool {
+		return parseLarkMillis(interactiveCards[i].CreateTime) < parseLarkMillis(interactiveCards[j].CreateTime)
+	})
+	return recentContextItems{messages: kept, interactiveCards: interactiveCards}, nil
 }
 
 func (e *inboundEnricher) logRecentContextFetchFailure(msg InboundMessage, err error, classified recentContextFetchClassification, attempts int) {

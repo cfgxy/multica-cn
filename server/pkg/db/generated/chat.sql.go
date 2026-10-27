@@ -2506,6 +2506,68 @@ func (q *Queries) ListUnownedChannelChatContextRevisions(ctx context.Context, ch
 	return items, nil
 }
 
+const listVerifiedAgentResultsForLarkContext = `-- name: ListVerifiedAgentResultsForLarkContext :many
+SELECT outbound.channel_message_id AS message_id,
+       message.content,
+       agent.name AS agent_name
+FROM channel_outbound_message AS outbound
+JOIN chat_message AS message ON message.task_id = outbound.task_id
+JOIN agent_task_queue AS owner ON owner.id = message.task_id
+JOIN chat_session AS session ON session.id = message.chat_session_id
+JOIN agent ON agent.id = session.agent_id
+JOIN channel_installation AS installation ON installation.id = $1
+WHERE outbound.installation_id = $1
+  AND outbound.channel_type = 'feishu'
+  AND outbound.outbound_kind = 'task_reply'
+  AND outbound.channel_message_id = ANY($2::text[])
+  AND message.role = 'assistant'
+  AND message.content <> ''
+  AND message.channel_outbound_type = 'feishu'
+  AND message.channel_outbound_installation_id = $1
+  AND message.channel_outbound_chat_id = $3
+  AND outbound.channel_message_id = ANY(message.channel_outbound_message_ids)
+  AND owner.status = 'completed'
+  AND installation.channel_type = 'feishu'
+  AND installation.status = 'active'
+  AND session.workspace_id = installation.workspace_id
+`
+
+type ListVerifiedAgentResultsForLarkContextParams struct {
+	InstallationID      pgtype.UUID `json:"installation_id"`
+	CandidateMessageIds []string    `json:"candidate_message_ids"`
+	ChannelChatID       pgtype.Text `json:"channel_chat_id"`
+}
+
+type ListVerifiedAgentResultsForLarkContextRow struct {
+	MessageID string `json:"message_id"`
+	Content   string `json:"content"`
+	AgentName string `json:"agent_name"`
+}
+
+// Resolve only messages Lark returned in the current history window. Every
+// relationship is checked again in SQL: one active Feishu installation, its
+// workspace, the exact conversation/topic key, task completion, and both
+// durable outbound-provenance records. A row missing either record is unknown.
+func (q *Queries) ListVerifiedAgentResultsForLarkContext(ctx context.Context, arg ListVerifiedAgentResultsForLarkContextParams) ([]ListVerifiedAgentResultsForLarkContextRow, error) {
+	rows, err := q.db.Query(ctx, listVerifiedAgentResultsForLarkContext, arg.InstallationID, arg.CandidateMessageIds, arg.ChannelChatID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListVerifiedAgentResultsForLarkContextRow{}
+	for rows.Next() {
+		var i ListVerifiedAgentResultsForLarkContextRow
+		if err := rows.Scan(&i.MessageID, &i.Content, &i.AgentName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockChatSessionForAppend = `-- name: LockChatSessionForAppend :one
 SELECT id FROM chat_session
 WHERE id = $1
