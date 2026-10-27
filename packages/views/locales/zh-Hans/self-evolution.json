@@ -701,7 +701,7 @@
   },
   "clauseGovernance": {
     "title": "条款治理",
-    "description": "从立法到注入的条款资产全链只读视图",
+    "description": "从立法到注入的条款资产全链视图",
     "window": "统计窗口",
     "d7": "近 7 天",
     "d30": "近 30 天",
@@ -742,13 +742,14 @@
       "truncated": "仅显示前 100 条",
       "degradedFlag": "降级快照",
       "driftTitle": "载体漂移",
-      "driftEmpty": "载体标记与资产库一致（已扫描 {{count}} 个载体）"
+      "driftEmpty": "载体标记与资产库一致（已扫描 {{count}} 个载体）",
+      "unnamedCarrier": "未命名载体"
     },
     "driftKind": { "stale_rev": "版本滞后", "orphan_marker": "孤儿标记", "missing_segment": "缺失渲染段" },
     "driftDesc": {
       "staleRev": "快照版本 {{marker}} → 资产版本 {{expected}}",
       "orphanMarker": "载体存在标记，资产库无此生效条款",
-      "missingSegment": "生效条款缺少渲染段（期望版本 {{expected}}）"
+      "missingSegment": "快照注入模式下，载体缺少生效条款渲染段（期望版本 {{expected}}）"
     },
     "rollback": {
       "title": "回滚建议",
@@ -787,6 +788,18 @@
       "quality": "质量与注入",
       "latest": "最新",
       "notFound": "条款不存在或已被删除"
+    },
+    "manage": {
+      "title": "管理条款",
+      "edit": "编辑内容",
+      "content": "条款内容",
+      "save": "保存为新版本",
+      "cancel": "取消",
+      "deactivate": "停用",
+      "deactivateConfirm": "此操作会撤销生效绑定并从载体中移除条款，条款记录仍保留以供后续管理。",
+      "delete": "删除条款",
+      "deleteConfirm": "此操作会永久删除条款、版本、绑定和条款计量数据，并从载体中移除条款，且无法撤销。",
+      "failure": "操作失败，请检查权限后重试。"
     },
     "version": { "sha": "内容指纹", "showContent": "展开正文", "hideContent": "收起正文", "compare": "对比版本" },
     "compare": {

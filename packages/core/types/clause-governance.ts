@@ -109,6 +109,7 @@ export interface ClauseDriftEntry {
 export interface ClauseDriftCarrier {
   scope: string;
   scope_id: string;
+  scope_name?: string;
   entries: ClauseDriftEntry[];
 }
 

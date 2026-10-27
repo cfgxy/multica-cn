@@ -36,6 +36,24 @@ func ParseMentions(content string) []Mention {
 	return result
 }
 
+// IsAgentSelfMention reports whether content explicitly mentions agentID.
+func IsAgentSelfMention(content, agentID string) bool {
+	agentUUID, err := ParseUUID(agentID)
+	if err != nil {
+		return false
+	}
+	for _, mention := range ParseMentions(content) {
+		if mention.Type != "agent" {
+			continue
+		}
+		mentionedUUID, err := ParseUUID(mention.ID)
+		if err == nil && mentionedUUID == agentUUID {
+			return true
+		}
+	}
+	return false
+}
+
 // HasMentionAll returns true if any mention in the slice is an @all mention.
 func HasMentionAll(mentions []Mention) bool {
 	for _, m := range mentions {
