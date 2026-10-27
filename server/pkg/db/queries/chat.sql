@@ -559,6 +559,35 @@ SET channel_outbound_type = @channel_type,
 WHERE task_id = @task_id
   AND role = 'assistant';
 
+-- name: ListVerifiedAgentResultsForLarkContext :many
+-- Resolve only messages Lark returned in the current history window. Every
+-- relationship is checked again in SQL: one active Feishu installation, its
+-- workspace, the exact conversation/topic key, task completion, and both
+-- durable outbound-provenance records. A row missing either record is unknown.
+SELECT outbound.channel_message_id AS message_id,
+       message.content,
+       agent.name AS agent_name
+FROM channel_outbound_message AS outbound
+JOIN chat_message AS message ON message.task_id = outbound.task_id
+JOIN agent_task_queue AS owner ON owner.id = message.task_id
+JOIN chat_session AS session ON session.id = message.chat_session_id
+JOIN agent ON agent.id = session.agent_id
+JOIN channel_installation AS installation ON installation.id = @installation_id
+WHERE outbound.installation_id = @installation_id
+  AND outbound.channel_type = 'feishu'
+  AND outbound.outbound_kind = 'task_reply'
+  AND outbound.channel_message_id = ANY(@candidate_message_ids::text[])
+  AND message.role = 'assistant'
+  AND message.content <> ''
+  AND message.channel_outbound_type = 'feishu'
+  AND message.channel_outbound_installation_id = @installation_id
+  AND message.channel_outbound_chat_id = @channel_chat_id
+  AND outbound.channel_message_id = ANY(message.channel_outbound_message_ids)
+  AND owner.status = 'completed'
+  AND installation.channel_type = 'feishu'
+  AND installation.status = 'active'
+  AND session.workspace_id = installation.workspace_id;
+
 -- name: ListChannelOutboundMessageIDsForContext :many
 -- Assistant generation is inherited from its owning task, matching
 -- ListChatMessagesPageForChannelContext. Provider IDs are scoped by session,
