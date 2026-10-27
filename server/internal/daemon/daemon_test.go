@@ -586,6 +586,45 @@ func TestTaskMulticaEnvironmentIncludesPrivateConfigRoot(t *testing.T) {
 	}
 }
 
+func TestApplySnapshotSandboxEnvironment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		env      map[string]string
+		snapshot *agent.SnapshotWrap
+		want     map[string]string
+	}{
+		{
+			name: "ordinary task remains unmarked",
+			env:  map[string]string{"EXISTING": "value"},
+			want: map[string]string{"EXISTING": "value"},
+		},
+		{
+			name:     "snapshot task is marked",
+			env:      map[string]string{"EXISTING": "value"},
+			snapshot: &agent.SnapshotWrap{},
+			want:     map[string]string{"EXISTING": "value", "IS_SANDBOX": "1"},
+		},
+		{
+			name:     "snapshot marker overrides custom value",
+			env:      map[string]string{"IS_SANDBOX": "0"},
+			snapshot: &agent.SnapshotWrap{},
+			want:     map[string]string{"IS_SANDBOX": "1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			applySnapshotSandboxEnvironment(tt.env, tt.snapshot)
+			if !maps.Equal(tt.env, tt.want) {
+				t.Fatalf("applySnapshotSandboxEnvironment() = %#v, want %#v", tt.env, tt.want)
+			}
+		})
+	}
+}
+
 // When `brew --prefix` is unavailable but the executable path is under a
 // known Cellar root, triggerRestart must recover the prefix from the
 // known-prefix list and target <prefix>/bin/multica.
