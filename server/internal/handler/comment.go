@@ -3794,8 +3794,21 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if reason != "" {
-			writeAgentCommentMentionError(w, reason)
-			return
+			var parentComment *db.Comment
+			if existing.ParentID.Valid {
+				parent, parentErr := h.Queries.GetComment(r.Context(), existing.ParentID)
+				if parentErr != nil {
+					writeError(w, http.StatusInternalServerError, "failed to load parent comment for responsibility mention validation")
+					return
+				}
+				if uuidToString(parent.IssueID) == uuidToString(existing.IssueID) {
+					parentComment = &parent
+				}
+			}
+			if !assignedAgentMayReplyToMemberWithoutMention(*issue, parentComment, actorID) {
+				writeAgentCommentMentionError(w, reason)
+				return
+			}
 		}
 	}
 
