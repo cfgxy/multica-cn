@@ -312,6 +312,29 @@ func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T)
 	if len(created.TriggerOutcomes) != 0 {
 		t.Fatalf("terminal reply triggered agents: %+v", created.TriggerOutcomes)
 	}
+
+	contentEdit := commentRequest(http.MethodPut, issueID, created.ID, map[string]any{
+		"content": "The requested work is complete after verification.",
+	})
+	contentEdit.Header.Set("X-Agent-ID", agentID)
+	contentEdit.Header.Set("X-Task-ID", taskID)
+	var updated CommentResponse
+	testutil.Call(t, testHandler.UpdateComment, contentEdit).Want(http.StatusOK).JSON(&updated)
+	if updated.Content != "The requested work is complete after verification." || len(updated.TriggerOutcomes) != 0 {
+		t.Fatalf("terminal content edit = %+v", updated)
+	}
+
+	attachmentEdit := commentRequest(http.MethodPut, issueID, created.ID, map[string]any{
+		"content":        updated.Content,
+		"attachment_ids": []string{},
+	})
+	attachmentEdit.Header.Set("X-Agent-ID", agentID)
+	attachmentEdit.Header.Set("X-Task-ID", taskID)
+	var attachmentUpdated CommentResponse
+	testutil.Call(t, testHandler.UpdateComment, attachmentEdit).Want(http.StatusOK).JSON(&attachmentUpdated)
+	if attachmentUpdated.Content != updated.Content || len(attachmentUpdated.TriggerOutcomes) != 0 {
+		t.Fatalf("terminal attachment edit = %+v", attachmentUpdated)
+	}
 }
 
 func TestCommentMentionAdmissionNormalizedSpansAndPreview(t *testing.T) {
