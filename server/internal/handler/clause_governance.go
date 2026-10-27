@@ -513,8 +513,8 @@ type clauseLayerViolation struct {
 }
 
 type clauseDriftEntry struct {
-	// Kind: stale_rev (marker behind the asset), orphan_marker (no live
-	// bound clause), missing_segment (bound clause without a marker).
+	// Kind: stale_rev (marker behind the asset), orphan_marker (no live bound
+	// clause), missing_segment (bound clause without a marker).
 	Kind        string `json:"kind"`
 	Slug        string `json:"slug"`
 	MarkerRev   int    `json:"marker_rev,omitempty"`
