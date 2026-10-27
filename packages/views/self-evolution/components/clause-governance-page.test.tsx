@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useMemo, useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -25,9 +25,18 @@ const m = vi.hoisted(() => ({
   reconciliationQuery: vi.fn(),
   detailQuery: vi.fn(),
   replace: vi.fn(),
+  push: vi.fn(),
+  updateClauseContent: vi.fn(),
+  deactivateClause: vi.fn(),
+  deleteClause: vi.fn(),
 }));
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/api", () => ({ api: {
+  updateClauseContent: m.updateClauseContent,
+  deactivateClause: m.deactivateClause,
+  deleteClause: m.deleteClause,
+} }));
 vi.mock("@multica/core/self-evolution", () => ({
   clauseGovernanceOverviewOptions: (wsId: string, days: number) => {
     m.overviewOptions(wsId, days);
@@ -46,7 +55,7 @@ vi.mock("./self-evolution-shell", () => ({ SelfEvolutionShell: ({ children }: { 
 
 function makeAdapter(search: string, onReplace: (path: string) => void): NavigationAdapter {
   return {
-    push: vi.fn(),
+    push: m.push,
     replace: (path) => {
       m.replace(path);
       window.history.replaceState({}, "", path);
@@ -70,7 +79,7 @@ function NavigationHarness({ children, initialSearch }: { children: ReactNode; i
 
 function mount(element: ReactNode, search = "?days=30") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const rendered = render(
     <QueryClientProvider client={client}>
       <WorkspaceSlugProvider slug="test-workspace">
         <NavigationHarness initialSearch={search}>
@@ -79,6 +88,7 @@ function mount(element: ReactNode, search = "?days=30") {
       </WorkspaceSlugProvider>
     </QueryClientProvider>,
   );
+  return { ...rendered, client };
 }
 
 function overviewFixture() {
@@ -100,7 +110,7 @@ function reconciliationFixture() {
     healthy: false,
     layer_set_violations: [],
     totals: { injections: 0, runs: 0, degraded_rows: 0, degraded_runs: 0, clause_tokens: 0 },
-    drift: [{ scope: "workspace", scope_id: "scope-1", entries: [{ kind: "stale_rev", slug: "sample-clause", marker_rev: 1, expected_rev: 2, carrier_content: "PRIVATE CARRIER TEXT" }] }],
+    drift: [{ scope: "workspace", scope_id: "scope-1", scope_name: "Production workspace", entries: [{ kind: "stale_rev", slug: "sample-clause", marker_rev: 1, expected_rev: 2, carrier_content: "PRIVATE CARRIER TEXT" }] }],
     carriers_scanned: 1,
   };
 }
@@ -142,6 +152,10 @@ beforeEach(() => {
   m.reconciliationQuery.mockReset().mockImplementation(() => Promise.resolve(m.reconciliation));
   m.detailQuery.mockReset().mockImplementation(() => Promise.resolve(m.detail));
   m.replace.mockClear();
+  m.push.mockClear();
+  m.updateClauseContent.mockReset().mockResolvedValue(undefined);
+  m.deactivateClause.mockReset().mockResolvedValue(undefined);
+  m.deleteClause.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => cleanup());
@@ -150,6 +164,8 @@ describe("ClauseGovernancePage", () => {
   it("writes the selected window to the URL, scopes/refetches both queries, and keeps carrier text out of alerts", async () => {
     mount(<ClauseGovernancePage />, "?days=30&tab=overview");
     await screen.findByText("Sample clause");
+    expect(screen.getByText("Production workspace")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "sample-clause · Sample clause" })).toBeTruthy();
 
     expect(m.overviewOptions).toHaveBeenCalledWith("ws-1", 30);
     expect(m.reconciliationOptions).toHaveBeenCalledWith("ws-1", 30);
@@ -220,5 +236,86 @@ describe("ClauseGovernanceDetailPage", () => {
     expect(screen.getByText("All task kinds")).toBeTruthy();
     expect(screen.getByText("coding")).toBeTruthy();
     expect(screen.getByText("review")).toBeTruthy();
+  });
+
+  it("saves direct edits as a new clause version", async () => {
+    mount(<ClauseGovernanceDetailPage clauseId="clause-1" />);
+    await screen.findByRole("heading", { name: "Sample clause" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit content" }));
+    const editor = screen.getByRole("textbox", { name: "Clause content" });
+    fireEvent.change(editor, { target: { value: "Updated clause text" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save new version" }));
+
+    await waitFor(() => expect(m.updateClauseContent).toHaveBeenCalledWith("clause-1", "Updated clause text", 2));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Clause content" })).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("preserves an unsaved draft when detail data is refetched", async () => {
+    const mounted = mount(<ClauseGovernanceDetailPage clauseId="clause-1" />);
+    await screen.findByRole("heading", { name: "Sample clause" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit content" }));
+    const editor = screen.getByRole("textbox", { name: "Clause content" });
+    fireEvent.change(editor, { target: { value: "Unsaved draft" } });
+    m.detail = {
+      ...detailFixture(),
+      latest_version: 3,
+      versions: [...detailFixture().versions, {
+        version: 3,
+        content: "Server-side update",
+        content_sha256: "c".repeat(64),
+        source: "manual",
+        carrier_scope: "workspace",
+        created_by_type: "member",
+        created_at: "2026-10-03T00:00:00Z",
+      }],
+    };
+
+    await mounted.client.invalidateQueries({
+      queryKey: ["clause-governance", "detail", "ws-1", "clause-1", 30],
+    });
+    await waitFor(() => expect(m.detailQuery).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("textbox", { name: "Clause content" })).toHaveValue("Unsaved draft");
+  });
+
+  it("requires confirmation before deactivating or deleting and reports failures", async () => {
+    m.deactivateClause.mockRejectedValueOnce(new Error("forbidden"));
+    mount(<ClauseGovernanceDetailPage clauseId="clause-1" />);
+    await screen.findByRole("heading", { name: "Sample clause" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Deactivate" }));
+    const deactivateDialog = await screen.findByRole("alertdialog");
+    expect(within(deactivateDialog).getByText(/withdraws the active binding/i)).toBeTruthy();
+    fireEvent.click(within(deactivateDialog).getByRole("button", { name: "Deactivate" }));
+    await waitFor(() => expect(m.deactivateClause).toHaveBeenCalledWith("clause-1"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The operation failed. Check your permissions and try again.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete clause" }));
+    const deleteDialog = await screen.findByRole("alertdialog");
+    expect(within(deleteDialog).getByText(/permanently deletes the clause/i)).toBeTruthy();
+    fireEvent.click(within(deleteDialog).getByRole("button", { name: "Delete clause" }));
+    await waitFor(() => expect(m.deleteClause).toHaveBeenCalledWith("clause-1"));
+    await waitFor(() => expect(m.push).toHaveBeenCalledWith("/test-workspace/self-evolution/clause-governance?days=30"));
+  });
+
+  it("keeps deprecated clauses editable and deletable without offering deactivation", async () => {
+    m.detail = { ...detailFixture(), status: "deprecated" };
+    mount(<ClauseGovernanceDetailPage clauseId="clause-1" />);
+    await screen.findByRole("heading", { name: "Sample clause" });
+
+    expect(screen.getByRole("button", { name: "Edit content" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete clause" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Deactivate" })).toBeNull();
+  });
+
+  it("does not offer direct editing for revoked clauses", async () => {
+    m.detail = { ...detailFixture(), status: "revoked" };
+    mount(<ClauseGovernanceDetailPage clauseId="clause-1" />);
+    await screen.findByRole("heading", { name: "Sample clause" });
+
+    expect(screen.queryByRole("button", { name: "Edit content" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Delete clause" })).toBeTruthy();
   });
 });

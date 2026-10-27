@@ -396,7 +396,7 @@ func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Querie
 		static := clausemark.Static(current, renderedClausesByCarrier(allClauses, overrides[c])[c])
 		scan, ok, reason := promptGovernanceGate(static)
 		if !ok {
-			return fmt.Errorf("重渲染文本未通过内容门闸（%s）: %s", c.scope, reason)
+			return &carrierRenderValidationError{message: fmt.Sprintf("重渲染文本未通过内容门闸（%s）: %s", c.scope, reason)}
 		}
 		if _, err := persistCarrierVersionTx(ctx, qtx, workspaceID, promptVersionScope(c.scope), c.id, static,
 			"条款静态载体规范化", "legislation", nil, scan.Revision, scan.Findings, actorID); err != nil {
@@ -416,6 +416,12 @@ func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Querie
 	}
 	return nil
 }
+
+type carrierRenderValidationError struct {
+	message string
+}
+
+func (e *carrierRenderValidationError) Error() string { return e.message }
 
 // persistCarrierVersionTx is the transaction core of the governance write
 // funnel: next version number, prompt_version row, business-column copy. The

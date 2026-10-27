@@ -190,11 +190,36 @@ func (q *Queries) CountDegradedInjections(ctx context.Context, arg CountDegraded
 	return degraded_runs, err
 }
 
+const countWorkspaceAgents = `-- name: CountWorkspaceAgents :one
+SELECT COUNT(*)::bigint FROM agent
+WHERE agent.workspace_id = $1::uuid
+`
+
+func (q *Queries) CountWorkspaceAgents(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countWorkspaceAgents, workspaceID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countWorkspaceInjections = `-- name: CountWorkspaceInjections :one
+WITH degraded_tasks AS (
+    SELECT task_id
+    FROM clause_injection
+    WHERE workspace_id = $1::uuid
+      AND created_at > $2::timestamptz
+      AND degraded
+    UNION
+    SELECT task_id
+    FROM clause_injection_observation
+    WHERE workspace_id = $1::uuid
+      AND created_at > $2::timestamptz
+      AND degraded
+)
 SELECT COUNT(*)::bigint AS injections,
        COUNT(DISTINCT task_id)::bigint AS runs,
        COUNT(*) FILTER (WHERE degraded)::bigint AS degraded_rows,
-       COUNT(DISTINCT task_id) FILTER (WHERE degraded)::bigint AS degraded_runs
+       (SELECT COUNT(*)::bigint FROM degraded_tasks) AS degraded_runs
 FROM clause_injection
 WHERE clause_injection.workspace_id = $1::uuid
   AND clause_injection.created_at > $2::timestamptz
@@ -213,7 +238,8 @@ type CountWorkspaceInjectionsRow struct {
 }
 
 // Dynamic-path health over a trailing window: total injections, covered
-// runs, and the degraded subset (snapshot-fallback rows carry the flag).
+// runs, and degraded counts. Carrier observations also count degraded runs
+// when fallback parsing yielded no clause-level rows.
 func (q *Queries) CountWorkspaceInjections(ctx context.Context, arg CountWorkspaceInjectionsParams) (CountWorkspaceInjectionsRow, error) {
 	row := q.db.QueryRow(ctx, countWorkspaceInjections, arg.WorkspaceID, arg.Since)
 	var i CountWorkspaceInjectionsRow
@@ -360,6 +386,59 @@ func (q *Queries) CreateClauseVersion(ctx context.Context, arg CreateClauseVersi
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const deleteClause = `-- name: DeleteClause :execrows
+DELETE FROM clause WHERE id = $1 AND workspace_id = $2
+`
+
+type DeleteClauseParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) DeleteClause(ctx context.Context, arg DeleteClauseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteClause, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteClauseBindings = `-- name: DeleteClauseBindings :exec
+DELETE FROM clause_binding WHERE clause_id = $1
+`
+
+func (q *Queries) DeleteClauseBindings(ctx context.Context, clauseID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteClauseBindings, clauseID)
+	return err
+}
+
+const deleteClauseInjections = `-- name: DeleteClauseInjections :exec
+DELETE FROM clause_injection WHERE clause_id = $1
+`
+
+func (q *Queries) DeleteClauseInjections(ctx context.Context, clauseID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteClauseInjections, clauseID)
+	return err
+}
+
+const deleteClauseQuality = `-- name: DeleteClauseQuality :exec
+DELETE FROM clause_quality_daily WHERE clause_id = $1
+`
+
+func (q *Queries) DeleteClauseQuality(ctx context.Context, clauseID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteClauseQuality, clauseID)
+	return err
+}
+
+const deleteClauseVersions = `-- name: DeleteClauseVersions :exec
+DELETE FROM clause_version WHERE clause_id = $1
+`
+
+func (q *Queries) DeleteClauseVersions(ctx context.Context, clauseID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteClauseVersions, clauseID)
+	return err
 }
 
 const getActiveClauseBinding = `-- name: GetActiveClauseBinding :one
@@ -573,6 +652,37 @@ func (q *Queries) InsertClauseInjection(ctx context.Context, arg InsertClauseInj
 	return err
 }
 
+const insertClauseInjectionObservation = `-- name: InsertClauseInjectionObservation :exec
+INSERT INTO clause_injection_observation (
+    workspace_id, task_id, carrier_scope, carrier_scope_id, degraded, degradation_reason
+) VALUES (
+    $1, $2, $3, $4, $5, $6
+)
+`
+
+type InsertClauseInjectionObservationParams struct {
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	TaskID            pgtype.UUID `json:"task_id"`
+	CarrierScope      string      `json:"carrier_scope"`
+	CarrierScopeID    pgtype.UUID `json:"carrier_scope_id"`
+	Degraded          bool        `json:"degraded"`
+	DegradationReason string      `json:"degradation_reason"`
+}
+
+// One durable row per degraded carrier claim, including snapshots that cannot
+// be parsed and therefore produce no clause_injection rows.
+func (q *Queries) InsertClauseInjectionObservation(ctx context.Context, arg InsertClauseInjectionObservationParams) error {
+	_, err := q.db.Exec(ctx, insertClauseInjectionObservation,
+		arg.WorkspaceID,
+		arg.TaskID,
+		arg.CarrierScope,
+		arg.CarrierScopeID,
+		arg.Degraded,
+		arg.DegradationReason,
+	)
+	return err
+}
+
 const latestClauseVersion = `-- name: LatestClauseVersion :one
 SELECT version FROM clause_version
 WHERE clause_version.clause_id = $1
@@ -655,28 +765,30 @@ func (q *Queries) ListActiveWorkspaceClauses(ctx context.Context, workspaceID pg
 }
 
 const listCarrierBusinessColumns = `-- name: ListCarrierBusinessColumns :many
-SELECT id AS scope_id, instructions AS business_column, 'agent'::text AS scope
+SELECT id AS scope_id, name AS carrier_name, instructions AS business_column, 'agent'::text AS scope
 FROM agent
 WHERE agent.workspace_id = $1::uuid
-LIMIT $2::int
+  AND ($2::uuid IS NULL OR agent.id > $2::uuid)
+ORDER BY agent.id
+LIMIT $3::int
 `
 
 type ListCarrierBusinessColumnsParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AfterID     pgtype.UUID `json:"after_id"`
 	RowLimit    int32       `json:"row_limit"`
 }
 
 type ListCarrierBusinessColumnsRow struct {
 	ScopeID        pgtype.UUID `json:"scope_id"`
+	CarrierName    string      `json:"carrier_name"`
 	BusinessColumn string      `json:"business_column"`
 	Scope          string      `json:"scope"`
 }
 
 // Reconciliation input: every agent-tier business column in the workspace.
-// The workspace/project/squad tiers are single/few rows; the agent tier can
-// be large, hence the caller-side LIMIT.
 func (q *Queries) ListCarrierBusinessColumns(ctx context.Context, arg ListCarrierBusinessColumnsParams) ([]ListCarrierBusinessColumnsRow, error) {
-	rows, err := q.db.Query(ctx, listCarrierBusinessColumns, arg.WorkspaceID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listCarrierBusinessColumns, arg.WorkspaceID, arg.AfterID, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -684,7 +796,12 @@ func (q *Queries) ListCarrierBusinessColumns(ctx context.Context, arg ListCarrie
 	items := []ListCarrierBusinessColumnsRow{}
 	for rows.Next() {
 		var i ListCarrierBusinessColumnsRow
-		if err := rows.Scan(&i.ScopeID, &i.BusinessColumn, &i.Scope); err != nil {
+		if err := rows.Scan(
+			&i.ScopeID,
+			&i.CarrierName,
+			&i.BusinessColumn,
+			&i.Scope,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1219,6 +1336,72 @@ func (q *Queries) ListClausesForWorkspace(ctx context.Context, workspaceID pgtyp
 	return items, nil
 }
 
+const listDegradedClauseCarrierScopes = `-- name: ListDegradedClauseCarrierScopes :many
+SELECT DISTINCT scope, scope_id
+FROM (
+    SELECT cio.carrier_scope AS scope, cio.carrier_scope_id::text AS scope_id
+    FROM clause_injection_observation cio
+    WHERE cio.workspace_id = $1::uuid
+      AND cio.created_at > $2::timestamptz
+      AND cio.degraded = TRUE
+    UNION ALL
+    SELECT ci.carrier_scope AS scope,
+           CASE ci.carrier_scope
+             WHEN 'workspace' THEN a.workspace_id
+             WHEN 'project' THEN NULL::uuid
+             WHEN 'squad' THEN atq.squad_id
+             WHEN 'agent' THEN atq.agent_id
+           END::text AS scope_id
+    FROM clause_injection ci
+    JOIN agent_task_queue atq ON atq.id = ci.task_id
+    JOIN agent a ON a.id = atq.agent_id
+    WHERE ci.workspace_id = $1::uuid
+      AND ci.created_at > $2::timestamptz
+      AND ci.degraded = TRUE
+      AND NOT EXISTS (
+          SELECT 1 FROM clause_injection_observation cio
+          WHERE cio.task_id = ci.task_id
+            AND cio.carrier_scope = ci.carrier_scope
+            AND cio.degraded
+      )
+) degraded_carriers
+WHERE scope_id IS NOT NULL
+`
+
+type ListDegradedClauseCarrierScopesParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+}
+
+type ListDegradedClauseCarrierScopesRow struct {
+	Scope   string `json:"scope"`
+	ScopeID string `json:"scope_id"`
+}
+
+// The observation table is authoritative. The second arm covers legacy rows
+// only where the historical carrier ID is stable on the task. Project IDs are
+// intentionally omitted: legacy task rows do not retain which project was
+// read during claim, and current issue/session/autopilot relations may move.
+func (q *Queries) ListDegradedClauseCarrierScopes(ctx context.Context, arg ListDegradedClauseCarrierScopesParams) ([]ListDegradedClauseCarrierScopesRow, error) {
+	rows, err := q.db.Query(ctx, listDegradedClauseCarrierScopes, arg.WorkspaceID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDegradedClauseCarrierScopesRow{}
+	for rows.Next() {
+		var i ListDegradedClauseCarrierScopesRow
+		if err := rows.Scan(&i.Scope, &i.ScopeID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEffectiveCarrierClauses = `-- name: ListEffectiveCarrierClauses :many
 
 SELECT c.id AS clause_id, c.slug, c.title, c.status AS clause_status,
@@ -1471,6 +1654,33 @@ func (q *Queries) ListWorkspaceContextRow(ctx context.Context, workspaceID pgtyp
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockClauseForDirectManagement = `-- name: LockClauseForDirectManagement :one
+SELECT id, workspace_id, slug, title, status, created_by_type, created_by_id, created_at FROM clause
+WHERE clause.id = $1 AND clause.workspace_id = $2
+FOR UPDATE
+`
+
+type LockClauseForDirectManagementParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+func (q *Queries) LockClauseForDirectManagement(ctx context.Context, arg LockClauseForDirectManagementParams) (Clause, error) {
+	row := q.db.QueryRow(ctx, lockClauseForDirectManagement, arg.ID, arg.WorkspaceID)
+	var i Clause
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Slug,
+		&i.Title,
+		&i.Status,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const markClauseQualityRunFailed = `-- name: MarkClauseQualityRunFailed :exec

@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { AlertTriangle, ArrowLeft, Bot, Building2, CheckCircle2, FolderKanban, RefreshCw, Scale, Users } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ArrowLeft, Bot, Building2, CheckCircle2, FolderKanban, Pencil, Power, RefreshCw, Scale, Trash2, Users } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api } from "@multica/core/api";
 import { CartesianGrid, Line, LineChart, ReferenceLine, XAxis, YAxis } from "recharts";
 import type {
   ClauseGovernanceBinding,
@@ -32,6 +33,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@multica/ui/components/ui/alert-dialog";
+import { Textarea } from "@multica/ui/components/ui/textarea";
 import { AppLink, useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { SelfEvolutionShell } from "./self-evolution-shell";
@@ -213,7 +225,12 @@ export function ClauseGovernancePage() {
                     </CardContent>
                   </Card>
                 </section>
-                <ReconciliationSection data={reconciliationData} clauseById={new Map(data.clauses.map((clause) => [clause.id, clause]))} days={days} />
+                <ReconciliationSection
+                  data={reconciliationData}
+                  clauseById={new Map(data.clauses.map((clause) => [clause.id, clause]))}
+                  clauseBySlug={new Map(data.clauses.map((clause) => [clause.slug, clause]))}
+                  days={days}
+                />
                 <RollbackSection suggestions={data.rollback_suggestions} paths={paths} />
                 <section aria-labelledby="clause-list-title" className="space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-3">
@@ -312,7 +329,7 @@ function ClauseRow({ clause, days, paths }: { clause: ClauseGovernanceClause; da
   </tr>;
 }
 
-function ReconciliationSection({ data, clauseById, days }: { data: ClauseGovernanceReconciliation; clauseById: Map<string, ClauseGovernanceClause>; days: number }) {
+function ReconciliationSection({ data, clauseById, clauseBySlug, days }: { data: ClauseGovernanceReconciliation; clauseById: Map<string, ClauseGovernanceClause>; clauseBySlug: Map<string, ClauseGovernanceClause>; days: number }) {
   const { t } = useT("self-evolution");
   const paths = useWorkspacePaths();
   const violationRows = data.layer_set_violations;
@@ -342,10 +359,16 @@ function ReconciliationSection({ data, clauseById, days }: { data: ClauseGoverna
         <h3 className="font-medium">{t(($) => $.clauseGovernance.recon.driftTitle)}</h3>
         {data.drift.length === 0 ? <p className="flex items-center gap-2 text-body text-success"><CheckCircle2 aria-hidden className="size-4" />{t(($) => $.clauseGovernance.recon.driftEmpty, { count: data.carriers_scanned })}</p> : <div className="grid gap-3 sm:grid-cols-2">
           {data.drift.map((carrier) => <Card key={`${carrier.scope}-${carrier.scope_id}`} className="min-w-0">
-            <CardHeader className="pb-2"><CardTitle className="flex flex-wrap items-center gap-2 text-body"><ScopeBadge scope={carrier.scope} label={enumLabel(carrier.scope, ["workspace", "project", "squad", "agent"], (key) => t(($) => $.clauseGovernance.scope[key]))} /> <span className="font-mono text-caption text-muted-foreground" title={carrier.scope_id}>{shortId(carrier.scope_id)}</span></CardTitle></CardHeader>
+            <CardHeader className="pb-2"><CardTitle className="flex flex-wrap items-center gap-2 text-body"><ScopeBadge scope={carrier.scope} label={enumLabel(carrier.scope, ["workspace", "project", "squad", "agent"], (key) => t(($) => $.clauseGovernance.scope[key]))} /> <span>{carrier.scope_name || t(($) => $.clauseGovernance.recon.unnamedCarrier)}</span><span className="font-mono text-caption text-muted-foreground" title={carrier.scope_id}>{shortId(carrier.scope_id)}</span></CardTitle></CardHeader>
             <CardContent className="space-y-2">{carrier.entries.map((entry, index) => <div key={`${entry.slug}-${index}`} className="space-y-1 border-t pt-2 first:border-0 first:pt-0">
               <Badge variant="outline" className={`inline-flex items-center gap-1 ${entry.kind === "stale_rev" ? "border-transparent bg-warning/10 text-warning dark:bg-warning/20" : "border-destructive/30 text-destructive"}`}><AlertTriangle aria-hidden className="size-3" />{enumLabel(entry.kind, ["stale_rev", "orphan_marker", "missing_segment"], (key) => t(($) => $.clauseGovernance.driftKind[key]))}</Badge>
-              <p className="font-mono text-caption">{entry.slug}</p>
+              <p className="text-body">
+                {clauseBySlug.has(entry.slug) ? (
+                  <AppLink href={`${paths.selfEvolutionClauseGovernanceDetail(clauseBySlug.get(entry.slug)!.id)}?days=${days}`} className="text-primary hover:underline">
+                    <span className="font-medium">{entry.slug}</span> · {clauseBySlug.get(entry.slug)!.title}
+                  </AppLink>
+                ) : <span className="font-mono">{entry.slug}</span>}
+              </p>
               <p className="text-caption text-muted-foreground">{entry.kind === "stale_rev"
                 ? t(($) => $.clauseGovernance.driftDesc.staleRev, { marker: entry.marker_rev ?? "—", expected: entry.expected_rev ?? "—" })
                 : entry.kind === "orphan_marker"
@@ -409,6 +432,7 @@ function DetailContents({ data, days, paths }: { data: ClauseGovernanceDetail; d
         <Badge variant="outline">{t(($) => $.clauseGovernance.metrics.clauseTokens)} · {qualityUnmeasured ? t(($) => $.clauseGovernance.quality.unmeasured) : numberLabel(data.injected_tokens)}</Badge>
       </div>
     </header>
+    <ClauseManagementControls data={data} backPath={`${paths.selfEvolutionClauseGovernance()}?days=${days}`} />
     <Tabs defaultValue="versions" className="min-w-0">
       <TabsList className="flex h-auto w-full flex-wrap justify-start">
         <TabsTrigger value="versions">{t(($) => $.clauseGovernance.detail.versions)}</TabsTrigger>
@@ -422,6 +446,106 @@ function DetailContents({ data, days, paths }: { data: ClauseGovernanceDetail; d
       <TabsContent value="quality"><QualityPanel quality={data.quality_daily} days={days} /></TabsContent>
     </Tabs>
   </>;
+}
+
+function ClauseManagementControls({ data, backPath }: { data: ClauseGovernanceDetail; backPath: string }) {
+  const { t } = useT("self-evolution");
+  const wsId = useWorkspaceId();
+  const navigation = useNavigation();
+  const queryClient = useQueryClient();
+  const latest = data.versions.reduce<ClauseGovernanceVersion | undefined>(
+    (current, version) => !current || version.version > current.version ? version : current,
+    undefined,
+  );
+  const [editing, setEditing] = useState(false);
+  const [content, setContent] = useState(latest?.content ?? "");
+  const [confirmation, setConfirmation] = useState<"deactivate" | "delete" | null>(null);
+  const [lastAction, setLastAction] = useState<"edit" | "deactivate" | "delete" | null>(null);
+  useEffect(() => {
+    if (!editing) setContent(latest?.content ?? "");
+  }, [editing, latest?.content]);
+
+  const refresh = async () => {
+    await queryClient.invalidateQueries({
+      predicate: (query) => query.queryKey[0] === "clause-governance" && query.queryKey[2] === wsId,
+    });
+  };
+  const update = useMutation({
+    mutationFn: () => api.updateClauseContent(data.id, content, data.latest_version),
+    onSuccess: async () => { setLastAction(null); setEditing(false); await refresh(); },
+  });
+  const deactivate = useMutation({
+    mutationFn: () => api.deactivateClause(data.id),
+    onSuccess: async () => { setLastAction(null); setConfirmation(null); await refresh(); },
+    onError: () => setConfirmation(null),
+  });
+  const remove = useMutation({
+    mutationFn: () => api.deleteClause(data.id),
+    onSuccess: async () => {
+      setLastAction(null);
+      setConfirmation(null);
+      await refresh();
+      navigation.push(backPath);
+    },
+    onError: () => setConfirmation(null),
+  });
+  const busy = update.isPending || deactivate.isPending || remove.isPending;
+  const failed = (lastAction === "edit" && update.isError)
+    || (lastAction === "deactivate" && deactivate.isError)
+    || (lastAction === "delete" && remove.isError);
+
+  return <section className="space-y-3 rounded-md border p-4" aria-label={t(($) => $.clauseGovernance.manage.title)}>
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <h2 className="font-medium">{t(($) => $.clauseGovernance.manage.title)}</h2>
+      <div className="flex flex-wrap gap-2">
+		{!editing && data.status !== "revoked" ? <Button size="sm" variant="outline" onClick={() => { setLastAction(null); setEditing(true); }} disabled={busy || !latest}>
+          <Pencil aria-hidden className="mr-2 size-4" />{t(($) => $.clauseGovernance.manage.edit)}
+        </Button> : null}
+        {data.status === "active" ? <Button size="sm" variant="outline" onClick={() => { setLastAction(null); setConfirmation("deactivate"); }} disabled={busy}>
+          <Power aria-hidden className="mr-2 size-4" />{t(($) => $.clauseGovernance.manage.deactivate)}
+        </Button> : null}
+        <Button size="sm" variant="destructive" onClick={() => { setLastAction(null); setConfirmation("delete"); }} disabled={busy}>
+          <Trash2 aria-hidden className="mr-2 size-4" />{t(($) => $.clauseGovernance.manage.delete)}
+        </Button>
+      </div>
+    </div>
+    {editing ? <div className="space-y-2">
+      <Textarea aria-label={t(($) => $.clauseGovernance.manage.content)} value={content} rows={8} onChange={(event) => setContent(event.target.value)} />
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={() => { setLastAction("edit"); update.mutate(); }} disabled={busy || content.trim() === "" || content === latest?.content}>
+          {t(($) => $.clauseGovernance.manage.save)}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => { setContent(latest?.content ?? ""); setLastAction(null); setEditing(false); }} disabled={busy}>
+          {t(($) => $.clauseGovernance.manage.cancel)}
+        </Button>
+      </div>
+    </div> : null}
+    {failed ? <p role="alert" className="text-body text-destructive">{t(($) => $.clauseGovernance.manage.failure)}</p> : null}
+    <AlertDialog open={confirmation !== null} onOpenChange={(open) => { if (!open && !busy) setConfirmation(null); }}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{confirmation === "delete" ? t(($) => $.clauseGovernance.manage.delete) : t(($) => $.clauseGovernance.manage.deactivate)}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {confirmation === "delete" ? t(($) => $.clauseGovernance.manage.deleteConfirm) : t(($) => $.clauseGovernance.manage.deactivateConfirm)}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>{t(($) => $.clauseGovernance.manage.cancel)}</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={busy}
+            className={confirmation === "delete" ? "bg-destructive text-destructive-foreground hover:bg-destructive/90" : undefined}
+            onClick={(event) => {
+              event.preventDefault();
+              if (confirmation === "delete") { setLastAction("delete"); remove.mutate(); }
+              else if (confirmation === "deactivate") { setLastAction("deactivate"); deactivate.mutate(); }
+            }}
+          >
+            {confirmation === "delete" ? t(($) => $.clauseGovernance.manage.delete) : t(($) => $.clauseGovernance.manage.deactivate)}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </section>;
 }
 
 function VersionsPanel({ versions, quality }: { versions: ClauseGovernanceVersion[]; quality: ClauseGovernanceQualityDay[] }) {
