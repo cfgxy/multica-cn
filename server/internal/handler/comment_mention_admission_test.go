@@ -428,7 +428,7 @@ func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T)
 	}
 }
 
-func TestAssignedSquadLeaderCanReplyToMemberWithoutResponsibilityMention(t *testing.T) {
+func TestAssignedSquadLeaderCanCloseMemberOrWorkerThreadWithoutResponsibilityMention(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -490,6 +490,67 @@ func TestAssignedSquadLeaderCanReplyToMemberWithoutResponsibilityMention(t *test
 	if attachmentUpdated.Content != updatedContent || len(attachmentUpdated.TriggerOutcomes) != 0 {
 		t.Fatalf("terminal leader attachment edit = %+v", attachmentUpdated)
 	}
+
+	workerParentID := dbfx.Comment(t, issueID, fmt.Sprintf("[@Leader](mention://agent/%s) work is complete", leaderID), testutil.Cols{
+		"author_type": "agent",
+		"author_id":   workerID,
+	})
+	leaderReplyToWorkerRequest := func(method, commentID, content string, attachments bool) *http.Request {
+		body := map[string]any{"content": content}
+		if method == http.MethodPost {
+			body["parent_id"] = workerParentID
+		}
+		if attachments {
+			body["attachment_ids"] = []string{}
+		}
+		req := commentRequest(method, issueID, commentID, body)
+		req.Header.Set("X-Agent-ID", leaderID)
+		req.Header.Set("X-Task-ID", leaderTaskID)
+		return req
+	}
+	var workerReply CommentResponse
+	testutil.Call(t, testHandler.CreateComment, leaderReplyToWorkerRequest(http.MethodPost, "", terminal, false)).Want(http.StatusCreated).JSON(&workerReply)
+	if len(workerReply.TriggerOutcomes) != 0 {
+		t.Fatalf("terminal leader-to-worker reply triggered agents: %+v", workerReply.TriggerOutcomes)
+	}
+	testutil.Call(t, testHandler.UpdateComment, leaderReplyToWorkerRequest(http.MethodPut, workerReply.ID, updatedContent, false)).Want(http.StatusOK).JSON(&updated)
+	if updated.Content != updatedContent || len(updated.TriggerOutcomes) != 0 {
+		t.Fatalf("terminal leader-to-worker content edit = %+v", updated)
+	}
+	testutil.Call(t, testHandler.UpdateComment, leaderReplyToWorkerRequest(http.MethodPut, workerReply.ID, updatedContent, true)).Want(http.StatusOK).JSON(&attachmentUpdated)
+	if attachmentUpdated.Content != updatedContent || len(attachmentUpdated.TriggerOutcomes) != 0 {
+		t.Fatalf("terminal leader-to-worker attachment edit = %+v", attachmentUpdated)
+	}
+
+	outsideParentAgentID := dbfx.Agent(t, "assigned-squad-leader-reply-outside-parent", runtimeID)
+	outsideParentID := dbfx.Comment(t, issueID, "unrelated agent reply", testutil.Cols{
+		"author_type": "agent",
+		"author_id":   outsideParentAgentID,
+	})
+	outsideParentRequest := commentRequest(http.MethodPost, issueID, "", map[string]any{
+		"content":   terminal,
+		"parent_id": outsideParentID,
+	})
+	outsideParentRequest.Header.Set("X-Agent-ID", leaderID)
+	outsideParentRequest.Header.Set("X-Task-ID", leaderTaskID)
+	testutil.Call(t, testHandler.CreateComment, outsideParentRequest).Want(http.StatusUnprocessableEntity)
+
+	dbfx.Exec(t, `
+		INSERT INTO squad_member (squad_id, member_type, member_id, role)
+		VALUES ($1, 'agent', $2, 'leader')
+		ON CONFLICT (squad_id, member_type, member_id) DO NOTHING
+	`, squadID, leaderID)
+	leaderParentID := dbfx.Comment(t, issueID, "leader's earlier reply", testutil.Cols{
+		"author_type": "agent",
+		"author_id":   leaderID,
+	})
+	leaderParentRequest := commentRequest(http.MethodPost, issueID, "", map[string]any{
+		"content":   terminal,
+		"parent_id": leaderParentID,
+	})
+	leaderParentRequest.Header.Set("X-Agent-ID", leaderID)
+	leaderParentRequest.Header.Set("X-Task-ID", leaderTaskID)
+	testutil.Call(t, testHandler.CreateComment, leaderParentRequest).Want(http.StatusUnprocessableEntity)
 
 	twoAgentMentions := fmt.Sprintf("[@First](mention://agent/%s) [@Second](mention://agent/%s)", firstTargetID, secondTargetID)
 	assertTwoTargetRejection := func(t *testing.T, name string, handler http.HandlerFunc, req *http.Request) {
