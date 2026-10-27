@@ -4301,6 +4301,25 @@ export class ApiClient {
     });
   }
 
+  async updateClauseContent(clauseId: string, content: string, expectedVersion: number): Promise<void> {
+    await this.fetch(`/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content, expected_version: expectedVersion }),
+    });
+  }
+
+  async deactivateClause(clauseId: string): Promise<void> {
+    await this.fetch(`/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}/deactivate`, {
+      method: "POST",
+    });
+  }
+
+  async deleteClause(clauseId: string): Promise<void> {
+    await this.fetch(`/api/prompt-legislation/governance/clauses/${encodeURIComponent(clauseId)}`, {
+      method: "DELETE",
+    });
+  }
+
   async getClauseGovernanceReconciliation(days: number): Promise<ClauseGovernanceReconciliation> {
     const query = new URLSearchParams({ days: String(days) });
     const raw = await this.fetch<unknown>(

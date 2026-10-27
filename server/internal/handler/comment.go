@@ -1555,7 +1555,24 @@ func (h *Handler) validateExplicitAgentMentions(ctx context.Context, issue db.Is
 	return invalid, nil
 }
 
+const (
+	agentCommentMentionPolicy    = "Agent comments may contain at most one valid responsibility mention in the standard [@Label](mention://agent/<uuid>) form; agents cannot mention themselves; a non-leader member of the squad currently assigned to the issue must mention exactly that squad's leader; a directly assigned agent may reply to a member parent, and that squad's leader may reply to a member or squad-worker parent, without a valid responsibility mention; /note skips explicit target admission but does not bypass responsibility rules; plain text and malformed or unsupported mention links do not count."
+	noResponsibilityMentionError = "agent comments must mention one valid responsibility agent"
+)
+
+func writeAgentCommentMentionError(w http.ResponseWriter, message string) {
+	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		"error":                        message,
+		"code":                         "invalid_agent_comment_mention",
+		"agent_comment_mention_policy": agentCommentMentionPolicy,
+	})
+}
+
 func (h *Handler) admitExplicitAgentMentions(w http.ResponseWriter, r *http.Request, issue db.Issue, content, actorType, actorID string) bool {
+	if actorType == "agent" && util.IsAgentSelfMention(content, actorID) {
+		writeAgentCommentMentionError(w, "agents cannot mention themselves in comments")
+		return false
+	}
 	invalid, err := h.validateExplicitAgentMentions(r.Context(), issue, content, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to validate comment mentions")
@@ -1563,16 +1580,17 @@ func (h *Handler) admitExplicitAgentMentions(w http.ResponseWriter, r *http.Requ
 	}
 	if len(invalid) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"error":            "one or more agent mentions cannot be invoked",
-			"code":             "invalid_agent_mentions",
-			"invalid_mentions": invalid,
+			"error":                        "one or more agent mentions cannot be invoked",
+			"code":                         "invalid_agent_mentions",
+			"invalid_mentions":             invalid,
+			"agent_comment_mention_policy": agentCommentMentionPolicy,
 		})
 		return false
 	}
 	return true
 }
 
-func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue db.Issue, content, actorID string, task *db.AgentTaskQueue) (bool, error) {
+func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue db.Issue, content, actorID string) (string, error) {
 	mentions := util.ParseMentions(content)
 	validAgentMentions := make(map[string]struct{})
 	for _, mention := range mentions {
@@ -1588,36 +1606,121 @@ func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue 
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue
 			}
-			return false, err
+			return "", err
 		}
 		if !agent.ArchivedAt.Valid {
 			validAgentMentions[uuidToString(agent.ID)] = struct{}{}
 		}
 	}
 	if len(validAgentMentions) == 0 {
-		return false, nil
+		return noResponsibilityMentionError, nil
 	}
-	if task != nil && task.SquadID.Valid {
-		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: task.SquadID, WorkspaceID: issue.WorkspaceID})
+	if len(validAgentMentions) > 1 {
+		return "agent comments may mention only one valid responsibility agent", nil
+	}
+	if issue.AssigneeType.Valid && issue.AssigneeType.String == "squad" && issue.AssigneeID.Valid {
+		squad, err := h.Queries.GetSquadByAssignee(ctx, db.GetSquadByAssigneeParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
 		if err != nil {
-			return false, err
+			if errors.Is(err, pgx.ErrNoRows) {
+				return "the issue's assigned squad is unavailable", nil
+			}
+			return "", err
 		}
-		if uuidToString(squad.LeaderID) != actorID {
-			_, mentionedLeader := validAgentMentions[uuidToString(squad.LeaderID)]
-			return mentionedLeader, nil
+		if uuidToString(squad.LeaderID) == actorID {
+			return "", nil
+		}
+		actorUUID, err := util.ParseUUID(actorID)
+		if err != nil {
+			return "agent identity is invalid", nil
+		}
+		isMember, err := h.Queries.IsSquadMember(ctx, db.IsSquadMemberParams{
+			SquadID: squad.ID, MemberType: "agent", MemberID: actorUUID,
+		})
+		if err != nil {
+			return "", err
+		}
+		if isMember {
+			leaderID := uuidToString(squad.LeaderID)
+			if _, mentionedLeader := validAgentMentions[leaderID]; !mentionedLeader {
+				return "non-leader members of the issue's assigned squad must mention that squad's leader", nil
+			}
 		}
 	}
-	return true, nil
+	return "", nil
 }
 
-// assignedAgentMayReplyToMemberWithoutMention allows the direct agent assignee
-// to close a member's thread without manufacturing a dispatch. Every other
-// agent-authored comment still requires a responsibility mention.
-func assignedAgentMayReplyToMemberWithoutMention(issue db.Issue, parent *db.Comment, actorID string) bool {
-	return parent != nil &&
-		parent.AuthorType == "member" &&
-		issue.AssigneeType.Valid && issue.AssigneeType.String == "agent" &&
-		issue.AssigneeID.Valid && uuidToString(issue.AssigneeID) == actorID
+// agentMayReplyWithoutResponsibilityMention allows a direct agent assignee to
+// close a member's thread and an assigned squad's leader to close a member or
+// squad-worker thread without manufacturing a dispatch. Callers use it only
+// after confirming that no valid responsibility mention was supplied; every
+// other responsibility rule still applies.
+func (h *Handler) agentMayReplyWithoutResponsibilityMention(ctx context.Context, issue db.Issue, parent *db.Comment, actorID string) (bool, error) {
+	if parent == nil || !issue.AssigneeType.Valid || !issue.AssigneeID.Valid {
+		return false, nil
+	}
+	if issue.AssigneeType.String == "agent" {
+		return parent.AuthorType == "member" && uuidToString(issue.AssigneeID) == actorID, nil
+	}
+	if issue.AssigneeType.String != "squad" {
+		return false, nil
+	}
+	squad, err := h.Queries.GetSquadByAssignee(ctx, db.GetSquadByAssigneeParams{
+		ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if uuidToString(squad.LeaderID) != actorID {
+		return false, nil
+	}
+	if parent.AuthorType == "member" {
+		return true, nil
+	}
+	if parent.AuthorType != "agent" || uuidToString(parent.AuthorID) == actorID {
+		return false, nil
+	}
+	return h.Queries.IsSquadMember(ctx, db.IsSquadMemberParams{
+		SquadID: squad.ID, MemberType: "agent", MemberID: parent.AuthorID,
+	})
+}
+
+func (h *Handler) admitEditedAgentResponsibilityMention(w http.ResponseWriter, r *http.Request, issue db.Issue, existing db.Comment, content, actorID string) bool {
+	reason, mentionErr := h.validateAgentResponsibilityMention(r.Context(), issue, content, actorID)
+	if mentionErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
+		return false
+	}
+	if reason == "" {
+		return true
+	}
+
+	var parentComment *db.Comment
+	if existing.ParentID.Valid {
+		parent, parentErr := h.Queries.GetComment(r.Context(), existing.ParentID)
+		if parentErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load parent comment for responsibility mention validation")
+			return false
+		}
+		if uuidToString(parent.IssueID) == uuidToString(existing.IssueID) {
+			parentComment = &parent
+		}
+	}
+	if reason == noResponsibilityMentionError {
+		allowed, allowedErr := h.agentMayReplyWithoutResponsibilityMention(r.Context(), issue, parentComment, actorID)
+		if allowedErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
+			return false
+		}
+		if allowed {
+			return true
+		}
+	}
+
+	writeAgentCommentMentionError(w, reason)
+	return false
 }
 
 type CommentTriggerAgentResponse struct {
@@ -1939,14 +2042,21 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// Determine author identity: agent (via X-Agent-ID header) or member.
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	if authorType == "agent" {
-		task, _ := h.taskFromRequestHeader(r)
-		valid, err := h.validateAgentResponsibilityMention(r.Context(), issue, req.Content, authorID, &task)
+		reason, err := h.validateAgentResponsibilityMention(r.Context(), issue, req.Content, authorID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
 			return
 		}
-		if !valid && !assignedAgentMayReplyToMemberWithoutMention(issue, parentComment, authorID) {
-			writeError(w, http.StatusUnprocessableEntity, "agent comments must mention a responsible workspace agent; squad workers must mention their leader")
+		allowedWithoutMention := false
+		if reason == noResponsibilityMentionError {
+			allowedWithoutMention, err = h.agentMayReplyWithoutResponsibilityMention(r.Context(), issue, parentComment, authorID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
+				return
+			}
+		}
+		if reason != "" && !allowedWithoutMention {
+			writeAgentCommentMentionError(w, reason)
 			return
 		}
 	}
@@ -3716,6 +3826,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		if !h.admitExplicitAgentMentions(w, r, issue, req.Content, actorType, actorID) {
 			return
 		}
+		if actorType == "agent" && !h.admitEditedAgentResponsibilityMention(w, r, issue, existing, req.Content, actorID) {
+			return
+		}
 		// A content edit is a NEW action, so its delegation lineage must key on THIS
 		// edit. Only the AGENT author re-editing its OWN comment carries the lineage
 		// forward (commentSourceTaskID re-stamps the current editing task) — so
@@ -3743,7 +3856,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if actorType == "agent" {
+	if actorType == "agent" && oldContent == req.Content {
 		issue := triggerIssue
 		if issue == nil {
 			loaded, loadErr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: existing.IssueID, WorkspaceID: existing.WorkspaceID})
@@ -3753,14 +3866,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			}
 			issue = &loaded
 		}
-		task, _ := h.taskFromRequestHeader(r)
-		valid, mentionErr := h.validateAgentResponsibilityMention(r.Context(), *issue, req.Content, actorID, &task)
-		if mentionErr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
-			return
-		}
-		if !valid {
-			writeError(w, http.StatusUnprocessableEntity, "agent comments must mention a responsible workspace agent; squad workers must mention their leader")
+		if !h.admitEditedAgentResponsibilityMention(w, r, *issue, existing, req.Content, actorID) {
 			return
 		}
 	}

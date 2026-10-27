@@ -243,6 +243,27 @@ SELECT id, COALESCE(instructions, '')::text, 'agent'
 FROM agent WHERE workspace_id = sqlc.arg('workspace_id')::uuid
 ORDER BY scope, scope_id;
 
+-- name: ListWorkspaceCarrierTextsBatch :many
+SELECT scope_id, effective_content, scope
+FROM (
+    SELECT id AS scope_id, COALESCE(context, '')::text AS effective_content, 'workspace'::text AS scope
+    FROM workspace WHERE id = sqlc.arg('workspace_id')::uuid
+    UNION ALL
+    SELECT id, COALESCE(instructions, '')::text, 'project'
+    FROM project WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+    UNION ALL
+    SELECT id, COALESCE(instructions, '')::text, 'squad'
+    FROM squad WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+    UNION ALL
+    SELECT id, COALESCE(instructions, '')::text, 'agent'
+    FROM agent WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+) AS carriers
+WHERE sqlc.narg('after_scope')::text IS NULL
+   OR scope > sqlc.narg('after_scope')::text
+   OR (scope = sqlc.narg('after_scope')::text AND scope_id > sqlc.narg('after_scope_id')::uuid)
+ORDER BY scope, scope_id
+LIMIT sqlc.arg('row_limit')::int;
+
 -- name: GetPromptStructureBaseline :one
 SELECT * FROM prompt_structure_baseline
 WHERE prompt_structure_baseline.carrier_scope = $1
