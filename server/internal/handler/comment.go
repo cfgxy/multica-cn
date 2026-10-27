@@ -1968,6 +1968,15 @@ func taskCoversReplyParent(task db.AgentTaskQueue, parentID pgtype.UUID) bool {
 	return false
 }
 
+func taskStatusAllowsComment(status string) bool {
+	switch status {
+	case "dispatched", "running", "waiting_local_directory":
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	issueID := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, issueID)
@@ -2041,6 +2050,19 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 
 	// Determine author identity: agent (via X-Agent-ID header) or member.
 	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	var activeTaskID pgtype.UUID
+	if r.Header.Get("X-Actor-Source") == "task_token" {
+		task, ok := h.taskFromRequestHeader(r)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "invalid task token")
+			return
+		}
+		if !taskStatusAllowsComment(task.Status) {
+			writeError(w, http.StatusConflict, "task is no longer active")
+			return
+		}
+		activeTaskID = task.ID
+	}
 	if authorType == "agent" {
 		reason, err := h.validateAgentResponsibilityMention(r.Context(), issue, req.Content, authorID)
 		if err != nil {
@@ -2167,6 +2189,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 
 	created, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
 		ID:           dbid.NewV7(),
+		ActiveTaskID: activeTaskID,
 		IssueID:      issue.ID,
 		WorkspaceID:  issue.WorkspaceID,
 		AuthorType:   authorType,
@@ -2177,6 +2200,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		SourceTaskID: sourceTaskID,
 	})
 	if err != nil {
+		if activeTaskID.Valid && errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusConflict, "task is no longer active")
+			return
+		}
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create comment: "+err.Error())
 		return
