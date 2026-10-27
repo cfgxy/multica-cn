@@ -437,12 +437,22 @@ WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1);
 -- Centralizing this here means every comment entrypoint inherits both
 -- guarantees regardless of what a caller passes. The "Updated date" sort and
 -- the daemon GC TTL both read updated_at, so this consistency is load-bearing.
-WITH touched_issue AS (
+-- Task-token comments lock their active task row so cancellation and comment
+-- creation serialize; a NULL active_task_id preserves non-task comment paths.
+WITH active_task AS MATERIALIZED (
+    SELECT id
+    FROM agent_task_queue
+    WHERE id = sqlc.narg('active_task_id')::uuid
+      AND status IN ('dispatched', 'running', 'waiting_local_directory')
+    FOR SHARE
+), touched_issue AS (
     UPDATE issue SET
         updated_at = now(),
         revision = revision + 1,
         last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now())
-    WHERE issue.id = sqlc.arg(issue_id) AND issue.workspace_id = sqlc.arg(workspace_id)
+    WHERE issue.id = sqlc.arg(issue_id)
+      AND issue.workspace_id = sqlc.arg(workspace_id)
+      AND (sqlc.narg('active_task_id')::uuid IS NULL OR EXISTS (SELECT 1 FROM active_task))
     RETURNING issue.id, issue.workspace_id, issue.revision
 ), inserted_comment AS (
     INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, source_task_id, quick_action_id, via_plugin_id, id)
