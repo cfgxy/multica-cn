@@ -1556,6 +1556,10 @@ func (h *Handler) validateExplicitAgentMentions(ctx context.Context, issue db.Is
 }
 
 func (h *Handler) admitExplicitAgentMentions(w http.ResponseWriter, r *http.Request, issue db.Issue, content, actorType, actorID string) bool {
+	if actorType == "agent" && !isNoteComment(content) && util.IsAgentSelfMention(content, actorID) {
+		writeError(w, http.StatusUnprocessableEntity, "agents cannot mention themselves in comments")
+		return false
+	}
 	invalid, err := h.validateExplicitAgentMentions(r.Context(), issue, content, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to validate comment mentions")
