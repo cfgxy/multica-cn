@@ -288,6 +288,8 @@ func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T)
 	}
 	runtimeID := dbfx.Runtime(t, "assigned-agent-reply-runtime")
 	agentID := dbfx.Agent(t, "assigned-agent-reply-author", runtimeID)
+	firstTargetID := dbfx.Agent(t, "assigned-agent-reply-first-target", dbfx.Runtime(t, "assigned-agent-reply-first-target-runtime"))
+	secondTargetID := dbfx.Agent(t, "assigned-agent-reply-second-target", dbfx.Runtime(t, "assigned-agent-reply-second-target-runtime"))
 	issueID := dbfx.Issue(t, "assigned agent can close member thread", testutil.Cols{
 		"assignee_type": "agent",
 		"assignee_id":   agentID,
@@ -312,6 +314,31 @@ func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T)
 	if len(created.TriggerOutcomes) != 0 {
 		t.Fatalf("terminal reply triggered agents: %+v", created.TriggerOutcomes)
 	}
+	twoAgentMentions := fmt.Sprintf("[@First](mention://agent/%s) [@Second](mention://agent/%s)", firstTargetID, secondTargetID)
+	assertTwoTargetRejection := func(t *testing.T, name string, handler http.HandlerFunc, req *http.Request) {
+		t.Helper()
+		var rejected map[string]string
+		testutil.Call(t, handler, req).Want(http.StatusUnprocessableEntity).JSON(&rejected)
+		if rejected["error"] != "agent comments may mention only one valid responsibility agent" || rejected["code"] != "invalid_agent_comment_mention" {
+			t.Fatalf("%s two-target rejection = %+v", name, rejected)
+		}
+		for _, targetID := range []string{firstTargetID, secondTargetID} {
+			if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, targetID); got != 0 {
+				t.Fatalf("%s dispatched target %s: count=%d", name, targetID, got)
+			}
+		}
+	}
+
+	postWithTwoTargets := commentRequest(http.MethodPost, issueID, "", map[string]any{
+		"content":   twoAgentMentions,
+		"parent_id": parentID,
+	})
+	postWithTwoTargets.Header.Set("X-Agent-ID", agentID)
+	postWithTwoTargets.Header.Set("X-Task-ID", taskID)
+	assertTwoTargetRejection(t, "create", testHandler.CreateComment, postWithTwoTargets)
+	if got := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, issueID); got != 2 {
+		t.Fatalf("rejected create stored comment: count=%d, want 2", got)
+	}
 
 	contentEdit := commentRequest(http.MethodPut, issueID, created.ID, map[string]any{
 		"content": "The requested work is complete after verification.",
@@ -322,6 +349,25 @@ func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T)
 	testutil.Call(t, testHandler.UpdateComment, contentEdit).Want(http.StatusOK).JSON(&updated)
 	if updated.Content != "The requested work is complete after verification." || len(updated.TriggerOutcomes) != 0 {
 		t.Fatalf("terminal content edit = %+v", updated)
+	}
+	twoTargetContentEdit := commentRequest(http.MethodPut, issueID, created.ID, map[string]any{
+		"content": twoAgentMentions,
+	})
+	twoTargetContentEdit.Header.Set("X-Agent-ID", agentID)
+	twoTargetContentEdit.Header.Set("X-Task-ID", taskID)
+	assertTwoTargetRejection(t, "content edit", testHandler.UpdateComment, twoTargetContentEdit)
+
+	twoTargetAttachmentEdit := commentRequest(http.MethodPut, issueID, created.ID, map[string]any{
+		"content":        twoAgentMentions,
+		"attachment_ids": []string{},
+	})
+	twoTargetAttachmentEdit.Header.Set("X-Agent-ID", agentID)
+	twoTargetAttachmentEdit.Header.Set("X-Task-ID", taskID)
+	assertTwoTargetRejection(t, "attachment edit", testHandler.UpdateComment, twoTargetAttachmentEdit)
+	var storedContent string
+	dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, created.ID).Scan(&storedContent)
+	if storedContent != updated.Content {
+		t.Fatalf("rejected edit changed content to %q", storedContent)
 	}
 
 	attachmentEdit := commentRequest(http.MethodPut, issueID, created.ID, map[string]any{

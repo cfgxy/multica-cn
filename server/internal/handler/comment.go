@@ -1555,7 +1555,10 @@ func (h *Handler) validateExplicitAgentMentions(ctx context.Context, issue db.Is
 	return invalid, nil
 }
 
-const agentCommentMentionPolicy = "Agent comments may contain at most one valid responsibility mention in the standard [@Label](mention://agent/<uuid>) form; agents cannot mention themselves; a non-leader member of the squad currently assigned to the issue must mention exactly that squad's leader; a directly assigned agent may reply to a member parent without a mention; /note skips explicit target admission but does not bypass responsibility rules; plain text and malformed or unsupported mention links do not count."
+const (
+	agentCommentMentionPolicy    = "Agent comments may contain at most one valid responsibility mention in the standard [@Label](mention://agent/<uuid>) form; agents cannot mention themselves; a non-leader member of the squad currently assigned to the issue must mention exactly that squad's leader; a directly assigned agent may reply to a member parent without a valid responsibility mention; /note skips explicit target admission but does not bypass responsibility rules; plain text and malformed or unsupported mention links do not count."
+	noResponsibilityMentionError = "agent comments must mention one valid responsibility agent"
+)
 
 func writeAgentCommentMentionError(w http.ResponseWriter, message string) {
 	writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
@@ -1610,7 +1613,7 @@ func (h *Handler) validateAgentResponsibilityMention(ctx context.Context, issue 
 		}
 	}
 	if len(validAgentMentions) == 0 {
-		return "agent comments must mention one valid responsibility agent", nil
+		return noResponsibilityMentionError, nil
 	}
 	if len(validAgentMentions) > 1 {
 		return "agent comments may mention only one valid responsibility agent", nil
@@ -1980,7 +1983,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
 			return
 		}
-		if reason != "" && !assignedAgentMayReplyToMemberWithoutMention(issue, parentComment, authorID) {
+		if reason != "" && !(reason == noResponsibilityMentionError && assignedAgentMayReplyToMemberWithoutMention(issue, parentComment, authorID)) {
 			writeAgentCommentMentionError(w, reason)
 			return
 		}
@@ -3805,7 +3808,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 					parentComment = &parent
 				}
 			}
-			if !assignedAgentMayReplyToMemberWithoutMention(*issue, parentComment, actorID) {
+			if reason != noResponsibilityMentionError || !assignedAgentMayReplyToMemberWithoutMention(*issue, parentComment, actorID) {
 				writeAgentCommentMentionError(w, reason)
 				return
 			}
