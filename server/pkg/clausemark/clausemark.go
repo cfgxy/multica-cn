@@ -137,9 +137,14 @@ func Static(text string, clauses []RenderedClause) string {
 	stable := StripMarkers(text)
 	for _, c := range clauses {
 		remove := func(body string) {
-			stable = removeClauseBlock(stable, body)
-			stable = removeSectionBlock(stable, body)
-			stable = removeExactBlock(stable, body)
+			switch {
+			case firstSectionHeading(body) != "":
+				stable = removeSectionBlock(stable, body)
+			case firstClauseLabel(body) != "":
+				stable = removeClauseBlock(stable, body)
+			default:
+				stable = removeExactBlock(stable, body)
+			}
 		}
 		remove(c.Body)
 		for _, body := range c.SupersededBodies {
@@ -316,34 +321,34 @@ func removeClauseBlock(text, block string) string {
 	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
 
-// removeSectionBlock moves a legacy section-sized clause asset out of stable
-// text before it is rendered in the managed region. New clause assets use
-// bold labels, but the initial inventory also contains whole ## sections.
+// removeSectionBlock 仅在同名章节的完整正文与资产相同时移除遗留章节资产。
 func removeSectionBlock(text, block string) string {
 	section := firstSectionHeading(block)
 	if section == "" {
 		return text
 	}
 	lines := splitLines(text)
-	start := -1
-	end := len(lines)
-	for i, line := range lines {
-		heading := sectionHeading(line)
-		if heading == "" {
+	target := strings.TrimRight(strings.ReplaceAll(block, "\r\n", "\n"), "\n")
+	out := make([]string, 0, len(lines))
+	for start := 0; start < len(lines); {
+		if sectionHeading(lines[start]) != section {
+			out = append(out, lines[start])
+			start++
 			continue
 		}
-		if start >= 0 {
-			end = i
-			break
+
+		end := start + 1
+		for end < len(lines) && sectionHeading(lines[end]) == "" {
+			end++
 		}
-		if heading == section {
-			start = i
+		candidate := strings.TrimRight(strings.Join(lines[start:end], "\n"), "\n")
+		if candidate == target {
+			start = end
+			continue
 		}
+		out = append(out, lines[start:end]...)
+		start = end
 	}
-	if start < 0 {
-		return text
-	}
-	out := append(lines[:start:start], lines[end:]...)
 	return strings.TrimRight(strings.Join(out, "\n"), "\n")
 }
 
