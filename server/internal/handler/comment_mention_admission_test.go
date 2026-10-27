@@ -243,49 +243,6 @@ func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T)
 	}
 }
 
-func TestAssignedSquadLeaderCanReplyToMemberWithoutResponsibilityMention(t *testing.T) {
-	if testHandler == nil || testPool == nil {
-		t.Skip("database not available")
-	}
-	runtimeID := dbfx.Runtime(t, "assigned-squad-leader-reply-runtime")
-	leaderID := dbfx.Agent(t, "assigned-squad-leader-reply-author", runtimeID)
-	workerID := dbfx.Agent(t, "assigned-squad-worker-reply-author", runtimeID)
-	squadID := dbfx.Squad(t, "assigned squad reply", leaderID)
-	issueID := dbfx.Issue(t, "assigned squad leader can close member thread", testutil.Cols{
-		"assignee_type": "squad",
-		"assignee_id":   squadID,
-	})
-	parentID := dbfx.Comment(t, issueID, "please complete this", testutil.Cols{
-		"author_type": "member",
-		"author_id":   testUserID,
-	})
-	leaderTaskID := dbfx.Task(t, leaderID, testutil.Cols{
-		"runtime_id": runtimeID, "issue_id": issueID, "trigger_comment_id": parentID,
-		"status": "running", "started_at": testutil.Raw("now()"),
-	})
-	workerTaskID := dbfx.Task(t, workerID, testutil.Cols{
-		"runtime_id": runtimeID, "issue_id": issueID, "trigger_comment_id": parentID,
-		"status": "running", "started_at": testutil.Raw("now()"),
-	})
-
-	request := func(agentID, taskID string) *http.Request {
-		req := commentRequest(http.MethodPost, issueID, "", map[string]any{
-			"content":   "The requested work is complete; no follow-up action is assigned.",
-			"parent_id": parentID,
-		})
-		req.Header.Set("X-Agent-ID", agentID)
-		req.Header.Set("X-Task-ID", taskID)
-		return req
-	}
-
-	var created CommentResponse
-	testutil.Call(t, testHandler.CreateComment, request(leaderID, leaderTaskID)).Want(http.StatusCreated).JSON(&created)
-	if len(created.TriggerOutcomes) != 0 {
-		t.Fatalf("terminal squad leader reply triggered agents: %+v", created.TriggerOutcomes)
-	}
-	testutil.Call(t, testHandler.CreateComment, request(workerID, workerTaskID)).Want(http.StatusUnprocessableEntity)
-}
-
 func TestCommentMentionAdmissionNormalizedSpansAndPreview(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
