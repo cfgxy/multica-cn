@@ -381,6 +381,51 @@ func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T)
 	if attachmentUpdated.Content != updated.Content || len(attachmentUpdated.TriggerOutcomes) != 0 {
 		t.Fatalf("terminal attachment edit = %+v", attachmentUpdated)
 	}
+
+	singleTargetMention := fmt.Sprintf("[@First](mention://agent/%s)", firstTargetID)
+	delegatingComment := commentRequest(http.MethodPost, issueID, "", map[string]any{
+		"content":   singleTargetMention,
+		"parent_id": parentID,
+	})
+	delegatingComment.Header.Set("X-Agent-ID", agentID)
+	delegatingComment.Header.Set("X-Task-ID", taskID)
+	var delegated CommentResponse
+	testutil.Call(t, testHandler.CreateComment, delegatingComment).Want(http.StatusCreated).JSON(&delegated)
+	if len(delegated.TriggerOutcomes) != 1 || delegated.TriggerOutcomes[0].TargetID != firstTargetID || delegated.TriggerOutcomes[0].Status != DispatchQueued {
+		t.Fatalf("single-target delegation = %+v, want one queued task for %s", delegated.TriggerOutcomes, firstTargetID)
+	}
+
+	var queuedTaskID, queuedStatus string
+	dbfx.QueryRow(t, `SELECT id, status FROM agent_task_queue WHERE trigger_comment_id = $1 AND agent_id = $2`, delegated.ID, firstTargetID).Scan(&queuedTaskID, &queuedStatus)
+	if queuedStatus != "queued" {
+		t.Fatalf("single-target task status = %q, want queued", queuedStatus)
+	}
+
+	legacyTwoTargetEdit := commentRequest(http.MethodPut, issueID, delegated.ID, map[string]any{
+		"content": twoAgentMentions,
+	})
+	legacyTwoTargetEdit.Header.Set("X-Agent-ID", agentID)
+	legacyTwoTargetEdit.Header.Set("X-Task-ID", taskID)
+	var legacyRejected map[string]string
+	testutil.Call(t, testHandler.UpdateComment, legacyTwoTargetEdit).Want(http.StatusUnprocessableEntity).JSON(&legacyRejected)
+	if legacyRejected["error"] != "agent comments may mention only one valid responsibility agent" {
+		t.Fatalf("legacy two-target rejection = %+v", legacyRejected)
+	}
+
+	var storedDelegatedContent string
+	dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, delegated.ID).Scan(&storedDelegatedContent)
+	if storedDelegatedContent != singleTargetMention {
+		t.Fatalf("rejected legacy edit changed content to %q", storedDelegatedContent)
+	}
+	dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, queuedTaskID).Scan(&queuedStatus)
+	if queuedStatus != "queued" {
+		t.Fatalf("rejected legacy edit cancelled queued task: status=%q", queuedStatus)
+	}
+	var cancellationEvents int
+	dbfx.QueryRow(t, `SELECT count(*) FROM audit_event WHERE task_id = $1 AND domain = 'run' AND event_type = 'run.cancelled'`, queuedTaskID).Scan(&cancellationEvents)
+	if cancellationEvents != 0 {
+		t.Fatalf("rejected legacy edit wrote %d run.cancelled audit events", cancellationEvents)
+	}
 }
 
 func TestCommentMentionAdmissionNormalizedSpansAndPreview(t *testing.T) {
