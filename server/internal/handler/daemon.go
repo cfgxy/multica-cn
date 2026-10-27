@@ -172,6 +172,7 @@ type BranchAdoptionAuthorizationResponse struct {
 	Source                    BranchAdoptionOwner `json:"source"`
 	Continuation              BranchAdoptionOwner `json:"continuation"`
 	SourceIssueSuspended      bool                `json:"source_issue_suspended"`
+	SourceTaskCompleted       bool                `json:"source_task_completed"`
 	ContinuationTaskIsRunning bool                `json:"continuation_task_is_running"`
 }
 
@@ -250,8 +251,10 @@ func (h *Handler) AuthorizeBranchAdoption(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "source issue not found")
 		return
 	}
-	if !sourceIssue.SuspendedAt.Valid {
-		writeError(w, http.StatusConflict, "source issue is not suspended")
+	sourceIssueSuspended := sourceIssue.SuspendedAt.Valid
+	sourceTaskCompleted := source.Status == "completed"
+	if !branchAdoptionSourceCanContinue(sourceIssueSuspended, sourceTaskCompleted) {
+		writeError(w, http.StatusConflict, "source issue is not suspended and source task is not completed")
 		return
 	}
 
@@ -269,9 +272,14 @@ func (h *Handler) AuthorizeBranchAdoption(w http.ResponseWriter, r *http.Request
 			ConversationID: uuidToString(continuation.IssueID),
 			TaskID:         continuationTaskID,
 		},
-		SourceIssueSuspended:      true,
+		SourceIssueSuspended:      sourceIssueSuspended,
+		SourceTaskCompleted:       sourceTaskCompleted,
 		ContinuationTaskIsRunning: true,
 	})
+}
+
+func branchAdoptionSourceCanContinue(sourceIssueSuspended, sourceTaskCompleted bool) bool {
+	return sourceIssueSuspended || sourceTaskCompleted
 }
 
 // verifyDaemonWorkspaceAccess checks workspace access without writing an HTTP error.
