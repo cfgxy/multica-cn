@@ -1659,6 +1659,35 @@ func assignedAgentMayReplyToMemberWithoutMention(issue db.Issue, parent *db.Comm
 		issue.AssigneeID.Valid && uuidToString(issue.AssigneeID) == actorID
 }
 
+func (h *Handler) admitEditedAgentResponsibilityMention(w http.ResponseWriter, r *http.Request, issue db.Issue, existing db.Comment, content, actorID string) bool {
+	reason, mentionErr := h.validateAgentResponsibilityMention(r.Context(), issue, content, actorID)
+	if mentionErr != nil {
+		writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
+		return false
+	}
+	if reason == "" {
+		return true
+	}
+
+	var parentComment *db.Comment
+	if existing.ParentID.Valid {
+		parent, parentErr := h.Queries.GetComment(r.Context(), existing.ParentID)
+		if parentErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load parent comment for responsibility mention validation")
+			return false
+		}
+		if uuidToString(parent.IssueID) == uuidToString(existing.IssueID) {
+			parentComment = &parent
+		}
+	}
+	if reason == noResponsibilityMentionError && assignedAgentMayReplyToMemberWithoutMention(issue, parentComment, actorID) {
+		return true
+	}
+
+	writeAgentCommentMentionError(w, reason)
+	return false
+}
+
 type CommentTriggerAgentResponse struct {
 	ID        string  `json:"id"`
 	Name      string  `json:"name"`
@@ -3754,6 +3783,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		if !h.admitExplicitAgentMentions(w, r, issue, req.Content, actorType, actorID) {
 			return
 		}
+		if actorType == "agent" && !h.admitEditedAgentResponsibilityMention(w, r, issue, existing, req.Content, actorID) {
+			return
+		}
 		// A content edit is a NEW action, so its delegation lineage must key on THIS
 		// edit. Only the AGENT author re-editing its OWN comment carries the lineage
 		// forward (commentSourceTaskID re-stamps the current editing task) — so
@@ -3781,7 +3813,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if actorType == "agent" {
+	if actorType == "agent" && oldContent == req.Content {
 		issue := triggerIssue
 		if issue == nil {
 			loaded, loadErr := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: existing.IssueID, WorkspaceID: existing.WorkspaceID})
@@ -3791,27 +3823,8 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			}
 			issue = &loaded
 		}
-		reason, mentionErr := h.validateAgentResponsibilityMention(r.Context(), *issue, req.Content, actorID)
-		if mentionErr != nil {
-			writeError(w, http.StatusInternalServerError, "failed to validate responsibility mention")
+		if !h.admitEditedAgentResponsibilityMention(w, r, *issue, existing, req.Content, actorID) {
 			return
-		}
-		if reason != "" {
-			var parentComment *db.Comment
-			if existing.ParentID.Valid {
-				parent, parentErr := h.Queries.GetComment(r.Context(), existing.ParentID)
-				if parentErr != nil {
-					writeError(w, http.StatusInternalServerError, "failed to load parent comment for responsibility mention validation")
-					return
-				}
-				if uuidToString(parent.IssueID) == uuidToString(existing.IssueID) {
-					parentComment = &parent
-				}
-			}
-			if reason != noResponsibilityMentionError || !assignedAgentMayReplyToMemberWithoutMention(*issue, parentComment, actorID) {
-				writeAgentCommentMentionError(w, reason)
-				return
-			}
 		}
 	}
 
