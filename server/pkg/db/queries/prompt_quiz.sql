@@ -413,6 +413,12 @@ SELECT
     COALESCE(tu.total_tokens, 0)::bigint AS run_tokens
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
+-- The collector cannot form a result when the item is gone or belongs to a
+-- different workspace. Keep those terminal rows out of the bounded candidate
+-- set instead of discovering the permanent condition after LIMIT.
+JOIN prompt_quiz_item pqi
+  ON pqi.id = atq.trigger_evidence_ref_id
+ AND pqi.workspace_id = a.workspace_id
 LEFT JOIN LATERAL (
     SELECT
         SUM(u.input_tokens + u.output_tokens)::bigint AS total_tokens,
@@ -424,6 +430,27 @@ WHERE atq.originator_source = 'quiz'
   AND atq.issue_id IS NULL
   AND atq.status IN ('completed', 'failed', 'cancelled')
   AND atq.completed_at IS NOT NULL
+  -- These fields are immutable claim-time evidence. A terminal row missing any
+  -- of them cannot later become attributable, so exclude it before the fixed
+  -- candidate window rather than letting it permanently starve valid runs.
+  -- Keep the version predicate equivalent to agentTierVersion: JSON integer,
+  -- positive, and representable by Go's int32. Do not cast the JSON text:
+  -- PostgreSQL may evaluate WHERE predicates in any order, so a cast here
+  -- could fail before the JSON type and digit predicates reject legacy data.
+  AND jsonb_typeof(atq.prompt_versions -> 'agent') = 'number'
+  AND atq.prompt_versions ->> 'agent' ~ '^[1-9][0-9]{0,9}$'
+  AND (
+    length(atq.prompt_versions ->> 'agent') < 10
+    OR (
+      length(atq.prompt_versions ->> 'agent') = 10
+      AND (atq.prompt_versions ->> 'agent') COLLATE "C" <= '2147483647'
+    )
+  )
+  AND atq.runtime_id IS NOT NULL
+  -- batchIDFromContext accepts canonical, URN, raw-hex, and braced UUID forms.
+  -- Keep every form it can parse; malformed contexts cannot produce a result.
+  AND jsonb_typeof(atq.context -> 'quiz_batch_id') = 'string'
+  AND atq.context ->> 'quiz_batch_id' ~* '^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\})$'
   AND NOT EXISTS (
     SELECT 1 FROM prompt_quiz_result r
     WHERE r.task_id = atq.id
