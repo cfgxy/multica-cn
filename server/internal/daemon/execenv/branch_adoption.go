@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// BranchAdoption binds a suspended source task's managed branch to one running
+// BranchAdoption binds an authorized source task's managed branch to one running
 // continuation task. The daemon constructs this only from its token-bound task
 // context and the server's authorization response; it is not a CLI trust
 // boundary.
