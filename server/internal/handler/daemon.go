@@ -5518,22 +5518,28 @@ type TaskCancelAckRequest struct {
 	// preserved worktree is the only pointer left to the agent's work.
 	ErrorMessage  string `json:"error_message,omitempty"`
 	FailureReason string `json:"failure_reason,omitempty"`
-	// Confirmed: true when the daemon interrupted a live process tree for
-	// this stop (RUYI-292 two-phase cancel). Observability only — the flip to
-	// cancelled is driven by the ack itself, flag or not: a daemon that acks
-	// without it (older build, or the task-gone pre-completion check) has
-	// still reported the run as stopped.
+	// Confirmed attests that the daemon has a proven worker exit or stopped
+	// unit cgroup for this cancellation. The server rejects acknowledgements
+	// without it so a cancelled execution context cannot terminalize a task
+	// while a supervised worker remains alive.
 	Confirmed bool `json:"confirmed,omitempty"`
 }
 
+	// An acknowledgement is the transition from cancel_requested to cancelled.
+	// Refuse a daemon that cannot attest to a proven worker exit; otherwise a
+	// cancelled context alone can terminalize a task while its unit still runs.
+	if !req.Confirmed {
+		writeError(w, http.StatusConflict, "cancel acknowledgement requires confirmed worker stop")
+		return
+	}
 func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
 	if !ok {
 		return
 	}
-	// Body is optional: older daemons send `{}`, and a decode failure must not
-	// break the cancellation contract this endpoint exists for.
+	// Decode failure leaves the request unconfirmed and is rejected below. The
+	// endpoint only accepts an acknowledgement that carries stop evidence.
 	var req TaskCancelAckRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	// Same persistence hazard as /fail and /complete: these strings go straight

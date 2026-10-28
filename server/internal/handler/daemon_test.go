@@ -4248,8 +4248,29 @@ func TestAckTaskCancelled(t *testing.T) {
 		t.Fatal("cross-workspace ack must not claim the marker")
 	}
 
+	// A daemon must provide worker-stop evidence before the endpoint can settle
+	// any cancellation side effects or advance cancel_requested to cancelled.
+	unconfirmedTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID,
+		"issue_id":   nil,
+		"status":     "cancel_requested",
+		"started_at": testutil.Raw("now()"),
+	})
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, unconfirmedTaskID)
+	})
+	req = newDaemonTokenRequest("POST", "/api/daemon/tasks/"+unconfirmedTaskID+"/cancel-ack", nil,
+		testWorkspaceID, "legit-daemon")
+	req = withURLParam(req, "taskId", unconfirmedTaskID)
+	testutil.Call(t, testHandler.AckTaskCancelled, req).Want(http.StatusConflict)
+	var status string
+	dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, unconfirmedTaskID).Scan(&status)
+	if status != "cancel_requested" {
+		t.Fatalf("unconfirmed cancellation status = %q, want cancel_requested", status)
+	}
+
 	// Same-workspace token settles the deferred finalize.
-	req = newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/cancel-ack", nil,
+	req = newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/cancel-ack", map[string]any{"confirmed": true},
 		testWorkspaceID, "legit-daemon")
 	req = withURLParam(req, "taskId", taskID)
 	testutil.Call(t, testHandler.AckTaskCancelled, req).Want(http.StatusOK)
@@ -4268,7 +4289,7 @@ func TestAckTaskCancelled(t *testing.T) {
 	}
 
 	// Idempotent: a second ack is a no-op (no duplicate Stopped.).
-	req = newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/cancel-ack", nil,
+	req = newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/cancel-ack", map[string]any{"confirmed": true},
 		testWorkspaceID, "legit-daemon")
 	req = withURLParam(req, "taskId", taskID)
 	testutil.Call(t, testHandler.AckTaskCancelled, req).Want(http.StatusOK)

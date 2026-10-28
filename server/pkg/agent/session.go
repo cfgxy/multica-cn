@@ -47,10 +47,16 @@ type workerSession struct {
 	startCtx    context.Context
 	startCancel context.CancelFunc
 	driverOnce  sync.Once
+	stopMu      sync.Mutex
+	stopStarted bool
 	closeOnce   sync.Once
 	waitOnce    sync.Once
 	waitResult  error
 	reapDone    chan struct{} // closed once the worker's exit is proven; past it the cancel driver has no kill target
+	exitSeen    chan struct{} // closed once WorkerHandle.Wait reports an exit; the cgroup may still be stopping
+	cancelDone  chan struct{} // closed when a context-triggered stop sequence reaches a terminal outcome
+	stopDone    chan struct{} // closed after the complete unit cgroup stop reaches a terminal outcome
+	stopErr     error
 }
 
 type sessionMode int
@@ -70,6 +76,9 @@ func newWorkerSession(cmd *exec.Cmd, sup *Supervision) *workerSession {
 		s.mode = sessionSupervised
 		s.reattaching = sup.Reattach
 		s.reapDone = make(chan struct{})
+		s.exitSeen = make(chan struct{})
+		s.cancelDone = make(chan struct{})
+		s.stopDone = make(chan struct{})
 	}
 	return s
 }
@@ -160,7 +169,7 @@ func (s *workerSession) Start(ctx context.Context, logger *slog.Logger) error {
 	s.pumpStdout(logger)
 	s.pumpStderr(logger)
 	s.pumpStdin()
-	s.armCancelDriver()
+	s.armCancelDriver(logger)
 
 	if s.reattaching {
 		logger.Info("reattached supervised worker", "run_id", spec.RunID, "pid", handle.PID())
@@ -241,11 +250,73 @@ func (s *workerSession) Wait(ctx context.Context) error {
 		return errors.New("supervised wait before start")
 	}
 	s.waitOnce.Do(func() {
-		exit, err := s.handle.Wait(ctx)
-		// The exit is proven: the cancel driver's job — unblocking a live
-		// worker — is over, so context cleanup that races past the happy
-		// path must not end in a signal against a reaped worker.
+		// A cancelled execution context asks the cancel driver to stop the
+		// worker; it is not exit evidence. Waiting with it would let a caller
+		// return and acknowledge cancellation while the systemd unit still runs.
+		waitCtx, cancelWait := context.WithCancel(context.Background())
+		defer cancelWait()
+		type waitOutcome struct {
+			exit WorkerExit
+			err  error
+		}
+		waitResult := make(chan waitOutcome, 1)
+		go func() {
+			exit, err := s.handle.Wait(waitCtx)
+			waitResult <- waitOutcome{exit: exit, err: err}
+		}()
+		var outcome waitOutcome
+		select {
+		case outcome = <-waitResult:
+		case <-s.cancelDone:
+			if s.detaching() {
+				cancelWait()
+				s.waitResult = ErrDetached
+				return
+			}
+			if err := s.sup.CancellationFailureError(); err != nil {
+				cancelWait()
+				s.waitResult = err
+				return
+			}
+			outcome = <-waitResult
+		}
+		if outcome.err == nil {
+			close(s.exitSeen)
+		}
+		if s.startCtx != nil && s.startCtx.Err() != nil && !s.detaching() {
+			// SIGKILL may yield an exit record before Stop verifies that the
+			// complete cgroup is gone. Let the cancellation sequence settle first.
+			<-s.cancelDone
+			if err := s.sup.CancellationFailureError(); err != nil {
+				cancelWait()
+				s.waitResult = err
+				return
+			}
+		}
+		exit, err := outcome.exit, outcome.err
+		if err != nil {
+			if !errors.Is(err, ErrDetached) {
+				s.sup.MarkCancellationUnconfirmed(fmt.Errorf("supervised worker wait: %w", err))
+				s.waitResult = s.sup.CancellationFailureError()
+				return
+			}
+			s.waitResult = err
+			return
+		}
+		if err := s.stopCgroup(nil); err != nil {
+			s.waitResult = s.sup.CancellationFailureError()
+			return
+		}
+		// The handle returned a recorded exit, so the cancel driver can no
+		// longer have a live target and the daemon may later acknowledge stop.
 		close(s.reapDone)
+		s.sup.MarkWorkerExitConfirmed()
+		if s.startCtx != nil && s.startCtx.Err() != nil && !s.detaching() {
+			if err := s.sup.CancellationConfirmationError(); err != nil {
+				s.waitResult = err
+				return
+			}
+		}
 		if s.startCancel != nil {
 			s.startCancel()
 		}
@@ -264,8 +335,6 @@ func (s *workerSession) Wait(ctx context.Context) error {
 		case <-time.After(pumpDrainGrace):
 		}
 		switch {
-		case err != nil:
-			s.waitResult = err
 		case exit.Code != 0 || exit.Signal != "":
 			s.waitResult = &WorkerExitError{Exit: exit}
 		default:
@@ -273,6 +342,33 @@ func (s *workerSession) Wait(ctx context.Context) error {
 		}
 	})
 	return s.waitResult
+}
+
+// stopCgroup waits for the transient unit's complete cgroup to disappear. A
+// launcher exit record only proves the leader exited; a remaining descendant
+// can still keep the unit alive. The shared operation also serializes a normal
+// exit with cancellation's SIGKILL→Stop path.
+func (s *workerSession) stopCgroup(beforeStop func()) error {
+	s.stopMu.Lock()
+	if s.stopStarted {
+		s.stopMu.Unlock()
+		<-s.stopDone
+		return s.stopErr
+	}
+	s.stopStarted = true
+	s.stopMu.Unlock()
+
+	s.sup.BeginCancellationStop()
+	if beforeStop != nil {
+		beforeStop()
+	}
+	s.stopErr = s.handle.Stop()
+	s.sup.EndCancellationStop(s.stopErr)
+	if s.stopErr != nil {
+		s.sup.MarkCancellationUnconfirmed(fmt.Errorf("supervised worker cgroup stop: %w", s.stopErr))
+	}
+	close(s.stopDone)
+	return s.stopErr
 }
 
 // pumpDrainGrace bounds Wait's wait for the stream pumps on cancel/detach
@@ -312,7 +408,7 @@ func (s *workerSession) detach() error {
 // backend set one), then SIGKILL. When the daemon itself is shutting down the
 // supervisor's detaching switch wins: the worker is left running and the next
 // daemon reconciles it.
-func (s *workerSession) armCancelDriver() {
+func (s *workerSession) armCancelDriver(logger *slog.Logger) {
 	ctx := s.startCtx
 	if ctx == nil {
 		return
@@ -320,11 +416,29 @@ func (s *workerSession) armCancelDriver() {
 	grace := s.cmd.WaitDelay
 	go func() {
 		<-ctx.Done()
-		if s.detaching() {
-			_ = s.detach()
-			return
-		}
 		s.driverOnce.Do(func() {
+			defer close(s.cancelDone)
+			if s.detaching() {
+				_ = s.detach()
+				return
+			}
+			markFailure := func(action string, err error) {
+				if err == nil {
+					return
+				}
+				failure := fmt.Errorf("supervised worker %s: %w", action, err)
+				s.sup.MarkCancellationUnconfirmed(failure)
+				logger.Error("supervised worker cancellation is unconfirmed", "action", action, "error", err)
+			}
+			forceStop := func() {
+				// Signal retains the backend's established process-group contract;
+				// Stop then kills the complete transient-unit cgroup and waits for
+				// its disappearance before recording an exit.
+				stopErr := s.stopCgroup(func() {
+					markFailure("SIGKILL", s.Signal(syscall.SIGKILL))
+				})
+				markFailure("cgroup stop", stopErr)
+			}
 			// A reaped worker is never a kill target: the natural-exit
 			// path proves the exit before any cancellation fan-out. Past
 			// this point the check is best-effort — a worker exiting in
@@ -335,21 +449,21 @@ func (s *workerSession) armCancelDriver() {
 			default:
 			}
 			if grace <= 0 {
-				_ = s.Signal(syscall.SIGKILL)
+				forceStop()
 				return
 			}
-			_ = s.Signal(syscall.SIGTERM)
-			done := make(chan struct{})
-			go func() {
-				_, _ = s.handle.Wait(context.Background())
-				close(done)
-			}()
+			if err := s.Signal(syscall.SIGTERM); err != nil {
+				markFailure("SIGTERM", err)
+				forceStop()
+				return
+			}
 			timer := time.NewTimer(grace)
 			defer timer.Stop()
 			select {
-			case <-done:
+			case <-s.reapDone:
+			case <-s.exitSeen:
 			case <-timer.C:
-				_ = s.Signal(syscall.SIGKILL)
+				forceStop()
 			}
 		})
 	}()
