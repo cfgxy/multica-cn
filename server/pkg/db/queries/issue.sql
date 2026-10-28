@@ -175,7 +175,13 @@ WHERE id = $1
 RETURNING *;
 
 -- name: UpdateIssue :one
-WITH candidate AS (
+WITH active_task AS MATERIALIZED (
+    SELECT id
+    FROM agent_task_queue
+    WHERE id = sqlc.narg('active_task_id')::uuid
+      AND status IN ('dispatched', 'running', 'waiting_local_directory')
+    FOR SHARE
+), candidate AS (
     SELECT
         i.*,
         COALESCE(sqlc.narg('title')::text, i.title) AS next_title,
@@ -220,6 +226,7 @@ WITH candidate AS (
     FROM issue AS i
     WHERE i.id = $1
       AND (sqlc.narg('expected_revision')::bigint IS NULL OR i.revision = sqlc.narg('expected_revision')::bigint)
+      AND (sqlc.narg('active_task_id')::uuid IS NULL OR EXISTS (SELECT 1 FROM active_task))
 ), changed AS (
     SELECT
         candidate.*,

@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,6 +43,8 @@ type Supervisor struct {
 	// unitProbe stands in for the systemd unit-active check in tests;
 	// nil uses s.sys. Probe failures fail open (never fabricate).
 	unitProbe func(ctx context.Context, unit string) (bool, error)
+	// unitKiller stands in for systemd's cgroup kill in tests; nil uses s.sys.
+	unitKiller func(ctx context.Context, unit string) error
 
 	// lostAfter bounds how long Wait polls a provably dead worker before
 	// synthesizing the lost exit; zero selects defaultLostConvergence.
@@ -128,9 +131,16 @@ func (s *Supervisor) Launch(ctx context.Context, spec agent.LaunchSpec) (agent.W
 	}
 	client, err := DialControl(ctx, man.ControlSocket, 30*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("supervisor: control dial after start %s: %w", spec.RunID, err)
+		return nil, controlDialAfterStartError(spec.RunID, err)
 	}
 	return s.newHandle(man, client), nil
+}
+
+// controlDialAfterStartError marks a post-systemd-run failure as unconfirmed:
+// the unit exists independently of the daemon even when its control socket
+// could not be reached.
+func controlDialAfterStartError(runID string, err error) error {
+	return fmt.Errorf("%w: supervisor control dial after start %s: %v", agent.ErrCancellationUnconfirmed, runID, err)
 }
 
 // Reattach binds to a previously launched run. It serves both reconciliation
@@ -306,6 +316,16 @@ func (s *Supervisor) unitActive(ctx context.Context, unit string) (bool, error) 
 	return s.sys.UnitActive(ctx, unit)
 }
 
+func (s *Supervisor) killUnit(ctx context.Context, unit string) error {
+	if s.unitKiller != nil {
+		return s.unitKiller(ctx, unit)
+	}
+	if s.sys == nil {
+		return fmt.Errorf("supervisor: no systemd controller for unit kill")
+	}
+	return s.sys.KillUnit(ctx, unit)
+}
+
 // lostSignal is the synthesized WorkerExit signal for a converged lost run.
 // It reads exec-style ("signal: lost") like "signal: killed" does.
 const lostSignal = "lost"
@@ -359,22 +379,36 @@ func (h *supervisedHandle) Signal(sig syscall.Signal) error {
 func (h *supervisedHandle) Stop() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	if err := h.sup.sys.KillUnit(ctx, h.man.Unit); err != nil {
-		return err
+	active, err := h.unitActiveOrCollected(ctx)
+	if err != nil {
+		return fmt.Errorf("supervisor: pre-stop liveness %s: %w", h.man.Unit, err)
 	}
-	// Wait until systemd reports the unit gone, so a racing launcher cannot
-	// resurrect state after we record the exit.
+	killed := false
+	if active {
+		if err := h.sup.killUnit(ctx, h.man.Unit); err != nil {
+			return err
+		}
+		killed = true
+	}
+	// Wait until systemd reports the unit gone before recording the exit. A
+	// successful kill request is not evidence that the worker's cgroup stopped;
+	// recording it while the unit is still active would let the daemon confirm a
+	// cancellation with live descendants.
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		active, err := h.sup.sys.UnitActive(ctx, h.man.Unit)
-		if err == nil && !active {
+		active, err := h.unitActiveOrCollectedAfterOwnKill(ctx, killed)
+		if err != nil {
+			return fmt.Errorf("supervisor: post-stop liveness %s: %w", h.man.Unit, err)
+		}
+		if !active {
 			break
 		}
 		if time.Now().After(deadline) {
-			break
+			return fmt.Errorf("supervisor: stop %s timed out waiting for unit inactive", h.man.Unit)
 		}
 		select {
 		case <-ctx.Done():
+			return fmt.Errorf("supervisor: stop %s waiting for unit inactive: %w", h.man.Unit, ctx.Err())
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
@@ -395,6 +429,37 @@ func (h *supervisedHandle) Stop() error {
 		}
 	}
 	return nil
+}
+
+// unitActiveOrCollected treats an unknown unit as stopped only when the
+// transient unit was collected after this run recorded a real exit. --collect
+// removes units after cgroup teardown, but a generic systemd probe failure
+// remains untrusted and must keep cancellation unconfirmed.
+func (h *supervisedHandle) unitActiveOrCollected(ctx context.Context) (bool, error) {
+	return h.unitActiveOrCollectedAfterOwnKill(ctx, false)
+}
+
+// unitActiveOrCollectedAfterOwnKill accepts a collected unit without a prior
+// exit record only after this Stop call successfully killed that same active
+// unit. The accepted KillUnit request plus systemd's collected response proves
+// the complete cgroup disappeared; neither generic probe failures nor an
+// unrelated collected unit carry that proof.
+func (h *supervisedHandle) unitActiveOrCollectedAfterOwnKill(ctx context.Context, ownKill bool) (bool, error) {
+	active, err := h.sup.unitActive(ctx, h.man.Unit)
+	if err == nil || !errors.Is(err, ErrUnitCollected) {
+		return active, err
+	}
+	if ownKill {
+		return false, nil
+	}
+	man, readErr := h.sup.mgr.ReadManifest(h.man.RunID)
+	if readErr != nil {
+		return false, fmt.Errorf("read manifest for collected unit: %w", readErr)
+	}
+	if man.Exit == nil || (man.Exit.Source != ExitSourceLauncher && man.Exit.Source != ExitSourceSupervisor) {
+		return false, fmt.Errorf("collected unit %s has no trusted exit record", h.man.Unit)
+	}
+	return false, nil
 }
 
 // Detach leaves the worker running for the next daemon (graceful shutdown).
