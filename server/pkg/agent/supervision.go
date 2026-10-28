@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"syscall"
 )
 
@@ -105,6 +107,11 @@ type WorkerExit struct {
 // over — the next daemon reconciles it.
 var ErrDetached = fmt.Errorf("worker detached: daemon shutdown leaves it running")
 
+// ErrCancellationUnconfirmed marks a cancellation whose worker exit could not
+// be proven. Callers must leave the server-side task in cancel_requested rather
+// than acknowledge it as cancelled.
+var ErrCancellationUnconfirmed = errors.New("worker cancellation is unconfirmed")
+
 func (e WorkerExit) Exited() bool { return e.Code >= 0 }
 
 func (e WorkerExit) Error() string {
@@ -130,10 +137,154 @@ type Supervision struct {
 	// initial prompt/handshake to a reattached worker — it consumed its
 	// prompt before the previous daemon died.
 	Reattach bool
+
+	stopMu                   sync.Mutex
+	workerExitConfirmed      bool
+	cancellationStopInFlight bool
+	cancellationFailureCause error
+	resolutionDone           chan struct{}
+	resolutionClosed         bool
 }
 
 // active reports whether this execution must launch through the supervisor.
 func (s *Supervision) active() bool { return s != nil && s.Supervisor != nil && s.RunID != "" }
+
+// MarkWorkerExitConfirmed records that WorkerHandle.Wait returned a proven
+// exit. It is intentionally separate from a successful signal: delivery of a
+// signal never proves the worker or its cgroup has stopped.
+func (s *Supervision) MarkWorkerExitConfirmed() {
+	if s == nil {
+		return
+	}
+	s.stopMu.Lock()
+	s.workerExitConfirmed = true
+	s.closeResolutionLocked()
+	s.stopMu.Unlock()
+}
+
+// BeginCancellationStop prevents an exit record delivered by SIGKILL from
+// confirming cancellation until the subsequent whole-cgroup Stop has finished.
+// The process leader can die before a descendant, so its exit alone is not
+// enough while the cgroup stop is still in flight.
+func (s *Supervision) BeginCancellationStop() {
+	if s == nil {
+		return
+	}
+	s.stopMu.Lock()
+	s.cancellationStopInFlight = true
+	s.stopMu.Unlock()
+}
+
+// EndCancellationStop records the terminal outcome of a whole-cgroup stop and
+// re-enables cancellation confirmation. A failed stop remains sticky.
+func (s *Supervision) EndCancellationStop(err error) {
+	if s == nil {
+		return
+	}
+	s.stopMu.Lock()
+	s.cancellationStopInFlight = false
+	if err != nil && s.cancellationFailureCause == nil {
+		s.cancellationFailureCause = err
+	}
+	s.closeResolutionLocked()
+	s.stopMu.Unlock()
+}
+
+// MarkCancellationUnconfirmed records a failed cancellation action. The
+// failure remains sticky even if the worker exits later: the daemon must not
+// claim a stop it could not verify through the cancellation path.
+func (s *Supervision) MarkCancellationUnconfirmed(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	s.stopMu.Lock()
+	if s.cancellationFailureCause == nil {
+		s.cancellationFailureCause = err
+	}
+	s.closeResolutionLocked()
+	s.stopMu.Unlock()
+}
+
+// WaitForWorkerStopResolution blocks until the supervised worker has either
+// proven its whole lifecycle scope stopped or recorded a cancellation failure.
+// A backend result is not equivalent to either event: several ACP backends
+// publish it before their deferred session Wait finishes the cgroup teardown.
+func (s *Supervision) WaitForWorkerStopResolution(ctx context.Context) error {
+	if !s.active() {
+		return nil
+	}
+	s.stopMu.Lock()
+	if err := s.cancellationConfirmationErrorLocked(); err != ErrCancellationUnconfirmed {
+		s.stopMu.Unlock()
+		return err
+	}
+	if s.resolutionDone == nil {
+		s.resolutionDone = make(chan struct{})
+	}
+	done := s.resolutionDone
+	s.stopMu.Unlock()
+
+	select {
+	case <-done:
+		return s.CancellationConfirmationError()
+	case <-ctx.Done():
+		return fmt.Errorf("%w: waiting for worker stop resolution: %v", ErrCancellationUnconfirmed, ctx.Err())
+	}
+}
+
+func (s *Supervision) closeResolutionLocked() {
+	if s.resolutionClosed {
+		return
+	}
+	if s.cancellationFailureCause == nil && (s.cancellationStopInFlight || !s.workerExitConfirmed) {
+		return
+	}
+	if s.resolutionDone == nil {
+		s.resolutionDone = make(chan struct{})
+	}
+	close(s.resolutionDone)
+	s.resolutionClosed = true
+}
+
+// CancellationFailureError reports a failed cancellation action without
+// requiring a worker exit record. It lets a session stop waiting when Kill or
+// Stop has already failed, while CancellationConfirmationError remains the
+// stricter gate for terminal acknowledgement.
+func (s *Supervision) CancellationFailureError() error {
+	if !s.active() {
+		return nil
+	}
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	if s.cancellationFailureCause == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", ErrCancellationUnconfirmed, s.cancellationFailureCause)
+}
+
+// CancellationConfirmationError returns nil only after a supervised worker
+// has a proven exit and every cancellation action succeeded.
+func (s *Supervision) CancellationConfirmationError() error {
+	if !s.active() {
+		return nil
+	}
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	return s.cancellationConfirmationErrorLocked()
+}
+
+func (s *Supervision) cancellationConfirmationErrorLocked() error {
+	if s.cancellationFailureCause != nil {
+		return fmt.Errorf("%w: %v", ErrCancellationUnconfirmed, s.cancellationFailureCause)
+	}
+	if s.cancellationStopInFlight {
+		return ErrCancellationUnconfirmed
+	}
+	if !s.workerExitConfirmed {
+		return ErrCancellationUnconfirmed
+	}
+	return nil
+}
 
 // ShutdownDetaching is the optional supervisor-side switch the daemon flips
 // while it is shutting down: a cancellation arriving after this point must

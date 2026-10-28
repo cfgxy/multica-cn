@@ -1968,7 +1968,7 @@ func taskCoversReplyParent(task db.AgentTaskQueue, parentID pgtype.UUID) bool {
 	return false
 }
 
-func taskStatusAllowsComment(status string) bool {
+func taskStatusAllowsWrite(status string) bool {
 	switch status {
 	case "dispatched", "running", "waiting_local_directory":
 		return true
@@ -2057,7 +2057,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "invalid task token")
 			return
 		}
-		if !taskStatusAllowsComment(task.Status) {
+		if !taskStatusAllowsWrite(task.Status) {
 			writeError(w, http.StatusConflict, "task is no longer active")
 			return
 		}

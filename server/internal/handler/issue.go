@@ -3328,6 +3328,34 @@ func refreshUntouchedNullableIssueParams(params *db.UpdateIssueParams, current d
 
 var errIssueFieldConflict = errors.New("issue text field conflict")
 
+func (h *Handler) activeTaskIDForIssueWrite(w http.ResponseWriter, r *http.Request) (pgtype.UUID, bool) {
+	if r.Header.Get("X-Actor-Source") != "task_token" {
+		return pgtype.UUID{}, true
+	}
+	task, ok := h.taskFromRequestHeader(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "invalid task token")
+		return pgtype.UUID{}, false
+	}
+	if !taskStatusAllowsWrite(task.Status) {
+		writeError(w, http.StatusConflict, "task is no longer active")
+		return pgtype.UUID{}, false
+	}
+	return task.ID, true
+}
+
+func (h *Handler) writeInactiveTaskError(w http.ResponseWriter, r *http.Request, err error) bool {
+	if !errors.Is(err, pgx.ErrNoRows) || r.Header.Get("X-Actor-Source") != "task_token" {
+		return false
+	}
+	task, ok := h.taskFromRequestHeader(r)
+	if ok && taskStatusAllowsWrite(task.Status) {
+		return false
+	}
+	writeError(w, http.StatusConflict, "task is no longer active")
+	return true
+}
+
 // entrySource names this write in the cascade audit details, distinguishing
 // http_update_issue from http_batch_update_issues. flippedOut is populated
 // on the success path with the decision cards this write flipped into
@@ -3458,6 +3486,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := requestUserID(r)
 	workspaceID := uuidToString(prevIssue.WorkspaceID)
+	activeTaskID, ok := h.activeTaskIDForIssueWrite(w, r)
+	if !ok {
+		return
+	}
 
 	// Read body as raw bytes so we can detect which fields were explicitly sent.
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -3479,6 +3511,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// Pre-fill nullable fields (bare sqlc.narg) with current values
 	params := db.UpdateIssueParams{
 		ID:            prevIssue.ID,
+		ActiveTaskID:  activeTaskID,
 		AssigneeType:  prevIssue.AssigneeType,
 		AssigneeID:    prevIssue.AssigneeID,
 		StartDate:     prevIssue.StartDate,
@@ -3713,6 +3746,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		if writeIssueStatusRaceError(w, err) {
+			return
+		}
+		if h.writeInactiveTaskError(w, r, err) {
 			return
 		}
 		if errors.Is(err, errIssueFieldConflict) {
@@ -4272,6 +4308,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	activeTaskID, ok := h.activeTaskIDForIssueWrite(w, r)
+	if !ok {
+		return
+	}
 
 	// Detect which fields in "updates" were explicitly set (including null).
 	var rawTop map[string]json.RawMessage
@@ -4402,6 +4442,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 
 		params := db.UpdateIssueParams{
 			ID:            prevIssue.ID,
+			ActiveTaskID:  activeTaskID,
 			AssigneeType:  prevIssue.AssigneeType,
 			AssigneeID:    prevIssue.AssigneeID,
 			StartDate:     prevIssue.StartDate,
@@ -4579,6 +4620,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			// status, not of one issue, so every remaining item would fail the
 			// same way. Abort with 409 instead of reporting a partial update.
 			if writeIssueStatusRaceError(w, err) {
+				return
+			}
+			if h.writeInactiveTaskError(w, r, err) {
 				return
 			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)

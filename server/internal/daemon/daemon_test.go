@@ -3402,6 +3402,40 @@ func (blockingBackend) Execute(_ context.Context, _ string, _ agent.ExecOptions)
 	return &agent.Session{Messages: msgCh, Result: resCh}, nil
 }
 
+// unconfirmedSupervisor only marks an ExecOptions value as supervised. Its
+// methods are unreachable here because delayedResultBackend does not launch a
+// worker; the test drives the daemon-side exit-confirmation gate directly.
+type unconfirmedSupervisor struct{}
+
+func (unconfirmedSupervisor) Launch(context.Context, agent.LaunchSpec) (agent.WorkerHandle, error) {
+	return nil, nil
+}
+
+func (unconfirmedSupervisor) Reattach(context.Context, string) (agent.WorkerHandle, error) {
+	return nil, nil
+}
+
+type delayedResultBackend struct {
+	started      chan<- struct{}
+	release      <-chan struct{}
+	beforeResult func()
+}
+
+func (b delayedResultBackend) Execute(_ context.Context, _ string, _ agent.ExecOptions) (*agent.Session, error) {
+	msgCh := make(chan agent.Message)
+	resCh := make(chan agent.Result, 1)
+	close(msgCh)
+	close(b.started)
+	go func() {
+		<-b.release
+		if b.beforeResult != nil {
+			b.beforeResult()
+		}
+		resCh <- agent.Result{Status: "aborted"}
+	}()
+	return &agent.Session{Messages: msgCh, Result: resCh}, nil
+}
+
 type countedRunningBackend struct {
 	release <-chan struct{}
 }
@@ -3475,6 +3509,131 @@ func TestExecuteAndDrain_ContextCancelled_ReportsCancelled(t *testing.T) {
 	}
 	if result.Status != "cancelled" {
 		t.Fatalf("expected status=cancelled when parent ctx is cancelled, got %q (err=%q)", result.Status, result.Error)
+	}
+}
+
+func TestExecuteAndDrain_SupervisedCancellationWaitsForWorkerExit(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan error, 1)
+	supervision := &agent.Supervision{Supervisor: unconfirmedSupervisor{}, RunID: "run-1"}
+	go func() {
+		_, _, err := d.executeAndDrain(ctx, delayedResultBackend{started: started, release: release, beforeResult: func() {
+			supervision.MarkCancellationUnconfirmed(errors.New("worker exit was not proven"))
+		}}, "p", agent.ExecOptions{
+			Supervision: supervision,
+		}, slog.Default(), "t-supervised-cancel", "", "", new(atomic.Int32))
+		result <- err
+	}()
+	<-started
+	cancel()
+
+	select {
+	case err := <-result:
+		t.Fatalf("supervised cancellation returned before worker exit: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-result:
+		if !errors.Is(err, agent.ErrCancellationUnconfirmed) {
+			t.Fatalf("error after missing worker exit proof = %v, want ErrCancellationUnconfirmed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("supervised cancellation did not finish after backend reported its result")
+	}
+}
+
+func TestExecuteAndDrain_SupervisedWatchdogWaitsForWorkerExit(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	d.cfg.AgentIdleWatchdog = 30 * time.Millisecond
+	started := make(chan struct{})
+	release := make(chan struct{})
+	result := make(chan error, 1)
+	supervision := &agent.Supervision{Supervisor: unconfirmedSupervisor{}, RunID: "run-1"}
+	go func() {
+		_, _, err := d.executeAndDrain(context.Background(), delayedResultBackend{started: started, release: release, beforeResult: func() {
+			supervision.MarkCancellationUnconfirmed(errors.New("worker exit was not proven"))
+		}}, "p", agent.ExecOptions{
+			Supervision: supervision,
+		}, slog.Default(), "t-supervised-watchdog", "", "", new(atomic.Int32))
+		result <- err
+	}()
+	<-started
+
+	// The watchdog has cancelled the backend, but the worker has not reported
+	// an exit yet. Returning here would allow a concurrent poll cancellation to
+	// send a false confirmed acknowledgement.
+	select {
+	case err := <-result:
+		t.Fatalf("watchdog returned before worker exit: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case err := <-result:
+		if !errors.Is(err, agent.ErrCancellationUnconfirmed) {
+			t.Fatalf("error after missing watchdog exit proof = %v, want ErrCancellationUnconfirmed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("watchdog cancellation did not finish after backend reported its result")
+	}
+}
+
+func TestExecuteAndDrain_SupervisedResultWaitsForCgroupStop(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	supervision := &agent.Supervision{Supervisor: unconfirmedSupervisor{}, RunID: "run-result-before-stop"}
+	supervision.BeginCancellationStop()
+	go func() {
+		_, _, err := d.executeAndDrain(context.Background(), delayedResultBackend{started: started, release: release}, "p", agent.ExecOptions{
+			Supervision: supervision,
+		}, slog.Default(), "t-supervised-result-before-stop", "", "", new(atomic.Int32))
+		done <- err
+	}()
+	<-started
+	close(release)
+
+	select {
+	case err := <-done:
+		t.Fatalf("result returned before cgroup stop completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	supervision.EndCancellationStop(nil)
+	supervision.MarkWorkerExitConfirmed()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("executeAndDrain after proven cgroup stop: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("executeAndDrain did not return after cgroup stop confirmation")
+	}
+}
+
+func TestExecuteAndDrain_SupervisedDeadlineRequiresStopProof(t *testing.T) {
+	t.Parallel()
+
+	d := newTestDaemon(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	supervision := &agent.Supervision{Supervisor: unconfirmedSupervisor{}, RunID: "run-deadline"}
+	supervision.MarkCancellationUnconfirmed(errors.New("stop request failed"))
+	_, _, err := d.executeAndDrain(ctx, blockingBackend{}, "p", agent.ExecOptions{Supervision: supervision}, slog.Default(), "t-supervised-deadline", "", "", new(atomic.Int32))
+	if !errors.Is(err, agent.ErrCancellationUnconfirmed) {
+		t.Fatalf("deadline without worker stop proof = %v, want ErrCancellationUnconfirmed", err)
 	}
 }
 
@@ -5592,6 +5751,98 @@ func TestHandleTask_AcksCancelAfterPollCancelled(t *testing.T) {
 	}
 	if ackIdx < pollStatusIdx {
 		t.Fatalf("cancel-ack before the poll observed the cancellation (order: %v)", order)
+	}
+}
+
+func TestHandleTask_DoesNotAckUnconfirmedPollCancellation(t *testing.T) {
+	t.Parallel()
+
+	var ackCalls atomic.Int64
+	var statusCalls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/cancel-ack"):
+			ackCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			if statusCalls.Add(1) == 1 {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"status":"cancelled"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:         make(map[string]*workspaceState),
+		runtimeIndex:       map[string]Runtime{"rt-1": {ID: "rt-1", Provider: "claude"}},
+		cancelPollInterval: 10 * time.Millisecond,
+	}
+	d.runner = taskRunnerFunc(func(runCtx context.Context, _ Task, _ string, _ int, _ *slog.Logger) (TaskResult, error) {
+		<-runCtx.Done()
+		return TaskResult{Status: "aborted"}, agent.ErrCancellationUnconfirmed
+	})
+
+	d.handleTask(context.Background(), Task{
+		ID:        "task-unconfirmed-cancel",
+		RuntimeID: "rt-1",
+		IssueID:   "issue-unconfirmed-cancel",
+		Agent:     &AgentData{Name: "test-agent"},
+	}, 0)
+
+	if statusCalls.Load() == 0 {
+		t.Fatal("poll cancellation was not observed")
+	}
+	if got := ackCalls.Load(); got != 0 {
+		t.Fatalf("cancel-ack calls = %d, want 0 while worker stop is unconfirmed", got)
+	}
+}
+
+func TestHandleTask_DoesNotFailUnconfirmedStopWithoutPollCancellation(t *testing.T) {
+	t.Parallel()
+
+	var failCalls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/fail"):
+			failCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:         make(map[string]*workspaceState),
+		runtimeIndex:       map[string]Runtime{"rt-1": {ID: "rt-1", Provider: "claude"}},
+		cancelPollInterval: time.Hour,
+	}
+	d.runner = taskRunnerFunc(func(context.Context, Task, string, int, *slog.Logger) (TaskResult, error) {
+		return TaskResult{}, agent.ErrCancellationUnconfirmed
+	})
+
+	d.handleTask(context.Background(), Task{
+		ID:        "task-unconfirmed-no-poll",
+		RuntimeID: "rt-1",
+		IssueID:   "issue-unconfirmed-no-poll",
+		Agent:     &AgentData{Name: "test-agent"},
+	}, 0)
+
+	if got := failCalls.Load(); got != 0 {
+		t.Fatalf("fail callbacks = %d, want 0 while worker stop is unconfirmed", got)
 	}
 }
 
