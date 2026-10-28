@@ -295,6 +295,29 @@ func authorizeRepoCheckoutWorkDir(activeRoot, requested string) (string, error) 
 	return workdir, nil
 }
 
+// gitWorktreeRoot returns the nearest worktree containing dir. A linked
+// worktree records its Git metadata as a .git file, while a primary worktree
+// uses a directory, so any existing .git entry is treated as a boundary. This
+// intentionally fails closed for a malformed entry: creating a repository
+// checkout below it could otherwise turn that checkout into a parent gitlink.
+func gitWorktreeRoot(dir string) (string, error) {
+	for {
+		_, err := os.Lstat(filepath.Join(dir, ".git"))
+		switch {
+		case err == nil:
+			return dir, nil
+		case !errors.Is(err, os.ErrNotExist):
+			return "", fmt.Errorf("inspect Git metadata in %q: %w", dir, err)
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", nil
+		}
+		dir = parent
+	}
+}
+
 const (
 	repoCheckoutLockWaitTimeout = 10 * time.Second
 	repoCheckoutRetryAfter      = 2 * time.Second
@@ -540,6 +563,16 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		authorizedWorkDir, authErr := authorizeRepoCheckoutWorkDir(activeTask.WorkDir, req.WorkDir)
 		if authErr != nil {
 			http.Error(w, "repo checkout workdir is not owned by the active task", http.StatusForbidden)
+			return
+		}
+		gitRoot, gitRootErr := gitWorktreeRoot(authorizedWorkDir)
+		if gitRootErr != nil {
+			d.logger.Error("repo checkout could not inspect workdir Git metadata", "workdir", authorizedWorkDir, "error", gitRootErr)
+			http.Error(w, "could not inspect the repo checkout workdir", http.StatusInternalServerError)
+			return
+		}
+		if gitRoot != "" {
+			http.Error(w, "repo checkout cannot run inside a Git worktree; use a task workdir outside the repository", http.StatusConflict)
 			return
 		}
 		// Identity is derived from the token-bound active task. AgentName and the
