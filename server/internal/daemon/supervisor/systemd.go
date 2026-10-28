@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,11 @@ import (
 
 	"log/slog"
 )
+
+// ErrUnitCollected identifies systemd's distinct "unit no longer exists"
+// answer. It is not generally stop evidence: callers must combine it with a
+// trusted recorded exit for the same run before treating the cgroup as gone.
+var ErrUnitCollected = errors.New("systemd unit collected")
 
 // systemdCtl wraps the user systemd manager the supervisor drives. Every
 // invocation carries an environment that works even when the daemon was
@@ -93,10 +99,12 @@ func (s *systemdCtl) UnitActive(ctx context.Context, unit string) (bool, error) 
 	out, err := s.run(ctx, 5*time.Second, "is-active", unit)
 	state := strings.TrimSpace(string(out))
 	switch state {
-	case "active", "activating", "reloading":
+	case "active", "activating", "reloading", "deactivating":
 		return true, nil
-	case "inactive", "failed", "deactivating":
+	case "inactive", "failed":
 		return false, nil
+	case "unknown":
+		return false, fmt.Errorf("%w: %s", ErrUnitCollected, unit)
 	default:
 		return false, fmt.Errorf("supervisor: is-active %s: %q (%v)", unit, state, err)
 	}

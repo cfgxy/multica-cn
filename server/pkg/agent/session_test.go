@@ -43,6 +43,11 @@ type fakeHandle struct {
 	detached  bool
 	stopped   bool
 	signalled []syscall.Signal
+	signalErr map[syscall.Signal]error
+	killExits bool
+	stopExits bool
+	stopErr   error
+	stopGate  <-chan struct{}
 }
 
 func (h *fakeHandle) PID() int { return h.pid }
@@ -77,7 +82,11 @@ func (h *fakeHandle) StderrStream(ctx context.Context) (io.ReadCloser, error) {
 }
 
 func (h *fakeHandle) Wait(ctx context.Context) (WorkerExit, error) {
-	<-h.waitCh
+	select {
+	case <-h.waitCh:
+	case <-ctx.Done():
+		return WorkerExit{}, ctx.Err()
+	}
 	// A real supervisor's tailer ends its stream with EOF once the exit is
 	// proven; mimic that so pumps unblock the way they do in production.
 	h.closeStreams()
@@ -126,30 +135,38 @@ func (h *fakeHandle) CloseForExit() {
 
 func (h *fakeHandle) Signal(sig syscall.Signal) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.signalled = append(h.signalled, sig)
-	// A SIGKILL ends the worker: the tailer proves the exit and EOFs the
-	// streams, exactly what a real supervisor's handle does. Without this
-	// a cancel-driven teardown can never unblock the backend reader that
-	// sits between the lifecycle goroutine and its deferred Wait.
-	if sig == syscall.SIGKILL {
-		// The kill ends the worker: the tailer proves the exit and EOFs
-		// the streams, exactly what a real supervisor's handle does.
-		// async + out of h.mu — closeStreams takes the same lock.
-		select {
-		case <-h.waitCh:
-		default:
-			close(h.waitCh)
-		}
-		go h.closeStreams()
+	err := h.signalErr[sig]
+	killExits := h.killExits
+	h.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if sig == syscall.SIGKILL && killExits {
+		// A successful SIGKILL causes the supervisor tailer to prove exit and
+		// close streams. Tests can disable this to model a worker still alive
+		// after an accepted signal.
+		h.CloseForExit()
 	}
 	return nil
 }
 
 func (h *fakeHandle) Stop() error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.stopped = true
+	err := h.stopErr
+	stopExits := h.stopExits
+	stopGate := h.stopGate
+	h.mu.Unlock()
+	if stopGate != nil {
+		<-stopGate
+	}
+	if err != nil {
+		return err
+	}
+	if stopExits {
+		h.CloseForExit()
+	}
 	return nil
 }
 
@@ -221,12 +238,14 @@ func newFakeSupervisor(t *testing.T) (*fakeSupervisor, *fakeHandle) {
 	sup := &fakeSupervisor{launchGate: make(chan struct{})}
 	close(sup.launchGate)
 	h := &fakeHandle{
-		pid:     4242,
-		stdoutR: outR,
-		stdoutW: outW,
-		stderrR: errR,
-		stderrW: errW,
-		waitCh:  make(chan struct{}),
+		pid:       4242,
+		stdoutR:   outR,
+		stdoutW:   outW,
+		stderrR:   errR,
+		stderrW:   errW,
+		waitCh:    make(chan struct{}),
+		signalErr: make(map[syscall.Signal]error),
+		killExits: true,
 	}
 	sup.handle = h
 	return sup, h
@@ -428,6 +447,201 @@ func TestWorkerSessionCancelDriverKillsWithoutGrace(t *testing.T) {
 			t.Fatalf("SIGKILL never delivered; got %v", got)
 		case <-time.After(5 * time.Millisecond):
 		}
+	}
+}
+
+func TestWorkerSessionCancellationWaitsForProvenWorkerExit(t *testing.T) {
+	sup, h := newFakeSupervisor(t)
+	h.mu.Lock()
+	h.killExits = false
+	h.mu.Unlock()
+	supervision := &Supervision{Supervisor: sup, RunID: "run-1", TaskID: "t", Runtime: "claude"}
+	sess := newWorkerSession(exec.Command("fake-cli"), supervision)
+	if _, err := sess.StdoutPipe(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sess.Start(ctx, slog.Default()); err != nil {
+		t.Fatal(err)
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- sess.Wait(ctx) }()
+	cancel()
+
+	// SIGKILL and Stop can both return without proving the cgroup exited. A
+	// cancelled caller must still wait for the supervisor's exit record.
+	select {
+	case err := <-waitDone:
+		t.Fatalf("Wait returned before worker exit was proven: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if !errIs(supervision.CancellationConfirmationError(), ErrCancellationUnconfirmed) {
+		t.Fatalf("cancellation was confirmed before worker exit: %v", supervision.CancellationConfirmationError())
+	}
+
+	h.mu.Lock()
+	h.exit = &WorkerExit{Code: 0}
+	h.mu.Unlock()
+	h.CloseForExit()
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("Wait after proven exit: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return after worker exit was proven")
+	}
+	if err := supervision.CancellationConfirmationError(); err != nil {
+		t.Fatalf("cancellation confirmation after proven exit: %v", err)
+	}
+}
+
+func TestWorkerSessionSignalFailureLeavesCancellationUnconfirmed(t *testing.T) {
+	sup, h := newFakeSupervisor(t)
+	h.mu.Lock()
+	h.signalErr[syscall.SIGKILL] = io.ErrUnexpectedEOF
+	h.stopExits = true
+	h.exit = &WorkerExit{Code: 0}
+	h.mu.Unlock()
+	supervision := &Supervision{Supervisor: sup, RunID: "run-1", TaskID: "t", Runtime: "claude"}
+	sess := newWorkerSession(exec.Command("fake-cli"), supervision)
+	if _, err := sess.StdoutPipe(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sess.Start(ctx, slog.Default()); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := sess.Wait(context.Background()); !errIs(err, ErrCancellationUnconfirmed) {
+		t.Fatalf("Wait after failed signal = %v, want ErrCancellationUnconfirmed", err)
+	}
+	if !errIs(supervision.CancellationConfirmationError(), ErrCancellationUnconfirmed) {
+		t.Fatalf("signal failure allowed cancellation acknowledgement: %v", supervision.CancellationConfirmationError())
+	}
+}
+
+func TestWorkerSessionWaitsForCgroupStopAfterKillExit(t *testing.T) {
+	sup, h := newFakeSupervisor(t)
+	stopGate := make(chan struct{})
+	h.mu.Lock()
+	h.exit = &WorkerExit{Code: 0}
+	h.stopGate = stopGate
+	h.mu.Unlock()
+	supervision := &Supervision{Supervisor: sup, RunID: "run-1", TaskID: "t", Runtime: "claude"}
+	sess := newWorkerSession(exec.Command("fake-cli"), supervision)
+	if _, err := sess.StdoutPipe(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sess.Start(ctx, slog.Default()); err != nil {
+		t.Fatal(err)
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- sess.Wait(context.Background()) }()
+	cancel()
+
+	// SIGKILL immediately gives the fake an exit record, but the Stop call is
+	// deliberately still waiting. Cancellation must remain unconfirmed here.
+	select {
+	case err := <-waitDone:
+		t.Fatalf("Wait returned before cgroup Stop completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(stopGate)
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("Wait after cgroup Stop: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait did not return after cgroup Stop completed")
+	}
+}
+
+func TestWorkerSessionGraceExpiryStopsCgroupBeforeWaitReturns(t *testing.T) {
+	sup, h := newFakeSupervisor(t)
+	h.mu.Lock()
+	h.killExits = false
+	h.stopExits = true
+	h.exit = &WorkerExit{Code: 0}
+	h.mu.Unlock()
+	cmd := exec.Command("fake-cli")
+	cmd.WaitDelay = 50 * time.Millisecond
+	supervision := &Supervision{Supervisor: sup, RunID: "run-1", TaskID: "t", Runtime: "claude"}
+	sess := newWorkerSession(cmd, supervision)
+	if _, err := sess.StdoutPipe(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sess.Start(ctx, slog.Default()); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := sess.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait after forced cgroup stop: %v", err)
+	}
+	h.mu.Lock()
+	signals := append([]syscall.Signal(nil), h.signalled...)
+	stopped := h.stopped
+	h.mu.Unlock()
+	if len(signals) != 2 || signals[0] != syscall.SIGTERM || signals[1] != syscall.SIGKILL {
+		t.Fatalf("signals = %v, want SIGTERM then SIGKILL", signals)
+	}
+	if !stopped {
+		t.Fatal("grace expiry did not stop the worker cgroup")
+	}
+	if err := supervision.CancellationConfirmationError(); err != nil {
+		t.Fatalf("forced stop was not confirmed by worker exit: %v", err)
+	}
+}
+
+func TestWorkerSessionGracefulExitDoesNotEscalateAfterExitEvidence(t *testing.T) {
+	sup, h := newFakeSupervisor(t)
+	cmd := exec.Command("fake-cli")
+	cmd.WaitDelay = 500 * time.Millisecond
+	sess := newWorkerSession(cmd, &Supervision{Supervisor: sup, RunID: "run-1", TaskID: "t", Runtime: "claude"})
+	if _, err := sess.StdoutPipe(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sess.Start(ctx, slog.Default()); err != nil {
+		t.Fatal(err)
+	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- sess.Wait(context.Background()) }()
+	cancel()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		h.mu.Lock()
+		signals := append([]syscall.Signal(nil), h.signalled...)
+		h.mu.Unlock()
+		if len(signals) > 0 && signals[0] == syscall.SIGTERM {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("SIGTERM was not sent: %v", signals)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	h.mu.Lock()
+	h.exit = &WorkerExit{Code: 0}
+	h.mu.Unlock()
+	h.CloseForExit()
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("Wait after graceful exit: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not return after graceful exit")
+	}
+	h.mu.Lock()
+	signals := append([]syscall.Signal(nil), h.signalled...)
+	h.mu.Unlock()
+	if len(signals) != 1 || signals[0] != syscall.SIGTERM {
+		t.Fatalf("signals after graceful exit = %v, want only SIGTERM", signals)
 	}
 }
 
