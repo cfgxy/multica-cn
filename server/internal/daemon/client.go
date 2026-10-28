@@ -141,12 +141,14 @@ type BranchAdoptionOwner struct {
 
 // BranchAdoptionAuthorization is returned only after the server has checked
 // task ownership, the source task's recorded branch, and source Issue
-// suspension. Git and marker validation remains local to the daemon.
+// suspension or same-conversation completed-task recovery. Git and marker
+// validation remains local to the daemon.
 type BranchAdoptionAuthorization struct {
 	Branch                    string              `json:"branch"`
 	Source                    BranchAdoptionOwner `json:"source"`
 	Continuation              BranchAdoptionOwner `json:"continuation"`
 	SourceIssueSuspended      bool                `json:"source_issue_suspended"`
+	SourceTaskCompleted       bool                `json:"source_task_completed"`
 	ContinuationTaskIsRunning bool                `json:"continuation_task_is_running"`
 }
 

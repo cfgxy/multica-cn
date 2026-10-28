@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -584,6 +585,131 @@ func TestBranchAdoptionHandlerRejectsServerSnapshotBeforeMarkerWrite(t *testing.
 	if !bytes.Equal(markerBefore, markerAfter) {
 		t.Fatalf("server snapshot rejection changed marker:\n got %s\nwant %s", markerAfter, markerBefore)
 	}
+}
+
+func TestValidateBranchAdoptionAuthorizationAllowsCompletedSourceTaskForSameConversationAndAgent(t *testing.T) {
+	active := activeRepoCheckoutTask{
+		WorkspaceID: "workspace-id",
+		TaskID:      "continuation-task",
+		AgentID:     "continuation-agent",
+		IssueID:     "continuation-issue",
+	}
+	req := branchAdoptionRequest{
+		SourceTaskID: "source-task",
+		Branch:       "agent/source/ruyi-905",
+	}
+	authorization := &BranchAdoptionAuthorization{
+		Branch: req.Branch,
+		Source: BranchAdoptionOwner{
+			WorkspaceID:    "workspace-id",
+			AgentID:        active.AgentID,
+			ConversationID: active.IssueID,
+			TaskID:         req.SourceTaskID,
+		},
+		Continuation: BranchAdoptionOwner{
+			WorkspaceID:    active.WorkspaceID,
+			TaskID:         active.TaskID,
+			AgentID:        active.AgentID,
+			ConversationID: active.IssueID,
+		},
+		SourceTaskCompleted:       true,
+		ContinuationTaskIsRunning: true,
+	}
+	if err := validateBranchAdoptionAuthorization(active, req, authorization); err != nil {
+		t.Fatalf("validate completed source authorization: %v", err)
+	}
+}
+
+func TestValidateBranchAdoptionAuthorizationRejectsCompletedSourceTaskFromExternalContinuation(t *testing.T) {
+	active := activeRepoCheckoutTask{
+		WorkspaceID: "workspace-id",
+		TaskID:      "continuation-task",
+		AgentID:     "continuation-agent",
+		IssueID:     "continuation-issue",
+	}
+	req := branchAdoptionRequest{SourceTaskID: "source-task", Branch: "agent/source/ruyi-905"}
+	authorization := &BranchAdoptionAuthorization{
+		Branch: req.Branch,
+		Source: BranchAdoptionOwner{
+			WorkspaceID:    active.WorkspaceID,
+			AgentID:        "source-agent",
+			ConversationID: "source-issue",
+			TaskID:         req.SourceTaskID,
+		},
+		Continuation: BranchAdoptionOwner{
+			WorkspaceID:    active.WorkspaceID,
+			TaskID:         active.TaskID,
+			AgentID:        active.AgentID,
+			ConversationID: active.IssueID,
+		},
+		SourceTaskCompleted:       true,
+		ContinuationTaskIsRunning: true,
+	}
+	if err := validateBranchAdoptionAuthorization(active, req, authorization); err == nil {
+		t.Fatal("external continuation was authorized to adopt a completed source task")
+	}
+}
+
+func TestBranchAdoptionHandlerRejectsExternalCompletedSourceBeforeMarkerWrite(t *testing.T) {
+	const workspaceID = "ws-branch-adoption"
+	const branch = "agent/source/ruyi-871"
+	const recordRef = "refs/multica/local-state/agent/source/ruyi-871"
+	workDir := t.TempDir()
+	d := newRepoCheckoutTestDaemon(t, workspaceID, "https://github.com/org/repo.git", workDir, &recordingRepoCache{})
+	recordBefore := writeBranchAdoptionTestRecord(t, workDir, recordRef)
+	markerPath := filepath.Join(workDir, execenv.TaskContextMarkerRelPath)
+	markerBefore, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"branch":"` + branch + `","source":{"workspace_id":"ws-branch-adoption","agent_id":"source-agent","conversation_id":"source-issue","task_id":"source-task"},"continuation":{"workspace_id":"ws-branch-adoption","agent_id":"agent-1","conversation_id":"issue-1","task_id":"task-1"},"source_task_completed":true,"continuation_task_is_running":true}`))
+	}))
+	defer authServer.Close()
+	d.client = NewClient(authServer.URL)
+
+	rec := httptest.NewRecorder()
+	body := `{"source_task_id":"source-task","branch":"` + branch + `","expected_remote_sha":"` + strings.Repeat("a", 40) + `","workdir":"` + workDir + `"}`
+	d.branchAdoptionHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(strings.NewReader(body)))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+	markerAfter, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(markerBefore, markerAfter) {
+		t.Fatalf("external completed-source rejection changed marker:\n got %s\nwant %s", markerAfter, markerBefore)
+	}
+	if recordAfter := branchAdoptionTestGit(t, workDir, "rev-parse", recordRef); recordAfter != recordBefore {
+		t.Fatalf("external completed-source rejection changed branch record: got %s, want %s", recordAfter, recordBefore)
+	}
+}
+
+func writeBranchAdoptionTestRecord(t *testing.T, workDir, recordRef string) string {
+	t.Helper()
+	branchAdoptionTestGit(t, workDir, "init", "--initial-branch=main")
+	branchAdoptionTestGit(t, workDir, "config", "user.name", "Multica Test")
+	branchAdoptionTestGit(t, workDir, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(workDir, "branch-adoption-probe.txt"), []byte("probe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	branchAdoptionTestGit(t, workDir, "add", "branch-adoption-probe.txt")
+	branchAdoptionTestGit(t, workDir, "commit", "-m", "branch adoption probe")
+	record := branchAdoptionTestGit(t, workDir, "rev-parse", "HEAD")
+	branchAdoptionTestGit(t, workDir, "update-ref", recordRef, record)
+	return record
+}
+
+func branchAdoptionTestGit(t *testing.T, workDir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", workDir}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func TestRepoCheckoutExplicitRefOverridesProjectDefault(t *testing.T) {
