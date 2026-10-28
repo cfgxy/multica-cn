@@ -111,8 +111,9 @@ func (r Runner) sweep(ctx context.Context) (Outcome, error) {
 // A run whose item is gone, whose claim recorded no agent-tier version, or whose
 // runtime is unknown is SKIPPED rather than failing the tick: it measured
 // something that cannot be placed on an axis the comparison uses, and one such
-// run must not stop the rest of the sweep. Skipping leaves the row unmatched, so
-// it is retried next tick and drops out naturally once the cause is permanent.
+// run must not stop the rest of the sweep. ListFinishedPromptQuizTasks removes
+// those permanent cases before its bounded candidate window; the checks below
+// remain defensive against malformed legacy data.
 func (r Runner) collect(ctx context.Context) (int, error) {
 	runs, err := r.Queries.ListFinishedPromptQuizTasks(ctx, CollectLimit)
 	if err != nil {
