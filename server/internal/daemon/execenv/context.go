@@ -24,13 +24,24 @@ const TaskContextMarkerRelPath = ".multica/daemon_task_context.json"
 const TaskContextMarkerManagedBy = "multica-daemon-task"
 
 type taskContextMarkerFile struct {
-	ManagedBy     string `json:"managed_by"`
-	TaskID        string `json:"task_id,omitempty"`
-	AgentID       string `json:"agent_id,omitempty"`
-	IssueID       string `json:"issue_id,omitempty"`
-	ChatSessionID string `json:"chat_session_id,omitempty"`
-	Branch        string `json:"branch,omitempty"`
-	BaseCommit    string `json:"base_commit,omitempty"`
+	ManagedBy        string                  `json:"managed_by"`
+	TaskID           string                  `json:"task_id,omitempty"`
+	AgentID          string                  `json:"agent_id,omitempty"`
+	IssueID          string                  `json:"issue_id,omitempty"`
+	ChatSessionID    string                  `json:"chat_session_id,omitempty"`
+	Branch           string                  `json:"branch,omitempty"`
+	BaseCommit       string                  `json:"base_commit,omitempty"`
+	PreparedReanchor *preparedReanchorMarker `json:"prepared_reanchor,omitempty"`
+}
+
+// preparedReanchorMarker records the exact refs a reanchor was prepared
+// against. The marker write and the Git ref transaction cannot be atomic, so a
+// retry must prove that it is resuming the same transaction rather than moving
+// refs that changed while the marker was prepared.
+type preparedReanchorMarker struct {
+	Target           string `json:"target"`
+	BranchTip        string `json:"branch_tip"`
+	LocalStateRecord string `json:"local_state_record"`
 }
 
 // EnsureWorkspacesRootMarker writes a persistent daemon-task marker at

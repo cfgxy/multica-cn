@@ -148,7 +148,7 @@ func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r 
 	return task, wsID, true
 }
 
-// BranchAdoptionAuthorizationRequest names the suspended source task whose
+// BranchAdoptionAuthorizationRequest names the authorized source task whose
 // already-delivered branch a running continuation task requests to adopt.
 // The continuation task is path-bound and is never accepted from the body.
 type BranchAdoptionAuthorizationRequest struct {
@@ -172,6 +172,7 @@ type BranchAdoptionAuthorizationResponse struct {
 	Source                    BranchAdoptionOwner `json:"source"`
 	Continuation              BranchAdoptionOwner `json:"continuation"`
 	SourceIssueSuspended      bool                `json:"source_issue_suspended"`
+	SourceTaskCompleted       bool                `json:"source_task_completed"`
 	ContinuationTaskIsRunning bool                `json:"continuation_task_is_running"`
 }
 
@@ -250,28 +251,37 @@ func (h *Handler) AuthorizeBranchAdoption(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "source issue not found")
 		return
 	}
-	if !sourceIssue.SuspendedAt.Valid {
-		writeError(w, http.StatusConflict, "source issue is not suspended")
+	sourceIssueSuspended := sourceIssue.SuspendedAt.Valid
+	sourceTaskCompleted := source.Status == "completed"
+	sourceOwner := BranchAdoptionOwner{
+		WorkspaceID:    workspaceID,
+		AgentID:        uuidToString(source.AgentID),
+		ConversationID: uuidToString(source.IssueID),
+		TaskID:         req.SourceTaskID,
+	}
+	continuationOwner := BranchAdoptionOwner{
+		WorkspaceID:    workspaceID,
+		AgentID:        uuidToString(continuation.AgentID),
+		ConversationID: uuidToString(continuation.IssueID),
+		TaskID:         continuationTaskID,
+	}
+	if !branchAdoptionSourceCanContinue(sourceIssueSuspended, sourceTaskCompleted, sourceOwner, continuationOwner) {
+		writeError(w, http.StatusConflict, "source issue is not suspended and completed source task cannot continue across agents or conversations")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, BranchAdoptionAuthorizationResponse{
-		Branch: req.Branch,
-		Source: BranchAdoptionOwner{
-			WorkspaceID:    workspaceID,
-			AgentID:        uuidToString(source.AgentID),
-			ConversationID: uuidToString(source.IssueID),
-			TaskID:         req.SourceTaskID,
-		},
-		Continuation: BranchAdoptionOwner{
-			WorkspaceID:    workspaceID,
-			AgentID:        uuidToString(continuation.AgentID),
-			ConversationID: uuidToString(continuation.IssueID),
-			TaskID:         continuationTaskID,
-		},
-		SourceIssueSuspended:      true,
+		Branch:                    req.Branch,
+		Source:                    sourceOwner,
+		Continuation:              continuationOwner,
+		SourceIssueSuspended:      sourceIssueSuspended,
+		SourceTaskCompleted:       sourceTaskCompleted,
 		ContinuationTaskIsRunning: true,
 	})
+}
+
+func branchAdoptionSourceCanContinue(sourceIssueSuspended, sourceTaskCompleted bool, source, continuation BranchAdoptionOwner) bool {
+	return sourceIssueSuspended || (sourceTaskCompleted && source.AgentID == continuation.AgentID && source.ConversationID == continuation.ConversationID)
 }
 
 // verifyDaemonWorkspaceAccess checks workspace access without writing an HTTP error.

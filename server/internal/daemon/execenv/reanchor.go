@@ -51,20 +51,30 @@ type ReanchorResult struct {
 //     the new tip. Without the record rewrite the next prepare would fail the
 //     checkpoint-ancestor proof and fork the conversation onto a fresh branch
 //     name - the re-anchor would silently not stick;
+//   - the task marker is re-pinned to the new tip before the Git ref
+//     transaction. If that transaction fails, the marker deliberately remains
+//     at the requested target: a retry recognizes that prepared state and
+//     resumes the guarded ref transaction. Preflight fails closed while the
+//     branch and marker disagree, rather than relying on a second filesystem
+//     write whose failure could make the operation permanently unrecoverable;
 //   - a pending delivery-guard refusal marker refuses the operation: the
 //     marker is the guard's in-flight handshake and belongs to its own heal
 //     path (RUYI-479), not to an operator rewrite.
 //
 // Preconditions: the target must exist, must be exactly one commit ahead of
 // expectedBase (the verified content commit), and expectedBase must be the
-// caller's verified shared-mainline tip. A branch with no local-state record
-// is still re-anchored (its tip moves and the audit lands); the record step
-// is a no-op reported via RecordReanchored=false.
-func ReanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorNote) (ReanchorResult, error) {
-	return reanchorBranch(gitRoot, branch, target, expectedBase, note, func() {})
+// caller's verified shared-mainline tip. An empty markerPath resolves to the
+// task marker at the Git worktree root. A missing, foreign, or unrelated marker
+// refuses the operation rather than creating an unprovable delivery relationship.
+func ReanchorBranch(gitRoot, branch, target, expectedBase, markerPath string, note ReanchorNote) (ReanchorResult, error) {
+	return reanchorBranch(gitRoot, branch, target, expectedBase, markerPath, note, func() {})
 }
 
-func reanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorNote, afterLinkedWorktreeCheck func()) (ReanchorResult, error) {
+func reanchorBranch(gitRoot, branch, target, expectedBase, markerPath string, note ReanchorNote, afterLinkedWorktreeCheck func()) (ReanchorResult, error) {
+	return reanchorBranchWithOperations(gitRoot, branch, target, expectedBase, markerPath, note, afterLinkedWorktreeCheck, writeMarkerFileAtomic, updateReanchorRefs)
+}
+
+func reanchorBranchWithOperations(gitRoot, branch, target, expectedBase, markerPath string, note ReanchorNote, afterLinkedWorktreeCheck func(), writeMarker func(string, []byte) error, updateRefs func(string, string, string, string, string, string, string, string) error) (ReanchorResult, error) {
 	var result ReanchorResult
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
@@ -139,43 +149,122 @@ func reanchorBranch(gitRoot, branch, target, expectedBase string, note ReanchorN
 	}
 
 	oldRecord := runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", userStateRef(branch))
-	var newRecord string
-	if oldRecord != "" {
-		userState, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", oldRecord+"^1")
-		if err != nil || userState == "" {
-			return result, fmt.Errorf("reanchor: branch record %s has no user-state parent; refusing to guess one", shortID(oldRecord))
-		}
-		rec, err := readBranchRecord(gitRoot, oldRecord)
-		if err != nil {
-			return result, fmt.Errorf("reanchor: read branch record: %w", err)
-		}
-		if rec.checkpoint == "" {
-			return result, fmt.Errorf("reanchor: branch record %s carries no checkpoint; refusing to rewrite it", shortID(oldRecord))
-		}
-		msg := branchRecordMessage(rec.owner) + "\n" + reanchorRecordNote(branch, note, oldTip, resolvedTarget, resolvedExpectedBase)
-		args := append(commitIdentityArgs(gitRoot), "commit-tree", userState+"^{tree}",
-			"-p", userState, "-p", resolvedTarget, "-m", msg)
-		newRecord, err = runGitTrimmed(gitRoot, args...)
-		if err != nil {
-			return result, fmt.Errorf("reanchor: git commit-tree: %w", err)
-		}
+	if oldRecord == "" {
+		return result, fmt.Errorf("reanchor: branch %s has no Multica branch record", branch)
+	}
+	markerPath, markerAfter, writeMarkerNow, err := reanchoredTaskMarker(gitRoot, markerPath, branch, oldTip, oldRecord, resolvedTarget)
+	if err != nil {
+		return result, err
+	}
+
+	userState, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", oldRecord+"^1")
+	if err != nil || userState == "" {
+		return result, fmt.Errorf("reanchor: branch record %s has no user-state parent; refusing to guess one", shortID(oldRecord))
+	}
+	rec, err := readBranchRecord(gitRoot, oldRecord)
+	if err != nil {
+		return result, fmt.Errorf("reanchor: read branch record: %w", err)
+	}
+	if rec.checkpoint == "" {
+		return result, fmt.Errorf("reanchor: branch record %s carries no checkpoint; refusing to rewrite it", shortID(oldRecord))
+	}
+	msg := branchRecordMessage(rec.owner) + "\n" + reanchorRecordNote(branch, note, oldTip, resolvedTarget, resolvedExpectedBase)
+	args := append(commitIdentityArgs(gitRoot), "commit-tree", userState+"^{tree}",
+		"-p", userState, "-p", resolvedTarget, "-m", msg)
+	newRecord, err := runGitTrimmed(gitRoot, args...)
+	if err != nil {
+		return result, fmt.Errorf("reanchor: git commit-tree: %w", err)
 	}
 
 	archiveTipRef, archiveStateRef, err := newReanchorArchiveRefs(branch)
 	if err != nil {
 		return result, err
 	}
-	if err := updateReanchorRefs(gitRoot, branch, resolvedTarget, oldTip, oldRecord, newRecord, archiveTipRef, archiveStateRef); err != nil {
-		return result, err
+	// The filesystem and Git's ref store cannot share one transaction. A marker
+	// already pinned to target is a durable prepared state left by an earlier
+	// rejected ref transaction, so it needs no second filesystem write before we
+	// retry that transaction.
+	if writeMarkerNow {
+		if err := writeMarker(markerPath, markerAfter); err != nil {
+			return result, fmt.Errorf("reanchor: update task marker: %w", err)
+		}
+	}
+	if err := updateRefs(gitRoot, branch, resolvedTarget, oldTip, oldRecord, newRecord, archiveTipRef, archiveStateRef); err != nil {
+		if writeMarkerNow {
+			return result, fmt.Errorf("reanchor: move branch/record: %w; task marker remains prepared at %s while branch %s stays at %s; rerun this reanchor to resume safely", err, shortID(resolvedTarget), branch, shortID(oldTip))
+		}
+		return result, fmt.Errorf("reanchor: resume branch/record move: %w; task marker remains prepared at %s and this reanchor can be retried", err, shortID(resolvedTarget))
 	}
 
 	result.Branch, result.OldTip, result.NewTip, result.ExpectedBase = branch, oldTip, resolvedTarget, resolvedExpectedBase
 	result.ArchiveRefs = append(result.ArchiveRefs, archiveTipRef)
-	if oldRecord != "" {
-		result.OldRecord, result.NewRecord, result.RecordReanchored = oldRecord, newRecord, true
-		result.ArchiveRefs = append(result.ArchiveRefs, archiveStateRef)
-	}
+	result.OldRecord, result.NewRecord, result.RecordReanchored = oldRecord, newRecord, true
+	result.ArchiveRefs = append(result.ArchiveRefs, archiveStateRef)
 	return result, writeReanchorAudit(gitRoot, &result, note)
+}
+
+func reanchoredTaskMarker(gitRoot, markerPath, branch, oldTip, oldRecord, target string) (string, []byte, bool, error) {
+	markerPath = strings.TrimSpace(markerPath)
+	if markerPath == "" {
+		root, err := runGitTrimmed(gitRoot, "rev-parse", "--show-toplevel")
+		if err != nil {
+			return "", nil, false, fmt.Errorf("reanchor: resolve git root for task marker: %w", err)
+		}
+		markerPath = filepath.Join(root, TaskContextMarkerRelPath)
+	}
+	before, err := os.ReadFile(markerPath)
+	if err != nil {
+		return "", nil, false, fmt.Errorf("reanchor: read task marker %s: %w", markerPath, err)
+	}
+	var marker taskContextMarkerFile
+	if err := json.Unmarshal(before, &marker); err != nil {
+		return "", nil, false, fmt.Errorf("reanchor: task marker %s is not parseable", markerPath)
+	}
+	if marker.ManagedBy != TaskContextMarkerManagedBy {
+		return "", nil, false, fmt.Errorf("reanchor: task marker %s is not managed by Multica", markerPath)
+	}
+	if marker.TaskID == "" {
+		return "", nil, false, fmt.Errorf("reanchor: task marker %s has no task_id", markerPath)
+	}
+	if marker.Branch != branch {
+		return "", nil, false, fmt.Errorf("reanchor: task marker branch %q does not match %q", marker.Branch, branch)
+	}
+	if marker.BaseCommit == "" {
+		return "", nil, false, fmt.Errorf("reanchor: task marker %s has no base_commit", markerPath)
+	}
+	if marker.BaseCommit == target {
+		prepared := marker.PreparedReanchor
+		if prepared == nil {
+			return "", nil, false, fmt.Errorf("reanchor: task marker is prepared for %s but lacks the original ref snapshot; refusing an unprovable recovery", shortID(target))
+		}
+		if prepared.Target != target {
+			return "", nil, false, fmt.Errorf("reanchor: prepared marker target %s does not match requested target %s", shortID(prepared.Target), shortID(target))
+		}
+		if prepared.BranchTip != oldTip {
+			return "", nil, false, fmt.Errorf("reanchor: prepared marker branch tip %s no longer matches branch %s at %s", shortID(prepared.BranchTip), branch, shortID(oldTip))
+		}
+		if prepared.LocalStateRecord != oldRecord {
+			return "", nil, false, fmt.Errorf("reanchor: prepared marker local-state record %s no longer matches branch %s record %s", shortID(prepared.LocalStateRecord), branch, shortID(oldRecord))
+		}
+		// The initial marker write succeeded but the ref transaction did not. The
+		// immutable ref snapshot proves that this retry resumes that exact guarded
+		// transaction without another filesystem write.
+		return markerPath, before, false, nil
+	}
+	if _, err := runGit(gitRoot, "merge-base", "--is-ancestor", marker.BaseCommit, oldTip); err != nil {
+		return "", nil, false, fmt.Errorf("reanchor: task marker base %s is not an ancestor of branch %s at %s: %w", shortID(marker.BaseCommit), branch, shortID(oldTip), err)
+	}
+	marker.BaseCommit = target
+	marker.PreparedReanchor = &preparedReanchorMarker{
+		Target:           target,
+		BranchTip:        oldTip,
+		LocalStateRecord: oldRecord,
+	}
+	after, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return "", nil, false, fmt.Errorf("reanchor: marshal task marker: %w", err)
+	}
+	return markerPath, after, true, nil
 }
 
 func branchCheckoutPath(gitRoot, branch string) (string, bool, error) {
