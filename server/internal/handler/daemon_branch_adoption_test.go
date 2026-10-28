@@ -28,6 +28,60 @@ func TestAuthorizeBranchAdoptionReturnsTrustedSnapshot(t *testing.T) {
 	}
 }
 
+func TestAuthorizeBranchAdoptionAllowsCompletedSourceTaskForSameConversationAndAgent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fixture := newBranchAdoptionAuthorizationFixture(t)
+	dbfx.Exec(t, `UPDATE issue SET suspended_at = NULL WHERE id = $1`, fixture.sourceIssueID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, fixture.sourceTaskID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET agent_id = $1, issue_id = $2 WHERE id = $3`, fixture.sourceAgentID, fixture.sourceIssueID, fixture.continuationTaskID)
+
+	w := testutil.Call(t, testHandler.AuthorizeBranchAdoption,
+		branchAdoptionAuthorizationRequest(fixture.continuationTaskID, fixture.sourceTaskID, fixture.branch, testWorkspaceID)).Want(http.StatusOK)
+	var response BranchAdoptionAuthorizationResponse
+	w.JSON(&response)
+	if response.SourceIssueSuspended || !response.SourceTaskCompleted || !response.ContinuationTaskIsRunning || response.Source.AgentID != response.Continuation.AgentID || response.Source.ConversationID != response.Continuation.ConversationID {
+		t.Fatalf("completed source authorization response = %+v", response)
+	}
+}
+
+func TestAuthorizeBranchAdoptionRejectsCompletedSourceTaskForExternalContinuation(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	fixture := newBranchAdoptionAuthorizationFixture(t)
+	dbfx.Exec(t, `UPDATE issue SET suspended_at = NULL WHERE id = $1`, fixture.sourceIssueID)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, fixture.sourceTaskID)
+
+	testutil.Call(t, testHandler.AuthorizeBranchAdoption,
+		branchAdoptionAuthorizationRequest(fixture.continuationTaskID, fixture.sourceTaskID, fixture.branch, testWorkspaceID)).Want(http.StatusConflict)
+}
+
+func TestBranchAdoptionSourceCanContinue(t *testing.T) {
+	source := BranchAdoptionOwner{AgentID: "source-agent", ConversationID: "source-issue"}
+	tests := []struct {
+		name                 string
+		sourceIssueSuspended bool
+		sourceTaskCompleted  bool
+		continuation         BranchAdoptionOwner
+		want                 bool
+	}{
+		{name: "suspended issue may continue across conversations", sourceIssueSuspended: true, continuation: BranchAdoptionOwner{AgentID: "another-agent", ConversationID: "another-issue"}, want: true},
+		{name: "completed source task continues for same agent and conversation", sourceTaskCompleted: true, continuation: source, want: true},
+		{name: "completed source task cannot continue for another agent", sourceTaskCompleted: true, continuation: BranchAdoptionOwner{AgentID: "another-agent", ConversationID: source.ConversationID}, want: false},
+		{name: "completed source task cannot continue for another conversation", sourceTaskCompleted: true, continuation: BranchAdoptionOwner{AgentID: source.AgentID, ConversationID: "another-issue"}, want: false},
+		{name: "neither", continuation: source, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := branchAdoptionSourceCanContinue(tt.sourceIssueSuspended, tt.sourceTaskCompleted, source, tt.continuation); got != tt.want {
+				t.Fatalf("branchAdoptionSourceCanContinue(%v, %v, %+v, %+v) = %v, want %v", tt.sourceIssueSuspended, tt.sourceTaskCompleted, source, tt.continuation, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAuthorizeBranchAdoptionRejectsInvalidMappings(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

@@ -485,7 +485,7 @@ func validateBranchAdoptionAuthorization(active activeRepoCheckoutTask, req bran
 	if authorization == nil {
 		return errors.New("branch adoption server returned no authorization")
 	}
-	if authorization.Branch != req.Branch || !authorization.SourceIssueSuspended || !authorization.ContinuationTaskIsRunning {
+	if authorization.Branch != req.Branch || !authorization.ContinuationTaskIsRunning {
 		return errors.New("branch adoption server response does not authorize this request")
 	}
 	if authorization.Source.TaskID != req.SourceTaskID {
@@ -495,6 +495,12 @@ func validateBranchAdoptionAuthorization(active activeRepoCheckoutTask, req bran
 	if continuation.WorkspaceID != active.WorkspaceID || continuation.TaskID != active.TaskID ||
 		continuation.AgentID != active.AgentID || continuation.ConversationID != active.IssueID {
 		return errors.New("branch adoption server response continuation task does not match the active task")
+	}
+	if authorization.Source.WorkspaceID != active.WorkspaceID {
+		return errors.New("branch adoption server response source task is not in the active workspace")
+	}
+	if !authorization.SourceIssueSuspended && (!authorization.SourceTaskCompleted || authorization.Source.AgentID != continuation.AgentID || authorization.Source.ConversationID != continuation.ConversationID) {
+		return errors.New("branch adoption server response completed source task does not belong to the active agent and conversation")
 	}
 	return nil
 }

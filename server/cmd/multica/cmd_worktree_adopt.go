@@ -16,7 +16,7 @@ import (
 
 var worktreeAdoptCmd = &cobra.Command{
 	Use:   "adopt",
-	Short: "Adopt an authorized suspended task branch into this continuation task",
+	Short: "Adopt an authorized source task branch into this continuation task",
 	Args:  exactArgs(0),
 	RunE:  runWorktreeAdopt,
 }
@@ -29,7 +29,7 @@ var (
 
 func init() {
 	worktreeCmd.AddCommand(worktreeAdoptCmd)
-	worktreeAdoptCmd.Flags().StringVar(&worktreeAdoptSourceTask, "source-task", "", "suspended task recorded as owning the branch (required)")
+	worktreeAdoptCmd.Flags().StringVar(&worktreeAdoptSourceTask, "source-task", "", "authorized source task recorded as owning the branch (required)")
 	worktreeAdoptCmd.Flags().StringVar(&worktreeAdoptBranch, "branch", "", "managed branch to adopt (required)")
 	worktreeAdoptCmd.Flags().StringVar(&worktreeAdoptExpectedRemoteSHA, "expected-remote-sha", "", "exact expected origin branch SHA (required)")
 }

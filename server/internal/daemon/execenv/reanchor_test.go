@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -47,7 +48,8 @@ func TestReanchorBranchReanchorsStaleChain(t *testing.T) {
 	}
 
 	note := ReanchorNote{OperatorAgent: "a", OperatorTask: "t", Issue: "RUYI-780", Reason: "stale chain repair"}
-	res, err := ReanchorBranch(repo, "agent/j/mul-x", content, mainTip, note)
+	markerPath := prepareReanchorFixture(t, repo, "agent/j/mul-x")
+	res, err := ReanchorBranch(repo, "agent/j/mul-x", content, mainTip, "", note)
 	if err != nil {
 		t.Fatalf("ReanchorBranch: %v", err)
 	}
@@ -87,11 +89,21 @@ func TestReanchorBranchReanchorsStaleChain(t *testing.T) {
 	if rec.owner != testBranchOwner {
 		t.Errorf("record owner = %+v, want %+v", rec.owner, testBranchOwner)
 	}
+	marker := readReanchorTestMarker(t, markerPath)
+	if marker.BaseCommit != content {
+		t.Errorf("marker base_commit = %s, want %s", marker.BaseCommit, content)
+	}
 	// The re-pinned record must prove ownership the way the next prepare will
 	// check it: checkpoint is an ancestor of the tip and the record is ours.
 	if _, owned := branchOwnedBy(repo, "agent/j/mul-x", testBranchOwner, worktreeTestLogger()); !owned {
 		t.Error("re-anchored record no longer proves ownership for the next prepare")
 	}
+	gitRun(t, repo, "checkout", "agent/j/mul-x")
+	preflight, err := PreflightWorktree(repo)
+	if err != nil || preflight.Status != "pass" {
+		t.Fatalf("PreflightWorktree after re-anchor = %+v, error = %v; want pass", preflight, err)
+	}
+	gitRun(t, repo, "checkout", "main")
 	// Audit line landed.
 	auditPath := res.AuditPath
 	if auditPath == "" {
@@ -126,7 +138,7 @@ func TestReanchorBranchRejectsInvalidRecordBeforeMovingBranch(t *testing.T) {
 	// A normal commit is not a branch-record commit. The old implementation
 	// moved the branch before finding this out.
 	gitRun(t, repo, "update-ref", userStateRef("agent/j/mul-invalid-record"), mainTip)
-	_, err := ReanchorBranch(repo, "agent/j/mul-invalid-record", content, mainTip, ReanchorNote{})
+	_, err := ReanchorBranch(repo, "agent/j/mul-invalid-record", content, mainTip, prepareReanchorFixture(t, repo, "agent/j/mul-invalid-record"), ReanchorNote{})
 	if err == nil || (!strings.Contains(err.Error(), "read branch record") && !strings.Contains(err.Error(), "carries no checkpoint")) {
 		t.Fatalf("invalid record accepted or wrong error: %v", err)
 	}
@@ -183,7 +195,7 @@ func TestReanchorBranchRejectsLinkedWorktreeWithoutChangingItsIndex(t *testing.T
 	oldTip := gitRun(t, linked, "rev-parse", "HEAD")
 	oldIndex := gitRun(t, linked, "ls-files", "--stage")
 
-	_, err := ReanchorBranch(repo, "agent/j/mul-linked", content, mainTip, ReanchorNote{})
+	_, err := ReanchorBranch(repo, "agent/j/mul-linked", content, mainTip, prepareReanchorFixture(t, repo, "agent/j/mul-linked"), ReanchorNote{})
 	if err == nil || !strings.Contains(err.Error(), "checked out") {
 		t.Fatalf("linked worktree branch accepted or wrong error: %v", err)
 	}
@@ -218,14 +230,15 @@ func TestReanchorBranchKeepsEveryArchiveReachableAcrossCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeBranchRecord: %v", err)
 	}
-	first, err := ReanchorBranch(repo, "agent/j/mul-history", contentOne, mainTip, ReanchorNote{})
+	markerPath := prepareReanchorFixture(t, repo, "agent/j/mul-history")
+	first, err := ReanchorBranch(repo, "agent/j/mul-history", contentOne, mainTip, markerPath, ReanchorNote{})
 	if err != nil {
 		t.Fatalf("first ReanchorBranch: %v", err)
 	}
 
 	gitRun(t, repo, "commit", "--allow-empty", "-m", "content two")
 	contentTwo := gitRun(t, repo, "rev-parse", "HEAD")
-	second, err := ReanchorBranch(repo, "agent/j/mul-history", contentTwo, contentOne, ReanchorNote{})
+	second, err := ReanchorBranch(repo, "agent/j/mul-history", contentTwo, contentOne, markerPath, ReanchorNote{})
 	if err != nil {
 		t.Fatalf("second ReanchorBranch: %v", err)
 	}
@@ -274,7 +287,7 @@ func TestReanchorBranchRejectsOffMainlineTarget(t *testing.T) {
 	gitRun(t, repo, "commit", "--allow-empty", "-m", "m3")
 	mainTip := gitRun(t, repo, "rev-parse", "HEAD")
 
-	_, err := ReanchorBranch(repo, "agent/j/mul-y", stale, mainTip, ReanchorNote{})
+	_, err := ReanchorBranch(repo, "agent/j/mul-y", stale, mainTip, prepareReanchorFixture(t, repo, "agent/j/mul-y"), ReanchorNote{})
 	if err == nil || !strings.Contains(err.Error(), "sits on") {
 		t.Fatalf("off-mainline target accepted or wrong error: %v", err)
 	}
@@ -300,7 +313,7 @@ func TestReanchorBranchRefusesPendingGuardRefusal(t *testing.T) {
 	// A pending refusal marker at the old tip.
 	gitRun(t, repo, "update-ref", guardRefusalRef("agent/j/mul-z"), old)
 
-	_, err := ReanchorBranch(repo, "agent/j/mul-z", content, mainTip, ReanchorNote{})
+	_, err := ReanchorBranch(repo, "agent/j/mul-z", content, mainTip, prepareReanchorFixture(t, repo, "agent/j/mul-z"), ReanchorNote{})
 	if err == nil || !strings.Contains(err.Error(), "delivery-guard refusal") {
 		t.Fatalf("reanchor proceeded despite a pending refusal marker: %v", err)
 	}
@@ -309,10 +322,7 @@ func TestReanchorBranchRefusesPendingGuardRefusal(t *testing.T) {
 	}
 }
 
-// TestReanchorBranchNoRecordStillMovesTip: a branch without a local-state
-// record is still re-anchored; the record step reports itself as a no-op and
-// the next prepare forks a fresh branch instead of continuing.
-func TestReanchorBranchNoRecordStillMovesTip(t *testing.T) {
+func TestReanchorBranchRefusesMissingRecordWithoutChangingMarker(t *testing.T) {
 	repo := newTestRepo(t)
 	gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
 	m2 := gitRun(t, repo, "rev-parse", "HEAD")
@@ -320,17 +330,27 @@ func TestReanchorBranchNoRecordStillMovesTip(t *testing.T) {
 	mainTip := gitRun(t, repo, "rev-parse", "HEAD")
 	gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
 	content := gitRun(t, repo, "rev-parse", "HEAD")
-	gitRun(t, repo, "update-ref", "refs/heads/agent/j/mul-w", m2)
-
-	res, err := ReanchorBranch(repo, "agent/j/mul-w", content, mainTip, ReanchorNote{})
+	branch := "agent/j/mul-w"
+	gitRun(t, repo, "update-ref", "refs/heads/"+branch, m2)
+	markerPath := writeReanchorTestMarker(t, repo, branch, m2)
+	markerBefore, err := os.ReadFile(markerPath)
 	if err != nil {
-		t.Fatalf("ReanchorBranch: %v", err)
+		t.Fatal(err)
 	}
-	if res.RecordReanchored {
-		t.Error("record reported re-anchored for a branch that has no record")
+
+	_, err = ReanchorBranch(repo, branch, content, mainTip, markerPath, ReanchorNote{})
+	if err == nil || !strings.Contains(err.Error(), "has no Multica branch record") {
+		t.Fatalf("ReanchorBranch error = %v, want missing branch record refusal", err)
 	}
-	if got := gitRun(t, repo, "rev-parse", "refs/heads/agent/j/mul-w"); got != content {
-		t.Errorf("branch tip = %s, want %s", got, content)
+	if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != m2 {
+		t.Errorf("branch tip = %s, want unchanged %s", got, m2)
+	}
+	markerAfter, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(markerAfter) != string(markerBefore) {
+		t.Fatalf("marker changed after missing-record refusal:\n got %s\nwant %s", markerAfter, markerBefore)
 	}
 }
 
@@ -344,7 +364,7 @@ func TestReanchorBranchAlreadyAtTarget(t *testing.T) {
 	content := gitRun(t, repo, "rev-parse", "HEAD")
 	gitRun(t, repo, "update-ref", "refs/heads/agent/j/mul-v", content)
 
-	_, err := ReanchorBranch(repo, "agent/j/mul-v", content, mainTip, ReanchorNote{})
+	_, err := ReanchorBranch(repo, "agent/j/mul-v", content, mainTip, prepareReanchorFixture(t, repo, "agent/j/mul-v"), ReanchorNote{})
 	if err == nil || !strings.Contains(err.Error(), "already stands") {
 		t.Fatalf("expected an already-at-target refusal, got %v", err)
 	}
@@ -361,7 +381,7 @@ func TestReanchorBranchNormalizesRevisionInputs(t *testing.T) {
 	contentOne := gitRun(t, repo, "rev-parse", "HEAD")
 
 	gitRun(t, repo, "update-ref", "refs/heads/agent/j/mul-symbolic-base", m2)
-	first, err := ReanchorBranch(repo, "agent/j/mul-symbolic-base", contentOne[:12], "origin/main", ReanchorNote{})
+	first, err := ReanchorBranch(repo, "agent/j/mul-symbolic-base", contentOne[:12], "origin/main", prepareReanchorFixture(t, repo, "agent/j/mul-symbolic-base"), ReanchorNote{})
 	if err != nil {
 		t.Fatalf("ReanchorBranch(origin/main, short target): %v", err)
 	}
@@ -372,7 +392,7 @@ func TestReanchorBranchNormalizesRevisionInputs(t *testing.T) {
 	gitRun(t, repo, "commit", "--allow-empty", "-m", "content two")
 	contentTwo := gitRun(t, repo, "rev-parse", "HEAD")
 	gitRun(t, repo, "update-ref", "refs/heads/agent/j/mul-short-base", m2)
-	second, err := ReanchorBranch(repo, "agent/j/mul-short-base", contentTwo[:12], contentOne[:12], ReanchorNote{})
+	second, err := ReanchorBranch(repo, "agent/j/mul-short-base", contentTwo[:12], contentOne[:12], prepareReanchorFixture(t, repo, "agent/j/mul-short-base"), ReanchorNote{})
 	if err != nil {
 		t.Fatalf("ReanchorBranch(short base, short target): %v", err)
 	}
@@ -416,7 +436,7 @@ func TestReanchorBranchRejectsLinkedWorktreeCreatedDuringReservation(t *testing.
 		}
 	}
 
-	_, err := reanchorBranch(repo, branch, content, mainTip, ReanchorNote{}, afterLinkedWorktreeCheck)
+	_, err := reanchorBranch(repo, branch, content, mainTip, prepareReanchorFixture(t, repo, branch), ReanchorNote{}, afterLinkedWorktreeCheck)
 	if err == nil || !strings.Contains(err.Error(), "reserve branch") {
 		t.Fatalf("re-anchor accepted a branch checked out during reservation: %v", err)
 	}
@@ -434,9 +454,298 @@ func TestReanchorBranchRejectsLinkedWorktreeCreatedDuringReservation(t *testing.
 	}
 }
 
+func TestReanchorBranchRejectsMarkerWriteWithoutMovingRefs(t *testing.T) {
+	repo := newTestRepo(t)
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
+	m2 := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "main")
+	mainTip := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
+	content := gitRun(t, repo, "rev-parse", "HEAD")
+	branch := "agent/j/mul-marker-write-failure"
+	gitRun(t, repo, "update-ref", "refs/heads/"+branch, m2)
+	markerPath := prepareReanchorFixture(t, repo, branch)
+
+	markerBefore, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordBefore := gitRun(t, repo, "rev-parse", userStateRef(branch))
+	_, err = reanchorBranchWithOperations(repo, branch, content, mainTip, markerPath, ReanchorNote{}, func() {}, func(string, []byte) error {
+		return errors.New("marker storage unavailable")
+	}, updateReanchorRefs)
+	if err == nil || !strings.Contains(err.Error(), "update task marker") {
+		t.Fatalf("reanchor error = %v, want marker-write refusal", err)
+	}
+	if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != m2 {
+		t.Errorf("branch moved after marker write failure: got %s, want %s", got, m2)
+	}
+	if got := gitRun(t, repo, "rev-parse", userStateRef(branch)); got != recordBefore {
+		t.Errorf("record changed after marker write failure: got %s, want %s", got, recordBefore)
+	}
+	markerAfter, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(markerAfter) != string(markerBefore) {
+		t.Fatalf("marker changed after write refusal:\n got %s\nwant %s", markerAfter, markerBefore)
+	}
+}
+
+func TestReanchorBranchResumesAfterRefTransactionFailureWithoutMarkerRollback(t *testing.T) {
+	repo := newTestRepo(t)
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
+	m2 := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "main")
+	mainTip := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
+	content := gitRun(t, repo, "rev-parse", "HEAD")
+	branch := "agent/j/mul-ref-transaction-failure"
+	gitRun(t, repo, "update-ref", "refs/heads/"+branch, m2)
+	markerPath := prepareReanchorFixture(t, repo, branch)
+
+	markerBefore, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordBefore := gitRun(t, repo, "rev-parse", userStateRef(branch))
+	markerWrites := 0
+	writeMarker := func(path string, data []byte) error {
+		markerWrites++
+		if markerWrites > 1 {
+			return errors.New("marker storage unavailable during rollback")
+		}
+		return writeMarkerFileAtomic(path, data)
+	}
+	_, err = reanchorBranchWithOperations(repo, branch, content, mainTip, markerPath, ReanchorNote{}, func() {}, writeMarker, func(string, string, string, string, string, string, string, string) error {
+		return errors.New("simulated ref transaction rejection")
+	})
+	if err == nil || !strings.Contains(err.Error(), "simulated ref transaction rejection") {
+		t.Fatalf("reanchor error = %v, want ref transaction failure", err)
+	}
+	if markerWrites != 1 {
+		t.Fatalf("marker writes after ref transaction rejection = %d, want one prepared write", markerWrites)
+	}
+	if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != m2 {
+		t.Errorf("branch moved after ref transaction failure: got %s, want %s", got, m2)
+	}
+	if got := gitRun(t, repo, "rev-parse", userStateRef(branch)); got != recordBefore {
+		t.Errorf("record changed after ref transaction failure: got %s, want %s", got, recordBefore)
+	}
+	markerAfter, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(markerAfter) == string(markerBefore) {
+		t.Fatal("marker was restored after ref transaction failure; want recoverable prepared marker")
+	}
+	if marker := readReanchorTestMarker(t, markerPath); marker.BaseCommit != content {
+		t.Fatalf("prepared marker base_commit = %s, want target %s", marker.BaseCommit, content)
+	} else if marker.PreparedReanchor == nil || marker.PreparedReanchor.Target != content || marker.PreparedReanchor.BranchTip != m2 || marker.PreparedReanchor.LocalStateRecord != recordBefore {
+		t.Fatalf("prepared marker snapshot = %+v, want target=%s branch_tip=%s local_state_record=%s", marker.PreparedReanchor, content, m2, recordBefore)
+	}
+
+	gitRun(t, repo, "checkout", branch)
+	preflight, preflightErr := PreflightWorktree(repo)
+	if preflightErr == nil || preflight.Status != "fail" || preflight.BaseIsAncestor {
+		t.Fatalf("PreflightWorktree during prepared recovery = %+v, error = %v; want fail closed", preflight, preflightErr)
+	}
+	gitRun(t, repo, "checkout", "main")
+
+	result, err := reanchorBranchWithOperations(repo, branch, content, mainTip, markerPath, ReanchorNote{}, func() {}, writeMarker, updateReanchorRefs)
+	if err != nil {
+		t.Fatalf("ReanchorBranch recovery retry: %v", err)
+	}
+	if markerWrites != 1 {
+		t.Fatalf("marker writes after recovery retry = %d, want no rollback or rewrite", markerWrites)
+	}
+	if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != content {
+		t.Errorf("branch after recovery retry = %s, want %s", got, content)
+	}
+	if got := gitRun(t, repo, "rev-parse", userStateRef(branch)); got != result.NewRecord {
+		t.Errorf("record after recovery retry = %s, want %s", got, result.NewRecord)
+	}
+	if result.AuditPath == "" || result.AuditLine == "" {
+		t.Fatalf("recovery retry did not retain reanchor audit evidence: %+v", result)
+	}
+	gitRun(t, repo, "checkout", branch)
+	preflight, preflightErr = PreflightWorktree(repo)
+	if preflightErr != nil || preflight.Status != "pass" {
+		t.Fatalf("PreflightWorktree after recovery retry = %+v, error = %v; want pass", preflight, preflightErr)
+	}
+}
+
+func TestReanchorBranchRejectsPreparedRecoveryWhenRefsChanged(t *testing.T) {
+	for _, change := range []string{"branch", "record"} {
+		t.Run(change, func(t *testing.T) {
+			repo := newTestRepo(t)
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
+			m2 := gitRun(t, repo, "rev-parse", "HEAD")
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "main")
+			mainTip := gitRun(t, repo, "rev-parse", "HEAD")
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
+			content := gitRun(t, repo, "rev-parse", "HEAD")
+			branch := "agent/j/mul-prepared-" + change
+			gitRun(t, repo, "update-ref", "refs/heads/"+branch, m2)
+			markerPath := prepareReanchorFixture(t, repo, branch)
+
+			_, err := reanchorBranchWithOperations(repo, branch, content, mainTip, markerPath, ReanchorNote{}, func() {}, writeMarkerFileAtomic, func(string, string, string, string, string, string, string, string) error {
+				return errors.New("simulated ref transaction rejection")
+			})
+			if err == nil || !strings.Contains(err.Error(), "simulated ref transaction rejection") {
+				t.Fatalf("initial reanchor error = %v, want ref transaction rejection", err)
+			}
+
+			gitRun(t, repo, "checkout", "--detach", m2)
+			gitRun(t, repo, "commit", "--allow-empty", "-m", "unrelated")
+			unrelated := gitRun(t, repo, "rev-parse", "HEAD")
+			gitRun(t, repo, "checkout", "main")
+			if change == "branch" {
+				gitRun(t, repo, "update-ref", "refs/heads/"+branch, unrelated)
+			} else {
+				gitRun(t, repo, "update-ref", userStateRef(branch), unrelated)
+			}
+			branchBeforeRetry := gitRun(t, repo, "rev-parse", "refs/heads/"+branch)
+			recordBeforeRetry := gitRun(t, repo, "rev-parse", userStateRef(branch))
+			markerBeforeRetry, err := os.ReadFile(markerPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refUpdates := 0
+			_, err = reanchorBranchWithOperations(repo, branch, content, mainTip, markerPath, ReanchorNote{}, func() {}, func(string, []byte) error {
+				t.Fatal("prepared recovery unexpectedly rewrote task marker")
+				return nil
+			}, func(string, string, string, string, string, string, string, string) error {
+				refUpdates++
+				return nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "prepared marker") {
+				t.Fatalf("prepared recovery error = %v, want fail-closed snapshot mismatch", err)
+			}
+			if refUpdates != 0 {
+				t.Fatalf("prepared recovery attempted %d ref updates after snapshot mismatch", refUpdates)
+			}
+			if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != branchBeforeRetry {
+				t.Errorf("branch changed after prepared recovery refusal: got %s, want %s", got, branchBeforeRetry)
+			}
+			if got := gitRun(t, repo, "rev-parse", userStateRef(branch)); got != recordBeforeRetry {
+				t.Errorf("record changed after prepared recovery refusal: got %s, want %s", got, recordBeforeRetry)
+			}
+			markerAfterRetry, err := os.ReadFile(markerPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(markerAfterRetry) != string(markerBeforeRetry) {
+				t.Fatal("marker changed after prepared recovery refusal")
+			}
+			if refs := gitRun(t, repo, "for-each-ref", "--format=%(refname)", "refs/multica/reanchor/"+branch); refs != "" {
+				t.Fatalf("prepared recovery created archive refs after refusal: %s", refs)
+			}
+		})
+	}
+}
+
+func TestReanchorBranchRejectsPreparedMarkerWithoutSnapshot(t *testing.T) {
+	repo := newTestRepo(t)
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
+	m2 := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "main")
+	mainTip := gitRun(t, repo, "rev-parse", "HEAD")
+	gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
+	content := gitRun(t, repo, "rev-parse", "HEAD")
+	branch := "agent/j/mul-legacy-prepared"
+	gitRun(t, repo, "update-ref", "refs/heads/"+branch, m2)
+	markerPath := prepareReanchorFixture(t, repo, branch)
+	writeReanchorTestMarker(t, repo, branch, content)
+
+	recordBefore := gitRun(t, repo, "rev-parse", userStateRef(branch))
+	markerBefore, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refUpdates := 0
+	_, err = reanchorBranchWithOperations(repo, branch, content, mainTip, markerPath, ReanchorNote{}, func() {}, func(string, []byte) error {
+		t.Fatal("legacy prepared marker recovery unexpectedly rewrote task marker")
+		return nil
+	}, func(string, string, string, string, string, string, string, string) error {
+		refUpdates++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "lacks the original ref snapshot") {
+		t.Fatalf("legacy prepared marker recovery error = %v, want fail-closed snapshot refusal", err)
+	}
+	if refUpdates != 0 {
+		t.Fatalf("legacy prepared marker recovery attempted %d ref updates", refUpdates)
+	}
+	if got := gitRun(t, repo, "rev-parse", "refs/heads/"+branch); got != m2 {
+		t.Errorf("branch changed after legacy prepared marker refusal: got %s, want %s", got, m2)
+	}
+	if got := gitRun(t, repo, "rev-parse", userStateRef(branch)); got != recordBefore {
+		t.Errorf("record changed after legacy prepared marker refusal: got %s, want %s", got, recordBefore)
+	}
+	markerAfter, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(markerAfter) != string(markerBefore) {
+		t.Fatal("marker changed after legacy prepared marker refusal")
+	}
+	if refs := gitRun(t, repo, "for-each-ref", "--format=%(refname)", "refs/multica/reanchor/"+branch); refs != "" {
+		t.Fatalf("legacy prepared marker recovery created archive refs: %s", refs)
+	}
+}
+
 type failingReanchorAuditFile struct {
 	writeErr error
 	closeErr error
+}
+
+func prepareReanchorFixture(t *testing.T, repo, branch string) string {
+	t.Helper()
+	branchTip := gitRun(t, repo, "rev-parse", "refs/heads/"+branch)
+	if existing := runGitSafeTrimmed(repo, "rev-parse", "--verify", "--quiet", userStateRef(branch)); existing == "" {
+		snapshot := gitRun(t, repo, "commit-tree", "HEAD^{tree}")
+		if _, err := writeBranchRecord(repo, branch, snapshot, branchTip, testBranchOwner); err != nil {
+			t.Fatalf("writeBranchRecord(%s): %v", branch, err)
+		}
+	}
+	return writeReanchorTestMarker(t, repo, branch, branchTip)
+}
+
+func writeReanchorTestMarker(t *testing.T, repo, branch, baseCommit string) string {
+	t.Helper()
+	path := filepath.Join(repo, TaskContextMarkerRelPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(taskContextMarkerFile{
+		ManagedBy:  TaskContextMarkerManagedBy,
+		TaskID:     "reanchor-task",
+		AgentID:    "reanchor-agent",
+		IssueID:    "reanchor-issue",
+		Branch:     branch,
+		BaseCommit: baseCommit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func readReanchorTestMarker(t *testing.T, path string) taskContextMarkerFile {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marker taskContextMarkerFile
+	if err := json.Unmarshal(data, &marker); err != nil {
+		t.Fatalf("decode task marker: %v", err)
+	}
+	return marker
 }
 
 func (f failingReanchorAuditFile) Write(p []byte) (int, error) {
@@ -475,7 +784,7 @@ func TestReanchorBranchAuditFailureIsBestEffort(t *testing.T) {
 			}
 			t.Cleanup(func() { openReanchorAuditFile = previousOpen })
 
-			result, err := ReanchorBranch(repo, branch, content, mainTip, ReanchorNote{})
+			result, err := ReanchorBranch(repo, branch, content, mainTip, prepareReanchorFixture(t, repo, branch), ReanchorNote{})
 			if err != nil {
 				t.Fatalf("ReanchorBranch returned an audit error after refs committed: %v", err)
 			}

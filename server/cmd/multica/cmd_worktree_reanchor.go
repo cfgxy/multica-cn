@@ -17,9 +17,9 @@ var worktreeReanchorCmd = &cobra.Command{
 		"verified content commit that sits directly on the shared mainline tip, so the next managed " +
 		"task starts from the mainline base instead of replaying the stale chain. The old tip and the " +
 		"old branch record are archived under refs/multica/reanchor/ before anything moves, the " +
-		"branch record's checkpoint is re-pinned to the new tip (same user-state snapshot, same " +
-		"owner), and one line is appended to .multica/reanchor-audit.jsonl. It refuses to run while " +
-		"a delivery-guard refusal marker holds the branch.\n\n" +
+		"branch record and managed task marker are re-pinned to the new tip, and one line is appended " +
+		"to .multica/reanchor-audit.jsonl. It refuses to run while a delivery-guard refusal marker " +
+		"holds the branch.\n\n" +
 		"The target must be exactly one commit ahead of --expected-base; pass the freshly fetched " +
 		"mainline tip for --expected-base and the verified content commit for --target.",
 	RunE: runWorktreeReanchor,
@@ -32,6 +32,7 @@ var (
 	reanchorNoteText     string
 	reanchorIssue        string
 	reanchorRepoRoot     string
+	reanchorMarkerPath   string
 )
 
 func init() {
@@ -42,6 +43,7 @@ func init() {
 	worktreeReanchorCmd.Flags().StringVar(&reanchorNoteText, "note", "", "free-text reason recorded on the branch record and the audit line")
 	worktreeReanchorCmd.Flags().StringVar(&reanchorIssue, "issue", "", "issue identifier for the audit trail")
 	worktreeReanchorCmd.Flags().StringVar(&reanchorRepoRoot, "repo-root", "", "git root to operate on (default: current working directory)")
+	worktreeReanchorCmd.Flags().StringVar(&reanchorMarkerPath, "marker-path", "", "task marker to re-pin (default: <repo-root>/.multica/daemon_task_context.json)")
 }
 
 func runWorktreeReanchor(cmd *cobra.Command, _ []string) error {
@@ -68,7 +70,7 @@ func runWorktreeReanchor(cmd *cobra.Command, _ []string) error {
 		Issue:         reanchorIssue,
 		Reason:        reanchorNoteText,
 	}
-	result, err := execenv.ReanchorBranch(root, reanchorBranch, reanchorTarget, reanchorExpectedBase, note)
+	result, err := execenv.ReanchorBranch(root, reanchorBranch, reanchorTarget, reanchorExpectedBase, reanchorMarkerPath, note)
 	if err := json.NewEncoder(cmd.OutOrStdout()).Encode(result); err != nil {
 		return fmt.Errorf("write reanchor result: %w", err)
 	}
