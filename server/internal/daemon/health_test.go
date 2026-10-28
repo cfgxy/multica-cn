@@ -528,6 +528,52 @@ func TestRepoCheckoutRejectsAnotherTaskWorkdir(t *testing.T) {
 	}
 }
 
+func TestRepoCheckoutRejectsWorkdirInsideGitWorktree(t *testing.T) {
+	const workspaceID = "ws-checkout"
+	const repoURL = "https://github.com/org/repo.git"
+
+	gitRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(gitRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("create Git metadata directory: %v", err)
+	}
+	descendant := filepath.Join(gitRoot, "service")
+	if err := os.Mkdir(descendant, 0o755); err != nil {
+		t.Fatalf("create repository descendant: %v", err)
+	}
+	linkedWorktree := t.TempDir()
+	if err := os.WriteFile(filepath.Join(linkedWorktree, ".git"), []byte("gitdir: /git/worktrees/task\n"), 0o644); err != nil {
+		t.Fatalf("create linked worktree gitdir file: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		workDir string
+	}{
+		{name: "repository root", workDir: gitRoot},
+		{name: "repository descendant", workDir: descendant},
+		{name: "linked worktree root", workDir: linkedWorktree},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
+			d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, tc.workDir, cache)
+
+			rec := httptest.NewRecorder()
+			body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + tc.workDir + `","task_id":"task-1"}`)
+			d.repoCheckoutHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(body))
+
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "inside a Git worktree") {
+				t.Fatalf("rejection should explain the Git worktree boundary: %s", rec.Body.String())
+			}
+			if got := cache.lastCreateParams(); got != (repocache.WorktreeParams{}) {
+				t.Fatalf("Git worktree checkout reached repo cache: %+v", got)
+			}
+		})
+	}
+}
+
 func TestBranchAdoptionHandlerRejectsUnauthenticatedAndForeignWorkdir(t *testing.T) {
 	const workspaceID = "ws-branch-adoption"
 	workDir := t.TempDir()
