@@ -269,6 +269,136 @@ func TestSweepSkipsRunsWithNoAgentTierVersion(t *testing.T) {
 	}
 }
 
+func TestAgentTierVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want int32
+		ok   bool
+	}{
+		{name: "positive int32", raw: `{"agent": 3}`, want: 3, ok: true},
+		{name: "int32 maximum", raw: `{"agent": 2147483647}`, want: 2147483647, ok: true},
+		{name: "missing agent tier", raw: `{"workspace": 4}`},
+		{name: "zero", raw: `{"agent": 0}`},
+		{name: "string", raw: `{"agent": "not-a-number"}`},
+		{name: "object", raw: `{"agent": {"version": 3}}`},
+		{name: "fractional", raw: `{"agent": 3.5}`},
+		{name: "above int32", raw: `{"agent": 2147483648}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := agentTierVersion([]byte(tt.raw))
+			if got != tt.want || ok != tt.ok {
+				t.Errorf("agentTierVersion(%s) = (%d, %t), want (%d, %t)", tt.raw, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestSweepDoesNotLetPermanentlyUncollectableRunsStarveCollectableResults(t *testing.T) {
+	tests := []struct {
+		name           string
+		promptVersions string
+		overrides      testutil.Cols
+	}{
+		{
+			name:           "missing agent tier",
+			promptVersions: `{"workspace": 4}`,
+		},
+		{
+			name:           "invalid agent tier",
+			promptVersions: `{"agent": 0}`,
+		},
+		{
+			name:           "agent tier string",
+			promptVersions: `{"agent": "not-a-number"}`,
+		},
+		{
+			name:           "agent tier object",
+			promptVersions: `{"agent": {"version": 3}}`,
+		},
+		{
+			name:           "fractional agent tier",
+			promptVersions: `{"agent": 3.5}`,
+		},
+		{
+			name:           "agent tier above int32",
+			promptVersions: `{"agent": 2147483648}`,
+		},
+		{
+			name:           "missing runtime",
+			promptVersions: `{"agent": 3}`,
+			overrides:      testutil.Cols{"runtime_id": nil},
+		},
+		{
+			name:           "missing item",
+			promptVersions: `{"agent": 3}`,
+			overrides: testutil.Cols{
+				"trigger_evidence_ref_id": "00000000-0000-0000-0000-000000000000",
+			},
+		},
+		{
+			name:           "invalid batch context",
+			promptVersions: `{"agent": 3}`,
+			overrides: testutil.Cols{
+				"context": testutil.Raw(`'{"quiz_batch_id":"not-a-uuid"}'::jsonb`),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := newBank(t)
+			historical := withFinishTimes(tt.overrides,
+				testutil.Raw("timestamptz '2026-10-28 00:01:00+00'"),
+				testutil.Raw("timestamptz '2026-10-28 00:00:00+00'"))
+			for range CollectLimit {
+				b.finishedRunWith(t, tt.promptVersions, historical)
+			}
+			collectable := b.finishedRunWith(t, `{"agent": 3}`, withFinishTimes(nil,
+				testutil.Raw("timestamptz '2026-10-28 02:01:00+00'"),
+				testutil.Raw("timestamptz '2026-10-28 02:00:00+00'")))
+
+			var wasInOriginalWindow int
+			b.f.QueryRow(t, `
+				SELECT count(*)
+				FROM (
+					SELECT id
+					FROM agent_task_queue
+					WHERE agent_id = $1
+					  AND originator_source = 'quiz'
+					  AND issue_id IS NULL
+					  AND status IN ('completed', 'failed', 'cancelled')
+					  AND completed_at IS NOT NULL
+					  AND NOT EXISTS (
+						SELECT 1
+						FROM prompt_quiz_result r
+						WHERE r.task_id = agent_task_queue.id
+						  AND (r.score IS NOT NULL OR r.graded_at IS NOT NULL)
+					  )
+					ORDER BY completed_at
+					LIMIT $2
+				) original_window
+				WHERE id = $3`, b.agentID, CollectLimit, collectable).
+				Scan(&wasInOriginalWindow)
+			if wasInOriginalWindow != 0 {
+				t.Fatalf("collectable run was in the original %d-row window, want it behind the older %s rows", CollectLimit, tt.name)
+			}
+
+			if out := b.run(t); out.Collected != 1 {
+				t.Fatalf("collected %d runs, want the one collectable run behind %d older %s rows", out.Collected, CollectLimit, tt.name)
+			}
+			if n := b.f.Count(t, `SELECT count(*) FROM prompt_quiz_result WHERE task_id = $1`, collectable); n != 1 {
+				t.Errorf("collectable run produced %d measurements, want 1", n)
+			}
+			if n := b.results(t); n != 1 {
+				t.Errorf("stored %d measurements, want only the collectable run", n)
+			}
+		})
+	}
+}
+
 // TestSweepDistinguishesUnmeasuredCostFromZeroCost is the measured-vs-zero pair
 // at the sweep layer. A run whose usage rows never arrived stores NULL, which
 // the baseline drops; a run that genuinely reported zero stores 0, which the
@@ -449,10 +579,15 @@ func keysOf(m map[string]any) []string {
 // the given agent_task_queue.prompt_versions attribution.
 func (b *bank) finishedRun(t *testing.T, promptVersions string) string {
 	t.Helper()
+	return b.finishedRunWith(t, promptVersions, nil)
+}
+
+func (b *bank) finishedRunWith(t *testing.T, promptVersions string, overrides testutil.Cols) string {
+	t.Helper()
 	batch := "11111111-2222-3333-4444-555555555555"
 	payload := fmt.Sprintf(`{"kind": %q, "quiz_batch_id": %q, "quiz_item_id": %q, "quiz_prompt": "x"}`,
 		promptquiz.TaskKind, batch, b.itemID)
-	return b.f.Task(t, b.agentID, testutil.Cols{
+	cols := testutil.Cols{
 		"runtime_id":              b.runtimeID,
 		"status":                  "completed",
 		"originator_source":       promptquiz.OriginatorSource,
@@ -462,7 +597,22 @@ func (b *bank) finishedRun(t *testing.T, promptVersions string) string {
 		"prompt_versions":         testutil.Raw(fmt.Sprintf("'%s'::jsonb", promptVersions)),
 		"started_at":              testutil.Raw("now() - interval '2 minutes'"),
 		"completed_at":            testutil.Raw("now()"),
-	})
+	}
+	for column, value := range overrides {
+		cols[column] = value
+	}
+	return b.f.Task(t, b.agentID, cols)
+}
+
+func withFinishTimes(overrides testutil.Cols, completedAt, startedAt testutil.Raw) testutil.Cols {
+	merged := testutil.Cols{
+		"completed_at": completedAt,
+		"started_at":   startedAt,
+	}
+	for column, value := range overrides {
+		merged[column] = value
+	}
+	return merged
 }
 
 // TestSweepGradesCompletedRunsAgainstTheItemChecks pins the grading seam
