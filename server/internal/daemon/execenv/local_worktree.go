@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
@@ -108,6 +109,12 @@ const (
 	// the handshake between two runs.
 	guardRefusalRefPrefix = "refs/multica/guard-refusal/"
 
+	// adoptedContinuationRefPrefix indexes a branch adopted from another
+	// conversation by the continuation conversation that owns it now. The
+	// source branch name cannot be derived from the target agent, so the next
+	// Prepare uses this ref to resume the adopted work line.
+	adoptedContinuationRefPrefix = "refs/multica/adopted-continuation/"
+
 	// gitlinkEmbedRefPrefix namespaces the momentary ref a gitlink child's
 	// snapshot is fetched through (see embedGitlinkChild). Created and deleted
 	// inside one embed; the name carries the creation time so a crashed embed's
@@ -190,6 +197,10 @@ func localWorktreeConversation(params PrepareParams) (key, id string) {
 // LocalWorktree is a prepared worktree plus everything the daemon needs to
 // finalize it after the agent exits.
 type LocalWorktree struct {
+	// lifecycleMu serializes an in-flight branch adoption with Finalize. A
+	// continuation must never expose a checkout on the adopted branch with the
+	// delivery state of the branch Prepare originally created.
+	lifecycleMu sync.Mutex
 	// GitRoot is the user's repository root — the repo that owns the branch.
 	GitRoot string
 	// Path is the worktree root inside the env root.
@@ -256,6 +267,30 @@ type LocalWorktree struct {
 	// Set by the daemon when a pre-commit step failed in a way that would make
 	// the committed branch wrong (see AbortWithReason).
 	aborted error
+	// runtimeConfig is installed by the daemon after it successfully injects the
+	// task brief. It intentionally stays process-local: Prepare crosses a JSON
+	// helper boundary before injection exists, while branch adoption needs it
+	// later to move the managed block across a checkout.
+	runtimeConfig *runtimeConfigBinding
+}
+
+// BindRuntimeConfig records the successfully injected runtime brief so branch
+// adoption can remove and restore it without turning a tracked config file into
+// an uncommitted checkout conflict. Snapshot worktrees never call this: their
+// runtime file lives in an overlay upper layer rather than this Git worktree.
+func (w *LocalWorktree) BindRuntimeConfig(provider string, ctx TaskContextForEnv) {
+	if w == nil {
+		return
+	}
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
+	ctx.ManagedBranch = w.Branch
+	ctx.BaseCommit = w.BaseCommit
+	w.runtimeConfig = &runtimeConfigBinding{
+		workDir:  w.WorkDir,
+		provider: provider,
+		context:  ctx,
+	}
 }
 
 // MarshalJSON / UnmarshalJSON carry this struct's unexported state across the
@@ -632,6 +667,8 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 	if w == nil {
 		return LocalWorktreeOutcome{}, nil
 	}
+	w.lifecycleMu.Lock()
+	defer w.lifecycleMu.Unlock()
 	outcome := LocalWorktreeOutcome{Branch: w.Branch}
 
 	unlock, err := lockGitRoot(w.GitRoot, logger)
@@ -1856,6 +1893,7 @@ const (
 	ownerTrailerAgent        = "Multica-Agent"
 	ownerTrailerConversation = "Multica-Conversation"
 	ownerTrailerTask         = "Multica-Task"
+	ownerTrailerContinuation = "Multica-Continuation-Branch"
 )
 
 // branchRecord is what refs/multica/local-state/<branch> holds: a commit whose
@@ -1873,8 +1911,9 @@ type branchRecord struct {
 	// state is the commit whose tree is the user snapshot the branch carries.
 	state string
 	// checkpoint is the branch tip this record was written against.
-	checkpoint string
-	owner      branchOwner
+	checkpoint         string
+	owner              branchOwner
+	continuationBranch string
 }
 
 // writeBranchRecord records the branch as carrying userState at checkpoint, and
@@ -1942,6 +1981,8 @@ func readBranchRecord(gitRoot, commit string) (branchRecord, error) {
 			record.owner.ConversationID = value
 		case ownerTrailerTask:
 			record.owner.TaskID = value
+		case ownerTrailerContinuation:
+			record.continuationBranch = value
 		}
 	}
 	if checkpoint, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", commit+"^2"); err == nil {
@@ -2037,6 +2078,17 @@ func resolveTaskBranch(gitRoot string, params LocalWorktreeParams, headSHA strin
 
 	owner := params.owner()
 	if params.ConversationKey != "" && owner.valid() {
+		if adopted := adoptedContinuationBranch(gitRoot, owner, logger); adopted != "" {
+			plan, ok := planForExistingBranch(gitRoot, adopted, headSHA, owner, true, logger)
+			if ok {
+				return plan
+			}
+			if logger != nil {
+				logger.Info("execenv: adopted continuation branch is no longer usable; not continuing it",
+					"git_root", gitRoot, "branch", adopted)
+			}
+		}
+
 		preferred := fmt.Sprintf("agent/%s/%s", agentSegment, sanitizeName(params.ConversationKey))
 		for _, name := range []string{preferred, preferred + "-" + owner.fingerprint()} {
 			plan, ok := planForExistingBranch(gitRoot, name, headSHA, owner, true, logger)
@@ -2070,6 +2122,39 @@ func resolveTaskBranch(gitRoot string, params LocalWorktreeParams, headSHA strin
 		return taskScoped
 	}
 	return plan
+}
+
+func adoptedContinuationRef(owner branchOwner) string {
+	return adoptedContinuationRefPrefix + owner.fingerprint()
+}
+
+// adoptedContinuationBranch returns the branch explicitly transferred to this
+// conversation. It is only a discovery index: planForExistingBranch still
+// proves the branch's current ownership and checkpoint before using it.
+func adoptedContinuationBranch(gitRoot string, owner branchOwner, logger *slog.Logger) string {
+	ref, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", adoptedContinuationRef(owner))
+	if err != nil || ref == "" {
+		return ""
+	}
+	record, err := readBranchRecord(gitRoot, ref)
+	if err != nil || record.owner != owner || record.continuationBranch == "" {
+		if logger != nil {
+			logger.Warn("execenv: ignoring an invalid adopted continuation record",
+				"git_root", gitRoot, "record", ref, "error", err)
+		}
+		return ""
+	}
+	if _, err := runGit(gitRoot, "check-ref-format", "--branch", record.continuationBranch); err != nil {
+		if logger != nil {
+			logger.Warn("execenv: ignoring an adopted continuation record with an invalid branch",
+				"git_root", gitRoot, "record", ref, "branch", record.continuationBranch, "error", err)
+		}
+		return ""
+	}
+	if !branchExists(gitRoot, record.continuationBranch) {
+		return ""
+	}
+	return record.continuationBranch
 }
 
 // anchorNewBranchBase resolves the base commit for a branch this prepare is
@@ -3005,6 +3090,61 @@ func dropBranch(gitRoot, branch string, logger *slog.Logger) {
 func pruneOrphanedStateRefs(gitRoot string, logger *slog.Logger) {
 	pruneOrphanedRefs(gitRoot, localStateRefPrefix, "local-directory snapshot", logger)
 	pruneOrphanedRefs(gitRoot, guardRefusalRefPrefix, "delivery-guard refusal marker", logger)
+	pruneOrphanedAdoptedContinuations(gitRoot, logger)
+}
+
+func pruneOrphanedAdoptedContinuations(gitRoot string, logger *slog.Logger) {
+	out, err := runGitTrimmed(gitRoot, "for-each-ref", "--format=%(refname)", adoptedContinuationRefPrefix)
+	if err != nil {
+		if logger != nil {
+			logger.Debug("execenv: could not list adopted continuation refs", "git_root", gitRoot, "error", err)
+		}
+		return
+	}
+	for _, ref := range strings.Split(out, "\n") {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		mappedRecord, recordErr := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", ref)
+		record, parseErr := readBranchRecord(gitRoot, mappedRecord)
+		valid := recordErr == nil && parseErr == nil && record.owner.valid() && record.continuationBranch != "" &&
+			branchExists(gitRoot, record.continuationBranch)
+		if valid {
+			_, valid = branchOwnedBy(gitRoot, record.continuationBranch, record.owner, logger)
+		}
+		if !valid && adoptedContinuationMayHealGuardRefusal(gitRoot, record) {
+			// The next Prepare gives the delivery-guard healer the only chance to
+			// re-anchor this branch. Removing the adoption mapping here would make
+			// that retry fall back to an unrelated target-derived branch.
+			continue
+		}
+		if valid {
+			continue
+		}
+		if deleteOut, deleteErr := runGit(gitRoot, "update-ref", "-d", ref); deleteErr != nil {
+			if logger != nil {
+				logger.Warn("execenv: could not drop an orphaned adopted continuation ref", "ref", ref, "output", strings.TrimSpace(deleteOut), "error", deleteErr)
+			}
+			continue
+		}
+		if logger != nil {
+			logger.Info("execenv: dropped an orphaned adopted continuation ref", "git_root", gitRoot, "ref", ref)
+		}
+	}
+}
+
+func adoptedContinuationMayHealGuardRefusal(gitRoot string, record branchRecord) bool {
+	if !record.owner.valid() || record.continuationBranch == "" ||
+		runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", guardRefusalRef(record.continuationBranch)) == "" {
+		return false
+	}
+	stateRef := runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", userStateRef(record.continuationBranch))
+	if stateRef == "" {
+		return false
+	}
+	state, err := readBranchRecord(gitRoot, stateRef)
+	return err == nil && state.owner == record.owner && state.checkpoint != ""
 }
 
 func pruneOrphanedRefs(gitRoot, refPrefix, what string, logger *slog.Logger) {
