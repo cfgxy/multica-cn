@@ -78,7 +78,7 @@ jest.mock("@/components/ui/button", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { Pressable } = jest.requireActual<typeof import("react-native")>("react-native");
   return {
-    Button: ({ children, ...props }: Record<string, unknown>) =>
+    Button: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) =>
       React.createElement(Pressable, { ...props, accessibilityRole: "button" }, children),
   };
 });
