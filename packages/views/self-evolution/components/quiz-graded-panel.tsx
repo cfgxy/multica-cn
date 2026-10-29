@@ -22,6 +22,10 @@ import {
 } from "@multica/core/self-evolution";
 import type { PromptQuizBaseline, PromptQuizSampleRow } from "@multica/core/types";
 import { useT, useLocale } from "../../i18n";
+import { readQuizBatch, writeQuizBatch } from "./quiz-session";
+
+const QUIZ_POLL_INTERVAL = 15_000;
+const SAMPLE_POLL_WINDOW = 10 * 60 * 1000;
 
 /**
  * The graded side of the quiz (RUYI-286), owner-only like the rubrics it
@@ -55,18 +59,59 @@ export function QuizGradedPanel({
 
   const run = useCreatePromptQuizBatch(wsId);
   const queryClient = useQueryClient();
-  const [orderedBatch, setOrderedBatch] = useState({ agentId: "", batchId: "" });
+  const [orderedBatch, setOrderedBatch] = useState(() => ({
+    agentId,
+    ...(readQuizBatch(wsId, agentId) ?? { batchId: "", orderedAt: 0, expectedRows: 0 }),
+  }));
+  const [samplePollDeadline] = useState(() => Date.now() + SAMPLE_POLL_WINDOW);
   const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
+  const orderedAt = orderedBatch.agentId === agentId ? orderedBatch.orderedAt : 0;
+  const expectedRows = orderedBatch.agentId === agentId ? orderedBatch.expectedRows : 0;
+  const batchPollDeadline = orderedAt > 0 ? orderedAt + SAMPLE_POLL_WINDOW : samplePollDeadline;
   const batch = useQuery({
     ...promptQuizBatchOptions(wsId, batchId),
-    refetchInterval: batchId !== "" ? 15_000 : false,
+    refetchInterval: (query) =>
+      batchId !== "" &&
+      !(expectedRows > 0 && (query.state.data?.rows.length ?? 0) >= expectedRows) &&
+      (expectedRows > 0 || Date.now() < batchPollDeadline)
+        ? QUIZ_POLL_INTERVAL
+        : false,
   });
+  const batchComplete =
+    expectedRows > 0 && (batch.data?.rows.length ?? 0) >= expectedRows;
   const samples = useQuery({
     ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
-    refetchInterval: batchId !== "" ? 15_000 : false,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchInterval: () =>
+      batchId !== "" && !batchComplete
+        ? QUIZ_POLL_INTERVAL
+        : batchId === "" && Date.now() < samplePollDeadline
+          ? QUIZ_POLL_INTERVAL
+          : false,
   });
 
   const batchGraded = batch.data?.scores?.graded ?? 0;
+  useEffect(() => {
+    setOrderedBatch({
+      agentId,
+      ...(readQuizBatch(wsId, agentId) ?? { batchId: "", orderedAt: 0, expectedRows: 0 }),
+    });
+  }, [agentId, wsId]);
+
+  useEffect(() => {
+    void queryClient.invalidateQueries({
+      queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
+    });
+  }, [agentId, queryClient, wsId]);
+
+  useEffect(() => {
+    if (!batchComplete) return;
+    void queryClient.invalidateQueries({
+      queryKey: promptQuizKeys.samples(wsId, "agent", agentId, baseline.current_version),
+    });
+  }, [agentId, baseline.current_version, batchComplete, queryClient, wsId]);
+
   useEffect(() => {
     if (batchGraded > 0) {
       void queryClient.invalidateQueries({ queryKey: promptQuizKeys.baseline(wsId, "agent", agentId) });
@@ -81,7 +126,12 @@ export function QuizGradedPanel({
       { agent_ids: [agentId] },
       {
         onSuccess: (resp) => {
-          if (resp.batch_id !== "") setOrderedBatch({ agentId, batchId: resp.batch_id });
+          if (resp.batch_id !== "") {
+            const orderedAt = Date.now();
+            const expectedRows = resp.ordered;
+            setOrderedBatch({ agentId, batchId: resp.batch_id, orderedAt, expectedRows });
+            writeQuizBatch(wsId, agentId, resp.batch_id, orderedAt, expectedRows);
+          }
           const refused = resp.refused_agents?.length ?? 0;
           if (refused > 0) {
             toast.warning(t(($) => $.quiz.graded.refused, { count: refused }));
