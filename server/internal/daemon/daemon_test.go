@@ -1683,7 +1683,7 @@ func TestRunTask_ReportsContextOnlyUsage(t *testing.T) {
 		{"context only", "00000000-0000-4000-8000-000000000001", 0, 0, 0, 0, 350000, 1},
 		// all-zero tokens still report one entry: the script emits an
 		// assistant event, which is provider evidence of one model API
-		// response even with zero billable tokens (migration 987 call
+		// response even with zero billable tokens (migration 996 call
 		// counts make a zero-token response a known call, not a no-op).
 		{"all zero", "00000000-0000-4000-8000-000000000002", 0, 0, 0, 0, 0, 1},
 		{"billing unchanged", "00000000-0000-4000-8000-000000000003", 12, 7, 4, 3, 26, 1},
@@ -1729,7 +1729,7 @@ func TestRunTask_ReportsContextOnlyUsage(t *testing.T) {
 					tt.inputTokens, tt.outputTokens, tt.cacheRead, tt.cacheWrite, tt.contextTokens)
 			}
 			// Each subtest's script emits exactly one assistant event, the
-			// provider's evidence for one model API response (migration 987):
+			// provider's evidence for one model API response (migration 996):
 			// the call count is 1 even in the all-zero subtest.
 			if u.ModelCallCount != 1 {
 				t.Fatalf("usage entry ModelCallCount = %d, want 1", u.ModelCallCount)
@@ -1742,7 +1742,7 @@ func TestRunTask_ReportsContextOnlyUsage(t *testing.T) {
 // result event's per-model totals replace the stream's map wholesale and carry
 // no call counts of their own, so this run's assistant-event evidence must be
 // ported across, or a successful run would report tokens without its call
-// evidence (migration 987).
+// evidence (migration 996).
 func TestRunTask_ClaudeResultPortsCallCounts(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fixture is POSIX-only")

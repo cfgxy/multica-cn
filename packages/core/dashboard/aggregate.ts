@@ -211,7 +211,7 @@ export interface DashboardTokenTotals {
   cacheWrite: number;
   cost: number;
   taskCount: number;
-  // Model API/Prompt call counts (migration 987): the known half plus the
+  // Model API/Prompt call counts (migration 996): the known half plus the
   // rows whose provider gave no call evidence. A KPI that shows a nonzero
   // unknown count must say so, not present the known half as a total.
   modelCallCount: number;
