@@ -28,6 +28,17 @@ afterEach(() => {
 // app in past incidents. The contract is: a malformed response degrades to
 // an empty/safe shape, never throws into React.
 describe("ApiClient schema fallback", () => {
+  it.each([400, 404])(
+    "falls back when an older server returns %i for current quiz batches",
+    async (status) => {
+      stubFetchJson({ error: "current batch is unavailable" }, status);
+      const client = new ApiClient("https://api.example.test");
+      await expect(client.getCurrentPromptQuizBatch("agent-1")).resolves.toEqual({
+        batch_id: "", ordered: 0, settled: true, rows: [], counts: {},
+      });
+    },
+  );
+
   it("never logs raw GitLab projects from a malformed response", async () => {
     const warn = vi.fn();
     setSchemaLogger({ debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() });

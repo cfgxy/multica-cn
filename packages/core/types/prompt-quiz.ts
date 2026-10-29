@@ -82,6 +82,8 @@ export interface PromptQuizSampleRow {
   measured_at?: string;
   run_tokens?: number;
   task_status?: string;
+  /** "pending" | "awaiting_grade" | "measured" | "not_measured", server-driven. */
+  measurement_status?: string;
 }
 
 /**
@@ -182,13 +184,17 @@ export interface CreatePromptQuizBatchRequest {
 /** What a batch order actually did. */
 export interface PromptQuizBatchCreateResponse {
   batch_id: string;
-  ordered: number;
+  ordered?: number;
   refused_agents?: { agent_id: string; reason: string }[];
 }
 
 /** One batch's read-back: per-run rows, outcome counts, graded summary. */
 export interface PromptQuizBatchResponse {
   batch_id: string;
+  /** Exact queue-row count for this batch. */
+  ordered: number;
+  /** False while a task runs, awaits collection, or a stored result awaits grading. */
+  settled: boolean;
   rows: PromptQuizSampleRow[];
   /** Per-outcome counts ("answered"/"errored") — never a pass rate. */
   counts: Record<string, number>;

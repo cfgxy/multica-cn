@@ -456,20 +456,31 @@ func (q *Queries) NextPromptVersion(ctx context.Context, arg NextPromptVersionPa
 }
 
 const setAgentTaskQueuePromptVersions = `-- name: SetAgentTaskQueuePromptVersions :exec
-UPDATE agent_task_queue SET prompt_versions = $2
+UPDATE agent_task_queue
+SET prompt_versions = $2,
+    context = CASE
+        WHEN originator_source = 'quiz' AND $3::boolean
+            THEN COALESCE(context, '{}'::jsonb) - 'quiz_measurement_status'
+        ELSE context
+    END
 WHERE id = $1
 `
 
 type SetAgentTaskQueuePromptVersionsParams struct {
-	ID             pgtype.UUID `json:"id"`
-	PromptVersions []byte      `json:"prompt_versions"`
+	ID                          pgtype.UUID `json:"id"`
+	PromptVersions              []byte      `json:"prompt_versions"`
+	ClearQuizAttributionPending bool        `json:"clear_quiz_attribution_pending"`
 }
 
 // Run-level attribution (RUYI-183 T2): records which prompt_version.version
 // of each injected tier a claimed run executed with. Written once at claim
-// time; absent keys mean "tier not injected", never version 0.
+// time; absent keys mean "tier not injected", never version 0. A quiz task
+// starts with an attribution_pending marker in context; clear it atomically
+// with a complete attribution write so the collector never mistakes an
+// attribution outage for a permanently unmeasurable run. A partial write after
+// a failed tier lookup retains the marker while preserving resolved tiers.
 func (q *Queries) SetAgentTaskQueuePromptVersions(ctx context.Context, arg SetAgentTaskQueuePromptVersionsParams) error {
-	_, err := q.db.Exec(ctx, setAgentTaskQueuePromptVersions, arg.ID, arg.PromptVersions)
+	_, err := q.db.Exec(ctx, setAgentTaskQueuePromptVersions, arg.ID, arg.PromptVersions, arg.ClearQuizAttributionPending)
 	return err
 }
 
