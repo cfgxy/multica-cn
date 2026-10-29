@@ -73,7 +73,7 @@ export function QuizGradedPanel({
     refetchInterval: (query) =>
       batchId !== "" &&
       !(expectedRows > 0 && (query.state.data?.rows.length ?? 0) >= expectedRows) &&
-      (expectedRows > 0 || Date.now() < batchPollDeadline)
+      Date.now() < batchPollDeadline
         ? QUIZ_POLL_INTERVAL
         : false,
   });
@@ -84,9 +84,7 @@ export function QuizGradedPanel({
     staleTime: 0,
     refetchOnMount: "always",
     refetchInterval: () =>
-      batchId !== "" && !batchComplete
-        ? QUIZ_POLL_INTERVAL
-        : batchId === "" && Date.now() < samplePollDeadline
+      Date.now() < samplePollDeadline && (batchId === "" || !batchComplete)
           ? QUIZ_POLL_INTERVAL
           : false,
   });
