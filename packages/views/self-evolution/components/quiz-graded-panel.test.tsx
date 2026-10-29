@@ -119,13 +119,14 @@ describe("QuizGradedPanel", () => {
 
   it("restores the ordered batch after the panel unmounts and remounts", async () => {
     vi.useFakeTimers();
-    api.getPromptQuizSamples.mockResolvedValue([]);
-    api.getPromptQuizBatch.mockResolvedValue({
+    let latest: PromptQuizSampleRow[] = [];
+    api.getPromptQuizSamples.mockImplementation(async () => latest);
+    api.getPromptQuizBatch.mockImplementation(async () => ({
       batch_id: "batch-1",
-      rows: [{ ...row, outcome: "", score: null, task_status: "running" }],
-      counts: {},
-      scores: { graded: 0, mean: 0 },
-    });
+      rows: latest,
+      counts: latest.length > 0 ? { answered: latest.length } : {},
+      scores: { graded: latest.length, mean: latest.length > 0 ? 0.5 : 0 },
+    }));
     api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
     const flush = async () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(1); });
@@ -144,5 +145,39 @@ describe("QuizGradedPanel", () => {
     expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(2);
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("batch-1");
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("0 graded");
+
+    latest = [row];
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("1 graded");
+    expect(screen.getAllByTestId(`quiz-sample-${row.task_id}`)).toHaveLength(2);
+  });
+
+  it("stops batch and sample polling when the window expires without results", async () => {
+    vi.useFakeTimers();
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    api.getPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      rows: [],
+      counts: {},
+      scores: { graded: 0, mean: 0 },
+    });
+    api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+
+    mount();
+    await flush();
+    fireEvent.click(screen.getByTestId("quiz-graded-run"));
+    await flush();
+    await flush();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60 * 1000); });
+    const batchCallsAtDeadline = api.getPromptQuizBatch.mock.calls.length;
+    const sampleCallsAtDeadline = api.getPromptQuizSamples.mock.calls.length;
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(batchCallsAtDeadline);
+    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(sampleCallsAtDeadline);
   });
 });
