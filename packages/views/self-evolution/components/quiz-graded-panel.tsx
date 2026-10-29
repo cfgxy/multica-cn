@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -15,13 +15,15 @@ import {
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { clientErrorMessage } from "@multica/core/api";
 import {
-  promptQuizBatchOptions,
+  promptQuizCurrentBatchOptions,
   promptQuizKeys,
   promptQuizSamplesOptions,
   useCreatePromptQuizBatch,
 } from "@multica/core/self-evolution";
 import type { PromptQuizBaseline, PromptQuizSampleRow } from "@multica/core/types";
 import { useT, useLocale } from "../../i18n";
+const QUIZ_POLL_INTERVAL = 15_000;
+
 
 /**
  * The graded side of the quiz (RUYI-286), owner-only like the rubrics it
@@ -55,23 +57,90 @@ export function QuizGradedPanel({
 
   const run = useCreatePromptQuizBatch(wsId);
   const queryClient = useQueryClient();
-  const [orderedBatch, setOrderedBatch] = useState({ agentId: "", batchId: "" });
-  const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
   const batch = useQuery({
-    ...promptQuizBatchOptions(wsId, batchId),
-    refetchInterval: batchId !== "" ? 15_000 : false,
+    ...promptQuizCurrentBatchOptions(wsId, agentId),
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (query.state.status === "error") return QUIZ_POLL_INTERVAL;
+      return data?.batch_id !== "" && data?.settled !== true ? QUIZ_POLL_INTERVAL : false;
+    },
   });
+  const batchId = batch.data?.batch_id ?? "";
+  const batchSettled = batch.data?.settled === true;
+  const {
+    dataUpdatedAt: batchDataUpdatedAt,
+    isSuccess: batchIsSuccess,
+    refetch: refetchBatch,
+  } = batch;
   const samples = useQuery({
     ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
-    refetchInterval: batchId !== "" ? 15_000 : false,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    refetchInterval: () => {
+      return batchId !== "" && !batchSettled ? QUIZ_POLL_INTERVAL : false;
+    },
   });
+  const {
+    dataUpdatedAt: samplesDataUpdatedAt,
+    isFetching: samplesIsFetching,
+    refetch: refetchSamples,
+  } = samples;
 
+  const previousBatchState = useRef({ batchId: "", settled: false });
   const batchGraded = batch.data?.scores?.graded ?? 0;
   useEffect(() => {
-    if (batchGraded > 0) {
+    void queryClient.invalidateQueries({
+      queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
+    });
+  }, [agentId, queryClient, wsId]);
+
+  useEffect(() => {
+    if (!batchIsSuccess || batchId === "") return;
+    const previous = previousBatchState.current;
+    previousBatchState.current = { batchId, settled: batchSettled };
+    const firstObservationSettled = previous.batchId !== batchId && batchSettled;
+    const becameSettled = previous.batchId === batchId && !previous.settled && batchSettled;
+    if (!firstObservationSettled && !becameSettled) return;
+    void queryClient.invalidateQueries({
+      queryKey: promptQuizKeys.baseline(wsId, "agent", agentId),
+    });
+    if (baseline.current_version <= 0) return;
+    if (firstObservationSettled) {
+      if (samplesIsFetching && samplesDataUpdatedAt === 0) {
+        void refetchSamples().then(() => refetchSamples());
+      } else {
+        void refetchSamples();
+      }
+    } else {
+      void queryClient.invalidateQueries({
+        queryKey: promptQuizKeys.samples(wsId, "agent", agentId, baseline.current_version),
+      });
+    }
+    // A newer batch can settle while an older batch is still active. Refresh
+    // current once so the server can select that active batch before polling
+    // stops for the settled one.
+    void refetchBatch();
+  }, [
+    agentId,
+    baseline.current_version,
+    batchDataUpdatedAt,
+    batchIsSuccess,
+    batchId,
+    batchSettled,
+    queryClient,
+    refetchBatch,
+    refetchSamples,
+    samplesDataUpdatedAt,
+    samplesIsFetching,
+    wsId,
+  ]);
+
+  useEffect(() => {
+    if (batchGraded > 0 && !batchSettled) {
       void queryClient.invalidateQueries({ queryKey: promptQuizKeys.baseline(wsId, "agent", agentId) });
     }
-  }, [agentId, batchGraded, queryClient, wsId]);
+  }, [agentId, batchGraded, batchSettled, queryClient, wsId]);
 
   const scores = baseline.scores;
   const graded = scores?.graded ?? 0;
@@ -81,12 +150,17 @@ export function QuizGradedPanel({
       { agent_ids: [agentId] },
       {
         onSuccess: (resp) => {
-          if (resp.batch_id !== "") setOrderedBatch({ agentId, batchId: resp.batch_id });
+          if (resp.batch_id !== "") {
+            void queryClient.cancelQueries({ queryKey: promptQuizKeys.currentBatch(wsId, agentId) })
+              .then(() => refetchBatch());
+          }
           const refused = resp.refused_agents?.length ?? 0;
           if (refused > 0) {
             toast.warning(t(($) => $.quiz.graded.refused, { count: refused }));
+          } else if (resp.ordered !== undefined) {
+            toast.success(t(($) => $.quiz.graded.ordered, { ordered: resp.ordered ?? 0 }));
           } else {
-            toast.success(t(($) => $.quiz.graded.ordered, { ordered: resp.ordered }));
+            toast.success(t(($) => $.quiz.graded.orderedUnknown));
           }
         },
         onError: (e) =>
@@ -125,12 +199,11 @@ export function QuizGradedPanel({
           </Button>
         </div>
 
-        {batchId !== "" ? (
-          batch.isPending ? (
-            <Skeleton className="h-16 w-full rounded-lg" />
-          ) : batch.isError ? (
-            <p className="text-caption text-muted-foreground">{t(($) => $.quiz.reading.error)}</p>
-          ) : (
+        {batch.isPending ? (
+          <Skeleton className="h-16 w-full rounded-lg" />
+        ) : batch.isError ? (
+          <p className="text-caption text-muted-foreground">{t(($) => $.quiz.reading.error)}</p>
+        ) : batchId !== "" ? (
             <div className="flex flex-col gap-1" data-testid="quiz-graded-batch">
               <p className="break-all text-caption text-muted-foreground">{batchId}</p>
               <p className="text-caption text-muted-foreground">
@@ -148,7 +221,6 @@ export function QuizGradedPanel({
                 </ul>
               ) : null}
             </div>
-          )
         ) : null}
 
         <div className="flex flex-col gap-1">
@@ -195,6 +267,9 @@ function SampleRow({
 }) {
   const { t } = useT("self-evolution");
   const checks = parseChecks(row.score_detail);
+  const awaitingGradeStatus = row.measurement_status === "awaiting_grade"
+    ? taskStatusKey(row)
+    : null;
 
   return (
     <li
@@ -203,12 +278,19 @@ function SampleRow({
     >
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-caption font-medium">{row.item_title ?? row.item_slug ?? row.item_id}</span>
-        <Badge variant="outline">{t(($) => $.quiz.graded.version, { version: row.version })}</Badge>
+        {row.version > 0 ? (
+          <Badge variant="outline">{t(($) => $.quiz.graded.version, { version: row.version })}</Badge>
+        ) : null}
         <Badge variant={row.outcome === "answered" ? "secondary" : "outline"}>
           {row.outcome === "answered"
             ? t(($) => $.quiz.graded.answered)
-            : t(($) => $.quiz.graded.errored)}
+            : row.outcome === "errored"
+              ? t(($) => $.quiz.graded.errored)
+              : t(($) => $.quiz.graded[taskStatusKey(row)])}
         </Badge>
+        {awaitingGradeStatus !== null ? (
+          <Badge variant="outline">{t(($) => $.quiz.graded[awaitingGradeStatus])}</Badge>
+        ) : null}
         {row.score !== null && row.score !== undefined ? (
           <Badge variant="secondary" data-testid="quiz-sample-score">
             {pct(row.score)}
@@ -255,6 +337,30 @@ function SampleRow({
       ) : null}
     </li>
   );
+}
+
+function taskStatusKey(row: PromptQuizSampleRow):
+  | "taskQueued"
+  | "taskRunning"
+  | "taskAwaitingGrade"
+  | "taskPending"
+  | "taskNotMeasured" {
+  if (row.measurement_status === "not_measured") return "taskNotMeasured";
+  if (row.measurement_status === "awaiting_grade") return "taskAwaitingGrade";
+  if (row.measurement_status === "pending") return "taskPending";
+  switch (row.task_status) {
+    case "queued":
+    case "dispatched":
+      return "taskQueued";
+    case "running":
+      return "taskRunning";
+    case "completed":
+    case "failed":
+    case "cancelled":
+      return row.version <= 0 ? "taskNotMeasured" : "taskAwaitingGrade";
+    default:
+      return "taskPending";
+  }
 }
 
 interface ParsedCheck {

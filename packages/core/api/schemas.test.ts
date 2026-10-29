@@ -8,6 +8,8 @@ import {
   PromptQuizItemDetailSchema,
   PromptQuizItemListSchema,
   PromptQuizBaselineSchema,
+  PromptQuizBatchCreateResponseSchema,
+  PromptQuizBatchResponseSchema,
   EMPTY_PROMPT_QUIZ_ITEM,
   EMPTY_PROMPT_QUIZ_BASELINE,
   WecomInstallationSchema,
@@ -2574,6 +2576,41 @@ describe("prompt quiz schemas (RUYI-185)", () => {
     expect(parsed.incomparable).toBe(0);
     expect(parsed.baseline_incomparable).toBe(0);
     expect(parsed.outcomes).toEqual({});
+  });
+
+  it("preserves a missing ordered count from a compatible batch response", () => {
+    const parsed = PromptQuizBatchCreateResponseSchema.parse({ batch_id: "batch-1" });
+    expect(parsed.ordered).toBeUndefined();
+  });
+
+  it("rejects invalid batch order counts without capping compatible server values", () => {
+    expect(PromptQuizBatchCreateResponseSchema.safeParse({ batch_id: "batch-1", ordered: -1 }).success)
+      .toBe(false);
+    expect(PromptQuizBatchCreateResponseSchema.safeParse({ batch_id: "batch-1", ordered: 1.5 }).success)
+      .toBe(false);
+    expect(PromptQuizBatchCreateResponseSchema.safeParse({ batch_id: "batch-1", ordered: 51 }).success)
+      .toBe(true);
+  });
+
+  it("falls back to an empty settled current batch for malformed batch responses", () => {
+    const parsed = parseWithFallback(
+      { batch_id: 42, ordered: -1, settled: "no", rows: "not rows" },
+      PromptQuizBatchResponseSchema,
+      { batch_id: "", ordered: 0, settled: true, rows: [], counts: {} },
+      { endpoint: "GET /api/prompt-quiz/batches/current" },
+    );
+    expect(parsed).toEqual({ batch_id: "", ordered: 0, settled: true, rows: [], counts: {} });
+  });
+
+  it("accepts an explicit terminal not-measured batch row", () => {
+    const parsed = PromptQuizBatchResponseSchema.parse({
+      batch_id: "batch-1",
+      ordered: 1,
+      settled: true,
+      rows: [{ task_id: "task-1", task_status: "completed", measurement_status: "not_measured" }],
+      counts: {},
+    });
+    expect(parsed.rows[0]?.measurement_status).toBe("not_measured");
   });
 
   it("falls back to an unmeasured reading, never to a clean one", () => {

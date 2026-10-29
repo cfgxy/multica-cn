@@ -188,6 +188,8 @@ var postConsolidationStems = []string{
 	"994_clause_injection_observation_id_index",
 	"994_clause_injection_observation_task_scope_time_index",
 	"994_clause_injection_observation_workspace_time_index",
+	"995_agent_task_queue_quiz_batch_index",        // RUYI-896 (agent-scoped prompt quiz batch recovery index)
+	"995_agent_task_queue_quiz_batch_lookup_index", // RUYI-896 (explicit prompt quiz batch lookup index)
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
