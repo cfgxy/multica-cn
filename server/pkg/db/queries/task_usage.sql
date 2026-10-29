@@ -15,7 +15,7 @@
 -- reported exactly once, at task completion, so they are overwritten like the
 -- token counters rather than COALESCEd like context_tokens.
 -- model_call_count is NULL when complete provider-original per-call evidence is
--- unavailable (migration 987). The handler derives a known count transactionally
+-- unavailable (migration 996). The handler derives a known count transactionally
 -- from task_usage_model_call_evidence; daemon-supplied aggregate counts are not
 -- trusted.
 INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, model_call_count, updated_at)
@@ -162,7 +162,7 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
-    -- Call counts (migration 987): the known half plus the count of rows that
+    -- Call counts (migration 996): the known half plus the count of rows that
     -- have no provider call evidence. Readers must not present
     -- model_call_count as a complete total while model_call_unknown_count is
     -- nonzero — that would turn "N rows unknown" into "0 calls".
@@ -418,7 +418,7 @@ SELECT
     -- requires. Rows without evidence are counted separately in the rollup
     -- (model_call_unknown_count) and surface through the dashboard read
     -- paths — never folded into this counter, which would turn "unknown"
-    -- into "0 calls" (migration 987).
+    -- into "0 calls" (migration 996).
     SUM(model_call_count)::bigint       AS model_call_count,
     SUM(task_count)::bigint         AS task_count
 FROM task_usage_hourly

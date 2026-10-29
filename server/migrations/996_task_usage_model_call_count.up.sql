@@ -27,7 +27,7 @@ COMMENT ON COLUMN task_usage.model_call_count IS
 -- explicit cleanup in DeleteTaskBatch, consistent with the rest of this schema.
 --
 -- Recovery: a conditionally skipped migration is still ledgered. If this table
--- or its index is absent in an environment whose schema_migrations records 987,
+-- or its index is absent in an environment whose schema_migrations records 996,
 -- restore exactly this CREATE TABLE and the companion evidence-index migration before
 -- enabling call-count accounting there. The handler fails closed to unknown if
 -- persistence is unavailable; it never accepts the daemon's aggregate count.

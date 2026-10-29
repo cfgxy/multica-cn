@@ -277,7 +277,7 @@ type DashboardUsageDailyResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	// Model call counts (migration 987): `ModelCallCount` is the known half —
+	// Model call counts (migration 996): `ModelCallCount` is the known half —
 	// rows whose provider reported dedupable call evidence — and
 	// `ModelCallUnknownCount` is how many rows in this bucket had none. The
 	// client must not present the count as a complete total while the unknown
@@ -374,7 +374,7 @@ type DashboardUsageByAgentResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	// Model call counts (migration 987) — same known/unknown split contract as
+	// Model call counts (migration 996) — same known/unknown split contract as
 	// the daily response; the client folds rows by agent and must not present
 	// a nonzero unknown count as a complete total.
 	ModelCallCount        int64 `json:"model_call_count"`
