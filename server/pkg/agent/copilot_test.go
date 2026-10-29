@@ -1114,7 +1114,7 @@ func TestBuildCopilotArgsBlocksResumeAndACP(t *testing.T) {
 	}
 }
 
-// ── Model call counts (migration 987) ──────────────────────────────────────
+// ── Model call counts (migration 996) ──────────────────────────────────────
 // Each assistant.usage event is one model API call. The count is attached to
 // whichever token source wins and must stay 0 when no such event was seen:
 // the absence is an unknown, not a measured zero.

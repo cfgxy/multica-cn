@@ -297,7 +297,7 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 		}
 	})
 
-	t.Run("running task evidence holds then expires without terminal usage", func(t *testing.T) {
+	t.Run("running task evidence without terminal usage fails open", func(t *testing.T) {
 		runtimeID := runtimeModelCallBudgetFixture(t, "running-evidence")
 		agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-running-evidence")
 		usageTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
@@ -313,8 +313,8 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 			`{"provider":"claude","model":"budget-live","evidence_id":"live-call-1"}`)
 		testutil.Call(t, testHandler.ReportTaskModelCallEvidence, req).Want(http.StatusOK)
 
-		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task != nil {
-			t.Fatalf("running evidence did not hold runtime: claimed %s: %s", task.ID, body)
+		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task == nil || task.ID != queuedID {
+			t.Fatalf("live evidence without terminal usage must fail open and claim %s, got %+v: %s", queuedID, task, body)
 		}
 		var evidenceCount, usageCount int
 		if err := testPool.QueryRow(ctx, `SELECT count(*) FROM task_usage_model_call_evidence WHERE task_id = $1`, usageTaskID).Scan(&evidenceCount); err != nil {
@@ -325,12 +325,6 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 		}
 		if evidenceCount != 1 || usageCount != 0 {
 			t.Fatalf("running persistence = %d evidence / %d usage rows, want 1 / 0", evidenceCount, usageCount)
-		}
-		if _, err := testPool.Exec(ctx, `UPDATE task_usage_model_call_evidence SET created_at = now() - INTERVAL '61 seconds' WHERE task_id = $1`, usageTaskID); err != nil {
-			t.Fatalf("expire live evidence: %v", err)
-		}
-		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task == nil || task.ID != queuedID {
-			t.Fatalf("expired running evidence must release queued task %s, got %+v: %s", queuedID, task, body)
 		}
 	})
 
@@ -359,7 +353,7 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 		}
 	})
 
-	t.Run("batch runtime holds known exhausted then releases unknown window", func(t *testing.T) {
+	t.Run("batch runtime holds known exhausted then releases incomplete live window", func(t *testing.T) {
 		runtimeID := runtimeModelCallBudgetFixture(t, "batch")
 		agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-batch")
 		usageTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
@@ -380,14 +374,20 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 			t.Fatalf("batch held task status = %q, want queued", got)
 		}
 
-		seedModelCallUsage(t, ctx, usageTaskID, "copilot", "unknown", nil)
+		liveTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, liveTaskID); err != nil {
+			t.Fatalf("mark batch live source task running: %v", err)
+		}
+		req := modelCallEvidenceRequest(t, runtimeID, liveTaskID,
+			`{"provider":"copilot","model":"unknown-live","evidence_id":"batch-live-call-1"}`)
+		testutil.Call(t, testHandler.ReportTaskModelCallEvidence, req).Want(http.StatusOK)
 		w = postBatchClaim(t, testWorkspaceID, []string{runtimeID}, 5)
 		if w.Code != http.StatusOK {
-			t.Fatalf("batch unknown release: got %d: %s", w.Code, w.Body.String())
+			t.Fatalf("batch incomplete live release: got %d: %s", w.Code, w.Body.String())
 		}
 		resp := decodeBatchClaim(t, w)
 		if len(resp.Tasks) != 1 || resp.Tasks[0].ID != queuedID {
-			t.Fatalf("unknown batch window must fail open, got %+v", resp.Tasks)
+			t.Fatalf("incomplete live batch window must fail open, got %+v", resp.Tasks)
 		}
 	})
 }
@@ -422,10 +422,17 @@ func TestListTasksByIssue_QueuedReasonModelCallBudget(t *testing.T) {
 		t.Fatalf("queued reason = %q, want runtime_model_call_budget", got)
 	}
 
-	// An unknown row has precedence over a partial sum: observable in the
-	// budget report, but never rendered as an admission hold.
-	seedModelCallUsage(t, ctx, usageTaskID, "copilot", "unknown", nil)
+	// Live evidence without terminal usage has the same precedence over the
+	// partial sum: it is observable in the budget report, but never rendered as
+	// an admission hold.
+	liveTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, liveTaskID); err != nil {
+		t.Fatalf("mark queued-reason live source task running: %v", err)
+	}
+	req := modelCallEvidenceRequest(t, runtimeID, liveTaskID,
+		`{"provider":"copilot","model":"unknown-live","evidence_id":"queued-reason-live-call-1"}`)
+	testutil.Call(t, testHandler.ReportTaskModelCallEvidence, req).Want(http.StatusOK)
 	if got := runs()[queuedID].QueuedReason; got != "" {
-		t.Fatalf("unknown budget window still carries queued reason %q", got)
+		t.Fatalf("incomplete live budget window still carries queued reason %q", got)
 	}
 }
