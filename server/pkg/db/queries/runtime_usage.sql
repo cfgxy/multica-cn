@@ -35,19 +35,38 @@ ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provide
 -- Rolling provider-call admission budget. Known calls use each provider
 -- evidence row's insertion time, so calls are visible before task completion
 -- and a long task can span multiple windows. Usage rows without complete
--- evidence remain unknown and make the window fail open.
+-- evidence, and live evidence without a matching terminal usage row, remain
+-- unknown and make the window fail open.
 SELECT
     (SELECT COUNT(*)::bigint
      FROM task_usage_model_call_evidence e
      JOIN agent_task_queue atq ON atq.id = e.task_id
      WHERE atq.runtime_id = @runtime_id
        AND e.created_at >= @since::timestamptz) AS known_calls,
-    (SELECT COUNT(tu.task_id)::bigint
-     FROM task_usage tu
-     JOIN agent_task_queue atq ON atq.id = tu.task_id
-     WHERE atq.runtime_id = @runtime_id
-       AND tu.model_call_count IS NULL
-       AND COALESCE(tu.updated_at, tu.created_at) >= @since::timestamptz) AS unknown_usage_rows;
+    (SELECT COUNT(*)::bigint
+     FROM (
+         SELECT tu.task_id, tu.provider, tu.model
+         FROM task_usage tu
+         JOIN agent_task_queue atq ON atq.id = tu.task_id
+         WHERE atq.runtime_id = @runtime_id
+           AND tu.model_call_count IS NULL
+           AND COALESCE(tu.updated_at, tu.created_at) >= @since::timestamptz
+
+         UNION
+
+         SELECT e.task_id, e.provider, e.model
+         FROM task_usage_model_call_evidence e
+         JOIN agent_task_queue atq ON atq.id = e.task_id
+         WHERE atq.runtime_id = @runtime_id
+           AND e.created_at >= @since::timestamptz
+           AND NOT EXISTS (
+               SELECT 1
+               FROM task_usage tu
+               WHERE tu.task_id = e.task_id
+                 AND tu.provider = e.provider
+                 AND tu.model = e.model
+           )
+     ) AS incomplete_usage) AS unknown_usage_rows;
 
 -- name: ListRuntimeModelCallBudgetUsage :many
 -- Batch equivalent for queued-reason decoration and multi-runtime claims. The
@@ -62,14 +81,34 @@ SELECT
        AND e.created_at >= to_timestamp(
            EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
        )) AS known_calls,
-    (SELECT COUNT(tu.task_id)::bigint
-     FROM task_usage tu
-     JOIN agent_task_queue atq ON atq.id = tu.task_id
-     WHERE atq.runtime_id = rt.id
-       AND tu.model_call_count IS NULL
-       AND COALESCE(tu.updated_at, tu.created_at) >= to_timestamp(
-           EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
-       )) AS unknown_usage_rows
+    (SELECT COUNT(*)::bigint
+     FROM (
+         SELECT tu.task_id, tu.provider, tu.model
+         FROM task_usage tu
+         JOIN agent_task_queue atq ON atq.id = tu.task_id
+         WHERE atq.runtime_id = rt.id
+           AND tu.model_call_count IS NULL
+           AND COALESCE(tu.updated_at, tu.created_at) >= to_timestamp(
+               EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
+           )
+
+         UNION
+
+         SELECT e.task_id, e.provider, e.model
+         FROM task_usage_model_call_evidence e
+         JOIN agent_task_queue atq ON atq.id = e.task_id
+         WHERE atq.runtime_id = rt.id
+           AND e.created_at >= to_timestamp(
+               EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
+           )
+           AND NOT EXISTS (
+               SELECT 1
+               FROM task_usage tu
+               WHERE tu.task_id = e.task_id
+                 AND tu.provider = e.provider
+                 AND tu.model = e.model
+           )
+     ) AS incomplete_usage) AS unknown_usage_rows
 FROM agent_runtime rt
 WHERE rt.id = ANY(@runtime_ids::uuid[]);
 

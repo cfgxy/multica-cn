@@ -130,7 +130,7 @@ func TestTaskUsagePayloadEvidenceCompatibility(t *testing.T) {
 	oldDaemon := []byte(`{"provider":"anthropic","model":"claude-opus-5","model_call_count":42}`)
 	var legacy TaskUsagePayload
 	if err := json.Unmarshal(oldDaemon, &legacy); err != nil {
-		t.Fatalf("new server must not error on a pre-987 payload: %v", err)
+		t.Fatalf("new server must not error on a pre-996 payload: %v", err)
 	}
 	if legacy.ModelCallCount != 42 {
 		t.Errorf("legacy model_call_count = %d, want 42", legacy.ModelCallCount)

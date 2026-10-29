@@ -37,7 +37,7 @@ func usageRow(workspace, runtime, provider, model string, input, output, cacheRe
 		UncostedCacheReadTokens: cacheRead, UncostedCacheWriteTokens: cacheWrite,
 		TaskCount: taskCount,
 		// The counter exposes the known half only; unknown rows stay out of
-		// the metrics path by construction (migration 987).
+		// the metrics path by construction (migration 996).
 		ModelCallCount: modelCalls,
 	}
 }

@@ -201,7 +201,7 @@ type RuntimeUsageResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	// Model call counts (migration 987): known half plus the count of rows
+	// Model call counts (migration 996): known half plus the count of rows
 	// whose provider gave no call evidence; clients must not present the
 	// known half as a complete total when the unknown count is nonzero.
 	ModelCallCount        int64 `json:"model_call_count"`
@@ -321,7 +321,7 @@ type RuntimeUsageByAgentResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	// Model call counts (migration 987): same known/unknown split contract as
+	// Model call counts (migration 996): same known/unknown split contract as
 	// the daily response.
 	ModelCallCount        int64 `json:"model_call_count"`
 	ModelCallUnknownCount int64 `json:"model_call_unknown_count"`
@@ -395,7 +395,7 @@ type RuntimeUsageByHourResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	// Model call counts (migration 987): same known/unknown split contract as
+	// Model call counts (migration 996): same known/unknown split contract as
 	// the daily response.
 	ModelCallCount        int64 `json:"model_call_count"`
 	ModelCallUnknownCount int64 `json:"model_call_unknown_count"`
