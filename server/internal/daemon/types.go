@@ -378,6 +378,25 @@ type TaskUsageEntry struct {
 	Turns            int   `json:"turns,omitempty"`
 	Compactions      int   `json:"compactions,omitempty"`
 	MaxContextTokens int64 `json:"max_context_tokens,omitempty"`
+	// ModelCallEvidenceIDs are the provider-original identities for every model
+	// call represented by this usage row. The server inserts them under a unique
+	// database key and derives ModelCallCount there; it never trusts this daemon
+	// diagnostic field as a billing input.
+	ModelCallEvidenceIDs []string `json:"model_call_evidence_ids,omitempty"`
+	// ModelCallEvidenceComplete is true only when ModelCallEvidenceIDs contains
+	// every call for this usage row. Its zero value deliberately means unknown,
+	// so daemons that predate the field fail open instead of claiming a zero.
+	ModelCallEvidenceComplete bool `json:"model_call_evidence_complete,omitempty"`
+	// ModelCallCount is retained solely for compatibility with older server
+	// versions. New servers ignore it and derive the stored count from evidence.
+	ModelCallCount int64 `json:"model_call_count,omitempty"`
+}
+
+type TaskModelCallEvidence struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	EvidenceID string `json:"evidence_id,omitempty"`
+	Incomplete bool   `json:"incomplete,omitempty"`
 }
 
 // TaskResult is the outcome of executing a task.

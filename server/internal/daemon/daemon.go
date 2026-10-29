@@ -7556,6 +7556,100 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, err
 	}
 
+	evidenceQueue := make(chan TaskModelCallEvidence, 64)
+	evidenceCtx, cancelEvidence := context.WithCancel(ctx)
+	const overflowUnknownRefreshInterval = 30 * time.Second
+	const overflowUnknownRetryInterval = time.Second
+	var evidenceWorkers sync.WaitGroup
+	var startEvidenceWorkers sync.Once
+	var overflowUnknownMu sync.Mutex
+	var lastOverflowUnknown time.Time
+	var overflowUnknownModel string
+	var overflowUnknownInFlight bool
+	startEvidenceReporter := func() {
+		for i := 0; i < 4; i++ {
+			evidenceWorkers.Add(1)
+			go func() {
+				defer evidenceWorkers.Done()
+				for evidence := range evidenceQueue {
+					reportCtx, cancel := context.WithTimeout(evidenceCtx, 3*time.Second)
+					err := d.client.ReportTaskModelCallEvidence(reportCtx, task.ID, evidence)
+					cancel()
+					if err != nil {
+						taskLog.Warn("report live model-call evidence failed", "provider", provider, "model", evidence.Model, "error", err)
+					}
+				}
+			}()
+		}
+	}
+	enqueueEvidence := func(evidence TaskModelCallEvidence) {
+		startEvidenceWorkers.Do(startEvidenceReporter)
+		select {
+		case evidenceQueue <- evidence:
+		default:
+			taskLog.Warn("live model-call evidence queue full; terminal usage report will retry persistence",
+				"provider", provider, "model", evidence.Model, "incomplete", evidence.Incomplete)
+			overflowUnknownMu.Lock()
+			refreshUnknown := !overflowUnknownInFlight && time.Since(lastOverflowUnknown) >= overflowUnknownRefreshInterval
+			if overflowUnknownModel == "" {
+				overflowUnknownModel = evidence.Model
+			}
+			unknownModel := overflowUnknownModel
+			if refreshUnknown {
+				overflowUnknownInFlight = true
+			}
+			overflowUnknownMu.Unlock()
+			if refreshUnknown {
+				evidenceWorkers.Add(1)
+				go func() {
+					defer evidenceWorkers.Done()
+					defer func() {
+						overflowUnknownMu.Lock()
+						overflowUnknownInFlight = false
+						overflowUnknownMu.Unlock()
+					}()
+					unknown := TaskModelCallEvidence{Provider: provider, Model: unknownModel, Incomplete: true}
+					for {
+						reportCtx, cancel := context.WithTimeout(evidenceCtx, 3*time.Second)
+						err := d.client.ReportTaskModelCallEvidence(reportCtx, task.ID, unknown)
+						cancel()
+						if err == nil {
+							overflowUnknownMu.Lock()
+							lastOverflowUnknown = time.Now()
+							overflowUnknownMu.Unlock()
+							return
+						}
+						taskLog.Warn("report overflow model-call evidence as unknown failed", "provider", provider, "model", unknownModel, "error", err)
+						timer := time.NewTimer(overflowUnknownRetryInterval)
+						select {
+						case <-timer.C:
+						case <-evidenceCtx.Done():
+							timer.Stop()
+							return
+						}
+					}
+				}()
+			}
+		}
+	}
+	defer func() {
+		close(evidenceQueue)
+		workersDone := make(chan struct{})
+		go func() {
+			evidenceWorkers.Wait()
+			close(workersDone)
+		}()
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-workersDone:
+		case <-timer.C:
+			cancelEvidence()
+			<-workersDone
+		}
+		cancelEvidence()
+	}()
+
 	// Refuse to spawn an agent without a workspace. An empty workspace_id
 	// here would make MULTICA_WORKSPACE_ID empty in the agent env, and the
 	// CLI would otherwise silently fall back to the user-global config — a
@@ -8669,6 +8763,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		CLIVersion:     resolvedVersion,
 		Env:            agentEnv,
 		Logger:         d.logger,
+		OnModelCallEvidence: func(model, evidenceID string) {
+			enqueueEvidence(TaskModelCallEvidence{Provider: provider, Model: model, EvidenceID: evidenceID})
+		},
+		OnModelCallEvidenceIncomplete: func(model string) {
+			enqueueEvidence(TaskModelCallEvidence{Provider: provider, Model: model, Incomplete: true})
+		},
 		TaskID:         task.ID,
 		RuntimeID:      task.RuntimeID,
 		DaemonVersion:  d.cfg.CLIVersion,
@@ -9010,18 +9110,22 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Convert agent usage map to task usage entries.
 	var usageEntries []TaskUsageEntry
 	for model, u := range result.Usage {
-		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 {
+		evidenceIDs := u.ModelCallEvidenceIDs()
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 && len(evidenceIDs) == 0 && !u.ModelCallEvidenceIncomplete {
 			continue
 		}
 		usageEntries = append(usageEntries, TaskUsageEntry{
-			Provider:         provider,
-			Model:            model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUSDTicks:     u.CostUSDTicks,
-			ContextTokens:    u.ContextTokens,
+			Provider:                  provider,
+			Model:                     model,
+			InputTokens:               u.InputTokens,
+			OutputTokens:              u.OutputTokens,
+			CacheReadTokens:           u.CacheReadTokens,
+			CacheWriteTokens:          u.CacheWriteTokens,
+			CostUSDTicks:              u.CostUSDTicks,
+			ContextTokens:             u.ContextTokens,
+			ModelCallEvidenceIDs:      evidenceIDs,
+			ModelCallEvidenceComplete: len(evidenceIDs) > 0 && !u.ModelCallEvidenceIncomplete,
+			ModelCallCount:            u.ModelCallCount,
 			// Run-scoped (RUYI-154), not per-model — same values on every
 			// entry of this run; see TaskUsageEntry.Turns.
 			Turns:            result.Turns,
@@ -10126,6 +10230,18 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 		existing.CacheReadTokens += u.CacheReadTokens
 		existing.CacheWriteTokens += u.CacheWriteTokens
 		existing.CostUSDTicks += u.CostUSDTicks
+		// Each retry attempt can issue distinct provider calls. Preserve every
+		// raw identity and let the database's task/provider uniqueness key
+		// deduplicate any replayed provider event across attempts.
+		for _, evidenceID := range u.ModelCallEvidenceIDs() {
+			existing = existing.WithModelCallEvidence(evidenceID)
+		}
+		existing.ModelCallEvidenceIncomplete = existing.ModelCallEvidenceIncomplete || u.ModelCallEvidenceIncomplete
+		if existing.ModelCallEvidenceIncomplete {
+			existing.ModelCallCount = 0
+		} else {
+			existing.ModelCallCount = int64(len(existing.ModelCallEvidenceIDs()))
+		}
 		merged[model] = existing
 	}
 	return merged

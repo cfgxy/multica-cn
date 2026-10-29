@@ -51,6 +51,7 @@ import { DeleteRuntimeProfileDialog } from "./delete-runtime-profile-dialog";
 import { runtimeRowLabel } from "./runtime-machines";
 import { BackpressureBadge } from "./runtime-backpressure-badge";
 import { BackpressureSettingsCard } from "./runtime-backpressure-settings-card";
+import { ModelCallBudgetCard } from "./runtime-model-call-budget-card";
 import { useT, useTimeAgo } from "../../i18n";
 
 function getCliVersion(metadata: Record<string, unknown>): string | null {
@@ -214,6 +215,7 @@ export function RuntimeDetail({
             {canReadRuntime && runtime.runtime_mode === "local" && !!runtime.daemon_id && (
               <BackpressureSettingsCard runtime={runtime} canEdit={isAdmin} />
             )}
+            {canReadRuntime && <ModelCallBudgetCard runtime={runtime} canEdit={isAdmin} />}
             {canReadRuntime && <UsageSection runtime={runtime} />}
           </div>
 

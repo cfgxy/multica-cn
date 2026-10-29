@@ -211,6 +211,11 @@ export interface DashboardTokenTotals {
   cacheWrite: number;
   cost: number;
   taskCount: number;
+  // Model API/Prompt call counts (migration 996): the known half plus the
+  // rows whose provider gave no call evidence. A KPI that shows a nonzero
+  // unknown count must say so, not present the known half as a total.
+  modelCallCount: number;
+  modelCallUnknownCount: number;
 }
 
 // Whole-window totals for the KPI tiles. taskCount sums DISTINCT task counts
@@ -227,8 +232,19 @@ export function computeDailyTotals(usage: DashboardUsageDaily[]): DashboardToken
       cacheWrite: acc.cacheWrite + u.cache_write_tokens,
       cost: acc.cost + estimateCost(u),
       taskCount: acc.taskCount + u.task_count,
+      modelCallCount: acc.modelCallCount + (u.model_call_count ?? 0),
+      modelCallUnknownCount: acc.modelCallUnknownCount + (u.model_call_unknown_count ?? 0),
     }),
-    { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, taskCount: 0 },
+    {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      taskCount: 0,
+      modelCallCount: 0,
+      modelCallUnknownCount: 0,
+    },
   );
 }
 

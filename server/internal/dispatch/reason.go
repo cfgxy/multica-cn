@@ -59,6 +59,10 @@ const (
 	// until the machine returns; backpressure means the machine is up and the
 	// hold decays on its own.
 	ReasonRuntimeBackpressure ReasonCode = "runtime_backpressure"
+	// ReasonRuntimeModelCallBudget means the Runtime's rolling provider-call
+	// budget is exhausted. It is emitted only when the entire window has
+	// durable per-call evidence; an unknown row always releases the hold.
+	ReasonRuntimeModelCallBudget ReasonCode = "runtime_model_call_budget"
 	// ReasonAlreadyActive: a run is already active/pending for this target and
 	// this trigger did not coalesce.
 	ReasonAlreadyActive ReasonCode = "already_active"

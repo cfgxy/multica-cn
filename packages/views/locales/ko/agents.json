@@ -704,7 +704,8 @@
       "started_prefix": "{{when}} 시작됨",
       "dispatched_prefix": "{{when}} 디스패치됨",
       "queued_prefix": "{{when}} 대기 시작",
-      "queued_backpressure": "런타임 복구 대기 중"
+      "queued_backpressure": "런타임 복구 대기 중",
+      "queued_model_call_budget": "모델 호출 예산 윈도우 진행 대기 중"
     }
   },
   "char_counter": {
@@ -1055,6 +1056,7 @@
       "load_more": "더 보기",
       "empty": "아직 실행 기록이 없습니다.",
       "queued_backpressure": "런타임 복구 대기 중",
+      "queued_model_call_budget": "모델 호출 예산 윈도우 진행 대기 중",
       "other_agents": "에이전트 {{count}}대 실행 중"
     },
     "edit": {

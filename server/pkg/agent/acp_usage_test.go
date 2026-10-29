@@ -95,6 +95,37 @@ func TestACPUsageAccumulatorMatrix(t *testing.T) {
 			},
 			want: TokenUsage{InputTokens: 100, OutputTokens: 30, CacheReadTokens: 20, CostUSDTicks: 1200},
 		},
+		{
+			name: "provider cumulative model calls remain unknown without per-call identities",
+			snapshots: []string{
+				`{"inputTokens":100,"modelCalls":3,"costUsdTicks":900}`,
+				`{"outputTokens":30,"modelCalls":7,"costUsdTicks":1200}`,
+			},
+			want: TokenUsage{InputTokens: 100, OutputTokens: 30, CostUSDTicks: 1200},
+		},
+		{
+			name: "snake_case cumulative model_calls remains unknown",
+			snapshots: []string{
+				`{"inputTokens":100,"model_calls":4}`,
+			},
+			want: TokenUsage{InputTokens: 100},
+		},
+		{
+			name: "cumulative model_calls never creates known evidence",
+			snapshots: []string{
+				`{"inputTokens":100,"modelCalls":9}`,
+				`{"inputTokens":120,"modelCalls":5}`,
+				`{"inputTokens":130}`,
+			},
+			want: TokenUsage{InputTokens: 130},
+		},
+		{
+			name: "absence of the field stays unknown (zero), not a measured 0",
+			snapshots: []string{
+				`{"inputTokens":100,"outputTokens":30}`,
+			},
+			want: TokenUsage{InputTokens: 100, OutputTokens: 30},
+		},
 	}
 
 	for _, test := range tests {

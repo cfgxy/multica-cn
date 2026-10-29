@@ -137,6 +137,12 @@ type AgentRuntime struct {
 	RegistrationSource string             `json:"registration_source"`
 	CredentialRef      pgtype.Text        `json:"credential_ref"`
 	MaxConcurrentTasks int32              `json:"max_concurrent_tasks"`
+	// Whether complete known provider-call usage may hold new task claims for this runtime.
+	ModelCallBudgetEnabled bool `json:"model_call_budget_enabled"`
+	// Maximum complete known provider calls allowed in the rolling budget window.
+	ModelCallBudgetMaxCalls int64 `json:"model_call_budget_max_calls"`
+	// Rolling provider-call budget window in seconds.
+	ModelCallBudgetWindowSeconds int32 `json:"model_call_budget_window_seconds"`
 }
 
 type AgentSkill struct {
@@ -2440,6 +2446,8 @@ type TaskUsage struct {
 	Turns            pgtype.Int4 `json:"turns"`
 	Compactions      pgtype.Int4 `json:"compactions"`
 	MaxContextTokens pgtype.Int8 `json:"max_context_tokens"`
+	// Count derived by the server from complete provider-original per-call evidence. NULL when evidence is unavailable or incomplete; historical rows remain permanently NULL.
+	ModelCallCount pgtype.Int8 `json:"model_call_count"`
 }
 
 type TaskUsageHourly struct {
@@ -2464,6 +2472,10 @@ type TaskUsageHourly struct {
 	UncostedOutputTokens     pgtype.Int8 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  pgtype.Int8 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens pgtype.Int8 `json:"uncosted_cache_write_tokens"`
+	// Sum of model_call_count over the rows in this bucket that had one; 0 when none did.
+	ModelCallCount int64 `json:"model_call_count"`
+	// Rows in this bucket whose model_call_count is NULL (provider evidence was unavailable or incomplete). Readers must not present model_call_count as a complete total while this is nonzero.
+	ModelCallUnknownCount int64 `json:"model_call_unknown_count"`
 }
 
 type TaskUsageHourlyDirty struct {
@@ -2484,6 +2496,14 @@ type TaskUsageHourlyRollupState struct {
 	LastRunFinishedAt pgtype.Timestamptz `json:"last_run_finished_at"`
 	LastRunRows       int64              `json:"last_run_rows"`
 	LastError         pgtype.Text        `json:"last_error"`
+}
+
+type TaskUsageModelCallEvidence struct {
+	TaskID     pgtype.UUID        `json:"task_id"`
+	Provider   string             `json:"provider"`
+	Model      string             `json:"model"`
+	EvidenceID string             `json:"evidence_id"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
 type User struct {

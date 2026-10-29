@@ -1960,12 +1960,12 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	// daemon's own client-side gate stays the authoritative pre-claim
 	// barrier). Held runtimes' tasks stay queued — nothing fails.
 	claimable := authorized
+	now := time.Now()
 	if req.Backpressure != nil {
 		if req.Backpressure.Active {
 			claimable = nil
 		}
 	} else {
-		now := time.Now()
 		claimable = make([]pgtype.UUID, 0, len(authorized))
 		for _, rtID := range authorized {
 			if !runtimeHeldByBackpressure(runtimeByID[uuidToString(rtID)], now) {
@@ -1973,8 +1973,22 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if len(claimable) > 0 {
+		claimableRuntimes := make([]db.AgentRuntime, 0, len(claimable))
+		for _, rtID := range claimable {
+			claimableRuntimes = append(claimableRuntimes, runtimeByID[uuidToString(rtID)])
+		}
+		budgetHeld := h.runtimeModelCallBudgetHolds(r.Context(), claimableRuntimes, now)
+		filtered := make([]pgtype.UUID, 0, len(claimable))
+		for _, rtID := range claimable {
+			if !budgetHeld[uuidToString(rtID)] {
+				filtered = append(filtered, rtID)
+			}
+		}
+		claimable = filtered
+	}
 	if len(claimable) == 0 {
-		slog.Debug("batch claim: all runtimes held by backpressure",
+		slog.Debug("batch claim: all runtimes held by admission controls",
 			"daemon_id", req.DaemonID, "runtimes", len(authorized))
 		writeMeasuredJSON(w, http.StatusOK, map[string]any{"tasks": []AgentTaskResponse{}})
 		return
@@ -3894,9 +3908,16 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	// backpressure body, so the decision rides on the stored report with the
 	// same freshness TTL as the batch path. Held renders exactly like "no
 	// task": the queued row stays queued, the poller just gets nothing.
-	if runtimeHeldByBackpressure(runtime, time.Now()) {
+	now := time.Now()
+	if runtimeHeldByBackpressure(runtime, now) {
 		outcome = "bp_held"
 		slog.Debug("claim held: runtime backpressure active", "runtime_id", runtimeID)
+		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
+		return
+	}
+	if h.runtimeHeldByModelCallBudget(r.Context(), runtime, now) {
+		outcome = "model_call_budget_held"
+		slog.Debug("claim held: runtime model-call budget exhausted", "runtime_id", runtimeID)
 		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
 		return
 	}
@@ -5080,6 +5101,19 @@ type TaskUsagePayload struct {
 	Turns            int   `json:"turns,omitempty"`
 	Compactions      int   `json:"compactions,omitempty"`
 	MaxContextTokens int64 `json:"max_context_tokens,omitempty"`
+	// ModelCallEvidenceIDs contains every provider-original identity for this
+	// (provider, model) usage row. The handler persists these under a unique key
+	// and derives the count from storage, so daemon report replay cannot count the
+	// same provider request twice.
+	ModelCallEvidenceIDs []string `json:"model_call_evidence_ids,omitempty"`
+	// ModelCallEvidenceComplete must be true only if the ID list covers every
+	// call. Its zero value makes an older daemon's omitted field unknown rather
+	// than a misleading known zero.
+	ModelCallEvidenceComplete bool `json:"model_call_evidence_complete,omitempty"`
+	// ModelCallCount is accepted only to decode reports from older daemons. New
+	// accounting intentionally ignores it because an aggregate is not replay-safe
+	// provider evidence.
+	ModelCallCount int64 `json:"model_call_count,omitempty"`
 }
 
 // authoritativeContextTokens converts a reported context size into the nullable
@@ -5132,6 +5166,97 @@ func authoritativeCostTicks(ticks int64) pgtype.Int8 {
 	return pgtype.Int8{Int64: ticks, Valid: true}
 }
 
+// completeModelCallEvidenceIDs validates and locally deduplicates a complete
+// provider evidence set before it reaches the database. Malformed or partial
+// evidence is unknown, not a client error: the daemon already completed work
+// and the only safe accounting result is a nullable count.
+func completeModelCallEvidenceIDs(usage TaskUsagePayload) []string {
+	if !usage.ModelCallEvidenceComplete || len(usage.ModelCallEvidenceIDs) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(usage.ModelCallEvidenceIDs))
+	ids := make([]string, 0, len(usage.ModelCallEvidenceIDs))
+	for _, evidenceID := range usage.ModelCallEvidenceIDs {
+		if strings.TrimSpace(evidenceID) == "" || strings.IndexByte(evidenceID, 0) >= 0 {
+			return nil
+		}
+		if _, duplicate := seen[evidenceID]; duplicate {
+			continue
+		}
+		seen[evidenceID] = struct{}{}
+		ids = append(ids, evidenceID)
+	}
+	return ids
+}
+
+func (h *Handler) ReportTaskModelCallEvidence(w http.ResponseWriter, r *http.Request) {
+	daemonID := middleware.DaemonIDFromContext(r.Context())
+	if middleware.DaemonWorkspaceIDFromContext(r.Context()) == "" || daemonID == "" {
+		writeError(w, http.StatusForbidden, "daemon credential required")
+		return
+	}
+	taskID := chi.URLParam(r, "taskId")
+	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	if !ok {
+		return
+	}
+	if task.Status != "running" {
+		writeError(w, http.StatusConflict, "task is not running")
+		return
+	}
+	runtime, ok := h.requireDaemonRuntimeAccess(w, r, uuidToString(task.RuntimeID))
+	if !ok {
+		return
+	}
+	if !runtime.DaemonID.Valid || runtime.DaemonID.String != daemonID {
+		writeError(w, http.StatusForbidden, "daemon does not own task runtime")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+
+	var req struct {
+		Provider   string `json:"provider"`
+		Model      string `json:"model"`
+		EvidenceID string `json:"evidence_id"`
+		Incomplete bool   `json:"incomplete"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	provider := normalizeProvider(req.Provider)
+	model := req.Model
+	evidenceID := strings.TrimSpace(req.EvidenceID)
+	if provider == "" || strings.TrimSpace(model) == "" || strings.IndexByte(model, 0) >= 0 ||
+		(req.Incomplete && evidenceID != "") || (!req.Incomplete && (evidenceID == "" || strings.IndexByte(evidenceID, 0) >= 0)) {
+		writeError(w, http.StatusBadRequest, "provider and model are required with either evidence_id or incomplete=true")
+		return
+	}
+	if req.Incomplete {
+		if err := h.Queries.MarkTaskUsageModelCallsUnknown(r.Context(), db.MarkTaskUsageModelCallsUnknownParams{
+			TaskID: task.ID, Provider: provider, Model: model,
+		}); err != nil {
+			slog.Warn("mark live task model-call usage unknown failed", "task_id", taskID, "model", model, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to store task usage evidence")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+	if err := h.Queries.InsertTaskUsageModelCallEvidence(r.Context(), db.InsertTaskUsageModelCallEvidenceParams{
+		TaskID:     task.ID,
+		Provider:   provider,
+		Model:      model,
+		EvidenceID: evidenceID,
+	}); err != nil {
+		slog.Warn("insert live task usage call evidence failed", "task_id", taskID, "model", model, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage evidence")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
@@ -5155,6 +5280,11 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	// resolve to a provider instead of landing as '' and pricing $0.
 	var runtimeProvider string
 	runtimeProviderLoaded := false
+	type normalizedUsage struct {
+		payload  TaskUsagePayload
+		provider string
+	}
+	usage := make([]normalizedUsage, 0, len(req.Usage))
 	for _, u := range req.Usage {
 		provider := normalizeProvider(u.Provider)
 		if provider == "" {
@@ -5169,9 +5299,56 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			}
 			provider = runtimeProvider
 		}
-		if err := h.Queries.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
+		usage = append(usage, normalizedUsage{payload: u, provider: provider})
+	}
+
+	if len(usage) == 0 {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		slog.Warn("start task usage transaction failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	parsedTaskID := parseUUID(taskID)
+
+	for _, entry := range usage {
+		u := entry.payload
+		modelCallCount := pgtype.Int8{}
+		if evidenceIDs := completeModelCallEvidenceIDs(u); len(evidenceIDs) > 0 {
+			for _, evidenceID := range evidenceIDs {
+				if err := qtx.InsertTaskUsageModelCallEvidence(r.Context(), db.InsertTaskUsageModelCallEvidenceParams{
+					TaskID:     parsedTaskID,
+					Provider:   entry.provider,
+					Model:      u.Model,
+					EvidenceID: evidenceID,
+				}); err != nil {
+					slog.Warn("insert task usage call evidence failed", "task_id", taskID, "model", u.Model, "error", err)
+					writeError(w, http.StatusInternalServerError, "failed to store task usage")
+					return
+				}
+			}
+			count, err := qtx.CountTaskUsageModelCallEvidence(r.Context(), db.CountTaskUsageModelCallEvidenceParams{
+				TaskID:   parsedTaskID,
+				Provider: entry.provider,
+				Model:    u.Model,
+			})
+			if err != nil {
+				slog.Warn("count task usage call evidence failed", "task_id", taskID, "model", u.Model, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to store task usage")
+				return
+			}
+			modelCallCount = pgtype.Int8{Int64: count, Valid: true}
+		}
+
+		if err := qtx.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
 			TaskID:           parseUUID(taskID),
-			Provider:         provider,
+			Provider:         entry.provider,
 			Model:            u.Model,
 			InputTokens:      u.InputTokens,
 			OutputTokens:     u.OutputTokens,
@@ -5182,11 +5359,22 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			Turns:            authoritativeTurns(u.Turns),
 			Compactions:      authoritativeCompactions(u.Compactions),
 			MaxContextTokens: authoritativeMaxContextTokens(u.MaxContextTokens),
+			ModelCallCount:   modelCallCount,
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
-			continue
+			writeError(w, http.StatusInternalServerError, "failed to store task usage")
+			return
 		}
-		h.TaskService.CaptureTaskUsage(r.Context(), task, provider, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSDTicks)
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		slog.Warn("commit task usage transaction failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage")
+		return
+	}
+
+	for _, entry := range usage {
+		u := entry.payload
+		h.TaskService.CaptureTaskUsage(r.Context(), task, entry.provider, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSDTicks)
 
 		// Surface prompt-cache effectiveness per run so cache hit rates are
 		// observable in logs, not just queryable from runtime_usage. The ratio
@@ -5196,7 +5384,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		if totalInput := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens; totalInput > 0 {
 			slog.Info("task prompt-cache usage",
 				"task_id", taskID,
-				"provider", provider,
+				"provider", entry.provider,
 				"model", u.Model,
 				"input_tokens", u.InputTokens,
 				"output_tokens", u.OutputTokens,
@@ -5525,13 +5713,6 @@ type TaskCancelAckRequest struct {
 	Confirmed bool `json:"confirmed,omitempty"`
 }
 
-	// An acknowledgement is the transition from cancel_requested to cancelled.
-	// Refuse a daemon that cannot attest to a proven worker exit; otherwise a
-	// cancelled context alone can terminalize a task while its unit still runs.
-	if !req.Confirmed {
-		writeError(w, http.StatusConflict, "cancel acknowledgement requires confirmed worker stop")
-		return
-	}
 func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
@@ -5542,6 +5723,15 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	// endpoint only accepts an acknowledgement that carries stop evidence.
 	var req TaskCancelAckRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	// An acknowledgement is the transition from cancel_requested to cancelled.
+	// Refuse a daemon that cannot attest to a proven worker exit; otherwise a
+	// cancelled context alone can terminalize a task while its unit still runs.
+	if !req.Confirmed {
+		writeError(w, http.StatusConflict, "cancel acknowledgement requires confirmed worker stop")
+		return
+	}
+
 	// Same persistence hazard as /fail and /complete: these strings go straight
 	// into TEXT columns, and this endpoint fails LOUD on write errors, so an
 	// unsanitized NUL here turns a cancelled task's only pointer to its work
