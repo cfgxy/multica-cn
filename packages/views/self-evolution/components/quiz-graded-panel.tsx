@@ -63,11 +63,12 @@ export function QuizGradedPanel({
     agentId,
     ...(readQuizBatch(wsId, agentId) ?? { batchId: "", orderedAt: 0, expectedRows: 0 }),
   }));
-  const [samplePollDeadline] = useState(() => Date.now() + SAMPLE_POLL_WINDOW);
+  const [unboundSamplePollDeadline] = useState(() => Date.now() + SAMPLE_POLL_WINDOW);
   const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
   const orderedAt = orderedBatch.agentId === agentId ? orderedBatch.orderedAt : 0;
   const expectedRows = orderedBatch.agentId === agentId ? orderedBatch.expectedRows : 0;
-  const batchPollDeadline = orderedAt > 0 ? orderedAt + SAMPLE_POLL_WINDOW : samplePollDeadline;
+  const batchPollDeadline = orderedAt > 0 ? orderedAt + SAMPLE_POLL_WINDOW : unboundSamplePollDeadline;
+  const samplePollDeadline = orderedAt > 0 ? orderedAt + SAMPLE_POLL_WINDOW : unboundSamplePollDeadline;
   const batch = useQuery({
     ...promptQuizBatchOptions(wsId, batchId),
     refetchInterval: (query) =>

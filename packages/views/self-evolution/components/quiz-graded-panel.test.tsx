@@ -180,4 +180,36 @@ describe("QuizGradedPanel", () => {
     expect(api.getPromptQuizBatch).toHaveBeenCalledTimes(batchCallsAtDeadline);
     expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(sampleCallsAtDeadline);
   });
+
+  it("does not restart sample polling after remounting an expired ordered batch", async () => {
+    vi.useFakeTimers();
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    api.getPromptQuizBatch.mockResolvedValue({
+      batch_id: "batch-1",
+      rows: [],
+      counts: {},
+      scores: { graded: 0, mean: 0 },
+    });
+    api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
+
+    const first = mount();
+    await flush();
+    fireEvent.click(screen.getByTestId("quiz-graded-run"));
+    await flush();
+    await flush();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60 * 1000); });
+
+    first.unmount();
+    const sampleCallsBeforeRemount = api.getPromptQuizSamples.mock.calls.length;
+    mount();
+    await flush();
+    const sampleCallsAfterRemount = api.getPromptQuizSamples.mock.calls.length;
+    expect(sampleCallsAfterRemount).toBe(sampleCallsBeforeRemount + 1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(api.getPromptQuizSamples).toHaveBeenCalledTimes(sampleCallsAfterRemount);
+  });
 });
