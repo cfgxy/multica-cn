@@ -3739,7 +3739,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
-	h.recordClaimedPromptVersions(r.Context(), task.ID, promptVersionScopeIDs)
+	isQuizTask := task.OriginatorSource.Valid && task.OriginatorSource.String == promptquiz.OriginatorSource
+	h.recordClaimedPromptVersions(r.Context(), task.ID, promptVersionScopeIDs, isQuizTask)
 	// Clause injection events (RUYI-751 §6): computed-selected = injected, so
 	// the accumulated records are the run's call-count basis. Scope strings
 	// were stamped by filterClauses at each read point.
@@ -3756,39 +3757,57 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 //
 // A tier with no prompt_version row yet (never saved/edited since the
 // governance table shipped) is skipped rather than recorded as version 0 —
-// absent means "not attributable", never "version zero". Failure here is
-// logged and swallowed: attribution is observability, not a claim
-// precondition, so it must never turn a successful claim into a retry.
-func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype.UUID, scopeIDs map[string]string) {
-	if len(scopeIDs) == 0 {
+// absent means "not attributable", never "version zero". Failures are logged
+// and swallowed because attribution is not a claim precondition. A failed
+// agent-tier lookup leaves a quiz task's attribution_pending marker intact so
+// collection cannot mistake it for a permanent absence.
+func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype.UUID, scopeIDs map[string]string, isQuizTask bool) {
+	if len(scopeIDs) == 0 && !isQuizTask {
 		return
 	}
 	versions := make(map[string]int32, len(scopeIDs))
-	for scope, scopeID := range scopeIDs {
+	clearQuizAttributionPending := true
+	recordScope := func(scope, scopeID string) {
 		parsedScopeID, err := util.ParseUUID(scopeID)
 		if err != nil {
-			continue
+			slog.Warn("task claim: invalid prompt version scope id", "task_id", uuidToString(taskID), "scope", scope, "error", err)
+			clearQuizAttributionPending = false
+			return
 		}
 		v, err := h.Queries.GetLatestPromptVersion(ctx, db.GetLatestPromptVersionParams{
 			Scope:   scope,
 			ScopeID: parsedScopeID,
 		})
 		if err != nil {
-			continue
+			if !errors.Is(err, pgx.ErrNoRows) {
+				slog.Warn("task claim: failed to read prompt version attribution", "task_id", uuidToString(taskID), "scope", scope, "error", err)
+				clearQuizAttributionPending = false
+				return
+			}
+			return
 		}
 		versions[scope] = v.Version
 	}
-	if len(versions) == 0 {
-		return
+	for scope, scopeID := range scopeIDs {
+		if scope != "agent" {
+			recordScope(scope, scopeID)
+		}
+	}
+	if agentID, ok := scopeIDs["agent"]; ok {
+		recordScope("agent", agentID)
 	}
 	payload, err := json.Marshal(versions)
 	if err != nil {
 		slog.Warn("task claim: failed to marshal prompt version attribution", "task_id", uuidToString(taskID), "error", err)
 		return
 	}
+	if len(versions) == 0 && !isQuizTask {
+		return
+	}
 	if err := h.Queries.SetAgentTaskQueuePromptVersions(ctx, db.SetAgentTaskQueuePromptVersionsParams{
-		ID:             taskID,
-		PromptVersions: payload,
+		ID:                          taskID,
+		PromptVersions:              payload,
+		ClearQuizAttributionPending: !isQuizTask || clearQuizAttributionPending,
 	}); err != nil {
 		slog.Warn("task claim: failed to persist prompt version attribution", "task_id", uuidToString(taskID), "error", err)
 	}
@@ -5525,13 +5544,6 @@ type TaskCancelAckRequest struct {
 	Confirmed bool `json:"confirmed,omitempty"`
 }
 
-	// An acknowledgement is the transition from cancel_requested to cancelled.
-	// Refuse a daemon that cannot attest to a proven worker exit; otherwise a
-	// cancelled context alone can terminalize a task while its unit still runs.
-	if !req.Confirmed {
-		writeError(w, http.StatusConflict, "cancel acknowledgement requires confirmed worker stop")
-		return
-	}
 func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
@@ -5542,6 +5554,13 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	// endpoint only accepts an acknowledgement that carries stop evidence.
 	var req TaskCancelAckRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	// An acknowledgement is the transition from cancel_requested to cancelled.
+	// Refuse a daemon that cannot attest to a proven worker exit; otherwise a
+	// cancelled context alone can terminalize a task while its unit still runs.
+	if !req.Confirmed {
+		writeError(w, http.StatusConflict, "cancel acknowledgement requires confirmed worker stop")
+		return
+	}
 	// Same persistence hazard as /fail and /complete: these strings go straight
 	// into TEXT columns, and this endpoint fails LOUD on write errors, so an
 	// unsanitized NUL here turns a cancelled task's only pointer to its work

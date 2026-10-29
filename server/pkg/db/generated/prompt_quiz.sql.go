@@ -318,6 +318,92 @@ func (q *Queries) DeletePromptQuizItem(ctx context.Context, arg DeletePromptQuiz
 	return result.RowsAffected(), nil
 }
 
+const findCurrentOrLatestPromptQuizBatchForAgent = `-- name: FindCurrentOrLatestPromptQuizBatchForAgent :one
+SELECT CAST(q.context->>'quiz_batch_id' AS text) AS batch_id
+FROM agent_task_queue q
+JOIN agent a ON a.id = q.agent_id
+LEFT JOIN prompt_quiz_result r ON r.task_id = q.id AND r.workspace_id = a.workspace_id
+WHERE a.workspace_id = $1::uuid
+  AND q.agent_id = $2::uuid
+  AND q.originator_source = 'quiz'
+  AND q.context->>'quiz_batch_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+GROUP BY q.context->>'quiz_batch_id'
+ORDER BY bool_or(
+        q.context->>'quiz_measurement_status' IS DISTINCT FROM 'not_measured'
+        AND (
+            q.status NOT IN ('completed', 'failed', 'cancelled')
+            OR (r.task_id IS NOT NULL AND r.graded_at IS NULL AND r.score IS NULL)
+            OR (
+                q.status IN ('completed', 'failed', 'cancelled')
+                AND r.task_id IS NULL
+            )
+        )
+    ) DESC,
+    bool_or(COALESCE(q.context->>'quiz_batch_source', 'manual') = 'manual') DESC,
+    max(q.created_at) DESC
+LIMIT 1
+`
+
+type FindCurrentOrLatestPromptQuizBatchForAgentParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// Prefer an active batch over settled history. Within the same lifecycle state,
+// prefer manually ordered work over cadence sweep work; otherwise return the
+// newest settled batch for traceability after a reload.
+// The queue remains the source of truth, so a browser does not infer this from
+// session storage or a time window.
+func (q *Queries) FindCurrentOrLatestPromptQuizBatchForAgent(ctx context.Context, arg FindCurrentOrLatestPromptQuizBatchForAgentParams) (string, error) {
+	row := q.db.QueryRow(ctx, findCurrentOrLatestPromptQuizBatchForAgent, arg.WorkspaceID, arg.AgentID)
+	var batch_id string
+	err := row.Scan(&batch_id)
+	return batch_id, err
+}
+
+const getPromptQuizBatchProgress = `-- name: GetPromptQuizBatchProgress :one
+SELECT
+    count(*)::int AS ordered,
+    count(*) FILTER (
+        WHERE q.context->>'quiz_measurement_status' IS DISTINCT FROM 'not_measured'
+          AND (
+                q.status NOT IN ('completed', 'failed', 'cancelled')
+             OR (r.task_id IS NOT NULL AND r.graded_at IS NULL AND r.score IS NULL)
+             OR (
+                    q.status IN ('completed', 'failed', 'cancelled')
+                    AND r.task_id IS NULL
+                )
+          )
+    )::int AS pending
+FROM agent_task_queue q
+JOIN agent a ON a.id = q.agent_id
+LEFT JOIN prompt_quiz_result r ON r.task_id = q.id AND r.workspace_id = a.workspace_id
+WHERE a.workspace_id = $1::uuid
+  AND q.originator_source = 'quiz'
+  AND q.context->>'quiz_batch_id' = $2::text
+  AND ($3::uuid IS NULL OR q.agent_id = $3::uuid)
+`
+
+type GetPromptQuizBatchProgressParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	BatchID     string      `json:"batch_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+type GetPromptQuizBatchProgressRow struct {
+	Ordered int32 `json:"ordered"`
+	Pending int32 `json:"pending"`
+}
+
+// The displayed list is deliberately bounded. This aggregate, rather than that
+// viewport, is the authority for batch size and collection convergence.
+func (q *Queries) GetPromptQuizBatchProgress(ctx context.Context, arg GetPromptQuizBatchProgressParams) (GetPromptQuizBatchProgressRow, error) {
+	row := q.db.QueryRow(ctx, getPromptQuizBatchProgress, arg.WorkspaceID, arg.BatchID, arg.AgentID)
+	var i GetPromptQuizBatchProgressRow
+	err := row.Scan(&i.Ordered, &i.Pending)
+	return i, err
+}
+
 const getPromptQuizItem = `-- name: GetPromptQuizItem :one
 SELECT id, workspace_id, slug, title, body, revision, runtime_profile, active, created_by_user_id, created_at, updated_at, rubric, tags, difficulty, rubric_checks
 FROM prompt_quiz_item
@@ -567,9 +653,6 @@ SELECT
     COALESCE(tu.total_tokens, 0)::bigint AS run_tokens
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
-JOIN prompt_quiz_item pqi
-  ON pqi.id = atq.trigger_evidence_ref_id
- AND pqi.workspace_id = a.workspace_id
 LEFT JOIN LATERAL (
     SELECT
         SUM(u.input_tokens + u.output_tokens)::bigint AS total_tokens,
@@ -581,33 +664,34 @@ WHERE atq.originator_source = 'quiz'
   AND atq.issue_id IS NULL
   AND atq.status IN ('completed', 'failed', 'cancelled')
   AND atq.completed_at IS NOT NULL
-  -- These fields are immutable claim-time evidence. A terminal row missing any
-  -- of them cannot later become attributable, so exclude it before the fixed
-  -- candidate window rather than letting it permanently starve valid runs.
-  -- Keep the version predicate equivalent to agentTierVersion: JSON integer,
-  -- positive, and representable by Go's int32. Do not cast the JSON text:
-  -- PostgreSQL may evaluate WHERE predicates in any order, so a cast here
-  -- could fail before the JSON type and digit predicates reject legacy data.
-  AND jsonb_typeof(atq.prompt_versions -> 'agent') = 'number'
-  AND atq.prompt_versions ->> 'agent' ~ '^[1-9][0-9]{0,9}$'
-  AND (
-    length(atq.prompt_versions ->> 'agent') < 10
-    OR (
-      length(atq.prompt_versions ->> 'agent') = 10
-      AND (atq.prompt_versions ->> 'agent') COLLATE "C" <= '2147483647'
-    )
-  )
-  AND atq.runtime_id IS NOT NULL
-  -- batchIDFromContext accepts canonical, URN, raw-hex, and braced UUID forms.
-  -- Keep every form it can parse; malformed contexts cannot produce a result.
-  AND jsonb_typeof(atq.context -> 'quiz_batch_id') = 'string'
-  AND atq.context ->> 'quiz_batch_id' ~* '^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\})$'
+  AND atq.context->>'quiz_measurement_status' IS DISTINCT FROM 'not_measured'
   AND NOT EXISTS (
     SELECT 1 FROM prompt_quiz_result r
     WHERE r.task_id = atq.id
       AND (r.score IS NOT NULL OR r.graded_at IS NOT NULL)
   )
-ORDER BY atq.completed_at
+ORDER BY CASE
+    WHEN jsonb_typeof(atq.prompt_versions -> 'agent') = 'number'
+     AND atq.prompt_versions ->> 'agent' ~ '^[1-9][0-9]{0,9}$'
+     AND (
+        length(atq.prompt_versions ->> 'agent') < 10
+        OR (
+            length(atq.prompt_versions ->> 'agent') = 10
+            AND (atq.prompt_versions ->> 'agent') COLLATE "C" <= '2147483647'
+        )
+     )
+     AND atq.runtime_id IS NOT NULL
+     AND jsonb_typeof(atq.context -> 'quiz_batch_id') = 'string'
+     AND atq.context ->> 'quiz_batch_id' ~* '^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\})$'
+     AND EXISTS (
+        SELECT 1
+        FROM prompt_quiz_item pqi
+        WHERE pqi.id = atq.trigger_evidence_ref_id
+          AND pqi.workspace_id = a.workspace_id
+     )
+    THEN 0
+    ELSE 1
+END, atq.completed_at
 LIMIT $1::int
 `
 
@@ -640,9 +724,9 @@ type ListFinishedPromptQuizTasksRow struct {
 // collector writes when it judges the run not gradeable. Rows from
 // score-incapable writers (all three NULL) keep coming back and are graded —
 // or explicitly judged — on a later tick.
-// The collector cannot form a result when the item is gone or belongs to a
-// different workspace. Keep those terminal rows out of the bounded candidate
-// set instead of discovering the permanent condition after LIMIT.
+// Keep valid measurements ahead of permanently uncollectable historical rows.
+// The latter still reach the collector when capacity permits, which records the
+// durable not_measured state the batch read needs to settle.
 func (q *Queries) ListFinishedPromptQuizTasks(ctx context.Context, rowLimit int32) ([]ListFinishedPromptQuizTasksRow, error) {
 	rows, err := q.db.Query(ctx, listFinishedPromptQuizTasks, rowLimit)
 	if err != nil {
@@ -763,7 +847,7 @@ type ListPromptQuizGradedSamplesRow struct {
 // score on this question, when, and on what evidence". Owner-only at the
 // route for the same reason as the batch list above.
 //
-// Like ListPromptQuizResultsForBatch: LEFT JOIN so deleting an item keeps its
+// Like ListPromptQuizTasksForBatch: LEFT JOIN so deleting an item keeps its
 // readings readable; errored rows return with their outcome intact so "not
 // graded because the run errored" stays visible rather than collapsing into
 // the graded population.
@@ -973,100 +1057,6 @@ func (q *Queries) ListPromptQuizItems(ctx context.Context, arg ListPromptQuizIte
 	return items, nil
 }
 
-const listPromptQuizResultsForBatch = `-- name: ListPromptQuizResultsForBatch :many
-SELECT
-    r.task_id,
-    r.scope,
-    r.scope_id,
-    r.version,
-    r.item_id,
-    r.item_revision,
-    r.outcome,
-    r.score,
-    r.score_detail,
-    r.graded_at,
-    r.measured_at,
-    r.run_tokens,
-    i.slug AS item_slug,
-    i.title AS item_title,
-    atq.status AS task_status
-FROM prompt_quiz_result r
-LEFT JOIN prompt_quiz_item i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
-JOIN agent_task_queue atq ON atq.id = r.task_id
-WHERE r.workspace_id = $1::uuid
-  AND r.batch_id = $2::uuid
-ORDER BY r.measured_at DESC
-LIMIT $3::int
-`
-
-type ListPromptQuizResultsForBatchParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	BatchID     pgtype.UUID `json:"batch_id"`
-	RowLimit    int32       `json:"row_limit"`
-}
-
-type ListPromptQuizResultsForBatchRow struct {
-	TaskID       pgtype.UUID        `json:"task_id"`
-	Scope        string             `json:"scope"`
-	ScopeID      pgtype.UUID        `json:"scope_id"`
-	Version      int32              `json:"version"`
-	ItemID       pgtype.UUID        `json:"item_id"`
-	ItemRevision int32              `json:"item_revision"`
-	Outcome      string             `json:"outcome"`
-	Score        pgtype.Float4      `json:"score"`
-	ScoreDetail  []byte             `json:"score_detail"`
-	GradedAt     pgtype.Timestamptz `json:"graded_at"`
-	MeasuredAt   pgtype.Timestamptz `json:"measured_at"`
-	RunTokens    pgtype.Int8        `json:"run_tokens"`
-	ItemSlug     pgtype.Text        `json:"item_slug"`
-	ItemTitle    pgtype.Text        `json:"item_title"`
-	TaskStatus   string             `json:"task_status"`
-}
-
-// One batch's rows for the traceability view (RUYI-286): per sample — which
-// item, which agent/version, outcome, score, and the task id that joins back
-// to the run. Owner-only at the route: it exposes score_detail's assertion
-// evidence, which is the private half's grading output.
-//
-// LEFT JOIN, not JOIN: an item hard-deleted after the batch ran must not erase
-// the batch's history — the reading stays interpretable through item_revision
-// and item_body_sha256, which is exactly why the item is not a version table.
-func (q *Queries) ListPromptQuizResultsForBatch(ctx context.Context, arg ListPromptQuizResultsForBatchParams) ([]ListPromptQuizResultsForBatchRow, error) {
-	rows, err := q.db.Query(ctx, listPromptQuizResultsForBatch, arg.WorkspaceID, arg.BatchID, arg.RowLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListPromptQuizResultsForBatchRow{}
-	for rows.Next() {
-		var i ListPromptQuizResultsForBatchRow
-		if err := rows.Scan(
-			&i.TaskID,
-			&i.Scope,
-			&i.ScopeID,
-			&i.Version,
-			&i.ItemID,
-			&i.ItemRevision,
-			&i.Outcome,
-			&i.Score,
-			&i.ScoreDetail,
-			&i.GradedAt,
-			&i.MeasuredAt,
-			&i.RunTokens,
-			&i.ItemSlug,
-			&i.ItemTitle,
-			&i.TaskStatus,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listPromptQuizSamples = `-- name: ListPromptQuizSamples :many
 SELECT
     r.item_id,
@@ -1211,6 +1201,150 @@ func (q *Queries) ListPromptQuizScopesForSweep(ctx context.Context, rowLimit int
 		return nil, err
 	}
 	return items, nil
+}
+
+const listPromptQuizTasksForBatch = `-- name: ListPromptQuizTasksForBatch :many
+SELECT
+    q.id AS task_id,
+    COALESCE(r.scope, 'agent') AS scope,
+    q.agent_id AS scope_id,
+    COALESCE(r.version, 0) AS version,
+    COALESCE(r.item_id, CASE
+        WHEN q.context->>'quiz_item_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            THEN (q.context->>'quiz_item_id')::uuid
+    END) AS item_id,
+    COALESCE(r.item_revision, i.revision, 0) AS item_revision,
+    COALESCE(r.outcome, '') AS outcome,
+    r.score,
+    r.score_detail,
+    r.graded_at,
+    r.measured_at,
+    r.run_tokens,
+    i.slug AS item_slug,
+    i.title AS item_title,
+    q.status AS task_status,
+    CASE
+        -- Only the collector's durable decision makes a task final without a
+        -- measurement. A terminal task without this marker may still be waiting
+        -- for the collector and must keep the batch pending.
+        WHEN q.context->>'quiz_measurement_status' = 'not_measured' THEN 'not_measured'
+        -- An old collector may have persisted a score before grading stamps
+        -- existed. That is already a completed measurement, not pending work.
+        WHEN r.task_id IS NOT NULL AND r.graded_at IS NULL AND r.score IS NULL THEN 'awaiting_grade'
+        WHEN r.task_id IS NOT NULL THEN 'measured'
+        ELSE 'pending'
+    END AS measurement_status
+FROM agent_task_queue q
+JOIN agent a ON a.id = q.agent_id
+LEFT JOIN prompt_quiz_result r ON r.task_id = q.id AND r.workspace_id = a.workspace_id
+LEFT JOIN prompt_quiz_item i ON i.id = COALESCE(r.item_id, CASE
+    WHEN q.context->>'quiz_item_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        THEN (q.context->>'quiz_item_id')::uuid
+END) AND i.workspace_id = a.workspace_id
+WHERE a.workspace_id = $1::uuid
+  AND q.originator_source = 'quiz'
+  AND q.context->>'quiz_batch_id' = $2::text
+  AND ($3::uuid IS NULL OR q.agent_id = $3::uuid)
+  AND ($4::boolean OR r.task_id IS NOT NULL)
+ORDER BY q.created_at DESC
+LIMIT $5::int
+`
+
+type ListPromptQuizTasksForBatchParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	BatchID        string      `json:"batch_id"`
+	AgentID        pgtype.UUID `json:"agent_id"`
+	IncludePending bool        `json:"include_pending"`
+	RowLimit       int32       `json:"row_limit"`
+}
+
+type ListPromptQuizTasksForBatchRow struct {
+	TaskID            pgtype.UUID        `json:"task_id"`
+	Scope             string             `json:"scope"`
+	ScopeID           pgtype.UUID        `json:"scope_id"`
+	Version           int32              `json:"version"`
+	ItemID            pgtype.UUID        `json:"item_id"`
+	ItemRevision      int32              `json:"item_revision"`
+	Outcome           string             `json:"outcome"`
+	Score             pgtype.Float4      `json:"score"`
+	ScoreDetail       []byte             `json:"score_detail"`
+	GradedAt          pgtype.Timestamptz `json:"graded_at"`
+	MeasuredAt        pgtype.Timestamptz `json:"measured_at"`
+	RunTokens         pgtype.Int8        `json:"run_tokens"`
+	ItemSlug          pgtype.Text        `json:"item_slug"`
+	ItemTitle         pgtype.Text        `json:"item_title"`
+	TaskStatus        string             `json:"task_status"`
+	MeasurementStatus string             `json:"measurement_status"`
+}
+
+// The queue is the source of truth for a batch. A collector can write the
+// prompt_quiz_result well after a task reaches a terminal state, so starting
+// from results would hide queued/running work and make a completed task appear
+// to disappear during that interval. Only the current-batch recovery endpoint
+// requests uncollected rows; the established explicit batch endpoint keeps its
+// result-only wire contract for installed clients.
+func (q *Queries) ListPromptQuizTasksForBatch(ctx context.Context, arg ListPromptQuizTasksForBatchParams) ([]ListPromptQuizTasksForBatchRow, error) {
+	rows, err := q.db.Query(ctx, listPromptQuizTasksForBatch,
+		arg.WorkspaceID,
+		arg.BatchID,
+		arg.AgentID,
+		arg.IncludePending,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPromptQuizTasksForBatchRow{}
+	for rows.Next() {
+		var i ListPromptQuizTasksForBatchRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.Scope,
+			&i.ScopeID,
+			&i.Version,
+			&i.ItemID,
+			&i.ItemRevision,
+			&i.Outcome,
+			&i.Score,
+			&i.ScoreDetail,
+			&i.GradedAt,
+			&i.MeasuredAt,
+			&i.RunTokens,
+			&i.ItemSlug,
+			&i.ItemTitle,
+			&i.TaskStatus,
+			&i.MeasurementStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markPromptQuizTaskNotMeasured = `-- name: MarkPromptQuizTaskNotMeasured :exec
+UPDATE agent_task_queue
+SET context = jsonb_set(
+    COALESCE(context, '{}'::jsonb),
+    '{quiz_measurement_status}',
+    '"not_measured"'::jsonb,
+    true
+)
+WHERE id = $1::uuid
+  AND originator_source = 'quiz'
+  AND status IN ('completed', 'failed', 'cancelled')
+`
+
+// A collector can only set this after determining that a terminal quiz task
+// cannot safely be attributed to a prompt version. The durable marker keeps the
+// batch pending until that decision exists without fabricating a baseline row.
+func (q *Queries) MarkPromptQuizTaskNotMeasured(ctx context.Context, taskID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markPromptQuizTaskNotMeasured, taskID)
+	return err
 }
 
 const recordPromptQuizSweep = `-- name: RecordPromptQuizSweep :exec

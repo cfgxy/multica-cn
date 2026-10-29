@@ -130,12 +130,12 @@ function detail(over: Partial<PromptQuizItemDetail> = {}): PromptQuizItemDetail 
   return { ...item(), rubric: "Names all three constraints.", ...over };
 }
 
-function renderTab(agentId = "agent-1") {
+function renderTab(agentId = "agent-1", wsId = "ws-1") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <QuizTab wsId="ws-1" initialAgentId={agentId} />
+        <QuizTab wsId={wsId} initialAgentId={agentId} />
       </I18nProvider>
     </QueryClientProvider>,
   );
@@ -151,6 +151,22 @@ beforeEach(() => {
 });
 
 describe("QuizTab reading", () => {
+  it("restores the selected agent after the tab unmounts and remounts", async () => {
+    const first = renderTab("", "ws-selection");
+    fireEvent.click(screen.getByRole("combobox"));
+    fireEvent.click(await screen.findByRole("option", { name: "Gu Xiaoyu" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("quiz-reading-card")).toBeInTheDocument();
+    });
+
+    first.unmount();
+    renderTab("", "ws-selection");
+    await waitFor(() => {
+      expect(screen.getByRole("combobox")).toHaveTextContent("Gu Xiaoyu");
+    });
+    expect(screen.getByTestId("quiz-reading-card")).toBeInTheDocument();
+  });
+
   it("prints the verdict with both groups and the decision inputs", async () => {
     renderTab();
     await waitFor(() => {

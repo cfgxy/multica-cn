@@ -35,6 +35,12 @@ const ScopeLimit = 100
 // CollectLimit bounds how many finished runs one tick folds in.
 const CollectLimit = 500
 
+// AttributionPendingGracePeriod gives a claim-side attribution failure a short
+// visible pending period before collection records it as not measured. The
+// collector cannot safely recreate a claim-time version after that point, so
+// using the current version would fabricate a measurement instead.
+const AttributionPendingGracePeriod = 15 * time.Minute
+
 // EnqueueLimit bounds how many new measurements one tick orders. A fresh
 // deployment would otherwise queue NewVersionSampleSize runs for every agent at
 // once and starve real work; spreading the fill over several ticks costs a few
@@ -109,11 +115,11 @@ func (r Runner) sweep(ctx context.Context) (Outcome, error) {
 // collect folds finished quiz runs into measurements.
 //
 // A run whose item is gone, whose claim recorded no agent-tier version, or whose
-// runtime is unknown is SKIPPED rather than failing the tick: it measured
-// something that cannot be placed on an axis the comparison uses, and one such
-// run must not stop the rest of the sweep. ListFinishedPromptQuizTasks removes
-// those permanent cases before its bounded candidate window; the checks below
-// remain defensive against malformed legacy data.
+// runtime is unknown is marked not measured rather than failing the tick: it
+// cannot be placed on an axis the comparison uses, and one such run must not
+// stop the rest of the sweep. The query prioritizes collectable rows so these
+// permanent cases cannot starve results; the durable marker lets their batch
+// settle without fabricating a baseline measurement.
 func (r Runner) collect(ctx context.Context) (int, error) {
 	runs, err := r.Queries.ListFinishedPromptQuizTasks(ctx, CollectLimit)
 	if err != nil {
@@ -124,6 +130,12 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 	for _, run := range runs {
 		version, ok := agentTierVersion(run.PromptVersions)
 		if !ok {
+			if quizAttributionPending(run.Context) && !attributionPendingExpired(run.CompletedAt, time.Now()) {
+				continue
+			}
+			if err := r.markNotMeasured(ctx, run.TaskID); err != nil {
+				return n, err
+			}
 			continue
 		}
 		// Migration 251 allows a terminal queue row to have no runtime. Storing
@@ -131,6 +143,9 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 		// measured it, and every later reading would then have to be compared
 		// against an unknown instrument (A1).
 		if !run.RuntimeID.Valid {
+			if err := r.markNotMeasured(ctx, run.TaskID); err != nil {
+				return n, err
+			}
 			continue
 		}
 		item, err := r.Queries.GetPromptQuizItem(ctx, db.GetPromptQuizItemParams{
@@ -139,6 +154,9 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
+				if err := r.markNotMeasured(ctx, run.TaskID); err != nil {
+					return n, err
+				}
 				continue
 			}
 			return n, fmt.Errorf("read quiz item: %w", err)
@@ -146,6 +164,9 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 
 		batch, ok := batchIDFromContext(run.Context)
 		if !ok {
+			if err := r.markNotMeasured(ctx, run.TaskID); err != nil {
+				return n, err
+			}
 			continue
 		}
 
@@ -213,6 +234,13 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+func (r Runner) markNotMeasured(ctx context.Context, taskID pgtype.UUID) error {
+	if err := r.Queries.MarkPromptQuizTaskNotMeasured(ctx, taskID); err != nil {
+		return fmt.Errorf("mark quiz task not measured: %w", err)
+	}
+	return nil
 }
 
 // gradeTask grades one finished run: the item's checks against the run's last
@@ -329,7 +357,7 @@ func (r Runner) enqueue(ctx context.Context, budget int) (int, error) {
 // field, so this function could not send the answer key even by mistake.
 // sweep_test.go asserts the payload's field set rather than trusting that.
 func taskContext(item db.ListActivePromptQuizItemsForProfileRow, batch pgtype.UUID) ([]byte, error) {
-	return TaskContextPayload(uuid.UUID(item.ID.Bytes).String(), item.Body, batch)
+	return taskContextPayload(uuid.UUID(item.ID.Bytes).String(), item.Body, batch, "sweep")
 }
 
 // TaskContextPayload builds the payload a quiz run's daemon receives, exported
@@ -341,11 +369,17 @@ func taskContext(item db.ListActivePromptQuizItemsForProfileRow, batch pgtype.UU
 // prompt under test plus a fixed string. The guarantee is the caller's to keep
 // on this path: pass the body and the ids, nothing more.
 func TaskContextPayload(itemID, body string, batch pgtype.UUID) ([]byte, error) {
+	return taskContextPayload(itemID, body, batch, "manual")
+}
+
+func taskContextPayload(itemID, body string, batch pgtype.UUID, source string) ([]byte, error) {
 	payload, err := json.Marshal(map[string]any{
-		"kind":          promptquiz.TaskKind,
-		"quiz_batch_id": uuid.UUID(batch.Bytes).String(),
-		"quiz_item_id":  itemID,
-		"quiz_prompt":   body,
+		"kind":                    promptquiz.TaskKind,
+		"quiz_batch_id":           uuid.UUID(batch.Bytes).String(),
+		"quiz_item_id":            itemID,
+		"quiz_prompt":             body,
+		"quiz_batch_source":       source,
+		"quiz_measurement_status": "attribution_pending",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode quiz context: %w", err)
@@ -370,6 +404,23 @@ func agentTierVersion(raw []byte) (int32, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+func quizAttributionPending(raw []byte) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var payload struct {
+		MeasurementStatus string `json:"quiz_measurement_status"`
+	}
+	return json.Unmarshal(raw, &payload) == nil && payload.MeasurementStatus == "attribution_pending"
+}
+
+func attributionPendingExpired(completedAt pgtype.Timestamptz, now time.Time) bool {
+	if !completedAt.Valid {
+		return true
+	}
+	return !completedAt.Time.Add(AttributionPendingGracePeriod).After(now)
 }
 
 func batchIDFromContext(raw []byte) (pgtype.UUID, bool) {

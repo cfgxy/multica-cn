@@ -2438,6 +2438,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
 			r.Post("/bank/import", h.ImportPromptQuizBank)
 			r.Post("/batches", h.CreatePromptQuizBatch)
+			r.Get("/batches/current", h.GetCurrentPromptQuizBatch)
 			r.Get("/batches/{batchId}", h.GetPromptQuizBatch)
 			r.Get("/samples", h.GetPromptQuizSamples)
 		})

@@ -74,8 +74,9 @@ type QuizBatchRefusedAgent struct {
 // Orders one real run per (valid agent × selected item) under a fresh batch id
 // written into each task payload. Enqueueing mirrors the sweep's exactly: the
 // CreatePromptQuizTask fence may refuse (agent being deleted), and a refusal
-// counts the row as not ordered rather than failing the batch — partial
-// progress is the sweep's semantics and stays the batch's.
+// counts the row as not ordered rather than failing the batch. Other failures
+// roll the entire batch back, so a client never retries after an invisible
+// partially ordered batch.
 func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) {
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 
@@ -105,13 +106,16 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 	}
 	agents := make([]agentRef, 0, len(req.AgentIDs))
 	var refused []QuizBatchRefusedAgent
-	seen := map[string]bool{}
+	seen := map[uuid.UUID]struct{}{}
 	for _, raw := range req.AgentIDs {
 		id, err := uuid.Parse(raw)
-		if err != nil || seen[raw] {
+		if err != nil {
 			continue
 		}
-		seen[raw] = true
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
 		agent, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
 			ID:          pgtype.UUID{Bytes: id, Valid: true},
 			WorkspaceID: workspaceID,
@@ -123,6 +127,10 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to read the agent")
 			return
+		}
+		if agent.ArchivedAt.Valid {
+			refused = append(refused, QuizBatchRefusedAgent{AgentID: raw, Reason: "not_found"})
+			continue
 		}
 		if !agent.RuntimeID.Valid {
 			refused = append(refused, QuizBatchRefusedAgent{AgentID: raw, Reason: "no_runtime"})
@@ -152,6 +160,14 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 	}
 
 	batch := newQuizBatchID()
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start the quiz batch")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
 	ordered := 0
 	for _, agent := range agents {
 		for _, item := range items {
@@ -160,7 +176,7 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 				writeError(w, http.StatusInternalServerError, "failed to encode the quiz context")
 				return
 			}
-			_, err = h.Queries.CreatePromptQuizTask(r.Context(), db.CreatePromptQuizTaskParams{
+			_, err = qtx.CreatePromptQuizTask(r.Context(), db.CreatePromptQuizTaskParams{
 				AgentID:   agent.id,
 				RuntimeID: agent.runtimeID,
 				// Same standing as sweep-ordered runs: below everything a
@@ -180,6 +196,14 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 			}
 			ordered++
 		}
+	}
+	if ordered == 0 {
+		writeErrorCode(w, http.StatusConflict, "quiz_batch_fenced", "every quiz run was refused by the task ownership fence")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit the quiz batch")
+		return
 	}
 
 	resp := PromptQuizBatchCreateResponse{BatchID: uuidToString(batch), Ordered: ordered, RefusedAgents: refused}
@@ -213,13 +237,16 @@ func (h *Handler) resolveBatchItems(r *http.Request, workspaceID pgtype.UUID, it
 		return out, nil
 	}
 
-	seen := map[string]bool{}
+	seen := map[uuid.UUID]struct{}{}
 	for _, raw := range itemIDs {
 		id, err := uuid.Parse(raw)
-		if err != nil || seen[raw] {
+		if err != nil {
 			continue
 		}
-		seen[raw] = true
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
 		item, err := h.Queries.GetPromptQuizItem(r.Context(), db.GetPromptQuizItemParams{
 			ID:          pgtype.UUID{Bytes: id, Valid: true},
 			WorkspaceID: workspaceID,
@@ -249,7 +276,13 @@ func newQuizBatchID() pgtype.UUID {
 
 // PromptQuizBatchResponse is one batch's read-back, one row per run.
 type PromptQuizBatchResponse struct {
-	BatchID string                  `json:"batch_id"`
+	BatchID string `json:"batch_id"`
+	// Ordered is the exact queue-row count, not a client-side estimate.
+	Ordered int `json:"ordered"`
+	// Settled means no task is still running or awaiting collection or grading.
+	// The collector explicitly marks an unassignable terminal task not_measured so
+	// that it does not leave the batch pending forever.
+	Settled bool                    `json:"settled"`
 	Rows    []PromptQuizSampleRow   `json:"rows"`
 	Counts  map[string]int          `json:"counts"`
 	Scores  promptquiz.ScoreSummary `json:"scores"`
@@ -267,57 +300,112 @@ func (h *Handler) GetPromptQuizBatch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := h.Queries.ListPromptQuizResultsForBatch(r.Context(), db.ListPromptQuizResultsForBatchParams{
-		WorkspaceID: workspaceID,
-		BatchID:     batchID,
-		RowLimit:    quizSampleLimit,
-	})
+	resp, err := h.readPromptQuizBatch(r, workspaceID, pgtype.UUID{}, uuidToString(batchID), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read the batch")
 		return
 	}
+	writeJSON(w, http.StatusOK, resp)
+}
 
-	resp := PromptQuizBatchResponse{
-		BatchID: uuidToString(batchID),
+// GetCurrentPromptQuizBatch — GET /api/prompt-quiz/batches/current?agent_id=…
+// (Owner-only). It returns an active batch first, otherwise the latest settled
+// batch, so reloads preserve traceability without serializing server state.
+func (h *Handler) GetCurrentPromptQuizBatch(w http.ResponseWriter, r *http.Request) {
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	agentID, ok := parseUUIDOrBadRequest(w, r.URL.Query().Get("agent_id"), "agent_id")
+	if !ok {
+		return
+	}
+
+	batchID, err := h.Queries.FindCurrentOrLatestPromptQuizBatchForAgent(r.Context(), db.FindCurrentOrLatestPromptQuizBatchForAgentParams{
+		WorkspaceID: workspaceID,
+		AgentID:     agentID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(w, http.StatusOK, emptyPromptQuizBatch())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read the current batch")
+		return
+	}
+
+	resp, err := h.readPromptQuizBatch(r, workspaceID, agentID, batchID, true)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read the current batch")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func emptyPromptQuizBatch() PromptQuizBatchResponse {
+	return PromptQuizBatchResponse{
 		Rows:    []PromptQuizSampleRow{},
 		Counts:  map[string]int{},
+		Settled: true,
 	}
+}
+
+func (h *Handler) readPromptQuizBatch(r *http.Request, workspaceID, agentID pgtype.UUID, batchID string, includePending bool) (PromptQuizBatchResponse, error) {
+	progress, err := h.Queries.GetPromptQuizBatchProgress(r.Context(), db.GetPromptQuizBatchProgressParams{
+		WorkspaceID: workspaceID,
+		BatchID:     batchID,
+		AgentID:     agentID,
+	})
+	if err != nil {
+		return PromptQuizBatchResponse{}, err
+	}
+	rows, err := h.Queries.ListPromptQuizTasksForBatch(r.Context(), db.ListPromptQuizTasksForBatchParams{
+		WorkspaceID:    workspaceID,
+		BatchID:        batchID,
+		AgentID:        agentID,
+		IncludePending: includePending,
+		RowLimit:       quizSampleLimit,
+	})
+	if err != nil {
+		return PromptQuizBatchResponse{}, err
+	}
+
+	resp := emptyPromptQuizBatch()
+	resp.BatchID = batchID
+	resp.Ordered = int(progress.Ordered)
+	resp.Settled = progress.Pending == 0
 	sample := promptquiz.Sample{Scores: []promptquiz.ScoredReading{}}
 	for _, row := range rows {
 		resp.Rows = appendQuizBatchRow(resp.Rows, row)
-		resp.Counts[row.Outcome]++
+		if row.Outcome != "" {
+			resp.Counts[row.Outcome]++
+		}
 		if row.Score.Valid {
 			sample.Scores = append(sample.Scores, promptquiz.ScoredReading{
 				ItemID: uuidToString(row.ItemID), Score: float64(row.Score.Float32),
 			})
 		}
 	}
-	// Scored-only aggregation over the batch's own rows. A batch is one
-	// cohort by construction (one payload wording, the agent's runtime at
-	// order time), so no cohort filter is applied here — and the summary is
-	// a read-back, not the comparison instrument the baseline uses.
 	resp.Scores = promptquiz.SummarizeScores(sample)
-	writeJSON(w, http.StatusOK, resp)
+	return resp, nil
 }
 
 // appendQuizBatchRow maps one batch row onto the wire shape, in place.
-func appendQuizBatchRow(dst []PromptQuizSampleRow, row db.ListPromptQuizResultsForBatchRow) []PromptQuizSampleRow {
+func appendQuizBatchRow(dst []PromptQuizSampleRow, row db.ListPromptQuizTasksForBatchRow) []PromptQuizSampleRow {
 	return append(dst, PromptQuizSampleRow{
-		TaskID:       uuidToString(row.TaskID),
-		Scope:        row.Scope,
-		ScopeID:      uuidToString(row.ScopeID),
-		Version:      row.Version,
-		ItemID:       uuidToString(row.ItemID),
-		ItemRevision: row.ItemRevision,
-		ItemSlug:     row.ItemSlug.String,
-		ItemTitle:    row.ItemTitle.String,
-		Outcome:      row.Outcome,
-		Score:        quizScorePtr(row.Score),
-		ScoreDetail:  json.RawMessage(row.ScoreDetail),
-		GradedAt:     quizTimePtr(row.GradedAt),
-		MeasuredAt:   quizTimePtr(row.MeasuredAt),
-		RunTokens:    quizTokensPtr(row.RunTokens),
-		TaskStatus:   row.TaskStatus,
+		TaskID:            uuidToString(row.TaskID),
+		Scope:             row.Scope,
+		ScopeID:           uuidToString(row.ScopeID),
+		Version:           row.Version,
+		ItemID:            uuidToString(row.ItemID),
+		ItemRevision:      row.ItemRevision,
+		ItemSlug:          row.ItemSlug.String,
+		ItemTitle:         row.ItemTitle.String,
+		Outcome:           row.Outcome,
+		Score:             quizScorePtr(row.Score),
+		ScoreDetail:       json.RawMessage(row.ScoreDetail),
+		GradedAt:          quizTimePtr(row.GradedAt),
+		MeasuredAt:        quizTimePtr(row.MeasuredAt),
+		RunTokens:         quizTokensPtr(row.RunTokens),
+		TaskStatus:        row.TaskStatus,
+		MeasurementStatus: row.MeasurementStatus,
 	})
 }
 
@@ -347,6 +435,9 @@ type PromptQuizSampleRow struct {
 	// TaskStatus is the agent_task_queue row's status, so "ordered but not
 	// yet picked up" stays visible instead of looking like a missing sample.
 	TaskStatus string `json:"task_status"`
+	// MeasurementStatus distinguishes a terminal task explicitly found
+	// unmeasurable from one still awaiting collection.
+	MeasurementStatus string `json:"measurement_status,omitempty"`
 }
 
 // GetPromptQuizSamples — GET /api/prompt-quiz/samples (Owner-only).

@@ -5067,11 +5067,12 @@ export const PromptQuizSampleRowSchema = z.object({
   measured_at: z.string().optional(),
   run_tokens: z.number().nullable().optional(),
   task_status: z.string().optional(),
+  measurement_status: z.string().optional(),
 });
 
 export const PromptQuizBatchCreateResponseSchema = z.object({
   batch_id: z.string().default(""),
-  ordered: z.number().default(0),
+  ordered: z.number().int().nonnegative().optional(),
   refused_agents: z
     .array(z.object({ agent_id: z.string(), reason: z.string() }))
     .optional(),
@@ -5083,6 +5084,8 @@ export const PromptQuizSampleListSchema = z.object({
 
 export const PromptQuizBatchResponseSchema = z.object({
   batch_id: z.string().default(""),
+  ordered: z.number().int().nonnegative().default(0),
+  settled: z.boolean().default(true),
   rows: z.array(PromptQuizSampleRowSchema).default([]),
   counts: z.record(z.string(), z.number()).default({}),
   scores: PromptQuizScoreSummarySchema.optional(),

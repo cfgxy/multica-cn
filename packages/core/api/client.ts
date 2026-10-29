@@ -4635,8 +4635,32 @@ export class ApiClient {
     return parseWithFallback(
       raw,
       PromptQuizBatchResponseSchema,
-      { batch_id: batchId, rows: [], counts: {} },
+      { batch_id: batchId, ordered: 0, settled: true, rows: [], counts: {} },
       { endpoint: "GET /api/prompt-quiz/batches/{id}" },
+    );
+  }
+
+  /** The agent's active batch, or its latest settled traceability view. */
+  async getCurrentPromptQuizBatch(agentId: string): Promise<PromptQuizBatchResponse> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(
+        `/api/prompt-quiz/batches/current?agent_id=${encodeURIComponent(agentId)}`,
+      );
+    } catch (error) {
+      // Older servers route "current" to the legacy batch-id handler (400) or
+      // have no current-batch route at all (404). Neither means the panel has
+      // a batch to restore.
+      if (error instanceof ApiError && (error.status === 400 || error.status === 404)) {
+        return { batch_id: "", ordered: 0, settled: true, rows: [], counts: {} };
+      }
+      throw error;
+    }
+    return parseWithFallback(
+      raw,
+      PromptQuizBatchResponseSchema,
+      { batch_id: "", ordered: 0, settled: true, rows: [], counts: {} },
+      { endpoint: "GET /api/prompt-quiz/batches/current" },
     );
   }
 

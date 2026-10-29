@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -188,9 +189,12 @@ func TestPromptQuizBatchCreateValidation(t *testing.T) {
 	runtimeID := handlerTestRuntimeID(t)
 	validAgent := dbfx.Agent(t, "quiz-batch-agent", runtimeID)
 	noRuntimeAgent := dbfx.Agent(t, "quiz-batch-no-runtime", "")
+	archivedAgent := dbfx.Agent(t, "quiz-batch-archived", runtimeID, testutil.Cols{
+		"archived_at": testutil.Raw("now()"),
+	})
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id::text = ANY($1)`,
-			[]string{validAgent, noRuntimeAgent})
+			[]string{validAgent, noRuntimeAgent, archivedAgent})
 		testPool.Exec(context.Background(),
 			`DELETE FROM agent_task_queue WHERE agent_id::text = ANY($1)`, []string{validAgent})
 	})
@@ -220,6 +224,34 @@ func TestPromptQuizBatchCreateValidation(t *testing.T) {
 		if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue
 		                       WHERE agent_id::text = ANY($1)`, []string{validAgent}); n != 0 {
 			t.Fatalf("%d rows stored for a refused batch", n)
+		}
+	})
+
+	t.Run("archived agent is refused even with a runtime", func(t *testing.T) {
+		resp := post(map[string]any{"agent_ids": []string{archivedAgent}}).Want(422)
+		if !strings.Contains(resp.Body.String(), "no_valid_agents") {
+			t.Fatalf("body does not name the refusal: %s", resp.Body.String())
+		}
+		if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id = $1::uuid`, archivedAgent); n != 0 {
+			t.Fatalf("%d rows stored for an archived agent", n)
+		}
+	})
+
+	t.Run("task fence refusing every run returns conflict and stores nothing", func(t *testing.T) {
+		fencedAgent := dbfx.Agent(t, "quiz-batch-fenced", newQuizUUID(t))
+		itemID := seedQuizItem(t, "quiz-batch-fenced-item")
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE agent_id = $1::uuid`, fencedAgent)
+			testPool.Exec(context.Background(), `DELETE FROM prompt_quiz_item WHERE id = $1::uuid`, itemID)
+			testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1::uuid`, fencedAgent)
+		})
+
+		resp := post(map[string]any{"agent_ids": []string{fencedAgent}, "item_ids": []string{itemID}}).Want(409)
+		if !strings.Contains(resp.Body.String(), "quiz_batch_fenced") {
+			t.Fatalf("body does not name the fence refusal: %s", resp.Body.String())
+		}
+		if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id = $1::uuid`, fencedAgent); n != 0 {
+			t.Fatalf("%d rows stored after all quiz runs were fence-refused", n)
 		}
 	})
 
@@ -265,6 +297,32 @@ func TestPromptQuizBatchCreateValidation(t *testing.T) {
 		}
 		if originator != promptquiz.OriginatorSource {
 			t.Fatalf("originator_source = %q, want quiz", originator)
+		}
+	})
+
+	t.Run("UUID case variants order one task", func(t *testing.T) {
+		agentID := dbfx.Agent(t, "quiz-batch-case-dedupe-agent", handlerTestRuntimeID(t))
+		itemID := seedQuizItem(t, "quiz-batch-case-dedupe-item")
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
+			testPool.Exec(context.Background(), `DELETE FROM prompt_quiz_item WHERE id = $1::uuid`, itemID)
+			testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1::uuid`, agentID)
+		})
+
+		var resp struct {
+			BatchID string `json:"batch_id"`
+			Ordered int    `json:"ordered"`
+		}
+		testutil.Call(t, testHandler.CreatePromptQuizBatch, newRequest("POST", "/api/prompt-quiz/batches", map[string]any{
+			"agent_ids": []string{agentID, strings.ToUpper(agentID)},
+			"item_ids":  []string{itemID, strings.ToUpper(itemID)},
+		})).Want(200).JSON(&resp)
+		if resp.Ordered != 1 {
+			t.Fatalf("ordered = %d, want 1", resp.Ordered)
+		}
+		if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue
+			WHERE agent_id = $1::uuid AND context ->> 'quiz_batch_id' = $2`, agentID, resp.BatchID); n != 1 {
+			t.Fatalf("queue tasks for case-variant UUIDs = %d, want 1", n)
 		}
 	})
 
@@ -327,41 +385,44 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 
 	// The batch id is IN the payload the daemon will receive, next to the
 	// item id — the field set the sweep's payload test pins.
-	var contexts []string
+	type queuedTask struct {
+		ID      string
+		Context string
+	}
+	var queuedTasks []queuedTask
 	rows, err := testPool.Query(context.Background(),
-		`SELECT context FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
+		`SELECT id::text, context FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for rows.Next() {
-		var c []byte
-		if err := rows.Scan(&c); err != nil {
+		var task queuedTask
+		if err := rows.Scan(&task.ID, &task.Context); err != nil {
 			t.Fatal(err)
 		}
-		contexts = append(contexts, string(c))
+		queuedTasks = append(queuedTasks, task)
 	}
 	rows.Close()
-	if len(contexts) != 2 {
-		t.Fatalf("%d task rows, want 2", len(contexts))
+	if len(queuedTasks) != 2 {
+		t.Fatalf("%d task rows, want 2", len(queuedTasks))
 	}
-	for _, c := range contexts {
-		if !strings.Contains(c, created.BatchID) || !strings.Contains(c, "quiz_item_id") || !strings.Contains(c, "quiz_prompt") {
-			t.Fatalf("payload is missing the batch/item/prompt fields: %s", c)
+	for _, task := range queuedTasks {
+		if !strings.Contains(task.Context, created.BatchID) || !strings.Contains(task.Context, "quiz_item_id") || !strings.Contains(task.Context, "quiz_prompt") {
+			t.Fatalf("payload is missing the batch/item/prompt fields: %s", task.Context)
 		}
 	}
 
 	// One answered-and-graded run, one errored run, both on the batch.
 	gradedScore := 0.75
-	for _, outcome := range []string{promptquiz.OutcomeAnswered, promptquiz.OutcomeErrored} {
-		taskID := dbfx.Task(t, agentID, map[string]any{
-			"status": "completed", "originator_source": promptquiz.OriginatorSource,
-			"completed_at": testutil.Raw("now()"),
-		})
+	for i, outcome := range []string{promptquiz.OutcomeAnswered, promptquiz.OutcomeErrored} {
+		taskID := queuedTasks[i].ID
+		testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1::uuid`, taskID)
 		cols := map[string]any{
 			"workspace_id": testWorkspaceID, "scope": "agent", "scope_id": agentID,
 			"version": 1, "item_id": itemA, "item_revision": 1,
 			"item_body_sha256": promptquiz.BodyDigest("anchor"),
 			"batch_id":         created.BatchID, "task_id": taskID, "outcome": outcome,
+			"graded_at": testutil.Raw("now()"),
 		}
 		if outcome == promptquiz.OutcomeAnswered {
 			detail, _ := json.Marshal([]map[string]any{{"id": "c1", "kind": "includes_all", "passed": true, "weight": 1}})
@@ -375,6 +436,8 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 	req := newRequest("GET", "/api/prompt-quiz/batches/"+created.BatchID, nil)
 	var batch struct {
 		BatchID string `json:"batch_id"`
+		Ordered int    `json:"ordered"`
+		Settled bool   `json:"settled"`
 		Rows    []struct {
 			TaskID     string          `json:"task_id"`
 			ItemID     string          `json:"item_id"`
@@ -396,7 +459,7 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 	testutil.Call(t, testHandler.GetPromptQuizBatch, withURLParam(req, "batchId", created.BatchID)).
 		Want(200).JSON(&batch)
 
-	if batch.BatchID != created.BatchID || len(batch.Rows) != 2 {
+	if batch.BatchID != created.BatchID || batch.Ordered != 2 || !batch.Settled || len(batch.Rows) != 2 {
 		t.Fatalf("batch read-back = %d rows, want 2 for %s", len(batch.Rows), created.BatchID)
 	}
 	if batch.Counts[promptquiz.OutcomeAnswered] != 1 || batch.Counts[promptquiz.OutcomeErrored] != 1 {
@@ -420,6 +483,457 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 		if row.TaskID == "" || row.TaskStatus == "" {
 			t.Errorf("row lost its task join: %+v", row)
 		}
+	}
+}
+
+// TestPromptQuizBatchProgressUsesTheWholeQueue proves batch completion is not
+// inferred from the bounded row window: queued and running work remains pending,
+// as does a terminal task until the collector explicitly marks it not measured.
+func TestPromptQuizBatchProgressUsesTheWholeQueue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	batchID := newQuizUUID(t)
+	agentID := dbfx.Agent(t, "quiz-batch-progress", handlerTestRuntimeID(t))
+	itemID := seedQuizItem(t, "quiz-batch-progress-item")
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
+		testPool.Exec(ctx, `DELETE FROM prompt_quiz_result WHERE scope = 'agent' AND scope_id = $1::uuid`, agentID)
+		testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1::uuid`, agentID)
+		testPool.Exec(ctx, `DELETE FROM prompt_quiz_item WHERE id = $1::uuid`, itemID)
+	})
+
+	contextJSON := testutil.Raw(`jsonb_build_object('quiz_batch_id', '` + batchID + `', 'quiz_item_id', '` + itemID + `')`)
+	notMeasuredContextJSON := testutil.Raw(`jsonb_build_object('quiz_batch_id', '` + batchID + `', 'quiz_item_id', '` + itemID + `', 'quiz_measurement_status', 'not_measured')`)
+	queuedTask := dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           contextJSON,
+		"created_at":        testutil.Raw("now() + interval '3 seconds'"),
+	})
+	runningTask := dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           contextJSON,
+		"status":            "running",
+		"created_at":        testutil.Raw("now() + interval '2 seconds'"),
+	})
+	awaitingGradeTask := dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           contextJSON,
+		"status":            "completed",
+		"completed_at":      testutil.Raw("now()"),
+		"created_at":        testutil.Raw("now() + interval '1 second'"),
+	})
+	legacyScoredTask := dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           contextJSON,
+		"status":            "completed",
+		"completed_at":      testutil.Raw("now()"),
+		"created_at":        testutil.Raw("now() + interval '5 seconds'"),
+	})
+	dbfx.Insert(t, "prompt_quiz_result", map[string]any{
+		"workspace_id": testWorkspaceID, "scope": "agent", "scope_id": agentID,
+		"version": 1, "item_id": itemID, "item_revision": 1,
+		"item_body_sha256": promptquiz.BodyDigest("anchor"),
+		"batch_id":         batchID, "task_id": legacyScoredTask, "outcome": promptquiz.OutcomeAnswered,
+		"score": 0.5,
+	})
+	dbfx.Insert(t, "prompt_quiz_result", map[string]any{
+		"workspace_id": testWorkspaceID, "scope": "agent", "scope_id": agentID,
+		"version": 1, "item_id": itemID, "item_revision": 1,
+		"item_body_sha256": promptquiz.BodyDigest("anchor"),
+		"batch_id":         batchID, "task_id": awaitingGradeTask, "outcome": promptquiz.OutcomeAnswered,
+	})
+	pendingTerminalTask := dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           contextJSON,
+		"status":            "completed",
+		"completed_at":      testutil.Raw("now()"),
+	})
+	notMeasuredTask := dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           notMeasuredContextJSON,
+		"status":            "completed",
+		"completed_at":      testutil.Raw("now()"),
+		"created_at":        testutil.Raw("now() + interval '4 seconds'"),
+	})
+
+	// 496 terminal tasks make a 502-row batch. The endpoint may return 500
+	// display rows, but its aggregate must still report every queue row.
+	for range 496 {
+		dbfx.Task(t, agentID, testutil.Cols{
+			"originator_source": promptquiz.OriginatorSource,
+			"context":           notMeasuredContextJSON,
+			"status":            "completed",
+			"completed_at":      testutil.Raw("now()"),
+		})
+	}
+
+	read := func(path string) struct {
+		BatchID string `json:"batch_id"`
+		Ordered int    `json:"ordered"`
+		Settled bool   `json:"settled"`
+		Rows    []struct {
+			TaskID            string `json:"task_id"`
+			TaskStatus        string `json:"task_status"`
+			MeasurementStatus string `json:"measurement_status"`
+		} `json:"rows"`
+	} {
+		t.Helper()
+		var batch struct {
+			BatchID string `json:"batch_id"`
+			Ordered int    `json:"ordered"`
+			Settled bool   `json:"settled"`
+			Rows    []struct {
+				TaskID            string `json:"task_id"`
+				TaskStatus        string `json:"task_status"`
+				MeasurementStatus string `json:"measurement_status"`
+			} `json:"rows"`
+		}
+		if path == "current" {
+			testutil.Call(t, testHandler.GetCurrentPromptQuizBatch,
+				newRequest("GET", "/api/prompt-quiz/batches/current?agent_id="+agentID, nil)).Want(200).JSON(&batch)
+		} else {
+			testutil.Call(t, testHandler.GetPromptQuizBatch,
+				withURLParam(newRequest("GET", "/api/prompt-quiz/batches/"+batchID, nil), "batchId", batchID)).Want(200).JSON(&batch)
+		}
+		return batch
+	}
+
+	batch := read("current")
+	if batch.Ordered != 502 || batch.Settled || len(batch.Rows) != quizSampleLimit {
+		t.Fatalf("bounded current batch = ordered=%d settled=%t rows=%d, want 502 false %d", batch.Ordered, batch.Settled, len(batch.Rows), quizSampleLimit)
+	}
+	states := map[string]string{}
+	for _, row := range batch.Rows {
+		states[row.TaskID] = row.MeasurementStatus
+	}
+	if states[queuedTask] != "pending" ||
+		states[runningTask] != "pending" ||
+		states[awaitingGradeTask] != "awaiting_grade" ||
+		states[legacyScoredTask] != "measured" ||
+		states[pendingTerminalTask] != "pending" ||
+		states[notMeasuredTask] != "not_measured" {
+		t.Fatalf("live task states = %v", states)
+	}
+	if explicit := read("batch"); explicit.Ordered != 502 || explicit.Settled || len(explicit.Rows) != 2 {
+		t.Fatalf("explicit batch = ordered=%d settled=%t rows=%d, want 502 false 2 collected rows", explicit.Ordered, explicit.Settled, len(explicit.Rows))
+	}
+
+	testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'completed', completed_at = now()
+		WHERE id::text = ANY($1)`, []string{queuedTask, runningTask})
+	testPool.Exec(ctx, `UPDATE prompt_quiz_result SET graded_at = now() WHERE task_id = $1::uuid`, awaitingGradeTask)
+	if stillPending := read("batch"); stillPending.Settled {
+		t.Fatalf("terminal task awaiting collector was reported settled: %+v", stillPending)
+	}
+	dbfx.Insert(t, "prompt_quiz_result", map[string]any{
+		"workspace_id": testWorkspaceID, "scope": "agent", "scope_id": agentID,
+		"version": 1, "item_id": itemID, "item_revision": 1,
+		"item_body_sha256": promptquiz.BodyDigest("anchor"),
+		"batch_id":         batchID, "task_id": pendingTerminalTask, "outcome": promptquiz.OutcomeAnswered,
+	})
+	testPool.Exec(ctx, `UPDATE agent_task_queue
+		SET context = jsonb_set(context, '{quiz_measurement_status}', '"not_measured"'::jsonb)
+		WHERE id = $1::uuid`, pendingTerminalTask)
+	settled := read("batch")
+	if !settled.Settled || settled.Ordered != 502 {
+		t.Fatalf("settled batch = ordered=%d settled=%t, want 502 true", settled.Ordered, settled.Settled)
+	}
+	for _, row := range settled.Rows {
+		if row.TaskID == pendingTerminalTask && row.MeasurementStatus != "not_measured" {
+			t.Fatalf("marked legacy result state = %q, want not_measured", row.MeasurementStatus)
+		}
+	}
+}
+
+func TestCurrentPromptQuizBatchIsAgentScoped(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	batchID := newQuizUUID(t)
+	selectedAgent := dbfx.Agent(t, "quiz-current-selected", handlerTestRuntimeID(t))
+	otherAgent := dbfx.Agent(t, "quiz-current-other", handlerTestRuntimeID(t))
+	settledContext := testutil.Raw(`jsonb_build_object('quiz_batch_id', '` + batchID + `', 'quiz_measurement_status', 'not_measured')`)
+	activeContext := testutil.Raw(`jsonb_build_object('quiz_batch_id', '` + batchID + `')`)
+	dbfx.Task(t, selectedAgent, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           settledContext,
+		"status":            "completed",
+		"completed_at":      testutil.Raw("now()"),
+	})
+	dbfx.Task(t, otherAgent, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           activeContext,
+		"status":            "queued",
+	})
+
+	var batch struct {
+		Ordered int  `json:"ordered"`
+		Settled bool `json:"settled"`
+		Rows    []struct {
+			ScopeID string `json:"scope_id"`
+		} `json:"rows"`
+	}
+	testutil.Call(t, testHandler.GetCurrentPromptQuizBatch,
+		newRequest("GET", "/api/prompt-quiz/batches/current?agent_id="+selectedAgent, nil)).Want(200).JSON(&batch)
+	if batch.Ordered != 1 || !batch.Settled || len(batch.Rows) != 1 || batch.Rows[0].ScopeID != selectedAgent {
+		t.Fatalf("current agent batch = %+v, want one settled row for %s", batch, selectedAgent)
+	}
+}
+
+func TestCurrentPromptQuizBatchPrefersActiveBatchThenManual(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	manualBatchID := newQuizUUID(t)
+	sweepBatchID := newQuizUUID(t)
+	agentID := dbfx.Agent(t, "quiz-current-manual", handlerTestRuntimeID(t))
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
+		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1::uuid`, agentID)
+	})
+	dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context": testutil.Raw(`jsonb_build_object(
+			'quiz_batch_id', '` + manualBatchID + `',
+			'quiz_batch_source', 'manual',
+			'quiz_measurement_status', 'not_measured'
+		)`),
+		"status":       "completed",
+		"completed_at": testutil.Raw("now() - interval '1 minute'"),
+	})
+	dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context": testutil.Raw(`jsonb_build_object(
+			'quiz_batch_id', '` + sweepBatchID + `',
+			'quiz_batch_source', 'sweep'
+		)`),
+		"status": "queued",
+	})
+
+	var batch struct {
+		BatchID string `json:"batch_id"`
+		Settled bool   `json:"settled"`
+	}
+	testutil.Call(t, testHandler.GetCurrentPromptQuizBatch,
+		newRequest("GET", "/api/prompt-quiz/batches/current?agent_id="+agentID, nil)).Want(200).JSON(&batch)
+	if batch.BatchID != sweepBatchID || batch.Settled {
+		t.Fatalf("current batch = %+v, want active sweep batch %s", batch, sweepBatchID)
+	}
+
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue
+		SET status = 'completed', completed_at = now(),
+			context = jsonb_set(context, '{quiz_measurement_status}', '"not_measured"')
+		WHERE agent_id = $1::uuid AND context->>'quiz_batch_id' = $2`, agentID, sweepBatchID); err != nil {
+		t.Fatalf("settle sweep batch: %v", err)
+	}
+	testutil.Call(t, testHandler.GetCurrentPromptQuizBatch,
+		newRequest("GET", "/api/prompt-quiz/batches/current?agent_id="+agentID, nil)).Want(200).JSON(&batch)
+	if batch.BatchID != manualBatchID || !batch.Settled {
+		t.Fatalf("current batch = %+v, want settled manual batch %s", batch, manualBatchID)
+	}
+
+	if _, err := testPool.Exec(context.Background(), `UPDATE agent_task_queue
+		SET status = 'queued', completed_at = NULL,
+			context = context - 'quiz_measurement_status'
+		WHERE agent_id = $1::uuid`, agentID); err != nil {
+		t.Fatalf("activate matching batches: %v", err)
+	}
+	testutil.Call(t, testHandler.GetCurrentPromptQuizBatch,
+		newRequest("GET", "/api/prompt-quiz/batches/current?agent_id="+agentID, nil)).Want(200).JSON(&batch)
+	if batch.BatchID != manualBatchID || batch.Settled {
+		t.Fatalf("current batch = %+v, want active manual batch %s", batch, manualBatchID)
+	}
+}
+
+func TestPromptQuizBatchIndexSupportsAgentReadPaths(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	const (
+		agentIndexName  = "idx_agent_task_queue_quiz_batch_agent_created_at"
+		lookupIndexName = "idx_agent_task_queue_quiz_batch_lookup"
+	)
+	for indexName, wants := range map[string][]string{
+		agentIndexName:  {"agent_id", "quiz_batch_id", "created_at DESC", "originator_source"},
+		lookupIndexName: {"quiz_batch_id", "created_at DESC", "originator_source"},
+	} {
+		var definition string
+		if err := testPool.QueryRow(ctx, `SELECT pg_get_indexdef($1::regclass)`, indexName).Scan(&definition); err != nil {
+			t.Fatalf("load quiz batch index %s: %v", indexName, err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(definition, want) {
+				t.Fatalf("quiz batch index %s = %q, missing %q", indexName, definition, want)
+			}
+		}
+	}
+
+	agentID := dbfx.Agent(t, "quiz-batch-index", handlerTestRuntimeID(t))
+	batchID := newQuizUUID(t)
+	itemID := seedQuizItem(t, "quiz-batch-index-item")
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           testutil.Raw(`jsonb_build_object('quiz_batch_id', '` + batchID + `', 'quiz_item_id', '` + itemID + `')`),
+	})
+	dbfx.Insert(t, "prompt_quiz_result", testutil.Cols{
+		"workspace_id":     testWorkspaceID,
+		"scope":            "agent",
+		"scope_id":         agentID,
+		"version":          1,
+		"item_id":          itemID,
+		"item_revision":    1,
+		"item_body_sha256": promptquiz.BodyDigest("quiz-batch-index"),
+		"batch_id":         batchID,
+		"task_id":          taskID,
+		"outcome":          promptquiz.OutcomeAnswered,
+		"measured_at":      testutil.Raw("now()"),
+		"graded_at":        testutil.Raw("now()"),
+	})
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM prompt_quiz_result WHERE task_id = $1::uuid`, taskID)
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
+		testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1::uuid`, agentID)
+		testPool.Exec(ctx, `DELETE FROM prompt_quiz_item WHERE id = $1::uuid`, itemID)
+	})
+
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin index plan transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off`); err != nil {
+		t.Fatalf("disable sequential scans: %v", err)
+	}
+	explain := func(query string, args ...any) string {
+		rows, err := tx.Query(ctx, "EXPLAIN (COSTS OFF) "+query, args...)
+		if err != nil {
+			t.Fatalf("explain quiz batch query: %v", err)
+		}
+		defer rows.Close()
+		var lines []string
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatalf("scan quiz batch plan: %v", err)
+			}
+			lines = append(lines, line)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read quiz batch plan: %v", err)
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	rowsPlan := explain(`
+		SELECT q.id
+		FROM agent_task_queue q
+		WHERE q.agent_id = $1::uuid
+		  AND q.originator_source = 'quiz'
+		  AND q.context->>'quiz_batch_id' = $2
+		ORDER BY q.created_at DESC
+		LIMIT 500`, agentID, batchID)
+	currentPlan := explain(`
+		SELECT q.context->>'quiz_batch_id'
+		FROM agent_task_queue q
+		WHERE q.agent_id = $1::uuid
+		  AND q.originator_source = 'quiz'
+		  AND q.context->>'quiz_batch_id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+		GROUP BY q.context->>'quiz_batch_id'
+		ORDER BY max(q.created_at) DESC
+		LIMIT 1`, agentID)
+	progressPlan := explain(promptQuizProductionQuery(t, "GetPromptQuizBatchProgress"), testWorkspaceID, batchID, nil)
+	lookupPlan := explain(promptQuizProductionQuery(t, "ListPromptQuizTasksForBatch"), testWorkspaceID, batchID, nil, false, 500)
+	for name, check := range map[string]struct {
+		plan      string
+		indexName string
+	}{
+		"rows":     {plan: rowsPlan, indexName: agentIndexName},
+		"current":  {plan: currentPlan, indexName: agentIndexName},
+		"progress": {plan: progressPlan, indexName: lookupIndexName},
+		"lookup":   {plan: lookupPlan, indexName: lookupIndexName},
+	} {
+		if !strings.Contains(check.plan, check.indexName) {
+			t.Fatalf("%s query plan does not use %s:\n%s", name, check.indexName, check.plan)
+		}
+	}
+}
+
+// promptQuizProductionQuery loads the named source query so the EXPLAIN checks
+// above cannot silently diverge from the SQLC query an API handler executes.
+func promptQuizProductionQuery(t *testing.T, name string) string {
+	t.Helper()
+
+	body, err := os.ReadFile("../../pkg/db/queries/prompt_quiz.sql")
+	if err != nil {
+		t.Fatalf("read prompt quiz query source: %v", err)
+	}
+	marker := "-- name: " + name + " "
+	start := strings.Index(string(body), marker)
+	if start < 0 {
+		t.Fatalf("query source does not contain %s", name)
+	}
+	query := string(body[start+len(marker):])
+	if lineEnd := strings.IndexByte(query, '\n'); lineEnd >= 0 {
+		query = query[lineEnd+1:]
+	}
+	if next := strings.Index(query, "\n-- name: "); next >= 0 {
+		query = query[:next]
+	}
+	query = strings.NewReplacer(
+		"sqlc.arg('workspace_id')", "$1",
+		"sqlc.arg('batch_id')", "$2",
+		"sqlc.narg('agent_id')", "$3",
+		"sqlc.arg('include_pending')", "$4",
+		"sqlc.arg('row_limit')", "$5",
+	).Replace(query)
+	if strings.Contains(query, "sqlc.") {
+		t.Fatalf("query %s still contains SQLC arguments: %s", name, query)
+	}
+	return query
+}
+
+// TestPromptQuizBatchProgressIsWorkspaceScoped keeps a shared batch id from
+// exposing another workspace's queue rows.
+func TestPromptQuizBatchProgressIsWorkspaceScoped(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	batchID := newQuizUUID(t)
+	localAgent := dbfx.Agent(t, "quiz-batch-scope-local", handlerTestRuntimeID(t))
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE agent_id = $1::uuid`, localAgent)
+		testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1::uuid`, localAgent)
+	})
+
+	otherWorkspace := dbfx.Workspace(t, "quiz batch other", "quiz-batch-other-"+batchID[:8])
+	otherFixture := testutil.New(testPool, otherWorkspace, testUserID)
+	otherFixture.Member(t, otherWorkspace, testUserID, "owner")
+	otherRuntime := otherFixture.Runtime(t, "quiz-batch-other-runtime")
+	otherAgent := otherFixture.Agent(t, "quiz-batch-scope-other", otherRuntime)
+	contextJSON := testutil.Raw(`jsonb_build_object('quiz_batch_id', '` + batchID + `', 'quiz_measurement_status', 'not_measured')`)
+	dbfx.Task(t, localAgent, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           contextJSON,
+		"status":            "completed",
+		"completed_at":      testutil.Raw("now()"),
+	})
+	otherFixture.Task(t, otherAgent, testutil.Cols{
+		"originator_source": promptquiz.OriginatorSource,
+		"context":           contextJSON,
+		"status":            "queued",
+	})
+
+	var batch struct {
+		Ordered int  `json:"ordered"`
+		Settled bool `json:"settled"`
+	}
+	testutil.Call(t, testHandler.GetPromptQuizBatch,
+		withURLParam(newRequest("GET", "/api/prompt-quiz/batches/"+batchID, nil), "batchId", batchID)).Want(200).JSON(&batch)
+	if batch.Ordered != 1 || !batch.Settled {
+		t.Fatalf("workspace batch = ordered=%d settled=%t, want 1 true", batch.Ordered, batch.Settled)
 	}
 }
 
