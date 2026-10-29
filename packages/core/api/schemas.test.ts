@@ -1201,8 +1201,8 @@ describe("dashboard + runtime usage schema drift", () => {
     expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.provider).toBe("");
   });
 
-  it("defaults model call counts to 0 so a pre-migration-987 backend still renders", () => {
-    // A backend older than migration 987 sends neither call-count field. The
+  it("defaults model call counts to 0 so a pre-migration-996 backend still renders", () => {
+    // A backend older than migration 996 sends neither call-count field. The
     // row must survive with both halves at 0 — "no known calls, no unknown
     // rows" — rather than a missing field reading as "unknown".
     for (const list of [

@@ -2056,7 +2056,7 @@ const CostSplitShape = {
   uncosted_cache_write_tokens: z.number().optional(),
 };
 
-// Model API/Prompt call counts (migration 987). `model_call_count` is the
+// Model API/Prompt call counts (migration 996). `model_call_count` is the
 // known half only; `model_call_unknown_count` counts the rows whose provider
 // gave no call evidence. Defaults mirror the cost split: a backend older than
 // the column sends neither, and once the backend carries them the unknown

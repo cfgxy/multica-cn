@@ -1395,7 +1395,7 @@ export interface IssueUsageSummary {
 // there means "estimate from the full token counts", which is not the same as
 // a real 0 ("nothing left to estimate"). See estimateCost in
 // packages/views/runtimes/utils.ts.
-// Model API/Prompt call counts (migration 987), carried on every usage row:
+// Model API/Prompt call counts (migration 996), carried on every usage row:
 // `model_call_count` is the known half only, and `model_call_unknown_count`
 // counts the rows whose provider gave no call evidence. Both optional because
 // a backend older than the column sends neither; a UI that sees a nonzero

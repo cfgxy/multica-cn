@@ -803,7 +803,7 @@ function UsagePane(props: UsagePaneProps) {
         />
       </View>
 
-      {/* Model API call KPI (migration 987): rendered only when the window
+      {/* Model API call KPI (migration 996): rendered only when the window
           actually has data. The value is the known half; rows whose provider
           gave no call evidence stay in the hint, never folded into the
           number (contract: unknown must not read as 0). */}
