@@ -5525,13 +5525,6 @@ type TaskCancelAckRequest struct {
 	Confirmed bool `json:"confirmed,omitempty"`
 }
 
-	// An acknowledgement is the transition from cancel_requested to cancelled.
-	// Refuse a daemon that cannot attest to a proven worker exit; otherwise a
-	// cancelled context alone can terminalize a task while its unit still runs.
-	if !req.Confirmed {
-		writeError(w, http.StatusConflict, "cancel acknowledgement requires confirmed worker stop")
-		return
-	}
 func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
@@ -5542,6 +5535,13 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	// endpoint only accepts an acknowledgement that carries stop evidence.
 	var req TaskCancelAckRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
+	// An acknowledgement is the transition from cancel_requested to cancelled.
+	// Refuse a daemon that cannot attest to a proven worker exit; otherwise a
+	// cancelled context alone can terminalize a task while its unit still runs.
+	if !req.Confirmed {
+		writeError(w, http.StatusConflict, "cancel acknowledgement requires confirmed worker stop")
+		return
+	}
 	// Same persistence hazard as /fail and /complete: these strings go straight
 	// into TEXT columns, and this endpoint fails LOUD on write errors, so an
 	// unsanitized NUL here turns a cancelled task's only pointer to its work
