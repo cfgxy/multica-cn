@@ -729,6 +729,38 @@ describe("AgentTaskListSchema", () => {
     ]);
   });
 
+  it("preserves quiz Run identity and degrades malformed quiz metadata independently", () => {
+    const parsed = AgentTaskListSchema.parse([
+      {
+        ...task,
+        kind: "quiz",
+        quiz_item_id: "item-1",
+        quiz_item_title: "Stability question",
+        quiz_batch_id: "batch-1",
+      },
+      {
+        ...task,
+        id: "task-2",
+        kind: "quiz",
+        quiz_item_id: 42,
+        quiz_item_title: { text: "wrong shape" },
+        quiz_batch_id: false,
+      },
+    ]);
+
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]).toMatchObject({
+      kind: "quiz",
+      quiz_item_id: "item-1",
+      quiz_item_title: "Stability question",
+      quiz_batch_id: "batch-1",
+    });
+    expect(parsed[1]?.kind).toBe("quiz");
+    expect(parsed[1]?.quiz_item_id).toBeUndefined();
+    expect(parsed[1]?.quiz_item_title).toBeUndefined();
+    expect(parsed[1]?.quiz_batch_id).toBeUndefined();
+  });
+
   it("accepts durable workdir metadata from newer backends", () => {
     const parsed = AgentTaskListSchema.parse([
       {

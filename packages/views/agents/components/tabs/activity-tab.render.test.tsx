@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, AgentTask } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -178,6 +178,96 @@ describe("ActivityTab daily-retrospective runs (RUYI-673)", () => {
     renderTab();
     expect(await screen.findByText("Quick create")).toBeInTheDocument();
     expect(screen.queryByText(/Daily retrospective/)).not.toBeInTheDocument();
+  });
+});
+
+describe("ActivityTab prompt-quiz runs", () => {
+  it("shows quiz source, item title, and distinct batch/item identifiers for active and completed runs", async () => {
+    snapshotRef.current = () => Promise.resolve([
+      {
+        id: "task-quiz-1",
+        agent_id: "agent-1",
+        issue_id: "",
+        status: "running",
+        created_at: "2026-10-11T00:00:00Z",
+        kind: "quiz",
+        quiz_item_id: "5b0e0000-0000-4000-8000-111122223333",
+        quiz_item_title: "稳定性题目",
+        quiz_batch_id: "8a1f0000-0000-4000-8000-444455556666",
+      } as unknown as AgentTask,
+      {
+        id: "task-quiz-legacy-active",
+        agent_id: "agent-1",
+        issue_id: "",
+        status: "running",
+        created_at: "2026-10-11T00:00:30Z",
+        kind: "quiz",
+        quiz_item_id: "6c1d0000-0000-4000-8000-777788889999",
+        quiz_batch_id: "8a1f0000-0000-4000-8000-aaaabbbbcccc",
+      } as unknown as AgentTask,
+      {
+        id: "task-quiz-item-only-active",
+        agent_id: "agent-1",
+        issue_id: "",
+        status: "running",
+        created_at: "2026-10-11T00:00:45Z",
+        kind: "quiz",
+        quiz_item_id: "6c1d0000-0000-4000-8000-123456789abc",
+      } as unknown as AgentTask,
+    ]);
+    agentTasksRef.current = () => Promise.resolve([
+      {
+        id: "task-quiz-2",
+        agent_id: "agent-1",
+        issue_id: "",
+        status: "completed",
+        created_at: "2026-10-11T00:01:00Z",
+        completed_at: "2026-10-11T00:03:00Z",
+        kind: "quiz",
+        quiz_item_id: "7c3a0000-0000-4000-8000-ddddeeeeffff",
+        quiz_item_title: "错误处理题目",
+        quiz_batch_id: "9b2f0000-0000-4000-8000-111133335555",
+      },
+      {
+        id: "task-quiz-legacy-completed",
+        agent_id: "agent-1",
+        issue_id: "",
+        status: "completed",
+        created_at: "2026-10-11T00:02:00Z",
+        completed_at: "2026-10-11T00:04:00Z",
+        kind: "quiz",
+        quiz_item_id: "7c3a0000-0000-4000-8000-aaaa22224444",
+        quiz_batch_id: "9b2f0000-0000-4000-8000-666677778888",
+      },
+    ] as unknown as AgentTask[]);
+    renderTab();
+
+    const activeTitle = await screen.findByText(
+      "稳定性题目 · Batch 55556666 / Item 22223333",
+    );
+    const completedTitle = screen.getByText(
+      "错误处理题目 · Batch 33335555 / Item eeeeffff",
+    );
+    const legacyActiveTitle = screen.getByText(
+      "Quiz scoring · Batch bbbbcccc / Item 88889999",
+    );
+    const itemOnlyActiveTitle = screen.getByText(
+      "Quiz scoring · Item 56789abc",
+    );
+    const legacyCompletedTitle = screen.getByText(
+      "Quiz scoring · Batch 77778888 / Item 22224444",
+    );
+    expect(within(activeTitle.closest(".group")!).getByText("Quiz scoring"))
+      .toBeInTheDocument();
+    expect(within(completedTitle.closest(".group")!).getByText("Quiz scoring"))
+      .toBeInTheDocument();
+    expect(within(legacyActiveTitle.closest(".group")!).getByText("Quiz scoring"))
+      .toBeInTheDocument();
+    expect(within(itemOnlyActiveTitle.closest(".group")!).getByText("Quiz scoring"))
+      .toBeInTheDocument();
+    expect(within(legacyCompletedTitle.closest(".group")!).getByText("Quiz scoring"))
+      .toBeInTheDocument();
+    expect(screen.queryByText("Untracked")).not.toBeInTheDocument();
   });
 });
 

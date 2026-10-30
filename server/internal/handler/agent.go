@@ -697,7 +697,7 @@ type AgentTaskResponse struct {
 	InitiatorID    string `json:"initiator_id,omitempty"`    // user UUID (member) or agent UUID
 	InitiatorName  string `json:"initiator_name,omitempty"`  // display name of the initiator
 	InitiatorEmail string `json:"initiator_email,omitempty"` // member email; empty for agent initiators
-	Kind           string `json:"kind"`                      // discriminator: "comment" | "autopilot" | "chat" | "quick_create" | "direct" — used by the activity row to label tasks that have no linked issue
+	Kind           string `json:"kind"`                      // source discriminator used by activity rows, including no-issue task kinds
 	// RetrospectiveRunID / RetrospectiveWindowEnd (RUYI-673) ride only on
 	// daily-retrospective tasks (kind="retrospective"): the retrospective_run
 	// row the task serves and the window end (= trigger moment) the UI stamps
@@ -706,6 +706,11 @@ type AgentTaskResponse struct {
 	// valid retrospective payload.
 	RetrospectiveRunID     string `json:"retrospective_run_id,omitempty"`
 	RetrospectiveWindowEnd string `json:"retrospective_window_end,omitempty"`
+	// Quiz item identity is presentation metadata for activity rows; it is read
+	// from the quiz task context without changing the grading/result linkage.
+	QuizItemID    string `json:"quiz_item_id,omitempty"`
+	QuizItemTitle string `json:"quiz_item_title,omitempty"`
+	QuizBatchID   string `json:"quiz_batch_id,omitempty"`
 	// Attribution is the resolved accountable-human provenance for this run
 	// (MUL-4302 §9): the source label + precise flag, the initiator (accountable)
 	// and originator refs, the evidence pointer, and lineage. Always present (the
@@ -1072,6 +1077,24 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		if tc, ok := retrospective.ParseTaskContext(t.Context); ok {
 			resp.RetrospectiveRunID = tc.RunID
 			resp.RetrospectiveWindowEnd = tc.WindowEnd
+		}
+	}
+	if resp.Kind == promptquiz.TaskKind {
+		var quizContext struct {
+			ItemID    string `json:"quiz_item_id"`
+			ItemTitle string `json:"quiz_item_title"`
+			BatchID   string `json:"quiz_batch_id"`
+		}
+		if json.Unmarshal(t.Context, &quizContext) == nil {
+			if _, err := util.ParseUUID(quizContext.ItemID); err == nil {
+				resp.QuizItemID = quizContext.ItemID
+			}
+			if strings.TrimSpace(quizContext.ItemTitle) != "" {
+				resp.QuizItemTitle = quizContext.ItemTitle
+			}
+			if _, err := util.ParseUUID(quizContext.BatchID); err == nil {
+				resp.QuizBatchID = quizContext.BatchID
+			}
 		}
 	}
 	return resp
@@ -3226,6 +3249,7 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 	for i, t := range tasks {
 		resp[i] = taskToResponse(t, workspaceID)
 	}
+	h.hydrateQuizItemTitles(r.Context(), workspaceID, resp)
 	// RUYI-397/700: same admission decoration as the execution-log read — a
 	// queued row whose agent's bound runtime sits under a fresh backpressure
 	// hold carries the reason, so the mobile task history renders "waiting
@@ -3507,6 +3531,7 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 		}
 		resp = append(resp, taskToResponse(t, workspaceID))
 	}
+	h.hydrateQuizItemTitles(r.Context(), workspaceID, resp)
 	// RUYI-700: the mobile task history renders active queued rows straight
 	// from this snapshot, so apply the same backpressure decoration as the
 	// list reads — otherwise those queued rows stall silently.
@@ -3514,4 +3539,59 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// hydrateQuizItemTitles fills presentation metadata missing from older quiz
+// task contexts. The item read is workspace-scoped and failures leave the
+// persisted item identity intact without inventing a title.
+func (h *Handler) hydrateQuizItemTitles(ctx context.Context, workspaceID string, tasks []AgentTaskResponse) {
+	workspaceUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return
+	}
+	itemIDs := make([]pgtype.UUID, 0, len(tasks))
+	seen := make(map[pgtype.UUID]struct{}, len(tasks))
+	for i := range tasks {
+		task := &tasks[i]
+		if task.Kind != promptquiz.TaskKind || task.QuizItemTitle != "" || task.QuizItemID == "" {
+			continue
+		}
+		itemUUID, err := util.ParseUUID(task.QuizItemID)
+		if err != nil {
+			continue
+		}
+		if _, ok := seen[itemUUID]; !ok {
+			itemIDs = append(itemIDs, itemUUID)
+			seen[itemUUID] = struct{}{}
+		}
+	}
+	if len(itemIDs) == 0 {
+		return
+	}
+	items, err := h.Queries.ListPromptQuizItemTitles(ctx, db.ListPromptQuizItemTitlesParams{
+		WorkspaceID: workspaceUUID,
+		Ids:         itemIDs,
+	})
+	if err != nil {
+		return
+	}
+	titles := make(map[string]string, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.Title) != "" {
+			titles[uuidToString(item.ID)] = item.Title
+		}
+	}
+	for i := range tasks {
+		task := &tasks[i]
+		if task.Kind != promptquiz.TaskKind || task.QuizItemTitle != "" {
+			continue
+		}
+		itemUUID, err := util.ParseUUID(task.QuizItemID)
+		if err != nil {
+			continue
+		}
+		if title := titles[uuidToString(itemUUID)]; title != "" {
+			task.QuizItemTitle = title
+		}
+	}
 }
