@@ -3,7 +3,9 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1838,10 +1840,11 @@ const claimBatchMaxTasksCap = 32
 func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var req struct {
-		DaemonID     string                             `json:"daemon_id"`
-		RuntimeIDs   []string                           `json:"runtime_ids"`
-		MaxTasks     int                                `json:"max_tasks"`
-		Backpressure *protocol.DaemonBackpressureReport `json:"backpressure,omitempty"`
+		DaemonID         string                             `json:"daemon_id"`
+		RuntimeIDs       []string                           `json:"runtime_ids"`
+		MaxTasks         int                                `json:"max_tasks"`
+		SessionPublicKey string                             `json:"session_public_key,omitempty"`
+		Backpressure     *protocol.DaemonBackpressureReport `json:"backpressure,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1859,6 +1862,8 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "daemon_id is required")
 		return
 	}
+	sessionPublicKey, sessionKeyValid := decodeCredentialSessionPublicKey(req.SessionPublicKey)
+	credentialMCPReady := sessionKeyValid && requestHasClientCapability(r, protocol.DaemonCapabilityCredentialMCPV1)
 	if ctxDaemonID := middleware.DaemonIDFromContext(r.Context()); ctxDaemonID != "" && ctxDaemonID != req.DaemonID {
 		writeError(w, http.StatusForbidden, "daemon_id does not match token")
 		return
@@ -2022,6 +2027,41 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
+		requiresCredentialMCP, credentialErr := h.taskRequiresCredentialMCP(r.Context(), uuidToString(task.ID))
+		if credentialErr != nil || (requiresCredentialMCP && !credentialMCPReady) {
+			if credentialErr != nil {
+				slog.Error("batch claim: inspect direct credential requirements failed; requeueing claim",
+					"task_id", uuidToString(task.ID), "error", credentialErr)
+			} else {
+				slog.Info("batch claim: daemon does not support direct credentials; requeueing claim",
+					"task_id", uuidToString(task.ID), "runtime_id", uuidToString(task.RuntimeID))
+			}
+			if _, rerr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), task); rerr != nil {
+				slog.Error("batch claim: requeue after credential capability gate failed",
+					"task_id", uuidToString(task.ID), "error", rerr)
+			}
+			continue
+		}
+		if sessionKeyValid {
+			capabilityTx, capabilityErr := h.TxStarter.Begin(r.Context())
+			if capabilityErr == nil {
+				resp.CredentialCapabilities, capabilityErr = mintCredentialCapabilities(r.Context(), capabilityTx, req.DaemonID, resp.ID, sessionPublicKey)
+				if capabilityErr == nil {
+					capabilityErr = capabilityTx.Commit(r.Context())
+				} else {
+					_ = capabilityTx.Rollback(r.Context())
+				}
+			}
+			if capabilityErr != nil {
+				slog.Error("batch claim: mint credential capabilities failed; requeueing claim",
+					"task_id", uuidToString(task.ID), "error", capabilityErr)
+				if _, rerr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), task); rerr != nil {
+					slog.Error("batch claim: requeue after credential capability mint failed",
+						"task_id", uuidToString(task.ID), "error", rerr)
+				}
+				continue
+			}
+		}
 		tokenStr, terr := auth.GenerateAgentTaskToken()
 		if terr != nil {
 			slog.Error("batch claim: generate task token failed; requeueing claim",
@@ -2077,6 +2117,20 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			"total_ms", time.Since(start).Milliseconds())
 	}
 	writeMeasuredJSON(w, http.StatusOK, map[string]any{"tasks": out})
+}
+
+func decodeCredentialSessionPublicKey(value string) ([]byte, bool) {
+	if strings.TrimSpace(value) == "" {
+		return nil, false
+	}
+	key, err := base64.RawURLEncoding.Strict().DecodeString(value)
+	if err != nil || len(key) != 32 {
+		return nil, false
+	}
+	if _, err := ecdh.X25519().NewPublicKey(key); err != nil {
+		return nil, false
+	}
+	return key, true
 }
 
 // claimBuildFailure captures a pre-response failure from
@@ -3937,6 +3991,26 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	if failure != nil {
 		outcome = failure.outcome
 		writeError(w, failure.status, failure.message)
+		return
+	}
+	requiresCredentialMCP, credentialErr := h.taskRequiresCredentialMCP(r.Context(), uuidToString(task.ID))
+	if credentialErr != nil || requiresCredentialMCP {
+		if credentialErr != nil {
+			slog.Error("task claim: inspect direct credential requirements failed; requeueing claim",
+				"task_id", uuidToString(task.ID), "error", credentialErr)
+			outcome = "error_credential_gate"
+		} else {
+			slog.Info("task claim: legacy endpoint cannot deliver direct credentials; requeueing claim",
+				"task_id", uuidToString(task.ID), "runtime_id", runtimeID)
+			outcome = "credential_mcp_required"
+		}
+		if _, requeueErr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), *task); requeueErr != nil {
+			slog.Error("task claim: requeue after credential capability gate failed",
+				"task_id", uuidToString(task.ID), "error", requeueErr)
+			writeError(w, http.StatusInternalServerError, "failed to defer credential-bound task")
+			return
+		}
+		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
 		return
 	}
 	commentBackedTask := task.TriggerCommentID.Valid || len(task.CoalescedCommentIds) > 0
