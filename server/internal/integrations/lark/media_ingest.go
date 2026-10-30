@@ -35,6 +35,11 @@ type messageResourceStreamer interface {
 	DownloadMessageResourceStream(ctx context.Context, creds InstallationCredentials, p DownloadResourceParams) (DownloadedResourceStream, error)
 }
 
+// Media resolution is serial and shares the router's 45-second deadline with
+// queueing and attachment binding. Eight items leave time for those stages
+// even when each item's download and upload take about 500ms.
+const maxMediaResourcesPerMessage = 8
+
 type feishuMediaResolver struct {
 	api     APIClient
 	creds   CredentialsResolver
@@ -65,7 +70,7 @@ func (r *feishuMediaResolver) HasMedia(msg channel.InboundMessage) bool {
 	if err != nil {
 		return false
 	}
-	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0 || len(lm.QuotedMedia) > 0 || hasShareLinks(lm)
+	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0 || len(lm.QuotedMedia) > 0 || len(lm.ForwardMedia) > 0 || hasShareLinks(lm)
 }
 
 // hasShareLinks mirrors HasMedia's coverage for links only: the trigger's
@@ -95,11 +100,6 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 		return msg
 	}
 	resources := mediaResourcesFromMessage(lm)
-	for _, recent := range lm.RecentMedia {
-		resources = append(resources, mediaResourcesFromMessage(InboundMessage{
-			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
-		})...)
-	}
 	// Quoted-parent media rides the same download/upload path; the object
 	// key is derived from (chat message, resource message, key), so quoted
 	// and trigger resources never collide even when both reference the same
@@ -109,22 +109,46 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 			MessageID: quoted.MessageID, MessageType: quoted.MessageType, Content: quoted.Content,
 		})...)
 	}
+	for _, forwarded := range lm.ForwardMedia {
+		forwardedResources := mediaResourcesFromMessage(InboundMessage{
+			MessageID: forwarded.MessageID, MessageType: forwarded.MessageType, Content: forwarded.Content,
+		})
+		for _, resource := range forwardedResources {
+			if resource.fetchType == "image" {
+				resources = append(resources, resource)
+			}
+		}
+	}
+	// Explicit media from this turn wins the bounded budget over automatically
+	// prefetched history, which must not displace a forwarded or quoted image.
+	for _, recent := range lm.RecentMedia {
+		resources = append(resources, mediaResourcesFromMessage(InboundMessage{
+			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
+		})...)
+	}
+	resources = dedupeMediaResources(resources)
 	// Share links ride the same ledger→download→upload→MediaRef chain
 	// (RUYI-572): scanned from the trigger's own text/post body and from
 	// the recent/quoted descriptors. Deduped across sources so a link
 	// surfaced by both the trigger and its quoted parent resolves once.
 	links := shareLinkResources(lm)
-	for _, recent := range lm.RecentMedia {
-		links = append(links, shareLinkResources(InboundMessage{
-			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
-		})...)
-	}
 	for _, quoted := range lm.QuotedMedia {
 		links = append(links, shareLinkResources(InboundMessage{
 			MessageID: quoted.MessageID, MessageType: quoted.MessageType, Content: quoted.Content,
 		})...)
 	}
+	for _, recent := range lm.RecentMedia {
+		links = append(links, shareLinkResources(InboundMessage{
+			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
+		})...)
+	}
 	links = dedupeLinkResources(links)
+	if len(resources) > maxMediaResourcesPerMessage {
+		resources = resources[:maxMediaResourcesPerMessage]
+	}
+	if remaining := maxMediaResourcesPerMessage - len(resources); len(links) > remaining {
+		links = links[:remaining]
+	}
 	if len(resources) == 0 && len(links) == 0 {
 		return msg
 	}
@@ -288,6 +312,28 @@ type larkMediaResource struct {
 	mimeType  string
 	sizeBytes int64
 	messageID string
+}
+
+func dedupeMediaResources(resources []larkMediaResource) []larkMediaResource {
+	if len(resources) <= 1 {
+		return resources
+	}
+	type resourceKey struct {
+		messageID string
+		fetchType string
+		key       string
+	}
+	seen := make(map[resourceKey]struct{}, len(resources))
+	result := make([]larkMediaResource, 0, len(resources))
+	for _, resource := range resources {
+		key := resourceKey{messageID: resource.messageID, fetchType: resource.fetchType, key: resource.key}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, resource)
+	}
+	return result
 }
 
 // larkLinkResource is one share link harvested from message text, tagged
@@ -563,6 +609,15 @@ func mediaResourcesFromMessage(lm InboundMessage) []larkMediaResource {
 	default:
 		return nil
 	}
+}
+
+func messageHasImageResource(lm InboundMessage) bool {
+	for _, resource := range mediaResourcesFromMessage(lm) {
+		if resource.fetchType == "image" {
+			return true
+		}
+	}
+	return false
 }
 
 func mediaResourcesFromPost(lm InboundMessage) []larkMediaResource {

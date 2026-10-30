@@ -287,6 +287,11 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 		}()
 	}
 	fetches.Wait()
+	var visibleForwardChildren []LarkMessage
+	var forwardChildCount, truncatedForwardChildren int
+	if isForward && forwardErr == nil {
+		visibleForwardChildren, forwardChildCount, truncatedForwardChildren = forwardedChildren(forwardItems, msg.MessageID, e.maxForwardChildren)
+	}
 
 	if wantRecent {
 		if recentErr != nil {
@@ -362,6 +367,16 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 			e.hints.ObserveDenied(ctx, creds, msg.ChatID, CapabilityReadHistory, forwardErr)
 		} else {
 			e.hints.ObserveSuccess(creds.AppID, msg.ChatID, CapabilityReadHistory)
+			for _, child := range visibleForwardChildren {
+				childMessage := InboundMessage{MessageID: child.MessageID, MessageType: child.MessageType, Content: child.Content}
+				if child.Deleted || (child.MessageType != "image" && child.MessageType != "post") || child.MessageID == "" ||
+					!messageHasImageResource(childMessage) {
+					continue
+				}
+				msg.ForwardMedia = append(msg.ForwardMedia, EnrichedMediaMessage{
+					MessageID: child.MessageID, MessageType: child.MessageType, Content: child.Content,
+				})
+			}
 		}
 	}
 
@@ -409,7 +424,7 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 			e.logger.Warn("lark enricher: forward fetch failed", "message_id", msg.MessageID, "err", forwardErr)
 			core = forwardedErrorBlock()
 		} else {
-			core = e.renderForwardedItems(forwardItems, msg.MessageID, names)
+			core = e.renderForwardedChildren(visibleForwardChildren, forwardChildCount, truncatedForwardChildren, names)
 		}
 	} else {
 		core = msg.Body
@@ -865,34 +880,13 @@ func feishuShareLinkNote(text string) string {
 // not recursed into (it gets a manual-expand placeholder) so the HTTP
 // fan-out on the ACK-latency-sensitive inbound path stays bounded.
 func (e *inboundEnricher) renderForwardedItems(items []LarkMessage, forwardID string, names map[string]string) string {
-	// The verified contract is that GetMessage(forward_id) returns one
-	// level of bundling: [sentinel, direct-children…]. We therefore
-	// treat every non-sentinel item as a direct child. We filter by id
-	// (not by upper_message_id == forwardID) on purpose: a strict
-	// upper_message_id match would silently DROP a real child if Lark
-	// ever returned one with that field unpopulated. A child that is
-	// itself a forward is rendered as a manual-expand placeholder below
-	// rather than recursed into, so grandchildren are never inlined.
-	children := make([]LarkMessage, 0, len(items))
-	for _, it := range items {
-		if it.MessageID == forwardID {
-			continue // the forward sentinel itself
-		}
-		children = append(children, it)
-	}
-	total := len(children)
+	children, total, truncated := forwardedChildren(items, forwardID, e.maxForwardChildren)
+	return e.renderForwardedChildren(children, total, truncated, names)
+}
+
+func (e *inboundEnricher) renderForwardedChildren(children []LarkMessage, total, truncated int, names map[string]string) string {
 	if total == 0 {
 		return "<forwarded_messages count=\"0\">\n[no forwarded content available]\n</forwarded_messages>"
-	}
-
-	sort.SliceStable(children, func(i, j int) bool {
-		return parseLarkMillis(children[i].CreateTime) < parseLarkMillis(children[j].CreateTime)
-	})
-
-	truncated := 0
-	if total > e.maxForwardChildren {
-		truncated = total - e.maxForwardChildren
-		children = children[:e.maxForwardChildren]
 	}
 
 	labeler := newSpeakerLabeler(names)
@@ -916,6 +910,23 @@ func (e *inboundEnricher) renderForwardedItems(items []LarkMessage, forwardID st
 		body += fmt.Sprintf("\n... (%d more truncated)", truncated)
 	}
 	return fmt.Sprintf("<forwarded_messages count=\"%d\">\n%s\n</forwarded_messages>", total, body)
+}
+
+func forwardedChildren(items []LarkMessage, forwardID string, max int) ([]LarkMessage, int, int) {
+	children := make([]LarkMessage, 0, len(items))
+	for _, item := range items {
+		if item.MessageID != forwardID {
+			children = append(children, item)
+		}
+	}
+	sort.SliceStable(children, func(i, j int) bool {
+		return parseLarkMillis(children[i].CreateTime) < parseLarkMillis(children[j].CreateTime)
+	})
+	total := len(children)
+	if total <= max {
+		return children, total, 0
+	}
+	return children[:max], total, total - max
 }
 
 // flattenMessage turns one fetched message into plain text: structural
