@@ -40,6 +40,25 @@ describe("ApiClient cookie-auth transport", () => {
   });
 });
 
+describe("ApiClient self-evolution model discovery", () => {
+  it("falls back safely when a model-list response is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, models: [4] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+    const result = await new ApiClient("http://localhost").listSelfEvolutionModelConfigModels({
+      base_url: "https://gateway.example/v1",
+      api_key: "",
+    });
+    expect(result).toEqual({ ok: false, models: [], error_kind: "other", message: "" });
+  });
+});
+
 describe("ApiClient agent conversation-starter compatibility", () => {
   const prompt = {
     label: "Review a PR",

@@ -24,9 +24,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/llm"
-	"github.com/multica-ai/multica/server/internal/util/secretbox"
 )
 
 // --- fixtures ---
@@ -129,6 +129,16 @@ func newGateway(t *testing.T, status int) *gateway {
 		g.auth = r.Header.Get("Authorization")
 		defer g.mu.Unlock()
 		g.calls++
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			if status != 0 {
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"error":{"message":"denied"}}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"model-a","object":"model","created":1,"owned_by":"test"}]}`)
+			return
+		}
 		payload, _ := io.ReadAll(r.Body)
 		var req struct {
 			Model string `json:"model"`
@@ -585,6 +595,200 @@ func TestValidateOnlyNeverTouchesStore(t *testing.T) {
 	}
 	if store.upserts != 0 || store.vals != 0 {
 		t.Fatalf("validate-only wrote to the store: upserts=%d vals=%d", store.upserts, store.vals)
+	}
+}
+
+func TestValidateOnlyReusesStoredAPIKeyWhenInputIsEmpty(t *testing.T) {
+	g := newGateway(t, 0)
+	ws := testWS(32)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("stored-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := overrideRow(ws, g, "", "old-model")
+	row.ApiKeyEncrypted = sealed
+	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{ws: row}}
+	r := NewResolver(store, box, llm.New(llm.Config{}), "")
+
+	out, err := r.ValidateOnly(context.Background(), ws, SaveInput{BaseURL: g.srv.URL, Model: "new-model"})
+	if err != nil || !out.OK {
+		t.Fatalf("out=%+v err=%v", out, err)
+	}
+	if g.auth != "Bearer stored-key" || g.model != "new-model" {
+		t.Fatalf("gateway auth=%q model=%q", g.auth, g.model)
+	}
+	if store.upserts != 0 || store.vals != 0 {
+		t.Fatalf("validate-only wrote to the store: upserts=%d vals=%d", store.upserts, store.vals)
+	}
+}
+
+func TestValidateOnlyUsesExplicitAPIKeyInsteadOfStoredKey(t *testing.T) {
+	g := newGateway(t, 0)
+	ws := testWS(33)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("stored-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := overrideRow(ws, g, "", "old-model")
+	row.ApiKeyEncrypted = sealed
+	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{ws: row}}
+	r := NewResolver(store, box, llm.New(llm.Config{}), "")
+
+	out, err := r.ValidateOnly(context.Background(), ws, SaveInput{BaseURL: g.srv.URL, APIKey: "new-key", Model: "new-model"})
+	if err != nil || !out.OK {
+		t.Fatalf("out=%+v err=%v", out, err)
+	}
+	if g.auth != "Bearer new-key" {
+		t.Fatalf("gateway auth=%q, want explicit key", g.auth)
+	}
+}
+
+func TestValidateOnlyDoesNotSendStoredAPIKeyToChangedBaseURL(t *testing.T) {
+	var calls int
+	var auth string
+	var mu sync.Mutex
+	newGateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = r.Header.Get("Authorization")
+		calls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"ok","choices":[{"message":{"content":"pong"}}]}`)
+	}))
+	t.Cleanup(newGateway.Close)
+
+	ws := testWS(36)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("stored-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := db.SelfEvolutionModelConfig{
+		WorkspaceID: ws,
+		BaseUrl:     pgtype.Text{String: "https://old-gateway.example/v1", Valid: true},
+		Model:       pgtype.Text{String: "old-model", Valid: true},
+	}
+	row.ApiKeyEncrypted = sealed
+	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{ws: row}}
+	r := NewResolver(store, box, llm.New(llm.Config{}), "")
+
+	out, err := r.ValidateOnly(context.Background(), ws, SaveInput{BaseURL: newGateway.URL, Model: "new-model"})
+	if err != nil || !out.OK {
+		t.Fatalf("out=%+v err=%v", out, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 || auth == "Bearer stored-key" {
+		t.Fatalf("changed gateway calls=%d authorization=%q", calls, auth)
+	}
+}
+
+func TestSaveRequiresNewAPIKeyWhenBaseURLChanges(t *testing.T) {
+	var calls int
+	newGateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"ok","choices":[{"message":{"content":"pong"}}]}`)
+	}))
+	t.Cleanup(newGateway.Close)
+
+	ws := testWS(38)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("stored-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := db.SelfEvolutionModelConfig{
+		WorkspaceID:     ws,
+		BaseUrl:         pgtype.Text{String: "https://old-gateway.example/v1", Valid: true},
+		Model:           pgtype.Text{String: "old-model", Valid: true},
+		ApiKeyEncrypted: sealed,
+	}
+	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{ws: row}}
+	r := NewResolver(store, box, llm.New(llm.Config{}), "")
+
+	_, failure, err := r.Save(context.Background(), ws, SaveInput{BaseURL: newGateway.URL, Model: "new-model"})
+	if err != nil || failure == nil || failure.Kind != llm.ErrorKindCredentials {
+		t.Fatalf("failure=%+v err=%v", failure, err)
+	}
+	if calls != 0 || store.upserts != 0 {
+		t.Fatalf("changed gateway calls=%d upserts=%d", calls, store.upserts)
+	}
+}
+
+func TestListModelsReusesStoredAPIKeyAndReturnsIDs(t *testing.T) {
+	g := newGateway(t, 0)
+	ws := testWS(34)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("stored-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := overrideRow(ws, g, "", "old-model")
+	row.ApiKeyEncrypted = sealed
+	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{ws: row}}
+	r := NewResolver(store, box, llm.New(llm.Config{}), "")
+
+	models, err := r.ListModels(context.Background(), ws, g.srv.URL, "")
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	if g.auth != "Bearer stored-key" || len(models) != 1 || models[0] != "model-a" {
+		t.Fatalf("auth=%q models=%v", g.auth, models)
+	}
+	if store.upserts != 0 {
+		t.Fatalf("model discovery unexpectedly saved config: %d upserts", store.upserts)
+	}
+}
+
+func TestListModelsDoesNotSendStoredAPIKeyToChangedBaseURL(t *testing.T) {
+	var calls int
+	var auth string
+	var mu sync.Mutex
+	newGateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = r.Header.Get("Authorization")
+		calls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"public-model","object":"model","created":1,"owned_by":"test"}]}`)
+	}))
+	t.Cleanup(newGateway.Close)
+
+	ws := testWS(37)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("stored-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := db.SelfEvolutionModelConfig{
+		WorkspaceID: ws,
+		BaseUrl:     pgtype.Text{String: "https://old-gateway.example/v1", Valid: true},
+		Model:       pgtype.Text{String: "old-model", Valid: true},
+	}
+	row.ApiKeyEncrypted = sealed
+	r := NewResolver(&fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{ws: row}}, box, llm.New(llm.Config{}), "")
+
+	models, err := r.ListModels(context.Background(), ws, newGateway.URL, "")
+	if err != nil || len(models) != 1 || models[0] != "public-model" {
+		t.Fatalf("ListModels models=%v err=%v", models, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 || auth == "Bearer stored-key" {
+		t.Fatalf("changed gateway calls=%d authorization=%q", calls, auth)
+	}
+}
+
+func TestListModelsPreservesCredentialRejection(t *testing.T) {
+	g := newGateway(t, http.StatusUnauthorized)
+	ws := testWS(35)
+	r := NewResolver(&fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{}}, testBox(t), llm.New(llm.Config{}), "")
+	_, err := r.ListModels(context.Background(), ws, g.srv.URL, "invalid-key")
+	if err == nil || llm.Classify(err) != llm.ErrorKindCredentials || llm.Summary(err) != "网关拒绝凭据（HTTP 401）" {
+		t.Fatalf("model-list error=%v kind=%q summary=%q", err, llm.Classify(err), llm.Summary(err))
 	}
 }
 
