@@ -4471,11 +4471,9 @@ func TestBatchIssueGCCheckReadsNoCatalogForBuiltInStatuses(t *testing.T) {
 	}
 }
 
-// RUYI-478: the claim must carry the full attachment rows (filename + durable
-// markdown URL) behind a quick-create context's attachment ids, so the
-// delegated create-run can inline pasted images into the description. A
-// dangling id degrades to omission — the raw ids (server-side binding) never
-// regress.
+// The claim carries the full attachment rows behind a quick-create context's
+// attachment ids. A dangling id degrades to omission; the raw ids used for
+// server-side binding remain unchanged.
 func TestClaimTask_QuickCreateAttachmentMetas(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
