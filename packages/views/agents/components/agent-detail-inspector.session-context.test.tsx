@@ -201,3 +201,21 @@ describe("AgentDetailInspector session context gate", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("AgentDetailInspector concurrency field", () => {
+  afterEach(cleanup);
+
+  it.each(["blur", "enter"] as const)(
+    "does not convert an empty draft to unlimited on %s",
+    async (commit) => {
+      const onUpdate = renderInspector(makeAgent({ max_concurrent_tasks: 4 }));
+      const input = screen.getByLabelText("Concurrency");
+      fireEvent.change(input, { target: { value: "" } });
+      if (commit === "blur") fireEvent.blur(input);
+      else fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(onUpdate).not.toHaveBeenCalled();
+      await waitFor(() => expect(input).toHaveValue(4));
+    },
+  );
+});

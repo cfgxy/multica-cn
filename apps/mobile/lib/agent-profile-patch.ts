@@ -15,6 +15,7 @@
 import {
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
+  AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
   AGENT_SESSION_COMPACT_PCT_DEFAULT,
   AGENT_SESSION_COMPACT_PCT_MAX,
   AGENT_SESSION_COMPACT_PCT_MIN,
@@ -63,8 +64,10 @@ export function parseBounded(
   max: number,
   extra?: number,
 ): number | null {
-  const parsed = parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) return null;
+  const trimmed = raw.trim();
+  if (!/^-?\d+$/.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed)) return null;
   if (extra !== undefined && parsed === extra) return parsed;
   if (parsed < min || parsed > max) return null;
   return parsed;
@@ -102,6 +105,7 @@ export function buildProfilePatch(
     draft.concurrency,
     AGENT_MAX_CONCURRENT_TASKS_MIN,
     AGENT_MAX_CONCURRENT_TASKS_MAX,
+    AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
   );
   if (conc !== null && conc !== agent.max_concurrent_tasks)
     next.max_concurrent_tasks = conc;

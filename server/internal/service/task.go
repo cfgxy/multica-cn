@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/chattitle"
@@ -3910,7 +3911,10 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		if weight < 1 {
 			weight = 1
 		}
-		if agent.MaxConcurrentTasks != -1 && running*weight >= int64(agent.MaxConcurrentTasks) {
+		// Unlimited (0) skips the agent-level gate; the runtime-level gate
+		// above still applies.
+		if !agentconfig.IsUnlimitedMaxConcurrentTasks(agent.MaxConcurrentTasks) &&
+			running*weight >= int64(agent.MaxConcurrentTasks) {
 			slog.Debug("task claim: no capacity", "agent_id", util.UUIDToString(agentID), "running", running, "weight", weight, "max", agent.MaxConcurrentTasks)
 			outcome = "no_capacity"
 			return nil

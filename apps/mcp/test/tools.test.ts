@@ -2440,6 +2440,67 @@ describe("workspace run view + agent/squad management tools", () => {
     ).rejects.toThrow(ToolInputError);
   });
 
+  it.each([0, 8])("create_agent accepts concurrency %i", async (value) => {
+    const client = fakeClient({
+      createAgent: async (_ws: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "createAgent", args: [body] });
+        return agentDetail;
+      },
+    });
+    await findTool("create_agent")?.handler(
+      { workspace: WS, name: "New agent", runtime_id: "rt1", max_concurrent_tasks: value },
+      client,
+    );
+    expect(callsOf(client)[0]?.args[0]).toMatchObject({ max_concurrent_tasks: value });
+  });
+
+  it.each(["create_agent", "update_agent"] as const)(
+    "%s rejects concurrency outside 0-50 before calling the API",
+    async (toolName) => {
+      for (const value of [-1, -2, 51]) {
+        const client = fakeClient({
+          createAgent: async (...args: unknown[]) => {
+            callsOf(client).push({ method: "createAgent", args });
+            return agentDetail;
+          },
+          updateAgent: async (...args: unknown[]) => {
+            callsOf(client).push({ method: "updateAgent", args });
+            return agentDetail;
+          },
+        });
+        const args = toolName === "create_agent"
+          ? { workspace: WS, name: "New agent", runtime_id: "rt1", max_concurrent_tasks: value }
+          : { workspace: WS, agent_id: "a1", max_concurrent_tasks: value };
+        await expect(findTool(toolName)?.handler(args, client)).rejects.toThrow(ToolInputError);
+        expect(callsOf(client)).toEqual([]);
+      }
+    },
+  );
+
+  it.each(["create_agent", "update_agent"] as const)(
+    "%s declares the concurrency upper bound in its input schema",
+    (toolName) => {
+      expect(findTool(toolName)?.inputSchema.properties.max_concurrent_tasks).toMatchObject({
+        minimum: 0,
+        maximum: 50,
+      });
+    },
+  );
+
+  it.each([0, 8])("update_agent accepts concurrency %i", async (value) => {
+    const client = fakeClient({
+      updateAgent: async (_ws: string, id: string, body: Record<string, unknown>) => {
+        callsOf(client).push({ method: "updateAgent", args: [id, body] });
+        return agentDetail;
+      },
+    });
+    await findTool("update_agent")?.handler(
+      { workspace: WS, agent_id: "a1", max_concurrent_tasks: value },
+      client,
+    );
+    expect(callsOf(client)[0]?.args[1]).toEqual({ max_concurrent_tasks: value });
+  });
+
   it("update_agent sends only the provided keys (PATCH semantics)", async () => {
     const client = fakeClient({
       updateAgent: async (_ws: string, id: string, body: Record<string, unknown>) => {

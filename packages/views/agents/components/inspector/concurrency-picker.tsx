@@ -3,12 +3,17 @@
 import { useEffect, useState } from "react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
+import {
+  AGENT_MAX_CONCURRENT_TASKS_MAX,
+  AGENT_MAX_CONCURRENT_TASKS_MIN,
+  AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
+} from "@multica/core/agents";
 import { PropertyPicker } from "../../../issues/components/pickers";
 import { CHIP_CLASS } from "./chip";
 import { useT } from "../../../i18n";
 
-const MIN = -1;
-const MAX = 50;
+const MIN = AGENT_MAX_CONCURRENT_TASKS_UNLIMITED;
+const MAX = AGENT_MAX_CONCURRENT_TASKS_MAX;
 
 export function ConcurrencyPicker({
   value,
@@ -33,27 +38,35 @@ export function ConcurrencyPicker({
     if (open) setDraft(String(value));
   }, [open, value]);
 
+  const displayValue =
+    value === AGENT_MAX_CONCURRENT_TASKS_UNLIMITED
+      ? t(($) => $.pickers.concurrency_unlimited)
+      : value;
+
   if (!canEdit) {
     return (
       <span className="font-mono text-caption tabular-nums text-muted-foreground">
-        {value}
+        {displayValue}
       </span>
     );
   }
 
   const commit = async () => {
+    if (draft.trim() === "") return;
     const n = Number(draft);
-    if (!Number.isInteger(n) || (n !== -1 && (n < 1 || n > MAX))) return;
+    // 0 = unlimited, 1-50 = cap; negative values are invalid.
+    if (
+      !Number.isInteger(n) ||
+      (n !== AGENT_MAX_CONCURRENT_TASKS_UNLIMITED &&
+        (n < AGENT_MAX_CONCURRENT_TASKS_MIN || n > MAX))
+    ) {
+      return;
+    }
     setOpen(false);
     if (n !== value) await onChange(n);
   };
 
-  const tooltip = t(($) => $.pickers.concurrency_tooltip, {
-    value:
-      value === -1
-        ? t(($) => $.pickers.concurrency_unlimited)
-        : value,
-  });
+  const tooltip = t(($) => $.pickers.concurrency_tooltip, { value: displayValue });
 
   return (
     <PropertyPicker
@@ -66,7 +79,7 @@ export function ConcurrencyPicker({
         <button type="button" className={CHIP_CLASS} aria-label={tooltip} />
       }
       trigger={
-        <span className="font-mono tabular-nums">{value}</span>
+        <span className="font-mono tabular-nums">{displayValue}</span>
       }
     >
       <div className="space-y-2 p-2">
