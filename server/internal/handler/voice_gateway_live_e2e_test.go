@@ -144,7 +144,7 @@ func TestVoiceGatewayLiveProviderE2E(t *testing.T) {
 		defer conn.Close()
 		t.Logf("handshake through the configured proxy completed in %s", handshake)
 
-		if err := conn.WriteJSON(composeVoiceSetupFrame(liveE2EInstructions, model, nil)); err != nil {
+		if err := conn.WriteJSON(composeVoiceSetupFrame(liveE2EInstructions, model, nil, nil)); err != nil {
 			t.Fatalf("setup write failed: %v", err)
 		}
 

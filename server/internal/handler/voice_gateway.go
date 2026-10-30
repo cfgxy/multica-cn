@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/auth"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/agentcontext"
@@ -64,7 +65,11 @@ var voiceUpgrader = websocket.Upgrader{
 // contract with the write-back layer). `tools` joined in RUYI-692 D1: tool
 // declarations are stable session identity riding setup, and an advanced-JSON
 // tool list has no server-side executor — the model would stop mid-session
-// waiting for results that never come (A2 §2.2 risk finding).
+// waiting for results that never come (A2 §2.2 risk finding). RUYI-874 ③
+// refines that: the SERVER now composes `tools` — the controlled Multica MCP
+// bridge face — because the gateway DOES own the executor; an advanced-JSON
+// list is still rejected (a user-supplied declaration has no bridge entry,
+// and the model waiting on its result would stall exactly as D1 found).
 var reservedSetupKeys = map[string]bool{
 	"model":                    true,
 	"systemInstruction":        true,
@@ -250,8 +255,11 @@ func liveSessionSnapshot(agentRow db.Agent, target *voiceTarget, model string) [
 // lives under realtimeInputConfig — setup-root placement is rejected by the
 // service) plus the three capability switches the demo lacked (§2.5):
 // sessionResumption, contextWindowCompression, and both transcription taps
-// that feed the write-back.
-func composeVoiceSetupFrame(instructions, model string, advanced map[string]json.RawMessage) map[string]any {
+// that feed the write-back. RUYI-874 ③: the setup also carries the
+// canonical Multica MCP declarations, adapted from tools/list for Gemini's
+// function-calling protocol, so a provider-issued toolCall is answered on the
+// caller's own identity instead of stalling.
+func composeVoiceSetupFrame(instructions, model string, advanced map[string]json.RawMessage, toolDeclarations []map[string]any) map[string]any {
 	setup := map[string]any{
 		"model":                    "models/" + model,
 		"generationConfig":         map[string]any{"responseModalities": []string{"AUDIO"}},
@@ -270,6 +278,9 @@ func composeVoiceSetupFrame(instructions, model string, advanced map[string]json
 		setup["systemInstruction"] = map[string]any{
 			"parts": []map[string]any{{"text": instructions}},
 		}
+	}
+	if len(toolDeclarations) > 0 {
+		setup["tools"] = []map[string]any{{"functionDeclarations": toolDeclarations}}
 	}
 	for key, value := range advanced {
 		if reservedSetupKeys[key] {
@@ -342,15 +353,19 @@ type liveServerFrame struct {
 	} `json:"toolCall"`
 }
 
+// liveClientFunctionResponse is one client-returned tool result on the
+// toolResponse envelope.
+type liveClientFunctionResponse struct {
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	Response json.RawMessage `json:"response"`
+}
+
 // liveClientToolFrame is the client→gateway half: function responses
 // returning tool results upstream.
 type liveClientToolFrame struct {
 	ToolResponse *struct {
-		FunctionResponses []struct {
-			ID       string          `json:"id"`
-			Name     string          `json:"name"`
-			Response json.RawMessage `json:"response"`
-		} `json:"functionResponses"`
+		FunctionResponses []liveClientFunctionResponse `json:"functionResponses"`
 	} `json:"toolResponse"`
 }
 
@@ -459,7 +474,7 @@ func (h *Handler) StartVoiceSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if userID := h.voiceRequestUserID(r); userID != "" {
-		plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID)
+		plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID, h.voiceChatSessionQuery(r), h.voiceIssueQuery(r), voiceRequestToken(r))
 		if hsErr != nil {
 			hsErr.writeHTTP(w)
 			return
@@ -502,6 +517,10 @@ type voiceSessionPlan struct {
 	instructions string
 	model        string
 	advanced     map[string]json.RawMessage
+	mcp          *voiceMCPBridge
+	tools        []map[string]any
+	skillRefs    []service.AgentSkillRefData
+	issueID      pgtype.UUID
 }
 
 // Transport modes for live_session rows (RUYI-626). RUYI-692 D1 ② retired
@@ -535,7 +554,7 @@ type voiceSessionGate struct {
 	target   *voiceTarget
 }
 
-// resolveVoiceSessionGate performs only read-only identity and voice checks.
+// resolveVoiceSessionGate performs identity, invocation, and voice checks.
 // Both preflight and session creation use this exact gate chain.
 func (h *Handler) resolveVoiceSessionGate(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID) (*voiceSessionGate, *voiceHandshakeError) {
 	if workspaceID == "" {
@@ -548,6 +567,12 @@ func (h *Handler) resolveVoiceSessionGate(ctx context.Context, userID, workspace
 	agentRow, err := h.Queries.GetAgent(ctx, agentUUID)
 	if err != nil || uuidToString(agentRow.WorkspaceID) != workspaceID {
 		return nil, &voiceHandshakeError{status: http.StatusNotFound, detail: "agent not found"}
+	}
+	// A voice session lets the caller direct the agent and load its assigned
+	// skills, so it is an invocation rather than a view. Keep it on the same
+	// owner/allow-list boundary as chat, issue assignment, and @-mentions.
+	if !h.canInvokeAgent(ctx, agentRow, "member", userID, userID, workspaceID) {
+		return nil, &voiceHandshakeError{status: http.StatusForbidden, detail: "you do not have access to this agent"}
 	}
 
 	target, rejection, serverErr := h.resolveVoiceTarget(ctx, agentRow)
@@ -569,11 +594,22 @@ func (h *Handler) resolveVoiceSessionGate(ctx context.Context, userID, workspace
 }
 
 // openVoiceSession creates the gateway-relayed live session after the shared
-// read-only gate chain has passed. (RUYI-692 D1 ②: every session is gateway.)
-func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID) (*voiceSessionPlan, *voiceHandshakeError) {
+// authorization and voice gate chain has passed. (RUYI-692 D1 ②: every session is gateway.)
+// chatSessionRaw and issueRaw are optional. An invalid contextual link degrades
+// to the existing plain-voice behavior rather than changing the voice gate.
+func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID, chatSessionRaw, issueRaw, callerToken string) (*voiceSessionPlan, *voiceHandshakeError) {
 	gate, hsErr := h.resolveVoiceSessionGate(ctx, userID, workspaceID, agentUUID)
 	if hsErr != nil {
 		return nil, hsErr
+	}
+	if h.TaskService == nil {
+		slog.Error("voice skill catalog service is unavailable", "agent_id", uuidToString(agentUUID))
+		return nil, &voiceHandshakeError{status: http.StatusServiceUnavailable, detail: "voice session unavailable due to a server configuration problem"}
+	}
+	_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(ctx, agentUUID)
+	if err != nil {
+		slog.Error("voice skill catalog load failed", "agent_id", uuidToString(agentUUID), "error", err)
+		return nil, &voiceHandshakeError{status: http.StatusServiceUnavailable, detail: "voice session unavailable due to a server configuration problem"}
 	}
 	model := gate.target.model
 	session, err := h.Queries.CreateLiveSession(ctx, db.CreateLiveSessionParams{
@@ -584,12 +620,20 @@ func (h *Handler) openVoiceSession(ctx context.Context, userID, workspaceID stri
 		Model:             model,
 		ContextSnapshot:   liveSessionSnapshot(gate.agentRow, gate.target, model),
 		Mode:              voiceSessionModeGateway,
+		// RUYI-874 link ①: when the session opens FROM a chat surface the
+		// caller hands the chat_session UUID; the validated link binds the
+		// terminal write-back (merged turns into that chat session) and the
+		// rich-context injection. A missing/invalid link degrades to plain
+		// voice semantics — it never rejects the voice session.
+		ChatSessionID: h.resolveVoiceChatSession(ctx, userID, workspaceID, agentUUID, chatSessionRaw),
 	})
 	if err != nil {
 		slog.Error("create live session failed", "agent_id", uuidToString(agentUUID), "error", err)
 		return nil, &voiceHandshakeError{status: http.StatusInternalServerError, detail: "failed to start voice session"}
 	}
-	return &voiceSessionPlan{session: session, target: gate.target, apiKey: gate.target.apiKey, instructions: gate.agentRow.Instructions, model: model, advanced: gate.target.advanced}, nil
+	plan := &voiceSessionPlan{session: session, target: gate.target, apiKey: gate.target.apiKey, instructions: gate.agentRow.Instructions, model: model, advanced: gate.target.advanced, skillRefs: skillRefs, issueID: h.resolveVoiceIssueContext(ctx, userID, workspaceID, issueRaw)}
+	plan.tools = prepareVoiceToolDeclarations(ctx, plan, callerToken)
+	return plan, nil
 }
 
 // voiceRequestUserID resolves the caller identity from the request's bearer
@@ -649,6 +693,118 @@ func (h *Handler) resolveVoiceWorkspaceID(r *http.Request) string {
 		return util.UUIDToString(ws.ID)
 	}
 	return ""
+}
+
+// voiceChatSessionQuery reads the optional chat_session_id upgrade query
+// value (RUYI-874 link ①/②): the chat surface that opened the voice UI
+// hands its session over so the voice conversation lands back into it.
+// Both start paths share r.URL, so one reader serves header and frame auth.
+func (h *Handler) voiceChatSessionQuery(r *http.Request) string {
+	return r.URL.Query().Get("chat_session_id")
+}
+
+// voiceIssueQuery reads an optional Issue-context link. Issue-comment surfaces
+// pass this value so Live receives the same verified Issue context that an
+// explicit chat mention would provide; other entry points keep their existing
+// chat-link or plain-voice behavior.
+func (h *Handler) voiceIssueQuery(r *http.Request) string {
+	return r.URL.Query().Get("issue_id")
+}
+
+// resolveVoiceIssueContext authorizes an Issue-context link independently of a
+// chat session. Workspace membership was established by the voice gate, then
+// GetIssueInWorkspace prevents cross-workspace UUIDs from becoming model input.
+func (h *Handler) resolveVoiceIssueContext(ctx context.Context, userID, workspaceID, raw string) pgtype.UUID {
+	if raw == "" {
+		return pgtype.UUID{}
+	}
+	issueID, err := util.ParseUUID(raw)
+	if err != nil {
+		slog.Warn("voice: issue_id query is not a UUID; degrading Issue context", "user_id", userID)
+		return pgtype.UUID{}
+	}
+	workspaceIDParsed, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return pgtype.UUID{}
+	}
+	if _, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: workspaceIDParsed}); err != nil {
+		slog.Warn("voice: issue_id not found in caller workspace; degrading Issue context", "issue_id", raw, "user_id", userID)
+		return pgtype.UUID{}
+	}
+	return issueID
+}
+
+// resolveVoiceChatSession validates the optional chat-session link against
+// the caller's own access surface and returns the bound UUID (invalid).
+// The link is a DEGRADABLE capability, never a gate: an empty value
+// returns invalid, and an invalid or unauthorized value logs and returns
+// invalid so the session still runs as plain voice. The permission check is
+// exactly the chat surface's own gate chain (chat.go: loadChatSessionForUser
+// ownership + canAccessPrivateAgent):
+//
+//   - the session must exist IN THE CALLER'S WORKSPACE (GetChatSessionIn
+//     Workspace with the resolved workspace UUID — a raw UUID from a query
+//     string is untrusted input);
+//   - the caller must be its CREATOR (the chat surface's ownership rule);
+//   - the agent bound to that session must be the one this voice session
+//     opens (the chat session's transcript and this live session share the
+//     same agent, so a cross-agent link would mix two context streams);
+//   - the private-agent access gate applies the same way the chat surface
+//     enforces it.
+//
+// On failure the session degrades to no chat write-back and no rich-context
+// injection: the voice conversation still runs, nothing is lost, and no
+// cross-session context leak is possible.
+func (h *Handler) resolveVoiceChatSession(ctx context.Context, userID, workspaceID string, agentUUID pgtype.UUID, raw string) pgtype.UUID {
+	if raw == "" {
+		return pgtype.UUID{}
+	}
+	chatUUID, err := util.ParseUUID(raw)
+	if err != nil {
+		slog.Warn("voice: chat_session_id query is not a UUID; degrading to plain voice",
+			"chat_session_id", raw, "user_id", userID)
+		return pgtype.UUID{}
+	}
+	workspaceUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		// openVoiceSession already resolved workspaceID through membership;
+		// an unparseable value means the caller handed us a slug — the chat
+		// link is a UUID-only contract, degrade.
+		slog.Warn("voice: unresolvable workspace for chat_session_id; degrading",
+			"workspace_id", workspaceID, "user_id", userID)
+		return pgtype.UUID{}
+	}
+	session, err := h.Queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{
+		ID:          chatUUID,
+		WorkspaceID: workspaceUUID,
+	})
+	if err != nil {
+		slog.Warn("voice: chat_session_id not found in caller's workspace; degrading to plain voice",
+			"chat_session_id", raw, "workspace_id", workspaceID, "user_id", userID, "error", err)
+		return pgtype.UUID{}
+	}
+	if uuidToString(session.CreatorID) != userID {
+		slog.Warn("voice: chat_session_id is not the caller's session; degrading to plain voice",
+			"chat_session_id", raw, "user_id", userID)
+		return pgtype.UUID{}
+	}
+	if uuidToString(session.AgentID) != uuidToString(agentUUID) {
+		slog.Warn("voice: chat_session_id bound to a different agent; degrading to plain voice",
+			"chat_session_id", raw, "agent_id", uuidToString(agentUUID), "user_id", userID)
+		return pgtype.UUID{}
+	}
+	agentRow, err := h.Queries.GetAgent(ctx, agentUUID)
+	if err != nil {
+		// Agent gate already passed in openVoiceSession; unreachable here.
+		return pgtype.UUID{}
+	}
+	// Member voice callers act as themselves: actorType/actorID = member + userID.
+	if !h.canAccessPrivateAgent(ctx, agentRow, "member", userID, workspaceID) {
+		slog.Warn("voice: caller lost private-agent access; degrading chat link",
+			"chat_session_id", raw, "agent_id", uuidToString(agentUUID), "user_id", userID)
+		return pgtype.UUID{}
+	}
+	return chatUUID
 }
 
 // voiceAuthReadDeadline matches the realtime hub's first-frame budget.
@@ -717,7 +873,7 @@ func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID)
+	plan, hsErr := h.openVoiceSession(r.Context(), userID, h.resolveVoiceWorkspaceID(r), agentUUID, h.voiceChatSessionQuery(r), h.voiceIssueQuery(r), token)
 	if hsErr != nil {
 		// Guard failures carry no stable code; the frame path always names
 		// one so clients branch on `code` uniformly.
@@ -737,7 +893,7 @@ func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Req
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
-	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced)); err != nil {
+	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced, plan.tools)); err != nil {
 		slog.Warn("voice setup write failed", "session_id", uuidToString(plan.session.ID), "error", err)
 		providerConn.Close()
 		h.recordDialFailureBadge(r.Context(), plan.target, nil)
@@ -745,7 +901,7 @@ func (h *Handler) startVoiceSessionFirstFrame(w http.ResponseWriter, r *http.Req
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
-	h.relayVoiceSessionConn(r, plan.session, plan.target, providerConn, conn)
+	h.relayVoiceSessionConn(r, plan, providerConn, conn)
 }
 
 // dialVoiceProvider opens the provider relay hop. The key rides the
@@ -826,7 +982,7 @@ func (h *Handler) relayVoiceSession(
 	}
 	defer providerConn.Close()
 
-	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced)); err != nil {
+	if err := providerConn.WriteJSON(composeVoiceSetupFrame(plan.instructions, plan.model, plan.advanced, plan.tools)); err != nil {
 		slog.Warn("voice setup write failed", "session_id", uuidToString(plan.session.ID), "error", err)
 		h.recordDialFailureBadge(r.Context(), plan.target, nil)
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
@@ -839,7 +995,7 @@ func (h *Handler) relayVoiceSession(
 		h.endLiveSession(context.Background(), plan.session, nil, nil)
 		return
 	}
-	h.relayVoiceSessionConn(r, plan.session, plan.target, providerConn, clientConn)
+	h.relayVoiceSessionConn(r, plan, providerConn, clientConn)
 }
 
 // relayVoiceSessionConn is the pump shared by both start paths; it owns two
@@ -849,10 +1005,11 @@ func (h *Handler) relayVoiceSession(
 // actually runs under.
 func (h *Handler) relayVoiceSessionConn(
 	r *http.Request,
-	session db.LiveSession,
-	target *voiceTarget,
+	plan *voiceSessionPlan,
 	providerConn, clientConn *websocket.Conn,
 ) {
+	session := plan.session
+	target := plan.target
 	defer providerConn.Close()
 	defer clientConn.Close()
 
@@ -882,6 +1039,43 @@ func (h *Handler) relayVoiceSessionConn(
 		toolMu.Lock()
 		defer toolMu.Unlock()
 		toolFrames = append(toolFrames, f)
+	}
+	// RUYI-874 link ③: call IDs the provider-side bridge has already executed.
+	// The bridge is the authoritative executor (same user identity), so a
+	// client-echoed toolResponse for a call the bridge handled must NOT be
+	// re-merged into the toolFrames facts nor forwarded upstream — that is
+	// the "duplicate tool result" red line. Both pumps share this set under
+	// toolMu (the provider pump marks, the client pump checks).
+	bridgeHandledCalls := map[string]bool{}
+	markBridgeCall := func(callID string) {
+		if callID == "" {
+			return
+		}
+		toolMu.Lock()
+		bridgeHandledCalls[callID] = true
+		toolMu.Unlock()
+	}
+	bridgeHandled := func(callID string) bool {
+		toolMu.Lock()
+		defer toolMu.Unlock()
+		return bridgeHandledCalls[callID]
+	}
+	// filterKeptToolResponses returns the toolResponse envelope with the
+	// bridge-handled responses removed (the ones the provider already
+	// received via the bridge's own echo), or nil when none remain — the
+	// caller then drops the frame instead of relaying a bare envelope.
+	filterKeptToolResponses := func(toolFrame liveClientToolFrame, handled func(string) bool) map[string]any {
+		kept := make([]map[string]any, 0, len(toolFrame.ToolResponse.FunctionResponses))
+		for _, resp := range toolFrame.ToolResponse.FunctionResponses {
+			if handled(resp.ID) {
+				continue
+			}
+			kept = append(kept, map[string]any{"id": resp.ID, "name": resp.Name, "response": resp.Response})
+		}
+		if len(kept) == 0 {
+			return nil
+		}
+		return map[string]any{"toolResponse": map[string]any{"functionResponses": kept}}
 	}
 	// Exactly one terminal write covers every teardown path from here: client
 	// disconnect, provider close, or a relay write failure. The closures read
@@ -940,8 +1134,37 @@ func (h *Handler) relayVoiceSessionConn(
 			var toolFrame liveClientToolFrame
 			if json.Unmarshal(data, &toolFrame) == nil && toolFrame.ToolResponse != nil {
 				for _, resp := range toolFrame.ToolResponse.FunctionResponses {
+					// RUYI-874 link ③: the provider-side bridge already
+					// executed and re-merged these calls upstream — the
+					// client's toolResponse for a bridge-handled call must
+					// not re-enter the facts layer or the provider, so it is
+					// swallowed rather than recorded/relayed.
+					if bridgeHandled(resp.ID) {
+						continue
+					}
 					recordToolFrame(agentcontext.VoiceToolFrame{Name: resp.Name, CallID: resp.ID, Args: resp.Response, IsResult: true})
 				}
+				// Bridge-handled responses are stripped from the envelope so
+				// the provider sees each tool result exactly once. All
+				// responses bridge-handled means the relay frame is empty:
+				// drop it entirely rather than send a bare envelope.
+				kept := filterKeptToolResponses(toolFrame, bridgeHandled)
+				if kept == nil {
+					continue
+				}
+				rewritten, merr := json.Marshal(kept)
+				if merr != nil {
+					if err := writeProvider(msgType, data); err != nil {
+						clientConn.Close()
+						return
+					}
+					continue
+				}
+				if err := writeProvider(msgType, rewritten); err != nil {
+					clientConn.Close()
+					return
+				}
+				continue
 			}
 			if err := writeProvider(msgType, data); err != nil {
 				clientConn.Close()
@@ -960,17 +1183,40 @@ func (h *Handler) relayVoiceSessionConn(
 			return
 		}
 		contextInjected = true
-		section := h.loadVoiceSessionSection(r.Context(), session.WorkspaceID, session.AgentID)
-		if strings.TrimSpace(section) == "" {
-			// §3.6: nothing to hand over is rendered as nothing — never as an
-			// invented continuity line.
-			return
+		// RUYI-874 link ②: a chat-linked session opens with its conversation
+		// context (project, recent messages with semantic mentions, images),
+		// while every entry point receives the same hash-pinned skill catalog.
+		var parts []map[string]any
+		if ctx := h.composeVoiceChatContext(r.Context(), session); ctx != nil {
+			if strings.TrimSpace(ctx.Text) != "" {
+				parts = append(parts, map[string]any{"text": ctx.Text})
+			}
+			for _, img := range ctx.ImageParts {
+				parts = append(parts, img)
+			}
+		}
+		if ctx := h.composeVoiceIssueContext(r.Context(), session, plan.issueID); ctx != nil {
+			if strings.TrimSpace(ctx.Text) != "" {
+				parts = append(parts, map[string]any{"text": ctx.Text})
+			}
+		}
+		if catalog := voiceSkillCatalogContext(plan.skillRefs); catalog != "" {
+			parts = append(parts, map[string]any{"text": catalog})
+		}
+		if len(parts) == 0 {
+			section := h.loadVoiceSessionSection(r.Context(), session.WorkspaceID, session.AgentID)
+			if strings.TrimSpace(section) == "" {
+				// §3.6: nothing to hand over is rendered as nothing — never
+				// as an invented continuity line.
+				return
+			}
+			parts = []map[string]any{{"text": section}}
 		}
 		turn, err := json.Marshal(map[string]any{
 			"clientContent": map[string]any{
 				"turns": []map[string]any{{
 					"role":  "user",
-					"parts": []map[string]any{{"text": section}},
+					"parts": parts,
 				}},
 				"turnComplete": true,
 			},
@@ -1012,8 +1258,61 @@ func (h *Handler) relayVoiceSessionConn(
 				}
 			}
 			if frame.ToolCall != nil {
+				toolCallStartedAt := time.Now()
 				for _, call := range frame.ToolCall.FunctionCalls {
 					recordToolFrame(agentcontext.VoiceToolFrame{Name: call.Name, CallID: call.ID, Args: call.Args})
+				}
+				// RUYI-874 link ③: the gateway executes the call on the
+				// session's own user identity (the bridge's permission
+				// boundary) and sends the real result back to the provider
+				// as a function response — the controlled bridge replaces
+				// the client-side toolResponse pump. One response frame
+				// per call batch keeps the provider's call ids matched
+				// 1:1; a failed execution comes back as a structured
+				// {error:{code,message}} payload the model reads, never
+				// a synthesized result.
+				// Bounded execution: a slow bridge query must not wedge the provider pump
+				// (and with it the relay and teardown). 15s matches the read-only bridge's
+				// worst-case budget.
+				execCtx, execCancel := context.WithTimeout(context.Background(), 15*time.Second)
+				var responses []map[string]any
+				for _, call := range frame.ToolCall.FunctionCalls {
+					markBridgeCall(call.ID)
+					var result json.RawMessage
+					if call.Name == "load_skill" {
+						result, _ = h.executeVoiceSkill(execCtx, session, plan.skillRefs, call.Args)
+					} else if plan.mcp == nil {
+						result = voiceToolError("unavailable", "Multica MCP is unavailable for this voice session")
+					} else if result, err = plan.mcp.call(execCtx, call.Name, call.Args); err != nil || result == nil {
+						result = voiceToolError("unavailable", "Multica MCP tool call failed")
+					}
+					responses = append(responses, map[string]any{
+						"id":       call.ID,
+						"name":     call.Name,
+						"response": json.RawMessage(result),
+					})
+					recordToolFrame(agentcontext.VoiceToolFrame{Name: call.Name, CallID: call.ID, Args: result, IsResult: true})
+				}
+				// Upstream tool results ride the SAME toolResponse frame the
+				// client pump already forwards (liveClientToolFrame shape) —
+				// the provider's BidiGenerateContent contract expects a
+				// toolResponse after a toolCall, so the bridge's echo uses
+				// the identical envelope rather than inventing a new one.
+				execCancel()
+				respFrame, err := json.Marshal(map[string]any{
+					"toolResponse": map[string]any{"functionResponses": responses},
+				})
+				if err == nil {
+					if werr := writeProvider(websocket.TextMessage, respFrame); werr != nil {
+						slog.Warn("voice MCP bridge: function response write failed",
+							"session_id", uuidToString(session.ID), "error", werr)
+						clientConn.Close()
+						return
+					}
+					slog.Info("voice function responses sent",
+						"session_id", uuidToString(session.ID),
+						"function_count", len(responses),
+						"latency_ms", time.Since(toolCallStartedAt).Milliseconds())
 				}
 			}
 			if content := frame.ServerContent; content != nil {
@@ -1063,6 +1362,12 @@ func (h *Handler) endLiveSession(ctx context.Context, session db.LiveSession, tr
 		return
 	}
 	h.writeBackVoiceSession(ctx, ended, transcript, toolFrames, true)
+	// RUYI-874 link ①: the chat write-back runs AFTER the facts write-back
+	// (both are idempotent; the terminal row already holds the transcript,
+	// so a chat-write-back failure still loses nothing — replay re-inserts
+	// the deduped rows). A session without a validated chat link is a
+	// no-op here.
+	h.writeBackVoiceChatSession(ctx, ended, transcript)
 }
 
 // writeBackVoiceSession extracts the facts layer and the summary projection
@@ -1143,6 +1448,11 @@ func (h *Handler) replayVoiceSessionWriteBack(ctx context.Context, session db.Li
 		return fmt.Errorf("decode transcript: %w", err)
 	}
 	h.writeBackVoiceSession(ctx, session, transcript, nil, false)
+	// RUYI-874 link ①: the recovery path re-runs the chat write-back too —
+	// it is fully idempotent (UUIDv5 keys + ON CONFLICT), so a replay after
+	// a partial terminal write lands zero duplicate rows and re-broadcasts
+	// nothing for the already-inserted turns.
+	h.writeBackVoiceChatSession(ctx, session, transcript)
 	return nil
 }
 
