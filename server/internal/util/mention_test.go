@@ -148,16 +148,39 @@ func TestStripAgentMentionLinks(t *testing.T) {
 			content: "failed [@Agent](mention://agent/11111111-1111-1111-1111-111111111111",
 			want:    "failed @Agent11111111-1111-1111-1111-111111111111",
 		},
+		{
+			name:    "removes nested agent links without reconstructing outer link",
+			content: "[[@A](mention://agent/11111111-1111-1111-1111-111111111111)](mention://agent/22222222-2222-2222-2222-222222222222)",
+			want:    "[@A](agent/22222222-2222-2222-2222-222222222222)",
+		},
+		{
+			name:    "preserves recovery instructions after truncated target",
+			content: "failed [@Agent](mention://agent/11111111-1111-1111-1111-111111111111\n\nrecovery: (git checkout recovery)",
+			want:    "failed @Agent11111111-1111-1111-1111-111111111111\n\nrecovery: (git checkout recovery)",
+		},
+		{
+			name:    "neutralizes nonstandard and mixed case targets",
+			content: "[@A](<mention://agent/11111111-1111-1111-1111-111111111111>) [@B]( mention://agent/22222222-2222-2222-2222-222222222222) [@C](MENTION://AGENT/33333333-3333-3333-3333-333333333333)",
+			want:    "[@A](<agent/11111111-1111-1111-1111-111111111111>) [@B]( agent/22222222-2222-2222-2222-222222222222) @C",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := StripAgentMentionLinks(tt.content)
 			if got != tt.want {
 				t.Fatalf("StripAgentMentionLinks() = %q, want %q", got, tt.want)
 			}
-			if strings.Contains(got, "mention://agent/") {
+			if strings.Contains(strings.ToLower(got), "mention://agent/") {
 				t.Fatalf("StripAgentMentionLinks() = %q, must not retain agent protocol", got)
 			}
 		})
+	}
+}
+
+func TestStripAgentMentionLinksHandlesLongEscapedLabel(t *testing.T) {
+	content := "[" + strings.Repeat("\\", 200000) + "A](mention://agent/11111111-1111-1111-1111-111111111111)"
+	got := StripAgentMentionLinks(content)
+	if strings.Contains(strings.ToLower(got), "mention://agent/") {
+		t.Fatal("long escaped label retained the agent protocol")
 	}
 }
 
