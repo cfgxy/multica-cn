@@ -264,7 +264,7 @@ describe("fetchRaw timeout semantics (RUYI-567)", () => {
   afterEach(() => {
     resolveFetch = null;
     appStateListeners.clear();
-    api.setOptions({ subscribeAppState: undefined });
+    api.setOptions({ subscribeAppState: undefined, onUnauthorized: undefined });
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.useRealTimers();
@@ -333,6 +333,79 @@ describe("fetchRaw timeout semantics (RUYI-567)", () => {
     });
     void observed;
     expect(appStateListeners.size).toBe(0);
+  });
+
+  it("settles deleteRuntime at 30s when React Native fetch ignores abort, then ignores a late 401", async () => {
+    const lateResponse = {
+      resolve: null as ((response: Response) => void) | null,
+    };
+    const onUnauthorized = vi.fn();
+    const stubbornFetch = vi.fn(
+      (_url: string, init: RequestInit): Promise<Response> =>
+        new Promise((resolve) => {
+          lateResponse.resolve = resolve;
+          init.signal?.addEventListener("abort", () => undefined);
+        }),
+    );
+    api.setOptions({ onUnauthorized });
+    vi.stubGlobal("fetch", stubbornFetch);
+
+    const pending = api.deleteRuntime("runtime-1");
+    const observed = pending.catch(() => undefined);
+    expect(appStateListeners.size).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await expect(pending).rejects.toMatchObject({
+      name: "ApiError",
+      status: 0,
+    });
+    void observed;
+    const requestInit = stubbornFetch.mock.calls[0][1] as RequestInit;
+    expect(requestInit.signal?.aborted).toBe(true);
+    expect(appStateListeners.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+
+    if (!lateResponse.resolve) throw new Error("fetch resolver was not captured");
+    lateResponse.resolve(new Response(null, { status: 401 }));
+    await Promise.resolve();
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("rejects an already-aborted deleteRuntime signal without starting fetch", async () => {
+    const caller = new AbortController();
+    const fetchMock = vi.fn();
+    caller.abort();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      api.deleteRuntime("runtime-1", { signal: caller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(appStateListeners.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps caller cancellation classified as AbortError when it wins the race", async () => {
+    const caller = new AbortController();
+    const stubbornFetch = vi.fn(
+      (_url: string, init: RequestInit): Promise<Response> =>
+        new Promise(() => {
+          init.signal?.addEventListener("abort", () => undefined);
+        }),
+    );
+    vi.stubGlobal("fetch", stubbornFetch);
+
+    const pending = api.deleteRuntime("runtime-1", { signal: caller.signal });
+    const observed = pending.catch(() => undefined);
+    caller.abort();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    void observed;
+    expect(appStateListeners.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("surfaces ApiError with status 0 for a foreground-resume timeout abort", async () => {
@@ -482,10 +555,8 @@ describe("ApiClient.uploadFile", () => {
   const makeHangingFetch = () =>
     vi.fn(
       (_path: string, init: RequestInit): Promise<Response> =>
-        new Promise((_, reject) => {
-          init.signal?.addEventListener("abort", () =>
-            reject(Object.assign(new Error("Aborted"), { name: "AbortError" })),
-          );
+        new Promise(() => {
+          init.signal?.addEventListener("abort", () => undefined);
         }),
     );
 

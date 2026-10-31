@@ -29,6 +29,9 @@ export function useDeleteRuntime() {
   };
 
   return useMutation({
+    // Runtime removal must surface the API timeout while offline instead of
+    // remaining paused in TanStack Query's default online-only mode.
+    networkMode: "always",
     mutationFn: (runtimeId: string) => api.deleteRuntime(runtimeId),
     onSettled: invalidate,
   });
@@ -39,6 +42,8 @@ export function useUnbindAgentsAndDeleteRuntime() {
   const wsId = useWorkspaceStore((state) => state.currentWorkspaceId);
 
   return useMutation({
+    // Keep the bound-agent confirmation path consistent with strict removal.
+    networkMode: "always",
     mutationFn: ({
       runtimeId,
       expectedActiveAgentIds,
