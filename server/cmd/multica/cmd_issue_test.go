@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -420,6 +423,128 @@ func TestRunIssueCommentAddRejectsExternalAttachmentWithZeroUploads(t *testing.T
 	}
 	if comments != 0 {
 		t.Errorf("expected no comment to be posted, got %d", comments)
+	}
+}
+
+// TestRunIssueCommentAddReturnsValidationError verifies that admission rejects
+// surface once to callers rather than being retried or converted to success.
+func TestRunIssueCommentAddReturnsValidationError(t *testing.T) {
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	var commentPosts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/comments":
+			commentPosts++
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": "agent comments must mention one valid responsibility agent",
+				"code":  "invalid_agent_comment_mention",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := newIssueCommentAddTestCmd()
+	_ = cmd.Flags().Set("content", "final report")
+	err := runIssueCommentAdd(cmd, []string{issueID})
+	if err == nil {
+		t.Fatal("expected comment admission rejection")
+	}
+	if commentPosts != 1 {
+		t.Fatalf("comment POST attempts = %d, want 1", commentPosts)
+	}
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error = %T %v, want wrapped *cli.HTTPError", err, err)
+	}
+	if httpErr.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("HTTP status = %d, want %d", httpErr.StatusCode, http.StatusUnprocessableEntity)
+	}
+	if got := cli.ExitCodeFor(err); got != cli.ExitValidation {
+		t.Fatalf("exit code = %d, want %d", got, cli.ExitValidation)
+	}
+}
+
+func TestCLICommentAddExitCodes(t *testing.T) {
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/comments":
+			var body struct {
+				Content string `json:"content"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode comment body: %v", err)
+			}
+			if body.Content == "rejected report" {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": "agent comments must mention one valid responsibility agent",
+					"code":  "invalid_agent_comment_mention",
+				})
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "22222222-2222-4222-8222-222222222222"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	binary := os.Getenv("MULTICA_CLI_UNDER_TEST")
+	if binary == "" {
+		binary = filepath.Join(t.TempDir(), "multica")
+		_, testFile, _, ok := runtime.Caller(0)
+		if !ok {
+			t.Fatal("locate test source")
+		}
+		build := exec.Command("go", "build", "-o", binary, ".")
+		build.Dir = filepath.Dir(testFile)
+		if output, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build CLI: %v\n%s", err, output)
+		}
+	}
+
+	for _, tt := range []struct {
+		name    string
+		content string
+		want    int
+	}{
+		{name: "success", content: "accepted report", want: 0},
+		{name: "admission rejection", content: "rejected report", want: cli.ExitValidation},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(binary, "issue", "comment", "add", issueID, "--content", tt.content)
+			cmd.Env = append(os.Environ(),
+				"HOME="+t.TempDir(),
+				"MULTICA_SERVER_URL="+srv.URL,
+				"MULTICA_WORKSPACE_ID=ws-1",
+				"MULTICA_TOKEN=mat_test-token",
+			)
+			output, err := cmd.CombinedOutput()
+			got := 0
+			if err != nil {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) {
+					t.Fatalf("run CLI: %v\n%s", err, output)
+				}
+				got = exitErr.ExitCode()
+			}
+			if got != tt.want {
+				t.Fatalf("CLI exit code = %d, want %d\n%s", got, tt.want, output)
+			}
+		})
 	}
 }
 
