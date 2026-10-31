@@ -152,6 +152,43 @@ func TestCatalogDifficultySpread(t *testing.T) {
 	}
 }
 
+func TestHistoricalRegressionCasesGradeObservableSignals(t *testing.T) {
+	tests := []struct {
+		slug   string
+		answer string
+	}{
+		{
+			slug:   "bm-dis-self-mention-handoff",
+			answer: "只提及自己不构成交接，也不会触发交接。应继续处理，或交给实际责任人。",
+		},
+		{
+			slug:   "bm-tl-verification-code-limit",
+			answer: "以服务端提示为准；达到上限后停止。限制未知时先核实。",
+		},
+		{
+			slug:   "bm-bd-cleanup-after-verification",
+			answer: "先完成验证并留存证据，确认归属后只清理自己创建的资源；共享资源应进一步核实。",
+		},
+	}
+
+	items := map[string]Item{}
+	for _, item := range Catalog {
+		items[item.Slug] = item
+	}
+	for _, tt := range tests {
+		t.Run(tt.slug, func(t *testing.T) {
+			item, ok := items[tt.slug]
+			if !ok {
+				t.Fatalf("catalog does not contain %q", tt.slug)
+			}
+			grade := promptquiz.Grade(marshalChecks(t, item.Checks), tt.answer)
+			if !grade.Graded || grade.Score != 1 {
+				t.Fatalf("observable signals should pass all checks: %+v", grade)
+			}
+		})
+	}
+}
+
 func marshalChecks(t *testing.T, checks []promptquiz.Check) []byte {
 	t.Helper()
 	raw, err := json.Marshal(checks)
