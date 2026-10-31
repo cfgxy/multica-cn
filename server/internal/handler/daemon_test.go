@@ -2420,6 +2420,7 @@ func TestCompleteTask_CommentTriggered_SynthesizesCommentWhenAgentSilent(t *test
 	dbfx.QueryRow(t, `
 		SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1
 	`, testWorkspaceID).Scan(&agentID, &runtimeID)
+	otherAgentID := dbfx.Agent(t, "mul-3310 terminal-output-other-agent", dbfx.Runtime(t, "mul-3310 terminal-output-other-runtime"))
 
 	setWorkspaceIssuePrefixForTest(t, "MUL")
 
@@ -2440,7 +2441,11 @@ func TestCompleteTask_CommentTriggered_SynthesizesCommentWhenAgentSilent(t *test
 	})
 
 	agentFinalOutput := fmt.Sprintf(
-		"sure, see MUL-3310, issue/MUL-3310, feature/MUL-3310, and [MUL-3310](mention://issue/%s)",
+		"sure, see MUL-3310, issue/MUL-3310, feature/MUL-3310, [MUL-3310](mention://issue/%s), [@Self](mention://agent/%s), and [@Other](mention://agent/%s)",
+		issueID, agentID, otherAgentID,
+	)
+	wantContentPrefix := fmt.Sprintf(
+		"sure, see MUL-3310, issue/MUL-3310, feature/MUL-3310, [MUL-3310](mention://issue/%s), @Self, and @Other",
 		issueID,
 	)
 
@@ -2483,8 +2488,8 @@ func TestCompleteTask_CommentTriggered_SynthesizesCommentWhenAgentSilent(t *test
 	if seen != 1 {
 		t.Fatalf("expected exactly 1 synthesized agent comment, got %d", seen)
 	}
-	if !strings.HasPrefix(content, agentFinalOutput) || !strings.Contains(content, "mention://agent/"+agentID) {
-		t.Fatalf("synthesized comment content = %q, want original output and responsibility mention", content)
+	if !strings.HasPrefix(content, wantContentPrefix) || strings.Contains(content, "mention://agent/") {
+		t.Fatalf("synthesized comment content = %q, want terminal output without self or cross-agent mention links", content)
 	}
 	if parentID == nil || *parentID != triggerCommentID {
 		got := "<nil>"
@@ -4267,6 +4272,17 @@ func TestAckTaskCancelled(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, unconfirmedTaskID).Scan(&status)
 	if status != "cancel_requested" {
 		t.Fatalf("unconfirmed cancellation status = %q, want cancel_requested", status)
+	}
+
+	// A partial decode must not accept the confirmation before the malformed
+	// field is rejected.
+	req = newDaemonTokenRequest("POST", "/api/daemon/tasks/"+unconfirmedTaskID+"/cancel-ack",
+		json.RawMessage(`{"confirmed":true,"branch_name":7}`), testWorkspaceID, "legit-daemon")
+	req = withURLParam(req, "taskId", unconfirmedTaskID)
+	testutil.Call(t, testHandler.AckTaskCancelled, req).Want(http.StatusBadRequest)
+	dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, unconfirmedTaskID).Scan(&status)
+	if status != "cancel_requested" {
+		t.Fatalf("malformed acknowledgement status = %q, want cancel_requested", status)
 	}
 
 	// Same-workspace token settles the deferred finalize.

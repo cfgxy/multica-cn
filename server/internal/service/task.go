@@ -185,29 +185,6 @@ func truncateFallbackCommentBody(body string, maxRunes int) string {
 	return oversizedFallbackCommentNotice
 }
 
-func taskResponsibilityMention(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, task db.AgentTaskQueue) (string, string, error) {
-	targetID := task.AgentID
-	if task.SquadID.Valid {
-		squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: task.SquadID, WorkspaceID: workspaceID})
-		if err != nil {
-			return "", "", err
-		}
-		targetID = squad.LeaderID
-	}
-	if !targetID.Valid {
-		return "", "", fmt.Errorf("task %s has no responsibility agent", util.UUIDToString(task.ID))
-	}
-	target, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: targetID, WorkspaceID: workspaceID})
-	if err != nil {
-		return "", "", fmt.Errorf("task %s responsibility agent is unavailable in workspace: %w", util.UUIDToString(task.ID), err)
-	}
-	if target.ArchivedAt.Valid {
-		return "", "", fmt.Errorf("task %s responsibility agent %s is archived", util.UUIDToString(task.ID), util.UUIDToString(target.ID))
-	}
-	id := util.UUIDToString(targetID)
-	return "[@负责人](mention://agent/" + id + ")", id, nil
-}
-
 const (
 	taskAnalyticsContextCacheMax = 4096
 	// RuntimeClaimFreshnessSeconds is the maximum DB heartbeat age accepted by
@@ -8034,32 +8011,14 @@ func (s *TaskService) AddDaemonTaskSystemComment(ctx context.Context, taskID pgt
 }
 
 func (s *TaskService) createAgentComment(ctx context.Context, task db.AgentTaskQueue, content, commentType string) {
+	content = util.StripAgentMentionLinks(content)
 	if content == "" {
 		return
 	}
-	// Look up issue to get workspace ID for mention expansion and broadcasting.
+	// Look up the issue for event and thread side effects.
 	issue, err := s.Queries.GetIssue(ctx, task.IssueID)
 	if err != nil {
 		return
-	}
-	mention, responsibilityID, err := taskResponsibilityMention(ctx, s.Queries, issue.WorkspaceID, task)
-	if err != nil {
-		slog.Warn("agent comment responsibility mention could not be resolved",
-			"task_id", util.UUIDToString(task.ID),
-			"issue_id", util.UUIDToString(task.IssueID),
-			"error", err,
-		)
-		return
-	}
-	hasResponsibilityMention := false
-	for _, parsed := range util.ParseMentions(content) {
-		if parsed.Type == "agent" && parsed.ID == responsibilityID {
-			hasResponsibilityMention = true
-			break
-		}
-	}
-	if !hasResponsibilityMention {
-		content += "\n\n" + mention
 	}
 	// Resolve the thread root for thread-level side effects without overwriting
 	// parentID. The stored parent_id must remain the exact comment being replied
