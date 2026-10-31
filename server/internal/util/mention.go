@@ -48,10 +48,10 @@ func StripAgentMentionLinks(content string) string {
 	var stripped strings.Builder
 	remaining := content
 	for {
-		linkEnd := strings.Index(remaining, agentMentionPrefix)
+		linkEnd := indexFold(remaining, agentMentionPrefix)
 		if linkEnd < 0 {
 			stripped.WriteString(remaining)
-			return stripped.String()
+			return stripAgentMentionProtocol(stripped.String())
 		}
 		labelStart, ok := markdownLinkLabelStart(remaining, linkEnd)
 		if !ok {
@@ -65,16 +65,53 @@ func StripAgentMentionLinks(content string) string {
 
 		stripped.WriteString(remaining[:labelStart])
 		stripped.WriteString(remaining[labelStart+1 : linkEnd])
-		targetEnd := strings.IndexByte(remaining[linkEnd+len(agentMentionPrefix):], ')')
-		if targetEnd < 0 {
+		target := remaining[linkEnd+len(agentMentionPrefix):]
+		targetEnd := strings.IndexByte(target, ')')
+		lineEnd := strings.IndexAny(target, "\r\n")
+		if targetEnd < 0 || (lineEnd >= 0 && targetEnd > lineEnd) {
 			// The truncated target cannot activate as a Markdown link, but leaving
 			// its protocol in a synthetic comment would still misrepresent a
-			// dispatch. Preserve the trailing text without the agent link prefix.
-			stripped.WriteString(remaining[linkEnd+len(agentMentionPrefix):])
-			return stripped.String()
+			// dispatch. Do not consume text on a later line: it can contain the
+			// failure's recovery instructions.
+			if lineEnd < 0 {
+				stripped.WriteString(target)
+				return stripAgentMentionProtocol(stripped.String())
+			}
+			stripped.WriteString(target[:lineEnd])
+			remaining = target[lineEnd:]
+			continue
 		}
 		remaining = remaining[linkEnd+len(agentMentionPrefix)+targetEnd+1:]
 	}
+}
+
+// stripAgentMentionProtocol is the final defense for non-standard Markdown
+// targets, malformed links, and nested links. System comments cannot dispatch,
+// so retaining the agent URI in any spelling would be misleading.
+func stripAgentMentionProtocol(content string) string {
+	const agentProtocol = "mention://agent/"
+
+	var stripped strings.Builder
+	for offset := 0; ; {
+		index := indexFold(content[offset:], agentProtocol)
+		if index < 0 {
+			stripped.WriteString(content[offset:])
+			return stripped.String()
+		}
+		index += offset
+		stripped.WriteString(content[offset:index])
+		stripped.WriteString("agent/")
+		offset = index + len(agentProtocol)
+	}
+}
+
+func indexFold(content, needle string) int {
+	for i := 0; i+len(needle) <= len(content); i++ {
+		if strings.EqualFold(content[i:i+len(needle)], needle) {
+			return i
+		}
+	}
+	return -1
 }
 
 // markdownLinkLabelStart returns the opening bracket for a link whose closing
@@ -83,13 +120,16 @@ func StripAgentMentionLinks(content string) string {
 func markdownLinkLabelStart(content string, linkEnd int) (int, bool) {
 	depth := 1
 	for i := linkEnd - 1; i >= 0; i-- {
-		if markdownBracketEscaped(content, i) {
-			continue
-		}
 		switch content[i] {
 		case ']':
+			if markdownBracketEscaped(content, i) {
+				continue
+			}
 			depth++
 		case '[':
+			if markdownBracketEscaped(content, i) {
+				continue
+			}
 			depth--
 			if depth == 0 {
 				return i, true
