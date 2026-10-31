@@ -5533,7 +5533,12 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req TaskCancelAckRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid cancellation acknowledgement")
+		return
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "invalid cancellation acknowledgement")
 		return
 	}

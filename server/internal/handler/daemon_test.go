@@ -4218,12 +4218,13 @@ func TestAckTaskCancelled(t *testing.T) {
 	chatSessionID := dbfx.ChatSession(t, agentID, testutil.Cols{
 		"title": "cancel ack test",
 	})
+	issueID := dbfx.Issue(t, "cancel ack task workspace anchor")
 
 	// Cancelled chat task with a pending deferred-finalize marker, plus a
 	// transcript row that landed after the cancel (the daemon's late flush).
 	taskID := dbfx.Task(t, agentID, testutil.Cols{
 		"runtime_id":                runtimeID,
-		"issue_id":                  nil,
+		"issue_id":                  issueID,
 		"chat_session_id":           chatSessionID,
 		"status":                    "cancelled",
 		"started_at":                testutil.Raw("now()"),
@@ -4257,7 +4258,7 @@ func TestAckTaskCancelled(t *testing.T) {
 	// any cancellation side effects or advance cancel_requested to cancelled.
 	unconfirmedTaskID := dbfx.Task(t, agentID, testutil.Cols{
 		"runtime_id": runtimeID,
-		"issue_id":   nil,
+		"issue_id":   issueID,
 		"status":     "cancel_requested",
 		"started_at": testutil.Raw("now()"),
 	})
@@ -4283,6 +4284,22 @@ func TestAckTaskCancelled(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, unconfirmedTaskID).Scan(&status)
 	if status != "cancel_requested" {
 		t.Fatalf("malformed acknowledgement status = %q, want cancel_requested", status)
+	}
+
+	for _, body := range []string{
+		`{"confirmed":true}{"confirmed":true}`,
+		`{"confirmed":true} null`,
+		`{"confirmed":true} trailing`,
+	} {
+		req = httptest.NewRequest("POST", "/api/daemon/tasks/"+unconfirmedTaskID+"/cancel-ack", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req = req.WithContext(middleware.WithDaemonContext(req.Context(), testWorkspaceID, "legit-daemon"))
+		req = withURLParam(req, "taskId", unconfirmedTaskID)
+		testutil.Call(t, testHandler.AckTaskCancelled, req).Want(http.StatusBadRequest)
+		dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, unconfirmedTaskID).Scan(&status)
+		if status != "cancel_requested" {
+			t.Fatalf("trailing acknowledgement status = %q, want cancel_requested", status)
+		}
 	}
 
 	// Same-workspace token settles the deferred finalize.

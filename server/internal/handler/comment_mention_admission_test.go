@@ -219,11 +219,12 @@ func TestAgentCommentSelfMentionGateRejectsBeforeWrites(t *testing.T) {
 	issueID := dbfx.Issue(t, "agent self mention gate")
 	commentID := dbfx.Comment(t, issueID, "original body")
 	taskID := dbfx.Task(t, authorID, testutil.Cols{
-		"runtime_id":         runtimeID,
-		"issue_id":           issueID,
-		"originator_user_id": testUserID,
-		"status":             "running",
-		"started_at":         testutil.Raw("now()"),
+		"runtime_id":          runtimeID,
+		"issue_id":            issueID,
+		"originator_user_id":  testUserID,
+		"accountable_user_id": testUserID,
+		"status":              "running",
+		"started_at":          testutil.Raw("now()"),
 	})
 
 	selfContent := fmt.Sprintf("[@负责人](mention://agent/%s) [@另一个别名](mention://agent/%s)", strings.ToUpper(authorID), authorID)
@@ -288,8 +289,8 @@ func TestAssignedAgentCanReportWithoutResponsibilityMention(t *testing.T) {
 	}
 	runtimeID := dbfx.Runtime(t, "assigned-agent-reply-runtime")
 	agentID := dbfx.Agent(t, "assigned-agent-reply-author", runtimeID)
-	firstTargetID := dbfx.Agent(t, "assigned-agent-reply-first-target", dbfx.Runtime(t, "assigned-agent-reply-first-target-runtime"))
-	secondTargetID := dbfx.Agent(t, "assigned-agent-reply-second-target", dbfx.Runtime(t, "assigned-agent-reply-second-target-runtime"))
+	firstTargetID := createHandlerTestAgent(t, "assigned-agent-reply-first-target", nil)
+	secondTargetID := createHandlerTestAgent(t, "assigned-agent-reply-second-target", nil)
 	issueID := dbfx.Issue(t, "assigned agent can close member thread", testutil.Cols{
 		"assignee_type": "agent",
 		"assignee_id":   agentID,
@@ -314,6 +315,11 @@ func TestAssignedAgentCanReportWithoutResponsibilityMention(t *testing.T) {
 	if len(created.TriggerOutcomes) != 0 {
 		t.Fatalf("terminal reply triggered agents: %+v", created.TriggerOutcomes)
 	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, taskID)
+	taskID = dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID,
+		"status": "running", "started_at": testutil.Raw("now()"),
+	})
 
 	topLevelRequest := func(method, commentID, content string, attachments bool) *http.Request {
 		body := map[string]any{"content": content}
@@ -488,10 +494,16 @@ func TestAssignedSquadLeaderCanReportWithoutResponsibilityMention(t *testing.T) 
 		t.Skip("database not available")
 	}
 	runtimeID := dbfx.Runtime(t, "assigned-squad-leader-reply-runtime")
-	leaderID := dbfx.Agent(t, "assigned-squad-leader-reply-leader", runtimeID)
+	leaderID := dbfx.Agent(t, "assigned-squad-leader-reply-leader", runtimeID, testutil.Cols{
+		"visibility": "workspace", "permission_mode": "public_to",
+	})
+	dbfx.Exec(t, `
+		INSERT INTO agent_invocation_target (agent_id, target_type, target_id)
+		VALUES ($1, 'workspace', $2)
+	`, leaderID, testWorkspaceID)
 	workerID := dbfx.Agent(t, "assigned-squad-leader-reply-worker", runtimeID)
-	firstTargetID := dbfx.Agent(t, "assigned-squad-leader-reply-first-target", dbfx.Runtime(t, "assigned-squad-leader-reply-first-target-runtime"))
-	secondTargetID := dbfx.Agent(t, "assigned-squad-leader-reply-second-target", dbfx.Runtime(t, "assigned-squad-leader-reply-second-target-runtime"))
+	firstTargetID := createHandlerTestAgent(t, "assigned-squad-leader-reply-first-target", nil)
+	secondTargetID := createHandlerTestAgent(t, "assigned-squad-leader-reply-second-target", nil)
 	squadID := dbfx.Squad(t, "assigned squad leader terminal reply", leaderID)
 	dbfx.Exec(t, `
 		INSERT INTO squad_member (squad_id, member_type, member_id, role)
@@ -533,6 +545,11 @@ func TestAssignedSquadLeaderCanReportWithoutResponsibilityMention(t *testing.T) 
 	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, issueID, leaderID); got != 0 {
 		t.Fatalf("terminal leader reply queued %d leader tasks", got)
 	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, leaderTaskID)
+	leaderTaskID = dbfx.Task(t, leaderID, testutil.Cols{
+		"runtime_id": runtimeID, "issue_id": issueID,
+		"status": "running", "started_at": testutil.Raw("now()"), "is_leader_task": true, "squad_id": squadID,
+	})
 
 	topLevelRequest := func(method, commentID, content string, attachments bool) *http.Request {
 		body := map[string]any{"content": content}
