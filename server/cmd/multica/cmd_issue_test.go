@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -420,6 +421,52 @@ func TestRunIssueCommentAddRejectsExternalAttachmentWithZeroUploads(t *testing.T
 	}
 	if comments != 0 {
 		t.Errorf("expected no comment to be posted, got %d", comments)
+	}
+}
+
+// TestRunIssueCommentAddReturnsValidationError verifies that admission rejects
+// surface once to callers rather than being retried or converted to success.
+func TestRunIssueCommentAddReturnsValidationError(t *testing.T) {
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	var commentPosts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/comments":
+			commentPosts++
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": "agent comments must mention one valid responsibility agent",
+				"code":  "invalid_agent_comment_mention",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	cmd := newIssueCommentAddTestCmd()
+	_ = cmd.Flags().Set("content", "final report")
+	err := runIssueCommentAdd(cmd, []string{issueID})
+	if err == nil {
+		t.Fatal("expected comment admission rejection")
+	}
+	if commentPosts != 1 {
+		t.Fatalf("comment POST attempts = %d, want 1", commentPosts)
+	}
+	var httpErr *cli.HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error = %T %v, want wrapped *cli.HTTPError", err, err)
+	}
+	if httpErr.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("HTTP status = %d, want %d", httpErr.StatusCode, http.StatusUnprocessableEntity)
+	}
+	if got := cli.ExitCodeFor(err); got != cli.ExitValidation {
+		t.Fatalf("exit code = %d, want %d", got, cli.ExitValidation)
 	}
 }
 

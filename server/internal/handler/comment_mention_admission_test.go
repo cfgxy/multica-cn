@@ -282,7 +282,7 @@ func TestAgentCommentSelfMentionGateRejectsBeforeWrites(t *testing.T) {
 	}
 }
 
-func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T) {
+func TestAssignedAgentCanReportWithoutResponsibilityMention(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -314,6 +314,61 @@ func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T)
 	if len(created.TriggerOutcomes) != 0 {
 		t.Fatalf("terminal reply triggered agents: %+v", created.TriggerOutcomes)
 	}
+
+	topLevelRequest := func(method, commentID, content string, attachments bool) *http.Request {
+		body := map[string]any{"content": content}
+		if attachments {
+			body["attachment_ids"] = []string{}
+		}
+		req := commentRequest(method, issueID, commentID, body)
+		req.Header.Set("X-Agent-ID", agentID)
+		req.Header.Set("X-Task-ID", taskID)
+		return req
+	}
+	var topLevel CommentResponse
+	testutil.Call(t, testHandler.CreateComment,
+		topLevelRequest(http.MethodPost, "", "The requested work is complete at the issue root.", false),
+	).Want(http.StatusCreated).JSON(&topLevel)
+	if len(topLevel.TriggerOutcomes) != 0 {
+		t.Fatalf("top-level terminal report triggered agents: %+v", topLevel.TriggerOutcomes)
+	}
+	var topLevelUpdated CommentResponse
+	testutil.Call(t, testHandler.UpdateComment,
+		topLevelRequest(http.MethodPut, topLevel.ID, "The issue-root report was verified.", false),
+	).Want(http.StatusOK).JSON(&topLevelUpdated)
+	if len(topLevelUpdated.TriggerOutcomes) != 0 {
+		t.Fatalf("top-level content edit triggered agents: %+v", topLevelUpdated.TriggerOutcomes)
+	}
+	var topLevelAttachmentUpdated CommentResponse
+	testutil.Call(t, testHandler.UpdateComment,
+		topLevelRequest(http.MethodPut, topLevel.ID, topLevelUpdated.Content, true),
+	).Want(http.StatusOK).JSON(&topLevelAttachmentUpdated)
+	if len(topLevelAttachmentUpdated.TriggerOutcomes) != 0 {
+		t.Fatalf("top-level attachment edit triggered agents: %+v", topLevelAttachmentUpdated.TriggerOutcomes)
+	}
+	for _, issueStatus := range []string{"in_review", "blocked"} {
+		t.Run("top-level "+issueStatus, func(t *testing.T) {
+			statusIssueID := dbfx.Issue(t, "assigned agent top-level "+issueStatus, testutil.Cols{
+				"assignee_type": "agent",
+				"assignee_id":   agentID,
+				"status":        issueStatus,
+			})
+			statusTaskID := dbfx.Task(t, agentID, testutil.Cols{
+				"runtime_id": runtimeID, "issue_id": statusIssueID,
+				"status": "running", "started_at": testutil.Raw("now()"),
+			})
+			statusRequest := commentRequest(http.MethodPost, statusIssueID, "", map[string]any{
+				"content": "No further agent action is assigned.",
+			})
+			statusRequest.Header.Set("X-Agent-ID", agentID)
+			statusRequest.Header.Set("X-Task-ID", statusTaskID)
+			var statusCreated CommentResponse
+			testutil.Call(t, testHandler.CreateComment, statusRequest).Want(http.StatusCreated).JSON(&statusCreated)
+			if len(statusCreated.TriggerOutcomes) != 0 {
+				t.Fatalf("%s top-level report triggered agents: %+v", issueStatus, statusCreated.TriggerOutcomes)
+			}
+		})
+	}
 	twoAgentMentions := fmt.Sprintf("[@First](mention://agent/%s) [@Second](mention://agent/%s)", firstTargetID, secondTargetID)
 	assertTwoTargetRejection := func(t *testing.T, name string, handler http.HandlerFunc, req *http.Request) {
 		t.Helper()
@@ -336,8 +391,8 @@ func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T)
 	postWithTwoTargets.Header.Set("X-Agent-ID", agentID)
 	postWithTwoTargets.Header.Set("X-Task-ID", taskID)
 	assertTwoTargetRejection(t, "create", testHandler.CreateComment, postWithTwoTargets)
-	if got := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, issueID); got != 2 {
-		t.Fatalf("rejected create stored comment: count=%d, want 2", got)
+	if got := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, issueID); got != 3 {
+		t.Fatalf("rejected create stored comment: count=%d, want 3", got)
 	}
 
 	contentEdit := commentRequest(http.MethodPut, issueID, created.ID, map[string]any{
@@ -428,7 +483,7 @@ func TestAssignedAgentCanReplyToMemberWithoutResponsibilityMention(t *testing.T)
 	}
 }
 
-func TestAssignedSquadLeaderCanCloseMemberOrWorkerThreadWithoutResponsibilityMention(t *testing.T) {
+func TestAssignedSquadLeaderCanReportWithoutResponsibilityMention(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -477,6 +532,61 @@ func TestAssignedSquadLeaderCanCloseMemberOrWorkerThreadWithoutResponsibilityMen
 	}
 	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, issueID, leaderID); got != 0 {
 		t.Fatalf("terminal leader reply queued %d leader tasks", got)
+	}
+
+	topLevelRequest := func(method, commentID, content string, attachments bool) *http.Request {
+		body := map[string]any{"content": content}
+		if attachments {
+			body["attachment_ids"] = []string{}
+		}
+		req := commentRequest(method, issueID, commentID, body)
+		req.Header.Set("X-Agent-ID", leaderID)
+		req.Header.Set("X-Task-ID", leaderTaskID)
+		return req
+	}
+	var topLevel CommentResponse
+	testutil.Call(t, testHandler.CreateComment,
+		topLevelRequest(http.MethodPost, "", "The issue-root report is complete; no handoff is required.", false),
+	).Want(http.StatusCreated).JSON(&topLevel)
+	if len(topLevel.TriggerOutcomes) != 0 {
+		t.Fatalf("top-level leader report triggered agents: %+v", topLevel.TriggerOutcomes)
+	}
+	var topLevelUpdated CommentResponse
+	testutil.Call(t, testHandler.UpdateComment,
+		topLevelRequest(http.MethodPut, topLevel.ID, "The issue-root report was verified.", false),
+	).Want(http.StatusOK).JSON(&topLevelUpdated)
+	if len(topLevelUpdated.TriggerOutcomes) != 0 {
+		t.Fatalf("top-level leader content edit triggered agents: %+v", topLevelUpdated.TriggerOutcomes)
+	}
+	var topLevelAttachmentUpdated CommentResponse
+	testutil.Call(t, testHandler.UpdateComment,
+		topLevelRequest(http.MethodPut, topLevel.ID, topLevelUpdated.Content, true),
+	).Want(http.StatusOK).JSON(&topLevelAttachmentUpdated)
+	if len(topLevelAttachmentUpdated.TriggerOutcomes) != 0 {
+		t.Fatalf("top-level leader attachment edit triggered agents: %+v", topLevelAttachmentUpdated.TriggerOutcomes)
+	}
+	for _, issueStatus := range []string{"in_review", "blocked"} {
+		t.Run("top-level "+issueStatus, func(t *testing.T) {
+			statusIssueID := dbfx.Issue(t, "assigned squad leader top-level "+issueStatus, testutil.Cols{
+				"assignee_type": "squad",
+				"assignee_id":   squadID,
+				"status":        issueStatus,
+			})
+			statusTaskID := dbfx.Task(t, leaderID, testutil.Cols{
+				"runtime_id": runtimeID, "issue_id": statusIssueID,
+				"status": "running", "started_at": testutil.Raw("now()"), "is_leader_task": true, "squad_id": squadID,
+			})
+			statusRequest := commentRequest(http.MethodPost, statusIssueID, "", map[string]any{
+				"content": "No further agent action is assigned.",
+			})
+			statusRequest.Header.Set("X-Agent-ID", leaderID)
+			statusRequest.Header.Set("X-Task-ID", statusTaskID)
+			var statusCreated CommentResponse
+			testutil.Call(t, testHandler.CreateComment, statusRequest).Want(http.StatusCreated).JSON(&statusCreated)
+			if len(statusCreated.TriggerOutcomes) != 0 {
+				t.Fatalf("%s top-level leader report triggered agents: %+v", issueStatus, statusCreated.TriggerOutcomes)
+			}
+		})
 	}
 
 	updatedContent := "The requested work is complete after verification."

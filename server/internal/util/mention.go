@@ -1,6 +1,9 @@
 package util
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // Mention represents a parsed @mention from markdown content.
 type Mention struct {
@@ -34,6 +37,74 @@ func ParseMentions(content string) []Mention {
 		result = append(result, Mention{Type: m[2], ID: m[3]})
 	}
 	return result
+}
+
+// StripAgentMentionLinks keeps the display label while removing every agent
+// mention link. It is for system-synthesized comments, which cannot dispatch a
+// task and therefore must not claim to delegate work.
+func StripAgentMentionLinks(content string) string {
+	const agentMentionPrefix = "](mention://agent/"
+
+	var stripped strings.Builder
+	remaining := content
+	for {
+		linkEnd := strings.Index(remaining, agentMentionPrefix)
+		if linkEnd < 0 {
+			stripped.WriteString(remaining)
+			return stripped.String()
+		}
+		labelStart, ok := markdownLinkLabelStart(remaining, linkEnd)
+		if !ok {
+			// This is not a well-formed Markdown link. Preserve it and keep
+			// scanning after the agent target prefix for the next candidate.
+			prefixEnd := linkEnd + len(agentMentionPrefix)
+			stripped.WriteString(remaining[:prefixEnd])
+			remaining = remaining[prefixEnd:]
+			continue
+		}
+
+		stripped.WriteString(remaining[:labelStart])
+		stripped.WriteString(remaining[labelStart+1 : linkEnd])
+		targetEnd := strings.IndexByte(remaining[linkEnd+len(agentMentionPrefix):], ')')
+		if targetEnd < 0 {
+			// The truncated target cannot activate as a Markdown link, but leaving
+			// its protocol in a synthetic comment would still misrepresent a
+			// dispatch. Preserve the trailing text without the agent link prefix.
+			stripped.WriteString(remaining[linkEnd+len(agentMentionPrefix):])
+			return stripped.String()
+		}
+		remaining = remaining[linkEnd+len(agentMentionPrefix)+targetEnd+1:]
+	}
+}
+
+// markdownLinkLabelStart returns the opening bracket for a link whose closing
+// bracket starts at linkEnd. Bracket balancing keeps an agent link from
+// consuming a preceding member or issue link, while retaining nested labels.
+func markdownLinkLabelStart(content string, linkEnd int) (int, bool) {
+	depth := 1
+	for i := linkEnd - 1; i >= 0; i-- {
+		if markdownBracketEscaped(content, i) {
+			continue
+		}
+		switch content[i] {
+		case ']':
+			depth++
+		case '[':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func markdownBracketEscaped(content string, index int) bool {
+	backslashes := 0
+	for index--; index >= 0 && content[index] == '\\'; index-- {
+		backslashes++
+	}
+	return backslashes%2 != 0
 }
 
 // IsAgentSelfMention reports whether content explicitly mentions agentID.
