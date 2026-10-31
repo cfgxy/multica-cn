@@ -450,6 +450,44 @@ class ApiClient {
     this.options = { ...this.options, ...options };
   }
 
+  private awaitRequestSettlement<T>(
+    request: Promise<T>,
+    signal: AbortSignal,
+    cleanup: () => void,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+
+      const settle = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        cleanup();
+        callback();
+      };
+
+      const onAbort = () => {
+        const reason = signal.reason;
+        const error =
+          reason instanceof ApiError ||
+          (reason instanceof Error && reason.name === "AbortError")
+            ? reason
+            : Object.assign(new Error("Aborted"), { name: "AbortError" });
+        settle(() => reject(error));
+      };
+
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort);
+
+      // Some React Native fetch implementations never settle after aborting.
+      // Keep observing that promise, but let the first termination settle callers.
+      request.then(
+        (response) => settle(() => resolve(response)),
+        (error: unknown) => settle(() => reject(error)),
+      );
+    });
+  }
+
   private async fetchRaw(
     path: string,
     init: RequestInit & { signal?: AbortSignal; timeoutMs?: number } = {},
@@ -481,41 +519,21 @@ class ApiClient {
       headers["X-Workspace-Slug"] = slug;
     }
 
-    // Timeout + caller-signal forwarding.
-    //
-    // Hermes does NOT support AbortSignal.timeout() or AbortSignal.any() —
-    // see facebook/react-native#42042 and livekit#4014. So we manually
-    // compose a single controller that aborts on:
-    //   (a) caller-side signal (TQ cancelling a stale/inactive query, the
-    //       login screens cancelling an abandoned send-code, etc),
-    //   (b) per-request deadline — FETCH_TIMEOUT_MS by default, tightened
-    //       to LOGIN_TIMEOUT_MS on the login chain (RUYI-568). This defends
-    //       against iOS suspending the network task silently during
-    //       background — fetch() then never resolves;
-    //       facebook/react-native#35384. Without this, a refetch
-    //       triggered by WS reconnect can leave the FlatList pull-to-refresh
-    //       spinner stuck on the screen indefinitely.
     const controller = new AbortController();
     const timeoutMs = init.timeoutMs ?? FETCH_TIMEOUT_MS;
-    // 这条 message 会经 ApiError 一路冒泡到 18 处屏幕的错误行/Alert 正文
-    // （见 components/**/*.tsx 的 err.message 落点），所以必须是译文而
-    // 不是内部日志串。
     const timeoutError = () =>
-      new Error(
+      new ApiError(
         i18n.t(
           "common:mobile.common.request_timeout",
-          "Request timed out after {{seconds}}s",
+          `Request timed out after ${timeoutMs}ms`,
           { seconds: Math.round(timeoutMs / 1000) },
         ),
+        0,
       );
-    const timeoutId = setTimeout(() => {
-      controller.abort(timeoutError());
-    }, timeoutMs);
-    // RUYI-567: the timer above is blind while the app is backgrounded
-    // (paused JS timers), so a request that outlives its deadline in the
-    // background must be re-judged on foreground entry — otherwise the
-    // caller keeps waiting past the hard ceiling with no error. The
-    // listener is scoped to this request and removed on settle.
+    const timeoutId = setTimeout(
+      () => controller.abort(timeoutError()),
+      timeoutMs,
+    );
     const onForeground = (state: string) => {
       if (state === "active" && Date.now() - start >= timeoutMs) {
         controller.abort(timeoutError());
@@ -524,47 +542,50 @@ class ApiClient {
     const unsubscribeAppState =
       this.options.subscribeAppState?.(onForeground);
     const callerSignal = init.signal;
-    const onCallerAbort = () => controller.abort(callerSignal?.reason);
+    const onCallerAbort = () => {
+      const reason = callerSignal?.reason;
+      controller.abort(
+        reason instanceof Error && reason.name === "AbortError"
+          ? reason
+          : Object.assign(new Error("Aborted"), { name: "AbortError" }),
+      );
+    };
     if (callerSignal) {
-      if (callerSignal.aborted) controller.abort(callerSignal.reason);
+      if (callerSignal.aborted) onCallerAbort();
       else callerSignal.addEventListener("abort", onCallerAbort);
     }
+    const cleanup = () => {
+      clearTimeout(timeoutId);
+      unsubscribeAppState?.();
+      callerSignal?.removeEventListener("abort", onCallerAbort);
+    };
 
     console.log(`[api] → ${method} ${path}`, { rid });
 
     let res: Response;
     try {
-      res = await fetch(`${getApiUrl()}${path}`, {
-        ...init,
-        signal: controller.signal,
-        headers,
-      });
+      const request: Promise<Response> = controller.signal.aborted
+        ? Promise.reject(controller.signal.reason)
+        : fetch(`${getApiUrl()}${path}`, {
+          ...init,
+          signal: controller.signal,
+          headers,
+        });
+      res = await this.awaitRequestSettlement(
+        request,
+        controller.signal,
+        cleanup,
+      );
     } catch (err) {
-      clearTimeout(timeoutId);
-      unsubscribeAppState?.();
-      callerSignal?.removeEventListener("abort", onCallerAbort);
-      // Re-throw with a clearer message if this was our own timeout abort.
-      if (
-        err instanceof Error &&
-        err.name === "AbortError" &&
-        !callerSignal?.aborted
-      ) {
+      if (err instanceof ApiError && err.status === 0) {
         const duration = Date.now() - start;
         console.warn(`[api] ← TIMEOUT ${path}`, {
           rid,
           duration: `${duration}ms`,
         });
-        throw new ApiError(
-          `Request timed out after ${timeoutMs}ms`,
-          0,
-          undefined,
-        );
       }
       throw err;
     }
-    clearTimeout(timeoutId);
-    unsubscribeAppState?.();
-    callerSignal?.removeEventListener("abort", onCallerAbort);
     const duration = Date.now() - start;
 
     if (!res.ok) {
@@ -1284,8 +1305,14 @@ class ApiClient {
     });
   }
 
-  async deleteRuntime(runtimeId: string): Promise<void> {
-    await this.fetch<void>(`/api/runtimes/${runtimeId}`, { method: "DELETE" });
+  async deleteRuntime(
+    runtimeId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<void> {
+    await this.fetch<void>(`/api/runtimes/${runtimeId}`, {
+      method: "DELETE",
+      signal: opts?.signal,
+    });
   }
 
   async unbindAgentsAndDeleteRuntime(
@@ -3374,65 +3401,65 @@ class ApiClient {
     if (opts?.issueId) formData.append("issue_id", opts.issueId);
     if (opts?.commentId) formData.append("comment_id", opts.commentId);
 
-    // Timeout + caller-signal forwarding — same manual composition as
-    // fetchRaw above (Hermes lacks AbortSignal.timeout()/any()).
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      // 超时后 RN fetch 以 AbortError reject；当调用方未取消时下面的
-      // catch 会把它改写为可区分的超时 ApiError。abort reason 带译文，
-      // 供按 reason 透传的运行时直接展示。
-      controller.abort(
-        new Error(
-          i18n.t(
-            "common:mobile.common.upload_timeout",
-            "Upload timed out after {{seconds}}s",
-            { seconds: Math.round(UPLOAD_TIMEOUT_MS / 1000) },
-          ),
+    const timeoutError = () =>
+      new ApiError(
+        i18n.t(
+          "common:mobile.common.upload_timeout",
+          `Upload timed out after ${UPLOAD_TIMEOUT_MS}ms`,
+          { seconds: Math.round(UPLOAD_TIMEOUT_MS / 1000) },
         ),
+        0,
       );
-    }, UPLOAD_TIMEOUT_MS);
+    const timeoutId = setTimeout(
+      () => controller.abort(timeoutError()),
+      UPLOAD_TIMEOUT_MS,
+    );
     const callerSignal = opts?.signal;
-    const onCallerAbort = () => controller.abort(callerSignal?.reason);
+    const onCallerAbort = () => {
+      const reason = callerSignal?.reason;
+      controller.abort(
+        reason instanceof Error && reason.name === "AbortError"
+          ? reason
+          : Object.assign(new Error("Aborted"), { name: "AbortError" }),
+      );
+    };
     if (callerSignal) {
-      if (callerSignal.aborted) controller.abort(callerSignal.reason);
+      if (callerSignal.aborted) onCallerAbort();
       else callerSignal.addEventListener("abort", onCallerAbort);
     }
+    const cleanup = () => {
+      clearTimeout(timeoutId);
+      callerSignal?.removeEventListener("abort", onCallerAbort);
+    };
 
     console.log(`[api] → POST ${path}`, { rid, filename: asset.name });
 
     let res: Response;
     try {
-      res = await fetch(`${getApiUrl()}${path}`, {
-        method: "POST",
-        headers,
-        body: formData,
-        signal: controller.signal,
-      });
+      const request: Promise<Response> = controller.signal.aborted
+        ? Promise.reject(controller.signal.reason)
+        : fetch(`${getApiUrl()}${path}`, {
+          method: "POST",
+          headers,
+          body: formData,
+          signal: controller.signal,
+        });
+      res = await this.awaitRequestSettlement(
+        request,
+        controller.signal,
+        cleanup,
+      );
     } catch (err) {
-      clearTimeout(timeoutId);
-      callerSignal?.removeEventListener("abort", onCallerAbort);
-      // 与 fetchRaw 相同的分类：我们自己的超时中止 → 状态 0 的超时
-      // ApiError；调用方主动取消 → 原样透传，不误标为超时。
-      if (
-        err instanceof Error &&
-        err.name === "AbortError" &&
-        !callerSignal?.aborted
-      ) {
+      if (err instanceof ApiError && err.status === 0) {
         const duration = Date.now() - start;
         console.warn(`[api] ← UPLOAD TIMEOUT ${path}`, {
           rid,
           duration: `${duration}ms`,
         });
-        throw new ApiError(
-          `Upload timed out after ${UPLOAD_TIMEOUT_MS}ms`,
-          0,
-          undefined,
-        );
       }
       throw err;
     }
-    clearTimeout(timeoutId);
-    callerSignal?.removeEventListener("abort", onCallerAbort);
     const duration = Date.now() - start;
 
     if (!res.ok) {
