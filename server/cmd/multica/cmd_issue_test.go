@@ -502,15 +502,18 @@ func TestCLICommentAddExitCodes(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	binary := filepath.Join(t.TempDir(), "multica")
-	_, testFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate test source")
-	}
-	build := exec.Command("go", "build", "-o", binary, ".")
-	build.Dir = filepath.Dir(testFile)
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build CLI: %v\n%s", err, output)
+	binary := os.Getenv("MULTICA_CLI_UNDER_TEST")
+	if binary == "" {
+		binary = filepath.Join(t.TempDir(), "multica")
+		_, testFile, _, ok := runtime.Caller(0)
+		if !ok {
+			t.Fatal("locate test source")
+		}
+		build := exec.Command("go", "build", "-o", binary, ".")
+		build.Dir = filepath.Dir(testFile)
+		if output, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build CLI: %v\n%s", err, output)
+		}
 	}
 
 	for _, tt := range []struct {
