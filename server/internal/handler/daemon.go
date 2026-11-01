@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -5531,10 +5532,16 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Decode failure leaves the request unconfirmed and is rejected below. The
-	// endpoint only accepts an acknowledgement that carries stop evidence.
 	var req TaskCancelAckRequest
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid cancellation acknowledgement")
+		return
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid cancellation acknowledgement")
+		return
+	}
 	// An acknowledgement is the transition from cancel_requested to cancelled.
 	// Refuse a daemon that cannot attest to a proven worker exit; otherwise a
 	// cancelled context alone can terminalize a task while its unit still runs.

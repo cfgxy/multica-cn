@@ -122,6 +122,68 @@ func TestIsAgentSelfMention(t *testing.T) {
 	}
 }
 
+func TestStripAgentMentionLinks(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "preserves preceding issue and member links",
+			content: "keep [MUL-1](mention://issue/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) and [@Member](mention://member/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb); handoff [@Self](mention://agent/11111111-1111-1111-1111-111111111111) to [@Leader](mention://agent/22222222-2222-2222-2222-222222222222); nested [@David[TF]](mention://agent/33333333-3333-3333-3333-333333333333); malformed [@Unknown](mention://agent/not-a-uuid)",
+			want:    "keep [MUL-1](mention://issue/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) and [@Member](mention://member/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb); handoff @Self to @Leader; nested @David[TF]; malformed @Unknown",
+		},
+		{
+			name:    "preserves adjacent non-agent link",
+			content: "[@Agent](mention://agent/11111111-1111-1111-1111-111111111111)[MUL-1](mention://issue/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)",
+			want:    "@Agent[MUL-1](mention://issue/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)",
+		},
+		{
+			name:    "preserves escaped brackets in label",
+			content: `[@David\[TF\]](mention://agent/11111111-1111-1111-1111-111111111111)`,
+			want:    `@David\[TF\]`,
+		},
+		{
+			name:    "removes truncated agent protocol",
+			content: "failed [@Agent](mention://agent/11111111-1111-1111-1111-111111111111",
+			want:    "failed @Agent11111111-1111-1111-1111-111111111111",
+		},
+		{
+			name:    "removes nested agent links without reconstructing outer link",
+			content: "[[@A](mention://agent/11111111-1111-1111-1111-111111111111)](mention://agent/22222222-2222-2222-2222-222222222222)",
+			want:    "[@A](agent/22222222-2222-2222-2222-222222222222)",
+		},
+		{
+			name:    "preserves recovery instructions after truncated target",
+			content: "failed [@Agent](mention://agent/11111111-1111-1111-1111-111111111111\n\nrecovery: (git checkout recovery)",
+			want:    "failed @Agent11111111-1111-1111-1111-111111111111\n\nrecovery: (git checkout recovery)",
+		},
+		{
+			name:    "neutralizes nonstandard and mixed case targets",
+			content: "[@A](<mention://agent/11111111-1111-1111-1111-111111111111>) [@B]( mention://agent/22222222-2222-2222-2222-222222222222) [@C](MENTION://AGENT/33333333-3333-3333-3333-333333333333)",
+			want:    "[@A](<agent/11111111-1111-1111-1111-111111111111>) [@B]( agent/22222222-2222-2222-2222-222222222222) @C",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripAgentMentionLinks(tt.content)
+			if got != tt.want {
+				t.Fatalf("StripAgentMentionLinks() = %q, want %q", got, tt.want)
+			}
+			if strings.Contains(strings.ToLower(got), "mention://agent/") {
+				t.Fatalf("StripAgentMentionLinks() = %q, must not retain agent protocol", got)
+			}
+		})
+	}
+}
+
+func TestStripAgentMentionLinksHandlesLongEscapedLabel(t *testing.T) {
+	content := "[" + strings.Repeat("\\", 200000) + "A](mention://agent/11111111-1111-1111-1111-111111111111)"
+	got := StripAgentMentionLinks(content)
+	if strings.Contains(strings.ToLower(got), "mention://agent/") {
+		t.Fatal("long escaped label retained the agent protocol")
+	}
+}
+
 // TestCommentMentionIsNotParsed 锁定 RUYI-108 的机制保证：
 // `mention://comment/<id>` 是纯渲染锚点，必须**永远**不进入 MentionRe 的类型组。
 // 一旦被解析，评论引用就会随通知/触发链路生效，把「引用一条评论」变成
