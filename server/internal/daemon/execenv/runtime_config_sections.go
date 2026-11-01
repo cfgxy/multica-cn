@@ -296,6 +296,8 @@ func writeAvailableCommands(b *strings.Builder, ctx TaskContextForEnv) {
 	writeIssueStatusCommand(b, ctx)
 	b.WriteString("- `multica issue children <id> [--output json]` — list a parent's sub-issues grouped by stage.\n")
 	b.WriteString("- `multica issue comment add <issue-id> [--content \"...\" | --content-file <path> | --content-stdin] [--parent <comment-id>] [--attachment <path>]` — post a comment. Agent-authored bodies MUST use `--content-file`; see `## Comment Formatting` for why. `multica issue comment add --help` for full flags.\n")
+	b.WriteString("- `multica issue decision list <issue-id> [--output json]` — list decision cards on the issue. Check for an existing open card on the same question before creating one.\n")
+	b.WriteString("- `multica issue decision add <issue-id> --question \"...\" --option \"...\" --option \"...\" [--context '<json>'] [--recommended N] [--source-comment <comment-id>]` — create a structured Owner decision card. Repeat `--option` 2–4 times. Use it only when the choice changes Owner-set goal, scope, acceptance, authorization, an irreversible tradeoff, or risk; never replace it with a plain comment.\n")
 	b.WriteString("- `multica issue metadata list <issue-id> [--output json]` — list KV metadata.\n")
 	b.WriteString("- `multica issue metadata set <issue-id> --key <k> --value <v> [--type string|number|bool]` — pin or overwrite a key.\n")
 	b.WriteString("- `multica issue metadata delete <issue-id> --key <k>` — remove a key.\n")
