@@ -13,27 +13,33 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// TestSquadOperatingProtocolRecordsAgainstTheTurnsIssue locks the recording
-// contract the protocol teaches (MUL-6622 / GH #7487): record against the issue
-// this turn runs on — squad assignment of that issue is irrelevant — and, when
-// the call fails, leave a trace WITHOUT breaking one-comment-per-turn. The
-// conditional matters: on the `action` path a delegation comment already exists,
-// so an unconditional "post a comment on failure" would demand a second one.
-func TestSquadOperatingProtocolRecordsAgainstTheTurnsIssue(t *testing.T) {
+// TestSquadOperatingProtocolRecordsFinalOutcome locks the recording contract
+// taught by the protocol: activity records the outcome that actually happened,
+// targets this turn's issue, and never creates a second comment solely because
+// activity recording failed.
+func TestSquadOperatingProtocolRecordsFinalOutcome(t *testing.T) {
 	for _, ownsStatus := range []bool{true, false} {
-		compact := strings.Join(strings.Fields(squadOperatingProtocolFor(ownsStatus)), " ")
+		protocol := squadOperatingProtocolFor(ownsStatus)
+		compact := strings.Join(strings.Fields(protocol), " ")
 		for _, want := range []string{
-			"Record it against the issue THIS turn is running on",
-			"It does not need to be assigned to your squad",
-			"without breaking the one-comment-per-turn rule",
-			"ONLY if you have not already commented this turn",
-			"do not add a second one",
+			"Record the final evaluation",
+			"After the selected path finishes or fails",
+			"Do not record `action` before direct work has completed",
+			"must target the issue THIS turn is running on",
+			"does not need to be assigned to your squad",
+			"ONLY when no delegation or delivery comment was already posted",
+			"do not add a second comment",
 			"never post a second comment just to report the error",
 		} {
 			if !strings.Contains(compact, want) {
 				t.Errorf("owns_status=%v: expected squad operating protocol to contain %q\n--- protocol ---\n%s",
 					ownsStatus, want, compact)
 			}
+		}
+		finish := strings.Index(protocol, "Finish the selected path")
+		record := strings.Index(protocol, "Record the final evaluation")
+		if finish < 0 || record < 0 || finish >= record {
+			t.Errorf("owns_status=%v: final evaluation must follow selected-path completion", ownsStatus)
 		}
 	}
 }
@@ -91,9 +97,10 @@ func TestSquadOperatingProtocolScopesParentStatusOwnership(t *testing.T) {
 	owner := squadOperatingProtocolFor(true)
 	for _, shared := range []string{
 		"## Squad Operating Protocol",
+		"Choose the execution mode",
 		"Delegate by @mention",
-		"Record your evaluation",
-		"Stop after dispatching",
+		"Record the final evaluation",
+		"Finish the selected path",
 		"Never both for the same work.",
 	} {
 		if !strings.Contains(owner, shared) || !strings.Contains(guest, shared) {
@@ -107,6 +114,76 @@ func TestSquadOperatingProtocolScopesParentStatusOwnership(t *testing.T) {
 	// rules in the brief and the per-turn prompt refer to by name.
 	if !strings.Contains(guest, "## Squad Operating Protocol") {
 		t.Error("guest-leader protocol lost its section header")
+	}
+}
+
+// TestSquadOperatingProtocolSupportsDirectAndTakeoverWork prevents the built-in
+// protocol from turning the leader into a mandatory dispatch-only relay. The
+// leader must be able to finish leader-owned work, authorized micro-tasks, and
+// active takeover work while preserving independent QA and safety boundaries.
+func TestSquadOperatingProtocolSupportsDirectAndTakeoverWork(t *testing.T) {
+	protocol := squadOperatingProtocolFor(true)
+	compact := strings.Join(strings.Fields(protocol), " ")
+	for _, want := range []string{
+		"You own the outcome",
+		"Do not delegate merely to satisfy squad form",
+		"authorized micro-task",
+		"active takeover rule",
+		"Direct work does not waive independent QA",
+		"For direct work, complete and verify the authorized scope",
+	} {
+		if !strings.Contains(compact, want) {
+			t.Errorf("expected squad operating protocol to contain %q\n--- protocol ---\n%s", want, protocol)
+		}
+	}
+	for _, forbidden := range []string{
+		"must delegate X to the right squad member",
+		"Stop after dispatching",
+		"Do NOT do the implementation work yourself unless",
+	} {
+		if strings.Contains(compact, forbidden) {
+			t.Errorf("squad operating protocol retained dispatch-only rule %q\n--- protocol ---\n%s", forbidden, protocol)
+		}
+	}
+}
+
+func TestSquadQuickCreateProtocolUsesCreateOnlyContract(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	var leaderID string
+	if err := testPool.QueryRow(ctx,
+		`SELECT id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&leaderID); err != nil {
+		t.Fatalf("get leader agent: %v", err)
+	}
+	squad := seedSquadForBriefing(t, leaderID, "Quick Create Squad", "Prefer the backend specialist.")
+	out := buildSquadLeaderQuickCreateBriefing(ctx, testHandler.Queries, squad)
+	for _, want := range []string{
+		"## Squad Quick-Create Protocol",
+		"run exactly one",
+		"multica issue create",
+		"There is no issue yet",
+		"Do NOT dispatch by @mention",
+		"## Squad Roster",
+		"## Squad Instructions (Quick Create Squad)",
+		"Prefer the backend specialist.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected quick-create briefing to contain %q\n--- briefing ---\n%s", want, out)
+		}
+	}
+	for _, forbidden := range []string{
+		"## Squad Operating Protocol",
+		"ALWAYS call `multica squad activity`",
+		"Delegate by @mention",
+		"Own the parent issue status",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("quick-create briefing retained issue-bound rule %q\n--- briefing ---\n%s", forbidden, out)
+		}
 	}
 }
 

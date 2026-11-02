@@ -32,18 +32,20 @@ When a non-Backlog issue is assigned to a squad, Multica immediately enqueues a 
 
 1. **Leader claims the task.** The agent runtime picks up the task on its next poll, same as any other agent assignment.
 2. **Leader is briefed.** On claim, Multica appends three sections to the leader's system prompt — see [What the leader sees on every turn](#what-the-leader-sees-on-every-turn) below.
-3. **Leader posts one delegation comment.** The comment `@`-mentions the chosen member(s) using the exact mention markdown from the roster — that mention triggers a new `task` for each mentioned agent.
-4. **Leader records its evaluation** via `multica squad activity <issue-id> action --reason "..."`. This writes an entry to the issue's activity timeline so humans can see the leader actually evaluated the trigger.
-5. **The dispatch turn leaves the parent `in_progress`.** Same agent-managed status contract as a direct agent assignment — coordinating the squad is working the parent's ask, so the parent moves from `todo` to `in_progress`, and dispatching members is not delivery, so it stays there while the squad works.
-6. **Leader stops.** The leader does not do the implementation itself. When the delegated member posts back — or when a sub-issue / stage barrier closes — the leader is re-triggered to read the update and either delegate the next step, escalate, move the parent to `in_review` once the overall goal is met, or stay silent. `done` is left to a human reviewer or existing integrations (for example a PR with close intent that merges).
+3. **Leader chooses an execution mode.** It can finish leader-owned analysis, review, terminal closure, an authorized micro-task, or active takeover work directly; delegate specialist work when the handoff adds value; or record `no_action` when no material next step exists.
+4. **Delegation uses one actionable mention.** When delegation is selected, the comment uses the exact mention markdown from the roster and includes the goal, boundary, deliverable, and verifiable completion standard. The mention triggers a new `task` for each mentioned agent.
+5. **Leader finishes the selected path.** Direct work is completed and verified in the current turn. After delegation, the leader does not duplicate the member's work, but may finish independent leader-owned analysis, metadata, or status work. The parent stays `in_progress` while the overall goal is unfinished and moves to `in_review` only when the leader confirms completion. `done` is left to a human reviewer or existing integrations (for example a PR with close intent that merges).
+6. **Leader records the final evaluation** via `multica squad activity <issue-id> <outcome> --reason "..."`. It records `action` only after delegation is delivered or direct work completes, `no_action` when nothing material was needed, and `failed` when the selected action could not be completed.
 
 If the issue is in **Backlog**, the leader is not triggered — Backlog is a parking lot, same rule as for direct agent assignment.
+
+When quick-create is opened with a squad selected, no issue exists yet. The leader receives a create-only squad protocol: it can use the roster and squad instructions as routing context, but it does not post comments, change status, record squad activity, or dispatch by mention. It runs the single `multica issue create` command required by the quick-create prompt.
 
 ### What the leader sees on every turn
 
 On each squad-leader run, three blocks are appended to the leader's instructions:
 
-- **Squad Operating Protocol** — a hard-coded rule set: read the issue, delegate by `@`-mention, be terse (don't restate the issue body — the assignee can read it), record an evaluation every turn, **stop after dispatching** — the dispatch turn ends with the parent `in_progress` — and only move the parent to `in_review` once the overall goal is met. This protocol is system-managed and not editable.
+- **Squad Operating Protocol** — a hard-coded rule set: read the issue, choose direct work, delegation, or no action; use an actionable `@`-mention only for delegation; record an evaluation every turn; finish the selected path without duplicating a member's work; and only move the parent to `in_review` once the overall goal is met. Direct work is limited by the leader's active instructions and never bypasses independent QA, safety, authorization, or irreversible-operation boundaries. This protocol is system-managed and not editable.
 
   The status half of that protocol is **scoped to issues actually assigned to this squad**. A leader woken by an `@squad` mention on someone else's issue gets the same roster and delegation rules, but is told explicitly **not** to touch that issue's status — status stays with the issue's own assignee.
 - **Squad Roster** — the leader's self-row plus one row per non-archived member. Each row carries the exact mention markdown (`[@Name](mention://agent/<uuid>)` or `[@Name](mention://member/<uuid>)`) the leader should paste — typing a plain `@name` won't trigger anyone.

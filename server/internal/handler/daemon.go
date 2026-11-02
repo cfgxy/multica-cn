@@ -3522,10 +3522,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 
 			// Squad-leader briefing injection for quick-create tasks. When
 			// the user picked a squad in the modal, the task runs on the
-			// squad's leader agent (resolved by the handler). Surface the
-			// same Operating Protocol + Roster + user Instructions that
-			// issue-bound squad tasks see, so the leader can decide to
-			// delegate before opening the issue.
+			// squad's leader agent (resolved by the handler). Quick-create
+			// has no issue yet, so it receives a dedicated create-only
+			// protocol plus the roster and user instructions; issue-bound
+			// activity, status, comment, and mention rules do not apply.
 			if resp.Agent != nil && qc.SquadID != "" {
 				wsUUID, wsErr := util.ParseUUID(qc.WorkspaceID)
 				squadUUID, sqErr := util.ParseUUID(qc.SquadID)
@@ -3539,7 +3539,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 						// issue with the squad as assignee, the issue-bound
 						// claim path above grants ownership.
 						squad.Instructions = filterClauses(promptVersionScopeSquad, squad.ID, squad.Instructions)
-						briefing := buildSquadLeaderBriefing(r.Context(), h.Queries, squad, false)
+						briefing := buildSquadLeaderQuickCreateBriefing(r.Context(), h.Queries, squad)
 						if strings.TrimSpace(resp.Agent.Instructions) == "" {
 							resp.Agent.Instructions = briefing
 						} else {
