@@ -545,6 +545,22 @@ func TestPrepareDirectoryMode(t *testing.T) {
 		t.Fatalf("marker task_id = %q, want task id", marker.TaskID)
 	}
 
+	rootMarkerContent, err := os.ReadFile(filepath.Join(env.RootDir, TaskContextMarkerRelPath))
+	if err != nil {
+		t.Fatalf("failed to read checkout root marker: %v", err)
+	}
+	var rootMarker struct {
+		ManagedBy string `json:"managed_by"`
+		TaskID    string `json:"task_id"`
+		IssueID   string `json:"issue_id"`
+	}
+	if err := json.Unmarshal(rootMarkerContent, &rootMarker); err != nil {
+		t.Fatalf("checkout root marker unmarshal: %v\n%s", err, string(rootMarkerContent))
+	}
+	if rootMarker.ManagedBy != TaskContextMarkerManagedBy || rootMarker.TaskID != marker.TaskID || rootMarker.IssueID != marker.IssueID {
+		t.Fatalf("checkout root marker = %+v, want current task identity", rootMarker)
+	}
+
 	// Verify skill files.
 	skillContent, err := os.ReadFile(filepath.Join(env.WorkDir, ".agent_context", "skills", "code-review", "SKILL.md"))
 	if err != nil {

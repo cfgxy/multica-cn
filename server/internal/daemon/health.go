@@ -661,8 +661,8 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		// write failure degrades to the legacy marker shape and preflight
 		// reports it; it never undoes a successful checkout.
 		markerPath := filepath.Join(activeTask.WorkDir, execenv.TaskContextMarkerRelPath)
-		if regErr := execenv.RegisterTaskDeliveryContext(markerPath, result.BranchName, result.BaseCommit); regErr != nil {
-			d.logger.Warn("repo checkout: task marker delivery-context registration failed; preflight will report the missing baseline",
+		if regErr := execenv.RepairTaskDeliveryContext(markerPath, activeTask.TaskID, activeTask.AgentID, activeTask.IssueID, result.BranchName, result.BaseCommit); regErr != nil {
+			d.logger.Warn("repo checkout: task marker delivery-context repair failed; preflight will report the missing baseline",
 				"marker", markerPath, "error", regErr)
 		}
 
