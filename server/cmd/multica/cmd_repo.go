@@ -348,10 +348,15 @@ func runRepoCheckout(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("MULTICA_TOKEN not set (repo checkout requires the active task credential)")
 	}
 
-	// Use current working directory as the checkout target.
-	workDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get working directory: %w", err)
+	// The daemon supplies a task-owned root for checkout. This matters when an
+	// agent's cwd is a Git worktree: that worktree remains ineligible as a target.
+	workDir := strings.TrimSpace(os.Getenv("MULTICA_REPO_CHECKOUT_ROOT"))
+	if workDir == "" {
+		var err error
+		workDir, err = os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get working directory: %w", err)
+		}
 	}
 
 	reqBody := map[string]any{
