@@ -776,6 +776,18 @@ deleted_jev_configs AS (
 deleted_knowledge_operations AS (
     DELETE FROM knowledge_entry_operation WHERE knowledge_entry_operation.workspace_id = $1
 ),
+deleted_knowledge_governance_findings AS (
+    DELETE FROM knowledge_governance_finding WHERE knowledge_governance_finding.workspace_id = $1
+),
+deleted_knowledge_governance_runs AS (
+    DELETE FROM knowledge_governance_run WHERE knowledge_governance_run.workspace_id = $1
+),
+deleted_knowledge_lifecycle_events AS (
+    DELETE FROM knowledge_lifecycle_event WHERE knowledge_lifecycle_event.workspace_id = $1
+),
+deleted_knowledge_entry_versions AS (
+    DELETE FROM knowledge_entry_version WHERE knowledge_entry_version.workspace_id = $1
+),
 deleted_scan_batches AS (
     DELETE FROM knowledge_scan_batch WHERE knowledge_scan_batch.workspace_id = $1
 ),

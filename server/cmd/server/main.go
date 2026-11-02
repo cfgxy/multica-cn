@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
+	"github.com/multica-ai/multica/server/internal/knowledgegovernance"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/profiling"
@@ -800,8 +801,19 @@ func main() {
 	}
 	h.RetrospectiveRunner = retroRunner
 	h.TaskService.RetrospectiveTerminal = retroRunner.ProcessTaskTerminal
+	governanceRunner := &knowledgegovernance.Runner{
+		DB:      pool,
+		Queries: queries,
+		Enqueue: h.KnowledgeGovernanceTaskEnqueuer(),
+		Notify:  h.TaskService.NotifyTaskEnqueued,
+	}
+	h.KnowledgeGovernanceRunner = governanceRunner
+	h.TaskService.KnowledgeGovernanceTerminal = governanceRunner.ProcessTaskTerminal
 	if err := schedulerMgr.Register(scheduler.RetrospectiveJob(retroRunner)); err != nil {
 		slog.Warn("scheduler: failed to register prompt_retrospective job", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.KnowledgeGovernanceJob(governanceRunner)); err != nil {
+		slog.Warn("scheduler: failed to register knowledge_governance job", "error", err)
 	}
 	// MUL-3551: scheduled-Autopilot dispatch runs on the same DB-backed
 	// scheduler. The job owns its plan_times via PlansForScope (each

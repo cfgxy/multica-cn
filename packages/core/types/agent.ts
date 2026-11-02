@@ -1304,6 +1304,7 @@ export interface KnowledgeDir {
   /** Set on registration or by an explicit rescan request; cleared once the
    * hosting daemon lands the scan (RUYI-289). */
   scan_requested?: boolean;
+  managed_active?: boolean;
   entry_count: number;
   last_scan?: KnowledgeScanBatch;
   created_at: string;
@@ -1325,6 +1326,12 @@ export interface KnowledgeEntry {
   content: string;
   content_sha256: string;
   mirror_state: string;
+  lifecycle_state?: string;
+  current_version?: number;
+  missing_confirmation?: number;
+  replacement_entry_id?: string;
+  writeback_state?: string;
+  writeback_error?: string;
   first_seen_at: string;
   last_confirmed_at: string;
   adoption_state: string;
@@ -1344,6 +1351,96 @@ export interface KnowledgeEntryOperation {
   operation_type?: string;
   error?: string;
   requested_at?: string;
+}
+
+export interface KnowledgeEntryVersion {
+  id: string;
+  entry_id: string;
+  version: number;
+  content: string;
+  content_sha256: string;
+  source: string;
+  created_at: string;
+}
+
+export interface KnowledgeLifecycleEvent {
+  id: string;
+  entry_id: string;
+  from_state: string;
+  to_state: string;
+  operation: string;
+  reason: string;
+  evidence_ref: string;
+  replacement_entry_id?: string;
+  writeback_state: string;
+  writeback_error?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+export interface UpdateKnowledgeLifecycleRequest {
+  state: "needs_review" | "superseded" | "deprecated" | "invalid" | "duplicate";
+  reason: string;
+  evidence_ref: string;
+  writeback?: boolean;
+}
+
+export interface RestoreKnowledgeEntryRequest {
+  version_id: string;
+  reason: string;
+  evidence_ref: string;
+  writeback?: boolean;
+}
+
+/** One asynchronous, advisory review of a mirrored knowledge directory. */
+export interface KnowledgeGovernanceRun {
+  id: string;
+  workspace_id: string;
+  dir_id: string;
+  task_id?: string;
+  agent_id: string;
+  status: "running" | "succeeded" | "failed" | "cancelled";
+  title: string;
+  prompt_version: string;
+  trigger: "manual" | "retry" | "schedule";
+  detail: Record<string, unknown>;
+  report: Record<string, unknown>;
+  created_by: string;
+  created_at: string;
+  finished_at?: string;
+}
+
+/** Immutable, evidence-bearing finding produced by a governance run. */
+export interface KnowledgeGovernanceFinding {
+  id: string;
+  run_id: string;
+  entry_id: string;
+  entry_key: string;
+  original_content: string;
+  content_version: number;
+  content_sha256: string;
+  scope: string;
+  verdict: "valid" | "revised" | "deprecated" | "superseded" | "duplicate" | "invalid" | "needs_review";
+  problem_categories: string[];
+  counter_evidence: Array<Record<string, unknown>>;
+  applicable_scope: string;
+  replacement_entry_id?: string;
+  recommendation: string;
+  writeback_authorized: false;
+  lifecycle_event_ref: string;
+  created_at: string;
+}
+
+export interface KnowledgeGovernanceRunDetail {
+  run: KnowledgeGovernanceRun;
+  findings: KnowledgeGovernanceFinding[];
+}
+
+export interface KnowledgeGovernanceRunStart {
+  run_id: string;
+  task_id?: string;
+  title: string;
+  status: "running";
 }
 
 export interface CreateSkillRequest {

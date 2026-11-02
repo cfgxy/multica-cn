@@ -161,6 +161,32 @@ var concurrentMigrationPrefixGroups = map[string]struct {
 			"994_clause_injection_observation_workspace_time_index",
 		},
 	},
+	"995": {
+		issue: "RUYI-916",
+		stems: []string{
+			"995_knowledge_lifecycle",
+			"995_knowledge_lifecycle_entry_version_index",
+			"995_knowledge_lifecycle_event_entry_index",
+		},
+		concurrentIndexes: []string{
+			"995_knowledge_lifecycle_entry_version_index",
+			"995_knowledge_lifecycle_event_entry_index",
+		},
+	},
+	"998": {
+		issue: "RUYI-916",
+		stems: []string{
+			"998_knowledge_governance_run",
+			"998_knowledge_governance_run_active_scope_index",
+			"998_knowledge_governance_run_finding_index",
+			"998_knowledge_governance_run_workspace_created_index",
+		},
+		concurrentIndexes: []string{
+			"998_knowledge_governance_run_active_scope_index",
+			"998_knowledge_governance_run_finding_index",
+			"998_knowledge_governance_run_workspace_created_index",
+		},
+	},
 }
 
 var concurrentIndexUpPattern = regexp.MustCompile(`(?is)^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+CONCURRENTLY\b[^;]*;?\s*$`)

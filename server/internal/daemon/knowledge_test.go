@@ -110,6 +110,10 @@ func runFakeKnowledgeBd(args []string) {
 			payload = "{"
 			break
 		}
+		if _, err := os.Stat(filepath.Join(dir, "INVALID_MEMORIES")); err == nil {
+			payload = "{not-json"
+			break
+		}
 		// Real bd envelopes a numeric schema_version into the same flat
 		// object as the memories; mirror that shape so the tolerant decode
 		// is exercised and the metadata field is never mirrored.
@@ -923,5 +927,113 @@ func TestDaemonKnowledgeCallbackFailureDoesNotBlockOtherWorkspaces(t *testing.T)
 	}
 	if !foundFailing {
 		t.Fatalf("failed workspace was not retried: %+v", posted)
+	}
+}
+
+func TestDaemonKnowledgeWritebackAppliesDirectSourceMutations(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".beads"), 0o755); err != nil {
+		t.Fatalf("seed source .beads: %v", err)
+	}
+	fakeKnowledgeBdReplace(t, source, map[string]string{"retire": "verified value"})
+	d := newKnowledgeTestDaemon(t, newFakeKnowledgeServer(t, KnowledgePlan{}))
+
+	remove := KnowledgePlanWriteback{
+		EventID: "event-remove", EntryID: "entry-1", Operation: "remove", Path: source,
+		Key: "retire", ContentSha256: knowledgeContentSHA("verified value"),
+	}
+	report, err := d.runKnowledgeWriteback(context.Background(), remove)
+	if err != nil || !report.OK {
+		t.Fatalf("remove write-back: report=%+v err=%v", report, err)
+	}
+	if _, found := fakeKnowledgeBdState(t, source)["retire"]; found {
+		t.Fatalf("remove write-back kept retired source entry")
+	}
+
+	restore := KnowledgePlanWriteback{
+		EventID: "event-restore", EntryID: "entry-1", Operation: "restore", Path: source,
+		Key: "retire", Content: "restored value", ContentSha256: knowledgeContentSHA("restored value"), Actor: "multica-owner",
+	}
+	report, err = d.runKnowledgeWriteback(context.Background(), restore)
+	if err != nil || !report.OK {
+		t.Fatalf("restore write-back: report=%+v err=%v", report, err)
+	}
+	if got := fakeKnowledgeBdState(t, source)["retire"]; got != "restored value" {
+		t.Fatalf("restore write-back source value = %q, want restored value", got)
+	}
+}
+
+func TestDaemonKnowledgeWritebackReportsDirectMutationFailure(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".beads"), 0o755); err != nil {
+		t.Fatalf("seed source .beads: %v", err)
+	}
+	fakeKnowledgeBdReplace(t, source, map[string]string{"retire": "verified value"})
+	if err := os.WriteFile(filepath.Join(source, "FAIL_FORGET"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("plant forget failure: %v", err)
+	}
+
+	d := newKnowledgeTestDaemon(t, newFakeKnowledgeServer(t, KnowledgePlan{}))
+	report, err := d.runKnowledgeWriteback(context.Background(), KnowledgePlanWriteback{
+		EventID: "event-remove", EntryID: "entry-1", Operation: "remove", Path: source, Key: "retire",
+	})
+	if err == nil || report.OK || !strings.Contains(err.Error(), "bd forget") {
+		t.Fatalf("remove failure must remain observable: report=%+v err=%v", report, err)
+	}
+	if got := fakeKnowledgeBdState(t, source)["retire"]; got != "verified value" {
+		t.Fatalf("failed delete changed source to %q", got)
+	}
+}
+
+func TestDaemonKnowledgeWritebackRejectsChangedSource(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".beads"), 0o755); err != nil {
+		t.Fatalf("seed source .beads: %v", err)
+	}
+	fakeKnowledgeBdReplace(t, source, map[string]string{"retire": "newer source content"})
+
+	d := newKnowledgeTestDaemon(t, newFakeKnowledgeServer(t, KnowledgePlan{}))
+	report, err := d.runKnowledgeWriteback(context.Background(), KnowledgePlanWriteback{
+		EventID: "event-remove", EntryID: "entry-1", Operation: "remove", Path: source, Key: "retire",
+		ExpectedContentSha256: knowledgeContentSHA("reviewed source content"),
+	})
+	if err == nil || report.OK || !strings.Contains(err.Error(), "source content changed") {
+		t.Fatalf("changed source must reject deletion: report=%+v err=%v", report, err)
+	}
+	if got := fakeKnowledgeBdState(t, source)["retire"]; got != "newer source content" {
+		t.Fatalf("stale delete changed source to %q", got)
+	}
+}
+
+func TestDaemonKnowledgeWritebackRejectsUnreadableSource(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".beads"), 0o755); err != nil {
+		t.Fatalf("seed source .beads: %v", err)
+	}
+	fakeKnowledgeBdReplace(t, source, map[string]string{"retire": "verified value"})
+	if err := os.WriteFile(filepath.Join(source, "INVALID_MEMORIES"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("plant invalid-memory response flag: %v", err)
+	}
+
+	d := newKnowledgeTestDaemon(t, newFakeKnowledgeServer(t, KnowledgePlan{}))
+	report, err := d.runKnowledgeWriteback(context.Background(), KnowledgePlanWriteback{
+		EventID: "event-remove", EntryID: "entry-1", Operation: "remove", Path: source, Key: "retire",
+	})
+	if err == nil || report.OK || !strings.Contains(err.Error(), "decode bd memories") {
+		t.Fatalf("unreadable source must reject deletion: report=%+v err=%v", report, err)
+	}
+	if got := fakeKnowledgeBdState(t, source)["retire"]; got != "verified value" {
+		t.Fatalf("unreadable source changed entry to %q", got)
+	}
+	log, err := os.ReadFile(filepath.Join(source, "invocations.log"))
+	if err != nil {
+		t.Fatalf("read bd invocation log: %v", err)
+	}
+	if strings.Contains(string(log), "forget") {
+		t.Fatalf("unreadable source must not invoke bd forget: %s", log)
 	}
 }

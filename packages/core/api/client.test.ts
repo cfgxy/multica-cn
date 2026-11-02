@@ -8,6 +8,56 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ApiClient knowledge governance compatibility", () => {
+	it("preserves an invalid governance verdict from a newer server", async () => {
+		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+			run: {},
+			findings: [{ verdict: "invalid" }],
+		}), {
+			status: 200,
+			headers: { "Content-Type": "application/json" },
+		})));
+
+		const client = new ApiClient("https://api.example.test");
+		const detail = await client.getKnowledgeGovernanceRun("run-1");
+		expect(detail?.findings[0]?.verdict).toBe("invalid");
+	});
+
+  it("falls back safely when governance responses are malformed", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ runs: "invalid" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ run: "invalid" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ run: "invalid" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: 7, task_id: "task-1" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ run: "invalid" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+
+    await expect(client.listKnowledgeGovernanceRuns()).resolves.toEqual([]);
+    await expect(client.getKnowledgeGovernanceRun("run-1")).resolves.toBeNull();
+    await expect(client.startKnowledgeGovernanceRun("dir-1")).resolves.toBeNull();
+    await expect(client.cancelKnowledgeGovernanceRun("run-1")).resolves.toBeNull();
+    await expect(client.retryKnowledgeGovernanceRun("run-1")).resolves.toBeNull();
+  });
+});
+
 describe("ApiClient cookie-auth transport", () => {
   it("includes browser credentials from login through the first protected request", async () => {
     const fetchMock = vi
@@ -3411,5 +3461,50 @@ describe("ApiClient agent backpressure policy (RUYI-859 stage A)", () => {
     });
     expect(again.agent_id).toBe("agent-1");
     expect(again.events).toEqual([]);
+  });
+});
+
+describe("ApiClient knowledge lifecycle compatibility", () => {
+  it("falls back to empty history when a newer endpoint returns malformed rows", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "version-1" }]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }))
+        .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "event-1" }]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })),
+    );
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.listKnowledgeEntryVersions("entry-1")).resolves.toEqual([]);
+    await expect(client.listKnowledgeEntryLifecycle("entry-1")).resolves.toEqual([]);
+  });
+
+  it("normalizes malformed lifecycle mutation responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ managed_active: "yes" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ status: 7 }), {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ status: 7, version: "two" }), {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        })),
+    );
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.setKnowledgeDirManaged("dir-1", true)).resolves.toEqual({ managed_active: false });
+    await expect(client.updateKnowledgeEntryLifecycle("entry-1", { state: "needs_review", reason: "obsolete", evidence_ref: "issue:00000000-0000-0000-0000-000000000916" })).resolves.toEqual({ status: "" });
+    await expect(client.restoreKnowledgeEntry("entry-1", { version_id: "version-1", reason: "restore", evidence_ref: "issue:00000000-0000-0000-0000-000000000916" })).resolves.toEqual({ status: "", version: 0 });
   });
 });

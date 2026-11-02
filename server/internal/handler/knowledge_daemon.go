@@ -35,6 +35,7 @@ type KnowledgePlanWorkspace struct {
 	Dirs            []KnowledgePlanDir       `json:"dirs"`
 	Adoptions       []KnowledgePlanAdopt     `json:"adoptions"`
 	Operations      []KnowledgePlanOperation `json:"operations"`
+	Writebacks      []KnowledgePlanWriteback `json:"writebacks"`
 }
 
 type KnowledgePlanUltimate struct {
@@ -78,6 +79,18 @@ type KnowledgePlanOperation struct {
 	UltimatePath  string   `json:"ultimate_path"`
 }
 
+type KnowledgePlanWriteback struct {
+	EventID               string `json:"event_id"`
+	EntryID               string `json:"entry_id"`
+	Operation             string `json:"operation"`
+	Path                  string `json:"path"`
+	Key                   string `json:"key"`
+	Content               string `json:"content"`
+	ContentSha256         string `json:"content_sha256"`
+	ExpectedContentSha256 string `json:"expected_content_sha256,omitempty"`
+	Actor                 string `json:"actor"`
+}
+
 // KnowledgeResultsRequest is one daemon's report for a knowledge cycle.
 type KnowledgeResultsRequest struct {
 	Discoveries []KnowledgeDiscoveryReport `json:"discoveries"`
@@ -85,12 +98,20 @@ type KnowledgeResultsRequest struct {
 	Scans       []KnowledgeScanReport      `json:"scans"`
 	Adoptions   []KnowledgeAdoptReport     `json:"adoptions"`
 	Operations  []KnowledgeOperationReport `json:"operations"`
+	Writebacks  []KnowledgeWritebackReport `json:"writebacks"`
 }
 
 type KnowledgeOperationReport struct {
 	ID    string `json:"id"`
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+}
+
+type KnowledgeWritebackReport struct {
+	EventID string `json:"event_id"`
+	EntryID string `json:"entry_id"`
+	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
 }
 
 // KnowledgeDiscoveryReport registers an auto-discovered candidate: a project
@@ -238,7 +259,10 @@ func (h *Handler) GetKnowledgePlan(w http.ResponseWriter, r *http.Request) {
 	// stale copy.
 	planByWorkspace := make(map[string]*KnowledgePlanWorkspace, len(workspaceIDs))
 	for _, ws := range workspaceIDs {
-		planByWorkspace[uuidToString(ws)] = &KnowledgePlanWorkspace{WorkspaceID: uuidToString(ws), DiscoveryRoots: []string{}, Dirs: []KnowledgePlanDir{}, Adoptions: []KnowledgePlanAdopt{}, Operations: []KnowledgePlanOperation{}}
+		planByWorkspace[uuidToString(ws)] = &KnowledgePlanWorkspace{
+			WorkspaceID: uuidToString(ws), DiscoveryRoots: []string{}, Dirs: []KnowledgePlanDir{},
+			Adoptions: []KnowledgePlanAdopt{}, Operations: []KnowledgePlanOperation{}, Writebacks: []KnowledgePlanWriteback{},
+		}
 	}
 
 	// Discovery roots: this daemon's local_directory project resources per
@@ -458,6 +482,45 @@ WHERE workspace_id::text = $1 AND id::text = ANY($2::text[])`, workspaceID, oper
 	}
 	opRows.Close()
 
+	writebackRows, err := h.DB.Query(r.Context(), `
+SELECT le.id::text, e.id::text, le.workspace_id::text, le.operation, d.path, e.key,
+       v.content, v.content_sha256, le.expected_content_sha256, COALESCE(le.actor_id::text, '')
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+JOIN knowledge_dir d ON d.id = e.dir_id
+JOIN knowledge_entry_version v ON v.id = le.version_id
+    AND v.entry_id = e.id AND v.workspace_id = le.workspace_id
+WHERE le.workspace_id = ANY($1) AND le.writeback_state = 'queued'
+  AND le.operation IN ('writeback_remove', 'writeback_restore')
+  AND e.lifecycle_state = le.to_state
+  AND d.kind = 'candidate_cli' AND d.project_id IS NULL AND d.managed_active = TRUE
+  AND d.removed = FALSE AND d.daemon_id = $2`, workspaceIDs, daemonID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
+		return
+	}
+	for writebackRows.Next() {
+		var workspaceID string
+		var job KnowledgePlanWriteback
+		var actor string
+		if err := writebackRows.Scan(&job.EventID, &job.EntryID, &workspaceID, &job.Operation, &job.Path,
+			&job.Key, &job.Content, &job.ContentSha256, &job.ExpectedContentSha256, &actor); err != nil {
+			writebackRows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
+			return
+		}
+		if job.Operation == "writeback_remove" {
+			job.Operation = "remove"
+		} else {
+			job.Operation = "restore"
+		}
+		job.Actor = "multica-" + actor
+		if wsPlan := planByWorkspace[workspaceID]; wsPlan != nil {
+			wsPlan.Writebacks = append(wsPlan.Writebacks, job)
+		}
+	}
+	writebackRows.Close()
+
 	// Materialize the accumulated workspaces in stable id order.
 	for _, ws := range workspaceIDs {
 		if wsPlan, ok := planByWorkspace[uuidToString(ws)]; ok {
@@ -492,7 +555,7 @@ func (h *Handler) PostKnowledgeResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var registered, ultimatesAccepted, ultimatesConflicts, scansApplied, adoptionsResolved, operationsResolved int
+	var registered, ultimatesAccepted, ultimatesConflicts, scansApplied, adoptionsResolved, operationsResolved, writebacksResolved int
 	for _, disc := range body.Discoveries {
 		workspaceID, ok := allowed[disc.WorkspaceID]
 		if !ok || disc.Path == "" {
@@ -630,6 +693,95 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 			operationsResolved++
 		}
 	}
+	for _, writeback := range body.Writebacks {
+		eventID, eventOK := knowledgeParseUUID(writeback.EventID)
+		entryID, entryOK := knowledgeParseUUID(writeback.EntryID)
+		if !eventOK || !entryOK {
+			continue
+		}
+		tx, err := h.TxStarter.Begin(r.Context())
+		if err != nil {
+			continue
+		}
+		var workspaceID, sourceVersionID pgtype.UUID
+		var operation, boundDaemon string
+		err = tx.QueryRow(r.Context(), `
+SELECT le.workspace_id, le.operation, le.version_id, d.daemon_id
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+JOIN knowledge_dir d ON d.id = e.dir_id
+WHERE le.id = $1 AND le.entry_id = $2 AND le.writeback_state = 'queued'
+  AND d.kind = 'candidate_cli' AND d.project_id IS NULL AND d.managed_active = TRUE
+	  AND d.removed = FALSE
+		FOR UPDATE OF le, e, d`, eventID, entryID).Scan(&workspaceID, &operation, &sourceVersionID, &boundDaemon)
+		if err != nil || boundDaemon != daemonID {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		if _, allowedWorkspace := allowed[uuidToString(workspaceID)]; !allowedWorkspace {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		state := "failed"
+		if writeback.OK {
+			state = "succeeded"
+		}
+		tag, err := tx.Exec(r.Context(), `
+UPDATE knowledge_lifecycle_event SET writeback_state = $2, writeback_error = $3, completed_at = now()
+WHERE id = $1 AND writeback_state = 'queued'`, eventID, state, writeback.Error)
+		if err != nil || tag.RowsAffected() == 0 {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		if writeback.OK {
+			if operation == "writeback_restore" {
+				var nextVersion int
+				if err := tx.QueryRow(r.Context(), `
+SELECT current_version + 1 FROM knowledge_entry
+WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID).Scan(&nextVersion); err != nil {
+					_ = tx.Rollback(r.Context())
+					continue
+				}
+				tag, err = tx.Exec(r.Context(), `
+INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+SELECT e.workspace_id, e.id, $3, v.content, v.content_sha256, 'restore', le.actor_id
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+JOIN knowledge_entry_version v ON v.id = le.version_id
+WHERE le.id = $1 AND le.entry_id = $2`, eventID, entryID, nextVersion)
+				if err != nil || tag.RowsAffected() != 1 {
+					_ = tx.Rollback(r.Context())
+					continue
+				}
+				tag, err = tx.Exec(r.Context(), `
+UPDATE knowledge_entry SET content = v.content, content_sha256 = v.content_sha256,
+    current_version = $3, lifecycle_state = 'active', mirror_state = 'synced',
+    missing_confirmation = 0, writeback_state = 'succeeded', writeback_error = '',
+    last_confirmed_at = now()
+FROM knowledge_entry_version v
+WHERE knowledge_entry.id = $1 AND knowledge_entry.workspace_id = $2 AND v.id = $4`,
+					entryID, workspaceID, nextVersion, sourceVersionID)
+			} else {
+				tag, err = tx.Exec(r.Context(), `
+UPDATE knowledge_entry SET mirror_state = $2, missing_confirmation = $3,
+	    writeback_state = 'succeeded', writeback_error = '', last_confirmed_at = now()
+	WHERE id = $1 AND workspace_id = $4`,
+					entryID, "source_deleted", 2, workspaceID)
+			}
+		} else {
+			tag, err = tx.Exec(r.Context(), `
+	UPDATE knowledge_entry SET writeback_state = 'failed', writeback_error = $2
+	WHERE id = $1 AND workspace_id = $3`, entryID, writeback.Error, workspaceID)
+		}
+		if err != nil || tag.RowsAffected() != 1 {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			continue
+		}
+		writebacksResolved++
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"discoveries_registered": registered,
@@ -638,6 +790,7 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		"scans_applied":          scansApplied,
 		"adoptions_resolved":     adoptionsResolved,
 		"operations_resolved":    operationsResolved,
+		"writebacks_resolved":    writebacksResolved,
 	})
 }
 
