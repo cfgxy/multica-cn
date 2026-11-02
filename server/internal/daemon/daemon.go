@@ -8493,6 +8493,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
+	} else if snapPlan == nil && env.LocalWorktree != nil {
+		// The worktree can later adopt an already-managed branch. Keep the exact
+		// successful injection context so that transition can remove the current
+		// managed block before checkout and rebuild it from the adopted tree.
+		env.LocalWorktree.BindRuntimeConfig(provider, taskCtx)
 	}
 	// An exempt turn runs in the user's directory without having queued for it,
 	// so a sibling coding task may be writing to the same tree right now. That
@@ -8843,12 +8848,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// fields or ambient process environment. Register only for the provider
 	// execution window and always remove the credential afterwards.
 	d.registerActiveRepoCheckoutTask(agentToken, activeRepoCheckoutTask{
-		WorkspaceID: task.WorkspaceID,
-		TaskID:      task.ID,
-		AgentID:     task.AgentID,
-		IssueID:     task.IssueID,
-		AgentName:   task.Agent.Name,
-		WorkDir:     env.WorkDir,
+		WorkspaceID:   task.WorkspaceID,
+		TaskID:        task.ID,
+		AgentID:       task.AgentID,
+		IssueID:       task.IssueID,
+		AgentName:     task.Agent.Name,
+		WorkDir:       env.WorkDir,
+		LocalWorktree: env.LocalWorktree,
 	})
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
@@ -8950,6 +8956,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
 		} else {
 			runtimeBrief = freshBrief
+			if snapPlan == nil && env.LocalWorktree != nil {
+				env.LocalWorktree.BindRuntimeConfig(provider, taskCtx)
+			}
 			if providerNeedsInlineSystemPrompt(provider) {
 				execOpts.SystemPrompt = runtimeBrief
 			}
