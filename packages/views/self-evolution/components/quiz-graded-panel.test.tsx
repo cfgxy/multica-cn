@@ -49,12 +49,12 @@ const row: PromptQuizSampleRow = {
   score_detail: [{ id: "rule-1", kind: "includes", passed: true, evidence: "matched" }],
 };
 
-function mount() {
+function mount(baselineData: PromptQuizBaseline = baseline) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" resources={{ en: { common: enCommon, "self-evolution": enSelfEvolution } }}>
-        <QuizGradedPanel wsId="ws-1" agentId="agent-1" baseline={baseline} />
+        <QuizGradedPanel wsId="ws-1" agentId="agent-1" baseline={baselineData} />
       </I18nProvider>
     </QueryClientProvider>,
   );
@@ -68,6 +68,58 @@ afterEach(() => {
 });
 
 describe("QuizGradedPanel", () => {
+  it("compares candidate and baseline scores without treating ungraded items as zero", async () => {
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    mount({
+      ...baseline,
+      scores: {
+        graded: 4,
+        mean: 0.75,
+        items: [
+          { item_id: "item-shared", graded: 2, mean: 0.75 },
+          { item_id: "item-candidate-only", graded: 2, mean: 0.5 },
+          { item_id: "item-ungraded", graded: 0, mean: 0 },
+        ],
+      },
+      baseline_scores: {
+        graded: 3,
+        mean: 0.5,
+        items: [
+          { item_id: "item-shared", graded: 2, mean: 0.5 },
+          { item_id: "item-baseline-only", graded: 1, mean: 1 },
+          { item_id: "item-ungraded", graded: 1, mean: 0.25 },
+        ],
+      },
+    });
+
+    expect(await screen.findByTestId("quiz-graded-comparison")).toBeInTheDocument();
+    expect(screen.getByTestId("quiz-graded-candidate-summary")).toHaveTextContent("4 graded · mean 75%");
+    expect(screen.getByTestId("quiz-graded-baseline-summary")).toHaveTextContent("3 graded · mean 50%");
+    expect(screen.getByTestId("quiz-graded-score-delta")).toHaveTextContent("Delta +25%");
+
+    expect(screen.getByTestId("quiz-graded-item-item-shared")).toHaveTextContent("Delta +25%");
+    expect(screen.getByTestId("quiz-graded-item-item-candidate-only")).toHaveTextContent("Baseline: Not graded yet");
+    expect(screen.getByTestId("quiz-graded-item-item-candidate-only")).toHaveTextContent("Delta Not graded yet");
+    expect(screen.getByTestId("quiz-graded-item-item-baseline-only")).toHaveTextContent("Candidate: Not graded yet");
+    expect(screen.getByTestId("quiz-graded-item-item-ungraded")).toHaveTextContent("Candidate: Not graded yet");
+    expect(screen.getByTestId("quiz-graded-item-item-ungraded")).not.toHaveTextContent("Candidate: 0%");
+  });
+
+  it("keeps an ungraded aggregate score out of the comparison", async () => {
+    api.getPromptQuizSamples.mockResolvedValue([]);
+    mount({
+      ...baseline,
+      scores: { graded: 0, mean: 0, items: [] },
+      baseline_scores: { graded: 3, mean: 0.5, items: [] },
+    });
+
+    expect(await screen.findByTestId("quiz-graded-comparison")).toBeInTheDocument();
+    expect(screen.getByTestId("quiz-graded-candidate-summary")).toHaveTextContent("Not graded yet");
+    expect(screen.getByTestId("quiz-graded-candidate-summary")).not.toHaveTextContent("0%");
+    expect(screen.getByTestId("quiz-graded-baseline-summary")).toHaveTextContent("3 graded · mean 50%");
+    expect(screen.getByTestId("quiz-graded-score-delta")).toHaveTextContent("Delta Not graded yet");
+  });
+
   it("identifies each sample's run and both timestamps beside its evidence", async () => {
     api.getPromptQuizSamples.mockResolvedValue([row]);
     mount();
