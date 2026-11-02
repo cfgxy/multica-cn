@@ -636,6 +636,11 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		params.Task.ManagedBranch = localWorktree.Branch
 		params.Task.BaseCommit = localWorktree.BaseCommit
 	}
+	if envRoot != workDir {
+		if err := writeTaskContextMarker(envRoot, params.Task, manifest); err != nil {
+			return nil, fmt.Errorf("execenv: write repo checkout task marker: %w", err)
+		}
+	}
 	if err := writeContextFiles(workDir, params.Provider, params.Task, manifest); err != nil {
 		return nil, fmt.Errorf("execenv: write context files: %w", err)
 	}
@@ -937,6 +942,12 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	// legacy local_directory Reuse fallback — skip the persist in that
 	// case to avoid creating a stray manifest at the filesystem root.
 	manifest := &sidecarManifest{}
+	if env.RootDir != "" && env.RootDir != params.WorkDir {
+		if err := writeTaskContextMarker(env.RootDir, params.Task, manifest); err != nil {
+			logger.Warn("execenv: refresh repo checkout task marker failed", "error", err)
+			return nil
+		}
+	}
 	if err := writeContextFiles(params.WorkDir, params.Provider, params.Task, manifest); err != nil {
 		logger.Warn("execenv: refresh context files failed", "error", err)
 	}

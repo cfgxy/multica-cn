@@ -615,6 +615,60 @@ func TestRepoCheckoutRejectsWorkdirInsideGitWorktree(t *testing.T) {
 	}
 }
 
+func TestRepoCheckoutUsesTaskRootWhenAgentWorkDirIsGitWorktree(t *testing.T) {
+	t.Parallel()
+
+	const workspaceID = "ws-checkout"
+	const repoURL = "https://github.com/org/repo.git"
+	checkoutRoot := t.TempDir()
+	agentWorkDir := filepath.Join(checkoutRoot, "existing-repository")
+	if err := os.Mkdir(agentWorkDir, 0o755); err != nil {
+		t.Fatalf("create agent workdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentWorkDir, ".git"), []byte("gitdir: /git/worktrees/agent\n"), 0o644); err != nil {
+		t.Fatalf("create linked worktree metadata: %v", err)
+	}
+
+	cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
+	d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, checkoutRoot, cache)
+
+	t.Run("repairs marker through task root", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + checkoutRoot + `","task_id":"task-1"}`)
+		d.repoCheckoutHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(body))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if got := cache.lastCreateParams().WorkDir; got != checkoutRoot {
+			t.Fatalf("checkout workdir = %q, want task root %q", got, checkoutRoot)
+		}
+		data, err := os.ReadFile(filepath.Join(checkoutRoot, execenv.TaskContextMarkerRelPath))
+		if err != nil {
+			t.Fatalf("read repaired task marker: %v", err)
+		}
+		var marker struct {
+			TaskID     string `json:"task_id"`
+			Branch     string `json:"branch"`
+			BaseCommit string `json:"base_commit"`
+		}
+		if err := json.Unmarshal(data, &marker); err != nil {
+			t.Fatalf("decode repaired task marker: %v", err)
+		}
+		if marker.TaskID != "task-1" || marker.Branch != "agent/test" || marker.BaseCommit != strings.Repeat("a", 40) {
+			t.Fatalf("marker = %+v, want task delivery context", marker)
+		}
+	})
+
+	t.Run("rejects agent Git worktree", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + agentWorkDir + `","task_id":"task-1"}`)
+		d.repoCheckoutHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(body))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
 func TestBranchAdoptionHandlerRejectsUnauthenticatedAndForeignWorkdir(t *testing.T) {
 	const workspaceID = "ws-branch-adoption"
 	workDir := t.TempDir()
