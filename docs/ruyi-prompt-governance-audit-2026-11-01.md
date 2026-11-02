@@ -56,7 +56,7 @@ flowchart TD
 - Agent clauses：Leader、QA、研发、PM、UI、巡检、发布的运行期合同。
 - Project clauses：项目专有工程事实；本轮未删除 Multica 技术快照，避免在没有专用 Skill 等价物时丢失迁移、Android、数据库和环境约束。
 
-## 收束结果
+## 收束结果（截至 2026年11月01日初始治理）
 
 | 项目 | 治理前 | 当前 |
 |---|---:|---:|
@@ -66,7 +66,7 @@ flowchart TD
 | Agent dynamic token 估算 | 1637 | 362 |
 | Multica Project dynamic token 估算 | 1761 | 约 1721 |
 
-当前保留的 22 条 active clause 有独立版本、SHA256、active binding 和审计。被合并或作用域错位的 26 条仅停用 binding 并标记 deprecated，历史版本不删除。Multica 项目中错误绑定到所有角色的 `cls_10000026《开发规范（顾小鱼）》` 已退役，开发职责由顾小鱼的 agent 静态/动态合同承载。
+截至 2026年11月01日初始治理，当时保留的 22 条 active clause 有独立版本、SHA256、active binding 和审计。被合并或作用域错位的 26 条仅停用 binding 并标记 deprecated，历史版本不删除。Multica 项目中错误绑定到所有角色的 `cls_10000026《开发规范（顾小鱼）》` 已退役，开发职责由顾小鱼的 agent 静态/动态合同承载。
 
 ## 保护性恢复
 
@@ -85,7 +85,7 @@ flowchart TD
 
 所有 RUYI 角色的静态 prompt 已追加统一“知识优先与沉淀边界”而不改写人物正文：Issue 内临时状态写 Issue 评论；跨 Issue、已验证且有适用边界的经验才写 bd Memory；先检索既有知识/项目规则/已启用 Skill，只有它们都不能给出可验证路径时才设计受控探索。
 
-已为角色建立实际绑定的 Skill 场景索引：Leader 使用 `guxy-harness-update-prompt`、`guxy-adr` 和资源/AVD技能；QA 使用 `guxy-bug-analysis`、`guxy-evidence-bugfix` 和资源/AVD技能；研发使用 `guxy-backend-debug`、`guxy-evidence-bugfix` 和资源/AVD技能；白小巡使用只读分析和资源/AVD事实采集技能。PM、设计、发布未绑定虚构 Skill，只提示使用当前运行时实际可见能力。
+已为角色建立实际绑定的 Skill 场景索引：Leader 使用 `guxy-harness-update-prompt`、`guxy-adr` 和资源/AVD Skill；QA 使用 `guxy-bug-analysis` 和资源/AVD Skill，实现型 `guxy-evidence-bugfix` 已停用；研发使用 `guxy-backend-debug`、`guxy-evidence-bugfix` 和资源/AVD Skill；白小巡只使用 `guxy-bug-analysis`，资源写操作 Skill 已停用。PM、设计、发布未绑定虚构 Skill，只提示使用当前运行时实际可见能力。
 
 `resource-pool-qa` 和 `vm-avd-e2e` 的描述已补充 VM、租约、制品交接、Android+后端联合验收、跨端一致性和 fixture 等触发词；正文已去除 `RUYI-903` 专属标题。
 
@@ -135,4 +135,17 @@ flowchart TD
 - `runtime_config_sections.go` 的 Available Commands 增加 `multica issue decision list/add`；新增 `runtime_config_decision_commands_test.go` 回归断言。
 - 验证：`go test ./internal/daemon/execenv -count=1` 通过；数据库写入经 ROLLBACK 演练、单事务提交和新连接回读，v5 哈希未变。
 
-未完成：runtime brief 改动未提交、未合并、未部署，生产 daemon 仍使用旧命令清单。下一次真实 Issue Run 应回读 `clause_injection` 为 v7，并确认 brief 含 decision 命令。
+2026年11月02日回验：runtime brief 改动已由 PR #550 合并、重建并重启生产 daemon；真实 RUYI-915 Run 的 `clause_injection` 为 `cls_10000002` v7，运行时 `CLAUDE.md` 同时包含 `multica issue decision list/add`。原“未提交、未部署”状态已关闭。
+
+## 2026年11月03日 P1/P2-1 修复追记
+
+后续全量回溯发现，v7 虽恢复了决策卡正文，但 mention 与决策卡仍共用一个版本生命周期；Leader 的防拆单、知识、轮次经济和接管阈值又只在部分 `is_leader_task=true` Run 中可见。现已按独立失败域修复生产真源：
+
+- 退役混合 Clause `cls_10000002`、`cls_10000004`、`cls_10000015`、`cls_10000018` 的 active binding，历史版本保留；创建 `cls_10000064`～`cls_10000078` 共 15 条原子 Clause。active clause 从 22 条变为 33 条，增加来自规则拆分而非新增行为。
+- mention、决策卡、交付证据、中文文本、P0/P1/P2、跨角色交付和代码连续交付分别使用 workspace binding；职责路由、知识、防拆单、阶段交付/状态、轮次经济、接管阈值和完成判据绑定蔡小星 agent，覆盖其所有 issue Run。
+- `cls_10000021《等待期调度》` 从 squad binding 迁到蔡小星 agent binding；原 binding 仅置 `withdrawn`，正文版本未改。
+- 决策卡长度口径明确为问题、全部选项和 `context` 的面向 Owner 展示正文合计不超过 600 个 Unicode 字符，证据中的 URL、Issue/PR 标识和 commit SHA 不计；`unknowns` 必须存在，无未知项用空数组。
+- 平台实际下发的 `guxy-harness-update-prompt` 已从旧 Git `snapshot/restore` 协议升级到完整 v7：以 Multica 平台 prompt/Clause 为唯一权威，保留 Owner 明确授权下的受控数据库维护例外；description、正文和两个 supporting files 与本机当前版本一致。v5/v6 是同一事务批次中修正正文截断和 description 精确一致性的 append-only 中间版本。
+- 内建 Squad Operating Protocol 的“必须派发、派发后立即停工、通常不得自己实现”冲突已在代码中改为 direct/delegate/no-action 三路径，并允许授权微幅直办和接管；最终 activity 在路径完成或失败后记录。quick-create 改用 create-only 专用协议，不再接收 issue-bound activity/status/comment/mention 要求。该项需随本次代码 PR 合并、重建 daemon 后才进入生产 runtime。
+
+上述生产数据库写入均经过同脚本 `ROLLBACK` 演练、版本/SHA 基线断言、单事务提交和新连接回读。完整证据与剩余行为回归见 `docs/ruyi-prompt-governance-full-audit-2026-11-02.md`。
