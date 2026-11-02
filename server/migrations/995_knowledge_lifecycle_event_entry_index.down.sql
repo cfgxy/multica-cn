@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_knowledge_lifecycle_event_entry;

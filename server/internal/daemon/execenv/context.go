@@ -1163,6 +1163,9 @@ func renderIssueContext(provider string, ctx TaskContextForEnv) string {
 	if ctx.RetrospectivePrompt != "" {
 		return renderRetrospectiveContext(ctx)
 	}
+	if ctx.KnowledgeGovernancePrompt != "" {
+		return renderKnowledgeGovernanceContext(ctx)
+	}
 	if ctx.QuickCreatePrompt != "" {
 		return renderQuickCreateContext(ctx)
 	}
@@ -1219,6 +1222,18 @@ func renderRetrospectiveContext(ctx TaskContextForEnv) string {
 	b.WriteString("**Trigger:** Scheduled retrospective run\n\n")
 	b.WriteString("## Assignment\n\n")
 	b.WriteString(ctx.RetrospectivePrompt)
+	b.WriteString("\n\n")
+	return b.String()
+}
+
+// renderKnowledgeGovernanceContext writes the server-owned evidence contract
+// unchanged, so the artifact and the final-message parser stay aligned.
+func renderKnowledgeGovernanceContext(ctx TaskContextForEnv) string {
+	var b strings.Builder
+	b.WriteString("# Knowledge Governance\n\n")
+	b.WriteString("**Trigger:** Knowledge governance run\n\n")
+	b.WriteString("## Assignment\n\n")
+	b.WriteString(ctx.KnowledgeGovernancePrompt)
 	b.WriteString("\n\n")
 	return b.String()
 }

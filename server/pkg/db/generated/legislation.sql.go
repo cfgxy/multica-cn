@@ -199,6 +199,141 @@ func (q *Queries) ApprovePromptProposal(ctx context.Context, arg ApprovePromptPr
 	return i, err
 }
 
+const createKnowledgeGovernanceTask = `-- name: CreateKnowledgeGovernanceTask :one
+WITH active_run AS (
+    SELECT knowledge_governance_run.id FROM knowledge_governance_run
+    WHERE knowledge_governance_run.id = $1
+      AND knowledge_governance_run.status = 'running'
+    FOR UPDATE
+),
+inserted_task AS (
+    INSERT INTO agent_task_queue (
+        agent_id,
+        runtime_id,
+        issue_id,
+        status,
+        priority,
+        context,
+        originator_user_id,
+        accountable_user_id,
+        originator_source,
+        trigger_evidence_kind,
+        trigger_evidence_ref_id
+    )
+    SELECT
+        $2, $3, NULL::uuid, 'queued', $4,
+        $5,
+        $6, $7,
+        'knowledge_governance', 'knowledge_governance_run', $1
+    WHERE EXISTS (SELECT 1 FROM active_run)
+      AND lock_task_owner_rows($2, NULL::uuid, $3)
+    RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id, local_directory_scope, chat_model_snapshot
+),
+linked_run AS (
+    UPDATE knowledge_governance_run
+    SET task_id = (SELECT inserted_task.id FROM inserted_task)
+    WHERE knowledge_governance_run.id = $1
+      AND knowledge_governance_run.status = 'running'
+      AND EXISTS (SELECT 1 FROM inserted_task)
+    RETURNING knowledge_governance_run.id
+)
+SELECT agent_task_queue.id, agent_task_queue.agent_id, agent_task_queue.issue_id, agent_task_queue.status, agent_task_queue.priority, agent_task_queue.dispatched_at, agent_task_queue.started_at, agent_task_queue.completed_at, agent_task_queue.result, agent_task_queue.error, agent_task_queue.created_at, agent_task_queue.context, agent_task_queue.runtime_id, agent_task_queue.session_id, agent_task_queue.work_dir, agent_task_queue.trigger_comment_id, agent_task_queue.chat_session_id, agent_task_queue.autopilot_run_id, agent_task_queue.attempt, agent_task_queue.max_attempts, agent_task_queue.parent_task_id, agent_task_queue.failure_reason, agent_task_queue.trigger_summary, agent_task_queue.force_fresh_session, agent_task_queue.is_leader_task, agent_task_queue.wait_reason, agent_task_queue.initiator_user_id, agent_task_queue.handoff_note, agent_task_queue.prepare_lease_expires_at, agent_task_queue.squad_id, agent_task_queue.runtime_mcp_overlay, agent_task_queue.escalation_for_task_id, agent_task_queue.fire_at, agent_task_queue.originator_user_id, agent_task_queue.runtime_connected_apps, agent_task_queue.coalesced_comment_ids, agent_task_queue.delivered_comment_ids, agent_task_queue.chat_input_task_id, agent_task_queue.chat_finalize_deferred_at, agent_task_queue.originator_source, agent_task_queue.delegated_from_task_id, agent_task_queue.retry_of_task_id, agent_task_queue.rerun_of_task_id, agent_task_queue.rule_version_id, agent_task_queue.trigger_evidence_kind, agent_task_queue.trigger_evidence_ref_id, agent_task_queue.accountable_user_id, agent_task_queue.session_rollout_missing, agent_task_queue.retired_session_id, agent_task_queue.quick_actions_disabled, agent_task_queue.regenerate_quick_actions_for, agent_task_queue.branch_name, agent_task_queue.durable_work_dir, agent_task_queue.channel_context_revision, agent_task_queue.prompt_versions, agent_task_queue.cancel_requested_by_user_id, agent_task_queue.cancel_requested_at, agent_task_queue.cancel_reason, agent_task_queue.cancel_actor_type, agent_task_queue.cancel_actor_id, agent_task_queue.local_directory_scope, agent_task_queue.chat_model_snapshot
+FROM agent_task_queue
+JOIN inserted_task ON agent_task_queue.id = inserted_task.id
+CROSS JOIN linked_run
+`
+
+type CreateKnowledgeGovernanceTaskParams struct {
+	RunID             pgtype.UUID `json:"run_id"`
+	AgentID           pgtype.UUID `json:"agent_id"`
+	RuntimeID         pgtype.UUID `json:"runtime_id"`
+	Priority          int32       `json:"priority"`
+	Context           []byte      `json:"context"`
+	OriginatorUserID  pgtype.UUID `json:"originator_user_id"`
+	AccountableUserID pgtype.UUID `json:"accountable_user_id"`
+}
+
+// Governance uses the same issue-less task ownership fence as retrospective
+// runs. The context is a durable evidence-review snapshot and the terminal
+// processor is the only path that records its findings.
+func (q *Queries) CreateKnowledgeGovernanceTask(ctx context.Context, arg CreateKnowledgeGovernanceTaskParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, createKnowledgeGovernanceTask,
+		arg.RunID,
+		arg.AgentID,
+		arg.RuntimeID,
+		arg.Priority,
+		arg.Context,
+		arg.OriginatorUserID,
+		arg.AccountableUserID,
+	)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.PromptVersions,
+		&i.CancelRequestedByUserID,
+		&i.CancelRequestedAt,
+		&i.CancelReason,
+		&i.CancelActorType,
+		&i.CancelActorID,
+		&i.LocalDirectoryScope,
+		&i.ChatModelSnapshot,
+	)
+	return i, err
+}
+
 const createPromptProposal = `-- name: CreatePromptProposal :one
 
 INSERT INTO prompt_proposal (

@@ -37,12 +37,13 @@ type KnowledgePlan struct {
 }
 
 type KnowledgePlanWorkspace struct {
-	WorkspaceID    string                  `json:"workspace_id"`
-	HasUltimate    bool                    `json:"has_ultimate"`
-	Ultimate       *KnowledgePlanUltimate  `json:"ultimate,omitempty"`
-	DiscoveryRoots []string                `json:"discovery_roots"`
-	Dirs           []KnowledgePlanDir      `json:"dirs"`
-	Adoptions      []KnowledgePlanAdoption `json:"adoptions"`
+	WorkspaceID    string                   `json:"workspace_id"`
+	HasUltimate    bool                     `json:"has_ultimate"`
+	Ultimate       *KnowledgePlanUltimate   `json:"ultimate,omitempty"`
+	DiscoveryRoots []string                 `json:"discovery_roots"`
+	Dirs           []KnowledgePlanDir       `json:"dirs"`
+	Adoptions      []KnowledgePlanAdoption  `json:"adoptions"`
+	Writebacks     []KnowledgePlanWriteback `json:"writebacks"`
 }
 
 type KnowledgePlanUltimate struct {
@@ -73,11 +74,24 @@ type KnowledgePlanAdoption struct {
 	UltimatePath  string `json:"ultimate_path"`
 }
 
+type KnowledgePlanWriteback struct {
+	EventID               string `json:"event_id"`
+	EntryID               string `json:"entry_id"`
+	Operation             string `json:"operation"`
+	Path                  string `json:"path"`
+	Key                   string `json:"key"`
+	Content               string `json:"content"`
+	ContentSha256         string `json:"content_sha256"`
+	ExpectedContentSha256 string `json:"expected_content_sha256,omitempty"`
+	Actor                 string `json:"actor"`
+}
+
 type KnowledgeResults struct {
 	Discoveries []KnowledgeDiscoveryReport `json:"discoveries,omitempty"`
 	Ultimates   []KnowledgeUltimateReport  `json:"ultimates,omitempty"`
 	Scans       []KnowledgeScanReport      `json:"scans,omitempty"`
 	Adoptions   []KnowledgeAdoptReport     `json:"adoptions,omitempty"`
+	Writebacks  []KnowledgeWritebackReport `json:"writebacks,omitempty"`
 }
 
 type KnowledgeResultsAck struct {
@@ -86,6 +100,7 @@ type KnowledgeResultsAck struct {
 	UltimateConflicts     int `json:"ultimate_conflicts"`
 	ScansApplied          int `json:"scans_applied"`
 	AdoptionsResolved     int `json:"adoptions_resolved"`
+	WritebacksResolved    int `json:"writebacks_resolved"`
 }
 
 type KnowledgeDiscoveryReport struct {
@@ -119,6 +134,13 @@ type KnowledgeAdoptReport struct {
 	// UltimateDirID is the directory the transfer actually landed in.
 	UltimateDirID string `json:"ultimate_dir_id,omitempty"`
 	Error         string `json:"error,omitempty"`
+}
+
+type KnowledgeWritebackReport struct {
+	EventID string `json:"event_id"`
+	EntryID string `json:"entry_id"`
+	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
 }
 
 // --- client -----------------------------------------------------------------
@@ -193,7 +215,7 @@ func (d *Daemon) knowledgeSync(ctx context.Context) error {
 		d.knowledgeSyncWorkspace(ctx, &plan.Workspaces[i], results)
 	}
 	if len(results.Discoveries) == 0 && len(results.Ultimates) == 0 &&
-		len(results.Scans) == 0 && len(results.Adoptions) == 0 {
+		len(results.Scans) == 0 && len(results.Adoptions) == 0 && len(results.Writebacks) == 0 {
 		return nil
 	}
 	if _, err := d.client.PostKnowledgeResults(ctx, d.cfg.DaemonID, results); err != nil {
@@ -248,6 +270,14 @@ func (d *Daemon) knowledgeSyncWorkspace(ctx context.Context, ws *KnowledgePlanWo
 			})
 		} else {
 			results.Adoptions = append(results.Adoptions, report)
+		}
+	}
+	for _, job := range ws.Writebacks {
+		if report, err := d.runKnowledgeWriteback(ctx, job); err != nil {
+			d.logger.Warn("knowledge write-back failed", "event", job.EventID, "operation", job.Operation, "error", err)
+			results.Writebacks = append(results.Writebacks, KnowledgeWritebackReport{EventID: job.EventID, EntryID: job.EntryID, Error: err.Error()})
+		} else {
+			results.Writebacks = append(results.Writebacks, report)
 		}
 	}
 }
@@ -359,6 +389,57 @@ func (d *Daemon) runKnowledgeAdoption(ctx context.Context, job KnowledgePlanAdop
 	return report, nil
 }
 
+func (d *Daemon) runKnowledgeWriteback(ctx context.Context, job KnowledgePlanWriteback) (KnowledgeWritebackReport, error) {
+	report := KnowledgeWritebackReport{EventID: job.EventID, EntryID: job.EntryID}
+	if strings.TrimSpace(job.Path) == "" || strings.TrimSpace(job.Key) == "" {
+		return report, fmt.Errorf("knowledge write-back requires source path and key")
+	}
+
+	switch job.Operation {
+	case "remove":
+		memories, err := bdListMemories(ctx, job.Path)
+		if err != nil {
+			return report, fmt.Errorf("read source before deletion: %w", err)
+		}
+		if content, found := memories[job.Key]; found && job.ExpectedContentSha256 != "" && knowledgeContentSHA(content) != job.ExpectedContentSha256 {
+			return report, fmt.Errorf("source content changed for key %s", job.Key)
+		}
+		if err := bdForget(ctx, job.Path, job.Key); err != nil {
+			return report, err
+		}
+		memories, err = bdListMemories(ctx, job.Path)
+		if err != nil {
+			return report, fmt.Errorf("verify source deletion: %w", err)
+		}
+		if _, found := memories[job.Key]; found {
+			return report, fmt.Errorf("source deletion did not remove key %s", job.Key)
+		}
+	case "restore":
+		memories, err := bdListMemories(ctx, job.Path)
+		if err != nil {
+			return report, fmt.Errorf("read source before restore: %w", err)
+		}
+		if content, found := memories[job.Key]; found && strings.TrimSpace(content) != strings.TrimSpace(job.Content) && job.ExpectedContentSha256 != "" && knowledgeContentSHA(content) != job.ExpectedContentSha256 {
+			return report, fmt.Errorf("source content changed for key %s", job.Key)
+		}
+		if err := bdRemember(ctx, job.Path, job.Key, job.Content, job.Actor); err != nil {
+			return report, err
+		}
+		recalled, err := bdRecall(ctx, job.Path, job.Key)
+		if err != nil {
+			return report, fmt.Errorf("verify source restore: %w", err)
+		}
+		if strings.TrimSpace(recalled) != strings.TrimSpace(job.Content) {
+			return report, fmt.Errorf("source restore read-back mismatch for key %s", job.Key)
+		}
+	default:
+		return report, fmt.Errorf("unsupported knowledge write-back operation %q", job.Operation)
+	}
+
+	report.OK = true
+	return report, nil
+}
+
 // --- ultimate placement -----------------------------------------------------
 
 // knowledgeStateRoot hosts daemon-managed knowledge state. The env override
@@ -438,7 +519,7 @@ func bdListMemories(ctx context.Context, dir string) (map[string]string, error) 
 	memories := map[string]string{}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(out, &envelope); err != nil {
-		return memories, nil
+		return nil, fmt.Errorf("decode bd memories in %s: %w", dir, err)
 	}
 	for key, raw := range envelope {
 		if key == "" || key == "schema_version" {
@@ -456,6 +537,14 @@ func bdRemember(ctx context.Context, dir, key, content, actor string) error {
 	cmd := exec.CommandContext(ctx, knowledgeBdBin(), "remember", content, "--key", key, "--actor", actor, "-C", dir)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("bd remember %s: %w: %s", key, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func bdForget(ctx context.Context, dir, key string) error {
+	cmd := exec.CommandContext(ctx, knowledgeBdBin(), "forget", key, "-C", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("bd forget %s: %w: %s", key, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

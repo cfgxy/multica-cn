@@ -5300,6 +5300,7 @@ export const KnowledgeDirSchema = z.object({
   health_state: z.string(),
   health_note: z.string(),
   removed: z.boolean(),
+  managed_active: z.boolean().optional(),
   entry_count: z.number().int(),
   last_scan: KnowledgeScanBatchSchema.optional(),
   created_at: z.string(),
@@ -5315,6 +5316,12 @@ export const KnowledgeEntrySchema = z.object({
   content: z.string(),
   content_sha256: z.string(),
   mirror_state: z.string(),
+  lifecycle_state: z.string().optional(),
+  current_version: z.number().int().optional(),
+  missing_confirmation: z.number().int().optional(),
+  replacement_entry_id: z.string().optional(),
+  writeback_state: z.string().optional(),
+  writeback_error: z.string().optional(),
   first_seen_at: z.string(),
   last_confirmed_at: z.string(),
   adoption_state: z.string(),
@@ -5327,6 +5334,108 @@ export const KnowledgeEntrySchema = z.object({
 }).loose();
 
 export const KnowledgeEntryListSchema = z.array(KnowledgeEntrySchema);
+
+export const KnowledgeEntryVersionSchema = z.object({
+  id: z.string(),
+  entry_id: z.string(),
+  version: z.number().int(),
+  content: z.string(),
+  content_sha256: z.string(),
+  source: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const KnowledgeEntryVersionListSchema = z.array(KnowledgeEntryVersionSchema);
+
+export const KnowledgeLifecycleEventSchema = z.object({
+  id: z.string(),
+  entry_id: z.string(),
+  from_state: z.string(),
+  to_state: z.string(),
+  operation: z.string(),
+  reason: z.string(),
+  evidence_ref: z.string(),
+  replacement_entry_id: z.string().optional(),
+  writeback_state: z.string(),
+  writeback_error: z.string().optional(),
+  created_at: z.string(),
+  completed_at: z.string().optional(),
+}).loose();
+
+export const KnowledgeLifecycleEventListSchema = z.array(KnowledgeLifecycleEventSchema);
+
+export const KnowledgeDirManagedSchema = z.object({
+  managed_active: z.boolean().catch(false),
+}).loose();
+
+export const KnowledgeLifecycleUpdateSchema = z.object({
+  status: z.string().catch(""),
+}).loose();
+
+export const KnowledgeEntryRestoreSchema = z.object({
+  status: z.string().catch(""),
+  version: z.number().int().catch(0),
+}).loose();
+
+export const KnowledgeGovernanceRunSchema = z.object({
+  id: z.string().default(""),
+  workspace_id: z.string().default(""),
+  dir_id: z.string().default(""),
+  task_id: z.string().optional(),
+  agent_id: z.string().default(""),
+  status: z.enum(["running", "succeeded", "failed", "cancelled"]).catch("failed"),
+  title: z.string().default(""),
+  prompt_version: z.string().default(""),
+  trigger: z.enum(["manual", "retry", "schedule"]).catch("manual"),
+  detail: z.record(z.string(), z.unknown()).default({}),
+  report: z.record(z.string(), z.unknown()).default({}),
+  created_by: z.string().default(""),
+  created_at: z.string().default(""),
+  finished_at: z.string().optional(),
+}).loose();
+
+export const KnowledgeGovernanceFindingSchema = z.object({
+  id: z.string().default(""),
+  run_id: z.string().default(""),
+  entry_id: z.string().default(""),
+  entry_key: z.string().default(""),
+  original_content: z.string().default(""),
+  content_version: z.number().int().default(0),
+  content_sha256: z.string().default(""),
+  scope: z.string().default(""),
+  verdict: z.enum(["valid", "revised", "deprecated", "superseded", "duplicate", "invalid", "needs_review"]).catch("needs_review"),
+  problem_categories: z.array(z.string()).default([]),
+  counter_evidence: z.array(z.record(z.string(), z.unknown())).default([]),
+  applicable_scope: z.string().default(""),
+  replacement_entry_id: z.string().optional(),
+  recommendation: z.string().default(""),
+  writeback_authorized: z.literal(false).catch(false),
+  lifecycle_event_ref: z.string().default(""),
+  created_at: z.string().default(""),
+}).loose();
+
+export const KnowledgeGovernanceRunListResponseSchema = z.object({
+  runs: z.array(KnowledgeGovernanceRunSchema).default([]),
+}).loose();
+
+export const KnowledgeGovernanceRunDetailSchema = z.object({
+  run: KnowledgeGovernanceRunSchema,
+  findings: z.array(KnowledgeGovernanceFindingSchema).default([]),
+}).loose();
+
+export const KnowledgeGovernanceRunStartSchema = z.object({
+  run: z.object({
+    run_id: z.string().default(""),
+    task_id: z.string().optional(),
+    title: z.string().default(""),
+    status: z.literal("running").catch("running"),
+  }).loose(),
+}).loose();
+
+export const KnowledgeGovernanceCancelSchema = z.object({
+  status: z.string().default(""),
+  task_id: z.string().default(""),
+}).loose();
 
 // --- Self-evolution workspace overview (RUYI-284) ---
 //

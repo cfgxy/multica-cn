@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS uidx_knowledge_governance_run_active_scope;

@@ -180,6 +180,7 @@ type Task struct {
 	QuickCreateSourceContext  json.RawMessage             `json:"quick_create_source_context,omitempty"`  // immutable historical context, separate from the new instruction
 	QuizPrompt                string                      `json:"quiz_prompt,omitempty"`                  // item under test for prompt-quiz measurement runs; the run's entire assignment
 	RetrospectivePrompt       string                      `json:"retrospective_prompt,omitempty"`         // daily-retrospective window prompt (RUYI-552 direction 3); the run's entire assignment — analyze completed issues, submit drafts, create nothing
+	KnowledgeGovernancePrompt string                      `json:"knowledge_governance_prompt,omitempty"`  // evidence-led knowledge governance assignment; rendered verbatim and advisory only
 	HandoffNote               string                      `json:"handoff_note,omitempty"`                 // assignment handoff instruction; rendered into the opening prompt + issue_context.md
 	SquadID                   string                      `json:"squad_id,omitempty"`                     // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName                 string                      `json:"squad_name,omitempty"`                   // display name for the picker squad, used in prompt text
