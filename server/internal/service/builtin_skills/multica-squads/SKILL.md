@@ -157,6 +157,26 @@ agent instructions. The briefing includes:
 - Squad Roster;
 - Squad Instructions, only when `instructions` is non-empty.
 
+The operating protocol makes the leader choose a mode on every trigger:
+
+- complete leader-owned analysis, review, terminal closure, an authorized
+  micro-task, or active takeover work directly;
+- delegate actionable specialist work with one exact roster mention; or
+- record `no_action` and exit silently when no material next step exists.
+
+Direct work does not waive independent QA, safety, authorization, or
+irreversible-operation boundaries. After delegation, the leader does not
+repeat the member's work, but may finish independent leader-owned analysis,
+metadata, or status work in the same turn. The leader records `action` only
+after delegation is delivered or direct work completes; an attempted action
+that did not complete is `failed`.
+
+Quick-create uses a separate create-only protocol because no issue exists yet.
+The leader may read the roster and squad instructions as routing context, but
+must not call issue get/status/comment, squad activity, or dispatch by mention;
+it runs exactly one `multica issue create` command as directed by the
+quick-create prompt.
+
 Roster entries include member name, member type, mention markdown, and non-empty
 role. For agent members the roster also lists their assigned skills
 (`skills: a, b`, or `no skills assigned` when the agent has none) so the leader
