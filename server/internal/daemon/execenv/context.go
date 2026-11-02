@@ -181,6 +181,59 @@ func RegisterTaskDeliveryContext(markerPath, branch, baseCommit string) error {
 	return writeMarkerFileAtomic(markerPath, out)
 }
 
+// RepairTaskDeliveryContext restores an authenticated task's delivery proof
+// after checkout. Foreign, corrupt, root-shaped, cross-task, and unsafe marker
+// paths are rejected without modification.
+func RepairTaskDeliveryContext(markerPath, taskID, agentID, issueID, branch, baseCommit string) error {
+	if strings.TrimSpace(taskID) == "" {
+		return errors.New("execenv: task id is required to repair task delivery context")
+	}
+	return repairTaskContextMarkerFile(markerPath, func(data []byte) ([]byte, error) {
+		var marker taskContextMarkerFile
+		if err := json.Unmarshal(data, &marker); err != nil {
+			return nil, fmt.Errorf("task context marker %s is not a parseable daemon marker; refusing to repair", markerPath)
+		}
+		if marker.ManagedBy != TaskContextMarkerManagedBy {
+			return nil, fmt.Errorf("task context marker %s is not managed by Multica; refusing to repair", markerPath)
+		}
+		if marker.TaskID != "" {
+			// A matching task ID is globally unique and proves ownership even when
+			// an earlier handoff left stale agent or issue fields behind.
+			if marker.TaskID != taskID {
+				return nil, fmt.Errorf("task context marker %s belongs to task %s, not active task %s", markerPath, marker.TaskID, taskID)
+			}
+		} else {
+			// Without the unique task ID, both fields are required to distinguish
+			// this task from another task executed by the same agent.
+			if marker.AgentID == "" || marker.IssueID == "" || agentID == "" || issueID == "" {
+				return nil, fmt.Errorf("task context marker %s lacks task_id and matching agent_id and issue_id; refusing to repair", markerPath)
+			}
+			if marker.AgentID != agentID || marker.IssueID != issueID {
+				return nil, fmt.Errorf("task context marker %s does not belong to the active agent and issue", markerPath)
+			}
+		}
+
+		marker.TaskID = taskID
+		if agentID != "" {
+			marker.AgentID = agentID
+		}
+		if issueID != "" {
+			marker.IssueID = issueID
+		}
+		if branch != "" {
+			marker.Branch = branch
+		}
+		if baseCommit != "" {
+			marker.BaseCommit = baseCommit
+		}
+		out, err := json.MarshalIndent(marker, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("marshal task context marker: %w", err)
+		}
+		return out, nil
+	})
+}
+
 // writeContextFiles renders and writes .agent_context/issue_context.md and
 // skills into the appropriate provider-native location.
 //

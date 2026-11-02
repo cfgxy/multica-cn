@@ -366,6 +366,47 @@ func TestRepoCheckoutUsesTaskScopedProjectRefByDefault(t *testing.T) {
 	}
 }
 
+func TestRepoCheckoutRepairsIncompleteCurrentTaskMarker(t *testing.T) {
+	t.Parallel()
+
+	const workspaceID = "ws-checkout"
+	const repoURL = "https://github.com/org/repo.git"
+	cache := &recordingRepoCache{lookupPath: "/cache/org/repo.git"}
+	workDir := t.TempDir()
+	d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, workDir, cache)
+	markerPath := filepath.Join(workDir, execenv.TaskContextMarkerRelPath)
+	if err := os.WriteFile(markerPath, []byte(`{"managed_by":"multica-daemon-task","agent_id":"agent-1","issue_id":"issue-1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := httptest.NewRecorder()
+	body := strings.NewReader(`{"url":"` + repoURL + `","workspace_id":"` + workspaceID + `","workdir":"` + workDir + `","task_id":"task-1"}`)
+	d.repoCheckoutHandler().ServeHTTP(rec, authorizedRepoCheckoutRequest(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marker struct {
+		TaskID     string `json:"task_id"`
+		AgentID    string `json:"agent_id"`
+		IssueID    string `json:"issue_id"`
+		Branch     string `json:"branch"`
+		BaseCommit string `json:"base_commit"`
+	}
+	if err := json.Unmarshal(data, &marker); err != nil {
+		t.Fatal(err)
+	}
+	if marker.TaskID != "task-1" || marker.AgentID != "agent-1" || marker.IssueID != "issue-1" {
+		t.Fatalf("marker identity = %+v, want active task identity", marker)
+	}
+	if marker.Branch != "agent/test" || marker.BaseCommit != strings.Repeat("a", 40) {
+		t.Fatalf("marker delivery fields = %+v, want checkout branch and base", marker)
+	}
+}
+
 // A request with no Authorization header can only come from a CLI older than
 // repoCheckoutMinCLIVersion, which is a permanent failure. The rejection has to
 // say so: the agent sees this string and nothing else (#7520).
