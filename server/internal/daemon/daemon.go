@@ -73,6 +73,7 @@ const (
 	taskSlotWaitTimeout      = 2 * time.Second
 	taskSlotCapacityBackoff  = 5 * time.Second
 	repoCheckoutModeEnv      = "MULTICA_REPO_CHECKOUT_MODE"
+	repoCheckoutRootEnv      = "MULTICA_REPO_CHECKOUT_ROOT"
 	repoCheckoutModeIsolated = "isolated"
 	// defaultTaskPrepareTimeout is a hard liveness bound for everything after
 	// claim and before StartTask succeeds: runtime resolution, skill bundles,
@@ -8525,6 +8526,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, err
 	}
 	agentEnv := taskMulticaEnvironment(task, agentName, agentToken, env.MulticaConfigRoot, d.cfg.WorkspacesRoot, d.cfg.ServerBaseURL, d.cfg.HealthPort, slot, taskTempDir)
+	if env.RootDir != "" {
+		// Repo checkout must target the task-owned env root rather than the
+		// provider's cwd, which can itself be a Git worktree for local resources.
+		agentEnv[repoCheckoutRootEnv] = env.RootDir
+	}
 	if checkoutMode := repoCheckoutModeFor(provider, runtime.GOOS); checkoutMode != "" {
 		agentEnv[repoCheckoutModeEnv] = checkoutMode
 	}
@@ -8848,7 +8854,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AgentID:     task.AgentID,
 		IssueID:     task.IssueID,
 		AgentName:   task.Agent.Name,
-		WorkDir:     env.WorkDir,
+		WorkDir:     env.RootDir,
 	})
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 

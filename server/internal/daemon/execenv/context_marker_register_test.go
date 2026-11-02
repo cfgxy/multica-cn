@@ -151,6 +151,164 @@ func TestRegisterTaskDeliveryContextRefusesRootMarker(t *testing.T) {
 	}
 }
 
+func TestRepairTaskDeliveryContext(t *testing.T) {
+	writeMarker := func(t *testing.T, contents string) string {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, TaskContextMarkerRelPath)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	readMarker := func(t *testing.T, path string) taskContextMarkerFile {
+		t.Helper()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var marker taskContextMarkerFile
+		if err := json.Unmarshal(data, &marker); err != nil {
+			t.Fatal(err)
+		}
+		return marker
+	}
+
+	t.Run("repairs matching agent and issue when task id is missing", func(t *testing.T) {
+		path := writeMarker(t, `{"managed_by":"multica-daemon-task","agent_id":"agent-a","issue_id":"issue-a"}`)
+		if err := RepairTaskDeliveryContext(path, "task-a", "agent-a", "issue-a", "agent/a/task-a", "base-a"); err != nil {
+			t.Fatal(err)
+		}
+		marker := readMarker(t, path)
+		if marker.TaskID != "task-a" || marker.Branch != "agent/a/task-a" || marker.BaseCommit != "base-a" {
+			t.Fatalf("marker = %+v, want restored identity and delivery fields", marker)
+		}
+	})
+
+	t.Run("matching task id accepts stale optional identity and empty baseline", func(t *testing.T) {
+		path := writeMarker(t, `{"managed_by":"multica-daemon-task","task_id":"task-a","agent_id":"agent-old","issue_id":"issue-old","branch":"agent/old","base_commit":"base-old"}`)
+		if err := RepairTaskDeliveryContext(path, "task-a", "agent-a", "issue-a", "agent/a/task-a", ""); err != nil {
+			t.Fatal(err)
+		}
+		marker := readMarker(t, path)
+		if marker.AgentID != "agent-a" || marker.IssueID != "issue-a" || marker.Branch != "agent/a/task-a" || marker.BaseCommit != "base-old" {
+			t.Fatalf("marker = %+v, want refreshed identity, branch, and preserved baseline", marker)
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		contents string
+	}{
+		{name: "root shaped", contents: `{"managed_by":"multica-daemon-task"}`},
+		{name: "agent only", contents: `{"managed_by":"multica-daemon-task","agent_id":"agent-a"}`},
+		{name: "other task", contents: `{"managed_by":"multica-daemon-task","task_id":"task-other","agent_id":"agent-a","issue_id":"issue-a"}`},
+		{name: "foreign", contents: `{"managed_by":"other-tool","task_id":"task-a"}`},
+		{name: "corrupt", contents: `{"managed_by":`},
+	} {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			path := writeMarker(t, tc.contents)
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := RepairTaskDeliveryContext(path, "task-a", "agent-a", "issue-a", "agent/a/task-a", "base-a"); err == nil {
+				t.Fatal("expected repair rejection")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("unsafe marker changed:\n got %s\nwant %s", after, before)
+			}
+		})
+	}
+}
+
+func TestRepairTaskContextMarkerFileRejectsSymlinkAndInPlaceRewrite(t *testing.T) {
+	t.Run("symlinked marker directory", func(t *testing.T) {
+		workDir := t.TempDir()
+		targetDir := t.TempDir()
+		target := filepath.Join(targetDir, filepath.Base(TaskContextMarkerRelPath))
+		before := []byte(`{"managed_by":"multica-daemon-task","agent_id":"agent-a","issue_id":"issue-a"}`)
+		if err := os.WriteFile(target, before, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(targetDir, filepath.Join(workDir, ".multica")); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if err := RepairTaskDeliveryContext(filepath.Join(workDir, TaskContextMarkerRelPath), "task-a", "agent-a", "issue-a", "agent/a/task-a", "base-a"); err == nil {
+			t.Fatal("expected symlinked marker directory rejection")
+		}
+		after, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(after) != string(before) {
+			t.Fatalf("symlink target changed:\n got %s\nwant %s", after, before)
+		}
+	})
+
+	t.Run("symlinked workdir ancestor", func(t *testing.T) {
+		realWorkDir := t.TempDir()
+		markerPath := filepath.Join(realWorkDir, TaskContextMarkerRelPath)
+		if err := os.MkdirAll(filepath.Dir(markerPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		before := []byte(`{"managed_by":"multica-daemon-task","agent_id":"agent-a","issue_id":"issue-a"}`)
+		if err := os.WriteFile(markerPath, before, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(t.TempDir(), "workdir-link")
+		if err := os.Symlink(realWorkDir, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if err := RepairTaskDeliveryContext(filepath.Join(link, TaskContextMarkerRelPath), "task-a", "agent-a", "issue-a", "agent/a/task-a", "base-a"); err == nil {
+			t.Fatal("expected symlinked workdir ancestor rejection")
+		}
+		after, err := os.ReadFile(markerPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(after) != string(before) {
+			t.Fatalf("symlinked workdir target changed:\n got %s\nwant %s", after, before)
+		}
+	})
+
+	t.Run("in place rewrite", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, TaskContextMarkerRelPath)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		original := []byte(`{"managed_by":"multica-daemon-task","task_id":"task-a"}`)
+		if err := os.WriteFile(path, original, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rewritten := []byte(`{"managed_by":"multica-daemon-task","task_id":"task-b"}`)
+		err := repairTaskContextMarkerFile(path, func(data []byte) ([]byte, error) {
+			if err := os.WriteFile(path, rewritten, 0o644); err != nil {
+				return nil, err
+			}
+			return data, nil
+		})
+		if err == nil {
+			t.Fatal("expected in-place rewrite rejection")
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(after) != string(rewritten) {
+			t.Fatalf("marker changed after rejection:\n got %s\nwant %s", after, rewritten)
+		}
+	})
+}
+
 // TestWriteTaskContextMarkerDevQaHandoff covers the atomic DEV->QA workdir
 // handoff (RUYI-848): when a QA task reuses a DEV workdir whose marker already
 // carries a registered delivery (branch + base_commit from `repo checkout`),

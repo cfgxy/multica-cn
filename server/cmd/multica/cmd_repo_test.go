@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -216,6 +217,8 @@ func TestRunRepoCheckoutForwardsManagedCheckoutMode(t *testing.T) {
 	t.Setenv("MULTICA_TASK_ID", "task-1")
 	t.Setenv("MULTICA_TOKEN", "mat_repo_checkout_test")
 	t.Setenv("MULTICA_REPO_CHECKOUT_MODE", "isolated")
+	checkoutRoot := filepath.Join(t.TempDir(), "task-root")
+	t.Setenv("MULTICA_REPO_CHECKOUT_ROOT", checkoutRoot)
 
 	previousRef := repoCheckoutRef
 	repoCheckoutRef = "release/v2"
@@ -232,6 +235,9 @@ func TestRunRepoCheckoutForwardsManagedCheckoutMode(t *testing.T) {
 	}
 	if got := body["retry_busy"]; got != true {
 		t.Fatalf("retry_busy = %v, want true", got)
+	}
+	if got := body["workdir"]; got != checkoutRoot {
+		t.Fatalf("workdir = %q, want daemon-provided checkout root %q", got, checkoutRoot)
 	}
 }
 
