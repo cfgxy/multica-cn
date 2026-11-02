@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package execenv
 
@@ -14,8 +14,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-const maxTaskContextMarkerBytes = 1 << 20
 
 // repairTaskContextMarkerFile keeps the marker directory open while it reads
 // and replaces the marker. Descriptor-relative operations prevent a .multica
@@ -86,7 +84,7 @@ func repairTaskContextMarkerFile(markerPath string, repair func([]byte) ([]byte,
 
 	// Exchange preserves the existing entry at tmpName. An unexpected entry is
 	// exchanged back or retained, never overwritten or deleted.
-	if err := unix.Renameat2(dirFD, tmpName, dirFD, markerName, unix.RENAME_EXCHANGE); err != nil {
+	if err := exchangeTaskContextMarker(dirFD, tmpName, markerName); err != nil {
 		return fmt.Errorf("replace task context marker: %w", err)
 	}
 	var displaced unix.Stat_t
@@ -149,7 +147,7 @@ func restoreTaskContextMarker(dirFD int, tmpName, markerName string, replacement
 	if !sameTaskMarker(installed, replacement) {
 		return false, fmt.Errorf("%w (marker changed again; preserved both entries)", repairErr)
 	}
-	if err := unix.Renameat2(dirFD, tmpName, dirFD, markerName, unix.RENAME_EXCHANGE); err != nil {
+	if err := exchangeTaskContextMarker(dirFD, tmpName, markerName); err != nil {
 		return false, fmt.Errorf("%w (restore original marker: %v)", repairErr, err)
 	}
 	return true, repairErr

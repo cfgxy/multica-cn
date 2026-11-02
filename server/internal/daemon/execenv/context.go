@@ -23,6 +23,8 @@ const TaskContextMarkerRelPath = ".multica/daemon_task_context.json"
 // treating TaskContextMarkerRelPath as daemon-owned.
 const TaskContextMarkerManagedBy = "multica-daemon-task"
 
+const maxTaskContextMarkerBytes = 1 << 20
+
 type taskContextMarkerFile struct {
 	ManagedBy        string                  `json:"managed_by"`
 	TaskID           string                  `json:"task_id,omitempty"`
