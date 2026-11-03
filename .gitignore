@@ -107,3 +107,13 @@ pat.txt
 
 # RUYI-632: E2E release-entry artifacts (manifest + per-file hashes), runtime-local
 e2e-artifacts/
+
+# Internal governance, migration, QA evidence, and operations records belong in
+# the private Multica documentation repository, never in this public code repo.
+/HANDOFF-*.md
+/docs/ruyi-*.md
+/docs/shanghui-*.md
+/.qa-local/
+/.ruyi-*-review/
+/ruyi-*-phase*-inventory.md
+/qa/fixtures/ruyi-*/
