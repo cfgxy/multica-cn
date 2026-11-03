@@ -189,7 +189,7 @@ class GateEndToEndCase(unittest.TestCase):
         ctx = (
             '# workspace context\n\n'
             '## 空间身份与成员 UUID\n'
-            '本空间 ID：42f61469-c332-41f3-a2b4-018667473993。\n\n'
+            '本空间 ID：11111111-2222-4333-8444-555555555555。\n\n'
             + seg('cls_a1b2c3d4', 3, MARKER_OK_BODY) + '\n\n'
             '## 协作纪律\n'
             '- 回报用中文，先结论后依据。\n'
@@ -204,7 +204,7 @@ class GateEndToEndCase(unittest.TestCase):
         ctx = (
             '# workspace context\n\n'
             '## 空间身份与成员 UUID\n'
-            '本空间 ID：42f61469-c332-41f3-a2b4-018667473993。\n\n'
+            '本空间 ID：11111111-2222-4333-8444-555555555555。\n\n'
             '<!-- clause:id=cls_a1b2c3d4 rev=3 -->\n'
             '正文没有关闭标记\n\n'
             '## 协作纪律\n'
@@ -250,7 +250,7 @@ class GateEndToEndCase(unittest.TestCase):
         ctx = (
             '# workspace context\n\n'
             '## 空间身份与成员 UUID\n'
-            'ID：42f61469-c332-41f3-a2b4-018667473993。\n\n'
+            'ID：11111111-2222-4333-8444-555555555555。\n\n'
             + seg('cls_a1b2c3d4', 1, '## 渲染段里的标题\n平台渲染的正文。') + '\n\n'
             '## 协作纪律\n'
             '- 回报用中文。\n'

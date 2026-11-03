@@ -64,7 +64,7 @@ func TestTranscriptContextReadingValues(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	cwd := "/home/guxy/multica_workspaces/task/workdir"
+	cwd := "/home/testuser/multica_workspaces/task/workdir"
 	sid := "sid-1"
 	writeTranscript(t, root, cwd, sid,
 		transcriptAssistantLine(t, "msg_1", "gpt-5.6-terra", 10_000, 2_000, 0, 100, false),
@@ -200,7 +200,7 @@ func TestClaudeProjectSlug(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"/tmp", "-tmp"},
 		{"/tmp/gh.audit.slug.test", "-tmp-gh-audit-slug-test"},
-		{"/home/guxy/multica_workspaces/shanghui-4da3341f7ba8/shan-224-09a3c39122e7/worktree",
+		{"/home/testuser/multica_workspaces/example-workspace-000000000000/task-224-000000000000/worktree",
 			"-home-guxy-multica-workspaces-shanghui-4da3341f7ba8-shan-224-09a3c39122e7-worktree"},
 	}
 	for _, tt := range tests {

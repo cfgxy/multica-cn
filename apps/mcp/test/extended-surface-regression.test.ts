@@ -826,7 +826,7 @@ describe("combined serial path: update → assign → relations → comments", (
 
 describe("project resource face: bindings, duplicate guard, label clearing", () => {
   const GITHUB_REF = { url: "https://github.com/cfgxy/multica-cn.git" };
-  const LOCAL_REF = { local_path: "/home/guxy/work", daemon_id: "d-1" };
+  const LOCAL_REF = { local_path: "/home/testuser/work", daemon_id: "d-1" };
 
   it("registers the four resource tools once with the read-only split", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
@@ -916,7 +916,7 @@ describe("project resource face: bindings, duplicate guard, label clearing", () 
       workspace: WS,
       project_id: "p-1",
       resource_type: "local_directory",
-      resource_ref: { local_path: "/home/guxy/other", daemon_id: "d-1" },
+      resource_ref: { local_path: "/home/testuser/other", daemon_id: "d-1" },
     });
     expect(second).toMatchObject({ created: false, code: "already_attached" });
     expect(second.message).toMatch(/daemon/);

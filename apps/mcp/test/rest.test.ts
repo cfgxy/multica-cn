@@ -435,7 +435,7 @@ describe("project resource client methods", () => {
     const client = makeClient(makeFetch(201, RESOURCE, calls));
     const body = {
       resource_type: "local_directory" as const,
-      resource_ref: { local_path: "/home/guxy/work", daemon_id: "d-1" },
+      resource_ref: { local_path: "/home/testuser/work", daemon_id: "d-1" },
       label: "工作副本",
     };
     await client.createProjectResource("ws", "p1", body);

@@ -86,7 +86,7 @@ finalize 后、接线生产前，对交付镜像执行两道机械断言（任�
 
 - guest 脚本（`guest/`）在租约 VM 内的实测属池侧闭环验收（E3/E6 联调），
   本流水线只保证其进入镜像；audit 范围说明见 `slot-pool.sh audit`。
-- PS1 三脚本在本机（gti-server）无 PowerShell 运行面，仅静态评审；首次重建
+- PS1 三脚本在当前 Linux 构建机无 PowerShell 运行面，仅静态评审；首次重建
   需宿主机窗口（按 resource-pool-qa skill 的租约流程申请，禁止直连宿主机操作）。
 - 磁盘 per-instance 硬配额缺失（差分盘继承 base 上限）为 RUYI-679 已登记
   遗留项，不在本单范围。

@@ -12,8 +12,8 @@ func TestVerifyTaskCredentialInjection(t *testing.T) {
 		"MULTICA_TOKEN":        "mat_78aa02deadbeef",
 		"MULTICA_SERVER_URL":   "http://localhost:8080",
 		"MULTICA_DAEMON_PORT":  "9478",
-		cli.TaskConfigRootEnv:  "/home/guxy/multica_workspaces/ws/task-1/multica-config",
-		"MULTICA_WORKSPACE_ID": "42f61469-c332-41f3-a2b4-018667473993",
+		cli.TaskConfigRootEnv:  "/home/testuser/multica_workspaces/ws/task-1/multica-config",
+		"MULTICA_WORKSPACE_ID": "11111111-2222-4333-8444-555555555555",
 		"MULTICA_AGENT_ID":     "43324e0c-014a-4866-bc17-de6f94850fd5",
 		"MULTICA_TASK_ID":      "01a08744-38c1-712a-8670-02d65192ff58",
 	}

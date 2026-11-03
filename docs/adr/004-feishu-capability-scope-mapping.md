@@ -41,7 +41,7 @@ AND-of-OR 语义：每个内层组满足任一 scope 即该组满足，全部组
 
 ## 3. 与 CC Connect 的复用/分叉对照（逐能力）
 
-基线：`cfgxy/cc-connect`（本地检出 `/home/guxy/Codes/offcial/cc-connect`，分支 `guxy`，tip `9397f066d34ee1ceaec39f1807d1d27512596745`，只读；该检出 remote 已指向 `cfgxy/cc-connect`）。以下「M」= Multica，`C` = CC Connect。
+基线：`cfgxy/cc-connect` 的只读对照版本（分支与精确 revision 保存在内部审计记录中）。以下「M」= Multica，`C` = CC Connect。
 
 ### 3.1 用户姓名解析 — 复用
 

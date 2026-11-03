@@ -220,7 +220,7 @@ export function pickActiveServer(
  * 只在「API 独立域名」的部署形态下可达。自建最常见的单域名反代把根路径
  * 交给 Web 前端、只把 `/api/*` 转给 server,此时 `/health` 会落到前端的
  * 404 页 —— 地址完全可用却被判为不可达(QA 评审 P0-1,已对
- * hp-server.dzo-mermaid.ts.net 实测复现)。
+ * selfhost.example.test 实测复现)。
  *
  * `/api/me` 在两种形态下都由 server 处理,且无凭证时稳定返回 401 ——
  * 这恰恰是「API 活着」的最强信号,不需要任何认证态。

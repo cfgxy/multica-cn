@@ -186,12 +186,12 @@ func TestSSHTargetAliasAcceptsOnlyRegisteredAliasShape(t *testing.T) {
 		want   string
 		ok     bool
 	}{
-		{target: "ssh:gti-server", want: "gti-server", ok: true},
+		{target: "ssh:devbox", want: "devbox", ok: true},
 		{target: "ssh:dev_2", want: "dev_2", ok: true},
 		{target: "ssh:gti.example", ok: false},
-		{target: "ssh:user@gti-server", ok: false},
+		{target: "ssh:user@devbox", ok: false},
 		{target: "ssh:-oProxyCommand=x", ok: false},
-		{target: "gti-server", ok: false},
+		{target: "devbox", ok: false},
 	} {
 		got, ok := fileaccess.SSHTargetAlias(tc.target)
 		if got != tc.want || ok != tc.ok {
@@ -211,10 +211,10 @@ func TestSSHConfigDeclaresOnlyExactExplicitAlias(t *testing.T) {
 	if err := os.WriteFile(config, []byte("Host *.example\n  User ignored\nInclude conf.d/*.conf\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(include, []byte("Host gti-server gti-readonly\n  HostName gti\n"), 0o600); err != nil {
+	if err := os.WriteFile(include, []byte("Host devbox readonly-box\n  HostName devbox.example.internal\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !sshConfigDeclaresAlias("gti-server", []string{config}) {
+	if !sshConfigDeclaresAlias("devbox", []string{config}) {
 		t.Fatal("explicit included alias was not recognized")
 	}
 	if sshConfigDeclaresAlias("unregistered", []string{config}) {
@@ -262,7 +262,7 @@ func TestExecuteFileOperationSSHAppliesOperationDeadline(t *testing.T) {
 	})
 	policy, version := policyDispatchFields(t)
 	_, err := executeFileOperation(context.Background(), protocol.DaemonFileOperationDispatch{
-		TargetID: "ssh:gti-server", Kind: string(fileaccess.KindMetadata), Path: "/configured/file", Roots: []string{"/configured"},
+		TargetID: "ssh:devbox", Kind: string(fileaccess.KindMetadata), Path: "/configured/file", Roots: []string{"/configured"},
 		Policy: policy, PolicyVersion: version,
 	})
 	if !errors.Is(err, fileaccess.ErrorTargetUnreachable) {
@@ -273,7 +273,7 @@ func TestExecuteFileOperationSSHAppliesOperationDeadline(t *testing.T) {
 func TestSFTPFileSessionHonorsCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := newSFTPFileSession(ctx, "gti-server")
+	_, err := newSFTPFileSession(ctx, "devbox")
 	if !errors.Is(err, fileaccess.ErrorTargetUnreachable) {
 		t.Fatalf("error = %v", err)
 	}
@@ -297,7 +297,7 @@ func TestExecuteFileOperationSSHReadsResolvedFileAndRejectsEscape(t *testing.T) 
 
 	policy, version := policyDispatchFields(t)
 	got, err := executeFileOperation(context.Background(), protocol.DaemonFileOperationDispatch{
-		TargetID: "ssh:gti-server", Kind: string(fileaccess.KindRead), Path: "/configured/notes.txt", Roots: []string{"/configured"},
+		TargetID: "ssh:devbox", Kind: string(fileaccess.KindRead), Path: "/configured/notes.txt", Roots: []string{"/configured"},
 		Offset: 2, Length: 3, Policy: policy, PolicyVersion: version,
 	})
 	if err != nil {
@@ -309,14 +309,14 @@ func TestExecuteFileOperationSSHReadsResolvedFileAndRejectsEscape(t *testing.T) 
 	}
 
 	_, err = executeFileOperation(context.Background(), protocol.DaemonFileOperationDispatch{
-		TargetID: "ssh:gti-server", Kind: string(fileaccess.KindMetadata), Path: "/configured/escape", Roots: []string{"/configured"},
+		TargetID: "ssh:devbox", Kind: string(fileaccess.KindMetadata), Path: "/configured/escape", Roots: []string{"/configured"},
 		Policy: policy, PolicyVersion: version,
 	})
 	if !errors.Is(err, fileaccess.ErrorSymlinkEscapeDenied) {
 		t.Fatalf("escape error = %v", err)
 	}
 	_, err = executeFileOperation(context.Background(), protocol.DaemonFileOperationDispatch{
-		TargetID: "ssh:gti-server", Kind: string(fileaccess.KindMetadata), Path: "/configured/sensitive", Roots: []string{"/configured"},
+		TargetID: "ssh:devbox", Kind: string(fileaccess.KindMetadata), Path: "/configured/sensitive", Roots: []string{"/configured"},
 		Policy: policy, PolicyVersion: version,
 	})
 	if !errors.Is(err, fileaccess.ErrorSensitivePathDenied) {
@@ -337,7 +337,7 @@ func TestExecuteFileOperationSSHListsThroughRegisteredTarget(t *testing.T) {
 	defer restore()
 	policy, version := policyDispatchFields(t)
 	got, err := executeFileOperation(context.Background(), protocol.DaemonFileOperationDispatch{
-		TargetID: "ssh:gti-server", Kind: string(fileaccess.KindList), Path: "/configured/docs", Roots: []string{"/configured"},
+		TargetID: "ssh:devbox", Kind: string(fileaccess.KindList), Path: "/configured/docs", Roots: []string{"/configured"},
 		Limit: 1, Policy: policy, PolicyVersion: version,
 	})
 	if err != nil {
