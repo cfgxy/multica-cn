@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc audit env-exec api-dev web-dev web-release desktop-dev desktop-build android-build mcp-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-render mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
+.PHONY: help makehelp dev server daemon cli multica build test test-redis-down migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy orphans gc audit env-exec api-dev web-dev web-release desktop-dev desktop-build android-build mcp-dev daemon-build daemon-install daemon-update daemon-update-systemd daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-render mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall check-slot use
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
 ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $(WORKTREE_ENV_FILE)),$(WORKTREE_ENV_FILE),$(MAIN_ENV_FILE)))
@@ -188,7 +188,9 @@ selfhost-stop: ## Stop the self-hosted Docker Compose stack (overlays docker-com
 daemon-build: ## Build the runtime daemon CLI with release version metadata
 	cd server && go build -ldflags "-X main.version=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1 | sed 's/^v//') -X main.commit=$$(git rev-parse --short HEAD) -X main.date=$$(date -u '+%Y-%m-%dT%H:%M:%SZ')" -o bin/multica ./cmd/multica
 
-# 部署参数：以「执行 make 的普通用户」为 daemon 运行用户（内部自动 sudo，勿用 sudo make）。
+# 部署参数：以「执行 make 的普通用户」为 daemon 运行用户（勿用 sudo make）。
+# daemon-install 需要 sudo；daemon-update 在无免密 sudo 时仍更新二进制并安全重启，
+# 但跳过 systemd / node-exporter / linger 等主机配置收敛。
 # 换机器按规格覆盖：make daemon-install CPU_QUOTA=400% MEMORY_HIGH=8G MEMORY_MAX=12G
 # 背压准入阈值不在本文件：参数唯一权威源 = 空间设置（web UI），经心跳下发到 daemon
 # 热生效（RUYI-618）；systemd env 注入已退役，杜绝双源漂移。
@@ -197,7 +199,7 @@ daemon-build: ## Build the runtime daemon CLI with release version metadata
 #   make daemon-install PROFILE=idata  → multica-daemon@idata，读 ~/.multica/profiles/idata/
 PROFILE ?= default
 
-# 主机侧渲染参数持久化（RUYI-396）：daemon-install / daemon-update 渲染安装成功后，
+# 主机侧渲染参数持久化（RUYI-396）：daemon-install / 有免密 sudo 的 daemon-update 渲染安装成功后，
 # 把当次生效值写回该文件；下次渲染前先读回——已按机配置的值不会被裸跑 update
 # 静默冲回默认。优先级：make 命令行传参 > 本文件 > 下方代码默认；手工微调直接
 # 编辑该文件，删除该文件即恢复代码默认。
@@ -243,7 +245,7 @@ NODE_EXPORTER_UNIT_RENDER = sed \
 # 渲染参数持久化写回（install/update 安装成功后调用；在 recipe 内展开为多行 shell）
 define DAEMON_RENDER_PERSIST
 printf '%s\n' \
-	  '# multica-daemon systemd unit 渲染参数（主机侧持久化，由 make daemon-install / daemon-update 维护）' \
+	  '# multica-daemon systemd unit 渲染参数（主机侧持久化，由 make daemon-install / 有免密 sudo 的 daemon-update 维护）' \
 	  '# 优先级：make 命令行传参 > 本文件 > Makefile 代码默认；手工微调直接编辑本文件，删除即恢复默认' \
 	  'CPU_QUOTA ?= $(CPU_QUOTA)' \
 	  'MEMORY_HIGH ?= $(MEMORY_HIGH)' \
@@ -378,9 +380,21 @@ daemon-install: daemon-build ## Install daemon as systemd instance: make daemon-
 daemon-preflight: ## Read-only check of kernel/system prerequisites for the OOM guard
 	@bash deploy/oom-preflight.sh
 
-daemon-update: daemon-build ## Re-render and converge multica-daemon@.service from the current template (auto snapshot + diff first), then install, daemon-reload, restart every enabled multica-daemon@* instance (pass PROFILE=<name> to restart only that one)
-	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make daemon-update' as the regular user (sudo is invoked internally)"; exit 1; fi
+daemon-update: daemon-build ## Update daemon binary and restart PROFILE (default when omitted); converge systemd config only with passwordless sudo
+	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make daemon-update' as the regular user"; exit 1; fi
 	install -m755 server/bin/multica $(HOME)/.local/bin/multica
+	@if sudo -n true >/dev/null 2>&1; then \
+		$(MAKE) --no-print-directory daemon-update-systemd PROFILE="$(PROFILE)"; \
+	else \
+		echo "WARN: passwordless sudo unavailable; skipped systemd unit, daemon-reload, linger, node-exporter, and host render-parameter updates"; \
+		bash scripts/daemon-update-restart.sh "$(PROFILE)" "$(HOME)/.local/bin/multica"; \
+	fi
+
+# Privileged half of daemon-update. The public target calls this only after
+# `sudo -n true` succeeds, so unattended updates never block on a password
+# prompt. PROFILE is always explicit here; the public target defaults it to
+# `default` and never fans out to every enabled profile.
+daemon-update-systemd:
 	@if [ -f $(DAEMON_RENDER_MK) ]; then echo "== 读回主机渲染参数：$(DAEMON_RENDER_MK) =="; fi
 	$(DAEMON_UNIT_RENDER) deploy/multica-daemon@.service.template > /tmp/multica-daemon@.service
 	@if [ -f /etc/systemd/system/multica-daemon@.service ]; then \
@@ -403,20 +417,13 @@ daemon-update: daemon-build ## Re-render and converge multica-daemon@.service fr
 	@loginctl show-user $(USER) -p Linger || true
 	# node-exporter 收敛（RUYI-618）：与 install 同一套收敛，幂等
 	@$(call ENSURE_NODE_EXPORTER)
-	# deerflow 配置收敛（RUYI-548）：带 PROFILE 只收敛该实例；不带则收敛 default + 全部 enabled 实例（先于重启）
-	@$(call DEERFLOW_CONVERGE_SCOPE,$(if $(filter command line,$(origin PROFILE)),$(PROFILE),ALL))
+	# deerflow 配置收敛（RUYI-548）：daemon-update 始终只处理目标 PROFILE
+	@$(call DEERFLOW_CONVERGE_SCOPE,$(PROFILE))
 	sudo systemctl daemon-reload
-	@if [ "$(origin PROFILE)" = "command line" ]; then \
-		units="multica-daemon@$(PROFILE).service"; \
-	else \
-		units="$$(systemctl list-unit-files 'multica-daemon@*.service' --no-legend 2>/dev/null | awk '$$2 == "enabled" {print $$1}' | grep -v '^multica-daemon@\.service$$' | sort -u)"; \
-	fi; \
-	if [ -z "$$units" ]; then \
-		echo "WARN: 未发现 enabled 的 multica-daemon@* 实例；unit 已重渲染安装，实例需手动启动"; \
-	else \
-		for u in $$units; do echo "== restart $$u =="; sudo systemctl restart "$$u"; done; \
-		for u in $$units; do systemctl --no-pager --lines=0 status "$$u" || true; done; \
-	fi
+	@unit="multica-daemon@$(PROFILE).service"; \
+		echo "== restart $$unit =="; \
+		sudo systemctl restart "$$unit"; \
+		systemctl --no-pager --lines=0 status "$$unit"
 
 # 卸载 = 只清 systemd 启动项与 oom-guard：默认 multica-daemon.service、模板
 # multica-daemon@.service 及全部已启用实例、guard 脚本/单元，并顺带停掉手动
