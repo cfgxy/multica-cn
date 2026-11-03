@@ -1,5 +1,5 @@
 /**
- * server-config 的纯逻辑测试(RUYI-4)。
+ * server-config 的纯逻辑测试(EXM-4)。
  *
  * 覆盖目标是方案里点名的三类分支:
  *   1. 默认项合成 —— 内置项来源于构建期 env、不落盘、恒在列表首位
@@ -35,7 +35,7 @@ import {
 const custom = (over: Partial<ServerEntry> = {}): ServerEntry => ({
   id: "srv_1",
   name: "Home lab",
-  apiUrl: "https://selfhost-node.example.test",
+  apiUrl: "https://selfhost.example.test",
   webUrl: null,
   builtIn: false,
   ...over,
@@ -228,7 +228,7 @@ describe("composeServerList", () => {
 describe("resolveWebUrl(webUrl 回退)", () => {
   it("webUrl 为 null 时回退 apiUrl —— 单域名部署零配置", () => {
     expect(resolveWebUrl(custom({ webUrl: null }))).toBe(
-      "https://selfhost-node.example.test",
+      "https://selfhost.example.test",
     );
   });
 
@@ -443,7 +443,7 @@ describe("切换服务器后六处消费点的取值", () => {
   const selfHosted = custom({
     id: "srv_self",
     name: "Home lab",
-    apiUrl: "https://selfhost-node.example.test",
+    apiUrl: "https://selfhost.example.test",
     webUrl: null, // 单域名部署:Web 与 API 同源
   });
   const servers = composeServerList(builtIn, [selfHosted]);
@@ -460,11 +460,11 @@ describe("切换服务器后六处消费点的取值", () => {
       // ③ lib/attachment-url —— 服务器相对路径的附件
       attachment: `${apiUrl}/api/attachments/att-1/download`,
       // ④ issue/[id] —— Copy link / Open on web
-      issueLink: `${webUrl}/acme/issue/RUYI-4`,
+      issueLink: `${webUrl}/acme/issue/EXM-4`,
       // ⑤ project/[id] —— Open on web
       projectLink: `${webUrl}/acme/projects/p-1`,
       // ⑥ comment-context-menu —— Copy Link
-      commentLink: `${webUrl}/acme/issue/RUYI-4#comment-c-1`,
+      commentLink: `${webUrl}/acme/issue/EXM-4#comment-c-1`,
     };
   };
 
@@ -473,22 +473,22 @@ describe("切换服务器后六处消费点的取值", () => {
       apiFetch: "https://api.multica.ai/api/me",
       ws: "wss://api.multica.ai/ws",
       attachment: "https://api.multica.ai/api/attachments/att-1/download",
-      issueLink: "https://multica.ai/acme/issue/RUYI-4",
+      issueLink: "https://multica.ai/acme/issue/EXM-4",
       projectLink: "https://multica.ai/acme/projects/p-1",
-      commentLink: "https://multica.ai/acme/issue/RUYI-4#comment-c-1",
+      commentLink: "https://multica.ai/acme/issue/EXM-4#comment-c-1",
     });
   });
 
   it("切到单域名自建项:六处全部指向新地址,Web 跳转走回退值", () => {
     expect(consume("srv_self")).toEqual({
-      apiFetch: "https://selfhost-node.example.test/api/me",
-      ws: "wss://selfhost-node.example.test/ws",
+      apiFetch: "https://selfhost.example.test/api/me",
+      ws: "wss://selfhost.example.test/ws",
       attachment:
-        "https://selfhost-node.example.test/api/attachments/att-1/download",
-      issueLink: "https://selfhost-node.example.test/acme/issue/RUYI-4",
-      projectLink: "https://selfhost-node.example.test/acme/projects/p-1",
+        "https://selfhost.example.test/api/attachments/att-1/download",
+      issueLink: "https://selfhost.example.test/acme/issue/EXM-4",
+      projectLink: "https://selfhost.example.test/acme/projects/p-1",
       commentLink:
-        "https://selfhost-node.example.test/acme/issue/RUYI-4#comment-c-1",
+        "https://selfhost.example.test/acme/issue/EXM-4#comment-c-1",
     });
   });
 
@@ -497,7 +497,7 @@ describe("切换服务器后六处消费点的取值", () => {
       { ...selfHosted, webUrl: "https://app.example.test" },
     ]);
     const active = pickActiveServer(withWeb, "srv_self");
-    expect(active.apiUrl).toBe("https://selfhost-node.example.test");
+    expect(active.apiUrl).toBe("https://selfhost.example.test");
     expect(resolveWebUrl(active)).toBe("https://app.example.test");
   });
 });
