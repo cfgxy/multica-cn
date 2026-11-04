@@ -2662,6 +2662,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// RUYI-48: a running job formally absorbs the issue's
 					// queued messages into its own run (task-token scoped).
 					r.Post("/consume-queued-tasks", h.ConsumeQueuedTasksForIssue)
+					r.Post("/no-action", h.RecordTaskNoAction)
 					r.Post("/rerun", h.RerunIssue)
 					r.Post("/tasks/{taskId}/retry", h.RetryTask)
 					r.Post("/quick-actions/{quickActionId}/run", h.RunQuickAction)

@@ -232,6 +232,9 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"This is a default, not",
 		"Use a routable issue key in the PR title, body, or branch",
 		"include the PR URL when a PR exists",
+		"multica issue no-action <issue-id> --reason",
+		"exit without posting a comment",
+		"multica squad activity <issue-id> no_action",
 		"Closes MUL-2759",
 		"--status backlog",
 		// The only sanctioned pr_url reference is the negative compatibility

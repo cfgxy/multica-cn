@@ -209,6 +209,47 @@ func TestAgentResponsibilityMentionUsesCurrentIssueSquadAssignment(t *testing.T)
 	testutil.Call(t, testHandler.CreateComment, request(http.MethodPost, outsiderID, outsiderTaskID, "", otherMention)).Want(http.StatusCreated)
 }
 
+func TestTaskBoundExternalAgentCanDeliverWithoutResponsibilityMention(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := dbfx.Runtime(t, "task-bound-terminal-runtime")
+	leaderID := dbfx.Agent(t, "task-bound-terminal-leader", runtimeID)
+	externalID := dbfx.Agent(t, "task-bound-terminal-external", runtimeID)
+	squadID := dbfx.Squad(t, "task-bound-terminal-squad", leaderID)
+	issueID := dbfx.Issue(t, "task-bound terminal delivery", testutil.Cols{
+		"assignee_type": "squad",
+		"assignee_id":   squadID,
+	})
+	triggerID := dbfx.Comment(t, issueID, "please verify this", testutil.Cols{
+		"author_type": "agent",
+		"author_id":   leaderID,
+	})
+	taskID := dbfx.Task(t, externalID, testutil.Cols{
+		"runtime_id":         runtimeID,
+		"issue_id":           issueID,
+		"trigger_comment_id": triggerID,
+		"status":             "running",
+		"started_at":         testutil.Raw("now()"),
+	})
+
+	req := commentRequest(http.MethodPost, issueID, "", map[string]any{
+		"content":   "Verification completed; the requested evidence is attached to this result.",
+		"parent_id": triggerID,
+	})
+	req.Header.Set("X-Agent-ID", externalID)
+	req.Header.Set("X-Task-ID", taskID)
+	req.Header.Set("X-Actor-Source", "task_token")
+	var created CommentResponse
+	testutil.Call(t, testHandler.CreateComment, req).Want(http.StatusCreated).JSON(&created)
+
+	var sourceTaskID, parentID string
+	dbfx.QueryRow(t, `SELECT source_task_id, parent_id FROM comment WHERE id = $1`, created.ID).Scan(&sourceTaskID, &parentID)
+	if sourceTaskID != taskID || parentID != triggerID {
+		t.Fatalf("task-bound terminal comment source=%s parent=%s, want task=%s parent=%s", sourceTaskID, parentID, taskID, triggerID)
+	}
+}
+
 func TestAgentCommentSelfMentionGateRejectsBeforeWrites(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")

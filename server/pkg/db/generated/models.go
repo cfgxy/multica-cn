@@ -221,6 +221,9 @@ type AgentTaskQueue struct {
 	CancelActorID           pgtype.UUID        `json:"cancel_actor_id"`
 	LocalDirectoryScope     []byte             `json:"local_directory_scope"`
 	ChatModelSnapshot       pgtype.Text        `json:"chat_model_snapshot"`
+	NoActionAt              pgtype.Timestamptz `json:"no_action_at"`
+	NoActionReason          pgtype.Text        `json:"no_action_reason"`
+	CommentOutputAt         pgtype.Timestamptz `json:"comment_output_at"`
 }
 
 type AgentToLabel struct {

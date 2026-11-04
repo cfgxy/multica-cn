@@ -74,7 +74,7 @@ match, or the link resolves to the wrong entity (or to nothing).
 
 | To…                  | type     | uuid from       | What the backend does                                    |
 | -------------------- | -------- | --------------- | -------------------------------------------------------- |
-| trigger an agent     | `agent`  | agent.id        | enqueues a run for that agent (`EnqueueTaskForMention`)  |
+| trigger an agent     | `agent`  | agent.id        | enqueues a run for that agent; when this is the current assigned squad's Leader, the run keeps that squad's Leader role |
 | hand work to a squad | `squad`  | squad.id        | resolves the squad's `leader_id` and enqueues a run for the LEADER agent |
 | link a person        | `member` | member.user_id  | renders a link; enqueues NOTHING — no agent run          |
 | reference an issue   | `issue`  | issue.id        | renders a link; enqueues NOTHING — always safe           |
@@ -85,6 +85,11 @@ The mention trigger set is computed by `computeMentionedAgentCommentTriggers`
 It acts on two types only: the `squad` branch resolves the squad and adds its
 leader to the trigger set; everything that is not `agent` after that is skipped
 (`if m.Type != "agent" { continue }`), then the `agent` branch adds that agent.
+A direct `agent` mention receives one role-sensitive exception: when the issue is
+assigned to a squad and the target is that squad's current Leader, the backend
+uses the same Leader trigger shape as a squad mention. It will not overwrite an
+explicit worker task or another squad's Leader context; that trigger is reported
+blocked with `task_role_conflict` instead.
 A `member` or `issue` mention reaches neither branch, so it enqueues no task.
 
 A `member` mention therefore does NOT make a person "run", and this skill does

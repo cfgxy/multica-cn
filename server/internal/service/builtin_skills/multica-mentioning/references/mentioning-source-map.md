@@ -40,7 +40,9 @@ a pointer.
 | `squad` → shared enqueue helper calls `EnqueueTaskForSquadLeader` | `server/internal/handler/comment.go:1141-1147` |
 | Everything not `agent` after the squad branch is skipped: `if m.Type != "agent" { continue }` | `server/internal/handler/comment.go:1437-1439` |
 | `agent` branch: load agent in workspace, then add the agent trigger | `server/internal/handler/comment.go:1440-1464` |
-| `agent` → shared enqueue helper calls `EnqueueTaskForMention` (a run for that agent) | `server/internal/handler/comment.go:1148-1154` |
+| Direct `agent` mention of the current assigned squad's Leader is upgraded to the same leader-role trigger shape as `@squad`; other direct agent mentions remain generic | `server/internal/handler/comment.go` (search `assignedSquadForMentionedLeader`) |
+| Incompatible pending role/HEAD is blocked as `task_role_conflict`, never merged or reported as deferred | `server/internal/handler/comment.go` (`resolveCommentTriggerEnqueue`); `server/pkg/db/queries/agent.sql` (`HasIncompatiblePendingTaskForSquadLeader`) |
+| Generic `agent` → shared enqueue helper calls `EnqueueTaskForMention`; leader-shaped direct mentions call `EnqueueTaskForSquadLeader` | `server/internal/handler/comment.go` (`enqueueSingleCommentTrigger`) |
 | **`member` and `issue` mentions reach neither branch — they enqueue NOTHING.** A `member` mention fails the `!= "agent"` skip at lines 1437-1439 (the squad branch above it only matches `squad`); an `issue` mention does the same. | `server/internal/handler/comment.go:1397,1437-1439` |
 
 ## Preview and suppression

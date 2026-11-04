@@ -540,8 +540,8 @@ func TestTaskIsSquadLeaderReadsProtocolFields(t *testing.T) {
 // negative regression for MUL-5811: on a current server, a plain agent that
 // happens to document a "## Squad Operating Protocol" section in its own
 // instructions must get the ordinary comment prompt — no squad activity
-// obligation, no silent-exit licence, and the unconditional reply imperative
-// intact.
+// obligation or leader-only silent exit. Ordinary tasks still get their own
+// explicit issue no-action path.
 func TestBuildPromptProtocolHeadingInInstructionsIsNotALeader(t *testing.T) {
 	t.Parallel()
 
@@ -568,8 +568,8 @@ func TestBuildPromptProtocolHeadingInInstructionsIsNotALeader(t *testing.T) {
 			t.Fatalf("ordinary agent prompt leaked squad-leader rule %q\n---\n%s", banned, out)
 		}
 	}
-	if !strings.Contains(out, "Post your reply as a comment") {
-		t.Fatalf("ordinary agent prompt lost the unconditional reply imperative\n---\n%s", out)
+	if !strings.Contains(out, "multica issue no-action issue-123 --reason") || !strings.Contains(out, "Post your reply as a comment") {
+		t.Fatalf("ordinary agent prompt lost the no-action-scoped reply imperative\n---\n%s", out)
 	}
 }
 

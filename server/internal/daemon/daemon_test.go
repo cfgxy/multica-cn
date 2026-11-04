@@ -6108,10 +6108,10 @@ func TestBuildPromptSquadLeaderMultiThreadCarvesOutNoAction(t *testing.T) {
 	ordinaryTask.IsLeaderTask = false
 	ordinaryTask.Agent = &AgentData{Name: "Reg", Instructions: "You are a regular agent."}
 	ordinary := BuildPrompt(ordinaryTask, "claude")
-	if !strings.Contains(ordinary, ". Post ONE reply per thread") {
-		t.Fatalf("ordinary multi-thread prompt missing the unconditional imperative\n---\n%s", ordinary)
+	if !strings.Contains(ordinary, "multica issue no-action") || !strings.Contains(ordinary, "skip this ENTIRE fan-out block") {
+		t.Fatalf("ordinary multi-thread prompt missing the no-action carve-out\n---\n%s", ordinary)
 	}
-	if strings.Contains(ordinary, "Unless your outcome is") || strings.Contains(ordinary, "skip this ENTIRE fan-out block") {
+	if strings.Contains(ordinary, "Unless your outcome is") {
 		t.Fatalf("ordinary multi-thread prompt leaked the leader carve-out\n---\n%s", ordinary)
 	}
 }

@@ -4790,7 +4790,7 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 			// does not leave an uncovered delivery obligation to hand to another
 			// task; doing so would re-enqueue the very cascade the circuit breaker
 			// rejected.
-			if res.reason == ReasonAgentOnlyCascadeBlocked {
+			if res.reason == ReasonAgentOnlyCascadeBlocked || res.reason == ReasonTaskRoleConflict {
 				continue
 			}
 			headSha := h.TaskService.ResolveIssueReviewSHAParam(ctx, task.IssueID)

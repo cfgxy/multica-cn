@@ -205,6 +205,7 @@ WITH active_task AS MATERIALIZED (
     FROM agent_task_queue
     WHERE id = $1::uuid
       AND status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND no_action_at IS NULL
     FOR SHARE
 ), touched_issue AS (
     UPDATE issue SET
@@ -279,6 +280,8 @@ type CreateCommentRow struct {
 // Centralizing this here means every comment entrypoint inherits both
 // guarantees regardless of what a caller passes. The "Updated date" sort and
 // the daemon GC TTL both read updated_at, so this consistency is load-bearing.
+// Task-token comments lock their active task row so cancellation and comment
+// creation serialize; a NULL active_task_id preserves non-task comment paths.
 func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (CreateCommentRow, error) {
 	row := q.db.QueryRow(ctx, createComment,
 		arg.ActiveTaskID,
