@@ -444,6 +444,7 @@ WITH active_task AS MATERIALIZED (
     FROM agent_task_queue
     WHERE id = sqlc.narg('active_task_id')::uuid
       AND status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND no_action_at IS NULL
     FOR SHARE
 ), touched_issue AS (
     UPDATE issue SET

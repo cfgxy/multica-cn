@@ -60,7 +60,7 @@ func (s *TaskService) ConsumeQueuedTasksForRunningTask(ctx context.Context, cons
 		if err != nil {
 			return fmt.Errorf("load consuming task: %w", err)
 		}
-		if !consuming.IssueID.Valid || (consuming.Status != "dispatched" && consuming.Status != "running" && consuming.Status != "waiting_local_directory") {
+		if consuming.NoActionAt.Valid || !consuming.IssueID.Valid || (consuming.Status != "dispatched" && consuming.Status != "running" && consuming.Status != "waiting_local_directory") {
 			return ErrTaskNotConsumable
 		}
 
@@ -81,6 +81,8 @@ func (s *TaskService) ConsumeQueuedTasksForRunningTask(ctx context.Context, cons
 			ParentTaskID:  consuming.ID,
 			IssueID:       consuming.IssueID,
 			AgentID:       consuming.AgentID,
+			IsLeaderTask:  consuming.IsLeaderTask,
+			SquadID:       consuming.SquadID,
 			HeadSha:       pgtype.Text{String: derefText(headSha), Valid: headSha != nil},
 		})
 		if err != nil {
