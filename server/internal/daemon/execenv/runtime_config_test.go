@@ -549,8 +549,9 @@ func TestProtocolHeadingInInstructionsGetsNoLeaderBrief(t *testing.T) {
 			t.Fatalf("ordinary-agent brief leaked leader-only content %q\n---\n%s", banned, out)
 		}
 	}
-	if !strings.Contains(out, "**Post your final results as a comment — this step is mandatory**") {
-		t.Fatalf("ordinary-agent brief lost the unconditional reply obligation\n---\n%s", out)
+	if !strings.Contains(out, "this step is mandatory unless this trigger needs no material action") ||
+		!strings.Contains(out, "multica issue no-action <issue-id> --reason") {
+		t.Fatalf("ordinary-agent brief lost the no-action-scoped reply obligation\n---\n%s", out)
 	}
 }
 

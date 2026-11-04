@@ -5499,7 +5499,8 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		// mention-after-work bullet is gone with the block (the discipline
 		// itself stays in `## Mentions`, pinned by the Mentions subtest).
 		for _, want := range []string{
-			"**Post your final results as a comment — this step is mandatory**",
+			"this step is mandatory unless this trigger needs no material action",
+			"multica issue no-action",
 			"whose only possible reply is another courtesy",
 		} {
 			if !strings.Contains(s, want) {

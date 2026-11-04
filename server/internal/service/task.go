@@ -4879,24 +4879,26 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// for assignment-triggered tasks it is NULL and the fallback is top-level.
 	// Chat tasks have no IssueID and are handled separately below.
 	//
-	// Exception (RUYI-867): a task whose squad leader recorded a no_action
-	// evaluation is terminal by design — the evaluation record replaces the
-	// fallback comment, and the synthetic mention would only retrigger a run.
+	// Explicit no_action is terminal by design. Ordinary tasks persist it on the
+	// task row; squad leaders keep their existing activity-log contract. Either
+	// marker replaces the fallback comment that would otherwise manufacture a new
+	// mention and retrigger the issue.
 	if task.IssueID.Valid {
-		noAction, noActionErr := HasSquadLeaderNoActionEvaluationForTask(ctx, s.Queries, task)
-		if noActionErr != nil {
-			slog.Warn("checking squad leader no_action evaluation failed",
-				"task_id", util.UUIDToString(task.ID),
-				"issue_id", util.UUIDToString(task.IssueID),
-				"agent_id", util.UUIDToString(task.AgentID),
-				"error", noActionErr,
-			)
+		noAction := task.NoActionAt.Valid
+		if !noAction {
+			var noActionErr error
+			noAction, noActionErr = HasSquadLeaderNoActionEvaluationForTask(ctx, s.Queries, task)
+			if noActionErr != nil {
+				slog.Warn("checking squad leader no_action evaluation failed",
+					"task_id", util.UUIDToString(task.ID),
+					"issue_id", util.UUIDToString(task.IssueID),
+					"agent_id", util.UUIDToString(task.AgentID),
+					"error", noActionErr,
+				)
+			}
 		}
-		// Exception (RUYI-867): a task whose squad leader recorded a no_action
-		// evaluation is terminal by design — the evaluation record replaces the
-		// fallback comment, and the synthetic mention would only retrigger a run.
 		if noAction {
-			slog.Info("skipping completion fallback comment: squad leader no_action evaluation recorded",
+			slog.Info("skipping completion fallback comment: no_action recorded",
 				"task_id", util.UUIDToString(task.ID),
 				"issue_id", util.UUIDToString(task.IssueID),
 				"agent_id", util.UUIDToString(task.AgentID),

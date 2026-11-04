@@ -2303,10 +2303,10 @@ WHERE issue_id = @issue_id
 -- dispatched/running). The caller must NOT blindly enqueue a fresh task in that
 -- case — a dispatched sibling would trip the unique index — it defers to
 -- completion reconciliation unless no active task exists at all.
-UPDATE agent_task_queue
+UPDATE agent_task_queue AS target
 SET coalesced_comment_ids = (
         SELECT COALESCE(array_agg(DISTINCT e), '{}')
-        FROM unnest(array_append(coalesced_comment_ids, trigger_comment_id)) AS e
+        FROM unnest(array_append(target.coalesced_comment_ids, target.trigger_comment_id)) AS e
         WHERE e IS NOT NULL AND e <> @new_trigger_comment_id::uuid
     ),
     trigger_comment_id = @new_trigger_comment_id::uuid,
@@ -2326,8 +2326,19 @@ SET coalesced_comment_ids = (
     trigger_evidence_kind = sqlc.narg('new_trigger_evidence_kind'),
     trigger_evidence_ref_id = sqlc.narg('new_trigger_evidence_ref_id')::uuid,
     runtime_mcp_overlay = sqlc.narg('new_runtime_mcp_overlay'),
-    runtime_connected_apps = sqlc.narg('new_runtime_connected_apps')
-WHERE id = (
+    runtime_connected_apps = sqlc.narg('new_runtime_connected_apps'),
+    -- A direct @agent mention of the issue's assigned squad leader executes in
+    -- that squad's leader role. Upgrade only a role-neutral queued task; never
+    -- overwrite an explicit worker task or a different squad's leader context.
+    is_leader_task = CASE
+        WHEN sqlc.arg('new_is_leader_task')::bool THEN TRUE
+        ELSE target.is_leader_task
+    END,
+    squad_id = CASE
+        WHEN sqlc.arg('new_is_leader_task')::bool THEN sqlc.narg('new_squad_id')::uuid
+        ELSE target.squad_id
+    END
+WHERE target.id = (
     SELECT t.id FROM agent_task_queue t
     WHERE t.issue_id = @issue_id
       AND t.agent_id = @agent_id
@@ -2344,10 +2355,83 @@ WHERE id = (
           COALESCE(sqlc.narg('head_sha')::text, '') = ''
           OR t.context->>'head_sha' = sqlc.narg('head_sha')::text
       )
+      AND (
+          NOT sqlc.arg('new_is_leader_task')::bool
+          OR (t.is_leader_task AND t.squad_id = sqlc.narg('new_squad_id')::uuid)
+          OR (NOT t.is_leader_task AND t.squad_id IS NULL)
+      )
     ORDER BY t.created_at DESC
     LIMIT 1
 )
-RETURNING id, coalesced_comment_ids;
+  AND (
+      target.status = 'queued'
+      OR (target.status = 'deferred' AND target.context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+      COALESCE(sqlc.narg('head_sha')::text, '') = ''
+      OR target.context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+  AND (
+      NOT sqlc.arg('new_is_leader_task')::bool
+      OR (target.is_leader_task AND target.squad_id = sqlc.narg('new_squad_id')::uuid)
+      OR (NOT target.is_leader_task AND target.squad_id IS NULL)
+  )
+RETURNING target.id, target.coalesced_comment_ids;
+
+-- name: HasIncompatiblePendingTaskForSquadLeader :one
+-- A leader trigger must never merge into a task whose role or reviewed HEAD is
+-- different. The caller reports the saved comment as blocked instead of
+-- claiming it was deferred under a task that cannot execute it correctly.
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue t
+    WHERE t.issue_id = @issue_id
+      AND t.agent_id = @agent_id
+      AND (
+          t.status IN ('queued', 'dispatched')
+          OR (t.status = 'deferred' AND t.context->>'channel_issue_media_pending' = 'true')
+      )
+      AND (
+          (
+              COALESCE(sqlc.narg('head_sha')::text, '') <> ''
+              AND t.context->>'head_sha' IS DISTINCT FROM sqlc.narg('head_sha')::text
+          )
+          OR NOT (
+              (t.is_leader_task AND t.squad_id = sqlc.arg('squad_id')::uuid)
+              OR (
+                  NOT t.is_leader_task
+                  AND t.squad_id IS NULL
+                  AND (
+                      t.status = 'queued'
+                      OR (t.status = 'deferred' AND t.context->>'channel_issue_media_pending' = 'true')
+                  )
+              )
+          )
+      )
+) AS incompatible;
+
+-- name: SetAgentTaskNoAction :one
+UPDATE agent_task_queue
+SET no_action_at = now(),
+    no_action_reason = NULLIF(btrim(sqlc.arg('reason')::text), '')
+WHERE id = sqlc.arg('task_id')::uuid
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND no_action_at IS NULL
+  AND comment_output_at IS NULL
+RETURNING *;
+
+-- name: MarkAgentTaskCommentOutput :one
+UPDATE agent_task_queue
+SET comment_output_at = COALESCE(comment_output_at, now())
+WHERE id = sqlc.arg('task_id')::uuid
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND no_action_at IS NULL
+RETURNING *;
+
+-- name: HasCommentForSourceTask :one
+SELECT EXISTS (
+    SELECT 1 FROM comment
+    WHERE source_task_id = sqlc.arg('task_id')::uuid
+) AS exists;
 
 -- name: RegisterPlannedCommentForActiveTask :one
 -- #5914: durably register a comment that lost an enqueue race as a PLANNED
@@ -2393,6 +2477,40 @@ WHERE id = (
 )
 RETURNING id, coalesced_comment_ids;
 
+-- name: RegisterPlannedCommentForActiveSquadLeaderTask :one
+-- Lost-race recovery for a leader trigger. Both candidate selection and the
+-- actual update are role- and HEAD-exact, so a worker task or another squad can
+-- never inherit a leader-only delivery obligation while the statement waits on
+-- a row lock.
+UPDATE agent_task_queue AS target
+SET coalesced_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(array_append(target.coalesced_comment_ids, @comment_id::uuid)) AS e
+        WHERE e IS NOT NULL
+    )
+WHERE target.id = (
+    SELECT t.id FROM agent_task_queue t
+    WHERE t.issue_id = @issue_id
+      AND t.agent_id = @agent_id
+      AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND t.is_leader_task
+      AND t.squad_id = sqlc.arg('squad_id')::uuid
+      AND (
+          COALESCE(sqlc.narg('head_sha')::text, '') = ''
+          OR t.context->>'head_sha' = sqlc.narg('head_sha')::text
+      )
+    ORDER BY t.created_at DESC
+    LIMIT 1
+)
+  AND target.status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND target.is_leader_task
+  AND target.squad_id = sqlc.arg('squad_id')::uuid
+  AND (
+      COALESCE(sqlc.narg('head_sha')::text, '') = ''
+      OR target.context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+RETURNING target.id, target.coalesced_comment_ids;
+
 -- name: GetAgentTaskForUpdate :one
 -- Row-locked load of one task. ConsumeQueuedTasksForRunningTask holds this lock
 -- across the whole consumption transaction so a concurrent CompleteTask (which
@@ -2429,6 +2547,8 @@ SET status = 'cancelled',
 WHERE issue_id = sqlc.arg('issue_id')::uuid
   AND agent_id = sqlc.arg('agent_id')::uuid
   AND status = 'queued'
+  AND is_leader_task = sqlc.arg('is_leader_task')::bool
+  AND squad_id IS NOT DISTINCT FROM sqlc.narg('squad_id')::uuid
   AND (
       COALESCE(sqlc.narg('head_sha')::text, '') = ''
       OR context->>'head_sha' = sqlc.narg('head_sha')::text
@@ -2674,6 +2794,20 @@ WHERE issue_id = $1 AND agent_id = $2
     status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
   );
+
+-- name: HasActiveSquadLeaderTaskForIssueAndAgent :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE issue_id = @issue_id
+      AND agent_id = @agent_id
+      AND status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND is_leader_task
+      AND squad_id = sqlc.arg('squad_id')::uuid
+      AND (
+          COALESCE(sqlc.narg('head_sha')::text, '') = ''
+          OR context->>'head_sha' = sqlc.narg('head_sha')::text
+      )
+) AS has_active;
 
 -- name: GetLatestTaskRoleForIssueAndAgent :one
 -- Returns the role markers from the agent's most recent task on this issue.

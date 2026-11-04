@@ -62,6 +62,11 @@ const (
 	// ReasonAlreadyActive: a run is already active/pending for this target and
 	// this trigger did not coalesce.
 	ReasonAlreadyActive ReasonCode = "already_active"
+	// ReasonTaskRoleConflict: a task for this (issue, agent) pair already owns the
+	// pending slot under a different execution role, squad, or reviewed HEAD. The
+	// comment is saved, but no run is promised: merging would execute it under the
+	// wrong briefing and manufacturing a deferred success would hide that fact.
+	ReasonTaskRoleConflict ReasonCode = "task_role_conflict"
 	// ReasonSelfTriggerSuppressed: the target was intentionally not (re-)triggered
 	// because doing so would be a self-trigger the guard suppresses, and no active
 	// run remains to cover it — e.g. a squad leader's own @mention of its squad

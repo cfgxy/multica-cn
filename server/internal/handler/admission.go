@@ -60,6 +60,7 @@ const (
 	ReasonAgentRuntimeRequired       = dispatch.ReasonAgentRuntimeRequired
 	ReasonAttributionBlocked         = dispatch.ReasonAttributionBlocked
 	ReasonAlreadyActive              = dispatch.ReasonAlreadyActive
+	ReasonTaskRoleConflict           = dispatch.ReasonTaskRoleConflict
 	ReasonSelfTriggerSuppressed      = dispatch.ReasonSelfTriggerSuppressed
 	ReasonAgentOnlyCascadeBlocked    = dispatch.ReasonAgentOnlyCascadeBlocked
 	ReasonIssueStatusNotDispatchable = dispatch.ReasonIssueStatusNotDispatchable
@@ -128,6 +129,8 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "the run couldn't be attributed to a responsible member"
 	case ReasonAlreadyActive:
 		return "a run is already active for this target"
+	case ReasonTaskRoleConflict:
+		return "a run with a different execution role is already active for this target"
 	default:
 		return "the run was blocked"
 	}
