@@ -117,3 +117,4 @@ e2e-artifacts/
 /.ruyi-*-review/
 /ruyi-*-phase*-inventory.md
 /qa/fixtures/ruyi-*/
+/_ctx/
