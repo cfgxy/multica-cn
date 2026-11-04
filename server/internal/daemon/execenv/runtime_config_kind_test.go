@@ -303,14 +303,10 @@ func TestBackgroundTaskSafetySlimHardPins(t *testing.T) {
 		"exact child PID you started",
 		"`multica daemon status --output json`",
 		"never kill it if it is the reported daemon PID",
-		// Resource self-cleanup (2026-09-30 incident): without these pins a
-		// trim can silently re-allow QA/build runs to leave dev stacks running
-		// — exactly the ~10 GB of orphaned next-servers the paragraph exists
-		// to prevent.
-		"Everything you start is yours to stop",
+		// Resource self-cleanup (2026-09-30 incident) still applies to
+		// run-owned resources. Cross-run handoffs are pinned separately below.
+		"Stop their run-owned resources before this turn ends",
 		"`make down`/`make destroy`, `docker compose down`",
-		"not something the next run inherits",
-		"start it with a TTL (`make up --ttl 24`)",
 		"scripts/qa-clean.sh --issue <issue-id> --yes",
 		"Build outputs, screenshots, and QA evidence are runtime-local",
 	} {
@@ -333,5 +329,42 @@ func TestBackgroundTaskSafetySlimHardPins(t *testing.T) {
 	// precisely no longer run-owned after handoff.
 	if strings.Contains(out, "The rules above") {
 		t.Errorf("slim Background Task Safety must not reintroduce the ambiguous \"The rules above\" scoping sentence\n---\n%s", out)
+	}
+}
+
+// Cross-run environments have a handoff contract; they do not defer this
+// run's test/build results or reserve pool capacity for work without a delta.
+func TestBackgroundTaskSafetyIssueBriefCrossRunHandoff(t *testing.T) {
+	t.Parallel()
+
+	out := buildMetaSkillContent("claude", TaskContextForEnv{IssueID: "i-1"})
+	for _, want := range []string{
+		"Run-owned tests, builds, and temporary tasks must finish and have their required results collected in this turn; never background-and-yield",
+		"Explicitly authorized cross-run test/QA environments (VMs, AVDs, services, fixtures)",
+		"only for unfinished P0/P1 work that depends on them or an explicitly approved next step that needs them",
+		"detach its lifecycle from this run",
+		"responsible owner, TTL or expiry time",
+		"immutable version (commit SHA or artifact digest)",
+		"accessible evidence and rebuild inputs",
+		"stop/release handle, and release conditions",
+		"Do not occupy resource pools solely for unapproved P2 work, historical evidence backfill, or speculation without a delta",
+		"Owner-approved P2 work kept on this issue may reacquire or explicitly retain the environment when the approved next step depends on it",
+		"Actively stop/release retained resources as soon as they are no longer needed",
+		"expiry is a backstop, not proof of cleanup",
+		"only if it preserves authorized handoffs",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("issue brief missing cross-run resource boundary %q", want)
+		}
+	}
+	for _, banned := range []string{
+		"Everything you start is yours to stop before this turn ends",
+		"not something the next run inherits",
+		"the persistent-service handoff above is the only exception",
+		"Do not occupy resource pools for P2 work",
+	} {
+		if strings.Contains(out, banned) {
+			t.Errorf("issue brief still carries unconditional teardown rule %q", banned)
+		}
 	}
 }
