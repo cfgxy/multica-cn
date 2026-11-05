@@ -167,6 +167,35 @@ func TestPipeCrashSelfHeal_StopsAfterThreeConsecutiveCrashes(t *testing.T) {
 	}
 }
 
+// TestPipeCrashSelfHeal_StopsAfterFreshNonCrashFailure verifies that the
+// preserved first failure cannot make a later non-crash retry look like a
+// consecutive pipe crash.
+func TestPipeCrashSelfHeal_StopsAfterFreshNonCrashFailure(t *testing.T) {
+	t.Parallel()
+
+	d, _ := newTranscriptRecorder(t)
+	d.cfg.PipeCrashSelfHealEnabled = true
+	fb := &fakeBackend{
+		results: []agent.Result{
+			resumedPipeCrashResult(),
+			{Status: "failed", Error: "fresh session failed for an unrelated reason"},
+			{Status: "completed", Output: "third attempt must not run", SessionID: "unreachable"},
+		},
+	}
+
+	result, _, retired := runSelfHealLoop(t, d, fb, "sess-old")
+
+	if len(fb.calls) != 2 {
+		t.Fatalf("expected the fresh non-crash failure to stop retries, got %d calls", len(fb.calls))
+	}
+	if result.Status != "failed" || result.SessionID != "" {
+		t.Fatalf("expected the original unrecoverable failure to stand, got %+v", result)
+	}
+	if retired != "sess-old" {
+		t.Fatalf("expected the original session to stay retired, got %q", retired)
+	}
+}
+
 // TestPipeCrashSelfHeal_DisabledRestoresLegacyFailFast pins the kill switch:
 // with it off, a pipe crash is exactly what pre-RUYI-659 behaviour made of it
 // — one failed attempt, no retry, no retirement, no progress message — even
@@ -245,6 +274,29 @@ type crashAfterToolsBackend struct {
 	calls atomic.Int32
 }
 
+// freshRetryCrashAfterToolsBackend crashes before work on the resumed attempt,
+// then emits tool_use before the fresh retry crashes. A third call would replay
+// an attempt that already had observable side effects.
+type freshRetryCrashAfterToolsBackend struct {
+	calls atomic.Int32
+}
+
+func (b *freshRetryCrashAfterToolsBackend) Execute(_ context.Context, _ string, _ agent.ExecOptions) (*agent.Session, error) {
+	call := b.calls.Add(1)
+	msgCh := make(chan agent.Message, 1)
+	if call == 2 {
+		msgCh <- agent.Message{Type: agent.MessageToolUse, Tool: "bash"}
+	}
+	close(msgCh)
+	resCh := make(chan agent.Result, 1)
+	if call == 1 {
+		resCh <- resumedPipeCrashResult()
+	} else {
+		resCh <- freshPipeCrashResult()
+	}
+	return &agent.Session{Messages: msgCh, Result: resCh}, nil
+}
+
 func (b *crashAfterToolsBackend) Execute(_ context.Context, _ string, _ agent.ExecOptions) (*agent.Session, error) {
 	b.calls.Add(1)
 	msgCh := make(chan agent.Message, 1)
@@ -300,5 +352,43 @@ func TestPipeCrashSelfHeal_DoesNotRetryAfterToolsRun(t *testing.T) {
 	}
 	if notices := noticeContents(t, rec); len(notices) != 0 {
 		t.Fatalf("expected no progress notices, got %+v", notices)
+	}
+}
+
+// TestPipeCrashSelfHeal_DoesNotRetryAfterToolsOnFreshRetry verifies that the
+// fresh retry's tool count, rather than the preserved first result's count,
+// controls whether another pipe-crash retry is safe.
+func TestPipeCrashSelfHeal_DoesNotRetryAfterToolsOnFreshRetry(t *testing.T) {
+	t.Parallel()
+
+	d, _ := newTranscriptRecorder(t)
+	d.cfg.PipeCrashSelfHealEnabled = true
+	backend := &freshRetryCrashAfterToolsBackend{}
+	ctx := context.Background()
+	taskLog := slog.Default()
+	opts := agent.ExecOptions{ResumeSessionID: "sess-old"}
+	var msgSeq atomic.Int32
+
+	first, tools, err := d.executeAndDrain(ctx, backend, "prompt", opts, taskLog, "task-pipe-crash", "", "claude", &msgSeq)
+	if err != nil {
+		t.Fatalf("initial attempt error: %v", err)
+	}
+	result, _, retired := d.freshSessionRetryLoop(
+		ctx, backend, nil, opts, taskLog,
+		&Task{ID: "task-pipe-crash", PriorSessionID: "sess-old"},
+		execenv.TaskContextForEnv{},
+		&execenv.Environment{WorkDir: t.TempDir()},
+		"brief", &msgSeq,
+		first, tools, "claude",
+	)
+
+	if backend.calls.Load() != 2 {
+		t.Fatalf("expected tool use on the fresh retry to stop retries, got %d calls", backend.calls.Load())
+	}
+	if result.Status != "failed" || result.SessionID != "" {
+		t.Fatalf("expected the original unrecoverable failure to stand, got %+v", result)
+	}
+	if retired != "sess-old" {
+		t.Fatalf("expected the original session to stay retired, got %q", retired)
 	}
 }
