@@ -82,6 +82,17 @@ type CapabilitySpec struct {
 	Probeable bool
 }
 
+// PermissionAddons is the complete set of permissions requested by a Lark
+// QR confirmation. The registration flow consumes this as the `addons` query
+// parameter: scopes authorize OpenAPI calls and events retain the inbound
+// message-subscription contract, which cannot be verified through REST.
+type PermissionAddons struct {
+	Scopes []string `json:"scopes"`
+	Events []string `json:"events"`
+}
+
+const receiveMessageEvent = "im.message.receive_v1"
+
 // ProbeCapabilityBudget bounds one whole capability sweep (four synthetic
 // calls worst case), shared by the install-time probe and the HTTP recheck
 // endpoint.
@@ -152,12 +163,40 @@ var capabilityCatalog = []CapabilitySpec{
 	}, true},
 }
 
-// CapabilityCatalog returns the catalog in display order. The slice is a
-// copy, so callers cannot mutate the source of truth.
+// CapabilityCatalog returns the catalog in display order. The result is a
+// deep copy, so callers cannot mutate the source of truth through nested
+// scope groups.
 func CapabilityCatalog() []CapabilitySpec {
 	out := make([]CapabilitySpec, len(capabilityCatalog))
-	copy(out, capabilityCatalog)
+	for i, spec := range capabilityCatalog {
+		out[i] = CapabilitySpec{
+			ID:        spec.ID,
+			Probeable: spec.Probeable,
+			Scopes:    make([][]string, len(spec.Scopes)),
+		}
+		for j, group := range spec.Scopes {
+			out[i].Scopes[j] = append([]string(nil), group...)
+		}
+	}
 	return out
+}
+
+// PermissionAddonsForRegistration returns every catalogued scope, including
+// scope alternatives, for Lark's QR grant dialog. Requesting the full union
+// keeps new installs and incremental grants in sync with the capability
+// catalog. The receive event is intentionally separate: it is needed for
+// inbound delivery but is not a REST-probeable permission.
+func PermissionAddonsForRegistration() PermissionAddons {
+	var scopes []string
+	for _, spec := range capabilityCatalog {
+		for _, group := range spec.Scopes {
+			scopes = append(scopes, group...)
+		}
+	}
+	return PermissionAddons{
+		Scopes: MissingScopes(scopes, nil),
+		Events: []string{receiveMessageEvent},
+	}
 }
 
 // CapabilitySpecByID looks up one capability's spec.

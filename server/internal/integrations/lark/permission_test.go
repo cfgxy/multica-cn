@@ -43,6 +43,11 @@ func TestCapabilityCatalogShape(t *testing.T) {
 	if len(capabilityCatalog[0].Scopes) == 0 {
 		t.Fatal("CapabilityCatalog returned the backing slice, not a copy")
 	}
+	catalog = CapabilityCatalog()
+	catalog[0].Scopes[0][0] = "mutated"
+	if capabilityCatalog[0].Scopes[0][0] == "mutated" {
+		t.Fatal("CapabilityCatalog returned nested scope backing storage")
+	}
 }
 
 // TestCapabilityCatalogShareLinkRows pins the RUYI-572 rows' exact
