@@ -26,9 +26,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/llm"
-	"github.com/multica-ai/multica/server/internal/util/secretbox"
 )
 
 // Source labels for the priority chain. Frontend and run records carry them
@@ -156,12 +156,12 @@ func (r *Resolver) ScoringEnabled(ctx context.Context, workspaceID pgtype.UUID) 
 
 // State is the module-config view the status cards render.
 type State struct {
-	Status          string // ok | unconfigured | error | disabled
-	EffectiveSource string // module_config | deploy_default | "" when unconfigured
-	Model           string
-	LastValidatedAt pgtype.Timestamptz
+	Status           string // ok | unconfigured | error | disabled
+	EffectiveSource  string // module_config | deploy_default | "" when unconfigured
+	Model            string
+	LastValidatedAt  pgtype.Timestamptz
 	LastValidationOK pgtype.Bool
-	ValidationError string
+	ValidationError  string
 }
 
 // ScoringState derives the four-state closed loop for the quality/status
@@ -259,8 +259,14 @@ func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInp
 		if err != nil && !isNoRows(err) {
 			return zero, nil, err
 		}
+		if in.APIKey == "" && err == nil && len(stored.ApiKeyEncrypted) > 0 && !sameBaseURL(in.BaseURL, stored.BaseUrl.String) {
+			return zero, &ValidationFailure{
+				Kind:    llm.ErrorKindCredentials,
+				Message: "A new API key is required when changing the Base URL",
+			}, nil
+		}
 		plainKey := in.APIKey
-		if plainKey == "" && err == nil && len(stored.ApiKeyEncrypted) > 0 {
+		if plainKey == "" && err == nil && len(stored.ApiKeyEncrypted) > 0 && sameBaseURL(in.BaseURL, stored.BaseUrl.String) {
 			plain, err := r.box.Open(stored.ApiKeyEncrypted)
 			if err != nil {
 				return zero, nil, err
@@ -303,10 +309,61 @@ func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInp
 // ValidateOnly runs a validation pass for the given input without touching
 // the store (pre-save preview from the config card).
 func (r *Resolver) ValidateOnly(ctx context.Context, workspaceID pgtype.UUID, in SaveInput) (ValidationOutcome, error) {
-	// The workspace id is unused today; it keeps the signature ready for
-	// per-workspace rate limits without a breaking change.
-	_ = workspaceID
-	return r.validate(ctx, strings.TrimSpace(in.BaseURL), strings.TrimSpace(in.APIKey), strings.TrimSpace(in.Model)), nil
+	baseURL := strings.TrimSpace(in.BaseURL)
+	model := strings.TrimSpace(in.Model)
+	apiKey := strings.TrimSpace(in.APIKey)
+	if baseURL != "" && model != "" && apiKey == "" {
+		stored, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
+		if err != nil && !isNoRows(err) {
+			return ValidationOutcome{}, err
+		}
+		if err == nil && len(stored.ApiKeyEncrypted) > 0 && sameBaseURL(baseURL, stored.BaseUrl.String) {
+			plain, err := r.box.Open(stored.ApiKeyEncrypted)
+			if err != nil {
+				return ValidationOutcome{}, err
+			}
+			apiKey = string(plain)
+		}
+	}
+	return r.validate(ctx, baseURL, apiKey, model), nil
+}
+
+// ListModels queries the selected OpenAI-compatible endpoint without saving
+// the draft. An empty API key reuses the workspace's encrypted key only when
+// the Base URL is unchanged.
+func (r *Resolver) ListModels(ctx context.Context, workspaceID pgtype.UUID, baseURL, apiKey string) ([]string, error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	apiKey = strings.TrimSpace(apiKey)
+	if baseURL == "" {
+		return nil, ErrIncompleteCreds
+	}
+	if apiKey == "" {
+		stored, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
+		if err != nil && !isNoRows(err) {
+			return nil, err
+		}
+		if err == nil && len(stored.ApiKeyEncrypted) > 0 && sameBaseURL(baseURL, stored.BaseUrl.String) {
+			plain, err := r.box.Open(stored.ApiKeyEncrypted)
+			if err != nil {
+				return nil, err
+			}
+			apiKey = string(plain)
+		}
+	}
+	listCtx, cancel := context.WithTimeout(ctx, validationTimeout)
+	defer cancel()
+	return llm.New(llm.Config{
+		BaseURL:                   baseURL,
+		APIKey:                    apiKey,
+		IsolateAmbientCredentials: true,
+	}).ListModels(listCtx)
+}
+
+func sameBaseURL(a, b string) bool {
+	normalize := func(value string) string {
+		return strings.TrimRight(strings.TrimSpace(value), "/")
+	}
+	return normalize(a) != "" && normalize(a) == normalize(b)
 }
 
 // RevalidateStored re-runs validation against the stored override and
@@ -335,9 +392,9 @@ func (r *Resolver) RevalidateStored(ctx context.Context, workspaceID pgtype.UUID
 
 	nowValidated := pgtype.Timestamptz{Time: r.now(), Valid: true}
 	if err := r.store.UpdateSelfEvolutionModelConfigValidation(ctx, db.UpdateSelfEvolutionModelConfigValidationParams{
-		WorkspaceID:        workspaceID,
-		LastValidatedAt:    nowValidated,
-		LastValidationOk:   pgtype.Bool{Bool: outcome.OK, Valid: true},
+		WorkspaceID:         workspaceID,
+		LastValidatedAt:     nowValidated,
+		LastValidationOk:    pgtype.Bool{Bool: outcome.OK, Valid: true},
 		LastValidationError: maskedOrEmpty(outcome),
 	}); err != nil {
 		return outcome, err
@@ -383,8 +440,9 @@ func (*incompleteCredsError) Error() string {
 
 func (r *Resolver) buildClient(row db.SelfEvolutionModelConfig) (*llm.Client, error) {
 	cfg := llm.Config{
-		BaseURL:      row.BaseUrl.String,
-		DefaultModel: row.Model.String,
+		BaseURL:                   row.BaseUrl.String,
+		DefaultModel:              row.Model.String,
+		IsolateAmbientCredentials: true,
 	}
 	if len(row.ApiKeyEncrypted) > 0 {
 		plain, err := r.box.Open(row.ApiKeyEncrypted)
@@ -403,7 +461,12 @@ func (r *Resolver) validate(ctx context.Context, baseURL, apiKey, model string) 
 	if baseURL == "" || model == "" {
 		return ValidationOutcome{OK: false, Kind: llm.ErrorKindNotConfigured, Message: "base URL and model are both required"}
 	}
-	client := llm.New(llm.Config{APIKey: apiKey, BaseURL: baseURL, DefaultModel: model})
+	client := llm.New(llm.Config{
+		APIKey:                    apiKey,
+		BaseURL:                   baseURL,
+		DefaultModel:              model,
+		IsolateAmbientCredentials: true,
+	})
 	pingCtx, cancel := context.WithTimeout(ctx, validationTimeout)
 	defer cancel()
 	_, err := client.GenerateText(pingCtx, model, "You are a connectivity health check. Reply with the single word: pong.", "ping")

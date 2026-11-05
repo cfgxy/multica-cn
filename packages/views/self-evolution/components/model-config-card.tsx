@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { clientErrorMessage } from "@multica/core/api";
@@ -9,6 +9,7 @@ import {
   useRestoreSelfEvolutionModelDefault,
   useSaveSelfEvolutionModelConfig,
   useValidateSelfEvolutionModelConfig,
+  useListSelfEvolutionModelConfigModels,
   selfEvolutionModelConfigOptions,
 } from "@multica/core/self-evolution";
 import {
@@ -49,14 +50,20 @@ import { SecretField } from "./secret-field";
  * classified reason next to the fields). The stored key is never echoed —
  * an empty SecretField means "keep the existing key".
  */
-export function ModelConfigCard({
-  wsId,
-  showConsumers = false,
-}: {
+type ModelConfigCardProps = {
   wsId: string;
   /** Module-config page variant: name the scoring consumer and its switch. */
   showConsumers?: boolean;
-}) {
+};
+
+export function ModelConfigCard(props: ModelConfigCardProps) {
+  return <WorkspaceModelConfigCard key={props.wsId} {...props} />;
+}
+
+function WorkspaceModelConfigCard({
+  wsId,
+  showConsumers = false,
+}: ModelConfigCardProps) {
   const { t } = useT("self-evolution");
   const locale = useLocale();
   const currentMember = useCurrentMember(wsId);
@@ -65,6 +72,7 @@ export function ModelConfigCard({
   const config = useQuery(selfEvolutionModelConfigOptions(wsId));
   const save = useSaveSelfEvolutionModelConfig(wsId);
   const validate = useValidateSelfEvolutionModelConfig(wsId);
+  const listModels = useListSelfEvolutionModelConfigModels();
   const restore = useRestoreSelfEvolutionModelDefault(wsId);
 
   const [baseUrl, setBaseUrl] = useState("");
@@ -74,6 +82,11 @@ export function ModelConfigCard({
   const [loaded, setLoaded] = useState(false);
   const [confirmRestore, setConfirmRestore] = useState(false);
   const [validation, setValidation] = useState<{ ok: boolean; message: string } | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [modelListMessage, setModelListMessage] = useState("");
+  const [modelListFailed, setModelListFailed] = useState(false);
+  const modelListRequest = useRef(0);
+  const configMutationRequest = useRef(0);
 
   useEffect(() => {
     const data = config.data;
@@ -83,6 +96,13 @@ export function ModelConfigCard({
     setScoringEnabled(data.override?.scoring_enabled ?? data.scoring_enabled);
     setLoaded(true);
   }, [config.data, loaded]);
+
+  useEffect(() => {
+    return () => {
+      modelListRequest.current++;
+      configMutationRequest.current++;
+    };
+  }, []);
 
   if (config.isPending) {
     return (
@@ -124,6 +144,11 @@ export function ModelConfigCard({
   const data = config.data;
   const resolved = data.resolved;
   const override = data.override;
+  const storedBaseUrl = override?.base_url?.trim().replace(/\/+$/, "") ?? "";
+  const draftBaseUrl = baseUrl.trim().replace(/\/+$/, "");
+  const replacementKeyRequired = override?.has_api_key === true
+    && apiKey.trim() === ""
+    && storedBaseUrl !== draftBaseUrl;
 
   const errorKindLabel = (kind: string) => {
     switch (kind) {
@@ -137,11 +162,13 @@ export function ModelConfigCard({
 
   /** Validate-first save: a failed check never reaches the PUT. */
   const saveWithValidation = () => {
+    const requestId = ++configMutationRequest.current;
     setValidation(null);
     validate.mutate(
       { base_url: baseUrl.trim(), api_key: apiKey, model: model.trim() },
       {
         onSuccess: (result) => {
+          if (requestId !== configMutationRequest.current) return;
           if (!result.ok) {
             setValidation({ ok: false, message: result.message || errorKindLabel(result.error_kind) });
             return;
@@ -155,17 +182,20 @@ export function ModelConfigCard({
             },
             {
               onSuccess: () => {
+                if (requestId !== configMutationRequest.current) return;
                 setApiKey("");
                 setValidation({ ok: true, message: "" });
                 toast.success(t(($) => $.modelConfig.saveOk));
               },
               onError: (e) => {
+                if (requestId !== configMutationRequest.current) return;
                 toast.error(clientErrorMessage(e) ?? t(($) => $.knowledge.error.write));
               },
             },
           );
         },
         onError: (e) => {
+          if (requestId !== configMutationRequest.current) return;
           toast.error(clientErrorMessage(e) ?? t(($) => $.knowledge.error.write));
         },
       },
@@ -173,9 +203,11 @@ export function ModelConfigCard({
   };
 
   const revalidateStored = () => {
+    const requestId = ++configMutationRequest.current;
     setValidation(null);
     validate.mutate(undefined, {
       onSuccess: (result) => {
+        if (requestId !== configMutationRequest.current) return;
         setValidation(
           result.ok
             ? { ok: true, message: "" }
@@ -183,12 +215,68 @@ export function ModelConfigCard({
         );
       },
       onError: (e) => {
+        if (requestId !== configMutationRequest.current) return;
         toast.error(clientErrorMessage(e) ?? t(($) => $.knowledge.error.write));
       },
     });
   };
 
-  const busy = validate.isPending || save.isPending;
+  const fetchModels = () => {
+    const requestId = ++modelListRequest.current;
+    setModelListMessage("");
+    setModelListFailed(false);
+    listModels.mutate(
+      { base_url: baseUrl.trim(), api_key: apiKey },
+      {
+        onSuccess: (result) => {
+          if (requestId !== modelListRequest.current) return;
+          setModels(result.ok ? result.models : []);
+          setModelListFailed(!result.ok);
+          const failureFallback = t(($) => $.modelConfig.modelsFailed);
+          setModelListMessage(
+            result.ok
+              ? result.models.length > 0
+                ? t(($) => $.modelConfig.modelsLoaded, { count: result.models.length })
+                : t(($) => $.modelConfig.modelsEmpty)
+              : result.error_kind
+                ? `${failureFallback} (${errorKindLabel(result.error_kind)})`
+                : result.message || failureFallback,
+          );
+        },
+        onError: (error) => {
+          if (requestId !== modelListRequest.current) return;
+          setModels([]);
+          setModelListFailed(true);
+          setModelListMessage(clientErrorMessage(error) ?? t(($) => $.modelConfig.modelsFailed));
+        },
+      },
+    );
+  };
+
+  const restoreConfig = () => {
+    const requestId = ++configMutationRequest.current;
+    modelListRequest.current++;
+    restore.mutate(undefined, {
+      onSuccess: () => {
+        if (requestId !== configMutationRequest.current) return;
+        setApiKey("");
+        setBaseUrl("");
+        setModel("");
+        setScoringEnabled(true);
+        setModels([]);
+        setModelListMessage("");
+        setModelListFailed(false);
+        setValidation(null);
+        toast.success(t(($) => $.modelConfig.restoreOk));
+      },
+      onError: (e) => {
+        if (requestId !== configMutationRequest.current) return;
+        toast.error(clientErrorMessage(e) ?? t(($) => $.knowledge.error.write));
+      },
+    });
+  };
+
+  const busy = validate.isPending || save.isPending || restore.isPending;
   const lastValidated = override?.last_validated_at;
 
   return (
@@ -219,8 +307,15 @@ export function ModelConfigCard({
             <Input
               id="model-config-base-url"
               value={baseUrl}
-              disabled={!canManage || !data.encryption_ready}
-              onChange={(e) => setBaseUrl(e.target.value)}
+              disabled={!canManage || !data.encryption_ready || busy || listModels.isPending}
+              onChange={(e) => {
+                modelListRequest.current++;
+                setBaseUrl(e.target.value);
+                setApiKey("");
+                setModels([]);
+                setModelListMessage("");
+                setModelListFailed(false);
+              }}
               placeholder="https://llm-gateway.example.com/v1"
             />
           </div>
@@ -229,20 +324,48 @@ export function ModelConfigCard({
             <SecretField
               id="model-config-api-key"
               value={apiKey}
-              onChange={setApiKey}
+              onChange={(value) => {
+                modelListRequest.current++;
+                setApiKey(value);
+                setModels([]);
+                setModelListMessage("");
+                setModelListFailed(false);
+              }}
               hasExisting={override?.has_api_key === true}
-              disabled={!canManage || !data.encryption_ready}
+              disabled={!canManage || !data.encryption_ready || busy || listModels.isPending}
             />
+            {replacementKeyRequired ? (
+              <p className="text-caption text-muted-foreground" role="note">
+                {t(($) => $.modelConfig.newKeyRequired)}
+              </p>
+            ) : null}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="model-config-model">{t(($) => $.modelConfig.model)}</Label>
             <Input
               id="model-config-model"
+              list="model-config-model-options"
               value={model}
-              disabled={!canManage || !data.encryption_ready}
+              disabled={!canManage || !data.encryption_ready || busy}
               onChange={(e) => setModel(e.target.value)}
               placeholder={resolved.model || "gpt-4o-mini"}
             />
+            <datalist id="model-config-model-options">
+              {models.map((modelId) => <option key={modelId} value={modelId} />)}
+            </datalist>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!canManage || !data.encryption_ready || listModels.isPending || baseUrl.trim() === ""}
+              onClick={fetchModels}
+            >
+              {listModels.isPending ? t(($) => $.modelConfig.modelsLoading) : t(($) => $.modelConfig.loadModels)}
+            </Button>
+            {modelListMessage ? (
+              <p className={modelListFailed ? "text-caption text-destructive" : "text-caption text-muted-foreground"} role={modelListFailed ? "alert" : "status"}>
+                {modelListMessage}
+              </p>
+            ) : null}
           </div>
         </div>
 
@@ -255,7 +378,7 @@ export function ModelConfigCard({
               <span className="text-body">{t(($) => $.modelConfig.scoringConsumer)}</span>
               <Switch
                 checked={scoringEnabled}
-                disabled={!canManage}
+                disabled={!canManage || busy}
                 onCheckedChange={(v) => setScoringEnabled(v === true)}
                 aria-label={t(($) => $.modelConfig.scoringConsumer)}
               />
@@ -265,7 +388,7 @@ export function ModelConfigCard({
 
         <div className="flex flex-wrap items-center gap-3">
           {canManage && data.encryption_ready ? (
-            <Button size="sm" disabled={busy || baseUrl.trim() === "" || model.trim() === ""} onClick={saveWithValidation}>
+            <Button size="sm" disabled={busy || replacementKeyRequired || baseUrl.trim() === "" || model.trim() === ""} onClick={saveWithValidation}>
               {busy ? t(($) => $.modelConfig.busy) : t(($) => $.modelConfig.saveAndValidate)}
             </Button>
           ) : null}
@@ -273,7 +396,7 @@ export function ModelConfigCard({
             <Button
               size="sm"
               variant="outline"
-              disabled={restore.isPending || !canManage}
+              disabled={busy || !canManage}
               onClick={() => setConfirmRestore(true)}
             >
               {t(($) => $.modelConfig.restoreDefault)}
@@ -283,7 +406,7 @@ export function ModelConfigCard({
             <Button
               size="sm"
               variant="outline"
-              disabled={validate.isPending}
+              disabled={busy}
               onClick={revalidateStored}
             >
               {t(($) => $.modelConfig.revalidate)}
@@ -329,20 +452,7 @@ export function ModelConfigCard({
           <AlertDialogFooter>
             <AlertDialogCancel>{t(($) => $.skills.cancel)}</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() =>
-                restore.mutate(undefined, {
-                  onSuccess: () => {
-                    setApiKey("");
-                    setBaseUrl("");
-                    setModel("");
-                    setValidation(null);
-                    toast.success(t(($) => $.modelConfig.restoreOk));
-                  },
-                  onError: (e) => {
-                    toast.error(clientErrorMessage(e) ?? t(($) => $.knowledge.error.write));
-                  },
-                })
-              }
+              onClick={restoreConfig}
             >
               {t(($) => $.modelConfig.restoreDefault)}
             </AlertDialogAction>

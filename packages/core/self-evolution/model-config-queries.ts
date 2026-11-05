@@ -64,3 +64,10 @@ export function useValidateSelfEvolutionModelConfig(wsId: string) {
     },
   });
 }
+
+export function useListSelfEvolutionModelConfigModels() {
+  return useMutation({
+    mutationFn: (input: Pick<SelfEvolutionModelConfigSave, "base_url" | "api_key">) =>
+      api.listSelfEvolutionModelConfigModels(input),
+  });
+}
