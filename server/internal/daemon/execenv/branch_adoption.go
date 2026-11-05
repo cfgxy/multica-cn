@@ -98,10 +98,6 @@ func AdoptManagedBranch(gitRoot string, adoption BranchAdoption) (BranchAdoption
 	if branchTip != adoption.ExpectedRemoteSHA {
 		return result, fmt.Errorf("adopt branch: local branch %s is %s, not expected %s", adoption.Branch, branchTip, adoption.ExpectedRemoteSHA)
 	}
-	if refusal := runGitSafeTrimmed(root, "rev-parse", "--verify", "--quiet", guardRefusalRef(adoption.Branch)); refusal != "" {
-		return result, fmt.Errorf("adopt branch: branch %s has a pending delivery-guard refusal at %s", adoption.Branch, shortID(refusal))
-	}
-
 	oldRecordRef, err := readUserStateRef(root, adoption.Branch)
 	if err != nil || oldRecordRef == "" {
 		return result, fmt.Errorf("adopt branch: branch %s has no Multica branch record", adoption.Branch)

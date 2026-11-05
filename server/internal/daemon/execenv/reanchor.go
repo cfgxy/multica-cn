@@ -54,12 +54,8 @@ type ReanchorResult struct {
 //   - the task marker is re-pinned to the new tip before the Git ref
 //     transaction. If that transaction fails, the marker deliberately remains
 //     at the requested target: a retry recognizes that prepared state and
-//     resumes the guarded ref transaction. Preflight fails closed while the
-//     branch and marker disagree, rather than relying on a second filesystem
-//     write whose failure could make the operation permanently unrecoverable;
-//   - a pending delivery-guard refusal marker refuses the operation: the
-//     marker is the guard's in-flight handshake and belongs to its own heal
-//     path (RUYI-479), not to an operator rewrite.
+//     resumes the guarded ref transaction. Ordinary preflight ignores this
+//     explicit recovery state rather than making it a delivery gate.
 //
 // Preconditions: the target must exist, must be exactly one commit ahead of
 // expectedBase (the verified content commit), and expectedBase must be the
@@ -116,12 +112,6 @@ func reanchorBranchWithOperations(gitRoot, branch, target, expectedBase, markerP
 	}
 	defer unlock()
 
-	// Fail closed while the delivery guard holds this branch: a refusal marker
-	// means a previous run was refused and preserved; that handshake has its
-	// own heal path and an operator must not rewrite it underneath.
-	if refusal := runGitSafeTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", guardRefusalRef(branch)); refusal != "" {
-		return result, fmt.Errorf("reanchor: branch %s has a pending delivery-guard refusal at %s; resolve it via the guard's heal path first", branch, shortID(refusal))
-	}
 	if path, checkedOut, err := branchCheckoutPath(gitRoot, branch); err != nil {
 		return result, fmt.Errorf("reanchor: inspect linked worktrees: %w", err)
 	} else if checkedOut {
