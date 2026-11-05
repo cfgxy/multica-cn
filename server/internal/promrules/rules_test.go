@@ -265,3 +265,48 @@ func TestEvaluateAgentRule_KeepsPendingAndDoesNotCreateQueryErrorMappings(t *tes
 		t.Fatalf("sustained verified breach should fire that agent: state=%+v transition=%q", rule, transition)
 	}
 }
+
+func TestReconcileAgentRuleSelectionRequiresFreshMappingAfterReselection(t *testing.T) {
+	rule := validRule()
+	rule.Grouping = GroupAgent
+	rule.ForSeconds = 0
+	agentID := "11111111-1111-1111-1111-111111111111"
+	selected := map[string]pgtype.UUID{agentID: parseRuleUUID(agentID)}
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+
+	transition := evaluateAgentRule(&rule, selected, []Sample{{Labels: map[string]string{"agent_id": agentID}, Value: 25}}, nil, now)
+	if transition != TransitionFired || !AgentState(rule, agentID).Firing {
+		t.Fatalf("verified breach should fire selected agent: state=%+v transition=%q", rule, transition)
+	}
+	if desired := desiredRulePauses([]Rule{rule}, map[string]map[string]pgtype.UUID{rule.ID: selected}); !desired[rule.ID][agentID].Valid {
+		t.Fatalf("firing agent should own a pause: %+v", desired)
+	}
+
+	if !reconcileAgentRuleSelection(&rule, nil) {
+		t.Fatal("deselecting a firing agent must clear its persisted state")
+	}
+	if rule.State.Firing || len(rule.AgentStates) != 0 {
+		t.Fatalf("deselection must reaggregate the rule without stale firing state: %+v", rule)
+	}
+	if desired := desiredRulePauses([]Rule{rule}, map[string]map[string]pgtype.UUID{rule.ID: nil}); len(desired[rule.ID]) != 0 {
+		t.Fatalf("deselected agent must not retain a pause: %+v", desired)
+	}
+
+	if isDue(rule, now.Add(5*time.Second)) {
+		t.Fatal("reselection check must run before the next due evaluation")
+	}
+	if reconcileAgentRuleSelection(&rule, selected) {
+		t.Fatal("reselection without a sample must not create persisted agent state")
+	}
+	if desired := desiredRulePauses([]Rule{rule}, map[string]map[string]pgtype.UUID{rule.ID: selected}); len(desired[rule.ID]) != 0 {
+		t.Fatalf("reselected agent must wait for a fresh verified sample: %+v", desired)
+	}
+
+	transition = evaluateAgentRule(&rule, selected, []Sample{{Labels: map[string]string{"agent_id": agentID}, Value: 25}}, nil, now.Add(30*time.Second))
+	if transition != TransitionFired || !AgentState(rule, agentID).Firing {
+		t.Fatalf("next due verified sample should restore firing state: state=%+v transition=%q", rule, transition)
+	}
+	if desired := desiredRulePauses([]Rule{rule}, map[string]map[string]pgtype.UUID{rule.ID: selected}); !desired[rule.ID][agentID].Valid {
+		t.Fatalf("fresh verified sample should restore the source-owned pause: %+v", desired)
+	}
+}
