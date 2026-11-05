@@ -3,6 +3,9 @@
 package execenv
 
 import (
+	"crypto/sha256"
+	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,6 +215,161 @@ func TestSnapshotWorkerCapturesGitArtifactSmoke(t *testing.T) {
 	if entries, err := os.ReadDir(alias); err != nil || len(entries) != 0 {
 		t.Fatalf("worker mount namespace must be gone; alias entries=%d err=%v", len(entries), err)
 	}
+}
+
+// TestSnapshotWorkerCapturesLinkedWorktreeArtifactSmoke 验证 linked worktree
+// 的工作树与外置 common Git metadata 都在同一个私有 mount namespace 内。它
+// 覆盖 tracked、untracked、binary、ref 和 object 的写入，并确认 bundle 仍可在
+// 独立 clone 中恢复。
+func TestSnapshotWorkerCapturesLinkedWorktreeArtifactSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	scratch := t.TempDir()
+	base := filepath.Join(scratch, "base")
+	linked := filepath.Join(scratch, "linked")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, base, "init", "-q")
+	gitForSnapshotTest(t, base, "config", "user.name", "Test")
+	gitForSnapshotTest(t, base, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(base, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, base, "add", "tracked.txt")
+	gitForSnapshotTest(t, base, "commit", "-qm", "base")
+	gitForSnapshotTest(t, base, "worktree", "add", "-q", "--detach", linked)
+
+	baseline := strings.TrimSpace(gitForSnapshotTest(t, linked, "rev-parse", "HEAD"))
+	commonDir := strings.TrimSpace(gitForSnapshotTest(t, linked, "rev-parse", "--git-common-dir"))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(linked, commonDir)
+	}
+	before := linkedGitFingerprint(t, linked, commonDir)
+
+	unit := func(name, target string) SnapshotUnitSpec {
+		alias := filepath.Join(scratch, name, "alias")
+		upper := filepath.Join(scratch, name, "upper")
+		work := filepath.Join(scratch, name, "work")
+		for _, dir := range []string{alias, upper, work} {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return SnapshotUnitSpec{Target: target, Alias: alias, Upper: upper, Work: work}
+	}
+	artifactDir := filepath.Join(scratch, "artifact")
+	spec := &SnapshotRunSpec{
+		TaskID: "linked-git-artifact-smoke",
+		Units: []SnapshotUnitSpec{
+			unit("worktree", linked),
+			unit("common", commonDir),
+		},
+		Cwd: linked,
+		GitArtifact: &SnapshotGitArtifactSpec{
+			ArtifactDir: artifactDir,
+			Baseline:    baseline,
+			EnvRoot:     filepath.Join(scratch, "env"),
+		},
+	}
+	wrap, err := BuildSnapshotWrap(bin, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := "printf 'changed\\n' > tracked.txt" +
+		" && printf 'untracked\\n' > untracked.txt" +
+		" && printf '\\000\\001\\002\\377' > binary.bin" +
+		" && git add -A" +
+		" && git commit -qm isolated" +
+		" && git update-ref refs/heads/private-isolated HEAD"
+	out, err := spawnWithSnapshotNamespaces(t,
+		bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+		"/bin/sh", "-c", payload)
+	if err != nil {
+		t.Fatalf("worker failed: %v\n%s", err, out)
+	}
+
+	if after := linkedGitFingerprint(t, linked, commonDir); after != before {
+		t.Fatalf("linked worktree snapshot wrote through to pristine Git state\nbefore: %s\nafter:  %s", before, after)
+	}
+	for _, name := range []string{"untracked.txt", "binary.bin"} {
+		if _, err := os.Stat(filepath.Join(linked, name)); !os.IsNotExist(err) {
+			t.Fatalf("worker write %s leaked into linked pristine worktree (stat err=%v)", name, err)
+		}
+	}
+	if got, err := os.ReadFile(filepath.Join(linked, "tracked.txt")); err != nil || string(got) != "base\n" {
+		t.Fatalf("linked pristine tracked file = %q, err=%v; want base content", got, err)
+	}
+
+	clone := filepath.Join(scratch, "clone")
+	gitForSnapshotTest(t, "", "clone", "-q", base, clone)
+	gitForSnapshotTest(t, clone, "fetch", filepath.Join(artifactDir, "changes.bundle"), "HEAD:refs/heads/snapshot")
+	gitForSnapshotTest(t, clone, "checkout", "-q", "snapshot")
+	gitForSnapshotTest(t, clone, "fsck", "--no-dangling")
+	if got := gitForSnapshotTest(t, clone, "show", "snapshot:tracked.txt"); got != "changed\n" {
+		t.Fatalf("captured linked tracked content = %q, want changed", got)
+	}
+	if got := gitForSnapshotTest(t, clone, "show", "snapshot:untracked.txt"); got != "untracked\n" {
+		t.Fatalf("captured linked untracked content = %q, want untracked", got)
+	}
+	if got := []byte(gitForSnapshotTest(t, clone, "show", "snapshot:binary.bin")); string(got) != string([]byte{0, 1, 2, 255}) {
+		t.Fatalf("captured linked binary content = %v", got)
+	}
+}
+
+func linkedGitFingerprint(t *testing.T, worktree, commonDir string) string {
+	t.Helper()
+	gitDir := strings.TrimSpace(gitForSnapshotTest(t, worktree, "rev-parse", "--absolute-git-dir"))
+	return strings.Join([]string{
+		"status=" + gitForSnapshotTest(t, worktree, "status", "--porcelain=v1", "--untracked-files=all"),
+		"refs=" + gitForSnapshotTest(t, worktree, "show-ref", "--head"),
+		"worktree=" + smokeTreeDigest(t, worktree, true),
+		"git-dir=" + smokeTreeDigest(t, gitDir, false),
+		"common-dir=" + smokeTreeDigest(t, commonDir, false),
+	}, " | ")
+}
+
+func smokeTreeDigest(t *testing.T, root string, skipRootGitDir bool) string {
+	t.Helper()
+	hash := sha256.New()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		if skipRootGitDir && path == filepath.Join(root, ".git") && entry.IsDir() {
+			return filepath.SkipDir
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(hash, "%s\\x00%s\\x00", filepath.ToSlash(rel), entry.Type()); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprint(hash, target)
+			return err
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		_, err = hash.Write(contents)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("digest %s: %v", root, err)
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 // TestSnapshotWorkerInterruptedAgentKeepsRecoverableArtifactSmoke covers the
