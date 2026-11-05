@@ -44,6 +44,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -530,17 +531,21 @@ func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries
 	if err != nil {
 		return "", fmt.Errorf("条款「%s」当前版本读取失败: %w", clause.Title, err)
 	}
-	content := strings.TrimRight(p.ClauseText, "\n")
-	synthesized, err := h.renderCarrierFromActiveClausesTx(ctx, qtx, workspaceID,
-		carrierRef{scope: binding.Scope, id: binding.ScopeID}, current, &clauseRenderOverride{
-			ClauseID:          clause.ID,
-			Version:           clause.Version + 1,
-			Content:           content,
-			SupersededContent: currentVersion.Content,
-		})
+	ref := carrierRef{scope: binding.Scope, id: binding.ScopeID}
+	rows, err := h.activeClauseRowsTx(ctx, qtx, workspaceID)
 	if err != nil {
-		return "", fmt.Errorf("条款「%s」资产渲染失败，已阻断：%w", clause.Title, err)
+		return "", err
 	}
+	if err := clausemark.ValidateSnapshot(current, renderedClausesByCarrier(rows, nil)[ref]); err != nil {
+		return "", err
+	}
+	content := strings.TrimRight(p.ClauseText, "\n")
+	synthesized := clausemark.Static(current, renderedClausesByCarrier(rows, &clauseRenderOverride{
+		ClauseID:          clause.ID,
+		Version:           clause.Version + 1,
+		Content:           content,
+		SupersededContent: currentVersion.Content,
+	})[ref])
 	return synthesized, nil
 }
 
