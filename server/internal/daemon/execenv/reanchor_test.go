@@ -521,9 +521,16 @@ func TestReanchorBranchResumesAfterRefTransactionFailureWithoutMarkerRollback(t 
 	}
 
 	gitRun(t, repo, "checkout", branch)
+	t.Setenv("MULTICA_TASK_ID", "reanchor-task")
 	preflight, preflightErr := PreflightWorktree(repo)
-	if preflightErr != nil || preflight.Status != "pass" || preflight.BaseIsAncestor || len(preflight.Warnings) == 0 {
-		t.Fatalf("PreflightWorktree during prepared recovery = %+v, error = %v; want non-blocking diagnostics", preflight, preflightErr)
+	if preflightErr == nil || preflight.Status != "fail" || preflight.BaseIsAncestor || len(preflight.Warnings) == 0 {
+		t.Fatalf("PreflightWorktree during prepared recovery = %+v, error = %v; want ancestor failure with diagnostics", preflight, preflightErr)
+	}
+	if !strings.Contains(preflightErr.Error(), "not proven as an ancestor") {
+		t.Fatalf("prepared recovery preflight error = %v, want ancestor failure", preflightErr)
+	}
+	if len(preflight.Suggestions) != 1 || preflight.Suggestions[0].Kind != "ancestor_break" {
+		t.Fatalf("prepared recovery suggestions = %+v, want ancestor_break", preflight.Suggestions)
 	}
 	gitRun(t, repo, "checkout", "main")
 

@@ -97,7 +97,7 @@ func PreflightWorktree(cwd string) (WorktreePreflight, error) {
 	} else if marker.Branch != "" {
 		result.Warnings = append(result.Warnings, "managed branch metadata is not trusted for this task; preflight will not compare HEAD with the recorded branch")
 	}
-	if trustedMarker && result.Head != "" && len(marker.PreparedReanchor) == 0 {
+	if trustedMarker && result.Head != "" {
 		if _, ancestorErr := runGit(gitRoot, "merge-base", "--is-ancestor", marker.BaseCommit, result.Head); ancestorErr == nil {
 			result.BaseIsAncestor = true
 		} else {
