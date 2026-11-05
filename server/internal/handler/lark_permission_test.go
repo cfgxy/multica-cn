@@ -162,19 +162,18 @@ func TestRecheckLarkPermissions_PersistsHonestTriState(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Capabilities) != 7 {
-		t.Fatalf("expected 7 verdicts, got %d", len(resp.Capabilities))
+	if len(resp.Capabilities) != 6 {
+		t.Fatalf("expected 6 REST-probeable verdicts, got %d", len(resp.Capabilities))
 	}
 	status := map[string]string{}
 	for _, c := range resp.Capabilities {
 		status[c.Capability] = c.Status
 	}
 	want := map[string]string{
-		"receive_messages": "unknown", // never probeable over REST
-		"send_messages":    "granted",
-		"read_history":     "missing", // 99991672 from the stub
-		"media_resources":  "granted",
-		"contact_lookup":   "granted",
+		"send_messages":   "granted",
+		"read_history":    "missing", // 99991672 from the stub
+		"media_resources": "granted",
+		"contact_lookup":  "granted",
 		// RUYI-572: the stub predates the ShareLinkClient surface, so the
 		// share-link probes degrade to honest unknown instead of faking a
 		// verdict — the degradation the install panel shows pre-regrant.
@@ -196,13 +195,13 @@ func TestRecheckLarkPermissions_PersistsHonestTriState(t *testing.T) {
 	// Verdicts are persisted exactly once per capability (upsert, not
 	// accumulate), and a second recheck overwrites in place.
 	n := capabilityStateCount(t, instUUID)
-	if n != 7 {
-		t.Fatalf("expected 7 persisted rows, got %d", n)
+	if n != 6 {
+		t.Fatalf("expected 6 persisted rows, got %d", n)
 	}
 	if w := recheckAs(testUserID, instID); w.Code != http.StatusOK {
 		t.Fatalf("second recheck as workspace owner: want 200, got %d", w.Code)
 	}
-	if n := capabilityStateCount(t, instUUID); n != 7 {
+	if n := capabilityStateCount(t, instUUID); n != 6 {
 		t.Fatalf("recheck must upsert, not accumulate: got %d rows", n)
 	}
 }

@@ -1167,7 +1167,6 @@
     "permissions_grant_description": "Feishu または Lark でこのコードをスキャンし、既存のボットに必要な権限を確認してください。",
     "permissions_grant_open_link": "Feishu または Lark で開く",
     "permissions_grant_failed": "権限付与用の QR コードを準備できませんでした",
-    "permissions_receive_note": "イベント購読に依存するため自動判定できず、実際の送受信をもって判断します。",
     "permission_status_granted": "付与済み",
     "permission_status_missing": "不足",
     "permission_status_unknown": "未判定",

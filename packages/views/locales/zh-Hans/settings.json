@@ -1167,7 +1167,6 @@
     "permissions_grant_description": "请用飞书或 Lark 扫描此二维码，并为现有 Bot 确认所申请的权限。",
     "permissions_grant_open_link": "在飞书或 Lark 中打开",
     "permissions_grant_failed": "未能准备补授权二维码",
-    "permissions_receive_note": "依赖事件订阅，无法自动探测，以实际收发为准。",
     "permission_status_granted": "已开通",
     "permission_status_missing": "缺少",
     "permission_status_unknown": "未判定",

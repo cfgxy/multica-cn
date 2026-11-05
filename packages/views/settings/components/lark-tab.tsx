@@ -409,11 +409,6 @@ export function LarkCapabilityPanel({
                   {statusLabel(c.status)}
                 </span>
                 <span>{capabilityLabel(c.capability)}</span>
-                {c.capability === "receive_messages" && c.status === "unknown" && (
-                  <span className="text-micro text-muted-foreground">
-                    {t(($) => $.lark.permissions_receive_note)}
-                  </span>
-                )}
               </li>
             ))}
           </ul>

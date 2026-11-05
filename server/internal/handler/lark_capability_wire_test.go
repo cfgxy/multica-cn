@@ -98,7 +98,7 @@ func TestListLarkInstallations_EmptyProbeTableServesEmptyArray(t *testing.T) {
 	}
 }
 
-func TestListLarkInstallations_ServesStoredVerdicts(t *testing.T) {
+func TestListLarkInstallations_HidesStoredNonProbeableVerdicts(t *testing.T) {
 	wireLarkInstallServices(t)
 	instID := seedCapabilityWireInstallation(t, "cli_r545_verdicts")
 	if _, err := testPool.Exec(context.Background(), `
@@ -117,14 +117,8 @@ VALUES ($1, $2, 'feishu', 'receive_messages', 'granted', 'ok', '["im:message"]':
 	if err := json.Unmarshal(raw, &caps); err != nil {
 		t.Fatalf("decode capabilities %s: %v", raw, err)
 	}
-	if len(caps) != 1 {
-		t.Fatalf("expected 1 stored verdict, got %d: %s", len(caps), raw)
-	}
-	if caps[0].Capability != "receive_messages" || caps[0].Status != "granted" {
-		t.Fatalf("unexpected verdict: %+v", caps[0])
-	}
-	if len(caps[0].RequiredScopes) != 1 || caps[0].RequiredScopes[0] != "im:message" {
-		t.Fatalf("required_scopes roundtrip failed: %+v", caps[0].RequiredScopes)
+	if len(caps) != 0 {
+		t.Fatalf("expected non-probeable verdict to stay hidden, got %d: %s", len(caps), raw)
 	}
 }
 
