@@ -125,7 +125,7 @@ export function RuntimeDetail({
   const isAdmin = currentMember
     ? currentMember.role === "owner" || currentMember.role === "admin"
     : false;
-  const isRuntimeOwner = user && runtime.owner_id === user.id;
+  const isRuntimeOwner = Boolean(user && runtime.owner_id === user.id);
   const canEditRuntime = isAdmin || isRuntimeOwner;
   const canReadRuntime = isRuntimeUsableForUser(runtime, user?.id ?? null);
   const canRemove = canEditRuntime;
