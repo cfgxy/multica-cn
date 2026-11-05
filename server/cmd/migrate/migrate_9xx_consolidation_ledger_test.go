@@ -196,7 +196,7 @@ var postConsolidationStems = []string{
 	"995_knowledge_lifecycle", // RUYI-916
 	"995_knowledge_lifecycle_entry_version_index",
 	"995_knowledge_lifecycle_event_entry_index",
-		"997_agent_task_no_action",
+	"997_agent_task_no_action",
 	"998_knowledge_governance_run", // RUYI-916
 	"998_knowledge_governance_run_active_scope_index",
 	"998_knowledge_governance_run_finding_index",
