@@ -91,7 +91,10 @@ type PermissionAddons struct {
 	Events []string `json:"events"`
 }
 
-const receiveMessageEvent = "im.message.receive_v1"
+const (
+	receiveMessageEvent    = "im.message.receive_v1"
+	legacyMessageSendScope = "im:message:send"
+)
 
 // ProbeCapabilityBudget bounds one whole capability sweep (four synthetic
 // calls worst case), shared by the install-time probe and the HTTP recheck
@@ -135,7 +138,7 @@ var capabilityCatalog = []CapabilitySpec{
 		{"im:message.p2p_msg", "im:message.p2p_msg:readonly"},
 	}, false},
 	{CapabilitySendMessages, [][]string{
-		{"im:message", "im:message:send_as_bot", "im:message:send"},
+		{"im:message", "im:message:send_as_bot", legacyMessageSendScope},
 	}, true},
 	{CapabilityReadHistory, [][]string{
 		{"im:message", "im:message:readonly"},
@@ -181,16 +184,22 @@ func CapabilityCatalog() []CapabilitySpec {
 	return out
 }
 
-// PermissionAddonsForRegistration returns every catalogued scope, including
-// scope alternatives, for Lark's QR grant dialog. Requesting the full union
-// keeps new installs and incremental grants in sync with the capability
-// catalog. The receive event is intentionally separate: it is needed for
-// inbound delivery but is not a REST-probeable permission.
+// PermissionAddonsForRegistration returns every requestable catalogued scope,
+// including scope alternatives, for Lark's QR grant dialog. This keeps new
+// installs and incremental grants in sync with the capability catalog without
+// requesting scopes closed to new applications. The receive event is
+// intentionally separate: it is needed for inbound delivery but is not a
+// REST-probeable permission.
 func PermissionAddonsForRegistration() PermissionAddons {
 	var scopes []string
 	for _, spec := range capabilityCatalog {
 		for _, group := range spec.Scopes {
-			scopes = append(scopes, group...)
+			for _, scope := range group {
+				if scope == legacyMessageSendScope {
+					continue
+				}
+				scopes = append(scopes, scope)
+			}
 		}
 	}
 	return PermissionAddons{

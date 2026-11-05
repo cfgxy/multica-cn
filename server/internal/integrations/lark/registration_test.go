@@ -125,18 +125,7 @@ func TestRegistrationClient_Begin_HappyPath(t *testing.T) {
 	if err := json.Unmarshal([]byte(q.Get("addons")), &addons); err != nil {
 		t.Fatalf("decode QR addons: %v", err)
 	}
-	if !slices.Contains(addons.Events, receiveMessageEvent) {
-		t.Fatalf("QR events = %v, want %q", addons.Events, receiveMessageEvent)
-	}
-	for _, spec := range CapabilityCatalog() {
-		for _, group := range spec.Scopes {
-			for _, scope := range group {
-				if !slices.Contains(addons.Scopes, scope) {
-					t.Errorf("QR addons missing %q from capability %q", scope, spec.ID)
-				}
-			}
-		}
-	}
+	assertRegistrationAddons(t, addons)
 }
 
 // TestRegistrationClient_Begin_OmitsNameWhenPresetEmpty pins that an
@@ -182,12 +171,24 @@ func TestPermissionGrantQRCodeURLUsesExistingAppAndCompleteAddons(t *testing.T) 
 	if err := json.Unmarshal([]byte(u.Query().Get("addons")), &addons); err != nil {
 		t.Fatalf("decode addons: %v", err)
 	}
-	if !slices.Contains(addons.Events, "im.message.receive_v1") {
-		t.Fatalf("events = %v, want im.message.receive_v1", addons.Events)
+	assertRegistrationAddons(t, addons)
+}
+
+func assertRegistrationAddons(t *testing.T, addons PermissionAddons) {
+	t.Helper()
+
+	if !slices.Contains(addons.Events, receiveMessageEvent) {
+		t.Errorf("addons events = %v, want %q", addons.Events, receiveMessageEvent)
+	}
+	if slices.Contains(addons.Scopes, legacyMessageSendScope) {
+		t.Errorf("addons scopes must exclude closed legacy scope %q", legacyMessageSendScope)
 	}
 	for _, spec := range CapabilityCatalog() {
 		for _, group := range spec.Scopes {
 			for _, scope := range group {
+				if scope == legacyMessageSendScope {
+					continue
+				}
 				if !slices.Contains(addons.Scopes, scope) {
 					t.Errorf("addons scopes missing %q from capability %q", scope, spec.ID)
 				}
