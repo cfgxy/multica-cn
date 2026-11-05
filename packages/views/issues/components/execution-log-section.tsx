@@ -364,7 +364,7 @@ export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSection
 
 // ─── Issue total ───────────────────────────────────────────────────────────
 
-// The issue's whole spend, as a header affordance: "2.1M · $4.92". Answers
+// The issue's whole spend, as a header affordance: "2.1M · 4 calls · $4.92". Answers
 // "what has this issue cost" without expanding anything, and is the entry
 // point to the per-run breakdown.
 //
@@ -423,6 +423,14 @@ export function IssueUsageTotal({
           {formatTokens(total.tokens)}
         </span>
         <span className={`text-faint-foreground ${narrowTier}`}>·</span>
+        <span className="text-muted-foreground">
+          {total.modelCallUnknownCount > 0
+            ? t(($) => $.usage_detail.calls_compact_partial, {
+                known: total.modelCallCount,
+              })
+            : t(($) => $.usage_detail.calls_complete, { count: total.modelCallCount })}
+        </span>
+        <span className="text-faint-foreground">·</span>
         <span className="text-muted-foreground">{formatUsd(total.cost)}</span>
       </TooltipTrigger>
       <TooltipContent>{t(($) => $.execution_log.usage_total_tooltip)}</TooltipContent>

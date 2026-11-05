@@ -57,6 +57,8 @@ type GetIssueUsageSummaryRow struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
+	ModelCallCount           int64 `json:"model_call_count"`
+	ModelCallUnknownCount    int32 `json:"model_call_unknown_count"`
 	TaskCount                int32 `json:"task_count"`
 }
 
@@ -73,6 +75,8 @@ func (q *Queries) GetIssueUsageSummary(ctx context.Context, issueID pgtype.UUID)
 		&i.UncostedOutputTokens,
 		&i.UncostedCacheReadTokens,
 		&i.UncostedCacheWriteTokens,
+		&i.ModelCallCount,
+		&i.ModelCallUnknownCount,
 		&i.TaskCount,
 	)
 	return i, err
@@ -755,7 +759,8 @@ SELECT
     tu.context_tokens,
     tu.turns,
     tu.compactions,
-    tu.max_context_tokens
+    tu.max_context_tokens,
+    tu.model_call_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.issue_id = $1
@@ -775,6 +780,7 @@ type ListIssueTaskUsageRow struct {
 	Turns            pgtype.Int4 `json:"turns"`
 	Compactions      pgtype.Int4 `json:"compactions"`
 	MaxContextTokens pgtype.Int8 `json:"max_context_tokens"`
+	ModelCallCount   pgtype.Int8 `json:"model_call_count"`
 }
 
 // Per-(task, provider, model) usage rows for every task on one issue — the
@@ -816,6 +822,7 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 			&i.Turns,
 			&i.Compactions,
 			&i.MaxContextTokens,
+			&i.ModelCallCount,
 		); err != nil {
 			return nil, err
 		}

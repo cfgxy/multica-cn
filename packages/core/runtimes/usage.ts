@@ -510,6 +510,7 @@ export type Priceable = Pick<
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  model_call_count?: number;
 };
 
 // Providers report cost in ticks of 1e-10 USD (xAI's unit), which keeps
@@ -657,6 +658,10 @@ export interface TaskUsageSummary {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Sum of rows whose provider supplied complete original call evidence. */
+  modelCallCount: number;
+  /** Rows whose provider did not supply complete original call evidence. */
+  modelCallUnknownCount: number;
   /** Distinct models this run touched, in first-seen order. Usually one. */
   models: string[];
 }
@@ -682,6 +687,7 @@ export function summarizeTaskUsage(
   const summary: TaskUsageSummary = {
     tokens: 0, cost: 0, cacheSavings: 0,
     input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+    modelCallCount: 0, modelCallUnknownCount: 0,
     models,
   };
 
@@ -692,6 +698,11 @@ export function summarizeTaskUsage(
     summary.cacheWrite += slice.cache_write_tokens;
     summary.cost += estimateCost(slice);
     summary.cacheSavings += estimateCacheSavings(slice);
+    if (slice.model_call_count === undefined) {
+      summary.modelCallUnknownCount++;
+    } else {
+      summary.modelCallCount += slice.model_call_count;
+    }
     if (slice.model && !models.includes(slice.model)) models.push(slice.model);
   }
   summary.tokens =

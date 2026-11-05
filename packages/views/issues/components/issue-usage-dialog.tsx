@@ -124,7 +124,7 @@ export function IssueUsageDialog({
              by-agent bars, footnotes) stretches with it and paints outside
              the box. */
           <div className="flex min-w-0 flex-col gap-5">
-            <div className="grid grid-cols-3 divide-x rounded-lg border bg-card">
+            <div className="grid grid-cols-2 divide-x rounded-lg border bg-card sm:grid-cols-4">
               <KpiCard
                 label={t(($) => $.usage_detail.kpi_cost)}
                 value={formatUsd(total.cost)}
@@ -146,6 +146,20 @@ export function IssueUsageDialog({
                   input: formatTokens(total.input),
                   output: formatTokens(total.output),
                 })}
+              />
+              <KpiCard
+                label={t(($) => $.usage_detail.kpi_calls)}
+                value={t(($) => $.usage_detail.calls_complete, {
+                  count: total.modelCallCount,
+                })}
+                hint={
+                  total.modelCallUnknownCount > 0
+                    ? t(($) => $.usage_detail.calls_partial, {
+                        known: total.modelCallCount,
+                        unknown: total.modelCallUnknownCount,
+                      })
+                    : undefined
+                }
               />
             </div>
 
@@ -278,7 +292,7 @@ function RunTable({ tasks, total }: { tasks: AgentTask[]; total: TaskUsageSummar
   );
 
   return (
-    // Nine columns of numbers have a floor width; on a narrow window they
+    // The numeric columns have a floor width; on a narrow window they
     // scroll sideways rather than squeezing the trigger text to nothing or
     // pushing the totals outside the dialog.
     //
@@ -287,7 +301,7 @@ function RunTable({ tasks, total }: { tasks: AgentTask[]; total: TaskUsageSummar
     // min-content width and never scrolls. Removing it puts the table back
     // outside the dialog.
     <div className="max-h-[45vh] min-w-0 overflow-auto">
-      <table className="w-full min-w-[62rem]">
+      <table className="w-full min-w-[68rem]">
         <thead className="sticky top-0 bg-popover">
           <tr className="text-micro text-muted-foreground [&>th]:whitespace-nowrap [&>th]:px-2 [&>th]:pb-1.5 [&>th]:text-right [&>th]:font-normal">
             <th className="!pl-0 !text-left">{t(($) => $.usage_detail.col_run)}</th>
@@ -306,6 +320,7 @@ function RunTable({ tasks, total }: { tasks: AgentTask[]; total: TaskUsageSummar
             <th>{t(($) => $.usage_detail.col_compactions)}</th>
             <th>{t(($) => $.usage_detail.col_max_context)}</th>
             <th>{t(($) => $.usage_detail.col_context)}</th>
+            <th>{t(($) => $.usage_detail.col_calls)}</th>
             <th className="!pr-16">{t(($) => $.usage_detail.col_tokens)}</th>
             <th className="!pr-0">{t(($) => $.usage_detail.col_cost)}</th>
           </tr>
@@ -324,6 +339,13 @@ function RunTable({ tasks, total }: { tasks: AgentTask[]; total: TaskUsageSummar
             <td>{formatTokens(total.cacheRead)}</td>
             <td>{formatTokens(total.cacheWrite)}</td>
             <td colSpan={4} />
+            <td>
+              {total.modelCallUnknownCount > 0
+                ? t(($) => $.usage_detail.calls_compact_partial, {
+                    known: total.modelCallCount,
+                  })
+                : t(($) => $.usage_detail.calls_complete, { count: total.modelCallCount })}
+            </td>
             <td className="!pr-16">{formatTokens(total.tokens)}</td>
             <td className="!pr-0">{formatUsd(total.cost)}</td>
           </tr>
@@ -392,6 +414,13 @@ function RunRow({ task, maxTokens }: { task: AgentTask; maxTokens: number }) {
       </td>
       <td className="text-muted-foreground">
         {task.context_tokens != null ? formatTokens(task.context_tokens) : "—"}
+      </td>
+      <td>
+        {summary.modelCallUnknownCount > 0
+          ? t(($) => $.usage_detail.calls_compact_partial, {
+              known: summary.modelCallCount,
+            })
+          : t(($) => $.usage_detail.calls_complete, { count: summary.modelCallCount })}
       </td>
       <td className="!pr-2">
         <div className="flex items-center justify-end gap-2">
