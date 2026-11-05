@@ -37,6 +37,13 @@ const (
 // client or an empty BaseURL reports "disabled".
 type AdvisoryClient struct {
 	BaseURL string
+	// APIKey is held in memory only after workspace config decryption. It is
+	// sent as a bearer credential when configured and never enters reports.
+	APIKey string
+	// Model is the configured JEV model identity. The binary judge protocol
+	// currently accepts only input, so this records the model actually selected
+	// for the endpoint without changing that upstream request contract.
+	Model   string
 	Timeout time.Duration
 }
 
@@ -58,6 +65,7 @@ type AdvisoryReport struct {
 	Stage         string  `json:"stage"` // "submit" | "gate"
 	Available     bool    `json:"available"`
 	Engine        string  `json:"engine,omitempty"`
+	Model         string  `json:"model,omitempty"`
 	PFailure      float64 `json:"p_failure,omitempty"`
 	Threshold     float64 `json:"threshold,omitempty"`
 	Warn          bool    `json:"warn"`
@@ -83,6 +91,9 @@ func (c *AdvisoryClient) Judge(ctx context.Context, text string) (*jevJudgeRespo
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
 	httpClient := &http.Client{Timeout: timeout}
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -110,6 +121,7 @@ func (c *AdvisoryClient) Assess(ctx context.Context, stage, text string) Advisor
 	sum := sha256.Sum256([]byte(text))
 	rep := AdvisoryReport{
 		Stage:       stage,
+		Model:       c.model(),
 		InputSHA256: hex.EncodeToString(sum[:]),
 		CheckedAt:   time.Now().UTC().Format(time.RFC3339),
 	}
@@ -123,7 +135,9 @@ func (c *AdvisoryClient) Assess(ctx context.Context, stage, text string) Advisor
 	}
 	out, err := c.Judge(ctx, text)
 	if err != nil {
-		rep.SkippedReason = "unreachable: " + truncateRunes(err.Error(), 120)
+		// The transport error can echo an endpoint or credentials. Persist only a
+		// stable category so advisory JSONB remains safe for owner-visible reads.
+		rep.SkippedReason = "unreachable"
 		return rep
 	}
 	rep.Available = true
@@ -133,6 +147,13 @@ func (c *AdvisoryClient) Assess(ctx context.Context, stage, text string) Advisor
 	rep.Warn = out.Warn
 	rep.Decision = out.Decision
 	return rep
+}
+
+func (c *AdvisoryClient) model() string {
+	if c == nil {
+		return ""
+	}
+	return c.Model
 }
 
 // AdvisoryFromEnv builds the process-default client from the environment.
