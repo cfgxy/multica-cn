@@ -19,26 +19,11 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ScrollView } from "react-native";
 import type { ComponentType } from "react";
 import type { IssueDecision } from "@multica/core/types";
 
-const mockScrollTo = jest.fn();
-
-jest.mock("react-native", () => {
-  const actual = jest.requireActual<typeof import("react-native")>("react-native");
-  const ReactActual = jest.requireActual<typeof import("react")>("react");
-  const ScrollView = ReactActual.forwardRef(
-    (
-      { children, ...props }: React.ComponentProps<typeof actual.ScrollView>,
-      ref: React.ForwardedRef<{ scrollTo: typeof mockScrollTo }>,
-    ) => {
-      ReactActual.useImperativeHandle(ref, () => ({ scrollTo: mockScrollTo }));
-      return ReactActual.createElement(actual.View, props, children);
-    },
-  );
-
-  return { ...actual, ScrollView };
-});
+const mockScrollTo = ScrollView.prototype.scrollTo as jest.Mock;
 
 // --- router params, per-test mutable (mock-prefixed so jest hoisting allows)
 let mockGlobalParams: { cardId?: string; filter?: string } = {};
@@ -212,9 +197,7 @@ describe("RUYI-863 mobile decision-card entries (shared browser)", () => {
   it("resets the scroll position for the initial card, navigation and filter changes", async () => {
     await renderEntry(MoreMenuScreen, threeCards);
 
-    await waitFor(() =>
-      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
-    );
+    expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false });
 
     mockScrollTo.mockClear();
     await act(async () => {
