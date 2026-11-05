@@ -159,6 +159,11 @@ func (w *Worker) evaluateWorkspace(ctx context.Context, item workspaceSettings) 
 	changedAgents := make(map[string]pgtype.UUID)
 	now := time.Now().UTC()
 	for i := range current.Rules {
+		if reconcileAgentRuleSelection(&current.Rules[i], selections[current.Rules[i].ID]) {
+			updated = true
+		}
+	}
+	for i := range current.Rules {
 		rule := &current.Rules[i]
 		result, exists := results[rule.ID]
 		if !exists || !rule.Enabled || !SameDefinition(result.rule, *rule) || !isDue(*rule, now) {
@@ -393,6 +398,44 @@ func verifiedAgentSamples(samples []Sample, selected map[string]pgtype.UUID) map
 		mapped[agentID] = append(mapped[agentID], sample)
 	}
 	return mapped
+}
+
+func reconcileAgentRuleSelection(rule *Rule, selected map[string]pgtype.UUID) bool {
+	if rule.Grouping != GroupAgent || len(rule.AgentStates) == 0 {
+		return false
+	}
+	changed := false
+	for agentID := range rule.AgentStates {
+		if _, stillSelected := selected[agentID]; stillSelected {
+			continue
+		}
+		delete(rule.AgentStates, agentID)
+		changed = true
+	}
+	if !changed {
+		return false
+	}
+
+	state := RuleState{
+		LastEvaluatedAt: rule.State.LastEvaluatedAt,
+		LastError:       rule.State.LastError,
+	}
+	for agentID := range selected {
+		agentState, known := rule.AgentStates[agentID]
+		if !known {
+			continue
+		}
+		state.Values = append(state.Values, agentState.Values...)
+		if agentState.Firing {
+			state.Firing = true
+		}
+		if agentState.PendingSince != nil && (state.PendingSince == nil || agentState.PendingSince.Before(*state.PendingSince)) {
+			pending := *agentState.PendingSince
+			state.PendingSince = &pending
+		}
+	}
+	rule.State = state
+	return true
 }
 
 func desiredRulePauses(rules []Rule, selections map[string]map[string]pgtype.UUID) map[string]map[string]pgtype.UUID {
