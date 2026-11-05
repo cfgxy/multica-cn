@@ -937,7 +937,7 @@ UPDATE issue SET
     last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at, suspended_at
 `
 
 type IncrementOuterLoopRoundParams struct {
@@ -983,6 +983,7 @@ func (q *Queries) IncrementOuterLoopRound(ctx context.Context, arg IncrementOute
 		&i.LastActivityAt,
 		&i.RunSuppressed,
 		&i.RunSuppressedAt,
+		&i.SuspendedAt,
 	)
 	return i, err
 }
@@ -1573,7 +1574,7 @@ func (q *Queries) ListOpenIssues(ctx context.Context, arg ListOpenIssuesParams) 
 }
 
 const listOuterLoopRunningIssues = `-- name: ListOuterLoopRunningIssues :many
-SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at FROM issue
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at, suspended_at FROM issue
 WHERE metadata @> jsonb_build_object('outerloop_state', 'running')
 ORDER BY id
 `
@@ -1626,6 +1627,7 @@ func (q *Queries) ListOuterLoopRunningIssues(ctx context.Context) ([]Issue, erro
 			&i.LastActivityAt,
 			&i.RunSuppressed,
 			&i.RunSuppressedAt,
+			&i.SuspendedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1986,7 +1988,7 @@ UPDATE issue SET
     last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at, suspended_at
 `
 
 type SetOuterLoopResumedStateParams struct {
@@ -2032,6 +2034,7 @@ func (q *Queries) SetOuterLoopResumedState(ctx context.Context, arg SetOuterLoop
 		&i.LastActivityAt,
 		&i.RunSuppressed,
 		&i.RunSuppressedAt,
+		&i.SuspendedAt,
 	)
 	return i, err
 }
@@ -2290,7 +2293,7 @@ UPDATE issue SET
 WHERE id = $2
   AND workspace_id = $3
   AND status = $4
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at, suspended_at
 `
 
 type UpdateIssueStatusOnlyParams struct {
@@ -2343,6 +2346,7 @@ func (q *Queries) UpdateIssueStatusOnly(ctx context.Context, arg UpdateIssueStat
 		&i.LastActivityAt,
 		&i.RunSuppressed,
 		&i.RunSuppressedAt,
+		&i.SuspendedAt,
 	)
 	return i, err
 }
