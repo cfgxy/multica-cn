@@ -38,6 +38,12 @@ func TestRuntimeHandlersRejectMalformedRuntimeID(t *testing.T) {
 			handle: testHandler.DeleteAgentRuntime,
 		},
 		{
+			name:   "remove from management list",
+			method: "POST",
+			path:   "/api/runtimes/not-a-uuid/remove-from-list",
+			handle: testHandler.RemoveAgentRuntimeFromList,
+		},
+		{
 			name:   "unbind-agents-and-delete",
 			method: "POST",
 			path:   "/api/runtimes/not-a-uuid/unbind-agents-and-delete",

@@ -188,6 +188,7 @@ var postConsolidationStems = []string{
 	"984_prompt_proposal_enactment_target",               // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
 	"982_scheduling_pause_system_source",                 // RUYI-859 (created_by nullable: system error-rate suppression source)
 	"982_scheduling_pause_system_source_promql_recovery", // RUYI-859 forward recovery for historical policy databases
+	"993_runtime_removed_at",                             // RUYI-895 (hides a Runtime from user-managed lists)
 	"994_clause_injection_observation",                   // RUYI-891 (claim-time degraded carrier observations)
 	"994_clause_injection_observation_id_index",
 	"994_clause_injection_observation_task_scope_time_index",

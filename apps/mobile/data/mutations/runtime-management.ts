@@ -34,6 +34,18 @@ export function useDeleteRuntime() {
   });
 }
 
+export function useRemoveRuntimeFromList() {
+  const queryClient = useQueryClient();
+  const wsId = useWorkspaceStore((state) => state.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: (runtimeId: string) => api.removeRuntimeFromList(runtimeId),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
 export function useUnbindAgentsAndDeleteRuntime() {
   const queryClient = useQueryClient();
   const wsId = useWorkspaceStore((state) => state.currentWorkspaceId);
