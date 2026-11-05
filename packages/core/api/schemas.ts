@@ -5328,6 +5328,16 @@ export const KnowledgeEntrySchema = z.object({
 
 export const KnowledgeEntryListSchema = z.array(KnowledgeEntrySchema);
 
+export const KnowledgeEntryOperationSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+}).loose();
+
+export const EMPTY_KNOWLEDGE_ENTRY_OPERATION = {
+  id: "",
+  status: "",
+};
+
 // --- Self-evolution workspace overview (RUYI-284) ---
 //
 // One read-only aggregate across the six data planes the tabs serve. Every

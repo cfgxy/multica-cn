@@ -72,3 +72,30 @@ export function useAdoptKnowledgeEntry(wsId: string) {
     },
   });
 }
+
+function useKnowledgeOperation<T>(wsId: string, mutationFn: (input: T) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: knowledgeKeys.all(wsId) });
+    },
+  });
+}
+
+export function useEditKnowledgeEntry(wsId: string) {
+  return useKnowledgeOperation(wsId, ({ id, content }: { id: string; content: string }) =>
+    api.editKnowledgeEntry(id, content));
+}
+
+export function useDeleteKnowledgeEntry(wsId: string) {
+  return useKnowledgeOperation(wsId, (id: string) => api.deleteKnowledgeEntry(id));
+}
+
+export function useMergeKnowledgeEntries(wsId: string) {
+  return useKnowledgeOperation(wsId, ({ id, content, sourceEntryIds }: {
+    id: string;
+    content: string;
+    sourceEntryIds: string[];
+  }) => api.mergeKnowledgeEntries(id, content, sourceEntryIds));
+}

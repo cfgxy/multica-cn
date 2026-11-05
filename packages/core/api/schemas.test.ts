@@ -85,6 +85,8 @@ import {
   EMPTY_PLUGIN_PREVIEW,
   ListGitLabRepositoriesResponseSchema,
   EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
+  EMPTY_KNOWLEDGE_ENTRY_OPERATION,
+  KnowledgeEntryOperationSchema,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -95,6 +97,29 @@ import {
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 import { SkillSummaryListSchema } from "./schemas";
+
+describe("KnowledgeEntryOperationSchema", () => {
+  const endpoint = { endpoint: "POST /api/knowledge/entries/:id/edit" };
+
+  it("accepts an operation receipt and ignores unknown fields", () => {
+    expect(KnowledgeEntryOperationSchema.parse({ id: "op-1", status: "queued", retry_after: 10 })).toEqual({
+      id: "op-1",
+      status: "queued",
+      retry_after: 10,
+    });
+  });
+
+  it("falls back when an operation receipt is malformed", () => {
+    expect(
+      parseWithFallback(
+        { id: "op-1", status: 202 },
+        KnowledgeEntryOperationSchema,
+        EMPTY_KNOWLEDGE_ENTRY_OPERATION,
+        endpoint,
+      ),
+    ).toEqual(EMPTY_KNOWLEDGE_ENTRY_OPERATION);
+  });
+});
 
 describe("decision request response", () => {
   const baseRequest = {

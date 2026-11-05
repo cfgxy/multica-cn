@@ -133,10 +133,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// Self-evolution surfaces (RUYI-265/RUYI-305): the prompt-legislation
 	// pool, its structure baselines, the retrospective config/run/watermark
 	// tables, registered knowledge directories, their read-only mirror
-	// entries and the scan log all go with the workspace
+	// entries, daemon operation queue and scan log all go with the workspace
 	// (DeleteWorkspaceSelfEvolutionData).
 	"knowledge_dir":             workspaceDelete,
 	"knowledge_entry":           workspaceDelete,
+	"knowledge_entry_operation": workspaceDelete,
 	"knowledge_scan_batch":      workspaceDelete,
 	"prompt_proposal":           workspaceDelete,
 	"prompt_structure_baseline": workspaceDelete,
