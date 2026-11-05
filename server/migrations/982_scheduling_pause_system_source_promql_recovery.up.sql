@@ -2,10 +2,10 @@
 -- migration before the PromQL rule source fields were added to its file.
 --
 -- Migration ledgers record the complete stem, not the file contents. Editing
--- 982 therefore cannot repair an already-applied database. This same-number
--- follow-up stem keeps RUYI-859's allocated 985 migration identity while
--- bringing both the historical and clean-install shapes to the PromQL
--- scheduling contract. There are no foreign keys or secondary indexes.
+-- the policy file therefore cannot repair an already-applied database. This
+-- same-number follow-up stem brings both the historical and clean-install
+-- shapes to the PromQL scheduling contract. There are no foreign keys or
+-- secondary indexes.
 
 -- A recorded historical 130 can likewise have a missing permission_mode after
 -- an interrupted/manual schema repair. 130 handles the inverse collision

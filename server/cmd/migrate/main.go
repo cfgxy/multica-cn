@@ -345,7 +345,7 @@ var concurrentIndexCleanups = map[string][]string{
 	"979_credential_capability_task_index_nonunique":            {"credential_capability_task_idx"},
 	"979_credential_audit_id_index":                             {"credential_audit_id_uidx"},
 	"979_credential_audit_workspace_created_index":              {"credential_audit_workspace_created_idx"},
-	"983_agent_suppression_event_index":                         {"idx_agent_suppression_event_agent"},
+	"982_agent_suppression_event_index":                         {"idx_agent_suppression_event_agent"},
 	"994_clause_injection_observation_id_index":                 {"idx_clause_injection_observation_id"},
 	"994_clause_injection_observation_task_scope_time_index":    {"idx_clause_injection_observation_task_scope_time"},
 	"994_clause_injection_observation_workspace_time_index":     {"idx_clause_injection_observation_workspace_time"},
@@ -386,6 +386,15 @@ var preMigrationHooks = func() map[string]preMigrationHook {
 	}
 	return hooks
 }()
+
+// renamedMigrationVersions maps pre-release RUYI-859 ledger identities to the
+// single allocated 982 number. The SQL files remain separate because Postgres
+// requires CREATE INDEX CONCURRENTLY to be the only statement in its command.
+var renamedMigrationVersions = map[string]string{
+	"982_agent_suppression_event_index":                  "983_agent_suppression_event_index",
+	"982_scheduling_pause_system_source":                 "985_scheduling_pause_system_source",
+	"982_scheduling_pause_system_source_promql_recovery": "985_scheduling_pause_system_source_promql_recovery",
+}
 
 var preRollbackHooks = func() map[string]preMigrationHook {
 	hooks := make(map[string]preMigrationHook, len(concurrentDownIndexCleanups)+len(sourceContextMigrationVersions)+1)
@@ -475,6 +484,35 @@ func hooksForDirection(direction string) map[string]preMigrationHook {
 	default:
 		return nil
 	}
+}
+
+// reconcileRenamedMigrationVersion keeps a pre-release ledger compatible with
+// a corrected migration identity. It runs only after the target SQL succeeds:
+// a crash before then leaves the legacy ledger intact so the next run retries
+// the idempotent target SQL. Updating version preserves applied_at; if both
+// names are present, the legacy row is redundant and can be removed.
+func reconcileRenamedMigrationVersion(ctx context.Context, conn *pgxpool.Conn, tableIdent, target string) (bool, error) {
+	legacy, ok := renamedMigrationVersions[target]
+	if !ok {
+		return false, nil
+	}
+
+	var targetRecorded bool
+	if err := conn.QueryRow(ctx, fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM %s WHERE version = $1)", tableIdent), target).Scan(&targetRecorded); err != nil {
+		return false, fmt.Errorf("check corrected migration ledger %q: %w", target, err)
+	}
+	if targetRecorded {
+		if _, err := conn.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE version = $1", tableIdent), legacy); err != nil {
+			return false, fmt.Errorf("remove redundant legacy migration ledger %q: %w", legacy, err)
+		}
+		return true, nil
+	}
+
+	commandTag, err := conn.Exec(ctx, fmt.Sprintf("UPDATE %s SET version = $1 WHERE version = $2", tableIdent), target, legacy)
+	if err != nil {
+		return false, fmt.Errorf("rename legacy migration ledger %q to %q: %w", legacy, target, err)
+	}
+	return commandTag.RowsAffected() > 0, nil
 }
 
 func ensureSourceContextRollbackSafe(ctx context.Context, pool *pgxpool.Pool) error {
@@ -1114,6 +1152,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 
 		if opts.Direction == "up" {
 			if exists {
+				if _, err := reconcileRenamedMigrationVersion(ctx, conn, tableIdent, version); err != nil {
+					return err
+				}
 				fmt.Printf("  skip  %s (already applied)\n", version)
 				continue
 			}
@@ -1158,7 +1199,13 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		}
 
 		if opts.Direction == "up" {
-			_, err = conn.Exec(ctx, insertSQL, version)
+			alreadyRecorded, reconcileErr := reconcileRenamedMigrationVersion(ctx, conn, tableIdent, version)
+			if reconcileErr != nil {
+				return reconcileErr
+			}
+			if !alreadyRecorded {
+				_, err = conn.Exec(ctx, insertSQL, version)
+			}
 		} else {
 			_, err = conn.Exec(ctx, deleteSQL, version)
 		}
