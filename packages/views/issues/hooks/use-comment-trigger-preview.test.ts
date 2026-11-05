@@ -265,6 +265,19 @@ describe("commentTriggerPreviewSignature", () => {
       commentTriggerPreviewSignature("text [@A](mention://agent/still-not-a-uuid)"),
     );
   });
+
+  it("distinguishes an incomplete agent-link suffix from a complete malformed link", () => {
+    const incomplete = "text](mention://agent/not-a-uuid)";
+    const complete = "[@Lost](mention://agent/not-a-uuid)";
+
+    expect(commentTriggerPreviewSignature(incomplete)).toBe(
+      commentTriggerPreviewSignature("ordinary text"),
+    );
+    expect(commentTriggerPreviewSignature(complete)).not.toBe(
+      commentTriggerPreviewSignature(incomplete),
+    );
+  });
+
   it("ignores ordinary text changes", () => {
     expect(commentTriggerPreviewSignature("hello")).toBe(
       commentTriggerPreviewSignature("hello with more ordinary text"),
