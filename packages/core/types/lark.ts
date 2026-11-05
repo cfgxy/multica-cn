@@ -71,6 +71,12 @@ export interface RecheckLarkPermissionsResponse {
   capabilities: LarkCapabilityState[];
 }
 
+/** Response of POST /lark/installations/{id}/grant-permissions. The QR
+ * confirms the current permission catalog on the existing Lark app. */
+export interface BeginLarkPermissionGrantResponse {
+  qr_code_url: string;
+}
+
 export interface ListLarkInstallationsResponse {
   installations: LarkInstallation[];
   /** Whether the deployment has the at-rest secret key configured. When
