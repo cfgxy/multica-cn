@@ -257,7 +257,6 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
         onWindow={setWindow}
         onRefresh={refresh}
         refreshing={query.isFetching}
-        live
       />
     );
   }
@@ -349,6 +348,7 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
         onWindow={setWindow}
         onRefresh={refresh}
         refreshing={query.isFetching}
+        live
       />
 
       <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
@@ -527,6 +527,8 @@ function EmptyShell({
   hint,
   window,
   onWindow,
+  onRefresh,
+  refreshing,
 }: {
   title: string;
   hint: string;
