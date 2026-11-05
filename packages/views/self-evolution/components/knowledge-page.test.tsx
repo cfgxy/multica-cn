@@ -29,6 +29,15 @@ const m = vi.hoisted(() => ({
   scanMutate: vi.fn(),
   unregisterMutate: vi.fn(),
   adoptMutate: vi.fn(),
+  editMutate: vi.fn(),
+  deleteMutate: vi.fn(),
+  mergeMutate: vi.fn(),
+}));
+
+vi.mock("../../editor", () => ({
+  ContentEditor: ({ value, onUpdate }: { value: string; onUpdate?: (next: string) => void }) => (
+    <textarea aria-label="Knowledge content" value={value} onChange={(event) => onUpdate?.(event.target.value)} />
+  ),
 }));
 
 vi.mock("@multica/core/permissions", async () => {
@@ -66,6 +75,9 @@ vi.mock("@multica/core/self-evolution", async () => {
     useScanKnowledgeDir: () => ({ mutate: m.scanMutate, isPending: false }),
     useUnregisterKnowledgeDir: () => ({ mutate: m.unregisterMutate, isPending: false }),
     useAdoptKnowledgeEntry: () => ({ mutate: m.adoptMutate, isPending: false }),
+    useEditKnowledgeEntry: () => ({ mutate: m.editMutate, isPending: false }),
+    useDeleteKnowledgeEntry: () => ({ mutate: m.deleteMutate, isPending: false }),
+    useMergeKnowledgeEntries: () => ({ mutate: m.mergeMutate, isPending: false }),
   };
 });
 
@@ -215,20 +227,130 @@ describe("KnowledgePageBody", () => {
     );
   });
 
-  it("opens the entry drawer and adopts from it (owner only)", async () => {
+  it("opens a full Markdown reader and adopts from it (owner only)", async () => {
     m.role = "owner";
     m.dirs = [dirFixture()];
     m.entries = [entryFixture()];
     mount();
 
     await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
-    const drawer = await screen.findByTestId("knowledge-entry-drawer");
-    expect(within(drawer).getByText(entryFixture().content)).toBeTruthy();
-    expect(within(drawer).getByText("Mirror of project-x memories")).toBeTruthy();
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    expect(within(dialog).getByTestId("knowledge-entry-markdown")).toBeTruthy();
+    expect(within(dialog).getByText(entryFixture().content)).toBeTruthy();
+    expect(within(dialog).getByText("Mirror of project-x memories")).toBeTruthy();
 
-    await userEvent.click(within(drawer).getByRole("button", { name: "Adopt" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Adopt" }));
     expect(m.adoptMutate).toHaveBeenCalledTimes(1);
     expect(m.adoptMutate).toHaveBeenCalledWith("entry-1", expect.anything());
+  });
+
+  it("labels a structured, detailed entry as high value", async () => {
+    m.role = "owner";
+    m.dirs = [dirFixture()];
+    m.entries = [entryFixture({
+      content: `# Release rollback\n\n${"Keep each release artifact and its checksums available for a verified rollback. ".repeat(8)}\n\n- Confirm the deployed version\n- Restore the tagged artifact\n- Validate health checks`,
+    })];
+    mount();
+
+    const row = await screen.findByTestId("knowledge-entry-deploy-rollback");
+    expect(within(row).getByText("High value")).toBeTruthy();
+    await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    expect(within(dialog).getByText("Estimated value")).toBeTruthy();
+    expect(within(dialog).getByText("High value")).toBeTruthy();
+  });
+
+  it("labels only unstructured, very short content as low value", async () => {
+    m.role = "owner";
+    m.dirs = [dirFixture()];
+    m.entries = [entryFixture({ content: "Keep rollback notes." })];
+    mount();
+
+    const row = await screen.findByTestId("knowledge-entry-deploy-rollback");
+    expect(within(row).getByText("Low value")).toBeTruthy();
+    await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    expect(within(dialog).getByText("Estimated value")).toBeTruthy();
+    expect(within(dialog).getByText("Low value")).toBeTruthy();
+  });
+
+  it("leaves ordinary unstructured content unclassified", async () => {
+    m.role = "owner";
+    m.dirs = [dirFixture()];
+    m.entries = [entryFixture({ content: "Keep the rollback procedure current with each release and validate it before publishing. This note records the operational expectation without a detailed runbook." })];
+    mount();
+
+    const row = await screen.findByTestId("knowledge-entry-deploy-rollback");
+    expect(within(row).queryByText("High value")).toBeNull();
+    expect(within(row).queryByText("Low value")).toBeNull();
+    await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    expect(within(dialog).queryByText("Estimated value")).toBeNull();
+    expect(within(dialog).queryByText("High value")).toBeNull();
+    expect(within(dialog).queryByText("Low value")).toBeNull();
+  });
+
+  it("queues an edit only for a synced ultimate-library entry", async () => {
+    m.role = "owner";
+    m.dirs = [dirFixture({ id: "dir-ultimate", kind: "ultimate", label: "workspace library" })];
+    m.entries = [entryFixture({ dir_id: "dir-ultimate", content: "# Rollback\n\nUse the tagged release." })];
+    mount();
+
+    await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    expect(within(dialog).getByRole("heading", { name: "Rollback" })).toBeTruthy();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Edit" }));
+    const editor = within(dialog).getByRole("textbox", { name: "Knowledge content" });
+    await userEvent.clear(editor);
+    await userEvent.type(editor, "# Safer rollback");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Queue edit" }));
+
+    expect(m.editMutate).toHaveBeenCalledWith(
+      { id: "entry-1", content: "# Safer rollback" },
+      expect.anything(),
+    );
+  });
+
+  it("requires an explicit confirmation before queueing a delete", async () => {
+    m.role = "owner";
+    m.dirs = [dirFixture({ id: "dir-ultimate", kind: "ultimate" })];
+    m.entries = [entryFixture({ dir_id: "dir-ultimate" })];
+    mount();
+
+    await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    const confirm = await screen.findByRole("alertdialog");
+    expect(m.deleteMutate).not.toHaveBeenCalled();
+    await userEvent.click(within(confirm).getByRole("button", { name: "Delete" }));
+
+    expect(m.deleteMutate).toHaveBeenCalledWith("entry-1", expect.anything());
+  });
+
+  it("lists duplicate entries and requires confirmation before queueing a merge", async () => {
+    m.role = "owner";
+    m.dirs = [dirFixture({ id: "dir-ultimate", kind: "ultimate" })];
+    m.entries = [
+      entryFixture({ dir_id: "dir-ultimate" }),
+      entryFixture({ id: "entry-2", key: "deploy-rollback-copy", dir_id: "dir-ultimate" }),
+    ];
+    mount();
+
+    await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Merge selected" }));
+    const candidates = await within(dialog).findByTestId("knowledge-merge-candidates");
+    expect(within(candidates).getByText("Duplicate")).toBeTruthy();
+    await userEvent.click(within(candidates).getByRole("checkbox"));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Merge selected" }));
+    const confirm = await screen.findByRole("alertdialog");
+    expect(m.mergeMutate).not.toHaveBeenCalled();
+    await userEvent.click(within(confirm).getByRole("button", { name: "Merge selected" }));
+
+    expect(m.mergeMutate).toHaveBeenCalledWith(
+      { id: "entry-1", content: entryFixture().content, sourceEntryIds: ["entry-2"] },
+      expect.anything(),
+    );
   });
 
   it("unregisters a directory only through the drawer's confirm dialog", async () => {

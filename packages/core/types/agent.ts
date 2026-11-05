@@ -1336,6 +1336,12 @@ export interface KnowledgeEntry {
   adoption_error?: string;
 }
 
+/** A daemon-owned mutation accepted into the durable knowledge queue. */
+export interface KnowledgeEntryOperation {
+  id: string;
+  status: string;
+}
+
 export interface CreateSkillRequest {
   name: string;
   description?: string;
