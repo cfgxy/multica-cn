@@ -45,6 +45,9 @@ func TestVoiceWriteBack_FactsSummaryOnDisconnect(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
+	// This flow asserts the explicit unavailable-MCP contract. It must not
+	// depend on whether a developer happens to run an MCP listener locally.
+	t.Setenv("MCP_URL", "")
 	provider := newStubVoiceProvider(t)
 	agentID, _ := seedUsableVoiceSetup(t, "WriteBack Probe", `{"model":"stubby-live-1"}`)
 	srv := voiceGatewayServer(t)
@@ -74,23 +77,59 @@ func TestVoiceWriteBack_FactsSummaryOnDisconnect(t *testing.T) {
 	provider.sendDownstream(stubConn, map[string]any{
 		"sessionResumptionUpdate": map[string]any{"newHandle": "wb-handle-9"},
 	})
-	// Upstream: the client returns the tool result. Wait until the gateway
-	// has relayed it upstream — the stub recording it proves the client pump
-	// parsed it — before disconnecting, since a close drops unread data.
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(
-		`{"toolResponse":{"functionResponses":[{"id":"call-1","name":"search","response":{"hits":2}}]}}`)); err != nil {
-		t.Fatalf("send toolResponse: %v", err)
-	}
+	// The MCP endpoint is deliberately unavailable in this test. The bridge
+	// must return its structured unavailable response and echo it upstream
+	// before the client pump can swallow a duplicate tool response.
 	waitFor(t, 3*time.Second, func() bool {
 		provider.mu.Lock()
 		defer provider.mu.Unlock()
 		for _, msg := range provider.clientMsgs {
-			if strings.Contains(string(msg), "toolResponse") {
+			if strings.Contains(string(msg), "toolResponse") &&
+				strings.Contains(string(msg), `unavailable`) {
 				return true
 			}
 		}
 		return false
 	})
+	// Now the client echo: call-1 is marked bridge-handled, so this frame
+	// is DEDUPE-SWALLOWED — not relayed, not a second fact. The session's
+	// facts settle to exactly the bridge's own five: tool_call + tool_result
+	// (one of each, the dedupe pair) + user_decision + resumption handle +
+	// session end.
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(
+		`{"toolResponse":{"functionResponses":[{"id":"call-1","name":"search","response":{"hits":2}}]}}`)); err != nil {
+		t.Fatalf("send toolResponse: %v", err)
+	}
+	// The marker gives the client pump an observable ordering barrier: it can
+	// reach the provider only after the preceding duplicate response has been
+	// consumed and dropped.
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(
+		`{"clientContent":{"turns":[{"role":"user","parts":[{"text":"dedupe barrier"}]}],"turnComplete":true}}`)); err != nil {
+		t.Fatalf("send dedupe barrier: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		provider.mu.Lock()
+		defer provider.mu.Unlock()
+		for _, msg := range provider.clientMsgs {
+			if strings.Contains(string(msg), "dedupe barrier") {
+				return true
+			}
+		}
+		return false
+	})
+	// The swallowed echo must NOT add a second toolResponse frame to the
+	// provider: the marker above confirms the echo has already been processed.
+	provider.mu.Lock()
+	toolResponseFrames := 0
+	for _, msg := range provider.clientMsgs {
+		if strings.Contains(string(msg), "toolResponse") {
+			toolResponseFrames++
+		}
+	}
+	provider.mu.Unlock()
+	if toolResponseFrames != 1 {
+		t.Errorf("want exactly 1 toolResponse frame at the provider (the bridge's own; the client echo is deduped), got %d", toolResponseFrames)
+	}
 
 	// Abrupt client disconnect — no close frame. The deferred terminal write
 	// must still persist the transcript and run the write-back.
@@ -177,6 +216,10 @@ func TestVoiceWriteBack_FactsSummaryOnDisconnect(t *testing.T) {
 		`SELECT summary FROM live_session WHERE id = $1::uuid`, sessionID).Scan(&summary); err != nil || summary == "" {
 		t.Fatalf("summary not persisted: %v %q", err, summary)
 	}
+	// RUYI-874 ③: the bridge records exactly ONE tool_result (its own
+	// execution result; the client echo is deduped away), so the settled
+	// mix stays 5 facts: tool_call + tool_result (the bridge's pair),
+	// user_decision, resumption handle, session end.
 	if !strings.Contains(summary, "5 fact event(s)") || !strings.Contains(summary, "[user_decision] user decision: 我们决定用方案二上线") {
 		t.Errorf("summary not rebuilt from facts:\n%s", summary)
 	}

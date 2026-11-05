@@ -171,10 +171,14 @@ func voiceAuthCookie(t *testing.T, userID string) *http.Cookie {
 // startVoiceSession issues the plain-HTTP initiation request with cookie
 // identity (the browser/desktop path).
 func startVoiceSession(t *testing.T, agentID string) *httptest.ResponseRecorder {
+	return startVoiceSessionAs(t, testUserID, agentID)
+}
+
+func startVoiceSessionAs(t *testing.T, userID, agentID string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := withURLParam(newRequest(http.MethodGet, "/api/agents/"+agentID+"/voice-session", nil), "id", agentID)
 	req.Header.Del("X-User-ID")
-	req.AddCookie(voiceAuthCookie(t, testUserID))
+	req.AddCookie(voiceAuthCookie(t, userID))
 	w := httptest.NewRecorder()
 	testHandler.StartVoiceSession(w, req)
 	return w
@@ -547,6 +551,31 @@ func TestVoiceSessionGate_GatePassCreatesLiveSession(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("live_session rows = %d, want 1", count)
+	}
+}
+
+// TestVoiceSessionGate_UsesAgentInvokePermission ensures a caller who can use
+// the workspace voice provider cannot use it to invoke another member's
+// private agent. The provider setup is deliberately healthy so a 403 can only
+// come from the agent invocation gate.
+func TestVoiceSessionGate_UsesAgentInvokePermission(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	newStubVoiceProvider(t)
+	agentID, _ := seedUsableVoiceSetup(t, "Invoke Permission", "")
+	memberID := createPermissionTestMember(t, "voice-invoke-member-"+time.Now().UTC().Format("20060102150405.000000000")+"@multica.test")
+
+	w := startVoiceSessionAs(t, memberID, agentID)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("voice session for a private agent = %d, want 403: %s", w.Code, w.Body.String())
+	}
+	var count int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM live_session WHERE agent_id = $1`, agentID).Scan(&count); err != nil {
+		t.Fatalf("count live sessions: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("live_session rows = %d, want 0 after invoke denial", count)
 	}
 }
 
