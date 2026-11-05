@@ -282,7 +282,7 @@ func TestReconcileAgentRuleSelectionRequiresFreshMappingAfterReselection(t *test
 		t.Fatalf("firing agent should own a pause: %+v", desired)
 	}
 
-	if !reconcileAgentRuleSelection(&rule, nil) {
+	if !ReconcileAgentRuleSelection(&rule, nil) {
 		t.Fatal("deselecting a firing agent must clear its persisted state")
 	}
 	if rule.State.Firing || len(rule.AgentStates) != 0 {
@@ -295,7 +295,7 @@ func TestReconcileAgentRuleSelectionRequiresFreshMappingAfterReselection(t *test
 	if isDue(rule, now.Add(5*time.Second)) {
 		t.Fatal("reselection check must run before the next due evaluation")
 	}
-	if reconcileAgentRuleSelection(&rule, selected) {
+	if ReconcileAgentRuleSelection(&rule, selected) {
 		t.Fatal("reselection without a sample must not create persisted agent state")
 	}
 	if desired := desiredRulePauses([]Rule{rule}, map[string]map[string]pgtype.UUID{rule.ID: selected}); len(desired[rule.ID]) != 0 {

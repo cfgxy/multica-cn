@@ -531,6 +531,34 @@ func (h *Handler) PutAgentBackpressurePolicy(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "failed to save backpressure policy")
 		return
 	}
+	if len(removedRuleIDs) > 0 {
+		policies, err := qtx.ListAgentBackpressurePoliciesWithPromQLRules(ctx, agent.WorkspaceID)
+		if err != nil {
+			slog.Error("load PromQL selections after policy save failed", "agent_id", util.UUIDToString(agent.ID), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to save backpressure policy")
+			return
+		}
+		selections := promrules.SelectedAgentsByRule(policies)
+		stateChanged := false
+		for i := range config.Rules {
+			if promrules.ReconcileAgentRuleSelection(&config.Rules[i], selections[config.Rules[i].ID]) {
+				stateChanged = true
+			}
+		}
+		if stateChanged {
+			encoded, err := json.Marshal(config)
+			if err != nil {
+				slog.Error("encode reconciled PromQL rule state failed", "agent_id", util.UUIDToString(agent.ID), "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to save backpressure policy")
+				return
+			}
+			if _, err := tx.Exec(ctx, "UPDATE workspace SET settings = jsonb_set(settings, '{promql_rules}', $2::jsonb, true), updated_at = now() WHERE id = $1", agent.WorkspaceID, encoded); err != nil {
+				slog.Error("save reconciled PromQL rule state failed", "agent_id", util.UUIDToString(agent.ID), "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to save backpressure policy")
+				return
+			}
+		}
+	}
 
 	var oldCard *protocol.AgentBackpressureConfig
 	if hasPrev {
