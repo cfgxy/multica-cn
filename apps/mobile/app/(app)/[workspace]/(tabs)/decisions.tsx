@@ -56,6 +56,8 @@ import {
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useDecisionsViewStore } from "@/data/stores/decisions-view-store";
 import type { DecisionRequest } from "@multica/core/types";
+import { MAX_WORKSPACE_DECISION_INBOX_QUERY_RUNES } from "@multica/core/issues/decisions";
+import { truncateToCodePoints } from "@multica/core/utils";
 import {
   DECISION_TAB_ORDER,
   groupDecisionInboxSections,
@@ -224,7 +226,11 @@ export default function Decisions() {
       <KeyboardAvoidingView className="flex-1" behavior="padding">
         <DecisionsSearchRow
           value={searchInput}
-          onChange={setSearchInput}
+          onChange={(value) =>
+            setSearchInput(
+              truncateToCodePoints(value, MAX_WORKSPACE_DECISION_INBOX_QUERY_RUNES),
+            )
+          }
         />
         {pageQuery.isPending && !hasWindow ? (
           <DecisionsLoading />
@@ -249,11 +255,11 @@ export default function Decisions() {
           </View>
         ) : null}
 
-        {!pageQuery.isPending && !pageQuery.isError && pendingRow ? (
+        {pendingRow ? (
           <DecisionsQueueCard request={pendingRow} pendingCount={requestsData?.counts.pending ?? 0} />
         ) : null}
 
-        {!pageQuery.isPending && !pageQuery.isError && !requestsPending && historyTotal > 0 ? (
+        {!requestsPending && historyTotal > 0 ? (
           <DecisionsHistory
             open={historyOpen}
             total={historyTotal}
@@ -482,6 +488,7 @@ function DecisionsSearchRow({
           color={THEME[colorScheme].mutedForeground}
         />
         <TextField
+          testID="decisions-search-input"
           value={value}
           onChangeText={onChange}
           placeholder={t("search.placeholder", "Search issue number, title, or question")}

@@ -56,13 +56,19 @@ vi.mock("@multica/core/issues/decisions", async (importOriginal) => {
       return {
         queryKey: ["test", "decision-inbox", workspaceId, filters],
         initialPageParam: null as PageParam,
-        queryFn: async ({ pageParam }: { pageParam: PageParam }) =>
-          inboxRef.current?.(pageParam) ?? {
-            items: [],
-            counts: { open: 0, answered: 0, cancelled: 0 },
-            next_cursor: null,
-            next_cursor_id: null,
-          },
+        queryFn: async ({ pageParam }: { pageParam: PageParam }) => {
+          if (Array.from(filters?.q ?? "").length > 200) {
+            throw new Error("search keyword too long");
+          }
+          return (
+            inboxRef.current?.(pageParam) ?? {
+              items: [],
+              counts: { open: 0, answered: 0, cancelled: 0 },
+              next_cursor: null,
+              next_cursor_id: null,
+            }
+          );
+        },
         // Same cursor contract as the real options: the pair travels
         // together; a page without both ends the walk.
         getNextPageParam: (lastPage: WorkspaceDecisionInbox) =>
@@ -520,6 +526,18 @@ describe("DecisionCenterPage keyword search (RUYI-864)", () => {
     });
     expect(screen.queryByTestId("decision-filtered-empty")).toBeNull();
   });
+
+  it("limits the keyword to the server's 200-rune contract before querying", async () => {
+    renderPage();
+
+    fireEvent.change(screen.getByTestId("decision-search-input"), {
+      target: { value: "😀".repeat(201) },
+    });
+
+    await vi.waitFor(() => expect(lastPageFilters().q).toBe("😀".repeat(200)));
+    expect(Array.from(lastPageFilters().q ?? "")).toHaveLength(200);
+    expect(screen.queryByTestId("decision-center-error")).toBeNull();
+  });
 });
 
 // RUYI-864: the pending authorization queue is a single card the server
@@ -547,6 +565,24 @@ describe("DecisionCenterPage pending queue (RUYI-864)", () => {
       return Promise.resolve(requestsList(rows));
     };
   }
+
+  it("keeps authorization queue and history visible when the decision inbox fails", async () => {
+    inboxRef.current = () => {
+      throw new Error("inbox unavailable");
+    };
+    requestsRef.current = () =>
+      Promise.resolve(
+        requestsList([makeRequest({ id: "r-pending", title: "Pending approval" })], {
+          pending: 1,
+          history: 1,
+        }),
+      );
+    renderPage();
+
+    expect(await screen.findByTestId("decision-center-error")).toBeInTheDocument();
+    expect(await screen.findByTestId("decision-queue")).toHaveTextContent("Pending approval");
+    expect(await screen.findByTestId("decision-history-toggle")).toBeInTheDocument();
+  });
 
   it("shows only the oldest pending row in a dedicated area above the list", async () => {
     inboxRef.current = () => ({

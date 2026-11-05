@@ -45,6 +45,10 @@ export interface WorkspaceDecisionInboxFilters {
   limit?: number;
 }
 
+// The workspace decision inbox handler rejects a longer keyword with 400.
+// Clients count Unicode code points so this stays aligned with Go runes.
+export const MAX_WORKSPACE_DECISION_INBOX_QUERY_RUNES = 200;
+
 export const decisionInboxKeys = {
   all: () => [...issueKeys.decisionsAll(), "workspace-inbox"] as const,
   workspace: (workspaceId: string | null | undefined) =>

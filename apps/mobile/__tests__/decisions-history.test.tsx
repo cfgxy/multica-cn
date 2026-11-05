@@ -6,6 +6,7 @@ import type {
   DecisionRequestsList,
   WorkspaceDecisionInbox,
 } from "@multica/core/types";
+import type { WorkspaceDecisionInboxFilters } from "@multica/core/issues/decisions";
 import type { DecisionRequestsListFilters } from "@multica/core/issues/decision-requests";
 import type { DecisionInboxRow } from "@/lib/decision-inbox-display";
 import Decisions from "@/app/(app)/[workspace]/(tabs)/decisions";
@@ -40,6 +41,8 @@ const mockRequestsData: { value: DecisionRequestsList } = {
   },
 };
 const mockRequestsCalls: DecisionRequestsListFilters[] = [];
+const mockInboxCalls: WorkspaceDecisionInboxFilters[] = [];
+const mockInboxError: { value: Error | null } = { value: null };
 const mockHistoryPages: DecisionRequestsList[] = [];
 const mockInboxPage: WorkspaceDecisionInbox = {
   items: [],
@@ -50,7 +53,17 @@ const mockInboxPage: WorkspaceDecisionInbox = {
 
 jest.mock("@/data/api", () => ({
   api: {
-    listWorkspaceDecisionInbox: jest.fn(() => Promise.resolve(mockInboxPage)),
+    listWorkspaceDecisionInbox: jest.fn(
+      (_wsId: string, filters: WorkspaceDecisionInboxFilters = {}) => {
+        mockInboxCalls.push(filters);
+        if (Array.from(filters.q ?? "").length > 200) {
+          return Promise.reject(new Error("search keyword too long"));
+        }
+        return mockInboxError.value
+          ? Promise.reject(mockInboxError.value)
+          : Promise.resolve(mockInboxPage);
+      },
+    ),
     listDecisionRequests: jest.fn((_wsId: string, filters: DecisionRequestsListFilters = {}) => {
       mockRequestsCalls.push(filters);
       if (filters.status === "pending") {
@@ -251,6 +264,8 @@ async function renderDecisions() {
 beforeEach(() => {
   mockRequestsData.value = list([]);
   mockRequestsCalls.length = 0;
+  mockInboxCalls.length = 0;
+  mockInboxError.value = null;
   mockHistoryPages.length = 0;
   jest.clearAllMocks();
 });
@@ -262,6 +277,32 @@ const pendingCalls = () => mockRequestsCalls.filter((call) => call.status === "p
 const historyCalls = () => mockRequestsCalls.filter((call) => call.status === "history");
 
 describe("Decisions tab history entry (RUYI-864 rework)", () => {
+  it("keeps authorization queue and history visible when the decision inbox fails", async () => {
+    mockInboxError.value = new Error("inbox unavailable");
+    mockRequestsData.value = list(
+      [makeRequest("r-pending", "2026-10-20T00:00:00Z", { status: "pending" })],
+      { pending: 1, history: 1 },
+    );
+
+    await renderDecisions();
+
+    expect(await screen.findByText(/Failed to load decision cards/)).toBeTruthy();
+    expect(await screen.findByTestId("decisions-request-row-r-pending")).toBeTruthy();
+    expect(await screen.findByTestId("decisions-history-toggle")).toBeTruthy();
+  });
+
+  it("limits the keyword before it can reach the server's 200-rune rejection", async () => {
+    await renderDecisions();
+
+    fireEvent.changeText(screen.getByTestId("decisions-search-input"), "😀".repeat(201));
+
+    await waitFor(() =>
+      expect(mockInboxCalls.some((filters) => filters.q === "😀".repeat(200))).toBe(true),
+    );
+    expect(mockInboxCalls.some((filters) => Array.from(filters.q ?? "").length > 200)).toBe(false);
+    expect(screen.queryByText(/Failed to load decision cards/)).toBeNull();
+  });
+
   it("keeps the entry visible for approved-only history when no pending row remains", async () => {
     // No pending rows — the top queue area is gone — but a consent is in
     // flight: one approved row, and ONLY closed/executed re-derivation (0)

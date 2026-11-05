@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  MAX_WORKSPACE_DECISION_INBOX_QUERY_RUNES,
   workspaceDecisionInboxPageOptions,
 } from "@multica/core/issues/decisions";
 import {
@@ -25,6 +26,7 @@ import {
   decisionCenterPrefsStore,
   type DecisionCenterStatusFilter,
 } from "@multica/core/issues/stores/decision-center-prefs-store";
+import { truncateToCodePoints } from "@multica/core/utils";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -190,7 +192,14 @@ export function DecisionCenterPage() {
           />
           <Input
             value={searchInput}
-            onChange={(event) => setSearchInput(event.target.value)}
+            onChange={(event) =>
+              setSearchInput(
+                truncateToCodePoints(
+                  event.target.value,
+                  MAX_WORKSPACE_DECISION_INBOX_QUERY_RUNES,
+                ),
+              )
+            }
             aria-label={t(($) => $.search.placeholder)}
             placeholder={t(($) => $.search.placeholder)}
             className="h-7 pl-7 pr-7 text-caption"
@@ -247,7 +256,7 @@ export function DecisionCenterPage() {
         </div>
       )}
 
-      {!pageQuery.isPending && !pageQuery.isError && pendingRow && (
+      {pendingRow && (
         <section className="px-4 pb-2" data-testid="decision-queue">
           <div className="flex items-center gap-2 py-2">
             <ShieldCheck className="size-3.5 text-brand" aria-hidden />
@@ -262,7 +271,7 @@ export function DecisionCenterPage() {
         </section>
       )}
 
-      {!requestsPending && !pageQuery.isError && historyTotal > 0 && (
+      {!requestsPending && historyTotal > 0 && (
         <section className="px-4 pb-1" data-testid="decision-history">
           <button
             type="button"
