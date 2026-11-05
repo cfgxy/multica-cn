@@ -18,10 +18,12 @@ import (
 
 func TestVoiceMCPBridge_UsesCanonicalToolsListAndCall(t *testing.T) {
 	var methods []string
+	var callers []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer caller-token" {
 			t.Errorf("authorization = %q", got)
 		}
+		callers = append(callers, r.Header.Get("Authorization"))
 		var request struct {
 			Method string `json:"method"`
 			Params struct {
@@ -80,6 +82,9 @@ func TestVoiceMCPBridge_UsesCanonicalToolsListAndCall(t *testing.T) {
 	}
 	if got := strings.Join(methods, ","); got != "initialize,tools/list,initialize,tools/call,initialize,tools/call" {
 		t.Fatalf("MCP sequence = %q", got)
+	}
+	if got := strings.Join(callers, ","); got != "Bearer caller-token,Bearer caller-token,Bearer caller-token,Bearer caller-token,Bearer caller-token,Bearer caller-token" {
+		t.Fatalf("MCP caller identity changed across discovery and calls: %q", got)
 	}
 }
 

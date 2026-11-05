@@ -44,6 +44,9 @@ services:
 
   backend:
     environment:
+      # Voice MCP calls stay on the Compose network. This must not reuse the
+      # frontend's optional public rewrite target below.
+      MCP_URL: http://mcp:3002
       # Unset keeps the whole OAuth surface off (the PAT path is unaffected);
       # the PEM itself is injected from .env.
       OAUTH_SIGNING_KEY: ${OAUTH_SIGNING_KEY:-}
