@@ -451,6 +451,7 @@ import {
   ListIssuesResponseSchema,
   CreateIssueResponseSchema,
   IssueSchema,
+  IssueUsageSummarySchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
   CommentSubIssueTaskResponseSchema,
@@ -470,6 +471,7 @@ import {
   EMPTY_EXECUTION_PROFILE,
   EMPTY_EXECUTION_PROFILE_LIST,
   EMPTY_EXECUTION_PROFILE_ACTIVATION,
+  EMPTY_ISSUE_USAGE_SUMMARY,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SquadSchema,
@@ -3767,7 +3769,10 @@ export class ApiClient {
   }
 
   async getIssueUsage(issueId: string): Promise<IssueUsageSummary> {
-    return this.fetch(`/api/issues/${issueId}/usage`);
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/usage`);
+    return parseWithFallback(raw, IssueUsageSummarySchema, EMPTY_ISSUE_USAGE_SUMMARY, {
+      endpoint: "GET /api/issues/:id/usage",
+    });
   }
 
   // The single-run cancel now answers with the RUYI-292 cancel matrix:

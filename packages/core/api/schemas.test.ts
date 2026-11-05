@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentRuntimeSchema, DecisionRequestSchema, IssueDecisionSchema } from "./schemas";
+import { AgentRuntimeSchema, AgentTaskSchema, DecisionRequestSchema, IssueDecisionSchema } from "./schemas";
 import {
   AppConfigSchema,
   MarketplaceItemSchema,
@@ -87,6 +87,8 @@ import {
   EMPTY_PLUGIN_PREVIEW,
   ListGitLabRepositoriesResponseSchema,
   EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
+  EMPTY_ISSUE_USAGE_SUMMARY,
+  IssueUsageSummarySchema,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -97,6 +99,55 @@ import {
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 import { SkillSummaryListSchema } from "./schemas";
+
+describe("issue usage summary response", () => {
+  const base = {
+    total_input_tokens: 10,
+    total_output_tokens: 20,
+    total_cache_read_tokens: 30,
+    total_cache_write_tokens: 40,
+    task_count: 2,
+  };
+
+  it("preserves known and incomplete model call evidence", () => {
+    const parsed = IssueUsageSummarySchema.parse({
+      ...base,
+      model_call_count: 4,
+      model_call_unknown_count: 1,
+    });
+    expect(parsed.model_call_count).toBe(4);
+    expect(parsed.model_call_unknown_count).toBe(1);
+  });
+
+  it("keeps omitted model call evidence distinct from zero", () => {
+    const parsed = IssueUsageSummarySchema.parse(base);
+    expect(parsed.model_call_count).toBeUndefined();
+    expect(parsed.model_call_unknown_count).toBeUndefined();
+  });
+
+  it("preserves optional call evidence on each task usage slice", () => {
+    const known = AgentTaskSchema.parse({
+      id: "task-known",
+      usage: [{ model: "claude-opus-5", model_call_count: 4 }],
+    });
+    const incomplete = AgentTaskSchema.parse({
+      id: "task-incomplete",
+      usage: [{ model: "gpt-5.6-terra" }],
+    });
+
+    expect(known.usage?.[0]?.model_call_count).toBe(4);
+    expect(incomplete.usage?.[0]?.model_call_count).toBeUndefined();
+  });
+
+  it("falls back when model call evidence is malformed", () => {
+    expect(parseWithFallback(
+      { ...base, model_call_count: "four" },
+      IssueUsageSummarySchema,
+      EMPTY_ISSUE_USAGE_SUMMARY,
+      { endpoint: "GET /api/issues/:id/usage" },
+    )).toBe(EMPTY_ISSUE_USAGE_SUMMARY);
+  });
+});
 
 describe("decision request response", () => {
   const baseRequest = {

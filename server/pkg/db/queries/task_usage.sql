@@ -89,6 +89,8 @@ LIMIT 1;
 -- RUYI-154) are run-scoped, not per-model: a run that reports more than one
 -- (provider, model) row carries the same run-level reading on each of its
 -- rows. The handler layer collapses them back to one figure per task.
+-- model_call_count stays per-model: NULL is an explicit unknown when provider
+-- original call evidence is incomplete, so consumers must not treat it as 0.
 --
 -- Ordering is by task then model so the client can group by task_id in one
 -- pass. Uses idx_agent_task_queue_issue_id (migration 035) + the task_usage
@@ -105,7 +107,8 @@ SELECT
     tu.context_tokens,
     tu.turns,
     tu.compactions,
-    tu.max_context_tokens
+    tu.max_context_tokens,
+    tu.model_call_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.issue_id = $1
@@ -122,6 +125,8 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.model_call_count), 0)::bigint AS model_call_count,
+    COUNT(*) FILTER (WHERE tu.model_call_count IS NULL)::int AS model_call_unknown_count,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id

@@ -6470,6 +6470,11 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 			v := row.CostUsdTicks.Int64
 			cost = &v
 		}
+		var modelCallCount *int64
+		if row.ModelCallCount.Valid {
+			v := row.ModelCallCount.Int64
+			modelCallCount = &v
+		}
 		taskID := uuidToString(row.TaskID)
 		byTask[taskID] = append(byTask[taskID], TaskUsageData{
 			Provider:         row.Provider,
@@ -6479,6 +6484,7 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 			CacheReadTokens:  row.CacheReadTokens,
 			CacheWriteTokens: row.CacheWriteTokens,
 			CostUsdTicks:     cost,
+			ModelCallCount:   modelCallCount,
 		})
 		stats := runStatsByTask[taskID]
 		stats.mergeRow(row.Turns, row.Compactions, row.MaxContextTokens, row.ContextTokens)
@@ -6621,6 +6627,8 @@ func (h *Handler) GetIssueUsage(w http.ResponseWriter, r *http.Request) {
 		"uncosted_output_tokens":      row.UncostedOutputTokens,
 		"uncosted_cache_read_tokens":  row.UncostedCacheReadTokens,
 		"uncosted_cache_write_tokens": row.UncostedCacheWriteTokens,
+		"model_call_count":            row.ModelCallCount,
+		"model_call_unknown_count":    row.ModelCallUnknownCount,
 		"task_count":                  row.TaskCount,
 	})
 }

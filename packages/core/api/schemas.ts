@@ -2286,7 +2286,27 @@ const TaskUsageSchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   cost_usd_ticks: z.number().optional(),
+  model_call_count: z.number().optional(),
 }).loose();
+
+export const IssueUsageSummarySchema = z.object({
+  total_input_tokens: z.number().default(0),
+  total_output_tokens: z.number().default(0),
+  total_cache_read_tokens: z.number().default(0),
+  total_cache_write_tokens: z.number().default(0),
+  ...CostSplitShape,
+  model_call_count: z.number().optional(),
+  model_call_unknown_count: z.number().optional(),
+  task_count: z.number().default(0),
+}).loose();
+
+export const EMPTY_ISSUE_USAGE_SUMMARY = {
+  total_input_tokens: 0,
+  total_output_tokens: 0,
+  total_cache_read_tokens: 0,
+  total_cache_write_tokens: 0,
+  task_count: 0,
+};
 
 export const AgentTaskSchema = z.object({
   id: z.string(),

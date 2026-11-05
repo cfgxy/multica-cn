@@ -628,6 +628,9 @@ export interface TaskUsage {
   cache_read_tokens: number;
   cache_write_tokens: number;
   cost_usd_ticks?: number;
+  // Absent means the provider's original call evidence is incomplete; zero is
+  // a complete, known count.
+  model_call_count?: number;
 }
 
 /**
@@ -1369,14 +1372,13 @@ export interface SetAgentSkillsRequest {
   skill_ids: string[];
 }
 
-export interface IssueUsageSummary {
+export interface IssueUsageSummary extends ModelCallCountFields {
   total_input_tokens: number;
   total_output_tokens: number;
   total_cache_read_tokens: number;
   total_cache_write_tokens: number;
-  // Optional unlike the usage-row types: `getIssueUsage` returns this shape
-  // unvalidated (no zod schema), so nothing guarantees the field is present
-  // when the backend is older than the cost split.
+  // Optional fields preserve compatibility with a backend older than their
+  // corresponding aggregation.
   cost_usd_ticks?: number;
   uncosted_input_tokens?: number;
   uncosted_output_tokens?: number;
