@@ -8,22 +8,19 @@ import (
 )
 
 // The failure event is where a delivery-guard refusal becomes legible to the
-// user (RUYI-579 W3): the classified kind and the self-heal attempt ride as
-// structured fields, while the machine-readable trailer itself never leaks
+// user (RUYI-579 W3): the classified kind rides as a structured field, while
+// the machine-readable trailer itself never leaks
 // into the human-facing error text — the server stores and broadcasts the
 // remainder only.
 func TestTaskFailedFieldsCarryGuardClassification(t *testing.T) {
 	msg := taskfailure.AppendGuardMeta(
 		"refusing to record branch agent/j/mul-6881: the delivered commit no longer contains the commit this turn started from",
-		taskfailure.GuardKindAncestorBreak, true)
+		taskfailure.GuardKindAncestorBreak)
 
 	fields := taskFailedFields(msg, string(taskfailure.ReasonDeliveryGuard), false)
 
 	if fields["guard_kind"] != taskfailure.GuardKindAncestorBreak {
 		t.Errorf("guard_kind = %v, want %q", fields["guard_kind"], taskfailure.GuardKindAncestorBreak)
-	}
-	if fields["guard_heal_attempted"] != true {
-		t.Errorf("guard_heal_attempted = %v, want true", fields["guard_heal_attempted"])
 	}
 	errText, _ := fields["error"].(string)
 	if errText == "" {
@@ -45,9 +42,6 @@ func TestTaskFailedFieldsWithoutGuardTrailerStayUnchanged(t *testing.T) {
 	if _, ok := fields["guard_kind"]; ok {
 		t.Errorf("plain failure grew a guard_kind: %v", fields["guard_kind"])
 	}
-	if _, ok := fields["guard_heal_attempted"]; ok {
-		t.Errorf("plain failure grew guard_heal_attempted: %v", fields["guard_heal_attempted"])
-	}
 	if text, _ := fields["error"].(string); text != "runtime went offline" {
 		t.Errorf("error = %q, want the message unchanged", text)
 	}
@@ -56,7 +50,7 @@ func TestTaskFailedFieldsWithoutGuardTrailerStayUnchanged(t *testing.T) {
 // A retry-pending failure never carries error text, but the classification
 // still rides: the user is told what kind of refusal will be retried.
 func TestTaskFailedFieldsRetryPendingKeepsKindDropsError(t *testing.T) {
-	msg := taskfailure.AppendGuardMeta("refusing to record branch x", taskfailure.GuardKindBranchMismatch, false)
+	msg := taskfailure.AppendGuardMeta("refusing to record branch x", taskfailure.GuardKindBranchMismatch)
 
 	fields := taskFailedFields(msg, string(taskfailure.ReasonDeliveryGuard), true)
 
@@ -65,8 +59,5 @@ func TestTaskFailedFieldsRetryPendingKeepsKindDropsError(t *testing.T) {
 	}
 	if fields["guard_kind"] != taskfailure.GuardKindBranchMismatch {
 		t.Errorf("guard_kind = %v, want %q", fields["guard_kind"], taskfailure.GuardKindBranchMismatch)
-	}
-	if fields["guard_heal_attempted"] != false {
-		t.Errorf("guard_heal_attempted = %v, want false", fields["guard_heal_attempted"])
 	}
 }

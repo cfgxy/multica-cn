@@ -297,31 +297,6 @@ func TestReanchorBranchRejectsOffMainlineTarget(t *testing.T) {
 	}
 }
 
-// TestReanchorBranchRefusesPendingGuardRefusal: a delivery-guard refusal
-// marker holds the branch for its own heal path; the operator rewrite must
-// stand down and move nothing.
-func TestReanchorBranchRefusesPendingGuardRefusal(t *testing.T) {
-	repo := newTestRepo(t)
-	gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
-	m2 := gitRun(t, repo, "rev-parse", "HEAD")
-	gitRun(t, repo, "commit", "--allow-empty", "-m", "m3")
-	mainTip := gitRun(t, repo, "rev-parse", "HEAD")
-	gitRun(t, repo, "commit", "--allow-empty", "-m", "content")
-	content := gitRun(t, repo, "rev-parse", "HEAD")
-	gitRun(t, repo, "update-ref", "refs/heads/agent/j/mul-z", m2)
-	old := gitRun(t, repo, "rev-parse", "refs/heads/agent/j/mul-z")
-	// A pending refusal marker at the old tip.
-	gitRun(t, repo, "update-ref", guardRefusalRef("agent/j/mul-z"), old)
-
-	_, err := ReanchorBranch(repo, "agent/j/mul-z", content, mainTip, prepareReanchorFixture(t, repo, "agent/j/mul-z"), ReanchorNote{})
-	if err == nil || !strings.Contains(err.Error(), "delivery-guard refusal") {
-		t.Fatalf("reanchor proceeded despite a pending refusal marker: %v", err)
-	}
-	if got := gitRun(t, repo, "rev-parse", "refs/heads/agent/j/mul-z"); got != old {
-		t.Errorf("branch moved despite refusal marker: %s", got)
-	}
-}
-
 func TestReanchorBranchRefusesMissingRecordWithoutChangingMarker(t *testing.T) {
 	repo := newTestRepo(t)
 	gitRun(t, repo, "commit", "--allow-empty", "-m", "m2")
@@ -546,9 +521,16 @@ func TestReanchorBranchResumesAfterRefTransactionFailureWithoutMarkerRollback(t 
 	}
 
 	gitRun(t, repo, "checkout", branch)
+	t.Setenv("MULTICA_TASK_ID", "reanchor-task")
 	preflight, preflightErr := PreflightWorktree(repo)
-	if preflightErr == nil || preflight.Status != "fail" || preflight.BaseIsAncestor {
-		t.Fatalf("PreflightWorktree during prepared recovery = %+v, error = %v; want fail closed", preflight, preflightErr)
+	if preflightErr == nil || preflight.Status != "fail" || preflight.BaseIsAncestor || len(preflight.Warnings) == 0 {
+		t.Fatalf("PreflightWorktree during prepared recovery = %+v, error = %v; want ancestor failure with diagnostics", preflight, preflightErr)
+	}
+	if !strings.Contains(preflightErr.Error(), "not proven as an ancestor") {
+		t.Fatalf("prepared recovery preflight error = %v, want ancestor failure", preflightErr)
+	}
+	if len(preflight.Suggestions) != 1 || preflight.Suggestions[0].Kind != "ancestor_break" {
+		t.Fatalf("prepared recovery suggestions = %+v, want ancestor_break", preflight.Suggestions)
 	}
 	gitRun(t, repo, "checkout", "main")
 

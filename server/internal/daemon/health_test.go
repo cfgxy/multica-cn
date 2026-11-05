@@ -366,7 +366,7 @@ func TestRepoCheckoutUsesTaskScopedProjectRefByDefault(t *testing.T) {
 	}
 }
 
-func TestRepoCheckoutRepairsIncompleteCurrentTaskMarker(t *testing.T) {
+func TestRepoCheckoutRegistersDeliveryFieldsWithoutRepairingTaskMarker(t *testing.T) {
 	t.Parallel()
 
 	const workspaceID = "ws-checkout"
@@ -399,8 +399,8 @@ func TestRepoCheckoutRepairsIncompleteCurrentTaskMarker(t *testing.T) {
 	if err := json.Unmarshal(data, &marker); err != nil {
 		t.Fatal(err)
 	}
-	if marker.TaskID != "task-1" || marker.AgentID != "agent-1" || marker.IssueID != "issue-1" {
-		t.Fatalf("marker identity = %+v, want active task identity", marker)
+	if marker.TaskID != "" || marker.AgentID != "agent-1" || marker.IssueID != "issue-1" {
+		t.Fatalf("marker identity = %+v, want the original incomplete metadata preserved", marker)
 	}
 	if marker.Branch != "agent/test" || marker.BaseCommit != strings.Repeat("a", 40) {
 		t.Fatalf("marker delivery fields = %+v, want checkout branch and base", marker)

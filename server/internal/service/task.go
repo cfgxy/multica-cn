@@ -5205,11 +5205,11 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	errMsg = util.SanitizeTextForPostgres(errMsg)
 
 	// RUYI-579 W3: a delivery_guard refusal arrives with the daemon's
-	// machine-readable trailer naming its shape and self-heal outcome. Split
+	// machine-readable trailer naming its shape. Split
 	// it at this boundary: the classifier and the persisted error column see
 	// only the plain text, while the task:failed event published below keeps
 	// the original message so taskFailedFields can lift the trailer into the
-	// structured guard_kind / guard_heal_attempted fields.
+	// structured guard_kind field.
 	eventErrMsg := errMsg
 	errMsg = taskfailure.StripGuardMeta(errMsg)
 
@@ -7802,8 +7802,7 @@ func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, 
 // attempt from a user-visible terminal failure.
 //
 // A delivery_guard refusal's message may carry the daemon's machine-readable
-// trailer (RUYI-579 W3): its shape and self-heal outcome become the
-// structured guard_kind / guard_heal_attempted fields and the trailer itself
+// trailer (RUYI-579 W3): its shape becomes the structured guard_kind field and the trailer itself
 // never reaches the user-facing error text. Messages without the trailer are
 // returned untouched.
 func taskFailedFields(errMsg, failureReason string, retryPending bool) map[string]any {
@@ -7811,11 +7810,10 @@ func taskFailedFields(errMsg, failureReason string, retryPending bool) map[strin
 		"failure_reason": failureReason,
 		"retry_pending":  retryPending,
 	}
-	if kind, healAttempted, remainder, ok := taskfailure.ParseGuardMeta(errMsg); ok {
+	if kind, remainder, ok := taskfailure.ParseGuardMeta(errMsg); ok {
 		if kind != "" {
 			fields["guard_kind"] = kind
 		}
-		fields["guard_heal_attempted"] = healAttempted
 		errMsg = remainder
 	}
 	if errMsg != "" && !retryPending {
