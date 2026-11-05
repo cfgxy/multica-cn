@@ -908,6 +908,10 @@
     "engine": "ランタイム {{engine}}",
     "lastCheckError": "最終確認：{{reason}}",
     "encryptionNotReady": "このデプロイにはワークスペース単位の暗号化キーがないため、JEV 設定を保存できません。",
+    "source": {
+      "workspace": "ワークスペースの上書き",
+      "deployment": "デプロイの既定値"
+    },
     "status": {
       "unconfigured": "未設定",
       "offline": "オフライン",

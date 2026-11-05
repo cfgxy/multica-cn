@@ -4558,6 +4558,7 @@ export class ApiClient {
     const raw = await this.fetch<unknown>("/api/self-evolution/jev-config");
     return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
       status: "unconfigured",
+      source: "unconfigured",
       endpoint: "",
       model: "",
       timeout_ms: 1500,
@@ -4575,6 +4576,7 @@ export class ApiClient {
     });
     return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
       status: "unconfigured",
+      source: "unconfigured",
       endpoint: "",
       model: "",
       timeout_ms: 1500,
@@ -4587,6 +4589,7 @@ export class ApiClient {
     const raw = await this.fetch<unknown>("/api/self-evolution/jev-config", { method: "DELETE" });
     return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
       status: "unconfigured",
+      source: "unconfigured",
       endpoint: "",
       model: "",
       timeout_ms: 1500,
@@ -4601,6 +4604,7 @@ export class ApiClient {
     });
     return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
       status: "unconfigured",
+      source: "unconfigured",
       endpoint: "",
       model: "",
       timeout_ms: 1500,

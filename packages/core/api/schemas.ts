@@ -5497,6 +5497,7 @@ export const SelfEvolutionConfigValidationSchema = z.object({
 // degrade to unconfigured so it cannot claim a working risk precheck.
 export const SelfEvolutionJevConfigSchema = z.object({
   status: z.enum(["unconfigured", "offline", "available"]).default("unconfigured"),
+  source: z.enum(["unconfigured", "workspace", "deployment"]).default("unconfigured"),
   endpoint: z.string().default(""),
   model: z.string().default(""),
   timeout_ms: z.number().int().min(100).max(30000).default(1500),

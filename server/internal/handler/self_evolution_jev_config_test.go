@@ -10,11 +10,12 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/jevconfig"
+	"github.com/multica-ai/multica/server/internal/legislation"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 )
 
-func withTestJevConfig(t *testing.T) {
+func withTestJevConfig(t *testing.T, deployment ...*legislation.AdvisoryClient) {
 	t.Helper()
 	key := make([]byte, secretbox.KeySize)
 	if _, err := rand.Read(key); err != nil {
@@ -25,7 +26,11 @@ func withTestJevConfig(t *testing.T) {
 		t.Fatalf("secretbox.New: %v", err)
 	}
 	previous := testHandler.JevConfig
-	testHandler.JevConfig = jevconfig.NewResolver(testHandler.Queries, box)
+	defaultClient := &legislation.AdvisoryClient{}
+	if len(deployment) == 1 {
+		defaultClient = deployment[0]
+	}
+	testHandler.JevConfig = jevconfig.NewResolver(testHandler.Queries, box, defaultClient)
 	t.Cleanup(func() { testHandler.JevConfig = previous })
 }
 

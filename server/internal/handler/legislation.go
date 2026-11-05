@@ -1021,8 +1021,8 @@ func (h *Handler) UpdatePromptProposal(w http.ResponseWriter, r *http.Request) {
 
 // jevAdvisory returns the advisory client for one workspace. An injected
 // client (tests, staging) wins; a configured workspace then takes precedence.
-// Legacy process defaults remain only for deployments without the encrypted
-// workspace resolver, preserving the legacy operating mode.
+// The resolver falls back to the deployment default for workspaces without an
+// override, preserving the legacy operating mode after encryption is enabled.
 func (h *Handler) jevAdvisory(ctx context.Context, workspaceID pgtype.UUID) *legislation.AdvisoryClient {
 	if h.JevAdvisory != nil {
 		return h.JevAdvisory

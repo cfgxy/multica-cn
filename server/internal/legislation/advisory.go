@@ -41,8 +41,7 @@ type AdvisoryClient struct {
 	// sent as a bearer credential when configured and never enters reports.
 	APIKey string
 	// Model is the configured JEV model identity. The binary judge protocol
-	// currently accepts only input, so this records the model actually selected
-	// for the endpoint without changing that upstream request contract.
+	// consumes it as the optional model request field.
 	Model   string
 	Timeout time.Duration
 }
@@ -77,7 +76,13 @@ type AdvisoryReport struct {
 
 // Judge posts one text to the service and returns the raw verdict.
 func (c *AdvisoryClient) Judge(ctx context.Context, text string) (*jevJudgeResponse, error) {
-	payload, err := json.Marshal(map[string]string{"input": text})
+	payload, err := json.Marshal(struct {
+		Input string `json:"input"`
+		Model string `json:"model,omitempty"`
+	}{
+		Input: text,
+		Model: c.model(),
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -71,7 +71,7 @@ func TestAdvisoryAssessWarnSemantics(t *testing.T) {
 	}
 }
 
-func TestAdvisoryConfiguredModelAndCredentialStayOutOfReportPayload(t *testing.T) {
+func TestAdvisoryConfiguredModelIsSentAndCredentialStaysOutOfReport(t *testing.T) {
 	var authorization string
 	var request map[string]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,8 +95,8 @@ func TestAdvisoryConfiguredModelAndCredentialStayOutOfReportPayload(t *testing.T
 	if authorization != "Bearer workspace-key" {
 		t.Fatalf("authorization = %q", authorization)
 	}
-	if request["input"] != "proposal text" || len(request) != 1 {
-		t.Fatalf("request = %#v, want input-only protocol payload", request)
+	if request["input"] != "proposal text" || request["model"] != "jev-local" || len(request) != 2 {
+		t.Fatalf("request = %#v, want input and configured model", request)
 	}
 	encoded, err := json.Marshal(report)
 	if err != nil {

@@ -41,10 +41,17 @@ const (
 	StatusAvailable    = "available"
 )
 
+const (
+	SourceUnconfigured = "unconfigured"
+	SourceWorkspace    = "workspace"
+	SourceDeployment   = "deployment"
+)
+
 // State is the safe presentation form of a saved config. Ciphertext is never
 // returned; HasAPIKey is the only fact exposed about credentials.
 type State struct {
 	Status         string
+	Source         string
 	BaseURL        string
 	Model          string
 	TimeoutMS      int32
@@ -67,22 +74,22 @@ type SaveInput struct {
 
 // Resolver decrypts a stored credential only for an outgoing JEV request.
 type Resolver struct {
-	store Store
-	box   *secretbox.Box
-	now   func() time.Time
+	store      Store
+	box        *secretbox.Box
+	deployment *legislation.AdvisoryClient
+	now        func() time.Time
 }
 
-func NewResolver(store Store, box *secretbox.Box) *Resolver {
-	return &Resolver{store: store, box: box, now: time.Now}
+func NewResolver(store Store, box *secretbox.Box, deployment *legislation.AdvisoryClient) *Resolver {
+	return &Resolver{store: store, box: box, deployment: deployment, now: time.Now}
 }
 
-// Client returns the workspace's configured advisory client. A missing row is
-// deliberately disabled rather than falling back to the legacy process URL:
-// the workspace status and the actual proposal behavior then agree.
+// Client returns the workspace's configured client, or the deployment default
+// when the workspace has not overridden it.
 func (r *Resolver) Client(ctx context.Context, workspaceID pgtype.UUID) (*legislation.AdvisoryClient, error) {
 	row, err := r.store.GetSelfEvolutionJevConfig(ctx, workspaceID)
 	if isNoRows(err) {
-		return &legislation.AdvisoryClient{}, nil
+		return r.deploymentClient(), nil
 	}
 	if err != nil {
 		return nil, err
@@ -103,7 +110,7 @@ func (r *Resolver) Client(ctx context.Context, workspaceID pgtype.UUID) (*legisl
 func (r *Resolver) State(ctx context.Context, workspaceID pgtype.UUID) (State, error) {
 	row, err := r.store.GetSelfEvolutionJevConfig(ctx, workspaceID)
 	if isNoRows(err) {
-		return State{Status: StatusUnconfigured, TimeoutMS: defaultTimeoutMS}, nil
+		return r.deploymentState(ctx), nil
 	}
 	if err != nil {
 		return State{}, err
@@ -114,6 +121,7 @@ func (r *Resolver) State(ctx context.Context, workspaceID pgtype.UUID) (State, e
 	}
 	return State{
 		Status:         status,
+		Source:         SourceWorkspace,
 		BaseURL:        row.BaseUrl,
 		Model:          row.Model,
 		TimeoutMS:      row.TimeoutMs,
@@ -169,12 +177,17 @@ func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInp
 // Recheck records a safe, bounded connectivity result and returns the newest
 // state. The advisory call itself never reports an error for a network fault.
 func (r *Resolver) Recheck(ctx context.Context, workspaceID pgtype.UUID) (State, error) {
+	if _, err := r.store.GetSelfEvolutionJevConfig(ctx, workspaceID); isNoRows(err) {
+		return r.deploymentState(ctx), nil
+	} else if err != nil {
+		return State{}, err
+	}
 	client, err := r.Client(ctx, workspaceID)
 	if err != nil {
 		return State{}, err
 	}
 	if !client.Enabled() {
-		return State{Status: StatusUnconfigured, TimeoutMS: defaultTimeoutMS}, nil
+		return State{Status: StatusUnconfigured, Source: SourceWorkspace, TimeoutMS: defaultTimeoutMS}, nil
 	}
 	report := client.Assess(ctx, "config_probe", probeInput)
 	checkedAt := r.now().UTC()
@@ -188,6 +201,44 @@ func (r *Resolver) Recheck(ctx context.Context, workspaceID pgtype.UUID) (State,
 		return State{}, err
 	}
 	return r.State(ctx, workspaceID)
+}
+
+func (r *Resolver) deploymentClient() *legislation.AdvisoryClient {
+	if r.deployment != nil {
+		return r.deployment
+	}
+	return &legislation.AdvisoryClient{}
+}
+
+func (r *Resolver) deploymentState(ctx context.Context) State {
+	client := r.deploymentClient()
+	timeoutMS := int32(client.Timeout / time.Millisecond)
+	if timeoutMS <= 0 {
+		timeoutMS = defaultTimeoutMS
+	}
+	state := State{
+		Status:    StatusUnconfigured,
+		Source:    SourceUnconfigured,
+		BaseURL:   client.BaseURL,
+		Model:     client.Model,
+		TimeoutMS: timeoutMS,
+	}
+	if !client.Enabled() {
+		return state
+	}
+	report := client.Assess(ctx, "config_probe", probeInput)
+	checkedAt := r.now().UTC()
+	state.Source = SourceDeployment
+	state.LastCheckedAt = pgtype.Timestamptz{Time: checkedAt, Valid: true}
+	state.LastCheckOK = pgtype.Bool{Bool: report.Available, Valid: true}
+	state.LastCheckError = report.SkippedReason
+	state.LastEngine = report.Engine
+	if report.Available {
+		state.Status = StatusAvailable
+	} else {
+		state.Status = StatusOffline
+	}
+	return state
 }
 
 func (r *Resolver) Delete(ctx context.Context, workspaceID pgtype.UUID) error {

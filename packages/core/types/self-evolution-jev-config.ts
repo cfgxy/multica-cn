@@ -1,5 +1,6 @@
 /** Workspace-scoped JEV advisory configuration. */
 export type SelfEvolutionJevStatus = "unconfigured" | "offline" | "available";
+export type SelfEvolutionJevSource = "unconfigured" | "workspace" | "deployment";
 
 /**
  * Safe JEV status returned by the server. `has_api_key` is intentionally the
@@ -7,6 +8,7 @@ export type SelfEvolutionJevStatus = "unconfigured" | "offline" | "available";
  */
 export interface SelfEvolutionJevConfig {
   status: SelfEvolutionJevStatus;
+  source: SelfEvolutionJevSource;
   endpoint: string;
   model: string;
   timeout_ms: number;
