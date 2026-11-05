@@ -1,8 +1,6 @@
 package taskfailure
 
 import (
-	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -26,31 +24,26 @@ const (
 
 // GuardMetaLine is the machine-readable trailer the daemon appends to a
 // delivery_guard task failure message. The server parses it back out when it
-// builds the task:failed event payload (guard_kind / guard_heal_attempted)
+// builds the task:failed event payload (guard_kind)
 // and strips it from the user-facing error text. It is a wire convention
 // between internal/daemon and internal/service — both ends live in this
 // repo, so the format has no versioning beyond this constant.
 const GuardMetaLine = "multica-delivery-guard"
 
-// FormatGuardMeta renders the trailer for a delivery_guard failure with the
-// given kind and self-heal outcome. An unclassified refusal (empty kind, no
-// heal attempted) gets no trailer — there is nothing to say that the error
-// prose does not already say.
-func FormatGuardMeta(kind string, healAttempted bool) string {
-	if kind == "" && !healAttempted {
+// FormatGuardMeta renders the trailer for a classified delivery_guard failure.
+// An unclassified refusal gets no trailer because the error prose is already
+// the complete diagnostic.
+func FormatGuardMeta(kind string) string {
+	if kind == "" {
 		return ""
 	}
-	heal := 0
-	if healAttempted {
-		heal = 1
-	}
-	return fmt.Sprintf("%s: kind=%s heal_attempted=%d", GuardMetaLine, kind, heal)
+	return GuardMetaLine + ": kind=" + kind
 }
 
 // AppendGuardMeta attaches the trailer to a task failure message. An empty
 // trailer leaves the message untouched.
-func AppendGuardMeta(message, kind string, healAttempted bool) string {
-	meta := FormatGuardMeta(kind, healAttempted)
+func AppendGuardMeta(message, kind string) string {
+	meta := FormatGuardMeta(kind)
 	if meta == "" {
 		return message
 	}
@@ -58,17 +51,16 @@ func AppendGuardMeta(message, kind string, healAttempted bool) string {
 }
 
 // ParseGuardMeta extracts the trailer from a delivery_guard failure message,
-// returning the kind, whether a self-heal was attempted, and the message
-// with the trailer line removed. ok is false — and the message returned
-// unchanged — when the message carries no trailer.
-func ParseGuardMeta(message string) (kind string, healAttempted bool, remainder string, ok bool) {
+// returning its kind and the message with the trailer line removed. ok is false
+// — and the message returned unchanged — when the message carries no trailer.
+func ParseGuardMeta(message string) (kind, remainder string, ok bool) {
 	remainder = message
 	idx := strings.LastIndex(message, "\n"+GuardMetaLine+":")
 	if idx < 0 {
 		if strings.HasPrefix(message, GuardMetaLine+":") {
 			idx = 0
 		} else {
-			return "", false, message, false
+			return "", message, false
 		}
 	}
 	lineStart := idx
@@ -94,17 +86,14 @@ func ParseGuardMeta(message string) (kind string, healAttempted bool, remainder 
 		// field's purpose is visibility, not enumeration enforcement.
 		kind = fields["kind"]
 	}
-	if heal, err := strconv.Atoi(fields["heal_attempted"]); err == nil {
-		healAttempted = heal != 0
-	}
-	return kind, healAttempted, remainder, true
+	return kind, remainder, true
 }
 
 // StripGuardMeta returns the message with the trailer removed — the text a
 // user should see and the text that gets persisted. A message without the
 // trailer comes back unchanged.
 func StripGuardMeta(message string) string {
-	_, _, remainder, _ := ParseGuardMeta(message)
+	_, remainder, _ := ParseGuardMeta(message)
 	return remainder
 }
 

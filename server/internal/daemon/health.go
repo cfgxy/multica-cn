@@ -655,14 +655,12 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, "repo checkout returned no result", http.StatusInternalServerError)
 			return
 		}
-		// Register the delivery context (branch + task baseline) into the
-		// active task's marker so `multica worktree preflight` can prove this
-		// checkout's delivery relationship (RUYI-848). Non-fatal: a marker
-		// write failure degrades to the legacy marker shape and preflight
-		// reports it; it never undoes a successful checkout.
+		// Record checkout metadata only as a diagnostic aid. A checkout, push,
+		// PR, and ordinary preflight remain valid when this marker is absent or
+		// stale; only Git's own delivery checks are blocking.
 		markerPath := filepath.Join(activeTask.WorkDir, execenv.TaskContextMarkerRelPath)
-		if regErr := execenv.RepairTaskDeliveryContext(markerPath, activeTask.TaskID, activeTask.AgentID, activeTask.IssueID, result.BranchName, result.BaseCommit); regErr != nil {
-			d.logger.Warn("repo checkout: task marker delivery-context repair failed; preflight will report the missing baseline",
+		if regErr := execenv.RegisterTaskDeliveryContext(markerPath, result.BranchName, result.BaseCommit); regErr != nil {
+			d.logger.Warn("repo checkout: task marker delivery-context registration failed; checkout remains usable",
 				"marker", markerPath, "error", regErr)
 		}
 

@@ -21,6 +21,7 @@ type WorktreePreflight struct {
 	BaseCommit     string   `json:"base_commit,omitempty"`
 	BaseIsAncestor bool     `json:"base_is_ancestor"`
 	WorktreeStatus []string `json:"worktree_status"`
+	Warnings       []string `json:"warnings"`
 	Errors         []string `json:"errors"`
 }
 
@@ -29,27 +30,31 @@ type preflightTaskMarker struct {
 	TaskID     string `json:"task_id"`
 	Branch     string `json:"branch"`
 	BaseCommit string `json:"base_commit"`
+	// PreparedReanchor belongs exclusively to the explicit `worktree reanchor`
+	// transaction. Ordinary delivery diagnostics must never turn it into a gate.
+	PreparedReanchor json.RawMessage `json:"prepared_reanchor"`
 }
 
 // PreflightWorktree inspects the current managed task worktree and never changes
 // refs, the index, or files. Its delivery checks are the same checks Finalize
 // applies before recording a delivered branch.
 func PreflightWorktree(cwd string) (WorktreePreflight, error) {
-	result := WorktreePreflight{Status: "fail", WorktreeStatus: []string{}, Errors: []string{}}
-	marker, err := findPreflightTaskMarker(cwd)
-	if err != nil {
-		result.Errors = append(result.Errors, err.Error())
+	result := WorktreePreflight{Status: "fail", WorktreeStatus: []string{}, Warnings: []string{}, Errors: []string{}}
+	marker, markerErr := findPreflightTaskMarker(cwd)
+	if markerErr != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("managed task metadata is unavailable: %v; inspect `git status --short --branch` and continue once the Git checks below are clean", markerErr))
 	} else {
 		result.TaskID = marker.TaskID
 		result.ExpectedBranch = marker.Branch
 		result.BaseCommit = marker.BaseCommit
-	}
-	if err == nil && (marker.TaskID == "" || marker.Branch == "" || marker.BaseCommit == "") {
-		result.Errors = append(result.Errors, "managed task marker is missing task_id, branch, or base_commit; delivery relationship cannot be proven")
-	}
-	if err == nil {
+		if marker.TaskID == "" || marker.Branch == "" || marker.BaseCommit == "" {
+			result.Warnings = append(result.Warnings, "managed task metadata is incomplete (task_id, branch, or base_commit is missing); preflight checked the resolvable Git state only")
+		}
+		if len(marker.PreparedReanchor) > 0 {
+			result.Warnings = append(result.Warnings, "an explicit worktree reanchor transaction is prepared; it is not part of ordinary preflight or delivery, so complete or inspect it only if that recovery was intentionally requested")
+		}
 		if currentTaskID := strings.TrimSpace(os.Getenv("MULTICA_TASK_ID")); currentTaskID != "" && currentTaskID != marker.TaskID {
-			result.Errors = append(result.Errors, fmt.Sprintf("managed task marker belongs to task %s, but MULTICA_TASK_ID is %s", marker.TaskID, currentTaskID))
+			result.Warnings = append(result.Warnings, fmt.Sprintf("managed task marker belongs to task %s, but MULTICA_TASK_ID is %s; Git delivery checks remain authoritative", marker.TaskID, currentTaskID))
 		}
 	}
 
@@ -76,27 +81,34 @@ func PreflightWorktree(cwd string) (WorktreePreflight, error) {
 		} else {
 			result.Errors = append(result.Errors, fmt.Sprintf("resolve managed branch %s: %v", marker.Branch, tipErr))
 		}
+	} else {
+		result.Warnings = append(result.Warnings, "no managed branch is recorded; preflight cannot compare HEAD with a registered branch")
 	}
-	if marker.BaseCommit != "" && result.Head != "" {
+	if marker.BaseCommit != "" && result.Head != "" && len(marker.PreparedReanchor) == 0 {
 		if _, ancestorErr := runGit(gitRoot, "merge-base", "--is-ancestor", marker.BaseCommit, result.Head); ancestorErr == nil {
 			result.BaseIsAncestor = true
 		} else {
 			result.Errors = append(result.Errors, fmt.Sprintf("base commit %s is not proven as an ancestor of HEAD %s", marker.BaseCommit, result.Head))
 		}
+	} else if marker.BaseCommit == "" {
+		result.Warnings = append(result.Warnings, "no delivery baseline is recorded; preflight cannot check its ancestry")
 	}
 	if status, statusErr := runPreflightGit(gitRoot, "status", "--short", "--branch", "--untracked-files=all"); statusErr == nil {
 		result.WorktreeStatus = splitStatusLines(status)
 	} else {
 		result.Errors = append(result.Errors, fmt.Sprintf("read worktree status: %v", statusErr))
 	}
+	if unmerged, unmergedErr := runPreflightGit(gitRoot, "ls-files", "--unmerged"); unmergedErr != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("inspect unresolved merge paths: %v", unmergedErr))
+	} else if strings.TrimSpace(unmerged) != "" {
+		result.Errors = append(result.Errors, fmt.Sprintf("unresolved merge paths: %s", strings.TrimSpace(unmerged)))
+	}
 
 	if marker.Branch != "" && result.CurrentBranch != marker.Branch {
 		result.Errors = append(result.Errors, fmt.Sprintf("current branch %q does not match expected branch %q", result.CurrentBranch, marker.Branch))
 	}
-	if marker.Branch != "" && marker.BaseCommit != "" {
-		if guardErr := verifyDeliveryPoint(gitRoot, marker.Branch, marker.BaseCommit, result.Head); guardErr != nil {
-			result.Errors = append(result.Errors, guardErr.Error())
-		}
+	if marker.Branch != "" && result.BranchTip != "" && result.Head != "" && result.BranchTip != result.Head {
+		result.Errors = append(result.Errors, fmt.Sprintf("managed branch %s points at %s while HEAD is %s", marker.Branch, shortID(result.BranchTip), shortID(result.Head)))
 	}
 	if len(result.Errors) == 0 {
 		result.Status = "pass"

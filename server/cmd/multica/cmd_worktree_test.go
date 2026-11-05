@@ -129,11 +129,43 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 		}
 	})
 
-	t.Run("missing task context fails closed", func(t *testing.T) {
+	t.Run("missing task context reports a warning", func(t *testing.T) {
 		repo, _ := newPreflightRepo(t)
 		got, err := runPreflightCLI(t, repo)
-		if err == nil || got["status"] != "fail" || got["current_branch"] != "agent/managed" || got["head"] == "" || !strings.Contains(err.Error(), "no Multica managed task context") {
-			t.Fatalf("preflight = %#v, error = %v; want missing context failure", got, err)
+		if err != nil || got["status"] != "pass" || got["current_branch"] != "agent/managed" || got["head"] == "" {
+			t.Fatalf("preflight = %#v, error = %v; want Git-only pass", got, err)
+		}
+		warnings, _ := got["warnings"].([]any)
+		if len(warnings) == 0 || !strings.Contains(warnings[0].(string), "no Multica managed task context") {
+			t.Fatalf("preflight warnings = %#v, want missing context diagnosis", got["warnings"])
+		}
+	})
+
+	t.Run("unresolved merge remains blocking", func(t *testing.T) {
+		repo, base := newPreflightRepo(t)
+		writePreflightMarker(t, repo, "task-conflict", "agent/managed", base)
+		gitPreflight(t, repo, "switch", "-c", "agent/other")
+		if err := os.WriteFile(filepath.Join(repo, "initial.txt"), []byte("other\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitPreflight(t, repo, "add", "initial.txt")
+		gitPreflight(t, repo, "commit", "-m", "other change")
+		gitPreflight(t, repo, "switch", "agent/managed")
+		if err := os.WriteFile(filepath.Join(repo, "initial.txt"), []byte("managed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitPreflight(t, repo, "add", "initial.txt")
+		gitPreflight(t, repo, "commit", "-m", "managed change")
+		if _, err := gitPreflightTry(repo, "merge", "agent/other"); err == nil {
+			t.Fatal("fixture merge unexpectedly succeeded")
+		}
+
+		got, err := runPreflightCLI(t, repo)
+		if err == nil || got["status"] != "fail" {
+			t.Fatalf("preflight = %#v, error = %v; want unresolved merge failure", got, err)
+		}
+		if !strings.Contains(err.Error(), "unresolved merge paths") {
+			t.Fatalf("preflight error = %v, want unresolved merge paths", err)
 		}
 	})
 }
@@ -209,10 +241,9 @@ func TestWorktreeAdoptCLIRequiresFlagsAndIsRegistered(t *testing.T) {
 	}
 }
 
-// A marker in the pre-RUYI-848 shape (task_id only, no branch/base_commit -
-// what the daemon wrote before `repo checkout` registered the delivery)
-// must keep failing preflight with the diagnostic the fix removes.
-func TestWorktreePreflightLegacyMarkerShapeFails(t *testing.T) {
+// A legacy marker is useful diagnostic context, never a gate for otherwise
+// healthy Git delivery.
+func TestWorktreePreflightLegacyMarkerShapeWarns(t *testing.T) {
 	repo, _ := newPreflightRepo(t)
 	path := filepath.Join(repo, execenv.TaskContextMarkerRelPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -222,11 +253,15 @@ func TestWorktreePreflightLegacyMarkerShapeFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := runPreflightCLI(t, repo)
-	if err == nil {
-		t.Fatalf("legacy marker shape should fail preflight: %#v", got)
+	if err != nil {
+		t.Fatalf("legacy marker should not block preflight: %#v, error=%v", got, err)
 	}
-	if got["status"] != "fail" || got["git_root"] != repo {
-		t.Fatalf("preflight JSON = %#v, want fail with the resolved git root", got)
+	if got["status"] != "pass" || got["git_root"] != repo {
+		t.Fatalf("preflight JSON = %#v, want pass with the resolved git root", got)
+	}
+	warnings, ok := got["warnings"].([]any)
+	if !ok || len(warnings) == 0 {
+		t.Fatalf("preflight warnings = %#v, want incomplete metadata warning", got["warnings"])
 	}
 }
 
@@ -359,6 +394,12 @@ func gitPreflight(t *testing.T, repo string, args ...string) string {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func gitPreflightTry(repo string, args ...string) (string, error) {
+	all := append([]string{"-C", repo}, args...)
+	output, err := exec.Command("git", all...).CombinedOutput()
+	return strings.TrimSpace(string(output)), err
 }
 
 func anyStrings(values []any) []string {
