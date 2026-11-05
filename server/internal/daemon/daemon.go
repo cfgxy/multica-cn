@@ -9533,6 +9533,8 @@ func (d *Daemon) freshSessionRetryLoop(
 	firstTools := tools
 	mergedUsage := firstUsage
 	retiredSessionID := ""
+	latestResult := result
+	latestTools := tools
 
 	// crashStreak counts CONSECUTIVE attempts whose failure names a pipe
 	// crash. Any non-crash outcome resets it: the budget exists to bound one
@@ -9545,20 +9547,20 @@ func (d *Daemon) freshSessionRetryLoop(
 			crashStreak = 0
 		}
 	}
-	noteCrash(result)
+	noteCrash(latestResult)
 
 	for attempt := 1; ; attempt++ {
-		gate := result
+		gate := latestResult
 		crashRetry := d.cfg.PipeCrashSelfHealEnabled && crashStreak >= 1
 		if !d.cfg.PipeCrashSelfHealEnabled && crashStreak >= 1 {
 			gate.ResumeRejected = false
 		}
-		if !shouldRetryWithFreshSession(gate, task.PriorSessionID, tools, provider) {
+		if !shouldRetryWithFreshSession(gate, task.PriorSessionID, latestTools, provider) {
 			if !(crashRetry &&
 				crashStreak < maxPipeCrashConsecutiveFailures &&
-				result.Status == "failed" &&
-				result.SessionID == "" &&
-				tools == 0) {
+				gate.Status == "failed" &&
+				gate.SessionID == "" &&
+				latestTools == 0) {
 				return result, tools, retiredSessionID
 			}
 		}
@@ -9626,7 +9628,12 @@ func (d *Daemon) freshSessionRetryLoop(
 		// than being relabeled resumable by a benign-looking second error.
 		result, tools = reconcileFreshRetryResult(firstResult, mergedUsage, firstTools, retryResult, retryTools, retryErr)
 		mergedUsage = result.Usage
-		noteCrash(result)
+		// The authoritative result intentionally remains the first failure when
+		// a retry fails without a session. Retry eligibility, however, must use
+		// the most recent attempt so a non-crash or tool-using retry cannot be
+		// mistaken for another safe pipe crash.
+		latestResult, latestTools = retryResult, retryTools
+		noteCrash(latestResult)
 	}
 }
 
