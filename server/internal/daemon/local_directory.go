@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -633,13 +635,38 @@ type snapshotUnit struct {
 	// LockPath is the symlink-resolved unit target — the per-subdir lock key
 	// when the task declared its scope. Empty on undeclared (lock-free) units.
 	LockPath string
+	// InternalKey 仅用于 daemon 内部的 Git metadata overlay。它不属于用户
+	// 声明的 scope，且以路径散列参与 snapshot tree 命名，避免与资源子目录冲突。
+	InternalKey string
 }
 
 // snapshotPlan is the resolved execution brief for a snapshot-mode task.
 type snapshotPlan struct {
-	Units    []snapshotUnit
-	Primary  *snapshotUnit // where the task's cwd lands
-	Declared bool          // task carried a local_directory_scope declaration
+	Units            []snapshotUnit
+	GitMetadataUnits []snapshotUnit
+	Primary          *snapshotUnit // where the task's cwd lands
+	Declared         bool          // task carried a local_directory_scope declaration
+}
+
+// materializedUnits 返回 worker 和 ledger 必须共同使用的完整挂载集合。Git
+// metadata 单元不参与用户可见的 scope 锁，也不改变 Primary 的 cwd。
+func (p *snapshotPlan) materializedUnits() []snapshotUnit {
+	if p == nil {
+		return nil
+	}
+	units := make([]snapshotUnit, 0, len(p.Units)+len(p.GitMetadataUnits))
+	units = append(units, p.Units...)
+	units = append(units, p.GitMetadataUnits...)
+	return units
+}
+
+func snapshotUnitStem(issueID, taskID string, unit snapshotUnit) string {
+	subdir := unit.Subdir
+	if unit.InternalKey != "" {
+		sum := sha256.Sum256([]byte(unit.InternalKey))
+		subdir = "git-metadata-" + hex.EncodeToString(sum[:8])
+	}
+	return execenv.SnapshotStem(issueID, subdir, taskID)
 }
 
 // DeclaredLockPaths returns the real paths every declared subdirectory locks
@@ -845,7 +872,9 @@ func subdirectoryInEffectiveSet(sub string, set []string) bool {
 // path for anything with a .git: branch delivery, resume, and half-finished
 // preservation stay exactly as they are.
 func gitToplevel(dir string) (string, bool) {
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	cmd.Env = snapshotGitEnvironment()
+	out, err := cmd.Output()
 	if err != nil {
 		return "", false
 	}
@@ -879,16 +908,24 @@ func snapshotWorktreeFallbackWithGitGateAndCapability(plan *snapshotPlan, gitSna
 	if plan == nil || plan.Primary == nil {
 		return nil, nil
 	}
-	// Recursively audit Git metadata before choosing the preserved worktree
+	// 递归审计 Git metadata，再决定是否可使用 snapshot。审计失败或 metadata
+	// 无法完整物化时始终复用既有 worktree；不会通过写 pristine 修复状态。
 	// delivery path. The audit is intentionally non-mutating; an unsafe or
 	// incomplete shape still falls back without attempting to repair .git.
 	// Git snapshot delivery is deliberately narrower than the audit and is
 	// off by default. Operators opt in per daemon process only after the
 	// snapshot artifact/recovery path has been deployed.
 	audit := auditSnapshotGitScope(plan)
+	plan.GitMetadataUnits = nil
 	worktreeCandidate := strings.TrimSpace(plan.Primary.Ref.ExecutionMode) == localDirectoryModeWorktree
-	if audit.Safe && (!audit.HasGit || (!worktreeCandidate || snapshotCapable) && gitSnapshotDeliveryEligible(plan, gitSnapshotEnabled)) {
+	if audit.Safe && !audit.HasGit {
 		return nil, nil
+	}
+	if audit.Safe && (!worktreeCandidate || snapshotCapable) && gitSnapshotDeliveryEligibleFromAudit(plan, gitSnapshotEnabled, audit) {
+		if units, ok := gitSnapshotMetadataUnits(plan, audit); ok {
+			plan.GitMetadataUnits = units
+			return nil, nil
+		}
 	}
 	root := plan.Primary.Ref.LocalPath
 	abs, err := normalizeLocalPath(root)
@@ -902,6 +939,31 @@ func snapshotWorktreeFallbackWithGitGateAndCapability(plan *snapshotPlan, gitSna
 	ref := plan.Primary.Ref
 	ref.ExecutionMode = localDirectoryModeWorktree
 	return &localDirectoryAssignment{Ref: ref, AbsPath: abs, RealPath: real}, nil
+}
+
+func gitSnapshotMetadataUnits(plan *snapshotPlan, audit gitSnapshotAudit) ([]snapshotUnit, bool) {
+	covered := make([]string, 0, len(plan.Units))
+	for _, unit := range plan.Units {
+		real, err := canonicalGitDirectory(unit.AbsPath)
+		if err != nil {
+			return nil, false
+		}
+		covered = append(covered, real)
+	}
+	var units []snapshotUnit
+	for _, dependency := range audit.Dependencies {
+		if withinAnyScope(dependency, covered) {
+			continue
+		}
+		for _, scope := range covered {
+			if withinAnyScope(scope, []string{dependency}) {
+				return nil, false
+			}
+		}
+		units = append(units, snapshotUnit{AbsPath: dependency, InternalKey: dependency})
+		covered = append(covered, dependency)
+	}
+	return units, true
 }
 
 // snapshotExecutionObservation is the non-sensitive decision record emitted
@@ -977,15 +1039,15 @@ func (p *snapshotPlan) materializeTrees(envRoot, issueID, taskID string) (string
 	if p == nil {
 		return "", nil
 	}
-	for _, u := range p.Units {
-		alias, upper, work := execenv.PlanSnapshotTree(envRoot, execenv.SnapshotStem(issueID, u.Subdir, taskID))
+	for _, u := range p.materializedUnits() {
+		alias, upper, work := execenv.PlanSnapshotTree(envRoot, snapshotUnitStem(issueID, taskID, u))
 		for _, dir := range []string{alias, upper, work} {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return "", fmt.Errorf("snapshot: create tree dir %s: %w", dir, err)
 			}
 		}
 	}
-	_, primaryUpper, _ := execenv.PlanSnapshotTree(envRoot, execenv.SnapshotStem(issueID, p.Primary.Subdir, taskID))
+	_, primaryUpper, _ := execenv.PlanSnapshotTree(envRoot, snapshotUnitStem(issueID, taskID, *p.Primary))
 	return primaryUpper, nil
 }
 
