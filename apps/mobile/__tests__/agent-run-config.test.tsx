@@ -289,6 +289,23 @@ describe("AgentRunConfig (RUYI-624)", () => {
     expect(mockMutate).not.toHaveBeenCalled();
   });
 
+  it.each(["-2", "51"])(
+    "keeps Save disabled when invalid concurrency %s is combined with a runtime change",
+    async (concurrency) => {
+      await render(<AgentRunConfig />);
+      await waitFor(() => expect(screen.getByDisplayValue("3")).toBeTruthy());
+
+      await fireEvent.changeText(screen.getByDisplayValue("3"), concurrency);
+      await fireEvent.press(screen.getByText("Runtime Two"));
+
+      expect(screen.getByLabelText("Save").props.accessibilityState.disabled).toBe(
+        true,
+      );
+      await fireEvent.press(screen.getByLabelText("Save"));
+      expect(mockMutate).not.toHaveBeenCalled();
+    },
+  );
+
   it("switching the runtime clears model-derived state and PUTs the rebind with a cleared model", async () => {
     await render(<AgentRunConfig />);
     await waitFor(() => expect(screen.getByDisplayValue("gpt-x")).toBeTruthy());
