@@ -35,6 +35,10 @@ func snapshotSmokeBinary(t *testing.T) string {
 // spawnWithSnapshotNamespaces is the same clone + ID-map shape the daemon
 // probe and pkg/agent's wrap spawner use.
 func spawnWithSnapshotNamespaces(t *testing.T, argv ...string) ([]byte, error) {
+	return spawnWithSnapshotNamespacesEnv(t, snapshotSmokeEnvironment(), argv...)
+}
+
+func spawnWithSnapshotNamespacesEnv(t *testing.T, env []string, argv ...string) ([]byte, error) {
 	t.Helper()
 	cmd := exec.Command(argv[0], argv[1:]...)
 	if cmd.SysProcAttr == nil {
@@ -43,8 +47,28 @@ func spawnWithSnapshotNamespaces(t *testing.T, argv ...string) ([]byte, error) {
 	cmd.SysProcAttr.Cloneflags = syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS
 	cmd.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
 	cmd.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
-	cmd.Env = append(os.Environ(), "HOME="+os.TempDir())
+	cmd.Env = env
 	return cmd.CombinedOutput()
+}
+
+func snapshotSmokeEnvironment(overrides ...string) []string {
+	values := make(map[string]string, len(overrides)+1)
+	values["HOME"] = os.TempDir()
+	for _, override := range overrides {
+		key, value, _ := strings.Cut(override, "=")
+		values[key] = value
+	}
+	env := make([]string, 0, len(os.Environ())+len(values))
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if _, replaced := values[key]; !replaced {
+			env = append(env, item)
+		}
+	}
+	for key, value := range values {
+		env = append(env, key+"="+value)
+	}
+	return env
 }
 
 func TestProbeSnapshotSupportSmoke(t *testing.T) {
@@ -214,6 +238,119 @@ func TestSnapshotWorkerCapturesGitArtifactSmoke(t *testing.T) {
 	}
 	if entries, err := os.ReadDir(alias); err != nil || len(entries) != 0 {
 		t.Fatalf("worker mount namespace must be gone; alias entries=%d err=%v", len(entries), err)
+	}
+}
+
+// TestSnapshotWorkerStripsGitLocationEnvironmentSmoke injects each Git
+// location override into the parent process. Both the agent and artifact
+// capture must resolve Git metadata through the mounted snapshot view.
+func TestSnapshotWorkerStripsGitLocationEnvironmentSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	cases := []struct {
+		name  string
+		build func(gitDir, worktree string) []string
+	}{
+		{name: "git-dir", build: func(gitDir, _ string) []string { return []string{"GIT_DIR=" + gitDir} }},
+		{name: "git-work-tree", build: func(_ string, worktree string) []string { return []string{"GIT_WORK_TREE=" + worktree} }},
+		{name: "git-common-dir", build: func(gitDir, _ string) []string { return []string{"GIT_COMMON_DIR=" + gitDir} }},
+		{name: "git-object-directory", build: func(gitDir, _ string) []string {
+			return []string{"GIT_OBJECT_DIRECTORY=" + filepath.Join(gitDir, "objects")}
+		}},
+		{name: "git-alternate-object-directories", build: func(gitDir, _ string) []string {
+			return []string{"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(gitDir, "objects")}
+		}},
+		{name: "git-index-file", build: func(gitDir, _ string) []string { return []string{"GIT_INDEX_FILE=" + filepath.Join(gitDir, "index")} }},
+		{name: "combined", build: func(gitDir, worktree string) []string {
+			return []string{
+				"GIT_DIR=" + gitDir,
+				"GIT_WORK_TREE=" + worktree,
+				"GIT_COMMON_DIR=" + gitDir,
+				"GIT_OBJECT_DIRECTORY=" + filepath.Join(gitDir, "objects"),
+				"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(gitDir, "objects"),
+				"GIT_INDEX_FILE=" + filepath.Join(gitDir, "index"),
+			}
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scratch := t.TempDir()
+			target := filepath.Join(scratch, "pristine")
+			outside := filepath.Join(scratch, "outside")
+			for _, repo := range []string{target, outside} {
+				if err := os.MkdirAll(repo, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				gitForSnapshotTest(t, repo, "init", "-q")
+				gitForSnapshotTest(t, repo, "config", "user.name", "Test")
+				gitForSnapshotTest(t, repo, "config", "user.email", "test@example.invalid")
+			}
+			if err := os.WriteFile(filepath.Join(target, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			gitForSnapshotTest(t, target, "add", "tracked.txt")
+			gitForSnapshotTest(t, target, "commit", "-qm", "base")
+			baseline := strings.TrimSpace(gitForSnapshotTest(t, target, "rev-parse", "HEAD"))
+			targetBefore := smokeTreeDigest(t, target, false)
+			outsideBefore := smokeTreeDigest(t, outside, false)
+
+			unit := func(name string) SnapshotUnitSpec {
+				alias := filepath.Join(scratch, name, "alias")
+				upper := filepath.Join(scratch, name, "upper")
+				work := filepath.Join(scratch, name, "work")
+				for _, dir := range []string{alias, upper, work} {
+					if err := os.MkdirAll(dir, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return SnapshotUnitSpec{Target: target, Alias: alias, Upper: upper, Work: work}
+			}
+			artifactDir := filepath.Join(scratch, "artifact")
+			spec := &SnapshotRunSpec{
+				TaskID: "git-location-environment-" + tc.name,
+				Units:  []SnapshotUnitSpec{unit("view")},
+				Cwd:    target,
+				GitArtifact: &SnapshotGitArtifactSpec{
+					ArtifactDir: artifactDir,
+					Baseline:    baseline,
+					EnvRoot:     filepath.Join(scratch, "env"),
+				},
+			}
+			wrap, err := BuildSnapshotWrap(bin, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload := "printf 'changed\\n' > tracked.txt" +
+				" && printf 'untracked\\n' > untracked.txt" +
+				" && printf '\\000\\001\\002\\377' > binary.bin" +
+				" && git add -A" +
+				" && git commit -qm isolated"
+			outsideGitDir := filepath.Join(outside, ".git")
+			out, err := spawnWithSnapshotNamespacesEnv(t, snapshotSmokeEnvironment(tc.build(outsideGitDir, outside)...),
+				bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+				"/bin/sh", "-c", payload)
+			if err != nil {
+				t.Fatalf("worker failed: %v\n%s", err, out)
+			}
+			if after := smokeTreeDigest(t, target, false); after != targetBefore {
+				t.Fatalf("snapshot wrote through to pristine target\nbefore: %s\nafter:  %s", targetBefore, after)
+			}
+			if after := smokeTreeDigest(t, outside, false); after != outsideBefore {
+				t.Fatalf("snapshot wrote through to externally selected Git metadata\nbefore: %s\nafter:  %s", outsideBefore, after)
+			}
+
+			clone := filepath.Join(scratch, "clone")
+			gitForSnapshotTest(t, "", "clone", "-q", target, clone)
+			gitForSnapshotTest(t, clone, "fetch", filepath.Join(artifactDir, "changes.bundle"), "HEAD:refs/heads/snapshot")
+			gitForSnapshotTest(t, clone, "checkout", "-q", "snapshot")
+			gitForSnapshotTest(t, clone, "fsck", "--no-dangling")
+			if got := gitForSnapshotTest(t, clone, "show", "snapshot:tracked.txt"); got != "changed\n" {
+				t.Fatalf("captured tracked content = %q, want changed", got)
+			}
+			if got := []byte(gitForSnapshotTest(t, clone, "show", "snapshot:binary.bin")); string(got) != string([]byte{0, 1, 2, 255}) {
+				t.Fatalf("captured binary content = %v", got)
+			}
+		})
 	}
 }
 

@@ -873,7 +873,7 @@ func subdirectoryInEffectiveSet(sub string, set []string) bool {
 // preservation stay exactly as they are.
 func gitToplevel(dir string) (string, bool) {
 	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
-	cmd.Env = snapshotGitEnvironment()
+	cmd.Env = execenv.SnapshotGitEnvironment()
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false

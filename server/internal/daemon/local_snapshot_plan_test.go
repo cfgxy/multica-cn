@@ -373,6 +373,34 @@ func TestAuditSnapshotGitScope(t *testing.T) {
 	}
 }
 
+func TestAuditSnapshotGitScopeIgnoresGitLocationEnvironment(t *testing.T) {
+	repo := newTestGitRoot(t)
+	outside := newTestGitRoot(t)
+	outsideGitDir := filepath.Join(outside, ".git")
+	t.Setenv("GIT_DIR", outsideGitDir)
+	t.Setenv("GIT_WORK_TREE", outside)
+	t.Setenv("GIT_COMMON_DIR", outsideGitDir)
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(outsideGitDir, "objects"))
+	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", filepath.Join(outsideGitDir, "objects"))
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(outsideGitDir, "index"))
+
+	audit := auditSnapshotGitScope(&snapshotPlan{
+		Units:   []snapshotUnit{{AbsPath: repo}},
+		Primary: &snapshotUnit{AbsPath: repo},
+	})
+	if !audit.HasGit || !audit.Safe || len(audit.Repositories) != 1 {
+		t.Fatalf("audit must use the repository under the declared scope, got %+v", audit)
+	}
+	if got := audit.Repositories[0].Worktree; got != repo {
+		t.Fatalf("audited worktree = %q, want %q", got, repo)
+	}
+	for _, dependency := range audit.Dependencies {
+		if withinAnyScope(dependency, []string{outside}) {
+			t.Fatalf("ambient Git location override leaked into dependency %q", dependency)
+		}
+	}
+}
+
 func TestGitSnapshotDeliveryEligibleIsNarrow(t *testing.T) {
 	gitRoot := newTestGitRoot(t)
 	ordinary := &snapshotPlan{Units: []snapshotUnit{{AbsPath: gitRoot}}, Primary: &snapshotUnit{AbsPath: gitRoot}}

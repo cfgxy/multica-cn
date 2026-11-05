@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
 // gitSnapshotAudit 描述 worker 启动前解析出的 Git 读写边界。审计只读；失败
@@ -160,7 +162,7 @@ func gitSnapshotDeliveryEligibleFromAudit(plan *snapshotPlan, enabled bool, audi
 func gitPath(repo string, args ...string) (string, error) {
 	argv := append([]string{"-C", repo, "rev-parse"}, args...)
 	cmd := exec.Command("git", argv...)
-	cmd.Env = snapshotGitEnvironment()
+	cmd.Env = execenv.SnapshotGitEnvironment()
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -263,22 +265,6 @@ func compactContainedPaths(paths []string) []string {
 		}
 	}
 	return kept
-}
-
-func snapshotGitEnvironment() []string {
-	blocked := map[string]bool{
-		"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_COMMON_DIR": true,
-		"GIT_OBJECT_DIRECTORY": true, "GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
-		"GIT_INDEX_FILE": true,
-	}
-	env := make([]string, 0, len(os.Environ()))
-	for _, item := range os.Environ() {
-		key, _, _ := strings.Cut(item, "=")
-		if !blocked[key] {
-			env = append(env, item)
-		}
-	}
-	return env
 }
 
 func withinAnyScope(path string, scopes []string) bool {
