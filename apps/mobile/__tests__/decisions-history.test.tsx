@@ -1,8 +1,13 @@
-// @ts-nocheck
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { DecisionRequest } from "@multica/core/types";
+import type {
+  DecisionRequest,
+  DecisionRequestsList,
+  WorkspaceDecisionInbox,
+} from "@multica/core/types";
+import type { DecisionRequestsListFilters } from "@multica/core/issues/decision-requests";
+import type { DecisionInboxRow } from "@/lib/decision-inbox-display";
 import Decisions from "@/app/(app)/[workspace]/(tabs)/decisions";
 
 /**
@@ -26,10 +31,17 @@ jest.mock("expo-router", () => ({
   router: { push: (...args: unknown[]) => mockRouterPush(...args), back: jest.fn() },
 }));
 
-const mockRequestsData = { value: null as unknown };
-const mockRequestsCalls: unknown[] = [];
-const mockHistoryPages: unknown[] = [];
-const mockInboxPage = {
+const mockRequestsData: { value: DecisionRequestsList } = {
+  value: {
+    items: [],
+    counts: { pending: 0, approved: 0, closed: 0, executed: 0, history: 0 },
+    next_cursor: null,
+    next_cursor_id: null,
+  },
+};
+const mockRequestsCalls: DecisionRequestsListFilters[] = [];
+const mockHistoryPages: DecisionRequestsList[] = [];
+const mockInboxPage: WorkspaceDecisionInbox = {
   items: [],
   counts: { open: 0, answered: 0, cancelled: 0 },
   next_cursor: null,
@@ -39,7 +51,7 @@ const mockInboxPage = {
 jest.mock("@/data/api", () => ({
   api: {
     listWorkspaceDecisionInbox: jest.fn(() => Promise.resolve(mockInboxPage)),
-    listDecisionRequests: jest.fn((_wsId: string, filters: Record<string, unknown> = {}) => {
+    listDecisionRequests: jest.fn((_wsId: string, filters: DecisionRequestsListFilters = {}) => {
       mockRequestsCalls.push(filters);
       if (filters.status === "pending") {
         return Promise.resolve(mockRequestsData.value);
@@ -62,8 +74,9 @@ jest.mock("@/data/api", () => ({
 }));
 
 jest.mock("@/data/workspace-store", () => ({
-  useWorkspaceStore: (selector) =>
-    selector({ currentWorkspaceId: "ws-1", currentWorkspaceSlug: "acme" }),
+  useWorkspaceStore: (
+    selector: (state: { currentWorkspaceId: string; currentWorkspaceSlug: string }) => unknown,
+  ) => selector({ currentWorkspaceId: "ws-1", currentWorkspaceSlug: "acme" }),
 }));
 
 jest.mock("@/data/stores/decisions-view-store", () => {
@@ -78,7 +91,8 @@ jest.mock("react-native-keyboard-controller", () => {
   const R = jest.requireActual<typeof import("react")>("react");
   const { View } = jest.requireActual<typeof import("react-native")>("react-native");
   return {
-    KeyboardAvoidingView: ({ children }) => R.createElement(View, null, children),
+    KeyboardAvoidingView: ({ children }: React.PropsWithChildren) =>
+      R.createElement(View, null, children),
   };
 });
 
@@ -90,8 +104,13 @@ jest.mock("@/components/ui/text", () => {
 jest.mock("@/components/ui/button", () => {
   const R = jest.requireActual<typeof import("react")>("react");
   const { Pressable } = jest.requireActual<typeof import("react-native")>("react-native");
+  type mockButtonProps = React.ComponentProps<typeof Pressable> & {
+    variant?: unknown;
+    size?: unknown;
+  };
   return {
-    Button: ({ variant: _v, size: _s, ...props }) => R.createElement(Pressable, props),
+    Button: ({ variant: _v, size: _s, ...props }: mockButtonProps) =>
+      R.createElement(Pressable, props),
   };
 });
 
@@ -120,7 +139,7 @@ jest.mock("@/components/decision/decision-inbox-row", () => {
   const R = jest.requireActual<typeof import("react")>("react");
   const { View } = jest.requireActual<typeof import("react-native")>("react-native");
   return {
-    DecisionInboxRow: ({ row }) =>
+    DecisionInboxRow: ({ row }: { row: DecisionInboxRow }) =>
       R.createElement(View, { testID: `decisions-inbox-row-${row.id}` }, [String(row.id)]),
   };
 });
@@ -196,13 +215,13 @@ function makeRequest(id: string, created: string, overrides: Partial<DecisionReq
     created_at: created,
     updated_at: created,
     ...overrides,
-  } as unknown as DecisionRequest;
+  } as DecisionRequest;
 }
 
 function list(
   items: DecisionRequest[],
-  counts: Partial<{ pending: number; approved: number; closed: number; executed: number; history: number }> = {},
-  cursor: { next_cursor: string | null; next_cursor_id: string | null } = {
+  counts: Partial<DecisionRequestsList["counts"]> = {},
+  cursor: Pick<DecisionRequestsList, "next_cursor" | "next_cursor_id"> = {
     next_cursor: null,
     next_cursor_id: null,
   },
@@ -211,7 +230,7 @@ function list(
     items,
     counts: { pending: 0, approved: 0, closed: 0, executed: 0, history: 0, ...counts },
     ...cursor,
-  };
+  } satisfies DecisionRequestsList;
 }
 
 // RTL's render is async: setRenderResult only fires after its internal
@@ -239,10 +258,8 @@ beforeEach(() => {
 // Row-source helpers: the REAL options' serialization, recorded by the api
 // fake — the pinned contract is "only pending-walk + history-window calls,
 // never the legacy desc&limit=50 walk".
-const pendingCalls = () =>
-  mockRequestsCalls.filter((c: Record<string, unknown>) => c.status === "pending");
-const historyCalls = () =>
-  mockRequestsCalls.filter((c: Record<string, unknown>) => c.status === "history");
+const pendingCalls = () => mockRequestsCalls.filter((call) => call.status === "pending");
+const historyCalls = () => mockRequestsCalls.filter((call) => call.status === "history");
 
 describe("Decisions tab history entry (RUYI-864 rework)", () => {
   it("keeps the entry visible for approved-only history when no pending row remains", async () => {
@@ -275,14 +292,14 @@ describe("Decisions tab history entry (RUYI-864 rework)", () => {
     // Every requests-list call is a real-options walk: the queue's
     // oldest-pending, the lazy history window — and NEVER the legacy
     // desc&limit=50 client walk.
-    pendingCalls().forEach((c: Record<string, unknown>) =>
-      expect(c).toMatchObject({ status: "pending", order: "asc", limit: 1 }),
+    pendingCalls().forEach((call) =>
+      expect(call).toMatchObject({ status: "pending", order: "asc", limit: 1 }),
     );
     expect(historyCalls().length).toBeGreaterThan(0);
-    historyCalls().forEach((c: Record<string, unknown>) =>
-      expect(c).toMatchObject({ status: "history", order: "desc", limit: 20 }),
+    historyCalls().forEach((call) =>
+      expect(call).toMatchObject({ status: "history", order: "desc", limit: 20 }),
     );
-    expect(mockRequestsCalls.some((c: Record<string, unknown>) => c.limit === 50)).toBe(false);
+    expect(mockRequestsCalls.some((call) => call.limit === 50)).toBe(false);
   });
 
   it("badges the entry total from the history bucket, not closed+executed", async () => {
@@ -339,7 +356,7 @@ describe("Decisions tab history entry (RUYI-864 rework)", () => {
     await screen.findByTestId("decisions-request-row-a4");
     // The keyset walk actually paged: a history call carried the cursor pair.
     expect(
-      historyCalls().some((c: Record<string, unknown>) => c.after_id === "a2"),
+      historyCalls().some((call) => call.after_id === "a2"),
     ).toBe(true);
     // The tail page is short — the walk ends with the button gone.
     await waitFor(() => expect(screen.queryByTestId("decisions-history-load-more")).toBeNull());
