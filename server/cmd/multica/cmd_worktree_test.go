@@ -72,7 +72,7 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 		gitPreflight(t, repo, "commit", "-m", "mainline change")
 		head := gitPreflight(t, repo, "rev-parse", "HEAD")
 
-		got, err := runPreflightCLI(t, repo)
+		got, err := runPreflightCLIWithTaskID(t, repo, "task-2")
 		if err == nil {
 			t.Fatal("expected branch mismatch failure")
 		}
@@ -81,6 +81,9 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "does not match expected branch") {
 			t.Fatalf("error = %q, want branch mismatch", err)
+		}
+		if !hasPreflightSuggestion(got, "branch_mismatch") {
+			t.Fatalf("preflight suggestions = %#v, want branch_mismatch", got["suggestions"])
 		}
 	})
 
@@ -97,12 +100,36 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 		gitPreflight(t, repo, "branch", "-f", "agent/managed", unrelated)
 		gitPreflight(t, repo, "switch", "agent/managed")
 
-		got, err := runPreflightCLI(t, repo)
+		got, err := runPreflightCLIWithTaskID(t, repo, "task-3")
 		if err == nil || got["status"] != "fail" || got["base_is_ancestor"] != false {
 			t.Fatalf("preflight = %#v, error = %v; want ancestor break", got, err)
 		}
 		if !strings.Contains(err.Error(), "not proven as an ancestor") {
 			t.Fatalf("error = %q, want ancestor break", err)
+		}
+		if !hasPreflightSuggestion(got, "ancestor_break") {
+			t.Fatalf("preflight suggestions = %#v, want ancestor_break", got["suggestions"])
+		}
+	})
+
+	t.Run("stale complete marker only reports diagnostics", func(t *testing.T) {
+		repo, base := newPreflightRepo(t)
+		writePreflightMarker(t, repo, "task-a", "agent/stale", base)
+		gitPreflight(t, repo, "branch", "agent/stale")
+
+		got, err := runPreflightCLIWithTaskID(t, repo, "task-b")
+		if err != nil || got["status"] != "pass" {
+			t.Fatalf("preflight = %#v, error = %v; want pass with stale marker warning", got, err)
+		}
+		if got["expected_branch"] != "agent/stale" || got["base_commit"] != base {
+			t.Fatalf("preflight diagnostics = %#v, want stale marker fields retained", got)
+		}
+		warnings, ok := got["warnings"].([]any)
+		if !ok || !strings.Contains(strings.Join(anyStrings(warnings), "\n"), "belongs to task task-a") {
+			t.Fatalf("preflight warnings = %#v, want stale task diagnostic", got["warnings"])
+		}
+		if got["managed_branch_tip"] != nil || got["base_is_ancestor"] != false {
+			t.Fatalf("preflight = %#v, stale marker must not drive delivery checks", got)
 		}
 	})
 
@@ -117,7 +144,7 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 		gitPreflight(t, repo, "commit", "-m", "unrelated root")
 		head := gitPreflight(t, repo, "rev-parse", "HEAD")
 
-		got, err := runPreflightCLI(t, repo)
+		got, err := runPreflightCLIWithTaskID(t, repo, "task-4")
 		if err == nil {
 			t.Fatal("expected preflight to reject the unmanaged branch")
 		}
@@ -126,6 +153,9 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 		}
 		if got["expected_branch"] != "agent/managed" || got["current_branch"] != "agent/unmanaged" || got["head"] != head || got["managed_branch_tip"] != base {
 			t.Fatalf("preflight diagnostics = %#v, want expected/current branch, HEAD %s, and managed tip %s", got, head, base)
+		}
+		if !hasPreflightSuggestion(got, "branch_mismatch") || !hasPreflightSuggestion(got, "ancestor_break") {
+			t.Fatalf("preflight suggestions = %#v, want branch_mismatch and ancestor_break", got["suggestions"])
 		}
 	})
 
@@ -160,12 +190,15 @@ func TestWorktreePreflightCLIOutputAndGuards(t *testing.T) {
 			t.Fatal("fixture merge unexpectedly succeeded")
 		}
 
-		got, err := runPreflightCLI(t, repo)
+		got, err := runPreflightCLIWithTaskID(t, repo, "task-conflict")
 		if err == nil || got["status"] != "fail" {
 			t.Fatalf("preflight = %#v, error = %v; want unresolved merge failure", got, err)
 		}
 		if !strings.Contains(err.Error(), "unresolved merge paths") {
 			t.Fatalf("preflight error = %v, want unresolved merge paths", err)
+		}
+		if !hasPreflightSuggestion(got, "unresolved_merge") {
+			t.Fatalf("preflight suggestions = %#v, want unresolved_merge", got["suggestions"])
 		}
 	})
 }
@@ -334,8 +367,12 @@ func TestWorktreePreflightRejectsArguments(t *testing.T) {
 }
 
 func runPreflightCLI(t *testing.T, cwd string) (map[string]any, error) {
+	return runPreflightCLIWithTaskID(t, cwd, "")
+}
+
+func runPreflightCLIWithTaskID(t *testing.T, cwd, taskID string) (map[string]any, error) {
 	t.Helper()
-	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv("MULTICA_TASK_ID", taskID)
 	original, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -357,6 +394,17 @@ func runPreflightCLI(t *testing.T, cwd string) (map[string]any, error) {
 		t.Fatalf("decode preflight JSON %q: %v", out.String(), decodeErr)
 	}
 	return got, err
+}
+
+func hasPreflightSuggestion(got map[string]any, kind string) bool {
+	suggestions, _ := got["suggestions"].([]any)
+	for _, raw := range suggestions {
+		suggestion, _ := raw.(map[string]any)
+		if suggestion["kind"] == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func newPreflightRepo(t *testing.T) (string, string) {
