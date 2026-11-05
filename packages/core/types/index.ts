@@ -529,6 +529,11 @@ export type {
   SelfEvolutionModelConfigSave,
 } from "./self-evolution-model-config";
 export type {
+  SelfEvolutionJevConfig,
+  SelfEvolutionJevConfigSave,
+  SelfEvolutionJevStatus,
+} from "./self-evolution-jev-config";
+export type {
   WorkspaceBackpressureSettings,
   WorkspaceBackpressureSettingsSave,
 } from "./workspace-backpressure";

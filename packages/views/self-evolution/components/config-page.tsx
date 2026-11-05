@@ -1,5 +1,6 @@
 "use client";
 
+import { JevConfigCard } from "./jev-config-card";
 import { ModelConfigCard } from "./model-config-card";
 import { SelfEvolutionShell } from "./self-evolution-shell";
 import { useT } from "../../i18n";
@@ -24,6 +25,7 @@ export function SelfEvolutionConfigPage() {
           <p className="text-body text-muted-foreground">{t(($) => $.configPage.description)}</p>
         </div>
         <ModelConfigCard wsId={wsId} showConsumers />
+        <JevConfigCard wsId={wsId} />
       </div>
     </SelfEvolutionShell>
   );

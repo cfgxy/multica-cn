@@ -34,6 +34,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/jevconfig"
 	"github.com/multica-ai/multica/server/internal/legislation"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -260,6 +261,11 @@ type Handler struct {
 	// layer. Every fault degrades to a stored skip report — the fail-closed
 	// gate semantics never depend on this client.
 	JevAdvisory *legislation.AdvisoryClient
+	// JevConfig resolves the workspace-owned JEV advisory endpoint.
+	// It is nil when the deployment encryption key is absent; the config API
+	// then reports that saves are unavailable rather than storing a plaintext
+	// credential. JevAdvisory remains the test/staging injection override.
+	JevConfig *jevconfig.Resolver
 	// UserStateCache fronts the persisted disabled flag for the auth
 	// paths (RUYI-47). Admin handlers invalidate the entry for a user
 	// right after flipping disabled/super-admin state so the change is

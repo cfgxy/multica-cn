@@ -71,6 +71,42 @@ func TestAdvisoryAssessWarnSemantics(t *testing.T) {
 	}
 }
 
+func TestAdvisoryConfiguredModelAndCredentialStayOutOfReportPayload(t *testing.T) {
+	var authorization string
+	var request map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"p_failure": 0.1, "threshold": 0.3, "warn": false, "decision": "pass", "engine": "jev-runtime",
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	report := (&AdvisoryClient{
+		BaseURL: srv.URL,
+		APIKey:  "workspace-key",
+		Model:   "jev-local",
+		Timeout: time.Second,
+	}).Assess(context.Background(), "submit", "proposal text")
+	if !report.Available || report.Model != "jev-local" {
+		t.Fatalf("report = %#v, want available configured model", report)
+	}
+	if authorization != "Bearer workspace-key" {
+		t.Fatalf("authorization = %q", authorization)
+	}
+	if request["input"] != "proposal text" || len(request) != 1 {
+		t.Fatalf("request = %#v, want input-only protocol payload", request)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "workspace-key") {
+		t.Fatalf("report leaked API key: %s", encoded)
+	}
+}
+
 func TestAdvisoryAssessDisabled(t *testing.T) {
 	c := &AdvisoryClient{BaseURL: "", Timeout: time.Second}
 	rep := c.Assess(context.Background(), "gate", "文本")

@@ -38,6 +38,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
+	"github.com/multica-ai/multica/server/internal/jevconfig"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
@@ -1353,6 +1354,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				deployModel = h.LLM.DefaultModel()
 			}
 			h.SelfEvolution = selfevconfig.NewResolver(queries, box, h.LLM, deployModel)
+			h.JevConfig = jevconfig.NewResolver(queries, box)
 			slog.Info("self-evolution model config encryption enabled")
 		}
 	} else {
@@ -2561,11 +2563,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Use(middleware.RequireWorkspaceMember(queries))
 			r.Get("/overview", h.GetSelfEvolutionOverview)
 			r.Get("/model-config", h.GetSelfEvolutionModelConfig)
+			r.Get("/jev-config", h.GetSelfEvolutionJevConfig)
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
 				r.Put("/model-config", h.PutSelfEvolutionModelConfig)
 				r.Delete("/model-config", h.DeleteSelfEvolutionModelConfig)
 				r.Post("/model-config/validate", h.ValidateSelfEvolutionModelConfig)
+				r.Put("/jev-config", h.PutSelfEvolutionJevConfig)
+				r.Delete("/jev-config", h.DeleteSelfEvolutionJevConfig)
+				r.Post("/jev-config/recheck", h.RecheckSelfEvolutionJevConfig)
 			})
 		})
 
