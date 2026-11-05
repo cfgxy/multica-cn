@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import {
-  Trash2,
+  ListMinus,
   ChevronRight,
   Cpu,
   Globe,
@@ -15,7 +15,6 @@ import type {
   AgentRuntime,
   Agent,
   MemberWithUser,
-  RuntimeProfile,
 } from "@multica/core/types";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -25,7 +24,6 @@ import {
   deriveRuntimeHealth,
   isRuntimeUsableForUser,
   runtimeDisplayName,
-  runtimeProfileListOptions,
 } from "@multica/core/runtimes";
 import {
   type AgentPresenceDetail,
@@ -46,8 +44,7 @@ import { availabilityConfig, workloadConfig } from "../../agents/presence";
 import { HealthBadge } from "./shared";
 import { ProviderLogo } from "./provider-logo";
 import { UsageSection } from "./usage-section";
-import { DeleteRuntimeDialog } from "./delete-runtime-dialog";
-import { DeleteRuntimeProfileDialog } from "./delete-runtime-profile-dialog";
+import { RemoveRuntimeFromListDialog } from "./remove-runtime-from-list-dialog";
 import { runtimeRowLabel } from "./runtime-machines";
 import { BackpressureBadge } from "./runtime-backpressure-badge";
 import { BackpressureSettingsCard } from "./runtime-backpressure-settings-card";
@@ -112,11 +109,10 @@ export function RuntimeDetail({
   const navigation = useNavigation();
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: profiles = [] } = useQuery(runtimeProfileListOptions(wsId));
   const { byAgent: presenceMap } = useWorkspacePresenceMap(wsId);
   const now = useNowTick();
 
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
 
   const health = deriveRuntimeHealth(runtime, now);
   const ownerMember = runtime.owner_id
@@ -132,29 +128,18 @@ export function RuntimeDetail({
   const isRuntimeOwner = user && runtime.owner_id === user.id;
   const canEditRuntime = isAdmin || isRuntimeOwner;
   const canReadRuntime = isRuntimeUsableForUser(runtime, user?.id ?? null);
-  const runtimeProfile: RuntimeProfile | null = runtime.profile_id
-    ? profiles.find((p) => p.id === runtime.profile_id) ?? null
-    : null;
-  const isCustomRuntime = !!runtime.profile_id;
-  const canDelete = isCustomRuntime
-    ? isAdmin && !!runtimeProfile
-    : canEditRuntime;
+  const canRemove = canEditRuntime;
 
   const servingAgents = agents.filter(
     (a) => a.runtime_id === runtime.id && !a.archived_at,
   );
 
-  const deleteDestination = afterDeleteHref ?? paths.runtimes();
+  const removeDestination = afterDeleteHref ?? paths.runtimes();
 
-  const handleRuntimeDeleted = () => {
-    setDeleteOpen(false);
-    navigation.replace(deleteDestination);
-    toast.success(t(($) => $.detail.toast_deleted));
-  };
-
-  const handleProfileDeleted = () => {
-    setDeleteOpen(false);
-    navigation.replace(deleteDestination);
+  const handleRuntimeRemoved = () => {
+    setRemoveOpen(false);
+    navigation.replace(removeDestination);
+    toast.success(t(($) => $.detail.toast_removed_from_list));
   };
 
   const daemonShort = shortDaemonId(runtime.daemon_id);
@@ -228,30 +213,20 @@ export function RuntimeDetail({
               runtime={runtime}
               canEditVisibility={!!isRuntimeOwner}
               canEditConcurrency={!!canEditRuntime}
-              canDelete={!!canDelete}
-              onDelete={() => setDeleteOpen(true)}
+              canRemove={canRemove}
+              onRemove={() => setRemoveOpen(true)}
             />
           </div>
         </div>
       </div>
 
-      {isCustomRuntime && runtimeProfile ? (
-        <DeleteRuntimeProfileDialog
-          open={deleteOpen}
-          onOpenChange={setDeleteOpen}
-          profile={runtimeProfile}
-          wsId={wsId}
-          onDeleted={handleProfileDeleted}
-        />
-      ) : (
-        <DeleteRuntimeDialog
-          open={deleteOpen}
-          onOpenChange={setDeleteOpen}
-          runtime={runtime}
-          wsId={wsId}
-          onDeleted={handleRuntimeDeleted}
-        />
-      )}
+      <RemoveRuntimeFromListDialog
+        open={removeOpen}
+        onOpenChange={setRemoveOpen}
+        runtime={runtime}
+        wsId={wsId}
+        onRemoved={handleRuntimeRemoved}
+      />
     </div>
   );
 }
@@ -499,8 +474,8 @@ function DiagnosticsCard({
   runtime,
   canEditVisibility,
   canEditConcurrency,
-  canDelete,
-  onDelete,
+  canRemove,
+  onRemove,
 }: {
   runtime: AgentRuntime;
   /**
@@ -511,8 +486,8 @@ function DiagnosticsCard({
    */
   canEditVisibility: boolean;
   canEditConcurrency: boolean;
-  canDelete: boolean;
-  onDelete: () => void;
+  canRemove: boolean;
+  onRemove: () => void;
 }) {
   const { t } = useT("runtimes");
   return (
@@ -537,22 +512,16 @@ function DiagnosticsCard({
           </div>
           <RuntimeConcurrencyEditor runtime={runtime} canEdit={canEditConcurrency} />
         </div>
-        {canDelete && (
-          // The button stays clickable even when the runtime is a live
-          // local daemon (self-healing). The owner explicitly asked for
-          // it (MUL-3352) — disabling here left them looking at a button
-          // they had every permission to click but couldn't. The dialog
-          // raises a self-heal banner so the user sees the trade-off
-          // before confirming.
+        {canRemove && (
           <div className="border-t pt-3">
             <Button
               variant="ghost"
               size="sm"
               className="h-8 w-full justify-start gap-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
-              onClick={onDelete}
+              onClick={onRemove}
             >
-              <Trash2 className="h-3.5 w-3.5" />
-              {t(($) => $.detail.delete_button)}
+              <ListMinus className="h-3.5 w-3.5" />
+              {t(($) => $.detail.remove_from_list_button)}
             </Button>
           </div>
         )}

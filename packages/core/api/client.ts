@@ -2841,6 +2841,12 @@ export class ApiClient {
     await this.fetch(`/api/runtimes/${runtimeId}`, { method: "DELETE" });
   }
 
+  async removeRuntimeFromList(runtimeId: string): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}/remove-from-list`, {
+      method: "POST",
+    });
+  }
+
   // Confirmed variant of deleteRuntime. The strict DELETE refuses with
   // structured 409 (`code: "runtime_has_active_agents"`, body carries the
   // blocking agents) when active agents are bound; the front-end then opens
