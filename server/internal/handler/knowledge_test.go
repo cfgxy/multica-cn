@@ -599,9 +599,18 @@ WHERE o.id = $1`, first.ID).Scan(&content, &status, &operationErr); err != nil {
 	if content != "original target" || status != "queued" || !strings.Contains(operationErr, "recall mismatch") {
 		t.Fatalf("failed operation changed mirror or cannot retry: content=%q status=%q error=%q", content, status, operationErr)
 	}
+	failedEntry := knowledgeEntryByKey(t, ultimate, "target")
+	if failedEntry.PendingOperation == nil || failedEntry.PendingOperation.ID != first.ID ||
+		failedEntry.PendingOperation.OperationType != "edit" || failedEntry.PendingOperation.Status != "queued" ||
+		!strings.Contains(failedEntry.PendingOperation.Error, "recall mismatch") || failedEntry.PendingOperation.RequestedAt == nil {
+		t.Fatalf("failed operation is not visible through the knowledge read model: %+v", failedEntry.PendingOperation)
+	}
 	postKnowledgeResults(t, daemonID, map[string]any{
 		"operations": []map[string]any{{"id": first.ID, "ok": true}},
 	})
+	if completedEntry := knowledgeEntryByKey(t, ultimate, "target"); completedEntry.PendingOperation != nil {
+		t.Fatalf("completed operation remained visible through the knowledge read model: %+v", completedEntry.PendingOperation)
+	}
 
 	var merge KnowledgeEntryOperationResponse
 	testutil.Call(t, testHandler.MergeKnowledgeEntries,
@@ -647,6 +656,14 @@ WHERE target.id = $1::uuid AND operation.id = $4::uuid`, targetID, sourceID, sec
 	}
 	if targetContent != "first edit" || targetState != "synced" || firstSourceState != "synced" || secondSourceState != "synced" || operationStatus != "queued" || !strings.Contains(operationError, "second-source") {
 		t.Fatalf("partial merge changed mirror or cannot retry: target=(%q,%q) sources=(%q,%q) operation=(%q,%q)", targetContent, targetState, firstSourceState, secondSourceState, operationStatus, operationError)
+	}
+	for _, key := range []string{"target", "source", "second-source"} {
+		entry := knowledgeEntryByKey(t, ultimate, key)
+		if entry.PendingOperation == nil || entry.PendingOperation.ID != merge.ID ||
+			entry.PendingOperation.OperationType != "merge" || entry.PendingOperation.Status != "queued" ||
+			!strings.Contains(entry.PendingOperation.Error, "second-source") {
+			t.Fatalf("partial merge is not visible for %q through the knowledge read model: %+v", key, entry.PendingOperation)
+		}
 	}
 	retryPlan := knowledgePlan(t, daemonID)
 	var retryOperation *KnowledgePlanOperation

@@ -948,7 +948,15 @@
     "similar": "相似",
     "highValue": "高价值",
     "lowValue": "低价值",
-    "editorPlaceholder": "编写整合后的 Markdown 内容"
+    "editorPlaceholder": "编写整合后的 Markdown 内容",
+    "operationSyncing": "{{operation}}正在同步",
+    "operationFailed": "{{operation}}同步失败",
+    "operationType": {
+      "change": "变更",
+      "edit": "编辑",
+      "delete": "删除",
+      "merge": "合并"
+    }
   },
   "skillsSeg": {
     "managed": "已管理 Skill",
