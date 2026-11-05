@@ -48,7 +48,13 @@
     "delete_description": "This action cannot be undone.",
     "delete_bound_description": "Bound agents will be kept but unbound; queued and running tasks will be cancelled.",
     "delete_failed": "The runtime changed or could not be deleted. Refresh and review the current bindings.",
-    "deleting": "Deleting…"
+    "deleting": "Deleting…",
+    "remove_title": "Remove \"{{name}}\" from your management list?",
+    "remove_description": "\"{{name}}\" will no longer appear in your runtime list. Its agents, tasks, automation, and runtime process will not be changed.",
+    "remove_confirm": "Remove from list",
+    "remove_button": "Remove from management list",
+    "removing": "Removing…",
+    "remove_failed": "Couldn't remove the runtime from your management list. Try again."
   },
   "mika_setup": {
     "title": "Your runtime is ready. Start with Mika.",
@@ -181,6 +187,7 @@
     "all_runtimes": "All runtimes",
     "read_only": "Read-only",
     "delete_button": "Delete runtime",
+    "remove_from_list_button": "Remove from management list",
     "last_seen": "last seen {{when}}",
     "never_seen": "never connected",
     "backpressure_hint": "Host memory backpressure ({{reason}}): available memory {{mem}}%, swap used {{swap}}%. New task claims pause until the host recovers — {{count}} claim polls deferred so far.",
@@ -263,6 +270,15 @@
         }
       }
     },
+    "remove_from_list_dialog": {
+      "title": "Remove \"{{name}}\" from your management list?",
+      "description": "\"{{name}}\" will no longer appear in your runtime list. Its agents, tasks, automation, and runtime process will not be changed.",
+      "cancel": "Cancel",
+      "confirm": "Remove from list",
+      "submitting": "Removing…",
+      "error": "Failed to remove runtime from management list"
+    },
+    "toast_removed_from_list": "Runtime removed from management list",
     "toast_deleted": "Runtime deleted",
     "toast_delete_failed": "Failed to delete runtime",
     "running_chip_one": "· {{count}} running",

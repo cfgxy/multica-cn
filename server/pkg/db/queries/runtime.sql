@@ -1,6 +1,7 @@
 -- name: ListAgentRuntimes :many
 SELECT * FROM agent_runtime
 WHERE workspace_id = $1
+  AND removed_at IS NULL
 ORDER BY created_at ASC;
 
 -- name: ListVisibleAgentRuntimes :many
@@ -9,6 +10,7 @@ ORDER BY created_at ASC;
 -- sees only runtimes the owner has explicitly shared with the workspace.
 SELECT * FROM agent_runtime
 WHERE workspace_id = $1
+  AND removed_at IS NULL
   AND (owner_id = $2 OR visibility = 'public')
 ORDER BY created_at ASC;
 
@@ -347,7 +349,16 @@ RETURNING task.*;
 -- name: ListAgentRuntimesByOwner :many
 SELECT * FROM agent_runtime
 WHERE workspace_id = $1 AND owner_id = $2
+  AND removed_at IS NULL
 ORDER BY created_at ASC;
+
+-- name: MarkAgentRuntimeRemovedFromList :exec
+-- Hides a runtime from user-managed lists without touching the runtime's
+-- registration, liveness, agents, or queued work. COALESCE makes retries
+-- idempotent while preserving the first removal timestamp for auditing.
+UPDATE agent_runtime
+SET removed_at = COALESCE(removed_at, now())
+WHERE id = $1;
 
 -- name: ForceOfflineRuntimesByIDs :many
 -- Unconditionally flips a known set of runtime IDs to offline. Distinct from
