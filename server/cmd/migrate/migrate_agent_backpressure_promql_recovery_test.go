@@ -76,9 +76,9 @@ func TestAgentInvocationPermissionMigrationHandlesPreexistingColumn(t *testing.T
 }
 
 // TestAgentBackpressurePromQLRecoveryMigration models a deployment with a
-// recorded 130 that lacks permission_mode and original stage-A stems that lack
-// PromQL fields. Those stems are already in its ledger, so only the
-// same-number recovery stem can bring the persisted schema forward.
+// recorded 130 that lacks permission_mode and original RUYI-859 stems that
+// lack PromQL fields. Those stems are already in its ledger, so only the
+// renamed same-number recovery stem can bring the persisted schema forward.
 func TestAgentBackpressurePromQLRecoveryMigration(t *testing.T) {
 	adminPool := openTestPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -115,7 +115,8 @@ func TestAgentBackpressurePromQLRecoveryMigration(t *testing.T) {
 		`CREATE TABLE agent_suppression_event (
 			id UUID PRIMARY KEY,
 			workspace_id UUID NOT NULL,
-			agent_id UUID NOT NULL
+			agent_id UUID NOT NULL,
+			occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 		`INSERT INTO schema_migrations (version) VALUES
 			('130_agent_invocation_permission'),
@@ -128,7 +129,7 @@ func TestAgentBackpressurePromQLRecoveryMigration(t *testing.T) {
 		}
 	}
 
-	const recoveryVersion = "985_scheduling_pause_system_source_promql_recovery"
+	const recoveryVersion = "982_scheduling_pause_system_source_promql_recovery"
 	options := runOptions{
 		Direction:             "up",
 		Files:                 realMigrationFiles(t, []string{recoveryVersion}, "up"),
@@ -176,5 +177,116 @@ func TestAgentBackpressurePromQLRecoveryMigration(t *testing.T) {
 
 	if err := runMigrations(ctx, pool, options); err != nil {
 		t.Fatalf("repeat PromQL recovery migration: %v", err)
+	}
+}
+
+// TestAgentBackpressureMigrationRenumberPreservesLedger proves the RUYI-859
+// consolidation can repair a database that recorded all pre-release migration
+// identities. Every renamed file executes idempotently before its ledger row
+// moves, preserving the original applied_at timestamp.
+func TestAgentBackpressureMigrationRenumberPreservesLedger(t *testing.T) {
+	adminPool := openTestPool(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	suffix := fmt.Sprintf("%d_%d", time.Now().UnixNano(), rand.Uint32())
+	schema := "migrate_ruyi859_renumber_" + suffix
+	schemaIdent := pgx.Identifier{schema}.Sanitize()
+	if _, err := adminPool.Exec(ctx, "CREATE SCHEMA "+schemaIdent); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if _, err := adminPool.Exec(cleanupCtx, "DROP SCHEMA IF EXISTS "+schemaIdent+" CASCADE"); err != nil {
+			t.Logf("drop schema %s: %v", schema, err)
+		}
+	})
+
+	pool := openTestPoolWithSearchPath(t, schema)
+	for _, statement := range []string{
+		`CREATE TABLE schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE agent (
+			id UUID PRIMARY KEY
+		)`,
+		`CREATE TABLE agent_backpressure_policy (
+			workspace_id UUID NOT NULL,
+			agent_id UUID NOT NULL,
+			PRIMARY KEY (workspace_id, agent_id)
+		)`,
+		`CREATE TABLE agent_suppression_event (
+			id UUID PRIMARY KEY,
+			workspace_id UUID NOT NULL,
+			agent_id UUID NOT NULL,
+			occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE INDEX idx_agent_suppression_event_agent
+			ON agent_suppression_event (agent_id, occurred_at DESC)`,
+		`CREATE TABLE scheduling_pause (
+			created_by UUID NOT NULL,
+			reason TEXT NOT NULL
+		)`,
+	} {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("create historical fixture: %v", err)
+		}
+	}
+
+	versions := []struct {
+		legacy  string
+		target  string
+		applied time.Time
+	}{
+		{
+			legacy:  "983_agent_suppression_event_index",
+			target:  "982_agent_suppression_event_index",
+			applied: time.Date(2026, time.October, 24, 1, 2, 3, 0, time.UTC),
+		},
+		{
+			legacy:  "985_scheduling_pause_system_source",
+			target:  "982_scheduling_pause_system_source",
+			applied: time.Date(2026, time.October, 24, 1, 2, 4, 0, time.UTC),
+		},
+		{
+			legacy:  "985_scheduling_pause_system_source_promql_recovery",
+			target:  "982_scheduling_pause_system_source_promql_recovery",
+			applied: time.Date(2026, time.October, 24, 1, 2, 5, 0, time.UTC),
+		},
+	}
+	for _, version := range versions {
+		if _, err := pool.Exec(ctx, `INSERT INTO schema_migrations (version, applied_at) VALUES ($1, $2)`, version.legacy, version.applied); err != nil {
+			t.Fatalf("record historical migration %s: %v", version.legacy, err)
+		}
+	}
+
+	options := runOptions{
+		Direction:             "up",
+		Files:                 realMigrationFiles(t, []string{versions[0].target, versions[1].target, versions[2].target}, "up"),
+		SchemaMigrationsTable: schema + ".schema_migrations",
+		AdvisoryLockKey:       int64(rand.Uint64()&0x7fffffffffffffff) | 1,
+		Hooks:                 hooksForDirection("up"),
+	}
+	if err := runMigrations(ctx, pool, options); err != nil {
+		t.Fatalf("apply consolidated RUYI-859 migrations: %v", err)
+	}
+
+	for _, version := range versions {
+		var got time.Time
+		if err := pool.QueryRow(ctx, `SELECT applied_at FROM schema_migrations WHERE version = $1`, version.target).Scan(&got); err != nil {
+			t.Errorf("read renamed migration %s: %v", version.target, err)
+			continue
+		}
+		if !got.Equal(version.applied) {
+			t.Errorf("renamed migration %s applied_at = %s, want %s", version.target, got, version.applied)
+		}
+		var legacyRows int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version = $1`, version.legacy).Scan(&legacyRows); err != nil {
+			t.Errorf("count legacy migration %s: %v", version.legacy, err)
+		} else if legacyRows != 0 {
+			t.Errorf("legacy migration %s remained after consolidation", version.legacy)
+		}
 	}
 }

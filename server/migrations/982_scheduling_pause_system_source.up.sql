@@ -1,4 +1,4 @@
--- RUYI-859 stage B: automatic error-rate suppression needs a SYSTEM source
+-- RUYI-859: automatic error-rate suppression needs a SYSTEM source
 -- on scheduling_pause that no human pause can ever hold or lift by mistake.
 --
 -- Stage A (982) introduced agent_backpressure_policy / agent_suppression_event

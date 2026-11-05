@@ -34,11 +34,9 @@
 --
 -- The event table is brand new inside this single implicit transaction, so
 -- its index (the "recent events" read on the agent detail page) is built
--- CONCURRENTLY in its own single-statement file: 983 occupies the separate
--- allocation number the repo index rule requires for a concurrent build
--- (reported in the issue thread; the 975/979 multi-file same-number pattern
--- would also satisfy the one-number rule, but a separate stem is the cleanest
--- expression of "one index build, one file, outside any transaction").
+-- CONCURRENTLY in its own single-statement file. It shares this migration's
+-- 982 allocation number, following the 975/979 multi-file same-number pattern
+-- while preserving the one-number-per-issue rule.
 -- The policy table carries no explicit index at all: its (workspace_id,
 -- agent_id) composite primary key is table DDL, not a created index.
 --
