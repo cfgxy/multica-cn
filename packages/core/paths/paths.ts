@@ -36,8 +36,7 @@ function workspaceScoped(slug: string) {
     root: () => `${ws}/issues`,
     usage: () => `${ws}/usage`,
     selfEvolution: () => `${ws}/self-evolution`,
-    // RUYI-551: the module's URL-driven sub-navigation — 10 routes (9 sub-nav
-    // pages + the skill detail route, which stays out of the nav) in 4 groups.
+    // RUYI-551 / RUYI-890: module destinations, including query-driven tabs.
     selfEvolutionKnowledge: () => `${ws}/self-evolution/knowledge`,
     selfEvolutionSkills: () => `${ws}/self-evolution/skills`,
     selfEvolutionSkillDetail: (id: string) =>
@@ -46,9 +45,11 @@ function workspaceScoped(slug: string) {
     selfEvolutionClauseGovernance: () => `${ws}/self-evolution/clause-governance`,
     selfEvolutionClauseGovernanceDetail: (clauseId: string) =>
       `${ws}/self-evolution/clause-governance/${encode(clauseId)}`,
-    selfEvolutionQuiz: () => `${ws}/self-evolution/quiz`,
-    selfEvolutionProposals: () => `${ws}/self-evolution/proposals`,
-    selfEvolutionVersions: () => `${ws}/self-evolution/versions`,
+    selfEvolutionQuiz: () => `${ws}/self-evolution/quality?tab=quiz`,
+    selfEvolutionProposals: () => `${ws}/self-evolution/clause-governance?tab=proposals`,
+    selfEvolutionProposalRun: (runId: string) =>
+      `${ws}/self-evolution/clause-governance?tab=proposals&run=${encode(runId)}`,
+    selfEvolutionVersions: () => `${ws}/self-evolution/quality?tab=versions`,
     selfEvolutionRetrospective: () => `${ws}/self-evolution/retrospective`,
     selfEvolutionConfig: () => `${ws}/self-evolution/config`,
     issues: () => `${ws}/issues`,
