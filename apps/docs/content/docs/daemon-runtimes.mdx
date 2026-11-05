@@ -73,6 +73,16 @@ One daemon executes at most 20 tasks at a time by default; each agent at most 6.
 
 Once a limit is reached, new tasks keep queueing. You can adjust a single agent's concurrency in the agent settings, and the machine-wide cap through `MULTICA_DAEMON_MAX_CONCURRENT_TASKS`. Parallel runs compete for machine capacity, tool account quota, and the same working directory all at once.
 
+## Codex native subagents
+
+Codex can spawn native child threads, but Multica currently tracks only the parent Codex thread for each task. When the parent finishes, Multica closes the app-server session instead of waiting for unfinished child threads, so child work that the parent has not collected can be lost.
+
+For that reason, Codex native subagents are off by default in daemon-managed tasks. An agent owner can explicitly enable or disable them with the **Subagent tools** setting. Explicit per-agent settings override the daemon-wide `MULTICA_CODEX_MULTI_AGENT` fallback; an unset per-agent setting keeps the conservative Codex default. Other providers keep their own defaults until an explicit agent setting is saved.
+
+<Callout type="warning">
+Enabling Codex native subagents accepts the lifecycle limitation above. The parent thread must collect child results before it finishes; Multica does not reconcile unfinished Codex child threads afterward.
+</Callout>
+
 ## Private and public runtimes
 
 A local runtime is **private** by default: only the runtime owner can create agents on it. Workspace owners and admins are no exception — the runtime is someone else's computer, and running an agent there spends their machine and their tool credentials.

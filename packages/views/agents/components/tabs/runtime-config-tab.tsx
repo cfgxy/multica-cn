@@ -107,7 +107,13 @@ export function RuntimeConfigTab({
     previousFormRef.current = originalForm;
   }, [originalForm]);
 
-  const currentCfg = useMemo(() => formToConfig(state), [state]);
+  const currentCfg = useMemo(() => {
+    const cfg = formToConfig(state);
+    if (typeof original.allow_subagents === "boolean") {
+      cfg.allow_subagents = original.allow_subagents;
+    }
+    return cfg;
+  }, [state, original.allow_subagents]);
   const dirty = !openclawRuntimeConfigEquals(original, currentCfg);
 
   useEffect(() => {

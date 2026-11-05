@@ -258,6 +258,24 @@ describe("AgentRunConfig (RUYI-624)", () => {
     );
   });
 
+  it("switching to Codex does not silently opt into native subagents", async () => {
+    mockRuntimes = mockRuntimes.map((runtime) =>
+      runtime.id === "runtime-2" ? { ...runtime, provider: "codex" } : runtime,
+    );
+    await render(<AgentRunConfig />);
+    await waitFor(() => expect(screen.getByDisplayValue("gpt-x")).toBeTruthy());
+
+    await fireEvent.press(screen.getByText("Runtime Two"));
+    expect(screen.getByTestId("subagents-switch").props.accessibilityState.checked).toBe(
+      false,
+    );
+    await fireEvent.press(screen.getByLabelText("Save"));
+    expect(mockMutate).toHaveBeenCalledWith(
+      { runtime_id: "runtime-2", model: "" },
+      expect.anything(),
+    );
+  });
+
   it("an out-of-range concurrency draft reverts (Save disabled), never clamps", async () => {
     await render(<AgentRunConfig />);
     await waitFor(() => expect(screen.getByDisplayValue("3")).toBeTruthy());
@@ -270,9 +288,28 @@ describe("AgentRunConfig (RUYI-624)", () => {
     expect(mockMutate).not.toHaveBeenCalled();
   });
 
-  it("subagent toggle round-trips through runtime_config", async () => {
+  it("subagent toggle writes an explicit deny from the default-on state", async () => {
     await render(<AgentRunConfig />);
     await waitFor(() => expect(screen.getByDisplayValue("3")).toBeTruthy());
+
+    await fireEvent.press(screen.getByTestId("subagents-switch"));
+    await fireEvent.press(screen.getByLabelText("Save"));
+    expect(mockMutate).toHaveBeenCalledWith(
+      { runtime_config: { allow_subagents: false } },
+      expect.anything(),
+    );
+  });
+
+  it("Codex defaults subagents off and writes an explicit opt-in", async () => {
+    mockRuntimes = mockRuntimes.map((runtime) =>
+      runtime.id === "runtime-1" ? { ...runtime, provider: "codex" } : runtime,
+    );
+    await render(<AgentRunConfig />);
+    await waitFor(() =>
+      expect(screen.getByTestId("subagents-switch").props.accessibilityState.checked).toBe(
+        false,
+      ),
+    );
 
     await fireEvent.press(screen.getByTestId("subagents-switch"));
     await fireEvent.press(screen.getByLabelText("Save"));

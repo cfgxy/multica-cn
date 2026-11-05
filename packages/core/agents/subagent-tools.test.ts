@@ -2,16 +2,18 @@ import { describe, expect, it } from "vitest";
 import { allowsSubagents, mergeSubagentAllowance } from "./subagent-tools";
 
 describe("allowsSubagents", () => {
-  it("is fail-closed for missing, malformed, or non-object configs", () => {
-    expect(allowsSubagents(undefined)).toBe(false);
-    expect(allowsSubagents(null)).toBe(false);
-    expect(allowsSubagents({})).toBe(false);
-    expect(allowsSubagents("allow_subagents")).toBe(false);
-    expect(allowsSubagents(["allow_subagents"])).toBe(false);
-    expect(allowsSubagents({ allow_subagents: "true" })).toBe(false);
+  it("uses the provider default for missing, malformed, or non-object configs", () => {
+    expect(allowsSubagents(undefined)).toBe(true);
+    expect(allowsSubagents(null)).toBe(true);
+    expect(allowsSubagents({})).toBe(true);
+    expect(allowsSubagents({}, "codex")).toBe(false);
+    expect(allowsSubagents("allow_subagents")).toBe(true);
+    expect(allowsSubagents("allow_subagents", "codex")).toBe(false);
+    expect(allowsSubagents(["allow_subagents"])).toBe(true);
+    expect(allowsSubagents({ allow_subagents: "false" })).toBe(true);
   });
 
-  it("only an explicit true allows subagents", () => {
+  it("only an explicit false denies subagents", () => {
     expect(allowsSubagents({ allow_subagents: true })).toBe(true);
     expect(allowsSubagents({ allow_subagents: false })).toBe(false);
   });
@@ -24,22 +26,28 @@ describe("allowsSubagents", () => {
 });
 
 describe("mergeSubagentAllowance", () => {
-  it("sets the key on a non-object config without mutating the input", () => {
-    const original = { mode: "local" };
+  it("writes explicit true when allowing without mutating the input", () => {
+    const original = { mode: "local", allow_subagents: false };
     const merged = mergeSubagentAllowance(original, true);
     expect(merged).toEqual({ mode: "local", allow_subagents: true });
-    expect(original).toEqual({ mode: "local" });
+    expect(original).toEqual({ mode: "local", allow_subagents: false });
     expect(mergeSubagentAllowance(null, true)).toEqual({ allow_subagents: true });
   });
 
-  it("removes the key when denying so absent equals the default", () => {
-    expect(mergeSubagentAllowance({ allow_subagents: true }, false)).toEqual({});
+  it("writes explicit false when denying", () => {
+    expect(mergeSubagentAllowance({ allow_subagents: true }, false)).toEqual({
+      allow_subagents: false,
+    });
     expect(mergeSubagentAllowance({ mode: "local", allow_subagents: true }, false)).toEqual({
       mode: "local",
+      allow_subagents: false,
     });
   });
 
-  it("denying a config that never had the key is a no-op", () => {
-    expect(mergeSubagentAllowance({ mode: "local" }, false)).toEqual({ mode: "local" });
+  it("denying a config that never had the key adds the override", () => {
+    expect(mergeSubagentAllowance({ mode: "local" }, false)).toEqual({
+      mode: "local",
+      allow_subagents: false,
+    });
   });
 });
