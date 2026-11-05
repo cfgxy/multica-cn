@@ -147,6 +147,7 @@ export function InlineCommentComposer({
       <VoiceSessionOverlay
         agentId={voiceOpen && voiceAgentId !== null ? voiceAgentId : null}
         workspaceSlug={wsSlug ?? ""}
+        issueId={issueId}
         onClose={() => setVoiceOpen(false)}
         onUserTurn={handleUserTurn}
       />
