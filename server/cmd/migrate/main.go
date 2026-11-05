@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -344,6 +345,7 @@ var concurrentIndexCleanups = map[string][]string{
 	"979_credential_capability_task_index_nonunique":            {"credential_capability_task_idx"},
 	"979_credential_audit_id_index":                             {"credential_audit_id_uidx"},
 	"979_credential_audit_workspace_created_index":              {"credential_audit_workspace_created_idx"},
+	"982_agent_suppression_event_index":                         {"idx_agent_suppression_event_agent"},
 	"994_clause_injection_observation_id_index":                 {"idx_clause_injection_observation_id"},
 	"994_clause_injection_observation_task_scope_time_index":    {"idx_clause_injection_observation_task_scope_time"},
 	"994_clause_injection_observation_workspace_time_index":     {"idx_clause_injection_observation_workspace_time"},
@@ -384,6 +386,15 @@ var preMigrationHooks = func() map[string]preMigrationHook {
 	}
 	return hooks
 }()
+
+// renamedMigrationVersions maps pre-release RUYI-859 ledger identities to the
+// single allocated 982 number. The SQL files remain separate because Postgres
+// requires CREATE INDEX CONCURRENTLY to be the only statement in its command.
+var renamedMigrationVersions = map[string]string{
+	"982_agent_suppression_event_index":                  "983_agent_suppression_event_index",
+	"982_scheduling_pause_system_source":                 "985_scheduling_pause_system_source",
+	"982_scheduling_pause_system_source_promql_recovery": "985_scheduling_pause_system_source_promql_recovery",
+}
 
 var preRollbackHooks = func() map[string]preMigrationHook {
 	hooks := make(map[string]preMigrationHook, len(concurrentDownIndexCleanups)+len(sourceContextMigrationVersions)+1)
@@ -473,6 +484,35 @@ func hooksForDirection(direction string) map[string]preMigrationHook {
 	default:
 		return nil
 	}
+}
+
+// reconcileRenamedMigrationVersion keeps a pre-release ledger compatible with
+// a corrected migration identity. It runs only after the target SQL succeeds:
+// a crash before then leaves the legacy ledger intact so the next run retries
+// the idempotent target SQL. Updating version preserves applied_at; if both
+// names are present, the legacy row is redundant and can be removed.
+func reconcileRenamedMigrationVersion(ctx context.Context, conn *pgxpool.Conn, tableIdent, target string) (bool, error) {
+	legacy, ok := renamedMigrationVersions[target]
+	if !ok {
+		return false, nil
+	}
+
+	var targetRecorded bool
+	if err := conn.QueryRow(ctx, fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM %s WHERE version = $1)", tableIdent), target).Scan(&targetRecorded); err != nil {
+		return false, fmt.Errorf("check corrected migration ledger %q: %w", target, err)
+	}
+	if targetRecorded {
+		if _, err := conn.Exec(ctx, fmt.Sprintf("DELETE FROM %s WHERE version = $1", tableIdent), legacy); err != nil {
+			return false, fmt.Errorf("remove redundant legacy migration ledger %q: %w", legacy, err)
+		}
+		return true, nil
+	}
+
+	commandTag, err := conn.Exec(ctx, fmt.Sprintf("UPDATE %s SET version = $1 WHERE version = $2", tableIdent), target, legacy)
+	if err != nil {
+		return false, fmt.Errorf("rename legacy migration ledger %q to %q: %w", legacy, target, err)
+	}
+	return commandTag.RowsAffected() > 0, nil
 }
 
 func ensureSourceContextRollbackSafe(ctx context.Context, pool *pgxpool.Pool) error {
@@ -734,6 +774,12 @@ func runAttributionStrictHook(ctx context.Context, pool *pgxpool.Pool) error {
 // arbitrary — it just needs to be stable across every process that runs
 // migrations against the same database. See GitHub multica-ai/multica#3647.
 const migrationAdvisoryLockKey int64 = 7244554146635925501
+
+// migrationAdvisoryLockRetryInterval keeps contenders from busy-spinning while
+// another runner owns the session-level migration lock. A blocking
+// pg_advisory_lock leaves the waiter's transaction active, which can deadlock
+// with CREATE INDEX CONCURRENTLY in the lock holder; see acquireMigrationLock.
+const migrationAdvisoryLockRetryInterval = 50 * time.Millisecond
 
 // defaultSchemaMigrationsTable is the unqualified name of the bookkeeping
 // table that tracks which migrations have been applied. Tests override
@@ -1032,10 +1078,10 @@ func main() {
 // instead of racing each other.
 //
 // It is safe to invoke concurrently from multiple goroutines or
-// processes against the same database with the same options: every
-// caller blocks on pg_advisory_lock, and once it is their turn the
-// already-applied EXISTS check turns each finished migration into a
-// no-op skip. See GitHub multica-ai/multica#3647 / MUL-2923.
+// processes against the same database with the same options: every caller
+// waits to acquire a session-level advisory lock, and once it is their turn
+// the already-applied EXISTS check turns each finished migration into a no-op
+// skip. See GitHub multica-ai/multica#3647 / MUL-2923.
 func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) error {
 	switch opts.Direction {
 	case "up", "down":
@@ -1057,27 +1103,20 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		lockKey = migrationAdvisoryLockKey
 	}
 
-	// pg_advisory_lock is scoped to a single session, so we must pin one
-	// *pgxpool.Conn for the whole run — calling pool.Exec would attach the
-	// lock to a random connection that pgxpool could hand back out before
-	// the loop finishes, making the lock effectively a no-op. We use the
-	// blocking pg_advisory_lock (not pg_try_*) so a late-arriving runner
-	// queues behind the current one instead of crash-looping; once it
-	// acquires the lock the EXISTS checks below turn finished migrations
-	// into no-op skips.
+	// The advisory lock is scoped to a single session, so after acquiring it
+	// we must pin one *pgxpool.Conn for the whole run. Calling pool.Exec would
+	// attach the lock to a random connection that pgxpool could hand back out
+	// before the loop finishes, making the lock effectively a no-op.
 	//
 	// We deliberately do NOT wrap the loop in a single transaction: the
 	// repo already ships migrations using CREATE INDEX CONCURRENTLY,
 	// which Postgres rejects inside a transaction block.
-	conn, err := pool.Acquire(ctx)
+	conn, err := acquireMigrationLock(ctx, pool, lockKey)
 	if err != nil {
-		return fmt.Errorf("acquire migration connection: %w", err)
+		return fmt.Errorf("acquire migration advisory lock: %w", err)
 	}
 	defer conn.Release()
 
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", lockKey); err != nil {
-		return fmt.Errorf("acquire migration advisory lock: %w", err)
-	}
 	// Best-effort explicit unlock on the success path. On error returns
 	// the defer still runs; on os.Exit error paths in main() it does not,
 	// but session-level advisory locks are released automatically when
@@ -1113,6 +1152,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 
 		if opts.Direction == "up" {
 			if exists {
+				if _, err := reconcileRenamedMigrationVersion(ctx, conn, tableIdent, version); err != nil {
+					return err
+				}
 				fmt.Printf("  skip  %s (already applied)\n", version)
 				continue
 			}
@@ -1157,7 +1199,13 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		}
 
 		if opts.Direction == "up" {
-			_, err = conn.Exec(ctx, insertSQL, version)
+			alreadyRecorded, reconcileErr := reconcileRenamedMigrationVersion(ctx, conn, tableIdent, version)
+			if reconcileErr != nil {
+				return reconcileErr
+			}
+			if !alreadyRecorded {
+				_, err = conn.Exec(ctx, insertSQL, version)
+			}
 		} else {
 			_, err = conn.Exec(ctx, deleteSQL, version)
 		}
@@ -1173,6 +1221,43 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 	}
 
 	return nil
+}
+
+// acquireMigrationLock waits for a session-level advisory lock without keeping
+// a database transaction open while it waits. PostgreSQL's blocking
+// pg_advisory_lock keeps the waiting SELECT's virtual transaction active.
+// CREATE INDEX CONCURRENTLY held by the lock owner must wait for that virtual
+// transaction, producing a cycle: runner B waits for A's advisory lock while A
+// waits for B's virtual transaction. pg_try_advisory_lock completes each failed
+// SELECT before retrying, so concurrent-index migrations cannot see a waiting
+// contender as an active transaction.
+func acquireMigrationLock(ctx context.Context, pool *pgxpool.Pool, lockKey int64) (*pgxpool.Conn, error) {
+	ticker := time.NewTicker(migrationAdvisoryLockRetryInterval)
+	defer ticker.Stop()
+
+	for {
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("acquire migration connection: %w", err)
+		}
+
+		var acquired bool
+		err = conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", lockKey).Scan(&acquired)
+		if err != nil {
+			conn.Release()
+			return nil, err
+		}
+		if acquired {
+			return conn, nil
+		}
+		conn.Release()
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // quoteQualifiedIdentifier safely quotes either an unqualified table
