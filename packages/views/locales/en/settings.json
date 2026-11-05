@@ -1171,7 +1171,6 @@
     "permissions_grant_description": "Scan this code in Feishu or Lark and confirm the requested permissions for this existing Bot.",
     "permissions_grant_open_link": "Open in Feishu or Lark",
     "permissions_grant_failed": "Could not prepare the permission grant",
-    "permissions_receive_note": "Depends on event subscription; cannot be probed automatically — judged by live message delivery.",
     "permission_status_granted": "Granted",
     "permission_status_missing": "Missing",
     "permission_status_unknown": "Undetermined",

@@ -419,6 +419,24 @@ func TestProbeCapabilityClassifiesEachSurface(t *testing.T) {
 	})
 }
 
+func TestCheckInstallationCapabilitiesSkipsNonProbeableCatalogEntries(t *testing.T) {
+	t.Parallel()
+
+	results := CheckInstallationCapabilities(
+		context.Background(),
+		&probeStubClient{},
+		InstallationCredentials{AppID: "cli_probe", AppSecret: "s"},
+	)
+	if len(results) != 6 {
+		t.Fatalf("results = %d, want 6 REST-probeable capabilities", len(results))
+	}
+	for _, result := range results {
+		if result.Capability == CapabilityReceiveMessages {
+			t.Fatal("receive_messages must not be emitted as a REST capability check")
+		}
+	}
+}
+
 // probeNoShareClient models an APIClient predating the share-link
 // surface (stub client, older fakes): the share-link probes must
 // honestly report unknown instead of panicking on the type assertion.
