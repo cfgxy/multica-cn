@@ -60,6 +60,7 @@ func Parse(text string) (Document, error) {
 	openIdx := -1
 	var cur Segment
 	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
 		switch {
 		case openIdx < 0 && openLine.MatchString(line):
 			m := openLine.FindStringSubmatch(line)
@@ -67,10 +68,16 @@ func Parse(text string) (Document, error) {
 			fmt.Sscanf(m[2], "%d", &rev)
 			cur = Segment{Slug: m[1], Rev: rev}
 			openIdx = i
+		case openIdx < 0 && strings.Contains(trimmed, "<!-- clause:id="):
+			return Document{}, fmt.Errorf("clausemark: 第 %d 行的条款打开标记格式无效", i+1)
 		case openIdx < 0 && closeLine.MatchString(line):
 			return Document{}, fmt.Errorf("clausemark: 第 %d 行出现孤立的关闭标记 <!-- /clause -->", i+1)
+		case openIdx < 0 && strings.Contains(trimmed, "<!-- /clause"):
+			return Document{}, fmt.Errorf("clausemark: 第 %d 行的条款关闭标记格式无效", i+1)
 		case openIdx >= 0 && openLine.MatchString(line):
 			return Document{}, fmt.Errorf("clausemark: 第 %d 行在未关闭的条款段内出现新的打开标记", i+1)
+		case openIdx >= 0 && strings.Contains(trimmed, "<!-- clause:id="):
+			return Document{}, fmt.Errorf("clausemark: 第 %d 行的条款打开标记格式无效", i+1)
 		case openIdx >= 0 && closeLine.MatchString(line):
 			if strings.TrimSpace(cur.Body) == "" {
 				return Document{}, fmt.Errorf("clausemark: 条款段 %s（第 %d 行起）正文为空", cur.Slug, openIdx+1)
@@ -82,6 +89,8 @@ func Parse(text string) (Document, error) {
 			}
 			doc.Segments = append(doc.Segments, cur)
 			openIdx = -1
+		case openIdx >= 0 && strings.Contains(trimmed, "<!-- /clause"):
+			return Document{}, fmt.Errorf("clausemark: 第 %d 行的条款关闭标记格式无效", i+1)
 		case openIdx >= 0:
 			cur.Body += line + "\n"
 		default:
@@ -152,6 +161,37 @@ func Static(text string, clauses []RenderedClause) string {
 		}
 	}
 	return strings.TrimRight(stable, "\n")
+}
+
+// ValidateSnapshot accepts an entirely unmarked legacy carrier, or a complete
+// marker snapshot matching the active asset identities and versions.
+func ValidateSnapshot(text string, active []RenderedClause) error {
+	doc, err := Parse(text)
+	if err != nil {
+		return fmt.Errorf("载体快照结构无效：%w", err)
+	}
+	if len(doc.Segments) == 0 {
+		return nil
+	}
+
+	expected := make(map[string]int, len(active))
+	for _, clause := range active {
+		expected[clause.Slug] = clause.Version
+	}
+	for _, segment := range doc.Segments {
+		version, ok := expected[segment.Slug]
+		if !ok {
+			return fmt.Errorf("载体快照包含不属于当前活动集的条款 %s", segment.Slug)
+		}
+		if segment.Rev != version {
+			return fmt.Errorf("载体快照中条款 %s 的版本为 %d，活动版本为 %d", segment.Slug, segment.Rev, version)
+		}
+		delete(expected, segment.Slug)
+	}
+	for slug := range expected {
+		return fmt.Errorf("载体快照缺少活动条款 %s", slug)
+	}
+	return nil
 }
 
 // Render builds a claim-time context: the owner-editable static context with
