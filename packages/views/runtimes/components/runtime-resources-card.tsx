@@ -129,6 +129,53 @@ function Fact({ label, value }: { label: string; value: string }) {
   );
 }
 
+function ResourceHeader({
+  window,
+  onWindow,
+  onRefresh,
+  refreshing,
+  live = false,
+}: {
+  window: UsageMetricWindow;
+  onWindow: (w: UsageMetricWindow) => void;
+  onRefresh: () => void;
+  refreshing: boolean;
+  live?: boolean;
+}) {
+  const { t } = useT("runtimes");
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-center gap-2">
+        <Activity className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+        <h4 className="text-body font-semibold">
+          {t(($) => $.detail.resources.title)}
+        </h4>
+        {live && (
+          <span className="text-caption text-muted-foreground">
+            {t(($) => $.detail.resources.live)}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-2">
+        <MetricWindowSegmented value={window} onChange={onWindow} />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onRefresh}
+          disabled={refreshing}
+        >
+          <RefreshCw
+            className={refreshing ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"}
+            aria-hidden="true"
+          />
+          {t(($) => $.detail.resources.refresh)}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
   const { t } = useT("runtimes");
   const timeAgo = useTimeAgo();
@@ -136,6 +183,9 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
   const query = useQuery(runtimeResourcesOptions(runtime.id, window));
   const data = query.data;
   const series = data?.series ?? {};
+  const refresh = () => {
+    void query.refetch();
+  };
 
   // Visible structured empties — in this card the reader must always be able
   // to tell WHY the panel is not full, so no state silently hides the card.
@@ -145,15 +195,12 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
         className="rounded-lg border bg-card p-4"
         data-testid="runtime-resources-card"
       >
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Activity className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-            <h4 className="text-body font-semibold">
-              {t(($) => $.detail.resources.title)}
-            </h4>
-          </div>
-          <MetricWindowSegmented value={window} onChange={setWindow} />
-        </div>
+        <ResourceHeader
+          window={window}
+          onWindow={setWindow}
+          onRefresh={refresh}
+          refreshing={query.isFetching}
+        />
         <div className="mt-3 grid gap-4 sm:grid-cols-2">
           <Skeleton className="aspect-[3/1] rounded-md" />
           <Skeleton className="aspect-[3/1] rounded-md" />
@@ -168,23 +215,16 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
         className="rounded-lg border bg-card p-4"
         data-testid="runtime-resources-card"
       >
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Activity className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-            <h4 className="text-body font-semibold">
-              {t(($) => $.detail.resources.title)}
-            </h4>
-          </div>
-          <MetricWindowSegmented value={window} onChange={setWindow} />
-        </div>
+        <ResourceHeader
+          window={window}
+          onWindow={setWindow}
+          onRefresh={refresh}
+          refreshing={query.isFetching}
+        />
         <div className="mt-3 flex aspect-[3/1] max-h-40 flex-col items-center justify-center gap-2 rounded-md border border-dashed bg-muted/20 p-4 text-center">
           <p className="text-caption text-muted-foreground">
             {t(($) => $.detail.resources.error_hint)}
           </p>
-          <Button variant="outline" size="sm" onClick={() => query.refetch()}>
-            <RefreshCw className="h-3.5 w-3.5" />
-            {t(($) => $.detail.resources.retry)}
-          </Button>
         </div>
       </div>
     );
@@ -203,6 +243,8 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
         hint={t(($) => $.detail.resources.empty_no_daemon_hint)}
         window={window}
         onWindow={setWindow}
+        onRefresh={refresh}
+        refreshing={query.isFetching}
       />
     );
   }
@@ -213,6 +255,9 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
         hint={t(($) => $.detail.resources.empty_not_configured_hint)}
         window={window}
         onWindow={setWindow}
+        onRefresh={refresh}
+        refreshing={query.isFetching}
+        live
       />
     );
   }
@@ -224,6 +269,8 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
         hint={t(($) => $.detail.resources.empty_no_samples_hint)}
         window={window}
         onWindow={setWindow}
+        onRefresh={refresh}
+        refreshing={query.isFetching}
       />
     );
   }
@@ -231,7 +278,13 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
   // Current values — the newest sample of each series, plus host uptime
   // derived from node_boot_time_seconds (boot time, not online time: the
   // host may have booted long before this daemon ever connected).
-  const cpuNow = lastOf(series.cpu_cores);
+  const cpuBusy = lastOf(series.cpu_cores);
+  const cpuTotal = lastOf(series.cpu_total_cores);
+  const cpuUsagePct =
+    cpuBusy != null && cpuTotal != null && cpuTotal > 0
+      ? (cpuBusy / cpuTotal) * 100
+      : null;
+  const cpuLoad = lastOf(series.cpu_load_1m);
   const memTotal = lastOf(series.memory_total_bytes);
   const memAvail = lastOf(series.memory_available_bytes);
   const memUsedPct =
@@ -247,8 +300,13 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
       : null;
   const fsSize = lastOf(series.filesystem_size_bytes);
   const fsAvail = lastOf(series.filesystem_avail_bytes);
+  const fsUsedPct =
+    fsSize != null && fsAvail != null && fsSize > 0
+      ? Math.round((1 - fsAvail / fsSize) * 100)
+      : null;
   const ioRead = lastOf(series.disk_read_bytes_per_second);
   const ioWritten = lastOf(series.disk_written_bytes_per_second);
+  const psiMemorySomePct = lastOf(series.psi_memory_some_pct);
   const bootTime = lastOf(series.boot_time_seconds);
   const uptimeSec =
     bootTime != null ? Math.max(0, Date.now() / 1000 - bootTime) : null;
@@ -286,25 +344,31 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
 
   return (
     <div className="rounded-lg border bg-card p-4" data-testid="runtime-resources-card">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Activity className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-          <h4 className="text-body font-semibold">
-            {t(($) => $.detail.resources.title)}
-          </h4>
-          <span className="text-caption text-muted-foreground">
-            {t(($) => $.detail.resources.live)}
-          </span>
-        </div>
-        <MetricWindowSegmented value={window} onChange={setWindow} />
-      </div>
+      <ResourceHeader
+        window={window}
+        onWindow={setWindow}
+        onRefresh={refresh}
+        refreshing={query.isFetching}
+      />
 
-      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 lg:grid-cols-4">
+      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
         <Fact
-          label={t(($) => $.detail.resources.cpu)}
+          label={t(($) => $.detail.resources.cpu_usage)}
           value={
-            cpuNow != null
-              ? t(($) => $.detail.resources.cpu_value, { cores: cpuNow.toFixed(1) })
+            cpuUsagePct != null && cpuBusy != null && cpuTotal != null
+              ? t(($) => $.detail.resources.cpu_usage_value, {
+                  pct: cpuUsagePct.toFixed(1),
+                  busy: cpuBusy.toFixed(1),
+                  total: cpuTotal.toFixed(1),
+                })
+              : "—"
+          }
+        />
+        <Fact
+          label={t(($) => $.detail.resources.cpu_load)}
+          value={
+            cpuLoad != null
+              ? t(($) => $.detail.resources.cpu_load_value, { load: cpuLoad.toFixed(2) })
               : "—"
           }
         />
@@ -335,12 +399,21 @@ export function RuntimeResourcesCard({ runtime }: { runtime: AgentRuntime }) {
           }
         />
         <Fact
+          label={t(($) => $.detail.resources.psi)}
+          value={
+            psiMemorySomePct != null
+              ? t(($) => $.detail.resources.psi_value, { psi: psiMemorySomePct.toFixed(1) })
+              : t(($) => $.detail.resources.psi_unavailable)
+          }
+        />
+        <Fact
           label={t(($) => $.detail.resources.disk)}
           value={
-            fsSize != null && fsAvail != null
+            fsSize != null && fsAvail != null && fsUsedPct != null
               ? t(($) => $.detail.resources.disk_value, {
                   avail: formatBytes(fsAvail),
                   total: formatBytes(fsSize),
+                  pct: fsUsedPct,
                 })
               : "—"
           }
@@ -459,19 +532,17 @@ function EmptyShell({
   hint: string;
   window: UsageMetricWindow;
   onWindow: (w: UsageMetricWindow) => void;
+  onRefresh: () => void;
+  refreshing: boolean;
 }) {
-  const { t } = useT("runtimes");
   return (
     <div className="rounded-lg border bg-card p-4" data-testid="runtime-resources-card">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Activity className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-          <h4 className="text-body font-semibold">
-            {t(($) => $.detail.resources.title)}
-          </h4>
-        </div>
-        <MetricWindowSegmented value={window} onChange={onWindow} />
-      </div>
+      <ResourceHeader
+        window={window}
+        onWindow={onWindow}
+        onRefresh={onRefresh}
+        refreshing={refreshing}
+      />
       <div
         className="mt-3 flex aspect-[3/1] max-h-40 flex-col items-center justify-center gap-1.5 rounded-md border border-dashed bg-muted/20 p-4 text-center"
         data-testid="runtime-resources-empty"

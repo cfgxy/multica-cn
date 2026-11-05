@@ -41,6 +41,33 @@ func resourceEndpointFixture(t *testing.T, name string) (runtimeID, daemonID str
 	return runtimeID, daemonID
 }
 
+func TestRuntimeResourceQueriesIncludesDisplayMetrics(t *testing.T) {
+	queries := runtimeResourceQueries("runtime-host", 5*time.Minute)
+	byKey := make(map[string]string, len(queries))
+	for _, query := range queries {
+		byKey[query.key] = query.query
+	}
+	if len(byKey) != 13 {
+		t.Fatalf("expected 13 resource queries, got %d: %v", len(byKey), byKey)
+	}
+	for key, metric := range map[string]string{
+		"cpu_total_cores":     "node_cpu_seconds_total",
+		"cpu_load_1m":         "node_load1",
+		"psi_memory_some_pct": "node_pressure_memory_waiting_seconds_total",
+	} {
+		query, ok := byKey[key]
+		if !ok {
+			t.Fatalf("missing %q query: %v", key, byKey)
+		}
+		if !strings.Contains(query, metric) {
+			t.Fatalf("%q must use %s, got %s", key, metric, query)
+		}
+		if !strings.Contains(query, `daemon=~"runtime-host"`) {
+			t.Fatalf("%q is not narrowed to the runtime daemon: %s", key, query)
+		}
+	}
+}
+
 // TestGetRuntimeResources_NarrowsToRuntimeDaemon proves the panel's
 // narrowing: every query is pinned to the runtime row's daemon id, and a
 // second daemon's id never leaks into the PromQL — the cross-daemon read
@@ -84,13 +111,18 @@ func TestGetRuntimeResources_NarrowsToRuntimeDaemon(t *testing.T) {
 	if body.SampledAt == "" {
 		t.Fatal("expected a non-empty sampled_at from the stub's newest point")
 	}
-	// Ten keys: the nine panel series plus boot_time_seconds for uptime.
-	if len(body.Series) != 10 {
-		t.Fatalf("expected 10 series keys, got %d: %v", len(body.Series), keysOf(body.Series))
+	// Thirteen keys: the original host series plus CPU capacity/load and PSI.
+	if len(body.Series) != 13 {
+		t.Fatalf("expected 13 series keys, got %d: %v", len(body.Series), keysOf(body.Series))
 	}
 	asked := stub.asked()
-	if len(asked) != 10 {
-		t.Fatalf("expected 10 resource queries, got %d", len(asked))
+	if len(asked) != 13 {
+		t.Fatalf("expected 13 resource queries, got %d", len(asked))
+	}
+	for _, key := range []string{"cpu_total_cores", "cpu_load_1m", "psi_memory_some_pct"} {
+		if _, ok := body.Series[key]; !ok {
+			t.Fatalf("response is missing %q: %v", key, keysOf(body.Series))
+		}
 	}
 	for _, q := range asked {
 		if !strings.Contains(q, `daemon=~"`) {
@@ -102,6 +134,9 @@ func TestGetRuntimeResources_NarrowsToRuntimeDaemon(t *testing.T) {
 		if !strings.Contains(q, "node_") || strings.Contains(q, "multica_daemon_") {
 			t.Fatalf("query must use node-exporter native metrics only: %s", q)
 		}
+	}
+	if !strings.Contains(strings.Join(asked, "\n"), "node_pressure_memory_waiting_seconds_total") {
+		t.Fatalf("PSI query is missing: %v", asked)
 	}
 }
 

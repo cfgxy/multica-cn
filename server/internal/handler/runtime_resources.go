@@ -34,15 +34,22 @@ import (
 
 // runtimeResourceQueries are the per-daemon node-exporter series for one
 // Runtime's host. Same arithmetic as the workspace panel (usage_metrics.go)
-// plus node_boot_time_seconds for host uptime.
+// plus CPU capacity/load, memory PSI, and node_boot_time_seconds for the
+// complete Runtime resource summary.
 func runtimeResourceQueries(daemonID string, rateWindow time.Duration) []usageQuery {
 	match := daemonMatcher([]string{daemonID})
 	fsFilter := `fstype!~"tmpfs|fuse.*|squashfs|nsfs|overlay|iso9660"`
 	diskFilter := `device!~"^(loop|ram|fd|sr|dm-|zram)"`
 	return []usageQuery{
 		{"cpu_cores", fmt.Sprintf(`sum by (daemon) (rate(node_cpu_seconds_total{%s,mode!~"idle"}[%s]))`, match, durationProm(rateWindow))},
+		{"cpu_total_cores", fmt.Sprintf(`count by (daemon) (node_cpu_seconds_total{%s,mode="idle"})`, match)},
+		{"cpu_load_1m", fmt.Sprintf("node_load1{%s}", match)},
 		{"memory_total_bytes", fmt.Sprintf("node_memory_MemTotal_bytes{%s}", match)},
 		{"memory_available_bytes", fmt.Sprintf("node_memory_MemAvailable_bytes{%s}", match)},
+		// The PSI counter is intentionally left absent when node-exporter cannot
+		// expose it. The client then renders an explicit unavailable state rather
+		// than treating a missing signal as zero memory pressure.
+		{"psi_memory_some_pct", fmt.Sprintf(`100 * avg by (daemon) (rate(node_pressure_memory_waiting_seconds_total{%s}[%s]))`, match, durationProm(rateWindow))},
 		{"swap_total_bytes", fmt.Sprintf("node_memory_SwapTotal_bytes{%s}", match)},
 		{"swap_free_bytes", fmt.Sprintf("node_memory_SwapFree_bytes{%s}", match)},
 		{"filesystem_size_bytes", fmt.Sprintf(`sum by (daemon) (node_filesystem_size_bytes{%s,%s})`, match, fsFilter)},
@@ -70,8 +77,10 @@ type runtimeResourcesResponse struct {
 	// SampledAt is the newest sample timestamp across all series, RFC3339 —
 	// "how fresh is this reading" without a second request.
 	SampledAt string `json:"sampled_at,omitempty"`
-	// Series mirrors the workspace panel's keying (cpu_cores, …,
-	// boot_time_seconds), already normalized to {labels, points:[{t,v}]}.
+	// Series uses named metrics (cpu_cores, cpu_total_cores, cpu_load_1m,
+	// psi_memory_some_pct, …, boot_time_seconds), each normalized to
+	// {labels, points:[{t,v}]}. A missing PSI series means the host cannot
+	// expose PSI; it is not a zero-pressure measurement.
 	Series map[string][]promquery.Series `json:"series"`
 }
 
