@@ -110,6 +110,10 @@ func runFakeKnowledgeBd(args []string) {
 			fmt.Fprintln(os.Stderr, "simulated bd forget failure")
 			os.Exit(1)
 		}
+		if _, err := os.Stat(filepath.Join(dir, "FAIL_FORGET_"+args[1])); err == nil {
+			fmt.Fprintln(os.Stderr, "simulated bd forget failure")
+			os.Exit(1)
+		}
 		state := fakeBdRead(statePath)
 		if _, found := state[args[1]]; !found {
 			fmt.Fprintln(os.Stderr, "fake bd: memory not found")
@@ -468,8 +472,9 @@ func TestDaemonKnowledgeAdoptionTransfer(t *testing.T) {
 
 // TestDaemonKnowledgeOperations proves the mutation half of the pull protocol:
 // an edit and merge are read back before reporting success, merge sources and
-// confirmed deletes are forgotten, a failed forget reports failure, and an
-// already-absent key converges after a lost result replay.
+// confirmed deletes are forgotten, a partially completed merge reports
+// failure then converges on replay, and an already-absent key converges
+// after a lost result replay.
 func TestDaemonKnowledgeOperations(t *testing.T) {
 	fakeKnowledgeBdSetup(t)
 	ultimate := t.TempDir()
@@ -529,6 +534,47 @@ func TestDaemonKnowledgeOperations(t *testing.T) {
 	}
 	if err := os.Remove(filepath.Join(ultimate, "FAIL_FORGET")); err != nil {
 		t.Fatalf("clear forget failure flag: %v", err)
+	}
+
+	// A merge can write its target and delete its first source before a later
+	// forget fails. The next queued replay must finish from that partial bd
+	// state instead of treating the first failure as terminal.
+	fakeKnowledgeBdReplace(t, ultimate, map[string]string{
+		"target": "before merge", "source-one": "first source", "source-two": "second source",
+	})
+	if err := os.WriteFile(filepath.Join(ultimate, "FAIL_FORGET_source-two"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("plant second source forget failure flag: %v", err)
+	}
+	fake.mu.Lock()
+	fake.plan.Workspaces[0].Operations = []KnowledgePlanOperation{{
+		ID: "merge-retry", OperationType: "merge", Key: "target", Content: "consolidated again",
+		DeleteKeys: []string{"source-one", "source-two"}, Actor: "multica-owner", UltimatePath: ultimate,
+	}}
+	fake.mu.Unlock()
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("partially completed merge cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	report = posted[len(posted)-1].Operations[0]
+	if report.OK || !strings.Contains(report.Error, "bd forget source-two") {
+		t.Fatalf("partial merge failure report: %+v", report)
+	}
+	if state = fakeKnowledgeBdState(t, ultimate); state["target"] != "consolidated again" || state["source-one"] != "" || state["source-two"] != "second source" {
+		t.Fatalf("partial merge bd state: %v", state)
+	}
+	if err := os.Remove(filepath.Join(ultimate, "FAIL_FORGET_source-two")); err != nil {
+		t.Fatalf("clear second source forget failure flag: %v", err)
+	}
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("partially completed merge replay cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	report = posted[len(posted)-1].Operations[0]
+	if !report.OK || report.Error != "" {
+		t.Fatalf("partial merge replay report: %+v", report)
+	}
+	if state = fakeKnowledgeBdState(t, ultimate); state["target"] != "consolidated again" || state["source-one"] != "" || state["source-two"] != "" {
+		t.Fatalf("partial merge replay bd state: %v", state)
 	}
 
 	// A replay after bd already removed the key still returns success: the

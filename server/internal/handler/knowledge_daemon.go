@@ -583,6 +583,8 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 // applyKnowledgeOperationResult advances one durable daemon job. Its queued
 // and daemon-binding guards make stale reports inert; all mirror mutations and
 // completion markers share one transaction after the daemon has read back bd.
+// A daemon failure leaves the operation queued: bd commands can have applied a
+// prefix of a merge before reporting an error, and replay is idempotent.
 func (h *Handler) applyKnowledgeOperationResult(ctx context.Context, operationID pgtype.UUID, daemonID string, ok bool, failureReason string) bool {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
@@ -609,7 +611,7 @@ WHERE o.id = $1 AND o.status = 'queued' AND d.kind = 'ultimate'
 		}
 		tag, err := tx.Exec(ctx, `
 UPDATE knowledge_entry_operation
-SET status = 'failed', error = $2, completed_at = now()
+SET error = $2, completed_at = NULL
 WHERE id = $1 AND status = 'queued'`, operationID, failureReason)
 		if err != nil || tag.RowsAffected() == 0 {
 			return false

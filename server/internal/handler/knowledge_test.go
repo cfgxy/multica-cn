@@ -519,7 +519,7 @@ func TestKnowledgeEntryOperations(t *testing.T) {
 	})
 	readonly := knowledgeEntryByKey(t, candidate, "readonly")
 
-	var targetID, sourceID string
+	var targetID, sourceID, secondSourceID string
 	if err := testPool.QueryRow(ctx, `
 INSERT INTO knowledge_entry (workspace_id, dir_id, key, content, content_sha256, adoption_state)
 VALUES ($1, $2, 'target', 'original target', $3, 'adopted')
@@ -531,6 +531,12 @@ INSERT INTO knowledge_entry (workspace_id, dir_id, key, content, content_sha256,
 VALUES ($1, $2, 'source', 'original source', $3, 'adopted')
 RETURNING id::text`, testWorkspaceID, ultimate, knowledgeContentSHA("original source")).Scan(&sourceID); err != nil {
 		t.Fatalf("seed source entry: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO knowledge_entry (workspace_id, dir_id, key, content, content_sha256, adoption_state)
+VALUES ($1, $2, 'second-source', 'second original source', $3, 'adopted')
+RETURNING id::text`, testWorkspaceID, ultimate, knowledgeContentSHA("second original source")).Scan(&secondSourceID); err != nil {
+		t.Fatalf("seed second source entry: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(ctx, `DELETE FROM knowledge_entry_operation WHERE workspace_id = $1`, testWorkspaceID)
@@ -590,14 +596,17 @@ FROM knowledge_entry e JOIN knowledge_entry_operation o ON o.entry_id = e.id
 WHERE o.id = $1`, first.ID).Scan(&content, &status, &operationErr); err != nil {
 		t.Fatalf("read failed operation: %v", err)
 	}
-	if content != "original target" || status != "failed" || !strings.Contains(operationErr, "recall mismatch") {
-		t.Fatalf("failed operation changed mirror or lost reason: content=%q status=%q error=%q", content, status, operationErr)
+	if content != "original target" || status != "queued" || !strings.Contains(operationErr, "recall mismatch") {
+		t.Fatalf("failed operation changed mirror or cannot retry: content=%q status=%q error=%q", content, status, operationErr)
 	}
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"operations": []map[string]any{{"id": first.ID, "ok": true}},
+	})
 
 	var merge KnowledgeEntryOperationResponse
 	testutil.Call(t, testHandler.MergeKnowledgeEntries,
 		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+targetID+"/merge", map[string]any{
-			"content": "consolidated knowledge", "source_entry_ids": []string{sourceID}, "confirm": true,
+			"content": "consolidated knowledge", "source_entry_ids": []string{sourceID, secondSourceID}, "confirm": true,
 		}), "id", targetID)).Want(http.StatusAccepted).JSON(&merge)
 	plan = knowledgePlan(t, daemonID)
 	var mergePlan *KnowledgePlanOperation
@@ -608,8 +617,48 @@ WHERE o.id = $1`, first.ID).Scan(&content, &status, &operationErr); err != nil {
 			}
 		}
 	}
-	if mergePlan == nil || len(mergePlan.DeleteKeys) != 1 || mergePlan.DeleteKeys[0] != "source" {
+	hasDeleteKey := func(keys []string, key string) bool {
+		for _, candidate := range keys {
+			if candidate == key {
+				return true
+			}
+		}
+		return false
+	}
+	if mergePlan == nil || len(mergePlan.DeleteKeys) != 2 || !hasDeleteKey(mergePlan.DeleteKeys, "source") || !hasDeleteKey(mergePlan.DeleteKeys, "second-source") {
 		t.Fatalf("merge plan does not delete the source after recall: %+v", mergePlan)
+	}
+	// A daemon can report failure after writing the target and deleting one source.
+	// The server keeps the operation queued, preserves its error, and leaves every
+	// mirror row untouched until a successful replay confirms the complete merge.
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"operations": []map[string]any{{"id": merge.ID, "ok": false, "error": "bd forget second-source: simulated failure"}},
+	})
+	var targetContent, targetState, firstSourceState, secondSourceState, operationStatus, operationError string
+	if err := testPool.QueryRow(ctx, `
+SELECT target.content, target.mirror_state, first_source.mirror_state, second_source.mirror_state, operation.status, operation.error
+FROM knowledge_entry target
+JOIN knowledge_entry first_source ON first_source.id = $2::uuid
+JOIN knowledge_entry second_source ON second_source.id = $3::uuid
+JOIN knowledge_entry_operation operation ON operation.entry_id = target.id
+WHERE target.id = $1::uuid AND operation.id = $4::uuid`, targetID, sourceID, secondSourceID, merge.ID).
+		Scan(&targetContent, &targetState, &firstSourceState, &secondSourceState, &operationStatus, &operationError); err != nil {
+		t.Fatalf("read partially completed merge: %v", err)
+	}
+	if targetContent != "first edit" || targetState != "synced" || firstSourceState != "synced" || secondSourceState != "synced" || operationStatus != "queued" || !strings.Contains(operationError, "second-source") {
+		t.Fatalf("partial merge changed mirror or cannot retry: target=(%q,%q) sources=(%q,%q) operation=(%q,%q)", targetContent, targetState, firstSourceState, secondSourceState, operationStatus, operationError)
+	}
+	retryPlan := knowledgePlan(t, daemonID)
+	var retryOperation *KnowledgePlanOperation
+	for i := range retryPlan.Workspaces {
+		for j := range retryPlan.Workspaces[i].Operations {
+			if retryPlan.Workspaces[i].Operations[j].ID == merge.ID {
+				retryOperation = &retryPlan.Workspaces[i].Operations[j]
+			}
+		}
+	}
+	if retryOperation == nil || retryOperation.Key != "target" || len(retryOperation.DeleteKeys) != 2 || !hasDeleteKey(retryOperation.DeleteKeys, "source") || !hasDeleteKey(retryOperation.DeleteKeys, "second-source") {
+		t.Fatalf("partial merge was not returned for replay: %+v", retryOperation)
 	}
 	postKnowledgeResults(t, daemonID, map[string]any{
 		"operations": []map[string]any{{"id": merge.ID, "ok": true}},
@@ -621,5 +670,16 @@ WHERE o.id = $1`, first.ID).Scan(&content, &status, &operationErr); err != nil {
 	source := knowledgeEntryByKey(t, ultimate, "source")
 	if source.MirrorState != "source_deleted" {
 		t.Fatalf("completed merge source: %+v", source)
+	}
+	secondSource := knowledgeEntryByKey(t, ultimate, "second-source")
+	if secondSource.MirrorState != "source_deleted" {
+		t.Fatalf("completed merge second source: %+v", secondSource)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT status, error FROM knowledge_entry_operation WHERE id = $1::uuid`, merge.ID).
+		Scan(&operationStatus, &operationError); err != nil {
+		t.Fatalf("read completed merge operation: %v", err)
+	}
+	if operationStatus != "completed" || operationError != "" {
+		t.Fatalf("completed merge did not clear retry state: status=%q error=%q", operationStatus, operationError)
 	}
 }
