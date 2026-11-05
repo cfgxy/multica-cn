@@ -4,18 +4,21 @@
 -- management surface (freeze / unfreeze / inspect) plus the counts the API
 -- surfaces as "frozen queue depth".
 
--- name: UpsertAgentSchedulingPause :one
--- Freeze one agent. The ON CONFLICT arm is a no-op against the partial
--- unique index (idx_scheduling_pause_agent_level), so a double freeze is
--- idempotent: the second call returns the ORIGINAL row, preserving the first
--- operator's created_by / created_at / reason instead of letting a later
--- caller quietly rewrite the audit trail. Pass an empty reason to explicitly
--- clear it on a deliberate re-freeze.
+-- name: InsertAgentSchedulingPause :execrows
+-- Freeze one agent. The ON CONFLICT DO NOTHING arm makes the insert
+-- source-guarded: when ANY row already occupies the (workspace, agent)
+-- agent-level slot — a first human write, the automatic loop's system
+-- source row (created_by NULL, RUYI-859) or anything else — the statement
+-- writes nothing and reports 0 affected rows, so the caller observes the
+-- slot instead of taking it. Rows>0 is the paused transition (audit row +
+-- realtime broadcast owed); rows=0 is a read-only no-op. The caller
+-- reads the slot back with GetAgentSchedulingPause to report the CURRENT
+-- row (first write's attribution preserved), keeping a double freeze
+-- idempotent: the second call never rewrites the audit trail.
 INSERT INTO scheduling_pause (workspace_id, agent_id, reason, created_by)
 VALUES (@workspace_id, @agent_id, @reason, @created_by)
 ON CONFLICT (workspace_id, agent_id) WHERE agent_id IS NOT NULL
-DO UPDATE SET workspace_id = EXCLUDED.workspace_id
-RETURNING *;
+DO NOTHING;
 
 -- name: UpsertWorkspaceSchedulingPause :one
 -- Freeze every agent in the workspace (agent_id NULL). Same idempotency
@@ -47,9 +50,19 @@ WHERE sp.workspace_id = @workspace_id
 ORDER BY sp.agent_id NULLS LAST
 LIMIT 1;
 
--- name: DeleteAgentSchedulingPause :exec
+-- name: DeleteHumanAgentSchedulingPause :execrows
+-- The human resume's precise-source delete: created_by NOT NULL selects the
+-- human freezes only. The loop's system source row — created_by NULL with
+-- the fixed 'error_rate_suppression' reason (RUYI-859 stage B) — is
+-- invisible to this statement, so a human resume can neither lift an
+-- automatic suppression nor fake a human-resumed transition on top of it;
+-- the loop is that row's only releaser. Rows>0 is the resumed transition
+-- (audit row + broadcast owed); rows=0 means the slot was empty or is held
+-- by a row no human may release: read-only.
 DELETE FROM scheduling_pause
-WHERE workspace_id = @workspace_id AND agent_id = @agent_id;
+WHERE workspace_id = @workspace_id
+  AND agent_id = @agent_id
+  AND created_by IS NOT NULL;
 
 -- name: DeleteWorkspaceSchedulingPause :exec
 DELETE FROM scheduling_pause

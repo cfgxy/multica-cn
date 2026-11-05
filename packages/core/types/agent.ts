@@ -1555,6 +1555,24 @@ export interface DashboardUsageTraffic {
   series?: Record<string, UsageMetricSeries[]>;
 }
 
+// Per-Runtime host resources (RUYI-859 stage 1): the workspace's RUYI-618
+// resource panel narrowed server-side to this runtime's daemon host, plus
+// the Runtime-page extras. `sampled_at` (RFC3339, UTC) is the newest sample
+// timestamp across all series — "how fresh is this reading". `has_daemon`
+// is false for cloud / manual runtimes that bind no host; `configured` is
+// false when the server has no PROMETHEUS_URL. Both are visible states, not
+// errors. Series keys mirror the workspace panel (cpu_cores, memory_*,
+// swap_*, filesystem_*, disk_*) plus `boot_time_seconds` for host uptime.
+export interface RuntimeResources {
+  configured: boolean;
+  daemon_id?: string;
+  has_daemon?: boolean;
+  window?: string;
+  step_seconds?: number;
+  sampled_at?: string;
+  series?: Record<string, UsageMetricSeries[]>;
+}
+
 // One (date) bucket of terminal-task run-time + counts for the workspace
 // dashboard. Powers the Time and Tasks metrics on the daily-trend toggle
 // — same toggle as Tokens / Cost, anchored on completed_at so day buckets

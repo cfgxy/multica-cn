@@ -2099,6 +2099,28 @@ export const DashboardUsageTrafficSchema = z.object({
   series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
 }).loose();
 
+// Per-Runtime host resources (RUYI-859 stage 1): the RUYI-618 resource panel
+// narrowed server-side to the one daemon host the runtime binds. Three
+// distinct structured empty states the Runtime page must render visibly
+// instead of hiding the section:
+//   configured=false — the deployment has no PROMETHEUS_URL (normal);
+//   has_daemon=false — cloud/manual runtime binds no daemon host;
+//   configured+has_daemon with empty series — Prometheus is up but the
+//   daemon host is not scraping yet.
+// `sampled_at` is the newest sample timestamp across all series — "how
+// fresh is this reading" without a second request.
+export const RuntimeResourcesSchema = z.object({
+  configured: z.boolean(),
+  daemon_id: z.string().default(""),
+  has_daemon: z.boolean().default(false),
+  window: z.string().optional(),
+  step_seconds: z.number().optional(),
+  sampled_at: z.string().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
+
+export type RuntimeResources = z.infer<typeof RuntimeResourcesSchema>;
+
 const DashboardUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
   provider: z.string().default(""),
@@ -5476,6 +5498,46 @@ export const WorkspaceBackpressureSettingsSchema = z.object({
   custom: z.boolean().default(false),
 });
 
+export const WorkspacePromQLRuleSampleSchema = z.object({
+  labels: z.record(z.string(), z.string()).nullish().transform((value) => value ?? {}),
+  value: z.number().default(0),
+}).loose();
+
+export const WorkspacePromQLRuleSchema = z.object({
+  id: z.string().default(""),
+  name: z.string().default(""),
+  enabled: z.boolean().default(false),
+  metric: z.enum(["failures", "failure_rate"]).default("failure_rate"),
+  grouping: z.enum(["workspace", "agent"]).default("workspace"),
+  condition: z.enum(["threshold", "present"]).default("threshold"),
+  comparison: z.enum([">", ">=", "<", "<="]).optional(),
+  threshold: z.number().optional(),
+  recovery_threshold: z.number().optional(),
+  lookback_seconds: z.number().default(300),
+  evaluation_seconds: z.number().default(30),
+  for_seconds: z.number().default(0),
+  no_data_policy: z.enum(["keep", "trigger", "resolve"]).default("keep"),
+  query_error_policy: z.enum(["keep", "trigger", "resolve"]).default("keep"),
+  state: z.object({
+    firing: z.boolean().default(false),
+    pending_since: z.string().optional(),
+    last_evaluated_at: z.string().optional(),
+    last_error: z.string().optional(),
+    values: z.array(WorkspacePromQLRuleSampleSchema).optional(),
+  }).loose().default({ firing: false }),
+}).loose();
+
+export const WorkspacePromQLRulesSchema = z.object({
+  rules: z.array(WorkspacePromQLRuleSchema).default([]),
+  prometheus_configured: z.boolean().default(false),
+}).loose();
+
+export const WorkspacePromQLRulePreviewSchema = z.object({
+  query: z.string().default(""),
+  samples: z.array(WorkspacePromQLRuleSampleSchema).default([]),
+  matches: z.boolean().default(false),
+}).loose();
+
 // ---- Daemon host backpressure settings + event history (RUYI-729) ----
 // The daemon-host override card (Runtime detail page) and its report/event
 // shapes. Coexists with the workspace card above: the workspace settings are
@@ -5527,6 +5589,95 @@ export const RuntimeBackpressureSettingsSchema = z.object({
 }).loose();
 
 export type RuntimeBackpressureSettings = z.infer<typeof RuntimeBackpressureSettingsSchema>;
+
+// RUYI-859 stage A: agent-level error-rate backpressure policy (config
+// surface + read-only visibility). A no-row agent answers with the server's
+// built-in defaults (monitor-only, auto-suppression off), so the card always
+// has concrete numbers. The two windows and the FIXED 0.5x recovery
+// threshold are product semantics the page must show.
+
+const AgentBackpressureConfigSchema = z.object({
+  window_minutes: z.number().default(60),
+  error_rate_threshold_pct: z.number().default(30),
+  min_samples: z.number().default(5),
+  recovery_window_minutes: z.number().default(30),
+  suppress_on_error_rate: z.boolean().default(false),
+  count_model_api_failures: z.boolean().default(true),
+  count_execution_failures: z.boolean().default(true),
+  promql_rule_ids: z.array(z.string()).default([]),
+}).loose();
+
+export type AgentBackpressureConfig = z.infer<typeof AgentBackpressureConfigSchema>;
+
+const AgentBackpressureSchedulingSchema = z.object({
+  paused: z.boolean().default(false),
+  scope: z.string().optional(),
+  reason: z.string().optional(),
+  created_by: z.string().optional(),
+  created_at: z.string().optional(),
+  queued_count: z.number().default(0),
+  promql_rule_paused: z.boolean().default(false),
+});
+
+const AgentBackpressureWindowSchema = z
+  .object({
+    window_minutes: z.number().default(0),
+    total_terminal: z.number().default(0),
+    selected_failures: z.number().default(0),
+    recovery_threshold_pct: z.number().default(0),
+    error_rate_pct: z.number().nullable().default(null),
+    by_class: z.record(z.string(), z.number()).default({}),
+  })
+  .loose();
+
+const AgentBackpressureEventSchema = z.object({
+  id: z.string().default(""),
+  event_type: z.string().default(""),
+  sample_count: z.number().default(0),
+  error_rate_pct: z.number().default(0),
+  effective_policy: z.unknown().optional(),
+  source: z.string().optional(),
+  rule_id: z.string().optional(),
+  rule_name: z.string().optional(),
+  reason: z.string().optional(),
+  occurred_at: z.string().default(""),
+}).loose();
+
+const AgentPromQLRuleStateSchema = z.object({
+  firing: z.boolean().default(false),
+  pending_since: z.string().optional(),
+  last_evaluated_at: z.string().optional(),
+  last_error: z.string().optional(),
+}).loose();
+
+const AgentPromQLRuleStatusSchema = z.object({
+  id: z.string().default(""),
+  name: z.string().default(""),
+  grouping: z.string().default(""),
+  state: AgentPromQLRuleStateSchema.default({ firing: false }),
+  status: z.string().default("inactive"),
+  source_active: z.boolean().default(false),
+  reason: z.string().optional(),
+  entered_at: z.string().optional(),
+  mapping_mismatch: z.boolean().default(false),
+}).loose();
+
+export const AgentBackpressurePolicySchema = z.object({
+  agent_id: z.string().default(""),
+  configured: z.boolean().default(false),
+  config: AgentBackpressureConfigSchema.nullish().catch(null),
+  updated_by: z.string().optional(),
+  updated_at: z.string().optional(),
+  window: AgentBackpressureWindowSchema.nullish().catch(null),
+  scheduling: AgentBackpressureSchedulingSchema.nullish().catch(null),
+  events: z.array(AgentBackpressureEventSchema).default([]),
+  promql_rules: z.array(AgentPromQLRuleStatusSchema).default([]),
+}).loose();
+
+export type AgentBackpressurePolicy = z.infer<typeof AgentBackpressurePolicySchema>;
+export type AgentBackpressureEvent = z.infer<typeof AgentBackpressureEventSchema>;
+
+export const AgentBackpressureEventListSchema = z.array(AgentBackpressureEventSchema);
 
 const DaemonBackpressureEventSchema = z.object({
   id: z.string().default(""),

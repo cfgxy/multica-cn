@@ -47,11 +47,12 @@ const (
 // workspace: whether a freeze is active, at which scope, who froze it and
 // how much queued work is currently held back.
 type SchedulingState struct {
-	Paused    bool   `json:"paused"`
-	Scope     string `json:"scope,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	CreatedBy string `json:"created_by,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
+	Paused           bool   `json:"paused"`
+	PromQLRulePaused bool   `json:"promql_rule_paused"`
+	Scope            string `json:"scope,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	CreatedBy        string `json:"created_by,omitempty"`
+	CreatedAt        string `json:"created_at,omitempty"`
 	// QueuedCount is the frozen queue depth: queued tasks that the fence is
 	// holding back. Reported regardless of pause state (an unpaused agent's
 	// count is just its live queue length); the UI renders it as frozen
@@ -69,10 +70,16 @@ var ErrSchedulingPauseNotFound = errors.New("scheduling pause: agent not found i
 // attribution preserved). The audit write shares the freeze's transaction —
 // an administrative control-plane action without its trail is treated as
 // not having happened. Returns the pause row and the frozen queue depth.
+//
+// Source-guarded (RUYI-859): when the slot is occupied by ANY other row —
+// in particular the automatic loop's system source row — the human pause is
+// read-only: it inserts nothing, appends no member-paused audit and fires
+// no paused broadcast. Only an actual first write owes the trail.
 func (s *TaskService) PauseAgentScheduling(ctx context.Context, workspaceID, agentID pgtype.UUID, reason string, actorMemberID pgtype.UUID) (db.SchedulingPause, int64, error) {
 	var (
-		pause  db.SchedulingPause
-		queued int64
+		pause    db.SchedulingPause
+		queued   int64
+		inserted bool
 	)
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		agent, err := qtx.GetAgent(ctx, agentID)
@@ -85,7 +92,16 @@ func (s *TaskService) PauseAgentScheduling(ctx context.Context, workspaceID, age
 		if agent.WorkspaceID != workspaceID {
 			return fmt.Errorf("%w: %s", ErrSchedulingPauseNotFound, util.UUIDToString(agentID))
 		}
-		p, err := qtx.UpsertAgentSchedulingPause(ctx, db.UpsertAgentSchedulingPauseParams{
+
+		// Count BEFORE inserting so a concurrent claim between the two
+		// statements cannot inflate the reported number.
+		q, err := qtx.CountQueuedTasksForAgent(ctx, agentID)
+		if err != nil {
+			return fmt.Errorf("count frozen queued tasks: %w", err)
+		}
+		queued = q
+
+		rows, err := qtx.InsertAgentSchedulingPause(ctx, db.InsertAgentSchedulingPauseParams{
 			WorkspaceID: workspaceID,
 			AgentID:     agentID,
 			Reason:      reason,
@@ -94,14 +110,26 @@ func (s *TaskService) PauseAgentScheduling(ctx context.Context, workspaceID, age
 		if err != nil {
 			return fmt.Errorf("freeze agent scheduling: %w", err)
 		}
-		pause = p
+		inserted = rows > 0
 
-		q, err := qtx.CountQueuedTasksForAgent(ctx, agentID)
-		if err != nil {
-			return fmt.Errorf("count frozen queued tasks: %w", err)
+		// The slot's CURRENT row is the response's source of truth whether
+		// we wrote it or observed it: a read of a foreign occupant (the
+		// loop's system row, a foreign human row) is the first-write-keeps
+		// contract the double-freeze test pins.
+		if row, err := qtx.GetAgentSchedulingPause(ctx, db.GetAgentSchedulingPauseParams{
+			WorkspaceID: workspaceID,
+			AgentID:     agentID,
+		}); err == nil {
+			pause = row
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("read agent scheduling pause: %w", err)
 		}
-		queued = q
 
+		if !inserted {
+			// A foreign-source row occupies the slot: the human pause
+			// observed, it did not act. No member audit, no transition.
+			return nil
+		}
 		details, _ := json.Marshal(map[string]any{
 			"scope":        SchedulingPauseScopeAgent,
 			"reason":       reason,
@@ -114,18 +142,35 @@ func (s *TaskService) PauseAgentScheduling(ctx context.Context, workspaceID, age
 		return db.SchedulingPause{}, 0, err
 	}
 
-	s.broadcastSchedulingChange(ctx, workspaceID, &agentID, SchedulingPauseScopeAgent, true, reason, queued)
+	// The paused broadcast is owed on the actual insert only; an observed
+	// foreign occupant leaves the loop's (or no one's) transition alone.
+	if inserted {
+		s.broadcastSchedulingChange(ctx, workspaceID, &agentID, SchedulingPauseScopeAgent, true, reason, queued)
+	}
 	return pause, queued, nil
 }
 
-// ResumeAgentScheduling lifts an agent-level freeze and reports how many
-// queued tasks were being held back. Idempotent: no freeze row is a no-op
-// returning 0. On success it bumps the EmptyClaim verdict for the agent's
-// runtime (and wakes the daemon) so the freshly-unfrozen queue is consumed
-// on the next poll instead of after EmptyClaimCacheTTL.
-func (s *TaskService) ResumeAgentScheduling(ctx context.Context, workspaceID, agentID pgtype.UUID, actorMemberID pgtype.UUID) (int64, error) {
-	var queued int64
-	var runtimeID pgtype.UUID
+// ResumeAgentScheduling lifts a HUMAN agent-level freeze and reports how
+// many queued tasks were held back. Idempotent: no human freeze row is a
+// no-op returning 0. On success it bumps the EmptyClaim verdict for the
+// agent's runtime (and wakes the daemon) so the freshly-unfrozen queue is
+// consumed on the next poll instead of after EmptyClaimCacheTTL.
+//
+// Source-guarded (RUYI-859): the delete matches human rows only
+// (created_by NOT NULL). When the slot is held by the automatic loop's
+// system source row, the human resume is read-only: the system row
+// survives, no member-resumed audit is appended and no resumed broadcast
+// fires — the loop is that row's only releaser, so a human action can
+// neither lift the suppression nor fake a human-resumed transition on top
+// of it. The slot's current row is read back and returned so the caller
+// sees whether the agent is still paused (e.g. by the system row).
+func (s *TaskService) ResumeAgentScheduling(ctx context.Context, workspaceID, agentID pgtype.UUID, actorMemberID pgtype.UUID) (db.SchedulingPause, int64, error) {
+	var (
+		pause     db.SchedulingPause
+		queued    int64
+		released  bool
+		runtimeID pgtype.UUID
+	)
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		agent, err := qtx.GetAgent(ctx, agentID)
 		if err != nil {
@@ -150,13 +195,33 @@ func (s *TaskService) ResumeAgentScheduling(ctx context.Context, workspaceID, ag
 		}
 		queued = q
 
-		if err := qtx.DeleteAgentSchedulingPause(ctx, db.DeleteAgentSchedulingPauseParams{
+		rows, err := qtx.DeleteHumanAgentSchedulingPause(ctx, db.DeleteHumanAgentSchedulingPauseParams{
 			WorkspaceID: workspaceID,
 			AgentID:     agentID,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("resume agent scheduling: %w", err)
 		}
+		released = rows > 0
 
+		// The slot's CURRENT row (or its emptiness) is the response's
+		// source of truth: a foreign occupant the human resume may not
+		// touch still reads back as the live pause.
+		if row, err := qtx.GetAgentSchedulingPause(ctx, db.GetAgentSchedulingPauseParams{
+			WorkspaceID: workspaceID,
+			AgentID:     agentID,
+		}); err == nil {
+			pause = row
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("read agent scheduling pause: %w", err)
+		}
+
+		if !released {
+			// Nothing the human owns was lifted (empty slot, or the slot
+			// is held by a system row): the no human-resumed transition is
+			// owed — no member audit, no broadcast.
+			return nil
+		}
 		details, _ := json.Marshal(map[string]any{
 			"scope":        SchedulingPauseScopeAgent,
 			"queued_count": queued,
@@ -165,17 +230,21 @@ func (s *TaskService) ResumeAgentScheduling(ctx context.Context, workspaceID, ag
 			actorMemberID, workspaceID, agentID, details))
 	})
 	if err != nil {
-		return 0, err
+		return db.SchedulingPause{}, 0, err
 	}
 
-	// Bump even when no freeze row existed: the daemon may still hold a
-	// cached empty verdict from before an out-of-band freeze removal, and a
-	// redundant bump costs one extra DB poll at worst.
-	if runtimeID.Valid {
-		s.notifyRuntimeMayHaveWork(runtimeID, "")
+	if released {
+		// Bump only when the human row was actually lifted: the daemon may
+		// still hold a cached empty verdict from before the freeze, and a
+		// redundant bump costs one extra DB poll at worst. A resume that
+		// only observed a foreign occupant (empty slot, system row) owes
+		// no wakeup and no transition.
+		if runtimeID.Valid {
+			s.notifyRuntimeMayHaveWork(runtimeID, "")
+		}
+		s.broadcastSchedulingChange(ctx, workspaceID, &agentID, SchedulingPauseScopeAgent, false, "", queued)
 	}
-	s.broadcastSchedulingChange(ctx, workspaceID, &agentID, SchedulingPauseScopeAgent, false, "", queued)
-	return queued, nil
+	return pause, queued, nil
 }
 
 // PauseWorkspaceScheduling freezes every agent in the workspace with one
@@ -331,6 +400,25 @@ func readSchedulingState(ctx context.Context, qtx *db.Queries, workspaceID pgtyp
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("read scheduling pause: %w", err)
 		}
+		promQLPauses, err := qtx.ListAgentPromQLRulePauses(ctx, db.ListAgentPromQLRulePausesParams{
+			WorkspaceID: workspaceID,
+			AgentID:     *agentID,
+		})
+		if err != nil {
+			return fmt.Errorf("read PromQL rule pauses: %w", err)
+		}
+		if len(promQLPauses) > 0 {
+			state.PromQLRulePaused = true
+			if !state.Paused {
+				state.Paused = true
+				state.Scope = SchedulingPauseScopeAgent
+				state.Reason = "promql_rule"
+				if promQLPauses[0].EnteredAt.Valid {
+					state.CreatedAt = promQLPauses[0].EnteredAt.Time.UTC().Format(time.RFC3339)
+				}
+			}
+		}
+
 		q, err := qtx.CountQueuedTasksForAgent(ctx, *agentID)
 		if err != nil {
 			return fmt.Errorf("count queued tasks: %w", err)
@@ -350,6 +438,25 @@ func readSchedulingState(ctx context.Context, qtx *db.Queries, workspaceID pgtyp
 	}
 	state.QueuedCount = q
 	return nil
+}
+
+// PublishPromQLRuleSchedulingChange invalidates a runtime's cached empty-claim
+// verdict and publishes the effective scheduling state after a source-owned
+// PromQL pause transition. The source row itself was already committed by the
+// worker or settings transaction; this is intentionally post-commit so a
+// daemon wakeup cannot observe a half-written source.
+func (s *TaskService) PublishPromQLRuleSchedulingChange(ctx context.Context, workspaceID, agentID pgtype.UUID) {
+	state, err := s.AgentSchedulingState(ctx, workspaceID, agentID)
+	if err != nil {
+		return
+	}
+	if !state.Paused {
+		if agent, err := s.Queries.GetAgent(ctx, agentID); err == nil && agent.RuntimeID.Valid {
+			s.notifyRuntimeMayHaveWork(agent.RuntimeID, "")
+		}
+	}
+	s.broadcastSchedulingChange(ctx, workspaceID, &agentID, SchedulingPauseScopeAgent,
+		state.Paused, state.Reason, state.QueuedCount)
 }
 
 func fillStateFromRow(state *SchedulingState, row db.SchedulingPause) {
