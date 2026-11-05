@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Cpu,
   Globe,
+  Info,
   Lock,
   Save,
 } from "lucide-react";
@@ -20,6 +21,7 @@ import type {
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
+import { workspaceBackpressureSettingsOptions } from "@multica/core/workspace";
 import { useUpdateRuntime } from "@multica/core/runtimes/mutations";
 import {
   deriveRuntimeHealth,
@@ -51,6 +53,8 @@ import { DeleteRuntimeProfileDialog } from "./delete-runtime-profile-dialog";
 import { runtimeRowLabel } from "./runtime-machines";
 import { BackpressureBadge } from "./runtime-backpressure-badge";
 import { BackpressureSettingsCard } from "./runtime-backpressure-settings-card";
+import { RuntimeResourcesCard } from "./runtime-resources-card";
+import { runtimeBackpressureSettingsOptions } from "@multica/core/runtimes/queries";
 import { useT, useTimeAgo } from "../../i18n";
 
 function getCliVersion(metadata: Record<string, unknown>): string | null {
@@ -206,13 +210,27 @@ export function RuntimeDetail({
               cliVersion={cliVersion}
               daemonShort={daemonShort}
             />
-            {/* Daemon-host backpressure gate (RUYI-729): config entry lives on
-                the Runtime page because the gate is per daemon host. Reads are
-                open to anyone who can read the runtime; writes are gated to
-                owner/admin in the card, matching the server's scheduling
-                control authorization. */}
-            {canReadRuntime && runtime.runtime_mode === "local" && !!runtime.daemon_id && (
-              <BackpressureSettingsCard runtime={runtime} canEdit={isAdmin} />
+            {/* Host resources & backpressure section (RUYI-859 stage 1).
+                The resources card renders for EVERY readable runtime: the
+                server answers cloud / manual / local-but-unbound runtimes with
+                the structured has_daemon=false empty, so the promise "the
+                reader always knows WHY the panel is empty" also holds on
+                machines that bind no daemon host. The backpressure layer note
+                and the per-daemon settings card stay daemon-host-bound — a
+                cloud runtime has no gate and no host card to configure. */}
+            {canReadRuntime && (
+              <section className="space-y-3" data-testid="resources-backpressure-section">
+                <h3 className="flex items-center gap-1.5 text-body font-medium">
+                  {t(($) => $.detail.resources_backpressure_title)}
+                </h3>
+                <RuntimeResourcesCard runtime={runtime} />
+                {runtime.runtime_mode === "local" && !!runtime.daemon_id && (
+                  <>
+                    <BackpressureLayerNote runtime={runtime} />
+                    <BackpressureSettingsCard runtime={runtime} canEdit={isAdmin} />
+                  </>
+                )}
+              </section>
             )}
             {canReadRuntime && <UsageSection runtime={runtime} />}
           </div>
@@ -758,5 +776,55 @@ function VisibilityChoice({
       />
       <TooltipContent>{tooltip}</TooltipContent>
     </Tooltip>
+  );
+}
+
+// Two-layer semantics note for the backpressure gate: the workspace default
+// card (Settings → General, RUYI-618) versus this daemon host's override
+// card (RUYI-729, the card below). The daemon-side contract is a shadow —
+// a saved host card overrides every workspace card on that machine, and
+// deleting the host row converges the gate back to the workspace plane —
+// so the reader needs one visible line saying which layer is actually in
+// force right now, plus a jump to the other layer. Both reads share the
+// same query keys the surrounding cards already use, so this adds no
+// requests.
+function BackpressureLayerNote({ runtime }: { runtime: AgentRuntime }) {
+  const { t } = useT("runtimes");
+  const wsId = useWorkspaceId();
+  const paths = useWorkspacePaths();
+  const { data: daemonSettings } = useQuery(
+    runtimeBackpressureSettingsOptions(runtime.id),
+  );
+  const { data: wsSettings } = useQuery(workspaceBackpressureSettingsOptions(wsId));
+
+  let text: string;
+  if (daemonSettings?.configured === true) {
+    // Host card in force: it shadows the workspace plane, including a
+    // workspace-saved custom card.
+    text = t(($) => $.detail.bp_layer_override);
+  } else if (wsSettings?.custom === true) {
+    // No host row: the gate runs the workspace's saved custom defaults.
+    text = t(($) => $.detail.bp_layer_workspace_custom);
+  } else {
+    // No host row, no workspace row either: both layers sit on code
+    // defaults — the least surprising state to name out loud.
+    text = t(($) => $.detail.bp_layer_all_defaults);
+  }
+
+  return (
+    <div
+      className="flex flex-wrap items-center gap-2 rounded-md bg-muted/40 px-3 py-2"
+      data-testid="backpressure-layer-note"
+    >
+      <Info className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span className="min-w-0 flex-1 text-caption text-muted-foreground">{text}</span>
+      <AppLink
+        href={`${paths.settings()}?tab=workspace`}
+        className="shrink-0 text-caption text-foreground underline underline-offset-2 hover:opacity-80"
+        data-testid="bp-layer-workspace-link"
+      >
+        {t(($) => $.detail.bp_layer_workspace_link)}
+      </AppLink>
+    </div>
   );
 }
