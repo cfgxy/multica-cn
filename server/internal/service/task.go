@@ -4135,7 +4135,15 @@ func (s *TaskService) FinalizeTaskClaim(
 			if err := qtx.DeleteExpiredDaemonTokens(ctx); err != nil {
 				return fmt.Errorf("delete expired daemon tokens: %w", err)
 			}
-			if _, err := qtx.CreateDaemonToken(ctx, daemonTokens[0]); err != nil {
+			daemonToken := daemonTokens[0]
+			// Rebind inside the finalization transaction to the same owner used
+			// for the task token. A stale pre-read cannot mint a credential for
+			// a runtime owner that changed before commit.
+			daemonToken.OwnerID = token.UserID
+			if !daemonToken.OwnerID.Valid {
+				return fmt.Errorf("create remote MCP daemon token: runtime owner required")
+			}
+			if _, err := qtx.CreateDaemonToken(ctx, daemonToken); err != nil {
 				return fmt.Errorf("create remote MCP daemon token: %w", err)
 			}
 		}

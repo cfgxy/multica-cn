@@ -13,7 +13,9 @@ import (
 // daemonTokenCachePrefix namespaces daemon-token cache keys separately
 // from PAT (mul:auth:pat:*) so the two key spaces can't collide and an
 // invalidation on one kind of token doesn't accidentally hit the other.
-const daemonTokenCachePrefix = "mul:auth:daemon:"
+// v2 adds OwnerID. Entries written under the previous namespace are never read,
+// so an ownerless cached identity cannot survive the schema upgrade.
+const daemonTokenCachePrefix = "mul:auth:daemon:v2:"
 
 // DaemonTokenIdentity is what DaemonAuth needs from the cached lookup —
 // the workspace_id and daemon_id that the middleware injects into the
@@ -22,6 +24,7 @@ const daemonTokenCachePrefix = "mul:auth:daemon:"
 type DaemonTokenIdentity struct {
 	WorkspaceID string `json:"w"`
 	DaemonID    string `json:"d"`
+	OwnerID     string `json:"o,omitempty"`
 }
 
 // DaemonTokenCache caches resolved daemon-token (mdt_) lookups in Redis.

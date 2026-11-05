@@ -239,7 +239,13 @@ func TestClaimTasksByRuntime_CancelsTaskWhenRuntimeOwnerMissing(t *testing.T) {
 	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, rtNull, "Ownerless agent")
 	taskID := seedQueuedIssueTask(t, ctx, agentID, rtNull, issueID)
 
-	w := postBatchClaim(t, testWorkspaceID, []string{rtNull}, 1)
+	req := newOwnerDaemonRequest("POST", "/api/daemon/tasks/claim", map[string]any{
+		"daemon_id":   batchClaimTestDaemonID,
+		"runtime_ids": []string{rtNull},
+		"max_tasks":   1,
+	})
+	w := httptest.NewRecorder()
+	testHandler.ClaimTasksByRuntime(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
