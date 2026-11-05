@@ -2512,6 +2512,17 @@ type RetrospectiveRun struct {
 	TaskID pgtype.UUID `json:"task_id"`
 }
 
+type RuntimeConfigTemplate struct {
+	RuntimeKind       string             `json:"runtime_kind"`
+	Revision          int64              `json:"revision"`
+	Files             []byte             `json:"files"`
+	SupportedApiTypes []byte             `json:"supported_api_types"`
+	DefaultModel      string             `json:"default_model"`
+	Status            string             `json:"status"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	UpdatedBy         pgtype.UUID        `json:"updated_by"`
+}
+
 // Per-runtime model cost budgets: runtime total (user_id NULL) plus per-user scopes, each with optional daily/weekly/monthly UTC-window USD limits in 1e-10 USD ticks. No row = no limit.
 type RuntimeCostBudget struct {
 	ID          pgtype.UUID `json:"id"`
@@ -2529,17 +2540,6 @@ type RuntimeCostBudget struct {
 	UpdatedBy                  pgtype.UUID        `json:"updated_by"`
 	CreatedAt                  pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt                  pgtype.Timestamptz `json:"updated_at"`
-}
-
-type RuntimeConfigTemplate struct {
-	RuntimeKind       string             `json:"runtime_kind"`
-	Revision          int64              `json:"revision"`
-	Files             []byte             `json:"files"`
-	SupportedApiTypes []byte             `json:"supported_api_types"`
-	DefaultModel      string             `json:"default_model"`
-	Status            string             `json:"status"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
-	UpdatedBy         pgtype.UUID        `json:"updated_by"`
 }
 
 type RuntimeCredential struct {

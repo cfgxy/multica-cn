@@ -1,16 +1,19 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
 import { AgentRuntimeSchema } from "../api/schemas";
+import type { RuntimeDevice } from "../types";
 import { defaultAgentRuntime } from "./default-selection";
-const runtime = (id: string) =>
-  AgentRuntimeSchema.parse({
+const runtime = (id: string): RuntimeDevice => ({
+  ...AgentRuntimeSchema.parse({
     id,
     workspace_id: "ws",
     name: "Claude (tensor)",
     provider: "claude",
     status: "online",
     owner_id: "me",
-  });
+  }),
+  credential_status: "not_configured",
+});
 const source = {
   binding_id: "binding",
   linux_user: "mas_glite",
