@@ -22,6 +22,24 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ComponentType } from "react";
 import type { IssueDecision } from "@multica/core/types";
 
+const mockScrollTo = jest.fn();
+
+jest.mock("react-native", () => {
+  const actual = jest.requireActual<typeof import("react-native")>("react-native");
+  const ReactActual = jest.requireActual<typeof import("react")>("react");
+  const ScrollView = ReactActual.forwardRef(
+    (
+      { children, ...props }: React.ComponentProps<typeof actual.ScrollView>,
+      ref: React.ForwardedRef<{ scrollTo: typeof mockScrollTo }>,
+    ) => {
+      ReactActual.useImperativeHandle(ref, () => ({ scrollTo: mockScrollTo }));
+      return ReactActual.createElement(actual.View, props, children);
+    },
+  );
+
+  return { ...actual, ScrollView };
+});
+
 // --- router params, per-test mutable (mock-prefixed so jest hoisting allows)
 let mockGlobalParams: { cardId?: string; filter?: string } = {};
 const mockLocalParams = { id: "issue-1", workspace: "ws", decisionId: "c2" };
@@ -157,6 +175,7 @@ function question() {
 
 beforeEach(() => {
   mockGlobalParams = {};
+  mockScrollTo.mockClear();
 });
 
 afterEach(() => {
@@ -188,6 +207,38 @@ describe("RUYI-863 mobile decision-card entries (shared browser)", () => {
     expect(scroll.props.keyboardShouldPersistTaps).toBe("handled");
     expect(screen.getByTestId("browser-stub-card")).toBeTruthy();
     expect(screen.getByTestId("decision-browser-next")).toBeTruthy();
+  });
+
+  it("resets the scroll position for the initial card, navigation and filter changes", async () => {
+    await renderEntry(MoreMenuScreen, threeCards);
+
+    await waitFor(() =>
+      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
+    );
+
+    mockScrollTo.mockClear();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("decision-browser-next"));
+    });
+    await waitFor(() =>
+      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
+    );
+
+    mockScrollTo.mockClear();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("decision-browser-previous"));
+    });
+    await waitFor(() =>
+      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
+    );
+
+    mockScrollTo.mockClear();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("decision-browser-filter-cancelled"));
+    });
+    await waitFor(() =>
+      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
+    );
   });
 
   it("info-feed single-card entry pins the target card even when it is cancelled (no bounce)", async () => {
