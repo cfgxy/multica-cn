@@ -1,8 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
   OPENCLAW_GATEWAY_TOKEN_MASK,
+  parseOpenclawRuntimeConfig,
   serializeOpenclawRuntimeConfig,
 } from "./openclaw-runtime-config";
+
+describe("subagent override compatibility", () => {
+  it("preserves legacy true and explicit false through parse and serialize", () => {
+    expect(
+      serializeOpenclawRuntimeConfig(
+        parseOpenclawRuntimeConfig({ mode: "local", allow_subagents: true }),
+      ),
+    ).toEqual({ mode: "local", allow_subagents: true });
+    expect(
+      serializeOpenclawRuntimeConfig(
+        parseOpenclawRuntimeConfig({ mode: "local", allow_subagents: false }),
+      ),
+    ).toEqual({ mode: "local", allow_subagents: false });
+  });
+});
 
 describe("serializeOpenclawRuntimeConfig", () => {
   it("keeps the masked gateway token sentinel so the API can preserve the persisted token", () => {

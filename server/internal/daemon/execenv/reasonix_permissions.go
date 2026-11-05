@@ -150,7 +150,7 @@ func reasonixDenyList(raw any) ([]string, error) {
 
 // reasonixProjectConfig renders the task's reasonix.toml from the owner's config
 // at userConfigPath (which need not exist). denySubagentTools mirrors the
-// agent's runtime_config.allow_subagents=false posture.
+// agent's explicit runtime_config.allow_subagents=false override.
 func reasonixProjectConfig(userConfigPath string, denySubagentTools bool) ([]byte, error) {
 	ownerPermissions, err := reasonixOwnerPermissions(userConfigPath)
 	if err != nil {
@@ -168,8 +168,8 @@ func reasonixProjectConfig(userConfigPath string, denySubagentTools bool) ([]byt
 }
 
 // writeReasonixProjectConfig lays down the per-task reasonix.toml in workDir,
-// denying the `ask` tool — and, unless allowSubagents, the task-delegation
-// tools — on top of the runtime owner's own permissions.
+// denying the `ask` tool and, when explicitly requested, the task-delegation
+// tools on top of the runtime owner's own permissions.
 // taskEnv is the agent's sanitized custom_env, which decides — together with the
 // daemon's own environment — which user config the Reasonix child will load
 // (reasonix_user_config.go).
@@ -182,12 +182,12 @@ func reasonixProjectConfig(userConfigPath string, denySubagentTools bool) ([]byt
 //
 // The same holds when the owner's config cannot be read or restated: the daemon
 // writes nothing rather than a table that silently drops their deny rules.
-func writeReasonixProjectConfig(workDir string, taskEnv map[string]string, manifest *sidecarManifest, allowSubagents bool, logger *slog.Logger) error {
+func writeReasonixProjectConfig(workDir string, taskEnv map[string]string, manifest *sidecarManifest, denySubagentTools bool, logger *slog.Logger) error {
 	if workDir == "" {
 		return nil
 	}
 	userConfig := reasonixEnv(taskEnv).userConfigLoadPath()
-	content, err := reasonixProjectConfig(userConfig, !allowSubagents)
+	content, err := reasonixProjectConfig(userConfig, denySubagentTools)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("execenv: cannot restate the reasonix user permissions; leaving the task without a project config — the reasonix ask tool stays enabled for this task",

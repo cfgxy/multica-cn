@@ -13,8 +13,8 @@ import (
 const claudeRuntimeSkillSettingsFile = "claude-runtime-skill-settings.json"
 
 // subagentDenyTools lists the provider-native task-delegation tool names that
-// are denied unless the agent's runtime_config explicitly allows subagents
-// (runtime_config.allow_subagents). Both spellings are emitted because the
+// are denied when the agent's runtime_config explicitly disables subagents
+// (runtime_config.allow_subagents=false). Both spellings are emitted because the
 // same deny list serves every CLI flavor backed by this settings file.
 var subagentDenyTools = []string{"Agent", "Task"}
 
@@ -28,20 +28,29 @@ type RuntimeSkillRefForEnv struct {
 	Plugin string
 }
 
-// SubagentToolsAllowed reports whether an agent's runtime_config explicitly
-// allows subagent tools. Absent or malformed config denies — the default
-// posture is fail-closed: an agent must opt in to task delegation.
-func SubagentToolsAllowed(runtimeConfig json.RawMessage) bool {
+// SubagentToolsPolicy returns the explicit runtime_config.allow_subagents
+// override. Nil means the field is absent or malformed and the provider's own
+// default applies; a non-nil pointer preserves both true and false.
+func SubagentToolsPolicy(runtimeConfig json.RawMessage) *bool {
 	if len(runtimeConfig) == 0 {
-		return false
+		return nil
 	}
 	var cfg struct {
-		AllowSubagents bool `json:"allow_subagents"`
+		AllowSubagents *bool `json:"allow_subagents"`
 	}
 	if err := json.Unmarshal(runtimeConfig, &cfg); err != nil {
-		return false
+		return nil
 	}
 	return cfg.AllowSubagents
+}
+
+// SubagentToolsDenied reports whether the explicit policy disables subagents.
+func SubagentToolsDenied(runtimeConfig json.RawMessage) bool {
+	return subagentToolsDenied(SubagentToolsPolicy(runtimeConfig))
+}
+
+func subagentToolsDenied(policy *bool) bool {
+	return policy != nil && !*policy
 }
 
 // MaxTurnsFromRuntimeConfig reads runtime_config.max_turns: the hard agentic
@@ -109,8 +118,9 @@ func cleanRuntimeSkillKey(key string) (string, bool) {
 //
 //   - claude: --settings carries skillOverrides, Skill(...) denies, and the
 //     Agent/Task tool deny.
-//   - codex: config.toml [[skills.config]] filters skills. There is no
-//     task-delegation tool to deny — treat the tool layer as covered.
+//   - codex: config.toml filters skills and pins features.multi_agent when an
+//     agent-level override is present; missing policy keeps the conservative
+//     daemon default because child-thread results are not lifecycle-managed.
 //   - reasonix: per-task reasonix.toml [permissions] deny covers tools; the
 //     CLI has no skill-catalog hook, so skills stay prompt-enforced.
 func runtimePolicyEnforcement(provider string) (skillsEnforced, toolsEnforced bool) {
@@ -139,14 +149,14 @@ func warnRuntimePolicyGaps(provider string, task TaskContextForEnv, logger *slog
 			"disabled_runtime_skills", len(task.DisabledRuntimeSkills),
 		)
 	}
-	if !toolsEnforced && !task.AllowSubagents && logger != nil {
+	if !toolsEnforced && subagentToolsDenied(task.SubagentToolsAllowed) && logger != nil {
 		logger.Warn("execenv: the subagent tool deny cannot be enforced for this provider; prompt-layer rules are the only control",
 			"provider", provider,
 		)
 	}
 }
 
-func prepareClaudeSkillSettings(envRoot string, disabled []RuntimeSkillRefForEnv, workspaceSkills []SkillContextForEnv, allowSubagents bool) (string, error) {
+func prepareClaudeSkillSettings(envRoot string, disabled []RuntimeSkillRefForEnv, workspaceSkills []SkillContextForEnv, denySubagentTools bool) (string, error) {
 	path := filepath.Join(envRoot, claudeRuntimeSkillSettingsFile)
 
 	overrides := make(map[string]string)
@@ -159,7 +169,7 @@ func prepareClaudeSkillSettings(envRoot string, disabled []RuntimeSkillRefForEnv
 		seenDeny[rule] = struct{}{}
 		deny = append(deny, rule)
 	}
-	if !allowSubagents {
+	if denySubagentTools {
 		for _, tool := range subagentDenyTools {
 			addDeny(tool)
 		}

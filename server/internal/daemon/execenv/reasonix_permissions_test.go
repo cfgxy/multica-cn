@@ -68,10 +68,9 @@ func TestPrepareDeniesReasonixAskTool(t *testing.T) {
 	defer env.Cleanup(true)
 
 	configPath := filepath.Join(env.WorkDir, reasonixProjectConfigFile)
-	// Default posture: subagent tools denied alongside ask (runtime_config
-	// carries no allow_subagents opt-in in this fixture).
-	if got := taskDenyList(t, configPath); !slices.Equal(got, []string{"Agent", "Task", "ask"}) {
-		t.Fatalf("deny = %v, want [Agent Task ask]", got)
+	// Missing runtime_config leaves subagent tools alone; ask remains denied.
+	if got := taskDenyList(t, configPath); !slices.Equal(got, []string{"ask"}) {
+		t.Fatalf("deny = %v, want [ask]", got)
 	}
 
 	// The sidecar is daemon-owned state, so CleanupSidecars must take it back
@@ -115,10 +114,9 @@ func TestReuseRewritesReasonixAskDeny(t *testing.T) {
 		t.Fatal("Reuse returned nil")
 	}
 	got := taskDenyList(t, filepath.Join(reused.WorkDir, reasonixProjectConfigFile))
-	// Default posture on reuse too: the owner's bash rule survives and the
-	// subagent tools are re-denied alongside ask.
-	if !slices.Equal(got, []string{"bash", "Agent", "Task", "ask"}) {
-		t.Fatalf("deny after reuse = %v, want [bash Agent Task ask]", got)
+	// The owner's bash rule survives and ask is re-denied on reuse.
+	if !slices.Equal(got, []string{"bash", "ask"}) {
+		t.Fatalf("deny after reuse = %v, want [bash ask]", got)
 	}
 }
 
@@ -136,7 +134,7 @@ default = "some-model"
 `)
 	workDir := t.TempDir()
 
-	if err := writeReasonixProjectConfig(workDir, env, &sidecarManifest{}, true, testLogger()); err != nil {
+	if err := writeReasonixProjectConfig(workDir, env, &sidecarManifest{}, false, testLogger()); err != nil {
 		t.Fatalf("writeReasonixProjectConfig: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(workDir, reasonixProjectConfigFile))
@@ -174,7 +172,7 @@ func TestReasonixProjectConfigKeepsOwnerAskDeny(t *testing.T) {
 	env := reasonixEnvWith(t, "[permissions]\ndeny = [\"ask\", \"bash\"]\n")
 	workDir := t.TempDir()
 
-	if err := writeReasonixProjectConfig(workDir, env, &sidecarManifest{}, true, testLogger()); err != nil {
+	if err := writeReasonixProjectConfig(workDir, env, &sidecarManifest{}, false, testLogger()); err != nil {
 		t.Fatalf("writeReasonixProjectConfig: %v", err)
 	}
 	got := taskDenyList(t, filepath.Join(workDir, reasonixProjectConfigFile))
@@ -201,7 +199,7 @@ func TestReasonixProjectConfigSkipsUnreadableOwnerConfig(t *testing.T) {
 			t.Parallel()
 			workDir := t.TempDir()
 			manifest := &sidecarManifest{}
-			if err := writeReasonixProjectConfig(workDir, reasonixEnvWith(t, tc.config), manifest, true, testLogger()); err != nil {
+			if err := writeReasonixProjectConfig(workDir, reasonixEnvWith(t, tc.config), manifest, false, testLogger()); err != nil {
 				t.Fatalf("writeReasonixProjectConfig: %v", err)
 			}
 			if _, err := os.Stat(filepath.Join(workDir, reasonixProjectConfigFile)); !os.IsNotExist(err) {
@@ -228,7 +226,7 @@ func TestReasonixProjectConfigKeepsRepositoryFile(t *testing.T) {
 	// reports success so the task still runs (with ask enabled, caught by the
 	// backend's fail-closed question handling).
 	manifest := &sidecarManifest{}
-	if err := writeReasonixProjectConfig(workDir, reasonixEnvWith(t, ""), manifest, true, testLogger()); err != nil {
+	if err := writeReasonixProjectConfig(workDir, reasonixEnvWith(t, ""), manifest, false, testLogger()); err != nil {
 		t.Fatalf("writeReasonixProjectConfig: %v", err)
 	}
 	data, err := os.ReadFile(configPath)
@@ -264,13 +262,13 @@ func TestReasonixProjectConfigSkippedForOtherProviders(t *testing.T) {
 	}
 }
 
-func TestReasonixProjectConfigDeniesSubagentToolsUnlessAllowed(t *testing.T) {
+func TestReasonixProjectConfigDeniesSubagentToolsWhenExplicitlyDisabled(t *testing.T) {
 	t.Parallel()
 
-	denyFrom := func(t *testing.T, allowSubagents bool) []string {
+	denyFrom := func(t *testing.T, denySubagentTools bool) []string {
 		t.Helper()
 		workDir := t.TempDir()
-		if err := writeReasonixProjectConfig(workDir, reasonixEnvWith(t, ""), &sidecarManifest{}, allowSubagents, testLogger()); err != nil {
+		if err := writeReasonixProjectConfig(workDir, reasonixEnvWith(t, ""), &sidecarManifest{}, denySubagentTools, testLogger()); err != nil {
 			t.Fatalf("writeReasonixProjectConfig: %v", err)
 		}
 		data, err := os.ReadFile(filepath.Join(workDir, reasonixProjectConfigFile))
@@ -297,7 +295,7 @@ func TestReasonixProjectConfigDeniesSubagentToolsUnlessAllowed(t *testing.T) {
 		return false
 	}
 
-	denied := denyFrom(t, false)
+	denied := denyFrom(t, true)
 	for _, tool := range subagentDenyTools {
 		if !contains(denied, tool) {
 			t.Errorf("deny = %v, want it to contain %q", denied, tool)
@@ -307,10 +305,10 @@ func TestReasonixProjectConfigDeniesSubagentToolsUnlessAllowed(t *testing.T) {
 		t.Errorf("deny = %v, want it to keep %q", denied, reasonixAskTool)
 	}
 
-	allowed := denyFrom(t, true)
+	allowed := denyFrom(t, false)
 	for _, tool := range subagentDenyTools {
 		if contains(allowed, tool) {
-			t.Errorf("deny = %v, opted-in agent must keep %q available", allowed, tool)
+			t.Errorf("deny = %v, default policy must keep %q available", allowed, tool)
 		}
 	}
 	if !contains(allowed, reasonixAskTool) {

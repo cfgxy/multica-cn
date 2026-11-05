@@ -12,9 +12,9 @@
  * clears the flag (an empty field then genuinely clears the token), and
  * switching modes also clears it (web CR for issue #3260).
  *
- * parse/serialize preserve `allow_subagents`, so saving routing never wipes
- * the subagent toggle set in the profile editor (see
- * openclaw-runtime-config.ts header comment).
+ * parse/serialize preserve both legacy `allow_subagents:true` and explicit
+ * false, so saving routing never rewrites the owner policy set in the profile
+ * editor (see openclaw-runtime-config.ts header comment).
  */
 import { SheetHeader } from "@/components/ui/sheet-header";
 import { useMemo, useState } from "react";
@@ -79,6 +79,9 @@ export default function AgentRuntimeConfig() {
   const draft = useMemo(() => {
     const cfg = parseOpenclawRuntimeConfig(null);
     cfg.mode = mode;
+    if (typeof original.allow_subagents === "boolean") {
+      cfg.allow_subagents = original.allow_subagents;
+    }
     if (mode === "gateway") {
       const gw: NonNullable<
         ReturnType<typeof parseOpenclawRuntimeConfig>["gateway"]
@@ -97,7 +100,7 @@ export default function AgentRuntimeConfig() {
       if (Object.keys(gw).length > 0) cfg.gateway = gw;
     }
     return cfg;
-  }, [mode, host, port, token, tls, tokenWasMasked]);
+  }, [mode, host, port, token, tls, tokenWasMasked, original]);
 
   const dirty = seeded && !openclawRuntimeConfigEquals(original, draft);
   const portValid = port === "" || /^\d+$/.test(port);

@@ -4609,6 +4609,35 @@ func TestNormalizeCodexLaunchArgsStripsShellQuotes(t *testing.T) {
 	}
 }
 
+func TestBuildCodexArgsExplicitSubagentPolicyWinsConflicts(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name       string
+		allow      bool
+		wantSuffix string
+	}{
+		{name: "allow", allow: true, wantSuffix: "--enable multi_agent"},
+		{name: "deny", allow: false, wantSuffix: "--disable multi_agent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildCodexArgs(ExecOptions{
+				ExtraArgs:            []string{"--enable", "multi_agent", "-c", "features.multi_agent=false"},
+				CustomArgs:           []string{"--disable", "multi_agent", "--config=features.multi_agent=true"},
+				SubagentToolsAllowed: boolPtr(tc.allow),
+			}, slog.Default())
+			joined := strings.Join(got, " ")
+			if strings.Contains(joined, "features.multi_agent=") {
+				t.Fatalf("conflicting multi-agent config survived: %v", got)
+			}
+			if !strings.HasSuffix(joined, tc.wantSuffix) {
+				t.Fatalf("explicit policy was not authoritative: %v", got)
+			}
+		})
+	}
+}
+
 func TestCodexExecuteFailsClosedWhenMcpConfigInvalid(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

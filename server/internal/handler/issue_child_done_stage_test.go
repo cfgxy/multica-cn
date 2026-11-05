@@ -40,6 +40,11 @@ func TestStageBarrierClosed_Unstaged(t *testing.T) {
 			want:     false,
 		},
 		{
+			name:     "an in-review sibling is delivered but still holds the barrier open",
+			children: []db.Issue{child(0, "done"), child(0, "in_review")},
+			want:     false,
+		},
+		{
 			name:     "cancelled counts as terminal",
 			children: []db.Issue{child(0, "done"), child(0, "cancelled")},
 			want:     true,
@@ -66,6 +71,16 @@ func TestStageBarrierClosed_Staged(t *testing.T) {
 		}
 		if stageBarrierClosed(children, child(1, "done"), literalTerminalChild) {
 			t.Fatal("expected barrier not closed while stage 1 has an open child")
+		}
+	})
+
+	t.Run("an in-review sibling in an earlier stage holds a later barrier open", func(t *testing.T) {
+		children := []db.Issue{
+			child(1, "done"), child(1, "in_review"),
+			child(2, "done"),
+		}
+		if stageBarrierClosed(children, child(2, "done"), literalTerminalChild) {
+			t.Fatal("expected in_review to hold the earlier stage barrier open")
 		}
 	})
 

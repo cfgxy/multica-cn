@@ -47,7 +47,7 @@ function draft(overrides: Partial<Parameters<typeof buildProfilePatch>[1]> = {})
     concurrency: "4",
     maxContext: "200000",
     compactPct: "80",
-    subagents: false,
+    subagents: true,
     voiceProviderId: "",
     voiceModel: "",
     voiceAdvanced: "",
@@ -121,9 +121,17 @@ describe("buildProfilePatch", () => {
     expect(buildProfilePatch(agent({ id: "" }), draft())).toBeNull();
   });
 
-  it("round-trips the subagents toggle through runtime_config", () => {
-    const patch = buildProfilePatch(agent(), draft({ subagents: true }));
-    expect(patch?.runtime_config).toBeDefined();
+  it("writes explicit false when subagents are disabled", () => {
+    const patch = buildProfilePatch(agent(), draft({ subagents: false }));
+    expect(patch?.runtime_config).toEqual({ allow_subagents: false });
+  });
+
+  it("writes explicit true when subagents are re-enabled", () => {
+    const patch = buildProfilePatch(
+      agent({ runtime_config: { allow_subagents: false } }),
+      draft({ subagents: true }),
+    );
+    expect(patch?.runtime_config).toEqual({ allow_subagents: true });
   });
 
   describe("voice provider override triple (RUYI-749 D1)", () => {

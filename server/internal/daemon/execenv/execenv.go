@@ -159,17 +159,17 @@ type TaskContextForEnv struct {
 	AgentInstructions             string // agent identity/persona instructions, injected into CLAUDE.md
 	AgentSkills                   []SkillContextForEnv
 	DisabledRuntimeSkills         []RuntimeSkillRefForEnv
-	// AllowSubagents mirrors runtime_config.allow_subagents on the agent row:
-	// false (absent or malformed config included) makes prepareClaudeSkillSettings
-	// deny the provider's task-delegation tools for this task's process.
-	AllowSubagents      bool
-	Repos               []RepoContextForEnv     // workspace repos available for checkout
-	ProjectID           string                  // active project for this task, when present
-	ProjectTitle        string                  // human-readable project title
-	ProjectDescription  string                  // durable project-level context, rendered into the brief's Project Context section
-	ProjectInstructions string                  // per-project agent instructions, rendered into the brief's Project Instructions section right after Workspace Context (RUYI-46)
-	ProjectResources    []ProjectResourceForEnv // resources attached to the project
-	ChatSessionID       string                  // non-empty for chat tasks
+	// SubagentToolsAllowed preserves runtime_config.allow_subagents as a
+	// tri-state. Nil delegates to the provider default; true/false are explicit
+	// per-agent overrides.
+	SubagentToolsAllowed *bool
+	Repos                []RepoContextForEnv     // workspace repos available for checkout
+	ProjectID            string                  // active project for this task, when present
+	ProjectTitle         string                  // human-readable project title
+	ProjectDescription   string                  // durable project-level context, rendered into the brief's Project Context section
+	ProjectInstructions  string                  // per-project agent instructions, rendered into the brief's Project Instructions section right after Workspace Context (RUYI-46)
+	ProjectResources     []ProjectResourceForEnv // resources attached to the project
+	ChatSessionID        string                  // non-empty for chat tasks
 	// ChatChannelType is the IM platform behind a chat session ("slack",
 	// "feishu", "wecom"); empty for a web/mobile chat. It names the surface in
 	// the brief's copy; what that surface can DELIVER is the separate field
@@ -669,7 +669,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// For Codex, set up a per-task CODEX_HOME seeded from ~/.codex/ with skills.
 	if params.Provider == "codex" {
 		codexHome := filepath.Join(envRoot, codexHomeDirName)
-		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, IsLocalDirectory: params.LocalWorkDir != "" || params.LocalWorktree != nil, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
+		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, IsLocalDirectory: params.LocalWorkDir != "" || params.LocalWorktree != nil, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs, SubagentToolsAllowed: params.Task.SubagentToolsAllowed}, logger); err != nil {
 			return nil, fmt.Errorf("execenv: prepare codex-home: %w", err)
 		}
 		if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
@@ -679,7 +679,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	}
 
 	if params.Provider == "claude" {
-		settingsPath, err := prepareClaudeSkillSettings(envRoot, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills, params.Task.AllowSubagents)
+		settingsPath, err := prepareClaudeSkillSettings(envRoot, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills, subagentToolsDenied(params.Task.SubagentToolsAllowed))
 		if err != nil {
 			return nil, fmt.Errorf("execenv: prepare claude skill settings: %w", err)
 		}
@@ -723,7 +723,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// project-scoped reasonix.toml. Degraded, not fatal: without it the task
 	// still runs under the backend's fail-closed question handling.
 	if params.Provider == "reasonix" {
-		if err := writeReasonixProjectConfig(workDir, params.ReasonixEnv, manifest, params.Task.AllowSubagents, logger); err != nil {
+		if err := writeReasonixProjectConfig(workDir, params.ReasonixEnv, manifest, subagentToolsDenied(params.Task.SubagentToolsAllowed), logger); err != nil {
 			logger.Warn("execenv: write reasonix project config failed", "error", err)
 		}
 	}
@@ -959,7 +959,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	// config (especially sandbox/network access) is up to date.
 	if params.Provider == "codex" {
 		codexHome := filepath.Join(env.RootDir, codexHomeDirName)
-		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, ResumeSessionID: params.ResumeSessionID, IsLocalDirectory: params.LocalDirectory, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
+		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, ResumeSessionID: params.ResumeSessionID, IsLocalDirectory: params.LocalDirectory, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs, SubagentToolsAllowed: params.Task.SubagentToolsAllowed}, logger); err != nil {
 			logger.Warn("execenv: refresh codex-home failed", "error", err)
 		} else {
 			env.CodexHome = codexHome
@@ -970,7 +970,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	}
 
 	if params.Provider == "claude" && env.RootDir != "" {
-		settingsPath, err := prepareClaudeSkillSettings(env.RootDir, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills, params.Task.AllowSubagents)
+		settingsPath, err := prepareClaudeSkillSettings(env.RootDir, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills, subagentToolsDenied(params.Task.SubagentToolsAllowed))
 		if err != nil {
 			logger.Warn("execenv: refresh claude skill settings failed", "error", err)
 		} else {
@@ -982,7 +982,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	// prior run's reasonix.toml, so without this the next turn would run with
 	// the tool available again.
 	if params.Provider == "reasonix" {
-		if err := writeReasonixProjectConfig(params.WorkDir, params.ReasonixEnv, manifest, params.Task.AllowSubagents, logger); err != nil {
+		if err := writeReasonixProjectConfig(params.WorkDir, params.ReasonixEnv, manifest, subagentToolsDenied(params.Task.SubagentToolsAllowed), logger); err != nil {
 			logger.Warn("execenv: refresh reasonix project config failed", "error", err)
 		}
 	}
