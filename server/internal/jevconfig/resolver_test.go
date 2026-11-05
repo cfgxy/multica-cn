@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/legislation"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -88,7 +89,7 @@ func testBox(t *testing.T) *secretbox.Box {
 
 func TestStateReportsUnconfigured(t *testing.T) {
 	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionJevConfig{}}
-	state, err := NewResolver(store, testBox(t)).State(context.Background(), testWorkspace(1))
+	state, err := NewResolver(store, testBox(t), &legislation.AdvisoryClient{}).State(context.Background(), testWorkspace(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func TestSaveRecordsAvailableProbeAndEncryptsKey(t *testing.T) {
 
 	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionJevConfig{}}
 	box := testBox(t)
-	resolver := NewResolver(store, box)
+	resolver := NewResolver(store, box, &legislation.AdvisoryClient{})
 	ws := testWorkspace(2)
 	state, err := resolver.Save(context.Background(), ws, SaveInput{
 		BaseURL: server.URL, APIKey: "workspace-secret", Model: "jev-local", TimeoutMS: 1500,
@@ -126,8 +127,8 @@ func TestSaveRecordsAvailableProbeAndEncryptsKey(t *testing.T) {
 	if auth != "Bearer workspace-secret" {
 		t.Fatalf("authorization = %q", auth)
 	}
-	if payload["input"] != probeInput || len(payload) != 1 {
-		t.Fatalf("probe payload = %#v, want only input", payload)
+	if payload["input"] != probeInput || payload["model"] != "jev-local" || len(payload) != 2 {
+		t.Fatalf("probe payload = %#v, want input and configured model", payload)
 	}
 	row := store.rows[ws]
 	if string(row.ApiKeyEncrypted) == "workspace-secret" || len(row.ApiKeyEncrypted) == 0 {
@@ -145,7 +146,7 @@ func TestSaveRecordsAvailableProbeAndEncryptsKey(t *testing.T) {
 func TestSaveOfflinePreservesExistingCredential(t *testing.T) {
 	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionJevConfig{}}
 	box := testBox(t)
-	resolver := NewResolver(store, box)
+	resolver := NewResolver(store, box, &legislation.AdvisoryClient{})
 	ws := testWorkspace(3)
 	if _, err := resolver.Save(context.Background(), ws, SaveInput{
 		BaseURL: "http://127.0.0.1:1", APIKey: "original-secret", Model: "jev-local", TimeoutMS: 100,
@@ -168,7 +169,7 @@ func TestSaveOfflinePreservesExistingCredential(t *testing.T) {
 }
 
 func TestSaveRejectsInvalidInput(t *testing.T) {
-	resolver := NewResolver(&fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionJevConfig{}}, testBox(t))
+	resolver := NewResolver(&fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionJevConfig{}}, testBox(t), &legislation.AdvisoryClient{})
 	ws := testWorkspace(4)
 	cases := []struct {
 		name string
@@ -185,5 +186,41 @@ func TestSaveRejectsInvalidInput(t *testing.T) {
 				t.Fatalf("Save error = %v, want %v", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestMissingWorkspaceConfigUsesDeploymentDefault(t *testing.T) {
+	var payload map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &payload)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"engine": "deployment-jev", "p_failure": 0.2, "threshold": 0.5, "warn": false, "decision": "pass",
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	resolver := NewResolver(
+		&fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionJevConfig{}},
+		testBox(t),
+		&legislation.AdvisoryClient{BaseURL: server.URL, Model: "deployment-model"},
+	)
+	ws := testWorkspace(5)
+	client, err := resolver.Client(context.Background(), ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.BaseURL != server.URL || client.Model != "deployment-model" {
+		t.Fatalf("client = %#v, want deployment default", client)
+	}
+	state, err := resolver.State(context.Background(), ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != StatusAvailable || state.Source != SourceDeployment || state.LastEngine != "deployment-jev" {
+		t.Fatalf("state = %#v, want available deployment state", state)
+	}
+	if payload["input"] != probeInput || payload["model"] != "deployment-model" {
+		t.Fatalf("probe payload = %#v, want input and deployment model", payload)
 	}
 }

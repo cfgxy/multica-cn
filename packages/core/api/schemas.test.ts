@@ -2750,6 +2750,7 @@ describe("DecisionRequestSchema authorization receipt", () => {
 describe("SelfEvolutionJevConfigSchema", () => {
   const fallback = {
     status: "unconfigured" as const,
+    source: "unconfigured" as const,
     endpoint: "",
     model: "",
     timeout_ms: 1500,

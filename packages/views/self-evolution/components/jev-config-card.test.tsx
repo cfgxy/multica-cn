@@ -54,6 +54,7 @@ vi.mock("@multica/core/self-evolution", async () => {
 function configFixture(overrides: Partial<SelfEvolutionJevConfig> = {}): SelfEvolutionJevConfig {
   return {
     status: "unconfigured",
+    source: "unconfigured",
     endpoint: "",
     model: "",
     timeout_ms: 1500,
@@ -86,6 +87,7 @@ describe("JevConfigCard", () => {
   it("shows the offline state without echoing a stored API key", async () => {
     state.config = configFixture({
       status: "offline",
+      source: "workspace",
       endpoint: "https://jev.example.com",
       model: "jev-local",
       has_api_key: true,
@@ -94,7 +96,7 @@ describe("JevConfigCard", () => {
     });
     mount();
 
-    expect((await screen.findByTestId("jev-config-status")).textContent).toBe("Offline");
+    expect((await screen.findByTestId("jev-config-status")).textContent).toBe("Offline · Workspace override");
     expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("API key") as HTMLInputElement).placeholder).toBe(
       "Leave empty to keep the existing value",
@@ -135,10 +137,15 @@ describe("JevConfigCard", () => {
 
   it("makes the status member-visible while withholding owner controls", async () => {
     state.role = "member";
-    state.config = configFixture({ status: "available", endpoint: "https://jev.example.com", model: "jev-local" });
+    state.config = configFixture({
+      status: "available",
+      source: "workspace",
+      endpoint: "https://jev.example.com",
+      model: "jev-local",
+    });
     mount();
 
-    expect((await screen.findByTestId("jev-config-status")).textContent).toBe("Available");
+    expect((await screen.findByTestId("jev-config-status")).textContent).toBe("Available · Workspace override");
     expect((screen.getByLabelText("Endpoint") as HTMLInputElement).disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "Save and check" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Re-check" })).toBeNull();
@@ -146,12 +153,31 @@ describe("JevConfigCard", () => {
   });
 
   it("offers stored-config recheck and removal only to an owner", async () => {
-    state.config = configFixture({ status: "available", endpoint: "https://jev.example.com", model: "jev-local" });
+    state.config = configFixture({
+      status: "available",
+      source: "workspace",
+      endpoint: "https://jev.example.com",
+      model: "jev-local",
+    });
     mount();
 
     await userEvent.click(await screen.findByRole("button", { name: "Re-check" }));
     expect(state.recheck).toHaveBeenCalledWith(undefined, expect.anything());
     await userEvent.click(screen.getByRole("button", { name: "Remove configuration" }));
     expect(state.remove).toHaveBeenCalledWith(undefined, expect.anything());
+  });
+
+  it("shows a deployment default without offering workspace removal", async () => {
+    state.config = configFixture({
+      status: "available",
+      source: "deployment",
+      endpoint: "https://jev.example.com",
+      model: "deployment-model",
+    });
+    mount();
+
+    expect((await screen.findByTestId("jev-config-status")).textContent).toBe("Available · Deployment default");
+    expect(screen.getByRole("button", { name: "Re-check" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove configuration" })).toBeNull();
   });
 });

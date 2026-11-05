@@ -103,6 +103,17 @@ export function JevConfigCard({ wsId }: { wsId: string }) {
     }
   };
 
+  const sourceLabel = () => {
+    switch (data.source) {
+      case "deployment":
+        return t(($) => $.jevConfig.source.deployment);
+      case "workspace":
+        return t(($) => $.jevConfig.source.workspace);
+      default:
+        return null;
+    }
+  };
+
   const saveConfig = () => {
     save.mutate(
       {
@@ -152,7 +163,7 @@ export function JevConfigCard({ wsId }: { wsId: string }) {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle>{t(($) => $.jevConfig.title)}</CardTitle>
           <span className="text-caption text-muted-foreground" data-testid="jev-config-status">
-            {statusLabel()}
+            {[statusLabel(), sourceLabel()].filter(Boolean).join(" · ")}
           </span>
         </div>
         <CardDescription>{t(($) => $.jevConfig.description)}</CardDescription>
@@ -219,7 +230,7 @@ export function JevConfigCard({ wsId }: { wsId: string }) {
               {t(($) => $.jevConfig.recheck)}
             </Button>
           ) : null}
-          {canManage && data.status !== "unconfigured" ? (
+          {canManage && data.source === "workspace" ? (
             <Button size="sm" variant="outline" disabled={busy} onClick={deleteConfig}>
               {t(($) => $.jevConfig.delete)}
             </Button>

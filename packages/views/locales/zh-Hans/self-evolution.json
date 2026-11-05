@@ -1026,6 +1026,10 @@
     "engine": "运行版本 {{engine}}",
     "lastCheckError": "最近检查：{{reason}}",
     "encryptionNotReady": "本部署未配置工作区级加密密钥，无法保存 JEV 配置。",
+    "source": {
+      "workspace": "工作区覆盖",
+      "deployment": "部署默认值"
+    },
     "status": {
       "unconfigured": "未配置",
       "offline": "离线",

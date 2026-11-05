@@ -531,6 +531,7 @@ export type {
 export type {
   SelfEvolutionJevConfig,
   SelfEvolutionJevConfigSave,
+  SelfEvolutionJevSource,
   SelfEvolutionJevStatus,
 } from "./self-evolution-jev-config";
 export type {

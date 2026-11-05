@@ -1354,7 +1354,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				deployModel = h.LLM.DefaultModel()
 			}
 			h.SelfEvolution = selfevconfig.NewResolver(queries, box, h.LLM, deployModel)
-			h.JevConfig = jevconfig.NewResolver(queries, box)
+			h.JevConfig = jevconfig.NewResolver(queries, box, legislation.AdvisoryFromEnv())
 			slog.Info("self-evolution model config encryption enabled")
 		}
 	} else {

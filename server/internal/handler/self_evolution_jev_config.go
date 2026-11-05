@@ -10,6 +10,7 @@ import (
 
 type jevConfigResponse struct {
 	Status          string `json:"status"`
+	Source          string `json:"source"`
 	Endpoint        string `json:"endpoint"`
 	Model           string `json:"model"`
 	TimeoutMS       int32  `json:"timeout_ms"`
@@ -35,6 +36,7 @@ func (h *Handler) GetSelfEvolutionJevConfig(w http.ResponseWriter, r *http.Reque
 	if h.JevConfig == nil {
 		writeJSON(w, http.StatusOK, jevConfigResponse{
 			Status:          jevconfig.StatusUnconfigured,
+			Source:          jevconfig.SourceUnconfigured,
 			TimeoutMS:       1500,
 			EncryptionReady: false,
 		})
@@ -105,6 +107,7 @@ func (h *Handler) writeJevConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := jevConfigResponse{
 		Status:          state.Status,
+		Source:          state.Source,
 		Endpoint:        state.BaseURL,
 		Model:           state.Model,
 		TimeoutMS:       state.TimeoutMS,

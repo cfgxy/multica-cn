@@ -908,6 +908,10 @@
     "engine": "런타임 {{engine}}",
     "lastCheckError": "마지막 확인: {{reason}}",
     "encryptionNotReady": "이 배포에는 워크스페이스 단위 암호화 키가 없어 JEV 구성을 저장할 수 없습니다.",
+    "source": {
+      "workspace": "워크스페이스 재정의",
+      "deployment": "배포 기본값"
+    },
     "status": {
       "unconfigured": "구성되지 않음",
       "offline": "오프라인",

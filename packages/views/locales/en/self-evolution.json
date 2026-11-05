@@ -909,6 +909,10 @@
     "engine": "Runtime {{engine}}",
     "lastCheckError": "Last check: {{reason}}",
     "encryptionNotReady": "This deployment has no per-workspace encryption key, so JEV configuration cannot be saved.",
+    "source": {
+      "workspace": "Workspace override",
+      "deployment": "Deployment default"
+    },
     "status": {
       "unconfigured": "Unconfigured",
       "offline": "Offline",
