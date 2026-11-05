@@ -215,11 +215,15 @@ jobs:
           fi
           alternate_url=$(pnpm exec dotenv -e ".env.${alternate_env}" -- sh -c 'printf %s "$EXPO_PUBLIC_API_URL"')
 
-          if ! unzip -p "${apk[0]}" assets/index.android.bundle | rg --fixed-strings --quiet -- "$expected_url"; then
+          bundle=$(mktemp)
+          trap 'rm -f "$bundle"' EXIT
+          unzip -p "${apk[0]}" assets/index.android.bundle > "$bundle"
+
+          if ! rg --fixed-strings --quiet -- "$expected_url" "$bundle"; then
             echo "::error::Release bundle does not contain the selected public API configuration"
             exit 1
           fi
-          if unzip -p "${apk[0]}" assets/index.android.bundle | rg --fixed-strings --quiet -- "$alternate_url"; then
+          if rg --fixed-strings --quiet -- "$alternate_url" "$bundle"; then
             echo "::error::Release bundle contains the alternate environment public API configuration"
             exit 1
           fi
