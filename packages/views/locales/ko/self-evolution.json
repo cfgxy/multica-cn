@@ -830,7 +830,15 @@
     "similar": "유사",
     "highValue": "높은 가치",
     "lowValue": "낮은 가치",
-    "editorPlaceholder": "통합된 Markdown 내용 작성"
+    "editorPlaceholder": "통합된 Markdown 내용 작성",
+    "operationSyncing": "{{operation}} 동기화 중",
+    "operationFailed": "{{operation}} 동기화 실패",
+    "operationType": {
+      "change": "변경",
+      "edit": "편집",
+      "delete": "삭제",
+      "merge": "병합"
+    }
   },
   "skillsSeg": {
     "managed": "관리 중인 스킬",

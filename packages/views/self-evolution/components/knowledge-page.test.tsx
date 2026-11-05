@@ -311,6 +311,38 @@ describe("KnowledgePageBody", () => {
     );
   });
 
+  it("shows a daemon failure for a queued write and clears it after replay succeeds", async () => {
+    m.role = "owner";
+    m.dirs = [dirFixture({ id: "dir-ultimate", kind: "ultimate", label: "workspace library" })];
+    m.entries = [entryFixture({
+      dir_id: "dir-ultimate",
+      pending_operation: {
+        id: "operation-1",
+        status: "queued",
+        operation_type: "edit",
+        error: "bd recall mismatch",
+        requested_at: "2026-11-05T07:00:00Z",
+      },
+    })];
+    const view = mount();
+
+    const row = await screen.findByTestId("knowledge-entry-deploy-rollback");
+    expect(within(row).getByTestId("knowledge-entry-operation")).toHaveTextContent("Edit sync failed");
+    await userEvent.click(row);
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    expect(within(dialog).getByTestId("knowledge-entry-operation")).toHaveTextContent("bd recall mismatch");
+    expect(within(dialog).queryByRole("button", { name: "Edit" })).toBeNull();
+
+    view.unmount();
+    m.entries = [entryFixture({ dir_id: "dir-ultimate" })];
+    mount();
+
+    const replayedRow = await screen.findByTestId("knowledge-entry-deploy-rollback");
+    expect(within(replayedRow).queryByTestId("knowledge-entry-operation")).toBeNull();
+    await userEvent.click(replayedRow);
+    expect(within(await screen.findByTestId("knowledge-entry-dialog")).getByRole("button", { name: "Edit" })).toBeTruthy();
+  });
+
   it("requires an explicit confirmation before queueing a delete", async () => {
     m.role = "owner";
     m.dirs = [dirFixture({ id: "dir-ultimate", kind: "ultimate" })];

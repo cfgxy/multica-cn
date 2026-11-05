@@ -830,7 +830,15 @@
     "similar": "類似",
     "highValue": "高価値",
     "lowValue": "低価値",
-    "editorPlaceholder": "統合済み Markdown 内容を入力"
+    "editorPlaceholder": "統合済み Markdown 内容を入力",
+    "operationSyncing": "{{operation}}を同期中",
+    "operationFailed": "{{operation}}の同期に失敗しました",
+    "operationType": {
+      "change": "変更",
+      "edit": "編集",
+      "delete": "削除",
+      "merge": "統合"
+    }
   },
   "skillsSeg": {
     "managed": "管理中のスキル",

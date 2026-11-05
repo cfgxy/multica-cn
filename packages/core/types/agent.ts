@@ -1334,12 +1334,16 @@ export interface KnowledgeEntry {
   adopted_from_dir_id?: string;
   adopted_from_key?: string;
   adoption_error?: string;
+  pending_operation?: KnowledgeEntryOperation;
 }
 
 /** A daemon-owned mutation accepted into the durable knowledge queue. */
 export interface KnowledgeEntryOperation {
   id: string;
   status: string;
+  operation_type?: string;
+  error?: string;
+  requested_at?: string;
 }
 
 export interface CreateSkillRequest {

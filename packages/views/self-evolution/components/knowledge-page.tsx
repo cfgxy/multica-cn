@@ -37,7 +37,7 @@ import {
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@multica/ui/components/ui/alert-dialog";
 import { clientErrorMessage } from "@multica/core/api";
 import { useCurrentMember } from "@multica/core/permissions";
-import type { KnowledgeDir, KnowledgeEntry } from "@multica/core/types";
+import type { KnowledgeDir, KnowledgeEntry, KnowledgeEntryOperation } from "@multica/core/types";
 import {
   knowledgeDirsOptions,
   knowledgeEntriesOptions,
@@ -470,6 +470,7 @@ function KnowledgeEntryDialog({
     return entries
       .filter((candidate) => candidate.id !== entry.id && candidate.dir_id === entry.dir_id)
       .filter((candidate) => candidate.mirror_state === "synced")
+      .filter((candidate) => candidate.pending_operation === undefined)
       .map((candidate) => ({
         entry: candidate,
         kind: candidate.content_sha256 === entry.content_sha256
@@ -484,7 +485,8 @@ function KnowledgeEntryDialog({
   const writable = entry !== null
     && canManage
     && ultimateDirIds.has(entry.dir_id)
-    && entry.mirror_state === "synced";
+    && entry.mirror_state === "synced"
+    && entry.pending_operation === undefined;
   const value = entry ? knowledgeValue(entry.content) : null;
   const close = () => onOpenChange(false);
 
@@ -534,6 +536,9 @@ function KnowledgeEntryDialog({
                 </dl>
                 {entry.adoption_error ? (
                   <p role="alert" className="text-caption text-destructive">{entry.adoption_error}</p>
+                ) : null}
+                {entry.pending_operation ? (
+                  <KnowledgeOperationStatus operation={entry.pending_operation} detailed />
                 ) : null}
                 {mode === "read" ? (
                   <div className="min-h-64 rounded-md border bg-background p-5" data-testid="knowledge-entry-markdown">
@@ -643,6 +648,43 @@ function KnowledgeEntryDialog({
   );
 }
 
+function KnowledgeOperationStatus({
+  operation,
+  detailed = false,
+}: {
+  operation: KnowledgeEntryOperation;
+  detailed?: boolean;
+}) {
+  const { t } = useT("self-evolution");
+  const operationLabel = (() => {
+    switch (operation.operation_type) {
+      case "edit": return t(($) => $.knowledgeSeg.operationType.edit);
+      case "delete": return t(($) => $.knowledgeSeg.operationType.delete);
+      case "merge": return t(($) => $.knowledgeSeg.operationType.merge);
+      default: return t(($) => $.knowledgeSeg.operationType.change);
+    }
+  })();
+  const hasError = operation.error !== undefined && operation.error !== "";
+
+  return (
+    <div
+      className={detailed ? "rounded-md border border-destructive/30 bg-destructive/5 p-3" : undefined}
+      data-testid="knowledge-entry-operation"
+    >
+      <Badge variant={hasError ? "destructive" : "outline"}>
+        {hasError
+          ? t(($) => $.knowledgeSeg.operationFailed, { operation: operationLabel })
+          : t(($) => $.knowledgeSeg.operationSyncing, { operation: operationLabel })}
+      </Badge>
+      {detailed && hasError ? (
+        <p role="alert" className="mt-2 break-words text-caption text-destructive">
+          {operation.error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function knowledgeSimilarity(left: string, right: string): number {
   const words = (content: string) => new Set(content.toLowerCase().match(/[\p{L}\p{N}_-]{3,}/gu) ?? []);
   const leftWords = words(left);
@@ -744,7 +786,12 @@ function EntriesSegment({
                 {dirLabel(entry.dir_id)}
               </TableCell>
               <TableCell>
-                <Badge variant="outline">{mirrorLabel(entry.mirror_state)}</Badge>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">{mirrorLabel(entry.mirror_state)}</Badge>
+                  {entry.pending_operation ? (
+                    <KnowledgeOperationStatus operation={entry.pending_operation} />
+                  ) : null}
+                </div>
               </TableCell>
               <TableCell>
                 <Badge variant={entry.adoption_state === "adopted" ? "secondary" : "outline"}>

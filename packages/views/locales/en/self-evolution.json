@@ -831,7 +831,15 @@
     "similar": "Similar",
     "highValue": "High value",
     "lowValue": "Low value",
-    "editorPlaceholder": "Write the consolidated Markdown content"
+    "editorPlaceholder": "Write the consolidated Markdown content",
+    "operationSyncing": "{{operation}} is syncing",
+    "operationFailed": "{{operation}} sync failed",
+    "operationType": {
+      "change": "Change",
+      "edit": "Edit",
+      "delete": "Delete",
+      "merge": "Merge"
+    }
   },
   "skillsSeg": {
     "managed": "Managed skills",

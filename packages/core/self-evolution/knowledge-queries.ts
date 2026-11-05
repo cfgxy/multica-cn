@@ -25,6 +25,8 @@ export function knowledgeEntriesOptions(wsId: string, dirId: string, query: stri
       ...(dirId ? { dir_id: dirId } : {}),
       ...(query ? { q: query } : {}),
     }),
+    refetchInterval: (query) =>
+      query.state.data?.some((entry) => entry.pending_operation !== undefined) ? 5_000 : false,
     enabled: !!wsId,
   });
 }

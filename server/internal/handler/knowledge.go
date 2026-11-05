@@ -54,26 +54,30 @@ type KnowledgeScanBatchResponse struct {
 }
 
 type KnowledgeEntryResponse struct {
-	ID               string     `json:"id"`
-	DirID            string     `json:"dir_id"`
-	Key              string     `json:"key"`
-	Content          string     `json:"content"`
-	ContentSha256    string     `json:"content_sha256"`
-	MirrorState      string     `json:"mirror_state"`
-	FirstSeenAt      time.Time  `json:"first_seen_at"`
-	LastConfirmedAt  time.Time  `json:"last_confirmed_at"`
-	AdoptionState    string     `json:"adoption_state"`
-	AdoptedAt        *time.Time `json:"adopted_at,omitempty"`
-	AdoptedBy        *string    `json:"adopted_by,omitempty"`
-	UltimateDirID    *string    `json:"ultimate_dir_id,omitempty"`
-	AdoptedFromDirID *string    `json:"adopted_from_dir_id,omitempty"`
-	AdoptedFromKey   *string    `json:"adopted_from_key,omitempty"`
-	AdoptionError    string     `json:"adoption_error,omitempty"`
+	ID               string                           `json:"id"`
+	DirID            string                           `json:"dir_id"`
+	Key              string                           `json:"key"`
+	Content          string                           `json:"content"`
+	ContentSha256    string                           `json:"content_sha256"`
+	MirrorState      string                           `json:"mirror_state"`
+	FirstSeenAt      time.Time                        `json:"first_seen_at"`
+	LastConfirmedAt  time.Time                        `json:"last_confirmed_at"`
+	AdoptionState    string                           `json:"adoption_state"`
+	AdoptedAt        *time.Time                       `json:"adopted_at,omitempty"`
+	AdoptedBy        *string                          `json:"adopted_by,omitempty"`
+	UltimateDirID    *string                          `json:"ultimate_dir_id,omitempty"`
+	AdoptedFromDirID *string                          `json:"adopted_from_dir_id,omitempty"`
+	AdoptedFromKey   *string                          `json:"adopted_from_key,omitempty"`
+	AdoptionError    string                           `json:"adoption_error,omitempty"`
+	PendingOperation *KnowledgeEntryOperationResponse `json:"pending_operation,omitempty"`
 }
 
 type KnowledgeEntryOperationResponse struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID            string     `json:"id"`
+	OperationType string     `json:"operation_type,omitempty"`
+	Status        string     `json:"status"`
+	Error         string     `json:"error,omitempty"`
+	RequestedAt   *time.Time `json:"requested_at,omitempty"`
 }
 
 // GetKnowledgeDirs serves GET /api/knowledge/dirs: the workspace's registered
@@ -258,8 +262,17 @@ func (h *Handler) GetKnowledgeEntries(w http.ResponseWriter, r *http.Request) {
 SELECT e.id, e.dir_id, e.key, e.content, e.content_sha256, e.mirror_state,
        e.first_seen_at, e.last_confirmed_at, e.adoption_state, e.adopted_at,
        e.adopted_by, e.ultimate_dir_id, e.adopted_from_dir_id, e.adopted_from_key,
-       e.adoption_error
+       e.adoption_error, pending.id, COALESCE(pending.operation_type, ''),
+       COALESCE(pending.status, ''), COALESCE(pending.error, ''), pending.created_at
 FROM knowledge_entry e
+	LEFT JOIN LATERAL (
+	    SELECT o.id, o.operation_type, o.status, o.error, o.created_at
+	    FROM knowledge_entry_operation o
+	    WHERE o.workspace_id = e.workspace_id AND o.status = 'queued'
+	      AND (o.entry_id = e.id OR o.delete_entry_ids ? e.id::text)
+	    ORDER BY o.created_at DESC, o.id DESC
+	    LIMIT 1
+	) pending ON TRUE
 WHERE e.workspace_id = $1
   AND ($2::uuid IS NULL OR e.dir_id = $2)
   AND ($3 = '' OR position($3 in lower(e.key)) > 0 OR position($3 in lower(e.content)) > 0)
@@ -273,12 +286,14 @@ LIMIT 200`, workspaceID, dirID, query)
 	entries := make([]KnowledgeEntryResponse, 0, 64)
 	for rows.Next() {
 		var entry KnowledgeEntryResponse
-		var id, entryDirID, adoptedBy, ultimateDirID, fromDirID pgtype.UUID
-		var adoptedAt pgtype.Timestamptz
+		var id, entryDirID, adoptedBy, ultimateDirID, fromDirID, pendingID pgtype.UUID
+		var adoptedAt, pendingRequestedAt pgtype.Timestamptz
+		var pendingOperationType, pendingStatus, pendingError string
 		if err := rows.Scan(&id, &entryDirID, &entry.Key, &entry.Content, &entry.ContentSha256,
 			&entry.MirrorState, &entry.FirstSeenAt, &entry.LastConfirmedAt, &entry.AdoptionState,
 			&adoptedAt, &adoptedBy, &ultimateDirID, &fromDirID, &entry.AdoptedFromKey,
-			&entry.AdoptionError); err != nil {
+			&entry.AdoptionError, &pendingID, &pendingOperationType, &pendingStatus, &pendingError,
+			&pendingRequestedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to read knowledge entries")
 			return
 		}
@@ -299,6 +314,17 @@ LIMIT 200`, workspaceID, dirID, query)
 		if fromDirID.Valid {
 			value := uuidToString(fromDirID)
 			entry.AdoptedFromDirID = &value
+		}
+		if pendingID.Valid {
+			pending := &KnowledgeEntryOperationResponse{
+				ID: uuidToString(pendingID), OperationType: pendingOperationType,
+				Status: pendingStatus, Error: pendingError,
+			}
+			if pendingRequestedAt.Valid {
+				value := pendingRequestedAt.Time
+				pending.RequestedAt = &value
+			}
+			entry.PendingOperation = pending
 		}
 		entries = append(entries, entry)
 	}
