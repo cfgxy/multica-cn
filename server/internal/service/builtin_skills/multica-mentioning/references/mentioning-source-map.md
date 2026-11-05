@@ -49,10 +49,11 @@ a pointer.
 
 | Fact | Source |
 | --- | --- |
-| Explicit agent links, including malformed IDs and suppressed targets, are checked before comment creation or changed-body edit; the same predicate is used by preview | `server/internal/handler/comment.go` (search `validateExplicitAgentMentions`, `admitExplicitAgentMentions`) |
-| Failure is HTTP 422 with `invalid_agent_mentions` and normalized UTF-8 byte offsets for each full link, and occurs before create/attachment/event/cancellation | `server/internal/handler/comment.go` (search `invalidAgentMention`, `admitExplicitAgentMentions` and its callers); `server/internal/handler/comment_mention_admission_test.go` |
-| Preview omits runnable agents on invalid explicit agent mentions; edit preview checks author/admin permissions | `server/internal/handler/comment.go` (search `PreviewCommentTriggers`) |
-| Web/desktop preserve the rejected draft and translate the code; CLI retains the input file and formats the code and byte offsets into a safe message | `packages/views/issues/hooks/use-issue-timeline.ts`, `packages/views/issues/components/comment-card.tsx`, `server/internal/cli/errors.go` (search `invalidAgentMentionMessage`) |
+| Parsed explicit agent/squad targets are resolved after the comment is saved; blocked targets remain non-executing and return one `trigger_outcomes` entry each | `server/internal/handler/comment.go` (search `resolveMentionedAgentCommentTriggers`, `commentTriggerOutcomes`); `server/internal/handler/comment_trigger_outcomes_test.go` |
+| Complete agent links outside the parser grammar are saved and returned as normalized UTF-8 byte spans in `invalid_mentions`; `/note` skips both trigger and warning | `server/internal/handler/comment.go` (search `findUnparsedAgentMentions`); `server/internal/handler/comment_mention_admission_test.go` |
+| Preview keeps valid runnable agents while returning blocked outcomes and unparsed-link warnings; edit preview still checks author/admin permissions | `server/internal/handler/comment.go` (search `PreviewCommentTriggers`); `server/internal/handler/comment_mention_admission_test.go` |
+| Create/edit success responses expose both `trigger_outcomes` and `invalid_mentions`; table CLI warns without turning the saved comment into a failure | `server/internal/handler/comment.go` (`CommentResponse`); `server/cmd/multica/cmd_issue.go` (search `warnUnhandledCommentTriggers`); `packages/core/types/comment.ts`; `apps/mcp/src/types.ts` |
+| Agent comments have no responsibility-mention count/Leader admission gate; same-issue self mentions are saved and blocked only at dispatch resolution | `server/internal/handler/comment.go` (search `ReasonSelfTriggerSuppressed`); `server/internal/handler/comment_mention_admission_test.go`; `server/internal/handler/mention_self_trigger_test.go` |
 
 | Fact | Source |
 | --- | --- |

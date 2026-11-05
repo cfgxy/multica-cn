@@ -165,9 +165,8 @@ func TestCreateComment_SquadLeaderNoActionRejectsComment(t *testing.T) {
 	fx := newRunningSquadLeaderTaskFixture(t)
 	recordSquadLeaderEvaluationForTask(t, fx, "no_action")
 
-	// The content must clear the mandatory-mention gate first (422), or the
-	// 409 no_action check is never reached: a leader agent posting a valid
-	// agent mention (its own) passes validateAgentResponsibilityMention.
+	// Keep an explicit self mention in the payload to prove no_action remains the
+	// hard write boundary even though mention shape is now advisory.
 	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/issues/"+fx.IssueID+"/comments", map[string]any{
 		"content":   "No action needed. [@leader](mention://agent/" + fx.LeaderID + ")",

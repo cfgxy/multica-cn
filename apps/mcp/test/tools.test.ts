@@ -2028,6 +2028,26 @@ describe("comment management tools", () => {
     });
   });
 
+  describe("add_comment", () => {
+    it("returns saved-comment mention warnings alongside dispatch outcomes", async () => {
+      const client = fakeClient({
+        addComment: async () => commentFixture({
+          trigger_outcomes: [{ target_type: "agent", target_id: "a1", status: "blocked" }],
+          invalid_mentions: [{ start: 4, end: 40 }],
+        }),
+      });
+      const result = (await findTool("add_comment")?.handler(
+        { workspace: WS, issue: "VOI-1", content: "comment" },
+        client,
+      )) as Record<string, unknown>;
+      expect(result.posted).toBe(true);
+      expect(result.trigger_outcomes).toEqual([
+        { target_type: "agent", target_id: "a1", status: "blocked" },
+      ]);
+      expect(result.invalid_mentions).toEqual([{ start: 4, end: 40 }]);
+    });
+  });
+
   describe("edit_comment", () => {
     it("maps the edit fields onto the PUT body and returns the audit snapshot", async () => {
       const client = fakeClient({
@@ -2038,6 +2058,7 @@ describe("comment management tools", () => {
             revision: 2,
             updated_at: "2026-10-03T03:00:00Z",
             trigger_outcomes: [{ target_type: "agent", target_id: "a1", status: "queued" }],
+            invalid_mentions: [{ start: 12, end: 48 }],
           });
         },
       });
@@ -2063,6 +2084,7 @@ describe("comment management tools", () => {
       expect(result.trigger_outcomes).toEqual([
         { target_type: "agent", target_id: "a1", status: "queued" },
       ]);
+      expect(result.invalid_mentions).toEqual([{ start: 12, end: 48 }]);
     });
 
     it("reports zero dispatches for an ordinary content edit (no implicit run surface)", async () => {

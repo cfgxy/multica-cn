@@ -35,8 +35,10 @@ export function commentTriggerPreviewSignature(content: string): string {
     tokens.push(token);
   }
   // The routing parser omits malformed IDs, but the admission preview still
-  // needs a new query when the user edits one of those links.
-  tokens.push(...(content.match(/\]\(mention:\/\/agent\/[^)\s]*\)/g) ?? []));
+  // needs a new query when a complete malformed link appears or changes. Match
+  // the opening label too so ordinary `text](mention://agent/...)` fragments do
+  // not collide with a real malformed Markdown link in the query cache.
+  tokens.push(...(content.match(/\[[^\n]*?\]\(mention:\/\/agent\/[^)\s]*\)/g) ?? []));
 
   return `nonempty|${tokens.join(",")}`;
 }
