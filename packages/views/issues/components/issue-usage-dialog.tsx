@@ -149,9 +149,15 @@ export function IssueUsageDialog({
               />
               <KpiCard
                 label={t(($) => $.usage_detail.kpi_calls)}
-                value={t(($) => $.usage_detail.calls_complete, {
-                  count: total.modelCallCount,
-                })}
+                value={
+                  total.modelCallUnknownCount > 0
+                    ? t(($) => $.usage_detail.calls_compact_partial, {
+                        known: total.modelCallCount,
+                      })
+                    : t(($) => $.usage_detail.calls_complete, {
+                        count: total.modelCallCount,
+                      })
+                }
                 hint={
                   total.modelCallUnknownCount > 0
                     ? t(($) => $.usage_detail.calls_partial, {
