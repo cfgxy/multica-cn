@@ -203,12 +203,10 @@ type TaskContextForEnv struct {
 	AutopilotSource         string
 	AutopilotTriggerPayload string
 	QuickCreatePrompt       string // non-empty for quick-create tasks
-	// QuickCreateAttachments carries the full attachment rows behind the
-	// quick-create upload (RUYI-478). Rendered into issue_context.md so the
-	// delegated create-run knows the files exist and can inline images into
-	// the new issue's description; quick-create forbids non-create CLI
-	// calls, so each row must be self-contained (durable markdown URL, no
-	// download instruction). Task-static: safe for the prompt-cache prefix.
+	// QuickCreateAttachments carries the uploaded attachment rows. issue_context.md
+	// exposes filenames and content types for context, but does not repeat them
+	// in the description; the IDs are bound by the issue-create call. Task-static:
+	// safe for the prompt-cache prefix.
 	QuickCreateAttachments []QuickCreateAttachmentForEnv
 	QuizPrompt             string // item under test for prompt-quiz runs; rendered verbatim into the prompt and issue_context.md
 	RetrospectivePrompt    string // daily-retrospective window prompt (RUYI-552 direction 3); rendered verbatim into the prompt and issue_context.md
@@ -256,10 +254,10 @@ type TaskContextForEnv struct {
 	InitiatorEmail string
 }
 
-// QuickCreateAttachmentForEnv mirrors daemon.QuickCreateAttachmentMeta: one
-// attachment row uploaded in the quick-create modal (RUYI-478). MarkdownURL
-// is the server-computed durable URL to inline into the new issue's
-// description; there is no download path on this surface.
+// QuickCreateAttachmentForEnv mirrors daemon.QuickCreateAttachmentMeta for
+// one attachment row uploaded in the quick-create modal. MarkdownURL is kept
+// in the task payload but deliberately omitted from issue_context.md to avoid
+// repeating the attachment in the description.
 type QuickCreateAttachmentForEnv struct {
 	ID          string
 	Filename    string

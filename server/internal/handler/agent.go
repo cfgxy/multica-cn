@@ -653,7 +653,7 @@ type AgentTaskResponse struct {
 	QuickCreatePriority      string                      `json:"quick_create_priority,omitempty"`       // explicit priority selected in quick-create
 	QuickCreateDueDate       string                      `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create
 	QuickCreateAttachmentIDs []string                    `json:"quick_create_attachment_ids,omitempty"` // attachment ids uploaded in the quick-create prompt and bound on issue create
-	QuickCreateAttachments   []QuickCreateAttachmentMeta `json:"quick_create_attachments,omitempty"`    // full rows behind the ids above — filenames + durable markdown URLs so the create-run can inline images into the description (RUYI-478)
+	QuickCreateAttachments   []QuickCreateAttachmentMeta `json:"quick_create_attachments,omitempty"`    // full rows behind the ids above; filenames and content types provide context without repeating attachments in the description
 	QuickCreateSourceContext json.RawMessage             `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
 	QuizPrompt               string                      `json:"quiz_prompt,omitempty"`                 // item under test for prompt-quiz measurement runs; the run's entire assignment
 	RetrospectivePrompt      string                      `json:"retrospective_prompt,omitempty"`        // daily-retrospective window prompt (RUYI-552 direction 3); the run's entire assignment — read issues, submit drafts, create nothing
@@ -896,14 +896,12 @@ type ChatAttachmentMeta struct {
 	ContentType string `json:"content_type,omitempty"`
 }
 
-// QuickCreateAttachmentMeta is the full attachment row behind a
-// quick-create context's attachment id (RUYI-478). MarkdownURL follows the
-// same buildMarkdownURL contract as the attachment API responses — durable,
-// persistable, no TTL — because quick-create runs cannot call
-// `multica attachment download` (only `issue create` is permitted there):
-// inlining this URL into the new issue's description is the only way a
-// pasted image reaches the body. The mirror struct on the daemon side lives
-// in internal/daemon/types.go and uses the same JSON field names.
+// QuickCreateAttachmentMeta is the attachment row behind a quick-create
+// context's attachment id. MarkdownURL follows the same durable URL contract
+// as attachment API responses; the create-run uses filename and content type
+// as context while the attachment ID is bound during issue creation. The
+// mirror struct on the daemon side lives in internal/daemon/types.go and uses
+// the same JSON field names.
 type QuickCreateAttachmentMeta struct {
 	ID          string `json:"id"`
 	Filename    string `json:"filename"`

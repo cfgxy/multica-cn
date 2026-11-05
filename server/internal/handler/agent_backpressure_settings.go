@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -163,6 +164,35 @@ func promQLRuleUUIDs(ids []string) ([]pgtype.UUID, error) {
 		out = append(out, parsed)
 	}
 	return out, nil
+}
+
+func reconcileWorkspacePromQLRuleSelections(ctx context.Context, tx pgx.Tx, qtx *db.Queries, workspaceID pgtype.UUID, settings []byte) error {
+	config, err := decodeWorkspacePromQLConfig(settings)
+	if err != nil {
+		return fmt.Errorf("decode workspace PromQL rules: %w", err)
+	}
+	policies, err := qtx.ListAgentBackpressurePoliciesWithPromQLRules(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("list PromQL selections: %w", err)
+	}
+	selections := promrules.SelectedAgentsByRule(policies)
+	stateChanged := false
+	for i := range config.Rules {
+		if promrules.ReconcileAgentRuleSelection(&config.Rules[i], selections[config.Rules[i].ID]) {
+			stateChanged = true
+		}
+	}
+	if !stateChanged {
+		return nil
+	}
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("encode reconciled PromQL rule state: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "UPDATE workspace SET settings = jsonb_set(settings, '{promql_rules}', $2::jsonb, true), updated_at = now() WHERE id = $1", workspaceID, encoded); err != nil {
+		return fmt.Errorf("save reconciled PromQL rule state: %w", err)
+	}
+	return nil
 }
 
 func selectedPromQLRules(config promrules.Config, agentID pgtype.UUID, selectedIDs []string, pauses []db.AgentPromqlRulePause) []agentPromQLRuleStatus {
@@ -532,31 +562,10 @@ func (h *Handler) PutAgentBackpressurePolicy(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if len(removedRuleIDs) > 0 {
-		policies, err := qtx.ListAgentBackpressurePoliciesWithPromQLRules(ctx, agent.WorkspaceID)
-		if err != nil {
-			slog.Error("load PromQL selections after policy save failed", "agent_id", util.UUIDToString(agent.ID), "error", err)
+		if err := reconcileWorkspacePromQLRuleSelections(ctx, tx, qtx, agent.WorkspaceID, settings); err != nil {
+			slog.Error("reconcile PromQL selection state after policy save failed", "agent_id", util.UUIDToString(agent.ID), "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to save backpressure policy")
 			return
-		}
-		selections := promrules.SelectedAgentsByRule(policies)
-		stateChanged := false
-		for i := range config.Rules {
-			if promrules.ReconcileAgentRuleSelection(&config.Rules[i], selections[config.Rules[i].ID]) {
-				stateChanged = true
-			}
-		}
-		if stateChanged {
-			encoded, err := json.Marshal(config)
-			if err != nil {
-				slog.Error("encode reconciled PromQL rule state failed", "agent_id", util.UUIDToString(agent.ID), "error", err)
-				writeError(w, http.StatusInternalServerError, "failed to save backpressure policy")
-				return
-			}
-			if _, err := tx.Exec(ctx, "UPDATE workspace SET settings = jsonb_set(settings, '{promql_rules}', $2::jsonb, true), updated_at = now() WHERE id = $1", agent.WorkspaceID, encoded); err != nil {
-				slog.Error("save reconciled PromQL rule state failed", "agent_id", util.UUIDToString(agent.ID), "error", err)
-				writeError(w, http.StatusInternalServerError, "failed to save backpressure policy")
-				return
-			}
 		}
 	}
 
@@ -623,8 +632,8 @@ func (h *Handler) DeleteAgentBackpressurePolicy(w http.ResponseWriter, r *http.R
 	defer func() { _ = tx.Rollback(ctx) }()
 	qtx := h.Queries.WithTx(tx)
 
-	var ignoredSettings []byte
-	if err := tx.QueryRow(ctx, "SELECT settings FROM workspace WHERE id = $1 FOR UPDATE", agent.WorkspaceID).Scan(&ignoredSettings); err != nil {
+	var settings []byte
+	if err := tx.QueryRow(ctx, "SELECT settings FROM workspace WHERE id = $1 FOR UPDATE", agent.WorkspaceID).Scan(&settings); err != nil {
 		slog.Error("lock workspace for agent backpressure policy delete failed", "workspace_id", util.UUIDToString(agent.WorkspaceID), "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to remove backpressure policy")
 		return
@@ -660,6 +669,13 @@ func (h *Handler) DeleteAgentBackpressurePolicy(w http.ResponseWriter, r *http.R
 		slog.Error("delete agent backpressure policy failed", "agent_id", util.UUIDToString(agent.ID), "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to remove backpressure policy")
 		return
+	}
+	if prevErr == nil && len(prev.PromqlRuleIds) > 0 {
+		if err := reconcileWorkspacePromQLRuleSelections(ctx, tx, qtx, agent.WorkspaceID, settings); err != nil {
+			slog.Error("reconcile PromQL selection state after policy delete failed", "agent_id", util.UUIDToString(agent.ID), "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to remove backpressure policy")
+			return
+		}
 	}
 	auditEvents := releaseEvents
 	if prevErr == nil {

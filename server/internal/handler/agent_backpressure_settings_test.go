@@ -401,6 +401,30 @@ func TestPutAgentBackpressurePolicy_ValidatesSelectionAndReleasesOnlyRemovedRule
 }
 
 func TestPutAgentBackpressurePolicy_ReselectionRequiresFreshAgentRuleMapping(t *testing.T) {
+	testAgentBackpressurePolicyReselectionRequiresFreshAgentRuleMapping(t, func(t *testing.T, workspaceID, agentID string) {
+		t.Helper()
+		deselectedBody := validBPBody()
+		deselectedBody["promql_rule_ids"] = []string{}
+		if w := agentBackpressurePolicyPut(t, workspaceID, agentID, deselectedBody); w.Code != http.StatusOK {
+			t.Fatalf("deselect firing rule: got %d — %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestDeleteAgentBackpressurePolicy_ReselectionRequiresFreshAgentRuleMapping(t *testing.T) {
+	testAgentBackpressurePolicyReselectionRequiresFreshAgentRuleMapping(t, func(t *testing.T, workspaceID, agentID string) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := newRequestAs(testUserID, http.MethodDelete, "/api/agents/"+agentID+"/backpressure-policy", nil)
+		req.Header.Set("X-Workspace-ID", workspaceID)
+		testHandler.DeleteAgentBackpressurePolicy(w, withURLParam(req, "id", agentID))
+		if w.Code != http.StatusOK {
+			t.Fatalf("delete firing rule policy: got %d — %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func testAgentBackpressurePolicyReselectionRequiresFreshAgentRuleMapping(t *testing.T, removeSelection func(*testing.T, string, string)) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -461,20 +485,30 @@ func TestPutAgentBackpressurePolicy_ReselectionRequiresFreshAgentRuleMapping(t *
 		"created_by":   testUserID,
 	}, "workspace_id = $1 AND agent_id = $2", workspaceID, agentID)
 
-	deselectedBody := validBPBody()
-	deselectedBody["promql_rule_ids"] = []string{}
-	if w := agentBackpressurePolicyPut(t, workspaceID, agentID, deselectedBody); w.Code != http.StatusOK {
-		t.Fatalf("deselect firing rule: got %d — %s", w.Code, w.Body.String())
+	removeSelection(t, workspaceID, agentID)
+
+	var settings []byte
+	if err := testPool.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, workspaceID).Scan(&settings); err != nil {
+		t.Fatalf("read workspace settings after selection removal: %v", err)
+	}
+	config, err := promrules.DecodeSettings(settings)
+	if err != nil {
+		t.Fatalf("decode workspace settings after selection removal: %v", err)
+	}
+	if _, retained := config.Rules[0].AgentStates[agentID]; retained {
+		t.Fatalf("removed agent retained stale mapping: %+v", config.Rules[0].AgentStates)
+	}
+	if !config.Rules[0].AgentStates[retainedAgentID].Firing || !config.Rules[0].State.Firing {
+		t.Fatalf("selection removal did not retain and reaggregate sibling state: %+v", config.Rules[0])
 	}
 	if w := agentBackpressurePolicyPut(t, workspaceID, agentID, selectedBody); w.Code != http.StatusOK {
 		t.Fatalf("reselect firing rule: got %d — %s", w.Code, w.Body.String())
 	}
 
-	var settings []byte
 	if err := testPool.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, workspaceID).Scan(&settings); err != nil {
 		t.Fatalf("read reconciled workspace settings: %v", err)
 	}
-	config, err := promrules.DecodeSettings(settings)
+	config, err = promrules.DecodeSettings(settings)
 	if err != nil {
 		t.Fatalf("decode reconciled workspace settings: %v", err)
 	}
