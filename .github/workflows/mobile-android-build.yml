@@ -219,11 +219,11 @@ jobs:
           trap 'rm -f "$bundle"' EXIT
           unzip -p "${apk[0]}" assets/index.android.bundle > "$bundle"
 
-          if ! rg --fixed-strings --quiet -- "$expected_url" "$bundle"; then
+          if ! grep -Fq -- "$expected_url" "$bundle"; then
             echo "::error::Release bundle does not contain the selected public API configuration"
             exit 1
           fi
-          if rg --fixed-strings --quiet -- "$alternate_url" "$bundle"; then
+          if grep -Fq -- "$alternate_url" "$bundle"; then
             echo "::error::Release bundle contains the alternate environment public API configuration"
             exit 1
           fi
