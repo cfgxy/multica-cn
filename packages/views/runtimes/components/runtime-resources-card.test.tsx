@@ -10,6 +10,7 @@ import { renderWithI18n } from "../../test/i18n";
 // seam is mocked the way the dashboard panel tests do it: option builders
 // run for real, the captured key decides what the query "returns".
 const queryKeys = vi.hoisted(() => [] as unknown[][]);
+const refetch = vi.hoisted(() => vi.fn());
 const fixturesRef = vi.hoisted(() => ({
   current: {} as Record<string, unknown>,
 }));
@@ -26,6 +27,7 @@ vi.mock("@tanstack/react-query", async () => {
       data?: unknown;
       isPending?: boolean;
       isError?: boolean;
+      isFetching?: boolean;
     }) => {
       queryKeys.push(opts.queryKey);
       // Key shape is ["runtimes", "resources", rid, window] — index 1 is the
@@ -39,7 +41,8 @@ vi.mock("@tanstack/react-query", async () => {
         isError: failed,
         isLoading: false,
         isSuccess: fixture !== undefined && !failed,
-        refetch: vi.fn(),
+        isFetching: false,
+        refetch,
       };
     },
   };
@@ -76,7 +79,7 @@ function series(
   return { labels, points: points.map(([t, v]) => ({ t, v })) };
 }
 
-// Ten keys — the nine panel series plus boot_time_seconds for uptime — all
+// Thirteen keys — the original host series plus CPU capacity/load and PSI — all
 // pinned to the same daemon so the "single host" invariant is visible in the
 // fixture.
 const RESOURCES_FIXTURE = {
@@ -88,8 +91,11 @@ const RESOURCES_FIXTURE = {
   sampled_at: "2026-10-10T00:00:00Z",
   series: {
     cpu_cores: [series({ daemon: "daemon-1" }, [[1000, 1.5], [1060, 3.2]])],
+    cpu_total_cores: [series({ daemon: "daemon-1" }, [[1000, 16], [1060, 16]])],
+    cpu_load_1m: [series({ daemon: "daemon-1" }, [[1000, 0.75], [1060, 1.25]])],
     memory_total_bytes: [series({ daemon: "daemon-1" }, [[1000, 16_000_000_000], [1060, 16_000_000_000]])],
     memory_available_bytes: [series({ daemon: "daemon-1" }, [[1000, 12_000_000_000], [1060, 8_000_000_000]])],
+    psi_memory_some_pct: [series({ daemon: "daemon-1" }, [[1000, 2], [1060, 12.5]])],
     swap_total_bytes: [series({ daemon: "daemon-1" }, [[1000, 4_000_000_000], [1060, 4_000_000_000]])],
     swap_free_bytes: [series({ daemon: "daemon-1" }, [[1000, 3_000_000_000], [1060, 1_000_000_000]])],
     filesystem_size_bytes: [series({ daemon: "daemon-1" }, [[1000, 500_000_000_000], [1060, 500_000_000_000]])],
@@ -102,6 +108,7 @@ const RESOURCES_FIXTURE = {
 
 beforeEach(() => {
   queryKeys.length = 0;
+  refetch.mockReset();
   fixturesRef.current = {};
 });
 
@@ -132,6 +139,7 @@ describe("RuntimeResourcesCard", () => {
         "This runtime binds no local daemon host, so there are no host resources to show.",
       ),
     ).toBeInTheDocument();
+    expect(screen.queryByText("Live")).toBeNull();
   });
 
   // Named P1 regression (RUYI-859 cross state): the server's no-daemon
@@ -168,11 +176,11 @@ describe("RuntimeResourcesCard", () => {
     expect(screen.getByText("No samples yet")).toBeInTheDocument();
   });
 
-  it("shows a retry-able error state when the proxy query fails", () => {
+  it("shows an error state when the proxy query fails", () => {
     fixturesRef.current["resources"] = "error";
     renderWithI18n(<RuntimeResourcesCard runtime={makeRuntime()} />);
     expect(screen.getByText("Failed to read host resources.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
   });
 
   it("renders current values and trend tiles from the narrowed series", () => {
@@ -181,6 +189,13 @@ describe("RuntimeResourcesCard", () => {
     // The card carries the daemon host identity in its own header — the
     // reader sees which machine these readings belong to.
     expect(screen.getByText("daemon-1")).toBeInTheDocument();
+    expect(screen.getByText("CPU usage")).toBeInTheDocument();
+    expect(screen.getByText("CPU load")).toBeInTheDocument();
+    expect(screen.getByText("Memory pressure (PSI)")).toBeInTheDocument();
+    expect(screen.getByText("Live")).toBeInTheDocument();
+    expect(screen.getByText("20.0% · 3.2 / 16.0 cores")).toBeInTheDocument();
+    expect(screen.getByText("1.25 (1m)")).toBeInTheDocument();
+    expect(screen.getByText("12.5%")).toBeInTheDocument();
     // Freshness: the newest sample timestamp is surfaced as "how old is this
     // reading", not hidden.
     expect(screen.getAllByText(/ago/).length).toBeGreaterThan(0);
@@ -197,5 +212,26 @@ describe("RuntimeResourcesCard", () => {
     await user.click(screen.getByRole("button", { name: "7d" }));
     const key = queryKeys.findLast((k) => k?.[1] === "resources");
     expect(key).toEqual(["runtimes", "resources", "rt-1", "7d"]);
+  });
+
+  it("marks an absent PSI series as unavailable rather than zero pressure", () => {
+    fixturesRef.current["resources"] = {
+      ...RESOURCES_FIXTURE,
+      series: { ...RESOURCES_FIXTURE.series, psi_memory_some_pct: [] },
+    };
+    renderWithI18n(<RuntimeResourcesCard runtime={makeRuntime()} />);
+    expect(screen.getByText("Not available")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["healthy", RESOURCES_FIXTURE],
+    ["no-samples", { configured: true, has_daemon: true, series: {} }],
+    ["error", "error"],
+  ])("offers a manual refresh in the %s state", async (_name, fixture) => {
+    const user = userEvent.setup();
+    fixturesRef.current["resources"] = fixture;
+    renderWithI18n(<RuntimeResourcesCard runtime={makeRuntime()} />);
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(refetch).toHaveBeenCalledOnce();
   });
 });
