@@ -48,7 +48,13 @@
     "delete_description": "この操作は取り消せません。",
     "delete_bound_description": "エージェントは保持されますがバインド解除され、実行中・待機中のタスクはキャンセルされます。",
     "delete_failed": "ランタイムが変更されたか削除できません。更新して現在のバインドを確認してください。",
-    "deleting": "削除中…"
+    "deleting": "削除中…",
+    "remove_title": "「{{name}}」を管理リストから外しますか？",
+    "remove_description": "「{{name}}」はランタイム一覧に表示されなくなります。エージェント、タスク、自動化、ランタイムプロセスは変更されません。",
+    "remove_confirm": "リストから外す",
+    "remove_button": "管理リストから外す",
+    "removing": "削除中…",
+    "remove_failed": "ランタイムを管理リストから外せませんでした。もう一度お試しください。"
   },
   "mika_setup": {
     "title": "ランタイムの準備ができました。Mika と始めましょう。",
@@ -177,6 +183,7 @@
     "all_runtimes": "すべてのランタイム",
     "read_only": "読み取り専用",
     "delete_button": "ランタイムを削除",
+    "remove_from_list_button": "管理リストから外す",
     "last_seen": "最終確認 {{when}}",
     "never_seen": "未接続",
     "backpressure_hint": "ホストメモリのバックプレッシャー（{{reason}}）：空きメモリ {{mem}}%、スワップ使用 {{swap}}%。ホストが回復するまで新しいタスクの取得は一時停止中（これまでに {{count}} 回の取得を延期）。",
@@ -255,6 +262,15 @@
         }
       }
     },
+    "remove_from_list_dialog": {
+      "title": "「{{name}}」を管理リストから外しますか？",
+      "description": "「{{name}}」はランタイム一覧に表示されなくなります。エージェント、タスク、自動化、ランタイムプロセスは変更されません。",
+      "cancel": "キャンセル",
+      "confirm": "リストから外す",
+      "submitting": "削除中…",
+      "error": "ランタイムを管理リストから外せませんでした"
+    },
+    "toast_removed_from_list": "ランタイムを管理リストから外しました",
     "toast_deleted": "ランタイムを削除しました",
     "toast_delete_failed": "ランタイムを削除できませんでした",
     "running_chip_other": "· 実行中 {{count}} 件",

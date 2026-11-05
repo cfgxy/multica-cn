@@ -27,6 +27,7 @@ import {
   type RendererRecoveryWindow,
 } from "./renderer-recovery";
 import { createBestEffortDevLog } from "./dev-log";
+import { configureDesktopQaIsolation } from "./qa-isolation";
 import {
   writeFreezeBreadcrumb,
   readFreezeBreadcrumb,
@@ -557,13 +558,15 @@ if (is.dev) {
   app.setName(DEV_APP_NAME);
   app.setPath("userData", join(app.getPath("appData"), DEV_APP_NAME));
 } else {
+  const qaIsolation = configureDesktopQaIsolation(app);
+
   // Pin the production app name in code. Electron's Linux WM_CLASS is set
   // from app.getName() when the first BrowserWindow is realized; the
   // packaged ASAR's package.json `productName` already steers app.getName()
   // to "Multica", but anchoring it here makes WM_CLASS ↔ StartupWMClass
   // (declared in electron-builder.yml) survive a regression in
   // productName / the build pipeline. Must run before requestSingleInstanceLock().
-  app.setName("Multica");
+  if (!qaIsolation) app.setName("Multica");
 }
 
 // --- Protocol registration -----------------------------------------------

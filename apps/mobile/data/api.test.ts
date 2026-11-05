@@ -140,6 +140,28 @@ describe("ApiClient.listAgents", () => {
   });
 });
 
+describe("ApiClient.removeRuntimeFromList", () => {
+  afterEach(() => {
+    api.setToken(null);
+    getCurrentSlug.mockReturnValue(null);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("posts to the management-list removal endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(api.removeRuntimeFromList("runtime-1")).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.test/api/runtimes/runtime-1/remove-from-list",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+});
+
 describe("ApiClient.listTimeline", () => {
   afterEach(() => {
     api.setToken(null);

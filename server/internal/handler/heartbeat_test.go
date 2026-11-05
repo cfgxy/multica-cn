@@ -145,6 +145,41 @@ func TestRecordHeartbeat_NoopStoreAlwaysWritesDB(t *testing.T) {
 	}
 }
 
+func TestRecordHeartbeat_PreservesRuntimeRemovedFromList(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE agent_runtime SET removed_at = now() WHERE id = $1`, runtimeID,
+	); err != nil {
+		t.Fatalf("mark runtime removed: %v", err)
+	}
+	var before time.Time
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT removed_at FROM agent_runtime WHERE id = $1`, runtimeID,
+	).Scan(&before); err != nil {
+		t.Fatalf("read removal state: %v", err)
+	}
+
+	orig := testHandler.LivenessStore
+	testHandler.LivenessStore = NewNoopLivenessStore()
+	t.Cleanup(func() { testHandler.LivenessStore = orig })
+	if err := testHandler.recordHeartbeat(context.Background(), loadRuntime(t, runtimeID)); err != nil {
+		t.Fatalf("recordHeartbeat: %v", err)
+	}
+
+	var after time.Time
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT removed_at FROM agent_runtime WHERE id = $1`, runtimeID,
+	).Scan(&after); err != nil {
+		t.Fatalf("read removal state after heartbeat: %v", err)
+	}
+	if !after.Equal(before) {
+		t.Fatalf("heartbeat changed removed_at: before=%s after=%s", before, after)
+	}
+}
+
 // TestRecordHeartbeat_RedisAvailableSkipsDBWithinFlushWindow confirms the hot
 // path: when Redis is the source of truth and the row is fresh, the heartbeat
 // touches Redis but does NOT rewrite the DB row.
