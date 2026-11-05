@@ -15,7 +15,7 @@
  * the whole usable width on a phone. The browser body itself is one
  * component, not three.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import {
@@ -70,6 +70,7 @@ export function MobileDecisionCardBrowser({
   initialCardId,
 }: MobileDecisionCardBrowserProps) {
   const { t } = useT("issues");
+  const scrollRef = useRef<ScrollView>(null);
   const [filter, setFilter] = useState<DecisionCardFilter>(initialFilter);
   const [cardId, setCardId] = useState(() =>
     initialDecisionBrowserCardId(decisions, initialFilter, initialCardId),
@@ -92,6 +93,10 @@ export function MobileDecisionCardBrowser({
     ? filtered.findIndex((d) => d.id === resolvedId)
     : -1;
   const current = currentIndex >= 0 ? filtered[currentIndex] : undefined;
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  }, [filter, resolvedId]);
 
   return (
     <View className="flex-1 bg-background" testID="decision-card-browser">
@@ -151,6 +156,7 @@ export function MobileDecisionCardBrowser({
 
       {current ? (
         <ScrollView
+          ref={scrollRef}
           contentContainerClassName="gap-3 py-3"
           contentContainerStyle={{ flexGrow: 1 }}
           keyboardShouldPersistTaps="handled"
