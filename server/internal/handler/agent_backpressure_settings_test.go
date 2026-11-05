@@ -19,8 +19,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/multica-ai/multica/server/internal/promquery"
+	"github.com/multica-ai/multica/server/internal/promrules"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -91,6 +95,18 @@ func agentBackpressurePolicyPut(t *testing.T, workspaceID, agentID string, body 
 	req.Header.Set("X-Workspace-ID", workspaceID)
 	testHandler.PutAgentBackpressurePolicy(w, withURLParam(req, "id", agentID))
 	return w
+}
+
+type workspacePromQLQuerier struct {
+	workspaceID string
+	series      []promquery.Series
+}
+
+func (q workspacePromQLQuerier) QueryInstant(_ context.Context, query string, _ time.Time) ([]promquery.Series, error) {
+	if strings.Contains(query, `workspace_id="`+q.workspaceID+`"`) {
+		return q.series, nil
+	}
+	return nil, nil
 }
 
 func TestGetAgentBackpressurePolicy_DefaultsWhenUnconfigured(t *testing.T) {
@@ -381,6 +397,136 @@ func TestPutAgentBackpressurePolicy_ValidatesSelectionAndReleasesOnlyRemovedRule
 	}
 	if deletionClearEvents != 1 {
 		t.Fatalf("policy deletion history = %d, want 1", deletionClearEvents)
+	}
+}
+
+func TestPutAgentBackpressurePolicy_ReselectionRequiresFreshAgentRuleMapping(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	workspaceID, agentID := backpressurePromQLFixture(t)
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read fixture runtime: %v", err)
+	}
+	retainedAgentID := dbfx.Agent(t, "Agent PromQL policy retained agent", runtimeID, testutil.Cols{
+		"workspace_id": workspaceID,
+		"owner_id":     testUserID,
+		"visibility":   "workspace",
+	})
+
+	rule := validWorkspacePromQLRule()
+	rule["grouping"] = "agent"
+	rule["for_seconds"] = 0
+	ruleID := rule["id"].(string)
+	lastEvaluatedAt := time.Now().UTC()
+	rule["state"] = map[string]any{
+		"firing":            true,
+		"last_evaluated_at": lastEvaluatedAt.Format(time.RFC3339Nano),
+	}
+	rule["agent_states"] = map[string]any{
+		agentID: map[string]any{
+			"firing":            true,
+			"last_evaluated_at": lastEvaluatedAt.Format(time.RFC3339Nano),
+		},
+		retainedAgentID: map[string]any{
+			"firing":            true,
+			"last_evaluated_at": lastEvaluatedAt.Format(time.RFC3339Nano),
+		},
+	}
+	storeWorkspacePromQLRules(t, workspaceID, []map[string]any{rule})
+
+	selectedBody := validBPBody()
+	selectedBody["promql_rule_ids"] = []string{ruleID}
+	if w := agentBackpressurePolicyPut(t, workspaceID, agentID, selectedBody); w.Code != http.StatusOK {
+		t.Fatalf("select firing rule: got %d — %s", w.Code, w.Body.String())
+	}
+	if w := agentBackpressurePolicyPut(t, workspaceID, retainedAgentID, selectedBody); w.Code != http.StatusOK {
+		t.Fatalf("select retained firing rule: got %d — %s", w.Code, w.Body.String())
+	}
+	for _, id := range []string{agentID, retainedAgentID} {
+		dbfx.InsertNoID(t, "agent_promql_rule_pause", testutil.Cols{
+			"workspace_id": workspaceID,
+			"agent_id":     id,
+			"rule_id":      ruleID,
+			"rule_name":    "test rule",
+			"reason":       "rule_firing",
+		}, "workspace_id = $1 AND agent_id = $2 AND rule_id = $3", workspaceID, id, ruleID)
+	}
+	dbfx.InsertNoID(t, "scheduling_pause", testutil.Cols{
+		"workspace_id": workspaceID,
+		"agent_id":     agentID,
+		"reason":       "manual incident hold",
+		"created_by":   testUserID,
+	}, "workspace_id = $1 AND agent_id = $2", workspaceID, agentID)
+
+	deselectedBody := validBPBody()
+	deselectedBody["promql_rule_ids"] = []string{}
+	if w := agentBackpressurePolicyPut(t, workspaceID, agentID, deselectedBody); w.Code != http.StatusOK {
+		t.Fatalf("deselect firing rule: got %d — %s", w.Code, w.Body.String())
+	}
+	if w := agentBackpressurePolicyPut(t, workspaceID, agentID, selectedBody); w.Code != http.StatusOK {
+		t.Fatalf("reselect firing rule: got %d — %s", w.Code, w.Body.String())
+	}
+
+	var settings []byte
+	if err := testPool.QueryRow(ctx, `SELECT settings FROM workspace WHERE id = $1`, workspaceID).Scan(&settings); err != nil {
+		t.Fatalf("read reconciled workspace settings: %v", err)
+	}
+	config, err := promrules.DecodeSettings(settings)
+	if err != nil {
+		t.Fatalf("decode reconciled workspace settings: %v", err)
+	}
+	if len(config.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(config.Rules))
+	}
+	stored := config.Rules[0]
+	if _, retained := stored.AgentStates[agentID]; retained {
+		t.Fatalf("reselected agent retained stale mapping: %+v", stored.AgentStates)
+	}
+	if !stored.AgentStates[retainedAgentID].Firing || !stored.State.Firing {
+		t.Fatalf("selected sibling state was not retained and reaggregated: %+v", stored)
+	}
+
+	countPauses := func() (agent, retained, manual int) {
+		t.Helper()
+		if err := testPool.QueryRow(ctx, `
+			SELECT
+				(SELECT count(*) FROM agent_promql_rule_pause WHERE workspace_id = $1 AND agent_id = $2 AND rule_id = $4),
+				(SELECT count(*) FROM agent_promql_rule_pause WHERE workspace_id = $1 AND agent_id = $3 AND rule_id = $4),
+				(SELECT count(*) FROM scheduling_pause WHERE workspace_id = $1 AND agent_id = $2 AND created_by IS NOT NULL)
+		`, workspaceID, agentID, retainedAgentID, ruleID).Scan(&agent, &retained, &manual); err != nil {
+			t.Fatalf("count pauses: %v", err)
+		}
+		return agent, retained, manual
+	}
+	if agentPauses, retainedPauses, manualPauses := countPauses(); agentPauses != 0 || retainedPauses != 1 || manualPauses != 1 {
+		t.Fatalf("sources after reselect = agent:%d retained:%d manual:%d; want 0:1:1", agentPauses, retainedPauses, manualPauses)
+	}
+
+	querier := workspacePromQLQuerier{workspaceID: workspaceID, series: []promquery.Series{
+		{Labels: map[string]string{"agent_id": agentID}, Points: []promquery.Point{{Value: 10}}},
+		{Labels: map[string]string{"agent_id": retainedAgentID}, Points: []promquery.Point{{Value: 10}}},
+	}}
+	worker := promrules.NewWorker(testPool, querier)
+	worker.EvaluateDue(ctx)
+	if agentPauses, retainedPauses, manualPauses := countPauses(); agentPauses != 0 || retainedPauses != 1 || manualPauses != 1 {
+		t.Fatalf("non-due tick recreated a stale source: agent:%d retained:%d manual:%d; want 0:1:1", agentPauses, retainedPauses, manualPauses)
+	}
+
+	config.Rules[0].State.LastEvaluatedAt = func() *time.Time {
+		past := time.Now().UTC().Add(-time.Minute)
+		return &past
+	}()
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("encode due config: %v", err)
+	}
+	dbfx.Exec(t, `UPDATE workspace SET settings = jsonb_set(settings, '{promql_rules}', $2::jsonb, true) WHERE id = $1`, workspaceID, string(encoded))
+	worker.EvaluateDue(ctx)
+	if agentPauses, retainedPauses, manualPauses := countPauses(); agentPauses != 1 || retainedPauses != 1 || manualPauses != 1 {
+		t.Fatalf("fresh sample did not restore only source-owned pause: agent:%d retained:%d manual:%d; want 1:1:1", agentPauses, retainedPauses, manualPauses)
 	}
 }
 

@@ -152,14 +152,14 @@ func (w *Worker) evaluateWorkspace(ctx context.Context, item workspaceSettings) 
 	if err != nil {
 		return fmt.Errorf("list selected PromQL policies: %w", err)
 	}
-	selections := selectedAgentsByRule(policies)
+	selections := SelectedAgentsByRule(policies)
 
 	updated := false
 	events := make([]service.Event, 0)
 	changedAgents := make(map[string]pgtype.UUID)
 	now := time.Now().UTC()
 	for i := range current.Rules {
-		if reconcileAgentRuleSelection(&current.Rules[i], selections[current.Rules[i].ID]) {
+		if ReconcileAgentRuleSelection(&current.Rules[i], selections[current.Rules[i].ID]) {
 			updated = true
 		}
 	}
@@ -305,7 +305,9 @@ func samplesFromSeries(series []promquery.Series) []Sample {
 	return samples
 }
 
-func selectedAgentsByRule(policies []db.AgentBackpressurePolicy) map[string]map[string]pgtype.UUID {
+// SelectedAgentsByRule maps each rule to the currently eligible agents whose
+// policies select it.
+func SelectedAgentsByRule(policies []db.AgentBackpressurePolicy) map[string]map[string]pgtype.UUID {
 	selected := make(map[string]map[string]pgtype.UUID)
 	for _, policy := range policies {
 		for _, ruleID := range policy.PromqlRuleIds {
@@ -400,7 +402,9 @@ func verifiedAgentSamples(samples []Sample, selected map[string]pgtype.UUID) map
 	return mapped
 }
 
-func reconcileAgentRuleSelection(rule *Rule, selected map[string]pgtype.UUID) bool {
+// ReconcileAgentRuleSelection drops state for deselected agents and rebuilds
+// aggregate state from the surviving verified mappings.
+func ReconcileAgentRuleSelection(rule *Rule, selected map[string]pgtype.UUID) bool {
 	if rule.Grouping != GroupAgent || len(rule.AgentStates) == 0 {
 		return false
 	}
