@@ -4,6 +4,7 @@ import { FAILURE_CLASSES } from "@multica/core/dashboard";
 import {
   FAILURE_CLASS_OPACITY,
   formatCompactNumber,
+  formatModelCallKpiValue,
   formatRatePercent,
   formatUsd,
 } from "./stats-format";
@@ -37,6 +38,17 @@ describe("formatCompactNumber（web CompactNumberFlow 镜像）", () => {
 
   it("999,999 进位到 M（web 的 1000× 阶梯上浮逻辑）", () => {
     expect(formatCompactNumber(999_999)).toBe("1M");
+  });
+});
+
+describe("formatModelCallKpiValue", () => {
+  it("marks unreported calls as partial, including a zero known subtotal", () => {
+    expect(formatModelCallKpiValue(0, 1)).toBe("0 + ?");
+    expect(formatModelCallKpiValue(1_234, 2)).toBe("1.2K + ?");
+  });
+
+  it("shows an exact compact value only when every call is known", () => {
+    expect(formatModelCallKpiValue(1_234, 0)).toBe("1.2K");
   });
 });
 

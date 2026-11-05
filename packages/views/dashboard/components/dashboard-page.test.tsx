@@ -575,7 +575,7 @@ describe("DashboardPage — known and unknown model calls", () => {
     cleanup();
   });
 
-  it("shows zero known calls and the unreported count without folding them together", () => {
+  it("marks a zero known total as partial when calls are unreported", () => {
     modelCallsRef.unknown = 2;
     renderDashboard();
 
@@ -583,14 +583,15 @@ describe("DashboardPage — known and unknown model calls", () => {
     const card = label.parentElement as HTMLElement;
     expect(card.querySelector("number-flow-react")).toHaveAttribute(
       "aria-label",
-      "0",
+      "0 + ?",
     );
+    expect(card).toHaveTextContent("0 + ?");
     expect(card).toHaveTextContent(
       "2 usage rows have an unknown model call count; excluded from the known total.",
     );
   });
 
-  it("shows known calls separately when both known and unknown counts are nonzero", () => {
+  it("marks a nonzero known subtotal as partial when calls are unreported", () => {
     modelCallsRef.known = 4;
     modelCallsRef.unknown = 3;
     renderDashboard();
@@ -599,8 +600,9 @@ describe("DashboardPage — known and unknown model calls", () => {
     const card = label.parentElement as HTMLElement;
     expect(card.querySelector("number-flow-react")).toHaveAttribute(
       "aria-label",
-      "4",
+      "4 + ?",
     );
+    expect(card).toHaveTextContent("4 + ?");
     expect(card).toHaveTextContent(
       "3 usage rows have an unknown model call count; excluded from the known total.",
     );
@@ -612,6 +614,7 @@ describe("DashboardPage — known and unknown model calls", () => {
 
     const card = screen.getByText("Model calls · 30D").parentElement as HTMLElement;
     expect(card).toHaveTextContent("4");
+    expect(card).not.toHaveTextContent("+ ?");
     expect(card).not.toHaveTextContent("unreported");
   });
 });

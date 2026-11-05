@@ -99,6 +99,7 @@ import { cn } from "@/lib/utils";
 import {
   FAILURE_CLASS_OPACITY,
   formatCompactNumber,
+  formatModelCallKpiValue,
   formatRatePercent,
   formatUsd,
 } from "@/lib/stats-format";
@@ -811,7 +812,10 @@ function UsagePane(props: UsagePaneProps) {
         <View className="mt-3 flex-row gap-3">
           <KpiCard
             label={t("kpi.calls_label", "Calls · {{days}}D", { days: props.windowLen })}
-            value={formatCompactNumber(props.totals.modelCallCount)}
+            value={formatModelCallKpiValue(
+              props.totals.modelCallCount,
+              props.totals.modelCallUnknownCount,
+            )}
             hint={
               props.totals.modelCallUnknownCount > 0
                 ? t("kpi.calls_unknown_hint", "{{unknown}} rows unreported", {
