@@ -293,11 +293,20 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
         <KpiCard
           label={t(($) => $.usage.kpi_calls_label, { days })}
           value={
-            <CompactNumberFlow
-              value={totals.modelCallCount}
-              locales={locales}
-              aria-label={String(totals.modelCallCount)}
-            />
+            <span className="inline-flex items-baseline">
+              <CompactNumberFlow
+                value={totals.modelCallCount}
+                locales={locales}
+                aria-label={
+                  totals.modelCallUnknownCount > 0
+                    ? `${totals.modelCallCount} + ?`
+                    : String(totals.modelCallCount)
+                }
+              />
+              {totals.modelCallUnknownCount > 0 ? (
+                <span aria-hidden="true"> + ?</span>
+              ) : null}
+            </span>
           }
           hint={
             totals.modelCallUnknownCount > 0

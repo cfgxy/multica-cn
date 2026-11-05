@@ -195,7 +195,7 @@ describe("UsageSection — Viewing timezone wiring", () => {
     expect(flows.at(-2)).toHaveAttribute("aria-label", "1K");
   });
 
-  it("keeps unknown calls visible instead of presenting them as a known zero", () => {
+  it("marks a zero known total as partial when calls are unreported", () => {
     usageOverride.rows = [
       {
         runtime_id: "r-1",
@@ -217,14 +217,15 @@ describe("UsageSection — Viewing timezone wiring", () => {
     const card = label.parentElement as HTMLElement;
     expect(card.querySelector("number-flow-react")).toHaveAttribute(
       "aria-label",
-      "0",
+      "0 + ?",
     );
+    expect(card).toHaveTextContent("0 + ?");
     expect(card).toHaveTextContent(
       "2 usage rows have an unknown model call count; excluded from the known total.",
     );
   });
 
-  it("shows known calls and the unknown count as separate values", () => {
+  it("marks a nonzero known subtotal as partial when calls are unreported", () => {
     usageOverride.rows = [
       {
         runtime_id: "r-1",
@@ -245,8 +246,9 @@ describe("UsageSection — Viewing timezone wiring", () => {
     const card = screen.getByText("Model calls · 30D").parentElement as HTMLElement;
     expect(card.querySelector("number-flow-react")).toHaveAttribute(
       "aria-label",
-      "5",
+      "5 + ?",
     );
+    expect(card).toHaveTextContent("5 + ?");
     expect(card).toHaveTextContent(
       "3 usage rows have an unknown model call count; excluded from the known total.",
     );
@@ -275,6 +277,7 @@ describe("UsageSection — Viewing timezone wiring", () => {
       "aria-label",
       "5",
     );
+    expect(card).not.toHaveTextContent("+ ?");
     expect(card).not.toHaveTextContent("unknown model call count");
   });
 });

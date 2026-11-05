@@ -768,11 +768,20 @@ export function DashboardPage() {
                       <KpiCard
                         label={t(($) => $.kpi.calls_label, { days: windowLen })}
                         value={
-                          <CompactNumberFlow
-                            value={totals.modelCallCount}
-                            locales={locales}
-                            aria-label={String(totals.modelCallCount)}
-                          />
+                          <span className="inline-flex items-baseline">
+                            <CompactNumberFlow
+                              value={totals.modelCallCount}
+                              locales={locales}
+                              aria-label={
+                                totals.modelCallUnknownCount > 0
+                                  ? `${totals.modelCallCount} + ?`
+                                  : String(totals.modelCallCount)
+                              }
+                            />
+                            {totals.modelCallUnknownCount > 0 ? (
+                              <span aria-hidden="true"> + ?</span>
+                            ) : null}
+                          </span>
                         }
                         hint={
                           totals.modelCallUnknownCount > 0
