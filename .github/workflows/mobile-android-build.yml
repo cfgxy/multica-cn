@@ -191,7 +191,7 @@ jobs:
           # export:embed 与 expo export 同路径）。本 app 只有一个 DOM 组件，
           # 分包没有收益，官方逃生口 EXPO_NO_BUNDLE_SPLITTING=1 直接绕开。
           EXPO_NO_BUNDLE_SPLITTING: "1"
-        run: pnpm exec dotenv -e .env.${{ env.APP_ENV }} -- ./android/gradlew assembleRelease --build-cache --parallel --no-daemon
+        run: pnpm exec dotenv -e .env.${{ env.APP_ENV }} -- ./android/gradlew -p android assembleRelease --build-cache --parallel --no-daemon
 
       - name: Verify bundled public API environment
         working-directory: apps/mobile
