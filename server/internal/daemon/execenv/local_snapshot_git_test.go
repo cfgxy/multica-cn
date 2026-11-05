@@ -27,7 +27,7 @@ func TestCaptureSnapshotGitArtifactImportsIntoIndependentClone(t *testing.T) {
 	}
 
 	artifactDir := t.TempDir()
-	if err := CaptureSnapshotGitArtifact(repo, &SnapshotGitArtifactSpec{ArtifactDir: artifactDir, Baseline: baseline, EnvRoot: t.TempDir()}); err != nil {
+	if err := CaptureSnapshotGitArtifact(repo, &SnapshotGitArtifactSpec{ArtifactDir: artifactDir, Baseline: baseline, EnvRoot: t.TempDir()}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(artifactDir, "manifest.json")); err != nil {
