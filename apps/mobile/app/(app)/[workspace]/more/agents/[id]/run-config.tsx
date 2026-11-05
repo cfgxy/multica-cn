@@ -270,9 +270,20 @@ export default function AgentRunConfig() {
   const voiceAdvancedInvalid =
     voiceProviderId !== "none" &&
     parseVoiceAdvancedDraft(voiceAdvanced) === "invalid";
+  const concurrencyInvalid =
+    parseBounded(
+      concurrency,
+      AGENT_MAX_CONCURRENT_TASKS_MIN,
+      AGENT_MAX_CONCURRENT_TASKS_MAX,
+      AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
+    ) === null;
 
   const canSave =
-    !!patch && dirty && !voiceAdvancedInvalid && !update.isPending;
+    !!patch &&
+    dirty &&
+    !voiceAdvancedInvalid &&
+    !concurrencyInvalid &&
+    !update.isPending;
 
   const onSave = () => {
     if (!canSave || !patch) return;
