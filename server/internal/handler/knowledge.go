@@ -1113,10 +1113,18 @@ VALUES ($1, $2, $3, 'noop', $4, $5) RETURNING id`,
 		return fail(err)
 	}
 	known.Close()
+	recordSourceRestored := func(entryID pgtype.UUID) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref)
+	SELECT workspace_id, id, lifecycle_state, lifecycle_state, 'source_restored', 'source reappeared during scan', $2
+	FROM knowledge_entry WHERE id = $1`, entryID, "knowledge_scan_batch:"+uuidToString(batchID))
+		return err
+	}
 
 	for key, content := range memories {
 		sha := knowledgeContentSHA(content)
 		if prior, ok := existing[key]; ok {
+			restored := prior.mirror == "source_deleted"
 			if prior.sha == sha {
 				if _, err := tx.Exec(ctx,
 					`UPDATE knowledge_entry
@@ -1124,11 +1132,8 @@ SET mirror_state = 'synced', missing_confirmation = 0, last_confirmed_at = now()
 	WHERE id = $1`, prior.id); err != nil {
 					return fail(err)
 				}
-				if prior.mirror == "source_deleted" {
-					if _, err := tx.Exec(ctx, `
-						INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref)
-	SELECT workspace_id, id, lifecycle_state, lifecycle_state, 'source_restored', 'source reappeared during scan', $2
-	FROM knowledge_entry WHERE id = $1`, prior.id, "knowledge_scan_batch:"+uuidToString(batchID)); err != nil {
+				if restored {
+					if err := recordSourceRestored(prior.id); err != nil {
 						return fail(err)
 					}
 				}
@@ -1145,6 +1150,11 @@ INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, c
 VALUES ($1, $2, $3, $4, $5, 'scan', $6)`,
 				workspaceID, prior.id, prior.version+1, content, sha, batchID); err != nil {
 				return fail(err)
+			}
+			if restored {
+				if err := recordSourceRestored(prior.id); err != nil {
+					return fail(err)
+				}
 			}
 			batch.Updated++
 			continue

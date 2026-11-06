@@ -511,6 +511,39 @@ func TestDaemonKnowledgeUnchangedRefresh(t *testing.T) {
 	}
 }
 
+// TestDaemonKnowledgeSourceDeletedReappearance 验证 source_deleted key 即使
+// 内容仍与镜像 SHA 一致且未排队手动扫描，重新出现时也会被上报以供恢复。
+func TestDaemonKnowledgeSourceDeletedReappearance(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".beads"), 0o755); err != nil {
+		t.Fatalf("seed .beads: %v", err)
+	}
+	fakeKnowledgeBdReplace(t, source, map[string]string{"tip": "stable"})
+
+	plan := KnowledgePlan{Workspaces: []KnowledgePlanWorkspace{{
+		WorkspaceID: "ws-1",
+		Dirs: []KnowledgePlanDir{{
+			DirID: "dir-1", Kind: "candidate_cli", Path: source, Bound: true,
+			Mirror:        map[string]string{"tip": knowledgeContentSHA("stable")},
+			SourceDeleted: map[string]bool{"tip": true},
+		}},
+	}}}
+	fake := newFakeKnowledgeServer(t, plan)
+	d := newKnowledgeTestDaemon(t, fake)
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("cycle: %v", err)
+	}
+	posted := fake.posted(t)
+	if len(posted) != 1 || len(posted[0].Scans) != 1 {
+		t.Fatalf("恢复扫描上报=%+v，期望一条扫描", posted)
+	}
+	scan := posted[0].Scans[0]
+	if !scan.OK || scan.Unchanged || scan.TriggerSource != "scheduled" || scan.Memories["tip"] != "stable" {
+		t.Fatalf("恢复扫描=%+v，期望 scheduled 全量 source 上报", scan)
+	}
+}
+
 // TestDaemonKnowledgeUltimateDesignation pins §2: a workspace without an
 // active ultimate gets one reported on the daemon-managed stable path, and
 // the path is an initialized bd project after the cycle.
