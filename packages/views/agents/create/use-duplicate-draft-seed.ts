@@ -22,6 +22,7 @@ export function useDuplicateDraftSeed({
   runtimesSettled,
   runtimes,
   currentUserId,
+  currentUserRole,
   fallbackRuntimeId,
   nameSuffix,
   onSeed,
