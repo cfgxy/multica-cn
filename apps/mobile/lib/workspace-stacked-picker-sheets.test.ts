@@ -113,7 +113,6 @@ const SINGLE_LAYER_SHEETS = [
   "issues-filter",
   "tasks-sort",
   "tasks-actor-picker",
-  "decisions-filter",
   "switch-workspace",
   "chat-rename",
   "more/agents/[id]/skills",

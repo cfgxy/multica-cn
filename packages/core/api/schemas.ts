@@ -1257,10 +1257,20 @@ export const DecisionRequestDetailSchema = z.object({
 export const DecisionRequestsListSchema = z.object({
   items: z.array(DecisionRequestSchema),
   counts: z.object({
-    pending: z.number().int(),
-    closed: z.number().int(),
-    executed: z.number().int(),
+    pending: z.number().int().default(0),
+    // RUYI-864 rework: the queue badge (pending), the in-flight-after-
+    // consent bucket (approved), and the history entry's authoritative total
+    // (history) ride the same envelope. .default(0) lets an installed
+    // desktop client survive a backend that predates the fields.
+    approved: z.number().int().default(0),
+    closed: z.number().int().default(0),
+    executed: z.number().int().default(0),
+    history: z.number().int().default(0),
   }),
+  // RUYI-864: the keyset cursor pair — null when the page came back short;
+  // the .default(null) mirrors the decision inbox's cursor tolerance.
+  next_cursor: z.string().nullable().default(null),
+  next_cursor_id: z.string().nullable().default(null),
 });
 
 // Workspace decision inbox (RUYI-494). Mirrors
@@ -1282,6 +1292,12 @@ export const DecisionInboxCountsSchema = z.object({
 export const WorkspaceDecisionInboxSchema = z.object({
   items: z.array(WorkspaceDecisionInboxItemSchema),
   counts: DecisionInboxCountsSchema,
+  // RUYI-864: the keyset cursor pair. The server omits both fields on
+  // short pages and drops them entirely on older responses — the
+  // .default(null) is what lets an installed desktop client survive a
+  // backend that does not send them yet.
+  next_cursor: z.string().nullable().default(null),
+  next_cursor_id: z.string().nullable().default(null),
 });
 
 // Batch answer (RUYI-471). Mirrors handler.BatchAnswerIssueDecisionsResponse:

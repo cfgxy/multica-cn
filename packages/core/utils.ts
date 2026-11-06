@@ -64,6 +64,16 @@ export function isImeComposing(event: {
 }
 
 /**
+ * Limits text to at most `maxLength` Unicode code points without changing
+ * text that already fits. This matches Go's rune counting and avoids
+ * splitting an astral character into an unpaired surrogate.
+ */
+export function truncateToCodePoints(text: string, maxLength: number): string {
+  const codePoints = Array.from(text);
+  return codePoints.length <= maxLength ? text : codePoints.slice(0, maxLength).join("");
+}
+
+/**
  * Truncate `text` to at most `maxLength` code points, appending an ellipsis
  * (`…`, U+2026) when it is longer. Text at or under the limit is returned
  * unchanged.

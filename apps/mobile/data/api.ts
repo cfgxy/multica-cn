@@ -2414,14 +2414,27 @@ class ApiClient {
   // fetch wrapper, shared zod schema, same query-string contract.
   async listWorkspaceDecisionInbox(
     workspaceId: string,
-    params?: { status?: IssueDecision["status"]; limit?: number },
+    params?: {
+      status?: IssueDecision["status"];
+      limit?: number;
+      /** RUYI-864: raw keyword; LIKE wildcards are escaped server-side. */
+      q?: string;
+      /** RUYI-864: keyset cursor pair — the two must travel together. */
+      after_created_at?: string;
+      after_id?: string;
+    },
+    opts?: { signal?: AbortSignal },
   ): Promise<WorkspaceDecisionInbox> {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
     if (params?.limit != null) qs.set("limit", String(params.limit));
+    if (params?.q) qs.set("q", params.q);
+    if (params?.after_created_at) qs.set("after_created_at", params.after_created_at);
+    if (params?.after_id) qs.set("after_id", params.after_id);
     const query = qs.size > 0 ? `?${qs.toString()}` : "";
     const raw = await this.fetch<unknown>(
       `/api/workspaces/${workspaceId}/decision-inbox${query}`,
+      { signal: opts?.signal },
     );
     const inbox = parseWithFallback(raw, WorkspaceDecisionInboxSchema, null, {
       endpoint: "GET /api/workspaces/:id/decision-inbox",
@@ -2510,13 +2523,32 @@ class ApiClient {
   // wrapper, shared zod schemas, same endpoints and query-string contract.
   async listDecisionRequests(
     workspaceId: string,
-    params?: { limit?: number },
+    params?: {
+      limit?: number;
+      /** RUYI-864: one real lifecycle status or the `history` terminal
+       *  window (every non-pending row — the set the counts' `history`
+       *  total badges; never a folded pseudo-state of the queue). */
+      status?: string;
+      /** RUYI-864: scan direction — 'asc' is the oldest-first pending queue,
+       *  'desc' the newest-first history surface. */
+      order?: "asc" | "desc";
+      /** RUYI-864 rework: keyset cursor pair (both together or neither —
+       *  the server rejects a lone half with 400). */
+      after_created_at?: string;
+      after_id?: string;
+    },
+    opts?: { signal?: AbortSignal },
   ): Promise<DecisionRequestsList> {
     const qs = new URLSearchParams();
     if (params?.limit != null) qs.set("limit", String(params.limit));
+    if (params?.status) qs.set("status", params.status);
+    if (params?.order) qs.set("order", params.order);
+    if (params?.after_created_at) qs.set("after_created_at", params.after_created_at);
+    if (params?.after_id) qs.set("after_id", params.after_id);
     const query = qs.size > 0 ? `?${qs.toString()}` : "";
     const raw = await this.fetch<unknown>(
       `/api/workspaces/${workspaceId}/decision-requests${query}`,
+      { signal: opts?.signal },
     );
     const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
       endpoint: "GET /api/workspaces/:id/decision-requests",
