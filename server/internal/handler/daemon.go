@@ -2500,6 +2500,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	claimWorkspaceID := parseUUID(runtimeWorkspaceID)
 	var clauseInjections []clauseInjectionRecord
 	var clauseObservations []clauseInjectionObservation
+	var clauseManifest []clauseManifestEntry
 	filterClauses := func(scope promptVersionScope, scopeID pgtype.UUID, text string) string {
 		res := h.applyDynamicClauses(r.Context(), claimWorkspaceID, scope, scopeID, taskKind, text)
 		for i := range res.Injections {
@@ -2507,6 +2508,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 		clauseInjections = append(clauseInjections, res.Injections...)
 		clauseObservations = append(clauseObservations, res.Observations...)
+		clauseManifest = append(clauseManifest, res.Manifest...)
 		return res.Text
 	}
 	// Claim-only capability: this server resolves the squad-leader role on the
@@ -3728,6 +3730,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// quick-create) so every agent running in the workspace sees the same
 	// shared context. Empty string when the owner hasn't set one; the daemon
 	// skips rendering the heading in that case.
+	wsContext := ""
 	if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(resp.WorkspaceID)); err == nil {
 		resp.WorkspaceSlug = ws.Slug
 		if issueNumber > 0 {
@@ -3737,8 +3740,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// filter before it reaches the response (ADR 007 §5). A NULL context is
 		// an empty static carrier, not an absent carrier: effective clauses may
 		// still bind to this workspace and must reach the claimed task.
-		wsContext := filterClauses(promptVersionScopeWorkspace, ws.ID, ws.Context.String)
-		resp.WorkspaceContext = wsContext
+		wsContext = filterClauses(promptVersionScopeWorkspace, ws.ID, ws.Context.String)
 		if strings.TrimSpace(wsContext) != "" {
 			promptVersionScopeIDs["workspace"] = uuidToString(ws.ID)
 		}
@@ -3749,6 +3751,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			"error", err,
 		)
 	}
+	resp.WorkspaceContext = appendActiveClauseManifest(wsContext, taskKind, clauseManifest)
 
 	// Workspace status catalog (MUL-6460): active CUSTOM statuses only, so the
 	// daemon can render them into the brief's status-command line. Read on every
