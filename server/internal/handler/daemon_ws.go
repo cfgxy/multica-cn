@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/middleware"
 )
@@ -47,14 +48,30 @@ func (h *Handler) DaemonWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.DaemonHub.HandleWebSocket(w, r, daemonws.ClientIdentity{
-		DaemonID:      middleware.DaemonIDFromContext(r.Context()),
-		UserID:        userID,
-		WorkspaceID:   primaryWorkspaceID,
-		WorkspaceIDs:  workspaceIDs,
-		RuntimeIDs:    runtimeIDs,
-		ClientVersion: r.Header.Get("X-Client-Version"),
-		Capabilities:  r.Header.Get("X-Client-Capabilities"),
+		DaemonID:           middleware.DaemonIDFromContext(r.Context()),
+		DaemonTokenHash:    daemonTokenHashForRequest(r),
+		DaemonTokenOwnerID: middleware.DaemonTokenOwnerIDFromContext(r.Context()),
+		UserID:             userID,
+		WorkspaceID:        primaryWorkspaceID,
+		WorkspaceIDs:       workspaceIDs,
+		RuntimeIDs:         runtimeIDs,
+		ClientVersion:      r.Header.Get("X-Client-Version"),
+		Capabilities:       r.Header.Get("X-Client-Capabilities"),
 	})
+}
+
+func daemonTokenHashForRequest(r *http.Request) string {
+	if middleware.DaemonWorkspaceIDFromContext(r.Context()) == "" {
+		return ""
+	}
+	if hash := middleware.DaemonTokenHashFromContext(r.Context()); hash != "" {
+		return hash
+	}
+	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !strings.HasPrefix(raw, "mdt_") {
+		return ""
+	}
+	return auth.HashToken(raw)
 }
 
 func parseRuntimeIDs(r *http.Request) []string {

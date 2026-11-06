@@ -20,6 +20,8 @@ const (
 	ctxKeyDaemonWorkspaceID daemonContextKey = iota
 	ctxKeyDaemonID
 	ctxKeyDaemonAuthPath
+	ctxKeyDaemonTokenHash
+	ctxKeyDaemonTokenOwnerID
 )
 
 // Daemon auth path labels exposed via context for slow-log attribution.
@@ -48,6 +50,30 @@ func DaemonIDFromContext(ctx context.Context) string {
 func DaemonAuthPathFromContext(ctx context.Context) string {
 	p, _ := ctx.Value(ctxKeyDaemonAuthPath).(string)
 	return p
+}
+
+func DaemonTokenHashFromContext(ctx context.Context) string {
+	hash, _ := ctx.Value(ctxKeyDaemonTokenHash).(string)
+	return hash
+}
+
+func DaemonTokenOwnerIDFromContext(ctx context.Context) string {
+	ownerID, _ := ctx.Value(ctxKeyDaemonTokenOwnerID).(string)
+	return ownerID
+}
+
+func WithDaemonTokenHash(ctx context.Context, tokenHash string) context.Context {
+	if tokenHash == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyDaemonTokenHash, tokenHash)
+}
+
+func WithDaemonTokenOwnerID(ctx context.Context, ownerID string) context.Context {
+	if ownerID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyDaemonTokenOwnerID, ownerID)
 }
 
 // WithDaemonContext returns a new context with the daemon workspace ID and daemon ID set.
@@ -88,6 +114,8 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 			// trust this header regardless of which auth path the
 			// request arrived on.
 			r.Header.Del("X-Actor-Source")
+			r.Header.Del("X-Agent-ID")
+			r.Header.Del("X-Task-ID")
 
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
@@ -111,6 +139,8 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 					ctx := context.WithValue(r.Context(), ctxKeyDaemonWorkspaceID, id.WorkspaceID)
 					ctx = context.WithValue(ctx, ctxKeyDaemonID, id.DaemonID)
 					ctx = context.WithValue(ctx, ctxKeyDaemonAuthPath, DaemonAuthPathDaemonToken)
+					ctx = WithDaemonTokenHash(ctx, hash)
+					ctx = WithDaemonTokenOwnerID(ctx, id.OwnerID)
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
@@ -130,17 +160,32 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 					WorkspaceID: uuidToString(dt.WorkspaceID),
 					DaemonID:    dt.DaemonID,
 				}
+				cacheable := true
+				if dt.OwnerID.Valid {
+					identity.OwnerID = uuidToString(dt.OwnerID)
+				} else if !strings.HasPrefix(dt.DaemonID, "qoder-managed-") {
+					ownerID, err := legacyDaemonTokenOwner(r.Context(), queries, dt)
+					if err != nil {
+						slog.Warn("daemon_auth: legacy daemon token owner lookup failed", "path", r.URL.Path, "error", err)
+						cacheable = false
+					}
+					identity.OwnerID = ownerID
+				}
 				// daemon_token.expires_at is NOT NULL; pgtype Valid is true
 				// in normal operation, but defend against zero just in case.
 				var expiresAt time.Time
 				if dt.ExpiresAt.Valid {
 					expiresAt = dt.ExpiresAt.Time
 				}
-				daemonCache.Set(r.Context(), hash, identity, auth.TTLForExpiry(time.Now(), expiresAt))
+				if cacheable {
+					daemonCache.Set(r.Context(), hash, identity, auth.TTLForExpiry(time.Now(), expiresAt))
+				}
 
 				ctx := context.WithValue(r.Context(), ctxKeyDaemonWorkspaceID, identity.WorkspaceID)
 				ctx = context.WithValue(ctx, ctxKeyDaemonID, identity.DaemonID)
 				ctx = context.WithValue(ctx, ctxKeyDaemonAuthPath, DaemonAuthPathDaemonToken)
+				ctx = WithDaemonTokenHash(ctx, hash)
+				ctx = WithDaemonTokenOwnerID(ctx, identity.OwnerID)
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
@@ -266,4 +311,26 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// legacyDaemonTokenOwner recovers the issuing owner for Remote MCP daemon
+// tokens minted before daemon_token.owner_id existed. The token and task token
+// were inserted in the same transaction, so the owner is accepted only when a
+// single live task_token with the same timestamp belongs to this daemon.
+func legacyDaemonTokenOwner(ctx context.Context, queries *db.Queries, token db.DaemonToken) (string, error) {
+	if !token.CreatedAt.Valid {
+		return "", nil
+	}
+	owners, err := queries.ListLegacyDaemonTokenOwners(ctx, db.ListLegacyDaemonTokenOwnersParams{
+		WorkspaceID: token.WorkspaceID,
+		CreatedAt:   token.CreatedAt,
+		DaemonID:    token.DaemonID,
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(owners) != 1 || !owners[0].Valid {
+		return "", nil
+	}
+	return uuidToString(owners[0]), nil
 }
