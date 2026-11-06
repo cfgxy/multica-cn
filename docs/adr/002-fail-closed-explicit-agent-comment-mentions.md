@@ -1,23 +1,36 @@
-# ADR 002：评论中的显式智能体提及发送前校验
+# ADR 002：评论中的显式智能体提及反馈
 
 - 日期：2026年09月28日
-- 状态：accepted（RUYI-250；Owner 于 2026年09月28日18:50 回复「A」，采纳评论 `01a0e798-b467-71fb-9bd8-56e2311e9cb2` 的方案 A）
+- 修订：2026年11月05日
+- 状态：superseded（发送前硬拒绝已由逐目标软 admission 取代）
 - 范围：工作区内普通任务评论的 POST、正文发生变化的 PUT，以及同一权限口径的触发预览。
 
 ## 背景
 
-RUYI-241 的交付评论使用了错误的 Leader agent UUID。旧协议先保存评论、发布事件，再解析目标和入队；目标不可调用只在成功响应的 `trigger_outcomes` 中体现。调用者看到已发布的评论，实际没有唤醒接收者。编辑旧评论时，旧客户端路径甚至会先取消原任务，再发现新正文无法触发。
+显式智能体提及同时承载两件事：评论正文记录协作事实，触发系统尝试启动目标智能体。目标 UUID 写错、目标归档或调用权限不足时，触发不应发生；但把这类协作语义错误提升为整条评论的写入门闸，会丢失合法汇报并诱发调用方重复改写或重试。
 
-## 决策
+## 当前决策
 
-规范化正文后、写评论、关联附件、发布事件或取消旧任务前，验证每个 Markdown `mention://agent/` 链接对应的智能体属于当前工作区、当前操作者可调用且未归档。包括 `suppress_agent_ids` 抑制的目标，也包括 UUID 格式不合法的显式链接。任一不满足即整条返回 HTTP 422：`code=invalid_agent_mentions`，`invalid_mentions=[{"start":N,"end":M}]`。区间为规范化正文中的 UTF-8 字节半开区间，覆盖完整链接；重复出现逐处列出。公开错误不包含 UUID、候选、名称或目标存在性，未知和私有不可调用完全同态；验证失败不记目标详情日志。
+评论内容与触发结果分开处理：
 
-预览沿用相同工作区、编辑权限及可调用性检查；若存在不可提交的显式 agent 链接，不显示可入队的 agent，返回同样的 `invalid_mentions` 区间供客户端警示，并保留原有 blocked 提示。正文未变的附件编辑不重验存量链接，`/note` 不触发也不校验。`squad` 提及、普通成员提及、已授权 agent 的运行时离线等待、任务合并/延后及瞬时入队失败保持原语义。评论保存与任务队列不构成单个事务，前置验证不宣称解决并发归档或入队失败的原子性。
+- 通过身份、作者、revision、task/no-action 等写入边界后，评论可以保存。
+- 每个可解析的显式 `@agent` / `@squad` 目标在成功响应的 `trigger_outcomes` 中返回 `queued`、`coalesced`、`deferred` 或 `blocked`。
+- 未知或跨工作区目标与不可调用的私有目标统一返回 `blocked/invocation_not_allowed`，不泄露目标是否存在。
+- 已归档或格式可解析但无法定位的目标返回 `blocked/target_unavailable`，且不创建 Run。
+- 完整但不符合 mention parser 语法的 agent 链接通过 `invalid_mentions` 返回 UTF-8 字节半开区间 warning；评论仍保存。
+- 同一 task 在同一任务中提及自身时返回 `blocked/self_trigger_suppressed`；跨任务的合法自交接不受此规则扩大限制。
+- 智能体评论不强制「必须且最多一个责任 mention」，Squad worker 也不由平台代码强制提及 Leader。多个显式目标逐一返回 outcome，实际执行继续按目标智能体原子去重。
 
-CLI 从服务端带固定代码和区间的 JSON 错误生成安全提示，原 `--content-file` 保留；Web/桌面共用的编辑器只在成功响应后清理草稿，按代码显示本地化拒收提示。成功响应仍返回 `trigger_outcomes`，已安装旧客户端可继续解析合法评论。
+预览与保存使用同一触发解析：预览同时返回可运行目标、blocked outcome 和 unparsed-link warning。`/note` 仍不触发智能体，也不产生 mention warning。
 
-## 权衡与回退
+## 保留边界
 
-拒收会改变旧的「部分目标失败仍可发布」契约，但可以阻止有误的交接评论落库。服务端不提供模糊目录建议，以免泄露私有目标；对其他 mention 类型和后台队列不增加新约束。回退时撤销 POST/PUT 前置校验及预览整条失败标记，即恢复旧的已保存再报告 blocked 语义；不需要数据库迁移。已发布的断链评论不会自动补发，需人工更正后重新发送。
+软化只作用于评论内容的协作语义，不放宽目标 dispatch 权限、工作区隔离、归档与运行时可用性检查、同任务 self-trigger suppression、agent-only cascade 熔断、task role conflict、原子去重、no-action 互斥、作者权限和 revision 校验。
 
-验证以 `server/internal/handler/comment_mention_admission_test.go` 的数据库 Feature 测试、`packages/core/api/client.test.ts` 的协议测试，以及 `packages/views/issues/` 的失败草稿测试为准。QA 隔离环境中的 CLI/API 无落库、无唤醒及合法链路复测由 QA 阶段另行完成。
+## 兼容性
+
+`trigger_outcomes` 与 `invalid_mentions` 都是成功响应上的附加字段，旧客户端可以忽略。CLI table 输出会提示「评论已保存但目标未触发」或无法解析的链接区间；JSON 调用方可以直接读取结构化结果。客户端仍可识别旧服务端返回的 `invalid_agent_mentions` 422，以兼容版本错配，但新服务端不再产生该语义拒绝。
+
+## 验证
+
+`server/internal/handler/comment_mention_admission_test.go` 覆盖 create/edit 对称性、非法目标、多个目标、智能体自 mention、普通终态汇报和 Squad worker 交接；`comment_trigger_outcomes_test.go`、`mention_self_trigger_test.go`、`comment_duplicate_enqueue_race_test.go`、`task_no_action_test.go` 继续验证保留边界。CLI、MCP 和 core schema 测试验证 warning 与 outcome 的向后兼容解析。

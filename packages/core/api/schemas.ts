@@ -1458,6 +1458,11 @@ export const CommentTriggerOutcomeSchema = z.object({
   reason_code: z.string().default(""),
 }).loose();
 
+const CommentMentionWarningSchema = z.object({
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+}).refine(({ start, end }) => end > start);
+
 export const CommentSchema = z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1477,6 +1482,12 @@ export const CommentSchema = z.object({
   trigger_outcomes: z.array(z.unknown()).catch([]).optional().transform((items) =>
     items?.flatMap((item) => {
       const parsed = CommentTriggerOutcomeSchema.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    }),
+  ),
+  invalid_mentions: z.array(z.unknown()).catch([]).optional().transform((items) =>
+    items?.flatMap((item) => {
+      const parsed = CommentMentionWarningSchema.safeParse(item);
       return parsed.success ? [parsed.data] : [];
     }),
   ),
@@ -1518,7 +1529,7 @@ const CommentTriggerPreviewAgentSchema = z.object({
 export const CommentTriggerPreviewSchema = z.object({
   agents: z.array(CommentTriggerPreviewAgentSchema).default([]),
   invalid_mentions: z
-    .array(z.object({ start: z.number().int().nonnegative(), end: z.number().int().nonnegative() }))
+    .array(CommentMentionWarningSchema)
     .catch([])
     .default([]),
   // Drop malformed blocked entries INDIVIDUALLY (MUL-4525): a single bad item
