@@ -297,8 +297,7 @@ SELECT dir_id::text, key, content_sha256 FROM knowledge_entry WHERE dir_id = ANY
 		}
 	}
 
-	// Ultimates: the workspace's active adoption target, whichever daemon
-	// designated it — but adoption work below only rides the daemon hosting it.
+	// Ultimates: adoption work only rides the daemon hosting the active target.
 	type ultimateRow struct {
 		workspaceID string
 		ult         KnowledgePlanUltimate
@@ -329,7 +328,7 @@ WHERE workspace_id = ANY($1) AND kind = 'ultimate' AND removed = FALSE`, workspa
 			continue
 		}
 		wsPlan.HasUltimate = true
-		usableByDaemon := row.daemonIDCol == "" || row.daemonIDCol == daemonID
+		usableByDaemon := row.daemonIDCol == daemonID
 		if usableByDaemon {
 			wsPlan.Ultimate = &row.ult
 		}
@@ -665,9 +664,9 @@ func (h *Handler) applyKnowledgeAdoptResult(ctx context.Context, daemonID, kind 
 	ok bool, ultimateDirID, failureReason string) bool {
 	switch kind {
 	case "entry":
-		// Success must identify the destination which was read back. Failure may
-		// omit it because the active ultimate still authorizes the planned job.
-		if ok && ultimateDirID == "" {
+		// Every result must identify the destination from the daemon's plan. This
+		// ties failures to the same authorization boundary as successful writes.
+		if ultimateDirID == "" {
 			return false
 		}
 		tx, err := h.TxStarter.Begin(ctx)
@@ -684,8 +683,8 @@ FROM knowledge_entry e
 JOIN knowledge_dir d ON d.workspace_id = e.workspace_id
 WHERE e.id = $1 AND e.adoption_state = 'transferring'
   AND d.kind = 'ultimate' AND d.removed = FALSE
-  AND (d.daemon_id = '' OR d.daemon_id = $3)
-  AND (NULLIF($2, '')::uuid IS NULL OR d.id = NULLIF($2, '')::uuid)
+	  AND d.daemon_id = $3
+	  AND d.id = $2::uuid
 FOR UPDATE OF e`, id, ultimateDirID, daemonID).
 			Scan(&workspaceID, &sourceDirID, &key, &content, &contentSHA, &adoptedBy)
 		if err != nil {

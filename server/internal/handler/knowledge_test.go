@@ -40,6 +40,14 @@ func registerKnowledgeDir(t *testing.T, kind, path string) string {
 	return created.ID
 }
 
+func bindKnowledgeDir(t *testing.T, dirID, daemonID string) {
+	t.Helper()
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE knowledge_dir SET daemon_id = $2 WHERE id = $1`, dirID, daemonID); err != nil {
+		t.Fatalf("bind knowledge dir: %v", err)
+	}
+}
+
 func knowledgeEntries(t *testing.T, dirID string) []KnowledgeEntryResponse {
 	t.Helper()
 	var entries []KnowledgeEntryResponse
@@ -163,7 +171,7 @@ func TestKnowledgeRegistrationQueuesFirstScan(t *testing.T) {
 }
 
 // TestKnowledgePlanHandsWorkToDaemon pins the plan contents: hosted +
-// unclaimed directories with their mirror SHA map, the resolved ultimate,
+// unclaimed directories with their mirror SHA map, a daemon-bound ultimate,
 // and — after a queue-time adoption — the pending transfer job.
 func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 	if testHandler == nil {
@@ -173,6 +181,19 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 
 	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-under-test")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-under-test")
+
+	// An unbound target cannot be safely dispatched to an arbitrary daemon.
+	unboundPlan := knowledgePlan(t, daemonID)
+	for i := range unboundPlan.Workspaces {
+		ws := &unboundPlan.Workspaces[i]
+		if ws.WorkspaceID != testWorkspaceID {
+			continue
+		}
+		if !ws.HasUltimate || ws.Ultimate != nil {
+			t.Fatalf("unbound plan ultimate: has=%v ultimate=%+v, want unavailable target", ws.HasUltimate, ws.Ultimate)
+		}
+	}
+	bindKnowledgeDir(t, ultimate, daemonID)
 
 	plan := knowledgePlan(t, daemonID)
 	var ws *KnowledgePlanWorkspace
@@ -248,6 +269,7 @@ func TestKnowledgePlanExcludesUltimateFromScanDirs(t *testing.T) {
 
 	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-not-a-scan-target")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/ultimate-fix-candidate")
+	bindKnowledgeDir(t, ultimate, daemonID)
 
 	plan := knowledgePlan(t, daemonID)
 	var ws *KnowledgePlanWorkspace
@@ -409,6 +431,7 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 
 	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-state-machine")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-state-machine")
+	bindKnowledgeDir(t, ultimate, daemonID)
 	postKnowledgeResults(t, daemonID, map[string]any{
 		"scans": []map[string]any{{
 			"dir_id": candidate, "trigger_source": "initial", "ok": true,
@@ -450,11 +473,38 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 		t.Fatalf("pending adoption missing from plan: %+v", job)
 	}
 
-	// Failure callbacks may omit the ultimate id and still resolve a job from an
-	// unclaimed ultimate's plan. The acknowledgment makes the result observable.
+	// A failure without the planned ultimate is inert, because the callback
+	// cannot prove where the daemon attempted the transfer.
 	ack := postKnowledgeResults(t, daemonID, map[string]any{
 		"adoptions": []map[string]any{{
 			"kind": "entry", "id": entry.ID, "ok": false, "error": "bd write refused",
+		}},
+	})
+	if ack["adoptions_resolved"].(float64) != 0 {
+		t.Fatalf("missing ultimate adoption resolved: %v", ack)
+	}
+	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "transferring" {
+		t.Fatalf("missing ultimate callback moved transferring entry: %q", state)
+	}
+
+	// A daemon not eligible for the target ultimate may not resolve the job.
+	ack = postKnowledgeResults(t, "foreign-daemon", map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "forged failure",
+		}},
+	})
+	if ack["adoptions_resolved"].(float64) != 0 {
+		t.Fatalf("foreign daemon adoption resolved: %v", ack)
+	}
+	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "transferring" {
+		t.Fatalf("foreign callback moved transferring entry: %q", state)
+	}
+
+	// A report for the bound ultimate changes the entry to failed and permits a
+	// retry.
+	ack = postKnowledgeResults(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "bd write refused",
 		}},
 	})
 	if ack["adoptions_resolved"].(float64) != 1 {
