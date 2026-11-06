@@ -53,6 +53,52 @@ func TestPrepareCodexKeepsRealHomeAndScopesOnlyCodexHome(t *testing.T) {
 	}
 }
 
+func TestPrepareAndReuseCodexApplyExplicitSubagentPolicy(t *testing.T) {
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+	t.Setenv(MulticaCodexMultiAgentEnv, "")
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: t.TempDir(),
+		WorkspaceID:    "ws-codex-subagent-policy",
+		TaskID:         "a1b2c3d4-e5f6-7890-abcd-012345678901",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task: TaskContextForEnv{
+			IssueID:              "codex-subagent-policy",
+			SubagentToolsAllowed: boolPolicy(true),
+		},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	configPath := filepath.Join(env.CodexHome, "config.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMultiAgentValue(t, parseTOML(t, string(data)), true)
+
+	reused := Reuse(ReuseParams{
+		WorkDir:  env.WorkDir,
+		Provider: "codex",
+		Task: TaskContextForEnv{
+			IssueID:              "codex-subagent-policy",
+			SubagentToolsAllowed: boolPolicy(false),
+		},
+	}, testLogger())
+	if reused == nil {
+		t.Fatal("Reuse returned nil")
+	}
+	data, err = os.ReadFile(filepath.Join(reused.CodexHome, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMultiAgentValue(t, parseTOML(t, string(data)), false)
+}
+
 func TestPrepareCodexLocalDirectoryChatKeepsRolloutAcrossTaskIDs(t *testing.T) {
 	// Given: a direct chat runs against the same local directory in two tasks.
 	sharedHome := t.TempDir()

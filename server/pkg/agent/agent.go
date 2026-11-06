@@ -122,6 +122,10 @@ type ExecOptions struct {
 	// routing; empty means inherit local Codex config.
 	// Other providers ignore this field.
 	ServiceTier string
+	// SubagentToolsAllowed is an explicit provider-native subagent policy. Nil
+	// keeps the provider default; Codex consumes non-nil values as an
+	// authoritative multi_agent override.
+	SubagentToolsAllowed *bool
 	// OpenclawMode chooses between local (embedded) and gateway routing for
 	// the openclaw backend. "" or "local" keeps the historical behaviour —
 	// the daemon spawns `openclaw agent --local …` and the agent loop runs

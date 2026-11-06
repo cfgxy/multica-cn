@@ -2,7 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import type {
   Agent,
   AgentRuntime,
@@ -38,6 +38,7 @@ const agent = {
   name: "Lambda",
   description: "Test agent",
   runtime_id: "runtime-1",
+  runtime_config: {},
 } as Agent;
 
 const privateRuntime = {
@@ -70,7 +71,7 @@ const completedModelsRequest = {
 
 let queryClient: QueryClient;
 
-function renderInspector(currentUserId: string) {
+function renderInspector(currentUserId: string, onUpdate = vi.fn(async () => {})) {
   renderWithI18n(
     <QueryClientProvider client={queryClient}>
       <AgentDetailInspector
@@ -80,10 +81,11 @@ function renderInspector(currentUserId: string) {
         members={[]}
         currentUserId={currentUserId}
         canEdit
-        onUpdate={vi.fn(async () => {})}
+        onUpdate={onUpdate}
       />
     </QueryClientProvider>,
   );
+  return onUpdate;
 }
 
 describe("AgentDetailInspector runtime access", () => {
@@ -116,6 +118,19 @@ describe("AgentDetailInspector runtime access", () => {
 
     await waitFor(() => {
       expect(mockInitiateListModels).toHaveBeenCalledWith(privateRuntime.id);
+    });
+  });
+
+  it("shows Codex subagents off by default and persists an explicit opt-in", async () => {
+    const onUpdate = renderInspector(privateRuntime.owner_id);
+    const toggle = screen.getByLabelText("Allow subagent tools");
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith("agent-1", {
+        runtime_config: { allow_subagents: true },
+      });
     });
   });
 });

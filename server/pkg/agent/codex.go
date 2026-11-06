@@ -296,6 +296,9 @@ func buildCodexArgs(opts ExecOptions, logger *slog.Logger) []string {
 	if opts.ServiceTier == codexFastServiceTier {
 		launchArgs = enforceCodexFastMode(launchArgs, logger)
 	}
+	if opts.SubagentToolsAllowed != nil {
+		launchArgs = enforceCodexMultiAgentPolicy(launchArgs, *opts.SubagentToolsAllowed, logger)
+	}
 	return append(args, launchArgs...)
 }
 
@@ -418,6 +421,52 @@ var codexManagedMcpConfigKeyRe = regexp.MustCompile(`^\s*mcp_servers(?:\s*\.|\s*
 
 var codexManagedFastModeConfigKeyRe = regexp.MustCompile(
 	`^\s*features\s*\.\s*fast_mode\s*(?:=|$)`)
+
+var codexManagedMultiAgentConfigKeyRe = regexp.MustCompile(
+	`^\s*features\s*\.\s*multi_agent\s*(?:=|$)`)
+
+const codexMultiAgentFeature = "multi_agent"
+
+func enforceCodexMultiAgentPolicy(args []string, allowed bool, logger *slog.Logger) []string {
+	args = stripCodexMultiAgentConflicts(args, logger)
+	flag := "--disable"
+	if allowed {
+		flag = "--enable"
+	}
+	return append(args, flag, codexMultiAgentFeature)
+}
+
+func stripCodexMultiAgentConflicts(args []string, logger *slog.Logger) []string {
+	args = filterCodexConfigOverrides(args, codexManagedMultiAgentConfigKeyRe, "features.multi_agent", logger)
+	filtered := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		flag := arg
+		value := ""
+		hasInlineValue := false
+		if idx := strings.Index(arg, "="); idx > 0 {
+			flag = arg[:idx]
+			value = arg[idx+1:]
+			hasInlineValue = true
+		}
+		if flag == "--enable" || flag == "--disable" {
+			if !hasInlineValue && i+1 < len(args) {
+				value = args[i+1]
+			}
+			if value == codexMultiAgentFeature {
+				if logger != nil {
+					logger.Warn("codex: ignored lower-priority multi-agent feature override", "flag", flag)
+				}
+				if !hasInlineValue {
+					i++
+				}
+				continue
+			}
+		}
+		filtered = append(filtered, arg)
+	}
+	return filtered
+}
 
 // A daemon-managed shell_environment_policy must also win over profile and
 // custom-arg overrides. Match root and profile policy keys without catching an
@@ -1042,6 +1091,11 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		// only needs the conflicting disable/config overrides removed.
 		runtimeCmd = runtimeCmd.withFilteredPrefix(func(prefix []string) []string {
 			return stripCodexFastModeConflicts(prefix, b.cfg.Logger)
+		})
+	}
+	if opts.SubagentToolsAllowed != nil {
+		runtimeCmd = runtimeCmd.withFilteredPrefix(func(prefix []string) []string {
+			return stripCodexMultiAgentConflicts(prefix, b.cfg.Logger)
 		})
 	}
 	codexArgs := buildCodexArgs(opts, b.cfg.Logger)

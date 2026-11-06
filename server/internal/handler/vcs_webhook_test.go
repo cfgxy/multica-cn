@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -624,6 +625,74 @@ func TestVCSWebhook_GitlabMergeRequest(t *testing.T) {
 	updated, _ := testHandler.Queries.GetIssue(ctx, parseUUID(issue.ID))
 	if updated.Status != "done" {
 		t.Errorf("expected issue done, got %q", updated.Status)
+	}
+}
+
+func TestVCSWebhook_GitlabSiblingMergeWaitsForAll(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "gitlab", "https://gitlab.test")
+	issue := newVCSIssue(t, "GitLab sibling MR test")
+	t.Cleanup(func() { cleanupVCS(ctx, issue.ID) })
+
+	fire := func(iid int32, state, action, title, description string) {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{
+			"object_kind": "merge_request",
+			"user":        map[string]any{"username": "alice"},
+			"project":     map[string]any{"path_with_namespace": "acme/widget"},
+			"object_attributes": map[string]any{
+				"iid": iid, "title": title, "description": description,
+				"state": state, "action": action, "source_branch": fmt.Sprintf("feat/%d", iid),
+				"url":         fmt.Sprintf("https://gitlab.test/acme/widget/-/merge_requests/%d", iid),
+				"last_commit": map[string]any{"id": fmt.Sprintf("sha-%d-%s", iid, state)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshal GitLab MR %d: %v", iid, err)
+		}
+		w := httptest.NewRecorder()
+		testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+			"X-Gitlab-Event": "Merge Request Hook", "X-Gitlab-Token": vcsTestSecret,
+		}, raw))
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("GitLab MR %d %s: expected 202, got %d (%s)", iid, action, w.Code, w.Body.String())
+		}
+	}
+
+	// MR A carries closing intent; MR B is a qualifying link-only sibling.
+	fire(41, "opened", "open", "Implement primary path", "Closes "+issue.Identifier)
+	fire(42, "opened", "open", issue.Identifier+": follow-up cleanup", "")
+
+	fire(41, "merged", "merge", "Implement primary path", "Closes "+issue.Identifier)
+	intermediate, err := testHandler.Queries.GetIssue(ctx, parseUUID(issue.ID))
+	if err != nil {
+		t.Fatalf("GetIssue after first MR merge: %v", err)
+	}
+	if intermediate.Status != "in_progress" {
+		t.Fatalf("after MR A merged with MR B open: status = %q, want in_progress", intermediate.Status)
+	}
+
+	fire(42, "merged", "merge", issue.Identifier+": follow-up cleanup", "")
+	final, err := testHandler.Queries.GetIssue(ctx, parseUUID(issue.ID))
+	if err != nil {
+		t.Fatalf("GetIssue after sibling MR merge: %v", err)
+	}
+	if final.Status != "done" {
+		t.Fatalf("after both sibling MRs merged: status = %q, want done", final.Status)
+	}
+
+	rows, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(issue.ID))
+	if err != nil {
+		t.Fatalf("ListVCSPullRequestsByIssue: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("linked GitLab MRs = %d, want 2", len(rows))
+	}
+	for _, row := range rows {
+		if row.Provider != "gitlab" || row.State != "merged" {
+			t.Fatalf("unexpected GitLab MR mirror: %+v", row)
+		}
 	}
 }
 
