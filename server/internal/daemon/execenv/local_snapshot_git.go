@@ -82,8 +82,9 @@ func CaptureSnapshotGitArtifact(cwd string, spec *SnapshotGitArtifactSpec, env [
 // SnapshotGitBaseline resolves the pristine commit before the worker mounts
 // the overlay. It is exported for the daemon's one-time pre-launch capture.
 func SnapshotGitBaseline(cwd string) (string, error) {
-	base, err := runGitTrimmed(cwd, "rev-parse", "HEAD")
-	if err != nil || strings.TrimSpace(base) == "" {
+	base, err := runGitEnvWithBase(cwd, SnapshotGitEnvironment(), nil, "rev-parse", "HEAD")
+	base = strings.TrimSpace(base)
+	if err != nil || base == "" {
 		return "", fmt.Errorf("resolve snapshot Git baseline: %w", err)
 	}
 	return base, nil
