@@ -452,7 +452,7 @@
     "runtime_none": "暂无可用运行时",
     "runtime_cloud_badge": "云端",
     "runtime_private_badge": "私有",
-    "runtime_private_locked_tooltip": "私有运行时——只有运行时所有者可在其上创建智能体。如果需要共享，请联系所有者切换为\"公开\"。",
+    "runtime_private_locked_tooltip": "私有运行时——只有运行时所有者或工作区所有者可在其上创建智能体。",
     "runtime_search_placeholder": "搜索机器…",
     "runtime_no_results": "没有匹配的机器",
     "runtime_group_online": "{{online}}/{{total}} 在线",
@@ -913,7 +913,7 @@
     "team_coming_soon": "即将推出",
     "members_group": "成员",
     "public_group": "公开访问",
-    "owner_only_readonly": "只有该智能体的所有者可以更改谁能调用它。",
+    "owner_only_readonly": "只有该智能体的所有者或工作区所有者可以更改谁能调用它。",
     "members_empty": "没有可选择的工作区成员",
     "composio_switch_hint": "提示——该智能体已启用 Composio 应用。共享后，所有获得访问权限的人都可以通过该智能体使用这些应用。",
     "save_failed": "更新访问权限失败"

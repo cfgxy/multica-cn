@@ -43,6 +43,7 @@ import {
 } from "@/data/queries/skills";
 import { runtimeListOptions } from "@/data/queries/runtimes";
 import { runtimeCapabilitiesOptions } from "@/data/queries/runtime-skills";
+import { memberListOptions } from "@/data/queries/members";
 import {
   useAddAgentSkills,
   useRemoveAgentSkill,
@@ -80,6 +81,9 @@ export default function AgentSkillsScreen() {
 
   const { data: allSkills } = useQuery(skillListOptions(wsId));
   const catalog = useQuery(skillCatalogOptions(wsId));
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const currentUserRole =
+    members.find((member) => member.user_id === me?.id)?.role ?? null;
 
   // Inherited runtime skills: the bound local runtime, discoverable only
   // when online and usable by this viewer (web's canReadRuntime ladder).
@@ -92,7 +96,8 @@ export default function AgentSkillsScreen() {
     [agent?.runtime_id, runtimes],
   );
   const canReadRuntime =
-    runtime != null && isRuntimeUsableForUser(runtime, me?.id ?? null);
+    runtime != null &&
+    isRuntimeUsableForUser(runtime, me?.id ?? null, currentUserRole);
   const runtimeId =
     runtime?.runtime_mode === "local" &&
     runtime.status === "online" &&

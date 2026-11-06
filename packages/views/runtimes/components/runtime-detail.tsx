@@ -135,7 +135,13 @@ export function RuntimeDetail({
     : false;
   const isRuntimeOwner = user && runtime.owner_id === user.id;
   const canEditRuntime = isAdmin || isRuntimeOwner;
-  const canReadRuntime = isRuntimeUsableForUser(runtime, user?.id ?? null);
+  const canEditVisibility =
+    currentMember?.role === "owner" || !!isRuntimeOwner;
+  const canReadRuntime = isRuntimeUsableForUser(
+    runtime,
+    user?.id ?? null,
+    currentMember?.role ?? null,
+  );
   const runtimeProfile: RuntimeProfile | null = runtime.profile_id
     ? profiles.find((p) => p.id === runtime.profile_id) ?? null
     : null;
@@ -244,7 +250,7 @@ export function RuntimeDetail({
             />
             <DiagnosticsCard
               runtime={runtime}
-              canEditVisibility={!!isRuntimeOwner}
+              canEditVisibility={canEditVisibility}
               canEditConcurrency={!!canEditRuntime}
               canDelete={!!canDelete}
               onDelete={() => setDeleteOpen(true)}
@@ -657,7 +663,8 @@ function RuntimeConcurrencyEditor({
 }
 
 // VisibilityReadout renders a static "Private" / "Public" pill for everyone
-// who is not the runtime owner — workspace admins included (MUL-6126). Its
+// who is neither the runtime owner nor workspace owner — workspace admins
+// included (MUL-6126). Its
 // tooltip is phrased in the third person for that reason; the editor's own
 // hints stay in the second person. The description used to sit under the
 // chip; it now lives in the hover tooltip so the Diagnostics column stays
@@ -686,11 +693,12 @@ function VisibilityReadout({ runtime }: { runtime: AgentRuntime }) {
   );
 }
 
-// VisibilityEditor lets the runtime owner flip public↔private. Owner only —
-// the PATCH endpoint refuses a workspace admin here (canSetRuntimeVisibility);
-// this is a UI gate, not a security boundary. Per-choice description text lives in the hover
-// tooltip so the two buttons stay a tight icon+label pair instead of the
-// previous two-line block that competed with the surrounding cards.
+// VisibilityEditor lets the runtime owner or workspace owner flip
+// public↔private. The PATCH endpoint refuses a workspace admin here
+// (canSetRuntimeVisibility); this is a UI gate, not a security boundary.
+// Per-choice description text lives in the hover tooltip so the two buttons
+// stay a tight icon+label pair instead of the previous two-line block that
+// competed with the surrounding cards.
 function VisibilityEditor({ runtime }: { runtime: AgentRuntime }) {
   const { t } = useT("runtimes");
   const wsId = useWorkspaceId();

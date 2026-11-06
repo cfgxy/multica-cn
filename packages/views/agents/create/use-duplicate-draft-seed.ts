@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { buildDuplicateDraft, type AgentDraft } from "@multica/core/agents";
-import type { Agent, RuntimeDevice } from "@multica/core/types";
+import type { Agent, MemberRole, RuntimeDevice } from "@multica/core/types";
 
 /**
  * Seeds the duplicate draft exactly once, and only from a runtime list that has
@@ -31,6 +31,7 @@ export function useDuplicateDraftSeed({
   runtimesSettled: boolean;
   runtimes: RuntimeDevice[];
   currentUserId: string | null;
+  currentUserRole?: MemberRole | null;
   fallbackRuntimeId: string;
   nameSuffix: string;
   onSeed: (draft: AgentDraft, runtimeReset: boolean) => void;
@@ -47,12 +48,14 @@ export function useDuplicateDraftSeed({
     const draft = buildDuplicateDraft(source, {
       runtimes,
       currentUserId,
+      currentUserRole,
       fallbackRuntimeId,
       nameSuffix,
     });
     onSeedRef.current(draft, draft.runtimeId !== source.runtime_id);
   }, [
     currentUserId,
+    currentUserRole,
     fallbackRuntimeId,
     nameSuffix,
     runtimes,
