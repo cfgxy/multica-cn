@@ -41,6 +41,12 @@ func registerKnowledgeDir(t *testing.T, kind, path string) string {
 	return created.ID
 }
 
+func registerKnowledgeUltimate(t *testing.T, daemonID, path string) string {
+	t.Helper()
+	grantKnowledgeUltimatePath(t, daemonID, path)
+	return registerKnowledgeDir(t, "ultimate", path)
+}
+
 func claimKnowledgeUltimate(t *testing.T, daemonID, dirID string) {
 	t.Helper()
 	dir := knowledgeDirState(t, dirID)
@@ -144,13 +150,11 @@ func postKnowledgeResults(t *testing.T, daemonID string, body map[string]any) ma
 	return ack
 }
 
-func postKnowledgeResultsAsUser(t *testing.T, daemonID string, body map[string]any) map[string]any {
+func postKnowledgeResultsAsUser(t *testing.T, daemonID string, body map[string]any) {
 	t.Helper()
-	var ack map[string]any
 	testutil.Call(t, testHandler.PostKnowledgeResults,
 		newRequest(http.MethodPost, "/api/daemon/knowledge/results?daemon_id="+daemonID, body)).
-		Want(http.StatusOK).JSON(&ack)
-	return ack
+		Want(http.StatusUnauthorized)
 }
 
 func adoptEntry(t *testing.T, entryID string) int {
@@ -181,9 +185,14 @@ func TestKnowledgeRegistrationQueuesFirstScan(t *testing.T) {
 		Want(http.StatusConflict)
 
 	// A second active ultimate refuses (single adoption target per workspace).
-	registerKnowledgeDir(t, "ultimate", t.TempDir())
+	ultimatePath := t.TempDir()
 	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
-		map[string]any{"kind": "ultimate", "path": t.TempDir()})).Want(http.StatusConflict)
+		map[string]any{"kind": "ultimate", "path": ultimatePath})).Want(http.StatusConflict)
+	registerKnowledgeUltimate(t, "registration-daemon", ultimatePath)
+	secondUltimatePath := t.TempDir()
+	grantKnowledgeUltimatePath(t, "second-registration-daemon", secondUltimatePath)
+	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
+		map[string]any{"kind": "ultimate", "path": secondUltimatePath})).Want(http.StatusConflict)
 
 	// Unknown kinds refuse; kind is optional and defaults to candidate_cli.
 	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
@@ -200,6 +209,44 @@ func TestKnowledgeRegistrationQueuesFirstScan(t *testing.T) {
 	}
 }
 
+// TestKnowledgeAdoptionRefusesUnboundUltimate keeps both manual-target entry
+// points executable: a new target must have a registered daemon path, and a
+// legacy unbound target must not turn an adoption into an unconsumable job.
+func TestKnowledgeAdoptionRefusesUnboundUltimate(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-without-ultimate-host"
+	const ultimatePath = "/tmp/ultimate-without-registered-host"
+
+	// The management API rejects an ultimate path with no daemon resource.
+	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
+		map[string]any{"kind": "ultimate", "path": ultimatePath})).Want(http.StatusConflict)
+
+	// An older unbound row may exist from before that validation. It remains
+	// visible, but cannot strand an adoption because no daemon can consume it.
+	dbfx.Insert(t, "knowledge_dir", testutil.Cols{
+		"workspace_id": testWorkspaceID,
+		"kind":         "ultimate",
+		"path":         ultimatePath,
+		"created_by":   testUserID,
+	})
+	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-without-ultimate-host")
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"unbound-target": "must remain pending"},
+		}},
+	})
+	entry := knowledgeEntryByKey(t, candidate, "unbound-target")
+	if code := adoptEntry(t, entry.ID); code != http.StatusConflict {
+		t.Fatalf("adopt against unbound ultimate: %d, want 409", code)
+	}
+	if state := knowledgeEntryByKey(t, candidate, "unbound-target").AdoptionState; state != "pending" {
+		t.Fatalf("unbound ultimate stranded adoption: state=%q, want pending", state)
+	}
+}
+
 // TestKnowledgePlanHandsWorkToDaemon pins the plan contents: hosted +
 // unclaimed directories with their mirror SHA map, a daemon-bound ultimate,
 // and — after a queue-time adoption — the pending transfer job.
@@ -209,10 +256,9 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 	}
 	const daemonID = "daemon-under-test"
 
-	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-under-test")
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/ultimate-under-test")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-under-test")
 	ultimatePath := knowledgeDirState(t, ultimate).Path
-	grantKnowledgeUltimatePath(t, daemonID, ultimatePath)
 
 	// 只有已登记的精确路径归属 daemon 才能看到或认领未绑定 ultimate。
 	unboundPlan := knowledgePlan(t, daemonID)
@@ -241,15 +287,12 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 	if foreignAck["ultimates_registered"].(float64) != 0 {
 		t.Fatalf("foreign daemon claimed unbound ultimate: %v", foreignAck)
 	}
-	userAck := postKnowledgeResultsAsUser(t, daemonID, map[string]any{
+	postKnowledgeResultsAsUser(t, daemonID, map[string]any{
 		"ultimates": []map[string]any{{
 			"workspace_id": testWorkspaceID,
 			"path":         ultimatePath,
 		}},
 	})
-	if userAck["ultimates_registered"].(float64) != 0 {
-		t.Fatalf("user request claimed unbound ultimate: %v", userAck)
-	}
 	claimKnowledgeUltimate(t, daemonID, ultimate)
 	foreignAck = postKnowledgeResults(t, "foreign-daemon", map[string]any{
 		"ultimates": []map[string]any{{
@@ -353,9 +396,8 @@ func TestKnowledgePlanExcludesUltimateFromScanDirs(t *testing.T) {
 	}
 	const daemonID = "daemon-under-test"
 
-	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-not-a-scan-target")
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/ultimate-not-a-scan-target")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/ultimate-fix-candidate")
-	grantKnowledgeUltimatePath(t, daemonID, knowledgeDirState(t, ultimate).Path)
 	claimKnowledgeUltimate(t, daemonID, ultimate)
 
 	plan := knowledgePlan(t, daemonID)
@@ -397,7 +439,7 @@ func TestKnowledgeResultsRefuseUltimateScanReports(t *testing.T) {
 	}
 	const daemonID = "daemon-under-test"
 
-	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-scan-guard")
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/ultimate-scan-guard")
 
 	ack := postKnowledgeResults(t, daemonID, map[string]any{
 		"scans": []map[string]any{{
@@ -516,9 +558,8 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 	}
 	const daemonID = "daemon-under-test"
 
-	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-state-machine")
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/ultimate-state-machine")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-state-machine")
-	grantKnowledgeUltimatePath(t, daemonID, knowledgeDirState(t, ultimate).Path)
 	claimKnowledgeUltimate(t, daemonID, ultimate)
 	postKnowledgeResults(t, daemonID, map[string]any{
 		"scans": []map[string]any{{
@@ -573,6 +614,22 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 	}
 	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "transferring" {
 		t.Fatalf("missing ultimate callback moved transferring entry: %q", state)
+	}
+
+	// User identity cannot impersonate the daemon for either successful or
+	// failed write results; both leave the queued transfer unchanged.
+	postKnowledgeResultsAsUser(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "forged user failure",
+		}},
+	})
+	postKnowledgeResultsAsUser(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": true, "ultimate_dir_id": ultimate,
+		}},
+	})
+	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "transferring" {
+		t.Fatalf("user callbacks moved transferring entry: %q", state)
 	}
 
 	// A daemon not eligible for the target ultimate may not resolve the job.
@@ -666,11 +723,9 @@ func TestKnowledgeEntryOperations(t *testing.T) {
 	}
 	const daemonID = "daemon-knowledge-operations"
 	ctx := context.Background()
-	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-operations")
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/ultimate-operations")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-operations")
-	if _, err := testPool.Exec(ctx, `UPDATE knowledge_dir SET daemon_id = $2 WHERE id = $1`, ultimate, daemonID); err != nil {
-		t.Fatalf("bind ultimate daemon: %v", err)
-	}
+	claimKnowledgeUltimate(t, daemonID, ultimate)
 	postKnowledgeResults(t, daemonID, map[string]any{
 		"scans": []map[string]any{{
 			"dir_id": candidate, "trigger_source": "initial", "ok": true,

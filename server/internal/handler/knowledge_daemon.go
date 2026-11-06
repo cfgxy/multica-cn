@@ -132,9 +132,9 @@ type KnowledgeAdoptReport struct {
 	Error         string `json:"error,omitempty"`
 }
 
-// knowledgePlanDaemonID resolves and cross-checks the requesting daemon's id:
-// the query parameter is required for user-identity callers, and a daemon
-// token may only ever speak for itself.
+// knowledgePlanDaemonID resolves and cross-checks the daemon selected for a
+// read-only plan. User identities retain this compatibility path; write
+// reports must use knowledgeResultsDaemonID instead.
 func knowledgePlanDaemonID(r *http.Request) (string, int, string) {
 	daemonID := strings.TrimSpace(r.URL.Query().Get("daemon_id"))
 	ctxDaemonID := middleware.DaemonIDFromContext(r.Context())
@@ -150,11 +150,28 @@ func knowledgePlanDaemonID(r *http.Request) (string, int, string) {
 	return daemonID, 0, ""
 }
 
+// knowledgeResultsDaemonID accepts reports only from an authenticated daemon.
+// A user can inspect a compatible plan, but must never be able to assert that
+// a daemon wrote and read back a bd Memory.
+func knowledgeResultsDaemonID(r *http.Request) (string, int, string) {
+	daemonID := middleware.DaemonIDFromContext(r.Context())
+	if daemonID == "" {
+		return "", http.StatusUnauthorized, "daemon authentication is required to report knowledge results"
+	}
+	if requested := strings.TrimSpace(r.URL.Query().Get("daemon_id")); requested != "" && requested != daemonID {
+		return "", http.StatusForbidden, "daemon tokens can only address their own daemon"
+	}
+	return daemonID, 0, ""
+}
+
 // knowledgePlanWorkspaces resolves the workspaces a plan covers for this
-// caller: a user identity sees every workspace it belongs to (the same
-// projection ListDaemonWorkspaces serves), a workspace-scoped daemon token
-// sees only its bound workspace.
+// caller. A workspace-scoped daemon token always wins over request headers and
+// sees only its bound workspace; a user identity sees every workspace it
+// belongs to through the same projection ListDaemonWorkspaces serves.
 func (h *Handler) knowledgePlanWorkspaces(r *http.Request) ([]pgtype.UUID, int, string) {
+	if workspaceID := middleware.DaemonWorkspaceIDFromContext(r.Context()); workspaceID != "" {
+		return []pgtype.UUID{parseUUID(workspaceID)}, 0, ""
+	}
 	if userID := requestUserID(r); userID != "" {
 		rows, err := h.Queries.ListDaemonWorkspaces(r.Context(), parseUUID(userID))
 		if err != nil {
@@ -166,11 +183,7 @@ func (h *Handler) knowledgePlanWorkspaces(r *http.Request) ([]pgtype.UUID, int, 
 		}
 		return ids, 0, ""
 	}
-	workspaceID := middleware.DaemonWorkspaceIDFromContext(r.Context())
-	if workspaceID == "" {
-		return nil, http.StatusUnauthorized, "daemon workspace identity required"
-	}
-	return []pgtype.UUID{parseUUID(workspaceID)}, 0, ""
+	return nil, http.StatusUnauthorized, "daemon workspace identity required"
 }
 
 // knowledgeParseUUID is the daemon-report tolerant id parse: reports carry
@@ -459,7 +472,7 @@ WHERE workspace_id::text = $1 AND id::text = ANY($2::text[])`, workspaceID, oper
 // one daemon's report for a knowledge cycle. Every item is applied
 // independently and best-effort; the response summarizes what landed.
 func (h *Handler) PostKnowledgeResults(w http.ResponseWriter, r *http.Request) {
-	daemonID, status, message := knowledgePlanDaemonID(r)
+	daemonID, status, message := knowledgeResultsDaemonID(r)
 	if status != 0 {
 		writeError(w, status, message)
 		return

@@ -143,12 +143,9 @@ ORDER BY d.kind = 'ultimate' DESC, d.created_at`, workspaceID)
 }
 
 // PostKnowledgeDir serves POST /api/knowledge/dirs: register a manually added
-// external source. Kind is a server decision (candidate_cli) — the daemon
-// auto-discovers project directories and auto-designates the ultimate, so a
-// hand registration only ever adds an external candidate. Scanning happens on
-// the daemon that hosts the path (registration just queues the first scan);
-// the row lands immediately and the first batch shows up within one knowledge
-// cycle, doubling as the access verification.
+// external source. Kind is normally a server decision (candidate_cli). A
+// management-channel ultimate is accepted only when its exact path has a
+// registered daemon host, so it can eventually receive adoption work.
 func (h *Handler) PostKnowledgeDir(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
 	if !ok {
@@ -178,6 +175,25 @@ func (h *Handler) PostKnowledgeDir(w http.ResponseWriter, r *http.Request) {
 	if body.Kind != "ultimate" && body.Kind != "candidate_cli" && body.Kind != "candidate_auto" {
 		writeError(w, http.StatusBadRequest, "kind must be ultimate, candidate_cli or candidate_auto")
 		return
+	}
+	if body.Kind == "ultimate" {
+		var hasDaemonHost bool
+		err := h.DB.QueryRow(r.Context(), `
+	SELECT EXISTS(
+		SELECT 1 FROM project_resource
+		WHERE workspace_id = $1
+		  AND resource_type = 'local_directory'
+		  AND resource_ref->>'local_path' = $2
+		  AND COALESCE(resource_ref->>'daemon_id', '') <> ''
+	)`, workspaceID, body.Path).Scan(&hasDaemonHost)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate the ultimate knowledge directory host")
+			return
+		}
+		if !hasDaemonHost {
+			writeError(w, http.StatusConflict, "an ultimate knowledge directory must match a registered daemon local directory")
+			return
+		}
 	}
 
 	// One active ultimate per workspace and one row per live path are
@@ -567,16 +583,18 @@ type knowledgeAdoptError struct {
 
 func (e *knowledgeAdoptError) Error() string { return e.reason }
 
-// knowledgeUltimateDir resolves the workspace's active ultimate directory.
+// knowledgeUltimateDir resolves the workspace's active ultimate directory only
+// after a daemon has claimed it. Queuing a transfer without this binding would
+// leave it in transferring with no authenticated consumer.
 func (h *Handler) knowledgeUltimateDir(ctx context.Context, workspaceID pgtype.UUID) (pgtype.UUID, string, error) {
 	var id pgtype.UUID
 	var path string
 	err := h.DB.QueryRow(ctx, `
 SELECT id, path FROM knowledge_dir
-WHERE workspace_id = $1 AND kind = 'ultimate' AND removed = FALSE
+	WHERE workspace_id = $1 AND kind = 'ultimate' AND removed = FALSE AND daemon_id <> ''
 ORDER BY created_at LIMIT 1`, workspaceID).Scan(&id, &path)
 	if err != nil {
-		return id, "", &knowledgeAdoptError{"no ultimate knowledge directory is designated for this workspace"}
+		return id, "", &knowledgeAdoptError{"no bound ultimate knowledge directory is designated for this workspace"}
 	}
 	return id, path, nil
 }
