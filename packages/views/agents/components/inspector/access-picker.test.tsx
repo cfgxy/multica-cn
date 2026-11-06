@@ -48,7 +48,7 @@ function renderPicker(
   return { ...utils, onChange };
 }
 
-describe("AccessPicker owner-only editing (MUL-3963)", () => {
+describe("AccessPicker access editing (MUL-3963)", () => {
   beforeEach(() => cleanup());
   afterEach(() => cleanup());
 
@@ -63,20 +63,20 @@ describe("AccessPicker owner-only editing (MUL-3963)", () => {
       visibility: "workspace",
     });
 
-    // No clickable trigger — a non-owner can never open the picker.
+    // No clickable trigger — an unauthorized viewer can never open the picker.
     expect(screen.queryByRole("button")).toBeNull();
     // The current access is still shown…
     expect(screen.getByTestId("access-readonly")).toBeInTheDocument();
     expect(screen.getByText("Workspace")).toBeInTheDocument();
-    // …with the owner-only explanation surfaced as the accessible label.
+    // …with the authorization explanation surfaced as the accessible label.
     expect(
       screen.getByLabelText(
-        "Only the agent owner can change who can run this agent.",
+        "Only the agent owner or workspace owner can change who can run this agent.",
       ),
     ).toBeInTheDocument();
   });
 
-  it("renders mutually exclusive access scopes for the owner", () => {
+  it("renders mutually exclusive access scopes for an authorized editor", () => {
     renderPicker({ canEdit: true });
     expect(
       screen.getByRole("radio", { name: /^Only me/i }),
@@ -89,7 +89,7 @@ describe("AccessPicker owner-only editing (MUL-3963)", () => {
     ).not.toBeChecked();
   });
 
-  it("lets the owner grant the entire workspace access", () => {
+  it("lets an authorized editor grant the entire workspace access", () => {
     const { onChange } = renderPicker({ canEdit: true });
     fireEvent.click(
       screen.getByRole("radio", { name: /^Entire workspace/i }),
@@ -102,7 +102,7 @@ describe("AccessPicker owner-only editing (MUL-3963)", () => {
     });
   });
 
-  it("reports an unsaved draft until the owner returns to the persisted mode", () => {
+  it("reports an unsaved draft until the editor returns to the persisted mode", () => {
     const onDirtyChange = vi.fn();
     renderPicker({ canEdit: true, onDirtyChange });
 

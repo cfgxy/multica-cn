@@ -10,7 +10,7 @@ package service
 //
 // The fixtures here deliberately create the torn state (tasks still pinned to
 // the old runtime after the agent row moved) so every test exercises both the
-// healing path and the fences that must NOT relax (health, private-owner,
+// healing path and the fences that must NOT relax (health,
 // per-(issue, agent) serialization, reclaim authorization).
 
 import (
@@ -184,11 +184,10 @@ func TestClaimAgentTaskHealthFencesFollowCurrentRuntime(t *testing.T) {
 	}
 }
 
-// TestClaimAgentTaskPrivateOwnerFenceFollowsCurrentRuntime pins that the
-// private-runtime owner gate attaches to the agent's CURRENT runtime: a
-// private runtime owned by someone else cannot claim the agent's stranded
-// rows even though the task itself sits on a public runtime.
-func TestClaimAgentTaskPrivateOwnerFenceFollowsCurrentRuntime(t *testing.T) {
+// TestClaimAgentTaskPrivateRuntimeHonorsPersistedBinding pins that an
+// authorized private-runtime binding remains claimable after it is persisted,
+// even when the runtime and agent have different owners.
+func TestClaimAgentTaskPrivateRuntimeHonorsPersistedBinding(t *testing.T) {
 	ctx := context.Background()
 	pool := newResolveOriginatorPool(t)
 	suffix := time.Now().UnixNano()
@@ -224,22 +223,14 @@ func TestClaimAgentTaskPrivateOwnerFenceFollowsCurrentRuntime(t *testing.T) {
 		taskID:       taskID,
 	}
 
-	// The agent IS bound to the private runtime, but its owner is foreign:
-	// the owner gate follows the current binding and blocks the claim.
-	if _, err := f.claim(t, ctx, f.newRuntimeID); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("claim on foreign-owned private runtime: err = %v, want no rows", err)
-	}
-	if status, _ := f.taskStatusRuntime(t, ctx, taskID); status != "queued" {
-		t.Fatalf("task status = %q, want queued after rejected claim", status)
-	}
-
-	// Hand the runtime to the agent's owner: the same claim now succeeds.
-	if _, err := pool.Exec(ctx, `UPDATE agent_runtime SET owner_id = $1 WHERE id = $2`,
-		agentOwner, privateRuntime); err != nil {
-		t.Fatalf("transfer runtime ownership: %v", err)
-	}
+	// The agent is bound to a private runtime owned by another member. The
+	// authorization was established at binding time, so task claiming executes
+	// that persisted binding instead of trying to reconstruct the actor.
 	if _, err := f.claim(t, ctx, f.newRuntimeID); err != nil {
-		t.Fatalf("claim on own private runtime: %v", err)
+		t.Fatalf("claim on authorized foreign-owned private runtime: %v", err)
+	}
+	if status, _ := f.taskStatusRuntime(t, ctx, taskID); status != "dispatched" {
+		t.Fatalf("task status = %q, want dispatched after claim", status)
 	}
 }
 

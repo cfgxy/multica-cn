@@ -345,7 +345,7 @@
     "runtime_none": "利用可能なランタイムがありません",
     "runtime_cloud_badge": "クラウド",
     "runtime_private_badge": "非公開",
-    "runtime_private_locked_tooltip": "非公開ランタイムです。オーナーのみがこのランタイム上にエージェントを作成できます。共有するには、オーナーに公開へ切り替えるよう依頼してください。",
+    "runtime_private_locked_tooltip": "非公開ランタイムです。ランタイムのオーナーまたはワークスペースのオーナーのみが、このランタイム上にエージェントを作成できます。",
     "runtime_search_placeholder": "マシンを検索…",
     "runtime_no_results": "一致するマシンがありません",
     "runtime_group_online": "{{online}}/{{total}} オンライン",
@@ -806,7 +806,7 @@
     "team_coming_soon": "近日公開",
     "members_group": "メンバー",
     "public_group": "公開アクセス",
-    "owner_only_readonly": "このエージェントを実行できる相手は、オーナーのみが変更できます。",
+    "owner_only_readonly": "このエージェントを実行できる相手を変更できるのは、エージェントのオーナーまたはワークスペースのオーナーのみです。",
     "members_empty": "選択できるワークスペースメンバーがいません",
     "composio_switch_hint": "ご注意 — このエージェントは Composio アプリが有効です。共有すると、アクセス権を持つ全員がこのエージェントを通じてこれらのアプリを利用できます。",
     "save_failed": "アクセス権の更新に失敗しました"

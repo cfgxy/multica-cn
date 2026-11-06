@@ -2592,21 +2592,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			"error_agent_runtime_changed", http.StatusConflict, "agent runtime changed before task delivery",
 		)
 	}
-	if runtime.Visibility == "private" && runtime.OwnerID.Valid &&
-		(!agent.OwnerID.Valid || agent.OwnerID != runtime.OwnerID) {
-		userMessage := "This private runtime cannot run the assigned agent because the agent and runtime have different owners."
-		if !agent.OwnerID.Valid {
-			userMessage = "This private runtime cannot run the assigned agent because the agent has no owner."
-		}
-		slog.Warn("daemon claim: private runtime no longer permits task agent; refusing dispatch",
+	if runtime.Visibility == "private" && runtime.OwnerID.Valid && !agent.OwnerID.Valid {
+		slog.Warn("daemon claim: private runtime cannot mint a task token for an ownerless agent; refusing dispatch",
 			"task_id", uuidToString(task.ID),
 			"agent_id", uuidToString(task.AgentID),
 			"runtime_id", runtimeID,
-			"agent_owner_valid", agent.OwnerID.Valid,
 		)
 		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, h.failClaimedTaskBeforeLaunch(
 			r.Context(), task,
-			userMessage,
+			"This private runtime cannot run the assigned agent because the agent has no owner.",
 			taskfailure.ReasonInvalidTaskIdentity,
 			"error_runtime_access_denied", http.StatusForbidden, "private runtime does not permit task agent",
 		)

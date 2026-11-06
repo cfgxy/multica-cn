@@ -41,6 +41,7 @@ import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { executionProfileListOptions, executionProfileDetailOptions } from "@/data/queries/execution-profiles";
 import { agentListOptions } from "@/data/queries/agents";
 import { runtimeListOptions } from "@/data/queries/runtimes";
+import { memberListOptions } from "@/data/queries/members";
 import {
   useActivateExecutionProfile,
   useCreateExecutionProfile,
@@ -70,6 +71,9 @@ export default function ExecutionProfilesScreen() {
   const listQuery = useQuery(executionProfileListOptions(wsId));
   const { data: agents } = useQuery(agentListOptions(wsId));
   const { data: runtimes } = useQuery(runtimeListOptions(wsId));
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const currentUserRole =
+    members.find((member) => member.user_id === me?.id)?.role ?? null;
 
   const create = useCreateExecutionProfile();
   const update = useUpdateExecutionProfile();
@@ -118,9 +122,10 @@ export default function ExecutionProfilesScreen() {
     () =>
       (runtimes ?? []).filter(
         (r) =>
-          r.status === "online" && isRuntimeUsableForUser(r, me?.id ?? null),
+          r.status === "online" &&
+          isRuntimeUsableForUser(r, me?.id ?? null, currentUserRole),
       ),
-    [runtimes, me],
+    [runtimes, me, currentUserRole],
   );
 
   // Entry candidates: unarchived agents not already named by the profile.
@@ -313,7 +318,7 @@ export default function ExecutionProfilesScreen() {
       case "runtime_forbidden":
         return t(
           "execution_profile.reason_runtime_forbidden",
-          "The runtime is now private and only its owner can use it",
+          "The runtime is now private and only its owner or the workspace owner can use it",
         );
       case "thinking_level_unsupported":
         return t(

@@ -342,7 +342,8 @@ func (h *Handler) SaveAgentBuilderDraft(w http.ResponseWriter, r *http.Request) 
 // resolveBuilderRuntime loads a runtime the caller is allowed to execute a
 // builder conversation on. Shared by session create and runtime switch so both
 // enforce the same gates in the same order: it exists in this workspace, this
-// member may use it (private runtimes stay owner/admin-only), it declares the
+// member may use it (a private runtime admits its runtime owner or workspace
+// owner), it declares the
 // text capability (§4.4 — builder carriers are text agents, and the static
 // Type-layer invariant is checked before the transient online state), and it
 // is online. verb names the attempted action in the offline error so the two
@@ -365,7 +366,7 @@ func (h *Handler) resolveBuilderRuntime(w http.ResponseWriter, r *http.Request, 
 		return db.AgentRuntime{}, false
 	}
 	if !canUseRuntimeForAgent(member, runtime) {
-		writeError(w, http.StatusForbidden, "this runtime is private; only its owner can use it")
+		writeError(w, http.StatusForbidden, "this runtime is private; only its owner or the workspace owner can use it")
 		return db.AgentRuntime{}, false
 	}
 	if !h.validateAgentTextBinding(w, r, runtime) {

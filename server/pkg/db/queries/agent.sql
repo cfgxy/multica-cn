@@ -1177,22 +1177,10 @@ WHERE id = (
             -- The claiming runtime must be the agent's current binding; an
             -- unbound agent (NULL runtime) never matches.
             AND a.runtime_id = @runtime_id
-            -- Private runtimes only execute their owner's agents. Ownerless
-            -- runtime/agent rows remain claimable only so the handler can
-            -- settle them explicitly before daemon delivery; filtering them
-            -- here would leave every task silently queued until the TTL.
-            -- Public runtimes remain shareable across agent owners.
-            AND (
-                r.visibility = 'public'
-                OR (
-                    r.visibility = 'private'
-                    AND (
-                        r.owner_id IS NULL
-                        OR a.owner_id IS NULL
-                        OR r.owner_id = a.owner_id
-                    )
-                )
-            )
+            -- The binding write already authorizes this agent against the
+            -- runtime. Claims cannot reconstruct the member who made that
+            -- authorized write, so they execute the persisted binding rather
+            -- than imposing an agent/runtime owner-equality requirement.
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
@@ -1322,12 +1310,12 @@ WHERE id = (
       AND atq.dispatched_at < now() - make_interval(secs => @claim_recovery_secs::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
-          -- Authorization fence, kept in sync with ClaimAgentTask's RUYI-224
-          -- authority model: a dispatched row is owned by the runtime it was
-          -- claimed on (the claim rewrote runtime_id), so re-delivery stays
-          -- authorized only while that runtime is still the agent's CURRENT
-          -- binding — the outer runtime_id filter pins atq.runtime_id to the
-          -- polling runtime, making this fence "agent still bound here".
+          -- Authorization fence: a dispatched row is owned by the runtime it
+          -- was claimed on (the claim rewrote runtime_id), so re-delivery
+          -- stays authorized only while that runtime is still the agent's
+          -- CURRENT binding — the outer runtime_id filter pins atq.runtime_id
+          -- to the polling runtime, making this fence "agent still bound
+          -- here".
           -- A row whose agent moved away is never re-delivered by the old
           -- runtime; recovering that wedged dispatch is the stale-dispatch
           -- machinery's job, not this fence's.
@@ -1336,17 +1324,6 @@ WHERE id = (
           JOIN agent_runtime r ON r.id = atq.runtime_id
           WHERE a.id = atq.agent_id
             AND a.runtime_id = atq.runtime_id
-            AND (
-                r.visibility = 'public'
-                OR (
-                    r.visibility = 'private'
-                    AND (
-                        r.owner_id IS NULL
-                        OR a.owner_id IS NULL
-                        OR r.owner_id = a.owner_id
-                    )
-                )
-            )
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
@@ -1376,12 +1353,12 @@ WHERE id IN (
       AND atq.dispatched_at < now() - make_interval(secs => @claim_recovery_secs::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
-          -- Authorization fence, kept in sync with ClaimAgentTask's RUYI-224
-          -- authority model: a dispatched row is owned by the runtime it was
-          -- claimed on (the claim rewrote runtime_id), so re-delivery stays
-          -- authorized only while that runtime is still the agent's CURRENT
-          -- binding — the outer runtime_id filter pins atq.runtime_id to the
-          -- polling runtime, making this fence "agent still bound here".
+          -- Authorization fence: a dispatched row is owned by the runtime it
+          -- was claimed on (the claim rewrote runtime_id), so re-delivery
+          -- stays authorized only while that runtime is still the agent's
+          -- CURRENT binding — the outer runtime_id filter pins atq.runtime_id
+          -- to the polling runtime, making this fence "agent still bound
+          -- here".
           -- A row whose agent moved away is never re-delivered by the old
           -- runtime; recovering that wedged dispatch is the stale-dispatch
           -- machinery's job, not this fence's.
@@ -1390,17 +1367,6 @@ WHERE id IN (
           JOIN agent_runtime r ON r.id = atq.runtime_id
           WHERE a.id = atq.agent_id
             AND a.runtime_id = atq.runtime_id
-            AND (
-                r.visibility = 'public'
-                OR (
-                    r.visibility = 'private'
-                    AND (
-                        r.owner_id IS NULL
-                        OR a.owner_id IS NULL
-                        OR r.owner_id = a.owner_id
-                    )
-                )
-            )
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
@@ -2873,17 +2839,6 @@ WHERE atq.status = 'queued'
       JOIN agent_runtime r ON r.id = $1
       WHERE a.id = atq.agent_id
         AND a.runtime_id = $1
-        AND (
-            r.visibility = 'public'
-            OR (
-                r.visibility = 'private'
-                AND (
-                    r.owner_id IS NULL
-                    OR a.owner_id IS NULL
-                    OR r.owner_id = a.owner_id
-                )
-            )
-        )
   )
 ORDER BY atq.priority DESC, atq.created_at ASC;
 
@@ -2999,17 +2954,6 @@ WHERE atq.status = 'queued'
       JOIN agent_runtime r ON r.id = a.runtime_id
       WHERE a.id = atq.agent_id
         AND a.runtime_id = ANY(@runtime_ids::uuid[])
-        AND (
-            r.visibility = 'public'
-            OR (
-                r.visibility = 'private'
-                AND (
-                    r.owner_id IS NULL
-                    OR a.owner_id IS NULL
-                    OR r.owner_id = a.owner_id
-                )
-            )
-        )
   )
 ORDER BY atq.priority DESC, atq.created_at ASC;
 
