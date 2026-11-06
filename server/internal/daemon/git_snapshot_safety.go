@@ -6,39 +6,46 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
-// gitSnapshotAudit describes the Git metadata boundary discovered before a
-// snapshot worker is created. It is deliberately read-only: a failed audit is
-// a reason to use the existing worktree backend, never a reason to repair a
-// user's repository metadata.
+// gitSnapshotAudit 描述 worker 启动前解析出的 Git 读写边界。审计只读；失败
+// 时必须回退既有 worktree，绝不尝试修复用户的 Git metadata。
 type gitSnapshotAudit struct {
-	HasGit bool
-	Safe   bool
-	Reason string
+	HasGit       bool
+	Safe         bool
+	Reason       string
+	Repositories []gitSnapshotRepository
+	Dependencies []string
 }
 
-// auditSnapshotGitScope recursively discovers Git repositories in the declared
-// snapshot units and proves that each repository's worktree, git dir, and
-// common git dir are all covered by a unit. Git's own resolution is used for
-// indirection (.git files, commondir, and symlinks) instead of parsing those
-// implementation details by hand.
+// gitSnapshotRepository 是一个工作树及其 Git 写入依赖。Dependencies 覆盖
+// git dir、common dir 和可达的 alternate object database。
+type gitSnapshotRepository struct {
+	Worktree     string
+	GitDir       string
+	CommonDir    string
+	Dependencies []string
+}
+
+// auditSnapshotGitScope 递归发现资源 scope 内的工作树，并解析每个工作树的
+// Git metadata。工作树本身必须仍在用户声明的 scope 中；metadata 可位于外部，
+// 仅在可解析为现存目录时作为 daemon 内部 overlay dependency 纳入计划。
 func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 	if plan == nil {
 		return gitSnapshotAudit{Safe: true}
 	}
 	units := plan.Units
-	// Unit tests and recovery callers can construct the minimal plan shape
-	// with only Primary. Treat that as one whole-root unit rather than
-	// silently declaring the directory non-Git.
 	if len(units) == 0 && plan.Primary != nil {
 		units = []snapshotUnit{*plan.Primary}
 	}
 
 	covered := make([]string, 0, len(units))
 	for _, unit := range units {
-		real, err := resolveRealPath(unit.AbsPath)
+		real, err := canonicalGitDirectory(unit.AbsPath)
 		if err != nil {
 			return gitSnapshotAudit{Reason: fmt.Sprintf("cannot resolve snapshot scope %q: %v", unit.AbsPath, err)}
 		}
@@ -64,8 +71,7 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 		}
 	}
 
-	// A unit may be a subdirectory of a repository, so its .git is outside the
-	// walk. Resolve that shape too; scope containment below rejects it safely.
+	// 一个 unit 可以指向仓库子目录，因此其 .git 不一定在 WalkDir 根目录下。
 	for _, unit := range units {
 		if top, ok := gitToplevel(unit.AbsPath); ok {
 			repositories[top] = struct{}{}
@@ -75,13 +81,14 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 		return gitSnapshotAudit{Safe: true}
 	}
 
+	repoPaths := make([]string, 0, len(repositories))
 	for repo := range repositories {
-		if _, err := os.Stat(filepath.Join(repo, ".gitmodules")); err == nil {
-			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("repository %q declares submodules", repo)}
-		} else if !os.IsNotExist(err) {
-			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot inspect submodule declaration in %q: %v", repo, err)}
-		}
+		repoPaths = append(repoPaths, repo)
+	}
+	sort.Strings(repoPaths)
 
+	audit := gitSnapshotAudit{HasGit: true}
+	for _, repo := range repoPaths {
 		top, err := gitPath(repo, "--show-toplevel")
 		if err != nil {
 			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve Git worktree %q: %v", repo, err)}
@@ -94,25 +101,44 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 		if err != nil {
 			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve common Git directory for %q: %v", repo, err)}
 		}
-		for _, path := range []string{top, gitDir, commonDir} {
-			real, err := filepath.EvalSymlinks(path)
-			if err != nil {
-				return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve Git path %q: %v", path, err)}
-			}
-			if !withinAnyScope(real, covered) {
-				return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("Git path %q is outside the declared snapshot scope", real)}
-			}
+		top, err = canonicalGitDirectory(top)
+		if err != nil {
+			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve Git worktree %q: %v", repo, err)}
 		}
+		gitDir, err = canonicalGitDirectory(gitDir)
+		if err != nil {
+			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve Git directory for %q: %v", repo, err)}
+		}
+		commonDir, err = canonicalGitDirectory(commonDir)
+		if err != nil {
+			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve common Git directory for %q: %v", repo, err)}
+		}
+		if !withinAnyScope(top, covered) {
+			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("Git worktree %q is outside the declared snapshot scope", top)}
+		}
+
+		dependencies, err := gitSnapshotDependencies(repo, gitDir, commonDir)
+		if err != nil {
+			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve Git metadata dependencies for %q: %v", repo, err)}
+		}
+		audit.Repositories = append(audit.Repositories, gitSnapshotRepository{
+			Worktree: top, GitDir: gitDir, CommonDir: commonDir, Dependencies: dependencies,
+		})
+		audit.Dependencies = append(audit.Dependencies, dependencies...)
 	}
-	return gitSnapshotAudit{HasGit: true, Safe: true}
+	audit.Dependencies = compactContainedPaths(audit.Dependencies)
+	audit.Safe = true
+	return audit
 }
 
-// gitSnapshotDeliveryEligible is intentionally narrower than the read-only
-// audit. The first delivery implementation has one repository and one overlay
-// unit, with a real .git directory at the resource root. Linked worktrees,
-// nested repositories, submodules, and subdirectory scopes retain the proven
-// worktree path until each has its own delivery and recovery contract.
+// gitSnapshotDeliveryEligible 比只读审计更窄：当前 artifact contract 只交付
+// 一个主仓的 bundle。linked worktree 的外部 metadata 可以单独 overlay；嵌套
+// 仓、submodule 与多仓目录仍回退到已有 worktree 交付路径。
 func gitSnapshotDeliveryEligible(plan *snapshotPlan, enabled bool) bool {
+	return gitSnapshotDeliveryEligibleFromAudit(plan, enabled, auditSnapshotGitScope(plan))
+}
+
+func gitSnapshotDeliveryEligibleFromAudit(plan *snapshotPlan, enabled bool, audit gitSnapshotAudit) bool {
 	if !enabled || plan == nil || plan.Primary == nil || len(plan.Units) != 1 {
 		return false
 	}
@@ -120,30 +146,24 @@ func gitSnapshotDeliveryEligible(plan *snapshotPlan, enabled bool) bool {
 	if unit.Subdir != "" || filepath.Clean(unit.AbsPath) != filepath.Clean(plan.Primary.AbsPath) {
 		return false
 	}
-	audit := auditSnapshotGitScope(plan)
-	if !audit.HasGit || !audit.Safe {
+	if _, err := os.Stat(filepath.Join(unit.AbsPath, ".gitmodules")); err == nil {
+		// 尚未初始化的 submodule 没有可递归发现的子工作树，但它的对象库也
+		// 不会由父仓 bundle 携带；必须等待完整多仓 artifact contract。
+		return false
+	} else if !os.IsNotExist(err) {
 		return false
 	}
-	info, err := os.Stat(filepath.Join(unit.AbsPath, ".git"))
-	if err != nil || !info.IsDir() {
+	if !audit.HasGit || !audit.Safe || len(audit.Repositories) != 1 {
 		return false
 	}
-	gitDirs := 0
-	err = filepath.WalkDir(unit.AbsPath, func(_ string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.Name() == ".git" {
-			gitDirs++
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	return err == nil && gitDirs == 1
+	return filepath.Clean(audit.Repositories[0].Worktree) == filepath.Clean(unit.AbsPath)
 }
 
-func gitPath(repo, arg string) (string, error) {
-	out, err := exec.Command("git", "-C", repo, "rev-parse", arg).Output()
+func gitPath(repo string, args ...string) (string, error) {
+	argv := append([]string{"-C", repo, "rev-parse"}, args...)
+	cmd := exec.Command("git", argv...)
+	cmd.Env = execenv.SnapshotGitEnvironment()
+	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
@@ -155,6 +175,96 @@ func gitPath(repo, arg string) (string, error) {
 		path = filepath.Join(repo, path)
 	}
 	return filepath.Clean(path), nil
+}
+
+func gitSnapshotDependencies(repo, gitDir, commonDir string) ([]string, error) {
+	objectDir, err := gitPath(repo, "--git-path", "objects")
+	if err != nil {
+		return nil, err
+	}
+	objectDir, err = canonicalGitDirectory(objectDir)
+	if err != nil {
+		return nil, err
+	}
+
+	dependencies := []string{gitDir, commonDir, objectDir}
+	queue := []string{objectDir}
+	seen := map[string]bool{objectDir: true}
+	for len(queue) > 0 {
+		objects := queue[0]
+		queue = queue[1:]
+		alternates, err := os.ReadFile(filepath.Join(objects, "info", "alternates"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, alternate := range strings.Split(string(alternates), "\n") {
+			alternate = strings.TrimSpace(alternate)
+			if alternate == "" {
+				continue
+			}
+			if strings.ContainsRune(alternate, 0) {
+				return nil, fmt.Errorf("alternate object path contains NUL")
+			}
+			if !filepath.IsAbs(alternate) {
+				alternate = filepath.Join(objects, alternate)
+			}
+			alternate, err = canonicalGitDirectory(alternate)
+			if err != nil {
+				return nil, err
+			}
+			if seen[alternate] {
+				continue
+			}
+			seen[alternate] = true
+			dependencies = append(dependencies, alternate)
+			queue = append(queue, alternate)
+		}
+	}
+	return compactContainedPaths(dependencies), nil
+}
+
+func canonicalGitDirectory(path string) (string, error) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(real)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%q is not a directory", path)
+	}
+	return filepath.Clean(real), nil
+}
+
+func compactContainedPaths(paths []string) []string {
+	unique := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		unique[filepath.Clean(path)] = struct{}{}
+	}
+	ordered := make([]string, 0, len(unique))
+	for path := range unique {
+		ordered = append(ordered, path)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		depthI := strings.Count(filepath.Clean(ordered[i]), string(filepath.Separator))
+		depthJ := strings.Count(filepath.Clean(ordered[j]), string(filepath.Separator))
+		if depthI != depthJ {
+			return depthI < depthJ
+		}
+		return ordered[i] < ordered[j]
+	})
+	kept := make([]string, 0, len(ordered))
+	for _, path := range ordered {
+		if !withinAnyScope(path, kept) {
+			kept = append(kept, path)
+		}
+	}
+	return kept
 }
 
 func withinAnyScope(path string, scopes []string) bool {

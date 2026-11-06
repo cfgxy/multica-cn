@@ -74,21 +74,22 @@ func RunSnapshotWorker(args []string) int {
 			return 1
 		}
 	}
+	gitEnv := SnapshotGitEnvironment()
 	// Preserve the original exec path for ordinary snapshots. Git delivery alone
 	// needs the mount to stay alive briefly after the child exits.
 	argv := append([]string{rest[0]}, rest[1:]...)
 	if spec.GitArtifact == nil {
-		if err := syscall.Exec(rest[0], argv, os.Environ()); err != nil {
+		if err := syscall.Exec(rest[0], argv, gitEnv); err != nil {
 			fmt.Fprintf(os.Stderr, "snapshot-worker: exec %s: %v\n", rest[0], err)
 			return 127
 		}
 		return 0 // unreachable
 	}
 	cmd := exec.Command(rest[0], argv[1:]...)
-	cmd.Env = os.Environ()
+	cmd.Env = gitEnv
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	err = cmd.Run()
-	if captureErr := CaptureSnapshotGitArtifact(spec.Cwd, spec.GitArtifact); captureErr != nil {
+	if captureErr := CaptureSnapshotGitArtifact(spec.Cwd, spec.GitArtifact, gitEnv); captureErr != nil {
 		fmt.Fprintf(os.Stderr, "snapshot-worker: capture Git artifact: %v\n", captureErr)
 		if err == nil {
 			return 1
