@@ -1,6 +1,6 @@
 ---
 name: multica-working-on-issues
-description: "Use when acting on a Multica issue beyond what the brief covers: PR linking vs close intent, reading a linked PR's real state, metadata keys, status-change side effects, sub-issue todo vs backlog."
+description: "Use before creating, updating, replacing, closing, or reviewing a PR/MR for a Multica issue, and for PR/MR linking vs close intent, Draft/Ready state, linked-PR readback, metadata, status side effects, or sub-issue todo vs backlog."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -16,10 +16,10 @@ For building mention links, load `multica-mentioning` instead — not this skill
 Every contract below is traced to source in
 `references/working-on-issues-source-map.md`.
 
-## PR linking and close intent are two distinct contracts
+## PR/MR linking and close intent are two distinct contracts
 
-The GitHub webhook runs two separate scans over an incoming PR. They are not the
-same gate and they read different fields.
+Multica's GitHub and supported VCS webhook paths run two separate scans over an
+incoming PR/MR. They are not the same gate and they read different fields.
 
 **Linking** scans the PR **title, body, OR branch** for a routable issue key
 (`PREFIX-NUMBER`, e.g. `MUL-2759`). Each match writes an issue ↔ PR link row.
@@ -66,25 +66,51 @@ Related to MUL-2759 in the body (no title/branch)  # links but reference_only �
 
 ### Default for code-changing issue work
 
-When an issue run changes code in a checked-out GitHub repo, the default handoff
-is to open or update a PR before posting the final Multica issue comment, unless
-the user explicitly asked for a local-only change or no PR. This is a default, not
-an unconditional command: if no code changed, say no PR is needed; if PR creation
-is blocked by auth, failing tests, or missing remote state, report that blocker
-instead of pretending the run is complete.
+When an issue run changes code in a checked-out repository with a supported PR/MR
+integration, the default handoff is to open or update a PR/MR before posting the
+final Multica issue comment, unless the user explicitly asked for a local-only
+change or no PR/MR. For a GitHub repository, this includes the existing contract
+to open or update a PR before posting the final Multica issue comment. This is a default, not
+an unconditional command: if no code changed, say no PR/MR is needed;
+if creation is blocked by auth, failing tests, or missing remote state, report that
+blocker instead of pretending the run is complete.
 
 Use a routable issue key in the PR title, body, or branch so the webhook can link
-the PR back to the issue. If the PR should close the issue on merge, put the key
-immediately after a closing keyword in the title or body, for example:
+the PR back to the issue. A delivery PR that should close the issue on merge must
+contain a standalone closing line in the body, for example:
 
 ```text
 MUL-2759: fix login redirect        # links only
 Closes MUL-2759                     # links and records close intent
 ```
 
-In the final issue comment, include the PR URL when a PR exists. If the task did
-not produce a PR because no code changed or the user asked not to create one, say
-that explicitly.
+Omit the closing line only when the PR is reference-only, intentionally does not
+close the issue, or public-repository safety forbids publishing the identifier;
+record that reason in the private issue. Multiple closing references are allowed
+and the issue closes only after every non-reference-only linked PR/MR is no longer
+`open`/`draft` and at least one merged link carries close intent.
+
+In the final issue comment, include every required PR/MR URL when one exists. In
+particular, include the PR URL when a PR exists. If the task did not produce a
+PR/MR because no code changed or the user asked not to create one, say that
+explicitly.
+
+### Continuous PR/MR delivery
+
+- Before creating a PR/MR, read the issue's current links with `multica issue
+  pull-requests <issue-id> --output json`. Reuse an existing open/draft PR/MR for
+  the same repository and delivery chain instead of opening another one.
+- One issue may legitimately require one working PR/MR per repository. Every
+  working PR/MR must be visibly linked. Multiple closing references are allowed:
+  Multica advances the issue only after every non-reference-only linked PR/MR is
+  no longer `open`/`draft` and at least one merged link carries close intent.
+- Draft means work is still in progress. Move the candidate to Ready only after
+  its version is stable and the required self-test, formal review, and QA or an
+  explicit waiver are recorded. If a PR/MR is replaced, verify whether it carries
+  unique delta, record the replacement, and close or mark the old one superseded.
+- Public-repository safety wins over auto-linking. If an internal issue identifier
+  must not be published, omit it and record the PR/MR URL and non-linking reason in
+  the private issue instead.
 
 ## End a no-op turn without creating another run
 
@@ -225,7 +251,10 @@ multica issue list --sort property:Impact --direction desc --output json
 ## Status changes have server side effects
 
 A status change is not cosmetic — the server enqueues or skips agent work based
-on it. These are the contracts, not advice:
+on it. These are the contracts, not advice. Agent Identity can narrow who owns a
+status write: when it says a squad member reports to the Leader without changing
+the parent issue, follow Agent Identity and do not use this section as permission
+to write that status.
 
 A workspace may define custom statuses beyond the seven built-ins; when any
 exist, the runtime brief's Available Commands section lists this workspace's
@@ -263,9 +292,11 @@ close intent writes the literal `done` key.
   later re-trigger confirms the overall goal is met.
 - **`in_review`** is an accepted issue status. Some workflows use it while a PR
   is open and awaiting review; moving to it is an explicit mutation.
-- **`done`** on a child issue posts a system comment on its parent. If a PR
-  carries close intent (`Closes MUL-XXXX`), it advances the issue to `done`
-  itself on merge — you do not also need to flip it manually.
+- **`done`** on a child issue posts a system comment on its parent. A merged
+  PR/MR with close intent can advance the issue to `done` only through the
+  aggregate contract above: every non-reference-only linked item must first be
+  out of `open`/`draft`, and at least one merged item must carry close intent.
+  When that aggregate closes, you do not also need to flip the issue manually.
 - **`cancelled`** is a terminal, user-driven decision to close the issue. Like
   `done` it enqueues no new agent work, and its open runs end with it
   (RUYI-384): queued runs are cancelled outright and in-flight runs receive a
@@ -339,6 +370,17 @@ to coordinate with.
 
 ## Sub-issues: `todo` starts work now, `backlog` parks it
 
+Creating a child issue changes scope and ownership; stage mechanics do not grant
+that authority. Use the create commands below only when the governing
+instructions and explicit Owner approval cover the named child deliverables or
+an explicitly approved complete stage plan. A stage-barrier wake, system
+comment, or example in this Skill authorizes neither an additional child nor an
+additional stage. It only tells the parent assignee to inspect the plan and, when
+dependencies are met, promote already approved and already created `backlog`
+children. If a needed child is outside the approved plan, use the required Owner
+decision path while continuing work that remains inside the parent issue's
+current scope.
+
 On an agent-assigned issue, create status decides whether the assignee fires
 immediately. A non-backlog status (e.g. `todo`) enqueues the agent at create
 time; `backlog` sets the assignee without triggering.
@@ -374,7 +416,8 @@ child.
 
 Advancement is agent-driven: the server only detects the closed barrier and
 wakes the parent assignee, who then decides whether to promote the next stage's
-`backlog` sub-issues to `todo`.
+already approved and already created `backlog` sub-issues to `todo`. The wake
+does not expand the approved breakdown or authorize creating another stage.
 
 ```bash
 # Stage 1 runs now; later stages parked until promoted
