@@ -27,13 +27,14 @@ type KnowledgePlanResponse struct {
 }
 
 type KnowledgePlanWorkspace struct {
-	WorkspaceID    string                   `json:"workspace_id"`
-	HasUltimate    bool                     `json:"has_ultimate"`
-	Ultimate       *KnowledgePlanUltimate   `json:"ultimate,omitempty"`
-	DiscoveryRoots []string                 `json:"discovery_roots"`
-	Dirs           []KnowledgePlanDir       `json:"dirs"`
-	Adoptions      []KnowledgePlanAdopt     `json:"adoptions"`
-	Operations     []KnowledgePlanOperation `json:"operations"`
+	WorkspaceID     string                   `json:"workspace_id"`
+	HasUltimate     bool                     `json:"has_ultimate"`
+	Ultimate        *KnowledgePlanUltimate   `json:"ultimate,omitempty"`
+	UnboundUltimate *KnowledgePlanUltimate   `json:"unbound_ultimate,omitempty"`
+	DiscoveryRoots  []string                 `json:"discovery_roots"`
+	Dirs            []KnowledgePlanDir       `json:"dirs"`
+	Adoptions       []KnowledgePlanAdopt     `json:"adoptions"`
+	Operations      []KnowledgePlanOperation `json:"operations"`
 }
 
 type KnowledgePlanUltimate struct {
@@ -298,6 +299,8 @@ SELECT dir_id::text, key, content_sha256 FROM knowledge_entry WHERE dir_id = ANY
 	}
 
 	// Ultimates: adoption work only rides the daemon hosting the active target.
+	// An unbound target is offered only as a claim candidate. A daemon must
+	// confirm it through the results endpoint before it becomes usable.
 	type ultimateRow struct {
 		workspaceID string
 		ult         KnowledgePlanUltimate
@@ -328,9 +331,11 @@ WHERE workspace_id = ANY($1) AND kind = 'ultimate' AND removed = FALSE`, workspa
 			continue
 		}
 		wsPlan.HasUltimate = true
-		usableByDaemon := row.daemonIDCol == daemonID
-		if usableByDaemon {
+		switch {
+		case row.daemonIDCol == daemonID:
 			wsPlan.Ultimate = &row.ult
+		case row.daemonIDCol == "":
+			wsPlan.UnboundUltimate = &row.ult
 		}
 	}
 
@@ -476,7 +481,19 @@ ON CONFLICT DO NOTHING`,
 		if !ok || ult.Path == "" {
 			continue
 		}
+		// A manually registered ultimate has no daemon until the daemon that can
+		// access its exact path confirms it. This compare-and-set keeps the first
+		// successful claimant authoritative and leaves foreign reports inert.
 		tag, err := h.DB.Exec(r.Context(), `
+	UPDATE knowledge_dir
+	SET daemon_id = $3, updated_at = now()
+	WHERE workspace_id = $1 AND kind = 'ultimate' AND path = $2
+	  AND removed = FALSE AND daemon_id = ''`, workspaceID, ult.Path, daemonID)
+		if err == nil && tag.RowsAffected() > 0 {
+			ultimatesAccepted++
+			continue
+		}
+		tag, err = h.DB.Exec(r.Context(), `
 INSERT INTO knowledge_dir (workspace_id, kind, path, daemon_id)
 VALUES ($1, 'ultimate', $2, $3)
 ON CONFLICT DO NOTHING`,
