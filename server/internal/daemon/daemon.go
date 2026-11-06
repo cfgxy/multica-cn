@@ -8239,9 +8239,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		snapshotPrimaryUpper = primaryUpper
 		env.WorkDir = snapPlan.Primary.AbsPath
-		units := make([]execenv.SnapshotUnitSpec, 0, len(snapPlan.Units))
-		for _, u := range snapPlan.Units {
-			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, execenv.SnapshotStem(task.IssueID, u.Subdir, task.ID))
+		materializedUnits := snapPlan.materializedUnits()
+		units := make([]execenv.SnapshotUnitSpec, 0, len(materializedUnits))
+		for _, u := range materializedUnits {
+			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, snapshotUnitStem(task.IssueID, task.ID, u))
 			units = append(units, execenv.SnapshotUnitSpec{Target: u.AbsPath, Subdir: u.Subdir, Alias: alias, Upper: upper, Work: work})
 		}
 		var gitArtifact *execenv.SnapshotGitArtifactSpec

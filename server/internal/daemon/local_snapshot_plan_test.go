@@ -336,8 +336,8 @@ func TestAuditSnapshotGitScope(t *testing.T) {
 		t.Fatalf("git worktree add: %v (%s)", err, out)
 	}
 	linkedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: linked}}, Primary: &snapshotUnit{AbsPath: linked}}
-	if audit := auditSnapshotGitScope(linkedPlan); !audit.HasGit || audit.Safe || !strings.Contains(audit.Reason, "outside") {
-		t.Fatalf("linked worktree with external common dir must fail audit, got %+v", audit)
+	if audit := auditSnapshotGitScope(linkedPlan); !audit.HasGit || !audit.Safe || len(audit.Dependencies) != 1 {
+		t.Fatalf("linked worktree with external common dir must produce one auditable dependency, got %+v", audit)
 	}
 
 	nested := newTestGitRoot(t)
@@ -348,6 +348,56 @@ func TestAuditSnapshotGitScope(t *testing.T) {
 	nestedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: nested}}, Primary: &snapshotUnit{AbsPath: nested}}
 	if audit := auditSnapshotGitScope(nestedPlan); !audit.HasGit || !audit.Safe {
 		t.Fatalf("nested repositories fully inside scope must be auditable, got %+v", audit)
+	}
+
+	withAlternate := newTestGitRoot(t)
+	alternateSource := newTestGitRoot(t)
+	alternateObjects := strings.TrimSpace(runTopologyGit(t, alternateSource, "rev-parse", "--git-path", "objects"))
+	if !filepath.IsAbs(alternateObjects) {
+		alternateObjects = filepath.Join(alternateSource, alternateObjects)
+	}
+	alternatesFile := filepath.Join(withAlternate, ".git", "objects", "info", "alternates")
+	if err := os.WriteFile(alternatesFile, []byte(alternateObjects+"\n"), 0o600); err != nil {
+		t.Fatalf("write object alternate: %v", err)
+	}
+	alternatePlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: withAlternate}}, Primary: &snapshotUnit{AbsPath: withAlternate}}
+	audit := auditSnapshotGitScope(alternatePlan)
+	if !audit.HasGit || !audit.Safe || !withinAnyScope(alternateObjects, audit.Dependencies) {
+		t.Fatalf("external alternate object database must be auditable, got %+v", audit)
+	}
+	if fallback, err := snapshotWorktreeFallbackWithGitGate(alternatePlan, true); err != nil || fallback != nil {
+		t.Fatalf("single repository with alternate objects must remain eligible, fallback=%+v err=%v", fallback, err)
+	}
+	if len(alternatePlan.GitMetadataUnits) != 1 || alternatePlan.GitMetadataUnits[0].AbsPath != alternateObjects {
+		t.Fatalf("alternate object database must receive its own metadata overlay, got %+v", alternatePlan.GitMetadataUnits)
+	}
+}
+
+func TestAuditSnapshotGitScopeIgnoresGitLocationEnvironment(t *testing.T) {
+	repo := newTestGitRoot(t)
+	outside := newTestGitRoot(t)
+	outsideGitDir := filepath.Join(outside, ".git")
+	t.Setenv("GIT_DIR", outsideGitDir)
+	t.Setenv("GIT_WORK_TREE", outside)
+	t.Setenv("GIT_COMMON_DIR", outsideGitDir)
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(outsideGitDir, "objects"))
+	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", filepath.Join(outsideGitDir, "objects"))
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(outsideGitDir, "index"))
+
+	audit := auditSnapshotGitScope(&snapshotPlan{
+		Units:   []snapshotUnit{{AbsPath: repo}},
+		Primary: &snapshotUnit{AbsPath: repo},
+	})
+	if !audit.HasGit || !audit.Safe || len(audit.Repositories) != 1 {
+		t.Fatalf("audit must use the repository under the declared scope, got %+v", audit)
+	}
+	if got := audit.Repositories[0].Worktree; got != repo {
+		t.Fatalf("audited worktree = %q, want %q", got, repo)
+	}
+	for _, dependency := range audit.Dependencies {
+		if withinAnyScope(dependency, []string{outside}) {
+			t.Fatalf("ambient Git location override leaked into dependency %q", dependency)
+		}
 	}
 }
 
@@ -371,6 +421,52 @@ func TestGitSnapshotDeliveryEligibleIsNarrow(t *testing.T) {
 	nestedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: nested}}, Primary: &snapshotUnit{AbsPath: nested}}
 	if gitSnapshotDeliveryEligible(nestedPlan, true) {
 		t.Fatal("nested Git must keep the worktree fallback")
+	}
+
+	parent := newTestGitRoot(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	if out, err := exec.Command("git", "-C", parent, "worktree", "add", "-q", linked).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v (%s)", err, out)
+	}
+	linkedPlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: linked}}, Primary: &snapshotUnit{AbsPath: linked}}
+	if !gitSnapshotDeliveryEligible(linkedPlan, true) {
+		t.Fatal("single linked worktree with auditable common metadata must be eligible")
+	}
+	if fallback, err := snapshotWorktreeFallbackWithGitGate(linkedPlan, true); err != nil || fallback != nil {
+		t.Fatalf("eligible linked worktree must enter snapshot delivery, fallback=%+v err=%v", fallback, err)
+	}
+	if len(linkedPlan.GitMetadataUnits) != 1 {
+		t.Fatalf("linked worktree must materialize one external Git metadata unit, got %+v", linkedPlan.GitMetadataUnits)
+	}
+
+	declaredSubmodule := newTestGitRoot(t)
+	if err := os.WriteFile(filepath.Join(declaredSubmodule, ".gitmodules"), []byte("[submodule \"dep\"]\n\tpath = dep\n\turl = ../dep\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitRun := exec.Command("git", "-C", declaredSubmodule, "add", ".gitmodules")
+	if out, err := gitRun.CombinedOutput(); err != nil {
+		t.Fatalf("git add .gitmodules: %v (%s)", err, out)
+	}
+	if out, err := exec.Command("git", "-C", declaredSubmodule, "commit", "-qm", "declare submodule").CombinedOutput(); err != nil {
+		t.Fatalf("git commit .gitmodules: %v (%s)", err, out)
+	}
+	declaredSubmodulePlan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: declaredSubmodule}}, Primary: &snapshotUnit{AbsPath: declaredSubmodule}}
+	if gitSnapshotDeliveryEligible(declaredSubmodulePlan, true) {
+		t.Fatal("uninitialized submodule declaration must retain the worktree fallback")
+	}
+}
+
+func TestGitSnapshotIneligibleWithoutWorktreeFallbackFailsClosed(t *testing.T) {
+	nested := newTestGitRoot(t)
+	if out, err := exec.Command("git", "init", "-q", filepath.Join(nested, "child")).CombinedOutput(); err != nil {
+		t.Fatalf("git init nested: %v (%s)", err, out)
+	}
+	plan := &snapshotPlan{
+		Units:   []snapshotUnit{{AbsPath: nested}},
+		Primary: &snapshotUnit{AbsPath: nested},
+	}
+	if fallback, err := snapshotWorktreeFallbackWithGitGate(plan, true); err == nil || fallback != nil {
+		t.Fatalf("unavailable worktree fallback must fail closed, fallback=%+v err=%v", fallback, err)
 	}
 }
 
@@ -418,10 +514,10 @@ func TestGitSnapshotUnsupportedTopologiesFallbackWithoutPristineWrites(t *testin
 	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "1")
 
 	type topology struct {
-		name          string
-		resourceRoot  string
-		repositories  []string
-		wantAuditSafe bool
+		name         string
+		resourceRoot string
+		repositories []string
+		wantSnapshot bool
 	}
 
 	linkedBase := newTestGitRoot(t)
@@ -449,10 +545,10 @@ func TestGitSnapshotUnsupportedTopologiesFallbackWithoutPristineWrites(t *testin
 	writeTopologyMarkers(t, parentB)
 
 	for _, tc := range []topology{
-		{name: "linked_worktree", resourceRoot: linked, repositories: []string{linked}, wantAuditSafe: false},
-		{name: "nested_repository", resourceRoot: nested, repositories: []string{nested, child}, wantAuditSafe: true},
-		{name: "submodule", resourceRoot: submodule, repositories: []string{submodule, filepath.Join(submodule, "deps", "module")}, wantAuditSafe: false},
-		{name: "parent_with_multiple_repositories", resourceRoot: parent, repositories: []string{parentA, parentB}, wantAuditSafe: true},
+		{name: "linked_worktree", resourceRoot: linked, repositories: []string{linked}, wantSnapshot: true},
+		{name: "nested_repository", resourceRoot: nested, repositories: []string{nested, child}},
+		{name: "submodule", resourceRoot: submodule, repositories: []string{submodule, filepath.Join(submodule, "deps", "module")}},
+		{name: "parent_with_multiple_repositories", resourceRoot: parent, repositories: []string{parentA, parentB}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := topologyFingerprint(t, tc.repositories)
@@ -475,15 +571,22 @@ func TestGitSnapshotUnsupportedTopologiesFallbackWithoutPristineWrites(t *testin
 			}
 
 			audit := auditSnapshotGitScope(plan)
-			if !audit.HasGit || audit.Safe != tc.wantAuditSafe {
-				t.Fatalf("audit = %+v, want HasGit=true Safe=%v", audit, tc.wantAuditSafe)
+			if !audit.HasGit || !audit.Safe {
+				t.Fatalf("audit = %+v, want a complete Git dependency graph", audit)
 			}
-			if gitSnapshotDeliveryEligible(plan, true) {
-				t.Fatal("unsupported Git topology must never be snapshot-delivery eligible")
+			if got := gitSnapshotDeliveryEligible(plan, true); got != tc.wantSnapshot {
+				t.Fatalf("snapshot delivery eligibility = %v, want %v", got, tc.wantSnapshot)
 			}
 			fallback, err := snapshotWorktreeFallback(plan)
-			if err != nil || fallback == nil || !fallback.UsesWorktree() {
-				t.Fatalf("unsupported topology must preserve worktree backend, fallback=%+v err=%v", fallback, err)
+			if err != nil {
+				t.Fatalf("select backend: %v", err)
+			}
+			if tc.wantSnapshot {
+				if fallback != nil || len(plan.GitMetadataUnits) == 0 {
+					t.Fatalf("isolatable linked worktree must use snapshot with metadata overlays, fallback=%+v units=%+v", fallback, plan.GitMetadataUnits)
+				}
+			} else if fallback == nil || !fallback.UsesWorktree() {
+				t.Fatalf("topology without a single-repository delivery contract must preserve worktree backend, fallback=%+v", fallback)
 			}
 
 			if after := topologyFingerprint(t, tc.repositories); after != before {
