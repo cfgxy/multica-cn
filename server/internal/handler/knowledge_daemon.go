@@ -657,13 +657,19 @@ WHERE id = $1 AND status = 'queued'`, operationID)
 }
 
 // applyKnowledgeAdoptResult lands a daemon-reported adoption transfer. The
-// transferring and bound-ultimate guards make stale or foreign callbacks inert.
+// transferring and plan-eligible-ultimate guards make stale or foreign
+// callbacks inert.
 // A successful read-back both marks the candidate adopted and materializes the
 // canonical ultimate mirror, so later owner edits target the memory bd wrote.
 func (h *Handler) applyKnowledgeAdoptResult(ctx context.Context, daemonID, kind string, id pgtype.UUID,
 	ok bool, ultimateDirID, failureReason string) bool {
 	switch kind {
 	case "entry":
+		// Success must identify the destination which was read back. Failure may
+		// omit it because the active ultimate still authorizes the planned job.
+		if ok && ultimateDirID == "" {
+			return false
+		}
 		tx, err := h.TxStarter.Begin(ctx)
 		if err != nil {
 			return false
@@ -675,9 +681,11 @@ func (h *Handler) applyKnowledgeAdoptResult(ctx context.Context, daemonID, kind 
 		err = tx.QueryRow(ctx, `
 SELECT e.workspace_id::text, e.dir_id::text, e.key, e.content, e.content_sha256, e.adopted_by
 FROM knowledge_entry e
-JOIN knowledge_dir d ON d.id = $2::uuid AND d.workspace_id = e.workspace_id
+JOIN knowledge_dir d ON d.workspace_id = e.workspace_id
 WHERE e.id = $1 AND e.adoption_state = 'transferring'
-  AND d.kind = 'ultimate' AND d.removed = FALSE AND d.daemon_id = $3
+  AND d.kind = 'ultimate' AND d.removed = FALSE
+  AND (d.daemon_id = '' OR d.daemon_id = $3)
+  AND (NULLIF($2, '')::uuid IS NULL OR d.id = NULLIF($2, '')::uuid)
 FOR UPDATE OF e`, id, ultimateDirID, daemonID).
 			Scan(&workspaceID, &sourceDirID, &key, &content, &contentSHA, &adoptedBy)
 		if err != nil {

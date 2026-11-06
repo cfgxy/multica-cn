@@ -450,12 +450,16 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 		t.Fatalf("pending adoption missing from plan: %+v", job)
 	}
 
-	// Failure callback lands 'failed' with the reason; retry queues again.
-	postKnowledgeResults(t, daemonID, map[string]any{
+	// Failure callbacks may omit the ultimate id and still resolve a job from an
+	// unclaimed ultimate's plan. The acknowledgment makes the result observable.
+	ack := postKnowledgeResults(t, daemonID, map[string]any{
 		"adoptions": []map[string]any{{
-			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "bd write refused",
+			"kind": "entry", "id": entry.ID, "ok": false, "error": "bd write refused",
 		}},
 	})
+	if ack["adoptions_resolved"].(float64) != 1 {
+		t.Fatalf("failed adoption acknowledgment: %v", ack)
+	}
 	failed := knowledgeEntryByKey(t, candidate, "flaky")
 	if failed.AdoptionState != "failed" || !strings.Contains(failed.AdoptionError, "bd write refused") {
 		t.Fatalf("after failed callback: state=%q error=%q", failed.AdoptionState, failed.AdoptionError)
@@ -463,13 +467,28 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 	if code := adoptEntry(t, entry.ID); code != http.StatusAccepted {
 		t.Fatalf("retry after failure: %d, want 202", code)
 	}
+	// A daemon not eligible for the ultimate's plan may not resolve the retry.
+	ack = postKnowledgeResults(t, "foreign-daemon", map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "forged failure",
+		}},
+	})
+	if ack["adoptions_resolved"].(float64) != 0 {
+		t.Fatalf("foreign daemon adoption resolved: %v", ack)
+	}
+	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "transferring" {
+		t.Fatalf("foreign callback moved transferring entry: %q", state)
+	}
 
 	// Success callback lands adopted with provenance; a stale repeat is inert.
-	postKnowledgeResults(t, daemonID, map[string]any{
+	ack = postKnowledgeResults(t, daemonID, map[string]any{
 		"adoptions": []map[string]any{{
 			"kind": "entry", "id": entry.ID, "ok": true, "ultimate_dir_id": ultimate,
 		}},
 	})
+	if ack["adoptions_resolved"].(float64) != 1 {
+		t.Fatalf("successful adoption acknowledgment: %v", ack)
+	}
 	adopted := knowledgeEntryByKey(t, candidate, "flaky")
 	if adopted.AdoptionState != "adopted" || adopted.UltimateDirID == nil || *adopted.UltimateDirID != ultimate {
 		t.Fatalf("after success callback: state=%q ultimate=%v", adopted.AdoptionState, adopted.UltimateDirID)
@@ -484,11 +503,14 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 	if ultimateMirror.AdoptedFromDirID == nil || *ultimateMirror.AdoptedFromDirID != candidate {
 		t.Fatalf("ultimate mirror provenance: from=%v", ultimateMirror.AdoptedFromDirID)
 	}
-	postKnowledgeResults(t, daemonID, map[string]any{
+	ack = postKnowledgeResults(t, daemonID, map[string]any{
 		"adoptions": []map[string]any{{
 			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "stale",
 		}},
 	})
+	if ack["adoptions_resolved"].(float64) != 0 {
+		t.Fatalf("stale adoption acknowledgment: %v", ack)
+	}
 	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "adopted" {
 		t.Fatalf("stale callback moved a terminal entry: %q", state)
 	}
