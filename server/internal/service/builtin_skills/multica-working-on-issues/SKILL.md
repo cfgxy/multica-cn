@@ -90,6 +90,11 @@ record that reason in the private issue. Multiple closing references are allowed
 and the issue closes only after every non-reference-only linked PR/MR is no longer
 `open`/`draft` and at least one merged link carries close intent.
 
+Keep the body scannable for reviewers: use H2 sections for the change's nature,
+key implementation points, and verification evidence, then the standalone
+closing line last. Keep the title aligned with the delivery commit subject, for
+example `fix(auth): 恢复任务令牌与守护令牌租户边界 (MUL-2759)`.
+
 In the final issue comment, include every required PR/MR URL when one exists. In
 particular, include the PR URL when a PR exists. If the task did not produce a
 PR/MR because no code changed or the user asked not to create one, say that
