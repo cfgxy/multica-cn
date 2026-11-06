@@ -76,13 +76,19 @@ if creation is blocked by auth, failing tests, or missing remote state, report t
 blocker instead of pretending the run is complete.
 
 Use a routable issue key in the PR title, body, or branch so the webhook can link
-the PR back to the issue. If the PR should close the issue on merge, put the key
-immediately after a closing keyword in the title or body, for example:
+the PR back to the issue. A delivery PR that should close the issue on merge must
+contain a standalone closing line in the body, for example:
 
 ```text
 MUL-2759: fix login redirect        # links only
 Closes MUL-2759                     # links and records close intent
 ```
+
+Omit the closing line only when the PR is reference-only, intentionally does not
+close the issue, or public-repository safety forbids publishing the identifier;
+record that reason in the private issue. Multiple closing references are allowed
+and the issue closes only after every non-reference-only linked PR/MR is no longer
+`open`/`draft` and at least one merged link carries close intent.
 
 In the final issue comment, include every required PR/MR URL when one exists. In
 particular, include the PR URL when a PR exists. If the task did not produce a
