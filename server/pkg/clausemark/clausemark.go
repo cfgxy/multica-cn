@@ -32,6 +32,12 @@ var openLine = regexp.MustCompile(`^<!--\s*clause:id=(cls_[0-9a-z]{8})\s+rev=(\d
 // CloseLine matches a clause region closer: <!-- /clause -->
 var closeLine = regexp.MustCompile(`^<!--\s*/clause\s*-->\s*$`)
 
+// Marker intent patterns must accept the same whitespace grammar as valid
+// markers. Otherwise a malformed tab-separated marker can be mistaken for
+// static text and make snapshot validation fail open.
+var openMarkerIntent = regexp.MustCompile(`<!--\s*clause:id=`)
+var closeMarkerIntent = regexp.MustCompile(`<!--\s*/clause`)
+
 // Segment is one parsed clause region.
 type Segment struct {
 	Slug string // cls_… identity, never mutated
@@ -68,15 +74,15 @@ func Parse(text string) (Document, error) {
 			fmt.Sscanf(m[2], "%d", &rev)
 			cur = Segment{Slug: m[1], Rev: rev}
 			openIdx = i
-		case openIdx < 0 && strings.Contains(trimmed, "<!-- clause:id="):
+		case openIdx < 0 && openMarkerIntent.MatchString(trimmed):
 			return Document{}, fmt.Errorf("clausemark: 第 %d 行的条款打开标记格式无效", i+1)
 		case openIdx < 0 && closeLine.MatchString(line):
 			return Document{}, fmt.Errorf("clausemark: 第 %d 行出现孤立的关闭标记 <!-- /clause -->", i+1)
-		case openIdx < 0 && strings.Contains(trimmed, "<!-- /clause"):
+		case openIdx < 0 && closeMarkerIntent.MatchString(trimmed):
 			return Document{}, fmt.Errorf("clausemark: 第 %d 行的条款关闭标记格式无效", i+1)
 		case openIdx >= 0 && openLine.MatchString(line):
 			return Document{}, fmt.Errorf("clausemark: 第 %d 行在未关闭的条款段内出现新的打开标记", i+1)
-		case openIdx >= 0 && strings.Contains(trimmed, "<!-- clause:id="):
+		case openIdx >= 0 && openMarkerIntent.MatchString(trimmed):
 			return Document{}, fmt.Errorf("clausemark: 第 %d 行的条款打开标记格式无效", i+1)
 		case openIdx >= 0 && closeLine.MatchString(line):
 			if strings.TrimSpace(cur.Body) == "" {
@@ -89,7 +95,7 @@ func Parse(text string) (Document, error) {
 			}
 			doc.Segments = append(doc.Segments, cur)
 			openIdx = -1
-		case openIdx >= 0 && strings.Contains(trimmed, "<!-- /clause"):
+		case openIdx >= 0 && closeMarkerIntent.MatchString(trimmed):
 			return Document{}, fmt.Errorf("clausemark: 第 %d 行的条款关闭标记格式无效", i+1)
 		case openIdx >= 0:
 			cur.Body += line + "\n"
@@ -239,10 +245,10 @@ func ReplaceSegment(text, slug string, expectedVersion int32, body string) (stri
 	}
 	for i, line := range splitLines(text) {
 		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, "<!-- clause:id=") && !openLine.MatchString(trimmed) {
+		if openMarkerIntent.MatchString(trimmed) && !openLine.MatchString(trimmed) {
 			return "", fmt.Errorf("clausemark: malformed clause opener on line %d", i+1)
 		}
-		if strings.Contains(trimmed, "<!-- /clause") && !closeLine.MatchString(trimmed) {
+		if closeMarkerIntent.MatchString(trimmed) && !closeLine.MatchString(trimmed) {
 			return "", fmt.Errorf("clausemark: malformed clause closer on line %d", i+1)
 		}
 	}

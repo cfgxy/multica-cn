@@ -224,6 +224,18 @@ func TestClauseRevisePreviewRejectsInvalidLegacyCarrierSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("tab-separated malformed marker", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID,
+			"# 工作原则\n<!--\tclause:id=cls_aaaaaaaa rev= -->\n")
+
+		code, body := preview(t, f, clauseID, "每日同步", "- **每日同步**：制表符畸形 marker 必须阻断。")
+		if code != http.StatusConflict || !strings.Contains(body, "载体快照结构无效") {
+			t.Fatalf("tab-separated malformed marker preview = %d: %s", code, body)
+		}
+	})
+
 	t.Run("marker version drift", func(t *testing.T) {
 		f := newClauseInjectionFixture(t)
 		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
