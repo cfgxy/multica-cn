@@ -134,74 +134,75 @@ func TestUpdateAgent_AllowlistRoundtripForOwner(t *testing.T) {
 	}
 }
 
-// TestUpdateAgent_AllowlistSilentlyDroppedForNonOwner is the Stage 3.1
-// privacy guarantee on the write path: a workspace owner / admin can call
-// UpdateAgent against another user's agent (which canManageAgent allows
-// for legitimate admin actions like reassigning the agent off a leaving
-// member's runtime), but a `composio_toolkit_allowlist` field in that
-// request must be silently ignored. Without this, an admin could
-// arbitrarily widen what an agent surfaces from another member's
-// connected accounts.
-func TestUpdateAgent_AllowlistSilentlyDroppedForNonOwner(t *testing.T) {
+// TestUpdateAgent_AllowlistAllowsWorkspaceOwnerAndDropsAdmin verifies the
+// owner exception: a workspace owner may change an agent's allowlist, while a
+// workspace admin remains unable to widen it.
+func TestUpdateAgent_AllowlistAllowsWorkspaceOwnerAndDropsAdmin(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	withComposioMCPAppsFlag(t, testHandler, true)
 	agentID, _ := allowlistFixture(t)
 
-	// Seed an existing allowlist via direct SQL so we can prove the
-	// admin's submission did not overwrite it.
+	// Seed an existing allowlist for the workspace owner to replace.
 	if _, err := testPool.Exec(context.Background(), `
 		UPDATE agent SET composio_toolkit_allowlist = $2 WHERE id = $1
 	`, agentID, []string{"notion"}); err != nil {
 		t.Fatalf("seed existing allowlist: %v", err)
 	}
 
-	// Workspace owner (testUserID) is NOT the agent owner.
+	// Workspace owner (testUserID) is NOT the agent owner, but may replace it.
 	w := httptest.NewRecorder()
 	testHandler.UpdateAgent(w, withURLParam(newRequest(
 		http.MethodPut, "/api/agents/"+agentID,
 		map[string]any{
-			// Touch some other field too, so the request is otherwise
-			// valid (canManageAgent admits workspace owners).
-			"description": "admin description sweep",
+			"description": "owner description sweep",
 			"composio_toolkit_allowlist": []string{
 				"github", "slack", // would-be widening
 			},
 		},
 	), "id", agentID))
 	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgent admin sweep: got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("UpdateAgent workspace owner sweep: got %d: %s", w.Code, w.Body.String())
 	}
-	// The non-owner-edit must NOT have replaced the allowlist; the
-	// description update must have landed.
 	stored, isNull := readAllowlistColumn(t, agentID)
 	if isNull {
-		t.Fatalf("allowlist must NOT be wiped by non-owner write; got NULL")
+		t.Fatalf("workspace owner write unexpectedly stored NULL")
 	}
-	if len(stored) != 1 || stored[0] != "notion" {
-		t.Errorf("non-owner widening landed: allowlist=%v; want unchanged [notion]", stored)
+	if len(stored) != 2 || stored[0] != "github" || stored[1] != "slack" {
+		t.Errorf("workspace owner allowlist=%v; want [github slack]", stored)
 	}
-	// The response shape should also not surface the would-be widened
-	// allowlist to the admin. agentToResponse populates it from the
-	// (unchanged) DB row, and the owner-only redaction at the end of
-	// UpdateAgent then strips it for the admin caller.
 	var resp AgentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(resp.ComposioToolkitAllowlist) != 0 {
-		t.Errorf("admin response leaked allowlist contents: %v", resp.ComposioToolkitAllowlist)
+	if len(resp.ComposioToolkitAllowlist) != 2 {
+		t.Errorf("workspace owner response allowlist=%v; want two entries", resp.ComposioToolkitAllowlist)
 	}
-	if !resp.ComposioToolkitAllowlistRedacted {
-		t.Errorf("admin response should mark allowlist redacted, got %+v", resp)
+	if resp.ComposioToolkitAllowlistRedacted {
+		t.Errorf("workspace owner response should not be redacted, got %+v", resp)
+	}
+
+	adminID := createPermissionTestAdmin(t, "allowlist-admin@multica.test")
+	w = httptest.NewRecorder()
+	testHandler.UpdateAgent(w, withURLParam(newRequestAs(
+		adminID, http.MethodPut, "/api/agents/"+agentID,
+		map[string]any{"composio_toolkit_allowlist": []string{"linear"}},
+	), "id", agentID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgent workspace admin: got %d: %s", w.Code, w.Body.String())
+	}
+	stored, isNull = readAllowlistColumn(t, agentID)
+	if isNull || len(stored) != 2 || stored[0] != "github" || stored[1] != "slack" {
+		t.Errorf("admin write changed allowlist: %v", stored)
 	}
 }
 
 // TestGetAgent_AllowlistVisibility verifies the read-path redaction is
-// strictly owner-only:
+// available to the agent owner and workspace owner:
 //   - the agent owner sees the slug list verbatim
-//   - the workspace owner (admin) sees nothing + redacted=true
+//   - the workspace owner sees the slug list verbatim
+//   - a workspace admin sees nothing + redacted=true
 //   - the response shape stays parseable in both cases (no nil-pointer panic)
 func TestGetAgent_AllowlistVisibility(t *testing.T) {
 	if testHandler == nil {
@@ -234,7 +235,7 @@ func TestGetAgent_AllowlistVisibility(t *testing.T) {
 		t.Errorf("owner should not see redacted flag")
 	}
 
-	// Workspace owner (testUserID) is NOT the agent owner — must be redacted.
+	// Workspace owner (testUserID) is NOT the agent owner — but sees the list.
 	w = httptest.NewRecorder()
 	testHandler.GetAgent(w, withURLParam(newRequest(
 		http.MethodGet, "/api/agents/"+agentID, nil,
@@ -242,15 +243,31 @@ func TestGetAgent_AllowlistVisibility(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GetAgent as ws-owner: got %d: %s", w.Code, w.Body.String())
 	}
+	var workspaceOwnerResp AgentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &workspaceOwnerResp); err != nil {
+		t.Fatalf("decode workspace owner response: %v", err)
+	}
+	if len(workspaceOwnerResp.ComposioToolkitAllowlist) != 2 {
+		t.Errorf("ws-owner response allowlist=%v; want length 2", workspaceOwnerResp.ComposioToolkitAllowlist)
+	}
+	if workspaceOwnerResp.ComposioToolkitAllowlistRedacted {
+		t.Errorf("ws-owner response should not mark allowlist redacted")
+	}
+
+	adminID := createPermissionTestAdmin(t, "allowlist-read-admin@multica.test")
+	w = httptest.NewRecorder()
+	testHandler.GetAgent(w, withURLParam(newRequestAs(
+		adminID, http.MethodGet, "/api/agents/"+agentID, nil,
+	), "id", agentID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetAgent as workspace admin: got %d: %s", w.Code, w.Body.String())
+	}
 	var adminResp AgentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &adminResp); err != nil {
-		t.Fatalf("decode admin response: %v", err)
+		t.Fatalf("decode workspace admin response: %v", err)
 	}
-	if len(adminResp.ComposioToolkitAllowlist) != 0 {
-		t.Errorf("ws-owner response leaked allowlist: %v", adminResp.ComposioToolkitAllowlist)
-	}
-	if !adminResp.ComposioToolkitAllowlistRedacted {
-		t.Errorf("ws-owner response should mark allowlist redacted")
+	if len(adminResp.ComposioToolkitAllowlist) != 0 || !adminResp.ComposioToolkitAllowlistRedacted {
+		t.Errorf("workspace admin response should be redacted, got %+v", adminResp)
 	}
 }
 

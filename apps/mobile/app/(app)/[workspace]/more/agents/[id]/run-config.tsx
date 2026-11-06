@@ -61,6 +61,7 @@ import {
 } from "@/components/agents/agent-editor-fields";
 import { agentDetailOptions } from "@/data/queries/agents";
 import { runtimeListOptions } from "@/data/queries/runtimes";
+import { memberListOptions } from "@/data/queries/members";
 import { runtimeModelsOptions } from "@/data/queries/runtime-models";
 import {
   voiceProvidersOptions,
@@ -97,6 +98,9 @@ export default function AgentRunConfig() {
   const { data: runtimes, isLoading: runtimesLoading } = useQuery(
     runtimeListOptions(wsId),
   );
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const currentUserRole =
+    members.find((member) => member.user_id === me?.id)?.role ?? null;
   const { data: voiceProviders = [] } = useQuery(voiceProvidersOptions(wsId ?? ""));
   const voiceEligible = useMemo(
     () => voiceProviders.filter(voiceProviderChainEligible),
@@ -161,6 +165,7 @@ export default function AgentRunConfig() {
     if (!agent) return [];
     const usable = agentSlotChoices(runtimes, "text", {
       currentUserId: me?.id ?? null,
+      currentUserRole,
       excludeRuntimeId: agent.voice_runtime_id ?? "",
       keepRuntimeId: runtimeId,
     });
@@ -169,7 +174,7 @@ export default function AgentRunConfig() {
       if (current) return [current, ...usable];
     }
     return usable;
-  }, [agent, runtimes, runtimeId, me]);
+  }, [agent, runtimes, runtimeId, me, currentUserRole]);
 
   const runtime = runtimes?.find((r) => r.id === runtimeId);
   const provider = runtime?.provider ?? "";

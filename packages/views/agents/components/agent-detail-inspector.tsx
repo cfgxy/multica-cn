@@ -142,8 +142,11 @@ export function AgentDetailInspector({
   });
 
   const isOnline = runtime?.status === "online";
+  const currentUserRole =
+    members.find((member) => member.user_id === currentUserId)?.role ?? null;
   const canReadRuntime =
-    runtime != null && isRuntimeUsableForUser(runtime, currentUserId);
+    runtime != null &&
+    isRuntimeUsableForUser(runtime, currentUserId, currentUserRole);
   const canDiscoverRuntimeModels = isOnline && canReadRuntime;
   const nameInvalid = name.trim().length === 0;
 

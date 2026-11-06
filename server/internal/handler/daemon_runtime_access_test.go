@@ -146,7 +146,7 @@ func TestClaimTaskByRuntime_OwnerlessAgentOnPrivateRuntimeFailsExplicitly(t *tes
 	}
 }
 
-func TestBuildClaimedTaskResponseRejectsAgentOwnerChangedAfterClaim(t *testing.T) {
+func TestBuildClaimedTaskResponseAllowsAgentOwnerChangedAfterClaim(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -175,30 +175,14 @@ func TestBuildClaimedTaskResponseRejectsAgentOwnerChangedAfterClaim(t *testing.T
 	}
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
 		testWorkspaceID, "claim-then-owner-change")
-	_, _, _, _, failure := testHandler.buildClaimedTaskResponse(
+	response, _, _, _, failure := testHandler.buildClaimedTaskResponse(
 		req, task, runtime, runtimeID, testWorkspaceID,
 	)
-	if failure == nil || failure.status != http.StatusForbidden || failure.outcome != "error_runtime_access_denied" {
-		t.Fatalf("failure = %+v, want runtime-access forbidden", failure)
+	if failure != nil {
+		t.Fatalf("failure = %+v, want nil after an owner change", failure)
 	}
-
-	var status, errorMessage, failureReason string
-	dbfx.QueryRow(t, `
-		SELECT status, error, failure_reason
-		FROM agent_task_queue
-		WHERE id = $1
-	`, taskID).Scan(&status, &errorMessage, &failureReason)
-	if status != "failed" {
-		t.Fatalf("task status = %q, want failed", status)
-	}
-	if !strings.Contains(errorMessage, "agent and runtime have different owners") {
-		t.Fatalf("task error = %q, want actionable owner-mismatch error", errorMessage)
-	}
-	if strings.Contains(errorMessage, "agent has no owner") {
-		t.Fatalf("task error = %q, must not describe a non-null owner as missing", errorMessage)
-	}
-	if failureReason != taskfailure.ReasonInvalidTaskIdentity.String() {
-		t.Fatalf("failure_reason = %q, want %q", failureReason, taskfailure.ReasonInvalidTaskIdentity)
+	if response.ID != taskID {
+		t.Fatalf("response task id = %q, want %q", response.ID, taskID)
 	}
 }
 

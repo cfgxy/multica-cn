@@ -12,7 +12,7 @@
  *     one target per selected member, PRESERVING persisted team targets
  *     (mobile has no team picker, so teams ride along untouched).
  *   - "Specific people" requires at least one target to be committable.
- *   - Only the owner can edit; everyone else gets the read-only summary
+ *   - The agent owner or workspace owner can edit; everyone else gets the read-only summary
  *     (access.owner_only_readonly), same as web's `canEdit` branch.
  *   - Switching away from private on an agent with a Composio allowlist
  *     shows the composio_switch_hint warning.
@@ -27,6 +27,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { effectiveAccessScope } from "@multica/core/agents/effective-access";
+import { canEditAgentAccess } from "@multica/core/permissions";
 import type {
   AgentInvocationTarget,
   AgentInvocationTargetInput,
@@ -91,7 +92,14 @@ export default function AgentAccess() {
   const scope = draftScope ?? persistedScope;
   const selectedMembers = draftMembers ?? persistedMembers;
 
-  const canEdit = !!agent && !!me && agent.owner_id === me.id;
+  const currentUserRole =
+    members?.find((member) => member.user_id === me?.id)?.role ?? null;
+  const canEdit =
+    agent !== undefined &&
+    canEditAgentAccess(agent, {
+      userId: me?.id ?? null,
+      role: currentUserRole,
+    }).allowed;
   const hasComposioAllowlist =
     (agent?.composio_toolkit_allowlist ?? []).length > 0;
 
@@ -318,7 +326,7 @@ export default function AgentAccess() {
             <Text className="text-xs text-muted-foreground leading-5">
               {t(
                 "access.owner_only_readonly",
-                "Only the agent owner can change who can run this agent.",
+                "Only the agent owner or workspace owner can change who can run this agent.",
               )}
             </Text>
           </View>
