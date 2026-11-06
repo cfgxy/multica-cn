@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -52,6 +53,18 @@ func claimKnowledgeUltimate(t *testing.T, daemonID, dirID string) {
 	if ack["ultimates_registered"].(float64) != 1 {
 		t.Fatalf("ultimate claim acknowledgment: %v", ack)
 	}
+}
+
+func grantKnowledgeUltimatePath(t *testing.T, daemonID, path string) {
+	t.Helper()
+	projectID := dbfx.Project(t, "knowledge ultimate path authorization")
+	dbfx.Insert(t, "project_resource", testutil.Cols{
+		"project_id":    projectID,
+		"workspace_id":  testWorkspaceID,
+		"resource_type": "local_directory",
+		"resource_ref":  `{"daemon_id":"` + daemonID + `","local_path":"` + path + `","execution_mode":"in_place"}`,
+		"position":      0,
+	})
 }
 
 func knowledgeEntries(t *testing.T, dirID string) []KnowledgeEntryResponse {
@@ -115,12 +128,23 @@ func knowledgePlan(t *testing.T, daemonID string) KnowledgePlanResponse {
 	t.Helper()
 	var plan KnowledgePlanResponse
 	testutil.Call(t, testHandler.GetKnowledgePlan,
-		newRequest(http.MethodGet, "/api/daemon/knowledge/plan?daemon_id="+daemonID, nil)).
+		newRequest(http.MethodGet, "/api/daemon/knowledge/plan?daemon_id="+daemonID, nil).WithContext(
+			middleware.WithDaemonContext(context.Background(), testWorkspaceID, daemonID))).
 		Want(http.StatusOK).JSON(&plan)
 	return plan
 }
 
 func postKnowledgeResults(t *testing.T, daemonID string, body map[string]any) map[string]any {
+	t.Helper()
+	var ack map[string]any
+	testutil.Call(t, testHandler.PostKnowledgeResults,
+		newRequest(http.MethodPost, "/api/daemon/knowledge/results?daemon_id="+daemonID, body).WithContext(
+			middleware.WithDaemonContext(context.Background(), testWorkspaceID, daemonID))).
+		Want(http.StatusOK).JSON(&ack)
+	return ack
+}
+
+func postKnowledgeResultsAsUser(t *testing.T, daemonID string, body map[string]any) map[string]any {
 	t.Helper()
 	var ack map[string]any
 	testutil.Call(t, testHandler.PostKnowledgeResults,
@@ -187,8 +211,10 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 
 	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-under-test")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-under-test")
+	ultimatePath := knowledgeDirState(t, ultimate).Path
+	grantKnowledgeUltimatePath(t, daemonID, ultimatePath)
 
-	// An unbound target cannot be safely dispatched to an arbitrary daemon.
+	// 只有已登记的精确路径归属 daemon 才能看到或认领未绑定 ultimate。
 	unboundPlan := knowledgePlan(t, daemonID)
 	for i := range unboundPlan.Workspaces {
 		ws := &unboundPlan.Workspaces[i]
@@ -199,11 +225,36 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 			t.Fatalf("unbound plan ultimate: has=%v ultimate=%+v claim=%+v, want claimable target", ws.HasUltimate, ws.Ultimate, ws.UnboundUltimate)
 		}
 	}
-	claimKnowledgeUltimate(t, daemonID, ultimate)
+	foreignPlan := knowledgePlan(t, "foreign-daemon")
+	for i := range foreignPlan.Workspaces {
+		ws := &foreignPlan.Workspaces[i]
+		if ws.WorkspaceID == testWorkspaceID && ws.UnboundUltimate != nil {
+			t.Fatalf("foreign daemon received an unbound ultimate: %+v", ws.UnboundUltimate)
+		}
+	}
 	foreignAck := postKnowledgeResults(t, "foreign-daemon", map[string]any{
 		"ultimates": []map[string]any{{
 			"workspace_id": testWorkspaceID,
-			"path":         knowledgeDirState(t, ultimate).Path,
+			"path":         ultimatePath,
+		}},
+	})
+	if foreignAck["ultimates_registered"].(float64) != 0 {
+		t.Fatalf("foreign daemon claimed unbound ultimate: %v", foreignAck)
+	}
+	userAck := postKnowledgeResultsAsUser(t, daemonID, map[string]any{
+		"ultimates": []map[string]any{{
+			"workspace_id": testWorkspaceID,
+			"path":         ultimatePath,
+		}},
+	})
+	if userAck["ultimates_registered"].(float64) != 0 {
+		t.Fatalf("user request claimed unbound ultimate: %v", userAck)
+	}
+	claimKnowledgeUltimate(t, daemonID, ultimate)
+	foreignAck = postKnowledgeResults(t, "foreign-daemon", map[string]any{
+		"ultimates": []map[string]any{{
+			"workspace_id": testWorkspaceID,
+			"path":         ultimatePath,
 		}},
 	})
 	if foreignAck["ultimates_registered"].(float64) != 0 {
@@ -249,6 +300,26 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 	if dir := knowledgeDirState(t, candidate); dir.HealthState != "ok" {
 		t.Fatalf("health after first scan: %q, want ok", dir.HealthState)
 	}
+	entry := knowledgeEntryByKey(t, candidate, "tip")
+	if code := adoptEntry(t, entry.ID); code != http.StatusAccepted {
+		t.Fatalf("queue adoption after authorized claim: %d, want 202", code)
+	}
+	var adoptionJob *KnowledgePlanAdopt
+	adoptionPlan := knowledgePlan(t, daemonID)
+	for i := range adoptionPlan.Workspaces {
+		workspace := &adoptionPlan.Workspaces[i]
+		if workspace.WorkspaceID != testWorkspaceID {
+			continue
+		}
+		for j := range workspace.Adoptions {
+			if workspace.Adoptions[j].ID == entry.ID {
+				adoptionJob = &workspace.Adoptions[j]
+			}
+		}
+	}
+	if adoptionJob == nil || adoptionJob.UltimateDirID != ultimate || adoptionJob.UltimatePath != ultimatePath {
+		t.Fatalf("authorized daemon missing adoption job: %+v", adoptionJob)
+	}
 
 	// Mirror SHA map is now populated for the next cycle.
 	planned = nil
@@ -284,6 +355,7 @@ func TestKnowledgePlanExcludesUltimateFromScanDirs(t *testing.T) {
 
 	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-not-a-scan-target")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/ultimate-fix-candidate")
+	grantKnowledgeUltimatePath(t, daemonID, knowledgeDirState(t, ultimate).Path)
 	claimKnowledgeUltimate(t, daemonID, ultimate)
 
 	plan := knowledgePlan(t, daemonID)
@@ -446,6 +518,7 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 
 	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-state-machine")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-state-machine")
+	grantKnowledgeUltimatePath(t, daemonID, knowledgeDirState(t, ultimate).Path)
 	claimKnowledgeUltimate(t, daemonID, ultimate)
 	postKnowledgeResults(t, daemonID, map[string]any{
 		"scans": []map[string]any{{

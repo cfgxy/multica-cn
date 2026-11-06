@@ -183,6 +183,24 @@ func knowledgeParseUUID(s string) (pgtype.UUID, bool) {
 	return id, true
 }
 
+// daemonOwnsKnowledgePath 通过 daemon token 和精确匹配的 local_directory
+// resource 验证路径归属。回报中的 daemon_id 与 path 均不可信，不能作为授权依据。
+func (h *Handler) daemonOwnsKnowledgePath(ctx context.Context, workspaceID, daemonID, path string) bool {
+	if middleware.DaemonIDFromContext(ctx) != daemonID {
+		return false
+	}
+	var owns bool
+	err := h.DB.QueryRow(ctx, `
+	SELECT EXISTS(
+		SELECT 1 FROM project_resource
+		WHERE workspace_id = $1::uuid
+		  AND resource_type = 'local_directory'
+		  AND resource_ref->>'daemon_id' = $2
+		  AND resource_ref->>'local_path' = $3
+	)`, workspaceID, daemonID, path).Scan(&owns)
+	return err == nil && owns
+}
+
 // GetKnowledgePlan serves GET /api/daemon/knowledge/plan?daemon_id=: the work
 // package for one knowledge cycle.
 func (h *Handler) GetKnowledgePlan(w http.ResponseWriter, r *http.Request) {
@@ -334,7 +352,7 @@ WHERE workspace_id = ANY($1) AND kind = 'ultimate' AND removed = FALSE`, workspa
 		switch {
 		case row.daemonIDCol == daemonID:
 			wsPlan.Ultimate = &row.ult
-		case row.daemonIDCol == "":
+		case row.daemonIDCol == "" && h.daemonOwnsKnowledgePath(r.Context(), row.workspaceID, daemonID, row.ult.Path):
 			wsPlan.UnboundUltimate = &row.ult
 		}
 	}
@@ -481,19 +499,33 @@ ON CONFLICT DO NOTHING`,
 		if !ok || ult.Path == "" {
 			continue
 		}
-		// A manually registered ultimate has no daemon until the daemon that can
-		// access its exact path confirms it. This compare-and-set keeps the first
-		// successful claimant authoritative and leaves foreign reports inert.
-		tag, err := h.DB.Exec(r.Context(), `
+		// 手工登记的 ultimate 只有在持有 daemon token 且拥有精确匹配
+		// local_directory resource 的 daemon 确认后才能绑定。
+		if h.daemonOwnsKnowledgePath(r.Context(), uuidToString(workspaceID), daemonID, ult.Path) {
+			tag, err := h.DB.Exec(r.Context(), `
 	UPDATE knowledge_dir
 	SET daemon_id = $3, updated_at = now()
 	WHERE workspace_id = $1 AND kind = 'ultimate' AND path = $2
 	  AND removed = FALSE AND daemon_id = ''`, workspaceID, ult.Path, daemonID)
-		if err == nil && tag.RowsAffected() > 0 {
-			ultimatesAccepted++
+			if err == nil && tag.RowsAffected() > 0 {
+				ultimatesAccepted++
+				continue
+			}
+		}
+		// 同一路径的手工 target 未被授权认领时不能降级为自动指定；只有
+		// 完全没有该路径时才沿用既有的自动 ultimate 指定逻辑。
+		var exists bool
+		if err := h.DB.QueryRow(r.Context(), `
+			SELECT EXISTS(
+				SELECT 1 FROM knowledge_dir
+				WHERE workspace_id = $1 AND kind = 'ultimate' AND path = $2 AND removed = FALSE
+			)`, workspaceID, ult.Path).Scan(&exists); err != nil || exists {
+			if err == nil {
+				ultimatesConflicts++
+			}
 			continue
 		}
-		tag, err = h.DB.Exec(r.Context(), `
+		tag, err := h.DB.Exec(r.Context(), `
 INSERT INTO knowledge_dir (workspace_id, kind, path, daemon_id)
 VALUES ($1, 'ultimate', $2, $3)
 ON CONFLICT DO NOTHING`,
