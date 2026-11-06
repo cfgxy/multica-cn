@@ -42,14 +42,34 @@ export function canEditAgent(agent: Agent, ctx: PermissionContext): Decision {
 }
 
 /**
+ * Change who may invoke an agent. This is narrower than general agent editing:
+ * workspace admins can manage ordinary agent fields, but only the agent owner
+ * or workspace owner may change `permission_mode` / `invocation_targets`.
+ */
+export function canEditAgentAccess(
+  agent: Agent,
+  ctx: PermissionContext,
+): Decision {
+  if (ctx.userId === null) {
+    return deny("not_authenticated", "Sign in to change agent access.");
+  }
+  if (agent.owner_id !== null && agent.owner_id === ctx.userId) return ALLOW;
+  if (ctx.role === "owner") return ALLOW;
+  return deny(
+    "not_resource_owner",
+    "Only the agent owner or workspace owner can change agent access.",
+  );
+}
+
+/**
  * Invoke an agent — assign it to an issue, @mention it, chat with it, or
  * otherwise trigger a run. Mirrors the MUL-3963 backend invocation gate,
  * which reads `permission_mode` + `invocation_targets` (NOT the derived
  * `visibility` field):
  *
  *   - owner: always
- *   - permission_mode "private": ONLY the owner. This is the key behavior
- *     change — workspace admins NO LONGER bypass a private agent.
+ *   - permission_mode "private": the agent owner and the workspace owner.
+ *     Workspace admins do not bypass a private agent.
  *   - permission_mode "public_to" + workspace target: any workspace member
  *   - permission_mode "public_to" + member target: only the matching user
  *   - team target: reserved, INERT in v1 (never grants)
@@ -68,9 +88,12 @@ export function canAssignAgentToIssue(
   }
 
   if (agent.permission_mode === "private") {
+    if (ctx.role === "owner") {
+      return ALLOW;
+    }
     return deny(
       "private_visibility",
-      "Personal agent — only the owner can assign work.",
+      "Personal agent — only the agent or workspace owner can assign work.",
     );
   }
 

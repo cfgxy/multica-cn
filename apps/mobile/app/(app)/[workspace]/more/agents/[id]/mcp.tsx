@@ -39,6 +39,7 @@ import {
 } from "@/data/queries/agent-mcp";
 import { runtimeListOptions } from "@/data/queries/runtimes";
 import { runtimeCapabilitiesOptions } from "@/data/queries/runtime-skills";
+import { memberListOptions } from "@/data/queries/members";
 import {
   useAddAgentMcpServer,
   useSetAgentMcpServerEnabled,
@@ -70,6 +71,9 @@ export default function AgentMcpScreen() {
   const canManage = useCanManageAgent(agent);
 
   const { data: runtimes } = useQuery(runtimeListOptions(wsId));
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const currentUserRole =
+    members.find((member) => member.user_id === me?.id)?.role ?? null;
   const runtime: AgentRuntime | null = useMemo(
     () =>
       agent?.runtime_id
@@ -78,7 +82,8 @@ export default function AgentMcpScreen() {
     [agent?.runtime_id, runtimes],
   );
   const canReadRuntime =
-    runtime != null && isRuntimeUsableForUser(runtime, me?.id ?? null);
+    runtime != null &&
+    isRuntimeUsableForUser(runtime, me?.id ?? null, currentUserRole);
   const runtimeId =
     runtime?.runtime_mode === "local" &&
     runtime.status === "online" &&

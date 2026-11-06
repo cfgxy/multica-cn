@@ -631,20 +631,23 @@ func createPermissionTestAdmin(t *testing.T, email string) string {
 	return userID
 }
 
-// TestUpdateAgent_AccessChangeIsOwnerOnly locks the interaction-bug fix
-// (separate PR): a workspace ADMIN who is NOT the agent owner may edit other
-// agent fields but must NOT change access — a real permission change returns an
-// explicit 403 (no more silent "bounce back"), while a no-op resubmit and
-// edits to other fields still succeed. The agent owner can change access.
-func TestUpdateAgent_AccessChangeIsOwnerOnly(t *testing.T) {
+// TestUpdateAgent_AccessChangeAllowsWorkspaceOwner verifies that a workspace
+// owner may change another member's agent access. A workspace admin who is not
+// the agent owner remains rejected, while the agent owner still succeeds.
+func TestUpdateAgent_AccessChangeAllowsWorkspaceOwner(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
 
-	// Agent owned by testUserID, public_to workspace (createHandlerTestAgent).
+	// Start with an agent owned by an admin so testUserID exercises the workspace
+	// owner path rather than the agent-owner shortcut.
 	agentID := createHandlerTestAgent(t, "owner-only-access-agent", nil)
+	agentOwnerID := createPermissionTestAdmin(t, "perm-access-agent-owner@multica.test")
 	adminID := createPermissionTestAdmin(t, "perm-access-admin@multica.test")
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET owner_id = $1 WHERE id = $2`, agentOwnerID, agentID); err != nil {
+		t.Fatalf("set agent owner: %v", err)
+	}
 
 	put := func(actorID string, body map[string]any) int {
 		rec := httptest.NewRecorder()
@@ -654,25 +657,24 @@ func TestUpdateAgent_AccessChangeIsOwnerOnly(t *testing.T) {
 		return rec.Code
 	}
 
-	// Admin (non-owner) attempts a REAL access change → 403.
+	// Workspace owner (testUserID) can change access.
 	rec := httptest.NewRecorder()
-	r := newRequestAs(adminID, "PUT", "/api/agents/"+agentID, map[string]any{"permission_mode": "private"})
+	r := newRequestAs(testUserID, "PUT", "/api/agents/"+agentID, map[string]any{"permission_mode": "private"})
 	r = withURLParam(r, "id", agentID)
 	testHandler.UpdateAgent(rec, r)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("admin access change: expected 403, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("workspace owner access change: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	// Access must be unchanged (still public_to workspace).
-	if a, _ := testHandler.Queries.GetAgent(ctx, util.MustParseUUID(agentID)); a.PermissionMode != "public_to" {
-		t.Errorf("access must be unchanged after rejected admin write, got %q", a.PermissionMode)
+	if a, _ := testHandler.Queries.GetAgent(ctx, util.MustParseUUID(agentID)); a.PermissionMode != "private" {
+		t.Errorf("workspace owner change did not persist, got %q", a.PermissionMode)
 	}
 
-	// Admin no-op resubmit of the CURRENT permission (PATCH-as-PUT) → tolerated.
+	// A non-owner workspace admin cannot make a real access change.
 	if code := put(adminID, map[string]any{
 		"permission_mode":    "public_to",
 		"invocation_targets": []map[string]any{{"target_type": "workspace"}},
-	}); code != http.StatusOK {
-		t.Errorf("admin no-op permission resubmit: expected 200, got %d", code)
+	}); code != http.StatusForbidden {
+		t.Errorf("admin access change: expected 403, got %d", code)
 	}
 
 	// Admin editing a NON-permission field still works.
@@ -680,12 +682,15 @@ func TestUpdateAgent_AccessChangeIsOwnerOnly(t *testing.T) {
 		t.Errorf("admin editing other fields: expected 200, got %d", code)
 	}
 
-	// The owner CAN change access.
-	if code := put(testUserID, map[string]any{"permission_mode": "private"}); code != http.StatusOK {
-		t.Errorf("owner access change: expected 200, got %d", code)
+	// The agent owner can change access too.
+	if code := put(agentOwnerID, map[string]any{
+		"permission_mode":    "public_to",
+		"invocation_targets": []map[string]any{{"target_type": "workspace"}},
+	}); code != http.StatusOK {
+		t.Errorf("agent owner access change: expected 200, got %d", code)
 	}
-	if n := invocationTargetCount(t, agentID); n != 0 {
-		t.Errorf("owner set private: expected 0 targets, got %d", n)
+	if n := invocationTargetCount(t, agentID); n != 1 {
+		t.Errorf("agent owner set public_to: expected 1 target, got %d", n)
 	}
 }
 

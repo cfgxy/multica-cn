@@ -88,6 +88,14 @@ describe("agentSlotChoices", () => {
     expect(choices.map((r) => r.id)).toEqual(["rt-text"]);
   });
 
+  it("includes another member's private runtime for the workspace owner", () => {
+    const choices = agentSlotChoices([othersRt], "text", {
+      currentUserId: OWNER,
+      currentUserRole: "owner",
+    });
+    expect(choices.map((r) => r.id)).toEqual(["rt-other"]);
+  });
+
   it("excludes the other slot's selection", () => {
     const both = makeRuntime({
       id: "rt-both",

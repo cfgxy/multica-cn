@@ -62,10 +62,12 @@ export function BuilderSetup({
   banner?: ReactNode;
 }) {
   const { t } = useT("agents");
+  const currentUserRole =
+    members.find((member) => member.user_id === currentUserId)?.role ?? null;
   const hasOnline = runtimes.some(
     (runtime) =>
       runtime.status === "online" &&
-      isRuntimeUsableForUser(runtime, currentUserId),
+      isRuntimeUsableForUser(runtime, currentUserId, currentUserRole),
   );
   return (
     <main className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-5 py-10">

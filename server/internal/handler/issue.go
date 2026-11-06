@@ -3916,9 +3916,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 // also rejects archived targets and runs the INVOKE gate — canInvokeAgent, not
 // the softer canAccessPrivateAgent view gate: assigning an issue produces a
 // run, so it must clear the same predicate as chat / @-mention (MUL-3963).
-// That means owner-only for a private agent, with NO workspace-admin bypass
-// and NO unconditional agent-to-agent bypass — an agent caller (X-Agent-ID) is
-// judged by the top-of-chain human originator like everywhere else.
+// For a private agent, that admits the agent owner or workspace owner, with NO
+// workspace-admin bypass and NO unconditional agent-to-agent bypass — an agent
+// caller (X-Agent-ID) is judged by the top-of-chain human originator like
+// everywhere else.
 // An autopilot run needs no special case here: since MUL-6951 a scheduled run
 // carries its trigger owner's originator, so it is judged by exactly the same
 // predicate as that human acting directly.

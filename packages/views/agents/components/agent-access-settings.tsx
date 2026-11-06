@@ -1,6 +1,7 @@
 "use client";
 
 import type { Agent, MemberWithUser } from "@multica/core/types";
+import { canEditAgentAccess } from "@multica/core/permissions";
 import {
   SettingsCard,
   SettingsSection,
@@ -22,6 +23,8 @@ export function AgentAccessSettings({
   onUpdate: (id: string, data: Record<string, unknown>) => Promise<void>;
 }) {
   const { t } = useT("agents");
+  const currentUserRole =
+    members.find((member) => member.user_id === currentUserId)?.role ?? null;
 
   return (
     <SettingsSection
@@ -35,9 +38,10 @@ export function AgentAccessSettings({
           visibility={agent.visibility}
           members={members}
           ownerId={agent.owner_id}
-          canEdit={
-            currentUserId !== null && agent.owner_id === currentUserId
-          }
+          canEdit={canEditAgentAccess(agent, {
+            userId: currentUserId,
+            role: currentUserRole,
+          }).allowed}
           hasComposioAllowlist={
             (agent.composio_toolkit_allowlist ?? []).length > 0
           }
