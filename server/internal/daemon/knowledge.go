@@ -37,13 +37,14 @@ type KnowledgePlan struct {
 }
 
 type KnowledgePlanWorkspace struct {
-	WorkspaceID    string                   `json:"workspace_id"`
-	HasUltimate    bool                     `json:"has_ultimate"`
-	Ultimate       *KnowledgePlanUltimate   `json:"ultimate,omitempty"`
-	DiscoveryRoots []string                 `json:"discovery_roots"`
-	Dirs           []KnowledgePlanDir       `json:"dirs"`
-	Adoptions      []KnowledgePlanAdoption  `json:"adoptions"`
-	Operations     []KnowledgePlanOperation `json:"operations"`
+	WorkspaceID     string                   `json:"workspace_id"`
+	HasUltimate     bool                     `json:"has_ultimate"`
+	Ultimate        *KnowledgePlanUltimate   `json:"ultimate,omitempty"`
+	UnboundUltimate *KnowledgePlanUltimate   `json:"unbound_ultimate,omitempty"`
+	DiscoveryRoots  []string                 `json:"discovery_roots"`
+	Dirs            []KnowledgePlanDir       `json:"dirs"`
+	Adoptions       []KnowledgePlanAdoption  `json:"adoptions"`
+	Operations      []KnowledgePlanOperation `json:"operations"`
 }
 
 type KnowledgePlanUltimate struct {
@@ -231,6 +232,13 @@ func (d *Daemon) knowledgeSyncWorkspace(ctx context.Context, ws *KnowledgePlanWo
 		} else {
 			results.Ultimates = append(results.Ultimates, KnowledgeUltimateReport{WorkspaceID: ws.WorkspaceID, Path: path})
 		}
+	} else if ws.UnboundUltimate != nil && hasBeadsDatabase(ws.UnboundUltimate.Path) {
+		// A manually registered target is never scanned, but the daemon that can
+		// prove it hosts a bd database may claim it for adoption work.
+		results.Ultimates = append(results.Ultimates, KnowledgeUltimateReport{
+			WorkspaceID: ws.WorkspaceID,
+			Path:        ws.UnboundUltimate.Path,
+		})
 	}
 
 	registered := make(map[string]bool, len(ws.Dirs))

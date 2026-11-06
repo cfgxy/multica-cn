@@ -388,6 +388,45 @@ func TestDaemonKnowledgeUltimateDesignation(t *testing.T) {
 	}
 }
 
+// TestDaemonKnowledgeClaimsAccessibleManualUltimate ensures a manually
+// registered target becomes claimable only after the hosting daemon confirms
+// the same path contains its local bd database.
+func TestDaemonKnowledgeClaimsAccessibleManualUltimate(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	ultimate := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ultimate, ".beads"), 0o755); err != nil {
+		t.Fatalf("seed manual ultimate .beads: %v", err)
+	}
+
+	plan := KnowledgePlan{Workspaces: []KnowledgePlanWorkspace{{
+		WorkspaceID:     "ws-manual",
+		HasUltimate:     true,
+		UnboundUltimate: &KnowledgePlanUltimate{DirID: "dir-manual", Path: ultimate},
+	}}}
+	fake := newFakeKnowledgeServer(t, plan)
+	d := newKnowledgeTestDaemon(t, fake)
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("accessible target cycle: %v", err)
+	}
+	posted := fake.posted(t)
+	if len(posted) != 1 || len(posted[0].Ultimates) != 1 {
+		t.Fatalf("accessible manual target report: %+v", posted)
+	}
+	if report := posted[0].Ultimates[0]; report.WorkspaceID != "ws-manual" || report.Path != ultimate {
+		t.Fatalf("manual target report: %+v", report)
+	}
+
+	fake.mu.Lock()
+	fake.plan.Workspaces[0].UnboundUltimate = &KnowledgePlanUltimate{DirID: "dir-missing", Path: t.TempDir()}
+	fake.mu.Unlock()
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("inaccessible target cycle: %v", err)
+	}
+	if posted = fake.posted(t); len(posted) != 1 {
+		t.Fatalf("inaccessible manual target must not be claimed: %+v", posted)
+	}
+}
+
 // TestDaemonKnowledgeAdoptionTransfer pins §3's daemon half: the job's
 // content lands in the ultimate bd under the plan's key, the read-back
 // verifies it, and success/failure/duplicate outcomes are reported so the

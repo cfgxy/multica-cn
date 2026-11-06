@@ -40,11 +40,17 @@ func registerKnowledgeDir(t *testing.T, kind, path string) string {
 	return created.ID
 }
 
-func bindKnowledgeDir(t *testing.T, dirID, daemonID string) {
+func claimKnowledgeUltimate(t *testing.T, daemonID, dirID string) {
 	t.Helper()
-	if _, err := testPool.Exec(context.Background(),
-		`UPDATE knowledge_dir SET daemon_id = $2 WHERE id = $1`, dirID, daemonID); err != nil {
-		t.Fatalf("bind knowledge dir: %v", err)
+	dir := knowledgeDirState(t, dirID)
+	ack := postKnowledgeResults(t, daemonID, map[string]any{
+		"ultimates": []map[string]any{{
+			"workspace_id": testWorkspaceID,
+			"path":         dir.Path,
+		}},
+	})
+	if ack["ultimates_registered"].(float64) != 1 {
+		t.Fatalf("ultimate claim acknowledgment: %v", ack)
 	}
 }
 
@@ -189,11 +195,20 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 		if ws.WorkspaceID != testWorkspaceID {
 			continue
 		}
-		if !ws.HasUltimate || ws.Ultimate != nil {
-			t.Fatalf("unbound plan ultimate: has=%v ultimate=%+v, want unavailable target", ws.HasUltimate, ws.Ultimate)
+		if !ws.HasUltimate || ws.Ultimate != nil || ws.UnboundUltimate == nil || ws.UnboundUltimate.DirID != ultimate {
+			t.Fatalf("unbound plan ultimate: has=%v ultimate=%+v claim=%+v, want claimable target", ws.HasUltimate, ws.Ultimate, ws.UnboundUltimate)
 		}
 	}
-	bindKnowledgeDir(t, ultimate, daemonID)
+	claimKnowledgeUltimate(t, daemonID, ultimate)
+	foreignAck := postKnowledgeResults(t, "foreign-daemon", map[string]any{
+		"ultimates": []map[string]any{{
+			"workspace_id": testWorkspaceID,
+			"path":         knowledgeDirState(t, ultimate).Path,
+		}},
+	})
+	if foreignAck["ultimates_registered"].(float64) != 0 {
+		t.Fatalf("foreign daemon claimed bound ultimate: %v", foreignAck)
+	}
 
 	plan := knowledgePlan(t, daemonID)
 	var ws *KnowledgePlanWorkspace
@@ -269,7 +284,7 @@ func TestKnowledgePlanExcludesUltimateFromScanDirs(t *testing.T) {
 
 	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-not-a-scan-target")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/ultimate-fix-candidate")
-	bindKnowledgeDir(t, ultimate, daemonID)
+	claimKnowledgeUltimate(t, daemonID, ultimate)
 
 	plan := knowledgePlan(t, daemonID)
 	var ws *KnowledgePlanWorkspace
@@ -431,7 +446,7 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 
 	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-state-machine")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-state-machine")
-	bindKnowledgeDir(t, ultimate, daemonID)
+	claimKnowledgeUltimate(t, daemonID, ultimate)
 	postKnowledgeResults(t, daemonID, map[string]any{
 		"scans": []map[string]any{{
 			"dir_id": candidate, "trigger_source": "initial", "ok": true,
