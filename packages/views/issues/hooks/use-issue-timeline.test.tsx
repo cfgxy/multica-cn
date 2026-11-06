@@ -133,7 +133,7 @@ vi.mock("@multica/core/realtime", () => ({
 }));
 
 vi.mock("sonner", () => ({
-  toast: { error: vi.fn(), success: vi.fn() },
+  toast: { error: vi.fn(), success: vi.fn(), warning: vi.fn() },
 }));
 
 import { useIssueTimeline } from "./use-issue-timeline";
@@ -147,6 +147,7 @@ describe("useIssueTimeline", () => {
     stableHandles.resolveMutateAsync.mockClear();
     stableHandles.toggleMutate.mockClear();
     vi.mocked(toast.error).mockClear();
+    vi.mocked(toast.warning).mockClear();
     queryState.data = timelineData();
     queryState.isLoading = false;
     cacheUpdates.last = null;
@@ -224,6 +225,74 @@ describe("useIssueTimeline", () => {
 
     expect(accepted).toBe(false);
     expect(toast.error).toHaveBeenCalledWith("The comment wasn't posted. Check the agent mentions and try again.");
+  });
+
+  it.each(["comment", "reply", "edit"] as const)(
+    "warns after a successful %s when agent mention links were not recognized",
+    async (actionName) => {
+      const response = {
+        id: "comment-1",
+        content: "[@Lost](mention://agent/not-a-uuid)",
+        trigger_outcomes: [],
+        invalid_mentions: [{ start: 0, end: 39 }],
+      };
+      if (actionName === "edit") {
+        stableHandles.updateMutateAsync.mockResolvedValueOnce(response);
+      } else {
+        stableHandles.createMutateAsync.mockResolvedValueOnce(response);
+      }
+      const { result } = renderHook(() => useIssueTimeline("issue-1", "user-1"), {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <I18nProvider locale="en" resources={RESOURCES}>{children}</I18nProvider>
+        ),
+      });
+
+      await act(async () => {
+        if (actionName === "comment") {
+          expect(await result.current.submitComment(response.content)).toBe("comment-1");
+        } else if (actionName === "reply") {
+          expect(await result.current.submitReply("parent-1", response.content)).toBe("comment-1");
+        } else {
+          await result.current.editComment("comment-1", response.content, []);
+        }
+      });
+
+      expect(toast.warning).toHaveBeenCalledWith(
+        "Comment saved, but some agent mentions weren't recognized.",
+      );
+    },
+  );
+
+  it("shows blocked-target and unrecognized-mention warnings from the same successful response", async () => {
+    stableHandles.createMutateAsync.mockResolvedValueOnce({
+      id: "comment-1",
+      content: "[@Go](mention://agent/deadbeef) [@Lost](mention://agent/not-a-uuid)",
+      trigger_outcomes: [{
+        target_type: "agent",
+        target_id: "deadbeef",
+        status: "blocked",
+        reason_code: "invocation_not_allowed",
+      }],
+      invalid_mentions: [{ start: 35, end: 74 }],
+    });
+    const { result } = renderHook(() => useIssueTimeline("issue-1", "user-1"), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <I18nProvider locale="en" resources={RESOURCES}>{children}</I18nProvider>
+      ),
+    });
+
+    await act(async () => {
+      expect(await result.current.submitComment("handoff")).toBe("comment-1");
+    });
+
+    expect(toast.warning).toHaveBeenNthCalledWith(
+      1,
+      "Comment saved, but Go wasn't triggered (Not found or no permission)",
+    );
+    expect(toast.warning).toHaveBeenNthCalledWith(
+      2,
+      "Comment saved, but some agent mentions weren't recognized.",
+    );
   });
 
   it("passes the captured comment content through editComment", async () => {

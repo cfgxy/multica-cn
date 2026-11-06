@@ -53,7 +53,7 @@ func StripAgentMentionLinks(content string) string {
 			stripped.WriteString(remaining)
 			return stripAgentMentionProtocol(stripped.String())
 		}
-		labelStart, ok := markdownLinkLabelStart(remaining, linkEnd)
+		labelStart, ok := MarkdownLinkLabelStart(remaining, linkEnd)
 		if !ok {
 			// This is not a well-formed Markdown link. Preserve it and keep
 			// scanning after the agent target prefix for the next candidate.
@@ -114,10 +114,10 @@ func indexFold(content, needle string) int {
 	return -1
 }
 
-// markdownLinkLabelStart returns the opening bracket for a link whose closing
-// bracket starts at linkEnd. Bracket balancing keeps an agent link from
-// consuming a preceding member or issue link, while retaining nested labels.
-func markdownLinkLabelStart(content string, linkEnd int) (int, bool) {
+// MarkdownLinkLabelStart returns the opening bracket for a link whose closing
+// bracket starts at linkEnd. Bracket balancing keeps a link from consuming a
+// preceding link while retaining nested and escaped label brackets.
+func MarkdownLinkLabelStart(content string, linkEnd int) (int, bool) {
 	depth := 1
 	for i := linkEnd - 1; i >= 0; i-- {
 		switch content[i] {

@@ -43,6 +43,14 @@ export interface Comment {
   // Per-target result of every explicit @agent / @squad mention in this comment
   // (MUL-4525 §2). Present only on create/edit responses; older servers omit it.
   trigger_outcomes?: CommentTriggerOutcome[];
+  // Complete agent mention links the parser did not recognize. The comment was
+  // still saved; these UTF-8 byte spans are warning metadata for the submitter.
+  invalid_mentions?: CommentMentionWarning[];
+}
+
+export interface CommentMentionWarning {
+  start: number;
+  end: number;
 }
 
 // The domain result of one explicitly-mentioned trigger target. Success-shaped
@@ -79,7 +87,7 @@ export interface CommentTriggerPreview {
   // Explicit @agent / @squad mentions that will NOT trigger if posted as-is
   // (MUL-4525 §2). Additive: older servers omit it.
   blocked?: CommentTriggerOutcome[];
-  invalid_mentions?: { start: number; end: number }[];
+  invalid_mentions?: CommentMentionWarning[];
 }
 
 /**

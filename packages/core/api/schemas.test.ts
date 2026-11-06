@@ -1689,6 +1689,14 @@ describe("CommentSchema.trigger_outcomes", () => {
     expect(CommentSchema.parse({ ...comment, trigger_outcomes: "bad" }).trigger_outcomes).toEqual([]);
     expect(CommentSchema.safeParse({ ...comment, id: 123 }).success).toBe(false);
   });
+
+  it("parses saved-comment mention warnings and degrades malformed warning fields", () => {
+    expect(CommentSchema.parse({
+      ...comment,
+      invalid_mentions: [{ start: 3, end: 12 }],
+    }).invalid_mentions).toEqual([{ start: 3, end: 12 }]);
+    expect(CommentSchema.parse({ ...comment, invalid_mentions: "bad" }).invalid_mentions).toEqual([]);
+  });
 });
 
 describe("CommentTriggerPreviewSchema.blocked", () => {

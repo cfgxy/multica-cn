@@ -64,3 +64,16 @@ func TestWarnUnhandledCommentTriggersReportsSavedButBlocked(t *testing.T) {
 		}
 	}
 }
+
+func TestWarnUnhandledCommentTriggersReportsSavedButUnparsedMention(t *testing.T) {
+	capture := captureStderr(t)
+	warnUnhandledCommentTriggers(map[string]any{"invalid_mentions": []any{
+		map[string]any{"start": float64(3), "end": float64(40)},
+	}})
+	got := capture.read()
+	for _, want := range []string{"comment was saved", "[3,40)", "not recognized"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("warning missing %q: %s", want, got)
+		}
+	}
+}
