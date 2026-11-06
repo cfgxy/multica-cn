@@ -25,6 +25,8 @@ export function knowledgeEntriesOptions(wsId: string, dirId: string, query: stri
       ...(dirId ? { dir_id: dirId } : {}),
       ...(query ? { q: query } : {}),
     }),
+    refetchInterval: (query) =>
+      query.state.data?.some((entry) => entry.pending_operation !== undefined) ? 5_000 : false,
     enabled: !!wsId,
   });
 }
@@ -71,4 +73,31 @@ export function useAdoptKnowledgeEntry(wsId: string) {
       qc.invalidateQueries({ queryKey: knowledgeKeys.all(wsId) });
     },
   });
+}
+
+function useKnowledgeOperation<T>(wsId: string, mutationFn: (input: T) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: knowledgeKeys.all(wsId) });
+    },
+  });
+}
+
+export function useEditKnowledgeEntry(wsId: string) {
+  return useKnowledgeOperation(wsId, ({ id, content }: { id: string; content: string }) =>
+    api.editKnowledgeEntry(id, content));
+}
+
+export function useDeleteKnowledgeEntry(wsId: string) {
+  return useKnowledgeOperation(wsId, (id: string) => api.deleteKnowledgeEntry(id));
+}
+
+export function useMergeKnowledgeEntries(wsId: string) {
+  return useKnowledgeOperation(wsId, ({ id, content, sourceEntryIds }: {
+    id: string;
+    content: string;
+    sourceEntryIds: string[];
+  }) => api.mergeKnowledgeEntries(id, content, sourceEntryIds));
 }

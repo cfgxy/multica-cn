@@ -193,7 +193,8 @@ var postConsolidationStems = []string{
 	"994_clause_injection_observation_id_index",
 	"994_clause_injection_observation_task_scope_time_index",
 	"994_clause_injection_observation_workspace_time_index",
-	"997_agent_task_no_action",
+	"997_agent_task_no_action",      // RUYI-884
+	"999_knowledge_entry_operation", // RUYI-889
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

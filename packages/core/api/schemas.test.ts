@@ -85,6 +85,9 @@ import {
   EMPTY_PLUGIN_PREVIEW,
   ListGitLabRepositoriesResponseSchema,
   EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
+  EMPTY_KNOWLEDGE_ENTRY_OPERATION,
+  KnowledgeEntrySchema,
+  KnowledgeEntryOperationSchema,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -95,6 +98,54 @@ import {
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 import { SkillSummaryListSchema } from "./schemas";
+
+describe("KnowledgeEntryOperationSchema", () => {
+  const endpoint = { endpoint: "POST /api/knowledge/entries/:id/edit" };
+
+  it("accepts an operation receipt and its pending-state details", () => {
+    expect(KnowledgeEntryOperationSchema.parse({
+      id: "op-1",
+      status: "queued",
+      operation_type: "edit",
+      error: "bd recall mismatch",
+      requested_at: "2026-11-05T07:00:00Z",
+      retry_after: 10,
+    })).toEqual({
+      id: "op-1",
+      status: "queued",
+      operation_type: "edit",
+      error: "bd recall mismatch",
+      requested_at: "2026-11-05T07:00:00Z",
+      retry_after: 10,
+    });
+  });
+
+  it("falls back when an operation receipt is malformed", () => {
+    expect(
+      parseWithFallback(
+        { id: "op-1", status: 202 },
+        KnowledgeEntryOperationSchema,
+        EMPTY_KNOWLEDGE_ENTRY_OPERATION,
+        endpoint,
+      ),
+    ).toEqual(EMPTY_KNOWLEDGE_ENTRY_OPERATION);
+  });
+
+  it("rejects malformed pending operation state in a knowledge entry", () => {
+    expect(KnowledgeEntrySchema.safeParse({
+      id: "entry-1",
+      dir_id: "dir-1",
+      key: "deploy-rollback",
+      content: "Use the tagged release.",
+      content_sha256: "abc123",
+      mirror_state: "synced",
+      first_seen_at: "2026-11-05T07:00:00Z",
+      last_confirmed_at: "2026-11-05T07:00:00Z",
+      adoption_state: "adopted",
+      pending_operation: { id: "op-1", status: 202 },
+    }).success).toBe(false);
+  });
+});
 
 describe("decision request response", () => {
   const baseRequest = {

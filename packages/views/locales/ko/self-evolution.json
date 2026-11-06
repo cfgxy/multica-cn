@@ -802,6 +802,7 @@
     "attrAdoption": "채택 상태",
     "attrSource": "소스 키",
     "attrUpdated": "마지막 확인",
+    "attrValue": "추정 가치",
     "attrKind": "종류",
     "attrEntries": "항목 수",
     "attrCreated": "등록일",
@@ -815,7 +816,29 @@
     "colSource": "소스",
     "colPath": "경로",
     "colHealth": "상태",
-    "colLastScan": "마지막 스캔"
+    "colLastScan": "마지막 스캔",
+    "edit": "편집",
+    "save": "편집 대기열에 추가",
+    "delete": "삭제",
+    "deleteConfirm": "워크스페이스 라이브러리에서 \"{{key}}\"을(를) 삭제할까요? 확인 후 데몬이 삭제합니다.",
+    "merge": "선택 항목 병합",
+    "mergeCandidates": "유사 항목",
+    "mergeDescription": "위 통합 내용으로 대체할 소스 항목을 선택하세요.",
+    "mergeConfirm": "데몬이 통합된 Memory를 확인한 뒤 선택한 소스 항목 {{count}}개를 병합하고 삭제할까요?",
+    "noMergeCandidates": "이 라이브러리에는 병합할 중복 또는 유사한 동기화 항목이 없습니다.",
+    "duplicate": "중복",
+    "similar": "유사",
+    "highValue": "높은 가치",
+    "lowValue": "낮은 가치",
+    "editorPlaceholder": "통합된 Markdown 내용 작성",
+    "operationSyncing": "{{operation}} 동기화 중",
+    "operationFailed": "{{operation}} 동기화 실패",
+    "operationType": {
+      "change": "변경",
+      "edit": "편집",
+      "delete": "삭제",
+      "merge": "병합"
+    }
   },
   "skillsSeg": {
     "managed": "관리 중인 스킬",

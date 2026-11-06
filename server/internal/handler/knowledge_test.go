@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -38,6 +39,38 @@ func registerKnowledgeDir(t *testing.T, kind, path string) string {
 		t.Fatalf("register %s dir: status=%q, want queued for first scan", kind, created.Status)
 	}
 	return created.ID
+}
+
+func registerKnowledgeUltimate(t *testing.T, daemonID, path string) string {
+	t.Helper()
+	grantKnowledgeUltimatePath(t, daemonID, path)
+	return registerKnowledgeDir(t, "ultimate", path)
+}
+
+func claimKnowledgeUltimate(t *testing.T, daemonID, dirID string) {
+	t.Helper()
+	dir := knowledgeDirState(t, dirID)
+	ack := postKnowledgeResults(t, daemonID, map[string]any{
+		"ultimates": []map[string]any{{
+			"workspace_id": testWorkspaceID,
+			"path":         dir.Path,
+		}},
+	})
+	if ack["ultimates_registered"].(float64) != 1 {
+		t.Fatalf("ultimate claim acknowledgment: %v", ack)
+	}
+}
+
+func grantKnowledgeUltimatePath(t *testing.T, daemonID, path string) {
+	t.Helper()
+	projectID := dbfx.Project(t, "knowledge ultimate path authorization")
+	dbfx.Insert(t, "project_resource", testutil.Cols{
+		"project_id":    projectID,
+		"workspace_id":  testWorkspaceID,
+		"resource_type": "local_directory",
+		"resource_ref":  `{"daemon_id":"` + daemonID + `","local_path":"` + path + `","execution_mode":"in_place"}`,
+		"position":      0,
+	})
 }
 
 func knowledgeEntries(t *testing.T, dirID string) []KnowledgeEntryResponse {
@@ -101,7 +134,8 @@ func knowledgePlan(t *testing.T, daemonID string) KnowledgePlanResponse {
 	t.Helper()
 	var plan KnowledgePlanResponse
 	testutil.Call(t, testHandler.GetKnowledgePlan,
-		newRequest(http.MethodGet, "/api/daemon/knowledge/plan?daemon_id="+daemonID, nil)).
+		newRequest(http.MethodGet, "/api/daemon/knowledge/plan?daemon_id="+daemonID, nil).WithContext(
+			middleware.WithDaemonContext(context.Background(), testWorkspaceID, daemonID))).
 		Want(http.StatusOK).JSON(&plan)
 	return plan
 }
@@ -110,9 +144,17 @@ func postKnowledgeResults(t *testing.T, daemonID string, body map[string]any) ma
 	t.Helper()
 	var ack map[string]any
 	testutil.Call(t, testHandler.PostKnowledgeResults,
-		newRequest(http.MethodPost, "/api/daemon/knowledge/results?daemon_id="+daemonID, body)).
+		newRequest(http.MethodPost, "/api/daemon/knowledge/results?daemon_id="+daemonID, body).WithContext(
+			middleware.WithDaemonContext(context.Background(), testWorkspaceID, daemonID))).
 		Want(http.StatusOK).JSON(&ack)
 	return ack
+}
+
+func postKnowledgeResultsAsUser(t *testing.T, daemonID string, body map[string]any) {
+	t.Helper()
+	testutil.Call(t, testHandler.PostKnowledgeResults,
+		newRequest(http.MethodPost, "/api/daemon/knowledge/results?daemon_id="+daemonID, body)).
+		Want(http.StatusUnauthorized)
 }
 
 func adoptEntry(t *testing.T, entryID string) int {
@@ -143,9 +185,14 @@ func TestKnowledgeRegistrationQueuesFirstScan(t *testing.T) {
 		Want(http.StatusConflict)
 
 	// A second active ultimate refuses (single adoption target per workspace).
-	registerKnowledgeDir(t, "ultimate", t.TempDir())
+	ultimatePath := t.TempDir()
 	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
-		map[string]any{"kind": "ultimate", "path": t.TempDir()})).Want(http.StatusConflict)
+		map[string]any{"kind": "ultimate", "path": ultimatePath})).Want(http.StatusConflict)
+	registerKnowledgeUltimate(t, "registration-daemon", ultimatePath)
+	secondUltimatePath := t.TempDir()
+	grantKnowledgeUltimatePath(t, "second-registration-daemon", secondUltimatePath)
+	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
+		map[string]any{"kind": "ultimate", "path": secondUltimatePath})).Want(http.StatusConflict)
 
 	// Unknown kinds refuse; kind is optional and defaults to candidate_cli.
 	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
@@ -162,8 +209,46 @@ func TestKnowledgeRegistrationQueuesFirstScan(t *testing.T) {
 	}
 }
 
+// TestKnowledgeAdoptionRefusesUnboundUltimate keeps both manual-target entry
+// points executable: a new target must have a registered daemon path, and a
+// legacy unbound target must not turn an adoption into an unconsumable job.
+func TestKnowledgeAdoptionRefusesUnboundUltimate(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-without-ultimate-host"
+	const ultimatePath = "/tmp/ultimate-without-registered-host"
+
+	// The management API rejects an ultimate path with no daemon resource.
+	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
+		map[string]any{"kind": "ultimate", "path": ultimatePath})).Want(http.StatusConflict)
+
+	// An older unbound row may exist from before that validation. It remains
+	// visible, but cannot strand an adoption because no daemon can consume it.
+	dbfx.Insert(t, "knowledge_dir", testutil.Cols{
+		"workspace_id": testWorkspaceID,
+		"kind":         "ultimate",
+		"path":         ultimatePath,
+		"created_by":   testUserID,
+	})
+	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-without-ultimate-host")
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"unbound-target": "must remain pending"},
+		}},
+	})
+	entry := knowledgeEntryByKey(t, candidate, "unbound-target")
+	if code := adoptEntry(t, entry.ID); code != http.StatusConflict {
+		t.Fatalf("adopt against unbound ultimate: %d, want 409", code)
+	}
+	if state := knowledgeEntryByKey(t, candidate, "unbound-target").AdoptionState; state != "pending" {
+		t.Fatalf("unbound ultimate stranded adoption: state=%q, want pending", state)
+	}
+}
+
 // TestKnowledgePlanHandsWorkToDaemon pins the plan contents: hosted +
-// unclaimed directories with their mirror SHA map, the resolved ultimate,
+// unclaimed directories with their mirror SHA map, a daemon-bound ultimate,
 // and — after a queue-time adoption — the pending transfer job.
 func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 	if testHandler == nil {
@@ -171,8 +256,53 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 	}
 	const daemonID = "daemon-under-test"
 
-	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-under-test")
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/ultimate-under-test")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-under-test")
+	ultimatePath := knowledgeDirState(t, ultimate).Path
+
+	// 只有已登记的精确路径归属 daemon 才能看到或认领未绑定 ultimate。
+	unboundPlan := knowledgePlan(t, daemonID)
+	for i := range unboundPlan.Workspaces {
+		ws := &unboundPlan.Workspaces[i]
+		if ws.WorkspaceID != testWorkspaceID {
+			continue
+		}
+		if !ws.HasUltimate || ws.Ultimate != nil || ws.UnboundUltimate == nil || ws.UnboundUltimate.DirID != ultimate {
+			t.Fatalf("unbound plan ultimate: has=%v ultimate=%+v claim=%+v, want claimable target", ws.HasUltimate, ws.Ultimate, ws.UnboundUltimate)
+		}
+	}
+	foreignPlan := knowledgePlan(t, "foreign-daemon")
+	for i := range foreignPlan.Workspaces {
+		ws := &foreignPlan.Workspaces[i]
+		if ws.WorkspaceID == testWorkspaceID && ws.UnboundUltimate != nil {
+			t.Fatalf("foreign daemon received an unbound ultimate: %+v", ws.UnboundUltimate)
+		}
+	}
+	foreignAck := postKnowledgeResults(t, "foreign-daemon", map[string]any{
+		"ultimates": []map[string]any{{
+			"workspace_id": testWorkspaceID,
+			"path":         ultimatePath,
+		}},
+	})
+	if foreignAck["ultimates_registered"].(float64) != 0 {
+		t.Fatalf("foreign daemon claimed unbound ultimate: %v", foreignAck)
+	}
+	postKnowledgeResultsAsUser(t, daemonID, map[string]any{
+		"ultimates": []map[string]any{{
+			"workspace_id": testWorkspaceID,
+			"path":         ultimatePath,
+		}},
+	})
+	claimKnowledgeUltimate(t, daemonID, ultimate)
+	foreignAck = postKnowledgeResults(t, "foreign-daemon", map[string]any{
+		"ultimates": []map[string]any{{
+			"workspace_id": testWorkspaceID,
+			"path":         ultimatePath,
+		}},
+	})
+	if foreignAck["ultimates_registered"].(float64) != 0 {
+		t.Fatalf("foreign daemon claimed bound ultimate: %v", foreignAck)
+	}
 
 	plan := knowledgePlan(t, daemonID)
 	var ws *KnowledgePlanWorkspace
@@ -213,6 +343,26 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 	if dir := knowledgeDirState(t, candidate); dir.HealthState != "ok" {
 		t.Fatalf("health after first scan: %q, want ok", dir.HealthState)
 	}
+	entry := knowledgeEntryByKey(t, candidate, "tip")
+	if code := adoptEntry(t, entry.ID); code != http.StatusAccepted {
+		t.Fatalf("queue adoption after authorized claim: %d, want 202", code)
+	}
+	var adoptionJob *KnowledgePlanAdopt
+	adoptionPlan := knowledgePlan(t, daemonID)
+	for i := range adoptionPlan.Workspaces {
+		workspace := &adoptionPlan.Workspaces[i]
+		if workspace.WorkspaceID != testWorkspaceID {
+			continue
+		}
+		for j := range workspace.Adoptions {
+			if workspace.Adoptions[j].ID == entry.ID {
+				adoptionJob = &workspace.Adoptions[j]
+			}
+		}
+	}
+	if adoptionJob == nil || adoptionJob.UltimateDirID != ultimate || adoptionJob.UltimatePath != ultimatePath {
+		t.Fatalf("authorized daemon missing adoption job: %+v", adoptionJob)
+	}
 
 	// Mirror SHA map is now populated for the next cycle.
 	planned = nil
@@ -246,8 +396,9 @@ func TestKnowledgePlanExcludesUltimateFromScanDirs(t *testing.T) {
 	}
 	const daemonID = "daemon-under-test"
 
-	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-not-a-scan-target")
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/ultimate-not-a-scan-target")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/ultimate-fix-candidate")
+	claimKnowledgeUltimate(t, daemonID, ultimate)
 
 	plan := knowledgePlan(t, daemonID)
 	var ws *KnowledgePlanWorkspace
@@ -288,7 +439,7 @@ func TestKnowledgeResultsRefuseUltimateScanReports(t *testing.T) {
 	}
 	const daemonID = "daemon-under-test"
 
-	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-scan-guard")
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/ultimate-scan-guard")
 
 	ack := postKnowledgeResults(t, daemonID, map[string]any{
 		"scans": []map[string]any{{
@@ -407,8 +558,9 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 	}
 	const daemonID = "daemon-under-test"
 
-	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-state-machine")
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/ultimate-state-machine")
 	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-state-machine")
+	claimKnowledgeUltimate(t, daemonID, ultimate)
 	postKnowledgeResults(t, daemonID, map[string]any{
 		"scans": []map[string]any{{
 			"dir_id": candidate, "trigger_source": "initial", "ok": true,
@@ -450,10 +602,59 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 		t.Fatalf("pending adoption missing from plan: %+v", job)
 	}
 
-	// Failure callback lands 'failed' with the reason; retry queues again.
-	postKnowledgeResults(t, daemonID, map[string]any{
-		"adoptions": []map[string]any{{"kind": "entry", "id": entry.ID, "ok": false, "error": "bd write refused"}},
+	// A failure without the planned ultimate is inert, because the callback
+	// cannot prove where the daemon attempted the transfer.
+	ack := postKnowledgeResults(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": false, "error": "bd write refused",
+		}},
 	})
+	if ack["adoptions_resolved"].(float64) != 0 {
+		t.Fatalf("missing ultimate adoption resolved: %v", ack)
+	}
+	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "transferring" {
+		t.Fatalf("missing ultimate callback moved transferring entry: %q", state)
+	}
+
+	// User identity cannot impersonate the daemon for either successful or
+	// failed write results; both leave the queued transfer unchanged.
+	postKnowledgeResultsAsUser(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "forged user failure",
+		}},
+	})
+	postKnowledgeResultsAsUser(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": true, "ultimate_dir_id": ultimate,
+		}},
+	})
+	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "transferring" {
+		t.Fatalf("user callbacks moved transferring entry: %q", state)
+	}
+
+	// A daemon not eligible for the target ultimate may not resolve the job.
+	ack = postKnowledgeResults(t, "foreign-daemon", map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "forged failure",
+		}},
+	})
+	if ack["adoptions_resolved"].(float64) != 0 {
+		t.Fatalf("foreign daemon adoption resolved: %v", ack)
+	}
+	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "transferring" {
+		t.Fatalf("foreign callback moved transferring entry: %q", state)
+	}
+
+	// A report for the bound ultimate changes the entry to failed and permits a
+	// retry.
+	ack = postKnowledgeResults(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "bd write refused",
+		}},
+	})
+	if ack["adoptions_resolved"].(float64) != 1 {
+		t.Fatalf("failed adoption acknowledgment: %v", ack)
+	}
 	failed := knowledgeEntryByKey(t, candidate, "flaky")
 	if failed.AdoptionState != "failed" || !strings.Contains(failed.AdoptionError, "bd write refused") {
 		t.Fatalf("after failed callback: state=%q error=%q", failed.AdoptionState, failed.AdoptionError)
@@ -461,13 +662,28 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 	if code := adoptEntry(t, entry.ID); code != http.StatusAccepted {
 		t.Fatalf("retry after failure: %d, want 202", code)
 	}
+	// A daemon not eligible for the ultimate's plan may not resolve the retry.
+	ack = postKnowledgeResults(t, "foreign-daemon", map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "forged failure",
+		}},
+	})
+	if ack["adoptions_resolved"].(float64) != 0 {
+		t.Fatalf("foreign daemon adoption resolved: %v", ack)
+	}
+	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "transferring" {
+		t.Fatalf("foreign callback moved transferring entry: %q", state)
+	}
 
 	// Success callback lands adopted with provenance; a stale repeat is inert.
-	postKnowledgeResults(t, daemonID, map[string]any{
+	ack = postKnowledgeResults(t, daemonID, map[string]any{
 		"adoptions": []map[string]any{{
 			"kind": "entry", "id": entry.ID, "ok": true, "ultimate_dir_id": ultimate,
 		}},
 	})
+	if ack["adoptions_resolved"].(float64) != 1 {
+		t.Fatalf("successful adoption acknowledgment: %v", ack)
+	}
 	adopted := knowledgeEntryByKey(t, candidate, "flaky")
 	if adopted.AdoptionState != "adopted" || adopted.UltimateDirID == nil || *adopted.UltimateDirID != ultimate {
 		t.Fatalf("after success callback: state=%q ultimate=%v", adopted.AdoptionState, adopted.UltimateDirID)
@@ -475,13 +691,227 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 	if adopted.AdoptedFromDirID == nil || *adopted.AdoptedFromDirID != candidate || adopted.AdoptedFromKey == nil || *adopted.AdoptedFromKey != "flaky" {
 		t.Fatalf("adopted provenance: from=%v key=%v", adopted.AdoptedFromDirID, adopted.AdoptedFromKey)
 	}
-	postKnowledgeResults(t, daemonID, map[string]any{
-		"adoptions": []map[string]any{{"kind": "entry", "id": entry.ID, "ok": false, "error": "stale"}},
+	ultimateMirror := knowledgeEntryByKey(t, ultimate, "flaky")
+	if ultimateMirror.Content != "content worth retrying" || ultimateMirror.MirrorState != "synced" {
+		t.Fatalf("ultimate mirror after adoption: %+v", ultimateMirror)
+	}
+	if ultimateMirror.AdoptedFromDirID == nil || *ultimateMirror.AdoptedFromDirID != candidate {
+		t.Fatalf("ultimate mirror provenance: from=%v", ultimateMirror.AdoptedFromDirID)
+	}
+	ack = postKnowledgeResults(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "stale",
+		}},
 	})
+	if ack["adoptions_resolved"].(float64) != 0 {
+		t.Fatalf("stale adoption acknowledgment: %v", ack)
+	}
 	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "adopted" {
 		t.Fatalf("stale callback moved a terminal entry: %q", state)
 	}
 	if code := adoptEntry(t, entry.ID); code != http.StatusConflict {
 		t.Fatalf("adopt after adopted: %d, want 409", code)
+	}
+}
+
+// TestKnowledgeEntryOperations keeps the write boundary server-authoritative:
+// only a bound ultimate mirror may queue work, the daemon plan remains scoped
+// to that binding, and the mirror advances only after a successful report.
+func TestKnowledgeEntryOperations(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-knowledge-operations"
+	ctx := context.Background()
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/ultimate-operations")
+	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-operations")
+	claimKnowledgeUltimate(t, daemonID, ultimate)
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"readonly": "candidate source"},
+		}},
+	})
+	readonly := knowledgeEntryByKey(t, candidate, "readonly")
+
+	var targetID, sourceID, secondSourceID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO knowledge_entry (workspace_id, dir_id, key, content, content_sha256, adoption_state)
+VALUES ($1, $2, 'target', 'original target', $3, 'adopted')
+RETURNING id::text`, testWorkspaceID, ultimate, knowledgeContentSHA("original target")).Scan(&targetID); err != nil {
+		t.Fatalf("seed target entry: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO knowledge_entry (workspace_id, dir_id, key, content, content_sha256, adoption_state)
+VALUES ($1, $2, 'source', 'original source', $3, 'adopted')
+RETURNING id::text`, testWorkspaceID, ultimate, knowledgeContentSHA("original source")).Scan(&sourceID); err != nil {
+		t.Fatalf("seed source entry: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO knowledge_entry (workspace_id, dir_id, key, content, content_sha256, adoption_state)
+VALUES ($1, $2, 'second-source', 'second original source', $3, 'adopted')
+RETURNING id::text`, testWorkspaceID, ultimate, knowledgeContentSHA("second original source")).Scan(&secondSourceID); err != nil {
+		t.Fatalf("seed second source entry: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM knowledge_entry_operation WHERE workspace_id = $1`, testWorkspaceID)
+	})
+
+	// Candidate mirrors are read-only, and confirmation is mandatory even when
+	// the caller has Owner access to the workspace.
+	testutil.Call(t, testHandler.EditKnowledgeEntry,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+readonly.ID+"/edit", map[string]any{"content": "must fail"}), "id", readonly.ID)).
+		Want(http.StatusConflict)
+	testutil.Call(t, testHandler.DeleteKnowledgeEntry,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+targetID+"/delete", map[string]any{"confirm": false}), "id", targetID)).
+		Want(http.StatusBadRequest)
+
+	var first KnowledgeEntryOperationResponse
+	testutil.Call(t, testHandler.EditKnowledgeEntry,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+targetID+"/edit", map[string]any{"content": "first edit"}), "id", targetID)).
+		Want(http.StatusAccepted).JSON(&first)
+	if first.Status != "queued" || first.ID == "" {
+		t.Fatalf("first edit response: %+v", first)
+	}
+	// A target or source already captured by queued work cannot be mutated by a
+	// second operation before the daemon returns an outcome.
+	testutil.Call(t, testHandler.MergeKnowledgeEntries,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+sourceID+"/merge", map[string]any{
+			"content": "must conflict", "source_entry_ids": []string{targetID}, "confirm": true,
+		}), "id", sourceID)).Want(http.StatusConflict)
+
+	plan := knowledgePlan(t, daemonID)
+	var firstPlan *KnowledgePlanOperation
+	for i := range plan.Workspaces {
+		for j := range plan.Workspaces[i].Operations {
+			if plan.Workspaces[i].Operations[j].ID == first.ID {
+				firstPlan = &plan.Workspaces[i].Operations[j]
+			}
+		}
+	}
+	if firstPlan == nil || firstPlan.OperationType != "edit" || firstPlan.Key != "target" || firstPlan.Content != "first edit" {
+		t.Fatalf("queued edit missing from bound daemon plan: %+v", firstPlan)
+	}
+	foreignPlan := knowledgePlan(t, "daemon-not-bound-to-ultimate")
+	for _, workspace := range foreignPlan.Workspaces {
+		for _, operation := range workspace.Operations {
+			if operation.ID == first.ID {
+				t.Fatalf("foreign daemon received mutable operation: %+v", operation)
+			}
+		}
+	}
+
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"operations": []map[string]any{{"id": first.ID, "ok": false, "error": "bd recall mismatch"}},
+	})
+	var content, status, operationErr string
+	if err := testPool.QueryRow(ctx, `
+SELECT e.content, o.status, o.error
+FROM knowledge_entry e JOIN knowledge_entry_operation o ON o.entry_id = e.id
+WHERE o.id = $1`, first.ID).Scan(&content, &status, &operationErr); err != nil {
+		t.Fatalf("read failed operation: %v", err)
+	}
+	if content != "original target" || status != "queued" || !strings.Contains(operationErr, "recall mismatch") {
+		t.Fatalf("failed operation changed mirror or cannot retry: content=%q status=%q error=%q", content, status, operationErr)
+	}
+	failedEntry := knowledgeEntryByKey(t, ultimate, "target")
+	if failedEntry.PendingOperation == nil || failedEntry.PendingOperation.ID != first.ID ||
+		failedEntry.PendingOperation.OperationType != "edit" || failedEntry.PendingOperation.Status != "queued" ||
+		!strings.Contains(failedEntry.PendingOperation.Error, "recall mismatch") || failedEntry.PendingOperation.RequestedAt == nil {
+		t.Fatalf("failed operation is not visible through the knowledge read model: %+v", failedEntry.PendingOperation)
+	}
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"operations": []map[string]any{{"id": first.ID, "ok": true}},
+	})
+	if completedEntry := knowledgeEntryByKey(t, ultimate, "target"); completedEntry.PendingOperation != nil {
+		t.Fatalf("completed operation remained visible through the knowledge read model: %+v", completedEntry.PendingOperation)
+	}
+
+	var merge KnowledgeEntryOperationResponse
+	testutil.Call(t, testHandler.MergeKnowledgeEntries,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+targetID+"/merge", map[string]any{
+			"content": "consolidated knowledge", "source_entry_ids": []string{sourceID, secondSourceID}, "confirm": true,
+		}), "id", targetID)).Want(http.StatusAccepted).JSON(&merge)
+	plan = knowledgePlan(t, daemonID)
+	var mergePlan *KnowledgePlanOperation
+	for i := range plan.Workspaces {
+		for j := range plan.Workspaces[i].Operations {
+			if plan.Workspaces[i].Operations[j].ID == merge.ID {
+				mergePlan = &plan.Workspaces[i].Operations[j]
+			}
+		}
+	}
+	hasDeleteKey := func(keys []string, key string) bool {
+		for _, candidate := range keys {
+			if candidate == key {
+				return true
+			}
+		}
+		return false
+	}
+	if mergePlan == nil || len(mergePlan.DeleteKeys) != 2 || !hasDeleteKey(mergePlan.DeleteKeys, "source") || !hasDeleteKey(mergePlan.DeleteKeys, "second-source") {
+		t.Fatalf("merge plan does not delete the source after recall: %+v", mergePlan)
+	}
+	// A daemon can report failure after writing the target and deleting one source.
+	// The server keeps the operation queued, preserves its error, and leaves every
+	// mirror row untouched until a successful replay confirms the complete merge.
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"operations": []map[string]any{{"id": merge.ID, "ok": false, "error": "bd forget second-source: simulated failure"}},
+	})
+	var targetContent, targetState, firstSourceState, secondSourceState, operationStatus, operationError string
+	if err := testPool.QueryRow(ctx, `
+SELECT target.content, target.mirror_state, first_source.mirror_state, second_source.mirror_state, operation.status, operation.error
+FROM knowledge_entry target
+JOIN knowledge_entry first_source ON first_source.id = $2::uuid
+JOIN knowledge_entry second_source ON second_source.id = $3::uuid
+JOIN knowledge_entry_operation operation ON operation.entry_id = target.id
+WHERE target.id = $1::uuid AND operation.id = $4::uuid`, targetID, sourceID, secondSourceID, merge.ID).
+		Scan(&targetContent, &targetState, &firstSourceState, &secondSourceState, &operationStatus, &operationError); err != nil {
+		t.Fatalf("read partially completed merge: %v", err)
+	}
+	if targetContent != "first edit" || targetState != "synced" || firstSourceState != "synced" || secondSourceState != "synced" || operationStatus != "queued" || !strings.Contains(operationError, "second-source") {
+		t.Fatalf("partial merge changed mirror or cannot retry: target=(%q,%q) sources=(%q,%q) operation=(%q,%q)", targetContent, targetState, firstSourceState, secondSourceState, operationStatus, operationError)
+	}
+	for _, key := range []string{"target", "source", "second-source"} {
+		entry := knowledgeEntryByKey(t, ultimate, key)
+		if entry.PendingOperation == nil || entry.PendingOperation.ID != merge.ID ||
+			entry.PendingOperation.OperationType != "merge" || entry.PendingOperation.Status != "queued" ||
+			!strings.Contains(entry.PendingOperation.Error, "second-source") {
+			t.Fatalf("partial merge is not visible for %q through the knowledge read model: %+v", key, entry.PendingOperation)
+		}
+	}
+	retryPlan := knowledgePlan(t, daemonID)
+	var retryOperation *KnowledgePlanOperation
+	for i := range retryPlan.Workspaces {
+		for j := range retryPlan.Workspaces[i].Operations {
+			if retryPlan.Workspaces[i].Operations[j].ID == merge.ID {
+				retryOperation = &retryPlan.Workspaces[i].Operations[j]
+			}
+		}
+	}
+	if retryOperation == nil || retryOperation.Key != "target" || len(retryOperation.DeleteKeys) != 2 || !hasDeleteKey(retryOperation.DeleteKeys, "source") || !hasDeleteKey(retryOperation.DeleteKeys, "second-source") {
+		t.Fatalf("partial merge was not returned for replay: %+v", retryOperation)
+	}
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"operations": []map[string]any{{"id": merge.ID, "ok": true}},
+	})
+	target := knowledgeEntryByKey(t, ultimate, "target")
+	if target.Content != "consolidated knowledge" || target.MirrorState != "synced" {
+		t.Fatalf("completed merge target: %+v", target)
+	}
+	source := knowledgeEntryByKey(t, ultimate, "source")
+	if source.MirrorState != "source_deleted" {
+		t.Fatalf("completed merge source: %+v", source)
+	}
+	secondSource := knowledgeEntryByKey(t, ultimate, "second-source")
+	if secondSource.MirrorState != "source_deleted" {
+		t.Fatalf("completed merge second source: %+v", secondSource)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT status, error FROM knowledge_entry_operation WHERE id = $1::uuid`, merge.ID).
+		Scan(&operationStatus, &operationError); err != nil {
+		t.Fatalf("read completed merge operation: %v", err)
+	}
+	if operationStatus != "completed" || operationError != "" {
+		t.Fatalf("completed merge did not clear retry state: status=%q error=%q", operationStatus, operationError)
 	}
 }

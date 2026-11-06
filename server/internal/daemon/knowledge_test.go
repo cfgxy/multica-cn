@@ -99,7 +99,29 @@ func runFakeKnowledgeBd(args []string) {
 		data, _ := json.Marshal(state)
 		os.WriteFile(statePath, data, 0o644)
 	case "recall":
-		payload = fakeBdRead(statePath)[args[1]]
+		content, found := fakeBdRead(statePath)[args[1]]
+		if !found {
+			fmt.Fprintln(os.Stderr, "fake bd: memory not found")
+			os.Exit(1)
+		}
+		payload = content
+	case "forget":
+		if _, err := os.Stat(filepath.Join(dir, "FAIL_FORGET")); err == nil {
+			fmt.Fprintln(os.Stderr, "simulated bd forget failure")
+			os.Exit(1)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "FAIL_FORGET_"+args[1])); err == nil {
+			fmt.Fprintln(os.Stderr, "simulated bd forget failure")
+			os.Exit(1)
+		}
+		state := fakeBdRead(statePath)
+		if _, found := state[args[1]]; !found {
+			fmt.Fprintln(os.Stderr, "fake bd: memory not found")
+			os.Exit(1)
+		}
+		delete(state, args[1])
+		data, _ := json.Marshal(state)
+		os.WriteFile(statePath, data, 0o644)
 	default:
 		fmt.Fprintf(os.Stderr, "fake bd: unknown subcommand %q\n", args[0])
 		os.Exit(1)
@@ -366,6 +388,45 @@ func TestDaemonKnowledgeUltimateDesignation(t *testing.T) {
 	}
 }
 
+// TestDaemonKnowledgeClaimsAccessibleManualUltimate ensures a manually
+// registered target becomes claimable only after the hosting daemon confirms
+// the same path contains its local bd database.
+func TestDaemonKnowledgeClaimsAccessibleManualUltimate(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	ultimate := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ultimate, ".beads"), 0o755); err != nil {
+		t.Fatalf("seed manual ultimate .beads: %v", err)
+	}
+
+	plan := KnowledgePlan{Workspaces: []KnowledgePlanWorkspace{{
+		WorkspaceID:     "ws-manual",
+		HasUltimate:     true,
+		UnboundUltimate: &KnowledgePlanUltimate{DirID: "dir-manual", Path: ultimate},
+	}}}
+	fake := newFakeKnowledgeServer(t, plan)
+	d := newKnowledgeTestDaemon(t, fake)
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("accessible target cycle: %v", err)
+	}
+	posted := fake.posted(t)
+	if len(posted) != 1 || len(posted[0].Ultimates) != 1 {
+		t.Fatalf("accessible manual target report: %+v", posted)
+	}
+	if report := posted[0].Ultimates[0]; report.WorkspaceID != "ws-manual" || report.Path != ultimate {
+		t.Fatalf("manual target report: %+v", report)
+	}
+
+	fake.mu.Lock()
+	fake.plan.Workspaces[0].UnboundUltimate = &KnowledgePlanUltimate{DirID: "dir-missing", Path: t.TempDir()}
+	fake.mu.Unlock()
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("inaccessible target cycle: %v", err)
+	}
+	if posted = fake.posted(t); len(posted) != 1 {
+		t.Fatalf("inaccessible manual target must not be claimed: %+v", posted)
+	}
+}
+
 // TestDaemonKnowledgeAdoptionTransfer pins §3's daemon half: the job's
 // content lands in the ultimate bd under the plan's key, the read-back
 // verifies it, and success/failure/duplicate outcomes are reported so the
@@ -445,5 +506,130 @@ func TestDaemonKnowledgeAdoptionTransfer(t *testing.T) {
 	}
 	if state := fakeKnowledgeBdState(t, ultimate); state["tip-y"] != "" {
 		t.Fatalf("failed transfer must not write: %v", state)
+	}
+}
+
+// TestDaemonKnowledgeOperations proves the mutation half of the pull protocol:
+// an edit and merge are read back before reporting success, merge sources and
+// confirmed deletes are forgotten, a partially completed merge reports
+// failure then converges on replay, and an already-absent key converges
+// after a lost result replay.
+func TestDaemonKnowledgeOperations(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	ultimate := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ultimate, ".beads"), 0o755); err != nil {
+		t.Fatalf("seed ultimate .beads: %v", err)
+	}
+	fakeKnowledgeBdReplace(t, ultimate, map[string]string{
+		"target": "original", "source": "merge source", "gone": "delete me",
+	})
+
+	plan := KnowledgePlan{Workspaces: []KnowledgePlanWorkspace{{
+		WorkspaceID: "ws-operations",
+		HasUltimate: true,
+		Operations: []KnowledgePlanOperation{
+			{ID: "edit-1", OperationType: "edit", Key: "target", Content: "edited", Actor: "multica-owner", UltimatePath: ultimate},
+			{ID: "merge-1", OperationType: "merge", Key: "target", Content: "consolidated", DeleteKeys: []string{"source"}, Actor: "multica-owner", UltimatePath: ultimate},
+			{ID: "delete-1", OperationType: "delete", Key: "gone", UltimatePath: ultimate},
+		},
+	}}}
+	fake := newFakeKnowledgeServer(t, plan)
+	d := newKnowledgeTestDaemon(t, fake)
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("successful operations cycle: %v", err)
+	}
+	state := fakeKnowledgeBdState(t, ultimate)
+	if state["target"] != "consolidated" || state["source"] != "" || state["gone"] != "" {
+		t.Fatalf("knowledge state after operations: %v", state)
+	}
+	posted := fake.posted(t)
+	if len(posted) != 1 || len(posted[0].Operations) != 3 {
+		t.Fatalf("operation report: %+v", posted)
+	}
+	for _, report := range posted[0].Operations {
+		if !report.OK || report.Error != "" {
+			t.Fatalf("successful operation report: %+v", report)
+		}
+	}
+
+	if err := os.WriteFile(filepath.Join(ultimate, "FAIL_FORGET"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("plant forget failure flag: %v", err)
+	}
+	fake.mu.Lock()
+	fake.plan.Workspaces[0].Operations = []KnowledgePlanOperation{{
+		ID: "delete-fails", OperationType: "delete", Key: "target", UltimatePath: ultimate,
+	}}
+	fake.mu.Unlock()
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("failed delete cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	report := posted[len(posted)-1].Operations[0]
+	if report.OK || !strings.Contains(report.Error, "bd forget target") {
+		t.Fatalf("failed delete report: %+v", report)
+	}
+	if state = fakeKnowledgeBdState(t, ultimate); state["target"] != "consolidated" {
+		t.Fatalf("failed delete removed memory: %v", state)
+	}
+	if err := os.Remove(filepath.Join(ultimate, "FAIL_FORGET")); err != nil {
+		t.Fatalf("clear forget failure flag: %v", err)
+	}
+
+	// A merge can write its target and delete its first source before a later
+	// forget fails. The next queued replay must finish from that partial bd
+	// state instead of treating the first failure as terminal.
+	fakeKnowledgeBdReplace(t, ultimate, map[string]string{
+		"target": "before merge", "source-one": "first source", "source-two": "second source",
+	})
+	if err := os.WriteFile(filepath.Join(ultimate, "FAIL_FORGET_source-two"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("plant second source forget failure flag: %v", err)
+	}
+	fake.mu.Lock()
+	fake.plan.Workspaces[0].Operations = []KnowledgePlanOperation{{
+		ID: "merge-retry", OperationType: "merge", Key: "target", Content: "consolidated again",
+		DeleteKeys: []string{"source-one", "source-two"}, Actor: "multica-owner", UltimatePath: ultimate,
+	}}
+	fake.mu.Unlock()
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("partially completed merge cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	report = posted[len(posted)-1].Operations[0]
+	if report.OK || !strings.Contains(report.Error, "bd forget source-two") {
+		t.Fatalf("partial merge failure report: %+v", report)
+	}
+	if state = fakeKnowledgeBdState(t, ultimate); state["target"] != "consolidated again" || state["source-one"] != "" || state["source-two"] != "second source" {
+		t.Fatalf("partial merge bd state: %v", state)
+	}
+	if err := os.Remove(filepath.Join(ultimate, "FAIL_FORGET_source-two")); err != nil {
+		t.Fatalf("clear second source forget failure flag: %v", err)
+	}
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("partially completed merge replay cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	report = posted[len(posted)-1].Operations[0]
+	if !report.OK || report.Error != "" {
+		t.Fatalf("partial merge replay report: %+v", report)
+	}
+	if state = fakeKnowledgeBdState(t, ultimate); state["target"] != "consolidated again" || state["source-one"] != "" || state["source-two"] != "" {
+		t.Fatalf("partial merge replay bd state: %v", state)
+	}
+
+	// A replay after bd already removed the key still returns success: the
+	// handler can complete the durable operation without treating it as a new
+	// failure merely because the first report was lost.
+	fake.mu.Lock()
+	fake.plan.Workspaces[0].Operations = []KnowledgePlanOperation{{
+		ID: "delete-replay", OperationType: "delete", Key: "already-absent", UltimatePath: ultimate,
+	}}
+	fake.mu.Unlock()
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("idempotent delete cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	report = posted[len(posted)-1].Operations[0]
+	if !report.OK || report.Error != "" {
+		t.Fatalf("idempotent delete report: %+v", report)
 	}
 }

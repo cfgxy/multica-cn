@@ -37,12 +37,14 @@ type KnowledgePlan struct {
 }
 
 type KnowledgePlanWorkspace struct {
-	WorkspaceID    string                  `json:"workspace_id"`
-	HasUltimate    bool                    `json:"has_ultimate"`
-	Ultimate       *KnowledgePlanUltimate  `json:"ultimate,omitempty"`
-	DiscoveryRoots []string                `json:"discovery_roots"`
-	Dirs           []KnowledgePlanDir      `json:"dirs"`
-	Adoptions      []KnowledgePlanAdoption `json:"adoptions"`
+	WorkspaceID     string                   `json:"workspace_id"`
+	HasUltimate     bool                     `json:"has_ultimate"`
+	Ultimate        *KnowledgePlanUltimate   `json:"ultimate,omitempty"`
+	UnboundUltimate *KnowledgePlanUltimate   `json:"unbound_ultimate,omitempty"`
+	DiscoveryRoots  []string                 `json:"discovery_roots"`
+	Dirs            []KnowledgePlanDir       `json:"dirs"`
+	Adoptions       []KnowledgePlanAdoption  `json:"adoptions"`
+	Operations      []KnowledgePlanOperation `json:"operations"`
 }
 
 type KnowledgePlanUltimate struct {
@@ -73,11 +75,29 @@ type KnowledgePlanAdoption struct {
 	UltimatePath  string `json:"ultimate_path"`
 }
 
+type KnowledgePlanOperation struct {
+	ID            string   `json:"id"`
+	OperationType string   `json:"operation_type"`
+	Key           string   `json:"key"`
+	Content       string   `json:"content"`
+	DeleteKeys    []string `json:"delete_keys"`
+	Actor         string   `json:"actor"`
+	UltimateDirID string   `json:"ultimate_dir_id"`
+	UltimatePath  string   `json:"ultimate_path"`
+}
+
 type KnowledgeResults struct {
 	Discoveries []KnowledgeDiscoveryReport `json:"discoveries,omitempty"`
 	Ultimates   []KnowledgeUltimateReport  `json:"ultimates,omitempty"`
 	Scans       []KnowledgeScanReport      `json:"scans,omitempty"`
 	Adoptions   []KnowledgeAdoptReport     `json:"adoptions,omitempty"`
+	Operations  []KnowledgeOperationReport `json:"operations,omitempty"`
+}
+
+type KnowledgeOperationReport struct {
+	ID    string `json:"id"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 type KnowledgeResultsAck struct {
@@ -193,7 +213,7 @@ func (d *Daemon) knowledgeSync(ctx context.Context) error {
 		d.knowledgeSyncWorkspace(ctx, &plan.Workspaces[i], results)
 	}
 	if len(results.Discoveries) == 0 && len(results.Ultimates) == 0 &&
-		len(results.Scans) == 0 && len(results.Adoptions) == 0 {
+		len(results.Scans) == 0 && len(results.Adoptions) == 0 && len(results.Operations) == 0 {
 		return nil
 	}
 	if _, err := d.client.PostKnowledgeResults(ctx, d.cfg.DaemonID, results); err != nil {
@@ -212,6 +232,13 @@ func (d *Daemon) knowledgeSyncWorkspace(ctx context.Context, ws *KnowledgePlanWo
 		} else {
 			results.Ultimates = append(results.Ultimates, KnowledgeUltimateReport{WorkspaceID: ws.WorkspaceID, Path: path})
 		}
+	} else if ws.UnboundUltimate != nil && hasBeadsDatabase(ws.UnboundUltimate.Path) {
+		// A manually registered target is never scanned, but the daemon that can
+		// prove it hosts a bd database may claim it for adoption work.
+		results.Ultimates = append(results.Ultimates, KnowledgeUltimateReport{
+			WorkspaceID: ws.WorkspaceID,
+			Path:        ws.UnboundUltimate.Path,
+		})
 	}
 
 	registered := make(map[string]bool, len(ws.Dirs))
@@ -248,6 +275,14 @@ func (d *Daemon) knowledgeSyncWorkspace(ctx context.Context, ws *KnowledgePlanWo
 			})
 		} else {
 			results.Adoptions = append(results.Adoptions, report)
+		}
+	}
+	for _, operation := range ws.Operations {
+		if err := d.runKnowledgeOperation(ctx, operation); err != nil {
+			d.logger.Warn("knowledge operation failed", "operation", operation.OperationType, "id", operation.ID, "error", err)
+			results.Operations = append(results.Operations, KnowledgeOperationReport{ID: operation.ID, Error: err.Error()})
+		} else {
+			results.Operations = append(results.Operations, KnowledgeOperationReport{ID: operation.ID, OK: true})
 		}
 	}
 }
@@ -359,6 +394,48 @@ func (d *Daemon) runKnowledgeAdoption(ctx context.Context, job KnowledgePlanAdop
 	return report, nil
 }
 
+// runKnowledgeOperation executes a confirmed ultimate-library mutation. The
+// target is always read back after remember, and every forget is followed by a
+// failed recall; a lost result can safely replay an already-applied deletion.
+func (d *Daemon) runKnowledgeOperation(ctx context.Context, operation KnowledgePlanOperation) error {
+	if err := ensureBdReady(operation.UltimatePath); err != nil {
+		return fmt.Errorf("prepare ultimate directory: %w", err)
+	}
+	switch operation.OperationType {
+	case "edit", "merge":
+		if err := bdRemember(ctx, operation.UltimatePath, operation.Key, operation.Content, operation.Actor); err != nil {
+			return fmt.Errorf("bd remember: %w", err)
+		}
+		recalled, err := bdRecall(ctx, operation.UltimatePath, operation.Key)
+		if err != nil {
+			return fmt.Errorf("bd recall read-back: %w", err)
+		}
+		if strings.TrimSpace(recalled) != strings.TrimSpace(operation.Content) {
+			return fmt.Errorf("bd recall read-back mismatch for key %s", operation.Key)
+		}
+		if operation.OperationType == "edit" {
+			return nil
+		}
+	case "delete":
+		operation.DeleteKeys = []string{operation.Key}
+	default:
+		return fmt.Errorf("unsupported knowledge operation %q", operation.OperationType)
+	}
+	for _, key := range operation.DeleteKeys {
+		if err := bdForget(ctx, operation.UltimatePath, key); err != nil {
+			// A prior successful write followed by a failed report may replay the
+			// operation. The read-back below makes an already-absent key idempotent.
+			if _, recallErr := bdRecall(ctx, operation.UltimatePath, key); recallErr == nil {
+				return fmt.Errorf("bd forget %s: %w", key, err)
+			}
+		}
+		if _, err := bdRecall(ctx, operation.UltimatePath, key); err == nil {
+			return fmt.Errorf("bd forget read-back found key %s", key)
+		}
+	}
+	return nil
+}
+
 // --- ultimate placement -----------------------------------------------------
 
 // knowledgeStateRoot hosts daemon-managed knowledge state. The env override
@@ -467,6 +544,14 @@ func bdRecall(ctx context.Context, dir, key string) (string, error) {
 		return "", fmt.Errorf("bd recall %s: %w", key, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func bdForget(ctx context.Context, dir, key string) error {
+	cmd := exec.CommandContext(ctx, knowledgeBdBin(), "forget", key, "-C", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("bd forget %s: %w: %s", key, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func hasBeadsDatabase(path string) bool {
