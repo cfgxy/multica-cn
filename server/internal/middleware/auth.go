@@ -68,18 +68,15 @@ func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
 func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, disabled auth.DisabledLookup, oauthSigner *oauth.Signer, oauthGate *auth.OAuthGate) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// X-Actor-Source and X-Impersonator-ID are server-set only —
-			// any value supplied by the client is untrusted and discarded
-			// before the auth branches run. Only the mat_ branch below
-			// re-sets X-Actor-Source, and only the JWT branch re-sets
-			// X-Impersonator-ID (from a signed impersonation claim). This
-			// is what prevents a client from sending a normal mul_ PAT
-			// plus a forged `X-Actor-Source: member` or a forged
-			// X-Impersonator-ID to convince a downstream handler that its
-			// request came from another identity.
+			// Actor, impersonation, and agent identity headers are server-set
+			// only. Discard every client value before choosing an auth branch;
+			// the verified branches below selectively restore authoritative
+			// values from signed claims or token rows.
 			r.Header.Del("X-Actor-Source")
 			r.Header.Del("X-Impersonator-ID")
 			r.Header.Del("X-Impersonation-Session")
+			r.Header.Del("X-Agent-ID")
+			r.Header.Del("X-Task-ID")
 
 			tokenString, fromCookie := extractToken(r)
 			if tokenString == "" {
@@ -127,10 +124,16 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					_, _ = w.Write([]byte(`{"error":"task already recorded no_action; writes are no longer allowed"}`))
 					return
 				}
+				boundWorkspaceID := uuidToString(tt.WorkspaceID)
+				// Reject a conflicting explicit target before the authoritative
+				// binding below overwrites the selector the client supplied.
+				if checkTaskTokenWorkspaceTarget(w, r, queries, boundWorkspaceID) {
+					return
+				}
 				r.Header.Set("X-User-ID", userID)
 				r.Header.Set("X-Agent-ID", uuidToString(tt.AgentID))
 				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
-				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
+				r.Header.Set("X-Workspace-ID", boundWorkspaceID)
 				// X-Actor-Source flags the auth path so resolveActor and
 				// any owner-only handler can deny without re-querying the
 				// token table. The value "task_token" is the only signal

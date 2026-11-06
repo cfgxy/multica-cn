@@ -107,6 +107,10 @@ func setHandlerTestWorkspaceRepos(t *testing.T, repos []map[string]string) {
 
 // newDaemonTokenRequest creates an HTTP request with daemon token context set
 // (simulating DaemonAuth middleware for mdt_ tokens).
+func newOwnerDaemonRequest(method, path string, body any) *http.Request {
+	return newRequest(method, path, body)
+}
+
 func newDaemonTokenRequest(method, path string, body any, workspaceID, daemonID string) *http.Request {
 	var buf bytes.Buffer
 	if body != nil {
@@ -116,6 +120,7 @@ func newDaemonTokenRequest(method, path string, body any, workspaceID, daemonID 
 	req.Header.Set("Content-Type", "application/json")
 	// No X-User-ID — daemon tokens don't set it.
 	ctx := middleware.WithDaemonContext(req.Context(), workspaceID, daemonID)
+	ctx = middleware.WithDaemonTokenOwnerID(ctx, testUserID)
 	return req.WithContext(ctx)
 }
 
@@ -123,6 +128,7 @@ func TestRemoteMCPDaemonTokenForClaim(t *testing.T) {
 	runtime := db.AgentRuntime{
 		WorkspaceID: parseUUID(testWorkspaceID),
 		DaemonID:    strToText("daemon-remote-mcp"),
+		OwnerID:     parseUUID(testUserID),
 	}
 	raw, params, err := remoteMCPDaemonTokenForClaim(AgentTaskResponse{
 		RemoteMCPConnections: []remotemcp.Connection{{ContributionKey: "mobbin"}},
@@ -138,6 +144,9 @@ func TestRemoteMCPDaemonTokenForClaim(t *testing.T) {
 	}
 	if params[0].WorkspaceID != runtime.WorkspaceID || params[0].DaemonID != "daemon-remote-mcp" {
 		t.Fatalf("daemon token scope = (%v, %q)", params[0].WorkspaceID, params[0].DaemonID)
+	}
+	if params[0].OwnerID != runtime.OwnerID {
+		t.Fatalf("daemon token owner = %v, want %v", params[0].OwnerID, runtime.OwnerID)
 	}
 	remaining := time.Until(params[0].ExpiresAt.Time)
 	if remaining < 23*time.Hour || remaining > 24*time.Hour {
@@ -757,8 +766,7 @@ func TestClaimTaskByRuntime_MissingRuntimeOwnerCancelsAndRejects(t *testing.T) {
 	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Missing owner claim agent")
 	taskID := createDispatchedClaimFixtureTask(t, ctx, agentID, runtimeID, issueID, "120 seconds", false)
 
-	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
-		testWorkspaceID, "missing-owner-claim")
+	req := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
 	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusInternalServerError)
 	if !strings.Contains(w.Body.String(), "runtime owner required to mint task token") {
@@ -1018,9 +1026,10 @@ func TestDaemonHeartbeat_SlowProbeDoesNotWedge(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
+	daemonID := loadRuntime(t, runtimeID).DaemonID.String
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{
 		"runtime_id": runtimeID,
-	}, testWorkspaceID, "runtime-local-skills-daemon")
+	}, testWorkspaceID, daemonID)
 
 	start := time.Now()
 	testHandler.DaemonHeartbeat(w, req)
@@ -1057,9 +1066,10 @@ func TestDaemonHeartbeat_EmptyQueueSkipsPopPending(t *testing.T) {
 		testHandler.LocalSkillImportStore = origImport
 	})
 
+	daemonID := loadRuntime(t, runtimeID).DaemonID.String
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{
 		"runtime_id": runtimeID,
-	}, testWorkspaceID, "runtime-local-skills-daemon")
+	}, testWorkspaceID, daemonID)
 	testutil.Call(t, testHandler.DaemonHeartbeat, req).Want(http.StatusOK)
 	if listSpy.popCalls != 0 {
 		t.Fatalf("expected 0 PopPending calls on empty list queue, got %d", listSpy.popCalls)
@@ -1123,7 +1133,10 @@ func TestGetTaskStatus_WithDaemonToken_CrossWorkspace(t *testing.T) {
 	req = newDaemonTokenRequest("GET", "/api/daemon/tasks/"+taskID+"/status", nil,
 		testWorkspaceID, "legit-daemon")
 	req = req.WithContext(context.WithValue(
-		middleware.WithDaemonContext(req.Context(), testWorkspaceID, "legit-daemon"),
+		middleware.WithDaemonTokenOwnerID(
+			middleware.WithDaemonContext(req.Context(), testWorkspaceID, "legit-daemon"),
+			testUserID,
+		),
 		chi.RouteCtxKey, rctx))
 
 	testHandler.GetTaskStatus(w, req)
@@ -4293,7 +4306,9 @@ func TestAckTaskCancelled(t *testing.T) {
 	} {
 		req = httptest.NewRequest("POST", "/api/daemon/tasks/"+unconfirmedTaskID+"/cancel-ack", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		req = req.WithContext(middleware.WithDaemonContext(req.Context(), testWorkspaceID, "legit-daemon"))
+		ctx := middleware.WithDaemonContext(req.Context(), testWorkspaceID, "legit-daemon")
+		ctx = middleware.WithDaemonTokenOwnerID(ctx, testUserID)
+		req = req.WithContext(ctx)
 		req = withURLParam(req, "taskId", unconfirmedTaskID)
 		testutil.Call(t, testHandler.AckTaskCancelled, req).Want(http.StatusBadRequest)
 		dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, unconfirmedTaskID).Scan(&status)
