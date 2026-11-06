@@ -54,6 +54,9 @@ type KnowledgePlanDir struct {
 	// Mirror maps every mirrored key to its content SHA-256 so the daemon can
 	// skip reporting unchanged sources entirely.
 	Mirror map[string]string `json:"mirror"`
+	// SourceDeleted 标识先前扫描中确认缺失的条目。即使内容 SHA 未变，
+	// 它们重新出现时也必须上报给服务端，以记录 source_restored。
+	SourceDeleted map[string]bool `json:"source_deleted"`
 }
 
 type KnowledgePlanAdopt struct {
@@ -264,6 +267,7 @@ WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
 		row.dir.Bound = daemonIDCol == daemonID
 		row.dir.ScanRequired = row.dir.ScanRequested || !hasBatch
 		row.dir.Mirror = map[string]string{}
+		row.dir.SourceDeleted = map[string]bool{}
 		if wsPlan, ok := planByWorkspace[row.workspaceID]; ok {
 			wsPlan.Dirs = append(wsPlan.Dirs, row.dir)
 			if id, ok := knowledgeParseUUID(row.dir.DirID); ok {
@@ -275,24 +279,34 @@ WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
 
 	if len(dirIDs) > 0 {
 		shaRows, err := h.DB.Query(r.Context(), `
-SELECT dir_id::text, key, content_sha256 FROM knowledge_entry WHERE dir_id = ANY($1)`, dirIDs)
+	SELECT dir_id::text, key, content_sha256, mirror_state FROM knowledge_entry WHERE dir_id = ANY($1)`, dirIDs)
 		if err == nil {
 			mirrorByDir := make(map[string]map[string]string, len(dirIDs))
+			deletedByDir := make(map[string]map[string]bool, len(dirIDs))
 			for shaRows.Next() {
-				var dirID, key, sha string
-				if err := shaRows.Scan(&dirID, &key, &sha); err != nil {
+				var dirID, key, sha, mirrorState string
+				if err := shaRows.Scan(&dirID, &key, &sha, &mirrorState); err != nil {
 					break
 				}
 				if mirrorByDir[dirID] == nil {
 					mirrorByDir[dirID] = map[string]string{}
 				}
 				mirrorByDir[dirID][key] = sha
+				if mirrorState == "source_deleted" {
+					if deletedByDir[dirID] == nil {
+						deletedByDir[dirID] = map[string]bool{}
+					}
+					deletedByDir[dirID][key] = true
+				}
 			}
 			shaRows.Close()
 			for _, wsPlan := range planByWorkspace {
 				for j := range wsPlan.Dirs {
 					if mirror, ok := mirrorByDir[wsPlan.Dirs[j].DirID]; ok {
 						wsPlan.Dirs[j].Mirror = mirror
+					}
+					if deleted, ok := deletedByDir[wsPlan.Dirs[j].DirID]; ok {
+						wsPlan.Dirs[j].SourceDeleted = deleted
 					}
 				}
 			}

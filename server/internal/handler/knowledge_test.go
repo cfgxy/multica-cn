@@ -343,6 +343,26 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 	if planned.Mirror["tip"] == "" {
 		t.Fatalf("mirror SHA map missing tip: %v", planned.Mirror)
 	}
+
+	// 已确认删除的 key 必须单独传给 daemon：即使源内容 SHA 未变，重现
+	// 也需要服务端处理以恢复镜像投影并留下审计事件。
+	testPool.Exec(context.Background(), `
+		UPDATE knowledge_entry SET mirror_state = 'source_deleted', missing_confirmation = 2
+		WHERE dir_id = $1 AND key = 'tip'`, candidate)
+	plan = knowledgePlan(t, daemonID)
+	for i := range plan.Workspaces {
+		if plan.Workspaces[i].WorkspaceID == testWorkspaceID {
+			ws = &plan.Workspaces[i]
+		}
+	}
+	for i := range ws.Dirs {
+		if ws.Dirs[i].DirID == candidate {
+			planned = &ws.Dirs[i]
+		}
+	}
+	if planned == nil || !planned.SourceDeleted["tip"] {
+		t.Fatalf("计划缺少 source_deleted key：%+v", planned)
+	}
 }
 
 // TestKnowledgePlanExcludesUltimateFromScanDirs pins the RUYI-289 QA P1 fix:
@@ -488,6 +508,80 @@ func TestKnowledgeResultsLandsScans(t *testing.T) {
 	}
 	if !strings.HasPrefix(deletionEvidenceRef, "knowledge_scan_batch:") {
 		t.Fatalf("source deletion lacks scan evidence: %q", deletionEvidenceRef)
+	}
+
+	// 同 SHA 的重新出现只恢复镜像状态，不增加不可变版本，但必须留下一条
+	// source_restored 审计事件。
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "scheduled", "ok": true,
+			"memories": map[string]string{"a": "one-edited", "b": "two", "c": "three"},
+		}},
+	})
+	if restored := knowledgeEntryByKey(t, candidate, "b"); restored.MirrorState != "synced" || restored.MissingConfirmation != 0 || restored.CurrentVersion != 1 {
+		t.Fatalf("同 SHA 恢复结果=%+v，期望 synced/0/version 1", restored)
+	}
+	var versionCount, restoredEvents int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM knowledge_entry_version
+		WHERE entry_id = (SELECT id FROM knowledge_entry WHERE dir_id = $1 AND key = 'b')`, candidate).Scan(&versionCount); err != nil {
+		t.Fatalf("读取同 SHA 恢复版本数：%v", err)
+	}
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM knowledge_lifecycle_event
+		WHERE entry_id = (SELECT id FROM knowledge_entry WHERE dir_id = $1 AND key = 'b')
+		  AND operation = 'source_restored'`, candidate).Scan(&restoredEvents); err != nil {
+		t.Fatalf("读取同 SHA 恢复事件：%v", err)
+	}
+	if versionCount != 1 || restoredEvents != 1 {
+		t.Fatalf("同 SHA 恢复版本数=%d、事件数=%d，期望 1/1", versionCount, restoredEvents)
+	}
+
+	// 再次连续缺失后，以改变的内容恢复：该路径必须创建新版本，同时同样
+	// 只记录一条 source_restored 事件。
+	for i := 0; i < 2; i++ {
+		postKnowledgeResults(t, daemonID, map[string]any{
+			"scans": []map[string]any{{
+				"dir_id": candidate, "trigger_source": "scheduled", "ok": true,
+				"memories": map[string]string{"a": "one-edited", "c": "three"},
+			}},
+		})
+	}
+	if deleted := knowledgeEntryByKey(t, candidate, "b"); deleted.MirrorState != "source_deleted" || deleted.MissingConfirmation < 2 {
+		t.Fatalf("第二次确认删除结果：%+v", deleted)
+	}
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "scheduled", "ok": true,
+			"memories": map[string]string{"a": "one-edited", "b": "two edited", "c": "three"},
+		}},
+	})
+	if restored := knowledgeEntryByKey(t, candidate, "b"); restored.MirrorState != "synced" || restored.MissingConfirmation != 0 || restored.CurrentVersion != 2 || restored.Content != "two edited" {
+		t.Fatalf("变更 SHA 恢复结果=%+v，期望 synced/0/version 2/new content", restored)
+	}
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM knowledge_entry_version
+		WHERE entry_id = (SELECT id FROM knowledge_entry WHERE dir_id = $1 AND key = 'b')`, candidate).Scan(&versionCount); err != nil {
+		t.Fatalf("读取变更 SHA 恢复版本数：%v", err)
+	}
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM knowledge_lifecycle_event
+		WHERE entry_id = (SELECT id FROM knowledge_entry WHERE dir_id = $1 AND key = 'b')
+		  AND operation = 'source_restored'`, candidate).Scan(&restoredEvents); err != nil {
+		t.Fatalf("读取变更 SHA 恢复事件：%v", err)
+	}
+	if versionCount != 2 || restoredEvents != 2 {
+		t.Fatalf("变更 SHA 恢复版本数=%d、事件数=%d，期望 2/2", versionCount, restoredEvents)
+	}
+	var restoredVersionContent string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT content FROM knowledge_entry_version
+		WHERE entry_id = (SELECT id FROM knowledge_entry WHERE dir_id = $1 AND key = 'b')
+		  AND version = 2`, candidate).Scan(&restoredVersionContent); err != nil {
+		t.Fatalf("读取变更 SHA 恢复版本内容：%v", err)
+	}
+	if restoredVersionContent != "two edited" {
+		t.Fatalf("变更 SHA 恢复版本内容=%q，期望 %q", restoredVersionContent, "two edited")
 	}
 
 	// An unchanged report logs a zero-change noop batch.

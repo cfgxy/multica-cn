@@ -60,8 +60,9 @@ type KnowledgePlanDir struct {
 	// ScanRequired is true when the server has never recorded a scan for the
 	// directory or an explicit refresh was requested — the daemon must report
 	// even a byte-identical source so the first scan lands.
-	ScanRequired bool              `json:"scan_required"`
-	Mirror       map[string]string `json:"mirror"`
+	ScanRequired  bool              `json:"scan_required"`
+	Mirror        map[string]string `json:"mirror"`
+	SourceDeleted map[string]bool   `json:"source_deleted"`
 }
 
 type KnowledgePlanAdoption struct {
@@ -324,13 +325,13 @@ func (d *Daemon) scanKnowledgeDir(ctx context.Context, dir KnowledgePlanDir) *Kn
 	if dir.ScanRequired || dir.ScanRequested {
 		report.OK = true
 		report.Memories = memories
-		if !knowledgeMirrorChanged(dir.Mirror, memories) {
+		if !knowledgeMirrorChanged(dir.Mirror, dir.SourceDeleted, memories) {
 			report.Unchanged = true
 			report.Memories = nil
 		}
 		return report
 	}
-	if !knowledgeMirrorChanged(dir.Mirror, memories) {
+	if !knowledgeMirrorChanged(dir.Mirror, dir.SourceDeleted, memories) {
 		return nil
 	}
 	report.OK = true
@@ -338,7 +339,12 @@ func (d *Daemon) scanKnowledgeDir(ctx context.Context, dir KnowledgePlanDir) *Kn
 	return report
 }
 
-func knowledgeMirrorChanged(mirror map[string]string, memories map[string]string) bool {
+func knowledgeMirrorChanged(mirror map[string]string, sourceDeleted map[string]bool, memories map[string]string) bool {
+	for key := range sourceDeleted {
+		if _, restored := memories[key]; restored {
+			return true
+		}
+	}
 	if len(mirror) != len(memories) {
 		return true
 	}
