@@ -38,6 +38,73 @@ func requireMultiAgentDisabled(t *testing.T, parsed map[string]any) {
 	}
 }
 
+func requireMultiAgentValue(t *testing.T, parsed map[string]any, want bool) {
+	t.Helper()
+	features, ok := parsed["features"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected `features` table in parsed config, got: %#v", parsed["features"])
+	}
+	if got, ok := features["multi_agent"].(bool); !ok || got != want {
+		t.Fatalf("features.multi_agent = %#v, want %v", features["multi_agent"], want)
+	}
+}
+
+func boolPolicy(v bool) *bool { return &v }
+
+func TestEnsureCodexMultiAgentConfigExplicitPolicyOverridesDaemonDefault(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	t.Setenv(MulticaCodexMultiAgentEnv, "")
+	if err := ensureCodexMultiAgentConfig(configPath, boolPolicy(true), nil); err != nil {
+		t.Fatalf("explicit allow: %v", err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMultiAgentValue(t, parseTOML(t, string(data)), true)
+
+	t.Setenv(MulticaCodexMultiAgentEnv, "1")
+	if err := ensureCodexMultiAgentConfig(configPath, boolPolicy(false), nil); err != nil {
+		t.Fatalf("explicit deny: %v", err)
+	}
+	data, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireMultiAgentValue(t, parseTOML(t, string(data)), false)
+}
+
+func TestEnsureCodexMultiAgentConfigFallbackRemovesStaleManagedBlock(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.toml")
+
+	t.Setenv(MulticaCodexMultiAgentEnv, "")
+	if err := ensureCodexMultiAgentConfig(configPath, boolPolicy(false), nil); err != nil {
+		t.Fatalf("seed explicit deny: %v", err)
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), multicaMultiAgentBeginMarker) {
+		t.Fatalf("seeded config has no managed block:\n%s", data)
+	}
+
+	t.Setenv(MulticaCodexMultiAgentEnv, "1")
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
+		t.Fatalf("apply fallback: %v", err)
+	}
+	data, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), multicaMultiAgentBeginMarker) {
+		t.Fatalf("stale managed deny survived fallback:\n%s", data)
+	}
+}
+
 func TestStripUserMultiAgentDirectives(t *testing.T) {
 	t.Parallel()
 
@@ -173,7 +240,7 @@ func TestEnsureCodexMultiAgentConfigEmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.toml")
 
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 	}
 
@@ -209,7 +276,7 @@ model = "o3"
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 	}
 
@@ -239,7 +306,7 @@ features . multi_agent = true
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 	}
 
@@ -267,7 +334,7 @@ model = "o3"
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 	}
 
@@ -317,7 +384,7 @@ experimental_thinking = true
 				t.Fatalf("write fixture: %v", err)
 			}
 
-			if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+			if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 				t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 			}
 
@@ -351,7 +418,7 @@ func TestEnsureCodexMultiAgentConfigFeaturesTableEmpty(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 	}
 
@@ -374,7 +441,7 @@ thinking = true
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 	}
 
@@ -420,13 +487,13 @@ model = "o3"
 				t.Fatalf("write fixture: %v", err)
 			}
 
-			if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+			if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 				t.Fatalf("first run failed: %v", err)
 			}
 			first, _ := os.ReadFile(configPath)
 			infoFirst, _ := os.Stat(configPath)
 
-			if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+			if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 				t.Fatalf("second run failed: %v", err)
 			}
 			second, _ := os.ReadFile(configPath)
@@ -457,7 +524,7 @@ features.multi_agent = true
 
 	t.Setenv(MulticaCodexMultiAgentEnv, "1")
 
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 	}
 
@@ -506,7 +573,7 @@ features.multi_agent = true
 	if err := ensureCodexSandboxConfig(configPath, policy, "0.121.0", nil); err != nil {
 		t.Fatalf("ensureCodexSandboxConfig failed: %v", err)
 	}
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 	}
 
@@ -529,7 +596,7 @@ features.multi_agent = true
 	if err := ensureCodexSandboxConfig(configPath, policy, "0.121.0", nil); err != nil {
 		t.Fatalf("ensureCodexSandboxConfig (rerun) failed: %v", err)
 	}
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig (rerun) failed: %v", err)
 	}
 	dataAfter, _ := os.ReadFile(configPath)
@@ -554,7 +621,7 @@ experimental_thinking = true
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	if err := ensureCodexMultiAgentConfig(configPath, nil); err != nil {
+	if err := ensureCodexMultiAgentConfig(configPath, nil, nil); err != nil {
 		t.Fatalf("ensureCodexMultiAgentConfig failed: %v", err)
 	}
 

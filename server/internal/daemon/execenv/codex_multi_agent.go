@@ -27,8 +27,9 @@ import (
 // user's global `~/.codex/config.toml` is never modified.
 //
 // Users who explicitly want Codex native subagents inside a Multica task
-// (and accept the lifecycle risk) can keep the feature enabled by setting
-// `MULTICA_CODEX_MULTI_AGENT=1` in the daemon environment.
+// (and accept the lifecycle risk) can enable them per agent. The daemon-wide
+// `MULTICA_CODEX_MULTI_AGENT=1` escape hatch applies only when that agent has
+// no explicit allow_subagents setting.
 //
 // Layout note
 //
@@ -45,10 +46,10 @@ import (
 //   - Otherwise, the managed block lives at the top of the file with the
 //     dotted-key form `features.multi_agent = false`.
 
-// MulticaCodexMultiAgentEnv is the env var users can set to keep Codex
-// native multi-agent enabled inside daemon-managed tasks. Anything truthy
-// (1, true, yes, on; case-insensitive) keeps the feature on; everything
-// else (including unset) disables it.
+// MulticaCodexMultiAgentEnv is the daemon-wide fallback for agents with no
+// explicit subagent policy. Anything truthy (1, true, yes, on;
+// case-insensitive) leaves the native setting alone; everything else disables
+// it. Explicit per-agent true/false always wins.
 const MulticaCodexMultiAgentEnv = "MULTICA_CODEX_MULTI_AGENT"
 
 // multicaMultiAgentBeginMarker / multicaMultiAgentEndMarker delimit the
@@ -90,17 +91,15 @@ func codexMultiAgentEnabled() bool {
 	return false
 }
 
-// renderMulticaMultiAgentBlock returns the daemon-managed multi-agent
-// block. The body uses `multi_agent = false` when injected inside a
-// `[features]` table, and `features.multi_agent = false` otherwise.
-func renderMulticaMultiAgentBlock(inFeaturesTable bool) string {
+// renderMulticaMultiAgentBlock returns the daemon-managed multi-agent block.
+func renderMulticaMultiAgentBlock(inFeaturesTable, enabled bool) string {
 	var b strings.Builder
 	b.WriteString(multicaMultiAgentBeginMarker)
 	b.WriteString("\n")
 	if inFeaturesTable {
-		b.WriteString("multi_agent = false\n")
+		fmt.Fprintf(&b, "multi_agent = %t\n", enabled)
 	} else {
-		b.WriteString("features.multi_agent = false\n")
+		fmt.Fprintf(&b, "features.multi_agent = %t\n", enabled)
 	}
 	b.WriteString(multicaMultiAgentEndMarker)
 	b.WriteString("\n")
@@ -163,8 +162,8 @@ func hasRootFeaturesTable(content string) bool {
 // immediately after the first `[features]` header line. Caller must have
 // already stripped any prior managed block and any user-set `multi_agent`
 // directive from inside the table.
-func injectManagedBlockIntoFeaturesTable(content string) string {
-	block := renderMulticaMultiAgentBlock(true)
+func injectManagedBlockIntoFeaturesTable(content string, enabled bool) string {
+	block := renderMulticaMultiAgentBlock(true, enabled)
 	// Drop the trailing `\n` so we don't introduce a stray blank line when
 	// splicing block lines between existing lines.
 	blockLines := strings.Split(strings.TrimRight(block, "\n"), "\n")
@@ -182,23 +181,40 @@ func injectManagedBlockIntoFeaturesTable(content string) string {
 	return content
 }
 
-// ensureCodexMultiAgentConfig writes the daemon-managed multi-agent block
-// into the per-task config.toml so Codex native subagents stay disabled.
+// ensureCodexMultiAgentConfig writes the effective multi-agent policy into the
+// per-task config.toml. Explicit per-agent true/false always wins. With no
+// explicit value, MULTICA_CODEX_MULTI_AGENT retains its daemon-wide escape-hatch
+// semantics; otherwise the conservative default is false.
 // Idempotent: running it twice produces the same file.
 //
-// When MULTICA_CODEX_MULTI_AGENT is set to a truthy value, the function is
-// a no-op — the user has explicitly opted into Codex native subagents and
-// accepts the lifecycle risk. Toggling the env var across prepare runs is
-// not supported: the per-task config is short-lived (recreated per task),
-// so users should set the var once at daemon start.
-func ensureCodexMultiAgentConfig(configPath string, logger *slog.Logger) error {
-	if codexMultiAgentEnabled() {
+// With no explicit policy and a truthy MULTICA_CODEX_MULTI_AGENT, the function
+// is a no-op. Toggling the env var across prepare runs is not supported: the
+// per-task config is short-lived, so users should set it once at daemon start.
+func ensureCodexMultiAgentConfig(configPath string, explicit *bool, logger *slog.Logger) error {
+	if explicit == nil && codexMultiAgentEnabled() {
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("read config.toml: %w", err)
+		}
+		updated := multiAgentBlockRe.ReplaceAll(data, nil)
+		if string(updated) != string(data) {
+			if err := os.WriteFile(configPath, updated, 0o644); err != nil {
+				return fmt.Errorf("remove stale managed multi-agent config: %w", err)
+			}
+		}
 		if logger != nil {
-			logger.Info("codex multi-agent: leaving Codex native multi-agent untouched per MULTICA_CODEX_MULTI_AGENT",
+			logger.Info("codex multi-agent: removed Multica override and left Codex native policy untouched per MULTICA_CODEX_MULTI_AGENT",
 				"config_path", configPath,
 			)
 		}
 		return nil
+	}
+	enabled := false
+	if explicit != nil {
+		enabled = *explicit
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -216,10 +232,10 @@ func ensureCodexMultiAgentConfig(configPath string, logger *slog.Logger) error {
 
 	var updated string
 	if hasRootFeaturesTable(existing) {
-		updated = injectManagedBlockIntoFeaturesTable(existing)
+		updated = injectManagedBlockIntoFeaturesTable(existing, enabled)
 	} else {
 		existing = strings.TrimLeft(existing, "\n")
-		block := renderMulticaMultiAgentBlock(false)
+		block := renderMulticaMultiAgentBlock(false, enabled)
 		if existing == "" {
 			updated = block
 		} else {
