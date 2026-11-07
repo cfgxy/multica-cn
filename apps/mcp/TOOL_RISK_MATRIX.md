@@ -94,6 +94,7 @@ bounded metadata domain.
 | `list_decisions` | read | true | false | true | false | Reads decision cards. |
 | `get_decision` | read | true | false | true | false | Reads a decision card. |
 | `answer_decisions` | external | false | true | false | true | Answers a card and posts a creator-Agent mention that can resume its run. |
+| `cancel_decision` | write | false | false | false | false | Cancels one open decision card without posting an echo comment or affecting Agent runs. |
 | `unarchive_inbox_item` | write | false | false | true | false | Restores an item and issue siblings while preserving read state. |
 | `list_clauses` | read | true | false | true | false | Reads the workspace clause-governance overview (versions, bindings, status, injection counters). |
 | `get_clause` | read | true | false | true | false | Reads full governance detail for one clause (versions, bindings, proposals, quality ledger). |
@@ -122,6 +123,7 @@ bounded metadata domain.
 `update_issue_status`, `assign_issue`, `bulk_update_issues`, `dispatch_agent`,
 `cancel_run`, `retry_run`, `archive_agent`, `archive_squad`, and
 `answer_decisions` can start, resume, cancel, or otherwise affect agent runs.
+`cancel_decision` does not post an answer echo and cannot start, resume, or otherwise affect agent runs.
 `get_runtime_models` may enqueue a Daemon model-discovery request when the
 catalog cache is cold.
 

@@ -143,6 +143,7 @@ describe("tool surface", () => {
         "assign_issue",
         "bulk_update_agent_runtime_config",
         "bulk_update_issues",
+        "cancel_decision",
         "cancel_run",
         "create_agent",
         "create_execution_profile",
