@@ -1793,6 +1793,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// bd IO never runs inside the server container.
 		r.Get("/knowledge/plan", h.GetKnowledgePlan)
 		r.Post("/knowledge/results", h.PostKnowledgeResults)
+		r.Post("/knowledge/token/refresh", h.RefreshKnowledgeDaemonToken)
 	})
 
 	// Public Plugin Action API. This is the stable, globally versioned contract

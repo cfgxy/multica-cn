@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // --- fake bd (helper process) ----------------------------------------------
@@ -39,6 +40,15 @@ func fakeBdFlag(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func fakeBdHasArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
 
 func fakeBdRead(path string) map[string]string {
@@ -65,7 +75,11 @@ func runFakeKnowledgeBd(args []string) {
 	if len(args) > 0 && args[0] == "init" {
 		wd, _ := os.Getwd()
 		fakeBdLog(wd, args)
-		if err := os.MkdirAll(filepath.Join(wd, ".beads"), 0o755); err != nil {
+		if !fakeBdHasArg(args, "--proxied-server") {
+			fmt.Fprintln(os.Stderr, "fake bd init: proxied server is required")
+			os.Exit(1)
+		}
+		if err := os.MkdirAll(filepath.Join(wd, ".beads", "proxieddb"), 0o755); err != nil {
 			fmt.Fprintln(os.Stderr, "fake bd init:", err)
 			os.Exit(1)
 		}
@@ -80,6 +94,10 @@ func runFakeKnowledgeBd(args []string) {
 	payload := ""
 	switch args[0] {
 	case "memories":
+		if _, err := os.Stat(filepath.Join(dir, "MALFORMED_MEMORIES")); err == nil {
+			payload = "{"
+			break
+		}
 		// Real bd envelopes a numeric schema_version into the same flat
 		// object as the memories; mirror that shape so the tolerant decode
 		// is exercised and the metadata field is never mirrored.
@@ -99,6 +117,14 @@ func runFakeKnowledgeBd(args []string) {
 		data, _ := json.Marshal(state)
 		os.WriteFile(statePath, data, 0o644)
 	case "recall":
+		if _, err := os.Stat(filepath.Join(dir, "FAIL_RECALL")); err == nil {
+			fmt.Fprintln(os.Stderr, "simulated bd recall IO failure")
+			os.Exit(1)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "FAIL_RECALL_"+args[1])); err == nil {
+			fmt.Fprintln(os.Stderr, "simulated bd recall IO failure")
+			os.Exit(1)
+		}
 		content, found := fakeBdRead(statePath)[args[1]]
 		if !found {
 			fmt.Fprintln(os.Stderr, "fake bd: memory not found")
@@ -186,10 +212,11 @@ func fakeKnowledgeBdState(t *testing.T, dir string) map[string]string {
 // fakeKnowledgeServer serves the two daemon-facing endpoints from an in-memory
 // plan and captures every posted report.
 type fakeKnowledgeServer struct {
-	mu      sync.Mutex
-	plan    KnowledgePlan
-	results []KnowledgeResults
-	srv     *httptest.Server
+	mu                 sync.Mutex
+	plan               KnowledgePlan
+	results            []KnowledgeResults
+	resultFailuresLeft map[string]int
+	srv                *httptest.Server
 }
 
 func newFakeKnowledgeServer(t *testing.T, plan KnowledgePlan) *fakeKnowledgeServer {
@@ -209,6 +236,13 @@ func newFakeKnowledgeServer(t *testing.T, plan KnowledgePlan) *fakeKnowledgeServ
 			return
 		}
 		fake.mu.Lock()
+		workspaceID := knowledgeResultWorkspaceID(results)
+		if fake.resultFailuresLeft[workspaceID] > 0 {
+			fake.resultFailuresLeft[workspaceID]--
+			fake.mu.Unlock()
+			http.Error(w, "simulated knowledge callback failure", http.StatusInternalServerError)
+			return
+		}
 		fake.results = append(fake.results, results)
 		fake.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
@@ -217,6 +251,16 @@ func newFakeKnowledgeServer(t *testing.T, plan KnowledgePlan) *fakeKnowledgeServ
 	fake.srv = httptest.NewServer(mux)
 	t.Cleanup(fake.srv.Close)
 	return fake
+}
+
+func knowledgeResultWorkspaceID(results KnowledgeResults) string {
+	if len(results.Ultimates) > 0 {
+		return results.Ultimates[0].WorkspaceID
+	}
+	if len(results.Discoveries) > 0 {
+		return results.Discoveries[0].WorkspaceID
+	}
+	return ""
 }
 
 func (f *fakeKnowledgeServer) posted(t *testing.T) []KnowledgeResults {
@@ -229,11 +273,15 @@ func (f *fakeKnowledgeServer) posted(t *testing.T) []KnowledgeResults {
 // newKnowledgeTestDaemon builds a daemon talking to the fake server.
 func newKnowledgeTestDaemon(t *testing.T, fake *fakeKnowledgeServer) *Daemon {
 	t.Helper()
-	return &Daemon{
+	d := &Daemon{
 		cfg:    Config{DaemonID: "daemon-under-test"},
 		client: NewClient(fake.srv.URL),
 		logger: slog.Default(),
 	}
+	for _, workspace := range fake.plan.Workspaces {
+		d.client.SetKnowledgeToken(workspace.WorkspaceID, "mdt-test-"+workspace.WorkspaceID)
+	}
+	return d
 }
 
 func TestPostKnowledgeResultsUsesWorkspaceDaemonToken(t *testing.T) {
@@ -253,6 +301,82 @@ func TestPostKnowledgeResultsUsesWorkspaceDaemonToken(t *testing.T) {
 	}
 	if authorization != "Bearer mdt-registration-token" {
 		t.Fatalf("authorization = %q, want workspace daemon token", authorization)
+	}
+}
+
+func TestPostKnowledgeResultsRenewsOnlyTheRejectedWorkspaceToken(t *testing.T) {
+	var authorizations []string
+	var refreshes int
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/daemon/knowledge/results", func(w http.ResponseWriter, r *http.Request) {
+		authorization := r.Header.Get("Authorization")
+		authorizations = append(authorizations, authorization)
+		if authorization == "Bearer mdt-old" {
+			http.Error(w, "expired", http.StatusUnauthorized)
+			return
+		}
+		if authorization != "Bearer mdt-new" {
+			http.Error(w, "unexpected credential", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("POST /api/daemon/knowledge/token/refresh", func(w http.ResponseWriter, r *http.Request) {
+		refreshes++
+		if got := r.Header.Get("Authorization"); got != "Bearer mdt-old" {
+			http.Error(w, "refresh used wrong credential", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"daemon_token":"mdt-new"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	client.SetToken("mul-profile-pat")
+	if _, err := client.PostKnowledgeResults(context.Background(), "daemon-1", "workspace-missing", &KnowledgeResults{}); err == nil {
+		t.Fatal("callback without a workspace daemon credential succeeded")
+	}
+	client.SetKnowledgeToken("workspace-1", "mdt-old")
+	client.SetKnowledgeToken("workspace-2", "mdt-other")
+	if _, err := client.PostKnowledgeResults(context.Background(), "daemon-1", "workspace-1", &KnowledgeResults{}); err != nil {
+		t.Fatalf("post knowledge results after renewal: %v", err)
+	}
+	if refreshes != 1 || len(authorizations) != 2 || authorizations[0] != "Bearer mdt-old" || authorizations[1] != "Bearer mdt-new" {
+		t.Fatalf("credential sequence = refreshes:%d authorizations:%v", refreshes, authorizations)
+	}
+	if got := client.knowledgeToken("workspace-1"); got != "mdt-new" {
+		t.Fatalf("renewed workspace token = %q, want replacement", got)
+	}
+	if got := client.knowledgeToken("workspace-2"); got != "mdt-other" {
+		t.Fatalf("other workspace token changed to %q", got)
+	}
+}
+
+func TestRefreshKnowledgeTokenIfNeededRenewsBeforeExpiry(t *testing.T) {
+	var refreshes int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/daemon/knowledge/token/refresh" {
+			t.Fatalf("request path = %s", r.URL.Path)
+		}
+		refreshes++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"daemon_token":"mdt-renewed"}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	client.SetKnowledgeToken("workspace-1", "mdt-old")
+	client.knowledgeTokenMu.Lock()
+	client.knowledgeTokenIssuedAt["workspace-1"] = time.Now().Add(-knowledgeTokenRenewalInterval)
+	client.knowledgeTokenMu.Unlock()
+	if err := client.RefreshKnowledgeTokenIfNeeded(context.Background(), "daemon-1", "workspace-1"); err != nil {
+		t.Fatalf("refresh expiring credential: %v", err)
+	}
+	if refreshes != 1 || client.knowledgeToken("workspace-1") != "mdt-renewed" {
+		t.Fatalf("credential refresh = %d, token = %q", refreshes, client.knowledgeToken("workspace-1"))
 	}
 }
 
@@ -395,6 +519,13 @@ func TestDaemonKnowledgeUltimateDesignation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(want, ".beads")); err != nil {
 		t.Fatalf("ultimate path not bd-initialized: %v", err)
 	}
+	if !hasIsolatedBeadsDatabase(want) {
+		t.Fatalf("ultimate path did not use an isolated proxied bd store")
+	}
+	invocations, err := os.ReadFile(filepath.Join(want, "invocations.log"))
+	if err != nil || !strings.Contains(string(invocations), "init\x1f--proxied-server\x1f--non-interactive\x1f--skip-agents\x1f--skip-hooks") {
+		t.Fatalf("ultimate init invocation = %q, err = %v", invocations, err)
+	}
 
 	// A workspace that already has an ultimate is left alone.
 	fake.mu.Lock()
@@ -490,6 +621,41 @@ func TestDaemonKnowledgeAdoptionTransfer(t *testing.T) {
 		t.Fatalf("success report: %+v", report)
 	}
 
+	// An existing key cannot be overwritten with different content, but replaying
+	// the exact same transfer is safe and does not need another bd write.
+	fake.mu.Lock()
+	fake.plan.Workspaces[0].Adoptions = []KnowledgePlanAdoption{{
+		Kind: "entry", ID: "entry-conflict", Key: "tip-x", Content: "replacement content",
+		UltimateDirID: "dir-ult", UltimatePath: ultimate,
+	}}
+	fake.mu.Unlock()
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("same-key conflict cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	report = posted[len(posted)-1].Adoptions[0]
+	if report.OK || !strings.Contains(report.Error, "different content") {
+		t.Fatalf("same-key conflict report: %+v", report)
+	}
+	if state := fakeKnowledgeBdState(t, ultimate); state["tip-x"] != "a memory worth keeping" {
+		t.Fatalf("same-key conflict overwrote the existing memory: %v", state)
+	}
+
+	fake.mu.Lock()
+	fake.plan.Workspaces[0].Adoptions = []KnowledgePlanAdoption{{
+		Kind: "entry", ID: "entry-replay", Key: "tip-x", Content: "a memory worth keeping",
+		UltimateDirID: "dir-ult", UltimatePath: ultimate,
+	}}
+	fake.mu.Unlock()
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("same-key replay cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	report = posted[len(posted)-1].Adoptions[0]
+	if !report.OK {
+		t.Fatalf("same-key replay report: %+v", report)
+	}
+
 	// A duplicate-content job fails with a pointer to the existing key.
 	fake.mu.Lock()
 	fake.plan.Workspaces[0].Adoptions = []KnowledgePlanAdoption{{
@@ -526,6 +692,28 @@ func TestDaemonKnowledgeAdoptionTransfer(t *testing.T) {
 	}
 	if state := fakeKnowledgeBdState(t, ultimate); state["tip-y"] != "" {
 		t.Fatalf("failed transfer must not write: %v", state)
+	}
+}
+
+func TestKnowledgeAdoptionRejectsUnparseableUltimateStore(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	ultimate := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ultimate, ".beads"), 0o755); err != nil {
+		t.Fatalf("seed ultimate .beads: %v", err)
+	}
+	fakeKnowledgeBdReplace(t, ultimate, map[string]string{"key": "existing content"})
+	if err := os.WriteFile(filepath.Join(ultimate, "MALFORMED_MEMORIES"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("plant malformed memories marker: %v", err)
+	}
+	d := &Daemon{logger: slog.Default()}
+	_, err := d.runKnowledgeAdoption(context.Background(), KnowledgePlanAdoption{
+		Kind: "entry", ID: "entry-1", Key: "key", Content: "replacement content", UltimatePath: ultimate,
+	})
+	if err == nil || !strings.Contains(err.Error(), "inspect ultimate directory") {
+		t.Fatalf("unparseable ultimate adoption error = %v", err)
+	}
+	if state := fakeKnowledgeBdState(t, ultimate); state["key"] != "existing content" {
+		t.Fatalf("unparseable ultimate store was overwritten: %v", state)
 	}
 }
 
@@ -651,5 +839,59 @@ func TestDaemonKnowledgeOperations(t *testing.T) {
 	report = posted[len(posted)-1].Operations[0]
 	if !report.OK || report.Error != "" {
 		t.Fatalf("idempotent delete report: %+v", report)
+	}
+
+	// Only a true not-found recall is replay-safe. IO failures after a delete or
+	// merge must remain visible to the server for a later retry.
+	fakeKnowledgeBdReplace(t, ultimate, map[string]string{
+		"delete-hard": "delete me", "merge-hard": "merge source",
+	})
+	for _, key := range []string{"delete-hard", "merge-hard"} {
+		if err := os.WriteFile(filepath.Join(ultimate, "FAIL_RECALL_"+key), []byte("1"), 0o644); err != nil {
+			t.Fatalf("plant recall failure for %s: %v", key, err)
+		}
+	}
+	fake.mu.Lock()
+	fake.plan.Workspaces[0].Operations = []KnowledgePlanOperation{
+		{ID: "delete-hard", OperationType: "delete", Key: "delete-hard", UltimatePath: ultimate},
+		{ID: "merge-hard", OperationType: "merge", Key: "target", Content: "merged", DeleteKeys: []string{"merge-hard"}, UltimatePath: ultimate},
+	}
+	fake.mu.Unlock()
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("hard recall failure cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	for _, report := range posted[len(posted)-1].Operations {
+		if report.OK || !strings.Contains(report.Error, "bd recall") {
+			t.Fatalf("hard recall report: %+v", report)
+		}
+	}
+}
+
+func TestDaemonKnowledgeCallbackFailureDoesNotBlockOtherWorkspaces(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	fake := newFakeKnowledgeServer(t, KnowledgePlan{Workspaces: []KnowledgePlanWorkspace{
+		{WorkspaceID: "ws-failing"},
+		{WorkspaceID: "ws-healthy"},
+	}})
+	fake.resultFailuresLeft = map[string]int{"ws-failing": 1}
+	d := newKnowledgeTestDaemon(t, fake)
+	if err := d.knowledgeSync(context.Background()); err == nil || !strings.Contains(err.Error(), "ws-failing") {
+		t.Fatalf("first cycle error = %v, want failing workspace diagnostic", err)
+	}
+	posted := fake.posted(t)
+	if len(posted) != 1 || knowledgeResultWorkspaceID(posted[0]) != "ws-healthy" {
+		t.Fatalf("healthy workspace was not reported after failure: %+v", posted)
+	}
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("retry cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	foundFailing := false
+	for _, result := range posted {
+		foundFailing = foundFailing || knowledgeResultWorkspaceID(result) == "ws-failing"
+	}
+	if !foundFailing {
+		t.Fatalf("failed workspace was not retried: %+v", posted)
 	}
 }
