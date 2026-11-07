@@ -3,10 +3,12 @@ package supervisor
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -26,6 +28,10 @@ type fakeLauncher struct {
 }
 
 func startFakeLauncher(t *testing.T) *fakeLauncher {
+	return startFakeLauncherAt(t, filepath.Join(t.TempDir(), "control.sock"))
+}
+
+func startFakeLauncherAt(t *testing.T, path string) *fakeLauncher {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -36,7 +42,7 @@ func startFakeLauncher(t *testing.T) *fakeLauncher {
 		stdinW: w,
 		exitCh: make(chan WorkerExit, 1),
 		srvErr: make(chan error, 1),
-		path:   filepath.Join(t.TempDir(), "control.sock"),
+		path:   path,
 	}
 	go func() {
 		f.srvErr <- serveControl(f.path, f.stdinW, 4242, f.exitCh, func(sig syscall.Signal) {
@@ -57,6 +63,94 @@ func startFakeLauncher(t *testing.T) *fakeLauncher {
 		f.stdinW.Close()
 	})
 	return f
+}
+
+func TestLongRunRootUsesPrivateControlSocket(t *testing.T) {
+	root := filepath.Join(t.TempDir(), strings.Repeat("long-runs-root-", 12))
+	mgr, err := NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := fmt.Sprintf("aabbccdd-%x", time.Now().UnixNano())
+	defaultPath := controlSocketPath(mgr.Dir(runID))
+	if unixSocketPathFits(defaultPath) {
+		t.Fatalf("test root produced a valid default socket path: %q", defaultPath)
+	}
+	path, err := mgr.ControlSocketPath(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !unixSocketPathFits(path) {
+		t.Fatalf("control socket path is too long: %q", path)
+	}
+	if path != shortControlSocketPath(runID) {
+		t.Fatalf("control socket path = %q, want private short path", path)
+	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o700 {
+		t.Fatalf("private socket directory permissions = %o, want 700", info.Mode().Perm())
+	}
+
+	f := startFakeLauncherAt(t, path)
+	client, err := DialControl(context.Background(), path, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("control socket permissions = %o, want 600", info.Mode().Perm())
+	}
+	client.Close()
+	f.exitCh <- WorkerExit{Code: 0}
+	select {
+	case err := <-f.srvErr:
+		if err != nil {
+			t.Fatalf("serveControl: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not shut down after exit")
+	}
+}
+
+func TestUnixSocketPathLimit(t *testing.T) {
+	dir := filepath.Join(os.TempDir(), fmt.Sprintf("multica-socket-%x", time.Now().UnixNano()))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	nameLength := maxUnixSocketPathBytes - len([]byte(dir)) - 1
+	if nameLength < 1 {
+		t.Fatalf("temporary socket directory leaves no pathname room: %q", dir)
+	}
+	path := filepath.Join(dir, strings.Repeat("s", nameLength))
+	if got := len([]byte(path)); got != maxUnixSocketPathBytes {
+		t.Fatalf("socket path length = %d, want %d", got, maxUnixSocketPathBytes)
+	}
+	if !unixSocketPathFits(path) {
+		t.Fatalf("socket path at limit rejected: %q", path)
+	}
+	if unixSocketPathFits(path + "x") {
+		t.Fatal("socket path above limit accepted")
+	}
+
+	f := startFakeLauncherAt(t, path)
+	client, err := DialControl(context.Background(), path, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Close()
+	f.exitCh <- WorkerExit{Code: 0}
+	select {
+	case err := <-f.srvErr:
+		if err != nil {
+			t.Fatalf("serveControl: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not shut down after exit")
+	}
 }
 
 func (f *fakeLauncher) recordedSignals() []syscall.Signal {

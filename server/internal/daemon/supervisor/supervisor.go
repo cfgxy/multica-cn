@@ -97,6 +97,10 @@ func (s *Supervisor) Launch(ctx context.Context, spec agent.LaunchSpec) (agent.W
 		return nil, err
 	}
 	dir := s.mgr.Dir(spec.RunID)
+	controlSocket, err := s.mgr.ControlSocketPath(spec.RunID)
+	if err != nil {
+		return nil, err
+	}
 	man := &Manifest{
 		Version:       1,
 		RunID:         spec.RunID,
@@ -108,7 +112,7 @@ func (s *Supervisor) Launch(ctx context.Context, spec agent.LaunchSpec) (agent.W
 		Unit:          UnitName(spec.RunID),
 		State:         StateRunning,
 		DaemonID:      s.daemonID,
-		ControlSocket: controlSocketPath(dir),
+		ControlSocket: controlSocket,
 		StdoutLog:     stdoutLogPath(dir),
 		StderrLog:     stderrLogPath(dir),
 		StartedAt:     time.Now().UTC(),

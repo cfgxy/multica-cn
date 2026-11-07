@@ -35,6 +35,11 @@ import (
 // carries. The supervisor refuses to touch anything outside it.
 const unitPrefix = "multica-run-"
 
+// maxUnixSocketPathBytes is the conservative pathname ceiling shared by every
+// Unix target we support. BSD and Darwin expose a 104-byte sun_path, so a
+// 103-byte path leaves room for its trailing NUL; Linux and Solaris allow more.
+const maxUnixSocketPathBytes = 103
+
 // runIDPattern constrains run IDs to a UUID-ish shape. They end up in unit
 // names, socket paths and directory names; the pattern is what makes
 // systemd-run and UDS arguments injection-proof.
@@ -179,6 +184,72 @@ func UnitName(runID string) string { return unitPrefix + runID + ".service" }
 
 // Dir is the run's directory.
 func (m *Manager) Dir(runID string) string { return filepath.Join(m.root, runID) }
+
+// ControlSocketPath returns the control socket path for runID. Normal roots
+// keep the socket beside the manifest. Deep worktree or home paths use a
+// per-UID private directory under /tmp before the kernel's AF_UNIX pathname
+// limit can make a successfully started worker unreachable to the daemon.
+func (m *Manager) ControlSocketPath(runID string) (string, error) {
+	if err := ValidateRunID(runID); err != nil {
+		return "", err
+	}
+	path := controlSocketPath(m.Dir(runID))
+	if unixSocketPathFits(path) {
+		return path, nil
+	}
+	if err := ensurePrivateSocketDir(); err != nil {
+		return "", err
+	}
+	path = shortControlSocketPath(runID)
+	if !unixSocketPathFits(path) {
+		return "", fmt.Errorf("supervisor: short control socket path exceeds AF_UNIX limit: %q", path)
+	}
+	return path, nil
+}
+
+func unixSocketPathFits(path string) bool {
+	return len([]byte(path)) <= maxUnixSocketPathBytes
+}
+
+func privateSocketDir() (string, int, error) {
+	uid := os.Getuid()
+	if uid < 0 {
+		return "", 0, errors.New("supervisor: cannot determine current uid for control socket")
+	}
+	return filepath.Join("/tmp", fmt.Sprintf("multica-supervisor-%d", uid)), uid, nil
+}
+
+func shortControlSocketPath(runID string) string {
+	dir, _, err := privateSocketDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, runID+".sock")
+}
+
+func ensurePrivateSocketDir() error {
+	dir, uid, err := privateSocketDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("supervisor: create private control socket directory: %w", err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("supervisor: stat private control socket directory: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("supervisor: private control socket path is not a directory: %q", dir)
+	}
+	if !privateSocketDirOwnedByCurrentUser(info, uid) {
+		return fmt.Errorf("supervisor: private control socket directory is not owned by current uid: %q", dir)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("supervisor: secure private control socket directory: %w", err)
+	}
+	return nil
+}
 
 // ListRunIDs enumerates run directories on disk.
 func (m *Manager) ListRunIDs() ([]string, error) {

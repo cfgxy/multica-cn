@@ -2,9 +2,11 @@ package supervisor
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -71,6 +73,32 @@ func TestRetentionGCRemovesExpiredConvergedRuns(t *testing.T) {
 	}
 	if runExists(mgr, "aabbccdd-1-1") || runExists(mgr, "aabbccdd-2-1") {
 		t.Fatal("expired converged runs survived GC")
+	}
+}
+
+func TestRetentionGCRemovesExternalControlSocket(t *testing.T) {
+	mgr, err := NewManager(filepath.Join(t.TempDir(), strings.Repeat("long-runs-root-", 12)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := fmt.Sprintf("aabbccdd-%x", time.Now().UnixNano())
+	socket, err := mgr.ControlSocketPath(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socket, []byte("stale socket"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	man := convergedManifest(runID, 72*time.Hour)
+	man.ControlSocket = socket
+	seedRun(t, mgr, runID, man, false)
+
+	gc := &RetentionGC{Mgr: mgr, Log: slog.Default(), Retain: 24 * time.Hour}
+	if _, err := gc.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(socket); !os.IsNotExist(err) {
+		t.Fatalf("external control socket still exists (stat error %v)", err)
 	}
 }
 
