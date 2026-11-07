@@ -914,25 +914,69 @@ func TestRefreshKnowledgeDaemonTokenRequiresBoundDaemonCredential(t *testing.T) 
 		t.Skip("database not available")
 	}
 
+	daemonID := "refresh-daemon-" + uuid.New().String()
+	rawToken := "mdt_refresh_test_" + uuid.New().String()
+	tokenHash := auth.HashToken(rawToken)
+	runtimeID := dbfx.Insert(t, "agent_runtime", testutil.Cols{
+		"workspace_id": testWorkspaceID,
+		"daemon_id":    daemonID,
+		"name":         "refresh runtime",
+		"runtime_mode": "local",
+		"provider":     "refresh-test-" + uuid.New().String(),
+		"status":       "online",
+		"device_info":  "",
+		"metadata":     testutil.Raw("'{}'::jsonb"),
+		"last_seen_at": testutil.Raw("now()"),
+		"owner_id":     testUserID,
+	})
+	dbfx.Insert(t, "daemon_token", testutil.Cols{
+		"token_hash":   tokenHash,
+		"workspace_id": testWorkspaceID,
+		"daemon_id":    daemonID,
+		"expires_at":   testutil.Raw("now() + interval '1 hour'"),
+		"owner_id":     testUserID,
+	})
+
+	var beforeCount int
+	var beforeExpiry time.Time
+	dbfx.QueryRow(t, `SELECT count(*), max(expires_at) FROM daemon_token WHERE daemon_id = $1`, daemonID).Scan(&beforeCount, &beforeExpiry)
 	req := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", map[string]any{
-		"daemon_id": "refresh-daemon",
-	}, testWorkspaceID, "refresh-daemon")
+		// Request identity is ignored; the authenticated context is authoritative.
+		"daemon_id": "other-daemon",
+	}, testWorkspaceID, daemonID)
+	req = req.WithContext(middleware.WithDaemonTokenHash(req.Context(), tokenHash))
 	w := testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, req).Want(http.StatusOK)
-	var response map[string]string
+	var response map[string]bool
 	w.JSON(&response)
-	if !strings.HasPrefix(response["daemon_token"], "mdt_") {
-		t.Fatalf("renewal did not issue a daemon credential")
+	if !response["renewed"] {
+		t.Fatalf("renewal response = %v, want renewed=true", response)
 	}
 
-	wrongDaemon := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", map[string]any{
-		"daemon_id": "other-daemon",
-	}, testWorkspaceID, "refresh-daemon")
-	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, wrongDaemon).Want(http.StatusForbidden)
+	var afterCount int
+	var afterExpiry time.Time
+	var persistedHash string
+	dbfx.QueryRow(t, `SELECT count(*), max(expires_at), min(token_hash) FROM daemon_token WHERE daemon_id = $1`, daemonID).Scan(&afterCount, &afterExpiry, &persistedHash)
+	if afterCount != beforeCount || persistedHash != tokenHash {
+		t.Fatalf("renewal changed token rows: count %d -> %d, hash %q", beforeCount, afterCount, persistedHash)
+	}
+	if !afterExpiry.After(beforeExpiry) {
+		t.Fatalf("token expiry was not extended: before=%s after=%s", beforeExpiry, afterExpiry)
+	}
+
+	wrongHash := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
+	wrongHash = wrongHash.WithContext(middleware.WithDaemonTokenHash(wrongHash.Context(), auth.HashToken("mdt_wrong")))
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, wrongHash).Want(http.StatusForbidden)
 
 	patRequest := newRequest("POST", "/api/daemon/knowledge/token/refresh", map[string]any{
-		"daemon_id": "refresh-daemon",
+		"daemon_id": daemonID,
 	})
 	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, patRequest).Want(http.StatusUnauthorized)
+
+	dbfx.Exec(t, `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
+	noRuntime := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
+	// No request field can substitute for the now-missing authenticated runtime binding.
+	noRuntime = noRuntime.WithContext(middleware.WithDaemonTokenHash(noRuntime.Context(), tokenHash))
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, noRuntime).Want(http.StatusForbidden)
 }
 
 func TestDaemonHeartbeat_WithDaemonToken_CrossWorkspace(t *testing.T) {

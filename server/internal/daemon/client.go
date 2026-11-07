@@ -1122,27 +1122,22 @@ func (c *Client) Register(ctx context.Context, req map[string]any) (*RegisterRes
 	return &resp, nil
 }
 
-// RefreshKnowledgeToken replaces one workspace's callback credential through
-// the daemon-token-only renewal endpoint. It deliberately does not use the
-// profile token: knowledge writes must retain their daemon identity.
-func (c *Client) RefreshKnowledgeToken(ctx context.Context, daemonID, workspaceID string) error {
+// RefreshKnowledgeToken extends one workspace's callback credential in place
+// through the daemon-token-only renewal endpoint. It deliberately does not use
+// the profile token or send request identity: the server derives all identity
+// from the authenticated mdt context.
+func (c *Client) RefreshKnowledgeToken(ctx context.Context, workspaceID string) error {
 	workspaceID = strings.TrimSpace(workspaceID)
 	token := c.knowledgeToken(workspaceID)
 	if token == "" {
 		return fmt.Errorf("knowledge callback credential is unavailable for workspace %s", workspaceID)
 	}
-	var response struct {
-		DaemonToken string `json:"daemon_token"`
-	}
-	if err := c.postJSONWithToken(ctx, "/api/daemon/knowledge/token/refresh", token, map[string]any{
-		"daemon_id": daemonID,
-	}, &response); err != nil {
+	if err := c.postJSONWithToken(ctx, "/api/daemon/knowledge/token/refresh", token, map[string]any{}, nil); err != nil {
 		return err
 	}
-	if strings.TrimSpace(response.DaemonToken) == "" {
-		return errors.New("knowledge callback credential refresh returned no token")
-	}
-	c.SetKnowledgeToken(workspaceID, response.DaemonToken)
+	// The raw credential is unchanged; resetting its local issuance time keeps
+	// periodic refresh aligned with the server-side extension.
+	c.SetKnowledgeToken(workspaceID, token)
 	return nil
 }
 
@@ -1150,11 +1145,11 @@ func (c *Client) RefreshKnowledgeToken(ctx context.Context, daemonID, workspaceI
 // 24-hour server expiry. A daemon serving an otherwise idle workspace still
 // calls this from each knowledge cycle, so its next result does not need a PAT
 // or an expired-token recovery path.
-func (c *Client) RefreshKnowledgeTokenIfNeeded(ctx context.Context, daemonID, workspaceID string) error {
+func (c *Client) RefreshKnowledgeTokenIfNeeded(ctx context.Context, workspaceID string) error {
 	if !c.knowledgeTokenNeedsRenewal(workspaceID) {
 		return nil
 	}
-	return c.RefreshKnowledgeToken(ctx, daemonID, workspaceID)
+	return c.RefreshKnowledgeToken(ctx, workspaceID)
 }
 
 type WorkspaceReposResponse struct {
