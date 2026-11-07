@@ -972,6 +972,11 @@ func TestRefreshKnowledgeDaemonTokenRequiresBoundDaemonCredential(t *testing.T) 
 	})
 	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, patRequest).Want(http.StatusUnauthorized)
 
+	dbfx.Exec(t, `UPDATE agent_runtime SET status = 'offline' WHERE id = $1`, runtimeID)
+	offlineRuntime := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
+	offlineRuntime = offlineRuntime.WithContext(middleware.WithDaemonTokenHash(offlineRuntime.Context(), tokenHash))
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, offlineRuntime).Want(http.StatusForbidden)
+
 	dbfx.Exec(t, `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
 	noRuntime := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
 	// No request field can substitute for the now-missing authenticated runtime binding.
