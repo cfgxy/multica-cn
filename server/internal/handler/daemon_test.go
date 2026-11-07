@@ -959,6 +959,10 @@ func TestRefreshKnowledgeDaemonTokenRequiresBoundDaemonCredential(t *testing.T) 
 	if !afterExpiry.After(beforeExpiry) {
 		t.Fatalf("token expiry was not extended: before=%s after=%s", beforeExpiry, afterExpiry)
 	}
+	chunkedEmpty := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
+	chunkedEmpty.ContentLength = -1
+	chunkedEmpty = chunkedEmpty.WithContext(middleware.WithDaemonTokenHash(chunkedEmpty.Context(), tokenHash))
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, chunkedEmpty).Want(http.StatusOK)
 	for _, body := range []map[string]any{
 		{"daemon_id": "other-daemon"},
 		{"workspace_id": "other-workspace"},
