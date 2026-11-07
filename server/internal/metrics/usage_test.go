@@ -26,7 +26,7 @@ func (s *stubUsageSource) SumTaskUsageTotalsForMetrics(context.Context) ([]db.Su
 	return s.rows, s.err
 }
 
-func usageRow(workspace, runtime, provider, model string, input, output, cacheRead, cacheWrite, costTicks, taskCount int64) db.SumTaskUsageTotalsForMetricsRow {
+func usageRow(workspace, runtime, provider, model string, input, output, cacheRead, cacheWrite, costTicks, taskCount, modelCalls int64) db.SumTaskUsageTotalsForMetricsRow {
 	return db.SumTaskUsageTotalsForMetricsRow{
 		WorkspaceID: workspace, RuntimeID: runtime, Provider: provider, Model: model,
 		InputTokens: input, OutputTokens: output, CacheReadTokens: cacheRead, CacheWriteTokens: cacheWrite,
@@ -36,6 +36,9 @@ func usageRow(workspace, runtime, provider, model string, input, output, cacheRe
 		UncostedInputTokens: input, UncostedOutputTokens: output,
 		UncostedCacheReadTokens: cacheRead, UncostedCacheWriteTokens: cacheWrite,
 		TaskCount: taskCount,
+		// The counter exposes the known half only; unknown rows stay out of
+		// the metrics path by construction (migration 996).
+		ModelCallCount: modelCalls,
 	}
 }
 
@@ -50,7 +53,7 @@ func usageRow(workspace, runtime, provider, model string, input, output, cacheRe
 // 300_000 cache-read × 0.50/M = $0.15 → total $11.65.
 func TestUsageCollectorExposesAggregates(t *testing.T) {
 	src := &stubUsageSource{rows: []db.SumTaskUsageTotalsForMetricsRow{
-		usageRow("ws-1", "rt-1", "openai", "gpt-5.5", 1_000_000, 200_000, 300_000, 0, 5_000_000_000, 7),
+		usageRow("ws-1", "rt-1", "openai", "gpt-5.5", 1_000_000, 200_000, 300_000, 0, 5_000_000_000, 7, 42),
 	}}
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(NewUsageCollectorWithTTL(src, time.Hour))
@@ -59,6 +62,9 @@ func TestUsageCollectorExposesAggregates(t *testing.T) {
 # HELP multica_task_usage_cost_usd_total Lifetime task usage cost in USD: provider-reported ticks plus the rate-table estimate over uncosted tokens.
 # TYPE multica_task_usage_cost_usd_total counter
 multica_task_usage_cost_usd_total{model="gpt-5.5",provider="openai",runtime_id="rt-1",workspace_id="ws-1"} 11.65
+# HELP multica_task_usage_model_calls_total Lifetime model API/Prompt call count from provider-original, dedupable evidence. Rows whose provider does not report call evidence are excluded from this counter (its unknown row count is exposed through the dashboard read paths, not here); rate() over this series gives calls per second.
+# TYPE multica_task_usage_model_calls_total counter
+multica_task_usage_model_calls_total{model="gpt-5.5",provider="openai",runtime_id="rt-1",workspace_id="ws-1"} 42
 # HELP multica_task_usage_tasks_total Lifetime task count behind the usage rows.
 # TYPE multica_task_usage_tasks_total counter
 multica_task_usage_tasks_total{model="gpt-5.5",provider="openai",runtime_id="rt-1",workspace_id="ws-1"} 7
@@ -70,7 +76,7 @@ multica_task_usage_tokens_total{model="gpt-5.5",provider="openai",runtime_id="rt
 multica_task_usage_tokens_total{model="gpt-5.5",provider="openai",runtime_id="rt-1",token_type="output",workspace_id="ws-1"} 200000
 `
 	if err := promtest.GatherAndCompare(reg, strings.NewReader(want),
-		"multica_task_usage_tokens_total", "multica_task_usage_cost_usd_total", "multica_task_usage_tasks_total"); err != nil {
+		"multica_task_usage_tokens_total", "multica_task_usage_cost_usd_total", "multica_task_usage_tasks_total", "multica_task_usage_model_calls_total"); err != nil {
 		t.Fatal(err)
 	}
 	if src.calls != 1 {
@@ -83,7 +89,7 @@ multica_task_usage_tokens_total{model="gpt-5.5",provider="openai",runtime_id="rt
 // refreshes again.
 func TestUsageCollectorTTLCache(t *testing.T) {
 	src := &stubUsageSource{rows: []db.SumTaskUsageTotalsForMetricsRow{
-		usageRow("ws-1", "rt-1", "openai", "gpt-5.5", 10, 0, 0, 0, 0, 1),
+		usageRow("ws-1", "rt-1", "openai", "gpt-5.5", 10, 0, 0, 0, 0, 1, 0),
 	}}
 	reg := prometheus.NewRegistry()
 	collector := NewUsageCollectorWithTTL(src, time.Minute)
@@ -113,7 +119,7 @@ func TestUsageCollectorTTLCache(t *testing.T) {
 // refresh is not retried until the TTL lapses.
 func TestUsageCollectorKeepsSnapshotOnSourceError(t *testing.T) {
 	src := &stubUsageSource{rows: []db.SumTaskUsageTotalsForMetricsRow{
-		usageRow("ws-1", "rt-1", "openai", "gpt-5.5", 10, 0, 0, 0, 0, 1),
+		usageRow("ws-1", "rt-1", "openai", "gpt-5.5", 10, 0, 0, 0, 0, 1, 0),
 	}}
 	reg := prometheus.NewRegistry()
 	collector := NewUsageCollectorWithTTL(src, time.Minute)
@@ -153,7 +159,7 @@ multica_task_usage_tokens_total{model="gpt-5.5",provider="openai",runtime_id="rt
 // provider-reported cost still lands.
 func TestUsageCollectorUnpricedModelKeepsAuthoritativeCost(t *testing.T) {
 	src := &stubUsageSource{rows: []db.SumTaskUsageTotalsForMetricsRow{
-		usageRow("ws-1", "rt-1", "grok", "grok-unlisted", 1000, 0, 0, 0, 123, 1),
+		usageRow("ws-1", "rt-1", "grok", "grok-unlisted", 1000, 0, 0, 0, 123, 1, 0),
 	}}
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(NewUsageCollectorWithTTL(src, time.Hour))

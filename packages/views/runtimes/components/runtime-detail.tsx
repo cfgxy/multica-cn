@@ -55,6 +55,7 @@ import { BackpressureBadge } from "./runtime-backpressure-badge";
 import { BackpressureSettingsCard } from "./runtime-backpressure-settings-card";
 import { RuntimeResourcesCard } from "./runtime-resources-card";
 import { runtimeBackpressureSettingsOptions } from "@multica/core/runtimes/queries";
+import { ModelCallBudgetCard } from "./runtime-model-call-budget-card";
 import { useT, useTimeAgo } from "../../i18n";
 
 function getCliVersion(metadata: Record<string, unknown>): string | null {
@@ -238,6 +239,7 @@ export function RuntimeDetail({
                 )}
               </section>
             )}
+            {canReadRuntime && <ModelCallBudgetCard runtime={runtime} canEdit={isAdmin} />}
             {canReadRuntime && <UsageSection runtime={runtime} />}
           </div>
 

@@ -14,8 +14,12 @@
 -- turns / compactions / max_context_tokens (RUYI-154) are run-scoped stats
 -- reported exactly once, at task completion, so they are overwritten like the
 -- token counters rather than COALESCEd like context_tokens.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), now())
+-- model_call_count is NULL when complete provider-original per-call evidence is
+-- unavailable (migration 996). The handler derives a known count transactionally
+-- from task_usage_model_call_evidence; daemon-supplied aggregate counts are not
+-- trusted.
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, model_call_count, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), sqlc.narg('model_call_count'), now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -27,7 +31,24 @@ DO UPDATE SET
     turns = EXCLUDED.turns,
     compactions = EXCLUDED.compactions,
     max_context_tokens = EXCLUDED.max_context_tokens,
+    model_call_count = EXCLUDED.model_call_count,
     updated_at = now();
+
+-- name: InsertTaskUsageModelCallEvidence :exec
+INSERT INTO task_usage_model_call_evidence (task_id, provider, model, evidence_id)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (task_id, provider, evidence_id) DO NOTHING;
+
+-- name: MarkTaskUsageModelCallsUnknown :exec
+INSERT INTO task_usage (task_id, provider, model, model_call_count, updated_at)
+VALUES ($1, $2, $3, NULL, now())
+ON CONFLICT (task_id, provider, model)
+DO UPDATE SET model_call_count = NULL, updated_at = now();
+
+-- name: CountTaskUsageModelCallEvidence :one
+SELECT COUNT(*)::bigint
+FROM task_usage_model_call_evidence
+WHERE task_id = $1 AND provider = $2 AND model = $3;
 
 -- name: GetTaskUsage :many
 SELECT * FROM task_usage
@@ -68,6 +89,8 @@ LIMIT 1;
 -- RUYI-154) are run-scoped, not per-model: a run that reports more than one
 -- (provider, model) row carries the same run-level reading on each of its
 -- rows. The handler layer collapses them back to one figure per task.
+-- model_call_count stays per-model: NULL is an explicit unknown when provider
+-- original call evidence is incomplete, so consumers must not treat it as 0.
 --
 -- Ordering is by task then model so the client can group by task_id in one
 -- pass. Uses idx_agent_task_queue_issue_id (migration 035) + the task_usage
@@ -84,7 +107,8 @@ SELECT
     tu.context_tokens,
     tu.turns,
     tu.compactions,
-    tu.max_context_tokens
+    tu.max_context_tokens,
+    tu.model_call_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.issue_id = $1
@@ -101,6 +125,8 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.model_call_count), 0)::bigint AS model_call_count,
+    COUNT(*) FILTER (WHERE tu.model_call_count IS NULL)::int AS model_call_unknown_count,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
@@ -141,6 +167,12 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    -- Call counts (migration 996): the known half plus the count of rows that
+    -- have no provider call evidence. Readers must not present
+    -- model_call_count as a complete total while model_call_unknown_count is
+    -- nonzero — that would turn "N rows unknown" into "0 calls".
+    SUM(model_call_count)::bigint                       AS model_call_count,
+    SUM(model_call_unknown_count)::bigint                AS model_call_unknown_count,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
@@ -181,6 +213,10 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    -- Call counts: known half + row count without provider evidence, same
+    -- consumer contract as ListDashboardUsageDaily.
+    SUM(model_call_count)::bigint                       AS model_call_count,
+    SUM(model_call_unknown_count)::bigint                AS model_call_unknown_count,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
@@ -382,6 +418,13 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    -- Model call count: the known half only (rows with provider call
+    -- evidence), published as the lifetime sum that a Prometheus counter
+    -- requires. Rows without evidence are counted separately in the rollup
+    -- (model_call_unknown_count) and surface through the dashboard read
+    -- paths — never folded into this counter, which would turn "unknown"
+    -- into "0 calls" (migration 996).
+    SUM(model_call_count)::bigint       AS model_call_count,
     SUM(task_count)::bigint         AS task_count
 FROM task_usage_hourly
 GROUP BY workspace_id, runtime_id, LOWER(provider), model;

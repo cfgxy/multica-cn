@@ -201,6 +201,11 @@ type RuntimeUsageResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
+	// Model call counts (migration 996): known half plus the count of rows
+	// whose provider gave no call evidence; clients must not present the
+	// known half as a complete total when the unknown count is nonzero.
+	ModelCallCount        int64 `json:"model_call_count"`
+	ModelCallUnknownCount int64 `json:"model_call_unknown_count"`
 }
 
 // GetRuntimeUsage returns daily token usage for a runtime, aggregated from
@@ -255,6 +260,8 @@ func (h *Handler) listRuntimeUsage(ctx context.Context, runtimeID pgtype.UUID, t
 			UncostedOutputTokens:     row.UncostedOutputTokens,
 			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
 			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
+			ModelCallCount:           row.ModelCallCount,
+			ModelCallUnknownCount:    row.ModelCallUnknownCount,
 		}
 	}
 	return resp, nil
@@ -314,7 +321,11 @@ type RuntimeUsageByAgentResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32 `json:"task_count"`
+	// Model call counts (migration 996): same known/unknown split contract as
+	// the daily response.
+	ModelCallCount        int64 `json:"model_call_count"`
+	ModelCallUnknownCount int64 `json:"model_call_unknown_count"`
+	TaskCount             int32 `json:"task_count"`
 }
 
 // GetRuntimeUsageByAgent returns per-agent token aggregates for a runtime
@@ -355,6 +366,8 @@ func (h *Handler) GetRuntimeUsageByAgent(w http.ResponseWriter, r *http.Request)
 			UncostedOutputTokens:     row.UncostedOutputTokens,
 			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
 			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
+			ModelCallCount:           row.ModelCallCount,
+			ModelCallUnknownCount:    int64(row.ModelCallUnknownCount),
 			TaskCount:                row.TaskCount,
 		}
 	}
@@ -382,7 +395,11 @@ type RuntimeUsageByHourResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32 `json:"task_count"`
+	// Model call counts (migration 996): same known/unknown split contract as
+	// the daily response.
+	ModelCallCount        int64 `json:"model_call_count"`
+	ModelCallUnknownCount int64 `json:"model_call_unknown_count"`
+	TaskCount             int32 `json:"task_count"`
 }
 
 // GetRuntimeUsageByHour returns hourly (0..23) token aggregates for a
@@ -425,6 +442,8 @@ func (h *Handler) GetRuntimeUsageByHour(w http.ResponseWriter, r *http.Request) 
 			UncostedOutputTokens:     row.UncostedOutputTokens,
 			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
 			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
+			ModelCallCount:           row.ModelCallCount,
+			ModelCallUnknownCount:    int64(row.ModelCallUnknownCount),
 			TaskCount:                row.TaskCount,
 		}
 	}
