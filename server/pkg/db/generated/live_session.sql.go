@@ -14,9 +14,9 @@ import (
 const createLiveSession = `-- name: CreateLiveSession :one
 
 INSERT INTO live_session (
-    workspace_id, agent_id, runtime_instance_id, user_id, model, context_snapshot, mode
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary, mode
+    workspace_id, agent_id, runtime_instance_id, user_id, model, context_snapshot, mode, chat_session_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary, mode, chat_session_id
 `
 
 type CreateLiveSessionParams struct {
@@ -27,6 +27,7 @@ type CreateLiveSessionParams struct {
 	Model             string      `json:"model"`
 	ContextSnapshot   []byte      `json:"context_snapshot"`
 	Mode              string      `json:"mode"`
+	ChatSessionID     pgtype.UUID `json:"chat_session_id"`
 }
 
 // Live Session persistence (RUYI-425 stage 3, design §3.5). The voice
@@ -36,7 +37,10 @@ type CreateLiveSessionParams struct {
 // the relay finishes.
 // mode (RUYI-626) tags the transport that opened the session: the gateway
 // relay writes 'gateway', the direct-connect handoff writes 'direct'. The
-// CHECK in migration 937 pins the enum.
+// CHECK in migration 937 pins the enum. chat_session_id (RUYI-874 link ①)
+// names the chat_session the session was opened from; NULL for sessions
+// started outside a chat surface. The caller validates it belongs to this
+// workspace and agent (repo rule: no FK, application-side resolution).
 func (q *Queries) CreateLiveSession(ctx context.Context, arg CreateLiveSessionParams) (LiveSession, error) {
 	row := q.db.QueryRow(ctx, createLiveSession,
 		arg.WorkspaceID,
@@ -46,6 +50,7 @@ func (q *Queries) CreateLiveSession(ctx context.Context, arg CreateLiveSessionPa
 		arg.Model,
 		arg.ContextSnapshot,
 		arg.Mode,
+		arg.ChatSessionID,
 	)
 	var i LiveSession
 	err := row.Scan(
@@ -65,6 +70,7 @@ func (q *Queries) CreateLiveSession(ctx context.Context, arg CreateLiveSessionPa
 		&i.UpdatedAt,
 		&i.Summary,
 		&i.Mode,
+		&i.ChatSessionID,
 	)
 	return i, err
 }
@@ -73,7 +79,7 @@ const endLiveSession = `-- name: EndLiveSession :one
 UPDATE live_session
 SET status = 'ended', ended_at = now(), transcript = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary, mode
+RETURNING id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary, mode, chat_session_id
 `
 
 type EndLiveSessionParams struct {
@@ -104,12 +110,13 @@ func (q *Queries) EndLiveSession(ctx context.Context, arg EndLiveSessionParams) 
 		&i.UpdatedAt,
 		&i.Summary,
 		&i.Mode,
+		&i.ChatSessionID,
 	)
 	return i, err
 }
 
 const getLiveSession = `-- name: GetLiveSession :one
-SELECT id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary, mode FROM live_session WHERE id = $1
+SELECT id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary, mode, chat_session_id FROM live_session WHERE id = $1
 `
 
 func (q *Queries) GetLiveSession(ctx context.Context, id pgtype.UUID) (LiveSession, error) {
@@ -132,12 +139,13 @@ func (q *Queries) GetLiveSession(ctx context.Context, id pgtype.UUID) (LiveSessi
 		&i.UpdatedAt,
 		&i.Summary,
 		&i.Mode,
+		&i.ChatSessionID,
 	)
 	return i, err
 }
 
 const listLatestEndedLiveSessions = `-- name: ListLatestEndedLiveSessions :many
-SELECT id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary, mode FROM live_session
+SELECT id, workspace_id, agent_id, runtime_instance_id, user_id, status, model, context_snapshot, session_handle, transcript, started_at, ended_at, created_at, updated_at, summary, mode, chat_session_id FROM live_session
 WHERE workspace_id = $1 AND agent_id = $2 AND status = 'ended'
 ORDER BY ended_at DESC
 LIMIT 1
@@ -177,6 +185,7 @@ func (q *Queries) ListLatestEndedLiveSessions(ctx context.Context, arg ListLates
 			&i.UpdatedAt,
 			&i.Summary,
 			&i.Mode,
+			&i.ChatSessionID,
 		); err != nil {
 			return nil, err
 		}

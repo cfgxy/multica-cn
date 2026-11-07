@@ -11,6 +11,15 @@
 export interface VoiceSessionUrlOptions {
   workspaceId?: string | null;
   workspaceSlug?: string | null;
+  /**
+   * RUYI-874 link ①: the chat session a voice surface opened the voice
+   * conversation from. The gateway validates it against the caller's own
+   * access (creator + agent + workspace); an invalid value degrades to
+   * plain voice rather than rejecting the session.
+   */
+  chatSessionId?: string | null;
+  /** The Issue whose comment surface opened the voice conversation. */
+  issueId?: string | null;
 }
 
 /** http(s):// → ws(s)://. String munging, no WHATWG URL (Hermes lacks it). */
@@ -24,12 +33,19 @@ export function buildVoiceSessionUrl(
   opts: VoiceSessionUrlOptions = {},
 ): string {
   const base = `${toWebSocketBase(apiUrl)}/api/agents/${encodeURIComponent(agentId)}/voice-session`;
-  const workspace = opts.workspaceId
-    ? `workspace_id=${encodeURIComponent(opts.workspaceId)}`
-    : opts.workspaceSlug
-      ? `workspace_slug=${encodeURIComponent(opts.workspaceSlug)}`
-      : null;
-  return workspace ? `${base}?${workspace}` : base;
+  const params: string[] = [];
+  if (opts.workspaceId) {
+    params.push(`workspace_id=${encodeURIComponent(opts.workspaceId)}`);
+  } else if (opts.workspaceSlug) {
+    params.push(`workspace_slug=${encodeURIComponent(opts.workspaceSlug)}`);
+  }
+  if (opts.chatSessionId) {
+    params.push(`chat_session_id=${encodeURIComponent(opts.chatSessionId)}`);
+  }
+  if (opts.issueId) {
+    params.push(`issue_id=${encodeURIComponent(opts.issueId)}`);
+  }
+  return params.length ? `${base}?${params.join("&")}` : base;
 }
 
 /**

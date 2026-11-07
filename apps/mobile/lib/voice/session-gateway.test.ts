@@ -41,6 +41,43 @@ describe("buildGatewayVoiceSessionConfig", () => {
     expect(config.url.startsWith("ws://")).toBe(true);
   });
 
+  it("carries the chat session link (RUYI-874) in the query", () => {
+    const config = buildGatewayVoiceSessionConfig({
+      apiUrl: "https://api.example.com",
+      agentId: "ag-1",
+      workspaceSlug: "acme",
+      token: "t",
+      chatSessionId: "chat-uuid",
+    });
+    expect(config.url).toBe(
+      "wss://api.example.com/api/agents/ag-1/voice-session?workspace_slug=acme&chat_session_id=chat-uuid",
+    );
+    // A missing link leaves the URL exactly as the pre-RUYI-874 shape.
+    const plain = buildGatewayVoiceSessionConfig({
+      apiUrl: "https://api.example.com",
+      agentId: "ag-1",
+      workspaceSlug: "acme",
+      token: "t",
+      chatSessionId: null,
+    });
+    expect(plain.url).toBe(
+      "wss://api.example.com/api/agents/ag-1/voice-session?workspace_slug=acme",
+    );
+  });
+
+  it("carries Issue-comment context in the query", () => {
+    const config = buildGatewayVoiceSessionConfig({
+      apiUrl: "https://api.example.com",
+      agentId: "ag-1",
+      workspaceSlug: "acme",
+      token: "t",
+      issueId: "issue-uuid",
+    });
+    expect(config.url).toBe(
+      "wss://api.example.com/api/agents/ag-1/voice-session?workspace_slug=acme&issue_id=issue-uuid",
+    );
+  });
+
   it("omits the query string without a workspace slug", () => {
     const config = buildGatewayVoiceSessionConfig({
       apiUrl: "https://api.example.com/",

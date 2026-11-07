@@ -31,6 +31,7 @@ const mockVoiceOverlayProps = {
     | {
         agentId: string | null;
         workspaceSlug: string;
+        issueId?: string | null;
         onClose: () => void;
         onUserTurn?: (text: string) => void;
       }
@@ -146,6 +147,7 @@ jest.mock("@/components/voice/voice-session-overlay", () => ({
   VoiceSessionOverlay: (props: {
     agentId: string | null;
     workspaceSlug: string;
+    issueId?: string | null;
     onClose: () => void;
     onUserTurn?: (text: string) => void;
   }) => {
@@ -197,6 +199,13 @@ describe("InlineCommentComposer voice three-state slot", () => {
 
     expect(screen.getByLabelText(MIC_LABEL)).toBeTruthy();
     expect(screen.queryByLabelText(SEND_LABEL)).toBeNull();
+  });
+
+  it("从 Issue 评论入口打开语音时传入当前 Issue", async () => {
+    await renderComposer("agent-1");
+    await expandComposer();
+    await openVoice();
+    expect(mockVoiceOverlayProps.last?.issueId).toBe("issue-1");
   });
 
   it("输入文本 → 换成发送箭头", async () => {
