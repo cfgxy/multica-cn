@@ -3334,12 +3334,13 @@ func (h *Handler) writeInactiveTaskError(w http.ResponseWriter, r *http.Request,
 	return true
 }
 
+// actorType identifies the request actor for the cascade eligibility check.
 // entrySource names this write in the cascade audit details, distinguishing
 // http_update_issue from http_batch_update_issues. flippedOut is populated
 // on the success path with the decision cards this write flipped into
 // cancelled (nil when the write lands in no done category or flipped none),
 // so the caller can publish their realtime events post-commit.
-func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey, entrySource string, flippedOut *[]db.IssueDecision) (db.Issue, db.Issue, bool, error) {
+func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey, actorType, entrySource string, flippedOut *[]db.IssueDecision) (db.Issue, db.Issue, bool, error) {
 	if h.TxStarter == nil {
 		return db.Issue{}, db.Issue{}, false, errors.New("atomic issue update requires transaction starter")
 	}
@@ -3441,10 +3442,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	// RUYI-865 P1: settle the done card cascade in THIS transaction, on this
 	// qtx, before the commit — a failed settle rolls back the whole write
 	// rather than leaving a committed done status behind open cards. The
-	// one-sided done gate makes this a no-op for writes that land in no
-	// done category.
+	// narrow member in_review -> done gate makes this a no-op elsewhere.
 	if flippedOut != nil {
-		flipped, err := h.settleDoneCascadeInTx(ctx, qtx, current, issue, entrySource)
+		flipped, err := h.settleDoneCascadeInTx(ctx, qtx, current, issue, actorType, entrySource)
 		if err != nil {
 			return db.Issue{}, current, false, fmt.Errorf("settle done cascade: %w", err)
 		}
@@ -3464,6 +3464,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := requestUserID(r)
 	workspaceID := uuidToString(prevIssue.WorkspaceID)
+	actorTypeForCascade, _ := h.resolveActor(r, userID, workspaceID)
 	activeTaskID, ok := h.activeTaskIDForIssueWrite(w, r)
 	if !ok {
 		return
@@ -3688,7 +3689,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
 		var lockedPrev db.Issue
 		issue, lockedPrev, attachmentsChanged, err = h.updateIssueAtomically(
-			r.Context(), prevIssue.WorkspaceID, params, rawFields, req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard, "http_update_issue", &flippedCards,
+			r.Context(), prevIssue.WorkspaceID, params, rawFields, req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard, actorTypeForCascade, "http_update_issue", &flippedCards,
 		)
 		if lockedPrev.ID.Valid {
 			prevIssue = lockedPrev
@@ -3706,7 +3707,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			if req.Status == nil || !oldIssue.ID.Valid {
 				return nil
 			}
-			flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, "http_update_issue")
+			flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, actorTypeForCascade, "http_update_issue")
 			return innerErr
 		})
 	}
@@ -4324,6 +4325,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	actorTypeForCascade, _ := h.resolveActor(r, userID, workspaceID)
 	// Status is validated against this workspace's catalog, so it has to wait
 	// for wsUUID above. One check for the whole batch — every issue in it
 	// shares the workspace — and a rejection rather than a silent skip, so a
@@ -4532,7 +4534,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			// legacy single-update clients that omit description_base.
 			var lockedPrev db.Issue
 			issue, lockedPrev, _, err = h.updateIssueAtomically(
-				r.Context(), prevIssue.WorkspaceID, params, rawUpdates, nil, nil, nil, batchStatusKey, "http_batch_update_issues", &flippedCards,
+				r.Context(), prevIssue.WorkspaceID, params, rawUpdates, nil, nil, nil, batchStatusKey, actorTypeForCascade, "http_batch_update_issues", &flippedCards,
 			)
 			if err == nil {
 				prevIssue = lockedPrev
@@ -4553,7 +4555,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				if !oldIssue.ID.Valid {
 					return nil
 				}
-				flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, "http_batch_update_issues")
+				flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, actorTypeForCascade, "http_batch_update_issues")
 				return innerErr
 			})
 		}

@@ -35,13 +35,15 @@
  *       optimistic locking; the descriptions say so.
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota).
- * Decisions (RUYI-688): list_decisions, get_decision, answer_decisions — the
+ * Decisions (RUYI-688): list_decisions, get_decision, answer_decisions,
+ *       cancel_decision — the
  *       same decision-card surface the mobile decision center drives, one
- *       store of truth. Reads are pure reads; answer_decisions is the only
- *       write and it rides the product's own member-only answer gates (an
+ *       store of truth. Reads are pure reads; writes ride the product's own
+ *       member-only decision gates (an
  *       OAuth token acts as the consenting member). SIDE EFFECT: a successful
  *       answer posts the product's echo comment that mentions the creating
- *       agent, which resumes that agent's run. Answer numbering and the
+ *       agent, which resumes that agent's run; cancel_decision never does.
+ *       Answer numbering and the
  *       "1a 2b" selection grammar mirror the product's comment convention;
  *       defined failures come back as structured results keyed by `code`.
  * Write (project resource bindings): list_project_resources,
@@ -777,6 +779,8 @@ function structuredDecisionFailure(error: unknown): Record<string, unknown> | un
       return { code: "permission_denied", message };
     case 404:
       return { code: "not_found", message };
+    case 409:
+      return { code: "conflict", message };
     default:
       return undefined;
   }
@@ -5382,6 +5386,39 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           "Answered cards are updated in the same store the mobile decision center reads; the echo comment mentioning the creating agents has been posted.";
       }
       return payload;
+    },
+  },
+  {
+    name: "cancel_decision",
+    description:
+      "Cancel exactly one open decision card on an issue. This calls the platform's member-only cancellation endpoint, which enforces workspace and issue ownership, refuses authorization cards, and reports closed-card races as conflicts. It does not answer the card, post an echo comment, or trigger or resume an Agent run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        decision_id: {
+          type: "string",
+          description: "Decision card UUID, from list_decisions or get_decision.",
+        },
+      },
+      required: ["workspace", "issue", "decision_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueRef = requireString(args, "issue");
+      const decisionId = requireString(args, "decision_id");
+      try {
+        const decision = await client.cancelIssueDecision(workspace, issueRef, decisionId);
+        return {
+          cancelled: true,
+          decision: decisionCardBrief(decision),
+        };
+      } catch (error) {
+        const failure = structuredDecisionFailure(error);
+        if (failure === undefined) throw error;
+        return { cancelled: false, ...failure };
+      }
     },
   },
   {

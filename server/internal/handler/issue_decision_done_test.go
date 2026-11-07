@@ -17,12 +17,12 @@ import (
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
-// RUYI-865: when an issue formally enters the done category, the server
-// cancels every still-open question decision card in one idempotent batch,
+// RUYI-865: when a human member moves an issue from in_review to done, the
+// server cancels every still-open question decision card in one idempotent batch,
 // records an auditable system event, and never resurrects cancelled cards on
 // re-entry. The canonical assertions live here, on the shared cascade
-// helper exercised through each formal entry point (HTTP single update,
-// batch update, the PR-merged advance) plus the create-side race guard.
+// helper exercised through the qualifying HTTP single and batch updates plus
+// the create-side race guard.
 
 const decisionAutoCancelEvent = "issue.decision_cards_auto_cancelled"
 
@@ -203,14 +203,29 @@ func TestIssueDoneCascadeAutoCancelsOpenDecisionCards(t *testing.T) {
 	assertCardStatuses(t, statusCardsAfterDone(t, openA, openB, answered, cancelled, auth))
 	assertCascadeEvents(t, issueID, 1)
 
-	// A repeated formal done entry fires the transition again but flips no
-	// card (idempotent CAS), so it appends no audit row: the ledger keeps
-	// only the original two-card event.
+	// A non-review -> done write is ineligible, so it appends no audit row.
 	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "done"}); w.Code != http.StatusOK {
 		t.Fatalf("second done: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	assertCardStatuses(t, statusCardsAfterDone(t, openA, openB, answered, cancelled, auth))
 	assertCascadeEvents(t, issueID, 1)
+}
+
+func TestIssueDoneCascadeAgentTransitionLeavesDecisionCardsOpen(t *testing.T) {
+	f := newDecisionFixture(t)
+	cardID := insertInboxCard(t, testWorkspaceID, f.IssueID, "agent completion card", "open", "")
+	if w := updateIssueViaHandler(t, f.IssueID, map[string]any{"status": "in_review"}); w.Code != http.StatusOK {
+		t.Fatalf("in_review update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	w := httptest.NewRecorder()
+	req := withURLParam(newRequest(http.MethodPut, "/api/issues/"+f.IssueID, map[string]any{"status": "done"}), "id", f.IssueID)
+	testHandler.UpdateIssue(w, agentIdentityHeaders(req, f))
+	if w.Code != http.StatusOK {
+		t.Fatalf("agent done update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCardStatuses(t, map[string]string{cardID: "open"})
+	assertCascadeEvents(t, f.IssueID, 0)
 }
 
 func TestIssueDoneCascadeOnlyOnTransitionIntoDone(t *testing.T) {
@@ -242,11 +257,20 @@ func TestIssueDoneCascadeOnlyOnTransitionIntoDone(t *testing.T) {
 	}
 
 	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "done"}); w.Code != http.StatusOK {
-		t.Fatalf("re-enter done: expected 200, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("non-review done: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	assertCardStatuses(t, map[string]string{legacyCard: "open"})
+	assertCascadeEvents(t, issueID, 0)
+
+	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "in_review"}); w.Code != http.StatusOK {
+		t.Fatalf("move to in_review: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "done"}); w.Code != http.StatusOK {
+		t.Fatalf("qualifying done: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	assertCardStatuses(t, map[string]string{legacyCard: "cancelled"})
 	if rows := assertCascadeEvents(t, issueID, 1); len(rows[0].DecisionIDs) != 1 || rows[0].DecisionIDs[0] != legacyCard {
-		t.Errorf("re-entry audit decision_ids = %v, want [%s]", rows[0].DecisionIDs, legacyCard)
+		t.Errorf("qualifying audit decision_ids = %v, want [%s]", rows[0].DecisionIDs, legacyCard)
 	}
 	if *events != 1 {
 		t.Errorf("decision:updated events after entering Done = %d, want 1", *events)
@@ -256,6 +280,9 @@ func TestIssueDoneCascadeOnlyOnTransitionIntoDone(t *testing.T) {
 func TestIssueDoneCascadeBatchUpdateEntry(t *testing.T) {
 	issueID := dbfx.Issue(t, "batch done cascade issue")
 	openA, openB, answered, cancelled, auth := seedDecisionCards(t, issueID)
+	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "in_review"}); w.Code != http.StatusOK {
+		t.Fatalf("in_review update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
 
 	w := httptest.NewRecorder()
 	req := newRequest(http.MethodPost, "/api/issues/batch-update", map[string]any{
@@ -287,19 +314,14 @@ func TestIssueDoneCascadePRMergedEntry(t *testing.T) {
 		t.Fatalf("load issue row: %v", err)
 	}
 	// Drive the shared PR-merged path directly; github_test.go's webhook
-	// fixture pins its request-side wiring separately. The transition
-	// (status write + card cascade) commits in one transaction, so a
-	// failure here leaves neither a done status nor a half-cancelled
-	// backlog behind.
+	// fixture pins its request-side wiring separately. This system path must
+	// not cancel decision cards, even though it advances the issue to done.
 	if err := testHandler.advanceIssueToDone(t.Context(), issueRow, testWorkspaceID); err != nil {
 		t.Fatalf("advance to done: %v", err)
 	}
 
-	assertCardStatuses(t, statusCardsAfterDone(t, openA, openB, answered, cancelled, auth))
-	events := assertCascadeEvents(t, issueID, 1)
-	if events[0].EntrySource != "github_pr_merged" {
-		t.Errorf("audit entry_source = %q, want github_pr_merged", events[0].EntrySource)
-	}
+	assertCardStatuses(t, statusCardsPreDone(t, openA, openB, answered, cancelled, auth))
+	assertCascadeEvents(t, issueID, 0)
 }
 
 func TestDecisionCreateRefusedOnDoneIssue(t *testing.T) {
@@ -363,8 +385,8 @@ func TestDecisionCreateRefusedOnCustomDoneKey(t *testing.T) {
 			`DELETE FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, key)
 	})
 
-	// A custom done-category status must fire the cascade exactly like the
-	// built-in 'done'.
+	// A custom done-category status is terminal but must not trigger the narrow
+	// built-in human in_review -> done cancellation rule.
 	openA := insertInboxCard(t, testWorkspaceID, issueID, "custom done open card", "open", "1s ago")
 	authCard := insertInboxCard(t, testWorkspaceID, issueID, "custom done auth card", "open", "1s ago",
 		testutil.Cols{
@@ -382,8 +404,8 @@ func TestDecisionCreateRefusedOnCustomDoneKey(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("custom done update: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	assertCardStatuses(t, map[string]string{openA: "cancelled", authCard: "open"})
-	assertCascadeEvents(t, issueID, 1)
+	assertCardStatuses(t, map[string]string{openA: "open", authCard: "open"})
+	assertCascadeEvents(t, issueID, 0)
 
 	// A card raised on the custom done status is refused with the same 409
 	// contract; reopening lifts it again.
@@ -525,7 +547,7 @@ func runDoneStatusUpdate(ctx context.Context, t *testing.T, issueID string) (par
 			// Same settle the http entry point runs in this transaction:
 			// the just-committed card is seen under a fresh READ COMMITTED
 			// snapshot once the lock release unblocked the update.
-			if _, err = testHandler.settleDoneCascadeInTx(ctx, qdone, oldIssue, issue, "http_update_issue"); err == nil {
+			if _, err = testHandler.settleDoneCascadeInTx(ctx, qdone, oldIssue, issue, "member", "http_update_issue"); err == nil {
 				err = tx.Commit(ctx)
 			}
 		}
@@ -552,6 +574,9 @@ func TestIssueDoneCascadeCreateCommitsFirstConvergesLeftoverCard(t *testing.T) {
 	}
 	ctx := t.Context()
 	issueID := dbfx.Issue(t, "done race create-first issue")
+	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "in_review"}); w.Code != http.StatusOK {
+		t.Fatalf("in_review update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
 
 	locked, finish := openCardCreateTx(t, ctx, db.CreateIssueDecisionParams{
 		ID:                 dbid.NewV7(),
@@ -600,6 +625,9 @@ func TestIssueDoneCascadeDoneCommitsFirstRefusesRacedCreate(t *testing.T) {
 	}
 	ctx := t.Context()
 	issueID := dbfx.Issue(t, "done race done-first issue")
+	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "in_review"}); w.Code != http.StatusOK {
+		t.Fatalf("in_review update: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
 
 	// The done side: a write transaction that moves the issue to done but
 	// has NOT committed yet, holding the row lock.
@@ -693,6 +721,9 @@ func TestIssueDoneCascadeRecoveryAfterMissedTransition(t *testing.T) {
 	issueID := dbfx.Issue(t, "cascade recovery issue")
 	openA, openB, answered, cancelled, auth := seedDecisionCards(t, issueID)
 
+	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "in_review"}); w.Code != http.StatusOK {
+		t.Fatalf("in_review: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
 	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "done"}); w.Code != http.StatusOK {
 		t.Fatalf("done: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -710,6 +741,9 @@ func TestIssueDoneCascadeRecoveryAfterMissedTransition(t *testing.T) {
 	// and previously cancelled cards stay where they are.
 	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "in_progress"}); w.Code != http.StatusOK {
 		t.Fatalf("re-open: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "in_review"}); w.Code != http.StatusOK {
+		t.Fatalf("in_review before recovery: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "done"}); w.Code != http.StatusOK {
 		t.Fatalf("second done: expected 200, got %d: %s", w.Code, w.Body.String())
