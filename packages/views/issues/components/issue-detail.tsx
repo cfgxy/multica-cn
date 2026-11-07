@@ -358,6 +358,8 @@ function formatActivity(
       });
     case "description_updated":
       return t(($) => $.activity.description_updated);
+    case "credential_delivered":
+      return t(($) => $.activity.credential_delivered);
     case "task_completed":
       return t(($) => $.activity.task_completed, { count: entry.coalesced_count ?? 1 });
     case "task_failed":
@@ -1182,6 +1184,13 @@ export function IssueDetailSkeleton({ leading }: { leading?: ReactNode } = {}) {
 // IssueDetail
 // ---------------------------------------------------------------------------
 
+export function isCredentialRequestAvailable(
+  issue: Pick<Issue, "status" | "status_category">,
+  activityTruncated: boolean,
+): boolean {
+  return !activityTruncated && !issueBehavesAsAny(issue, ["done", "cancelled"]);
+}
+
 export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId: highlightCommentIdProp, highlightDecisionId: highlightDecisionIdProp, highlightRequestToken: highlightRequestTokenProp, leadingAction }: IssueDetailProps) {
   const { t } = useT("issues");
   const locale = useLocale();
@@ -1507,6 +1516,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     toggleReaction: handleToggleReaction,
   } = useIssueTimeline(id, user?.id);
   const timelineSortMode = useTimelineSortStore((state) => state.mode);
+  const deliveredCredentialRequestIds = useMemo(() => new Set(
+    timeline.flatMap((entry) => {
+      if (entry.type !== "activity" || entry.action !== "credential_delivered") return [];
+      const requestCommentId = entry.details?.request_comment_id;
+      return typeof requestCommentId === "string" ? [requestCommentId] : [];
+    }),
+  ), [timeline]);
+  const credentialActivityTruncated = truncatedKinds.includes("activity");
   const setTimelineSortMode = useTimelineSortStore((state) => state.setMode);
   const timelineSortHintSeen = useTimelineSortStore((state) => state.hintSeen);
   const setTimelineSortHintSeen = useTimelineSortStore((state) => state.setHintSeen);
@@ -2897,7 +2914,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         <div className="pb-3" id={`comment-${item.id}`}>
           <CommentCard
             issueId={id}
+            issue={issue}
             entry={item.entry}
+            credentialDelivered={deliveredCredentialRequestIds.has(item.entry.id)}
+            credentialRequestAvailable={isCredentialRequestAvailable(issue, credentialActivityTruncated)}
             replies={timelineView.threadReplies.get(item.id) ?? EMPTY_REPLIES}
             currentUserId={user?.id}
             canModerate={canModerateComments}

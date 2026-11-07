@@ -226,6 +226,15 @@ about the issue — there is no assignee gate (MUL-6417).
 | Shared actor-reference types and helpers | `packages/core/types/property.ts` (`parseActorRef`, `actorRefsFromValue`, `MAX_ISSUE_PROPERTY_ACTOR_VALUES`) |
 | API routes (`/api/properties`, PUT/DELETE `/api/issues/{id}/properties/{propertyId}`) | `server/cmd/server/router.go` |
 
+## Credential delivery requests
+
+| Behavior | Source |
+|---|---|
+| Request marker, field-presence rejection, and task-lineage lock | `server/internal/handler/credential_vault.go` (`credentialRequestCommentMarker`, `credentialDeliveryRequestValid`, `lockCredentialRequestComment`) |
+| Credential, grant, audit, and `credential_delivered` activity share one transaction | `server/internal/handler/credential_vault.go` (`CreateIssueCredential`) |
+| Completion is published through the ordinary activity websocket event | `server/internal/handler/credential_vault.go` (`CreateIssueCredential`, `protocol.EventActivityCreated`) |
+| Connector-free direct delivery remains supported | `server/internal/handler/credential_vault.go` (`credentialRequestConnector`, `credentialTargetService`) |
+
 ## Verification command
 
 Re-derive any line above before depending on it:

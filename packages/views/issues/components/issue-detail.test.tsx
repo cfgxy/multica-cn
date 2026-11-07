@@ -633,7 +633,7 @@ function mockTimelineResult(
 // Import component under test (after mocks)
 // ---------------------------------------------------------------------------
 
-import { IssueDetail, groupSubIssuesByStage } from "./issue-detail";
+import { IssueDetail, groupSubIssuesByStage, isCredentialRequestAvailable } from "./issue-detail";
 import { CommentMentionCard } from "./comment-mention-card";
 
 // ---------------------------------------------------------------------------
@@ -781,6 +781,13 @@ describe("IssueDetail (shared)", () => {
     // has project_id: null so getProject is not invoked.
     mockApiObj.getProject.mockReset();
     mockApiObj.listIssuePullRequests.mockResolvedValue({ pull_requests: [] });
+  });
+
+  it("fails closed for credential request cards when delivery activity is incomplete", () => {
+    expect(isCredentialRequestAvailable({ status: "todo", status_category: "todo" }, true)).toBe(false);
+    expect(isCredentialRequestAvailable({ status: "done", status_category: "" } as never, false)).toBe(false);
+    expect(isCredentialRequestAvailable({ status: "cancelled", status_category: "unknown" } as never, false)).toBe(false);
+    expect(isCredentialRequestAvailable({ status: "todo", status_category: "todo" }, false)).toBe(true);
   });
 
   it("shows linked GitLab MR when GitHub is disabled without showing GitHub rows", async () => {
