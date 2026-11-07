@@ -971,6 +971,16 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		}, prow.Inserted)
 	}
 
+	// Issue a workspace-bound callback credential after registration succeeds.
+	// The raw value is returned only in this response and is never logged; the
+	// database stores only its hash and the owner binding used by DaemonAuth.
+	daemonToken, err := h.issueDaemonRegistrationToken(r.Context(), wsUUID, req.DaemonID, ownerID)
+	if err != nil {
+		slog.Warn("daemon registration token issuance failed", "workspace_id", req.WorkspaceID, "daemon_id", req.DaemonID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to issue daemon credential")
+		return
+	}
+
 	slog.Info("daemon registered", "workspace_id", req.WorkspaceID, "daemon_id", req.DaemonID, "runtimes_count", len(resp))
 
 	h.publish(protocol.EventDaemonRegister, req.WorkspaceID, "system", "", map[string]any{
@@ -984,7 +994,25 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		"repos":         repoResp.Repos,
 		"repos_version": repoResp.ReposVersion,
 		"settings":      repoResp.Settings,
+		"daemon_token":  daemonToken,
 	})
+}
+
+func (h *Handler) issueDaemonRegistrationToken(ctx context.Context, workspaceID pgtype.UUID, daemonID string, ownerID pgtype.UUID) (string, error) {
+	raw, err := auth.GenerateDaemonToken()
+	if err != nil {
+		return "", fmt.Errorf("generate daemon token: %w", err)
+	}
+	if _, err := h.Queries.CreateDaemonToken(ctx, db.CreateDaemonTokenParams{
+		TokenHash:   auth.HashToken(raw),
+		WorkspaceID: workspaceID,
+		DaemonID:    daemonID,
+		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
+		OwnerID:     ownerID,
+	}); err != nil {
+		return "", fmt.Errorf("store daemon token: %w", err)
+	}
+	return raw, nil
 }
 
 // mergeLegacyRuntimes folds every runtime row keyed on a prior hostname-derived

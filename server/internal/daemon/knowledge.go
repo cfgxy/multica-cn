@@ -152,10 +152,18 @@ func (c *Client) GetKnowledgePlan(ctx context.Context, daemonID string) (*Knowle
 	return &plan, nil
 }
 
-func (c *Client) PostKnowledgeResults(ctx context.Context, daemonID string, results *KnowledgeResults) (*KnowledgeResultsAck, error) {
+func (c *Client) PostKnowledgeResults(ctx context.Context, daemonID, workspaceID string, results *KnowledgeResults) (*KnowledgeResultsAck, error) {
 	var ack KnowledgeResultsAck
 	path := "/api/daemon/knowledge/results?daemon_id=" + url.QueryEscape(daemonID)
-	if err := c.postJSON(ctx, path, results, &ack); err != nil {
+	// The registration response supplies a workspace-bound mdt_ credential.
+	// Keep the PAT fallback for older test servers and older control planes; the
+	// production endpoint rejects it for writes, so no authorization boundary is
+	// weakened when the credential is missing.
+	token := c.knowledgeToken(workspaceID)
+	if token == "" {
+		token = c.token
+	}
+	if err := c.postJSONWithToken(ctx, path, token, results, &ack); err != nil {
 		return nil, err
 	}
 	return &ack, nil
@@ -200,24 +208,25 @@ func knowledgeScanInterval() time.Duration {
 	return DefaultKnowledgeScanInterval
 }
 
-// knowledgeSync runs one pull cycle. Workspaces are isolated: a failure in
-// one never stops the others, and the report is a single POST covering all
-// of them.
+// knowledgeSync runs one pull cycle. Workspaces are isolated: each report is
+// posted with the daemon token issued for that workspace, so a token can never
+// authorize a callback for a different workspace.
 func (d *Daemon) knowledgeSync(ctx context.Context) error {
 	plan, err := d.client.GetKnowledgePlan(ctx, d.cfg.DaemonID)
 	if err != nil {
 		return fmt.Errorf("fetch knowledge plan: %w", err)
 	}
-	results := &KnowledgeResults{}
 	for i := range plan.Workspaces {
-		d.knowledgeSyncWorkspace(ctx, &plan.Workspaces[i], results)
-	}
-	if len(results.Discoveries) == 0 && len(results.Ultimates) == 0 &&
-		len(results.Scans) == 0 && len(results.Adoptions) == 0 && len(results.Operations) == 0 {
-		return nil
-	}
-	if _, err := d.client.PostKnowledgeResults(ctx, d.cfg.DaemonID, results); err != nil {
-		return fmt.Errorf("report knowledge results: %w", err)
+		ws := &plan.Workspaces[i]
+		results := &KnowledgeResults{}
+		d.knowledgeSyncWorkspace(ctx, ws, results)
+		if len(results.Discoveries) == 0 && len(results.Ultimates) == 0 &&
+			len(results.Scans) == 0 && len(results.Adoptions) == 0 && len(results.Operations) == 0 {
+			continue
+		}
+		if _, err := d.client.PostKnowledgeResults(ctx, d.cfg.DaemonID, ws.WorkspaceID, results); err != nil {
+			return fmt.Errorf("report knowledge results for workspace %s: %w", ws.WorkspaceID, err)
+		}
 	}
 	return nil
 }

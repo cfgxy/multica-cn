@@ -236,6 +236,26 @@ func newKnowledgeTestDaemon(t *testing.T, fake *fakeKnowledgeServer) *Daemon {
 	}
 }
 
+func TestPostKnowledgeResultsUsesWorkspaceDaemonToken(t *testing.T) {
+	var authorization string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"discoveries_registered":1}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	client.SetToken("mul-profile-pat")
+	client.SetKnowledgeToken("workspace-1", "mdt-registration-token")
+	if _, err := client.PostKnowledgeResults(context.Background(), "daemon-1", "workspace-1", &KnowledgeResults{}); err != nil {
+		t.Fatalf("post knowledge results: %v", err)
+	}
+	if authorization != "Bearer mdt-registration-token" {
+		t.Fatalf("authorization = %q, want workspace daemon token", authorization)
+	}
+}
+
 // --- tests -------------------------------------------------------------------
 
 // TestDaemonKnowledgeDiscoveryAndScan walks the discovery half-cycle: a
