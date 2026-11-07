@@ -1011,6 +1011,21 @@ func (h *Handler) RefreshKnowledgeDaemonToken(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusUnauthorized, "daemon token authentication is required to refresh knowledge credentials")
 		return
 	}
+	if r.ContentLength != 0 {
+		var req struct {
+			DaemonID    string `json:"daemon_id"`
+			WorkspaceID string `json:"workspace_id"`
+			OwnerID     string `json:"owner_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if strings.TrimSpace(req.DaemonID) != "" || strings.TrimSpace(req.WorkspaceID) != "" || strings.TrimSpace(req.OwnerID) != "" {
+			writeError(w, http.StatusBadRequest, "knowledge credential identity must come from daemon authentication")
+			return
+		}
+	}
 	tokenHash := strings.TrimSpace(middleware.DaemonTokenHashFromContext(ctx))
 	workspaceID := strings.TrimSpace(middleware.DaemonWorkspaceIDFromContext(ctx))
 	daemonID := strings.TrimSpace(middleware.DaemonIDFromContext(ctx))
