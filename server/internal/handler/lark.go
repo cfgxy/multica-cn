@@ -242,6 +242,54 @@ type RecheckLarkPermissionsResponse struct {
 	Capabilities []lark.CapabilityStateView `json:"capabilities"`
 }
 
+// BeginLarkPermissionGrantResponse carries the QR URL for confirming the
+// current permission catalog on an already-installed Lark app.
+type BeginLarkPermissionGrantResponse struct {
+	QRCodeURL string `json:"qr_code_url"`
+}
+
+// BeginLarkPermissionGrant (POST /api/workspaces/{id}/lark/installations/{installationId}/grant-permissions)
+// creates a confirmation QR code for the app already stored on an active
+// installation. This is deliberately restricted to workspace owner/admin:
+// unlike an initial agent-level binding, it expands a workspace integration's
+// permissions. It never creates a new app or accesses its secret.
+func (h *Handler) BeginLarkPermissionGrant(w http.ResponseWriter, r *http.Request) {
+	if h.LarkInstallations == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark integration not configured")
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	instUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "installationId"), "installation id")
+	if !ok {
+		return
+	}
+	if _, ok := h.requireWorkspaceRole(w, r, uuidToString(wsUUID), "lark installation not found", "owner", "admin"); !ok {
+		return
+	}
+	inst, err := h.LarkInstallations.GetInWorkspace(r.Context(), instUUID, wsUUID)
+	if err != nil {
+		if errors.Is(err, lark.ErrInstallationNotFound) {
+			writeError(w, http.StatusNotFound, "lark installation not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load installation")
+		return
+	}
+	if lark.InstallationStatus(inst.Status) != lark.InstallationActive {
+		writeError(w, http.StatusConflict, "only an active installation can be granted permissions")
+		return
+	}
+	qrCodeURL, err := lark.PermissionGrantQRCodeURL(lark.Region(inst.Region), inst.AppID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create permission grant URL")
+		return
+	}
+	writeJSON(w, http.StatusOK, BeginLarkPermissionGrantResponse{QRCodeURL: qrCodeURL})
+}
+
 // RecheckLarkPermissions (POST /api/workspaces/{id}/lark/installations/{installationId}/recheck-permissions)
 // re-runs the capability probe NOW and persists the verdicts — the 补授权
 // panel's refresh button. This is the honesty boundary of the whole

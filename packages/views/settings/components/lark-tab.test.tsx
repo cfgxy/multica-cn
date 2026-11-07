@@ -30,6 +30,7 @@ const mockGetStatus = vi.hoisted(() => vi.fn());
 const mockDeleteInstallation = vi.hoisted(() => vi.fn());
 const mockInvalidate = vi.hoisted(() => vi.fn());
 const mockRecheckPermissions = vi.hoisted(() => vi.fn());
+const mockBeginPermissionGrant = vi.hoisted(() => vi.fn());
 // The static capability→scope catalog the bind dialog declares up front
 // (RUYI-400). Null = the query has no data (server without the catalog
 // or still loading) and the dialog must omit the declaration.
@@ -124,6 +125,7 @@ vi.mock("@multica/core/api", () => ({
     getLarkInstallStatus: mockGetStatus,
     deleteLarkInstallation: mockDeleteInstallation,
     recheckLarkPermissions: mockRecheckPermissions,
+    beginLarkPermissionGrant: mockBeginPermissionGrant,
   },
   ApiError,
 }));
@@ -820,6 +822,7 @@ describe("LarkCapabilityPanel (RUYI-400 权限状态)", () => {
     expect(
       container.querySelector('[data-testid="lark-capability-panel"]'),
     ).toBeNull();
+    expect(screen.queryByTestId("lark-permissions-grant")).toBeNull();
   });
 
   it("shows the not-checked hint and a first-check button for a never-probed bot (capabilities: [])", () => {
@@ -936,6 +939,81 @@ describe("LarkCapabilityPanel (RUYI-400 权限状态)", () => {
         .getAttribute("href")
         ?.startsWith("https://open.larksuite.com/app/cli_test_app/auth"),
     ).toBe(true);
+  });
+
+  it("opens a confirmation QR for an admin and the existing installation", async () => {
+    mockBeginPermissionGrant.mockResolvedValueOnce({
+      qr_code_url: "https://open.feishu.cn/app?clientID=cli_test_app",
+    });
+    installationsRef.current.installations = [
+      activeInstallation({
+        capabilities: [{ capability: "send_messages", status: "missing" }],
+      }),
+    ];
+    const user = userEvent.setup();
+    render(<LarkTab />, { wrapper: I18nWrapper });
+
+    await user.click(screen.getByTestId("lark-permissions-grant"));
+
+    await waitFor(() => {
+      expect(mockBeginPermissionGrant).toHaveBeenCalledWith("workspace-1", "inst-1");
+    });
+    expect(screen.getByTestId("qr-code").getAttribute("data-value")).toBe(
+      "https://open.feishu.cn/app?clientID=cli_test_app",
+    );
+  });
+
+  it("shows an error instead of an empty QR when permission grant preparation fails", async () => {
+    mockBeginPermissionGrant.mockRejectedValueOnce(new Error("grant failed"));
+    installationsRef.current.installations = [
+      activeInstallation({
+        capabilities: [{ capability: "send_messages", status: "missing" }],
+      }),
+    ];
+    const user = userEvent.setup();
+    render(<LarkTab />, { wrapper: I18nWrapper });
+
+    await user.click(screen.getByTestId("lark-permissions-grant"));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("grant failed");
+    });
+    expect(screen.queryByTestId("qr-code")).toBeNull();
+  });
+
+  it("treats a schema fallback URL as a grant failure instead of rendering a blank QR", async () => {
+    mockBeginPermissionGrant.mockResolvedValueOnce({ qr_code_url: "" });
+    installationsRef.current.installations = [
+      activeInstallation({
+        capabilities: [{ capability: "send_messages", status: "missing" }],
+      }),
+    ];
+    const user = userEvent.setup();
+    render(<LarkTab />, { wrapper: I18nWrapper });
+
+    await user.click(screen.getByTestId("lark-permissions-grant"));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Could not prepare the permission grant");
+    });
+    expect(screen.queryByTestId("qr-code")).toBeNull();
+  });
+
+  it("hides permission grant from members and when capability data is unavailable", () => {
+    membersRef.current = [{ user_id: "user-1", role: "member" }];
+    installationsRef.current.installations = [
+      activeInstallation({
+        capabilities: [{ capability: "send_messages", status: "missing" }],
+      }),
+    ];
+    const { rerender } = render(<LarkTab />, { wrapper: I18nWrapper });
+    expect(screen.queryByTestId("lark-permissions-grant")).toBeNull();
+
+    membersRef.current = [{ user_id: "user-1", role: "owner" }];
+    installationsRef.current.installations = [activeInstallation({ capabilities: null })];
+    rerender(<LarkTab />);
+    expect(screen.getByTestId("lark-capability-panel")).toBeTruthy();
+    expect(screen.queryByTestId("lark-permissions-grant")).toBeNull();
   });
 
   it("recheck calls the API for this installation and invalidates the listings cache", async () => {

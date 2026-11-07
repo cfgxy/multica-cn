@@ -474,6 +474,37 @@ func decorateQRCodeURL(raw, source, namePreset string) (string, error) {
 	if namePreset != "" {
 		q.Set("name", namePreset)
 	}
+	addons, err := json.Marshal(PermissionAddonsForRegistration())
+	if err != nil {
+		return "", fmt.Errorf("marshal permission addons: %w", err)
+	}
+	q.Set("addons", string(addons))
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// PermissionGrantQRCodeURL returns Lark's confirmation URL for adding the
+// complete current permission catalog to an existing app. It only uses the
+// persisted app id and never opens a device-flow session or reads credentials.
+func PermissionGrantQRCodeURL(region Region, appID string) (string, error) {
+	appID = strings.TrimSpace(appID)
+	if appID == "" {
+		return "", errors.New("app_id is required")
+	}
+	addons, err := json.Marshal(PermissionAddonsForRegistration())
+	if err != nil {
+		return "", fmt.Errorf("marshal permission addons: %w", err)
+	}
+	u, err := url.Parse(RegionOrDefault(string(region)).OpenPlatformBaseURL() + "/app")
+	if err != nil {
+		return "", fmt.Errorf("build grant URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("clientID", appID)
+	q.Set("from", "sdk")
+	q.Set("tp", "sdk")
+	q.Set("source", "go-sdk/multica")
+	q.Set("addons", string(addons))
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }

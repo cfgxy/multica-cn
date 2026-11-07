@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"testing"
 
@@ -161,19 +162,18 @@ func TestRecheckLarkPermissions_PersistsHonestTriState(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(resp.Capabilities) != 7 {
-		t.Fatalf("expected 7 verdicts, got %d", len(resp.Capabilities))
+	if len(resp.Capabilities) != 6 {
+		t.Fatalf("expected 6 REST-probeable verdicts, got %d", len(resp.Capabilities))
 	}
 	status := map[string]string{}
 	for _, c := range resp.Capabilities {
 		status[c.Capability] = c.Status
 	}
 	want := map[string]string{
-		"receive_messages": "unknown", // never probeable over REST
-		"send_messages":    "granted",
-		"read_history":     "missing", // 99991672 from the stub
-		"media_resources":  "granted",
-		"contact_lookup":   "granted",
+		"send_messages":   "granted",
+		"read_history":    "missing", // 99991672 from the stub
+		"media_resources": "granted",
+		"contact_lookup":  "granted",
 		// RUYI-572: the stub predates the ShareLinkClient surface, so the
 		// share-link probes degrade to honest unknown instead of faking a
 		// verdict — the degradation the install panel shows pre-regrant.
@@ -195,13 +195,13 @@ func TestRecheckLarkPermissions_PersistsHonestTriState(t *testing.T) {
 	// Verdicts are persisted exactly once per capability (upsert, not
 	// accumulate), and a second recheck overwrites in place.
 	n := capabilityStateCount(t, instUUID)
-	if n != 7 {
-		t.Fatalf("expected 7 persisted rows, got %d", n)
+	if n != 6 {
+		t.Fatalf("expected 6 persisted rows, got %d", n)
 	}
 	if w := recheckAs(testUserID, instID); w.Code != http.StatusOK {
 		t.Fatalf("second recheck as workspace owner: want 200, got %d", w.Code)
 	}
-	if n := capabilityStateCount(t, instUUID); n != 7 {
+	if n := capabilityStateCount(t, instUUID); n != 6 {
 		t.Fatalf("recheck must upsert, not accumulate: got %d rows", n)
 	}
 }
@@ -222,6 +222,58 @@ func TestRecheckLarkPermissions_RevokedInstallationConflict(t *testing.T) {
 
 	if code := recheckAs(ownerID, instID).Code; code != http.StatusConflict {
 		t.Fatalf("recheck on revoked installation: want 409, got %d", code)
+	}
+}
+
+func TestBeginLarkPermissionGrant_UsesExistingAppAndRequiresWorkspaceAdmin(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	wireLarkInstallServices(t)
+	agentID, ownerID, memberID := privateAgentTestFixture(t)
+	instID, _ := seedActiveInstallationForRecheck(t, agentID, ownerID)
+
+	begin := func(userID, installationID string) *httptest.ResponseRecorder {
+		req := newRequestAs(userID, http.MethodPost,
+			"/api/workspaces/"+testWorkspaceID+"/lark/installations/"+installationID+"/grant-permissions", nil)
+		req = withURLParams(req, "id", testWorkspaceID, "installationId", installationID)
+		w := httptest.NewRecorder()
+		testHandler.BeginLarkPermissionGrant(w, req)
+		return w
+	}
+
+	if code := begin(memberID, instID).Code; code != http.StatusForbidden {
+		t.Fatalf("grant as plain member: want 403, got %d", code)
+	}
+	if code := begin(ownerID, instID).Code; code != http.StatusForbidden {
+		t.Fatalf("grant as agent owner: want 403, got %d", code)
+	}
+
+	w := begin(testUserID, instID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("grant as workspace owner: want 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp BeginLarkPermissionGrantResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode grant response: %v", err)
+	}
+	u, err := url.Parse(resp.QRCodeURL)
+	if err != nil {
+		t.Fatalf("parse grant QR URL: %v", err)
+	}
+	if got := u.Query().Get("clientID"); got != "cli_recheck_test" {
+		t.Fatalf("grant QR clientID = %q, want existing app id", got)
+	}
+
+	if code := begin(testUserID, "018f0000-0000-7000-8000-000000000099").Code; code != http.StatusNotFound {
+		t.Fatalf("grant missing installation: want 404, got %d", code)
+	}
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE channel_installation SET status = 'revoked' WHERE id = $1`, instID); err != nil {
+		t.Fatalf("revoke installation: %v", err)
+	}
+	if code := begin(testUserID, instID).Code; code != http.StatusConflict {
+		t.Fatalf("grant revoked installation: want 409, got %d", code)
 	}
 }
 
