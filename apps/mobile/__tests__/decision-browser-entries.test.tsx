@@ -19,8 +19,11 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ScrollView } from "react-native";
 import type { ComponentType } from "react";
 import type { IssueDecision } from "@multica/core/types";
+
+const mockScrollTo = ScrollView.prototype.scrollTo as jest.Mock;
 
 // --- router params, per-test mutable (mock-prefixed so jest hoisting allows)
 let mockGlobalParams: { cardId?: string; filter?: string } = {};
@@ -157,6 +160,7 @@ function question() {
 
 beforeEach(() => {
   mockGlobalParams = {};
+  mockScrollTo.mockClear();
 });
 
 afterEach(() => {
@@ -188,6 +192,36 @@ describe("RUYI-863 mobile decision-card entries (shared browser)", () => {
     expect(scroll.props.keyboardShouldPersistTaps).toBe("handled");
     expect(screen.getByTestId("browser-stub-card")).toBeTruthy();
     expect(screen.getByTestId("decision-browser-next")).toBeTruthy();
+  });
+
+  it("resets the scroll position for the initial card, navigation and filter changes", async () => {
+    await renderEntry(MoreMenuScreen, threeCards);
+
+    expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false });
+
+    mockScrollTo.mockClear();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("decision-browser-next"));
+    });
+    await waitFor(() =>
+      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
+    );
+
+    mockScrollTo.mockClear();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("decision-browser-previous"));
+    });
+    await waitFor(() =>
+      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
+    );
+
+    mockScrollTo.mockClear();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("decision-browser-filter-cancelled"));
+    });
+    await waitFor(() =>
+      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
+    );
   });
 
   it("info-feed single-card entry pins the target card even when it is cancelled (no bounce)", async () => {
