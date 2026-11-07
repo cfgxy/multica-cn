@@ -41,6 +41,9 @@ type InboundMessage struct {
 	// /new must NOT inherit), quoted media is explicitly attached by the
 	// user and survives a fresh-session start.
 	QuotedMedia []EnrichedMediaMessage
+	// ForwardMedia carries images from visible direct children of a
+	// merge_forward message, including images embedded in post messages.
+	ForwardMedia []EnrichedMediaMessage
 	// ForceFreshSession marks this dispatch as a one-off fresh start: the
 	// daemon should skip prior session resume when it claims the resulting
 	// chat task.
@@ -97,9 +100,9 @@ type CardActionEvent struct {
 }
 
 // EnrichedMediaMessage is one media-bearing message the enricher surfaced
-// alongside the trigger — either a recent group message (RecentMedia) or
-// the quoted reply parent (QuotedMedia). Content is the raw msg_type-
-// specific JSON the media resolver parses for image_key/file_key.
+// alongside the trigger from recent context, a quoted parent, or a forwarded
+// child. Content is the raw msg_type-specific JSON the media resolver parses
+// for image_key/file_key.
 type EnrichedMediaMessage struct {
 	MessageID   string
 	MessageType string
