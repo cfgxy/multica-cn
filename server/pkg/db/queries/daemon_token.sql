@@ -11,9 +11,9 @@ SELECT * FROM daemon_token
 WHERE token_hash = $1 AND expires_at > now();
 
 -- name: RenewDaemonToken :one
--- Renew the authenticated daemon credential in place. A live runtime owned by
--- the same owner is required so an old token cannot keep itself alive after
--- its runtime has been removed or transferred.
+-- Renew the authenticated daemon credential in place. An online runtime owned
+-- by the same owner is required so an old token cannot keep itself alive after
+-- its runtime has gone offline, been removed, or been transferred.
 UPDATE daemon_token AS dt
 SET expires_at = now() + interval '24 hours'
 WHERE dt.token_hash = @token_hash
@@ -27,6 +27,7 @@ WHERE dt.token_hash = @token_hash
     WHERE r.workspace_id = dt.workspace_id
       AND r.daemon_id = dt.daemon_id
       AND r.owner_id = dt.owner_id
+      AND r.status = 'online'
   )
 RETURNING *;
 
