@@ -490,6 +490,7 @@
     "due_date_removed": "期限を削除しました",
     "title_renamed": "このタスクのタイトルを \"{{from}}\" から \"{{to}}\" に変更しました",
     "description_updated": "説明を更新しました",
+    "credential_delivered": "認証情報を配信しました",
     "task_completed_other": "{{count}} 件の作業を完了しました",
     "task_failed_other": "{{count}} 件の作業が失敗しました",
     "squad_leader_evaluated": "スクワッドのトリガーを評価しました",

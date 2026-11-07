@@ -497,6 +497,7 @@
     "due_date_removed": "removed due date",
     "title_renamed": "renamed this issue from \"{{from}}\" to \"{{to}}\"",
     "description_updated": "updated the description",
+    "credential_delivered": "delivered a credential",
     "task_completed_one": "completed a task",
     "task_completed_other": "completed {{count}} tasks",
     "task_failed_one": "a task failed",

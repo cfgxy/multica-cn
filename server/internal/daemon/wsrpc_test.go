@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -32,23 +33,125 @@ func TestCredentialCapabilityForConnectorSelectsOnlyMatchingUniqueCapability(t *
 	}
 }
 
-func TestWSRPCSessionKeyIsAvailableOnlyOnActiveConnection(t *testing.T) {
+func TestResolveCredentialCapabilitySendsRPCAfterClaimExpiry(t *testing.T) {
+	client := newWSRPCClient(time.Second)
+	sessionKey, err := credentialcrypto.NewSessionKey()
+	if err != nil {
+		t.Fatal("generate session key")
+	}
+	client.setSessionKey(sessionKey)
+
+	const taskID = "task-1"
+	const workspaceID = "workspace-1"
+	const daemonID = "daemon-1"
+	const connectorID = "connector-1"
+	const connectorRevision = int64(2)
+	envelopeExpiresAt := time.Now().UTC().Add(30 * time.Second)
+	aad, err := json.Marshal(struct {
+		TaskID            string    `json:"task_id"`
+		WorkspaceID       string    `json:"workspace_id"`
+		DaemonID          string    `json:"daemon_id"`
+		ConnectorID       string    `json:"connector_id"`
+		ConnectorRevision int64     `json:"connector_revision"`
+		ExpiresAt         time.Time `json:"expires_at"`
+	}{taskID, workspaceID, daemonID, connectorID, connectorRevision, envelopeExpiresAt})
+	if err != nil {
+		t.Fatal("marshal execution AAD")
+	}
+	sealed, err := credentialcrypto.SealForSession(sessionKey.PublicKey().Bytes(), []byte("synthetic-credential"), aad)
+	if err != nil {
+		t.Fatal("seal execution envelope")
+	}
+	responseBody, err := json.Marshal(map[string]any{
+		"envelope": sealed, "expires_at": envelopeExpiresAt,
+	})
+	if err != nil {
+		t.Fatal("marshal resolve response")
+	}
+	var resolveCalls int
+	generation := client.attach(func(frame []byte) (*wsOutbound, error) {
+		var message protocol.Message
+		if err := json.Unmarshal(frame, &message); err != nil {
+			return nil, err
+		}
+		var request protocol.RPCRequestPayload
+		if err := json.Unmarshal(message.Payload, &request); err != nil {
+			return nil, err
+		}
+		if request.Method != "credentials.resolve" {
+			t.Errorf("method = %q, want credentials.resolve", request.Method)
+		}
+		resolveCalls++
+		go client.deliver(protocol.RPCResponsePayload{
+			RequestID: request.RequestID,
+			Status:    http.StatusOK,
+			Body:      responseBody,
+		})
+		return &wsOutbound{data: frame}, nil
+	})
+	client.markRPCV1Supported(generation)
+	daemon := &Daemon{cfg: Config{DaemonID: daemonID}, wsRPC: client}
+	task := &Task{ID: taskID, WorkspaceID: workspaceID}
+	capability := CredentialCapability{
+		Capability: "opaque-capability", ConnectorID: connectorID, ConnectorRevision: connectorRevision,
+		ExpiresAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano), sessionKey: sessionKey,
+	}
+
+	plaintext, err := daemon.resolveCredentialCapability(context.Background(), task, capability)
+	if err != nil || string(plaintext) != "synthetic-credential" {
+		t.Fatalf("resolve expired claim capability = %q, %v; want credential from server", plaintext, err)
+	}
+	if resolveCalls != 1 {
+		t.Fatalf("resolve RPC calls = %d, want 1", resolveCalls)
+	}
+	zeroCredentialBytes(plaintext)
+}
+
+func TestWSRPCSessionKeyIsAvailableOnlyAfterRPCV1Negotiation(t *testing.T) {
 	client := newWSRPCClient(time.Second)
 	key, err := credentialcrypto.NewSessionKey()
 	if err != nil {
 		t.Fatal("generate session key")
 	}
 	client.setSessionKey(key)
-	if _, ok := client.sessionPublicKey(); ok {
+	if _, _, ok := client.sessionKeyForClaim(); ok {
 		t.Fatal("session public key available without a control connection")
 	}
-	client.attach(func([]byte) (*wsOutbound, error) { return &wsOutbound{}, nil })
-	if publicKey, ok := client.sessionPublicKey(); !ok || publicKey == "" {
-		t.Fatal("session public key unavailable on active control connection")
+	generation := client.attach(func([]byte) (*wsOutbound, error) { return &wsOutbound{}, nil })
+	if _, _, ok := client.sessionKeyForClaim(); ok {
+		t.Fatal("session public key available before rpc-v1 negotiation")
+	}
+	client.markRPCV1Supported(generation)
+	if claimKey, publicKey, ok := client.sessionKeyForClaim(); !ok || publicKey == "" || claimKey != key {
+		t.Fatal("session public key unavailable on negotiated control connection")
 	}
 	client.attach(nil)
-	if _, ok := client.sessionPublicKey(); ok {
+	if _, _, ok := client.sessionKeyForClaim(); ok {
 		t.Fatal("session public key survived control connection teardown")
+	}
+}
+
+func TestCredentialSessionEnvelopeUsesClaimSessionKeyAfterReconnect(t *testing.T) {
+	claimKey, err := credentialcrypto.NewSessionKey()
+	if err != nil {
+		t.Fatal("generate claim session key")
+	}
+	reconnectedKey, err := credentialcrypto.NewSessionKey()
+	if err != nil {
+		t.Fatal("generate reconnect session key")
+	}
+	aad := []byte("credential-aad")
+	envelope, err := credentialcrypto.SealForSession(claimKey.PublicKey().Bytes(), []byte("synthetic-secret"), aad)
+	if err != nil {
+		t.Fatal("seal credential envelope")
+	}
+	plaintext, err := openCredentialSessionEnvelope(claimKey, envelope, aad)
+	if err != nil || string(plaintext) != "synthetic-secret" {
+		t.Fatalf("claim session key did not open capability envelope: %q, %v", plaintext, err)
+	}
+	zeroCredentialBytes(plaintext)
+	if _, err := openCredentialSessionEnvelope(reconnectedKey, envelope, aad); err == nil {
+		t.Fatal("reconnected session key opened an envelope for the claim key")
 	}
 }
 

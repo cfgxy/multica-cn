@@ -1387,15 +1387,13 @@ export class ApiClient {
 
   async createIssueCredential(issueId: string, data: {
     name: string;
-    target_service: string;
-    connector_id: string;
-    connector_revision: number;
     purpose: string;
     subject_type: "agent" | "squad";
     subject_id: string;
     resource_scope: "single_use" | "issue" | "project" | "workspace" | "global";
     resource_id?: string;
     expires_at: string | null;
+    request_comment_id?: string;
     envelope: CredentialTransportEnvelope;
   }): Promise<CredentialMetadata | null> {
     const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials`, {
@@ -1410,9 +1408,6 @@ export class ApiClient {
 
   async replaceIssueCredential(issueId: string, credentialId: string, data: {
     name: string;
-    target_service: string;
-    connector_id: string;
-    connector_revision: number;
     purpose: string;
     subject_type: "agent" | "squad";
     subject_id: string;
