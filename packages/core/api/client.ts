@@ -1381,6 +1381,7 @@ export class ApiClient {
     resource_scope: "single_use" | "issue" | "project" | "workspace" | "global";
     resource_id?: string;
     expires_at: string | null;
+    request_comment_id?: string;
     envelope: CredentialTransportEnvelope;
   }): Promise<CredentialMetadata | null> {
     const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials`, {

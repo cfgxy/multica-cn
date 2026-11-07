@@ -22,7 +22,12 @@ import { Textarea } from "@multica/ui/components/ui/textarea";
 
 type CredentialTarget = Pick<Issue, "id" | "identifier" | "title" | "project_id" | "status" | "status_category" | "assignee_type" | "assignee_id">;
 type Scope = "single_use" | "issue" | "project" | "workspace" | "global";
+type CredentialRequest = {
+  commentId: string;
+  agentId: string;
+};
 
+const requestScopes: Scope[] = ["single_use", "issue", "project"];
 const terminalStatuses = new Set(["done", "cancelled"]);
 
 function displayStatus(item: CredentialMetadata, issueStatus: string): string {
@@ -32,7 +37,15 @@ function displayStatus(item: CredentialMetadata, issueStatus: string): string {
   return item.status === "active" ? "active" : item.status;
 }
 
-export function CredentialManager({ issue, workspaceMode = false }: { issue?: CredentialTarget; workspaceMode?: boolean }) {
+export function CredentialManager({
+  issue,
+  workspaceMode = false,
+  request,
+}: {
+  issue?: CredentialTarget;
+  workspaceMode?: boolean;
+  request?: CredentialRequest;
+}) {
   const wsId = useWorkspaceId();
   const queryClient = useQueryClient();
   const { t } = useT("settings");
@@ -68,7 +81,9 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
     enabled: workspaceMode && !!wsId && isOwner,
     retry: false,
   });
-  const [formOpen, setFormOpen] = useState(false);
+  const requestCommentId = request?.commentId;
+  const requestAgentId = request?.agentId;
+  const [formOpen, setFormOpen] = useState(!!request);
   const [name, setName] = useState("");
   const [purpose, setPurpose] = useState("");
   const [secret, setSecret] = useState("");
@@ -87,10 +102,18 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
 
   useEffect(() => () => { secretForSubmission.current = ""; }, []);
 
+  useEffect(() => {
+    if (!requestAgentId || !requestCommentId) return;
+    setSubject(`agent:${requestAgentId}`);
+    setScope("issue");
+    setFormOpen(true);
+  }, [requestAgentId, requestCommentId]);
+
   const subjectParts = subject.split(":");
   const subjectType: "agent" | "squad" = subjectParts[0] === "squad" ? "squad" : "agent";
   const subjectId = subjectParts[1] ?? "";
   const broadScopeDenied = !isOwner && scope !== "issue" && scope !== "single_use";
+  const invalidRequestScope = !!request && !requestScopes.includes(scope);
   const createMutation = useMutation({
     mutationFn: async () => {
       if (!selectedTarget || !subjectId) throw new Error("invalid");
@@ -113,7 +136,7 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
         purpose: "credential.create",
         version: CREDENTIAL_ENVELOPE_VERSION,
       });
-      const request = {
+      const credentialRequest = {
         name: name.trim(),
         purpose: purpose.trim(),
         subject_type: subjectType,
@@ -121,11 +144,12 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
         resource_scope: scope,
         resource_id: resourceId,
         expires_at: scope === "project" || scope === "workspace" || scope === "global" ? new Date(expiresAt).toISOString() : null,
+        ...(request ? { request_comment_id: request.commentId } : {}),
         envelope,
       };
       return replacing
-        ? api.replaceIssueCredential(replacing.issueId, replacing.item.id, request)
-        : api.createIssueCredential(selectedTarget.id, request);
+        ? api.replaceIssueCredential(replacing.issueId, replacing.item.id, credentialRequest)
+        : api.createIssueCredential(selectedTarget.id, credentialRequest);
     },
     onSuccess: async (created) => {
       if (!created || !selectedTarget) {
@@ -180,12 +204,13 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
     ...squads.map((squad) => ({ id: `squad:${squad.id}`, label: squad.name, type: "squad" as const })),
   ];
   const selectedSubject = activeSubjects.find((item) => item.id === subject);
-  const [sectionOpen, setSectionOpen] = useState(workspaceMode);
+  const availableScopes = request ? requestScopes : Object.keys(scopeTitles) as Scope[];
+  const [sectionOpen, setSectionOpen] = useState(workspaceMode || !!request);
 
   return (
     <section className="min-w-0 space-y-3" aria-labelledby="credential-manager-title">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        {workspaceMode ? (
+        {workspaceMode || request ? (
           <h3 id="credential-manager-title" className="text-caption font-medium">
             {t(($) => $.page.tabs.credentials)}
           </h3>
@@ -253,17 +278,17 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="credential-scope">{t(($) => $.credential_manager.resource)}</Label>
-              <Select items={(Object.keys(scopeTitles) as Scope[]).map((value) => ({ value, label: scopeTitles[value] }))} value={scope} onValueChange={(value) => { if (value) setScope(value as Scope); }}>
+              <Select items={availableScopes.map((value) => ({ value, label: scopeTitles[value] }))} value={scope} onValueChange={(value) => { if (value) setScope(value as Scope); }}>
                 <SelectTrigger id="credential-scope"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {(Object.keys(scopeTitles) as Scope[]).map((value) => <SelectItem key={value} value={value} disabled={!isOwner && value !== "issue" && value !== "single_use" || value === "project" && !selectedTarget.project_id}>{scopeTitles[value]}{value === "issue" ? ` (${selectedTarget.identifier})` : ""}</SelectItem>)}
+                  {availableScopes.map((value) => <SelectItem key={value} value={value} disabled={!isOwner && value !== "issue" && value !== "single_use" || value === "project" && !selectedTarget.project_id}>{scopeTitles[value]}{value === "issue" ? ` (${selectedTarget.identifier})` : ""}</SelectItem>)}
                 </SelectContent>
               </Select>
           {!isOwner ? <p className="text-caption text-muted-foreground">{t(($) => $.credential_manager.member_scope_hint)}</p> : null}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="credential-subject">{t(($) => $.credential_manager.subject)}</Label>
-              <Select items={activeSubjects.map((item) => ({ value: item.id, label: `${t(($) => $.credential_manager[item.type])}: ${item.label}` }))} value={subject} onValueChange={(value) => setSubject(value ?? "")}>
+              <Select items={activeSubjects.map((item) => ({ value: item.id, label: `${t(($) => $.credential_manager[item.type])}: ${item.label}` }))} value={subject} onValueChange={(value) => setSubject(value ?? "")} disabled={!!request}>
                 <SelectTrigger id="credential-subject"><SelectValue placeholder={t(($) => $.credential_manager.select_subject)} /></SelectTrigger>
                 <SelectContent>{activeSubjects.map((item) => <SelectItem key={item.id} value={item.id}>{t(($) => $.credential_manager[item.type])}: {item.label}</SelectItem>)}</SelectContent>
               </Select>
@@ -288,7 +313,7 @@ export function CredentialManager({ issue, workspaceMode = false }: { issue?: Cr
           </div>
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => { clearForm(); setReplacing(null); }}>{t(($) => $.credential_manager.cancel)}</Button>
-            <Button type="submit" disabled={createMutation.isPending || !subjectId || broadScopeDenied || !secret.trim() || !name.trim() || !purpose.trim() || ((scope === "project" || scope === "workspace" || scope === "global") && !expiresAt)}>
+            <Button type="submit" disabled={createMutation.isPending || !subjectId || broadScopeDenied || invalidRequestScope || !secret.trim() || !name.trim() || !purpose.trim() || ((scope === "project" || scope === "workspace" || scope === "global") && !expiresAt)}>
               {createMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : replacing ? <RotateCw className="size-4" /> : <ShieldCheck className="size-4" />}
               {createMutation.isPending ? t(($) => $.credential_manager.saving) : replacing ? t(($) => $.credential_manager.replace) : t(($) => $.credential_manager.save)}
             </Button>

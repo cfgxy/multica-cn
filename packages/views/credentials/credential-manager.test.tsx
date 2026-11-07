@@ -149,4 +149,49 @@ describe("CredentialManager", () => {
     await user.click(await screen.findByRole("button", { name: /deliver credential/i }));
     expect(screen.getByLabelText("Name")).toBeInTheDocument();
   });
+
+  it("binds a request-card delivery to its agent and comment", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <CredentialManager issue={issue} request={{ commentId: "request-comment-id", agentId: "agent-id" }} />
+      </QueryClientProvider>,
+    );
+    await screen.findByLabelText("Name");
+    expect(screen.getByRole("combobox", { name: "Allowed agent or squad" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("combobox", { name: "Resource access" }));
+    expect(screen.queryByRole("option", { name: "Workspace" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Global" })).not.toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Build token" } });
+    fireEvent.change(screen.getByLabelText("Purpose"), { target: { value: "Publish artifacts" } });
+    fireEvent.change(screen.getByLabelText("Secret value"), { target: { value: "fixture-value" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save and authorize" }));
+
+    await waitFor(() => expect(apiMock.createIssueCredential).toHaveBeenCalledOnce());
+    const request = apiMock.createIssueCredential.mock.calls[0]?.[1];
+    expect(request).toMatchObject({
+      request_comment_id: "request-comment-id",
+      subject_type: "agent",
+      subject_id: "agent-id",
+      resource_scope: "issue",
+    });
+    expect(request).not.toHaveProperty("secret");
+    expect(request).not.toHaveProperty("value");
+  });
+
+  it("keeps a request-card delivery reopenable after cancelling the form", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <CredentialManager issue={issue} request={{ commentId: "request-comment-id", agentId: "agent-id" }} />
+      </QueryClientProvider>,
+    );
+
+    await screen.findByLabelText("Name");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByLabelText("Secret value")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /deliver credential/i }));
+    expect(screen.getByLabelText("Secret value")).toBeInTheDocument();
+  });
 });

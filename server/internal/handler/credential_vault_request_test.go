@@ -32,6 +32,32 @@ func TestDecodeCreateIssueCredentialRequestAcceptsOnlyEncryptedEnvelope(t *testi
 	}
 }
 
+func TestCredentialDeliveryRequestRejectsConnectorFields(t *testing.T) {
+	request := strings.Replace(validCredentialRequestFixture,
+		`"resource_id":"00000000-0000-7000-8000-000000000002"`,
+		`"request_comment_id":"00000000-0000-7000-8000-000000000003"`, 1,
+	)
+	req, _, err := decodeCreateIssueCredentialRequest([]byte(request))
+	if err != nil || !credentialDeliveryRequestValid(req) {
+		t.Fatalf("request card payload was rejected: %v", err)
+	}
+	for name, body := range map[string]string{
+		"target service":     strings.Replace(request, `"purpose"`, `"target_service":"service","purpose"`, 1),
+		"connector ID":       strings.Replace(request, `"purpose"`, `"connector_id":"00000000-0000-7000-8000-000000000004","purpose"`, 1),
+		"connector revision": strings.Replace(request, `"purpose"`, `"connector_revision":1,"purpose"`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate, _, decodeErr := decodeCreateIssueCredentialRequest([]byte(body))
+			if decodeErr != nil {
+				t.Fatalf("request decoding failed: %v", decodeErr)
+			}
+			if credentialDeliveryRequestValid(candidate) {
+				t.Fatal("request card payload accepted a prohibited field")
+			}
+		})
+	}
+}
+
 func TestCredentialConnectorCompatibilityFieldsRemainSupported(t *testing.T) {
 	legacy := createIssueCredentialRequest{
 		Name: "fixture", TargetService: "legacy-service", Purpose: "synthetic test",
