@@ -22,7 +22,9 @@
     "run_time_label": "Run time · {{days}}D",
     "run_time_hint": "Across {{tasks}} tasks",
     "tasks_label": "Tasks · {{days}}D",
-    "tasks_hint": "{{failed}} failed"
+    "tasks_hint": "{{failed}} failed",
+    "calls_label": "Model calls · {{days}}D",
+    "calls_unknown_hint": "{{unknown}} usage rows have an unknown model call count; excluded from the known total."
   },
   "dim": {
     "label": "Dimension",
@@ -136,7 +138,9 @@
       "dim_model": "Model",
       "tokens": "Tokens/s",
       "cost": "Cost/h",
-      "tasks": "Tasks/h"
+      "tasks": "Tasks/h",
+      "calls": "Calls/h",
+      "calls_unknown_hint": "The Dashboard date range has {{unknown}} usage rows with unknown call counts; Calls/h includes only calls with evidence."
     }
   },
   "error": {

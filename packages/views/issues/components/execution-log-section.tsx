@@ -364,7 +364,7 @@ export function ExecutionLogSection({ issueId, identifier }: ExecutionLogSection
 
 // ─── Issue total ───────────────────────────────────────────────────────────
 
-// The issue's whole spend, as a header affordance: "2.1M · $4.92". Answers
+// The issue's whole spend, as a header affordance: "2.1M · 4 calls · $4.92". Answers
 // "what has this issue cost" without expanding anything, and is the entry
 // point to the per-run breakdown.
 //
@@ -423,6 +423,14 @@ export function IssueUsageTotal({
           {formatTokens(total.tokens)}
         </span>
         <span className={`text-faint-foreground ${narrowTier}`}>·</span>
+        <span className="text-muted-foreground">
+          {total.modelCallUnknownCount > 0
+            ? t(($) => $.usage_detail.calls_compact_partial, {
+                known: total.modelCallCount,
+              })
+            : t(($) => $.usage_detail.calls_complete, { count: total.modelCallCount })}
+        </span>
+        <span className="text-faint-foreground">·</span>
         <span className="text-muted-foreground">{formatUsd(total.cost)}</span>
       </TooltipTrigger>
       <TooltipContent>{t(($) => $.execution_log.usage_total_tooltip)}</TooltipContent>
@@ -579,14 +587,23 @@ export function ActiveTaskRow({
     requestedAtMs !== null &&
     now - requestedAtMs >= CANCEL_UNCONFIRMED_AFTER_MS;
 
-  // RUYI-397 admission code: the server stamps queued_reason while the
-  // agent's host is under a memory-backpressure hold. Swapping the plain
-  // "Queued" label for a named reason turns a silent stall into something a
-  // user can act on (free memory on the host, or wait it out); the tooltip
-  // carries the full sentence. Rows the server sent without the field — old
-  // servers, recovered holds — render exactly as before.
-  const queuedBackpressured =
-    task.status === "queued" && task.queued_reason === "runtime_backpressure";
+  // The server stamps a typed queued reason only while a Runtime admission
+  // gate holds this task. Unknown or missing reasons retain the plain queued
+  // label so newer server vocabulary cannot distort an installed client.
+  const queuedHold =
+    task.status !== "queued"
+      ? null
+      : task.queued_reason === "runtime_backpressure"
+        ? {
+            label: t(($) => $.execution_log.status_queued_backpressure),
+            hint: t(($) => $.execution_log.queued_backpressure_hint),
+          }
+        : task.queued_reason === "runtime_model_call_budget"
+          ? {
+              label: t(($) => $.execution_log.status_queued_model_call_budget),
+              hint: t(($) => $.execution_log.queued_model_call_budget_hint),
+            }
+          : null;
 
   // Transcript only meaningful once messages exist — pure-queued and
   // waiting_local_directory tasks haven't streamed any agent output yet.
@@ -627,12 +644,9 @@ export function ActiveTaskRow({
               <span className="text-info tabular-nums">{elapsed}</span>
               <span className="sr-only">{label}</span>
             </>
-          ) : queuedBackpressured ? (
-            <span
-              className={`${tone} min-w-0 truncate`}
-              title={t(($) => $.execution_log.queued_backpressure_hint)}
-            >
-              {t(($) => $.execution_log.status_queued_backpressure)}
+          ) : queuedHold ? (
+            <span className={`${tone} min-w-0 truncate`} title={queuedHold.hint}>
+              {queuedHold.label}
             </span>
           ) : (
             <span className={`${tone} min-w-0 truncate`}>{label}</span>

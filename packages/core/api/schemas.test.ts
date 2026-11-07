@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentRuntimeSchema, DecisionRequestSchema, IssueDecisionSchema } from "./schemas";
+import { AgentRuntimeSchema, AgentTaskSchema, DecisionRequestSchema, IssueDecisionSchema } from "./schemas";
 import {
   AppConfigSchema,
   MarketplaceItemSchema,
@@ -71,6 +71,8 @@ import {
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
+  RuntimeModelCallBudgetSchema,
+  EMPTY_RUNTIME_MODEL_CALL_BUDGET,
   SendChatMessageResponseSchema,
   SquadListSchema,
   SquadSchema,
@@ -85,6 +87,8 @@ import {
   EMPTY_PLUGIN_PREVIEW,
   ListGitLabRepositoriesResponseSchema,
   EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
+  EMPTY_ISSUE_USAGE_SUMMARY,
+  IssueUsageSummarySchema,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -117,6 +121,55 @@ describe("Lark permission grant response schema", () => {
         }),
       ).toEqual(fallback);
     }
+  });
+});
+
+describe("issue usage summary response", () => {
+  const base = {
+    total_input_tokens: 10,
+    total_output_tokens: 20,
+    total_cache_read_tokens: 30,
+    total_cache_write_tokens: 40,
+    task_count: 2,
+  };
+
+  it("preserves known and incomplete model call evidence", () => {
+    const parsed = IssueUsageSummarySchema.parse({
+      ...base,
+      model_call_count: 4,
+      model_call_unknown_count: 1,
+    });
+    expect(parsed.model_call_count).toBe(4);
+    expect(parsed.model_call_unknown_count).toBe(1);
+  });
+
+  it("keeps omitted model call evidence distinct from zero", () => {
+    const parsed = IssueUsageSummarySchema.parse(base);
+    expect(parsed.model_call_count).toBeUndefined();
+    expect(parsed.model_call_unknown_count).toBeUndefined();
+  });
+
+  it("preserves optional call evidence on each task usage slice", () => {
+    const known = AgentTaskSchema.parse({
+      id: "task-known",
+      usage: [{ model: "claude-opus-5", model_call_count: 4 }],
+    });
+    const incomplete = AgentTaskSchema.parse({
+      id: "task-incomplete",
+      usage: [{ model: "gpt-5.6-terra" }],
+    });
+
+    expect(known.usage?.[0]?.model_call_count).toBe(4);
+    expect(incomplete.usage?.[0]?.model_call_count).toBeUndefined();
+  });
+
+  it("falls back when model call evidence is malformed", () => {
+    expect(parseWithFallback(
+      { ...base, model_call_count: "four" },
+      IssueUsageSummarySchema,
+      EMPTY_ISSUE_USAGE_SUMMARY,
+      { endpoint: "GET /api/issues/:id/usage" },
+    )).toBe(EMPTY_ISSUE_USAGE_SUMMARY);
   });
 });
 
@@ -1223,6 +1276,34 @@ describe("dashboard + runtime usage schema drift", () => {
     expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.provider).toBe("");
   });
 
+  it("defaults model call counts to 0 so a pre-migration-996 backend still renders", () => {
+    // A backend older than migration 996 sends neither call-count field. The
+    // row must survive with both halves at 0 — "no known calls, no unknown
+    // rows" — rather than a missing field reading as "unknown".
+    for (const list of [
+      DashboardUsageDailyListSchema.parse([{ date: "2026-05-19" }]),
+      DashboardUsageByAgentListSchema.parse([{ model: "claude-opus-4-7" }]),
+      RuntimeUsageListSchema.parse([{ date: "2026-05-19" }]),
+      RuntimeUsageByAgentListSchema.parse([{ model: "x" }]),
+      RuntimeUsageByHourListSchema.parse([{ hour: 9 }]),
+    ]) {
+      expect(list[0]?.model_call_count).toBe(0);
+      expect(list[0]?.model_call_unknown_count).toBe(0);
+    }
+    // A live backend sends the known half plus its unknown-row count; both
+    // must round-trip untouched.
+    expect(
+      DashboardUsageDailyListSchema.parse([
+        { date: "2026-05-19", model_call_count: 42, model_call_unknown_count: 3 },
+      ])[0]?.model_call_count,
+    ).toBe(42);
+    expect(
+      DashboardUsageDailyListSchema.parse([
+        { date: "2026-05-19", model_call_count: 42, model_call_unknown_count: 3 },
+      ])[0]?.model_call_unknown_count,
+    ).toBe(3);
+  });
+
   it("rejects a non-array body so parseWithFallback can return its fallback", () => {
     expect(DashboardUsageDailyListSchema.safeParse(null).success).toBe(false);
     expect(DashboardFailureDailyListSchema.safeParse(null).success).toBe(false);
@@ -1272,6 +1353,69 @@ describe("dashboard + runtime usage schema drift", () => {
       { date: "2026-05-19", region: "us-east" },
     ]);
     expect((parsed[0] as Record<string, unknown>).region).toBe("us-east");
+  });
+});
+
+describe("runtime model-call budget schema drift", () => {
+  it("defaults missing config and report to a disabled, incomplete budget", () => {
+    const parsed = RuntimeModelCallBudgetSchema.parse({});
+    expect(parsed.config).toEqual({
+      enabled: false,
+      max_calls: 1000,
+      window_seconds: 86400,
+    });
+    expect(parsed.report).toEqual({
+      known_calls: 0,
+      unknown_usage_rows: 0,
+      complete: false,
+      active: false,
+      window_started_at: "",
+    });
+  });
+
+  it("preserves the server-derived complete and active verdicts", () => {
+    const parsed = RuntimeModelCallBudgetSchema.parse({
+      config: { enabled: true, max_calls: 100, window_seconds: 3600 },
+      report: {
+        known_calls: 100,
+        unknown_usage_rows: 0,
+        complete: true,
+        active: true,
+        window_started_at: "2026-10-24T00:00:00Z",
+      },
+    });
+    expect(parsed.report.complete).toBe(true);
+    expect(parsed.report.active).toBe(true);
+  });
+
+  it("falls back to the disabled budget for malformed numeric config", () => {
+    const parsed = parseWithFallback(
+      {
+        config: { enabled: true, max_calls: "100", window_seconds: 3600 },
+        report: { complete: true, active: true },
+      },
+      RuntimeModelCallBudgetSchema,
+      EMPTY_RUNTIME_MODEL_CALL_BUDGET,
+      { endpoint: "GET /api/runtimes/:id/model-call-budget" },
+    );
+    expect(parsed).toBe(EMPTY_RUNTIME_MODEL_CALL_BUDGET);
+  });
+
+  it("fails open when a persisted config exceeds the supported bounds", () => {
+    const parsed = parseWithFallback(
+      {
+        config: {
+          enabled: true,
+          max_calls: 1_000_000_001,
+          window_seconds: 3600,
+        },
+        report: { complete: true, active: true },
+      },
+      RuntimeModelCallBudgetSchema,
+      EMPTY_RUNTIME_MODEL_CALL_BUDGET,
+      { endpoint: "GET /api/runtimes/:id/model-call-budget" },
+    );
+    expect(parsed).toBe(EMPTY_RUNTIME_MODEL_CALL_BUDGET);
   });
 });
 

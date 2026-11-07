@@ -384,11 +384,11 @@ export interface AgentTask {
   // coarse values; `string & {}` admits the rest without collapsing the
   // hints.
   failure_reason?: TaskFailureReason | (string & {}) | "";
-  // RUYI-397: why a queued row is not moving yet, from the backend's
-  // dispatch.ReasonCode vocabulary ("runtime_backpressure" = the host
-  // reported memory backpressure and the server defers new claims until it
-  // recovers). `omitempty` on the wire: absent on old servers, on rows that
-  // are not queued, and once the hold clears — never a permanent verdict.
+  // Why a queued row is not moving yet, from the backend's dispatch.ReasonCode
+  // vocabulary. "runtime_backpressure" means the host reported memory pressure;
+  // "runtime_model_call_budget" means a complete known call-count window reached
+  // its configured limit. Unknown usage never creates the latter hold. `omitempty`
+  // on the wire: absent on old servers, non-queued rows, and once the hold clears.
   queued_reason?: string;
   created_at: string;
   /** Non-empty when the task was spawned from a chat session. */
@@ -628,6 +628,9 @@ export interface TaskUsage {
   cache_read_tokens: number;
   cache_write_tokens: number;
   cost_usd_ticks?: number;
+  // Absent means the provider's original call evidence is incomplete; zero is
+  // a complete, known count.
+  model_call_count?: number;
 }
 
 /**
@@ -1369,14 +1372,13 @@ export interface SetAgentSkillsRequest {
   skill_ids: string[];
 }
 
-export interface IssueUsageSummary {
+export interface IssueUsageSummary extends ModelCallCountFields {
   total_input_tokens: number;
   total_output_tokens: number;
   total_cache_read_tokens: number;
   total_cache_write_tokens: number;
-  // Optional unlike the usage-row types: `getIssueUsage` returns this shape
-  // unvalidated (no zod schema), so nothing guarantees the field is present
-  // when the backend is older than the cost split.
+  // Optional fields preserve compatibility with a backend older than their
+  // corresponding aggregation.
   cost_usd_ticks?: number;
   uncosted_input_tokens?: number;
   uncosted_output_tokens?: number;
@@ -1395,7 +1397,17 @@ export interface IssueUsageSummary {
 // there means "estimate from the full token counts", which is not the same as
 // a real 0 ("nothing left to estimate"). See estimateCost in
 // packages/views/runtimes/utils.ts.
-export interface RuntimeUsage {
+// Model API/Prompt call counts (migration 996), carried on every usage row:
+// `model_call_count` is the known half only, and `model_call_unknown_count`
+// counts the rows whose provider gave no call evidence. Both optional because
+// a backend older than the column sends neither; a UI that sees a nonzero
+// unknown count must not present the known half as a complete total.
+type ModelCallCountFields = {
+  model_call_count?: number;
+  model_call_unknown_count?: number;
+};
+
+export interface RuntimeUsage extends ModelCallCountFields {
   runtime_id: string;
   date: string;
   provider: string;
@@ -1421,7 +1433,7 @@ export interface RuntimeHourlyActivity {
 // client-side from a per-model pricing table (provider disambiguates bare
 // model ids that collide across providers) — the client groups these rows by
 // agent_id and sums cost per agent across models.
-export interface RuntimeUsageByAgent {
+export interface RuntimeUsageByAgent extends ModelCallCountFields {
   agent_id: string;
   provider: string;
   model: string;
@@ -1440,7 +1452,7 @@ export interface RuntimeUsageByAgent {
 // One (hour, model) row for the "By hour" tab; hour ∈ 0..23. Hours with
 // zero activity are omitted by the server; the client fills the gap to
 // render a continuous axis. Model preserved for client-side cost math.
-export interface RuntimeUsageByHour {
+export interface RuntimeUsageByHour extends ModelCallCountFields {
   hour: number;
   model: string;
   input_tokens: number;
@@ -1461,7 +1473,7 @@ export interface RuntimeUsageByHour {
 // client can disambiguate bare model ids that collide across providers
 // (e.g. Cursor's `auto` vs another provider's `auto`) when pricing. Cost
 // stays client-side via the model pricing table.
-export interface DashboardUsageDaily {
+export interface DashboardUsageDaily extends ModelCallCountFields {
   date: string;
   provider: string;
   model: string;
@@ -1480,7 +1492,7 @@ export interface DashboardUsageDaily {
 // Per-(agent, model) token totals for the workspace dashboard. Identical
 // wire shape to RuntimeUsageByAgent — the client folds by agent_id and
 // sums cost.
-export interface DashboardUsageByAgent {
+export interface DashboardUsageByAgent extends ModelCallCountFields {
   agent_id: string;
   provider: string;
   model: string;

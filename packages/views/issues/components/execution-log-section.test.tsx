@@ -125,6 +125,21 @@ describe("ActiveTaskRow", () => {
     expect(screen.queryByText("Working")).not.toBeInTheDocument();
   });
 
+  it("names the model-call budget hold on a held queued row", () => {
+    renderWithI18n(
+      <ActiveTaskRow
+        task={makeTask({
+          status: "queued",
+          queued_reason: "runtime_model_call_budget",
+        })}
+        issueId="issue-1"
+      />,
+    );
+
+    expect(screen.getByText("Queued · model call budget reached")).toBeInTheDocument();
+    expect(screen.queryByText("Queued · host memory busy")).not.toBeInTheDocument();
+  });
+
   it("keeps the plain queued label when no admission code rides the row", () => {
     renderWithI18n(
       <ActiveTaskRow task={makeTask({ status: "queued" })} issueId="issue-1" />,
@@ -511,6 +526,55 @@ describe("IssueUsageTotal pricing", () => {
 
     // 1M input tokens at $7/M, without any refetch.
     expect(screen.getByText("$7.00")).toBeInTheDocument();
+  });
+
+  it("shows the exact model call count when every usage slice has evidence", () => {
+    const task = makeTask({
+      status: "completed",
+      usage: [{
+        provider: "anthropic",
+        model: "claude-opus-5",
+        input_tokens: 1_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        model_call_count: 4,
+      }],
+    });
+
+    renderWithI18n(<IssueUsageTotal tasks={[task]} alone onOpen={() => {}} />);
+
+    expect(screen.getByText("4 calls")).toBeInTheDocument();
+  });
+
+  it("marks mixed call evidence as partial instead of a complete total", () => {
+    const task = makeTask({
+      status: "completed",
+      usage: [
+        {
+          provider: "anthropic",
+          model: "claude-opus-5",
+          input_tokens: 1_000,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          model_call_count: 4,
+        },
+        {
+          provider: "openai",
+          model: "gpt-5.6-terra",
+          input_tokens: 1_000,
+          output_tokens: 0,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+        },
+      ],
+    });
+
+    renderWithI18n(<IssueUsageTotal tasks={[task]} alone onOpen={() => {}} />);
+
+    expect(screen.getByText("4 + ? calls")).toBeInTheDocument();
+    expect(screen.queryByText("4 calls")).not.toBeInTheDocument();
   });
 });
 
