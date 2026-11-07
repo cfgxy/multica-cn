@@ -1017,7 +1017,7 @@ func (h *Handler) RefreshKnowledgeDaemonToken(w http.ResponseWriter, r *http.Req
 			WorkspaceID string `json:"workspace_id"`
 			OwnerID     string `json:"owner_id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
