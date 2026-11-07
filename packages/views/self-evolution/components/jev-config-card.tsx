@@ -42,12 +42,12 @@ export function JevConfigCard({ wsId }: { wsId: string }) {
   const [loadedWorkspaceID, setLoadedWorkspaceID] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!config.data || loadedWorkspaceID === wsId) return;
+    if (!canManage || !config.data || loadedWorkspaceID === wsId) return;
     setEndpoint(config.data.endpoint);
     setModel(config.data.model);
     setTimeoutMS(String(config.data.timeout_ms));
     setLoadedWorkspaceID(wsId);
-  }, [config.data, loadedWorkspaceID, wsId]);
+  }, [canManage, config.data, loadedWorkspaceID, wsId]);
 
   if (config.isPending) {
     return (
@@ -113,6 +113,21 @@ export function JevConfigCard({ wsId }: { wsId: string }) {
         return null;
     }
   };
+
+  if (!canManage) {
+    return (
+      <Card data-testid="jev-config-card">
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle>{t(($) => $.jevConfig.title)}</CardTitle>
+            <span className="text-caption text-muted-foreground" data-testid="jev-config-status">
+              {[statusLabel(), sourceLabel()].filter(Boolean).join(" · ")}
+            </span>
+          </div>
+        </CardHeader>
+      </Card>
+    );
+  }
 
   const saveConfig = () => {
     save.mutate(
@@ -181,7 +196,7 @@ export function JevConfigCard({ wsId }: { wsId: string }) {
             <Input
               id="jev-config-endpoint"
               value={endpoint}
-              disabled={!canManage || !data.encryption_ready}
+              disabled={!data.encryption_ready}
               onChange={(event) => setEndpoint(event.target.value)}
               placeholder="https://jev.example.com"
             />
@@ -193,7 +208,7 @@ export function JevConfigCard({ wsId }: { wsId: string }) {
               value={apiKey}
               onChange={setAPIKey}
               hasExisting={data.has_api_key}
-              disabled={!canManage || !data.encryption_ready}
+              disabled={!data.encryption_ready}
             />
           </div>
           <div className="space-y-1.5">
@@ -201,7 +216,7 @@ export function JevConfigCard({ wsId }: { wsId: string }) {
             <Input
               id="jev-config-model"
               value={model}
-              disabled={!canManage || !data.encryption_ready}
+              disabled={!data.encryption_ready}
               onChange={(event) => setModel(event.target.value)}
             />
           </div>
@@ -213,7 +228,7 @@ export function JevConfigCard({ wsId }: { wsId: string }) {
               min={100}
               max={30000}
               value={timeoutMS}
-              disabled={!canManage || !data.encryption_ready}
+              disabled={!data.encryption_ready}
               onChange={(event) => setTimeoutMS(event.target.value)}
             />
           </div>

@@ -2763,6 +2763,14 @@ describe("SelfEvolutionJevConfigSchema", () => {
     expect(SelfEvolutionJevConfigSchema.parse({})).toEqual(fallback);
   });
 
+  it("accepts the member-safe status and source response", () => {
+    expect(SelfEvolutionJevConfigSchema.parse({ status: "available", source: "workspace" })).toEqual({
+      ...fallback,
+      status: "available",
+      source: "workspace",
+    });
+  });
+
   it("falls back when a response contains an invalid status or timeout", () => {
     expect(
       parseWithFallback(
