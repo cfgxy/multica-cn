@@ -48,6 +48,7 @@ func TestParseNegativeCases(t *testing.T) {
 		"空正文段":    stableFixture + open + "\n<!-- /clause -->\n",
 		"slug格式错": strings.Replace(stableFixture+open+"\n- **x**：y。\n<!-- /clause -->\n", "cls_aaa00001", "CLAUSE-1", 1),
 		"rev非数字":  strings.Replace(stableFixture+open+"\n- **x**：y。\n<!-- /clause -->\n", "rev=1", "rev=x", 1),
+		"畸形打开无关闭": stableFixture + "<!-- clause:id=cls_aaa00001 rev= -->\n",
 		"重复slug": stableFixture +
 			open + "\n- **每日同步**：开工前回报。\n<!-- /clause -->\n" +
 			open + "\n- **每日同步**：再次出现。\n<!-- /clause -->\n",
@@ -56,6 +57,127 @@ func TestParseNegativeCases(t *testing.T) {
 		if _, err := Parse(text); err == nil {
 			t.Fatalf("%s: Parse succeeded, want error", name)
 		}
+	}
+}
+
+func TestParseRecognizesMarkerWhitespaceVariants(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gap  string
+	}{
+		{name: "no whitespace", gap: ""},
+		{name: "space", gap: " "},
+		{name: "tab", gap: "\t"},
+		{name: "mixed whitespace", gap: " \t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			carrier := "# 工作原则\n<!--" + tc.gap + "clause:id=cls_aaa00001 rev=1 -->\n正文。\n<!--" + tc.gap + "/clause -->\n"
+			doc, err := Parse(carrier)
+			if err != nil {
+				t.Fatalf("Parse returned error: %v", err)
+			}
+			if len(doc.Segments) != 1 || doc.Segments[0].Slug != "cls_aaa00001" || doc.Segments[0].Rev != 1 {
+				t.Fatalf("segments = %+v, want one cls_aaa00001 revision 1 segment", doc.Segments)
+			}
+		})
+	}
+}
+
+func TestParseRejectsMalformedMarkerWhitespaceVariants(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		carrier string
+	}{
+		{
+			name:    "tab-separated malformed opener",
+			carrier: "# 工作原则\n<!--\tclause:id=cls_aaa00001 rev= -->\n",
+		},
+		{
+			name:    "no-whitespace malformed opener",
+			carrier: "# 工作原则\n<!--clause:id=cls_aaa00001 rev= -->\n",
+		},
+		{
+			name:    "tab-separated malformed closer",
+			carrier: "# 工作原则\n<!--\t/clause broken -->\n",
+		},
+		{
+			name:    "no-whitespace malformed closer",
+			carrier: "# 工作原则\n<!--/clause broken -->\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Parse(tc.carrier); err == nil {
+				t.Fatal("Parse succeeded for a malformed marker")
+			}
+		})
+	}
+}
+
+func TestValidateSnapshot(t *testing.T) {
+	active := []RenderedClause{
+		{Slug: "cls_aaa00001", Version: 1, Body: "- **每日同步**：回报计划。"},
+		{Slug: "cls_bbb00002", Version: 3, Body: "- **风险同步**：说明阻塞。"},
+	}
+
+	cases := []struct {
+		name    string
+		carrier string
+		wantErr string
+	}{
+		{
+			name:    "completely unmarked legacy carrier",
+			carrier: "# 工作原则\n\n- 静态说明。\n",
+		},
+		{
+			name:    "complete legacy snapshot",
+			carrier: Render("# 工作原则\n", active),
+		},
+		{
+			name:    "partial legacy snapshot",
+			carrier: Render("# 工作原则\n", active[:1]),
+			wantErr: "载体快照缺少活动条款 cls_bbb00002",
+		},
+		{
+			name:    "malformed marker",
+			carrier: "# 工作原则\n<!-- clause:id=cls_aaa00001 rev= -->\n",
+			wantErr: "载体快照结构无效",
+		},
+		{
+			name:    "tab-separated malformed marker",
+			carrier: "# 工作原则\n<!--\tclause:id=cls_aaa00001 rev= -->\n",
+			wantErr: "载体快照结构无效",
+		},
+		{
+			name: "marker version drift",
+			carrier: Render("# 工作原则\n", []RenderedClause{
+				{Slug: "cls_aaa00001", Version: 2, Body: active[0].Body},
+				active[1],
+			}),
+			wantErr: "载体快照中条款 cls_aaa00001 的版本为 2，活动版本为 1",
+		},
+		{
+			name: "snapshot contains inactive clause",
+			carrier: Render("# 工作原则\n", []RenderedClause{
+				active[0],
+				{Slug: "cls_ccc00003", Version: 1, Body: "- **旧规则**：不应生效。"},
+			}),
+			wantErr: "载体快照包含不属于当前活动集的条款 cls_ccc00003",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateSnapshot(tc.carrier, active)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validate snapshot: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("validate snapshot = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 
