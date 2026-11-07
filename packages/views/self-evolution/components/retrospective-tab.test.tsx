@@ -55,7 +55,8 @@ vi.mock("@multica/core/permissions", () => ({
 // pins both shapes and keeps the test free of workspace-route context.
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({
-    selfEvolutionProposals: () => "/acme/self-evolution/proposals",
+    selfEvolutionProposals: () => "/acme/self-evolution/clause-governance?tab=proposals",
+    selfEvolutionProposalRun: (runId: string) => `/acme/self-evolution/clause-governance?tab=proposals&run=${encodeURIComponent(runId)}`,
     issueDetail: (id: string) => `/test-workspace/issues/${id}`,
   }),
 }));
@@ -428,7 +429,7 @@ describe("run rows link to the per-run results view", () => {
     await screen.findByTestId("retrospective-runs");
     expect(screen.getByText(/Daily retrospective 20261008_/)).toBeTruthy();
     const link = screen.getByRole("link", { name: "View results" });
-    expect(link.getAttribute("href")).toBe("/acme/self-evolution/proposals?run=run-1");
+    expect(link.getAttribute("href")).toBe("/acme/self-evolution/clause-governance?tab=proposals&run=run-1");
   });
 
   it("keeps the failure line and the rerun affordance alongside the link", async () => {
@@ -439,7 +440,7 @@ describe("run rows link to the per-run results view", () => {
     expect(screen.getByText(/Daily retrospective 20261008_/)).toBeTruthy();
     expect(
       screen.getByRole("link", { name: "View results" }).getAttribute("href"),
-    ).toContain("?run=run-2");
+    ).toContain("&run=run-2");
     expect(screen.getByRole("button", { name: "Run again" })).toBeTruthy();
   });
 });
