@@ -27,7 +27,7 @@ func TestUpdateAgentRuntimeConcurrencyLimit(t *testing.T) {
 	}
 	runtimeID, ownerID, memberID := runtimeVisibilityFixture(t)
 
-	for _, value := range []int32{0, 1, 50} {
+	for _, value := range []int32{0, 1, 50, 51} {
 		w := patchRuntimeConcurrency(ownerID, runtimeID, value)
 		if w.Code != http.StatusOK {
 			t.Fatalf("runtime limit %d: status = %d, want 200: %s", value, w.Code, w.Body.String())
@@ -41,7 +41,7 @@ func TestUpdateAgentRuntimeConcurrencyLimit(t *testing.T) {
 		}
 	}
 
-	for _, value := range []int32{-1, -2, 51} {
+	for _, value := range []int32{-1, -2} {
 		w := patchRuntimeConcurrency(ownerID, runtimeID, value)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("runtime limit %d: status = %d, want 400: %s", value, w.Code, w.Body.String())
@@ -56,8 +56,8 @@ func TestUpdateAgentRuntimeConcurrencyLimit(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
 		t.Fatalf("decode omitted runtime limit response: %v", err)
 	}
-	if response.MaxConcurrentTasks != 50 {
-		t.Fatalf("omitted runtime max_concurrent_tasks = %d, want 50", response.MaxConcurrentTasks)
+	if response.MaxConcurrentTasks != 51 {
+		t.Fatalf("omitted runtime max_concurrent_tasks = %d, want 51", response.MaxConcurrentTasks)
 	}
 
 	w = patchRuntimeConcurrency(memberID, runtimeID, 4)

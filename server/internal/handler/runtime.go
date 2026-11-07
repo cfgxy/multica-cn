@@ -658,8 +658,8 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.MaxConcurrentTasks != nil {
-		if err := validateAgentMaxConcurrentTasks(*req.MaxConcurrentTasks); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if *req.MaxConcurrentTasks < 0 {
+			writeError(w, http.StatusBadRequest, "max_concurrent_tasks must be a non-negative integer")
 			return
 		}
 	}
