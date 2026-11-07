@@ -325,39 +325,66 @@ func TestIssueDoneCascadePRMergedEntry(t *testing.T) {
 }
 
 func TestDecisionCreateRefusedOnDoneIssue(t *testing.T) {
-	f := newDecisionFixture(t)
-	issueID := f.IssueID
-	insertInboxCard(t, testWorkspaceID, issueID, "probe card", "open", "")
-	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "done"}); w.Code != http.StatusOK {
-		t.Fatalf("done update: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	t.Run("in_review to done cancels existing cards and rejects new cards", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		issueID := f.IssueID
+		insertInboxCard(t, testWorkspaceID, issueID, "probe card", "open", "")
+		if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "in_review"}); w.Code != http.StatusOK {
+			t.Fatalf("in_review update: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "done"}); w.Code != http.StatusOK {
+			t.Fatalf("done update: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
 
-	// A new card cannot land after the done transition.
-	w := createDecisionCard(t, f, false, map[string]any{
-		"question": "late card", "options": []string{"A", "B"},
+		// The done guard rejects a new card after the qualifying transition.
+		w := createDecisionCard(t, f, false, map[string]any{
+			"question": "late card", "options": []string{"A", "B"},
+		})
+		if w.Code != http.StatusConflict {
+			t.Fatalf("create on done issue: expected 409, got %d: %s", w.Code, w.Body.String())
+		}
+		assertOpenQuestionCardCount(t, issueID, 0)
+
+		// Reopening lifts the refusal: the same card shape creates fine.
+		if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "todo"}); w.Code != http.StatusOK {
+			t.Fatalf("re-open: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		w = createDecisionCard(t, f, false, map[string]any{
+			"question": "fresh card", "options": []string{"A", "B"},
+		})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create after re-open: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
 	})
-	if w.Code != http.StatusConflict {
-		t.Fatalf("create on done issue: expected 409, got %d: %s", w.Code, w.Body.String())
-	}
-	var openCount int
+
+	t.Run("direct done retains existing cards but rejects new cards", func(t *testing.T) {
+		f := newDecisionFixture(t)
+		issueID := f.IssueID
+		insertInboxCard(t, testWorkspaceID, issueID, "direct done probe card", "open", "")
+		if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "done"}); w.Code != http.StatusOK {
+			t.Fatalf("direct done update: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		w := createDecisionCard(t, f, false, map[string]any{
+			"question": "late direct-done card", "options": []string{"A", "B"},
+		})
+		if w.Code != http.StatusConflict {
+			t.Fatalf("create on direct-done issue: expected 409, got %d: %s", w.Code, w.Body.String())
+		}
+		assertOpenQuestionCardCount(t, issueID, 1)
+	})
+}
+
+func assertOpenQuestionCardCount(t *testing.T, issueID string, want int) {
+	t.Helper()
+	var got int
 	if err := testPool.QueryRow(t.Context(),
 		`SELECT count(*)::int FROM issue_decisions WHERE issue_id = $1 AND status = 'open' AND decision_kind = 'question'`,
-		parseUUID(issueID)).Scan(&openCount); err != nil {
+		parseUUID(issueID)).Scan(&got); err != nil {
 		t.Fatalf("count open cards: %v", err)
 	}
-	if openCount != 0 {
-		t.Errorf("open question cards after refused create = %d, want 0", openCount)
-	}
-
-	// Reopening lifts the refusal: the same card shape creates fine.
-	if w := updateIssueViaHandler(t, issueID, map[string]any{"status": "todo"}); w.Code != http.StatusOK {
-		t.Fatalf("re-open: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	w = createDecisionCard(t, f, false, map[string]any{
-		"question": "fresh card", "options": []string{"A", "B"},
-	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create after re-open: expected 201, got %d: %s", w.Code, w.Body.String())
+	if got != want {
+		t.Errorf("open question cards = %d, want %d", got, want)
 	}
 }
 
