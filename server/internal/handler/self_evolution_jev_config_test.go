@@ -83,6 +83,33 @@ func TestSelfEvolutionJevConfigPermissionsAndSafeReadback(t *testing.T) {
 	if !strings.Contains(ownerRec.Body.String(), `"has_api_key":true`) || !strings.Contains(ownerRec.Body.String(), `"status":"available"`) {
 		t.Fatalf("owner PUT response = %s", ownerRec.Body.String())
 	}
+	var ownerResponse map[string]json.RawMessage
+	if err := json.Unmarshal(ownerRec.Body.Bytes(), &ownerResponse); err != nil {
+		t.Fatalf("decode owner PUT response: %v", err)
+	}
+	for _, field := range []string{"endpoint", "model", "timeout_ms", "has_api_key", "last_checked_at", "last_check_ok", "engine", "encryption_ready"} {
+		if ownerResponse[field] == nil {
+			t.Errorf("owner PUT response is missing %q: %s", field, ownerRec.Body.String())
+		}
+	}
+
+	memberReadRec := httptest.NewRecorder()
+	get.ServeHTTP(memberReadRec, legislationReq(memberID, wsID, http.MethodGet, "/api/self-evolution/jev-config", nil))
+	if memberReadRec.Code != http.StatusOK {
+		t.Fatalf("configured member GET status = %d: %s", memberReadRec.Code, memberReadRec.Body.String())
+	}
+	var memberResponse map[string]json.RawMessage
+	if err := json.Unmarshal(memberReadRec.Body.Bytes(), &memberResponse); err != nil {
+		t.Fatalf("decode configured member GET response: %v", err)
+	}
+	if len(memberResponse) != 2 || memberResponse["status"] == nil || memberResponse["source"] == nil {
+		t.Fatalf("configured member GET must only return status and source: %s", memberReadRec.Body.String())
+	}
+	for _, secret := range []string{server.URL, "jev-local", "owner-key", "endpoint", "model", "timeout_ms", "has_api_key", "last_checked_at", "last_check_ok", "last_check_error", "engine", "encryption_ready"} {
+		if strings.Contains(memberReadRec.Body.String(), secret) {
+			t.Errorf("configured member GET leaked %q: %s", secret, memberReadRec.Body.String())
+		}
+	}
 }
 
 func TestSelfEvolutionJevConfigWriteFailsWithoutEncryption(t *testing.T) {

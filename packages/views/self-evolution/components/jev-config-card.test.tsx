@@ -135,18 +135,30 @@ describe("JevConfigCard", () => {
     expect((screen.getByRole("button", { name: "Save and check" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("makes the status member-visible while withholding owner controls", async () => {
+  it("makes only status and source member-visible", async () => {
     state.role = "member";
     state.config = configFixture({
       status: "available",
       source: "workspace",
       endpoint: "https://jev.example.com",
       model: "jev-local",
+      timeout_ms: 1700,
+      has_api_key: true,
+      last_checked_at: "2026-11-05T12:00:00Z",
+      last_check_error: "unreachable",
+      engine: "private-engine",
     });
     mount();
 
     expect((await screen.findByTestId("jev-config-status")).textContent).toBe("Available · Workspace override");
-    expect((screen.getByLabelText("Endpoint") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByText("https://jev.example.com")).toBeNull();
+    expect(screen.queryByText("jev-local")).toBeNull();
+    expect(screen.queryByText(/private-engine/)).toBeNull();
+    expect(screen.queryByText(/unreachable/)).toBeNull();
+    expect(screen.queryByLabelText("Endpoint")).toBeNull();
+    expect(screen.queryByLabelText("API key")).toBeNull();
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    expect(screen.queryByLabelText("Timeout (ms)")).toBeNull();
     expect(screen.queryByRole("button", { name: "Save and check" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Re-check" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove configuration" })).toBeNull();

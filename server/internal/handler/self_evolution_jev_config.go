@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/multica-ai/multica/server/internal/jevconfig"
+	"github.com/multica-ai/multica/server/internal/middleware"
 )
 
 type jevConfigResponse struct {
@@ -22,6 +23,11 @@ type jevConfigResponse struct {
 	EncryptionReady bool   `json:"encryption_ready"`
 }
 
+type jevConfigMemberResponse struct {
+	Status string `json:"status"`
+	Source string `json:"source"`
+}
+
 type jevConfigSaveRequest struct {
 	Endpoint  string `json:"endpoint"`
 	APIKey    string `json:"api_key"`
@@ -34,6 +40,10 @@ type jevConfigSaveRequest struct {
 // the save, delete and recheck routes.
 func (h *Handler) GetSelfEvolutionJevConfig(w http.ResponseWriter, r *http.Request) {
 	if h.JevConfig == nil {
+		if !isJevConfigOwner(r) {
+			writeJevConfigMemberResponse(w, jevconfig.StatusUnconfigured, jevconfig.SourceUnconfigured)
+			return
+		}
 		writeJSON(w, http.StatusOK, jevConfigResponse{
 			Status:          jevconfig.StatusUnconfigured,
 			Source:          jevconfig.SourceUnconfigured,
@@ -105,6 +115,10 @@ func (h *Handler) writeJevConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to read JEV configuration")
 		return
 	}
+	if !isJevConfigOwner(r) {
+		writeJevConfigMemberResponse(w, state.Status, state.Source)
+		return
+	}
 	resp := jevConfigResponse{
 		Status:          state.Status,
 		Source:          state.Source,
@@ -124,6 +138,15 @@ func (h *Handler) writeJevConfig(w http.ResponseWriter, r *http.Request) {
 		resp.LastCheckOK = &ok
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func isJevConfigOwner(r *http.Request) bool {
+	member, ok := middleware.MemberFromContext(r.Context())
+	return ok && member.Role == "owner"
+}
+
+func writeJevConfigMemberResponse(w http.ResponseWriter, status, source string) {
+	writeJSON(w, http.StatusOK, jevConfigMemberResponse{Status: status, Source: source})
 }
 
 func (h *Handler) writeJevConfigUnavailable(w http.ResponseWriter) {
