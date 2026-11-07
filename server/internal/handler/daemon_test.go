@@ -940,10 +940,7 @@ func TestRefreshKnowledgeDaemonTokenRequiresBoundDaemonCredential(t *testing.T) 
 	var beforeCount int
 	var beforeExpiry time.Time
 	dbfx.QueryRow(t, `SELECT count(*), max(expires_at) FROM daemon_token WHERE daemon_id = $1`, daemonID).Scan(&beforeCount, &beforeExpiry)
-	req := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", map[string]any{
-		// Request identity is ignored; the authenticated context is authoritative.
-		"daemon_id": "other-daemon",
-	}, testWorkspaceID, daemonID)
+	req := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", map[string]any{}, testWorkspaceID, daemonID)
 	req = req.WithContext(middleware.WithDaemonTokenHash(req.Context(), tokenHash))
 	w := testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, req).Want(http.StatusOK)
 	var response map[string]bool
@@ -961,6 +958,15 @@ func TestRefreshKnowledgeDaemonTokenRequiresBoundDaemonCredential(t *testing.T) 
 	}
 	if !afterExpiry.After(beforeExpiry) {
 		t.Fatalf("token expiry was not extended: before=%s after=%s", beforeExpiry, afterExpiry)
+	}
+	for _, body := range []map[string]any{
+		{"daemon_id": "other-daemon"},
+		{"workspace_id": "other-workspace"},
+		{"owner_id": uuid.New().String()},
+	} {
+		identityRequest := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", body, testWorkspaceID, daemonID)
+		identityRequest = identityRequest.WithContext(middleware.WithDaemonTokenHash(identityRequest.Context(), tokenHash))
+		testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, identityRequest).Want(http.StatusBadRequest)
 	}
 
 	wrongHash := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
