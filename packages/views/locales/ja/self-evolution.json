@@ -523,7 +523,10 @@
     "jevThreshold": "しきい値",
     "jevWarnFlag": "警告",
     "jevDisclaimer": "低コストの警告参考値です。確率根拠と合わせて判断し、単独で処理判断の根拠にしないでください（warn-only 副背路、ゲート判定には影響しません）。",
-    "jevUnavailable": "利用不可、スキップしました（本体フローには影響しません）"
+    "jevUnavailable": "利用不可、スキップしました（本体フローには影響しません）",
+    "jevModel": "モデル={{model}}",
+    "jevCheckedAt": "確認日時 {{date}}",
+    "jevFailureReason": "理由={{reason}}"
   },
   "retrospective": {
     "title": "日次ふりかえり",
@@ -888,9 +891,36 @@
       "other": "その他のエラー"
     }
   },
+  "jevConfig": {
+    "title": "JEV リスク事前確認",
+    "description": "提案向けの warn-only アドバイザリです。ゲート判定や owner の承認を変更しません。",
+    "endpoint": "エンドポイント",
+    "apiKey": "API キー",
+    "model": "モデル",
+    "timeout": "タイムアウト（ms）",
+    "save": "保存して確認",
+    "busy": "処理中…",
+    "recheck": "再確認",
+    "delete": "設定を削除",
+    "saveOk": "JEV 設定を保存しました。",
+    "deleteOk": "JEV 設定を削除しました。",
+    "lastChecked": "最終確認 {{date}}",
+    "engine": "ランタイム {{engine}}",
+    "lastCheckError": "最終確認：{{reason}}",
+    "encryptionNotReady": "このデプロイにはワークスペース単位の暗号化キーがないため、JEV 設定を保存できません。",
+    "source": {
+      "workspace": "ワークスペースの上書き",
+      "deployment": "デプロイの既定値"
+    },
+    "status": {
+      "unconfigured": "未設定",
+      "offline": "オフライン",
+      "available": "利用可能"
+    }
+  },
   "configPage": {
     "title": "モジュール設定",
-    "description": "以下のモデルサービスが品質スコアリングを支えます。Langfuse はインスタンス単位のため、ここでは読み取り専用です。"
+    "description": "以下のモデルサービスが品質スコアリングを支え、JEV は提案への warn-only アドバイザリです。Langfuse はインスタンス単位のため、ここでは読み取り専用です。"
   },
   "mobile": { "title": "自己進化", "overview": "概要", "versions": "バージョン", "proposals": "提案", "proposal_count_label": "件の提案", "pending_owner": "オーナーの確認待ち", "skills": "Skills", "review_diff": "提案の差分を確認", "empty_diff": "差分なし", "cancel": "キャンセル", "approve": "承認", "approving": "承認中…", "reject": "却下", "rejecting": "却下中…", "action_failed": "操作に失敗しました。変更は保存されていません。内容を確認して再試行してください。", "reject_reason": "却下理由", "reject_unavailable": "この端末では理由を入力できません。", "error": "提案プレビューを読み込めません", "load_error": "一部データを読み込めません。タップして再試行してください。", "review_approve": "確認して承認", "no_proposals": "提案はありません", "clauses": "条項ガバナンス", "injections": "回使用", "no_clauses": "管理対象の条項はありません", "retrospective": "振り返り実行", "issues_analyzed": "件を分析", "no_retrospectives": "振り返り記録はありません" }
 }
