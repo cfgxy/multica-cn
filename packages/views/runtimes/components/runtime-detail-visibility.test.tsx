@@ -337,6 +337,23 @@ describe("RuntimeDetail visibility section", () => {
     );
   });
 
+  it.each(["", "1.5", "1e2"])(
+    "does not save a non-strict integer draft %j",
+    (draft) => {
+      renderDetail(makeRuntime({ owner_id: "user-me", max_concurrent_tasks: 8 }));
+      const input = screen.getByRole("spinbutton", { name: "Parallel task limit" });
+      const save = screen.getByRole("button", { name: "Save parallel task limit" });
+
+      fireEvent.change(input, { target: { value: draft } });
+
+      expect(save).toBeDisabled();
+      fireEvent.click(save);
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(mockUpdateRuntime).not.toHaveBeenCalled();
+    },
+  );
+
   it("shows the unlimited runtime setting read-only to non-editors", () => {
     renderDetail(makeRuntime({ owner_id: "someone-else", max_concurrent_tasks: 0 }));
     expect(screen.getByText("Unlimited")).toBeInTheDocument();
