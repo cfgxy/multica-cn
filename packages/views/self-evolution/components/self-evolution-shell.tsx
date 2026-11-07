@@ -25,16 +25,16 @@ export function SelfEvolutionShell({ children }: { children: ReactNode }) {
         title={t(($) => $.title)}
         description={t(($) => $.description)}
       />
-      <div className={cn(PAGE_GUTTER, "flex min-h-0 flex-1 gap-6 py-6")}>
+      <div className={cn(PAGE_GUTTER, "flex min-h-0 flex-1 gap-3 py-6 lg:gap-6")}>
         {wsId ? (
           <SeSubNav wsId={wsId} />
         ) : (
-          <div className="w-52 shrink-0" aria-hidden />
+          <div className="w-40 shrink-0 lg:w-52" aria-hidden />
         )}
         {/* The body's scroll container: stretched to the row's definite
             height, so tall page content scrolls here instead of growing past
             the canvas and getting clipped with no scrollbar (RUYI-745). */}
-        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">{children}</div>
+        <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">{children}</div>
       </div>
     </div>
   );
