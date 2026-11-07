@@ -450,6 +450,21 @@ Read each sub-issue's description before promoting and only promote items whose
 stated dependencies are met; if a description conflicts with the parent's
 breakdown, leave it `backlog` and comment to confirm first.
 
+## Credential delivery requests
+
+When an agent needs a user-provided credential for the current issue, post a
+**top-level** issue comment whose first line is exactly:
+
+```text
+<!-- multica:credential-request:v1 -->
+```
+
+The comment must be emitted by the issue task itself; do not paste the marker
+into a reply or a member-authored comment. Add only a human-readable request
+below the marker. Never include a credential, token, API key, endpoint, or
+connector detail in the comment. The issue timeline presents the secure delivery
+form to an authorized member and records completion separately.
+
 ## Incorrect → correct
 
 PR title (link the issue):
