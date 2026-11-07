@@ -151,6 +151,13 @@ import type {
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
   KnowledgeEntry,
+  KnowledgeEntryVersion,
+  KnowledgeLifecycleEvent,
+  UpdateKnowledgeLifecycleRequest,
+  RestoreKnowledgeEntryRequest,
+  KnowledgeGovernanceRun,
+  KnowledgeGovernanceRunDetail,
+  KnowledgeGovernanceRunStart,
   SkillEffect,
   CreateSkillRequest,
   UpdateSkillRequest,
@@ -621,6 +628,15 @@ import {
   RetrospectiveRunSchema,
   KnowledgeDirListSchema,
   KnowledgeEntryListSchema,
+  KnowledgeEntryVersionListSchema,
+  KnowledgeLifecycleEventListSchema,
+  KnowledgeDirManagedSchema,
+  KnowledgeLifecycleUpdateSchema,
+  KnowledgeEntryRestoreSchema,
+  KnowledgeGovernanceRunListResponseSchema,
+  KnowledgeGovernanceRunDetailSchema,
+  KnowledgeGovernanceRunStartSchema,
+  KnowledgeGovernanceCancelSchema,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
   IssueViewSchema,
@@ -5667,10 +5683,11 @@ export class ApiClient {
     return this.fetch(`/api/knowledge/dirs/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
-  async listKnowledgeEntries(params?: { dir_id?: string; q?: string }): Promise<KnowledgeEntry[]> {
+  async listKnowledgeEntries(params?: { dir_id?: string; q?: string; lifecycle?: "active" | "archived" | "all" }): Promise<KnowledgeEntry[]> {
     const query = new URLSearchParams();
     if (params?.dir_id) query.set("dir_id", params.dir_id);
     if (params?.q) query.set("q", params.q);
+    if (params?.lifecycle) query.set("lifecycle", params.lifecycle);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
     const raw = await this.fetch<unknown>(`/api/knowledge/entries${suffix}`);
     return parseWithFallback(raw, KnowledgeEntryListSchema, [], {
@@ -5680,6 +5697,97 @@ export class ApiClient {
 
   async adoptKnowledgeEntry(id: string): Promise<{ status: string }> {
     return this.fetch(`/api/knowledge/entries/${encodeURIComponent(id)}/adopt`, { method: "POST" });
+  }
+
+  async listKnowledgeEntryVersions(id: string): Promise<KnowledgeEntryVersion[]> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/versions`);
+    return parseWithFallback(raw, KnowledgeEntryVersionListSchema, [], {
+      endpoint: "GET /api/knowledge/entries/{id}/versions",
+    });
+  }
+
+  async listKnowledgeEntryLifecycle(id: string): Promise<KnowledgeLifecycleEvent[]> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/lifecycle`);
+    return parseWithFallback(raw, KnowledgeLifecycleEventListSchema, [], {
+      endpoint: "GET /api/knowledge/entries/{id}/lifecycle",
+    });
+  }
+
+  async setKnowledgeDirManaged(id: string, managed_active: boolean): Promise<{ managed_active: boolean }> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/dirs/${encodeURIComponent(id)}/managed`, {
+      method: "PUT",
+      body: JSON.stringify({ managed_active }),
+    });
+    return parseWithFallback(raw, KnowledgeDirManagedSchema, { managed_active: false }, {
+      endpoint: "PUT /api/knowledge/dirs/{id}/managed",
+    });
+  }
+
+  async updateKnowledgeEntryLifecycle(id: string, data: UpdateKnowledgeLifecycleRequest): Promise<{ status: string }> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/lifecycle`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, KnowledgeLifecycleUpdateSchema, { status: "" }, {
+      endpoint: "POST /api/knowledge/entries/{id}/lifecycle",
+    });
+  }
+
+  async restoreKnowledgeEntry(id: string, data: RestoreKnowledgeEntryRequest): Promise<{ status: string; version: number }> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/restore`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, KnowledgeEntryRestoreSchema, { status: "", version: 0 }, {
+      endpoint: "POST /api/knowledge/entries/{id}/restore",
+    });
+  }
+
+  async listKnowledgeGovernanceRuns(dirId?: string): Promise<KnowledgeGovernanceRun[]> {
+    const query = dirId ? `?dir_id=${encodeURIComponent(dirId)}` : "";
+    const raw = await this.fetch<unknown>(`/api/knowledge/governance/runs${query}`);
+    return parseWithFallback(raw, KnowledgeGovernanceRunListResponseSchema, { runs: [] }, {
+      endpoint: "GET /api/knowledge/governance/runs",
+    }).runs;
+  }
+
+  async getKnowledgeGovernanceRun(id: string): Promise<KnowledgeGovernanceRunDetail | null> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/governance/runs/${encodeURIComponent(id)}`);
+    return parseWithFallback(raw, KnowledgeGovernanceRunDetailSchema, null, {
+      endpoint: "GET /api/knowledge/governance/runs/{id}",
+    });
+  }
+
+  async startKnowledgeGovernanceRun(dirId: string): Promise<KnowledgeGovernanceRunStart | null> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/dirs/${encodeURIComponent(dirId)}/governance`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const response = parseWithFallback<{ run: KnowledgeGovernanceRunStart } | null>(raw, KnowledgeGovernanceRunStartSchema, null, {
+      endpoint: "POST /api/knowledge/dirs/{id}/governance",
+    });
+    return response?.run ?? null;
+  }
+
+  async cancelKnowledgeGovernanceRun(id: string): Promise<{ status: string; task_id: string } | null> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/governance/runs/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, KnowledgeGovernanceCancelSchema, null, {
+      endpoint: "POST /api/knowledge/governance/runs/{id}/cancel",
+    });
+  }
+
+  async retryKnowledgeGovernanceRun(id: string): Promise<KnowledgeGovernanceRunStart | null> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/governance/runs/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const response = parseWithFallback<{ run: KnowledgeGovernanceRunStart } | null>(raw, KnowledgeGovernanceRunStartSchema, null, {
+      endpoint: "POST /api/knowledge/governance/runs/{id}/retry",
+    });
+    return response?.run ?? null;
   }
 
   async createSkill(data: CreateSkillRequest): Promise<Skill> {

@@ -425,6 +425,52 @@ SELECT
 WHERE lock_task_owner_rows(sqlc.arg('agent_id'), NULL::uuid, sqlc.arg('runtime_id'))
 RETURNING *;
 
+-- name: CreateKnowledgeGovernanceTask :one
+-- Governance uses the same issue-less task ownership fence as retrospective
+-- runs. The context is a durable evidence-review snapshot and the terminal
+-- processor is the only path that records its findings.
+WITH active_run AS (
+    SELECT knowledge_governance_run.id FROM knowledge_governance_run
+    WHERE knowledge_governance_run.id = sqlc.arg('run_id')
+      AND knowledge_governance_run.status = 'running'
+    FOR UPDATE
+),
+inserted_task AS (
+    INSERT INTO agent_task_queue (
+        agent_id,
+        runtime_id,
+        issue_id,
+        status,
+        priority,
+        context,
+        originator_user_id,
+        accountable_user_id,
+        originator_source,
+        trigger_evidence_kind,
+        trigger_evidence_ref_id
+    )
+    SELECT
+        sqlc.arg('agent_id'), sqlc.arg('runtime_id'), NULL::uuid, 'queued', sqlc.arg('priority'),
+        sqlc.arg('context'),
+        sqlc.arg('originator_user_id'), sqlc.arg('accountable_user_id'),
+        'knowledge_governance', 'knowledge_governance_run', sqlc.arg('run_id')
+    WHERE EXISTS (SELECT 1 FROM active_run)
+      AND lock_task_owner_rows(sqlc.arg('agent_id'), NULL::uuid, sqlc.arg('runtime_id'))
+    RETURNING *
+),
+linked_run AS (
+    UPDATE knowledge_governance_run
+    SET task_id = (SELECT inserted_task.id FROM inserted_task)
+    WHERE knowledge_governance_run.id = sqlc.arg('run_id')
+      AND knowledge_governance_run.status = 'running'
+      AND EXISTS (SELECT 1 FROM inserted_task)
+    RETURNING knowledge_governance_run.id
+)
+SELECT agent_task_queue.*
+FROM agent_task_queue
+JOIN inserted_task ON agent_task_queue.id = inserted_task.id
+CROSS JOIN linked_run;
+
 -- name: ListIssuesCompletedInWindow :many
 -- 已完成口径: done always; in_review only when the config widens the scan.
 -- The issue table has no completed_at — updated_at under a terminal-ish

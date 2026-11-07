@@ -775,8 +775,20 @@ deleted_retrospective_configs AS (
 deleted_model_configs AS (
     DELETE FROM self_evolution_model_config WHERE self_evolution_model_config.workspace_id = $1
 ),
+deleted_knowledge_governance_findings AS (
+    DELETE FROM knowledge_governance_finding WHERE knowledge_governance_finding.workspace_id = $1
+),
+deleted_knowledge_governance_runs AS (
+    DELETE FROM knowledge_governance_run WHERE knowledge_governance_run.workspace_id = $1
+),
 deleted_scan_batches AS (
     DELETE FROM knowledge_scan_batch WHERE knowledge_scan_batch.workspace_id = $1
+),
+deleted_knowledge_lifecycle_events AS (
+    DELETE FROM knowledge_lifecycle_event WHERE knowledge_lifecycle_event.workspace_id = $1
+),
+deleted_knowledge_entry_versions AS (
+    DELETE FROM knowledge_entry_version WHERE knowledge_entry_version.workspace_id = $1
 ),
 deleted_knowledge_entries AS (
     DELETE FROM knowledge_entry WHERE knowledge_entry.workspace_id = $1

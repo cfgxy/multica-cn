@@ -34,6 +34,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/knowledgegovernance"
 	"github.com/multica-ai/multica/server/internal/legislation"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -464,6 +465,10 @@ type Handler struct {
 	// cmd/server/main.go together with the scheduler job and the task
 	// service hook, so all three share one instance.
 	RetrospectiveRunner *retrospective.Runner
+	// KnowledgeGovernanceRunner owns asynchronous evidence-led governance runs
+	// for a knowledge directory. It is intentionally distinct from lifecycle
+	// writeback, which remains an explicit owner decision.
+	KnowledgeGovernanceRunner *knowledgegovernance.Runner
 	// VoiceProbeBaseURL is the connectivity-probe target for voice instance
 	// credentials (RUYI-425 §4.3/§4.5 stage 2): a lightweight models.list
 	// against the provider right after a credential save. Wired from

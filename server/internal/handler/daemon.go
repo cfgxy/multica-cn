@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/knowledgegovernance"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/retrospective"
@@ -3675,6 +3676,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// the run must not create issues or comments, which the prompt
 			// states as a hard boundary and the completion hook enforces.
 			resp.RetrospectivePrompt = retroPrompt
+		} else if governancePrompt, ok := knowledgegovernance.PromptFromContext(task.Context); ok {
+			// Knowledge governance is a dedicated issue-less task. The complete
+			// evidence contract is server-rendered and advisory: lifecycle writes
+			// remain unavailable until a later owner operation.
+			resp.KnowledgeGovernancePrompt = governancePrompt
 		}
 	}
 
@@ -5701,6 +5707,23 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 		}
 		service.TryAppendAuditEvents(r.Context(), h.Queries, service.TaskCancelledEvent(r.Context(), h.Queries, confirmed,
 			service.AuditReasonUserRequested, ackActor, confirmed.CancelRequestedByUserID, nil, service.AuditTrigger{}))
+	}
+	// Issue-less governance tasks do not traverse TaskService's complete or
+	// fail paths. Settle the advisory run after a confirmed cancellation; a
+	// replay reads the already-cancelled task and retries this idempotent hook
+	// if its first persistence attempt failed.
+	terminalTask := task
+	if confirmedFlip {
+		terminalTask = confirmed
+	}
+	if terminalTask.Status == "cancelled" && h.KnowledgeGovernanceRunner != nil {
+		if _, ok := knowledgegovernance.ParseTaskContext(terminalTask.Context); ok {
+			if _, err := h.KnowledgeGovernanceRunner.ProcessTaskTerminal(r.Context(), terminalTask, "", "cancelled"); err != nil {
+				slog.Error("cancel ack: settle knowledge governance run failed", "task_id", taskID, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to settle knowledge governance cancellation")
+				return
+			}
+		}
 	}
 	if durableWorkDir := strings.TrimSpace(req.DurableWorkDir); durableWorkDir != "" {
 		if err := h.Queries.SetAgentTaskDurableWorkDir(r.Context(), db.SetAgentTaskDurableWorkDirParams{
