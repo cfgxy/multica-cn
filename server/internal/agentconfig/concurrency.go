@@ -3,10 +3,12 @@ package agentconfig
 import "fmt"
 
 const (
-	DefaultMaxConcurrentTasks   int32 = 6
-	MinMaxConcurrentTasks       int32 = 1
-	MaxMaxConcurrentTasks       int32 = 50
-	UnlimitedMaxConcurrentTasks int32 = -1
+	DefaultMaxConcurrentTasks int32 = 6
+	MinMaxConcurrentTasks     int32 = 1
+	MaxMaxConcurrentTasks     int32 = 50
+	// UnlimitedMaxConcurrentTasks (RUYI-843 semantic revision): 0 means the
+	// agent has no personal cap; the owning runtime's cap still applies.
+	UnlimitedMaxConcurrentTasks int32 = 0
 )
 
 func IsValidMaxConcurrentTasks(value int32) bool {
@@ -14,10 +16,15 @@ func IsValidMaxConcurrentTasks(value int32) bool {
 		(value >= MinMaxConcurrentTasks && value <= MaxMaxConcurrentTasks)
 }
 
+// IsUnlimitedMaxConcurrentTasks reports whether the agent-level cap is disabled.
+func IsUnlimitedMaxConcurrentTasks(value int32) bool {
+	return value == UnlimitedMaxConcurrentTasks
+}
+
 func ValidateMaxConcurrentTasks(value int32) error {
 	if !IsValidMaxConcurrentTasks(value) {
 		return fmt.Errorf(
-			"must be -1 (unlimited) or between %d and %d",
+			"must be 0 (unlimited) or between %d and %d",
 			MinMaxConcurrentTasks,
 			MaxMaxConcurrentTasks,
 		)

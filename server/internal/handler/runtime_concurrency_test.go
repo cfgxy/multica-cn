@@ -8,10 +8,14 @@ import (
 )
 
 func patchRuntimeConcurrency(actorID, runtimeID string, value int32) *httptest.ResponseRecorder {
-	w := httptest.NewRecorder()
-	req := newRequestAs(actorID, http.MethodPatch, "/api/runtimes/"+runtimeID, map[string]any{
+	return patchRuntime(actorID, runtimeID, map[string]any{
 		"max_concurrent_tasks": value,
 	})
+}
+
+func patchRuntime(actorID, runtimeID string, body any) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	req := newRequestAs(actorID, http.MethodPatch, "/api/runtimes/"+runtimeID, body)
 	req = withURLParam(req, "runtimeId", runtimeID)
 	testHandler.UpdateAgentRuntime(w, req)
 	return w
@@ -23,21 +27,37 @@ func TestUpdateAgentRuntimeConcurrencyLimit(t *testing.T) {
 	}
 	runtimeID, ownerID, memberID := runtimeVisibilityFixture(t)
 
-	w := patchRuntimeConcurrency(ownerID, runtimeID, 8)
+	for _, value := range []int32{0, 1, 50} {
+		w := patchRuntimeConcurrency(ownerID, runtimeID, value)
+		if w.Code != http.StatusOK {
+			t.Fatalf("runtime limit %d: status = %d, want 200: %s", value, w.Code, w.Body.String())
+		}
+		var response AgentRuntimeResponse
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("decode runtime response for %d: %v", value, err)
+		}
+		if response.MaxConcurrentTasks != value {
+			t.Fatalf("runtime max_concurrent_tasks for %d = %d, want %d", value, response.MaxConcurrentTasks, value)
+		}
+	}
+
+	for _, value := range []int32{-1, -2, 51} {
+		w := patchRuntimeConcurrency(ownerID, runtimeID, value)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("runtime limit %d: status = %d, want 400: %s", value, w.Code, w.Body.String())
+		}
+	}
+
+	w := patchRuntime(ownerID, runtimeID, map[string]any{})
 	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH runtime capacity: status = %d, want 200: %s", w.Code, w.Body.String())
+		t.Fatalf("omitted runtime limit: status = %d, want 200: %s", w.Code, w.Body.String())
 	}
 	var response AgentRuntimeResponse
 	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("decode runtime response: %v", err)
+		t.Fatalf("decode omitted runtime limit response: %v", err)
 	}
-	if response.MaxConcurrentTasks != 8 {
-		t.Fatalf("runtime max_concurrent_tasks = %d, want 8", response.MaxConcurrentTasks)
-	}
-
-	w = patchRuntimeConcurrency(ownerID, runtimeID, -1)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("negative runtime limit: status = %d, want 400: %s", w.Code, w.Body.String())
+	if response.MaxConcurrentTasks != 50 {
+		t.Fatalf("omitted runtime max_concurrent_tasks = %d, want 50", response.MaxConcurrentTasks)
 	}
 
 	w = patchRuntimeConcurrency(memberID, runtimeID, 4)

@@ -175,10 +175,10 @@ func runAgentCopy(cmd *cobra.Command, args []string) error {
 		body["custom_args"] = ca
 	}
 
-	// max_concurrent_tasks: a valid source value (-1 or 1-50) is portable.
-	// Historical rows may contain other values; omit those so create applies its
-	// default instead of turning Duplicate into a 400. An explicit flag is
-	// validated before any API request and remains authoritative.
+	// max_concurrent_tasks: a valid source value (0 or 1-50) is portable.
+	// Invalid source values are omitted so create applies its default instead
+	// of turning Duplicate into a 400. An explicit flag is validated before
+	// any API request and remains authoritative.
 	if maxConcurrentTasksOverride != nil {
 		body["max_concurrent_tasks"] = *maxConcurrentTasksOverride
 	} else if v, ok := copiedAgentMaxConcurrentTasks(src["max_concurrent_tasks"]); ok {
@@ -294,14 +294,15 @@ func runAgentCopy(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// copiedAgentMaxConcurrentTasks returns a valid source value for the copy.
 func copiedAgentMaxConcurrentTasks(value any) (int32, bool) {
 	number, ok := value.(float64)
-	if !ok || number != math.Trunc(number) ||
-		(number != float64(agentconfig.UnlimitedMaxConcurrentTasks) &&
-			(number < float64(agentconfig.MinMaxConcurrentTasks) ||
-				number > float64(agentconfig.MaxMaxConcurrentTasks))) {
+	if !ok || number != math.Trunc(number) || number < 0 || number > float64(agentconfig.MaxMaxConcurrentTasks) {
 		return 0, false
 	}
 	value32 := int32(number)
-	return value32, agentconfig.IsValidMaxConcurrentTasks(value32)
+	if !agentconfig.IsValidMaxConcurrentTasks(value32) {
+		return 0, false
+	}
+	return value32, true
 }

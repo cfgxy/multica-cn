@@ -10,9 +10,13 @@ import type { Agent } from "@multica/core/types";
 import {
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
+  AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
   AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED,
 } from "@multica/core/agents/constants";
-import { buildProfilePatch, parseBounded } from "./agent-profile-patch";
+import {
+  buildProfilePatch,
+  parseBounded,
+} from "./agent-profile-patch";
 
 function agent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -62,7 +66,26 @@ describe("parseBounded", () => {
 
   it("rejects non-numeric and out-of-range drafts (revert, not clamp)", () => {
     expect(parseBounded("abc", 1, 16)).toBeNull();
-    expect(parseBounded("0", AGENT_MAX_CONCURRENT_TASKS_MIN, AGENT_MAX_CONCURRENT_TASKS_MAX)).toBeNull();
+    expect(parseBounded("1.5", 1, 16)).toBeNull();
+    expect(parseBounded("1x", 1, 16)).toBeNull();
+    expect(
+      parseBounded(
+        "0",
+        AGENT_MAX_CONCURRENT_TASKS_MIN,
+        AGENT_MAX_CONCURRENT_TASKS_MAX,
+        AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
+      ),
+    ).toBe(0);
+    for (const value of ["-1", "-2", "-3"]) {
+      expect(
+        parseBounded(
+          value,
+          AGENT_MAX_CONCURRENT_TASKS_MIN,
+          AGENT_MAX_CONCURRENT_TASKS_MAX,
+          0,
+        ),
+      ).toBeNull();
+    }
     expect(parseBounded("999", AGENT_MAX_CONCURRENT_TASKS_MIN, AGENT_MAX_CONCURRENT_TASKS_MAX)).toBeNull();
   });
 
@@ -84,6 +107,19 @@ describe("buildProfilePatch", () => {
       draft({ model: "glm-5.3-flash", concurrency: "6" }),
     );
     expect(patch).toEqual({ model: "glm-5.3-flash", max_concurrent_tasks: 6 });
+  });
+
+  it.each([0, 7])("does not change saved concurrency %i on profile-only updates", (value) => {
+    const patch = buildProfilePatch(
+      agent({ max_concurrent_tasks: value }),
+      draft({ description: "updated", concurrency: String(value) }),
+    );
+    expect(patch).toEqual({ description: "updated" });
+  });
+
+  it("writes 0 when an operator explicitly selects unlimited", () => {
+    const patch = buildProfilePatch(agent(), draft({ concurrency: "0" }));
+    expect(patch).toEqual({ max_concurrent_tasks: 0 });
   });
 
   it("omits a concurrency draft outside [min, max] instead of clamping", () => {

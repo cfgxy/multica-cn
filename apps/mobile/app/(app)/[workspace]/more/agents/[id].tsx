@@ -556,7 +556,11 @@ export default function AgentDetailPage() {
       label: t("mobile.detail.fact_concurrency", "Concurrency cap"),
       editable: true,
       value: (
-        <Text className="text-sm text-foreground">{a.max_concurrent_tasks}</Text>
+        <Text className="text-sm text-foreground">
+          {a.max_concurrent_tasks === 0
+            ? t("pickers.concurrency_unlimited", "Unlimited")
+            : a.max_concurrent_tasks}
+        </Text>
       ),
     },
     // RUYI-538 ①: reasoning-effort surfaced next to the model it qualifies,
