@@ -894,6 +894,47 @@ func TestDaemonRegister_WithDaemonToken_WorkspaceMismatch(t *testing.T) {
 	}
 }
 
+func TestDaemonRegister_WithDaemonToken_DaemonMismatch(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	req := newDaemonTokenRequest("POST", "/api/daemon/register", map[string]any{
+		"workspace_id": testWorkspaceID,
+		"daemon_id":    "other-daemon",
+		"runtimes": []map[string]any{
+			{"name": "test-runtime", "type": "claude", "version": "1.0.0", "status": "online"},
+		},
+	}, testWorkspaceID, "token-daemon")
+	testutil.Call(t, testHandler.DaemonRegister, req).Want(http.StatusForbidden)
+}
+
+func TestRefreshKnowledgeDaemonTokenRequiresBoundDaemonCredential(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	req := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", map[string]any{
+		"daemon_id": "refresh-daemon",
+	}, testWorkspaceID, "refresh-daemon")
+	w := testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, req).Want(http.StatusOK)
+	var response map[string]string
+	w.JSON(&response)
+	if !strings.HasPrefix(response["daemon_token"], "mdt_") {
+		t.Fatalf("renewal did not issue a daemon credential")
+	}
+
+	wrongDaemon := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", map[string]any{
+		"daemon_id": "other-daemon",
+	}, testWorkspaceID, "refresh-daemon")
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, wrongDaemon).Want(http.StatusForbidden)
+
+	patRequest := newRequest("POST", "/api/daemon/knowledge/token/refresh", map[string]any{
+		"daemon_id": "refresh-daemon",
+	})
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, patRequest).Want(http.StatusUnauthorized)
+}
+
 func TestDaemonHeartbeat_WithDaemonToken_CrossWorkspace(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

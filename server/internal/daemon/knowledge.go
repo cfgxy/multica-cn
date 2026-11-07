@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -155,16 +156,20 @@ func (c *Client) GetKnowledgePlan(ctx context.Context, daemonID string) (*Knowle
 func (c *Client) PostKnowledgeResults(ctx context.Context, daemonID, workspaceID string, results *KnowledgeResults) (*KnowledgeResultsAck, error) {
 	var ack KnowledgeResultsAck
 	path := "/api/daemon/knowledge/results?daemon_id=" + url.QueryEscape(daemonID)
-	// The registration response supplies a workspace-bound mdt_ credential.
-	// Keep the PAT fallback for older test servers and older control planes; the
-	// production endpoint rejects it for writes, so no authorization boundary is
-	// weakened when the credential is missing.
 	token := c.knowledgeToken(workspaceID)
 	if token == "" {
-		token = c.token
+		return nil, fmt.Errorf("knowledge callback credential is unavailable for workspace %s", workspaceID)
 	}
 	if err := c.postJSONWithToken(ctx, path, token, results, &ack); err != nil {
-		return nil, err
+		if !isUnauthorizedError(err) {
+			return nil, err
+		}
+		if err := c.RefreshKnowledgeToken(ctx, daemonID, workspaceID); err != nil {
+			return nil, fmt.Errorf("refresh knowledge callback credential: %w", err)
+		}
+		if err := c.postJSONWithToken(ctx, path, c.knowledgeToken(workspaceID), results, &ack); err != nil {
+			return nil, err
+		}
 	}
 	return &ack, nil
 }
@@ -216,8 +221,12 @@ func (d *Daemon) knowledgeSync(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("fetch knowledge plan: %w", err)
 	}
+	var reportErrs []error
 	for i := range plan.Workspaces {
 		ws := &plan.Workspaces[i]
+		if err := d.client.RefreshKnowledgeTokenIfNeeded(ctx, d.cfg.DaemonID, ws.WorkspaceID); err != nil {
+			reportErrs = append(reportErrs, fmt.Errorf("refresh knowledge credential for workspace %s: %w", ws.WorkspaceID, err))
+		}
 		results := &KnowledgeResults{}
 		d.knowledgeSyncWorkspace(ctx, ws, results)
 		if len(results.Discoveries) == 0 && len(results.Ultimates) == 0 &&
@@ -225,10 +234,10 @@ func (d *Daemon) knowledgeSync(ctx context.Context) error {
 			continue
 		}
 		if _, err := d.client.PostKnowledgeResults(ctx, d.cfg.DaemonID, ws.WorkspaceID, results); err != nil {
-			return fmt.Errorf("report knowledge results for workspace %s: %w", ws.WorkspaceID, err)
+			reportErrs = append(reportErrs, fmt.Errorf("report knowledge results for workspace %s: %w", ws.WorkspaceID, err))
 		}
 	}
-	return nil
+	return errors.Join(reportErrs...)
 }
 
 func (d *Daemon) knowledgeSyncWorkspace(ctx context.Context, ws *KnowledgePlanWorkspace, results *KnowledgeResults) {
@@ -384,6 +393,13 @@ func (d *Daemon) runKnowledgeAdoption(ctx context.Context, job KnowledgePlanAdop
 	if err != nil {
 		return report, fmt.Errorf("inspect ultimate directory: %w", err)
 	}
+	if existingContent, ok := existing[job.Key]; ok {
+		if strings.TrimSpace(existingContent) == strings.TrimSpace(job.Content) {
+			report.OK = true
+			return report, nil
+		}
+		return report, fmt.Errorf("ultimate library key %q already contains different content", job.Key)
+	}
 	for existingKey, existingContent := range existing {
 		if strings.TrimSpace(existingContent) == strings.TrimSpace(job.Content) {
 			return report, fmt.Errorf("identical content already exists in the ultimate library under key %q", existingKey)
@@ -436,10 +452,14 @@ func (d *Daemon) runKnowledgeOperation(ctx context.Context, operation KnowledgeP
 			// operation. The read-back below makes an already-absent key idempotent.
 			if _, recallErr := bdRecall(ctx, operation.UltimatePath, key); recallErr == nil {
 				return fmt.Errorf("bd forget %s: %w", key, err)
+			} else if !errors.Is(recallErr, errKnowledgeMemoryNotFound) {
+				return fmt.Errorf("bd recall after forget %s: %w", key, recallErr)
 			}
 		}
 		if _, err := bdRecall(ctx, operation.UltimatePath, key); err == nil {
 			return fmt.Errorf("bd forget read-back found key %s", key)
+		} else if !errors.Is(err, errKnowledgeMemoryNotFound) {
+			return fmt.Errorf("bd forget read-back %s: %w", key, err)
 		}
 	}
 	return nil
@@ -475,6 +495,9 @@ func ensureUltimateDir(workspaceID string) (string, error) {
 	if err := ensureBdReady(path); err != nil {
 		return "", err
 	}
+	if !hasIsolatedBeadsDatabase(path) {
+		return "", fmt.Errorf("daemon-managed ultimate %s does not use an isolated bd store", path)
+	}
 	return path, nil
 }
 
@@ -504,10 +527,13 @@ func knowledgeBdBin() string {
 // process working directory for init (unlike every other subcommand), so the
 // command must run with cmd.Dir set rather than passing -C.
 func bdInit(ctx context.Context, dir string) error {
-	cmd := exec.CommandContext(ctx, knowledgeBdBin(), "init")
+	cmd := exec.CommandContext(ctx, knowledgeBdBin(), "init", "--proxied-server", "--non-interactive", "--skip-agents", "--skip-hooks")
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("bd init in %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
+	}
+	if !hasIsolatedBeadsDatabase(dir) {
+		return fmt.Errorf("bd init in %s did not create an isolated proxied store", dir)
 	}
 	return nil
 }
@@ -524,7 +550,7 @@ func bdListMemories(ctx context.Context, dir string) (map[string]string, error) 
 	memories := map[string]string{}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(out, &envelope); err != nil {
-		return memories, nil
+		return nil, fmt.Errorf("decode bd memories in %s: %w", dir, err)
 	}
 	for key, raw := range envelope {
 		if key == "" || key == "schema_version" {
@@ -546,10 +572,15 @@ func bdRemember(ctx context.Context, dir, key, content, actor string) error {
 	return nil
 }
 
+var errKnowledgeMemoryNotFound = errors.New("knowledge memory not found")
+
 func bdRecall(ctx context.Context, dir, key string) (string, error) {
 	cmd := exec.CommandContext(ctx, knowledgeBdBin(), "recall", key, "-C", dir)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if strings.Contains(strings.ToLower(string(out)), "memory not found") {
+			return "", fmt.Errorf("%w: %s", errKnowledgeMemoryNotFound, key)
+		}
 		return "", fmt.Errorf("bd recall %s: %w", key, err)
 	}
 	return strings.TrimSpace(string(out)), nil
@@ -565,5 +596,10 @@ func bdForget(ctx context.Context, dir, key string) error {
 
 func hasBeadsDatabase(path string) bool {
 	info, err := os.Stat(filepath.Join(path, ".beads"))
+	return err == nil && info.IsDir()
+}
+
+func hasIsolatedBeadsDatabase(path string) bool {
+	info, err := os.Stat(filepath.Join(path, ".beads", "proxieddb"))
 	return err == nil && info.IsDir()
 }

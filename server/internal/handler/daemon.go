@@ -634,6 +634,10 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "workspace not found")
 			return
 		}
+		if tokenDaemonID := middleware.DaemonIDFromContext(r.Context()); tokenDaemonID == "" || tokenDaemonID != req.DaemonID {
+			writeError(w, http.StatusForbidden, "daemon tokens can only register their own daemon")
+			return
+		}
 		allowLegacyMerge = false
 		tokenOwnerID := middleware.DaemonTokenOwnerIDFromContext(r.Context())
 		ownerUUID, err := util.ParseUUID(tokenOwnerID)
@@ -996,6 +1000,43 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		"settings":      repoResp.Settings,
 		"daemon_token":  daemonToken,
 	})
+}
+
+// RefreshKnowledgeDaemonToken issues a replacement callback credential to an
+// already authenticated daemon. PATs never receive DaemonWorkspaceIDFromContext,
+// so only an mdt_ credential bound to this workspace, daemon, and owner reaches
+// the issuance path.
+func (h *Handler) RefreshKnowledgeDaemonToken(w http.ResponseWriter, r *http.Request) {
+	workspaceID := middleware.DaemonWorkspaceIDFromContext(r.Context())
+	daemonID := middleware.DaemonIDFromContext(r.Context())
+	ownerID, err := util.ParseUUID(middleware.DaemonTokenOwnerIDFromContext(r.Context()))
+	if workspaceID == "" || daemonID == "" || err != nil {
+		writeError(w, http.StatusUnauthorized, "daemon authentication is required to refresh knowledge credentials")
+		return
+	}
+
+	var req struct {
+		DaemonID string `json:"daemon_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.DaemonID) != daemonID {
+		writeError(w, http.StatusForbidden, "daemon tokens can only refresh their own credential")
+		return
+	}
+	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+	token, err := h.issueDaemonRegistrationToken(r.Context(), workspaceUUID, daemonID, ownerID)
+	if err != nil {
+		slog.Warn("knowledge daemon credential refresh failed", "workspace_id", workspaceID, "daemon_id", daemonID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to refresh daemon credential")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"daemon_token": token})
 }
 
 func (h *Handler) issueDaemonRegistrationToken(ctx context.Context, workspaceID pgtype.UUID, daemonID string, ownerID pgtype.UUID) (string, error) {
