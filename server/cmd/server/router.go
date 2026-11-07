@@ -1773,6 +1773,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
+		r.Post("/tasks/{taskId}/usage/evidence", h.ReportTaskModelCallEvidence)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
 		r.Post("/tasks/{taskId}/branch-adoptions/authorize", h.AuthorizeBranchAdoption)
@@ -3085,6 +3086,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Per-daemon host resources (RUYI-859): the usage
 					// panel narrowed to this runtime's daemon host.
 					r.Get("/resources", h.GetRuntimeResources)
+					r.Get("/model-call-budget", h.GetRuntimeModelCallBudget)
+					r.Put("/model-call-budget", h.PutRuntimeModelCallBudget)
 					r.Get("/usage", h.GetRuntimeUsage)
 					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
 					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)

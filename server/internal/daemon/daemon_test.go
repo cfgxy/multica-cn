@@ -1681,7 +1681,11 @@ func TestRunTask_ReportsContextOnlyUsage(t *testing.T) {
 		wantEntries   int
 	}{
 		{"context only", "00000000-0000-4000-8000-000000000001", 0, 0, 0, 0, 350000, 1},
-		{"all zero", "00000000-0000-4000-8000-000000000002", 0, 0, 0, 0, 0, 0},
+		// all-zero tokens still report one entry: the script emits an
+		// assistant event, which is provider evidence of one model API
+		// response even with zero billable tokens (migration 996 call
+		// counts make a zero-token response a known call, not a no-op).
+		{"all zero", "00000000-0000-4000-8000-000000000002", 0, 0, 0, 0, 0, 1},
 		{"billing unchanged", "00000000-0000-4000-8000-000000000003", 12, 7, 4, 3, 26, 1},
 	}
 	for _, tt := range tests {
@@ -1701,7 +1705,7 @@ func TestRunTask_ReportsContextOnlyUsage(t *testing.T) {
 			}
 
 			script := fmt.Sprintf("#!/bin/sh\nIFS= read -r _\nprintf '%%s\\n' '%s' '%s'\n",
-				fmt.Sprintf(`{"type":"assistant","message":{"model":"%s","usage":{"input_tokens":%d,"output_tokens":%d,"cache_read_input_tokens":%d,"cache_creation_input_tokens":%d},"content":[{"type":"text","text":"done"}]}}`, model, tt.inputTokens, tt.outputTokens, tt.cacheRead, tt.cacheWrite),
+				fmt.Sprintf(`{"type":"assistant","message":{"id":"msg-script","model":"%s","usage":{"input_tokens":%d,"output_tokens":%d,"cache_read_input_tokens":%d,"cache_creation_input_tokens":%d},"content":[{"type":"text","text":"done"}]}}`, model, tt.inputTokens, tt.outputTokens, tt.cacheRead, tt.cacheWrite),
 				fmt.Sprintf(`{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"done"}`, tt.sessionID))
 			if err := os.WriteFile(d.cfg.Agents["claude"].Path, []byte(script), 0o755); err != nil {
 				t.Fatalf("write fake agent: %v", err)
@@ -1724,7 +1728,60 @@ func TestRunTask_ReportsContextOnlyUsage(t *testing.T) {
 				t.Fatalf("usage entry = %+v, want billing (%d,%d,%d,%d) and context %d", u,
 					tt.inputTokens, tt.outputTokens, tt.cacheRead, tt.cacheWrite, tt.contextTokens)
 			}
+			// Each subtest's script emits exactly one assistant event, the
+			// provider's evidence for one model API response (migration 996):
+			// the call count is 1 even in the all-zero subtest.
+			if u.ModelCallCount != 1 {
+				t.Fatalf("usage entry ModelCallCount = %d, want 1", u.ModelCallCount)
+			}
 		})
+	}
+}
+
+// TestRunTask_ClaudeResultPortsCallCounts proves the result-event port: the
+// result event's per-model totals replace the stream's map wholesale and carry
+// no call counts of their own, so this run's assistant-event evidence must be
+// ported across, or a successful run would report tokens without its call
+// evidence (migration 996).
+func TestRunTask_ClaudeResultPortsCallCounts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	const model = "claude-sonnet-5"
+	const sessionID = "00000000-0000-4000-8000-000000000009"
+
+	d, _, cleanup := newLeaderReuseTestDaemon(t)
+	defer cleanup()
+
+	// Two assistant events (two model API responses) plus a result event that
+	// re-reports the summed tokens via modelUsage.
+	assistant1 := fmt.Sprintf(`{"type":"assistant","message":{"id":"msg-1","model":"%s","usage":{"input_tokens":100,"output_tokens":10},"content":[{"type":"text","text":"one"}]}}`, model)
+	assistant2 := fmt.Sprintf(`{"type":"assistant","message":{"id":"msg-2","model":"%s","usage":{"input_tokens":50,"output_tokens":5},"content":[{"type":"text","text":"two"}]}}`, model)
+	result := fmt.Sprintf(`{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"done","modelUsage":{"%s":{"inputTokens":150,"outputTokens":15}}}`, sessionID, model)
+	script := fmt.Sprintf("#!/bin/sh\nIFS= read -r _\nprintf '%%s\\n' '%s' '%s' '%s'\n",
+		assistant1, assistant2, result)
+	if err := os.WriteFile(d.cfg.Agents["claude"].Path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake agent: %v", err)
+	}
+
+	resultRun, err := d.runTask(context.Background(), leaderReuseTestTask("usage-port-"+sessionID), "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("runTask: %v", err)
+	}
+	if len(resultRun.Usage) != 1 {
+		t.Fatalf("usage entries = %+v, want 1", resultRun.Usage)
+	}
+	u := resultRun.Usage[0]
+	if u.Model != model || u.InputTokens != 150 || u.OutputTokens != 15 {
+		t.Fatalf("result totals = %+v, want model %s 150/15 from the result event", u, model)
+	}
+	// The result event carries no call counts of its own: the two assistant
+	// events' evidence must have been ported onto its totals.
+	if u.ModelCallCount != 2 {
+		t.Fatalf("ModelCallCount = %d, want 2 ported from the assistant events", u.ModelCallCount)
 	}
 }
 
