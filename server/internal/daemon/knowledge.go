@@ -164,7 +164,7 @@ func (c *Client) PostKnowledgeResults(ctx context.Context, daemonID, workspaceID
 		if !isUnauthorizedError(err) {
 			return nil, err
 		}
-		if err := c.RefreshKnowledgeToken(ctx, daemonID, workspaceID); err != nil {
+		if err := c.RefreshKnowledgeToken(ctx, workspaceID); err != nil {
 			return nil, fmt.Errorf("refresh knowledge callback credential: %w", err)
 		}
 		if err := c.postJSONWithToken(ctx, path, c.knowledgeToken(workspaceID), results, &ack); err != nil {
@@ -224,7 +224,7 @@ func (d *Daemon) knowledgeSync(ctx context.Context) error {
 	var reportErrs []error
 	for i := range plan.Workspaces {
 		ws := &plan.Workspaces[i]
-		if err := d.client.RefreshKnowledgeTokenIfNeeded(ctx, d.cfg.DaemonID, ws.WorkspaceID); err != nil {
+		if err := d.client.RefreshKnowledgeTokenIfNeeded(ctx, ws.WorkspaceID); err != nil {
 			reportErrs = append(reportErrs, fmt.Errorf("refresh knowledge credential for workspace %s: %w", ws.WorkspaceID, err))
 		}
 		results := &KnowledgeResults{}
@@ -447,19 +447,24 @@ func (d *Daemon) runKnowledgeOperation(ctx context.Context, operation KnowledgeP
 		return fmt.Errorf("unsupported knowledge operation %q", operation.OperationType)
 	}
 	for _, key := range operation.DeleteKeys {
-		if err := bdForget(ctx, operation.UltimatePath, key); err != nil {
-			// A prior successful write followed by a failed report may replay the
-			// operation. The read-back below makes an already-absent key idempotent.
-			if _, recallErr := bdRecall(ctx, operation.UltimatePath, key); recallErr == nil {
-				return fmt.Errorf("bd forget %s: %w", key, err)
-			} else if !errors.Is(recallErr, errKnowledgeMemoryNotFound) {
-				return fmt.Errorf("bd recall after forget %s: %w", key, recallErr)
-			}
+		memories, err := bdListMemories(ctx, operation.UltimatePath)
+		if err != nil {
+			return fmt.Errorf("inspect memories before forgetting %s: %w", key, err)
 		}
-		if _, err := bdRecall(ctx, operation.UltimatePath, key); err == nil {
+		if _, exists := memories[key]; !exists {
+			// A prior successful delete followed by a failed report may replay the
+			// operation. A successful read-only list proves the key is absent.
+			continue
+		}
+		if err := bdForget(ctx, operation.UltimatePath, key); err != nil {
+			return fmt.Errorf("bd forget %s: %w", key, err)
+		}
+		memories, err = bdListMemories(ctx, operation.UltimatePath)
+		if err != nil {
+			return fmt.Errorf("inspect memories after forgetting %s: %w", key, err)
+		}
+		if _, exists := memories[key]; exists {
 			return fmt.Errorf("bd forget read-back found key %s", key)
-		} else if !errors.Is(err, errKnowledgeMemoryNotFound) {
-			return fmt.Errorf("bd forget read-back %s: %w", key, err)
 		}
 	}
 	return nil
@@ -492,13 +497,35 @@ func ensureUltimateDir(workspaceID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return "", fmt.Errorf("create %s: %w", path, err)
+	}
+	if err := ensureGitRoot(path); err != nil {
+		return "", err
+	}
 	if err := ensureBdReady(path); err != nil {
 		return "", err
 	}
-	if !hasIsolatedBeadsDatabase(path) {
-		return "", fmt.Errorf("daemon-managed ultimate %s does not use an isolated bd store", path)
+	if !hasLocalBeadsDatabase(path) {
+		return "", fmt.Errorf("daemon-managed ultimate %s does not use a local bd store", path)
 	}
 	return path, nil
+}
+
+func ensureGitRoot(dir string) error {
+	if info, err := os.Stat(filepath.Join(dir, ".git")); err == nil && info.IsDir() {
+		return nil
+	}
+	cmd := exec.CommandContext(context.Background(), "git", "init", "--quiet")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git init in %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
+	}
+	info, err := os.Stat(filepath.Join(dir, ".git"))
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("git init in %s did not create a repository root", dir)
+	}
+	return nil
 }
 
 // ensureBdReady makes dir an initialized bd project: create it, then run
@@ -527,39 +554,57 @@ func knowledgeBdBin() string {
 // process working directory for init (unlike every other subcommand), so the
 // command must run with cmd.Dir set rather than passing -C.
 func bdInit(ctx context.Context, dir string) error {
-	cmd := exec.CommandContext(ctx, knowledgeBdBin(), "init", "--proxied-server", "--non-interactive", "--skip-agents", "--skip-hooks")
+	cmd := exec.CommandContext(ctx, knowledgeBdBin(), "init", "--non-interactive", "--skip-hooks", "--skip-agents", "--init-if-missing")
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("bd init in %s: %w: %s", dir, err, strings.TrimSpace(string(out)))
 	}
-	if !hasIsolatedBeadsDatabase(dir) {
-		return fmt.Errorf("bd init in %s did not create an isolated proxied store", dir)
+	if !hasLocalBeadsDatabase(dir) {
+		return fmt.Errorf("bd init in %s did not create a local beads database", dir)
 	}
 	return nil
 }
 
 // bdListMemories reads a source's memories read-only. bd envelopes a numeric
-// schema_version into the same flat JSON object as the memories, so the
-// decode tolerates the envelope and never mirrors metadata as an entry.
+// schema_version into the same flat JSON object as the memories, so the parser
+// validates the envelope and every value before returning any entries.
 func bdListMemories(ctx context.Context, dir string) (map[string]string, error) {
 	cmd := exec.CommandContext(ctx, knowledgeBdBin(), "memories", "--json", "--readonly", "-C", dir)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("bd memories in %s: %w", dir, err)
 	}
-	memories := map[string]string{}
 	var envelope map[string]json.RawMessage
 	if err := json.Unmarshal(out, &envelope); err != nil {
 		return nil, fmt.Errorf("decode bd memories in %s: %w", dir, err)
 	}
+	if envelope == nil {
+		return nil, fmt.Errorf("decode bd memories in %s: envelope must be an object", dir)
+	}
+	schemaVersion, ok := envelope["schema_version"]
+	if !ok {
+		return nil, fmt.Errorf("decode bd memories in %s: missing schema_version", dir)
+	}
+	var version int
+	if err := json.Unmarshal(schemaVersion, &version); err != nil || version < 1 {
+		if err == nil {
+			err = fmt.Errorf("unsupported schema_version %d", version)
+		}
+		return nil, fmt.Errorf("decode bd memories in %s: invalid schema_version: %w", dir, err)
+	}
+	memories := make(map[string]string, len(envelope)-1)
 	for key, raw := range envelope {
-		if key == "" || key == "schema_version" {
+		if key == "schema_version" {
 			continue
 		}
-		var content string
-		if json.Unmarshal(raw, &content) == nil {
-			memories[key] = content
+		if key == "" {
+			return nil, fmt.Errorf("decode bd memories in %s: memory key is empty", dir)
 		}
+		var content string
+		if err := json.Unmarshal(raw, &content); err != nil {
+			return nil, fmt.Errorf("decode bd memories in %s: value for %q is not a string: %w", dir, key, err)
+		}
+		memories[key] = content
 	}
 	return memories, nil
 }
@@ -599,7 +644,7 @@ func hasBeadsDatabase(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func hasIsolatedBeadsDatabase(path string) bool {
-	info, err := os.Stat(filepath.Join(path, ".beads", "proxieddb"))
+func hasLocalBeadsDatabase(path string) bool {
+	info, err := os.Stat(filepath.Join(path, ".beads", "embeddeddolt"))
 	return err == nil && info.IsDir()
 }

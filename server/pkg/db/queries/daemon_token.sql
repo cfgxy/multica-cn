@@ -10,6 +10,26 @@ RETURNING *;
 SELECT * FROM daemon_token
 WHERE token_hash = $1 AND expires_at > now();
 
+-- name: RenewDaemonToken :one
+-- Renew the authenticated daemon credential in place. A live runtime owned by
+-- the same owner is required so an old token cannot keep itself alive after
+-- its runtime has been removed or transferred.
+UPDATE daemon_token AS dt
+SET expires_at = now() + interval '24 hours'
+WHERE dt.token_hash = @token_hash
+  AND dt.workspace_id = @workspace_id
+  AND dt.daemon_id = @daemon_id
+  AND dt.owner_id = @owner_id
+  AND dt.expires_at > now()
+  AND EXISTS (
+    SELECT 1
+    FROM agent_runtime AS r
+    WHERE r.workspace_id = dt.workspace_id
+      AND r.daemon_id = dt.daemon_id
+      AND r.owner_id = dt.owner_id
+  )
+RETURNING *;
+
 -- name: DeleteDaemonTokensByWorkspaceAndDaemons :many
 -- Deletes every daemon_token row matching the (workspace_id, daemon_id)
 -- pairs implied by `daemon_ids`. Used by the member-revocation flow to
