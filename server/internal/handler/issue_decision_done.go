@@ -1,11 +1,10 @@
 package handler
 
-// RUYI-865: when an issue formally enters the done category, its still-open
-// question decision cards are auto-cancelled server-side so they stop
+// RUYI-865: when a human member moves an issue from in_review to done, its
+// still-open question decision cards are auto-cancelled server-side so they stop
 // holding decision-center backlog slots. This file owns that cascade. The
 // settle half runs INSIDE the done write's own transaction
-// (settleDoneCascadeInTx); every formal done entry point (HTTP single
-// update, HTTP batch update, and the PR-merged advance) runs its status
+// (settleDoneCascadeInTx); HTTP single and batch updates run their status
 // write and the settle in one transaction so the behavior can never drift
 // across entries — and a failed settle can never commit a done status
 // without cancelling the cards.
@@ -39,10 +38,8 @@ const (
 // best-effort version committed the status write first and left stranded
 // open cards plus no automatic retry when the cancel batch failed. The
 // entry points are the HTTP single/batch write paths (their status-guard or
-// atomic update transaction, which a done target now always takes) and the
-// PR-merged advance (its own write transaction); each propagates the error
-// to the request — the webhooks answer 5xx, so the provider re-delivery is
-// the retry driver, and the HTTP write's caller retries the same request.
+// atomic update transaction, which a done target now always takes). Each
+// propagates an error to the request so the caller can retry the same request.
 //
 // Both halves are idempotent under retry, so a redelivery after a committed
 // failure converges instead of duplicating:
@@ -69,16 +66,16 @@ const (
 // transaction's fresh READ COMMITTED read, the CAS flips it before commit,
 // no survivor — or the done write commits first and the create's post-lock
 // re-read refuses the card with a 409.
-func (h *Handler) settleDoneCascadeInTx(ctx context.Context, q *db.Queries, oldIssue, newIssue db.Issue, entrySource string) ([]db.IssueDecision, error) {
+func (h *Handler) settleDoneCascadeInTx(ctx context.Context, q *db.Queries, oldIssue, newIssue db.Issue, actorType, entrySource string) ([]db.IssueDecision, error) {
 	if !oldIssue.ID.Valid || !newIssue.ID.Valid {
 		// Without both rows, the transaction cannot prove a status transition.
 		return nil, nil
 	}
-	// Settle legacy cards only when this write moves the issue into the done
-	// category, including custom statuses (MUL-6243). Metadata edits, repeated
-	// done writes, and transitions out of done must not backfill history.
-	if issuestatus.Effective(ctx, q, oldIssue.WorkspaceID, oldIssue.Status) == issuestatus.Done ||
-		issuestatus.Effective(ctx, q, newIssue.WorkspaceID, newIssue.Status) != issuestatus.Done {
+	// This is intentionally a narrow built-in transition, rather than a done
+	// category transition: only a human member's actual in_review -> done write
+	// closes the decision loop. Agent, webhook, custom-status, repeated, and
+	// non-review completion paths leave existing cards untouched.
+	if actorType != "member" || oldIssue.Status != "in_review" || newIssue.Status != "done" {
 		return nil, nil
 	}
 	flipped, err := q.CancelOpenIssueDecisionsForIssue(ctx, db.CancelOpenIssueDecisionsForIssueParams{
