@@ -960,23 +960,27 @@ func TestRefreshKnowledgeDaemonTokenRequiresBoundDaemonCredential(t *testing.T) 
 	if !afterExpiry.After(beforeExpiry) {
 		t.Fatalf("token expiry was not extended: before=%s after=%s", beforeExpiry, afterExpiry)
 	}
+	assertRejectedWithoutRenewal := func(req *http.Request) {
+		t.Helper()
+		var beforeExpiry time.Time
+		dbfx.QueryRow(t, `SELECT expires_at FROM daemon_token WHERE token_hash = $1`, tokenHash).Scan(&beforeExpiry)
+		testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, req).Want(http.StatusBadRequest)
+		var afterExpiry time.Time
+		dbfx.QueryRow(t, `SELECT expires_at FROM daemon_token WHERE token_hash = $1`, tokenHash).Scan(&afterExpiry)
+		if !afterExpiry.Equal(beforeExpiry) {
+			t.Fatalf("rejected request extended token expiry: before=%s after=%s", beforeExpiry, afterExpiry)
+		}
+	}
 	chunkedEmpty := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
 	chunkedEmpty.ContentLength = -1
 	chunkedEmpty = chunkedEmpty.WithContext(middleware.WithDaemonTokenHash(chunkedEmpty.Context(), tokenHash))
 	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, chunkedEmpty).Want(http.StatusOK)
-	var beforeInvalidExpiry time.Time
-	dbfx.QueryRow(t, `SELECT expires_at FROM daemon_token WHERE token_hash = $1`, tokenHash).Scan(&beforeInvalidExpiry)
-	for _, body := range []string{"{}{}", "{} trailing"} {
+	for _, body := range []string{"{}{}", "{} trailing", "{"} {
 		invalidRequest := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
 		invalidRequest.Body = io.NopCloser(strings.NewReader(body))
 		invalidRequest.ContentLength = int64(len(body))
 		invalidRequest = invalidRequest.WithContext(middleware.WithDaemonTokenHash(invalidRequest.Context(), tokenHash))
-		testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, invalidRequest).Want(http.StatusBadRequest)
-	}
-	var afterInvalidExpiry time.Time
-	dbfx.QueryRow(t, `SELECT expires_at FROM daemon_token WHERE token_hash = $1`, tokenHash).Scan(&afterInvalidExpiry)
-	if !afterInvalidExpiry.Equal(beforeInvalidExpiry) {
-		t.Fatalf("invalid request extended token expiry: before=%s after=%s", beforeInvalidExpiry, afterInvalidExpiry)
+		assertRejectedWithoutRenewal(invalidRequest)
 	}
 	for _, body := range []map[string]any{
 		{"daemon_id": "other-daemon"},
@@ -985,7 +989,7 @@ func TestRefreshKnowledgeDaemonTokenRequiresBoundDaemonCredential(t *testing.T) 
 	} {
 		identityRequest := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", body, testWorkspaceID, daemonID)
 		identityRequest = identityRequest.WithContext(middleware.WithDaemonTokenHash(identityRequest.Context(), tokenHash))
-		testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, identityRequest).Want(http.StatusBadRequest)
+		assertRejectedWithoutRenewal(identityRequest)
 	}
 
 	wrongHash := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
