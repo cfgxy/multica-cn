@@ -856,13 +856,14 @@ func TestDaemonKnowledgeOperations(t *testing.T) {
 		t.Fatalf("idempotent delete report: %+v", report)
 	}
 
-	// A read-only list failure must remain visible to the server for a later
-	// retry; delete and merge must never infer absence from recall stderr.
+	// A malformed read-only list must remain visible to the server for a later
+	// retry; delete and merge must never infer absence from recall stderr or
+	// write a merge target before parsing the source library.
 	fakeKnowledgeBdReplace(t, ultimate, map[string]string{
 		"delete-hard": "delete me", "merge-hard": "merge source",
 	})
-	if err := os.WriteFile(filepath.Join(ultimate, "FAIL_MEMORIES"), []byte("1"), 0o644); err != nil {
-		t.Fatalf("plant memories failure: %v", err)
+	if err := os.WriteFile(filepath.Join(ultimate, "MALFORMED_MEMORIES"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("plant malformed memories marker: %v", err)
 	}
 	fake.mu.Lock()
 	fake.plan.Workspaces[0].Operations = []KnowledgePlanOperation{
@@ -878,6 +879,9 @@ func TestDaemonKnowledgeOperations(t *testing.T) {
 		if report.OK || !strings.Contains(report.Error, "bd memories") {
 			t.Fatalf("hard memories report: %+v", report)
 		}
+	}
+	if state = fakeKnowledgeBdState(t, ultimate); state["delete-hard"] != "delete me" || state["merge-hard"] != "merge source" || state["target"] != "" {
+		t.Fatalf("malformed memories changed bd state: %v", state)
 	}
 }
 

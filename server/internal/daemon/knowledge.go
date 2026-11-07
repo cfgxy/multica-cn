@@ -426,6 +426,14 @@ func (d *Daemon) runKnowledgeOperation(ctx context.Context, operation KnowledgeP
 	if err := ensureBdReady(operation.UltimatePath); err != nil {
 		return fmt.Errorf("prepare ultimate directory: %w", err)
 	}
+	if operation.OperationType == "merge" {
+		// A merge writes its target before removing its sources. Prove the source
+		// library is readable first so a list, Dolt, or permission failure cannot
+		// leave a new target behind while reporting the operation as failed.
+		if _, err := bdListMemories(ctx, operation.UltimatePath); err != nil {
+			return fmt.Errorf("inspect memories before merging: %w", err)
+		}
+	}
 	switch operation.OperationType {
 	case "edit", "merge":
 		if err := bdRemember(ctx, operation.UltimatePath, operation.Key, operation.Content, operation.Actor); err != nil {
