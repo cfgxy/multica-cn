@@ -128,6 +128,12 @@ type Client struct {
 	legacyWorkspaceEndpointEnabled bool
 	issueGCBatchMu                 sync.Mutex
 	legacyIssueGCBatchEnabled      bool
+
+	// knowledgeTokenByWorkspace stores the short-lived daemon credentials issued
+	// by registration. They are separate from the profile PAT so knowledge
+	// callbacks receive the daemon identity required by the server.
+	knowledgeTokenMu          sync.RWMutex
+	knowledgeTokenByWorkspace map[string]string
 }
 
 // BranchAdoptionOwner is the server-authoritative identity a local daemon uses
@@ -170,11 +176,12 @@ func (c *Client) AuthorizeBranchAdoption(ctx context.Context, continuationTaskID
 // NewClient creates a new daemon API client.
 func NewClient(baseURL string) *Client {
 	return &Client{
-		baseURL:      baseURL,
-		client:       &http.Client{Timeout: 30 * time.Second, Transport: cloneDefaultTransport()},
-		bundleClient: &http.Client{},
-		platform:     "daemon",
-		os:           normalizeGOOS(runtime.GOOS),
+		baseURL:                   baseURL,
+		client:                    &http.Client{Timeout: 30 * time.Second, Transport: cloneDefaultTransport()},
+		bundleClient:              &http.Client{},
+		platform:                  "daemon",
+		os:                        normalizeGOOS(runtime.GOOS),
+		knowledgeTokenByWorkspace: make(map[string]string),
 	}
 }
 
@@ -274,6 +281,28 @@ func (c *Client) SetToken(token string) {
 // Token returns the current auth token.
 func (c *Client) Token() string {
 	return c.token
+}
+
+// SetKnowledgeToken records the registration credential for one workspace.
+// The raw token stays in daemon memory and is never logged or persisted.
+func (c *Client) SetKnowledgeToken(workspaceID, token string) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	token = strings.TrimSpace(token)
+	if workspaceID == "" || token == "" {
+		return
+	}
+	c.knowledgeTokenMu.Lock()
+	defer c.knowledgeTokenMu.Unlock()
+	if c.knowledgeTokenByWorkspace == nil {
+		c.knowledgeTokenByWorkspace = make(map[string]string)
+	}
+	c.knowledgeTokenByWorkspace[workspaceID] = token
+}
+
+func (c *Client) knowledgeToken(workspaceID string) string {
+	c.knowledgeTokenMu.RLock()
+	defer c.knowledgeTokenMu.RUnlock()
+	return c.knowledgeTokenByWorkspace[workspaceID]
 }
 
 func (c *Client) ClaimTask(ctx context.Context, runtimeID string) (*Task, error) {
@@ -1067,6 +1096,7 @@ type RegisterResponse struct {
 	Repos        []RepoData      `json:"repos"`
 	ReposVersion string          `json:"repos_version"`
 	Settings     json.RawMessage `json:"settings,omitempty"`
+	DaemonToken  string          `json:"daemon_token,omitempty"`
 }
 
 func (c *Client) Register(ctx context.Context, req map[string]any) (*RegisterResponse, error) {
