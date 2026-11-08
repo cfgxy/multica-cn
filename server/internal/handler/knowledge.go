@@ -633,10 +633,11 @@ func (h *Handler) PostKnowledgeEntryLifecycle(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var body struct {
-		State       string `json:"state"`
-		Reason      string `json:"reason"`
-		EvidenceRef string `json:"evidence_ref"`
-		Writeback   bool   `json:"writeback"`
+		State              string `json:"state"`
+		Reason             string `json:"reason"`
+		EvidenceRef        string `json:"evidence_ref"`
+		ReplacementEntryID string `json:"replacement_entry_id"`
+		Writeback          bool   `json:"writeback"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "state, reason, and a locatable evidence_ref are required")
@@ -670,6 +671,29 @@ FOR UPDATE OF e, d`, entryID, workspaceID).Scan(&previous, &contentSHA, &dirID, 
 		writeError(w, http.StatusBadRequest, "evidence_ref is not available in this knowledge scope")
 		return
 	}
+	var replacementEntryID pgtype.UUID
+	if replacement := strings.TrimSpace(body.ReplacementEntryID); replacement != "" {
+		if body.State != "superseded" && body.State != "duplicate" {
+			writeError(w, http.StatusBadRequest, "replacement_entry_id is only valid for superseded or duplicate lifecycle states")
+			return
+		}
+		parsed, err := util.ParseUUID(replacement)
+		if err != nil || parsed == entryID {
+			writeError(w, http.StatusBadRequest, "replacement_entry_id must identify a different entry in this knowledge directory")
+			return
+		}
+		var found int
+		if err := tx.QueryRow(r.Context(), `
+			SELECT 1 FROM knowledge_entry
+			WHERE id = $1 AND workspace_id = $2 AND dir_id = $3`, parsed, workspaceID, dirID).Scan(&found); errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusBadRequest, "replacement_entry_id is not available in this knowledge directory")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to verify replacement knowledge entry")
+			return
+		}
+		replacementEntryID = parsed
+	}
 	if _, err := tx.Exec(r.Context(), `
 	UPDATE knowledge_lifecycle_event
 	SET writeback_state = 'cancelled', writeback_error = 'superseded by a later Owner lifecycle decision', completed_at = now()
@@ -692,16 +716,16 @@ FOR UPDATE OF e, d`, entryID, workspaceID).Scan(&previous, &contentSHA, &dirID, 
 		versionID = currentVersionID
 	}
 	if _, err := tx.Exec(r.Context(), `
-UPDATE knowledge_entry SET lifecycle_state = $3, replacement_entry_id = NULL,
-    writeback_state = $4, writeback_error = '' WHERE id = $1 AND workspace_id = $2`,
-		entryID, workspaceID, body.State, writebackState); err != nil {
+	UPDATE knowledge_entry SET lifecycle_state = $3, replacement_entry_id = $4,
+	    writeback_state = $5, writeback_error = '' WHERE id = $1 AND workspace_id = $2`,
+		entryID, workspaceID, body.State, replacementEntryID, writebackState); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update knowledge lifecycle")
 		return
 	}
 	_, err = tx.Exec(r.Context(), `
 INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, replacement_entry_id, version_id, expected_content_sha256, writeback_state, actor_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10, $11, NULLIF($12, '')::uuid)`,
-		workspaceID, entryID, previous, body.State, operation, strings.TrimSpace(body.Reason), evidence.canonical, pgtype.UUID{}, versionID, expectedContentSHA, writebackState, userID)
+		workspaceID, entryID, previous, body.State, operation, strings.TrimSpace(body.Reason), evidence.canonical, replacementEntryID, versionID, expectedContentSHA, writebackState, userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record knowledge lifecycle")
 		return

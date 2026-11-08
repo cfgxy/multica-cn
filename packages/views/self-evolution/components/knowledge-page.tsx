@@ -331,6 +331,9 @@ export function KnowledgePageBody({ wsId }: { wsId: string }) {
         entry={openEntry}
         entries={entryCandidates.data ?? []}
         ultimateDirIds={new Set(dirList.filter((dir) => dir.kind === "ultimate").map((dir) => dir.id))}
+        replacementEntries={(replacementEntries.data ?? []).filter(
+          (candidate) => candidate.id !== openEntry?.id,
+        )}
         isOpen={openEntry !== null}
         canManage={canManage}
         dirLabel={dirLabel}
@@ -535,6 +538,7 @@ function KnowledgeEntryDialog({
   entry,
   entries,
   ultimateDirIds,
+  replacementEntries,
   isOpen,
   canManage,
   dirLabel,
@@ -560,6 +564,7 @@ function KnowledgeEntryDialog({
   entry: KnowledgeEntry | null;
   entries: KnowledgeEntry[];
   ultimateDirIds: Set<string>;
+  replacementEntries: KnowledgeEntry[];
   isOpen: boolean;
   canManage: boolean;
   dirLabel: (id: string) => string;
@@ -736,6 +741,7 @@ function KnowledgeEntryDialog({
                 {mode === "read" && canManage ? (
                   <KnowledgeLifecycleActions
                     entry={entry}
+                    replacementEntries={replacementEntries}
                     versions={versions}
                     pending={lifecycleWritePending}
                     writebackAllowed={writebackAllowed}

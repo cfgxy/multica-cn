@@ -519,7 +519,6 @@ func TestDaemonKnowledgeSourceDeletedReappearance(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(source, ".beads"), 0o755); err != nil {
 		t.Fatalf("seed .beads: %v", err)
 	}
-	fakeKnowledgeBdReplace(t, source, map[string]string{"tip": "stable"})
 
 	plan := KnowledgePlan{Workspaces: []KnowledgePlanWorkspace{{
 		WorkspaceID: "ws-1",
@@ -531,14 +530,31 @@ func TestDaemonKnowledgeSourceDeletedReappearance(t *testing.T) {
 	}}}
 	fake := newFakeKnowledgeServer(t, plan)
 	d := newKnowledgeTestDaemon(t, fake)
+	// 已删除且仍缺失的 key 不构成新的 source 变化。服务端为审计和恢复保留镜像
+	// 记录，也不能因此让 scheduled synchronization 永久保持活跃。
 	if err := d.knowledgeSync(context.Background()); err != nil {
-		t.Fatalf("cycle: %v", err)
+		t.Fatalf("absent cycle: %v", err)
 	}
 	posted := fake.posted(t)
-	if len(posted) != 1 || len(posted[0].Scans) != 1 {
+	for _, report := range posted {
+		if len(report.Scans) != 0 {
+			t.Fatalf("未重现的删除项不应上报扫描：%+v", posted)
+		}
+	}
+
+	fakeKnowledgeBdReplace(t, source, map[string]string{"tip": "stable"})
+	if err := d.knowledgeSync(context.Background()); err != nil {
+		t.Fatalf("restored cycle: %v", err)
+	}
+	posted = fake.posted(t)
+	var scans []KnowledgeScanReport
+	for _, report := range posted {
+		scans = append(scans, report.Scans...)
+	}
+	if len(scans) != 1 {
 		t.Fatalf("恢复扫描上报=%+v，期望一条扫描", posted)
 	}
-	scan := posted[0].Scans[0]
+	scan := scans[0]
 	if !scan.OK || scan.Unchanged || scan.TriggerSource != "scheduled" || scan.Memories["tip"] != "stable" {
 		t.Fatalf("恢复扫描=%+v，期望 scheduled 全量 source 上报", scan)
 	}

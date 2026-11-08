@@ -400,7 +400,13 @@ func knowledgeMirrorChanged(mirror map[string]string, sourceDeleted map[string]b
 			return true
 		}
 	}
-	if len(mirror) != len(memories) {
+	activeEntries := 0
+	for key := range mirror {
+		if !sourceDeleted[key] {
+			activeEntries++
+		}
+	}
+	if activeEntries != len(memories) {
 		return true
 	}
 	for key, content := range memories {

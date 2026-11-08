@@ -11,17 +11,37 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/multica-ai/multica/server/internal/knowledgegovernance"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // --- shared fixtures ---------------------------------------------------------
+
+type failNextGovernanceBegin struct {
+	*pgxpool.Pool
+	fail bool
+}
+
+func (db *failNextGovernanceBegin) Begin(ctx context.Context) (pgx.Tx, error) {
+	if db.fail {
+		db.fail = false
+		return nil, errors.New("transient report persistence failure")
+	}
+	return db.Pool.Begin(ctx)
+}
 
 // registerKnowledgeDir registers one directory (no scan happens in-process)
 // and registers cleanup for its mirror rows, batches and the directory.
@@ -237,6 +257,72 @@ func TestKnowledgeGovernanceRunWaitsForWorkspaceDeleteFence(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT count(*) FROM agent_task_queue WHERE id = $1 AND issue_id IS NULL`, outcome.stats.TaskID).Scan(&taskCount)
 	if taskCount != 1 {
 		t.Fatalf("expected one issue-less governance task, got %d", taskCount)
+	}
+}
+
+func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	ctx := context.Background()
+	dirID := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
+
+	var agentID string
+	err := testPool.QueryRow(ctx, `
+		SELECT agent_id::text FROM retrospective_config
+		WHERE workspace_id = $1 AND enabled = TRUE LIMIT 1`, testWorkspaceID).Scan(&agentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		dbfx.QueryRow(t, `SELECT id::text FROM agent WHERE workspace_id = $1 ORDER BY created_at LIMIT 1`, testWorkspaceID).Scan(&agentID)
+		dbfx.InsertNoID(t, "retrospective_config", testutil.Cols{
+			"workspace_id": testWorkspaceID, "enabled": true, "include_in_review": false, "window_days": 7, "agent_id": agentID,
+		}, "workspace_id = $1", testWorkspaceID)
+	} else if err != nil {
+		t.Fatalf("read governance execution agent: %v", err)
+	}
+
+	runner := &knowledgegovernance.Runner{
+		DB:      testPool,
+		Queries: testHandler.Queries,
+		Enqueue: testHandler.KnowledgeGovernanceTaskEnqueuer(),
+	}
+	started, err := runner.RunWorkspace(ctx, testWorkspaceID, dirID, testUserID, "manual")
+	if err != nil {
+		t.Fatalf("start governance run: %v", err)
+	}
+	taskID := util.MustParseUUID(started.TaskID)
+	task, err := testHandler.Queries.GetAgentTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("read governance task: %v", err)
+	}
+	output := `{"findings":[],"backup_reference":"no writeback authorized"}`
+	result, err := json.Marshal(protocol.TaskCompletedPayload{TaskID: started.TaskID, Output: output})
+	if err != nil {
+		t.Fatalf("marshal completed task result: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'completed', result = $1::jsonb WHERE id = $2`, result, taskID); err != nil {
+		t.Fatalf("complete governance task: %v", err)
+	}
+	task.Status = "completed"
+	task.Result = result
+
+	failingRunner := &knowledgegovernance.Runner{
+		DB:      &failNextGovernanceBegin{Pool: testPool, fail: true},
+		Queries: testHandler.Queries,
+	}
+	settled, err := failingRunner.ProcessTaskTerminal(ctx, task, output, "")
+	if err == nil || settled == nil || settled.Status != "failed" {
+		t.Fatalf("persist failure settlement stats=%+v err=%v, want failed run and diagnostic error", settled, err)
+	}
+	var status, reason string
+	if err := testPool.QueryRow(ctx, `
+		SELECT status, report->>'reason' FROM knowledge_governance_run WHERE id = $1`, started.RunID).Scan(&status, &reason); err != nil {
+		t.Fatalf("read failed governance run: %v", err)
+	}
+	if status != "failed" || reason != "report_persistence_failed" {
+		t.Fatalf("persist failure run status=%q reason=%q, want failed/report_persistence_failed", status, reason)
+	}
+	if _, err := runner.RunWorkspace(ctx, testWorkspaceID, dirID, testUserID, "retry"); err != nil {
+		t.Fatalf("failed run must release directory scope for retry: %v", err)
 	}
 }
 
@@ -1033,6 +1119,74 @@ func TestKnowledgeLifecycleEvidenceReferencesAreScopedAndResolvable(t *testing.T
 		ORDER BY created_at DESC LIMIT 1`, entry.ID).Scan(&stored)
 	if stored != "code:pr:"+prID+"@"+sha {
 		t.Fatalf("stored code evidence_ref = %q, want canonical SHA reference", stored)
+	}
+}
+
+func TestKnowledgeLifecycleReplacementEntryStaysWithinKnowledgeDirectory(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-under-test"
+
+	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/lifecycle-replacement-contract")
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{
+				"retired":     "outdated deployment guidance",
+				"replacement": "current SSH deployment guidance",
+			},
+		}},
+	})
+	entry := knowledgeEntryByKey(t, candidate, "retired")
+	replacement := knowledgeEntryByKey(t, candidate, "replacement")
+	evidenceRef := "knowledge_scan_batch:" + knowledgeScanBatchID(t, candidate)
+
+	for _, state := range []string{"superseded", "duplicate"} {
+		testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
+			withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/lifecycle", map[string]any{
+				"state": state, "reason": "Owner selected the current guidance", "evidence_ref": evidenceRef,
+				"replacement_entry_id": replacement.ID,
+			}), "id", entry.ID)).Want(http.StatusAccepted)
+
+		var entryReplacement, eventReplacement string
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT replacement_entry_id::text FROM knowledge_entry WHERE id = $1`, entry.ID).Scan(&entryReplacement); err != nil {
+			t.Fatalf("read %s entry replacement: %v", state, err)
+		}
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT replacement_entry_id::text FROM knowledge_lifecycle_event
+			WHERE entry_id = $1 AND to_state = $2 ORDER BY created_at DESC LIMIT 1`, entry.ID, state).Scan(&eventReplacement); err != nil {
+			t.Fatalf("read %s event replacement: %v", state, err)
+		}
+		if entryReplacement != replacement.ID || eventReplacement != replacement.ID {
+			t.Fatalf("%s replacement entry=%q event=%q, want %q", state, entryReplacement, eventReplacement, replacement.ID)
+		}
+	}
+
+	otherDir := registerKnowledgeDir(t, "candidate_cli", "/tmp/lifecycle-replacement-other-dir")
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": otherDir, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"other": "another directory entry"},
+		}},
+	})
+	otherDirEntry := knowledgeEntryByKey(t, otherDir, "other")
+	foreignWorkspaceID := dbfx.Workspace(t, "Foreign replacement workspace", handlerTestSlug("foreign-replacement"))
+	foreignDirID := dbfx.Insert(t, "knowledge_dir", testutil.Cols{
+		"workspace_id": foreignWorkspaceID, "kind": "candidate_cli", "path": "/tmp/foreign-replacement", "label": "foreign",
+	})
+	foreignEntryID := dbfx.Insert(t, "knowledge_entry", testutil.Cols{
+		"workspace_id": foreignWorkspaceID, "dir_id": foreignDirID, "key": "foreign", "content": "foreign guidance",
+		"content_sha256": strings.Repeat("f", 64),
+	})
+
+	for _, invalidReplacement := range []string{entry.ID, otherDirEntry.ID, foreignEntryID} {
+		testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
+			withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/lifecycle", map[string]any{
+				"state": "superseded", "reason": "must reject an out-of-scope replacement", "evidence_ref": evidenceRef,
+				"replacement_entry_id": invalidReplacement,
+			}), "id", entry.ID)).Want(http.StatusBadRequest)
 	}
 }
 

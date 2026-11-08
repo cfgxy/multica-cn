@@ -3507,4 +3507,23 @@ describe("ApiClient knowledge lifecycle compatibility", () => {
     await expect(client.updateKnowledgeEntryLifecycle("entry-1", { state: "needs_review", reason: "obsolete", evidence_ref: "issue:00000000-0000-0000-0000-000000000916" })).resolves.toEqual({ status: "" });
     await expect(client.restoreKnowledgeEntry("entry-1", { version_id: "version-1", reason: "restore", evidence_ref: "issue:00000000-0000-0000-0000-000000000916" })).resolves.toEqual({ status: "", version: 0 });
   });
+
+  it("serializes lifecycle replacement entries", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: "not_requested" }), {
+      status: 202,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await client.updateKnowledgeEntryLifecycle("entry-1", {
+      state: "superseded",
+      reason: "Replaced by current guidance",
+      evidence_ref: "issue:00000000-0000-0000-0000-000000000916",
+      replacement_entry_id: "entry-2",
+    });
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({ replacement_entry_id: "entry-2" });
+  });
 });

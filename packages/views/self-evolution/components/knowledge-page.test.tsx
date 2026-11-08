@@ -538,6 +538,47 @@ describe("KnowledgePageBody", () => {
     }, expect.anything());
   });
 
+  it("submits a same-directory replacement for superseded and duplicate entries", async () => {
+    m.role = "owner";
+    m.dirs = [dirFixture()];
+    m.entries = [
+      entryFixture(),
+      entryFixture({ id: "entry-2", key: "ssh-guidance", content: "Use SSH transport." }),
+    ];
+    mount();
+
+    await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
+    const drawer = await screen.findByTestId("knowledge-entry-drawer");
+    await userEvent.type(within(drawer).getByPlaceholderText("Reason"), "Replaced by SSH guidance");
+    await userEvent.type(
+      within(drawer).getByPlaceholderText("Evidence reference"),
+      "issue:00000000-0000-0000-0000-000000000916",
+    );
+    await userEvent.click(within(drawer).getByRole("combobox", { name: "Lifecycle" }));
+    await userEvent.click(screen.getByRole("option", { name: "Superseded" }));
+    await userEvent.click(within(drawer).getByRole("combobox", { name: "Replacement" }));
+    await userEvent.click(screen.getByRole("option", { name: "ssh-guidance" }));
+    await userEvent.click(within(drawer).getByRole("button", { name: "Apply lifecycle" }));
+
+    expect(m.updateLifecycleMutate).toHaveBeenLastCalledWith({
+      id: "entry-1",
+      data: {
+        state: "superseded",
+        reason: "Replaced by SSH guidance",
+        evidence_ref: "issue:00000000-0000-0000-0000-000000000916",
+        replacement_entry_id: "entry-2",
+      },
+    }, expect.anything());
+
+    await userEvent.click(within(drawer).getByRole("combobox", { name: "Lifecycle" }));
+    await userEvent.click(screen.getByRole("option", { name: "Duplicate" }));
+    await userEvent.click(within(drawer).getByRole("button", { name: "Apply lifecycle" }));
+    expect(m.updateLifecycleMutate).toHaveBeenLastCalledWith({
+      id: "entry-1",
+      data: expect.objectContaining({ state: "duplicate", replacement_entry_id: "entry-2" }),
+    }, expect.anything());
+  });
+
   it("submits physical writeback only for an enabled managed source", async () => {
     m.role = "owner";
     m.dirs = [dirFixture({ managed_active: true })];

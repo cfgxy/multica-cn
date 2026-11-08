@@ -1382,6 +1382,7 @@ export interface UpdateKnowledgeLifecycleRequest {
   state: "needs_review" | "superseded" | "deprecated" | "invalid" | "duplicate";
   reason: string;
   evidence_ref: string;
+  replacement_entry_id?: string;
   writeback?: boolean;
 }
 

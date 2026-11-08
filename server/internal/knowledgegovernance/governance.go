@@ -16,6 +16,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 const (
@@ -218,7 +219,7 @@ ORDER BY d.workspace_id ASC, d.created_at ASC, d.id ASC`)
 }
 
 // ReconcileStaleRuns is the scheduler backstop for runs whose task reached a
-// failed terminal state without the task lifecycle hook, or was never linked.
+// terminal state without the task lifecycle hook, or was never linked.
 func (r *Runner) ReconcileStaleRuns(ctx context.Context) (int64, error) {
 	terminalResult, err := r.DB.Exec(ctx, `
 UPDATE knowledge_governance_run r
@@ -243,7 +244,50 @@ WHERE status = 'running'
 	if err != nil {
 		return terminalResult.RowsAffected(), fmt.Errorf("knowledge governance: reconcile unenqueued runs: %w", err)
 	}
-	return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected(), nil
+	if r.Queries == nil {
+		return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected(), errors.New("knowledge governance: runner queries are not wired")
+	}
+	rows, err := r.DB.Query(ctx, `
+	SELECT t.id
+	FROM knowledge_governance_run r
+	JOIN agent_task_queue t ON t.id = r.task_id
+	WHERE r.status = 'running' AND t.status = 'completed'`)
+	if err != nil {
+		return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected(), fmt.Errorf("knowledge governance: find completed runs: %w", err)
+	}
+	defer rows.Close()
+	var completedTaskIDs []pgtype.UUID
+	for rows.Next() {
+		var taskID pgtype.UUID
+		if err := rows.Scan(&taskID); err != nil {
+			return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected(), fmt.Errorf("knowledge governance: scan completed run: %w", err)
+		}
+		completedTaskIDs = append(completedTaskIDs, taskID)
+	}
+	if err := rows.Err(); err != nil {
+		return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected(), fmt.Errorf("knowledge governance: iterate completed runs: %w", err)
+	}
+
+	replayed := int64(0)
+	for _, taskID := range completedTaskIDs {
+		task, err := r.Queries.GetAgentTask(ctx, taskID)
+		if err != nil {
+			return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected() + replayed, fmt.Errorf("knowledge governance: read completed task: %w", err)
+		}
+		var payload protocol.TaskCompletedPayload
+		taskErr := ""
+		if err := json.Unmarshal(task.Result, &payload); err != nil {
+			taskErr = "invalid persisted completion result"
+		}
+		stats, err := r.ProcessTaskTerminal(ctx, task, payload.Output, taskErr)
+		if err != nil {
+			return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected() + replayed, fmt.Errorf("knowledge governance: replay completed task: %w", err)
+		}
+		if stats != nil {
+			replayed++
+		}
+	}
+	return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected() + replayed, nil
 }
 
 func (r *Runner) RunWorkspace(ctx context.Context, workspaceID, dirID, actorID, trigger string) (*RunStats, error) {
@@ -410,10 +454,13 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 	}
 	persisted, err := r.persistReport(ctx, runID, ws, tc, report)
 	if err != nil {
-		// Keep the run running. The terminal task row retains the immutable output,
-		// so a duplicate callback or terminal recovery can retry persistence without
-		// accepting a different report or permanently losing the result.
-		return nil, fmt.Errorf("knowledge governance: persist report: %w", err)
+		// 已完成任务通常不会再次触发此 hook。先结束 run 以释放目录 scope 并允许
+		// 重试；若收束写入也失败，ReconcileStaleRuns 会在之后重放 task.Result。
+		finishErr := r.finish(ctx, runID, ws, "failed", map[string]any{"reason": "report_persistence_failed"})
+		if finishErr != nil {
+			return nil, fmt.Errorf("knowledge governance: persist report: %w; finish failed: %v", err, finishErr)
+		}
+		return &RunStats{RunID: tc.RunID, Status: "failed"}, fmt.Errorf("knowledge governance: persist report: %w", err)
 	}
 	if !persisted {
 		return nil, nil
