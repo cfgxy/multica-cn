@@ -83,7 +83,7 @@ func TestExtractIdentifiers(t *testing.T) {
 	}
 }
 
-func TestUpdateIssueRejectsInReviewWhileLinkedPRIsDraft(t *testing.T) {
+func TestUpdateIssueAllowsInReviewWhileLinkedPRIsDraft(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -113,19 +113,26 @@ func TestUpdateIssueRejectsInReviewWhileLinkedPRIsDraft(t *testing.T) {
 	req = withURLParam(req, "id", issueID)
 	rec := httptest.NewRecorder()
 	testHandler.UpdateIssue(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("UpdateIssue status=%d body=%s, want 409", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("UpdateIssue status=%d body=%s, want 200", rec.Code, rec.Body.String())
 	}
 	var status string
 	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status != "in_progress" {
-		t.Fatalf("issue status changed to %q after rejected transition", status)
+	if status != "in_review" {
+		t.Fatalf("issue status = %q, want in_review", status)
+	}
+	linked, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("list linked PRs: %v", err)
+	}
+	if len(linked) != 1 || linked[0].State != "draft" {
+		t.Fatalf("linked PR mirror = %+v, want one draft PR", linked)
 	}
 }
 
-func TestBatchUpdateIssuesRejectsInReviewWhileLinkedPRIsDraft(t *testing.T) {
+func TestBatchUpdateIssuesAllowsInReviewWhileLinkedPRIsDraft(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -156,19 +163,26 @@ func TestBatchUpdateIssuesRejectsInReviewWhileLinkedPRIsDraft(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 	testHandler.BatchUpdateIssues(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("BatchUpdateIssues status=%d body=%s, want 409", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("BatchUpdateIssues status=%d body=%s, want 200", rec.Code, rec.Body.String())
 	}
 	var status string
 	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	if status != "in_progress" {
-		t.Fatalf("issue status changed to %q after rejected batch transition", status)
+	if status != "in_review" {
+		t.Fatalf("issue status = %q, want in_review", status)
+	}
+	linked, err := testHandler.Queries.ListPullRequestsByIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("list linked PRs: %v", err)
+	}
+	if len(linked) != 1 || linked[0].State != "draft" {
+		t.Fatalf("linked PR mirror = %+v, want one draft PR", linked)
 	}
 }
 
-func TestUpdateIssueRejectsInReviewWhileLinkedVCSReviewIsDraft(t *testing.T) {
+func TestUpdateIssueAllowsInReviewWhileLinkedVCSReviewIsDraft(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -206,8 +220,22 @@ func TestUpdateIssueRejectsInReviewWhileLinkedVCSReviewIsDraft(t *testing.T) {
 	req := withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{"status": "in_review"}), "id", issueID)
 	rec := httptest.NewRecorder()
 	testHandler.UpdateIssue(rec, req)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("UpdateIssue with draft VCS PR status=%d body=%s, want 409", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("UpdateIssue with draft VCS PR status=%d body=%s, want 200", rec.Code, rec.Body.String())
+	}
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "in_review" {
+		t.Fatalf("issue status = %q, want in_review", status)
+	}
+	linked, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("list linked VCS reviews: %v", err)
+	}
+	if len(linked) != 1 || linked[0].State != "draft" {
+		t.Fatalf("linked VCS review mirror = %+v, want one draft review", linked)
 	}
 }
 

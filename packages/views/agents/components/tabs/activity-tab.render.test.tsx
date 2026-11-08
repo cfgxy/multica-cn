@@ -29,7 +29,8 @@ vi.mock("@multica/core/api", () => ({ api: {} }));
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({
     issueDetail: (id: string) => `/acme/issues/${id}`,
-    selfEvolutionProposals: () => "/acme/self-evolution/proposals",
+    selfEvolutionProposals: () => "/acme/self-evolution/clause-governance?tab=proposals",
+    selfEvolutionProposalRun: (runId: string) => `/acme/self-evolution/clause-governance?tab=proposals&run=${encodeURIComponent(runId)}`,
   }),
 }));
 
@@ -158,7 +159,7 @@ describe("ActivityTab daily-retrospective runs (RUYI-673)", () => {
       name: /retrospective results/i,
     });
     expect(link.getAttribute("href")).toContain(
-      "/self-evolution/proposals?run=5b0e0000-0000-4000-8000-000000000001",
+      "/self-evolution/clause-governance?tab=proposals&run=5b0e0000-0000-4000-8000-000000000001",
     );
   });
 
@@ -211,7 +212,7 @@ describe("ActivityTab task experience receipts (RUYI-846)", () => {
     expect(await screen.findByText("Task experience receipt · applied")).toBeInTheDocument();
     expect(screen.getByText("use small verified steps")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Review proposal governance" }).getAttribute("href"))
-      .toBe("/acme/self-evolution/proposals");
+      .toBe("/acme/self-evolution/clause-governance?tab=proposals");
   });
 });
 

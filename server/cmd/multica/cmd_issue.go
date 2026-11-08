@@ -2147,21 +2147,35 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 
 func warnUnhandledCommentTriggers(result map[string]any) {
 	raw, ok := result["trigger_outcomes"].([]any)
-	if !ok {
-		return
+	if ok {
+		for _, item := range raw {
+			outcome, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			status := strVal(outcome, "status")
+			if status == "queued" || status == "coalesced" || status == "deferred" {
+				continue
+			}
+			fmt.Fprintf(os.Stderr,
+				"Warning: comment was saved, but %s %s was not triggered (%s).\n",
+				strVal(outcome, "target_type"), strVal(outcome, "target_id"), strVal(outcome, "reason_code"))
+		}
 	}
-	for _, item := range raw {
-		outcome, ok := item.(map[string]any)
+	warnings, _ := result["invalid_mentions"].([]any)
+	for _, item := range warnings {
+		warning, ok := item.(map[string]any)
 		if !ok {
 			continue
 		}
-		status := strVal(outcome, "status")
-		if status == "queued" || status == "coalesced" || status == "deferred" {
+		start, startOK := warning["start"].(float64)
+		end, endOK := warning["end"].(float64)
+		if !startOK || !endOK || start < 0 || end <= start {
 			continue
 		}
 		fmt.Fprintf(os.Stderr,
-			"Warning: comment was saved, but %s %s was not triggered (%s).\n",
-			strVal(outcome, "target_type"), strVal(outcome, "target_id"), strVal(outcome, "reason_code"))
+			"Warning: comment was saved, but the agent mention at UTF-8 byte range [%d,%d) was not recognized and triggered no agent.\n",
+			int(start), int(end))
 	}
 }
 

@@ -1269,13 +1269,14 @@ func TestPreviewCommentTriggers_MalformedMentionIDDoesNotPanic(t *testing.T) {
 				t.Fatalf("blocked reason = %q, want %q", blocked.ReasonCode, tc.reason)
 			}
 
-			// Invalid agent links now fail before write; squad links retain
-			// the old successful comment with a blocked outcome.
-			if tc.targetType == "agent" {
-				testutil.Call(t, testHandler.CreateComment,
-					withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": tc.content}), "id", issueID)).Want(http.StatusUnprocessableEntity)
-			} else {
-				postCommentForTriggerPreviewTest(t, issueID, map[string]any{"content": tc.content})
+			// Create mirrors preview: the comment saves and the malformed parsed
+			// target receives the same blocked outcome without triggering a run.
+			var created CommentResponse
+			testutil.Call(t, testHandler.CreateComment,
+				withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": tc.content}), "id", issueID)).Want(http.StatusCreated).JSON(&created)
+			outcome := findCommentOutcome(t, created.TriggerOutcomes, tc.targetID)
+			if outcome.TargetType != tc.targetType || outcome.Status != DispatchBlocked || outcome.ReasonCode != tc.reason {
+				t.Fatalf("create outcome = %+v, want %s blocked/%s", outcome, tc.targetType, tc.reason)
 			}
 			if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 0 {
 				t.Fatalf("assignee queued tasks = %d, want 0", got)

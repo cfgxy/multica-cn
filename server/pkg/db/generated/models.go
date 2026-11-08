@@ -1077,6 +1077,7 @@ type DaemonToken struct {
 	DaemonID    string             `json:"daemon_id"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	OwnerID     pgtype.UUID        `json:"owner_id"`
 }
 
 type DecisionRequest struct {
@@ -2344,6 +2345,20 @@ type SeatCapacityOutbox struct {
 	DeadLetteredAt pgtype.Timestamptz `json:"dead_lettered_at"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Per-workspace JEV warn-only advisory config: endpoint, secretbox-encrypted API key, configured model and last safe connectivity result.
+type SelfEvolutionJevConfig struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	BaseUrl         string             `json:"base_url"`
+	ApiKeyEncrypted []byte             `json:"api_key_encrypted"`
+	Model           string             `json:"model"`
+	TimeoutMs       int32              `json:"timeout_ms"`
+	LastCheckedAt   pgtype.Timestamptz `json:"last_checked_at"`
+	LastCheckOk     pgtype.Bool        `json:"last_check_ok"`
+	LastCheckError  string             `json:"last_check_error"`
+	LastEngine      string             `json:"last_engine"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 // Self-evolution module model-service config per workspace (RUYI-551): gateway base_url/model, secretbox-encrypted API key, scoring switch, last validation outcome. Module config outranks the deploy default.

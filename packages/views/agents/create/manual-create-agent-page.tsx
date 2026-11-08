@@ -58,6 +58,7 @@ export function ManualCreateAgentPage() {
     runtimesSettled: form.runtimesSettled,
     runtimes: form.runtimes,
     currentUserId: form.currentUserId,
+    currentUserRole: form.currentUserRole,
     fallbackRuntimeId: form.usableRuntimes[0]?.id ?? "",
     nameSuffix: t(($) => $.create_dialog.duplicate_copy_suffix),
     onSeed: (duplicated, runtimeReset) => {

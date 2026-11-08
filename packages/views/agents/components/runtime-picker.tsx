@@ -53,6 +53,8 @@ export function RuntimePicker({
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState<RuntimeFilter>("mine");
   const [search, setSearch] = useState("");
+  const currentUserRole =
+    members.find((member) => member.user_id === currentUserId)?.role ?? null;
 
   const getOwnerMember = (ownerId: string | null) => {
     if (!ownerId) return null;
@@ -68,8 +70,14 @@ export function RuntimePicker({
   // shared with agentSlotChoices via runtimeOfferableForBinding.
   const filteredRuntimes = useMemo(
     () =>
-      computeFilteredRuntimes(runtimes, filter, currentUserId, selectedRuntimeId),
-    [runtimes, filter, currentUserId, selectedRuntimeId],
+      computeFilteredRuntimes(
+        runtimes,
+        filter,
+        currentUserId,
+        currentUserRole,
+        selectedRuntimeId,
+      ),
+    [runtimes, filter, currentUserId, currentUserRole, selectedRuntimeId],
   );
 
   // Group the (searched) base list by machine so 20+ runtimes read as a
@@ -95,10 +103,16 @@ export function RuntimePicker({
   useEffect(() => {
     if (selectedRuntimeId !== "") return;
     const firstUsable = filteredRuntimes.find((r) =>
-      isRuntimeUsableForUser(r, currentUserId),
+      isRuntimeUsableForUser(r, currentUserId, currentUserRole),
     );
     if (firstUsable) onSelect(firstUsable.id);
-  }, [filteredRuntimes, selectedRuntimeId, currentUserId, onSelect]);
+  }, [
+    filteredRuntimes,
+    selectedRuntimeId,
+    currentUserId,
+    currentUserRole,
+    onSelect,
+  ]);
 
   // On filter toggle, recompute the picker's selection to a usable item
   // in the new filter set. Pushes `""` when nothing matches; the seeding
@@ -110,10 +124,11 @@ export function RuntimePicker({
       runtimes,
       next,
       currentUserId,
+      currentUserRole,
       selectedRuntimeId,
     );
     const firstUsable = nextList.find((r) =>
-      isRuntimeUsableForUser(r, currentUserId),
+      isRuntimeUsableForUser(r, currentUserId, currentUserRole),
     );
     onSelect(firstUsable?.id ?? "");
   };
@@ -249,6 +264,7 @@ export function RuntimePicker({
                     const disabled = !isRuntimeUsableForUser(
                       device,
                       currentUserId,
+                      currentUserRole,
                     );
                     const disabledTitle = disabled
                       ? t(($) => $.create_dialog.runtime_private_locked_tooltip)
@@ -336,6 +352,7 @@ function computeFilteredRuntimes(
   runtimes: RuntimeDevice[],
   filter: RuntimeFilter,
   currentUserId: string | null,
+  currentUserRole: MemberWithUser["role"] | null,
   keepRuntimeId?: string,
 ): RuntimeDevice[] {
   // §4.5 (RUYI-425): disabled instances offer no new bindings; the stored
@@ -352,8 +369,8 @@ function computeFilteredRuntimes(
     const bMine = b.owner_id === currentUserId;
     if (aMine && !bMine) return -1;
     if (!aMine && bMine) return 1;
-    const aUsable = isRuntimeUsableForUser(a, currentUserId);
-    const bUsable = isRuntimeUsableForUser(b, currentUserId);
+    const aUsable = isRuntimeUsableForUser(a, currentUserId, currentUserRole);
+    const bUsable = isRuntimeUsableForUser(b, currentUserId, currentUserRole);
     if (aUsable && !bUsable) return -1;
     if (!aUsable && bUsable) return 1;
     return 0;

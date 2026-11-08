@@ -22,17 +22,21 @@ func TestDaemonAuth_DaemonTokenCacheHit(t *testing.T) {
 
 	const rawToken = "mdt_cache_hit_test_token"
 	hash := auth.HashToken(rawToken)
+	const ownerID = "11111111-1111-4111-8111-111111111111"
 	cache.Set(context.Background(), hash, auth.DaemonTokenIdentity{
 		WorkspaceID: "ws-cached",
 		DaemonID:    "daemon-cached",
+		OwnerID:     ownerID,
 	}, auth.AuthCacheTTL)
 
-	var gotWS, gotDaemon, gotPath string
+	var gotWS, gotDaemon, gotPath, gotHash, gotOwner string
 	mw := DaemonAuth(nil, nil, cache, nil, nil) // nil queries — only safe on cache hit
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotWS = DaemonWorkspaceIDFromContext(r.Context())
 		gotDaemon = DaemonIDFromContext(r.Context())
 		gotPath = DaemonAuthPathFromContext(r.Context())
+		gotHash = DaemonTokenHashFromContext(r.Context())
+		gotOwner = DaemonTokenOwnerIDFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -49,6 +53,9 @@ func TestDaemonAuth_DaemonTokenCacheHit(t *testing.T) {
 	}
 	if gotPath != DaemonAuthPathDaemonToken {
 		t.Fatalf("expected auth path %q, got %q", DaemonAuthPathDaemonToken, gotPath)
+	}
+	if gotHash != hash || gotOwner != ownerID {
+		t.Fatalf("expected token hash/owner in context, got hash=%q owner=%q", gotHash, gotOwner)
 	}
 }
 
@@ -147,6 +154,30 @@ func TestDaemonAuth_StripsClientSuppliedActorSource(t *testing.T) {
 	}
 	if gotActorSource != "" {
 		t.Fatalf("X-Actor-Source must be cleared on the mdt_ path, got %q", gotActorSource)
+	}
+}
+
+func TestDaemonAuth_StripsForgedAgentIdentityHeaders(t *testing.T) {
+	var gotAgentID, gotTaskID string
+	mw := DaemonAuth(nil, nil, nil, nil, nil)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAgentID = r.Header.Get("X-Agent-ID")
+		gotTaskID = r.Header.Get("X-Task-ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/daemon/heartbeat", nil)
+	req.Header.Set("Authorization", "Bearer "+generateToken(validClaims(), auth.JWTSecret()))
+	req.Header.Set("X-Agent-ID", "11111111-1111-1111-1111-111111111111")
+	req.Header.Set("X-Task-ID", "22222222-2222-2222-2222-222222222222")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotAgentID != "" || gotTaskID != "" {
+		t.Fatalf("agent identity headers must be cleared on daemon auth paths, got agent=%q task=%q", gotAgentID, gotTaskID)
 	}
 }
 
@@ -284,7 +315,6 @@ func TestDaemonAuth_MCN_FleetUnreachable(t *testing.T) {
 		t.Fatalf("expected 503 when fleet is unavailable, got %d", w.Code)
 	}
 }
-
 
 // TestDaemonAuth_MCN_OwnerNotInLocalDB pins the new owner-existence
 // guard end-to-end through the middleware. Cloud verifies the token

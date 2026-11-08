@@ -142,8 +142,11 @@ export function AgentDetailInspector({
   });
 
   const isOnline = runtime?.status === "online";
+  const currentUserRole =
+    members.find((member) => member.user_id === currentUserId)?.role ?? null;
   const canReadRuntime =
-    runtime != null && isRuntimeUsableForUser(runtime, currentUserId);
+    runtime != null &&
+    isRuntimeUsableForUser(runtime, currentUserId, currentUserRole);
   const canDiscoverRuntimeModels = isOnline && canReadRuntime;
   const nameInvalid = name.trim().length === 0;
 
@@ -337,7 +340,12 @@ export function AgentDetailInspector({
               onSave={(next) => update({ max_concurrent_tasks: next })}
             />
           </SettingsRow>
-          <SubagentSettingRow agent={agent} canEdit={canEdit} update={update} />
+          <SubagentSettingRow
+            agent={agent}
+            provider={runtime?.provider ?? ""}
+            canEdit={canEdit}
+            update={update}
+          />
         </SettingsCard>
       </SettingsSection>
 
@@ -355,21 +363,24 @@ export function AgentDetailInspector({
 /**
  * Subagent tool allowance (runtime_config.allow_subagents). Lives in the
  * execution section because it gates what the agent's task process may do —
- * same family as concurrency — and defaults to denied (fail-closed) on the
- * daemon side. Saves immediately like the other single-purpose toggles.
+ * same family as concurrency. Missing configuration uses the provider default
+ * (Codex stays conservatively off); changing the switch writes an explicit
+ * true/false override. Saves immediately like the other single-purpose toggles.
  */
 function SubagentSettingRow({
   agent,
+  provider,
   canEdit,
   update,
 }: {
   agent: Agent;
+  provider: string;
   canEdit: boolean;
   update: (data: Record<string, unknown>) => Promise<void>;
 }) {
   const { t } = useT("agents");
   const [busy, setBusy] = useState(false);
-  const allowed = allowsSubagents(agent.runtime_config);
+  const allowed = allowsSubagents(agent.runtime_config, provider);
   const handleToggle = async (allow: boolean) => {
     setBusy(true);
     try {
@@ -390,7 +401,11 @@ function SubagentSettingRow({
   return (
     <SettingsRow
       label={t(($) => $.inspector.prop_subagents)}
-      description={t(($) => $.inspector.prop_subagents_hint)}
+      description={t(($) =>
+        provider === "codex"
+          ? $.inspector.prop_subagents_hint_codex
+          : $.inspector.prop_subagents_hint
+      )}
       align="start"
     >
       {canEdit && (

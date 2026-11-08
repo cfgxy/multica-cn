@@ -189,6 +189,81 @@ func TestClauseReviseKeepsCarrierStaticWithoutMarker(t *testing.T) {
 	}
 }
 
+func TestClauseRevisePreviewRejectsInvalidLegacyCarrierSnapshot(t *testing.T) {
+	preview := func(t *testing.T, f *clauseInjectionFixture, clauseID, name, content string) (int, string) {
+		t.Helper()
+		id := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, name, content, nil))
+		return legislationCall(t, testHandler.PreviewPromptProposal,
+			legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+id+"/preview", nil, "id", id))
+	}
+
+	t.Run("partial marker snapshot", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		_ = enactWorkspaceClause(t, f, "风险同步", "- **风险同步**：阻塞立即上报。")
+		var slug string
+		dbfx.QueryRow(t, `SELECT slug FROM clause WHERE id = $1`, clauseID).Scan(&slug)
+		carrier := clausemark.Render("# 工作原则\n", []clausemark.RenderedClause{{Slug: slug, Version: 1, Body: cleanClauseText}})
+		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, carrier)
+
+		code, body := preview(t, f, clauseID, "每日同步", "- **每日同步**：partial snapshot 必须阻断。")
+		if code != http.StatusConflict || !strings.Contains(body, "载体快照缺少活动条款") {
+			t.Fatalf("partial marker preview = %d: %s", code, body)
+		}
+	})
+
+	t.Run("malformed marker", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID,
+			"# 工作原则\n<!-- clause:id=cls_aaaaaaaa rev= -->\n")
+
+		code, body := preview(t, f, clauseID, "每日同步", "- **每日同步**：畸形 marker 必须阻断。")
+		if code != http.StatusConflict || !strings.Contains(body, "载体快照结构无效") {
+			t.Fatalf("malformed marker preview = %d: %s", code, body)
+		}
+	})
+
+	t.Run("tab-separated malformed marker", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID,
+			"# 工作原则\n<!--\tclause:id=cls_aaaaaaaa rev= -->\n")
+
+		code, body := preview(t, f, clauseID, "每日同步", "- **每日同步**：制表符畸形 marker 必须阻断。")
+		if code != http.StatusConflict || !strings.Contains(body, "载体快照结构无效") {
+			t.Fatalf("tab-separated malformed marker preview = %d: %s", code, body)
+		}
+	})
+
+	t.Run("marker version drift", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		var slug string
+		dbfx.QueryRow(t, `SELECT slug FROM clause WHERE id = $1`, clauseID).Scan(&slug)
+		carrier := clausemark.Render("# 工作原则\n", []clausemark.RenderedClause{{Slug: slug, Version: 99, Body: cleanClauseText}})
+		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, carrier)
+
+		code, body := preview(t, f, clauseID, "每日同步", "- **每日同步**：版本漂移必须阻断。")
+		if code != http.StatusConflict || !strings.Contains(body, "活动版本为 1") {
+			t.Fatalf("version-drift preview = %d: %s", code, body)
+		}
+	})
+
+	t.Run("target is no longer active", func(t *testing.T) {
+		f := newClauseInjectionFixture(t)
+		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		id := submitClauseOp(t, f, clauseOpBody(f.wsID, "revise_clause", clauseID, "每日同步", "- **每日同步**：失活目标必须阻断。", nil))
+		dbfx.Exec(t, `UPDATE clause SET status = 'deprecated' WHERE id = $1`, clauseID)
+
+		code, body := legislationCall(t, testHandler.PreviewPromptProposal,
+			legislationReq(f.memberID, f.wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+id+"/preview", nil, "id", id))
+		if code != http.StatusConflict || !strings.Contains(body, "当前状态为 deprecated") {
+			t.Fatalf("inactive target preview = %d: %s", code, body)
+		}
+	})
+}
+
 func directClauseRevisionRoute(h http.HandlerFunc) http.Handler {
 	return RequireHumanOrOAuthActor(middleware.RequireWorkspaceRole(testHandler.Queries, "owner")(h))
 }

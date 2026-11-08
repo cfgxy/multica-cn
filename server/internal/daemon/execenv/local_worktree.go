@@ -2828,12 +2828,16 @@ func runGitInput(dir, input string, args ...string) (string, error) {
 // runGitEnv is runGit with extra environment entries, for the one caller that
 // has to redirect GIT_INDEX_FILE.
 func runGitEnv(dir string, extraEnv []string, args ...string) (string, error) {
+	return runGitEnvWithBase(dir, os.Environ(), extraEnv, args...)
+}
+
+func runGitEnvWithBase(dir string, baseEnv, extraEnv []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 
 	full := append([]string{"-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
-	cmd.Env = append(gitMessageEnv(), extraEnv...)
+	cmd.Env = append(gitMessageEnvFrom(baseEnv), extraEnv...)
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -2849,7 +2853,10 @@ func runGitEnv(dir string, extraEnv []string, args ...string) (string, error) {
 // failed to prepare at all instead of falling back (RUYI-116). LANGUAGE has to
 // go too: gettext lets it override LC_ALL for message catalogues.
 func gitMessageEnv() []string {
-	env := os.Environ()
+	return gitMessageEnvFrom(os.Environ())
+}
+
+func gitMessageEnvFrom(env []string) []string {
 	out := env[:0:0]
 	for _, kv := range env {
 		switch {

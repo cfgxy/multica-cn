@@ -22,11 +22,12 @@ func TestDaemonRPCHandler_TasksClaim(t *testing.T) {
 	taskID := seedQueuedIssueTask(t, ctx, a, rt, i)
 
 	identity := daemonws.ClientIdentity{
-		DaemonID:     "ws-daemon",
-		UserID:       testUserID,
-		WorkspaceID:  testWorkspaceID,
-		WorkspaceIDs: []string{testWorkspaceID},
-		RuntimeIDs:   []string{rt},
+		DaemonID:           "ws-daemon",
+		DaemonTokenOwnerID: testUserID,
+		UserID:             testUserID,
+		WorkspaceID:        testWorkspaceID,
+		WorkspaceIDs:       []string{testWorkspaceID},
+		RuntimeIDs:         []string{rt},
 	}
 	body, _ := json.Marshal(map[string]any{
 		"daemon_id":   "ws-daemon",

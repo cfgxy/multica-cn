@@ -393,8 +393,9 @@ const COST_CELL_DAYS = 14;
 export function canReadRuntimeUsage(
   runtime: AgentRuntime,
   currentUserId: string | null,
+  currentUserRole: MemberWithUser["role"] | null = null,
 ): boolean {
-  return isRuntimeUsableForUser(runtime, currentUserId);
+  return isRuntimeUsableForUser(runtime, currentUserId, currentUserRole);
 }
 
 export function CostCell({
@@ -851,7 +852,11 @@ export function RuntimeList({
                 ) : (
                   <CostCell
                     runtimeId={row.runtime.id}
-                    enabled={canReadRuntimeUsage(row.runtime, user?.id ?? null)}
+                    enabled={canReadRuntimeUsage(
+                      row.runtime,
+                      user?.id ?? null,
+                      currentMember?.role ?? null,
+                    )}
                   />
                 )}
               </ListGridCell>

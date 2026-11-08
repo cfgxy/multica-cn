@@ -20,6 +20,7 @@ import {
 } from "@multica/core/runtimes";
 import {
   agentMcpServersOptions,
+  memberListOptions,
   workspaceMcpServersOptions,
 } from "@multica/core/workspace/queries";
 import {
@@ -77,8 +78,14 @@ export function McpConfigTab({
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { t } = useT("agents");
+  const { data: members = [] } = useQuery(
+    memberListOptions(agent.workspace_id ?? ""),
+  );
+  const currentUserRole =
+    members.find((member) => member.user_id === currentUserId)?.role ?? null;
   const canReadRuntime =
-    runtime != null && isRuntimeUsableForUser(runtime, currentUserId ?? null);
+    runtime != null &&
+    isRuntimeUsableForUser(runtime, currentUserId ?? null, currentUserRole);
   const runtimeId =
     runtime?.runtime_mode === "local" &&
     runtime.status === "online" &&

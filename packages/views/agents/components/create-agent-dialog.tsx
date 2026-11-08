@@ -84,6 +84,8 @@ export function CreateAgentDialog({
   const isDuplicate = !!template;
   const queryClient = useQueryClient();
   const wsId = useWorkspaceId();
+  const currentUserRole =
+    members.find((member) => member.user_id === currentUserId)?.role ?? null;
   // MUL-4010: rolls out the private / public_to access model in the create
   // flow to match the AccessPicker on the agent detail page. Shares the
   // `composio_mcp_apps` switch with the Composio rollout — the MUL-3963
@@ -157,7 +159,10 @@ export function CreateAgentDialog({
     const templateRuntime = template?.runtime_id
       ? runtimes.find((r) => r.id === template.runtime_id)
       : undefined;
-    if (templateRuntime && isRuntimeUsableForUser(templateRuntime, currentUserId)) {
+    if (
+      templateRuntime &&
+      isRuntimeUsableForUser(templateRuntime, currentUserId, currentUserRole)
+    ) {
       return templateRuntime.id;
     }
     return "";
@@ -170,7 +175,7 @@ export function CreateAgentDialog({
   // submit a request the backend will reject with 403.
   const selectedRuntimeLocked =
     selectedRuntime != null &&
-    !isRuntimeUsableForUser(selectedRuntime, currentUserId);
+    !isRuntimeUsableForUser(selectedRuntime, currentUserId, currentUserRole);
   const accessSelectionInvalid =
     accessPickerEnabled &&
     permissionMode === "public_to" &&

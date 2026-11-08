@@ -95,7 +95,11 @@ function makeRuntime(overrides: Partial<AgentRuntime> = {}): AgentRuntime {
 
 describe("canReadRuntimeUsage", () => {
   it("does not load usage for an admin viewing another member's private runtime", () => {
-    expect(canReadRuntimeUsage(makeRuntime(), "admin-1")).toBe(false);
+    expect(canReadRuntimeUsage(makeRuntime(), "admin-1", "admin")).toBe(false);
+  });
+
+  it("loads usage for the workspace owner viewing another member's private runtime", () => {
+    expect(canReadRuntimeUsage(makeRuntime(), "owner-1", "owner")).toBe(true);
   });
 
   it("allows usage for a public teammate runtime", () => {

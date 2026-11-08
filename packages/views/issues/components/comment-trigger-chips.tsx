@@ -163,7 +163,7 @@ export function CommentTriggerChips({
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {allowed}
-      {invalidMentionCount > 0 && blocked.length === 0 && (
+      {invalidMentionCount > 0 && (
         <Tooltip>
           <TooltipTrigger
             render={

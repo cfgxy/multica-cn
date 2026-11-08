@@ -1,6 +1,9 @@
 -- name: CreateDaemonToken :one
-INSERT INTO daemon_token (token_hash, workspace_id, daemon_id, expires_at)
-VALUES ($1, $2, $3, $4)
+-- owner_id binds the token to the runtime owner it was issued for; NULL is
+-- reserved for managed daemon credentials whose ownership is checked by their
+-- external connection record.
+INSERT INTO daemon_token (token_hash, workspace_id, daemon_id, expires_at, owner_id)
+VALUES (@token_hash, @workspace_id, @daemon_id, @expires_at, sqlc.narg('owner_id'))
 RETURNING *;
 
 -- name: GetDaemonTokenByHash :one
@@ -23,3 +26,19 @@ RETURNING token_hash;
 -- name: DeleteExpiredDaemonTokens :exec
 DELETE FROM daemon_token
 WHERE expires_at <= now();
+
+-- name: ListLegacyDaemonTokenOwners :many
+-- Compatibility for Remote MCP daemon tokens minted before owner_id existed.
+-- The daemon token and task_token were inserted in one transaction, so their
+-- created_at values match. The caller accepts this result only when exactly one
+-- live owner matches; LIMIT 2 is enough to detect ambiguity.
+SELECT DISTINCT tt.user_id
+FROM task_token tt
+JOIN agent_task_queue q ON q.id = tt.task_id
+JOIN agent_runtime r ON r.id = q.runtime_id
+WHERE tt.workspace_id = @workspace_id
+  AND tt.created_at = @created_at
+  AND tt.expires_at > now()
+  AND r.workspace_id = @workspace_id
+  AND r.daemon_id = @daemon_id::text
+LIMIT 2;

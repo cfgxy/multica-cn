@@ -35,7 +35,7 @@ func TestDaemonTokenCache_SetGetInvalidate(t *testing.T) {
 		t.Fatal("expected miss before set")
 	}
 
-	want := DaemonTokenIdentity{WorkspaceID: "ws-uuid", DaemonID: "daemon-1"}
+	want := DaemonTokenIdentity{WorkspaceID: "ws-uuid", DaemonID: "daemon-1", OwnerID: "owner-uuid"}
 	c.Set(ctx, "hash-D", want, AuthCacheTTL)
 	if got, ok := c.Get(ctx, "hash-D"); !ok || got != want {
 		t.Fatalf("expected hit %+v, got (%+v, %v)", want, got, ok)
@@ -44,6 +44,19 @@ func TestDaemonTokenCache_SetGetInvalidate(t *testing.T) {
 	c.Invalidate(ctx, "hash-D")
 	if _, ok := c.Get(ctx, "hash-D"); ok {
 		t.Fatal("expected miss after invalidate")
+	}
+}
+
+func TestDaemonTokenCache_IgnoresPreOwnerNamespace(t *testing.T) {
+	rdb := newRedisTestClient(t)
+	c := NewDaemonTokenCache(rdb)
+	ctx := context.Background()
+
+	if err := rdb.Set(ctx, "mul:auth:daemon:legacy-hash", `{"w":"ws","d":"daemon"}`, AuthCacheTTL).Err(); err != nil {
+		t.Fatalf("seed legacy cache entry: %v", err)
+	}
+	if _, ok := c.Get(ctx, "legacy-hash"); ok {
+		t.Fatal("pre-owner cache namespace must not authorize a daemon token")
 	}
 }
 

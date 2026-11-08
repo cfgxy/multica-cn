@@ -37,6 +37,28 @@ describe("CommentTriggerChips", () => {
     );
     expect(screen.getByLabelText("Check agent mentions before posting.")).toBeInTheDocument();
   });
+
+  it("shows malformed-link and blocked-target warnings together", () => {
+    renderWithI18n(
+      <CommentTriggerChips
+        agents={[]}
+        blocked={[{
+          target_type: "agent",
+          target_id: "deadbeef-0001",
+          status: "blocked",
+          reason_code: "invocation_not_allowed",
+        }]}
+        invalidMentionCount={1}
+        draftContent="[@Go](mention://agent/deadbeef-0001) [@Lost](mention://agent/not-a-uuid)"
+        suppressedAgentIds={new Set()}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Go")).toBeInTheDocument();
+    expect(screen.getByText("Not found or no permission")).toBeInTheDocument();
+    expect(screen.getByLabelText("Check agent mentions before posting.")).toBeInTheDocument();
+  });
   it("renders nothing without agents", () => {
     const { container } = renderWithI18n(
       <CommentTriggerChips agents={[]} suppressedAgentIds={new Set()} onToggle={vi.fn()} />,
