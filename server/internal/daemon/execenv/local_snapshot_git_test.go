@@ -54,6 +54,49 @@ func TestCaptureSnapshotGitArtifactImportsIntoIndependentClone(t *testing.T) {
 	}
 }
 
+func TestCaptureSnapshotGitArtifactIgnoresInheritedIdentity(t *testing.T) {
+	repo := t.TempDir()
+	gitForSnapshotTest(t, repo, "init", "-q")
+	gitForSnapshotTest(t, repo, "config", "user.name", "Test")
+	gitForSnapshotTest(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "add", "tracked.txt")
+	gitForSnapshotTest(t, repo, "commit", "-qm", "base")
+	baseline := strings.TrimSpace(gitForSnapshotTest(t, repo, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	identityEnv := append([]string{}, os.Environ()...)
+	identityEnv = append(identityEnv,
+		"GIT_AUTHOR_NAME=Injected Author",
+		"GIT_AUTHOR_EMAIL=injected-author@example.invalid",
+		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z",
+		"GIT_COMMITTER_NAME=Injected Committer",
+		"GIT_COMMITTER_EMAIL=injected-committer@example.invalid",
+		"GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
+	)
+	artifactDir := t.TempDir()
+	if err := CaptureSnapshotGitArtifact(repo, &SnapshotGitArtifactSpec{
+		ArtifactDir: artifactDir,
+		Baseline:    baseline,
+		EnvRoot:     t.TempDir(),
+	}, identityEnv); err != nil {
+		t.Fatal(err)
+	}
+
+	clone := filepath.Join(t.TempDir(), "clone")
+	gitForSnapshotTest(t, "", "clone", "-q", repo, clone)
+	gitForSnapshotTest(t, clone, "fetch", filepath.Join(artifactDir, "changes.bundle"), "HEAD:refs/heads/snapshot")
+	identity := strings.TrimSpace(gitForSnapshotTest(t, clone, "show", "-s", "--format=%an <%ae>|%cn <%ce>", "snapshot"))
+	want := "Multica Snapshot <snapshot@multica.invalid>|Multica Snapshot <snapshot@multica.invalid>"
+	if identity != want {
+		t.Fatalf("snapshot artifact identity = %q, want %q", identity, want)
+	}
+}
+
 func TestCaptureSnapshotGitArtifactExcludesSiblingChangesForDeclaredScope(t *testing.T) {
 	repo := t.TempDir()
 	gitForSnapshotTest(t, repo, "init", "-q")

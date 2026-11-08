@@ -695,6 +695,10 @@ type Daemon struct {
 	// surfaced via the server-side waiting_local_directory status while it
 	// waits. See MUL-2663.
 	localPathLocks *LocalPathLocker
+	// snapshotLockBindings carries the object identity captured after a declared
+	// snapshot scope lock is acquired into runTask. A re-resolved resource path
+	// must match this binding before any snapshot tree or worker is built.
+	snapshotLockBindings sync.Map // task ID -> *snapshotLockBinding
 
 	// bgSyncs tracks background goroutines started by registerTaskRepos so
 	// callers (notably tests using t.TempDir-backed cache roots) can wait for
@@ -5664,6 +5668,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	if localRelease != nil {
 		defer localRelease()
 	}
+	defer d.snapshotLockBindings.Delete(task.ID)
 
 	// Hold a process-wide active-root guard for the rest of this task so
 	// the GC loop never sees a window where the env root has neither the
@@ -6298,7 +6303,82 @@ func (d *Daemon) acquireSnapshotScopeLocks(ctx context.Context, task Task, plan 
 		return nil, true
 	}
 	taskLog.Info("local_directory: declared scope locks acquired", "count", len(locks))
+	binding, bindErr := snapshotLockBindingForPlan(plan)
+	if bindErr != nil {
+		releaseAll()
+		taskLog.Error("local_directory: capture locked snapshot targets failed", "error", bindErr)
+		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
+			kind:          terminalTaskReportFail,
+			taskID:        task.ID,
+			errorMessage:  bindErr.Error(),
+			failureReason: "local_directory_error",
+		}); failErr != nil {
+			taskLog.Error("fail task after snapshot target binding error", "error", failErr)
+		}
+		return nil, true
+	}
+	d.snapshotLockBindings.Store(task.ID, binding)
 	return releaseAll, false
+}
+
+func snapshotLockBindingForPlan(plan *snapshotPlan) (*snapshotLockBinding, error) {
+	if plan == nil || !plan.Declared {
+		return nil, nil
+	}
+	binding := &snapshotLockBinding{Units: make(map[string]snapshotLockedUnit, len(plan.Units))}
+	for _, unit := range plan.Units {
+		if unit.LockPath == "" {
+			return nil, fmt.Errorf("local_directory: declared snapshot unit %q has no lock path", unit.Subdir)
+		}
+		info, err := os.Stat(unit.LockPath)
+		if err != nil {
+			return nil, fmt.Errorf("local_directory: stat locked snapshot unit %q: %w", unit.LockPath, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("local_directory: locked snapshot unit %q is not a directory", unit.LockPath)
+		}
+		device, inode, identityErr := snapshotTargetIdentity(unit.LockPath)
+		if identityErr != nil {
+			return nil, fmt.Errorf("local_directory: identify locked snapshot unit %q: %w", unit.LockPath, identityErr)
+		}
+		binding.Units[snapshotUnitKey(unit)] = snapshotLockedUnit{
+			Path: filepath.Clean(unit.LockPath), Info: info, Device: device, Inode: inode,
+		}
+	}
+	return binding, nil
+}
+
+func applySnapshotLockBinding(plan *snapshotPlan, binding *snapshotLockBinding) error {
+	if plan == nil || binding == nil {
+		return nil
+	}
+	if !plan.Declared {
+		return fmt.Errorf("local_directory: snapshot lock binding requires a declared scope")
+	}
+	if len(plan.Units) != len(binding.Units) {
+		return fmt.Errorf("local_directory: snapshot scope changed after lock acquisition")
+	}
+	for i := range plan.Units {
+		unit := &plan.Units[i]
+		locked, ok := binding.Units[snapshotUnitKey(*unit)]
+		if !ok || filepath.Clean(unit.LockPath) != locked.Path {
+			return fmt.Errorf("local_directory: snapshot resource path changed after lock acquisition")
+		}
+		current, err := os.Stat(locked.Path)
+		if err != nil {
+			return fmt.Errorf("local_directory: stat locked snapshot target %q: %w", locked.Path, err)
+		}
+		if !os.SameFile(locked.Info, current) {
+			return fmt.Errorf("local_directory: locked snapshot target %q was replaced after lock acquisition", locked.Path)
+		}
+		unit.AbsPath = locked.Path
+		unit.LockPath = locked.Path
+		unit.TargetDevice = locked.Device
+		unit.TargetInode = locked.Inode
+		unit.IdentityCaptured = true
+	}
+	plan.Primary = plan.primaryUnit()
+	return nil
 }
 
 // reportTaskResult writes the final task disposition back to the server.
@@ -7773,6 +7853,22 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		if ferr != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(ferr)
 		}
+		if fb == nil {
+			expectsBinding := snapPlan.Declared && len(snapPlan.DeclaredLockPaths()) > 0 && !localDirectoryLockExempt(task)
+			rawBinding, hasBinding := d.snapshotLockBindings.LoadAndDelete(task.ID)
+			if expectsBinding && !hasBinding {
+				return TaskResult{}, asEnvironmentSetupFailure(errors.New("local_directory: snapshot scope lock binding is missing"))
+			}
+			if hasBinding {
+				binding, bindingOK := rawBinding.(*snapshotLockBinding)
+				if !bindingOK {
+					return TaskResult{}, asEnvironmentSetupFailure(errors.New("local_directory: invalid snapshot lock binding"))
+				}
+				if bindErr := applySnapshotLockBinding(snapPlan, binding); bindErr != nil {
+					return TaskResult{}, asEnvironmentSetupFailure(bindErr)
+				}
+			}
+		}
 		observation := snapshotExecutionObservationFor(snapPlan, fb, gateEnabled, d.client.snapshotSupport.Load())
 		taskLog.Info("local_directory: snapshot execution decision",
 			"execution_mode", observation.ExecutionMode,
@@ -8283,7 +8379,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		units := make([]execenv.SnapshotUnitSpec, 0, len(materializedUnits))
 		for _, u := range materializedUnits {
 			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, snapshotUnitStem(task.IssueID, task.ID, u))
-			units = append(units, execenv.SnapshotUnitSpec{Target: u.AbsPath, Subdir: u.Subdir, Alias: alias, Upper: upper, Work: work})
+			device, inode := u.TargetDevice, u.TargetInode
+			if !u.IdentityCaptured {
+				var identityErr error
+				device, inode, identityErr = snapshotTargetIdentity(u.AbsPath)
+				if identityErr != nil {
+					return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("identify snapshot target %q: %w", u.AbsPath, identityErr))
+				}
+			}
+			units = append(units, execenv.SnapshotUnitSpec{
+				Target: u.AbsPath, Subdir: u.Subdir, TargetDevice: device, TargetInode: inode,
+				TargetIdentitySet: u.IdentityCaptured || device != 0 || inode != 0,
+				Alias:             alias, Upper: upper, Work: work,
+			})
 		}
 		var gitArtifact *execenv.SnapshotGitArtifactSpec
 		if repository, eligible := gitSnapshotDeliveryRepository(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1", gitAudit); eligible {

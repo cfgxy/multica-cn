@@ -791,6 +791,39 @@ type snapshotUnit struct {
 	// overlays. It is outside the user's declared scope and its path hash keeps
 	// the snapshot tree name separate from resource subdirectories.
 	InternalKey string
+	// TargetDevice and TargetInode carry the identity captured at scope-lock
+	// admission into the worker spec. IdentityCaptured distinguishes an admitted
+	// zero-value identity from an undeclared unit that still needs path lookup.
+	TargetDevice     uint64
+	TargetInode      uint64
+	IdentityCaptured bool
+}
+
+type snapshotLockedUnit struct {
+	Path   string
+	Info   os.FileInfo
+	Device uint64
+	Inode  uint64
+}
+
+type snapshotLockBinding struct {
+	Units map[string]snapshotLockedUnit
+}
+
+func snapshotUnitKey(unit snapshotUnit) string {
+	return unit.ResourceID + "\x00" + unit.Subdir
+}
+
+func snapshotTargetIdentity(path string) (uint64, uint64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	device, inode, ok := snapshotFileIdentity(info)
+	if !ok {
+		return 0, 0, nil
+	}
+	return device, inode, nil
 }
 
 // snapshotPlan is the resolved execution brief for a snapshot-mode task.
@@ -939,7 +972,7 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 				plan.Units = append(plan.Units, snapshotUnit{
 					ResourceID: row.id,
 					Ref:        row.ref,
-					AbsPath:    abs,
+					AbsPath:    real,
 					Subdir:     sub,
 					Primary:    row.ref.Primary,
 					LockPath:   real,
@@ -985,11 +1018,16 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 	if err := validateLocalPath(primary.abs); err != nil {
 		return nil, err
 	}
+	real, err := resolveRealPath(primary.abs)
+	if err != nil {
+		return nil, err
+	}
 	plan.Units = []snapshotUnit{{
 		ResourceID: primary.id,
 		Ref:        primary.ref,
-		AbsPath:    primary.abs,
+		AbsPath:    real,
 		Primary:    true,
+		LockPath:   real,
 	}}
 	plan.Primary = &plan.Units[0]
 	return plan, nil
