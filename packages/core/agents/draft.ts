@@ -5,6 +5,7 @@ import type {
   AgentPermissionScope,
   AgentConversationStarter,
   CreateAgentRequest,
+  MemberRole,
   RuntimeDevice,
 } from "../types";
 import {
@@ -176,6 +177,7 @@ export function buildDuplicateDraft(
   options: {
     runtimes: RuntimeDevice[];
     currentUserId: string | null;
+    currentUserRole?: MemberRole | null;
     fallbackRuntimeId: string;
     nameSuffix: string;
   },
@@ -185,7 +187,11 @@ export function buildDuplicateDraft(
     options.runtimes.some(
       (runtime) =>
         runtime.id === source.runtime_id &&
-        isRuntimeUsableForUser(runtime, options.currentUserId),
+        isRuntimeUsableForUser(
+          runtime,
+          options.currentUserId,
+          options.currentUserRole,
+        ),
     );
   return {
     ...EMPTY_AGENT_DRAFT,

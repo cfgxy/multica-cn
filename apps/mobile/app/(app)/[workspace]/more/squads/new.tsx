@@ -28,6 +28,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { agentListOptions } from "@/data/queries/agents";
 import { runtimeListOptions } from "@/data/queries/runtimes";
+import { memberListOptions } from "@/data/queries/members";
 import { useCreateSquad } from "@/data/mutations/squads";
 import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useAvatarUploader } from "@/lib/avatar";
@@ -57,6 +58,9 @@ export default function NewSquadScreen() {
     agentListOptions(wsId),
   );
   const { data: runtimes } = useQuery(runtimeListOptions(wsId));
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const currentUserRole =
+    members.find((member) => member.user_id === me?.id)?.role ?? null;
 
   // Leader candidates (S1): unarchived + bound to a runtime the viewer can
   // use. A deleted runtime is absent from the list, so its agents drop out.
@@ -64,13 +68,15 @@ export default function NewSquadScreen() {
     if (!agents) return [];
     const usableRuntimeIds = new Set(
       (runtimes ?? [])
-        .filter((r) => isRuntimeUsableForUser(r, me?.id ?? null))
+        .filter((r) =>
+          isRuntimeUsableForUser(r, me?.id ?? null, currentUserRole),
+        )
         .map((r) => r.id),
     );
     return agents.filter(
       (a) => !a.archived_at && a.runtime_id && usableRuntimeIds.has(a.runtime_id),
     );
-  }, [agents, runtimes, me]);
+  }, [agents, runtimes, me, currentUserRole]);
 
   // Q6: My agents (owner match) vs the rest, both narrowed by the search
   // text (lowercase substring, web LeaderPicker parity).

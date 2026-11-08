@@ -11,6 +11,12 @@ const (
 	DaemonCapabilityExecutionManifestV1 = "execution-manifest-v1"
 	DaemonCapabilityAgentSkillV1        = "agent-skill-v1"
 	DaemonCapabilityRemoteMCPV1         = "remote-mcp-v1"
+	// DaemonCapabilityCredentialMCPV1 means the daemon can prefetch a
+	// task-scoped credential capability and expose it through the loopback MCP
+	// server. Servers must keep direct credentials away from older daemons:
+	// omitting an unknown JSON field would otherwise launch a task without its
+	// authorized credential.
+	DaemonCapabilityCredentialMCPV1 = "credential-mcp-v1"
 	// DaemonCapabilityLocalWorktreeV1 advertises that the daemon implements
 	// worktree mode for local_directory resources (execution_mode=worktree).
 	//

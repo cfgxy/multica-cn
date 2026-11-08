@@ -40,6 +40,14 @@ describe("isRuntimeUsableForUser", () => {
     expect(isRuntimeUsableForUser(makeRuntime(), OTHER)).toBe(false);
   });
 
+  it("lets the workspace owner use another member's private runtime", () => {
+    expect(isRuntimeUsableForUser(makeRuntime(), OTHER, "owner")).toBe(true);
+  });
+
+  it("keeps another member's private runtime unavailable to workspace admins", () => {
+    expect(isRuntimeUsableForUser(makeRuntime(), OTHER, "admin")).toBe(false);
+  });
+
   it("lets anyone use a public runtime", () => {
     expect(
       isRuntimeUsableForUser(makeRuntime({ visibility: "public" }), OTHER),

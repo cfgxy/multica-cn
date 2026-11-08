@@ -26,6 +26,7 @@ import (
 // failure probability. The judged text is held in memory only.
 type jevStub struct {
 	inputs []string
+	models []string
 	srv    *httptest.Server
 }
 
@@ -35,9 +36,11 @@ func newJevStub(t *testing.T, pFailure float64, warn bool) *jevStub {
 	stub.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Input string `json:"input"`
+			Model string `json:"model"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		stub.inputs = append(stub.inputs, body.Input)
+		stub.models = append(stub.models, body.Model)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"task": "kev_local", "p_success": 1 - pFailure, "p_failure": pFailure,
@@ -153,6 +156,36 @@ func TestLegislationAdvisorySubmitPrecheck(t *testing.T) {
 	row := jevAdvisoryRow(t, wsID, id)
 	if row == nil || !strings.Contains(advCompact(row), `"stage":"submit"`) || !strings.Contains(advCompact(row), `"warn":true`) {
 		t.Fatalf("row jev_advisory not persisted with the submit report: %s", advStr(row))
+	}
+}
+
+func TestLegislationAdvisoryUsesDeploymentDefaultWithWorkspaceResolver(t *testing.T) {
+	wsID, _, memberID := legislationFixture(t)
+	stub := newJevStub(t, 0.1, false)
+	withTestJevConfig(t, &legislation.AdvisoryClient{
+		BaseURL: stub.srv.URL,
+		Model:   "deployment-model",
+		Timeout: 2 * time.Second,
+	})
+	previous := testHandler.JevAdvisory
+	testHandler.JevAdvisory = nil
+	t.Cleanup(func() { testHandler.JevAdvisory = previous })
+
+	id := createDraft(t, wsID, memberID, "部署默认 JEV", cleanClauseText)
+	code, body := legislationCall(t, testHandler.SubmitPromptProposal,
+		legislationReq(memberID, wsID, http.MethodPost, "/api/prompt-legislation/proposals/"+id+"/submit", nil, "id", id))
+	if code != http.StatusOK {
+		t.Fatalf("submit: expected 200, got %d: %s", code, body)
+	}
+	if len(stub.inputs) != 1 || stub.inputs[0] != cleanClauseText || len(stub.models) != 1 || stub.models[0] != "deployment-model" {
+		t.Fatalf("deployment default request = inputs %#v models %#v", stub.inputs, stub.models)
+	}
+
+	get := memberRoute(http.HandlerFunc(testHandler.GetSelfEvolutionJevConfig))
+	rec := httptest.NewRecorder()
+	get.ServeHTTP(rec, legislationReq(memberID, wsID, http.MethodGet, "/api/self-evolution/jev-config", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"source":"deployment"`) || !strings.Contains(rec.Body.String(), `"status":"available"`) {
+		t.Fatalf("deployment config state = %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

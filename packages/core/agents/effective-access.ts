@@ -10,7 +10,7 @@ import type { AgentInvocationTarget, AgentPermissionMode } from "../types";
  *
  * Mapping mirrors the server's `canInvokeAgent` gate
  * (`server/internal/handler/agent_access.go`):
- *   - owner-only      = `private` (only the owner may invoke)
+ *   - owner-only      = `private` (the agent owner and workspace owner may invoke)
  *   - workspace       = `public_to` with a workspace target (any member/agent/system)
  *   - specific-people = `public_to` without a workspace target (member/team targets)
  */

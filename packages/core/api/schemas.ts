@@ -5506,6 +5506,23 @@ export const SelfEvolutionConfigValidationSchema = z.object({
   validated_at: z.string().optional(),
 });
 
+// ---- Workspace JEV advisory config ----
+// The browser never receives the encrypted key. A malformed response must
+// degrade to unconfigured so it cannot claim a working risk precheck.
+export const SelfEvolutionJevConfigSchema = z.object({
+  status: z.enum(["unconfigured", "offline", "available"]).default("unconfigured"),
+  source: z.enum(["unconfigured", "workspace", "deployment"]).default("unconfigured"),
+  endpoint: z.string().default(""),
+  model: z.string().default(""),
+  timeout_ms: z.number().int().min(100).max(30000).default(1500),
+  has_api_key: z.boolean().default(false),
+  last_checked_at: z.string().optional(),
+  last_check_ok: z.boolean().optional(),
+  last_check_error: z.string().default(""),
+  engine: z.string().optional(),
+  encryption_ready: z.boolean().default(true),
+});
+
 // Workspace host-backpressure settings (RUYI-618): the effective card the
 // settings form saves and every daemon receives on heartbeat acks. All
 // numeric fields default to the daemon code defaults so an old server

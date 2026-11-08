@@ -19,11 +19,13 @@ import (
 //
 // The invoke gate is the security-critical one: a workspace admin must NOT be
 // able to invoke someone's private agent (and thereby use that owner's
-// Composio/OAuth connections) just because they are an admin. Admin retains
-// management + inventory visibility, not the ability to run.
+// Composio/OAuth connections) just because they are an admin. The workspace
+// owner may invoke it. Admin retains management + inventory visibility, not the
+// ability to run.
 //
 // permission_mode drives invoke:
-//   - private   -> only the agent owner may invoke; NO admin bypass, NO A2A bypass.
+//   - private   -> the agent owner or workspace owner may invoke; NO admin
+//                  bypass, NO A2A bypass.
 //   - public_to -> the agent_invocation_target allow-list decides:
 //       * workspace target -> any workspace member (and workspace-internal
 //         agent/system principals) may invoke.
@@ -42,7 +44,8 @@ import (
 //   - system actor -> the originator when one was resolved, else no user
 //
 // originatorUserID is the empty string when no human could be attributed. For
-// private agents that means "deny" (unless the actor is the owner). For
+// private agents that means "deny" (unless the actor is the agent owner or
+// workspace owner). For
 // public_to agents, a workspace target still admits workspace-internal
 // agent/system principals, but member/team targets fail closed without a
 // matching human.
@@ -82,10 +85,17 @@ func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actor
 	if effectiveUser != "" && uuidToString(agent.OwnerID) == effectiveUser {
 		return true
 	}
+	if effectiveUser != "" {
+		member, err := h.getWorkspaceMember(ctx, effectiveUser, workspaceID)
+		if err == nil && member.Role == "owner" {
+			return true
+		}
+	}
 
 	if agent.PermissionMode != "public_to" {
 		// private (or any unknown mode) is deny-by-default: no admin bypass,
-		// no A2A bypass. Only the owner branch above passes.
+		// no A2A bypass. Only the agent-owner and workspace-owner branches above
+		// pass.
 		return false
 	}
 
@@ -132,6 +142,11 @@ func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actor
 	return false
 }
 
+func (h *Handler) requestIsWorkspaceOwner(ctx context.Context, userID string, workspaceID pgtype.UUID) bool {
+	member, err := h.getWorkspaceMember(ctx, userID, uuidToString(workspaceID))
+	return err == nil && member.Role == "owner"
+}
+
 // canAccessPrivateAgent gates the VIEW surfaces (list/detail navigation, chat
 // transcript read, task-cancel authorization). It is NOT the trigger gate —
 // see canInvokeAgent for that.
@@ -141,7 +156,8 @@ func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actor
 //   - the agent owner always passes.
 //   - workspace owner/admin pass (governance / inventory visibility retained).
 //   - a regular member passes for a public_to agent only when they hit a
-//     workspace or member target; private agents stay owner+admin only.
+//     workspace or member target; private agents remain unavailable to regular
+//     members without an explicit grant.
 func (h *Handler) canAccessPrivateAgent(ctx context.Context, agent db.Agent, actorType, actorID, workspaceID string) bool {
 	if actorType == "agent" {
 		return true

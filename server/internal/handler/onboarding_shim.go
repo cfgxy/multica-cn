@@ -192,7 +192,7 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !canUseRuntimeForAgent(member, runtime) {
-		writeError(w, http.StatusForbidden, "this runtime is private; only its owner can create agents on it")
+		writeError(w, http.StatusForbidden, "this runtime is private; only its owner or the workspace owner can create agents on it")
 		return
 	}
 	// RUYI-425 §4.4 rule 2: the shim creates a text assistant, so the bound

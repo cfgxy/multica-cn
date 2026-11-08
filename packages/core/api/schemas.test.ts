@@ -98,6 +98,7 @@ import {
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 import { SkillSummaryListSchema } from "./schemas";
+import { SelfEvolutionJevConfigSchema } from "./schemas";
 
 describe("KnowledgeEntryOperationSchema", () => {
   const endpoint = { endpoint: "POST /api/knowledge/entries/:id/edit" };
@@ -2794,5 +2795,41 @@ describe("DecisionRequestSchema authorization receipt", () => {
       ...base,
       execution_result: { receipt_version: 1, side_effect_status: "maybe" },
     }).success).toBe(false);
+  });
+});
+
+describe("SelfEvolutionJevConfigSchema", () => {
+  const fallback = {
+    status: "unconfigured" as const,
+    source: "unconfigured" as const,
+    endpoint: "",
+    model: "",
+    timeout_ms: 1500,
+    has_api_key: false,
+    last_check_error: "",
+    encryption_ready: true,
+  };
+
+  it("defaults an incomplete legacy response to unconfigured values", () => {
+    expect(SelfEvolutionJevConfigSchema.parse({})).toEqual(fallback);
+  });
+
+  it("accepts the member-safe status and source response", () => {
+    expect(SelfEvolutionJevConfigSchema.parse({ status: "available", source: "workspace" })).toEqual({
+      ...fallback,
+      status: "available",
+      source: "workspace",
+    });
+  });
+
+  it("falls back when a response contains an invalid status or timeout", () => {
+    expect(
+      parseWithFallback(
+        { status: "ready", timeout_ms: 1, has_api_key: "yes" },
+        SelfEvolutionJevConfigSchema,
+        fallback,
+        { endpoint: "GET /api/self-evolution/jev-config" },
+      ),
+    ).toEqual(fallback);
   });
 });
