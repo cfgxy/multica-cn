@@ -1579,6 +1579,21 @@ type KnowledgeEntry struct {
 	AdoptionError    string             `json:"adoption_error"`
 }
 
+// Daemon-executed edit, delete and merge jobs for ultimate knowledge entries; mirror changes land only after bd read-back.
+type KnowledgeEntryOperation struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	EntryID        pgtype.UUID        `json:"entry_id"`
+	OperationType  string             `json:"operation_type"`
+	Content        string             `json:"content"`
+	DeleteEntryIds []byte             `json:"delete_entry_ids"`
+	RequestedBy    pgtype.UUID        `json:"requested_by"`
+	Status         string             `json:"status"`
+	Error          string             `json:"error"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
+}
+
 // Per-directory scan batch log; zero-change batches are logged too so incremental ingestion stays recomputable.
 type KnowledgeScanBatch struct {
 	ID            pgtype.UUID        `json:"id"`
