@@ -66,7 +66,7 @@ func (h *Handler) revokeAndRemoveMember(ctx context.Context, workspaceID, userID
 		return empty, err
 	}
 
-	runtimes, err := qtx.ListAgentRuntimesByOwner(ctx, db.ListAgentRuntimesByOwnerParams{
+	runtimes, err := qtx.ListAgentRuntimesByOwnerIncludingRemoved(ctx, db.ListAgentRuntimesByOwnerIncludingRemovedParams{
 		WorkspaceID: workspaceID,
 		OwnerID:     userID,
 	})

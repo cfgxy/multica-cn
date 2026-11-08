@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func TestProjectResourceLifecycle(t *testing.T) {
@@ -1633,6 +1635,70 @@ func TestCreateProjectGatesSnapshotLocalDirectory(t *testing.T) {
 	testHandler.ListProjects(lw, lreq)
 	if strings.Contains(lw.Body.String(), "Bundled snapshot resource") {
 		t.Fatal("rejected create left a project behind")
+	}
+}
+
+func TestHiddenRuntimeCapabilitiesAllowLocalDirectoryWrites(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	tests := []struct {
+		mode       string
+		capability string
+		operation  string
+	}{
+		{mode: localDirectoryModeWorktree, capability: protocol.DaemonCapabilityLocalWorktreeV1, operation: "create"},
+		{mode: localDirectoryModeWorktree, capability: protocol.DaemonCapabilityLocalWorktreeV1, operation: "update"},
+		{mode: localDirectoryModeSnapshot, capability: protocol.DaemonCapabilityLocalSnapshotV1, operation: "create"},
+		{mode: localDirectoryModeSnapshot, capability: protocol.DaemonCapabilityLocalSnapshotV1, operation: "update"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.mode+" "+tc.operation, func(t *testing.T) {
+			daemonID := "daemon-hidden-capability-" + tc.mode + "-" + tc.operation
+			runtimeID := dbfx.Runtime(t, "Hidden capable runtime", testutil.Cols{
+				"workspace_id": testWorkspaceID,
+				"daemon_id":    daemonID,
+				"runtime_mode": "local",
+				"provider":     "multica_daemon",
+			})
+			metadata, err := json.Marshal(map[string]any{"capabilities": []string{tc.capability}})
+			if err != nil {
+				t.Fatalf("marshal runtime metadata: %v", err)
+			}
+			dbfx.Exec(t, `
+			UPDATE agent_runtime
+			SET metadata = $2::jsonb, removed_at = now(), status = 'online'
+			WHERE id = $1
+		`, runtimeID, metadata)
+
+			project := createTestProjectForResources(t, "Hidden runtime "+tc.mode+" "+tc.operation)
+			ref := map[string]any{
+				"local_path":     "/Users/dev/work/hidden-" + tc.mode + "-" + tc.operation,
+				"daemon_id":      daemonID,
+				"execution_mode": tc.mode,
+			}
+
+			if tc.operation == "create" {
+				createLocalDirectoryResourceFor(t, project.ID, ref)
+				return
+			}
+
+			created := createLocalDirectoryResourceFor(t, project.ID, map[string]any{
+				"local_path": ref["local_path"],
+				"daemon_id":  daemonID,
+			})
+			w := httptest.NewRecorder()
+			req := newRequest("PUT", "/api/projects/"+project.ID+"/resources/"+created.ID, map[string]any{
+				"resource_ref": ref,
+			})
+			req = withURLParams(req, "id", project.ID, "resourceId", created.ID)
+			testHandler.UpdateProjectResource(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("UpdateProjectResource with hidden capable runtime: expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

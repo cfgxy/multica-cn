@@ -4,6 +4,13 @@ WHERE workspace_id = $1
   AND removed_at IS NULL
 ORDER BY created_at ASC;
 
+-- name: ListAgentRuntimesIncludingRemoved :many
+-- Operational callers must still see a runtime hidden from the management
+-- list: hiding it neither stops its daemon nor withdraws its capabilities.
+SELECT * FROM agent_runtime
+WHERE workspace_id = $1
+ORDER BY created_at ASC;
+
 -- name: ListVisibleAgentRuntimes :many
 -- A private runtime is another member's machine and must not leak into their
 -- runtime list. The owner can always see their own runtime; everyone else
@@ -363,6 +370,13 @@ RETURNING task.*;
 SELECT * FROM agent_runtime
 WHERE workspace_id = $1 AND owner_id = $2
   AND removed_at IS NULL
+ORDER BY created_at ASC;
+
+-- name: ListAgentRuntimesByOwnerIncludingRemoved :many
+-- Member revocation is a safety boundary, so it must converge every runtime
+-- owned by the departing user, including records hidden from management lists.
+SELECT * FROM agent_runtime
+WHERE workspace_id = $1 AND owner_id = $2
 ORDER BY created_at ASC;
 
 -- name: MarkAgentRuntimeRemovedFromList :exec
