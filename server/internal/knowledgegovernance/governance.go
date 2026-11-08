@@ -283,7 +283,7 @@ WHERE status = 'running'
 		if err := json.Unmarshal(task.Result, &payload); err != nil {
 			taskErr = "invalid persisted completion result"
 		}
-		stats, err := r.ProcessTaskTerminal(ctx, task, payload.Output, taskErr)
+		stats, err := r.processTaskTerminal(ctx, task, payload.Output, taskErr, true)
 		if err != nil {
 			return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected() + replayed, fmt.Errorf("knowledge governance: replay completed task: %w", err)
 		}
@@ -433,6 +433,10 @@ ORDER BY key`, workspaceID, dirID)
 }
 
 func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue, output, taskErr string) (*RunStats, error) {
+	return r.processTaskTerminal(ctx, task, output, taskErr, false)
+}
+
+func (r *Runner) processTaskTerminal(ctx context.Context, task db.AgentTaskQueue, output, taskErr string, allowPersistenceReplay bool) (*RunStats, error) {
 	tc, ok := ParseTaskContext(task.Context)
 	if !ok {
 		return nil, fmt.Errorf("knowledge governance: invalid task context")
@@ -445,8 +449,8 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 	FROM knowledge_governance_run WHERE id = $1 AND workspace_id = $2`, runID, ws).Scan(&status, &reportReason); err != nil {
 		return nil, err
 	}
-	replayPending := status == "failed" && reportReason == "report_persistence_failed"
-	if status != "running" && !(task.Status == "completed" && replayPending) {
+	replayPending := task.Status == "completed" && status == "failed" && reportReason == "report_persistence_failed"
+	if status != "running" && !(allowPersistenceReplay && replayPending) {
 		return nil, nil
 	}
 	if task.Status == "cancelled" {
@@ -459,7 +463,7 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 	if err != nil {
 		return &RunStats{RunID: tc.RunID, Status: "failed"}, r.finish(ctx, runID, ws, "failed", map[string]any{"reason": "invalid_report"})
 	}
-	persisted, err := r.persistReport(ctx, runID, ws, tc, report)
+	persisted, err := r.persistReport(ctx, runID, ws, tc, report, allowPersistenceReplay)
 	if err != nil {
 		// Release the directory scope while retaining a durable replay marker.
 		// ReconcileStaleRuns replays the immutable task.Result until it persists.
@@ -540,7 +544,7 @@ func ParseRunOutput(raw string, tc TaskContext) (RunOutput, error) {
 	return out, nil
 }
 
-func (r *Runner) persistReport(ctx context.Context, runID, workspaceID pgtype.UUID, tc TaskContext, report RunOutput) (bool, error) {
+func (r *Runner) persistReport(ctx context.Context, runID, workspaceID pgtype.UUID, tc TaskContext, report RunOutput, allowPersistenceReplay bool) (bool, error) {
 	tx, err := r.DB.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -553,7 +557,7 @@ func (r *Runner) persistReport(ctx context.Context, runID, workspaceID pgtype.UU
 	FOR UPDATE`, runID, workspaceID).Scan(&status, &reportReason); err != nil {
 		return false, err
 	}
-	if status != "running" && !(status == "failed" && reportReason == "report_persistence_failed") {
+	if status != "running" && !(allowPersistenceReplay && status == "failed" && reportReason == "report_persistence_failed") {
 		return false, nil
 	}
 	counts := map[string]int{"scanned": len(report.Findings), "valid": 0, "revised": 0, "deprecated": 0, "superseded": 0, "duplicate": 0, "invalid": 0, "needs_review": 0}

@@ -340,6 +340,7 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 	task.Status = "completed"
 	task.Result = result
 	callbackReport := report
+	callbackReport.Findings = append([]knowledgegovernance.Finding(nil), report.Findings...)
 	callbackReport.BackupReference = "backup:callback-output-must-not-overwrite-task-result"
 	callbackOutputBytes, err := json.Marshal(callbackReport)
 	if err != nil {
@@ -361,6 +362,31 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 	}
 	if status != "failed" || reason != "report_persistence_failed" {
 		t.Fatalf("persist failure run status=%q reason=%q, want failed/report_persistence_failed", status, reason)
+	}
+	callbackReport.BackupReference = "backup:callback-reentry-must-not-overwrite-task-result"
+	callbackReport.Findings[0].Recommendation = "Callback output must never become durable"
+	callbackOutputBytes, err = json.Marshal(callbackReport)
+	if err != nil {
+		t.Fatalf("marshal repeated transient callback report: %v", err)
+	}
+	settled, err = runner.ProcessTaskTerminal(ctx, task, string(callbackOutputBytes), "")
+	if err != nil || settled != nil {
+		t.Fatalf("repeated callback after persist failure stats=%+v err=%v, want no-op", settled, err)
+	}
+	var pendingFindings int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM knowledge_governance_finding WHERE run_id = $1`, started.RunID).Scan(&pendingFindings); err != nil {
+		t.Fatalf("count findings after repeated callback: %v", err)
+	}
+	if pendingFindings != 0 {
+		t.Fatalf("repeated callback persisted %d findings, want 0", pendingFindings)
+	}
+	if err := testPool.QueryRow(ctx, `
+		SELECT status, report->>'reason' FROM knowledge_governance_run WHERE id = $1`, started.RunID).Scan(&status, &reason); err != nil {
+		t.Fatalf("read run after repeated callback: %v", err)
+	}
+	if status != "failed" || reason != "report_persistence_failed" {
+		t.Fatalf("repeated callback run status=%q reason=%q, want failed/report_persistence_failed", status, reason)
 	}
 	if _, err := runner.RunWorkspace(ctx, testWorkspaceID, dirID, testUserID, "retry"); err != nil {
 		t.Fatalf("failed run must release directory scope for retry: %v", err)
@@ -385,6 +411,14 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 	}
 	if findings != 1 || completedStatus != 1 {
 		t.Fatalf("replayed governance persistence findings=%d succeeded=%d, want 1/1", findings, completedStatus)
+	}
+	var recommendation string
+	if err := testPool.QueryRow(ctx, `
+		SELECT recommendation FROM knowledge_governance_finding WHERE run_id = $1`, started.RunID).Scan(&recommendation); err != nil {
+		t.Fatalf("read replayed governance finding: %v", err)
+	}
+	if recommendation != report.Findings[0].Recommendation {
+		t.Fatalf("replayed recommendation = %q, want immutable task result %q", recommendation, report.Findings[0].Recommendation)
 	}
 	var persistedResult []byte
 	if err := testPool.QueryRow(ctx, `SELECT result FROM agent_task_queue WHERE id = $1`, taskID).Scan(&persistedResult); err != nil {

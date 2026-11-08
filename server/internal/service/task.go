@@ -4969,8 +4969,8 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			}
 		}
 	}
-	// Governance settlement is replay-safe and reads the durable task result,
-	// so a callback retry can repair a transient report-persistence failure.
+	// Governance settlement reads the durable task result. A scheduler replay
+	// repairs transient report-persistence failures after callback delivery.
 	s.settleKnowledgeGovernanceTerminal(ctx, task)
 
 	// For chat tasks, broadcast chat:done AFTER commit. The single assistant
@@ -8310,8 +8310,8 @@ func (s *TaskService) parseKnowledgeGovernanceContext(task db.AgentTaskQueue) (k
 }
 
 // settleKnowledgeGovernanceTerminal derives the report only from durable task
-// state. A duplicate daemon callback therefore retries report persistence
-// without accepting replacement output after the task reached a terminal state.
+// state. A duplicate daemon callback cannot introduce replacement output after
+// the task reached a terminal state; the scheduler repairs persistence failures.
 func (s *TaskService) settleKnowledgeGovernanceTerminal(ctx context.Context, task db.AgentTaskQueue) {
 	if s.KnowledgeGovernanceTerminal == nil {
 		return
