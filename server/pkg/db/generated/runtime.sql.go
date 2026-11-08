@@ -884,6 +884,111 @@ func (q *Queries) ListAgentRuntimesByOwner(ctx context.Context, arg ListAgentRun
 	return items, nil
 }
 
+const listAgentRuntimesByOwnerIncludingRemoved = `-- name: ListAgentRuntimesByOwnerIncludingRemoved :many
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+WHERE workspace_id = $1 AND owner_id = $2
+ORDER BY created_at ASC
+`
+
+type ListAgentRuntimesByOwnerIncludingRemovedParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	OwnerID     pgtype.UUID `json:"owner_id"`
+}
+
+// Member revocation is a safety boundary, so it must converge every runtime
+// owned by the departing user, including records hidden from management lists.
+func (q *Queries) ListAgentRuntimesByOwnerIncludingRemoved(ctx context.Context, arg ListAgentRuntimesByOwnerIncludingRemovedParams) ([]AgentRuntime, error) {
+	rows, err := q.db.Query(ctx, listAgentRuntimesByOwnerIncludingRemoved, arg.WorkspaceID, arg.OwnerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentRuntime{}
+	for rows.Next() {
+		var i AgentRuntime
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DaemonID,
+			&i.Name,
+			&i.RuntimeMode,
+			&i.Provider,
+			&i.Status,
+			&i.DeviceInfo,
+			&i.Metadata,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OwnerID,
+			&i.LegacyDaemonID,
+			&i.Visibility,
+			&i.ProfileID,
+			&i.CustomName,
+			&i.RegistrationSource,
+			&i.CredentialRef,
+			&i.MaxConcurrentTasks,
+			&i.RemovedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentRuntimesIncludingRemoved = `-- name: ListAgentRuntimesIncludingRemoved :many
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+WHERE workspace_id = $1
+ORDER BY created_at ASC
+`
+
+// Operational callers must still see a runtime hidden from the management
+// list: hiding it neither stops its daemon nor withdraws its capabilities.
+func (q *Queries) ListAgentRuntimesIncludingRemoved(ctx context.Context, workspaceID pgtype.UUID) ([]AgentRuntime, error) {
+	rows, err := q.db.Query(ctx, listAgentRuntimesIncludingRemoved, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentRuntime{}
+	for rows.Next() {
+		var i AgentRuntime
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DaemonID,
+			&i.Name,
+			&i.RuntimeMode,
+			&i.Provider,
+			&i.Status,
+			&i.DeviceInfo,
+			&i.Metadata,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OwnerID,
+			&i.LegacyDaemonID,
+			&i.Visibility,
+			&i.ProfileID,
+			&i.CustomName,
+			&i.RegistrationSource,
+			&i.CredentialRef,
+			&i.MaxConcurrentTasks,
+			&i.RemovedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDaemonCustomNames = `-- name: ListDaemonCustomNames :many
 SELECT custom_name FROM agent_runtime
 WHERE workspace_id = $1
