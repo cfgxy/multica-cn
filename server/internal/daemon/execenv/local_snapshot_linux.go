@@ -63,16 +63,29 @@ func RunSnapshotWorker(args []string) int {
 		return 2
 	}
 
-	if err := mountSnapshotViews(&spec); err != nil {
+	mounts, err := mountSnapshotViews(&spec)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "snapshot-worker: %v\n", err)
 		return 1
 	}
+	defer mounts.Close()
 
-	if spec.Cwd != "" {
-		if err := unix.Chdir(spec.Cwd); err != nil {
+	if mounts.cwdView != nil {
+		if err := unix.Fchdir(int(mounts.cwdView.Fd())); err != nil {
 			fmt.Fprintf(os.Stderr, "snapshot-worker: chdir %s: %v\n", spec.Cwd, err)
 			return 1
 		}
+	}
+	gitCwd := mounts.cwdPath
+	if spec.GitArtifact != nil && gitCwd != "" {
+		gitCwd, err = mounts.persistentCwdPath()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "snapshot-worker: %v\n", err)
+			return 1
+		}
+	}
+	if gitCwd == "" {
+		gitCwd = spec.Cwd
 	}
 	gitEnv := SnapshotGitEnvironment()
 	if spec.GitArtifact != nil && spec.GitArtifact.ScopePath != "" {
@@ -82,7 +95,7 @@ func RunSnapshotWorker(args []string) int {
 		gitEnv = SnapshotGitEnvironmentAcrossFilesystems()
 	}
 	if spec.GitArtifact != nil {
-		if err := ValidateSnapshotGitHooks(spec.Cwd, &spec, gitEnv); err != nil {
+		if err := ValidateSnapshotGitHooks(gitCwd, &spec, gitEnv); err != nil {
 			fmt.Fprintf(os.Stderr, "snapshot-worker: %v\n", err)
 			return 1
 		}
@@ -101,7 +114,7 @@ func RunSnapshotWorker(args []string) int {
 	cmd.Env = gitEnv
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	err = cmd.Run()
-	if captureErr := CaptureSnapshotGitArtifact(spec.Cwd, spec.GitArtifact, gitEnv); captureErr != nil {
+	if captureErr := CaptureSnapshotGitArtifact(gitCwd, spec.GitArtifact, gitEnv); captureErr != nil {
 		fmt.Fprintf(os.Stderr, "snapshot-worker: capture Git artifact: %v\n", captureErr)
 		if err == nil {
 			return 1
@@ -134,18 +147,171 @@ func splitWorkerArgv(args []string) (string, []string, error) {
 	return "", nil, fmt.Errorf("missing %s separator", agent.SnapshotWorkerSep)
 }
 
-// mountSnapshotViews materializes every unit's overlay. See RunSnapshotWorker
-// for the ordering constraints.
-func mountSnapshotViews(spec *SnapshotRunSpec) error {
-	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
-		return fmt.Errorf("make mount tree private: %w", err)
-	}
-	for _, i := range mountOrder(spec.Units) {
-		if err := mountSnapshotUnit(&spec.Units[i]); err != nil {
-			return fmt.Errorf("unit %d (%s): %w", i, spec.Units[i].Target, err)
+// snapshotMounts keeps the opened objects alive for the worker lifetime. The
+// cwd anchor is opened outside the shallowest mounted unit, so a renamed
+// ancestor cannot redirect the worker into an uncovered replacement path.
+type snapshotMounts struct {
+	targets      []*os.File
+	cwdAnchor    *os.File
+	cwdView      *os.File
+	cwdPath      string
+	cwdRelative  string
+	gitCwdAnchor *os.File
+}
+
+func (m *snapshotMounts) Close() {
+	for _, target := range m.targets {
+		if target != nil {
+			_ = target.Close()
 		}
 	}
-	return nil
+	if m.cwdView != nil {
+		_ = m.cwdView.Close()
+	}
+	if m.cwdAnchor != nil {
+		_ = m.cwdAnchor.Close()
+	}
+	if m.gitCwdAnchor != nil {
+		_ = m.gitCwdAnchor.Close()
+	}
+}
+
+func (m *snapshotMounts) persistentCwdPath() (string, error) {
+	if m.cwdView == nil {
+		return m.cwdPath, nil
+	}
+	fd, err := unix.Dup(int(m.cwdView.Fd()))
+	if err != nil {
+		return "", fmt.Errorf("duplicate Git cwd anchor: %w", err)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
+		_ = unix.Close(fd)
+		return "", fmt.Errorf("clear Git cwd anchor close-on-exec: %w", err)
+	}
+	m.gitCwdAnchor = os.NewFile(uintptr(fd), "git-cwd-anchor")
+	return filepath.Join("/proc/self/fd", fmt.Sprint(fd)), nil
+}
+
+func snapshotCwdAnchor(spec *SnapshotRunSpec) (*os.File, string, error) {
+	if spec.Cwd == "" {
+		return nil, "", nil
+	}
+	cwd := filepath.Clean(spec.Cwd)
+	var anchorTarget string
+	bestDepth := int(^uint(0) >> 1)
+	for _, unit := range spec.Units {
+		rel, err := filepath.Rel(filepath.Clean(unit.Target), cwd)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		depth := strings.Count(filepath.Clean(unit.Target), string(filepath.Separator))
+		if depth < bestDepth {
+			bestDepth = depth
+			anchorTarget = filepath.Clean(unit.Target)
+		}
+	}
+	if anchorTarget == "" {
+		return nil, "", fmt.Errorf("cwd %s is not covered by a snapshot unit", spec.Cwd)
+	}
+	parent := filepath.Dir(anchorTarget)
+	relative, err := filepath.Rel(parent, cwd)
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve cwd anchor: %w", err)
+	}
+	fd, err := unix.Open(parent, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, "", fmt.Errorf("open cwd anchor %s: %w", parent, err)
+	}
+	return os.NewFile(uintptr(fd), parent), relative, nil
+}
+
+func snapshotRootPath(anchor *os.File, target string) string {
+	clean := filepath.Clean(target)
+	if clean == string(filepath.Separator) {
+		return filepath.Join("/proc/self/fd", fmt.Sprint(anchor.Fd()))
+	}
+	return filepath.Join("/proc/self/fd", fmt.Sprint(anchor.Fd()), strings.TrimPrefix(clean, string(filepath.Separator)))
+}
+
+func snapshotHasMountedAncestor(mounted []string, target string) bool {
+	for _, parent := range mounted {
+		rel, err := filepath.Rel(filepath.Clean(parent), filepath.Clean(target))
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// mountSnapshotViews materializes every unit's overlay. See RunSnapshotWorker
+// for the ordering constraints.
+func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
+	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
+		return nil, fmt.Errorf("make mount tree private: %w", err)
+	}
+	rootFD, err := unix.Open("/", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open mount path anchor: %w", err)
+	}
+	rootAnchor := os.NewFile(uintptr(rootFD), "/")
+	mounts := &snapshotMounts{targets: make([]*os.File, len(spec.Units))}
+	mounts.cwdAnchor, mounts.cwdRelative, err = snapshotCwdAnchor(spec)
+	if err != nil {
+		_ = rootAnchor.Close()
+		return nil, err
+	}
+	if mounts.cwdAnchor != nil {
+		mounts.cwdPath = filepath.Join("/proc/self/fd", fmt.Sprint(mounts.cwdAnchor.Fd()), mounts.cwdRelative)
+	}
+	prechecked := make([]*os.File, len(spec.Units))
+	closePrechecked := func() {
+		for _, opened := range prechecked {
+			if opened != nil {
+				_ = opened.Close()
+			}
+		}
+	}
+	for i := range spec.Units {
+		prechecked[i], err = openSnapshotTargetAt(&spec.Units[i], snapshotRootPath(rootAnchor, spec.Units[i].Target), true)
+		if err != nil {
+			closePrechecked()
+			mounts.Close()
+			_ = rootAnchor.Close()
+			return nil, fmt.Errorf("open unit %d (%s): %w", i, spec.Units[i].Target, err)
+		}
+	}
+	closePrechecked()
+	mounted := make([]string, 0, len(spec.Units))
+	for _, i := range mountOrder(spec.Units) {
+		path := snapshotRootPath(rootAnchor, spec.Units[i].Target)
+		verifyIdentity := !snapshotHasMountedAncestor(mounted, spec.Units[i].Target)
+		target, openErr := openSnapshotTargetAt(&spec.Units[i], path, verifyIdentity)
+		if openErr != nil {
+			mounts.Close()
+			_ = rootAnchor.Close()
+			return nil, fmt.Errorf("open unit %d (%s): %w", i, spec.Units[i].Target, openErr)
+		}
+		if err := mountSnapshotUnit(&spec.Units[i], target); err != nil {
+			_ = target.Close()
+			mounts.Close()
+			_ = rootAnchor.Close()
+			return nil, fmt.Errorf("unit %d (%s): %w", i, spec.Units[i].Target, err)
+		}
+		mounts.targets[i] = target
+		mounted = append(mounted, spec.Units[i].Target)
+	}
+	if mounts.cwdAnchor != nil {
+		cwdFD, openErr := unix.Openat(int(mounts.cwdAnchor.Fd()), mounts.cwdRelative, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if openErr != nil {
+			mounts.Close()
+			_ = rootAnchor.Close()
+			return nil, fmt.Errorf("open mounted cwd %s: %w", spec.Cwd, openErr)
+		}
+		mounts.cwdView = os.NewFile(uintptr(cwdFD), "snapshot-cwd")
+		mounts.cwdPath = filepath.Join("/proc/self/fd", fmt.Sprint(cwdFD))
+	}
+	_ = rootAnchor.Close()
+	return mounts, nil
 }
 
 // mountOrder returns the unit indices in mount order: by target depth,
@@ -171,20 +337,50 @@ func mountOrder(units []SnapshotUnitSpec) []int {
 // trusted.* xattrs, and no redirect_dir / metacopy / index options — the
 // kernel rejects the first two outright in a user namespace and silently drops
 // the third, so the mount never asks for them.
-func mountSnapshotUnit(u *SnapshotUnitSpec) error {
+func openSnapshotTarget(u *SnapshotUnitSpec) (*os.File, error) {
+	return openSnapshotTargetAt(u, u.Target, true)
+}
+
+func openSnapshotTargetAt(u *SnapshotUnitSpec, path string, verifyIdentity bool) (*os.File, error) {
+	if u.Target == "" || path == "" {
+		return nil, errors.New("unit is missing target")
+	}
+	fd, err := unix.Open(path, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open target %s: %w", u.Target, err)
+	}
+	file := os.NewFile(uintptr(fd), u.Target)
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("stat target %s: %w", u.Target, err)
+	}
+	if verifyIdentity && u.TargetIdentitySet &&
+		(uint64(stat.Dev) != u.TargetDevice || uint64(stat.Ino) != u.TargetInode) {
+		_ = file.Close()
+		return nil, fmt.Errorf("target %s changed before snapshot mount", u.Target)
+	}
+	return file, nil
+}
+
+func mountSnapshotUnit(u *SnapshotUnitSpec, target *os.File) error {
 	if u.Target == "" || u.Alias == "" || u.Upper == "" || u.Work == "" {
 		return errors.New("unit is missing target/alias/upper/work")
+	}
+	if target == nil {
+		return errors.New("unit is missing opened target")
 	}
 	for _, d := range []string{u.Alias, u.Upper, u.Work} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("prepare %s: %w", d, err)
 		}
 	}
-	if err := unix.Mount(u.Target, u.Alias, "", unix.MS_BIND, ""); err != nil {
+	targetFDPath := filepath.Join("/proc/self/fd", fmt.Sprint(target.Fd()))
+	if err := unix.Mount(targetFDPath, u.Alias, "", unix.MS_BIND, ""); err != nil {
 		return fmt.Errorf("bind %s -> %s: %w", u.Target, u.Alias, err)
 	}
 	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", u.Alias, u.Upper, u.Work)
-	if err := unix.Mount("overlay", u.Target, "overlay", 0, opts); err != nil {
+	if err := unix.Mount("overlay", targetFDPath, "overlay", 0, opts); err != nil {
 		return fmt.Errorf("overlay on %s: %w", u.Target, err)
 	}
 	return nil
@@ -230,10 +426,12 @@ func RunSnapshotProbe(args []string) int {
 		Upper:  upper,
 		Work:   work,
 	}}}
-	if err := mountSnapshotViews(&spec); err != nil {
+	mounts, err := mountSnapshotViews(&spec)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "snapshot-probe: mount: %v\n", err)
 		return 1
 	}
+	defer mounts.Close()
 	// The view covers view/, so the probe's checks read IN the view.
 	if _, err := os.Stat(filepath.Join(view, marker)); err != nil {
 		fmt.Fprintf(os.Stderr, "snapshot-probe: lower file not visible through view: %v\n", err)

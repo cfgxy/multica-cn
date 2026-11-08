@@ -43,7 +43,11 @@ func snapshotGitEnvironment(env []string) []string {
 	filtered := make([]string, 0, len(env)+2)
 	for _, item := range env {
 		key, _, _ := strings.Cut(item, "=")
-		if !snapshotBlockedGitEnvironment[key] && !strings.HasPrefix(key, "GIT_CONFIG_KEY_") && !strings.HasPrefix(key, "GIT_CONFIG_VALUE_") {
+		if !snapshotBlockedGitEnvironment[key] &&
+			!strings.HasPrefix(key, "GIT_CONFIG_KEY_") &&
+			!strings.HasPrefix(key, "GIT_CONFIG_VALUE_") &&
+			!strings.HasPrefix(key, "GIT_AUTHOR_") &&
+			!strings.HasPrefix(key, "GIT_COMMITTER_") {
 			filtered = append(filtered, item)
 		}
 	}

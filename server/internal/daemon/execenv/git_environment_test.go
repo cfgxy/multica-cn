@@ -12,6 +12,12 @@ func TestSnapshotGitEnvironmentBlocksConfigurationOverrides(t *testing.T) {
 		"GIT_CONFIG_KEY_0=core.hooksPath",
 		"GIT_CONFIG_VALUE_0=/host/hooks",
 		"GIT_CONFIG_PARAMETERS='core.hooksPath=/host/hooks'",
+		"GIT_AUTHOR_NAME=attacker",
+		"GIT_AUTHOR_EMAIL=attacker@example.invalid",
+		"GIT_AUTHOR_DATE=2000-01-01T00:00:00Z",
+		"GIT_COMMITTER_NAME=attacker",
+		"GIT_COMMITTER_EMAIL=attacker@example.invalid",
+		"GIT_COMMITTER_DATE=2000-01-01T00:00:00Z",
 	})
 	values := make(map[string]string, len(env))
 	for _, item := range env {
@@ -28,7 +34,11 @@ func TestSnapshotGitEnvironmentBlocksConfigurationOverrides(t *testing.T) {
 	if values["GIT_CONFIG_NOSYSTEM"] != "1" || values["GIT_CONFIG_GLOBAL"] != "/dev/null" {
 		t.Fatalf("snapshot config isolation = %#v", values)
 	}
-	for _, key := range []string{"GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_PARAMETERS"} {
+	for _, key := range []string{
+		"GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_PARAMETERS",
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+	} {
 		if _, ok := values[key]; ok {
 			t.Fatalf("snapshot environment retained %s", key)
 		}

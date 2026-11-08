@@ -109,6 +109,74 @@ func TestResolveSnapshotPlanUndeclaredPrimary(t *testing.T) {
 	}
 }
 
+func TestSnapshotScopeLockRejectsResourceSymlinkRetargetAfterLock(t *testing.T) {
+	t.Parallel()
+	scratch := t.TempDir()
+	repoA := filepath.Join(scratch, "repo-a")
+	repoB := filepath.Join(scratch, "repo-b")
+	resourcePath := filepath.Join(scratch, "resource")
+	for _, dir := range []string{filepath.Join(repoA, "src"), filepath.Join(repoB, "src")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoB, "sentinel"), []byte("must-not-be-touched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(repoA, resourcePath); err != nil {
+		t.Fatal(err)
+	}
+
+	const daemonID = "daemon-toctou"
+	resource := snapshotResourceForTest(t, "resource-1", resourcePath, daemonID, true, "src")
+	task := Task{
+		ID:                  "task-toctou",
+		IssueID:             "issue-toctou",
+		ProjectResources:    []ProjectResourceData{resource},
+		LocalDirectoryScope: scopeJSONForTest(t, resource.ID, "src"),
+	}
+	srv := waitingServerForTest(t, new(atomic.Int32))
+	defer srv.Close()
+	d := &Daemon{
+		cfg:            Config{DaemonID: daemonID},
+		client:         NewClient(srv.URL),
+		localPathLocks: NewLocalPathLocker(),
+		logger:         slog.Default(),
+	}
+	d.client.snapshotSupport.Store(true)
+
+	release, abort := d.acquireLocalDirectoryLockIfNeeded(context.Background(), task, slog.Default())
+	if abort || release == nil {
+		t.Fatalf("snapshot scope lock acquisition failed, abort=%v release=%v", abort, release != nil)
+	}
+	defer release()
+	if err := os.Remove(resourcePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(repoB, resourcePath); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := resolveSnapshotPlan(task, daemonID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawBinding, ok := d.snapshotLockBindings.LoadAndDelete(task.ID)
+	if !ok {
+		t.Fatal("snapshot scope lock did not record a binding")
+	}
+	binding, ok := rawBinding.(*snapshotLockBinding)
+	if !ok {
+		t.Fatalf("snapshot lock binding type = %T", rawBinding)
+	}
+	if err := applySnapshotLockBinding(plan, binding); err == nil {
+		t.Fatal("retargeted resource symlink must fail closed before materialization")
+	}
+	if got, err := os.ReadFile(filepath.Join(repoB, "sentinel")); err != nil || string(got) != "must-not-be-touched\n" {
+		t.Fatalf("retargeted directory changed, contents=%q err=%v", got, err)
+	}
+}
+
 func TestResolveSnapshotPlanUsesWorktreeResourceOnlyWithGitSnapshotGate(t *testing.T) {
 	plainTask := Task{
 		ID:               "plain",

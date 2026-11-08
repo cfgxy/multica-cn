@@ -661,6 +661,66 @@ func TestSnapshotWorkerCapturesLinkedWorktreeArtifactSmoke(t *testing.T) {
 	}
 }
 
+func TestSnapshotWorkerNestedUnitsUseIndependentUpperLayersSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	scratch := t.TempDir()
+	root := filepath.Join(scratch, "root")
+	child := filepath.Join(root, "child")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "root-lower"), []byte("root\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "child-lower"), []byte("child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	unit := func(name, target string) SnapshotUnitSpec {
+		alias := filepath.Join(scratch, name+"-alias")
+		upper := filepath.Join(scratch, name+"-upper")
+		work := filepath.Join(scratch, name+"-work")
+		for _, dir := range []string{alias, upper, work} {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return SnapshotUnitSpec{Target: target, Alias: alias, Upper: upper, Work: work}
+	}
+	rootUnit := unit("root", root)
+	childUnit := unit("child", child)
+	spec := &SnapshotRunSpec{
+		TaskID: "nested-upper-smoke",
+		Units:  []SnapshotUnitSpec{rootUnit, childUnit},
+		Cwd:    child,
+	}
+	wrap, err := BuildSnapshotWrap(bin, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := spawnWithSnapshotNamespaces(t,
+		bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+		"/bin/sh", "-c", "printf child-write > child-write && printf root-write > ../root-write")
+	if err != nil {
+		t.Fatalf("worker failed: %v\\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(childUnit.Upper, "child-write")); err != nil {
+		t.Fatalf("child write must land in child upper: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootUnit.Upper, "child", "child-write")); !os.IsNotExist(err) {
+		t.Fatalf("child write leaked into parent upper, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootUnit.Upper, "root-write")); err != nil {
+		t.Fatalf("root write must land in root upper: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "child-write")); !os.IsNotExist(err) {
+		t.Fatalf("child write leaked into pristine root, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "root-write")); !os.IsNotExist(err) {
+		t.Fatalf("root write leaked into pristine root, stat err=%v", err)
+	}
+}
+
 func linkedGitFingerprint(t *testing.T, worktree, commonDir string) string {
 	t.Helper()
 	gitDir := strings.TrimSpace(gitForSnapshotTest(t, worktree, "rev-parse", "--absolute-git-dir"))
