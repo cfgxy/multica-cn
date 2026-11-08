@@ -54,21 +54,30 @@ type KnowledgeScanBatchResponse struct {
 }
 
 type KnowledgeEntryResponse struct {
-	ID               string     `json:"id"`
-	DirID            string     `json:"dir_id"`
-	Key              string     `json:"key"`
-	Content          string     `json:"content"`
-	ContentSha256    string     `json:"content_sha256"`
-	MirrorState      string     `json:"mirror_state"`
-	FirstSeenAt      time.Time  `json:"first_seen_at"`
-	LastConfirmedAt  time.Time  `json:"last_confirmed_at"`
-	AdoptionState    string     `json:"adoption_state"`
-	AdoptedAt        *time.Time `json:"adopted_at,omitempty"`
-	AdoptedBy        *string    `json:"adopted_by,omitempty"`
-	UltimateDirID    *string    `json:"ultimate_dir_id,omitempty"`
-	AdoptedFromDirID *string    `json:"adopted_from_dir_id,omitempty"`
-	AdoptedFromKey   *string    `json:"adopted_from_key,omitempty"`
-	AdoptionError    string     `json:"adoption_error,omitempty"`
+	ID               string                           `json:"id"`
+	DirID            string                           `json:"dir_id"`
+	Key              string                           `json:"key"`
+	Content          string                           `json:"content"`
+	ContentSha256    string                           `json:"content_sha256"`
+	MirrorState      string                           `json:"mirror_state"`
+	FirstSeenAt      time.Time                        `json:"first_seen_at"`
+	LastConfirmedAt  time.Time                        `json:"last_confirmed_at"`
+	AdoptionState    string                           `json:"adoption_state"`
+	AdoptedAt        *time.Time                       `json:"adopted_at,omitempty"`
+	AdoptedBy        *string                          `json:"adopted_by,omitempty"`
+	UltimateDirID    *string                          `json:"ultimate_dir_id,omitempty"`
+	AdoptedFromDirID *string                          `json:"adopted_from_dir_id,omitempty"`
+	AdoptedFromKey   *string                          `json:"adopted_from_key,omitempty"`
+	AdoptionError    string                           `json:"adoption_error,omitempty"`
+	PendingOperation *KnowledgeEntryOperationResponse `json:"pending_operation,omitempty"`
+}
+
+type KnowledgeEntryOperationResponse struct {
+	ID            string     `json:"id"`
+	OperationType string     `json:"operation_type,omitempty"`
+	Status        string     `json:"status"`
+	Error         string     `json:"error,omitempty"`
+	RequestedAt   *time.Time `json:"requested_at,omitempty"`
 }
 
 // GetKnowledgeDirs serves GET /api/knowledge/dirs: the workspace's registered
@@ -134,12 +143,9 @@ ORDER BY d.kind = 'ultimate' DESC, d.created_at`, workspaceID)
 }
 
 // PostKnowledgeDir serves POST /api/knowledge/dirs: register a manually added
-// external source. Kind is a server decision (candidate_cli) — the daemon
-// auto-discovers project directories and auto-designates the ultimate, so a
-// hand registration only ever adds an external candidate. Scanning happens on
-// the daemon that hosts the path (registration just queues the first scan);
-// the row lands immediately and the first batch shows up within one knowledge
-// cycle, doubling as the access verification.
+// external source. Kind is normally a server decision (candidate_cli). A
+// management-channel ultimate is accepted only when its exact path has a
+// registered daemon host, so it can eventually receive adoption work.
 func (h *Handler) PostKnowledgeDir(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
 	if !ok {
@@ -169,6 +175,25 @@ func (h *Handler) PostKnowledgeDir(w http.ResponseWriter, r *http.Request) {
 	if body.Kind != "ultimate" && body.Kind != "candidate_cli" && body.Kind != "candidate_auto" {
 		writeError(w, http.StatusBadRequest, "kind must be ultimate, candidate_cli or candidate_auto")
 		return
+	}
+	if body.Kind == "ultimate" {
+		var hasDaemonHost bool
+		err := h.DB.QueryRow(r.Context(), `
+	SELECT EXISTS(
+		SELECT 1 FROM project_resource
+		WHERE workspace_id = $1
+		  AND resource_type = 'local_directory'
+		  AND resource_ref->>'local_path' = $2
+		  AND COALESCE(resource_ref->>'daemon_id', '') <> ''
+	)`, workspaceID, body.Path).Scan(&hasDaemonHost)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate the ultimate knowledge directory host")
+			return
+		}
+		if !hasDaemonHost {
+			writeError(w, http.StatusConflict, "an ultimate knowledge directory must match a registered daemon local directory")
+			return
+		}
 	}
 
 	// One active ultimate per workspace and one row per live path are
@@ -253,8 +278,17 @@ func (h *Handler) GetKnowledgeEntries(w http.ResponseWriter, r *http.Request) {
 SELECT e.id, e.dir_id, e.key, e.content, e.content_sha256, e.mirror_state,
        e.first_seen_at, e.last_confirmed_at, e.adoption_state, e.adopted_at,
        e.adopted_by, e.ultimate_dir_id, e.adopted_from_dir_id, e.adopted_from_key,
-       e.adoption_error
+       e.adoption_error, pending.id, COALESCE(pending.operation_type, ''),
+       COALESCE(pending.status, ''), COALESCE(pending.error, ''), pending.created_at
 FROM knowledge_entry e
+	LEFT JOIN LATERAL (
+	    SELECT o.id, o.operation_type, o.status, o.error, o.created_at
+	    FROM knowledge_entry_operation o
+	    WHERE o.workspace_id = e.workspace_id AND o.status = 'queued'
+	      AND (o.entry_id = e.id OR o.delete_entry_ids ? e.id::text)
+	    ORDER BY o.created_at DESC, o.id DESC
+	    LIMIT 1
+	) pending ON TRUE
 WHERE e.workspace_id = $1
   AND ($2::uuid IS NULL OR e.dir_id = $2)
   AND ($3 = '' OR position($3 in lower(e.key)) > 0 OR position($3 in lower(e.content)) > 0)
@@ -268,12 +302,14 @@ LIMIT 200`, workspaceID, dirID, query)
 	entries := make([]KnowledgeEntryResponse, 0, 64)
 	for rows.Next() {
 		var entry KnowledgeEntryResponse
-		var id, entryDirID, adoptedBy, ultimateDirID, fromDirID pgtype.UUID
-		var adoptedAt pgtype.Timestamptz
+		var id, entryDirID, adoptedBy, ultimateDirID, fromDirID, pendingID pgtype.UUID
+		var adoptedAt, pendingRequestedAt pgtype.Timestamptz
+		var pendingOperationType, pendingStatus, pendingError string
 		if err := rows.Scan(&id, &entryDirID, &entry.Key, &entry.Content, &entry.ContentSha256,
 			&entry.MirrorState, &entry.FirstSeenAt, &entry.LastConfirmedAt, &entry.AdoptionState,
 			&adoptedAt, &adoptedBy, &ultimateDirID, &fromDirID, &entry.AdoptedFromKey,
-			&entry.AdoptionError); err != nil {
+			&entry.AdoptionError, &pendingID, &pendingOperationType, &pendingStatus, &pendingError,
+			&pendingRequestedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to read knowledge entries")
 			return
 		}
@@ -294,6 +330,17 @@ LIMIT 200`, workspaceID, dirID, query)
 		if fromDirID.Valid {
 			value := uuidToString(fromDirID)
 			entry.AdoptedFromDirID = &value
+		}
+		if pendingID.Valid {
+			pending := &KnowledgeEntryOperationResponse{
+				ID: uuidToString(pendingID), OperationType: pendingOperationType,
+				Status: pendingStatus, Error: pendingError,
+			}
+			if pendingRequestedAt.Valid {
+				value := pendingRequestedAt.Time
+				pending.RequestedAt = &value
+			}
+			entry.PendingOperation = pending
 		}
 		entries = append(entries, entry)
 	}
@@ -354,6 +401,171 @@ WHERE id = $1 AND workspace_id = $2 AND adoption_state IN ('pending', 'failed')`
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "transferring"})
 }
 
+// EditKnowledgeEntry queues a replacement for an ultimate-library entry. The
+// daemon owns bd IO and the mirror is deliberately left unchanged until it
+// reports a successful recall of the requested Markdown.
+func (h *Handler) EditKnowledgeEntry(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Content) == "" {
+		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+	h.queueKnowledgeEntryOperation(w, r, userID, "edit", body.Content, nil)
+}
+
+// DeleteKnowledgeEntry queues a confirmed deletion. Confirmation is part of
+// the request contract as well as the UI dialog, so an API caller cannot
+// accidentally delete a memory by merely following the endpoint.
+func (h *Handler) DeleteKnowledgeEntry(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Confirm bool `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !body.Confirm {
+		writeError(w, http.StatusBadRequest, "delete confirmation is required")
+		return
+	}
+	h.queueKnowledgeEntryOperation(w, r, userID, "delete", "", nil)
+}
+
+// MergeKnowledgeEntries queues a user-confirmed consolidation. The target and
+// every deleted source must be live entries in the same ultimate directory;
+// source deletion happens only after the daemon read-back proves the target.
+func (h *Handler) MergeKnowledgeEntries(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Content        string   `json:"content"`
+		SourceEntryIDs []string `json:"source_entry_ids"`
+		Confirm        bool     `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !body.Confirm || strings.TrimSpace(body.Content) == "" || len(body.SourceEntryIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "content, source_entry_ids and confirmation are required")
+		return
+	}
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	targetID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "id")
+	if !ok {
+		return
+	}
+	var targetDirID pgtype.UUID
+	if err := h.DB.QueryRow(r.Context(), `
+SELECT dir_id FROM knowledge_entry WHERE id = $1 AND workspace_id = $2`, targetID, workspaceID).Scan(&targetDirID); err != nil {
+		writeError(w, http.StatusNotFound, "knowledge entry not found")
+		return
+	}
+	seen := make(map[string]struct{}, len(body.SourceEntryIDs))
+	sourceIDs := make([]pgtype.UUID, 0, len(body.SourceEntryIDs))
+	for _, rawID := range body.SourceEntryIDs {
+		id, valid := parseUUIDOrBadRequest(w, rawID, "source_entry_ids")
+		if !valid {
+			return
+		}
+		if id == targetID {
+			writeError(w, http.StatusBadRequest, "a merge source cannot be the target entry")
+			return
+		}
+		if _, duplicate := seen[rawID]; duplicate {
+			writeError(w, http.StatusBadRequest, "merge sources must be unique")
+			return
+		}
+		seen[rawID] = struct{}{}
+		sourceIDs = append(sourceIDs, id)
+	}
+	rows, err := h.DB.Query(r.Context(), `
+SELECT id, dir_id FROM knowledge_entry
+WHERE workspace_id = $1 AND id = ANY($2) AND mirror_state = 'synced'`, workspaceID, sourceIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to validate merge sources")
+		return
+	}
+	defer rows.Close()
+	found := 0
+	for rows.Next() {
+		var sourceID, sourceDirID pgtype.UUID
+		if err := rows.Scan(&sourceID, &sourceDirID); err != nil || sourceDirID != targetDirID {
+			writeError(w, http.StatusConflict, "merge sources must be live entries in the target directory")
+			return
+		}
+		found++
+	}
+	if rows.Err() != nil {
+		writeError(w, http.StatusInternalServerError, "failed to validate merge sources")
+		return
+	}
+	if found != len(sourceIDs) {
+		writeError(w, http.StatusConflict, "one or more merge sources are unavailable")
+		return
+	}
+	h.queueKnowledgeEntryOperation(w, r, userID, "merge", body.Content, body.SourceEntryIDs)
+}
+
+func (h *Handler) queueKnowledgeEntryOperation(w http.ResponseWriter, r *http.Request, userID, operationType, content string, deleteEntryIDs []string) {
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	entryID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "id")
+	if !ok {
+		return
+	}
+	var kind, daemonID, mirrorState string
+	if err := h.DB.QueryRow(r.Context(), `
+SELECT d.kind, d.daemon_id, e.mirror_state
+FROM knowledge_entry e
+JOIN knowledge_dir d ON d.id = e.dir_id
+WHERE e.id = $1 AND e.workspace_id = $2 AND d.workspace_id = $2 AND d.removed = FALSE`, entryID, workspaceID).
+		Scan(&kind, &daemonID, &mirrorState); err != nil {
+		writeError(w, http.StatusNotFound, "knowledge entry not found")
+		return
+	}
+	if kind != "ultimate" || daemonID == "" {
+		writeError(w, http.StatusConflict, "only entries in a bound knowledge hub can be changed")
+		return
+	}
+	if mirrorState != "synced" {
+		writeError(w, http.StatusConflict, "a deleted or removed source cannot be changed")
+		return
+	}
+	deleteJSON, err := json.Marshal(deleteEntryIDs)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid merge sources")
+		return
+	}
+	involvedEntryIDs := append([]string{uuidToString(entryID)}, deleteEntryIDs...)
+	var alreadyQueued bool
+	if err := h.DB.QueryRow(r.Context(), `
+SELECT EXISTS(
+    SELECT 1 FROM knowledge_entry_operation
+    WHERE workspace_id = $1 AND status = 'queued'
+      AND (entry_id::text = ANY($2::text[]) OR delete_entry_ids ?| $2::text[])
+)`, workspaceID, involvedEntryIDs).Scan(&alreadyQueued); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to queue knowledge operation")
+		return
+	}
+	if alreadyQueued {
+		writeError(w, http.StatusConflict, "a knowledge operation for this entry is already queued")
+		return
+	}
+	var operationID pgtype.UUID
+	if err := h.DB.QueryRow(r.Context(), `
+INSERT INTO knowledge_entry_operation (workspace_id, entry_id, operation_type, content, delete_entry_ids, requested_by)
+VALUES ($1, $2, $3, $4, $5::jsonb, NULLIF($6, '')::uuid)
+RETURNING id`, workspaceID, entryID, operationType, content, string(deleteJSON), userID).Scan(&operationID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to queue knowledge operation")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, KnowledgeEntryOperationResponse{ID: uuidToString(operationID), Status: "queued"})
+}
+
 func isPgUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
@@ -371,16 +583,18 @@ type knowledgeAdoptError struct {
 
 func (e *knowledgeAdoptError) Error() string { return e.reason }
 
-// knowledgeUltimateDir resolves the workspace's active ultimate directory.
+// knowledgeUltimateDir resolves the workspace's active ultimate directory only
+// after a daemon has claimed it. Queuing a transfer without this binding would
+// leave it in transferring with no authenticated consumer.
 func (h *Handler) knowledgeUltimateDir(ctx context.Context, workspaceID pgtype.UUID) (pgtype.UUID, string, error) {
 	var id pgtype.UUID
 	var path string
 	err := h.DB.QueryRow(ctx, `
 SELECT id, path FROM knowledge_dir
-WHERE workspace_id = $1 AND kind = 'ultimate' AND removed = FALSE
+	WHERE workspace_id = $1 AND kind = 'ultimate' AND removed = FALSE AND daemon_id <> ''
 ORDER BY created_at LIMIT 1`, workspaceID).Scan(&id, &path)
 	if err != nil {
-		return id, "", &knowledgeAdoptError{"no ultimate knowledge directory is designated for this workspace"}
+		return id, "", &knowledgeAdoptError{"no bound ultimate knowledge directory is designated for this workspace"}
 	}
 	return id, path, nil
 }

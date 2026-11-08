@@ -38,7 +38,7 @@ function renderPanel(capabilities: LarkInstallation["capabilities"]) {
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <I18nProvider locale="en" resources={{ en: { common: enCommon, settings: enSettings } }}>
-        <LarkCapabilityPanel installation={installation} canManage />
+        <LarkCapabilityPanel installation={installation} isWorkspaceAdmin />
       </I18nProvider>
     </QueryClientProvider>,
   );

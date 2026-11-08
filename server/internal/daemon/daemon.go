@@ -2860,6 +2860,9 @@ func (d *Daemon) registerRuntimesForWorkspaceBatchLocked(ctx context.Context, wo
 	if len(resp.Runtimes) == 0 && len(failedProfiles) == 0 {
 		return nil, "", fmt.Errorf("register runtimes: empty response")
 	}
+	if resp.DaemonToken != "" {
+		d.client.SetKnowledgeToken(workspaceID, resp.DaemonToken)
+	}
 	d.logger.Debug("register response", "workspace_id", workspaceID, "runtimes", len(resp.Runtimes), "repos", len(resp.Repos), "repos_version", resp.ReposVersion)
 	d.recordBuiltinVersionsSent(workspaceID, runtimes)
 	return resp, profileSig, nil
@@ -2906,6 +2909,9 @@ func (d *Daemon) registerBuiltinRuntimesForWorkspaceLocked(ctx context.Context, 
 	}
 	if len(resp.Runtimes) == 0 {
 		return nil, fmt.Errorf("register builtin runtimes: empty response")
+	}
+	if resp.DaemonToken != "" {
+		d.client.SetKnowledgeToken(workspaceID, resp.DaemonToken)
 	}
 	d.logger.Debug("builtin register response", "workspace_id", workspaceID, "runtimes", len(resp.Runtimes))
 	d.recordBuiltinVersionsSent(workspaceID, runtimes)

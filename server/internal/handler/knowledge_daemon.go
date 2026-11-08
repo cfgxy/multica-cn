@@ -27,12 +27,14 @@ type KnowledgePlanResponse struct {
 }
 
 type KnowledgePlanWorkspace struct {
-	WorkspaceID    string                 `json:"workspace_id"`
-	HasUltimate    bool                   `json:"has_ultimate"`
-	Ultimate       *KnowledgePlanUltimate `json:"ultimate,omitempty"`
-	DiscoveryRoots []string               `json:"discovery_roots"`
-	Dirs           []KnowledgePlanDir     `json:"dirs"`
-	Adoptions      []KnowledgePlanAdopt   `json:"adoptions"`
+	WorkspaceID     string                   `json:"workspace_id"`
+	HasUltimate     bool                     `json:"has_ultimate"`
+	Ultimate        *KnowledgePlanUltimate   `json:"ultimate,omitempty"`
+	UnboundUltimate *KnowledgePlanUltimate   `json:"unbound_ultimate,omitempty"`
+	DiscoveryRoots  []string                 `json:"discovery_roots"`
+	Dirs            []KnowledgePlanDir       `json:"dirs"`
+	Adoptions       []KnowledgePlanAdopt     `json:"adoptions"`
+	Operations      []KnowledgePlanOperation `json:"operations"`
 }
 
 type KnowledgePlanUltimate struct {
@@ -49,7 +51,7 @@ type KnowledgePlanDir struct {
 	// ScanRequired is true when no scan batch has ever been recorded for the
 	// directory or an explicit refresh was queued — the daemon must report
 	// the source even when it matches the (possibly empty) mirror map.
-	ScanRequired bool              `json:"scan_required"`
+	ScanRequired bool `json:"scan_required"`
 	// Mirror maps every mirrored key to its content SHA-256 so the daemon can
 	// skip reporting unchanged sources entirely.
 	Mirror map[string]string `json:"mirror"`
@@ -65,12 +67,30 @@ type KnowledgePlanAdopt struct {
 	UltimatePath  string `json:"ultimate_path"`
 }
 
+type KnowledgePlanOperation struct {
+	ID            string   `json:"id"`
+	OperationType string   `json:"operation_type"`
+	Key           string   `json:"key"`
+	Content       string   `json:"content"`
+	DeleteKeys    []string `json:"delete_keys"`
+	Actor         string   `json:"actor"`
+	UltimateDirID string   `json:"ultimate_dir_id"`
+	UltimatePath  string   `json:"ultimate_path"`
+}
+
 // KnowledgeResultsRequest is one daemon's report for a knowledge cycle.
 type KnowledgeResultsRequest struct {
 	Discoveries []KnowledgeDiscoveryReport `json:"discoveries"`
 	Ultimates   []KnowledgeUltimateReport  `json:"ultimates"`
 	Scans       []KnowledgeScanReport      `json:"scans"`
 	Adoptions   []KnowledgeAdoptReport     `json:"adoptions"`
+	Operations  []KnowledgeOperationReport `json:"operations"`
+}
+
+type KnowledgeOperationReport struct {
+	ID    string `json:"id"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 // KnowledgeDiscoveryReport registers an auto-discovered candidate: a project
@@ -112,9 +132,9 @@ type KnowledgeAdoptReport struct {
 	Error         string `json:"error,omitempty"`
 }
 
-// knowledgePlanDaemonID resolves and cross-checks the requesting daemon's id:
-// the query parameter is required for user-identity callers, and a daemon
-// token may only ever speak for itself.
+// knowledgePlanDaemonID resolves and cross-checks the daemon selected for a
+// read-only plan. User identities retain this compatibility path; write
+// reports must use knowledgeResultsDaemonID instead.
 func knowledgePlanDaemonID(r *http.Request) (string, int, string) {
 	daemonID := strings.TrimSpace(r.URL.Query().Get("daemon_id"))
 	ctxDaemonID := middleware.DaemonIDFromContext(r.Context())
@@ -130,11 +150,28 @@ func knowledgePlanDaemonID(r *http.Request) (string, int, string) {
 	return daemonID, 0, ""
 }
 
+// knowledgeResultsDaemonID accepts reports only from an authenticated daemon.
+// A user can inspect a compatible plan, but must never be able to assert that
+// a daemon wrote and read back a bd Memory.
+func knowledgeResultsDaemonID(r *http.Request) (string, int, string) {
+	daemonID := middleware.DaemonIDFromContext(r.Context())
+	if daemonID == "" {
+		return "", http.StatusUnauthorized, "daemon authentication is required to report knowledge results"
+	}
+	if requested := strings.TrimSpace(r.URL.Query().Get("daemon_id")); requested != "" && requested != daemonID {
+		return "", http.StatusForbidden, "daemon tokens can only address their own daemon"
+	}
+	return daemonID, 0, ""
+}
+
 // knowledgePlanWorkspaces resolves the workspaces a plan covers for this
-// caller: a user identity sees every workspace it belongs to (the same
-// projection ListDaemonWorkspaces serves), a workspace-scoped daemon token
-// sees only its bound workspace.
+// caller. A workspace-scoped daemon token always wins over request headers and
+// sees only its bound workspace; a user identity sees every workspace it
+// belongs to through the same projection ListDaemonWorkspaces serves.
 func (h *Handler) knowledgePlanWorkspaces(r *http.Request) ([]pgtype.UUID, int, string) {
+	if workspaceID := middleware.DaemonWorkspaceIDFromContext(r.Context()); workspaceID != "" {
+		return []pgtype.UUID{parseUUID(workspaceID)}, 0, ""
+	}
 	if userID := requestUserID(r); userID != "" {
 		rows, err := h.Queries.ListDaemonWorkspaces(r.Context(), parseUUID(userID))
 		if err != nil {
@@ -146,11 +183,7 @@ func (h *Handler) knowledgePlanWorkspaces(r *http.Request) ([]pgtype.UUID, int, 
 		}
 		return ids, 0, ""
 	}
-	workspaceID := middleware.DaemonWorkspaceIDFromContext(r.Context())
-	if workspaceID == "" {
-		return nil, http.StatusUnauthorized, "daemon workspace identity required"
-	}
-	return []pgtype.UUID{parseUUID(workspaceID)}, 0, ""
+	return nil, http.StatusUnauthorized, "daemon workspace identity required"
 }
 
 // knowledgeParseUUID is the daemon-report tolerant id parse: reports carry
@@ -161,6 +194,24 @@ func knowledgeParseUUID(s string) (pgtype.UUID, bool) {
 		return pgtype.UUID{}, false
 	}
 	return id, true
+}
+
+// daemonOwnsKnowledgePath 通过 daemon token 和精确匹配的 local_directory
+// resource 验证路径归属。回报中的 daemon_id 与 path 均不可信，不能作为授权依据。
+func (h *Handler) daemonOwnsKnowledgePath(ctx context.Context, workspaceID, daemonID, path string) bool {
+	if middleware.DaemonIDFromContext(ctx) != daemonID {
+		return false
+	}
+	var owns bool
+	err := h.DB.QueryRow(ctx, `
+	SELECT EXISTS(
+		SELECT 1 FROM project_resource
+		WHERE workspace_id = $1::uuid
+		  AND resource_type = 'local_directory'
+		  AND resource_ref->>'daemon_id' = $2
+		  AND resource_ref->>'local_path' = $3
+	)`, workspaceID, daemonID, path).Scan(&owns)
+	return err == nil && owns
 }
 
 // GetKnowledgePlan serves GET /api/daemon/knowledge/plan?daemon_id=: the work
@@ -187,7 +238,7 @@ func (h *Handler) GetKnowledgePlan(w http.ResponseWriter, r *http.Request) {
 	// stale copy.
 	planByWorkspace := make(map[string]*KnowledgePlanWorkspace, len(workspaceIDs))
 	for _, ws := range workspaceIDs {
-		planByWorkspace[uuidToString(ws)] = &KnowledgePlanWorkspace{WorkspaceID: uuidToString(ws), DiscoveryRoots: []string{}, Dirs: []KnowledgePlanDir{}, Adoptions: []KnowledgePlanAdopt{}}
+		planByWorkspace[uuidToString(ws)] = &KnowledgePlanWorkspace{WorkspaceID: uuidToString(ws), DiscoveryRoots: []string{}, Dirs: []KnowledgePlanDir{}, Adoptions: []KnowledgePlanAdopt{}, Operations: []KnowledgePlanOperation{}}
 	}
 
 	// Discovery roots: this daemon's local_directory project resources per
@@ -278,8 +329,9 @@ SELECT dir_id::text, key, content_sha256 FROM knowledge_entry WHERE dir_id = ANY
 		}
 	}
 
-	// Ultimates: the workspace's active adoption target, whichever daemon
-	// designated it — but adoption work below only rides the daemon hosting it.
+	// Ultimates: adoption work only rides the daemon hosting the active target.
+	// An unbound target is offered only as a claim candidate. A daemon must
+	// confirm it through the results endpoint before it becomes usable.
 	type ultimateRow struct {
 		workspaceID string
 		ult         KnowledgePlanUltimate
@@ -310,9 +362,11 @@ WHERE workspace_id = ANY($1) AND kind = 'ultimate' AND removed = FALSE`, workspa
 			continue
 		}
 		wsPlan.HasUltimate = true
-		usableByDaemon := row.daemonIDCol == "" || row.daemonIDCol == daemonID
-		if usableByDaemon {
+		switch {
+		case row.daemonIDCol == daemonID:
 			wsPlan.Ultimate = &row.ult
+		case row.daemonIDCol == "" && h.daemonOwnsKnowledgePath(r.Context(), row.workspaceID, daemonID, row.ult.Path):
+			wsPlan.UnboundUltimate = &row.ult
 		}
 	}
 
@@ -355,6 +409,55 @@ WHERE e.workspace_id = ANY($1) AND e.adoption_state = 'transferring'`, workspace
 		}
 	}
 
+	// Every mutable operation is attached to an active ultimate directory that
+	// is already bound to this daemon. Candidate mirrors and unbound hubs never
+	// cross this trust boundary.
+	opRows, err := h.DB.Query(r.Context(), `
+SELECT o.id::text, o.workspace_id::text, o.operation_type, e.key, o.content,
+       o.delete_entry_ids::text, COALESCE(o.requested_by::text, ''), d.id::text, d.path
+FROM knowledge_entry_operation o
+JOIN knowledge_entry e ON e.id = o.entry_id AND e.workspace_id = o.workspace_id
+JOIN knowledge_dir d ON d.id = e.dir_id AND d.workspace_id = o.workspace_id
+WHERE o.workspace_id = ANY($1) AND o.status = 'queued'
+  AND d.kind = 'ultimate' AND d.removed = FALSE AND d.daemon_id = $2`, workspaceIDs, daemonID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
+		return
+	}
+	for opRows.Next() {
+		var operation KnowledgePlanOperation
+		var workspaceID, sourceIDsJSON, requestedBy string
+		if err := opRows.Scan(&operation.ID, &workspaceID, &operation.OperationType, &operation.Key,
+			&operation.Content, &sourceIDsJSON, &requestedBy, &operation.UltimateDirID, &operation.UltimatePath); err != nil {
+			opRows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
+			return
+		}
+		if err := json.Unmarshal([]byte(sourceIDsJSON), &operation.DeleteKeys); err != nil {
+			operation.DeleteKeys = []string{}
+		} else if len(operation.DeleteKeys) > 0 {
+			keyRows, keyErr := h.DB.Query(r.Context(), `
+SELECT key FROM knowledge_entry
+WHERE workspace_id::text = $1 AND id::text = ANY($2::text[])`, workspaceID, operation.DeleteKeys)
+			if keyErr == nil {
+				keys := make([]string, 0, len(operation.DeleteKeys))
+				for keyRows.Next() {
+					var key string
+					if keyRows.Scan(&key) == nil {
+						keys = append(keys, key)
+					}
+				}
+				keyRows.Close()
+				operation.DeleteKeys = keys
+			}
+		}
+		operation.Actor = "multica-" + requestedBy
+		if wsPlan := planByWorkspace[workspaceID]; wsPlan != nil {
+			wsPlan.Operations = append(wsPlan.Operations, operation)
+		}
+	}
+	opRows.Close()
+
 	// Materialize the accumulated workspaces in stable id order.
 	for _, ws := range workspaceIDs {
 		if wsPlan, ok := planByWorkspace[uuidToString(ws)]; ok {
@@ -369,7 +472,7 @@ WHERE e.workspace_id = ANY($1) AND e.adoption_state = 'transferring'`, workspace
 // one daemon's report for a knowledge cycle. Every item is applied
 // independently and best-effort; the response summarizes what landed.
 func (h *Handler) PostKnowledgeResults(w http.ResponseWriter, r *http.Request) {
-	daemonID, status, message := knowledgePlanDaemonID(r)
+	daemonID, status, message := knowledgeResultsDaemonID(r)
 	if status != 0 {
 		writeError(w, status, message)
 		return
@@ -389,7 +492,7 @@ func (h *Handler) PostKnowledgeResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var registered, ultimatesAccepted, ultimatesConflicts, scansApplied, adoptionsResolved int
+	var registered, ultimatesAccepted, ultimatesConflicts, scansApplied, adoptionsResolved, operationsResolved int
 	for _, disc := range body.Discoveries {
 		workspaceID, ok := allowed[disc.WorkspaceID]
 		if !ok || disc.Path == "" {
@@ -407,6 +510,32 @@ ON CONFLICT DO NOTHING`,
 	for _, ult := range body.Ultimates {
 		workspaceID, ok := allowed[ult.WorkspaceID]
 		if !ok || ult.Path == "" {
+			continue
+		}
+		// 手工登记的 ultimate 只有在持有 daemon token 且拥有精确匹配
+		// local_directory resource 的 daemon 确认后才能绑定。
+		if h.daemonOwnsKnowledgePath(r.Context(), uuidToString(workspaceID), daemonID, ult.Path) {
+			tag, err := h.DB.Exec(r.Context(), `
+	UPDATE knowledge_dir
+	SET daemon_id = $3, updated_at = now()
+	WHERE workspace_id = $1 AND kind = 'ultimate' AND path = $2
+	  AND removed = FALSE AND daemon_id = ''`, workspaceID, ult.Path, daemonID)
+			if err == nil && tag.RowsAffected() > 0 {
+				ultimatesAccepted++
+				continue
+			}
+		}
+		// 同一路径的手工 target 未被授权认领时不能降级为自动指定；只有
+		// 完全没有该路径时才沿用既有的自动 ultimate 指定逻辑。
+		var exists bool
+		if err := h.DB.QueryRow(r.Context(), `
+			SELECT EXISTS(
+				SELECT 1 FROM knowledge_dir
+				WHERE workspace_id = $1 AND kind = 'ultimate' AND path = $2 AND removed = FALSE
+			)`, workspaceID, ult.Path).Scan(&exists); err != nil || exists {
+			if err == nil {
+				ultimatesConflicts++
+			}
 			continue
 		}
 		tag, err := h.DB.Exec(r.Context(), `
@@ -487,9 +616,18 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		if !ok {
 			continue
 		}
-		resolved := h.applyKnowledgeAdoptResult(r.Context(), adopt.Kind, id, adopt.OK, adopt.UltimateDirID, adopt.Error)
+		resolved := h.applyKnowledgeAdoptResult(r.Context(), daemonID, adopt.Kind, id, adopt.OK, adopt.UltimateDirID, adopt.Error)
 		if resolved {
 			adoptionsResolved++
+		}
+	}
+	for _, operation := range body.Operations {
+		id, ok := knowledgeParseUUID(operation.ID)
+		if !ok {
+			continue
+		}
+		if h.applyKnowledgeOperationResult(r.Context(), id, daemonID, operation.OK, operation.Error) {
+			operationsResolved++
 		}
 	}
 
@@ -499,29 +637,166 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		"ultimate_conflicts":     ultimatesConflicts,
 		"scans_applied":          scansApplied,
 		"adoptions_resolved":     adoptionsResolved,
+		"operations_resolved":    operationsResolved,
 	})
 }
 
+// applyKnowledgeOperationResult advances one durable daemon job. Its queued
+// and daemon-binding guards make stale reports inert; all mirror mutations and
+// completion markers share one transaction after the daemon has read back bd.
+// A daemon failure leaves the operation queued: bd commands can have applied a
+// prefix of a merge before reporting an error, and replay is idempotent.
+func (h *Handler) applyKnowledgeOperationResult(ctx context.Context, operationID pgtype.UUID, daemonID string, ok bool, failureReason string) bool {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return false
+	}
+	defer tx.Rollback(ctx)
+	var workspaceID, operationType, content string
+	var entryID pgtype.UUID
+	var sourceIDsJSON []byte
+	err = tx.QueryRow(ctx, `
+SELECT o.workspace_id::text, o.entry_id, o.operation_type, o.content, o.delete_entry_ids
+FROM knowledge_entry_operation o
+JOIN knowledge_entry e ON e.id = o.entry_id AND e.workspace_id = o.workspace_id
+JOIN knowledge_dir d ON d.id = e.dir_id AND d.workspace_id = o.workspace_id
+WHERE o.id = $1 AND o.status = 'queued' AND d.kind = 'ultimate'
+  AND d.removed = FALSE AND d.daemon_id = $2`, operationID, daemonID).
+		Scan(&workspaceID, &entryID, &operationType, &content, &sourceIDsJSON)
+	if err != nil {
+		return false
+	}
+	if !ok {
+		if failureReason == "" {
+			failureReason = "daemon did not confirm the knowledge operation"
+		}
+		tag, err := tx.Exec(ctx, `
+UPDATE knowledge_entry_operation
+SET error = $2, completed_at = NULL
+WHERE id = $1 AND status = 'queued'`, operationID, failureReason)
+		if err != nil || tag.RowsAffected() == 0 {
+			return false
+		}
+		return tx.Commit(ctx) == nil
+	}
+	switch operationType {
+	case "edit", "merge":
+		tag, err := tx.Exec(ctx, `
+UPDATE knowledge_entry SET content = $2, content_sha256 = $3, last_confirmed_at = now(), mirror_state = 'synced'
+WHERE id = $1`, entryID, content, knowledgeContentSHA(content))
+		if err != nil || tag.RowsAffected() == 0 {
+			return false
+		}
+		if operationType == "merge" {
+			var sourceIDs []string
+			if json.Unmarshal(sourceIDsJSON, &sourceIDs) != nil || len(sourceIDs) == 0 {
+				return false
+			}
+			tag, err = tx.Exec(ctx, `
+UPDATE knowledge_entry SET mirror_state = 'source_deleted', last_confirmed_at = now()
+WHERE workspace_id::text = $1 AND id::text = ANY($2::text[]) AND id <> $3`, workspaceID, sourceIDs, entryID)
+			if err != nil || tag.RowsAffected() != int64(len(sourceIDs)) {
+				return false
+			}
+		}
+	case "delete":
+		tag, err := tx.Exec(ctx, `
+UPDATE knowledge_entry SET mirror_state = 'source_deleted', last_confirmed_at = now() WHERE id = $1`, entryID)
+		if err != nil || tag.RowsAffected() == 0 {
+			return false
+		}
+	default:
+		return false
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE knowledge_entry_operation SET status = 'completed', error = '', completed_at = now()
+WHERE id = $1 AND status = 'queued'`, operationID)
+	if err != nil || tag.RowsAffected() == 0 {
+		return false
+	}
+	return tx.Commit(ctx) == nil
+}
+
 // applyKnowledgeAdoptResult lands a daemon-reported adoption transfer. The
-// transferring guard makes stale or duplicated callbacks inert, and only the
-// success path ever writes 'adopted' (G1: 转移完成才算采纳).
-func (h *Handler) applyKnowledgeAdoptResult(ctx context.Context, kind string, id pgtype.UUID,
+// transferring and plan-eligible-ultimate guards make stale or foreign
+// callbacks inert.
+// A successful read-back both marks the candidate adopted and materializes the
+// canonical ultimate mirror, so later owner edits target the memory bd wrote.
+func (h *Handler) applyKnowledgeAdoptResult(ctx context.Context, daemonID, kind string, id pgtype.UUID,
 	ok bool, ultimateDirID, failureReason string) bool {
 	switch kind {
 	case "entry":
-		if ok {
-			tag, err := h.DB.Exec(ctx, `
-UPDATE knowledge_entry
-SET adoption_state = 'adopted', adopted_at = now(),
-    ultimate_dir_id = NULLIF($2, '')::uuid,
-    adopted_from_dir_id = dir_id, adopted_from_key = key, adoption_error = ''
-WHERE id = $1 AND adoption_state = 'transferring'`, id, ultimateDirID)
-			return err == nil && tag.RowsAffected() > 0
+		// Every result must identify the destination from the daemon's plan. This
+		// ties failures to the same authorization boundary as successful writes.
+		if ultimateDirID == "" {
+			return false
 		}
-		tag, err := h.DB.Exec(ctx, `
+		tx, err := h.TxStarter.Begin(ctx)
+		if err != nil {
+			return false
+		}
+		defer tx.Rollback(ctx)
+
+		var workspaceID, sourceDirID, key, content, contentSHA string
+		var adoptedBy pgtype.UUID
+		err = tx.QueryRow(ctx, `
+SELECT e.workspace_id::text, e.dir_id::text, e.key, e.content, e.content_sha256, e.adopted_by
+FROM knowledge_entry e
+JOIN knowledge_dir d ON d.workspace_id = e.workspace_id
+WHERE e.id = $1 AND e.adoption_state = 'transferring'
+  AND d.kind = 'ultimate' AND d.removed = FALSE
+	  AND d.daemon_id = $3
+	  AND d.id = $2::uuid
+FOR UPDATE OF e`, id, ultimateDirID, daemonID).
+			Scan(&workspaceID, &sourceDirID, &key, &content, &contentSHA, &adoptedBy)
+		if err != nil {
+			return false
+		}
+
+		if !ok {
+			if failureReason == "" {
+				failureReason = "daemon did not confirm the knowledge adoption"
+			}
+			tag, err := tx.Exec(ctx, `
 UPDATE knowledge_entry SET adoption_state = 'failed', adoption_error = $2
 WHERE id = $1 AND adoption_state = 'transferring'`, id, failureReason)
-		return err == nil && tag.RowsAffected() > 0
+			if err != nil || tag.RowsAffected() == 0 {
+				return false
+			}
+			return tx.Commit(ctx) == nil
+		}
+
+		tag, err := tx.Exec(ctx, `
+UPDATE knowledge_entry
+SET adoption_state = 'adopted', adopted_at = now(), ultimate_dir_id = $2::uuid,
+    adopted_from_dir_id = dir_id, adopted_from_key = key, adoption_error = ''
+WHERE id = $1 AND adoption_state = 'transferring'`, id, ultimateDirID)
+		if err != nil || tag.RowsAffected() == 0 {
+			return false
+		}
+		tag, err = tx.Exec(ctx, `
+INSERT INTO knowledge_entry (
+    workspace_id, dir_id, key, content, content_sha256, mirror_state,
+    adoption_state, adopted_at, adopted_by, ultimate_dir_id,
+    adopted_from_dir_id, adopted_from_key, adoption_error
+)
+VALUES ($1::uuid, $2::uuid, $3, $4, $5, 'synced', 'adopted', now(), $6, $2::uuid, $7::uuid, $3, '')
+ON CONFLICT (dir_id, key) DO UPDATE
+SET content = EXCLUDED.content,
+    content_sha256 = EXCLUDED.content_sha256,
+    mirror_state = 'synced',
+    last_confirmed_at = now(),
+    adoption_state = 'adopted',
+    adopted_at = EXCLUDED.adopted_at,
+    adopted_by = EXCLUDED.adopted_by,
+    ultimate_dir_id = EXCLUDED.ultimate_dir_id,
+    adopted_from_dir_id = EXCLUDED.adopted_from_dir_id,
+    adopted_from_key = EXCLUDED.adopted_from_key,
+    adoption_error = ''`, workspaceID, ultimateDirID, key, content, contentSHA, adoptedBy, sourceDirID)
+		if err != nil || tag.RowsAffected() == 0 {
+			return false
+		}
+		return tx.Commit(ctx) == nil
 	}
 	return false
 }

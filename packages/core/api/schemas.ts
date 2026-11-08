@@ -5314,6 +5314,14 @@ export const KnowledgeDirSchema = z.object({
 
 export const KnowledgeDirListSchema = z.array(KnowledgeDirSchema);
 
+export const KnowledgeEntryOperationSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+  operation_type: z.string().optional(),
+  error: z.string().optional(),
+  requested_at: z.string().optional(),
+}).loose();
+
 export const KnowledgeEntrySchema = z.object({
   id: z.string(),
   dir_id: z.string(),
@@ -5330,9 +5338,15 @@ export const KnowledgeEntrySchema = z.object({
   adopted_from_dir_id: z.string().optional(),
   adopted_from_key: z.string().optional(),
   adoption_error: z.string().optional(),
+  pending_operation: KnowledgeEntryOperationSchema.optional(),
 }).loose();
 
 export const KnowledgeEntryListSchema = z.array(KnowledgeEntrySchema);
+
+export const EMPTY_KNOWLEDGE_ENTRY_OPERATION = {
+  id: "",
+  status: "",
+};
 
 // --- Self-evolution workspace overview (RUYI-284) ---
 //

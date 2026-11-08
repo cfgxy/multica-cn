@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Plus } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -15,6 +15,8 @@ import {
 } from "@multica/ui/components/ui/empty";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
+import { Markdown } from "@multica/ui/markdown";
 import {
   Select,
   SelectContent,
@@ -35,11 +37,14 @@ import {
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@multica/ui/components/ui/alert-dialog";
 import { clientErrorMessage } from "@multica/core/api";
 import { useCurrentMember } from "@multica/core/permissions";
-import type { KnowledgeDir, KnowledgeEntry } from "@multica/core/types";
+import type { KnowledgeDir, KnowledgeEntry, KnowledgeEntryOperation } from "@multica/core/types";
 import {
   knowledgeDirsOptions,
   knowledgeEntriesOptions,
   useAdoptKnowledgeEntry,
+  useDeleteKnowledgeEntry,
+  useEditKnowledgeEntry,
+  useMergeKnowledgeEntries,
   useRegisterKnowledgeDir,
   useScanKnowledgeDir,
   useUnregisterKnowledgeDir,
@@ -48,6 +53,7 @@ import { useLocale, useT } from "../../i18n";
 import { EntitySegToolbar } from "./entity-seg-toolbar";
 import { SelfEvolutionShell } from "./self-evolution-shell";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { ContentEditor } from "../../editor";
 
 type KnowledgeSegment = "entries" | "dirs" | "external";
 
@@ -56,9 +62,9 @@ type KnowledgeSegment = "entries" | "dirs" | "external";
  * — entries (the browsing default), registered dirs, and external candidate
  * sources — so operations no longer crowd the first screen (walk #18).
  * Adding an external source is the page-level CTA, no longer a collapsed
- * ghost at the bottom (walk #3). Rows open detail drawers: the entry mirror
- * with adoption, the dir with its status closure and scan history (walks
- * #4–6). Writes stay owner-only, exactly as the server enforces.
+ * ghost at the bottom (walk #3). Rows open the full entry reader or the dir
+ * drawer with its status closure and scan history (walks #4–6). Writes stay
+ * owner-only, exactly as the server enforces.
  */
 export function KnowledgePage() {
   const wsId = useWorkspaceId();
@@ -84,10 +90,17 @@ export function KnowledgePageBody({ wsId }: { wsId: string }) {
 
   const dirs = useQuery(knowledgeDirsOptions(wsId));
   const entries = useQuery(knowledgeEntriesOptions(wsId, dirId, query));
+  const entryCandidates = useQuery({
+    ...knowledgeEntriesOptions(wsId, openEntry?.dir_id ?? "", ""),
+    enabled: openEntry !== null,
+  });
   const register = useRegisterKnowledgeDir(wsId);
   const scan = useScanKnowledgeDir(wsId);
   const unregister = useUnregisterKnowledgeDir(wsId);
   const adopt = useAdoptKnowledgeEntry(wsId);
+  const edit = useEditKnowledgeEntry(wsId);
+  const remove = useDeleteKnowledgeEntry(wsId);
+  const merge = useMergeKnowledgeEntries(wsId);
 
   const mutationError = (e: unknown) =>
     toast.error(clientErrorMessage(e) ?? t(($) => $.knowledge.error.write));
@@ -256,73 +269,29 @@ export function KnowledgePageBody({ wsId }: { wsId: string }) {
         />
       ) : null}
 
-      {/* Entry drawer (fig 3, 480px): a read-only mirror plus its attributes
-          and the single write — adoption. */}
-      <Sheet
-        open={openEntry !== null}
+      <KnowledgeEntryDialog
+        entry={openEntry}
+        entries={entryCandidates.data ?? []}
+        ultimateDirIds={new Set(dirList.filter((dir) => dir.kind === "ultimate").map((dir) => dir.id))}
+        isOpen={openEntry !== null}
+        canManage={canManage}
+        dirLabel={dirLabel}
+        mirrorLabel={mirrorLabel}
+        adoptionLabel={adoptionLabel}
+        locale={locale}
+        adoptPending={adopt.isPending}
+        writePending={edit.isPending || remove.isPending || merge.isPending}
         onOpenChange={(open) => {
           if (!open) setOpenEntry(null);
         }}
-      >
-        <SheetContent className="w-full gap-0 overflow-y-auto sm:max-w-[480px]" data-testid="knowledge-entry-drawer">
-          {openEntry ? (
-            <>
-              <SheetHeader>
-                <SheetTitle className="font-mono text-title-sm">{openEntry.key}</SheetTitle>
-                <SheetDescription>
-                  {t(($) => $.knowledgeSeg.entryDrawerSubtitle, { dir: dirLabel(openEntry.dir_id) })}
-                </SheetDescription>
-              </SheetHeader>
-              <div className="flex flex-col gap-4 px-4 py-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline">{mirrorLabel(openEntry.mirror_state)}</Badge>
-                  <Badge variant={openEntry.adoption_state === "adopted" ? "secondary" : "outline"}>
-                    {adoptionLabel(openEntry.adoption_state)}
-                  </Badge>
-                </div>
-                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-caption">
-                  <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.attrDir)}</dt>
-                  <dd>{dirLabel(openEntry.dir_id)}</dd>
-                  <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.attrMirror)}</dt>
-                  <dd>{mirrorLabel(openEntry.mirror_state)}</dd>
-                  <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.attrAdoption)}</dt>
-                  <dd>{adoptionLabel(openEntry.adoption_state)}</dd>
-                  {openEntry.adopted_from_key ? (
-                    <>
-                      <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.attrSource)}</dt>
-                      <dd className="font-mono">{openEntry.adopted_from_key}</dd>
-                    </>
-                  ) : null}
-                  <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.attrUpdated)}</dt>
-                  <dd>{new Date(openEntry.last_confirmed_at).toLocaleString(locale)}</dd>
-                </dl>
-                {openEntry.adoption_error ? (
-                  <p role="alert" className="text-caption text-destructive">
-                    {openEntry.adoption_error}
-                  </p>
-                ) : null}
-                <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/30 p-3 font-mono text-caption">
-                  {openEntry.content}
-                </pre>
-                {canManage && openEntry.adoption_state === "pending" ? (
-                  <Button
-                    size="sm"
-                    disabled={adopt.isPending}
-                    onClick={() => {
-                      adopt.mutate(openEntry.id, {
-                        onError: mutationError,
-                        onSuccess: () => setOpenEntry(null),
-                      });
-                    }}
-                  >
-                    {t(($) => $.knowledge.adopt)}
-                  </Button>
-                ) : null}
-              </div>
-            </>
-          ) : null}
-        </SheetContent>
-      </Sheet>
+        onAdopt={(entry) => adopt.mutate(entry.id, { onError: mutationError, onSuccess: () => setOpenEntry(null) })}
+        onEdit={(id, content) => edit.mutate({ id, content }, { onError: mutationError, onSuccess: () => setOpenEntry(null) })}
+        onDelete={(id) => remove.mutate(id, { onError: mutationError, onSuccess: () => setOpenEntry(null) })}
+        onMerge={(id, content, sourceEntryIds) => merge.mutate(
+          { id, content, sourceEntryIds },
+          { onError: mutationError, onSuccess: () => setOpenEntry(null) },
+        )}
+      />
 
       {/* Dir drawer (fig 4, 440px): status closure strip, attributes, scan
           history, and the owner actions — unregister behind a confirm. */}
@@ -443,6 +412,301 @@ export function KnowledgePageBody({ wsId }: { wsId: string }) {
   );
 }
 
+function KnowledgeEntryDialog({
+  entry,
+  entries,
+  ultimateDirIds,
+  isOpen,
+  canManage,
+  dirLabel,
+  mirrorLabel,
+  adoptionLabel,
+  locale,
+  adoptPending,
+  writePending,
+  onOpenChange,
+  onAdopt,
+  onEdit,
+  onDelete,
+  onMerge,
+}: {
+  entry: KnowledgeEntry | null;
+  entries: KnowledgeEntry[];
+  ultimateDirIds: Set<string>;
+  isOpen: boolean;
+  canManage: boolean;
+  dirLabel: (id: string) => string;
+  mirrorLabel: (state: string) => string;
+  adoptionLabel: (state: string) => string;
+  locale: string;
+  adoptPending: boolean;
+  writePending: boolean;
+  onOpenChange: (open: boolean) => void;
+  onAdopt: (entry: KnowledgeEntry) => void;
+  onEdit: (id: string, content: string) => void;
+  onDelete: (id: string) => void;
+  onMerge: (id: string, content: string, sourceEntryIds: string[]) => void;
+}) {
+  const { t } = useT("self-evolution");
+  const [mode, setMode] = useState<"read" | "edit" | "merge">("read");
+  const [draft, setDraft] = useState("");
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const entryID = entry?.id;
+  const entryContent = entry?.content ?? "";
+
+  useEffect(() => {
+    if (!entryID) return;
+    setMode("read");
+    setDraft(entryContent);
+    setSelectedSourceIds([]);
+    setDeleteOpen(false);
+    setMergeOpen(false);
+  }, [entryContent, entryID]);
+
+  const mergeCandidates = useMemo(() => {
+    if (!entry) return [];
+    return entries
+      .filter((candidate) => candidate.id !== entry.id && candidate.dir_id === entry.dir_id)
+      .filter((candidate) => candidate.mirror_state === "synced")
+      .filter((candidate) => candidate.pending_operation === undefined)
+      .map((candidate) => ({
+        entry: candidate,
+        kind: candidate.content_sha256 === entry.content_sha256
+          ? "duplicate"
+          : knowledgeSimilarity(entry.content, candidate.content) >= 0.45
+            ? "similar"
+            : null,
+      }))
+      .filter((candidate): candidate is { entry: KnowledgeEntry; kind: "duplicate" | "similar" } => candidate.kind !== null);
+  }, [entries, entry]);
+
+  const writable = entry !== null
+    && canManage
+    && ultimateDirIds.has(entry.dir_id)
+    && entry.mirror_state === "synced"
+    && entry.pending_operation === undefined;
+  const value = entry ? knowledgeValue(entry.content) : null;
+  const close = () => onOpenChange(false);
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="flex h-[min(90vh,56rem)] max-w-5xl flex-col overflow-hidden p-0"
+        data-testid="knowledge-entry-dialog"
+      >
+        {entry ? (
+          <>
+            <DialogHeader className="border-b px-6 py-5">
+              <div className="flex min-w-0 flex-wrap items-center gap-2 pr-8">
+                <DialogTitle className="truncate font-mono text-title-sm">{entry.key}</DialogTitle>
+                <Badge variant="outline">{mirrorLabel(entry.mirror_state)}</Badge>
+                <Badge variant={entry.adoption_state === "adopted" ? "secondary" : "outline"}>
+                  {adoptionLabel(entry.adoption_state)}
+                </Badge>
+              </div>
+              <DialogDescription>
+                {t(($) => $.knowledgeSeg.entryDrawerSubtitle, { dir: dirLabel(entry.dir_id) })}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+              <div className="mx-auto flex w-full max-w-4xl flex-col gap-5">
+                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-caption">
+                  <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.attrDir)}</dt>
+                  <dd>{dirLabel(entry.dir_id)}</dd>
+                  <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.attrUpdated)}</dt>
+                  <dd>{new Date(entry.last_confirmed_at).toLocaleString(locale)}</dd>
+                  {value ? (
+                    <>
+                      <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.attrValue)}</dt>
+                      <dd>
+                        <Badge variant="outline">
+                          {t(($) => value === "high" ? $.knowledgeSeg.highValue : $.knowledgeSeg.lowValue)}
+                        </Badge>
+                      </dd>
+                    </>
+                  ) : null}
+                  {entry.adopted_from_key ? (
+                    <>
+                      <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.attrSource)}</dt>
+                      <dd className="font-mono">{entry.adopted_from_key}</dd>
+                    </>
+                  ) : null}
+                </dl>
+                {entry.adoption_error ? (
+                  <p role="alert" className="text-caption text-destructive">{entry.adoption_error}</p>
+                ) : null}
+                {entry.pending_operation ? (
+                  <KnowledgeOperationStatus operation={entry.pending_operation} detailed />
+                ) : null}
+                {mode === "read" ? (
+                  <div className="min-h-64 rounded-md border bg-background p-5" data-testid="knowledge-entry-markdown">
+                    <Markdown mode="full">{entry.content}</Markdown>
+                  </div>
+                ) : (
+                  <div className="min-h-80 rounded-md border bg-background p-3" data-testid="knowledge-entry-editor">
+                    <ContentEditor
+                      value={draft}
+                      onUpdate={(content) => setDraft(content)}
+                      disableMentions
+                      showBubbleMenu
+                      placeholder={t(($) => $.knowledgeSeg.editorPlaceholder)}
+                    />
+                  </div>
+                )}
+                {mode === "merge" ? (
+                  <div className="space-y-3 rounded-md border p-4" data-testid="knowledge-merge-candidates">
+                    <div>
+                      <h3 className="text-body font-medium">{t(($) => $.knowledgeSeg.mergeCandidates)}</h3>
+                      <p className="text-caption text-muted-foreground">{t(($) => $.knowledgeSeg.mergeDescription)}</p>
+                    </div>
+                    {mergeCandidates.length ? mergeCandidates.map(({ entry: candidate, kind }) => {
+                      const checked = selectedSourceIds.includes(candidate.id);
+                      return (
+                        <label key={candidate.id} className="flex cursor-pointer items-start gap-3 rounded-md px-2 py-2 hover:bg-muted">
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(next) => setSelectedSourceIds((current) =>
+                              next === true ? [...current, candidate.id] : current.filter((id) => id !== candidate.id),
+                            )}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-center gap-2">
+                              <span className="truncate font-mono text-caption font-medium">{candidate.key}</span>
+                              <Badge variant="outline">{t(($) => kind === "duplicate" ? $.knowledgeSeg.duplicate : $.knowledgeSeg.similar)}</Badge>
+                            </span>
+                            <span className="line-clamp-2 text-caption text-muted-foreground">{candidate.content}</span>
+                          </span>
+                        </label>
+                      );
+                    }) : <p className="text-caption text-muted-foreground">{t(($) => $.knowledgeSeg.noMergeCandidates)}</p>}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <DialogFooter className="border-t px-6 py-4 sm:justify-between">
+              <div className="flex flex-wrap gap-2">
+                {writable && mode === "read" ? (
+                  <>
+                    <Button size="sm" variant="outline" onClick={() => setMode("edit")}>
+                      <Pencil className="mr-1 size-4" aria-hidden />
+                      {t(($) => $.knowledgeSeg.edit)}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setMode("merge")}>
+                      {t(($) => $.knowledgeSeg.merge)}
+                    </Button>
+                    <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => setDeleteOpen(true)}>
+                      <Trash2 className="mr-1 size-4" aria-hidden />
+                      {t(($) => $.knowledgeSeg.delete)}
+                    </Button>
+                  </>
+                ) : null}
+                {canManage && entry.adoption_state === "pending" ? (
+                  <Button size="sm" disabled={adoptPending} onClick={() => onAdopt(entry)}>{t(($) => $.knowledge.adopt)}</Button>
+                ) : null}
+              </div>
+              <div className="flex gap-2">
+                {mode !== "read" ? <Button size="sm" variant="outline" onClick={() => setMode("read")}>{t(($) => $.knowledge.cancel)}</Button> : null}
+                {mode === "edit" ? (
+                  <Button size="sm" disabled={writePending || draft.trim() === "" || draft === entry.content} onClick={() => onEdit(entry.id, draft)}>{t(($) => $.knowledgeSeg.save)}</Button>
+                ) : null}
+                {mode === "merge" ? (
+                  <Button size="sm" disabled={writePending || draft.trim() === "" || selectedSourceIds.length === 0} onClick={() => setMergeOpen(true)}>{t(($) => $.knowledgeSeg.merge)}</Button>
+                ) : null}
+                {mode === "read" ? <Button size="sm" variant="outline" onClick={close}>{t(($) => $.knowledge.cancel)}</Button> : null}
+              </div>
+            </DialogFooter>
+            <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>{t(($) => $.knowledgeSeg.delete)}</AlertDialogTitle>
+                  <AlertDialogDescription>{t(($) => $.knowledgeSeg.deleteConfirm, { key: entry.key })}</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>{t(($) => $.knowledge.cancel)}</AlertDialogCancel>
+                  <AlertDialogAction className="bg-destructive text-white hover:bg-destructive/90" onClick={() => onDelete(entry.id)}>{t(($) => $.knowledgeSeg.delete)}</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+            <AlertDialog open={mergeOpen} onOpenChange={setMergeOpen}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>{t(($) => $.knowledgeSeg.merge)}</AlertDialogTitle>
+                  <AlertDialogDescription>{t(($) => $.knowledgeSeg.mergeConfirm, { count: selectedSourceIds.length })}</AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>{t(($) => $.knowledge.cancel)}</AlertDialogCancel>
+                  <AlertDialogAction onClick={() => onMerge(entry.id, draft, selectedSourceIds)}>{t(($) => $.knowledgeSeg.merge)}</AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function KnowledgeOperationStatus({
+  operation,
+  detailed = false,
+}: {
+  operation: KnowledgeEntryOperation;
+  detailed?: boolean;
+}) {
+  const { t } = useT("self-evolution");
+  const operationLabel = (() => {
+    switch (operation.operation_type) {
+      case "edit": return t(($) => $.knowledgeSeg.operationType.edit);
+      case "delete": return t(($) => $.knowledgeSeg.operationType.delete);
+      case "merge": return t(($) => $.knowledgeSeg.operationType.merge);
+      default: return t(($) => $.knowledgeSeg.operationType.change);
+    }
+  })();
+  const hasError = operation.error !== undefined && operation.error !== "";
+
+  return (
+    <div
+      className={detailed ? "rounded-md border border-destructive/30 bg-destructive/5 p-3" : undefined}
+      data-testid="knowledge-entry-operation"
+    >
+      <Badge variant={hasError ? "destructive" : "outline"}>
+        {hasError
+          ? t(($) => $.knowledgeSeg.operationFailed, { operation: operationLabel })
+          : t(($) => $.knowledgeSeg.operationSyncing, { operation: operationLabel })}
+      </Badge>
+      {detailed && hasError ? (
+        <p role="alert" className="mt-2 break-words text-caption text-destructive">
+          {operation.error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function knowledgeSimilarity(left: string, right: string): number {
+  const words = (content: string) => new Set(content.toLowerCase().match(/[\p{L}\p{N}_-]{3,}/gu) ?? []);
+  const leftWords = words(left);
+  const rightWords = words(right);
+  if (!leftWords.size || !rightWords.size) return 0;
+  let intersection = 0;
+  for (const word of leftWords) {
+    if (rightWords.has(word)) intersection++;
+  }
+  return intersection / (leftWords.size + rightWords.size - intersection);
+}
+
+function knowledgeValue(content: string): "high" | "low" | null {
+  const normalized = content.trim();
+  const paragraphs = normalized.split(/\n\s*\n/).filter(Boolean).length;
+  const hasStructure = /^#{1,6}\s|^\s*(?:[-*+]|\d+\.)\s+/m.test(normalized);
+
+  if (normalized.length <= 140 && paragraphs <= 1 && !hasStructure) return "low";
+  if (normalized.length >= 500 && (paragraphs >= 3 || hasStructure)) return "high";
+  return null;
+}
+
 function EntriesSegment({
   entries,
   dirLabel,
@@ -499,21 +763,35 @@ function EntriesSegment({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {entries.data.map((entry) => (
-            <TableRow
-              key={entry.id}
-              className="cursor-pointer"
-              data-testid={`knowledge-entry-${entry.key}`}
-              onClick={() => onOpenEntry(entry)}
-            >
-              <TableCell className="max-w-0 truncate font-mono text-caption font-medium">
-                {entry.key}
-              </TableCell>
+          {entries.data.map((entry) => {
+            const value = knowledgeValue(entry.content);
+            return (
+              <TableRow
+                key={entry.id}
+                className="cursor-pointer"
+                data-testid={`knowledge-entry-${entry.key}`}
+                onClick={() => onOpenEntry(entry)}
+              >
+                <TableCell className="max-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate font-mono text-caption font-medium">{entry.key}</span>
+                    {value ? (
+                      <Badge variant="outline">
+                        {t(($) => value === "high" ? $.knowledgeSeg.highValue : $.knowledgeSeg.lowValue)}
+                      </Badge>
+                    ) : null}
+                  </div>
+                </TableCell>
               <TableCell className="max-w-0 truncate text-caption text-muted-foreground">
                 {dirLabel(entry.dir_id)}
               </TableCell>
               <TableCell>
-                <Badge variant="outline">{mirrorLabel(entry.mirror_state)}</Badge>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">{mirrorLabel(entry.mirror_state)}</Badge>
+                  {entry.pending_operation ? (
+                    <KnowledgeOperationStatus operation={entry.pending_operation} />
+                  ) : null}
+                </div>
               </TableCell>
               <TableCell>
                 <Badge variant={entry.adoption_state === "adopted" ? "secondary" : "outline"}>
@@ -532,8 +810,9 @@ function EntriesSegment({
                   </Button>
                 ) : null}
               </TableCell>
-            </TableRow>
-          ))}
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
       {!canManage ? (

@@ -154,6 +154,7 @@ import type {
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
   KnowledgeEntry,
+  KnowledgeEntryOperation,
   SkillEffect,
   CreateSkillRequest,
   UpdateSkillRequest,
@@ -625,6 +626,8 @@ import {
   RetrospectiveRunSchema,
   KnowledgeDirListSchema,
   KnowledgeEntryListSchema,
+  KnowledgeEntryOperationSchema,
+  EMPTY_KNOWLEDGE_ENTRY_OPERATION,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
   IssueViewSchema,
@@ -5741,6 +5744,36 @@ export class ApiClient {
 
   async adoptKnowledgeEntry(id: string): Promise<{ status: string }> {
     return this.fetch(`/api/knowledge/entries/${encodeURIComponent(id)}/adopt`, { method: "POST" });
+  }
+
+  async editKnowledgeEntry(id: string, content: string): Promise<KnowledgeEntryOperation> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/edit`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+    return parseWithFallback(raw, KnowledgeEntryOperationSchema, EMPTY_KNOWLEDGE_ENTRY_OPERATION, {
+      endpoint: "POST /api/knowledge/entries/:id/edit",
+    });
+  }
+
+  async deleteKnowledgeEntry(id: string): Promise<KnowledgeEntryOperation> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({ confirm: true }),
+    });
+    return parseWithFallback(raw, KnowledgeEntryOperationSchema, EMPTY_KNOWLEDGE_ENTRY_OPERATION, {
+      endpoint: "POST /api/knowledge/entries/:id/delete",
+    });
+  }
+
+  async mergeKnowledgeEntries(id: string, content: string, sourceEntryIds: string[]): Promise<KnowledgeEntryOperation> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ content, source_entry_ids: sourceEntryIds, confirm: true }),
+    });
+    return parseWithFallback(raw, KnowledgeEntryOperationSchema, EMPTY_KNOWLEDGE_ENTRY_OPERATION, {
+      endpoint: "POST /api/knowledge/entries/:id/merge",
+    });
   }
 
   async createSkill(data: CreateSkillRequest): Promise<Skill> {

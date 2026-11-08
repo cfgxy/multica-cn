@@ -67,6 +67,7 @@ export type {
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
   KnowledgeEntry,
+  KnowledgeEntryOperation,
   SkillEffectMetrics,
   CreateSkillRequest,
   SkillImportResult,

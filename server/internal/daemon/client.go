@@ -128,7 +128,16 @@ type Client struct {
 	legacyWorkspaceEndpointEnabled bool
 	issueGCBatchMu                 sync.Mutex
 	legacyIssueGCBatchEnabled      bool
+
+	// knowledgeTokenByWorkspace stores the short-lived daemon credentials issued
+	// by registration. They are separate from the profile PAT so knowledge
+	// callbacks receive the daemon identity required by the server.
+	knowledgeTokenMu          sync.RWMutex
+	knowledgeTokenByWorkspace map[string]string
+	knowledgeTokenIssuedAt    map[string]time.Time
 }
+
+const knowledgeTokenRenewalInterval = 12 * time.Hour
 
 // BranchAdoptionOwner is the server-authoritative identity a local daemon uses
 // to verify an existing branch record and bind its continuation record.
@@ -170,11 +179,13 @@ func (c *Client) AuthorizeBranchAdoption(ctx context.Context, continuationTaskID
 // NewClient creates a new daemon API client.
 func NewClient(baseURL string) *Client {
 	return &Client{
-		baseURL:      baseURL,
-		client:       &http.Client{Timeout: 30 * time.Second, Transport: cloneDefaultTransport()},
-		bundleClient: &http.Client{},
-		platform:     "daemon",
-		os:           normalizeGOOS(runtime.GOOS),
+		baseURL:                   baseURL,
+		client:                    &http.Client{Timeout: 30 * time.Second, Transport: cloneDefaultTransport()},
+		bundleClient:              &http.Client{},
+		platform:                  "daemon",
+		os:                        normalizeGOOS(runtime.GOOS),
+		knowledgeTokenByWorkspace: make(map[string]string),
+		knowledgeTokenIssuedAt:    make(map[string]time.Time),
 	}
 }
 
@@ -275,6 +286,39 @@ func (c *Client) SetToken(token string) {
 // Token returns the current auth token.
 func (c *Client) Token() string {
 	return c.token
+}
+
+// SetKnowledgeToken records the registration credential for one workspace.
+// The raw token stays in daemon memory and is never logged or persisted.
+func (c *Client) SetKnowledgeToken(workspaceID, token string) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	token = strings.TrimSpace(token)
+	if workspaceID == "" || token == "" {
+		return
+	}
+	c.knowledgeTokenMu.Lock()
+	defer c.knowledgeTokenMu.Unlock()
+	if c.knowledgeTokenByWorkspace == nil {
+		c.knowledgeTokenByWorkspace = make(map[string]string)
+	}
+	if c.knowledgeTokenIssuedAt == nil {
+		c.knowledgeTokenIssuedAt = make(map[string]time.Time)
+	}
+	c.knowledgeTokenByWorkspace[workspaceID] = token
+	c.knowledgeTokenIssuedAt[workspaceID] = time.Now()
+}
+
+func (c *Client) knowledgeToken(workspaceID string) string {
+	c.knowledgeTokenMu.RLock()
+	defer c.knowledgeTokenMu.RUnlock()
+	return c.knowledgeTokenByWorkspace[workspaceID]
+}
+
+func (c *Client) knowledgeTokenNeedsRenewal(workspaceID string) bool {
+	c.knowledgeTokenMu.RLock()
+	defer c.knowledgeTokenMu.RUnlock()
+	issuedAt := c.knowledgeTokenIssuedAt[workspaceID]
+	return c.knowledgeTokenByWorkspace[workspaceID] != "" && (issuedAt.IsZero() || time.Since(issuedAt) >= knowledgeTokenRenewalInterval)
 }
 
 func (c *Client) ClaimTask(ctx context.Context, runtimeID string) (*Task, error) {
@@ -1074,6 +1118,7 @@ type RegisterResponse struct {
 	Repos        []RepoData      `json:"repos"`
 	ReposVersion string          `json:"repos_version"`
 	Settings     json.RawMessage `json:"settings,omitempty"`
+	DaemonToken  string          `json:"daemon_token,omitempty"`
 }
 
 func (c *Client) Register(ctx context.Context, req map[string]any) (*RegisterResponse, error) {
@@ -1082,6 +1127,36 @@ func (c *Client) Register(ctx context.Context, req map[string]any) (*RegisterRes
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// RefreshKnowledgeToken extends one workspace's callback credential in place
+// through the daemon-token-only renewal endpoint. It deliberately does not use
+// the profile token or send request identity: the server derives all identity
+// from the authenticated mdt context.
+func (c *Client) RefreshKnowledgeToken(ctx context.Context, workspaceID string) error {
+	workspaceID = strings.TrimSpace(workspaceID)
+	token := c.knowledgeToken(workspaceID)
+	if token == "" {
+		return fmt.Errorf("knowledge callback credential is unavailable for workspace %s", workspaceID)
+	}
+	if err := c.postJSONWithToken(ctx, "/api/daemon/knowledge/token/refresh", token, map[string]any{}, nil); err != nil {
+		return err
+	}
+	// The raw credential is unchanged; resetting its local issuance time keeps
+	// periodic refresh aligned with the server-side extension.
+	c.SetKnowledgeToken(workspaceID, token)
+	return nil
+}
+
+// RefreshKnowledgeTokenIfNeeded renews active callback credentials before the
+// 24-hour server expiry. A daemon serving an otherwise idle workspace still
+// calls this from each knowledge cycle, so its next result does not need a PAT
+// or an expired-token recovery path.
+func (c *Client) RefreshKnowledgeTokenIfNeeded(ctx context.Context, workspaceID string) error {
+	if !c.knowledgeTokenNeedsRenewal(workspaceID) {
+		return nil
+	}
+	return c.RefreshKnowledgeToken(ctx, workspaceID)
 }
 
 type WorkspaceReposResponse struct {
