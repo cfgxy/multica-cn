@@ -1,4 +1,10 @@
 import { z } from "zod";
+
+// A missing or malformed URL must not render a QR code: callers fall back to
+// an empty string and surface a recoverable failure instead.
+export const BeginLarkPermissionGrantResponseSchema = z.object({
+  qr_code_url: z.string().url(),
+}).loose();
 import type {
   AgentBuilderRuntimeSwitch,
   AgentBuilderSession,

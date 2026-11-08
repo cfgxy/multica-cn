@@ -287,6 +287,7 @@ import type {
   RedeemLarkBindingTokenResponse,
   LarkPermissionCatalogResponse,
   RecheckLarkPermissionsResponse,
+  BeginLarkPermissionGrantResponse,
   ComposioToolkit,
   ComposioConnection,
   ComposioConnectInitResponse,
@@ -705,6 +706,7 @@ import {
   EMPTY_SHARE_LINK,
   EMPTY_SHARE_LINK_INFO,
   EMPTY_JOIN_SHARE_LINK_RESPONSE,
+  BeginLarkPermissionGrantResponseSchema,
   type IssueView,
   type IssueViewPreference,
   type CreateIssueViewRequest,
@@ -7329,6 +7331,26 @@ export class ApiClient {
     return this.fetch(
       `/api/workspaces/${workspaceId}/lark/installations/${installationId}/recheck-permissions`,
       { method: "POST" },
+    );
+  }
+
+  /** Returns a confirmation QR code that adds the current permission catalog
+   * to an existing active Lark app. The backend enforces owner/admin access. */
+  async beginLarkPermissionGrant(
+    workspaceId: string,
+    installationId: string,
+  ): Promise<BeginLarkPermissionGrantResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/lark/installations/${installationId}/grant-permissions`,
+      { method: "POST" },
+    );
+    return parseWithFallback(
+      raw,
+      BeginLarkPermissionGrantResponseSchema,
+      { qr_code_url: "" },
+      {
+        endpoint: "POST /api/workspaces/:id/lark/installations/:installationId/grant-permissions",
+      },
     );
   }
 
