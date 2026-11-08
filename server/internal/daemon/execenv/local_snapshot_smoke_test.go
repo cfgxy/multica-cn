@@ -377,6 +377,78 @@ func TestSnapshotWorkerCapturesDeclaredGitSubdirectoryArtifactSmoke(t *testing.T
 	}
 }
 
+// TestSnapshotWorkerRejectsExternalHooksPathBeforeAgentCommitSmoke proves the
+// worker-side hook gate runs before the agent's ordinary git commit can invoke
+// a host hook. The daemon admission audit rejects this topology earlier; this
+// smoke covers the final execution-time backstop against configuration drift.
+func TestSnapshotWorkerRejectsExternalHooksPathBeforeAgentCommitSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	scratch := t.TempDir()
+	repo := filepath.Join(scratch, "pristine-repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "init", "-q")
+	gitForSnapshotTest(t, repo, "config", "user.name", "Test")
+	gitForSnapshotTest(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "add", "tracked.txt")
+	gitForSnapshotTest(t, repo, "commit", "-qm", "base")
+	baseline := strings.TrimSpace(gitForSnapshotTest(t, repo, "rev-parse", "HEAD"))
+
+	outside := filepath.Join(scratch, "outside-hooks")
+	hooks := filepath.Join(outside, "hooks")
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hook := "#!/bin/sh\nprintf hook-ran > " + filepath.Join(outside, "hook-ran") + "\n"
+	if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte(hook), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "config", "core.hooksPath", hooks).CombinedOutput(); err != nil {
+		t.Fatalf("configure external hooks path: %v (%s)", err, out)
+	}
+	before := smokeTreeDigest(t, outside, false)
+
+	alias, upper, work := filepath.Join(scratch, "alias"), filepath.Join(scratch, "upper"), filepath.Join(scratch, "work")
+	for _, path := range []string{alias, upper, work} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec := &SnapshotRunSpec{
+		TaskID: "reject-external-hooks-before-agent-commit",
+		Units:  []SnapshotUnitSpec{{Target: repo, Alias: alias, Upper: upper, Work: work}},
+		Cwd:    repo,
+		GitArtifact: &SnapshotGitArtifactSpec{
+			ArtifactDir: filepath.Join(scratch, "artifact"),
+			Baseline:    baseline,
+			EnvRoot:     filepath.Join(scratch, "env"),
+		},
+	}
+	wrap, err := BuildSnapshotWrap(bin, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := spawnWithSnapshotNamespaces(t,
+		bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+		"/bin/sh", "-c", "printf changed > tracked.txt && git add tracked.txt && git commit -qm isolated")
+	if err == nil {
+		t.Fatalf("worker must reject external hooks path before agent commit, output: %s", out)
+	}
+	if !strings.Contains(string(out), "core.hooksPath") {
+		t.Fatalf("worker rejection must identify hooks path, output: %s", out)
+	}
+	if after := smokeTreeDigest(t, outside, false); after != before {
+		t.Fatalf("external hook wrote outside snapshot before agent commit was rejected\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
 // TestSnapshotWorkerStripsGitLocationEnvironmentSmoke injects each Git
 // location override into the parent process. Both the agent and artifact
 // capture must resolve Git metadata through the mounted snapshot view.

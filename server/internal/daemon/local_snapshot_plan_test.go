@@ -543,7 +543,9 @@ func TestAuditSnapshotGitScopeAuditsSharedHooksWithinWorktree(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := newTestGitRoot(t)
 			tc.setup(t, repo)
-			plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}}
+			ref := localDirectoryRef{LocalPath: repo, ExecutionMode: localDirectoryModeWorktree}
+			unit := snapshotUnit{Ref: ref, AbsPath: repo}
+			plan := &snapshotPlan{Units: []snapshotUnit{unit}, Primary: &unit}
 			audit := auditSnapshotGitScope(plan)
 			if audit.Safe != tc.wantSafe {
 				t.Fatalf("shared hooks audit safe = %t, want %t: %+v", audit.Safe, tc.wantSafe, audit)
@@ -632,7 +634,9 @@ func TestAuditSnapshotGitScopeRejectsRedirectIntoSiblingWorktreeAdminState(t *te
 		t.Fatalf("redirect refs into sibling admin state: %v", err)
 	}
 
-	plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}}
+	ref := localDirectoryRef{LocalPath: repo, ExecutionMode: localDirectoryModeWorktree}
+	unit := snapshotUnit{Ref: ref, AbsPath: repo}
+	plan := &snapshotPlan{Units: []snapshotUnit{unit}, Primary: &unit}
 	if audit := auditSnapshotGitScope(plan); audit.Safe || !strings.Contains(audit.Reason, "sibling Git worktree admin state") {
 		t.Fatalf("redirect into sibling worktree admin state must fail audit, got %+v", audit)
 	}
@@ -810,6 +814,115 @@ func TestRevalidateSnapshotGitPlanRejectsMetadataChangeAfterPlanning(t *testing.
 
 	if _, err := revalidateSnapshotGitPlan(plan, true); err == nil || !strings.Contains(err.Error(), "unsafe Git metadata") {
 		t.Fatalf("metadata changed after planning must fail snapshot startup, got %v", err)
+	}
+}
+
+func TestSnapshotGitConfigurationRejectsExternalHooksAndIncludes(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, repo, outside string)
+	}{
+		{
+			name: "external core hooks path",
+			setup: func(t *testing.T, repo, outside string) {
+				t.Helper()
+				hooks := filepath.Join(outside, "hooks")
+				if err := os.MkdirAll(hooks, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				hook := "#!/bin/sh\nprintf hook-ran > " + filepath.Join(outside, "hook-ran") + "\n"
+				if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte(hook), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := exec.Command("git", "-C", repo, "config", "core.hooksPath", hooks).CombinedOutput(); err != nil {
+					t.Fatalf("set external hooks path: %v (%s)", err, out)
+				}
+			},
+		},
+		{
+			name: "external include hooks path",
+			setup: func(t *testing.T, repo, outside string) {
+				t.Helper()
+				hooks := filepath.Join(outside, "hooks")
+				if err := os.MkdirAll(hooks, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				hook := "#!/bin/sh\nprintf hook-ran > " + filepath.Join(outside, "hook-ran") + "\n"
+				if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte(hook), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				config := filepath.Join(outside, "hooks.gitconfig")
+				if err := os.WriteFile(config, []byte("[core]\n\thooksPath = "+hooks+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := exec.Command("git", "-C", repo, "config", "include.path", config).CombinedOutput(); err != nil {
+					t.Fatalf("include external hooks config: %v (%s)", err, out)
+				}
+			},
+		},
+		{
+			name: "inactive external conditional include",
+			setup: func(t *testing.T, repo, outside string) {
+				t.Helper()
+				config := filepath.Join(outside, "hooks.gitconfig")
+				if err := os.WriteFile(config, []byte("[core]\n\thooksPath = "+filepath.Join(outside, "hooks")+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := exec.Command("git", "-C", repo, "config", "includeIf.onbranch:does-not-match.path", config).CombinedOutput(); err != nil {
+					t.Fatalf("include inactive external hooks config: %v (%s)", err, out)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newTestGitRoot(t)
+			outside := t.TempDir()
+			if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(t, repo, outside)
+			before := treeDigest(t, outside, false)
+			ref := localDirectoryRef{LocalPath: repo, ExecutionMode: localDirectoryModeWorktree}
+			unit := snapshotUnit{Ref: ref, AbsPath: repo}
+			plan := &snapshotPlan{Units: []snapshotUnit{unit}, Primary: &unit}
+			audit := auditSnapshotGitScope(plan)
+			if !audit.Safe || !audit.HasGit {
+				t.Fatalf("metadata audit must remain safe before config audit, got %+v", audit)
+			}
+			if err := auditSnapshotGitConfiguration(audit); err == nil || !strings.Contains(err.Error(), "outside materialized dependencies") {
+				t.Fatalf("external hook configuration must reject snapshot admission, got %v", err)
+			}
+			fallback, err := snapshotWorktreeFallbackWithGitGateAndCapability(plan, true, true)
+			if err == nil || fallback != nil || !strings.Contains(err.Error(), "unsafe Git configuration") {
+				t.Fatalf("unsafe snapshot configuration must fail closed, fallback=%+v err=%v", fallback, err)
+			}
+			if after := treeDigest(t, outside, false); after != before {
+				t.Fatalf("snapshot admission executed an external hook\nbefore: %s\nafter:  %s", before, after)
+			}
+		})
+	}
+}
+
+func TestSnapshotGitConfigurationAcceptsMaterializedHooksPath(t *testing.T) {
+	repo := newTestGitRoot(t)
+	hooks := filepath.Join(repo, ".githooks")
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "config", "core.hooksPath", ".githooks").CombinedOutput(); err != nil {
+		t.Fatalf("configure materialized hooks path: %v (%s)", err, out)
+	}
+	ref := localDirectoryRef{LocalPath: repo, ExecutionMode: localDirectoryModeWorktree}
+	unit := snapshotUnit{Ref: ref, AbsPath: repo}
+	plan := &snapshotPlan{Units: []snapshotUnit{unit}, Primary: &unit}
+	audit := auditSnapshotGitScope(plan)
+	if err := auditSnapshotGitConfiguration(audit); err != nil {
+		t.Fatalf("materialized hooks path must be safe: %v", err)
+	}
+	if fallback, err := snapshotWorktreeFallbackWithGitGateAndCapability(plan, true, true); err != nil || fallback != nil {
+		t.Fatalf("materialized hooks path must allow snapshot delivery, fallback=%+v err=%v", fallback, err)
 	}
 }
 

@@ -81,6 +81,12 @@ func RunSnapshotWorker(args []string) int {
 		// boundary to discover the private metadata view.
 		gitEnv = SnapshotGitEnvironmentAcrossFilesystems()
 	}
+	if spec.GitArtifact != nil {
+		if err := ValidateSnapshotGitHooks(spec.Cwd, &spec, gitEnv); err != nil {
+			fmt.Fprintf(os.Stderr, "snapshot-worker: %v\n", err)
+			return 1
+		}
+	}
 	// Preserve the original exec path for ordinary snapshots. Git delivery alone
 	// needs the mount to stay alive briefly after the child exits.
 	argv := append([]string{rest[0]}, rest[1:]...)

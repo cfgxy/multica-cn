@@ -126,3 +126,84 @@ func SnapshotGitBaseline(cwd string) (string, error) {
 	}
 	return base, nil
 }
+
+// ValidateSnapshotGitHooks is the worker-side backstop for the daemon's
+// admission audit. It runs after the overlay mounts exist and before the agent
+// executes, so a config change between planning and startup cannot make Git
+// execute a hook from an unmaterialized host path.
+func ValidateSnapshotGitHooks(cwd string, spec *SnapshotRunSpec, env []string) error {
+	if spec == nil || len(spec.Units) == 0 {
+		return fmt.Errorf("snapshot Git hook validation requires mounted units")
+	}
+	env = snapshotGitEnvironment(env)
+	top, err := runGitEnvWithBase(cwd, env, nil, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return fmt.Errorf("resolve snapshot Git worktree: %w", err)
+	}
+	top = strings.TrimSpace(top)
+	if top == "" {
+		return fmt.Errorf("resolve snapshot Git worktree: Git returned an empty path")
+	}
+	if !filepath.IsAbs(top) {
+		top = filepath.Join(cwd, top)
+	}
+
+	raw, err := runGitEnvWithBase(cwd, env, nil, "config", "--includes", "--null", "--list")
+	if err != nil {
+		return fmt.Errorf("read snapshot Git configuration: %w", err)
+	}
+	records := strings.Split(strings.TrimSuffix(raw, "\x00"), "\x00")
+	for _, record := range records {
+		if record == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(record, "\n")
+		if !ok || !strings.EqualFold(key, "core.hookspath") {
+			continue
+		}
+		path, err := snapshotGitConfigPath(top, value)
+		if err != nil {
+			return fmt.Errorf("resolve snapshot core.hooksPath: %w", err)
+		}
+		if !snapshotPathInMountedUnits(path, spec.Units) {
+			return fmt.Errorf("snapshot core.hooksPath %q is outside mounted units", path)
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("resolve snapshot core.hooksPath %q: %w", path, err)
+		}
+		if !snapshotPathInMountedUnits(resolved, spec.Units) {
+			return fmt.Errorf("snapshot core.hooksPath %q resolves outside mounted units to %q", path, resolved)
+		}
+	}
+	return nil
+}
+
+func snapshotGitConfigPath(base, value string) (string, error) {
+	if value == "" || strings.ContainsRune(value, 0) {
+		return "", fmt.Errorf("invalid Git config path %q", value)
+	}
+	if value == "~" || strings.HasPrefix(value, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
+	} else if strings.HasPrefix(value, "~") {
+		return "", fmt.Errorf("unsupported home expansion in %q", value)
+	}
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(base, value)
+	}
+	return filepath.Clean(value), nil
+}
+
+func snapshotPathInMountedUnits(path string, units []SnapshotUnitSpec) bool {
+	for _, unit := range units {
+		rel, err := filepath.Rel(filepath.Clean(unit.Target), filepath.Clean(path))
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}

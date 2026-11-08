@@ -137,6 +137,19 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 	return audit
 }
 
+// auditSnapshotGitConfiguration applies only to snapshot delivery. The
+// established worktree backend intentionally retains a user's native Git hook
+// behavior when the feature gate is off or a snapshot falls back.
+func auditSnapshotGitConfiguration(audit gitSnapshotAudit) error {
+	commonDirs := gitSnapshotCommonDirs(audit.Repositories)
+	for _, repository := range audit.Repositories {
+		if err := auditGitConfiguration(repository.Worktree, repository.GitDir, repository.CommonDir, repository.Dependencies, commonDirs); err != nil {
+			return fmt.Errorf("unsafe Git configuration for %q: %w", repository.Worktree, err)
+		}
+	}
+	return nil
+}
+
 func gitSnapshotCommonDirs(repositories []gitSnapshotRepository) []string {
 	commonDirs := make([]string, 0, len(repositories))
 	for _, repository := range repositories {
@@ -227,6 +240,205 @@ func gitPath(repo string, args ...string) (string, error) {
 		path = filepath.Join(repo, path)
 	}
 	return filepath.Clean(path), nil
+}
+
+type gitConfigEntry struct {
+	Origin string
+	Key    string
+	Value  string
+}
+
+// auditGitConfiguration admits only repository/worktree configuration files
+// that the snapshot overlays. It recursively follows every include directive,
+// including inactive includeIf branches: a branch change inside the snapshot
+// must not make a previously unaudited host config effective.
+func auditGitConfiguration(worktree, gitDir, commonDir string, dependencies, commonDirs []string) error {
+	allowed := compactContainedPaths(append(append([]string{}, dependencies...), worktree))
+	forbidden, forbiddenRoots, err := siblingGitWorktreeAdminDirs(commonDirs, gitDir)
+	if err != nil {
+		return err
+	}
+
+	entries, err := gitConfigEntries(worktree, "--includes", "--null", "--show-origin", "--list")
+	if err != nil {
+		return fmt.Errorf("read effective Git configuration: %w", err)
+	}
+	sources := make([]string, 0, len(entries))
+	seenSources := make(map[string]bool)
+	for _, entry := range entries {
+		source, err := auditGitConfigEntrySource(worktree, entry, allowed, forbidden, forbiddenRoots)
+		if err != nil {
+			return err
+		}
+		if !seenSources[source] {
+			seenSources[source] = true
+			sources = append(sources, source)
+		}
+		if isGitHooksPathConfig(entry.Key) {
+			if err := auditGitHooksPath(entry.Value, worktree, allowed, forbidden, forbiddenRoots); err != nil {
+				return fmt.Errorf("unsafe core.hooksPath from %q: %w", source, err)
+			}
+		}
+	}
+
+	for len(sources) > 0 {
+		source := sources[0]
+		sources = sources[1:]
+		fileEntries, err := gitConfigEntries(worktree, "--file", source, "--includes", "--null", "--show-origin", "--list")
+		if err != nil {
+			return fmt.Errorf("read Git configuration source %q: %w", source, err)
+		}
+		for _, entry := range fileEntries {
+			entrySource, err := auditGitConfigEntrySource(worktree, entry, allowed, forbidden, forbiddenRoots)
+			if err != nil {
+				return err
+			}
+			if !seenSources[entrySource] {
+				seenSources[entrySource] = true
+				sources = append(sources, entrySource)
+			}
+			if isGitHooksPathConfig(entry.Key) {
+				if err := auditGitHooksPath(entry.Value, worktree, allowed, forbidden, forbiddenRoots); err != nil {
+					return fmt.Errorf("unsafe core.hooksPath from %q: %w", entrySource, err)
+				}
+			}
+			if !isGitIncludePathConfig(entry.Key) {
+				continue
+			}
+			included, err := resolveGitConfigPath(filepath.Dir(entrySource), entry.Value)
+			if err != nil {
+				return fmt.Errorf("resolve include from %q: %w", entrySource, err)
+			}
+			included, err = auditGitConfigFile(included, allowed, forbidden, forbiddenRoots)
+			if err != nil {
+				return fmt.Errorf("unsafe include from %q: %w", entrySource, err)
+			}
+			if !seenSources[included] {
+				seenSources[included] = true
+				sources = append(sources, included)
+			}
+		}
+	}
+	return nil
+}
+
+func gitConfigEntries(repo string, args ...string) ([]gitConfigEntry, error) {
+	argv := append([]string{"-C", repo, "config"}, args...)
+	cmd := exec.Command("git", argv...)
+	cmd.Env = execenv.SnapshotGitEnvironment()
+	raw, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	records := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+	if len(records)%2 != 0 {
+		return nil, fmt.Errorf("malformed Git config output")
+	}
+	entries := make([]gitConfigEntry, 0, len(records)/2)
+	for i := 0; i < len(records); i += 2 {
+		origin, record := records[i], records[i+1]
+		key, value, ok := strings.Cut(record, "\n")
+		if !ok || key == "" || strings.ContainsRune(origin, 0) || strings.ContainsRune(value, 0) {
+			return nil, fmt.Errorf("malformed Git config entry")
+		}
+		entries = append(entries, gitConfigEntry{Origin: origin, Key: key, Value: value})
+	}
+	return entries, nil
+}
+
+func auditGitConfigEntrySource(repo string, entry gitConfigEntry, allowed, forbidden, forbiddenRoots []string) (string, error) {
+	source, ok := strings.CutPrefix(entry.Origin, "file:")
+	if !ok || source == "" {
+		return "", fmt.Errorf("unsupported Git config origin %q", entry.Origin)
+	}
+	if !filepath.IsAbs(source) {
+		source = filepath.Join(repo, source)
+	}
+	return auditGitConfigFile(source, allowed, forbidden, forbiddenRoots)
+}
+
+func auditGitConfigFile(path string, allowed, forbidden, forbiddenRoots []string) (string, error) {
+	resolved, err := auditGitConfigPath(path, allowed, forbidden, forbiddenRoots)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("Git config source %q is not a regular file", resolved)
+	}
+	return resolved, nil
+}
+
+func auditGitHooksPath(value, worktree string, allowed, forbidden, forbiddenRoots []string) error {
+	path, err := resolveGitConfigPath(worktree, value)
+	if err != nil {
+		return err
+	}
+	resolved, err := auditGitConfigPath(path, allowed, forbidden, forbiddenRoots)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("hook path %q is not a directory", resolved)
+	}
+	return nil
+}
+
+func auditGitConfigPath(path string, allowed, forbidden, forbiddenRoots []string) (string, error) {
+	if path == "" || strings.ContainsRune(path, 0) || !filepath.IsAbs(path) {
+		return "", fmt.Errorf("invalid Git config path %q", path)
+	}
+	direct := filepath.Clean(path)
+	if containsCleanPath(direct, forbiddenRoots) || withinAnyScope(direct, forbidden) || !withinAnyScope(direct, allowed) {
+		return "", fmt.Errorf("Git config path %q is outside materialized dependencies", direct)
+	}
+	resolved, err := filepath.EvalSymlinks(direct)
+	if err != nil {
+		return "", fmt.Errorf("resolve Git config path %q: %w", direct, err)
+	}
+	resolved = filepath.Clean(resolved)
+	if containsCleanPath(resolved, forbiddenRoots) || withinAnyScope(resolved, forbidden) || !withinAnyScope(resolved, allowed) {
+		return "", fmt.Errorf("Git config path %q resolves outside materialized dependencies to %q", direct, resolved)
+	}
+	return resolved, nil
+}
+
+func resolveGitConfigPath(base, value string) (string, error) {
+	if value == "" || strings.ContainsRune(value, 0) {
+		return "", fmt.Errorf("invalid Git config path %q", value)
+	}
+	if value == "~" || strings.HasPrefix(value, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
+	} else if strings.HasPrefix(value, "~") {
+		return "", fmt.Errorf("unsupported home expansion in %q", value)
+	}
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(base, value)
+	}
+	return filepath.Clean(value), nil
+}
+
+func isGitHooksPathConfig(key string) bool {
+	return strings.EqualFold(key, "core.hookspath")
+}
+
+func isGitIncludePathConfig(key string) bool {
+	key = strings.ToLower(key)
+	return key == "include.path" || (strings.HasPrefix(key, "includeif.") && strings.HasSuffix(key, ".path"))
 }
 
 func gitSnapshotDependencies(repo, gitDir, commonDir string) ([]string, error) {
