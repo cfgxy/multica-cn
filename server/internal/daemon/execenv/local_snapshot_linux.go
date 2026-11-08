@@ -233,14 +233,28 @@ func snapshotRootPath(anchor *os.File, target string) string {
 	return filepath.Join("/proc/self/fd", fmt.Sprint(anchor.Fd()), strings.TrimPrefix(clean, string(filepath.Separator)))
 }
 
-func snapshotHasMountedAncestor(mounted []string, target string) bool {
+type snapshotMountedUnit struct {
+	Target string
+	Alias  string
+}
+
+func snapshotMountedAncestor(mounted []snapshotMountedUnit, target string) (snapshotMountedUnit, string, bool) {
+	var best snapshotMountedUnit
+	bestDepth := -1
+	bestRelative := ""
 	for _, parent := range mounted {
-		rel, err := filepath.Rel(filepath.Clean(parent), filepath.Clean(target))
-		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return true
+		rel, err := filepath.Rel(filepath.Clean(parent.Target), filepath.Clean(target))
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		depth := strings.Count(filepath.Clean(parent.Target), string(filepath.Separator))
+		if depth > bestDepth {
+			best = parent
+			bestDepth = depth
+			bestRelative = rel
 		}
 	}
-	return false
+	return best, bestRelative, bestDepth >= 0
 }
 
 // mountSnapshotViews materializes every unit's overlay. See RunSnapshotWorker
@@ -281,11 +295,20 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 		}
 	}
 	closePrechecked()
-	mounted := make([]string, 0, len(spec.Units))
+	mounted := make([]snapshotMountedUnit, 0, len(spec.Units))
 	for _, i := range mountOrder(spec.Units) {
 		path := snapshotRootPath(rootAnchor, spec.Units[i].Target)
-		verifyIdentity := !snapshotHasMountedAncestor(mounted, spec.Units[i].Target)
-		target, openErr := openSnapshotTargetAt(&spec.Units[i], path, verifyIdentity)
+		if parent, relative, nested := snapshotMountedAncestor(mounted, spec.Units[i].Target); nested {
+			verificationPath := filepath.Join(parent.Alias, relative)
+			verificationTarget, openErr := openSnapshotTargetAt(&spec.Units[i], verificationPath, true)
+			if openErr != nil {
+				mounts.Close()
+				_ = rootAnchor.Close()
+				return nil, fmt.Errorf("verify nested unit %d (%s): %w", i, spec.Units[i].Target, openErr)
+			}
+			_ = verificationTarget.Close()
+		}
+		target, openErr := openSnapshotTargetAt(&spec.Units[i], path, false)
 		if openErr != nil {
 			mounts.Close()
 			_ = rootAnchor.Close()
@@ -298,7 +321,7 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 			return nil, fmt.Errorf("unit %d (%s): %w", i, spec.Units[i].Target, err)
 		}
 		mounts.targets[i] = target
-		mounted = append(mounted, spec.Units[i].Target)
+		mounted = append(mounted, snapshotMountedUnit{Target: spec.Units[i].Target, Alias: spec.Units[i].Alias})
 	}
 	if mounts.cwdAnchor != nil {
 		cwdFD, openErr := unix.Openat(int(mounts.cwdAnchor.Fd()), mounts.cwdRelative, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
