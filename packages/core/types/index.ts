@@ -386,6 +386,7 @@ export type {
   LarkPermissionCatalogEntry,
   LarkPermissionCatalogResponse,
   RecheckLarkPermissionsResponse,
+  BeginLarkPermissionGrantResponse,
 } from "./lark";
 export type {
   ComposioToolkit,

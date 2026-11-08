@@ -35,13 +35,16 @@ type CapabilityStateView struct {
 	CheckedAt      time.Time `json:"checked_at"`
 }
 
-// CheckInstallationCapabilities probes every catalog capability against
-// creds and returns the verdicts in display order. The event-subscription
-// capability is never probeable over REST and comes back unknown with its
-// reason stated — the honest entry the UI renders as "以实际收发为准".
+// CheckInstallationCapabilities probes every REST-probeable catalog
+// capability against creds and returns the verdicts in display order.
+// Event subscriptions remain in the registration permission declaration but
+// are not capability-check rows: REST cannot establish whether events arrive.
 func CheckInstallationCapabilities(ctx context.Context, client APIClient, creds InstallationCredentials) []CapabilityCheckResult {
 	out := make([]CapabilityCheckResult, 0, len(capabilityCatalog))
 	for _, spec := range capabilityCatalog {
+		if !spec.Probeable {
+			continue
+		}
 		outcome := ProbeCapability(ctx, client, creds, spec.ID)
 		out = append(out, CapabilityCheckResult{
 			Capability:     spec.ID,
@@ -87,6 +90,12 @@ func ListCapabilityStates(ctx context.Context, q *db.Queries, installationID pgt
 	}
 	out := make([]CapabilityStateView, 0, len(rows))
 	for _, row := range rows {
+		if spec, ok := CapabilitySpecByID(CapabilityID(row.Capability)); ok && !spec.Probeable {
+			// Older installs can retain verdicts from before non-probeable
+			// capabilities stopped being persisted. Do not surface them as
+			// checks the UI cannot truthfully represent.
+			continue
+		}
 		var scopes []string
 		if len(row.RequiredScopes) > 0 {
 			if err := json.Unmarshal(row.RequiredScopes, &scopes); err != nil {

@@ -92,10 +92,33 @@ import {
   IssueStatusEntrySchema,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_ISSUE_STATUS_ENTRY,
+  BeginLarkPermissionGrantResponseSchema,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 import { SkillSummaryListSchema } from "./schemas";
 import { SelfEvolutionJevConfigSchema } from "./schemas";
+
+describe("Lark permission grant response schema", () => {
+  const fallback = { qr_code_url: "" };
+
+  it("accepts a confirmation QR URL", () => {
+    expect(
+      BeginLarkPermissionGrantResponseSchema.parse({
+        qr_code_url: "https://open.feishu.cn/app?clientID=cli_existing",
+      }),
+    ).toEqual({ qr_code_url: "https://open.feishu.cn/app?clientID=cli_existing" });
+  });
+
+  it("falls back to an empty URL for malformed responses", () => {
+    for (const malformed of [null, {}, { qr_code_url: "not a URL" }]) {
+      expect(
+        parseWithFallback(malformed, BeginLarkPermissionGrantResponseSchema, fallback, {
+          endpoint: "POST /api/workspaces/:id/lark/installations/:installationId/grant-permissions",
+        }),
+      ).toEqual(fallback);
+    }
+  });
+});
 
 describe("decision request response", () => {
   const baseRequest = {
