@@ -307,6 +307,7 @@ export function LarkCapabilityPanel({
 
   const caps = installation.capabilities;
   const missing = (caps ?? []).filter((c) => c.status === "missing");
+  const hasUnknown = (caps ?? []).some((c) => c.status === "unknown");
   const allGranted =
     !!caps && caps.length > 0 && missing.length === 0 &&
     caps.every((c) => c.status === "granted");
@@ -448,22 +449,23 @@ export function LarkCapabilityPanel({
                 <ExternalLink className="h-3 w-3" />
                 {t(($) => $.lark.permissions_console_link)}
               </a>
-              {canManage && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 gap-1 px-2 text-micro"
-                  onClick={handlePermissionGrant}
-                  disabled={granting}
-                  data-testid="lark-permissions-grant"
-                >
-                  <ScanLine className={cn("h-3 w-3", granting && "animate-pulse")} />
-                  {granting
-                    ? t(($) => $.lark.permissions_granting)
-                    : t(($) => $.lark.permissions_grant)}
-                </Button>
-              )}
             </div>
+          )}
+
+          {canManage && (missing.length > 0 || hasUnknown) && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-micro"
+              onClick={handlePermissionGrant}
+              disabled={granting}
+              data-testid="lark-permissions-grant"
+            >
+              <ScanLine className={cn("h-3 w-3", granting && "animate-pulse")} />
+              {granting
+                ? t(($) => $.lark.permissions_granting)
+                : t(($) => $.lark.permissions_grant)}
+            </Button>
           )}
 
           {allGranted && (

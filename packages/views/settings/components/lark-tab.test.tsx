@@ -963,6 +963,25 @@ describe("LarkCapabilityPanel (RUYI-400 权限状态)", () => {
     );
   });
 
+  it("offers the existing batch grant for an unknown Wiki or Docx probe", async () => {
+    mockBeginPermissionGrant.mockResolvedValueOnce({
+      qr_code_url: "https://open.feishu.cn/app?clientID=cli_test_app",
+    });
+    installationsRef.current.installations = [
+      activeInstallation({
+        capabilities: [{ capability: "wiki_doc_links", status: "unknown" }],
+      }),
+    ];
+    const user = userEvent.setup();
+    render(<LarkTab />, { wrapper: I18nWrapper });
+
+    await user.click(screen.getByTestId("lark-permissions-grant"));
+
+    await waitFor(() => {
+      expect(mockBeginPermissionGrant).toHaveBeenCalledWith("workspace-1", "inst-1");
+    });
+  });
+
   it("shows an error instead of an empty QR when permission grant preparation fails", async () => {
     mockBeginPermissionGrant.mockRejectedValueOnce(new Error("grant failed"));
     installationsRef.current.installations = [
@@ -1003,7 +1022,7 @@ describe("LarkCapabilityPanel (RUYI-400 权限状态)", () => {
     membersRef.current = [{ user_id: "user-1", role: "member" }];
     installationsRef.current.installations = [
       activeInstallation({
-        capabilities: [{ capability: "send_messages", status: "missing" }],
+        capabilities: [{ capability: "wiki_doc_links", status: "unknown" }],
       }),
     ];
     const { rerender } = render(<LarkTab />, { wrapper: I18nWrapper });
