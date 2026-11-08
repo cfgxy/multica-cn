@@ -2194,6 +2194,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// inside the handler, mirroring revoke).
 					r.Get("/lark/permission-catalog", h.GetLarkPermissionCatalog)
 					r.Post("/lark/installations/{installationId}/recheck-permissions", h.RecheckLarkPermissions)
+					r.Post("/lark/installations/{installationId}/grant-permissions", h.BeginLarkPermissionGrant)
 					// Device-flow scan-to-install. Begin opens a new
 					// registration session against Lark and returns
 					// the QR-code URL; the frontend dialog then polls

@@ -43,6 +43,11 @@ func TestCapabilityCatalogShape(t *testing.T) {
 	if len(capabilityCatalog[0].Scopes) == 0 {
 		t.Fatal("CapabilityCatalog returned the backing slice, not a copy")
 	}
+	catalog = CapabilityCatalog()
+	catalog[0].Scopes[0][0] = "mutated"
+	if capabilityCatalog[0].Scopes[0][0] == "mutated" {
+		t.Fatal("CapabilityCatalog returned nested scope backing storage")
+	}
 }
 
 // TestCapabilityCatalogShareLinkRows pins the RUYI-572 rows' exact
@@ -412,6 +417,24 @@ func TestProbeCapabilityClassifiesEachSurface(t *testing.T) {
 			t.Errorf("status = %q detail = %q, want unknown with reason", out.Status, out.Detail)
 		}
 	})
+}
+
+func TestCheckInstallationCapabilitiesSkipsNonProbeableCatalogEntries(t *testing.T) {
+	t.Parallel()
+
+	results := CheckInstallationCapabilities(
+		context.Background(),
+		&probeStubClient{},
+		InstallationCredentials{AppID: "cli_probe", AppSecret: "s"},
+	)
+	if len(results) != 6 {
+		t.Fatalf("results = %d, want 6 REST-probeable capabilities", len(results))
+	}
+	for _, result := range results {
+		if result.Capability == CapabilityReceiveMessages {
+			t.Fatal("receive_messages must not be emitted as a REST capability check")
+		}
+	}
 }
 
 // probeNoShareClient models an APIClient predating the share-link
