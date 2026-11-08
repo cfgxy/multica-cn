@@ -523,7 +523,10 @@
     "jevThreshold": "阈值",
     "jevWarnFlag": "预警",
     "jevDisclaimer": "仅低成本预警参考，须结合概率依据判断，不单独作为处置依据（warn-only 旁路，不影响门闸判定）。",
-    "jevUnavailable": "不可用，已跳过（不影响主流程）"
+    "jevUnavailable": "不可用，已跳过（不影响主流程）",
+    "jevModel": "模型={{model}}",
+    "jevCheckedAt": "检查时间 {{date}}",
+    "jevFailureReason": "原因={{reason}}"
   },
   "retrospective": {
     "title": "每日总复盘",
@@ -846,12 +849,14 @@
     "label": "自演化分区",
     "overview": "总览",
     "groupKnowledgeAssets": "知识资产",
-    "groupMeasures": "度量",
-    "groupLoop": "演进闭环",
-    "groupConfig": "配置",
+    "groupQualityGovernance": "质量与治理",
+    "groupWorkflow": "自进化工作流",
     "knowledge": "知识库",
     "skills": "技能演进",
-    "quality": "质量度量",
+    "quality": "质量与度量",
+    "qualityTabs": "质量与度量",
+    "governanceTabs": "条款治理",
+    "clauses": "条款",
     "clauseGovernance": "条款治理",
     "quiz": "题库测验",
     "proposals": "立法提案",
@@ -1029,9 +1034,36 @@
       "other": "其他错误"
     }
   },
+  "jevConfig": {
+    "title": "JEV 风险预检",
+    "description": "为提案提供仅预警的辅助判断，不会改变门闸结论或 owner 审批。",
+    "endpoint": "端点",
+    "apiKey": "API Key",
+    "model": "模型",
+    "timeout": "超时（毫秒）",
+    "save": "保存并检查",
+    "busy": "处理中…",
+    "recheck": "重新检查",
+    "delete": "移除配置",
+    "saveOk": "JEV 配置已保存。",
+    "deleteOk": "JEV 配置已移除。",
+    "lastChecked": "最近检查 {{date}}",
+    "engine": "运行版本 {{engine}}",
+    "lastCheckError": "最近检查：{{reason}}",
+    "encryptionNotReady": "本部署未配置工作区级加密密钥，无法保存 JEV 配置。",
+    "source": {
+      "workspace": "工作区覆盖",
+      "deployment": "部署默认值"
+    },
+    "status": {
+      "unconfigured": "未配置",
+      "offline": "离线",
+      "available": "可用"
+    }
+  },
   "configPage": {
     "title": "模块配置",
-    "description": "下方模型服务支撑质量评分；Langfuse 为实例级配置，此处只读。"
+    "description": "下方模型服务支撑质量评分；JEV 仅为提案提供预警；Langfuse 为实例级配置，此处只读。"
   },
   "mobile": { "title": "自演化", "overview": "总览", "versions": "版本", "proposals": "提案", "proposal_count_label": "项提案", "pending_owner": "待所有者处理", "skills": "技能", "review_diff": "查看提案差异", "empty_diff": "无差异行", "cancel": "取消", "approve": "批准", "approving": "正在批准…", "reject": "驳回", "rejecting": "正在驳回…", "action_failed": "操作失败，修改未保存。请检查后重试。", "reject_reason": "驳回原因", "reject_unavailable": "此设备暂不支持输入驳回原因。", "error": "无法加载提案预览", "load_error": "部分数据加载失败，点击重试。", "review_approve": "查看并批准", "no_proposals": "暂无提案", "clauses": "条款治理", "injections": "次使用", "no_clauses": "暂无治理条款", "retrospective": "复盘运行记录", "issues_analyzed": "个任务已分析", "no_retrospectives": "暂无复盘记录" }
 }

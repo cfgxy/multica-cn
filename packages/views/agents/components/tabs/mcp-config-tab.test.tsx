@@ -22,6 +22,7 @@ const workspaceMcp = vi.hoisted(() => ({
   // Servers ASSIGNED to this agent, and the workspace library to pick from.
   assigned: [] as Array<Record<string, unknown>>,
   library: [] as Array<Record<string, unknown>>,
+  members: [] as Array<Record<string, unknown>>,
 }));
 
 // The workspace section reads the agent's assignments plus the library.
@@ -36,6 +37,11 @@ vi.mock("@multica/core/workspace/queries", () => ({
   workspaceMcpServersOptions: (wsId: string) => ({
     queryKey: ["workspaces", wsId, "mcp-servers"],
     queryFn: () => Promise.resolve(workspaceMcp.library),
+    enabled: wsId !== "",
+  }),
+  memberListOptions: (wsId: string) => ({
+    queryKey: ["workspaces", wsId, "members"],
+    queryFn: () => Promise.resolve(workspaceMcp.members),
     enabled: wsId !== "",
   }),
 }));
@@ -159,6 +165,7 @@ describe("McpConfigTab", () => {
     vi.clearAllMocks();
     workspaceMcp.assigned = [];
     workspaceMcp.library = [];
+    workspaceMcp.members = [];
     mockAddServer.mockResolvedValue([]);
     mockSetEnabled.mockResolvedValue([]);
     mockRemoveServer.mockResolvedValue([]);

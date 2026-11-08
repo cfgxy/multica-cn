@@ -353,8 +353,8 @@ describe("RuntimeDetail visibility section", () => {
   });
 
   // MUL-6126: a workspace admin may rename or delete someone else's runtime,
-  // but not share it — sharing is the owner's consent to lend their machine,
-  // and the PATCH refuses an admin regardless of what this UI renders.
+  // but not share it — the runtime owner or workspace owner controls runtime
+  // visibility, and the PATCH refuses an admin regardless of this UI.
   it("keeps visibility read-only for a workspace admin who does not own the runtime", () => {
     mockQueryData.members = [
       { user_id: "user-me", role: "admin" },
@@ -365,6 +365,23 @@ describe("RuntimeDetail visibility section", () => {
     );
     expect(screen.getByText("Private")).toBeInTheDocument();
     expect(screen.queryByText("Public")).not.toBeInTheDocument();
+  });
+
+  it("lets the workspace owner change another member's runtime visibility", async () => {
+    mockQueryData.members = [
+      { user_id: "user-me", role: "owner" },
+      { user_id: "someone-else", role: "member" },
+    ];
+    renderDetail(
+      makeRuntime({ owner_id: "someone-else", visibility: "private" }),
+    );
+
+    fireEvent.click(screen.getByText("Public"));
+    await waitFor(() =>
+      expect(mockUpdateRuntime).toHaveBeenCalledWith("rt-1", {
+        visibility: "public",
+      }),
+    );
   });
 
   it("hides usage from a workspace admin viewing another member's private runtime", () => {

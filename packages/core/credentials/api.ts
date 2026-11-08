@@ -22,8 +22,6 @@ export const CredentialMetadataSchema = z.object({
   id: z.string(),
   name: z.string(),
   target_service: z.string(),
-  connector_id: z.string(),
-  connector_revision: z.number(),
   purpose: z.string(),
   status: z.string(),
   resource_scope: z.string(),

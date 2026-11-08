@@ -55,6 +55,8 @@ export interface PromptJevAdvisory {
   stage: "submit" | "gate";
   available: boolean;
   engine?: string;
+  /** Workspace-configured model identity used for this advisory pass. */
+  model?: string;
   p_failure?: number;
   threshold?: number;
   warn: boolean;

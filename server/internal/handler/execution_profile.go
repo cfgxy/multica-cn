@@ -573,13 +573,13 @@ func (h *Handler) UpsertExecutionProfileEntry(w http.ResponseWriter, r *http.Req
 		return
 	}
 	// Same gate CreateAgent / UpdateAgent apply: a profile must not become a
-	// way to move agents onto someone else's private runtime.
+	// way to move agents onto an unauthorized private runtime.
 	member, ok := h.workspaceMember(w, r, uuidToString(ws.ID))
 	if !ok {
 		return
 	}
 	if !canUseRuntimeForAgent(member, runtime) {
-		writeError(w, http.StatusForbidden, "this runtime is private; only its owner can move agents onto it")
+		writeError(w, http.StatusForbidden, "this runtime is private; only its owner or the workspace owner can move agents onto it")
 		return
 	}
 

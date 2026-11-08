@@ -200,10 +200,18 @@ func renderedClausesByCarrier(rows []db.ListActiveWorkspaceClausesRow, override 
 	return byCarrier
 }
 
-func (h *Handler) renderCarrierFromActiveClausesTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, ref carrierRef, current string, override *clauseRenderOverride) (string, error) {
+func (h *Handler) activeClauseRowsTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID) ([]db.ListActiveWorkspaceClausesRow, error) {
 	rows, err := qtx.ListActiveWorkspaceClauses(ctx, workspaceID)
 	if err != nil {
-		return "", fmt.Errorf("有效条款集读取失败: %w", err)
+		return nil, fmt.Errorf("有效条款集读取失败: %w", err)
+	}
+	return rows, nil
+}
+
+func (h *Handler) renderCarrierFromActiveClausesTx(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, ref carrierRef, current string, override *clauseRenderOverride) (string, error) {
+	rows, err := h.activeClauseRowsTx(ctx, qtx, workspaceID)
+	if err != nil {
+		return "", err
 	}
 	return clausemark.Static(current, renderedClausesByCarrier(rows, override)[ref]), nil
 }

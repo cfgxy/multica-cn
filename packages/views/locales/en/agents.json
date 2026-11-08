@@ -466,7 +466,7 @@
     "runtime_none": "No runtime available",
     "runtime_cloud_badge": "Cloud",
     "runtime_private_badge": "Private",
-    "runtime_private_locked_tooltip": "Private runtime — only its owner can create agents on it. Ask the owner to switch it to Public to share.",
+    "runtime_private_locked_tooltip": "Private runtime — only its owner or the workspace owner can create agents on it.",
     "runtime_search_placeholder": "Search machines…",
     "runtime_no_results": "No matching machines",
     "runtime_group_online": "{{online}}/{{total}} online",
@@ -932,7 +932,7 @@
     "team_coming_soon": "Coming soon",
     "members_group": "People",
     "public_group": "Public access",
-    "owner_only_readonly": "Only the agent owner can change who can run this agent.",
+    "owner_only_readonly": "Only the agent owner or workspace owner can change who can run this agent.",
     "members_empty": "No workspace members to choose from",
     "composio_switch_hint": "Heads up — this agent has Composio apps enabled. Sharing it lets everyone with access use those apps through this agent.",
     "save_failed": "Failed to update access"

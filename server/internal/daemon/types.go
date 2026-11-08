@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"crypto/ecdh"
 	"encoding/json"
 
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
@@ -59,10 +60,14 @@ type ConnectedAppData = runtimeapps.ConnectedApp
 
 type CredentialCapability struct {
 	Capability        string `json:"capability"`
-	ConnectorID       string `json:"connector_id"`
-	ConnectorRevision int64  `json:"connector_revision"`
-	TargetURL         string `json:"target_url"`
+	CredentialID      string `json:"credential_id,omitempty"`
+	CredentialName    string `json:"credential_name,omitempty"`
+	Purpose           string `json:"purpose,omitempty"`
+	ConnectorID       string `json:"connector_id,omitempty"`
+	ConnectorRevision int64  `json:"connector_revision,omitempty"`
+	TargetURL         string `json:"target_url,omitempty"`
 	ExpiresAt         string `json:"expires_at"`
+	sessionKey        *ecdh.PrivateKey
 }
 
 // ActiveSiblingRunData mirrors the claim-time warning context returned by the

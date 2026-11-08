@@ -490,6 +490,7 @@
     "due_date_removed": "移除了截止日期",
     "title_renamed": "把这个任务从\"{{from}}\"重命名为\"{{to}}\"",
     "description_updated": "更新了描述",
+    "credential_delivered": "已交付凭据",
     "task_completed_other": "完成了 {{count}} 个 task",
     "task_failed_other": "{{count}} 个 task 失败",
     "squad_leader_evaluated": "评估了小队触发",

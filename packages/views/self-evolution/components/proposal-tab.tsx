@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -144,7 +144,8 @@ export function ProposalTab({ wsId }: { wsId: string }) {
   // detail page's retrospective run rows and the retrospective page's run
   // list) land on the same scoped results view; changes are written back
   // so the URL keeps sharing the exact view.
-  const [runId, setRunId] = useState(() => navigation.searchParams.get("run") ?? "");
+  const urlRunId = navigation.searchParams.get("run") ?? "";
+  const [runId, setRunId] = useState(urlRunId);
   const [selectedId, setSelectedId] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<PromptProposal | null>(null);
@@ -154,6 +155,10 @@ export function ProposalTab({ wsId }: { wsId: string }) {
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [rejectFor, setRejectFor] = useState<PromptProposal | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+
+  useEffect(() => {
+    setRunId(urlRunId);
+  }, [urlRunId]);
 
   const runsQuery = useQuery(retrospectiveRunsOptions(wsId));
   const list = useQuery(promptProposalListOptions(wsId, status, runId));
@@ -218,7 +223,8 @@ export function ProposalTab({ wsId }: { wsId: string }) {
     if (next) params.set("run", next);
     else params.delete("run");
     const qs = params.toString();
-    navigation.replace(qs ? `${navigation.pathname}?${qs}` : navigation.pathname);
+    const path = qs ? `${navigation.pathname}?${qs}` : navigation.pathname;
+    navigation.replace(`${path}${navigation.hash}`);
   };
 
   const openCreate = () => {
@@ -579,12 +585,18 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                     <span className="font-medium">{t(($) => $.legislation.jevAdvisoryLabel)}</span>
                     {" · "}
                     {t(($) => $.legislation.jevStage[jev.stage])}
+                    {jev.model ? ` · ${t(($) => $.legislation.jevModel, { model: jev.model })}` : ""}
                     {jev.engine ? ` · ${jev.engine}` : ""}
                     {jev.p_failure != null ? ` · p_failure=${jev.p_failure.toFixed(3)}` : ""}
                     {jev.threshold != null
                       ? ` / ${t(($) => $.legislation.jevThreshold)}=${jev.threshold.toFixed(3)}`
                       : ""}
                     {jev.warn ? ` · ${t(($) => $.legislation.jevWarnFlag)}` : ""}
+                    {jev.checked_at
+                      ? ` · ${t(($) => $.legislation.jevCheckedAt, {
+                          date: new Date(jev.checked_at).toLocaleString(),
+                        })}`
+                      : ""}
                     <div className="text-muted-foreground text-caption">
                       {t(($) => $.legislation.jevDisclaimer)}
                     </div>
@@ -595,6 +607,15 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                     data-testid="legislation-jev-advisory-unavailable"
                   >
                     {t(($) => $.legislation.jevAdvisoryLabel)}: {t(($) => $.legislation.jevUnavailable)}
+                    {jev.model ? ` · ${t(($) => $.legislation.jevModel, { model: jev.model })}` : ""}
+                    {jev.skipped_reason
+                      ? ` · ${t(($) => $.legislation.jevFailureReason, { reason: jev.skipped_reason })}`
+                      : ""}
+                    {jev.checked_at
+                      ? ` · ${t(($) => $.legislation.jevCheckedAt, {
+                          date: new Date(jev.checked_at).toLocaleString(),
+                        })}`
+                      : ""}
                   </div>
                 );
               })()}

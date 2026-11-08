@@ -2,6 +2,10 @@ package daemon
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -270,5 +274,76 @@ func TestClaimTasksWSFirst_ReconnectToOldServerSkipsWSRPC(t *testing.T) {
 	}
 	if httpClaims.Load() != 1 {
 		t.Fatalf("HTTP claims = %d, want 1", httpClaims.Load())
+	}
+}
+
+func TestClaimTasksWSFirst_HTTPFallbackCarriesSessionKey(t *testing.T) {
+	var gotSessionPublicKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			SessionPublicKey string `json:"session_public_key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode claim request: %v", err)
+		}
+		gotSessionPublicKey = body.SessionPublicKey
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tasks":[{"id":"http-t","runtime_id":"rt1","agent":{"name":"a"},"credential_capabilities":[{"credential_id":"credential-id","capability":"capability"}]}]}`))
+	}))
+	defer srv.Close()
+
+	d := New(Config{ServerBaseURL: srv.URL, MaxConcurrentTasks: 4}, slog.New(slog.NewTextHandler(noopWriter{}, nil)))
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.wsRPC.attach(func([]byte) (*wsOutbound, error) { return nil, errWSRPCUnavailable })
+	d.wsRPC.setSessionKey(key)
+	d.wsRPC.markRPCV1Supported(d.wsRPC.currentGeneration())
+
+	tasks, err := d.ClaimTasksWSFirst(context.Background(), "daemon-x", []string{"rt1"}, 1)
+	if err != nil {
+		t.Fatalf("ClaimTasksWSFirst: %v", err)
+	}
+	if gotSessionPublicKey != base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes()) {
+		t.Fatalf("session_public_key = %q, want active WS session key", gotSessionPublicKey)
+	}
+	if len(tasks) != 1 || len(tasks[0].CredentialCapabilities) != 1 || tasks[0].CredentialCapabilities[0].sessionKey != key {
+		t.Fatalf("HTTP fallback did not bind the claim session key: %#v", tasks)
+	}
+}
+
+func TestClaimTasksWSFirst_HTTPFallbackOmitsSessionKeyBeforeRPCV1Negotiation(t *testing.T) {
+	var gotSessionPublicKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			SessionPublicKey string `json:"session_public_key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode claim request: %v", err)
+		}
+		gotSessionPublicKey = body.SessionPublicKey
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tasks":[{"id":"http-t","runtime_id":"rt1","agent":{"name":"a"},"credential_capabilities":[{"credential_id":"credential-id","capability":"capability"}]}]}`))
+	}))
+	defer srv.Close()
+
+	d := New(Config{ServerBaseURL: srv.URL, MaxConcurrentTasks: 4}, slog.New(slog.NewTextHandler(noopWriter{}, nil)))
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.wsRPC.attach(func([]byte) (*wsOutbound, error) { return nil, errWSRPCUnavailable })
+	d.wsRPC.setSessionKey(key)
+
+	tasks, err := d.ClaimTasksWSFirst(context.Background(), "daemon-x", []string{"rt1"}, 1)
+	if err != nil {
+		t.Fatalf("ClaimTasksWSFirst: %v", err)
+	}
+	if gotSessionPublicKey != "" {
+		t.Fatalf("session_public_key = %q before rpc-v1 negotiation, want empty", gotSessionPublicKey)
+	}
+	if len(tasks) != 1 || len(tasks[0].CredentialCapabilities) != 1 || tasks[0].CredentialCapabilities[0].sessionKey != nil {
+		t.Fatalf("HTTP fallback bound an unnegotiated session key: %#v", tasks)
 	}
 }

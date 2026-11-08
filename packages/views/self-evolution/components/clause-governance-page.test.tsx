@@ -52,10 +52,15 @@ vi.mock("@multica/core/self-evolution", () => ({
   },
 }));
 vi.mock("./self-evolution-shell", () => ({ SelfEvolutionShell: ({ children }: { children: ReactNode }) => children }));
+vi.mock("./proposal-tab", () => ({ ProposalTab: () => <div data-testid="proposal-panel" /> }));
 
 function makeAdapter(search: string, onReplace: (path: string) => void): NavigationAdapter {
   return {
-    push: m.push,
+    push: (path) => {
+      m.push(path);
+      window.history.pushState({}, "", path);
+      onReplace(path);
+    },
     replace: (path) => {
       m.replace(path);
       window.history.replaceState({}, "", path);
@@ -161,6 +166,25 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("ClauseGovernancePage", () => {
+  it("keeps clauses and proposals in URL-backed tabs without losing clause filters", async () => {
+    mount(<ClauseGovernancePage />, "?days=90&tab=clauses");
+    await screen.findByText("Sample clause");
+    fireEvent.click(screen.getByRole("button", { name: /Active/ }));
+    expect(screen.getByRole("button", { name: /Active/ }).getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Proposals" }));
+    await waitFor(() => expect(m.push).toHaveBeenLastCalledWith(
+      "/test-workspace/self-evolution/clause-governance?days=90&tab=proposals",
+    ));
+    expect(screen.getByTestId("proposal-panel")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "Clauses" }));
+    await waitFor(() => expect(m.push).toHaveBeenLastCalledWith(
+      "/test-workspace/self-evolution/clause-governance?days=90&tab=clauses",
+    ));
+    expect(screen.getByRole("button", { name: /Active/ }).getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("writes the selected window to the URL, scopes/refetches both queries, and keeps carrier text out of alerts", async () => {
     mount(<ClauseGovernancePage />, "?days=30&tab=overview");
     await screen.findByText("Sample clause");
