@@ -546,9 +546,10 @@ func runtimeLocalSkillRequestTerminal(status RuntimeLocalSkillRequestStatus) boo
 
 // requireRuntimeCapabilityReadAccess applies the runtime read gate to
 // capability discovery (local skills + the redacted MCP inventory). Private
-// machines remain owner-only even for admins; public runtimes are readable by
-// workspace members. Flows that copy skill files off the owner's machine add
-// the stricter owner-only check in requireRuntimeLocalSkillAccess.
+// machines are readable by their owner and the workspace owner; public runtimes
+// are readable by workspace members. Flows that copy skill files off the
+// owner's machine use the same workspace-owner exception in
+// requireRuntimeLocalSkillAccess.
 func (h *Handler) requireRuntimeCapabilityReadAccess(w http.ResponseWriter, r *http.Request, source, runtimeID string) (runtimeIDAndWorkspace, db.Member, bool) {
 	rt, member, ok := h.requireRuntimeReadAccess(w, r, source, runtimeID)
 	if !ok {
@@ -567,15 +568,15 @@ func (h *Handler) requireRuntimeCapabilityReadAccess(w http.ResponseWriter, r *h
 }
 
 // requireRuntimeLocalSkillAccess additionally requires the caller to own the
-// runtime. Import reads full skill file contents from the owner's machine, so
-// it stays owner-only even for workspace owners/admins.
+// runtime or to be the workspace owner. Import reads full skill file contents
+// from the owner's machine; admins remain blocked.
 func (h *Handler) requireRuntimeLocalSkillAccess(w http.ResponseWriter, r *http.Request, source, runtimeID string) (runtimeIDAndWorkspace, bool) {
 	rt, member, ok := h.requireRuntimeCapabilityReadAccess(w, r, source, runtimeID)
 	if !ok {
 		return runtimeIDAndWorkspace{}, false
 	}
 
-	if rt.ownerID != "" && rt.ownerID == uuidToString(member.UserID) {
+	if rt.ownerID != "" && (member.Role == "owner" || rt.ownerID == uuidToString(member.UserID)) {
 		return rt, true
 	}
 

@@ -242,6 +242,7 @@ func daemonClientCapabilities(workerSupervision, snapshotSupport bool) string {
 		protocol.DaemonCapabilityExecutionManifestV1,
 		protocol.DaemonCapabilityAgentSkillV1,
 		protocol.DaemonCapabilityRemoteMCPV1,
+		protocol.DaemonCapabilityCredentialMCPV1,
 		protocol.DaemonCapabilityLocalWorktreeV1,
 		protocol.DaemonCapabilitySourceContextQuickCreateV1,
 		protocol.DaemonCapabilityRPCV1,
@@ -335,7 +336,10 @@ const batchClaimRequestTimeout = 5 * time.Second
 //
 // backpressure (RUYI-393) is an optional machine-level memory-watermark report;
 // servers that predate the field ignore it, and a nil report omits the key.
-func (c *Client) ClaimTasks(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, backpressure *protocol.DaemonBackpressureReport) ([]*Task, error) {
+// sessionPublicKey carries the active, rpc-v1-negotiated WS session's X25519
+// public key when the HTTP path is a fallback. It is optional for compatibility
+// with claims that do not carry direct credentials.
+func (c *Client) ClaimTasks(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, sessionPublicKey string, backpressure *protocol.DaemonBackpressureReport) ([]*Task, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, batchClaimRequestTimeout)
 	defer cancel()
 	var resp struct {
@@ -345,6 +349,9 @@ func (c *Client) ClaimTasks(ctx context.Context, daemonID string, runtimeIDs []s
 		"daemon_id":   daemonID,
 		"runtime_ids": runtimeIDs,
 		"max_tasks":   maxTasks,
+	}
+	if sessionPublicKey != "" {
+		body["session_public_key"] = sessionPublicKey
 	}
 	if backpressure != nil {
 		body["backpressure"] = backpressure

@@ -335,6 +335,23 @@ describe("RuntimeDetail visibility section", () => {
     expect(screen.queryByText("Public")).not.toBeInTheDocument();
   });
 
+  it("lets the workspace owner change another member's runtime visibility", async () => {
+    mockQueryData.members = [
+      { user_id: "user-me", role: "owner" },
+      { user_id: "someone-else", role: "member" },
+    ];
+    renderDetail(
+      makeRuntime({ owner_id: "someone-else", visibility: "private" }),
+    );
+
+    fireEvent.click(screen.getByText("Public"));
+    await waitFor(() =>
+      expect(mockUpdateRuntime).toHaveBeenCalledWith("rt-1", {
+        visibility: "public",
+      }),
+    );
+  });
+
   it("hides usage from a workspace admin viewing another member's private runtime", () => {
     mockQueryData.members = [
       { user_id: "user-me", role: "admin" },

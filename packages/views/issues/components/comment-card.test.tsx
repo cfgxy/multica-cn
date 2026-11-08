@@ -41,7 +41,7 @@ vi.mock("@multica/core/paths", async (importOriginal) => {
   };
 });
 
-import { AttachmentList } from "./comment-card";
+import { AttachmentList, isCredentialRequestComment } from "./comment-card";
 
 function renderWithQuery(ui: ReactElement) {
   const qc = new QueryClient({
@@ -131,5 +131,19 @@ describe("AttachmentList — inline attachment filtering", () => {
 
     expect(screen.queryByText("report.pdf")).toBeNull();
     expect(container.firstChild).toBeNull();
+  });
+});
+
+describe("isCredentialRequestComment", () => {
+  const marker = "<!-- multica:credential-request:v1 -->";
+
+  it.each([
+    ["accepts LF marker", { actor_type: "agent", source_task_id: "task-1", content: `${marker}\nNeed a credential.` }, true],
+    ["accepts CRLF marker", { actor_type: "agent", source_task_id: "task-1", content: `${marker}\r\nNeed a credential.` }, true],
+    ["rejects member comment", { actor_type: "member", source_task_id: "task-1", content: marker }, false],
+    ["rejects comment without source task", { actor_type: "agent", content: marker }, false],
+    ["rejects marker after leading content", { actor_type: "agent", source_task_id: "task-1", content: `Need a credential.\n${marker}` }, false],
+  ])("%s", (_name, entry, expected) => {
+    expect(isCredentialRequestComment(entry as never)).toBe(expected);
   });
 });

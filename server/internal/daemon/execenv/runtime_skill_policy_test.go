@@ -56,7 +56,7 @@ func TestPrepareClaudeSkillSettings(t *testing.T) {
 		}
 	}
 
-	cleared, err := prepareClaudeSkillSettings(root, nil, nil, true)
+	cleared, err := prepareClaudeSkillSettings(root, nil, nil, false)
 	if err != nil {
 		t.Fatalf("clear settings: %v", err)
 	}
@@ -68,14 +68,14 @@ func TestPrepareClaudeSkillSettings(t *testing.T) {
 	}
 }
 
-func TestPrepareClaudeSkillSettingsDeniesSubagentToolsByDefault(t *testing.T) {
+func TestPrepareClaudeSkillSettingsDeniesSubagentToolsWhenExplicitlyDisabled(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
 	// No disabled skills at all — the tool deny alone must still produce the
 	// settings file, otherwise a skill-less agent would silently regain the
 	// task-delegation tools.
-	path, err := prepareClaudeSkillSettings(root, nil, nil, false)
+	path, err := prepareClaudeSkillSettings(root, nil, nil, true)
 	if err != nil {
 		t.Fatalf("prepareClaudeSkillSettings: %v", err)
 	}
@@ -102,11 +102,11 @@ func TestPrepareClaudeSkillSettingsDeniesSubagentToolsByDefault(t *testing.T) {
 	}
 }
 
-func TestPrepareClaudeSkillSettingsAllowsSubagentToolsWhenOptedIn(t *testing.T) {
+func TestPrepareClaudeSkillSettingsLeavesSubagentToolsAloneByDefault(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	path, err := prepareClaudeSkillSettings(root, nil, nil, true)
+	path, err := prepareClaudeSkillSettings(root, nil, nil, false)
 	if err != nil {
 		t.Fatalf("prepareClaudeSkillSettings: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestPrepareClaudeSkillSettingsAllowsSubagentToolsWhenOptedIn(t *testing.T) 
 	// Skill filtering must keep working alongside the opt-in.
 	path, err = prepareClaudeSkillSettings(root, []RuntimeSkillRefForEnv{
 		{Root: "provider", Key: "review-dir", Name: "review"},
-	}, nil, true)
+	}, nil, false)
 	if err != nil {
 		t.Fatalf("prepareClaudeSkillSettings: %v", err)
 	}
@@ -126,11 +126,11 @@ func TestPrepareClaudeSkillSettingsAllowsSubagentToolsWhenOptedIn(t *testing.T) 
 		t.Fatalf("read settings: %v", err)
 	}
 	if strings.Contains(string(data), `"Agent"`) {
-		t.Fatalf("opted-in agent must not deny subagent tools:\n%s", data)
+		t.Fatalf("default policy must not deny subagent tools:\n%s", data)
 	}
 }
 
-func TestSubagentToolsAllowed(t *testing.T) {
+func TestSubagentToolsDenied(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -140,15 +140,33 @@ func TestSubagentToolsAllowed(t *testing.T) {
 	}{
 		{"empty config", nil, false},
 		{"empty object", json.RawMessage("{}"), false},
-		{"explicit false", json.RawMessage(`{"allow_subagents": false}`), false},
-		{"explicit true", json.RawMessage(`{"allow_subagents": true}`), true},
+		{"explicit false", json.RawMessage(`{"allow_subagents": false}`), true},
+		{"explicit true", json.RawMessage(`{"allow_subagents": true}`), false},
 		{"malformed", json.RawMessage(`{invalid`), false},
-		{"provider fields ignored", json.RawMessage(`{"mode":"gateway","allow_subagents":true}`), true},
+		{"wrong type ignored", json.RawMessage(`{"allow_subagents":"false"}`), false},
+		{"provider fields ignored", json.RawMessage(`{"mode":"gateway","allow_subagents":false}`), true},
 	}
 	for _, tc := range cases {
-		if got := SubagentToolsAllowed(tc.raw); got != tc.want {
-			t.Errorf("%s: SubagentToolsAllowed = %v, want %v", tc.name, got, tc.want)
+		if got := SubagentToolsDenied(tc.raw); got != tc.want {
+			t.Errorf("%s: SubagentToolsDenied = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestSubagentToolsPolicyPreservesExplicitTriState(t *testing.T) {
+	t.Parallel()
+
+	if got := SubagentToolsPolicy(nil); got != nil {
+		t.Fatalf("empty config policy = %v, want nil", got)
+	}
+	if got := SubagentToolsPolicy(json.RawMessage(`{invalid`)); got != nil {
+		t.Fatalf("malformed config policy = %v, want nil", got)
+	}
+	if got := SubagentToolsPolicy(json.RawMessage(`{"allow_subagents":true}`)); got == nil || !*got {
+		t.Fatalf("explicit true policy = %v, want true", got)
+	}
+	if got := SubagentToolsPolicy(json.RawMessage(`{"allow_subagents":false}`)); got == nil || *got {
+		t.Fatalf("explicit false policy = %v, want false", got)
 	}
 }
 
@@ -236,7 +254,7 @@ func TestRuntimeSkillPoliciesYieldToWorkspaceSkills(t *testing.T) {
 	workspaceSkills := []SkillContextForEnv{{Name: "Review"}}
 	settingsPath, err := prepareClaudeSkillSettings(root, []RuntimeSkillRefForEnv{
 		{Root: "provider", Key: "review-dir", Name: "review"},
-	}, workspaceSkills, true)
+	}, workspaceSkills, false)
 	if err != nil {
 		t.Fatalf("prepareClaudeSkillSettings: %v", err)
 	}

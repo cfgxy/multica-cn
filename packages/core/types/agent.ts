@@ -17,9 +17,9 @@ export type AgentVisibility = "workspace" | "private";
 // maps to `visibility: "private"`.
 //
 // Invocation semantics:
-//   - owner: always
-//   - permission_mode "private": ONLY the owner (workspace admins no longer
-//     bypass — the key behavior change vs the old visibility model)
+//   - agent owner: always
+//   - permission_mode "private": the agent owner and workspace owner
+//     (workspace admins do not bypass)
 //   - permission_mode "public_to" + workspace target: any workspace member
 //   - permission_mode "public_to" + member target: only the matching user
 //   - team target: reserved, INERT in v1 (never grants)
@@ -49,11 +49,11 @@ export interface AgentInvocationTargetInput {
 
 // Runtime visibility is a separate axis from agent visibility — different
 // vocabulary because it gates a different action. "private" (default) means
-// only the runtime owner can bind agents to it — workspace admins included,
-// and only the owner may flip the flag (MUL-6126); "public" opens binding to
-// any workspace member. Older backends that haven't shipped MUL-2062 omit the
-// field; the consumer must default to "private" so the strictest behavior is
-// the fallback.
+// the runtime owner and workspace owner can bind agents to it — workspace
+// admins do not bypass — and either owner may flip the flag (MUL-6126);
+// "public" opens binding to any workspace member. Older backends that haven't
+// shipped MUL-2062 omit the field; the consumer must default to "private" so
+// the strictest behavior is the fallback.
 export type RuntimeVisibility = "private" | "public";
 
 export interface RuntimeDevice {

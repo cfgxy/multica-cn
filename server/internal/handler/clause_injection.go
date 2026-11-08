@@ -25,8 +25,12 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"math"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -100,6 +104,15 @@ type dynamicClauseResult struct {
 	Text         string
 	Injections   []clauseInjectionRecord
 	Observations []clauseInjectionObservation
+	Manifest     []clauseManifestEntry
+}
+
+type clauseManifestEntry struct {
+	Slug     string
+	Title    string
+	Version  int32
+	Scope    string
+	Degraded bool
 }
 
 // applyDynamicClauses filters one carrier business column down to the clause
@@ -108,11 +121,12 @@ type dynamicClauseResult struct {
 // proceeds (ADR 007 §5).
 func (h *Handler) applyDynamicClauses(ctx context.Context, workspaceID pgtype.UUID, scope promptVersionScope, scopeID pgtype.UUID, taskKind, text string) dynamicClauseResult {
 	degrade := func(reason string) dynamicClauseResult {
-		fallbackText, injections := h.snapshotFallback(ctx, workspaceID, scope, scopeID, taskKind, text, reason)
+		fallbackText, injections, manifest := h.snapshotFallback(ctx, workspaceID, scope, scopeID, taskKind, text, reason)
 		return dynamicClauseResult{
 			Text:         fallbackText,
 			Injections:   injections,
 			Observations: []clauseInjectionObservation{{Scope: string(scope), ScopeID: scopeID, Degraded: true, Reason: reason}},
+			Manifest:     manifest,
 		}
 	}
 
@@ -138,9 +152,15 @@ func (h *Handler) applyDynamicClauses(ctx context.Context, workspaceID pgtype.UU
 			"scope", string(scope), "error", err)
 		return degrade("parse_error")
 	}
+	if stableContainsClauseMarker(doc.Stable) {
+		slog.Warn("clause injection: carrier snapshot retains malformed marker text; filtering degraded text",
+			"scope", string(scope))
+		return degrade("parse_error")
+	}
 
 	rendered := make([]clausemark.RenderedClause, 0, len(set))
 	injections := make([]clauseInjectionRecord, 0, len(set))
+	manifest := make([]clauseManifestEntry, 0, len(set))
 	for _, row := range set {
 		rendered = append(rendered, clausemark.RenderedClause{
 			Slug: row.Slug, Version: int(row.Version), Body: row.Content,
@@ -149,34 +169,98 @@ func (h *Handler) applyDynamicClauses(ctx context.Context, workspaceID pgtype.UU
 			ClauseID:      row.ClauseID,
 			ClauseVersion: row.Version,
 		})
+		manifest = append(manifest, clauseManifestEntry{
+			Slug: row.Slug, Title: row.Title, Version: row.Version, Scope: string(scope),
+		})
 	}
 	return dynamicClauseResult{
 		Text:       clausemark.Render(doc.Stable, rendered),
 		Injections: injections,
+		Manifest:   manifest,
 	}
+}
+
+func appendActiveClauseManifest(text, taskKind string, entries []clauseManifestEntry) string {
+	if len(entries) == 0 {
+		return text
+	}
+	scopeRank := map[string]int{"workspace": 0, "project": 1, "squad": 2, "agent": 3}
+	unique := make(map[string]clauseManifestEntry, len(entries))
+	for _, entry := range entries {
+		key := fmt.Sprintf("%s\x00%s\x00%d", entry.Scope, entry.Slug, entry.Version)
+		unique[key] = entry
+	}
+	ordered := make([]clauseManifestEntry, 0, len(unique))
+	for _, entry := range unique {
+		ordered = append(ordered, entry)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if scopeRank[ordered[i].Scope] != scopeRank[ordered[j].Scope] {
+			return scopeRank[ordered[i].Scope] < scopeRank[ordered[j].Scope]
+		}
+		return ordered[i].Slug < ordered[j].Slug
+	})
+
+	var rows strings.Builder
+	degraded := false
+	for _, entry := range ordered {
+		degraded = degraded || entry.Degraded
+		fmt.Fprintf(&rows, "- %s `%s@%d`: %s\n", entry.Scope, entry.Slug, entry.Version, safeManifestTitle(entry.Title))
+	}
+	digest := sha256.Sum256([]byte(rows.String()))
+
+	var manifest strings.Builder
+	if strings.TrimSpace(text) != "" {
+		manifest.WriteString(strings.TrimRight(text, "\n"))
+		manifest.WriteString("\n\n")
+	}
+	manifest.WriteString("## Active Clause Manifest\n\n")
+	manifest.WriteString("This manifest is generated from the clauses actually injected into this task. It is for navigation and verification only: clause text, version, and active binding remain authoritative. The manifest adds no duty, expands no scope, and grants no permission.\n\n")
+	fmt.Fprintf(&manifest, "task_kind=%s clauses=%d manifest_sha256=%x degraded=%t\n\n", taskKind, len(ordered), digest, degraded)
+	manifest.WriteString(rows.String())
+	return manifest.String()
+}
+
+func safeManifestTitle(title string) string {
+	compact := strings.Join(strings.Fields(title), " ")
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(compact)
+}
+
+func stableContainsClauseMarker(text string) bool {
+	compact := strings.Join(strings.Fields(text), "")
+	return strings.Contains(compact, "<!--clause") || strings.Contains(compact, "<!--/clause")
+}
+
+func validSnapshotClauseRevision(rev int) bool {
+	return rev > 0 && int64(rev) <= math.MaxInt32
 }
 
 // snapshotFallbackInjections returns the injection accounting from a filtered
 // degraded snapshot.
 func (h *Handler) snapshotFallbackInjections(ctx context.Context, workspaceID pgtype.UUID, scope promptVersionScope, scopeID pgtype.UUID, taskKind, text, reason string) []clauseInjectionRecord {
-	_, injections := h.snapshotFallback(ctx, workspaceID, scope, scopeID, taskKind, text, reason)
+	_, injections, _ := h.snapshotFallback(ctx, workspaceID, scope, scopeID, taskKind, text, reason)
 	return injections
 }
 
 // snapshotFallback keeps only marker segments whose clause and active binding
 // still authorize injection from this carrier. A malformed snapshot fails
 // closed because its segment boundaries cannot be trusted.
-func (h *Handler) snapshotFallback(ctx context.Context, workspaceID pgtype.UUID, scope promptVersionScope, scopeID pgtype.UUID, taskKind, text, reason string) (string, []clauseInjectionRecord) {
+func (h *Handler) snapshotFallback(ctx context.Context, workspaceID pgtype.UUID, scope promptVersionScope, scopeID pgtype.UUID, taskKind, text, reason string) (string, []clauseInjectionRecord, []clauseManifestEntry) {
 	doc, err := clausemark.Parse(text)
-	stableMarkers := strings.Join(strings.Fields(doc.Stable), "")
-	if err != nil || strings.Contains(stableMarkers, "<!--clause") || strings.Contains(stableMarkers, "<!--/clause") {
+	if err != nil || stableContainsClauseMarker(doc.Stable) {
 		slog.Warn("clause injection: degraded run snapshot unparseable; clause-level count missing (reconciliation will flag)",
 			"scope", string(scope), "reason", reason, "error", err)
-		return "", nil
+		return "", nil, nil
 	}
 	out := make([]clauseInjectionRecord, 0, len(doc.Segments))
 	rendered := make([]clausemark.RenderedClause, 0, len(doc.Segments))
+	manifest := make([]clauseManifestEntry, 0, len(doc.Segments))
 	for _, seg := range doc.Segments {
+		if !validSnapshotClauseRevision(seg.Rev) {
+			slog.Warn("clause injection: snapshot segment has invalid revision; skipping it",
+				"scope", string(scope), "slug", seg.Slug, "revision", seg.Rev, "reason", reason)
+			continue
+		}
 		clause, err := h.Queries.GetClauseBySlug(ctx, db.GetClauseBySlugParams{Slug: seg.Slug, WorkspaceID: workspaceID})
 		if err != nil || clause.Status != "active" {
 			slog.Warn("clause injection: snapshot segment slug not in asset library; count missing for it",
@@ -201,8 +285,11 @@ func (h *Handler) snapshotFallback(ctx context.Context, workspaceID pgtype.UUID,
 			ClauseVersion: int32(seg.Rev),
 			Degraded:      true,
 		})
+		manifest = append(manifest, clauseManifestEntry{
+			Slug: seg.Slug, Title: clause.Title, Version: int32(seg.Rev), Scope: string(scope), Degraded: true,
+		})
 	}
-	return clausemark.Render(doc.Stable, rendered), out
+	return clausemark.Render(doc.Stable, rendered), out, manifest
 }
 
 func clauseBindingAllowsTaskKind(conditions []byte, taskKind string) bool {

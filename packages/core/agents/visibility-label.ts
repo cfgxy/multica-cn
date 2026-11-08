@@ -12,27 +12,26 @@ export const VISIBILITY_LABEL: Record<AgentVisibility, string> = {
 
 /**
  * Descriptions for the visibility CHOICE (create dialog / picker), where
- * "Personal" is submitted as `permission_mode: "private"` — owner-only, with
- * no workspace-admin bypass since MUL-3963 (`canInvokeAgent` in
- * `server/internal/handler/agent_access.go`). The older
- * "…and workspace admins…" copy predates that gate and is no longer true.
+ * "Personal" is submitted as `permission_mode: "private"`. The agent owner
+ * and workspace owner may invoke it; workspace admins do not bypass this gate
+ * (`canInvokeAgent` in `server/internal/handler/agent_access.go`).
  */
 export const VISIBILITY_DESCRIPTION: Record<AgentVisibility, string> = {
   workspace: "All members can assign",
-  private: "Only you can assign",
+  private: "Only you or the workspace owner can assign",
 };
 
 /**
  * Tooltip suitable for read-only badges on hover / list rows. Worded for an
  * EXISTING agent, where `visibility` is the lossy two-state projection of the
- * permission model: `private` covers both a truly owner-only agent and one
- * shared with specific people, so the copy names the owner's grants rather
+ * permission model: `private` covers both an owner-restricted agent and one
+ * shared with specific people, so the copy names the applicable grants rather
  * than promising either extreme. It must not claim workspace admins can
  * assign — admins keep management + view access, not invocation.
  */
 export const VISIBILITY_TOOLTIP: Record<AgentVisibility, string> = {
   workspace: "Workspace — all members can assign",
-  private: "Personal — only the owner and people they allow can assign",
+  private: "Personal — the agent owner, workspace owner, and permitted people can assign",
 };
 
 export function visibilityLabel(v: AgentVisibility): string {

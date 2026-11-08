@@ -1,4 +1,4 @@
-import type { RuntimeDevice } from "../types";
+import type { MemberRole, RuntimeDevice } from "../types";
 import { isRuntimeUsableForUser } from "./access";
 
 /**
@@ -50,6 +50,7 @@ export function runtimeCredentialStatus(
 
 export interface AgentSlotChoiceOptions {
   currentUserId: string | null;
+  currentUserRole?: MemberRole | null;
   /**
    * The other slot's selection; excluded so one instance can't hold both
    * slots. Empty string / undefined = other slot unbound.
@@ -94,7 +95,7 @@ export function agentSlotChoices(
   const usable = (runtimes ?? []).filter(
     (r) =>
       r.status === "online" &&
-      isRuntimeUsableForUser(r, opts.currentUserId) &&
+      isRuntimeUsableForUser(r, opts.currentUserId, opts.currentUserRole) &&
       runtimeSupportsCapability(r, capability) &&
       runtimeOfferableForBinding(r, keepRuntimeId),
   );

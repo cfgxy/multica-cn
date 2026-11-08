@@ -36,7 +36,7 @@ import { api, dispatchReasonCode, errorCode } from "@multica/core/api";
 import { ReplyInput } from "./reply-input";
 import { CommentTriggerChips } from "./comment-trigger-chips";
 import { useCommentTriggerPreview } from "../hooks/use-comment-trigger-preview";
-import type { TimelineEntry, Attachment } from "@multica/core/types";
+import type { TimelineEntry, Attachment, Issue } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { selectStandaloneAttachments } from "@multica/core/attachments/image-sequence";
 import { useCommentCollapseStore, useCommentDraftStore } from "@multica/core/issues/stores";
@@ -45,9 +45,17 @@ import { CommentsFoldBar } from "./resolved-thread-bar";
 import { deriveThreadResolution } from "./thread-utils";
 import { latestThreadComment } from "@multica/core/issues/timeline-sort";
 import { RevisionConflictCompare } from "./revision-conflict-compare";
+import { CredentialManager } from "../../credentials/credential-manager";
 
+const credentialRequestMarker = "<!-- multica:credential-request:v1 -->";
 const highlightedCommentBackgroundClass =
   "bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]";
+
+export function isCredentialRequestComment(entry: Pick<TimelineEntry, "actor_type" | "source_task_id" | "content">): boolean {
+  return entry.actor_type === "agent" &&
+    !!entry.source_task_id &&
+    (entry.content ?? "").split("\n", 1)[0]?.replace(/\r$/, "") === credentialRequestMarker;
+}
 
 // The `duration-300` on every highlighted surface below is
 // COMMENT_HIGHLIGHT_FADE_MS spelled as a literal — Tailwind can only emit a
@@ -92,7 +100,10 @@ function StickyHeaderShell({
 
 interface CommentCardProps {
   issueId: string;
+  issue?: Issue;
   entry: TimelineEntry;
+  credentialDelivered?: boolean;
+  credentialRequestAvailable?: boolean;
   /**
    * Flat list of every nested reply under this thread root, in render order.
    * Computed once in `issue-detail.tsx`'s `timelineView` and stabilized so
@@ -865,7 +876,10 @@ function CommentRow({
 
 function CommentCardImpl({
   issueId,
+  issue,
   entry,
+  credentialDelivered = false,
+  credentialRequestAvailable = true,
   replies,
   currentUserId,
   canModerate = false,
@@ -911,6 +925,7 @@ function CommentCardImpl({
     getActorName(lastComment.actor_type, lastComment.actor_id);
 
   const isHighlighted = highlightedCommentId === entry.id;
+  const isCredentialRequest = isCredentialRequestComment(entry);
 
   // Reply-resolution display. When a REPLY is the thread's resolution, the other
   // replies fold behind a bar and the resolution stays visible (root-resolution
@@ -1191,6 +1206,15 @@ function CommentCardImpl({
                   <ReadonlyContent content={entry.content ?? ""} attachments={entry.attachments} />
                 </div>
                 <AttachmentList attachments={entry.attachments} content={entry.content} className="mt-1.5 pl-10 max-md:pl-0" />
+                {isCredentialRequest && issue && (credentialDelivered || credentialRequestAvailable) ? (
+                  <div className="mt-3 border-t border-surface-border pt-3 pl-10 max-md:pl-0">
+                    {credentialDelivered ? (
+                      <p className="text-caption font-medium text-muted-foreground">{t(($) => $.activity.credential_delivered)}</p>
+                    ) : (
+                      <CredentialManager issue={issue} request={{ commentId: entry.id, agentId: entry.actor_id }} />
+                    )}
+                  </div>
+                ) : null}
                 {retryableAgentFailureComment(entry) && (
                   <TaskCommentRetryButton
                     issueId={issueId}

@@ -44,6 +44,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -406,7 +407,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	// The judged text is the source carrier's synthesized result.
 	advisory := p.JevAdvisory
 	if srcText, synthed := synth[carrierRef{scope: p.CarrierScope, id: p.CarrierScopeID}]; synthed {
-		if client := h.jevAdvisory(); client.Enabled() {
+		if client := h.jevAdvisory(ctx, workspaceID); client.Enabled() {
 			advisory = client.Assess(ctx, "gate", srcText).JSON()
 		}
 	}
@@ -530,17 +531,21 @@ func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries
 	if err != nil {
 		return "", fmt.Errorf("条款「%s」当前版本读取失败: %w", clause.Title, err)
 	}
-	content := strings.TrimRight(p.ClauseText, "\n")
-	synthesized, err := h.renderCarrierFromActiveClausesTx(ctx, qtx, workspaceID,
-		carrierRef{scope: binding.Scope, id: binding.ScopeID}, current, &clauseRenderOverride{
-			ClauseID:          clause.ID,
-			Version:           clause.Version + 1,
-			Content:           content,
-			SupersededContent: currentVersion.Content,
-		})
+	ref := carrierRef{scope: binding.Scope, id: binding.ScopeID}
+	rows, err := h.activeClauseRowsTx(ctx, qtx, workspaceID)
 	if err != nil {
-		return "", fmt.Errorf("条款「%s」资产渲染失败，已阻断：%w", clause.Title, err)
+		return "", err
 	}
+	if err := clausemark.ValidateSnapshot(current, renderedClausesByCarrier(rows, nil)[ref]); err != nil {
+		return "", err
+	}
+	content := strings.TrimRight(p.ClauseText, "\n")
+	synthesized := clausemark.Static(current, renderedClausesByCarrier(rows, &clauseRenderOverride{
+		ClauseID:          clause.ID,
+		Version:           clause.Version + 1,
+		Content:           content,
+		SupersededContent: currentVersion.Content,
+	})[ref])
 	return synthesized, nil
 }
 
@@ -1014,12 +1019,22 @@ func (h *Handler) UpdatePromptProposal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, proposalToResponse(updated))
 }
 
-// jevAdvisory returns the advisory client for this handler: an injected
-// client (tests, staging) wins, otherwise the process default built from the
-// MULTICA_JEV_ADVISORY_* environment.
-func (h *Handler) jevAdvisory() *legislation.AdvisoryClient {
+// jevAdvisory returns the advisory client for one workspace. An injected
+// client (tests, staging) wins; a configured workspace then takes precedence.
+// The resolver falls back to the deployment default for workspaces without an
+// override, preserving the legacy operating mode after encryption is enabled.
+func (h *Handler) jevAdvisory(ctx context.Context, workspaceID pgtype.UUID) *legislation.AdvisoryClient {
 	if h.JevAdvisory != nil {
 		return h.JevAdvisory
+	}
+	if h.JevConfig != nil {
+		client, err := h.JevConfig.Client(ctx, workspaceID)
+		if err == nil && client != nil {
+			return client
+		}
+		// Advisory failure remains a sidecar failure. Never let a bad encrypted
+		// row or a database read alter E1-E4 or the approval state machine.
+		return &legislation.AdvisoryClient{}
 	}
 	return legislation.AdvisoryFromEnv()
 }
@@ -1042,7 +1057,7 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 	advisoryText := p.ClauseText
 	// The advisory service is best-effort but external; call it before opening
 	// the transaction so a slow response cannot hold the proposal row lock.
-	advisory := h.jevAdvisory().Assess(r.Context(), "submit", advisoryText).JSON()
+	advisory := h.jevAdvisory(r.Context(), workspaceID).Assess(r.Context(), "submit", advisoryText).JSON()
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to submit proposal")

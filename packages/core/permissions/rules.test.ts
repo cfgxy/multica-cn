@@ -8,6 +8,7 @@ import {
   canDeleteSkill,
   canDeleteWorkspace,
   canEditAgent,
+  canEditAgentAccess,
   canEditComment,
   canEditSkill,
   canManageMembers,
@@ -142,6 +143,28 @@ describe("canEditAgent", () => {
   });
 });
 
+describe("canEditAgentAccess", () => {
+  const agent = makeAgent({ owner_id: ALICE });
+
+  it("allows the agent owner", () => {
+    expect(
+      canEditAgentAccess(agent, { userId: ALICE, role: "member" }).allowed,
+    ).toBe(true);
+  });
+
+  it("allows the workspace owner to change another member's agent access", () => {
+    expect(
+      canEditAgentAccess(agent, { userId: BOB, role: "owner" }).allowed,
+    ).toBe(true);
+  });
+
+  it("keeps workspace admins from changing another member's agent access", () => {
+    expect(
+      canEditAgentAccess(agent, { userId: BOB, role: "admin" }).allowed,
+    ).toBe(false);
+  });
+});
+
 describe("canAssignAgentToIssue", () => {
   const workspaceTargets = [
     { target_type: "workspace" as const, target_id: null },
@@ -180,6 +203,18 @@ describe("canAssignAgentToIssue", () => {
     });
     expect(
       canAssignAgentToIssue(a, { userId: ALICE, role: "member" }).allowed,
+    ).toBe(true);
+  });
+
+  it("allows the workspace owner to assign someone else's private agent", () => {
+    const a = makeAgent({
+      visibility: "private",
+      permission_mode: "private",
+      invocation_targets: [],
+      owner_id: ALICE,
+    });
+    expect(
+      canAssignAgentToIssue(a, { userId: BOB, role: "owner" }).allowed,
     ).toBe(true);
   });
 

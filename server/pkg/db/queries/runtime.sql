@@ -83,6 +83,8 @@ ORDER BY last_seen_at DESC;
 -- (xmax = 0) AS inserted distinguishes a fresh insert (true) from an upsert
 -- that updated an existing row (false). Analytics reads this to fire
 -- runtime_registered/runtime_ready only on first-time registration.
+-- When required_owner_id is set, the conflict branch can update only a row
+-- already owned by that user. A different or NULL owner returns no row.
 INSERT INTO agent_runtime (
     workspace_id,
     daemon_id,
@@ -109,6 +111,8 @@ DO UPDATE SET
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
     last_seen_at = now(),
     updated_at = now()
+WHERE sqlc.narg('required_owner_id')::uuid IS NULL
+   OR agent_runtime.owner_id = sqlc.narg('required_owner_id')::uuid
 RETURNING *, (xmax = 0) AS inserted;
 
 -- name: UpsertAgentRuntimeWithProfile :one
@@ -118,7 +122,8 @@ RETURNING *, (xmax = 0) AS inserted;
 -- single daemon can host the built-in provider AND any number of custom
 -- profiles of the same protocol family. provider stays the protocol family so
 -- task routing (agent.New(provider)) is unchanged; profile_id is the stable
--- identity. (xmax = 0) AS inserted mirrors UpsertAgentRuntime.
+-- identity. (xmax = 0) AS inserted mirrors UpsertAgentRuntime, including the
+-- required_owner_id conflict fence.
 INSERT INTO agent_runtime (
     workspace_id,
     daemon_id,
@@ -143,7 +148,15 @@ DO UPDATE SET
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
     last_seen_at = now(),
     updated_at = now()
+WHERE sqlc.narg('required_owner_id')::uuid IS NULL
+   OR agent_runtime.owner_id = sqlc.narg('required_owner_id')::uuid
 RETURNING *, (xmax = 0) AS inserted;
+
+-- name: ListRuntimeOwnersByDaemon :many
+-- Registration pre-check: every runtime row already held by this daemon_id,
+-- including ownerless rows, must be compatible with the authenticated owner.
+SELECT id, owner_id FROM agent_runtime
+WHERE workspace_id = @workspace_id AND daemon_id = @daemon_id;
 
 -- name: UpdateAgentRuntimeVisibility :one
 -- Toggles a runtime between 'private' (only owner can bind agents) and

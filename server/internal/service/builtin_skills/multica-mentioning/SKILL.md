@@ -117,17 +117,26 @@ first, then removes those agent IDs as a post-filter. A missing or empty field
 preserves the old behavior. A valid UUID that is not in the computed trigger set
 is a no-op; a malformed UUID is rejected at the request boundary.
 
-Before POST /comments or a body-changing PUT /comments/{id} writes anything,
-the server checks EVERY explicit Markdown `mention://agent/` link in the
-normalized body, including suppressed targets. An unknown, inaccessible,
-archived, or malformed agent target rejects the WHOLE comment with HTTP 422,
-`code: invalid_agent_mentions` and `invalid_mentions` entries containing
-UTF-8 byte offsets `start` and `end` (end exclusive) of the complete link.
-The public error cannot distinguish an unknown agent from an inaccessible
-private one and does not suggest names or disclose the target. Correct the link
-and retry the original draft. `/note` comments, squad mentions, and edits that
-change only attachments keep their previous behavior. Preview applies the
-same invoke/edit gate and shows no runnable agents if a link fails admission.
+POST /comments and body-changing PUT /comments/{id} save the comment before
+dispatch feedback is returned. Every parsed explicit `@agent` / `@squad`
+target receives a `trigger_outcomes` entry. An unknown or cross-workspace agent
+and an existing private agent the caller cannot invoke are intentionally
+indistinguishable (`blocked` + `invocation_not_allowed`); archived or malformed
+parsed targets are `blocked` + `target_unavailable`. A complete agent mention
+link that falls outside the parser grammar is also saved and returned as an
+`invalid_mentions` UTF-8 byte span warning. Preview returns the same blocked
+outcomes and warning spans without hiding other runnable targets. `/note`
+comments still trigger nothing and carry no mention warning.
+
+Mention shape is not a comment admission policy. Agent comments do not need a
+"responsibility mention", may name more than one target, and a worker in the
+assigned squad is not forced by the server to mention that squad's Leader.
+Those collaboration expectations belong in agent instructions and review. The
+dispatch layer still enforces target authority, workspace scope, task-role
+compatibility, execution deduplication, agent-only cascade limits, and
+same-issue self-trigger suppression. A same-issue self mention is saved with
+`blocked` + `self_trigger_suppressed`; a task may still explicitly wake itself
+on another issue.
 
 ## @all is the broadcast type
 
@@ -153,22 +162,27 @@ evaluated BEFORE the `@all` short-circuit.
 ## What does NOT happen (so the result doesn't surprise you)
 
 The cases below do not start a fresh run, but they have different responses.
-A link that never parsed is a silent no-op. An invalid explicit agent link
-returns HTTP 422 before saving. A squad mention that cannot trigger can still
-be saved with a blocked `trigger_outcomes` entry. A busy valid agent target
-returns `coalesced` or `deferred`: no second run, but your comment is folded
-into existing work. Check `trigger_outcomes` after any successful send.
+A complete agent link that never parsed is saved with an `invalid_mentions`
+warning. A parsed target that cannot trigger is saved with a blocked
+`trigger_outcomes` entry. A busy valid agent target returns `coalesced` or
+`deferred`: no second run, but your comment is folded into existing work.
+Check both fields after any successful send.
 
 - **A name where a UUID belongs.** `mention://member/Alice` is dead. The id
   group accepts only hex+dashes or `all`; the non-hex letters in a typical name
   make the whole pattern fail to match, so the parser returns nothing.
-- **A wrong agent UUID.** The server rejects an explicit agent link with
-  `invalid_agent_mentions` whether the UUID is unknown, inaccessible, archived
-  or malformed. The response only names the link's byte offsets, never the
-  target or its state. Check the UUID against `multica agent list --output json`
-  before retrying; a private agent visible to an admin may still be
-  uninvocable. A malformed link that does not follow the Markdown mention
-  shape may not be recognized at all, so use the exact syntax above.
+- **A wrong agent UUID.** The comment is saved, but that target does not run.
+  A well-formed unknown or cross-workspace UUID is
+  `blocked/invocation_not_allowed`, the same result as an existing private
+  target the caller cannot invoke, so the outcome cannot enumerate hidden
+  agents. A parsed malformed UUID is `blocked/target_unavailable`. A complete
+  agent link outside the parser grammar is listed only by byte span in
+  `invalid_mentions`. Check the UUID against
+  `multica agent list --output json`; a private agent visible to an admin may
+  still be uninvocable.
+- **A same-issue self mention.** The comment is saved and reports
+  `blocked/self_trigger_suppressed`; it does not create another run. This guard
+  is issue-scoped, so an active task can still mention itself on another issue.
 - **An already-pending task.** Even a correct `@agent`/`@squad` starts no second
   run when the target already has a pending task on this issue
   (`HasPendingTaskForIssueAndAgent`). This is a fold, not a drop: the comment

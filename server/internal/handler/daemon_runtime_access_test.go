@@ -7,10 +7,109 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
+
+func TestClaimTaskByRuntime_DaemonTokenCannotCrossDaemon(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name       string
+		taskStatus string
+	}{
+		{name: "queued task", taskStatus: "queued"},
+		{name: "stale dispatched task", taskStatus: "dispatched"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtimeID := dbfx.Runtime(t, tc.name+" runtime", testutil.Cols{
+				"daemon_id": "target-daemon",
+				"provider":  "claude",
+			})
+			agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, tc.name+" agent")
+
+			taskCols := testutil.Cols{
+				"runtime_id": runtimeID,
+				"issue_id":   issueID,
+				"status":     tc.taskStatus,
+			}
+			if tc.taskStatus == "dispatched" {
+				taskCols["dispatched_at"] = testutil.Raw("now() - interval '2 minutes'")
+			}
+			taskID := dbfx.Task(t, agentID, taskCols)
+
+			var beforeDispatchedAt pgtype.Timestamptz
+			dbfx.QueryRow(t, `SELECT dispatched_at FROM agent_task_queue WHERE id = $1`, taskID).Scan(&beforeDispatchedAt)
+
+			req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
+				testWorkspaceID, "attacker-daemon")
+			req = withURLParam(req, "runtimeId", runtimeID)
+			testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusNotFound)
+
+			var status string
+			var afterDispatchedAt pgtype.Timestamptz
+			dbfx.QueryRow(t, `SELECT status, dispatched_at FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status, &afterDispatchedAt)
+			if status != tc.taskStatus || afterDispatchedAt != beforeDispatchedAt {
+				t.Fatalf("task changed after refused claim: status=%q dispatched_at=%v, want status=%q dispatched_at=%v",
+					status, afterDispatchedAt, tc.taskStatus, beforeDispatchedAt)
+			}
+			if got := dbfx.Count(t, `SELECT count(*) FROM task_token WHERE task_id = $1`, taskID); got != 0 {
+				t.Fatalf("task token count = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestClaimTaskByRuntime_DaemonBindingCompatibility(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name            string
+		runtimeDaemonID any
+		requestDaemonID string
+		userCredential  bool
+	}{
+		{name: "matching daemon token", runtimeDaemonID: "claim-daemon", requestDaemonID: "claim-daemon"},
+		{name: "unbound runtime daemon", runtimeDaemonID: nil, requestDaemonID: "claim-daemon"},
+		{name: "user credential ignores machine binding", runtimeDaemonID: "other-daemon", userCredential: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtimeID := dbfx.Runtime(t, tc.name+" runtime", testutil.Cols{
+				"daemon_id": tc.runtimeDaemonID,
+				"provider":  "claude",
+			})
+			agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, tc.name+" agent")
+			taskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+
+			var req *http.Request
+			if tc.userCredential {
+				req = newOwnerDaemonRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
+			} else {
+				req = newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
+					testWorkspaceID, tc.requestDaemonID)
+			}
+			req = withURLParam(req, "runtimeId", runtimeID)
+			testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
+
+			var status string
+			dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status)
+			if status != "dispatched" {
+				t.Fatalf("task status = %q, want dispatched", status)
+			}
+			if got := dbfx.Count(t, `SELECT count(*) FROM task_token WHERE task_id = $1`, taskID); got != 1 {
+				t.Fatalf("task token count = %d, want 1", got)
+			}
+		})
+	}
+}
 
 func TestClaimTaskByRuntime_OwnerlessAgentOnPrivateRuntimeFailsExplicitly(t *testing.T) {
 	if testHandler == nil || testPool == nil {
@@ -47,7 +146,7 @@ func TestClaimTaskByRuntime_OwnerlessAgentOnPrivateRuntimeFailsExplicitly(t *tes
 	}
 }
 
-func TestBuildClaimedTaskResponseRejectsAgentOwnerChangedAfterClaim(t *testing.T) {
+func TestBuildClaimedTaskResponseAllowsAgentOwnerChangedAfterClaim(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -76,30 +175,14 @@ func TestBuildClaimedTaskResponseRejectsAgentOwnerChangedAfterClaim(t *testing.T
 	}
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
 		testWorkspaceID, "claim-then-owner-change")
-	_, _, _, _, failure := testHandler.buildClaimedTaskResponse(
+	response, _, _, _, failure := testHandler.buildClaimedTaskResponse(
 		req, task, runtime, runtimeID, testWorkspaceID,
 	)
-	if failure == nil || failure.status != http.StatusForbidden || failure.outcome != "error_runtime_access_denied" {
-		t.Fatalf("failure = %+v, want runtime-access forbidden", failure)
+	if failure != nil {
+		t.Fatalf("failure = %+v, want nil after an owner change", failure)
 	}
-
-	var status, errorMessage, failureReason string
-	dbfx.QueryRow(t, `
-		SELECT status, error, failure_reason
-		FROM agent_task_queue
-		WHERE id = $1
-	`, taskID).Scan(&status, &errorMessage, &failureReason)
-	if status != "failed" {
-		t.Fatalf("task status = %q, want failed", status)
-	}
-	if !strings.Contains(errorMessage, "agent and runtime have different owners") {
-		t.Fatalf("task error = %q, want actionable owner-mismatch error", errorMessage)
-	}
-	if strings.Contains(errorMessage, "agent has no owner") {
-		t.Fatalf("task error = %q, must not describe a non-null owner as missing", errorMessage)
-	}
-	if failureReason != taskfailure.ReasonInvalidTaskIdentity.String() {
-		t.Fatalf("failure_reason = %q, want %q", failureReason, taskfailure.ReasonInvalidTaskIdentity)
+	if response.ID != taskID {
+		t.Fatalf("response task id = %q, want %q", response.ID, taskID)
 	}
 }
 

@@ -23,8 +23,10 @@ const (
 
 // ClientIdentity captures the already-authenticated daemon connection scope.
 type ClientIdentity struct {
-	DaemonID string
-	UserID   string
+	DaemonID           string
+	DaemonTokenHash    string
+	DaemonTokenOwnerID string
+	UserID             string
 	// WorkspaceID is the legacy single-workspace scope used by older callers
 	// and daemon-token auth. New code should populate WorkspaceIDs from the
 	// runtime rows authorized for this connection.

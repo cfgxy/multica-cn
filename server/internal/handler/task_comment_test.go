@@ -33,8 +33,9 @@ func addTaskCommentRequest(t *testing.T, taskID, content string) *http.Request {
 	req := testutil.JSONRequest(http.MethodPost,
 		"/api/daemon/tasks/"+taskID+"/comment", map[string]any{"content": content})
 	req = testutil.WithURLParams(req, "taskId", taskID)
-	return req.WithContext(middleware.WithDaemonContext(
-		req.Context(), testWorkspaceID, "task-comment-daemon"))
+	ctx := middleware.WithDaemonContext(req.Context(), testWorkspaceID, "task-comment-daemon")
+	ctx = middleware.WithDaemonTokenOwnerID(ctx, testUserID)
+	return req.WithContext(ctx)
 }
 
 // TestAddTaskCommentPersistsSystemComment covers the ALERT leg end to end at

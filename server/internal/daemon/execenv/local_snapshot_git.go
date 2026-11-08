@@ -24,9 +24,13 @@ type snapshotGitArtifactManifest struct {
 // overlay view, commits every remaining tracked/untracked/binary change into
 // the overlay's private Git metadata, then writes an importable bundle. It is
 // called only by the snapshot worker while the mount still exists.
-func CaptureSnapshotGitArtifact(cwd string, spec *SnapshotGitArtifactSpec) error {
+func CaptureSnapshotGitArtifact(cwd string, spec *SnapshotGitArtifactSpec, env []string) error {
 	if spec == nil || spec.ArtifactDir == "" || spec.Baseline == "" {
 		return fmt.Errorf("snapshot git artifact is incomplete")
+	}
+	env = snapshotGitEnvironment(env)
+	run := func(args ...string) (string, error) {
+		return runGitEnvWithBase(cwd, env, nil, args...)
 	}
 	if err := CleanupRuntimeConfig(cwd, spec.Provider); err != nil {
 		return fmt.Errorf("clean snapshot runtime config: %w", err)
@@ -34,18 +38,19 @@ func CaptureSnapshotGitArtifact(cwd string, spec *SnapshotGitArtifactSpec) error
 	if err := CleanupSidecars(spec.EnvRoot); err != nil {
 		return fmt.Errorf("clean snapshot sidecars: %w", err)
 	}
-	if _, err := runGit(cwd, "add", "-A"); err != nil {
+	if _, err := run("add", "-A"); err != nil {
 		return fmt.Errorf("stage snapshot changes: %w", err)
 	}
-	if _, err := runGit(cwd, "diff", "--cached", "--quiet"); err != nil {
-		if _, commitErr := runGit(cwd, "-c", "user.name=Multica Snapshot", "-c", "user.email=snapshot@multica.invalid", "commit", "--no-verify", "-m", "multica: snapshot task artifact"); commitErr != nil {
+	if _, err := run("diff", "--cached", "--quiet"); err != nil {
+		if _, commitErr := run("-c", "user.name=Multica Snapshot", "-c", "user.email=snapshot@multica.invalid", "commit", "--no-verify", "-m", "multica: snapshot task artifact"); commitErr != nil {
 			return fmt.Errorf("commit snapshot changes: %w", commitErr)
 		}
 	}
-	head, err := runGitTrimmed(cwd, "rev-parse", "HEAD")
+	head, err := run("rev-parse", "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve snapshot artifact head: %w", err)
 	}
+	head = strings.TrimSpace(head)
 	if err := os.MkdirAll(spec.ArtifactDir, 0o700); err != nil {
 		return fmt.Errorf("create snapshot artifact directory: %w", err)
 	}
@@ -55,7 +60,7 @@ func CaptureSnapshotGitArtifact(cwd string, spec *SnapshotGitArtifactSpec) error
 	if spec.Baseline != head {
 		args = append(args, "^"+spec.Baseline)
 	}
-	if out, err := runGit(cwd, args...); err != nil {
+	if out, err := run(args...); err != nil {
 		return fmt.Errorf("create snapshot artifact bundle from %s to %s: %s: %w", spec.Baseline, head, strings.TrimSpace(out), err)
 	}
 	raw, err := os.ReadFile(bundle)
@@ -77,8 +82,9 @@ func CaptureSnapshotGitArtifact(cwd string, spec *SnapshotGitArtifactSpec) error
 // SnapshotGitBaseline resolves the pristine commit before the worker mounts
 // the overlay. It is exported for the daemon's one-time pre-launch capture.
 func SnapshotGitBaseline(cwd string) (string, error) {
-	base, err := runGitTrimmed(cwd, "rev-parse", "HEAD")
-	if err != nil || strings.TrimSpace(base) == "" {
+	base, err := runGitEnvWithBase(cwd, SnapshotGitEnvironment(), nil, "rev-parse", "HEAD")
+	base = strings.TrimSpace(base)
+	if err != nil || base == "" {
 		return "", fmt.Errorf("resolve snapshot Git baseline: %w", err)
 	}
 	return base, nil
