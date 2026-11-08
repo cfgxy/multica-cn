@@ -298,7 +298,8 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 	mounted := make([]snapshotMountedUnit, 0, len(spec.Units))
 	for _, i := range mountOrder(spec.Units) {
 		path := snapshotRootPath(rootAnchor, spec.Units[i].Target)
-		if parent, relative, nested := snapshotMountedAncestor(mounted, spec.Units[i].Target); nested {
+		parent, relative, nested := snapshotMountedAncestor(mounted, spec.Units[i].Target)
+		if nested {
 			verificationPath := filepath.Join(parent.Alias, relative)
 			verificationTarget, openErr := openSnapshotTargetAt(&spec.Units[i], verificationPath, true)
 			if openErr != nil {
@@ -308,7 +309,7 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 			}
 			_ = verificationTarget.Close()
 		}
-		target, openErr := openSnapshotTargetAt(&spec.Units[i], path, false)
+		target, openErr := openSnapshotTargetAt(&spec.Units[i], path, !nested)
 		if openErr != nil {
 			mounts.Close()
 			_ = rootAnchor.Close()
