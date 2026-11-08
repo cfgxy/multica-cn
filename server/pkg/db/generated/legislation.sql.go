@@ -237,9 +237,8 @@ linked_run AS (
       AND EXISTS (SELECT 1 FROM inserted_task)
     RETURNING knowledge_governance_run.id
 )
-SELECT agent_task_queue.id, agent_task_queue.agent_id, agent_task_queue.issue_id, agent_task_queue.status, agent_task_queue.priority, agent_task_queue.dispatched_at, agent_task_queue.started_at, agent_task_queue.completed_at, agent_task_queue.result, agent_task_queue.error, agent_task_queue.created_at, agent_task_queue.context, agent_task_queue.runtime_id, agent_task_queue.session_id, agent_task_queue.work_dir, agent_task_queue.trigger_comment_id, agent_task_queue.chat_session_id, agent_task_queue.autopilot_run_id, agent_task_queue.attempt, agent_task_queue.max_attempts, agent_task_queue.parent_task_id, agent_task_queue.failure_reason, agent_task_queue.trigger_summary, agent_task_queue.force_fresh_session, agent_task_queue.is_leader_task, agent_task_queue.wait_reason, agent_task_queue.initiator_user_id, agent_task_queue.handoff_note, agent_task_queue.prepare_lease_expires_at, agent_task_queue.squad_id, agent_task_queue.runtime_mcp_overlay, agent_task_queue.escalation_for_task_id, agent_task_queue.fire_at, agent_task_queue.originator_user_id, agent_task_queue.runtime_connected_apps, agent_task_queue.coalesced_comment_ids, agent_task_queue.delivered_comment_ids, agent_task_queue.chat_input_task_id, agent_task_queue.chat_finalize_deferred_at, agent_task_queue.originator_source, agent_task_queue.delegated_from_task_id, agent_task_queue.retry_of_task_id, agent_task_queue.rerun_of_task_id, agent_task_queue.rule_version_id, agent_task_queue.trigger_evidence_kind, agent_task_queue.trigger_evidence_ref_id, agent_task_queue.accountable_user_id, agent_task_queue.session_rollout_missing, agent_task_queue.retired_session_id, agent_task_queue.quick_actions_disabled, agent_task_queue.regenerate_quick_actions_for, agent_task_queue.branch_name, agent_task_queue.durable_work_dir, agent_task_queue.channel_context_revision, agent_task_queue.prompt_versions, agent_task_queue.cancel_requested_by_user_id, agent_task_queue.cancel_requested_at, agent_task_queue.cancel_reason, agent_task_queue.cancel_actor_type, agent_task_queue.cancel_actor_id, agent_task_queue.local_directory_scope, agent_task_queue.chat_model_snapshot, agent_task_queue.no_action_at, agent_task_queue.no_action_reason, agent_task_queue.comment_output_at
-FROM agent_task_queue
-JOIN inserted_task ON agent_task_queue.id = inserted_task.id
+SELECT inserted_task.id, inserted_task.agent_id, inserted_task.issue_id, inserted_task.status, inserted_task.priority, inserted_task.dispatched_at, inserted_task.started_at, inserted_task.completed_at, inserted_task.result, inserted_task.error, inserted_task.created_at, inserted_task.context, inserted_task.runtime_id, inserted_task.session_id, inserted_task.work_dir, inserted_task.trigger_comment_id, inserted_task.chat_session_id, inserted_task.autopilot_run_id, inserted_task.attempt, inserted_task.max_attempts, inserted_task.parent_task_id, inserted_task.failure_reason, inserted_task.trigger_summary, inserted_task.force_fresh_session, inserted_task.is_leader_task, inserted_task.wait_reason, inserted_task.initiator_user_id, inserted_task.handoff_note, inserted_task.prepare_lease_expires_at, inserted_task.squad_id, inserted_task.runtime_mcp_overlay, inserted_task.escalation_for_task_id, inserted_task.fire_at, inserted_task.originator_user_id, inserted_task.runtime_connected_apps, inserted_task.coalesced_comment_ids, inserted_task.delivered_comment_ids, inserted_task.chat_input_task_id, inserted_task.chat_finalize_deferred_at, inserted_task.originator_source, inserted_task.delegated_from_task_id, inserted_task.retry_of_task_id, inserted_task.rerun_of_task_id, inserted_task.rule_version_id, inserted_task.trigger_evidence_kind, inserted_task.trigger_evidence_ref_id, inserted_task.accountable_user_id, inserted_task.session_rollout_missing, inserted_task.retired_session_id, inserted_task.quick_actions_disabled, inserted_task.regenerate_quick_actions_for, inserted_task.branch_name, inserted_task.durable_work_dir, inserted_task.channel_context_revision, inserted_task.prompt_versions, inserted_task.cancel_requested_by_user_id, inserted_task.cancel_requested_at, inserted_task.cancel_reason, inserted_task.cancel_actor_type, inserted_task.cancel_actor_id, inserted_task.local_directory_scope, inserted_task.chat_model_snapshot, inserted_task.no_action_at, inserted_task.no_action_reason, inserted_task.comment_output_at
+FROM inserted_task
 CROSS JOIN linked_run
 `
 
@@ -253,10 +252,78 @@ type CreateKnowledgeGovernanceTaskParams struct {
 	AccountableUserID pgtype.UUID `json:"accountable_user_id"`
 }
 
+type CreateKnowledgeGovernanceTaskRow struct {
+	ID                        pgtype.UUID        `json:"id"`
+	AgentID                   pgtype.UUID        `json:"agent_id"`
+	IssueID                   pgtype.UUID        `json:"issue_id"`
+	Status                    string             `json:"status"`
+	Priority                  int32              `json:"priority"`
+	DispatchedAt              pgtype.Timestamptz `json:"dispatched_at"`
+	StartedAt                 pgtype.Timestamptz `json:"started_at"`
+	CompletedAt               pgtype.Timestamptz `json:"completed_at"`
+	Result                    []byte             `json:"result"`
+	Error                     pgtype.Text        `json:"error"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	Context                   []byte             `json:"context"`
+	RuntimeID                 pgtype.UUID        `json:"runtime_id"`
+	SessionID                 pgtype.Text        `json:"session_id"`
+	WorkDir                   pgtype.Text        `json:"work_dir"`
+	TriggerCommentID          pgtype.UUID        `json:"trigger_comment_id"`
+	ChatSessionID             pgtype.UUID        `json:"chat_session_id"`
+	AutopilotRunID            pgtype.UUID        `json:"autopilot_run_id"`
+	Attempt                   int32              `json:"attempt"`
+	MaxAttempts               int32              `json:"max_attempts"`
+	ParentTaskID              pgtype.UUID        `json:"parent_task_id"`
+	FailureReason             pgtype.Text        `json:"failure_reason"`
+	TriggerSummary            pgtype.Text        `json:"trigger_summary"`
+	ForceFreshSession         bool               `json:"force_fresh_session"`
+	IsLeaderTask              bool               `json:"is_leader_task"`
+	WaitReason                pgtype.Text        `json:"wait_reason"`
+	InitiatorUserID           pgtype.UUID        `json:"initiator_user_id"`
+	HandoffNote               pgtype.Text        `json:"handoff_note"`
+	PrepareLeaseExpiresAt     pgtype.Timestamptz `json:"prepare_lease_expires_at"`
+	SquadID                   pgtype.UUID        `json:"squad_id"`
+	RuntimeMcpOverlay         []byte             `json:"runtime_mcp_overlay"`
+	EscalationForTaskID       pgtype.UUID        `json:"escalation_for_task_id"`
+	FireAt                    pgtype.Timestamptz `json:"fire_at"`
+	OriginatorUserID          pgtype.UUID        `json:"originator_user_id"`
+	RuntimeConnectedApps      []byte             `json:"runtime_connected_apps"`
+	CoalescedCommentIds       []pgtype.UUID      `json:"coalesced_comment_ids"`
+	DeliveredCommentIds       []pgtype.UUID      `json:"delivered_comment_ids"`
+	ChatInputTaskID           pgtype.UUID        `json:"chat_input_task_id"`
+	ChatFinalizeDeferredAt    pgtype.Timestamptz `json:"chat_finalize_deferred_at"`
+	OriginatorSource          pgtype.Text        `json:"originator_source"`
+	DelegatedFromTaskID       pgtype.UUID        `json:"delegated_from_task_id"`
+	RetryOfTaskID             pgtype.UUID        `json:"retry_of_task_id"`
+	RerunOfTaskID             pgtype.UUID        `json:"rerun_of_task_id"`
+	RuleVersionID             pgtype.UUID        `json:"rule_version_id"`
+	TriggerEvidenceKind       pgtype.Text        `json:"trigger_evidence_kind"`
+	TriggerEvidenceRefID      pgtype.UUID        `json:"trigger_evidence_ref_id"`
+	AccountableUserID         pgtype.UUID        `json:"accountable_user_id"`
+	SessionRolloutMissing     bool               `json:"session_rollout_missing"`
+	RetiredSessionID          pgtype.Text        `json:"retired_session_id"`
+	QuickActionsDisabled      bool               `json:"quick_actions_disabled"`
+	RegenerateQuickActionsFor pgtype.UUID        `json:"regenerate_quick_actions_for"`
+	BranchName                pgtype.Text        `json:"branch_name"`
+	DurableWorkDir            pgtype.Text        `json:"durable_work_dir"`
+	ChannelContextRevision    pgtype.Int8        `json:"channel_context_revision"`
+	PromptVersions            []byte             `json:"prompt_versions"`
+	CancelRequestedByUserID   pgtype.UUID        `json:"cancel_requested_by_user_id"`
+	CancelRequestedAt         pgtype.Timestamptz `json:"cancel_requested_at"`
+	CancelReason              pgtype.Text        `json:"cancel_reason"`
+	CancelActorType           pgtype.Text        `json:"cancel_actor_type"`
+	CancelActorID             pgtype.UUID        `json:"cancel_actor_id"`
+	LocalDirectoryScope       []byte             `json:"local_directory_scope"`
+	ChatModelSnapshot         pgtype.Text        `json:"chat_model_snapshot"`
+	NoActionAt                pgtype.Timestamptz `json:"no_action_at"`
+	NoActionReason            pgtype.Text        `json:"no_action_reason"`
+	CommentOutputAt           pgtype.Timestamptz `json:"comment_output_at"`
+}
+
 // Governance uses the same issue-less task ownership fence as retrospective
 // runs. The context is a durable evidence-review snapshot and the terminal
 // processor is the only path that records its findings.
-func (q *Queries) CreateKnowledgeGovernanceTask(ctx context.Context, arg CreateKnowledgeGovernanceTaskParams) (AgentTaskQueue, error) {
+func (q *Queries) CreateKnowledgeGovernanceTask(ctx context.Context, arg CreateKnowledgeGovernanceTaskParams) (CreateKnowledgeGovernanceTaskRow, error) {
 	row := q.db.QueryRow(ctx, createKnowledgeGovernanceTask,
 		arg.RunID,
 		arg.AgentID,
@@ -266,7 +333,7 @@ func (q *Queries) CreateKnowledgeGovernanceTask(ctx context.Context, arg CreateK
 		arg.OriginatorUserID,
 		arg.AccountableUserID,
 	)
-	var i AgentTaskQueue
+	var i CreateKnowledgeGovernanceTaskRow
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,

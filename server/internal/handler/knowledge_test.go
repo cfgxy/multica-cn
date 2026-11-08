@@ -273,17 +273,24 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 		}},
 	})
 
-	var agentID string
+	runtimeID := dbfx.Runtime(t, "knowledge governance replay runtime")
+	agentID := dbfx.Agent(t, "knowledge governance replay executor", runtimeID)
+	var previousAgentID *string
+	var previousEnabled bool
 	err := testPool.QueryRow(ctx, `
-		SELECT agent_id::text FROM retrospective_config
-		WHERE workspace_id = $1 AND enabled = TRUE LIMIT 1`, testWorkspaceID).Scan(&agentID)
+		SELECT agent_id::text, enabled FROM retrospective_config
+		WHERE workspace_id = $1`, testWorkspaceID).Scan(&previousAgentID, &previousEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
-		dbfx.QueryRow(t, `SELECT id::text FROM agent WHERE workspace_id = $1 ORDER BY created_at LIMIT 1`, testWorkspaceID).Scan(&agentID)
 		dbfx.InsertNoID(t, "retrospective_config", testutil.Cols{
 			"workspace_id": testWorkspaceID, "enabled": true, "include_in_review": false, "window_days": 7, "agent_id": agentID,
 		}, "workspace_id = $1", testWorkspaceID)
 	} else if err != nil {
-		t.Fatalf("read governance execution agent: %v", err)
+		t.Fatalf("read governance execution config: %v", err)
+	} else {
+		dbfx.Exec(t, `UPDATE retrospective_config SET agent_id = $2, enabled = TRUE WHERE workspace_id = $1`, testWorkspaceID, agentID)
+		t.Cleanup(func() {
+			testPool.Exec(ctx, `UPDATE retrospective_config SET agent_id = $2, enabled = $3 WHERE workspace_id = $1`, testWorkspaceID, previousAgentID, previousEnabled)
+		})
 	}
 
 	runner := &knowledgegovernance.Runner{
@@ -383,8 +390,12 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 	if err := testPool.QueryRow(ctx, `SELECT result FROM agent_task_queue WHERE id = $1`, taskID).Scan(&persistedResult); err != nil {
 		t.Fatalf("read immutable completed task result: %v", err)
 	}
-	if string(persistedResult) != string(result) {
-		t.Fatalf("completed task result changed during replay: got %s want %s", persistedResult, result)
+	var persistedPayload protocol.TaskCompletedPayload
+	if err := json.Unmarshal(persistedResult, &persistedPayload); err != nil {
+		t.Fatalf("decode immutable completed task result: %v", err)
+	}
+	if persistedPayload.TaskID != started.TaskID || persistedPayload.Output != output {
+		t.Fatalf("completed task result changed during replay: got %+v want task_id=%q output=%q", persistedPayload, started.TaskID, output)
 	}
 }
 

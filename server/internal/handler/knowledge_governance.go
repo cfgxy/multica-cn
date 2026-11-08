@@ -370,6 +370,6 @@ func (h *Handler) KnowledgeGovernanceTaskEnqueuer() knowledgegovernance.TaskEnqu
 		if err != nil {
 			return db.AgentTaskQueue{}, err
 		}
-		return task, nil
+		return db.AgentTaskQueue(task), nil
 	}
 }

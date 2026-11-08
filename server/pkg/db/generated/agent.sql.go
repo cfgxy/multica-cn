@@ -10744,12 +10744,12 @@ WHERE id = (
       AND atq.dispatched_at < now() - make_interval(secs => $3::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
-          -- Authorization fence, kept in sync with ClaimAgentTask's RUYI-224
-          -- authority model: a dispatched row is owned by the runtime it was
-          -- claimed on (the claim rewrote runtime_id), so re-delivery stays
-          -- authorized only while that runtime is still the agent's CURRENT
-          -- binding — the outer runtime_id filter pins atq.runtime_id to the
-          -- polling runtime, making this fence "agent still bound here".
+          -- Authorization fence: a dispatched row is owned by the runtime it
+          -- was claimed on (the claim rewrote runtime_id), so re-delivery
+          -- stays authorized only while that runtime is still the agent's
+          -- CURRENT binding — the outer runtime_id filter pins atq.runtime_id
+          -- to the polling runtime, making this fence "agent still bound
+          -- here".
           -- A row whose agent moved away is never re-delivered by the old
           -- runtime; recovering that wedged dispatch is the stale-dispatch
           -- machinery's job, not this fence's.
@@ -10871,12 +10871,12 @@ WHERE id IN (
       AND atq.dispatched_at < now() - make_interval(secs => $3::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
-          -- Authorization fence, kept in sync with ClaimAgentTask's RUYI-224
-          -- authority model: a dispatched row is owned by the runtime it was
-          -- claimed on (the claim rewrote runtime_id), so re-delivery stays
-          -- authorized only while that runtime is still the agent's CURRENT
-          -- binding — the outer runtime_id filter pins atq.runtime_id to the
-          -- polling runtime, making this fence "agent still bound here".
+          -- Authorization fence: a dispatched row is owned by the runtime it
+          -- was claimed on (the claim rewrote runtime_id), so re-delivery
+          -- stays authorized only while that runtime is still the agent's
+          -- CURRENT binding — the outer runtime_id filter pins atq.runtime_id
+          -- to the polling runtime, making this fence "agent still bound
+          -- here".
           -- A row whose agent moved away is never re-delivered by the old
           -- runtime; recovering that wedged dispatch is the stale-dispatch
           -- machinery's job, not this fence's.

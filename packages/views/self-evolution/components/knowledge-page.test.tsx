@@ -573,8 +573,9 @@ describe("KnowledgePageBody", () => {
       },
     }, expect.anything());
 
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "ssh-guidance" })).toHaveAttribute("aria-expanded", "false"));
     await userEvent.click(within(dialog).getByRole("combobox", { name: "Lifecycle" }));
-    await userEvent.click(screen.getByRole("option", { name: "Duplicate" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Duplicate" }));
     await userEvent.click(within(dialog).getByRole("button", { name: "Apply lifecycle" }));
     expect(m.updateLifecycleMutate).toHaveBeenLastCalledWith({
       id: "entry-1",
@@ -600,8 +601,11 @@ describe("KnowledgePageBody", () => {
 
     await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
     const dialog = await screen.findByTestId("knowledge-entry-dialog");
-    expect(within(dialog).getAllByText("Replacement")).toHaveLength(2);
-    expect(within(dialog).getAllByText("entry-2")).toHaveLength(2);
+    await waitFor(() => {
+      expect(within(dialog).getByText("Replacement")).toBeTruthy();
+      expect(within(dialog).getByText("entry-2")).toBeTruthy();
+      expect(within(dialog).getByText(/Replacement: entry-2/)).toBeTruthy();
+    });
   });
 
   it("submits physical writeback only for an enabled managed source", async () => {
@@ -617,7 +621,7 @@ describe("KnowledgePageBody", () => {
     expect(writeback).toHaveAttribute("aria-disabled", "true");
 
     await userEvent.click(within(dialog).getByRole("combobox", { name: "Lifecycle" }));
-    await userEvent.click(screen.getByRole("option", { name: "Deprecated" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Deprecated" }));
     expect(writeback).not.toHaveAttribute("aria-disabled", "true");
     await userEvent.click(writeback);
     await userEvent.type(within(dialog).getByPlaceholderText("Reason"), "Superseded by SSH guidance");

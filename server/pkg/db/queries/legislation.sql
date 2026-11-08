@@ -466,9 +466,8 @@ linked_run AS (
       AND EXISTS (SELECT 1 FROM inserted_task)
     RETURNING knowledge_governance_run.id
 )
-SELECT agent_task_queue.*
-FROM agent_task_queue
-JOIN inserted_task ON agent_task_queue.id = inserted_task.id
+SELECT inserted_task.*
+FROM inserted_task
 CROSS JOIN linked_run;
 
 -- name: ListIssuesCompletedInWindow :many
