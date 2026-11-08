@@ -1084,6 +1084,11 @@ func snapshotWorktreeFallbackWithGitGateAndCapability(plan *snapshotPlan, gitSna
 	if audit.Safe && !audit.HasGit {
 		return nil, nil
 	}
+	if gitSnapshotEnabled && audit.HasGit {
+		if err := auditSnapshotGitConfiguration(audit); err != nil {
+			return nil, fmt.Errorf("local_directory: unsafe Git configuration prevents snapshot delivery and worktree fallback: %w", err)
+		}
+	}
 	if audit.Safe && (!worktreeCandidate || snapshotCapable) && gitSnapshotDeliveryEligibleFromAudit(plan, gitSnapshotEnabled, audit) {
 		if containment, ok := gitSnapshotContainmentUnits(plan, audit); ok {
 			if units, ok := gitSnapshotMetadataUnits(plan, audit); ok {
@@ -1164,6 +1169,11 @@ func revalidateSnapshotGitPlan(plan *snapshotPlan, enabled bool) (gitSnapshotAud
 	audit := auditSnapshotGitScope(plan)
 	if !audit.Safe {
 		return audit, fmt.Errorf("local_directory: unsafe Git metadata prevents snapshot startup: %s", audit.Reason)
+	}
+	if enabled && audit.HasGit {
+		if err := auditSnapshotGitConfiguration(audit); err != nil {
+			return audit, fmt.Errorf("local_directory: unsafe Git configuration prevents snapshot startup: %w", err)
+		}
 	}
 	if !audit.HasGit {
 		if len(plan.GitContainmentUnits) != 0 || len(plan.GitMetadataUnits) != 0 {

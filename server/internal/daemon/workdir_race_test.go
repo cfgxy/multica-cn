@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -243,6 +244,90 @@ func TestRunTaskRejectsEscapingWorktreeMetadataBeforePreparation(t *testing.T) {
 				t.Fatalf("unsafe metadata task created a worktree before failing, stat error = %v", statErr)
 			}
 		})
+	}
+}
+
+func TestRunTaskRejectsExternalHooksConfigurationBeforePreparation(t *testing.T) {
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "1")
+	repo := newTestGitRoot(t)
+	outside := t.TempDir()
+	hooks := filepath.Join(outside, "hooks")
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
+		t.Fatalf("create external hooks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+		t.Fatalf("write external sentinel: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte("#!/bin/sh\nprintf hook-ran > "+filepath.Join(outside, "hook-ran")+"\n"), 0o700); err != nil {
+		t.Fatalf("write external pre-commit hook: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "config", "core.hooksPath", hooks).CombinedOutput(); err != nil {
+		t.Fatalf("configure external hooks path: %v (%s)", err, out)
+	}
+	before := treeDigest(t, outside, false)
+	payloadMarker := filepath.Join(t.TempDir(), "agent-ran")
+	payload := filepath.Join(t.TempDir(), "agent")
+	if err := os.WriteFile(payload, []byte("#!/bin/sh\nprintf agent-ran > "+payloadMarker+"\n"), 0o700); err != nil {
+		t.Fatalf("write agent payload: %v", err)
+	}
+
+	var startCalls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/start") {
+			startCalls.Add(1)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	workspacesRoot := t.TempDir()
+	d := &Daemon{
+		client:         NewClient(srv.URL),
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:     make(map[string]*workspaceState),
+		activeEnvRoots: make(map[string]int),
+		cfg: Config{
+			DaemonID:       "d-mine",
+			WorkspacesRoot: workspacesRoot,
+			Agents: map[string]AgentEntry{
+				"claude": {Path: payload},
+			},
+		},
+	}
+	d.client.snapshotSupport.Store(true)
+	task := Task{
+		ID:               "task-external-hooks-configuration",
+		WorkspaceID:      "ws-external-hooks-configuration",
+		RuntimeID:        "rt-external-hooks-configuration",
+		IssueID:          "issue-external-hooks-configuration",
+		AgentID:          "agent-external-hooks-configuration",
+		Agent:            &AgentData{ID: "agent-external-hooks-configuration", Name: "test-agent"},
+		ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "r1", repo, "d-mine")},
+	}
+
+	_, err := d.runTask(context.Background(), task, "claude", 0, d.logger)
+	if err == nil || !strings.Contains(err.Error(), "unsafe Git configuration") {
+		t.Fatalf("runTask error = %v, want unsafe Git configuration", err)
+	}
+	if got := startCalls.Load(); got != 0 {
+		t.Fatalf("StartTask calls = %d, want 0 because external hooks must fail before preparation", got)
+	}
+	if _, err := os.Stat(payloadMarker); !os.IsNotExist(err) {
+		t.Fatalf("agent payload ran despite unsafe Git configuration, stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "hook-ran")); !os.IsNotExist(err) {
+		t.Fatalf("external hook ran despite unsafe Git configuration, stat error = %v", err)
+	}
+	if after := treeDigest(t, outside, false); after != before {
+		t.Fatalf("unsafe Git configuration changed external hook state\nbefore: %s\nafter:  %s", before, after)
+	}
+	envRoot := execenv.PredictRootDir(execenv.RootDirParams{
+		WorkspacesRoot: workspacesRoot,
+		WorkspaceID:    task.WorkspaceID,
+		TaskID:         task.ID,
+	})
+	if _, err := os.Stat(filepath.Join(envRoot, "worktree")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe Git configuration created a worktree before failing, stat error = %v", err)
 	}
 }
 
