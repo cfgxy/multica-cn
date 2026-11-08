@@ -971,6 +971,19 @@ export class MulticaClient {
     } as DecisionBatchResult;
   }
 
+  async cancelIssueDecision(
+    workspace: string,
+    issueId: string,
+    decisionId: string,
+  ): Promise<DecisionCardInfo> {
+    const raw = await this.request<Record<string, unknown>>(
+      "POST",
+      `/api/issues/${encodeURIComponent(issueId)}/decisions/${encodeURIComponent(decisionId)}/cancel`,
+      { workspace, body: {} },
+    );
+    return normalizeDecisionCard(raw);
+  }
+
   // ---- workspace management surface ----------------------------
   // Same read/write contract as the run lifecycle: every operation is a REST
   // call scoped by the workspace headers; run side effects are declared in
