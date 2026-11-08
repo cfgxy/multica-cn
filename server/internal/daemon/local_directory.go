@@ -146,6 +146,30 @@ func localDirectoryAssignmentForTask(task Task, daemonID string) (*localDirector
 	return findLocalDirectoryAssignment(task.ProjectResources, daemonID)
 }
 
+// validateWorktreeGitMetadata applies the same read-only containment audit to
+// the established worktree backend that snapshot delivery uses. The gate can
+// leave an ordinary worktree resource out of snapshot planning, but it must
+// never let git worktree operations follow a metadata redirect into an
+// unmaterialized host path.
+func validateWorktreeGitMetadata(assignment *localDirectoryAssignment) error {
+	if !assignment.UsesWorktree() {
+		return nil
+	}
+	unit := snapshotUnit{Ref: assignment.Ref, AbsPath: assignment.AbsPath}
+	audit := auditSnapshotGitScope(&snapshotPlan{Units: []snapshotUnit{unit}, Primary: &unit})
+	if !audit.Safe {
+		return fmt.Errorf("local_directory: unsafe Git metadata prevents worktree preparation: %s", audit.Reason)
+	}
+	commonDirs := gitSnapshotCommonDirs(audit.Repositories)
+	for _, repository := range audit.Repositories {
+		writableMetadata := compactContainedPaths([]string{repository.GitDir, repository.CommonDir})
+		if err := auditGitMetadataRedirectsWithin(repository.Worktree, repository.GitDir, repository.CommonDir, repository.Dependencies, writableMetadata, repository.Dependencies, commonDirs, true); err != nil {
+			return fmt.Errorf("local_directory: unsafe Git metadata prevents worktree preparation: %s", err)
+		}
+	}
+	return nil
+}
+
 // localDirectoryLockExempt reports whether a task may run inside an in_place
 // local_directory WITHOUT serialising on the per-path mutex. It is asked only
 // after an assignment has been resolved and validated, so an exempt task still
@@ -1042,16 +1066,20 @@ func snapshotWorktreeFallbackWithGitGateAndCapability(plan *snapshotPlan, gitSna
 	if plan == nil || plan.Primary == nil {
 		return nil, nil
 	}
-	// 递归审计 Git metadata，再决定是否可使用 snapshot。审计失败或 metadata
-	// 无法完整物化时始终复用既有 worktree；不会通过写 pristine 修复状态。
-	// delivery path. The audit is intentionally non-mutating; an unsafe or
-	// incomplete shape still falls back without attempting to repair .git.
+	// Audit Git metadata before selecting snapshot delivery. An unsafe graph
+	// also cannot use the legacy worktree backend: it writes refs, worktree
+	// admin state, and objects that could follow an escaped metadata redirect
+	// into the host. Fail closed before startup; safe topologies outside the
+	// snapshot artifact contract retain the established worktree backend.
 	// Git snapshot delivery is deliberately narrower than the audit and is
 	// off by default. Operators opt in per daemon process only after the
 	// snapshot artifact/recovery path has been deployed.
 	audit := auditSnapshotGitScope(plan)
 	plan.GitContainmentUnits = nil
 	plan.GitMetadataUnits = nil
+	if !audit.Safe {
+		return nil, fmt.Errorf("local_directory: unsafe Git metadata prevents snapshot delivery and worktree fallback: %s", audit.Reason)
+	}
 	worktreeCandidate := strings.TrimSpace(plan.Primary.Ref.ExecutionMode) == localDirectoryModeWorktree
 	if audit.Safe && !audit.HasGit {
 		return nil, nil
@@ -1076,7 +1104,11 @@ func snapshotWorktreeFallbackWithGitGateAndCapability(plan *snapshotPlan, gitSna
 	}
 	ref := plan.Primary.Ref
 	ref.ExecutionMode = localDirectoryModeWorktree
-	return &localDirectoryAssignment{Ref: ref, AbsPath: abs, RealPath: real}, nil
+	fallback := &localDirectoryAssignment{Ref: ref, AbsPath: abs, RealPath: real}
+	if err := validateWorktreeGitMetadata(fallback); err != nil {
+		return nil, err
+	}
+	return fallback, nil
 }
 
 // gitSnapshotContainmentUnits adds a root CoW view only for the already
@@ -1123,6 +1155,43 @@ func gitSnapshotMetadataUnits(plan *snapshotPlan, audit gitSnapshotAudit) ([]sna
 		covered = append(covered, dependency)
 	}
 	return units, true
+}
+
+// revalidateSnapshotGitPlan closes the interval between claim-time planning
+// and worker startup. Metadata units are mount inputs, so a topology change
+// cannot be applied in place after their overlay paths have been planned.
+func revalidateSnapshotGitPlan(plan *snapshotPlan, enabled bool) (gitSnapshotAudit, error) {
+	audit := auditSnapshotGitScope(plan)
+	if !audit.Safe {
+		return audit, fmt.Errorf("local_directory: unsafe Git metadata prevents snapshot startup: %s", audit.Reason)
+	}
+	if !audit.HasGit {
+		if len(plan.GitContainmentUnits) != 0 || len(plan.GitMetadataUnits) != 0 {
+			return audit, errors.New("local_directory: Git metadata topology changed after snapshot planning")
+		}
+		return audit, nil
+	}
+	if _, eligible := gitSnapshotDeliveryRepository(plan, enabled, audit); !eligible {
+		return audit, errors.New("local_directory: Git metadata topology no longer supports snapshot delivery")
+	}
+	containment, containmentOK := gitSnapshotContainmentUnits(plan, audit)
+	metadata, metadataOK := gitSnapshotMetadataUnits(plan, audit)
+	if !containmentOK || !metadataOK || !sameSnapshotUnits(plan.GitContainmentUnits, containment) || !sameSnapshotUnits(plan.GitMetadataUnits, metadata) {
+		return audit, errors.New("local_directory: Git metadata topology changed after snapshot planning")
+	}
+	return audit, nil
+}
+
+func sameSnapshotUnits(left, right []snapshotUnit) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if filepath.Clean(left[i].AbsPath) != filepath.Clean(right[i].AbsPath) || left[i].InternalKey != right[i].InternalKey {
+			return false
+		}
+	}
+	return true
 }
 
 // snapshotExecutionObservation is the non-sensitive decision record emitted

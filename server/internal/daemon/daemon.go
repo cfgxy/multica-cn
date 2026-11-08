@@ -8138,6 +8138,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			Task:                  taskCtx,
 		}
 		if localAssignment.UsesWorktree() {
+			// A gate-disabled worktree resource never enters snapshot planning, so
+			// enforce the same recursive metadata containment audit immediately
+			// before the only daemon path that can call PrepareLocalWorktree.
+			if err := validateWorktreeGitMetadata(localAssignment); err != nil {
+				return TaskResult{}, asEnvironmentSetupFailure(err)
+			}
 			prepParams.LocalWorktree = &execenv.LocalWorktreeParams{LocalPath: localAssignment.AbsPath}
 			// Take the per-path mutex for the snapshot alone, then hand it
 			// straight back — long enough to read a consistent tree, short
@@ -8199,6 +8205,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				return TaskResult{}, fmt.Errorf("local_directory worktree: wait for a consistent snapshot of %s: %w",
 					localAssignment.AbsPath, lockErr)
 			}
+			currentRealPath, realPathErr := resolveRealPath(localAssignment.AbsPath)
+			if realPathErr != nil || filepath.Clean(currentRealPath) != filepath.Clean(localAssignment.RealPath) {
+				release()
+				if realPathErr != nil {
+					return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("local_directory worktree: resolve locked path %s: %w", localAssignment.AbsPath, realPathErr))
+				}
+				return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("local_directory worktree: resource path %s changed while waiting for lock", localAssignment.AbsPath))
+			}
+			if err := validateWorktreeGitMetadata(localAssignment); err != nil {
+				release()
+				return TaskResult{}, asEnvironmentSetupFailure(err)
+			}
 			env, err = d.prepareExecutionEnvironment(prepareCtx, prepParams)
 			release()
 			if err != nil {
@@ -8206,6 +8224,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		} else {
 			if snapPlan != nil {
+				if _, auditErr := revalidateSnapshotGitPlan(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1"); auditErr != nil {
+					return TaskResult{}, asEnvironmentSetupFailure(auditErr)
+				}
 				// Snapshot mode (RUYI-669): Prepare writes context files and
 				// sidecars into LocalWorkDir, so the primary unit's upperdir
 				// takes that slot — everything lands in the overlay's upper
@@ -8248,6 +8269,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// the upper layer, never into the pristine path env.WorkDir points at.
 	snapshotPrimaryUpper := ""
 	if snapPlan != nil {
+		gitAudit, auditErr := revalidateSnapshotGitPlan(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1")
+		if auditErr != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(auditErr)
+		}
 		primaryUpper, merr := snapPlan.materializeTrees(resolvedRoot, task.IssueID, task.ID)
 		if merr != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(merr)
@@ -8261,7 +8286,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			units = append(units, execenv.SnapshotUnitSpec{Target: u.AbsPath, Subdir: u.Subdir, Alias: alias, Upper: upper, Work: work})
 		}
 		var gitArtifact *execenv.SnapshotGitArtifactSpec
-		gitAudit := auditSnapshotGitScope(snapPlan)
 		if repository, eligible := gitSnapshotDeliveryRepository(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1", gitAudit); eligible {
 			baseline, baselineErr := execenv.SnapshotGitBaseline(snapPlan.Primary.AbsPath)
 			if baselineErr != nil {

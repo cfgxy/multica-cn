@@ -406,6 +406,413 @@ func TestAuditSnapshotGitScopeIgnoresGitLocationEnvironment(t *testing.T) {
 	}
 }
 
+func TestAuditSnapshotGitScopeRejectsEscapingMetadataRedirects(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, repo, outside string)
+	}{
+		{
+			name: "refs directory symlink",
+			mutate: func(t *testing.T, repo, outside string) {
+				t.Helper()
+				refs := filepath.Join(repo, ".git", "refs")
+				if err := os.RemoveAll(refs); err != nil {
+					t.Fatalf("remove refs: %v", err)
+				}
+				if err := os.MkdirAll(filepath.Join(outside, "heads"), 0o700); err != nil {
+					t.Fatalf("create external refs sentinel: %v", err)
+				}
+				if err := os.Symlink(outside, refs); err != nil {
+					t.Fatalf("link refs outside snapshot scope: %v", err)
+				}
+			},
+		},
+		{
+			name: "index file symlink",
+			mutate: func(t *testing.T, repo, outside string) {
+				t.Helper()
+				index := filepath.Join(repo, ".git", "index")
+				if err := os.Remove(index); err != nil && !os.IsNotExist(err) {
+					t.Fatalf("remove index: %v", err)
+				}
+				if err := os.Symlink(filepath.Join(outside, "sentinel"), index); err != nil {
+					t.Fatalf("link index outside snapshot scope: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newTestGitRoot(t)
+			outside := t.TempDir()
+			if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+				t.Fatalf("write external sentinel: %v", err)
+			}
+			tc.mutate(t, repo, outside)
+			before := treeDigest(t, outside, false)
+			declared := filepath.Join(repo, "apps", "a")
+			if err := os.MkdirAll(declared, 0o700); err != nil {
+				t.Fatalf("create declared scope: %v", err)
+			}
+			ref := localDirectoryRef{LocalPath: repo, ExecutionMode: localDirectoryModeWorktree}
+			plan := &snapshotPlan{
+				Units:    []snapshotUnit{{Ref: ref, AbsPath: declared, Subdir: "apps/a"}},
+				Primary:  &snapshotUnit{Ref: ref, AbsPath: declared, Subdir: "apps/a"},
+				Declared: true,
+			}
+
+			audit := auditSnapshotGitScope(plan)
+			if !audit.HasGit || audit.Safe || !strings.Contains(audit.Reason, "metadata redirect") {
+				t.Fatalf("escaping Git metadata must fail audit, got %+v", audit)
+			}
+			fallback, err := snapshotWorktreeFallbackWithGitGate(plan, true)
+			if err == nil || fallback != nil || !strings.Contains(err.Error(), "unsafe Git metadata") {
+				t.Fatalf("unsafe metadata must fail closed before worktree preparation, fallback=%+v err=%v", fallback, err)
+			}
+			if after := treeDigest(t, outside, false); after != before {
+				t.Fatalf("metadata audit and fallback must not touch external sentinel\nbefore: %s\nafter:  %s", before, after)
+			}
+		})
+	}
+}
+
+func TestAuditSnapshotGitScopeAcceptsRefNamesMatchingMetadataFiles(t *testing.T) {
+	repo := newTestGitRoot(t)
+	for _, ref := range []string{"alternates", "commondir", "gitdir"} {
+		runTopologyGit(t, repo, "update-ref", "refs/heads/"+ref, "HEAD")
+	}
+	plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}}
+	if audit := auditSnapshotGitScope(plan); !audit.HasGit || !audit.Safe {
+		t.Fatalf("ordinary refs named like metadata files must remain safe, got %+v", audit)
+	}
+}
+
+func TestAuditSnapshotGitScopeAuditsSharedHooksWithinWorktree(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		setup    func(t *testing.T, repo string)
+		wantSafe bool
+	}{
+		{
+			name: "shared hooks inside worktree",
+			setup: func(t *testing.T, repo string) {
+				t.Helper()
+				shared := filepath.Join(repo, ".githooks")
+				if err := os.Mkdir(shared, 0o700); err != nil {
+					t.Fatalf("create shared hooks: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(shared, "pre-commit"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+					t.Fatalf("write shared hook: %v", err)
+				}
+				replaceTestGitHooksWithSymlink(t, repo, shared)
+			},
+			wantSafe: true,
+		},
+		{
+			name: "external hooks",
+			setup: func(t *testing.T, repo string) {
+				t.Helper()
+				external := filepath.Join(t.TempDir(), "hooks")
+				if err := os.MkdirAll(external, 0o700); err != nil {
+					t.Fatalf("create external hooks: %v", err)
+				}
+				replaceTestGitHooksWithSymlink(t, repo, external)
+			},
+			wantSafe: false,
+		},
+		{
+			name: "shared hooks resolve outside worktree",
+			setup: func(t *testing.T, repo string) {
+				t.Helper()
+				external := filepath.Join(t.TempDir(), "hooks")
+				if err := os.MkdirAll(external, 0o700); err != nil {
+					t.Fatalf("create external hooks: %v", err)
+				}
+				shared := filepath.Join(repo, ".githooks")
+				if err := os.Symlink(external, shared); err != nil {
+					t.Fatalf("redirect shared hooks outside worktree: %v", err)
+				}
+				replaceTestGitHooksWithSymlink(t, repo, shared)
+			},
+			wantSafe: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newTestGitRoot(t)
+			tc.setup(t, repo)
+			plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}}
+			audit := auditSnapshotGitScope(plan)
+			if audit.Safe != tc.wantSafe {
+				t.Fatalf("shared hooks audit safe = %t, want %t: %+v", audit.Safe, tc.wantSafe, audit)
+			}
+		})
+	}
+}
+
+func replaceTestGitHooksWithSymlink(t *testing.T, repo, target string) {
+	t.Helper()
+	hooks := filepath.Join(repo, ".git", "hooks")
+	if err := os.RemoveAll(hooks); err != nil {
+		t.Fatalf("remove default hooks: %v", err)
+	}
+	if err := os.Symlink(target, hooks); err != nil {
+		t.Fatalf("redirect hooks: %v", err)
+	}
+}
+
+func TestSnapshotWorktreeFallbackFailsClosedWhenGitAuditCannotComplete(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	ref := localDirectoryRef{LocalPath: missing, ExecutionMode: localDirectoryModeWorktree}
+	plan := &snapshotPlan{Units: []snapshotUnit{{Ref: ref, AbsPath: missing}}, Primary: &snapshotUnit{Ref: ref, AbsPath: missing}}
+
+	fallback, err := snapshotWorktreeFallbackWithGitGate(plan, true)
+	if err == nil || fallback != nil || !strings.Contains(err.Error(), "unsafe Git metadata") {
+		t.Fatalf("incomplete Git audit must fail closed, fallback=%+v err=%v", fallback, err)
+	}
+}
+
+func TestWorktreeMetadataAuditSkipsSiblingLinkedWorktrees(t *testing.T) {
+	repo := newTestGitRoot(t)
+	sibling := filepath.Join(t.TempDir(), "sibling")
+	runTopologyGit(t, repo, "worktree", "add", "-q", "--detach", sibling)
+
+	assignment := &localDirectoryAssignment{
+		Ref:     localDirectoryRef{LocalPath: repo, ExecutionMode: localDirectoryModeWorktree},
+		AbsPath: repo,
+	}
+	if err := validateWorktreeGitMetadata(assignment); err != nil {
+		t.Fatalf("sibling linked worktree must not block source worktree preparation: %v", err)
+	}
+}
+
+func TestWorktreeMetadataAuditAcceptsLinkedWorktreeBacklink(t *testing.T) {
+	repo := newTestGitRoot(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	runTopologyGit(t, repo, "worktree", "add", "-q", "--detach", linked)
+
+	assignment := &localDirectoryAssignment{
+		Ref:      localDirectoryRef{LocalPath: linked, ExecutionMode: localDirectoryModeWorktree},
+		AbsPath:  linked,
+		RealPath: linked,
+	}
+	if err := validateWorktreeGitMetadata(assignment); err != nil {
+		t.Fatalf("standard linked-worktree backlink must remain safe for worktree preparation: %v", err)
+	}
+	plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: linked}}, Primary: &snapshotUnit{AbsPath: linked}}
+	if audit := auditSnapshotGitScope(plan); !audit.HasGit || !audit.Safe {
+		t.Fatalf("standard linked-worktree backlink must remain safe for snapshot audit, got %+v", audit)
+	}
+}
+
+func TestAuditSnapshotGitScopeRejectsRedirectIntoSiblingWorktreeAdminState(t *testing.T) {
+	repo := newTestGitRoot(t)
+	sibling := filepath.Join(t.TempDir(), "sibling")
+	runTopologyGit(t, repo, "worktree", "add", "-q", "--detach", sibling)
+	siblingGitDir := strings.TrimSpace(runTopologyGit(t, sibling, "rev-parse", "--absolute-git-dir"))
+
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "heads"), 0o700); err != nil {
+		t.Fatalf("create external refs sentinel: %v", err)
+	}
+	redirectedRefs := filepath.Join(siblingGitDir, "redirected-refs")
+	if err := os.MkdirAll(redirectedRefs, 0o700); err != nil {
+		t.Fatalf("create sibling admin redirect: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(redirectedRefs, "heads")); err != nil {
+		t.Fatalf("redirect sibling admin refs outside repository: %v", err)
+	}
+	refs := filepath.Join(repo, ".git", "refs")
+	if err := os.RemoveAll(refs); err != nil {
+		t.Fatalf("remove repository refs: %v", err)
+	}
+	if err := os.Symlink(redirectedRefs, refs); err != nil {
+		t.Fatalf("redirect refs into sibling admin state: %v", err)
+	}
+
+	plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}}
+	if audit := auditSnapshotGitScope(plan); audit.Safe || !strings.Contains(audit.Reason, "sibling Git worktree admin state") {
+		t.Fatalf("redirect into sibling worktree admin state must fail audit, got %+v", audit)
+	}
+}
+
+func TestAuditSnapshotGitScopeRejectsRedirectIntoSiblingWorktreeAdminRoot(t *testing.T) {
+	repo := newTestGitRoot(t)
+	sibling := filepath.Join(t.TempDir(), "sibling")
+	runTopologyGit(t, repo, "worktree", "add", "-q", "--detach", sibling)
+	siblingGitDir := strings.TrimSpace(runTopologyGit(t, sibling, "rev-parse", "--absolute-git-dir"))
+	worktreesRoot := filepath.Dir(siblingGitDir)
+
+	refs := filepath.Join(repo, ".git", "refs")
+	if err := os.RemoveAll(refs); err != nil {
+		t.Fatalf("remove repository refs: %v", err)
+	}
+	if err := os.Symlink(worktreesRoot, refs); err != nil {
+		t.Fatalf("redirect refs into sibling worktree admin root: %v", err)
+	}
+
+	plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}}
+	if audit := auditSnapshotGitScope(plan); audit.Safe || !strings.Contains(audit.Reason, "sibling Git worktree admin root") {
+		t.Fatalf("redirect into sibling worktree admin root must fail audit, got %+v", audit)
+	}
+}
+
+func TestSiblingGitWorktreeAdminDirsUsesLinkedGitDirWhenCommonDirRedirects(t *testing.T) {
+	repo := newTestGitRoot(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	sibling := filepath.Join(t.TempDir(), "sibling")
+	runTopologyGit(t, repo, "worktree", "add", "-q", "--detach", linked)
+	runTopologyGit(t, repo, "worktree", "add", "-q", "--detach", sibling)
+	linkedGitDir := strings.TrimSpace(runTopologyGit(t, linked, "rev-parse", "--absolute-git-dir"))
+	siblingGitDir := strings.TrimSpace(runTopologyGit(t, sibling, "rev-parse", "--absolute-git-dir"))
+	redirectedCommonDir := filepath.Join(siblingGitDir, "redirected-common")
+	if err := os.MkdirAll(redirectedCommonDir, 0o700); err != nil {
+		t.Fatalf("create redirected common directory: %v", err)
+	}
+
+	forbidden, _, err := siblingGitWorktreeAdminDirs([]string{redirectedCommonDir}, linkedGitDir)
+	if err != nil {
+		t.Fatalf("enumerate sibling worktree admin directories: %v", err)
+	}
+	if !withinAnyScope(siblingGitDir, forbidden) {
+		t.Fatalf("linked GitDir must identify sibling admin state despite redirected commonDir, got %v", forbidden)
+	}
+}
+
+func TestWorktreeMetadataAuditRejectsRedirectIntoAlternateObjectDatabase(t *testing.T) {
+	repo := newTestGitRoot(t)
+	alternate := newTestGitRoot(t)
+	alternateObjects := strings.TrimSpace(runTopologyGit(t, alternate, "rev-parse", "--git-path", "objects"))
+	if !filepath.IsAbs(alternateObjects) {
+		alternateObjects = filepath.Join(alternate, alternateObjects)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".git", "objects", "info", "alternates"), []byte(alternateObjects+"\n"), 0o600); err != nil {
+		t.Fatalf("write alternate object database: %v", err)
+	}
+
+	redirectedRefs := filepath.Join(alternateObjects, "redirected-refs")
+	if err := os.MkdirAll(filepath.Join(redirectedRefs, "heads"), 0o700); err != nil {
+		t.Fatalf("create alternate sentinel: %v", err)
+	}
+	refs := filepath.Join(repo, ".git", "refs")
+	if err := os.RemoveAll(refs); err != nil {
+		t.Fatalf("remove repository refs: %v", err)
+	}
+	if err := os.Symlink(redirectedRefs, refs); err != nil {
+		t.Fatalf("redirect refs into alternate object database: %v", err)
+	}
+
+	before := treeDigest(t, alternate, false)
+	assignment := &localDirectoryAssignment{
+		Ref:     localDirectoryRef{LocalPath: repo, ExecutionMode: localDirectoryModeWorktree},
+		AbsPath: repo,
+	}
+	plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}}
+	if audit := auditSnapshotGitScope(plan); audit.Safe || !strings.Contains(audit.Reason, "metadata redirect") {
+		t.Fatalf("snapshot metadata must reject a writable redirect into an alternate object database, got %+v", audit)
+	}
+	if err := validateWorktreeGitMetadata(assignment); err == nil || !strings.Contains(err.Error(), "metadata redirect") {
+		t.Fatalf("worktree metadata must reject a writable redirect into an alternate object database, got %v", err)
+	}
+	if after := treeDigest(t, alternate, false); after != before {
+		t.Fatalf("metadata validation must not modify alternate object database\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+func TestWorktreeMetadataAuditSkipsNestedSubmoduleSiblingWorktrees(t *testing.T) {
+	parent := newTestGitRoot(t)
+	submoduleSource := newTestGitRoot(t)
+	runTopologyGit(t, parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", submoduleSource, "dep")
+
+	sibling := filepath.Join(t.TempDir(), "submodule-sibling")
+	runTopologyGit(t, filepath.Join(parent, "dep"), "worktree", "add", "-q", "--detach", sibling)
+
+	assignment := &localDirectoryAssignment{
+		Ref:     localDirectoryRef{LocalPath: parent, ExecutionMode: localDirectoryModeWorktree},
+		AbsPath: parent,
+	}
+	if err := validateWorktreeGitMetadata(assignment); err != nil {
+		t.Fatalf("nested submodule sibling worktree must not block parent worktree preparation: %v", err)
+	}
+}
+
+func TestAuditSnapshotGitScopeSkipsReftableSubmoduleSiblingWorktree(t *testing.T) {
+	repo := newTestGitRoot(t)
+	gitDir := filepath.Join(repo, ".git")
+	commonDir := filepath.Join(repo, ".git", "modules", "dep")
+	if err := os.MkdirAll(filepath.Join(commonDir, "objects"), 0o700); err != nil {
+		t.Fatalf("create reftable object directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(commonDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+		t.Fatalf("write reftable HEAD: %v", err)
+	}
+	sibling := filepath.Join(commonDir, "worktrees", "sibling")
+	if err := os.MkdirAll(sibling, 0o700); err != nil {
+		t.Fatalf("create sibling worktree admin directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "gitdir"), []byte(filepath.Join(t.TempDir(), "sibling", ".git")+"\n"), 0o600); err != nil {
+		t.Fatalf("write sibling gitdir backlink: %v", err)
+	}
+
+	if err := auditGitMetadataRedirectsWithin(repo, gitDir, gitDir, []string{gitDir}, []string{gitDir}, []string{gitDir}, []string{gitDir, commonDir}, true); err != nil {
+		t.Fatalf("known reftable submodule sibling worktree must not make parent audit unsafe: %v", err)
+	}
+}
+
+func TestAuditSnapshotGitScopeAuditsRefsWorktreesNamespace(t *testing.T) {
+	repo := newTestGitRoot(t)
+	refs := filepath.Join(repo, ".git", "refs")
+	if err := os.WriteFile(filepath.Join(refs, "HEAD"), []byte("not a symbolic ref\n"), 0o600); err != nil {
+		t.Fatalf("write ref namespace HEAD: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(refs, "objects"), 0o700); err != nil {
+		t.Fatalf("create ref namespace objects: %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "heads"), 0o700); err != nil {
+		t.Fatalf("create external ref sentinel: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(refs, "worktrees"), 0o700); err != nil {
+		t.Fatalf("create refs worktrees namespace: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(refs, "worktrees", "heads")); err != nil {
+		t.Fatalf("redirect ref namespace through symlink: %v", err)
+	}
+
+	plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}}
+	if audit := auditSnapshotGitScope(plan); audit.Safe || !strings.Contains(audit.Reason, "metadata redirect") {
+		t.Fatalf("refs/worktrees namespace redirect must fail audit, got %+v", audit)
+	}
+}
+
+func TestRevalidateSnapshotGitPlanRejectsMetadataChangeAfterPlanning(t *testing.T) {
+	repo := newTestGitRoot(t)
+	ref := localDirectoryRef{LocalPath: repo, ExecutionMode: localDirectoryModeSnapshot}
+	unit := snapshotUnit{Ref: ref, AbsPath: repo}
+	plan := &snapshotPlan{Units: []snapshotUnit{unit}, Primary: &unit}
+	if fallback, err := snapshotWorktreeFallbackWithGitGateAndCapability(plan, true, true); err != nil || fallback != nil {
+		t.Fatalf("prepare snapshot plan: fallback=%+v err=%v", fallback, err)
+	}
+
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "heads"), 0o700); err != nil {
+		t.Fatalf("create external refs sentinel: %v", err)
+	}
+	refs := filepath.Join(repo, ".git", "refs")
+	if err := os.RemoveAll(refs); err != nil {
+		t.Fatalf("remove refs: %v", err)
+	}
+	if err := os.Symlink(outside, refs); err != nil {
+		t.Fatalf("redirect refs outside repository: %v", err)
+	}
+
+	if _, err := revalidateSnapshotGitPlan(plan, true); err == nil || !strings.Contains(err.Error(), "unsafe Git metadata") {
+		t.Fatalf("metadata changed after planning must fail snapshot startup, got %v", err)
+	}
+}
+
 func TestGitSnapshotDeliveryEligibleIsNarrow(t *testing.T) {
 	gitRoot := newTestGitRoot(t)
 	ordinary := &snapshotPlan{Units: []snapshotUnit{{AbsPath: gitRoot}}, Primary: &snapshotUnit{AbsPath: gitRoot}}
