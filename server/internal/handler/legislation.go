@@ -407,7 +407,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	// The judged text is the source carrier's synthesized result.
 	advisory := p.JevAdvisory
 	if srcText, synthed := synth[carrierRef{scope: p.CarrierScope, id: p.CarrierScopeID}]; synthed {
-		if client := h.jevAdvisory(); client.Enabled() {
+		if client := h.jevAdvisory(ctx, workspaceID); client.Enabled() {
 			advisory = client.Assess(ctx, "gate", srcText).JSON()
 		}
 	}
@@ -1019,12 +1019,22 @@ func (h *Handler) UpdatePromptProposal(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, proposalToResponse(updated))
 }
 
-// jevAdvisory returns the advisory client for this handler: an injected
-// client (tests, staging) wins, otherwise the process default built from the
-// MULTICA_JEV_ADVISORY_* environment.
-func (h *Handler) jevAdvisory() *legislation.AdvisoryClient {
+// jevAdvisory returns the advisory client for one workspace. An injected
+// client (tests, staging) wins; a configured workspace then takes precedence.
+// The resolver falls back to the deployment default for workspaces without an
+// override, preserving the legacy operating mode after encryption is enabled.
+func (h *Handler) jevAdvisory(ctx context.Context, workspaceID pgtype.UUID) *legislation.AdvisoryClient {
 	if h.JevAdvisory != nil {
 		return h.JevAdvisory
+	}
+	if h.JevConfig != nil {
+		client, err := h.JevConfig.Client(ctx, workspaceID)
+		if err == nil && client != nil {
+			return client
+		}
+		// Advisory failure remains a sidecar failure. Never let a bad encrypted
+		// row or a database read alter E1-E4 or the approval state machine.
+		return &legislation.AdvisoryClient{}
 	}
 	return legislation.AdvisoryFromEnv()
 }
@@ -1047,7 +1057,7 @@ func (h *Handler) SubmitPromptProposal(w http.ResponseWriter, r *http.Request) {
 	advisoryText := p.ClauseText
 	// The advisory service is best-effort but external; call it before opening
 	// the transaction so a slow response cannot hold the proposal row lock.
-	advisory := h.jevAdvisory().Assess(r.Context(), "submit", advisoryText).JSON()
+	advisory := h.jevAdvisory(r.Context(), workspaceID).Assess(r.Context(), "submit", advisoryText).JSON()
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to submit proposal")

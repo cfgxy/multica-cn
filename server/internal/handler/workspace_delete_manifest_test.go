@@ -143,6 +143,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// Module model-service config (RUYI-551): workspace-keyed gateway
 	// credentials; the encrypted key material is destroyed with the workspace.
 	"self_evolution_model_config":   workspaceDelete,
+	"self_evolution_jev_config":     workspaceDelete,
 	"retrospective_config":          workspaceDelete,
 	"retrospective_issue_watermark": workspaceDelete,
 	"retrospective_run":             workspaceDelete,

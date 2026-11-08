@@ -519,6 +519,9 @@
     "jevWarnFlag": "경고",
     "jevDisclaimer": "저비용 경고 참고용입니다. 확률 근거와 함께 판단하고 단독으로 처분 근거로 삼지 마세요(warn-only 우회, 게이트 판정에는 영향 없음).",
     "jevUnavailable": "사용 불가, 건너뜀(본 흐름에는 영향 없음)",
+    "jevModel": "모델={{model}}",
+    "jevCheckedAt": "확인 시각 {{date}}",
+    "jevFailureReason": "사유={{reason}}",
     "enactmentTargetLabel": "조항 반영 대상",
     "enactmentTargetOptions": {
       "clause_library": "조항 라이브러리에 등록",
@@ -890,9 +893,36 @@
       "other": "기타 오류"
     }
   },
+  "jevConfig": {
+    "title": "JEV 위험 사전 검사",
+    "description": "제안을 위한 warn-only 자문입니다. 게이트 판정이나 owner 승인을 변경하지 않습니다.",
+    "endpoint": "엔드포인트",
+    "apiKey": "API 키",
+    "model": "모델",
+    "timeout": "시간 초과(ms)",
+    "save": "저장 및 확인",
+    "busy": "처리 중…",
+    "recheck": "다시 확인",
+    "delete": "구성 제거",
+    "saveOk": "JEV 구성이 저장되었습니다.",
+    "deleteOk": "JEV 구성이 제거되었습니다.",
+    "lastChecked": "마지막 확인 {{date}}",
+    "engine": "런타임 {{engine}}",
+    "lastCheckError": "마지막 확인: {{reason}}",
+    "encryptionNotReady": "이 배포에는 워크스페이스 단위 암호화 키가 없어 JEV 구성을 저장할 수 없습니다.",
+    "source": {
+      "workspace": "워크스페이스 재정의",
+      "deployment": "배포 기본값"
+    },
+    "status": {
+      "unconfigured": "구성되지 않음",
+      "offline": "오프라인",
+      "available": "사용 가능"
+    }
+  },
   "configPage": {
     "title": "모듈 설정",
-    "description": "아래 모델 서비스가 품질 스코어링을 지원합니다. Langfuse는 인스턴스 수준 설정이므로 여기서는 읽기 전용입니다."
+    "description": "아래 모델 서비스가 품질 스코어링을 지원하고, JEV는 제안용 warn-only 자문입니다. Langfuse는 인스턴스 수준 설정이므로 여기서는 읽기 전용입니다."
   },
   "mobile": { "title": "자기 진화", "overview": "개요", "versions": "버전", "proposals": "제안", "proposal_count_label": "개 제안", "pending_owner": "소유자 검토 대기", "skills": "Skills", "review_diff": "제안 변경 사항 검토", "empty_diff": "변경 사항 없음", "cancel": "취소", "approve": "승인", "approving": "승인 중…", "reject": "거부", "rejecting": "거부 중…", "action_failed": "작업에 실패했습니다. 변경 사항은 저장되지 않았습니다. 확인 후 다시 시도하세요.", "reject_reason": "거부 사유", "reject_unavailable": "이 기기에서는 사유 입력을 지원하지 않습니다.", "error": "제안 미리보기를 불러올 수 없습니다", "load_error": "일부 데이터를 불러오지 못했습니다. 탭하여 다시 시도하세요.", "review_approve": "검토 및 승인", "no_proposals": "제안 없음", "clauses": "조항 거버넌스", "injections": "회 사용", "no_clauses": "관리 조항 없음", "retrospective": "회고 실행", "issues_analyzed": "개 작업 분석", "no_retrospectives": "회고 기록 없음" }
 }

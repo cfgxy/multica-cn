@@ -513,3 +513,24 @@ it("renders — for legacy rows without the decision-context fields", async () =
     expect(dt.nextElementSibling?.textContent).toBe("—");
   }
 });
+
+it("renders the stored JEV model, check time, and safe failure reason", async () => {
+  state.proposals = [proposal({
+    jev_advisory: {
+      stage: "submit",
+      available: false,
+      model: "jev-local",
+      warn: false,
+      input_sha256: "a".repeat(64),
+      skipped_reason: "unreachable",
+      checked_at: "2026-11-05T12:00:00Z",
+    },
+  })];
+  mount();
+  await userEvent.click(await screen.findByTestId("legislation-row-prop-1"));
+
+  const advisory = await screen.findByTestId("legislation-jev-advisory-unavailable");
+  expect(advisory.textContent).toContain("model=jev-local");
+  expect(advisory.textContent).toContain("reason=unreachable");
+  expect(advisory.textContent).toContain("checked");
+});

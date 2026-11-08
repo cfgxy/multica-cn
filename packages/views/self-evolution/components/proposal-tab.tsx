@@ -585,12 +585,18 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                     <span className="font-medium">{t(($) => $.legislation.jevAdvisoryLabel)}</span>
                     {" · "}
                     {t(($) => $.legislation.jevStage[jev.stage])}
+                    {jev.model ? ` · ${t(($) => $.legislation.jevModel, { model: jev.model })}` : ""}
                     {jev.engine ? ` · ${jev.engine}` : ""}
                     {jev.p_failure != null ? ` · p_failure=${jev.p_failure.toFixed(3)}` : ""}
                     {jev.threshold != null
                       ? ` / ${t(($) => $.legislation.jevThreshold)}=${jev.threshold.toFixed(3)}`
                       : ""}
                     {jev.warn ? ` · ${t(($) => $.legislation.jevWarnFlag)}` : ""}
+                    {jev.checked_at
+                      ? ` · ${t(($) => $.legislation.jevCheckedAt, {
+                          date: new Date(jev.checked_at).toLocaleString(),
+                        })}`
+                      : ""}
                     <div className="text-muted-foreground text-caption">
                       {t(($) => $.legislation.jevDisclaimer)}
                     </div>
@@ -601,6 +607,15 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                     data-testid="legislation-jev-advisory-unavailable"
                   >
                     {t(($) => $.legislation.jevAdvisoryLabel)}: {t(($) => $.legislation.jevUnavailable)}
+                    {jev.model ? ` · ${t(($) => $.legislation.jevModel, { model: jev.model })}` : ""}
+                    {jev.skipped_reason
+                      ? ` · ${t(($) => $.legislation.jevFailureReason, { reason: jev.skipped_reason })}`
+                      : ""}
+                    {jev.checked_at
+                      ? ` · ${t(($) => $.legislation.jevCheckedAt, {
+                          date: new Date(jev.checked_at).toLocaleString(),
+                        })}`
+                      : ""}
                   </div>
                 );
               })()}

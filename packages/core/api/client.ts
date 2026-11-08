@@ -111,6 +111,9 @@ import type {
   ClauseGovernanceReconciliation,
   SelfEvolutionOverview,
   SelfEvolutionConfigValidation,
+
+  SelfEvolutionJevConfig,
+  SelfEvolutionJevConfigSave,
   SelfEvolutionModelConfig,
   SelfEvolutionModelConfigSave,
   WorkspaceBackpressureSettings,
@@ -674,6 +677,7 @@ import {
   EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION,
   SelfEvolutionOverviewSchema,
   SelfEvolutionConfigValidationSchema,
+  SelfEvolutionJevConfigSchema,
   SelfEvolutionModelConfigSchema,
   WorkspaceBackpressureSettingsSchema,
   EMPTY_SELF_EVOLUTION_OVERVIEW,
@@ -4542,6 +4546,66 @@ export class ApiClient {
       error_kind: "other",
       message: "",
     }, { endpoint: "POST /api/self-evolution/model-config/validate" });
+  }
+
+  /** The workspace's warn-only JEV advisory endpoint and its last probe. */
+  async getSelfEvolutionJevConfig(): Promise<SelfEvolutionJevConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/jev-config");
+    return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
+      status: "unconfigured",
+      source: "unconfigured",
+      endpoint: "",
+      model: "",
+      timeout_ms: 1500,
+      has_api_key: false,
+      encryption_ready: true,
+    }, { endpoint: "GET /api/self-evolution/jev-config" });
+  }
+
+  /** Saves the JEV endpoint and records the immediate connectivity result. */
+  async putSelfEvolutionJevConfig(save: SelfEvolutionJevConfigSave): Promise<SelfEvolutionJevConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/jev-config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(save),
+    });
+    return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
+      status: "unconfigured",
+      source: "unconfigured",
+      endpoint: "",
+      model: "",
+      timeout_ms: 1500,
+      has_api_key: false,
+      encryption_ready: true,
+    }, { endpoint: "PUT /api/self-evolution/jev-config" });
+  }
+
+  async deleteSelfEvolutionJevConfig(): Promise<SelfEvolutionJevConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/jev-config", { method: "DELETE" });
+    return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
+      status: "unconfigured",
+      source: "unconfigured",
+      endpoint: "",
+      model: "",
+      timeout_ms: 1500,
+      has_api_key: false,
+      encryption_ready: true,
+    }, { endpoint: "DELETE /api/self-evolution/jev-config" });
+  }
+
+  async recheckSelfEvolutionJevConfig(): Promise<SelfEvolutionJevConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/jev-config/recheck", {
+      method: "POST",
+    });
+    return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
+      status: "unconfigured",
+      source: "unconfigured",
+      endpoint: "",
+      model: "",
+      timeout_ms: 1500,
+      has_api_key: false,
+      encryption_ready: true,
+    }, { endpoint: "POST /api/self-evolution/jev-config/recheck" });
   }
 
   /**

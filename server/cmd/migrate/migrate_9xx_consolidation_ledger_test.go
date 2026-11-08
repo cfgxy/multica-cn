@@ -183,12 +183,13 @@ var postConsolidationStems = []string{
 	"979_credential_audit_id_index",                      // RUYI-837
 	"979_credential_audit_workspace_created_index",       // RUYI-837
 	"980_runtime_concurrency_limit",                      // RUYI-843
+	"981_self_evolution_jev_config",                      // RUYI-769
 	"982_agent_backpressure_policy",                      // RUYI-859 (agent error-rate policy + suppression event tables)
 	"982_agent_suppression_event_index",                  // RUYI-859 (CONCURRENTLY index, separate single-statement stem)
-	"984_prompt_proposal_enactment_target",               // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
 	"982_scheduling_pause_system_source",                 // RUYI-859 (created_by nullable: system error-rate suppression source)
 	"982_scheduling_pause_system_source_promql_recovery", // RUYI-859 forward recovery for historical policy databases
 	"983_daemon_token_owner",                             // daemon token ownership binding
+	"984_prompt_proposal_enactment_target",               // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
 	"994_clause_injection_observation",                   // RUYI-891 (claim-time degraded carrier observations)
 	"994_clause_injection_observation_id_index",
 	"994_clause_injection_observation_task_scope_time_index",
