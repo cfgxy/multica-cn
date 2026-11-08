@@ -270,6 +270,14 @@ func TestSnapshotWorkerCapturesDeclaredGitSubdirectoryArtifactSmoke(t *testing.T
 	pristineRefs := gitForSnapshotTest(t, repo, "show-ref", "--head")
 	clone := filepath.Join(scratch, "clone")
 	gitForSnapshotTest(t, "", "clone", "-q", repo, clone)
+	outside := filepath.Join(scratch, "outside-sentinel")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outsideBefore := smokeTreeDigest(t, outside, false)
 
 	if err := os.WriteFile(filepath.Join(repo, "apps", "b", "staged.txt"), []byte("user-staged\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -341,6 +349,9 @@ func TestSnapshotWorkerCapturesDeclaredGitSubdirectoryArtifactSmoke(t *testing.T
 	}
 	if got := gitForSnapshotTest(t, repo, "show-ref", "--head"); got != pristineRefs {
 		t.Fatalf("snapshot artifact changed pristine refs, got %q want %q", got, pristineRefs)
+	}
+	if after := smokeTreeDigest(t, outside, false); after != outsideBefore {
+		t.Fatalf("snapshot artifact wrote outside its materialized units\nbefore: %s\nafter:  %s", outsideBefore, after)
 	}
 
 	gitForSnapshotTest(t, clone, "fetch", filepath.Join(artifactDir, "changes.bundle"), "HEAD:refs/heads/snapshot")

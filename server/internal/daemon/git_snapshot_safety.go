@@ -126,9 +126,36 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 		})
 		audit.Dependencies = append(audit.Dependencies, dependencies...)
 	}
+	commonDirs := gitSnapshotCommonDirs(audit.Repositories)
+	for _, repository := range audit.Repositories {
+		if err := auditGitMetadataRedirects(repository.Worktree, repository.GitDir, repository.CommonDir, repository.Dependencies, commonDirs); err != nil {
+			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("unsafe Git metadata for %q: %v", repository.Worktree, err)}
+		}
+	}
 	audit.Dependencies = compactContainedPaths(audit.Dependencies)
 	audit.Safe = true
 	return audit
+}
+
+func gitSnapshotCommonDirs(repositories []gitSnapshotRepository) []string {
+	commonDirs := make([]string, 0, len(repositories))
+	for _, repository := range repositories {
+		commonDirs = append(commonDirs, repository.CommonDir)
+	}
+	return uniqueGitPaths(commonDirs)
+}
+
+func uniqueGitPaths(paths []string) []string {
+	unique := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		unique[filepath.Clean(path)] = struct{}{}
+	}
+	result := make([]string, 0, len(unique))
+	for path := range unique {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result
 }
 
 // gitSnapshotDeliveryEligible 比只读审计更窄：当前 artifact contract 只交付
@@ -249,6 +276,320 @@ func gitSnapshotDependencies(repo, gitDir, commonDir string) ([]string, error) {
 		}
 	}
 	return compactContainedPaths(dependencies), nil
+}
+
+// auditGitMetadataRedirects rejects metadata links that would make Git write
+// outside this repository's Git directory. alternate object databases remain
+// read dependencies only, even when snapshot delivery materializes them.
+func auditGitMetadataRedirects(worktree, gitDir, commonDir string, dependencies, commonDirs []string) error {
+	writableMetadata := compactContainedPaths([]string{gitDir, commonDir})
+	return auditGitMetadataRedirectsWithin(worktree, gitDir, commonDir, dependencies, writableMetadata, dependencies, commonDirs, true)
+}
+
+// auditGitMetadataRedirectsWithin audits Git's dependency graph against an
+// explicit set of writable metadata paths. alternateAllowed is intentionally
+// separate: alternate object databases are read dependencies, but they must
+// not authorise refs, indexes, or other metadata redirects to write there.
+func auditGitMetadataRedirectsWithin(worktree, gitDir, commonDir string, dependencies, allowed, alternateAllowed, commonDirs []string, allowLinkedWorktreeBacklink bool) error {
+	allowed = compactContainedPaths(allowed)
+	alternateAllowed = compactContainedPaths(alternateAllowed)
+	commonDirs = uniqueGitPaths(commonDirs)
+	forbidden, forbiddenRoots, err := siblingGitWorktreeAdminDirs(commonDirs, gitDir)
+	if err != nil {
+		return err
+	}
+	worktreesRoot := filepath.Join(commonDir, "worktrees")
+	currentLinkedGitDir := filepath.Dir(gitDir) == worktreesRoot
+
+	if err := auditGitMetadataEntry(filepath.Join(worktree, ".git"), worktree, allowed, alternateAllowed, forbidden, forbiddenRoots, true, allowLinkedWorktreeBacklink); err != nil {
+		return err
+	}
+	for _, dependency := range dependencies {
+		if err := filepath.WalkDir(dependency, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if path == dependency {
+				return nil
+			}
+			if entry.IsDir() {
+				if isKnownGitWorktreesRoot(path, commonDirs) {
+					if path != worktreesRoot || !currentLinkedGitDir {
+						// Sibling worktree admin records are not dependencies of the current
+						// repository. This also applies to repositories nested below the
+						// current common directory, such as initialized submodules.
+						return filepath.SkipDir
+					}
+				}
+				if filepath.Dir(path) == worktreesRoot && path != gitDir {
+					return filepath.SkipDir
+				}
+			}
+			entryAllowed := allowed
+			if entry.Type()&os.ModeSymlink != 0 && isGitHooksDirectory(path, gitDir, commonDir) {
+				// Hooks are executed, not written by Git. A shared hook directory in
+				// this worktree is materialized with the snapshot, unlike writable
+				// metadata redirects such as refs or index.
+				entryAllowed = compactContainedPaths(append(append([]string{}, allowed...), worktree))
+			}
+			return auditGitMetadataEntry(path, worktree, entryAllowed, alternateAllowed, forbidden, forbiddenRoots, false, allowLinkedWorktreeBacklink)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func isGitHooksDirectory(path, gitDir, commonDir string) bool {
+	path = filepath.Clean(path)
+	return path == filepath.Clean(filepath.Join(gitDir, "hooks")) ||
+		path == filepath.Clean(filepath.Join(commonDir, "hooks"))
+}
+
+func siblingGitWorktreeAdminDirs(commonDirs []string, currentGitDir string) ([]string, []string, error) {
+	var siblings []string
+	var roots []string
+	worktreesRoots := make([]string, 0, len(commonDirs)+1)
+	for _, commonDir := range commonDirs {
+		worktreesRoots = append(worktreesRoots, filepath.Join(commonDir, "worktrees"))
+	}
+	if filepath.Base(filepath.Dir(currentGitDir)) == "worktrees" {
+		worktreesRoots = append(worktreesRoots, filepath.Dir(currentGitDir))
+	}
+	for _, worktreesRoot := range uniqueGitPaths(worktreesRoots) {
+		entries, err := os.ReadDir(worktreesRoot)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, nil, err
+		}
+		hasSibling := false
+		for _, entry := range entries {
+			path := filepath.Join(worktreesRoot, entry.Name())
+			if filepath.Clean(path) != filepath.Clean(currentGitDir) {
+				hasSibling = true
+				siblings = append(siblings, path)
+			}
+		}
+		if hasSibling {
+			roots = append(roots, worktreesRoot)
+		}
+	}
+	return compactContainedPaths(siblings), uniqueGitPaths(roots), nil
+}
+
+func isKnownGitWorktreesRoot(path string, commonDirs []string) bool {
+	if filepath.Base(path) != "worktrees" {
+		return false
+	}
+	parent := filepath.Clean(filepath.Dir(path))
+	for _, commonDir := range commonDirs {
+		if parent == filepath.Clean(commonDir) {
+			return true
+		}
+	}
+	return false
+}
+
+// auditGitMetadataEntry checks Git's filesystem-level redirects without
+// following them during traversal. A link may target a regular file (index) or
+// directory (refs), so containment is evaluated on the resolved target rather
+// than requiring a directory.
+func auditGitMetadataEntry(path, worktree string, allowed, alternateAllowed, forbidden, forbiddenRoots []string, gitEntry, allowLinkedWorktreeBacklink bool) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return auditGitMetadataRedirect(path, allowed, forbidden, forbiddenRoots, false)
+	}
+	if gitEntry {
+		if info.IsDir() {
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("Git entry %q is neither a directory nor a redirect file", path)
+		}
+		return auditGitMetadataRedirect(path, allowed, forbidden, forbiddenRoots, true)
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	if strings.Contains(filepath.ToSlash(path), "/refs/") {
+		return auditGitSymbolicRef(path)
+	}
+	switch filepath.Base(path) {
+	case "commondir":
+		return auditGitMetadataRedirect(path, allowed, forbidden, forbiddenRoots, false)
+	case "gitdir":
+		if allowLinkedWorktreeBacklink {
+			return auditGitLinkedWorktreeBacklink(path, worktree, allowed, forbidden, forbiddenRoots)
+		}
+		return auditGitMetadataRedirect(path, allowed, forbidden, forbiddenRoots, false)
+	case "alternates":
+		return auditGitAlternateRedirects(path, alternateAllowed)
+	default:
+		return auditGitSymbolicRef(path)
+	}
+}
+
+// auditGitLinkedWorktreeBacklink permits only Git's documented linked-worktree
+// admin backlink: common/worktrees/<name>/gitdir -> <worktree>/.git. The
+// destination file is then parsed as a Git redirect and must terminate in a
+// Git metadata dependency. No other worktree path is safe for the legacy
+// worktree backend.
+func auditGitLinkedWorktreeBacklink(path, worktree string, allowed, forbidden, forbiddenRoots []string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	target := strings.TrimSpace(string(raw))
+	if target == "" || strings.ContainsRune(target, 0) {
+		return fmt.Errorf("invalid Git metadata redirect %q", path)
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	direct := filepath.Clean(target)
+	if direct != filepath.Clean(filepath.Join(worktree, ".git")) {
+		return fmt.Errorf("metadata redirect %q targets outside Git dependencies at %q", path, direct)
+	}
+	return auditGitMetadataRedirect(direct, allowed, forbidden, forbiddenRoots, true)
+}
+
+// auditGitMetadataRedirect resolves symlink and Git redirect-file targets and
+// ensures every target remains inside the worktree or an overlay dependency.
+// gitdir-prefixed is the format for a worktree's .git file; commondir and the
+// administrative gitdir file contain a bare path.
+func auditGitMetadataRedirect(path string, allowed, forbidden, forbiddenRoots []string, gitdirPrefixed bool) error {
+	var target string
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err = os.Readlink(path)
+		if err != nil {
+			return fmt.Errorf("read metadata symlink %q: %w", path, err)
+		}
+	} else {
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		target = strings.TrimSpace(string(raw))
+		if gitdirPrefixed {
+			var ok bool
+			target, ok = strings.CutPrefix(target, "gitdir: ")
+			if !ok {
+				return fmt.Errorf("invalid Git redirect file %q", path)
+			}
+			target = strings.TrimSpace(target)
+		}
+		if target == "" || strings.ContainsRune(target, 0) {
+			return fmt.Errorf("invalid Git metadata redirect %q", path)
+		}
+	}
+	return auditGitMetadataRedirectTarget(path, filepath.Dir(path), target, allowed, forbidden, forbiddenRoots)
+}
+
+// auditGitAlternateRedirects checks every alternate object database before the
+// worker can use it. Relative alternates are relative to the object directory,
+// rather than the info directory holding the file.
+func auditGitAlternateRedirects(path string, allowed []string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	objectDir := filepath.Dir(filepath.Dir(path))
+	for _, target := range strings.Split(string(raw), "\n") {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		if strings.ContainsRune(target, 0) {
+			return fmt.Errorf("alternate object path in %q contains NUL", path)
+		}
+		if err := auditGitMetadataRedirectTarget(path, objectDir, target, allowed, nil, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// auditGitMetadataRedirectTarget rejects both a direct target outside the
+// materialized set and a target whose later symlink resolution escapes it. The
+// direct check prevents a host-side intermediate symlink from escaping the
+// mount set and then re-entering it at a permitted destination.
+func auditGitMetadataRedirectTarget(path, base, target string, allowed, forbidden, forbiddenRoots []string) error {
+	if target == "" || strings.ContainsRune(target, 0) {
+		return fmt.Errorf("invalid Git metadata redirect %q", path)
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(base, target)
+	}
+	direct := filepath.Clean(target)
+	if containsCleanPath(direct, forbiddenRoots) {
+		return fmt.Errorf("metadata redirect %q targets sibling Git worktree admin root at %q", path, direct)
+	}
+	if withinAnyScope(direct, forbidden) {
+		return fmt.Errorf("metadata redirect %q targets sibling Git worktree admin state at %q", path, direct)
+	}
+	if !withinAnyScope(direct, allowed) {
+		return fmt.Errorf("metadata redirect %q targets outside materialized dependencies at %q", path, direct)
+	}
+	resolved, err := filepath.EvalSymlinks(direct)
+	if err != nil {
+		return fmt.Errorf("resolve metadata redirect %q: %w", path, err)
+	}
+	resolved = filepath.Clean(resolved)
+	if containsCleanPath(resolved, forbiddenRoots) {
+		return fmt.Errorf("metadata redirect %q resolves to sibling Git worktree admin root at %q", path, resolved)
+	}
+	if withinAnyScope(resolved, forbidden) {
+		return fmt.Errorf("metadata redirect %q resolves to sibling Git worktree admin state at %q", path, resolved)
+	}
+	if !withinAnyScope(resolved, allowed) {
+		return fmt.Errorf("metadata redirect %q resolves outside materialized dependencies to %q", path, resolved)
+	}
+	return nil
+}
+
+func containsCleanPath(path string, candidates []string) bool {
+	for _, candidate := range candidates {
+		if filepath.Clean(path) == filepath.Clean(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// auditGitSymbolicRef validates symbolic refs stored as ordinary files. Their
+// target syntax is repository-relative, so an absolute path or traversal would
+// turn a ref update into an unmaterialized filesystem write.
+func auditGitSymbolicRef(path string) error {
+	base := filepath.Base(path)
+	if base != "HEAD" && !strings.Contains(filepath.ToSlash(path), "/refs/") {
+		return nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	target, ok := strings.CutPrefix(string(raw), "ref: ")
+	if !ok {
+		return nil
+	}
+	target = strings.TrimSpace(target)
+	if target == "" || strings.ContainsRune(target, 0) || filepath.IsAbs(target) {
+		return fmt.Errorf("invalid symbolic Git ref %q", path)
+	}
+	clean := filepath.ToSlash(filepath.Clean(target))
+	if !strings.HasPrefix(clean, "refs/") || clean == "refs" || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("symbolic Git ref %q escapes refs namespace", path)
+	}
+	return nil
 }
 
 func canonicalGitDirectory(path string) (string, error) {
