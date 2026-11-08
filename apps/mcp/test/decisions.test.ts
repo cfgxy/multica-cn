@@ -47,6 +47,7 @@ interface FakeCard {
   selected_indices: number[];
   created_at: string;
   updated_at: string;
+  decision_kind?: "question" | "authorization";
 }
 
 /** Wire-shape card (options as [{label}]) exactly as the Go handler emits. */
@@ -61,6 +62,7 @@ function wireCard(card: FakeCard, issueId = ISSUE_ID): Record<string, unknown> {
     multi_select: card.multi_select,
     recommended_indices: card.recommended_indices,
     status: card.status,
+    decision_kind: card.decision_kind ?? "question",
     selected_indices: card.selected_indices,
     answered_by_type: card.status === "answered" ? "member" : null,
     answered_by_id: card.status === "answered" ? "u-1" : null,
@@ -77,6 +79,7 @@ class DecisionBackend {
   cards: FakeCard[] = [];
   requestLog: Array<{ method: string; path: string; body: unknown }> = [];
   batchEchoSeq = 0;
+  forcedCancelError?: { status: number; error: string };
 
   /** Seeds fresh clones — the fake mutates card state, and shared fixture
    * objects would leak answers across tests. */
@@ -153,6 +156,25 @@ class DecisionBackend {
     return { status: 200, payload: { results } };
   }
 
+  private cancel(issueId: string, decisionId: string): Record<string, unknown> {
+    if (this.forcedCancelError !== undefined) {
+      return { status: this.forcedCancelError.status, payload: { error: this.forcedCancelError.error } };
+    }
+    const card = this.cards.find((candidate) => candidate.id === decisionId);
+    if (card === undefined) {
+      return { status: 404, payload: { error: "decision card not found on this issue" } };
+    }
+    if (card.decision_kind === "authorization") {
+      return { status: 409, payload: { error: "authorization cards are cancelled through the decision request, not this endpoint" } };
+    }
+    if (card.status !== "open") {
+      return { status: 409, payload: { error: "decision card is no longer open" } };
+    }
+    card.status = "cancelled";
+    card.updated_at = "2026-10-11T10:00:00Z";
+    return { status: 200, payload: wireCard(card, issueId) };
+  }
+
   client(): MulticaClient {
     return new MulticaClient({
       serverUrl: "https://api.example.com",
@@ -207,6 +229,14 @@ class DecisionBackend {
         const answerBatch = url.pathname.match(/^\/api\/issues\/([^/]+)\/decisions\/answer-batch$/);
         if (method === "POST" && answerBatch !== null) {
           const outcome = this.answerBatch(ISSUE_ID, body);
+          return respond(outcome.status as number, outcome.payload);
+        }
+        const cancel = url.pathname.match(/^\/api\/issues\/([^/]+)\/decisions\/([^/]+)\/cancel$/);
+        if (method === "POST" && cancel !== null) {
+          if (cancel[1] === "unknown-issue") {
+            return respond(404, { error: "issue not found" });
+          }
+          const outcome = this.cancel(ISSUE_ID, cancel[2] ?? "");
           return respond(outcome.status as number, outcome.payload);
         }
         if (method === "GET" && /^\/api\/issues\/[^/]+$/.test(url.pathname)) {
@@ -282,9 +312,9 @@ const ANSWERED_C: FakeCard = {
 // ---- registration -----------------------------------------------------------
 
 describe("decision tool registration", () => {
-  it("registers the three tools once with read-only split", () => {
+  it("registers the four tools once with read-only split", () => {
     const names = TOOL_DEFINITIONS.map((tool) => tool.name);
-    for (const name of ["list_decisions", "get_decision", "answer_decisions"]) {
+    for (const name of ["list_decisions", "get_decision", "answer_decisions", "cancel_decision"]) {
       expect(names.filter((candidate) => candidate === name)).toHaveLength(1);
     }
     expect(findTool("list_decisions")?.description).toMatch(/read-only/i);
@@ -292,6 +322,8 @@ describe("decision tool registration", () => {
     // The one write declares its side effect: the echo comment resumes runs.
     expect(findTool("answer_decisions")?.description).toMatch(/echo comment/i);
     expect(findTool("answer_decisions")?.description).toMatch(/resumes/i);
+    expect(findTool("cancel_decision")?.description).toMatch(/does not answer/i);
+    expect(findTool("cancel_decision")?.description).toMatch(/does not.*echo comment/i);
   });
 });
 
@@ -667,5 +699,65 @@ describe("answer_decisions: structured failures", () => {
     const race = (result.results as Array<Record<string, unknown>>)[0];
     expect(result.answered).toBe(0);
     expect(race?.code).toBe("already_closed");
+  });
+});
+
+// ---- cancel_decision --------------------------------------------------------
+
+describe("cancel_decision", () => {
+  it("cancels exactly one card without using answer-batch or returning echo fields", async () => {
+    const backend = new DecisionBackend();
+    backend.seed(OPEN_A, OPEN_B);
+    const result = await callJson(backend.client(), "cancel_decision", {
+      workspace: WS,
+      issue: "VOI-42",
+      decision_id: "d-1",
+    });
+    expect(result.cancelled).toBe(true);
+    expect((result.decision as Record<string, unknown>).status).toBe("cancelled");
+    expect(backend.card("d-1").status).toBe("cancelled");
+    expect(backend.card("d-2").status).toBe("open");
+    expect(backend.requestLog.filter((entry) => entry.method === "POST")).toEqual([
+      {
+        method: "POST",
+        path: "/api/issues/VOI-42/decisions/d-1/cancel",
+        body: {},
+      },
+    ]);
+    expect(result).not.toHaveProperty("echo_comment_id");
+    expect(result).not.toHaveProperty("trigger_outcomes");
+  });
+
+  it.each([
+    ["answered", { ...ANSWERED_C }],
+    ["cancelled", { ...OPEN_A, status: "cancelled" as const }],
+  ])("reports an already %s card as a conflict", async (_state, card) => {
+    const backend = new DecisionBackend();
+    backend.seed(card);
+    const result = await callJson(backend.client(), "cancel_decision", {
+      workspace: WS,
+      issue: "VOI-42",
+      decision_id: card.id,
+    });
+    expect(result).toMatchObject({ cancelled: false, code: "conflict" });
+    expect(backend.card(card.id).status).toBe(card.status);
+  });
+
+  it.each([
+    ["unknown issue", "unknown-issue", "d-1", undefined, "not_found"],
+    ["unknown card", "VOI-42", "d-nope", undefined, "not_found"],
+    ["member-only", "VOI-42", "d-1", { status: 403, error: "decision cards can only be cancelled by human members" }, "permission_denied"],
+    ["authorization card", "VOI-42", "d-auth", undefined, "conflict"],
+  ])("maps server %s failures without answer side effects", async (_name, issue, decisionId, forcedError, code) => {
+    const backend = new DecisionBackend();
+    backend.seed({ ...OPEN_A, id: "d-auth", decision_kind: "authorization" });
+    backend.forcedCancelError = forcedError;
+    const result = await callJson(backend.client(), "cancel_decision", {
+      workspace: WS,
+      issue,
+      decision_id: decisionId,
+    });
+    expect(result).toMatchObject({ cancelled: false, code });
+    expect(backend.requestLog.every((entry) => !entry.path.endsWith("answer-batch"))).toBe(true);
   });
 });
