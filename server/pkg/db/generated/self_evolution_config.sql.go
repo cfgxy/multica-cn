@@ -11,6 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteSelfEvolutionJevConfig = `-- name: DeleteSelfEvolutionJevConfig :exec
+DELETE FROM self_evolution_jev_config WHERE self_evolution_jev_config.workspace_id = $1
+`
+
+func (q *Queries) DeleteSelfEvolutionJevConfig(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteSelfEvolutionJevConfig, workspaceID)
+	return err
+}
+
 const deleteSelfEvolutionModelConfig = `-- name: DeleteSelfEvolutionModelConfig :exec
 DELETE FROM self_evolution_model_config WHERE self_evolution_model_config.workspace_id = $1
 `
@@ -19,6 +28,33 @@ DELETE FROM self_evolution_model_config WHERE self_evolution_model_config.worksp
 func (q *Queries) DeleteSelfEvolutionModelConfig(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteSelfEvolutionModelConfig, workspaceID)
 	return err
+}
+
+const getSelfEvolutionJevConfig = `-- name: GetSelfEvolutionJevConfig :one
+
+SELECT workspace_id, base_url, api_key_encrypted, model, timeout_ms, last_checked_at, last_check_ok, last_check_error, last_engine, updated_at FROM self_evolution_jev_config WHERE self_evolution_jev_config.workspace_id = $1
+`
+
+// --- Workspace JEV advisory config ---
+// This endpoint is a warn-only prompt-proposal sidecar, not a model-service
+// override. Its key remains encrypted and is never selected into an API
+// response outside the server-side resolver.
+func (q *Queries) GetSelfEvolutionJevConfig(ctx context.Context, workspaceID pgtype.UUID) (SelfEvolutionJevConfig, error) {
+	row := q.db.QueryRow(ctx, getSelfEvolutionJevConfig, workspaceID)
+	var i SelfEvolutionJevConfig
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.BaseUrl,
+		&i.ApiKeyEncrypted,
+		&i.Model,
+		&i.TimeoutMs,
+		&i.LastCheckedAt,
+		&i.LastCheckOk,
+		&i.LastCheckError,
+		&i.LastEngine,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getSelfEvolutionModelConfig = `-- name: GetSelfEvolutionModelConfig :one
@@ -48,6 +84,35 @@ func (q *Queries) GetSelfEvolutionModelConfig(ctx context.Context, workspaceID p
 	return i, err
 }
 
+const updateSelfEvolutionJevConfigCheck = `-- name: UpdateSelfEvolutionJevConfigCheck :exec
+UPDATE self_evolution_jev_config SET
+    last_checked_at = $1,
+    last_check_ok = $2,
+    last_check_error = $3,
+    last_engine = $4,
+    updated_at = now()
+WHERE self_evolution_jev_config.workspace_id = $5
+`
+
+type UpdateSelfEvolutionJevConfigCheckParams struct {
+	LastCheckedAt  pgtype.Timestamptz `json:"last_checked_at"`
+	LastCheckOk    pgtype.Bool        `json:"last_check_ok"`
+	LastCheckError string             `json:"last_check_error"`
+	LastEngine     string             `json:"last_engine"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+}
+
+func (q *Queries) UpdateSelfEvolutionJevConfigCheck(ctx context.Context, arg UpdateSelfEvolutionJevConfigCheckParams) error {
+	_, err := q.db.Exec(ctx, updateSelfEvolutionJevConfigCheck,
+		arg.LastCheckedAt,
+		arg.LastCheckOk,
+		arg.LastCheckError,
+		arg.LastEngine,
+		arg.WorkspaceID,
+	)
+	return err
+}
+
 const updateSelfEvolutionModelConfigValidation = `-- name: UpdateSelfEvolutionModelConfigValidation :exec
 UPDATE self_evolution_model_config SET
     last_validated_at = $1,
@@ -74,6 +139,67 @@ func (q *Queries) UpdateSelfEvolutionModelConfigValidation(ctx context.Context, 
 		arg.WorkspaceID,
 	)
 	return err
+}
+
+const upsertSelfEvolutionJevConfig = `-- name: UpsertSelfEvolutionJevConfig :one
+INSERT INTO self_evolution_jev_config (
+    workspace_id, base_url, api_key_encrypted, model, timeout_ms,
+    last_checked_at, last_check_ok, last_check_error, last_engine, updated_at
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9, now()
+)
+ON CONFLICT (workspace_id) DO UPDATE SET
+    base_url = EXCLUDED.base_url,
+    api_key_encrypted = EXCLUDED.api_key_encrypted,
+    model = EXCLUDED.model,
+    timeout_ms = EXCLUDED.timeout_ms,
+    last_checked_at = EXCLUDED.last_checked_at,
+    last_check_ok = EXCLUDED.last_check_ok,
+    last_check_error = EXCLUDED.last_check_error,
+    last_engine = EXCLUDED.last_engine,
+    updated_at = now()
+RETURNING workspace_id, base_url, api_key_encrypted, model, timeout_ms, last_checked_at, last_check_ok, last_check_error, last_engine, updated_at
+`
+
+type UpsertSelfEvolutionJevConfigParams struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	BaseUrl         string             `json:"base_url"`
+	ApiKeyEncrypted []byte             `json:"api_key_encrypted"`
+	Model           string             `json:"model"`
+	TimeoutMs       int32              `json:"timeout_ms"`
+	LastCheckedAt   pgtype.Timestamptz `json:"last_checked_at"`
+	LastCheckOk     pgtype.Bool        `json:"last_check_ok"`
+	LastCheckError  string             `json:"last_check_error"`
+	LastEngine      string             `json:"last_engine"`
+}
+
+func (q *Queries) UpsertSelfEvolutionJevConfig(ctx context.Context, arg UpsertSelfEvolutionJevConfigParams) (SelfEvolutionJevConfig, error) {
+	row := q.db.QueryRow(ctx, upsertSelfEvolutionJevConfig,
+		arg.WorkspaceID,
+		arg.BaseUrl,
+		arg.ApiKeyEncrypted,
+		arg.Model,
+		arg.TimeoutMs,
+		arg.LastCheckedAt,
+		arg.LastCheckOk,
+		arg.LastCheckError,
+		arg.LastEngine,
+	)
+	var i SelfEvolutionJevConfig
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.BaseUrl,
+		&i.ApiKeyEncrypted,
+		&i.Model,
+		&i.TimeoutMs,
+		&i.LastCheckedAt,
+		&i.LastCheckOk,
+		&i.LastCheckError,
+		&i.LastEngine,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const upsertSelfEvolutionModelConfig = `-- name: UpsertSelfEvolutionModelConfig :one

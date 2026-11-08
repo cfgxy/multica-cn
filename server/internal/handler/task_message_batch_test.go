@@ -41,8 +41,9 @@ func batchMessagesRequest(t *testing.T, taskID string, messages []any) *http.Req
 	req := testutil.JSONRequest(http.MethodPost,
 		"/api/daemon/tasks/"+taskID+"/messages", map[string]any{"messages": messages})
 	req = testutil.WithURLParams(req, "taskId", taskID)
-	return req.WithContext(middleware.WithDaemonContext(
-		req.Context(), testWorkspaceID, "batch-messages-daemon"))
+	ctx := middleware.WithDaemonContext(req.Context(), testWorkspaceID, "batch-messages-daemon")
+	ctx = middleware.WithDaemonTokenOwnerID(ctx, testUserID)
+	return req.WithContext(ctx)
 }
 
 // TestReportTaskMessagesPersistsWholeBatch covers the multi-message shape of the

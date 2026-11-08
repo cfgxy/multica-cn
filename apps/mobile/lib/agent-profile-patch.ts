@@ -78,6 +78,7 @@ export function parseBounded(
 export function buildProfilePatch(
   agent: Agent,
   draft: AgentProfileDraft,
+  runtimeProvider = "",
 ): UpdateAgentRequest | null {
   if (!agent.id) return null;
   const trimmed = draft.name.trim();
@@ -128,7 +129,7 @@ export function buildProfilePatch(
     pct !== (agent.session_compact_pct ?? AGENT_SESSION_COMPACT_PCT_DEFAULT)
   )
     next.session_compact_pct = pct;
-  if (draft.subagents !== allowsSubagents(agent.runtime_config)) {
+  if (draft.subagents !== allowsSubagents(agent.runtime_config, runtimeProvider)) {
     next.runtime_config = mergeSubagentAllowance(
       agent.runtime_config,
       draft.subagents,

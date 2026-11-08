@@ -36,8 +36,8 @@ function selectedTargetIds(
 
 /**
  * Draft-first access editor. Visibility changes are security-sensitive, so
- * choosing a scope only updates the draft; nothing is persisted until the
- * owner explicitly saves the complete selection.
+ * choosing a scope only updates the draft; nothing is persisted until an
+ * authorized editor explicitly saves the complete selection.
  */
 export function AccessPicker({
   permissionMode,

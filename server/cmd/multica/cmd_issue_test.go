@@ -426,9 +426,9 @@ func TestRunIssueCommentAddRejectsExternalAttachmentWithZeroUploads(t *testing.T
 	}
 }
 
-// TestRunIssueCommentAddReturnsValidationError verifies that admission rejects
-// surface once to callers rather than being retried or converted to success.
-func TestRunIssueCommentAddReturnsValidationError(t *testing.T) {
+// TestRunIssueCommentAddReturnsLegacyValidationError keeps compatibility with
+// older servers that rejected mention semantics before saving the comment.
+func TestRunIssueCommentAddReturnsLegacyValidationError(t *testing.T) {
 	const issueID = "11111111-1111-4111-8111-111111111111"
 	var commentPosts int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -522,7 +522,7 @@ func TestCLICommentAddExitCodes(t *testing.T) {
 		want    int
 	}{
 		{name: "success", content: "accepted report", want: 0},
-		{name: "admission rejection", content: "rejected report", want: cli.ExitValidation},
+		{name: "legacy admission rejection", content: "rejected report", want: cli.ExitValidation},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := exec.Command(binary, "issue", "comment", "add", issueID, "--content", tt.content)

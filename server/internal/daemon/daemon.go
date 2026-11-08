@@ -7677,7 +7677,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AgentInstructions:                instructions,
 		AgentSkills:                      convertSkillsForEnv(skills),
 		DisabledRuntimeSkills:            convertDisabledRuntimeSkillsForEnv(task.Agent, task.RuntimeID, provider),
-		AllowSubagents:                   execenv.SubagentToolsAllowed(task.Agent.RuntimeConfig),
+		SubagentToolsAllowed:             execenv.SubagentToolsPolicy(task.Agent.RuntimeConfig),
 		Repos:                            convertReposForEnv(task.Repos),
 		ProjectID:                        task.ProjectID,
 		ProjectTitle:                     task.ProjectTitle,
@@ -7814,6 +7814,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var agentMcpConfig json.RawMessage
 	var effectiveMcpConfig json.RawMessage
 	var cursorMcpAuthSource string
+	if taskHasDirectCredentialCapability(task.CredentialCapabilities) && !agent.SupportsTaskMCP(provider) {
+		return TaskResult{}, fmt.Errorf("provider %q does not support task MCP credentials", provider)
+	}
 	remoteMCPConnections := append([]remotemcp.Connection(nil), task.RemoteMCPConnections...)
 	for _, candidate := range task.CredentialCapabilities {
 		capability, ok := credentialCapabilityForConnector(task.CredentialCapabilities, candidate.ConnectorID)
@@ -7858,6 +7861,26 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	for _, diagnostic := range remoteMCPDiagnostics {
 		taskLog.Warn("Remote MCP degraded", "reason", diagnostic)
+	}
+	credentialMCPConfig, credentialMCPServer, credentialMCPErr := startTaskCredentialMCP(
+		ctx, task.ID, task.CredentialCapabilities,
+		func(resolveCtx context.Context, capability CredentialCapability) ([]byte, error) {
+			return d.resolveCredentialCapability(resolveCtx, &task, capability)
+		},
+		taskLog,
+	)
+	if credentialMCPErr != nil {
+		return TaskResult{}, fmt.Errorf("prepare credential MCP server: %w", credentialMCPErr)
+	}
+	if credentialMCPServer != nil {
+		defer credentialMCPServer.Close()
+	}
+	if len(credentialMCPConfig) > 0 {
+		merged, mergeErr := mergeTaskRemoteMCPConfig(remoteMCPConfig, credentialMCPConfig)
+		if mergeErr != nil {
+			return TaskResult{}, fmt.Errorf("merge credential MCP configuration: %w", mergeErr)
+		}
+		remoteMCPConfig = merged
 	}
 
 	// Agent-trigger plugin hooks, as a second local MCP server beside the
@@ -8239,9 +8262,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		snapshotPrimaryUpper = primaryUpper
 		env.WorkDir = snapPlan.Primary.AbsPath
-		units := make([]execenv.SnapshotUnitSpec, 0, len(snapPlan.Units))
-		for _, u := range snapPlan.Units {
-			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, execenv.SnapshotStem(task.IssueID, u.Subdir, task.ID))
+		materializedUnits := snapPlan.materializedUnits()
+		units := make([]execenv.SnapshotUnitSpec, 0, len(materializedUnits))
+		for _, u := range materializedUnits {
+			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, snapshotUnitStem(task.IssueID, task.ID, u))
 			units = append(units, execenv.SnapshotUnitSpec{Target: u.AbsPath, Subdir: u.Subdir, Alias: alias, Upper: upper, Work: work})
 		}
 		var gitArtifact *execenv.SnapshotGitArtifactSpec
@@ -8792,6 +8816,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		McpConfig:              mcpConfig,
 		ThinkingLevel:          thinkingLevel,
 		ServiceTier:            serviceTier,
+		SubagentToolsAllowed:   taskCtx.SubagentToolsAllowed,
 		OpenclawMode:           openclawMode,
 		ClaudeSettingsPath:     env.ClaudeSettingsPath,
 		QwenpawWorkspace:       env.QwenpawWorkspace,
@@ -8842,7 +8867,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		return TaskResult{Status: "completed", Comment: "", WorkDir: env.WorkDir, EnvRoot: env.RootDir}, nil
 	}
-
 	// Authenticate the localhost repo-checkout endpoint with the same
 	// task-scoped token the child receives. The endpoint derives identity and
 	// branch ownership from this in-memory record instead of trusting request

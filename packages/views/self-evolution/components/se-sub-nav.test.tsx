@@ -9,18 +9,26 @@ import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 import type { SelfEvolutionOverview } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
+import jaCommon from "../../locales/ja/common.json";
+import jaSelfEvolution from "../../locales/ja/self-evolution.json";
+import koCommon from "../../locales/ko/common.json";
+import koSelfEvolution from "../../locales/ko/self-evolution.json";
 import { SE_NAV_GROUPS, SeSubNav } from "./se-sub-nav";
 
 /**
- * The module's URL-driven left sub-navigation (RUYI-551 §2.1): 9 pages in
- * 4 groups plus Overview, one route each. What only a mount can show: the
+ * The module's URL-driven left sub-navigation: six destinations in 3 groups.
+ * What only a mount can show: the
  * group structure exists, counts ride the overview aggregate (no fake
  * zeros), and the detail route lights its list parent — /skills/<id>
  * belongs to Skill evolution, so a refresh on a detail page keeps its
  * section highlighted.
  */
 
-const TEST_RESOURCES = { en: { common: enCommon, "self-evolution": enSelfEvolution } };
+const TEST_RESOURCES = {
+  en: { common: enCommon, "self-evolution": enSelfEvolution },
+  ja: { common: jaCommon, "self-evolution": jaSelfEvolution },
+  ko: { common: koCommon, "self-evolution": koSelfEvolution },
+};
 
 const state = vi.hoisted(() => ({
   overview: null as SelfEvolutionOverview | null,
@@ -76,13 +84,16 @@ function overviewFixture(): SelfEvolutionOverview {
   } as unknown as SelfEvolutionOverview;
 }
 
-function mount(pathname = "/test-workspace/self-evolution") {
+function mount(
+  pathname = "/test-workspace/self-evolution",
+  locale: "en" | "ja" | "ko" = "en",
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <WorkspaceSlugProvider slug="test-workspace">
         <NavigationProvider value={makeAdapter({ pathname })}>
-          <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <I18nProvider locale={locale} resources={TEST_RESOURCES}>
             <SeSubNav wsId="ws-1" />
           </I18nProvider>
         </NavigationProvider>
@@ -96,7 +107,7 @@ beforeEach(() => {
 });
 
 describe("SeSubNav", () => {
-  it("shows Overview, all 4 groups with their items, and honest counts", async () => {
+  it("shows the six destinations in three groups with honest counts", async () => {
     mount();
     const nav = await screen.findByTestId("se-sub-nav");
     const links = Array.from(nav.querySelectorAll("a")).map((a) => a.textContent);
@@ -106,32 +117,37 @@ describe("SeSubNav", () => {
       "Overview",
       "Knowledge",
       "Skill evolution",
-      "Quality",
+      "Quality & measures",
       "Clause governance",
-      "Quiz",
-      "Proposals",
-      "Versions",
       "Daily retrospective",
-      "Module config",
     ]);
-    // The group headings sit between the items.
     expect(screen.getByText("Knowledge assets")).toBeTruthy();
-    expect(screen.getByText("Measures")).toBeTruthy();
-    expect(screen.getByText("Evolution loop")).toBeTruthy();
-    expect(screen.getByText("Configuration")).toBeTruthy();
+    expect(screen.getByText("Quality & governance")).toBeTruthy();
+    expect(screen.getByText("Self-evolution workflow")).toBeTruthy();
     // Counts ride the overview aggregate, which resolves after the nav.
     await waitFor(() => expect(screen.getByText("2")).toBeTruthy()); // knowledge entries
     expect(screen.getByText("7")).toBeTruthy(); // skills
-    expect(SE_NAV_GROUPS).toHaveLength(4);
+    expect(SE_NAV_GROUPS).toHaveLength(3);
   });
 
-  it("marks only the current page active", async () => {
+  it("does not add configuration as a sidebar destination", async () => {
     mount("/test-workspace/self-evolution/config");
     await screen.findByTestId("se-sub-nav");
     const active = Array.from(
       screen.getByTestId("se-sub-nav").querySelectorAll("a[data-active]"),
     ).map((a) => a.textContent);
-    expect(active).toEqual(["Module config"]);
+    expect(active).toEqual([]);
+  });
+
+  it("highlights the consolidated quality and clause destinations for their tabs and details", async () => {
+    const { unmount } = mount("/test-workspace/self-evolution/quality");
+    await screen.findByTestId("se-sub-nav");
+    expect(screen.getByRole("link", { name: "Quality & measures" }).hasAttribute("data-active")).toBe(true);
+    unmount();
+
+    mount("/test-workspace/self-evolution/clause-governance/clause-9");
+    await screen.findByTestId("se-sub-nav");
+    expect(screen.getByRole("link", { name: "Clause governance" }).hasAttribute("data-active")).toBe(true);
   });
 
   it("lights the skills list parent from the detail route", async () => {
@@ -141,6 +157,15 @@ describe("SeSubNav", () => {
       screen.getByTestId("se-sub-nav").querySelectorAll("a[data-active]"),
     ).map((a) => a.textContent);
     expect(active).toEqual(["Skill evolution"]);
+  });
+
+  it("labels the consolidated quality destination in Japanese and Korean", async () => {
+    const { unmount: unmountJapanese } = mount("/test-workspace/self-evolution/quality", "ja");
+    expect(await screen.findByRole("link", { name: "品質と計測" })).toBeTruthy();
+    unmountJapanese();
+
+    mount("/test-workspace/self-evolution/quality", "ko");
+    expect(await screen.findByRole("link", { name: "품질 및 측정" })).toBeTruthy();
   });
 
   it("renders without a badge while the aggregate is still loading", async () => {

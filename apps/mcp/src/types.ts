@@ -197,6 +197,11 @@ export interface CommentInfo {
     status?: string;
     reason_code?: string;
   }>;
+  /** Saved-comment warnings for complete agent mention links the parser ignored. */
+  invalid_mentions?: Array<{
+    start: number;
+    end: number;
+  }>;
 }
 
 export interface IssueListParams {

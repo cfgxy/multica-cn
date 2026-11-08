@@ -272,28 +272,6 @@ func writeIssueStatusRaceError(w http.ResponseWriter, err error) bool {
 	return false
 }
 
-func (h *Handler) issueHasDraftPullRequest(ctx context.Context, issueID pgtype.UUID) (bool, error) {
-	githubPRs, err := h.Queries.ListPullRequestsByIssue(ctx, issueID)
-	if err != nil {
-		return false, err
-	}
-	for _, pr := range githubPRs {
-		if pr.State == "draft" {
-			return true, nil
-		}
-	}
-	vcsPRs, err := h.Queries.ListVCSPullRequestsByIssue(ctx, issueID)
-	if err != nil {
-		return false, err
-	}
-	for _, pr := range vcsPRs {
-		if pr.State == "draft" {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func validateIssueEnum(w http.ResponseWriter, field, value string, allowed []string) bool {
 	for _, a := range allowed {
 		if value == a {
@@ -3549,18 +3527,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		statusKeyForGuard = statusKey
-		if statusKey != prevIssue.Status && issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, statusKey) == "in_review" {
-			blocked, err := h.issueHasDraftPullRequest(r.Context(), prevIssue.ID)
-			if err != nil {
-				slog.Error("update issue: check linked pull request state", append(logger.RequestAttrs(r), "issue_id", id, "error", err)...)
-				writeError(w, http.StatusInternalServerError, "failed to verify linked pull request state")
-				return
-			}
-			if blocked {
-				writeError(w, http.StatusConflict, "issue cannot enter in_review while a linked pull request is draft")
-				return
-			}
-		}
 		params.Status = pgtype.Text{String: statusKey, Valid: true}
 	}
 	if req.Priority != nil {
@@ -3950,9 +3916,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 // also rejects archived targets and runs the INVOKE gate — canInvokeAgent, not
 // the softer canAccessPrivateAgent view gate: assigning an issue produces a
 // run, so it must clear the same predicate as chat / @-mention (MUL-3963).
-// That means owner-only for a private agent, with NO workspace-admin bypass
-// and NO unconditional agent-to-agent bypass — an agent caller (X-Agent-ID) is
-// judged by the top-of-chain human originator like everywhere else.
+// For a private agent, that admits the agent owner or workspace owner, with NO
+// workspace-admin bypass and NO unconditional agent-to-agent bypass — an agent
+// caller (X-Agent-ID) is judged by the top-of-chain human originator like
+// everywhere else.
 // An autopilot run needs no special case here: since MUL-6951 a scheduled run
 // carries its trigger owner's originator, so it is judged by exactly the same
 // predicate as that human acting directly.
@@ -4366,31 +4333,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		batchStatusKey, _, ok = h.resolveIssueStatusKeyKind(w, r, wsUUID, *req.Updates.Status)
 		if !ok {
 			return
-		}
-	}
-	if req.Updates.Status != nil && issuestatus.Effective(r.Context(), h.Queries, wsUUID, batchStatusKey) == "in_review" {
-		for _, id := range req.IssueIDs {
-			issueUUID, err := util.ParseUUID(id)
-			if err != nil {
-				continue
-			}
-			issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: issueUUID, WorkspaceID: wsUUID})
-			if err != nil {
-				continue
-			}
-			if issue.Status == batchStatusKey {
-				continue
-			}
-			blocked, err := h.issueHasDraftPullRequest(r.Context(), issue.ID)
-			if err != nil {
-				slog.Error("batch update issues: check linked pull request state", append(logger.RequestAttrs(r), "issue_id", id, "error", err)...)
-				writeError(w, http.StatusInternalServerError, "failed to verify linked pull request state")
-				return
-			}
-			if blocked {
-				writeError(w, http.StatusConflict, "issue cannot enter in_review while a linked pull request is draft")
-				return
-			}
 		}
 	}
 	// The batch shares one project_id, so it is checked once here rather than

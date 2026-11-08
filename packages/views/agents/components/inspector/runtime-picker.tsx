@@ -66,6 +66,8 @@ export function RuntimePicker({
   const { t } = useT("agents");
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState<Filter>("mine");
+  const currentUserRole =
+    members.find((member) => member.user_id === currentUserId)?.role ?? null;
   // Level 2 target. `null` shows the machine list; a machine id shows that
   // machine's runtimes. Falls back to the machine list at render time when
   // the id no longer resolves (e.g. the daemon was GC'd over WS).
@@ -74,10 +76,9 @@ export function RuntimePicker({
   const selected = runtimes.find((r) => r.id === value) ?? null;
 
   // Same predicate the create / duplicate / builder surfaces use, so a
-  // runtime this picker locks is exactly the one the API and CLI refuse
-  // (MUL-6126) — no workspace-role exception on either side.
+  // runtime this picker locks is exactly the one the API and CLI refuse.
   const isDisabled = (r: AgentRuntime): boolean =>
-    !isRuntimeUsableForUser(r, currentUserId);
+    !isRuntimeUsableForUser(r, currentUserId, currentUserRole);
 
   // §4.5: disabled instances offer no new bindings, so they drop out of the
   // option domain — machine lists and the open-time landing below. The

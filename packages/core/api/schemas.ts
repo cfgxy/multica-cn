@@ -1474,6 +1474,11 @@ export const CommentTriggerOutcomeSchema = z.object({
   reason_code: z.string().default(""),
 }).loose();
 
+const CommentMentionWarningSchema = z.object({
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+}).refine(({ start, end }) => end > start);
+
 export const CommentSchema = z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1493,6 +1498,12 @@ export const CommentSchema = z.object({
   trigger_outcomes: z.array(z.unknown()).catch([]).optional().transform((items) =>
     items?.flatMap((item) => {
       const parsed = CommentTriggerOutcomeSchema.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    }),
+  ),
+  invalid_mentions: z.array(z.unknown()).catch([]).optional().transform((items) =>
+    items?.flatMap((item) => {
+      const parsed = CommentMentionWarningSchema.safeParse(item);
       return parsed.success ? [parsed.data] : [];
     }),
   ),
@@ -1534,7 +1545,7 @@ const CommentTriggerPreviewAgentSchema = z.object({
 export const CommentTriggerPreviewSchema = z.object({
   agents: z.array(CommentTriggerPreviewAgentSchema).default([]),
   invalid_mentions: z
-    .array(z.object({ start: z.number().int().nonnegative(), end: z.number().int().nonnegative() }))
+    .array(CommentMentionWarningSchema)
     .catch([])
     .default([]),
   // Drop malformed blocked entries INDIVIDUALLY (MUL-4525): a single bad item
@@ -5495,6 +5506,23 @@ export const SelfEvolutionConfigValidationSchema = z.object({
   error_kind: z.string().default(""),
   message: z.string().default(""),
   validated_at: z.string().optional(),
+});
+
+// ---- Workspace JEV advisory config ----
+// The browser never receives the encrypted key. A malformed response must
+// degrade to unconfigured so it cannot claim a working risk precheck.
+export const SelfEvolutionJevConfigSchema = z.object({
+  status: z.enum(["unconfigured", "offline", "available"]).default("unconfigured"),
+  source: z.enum(["unconfigured", "workspace", "deployment"]).default("unconfigured"),
+  endpoint: z.string().default(""),
+  model: z.string().default(""),
+  timeout_ms: z.number().int().min(100).max(30000).default(1500),
+  has_api_key: z.boolean().default(false),
+  last_checked_at: z.string().optional(),
+  last_check_ok: z.boolean().optional(),
+  last_check_error: z.string().default(""),
+  engine: z.string().optional(),
+  encryption_ready: z.boolean().default(true),
 });
 
 // Workspace host-backpressure settings (RUYI-618): the effective card the

@@ -100,6 +100,7 @@ import {
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 import { SkillSummaryListSchema } from "./schemas";
+import { SelfEvolutionJevConfigSchema } from "./schemas";
 
 describe("decision request response", () => {
   const baseRequest = {
@@ -1694,6 +1695,14 @@ describe("CommentSchema.trigger_outcomes", () => {
     expect(CommentSchema.parse({ ...comment, trigger_outcomes: "bad" }).trigger_outcomes).toEqual([]);
     expect(CommentSchema.safeParse({ ...comment, id: 123 }).success).toBe(false);
   });
+
+  it("parses saved-comment mention warnings and degrades malformed warning fields", () => {
+    expect(CommentSchema.parse({
+      ...comment,
+      invalid_mentions: [{ start: 3, end: 12 }],
+    }).invalid_mentions).toEqual([{ start: 3, end: 12 }]);
+    expect(CommentSchema.parse({ ...comment, invalid_mentions: "bad" }).invalid_mentions).toEqual([]);
+  });
 });
 
 describe("CommentTriggerPreviewSchema.blocked", () => {
@@ -2805,5 +2814,41 @@ describe("DecisionRequestsListSchema rework fields", () => {
         next_cursor: "2026-10-20T00:00:00Z",
       }).success,
     ).toBe(true);
+  });
+});
+
+describe("SelfEvolutionJevConfigSchema", () => {
+  const fallback = {
+    status: "unconfigured" as const,
+    source: "unconfigured" as const,
+    endpoint: "",
+    model: "",
+    timeout_ms: 1500,
+    has_api_key: false,
+    last_check_error: "",
+    encryption_ready: true,
+  };
+
+  it("defaults an incomplete legacy response to unconfigured values", () => {
+    expect(SelfEvolutionJevConfigSchema.parse({})).toEqual(fallback);
+  });
+
+  it("accepts the member-safe status and source response", () => {
+    expect(SelfEvolutionJevConfigSchema.parse({ status: "available", source: "workspace" })).toEqual({
+      ...fallback,
+      status: "available",
+      source: "workspace",
+    });
+  });
+
+  it("falls back when a response contains an invalid status or timeout", () => {
+    expect(
+      parseWithFallback(
+        { status: "ready", timeout_ms: 1, has_api_key: "yes" },
+        SelfEvolutionJevConfigSchema,
+        fallback,
+        { endpoint: "GET /api/self-evolution/jev-config" },
+      ),
+    ).toEqual(fallback);
   });
 });

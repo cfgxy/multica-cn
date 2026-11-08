@@ -506,7 +506,7 @@ func TestMentionAgent_RejectsCrossWorkspaceAgentUUID(t *testing.T) {
 // truth, this list only summarises them):
 //   - reject plain workspace members (not owner, not admin, not agent owner)
 //   - allow the agent owner
-//   - reject workspace owners/admins: management access is not invoke access
+//   - allow the workspace owner and agent owner; reject workspace admins
 //   - reject an agent actor with no owner / allow-listed human originator —
 //     A2A is judged by the top of the chain, never by the immediate agent
 func TestShouldEnqueueOnComment_PrivateAgentGate(t *testing.T) {
@@ -562,11 +562,11 @@ func TestShouldEnqueueOnComment_PrivateAgentGate(t *testing.T) {
 			reason:    "agent owner is always in the allowed_principals set",
 		},
 		{
-			name:      "workspace owner — denied (not agent owner)",
+			name:      "workspace owner — allowed",
 			actorType: "member",
 			actorID:   testUserID,
-			want:      false,
-			reason:    "MUL-3963: workspace owners/admins no longer bypass a private agent's invocation gate",
+			want:      true,
+			reason:    "workspace owner may invoke a private agent",
 		},
 		{
 			name:      "agent-to-agent — denied without allowed originator",

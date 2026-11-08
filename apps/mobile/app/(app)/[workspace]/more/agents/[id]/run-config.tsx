@@ -61,6 +61,7 @@ import {
 } from "@/components/agents/agent-editor-fields";
 import { agentDetailOptions } from "@/data/queries/agents";
 import { runtimeListOptions } from "@/data/queries/runtimes";
+import { memberListOptions } from "@/data/queries/members";
 import { runtimeModelsOptions } from "@/data/queries/runtime-models";
 import {
   voiceProvidersOptions,
@@ -97,6 +98,9 @@ export default function AgentRunConfig() {
   const { data: runtimes, isLoading: runtimesLoading } = useQuery(
     runtimeListOptions(wsId),
   );
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const currentUserRole =
+    members.find((member) => member.user_id === me?.id)?.role ?? null;
   const { data: voiceProviders = [] } = useQuery(voiceProvidersOptions(wsId ?? ""));
   const voiceEligible = useMemo(
     () => voiceProviders.filter(voiceProviderChainEligible),
@@ -122,7 +126,7 @@ export default function AgentRunConfig() {
   const [seeded, setSeeded] = useState(false);
 
   useEffect(() => {
-    if (!agent || !agent.id || seeded) return;
+    if (!agent || !agent.id || seeded || runtimesLoading) return;
     const voice = agent as AgentWithVoiceOverride;
     setRuntimeId(agent.runtime_id);
     setModel(agent.model);
@@ -138,7 +142,10 @@ export default function AgentRunConfig() {
     setCompactPct(
       String(agent.session_compact_pct ?? AGENT_SESSION_COMPACT_PCT_DEFAULT),
     );
-    setSubagents(allowsSubagents(agent.runtime_config));
+    const boundProvider = (runtimes ?? []).find(
+      (candidate) => candidate.id === agent.runtime_id,
+    )?.provider;
+    setSubagents(allowsSubagents(agent.runtime_config, boundProvider));
     // The wire represents "unbound" as an empty string, which must map to
     // the "none" (inherit) sentinel — a raw "" would select no option at all.
     setVoiceProviderId(voice.voice_provider_id || "none");
@@ -147,7 +154,7 @@ export default function AgentRunConfig() {
       voice.voice_advanced ? JSON.stringify(voice.voice_advanced, null, 2) : "",
     );
     setSeeded(true);
-  }, [agent, seeded]);
+  }, [agent, runtimes, runtimesLoading, seeded]);
 
   // Text slot choices: online + usable by me + text-capable — plus the
   // agent's current runtime even when offline (so the current binding is
@@ -158,6 +165,7 @@ export default function AgentRunConfig() {
     if (!agent) return [];
     const usable = agentSlotChoices(runtimes, "text", {
       currentUserId: me?.id ?? null,
+      currentUserRole,
       excludeRuntimeId: agent.voice_runtime_id ?? "",
       keepRuntimeId: runtimeId,
     });
@@ -166,7 +174,7 @@ export default function AgentRunConfig() {
       if (current) return [current, ...usable];
     }
     return usable;
-  }, [agent, runtimes, runtimeId, me]);
+  }, [agent, runtimes, runtimeId, me, currentUserRole]);
 
   const runtime = runtimes?.find((r) => r.id === runtimeId);
   const provider = runtime?.provider ?? "";
@@ -190,10 +198,14 @@ export default function AgentRunConfig() {
   // same cascade web's editors apply.
   const handleRuntimeChange = (next: string) => {
     if (next === runtimeId) return;
+    const nextProvider = (runtimes ?? []).find(
+      (candidate) => candidate.id === next,
+    )?.provider;
     setRuntimeId(next);
     setModel("");
     setThinking("");
     setTier("");
+    setSubagents(allowsSubagents(agent?.runtime_config, nextProvider));
   };
   // Changing the model invalidates thinking / tier the same way.
   const handleModelChange = (next: string) => {
@@ -226,7 +238,7 @@ export default function AgentRunConfig() {
       voiceProviderId: voiceProviderId === "none" ? "" : voiceProviderId,
       voiceModel,
       voiceAdvanced,
-    });
+    }, provider);
   }, [
     agent,
     seeded,
@@ -238,6 +250,7 @@ export default function AgentRunConfig() {
     maxContext,
     compactPct,
     subagents,
+    provider,
     voiceProviderId,
     voiceModel,
     voiceAdvanced,
@@ -634,7 +647,9 @@ export default function AgentRunConfig() {
             <Text className="text-xs text-muted-foreground">
               {t(
                 "inspector.prop_subagents_hint",
-                "Off (default) hard-denies the Agent/Task tools at runtime, so this agent cannot delegate work to subagents. Turn on only for agents that need it.",
+                provider === "codex"
+                  ? "Codex native subagents are off by default because unfinished child work can be lost when the parent thread finishes. Turn on to accept that risk explicitly."
+                  : "Multica adds no extra subagent restriction by default. Change this switch to save an explicit per-agent policy.",
               )}
             </Text>
           </View>
