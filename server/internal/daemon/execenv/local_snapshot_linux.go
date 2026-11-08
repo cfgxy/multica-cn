@@ -75,6 +75,12 @@ func RunSnapshotWorker(args []string) int {
 		}
 	}
 	gitEnv := SnapshotGitEnvironment()
+	if spec.GitArtifact != nil && spec.GitArtifact.ScopePath != "" {
+		// A declared business unit is its own overlay mount while the repository
+		// .git is a separate internal mount above it. Git must cross that mount
+		// boundary to discover the private metadata view.
+		gitEnv = SnapshotGitEnvironmentAcrossFilesystems()
+	}
 	// Preserve the original exec path for ordinary snapshots. Git delivery alone
 	// needs the mount to stay alive briefly after the child exits.
 	argv := append([]string{rest[0]}, rest[1:]...)

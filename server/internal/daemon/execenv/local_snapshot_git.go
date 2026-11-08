@@ -38,19 +38,43 @@ func CaptureSnapshotGitArtifact(cwd string, spec *SnapshotGitArtifactSpec, env [
 	if err := CleanupSidecars(spec.EnvRoot); err != nil {
 		return fmt.Errorf("clean snapshot sidecars: %w", err)
 	}
-	if _, err := run("add", "-A"); err != nil {
+	addArgs := []string{"add", "-A"}
+	if spec.ScopePath != "" {
+		scopePath, err := snapshotArtifactScopePath(spec.ScopePath)
+		if err != nil {
+			return err
+		}
+		addArgs = append(addArgs, "--", scopePath)
+	}
+	// The private metadata overlay can still see host ref changes made after the
+	// daemon recorded Baseline. Rebuild its index and HEAD from that fixed commit
+	// before staging the task's final working tree. read-tree does not refresh
+	// the worktree, so it preserves task writes, including ones committed by the
+	// agent before capture.
+	if out, err := run("read-tree", spec.Baseline); err != nil {
+		return fmt.Errorf("rebuild snapshot Git index: %s: %w", strings.TrimSpace(out), err)
+	}
+	if out, err := run("update-ref", "HEAD", spec.Baseline); err != nil {
+		return fmt.Errorf("reset snapshot Git head to baseline: %s: %w", strings.TrimSpace(out), err)
+	}
+	if _, err := run(addArgs...); err != nil {
 		return fmt.Errorf("stage snapshot changes: %w", err)
 	}
+	head := spec.Baseline
 	if _, err := run("diff", "--cached", "--quiet"); err != nil {
-		if _, commitErr := run("-c", "user.name=Multica Snapshot", "-c", "user.email=snapshot@multica.invalid", "commit", "--no-verify", "-m", "multica: snapshot task artifact"); commitErr != nil {
+		tree, treeErr := run("write-tree")
+		if treeErr != nil {
+			return fmt.Errorf("write snapshot tree: %w", treeErr)
+		}
+		commit, commitErr := run("-c", "user.name=Multica Snapshot", "-c", "user.email=snapshot@multica.invalid", "commit-tree", strings.TrimSpace(tree), "-p", spec.Baseline, "-m", "multica: snapshot task artifact")
+		if commitErr != nil {
 			return fmt.Errorf("commit snapshot changes: %w", commitErr)
 		}
+		head = strings.TrimSpace(commit)
+		if out, updateErr := run("update-ref", "HEAD", head, spec.Baseline); updateErr != nil {
+			return fmt.Errorf("update snapshot artifact head: %s: %w", strings.TrimSpace(out), updateErr)
+		}
 	}
-	head, err := run("rev-parse", "HEAD")
-	if err != nil {
-		return fmt.Errorf("resolve snapshot artifact head: %w", err)
-	}
-	head = strings.TrimSpace(head)
 	if err := os.MkdirAll(spec.ArtifactDir, 0o700); err != nil {
 		return fmt.Errorf("create snapshot artifact directory: %w", err)
 	}
@@ -77,6 +101,19 @@ func CaptureSnapshotGitArtifact(cwd string, spec *SnapshotGitArtifactSpec, env [
 		return fmt.Errorf("write snapshot artifact manifest: %w", err)
 	}
 	return nil
+}
+
+func snapshotArtifactScopePath(scope string) (string, error) {
+	if strings.ContainsRune(scope, 0) {
+		return "", fmt.Errorf("snapshot Git artifact scope contains NUL")
+	}
+	clean := filepath.ToSlash(filepath.Clean(scope))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || filepath.IsAbs(scope) {
+		return "", fmt.Errorf("snapshot Git artifact scope %q must be a repository-relative directory", scope)
+	}
+	// Capture runs from the declared directory, so use Git's top-level magic to
+	// keep the path repository-relative rather than resolving it below cwd.
+	return ":/" + clean, nil
 }
 
 // SnapshotGitBaseline resolves the pristine commit before the worker mounts

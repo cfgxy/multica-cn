@@ -485,6 +485,35 @@ func TestLocalPathLockerCtxCancel(t *testing.T) {
 	}
 }
 
+func TestLocalPathLockerOverlappingScopeCtxCancel(t *testing.T) {
+	locker := NewLocalPathLocker()
+
+	release, err := locker.AcquireOverlapping(context.Background(), []string{"/some/path"}, "task-1", nil)
+	if err != nil {
+		t.Fatalf("acquire holder: %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	var waitCalls atomic.Int32
+	_, err = locker.AcquireOverlapping(ctx, []string{"/some/path/child"}, "task-2", func(path, holder string) {
+		waitCalls.Add(1)
+		if path != "/some/path/child" {
+			t.Errorf("wait path = %q, want child path", path)
+		}
+		if holder != "task-1" {
+			t.Errorf("wait holder = %q, want task-1", holder)
+		}
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	}
+	if got := waitCalls.Load(); got != 1 {
+		t.Fatalf("onWait calls = %d, want 1", got)
+	}
+}
+
 func TestLocalPathLockerDistinctPathsParallel(t *testing.T) {
 	locker := NewLocalPathLocker()
 

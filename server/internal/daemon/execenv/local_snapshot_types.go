@@ -104,6 +104,9 @@ type SnapshotGitArtifactSpec struct {
 	Baseline    string `json:"baseline"`
 	EnvRoot     string `json:"env_root"`
 	Provider    string `json:"provider"`
+	// ScopePath limits a declared-subdirectory delivery to this repository-
+	// relative path. Empty retains whole-repository delivery for root resources.
+	ScopePath string `json:"scope_path,omitempty"`
 }
 
 // SnapshotLedgerEntry is one ownership record: which task materialized which

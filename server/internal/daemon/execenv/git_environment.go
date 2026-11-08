@@ -18,6 +18,22 @@ func SnapshotGitEnvironment() []string {
 	return snapshotGitEnvironment(os.Environ())
 }
 
+// SnapshotGitEnvironmentAcrossFilesystems permits Git discovery from a
+// separately mounted declared business directory to its private .git mount.
+// It replaces, rather than appends to, an inherited setting so the worker and
+// its Git subprocesses never observe duplicate environment keys.
+func SnapshotGitEnvironmentAcrossFilesystems() []string {
+	env := SnapshotGitEnvironment()
+	filtered := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		key, _, _ := strings.Cut(item, "=")
+		if key != "GIT_DISCOVERY_ACROSS_FILESYSTEM" {
+			filtered = append(filtered, item)
+		}
+	}
+	return append(filtered, "GIT_DISCOVERY_ACROSS_FILESYSTEM=1")
+}
+
 func snapshotGitEnvironment(env []string) []string {
 	if env == nil {
 		env = os.Environ()
