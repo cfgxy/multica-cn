@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ChevronRight, ExternalLink, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronRight, ExternalLink, RefreshCw, ScanLine, Trash2 } from "lucide-react";
 // Named import, NOT default: react-qr-code is CJS, and electron-vite's
 // dep-optimizer default-import interop handed back the module namespace
 // object instead of the component, throwing "Element type is invalid …
@@ -302,9 +302,12 @@ export function LarkCapabilityPanel({
   const wsId = useWorkspaceId();
   const qc = useQueryClient();
   const [checking, setChecking] = useState(false);
+  const [granting, setGranting] = useState(false);
+  const [grantQRCodeURL, setGrantQRCodeURL] = useState<string | null>(null);
 
   const caps = installation.capabilities;
   const missing = (caps ?? []).filter((c) => c.status === "missing");
+  const hasUnknown = (caps ?? []).some((c) => c.status === "unknown");
   const allGranted =
     !!caps && caps.length > 0 && missing.length === 0 &&
     caps.every((c) => c.status === "granted");
@@ -325,6 +328,26 @@ export function LarkCapabilityPanel({
       );
     } finally {
       setChecking(false);
+    }
+  }
+
+  async function handlePermissionGrant() {
+    if (granting) return;
+    setGranting(true);
+    try {
+      const result = await api.beginLarkPermissionGrant(wsId, installation.id);
+      if (!result.qr_code_url) {
+        throw new Error(t(($) => $.lark.permissions_grant_failed));
+      }
+      setGrantQRCodeURL(result.qr_code_url);
+    } catch (e) {
+      toast.error(
+        e instanceof Error
+          ? e.message
+          : t(($) => $.lark.permissions_grant_failed),
+      );
+    } finally {
+      setGranting(false);
     }
   }
 
@@ -387,11 +410,6 @@ export function LarkCapabilityPanel({
                   {statusLabel(c.status)}
                 </span>
                 <span>{capabilityLabel(c.capability)}</span>
-                {c.capability === "receive_messages" && c.status === "unknown" && (
-                  <span className="text-micro text-muted-foreground">
-                    {t(($) => $.lark.permissions_receive_note)}
-                  </span>
-                )}
               </li>
             ))}
           </ul>
@@ -434,12 +452,63 @@ export function LarkCapabilityPanel({
             </div>
           )}
 
+          {canManage && (missing.length > 0 || hasUnknown) && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-micro"
+              onClick={handlePermissionGrant}
+              disabled={granting}
+              data-testid="lark-permissions-grant"
+            >
+              <ScanLine className={cn("h-3 w-3", granting && "animate-pulse")} />
+              {granting
+                ? t(($) => $.lark.permissions_granting)
+                : t(($) => $.lark.permissions_grant)}
+            </Button>
+          )}
+
           {allGranted && (
             <p className="text-micro text-muted-foreground">
               {t(($) => $.lark.permissions_all_granted)}
             </p>
           )}
         </>
+      )}
+
+      {grantQRCodeURL && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setGrantQRCodeURL(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{t(($) => $.lark.permissions_grant_title)}</DialogTitle>
+              <DialogDescription>
+                {t(($) => $.lark.permissions_grant_description)}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex justify-center py-2">
+              <QRCode value={grantQRCodeURL} size={192} />
+            </div>
+            <a
+              href={grantQRCodeURL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-center text-caption text-primary underline underline-offset-2"
+              data-testid="lark-permissions-grant-open-link"
+            >
+              {t(($) => $.lark.permissions_grant_open_link)}
+            </a>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setGrantQRCodeURL(null)}>
+                {t(($) => $.lark.install_close)}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );
