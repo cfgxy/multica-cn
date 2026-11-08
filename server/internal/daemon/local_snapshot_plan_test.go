@@ -40,11 +40,16 @@ func snapshotResourceForTest(t *testing.T, id, dir, daemonID string, primary boo
 }
 
 func worktreeResourceForTest(t *testing.T, id, dir, daemonID string) ProjectResourceData {
+	return worktreeResourceWithSubdirectoriesForTest(t, id, dir, daemonID)
+}
+
+func worktreeResourceWithSubdirectoriesForTest(t *testing.T, id, dir, daemonID string, subdirs ...string) ProjectResourceData {
 	t.Helper()
 	raw, err := json.Marshal(localDirectoryRef{
-		LocalPath:     dir,
-		DaemonID:      daemonID,
-		ExecutionMode: localDirectoryModeWorktree,
+		LocalPath:      dir,
+		DaemonID:       daemonID,
+		ExecutionMode:  localDirectoryModeWorktree,
+		Subdirectories: subdirs,
 	})
 	if err != nil {
 		t.Fatalf("marshal worktree ref: %v", err)
@@ -413,6 +418,27 @@ func TestGitSnapshotDeliveryEligibleIsNarrow(t *testing.T) {
 	if fallback, err := snapshotWorktreeFallbackWithGitGate(ordinary, true); err != nil || fallback != nil {
 		t.Fatalf("enabled ordinary repository must enter snapshot delivery, fallback=%+v err=%v", fallback, err)
 	}
+	declaredSubdir := filepath.Join(gitRoot, "apps", "a")
+	if err := os.MkdirAll(declaredSubdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	declared := &snapshotPlan{
+		Units:    []snapshotUnit{{AbsPath: declaredSubdir, Subdir: "apps/a"}},
+		Primary:  &snapshotUnit{AbsPath: declaredSubdir, Subdir: "apps/a"},
+		Declared: true,
+	}
+	if !gitSnapshotDeliveryEligible(declared, true) {
+		t.Fatal("single declared subdirectory of an ordinary repository must be eligible")
+	}
+	if fallback, err := snapshotWorktreeFallbackWithGitGate(declared, true); err != nil || fallback != nil {
+		t.Fatalf("eligible declared subdirectory must enter snapshot delivery, fallback=%+v err=%v", fallback, err)
+	}
+	if len(declared.GitContainmentUnits) != 1 || declared.GitContainmentUnits[0].AbsPath != gitRoot {
+		t.Fatalf("declared subdirectory must materialize a repository containment unit, got %+v", declared.GitContainmentUnits)
+	}
+	if len(declared.GitMetadataUnits) != 1 || declared.GitMetadataUnits[0].AbsPath != filepath.Join(gitRoot, ".git") {
+		t.Fatalf("declared subdirectory must materialize repository .git metadata, got %+v", declared.GitMetadataUnits)
+	}
 
 	nested := newTestGitRoot(t)
 	if out, err := exec.Command("git", "init", "-q", filepath.Join(nested, "child")).CombinedOutput(); err != nil {
@@ -437,6 +463,17 @@ func TestGitSnapshotDeliveryEligibleIsNarrow(t *testing.T) {
 	}
 	if len(linkedPlan.GitMetadataUnits) != 1 {
 		t.Fatalf("linked worktree must materialize one external Git metadata unit, got %+v", linkedPlan.GitMetadataUnits)
+	}
+	linkedSubdir := filepath.Join(linked, "apps", "a")
+	if err := os.MkdirAll(linkedSubdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkedSubdirPlan := &snapshotPlan{
+		Units:   []snapshotUnit{{AbsPath: linkedSubdir, Subdir: "apps/a"}},
+		Primary: &snapshotUnit{AbsPath: linkedSubdir, Subdir: "apps/a"},
+	}
+	if gitSnapshotDeliveryEligible(linkedSubdirPlan, true) {
+		t.Fatal("declared subdirectory of linked worktree must retain the worktree fallback")
 	}
 
 	declaredSubmodule := newTestGitRoot(t)
@@ -770,6 +807,161 @@ func TestMaterializeSnapshotTrees(t *testing.T) {
 	}
 }
 
+func TestGitSnapshotDeclaredSubdirectoryPlanLocksAndLedger(t *testing.T) {
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "1")
+	const daemonID = "d-mine"
+	repo := newTestGitRoot(t)
+	for _, subdir := range []string{"apps/a", "apps/a/child", "apps/b"} {
+		path := filepath.Join(repo, filepath.FromSlash(subdir))
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "tracked.txt"), []byte(subdir+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runTopologyGit(t, repo, "add", "apps")
+	runTopologyGit(t, repo, "commit", "-qm", "add declared directories")
+
+	resource := worktreeResourceWithSubdirectoriesForTest(t, "r1", repo, daemonID, "apps/a", "apps/b")
+	taskA := Task{
+		ID:                  "task-a",
+		IssueID:             "issue-a",
+		ProjectResources:    []ProjectResourceData{resource},
+		LocalDirectoryScope: scopeJSONForTest(t, "r1", "apps/a"),
+	}
+	planA, err := resolveSnapshotPlan(taskA, daemonID)
+	if err != nil {
+		t.Fatalf("resolve Git subdirectory plan: %v", err)
+	}
+	if planA == nil || planA.Primary == nil || planA.Primary.AbsPath != filepath.Join(repo, "apps", "a") {
+		t.Fatalf("Git subdirectory primary = %+v, want apps/a", planA)
+	}
+	if fallback, err := snapshotWorktreeFallbackWithGitGateAndCapability(planA, true, true); err != nil || fallback != nil {
+		t.Fatalf("ordinary Git subdirectory must use snapshot delivery, fallback=%+v err=%v", fallback, err)
+	}
+	if len(planA.GitMetadataUnits) != 1 || planA.GitMetadataUnits[0].AbsPath != filepath.Join(repo, ".git") || planA.GitMetadataUnits[0].InternalKey == "" {
+		t.Fatalf("Git metadata unit = %+v, want internal repository .git unit", planA.GitMetadataUnits)
+	}
+	if len(planA.GitContainmentUnits) != 1 || planA.GitContainmentUnits[0].AbsPath != repo || planA.GitContainmentUnits[0].InternalKey == "" {
+		t.Fatalf("Git containment unit = %+v, want internal repository root unit", planA.GitContainmentUnits)
+	}
+	if locks := planA.DeclaredLockPaths(); len(locks) != 1 || locks[0] != planA.Units[0].LockPath {
+		t.Fatalf("containment must not widen declared scope locks, got %v", locks)
+	}
+
+	envRoot := t.TempDir()
+	if _, err := planA.materializeTrees(envRoot, taskA.IssueID, taskA.ID); err != nil {
+		t.Fatalf("materialize Git subdirectory trees: %v", err)
+	}
+	units := make([]execenv.SnapshotUnitSpec, 0, len(planA.materializedUnits()))
+	for _, unit := range planA.materializedUnits() {
+		alias, upper, work := execenv.PlanSnapshotTree(envRoot, snapshotUnitStem(taskA.IssueID, taskA.ID, unit))
+		if _, err := os.Stat(upper); err != nil {
+			t.Fatalf("materialized unit upper %q: %v", unit.AbsPath, err)
+		}
+		units = append(units, execenv.SnapshotUnitSpec{Target: unit.AbsPath, Subdir: unit.Subdir, Alias: alias, Upper: upper, Work: work})
+	}
+	workerSpec := execenv.SnapshotRunSpec{TaskID: taskA.ID, Units: units, Cwd: planA.Primary.AbsPath}
+	if len(workerSpec.Units) != 3 || workerSpec.Units[0].Target != repo || workerSpec.Units[1].Target != filepath.Join(repo, "apps", "a") || workerSpec.Units[2].Target != filepath.Join(repo, ".git") || workerSpec.Cwd != filepath.Join(repo, "apps", "a") {
+		t.Fatalf("worker spec must retain containment, business, metadata units and business cwd, got %+v", workerSpec)
+	}
+	if err := execenv.RecordSnapshotStart(envRoot, execenv.SnapshotLedgerEntry{TaskID: taskA.ID, IssueID: taskA.IssueID, Root: envRoot, Primary: planA.Primary.AbsPath, Units: units}); err != nil {
+		t.Fatalf("record snapshot ledger: %v", err)
+	}
+	rawLedger, err := os.ReadFile(execenv.SnapshotLedgerPath(envRoot))
+	if err != nil {
+		t.Fatalf("read snapshot ledger: %v", err)
+	}
+	var ledger struct {
+		Entries []execenv.SnapshotLedgerEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(rawLedger, &ledger); err != nil {
+		t.Fatalf("decode snapshot ledger: %v", err)
+	}
+	if len(ledger.Entries) != 1 || len(ledger.Entries[0].Units) != 3 || ledger.Entries[0].Units[0].Target != repo || ledger.Entries[0].Units[1].Target != filepath.Join(repo, "apps", "a") || ledger.Entries[0].Units[2].Target != filepath.Join(repo, ".git") {
+		t.Fatalf("ledger must retain the full containment, business, and metadata unit set, got %+v", ledger)
+	}
+
+	var waitCalls atomic.Int32
+	srv := waitingServerForTest(t, &waitCalls)
+	d := &Daemon{
+		cfg:                Config{DaemonID: daemonID},
+		client:             NewClient(srv.URL),
+		localPathLocks:     NewLocalPathLocker(),
+		logger:             slog.Default(),
+		cancelPollInterval: time.Hour,
+	}
+	d.client.snapshotSupport.Store(true)
+	taskB := Task{
+		ID:                  "task-b",
+		IssueID:             "issue-b",
+		ProjectResources:    []ProjectResourceData{resource},
+		LocalDirectoryScope: scopeJSONForTest(t, "r1", "apps/b"),
+	}
+
+	var releases [2]func()
+	var aborts [2]bool
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		releases[0], aborts[0] = d.acquireLocalDirectoryLockIfNeeded(context.Background(), taskA, slog.Default())
+	}()
+	go func() {
+		defer wg.Done()
+		releases[1], aborts[1] = d.acquireLocalDirectoryLockIfNeeded(context.Background(), taskB, slog.Default())
+	}()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("disjoint Git subdirectories must run in parallel")
+	}
+	if aborts[0] || aborts[1] || releases[0] == nil || releases[1] == nil {
+		t.Fatalf("disjoint Git subdirectories must both hold scope locks, aborts=%v releases=%v", aborts, releases)
+	}
+	if calls := waitCalls.Load(); calls != 0 {
+		t.Fatalf("disjoint Git subdirectories must not wait, saw %d calls", calls)
+	}
+	releases[0]()
+	releases[1]()
+
+	firstRelease, firstAbort := d.acquireLocalDirectoryLockIfNeeded(context.Background(), taskA, slog.Default())
+	if firstAbort || firstRelease == nil {
+		t.Fatalf("first overlapping Git subdirectory task must acquire lock, abort=%v", firstAbort)
+	}
+	child := Task{
+		ID:                  "task-child",
+		IssueID:             "issue-child",
+		ProjectResources:    []ProjectResourceData{resource},
+		LocalDirectoryScope: scopeJSONForTest(t, "r1", "apps/a/child"),
+	}
+	blocked := make(chan func(), 1)
+	go func() {
+		release, _ := d.acquireLocalDirectoryLockIfNeeded(context.Background(), child, slog.Default())
+		blocked <- release
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for waitCalls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if waitCalls.Load() == 0 {
+		t.Fatal("parent/child Git subdirectory task never reported waiting_local_directory")
+	}
+	firstRelease()
+	select {
+	case release := <-blocked:
+		if release == nil {
+			t.Fatal("parent/child Git subdirectory task aborted after wait")
+		}
+		release()
+	case <-time.After(2 * time.Second):
+		t.Fatal("parent/child Git subdirectory task did not acquire after release")
+	}
+}
+
 // waitingServerForTest counts MarkTaskWaitingLocalDirectory calls the way the
 // serialise test observes the waiting_local_directory state flip.
 func waitingServerForTest(t *testing.T, counter *atomic.Int32) *httptest.Server {
@@ -1043,9 +1235,9 @@ func TestSnapshotChatTaskSkipsScopeLock(t *testing.T) {
 }
 
 // TestSnapshotMultiLockWaitCountsTaskOnce is the F7 regression: the gauge
-// counts tasks waiting on a directory, not individual lock waits. A task
-// declaring two subdirectories, both held, blocks twice — the gauge must net
-// +1 while parked and drain to 0 after the task proceeds and releases.
+// counts tasks waiting on a directory, not individual scope paths. A task
+// declaring two subdirectories, both held, waits for the atomic scope lease;
+// the gauge must net +1 while parked and drain to 0 after it proceeds.
 func TestSnapshotMultiLockWaitCountsTaskOnce(t *testing.T) {
 	t.Parallel()
 	const daemonID = "d-mine"
@@ -1086,8 +1278,8 @@ func TestSnapshotMultiLockWaitCountsTaskOnce(t *testing.T) {
 		releaseC = r
 	}()
 
-	// Parked on the first lock (sorted order: apps/a): one wait reported,
-	// the task counted exactly once.
+	// Parked on the atomic lease: one wait reported, and the task counted
+	// exactly once even though both declared paths are currently unavailable.
 	waitFor := func(n int32) {
 		t.Helper()
 		deadline := time.Now().Add(2 * time.Second)
@@ -1103,12 +1295,20 @@ func TestSnapshotMultiLockWaitCountsTaskOnce(t *testing.T) {
 		t.Errorf("waiting task must count once on its first blocking lock, got %d", got)
 	}
 
-	// First lock freed: the task advances to the second lock and blocks
-	// AGAIN — the gauge must stay at 1 (one waiting task), not drift to 2.
+	// Freeing only one path cannot partially grant the atomic lease. The task
+	// remains parked, does not re-report a second wait, and the gauge stays at
+	// 1 rather than drifting as each conflicting path changes.
 	releaseA()
-	waitFor(2)
+	select {
+	case <-done:
+		t.Fatal("partially available atomic scope lease acquired before every path was free")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if calls := waitCalls.Load(); calls != 1 {
+		t.Fatalf("atomic scope wait must be reported once, saw %d calls", calls)
+	}
 	if got := d.resourceWaitTasks.Load(); got != 1 {
-		t.Errorf("second blocking lock must not count the task twice, got %d", got)
+		t.Errorf("partially available scope lease must keep one waiting task, got %d", got)
 	}
 
 	releaseB()

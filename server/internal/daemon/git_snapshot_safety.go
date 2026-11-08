@@ -113,7 +113,7 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 		if err != nil {
 			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve common Git directory for %q: %v", repo, err)}
 		}
-		if !withinAnyScope(top, covered) {
+		if !withinAnyScope(top, covered) && !withinAnyScopeForAnyScope(covered, top) {
 			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("Git worktree %q is outside the declared snapshot scope", top)}
 		}
 
@@ -132,31 +132,56 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 }
 
 // gitSnapshotDeliveryEligible 比只读审计更窄：当前 artifact contract 只交付
-// 一个主仓的 bundle。linked worktree 的外部 metadata 可以单独 overlay；嵌套
-// 仓、submodule 与多仓目录仍回退到已有 worktree 交付路径。
+// 一个主仓的 bundle。根资源保留已支持的 linked worktree 路径；声明子目录仅
+// 支持仓根带普通 .git 目录的单仓，metadata 作为内部 overlay unit 单独挂载。
 func gitSnapshotDeliveryEligible(plan *snapshotPlan, enabled bool) bool {
 	return gitSnapshotDeliveryEligibleFromAudit(plan, enabled, auditSnapshotGitScope(plan))
 }
 
 func gitSnapshotDeliveryEligibleFromAudit(plan *snapshotPlan, enabled bool, audit gitSnapshotAudit) bool {
+	_, ok := gitSnapshotDeliveryRepository(plan, enabled, audit)
+	return ok
+}
+
+func gitSnapshotDeliveryRepository(plan *snapshotPlan, enabled bool, audit gitSnapshotAudit) (gitSnapshotRepository, bool) {
 	if !enabled || plan == nil || plan.Primary == nil || len(plan.Units) != 1 {
-		return false
+		return gitSnapshotRepository{}, false
 	}
 	unit := plan.Units[0]
-	if unit.Subdir != "" || filepath.Clean(unit.AbsPath) != filepath.Clean(plan.Primary.AbsPath) {
-		return false
-	}
-	if _, err := os.Stat(filepath.Join(unit.AbsPath, ".gitmodules")); err == nil {
-		// 尚未初始化的 submodule 没有可递归发现的子工作树，但它的对象库也
-		// 不会由父仓 bundle 携带；必须等待完整多仓 artifact contract。
-		return false
-	} else if !os.IsNotExist(err) {
-		return false
+	if filepath.Clean(unit.AbsPath) != filepath.Clean(plan.Primary.AbsPath) {
+		return gitSnapshotRepository{}, false
 	}
 	if !audit.HasGit || !audit.Safe || len(audit.Repositories) != 1 {
-		return false
+		return gitSnapshotRepository{}, false
 	}
-	return filepath.Clean(audit.Repositories[0].Worktree) == filepath.Clean(unit.AbsPath)
+	repository := audit.Repositories[0]
+	if !withinAnyScope(unit.AbsPath, []string{repository.Worktree}) {
+		return gitSnapshotRepository{}, false
+	}
+	if _, err := os.Stat(filepath.Join(repository.Worktree, ".gitmodules")); err == nil {
+		// 尚未初始化的 submodule 没有可递归发现的子工作树，但它的对象库也
+		// 不会由父仓 bundle 携带；必须等待完整多仓 artifact contract。
+		return gitSnapshotRepository{}, false
+	} else if !os.IsNotExist(err) {
+		return gitSnapshotRepository{}, false
+	}
+	if unit.Subdir == "" {
+		return repository, filepath.Clean(repository.Worktree) == filepath.Clean(unit.AbsPath)
+	}
+
+	// A declared Git subdirectory mounts only the repository's own .git as
+	// internal metadata. Linked worktrees, external common directories, and
+	// symlinked metadata need a broader artifact contract, so retain worktree
+	// fallback for them.
+	gitPath := filepath.Join(repository.Worktree, ".git")
+	info, err := os.Lstat(gitPath)
+	if err != nil || !info.IsDir() {
+		return gitSnapshotRepository{}, false
+	}
+	if filepath.Clean(repository.GitDir) != filepath.Clean(gitPath) || filepath.Clean(repository.CommonDir) != filepath.Clean(gitPath) {
+		return gitSnapshotRepository{}, false
+	}
+	return repository, true
 }
 
 func gitPath(repo string, args ...string) (string, error) {
@@ -271,6 +296,19 @@ func withinAnyScope(path string, scopes []string) bool {
 	for _, scope := range scopes {
 		rel, err := filepath.Rel(scope, path)
 		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// withinAnyScopeForAnyScope reports whether any declared scope is nested in
+// parent. A Git subdirectory has a repository root above the business scope;
+// that root is read-only from the daemon's perspective while its .git is
+// separately materialized as an internal metadata unit.
+func withinAnyScopeForAnyScope(scopes []string, parent string) bool {
+	for _, scope := range scopes {
+		if withinAnyScope(scope, []string{parent}) {
 			return true
 		}
 	}
