@@ -66,6 +66,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { ContentEditor } from "../../editor";
 import { PromptDiffView } from "../../market/prompt-diff-view";
 import { KnowledgeGovernanceRunDetailSheet } from "./knowledge-governance-run-detail";
+import { PickerEmpty, PickerItem, PropertyPicker } from "../../issues/components/pickers/property-picker";
 
 type KnowledgeSegment = "entries" | "archived" | "dirs" | "external" | "governance";
 
@@ -106,6 +107,10 @@ export function KnowledgePageBody({ wsId }: { wsId: string }) {
   const entryCandidates = useQuery({
     ...knowledgeEntriesOptions(wsId, openEntry?.dir_id ?? "", ""),
     enabled: openEntry !== null,
+  });
+  const replacementEntries = useQuery({
+    ...knowledgeEntriesOptions(wsId, openEntry?.dir_id ?? "", "", "all"),
+    enabled: Boolean(openEntry?.dir_id),
   });
   const versions = useQuery(knowledgeEntryVersionsOptions(wsId, openEntry?.id ?? ""));
   const lifecycle = useQuery(knowledgeEntryLifecycleOptions(wsId, openEntry?.id ?? ""));
@@ -662,6 +667,12 @@ function KnowledgeEntryDialog({
                   <dd>{new Date(entry.last_confirmed_at).toLocaleString(locale)}</dd>
                   <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.lifecycle)}</dt>
                   <dd>{lifecycleLabel(entry.lifecycle_state)}</dd>
+                  {entry.replacement_entry_id ? (
+                    <>
+                      <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.governance.replacement)}</dt>
+                      <dd className="break-all font-mono">{entry.replacement_entry_id}</dd>
+                    </>
+                  ) : null}
                   <dt className="text-muted-foreground">{t(($) => $.knowledgeSeg.version)}</dt>
                   <dd>{t(($) => $.knowledgeSeg.versionValue, { version: entry.current_version ?? 1 })}</dd>
                   {value ? (
@@ -1104,6 +1115,7 @@ function KnowledgeEntryHistory({
               {event.operation}: {event.from_state || "-"} → {event.to_state}
               {event.reason ? ` · ${event.reason}` : ""}
 	              {event.evidence_ref ? ` · ${event.evidence_ref}` : ""}
+              {event.replacement_entry_id ? ` · ${t(($) => $.knowledgeSeg.governance.replacement)}: ${event.replacement_entry_id}` : ""}
               {event.writeback_state === "failed" ? ` · ${event.writeback_error}` : ""}
             </p>
           ))}
@@ -1115,6 +1127,7 @@ function KnowledgeEntryHistory({
 
 function KnowledgeLifecycleActions({
   entry,
+  replacementEntries,
   versions,
   pending,
   writebackAllowed,
@@ -1122,6 +1135,7 @@ function KnowledgeLifecycleActions({
   onRestore,
 }: {
   entry: KnowledgeEntry;
+  replacementEntries: KnowledgeEntry[];
   versions: KnowledgeEntryVersion[];
   pending: boolean;
   writebackAllowed: boolean;
@@ -1132,6 +1146,10 @@ function KnowledgeLifecycleActions({
   const [reason, setReason] = useState("");
   const [evidenceRef, setEvidenceRef] = useState("");
   const [state, setState] = useState<UpdateKnowledgeLifecycleRequest["state"]>("needs_review");
+  const [replacementEntryID, setReplacementEntryID] = useState("");
+  const [replacementLabel, setReplacementLabel] = useState("");
+  const [replacementOpen, setReplacementOpen] = useState(false);
+  const [replacementQuery, setReplacementQuery] = useState("");
   const [writeback, setWriteback] = useState(false);
   const archived = entry.lifecycle_state !== "active";
   const restorableVersion = entry.mirror_state === "source_deleted"
@@ -1139,6 +1157,13 @@ function KnowledgeLifecycleActions({
     : versions.find((version) => version.content_sha256 !== entry.content_sha256);
   const isComplete = Boolean(reason.trim() && evidenceRef.trim());
   const finalState = state !== "needs_review";
+  const replacesEntry = state === "superseded" || state === "duplicate";
+  const normalizedReplacementQuery = replacementQuery.trim().normalize("NFKC").toLocaleLowerCase();
+  const candidates = replacementEntries.filter((candidate) => {
+    if (!normalizedReplacementQuery) return true;
+    const searchable = `${candidate.key}\n${candidate.content}`.normalize("NFKC").toLocaleLowerCase();
+    return searchable.includes(normalizedReplacementQuery);
+  });
   return (
     <div className="space-y-2 border-t pt-3">
       <h4 className="text-body font-medium">{t(($) => $.knowledgeSeg.lifecycle)}</h4>
@@ -1153,7 +1178,14 @@ function KnowledgeLifecycleActions({
           ]}
           value={state}
           onValueChange={(next) => {
-            if (typeof next === "string") setState(next as UpdateKnowledgeLifecycleRequest["state"]);
+            if (typeof next === "string") {
+              setState(next as UpdateKnowledgeLifecycleRequest["state"]);
+              if (next !== "superseded" && next !== "duplicate") {
+                setReplacementEntryID("");
+                setReplacementLabel("");
+                setReplacementQuery("");
+              }
+            }
           }}
         >
           <SelectTrigger aria-label={t(($) => $.knowledgeSeg.lifecycle)} className="min-w-40">
@@ -1169,6 +1201,40 @@ function KnowledgeLifecycleActions({
         </Select>
         <Input className="min-w-48 flex-1" value={reason} onChange={(event) => setReason(event.target.value)} placeholder={t(($) => $.knowledgeSeg.reason)} />
         <Input className="min-w-48 flex-1" value={evidenceRef} onChange={(event) => setEvidenceRef(event.target.value)} placeholder={t(($) => $.knowledgeSeg.evidenceRef)} />
+        {replacesEntry ? (
+          <PropertyPicker
+            open={replacementOpen}
+            onOpenChange={setReplacementOpen}
+            width="w-72"
+            searchable
+            searchPlaceholder={t(($) => $.knowledge.searchPlaceholder)}
+            onSearchChange={setReplacementQuery}
+            triggerRender={
+              <button
+                type="button"
+                className="flex min-w-48 flex-1 items-center rounded-lg border border-input px-2.5 py-2 text-left text-body hover:bg-accent"
+              >
+                <span className="truncate">{replacementLabel || t(($) => $.knowledgeSeg.governance.replacement)}</span>
+              </button>
+            }
+            trigger={replacementLabel || t(($) => $.knowledgeSeg.governance.replacement)}
+          >
+            {replacementQuery.trim() && candidates.length === 0 ? <PickerEmpty /> : null}
+            {candidates.map((candidate) => (
+              <PickerItem
+                key={candidate.id}
+                selected={candidate.id === replacementEntryID}
+                onClick={() => {
+                  setReplacementEntryID(candidate.id);
+                  setReplacementLabel(candidate.key);
+                  setReplacementOpen(false);
+                }}
+              >
+                <span className="truncate font-mono">{candidate.key}</span>
+              </PickerItem>
+            ))}
+          </PropertyPicker>
+        ) : null}
       </div>
       {writebackAllowed ? (
         <label className="flex items-center gap-2 text-caption text-muted-foreground">
@@ -1181,6 +1247,7 @@ function KnowledgeLifecycleActions({
           state,
           reason: reason.trim(),
           evidence_ref: evidenceRef.trim(),
+          ...(replacementEntryID && replacesEntry ? { replacement_entry_id: replacementEntryID } : {}),
           ...(writeback && finalState ? { writeback: true } : {}),
         })}>
           {t(($) => $.knowledgeSeg.applyLifecycle)}

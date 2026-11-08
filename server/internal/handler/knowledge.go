@@ -683,6 +683,7 @@ FOR UPDATE OF e, d`, entryID, workspaceID).Scan(&previous, &contentSHA, &dirID, 
 			return
 		}
 		var found int
+		var cycle bool
 		if err := tx.QueryRow(r.Context(), `
 			SELECT 1 FROM knowledge_entry
 			WHERE id = $1 AND workspace_id = $2 AND dir_id = $3`, parsed, workspaceID, dirID).Scan(&found); errors.Is(err, pgx.ErrNoRows) {
@@ -690,6 +691,27 @@ FOR UPDATE OF e, d`, entryID, workspaceID).Scan(&previous, &contentSHA, &dirID, 
 			return
 		} else if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to verify replacement knowledge entry")
+			return
+		}
+		if err := tx.QueryRow(r.Context(), `
+			WITH RECURSIVE replacement_chain AS (
+				SELECT id, replacement_entry_id
+				FROM knowledge_entry
+				WHERE id = $1 AND workspace_id = $2 AND dir_id = $3
+				UNION
+				SELECT e.id, e.replacement_entry_id
+				FROM knowledge_entry e
+				JOIN replacement_chain chain ON e.id = chain.replacement_entry_id
+				WHERE e.workspace_id = $2 AND e.dir_id = $3
+			)
+			SELECT EXISTS(SELECT 1 FROM replacement_chain WHERE id = $4)`,
+			parsed, workspaceID, dirID, entryID,
+		).Scan(&cycle); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate replacement knowledge entry")
+			return
+		}
+		if cycle {
+			writeError(w, http.StatusBadRequest, "replacement_entry_id must not create a replacement cycle")
 			return
 		}
 		replacementEntryID = parsed

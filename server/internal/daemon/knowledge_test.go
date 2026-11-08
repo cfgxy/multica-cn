@@ -511,8 +511,8 @@ func TestDaemonKnowledgeUnchangedRefresh(t *testing.T) {
 	}
 }
 
-// TestDaemonKnowledgeSourceDeletedReappearance 验证 source_deleted key 即使
-// 内容仍与镜像 SHA 一致且未排队手动扫描，重新出现时也会被上报以供恢复。
+// TestDaemonKnowledgeSourceDeletedReappearance verifies that a source_deleted
+// key is reported when it reappears, even if its content still matches the mirror.
 func TestDaemonKnowledgeSourceDeletedReappearance(t *testing.T) {
 	fakeKnowledgeBdSetup(t)
 	source := t.TempDir()
@@ -530,8 +530,8 @@ func TestDaemonKnowledgeSourceDeletedReappearance(t *testing.T) {
 	}}}
 	fake := newFakeKnowledgeServer(t, plan)
 	d := newKnowledgeTestDaemon(t, fake)
-	// 已删除且仍缺失的 key 不构成新的 source 变化。服务端为审计和恢复保留镜像
-	// 记录，也不能因此让 scheduled synchronization 永久保持活跃。
+	// A deleted key that remains absent is not a source change. The server keeps
+	// its mirror record for audit and restoration without scheduling forever.
 	if err := d.knowledgeSync(context.Background()); err != nil {
 		t.Fatalf("absent cycle: %v", err)
 	}

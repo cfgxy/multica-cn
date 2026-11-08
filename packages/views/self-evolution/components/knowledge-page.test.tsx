@@ -538,27 +538,30 @@ describe("KnowledgePageBody", () => {
     }, expect.anything());
   });
 
-  it("submits a same-directory replacement for superseded and duplicate entries", async () => {
+  it("filters replacement candidates and preserves the selected entry across replacement states", async () => {
     m.role = "owner";
     m.dirs = [dirFixture()];
     m.entries = [
       entryFixture(),
       entryFixture({ id: "entry-2", key: "ssh-guidance", content: "Use SSH transport." }),
+      entryFixture({ id: "entry-3", key: "deploy-guidance", content: "Use the deployment runbook." }),
     ];
     mount();
 
     await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
-    const drawer = await screen.findByTestId("knowledge-entry-drawer");
-    await userEvent.type(within(drawer).getByPlaceholderText("Reason"), "Replaced by SSH guidance");
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    await userEvent.type(within(dialog).getByPlaceholderText("Reason"), "Replaced by SSH guidance");
     await userEvent.type(
-      within(drawer).getByPlaceholderText("Evidence reference"),
+      within(dialog).getByPlaceholderText("Evidence reference"),
       "issue:00000000-0000-0000-0000-000000000916",
     );
-    await userEvent.click(within(drawer).getByRole("combobox", { name: "Lifecycle" }));
+    await userEvent.click(within(dialog).getByRole("combobox", { name: "Lifecycle" }));
     await userEvent.click(screen.getByRole("option", { name: "Superseded" }));
-    await userEvent.click(within(drawer).getByRole("combobox", { name: "Replacement" }));
-    await userEvent.click(screen.getByRole("option", { name: "ssh-guidance" }));
-    await userEvent.click(within(drawer).getByRole("button", { name: "Apply lifecycle" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Replacement" }));
+    await userEvent.type(screen.getByRole("textbox", { name: "Filter options" }), "SSH");
+    expect(screen.queryByRole("button", { name: "deploy-guidance" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "ssh-guidance" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Apply lifecycle" }));
 
     expect(m.updateLifecycleMutate).toHaveBeenLastCalledWith({
       id: "entry-1",
@@ -570,13 +573,35 @@ describe("KnowledgePageBody", () => {
       },
     }, expect.anything());
 
-    await userEvent.click(within(drawer).getByRole("combobox", { name: "Lifecycle" }));
+    await userEvent.click(within(dialog).getByRole("combobox", { name: "Lifecycle" }));
     await userEvent.click(screen.getByRole("option", { name: "Duplicate" }));
-    await userEvent.click(within(drawer).getByRole("button", { name: "Apply lifecycle" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Apply lifecycle" }));
     expect(m.updateLifecycleMutate).toHaveBeenLastCalledWith({
       id: "entry-1",
       data: expect.objectContaining({ state: "duplicate", replacement_entry_id: "entry-2" }),
     }, expect.anything());
+  });
+
+  it("renders entry and lifecycle replacement references", async () => {
+    m.entries = [entryFixture({ replacement_entry_id: "entry-2" })];
+    m.events = [{
+      id: "event-1",
+      entry_id: "entry-1",
+      from_state: "active",
+      to_state: "superseded",
+      operation: "transition",
+      reason: "Current guidance replaces this entry.",
+      evidence_ref: "issue:00000000-0000-0000-0000-000000000916",
+      replacement_entry_id: "entry-2",
+      writeback_state: "not_requested",
+      created_at: "2026-11-08T00:00:00Z",
+    }];
+    mount();
+
+    await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    expect(within(dialog).getAllByText("Replacement")).toHaveLength(2);
+    expect(within(dialog).getAllByText("entry-2")).toHaveLength(2);
   });
 
   it("submits physical writeback only for an enabled managed source", async () => {

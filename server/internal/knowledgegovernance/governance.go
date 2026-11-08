@@ -251,7 +251,11 @@ WHERE status = 'running'
 	SELECT t.id
 	FROM knowledge_governance_run r
 	JOIN agent_task_queue t ON t.id = r.task_id
-	WHERE r.status = 'running' AND t.status = 'completed'`)
+	WHERE t.status = 'completed'
+	  AND (
+	    r.status = 'running'
+	    OR (r.status = 'failed' AND r.report->>'reason' = 'report_persistence_failed')
+	  )`)
 	if err != nil {
 		return terminalResult.RowsAffected() + unenqueuedResult.RowsAffected(), fmt.Errorf("knowledge governance: find completed runs: %w", err)
 	}
@@ -435,11 +439,14 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 	}
 	ws := util.MustParseUUID(tc.WorkspaceID)
 	runID := util.MustParseUUID(tc.RunID)
-	var status string
-	if err := r.DB.QueryRow(ctx, `SELECT status FROM knowledge_governance_run WHERE id = $1 AND workspace_id = $2`, runID, ws).Scan(&status); err != nil {
+	var status, reportReason string
+	if err := r.DB.QueryRow(ctx, `
+	SELECT status, COALESCE(report->>'reason', '')
+	FROM knowledge_governance_run WHERE id = $1 AND workspace_id = $2`, runID, ws).Scan(&status, &reportReason); err != nil {
 		return nil, err
 	}
-	if status != "running" {
+	replayPending := status == "failed" && reportReason == "report_persistence_failed"
+	if status != "running" && !(task.Status == "completed" && replayPending) {
 		return nil, nil
 	}
 	if task.Status == "cancelled" {
@@ -454,8 +461,8 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 	}
 	persisted, err := r.persistReport(ctx, runID, ws, tc, report)
 	if err != nil {
-		// 已完成任务通常不会再次触发此 hook。先结束 run 以释放目录 scope 并允许
-		// 重试；若收束写入也失败，ReconcileStaleRuns 会在之后重放 task.Result。
+		// Release the directory scope while retaining a durable replay marker.
+		// ReconcileStaleRuns replays the immutable task.Result until it persists.
 		finishErr := r.finish(ctx, runID, ws, "failed", map[string]any{"reason": "report_persistence_failed"})
 		if finishErr != nil {
 			return nil, fmt.Errorf("knowledge governance: persist report: %w; finish failed: %v", err, finishErr)
@@ -539,14 +546,14 @@ func (r *Runner) persistReport(ctx context.Context, runID, workspaceID pgtype.UU
 		return false, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
-	var status string
+	var status, reportReason string
 	if err := tx.QueryRow(ctx, `
-	SELECT status FROM knowledge_governance_run
+	SELECT status, COALESCE(report->>'reason', '') FROM knowledge_governance_run
 	WHERE id = $1 AND workspace_id = $2
-	FOR UPDATE`, runID, workspaceID).Scan(&status); err != nil {
+	FOR UPDATE`, runID, workspaceID).Scan(&status, &reportReason); err != nil {
 		return false, err
 	}
-	if status != "running" {
+	if status != "running" && !(status == "failed" && reportReason == "report_persistence_failed") {
 		return false, nil
 	}
 	counts := map[string]int{"scanned": len(report.Findings), "valid": 0, "revised": 0, "deprecated": 0, "superseded": 0, "duplicate": 0, "invalid": 0, "needs_review": 0}

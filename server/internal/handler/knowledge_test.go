@@ -266,6 +266,12 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 	}
 	ctx := context.Background()
 	dirID := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
+	postKnowledgeResults(t, "daemon-under-test", map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": dirID, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"replay": "keep this governance report durable"},
+		}},
+	})
 
 	var agentID string
 	err := testPool.QueryRow(ctx, `
@@ -294,7 +300,29 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read governance task: %v", err)
 	}
-	output := `{"findings":[],"backup_reference":"no writeback authorized"}`
+	tc, ok := knowledgegovernance.ParseTaskContext(task.Context)
+	if !ok || len(tc.Entries) != 1 {
+		t.Fatalf("governance task context = %+v, want one snapshot entry", tc)
+	}
+	entry := tc.Entries[0]
+	report := knowledgegovernance.RunOutput{
+		Findings: []knowledgegovernance.Finding{{
+			EntryID: entry.ID, Key: entry.Key, OriginalContent: entry.Content,
+			ContentVersion: entry.CurrentVersion, ContentSHA256: entry.ContentSHA256, Scope: tc.Scope,
+			Verdict: "needs_review", ProblemCategories: []string{"unsupported_claim"},
+			CounterEvidence: []knowledgegovernance.Evidence{{
+				SourceType: "code", ImmutableRef: "commit:0123456789abcdef0123456789abcdef01234567",
+				ObservedAt: "2026-11-08T00:00:00Z", Excerpt: "No current source confirms the guidance.",
+			}},
+			ApplicableScope: "this directory", Recommendation: "Owner review required",
+		}},
+		BackupReference: "backup:immutable-completed-task-result",
+	}
+	outputBytes, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal governance report: %v", err)
+	}
+	output := string(outputBytes)
 	result, err := json.Marshal(protocol.TaskCompletedPayload{TaskID: started.TaskID, Output: output})
 	if err != nil {
 		t.Fatalf("marshal completed task result: %v", err)
@@ -304,12 +332,18 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 	}
 	task.Status = "completed"
 	task.Result = result
+	callbackReport := report
+	callbackReport.BackupReference = "backup:callback-output-must-not-overwrite-task-result"
+	callbackOutputBytes, err := json.Marshal(callbackReport)
+	if err != nil {
+		t.Fatalf("marshal transient callback report: %v", err)
+	}
 
 	failingRunner := &knowledgegovernance.Runner{
 		DB:      &failNextGovernanceBegin{Pool: testPool, fail: true},
 		Queries: testHandler.Queries,
 	}
-	settled, err := failingRunner.ProcessTaskTerminal(ctx, task, output, "")
+	settled, err := failingRunner.ProcessTaskTerminal(ctx, task, string(callbackOutputBytes), "")
 	if err == nil || settled == nil || settled.Status != "failed" {
 		t.Fatalf("persist failure settlement stats=%+v err=%v, want failed run and diagnostic error", settled, err)
 	}
@@ -323,6 +357,34 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 	}
 	if _, err := runner.RunWorkspace(ctx, testWorkspaceID, dirID, testUserID, "retry"); err != nil {
 		t.Fatalf("failed run must release directory scope for retry: %v", err)
+	}
+	if _, err := runner.ReconcileStaleRuns(ctx); err != nil {
+		t.Fatalf("replay persisted governance result: %v", err)
+	}
+	var backupReference string
+	if err := testPool.QueryRow(ctx, `
+		SELECT report->>'backup_reference' FROM knowledge_governance_run WHERE id = $1`, started.RunID).Scan(&backupReference); err != nil {
+		t.Fatalf("read replayed governance report: %v", err)
+	}
+	if backupReference != report.BackupReference {
+		t.Fatalf("replayed backup reference = %q, want immutable task result %q", backupReference, report.BackupReference)
+	}
+	var findings, completedStatus int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM knowledge_governance_finding WHERE run_id = $1`, started.RunID).Scan(&findings); err != nil {
+		t.Fatalf("count replayed governance findings: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM knowledge_governance_run WHERE id = $1 AND status = 'succeeded'`, started.RunID).Scan(&completedStatus); err != nil {
+		t.Fatalf("read replayed governance run status: %v", err)
+	}
+	if findings != 1 || completedStatus != 1 {
+		t.Fatalf("replayed governance persistence findings=%d succeeded=%d, want 1/1", findings, completedStatus)
+	}
+	var persistedResult []byte
+	if err := testPool.QueryRow(ctx, `SELECT result FROM agent_task_queue WHERE id = $1`, taskID).Scan(&persistedResult); err != nil {
+		t.Fatalf("read immutable completed task result: %v", err)
+	}
+	if string(persistedResult) != string(result) {
+		t.Fatalf("completed task result changed during replay: got %s want %s", persistedResult, result)
 	}
 }
 
@@ -1135,11 +1197,13 @@ func TestKnowledgeLifecycleReplacementEntryStaysWithinKnowledgeDirectory(t *test
 			"memories": map[string]string{
 				"retired":     "outdated deployment guidance",
 				"replacement": "current SSH deployment guidance",
+				"successor":   "the newest deployment guidance",
 			},
 		}},
 	})
 	entry := knowledgeEntryByKey(t, candidate, "retired")
 	replacement := knowledgeEntryByKey(t, candidate, "replacement")
+	successor := knowledgeEntryByKey(t, candidate, "successor")
 	evidenceRef := "knowledge_scan_batch:" + knowledgeScanBatchID(t, candidate)
 
 	for _, state := range []string{"superseded", "duplicate"} {
@@ -1188,6 +1252,23 @@ func TestKnowledgeLifecycleReplacementEntryStaysWithinKnowledgeDirectory(t *test
 				"replacement_entry_id": invalidReplacement,
 			}), "id", entry.ID)).Want(http.StatusBadRequest)
 	}
+
+	// A replacement may not point back to its source directly or through a chain.
+	testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+replacement.ID+"/lifecycle", map[string]any{
+			"state": "superseded", "reason": "must reject a direct replacement cycle", "evidence_ref": evidenceRef,
+			"replacement_entry_id": entry.ID,
+		}), "id", replacement.ID)).Want(http.StatusBadRequest)
+	testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+replacement.ID+"/lifecycle", map[string]any{
+			"state": "superseded", "reason": "continue replacement chain", "evidence_ref": evidenceRef,
+			"replacement_entry_id": successor.ID,
+		}), "id", replacement.ID)).Want(http.StatusAccepted)
+	testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+successor.ID+"/lifecycle", map[string]any{
+			"state": "duplicate", "reason": "must reject an indirect replacement cycle", "evidence_ref": evidenceRef,
+			"replacement_entry_id": entry.ID,
+		}), "id", successor.ID)).Want(http.StatusBadRequest)
 }
 
 // TestKnowledgeAdoptionStateMachine pins the async adoption: queue-time
