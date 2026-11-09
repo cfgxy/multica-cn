@@ -1681,17 +1681,79 @@ func TestKnowledgeAdoptionExistingUltimateMirrorVersionsContent(t *testing.T) {
 		t.Fatalf("existing mirror adoption acknowledgment: %v", ack)
 	}
 	var version int
-	var content, sha string
+	var content, sha, versionSource, createdBy string
 	if err := testPool.QueryRow(context.Background(), `
-		SELECT e.current_version, v.content, v.content_sha256
+		SELECT e.current_version, v.content, v.content_sha256, v.source, v.created_by::text
 		FROM knowledge_entry e
 		JOIN knowledge_entry_version v ON v.entry_id = e.id AND v.version = e.current_version
-		WHERE e.id = $1`, destinationID).Scan(&version, &content, &sha); err != nil {
+		WHERE e.id = $1`, destinationID).Scan(&version, &content, &sha, &versionSource, &createdBy); err != nil {
 		t.Fatalf("read updated ultimate mirror version: %v", err)
 	}
-	if version != 2 || content != "candidate copy" || sha != knowledgeContentSHA("candidate copy") {
-		t.Fatalf("updated ultimate mirror version=%d content=%q sha=%q", version, content, sha)
+	if version != 2 || content != "candidate copy" || sha != knowledgeContentSHA("candidate copy") || versionSource != "adoption" || createdBy != testUserID {
+		t.Fatalf("updated ultimate mirror version=%d content=%q sha=%q source=%q created_by=%q", version, content, sha, versionSource, createdBy)
 	}
+}
+
+func TestKnowledgeAdoptionExistingUltimateMirrorBackfillsCurrentVersion(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-adoption-legacy-mirror"
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/adoption-legacy-mirror-ultimate")
+	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/adoption-legacy-mirror-candidate")
+	claimKnowledgeUltimate(t, daemonID, ultimate)
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"legacy": "legacy mirror content"},
+		}},
+	})
+	source := knowledgeEntryByKey(t, candidate, "legacy")
+	var destinationID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO knowledge_entry (workspace_id, dir_id, key, content, content_sha256, adoption_state)
+		VALUES ($1, $2, 'legacy', $3, $4, 'adopted')
+		RETURNING id::text`, testWorkspaceID, ultimate, source.Content, source.ContentSha256).Scan(&destinationID); err != nil {
+		t.Fatalf("seed legacy ultimate mirror: %v", err)
+	}
+	if code := adoptEntry(t, source.ID); code != http.StatusAccepted {
+		t.Fatalf("queue legacy mirror adoption: %d, want 202", code)
+	}
+	ack := postKnowledgeResults(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{"kind": "entry", "id": source.ID, "ok": true, "ultimate_dir_id": ultimate}},
+	})
+	if ack["adoptions_resolved"].(float64) != 1 {
+		t.Fatalf("legacy mirror adoption acknowledgment: %v", ack)
+	}
+
+	var versions []KnowledgeEntryVersionResponse
+	testutil.Call(t, testHandler.GetKnowledgeEntryVersions,
+		withURLParam(newRequest(http.MethodGet, "/api/knowledge/entries/"+destinationID+"/versions", nil), "id", destinationID)).
+		Want(http.StatusOK).JSON(&versions)
+	if len(versions) != 1 || versions[0].Version != 1 || versions[0].Content != source.Content || versions[0].ContentSha256 != source.ContentSha256 || versions[0].Source != "adoption" {
+		t.Fatalf("legacy mirror versions after adoption: %+v", versions)
+	}
+
+	var scanBatchID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO knowledge_scan_batch (workspace_id, dir_id, trigger_source, result)
+		VALUES ($1, $2, 'initial', 'noop')
+		RETURNING id::text`, testWorkspaceID, ultimate).Scan(&scanBatchID); err != nil {
+		t.Fatalf("seed ultimate evidence batch: %v", err)
+	}
+	testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+destinationID+"/lifecycle", map[string]any{
+			"state": "needs_review", "reason": "legacy mirror lifecycle check", "evidence_ref": "knowledge_scan_batch:" + scanBatchID,
+		}), "id", destinationID)).Want(http.StatusAccepted)
+	testutil.Call(t, testHandler.GetKnowledgeEntryLifecycle,
+		withURLParam(newRequest(http.MethodGet, "/api/knowledge/entries/"+destinationID+"/lifecycle", nil), "id", destinationID)).
+		Want(http.StatusOK)
+
+	versionID := versions[0].ID
+	testutil.Call(t, testHandler.PostKnowledgeEntryRestore,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+destinationID+"/restore", map[string]any{
+			"version_id": versionID, "reason": "legacy mirror restore check", "evidence_ref": "knowledge_scan_batch:" + scanBatchID,
+		}), "id", destinationID)).Want(http.StatusAccepted)
 }
 
 // TestKnowledgeEntryOperations keeps the write boundary server-authoritative:
@@ -1810,16 +1872,16 @@ WHERE o.id = $1`, first.ID).Scan(&content, &status, &operationErr); err != nil {
 		t.Fatalf("completed operation remained visible through the knowledge read model: %+v", completedEntry.PendingOperation)
 	}
 	var targetVersion int
-	var targetVersionContent, targetVersionSHA string
+	var targetVersionContent, targetVersionSHA, targetVersionSource, targetVersionActor string
 	if err := testPool.QueryRow(ctx, `
-		SELECT e.current_version, v.content, v.content_sha256
+		SELECT e.current_version, v.content, v.content_sha256, v.source, v.created_by::text
 		FROM knowledge_entry e
 		JOIN knowledge_entry_version v ON v.entry_id = e.id AND v.version = e.current_version
-		WHERE e.id = $1`, targetID).Scan(&targetVersion, &targetVersionContent, &targetVersionSHA); err != nil {
+		WHERE e.id = $1`, targetID).Scan(&targetVersion, &targetVersionContent, &targetVersionSHA, &targetVersionSource, &targetVersionActor); err != nil {
 		t.Fatalf("read completed edit version: %v", err)
 	}
-	if targetVersion != 2 || targetVersionContent != "first edit" || targetVersionSHA != knowledgeContentSHA("first edit") {
-		t.Fatalf("completed edit version=%d content=%q sha=%q", targetVersion, targetVersionContent, targetVersionSHA)
+	if targetVersion != 2 || targetVersionContent != "first edit" || targetVersionSHA != knowledgeContentSHA("first edit") || targetVersionSource != "operation" || targetVersionActor != testUserID {
+		t.Fatalf("completed edit version=%d content=%q sha=%q source=%q created_by=%q", targetVersion, targetVersionContent, targetVersionSHA, targetVersionSource, targetVersionActor)
 	}
 
 	var merge KnowledgeEntryOperationResponse
@@ -1910,13 +1972,13 @@ WHERE target.id = $1::uuid AND operation.id = $4::uuid`, targetID, sourceID, sec
 		t.Fatalf("completed merge did not clear retry state: status=%q error=%q", operationStatus, operationError)
 	}
 	if err := testPool.QueryRow(ctx, `
-		SELECT e.current_version, v.content, v.content_sha256
+			SELECT e.current_version, v.content, v.content_sha256, v.source, v.created_by::text
 		FROM knowledge_entry e
 		JOIN knowledge_entry_version v ON v.entry_id = e.id AND v.version = e.current_version
-		WHERE e.id = $1`, targetID).Scan(&targetVersion, &targetVersionContent, &targetVersionSHA); err != nil {
+			WHERE e.id = $1`, targetID).Scan(&targetVersion, &targetVersionContent, &targetVersionSHA, &targetVersionSource, &targetVersionActor); err != nil {
 		t.Fatalf("read completed merge version: %v", err)
 	}
-	if targetVersion != 3 || targetVersionContent != "consolidated knowledge" || targetVersionSHA != knowledgeContentSHA("consolidated knowledge") {
-		t.Fatalf("completed merge version=%d content=%q sha=%q", targetVersion, targetVersionContent, targetVersionSHA)
+	if targetVersion != 3 || targetVersionContent != "consolidated knowledge" || targetVersionSHA != knowledgeContentSHA("consolidated knowledge") || targetVersionSource != "operation" || targetVersionActor != testUserID {
+		t.Fatalf("completed merge version=%d content=%q sha=%q source=%q created_by=%q", targetVersion, targetVersionContent, targetVersionSHA, targetVersionSource, targetVersionActor)
 	}
 }

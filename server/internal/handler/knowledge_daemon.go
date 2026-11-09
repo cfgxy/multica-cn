@@ -865,7 +865,7 @@ WHERE id = $1 AND status = 'queued'`, operationID, failureReason)
 		contentSHA := knowledgeContentSHA(content)
 		tag, err := tx.Exec(ctx, `
 	INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
-VALUES ($1, $2, $3, $4, $5, 'scan', $6)`, workspaceID, entryID, nextVersion, content, contentSHA, requestedBy)
+VALUES ($1, $2, $3, $4, $5, 'operation', $6)`, workspaceID, entryID, nextVersion, content, contentSHA, requestedBy)
 		if err != nil || tag.RowsAffected() != 1 {
 			return false
 		}
@@ -1002,7 +1002,7 @@ SET adoption_state = 'adopted', adopted_at = now(), ultimate_dir_id = $2::uuid,
 				nextVersion := destinationVersion + 1
 				tag, err = tx.Exec(ctx, `
 	INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
-	VALUES ($1, $2, $3, $4, $5, 'scan', $6)`, workspaceID, destinationID, nextVersion, content, contentSHA, adoptedBy)
+	VALUES ($1, $2, $3, $4, $5, 'adoption', $6)`, workspaceID, destinationID, nextVersion, content, contentSHA, adoptedBy)
 				if err != nil || tag.RowsAffected() != 1 {
 					return false
 				}
@@ -1014,6 +1014,15 @@ SET adoption_state = 'adopted', adopted_at = now(), ultimate_dir_id = $2::uuid,
 	    adopted_from_dir_id = $7::uuid, adopted_from_key = $8, adoption_error = ''
 	WHERE id = $1 AND workspace_id = $9`, destinationID, content, contentSHA, nextVersion, adoptedBy, ultimateDirID, sourceDirID, key, workspaceID)
 			} else {
+				// Legacy mirrors may have current_version without the corresponding
+				// immutable row. Materialize that row before updating adoption metadata.
+				tag, err = tx.Exec(ctx, `
+		INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+		VALUES ($1, $2, $3, $4, $5, 'adoption', $6)
+		ON CONFLICT (entry_id, version) DO NOTHING`, workspaceID, destinationID, destinationVersion, destinationContent, destinationSHA, adoptedBy)
+				if err != nil {
+					return false
+				}
 				tag, err = tx.Exec(ctx, `
 	UPDATE knowledge_entry
 	SET mirror_state = 'synced', last_confirmed_at = now(), adoption_state = 'adopted',
