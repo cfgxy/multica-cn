@@ -64,6 +64,9 @@ export {
   useScanKnowledgeDir,
   useUnregisterKnowledgeDir,
   useAdoptKnowledgeEntry,
+  useEditKnowledgeEntry,
+  useDeleteKnowledgeEntry,
+  useMergeKnowledgeEntries,
 } from "./knowledge-queries";
 export {
   promptVersionKeys,

@@ -941,27 +941,31 @@ describe("LarkCapabilityPanel (RUYI-400 权限状态)", () => {
     ).toBe(true);
   });
 
-  it("opens a confirmation QR for an admin and the existing installation", async () => {
-    mockBeginPermissionGrant.mockResolvedValueOnce({
-      qr_code_url: "https://open.feishu.cn/app?clientID=cli_test_app",
-    });
-    installationsRef.current.installations = [
-      activeInstallation({
-        capabilities: [{ capability: "send_messages", status: "missing" }],
-      }),
-    ];
-    const user = userEvent.setup();
-    render(<LarkTab />, { wrapper: I18nWrapper });
+  it.each(["owner", "admin"] as const)(
+    "allows a workspace %s to prepare a grant",
+    async (role) => {
+      mockBeginPermissionGrant.mockResolvedValueOnce({
+        qr_code_url: "https://open.feishu.cn/app?clientID=cli_test_app",
+      });
+      membersRef.current = [{ user_id: "user-1", role }];
+      installationsRef.current.installations = [
+        activeInstallation({
+          capabilities: [{ capability: "send_messages", status: "missing" }],
+        }),
+      ];
+      const user = userEvent.setup();
+      render(<LarkTab />, { wrapper: I18nWrapper });
 
-    await user.click(screen.getByTestId("lark-permissions-grant"));
+      await user.click(screen.getByTestId("lark-permissions-grant"));
 
-    await waitFor(() => {
-      expect(mockBeginPermissionGrant).toHaveBeenCalledWith("workspace-1", "inst-1");
-    });
-    expect(screen.getByTestId("qr-code").getAttribute("data-value")).toBe(
-      "https://open.feishu.cn/app?clientID=cli_test_app",
-    );
-  });
+      await waitFor(() => {
+        expect(mockBeginPermissionGrant).toHaveBeenCalledWith("workspace-1", "inst-1");
+      });
+      expect(screen.getByTestId("qr-code").getAttribute("data-value")).toBe(
+        "https://open.feishu.cn/app?clientID=cli_test_app",
+      );
+    },
+  );
 
   it("offers the existing batch grant for an unknown Wiki or Docx probe", async () => {
     mockBeginPermissionGrant.mockResolvedValueOnce({
@@ -1018,19 +1022,35 @@ describe("LarkCapabilityPanel (RUYI-400 权限状态)", () => {
     expect(screen.queryByTestId("qr-code")).toBeNull();
   });
 
-  it("hides permission grant from members and when capability data is unavailable", () => {
+  it("does not extend permission grants to a non-admin agent owner", () => {
     membersRef.current = [{ user_id: "user-1", role: "member" }];
     installationsRef.current.installations = [
       activeInstallation({
         capabilities: [{ capability: "wiki_doc_links", status: "unknown" }],
       }),
     ];
-    const { rerender } = render(<LarkTab />, { wrapper: I18nWrapper });
-    expect(screen.queryByTestId("lark-permissions-grant")).toBeNull();
+    render(
+      <>
+        <LarkAgentBindButton
+          agentId="agent-1"
+          agentName="Bot"
+          agentOwnerId="user-1"
+        />
+        <LarkTab />
+      </>,
+      { wrapper: I18nWrapper },
+    );
 
-    membersRef.current = [{ user_id: "user-1", role: "owner" }];
+    // Agent ownership still authorizes its own bind flow, but cannot grant
+    // workspace-level Lark permissions.
+    expect(screen.getByTestId("lark-agent-bot-connected")).toBeTruthy();
+    expect(screen.queryByTestId("lark-permissions-grant")).toBeNull();
+    expect(mockBeginPermissionGrant).not.toHaveBeenCalled();
+  });
+
+  it("hides permission grant when capability data is unavailable", () => {
     installationsRef.current.installations = [activeInstallation({ capabilities: null })];
-    rerender(<LarkTab />);
+    render(<LarkTab />, { wrapper: I18nWrapper });
     expect(screen.getByTestId("lark-capability-panel")).toBeTruthy();
     expect(screen.queryByTestId("lark-permissions-grant")).toBeNull();
   });

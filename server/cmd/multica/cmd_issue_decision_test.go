@@ -1,9 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
@@ -68,6 +72,57 @@ func TestDecisionContextFlagIsOptional(t *testing.T) {
 	}
 	if f.DefValue != "" {
 		t.Fatalf("--context default = %q, want empty for backward-compatible calls", f.DefValue)
+	}
+}
+
+func TestIssueDecisionCancelCommand(t *testing.T) {
+	if issueDecisionCancelCmd.Flags().Lookup("output") == nil {
+		t.Fatal("--output flag is not registered on the decision cancel command")
+	}
+	if issueDecisionCancelCmd.Flags().Lookup("option") != nil || issueDecisionCancelCmd.Flags().Lookup("question") != nil {
+		t.Fatal("decision cancel must not inherit decision-create flags")
+	}
+	if err := issueDecisionCancelCmd.Args(issueDecisionCancelCmd, []string{"MUL-42", "00000000-0000-4000-8000-000000000042"}); err != nil {
+		t.Fatalf("two cancel arguments rejected: %v", err)
+	}
+	if err := issueDecisionCancelCmd.Args(issueDecisionCancelCmd, []string{"MUL-42"}); err == nil {
+		t.Fatal("one cancel argument accepted, want exact two")
+	}
+}
+
+func TestRunIssueDecisionCancel(t *testing.T) {
+	const (
+		issueID    = "00000000-0000-4000-8000-000000000042"
+		decisionID = "00000000-0000-4000-8000-000000000043"
+	)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	t.Setenv("MULTICA_TASK_ID", "")
+	t.Setenv("MULTICA_AGENT_ID", "")
+	t.Setenv("MULTICA_DAEMON_PORT", "")
+
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/issues/"+issueID+"/decisions/"+decisionID+"/cancel" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode cancel body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": decisionID, "status": "cancelled"})
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("output", "json", "")
+	if err := runIssueDecisionCancel(cmd, []string{issueID, decisionID}); err != nil {
+		t.Fatalf("runIssueDecisionCancel: %v", err)
+	}
+	if len(gotBody) != 0 {
+		t.Fatalf("cancel request body = %#v, want empty object", gotBody)
 	}
 }
 

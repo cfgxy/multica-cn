@@ -751,8 +751,8 @@ DELETE FROM plugin_installation WHERE id IN (SELECT id FROM installations);
 -- Self-evolution tables (RUYI-265, RUYI-305) have no foreign keys or cascades.
 -- Every row — prompt legislation proposals, structure baselines, retrospective
 -- runs/watermarks/config, the module model-service config (RUYI-551), JEV
--- advisory config,
--- registered knowledge directories, mirror entries and scan batches — is
+-- advisory config, registered knowledge directories, mirror entries, operation
+-- queue and scan batches — is
 -- workspace-keyed, so each table deletes by workspace_id
 -- directly; no id-set indirection is needed.
 WITH deleted_prompt_proposals AS (
@@ -775,6 +775,9 @@ deleted_model_configs AS (
 ),
 deleted_jev_configs AS (
     DELETE FROM self_evolution_jev_config WHERE self_evolution_jev_config.workspace_id = $1
+),
+deleted_knowledge_operations AS (
+    DELETE FROM knowledge_entry_operation WHERE knowledge_entry_operation.workspace_id = $1
 ),
 deleted_scan_batches AS (
     DELETE FROM knowledge_scan_batch WHERE knowledge_scan_batch.workspace_id = $1

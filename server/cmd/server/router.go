@@ -1797,6 +1797,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// bd IO never runs inside the server container.
 		r.Get("/knowledge/plan", h.GetKnowledgePlan)
 		r.Post("/knowledge/results", h.PostKnowledgeResults)
+		r.Post("/knowledge/token/refresh", h.RefreshKnowledgeDaemonToken)
 	})
 
 	// Public Plugin Action API. This is the stable, globally versioned contract
@@ -2552,6 +2553,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/dirs/{id}/scan", h.ScanKnowledgeDir)
 				r.Delete("/dirs/{id}", h.DeleteKnowledgeDir)
 				r.Post("/entries/{id}/adopt", h.AdoptKnowledgeEntry)
+				r.Post("/entries/{id}/edit", h.EditKnowledgeEntry)
+				r.Post("/entries/{id}/delete", h.DeleteKnowledgeEntry)
+				r.Post("/entries/{id}/merge", h.MergeKnowledgeEntries)
 			})
 		})
 

@@ -155,6 +155,7 @@ export const TOOL_RISK_MATRIX: Record<string, ToolRiskEntry> = {
   list_decisions: read("读取决策卡"),
   get_decision: read("读取决策卡详情"),
   answer_decisions: external("回答决策卡并发布提及创建者 Agent 的回声评论，可能恢复其运行"),
+  cancel_decision: write("取消一张开放决策卡；不会发布回声评论或触发 Agent run"),
   list_clauses: read("读取工作区条款资产库概览（版本/绑定/状态/注入统计）"),
   get_clause: read("读取单条条款的完整治理详情（版本/绑定/提案/质量日表）"),
   search_clauses: read("按关键词与状态检索工作区条款资产库"),

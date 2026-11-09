@@ -74,7 +74,7 @@ export function LarkTab() {
 
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
-  const canManage =
+  const isWorkspaceAdmin =
     currentMember?.role === "owner" || currentMember?.role === "admin";
 
   const { data, isLoading } = useQuery({
@@ -167,7 +167,7 @@ export function LarkTab() {
                   <InstallationRow
                     key={inst.id}
                     installation={inst}
-                    canManage={canManage}
+                    isWorkspaceAdmin={isWorkspaceAdmin}
                     onDisconnect={() => setDisconnectTarget(inst.id)}
                   />
                 ))}
@@ -292,10 +292,11 @@ function useLarkCapabilityCopy() {
 // and get their own regression coverage.
 export function LarkCapabilityPanel({
   installation,
-  canManage,
+  isWorkspaceAdmin,
 }: {
   installation: LarkInstallation;
-  canManage: boolean;
+  // Settings passes workspace owner/admin only; agent ownership never grants this.
+  isWorkspaceAdmin: boolean;
 }) {
   const { t } = useT("settings");
   const { capabilityLabel, statusLabel } = useLarkCapabilityCopy();
@@ -332,7 +333,7 @@ export function LarkCapabilityPanel({
   }
 
   async function handlePermissionGrant() {
-    if (granting) return;
+    if (!isWorkspaceAdmin || granting) return;
     setGranting(true);
     try {
       const result = await api.beginLarkPermissionGrant(wsId, installation.id);
@@ -366,7 +367,7 @@ export function LarkCapabilityPanel({
         <p className="text-caption font-medium">
           {t(($) => $.lark.permissions_title)}
         </p>
-        {canManage && (
+        {isWorkspaceAdmin && (
           <Button
             variant="ghost"
             size="sm"
@@ -452,7 +453,7 @@ export function LarkCapabilityPanel({
             </div>
           )}
 
-          {canManage && (missing.length > 0 || hasUnknown) && (
+          {isWorkspaceAdmin && (missing.length > 0 || hasUnknown) && (
             <Button
               variant="outline"
               size="sm"
@@ -561,11 +562,11 @@ function LarkPermissionCatalogList({
 
 function InstallationRow({
   installation,
-  canManage,
+  isWorkspaceAdmin,
   onDisconnect,
 }: {
   installation: LarkInstallation;
-  canManage: boolean;
+  isWorkspaceAdmin: boolean;
   onDisconnect: () => void;
 }) {
   const { t } = useT("settings");
@@ -611,7 +612,7 @@ function InstallationRow({
             </p>
           </div>
         </div>
-        {canManage && isActive && (
+        {isWorkspaceAdmin && isActive && (
           <Button variant="outline" size="sm" onClick={onDisconnect}>
             <Trash2 className="h-3 w-3" />
             {t(($) => $.lark.disconnect)}
@@ -623,7 +624,12 @@ function InstallationRow({
         and would mislead. The panel itself decides what to show for
         servers without the field (nothing) vs never-probed bots
         (not-checked hint + first check). */}
-      {isActive && <LarkCapabilityPanel installation={installation} canManage={canManage} />}
+      {isActive && (
+        <LarkCapabilityPanel
+          installation={installation}
+          isWorkspaceAdmin={isWorkspaceAdmin}
+        />
+      )}
     </div>
   );
 }
