@@ -237,3 +237,30 @@ func TestSnapshotCwdAnchorSurvivesAncestorReplacement(t *testing.T) {
 		t.Fatalf("cwd anchor followed replaced ancestor: anchored=%v original=%v", anchoredInfo, originalInfo)
 	}
 }
+
+func TestSnapshotCwdViewRejectsReplacementAfterMountPathCheck(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "mount-root")
+	target := filepath.Join(root, "repo")
+	cwd := filepath.Join(target, "subdir")
+	if err := os.MkdirAll(cwd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	anchor, relative, err := snapshotCwdAnchor(&SnapshotRunSpec{
+		Units: []SnapshotUnitSpec{{Target: target}},
+		Cwd:   cwd,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer anchor.Close()
+
+	if err := os.Rename(root, root+".replaced"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "repo", "subdir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := snapshotCwdView(anchor, relative, cwd); err == nil {
+		t.Fatal("replacement outside the overlay view must fail cwd validation")
+	}
+}
