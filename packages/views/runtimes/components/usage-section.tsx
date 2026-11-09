@@ -293,27 +293,33 @@ export function UsageSection({ runtime }: { runtime: AgentRuntime }) {
         <KpiCard
           label={t(($) => $.usage.kpi_calls_label, { days })}
           value={
-            <span className="inline-flex items-baseline">
-              <CompactNumberFlow
-                value={totals.modelCallCount}
-                locales={locales}
-                aria-label={
-                  totals.modelCallUnknownCount > 0
-                    ? `${totals.modelCallCount} + ?`
-                    : String(totals.modelCallCount)
-                }
-              />
-              {totals.modelCallUnknownCount > 0 ? (
-                <span aria-hidden="true"> + ?</span>
-              ) : null}
-            </span>
+            totals.modelCallEvidenceAvailable ? (
+              <span className="inline-flex items-baseline">
+                <CompactNumberFlow
+                  value={totals.modelCallCount}
+                  locales={locales}
+                  aria-label={
+                    totals.modelCallUnknownCount > 0
+                      ? `${totals.modelCallCount} + ?`
+                      : String(totals.modelCallCount)
+                  }
+                />
+                {totals.modelCallUnknownCount > 0 ? (
+                  <span aria-hidden="true"> + ?</span>
+                ) : null}
+              </span>
+            ) : (
+              <span aria-label={t(($) => $.usage.kpi_calls_unavailable_hint)}>—</span>
+            )
           }
           hint={
-            totals.modelCallUnknownCount > 0
-              ? t(($) => $.usage.kpi_calls_unknown_hint, {
-                  unknown: totals.modelCallUnknownCount,
-                })
-              : undefined
+            !totals.modelCallEvidenceAvailable
+              ? t(($) => $.usage.kpi_calls_unavailable_hint)
+              : totals.modelCallUnknownCount > 0
+                ? t(($) => $.usage.kpi_calls_unknown_hint, {
+                    unknown: totals.modelCallUnknownCount,
+                  })
+                : undefined
           }
         />
       </div>
@@ -934,6 +940,7 @@ interface UsageTotals {
   cacheSavings: number;
   modelCallCount: number;
   modelCallUnknownCount: number;
+  modelCallEvidenceAvailable: boolean;
 }
 
 function computeTotals(rows: RuntimeUsage[]): UsageTotals {
@@ -948,6 +955,10 @@ function computeTotals(rows: RuntimeUsage[]): UsageTotals {
       modelCallCount: acc.modelCallCount + (u.model_call_count ?? 0),
       modelCallUnknownCount:
         acc.modelCallUnknownCount + (u.model_call_unknown_count ?? 0),
+      modelCallEvidenceAvailable:
+        acc.modelCallEvidenceAvailable &&
+        u.model_call_count !== undefined &&
+        u.model_call_unknown_count !== undefined,
     }),
     {
       input: 0,
@@ -958,6 +969,7 @@ function computeTotals(rows: RuntimeUsage[]): UsageTotals {
       cacheSavings: 0,
       modelCallCount: 0,
       modelCallUnknownCount: 0,
+      modelCallEvidenceAvailable: true,
     },
   );
 }

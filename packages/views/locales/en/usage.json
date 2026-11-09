@@ -24,7 +24,8 @@
     "tasks_label": "Tasks · {{days}}D",
     "tasks_hint": "{{failed}} failed",
     "calls_label": "Model calls · {{days}}D",
-    "calls_unknown_hint": "{{unknown}} usage rows have an unknown model call count; excluded from the known total."
+    "calls_unknown_hint": "{{unknown}} usage rows have an unknown model call count; excluded from the known total.",
+    "calls_unavailable_hint": "This server does not report model call evidence for the selected period."
   },
   "dim": {
     "label": "Dimension",
@@ -140,7 +141,8 @@
       "cost": "Cost/h",
       "tasks": "Tasks/h",
       "calls": "Calls/h",
-      "calls_unknown_hint": "The Dashboard date range has {{unknown}} usage rows with unknown call counts; Calls/h includes only calls with evidence."
+      "calls_unknown_hint": "This traffic window has {{unknown}} usage rows with unknown call counts; Calls/h includes only calls with evidence.",
+      "calls_unavailable_hint": "This server does not report whether Calls/h covers every usage row."
     }
   },
   "error": {

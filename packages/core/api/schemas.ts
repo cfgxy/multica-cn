@@ -2075,13 +2075,12 @@ const CostSplitShape = {
 
 // Model API/Prompt call counts (migration 996). `model_call_count` is the
 // known half only; `model_call_unknown_count` counts the rows whose provider
-// gave no call evidence. Defaults mirror the cost split: a backend older than
-// the column sends neither, and once the backend carries them the unknown
-// count stays a real number (0 = every row had call evidence) rather than
-// undefined.
+// gave no call evidence. A backend older than the column sends neither field;
+// that omission is not equivalent to a complete zero-count response, so keep
+// it distinct for the UI.
 const ModelCallCountShape = {
-  model_call_count: z.number().default(0),
-  model_call_unknown_count: z.number().default(0),
+  model_call_count: z.number().optional(),
+  model_call_unknown_count: z.number().optional(),
 };
 
 const DashboardUsageDailySchema = z.object({
@@ -2125,6 +2124,8 @@ export const DashboardUsageTrafficSchema = z.object({
   window: z.string().optional(),
   by: z.string().default("provider"),
   step_seconds: z.number().optional(),
+  calls_complete: z.boolean().optional(),
+  calls_unknown_rows: z.number().optional(),
   series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
 }).loose();
 

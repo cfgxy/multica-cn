@@ -1327,10 +1327,9 @@ describe("dashboard + runtime usage schema drift", () => {
     expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.provider).toBe("");
   });
 
-  it("defaults model call counts to 0 so a pre-migration-996 backend still renders", () => {
+  it("keeps omitted model call counts unavailable for a pre-migration-996 backend", () => {
     // A backend older than migration 996 sends neither call-count field. The
-    // row must survive with both halves at 0 — "no known calls, no unknown
-    // rows" — rather than a missing field reading as "unknown".
+    // row must survive, but missing evidence must not become a complete zero.
     for (const list of [
       DashboardUsageDailyListSchema.parse([{ date: "2026-05-19" }]),
       DashboardUsageByAgentListSchema.parse([{ model: "claude-opus-4-7" }]),
@@ -1338,8 +1337,8 @@ describe("dashboard + runtime usage schema drift", () => {
       RuntimeUsageByAgentListSchema.parse([{ model: "x" }]),
       RuntimeUsageByHourListSchema.parse([{ hour: 9 }]),
     ]) {
-      expect(list[0]?.model_call_count).toBe(0);
-      expect(list[0]?.model_call_unknown_count).toBe(0);
+      expect(list[0]?.model_call_count).toBeUndefined();
+      expect(list[0]?.model_call_unknown_count).toBeUndefined();
     }
     // A live backend sends the known half plus its unknown-row count; both
     // must round-trip untouched.

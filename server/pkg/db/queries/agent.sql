@@ -1335,18 +1335,16 @@ WHERE id = (
 RETURNING *;
 
 -- name: ReclaimStaleDispatchedTasksForRuntimes :many
--- Batch variant of ReclaimStaleDispatchedTaskForRuntime (MUL-4257): re-delivers
--- up to @max_tasks tasks across the whole runtime set in one round trip, so a
--- machine-level batch claim recovers lost-response dispatches for every runtime
--- it hosts without one query per runtime. Same eligibility as the singular
--- query (dispatched, never started, past the recovery window, expired/absent
--- prepare lease) and the same dispatched_at refresh; only the runtime filter
--- (= ANY) and the LIMIT (max_tasks instead of 1) differ.
-UPDATE agent_task_queue
-SET dispatched_at = now(),
-    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
-WHERE id IN (
-    SELECT atq.id FROM agent_task_queue atq
+-- Batch stale-response recovery is called inside the same runtime advisory
+-- locks as fresh claims and budget edits. A dispatch that still has current
+-- evidence or a current-window reservation keeps its allocation; an expired
+-- dispatch consumes a new slot and is admitted only while the runtime budget
+-- has capacity. Unknown evidence deliberately fails open, matching fresh
+-- claims. The final max-task limit is applied after admission so a rejected
+-- stale task cannot starve a later task that keeps its allocation.
+WITH candidates AS MATERIALIZED (
+    SELECT atq.id, atq.runtime_id, atq.dispatched_at, atq.priority
+    FROM agent_task_queue atq
     WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
       AND atq.status = 'dispatched'
       AND atq.started_at IS NULL
@@ -1371,10 +1369,104 @@ WHERE id IN (
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
       )
-    ORDER BY atq.priority DESC, atq.dispatched_at ASC
-    LIMIT @max_tasks::int
+    ORDER BY atq.priority DESC, atq.dispatched_at ASC, atq.id
     FOR UPDATE SKIP LOCKED
+), runtime_ids AS (
+    SELECT DISTINCT runtime_id FROM candidates
+), admissions AS (
+    SELECT
+        r.id AS runtime_id,
+        r.model_call_budget_enabled,
+        r.model_call_budget_max_calls,
+        r.model_call_budget_window_seconds,
+        (SELECT COUNT(*)::bigint
+         FROM task_usage_model_call_evidence e
+         JOIN agent_task_queue atq ON atq.id = e.task_id
+         WHERE atq.runtime_id = r.id
+           AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)) AS known_calls,
+        (SELECT COUNT(*)::bigint
+         FROM (
+             SELECT tu.task_id, tu.provider, tu.model
+             FROM task_usage tu
+             JOIN agent_task_queue atq ON atq.id = tu.task_id
+             WHERE atq.runtime_id = r.id
+               AND tu.model_call_count IS NULL
+               AND COALESCE(tu.updated_at, tu.created_at) >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+
+             UNION
+
+             SELECT e.task_id, e.provider, e.model
+             FROM task_usage_model_call_evidence e
+             JOIN agent_task_queue atq ON atq.id = e.task_id
+             WHERE atq.runtime_id = r.id
+               AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM task_usage tu
+                   WHERE tu.task_id = e.task_id
+                     AND tu.provider = e.provider
+                     AND tu.model = e.model
+               )
+         ) AS incomplete_usage) AS unknown_usage_rows,
+        (SELECT COUNT(*)::bigint
+         FROM agent_task_queue atq
+         WHERE atq.runtime_id = r.id
+           AND atq.status IN ('dispatched', 'running', 'waiting_local_directory')
+           AND atq.dispatched_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+           AND NOT EXISTS (
+               SELECT 1
+               FROM task_usage_model_call_evidence e
+               WHERE e.task_id = atq.id
+                 AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+           )) AS reserved_calls
+    FROM agent_runtime r
+    JOIN runtime_ids ids ON ids.runtime_id = r.id
+), scored AS (
+    SELECT
+        c.*,
+        a.model_call_budget_enabled,
+        a.model_call_budget_max_calls,
+        a.model_call_budget_window_seconds,
+        a.known_calls,
+        a.unknown_usage_rows,
+        a.reserved_calls,
+        (
+            c.dispatched_at >= now() - make_interval(secs => a.model_call_budget_window_seconds::double precision)
+            OR EXISTS (
+                SELECT 1
+                FROM task_usage_model_call_evidence e
+                WHERE e.task_id = c.id
+                  AND e.created_at >= now() - make_interval(secs => a.model_call_budget_window_seconds::double precision)
+            )
+        ) AS keeps_allocation
+    FROM candidates c
+    JOIN admissions a ON a.runtime_id = c.runtime_id
+), ranked AS (
+    SELECT *,
+        SUM(CASE WHEN keeps_allocation THEN 0 ELSE 1 END) OVER (
+            PARTITION BY runtime_id
+            ORDER BY priority DESC, dispatched_at ASC, id
+        ) AS new_reservation_rank
+    FROM scored
+), allowed AS (
+    SELECT id, priority, dispatched_at
+    FROM ranked
+    WHERE NOT model_call_budget_enabled
+       OR model_call_budget_max_calls <= 0
+       OR model_call_budget_window_seconds <= 0
+       OR unknown_usage_rows > 0
+       OR keeps_allocation
+       OR known_calls + reserved_calls + new_reservation_rank <= model_call_budget_max_calls
+), selected AS (
+    SELECT id
+    FROM allowed
+    ORDER BY priority DESC, dispatched_at ASC, id
+    LIMIT @max_tasks::int
 )
+UPDATE agent_task_queue
+SET dispatched_at = now(),
+    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
+WHERE id IN (SELECT id FROM selected)
 RETURNING *;
 
 -- name: ExtendAgentTaskPrepareLease :one

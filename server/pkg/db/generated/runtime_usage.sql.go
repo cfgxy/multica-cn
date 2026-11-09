@@ -11,6 +11,83 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getRuntimeModelCallBudgetAdmission = `-- name: GetRuntimeModelCallBudgetAdmission :one
+SELECT
+    r.model_call_budget_enabled,
+    r.model_call_budget_max_calls,
+    r.model_call_budget_window_seconds,
+    (SELECT COUNT(*)::bigint
+     FROM task_usage_model_call_evidence e
+     JOIN agent_task_queue atq ON atq.id = e.task_id
+     WHERE atq.runtime_id = r.id
+       AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)) AS known_calls,
+    (SELECT COUNT(*)::bigint
+     FROM (
+         SELECT tu.task_id, tu.provider, tu.model
+         FROM task_usage tu
+         JOIN agent_task_queue atq ON atq.id = tu.task_id
+         WHERE atq.runtime_id = r.id
+           AND tu.model_call_count IS NULL
+           AND COALESCE(tu.updated_at, tu.created_at) >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+
+         UNION
+
+         SELECT e.task_id, e.provider, e.model
+         FROM task_usage_model_call_evidence e
+         JOIN agent_task_queue atq ON atq.id = e.task_id
+         WHERE atq.runtime_id = r.id
+           AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+           AND NOT EXISTS (
+               SELECT 1
+               FROM task_usage tu
+               WHERE tu.task_id = e.task_id
+                 AND tu.provider = e.provider
+                 AND tu.model = e.model
+           )
+     ) AS incomplete_usage) AS unknown_usage_rows,
+    (SELECT COUNT(*)::bigint
+     FROM agent_task_queue atq
+     WHERE atq.runtime_id = r.id
+       AND atq.status IN ('dispatched', 'running', 'waiting_local_directory')
+       AND atq.dispatched_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+       AND NOT EXISTS (
+           SELECT 1
+           FROM task_usage_model_call_evidence e
+           WHERE e.task_id = atq.id
+             AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+       )) AS reserved_calls
+FROM agent_runtime r
+WHERE r.id = $1
+`
+
+type GetRuntimeModelCallBudgetAdmissionRow struct {
+	ModelCallBudgetEnabled       bool  `json:"model_call_budget_enabled"`
+	ModelCallBudgetMaxCalls      int64 `json:"model_call_budget_max_calls"`
+	ModelCallBudgetWindowSeconds int32 `json:"model_call_budget_window_seconds"`
+	KnownCalls                   int64 `json:"known_calls"`
+	UnknownUsageRows             int64 `json:"unknown_usage_rows"`
+	ReservedCalls                int64 `json:"reserved_calls"`
+}
+
+// The caller holds LockRuntimeClaimCapacity for this runtime. Count active
+// claims as one call reservation until their first evidence row enters the
+// rolling window, so concurrent queued -> dispatched transitions cannot use
+// the same final budget slot. Reservations deliberately use dispatched_at:
+// a task claimed before the current window does not reserve a fresh slot.
+func (q *Queries) GetRuntimeModelCallBudgetAdmission(ctx context.Context, runtimeID pgtype.UUID) (GetRuntimeModelCallBudgetAdmissionRow, error) {
+	row := q.db.QueryRow(ctx, getRuntimeModelCallBudgetAdmission, runtimeID)
+	var i GetRuntimeModelCallBudgetAdmissionRow
+	err := row.Scan(
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
+		&i.KnownCalls,
+		&i.UnknownUsageRows,
+		&i.ReservedCalls,
+	)
+	return i, err
+}
+
 const getRuntimeModelCallBudgetUsage = `-- name: GetRuntimeModelCallBudgetUsage :one
 SELECT
     (SELECT COUNT(*)::bigint

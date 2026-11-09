@@ -2180,20 +2180,6 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if len(claimable) > 0 {
-		claimableRuntimes := make([]db.AgentRuntime, 0, len(claimable))
-		for _, rtID := range claimable {
-			claimableRuntimes = append(claimableRuntimes, runtimeByID[uuidToString(rtID)])
-		}
-		budgetHeld := h.runtimeModelCallBudgetHolds(r.Context(), claimableRuntimes, now)
-		filtered := make([]pgtype.UUID, 0, len(claimable))
-		for _, rtID := range claimable {
-			if !budgetHeld[uuidToString(rtID)] {
-				filtered = append(filtered, rtID)
-			}
-		}
-		claimable = filtered
-	}
 	if len(claimable) == 0 {
 		slog.Debug("batch claim: all runtimes held by admission controls",
 			"daemon_id", req.DaemonID, "runtimes", len(authorized))
@@ -4167,13 +4153,6 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
 		return
 	}
-	if h.runtimeHeldByModelCallBudget(r.Context(), runtime, now) {
-		outcome = "model_call_budget_held"
-		slog.Debug("claim held: runtime model-call budget exhausted", "runtime_id", runtimeID)
-		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
-		return
-	}
-
 	claimStart := time.Now()
 	task, err := h.TaskService.ClaimTaskForRuntime(r.Context(), parseUUID(runtimeID))
 	claimMs = time.Since(claimStart).Milliseconds()

@@ -24,7 +24,8 @@
     "tasks_label": "task 数 · {{days}}天",
     "tasks_hint": "失败 {{failed}} 个",
     "calls_label": "模型调用 · {{days}}天",
-    "calls_unknown_hint": "另有 {{unknown}} 条用量记录的模型调用数未知，未计入已知调用数。"
+    "calls_unknown_hint": "另有 {{unknown}} 条用量记录的模型调用数未知，未计入已知调用数。",
+    "calls_unavailable_hint": "该服务器未报告所选时间范围的模型调用证据。"
   },
   "dim": {
     "label": "维度",
@@ -140,7 +141,8 @@
       "cost": "费用/小时",
       "tasks": "任务/小时",
       "calls": "调用/小时",
-      "calls_unknown_hint": "Dashboard 日期范围内有 {{unknown}} 条用量记录的调用数未知；调用/小时仅统计有明确证据的调用。"
+      "calls_unknown_hint": "此流量时间窗内有 {{unknown}} 条用量记录的调用数未知；调用/小时仅统计有明确证据的调用。",
+      "calls_unavailable_hint": "该服务器未报告调用/小时是否覆盖全部用量记录。"
     }
   },
   "error": {

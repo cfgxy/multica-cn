@@ -768,27 +768,33 @@ export function DashboardPage() {
                       <KpiCard
                         label={t(($) => $.kpi.calls_label, { days: windowLen })}
                         value={
-                          <span className="inline-flex items-baseline">
-                            <CompactNumberFlow
-                              value={totals.modelCallCount}
-                              locales={locales}
-                              aria-label={
-                                totals.modelCallUnknownCount > 0
-                                  ? `${totals.modelCallCount} + ?`
-                                  : String(totals.modelCallCount)
-                              }
-                            />
-                            {totals.modelCallUnknownCount > 0 ? (
-                              <span aria-hidden="true"> + ?</span>
-                            ) : null}
-                          </span>
+                          totals.modelCallEvidenceAvailable ? (
+                            <span className="inline-flex items-baseline">
+                              <CompactNumberFlow
+                                value={totals.modelCallCount}
+                                locales={locales}
+                                aria-label={
+                                  totals.modelCallUnknownCount > 0
+                                    ? `${totals.modelCallCount} + ?`
+                                    : String(totals.modelCallCount)
+                                }
+                              />
+                              {totals.modelCallUnknownCount > 0 ? (
+                                <span aria-hidden="true"> + ?</span>
+                              ) : null}
+                            </span>
+                          ) : (
+                            <span aria-label={t(($) => $.kpi.calls_unavailable_hint)}>—</span>
+                          )
                         }
                         hint={
-                          totals.modelCallUnknownCount > 0
-                            ? t(($) => $.kpi.calls_unknown_hint, {
-                                unknown: totals.modelCallUnknownCount,
-                              })
-                            : undefined
+                          !totals.modelCallEvidenceAvailable
+                            ? t(($) => $.kpi.calls_unavailable_hint)
+                            : totals.modelCallUnknownCount > 0
+                              ? t(($) => $.kpi.calls_unknown_hint, {
+                                  unknown: totals.modelCallUnknownCount,
+                                })
+                              : undefined
                         }
                       />
                     </div>
@@ -828,10 +834,7 @@ export function DashboardPage() {
                     own relative windows, so they sit outside the
                     calendar-window data flow above. */}
                 <UsageResourcesCard wsId={wsId} />
-                <UsageTrafficCard
-                  wsId={wsId}
-                  unknownCallCount={totals.modelCallUnknownCount}
-                />
+                <UsageTrafficCard wsId={wsId} />
               </>
             )}
           </TabsContent>

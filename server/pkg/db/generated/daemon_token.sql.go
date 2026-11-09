@@ -118,56 +118,6 @@ func (q *Queries) GetDaemonTokenByHash(ctx context.Context, tokenHash string) (D
 	return i, err
 }
 
-const renewDaemonToken = `-- name: RenewDaemonToken :one
--- Renew the authenticated daemon credential in place. An online runtime owned
--- by the same owner is required so an old token cannot keep itself alive after
--- its runtime has gone offline, been removed, or been transferred.
-UPDATE daemon_token AS dt
-SET expires_at = now() + interval '24 hours'
-WHERE dt.token_hash = $1
-  AND dt.workspace_id = $2
-  AND dt.daemon_id = $3
-  AND dt.owner_id = $4
-  AND dt.expires_at > now()
-  AND EXISTS (
-    SELECT 1
-    FROM agent_runtime AS r
-    WHERE r.workspace_id = dt.workspace_id
-      AND r.daemon_id = dt.daemon_id
-      AND r.owner_id = dt.owner_id
-      AND r.status = 'online'
-  )
-RETURNING id, token_hash, workspace_id, daemon_id, expires_at, created_at, owner_id
-`
-
-type RenewDaemonTokenParams struct {
-	TokenHash   string      `json:"token_hash"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	DaemonID    string      `json:"daemon_id"`
-	OwnerID     pgtype.UUID `json:"owner_id"`
-}
-
-// RenewDaemonToken extends the authenticated daemon token in place.
-func (q *Queries) RenewDaemonToken(ctx context.Context, arg RenewDaemonTokenParams) (DaemonToken, error) {
-	row := q.db.QueryRow(ctx, renewDaemonToken,
-		arg.TokenHash,
-		arg.WorkspaceID,
-		arg.DaemonID,
-		arg.OwnerID,
-	)
-	var i DaemonToken
-	err := row.Scan(
-		&i.ID,
-		&i.TokenHash,
-		&i.WorkspaceID,
-		&i.DaemonID,
-		&i.ExpiresAt,
-		&i.CreatedAt,
-		&i.OwnerID,
-	)
-	return i, err
-}
-
 const listLegacyDaemonTokenOwners = `-- name: ListLegacyDaemonTokenOwners :many
 SELECT DISTINCT tt.user_id
 FROM task_token tt
@@ -209,4 +159,53 @@ func (q *Queries) ListLegacyDaemonTokenOwners(ctx context.Context, arg ListLegac
 		return nil, err
 	}
 	return items, nil
+}
+
+const renewDaemonToken = `-- name: RenewDaemonToken :one
+UPDATE daemon_token AS dt
+SET expires_at = now() + interval '24 hours'
+WHERE dt.token_hash = $1
+  AND dt.workspace_id = $2
+  AND dt.daemon_id = $3
+  AND dt.owner_id = $4
+  AND dt.expires_at > now()
+  AND EXISTS (
+    SELECT 1
+    FROM agent_runtime AS r
+    WHERE r.workspace_id = dt.workspace_id
+      AND r.daemon_id = dt.daemon_id
+      AND r.owner_id = dt.owner_id
+      AND r.status = 'online'
+  )
+RETURNING id, token_hash, workspace_id, daemon_id, expires_at, created_at, owner_id
+`
+
+type RenewDaemonTokenParams struct {
+	TokenHash   string      `json:"token_hash"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	DaemonID    string      `json:"daemon_id"`
+	OwnerID     pgtype.UUID `json:"owner_id"`
+}
+
+// Renew the authenticated daemon credential in place. An online runtime owned
+// by the same owner is required so an old token cannot keep itself alive after
+// its runtime has gone offline, been removed, or been transferred.
+func (q *Queries) RenewDaemonToken(ctx context.Context, arg RenewDaemonTokenParams) (DaemonToken, error) {
+	row := q.db.QueryRow(ctx, renewDaemonToken,
+		arg.TokenHash,
+		arg.WorkspaceID,
+		arg.DaemonID,
+		arg.OwnerID,
+	)
+	var i DaemonToken
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.WorkspaceID,
+		&i.DaemonID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.OwnerID,
+	)
+	return i, err
 }

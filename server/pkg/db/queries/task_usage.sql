@@ -390,6 +390,22 @@ WHERE a.workspace_id = $1
 GROUP BY atq.agent_id, 2
 ORDER BY atq.agent_id, 2;
 
+-- name: CountWorkspaceUsageUnknownCallsInWindow :one
+-- The traffic panel's model-call counter contains only rows backed by durable
+-- provider evidence. Count missing-evidence rows over the complete PromQL
+-- rate evaluation horizon, including the lookbehind before the visible window,
+-- so its client can distinguish a complete zero from a known-only rate.
+-- `task_usage.created_at` is the usage observation time; an evidence correction
+-- updates the row without moving it into a newer window.
+SELECT COUNT(*)::bigint
+FROM task_usage tu
+JOIN agent_task_queue atq ON atq.id = tu.task_id
+JOIN agent a ON a.id = atq.agent_id
+WHERE a.workspace_id = sqlc.arg('workspace_id')
+  AND tu.created_at >= sqlc.arg('since')::timestamptz
+  AND tu.created_at <= sqlc.arg('until')::timestamptz
+  AND tu.model_call_count IS NULL;
+
 -- name: SumTaskUsageTotalsForMetrics :many
 -- Lifetime per-(workspace, runtime, provider, model) token/cost/task sums for
 -- the Prometheus usage exposition (RUYI-618). The full-table lifetime sum is

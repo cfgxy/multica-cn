@@ -194,6 +194,66 @@ func TestDashboardUsageTraffic_DimensionAndWindow(t *testing.T) {
 // TestPlanUsageMetricsWindow pins the step/rate math so the PromQL the panels
 // emit stays inside Prometheus's documented operating range at both window
 // extremes.
+func TestDashboardUsageTraffic_ModelCallCompletenessUsesTrafficWindow(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	stub := newStubPrometheus(t)
+	stub.swap(t)
+	readCompleteness := func() (bool, int64) {
+		w := httptest.NewRecorder()
+		testHandler.GetDashboardUsageTraffic(w, newRequest("GET", "/api/dashboard/usage/traffic?window=1h", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			CallsComplete    bool  `json:"calls_complete"`
+			CallsUnknownRows int64 `json:"calls_unknown_rows"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body.CallsComplete, body.CallsUnknownRows
+	}
+
+	_, baselineUnknownRows := readCompleteness()
+	runtimeID := dbfx.Runtime(t, "UsageTrafficCompletenessRuntime")
+	agentID := dbfx.Agent(t, "UsageTrafficCompletenessAgent", runtimeID)
+	issueID := dbfx.Issue(t, "usage traffic completeness issue")
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"issue_id":   issueID,
+		"runtime_id": runtimeID,
+		"status":     "completed",
+	})
+	dbfx.Insert(t, "task_usage", testutil.Cols{
+		"task_id":    taskID,
+		"provider":   "traffic-completeness",
+		"model":      "inside-window",
+		"created_at": testutil.Raw("now() - interval '30 minutes'"),
+	})
+	dbfx.Insert(t, "task_usage", testutil.Cols{
+		"task_id":    taskID,
+		"provider":   "traffic-completeness",
+		"model":      "rate-lookbehind",
+		"created_at": testutil.Raw("now() - interval '1 hour 30 seconds'"),
+	})
+	dbfx.Insert(t, "task_usage", testutil.Cols{
+		"task_id":    taskID,
+		"provider":   "traffic-completeness",
+		"model":      "outside-rate-lookbehind",
+		"created_at": testutil.Raw("now() - interval '1 hour 2 minutes'"),
+	})
+
+	complete, unknownRows := readCompleteness()
+	if complete {
+		t.Fatal("calls_complete = true, want false with an unknown row inside the traffic window")
+	}
+	if unknownRows != baselineUnknownRows+2 {
+		t.Fatalf("calls_unknown_rows = %d, want baseline %d plus the visible and rate-lookbehind rows", unknownRows, baselineUnknownRows)
+	}
+}
+
 func TestPlanUsageMetricsWindow(t *testing.T) {
 	now := time.Unix(1_760_000_000, 0)
 	for _, tc := range []struct {

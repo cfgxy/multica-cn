@@ -30,12 +30,16 @@ RETURNING *;
 -- The budget is per runtime. Provider-call consumption is calculated from
 -- task_usage separately at claim time; these columns only configure that
 -- admission check and never receive daemon-reported usage.
+WITH capacity_lock AS MATERIALIZED (
+    SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('id')::uuid::text || ':runtime_claim_capacity', 0))
+)
 UPDATE agent_runtime
 SET model_call_budget_enabled = @model_call_budget_enabled,
     model_call_budget_max_calls = @model_call_budget_max_calls,
     model_call_budget_window_seconds = @model_call_budget_window_seconds,
     updated_at = now()
 WHERE id = @id
+  AND EXISTS (SELECT 1 FROM capacity_lock)
 RETURNING *;
 
 -- name: LockRuntimeClaimCapacity :exec

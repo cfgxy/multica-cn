@@ -610,6 +610,7 @@
     "kpi_tokens_hint": "입력 {{input}} · 출력 {{output}}",
     "kpi_calls_label": "모델 호출 · {{days}}일",
     "kpi_calls_unknown_hint": "사용량 레코드 {{unknown}}개의 모델 호출 수를 알 수 없어 확인된 합계에서 제외했습니다.",
+    "kpi_calls_unavailable_hint": "이 서버는 선택한 기간의 모델 호출 근거를 보고하지 않습니다.",
     "when_title": "런타임 비용 발생 시점",
     "when_tab_daily": "일별",
     "when_tab_weekly": "주별",

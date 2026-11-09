@@ -610,6 +610,7 @@
     "kpi_tokens_hint": "入力 {{input}} · 出力 {{output}}",
     "kpi_calls_label": "モデル呼び出し · {{days}} 日",
     "kpi_calls_unknown_hint": "{{unknown}} 件の使用量レコードでモデル呼び出し数が不明です。既知の合計には含まれません。",
+    "kpi_calls_unavailable_hint": "このサーバーは、選択期間のモデル呼び出しの証拠を報告しません。",
     "when_title": "このランタイムでコストが発生した時期",
     "when_tab_daily": "日別",
     "when_tab_weekly": "週別",

@@ -1574,6 +1574,10 @@ export interface DashboardUsageTraffic {
   window?: string;
   by?: DashboardUsageTrafficDim;
   step_seconds?: number;
+  /** Whether call rates cover every usage row in the selected traffic window. */
+  calls_complete?: boolean;
+  /** Usage rows in the selected traffic window without call evidence. */
+  calls_unknown_rows?: number;
   series?: Record<string, UsageMetricSeries[]>;
 }
 

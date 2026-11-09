@@ -623,6 +623,7 @@
     "kpi_tokens_hint": "in {{input}} · out {{output}}",
     "kpi_calls_label": "Model calls · {{days}}D",
     "kpi_calls_unknown_hint": "{{unknown}} usage rows have an unknown model call count; excluded from the known total.",
+    "kpi_calls_unavailable_hint": "This server does not report model call evidence for the selected period.",
     "when_title": "When this runtime spent",
     "when_tab_daily": "Daily",
     "when_tab_weekly": "Weekly",

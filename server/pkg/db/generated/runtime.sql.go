@@ -2093,12 +2093,16 @@ func (q *Queries) UpdateAgentRuntimeCustomNameByDaemon(ctx context.Context, arg 
 }
 
 const updateAgentRuntimeModelCallBudget = `-- name: UpdateAgentRuntimeModelCallBudget :one
+WITH capacity_lock AS MATERIALIZED (
+    SELECT pg_advisory_xact_lock(hashtextextended($4::uuid::text || ':runtime_claim_capacity', 0))
+)
 UPDATE agent_runtime
 SET model_call_budget_enabled = $1,
     model_call_budget_max_calls = $2,
     model_call_budget_window_seconds = $3,
     updated_at = now()
 WHERE id = $4
+  AND EXISTS (SELECT 1 FROM capacity_lock)
 RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds
 `
 
