@@ -266,9 +266,6 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 		_ = rootAnchor.Close()
 		return nil, err
 	}
-	if mounts.cwdAnchor != nil {
-		mounts.cwdPath = filepath.Join("/proc/self/fd", fmt.Sprint(mounts.cwdAnchor.Fd()), mounts.cwdRelative)
-	}
 	prechecked := make([]*os.File, len(spec.Units))
 	closePrechecked := func() {
 		for _, opened := range prechecked {
@@ -347,7 +344,7 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 		mounted = append(mounted, snapshotMountedUnit{Target: spec.Units[i].Target, Alias: spec.Units[i].Alias})
 	}
 	if mounts.cwdAnchor != nil {
-		cwdFD, openErr := unix.Openat(int(mounts.cwdAnchor.Fd()), mounts.cwdRelative, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		cwdFD, openErr := snapshotCwdView(mounts.cwdAnchor, mounts.cwdRelative, spec.Cwd)
 		if openErr != nil {
 			mounts.Close()
 			_ = rootAnchor.Close()
@@ -358,6 +355,35 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 	}
 	_ = rootAnchor.Close()
 	return mounts, nil
+}
+
+// snapshotCwdView opens Cwd through the stable parent anchor and requires the
+// result to be on OverlayFS. A replacement after the mount path check may win
+// pathname resolution, but it cannot masquerade as the snapshot view and the
+// worker fails before Fchdir.
+func snapshotCwdView(anchor *os.File, relative, cwd string) (int, error) {
+	if anchor == nil || relative == "" || cwd == "" {
+		return -1, errors.New("snapshot cwd anchor is missing")
+	}
+	fd, err := unix.Openat(
+		int(anchor.Fd()),
+		relative,
+		unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC,
+		0,
+	)
+	if err != nil {
+		return -1, fmt.Errorf("open mounted cwd %s: %w", cwd, err)
+	}
+	var fs unix.Statfs_t
+	if err := unix.Fstatfs(fd, &fs); err != nil {
+		_ = unix.Close(fd)
+		return -1, fmt.Errorf("stat mounted cwd %s: %w", cwd, err)
+	}
+	if fs.Type != unix.OVERLAYFS_SUPER_MAGIC {
+		_ = unix.Close(fd)
+		return -1, fmt.Errorf("mounted cwd %s is not an overlay view", cwd)
+	}
+	return fd, nil
 }
 
 // mountOrder returns the unit indices in mount order: by target depth,
