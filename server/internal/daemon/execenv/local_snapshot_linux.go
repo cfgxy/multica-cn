@@ -322,6 +322,15 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 			_ = rootAnchor.Close()
 			return nil, fmt.Errorf("unit %d (%s): %w", i, spec.Units[i].Target, err)
 		}
+		if err := snapshotTargetStillAtPath(target, spec.Units[i].Target); err != nil {
+			if lower != target {
+				_ = lower.Close()
+			}
+			_ = target.Close()
+			mounts.Close()
+			_ = rootAnchor.Close()
+			return nil, fmt.Errorf("unit %d (%s): %w", i, spec.Units[i].Target, err)
+		}
 		if lower != target {
 			_ = lower.Close()
 		}
@@ -422,6 +431,24 @@ func validateSnapshotTargetFD(u *SnapshotUnitSpec, fd int, verifyIdentity bool) 
 		return nil, fmt.Errorf("target %s changed before snapshot mount", u.Target)
 	}
 	return file, nil
+}
+
+// snapshotTargetStillAtPath detects a rename after the target descriptor was
+// opened. Mounting through the descriptor cannot follow a replacement symlink,
+// but proceeding after the named target has moved would leave the resource path
+// pointing outside the snapshot view.
+func snapshotTargetStillAtPath(target *os.File, expected string) error {
+	if target == nil || expected == "" {
+		return errors.New("snapshot target path check is missing target")
+	}
+	actual, err := os.Readlink(filepath.Join("/proc/self/fd", fmt.Sprint(target.Fd())))
+	if err != nil {
+		return fmt.Errorf("read opened target path: %w", err)
+	}
+	if filepath.Clean(actual) != filepath.Clean(expected) {
+		return fmt.Errorf("snapshot target moved before mount: opened=%q expected=%q", actual, expected)
+	}
+	return nil
 }
 
 func mountSnapshotUnit(u *SnapshotUnitSpec, lower, target *os.File) error {

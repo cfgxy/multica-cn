@@ -133,6 +133,33 @@ func TestOpenSnapshotTargetFromRootRejectsNestedSymlinkReplacementAfterVerificat
 	}
 }
 
+func TestSnapshotTargetStillAtPathRejectsReplacementBeforeMount(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := openSnapshotTarget(&SnapshotUnitSpec{Target: child})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+
+	if err := os.Rename(child, child+".previous"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, child); err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshotTargetStillAtPath(opened, child); err == nil {
+		t.Fatal("target replaced by an external symlink before mount must fail path binding")
+	}
+}
+
 func TestSnapshotCwdAnchorSurvivesAncestorReplacement(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "mount-root")
 	target := filepath.Join(root, "repo")
