@@ -391,20 +391,41 @@ GROUP BY atq.agent_id, 2
 ORDER BY atq.agent_id, 2;
 
 -- name: CountWorkspaceUsageUnknownCallsInWindow :one
--- The traffic panel's model-call counter contains only rows backed by durable
--- provider evidence. Count missing-evidence rows over the complete PromQL
--- rate evaluation horizon, including the lookbehind before the visible window,
--- so its client can distinguish a complete zero from a known-only rate.
--- `task_usage.created_at` is the usage observation time; an evidence correction
--- updates the row without moving it into a newer window.
+-- The traffic panel's model-call counter contains only terminal usage rows
+-- backed by durable provider evidence. Count both terminal unknown rows and
+-- live evidence that has not yet produced a terminal usage row over the
+-- complete PromQL rate evaluation horizon, including the lookbehind before the
+-- visible window, so its client can distinguish a complete zero from a
+-- known-only rate. `task_usage.created_at` is the usage observation time; an
+-- evidence correction updates the row without moving it into a newer window.
 SELECT COUNT(*)::bigint
-FROM task_usage tu
-JOIN agent_task_queue atq ON atq.id = tu.task_id
-JOIN agent a ON a.id = atq.agent_id
-WHERE a.workspace_id = sqlc.arg('workspace_id')
-  AND tu.created_at >= sqlc.arg('since')::timestamptz
-  AND tu.created_at <= sqlc.arg('until')::timestamptz
-  AND tu.model_call_count IS NULL;
+FROM (
+    SELECT tu.task_id, tu.provider, tu.model
+    FROM task_usage tu
+    JOIN agent_task_queue atq ON atq.id = tu.task_id
+    JOIN agent a ON a.id = atq.agent_id
+    WHERE a.workspace_id = sqlc.arg('workspace_id')
+      AND tu.created_at >= sqlc.arg('since')::timestamptz
+      AND tu.created_at <= sqlc.arg('until')::timestamptz
+      AND tu.model_call_count IS NULL
+
+    UNION
+
+    SELECT e.task_id, e.provider, e.model
+    FROM task_usage_model_call_evidence e
+    JOIN agent_task_queue atq ON atq.id = e.task_id
+    JOIN agent a ON a.id = atq.agent_id
+    WHERE a.workspace_id = sqlc.arg('workspace_id')
+      AND e.created_at >= sqlc.arg('since')::timestamptz
+      AND e.created_at <= sqlc.arg('until')::timestamptz
+      AND NOT EXISTS (
+          SELECT 1
+          FROM task_usage tu
+          WHERE tu.task_id = e.task_id
+            AND tu.provider = e.provider
+            AND tu.model = e.model
+      )
+) AS incomplete_usage;
 
 -- name: SumTaskUsageTotalsForMetrics :many
 -- Lifetime per-(workspace, runtime, provider, model) token/cost/task sums for

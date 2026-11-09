@@ -252,6 +252,39 @@ func TestDashboardUsageTraffic_ModelCallCompletenessUsesTrafficWindow(t *testing
 	if unknownRows != baselineUnknownRows+2 {
 		t.Fatalf("calls_unknown_rows = %d, want baseline %d plus the visible and rate-lookbehind rows", unknownRows, baselineUnknownRows)
 	}
+
+	liveTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"issue_id":   issueID,
+		"runtime_id": runtimeID,
+		"status":     "running",
+	})
+	dbfx.InsertNoID(t, "task_usage_model_call_evidence", testutil.Cols{
+		"task_id":     liveTaskID,
+		"provider":    "traffic-completeness",
+		"model":       "live-only",
+		"evidence_id": "live-only-evidence",
+		"created_at":  testutil.Raw("now() - interval '30 minutes'"),
+	}, "task_id = $1 AND provider = $2 AND evidence_id = $3", liveTaskID, "traffic-completeness", "live-only-evidence")
+
+	complete, unknownRows = readCompleteness()
+	if complete {
+		t.Fatal("calls_complete = true, want false with live-only evidence")
+	}
+	if unknownRows != baselineUnknownRows+3 {
+		t.Fatalf("calls_unknown_rows = %d, want baseline %d plus terminal unknown rows and live-only evidence", unknownRows, baselineUnknownRows)
+	}
+
+	dbfx.Insert(t, "task_usage", testutil.Cols{
+		"task_id":    liveTaskID,
+		"provider":   "traffic-completeness",
+		"model":      "live-only",
+		"created_at": testutil.Raw("now() - interval '30 minutes'"),
+	})
+
+	_, unknownRows = readCompleteness()
+	if unknownRows != baselineUnknownRows+3 {
+		t.Fatalf("calls_unknown_rows = %d, want baseline %d plus each incomplete usage once", unknownRows, baselineUnknownRows)
+	}
 }
 
 func TestPlanUsageMetricsWindow(t *testing.T) {
