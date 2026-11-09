@@ -297,6 +297,36 @@ func resolveRealPath(absPath string) (string, error) {
 	return real, nil
 }
 
+// resolveSnapshotScopeTarget resolves a declared scope against the resource
+// root and refuses a symlink traversal that leaves that root. The declaration
+// is a write boundary, so both the root and final target must be canonicalized
+// before a unit can carry the path into locking or materialization.
+func resolveSnapshotScopeTarget(resourceRoot, subdir string) (string, error) {
+	if err := validateLocalPath(resourceRoot); err != nil {
+		return "", err
+	}
+	rootReal, err := resolveRealPath(resourceRoot)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(resourceRoot, filepath.FromSlash(subdir))
+	if err := validateLocalPath(target); err != nil {
+		return "", err
+	}
+	targetReal, err := resolveRealPath(target)
+	if err != nil {
+		return "", err
+	}
+	if !scopePathContains(rootReal, targetReal) {
+		return "", fmt.Errorf(
+			"local_directory scope: resolved target %q escapes resource root %q",
+			targetReal,
+			resourceRoot,
+		)
+	}
+	return targetReal, nil
+}
+
 // validateLocalPath enforces the daemon-side preconditions for running an
 // agent against a user-supplied directory:
 //
@@ -961,11 +991,7 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 						"local_directory scope: %q is outside the effective set declared on resource %q; refusing to widen it",
 						sub, row.ref.LocalPath)
 				}
-				abs := filepath.Join(row.abs, filepath.FromSlash(sub))
-				if err := validateLocalPath(abs); err != nil {
-					return nil, err
-				}
-				real, err := resolveRealPath(abs)
+				real, err := resolveSnapshotScopeTarget(row.abs, sub)
 				if err != nil {
 					return nil, err
 				}
