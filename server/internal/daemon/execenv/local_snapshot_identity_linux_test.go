@@ -260,7 +260,7 @@ func TestSnapshotCwdViewRejectsReplacementAfterMountPathCheck(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "repo", "subdir"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := snapshotCwdView(anchor, relative, cwd); err == nil {
+	if _, err := snapshotCwdView(anchor, relative, cwd, 1); err == nil {
 		t.Fatal("replacement outside the overlay view must fail cwd validation")
 	}
 }
