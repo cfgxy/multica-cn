@@ -216,6 +216,8 @@ export interface DashboardTokenTotals {
   // unknown count must say so, not present the known half as a total.
   modelCallCount: number;
   modelCallUnknownCount: number;
+  /** False when an older backend did not report model-call evidence fields. */
+  modelCallEvidenceAvailable: boolean;
 }
 
 // Whole-window totals for the KPI tiles. taskCount sums DISTINCT task counts
@@ -234,6 +236,10 @@ export function computeDailyTotals(usage: DashboardUsageDaily[]): DashboardToken
       taskCount: acc.taskCount + u.task_count,
       modelCallCount: acc.modelCallCount + (u.model_call_count ?? 0),
       modelCallUnknownCount: acc.modelCallUnknownCount + (u.model_call_unknown_count ?? 0),
+      modelCallEvidenceAvailable:
+        acc.modelCallEvidenceAvailable &&
+        u.model_call_count !== undefined &&
+        u.model_call_unknown_count !== undefined,
     }),
     {
       input: 0,
@@ -244,6 +250,7 @@ export function computeDailyTotals(usage: DashboardUsageDaily[]): DashboardToken
       taskCount: 0,
       modelCallCount: 0,
       modelCallUnknownCount: 0,
+      modelCallEvidenceAvailable: true,
     },
   );
 }

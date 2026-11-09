@@ -180,8 +180,8 @@ describe("UsageSection — Viewing timezone wiring", () => {
     render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
 
     const flows = Array.from(document.querySelectorAll("number-flow-react"));
-    expect(flows).toHaveLength(4);
-    expect(flows.at(-2)).toHaveAttribute("aria-label", "3K");
+    expect(flows).toHaveLength(3);
+    expect(flows.at(-1)).toHaveAttribute("aria-label", "3K");
     expect(
       flows.every(
         (flow) =>
@@ -192,7 +192,7 @@ describe("UsageSection — Viewing timezone wiring", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "7d" }));
 
-    expect(flows.at(-2)).toHaveAttribute("aria-label", "1K");
+    expect(flows.at(-1)).toHaveAttribute("aria-label", "1K");
   });
 
   it("marks a zero known total as partial when calls are unreported", () => {
@@ -251,6 +251,30 @@ describe("UsageSection — Viewing timezone wiring", () => {
     expect(card).toHaveTextContent("5 + ?");
     expect(card).toHaveTextContent(
       "3 usage rows have an unknown model call count; excluded from the known total.",
+    );
+  });
+
+  it("does not present omitted call evidence from an older server as zero", () => {
+    usageOverride.rows = [
+      {
+        runtime_id: "r-1",
+        date: new Date().toISOString().slice(0, 10),
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+      },
+    ];
+
+    render(<UsageSection runtime={RUNTIME} />, { wrapper: Wrapper });
+
+    const card = screen.getByText("Model calls · 30D").parentElement as HTMLElement;
+    expect(card.querySelector("number-flow-react")).toBeNull();
+    expect(card).toHaveTextContent("—");
+    expect(card).toHaveTextContent(
+      "This server does not report model call evidence for the selected period.",
     );
   });
 

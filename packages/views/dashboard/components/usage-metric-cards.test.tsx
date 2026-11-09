@@ -76,6 +76,8 @@ const TRAFFIC_FIXTURE = {
   configured: true,
   window: "1h",
   by: "provider",
+  calls_complete: true,
+  calls_unknown_rows: 0,
   series: {
     tokens_per_second: [
       series({ provider: "anthropic" }, [[1000, 10], [1060, 20]]),
@@ -136,14 +138,12 @@ describe("UsageResourcesCard", () => {
 describe("UsageTrafficCard", () => {
   it("renders nothing when the deployment has no metric backend", () => {
     fixturesRef.current["usage-traffic"] = { configured: false };
-    const { container } = renderWithI18n(
-      <UsageTrafficCard wsId="ws-1" unknownCallCount={0} />,
-    );
+    const { container } = renderWithI18n(<UsageTrafficCard wsId="ws-1" />);
     expect(container).toBeEmptyDOMElement();
   });
 
   it("draws tokens, cost and task rate tiles", () => {
-    renderWithI18n(<UsageTrafficCard wsId="ws-1" unknownCallCount={0} />);
+    renderWithI18n(<UsageTrafficCard wsId="ws-1" />);
     expect(screen.getByText("Model traffic")).toBeInTheDocument();
     expect(screen.getByText("Tokens/s")).toBeInTheDocument();
     expect(screen.getByText("Cost/h")).toBeInTheDocument();
@@ -152,20 +152,37 @@ describe("UsageTrafficCard", () => {
     expect(screen.queryByText(/unreported in the selected period/)).toBeNull();
   });
 
-  it("clarifies that Calls/h excludes unreported calls when unknown rows exist", () => {
-    renderWithI18n(<UsageTrafficCard wsId="ws-1" unknownCallCount={2} />);
+  it("clarifies that Calls/h excludes unknown calls in its own traffic window", () => {
+    fixturesRef.current["usage-traffic"] = {
+      ...TRAFFIC_FIXTURE,
+      calls_complete: false,
+      calls_unknown_rows: 2,
+    };
+    renderWithI18n(<UsageTrafficCard wsId="ws-1" />);
 
     expect(
       screen.getByText(
-        "The Dashboard date range has 2 usage rows with unknown call counts; Calls/h includes only calls with evidence.",
+        "This traffic window has 2 usage rows with unknown call counts; Calls/h includes only calls with evidence.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Calls/h")).toBeInTheDocument();
   });
 
+  it("keeps the call-coverage state unavailable when an older server omits it", () => {
+    const { calls_complete, calls_unknown_rows, ...legacyTraffic } = TRAFFIC_FIXTURE;
+    fixturesRef.current["usage-traffic"] = legacyTraffic;
+    renderWithI18n(<UsageTrafficCard wsId="ws-1" />);
+
+    expect(
+      screen.getByText(
+        "This server does not report whether Calls/h covers every usage row.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("switches the breakdown dimension through the query key", async () => {
     const user = userEvent.setup();
-    renderWithI18n(<UsageTrafficCard wsId="ws-1" unknownCallCount={0} />);
+    renderWithI18n(<UsageTrafficCard wsId="ws-1" />);
     await user.click(screen.getByRole("button", { name: "Model" }));
     const key = queryKeys.findLast((k) => k[2] === "usage-traffic");
     expect(key).toEqual(["dashboard", "ws-1", "usage-traffic", "1h", "model"]);
