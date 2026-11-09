@@ -104,7 +104,7 @@ func knowledgeEntries(t *testing.T, dirID string) []KnowledgeEntryResponse {
 	t.Helper()
 	var entries []KnowledgeEntryResponse
 	testutil.Call(t, testHandler.GetKnowledgeEntries,
-		newRequest(http.MethodGet, "/api/knowledge/entries?dir_id="+dirID, nil)).
+		newRequest(http.MethodGet, "/api/knowledge/entries?dir_id="+dirID+"&lifecycle=all", nil)).
 		Want(http.StatusOK).JSON(&entries)
 	return entries
 }
@@ -444,13 +444,26 @@ func knowledgePlan(t *testing.T, daemonID string) KnowledgePlanResponse {
 }
 
 func postKnowledgeResults(t *testing.T, daemonID string, body map[string]any) map[string]any {
+	return postKnowledgeResultsForWorkspace(t, testWorkspaceID, daemonID, body)
+}
+
+func postKnowledgeResultsForWorkspace(t *testing.T, workspaceID, daemonID string, body map[string]any) map[string]any {
 	t.Helper()
 	var ack map[string]any
 	testutil.Call(t, testHandler.PostKnowledgeResults,
 		newRequest(http.MethodPost, "/api/daemon/knowledge/results?daemon_id="+daemonID, body).WithContext(
-			middleware.WithDaemonContext(context.Background(), testWorkspaceID, daemonID))).
+			middleware.WithDaemonContext(context.Background(), workspaceID, daemonID))).
 		Want(http.StatusOK).JSON(&ack)
 	return ack
+}
+
+func seedKnowledgeEntryVersion(t *testing.T, workspaceID, entryID, content string) {
+	t.Helper()
+	if _, err := testPool.Exec(context.Background(), `
+		INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source)
+		VALUES ($1, $2, 1, $3, $4, 'initial')`, workspaceID, entryID, content, knowledgeContentSHA(content)); err != nil {
+		t.Fatalf("seed knowledge entry version for %s: %v", entryID, err)
+	}
 }
 
 func postKnowledgeResultsAsUser(t *testing.T, daemonID string, body map[string]any) {
@@ -468,6 +481,142 @@ func adoptEntry(t *testing.T, entryID string) int {
 }
 
 // --- tests -------------------------------------------------------------------
+
+func TestKnowledgeDiscoveryRequiresOwnedLocalDirectory(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-discovery-ownership"
+	ownedPath := t.TempDir()
+	foreignPath := t.TempDir()
+	grantKnowledgeUltimatePath(t, daemonID, ownedPath)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `
+			DELETE FROM knowledge_dir
+			WHERE workspace_id = $1 AND path = ANY($2::text[])`, testWorkspaceID, []string{ownedPath, foreignPath})
+	})
+
+	ack := postKnowledgeResults(t, daemonID, map[string]any{
+		"discoveries": []map[string]any{
+			{"workspace_id": testWorkspaceID, "path": foreignPath, "label": "foreign path"},
+			{"workspace_id": testWorkspaceID, "path": ownedPath, "label": "owned path"},
+		},
+	})
+	if ack["discoveries_registered"].(float64) != 1 {
+		t.Fatalf("discovery ownership acknowledgment: %v", ack)
+	}
+
+	var count int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT count(*) FROM knowledge_dir WHERE workspace_id = $1 AND path = $2`, testWorkspaceID, foreignPath).Scan(&count); err != nil {
+		t.Fatalf("read foreign discovery: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("unowned discovery registered %d directories", count)
+	}
+	var boundDaemon string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT daemon_id FROM knowledge_dir
+		WHERE workspace_id = $1 AND path = $2`, testWorkspaceID, ownedPath).Scan(&boundDaemon); err != nil {
+		t.Fatalf("read owned discovery: %v", err)
+	}
+	if boundDaemon != daemonID {
+		t.Fatalf("owned discovery binding=%q", boundDaemon)
+	}
+	plan := knowledgePlan(t, daemonID)
+	ownedInPlan := false
+	for _, workspace := range plan.Workspaces {
+		for _, dir := range workspace.Dirs {
+			if dir.Path == foreignPath {
+				t.Fatalf("unowned discovery leaked into scan plan: %+v", dir)
+			}
+			if dir.Path == ownedPath {
+				ownedInPlan = dir.ScanRequired
+			}
+		}
+	}
+	if !ownedInPlan {
+		t.Fatal("owned discovery did not produce its initial scan plan")
+	}
+}
+
+func TestKnowledgeDaemonResultsRespectTokenWorkspace(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-shared-across-workspaces"
+	ctx := context.Background()
+	workspaceB := dbfx.Workspace(t, "Knowledge callback workspace B", handlerTestSlug("knowledge-callback-workspace-b"))
+	ultimateB := dbfx.Insert(t, "knowledge_dir", testutil.Cols{
+		"workspace_id": workspaceB, "kind": "ultimate", "path": "/tmp/workspace-b-ultimate", "daemon_id": daemonID,
+	})
+	candidateB := dbfx.Insert(t, "knowledge_dir", testutil.Cols{
+		"workspace_id": workspaceB, "kind": "candidate_cli", "path": "/tmp/workspace-b-candidate", "daemon_id": daemonID,
+	})
+	adoptionB := dbfx.Insert(t, "knowledge_entry", testutil.Cols{
+		"workspace_id": workspaceB, "dir_id": candidateB, "key": "workspace-b-adoption", "content": "workspace B adoption",
+		"content_sha256": knowledgeContentSHA("workspace B adoption"), "adoption_state": "transferring",
+	})
+	operationTargetB := dbfx.Insert(t, "knowledge_entry", testutil.Cols{
+		"workspace_id": workspaceB, "dir_id": ultimateB, "key": "workspace-b-operation", "content": "workspace B old",
+		"content_sha256": knowledgeContentSHA("workspace B old"), "adoption_state": "adopted",
+	})
+	seedKnowledgeEntryVersion(t, workspaceB, operationTargetB, "workspace B old")
+	operationB := dbfx.Insert(t, "knowledge_entry_operation", testutil.Cols{
+		"workspace_id": workspaceB, "entry_id": operationTargetB, "operation_type": "edit", "content": "workspace B new",
+	})
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(ctx, `DELETE FROM knowledge_entry_operation WHERE workspace_id = $1`, workspaceB)
+		_, _ = testPool.Exec(ctx, `DELETE FROM knowledge_entry_version WHERE workspace_id = $1`, workspaceB)
+		_, _ = testPool.Exec(ctx, `DELETE FROM knowledge_entry WHERE workspace_id = $1`, workspaceB)
+		_, _ = testPool.Exec(ctx, `DELETE FROM knowledge_dir WHERE workspace_id = $1`, workspaceB)
+	})
+
+	// The same daemon ID may legitimately occur in another workspace. Its token
+	// remains scoped to A, so it cannot settle B's queued callback jobs.
+	ack := postKnowledgeResultsForWorkspace(t, testWorkspaceID, daemonID, map[string]any{
+		"adoptions":  []map[string]any{{"kind": "entry", "id": adoptionB, "ok": true, "ultimate_dir_id": ultimateB}},
+		"operations": []map[string]any{{"id": operationB, "ok": true}},
+	})
+	if ack["adoptions_resolved"].(float64) != 0 || ack["operations_resolved"].(float64) != 0 {
+		t.Fatalf("workspace A token resolved workspace B callbacks: %v", ack)
+	}
+	var adoptionState, operationState string
+	var mirrorCount int
+	if err := testPool.QueryRow(ctx, `SELECT adoption_state FROM knowledge_entry WHERE id = $1`, adoptionB).Scan(&adoptionState); err != nil {
+		t.Fatalf("read forged adoption state: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT status FROM knowledge_entry_operation WHERE id = $1`, operationB).Scan(&operationState); err != nil {
+		t.Fatalf("read forged operation state: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM knowledge_entry WHERE dir_id = $1 AND key = 'workspace-b-adoption'`, ultimateB).Scan(&mirrorCount); err != nil {
+		t.Fatalf("read forged adoption mirror: %v", err)
+	}
+	if adoptionState != "transferring" || operationState != "queued" || mirrorCount != 0 {
+		t.Fatalf("workspace A changed workspace B: adoption=%q operation=%q mirrors=%d", adoptionState, operationState, mirrorCount)
+	}
+
+	ack = postKnowledgeResultsForWorkspace(t, workspaceB, daemonID, map[string]any{
+		"adoptions":  []map[string]any{{"kind": "entry", "id": adoptionB, "ok": true, "ultimate_dir_id": ultimateB}},
+		"operations": []map[string]any{{"id": operationB, "ok": true}},
+	})
+	if ack["adoptions_resolved"].(float64) != 1 || ack["operations_resolved"].(float64) != 1 {
+		t.Fatalf("workspace B token did not resolve its callbacks: %v", ack)
+	}
+	var targetContent string
+	if err := testPool.QueryRow(ctx, `SELECT adoption_state FROM knowledge_entry WHERE id = $1`, adoptionB).Scan(&adoptionState); err != nil {
+		t.Fatalf("read resolved adoption state: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT status FROM knowledge_entry_operation WHERE id = $1`, operationB).Scan(&operationState); err != nil {
+		t.Fatalf("read resolved operation state: %v", err)
+	}
+	if err := testPool.QueryRow(ctx, `SELECT content FROM knowledge_entry WHERE id = $1`, operationTargetB).Scan(&targetContent); err != nil {
+		t.Fatalf("read resolved operation target: %v", err)
+	}
+	if adoptionState != "adopted" || operationState != "completed" || targetContent != "workspace B new" {
+		t.Fatalf("workspace B callback result: adoption=%q operation=%q content=%q", adoptionState, operationState, targetContent)
+	}
+}
 
 // TestKnowledgeRegistrationQueuesFirstScan pins the new registration
 // semantics: the handler only records the directory (dup path and second
@@ -1466,6 +1615,16 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 	if ultimateMirror.AdoptedFromDirID == nil || *ultimateMirror.AdoptedFromDirID != candidate {
 		t.Fatalf("ultimate mirror provenance: from=%v", ultimateMirror.AdoptedFromDirID)
 	}
+	var version, versionContent, versionSHA string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT v.version::text, v.content, v.content_sha256
+		FROM knowledge_entry_version v
+		WHERE v.entry_id = $1 AND v.version = 1`, ultimateMirror.ID).Scan(&version, &versionContent, &versionSHA); err != nil {
+		t.Fatalf("read adopted ultimate initial version: %v", err)
+	}
+	if version != "1" || versionContent != ultimateMirror.Content || versionSHA != ultimateMirror.ContentSha256 {
+		t.Fatalf("adopted ultimate initial version=(%q,%q,%q), mirror=(%q,%q)", version, versionContent, versionSHA, ultimateMirror.Content, ultimateMirror.ContentSha256)
+	}
 	ack = postKnowledgeResults(t, daemonID, map[string]any{
 		"adoptions": []map[string]any{{
 			"kind": "entry", "id": entry.ID, "ok": false, "ultimate_dir_id": ultimate, "error": "stale",
@@ -1477,8 +1636,61 @@ func TestKnowledgeAdoptionStateMachine(t *testing.T) {
 	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "adopted" {
 		t.Fatalf("stale callback moved a terminal entry: %q", state)
 	}
+	var versionCount int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM knowledge_entry_version WHERE entry_id = $1`, ultimateMirror.ID).Scan(&versionCount); err != nil {
+		t.Fatalf("count adopted ultimate versions after stale callback: %v", err)
+	}
+	if versionCount != 1 {
+		t.Fatalf("stale adoption callback created %d versions, want 1", versionCount)
+	}
 	if code := adoptEntry(t, entry.ID); code != http.StatusConflict {
 		t.Fatalf("adopt after adopted: %d, want 409", code)
+	}
+}
+
+func TestKnowledgeAdoptionExistingUltimateMirrorVersionsContent(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-adoption-existing-mirror"
+	ultimate := registerKnowledgeUltimate(t, daemonID, "/tmp/adoption-existing-mirror-ultimate")
+	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/adoption-existing-mirror-candidate")
+	claimKnowledgeUltimate(t, daemonID, ultimate)
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"shared": "candidate copy"},
+		}},
+	})
+	source := knowledgeEntryByKey(t, candidate, "shared")
+	var destinationID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO knowledge_entry (workspace_id, dir_id, key, content, content_sha256, adoption_state)
+		VALUES ($1, $2, 'shared', 'stale ultimate copy', $3, 'adopted')
+		RETURNING id::text`, testWorkspaceID, ultimate, knowledgeContentSHA("stale ultimate copy")).Scan(&destinationID); err != nil {
+		t.Fatalf("seed existing ultimate mirror: %v", err)
+	}
+	seedKnowledgeEntryVersion(t, testWorkspaceID, destinationID, "stale ultimate copy")
+	if code := adoptEntry(t, source.ID); code != http.StatusAccepted {
+		t.Fatalf("queue adoption for existing mirror: %d, want 202", code)
+	}
+	ack := postKnowledgeResults(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{"kind": "entry", "id": source.ID, "ok": true, "ultimate_dir_id": ultimate}},
+	})
+	if ack["adoptions_resolved"].(float64) != 1 {
+		t.Fatalf("existing mirror adoption acknowledgment: %v", ack)
+	}
+	var version int
+	var content, sha string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT e.current_version, v.content, v.content_sha256
+		FROM knowledge_entry e
+		JOIN knowledge_entry_version v ON v.entry_id = e.id AND v.version = e.current_version
+		WHERE e.id = $1`, destinationID).Scan(&version, &content, &sha); err != nil {
+		t.Fatalf("read updated ultimate mirror version: %v", err)
+	}
+	if version != 2 || content != "candidate copy" || sha != knowledgeContentSHA("candidate copy") {
+		t.Fatalf("updated ultimate mirror version=%d content=%q sha=%q", version, content, sha)
 	}
 }
 
@@ -1521,6 +1733,9 @@ VALUES ($1, $2, 'second-source', 'second original source', $3, 'adopted')
 RETURNING id::text`, testWorkspaceID, ultimate, knowledgeContentSHA("second original source")).Scan(&secondSourceID); err != nil {
 		t.Fatalf("seed second source entry: %v", err)
 	}
+	seedKnowledgeEntryVersion(t, testWorkspaceID, targetID, "original target")
+	seedKnowledgeEntryVersion(t, testWorkspaceID, sourceID, "original source")
+	seedKnowledgeEntryVersion(t, testWorkspaceID, secondSourceID, "second original source")
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(ctx, `DELETE FROM knowledge_entry_operation WHERE workspace_id = $1`, testWorkspaceID)
 	})
@@ -1593,6 +1808,18 @@ WHERE o.id = $1`, first.ID).Scan(&content, &status, &operationErr); err != nil {
 	})
 	if completedEntry := knowledgeEntryByKey(t, ultimate, "target"); completedEntry.PendingOperation != nil {
 		t.Fatalf("completed operation remained visible through the knowledge read model: %+v", completedEntry.PendingOperation)
+	}
+	var targetVersion int
+	var targetVersionContent, targetVersionSHA string
+	if err := testPool.QueryRow(ctx, `
+		SELECT e.current_version, v.content, v.content_sha256
+		FROM knowledge_entry e
+		JOIN knowledge_entry_version v ON v.entry_id = e.id AND v.version = e.current_version
+		WHERE e.id = $1`, targetID).Scan(&targetVersion, &targetVersionContent, &targetVersionSHA); err != nil {
+		t.Fatalf("read completed edit version: %v", err)
+	}
+	if targetVersion != 2 || targetVersionContent != "first edit" || targetVersionSHA != knowledgeContentSHA("first edit") {
+		t.Fatalf("completed edit version=%d content=%q sha=%q", targetVersion, targetVersionContent, targetVersionSHA)
 	}
 
 	var merge KnowledgeEntryOperationResponse
@@ -1681,5 +1908,15 @@ WHERE target.id = $1::uuid AND operation.id = $4::uuid`, targetID, sourceID, sec
 	}
 	if operationStatus != "completed" || operationError != "" {
 		t.Fatalf("completed merge did not clear retry state: status=%q error=%q", operationStatus, operationError)
+	}
+	if err := testPool.QueryRow(ctx, `
+		SELECT e.current_version, v.content, v.content_sha256
+		FROM knowledge_entry e
+		JOIN knowledge_entry_version v ON v.entry_id = e.id AND v.version = e.current_version
+		WHERE e.id = $1`, targetID).Scan(&targetVersion, &targetVersionContent, &targetVersionSHA); err != nil {
+		t.Fatalf("read completed merge version: %v", err)
+	}
+	if targetVersion != 3 || targetVersionContent != "consolidated knowledge" || targetVersionSHA != knowledgeContentSHA("consolidated knowledge") {
+		t.Fatalf("completed merge version=%d content=%q sha=%q", targetVersion, targetVersionContent, targetVersionSHA)
 	}
 }
