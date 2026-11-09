@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -78,6 +79,57 @@ func TestOpenSnapshotTargetRejectsIdentityMismatch(t *testing.T) {
 		TargetIdentitySet: true,
 	}); err == nil {
 		t.Fatal("replaced target must fail identity validation")
+	}
+}
+
+func TestOpenSnapshotTargetFromRootRejectsNestedSymlinkReplacementAfterVerification(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var admitted unix.Stat_t
+	if err := unix.Stat(child, &admitted); err != nil {
+		t.Fatal(err)
+	}
+	unit := SnapshotUnitSpec{
+		Target:            child,
+		TargetDevice:      uint64(admitted.Dev),
+		TargetInode:       uint64(admitted.Ino),
+		TargetIdentitySet: true,
+	}
+	verified, err := openSnapshotTarget(&unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verified.Close()
+
+	previous := child + ".previous"
+	if err := os.Rename(child, previous); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, child); err != nil {
+		t.Fatal(err)
+	}
+	rootFD, err := unix.Open("/", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootAnchor := os.NewFile(uintptr(rootFD), "/")
+	defer rootAnchor.Close()
+	if _, err := openSnapshotTargetFromRoot(&unit, rootAnchor, false); err == nil {
+		t.Fatal("nested target replaced by an external symlink must fail before mount")
+	}
+	anchoredInfo, err := os.Stat(filepath.Join("/proc/self/fd", fmt.Sprint(verified.Fd())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uint64(anchoredInfo.Sys().(*syscall.Stat_t).Dev) != uint64(admitted.Dev) || uint64(anchoredInfo.Sys().(*syscall.Stat_t).Ino) != uint64(admitted.Ino) {
+		t.Fatal("verified nested lower no longer identifies the admitted child")
 	}
 }
 

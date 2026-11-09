@@ -225,14 +225,6 @@ func snapshotCwdAnchor(spec *SnapshotRunSpec) (*os.File, string, error) {
 	return os.NewFile(uintptr(fd), parent), relative, nil
 }
 
-func snapshotRootPath(anchor *os.File, target string) string {
-	clean := filepath.Clean(target)
-	if clean == string(filepath.Separator) {
-		return filepath.Join("/proc/self/fd", fmt.Sprint(anchor.Fd()))
-	}
-	return filepath.Join("/proc/self/fd", fmt.Sprint(anchor.Fd()), strings.TrimPrefix(clean, string(filepath.Separator)))
-}
-
 type snapshotMountedUnit struct {
 	Target string
 	Alias  string
@@ -286,7 +278,7 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 		}
 	}
 	for i := range spec.Units {
-		prechecked[i], err = openSnapshotTargetAt(&spec.Units[i], snapshotRootPath(rootAnchor, spec.Units[i].Target), true)
+		prechecked[i], err = openSnapshotTargetFromRoot(&spec.Units[i], rootAnchor, true)
 		if err != nil {
 			closePrechecked()
 			mounts.Close()
@@ -297,8 +289,8 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 	closePrechecked()
 	mounted := make([]snapshotMountedUnit, 0, len(spec.Units))
 	for _, i := range mountOrder(spec.Units) {
-		path := snapshotRootPath(rootAnchor, spec.Units[i].Target)
 		parent, relative, nested := snapshotMountedAncestor(mounted, spec.Units[i].Target)
+		var lower *os.File
 		if nested {
 			verificationPath := filepath.Join(parent.Alias, relative)
 			verificationTarget, openErr := openSnapshotTargetAt(&spec.Units[i], verificationPath, true)
@@ -307,19 +299,31 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 				_ = rootAnchor.Close()
 				return nil, fmt.Errorf("verify nested unit %d (%s): %w", i, spec.Units[i].Target, openErr)
 			}
-			_ = verificationTarget.Close()
+			lower = verificationTarget
 		}
-		target, openErr := openSnapshotTargetAt(&spec.Units[i], path, !nested)
+		target, openErr := openSnapshotTargetFromRoot(&spec.Units[i], rootAnchor, !nested)
 		if openErr != nil {
+			if lower != nil {
+				_ = lower.Close()
+			}
 			mounts.Close()
 			_ = rootAnchor.Close()
 			return nil, fmt.Errorf("open unit %d (%s): %w", i, spec.Units[i].Target, openErr)
 		}
-		if err := mountSnapshotUnit(&spec.Units[i], target); err != nil {
+		if lower == nil {
+			lower = target
+		}
+		if err := mountSnapshotUnit(&spec.Units[i], lower, target); err != nil {
+			if lower != target {
+				_ = lower.Close()
+			}
 			_ = target.Close()
 			mounts.Close()
 			_ = rootAnchor.Close()
 			return nil, fmt.Errorf("unit %d (%s): %w", i, spec.Units[i].Target, err)
+		}
+		if lower != target {
+			_ = lower.Close()
 		}
 		mounts.targets[i] = target
 		mounted = append(mounted, snapshotMountedUnit{Target: spec.Units[i].Target, Alias: spec.Units[i].Alias})
@@ -369,10 +373,43 @@ func openSnapshotTargetAt(u *SnapshotUnitSpec, path string, verifyIdentity bool)
 	if u.Target == "" || path == "" {
 		return nil, errors.New("unit is missing target")
 	}
-	fd, err := unix.Open(path, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	fd, err := unix.Open(path, unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open target %s: %w", u.Target, err)
 	}
+	return validateSnapshotTargetFD(u, fd, verifyIdentity)
+}
+
+// openSnapshotTargetFromRoot resolves every target component through the
+// stable root descriptor and rejects symlinks atomically. Nested overlays need
+// a target in the parent's visible mount, while their lower source is the
+// separately verified pristine descriptor; following a replacement symlink
+// here could otherwise mount an unrelated host directory.
+func openSnapshotTargetFromRoot(u *SnapshotUnitSpec, root *os.File, verifyIdentity bool) (*os.File, error) {
+	if u.Target == "" {
+		return nil, errors.New("unit is missing target")
+	}
+	if !filepath.IsAbs(u.Target) {
+		return nil, fmt.Errorf("snapshot target must be absolute: %q", u.Target)
+	}
+	if root == nil {
+		return nil, errors.New("snapshot root anchor is missing")
+	}
+	relative := strings.TrimPrefix(filepath.Clean(u.Target), string(filepath.Separator))
+	if relative == "" {
+		relative = "."
+	}
+	fd, err := unix.Openat2(int(root.Fd()), relative, &unix.OpenHow{
+		Flags:   unix.O_PATH | unix.O_DIRECTORY | unix.O_CLOEXEC,
+		Resolve: unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open target %s: %w", u.Target, err)
+	}
+	return validateSnapshotTargetFD(u, fd, verifyIdentity)
+}
+
+func validateSnapshotTargetFD(u *SnapshotUnitSpec, fd int, verifyIdentity bool) (*os.File, error) {
 	file := os.NewFile(uintptr(fd), u.Target)
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
@@ -387,22 +424,23 @@ func openSnapshotTargetAt(u *SnapshotUnitSpec, path string, verifyIdentity bool)
 	return file, nil
 }
 
-func mountSnapshotUnit(u *SnapshotUnitSpec, target *os.File) error {
+func mountSnapshotUnit(u *SnapshotUnitSpec, lower, target *os.File) error {
 	if u.Target == "" || u.Alias == "" || u.Upper == "" || u.Work == "" {
 		return errors.New("unit is missing target/alias/upper/work")
 	}
-	if target == nil {
-		return errors.New("unit is missing opened target")
+	if lower == nil || target == nil {
+		return errors.New("unit is missing opened lower or target")
 	}
 	for _, d := range []string{u.Alias, u.Upper, u.Work} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return fmt.Errorf("prepare %s: %w", d, err)
 		}
 	}
-	targetFDPath := filepath.Join("/proc/self/fd", fmt.Sprint(target.Fd()))
-	if err := unix.Mount(targetFDPath, u.Alias, "", unix.MS_BIND, ""); err != nil {
+	lowerFDPath := filepath.Join("/proc/self/fd", fmt.Sprint(lower.Fd()))
+	if err := unix.Mount(lowerFDPath, u.Alias, "", unix.MS_BIND, ""); err != nil {
 		return fmt.Errorf("bind %s -> %s: %w", u.Target, u.Alias, err)
 	}
+	targetFDPath := filepath.Join("/proc/self/fd", fmt.Sprint(target.Fd()))
 	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", u.Alias, u.Upper, u.Work)
 	if err := unix.Mount("overlay", targetFDPath, "overlay", 0, opts); err != nil {
 		return fmt.Errorf("overlay on %s: %w", u.Target, err)

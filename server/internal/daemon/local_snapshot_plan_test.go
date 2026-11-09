@@ -299,6 +299,63 @@ func TestResolveSnapshotPlanDeclaredSubdirectories(t *testing.T) {
 	}
 }
 
+func TestResolveSnapshotPlanRejectsDeclaredScopeSymlinkEscapesResourceRoot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		subdir string
+		setup  func(t *testing.T, root, outside string)
+	}{
+		{
+			name:   "leaf",
+			subdir: "src/link",
+			setup: func(t *testing.T, root, outside string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(root, "src", "link")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:   "intermediate",
+			subdir: "src/link/child",
+			setup: func(t *testing.T, root, outside string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(outside, "child"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(root, "src", "link")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "resource")
+			outside := filepath.Join(t.TempDir(), "outside")
+			if err := os.MkdirAll(outside, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(t, root, outside)
+			resource := snapshotResourceForTest(t, "r1", root, "d1", true, "src")
+			task := Task{
+				ID:                  "symlink-escape-" + tc.name,
+				ProjectResources:    []ProjectResourceData{resource},
+				LocalDirectoryScope: scopeJSONForTest(t, resource.ID, tc.subdir),
+			}
+			if plan, err := resolveSnapshotPlan(task, "d1"); err == nil || !strings.Contains(err.Error(), "escapes resource root") {
+				t.Fatalf("escaped declared scope must fail before planning, plan=%+v err=%v", plan, err)
+			}
+		})
+	}
+}
+
 func TestResolveSnapshotPlanRefusesToWiden(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
