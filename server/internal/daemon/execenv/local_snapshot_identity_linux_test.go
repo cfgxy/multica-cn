@@ -160,6 +160,42 @@ func TestSnapshotTargetStillAtPathRejectsReplacementBeforeMount(t *testing.T) {
 	}
 }
 
+func TestSnapshotTargetsShareInodeRejectsNestedDirectoryReplacement(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unit := SnapshotUnitSpec{Target: child}
+	lower, err := openSnapshotTarget(&unit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lower.Close()
+
+	if err := os.Rename(child, child+".previous"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rootFD, err := unix.Open("/", unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootAnchor := os.NewFile(uintptr(rootFD), "/")
+	defer rootAnchor.Close()
+	target, err := openSnapshotTargetFromRoot(&unit, rootAnchor, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+
+	if err := snapshotTargetsShareInode(lower, target); err == nil {
+		t.Fatal("nested mount target replaced by another directory must fail identity binding")
+	}
+}
+
 func TestSnapshotCwdAnchorSurvivesAncestorReplacement(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "mount-root")
 	target := filepath.Join(root, "repo")

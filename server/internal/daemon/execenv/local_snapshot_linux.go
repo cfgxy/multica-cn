@@ -310,6 +310,15 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 			_ = rootAnchor.Close()
 			return nil, fmt.Errorf("open unit %d (%s): %w", i, spec.Units[i].Target, openErr)
 		}
+		if nested {
+			if err := snapshotTargetsShareInode(lower, target); err != nil {
+				_ = lower.Close()
+				_ = target.Close()
+				mounts.Close()
+				_ = rootAnchor.Close()
+				return nil, fmt.Errorf("verify nested unit %d (%s): %w", i, spec.Units[i].Target, err)
+			}
+		}
 		if lower == nil {
 			lower = target
 		}
@@ -447,6 +456,27 @@ func snapshotTargetStillAtPath(target *os.File, expected string) error {
 	}
 	if filepath.Clean(actual) != filepath.Clean(expected) {
 		return fmt.Errorf("snapshot target moved before mount: opened=%q expected=%q", actual, expected)
+	}
+	return nil
+}
+
+// snapshotTargetsShareInode binds a nested overlay's visible mountpoint to the
+// verified directory opened through the parent's pristine alias. Overlayfs
+// changes st_dev for the visible target but preserves the lower inode until a
+// replacement directory occupies that path.
+func snapshotTargetsShareInode(lower, target *os.File) error {
+	if lower == nil || target == nil {
+		return errors.New("nested snapshot target check is missing descriptor")
+	}
+	var lowerStat, targetStat unix.Stat_t
+	if err := unix.Fstat(int(lower.Fd()), &lowerStat); err != nil {
+		return fmt.Errorf("stat verified nested lower: %w", err)
+	}
+	if err := unix.Fstat(int(target.Fd()), &targetStat); err != nil {
+		return fmt.Errorf("stat nested mount target: %w", err)
+	}
+	if lowerStat.Ino != targetStat.Ino {
+		return fmt.Errorf("nested mount target changed before snapshot mount")
 	}
 	return nil
 }
