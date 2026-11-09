@@ -556,11 +556,14 @@ describe("KnowledgePageBody", () => {
       "issue:00000000-0000-0000-0000-000000000916",
     );
     await userEvent.click(within(dialog).getByRole("combobox", { name: "Lifecycle" }));
-    await userEvent.click(screen.getByRole("option", { name: "Superseded" }));
+    await userEvent.click(await screen.findByRole("option", { name: "Superseded" }));
     await userEvent.click(within(dialog).getByRole("button", { name: "Replacement" }));
-    await userEvent.type(screen.getByRole("textbox", { name: "Filter options" }), "SSH");
+    const replacementSearch = (await screen.findAllByPlaceholderText("Search key or content"))
+      .find((input) => input.getAttribute("aria-label") === "pickers.filter_options_aria");
+    expect(replacementSearch).toBeDefined();
+    await userEvent.type(replacementSearch!, "SSH");
     expect(screen.queryByRole("button", { name: "deploy-guidance" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "ssh-guidance" }));
+    await userEvent.click(await screen.findByRole("button", { name: "ssh-guidance" }));
     await userEvent.click(within(dialog).getByRole("button", { name: "Apply lifecycle" }));
 
     expect(m.updateLifecycleMutate).toHaveBeenLastCalledWith({
