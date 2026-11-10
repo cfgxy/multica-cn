@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { AgentRuntime, RuntimeProfile } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { NavigationProvider, type NavigationAdapter } from "../../navigation";
@@ -13,6 +13,8 @@ import enAgents from "../../locales/en/agents.json";
 const TEST_RESOURCES = {
   en: { common: enCommon, runtimes: enRuntimes, agents: enAgents },
 };
+
+const mockRemoveRuntimeFromList = vi.hoisted(() => vi.fn());
 
 // Stub the workspace queries the columns reach into. None of them feed the
 // row menu directly, but `createRuntimeColumns` wires CliCell + CostCell
@@ -47,6 +49,11 @@ vi.mock("@multica/core/runtimes", async () => ({
       "@multica/core/runtimes",
     )
   ).providerDisplayName,
+  runtimeDisplayLabel: (
+    await vi.importActual<typeof import("@multica/core/runtimes")>(
+      "@multica/core/runtimes",
+    )
+  ).runtimeDisplayLabel,
   deriveRuntimeHealth: () => "online",
   runtimeUsageOptions: () => ({ kind: "usage" }),
   runtimeProfileListOptions: () => ({ kind: "runtime-profiles" }),
@@ -63,6 +70,10 @@ vi.mock("@multica/core/runtimes", async () => ({
   useUpdateRuntimeProfile: () => ({
     isPending: false,
     mutateAsync: vi.fn(),
+  }),
+  useRemoveRuntimeFromList: () => ({
+    isPending: false,
+    mutateAsync: (...args: unknown[]) => mockRemoveRuntimeFromList(...args),
   }),
 }));
 
@@ -153,6 +164,7 @@ function makeRow(
     ownerMember: null,
     workload: { agentIds: [], runningCount: 0, queuedCount: 0 },
     canDelete,
+    canRemove: canDelete,
   };
 }
 
@@ -188,6 +200,7 @@ function renderActionsCell(
             profile={row.profile}
             wsId="ws-1"
             canDelete={row.canDelete}
+            canRemove={row.canRemove}
             detailHref={options.detailHref}
           />
         </QueryClientProvider>
@@ -197,7 +210,12 @@ function renderActionsCell(
 }
 
 describe("runtime list row menu", () => {
-  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => cleanup());
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRemoveRuntimeFromList.mockResolvedValue(undefined);
+  });
 
   it("renders the kebab menu for an online local runtime (self-healing is no longer hidden)", () => {
     // MUL-3352: hiding the kebab on a self-healing row left owners reading
@@ -276,6 +294,50 @@ describe("runtime list row menu", () => {
     fireEvent.click(screen.getByLabelText("Row actions"));
 
     expect(screen.queryByText("Open in new tab")).not.toBeInTheDocument();
+  });
+
+  it("opens a named removal confirmation and leaves the runtime unchanged on cancel", () => {
+    renderActionsCell(makeRow(makeRuntime({ name: "Studio Runtime" })));
+
+    fireEvent.click(screen.getByLabelText("Row actions"));
+    fireEvent.click(screen.getByText("Remove from management list"));
+
+    expect(
+      screen.getByRole("alertdialog", {
+        name: 'Remove "Studio Runtime" from your management list?',
+      }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mockRemoveRuntimeFromList).not.toHaveBeenCalled();
+  });
+
+  it("removes the selected runtime only after confirmation", async () => {
+    renderActionsCell(makeRow(makeRuntime({ name: "Studio Runtime" })));
+
+    fireEvent.click(screen.getByLabelText("Row actions"));
+    fireEvent.click(screen.getByText("Remove from management list"));
+    fireEvent.click(screen.getByRole("button", { name: "Remove from list" }));
+
+    await vi.waitFor(() =>
+      expect(mockRemoveRuntimeFromList).toHaveBeenCalledWith("rt-1"),
+    );
+  });
+
+  it("keeps removal available to a custom runtime owner without profile deletion", () => {
+    const profile = makeProfile();
+    const row = makeRow(
+      makeRuntime({ profile_id: profile.id }),
+      /* canDelete */ false,
+      profile,
+    );
+    row.canRemove = true;
+    renderActionsCell(row);
+
+    fireEvent.click(screen.getByLabelText("Row actions"));
+
+    expect(screen.getByText("Remove from management list")).toBeTruthy();
+    expect(screen.queryByText("Delete from workspace")).toBeNull();
   });
 
   it("hides the kebab menu when the caller lacks delete permission", () => {
