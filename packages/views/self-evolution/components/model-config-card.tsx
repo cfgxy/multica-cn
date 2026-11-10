@@ -356,7 +356,7 @@ function WorkspaceModelConfigCard({
             <Button
               size="sm"
               variant="outline"
-              disabled={!canManage || !data.encryption_ready || listModels.isPending || baseUrl.trim() === ""}
+              disabled={!canManage || !data.encryption_ready || busy || listModels.isPending || baseUrl.trim() === ""}
               onClick={fetchModels}
             >
               {listModels.isPending ? t(($) => $.modelConfig.modelsLoading) : t(($) => $.modelConfig.loadModels)}

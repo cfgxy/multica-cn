@@ -286,6 +286,8 @@ describe("ModelConfigCard", () => {
     view.rerender(cardTree("ws-1"));
     const recheck = screen.getByRole("button", { name: "Re-check", hidden: true });
     expect(recheck.hasAttribute("disabled")).toBe(true);
+    const loadModels = screen.getByRole("button", { name: "Load models", hidden: true });
+    expect(loadModels.hasAttribute("disabled")).toBe(true);
     expect(m.validateMutate).not.toHaveBeenCalled();
 
     act(() => m.restoreOptions?.onSuccess?.());

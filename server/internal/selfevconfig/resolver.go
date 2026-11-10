@@ -19,6 +19,7 @@ package selfevconfig
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -63,7 +64,8 @@ const (
 type Store interface {
 	GetSelfEvolutionModelConfig(ctx context.Context, workspaceID pgtype.UUID) (db.SelfEvolutionModelConfig, error)
 	UpsertSelfEvolutionModelConfig(ctx context.Context, arg db.UpsertSelfEvolutionModelConfigParams) (db.SelfEvolutionModelConfig, error)
-	UpdateSelfEvolutionModelConfigValidation(ctx context.Context, arg db.UpdateSelfEvolutionModelConfigValidationParams) error
+	UpdateSelfEvolutionModelConfig(ctx context.Context, arg db.UpdateSelfEvolutionModelConfigParams) (db.SelfEvolutionModelConfig, error)
+	UpdateSelfEvolutionModelConfigValidation(ctx context.Context, arg db.UpdateSelfEvolutionModelConfigValidationParams) (int64, error)
 	DeleteSelfEvolutionModelConfig(ctx context.Context, workspaceID pgtype.UUID) error
 }
 
@@ -86,8 +88,10 @@ type Resolver struct {
 	deployModel string
 	now         func() time.Time
 
-	mu    sync.Mutex
-	cache map[pgtype.UUID]cacheEntry
+	mu            sync.Mutex
+	mutationMu    sync.Mutex
+	mutationLocks map[pgtype.UUID]*sync.Mutex
+	cache         map[pgtype.UUID]cacheEntry
 }
 
 type cacheEntry struct {
@@ -100,12 +104,13 @@ type cacheEntry struct {
 // disabled client, which simply keeps the chain falling through to none.
 func NewResolver(store Store, box *secretbox.Box, deploy *llm.Client, deployModel string) *Resolver {
 	return &Resolver{
-		store:       store,
-		box:         box,
-		deploy:      deploy,
-		deployModel: deployModel,
-		now:         time.Now,
-		cache:       map[pgtype.UUID]cacheEntry{},
+		store:         store,
+		box:           box,
+		deploy:        deploy,
+		deployModel:   deployModel,
+		now:           time.Now,
+		mutationLocks: map[pgtype.UUID]*sync.Mutex{},
+		cache:         map[pgtype.UUID]cacheEntry{},
 	}
 }
 
@@ -243,6 +248,9 @@ type ValidationOutcome struct {
 // Save validates (mandatory whenever credentials are present) and only then
 // persists, returning the stored row. A failed validation persists nothing.
 func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInput) (db.SelfEvolutionModelConfig, *ValidationFailure, error) {
+	unlock := r.lockMutation(workspaceID)
+	defer unlock()
+
 	in.BaseURL = strings.TrimSpace(in.BaseURL)
 	in.Model = strings.TrimSpace(in.Model)
 	in.APIKey = strings.TrimSpace(in.APIKey)
@@ -253,20 +261,30 @@ func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInp
 		return zero, nil, ErrIncompleteCreds
 	}
 
-	var apiKey []byte
+	var (
+		apiKey            []byte
+		expectedUpdatedAt pgtype.Timestamptz
+		stored            db.SelfEvolutionModelConfig
+		storedFound       bool
+	)
 	if creds {
-		stored, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
+		row, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
 		if err != nil && !isNoRows(err) {
 			return zero, nil, err
 		}
-		if in.APIKey == "" && err == nil && len(stored.ApiKeyEncrypted) > 0 && !sameBaseURL(in.BaseURL, stored.BaseUrl.String) {
+		if err == nil {
+			stored = row
+			storedFound = true
+			expectedUpdatedAt = row.UpdatedAt
+		}
+		if in.APIKey == "" && storedFound && len(stored.ApiKeyEncrypted) > 0 && !sameBaseURL(in.BaseURL, stored.BaseUrl.String) {
 			return zero, &ValidationFailure{
 				Kind:    llm.ErrorKindCredentials,
 				Message: "A new API key is required when changing the Base URL",
 			}, nil
 		}
 		plainKey := in.APIKey
-		if plainKey == "" && err == nil && len(stored.ApiKeyEncrypted) > 0 && sameBaseURL(in.BaseURL, stored.BaseUrl.String) {
+		if plainKey == "" && storedFound && len(stored.ApiKeyEncrypted) > 0 && sameBaseURL(in.BaseURL, stored.BaseUrl.String) {
 			plain, err := r.box.Open(stored.ApiKeyEncrypted)
 			if err != nil {
 				return zero, nil, err
@@ -285,11 +303,18 @@ func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInp
 		if !outcome.OK {
 			return zero, &ValidationFailure{Kind: outcome.Kind, Message: outcome.Message}, nil
 		}
+	} else if row, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID); err == nil {
+		stored = row
+		storedFound = true
+		expectedUpdatedAt = row.UpdatedAt
+	} else if !isNoRows(err) {
+		return zero, nil, err
 	}
 
 	params := db.UpsertSelfEvolutionModelConfigParams{
-		WorkspaceID:    workspaceID,
-		ScoringEnabled: in.ScoringEnabled,
+		WorkspaceID:       workspaceID,
+		ScoringEnabled:    in.ScoringEnabled,
+		ExpectedUpdatedAt: expectedUpdatedAt,
 	}
 	if creds {
 		params.BaseUrl = pgtype.Text{String: in.BaseURL, Valid: true}
@@ -297,8 +322,34 @@ func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInp
 		params.ApiKeyEncrypted = apiKey
 		params.LastValidatedAt = pgtype.Timestamptz{Time: r.now(), Valid: true}
 		params.LastValidationOk = pgtype.Bool{Bool: true, Valid: true}
+	} else if storedFound {
+		params.BaseUrl = stored.BaseUrl
+		params.ApiKeyEncrypted = stored.ApiKeyEncrypted
+		params.Model = stored.Model
+		params.LastValidatedAt = stored.LastValidatedAt
+		params.LastValidationOk = stored.LastValidationOk
+		params.LastValidationError = stored.LastValidationError
 	}
-	row, err := r.store.UpsertSelfEvolutionModelConfig(ctx, params)
+	var row db.SelfEvolutionModelConfig
+	var err error
+	if storedFound {
+		row, err = r.store.UpdateSelfEvolutionModelConfig(ctx, db.UpdateSelfEvolutionModelConfigParams{
+			WorkspaceID:         params.WorkspaceID,
+			BaseUrl:             params.BaseUrl,
+			ApiKeyEncrypted:     params.ApiKeyEncrypted,
+			Model:               params.Model,
+			ScoringEnabled:      params.ScoringEnabled,
+			LastValidatedAt:     params.LastValidatedAt,
+			LastValidationOk:    params.LastValidationOk,
+			LastValidationError: params.LastValidationError,
+			ExpectedUpdatedAt:   params.ExpectedUpdatedAt,
+		})
+	} else {
+		row, err = r.store.UpsertSelfEvolutionModelConfig(ctx, params)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return zero, nil, ErrConcurrentUpdate
+	}
 	if err != nil {
 		return zero, nil, err
 	}
@@ -370,6 +421,9 @@ func sameBaseURL(a, b string) bool {
 // persists the outcome (the status card's 重新校验). A workspace without an
 // override validates to not-ok without writing anything.
 func (r *Resolver) RevalidateStored(ctx context.Context, workspaceID pgtype.UUID) (ValidationOutcome, error) {
+	unlock := r.lockMutation(workspaceID)
+	defer unlock()
+
 	row, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
 	if isNoRows(err) {
 		return ValidationOutcome{OK: false, Kind: llm.ErrorKindNotConfigured}, nil
@@ -391,13 +445,18 @@ func (r *Resolver) RevalidateStored(ctx context.Context, workspaceID pgtype.UUID
 	outcome := r.validate(ctx, row.BaseUrl.String, plainKey, row.Model.String)
 
 	nowValidated := pgtype.Timestamptz{Time: r.now(), Valid: true}
-	if err := r.store.UpdateSelfEvolutionModelConfigValidation(ctx, db.UpdateSelfEvolutionModelConfigValidationParams{
+	rows, err := r.store.UpdateSelfEvolutionModelConfigValidation(ctx, db.UpdateSelfEvolutionModelConfigValidationParams{
 		WorkspaceID:         workspaceID,
 		LastValidatedAt:     nowValidated,
 		LastValidationOk:    pgtype.Bool{Bool: outcome.OK, Valid: true},
 		LastValidationError: maskedOrEmpty(outcome),
-	}); err != nil {
+		ExpectedUpdatedAt:   row.UpdatedAt,
+	})
+	if err != nil {
 		return outcome, err
+	}
+	if rows != 1 {
+		return outcome, ErrConcurrentUpdate
 	}
 	r.invalidate(workspaceID)
 	return outcome, nil
@@ -406,6 +465,9 @@ func (r *Resolver) RevalidateStored(ctx context.Context, workspaceID pgtype.UUID
 // RestoreDefault deletes the override row (credentials and validation state
 // with it) — 恢复部署默认.
 func (r *Resolver) RestoreDefault(ctx context.Context, workspaceID pgtype.UUID) error {
+	unlock := r.lockMutation(workspaceID)
+	defer unlock()
+
 	if err := r.store.DeleteSelfEvolutionModelConfig(ctx, workspaceID); err != nil {
 		return err
 	}
@@ -431,6 +493,8 @@ func (r *Resolver) Override(ctx context.Context, workspaceID pgtype.UUID) (db.Se
 // ErrIncompleteCreds is returned when credentials are half-saved: base URL
 // and model must be provided together (or both blank for a switch-only save).
 var ErrIncompleteCreds = &incompleteCredsError{}
+
+var ErrConcurrentUpdate = errors.New("selfevconfig: configuration changed during validation")
 
 type incompleteCredsError struct{}
 
@@ -523,6 +587,18 @@ func rowCredsConfigured(row db.SelfEvolutionModelConfig) bool {
 }
 
 func isNoRows(err error) bool { return err != nil && err == pgx.ErrNoRows }
+
+func (r *Resolver) lockMutation(ws pgtype.UUID) func() {
+	r.mutationMu.Lock()
+	lock := r.mutationLocks[ws]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		r.mutationLocks[ws] = lock
+	}
+	r.mutationMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
 
 func (r *Resolver) cached(ws pgtype.UUID) (RunTarget, bool) {
 	r.mu.Lock()

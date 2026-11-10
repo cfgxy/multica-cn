@@ -113,6 +113,10 @@ func (h *Handler) PutSelfEvolutionModelConfig(w http.ResponseWriter, r *http.Req
 			writeError(w, http.StatusBadRequest, "base_url 与 model 必须同时提供，或同时留空（仅保存启用开关）")
 			return
 		}
+		if errors.Is(err, selfevconfig.ErrConcurrentUpdate) {
+			writeError(w, http.StatusConflict, "model config changed during validation; retry")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to save model config")
 		return
 	}
@@ -180,6 +184,10 @@ func (h *Handler) ValidateSelfEvolutionModelConfig(w http.ResponseWriter, r *htt
 	if err != nil {
 		if errors.Is(err, selfevconfig.ErrIncompleteCreds) {
 			writeError(w, http.StatusBadRequest, "base_url 与 model 必须同时提供")
+			return
+		}
+		if errors.Is(err, selfevconfig.ErrConcurrentUpdate) {
+			writeError(w, http.StatusConflict, "model config changed during validation; retry")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to validate model config")

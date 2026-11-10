@@ -24,9 +24,24 @@ ON CONFLICT (workspace_id) DO UPDATE SET
     last_validation_ok = EXCLUDED.last_validation_ok,
     last_validation_error = EXCLUDED.last_validation_error,
     updated_at = now()
+WHERE self_evolution_model_config.updated_at = @expected_updated_at
 RETURNING *;
 
--- name: UpdateSelfEvolutionModelConfigValidation :exec
+-- name: UpdateSelfEvolutionModelConfig :one
+UPDATE self_evolution_model_config SET
+    base_url = @base_url,
+    api_key_encrypted = @api_key_encrypted,
+    model = @model,
+    scoring_enabled = @scoring_enabled,
+    last_validated_at = @last_validated_at,
+    last_validation_ok = @last_validation_ok,
+    last_validation_error = @last_validation_error,
+    updated_at = now()
+WHERE self_evolution_model_config.workspace_id = @workspace_id
+  AND self_evolution_model_config.updated_at = @expected_updated_at
+RETURNING *;
+
+-- name: UpdateSelfEvolutionModelConfigValidation :execrows
 -- Records the outcome of a server-side validation pass (save-time mandatory
 -- or re-validate from the status card). Never stores request payloads.
 UPDATE self_evolution_model_config SET
@@ -34,7 +49,8 @@ UPDATE self_evolution_model_config SET
     last_validation_ok = @last_validation_ok,
     last_validation_error = @last_validation_error,
     updated_at = now()
-WHERE self_evolution_model_config.workspace_id = @workspace_id;
+WHERE self_evolution_model_config.workspace_id = @workspace_id
+  AND self_evolution_model_config.updated_at = @expected_updated_at;
 
 -- name: DeleteSelfEvolutionModelConfig :exec
 -- 恢复部署默认: the whole row goes, credentials and validation state with it.

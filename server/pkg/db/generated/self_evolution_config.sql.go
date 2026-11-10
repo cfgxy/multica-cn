@@ -113,13 +113,68 @@ func (q *Queries) UpdateSelfEvolutionJevConfigCheck(ctx context.Context, arg Upd
 	return err
 }
 
-const updateSelfEvolutionModelConfigValidation = `-- name: UpdateSelfEvolutionModelConfigValidation :exec
+const updateSelfEvolutionModelConfig = `-- name: UpdateSelfEvolutionModelConfig :one
+UPDATE self_evolution_model_config SET
+    base_url = $1,
+    api_key_encrypted = $2,
+    model = $3,
+    scoring_enabled = $4,
+    last_validated_at = $5,
+    last_validation_ok = $6,
+    last_validation_error = $7,
+    updated_at = now()
+WHERE self_evolution_model_config.workspace_id = $8
+  AND self_evolution_model_config.updated_at = $9
+RETURNING workspace_id, base_url, api_key_encrypted, model, scoring_enabled, last_validated_at, last_validation_ok, last_validation_error, updated_at
+`
+
+type UpdateSelfEvolutionModelConfigParams struct {
+	BaseUrl             pgtype.Text        `json:"base_url"`
+	ApiKeyEncrypted     []byte             `json:"api_key_encrypted"`
+	Model               pgtype.Text        `json:"model"`
+	ScoringEnabled      bool               `json:"scoring_enabled"`
+	LastValidatedAt     pgtype.Timestamptz `json:"last_validated_at"`
+	LastValidationOk    pgtype.Bool        `json:"last_validation_ok"`
+	LastValidationError string             `json:"last_validation_error"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	ExpectedUpdatedAt   pgtype.Timestamptz `json:"expected_updated_at"`
+}
+
+func (q *Queries) UpdateSelfEvolutionModelConfig(ctx context.Context, arg UpdateSelfEvolutionModelConfigParams) (SelfEvolutionModelConfig, error) {
+	row := q.db.QueryRow(ctx, updateSelfEvolutionModelConfig,
+		arg.BaseUrl,
+		arg.ApiKeyEncrypted,
+		arg.Model,
+		arg.ScoringEnabled,
+		arg.LastValidatedAt,
+		arg.LastValidationOk,
+		arg.LastValidationError,
+		arg.WorkspaceID,
+		arg.ExpectedUpdatedAt,
+	)
+	var i SelfEvolutionModelConfig
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.BaseUrl,
+		&i.ApiKeyEncrypted,
+		&i.Model,
+		&i.ScoringEnabled,
+		&i.LastValidatedAt,
+		&i.LastValidationOk,
+		&i.LastValidationError,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateSelfEvolutionModelConfigValidation = `-- name: UpdateSelfEvolutionModelConfigValidation :execrows
 UPDATE self_evolution_model_config SET
     last_validated_at = $1,
     last_validation_ok = $2,
     last_validation_error = $3,
     updated_at = now()
 WHERE self_evolution_model_config.workspace_id = $4
+  AND self_evolution_model_config.updated_at = $5
 `
 
 type UpdateSelfEvolutionModelConfigValidationParams struct {
@@ -127,18 +182,23 @@ type UpdateSelfEvolutionModelConfigValidationParams struct {
 	LastValidationOk    pgtype.Bool        `json:"last_validation_ok"`
 	LastValidationError string             `json:"last_validation_error"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	ExpectedUpdatedAt   pgtype.Timestamptz `json:"expected_updated_at"`
 }
 
 // Records the outcome of a server-side validation pass (save-time mandatory
 // or re-validate from the status card). Never stores request payloads.
-func (q *Queries) UpdateSelfEvolutionModelConfigValidation(ctx context.Context, arg UpdateSelfEvolutionModelConfigValidationParams) error {
-	_, err := q.db.Exec(ctx, updateSelfEvolutionModelConfigValidation,
+func (q *Queries) UpdateSelfEvolutionModelConfigValidation(ctx context.Context, arg UpdateSelfEvolutionModelConfigValidationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateSelfEvolutionModelConfigValidation,
 		arg.LastValidatedAt,
 		arg.LastValidationOk,
 		arg.LastValidationError,
 		arg.WorkspaceID,
+		arg.ExpectedUpdatedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const upsertSelfEvolutionJevConfig = `-- name: UpsertSelfEvolutionJevConfig :one
@@ -219,6 +279,7 @@ ON CONFLICT (workspace_id) DO UPDATE SET
     last_validation_ok = EXCLUDED.last_validation_ok,
     last_validation_error = EXCLUDED.last_validation_error,
     updated_at = now()
+WHERE self_evolution_model_config.updated_at = $9
 RETURNING workspace_id, base_url, api_key_encrypted, model, scoring_enabled, last_validated_at, last_validation_ok, last_validation_error, updated_at
 `
 
@@ -231,6 +292,7 @@ type UpsertSelfEvolutionModelConfigParams struct {
 	LastValidatedAt     pgtype.Timestamptz `json:"last_validated_at"`
 	LastValidationOk    pgtype.Bool        `json:"last_validation_ok"`
 	LastValidationError string             `json:"last_validation_error"`
+	ExpectedUpdatedAt   pgtype.Timestamptz `json:"expected_updated_at"`
 }
 
 func (q *Queries) UpsertSelfEvolutionModelConfig(ctx context.Context, arg UpsertSelfEvolutionModelConfigParams) (SelfEvolutionModelConfig, error) {
@@ -243,6 +305,7 @@ func (q *Queries) UpsertSelfEvolutionModelConfig(ctx context.Context, arg Upsert
 		arg.LastValidatedAt,
 		arg.LastValidationOk,
 		arg.LastValidationError,
+		arg.ExpectedUpdatedAt,
 	)
 	var i SelfEvolutionModelConfig
 	err := row.Scan(

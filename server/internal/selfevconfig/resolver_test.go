@@ -32,13 +32,18 @@ import (
 // --- fixtures ---
 
 type fakeStore struct {
-	mu      sync.Mutex
-	rows    map[pgtype.UUID]db.SelfEvolutionModelConfig
-	upserts int
-	lastUp  db.UpsertSelfEvolutionModelConfigParams
-	vals    int
-	lastVal db.UpdateSelfEvolutionModelConfigValidationParams
-	deletes int
+	mu             sync.Mutex
+	rows           map[pgtype.UUID]db.SelfEvolutionModelConfig
+	upserts        int
+	lastUp         db.UpsertSelfEvolutionModelConfigParams
+	upsertErr      error
+	updateErr      error
+	updates        int
+	lastUpdate     db.UpdateSelfEvolutionModelConfigParams
+	vals           int
+	lastVal        db.UpdateSelfEvolutionModelConfigValidationParams
+	validationRows *int64
+	deletes        int
 }
 
 func (s *fakeStore) GetSelfEvolutionModelConfig(_ context.Context, ws pgtype.UUID) (db.SelfEvolutionModelConfig, error) {
@@ -56,6 +61,9 @@ func (s *fakeStore) UpsertSelfEvolutionModelConfig(_ context.Context, p db.Upser
 	defer s.mu.Unlock()
 	s.upserts++
 	s.lastUp = p
+	if s.upsertErr != nil {
+		return db.SelfEvolutionModelConfig{}, s.upsertErr
+	}
 	row := db.SelfEvolutionModelConfig{
 		WorkspaceID:         p.WorkspaceID,
 		BaseUrl:             p.BaseUrl,
@@ -70,12 +78,38 @@ func (s *fakeStore) UpsertSelfEvolutionModelConfig(_ context.Context, p db.Upser
 	return row, nil
 }
 
-func (s *fakeStore) UpdateSelfEvolutionModelConfigValidation(_ context.Context, p db.UpdateSelfEvolutionModelConfigValidationParams) error {
+func (s *fakeStore) UpdateSelfEvolutionModelConfig(_ context.Context, p db.UpdateSelfEvolutionModelConfigParams) (db.SelfEvolutionModelConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updates++
+	s.lastUpdate = p
+	if s.updateErr != nil {
+		return db.SelfEvolutionModelConfig{}, s.updateErr
+	}
+	row, ok := s.rows[p.WorkspaceID]
+	if !ok {
+		return db.SelfEvolutionModelConfig{}, pgx.ErrNoRows
+	}
+	row.BaseUrl = p.BaseUrl
+	row.ApiKeyEncrypted = p.ApiKeyEncrypted
+	row.Model = p.Model
+	row.ScoringEnabled = p.ScoringEnabled
+	row.LastValidatedAt = p.LastValidatedAt
+	row.LastValidationOk = p.LastValidationOk
+	row.LastValidationError = p.LastValidationError
+	s.rows[p.WorkspaceID] = row
+	return row, nil
+}
+
+func (s *fakeStore) UpdateSelfEvolutionModelConfigValidation(_ context.Context, p db.UpdateSelfEvolutionModelConfigValidationParams) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.vals++
 	s.lastVal = p
-	return nil
+	if s.validationRows != nil {
+		return *s.validationRows, nil
+	}
+	return 1, nil
 }
 
 func (s *fakeStore) DeleteSelfEvolutionModelConfig(_ context.Context, ws pgtype.UUID) error {
@@ -390,6 +424,53 @@ func TestSaveValidatesAndSealsKey(t *testing.T) {
 	}
 }
 
+func TestSaveReturnsConcurrentUpdateWhenRowChangesDuringValidation(t *testing.T) {
+	g := newGateway(t, 0)
+	ws := testWS(39)
+	store := &fakeStore{
+		rows:      map[pgtype.UUID]db.SelfEvolutionModelConfig{},
+		upsertErr: pgx.ErrNoRows,
+	}
+	r := NewResolver(store, testBox(t), llm.New(llm.Config{}), "")
+
+	_, failure, err := r.Save(context.Background(), ws, SaveInput{
+		BaseURL: g.srv.URL, APIKey: "new-key", Model: "m1", ScoringEnabled: true,
+	})
+	if failure != nil || !errors.Is(err, ErrConcurrentUpdate) {
+		t.Fatalf("failure=%v err=%v, want concurrent update", failure, err)
+	}
+}
+
+func TestSaveReturnsConcurrentUpdateWhenStoredRowDisappears(t *testing.T) {
+	g := newGateway(t, 0)
+	ws := testWS(42)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("stored-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{
+			ws: {
+				WorkspaceID:     ws,
+				BaseUrl:         pgtype.Text{String: g.srv.URL, Valid: true},
+				ApiKeyEncrypted: sealed,
+				Model:           pgtype.Text{String: "old-model", Valid: true},
+				ScoringEnabled:  true,
+			},
+		},
+		updateErr: pgx.ErrNoRows,
+	}
+	r := NewResolver(store, box, llm.New(llm.Config{}), "")
+
+	_, failure, err := r.Save(context.Background(), ws, SaveInput{
+		BaseURL: g.srv.URL, Model: "new-model", ScoringEnabled: true,
+	})
+	if failure != nil || !errors.Is(err, ErrConcurrentUpdate) {
+		t.Fatalf("failure=%v err=%v, want concurrent update", failure, err)
+	}
+}
+
 func TestSaveBlankKeyReusesStoredKey(t *testing.T) {
 	g := newGateway(t, 0)
 	ws := testWS(8)
@@ -410,7 +491,7 @@ func TestSaveBlankKeyReusesStoredKey(t *testing.T) {
 	if g.auth != "Bearer original-key" {
 		t.Fatalf("validation auth = %q, want the stored key reused", g.auth)
 	}
-	if plain, err := box.Open(store.lastUp.ApiKeyEncrypted); err != nil || string(plain) != "original-key" {
+	if plain, err := box.Open(store.lastUpdate.ApiKeyEncrypted); err != nil || string(plain) != "original-key" {
 		t.Fatalf("stored key not carried over: %q / %v", plain, err)
 	}
 }
@@ -433,7 +514,70 @@ func TestSaveSwitchOnlySkipsValidation(t *testing.T) {
 	}
 }
 
+func TestSaveSwitchOnlyPreservesStoredConfigAndVersion(t *testing.T) {
+	ws := testWS(40)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("stored-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedAt := pgtype.Timestamptz{Time: time.Unix(1700000000, 0).UTC(), Valid: true}
+	store := &fakeStore{rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{
+		ws: {
+			WorkspaceID:     ws,
+			BaseUrl:         pgtype.Text{String: "https://gateway.example/v1", Valid: true},
+			ApiKeyEncrypted: sealed,
+			Model:           pgtype.Text{String: "stored-model", Valid: true},
+			ScoringEnabled:  true,
+			UpdatedAt:       updatedAt,
+		},
+	}}
+	r := NewResolver(store, box, llm.New(llm.Config{}), "")
+
+	if _, failure, err := r.Save(context.Background(), ws, SaveInput{ScoringEnabled: false}); err != nil || failure != nil {
+		t.Fatalf("switch-only save: failure=%v err=%v", failure, err)
+	}
+	if store.lastUpdate.ExpectedUpdatedAt != updatedAt {
+		t.Fatalf("expected updated_at = %+v, want %+v", store.lastUpdate.ExpectedUpdatedAt, updatedAt)
+	}
+	if store.lastUpdate.BaseUrl != store.rows[ws].BaseUrl || store.lastUpdate.Model != store.rows[ws].Model || string(store.lastUpdate.ApiKeyEncrypted) != string(sealed) {
+		t.Fatalf("switch-only save did not preserve stored config: %+v", store.lastUpdate)
+	}
+	if store.lastUpdate.ScoringEnabled {
+		t.Fatal("switch-only save did not update scoring switch")
+	}
+}
+
 // --- revalidate / validate-only ---
+
+func TestRevalidateStoredReturnsConcurrentUpdateWhenVersionChanges(t *testing.T) {
+	g := newGateway(t, 0)
+	ws := testWS(41)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("stored-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := int64(0)
+	store := &fakeStore{
+		rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{
+			ws: {
+				WorkspaceID:     ws,
+				BaseUrl:         pgtype.Text{String: g.srv.URL, Valid: true},
+				ApiKeyEncrypted: sealed,
+				Model:           pgtype.Text{String: "m1", Valid: true},
+				ScoringEnabled:  true,
+			},
+		},
+		validationRows: &rows,
+	}
+	r := NewResolver(store, box, llm.New(llm.Config{}), "")
+
+	out, err := r.RevalidateStored(context.Background(), ws)
+	if !out.OK || !errors.Is(err, ErrConcurrentUpdate) {
+		t.Fatalf("out=%+v err=%v, want successful validation with concurrent update", out, err)
+	}
+}
 
 func TestRevalidateStoredPersistsOutcome(t *testing.T) {
 	g := newGateway(t, 0)
