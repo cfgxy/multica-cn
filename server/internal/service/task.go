@@ -4386,8 +4386,10 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	// candidate SELECT and this claim, or a row stranded by a torn rebind),
 	// and claiming by that stale value would bounce off the service-side
 	// runtime_mismatch fence and strand the row forever. The SQL claim
-	// rewrites the row onto the resolved runtime; the runtimeInSet guard below
-	// keeps the routing contract.
+	// rewrites the row onto the resolved runtime. If the binding moves outside
+	// this daemon's set after the candidate SELECT, immediately requeue that
+	// committed claim and exclude the Agent from the rest of this batch.
+	excludedAgents := make(map[string]struct{})
 	claimOne := func(agentID pgtype.UUID) error {
 		task, err := s.claimTask(ctx, agentID, pgtype.UUID{})
 		if err != nil {
@@ -4397,9 +4399,16 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			return nil
 		}
 		// The SQL claim is scoped to the candidate runtime. Retain this guard as
-		// a defensive contract check so a future query change cannot route work
-		// to a runtime this daemon does not host.
+		// a defensive contract check so a rebind race cannot route work to a
+		// runtime this daemon does not host.
 		if _, ok := runtimeInSet[util.UUIDToString(task.RuntimeID)]; !ok {
+			if _, err := s.RequeueTaskAfterClaimFailure(ctx, *task); err != nil {
+				slog.Error("batch claim: requeue outside runtime set failed; leaving claim for stale recovery",
+					"task_id", util.UUIDToString(task.ID),
+					"runtime_id", util.UUIDToString(task.RuntimeID),
+					"error", err)
+			}
+			excludedAgents[util.UUIDToString(agentID)] = struct{}{}
 			return nil
 		}
 		claimed = append(claimed, *task)
@@ -4412,6 +4421,9 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			break
 		}
 		agentKey := util.UUIDToString(candidates[i].AgentID)
+		if _, excluded := excludedAgents[agentKey]; excluded {
+			continue
+		}
 		if _, seen := seenAgents[agentKey]; seen {
 			continue
 		}
@@ -4437,6 +4449,9 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			break
 		}
 		agentKey := util.UUIDToString(candidates[i].AgentID)
+		if _, excluded := excludedAgents[agentKey]; excluded {
+			continue
+		}
 		if _, seen := secondPassSeen[agentKey]; !seen {
 			secondPassSeen[agentKey] = struct{}{}
 			continue
