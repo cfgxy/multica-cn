@@ -161,6 +161,33 @@ func TestClaimTasksForRuntimes_MaxTasksCap(t *testing.T) {
 	}
 }
 
+// TestClaimTasksForRuntimes_FairFirstPass verifies the first pass gives each
+// Agent one opportunity before the batch uses remaining capacity on a busy
+// Agent.
+func TestClaimTasksForRuntimes_FairFirstPass(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+
+	rt1, rt2 := batchClaimFixture(t, ctx, pool)
+	ids := []pgtype.UUID{util.MustParseUUID(rt1), util.MustParseUUID(rt2)}
+
+	got, err := svc.ClaimTasksForRuntimes(ctx, ids, 2)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("claimed %d tasks with max_tasks=2, want 2", len(got))
+	}
+	seen := map[string]int{}
+	for _, task := range got {
+		seen[util.UUIDToString(task.RuntimeID)]++
+	}
+	if seen[rt1] != 1 || seen[rt2] != 1 {
+		t.Fatalf("runtime distribution = %v, want one task per runtime", seen)
+	}
+}
+
 // TestClaimTasksForRuntimes_AnyDueRuntimeChecksTheCompleteSet pins MUL-6486's
 // collection-level reclaim gate. Per-runtime backstops can begin staggered, but
 // one due member must run the single UPDATE over every runtime on that daemon;

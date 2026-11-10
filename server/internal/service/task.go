@@ -4375,7 +4375,10 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	// full. The helper preserves per-(issue, agent) serialization, Agent
 	// capacity caps, and dispatch side effects; invoking it for each candidate
 	// lets an unlimited Agent fill multiple Runtime slots in one poll while a
-	// bounded Agent naturally stops when its own capacity is reached.
+	// bounded Agent naturally stops when its own capacity is reached. The first
+	// pass gives each Agent one opportunity so a large queue for one Agent cannot
+	// starve other Agents when maxTasks is smaller than the total free capacity;
+	// the second pass uses the remaining slots to drain more work fairly.
 	// RUYI-224: pass an empty runtimeID so claimTask resolves the agent's
 	// CURRENT binding as the claim runtime. The step-4 candidate fence already
 	// guarantees that binding is in the polled set; the row's persisted
@@ -4385,13 +4388,35 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	// runtime_mismatch fence and strand the row forever. The SQL claim
 	// rewrites the row onto the resolved runtime; the runtimeInSet guard below
 	// keeps the routing contract.
+	claimOne := func(agentID pgtype.UUID) error {
+		task, err := s.claimTask(ctx, agentID, pgtype.UUID{})
+		if err != nil {
+			return fmt.Errorf("claim task: %w", err)
+		}
+		if task == nil {
+			return nil
+		}
+		// The SQL claim is scoped to the candidate runtime. Retain this guard as
+		// a defensive contract check so a future query change cannot route work
+		// to a runtime this daemon does not host.
+		if _, ok := runtimeInSet[util.UUIDToString(task.RuntimeID)]; !ok {
+			return nil
+		}
+		claimed = append(claimed, *task)
+		return nil
+	}
+
+	seenAgents := make(map[string]struct{}, len(candidates))
 	for i := range candidates {
 		if len(claimed) >= maxTasks {
 			break
 		}
-
-		task, err := s.claimTask(ctx, candidates[i].AgentID, pgtype.UUID{})
-		if err != nil {
+		agentKey := util.UUIDToString(candidates[i].AgentID)
+		if _, seen := seenAgents[agentKey]; seen {
+			continue
+		}
+		seenAgents[agentKey] = struct{}{}
+		if err := claimOne(candidates[i].AgentID); err != nil {
 			// Each scoped claim commits in its own transaction, so earlier
 			// iterations (and step-2 reclaims) are already dispatched
 			// server-side. Returning nil here would drop them and force the
@@ -4402,18 +4427,28 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 					"error", err, "claimed", len(claimed))
 				return claimed, nil
 			}
-			return nil, fmt.Errorf("claim task: %w", err)
+			return nil, err
 		}
-		if task == nil {
+	}
+
+	secondPassSeen := make(map[string]struct{}, len(seenAgents))
+	for i := range candidates {
+		if len(claimed) >= maxTasks {
+			break
+		}
+		agentKey := util.UUIDToString(candidates[i].AgentID)
+		if _, seen := secondPassSeen[agentKey]; !seen {
+			secondPassSeen[agentKey] = struct{}{}
 			continue
 		}
-		// The SQL claim is scoped to the candidate runtime. Retain this guard as
-		// a defensive contract check so a future query change cannot route work
-		// to a runtime this daemon does not host.
-		if _, ok := runtimeInSet[util.UUIDToString(task.RuntimeID)]; !ok {
-			continue
+		if err := claimOne(candidates[i].AgentID); err != nil {
+			if len(claimed) > 0 {
+				slog.Error("batch claim: claim task failed after partial success; returning claimed tasks to avoid loss",
+					"error", err, "claimed", len(claimed))
+				return claimed, nil
+			}
+			return nil, err
 		}
-		claimed = append(claimed, *task)
 	}
 
 	return claimed, nil
