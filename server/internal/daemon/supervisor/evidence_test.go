@@ -28,7 +28,7 @@ func TestWorkerEvidenceUsesOwnedManifestAndOpaqueBoundedCursor(t *testing.T) {
 	if err := os.WriteFile(errPath, []byte("failure"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.WriteManifest(&Manifest{RunID: runID, TaskID: taskID, DaemonID: "daemon-a", State: StateExited, StdoutLog: outPath, StderrLog: errPath}); err != nil {
+	if err := mgr.WriteManifest(&Manifest{RunID: runID, TaskID: taskID, RuntimeID: "runtime-a", Generation: 1, DaemonID: "daemon-a", State: StateExited, StdoutLog: outPath, StderrLog: errPath}); err != nil {
 		t.Fatal(err)
 	}
 	const secondTask, secondRun = "22222222-2222-4222-8222-222222222222", "22222222-2222-4222-8222-222222222222-1"
@@ -46,9 +46,12 @@ func TestWorkerEvidenceUsesOwnedManifestAndOpaqueBoundedCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &Supervisor{mgr: mgr, daemonID: "daemon-a", evidenceCursorKey: [32]byte{1}}
-	got := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, Stream: "stdout", TailBytes: 4})
+	got := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 4})
 	if !got.Available || got.StdoutTail != "6789" || got.ProcessLiveness != "exited" || got.NextCursor == "" {
 		t.Fatalf("unexpected evidence: %+v", got)
+	}
+	if got.Binding.RunID != runID || got.Binding.TaskID != taskID || got.Binding.RuntimeID != "runtime-a" || got.Binding.DaemonID != "daemon-a" || got.Binding.Generation != 1 {
+		t.Fatalf("incomplete worker binding: %+v", got.Binding)
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(got.NextCursor)
 	if err != nil {
@@ -85,8 +88,8 @@ func TestWorkerEvidenceUsesOwnedManifestAndOpaqueBoundedCursor(t *testing.T) {
 			}
 		})
 	}
-	cur, reason := s.verifyEvidenceCursor(got.NextCursor, taskID, "stdout", time.Now().Add(evidenceCursorTTL+time.Second))
-	if reason != "expired" || cur.Run != taskID {
+	cur, reason := s.verifyEvidenceCursor(got.NextCursor, taskID, runID, "stdout", cursor.Generation, time.Now().Add(evidenceCursorTTL+time.Second))
+	if reason != "expired" || cur.Task != taskID || cur.Run != runID {
 		t.Fatalf("expired cursor verification = (%+v, %q)", cur, reason)
 	}
 	cur.At = time.Now().Add(-evidenceCursorTTL - time.Second).UTC()
@@ -126,6 +129,93 @@ func TestWorkerEvidenceUsesOwnedManifestAndOpaqueBoundedCursor(t *testing.T) {
 	}
 	if bad := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, Stream: "/tmp/x", TailBytes: 999999}); bad.Available {
 		t.Fatalf("invalid request accepted: %+v", bad)
+	}
+}
+
+func TestWorkerEvidenceRejectsCursorFromStaleManifestGeneration(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const taskID = "66666666-6666-4666-8666-666666666666"
+	const runOne = taskID + "-1"
+	const runTwo = taskID + "-1-2"
+	s := &Supervisor{mgr: mgr, daemonID: "daemon-a", evidenceCursorKey: [32]byte{3}}
+	writeRun := func(runID string, generation int) {
+		t.Helper()
+		if err := os.MkdirAll(mgr.Dir(runID), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(stdoutLogPath(mgr.Dir(runID)), []byte(runID), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(stderrLogPath(mgr.Dir(runID)), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.WriteManifest(&Manifest{RunID: runID, TaskID: taskID, RuntimeID: "runtime-a", Generation: generation, DaemonID: "daemon-a", State: StateExited, StdoutLog: stdoutLogPath(mgr.Dir(runID)), StderrLog: stderrLogPath(mgr.Dir(runID))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRun(runOne, 1)
+	first := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 8})
+	if !first.Available || first.Binding.Generation != 1 {
+		t.Fatalf("initial generation was not selected: %+v", first)
+	}
+	writeRun(runTwo, 2)
+	latest := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 8})
+	if !latest.Available || latest.Binding.Generation != 2 {
+		t.Fatalf("latest generation was not selected: %+v", latest)
+	}
+	stale := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 8, Cursor: first.NextCursor})
+	if stale.Available || stale.Unavailable != "expired" {
+		t.Fatalf("stale generation cursor accepted: %+v", stale)
+	}
+}
+
+func TestWorkerEvidenceRejectsCursorFromDifferentAttemptSameGeneration(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const taskID = "77777777-7777-4777-8777-777777777777"
+	const firstRun = taskID + "-1"
+	const secondRun = taskID + "-2"
+	s := &Supervisor{mgr: mgr, daemonID: "daemon-a", evidenceCursorKey: [32]byte{4}}
+	writeRun := func(runID string, output string, startedAt time.Time) {
+		t.Helper()
+		if err := os.MkdirAll(mgr.Dir(runID), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		stdout := stdoutLogPath(mgr.Dir(runID))
+		stderr := stderrLogPath(mgr.Dir(runID))
+		if err := os.WriteFile(stdout, []byte(output), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(stderr, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.WriteManifest(&Manifest{
+			RunID: runID, TaskID: taskID, RuntimeID: "runtime-a", Generation: 1,
+			DaemonID: "daemon-a", State: StateExited, StartedAt: startedAt,
+			StdoutLog: stdout, StderrLog: stderr,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRun(firstRun, "first worker", time.Now().Add(-time.Minute))
+	first := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 8})
+	if !first.Available || first.Binding.RunID != firstRun {
+		t.Fatalf("initial attempt was not selected: %+v", first)
+	}
+
+	writeRun(secondRun, "second worker", time.Now().UTC())
+	latest := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 8})
+	if !latest.Available || latest.Binding.RunID != secondRun {
+		t.Fatalf("latest attempt was not selected: %+v", latest)
+	}
+	stale := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 8, Cursor: first.NextCursor})
+	if stale.Available || stale.Unavailable != "expired" {
+		t.Fatalf("cursor from prior attempt accepted: %+v", stale)
 	}
 }
 

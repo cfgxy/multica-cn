@@ -38,7 +38,7 @@ func TestHandleWorkerEvidenceRPCChecksRuntimeAndSupervisorOwnership(t *testing.T
 	if err := os.WriteFile(stdout, []byte("owned output"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := mgr.WriteManifest(&supervisor.Manifest{RunID: runID, TaskID: taskID, DaemonID: "daemon-a", State: supervisor.StateExited, StdoutLog: stdout, StderrLog: filepath.Join(mgr.Dir(runID), "worker-stderr.log")}); err != nil {
+	if err := mgr.WriteManifest(&supervisor.Manifest{RunID: runID, TaskID: taskID, RuntimeID: "runtime-a", DaemonID: "daemon-a", State: supervisor.StateExited, StdoutLog: stdout, StderrLog: filepath.Join(mgr.Dir(runID), "worker-stderr.log")}); err != nil {
 		t.Fatal(err)
 	}
 	d := &Daemon{supervisor: sup, wsRPC: newWSRPCClient(0), logger: slog.Default(), workspaces: map[string]*workspaceState{"workspace-a": {runtimeIDs: []string{"runtime-a"}}}}

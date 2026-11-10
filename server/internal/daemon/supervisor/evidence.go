@@ -10,20 +10,25 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+const maxWorkerEvidenceTailBytes = 4096
+
 type evidenceCursor struct {
-	Daemon string    `json:"d"`
-	Run    string    `json:"r"`
-	Stream string    `json:"s"`
-	Out    int64     `json:"o"`
-	Err    int64     `json:"e"`
-	At     time.Time `json:"t"`
-	MAC    string    `json:"m"`
+	Daemon     string    `json:"d"`
+	Task       string    `json:"q"`
+	Run        string    `json:"r"`
+	Stream     string    `json:"s"`
+	Generation int       `json:"g"`
+	Out        int64     `json:"o"`
+	Err        int64     `json:"e"`
+	At         time.Time `json:"t"`
+	MAC        string    `json:"m"`
 }
 
 const evidenceCursorTTL = 24 * time.Hour
@@ -44,10 +49,10 @@ func (s *Supervisor) signEvidenceCursor(cur evidenceCursor) (string, bool) {
 	return base64.RawURLEncoding.EncodeToString(encoded), true
 }
 
-func (s *Supervisor) verifyEvidenceCursor(token, run, stream string, now time.Time) (evidenceCursor, string) {
+func (s *Supervisor) verifyEvidenceCursor(token, task, run, stream string, generation int, now time.Time) (evidenceCursor, string) {
 	var cur evidenceCursor
 	raw, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil || json.Unmarshal(raw, &cur) != nil || cur.Out < 0 || cur.Err < 0 || cur.At.IsZero() {
+	if err != nil || json.Unmarshal(raw, &cur) != nil || cur.Generation < 1 || cur.Out < 0 || cur.Err < 0 || cur.At.IsZero() {
 		return cur, "expired"
 	}
 	wantMAC := cur.MAC
@@ -59,7 +64,7 @@ func (s *Supervisor) verifyEvidenceCursor(token, run, stream string, now time.Ti
 	mac := hmac.New(sha256.New, s.evidenceCursorKey[:])
 	_, _ = mac.Write(unsigned)
 	sig, err := base64.RawURLEncoding.DecodeString(wantMAC)
-	if err != nil || !hmac.Equal(sig, mac.Sum(nil)) || cur.Daemon != s.daemonID || cur.Run != run || cur.Stream != stream {
+	if err != nil || !hmac.Equal(sig, mac.Sum(nil)) || cur.Daemon != s.daemonID || cur.Task != task || cur.Run != run || cur.Stream != stream || cur.Generation != generation {
 		return cur, "expired"
 	}
 	if now.Sub(cur.At) > evidenceCursorTTL || cur.At.After(now.Add(time.Minute)) {
@@ -72,7 +77,7 @@ func (s *Supervisor) verifyEvidenceCursor(token, run, stream string, now time.Ti
 // callers never provide a path or a supervisor run directory.
 func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvidenceRequest) protocol.WorkerEvidenceResponse {
 	out := protocol.WorkerEvidenceResponse{ProcessLiveness: "unknown"}
-	if s == nil || s.mgr == nil || req.RunID == "" || req.TailBytes < 1 || req.TailBytes > 64<<10 || (req.Stream != "stdout" && req.Stream != "stderr" && req.Stream != "both") {
+	if s == nil || s.mgr == nil || req.RunID == "" || req.TailBytes < 1 || req.TailBytes > maxWorkerEvidenceTailBytes || (req.Stream != "stdout" && req.Stream != "stderr" && req.Stream != "both") {
 		out.Unavailable = "not_found"
 		return out
 	}
@@ -81,14 +86,7 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 		out.Unavailable = "daemon_unreachable"
 		return out
 	}
-	var man *Manifest
-	for _, id := range ids {
-		candidate, e := s.mgr.ReadManifest(id)
-		if e == nil && candidate.TaskID == req.RunID && candidate.DaemonID == s.daemonID {
-			man = candidate
-			break
-		}
-	}
+	man, generation := s.selectEvidenceManifest(ctx, ids, req)
 	if man == nil {
 		if evidenceExpired(s.mgr, req.RunID, nil) {
 			out.Unavailable = "expired"
@@ -97,10 +95,12 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 		out.Unavailable = "not_supervised"
 		return out
 	}
-	cur := evidenceCursor{}
+
+	out.Binding = workerBinding(man, generation)
+	cur := evidenceCursor{Generation: generation}
 	if req.Cursor != "" {
 		var reason string
-		cur, reason = s.verifyEvidenceCursor(req.Cursor, req.RunID, req.Stream, time.Now().UTC())
+		cur, reason = s.verifyEvidenceCursor(req.Cursor, req.RunID, man.RunID, req.Stream, generation, time.Now().UTC())
 		if reason != "" {
 			out.Unavailable = reason
 			return out
@@ -159,7 +159,7 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 	if !observed.IsZero() {
 		out.ObservedAt = &observed
 	}
-	cur.Daemon, cur.Run, cur.Stream = s.daemonID, req.RunID, req.Stream
+	cur.Daemon, cur.Task, cur.Run, cur.Stream = s.daemonID, req.RunID, man.RunID, req.Stream
 	if cur.At.IsZero() {
 		cur.At = time.Now().UTC()
 	}
@@ -169,7 +169,7 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 		out.Unavailable = "not_found"
 		return out
 	}
-	if man.State == StateExited {
+	if man.State == StateExited || man.Exit != nil {
 		out.ProcessLiveness = "exited"
 	} else if man.State == StateRunning {
 		if active, e := s.unitActive(ctx, man.Unit); e == nil && active {
@@ -180,6 +180,77 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 	}
 	out.Available = true
 	return out
+}
+
+func (s *Supervisor) selectEvidenceManifest(ctx context.Context, ids []string, req protocol.WorkerEvidenceRequest) (*Manifest, int) {
+	var selected *Manifest
+	selectedGeneration := 0
+	selectedAlive := false
+	for _, id := range ids {
+		candidate, err := s.mgr.ReadManifest(id)
+		if err != nil || candidate.TaskID != req.RunID || candidate.DaemonID != s.daemonID {
+			continue
+		}
+		if req.RuntimeID != "" && candidate.RuntimeID != req.RuntimeID {
+			continue
+		}
+		generation := manifestGeneration(candidate)
+		alive := false
+		if candidate.State == StateRunning && candidate.Exit == nil {
+			alive, _ = s.unitActive(ctx, candidate.Unit)
+		}
+		if selected == nil || alive && !selectedAlive || alive == selectedAlive && (generation > selectedGeneration || generation == selectedGeneration && candidate.StartedAt.After(selected.StartedAt)) {
+			selected = candidate
+			selectedGeneration = generation
+			selectedAlive = alive
+		}
+	}
+	return selected, selectedGeneration
+}
+
+func manifestGeneration(man *Manifest) int {
+	if man.Generation > 0 {
+		return man.Generation
+	}
+	parts := strings.Split(man.RunID, "-")
+	if len(parts) == 0 {
+		return 1
+	}
+	if generation, err := strconv.Atoi(parts[len(parts)-1]); err == nil && generation > 0 {
+		return generation
+	}
+	return 1
+}
+
+func workerBinding(man *Manifest, generation int) protocol.WorkerBindingEvidence {
+	binding := protocol.WorkerBindingEvidence{
+		RunID:         man.RunID,
+		TaskID:        man.TaskID,
+		RuntimeID:     man.RuntimeID,
+		DaemonID:      man.DaemonID,
+		DaemonVersion: man.DaemonVersion,
+		State:         man.State,
+		WorkerPID:     man.WorkerPID,
+		LauncherPID:   man.LauncherPID,
+		Generation:    generation,
+		StartedAt:     timePtr(man.StartedAt),
+	}
+	if man.Exit != nil {
+		code := man.Exit.Code
+		binding.ExitCode = &code
+		binding.ExitSignal = man.Exit.Signal
+		binding.ExitObservedAt = timePtr(man.Exit.At)
+		binding.ExitSource = man.Exit.Source
+	}
+	return binding
+}
+
+func timePtr(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	value = value.UTC()
+	return &value
 }
 
 func evidenceMissingCategory(mgr *Manager, man *Manifest) string {

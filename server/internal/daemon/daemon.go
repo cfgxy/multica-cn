@@ -9029,6 +9029,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Attempt 1: the segmented-continuation retry below takes attempt 2 with
 	// its own run id — one worker per Execute.
 	execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 1)
+	if execOpts.Supervision != nil {
+		execOpts.Supervision.RuntimeID = task.RuntimeID
+	}
 	if execOpts.Supervision != nil && execOpts.Supervision.Supervisor != nil && execOpts.Supervision.RunID != "" {
 		// This defer runs before cleanup/finalize defers. A cancellation racing
 		// the result path must preserve the worktree until the complete cgroup
@@ -9131,6 +9134,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// in its manifest; planSupervisedRun steps to the next generation so
 		// this retry launches a fresh unit instead of reentering the old one.
 		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 2)
+		if execOpts.Supervision != nil {
+			execOpts.Supervision.RuntimeID = task.RuntimeID
+		}
 
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
 		if retryErr != nil {
