@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -8,9 +9,90 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
+
+const (
+	gitSnapshotAuditTimeout       = 10 * time.Second
+	gitSnapshotAuditMaxEntries    = 100000
+	gitSnapshotAuditMaxConfigFile = 4 << 20
+	gitSnapshotAuditMaxConfigSrc  = 1024
+	gitSnapshotAuditMaxAlternates = 1024
+)
+
+type gitSnapshotAuditBudget struct {
+	ctx            context.Context
+	entries        int
+	configBytes    int64
+	configSources  int
+	alternatePaths int
+}
+
+func newGitSnapshotAuditBudget(ctx context.Context) *gitSnapshotAuditBudget {
+	return &gitSnapshotAuditBudget{ctx: ctx}
+}
+
+func (b *gitSnapshotAuditBudget) check() error {
+	select {
+	case <-b.ctx.Done():
+		return fmt.Errorf("Git audit exceeded its time budget: %w", b.ctx.Err())
+	default:
+		return nil
+	}
+}
+
+func (b *gitSnapshotAuditBudget) visit() error {
+	if err := b.check(); err != nil {
+		return err
+	}
+	b.entries++
+	if b.entries > gitSnapshotAuditMaxEntries {
+		return fmt.Errorf("Git audit exceeded the directory entry budget")
+	}
+	return nil
+}
+
+func (b *gitSnapshotAuditBudget) readConfig(path string) ([]byte, error) {
+	if err := b.check(); err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > gitSnapshotAuditMaxConfigFile {
+		return nil, fmt.Errorf("Git configuration file %q exceeds the size budget", path)
+	}
+	b.configBytes += info.Size()
+	if b.configBytes > gitSnapshotAuditMaxConfigFile {
+		return nil, fmt.Errorf("Git configuration exceeds the size budget")
+	}
+	return os.ReadFile(path)
+}
+
+func (b *gitSnapshotAuditBudget) source() error {
+	if err := b.check(); err != nil {
+		return err
+	}
+	b.configSources++
+	if b.configSources > gitSnapshotAuditMaxConfigSrc {
+		return fmt.Errorf("Git configuration exceeded the source budget")
+	}
+	return nil
+}
+
+func (b *gitSnapshotAuditBudget) alternate() error {
+	if err := b.check(); err != nil {
+		return err
+	}
+	b.alternatePaths++
+	if b.alternatePaths > gitSnapshotAuditMaxAlternates {
+		return fmt.Errorf("Git alternates exceeded the path budget")
+	}
+	return nil
+}
 
 // gitSnapshotAudit 描述 worker 启动前解析出的 Git 读写边界。审计只读；失败
 // 时必须回退既有 worktree，绝不尝试修复用户的 Git metadata。
@@ -35,9 +117,16 @@ type gitSnapshotRepository struct {
 // Git metadata。工作树本身必须仍在用户声明的 scope 中；metadata 可位于外部，
 // 仅在可解析为现存目录时作为 daemon 内部 overlay dependency 纳入计划。
 func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
+	ctx, cancel := context.WithTimeout(context.Background(), gitSnapshotAuditTimeout)
+	defer cancel()
+	return auditSnapshotGitScopeContext(ctx, plan)
+}
+
+func auditSnapshotGitScopeContext(ctx context.Context, plan *snapshotPlan) gitSnapshotAudit {
 	if plan == nil {
 		return gitSnapshotAudit{Safe: true}
 	}
+	budget := newGitSnapshotAuditBudget(ctx)
 	units := plan.Units
 	if len(units) == 0 && plan.Primary != nil {
 		units = []snapshotUnit{*plan.Primary}
@@ -54,10 +143,7 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 
 	repositories := make(map[string]struct{})
 	for _, unit := range units {
-		if err := filepath.WalkDir(unit.AbsPath, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
+		if err := walkGitSnapshotTree(ctx, unit.AbsPath, budget, func(path string, entry fs.DirEntry) error {
 			if entry.Name() != ".git" {
 				return nil
 			}
@@ -73,7 +159,7 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 
 	// 一个 unit 可以指向仓库子目录，因此其 .git 不一定在 WalkDir 根目录下。
 	for _, unit := range units {
-		if top, ok := gitToplevel(unit.AbsPath); ok {
+		if top, ok := gitToplevelContext(ctx, unit.AbsPath); ok {
 			repositories[top] = struct{}{}
 		}
 	}
@@ -89,15 +175,15 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 
 	audit := gitSnapshotAudit{HasGit: true}
 	for _, repo := range repoPaths {
-		top, err := gitPath(repo, "--show-toplevel")
+		top, err := gitPathContext(ctx, repo, "--show-toplevel")
 		if err != nil {
 			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve Git worktree %q: %v", repo, err)}
 		}
-		gitDir, err := gitPath(repo, "--absolute-git-dir")
+		gitDir, err := gitPathContext(ctx, repo, "--absolute-git-dir")
 		if err != nil {
 			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve Git directory for %q: %v", repo, err)}
 		}
-		commonDir, err := gitPath(repo, "--git-common-dir")
+		commonDir, err := gitPathContext(ctx, repo, "--git-common-dir")
 		if err != nil {
 			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve common Git directory for %q: %v", repo, err)}
 		}
@@ -117,7 +203,7 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("Git worktree %q is outside the declared snapshot scope", top)}
 		}
 
-		dependencies, err := gitSnapshotDependencies(repo, gitDir, commonDir)
+		dependencies, err := gitSnapshotDependenciesContext(ctx, budget, repo, gitDir, commonDir)
 		if err != nil {
 			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("cannot resolve Git metadata dependencies for %q: %v", repo, err)}
 		}
@@ -128,7 +214,7 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 	}
 	commonDirs := gitSnapshotCommonDirs(audit.Repositories)
 	for _, repository := range audit.Repositories {
-		if err := auditGitMetadataRedirects(repository.Worktree, repository.GitDir, repository.CommonDir, repository.Dependencies, commonDirs); err != nil {
+		if err := auditGitMetadataRedirectsContext(ctx, budget, repository.Worktree, repository.GitDir, repository.CommonDir, repository.Dependencies, commonDirs); err != nil {
 			return gitSnapshotAudit{HasGit: true, Reason: fmt.Sprintf("unsafe Git metadata for %q: %v", repository.Worktree, err)}
 		}
 	}
@@ -141,9 +227,16 @@ func auditSnapshotGitScope(plan *snapshotPlan) gitSnapshotAudit {
 // established worktree backend intentionally retains a user's native Git hook
 // behavior when the feature gate is off or a snapshot falls back.
 func auditSnapshotGitConfiguration(audit gitSnapshotAudit) error {
+	ctx, cancel := context.WithTimeout(context.Background(), gitSnapshotAuditTimeout)
+	defer cancel()
+	return auditSnapshotGitConfigurationContext(ctx, audit)
+}
+
+func auditSnapshotGitConfigurationContext(ctx context.Context, audit gitSnapshotAudit) error {
+	budget := newGitSnapshotAuditBudget(ctx)
 	commonDirs := gitSnapshotCommonDirs(audit.Repositories)
 	for _, repository := range audit.Repositories {
-		if err := auditGitConfiguration(repository.Worktree, repository.GitDir, repository.CommonDir, repository.Dependencies, commonDirs); err != nil {
+		if err := auditGitConfigurationContext(ctx, budget, repository.Worktree, repository.GitDir, repository.CommonDir, repository.Dependencies, commonDirs); err != nil {
 			return fmt.Errorf("unsafe Git configuration for %q: %w", repository.Worktree, err)
 		}
 	}
@@ -225,8 +318,14 @@ func gitSnapshotDeliveryRepository(plan *snapshotPlan, enabled bool, audit gitSn
 }
 
 func gitPath(repo string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitSnapshotAuditTimeout)
+	defer cancel()
+	return gitPathContext(ctx, repo, args...)
+}
+
+func gitPathContext(ctx context.Context, repo string, args ...string) (string, error) {
 	argv := append([]string{"-C", repo, "rev-parse"}, args...)
-	cmd := exec.Command("git", argv...)
+	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Env = execenv.SnapshotGitEnvironment()
 	out, err := cmd.Output()
 	if err != nil {
@@ -253,17 +352,30 @@ type gitConfigEntry struct {
 // including inactive includeIf branches: a branch change inside the snapshot
 // must not make a previously unaudited host config effective.
 func auditGitConfiguration(worktree, gitDir, commonDir string, dependencies, commonDirs []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), gitSnapshotAuditTimeout)
+	defer cancel()
+	return auditGitConfigurationContext(ctx, newGitSnapshotAuditBudget(ctx), worktree, gitDir, commonDir, dependencies, commonDirs)
+}
+
+func auditGitConfigurationContext(ctx context.Context, budget *gitSnapshotAuditBudget, worktree, gitDir, commonDir string, dependencies, commonDirs []string) error {
 	allowed := compactContainedPaths(append(append([]string{}, dependencies...), worktree))
 	forbidden, forbiddenRoots, err := siblingGitWorktreeAdminDirs(commonDirs, gitDir)
 	if err != nil {
 		return err
 	}
 
-	entries, err := gitConfigEntries(worktree, "--includes", "--null", "--show-origin", "--list")
+	if err := budget.source(); err != nil {
+		return err
+	}
+	entries, err := gitConfigEntriesContext(ctx, worktree, "--includes", "--null", "--show-origin", "--list")
 	if err != nil {
 		return fmt.Errorf("read effective Git configuration: %w", err)
 	}
-	sources := make([]string, 0, len(entries))
+	type configSource struct {
+		path  string
+		chain []string
+	}
+	sources := make([]configSource, 0, len(entries))
 	seenSources := make(map[string]bool)
 	for _, entry := range entries {
 		source, err := auditGitConfigEntrySource(worktree, entry, allowed, forbidden, forbiddenRoots)
@@ -272,7 +384,7 @@ func auditGitConfiguration(worktree, gitDir, commonDir string, dependencies, com
 		}
 		if !seenSources[source] {
 			seenSources[source] = true
-			sources = append(sources, source)
+			sources = append(sources, configSource{path: source, chain: []string{source}})
 		}
 		if isGitHooksPathConfig(entry.Key) {
 			if err := auditGitHooksPath(entry.Value, worktree, allowed, forbidden, forbiddenRoots); err != nil {
@@ -284,9 +396,12 @@ func auditGitConfiguration(worktree, gitDir, commonDir string, dependencies, com
 	for len(sources) > 0 {
 		source := sources[0]
 		sources = sources[1:]
-		fileEntries, err := gitConfigEntries(worktree, "--file", source, "--includes", "--null", "--show-origin", "--list")
+		if err := budget.source(); err != nil {
+			return err
+		}
+		fileEntries, err := gitConfigEntriesContext(ctx, worktree, "--file", source.path, "--includes", "--null", "--show-origin", "--list")
 		if err != nil {
-			return fmt.Errorf("read Git configuration source %q: %w", source, err)
+			return fmt.Errorf("read Git configuration source %q: %w", source.path, err)
 		}
 		for _, entry := range fileEntries {
 			entrySource, err := auditGitConfigEntrySource(worktree, entry, allowed, forbidden, forbiddenRoots)
@@ -295,7 +410,7 @@ func auditGitConfiguration(worktree, gitDir, commonDir string, dependencies, com
 			}
 			if !seenSources[entrySource] {
 				seenSources[entrySource] = true
-				sources = append(sources, entrySource)
+				sources = append(sources, configSource{path: entrySource, chain: append(append([]string{}, source.chain...), entrySource)})
 			}
 			if isGitHooksPathConfig(entry.Key) {
 				if err := auditGitHooksPath(entry.Value, worktree, allowed, forbidden, forbiddenRoots); err != nil {
@@ -313,9 +428,14 @@ func auditGitConfiguration(worktree, gitDir, commonDir string, dependencies, com
 			if err != nil {
 				return fmt.Errorf("unsafe include from %q: %w", entrySource, err)
 			}
+			for _, ancestor := range source.chain {
+				if included == ancestor {
+					return fmt.Errorf("Git configuration include cycle at %q", included)
+				}
+			}
 			if !seenSources[included] {
 				seenSources[included] = true
-				sources = append(sources, included)
+				sources = append(sources, configSource{path: included, chain: append(append([]string{}, source.chain...), included)})
 			}
 		}
 	}
@@ -323,12 +443,21 @@ func auditGitConfiguration(worktree, gitDir, commonDir string, dependencies, com
 }
 
 func gitConfigEntries(repo string, args ...string) ([]gitConfigEntry, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitSnapshotAuditTimeout)
+	defer cancel()
+	return gitConfigEntriesContext(ctx, repo, args...)
+}
+
+func gitConfigEntriesContext(ctx context.Context, repo string, args ...string) ([]gitConfigEntry, error) {
 	argv := append([]string{"-C", repo, "config"}, args...)
-	cmd := exec.Command("git", argv...)
+	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Env = execenv.SnapshotGitEnvironment()
 	raw, err := cmd.Output()
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) > gitSnapshotAuditMaxConfigFile {
+		return nil, fmt.Errorf("Git configuration output exceeds the size budget")
 	}
 	if len(raw) == 0 {
 		return nil, nil
@@ -442,7 +571,13 @@ func isGitIncludePathConfig(key string) bool {
 }
 
 func gitSnapshotDependencies(repo, gitDir, commonDir string) ([]string, error) {
-	objectDir, err := gitPath(repo, "--git-path", "objects")
+	ctx, cancel := context.WithTimeout(context.Background(), gitSnapshotAuditTimeout)
+	defer cancel()
+	return gitSnapshotDependenciesContext(ctx, newGitSnapshotAuditBudget(ctx), repo, gitDir, commonDir)
+}
+
+func gitSnapshotDependenciesContext(ctx context.Context, budget *gitSnapshotAuditBudget, repo, gitDir, commonDir string) ([]string, error) {
+	objectDir, err := gitPathContext(ctx, repo, "--git-path", "objects")
 	if err != nil {
 		return nil, err
 	}
@@ -457,7 +592,7 @@ func gitSnapshotDependencies(repo, gitDir, commonDir string) ([]string, error) {
 	for len(queue) > 0 {
 		objects := queue[0]
 		queue = queue[1:]
-		alternates, err := os.ReadFile(filepath.Join(objects, "info", "alternates"))
+		alternates, err := budget.readConfig(filepath.Join(objects, "info", "alternates"))
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -468,6 +603,9 @@ func gitSnapshotDependencies(repo, gitDir, commonDir string) ([]string, error) {
 			alternate = strings.TrimSpace(alternate)
 			if alternate == "" {
 				continue
+			}
+			if err := budget.alternate(); err != nil {
+				return nil, err
 			}
 			if strings.ContainsRune(alternate, 0) {
 				return nil, fmt.Errorf("alternate object path contains NUL")
@@ -494,8 +632,14 @@ func gitSnapshotDependencies(repo, gitDir, commonDir string) ([]string, error) {
 // outside this repository's Git directory. alternate object databases remain
 // read dependencies only, even when snapshot delivery materializes them.
 func auditGitMetadataRedirects(worktree, gitDir, commonDir string, dependencies, commonDirs []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), gitSnapshotAuditTimeout)
+	defer cancel()
+	return auditGitMetadataRedirectsContext(ctx, newGitSnapshotAuditBudget(ctx), worktree, gitDir, commonDir, dependencies, commonDirs)
+}
+
+func auditGitMetadataRedirectsContext(ctx context.Context, budget *gitSnapshotAuditBudget, worktree, gitDir, commonDir string, dependencies, commonDirs []string) error {
 	writableMetadata := compactContainedPaths([]string{gitDir, commonDir})
-	return auditGitMetadataRedirectsWithin(worktree, gitDir, commonDir, dependencies, writableMetadata, dependencies, commonDirs, true)
+	return auditGitMetadataRedirectsWithinContext(ctx, budget, worktree, gitDir, commonDir, dependencies, writableMetadata, dependencies, commonDirs, true)
 }
 
 // auditGitMetadataRedirectsWithin audits Git's dependency graph against an
@@ -503,6 +647,12 @@ func auditGitMetadataRedirects(worktree, gitDir, commonDir string, dependencies,
 // separate: alternate object databases are read dependencies, but they must
 // not authorise refs, indexes, or other metadata redirects to write there.
 func auditGitMetadataRedirectsWithin(worktree, gitDir, commonDir string, dependencies, allowed, alternateAllowed, commonDirs []string, allowLinkedWorktreeBacklink bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), gitSnapshotAuditTimeout)
+	defer cancel()
+	return auditGitMetadataRedirectsWithinContext(ctx, newGitSnapshotAuditBudget(ctx), worktree, gitDir, commonDir, dependencies, allowed, alternateAllowed, commonDirs, allowLinkedWorktreeBacklink)
+}
+
+func auditGitMetadataRedirectsWithinContext(ctx context.Context, budget *gitSnapshotAuditBudget, worktree, gitDir, commonDir string, dependencies, allowed, alternateAllowed, commonDirs []string, allowLinkedWorktreeBacklink bool) error {
 	allowed = compactContainedPaths(allowed)
 	alternateAllowed = compactContainedPaths(alternateAllowed)
 	commonDirs = uniqueGitPaths(commonDirs)
@@ -513,14 +663,14 @@ func auditGitMetadataRedirectsWithin(worktree, gitDir, commonDir string, depende
 	worktreesRoot := filepath.Join(commonDir, "worktrees")
 	currentLinkedGitDir := filepath.Dir(gitDir) == worktreesRoot
 
+	if err := budget.check(); err != nil {
+		return err
+	}
 	if err := auditGitMetadataEntry(filepath.Join(worktree, ".git"), worktree, allowed, alternateAllowed, forbidden, forbiddenRoots, true, allowLinkedWorktreeBacklink); err != nil {
 		return err
 	}
 	for _, dependency := range dependencies {
-		if err := filepath.WalkDir(dependency, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
+		if err := walkGitSnapshotTree(ctx, dependency, budget, func(path string, entry fs.DirEntry) error {
 			if path == dependency {
 				return nil
 			}
@@ -550,6 +700,34 @@ func auditGitMetadataRedirectsWithin(worktree, gitDir, commonDir string, depende
 		}
 	}
 	return nil
+}
+
+func walkGitSnapshotTree(ctx context.Context, root string, budget *gitSnapshotAuditBudget, visit func(path string, entry fs.DirEntry) error) error {
+	rootMountID, mountKnown, err := snapshotPathMountID(root)
+	if err != nil {
+		return fmt.Errorf("inspect mount boundary for %q: %w", root, err)
+	}
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := budget.visit(); err != nil {
+			return err
+		}
+		if entry.IsDir() && entry.Type()&os.ModeSymlink == 0 && path != root && mountKnown {
+			mountID, _, err := snapshotPathMountID(path)
+			if err != nil {
+				return fmt.Errorf("inspect mount boundary for %q: %w", path, err)
+			}
+			if mountID != rootMountID {
+				return fmt.Errorf("directory %q crosses a mount boundary", path)
+			}
+		}
+		if err := budget.check(); err != nil {
+			return err
+		}
+		return visit(path, entry)
+	})
 }
 
 func isGitHooksDirectory(path, gitDir, commonDir string) bool {

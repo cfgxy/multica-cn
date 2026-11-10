@@ -978,6 +978,7 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 
 	plan := &snapshotPlan{Declared: len(scopes) > 0}
 	if plan.Declared {
+		seenTargets := make(map[string]string)
 		for i, sc := range scopes {
 			row, ok := byID[sc.ResourceID]
 			if !ok {
@@ -995,6 +996,10 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 				if err != nil {
 					return nil, err
 				}
+				if previous, ok := seenTargets[real]; ok {
+					return nil, fmt.Errorf("local_directory scope: %q and %q resolve to the same directory %q", previous, sub, real)
+				}
+				seenTargets[real] = sub
 				plan.Units = append(plan.Units, snapshotUnit{
 					ResourceID: row.id,
 					Ref:        row.ref,
@@ -1094,7 +1099,11 @@ func subdirectoryInEffectiveSet(sub string, set []string) bool {
 // path for anything with a .git: branch delivery, resume, and half-finished
 // preservation stay exactly as they are.
 func gitToplevel(dir string) (string, bool) {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	return gitToplevelContext(context.Background(), dir)
+}
+
+func gitToplevelContext(ctx context.Context, dir string) (string, bool) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--show-toplevel")
 	cmd.Env = execenv.SnapshotGitEnvironment()
 	out, err := cmd.Output()
 	if err != nil {

@@ -356,6 +356,28 @@ func TestResolveSnapshotPlanRejectsDeclaredScopeSymlinkEscapesResourceRoot(t *te
 	}
 }
 
+func TestResolveSnapshotPlanRejectsCanonicalScopeAliases(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	alias := filepath.Join(root, "alias")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatal(err)
+	}
+	resource := snapshotResourceForTest(t, "r1", root, "d1", true, "real", "alias")
+	task := Task{
+		ID:                  "canonical-alias",
+		ProjectResources:    []ProjectResourceData{resource},
+		LocalDirectoryScope: scopeJSONForTest(t, resource.ID, "real", "alias"),
+	}
+	if plan, err := resolveSnapshotPlan(task, "d1"); err == nil || !strings.Contains(err.Error(), "same directory") {
+		t.Fatalf("canonical scope aliases must fail closed, plan=%+v err=%v", plan, err)
+	}
+}
+
 func TestResolveSnapshotPlanRefusesToWiden(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -601,6 +623,40 @@ func TestAuditSnapshotGitScopeRejectsEscapingMetadataRedirects(t *testing.T) {
 				t.Fatalf("metadata audit and fallback must not touch external sentinel\nbefore: %s\nafter:  %s", before, after)
 			}
 		})
+	}
+}
+
+func TestAuditSnapshotGitScopeRejectsMetadataSymlinkCycle(t *testing.T) {
+	repo := newTestGitRoot(t)
+	index := filepath.Join(repo, ".git", "index")
+	if err := os.Remove(index); err != nil {
+		t.Fatal(err)
+	}
+	cycleA := filepath.Join(repo, ".git", "cycle-a")
+	cycleB := filepath.Join(repo, ".git", "cycle-b")
+	if err := os.Symlink(cycleB, cycleA); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cycleA, cycleB); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cycleA, index); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}}
+	if audit := auditSnapshotGitScope(plan); audit.Safe || !strings.Contains(audit.Reason, "metadata redirect") {
+		t.Fatalf("metadata symlink cycle must fail closed, got %+v", audit)
+	}
+}
+
+func TestAuditSnapshotGitScopeHonorsCancellation(t *testing.T) {
+	repo := newTestGitRoot(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	audit := auditSnapshotGitScopeContext(ctx, &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}})
+	if audit.Safe || !strings.Contains(audit.Reason, "time budget") {
+		t.Fatalf("cancelled audit must fail closed, got %+v", audit)
 	}
 }
 
@@ -1027,6 +1083,35 @@ func TestSnapshotGitConfigurationRejectsExternalHooksAndIncludes(t *testing.T) {
 				t.Fatalf("snapshot admission executed an external hook\nbefore: %s\nafter:  %s", before, after)
 			}
 		})
+	}
+}
+
+func TestSnapshotGitConfigurationRejectsIncludeCycle(t *testing.T) {
+	repo := newTestGitRoot(t)
+	configA := filepath.Join(repo, ".git", "config-a")
+	configB := filepath.Join(repo, ".git", "config-b")
+	if err := os.WriteFile(configA, []byte("[include]\n\tpath = "+configB+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configB, []byte("[include]\n\tpath = "+configA+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(repo, ".git", "config")
+	raw, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, append(raw, []byte("[includeIf \"gitdir:/never-match/\"]\n\tpath = "+configA+"\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := &snapshotPlan{Units: []snapshotUnit{{AbsPath: repo}}, Primary: &snapshotUnit{AbsPath: repo}}
+	audit := auditSnapshotGitScope(plan)
+	if !audit.Safe {
+		t.Fatalf("metadata audit must complete before config audit, got %+v", audit)
+	}
+	if err := auditSnapshotGitConfiguration(audit); err == nil {
+		t.Fatal("Git include cycle must fail closed")
 	}
 }
 
