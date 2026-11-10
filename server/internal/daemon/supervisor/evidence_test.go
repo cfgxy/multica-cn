@@ -219,6 +219,45 @@ func TestWorkerEvidenceRejectsCursorFromDifferentAttemptSameGeneration(t *testin
 	}
 }
 
+func TestWorkerEvidencePrefersLatestAttemptOverOlderAttemptGeneration(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const taskID = "88888888-8888-4888-8888-888888888888"
+	const oldRun = taskID + "-1-2"
+	const latestRun = taskID + "-2"
+	s := &Supervisor{mgr: mgr, daemonID: "daemon-a", evidenceCursorKey: [32]byte{5}}
+	writeRun := func(runID string, generation int, startedAt time.Time) {
+		t.Helper()
+		if err := os.MkdirAll(mgr.Dir(runID), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		stdout := stdoutLogPath(mgr.Dir(runID))
+		stderr := stderrLogPath(mgr.Dir(runID))
+		if err := os.WriteFile(stdout, []byte(runID), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(stderr, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := mgr.WriteManifest(&Manifest{
+			RunID: runID, TaskID: taskID, RuntimeID: "runtime-a", Generation: generation,
+			DaemonID: "daemon-a", State: StateExited, StartedAt: startedAt,
+			StdoutLog: stdout, StderrLog: stderr,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := time.Now().UTC()
+	writeRun(oldRun, 2, started)
+	writeRun(latestRun, 1, started.Add(time.Second))
+	got := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 8})
+	if !got.Available || got.Binding.RunID != latestRun || got.Binding.Generation != 1 {
+		t.Fatalf("selected stale attempt: %+v", got)
+	}
+}
+
 func TestWorkerEvidenceClassifiesRetentionExpiry(t *testing.T) {
 	mgr := retentionTestManager(t)
 	const taskID, runID = "44444444-4444-4444-8444-444444444444", "44444444-4444-4444-8444-444444444444-1"
