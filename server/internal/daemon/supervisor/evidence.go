@@ -184,6 +184,7 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 
 func (s *Supervisor) selectEvidenceManifest(ctx context.Context, ids []string, req protocol.WorkerEvidenceRequest) (*Manifest, int) {
 	var selected *Manifest
+	selectedAttempt := 0
 	selectedGeneration := 0
 	selectedAlive := false
 	for _, id := range ids {
@@ -194,18 +195,50 @@ func (s *Supervisor) selectEvidenceManifest(ctx context.Context, ids []string, r
 		if req.RuntimeID != "" && candidate.RuntimeID != req.RuntimeID {
 			continue
 		}
+		attempt := manifestAttempt(candidate)
 		generation := manifestGeneration(candidate)
 		alive := false
 		if candidate.State == StateRunning && candidate.Exit == nil {
 			alive, _ = s.unitActive(ctx, candidate.Unit)
 		}
-		if selected == nil || alive && !selectedAlive || alive == selectedAlive && (generation > selectedGeneration || generation == selectedGeneration && candidate.StartedAt.After(selected.StartedAt)) {
+		prefer := selected == nil
+		if !prefer && alive != selectedAlive {
+			prefer = alive
+		}
+		if !prefer && alive == selectedAlive {
+			switch {
+			case attempt > selectedAttempt:
+				prefer = true
+			case attempt == selectedAttempt && generation > selectedGeneration:
+				prefer = true
+			case attempt == selectedAttempt && generation == selectedGeneration && candidate.StartedAt.After(selected.StartedAt):
+				prefer = true
+			}
+		}
+		if prefer {
 			selected = candidate
+			selectedAttempt = attempt
 			selectedGeneration = generation
 			selectedAlive = alive
 		}
 	}
 	return selected, selectedGeneration
+}
+
+func manifestAttempt(man *Manifest) int {
+	prefix := man.TaskID + "-"
+	if !strings.HasPrefix(man.RunID, prefix) {
+		return 0
+	}
+	parts := strings.Split(strings.TrimPrefix(man.RunID, prefix), "-")
+	if len(parts) == 0 {
+		return 0
+	}
+	attempt, err := strconv.Atoi(parts[0])
+	if err != nil || attempt < 1 {
+		return 0
+	}
+	return attempt
 }
 
 func manifestGeneration(man *Manifest) int {
