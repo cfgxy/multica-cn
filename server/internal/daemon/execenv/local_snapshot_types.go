@@ -61,6 +61,12 @@ type SnapshotUnitSpec struct {
 	// "" for the whole root. It is metadata here (naming, diagnostics); the
 	// mount itself only needs Target.
 	Subdir string `json:"subdir,omitempty"`
+	// TargetDevice and TargetInode identify the directory that was admitted by
+	// the daemon. Linux workers verify and anchor the mount to this object
+	// rather than trusting a path that may have been replaced after admission.
+	TargetDevice      uint64 `json:"target_device,omitempty"`
+	TargetInode       uint64 `json:"target_inode,omitempty"`
+	TargetIdentitySet bool   `json:"target_identity_set,omitempty"`
 	// Alias receives the pristine bind mount, taken BEFORE the overlay covers
 	// Target: inside the namespace the pristine content stays reachable
 	// through Alias for the lifetime of the view (decision 1: pristine via
@@ -104,6 +110,9 @@ type SnapshotGitArtifactSpec struct {
 	Baseline    string `json:"baseline"`
 	EnvRoot     string `json:"env_root"`
 	Provider    string `json:"provider"`
+	// ScopePath limits a declared-subdirectory delivery to this repository-
+	// relative path. Empty retains whole-repository delivery for root resources.
+	ScopePath string `json:"scope_path,omitempty"`
 }
 
 // SnapshotLedgerEntry is one ownership record: which task materialized which

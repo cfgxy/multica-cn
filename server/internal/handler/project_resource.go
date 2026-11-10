@@ -981,11 +981,13 @@ func (h *Handler) findLocalDirectoryConflict(ctx context.Context, projectID pgty
 
 // validateQuickCreateDirectoryScope validates a quick-create request's
 // local_directory_scope against the picked project's resources: every entry
-// must name a local_directory resource OF that project that is in snapshot
-// mode, and every declared subdirectory must sit inside that resource's
-// effective set. Returns the normalized JSON to store (nil when the request
-// declared nothing), or an HTTP status + message to write. A scope without a
-// project is rejected — resources only exist through a project.
+// must name a local_directory resource OF that project that is in snapshot or
+// worktree mode, and every declared subdirectory must sit inside that
+// resource's effective set. The daemon decides whether a worktree resource is
+// eligible for Git snapshot delivery; this API boundary only preserves the
+// user's declaration. Returns the normalized JSON to store (nil when the
+// request declared nothing), or an HTTP status + message to write. A scope
+// without a project is rejected — resources only exist through a project.
 func (h *Handler) validateQuickCreateDirectoryScope(ctx context.Context, projectID pgtype.UUID, raw json.RawMessage) (json.RawMessage, int, string) {
 	if len(raw) == 0 || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
 		return nil, 0, ""
@@ -1022,8 +1024,8 @@ func (h *Handler) validateQuickCreateDirectoryScope(ctx context.Context, project
 		if err := json.Unmarshal(row.ResourceRef, &ref); err != nil {
 			return nil, http.StatusInternalServerError, "failed to read project resource"
 		}
-		if ref.ExecutionMode != localDirectoryModeSnapshot {
-			return nil, http.StatusBadRequest, fmt.Sprintf("local_directory scope: resource %q is not in snapshot mode", ref.LocalPath)
+		if ref.ExecutionMode != localDirectoryModeSnapshot && ref.ExecutionMode != localDirectoryModeWorktree {
+			return nil, http.StatusBadRequest, fmt.Sprintf("local_directory scope: resource %q is not in snapshot or worktree mode", ref.LocalPath)
 		}
 		for _, sub := range s.Subdirectories {
 			if !subdirectoryInSet(sub, ref.Subdirectories) {

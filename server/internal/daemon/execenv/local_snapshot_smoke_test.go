@@ -241,6 +241,214 @@ func TestSnapshotWorkerCapturesGitArtifactSmoke(t *testing.T) {
 	}
 }
 
+func TestSnapshotWorkerCapturesDeclaredGitSubdirectoryArtifactSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	// The worker must override an inherited false setting because the business
+	// directory and repository metadata are separate overlay mounts.
+	t.Setenv("GIT_DISCOVERY_ACROSS_FILESYSTEM", "0")
+	scratch := t.TempDir()
+	repo := filepath.Join(scratch, "pristine-repo")
+	for path, contents := range map[string]string{
+		"apps/a/owned.txt":    "base-owned\n",
+		"apps/b/staged.txt":   "base-staged\n",
+		"apps/b/unstaged.txt": "base-unstaged\n",
+	} {
+		fullPath := filepath.Join(repo, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitForSnapshotTest(t, repo, "init", "-q")
+	gitForSnapshotTest(t, repo, "config", "user.name", "Test")
+	gitForSnapshotTest(t, repo, "config", "user.email", "test@example.invalid")
+	gitForSnapshotTest(t, repo, "add", "apps")
+	gitForSnapshotTest(t, repo, "commit", "-qm", "base")
+	baseline := strings.TrimSpace(gitForSnapshotTest(t, repo, "rev-parse", "HEAD"))
+	pristineRefs := gitForSnapshotTest(t, repo, "show-ref", "--head")
+	clone := filepath.Join(scratch, "clone")
+	gitForSnapshotTest(t, "", "clone", "-q", repo, clone)
+	outside := filepath.Join(scratch, "outside-sentinel")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outsideBefore := smokeTreeDigest(t, outside, false)
+
+	if err := os.WriteFile(filepath.Join(repo, "apps", "b", "staged.txt"), []byte("user-staged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "add", "apps/b/staged.txt")
+	if err := os.WriteFile(filepath.Join(repo, "apps", "b", "unstaged.txt"), []byte("user-unstaged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "apps", "b", "user-untracked.txt"), []byte("user-untracked\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pristineStatus := gitForSnapshotTest(t, repo, "status", "--porcelain=v1", "--untracked-files=all")
+
+	newUnit := func(name, target string) SnapshotUnitSpec {
+		alias := filepath.Join(scratch, name, "alias")
+		upper := filepath.Join(scratch, name, "upper")
+		work := filepath.Join(scratch, name, "work")
+		for _, dir := range []string{alias, upper, work} {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return SnapshotUnitSpec{Target: target, Alias: alias, Upper: upper, Work: work}
+	}
+	artifactDir := filepath.Join(scratch, "artifact")
+	spec := &SnapshotRunSpec{
+		TaskID: "declared-git-subdirectory-artifact-smoke",
+		Units: []SnapshotUnitSpec{
+			newUnit("containment", repo),
+			newUnit("business", filepath.Join(repo, "apps", "a")),
+			newUnit("metadata", filepath.Join(repo, ".git")),
+		},
+		Cwd: filepath.Join(repo, "apps", "a"),
+		GitArtifact: &SnapshotGitArtifactSpec{
+			ArtifactDir: artifactDir,
+			Baseline:    baseline,
+			EnvRoot:     filepath.Join(scratch, "env"),
+			ScopePath:   "apps/a",
+		},
+	}
+	wrap, err := BuildSnapshotWrap(bin, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := spawnWithSnapshotNamespaces(t,
+		bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+		"/bin/sh", "-c", "printf 'task-owned\\n' > owned.txt && printf 'task-untracked\\n' > task-untracked.txt && printf 'task-sibling\\n' > ../b/task-sibling.txt")
+	if err != nil {
+		t.Fatalf("worker failed: %v\n%s", err, out)
+	}
+
+	if got, err := os.ReadFile(filepath.Join(repo, "apps", "a", "owned.txt")); err != nil || string(got) != "base-owned\n" {
+		t.Fatalf("pristine declared file = %q, err=%v; want base content", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "apps", "a", "task-untracked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("declared worker write leaked into pristine (stat err=%v)", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(repo, "apps", "b", "staged.txt")); err != nil || string(got) != "user-staged\n" {
+		t.Fatalf("pristine staged sibling = %q, err=%v; want user content", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(repo, "apps", "b", "unstaged.txt")); err != nil || string(got) != "user-unstaged\n" {
+		t.Fatalf("pristine unstaged sibling = %q, err=%v; want user content", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "apps", "b", "task-sibling.txt")); !os.IsNotExist(err) {
+		t.Fatalf("sibling worker write leaked into pristine (stat err=%v)", err)
+	}
+	if got := gitForSnapshotTest(t, repo, "status", "--porcelain=v1", "--untracked-files=all"); got != pristineStatus {
+		t.Fatalf("pristine sibling Git state changed\nbefore: %q\nafter:  %q", pristineStatus, got)
+	}
+	if got := gitForSnapshotTest(t, repo, "show-ref", "--head"); got != pristineRefs {
+		t.Fatalf("snapshot artifact changed pristine refs, got %q want %q", got, pristineRefs)
+	}
+	if after := smokeTreeDigest(t, outside, false); after != outsideBefore {
+		t.Fatalf("snapshot artifact wrote outside its materialized units\nbefore: %s\nafter:  %s", outsideBefore, after)
+	}
+
+	gitForSnapshotTest(t, clone, "fetch", filepath.Join(artifactDir, "changes.bundle"), "HEAD:refs/heads/snapshot")
+	gitForSnapshotTest(t, clone, "checkout", "-q", "snapshot")
+	gitForSnapshotTest(t, clone, "fsck", "--no-dangling")
+	if got := gitForSnapshotTest(t, clone, "show", "snapshot:apps/a/owned.txt"); got != "task-owned\n" {
+		t.Fatalf("captured declared content = %q, want task change", got)
+	}
+	if got := gitForSnapshotTest(t, clone, "show", "snapshot:apps/b/staged.txt"); got != "base-staged\n" {
+		t.Fatalf("staged sibling leaked into artifact: %q", got)
+	}
+	if got := gitForSnapshotTest(t, clone, "show", "snapshot:apps/b/unstaged.txt"); got != "base-unstaged\n" {
+		t.Fatalf("unstaged sibling leaked into artifact: %q", got)
+	}
+	if got := gitForSnapshotTest(t, clone, "show", "snapshot:apps/a/task-untracked.txt"); got != "task-untracked\n" {
+		t.Fatalf("captured declared untracked content = %q, want task change", got)
+	}
+	if out, err := exec.Command("git", "-C", clone, "cat-file", "-e", "snapshot:apps/b/task-sibling.txt").CombinedOutput(); err == nil {
+		t.Fatalf("unexpected sibling task artifact file: %s", out)
+	}
+	if out, err := exec.Command("git", "-C", clone, "cat-file", "-e", "snapshot:apps/b/user-untracked.txt").CombinedOutput(); err == nil {
+		t.Fatalf("unexpected sibling artifact file: %s", out)
+	}
+}
+
+// TestSnapshotWorkerRejectsExternalHooksPathBeforeAgentCommitSmoke proves the
+// worker-side hook gate runs before the agent's ordinary git commit can invoke
+// a host hook. The daemon admission audit rejects this topology earlier; this
+// smoke covers the final execution-time backstop against configuration drift.
+func TestSnapshotWorkerRejectsExternalHooksPathBeforeAgentCommitSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	scratch := t.TempDir()
+	repo := filepath.Join(scratch, "pristine-repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "init", "-q")
+	gitForSnapshotTest(t, repo, "config", "user.name", "Test")
+	gitForSnapshotTest(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "add", "tracked.txt")
+	gitForSnapshotTest(t, repo, "commit", "-qm", "base")
+	baseline := strings.TrimSpace(gitForSnapshotTest(t, repo, "rev-parse", "HEAD"))
+
+	outside := filepath.Join(scratch, "outside-hooks")
+	hooks := filepath.Join(outside, "hooks")
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hook := "#!/bin/sh\nprintf hook-ran > " + filepath.Join(outside, "hook-ran") + "\n"
+	if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte(hook), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "config", "core.hooksPath", hooks).CombinedOutput(); err != nil {
+		t.Fatalf("configure external hooks path: %v (%s)", err, out)
+	}
+	before := smokeTreeDigest(t, outside, false)
+
+	alias, upper, work := filepath.Join(scratch, "alias"), filepath.Join(scratch, "upper"), filepath.Join(scratch, "work")
+	for _, path := range []string{alias, upper, work} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec := &SnapshotRunSpec{
+		TaskID: "reject-external-hooks-before-agent-commit",
+		Units:  []SnapshotUnitSpec{{Target: repo, Alias: alias, Upper: upper, Work: work}},
+		Cwd:    repo,
+		GitArtifact: &SnapshotGitArtifactSpec{
+			ArtifactDir: filepath.Join(scratch, "artifact"),
+			Baseline:    baseline,
+			EnvRoot:     filepath.Join(scratch, "env"),
+		},
+	}
+	wrap, err := BuildSnapshotWrap(bin, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := spawnWithSnapshotNamespaces(t,
+		bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+		"/bin/sh", "-c", "printf changed > tracked.txt && git add tracked.txt && git commit -qm isolated")
+	if err == nil {
+		t.Fatalf("worker must reject external hooks path before agent commit, output: %s", out)
+	}
+	if !strings.Contains(string(out), "core.hooksPath") {
+		t.Fatalf("worker rejection must identify hooks path, output: %s", out)
+	}
+	if after := smokeTreeDigest(t, outside, false); after != before {
+		t.Fatalf("external hook wrote outside snapshot before agent commit was rejected\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
 // TestSnapshotWorkerStripsGitLocationEnvironmentSmoke injects each Git
 // location override into the parent process. Both the agent and artifact
 // capture must resolve Git metadata through the mounted snapshot view.
@@ -450,6 +658,66 @@ func TestSnapshotWorkerCapturesLinkedWorktreeArtifactSmoke(t *testing.T) {
 	}
 	if got := []byte(gitForSnapshotTest(t, clone, "show", "snapshot:binary.bin")); string(got) != string([]byte{0, 1, 2, 255}) {
 		t.Fatalf("captured linked binary content = %v", got)
+	}
+}
+
+func TestSnapshotWorkerNestedUnitsUseIndependentUpperLayersSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	scratch := t.TempDir()
+	root := filepath.Join(scratch, "root")
+	child := filepath.Join(root, "child")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "root-lower"), []byte("root\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "child-lower"), []byte("child\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	unit := func(name, target string) SnapshotUnitSpec {
+		alias := filepath.Join(scratch, name+"-alias")
+		upper := filepath.Join(scratch, name+"-upper")
+		work := filepath.Join(scratch, name+"-work")
+		for _, dir := range []string{alias, upper, work} {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return SnapshotUnitSpec{Target: target, Alias: alias, Upper: upper, Work: work}
+	}
+	rootUnit := unit("root", root)
+	childUnit := unit("child", child)
+	spec := &SnapshotRunSpec{
+		TaskID: "nested-upper-smoke",
+		Units:  []SnapshotUnitSpec{rootUnit, childUnit},
+		Cwd:    child,
+	}
+	wrap, err := BuildSnapshotWrap(bin, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := spawnWithSnapshotNamespaces(t,
+		bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+		"/bin/sh", "-c", "printf child-write > child-write && printf root-write > ../root-write")
+	if err != nil {
+		t.Fatalf("worker failed: %v\\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(childUnit.Upper, "child-write")); err != nil {
+		t.Fatalf("child write must land in child upper: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootUnit.Upper, "child", "child-write")); !os.IsNotExist(err) {
+		t.Fatalf("child write leaked into parent upper, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootUnit.Upper, "root-write")); err != nil {
+		t.Fatalf("root write must land in root upper: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "child-write")); !os.IsNotExist(err) {
+		t.Fatalf("child write leaked into pristine root, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "root-write")); !os.IsNotExist(err) {
+		t.Fatalf("root write leaked into pristine root, stat err=%v", err)
 	}
 }
 
