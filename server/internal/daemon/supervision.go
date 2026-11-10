@@ -123,6 +123,7 @@ func (d *Daemon) setupSupervisor() {
 		d.logger.Warn("worker supervision disabled: supervisor init failed", "error", err)
 		return
 	}
+	sup.SetDaemonVersion(d.cfg.CLIVersion)
 	d.supervisor = sup
 	d.logger.Info("worker supervision enabled: task workers launch in systemd transient units",
 		"providers", "claude", "run_root", root)
@@ -310,6 +311,7 @@ func (d *Daemon) planSupervisedRun(provider, taskID string, attempt int) *agent.
 		return nil
 	}
 	runID := base
+	generation := 1
 	reattach := false
 	for gen := 2; ; gen++ {
 		man, err := d.supervisor.Manager().ReadManifest(runID)
@@ -333,12 +335,14 @@ func (d *Daemon) planSupervisedRun(provider, taskID string, attempt int) *agent.
 			return nil
 		}
 		runID = fmt.Sprintf("%s-%d", base, gen)
+		generation = gen
 	}
 	sup := &agent.Supervision{
 		Supervisor: d.supervisor,
 		RunID:      runID,
 		TaskID:     taskID,
 		Runtime:    provider,
+		Generation: generation,
 		Reattach:   reattach,
 	}
 	if reattach {
