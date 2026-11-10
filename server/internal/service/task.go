@@ -4371,8 +4371,11 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		}
 	}
 
-	// 6. Claim per distinct agent through the runtime-scoped helper, preserving
-	// per-(issue, agent) serialization, capacity caps, and dispatch side effects.
+	// 6. Claim candidates through the runtime-scoped helper until the batch is
+	// full. The helper preserves per-(issue, agent) serialization, Agent
+	// capacity caps, and dispatch side effects; invoking it for each candidate
+	// lets an unlimited Agent fill multiple Runtime slots in one poll while a
+	// bounded Agent naturally stops when its own capacity is reached.
 	// RUYI-224: pass an empty runtimeID so claimTask resolves the agent's
 	// CURRENT binding as the claim runtime. The step-4 candidate fence already
 	// guarantees that binding is in the polled set; the row's persisted
@@ -4382,16 +4385,10 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	// runtime_mismatch fence and strand the row forever. The SQL claim
 	// rewrites the row onto the resolved runtime; the runtimeInSet guard below
 	// keeps the routing contract.
-	triedAgents := make(map[string]struct{}, len(candidates))
 	for i := range candidates {
 		if len(claimed) >= maxTasks {
 			break
 		}
-		agentKey := util.UUIDToString(candidates[i].AgentID)
-		if _, tried := triedAgents[agentKey]; tried {
-			continue
-		}
-		triedAgents[agentKey] = struct{}{}
 
 		task, err := s.claimTask(ctx, candidates[i].AgentID, pgtype.UUID{})
 		if err != nil {
