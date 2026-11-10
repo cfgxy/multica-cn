@@ -632,10 +632,12 @@ export function RuntimeRowMenu({
               {t(($) => $.list.edit_action)}
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem onClick={() => setRemoveOpen(true)}>
-            <ListMinus aria-hidden="true" className="h-3.5 w-3.5" />
-            {t(($) => $.detail.remove_from_list_button)}
-          </DropdownMenuItem>
+          {canRemove && (
+            <DropdownMenuItem onClick={() => setRemoveOpen(true)}>
+              <ListMinus aria-hidden="true" className="h-3.5 w-3.5" />
+              {t(($) => $.detail.remove_from_list_button)}
+            </DropdownMenuItem>
+          )}
           {canDelete && (
             <DropdownMenuItem
               variant="destructive"

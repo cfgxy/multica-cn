@@ -340,6 +340,25 @@ describe("runtime list row menu", () => {
     expect(screen.queryByText("Delete from workspace")).toBeNull();
   });
 
+  it("does not offer removal for a pending custom runtime", () => {
+    const profile = makeProfile();
+    const row = makeRow(
+      makeRuntime({
+        id: `pending-runtime-profile:${profile.id}`,
+        profile_id: profile.id,
+      }),
+      /* canDelete */ true,
+      profile,
+    );
+    row.canRemove = false;
+    renderActionsCell(row);
+
+    fireEvent.click(screen.getByLabelText("Row actions"));
+
+    expect(screen.queryByText("Remove from management list")).toBeNull();
+    expect(screen.getByText("Delete from workspace")).toBeTruthy();
+  });
+
   it("hides the kebab menu when the caller lacks delete permission", () => {
     // Pre-existing behavior — re-asserted so the new self-healing guard
     // doesn't accidentally regress it (both paths return the same empty
