@@ -695,6 +695,10 @@ type Daemon struct {
 	// surfaced via the server-side waiting_local_directory status while it
 	// waits. See MUL-2663.
 	localPathLocks *LocalPathLocker
+	// snapshotLockBindings carries the object identity captured after a declared
+	// snapshot scope lock is acquired into runTask. A re-resolved resource path
+	// must match this binding before any snapshot tree or worker is built.
+	snapshotLockBindings sync.Map // task ID -> *snapshotLockBinding
 
 	// bgSyncs tracks background goroutines started by registerTaskRepos so
 	// callers (notably tests using t.TempDir-backed cache roots) can wait for
@@ -5670,6 +5674,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	if localRelease != nil {
 		defer localRelease()
 	}
+	defer d.snapshotLockBindings.Delete(task.ID)
 
 	// Hold a process-wide active-root guard for the rest of this task so
 	// the GC loop never sees a window where the env root has neither the
@@ -6179,11 +6184,13 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 // git-rooted worktree fallbacks take NOTHING — lock-freedom is what lets
 // sibling tasks share one directory through private upperdirs, the
 // acceptance-1 property — and chat tasks never queue behind a writer for the
-// same reason they don't behind an in_place task. Declared scopes acquire
-// one lock per declared subdirectory, in sorted real-path order so two tasks
-// with overlapping scopes cannot interleave into a lock-ordering deadlock,
-// each with the full waiting plumbing (status badge, prepare-lease extender,
-// cancellation poller) the in_place path uses.
+// same reason they don't behind an in_place task. Declared scopes acquire one
+// atomic lease over all their real paths. The specialized overlap locker
+// excludes same-path and ancestor/descendant declarations without changing
+// ordinary local-directory exact-path lock semantics, and prevents multi-scope
+// declarations from forming a lock-ordering deadlock. Waiting retains the full
+// plumbing (status badge, prepare-lease extender, cancellation poller) the
+// in_place path uses.
 func (d *Daemon) acquireSnapshotScopeLocks(ctx context.Context, task Task, plan *snapshotPlan, taskLog *slog.Logger) (release func(), abort bool) {
 	fb, ferr := snapshotWorktreeFallbackWithGitGateAndCapability(plan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1", d.client.snapshotSupport.Load())
 	if ferr != nil {
@@ -6214,7 +6221,6 @@ func (d *Daemon) acquireSnapshotScopeLocks(ctx context.Context, task Task, plan 
 			units[u.LockPath] = u
 		}
 	}
-	sort.Strings(locks)
 
 	waitCtx, waitCancel := context.WithCancel(ctx)
 	defer waitCancel()
@@ -6240,79 +6246,145 @@ func (d *Daemon) acquireSnapshotScopeLocks(ctx context.Context, task Task, plan 
 		}
 	}()
 
-	onWait := func(unit *snapshotUnit) func(string) {
-		return func(holder string) {
-			// The gauge counts TASKS waiting on a directory, not individual
-			// waits: a multi-lock task blocks once as a unit, so count it on
-			// the first blocking lock and leave the single deferred decrement
-			// balanced.
-			if !waitCounted {
-				waitCounted = true
-				d.resourceWaitTasks.Add(1)
-			}
-			reason := unit.displayName()
-			if holder != "" {
-				reason = fmt.Sprintf("%s (held by task %s)", reason, shortID(holder))
-			}
-			taskLog.Info("local_directory: waiting on declared scope lock", "subdir", unit.Subdir, "holder", holder)
-			if waitErr := d.client.MarkTaskWaitingLocalDirectory(ctx, task.ID, reason); waitErr != nil {
-				taskLog.Warn("local_directory: mark waiting status failed", "error", waitErr)
-			}
-			prepareLeaseOnce.Do(func() {
-				stopPrepareLease = d.startTaskPrepareLeaseExtender(waitCtx, task, taskLog)
-			})
-			watcherOnce.Do(func() {
-				cancelledByPoll = d.watchTaskCancellation(waitCtx, task.ID, pollInterval, taskLog)
-				go func() {
-					select {
-					case <-cancelledByPoll:
-						waitCancel()
-					case <-waitCtx.Done():
-					}
-				}()
-			})
-		}
-	}
-
-	var releases []func()
-	for _, lockPath := range locks {
+	onWait := func(lockPath, holder string) {
 		unit := units[lockPath]
-		releaseOne, err := d.localPathLocks.Acquire(waitCtx, lockPath, task.ID, onWait(unit))
-		if err != nil {
-			for _, r := range releases {
-				r()
-			}
-			if cancelledByPoll != nil {
+		if unit == nil {
+			taskLog.Error("local_directory: missing declared scope unit", "path", lockPath)
+			return
+		}
+		// The gauge counts TASKS waiting on a directory, not individual
+		// waits: a multi-lock task blocks once as a unit, so count it on
+		// the first blocking lock and leave the single deferred decrement
+		// balanced.
+		if !waitCounted {
+			waitCounted = true
+			d.resourceWaitTasks.Add(1)
+		}
+		reason := unit.displayName()
+		if holder != "" {
+			reason = fmt.Sprintf("%s (held by task %s)", reason, shortID(holder))
+		}
+		taskLog.Info("local_directory: waiting on declared scope lock", "subdir", unit.Subdir, "holder", holder)
+		if waitErr := d.client.MarkTaskWaitingLocalDirectory(ctx, task.ID, reason); waitErr != nil {
+			taskLog.Warn("local_directory: mark waiting status failed", "error", waitErr)
+		}
+		prepareLeaseOnce.Do(func() {
+			stopPrepareLease = d.startTaskPrepareLeaseExtender(waitCtx, task, taskLog)
+		})
+		watcherOnce.Do(func() {
+			cancelledByPoll = d.watchTaskCancellation(waitCtx, task.ID, pollInterval, taskLog)
+			go func() {
 				select {
 				case <-cancelledByPoll:
-					taskLog.Info("local_directory: declared scope wait aborted by server-side terminal state")
-					return nil, true
-				default:
+					waitCancel()
+				case <-waitCtx.Done():
 				}
-			}
-			taskLog.Error("local_directory: declared scope lock acquire failed", "error", err)
-			failureReason := "local_directory_error"
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				failureReason = "cancelled"
-			}
-			if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
-				kind:          terminalTaskReportFail,
-				taskID:        task.ID,
-				errorMessage:  fmt.Sprintf("local_directory scope wait cancelled: %s", err.Error()),
-				failureReason: failureReason,
-			}); failErr != nil {
-				taskLog.Error("fail task after snapshot scope lock cancel", "error", failErr)
-			}
-			return nil, true
-		}
-		releases = append(releases, releaseOne)
+			}()
+		})
 	}
-	taskLog.Info("local_directory: declared scope locks acquired", "count", len(releases))
-	return func() {
-		for i := len(releases) - 1; i >= 0; i-- {
-			releases[i]()
+
+	releaseAll, err := d.localPathLocks.AcquireOverlapping(waitCtx, locks, task.ID, onWait)
+	if err != nil {
+		if cancelledByPoll != nil {
+			select {
+			case <-cancelledByPoll:
+				taskLog.Info("local_directory: declared scope wait aborted by server-side terminal state")
+				return nil, true
+			default:
+			}
 		}
-	}, false
+		taskLog.Error("local_directory: declared scope lock acquire failed", "error", err)
+		failureReason := "local_directory_error"
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			failureReason = "cancelled"
+		}
+		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
+			kind:          terminalTaskReportFail,
+			taskID:        task.ID,
+			errorMessage:  fmt.Sprintf("local_directory scope wait cancelled: %s", err.Error()),
+			failureReason: failureReason,
+		}); failErr != nil {
+			taskLog.Error("fail task after snapshot scope lock cancel", "error", failErr)
+		}
+		return nil, true
+	}
+	taskLog.Info("local_directory: declared scope locks acquired", "count", len(locks))
+	binding, bindErr := snapshotLockBindingForPlan(plan)
+	if bindErr != nil {
+		releaseAll()
+		taskLog.Error("local_directory: capture locked snapshot targets failed", "error", bindErr)
+		if failErr := d.reportTerminalTask(ctx, terminalTaskReport{
+			kind:          terminalTaskReportFail,
+			taskID:        task.ID,
+			errorMessage:  bindErr.Error(),
+			failureReason: "local_directory_error",
+		}); failErr != nil {
+			taskLog.Error("fail task after snapshot target binding error", "error", failErr)
+		}
+		return nil, true
+	}
+	d.snapshotLockBindings.Store(task.ID, binding)
+	return releaseAll, false
+}
+
+func snapshotLockBindingForPlan(plan *snapshotPlan) (*snapshotLockBinding, error) {
+	if plan == nil || !plan.Declared {
+		return nil, nil
+	}
+	binding := &snapshotLockBinding{Units: make(map[string]snapshotLockedUnit, len(plan.Units))}
+	for _, unit := range plan.Units {
+		if unit.LockPath == "" {
+			return nil, fmt.Errorf("local_directory: declared snapshot unit %q has no lock path", unit.Subdir)
+		}
+		info, err := os.Stat(unit.LockPath)
+		if err != nil {
+			return nil, fmt.Errorf("local_directory: stat locked snapshot unit %q: %w", unit.LockPath, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("local_directory: locked snapshot unit %q is not a directory", unit.LockPath)
+		}
+		device, inode, identityErr := snapshotTargetIdentity(unit.LockPath)
+		if identityErr != nil {
+			return nil, fmt.Errorf("local_directory: identify locked snapshot unit %q: %w", unit.LockPath, identityErr)
+		}
+		binding.Units[snapshotUnitKey(unit)] = snapshotLockedUnit{
+			Path: filepath.Clean(unit.LockPath), Info: info, Device: device, Inode: inode,
+		}
+	}
+	return binding, nil
+}
+
+func applySnapshotLockBinding(plan *snapshotPlan, binding *snapshotLockBinding) error {
+	if plan == nil || binding == nil {
+		return nil
+	}
+	if !plan.Declared {
+		return fmt.Errorf("local_directory: snapshot lock binding requires a declared scope")
+	}
+	if len(plan.Units) != len(binding.Units) {
+		return fmt.Errorf("local_directory: snapshot scope changed after lock acquisition")
+	}
+	for i := range plan.Units {
+		unit := &plan.Units[i]
+		locked, ok := binding.Units[snapshotUnitKey(*unit)]
+		if !ok || filepath.Clean(unit.LockPath) != locked.Path {
+			return fmt.Errorf("local_directory: snapshot resource path changed after lock acquisition")
+		}
+		current, err := os.Stat(locked.Path)
+		if err != nil {
+			return fmt.Errorf("local_directory: stat locked snapshot target %q: %w", locked.Path, err)
+		}
+		if !os.SameFile(locked.Info, current) {
+			return fmt.Errorf("local_directory: locked snapshot target %q was replaced after lock acquisition", locked.Path)
+		}
+		unit.AbsPath = locked.Path
+		unit.LockPath = locked.Path
+		unit.TargetDevice = locked.Device
+		unit.TargetInode = locked.Inode
+		unit.IdentityCaptured = true
+	}
+	plan.Primary = plan.primaryUnit()
+	return nil
 }
 
 // reportTaskResult writes the final task disposition back to the server.
@@ -7787,6 +7859,22 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		if ferr != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(ferr)
 		}
+		if fb == nil {
+			expectsBinding := snapPlan.Declared && len(snapPlan.DeclaredLockPaths()) > 0 && !localDirectoryLockExempt(task)
+			rawBinding, hasBinding := d.snapshotLockBindings.LoadAndDelete(task.ID)
+			if expectsBinding && !hasBinding {
+				return TaskResult{}, asEnvironmentSetupFailure(errors.New("local_directory: snapshot scope lock binding is missing"))
+			}
+			if hasBinding {
+				binding, bindingOK := rawBinding.(*snapshotLockBinding)
+				if !bindingOK {
+					return TaskResult{}, asEnvironmentSetupFailure(errors.New("local_directory: invalid snapshot lock binding"))
+				}
+				if bindErr := applySnapshotLockBinding(snapPlan, binding); bindErr != nil {
+					return TaskResult{}, asEnvironmentSetupFailure(bindErr)
+				}
+			}
+		}
 		observation := snapshotExecutionObservationFor(snapPlan, fb, gateEnabled, d.client.snapshotSupport.Load())
 		taskLog.Info("local_directory: snapshot execution decision",
 			"execution_mode", observation.ExecutionMode,
@@ -8152,6 +8240,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			Task:                  taskCtx,
 		}
 		if localAssignment.UsesWorktree() {
+			// A gate-disabled worktree resource never enters snapshot planning, so
+			// enforce the same recursive metadata containment audit immediately
+			// before the only daemon path that can call PrepareLocalWorktree.
+			if err := validateWorktreeGitMetadata(localAssignment); err != nil {
+				return TaskResult{}, asEnvironmentSetupFailure(err)
+			}
 			prepParams.LocalWorktree = &execenv.LocalWorktreeParams{LocalPath: localAssignment.AbsPath}
 			// Take the per-path mutex for the snapshot alone, then hand it
 			// straight back — long enough to read a consistent tree, short
@@ -8213,6 +8307,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				return TaskResult{}, fmt.Errorf("local_directory worktree: wait for a consistent snapshot of %s: %w",
 					localAssignment.AbsPath, lockErr)
 			}
+			currentRealPath, realPathErr := resolveRealPath(localAssignment.AbsPath)
+			if realPathErr != nil || filepath.Clean(currentRealPath) != filepath.Clean(localAssignment.RealPath) {
+				release()
+				if realPathErr != nil {
+					return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("local_directory worktree: resolve locked path %s: %w", localAssignment.AbsPath, realPathErr))
+				}
+				return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("local_directory worktree: resource path %s changed while waiting for lock", localAssignment.AbsPath))
+			}
+			if err := validateWorktreeGitMetadata(localAssignment); err != nil {
+				release()
+				return TaskResult{}, asEnvironmentSetupFailure(err)
+			}
 			env, err = d.prepareExecutionEnvironment(prepareCtx, prepParams)
 			release()
 			if err != nil {
@@ -8220,6 +8326,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		} else {
 			if snapPlan != nil {
+				if _, auditErr := revalidateSnapshotGitPlan(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1"); auditErr != nil {
+					return TaskResult{}, asEnvironmentSetupFailure(auditErr)
+				}
 				// Snapshot mode (RUYI-669): Prepare writes context files and
 				// sidecars into LocalWorkDir, so the primary unit's upperdir
 				// takes that slot — everything lands in the overlay's upper
@@ -8262,6 +8371,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// the upper layer, never into the pristine path env.WorkDir points at.
 	snapshotPrimaryUpper := ""
 	if snapPlan != nil {
+		gitAudit, auditErr := revalidateSnapshotGitPlan(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1")
+		if auditErr != nil {
+			return TaskResult{}, asEnvironmentSetupFailure(auditErr)
+		}
 		primaryUpper, merr := snapPlan.materializeTrees(resolvedRoot, task.IssueID, task.ID)
 		if merr != nil {
 			return TaskResult{}, asEnvironmentSetupFailure(merr)
@@ -8272,19 +8385,42 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		units := make([]execenv.SnapshotUnitSpec, 0, len(materializedUnits))
 		for _, u := range materializedUnits {
 			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, snapshotUnitStem(task.IssueID, task.ID, u))
-			units = append(units, execenv.SnapshotUnitSpec{Target: u.AbsPath, Subdir: u.Subdir, Alias: alias, Upper: upper, Work: work})
+			device, inode := u.TargetDevice, u.TargetInode
+			if !u.IdentityCaptured {
+				var identityErr error
+				device, inode, identityErr = snapshotTargetIdentity(u.AbsPath)
+				if identityErr != nil {
+					return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("identify snapshot target %q: %w", u.AbsPath, identityErr))
+				}
+			}
+			units = append(units, execenv.SnapshotUnitSpec{
+				Target: u.AbsPath, Subdir: u.Subdir, TargetDevice: device, TargetInode: inode,
+				TargetIdentitySet: u.IdentityCaptured || device != 0 || inode != 0,
+				Alias:             alias, Upper: upper, Work: work,
+			})
 		}
 		var gitArtifact *execenv.SnapshotGitArtifactSpec
-		if gitSnapshotDeliveryEligible(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1") {
+		if repository, eligible := gitSnapshotDeliveryRepository(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1", gitAudit); eligible {
 			baseline, baselineErr := execenv.SnapshotGitBaseline(snapPlan.Primary.AbsPath)
 			if baselineErr != nil {
 				return TaskResult{}, asEnvironmentSetupFailure(baselineErr)
+			}
+			scopePath, scopeErr := filepath.Rel(repository.Worktree, snapPlan.Primary.AbsPath)
+			if scopeErr != nil {
+				return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("resolve snapshot Git artifact scope: %w", scopeErr))
+			}
+			if scopePath == ".." || strings.HasPrefix(scopePath, ".."+string(filepath.Separator)) {
+				return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("snapshot Git artifact scope %q is outside repository %q", snapPlan.Primary.AbsPath, repository.Worktree))
+			}
+			if scopePath == "." {
+				scopePath = ""
 			}
 			gitArtifact = &execenv.SnapshotGitArtifactSpec{
 				ArtifactDir: execenv.SnapshotGitArtifactDir(resolvedRoot, task.ID),
 				Baseline:    baseline,
 				EnvRoot:     resolvedRoot,
 				Provider:    provider,
+				ScopePath:   filepath.ToSlash(scopePath),
 			}
 		}
 		if err := execenv.RecordSnapshotStart(resolvedRoot, execenv.SnapshotLedgerEntry{
