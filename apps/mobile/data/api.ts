@@ -1288,6 +1288,12 @@ class ApiClient {
     await this.fetch<void>(`/api/runtimes/${runtimeId}`, { method: "DELETE" });
   }
 
+  async removeRuntimeFromList(runtimeId: string): Promise<void> {
+    await this.fetch<void>(`/api/runtimes/${runtimeId}/remove-from-list`, {
+      method: "POST",
+    });
+  }
+
   async unbindAgentsAndDeleteRuntime(
     runtimeId: string,
     expectedActiveAgentIds: string[],

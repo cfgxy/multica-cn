@@ -48,7 +48,13 @@
     "delete_description": "이 작업은 되돌릴 수 없습니다.",
     "delete_bound_description": "에이전트는 유지되지만 바인딩이 해제되고 대기 또는 실행 중인 작업은 취소됩니다.",
     "delete_failed": "런타임이 변경되었거나 삭제할 수 없습니다. 새로고침 후 현재 바인딩을 확인하세요.",
-    "deleting": "삭제 중…"
+    "deleting": "삭제 중…",
+    "remove_title": "\"{{name}}\"을(를) 관리 목록에서 제거할까요?",
+    "remove_description": "\"{{name}}\"은(는) 런타임 목록에 더 이상 표시되지 않습니다. 에이전트, 작업, 자동화, 런타임 프로세스는 변경되지 않습니다.",
+    "remove_confirm": "목록에서 제거",
+    "remove_button": "관리 목록에서 제거",
+    "removing": "제거 중…",
+    "remove_failed": "런타임을 관리 목록에서 제거하지 못했습니다. 다시 시도하세요."
   },
   "mika_setup": {
     "title": "런타임이 준비되었습니다. Mika와 시작하세요.",
@@ -177,6 +183,7 @@
     "all_runtimes": "모든 런타임",
     "read_only": "읽기 전용",
     "delete_button": "런타임 삭제",
+    "remove_from_list_button": "관리 목록에서 제거",
     "last_seen": "마지막 확인 {{when}}",
     "never_seen": "연결 기록 없음",
     "backpressure_hint": "호스트 메모리 백프레셔({{reason}}): 가용 메모리 {{mem}}%, 스왑 사용 {{swap}}%. 호스트가 회복될 때까지 새 작업 가져오기가 일시 중지됩니다. 지금까지 {{count}}회 가져오기가 지연되었습니다.",
@@ -255,6 +262,15 @@
         }
       }
     },
+    "remove_from_list_dialog": {
+      "title": "\"{{name}}\"을(를) 관리 목록에서 제거할까요?",
+      "description": "\"{{name}}\"은(는) 런타임 목록에 더 이상 표시되지 않습니다. 에이전트, 작업, 자동화, 런타임 프로세스는 변경되지 않습니다.",
+      "cancel": "취소",
+      "confirm": "목록에서 제거",
+      "submitting": "제거 중…",
+      "error": "런타임을 관리 목록에서 제거하지 못했습니다"
+    },
+    "toast_removed_from_list": "런타임을 관리 목록에서 제거했습니다",
     "toast_deleted": "런타임을 삭제했습니다",
     "toast_delete_failed": "런타임을 삭제하지 못했습니다",
     "running_chip_other": "· 실행 중 {{count}}개",

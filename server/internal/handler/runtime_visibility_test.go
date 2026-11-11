@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -280,6 +281,103 @@ func TestListAgentRuntimes_AllowsAdminsToGovernPrivateRuntimes(t *testing.T) {
 		}
 	}
 	t.Fatalf("admin runtime list did not include private runtime %s", privateRuntimeID)
+}
+
+func TestRemoveAgentRuntimeFromList_HidesOnlyTheManagementEntry(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	runtimeID, runtimeOwnerID, plainMemberID := runtimeVisibilityFixture(t)
+	boundAgentID := dbfx.Agent(t, "removed-runtime-agent", runtimeID)
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE agent_runtime SET visibility = 'public' WHERE id = $1`, runtimeID,
+	); err != nil {
+		t.Fatalf("make runtime public: %v", err)
+	}
+
+	remove := func(userID string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		req := withURLParam(
+			newRequestAs(userID, http.MethodPost, "/api/runtimes/"+runtimeID+"/remove-from-list", nil),
+			"runtimeId", runtimeID,
+		)
+		testHandler.RemoveAgentRuntimeFromList(w, req)
+		return w
+	}
+
+	if w := remove(plainMemberID); w.Code != http.StatusForbidden {
+		t.Fatalf("plain member remove: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if w := remove(testUserID); w.Code != http.StatusNoContent {
+		t.Fatalf("workspace owner remove: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var firstRemovedAt time.Time
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT removed_at FROM agent_runtime WHERE id = $1`, runtimeID,
+	).Scan(&firstRemovedAt); err != nil {
+		t.Fatalf("read removal state: %v", err)
+	}
+
+	if w := remove(runtimeOwnerID); w.Code != http.StatusNoContent {
+		t.Fatalf("runtime owner retry: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	var retriedRemovedAt time.Time
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT removed_at FROM agent_runtime WHERE id = $1`, runtimeID,
+	).Scan(&retriedRemovedAt); err != nil {
+		t.Fatalf("read removal state after retry: %v", err)
+	}
+	if !retriedRemovedAt.Equal(firstRemovedAt) {
+		t.Fatalf("removal retry changed timestamp: first=%s retry=%s", firstRemovedAt, retriedRemovedAt)
+	}
+
+	for _, tc := range []struct {
+		name string
+		req  *http.Request
+	}{
+		{
+			name: "workspace admin list",
+			req:  newRequest(http.MethodGet, "/api/runtimes", nil),
+		},
+		{
+			name: "runtime owner list",
+			req:  newRequestAs(runtimeOwnerID, http.MethodGet, "/api/runtimes?owner=me", nil),
+		},
+		{
+			name: "plain member visible list",
+			req:  newRequestAs(plainMemberID, http.MethodGet, "/api/runtimes", nil),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := testutil.Call(t, testHandler.ListAgentRuntimes, tc.req).Want(http.StatusOK)
+			var runtimes []AgentRuntimeResponse
+			w.JSON(&runtimes)
+			for _, runtime := range runtimes {
+				if runtime.ID == runtimeID {
+					t.Fatalf("removed runtime %s was returned", runtimeID)
+				}
+			}
+		})
+	}
+
+	// Internal lookups and existing bindings must remain usable: hiding a
+	// management-list row is deliberately not a teardown or unbind operation.
+	rt := loadRuntime(t, runtimeID)
+	if !rt.RemovedAt.Valid {
+		t.Fatal("GetAgentRuntime did not return the removed runtime state")
+	}
+	var agentRuntimeID string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT runtime_id FROM agent WHERE id = $1`, boundAgentID,
+	).Scan(&agentRuntimeID); err != nil {
+		t.Fatalf("read bound agent: %v", err)
+	}
+	if agentRuntimeID != runtimeID {
+		t.Fatalf("agent runtime binding changed: got %s, want %s", agentRuntimeID, runtimeID)
+	}
 }
 
 func TestPrivateRuntimeReadEndpointsHideKnownRuntimeFromNonOwners(t *testing.T) {
