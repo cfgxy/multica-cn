@@ -706,13 +706,12 @@ func TestCopilotAssistantMessageModelAttribution(t *testing.T) {
 	}
 }
 
-func TestCopilotModernStreamReportsNoUsage(t *testing.T) {
+func TestCopilotModernStreamReportsMessageEvidenceWithoutTokens(t *testing.T) {
 	t.Parallel()
 	// Copilot CLI 1.0.77 shape: assistant.message without outputTokens or model,
 	// tool.execution_complete without model, and no assistant.usage /
-	// session.shutdown (the CLI filters both off stdout). Nothing to report —
-	// this documents the upstream gap so a future CLI change shows up as a
-	// failing test rather than a silent one.
+	// session.shutdown (the CLI filters both off stdout). The message IDs still
+	// prove that two model calls occurred, even though token usage is unavailable.
 	lines := []string{
 		`{"type":"session.start","data":{"sessionId":"s1","version":1,"producer":"copilot-agent"},"id":"e1","timestamp":"2026-08-04T08:00:00.000Z"}`,
 		`{"type":"assistant.turn_start","data":{"turnId":"t1"},"id":"e2","timestamp":"2026-08-04T08:00:01.000Z"}`,
@@ -724,8 +723,9 @@ func TestCopilotModernStreamReportsNoUsage(t *testing.T) {
 
 	_, _, _, usage := simulateCopilotEventLoop(t, lines)
 
-	if len(usage) != 0 {
-		t.Fatalf("expected no usage from a 1.0.77-shaped stream, got %#v", usage)
+	u, ok := usage["copilot"]
+	if !ok || u.ModelCallCount != 2 || u.InputTokens != 0 || u.OutputTokens != 0 {
+		t.Fatalf("expected two tokenless calls from a 1.0.77-shaped stream, got %#v", usage)
 	}
 }
 
@@ -1146,11 +1146,11 @@ func TestCopilotCallCountPerAssistantUsageEvent(t *testing.T) {
 		t.Parallel()
 		lines := []string{fixtureSessionStart, fixtureTurnStart, fixtureAssistantMessage, fixtureResult}
 		_, _, _, usage := simulateCopilotEventLoop(t, lines)
-		// Legacy assistant.message path: tokens land under the session's
-		// selected model, and no per-call evidence exists, so the count stays
-		// unknown (0) while the legacy tokens still report.
-		if u := usage["claude-sonnet-4"]; u.ModelCallCount != 0 || u.OutputTokens != 5 {
-			t.Fatalf("expected unknown calls with legacy tokens, got %#v", usage)
+		// assistant.message carries a stable messageId, so it is provider
+		// evidence even when assistant.usage is absent. The token count still
+		// comes from the legacy message path.
+		if u := usage["claude-sonnet-4"]; u.ModelCallCount != 1 || u.OutputTokens != 5 {
+			t.Fatalf("expected one known call with legacy tokens, got %#v", usage)
 		}
 	})
 }

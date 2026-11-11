@@ -127,6 +127,14 @@ func TestTaskUsagePayloadEvidenceCompatibility(t *testing.T) {
 		t.Errorf("complete evidence ids = %v, want [msg_01 msg_02]", ids)
 	}
 
+	normalized := TaskUsagePayload{
+		ModelCallEvidenceComplete: true,
+		ModelCallEvidenceIDs:      []string{" msg_01 ", "msg_01", " msg_02 "},
+	}
+	if ids := completeModelCallEvidenceIDs(normalized); len(ids) != 2 || ids[0] != "msg_01" || ids[1] != "msg_02" {
+		t.Errorf("normalized evidence ids = %v, want [msg_01 msg_02]", ids)
+	}
+
 	oldDaemon := []byte(`{"provider":"anthropic","model":"claude-opus-5","model_call_count":42}`)
 	var legacy TaskUsagePayload
 	if err := json.Unmarshal(oldDaemon, &legacy); err != nil {

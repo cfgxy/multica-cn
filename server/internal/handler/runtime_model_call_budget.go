@@ -39,6 +39,7 @@ type runtimeModelCallBudgetConfig struct {
 type runtimeModelCallBudgetReport struct {
 	KnownCalls       int64  `json:"known_calls"`
 	UnknownUsageRows int64  `json:"unknown_usage_rows"`
+	ReservedCalls    int64  `json:"reserved_calls"`
 	Complete         bool   `json:"complete"`
 	Active           bool   `json:"active"`
 	WindowStartedAt  string `json:"window_started_at"`
@@ -71,9 +72,9 @@ func runtimeModelCallBudgetWindowStart(now time.Time, config runtimeModelCallBud
 	return now.UTC().Add(-time.Duration(config.WindowSeconds) * time.Second)
 }
 
-func modelCallBudgetActive(config runtimeModelCallBudgetConfig, knownCalls, unknownUsageRows int64) bool {
+func modelCallBudgetActive(config runtimeModelCallBudgetConfig, knownCalls, reservedCalls int64) bool {
 	return validateRuntimeModelCallBudgetConfig(config) == nil &&
-		config.Enabled && unknownUsageRows == 0 && knownCalls >= config.MaxCalls
+		config.Enabled && knownCalls+reservedCalls >= config.MaxCalls
 }
 
 func (h *Handler) runtimeModelCallBudgetResponse(
@@ -95,16 +96,17 @@ func (h *Handler) runtimeModelCallBudgetResponse(
 		Report: runtimeModelCallBudgetReport{
 			KnownCalls:       usage.KnownCalls,
 			UnknownUsageRows: usage.UnknownUsageRows,
+			ReservedCalls:    usage.ReservedCalls,
 			Complete:         usage.UnknownUsageRows == 0,
-			Active:           modelCallBudgetActive(config, usage.KnownCalls, usage.UnknownUsageRows),
+			Active:           modelCallBudgetActive(config, usage.KnownCalls, usage.ReservedCalls),
 			WindowStartedAt:  windowStart.Format(time.RFC3339),
 		},
 	}, nil
 }
 
-// runtimeHeldByModelCallBudget is deliberately fail-open. A query problem,
-// invalid persisted configuration, or even one provider row without original
-// evidence must never turn a partial count into an admission hold.
+// runtimeHeldByModelCallBudget is deliberately fail-open for query failures and
+// invalid persisted configuration. Unknown provider rows do not add to the
+// lower-bound count, but they also cannot bypass a known count at the limit.
 func (h *Handler) runtimeHeldByModelCallBudget(ctx context.Context, rt db.AgentRuntime, now time.Time) bool {
 	config := runtimeModelCallBudgetConfigFrom(rt)
 	if !config.Enabled {
@@ -127,7 +129,7 @@ func (h *Handler) runtimeHeldByModelCallBudget(ctx context.Context, rt db.AgentR
 			"runtime_id", uuidToString(rt.ID), "error", err)
 		return false
 	}
-	return modelCallBudgetActive(config, usage.KnownCalls, usage.UnknownUsageRows)
+	return modelCallBudgetActive(config, usage.KnownCalls, usage.ReservedCalls)
 }
 
 // runtimeModelCallBudgetHolds batch-loads usage for queue decoration and the
@@ -163,7 +165,7 @@ func (h *Handler) runtimeModelCallBudgetHolds(ctx context.Context, runtimes []db
 		if !ok {
 			continue
 		}
-		holds[id] = modelCallBudgetActive(config, row.KnownCalls, row.UnknownUsageRows)
+		holds[id] = modelCallBudgetActive(config, row.KnownCalls, row.ReservedCalls)
 	}
 	return holds
 }
