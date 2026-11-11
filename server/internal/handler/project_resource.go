@@ -262,9 +262,9 @@ func (h *Handler) requireLocalIsolationCapableDaemon(w http.ResponseWriter, r *h
 	}
 
 	// One machine hosts one runtime row per provider, all registered by the
-	// same daemon binary. A workspace has a handful of runtimes; the unfiltered
-	// list is a tiny read.
-	runtimes, err := h.Queries.ListAgentRuntimes(r.Context(), workspaceID)
+	// same daemon binary. A workspace has a handful of runtimes; this operational
+	// query intentionally includes records hidden from the management list.
+	runtimes, err := h.Queries.ListAgentRuntimesIncludingRemoved(r.Context(), workspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to check runtime capabilities")
 		return false

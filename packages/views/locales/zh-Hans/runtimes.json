@@ -48,7 +48,13 @@
     "delete_description": "此操作无法撤销。",
     "delete_bound_description": "智能体会保留但解除绑定；排队和运行中的任务会被取消。",
     "delete_failed": "运行时已变化或无法删除。请刷新并重新检查当前绑定。",
-    "deleting": "正在删除…"
+    "deleting": "正在删除…",
+    "remove_title": "从管理列表中移除「{{name}}」？",
+    "remove_description": "「{{name}}」将不再显示在运行时列表中。其智能体、任务、自动化和运行时进程均不会改变。",
+    "remove_confirm": "从列表中移除",
+    "remove_button": "从管理列表中移除",
+    "removing": "正在移除…",
+    "remove_failed": "无法从管理列表中移除此运行时，请重试。"
   },
   "mika_setup": {
     "title": "运行时已准备好，和 Mika 开始。",
@@ -177,6 +183,7 @@
     "all_runtimes": "全部运行时",
     "read_only": "只读",
     "delete_button": "删除运行时",
+    "remove_from_list_button": "从管理列表中移除",
     "last_seen": "最后活跃 {{when}}",
     "never_seen": "从未连接",
     "backpressure_hint": "主机内存背压（{{reason}}）：可用内存 {{mem}}%，swap 已用 {{swap}}%。主机水位恢复前新任务领取暂停，已累计延迟 {{count}} 次领取轮询。",
@@ -255,6 +262,15 @@
         }
       }
     },
+    "remove_from_list_dialog": {
+      "title": "从管理列表中移除「{{name}}」？",
+      "description": "「{{name}}」将不再显示在运行时列表中。其智能体、任务、自动化和运行时进程均不会改变。",
+      "cancel": "取消",
+      "confirm": "从列表中移除",
+      "submitting": "正在移除…",
+      "error": "从管理列表中移除运行时失败"
+    },
+    "toast_removed_from_list": "已从管理列表中移除运行时",
     "toast_deleted": "已删除运行时",
     "toast_delete_failed": "删除运行时失败",
     "running_chip_other": "· {{count}} 个进行中",
