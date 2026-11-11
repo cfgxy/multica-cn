@@ -372,6 +372,8 @@
     },
     "mb_card_title": "モデル呼び出し予算",
     "mb_description": "サーバーに永続化されたプロバイダー呼び出し回数で、新しい task の取得を制限します。",
+    "mb_unavailable": "利用不可",
+    "mb_unavailable_hint": "このサーバーはモデル呼び出し予算データを提供していません。",
     "mb_edit": "編集",
     "mb_state": "取得状態",
     "mb_state_disabled": "無効",

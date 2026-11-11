@@ -372,6 +372,8 @@
     },
     "mb_card_title": "모델 호출 예산",
     "mb_description": "서버에 저장된 provider 호출 횟수로 새 task 가져오기를 제한합니다.",
+    "mb_unavailable": "사용 불가",
+    "mb_unavailable_hint": "이 서버는 모델 호출 예산 데이터를 제공하지 않습니다.",
     "mb_edit": "편집",
     "mb_state": "가져오기 상태",
     "mb_state_disabled": "중지됨",

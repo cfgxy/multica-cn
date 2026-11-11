@@ -382,6 +382,8 @@
     },
     "mb_card_title": "Model call budget",
     "mb_description": "Limits new task claims using server-persisted provider call counts.",
+    "mb_unavailable": "Unavailable",
+    "mb_unavailable_hint": "This server does not expose model-call budget data.",
     "mb_edit": "Edit",
     "mb_state": "Admission",
     "mb_state_disabled": "Disabled",

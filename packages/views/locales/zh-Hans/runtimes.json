@@ -372,6 +372,8 @@
     },
     "mb_card_title": "模型调用预算",
     "mb_description": "使用服务端持久化的 provider 调用次数限制新 task 领取。",
+    "mb_unavailable": "不可用",
+    "mb_unavailable_hint": "当前服务器未提供模型调用预算数据。",
     "mb_edit": "编辑",
     "mb_state": "领取状态",
     "mb_state_disabled": "已停用",
