@@ -8981,6 +8981,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
 	}
 
+	// ACP providers report billing usage cumulatively for a resumed session.
+	// Normalize only after the optional fresh-session retry has been merged so
+	// the prior-session baseline is subtracted exactly once from the complete
+	// task result. Codex has its own start-time baseline handling and is not in
+	// this family.
+	result.Usage = subtractPriorSessionUsage(provider, task.PriorSessionUsage, result.Usage)
+
 	// Snapshot lifecycle (RUYI-669): the agent process is done, so the mounts
 	// it held died with its namespace. A completed run drops the snapshot
 	// tree here — after the retry convergence above, because the retry reuses
@@ -10129,6 +10136,71 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 		merged[model] = existing
 	}
 	return merged
+}
+
+var acpSessionCumulativeProviders = map[string]bool{
+	"hermes":     true,
+	"kimi":       true,
+	"kiro":       true,
+	"qoder":      true,
+	"qoderclicn": true,
+	"traecli":    true,
+	"grok":       true,
+	"qwenpaw":    true,
+	"mcode":      true,
+	"dim":        true,
+	"zeroclaw":   true,
+	"deerflow":   true,
+	"reasonix":   true,
+	"zcode":      true,
+}
+
+func isACPSessionCumulativeProvider(provider string) bool {
+	return acpSessionCumulativeProviders[strings.ToLower(strings.TrimSpace(provider))]
+}
+
+// subtractPriorSessionUsage converts session-cumulative ACP snapshots into the
+// current task's billing delta. Each bucket is clamped independently because a
+// provider can omit, reset, or revise one counter without invalidating the
+// others. ContextTokens is intentionally untouched: it describes the final
+// conversation size, not spend.
+func subtractPriorSessionUsage(provider string, baseline []TaskUsageEntry, usage map[string]agent.TokenUsage) map[string]agent.TokenUsage {
+	if !isACPSessionCumulativeProvider(provider) || len(baseline) == 0 || len(usage) == 0 {
+		return usage
+	}
+
+	byModel := make(map[string]TaskUsageEntry, len(baseline))
+	for _, entry := range baseline {
+		if strings.EqualFold(entry.Provider, provider) {
+			byModel[entry.Model] = entry
+		}
+	}
+	if len(byModel) == 0 {
+		return usage
+	}
+
+	for model, current := range usage {
+		prior, ok := byModel[model]
+		if !ok {
+			continue
+		}
+		current.InputTokens = nonNegativeUsageDelta(current.InputTokens, prior.InputTokens)
+		current.OutputTokens = nonNegativeUsageDelta(current.OutputTokens, prior.OutputTokens)
+		current.CacheReadTokens = nonNegativeUsageDelta(current.CacheReadTokens, prior.CacheReadTokens)
+		current.CacheWriteTokens = nonNegativeUsageDelta(current.CacheWriteTokens, prior.CacheWriteTokens)
+		if prior.CostUSDTicks > 0 {
+			current.CostUSDTicks = nonNegativeUsageDelta(current.CostUSDTicks, prior.CostUSDTicks)
+		}
+		usage[model] = current
+	}
+	return usage
+}
+
+func nonNegativeUsageDelta(current, prior int64) int64 {
+	if current <= prior {
+		return 0
+	}
+	return current - prior
 }
 
 // repoDataToInfo converts daemon RepoData to repocache RepoInfo.

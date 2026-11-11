@@ -140,6 +140,10 @@ type Task struct {
 	IsLeaderTask                  bool                   `json:"is_leader_task,omitempty"`                   // true when executing in the squad-leader coordinator role
 	LeaderRoleResolved            bool                   `json:"leader_role_resolved,omitempty"`             // server capability: IsLeaderTask/SquadID authoritatively answer "is this a leader run". Absent on servers predating it — those before #4951 never sent is_leader_task at all, later ones send it without this guarantee — so taskIsSquadLeader falls back to the briefing marker for both (MUL-5811)
 	PriorSessionID                string                 `json:"prior_session_id,omitempty"`                 // Claude session ID from a previous task on this issue
+	// PriorSessionUsage is the billing usage already recorded for the session
+	// being resumed. ACP providers report cumulative session usage; the daemon
+	// converts it to this task's delta before reporting it.
+	PriorSessionUsage             []TaskUsageEntry      `json:"prior_session_usage,omitempty"`
 	PriorWorkDir                  string                 `json:"prior_work_dir,omitempty"`                   // work_dir from a previous task on this issue
 	PriorSessionResumeUnavailable bool                   `json:"prior_session_resume_unavailable,omitempty"` // MUL-5305: server signals a more recent Codex session was withheld (rollout missing) and PriorSessionID (if any) is an older fallback; the run must disclose the continuity gap even if that older session resumes cleanly. Absent/false on old servers.
 	PriorContextBrief             string                 `json:"prior_context_brief,omitempty"`              // RUYI-107: mechanically assembled hand-off (previous result + unresolved threads + recent activity) replacing a session the server's context gate declined to resume. Mutually exclusive with PriorSessionResumeUnavailable — one says context was carried over, the other says it was lost. Empty on old servers.

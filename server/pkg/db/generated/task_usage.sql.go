@@ -59,6 +59,74 @@ func (q *Queries) GetIssueUsageSummary(ctx context.Context, issueID pgtype.UUID)
 	return i, err
 }
 
+const getPriorSessionUsage = `-- name: GetPriorSessionUsage :many
+SELECT
+    tu.provider,
+    tu.model,
+    SUM(tu.input_tokens)::bigint        AS input_tokens,
+    SUM(tu.output_tokens)::bigint       AS output_tokens,
+    SUM(tu.cache_read_tokens)::bigint   AS cache_read_tokens,
+    SUM(tu.cache_write_tokens)::bigint  AS cache_write_tokens,
+    COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks
+FROM task_usage tu
+JOIN agent_task_queue atq ON atq.id = tu.task_id
+WHERE atq.session_id = $1
+  AND atq.agent_id = $2
+  AND atq.id <> $3
+GROUP BY tu.provider, tu.model
+ORDER BY tu.provider, tu.model
+`
+
+type GetPriorSessionUsageParams struct {
+	SessionID pgtype.Text `json:"session_id"`
+	AgentID   pgtype.UUID `json:"agent_id"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+type GetPriorSessionUsageRow struct {
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	InputTokens      int64  `json:"input_tokens"`
+	OutputTokens     int64  `json:"output_tokens"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	CostUsdTicks     int64  `json:"cost_usd_ticks"`
+}
+
+// ACP providers report cumulative usage for a resumed session. Return the
+// billing counters already persisted by earlier tasks in that session so the
+// daemon can subtract them from the next cumulative snapshot before writing
+// the current task's delta. The current task is excluded defensively because
+// claim normally happens before its usage exists, but a retrying claim must not
+// use a partially written row as its own baseline.
+func (q *Queries) GetPriorSessionUsage(ctx context.Context, arg GetPriorSessionUsageParams) ([]GetPriorSessionUsageRow, error) {
+	rows, err := q.db.Query(ctx, getPriorSessionUsage, arg.SessionID, arg.AgentID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetPriorSessionUsageRow{}
+	for rows.Next() {
+		var i GetPriorSessionUsageRow
+		if err := rows.Scan(
+			&i.Provider,
+			&i.Model,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheReadTokens,
+			&i.CacheWriteTokens,
+			&i.CostUsdTicks,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getTaskContextTokens = `-- name: GetTaskContextTokens :one
 SELECT context_tokens
 FROM task_usage
