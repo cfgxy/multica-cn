@@ -146,8 +146,8 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 	`, taskID).Scan(&hourlyKnown, &hourlyUnknown); err != nil {
 		t.Fatalf("rollup read: %v", err)
 	}
-	if hourlyKnown != 3 {
-		t.Errorf("rollup known half = %d, want 3 (two success IDs plus one failure ID)", hourlyKnown)
+	if hourlyKnown != 4 {
+		t.Errorf("rollup known half = %d, want 4 (two success IDs, one failure ID, and one live ID)", hourlyKnown)
 	}
 	if hourlyUnknown != 1 {
 		t.Errorf("rollup unknown half = %d, want 1 (the row without call evidence)", hourlyUnknown)
@@ -185,5 +185,129 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 	}
 	if !seenKnown || !seenUnknown {
 		t.Fatalf("daily rows missing the fixture buckets: known=%v unknown=%v", seenKnown, seenUnknown)
+	}
+}
+
+// TestTaskUsageModelCallEvidenceCorrectionRehomesDurableUsage proves that a
+// provider correction for the same call identity moves the durable usage row to
+// the corrected model without duplicating its tokens or call count.
+func TestTaskUsageModelCallEvidenceCorrectionRehomesDurableUsage(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	runtimeID := dbfx.Runtime(t, "ModelCallCorrectionRuntime", testutil.Cols{
+		"daemon_id":    "model-call-correction-daemon",
+		"runtime_mode": "local",
+	})
+	agentID := dbfx.Agent(t, "ModelCallCorrectionAgent", runtimeID)
+	issueID := dbfx.Issue(t, "model-call-correction-issue")
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"issue_id":   issueID,
+		"runtime_id": runtimeID,
+		"status":     "completed",
+	})
+	dbfx.Cleanup(t, `DELETE FROM task_usage_model_call_evidence WHERE task_id = $1`, taskID)
+	dbfx.Cleanup(t, `DELETE FROM task_usage WHERE task_id = $1`, taskID)
+
+	report := func(body string) {
+		req := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/usage", taskID, json.RawMessage(body))
+		testutil.Call(t, testHandler.ReportTaskUsage, req).Want(http.StatusOK)
+	}
+
+	report(`{"usage":[{"provider":"claude","model":"model-call-correction-old","input_tokens":100,"output_tokens":10,"model_call_evidence_complete":true,"model_call_evidence_ids":["correction-1"]}]}`)
+	report(`{"usage":[{"provider":"claude","model":"model-call-correction-new","input_tokens":100,"output_tokens":10,"model_call_evidence_complete":true,"model_call_evidence_ids":["correction-1"]}]}`)
+
+	rows, err := testHandler.Queries.GetTaskUsage(ctx, parseUUID(taskID))
+	if err != nil {
+		t.Fatalf("read corrected task usage: %v", err)
+	}
+	byModel := make(map[string]db.TaskUsage, len(rows))
+	for _, row := range rows {
+		byModel[row.Model] = row
+	}
+	if _, ok := byModel["model-call-correction-old"]; ok {
+		t.Fatal("superseded model usage row remains after evidence correction")
+	}
+	corrected, ok := byModel["model-call-correction-new"]
+	if !ok {
+		t.Fatalf("corrected model usage row missing: %#v", byModel)
+	}
+	if corrected.InputTokens != 100 || corrected.OutputTokens != 10 {
+		t.Fatalf("corrected tokens = input %d output %d, want 100 / 10", corrected.InputTokens, corrected.OutputTokens)
+	}
+	if !corrected.ModelCallCount.Valid || corrected.ModelCallCount.Int64 != 1 {
+		t.Fatalf("corrected call count = %+v, want 1", corrected.ModelCallCount)
+	}
+
+	var evidenceModel string
+	if err := testPool.QueryRow(ctx, `
+		SELECT model FROM task_usage_model_call_evidence
+		WHERE task_id = $1 AND provider = 'claude' AND evidence_id = 'correction-1'`, taskID).Scan(&evidenceModel); err != nil {
+		t.Fatalf("read corrected evidence: %v", err)
+	}
+	if evidenceModel != "model-call-correction-new" {
+		t.Fatalf("evidence model = %q, want corrected model", evidenceModel)
+	}
+}
+
+// TestTaskUsageModelCallEvidencePartialCorrectionRecountsOldModel proves that
+// moving only part of a model's evidence also refreshes the old durable count.
+func TestTaskUsageModelCallEvidencePartialCorrectionRecountsOldModel(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	runtimeID := dbfx.Runtime(t, "ModelCallPartialCorrectionRuntime", testutil.Cols{
+		"daemon_id":    "model-call-partial-correction-daemon",
+		"runtime_mode": "local",
+	})
+	agentID := dbfx.Agent(t, "ModelCallPartialCorrectionAgent", runtimeID)
+	issueID := dbfx.Issue(t, "model-call-partial-correction-issue")
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"issue_id":   issueID,
+		"runtime_id": runtimeID,
+		"status":     "completed",
+	})
+	dbfx.Cleanup(t, `DELETE FROM task_usage_model_call_evidence WHERE task_id = $1`, taskID)
+	dbfx.Cleanup(t, `DELETE FROM task_usage WHERE task_id = $1`, taskID)
+
+	report := func(body string) {
+		req := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/usage", taskID, json.RawMessage(body))
+		testutil.Call(t, testHandler.ReportTaskUsage, req).Want(http.StatusOK)
+	}
+
+	report(`{"usage":[{"provider":"claude","model":"model-call-partial-old","input_tokens":100,"output_tokens":10,"model_call_evidence_complete":true,"model_call_evidence_ids":["partial-1","partial-2"]}]}`)
+	report(`{"usage":[{"provider":"claude","model":"model-call-partial-new","input_tokens":40,"output_tokens":4,"model_call_evidence_complete":true,"model_call_evidence_ids":["partial-1"]}]}`)
+
+	rows, err := testHandler.Queries.GetTaskUsage(ctx, parseUUID(taskID))
+	if err != nil {
+		t.Fatalf("read partially corrected task usage: %v", err)
+	}
+	byModel := make(map[string]db.TaskUsage, len(rows))
+	for _, row := range rows {
+		byModel[row.Model] = row
+	}
+	old, ok := byModel["model-call-partial-old"]
+	if !ok || !old.ModelCallCount.Valid || old.ModelCallCount.Int64 != 1 {
+		t.Fatalf("old model usage = %+v, want one remaining call", old)
+	}
+	newUsage, ok := byModel["model-call-partial-new"]
+	if !ok || !newUsage.ModelCallCount.Valid || newUsage.ModelCallCount.Int64 != 1 {
+		t.Fatalf("new model usage = %+v, want one corrected call", newUsage)
+	}
+
+	var oldTotal, newTotal int64
+	if err := testPool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(model_call_count) FILTER (WHERE model = 'model-call-partial-old'), 0),
+		       COALESCE(SUM(model_call_count) FILTER (WHERE model = 'model-call-partial-new'), 0)
+		FROM task_usage_model_call_totals
+		WHERE task_id = $1 AND provider = 'claude'`, taskID).Scan(&oldTotal, &newTotal); err != nil {
+		t.Fatalf("read partially corrected totals: %v", err)
+	}
+	if oldTotal != 1 || newTotal != 1 {
+		t.Fatalf("partial correction totals = old %d new %d, want 1 / 1", oldTotal, newTotal)
 	}
 }

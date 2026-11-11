@@ -16,7 +16,7 @@ func TestReportTaskModelCallEvidenceRequiresDaemonCredential(t *testing.T) {
 	testutil.Call(t, (&Handler{}).ReportTaskModelCallEvidence, req).Want(http.StatusForbidden)
 }
 
-func TestModelCallBudgetActive_RequiresCompleteKnownWindow(t *testing.T) {
+func TestModelCallBudgetActive_UsesKnownCallsAndReservations(t *testing.T) {
 	config := runtimeModelCallBudgetConfig{Enabled: true, MaxCalls: 3, WindowSeconds: 3600}
 	cases := []struct {
 		name    string
@@ -30,7 +30,7 @@ func TestModelCallBudgetActive_RequiresCompleteKnownWindow(t *testing.T) {
 		{name: "known calls at maximum", config: config, known: 3, want: true},
 		{name: "known calls above maximum", config: config, known: 4, want: true},
 		{name: "unknown only window fails open", config: config, unknown: 1, want: false},
-		{name: "mixed known unknown window fails open", config: config, known: 99, unknown: 1, want: false},
+		{name: "unknown cannot bypass known maximum", config: config, known: 99, unknown: 1, want: true},
 		{name: "invalid maximum fails open", config: runtimeModelCallBudgetConfig{Enabled: true, MaxCalls: 0, WindowSeconds: 3600}, known: 1, want: false},
 		{name: "invalid window fails open", config: runtimeModelCallBudgetConfig{Enabled: true, MaxCalls: 1, WindowSeconds: 0}, known: 1, want: false},
 	}
@@ -241,7 +241,7 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	t.Run("single runtime holds known exhausted then releases mixed window", func(t *testing.T) {
+	t.Run("single runtime keeps known exhaustion despite mixed window", func(t *testing.T) {
 		runtimeID := runtimeModelCallBudgetFixture(t, "single")
 		agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-single")
 		usageTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
@@ -258,11 +258,14 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 			t.Fatalf("held task status = %q, want queued", got)
 		}
 
-		// One unknown row makes the whole rolling window incomplete, so the
-		// partial known total must not continue holding this runtime.
+		// Unknown rows do not add to the lower bound, but they
+		// cannot bypass a known count that already reaches the runtime budget.
 		seedModelCallUsage(t, ctx, usageTaskID, "copilot", "unknown", nil)
-		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task == nil || task.ID != queuedID {
-			t.Fatalf("mixed known/unknown window must fail open, got %+v: %s", task, body)
+		if task, body := claimTaskByRuntimeForTest(t, runtimeID); task != nil {
+			t.Fatalf("mixed known/unknown window bypassed known exhaustion with %s: %s", task.ID, body)
+		}
+		if got := queueStatus(t, ctx, queuedID); got != "queued" {
+			t.Fatalf("mixed known/unknown held task status = %q, want queued", got)
 		}
 	})
 
@@ -304,7 +307,8 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 		if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, usageTaskID); err != nil {
 			t.Fatalf("mark source task running: %v", err)
 		}
-		queuedID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		queuedAgentID, queuedIssueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-running-evidence-queued")
+		queuedID := seedQueuedIssueTask(t, ctx, queuedAgentID, runtimeID, queuedIssueID)
 		setRuntimeModelCallBudgetForTest(t, runtimeID, true, 1, 60)
 		crossDaemonReq := modelCallEvidenceRequestAs(t, usageTaskID,
 			`{"provider":"claude","model":"budget-live","evidence_id":"cross-daemon-call"}`, "another-daemon")
@@ -339,7 +343,8 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 		if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, incompleteTaskID); err != nil {
 			t.Fatalf("mark incomplete source task running: %v", err)
 		}
-		queuedID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		queuedAgentID, queuedIssueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-running-incomplete-queued")
+		queuedID := seedQueuedIssueTask(t, ctx, queuedAgentID, runtimeID, queuedIssueID)
 		setRuntimeModelCallBudgetForTest(t, runtimeID, true, 1, 60)
 
 		req := modelCallEvidenceRequest(t, runtimeID, incompleteTaskID,
@@ -374,7 +379,8 @@ func TestRuntimeModelCallBudget_ClaimPathsFailOpenForUnknown(t *testing.T) {
 			t.Fatalf("batch held task status = %q, want queued", got)
 		}
 
-		liveTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+		liveAgentID, liveIssueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-queued-reason-live")
+		liveTaskID := seedQueuedIssueTask(t, ctx, liveAgentID, runtimeID, liveIssueID)
 		if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, liveTaskID); err != nil {
 			t.Fatalf("mark batch live source task running: %v", err)
 		}
@@ -425,14 +431,15 @@ func TestListTasksByIssue_QueuedReasonModelCallBudget(t *testing.T) {
 	// Live evidence without terminal usage has the same precedence over the
 	// partial sum: it is observable in the budget report, but never rendered as
 	// an admission hold.
-	liveTaskID := seedQueuedIssueTask(t, ctx, agentID, runtimeID, issueID)
+	liveAgentID, liveIssueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-queued-reason-live")
+	liveTaskID := seedQueuedIssueTask(t, ctx, liveAgentID, runtimeID, liveIssueID)
 	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, liveTaskID); err != nil {
 		t.Fatalf("mark queued-reason live source task running: %v", err)
 	}
 	req := modelCallEvidenceRequest(t, runtimeID, liveTaskID,
 		`{"provider":"copilot","model":"unknown-live","evidence_id":"queued-reason-live-call-1"}`)
 	testutil.Call(t, testHandler.ReportTaskModelCallEvidence, req).Want(http.StatusOK)
-	if got := runs()[queuedID].QueuedReason; got != "" {
-		t.Fatalf("incomplete live budget window still carries queued reason %q", got)
+	if got := runs()[queuedID].QueuedReason; got != "runtime_model_call_budget" {
+		t.Fatalf("known exhausted budget lost queued reason after incomplete live evidence: got %q", got)
 	}
 }

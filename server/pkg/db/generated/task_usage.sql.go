@@ -30,6 +30,83 @@ func (q *Queries) CountTaskUsageModelCallEvidence(ctx context.Context, arg Count
 	return column_1, err
 }
 
+const countTaskUsageModelCallEvidenceByIDs = `-- name: CountTaskUsageModelCallEvidenceByIDs :one
+SELECT COUNT(*)::bigint
+FROM task_usage_model_call_evidence
+WHERE task_id = $1
+  AND provider = $2
+  AND evidence_id = ANY($3::text[])
+`
+
+type CountTaskUsageModelCallEvidenceByIDsParams struct {
+	TaskID      pgtype.UUID `json:"task_id"`
+	Provider    string      `json:"provider"`
+	EvidenceIds []string    `json:"evidence_ids"`
+}
+
+func (q *Queries) CountTaskUsageModelCallEvidenceByIDs(ctx context.Context, arg CountTaskUsageModelCallEvidenceByIDsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countTaskUsageModelCallEvidenceByIDs, arg.TaskID, arg.Provider, arg.EvidenceIds)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countWorkspaceUsageUnknownCallsInWindow = `-- name: CountWorkspaceUsageUnknownCallsInWindow :one
+SELECT COUNT(*)::bigint
+FROM task_usage tu
+JOIN agent_task_queue atq ON atq.id = tu.task_id
+JOIN agent a ON a.id = atq.agent_id
+WHERE a.workspace_id = $1
+  AND tu.created_at >= $2::timestamptz
+  AND tu.created_at <= $3::timestamptz
+  AND tu.model_call_count IS NULL
+`
+
+type CountWorkspaceUsageUnknownCallsInWindowParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	Until       pgtype.Timestamptz `json:"until"`
+}
+
+// The traffic panel's model-call counter contains only rows backed by durable
+// provider evidence. Count missing-evidence rows over the complete PromQL
+// rate evaluation horizon, including the lookbehind before the visible window,
+// so its client can distinguish a complete zero from a known-only rate.
+// `task_usage.created_at` is the usage observation time; an evidence correction
+// updates the row without moving it into a newer window.
+func (q *Queries) CountWorkspaceUsageUnknownCallsInWindow(ctx context.Context, arg CountWorkspaceUsageUnknownCallsInWindowParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countWorkspaceUsageUnknownCallsInWindow, arg.WorkspaceID, arg.Since, arg.Until)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const deleteTaskUsageModelIfNoEvidence = `-- name: DeleteTaskUsageModelIfNoEvidence :exec
+DELETE FROM task_usage
+WHERE task_usage.task_id = $1
+  AND task_usage.provider = $2
+  AND task_usage.model = $3
+  AND task_usage.model_call_count IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM task_usage_model_call_evidence
+      WHERE task_id = $1
+        AND provider = $2
+        AND model = $3
+  )
+`
+
+type DeleteTaskUsageModelIfNoEvidenceParams struct {
+	TaskID   pgtype.UUID `json:"task_id"`
+	Provider string      `json:"provider"`
+	Model    string      `json:"model"`
+}
+
+func (q *Queries) DeleteTaskUsageModelIfNoEvidence(ctx context.Context, arg DeleteTaskUsageModelIfNoEvidenceParams) error {
+	_, err := q.db.Exec(ctx, deleteTaskUsageModelIfNoEvidence, arg.TaskID, arg.Provider, arg.Model)
+	return err
+}
+
 const getIssueUsageSummary = `-- name: GetIssueUsageSummary :one
 SELECT
     COALESCE(SUM(tu.input_tokens), 0)::bigint AS total_input_tokens,
@@ -41,6 +118,8 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.model_call_count), 0)::bigint AS model_call_count,
+    COUNT(*) FILTER (WHERE tu.model_call_count IS NULL)::int AS model_call_unknown_count,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
@@ -156,7 +235,8 @@ func (q *Queries) GetTaskUsage(ctx context.Context, taskID pgtype.UUID) ([]TaskU
 const insertTaskUsageModelCallEvidence = `-- name: InsertTaskUsageModelCallEvidence :exec
 INSERT INTO task_usage_model_call_evidence (task_id, provider, model, evidence_id)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (task_id, provider, evidence_id) DO NOTHING
+ON CONFLICT (task_id, provider, evidence_id)
+DO UPDATE SET model = EXCLUDED.model
 `
 
 type InsertTaskUsageModelCallEvidenceParams struct {
@@ -796,6 +876,8 @@ type ListIssueTaskUsageRow struct {
 // RUYI-154) are run-scoped, not per-model: a run that reports more than one
 // (provider, model) row carries the same run-level reading on each of its
 // rows. The handler layer collapses them back to one figure per task.
+// model_call_count stays per-model: NULL is an explicit unknown when provider
+// original call evidence is incomplete, so consumers must not treat it as 0.
 //
 // Ordering is by task then model so the client can group by task_id in one
 // pass. Uses idx_agent_task_queue_issue_id (migration 035) + the task_usage
@@ -834,6 +916,56 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 	return items, nil
 }
 
+const listTaskUsageEvidenceModels = `-- name: ListTaskUsageEvidenceModels :many
+SELECT DISTINCT model
+FROM task_usage_model_call_evidence
+WHERE task_id = $1
+  AND provider = $2
+  AND evidence_id = ANY($3::text[])
+`
+
+type ListTaskUsageEvidenceModelsParams struct {
+	TaskID      pgtype.UUID `json:"task_id"`
+	Provider    string      `json:"provider"`
+	EvidenceIds []string    `json:"evidence_ids"`
+}
+
+func (q *Queries) ListTaskUsageEvidenceModels(ctx context.Context, arg ListTaskUsageEvidenceModelsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listTaskUsageEvidenceModels, arg.TaskID, arg.Provider, arg.EvidenceIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			return nil, err
+		}
+		items = append(items, model)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockTaskForUsage = `-- name: LockTaskForUsage :one
+SELECT status
+FROM agent_task_queue
+WHERE id = $1
+FOR UPDATE
+`
+
+// Serializes terminal usage reports and live evidence writes for one task so
+// replayed requests cannot compute the same Prometheus delta concurrently.
+func (q *Queries) LockTaskForUsage(ctx context.Context, id pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, lockTaskForUsage, id)
+	var status string
+	err := row.Scan(&status)
+	return status, err
+}
+
 const markTaskUsageModelCallsUnknown = `-- name: MarkTaskUsageModelCallsUnknown :exec
 INSERT INTO task_usage (task_id, provider, model, model_call_count, updated_at)
 VALUES ($1, $2, $3, NULL, now())
@@ -849,6 +981,33 @@ type MarkTaskUsageModelCallsUnknownParams struct {
 
 func (q *Queries) MarkTaskUsageModelCallsUnknown(ctx context.Context, arg MarkTaskUsageModelCallsUnknownParams) error {
 	_, err := q.db.Exec(ctx, markTaskUsageModelCallsUnknown, arg.TaskID, arg.Provider, arg.Model)
+	return err
+}
+
+const refreshTaskUsageModelCallCount = `-- name: RefreshTaskUsageModelCallCount :exec
+UPDATE task_usage
+SET model_call_count = (
+        SELECT COUNT(*)::bigint
+        FROM task_usage_model_call_evidence AS e
+        WHERE e.task_id = $1
+          AND e.provider = $2
+          AND e.model = $3
+    ),
+    updated_at = now()
+WHERE task_id = $1
+  AND provider = $2
+  AND model = $3
+  AND model_call_count IS NOT NULL
+`
+
+type RefreshTaskUsageModelCallCountParams struct {
+	TaskID   pgtype.UUID `json:"task_id"`
+	Provider string      `json:"provider"`
+	Model    string      `json:"model"`
+}
+
+func (q *Queries) RefreshTaskUsageModelCallCount(ctx context.Context, arg RefreshTaskUsageModelCallCountParams) error {
+	_, err := q.db.Exec(ctx, refreshTaskUsageModelCallCount, arg.TaskID, arg.Provider, arg.Model)
 	return err
 }
 
@@ -946,30 +1105,54 @@ func (q *Queries) SumTaskFailuresForMetrics(ctx context.Context) ([]SumTaskFailu
 }
 
 const sumTaskUsageTotalsForMetrics = `-- name: SumTaskUsageTotalsForMetrics :many
+WITH token_totals AS (
+    SELECT
+        workspace_id::text AS workspace_id,
+        runtime_id::text AS runtime_id,
+        LOWER(provider) AS provider,
+        model,
+        SUM(input_tokens)::bigint AS input_tokens,
+        SUM(output_tokens)::bigint AS output_tokens,
+        SUM(cache_read_tokens)::bigint AS cache_read_tokens,
+        SUM(cache_write_tokens)::bigint AS cache_write_tokens,
+        SUM(cost_usd_ticks)::bigint AS cost_usd_ticks,
+        SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint AS uncosted_input_tokens,
+        SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint AS uncosted_output_tokens,
+        SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
+        SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+        SUM(task_count)::bigint AS task_count
+    FROM task_usage_hourly
+    GROUP BY workspace_id, runtime_id, LOWER(provider), model
+), call_totals AS (
+    SELECT
+        a.workspace_id::text AS workspace_id,
+        atq.runtime_id::text AS runtime_id,
+        LOWER(t.provider) AS provider,
+        t.model,
+        SUM(t.model_call_count)::bigint AS model_call_count
+    FROM task_usage_model_call_totals t
+    JOIN agent_task_queue atq ON atq.id = t.task_id
+    JOIN agent a ON a.id = atq.agent_id
+    GROUP BY a.workspace_id, atq.runtime_id, LOWER(t.provider), t.model
+)
 SELECT
-    workspace_id::text              AS workspace_id,
-    runtime_id::text                AS runtime_id,
-    LOWER(provider)                 AS provider,
-    model,
-    SUM(input_tokens)::bigint       AS input_tokens,
-    SUM(output_tokens)::bigint      AS output_tokens,
-    SUM(cache_read_tokens)::bigint  AS cache_read_tokens,
-    SUM(cache_write_tokens)::bigint AS cache_write_tokens,
-    SUM(cost_usd_ticks)::bigint     AS cost_usd_ticks,
-    SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint           AS uncosted_input_tokens,
-    SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
-    SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
-    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
-    -- Model call count: the known half only (rows with provider call
-    -- evidence), published as the lifetime sum that a Prometheus counter
-    -- requires. Rows without evidence are counted separately in the rollup
-    -- (model_call_unknown_count) and surface through the dashboard read
-    -- paths — never folded into this counter, which would turn "unknown"
-    -- into "0 calls" (migration 996).
-    SUM(model_call_count)::bigint       AS model_call_count,
-    SUM(task_count)::bigint         AS task_count
-FROM task_usage_hourly
-GROUP BY workspace_id, runtime_id, LOWER(provider), model
+    COALESCE(t.workspace_id, c.workspace_id) AS workspace_id,
+    COALESCE(t.runtime_id, c.runtime_id) AS runtime_id,
+    COALESCE(t.provider, c.provider) AS provider,
+    COALESCE(t.model, c.model) AS model,
+    COALESCE(t.input_tokens, 0)::bigint AS input_tokens,
+    COALESCE(t.output_tokens, 0)::bigint AS output_tokens,
+    COALESCE(t.cache_read_tokens, 0)::bigint AS cache_read_tokens,
+    COALESCE(t.cache_write_tokens, 0)::bigint AS cache_write_tokens,
+    COALESCE(t.cost_usd_ticks, 0)::bigint AS cost_usd_ticks,
+    COALESCE(t.uncosted_input_tokens, 0)::bigint AS uncosted_input_tokens,
+    COALESCE(t.uncosted_output_tokens, 0)::bigint AS uncosted_output_tokens,
+    COALESCE(t.uncosted_cache_read_tokens, 0)::bigint AS uncosted_cache_read_tokens,
+    COALESCE(t.uncosted_cache_write_tokens, 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(c.model_call_count, 0)::bigint AS model_call_count,
+    COALESCE(t.task_count, 0)::bigint AS task_count
+FROM token_totals t
+FULL OUTER JOIN call_totals c USING (workspace_id, runtime_id, provider, model)
 `
 
 type SumTaskUsageTotalsForMetricsRow struct {
