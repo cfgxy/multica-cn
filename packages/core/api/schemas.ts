@@ -5906,6 +5906,7 @@ const RuntimeModelCallBudgetConfigSchema = z.object({
 const RuntimeModelCallBudgetReportSchema = z.object({
   known_calls: z.number().int().nonnegative().default(0),
   unknown_usage_rows: z.number().int().nonnegative().default(0),
+  reserved_calls: z.number().int().nonnegative().default(0),
   complete: z.boolean().default(false),
   active: z.boolean().default(false),
   window_started_at: z.string().default(""),
@@ -5920,6 +5921,7 @@ export const RuntimeModelCallBudgetSchema = z.object({
   report: RuntimeModelCallBudgetReportSchema.default({
     known_calls: 0,
     unknown_usage_rows: 0,
+    reserved_calls: 0,
     complete: false,
     active: false,
     window_started_at: "",
@@ -5934,6 +5936,7 @@ export const EMPTY_RUNTIME_MODEL_CALL_BUDGET: RuntimeModelCallBudget = {
   report: {
     known_calls: 0,
     unknown_usage_rows: 0,
+    reserved_calls: 0,
     complete: false,
     active: false,
     window_started_at: "",

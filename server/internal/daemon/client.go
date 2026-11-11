@@ -670,9 +670,9 @@ func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []Tas
 	if len(usage) == 0 {
 		return nil
 	}
-	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage", taskID), map[string]any{
+	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage", taskID), map[string]any{
 		"usage": usage,
-	}, nil)
+	}, nil, defaultTerminalRetrySchedule)
 }
 
 func (c *Client) ReportTaskModelCallEvidence(ctx context.Context, taskID string, evidence TaskModelCallEvidence) error {

@@ -375,7 +375,17 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					for model, u := range usage {
 						evidenceIDs := u.ModelCallEvidenceIDs()
 						if len(evidenceIDs) > 0 || u.ModelCallEvidenceIncomplete {
-							ru := resultUsage[model]
+							resultModel := model
+							ru, exact := resultUsage[model]
+							if !exact {
+								for candidateModel, candidateUsage := range resultUsage {
+									if normalizeModelKey(candidateModel) == normalizeModelKey(model) {
+										resultModel = candidateModel
+										ru = candidateUsage
+										break
+									}
+								}
+							}
 							for _, evidenceID := range evidenceIDs {
 								ru = appendModelCallEvidence(ru, evidenceID)
 							}
@@ -383,7 +393,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 								ru.ModelCallEvidenceIncomplete = true
 								ru.ModelCallCount = 0
 							}
-							resultUsage[model] = ru
+							resultUsage[resultModel] = ru
 						}
 					}
 					usage = resultUsage

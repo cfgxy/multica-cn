@@ -268,10 +268,10 @@ func TestDashboardUsageTraffic_ModelCallCompletenessUsesTrafficWindow(t *testing
 
 	complete, unknownRows = readCompleteness()
 	if complete {
-		t.Fatal("calls_complete = true, want false with live-only evidence")
+		t.Fatal("calls_complete = true, want false while terminal unknown rows remain")
 	}
-	if unknownRows != baselineUnknownRows+3 {
-		t.Fatalf("calls_unknown_rows = %d, want baseline %d plus terminal unknown rows and live-only evidence", unknownRows, baselineUnknownRows)
+	if unknownRows != baselineUnknownRows+2 {
+		t.Fatalf("calls_unknown_rows = %d, want baseline %d plus terminal unknown rows; live evidence is known", unknownRows, baselineUnknownRows)
 	}
 
 	dbfx.Insert(t, "task_usage", testutil.Cols{
@@ -283,7 +283,7 @@ func TestDashboardUsageTraffic_ModelCallCompletenessUsesTrafficWindow(t *testing
 
 	_, unknownRows = readCompleteness()
 	if unknownRows != baselineUnknownRows+3 {
-		t.Fatalf("calls_unknown_rows = %d, want baseline %d plus each incomplete usage once", unknownRows, baselineUnknownRows)
+		t.Fatalf("calls_unknown_rows = %d, want baseline %d plus the two terminal unknown rows and the partial-evidence row", unknownRows, baselineUnknownRows)
 	}
 }
 
