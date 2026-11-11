@@ -22,6 +22,18 @@ export function useDeleteRuntime(wsId: string) {
   });
 }
 
+// Hides a runtime from management lists without changing agents, tasks, or the
+// runtime process. Only runtime projections need to be refreshed.
+export function useRemoveRuntimeFromList(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runtimeId: string) => api.removeRuntimeFromList(runtimeId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
+    },
+  });
+}
+
 // Confirmed-delete counterpart to useDeleteRuntime. The dialog routes here when
 // the strict DELETE refused with `runtime_has_active_agents` (or when the
 // caller already knows the runtime has active agents and wants to skip the

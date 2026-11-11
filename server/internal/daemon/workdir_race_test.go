@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -157,6 +158,356 @@ func TestRunTask_StartTaskCalledAfterWorkdirOnDisk(t *testing.T) {
 	}
 	if !workdirOnDisk.Load() {
 		t.Fatal("envRoot/workdir did not exist on disk when /start was called — os.MkdirAll must complete before StartTask (issue #3999 race A)")
+	}
+}
+
+func TestRunTaskRejectsEscapingWorktreeMetadataBeforePreparation(t *testing.T) {
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "")
+
+	for _, tc := range []struct {
+		name         string
+		sentinelRoot func(repo string) string
+	}{
+		{name: "outside repository", sentinelRoot: func(string) string { return t.TempDir() }},
+		{name: "inside repository outside Git metadata", sentinelRoot: func(repo string) string { return filepath.Join(repo, "host-sentinel") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newTestGitRoot(t)
+			sentinelRoot := tc.sentinelRoot(repo)
+			if err := os.MkdirAll(sentinelRoot, 0o700); err != nil {
+				t.Fatalf("create sentinel root: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(sentinelRoot, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+				t.Fatalf("write sentinel: %v", err)
+			}
+			refs := filepath.Join(repo, ".git", "refs")
+			if err := os.RemoveAll(refs); err != nil {
+				t.Fatalf("remove refs: %v", err)
+			}
+			if err := os.MkdirAll(filepath.Join(sentinelRoot, "heads"), 0o700); err != nil {
+				t.Fatalf("create refs sentinel: %v", err)
+			}
+			if err := os.Symlink(sentinelRoot, refs); err != nil {
+				t.Fatalf("link refs outside Git metadata: %v", err)
+			}
+			before := treeDigest(t, sentinelRoot, false)
+
+			var startCalls atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/start") {
+					startCalls.Add(1)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(srv.Close)
+
+			workspacesRoot := t.TempDir()
+			d := &Daemon{
+				client:         NewClient(srv.URL),
+				logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+				workspaces:     make(map[string]*workspaceState),
+				activeEnvRoots: make(map[string]int),
+				cfg: Config{
+					DaemonID:       "d-mine",
+					WorkspacesRoot: workspacesRoot,
+					Agents: map[string]AgentEntry{
+						"claude": {Path: filepath.Join(t.TempDir(), "missing-claude")},
+					},
+				},
+			}
+			task := Task{
+				ID:               "task-unsafe-worktree-metadata",
+				WorkspaceID:      "ws-unsafe-worktree-metadata",
+				RuntimeID:        "rt-unsafe-worktree-metadata",
+				IssueID:          "issue-unsafe-worktree-metadata",
+				AgentID:          "agent-unsafe-worktree-metadata",
+				Agent:            &AgentData{ID: "agent-unsafe-worktree-metadata", Name: "test-agent"},
+				ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "r1", repo, "d-mine")},
+			}
+
+			_, err := d.runTask(context.Background(), task, "claude", 0, d.logger)
+			if err == nil || !strings.Contains(err.Error(), "unsafe Git metadata") {
+				t.Fatalf("runTask error = %v, want unsafe Git metadata", err)
+			}
+			if got := startCalls.Load(); got != 0 {
+				t.Fatalf("StartTask calls = %d, want 0 because preparation must not begin", got)
+			}
+			if after := treeDigest(t, sentinelRoot, false); after != before {
+				t.Fatalf("gate-disabled worktree task wrote through Git metadata\nbefore: %s\nafter:  %s", before, after)
+			}
+			envRoot := execenv.PredictRootDir(execenv.RootDirParams{
+				WorkspacesRoot: workspacesRoot,
+				WorkspaceID:    task.WorkspaceID,
+				TaskID:         task.ID,
+			})
+			if _, statErr := os.Stat(filepath.Join(envRoot, "worktree")); !os.IsNotExist(statErr) {
+				t.Fatalf("unsafe metadata task created a worktree before failing, stat error = %v", statErr)
+			}
+		})
+	}
+}
+
+func TestRunTaskRejectsExternalHooksConfigurationBeforePreparation(t *testing.T) {
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "1")
+	repo := newTestGitRoot(t)
+	outside := t.TempDir()
+	hooks := filepath.Join(outside, "hooks")
+	if err := os.MkdirAll(hooks, 0o700); err != nil {
+		t.Fatalf("create external hooks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+		t.Fatalf("write external sentinel: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte("#!/bin/sh\nprintf hook-ran > "+filepath.Join(outside, "hook-ran")+"\n"), 0o700); err != nil {
+		t.Fatalf("write external pre-commit hook: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "config", "core.hooksPath", hooks).CombinedOutput(); err != nil {
+		t.Fatalf("configure external hooks path: %v (%s)", err, out)
+	}
+	before := treeDigest(t, outside, false)
+	payloadMarker := filepath.Join(t.TempDir(), "agent-ran")
+	payload := filepath.Join(t.TempDir(), "agent")
+	if err := os.WriteFile(payload, []byte("#!/bin/sh\nprintf agent-ran > "+payloadMarker+"\n"), 0o700); err != nil {
+		t.Fatalf("write agent payload: %v", err)
+	}
+
+	var startCalls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/start") {
+			startCalls.Add(1)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	workspacesRoot := t.TempDir()
+	d := &Daemon{
+		client:         NewClient(srv.URL),
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:     make(map[string]*workspaceState),
+		activeEnvRoots: make(map[string]int),
+		cfg: Config{
+			DaemonID:       "d-mine",
+			WorkspacesRoot: workspacesRoot,
+			Agents: map[string]AgentEntry{
+				"claude": {Path: payload},
+			},
+		},
+	}
+	d.client.snapshotSupport.Store(true)
+	task := Task{
+		ID:               "task-external-hooks-configuration",
+		WorkspaceID:      "ws-external-hooks-configuration",
+		RuntimeID:        "rt-external-hooks-configuration",
+		IssueID:          "issue-external-hooks-configuration",
+		AgentID:          "agent-external-hooks-configuration",
+		Agent:            &AgentData{ID: "agent-external-hooks-configuration", Name: "test-agent"},
+		ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "r1", repo, "d-mine")},
+	}
+
+	_, err := d.runTask(context.Background(), task, "claude", 0, d.logger)
+	if err == nil || !strings.Contains(err.Error(), "unsafe Git configuration") {
+		t.Fatalf("runTask error = %v, want unsafe Git configuration", err)
+	}
+	if got := startCalls.Load(); got != 0 {
+		t.Fatalf("StartTask calls = %d, want 0 because external hooks must fail before preparation", got)
+	}
+	if _, err := os.Stat(payloadMarker); !os.IsNotExist(err) {
+		t.Fatalf("agent payload ran despite unsafe Git configuration, stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "hook-ran")); !os.IsNotExist(err) {
+		t.Fatalf("external hook ran despite unsafe Git configuration, stat error = %v", err)
+	}
+	if after := treeDigest(t, outside, false); after != before {
+		t.Fatalf("unsafe Git configuration changed external hook state\nbefore: %s\nafter:  %s", before, after)
+	}
+	envRoot := execenv.PredictRootDir(execenv.RootDirParams{
+		WorkspacesRoot: workspacesRoot,
+		WorkspaceID:    task.WorkspaceID,
+		TaskID:         task.ID,
+	})
+	if _, err := os.Stat(filepath.Join(envRoot, "worktree")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe Git configuration created a worktree before failing, stat error = %v", err)
+	}
+}
+
+func TestRunTaskRechecksWorktreeMetadataAfterWaitingForPathLock(t *testing.T) {
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "")
+	repo := newTestGitRoot(t)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+		t.Fatalf("write external sentinel: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(outside, "heads"), 0o700); err != nil {
+		t.Fatalf("create external refs sentinel: %v", err)
+	}
+	before := treeDigest(t, outside, false)
+
+	waiting := make(chan struct{})
+	var waitOnce sync.Once
+	var startCalls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/wait-local-directory") {
+			waitOnce.Do(func() { close(waiting) })
+		}
+		if strings.HasSuffix(r.URL.Path, "/start") {
+			startCalls.Add(1)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	locker := NewLocalPathLocker()
+	release, err := locker.Acquire(context.Background(), repo, "holder", nil)
+	if err != nil {
+		t.Fatalf("preclaim local path lock: %v", err)
+	}
+	t.Cleanup(release)
+	workspacesRoot := t.TempDir()
+	d := &Daemon{
+		client:         NewClient(srv.URL),
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:     make(map[string]*workspaceState),
+		activeEnvRoots: make(map[string]int),
+		localPathLocks: locker,
+		cfg: Config{
+			DaemonID:       "d-mine",
+			WorkspacesRoot: workspacesRoot,
+			Agents: map[string]AgentEntry{
+				"claude": {Path: filepath.Join(t.TempDir(), "missing-claude")},
+			},
+		},
+	}
+	task := Task{
+		ID:               "task-worktree-metadata-lock-race",
+		WorkspaceID:      "ws-worktree-metadata-lock-race",
+		RuntimeID:        "rt-worktree-metadata-lock-race",
+		IssueID:          "issue-worktree-metadata-lock-race",
+		AgentID:          "agent-worktree-metadata-lock-race",
+		Agent:            &AgentData{ID: "agent-worktree-metadata-lock-race", Name: "test-agent"},
+		ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "r1", repo, "d-mine")},
+	}
+	errs := make(chan error, 1)
+	go func() {
+		_, runErr := d.runTask(context.Background(), task, "claude", 0, d.logger)
+		errs <- runErr
+	}()
+	select {
+	case <-waiting:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worktree task did not wait for the path lock")
+	}
+
+	refs := filepath.Join(repo, ".git", "refs")
+	if err := os.RemoveAll(refs); err != nil {
+		t.Fatalf("remove refs while lock is held: %v", err)
+	}
+	if err := os.Symlink(outside, refs); err != nil {
+		t.Fatalf("redirect refs while lock is held: %v", err)
+	}
+	release()
+
+	select {
+	case runErr := <-errs:
+		if runErr == nil || !strings.Contains(runErr.Error(), "unsafe Git metadata") {
+			t.Fatalf("runTask error = %v, want unsafe Git metadata after lock acquisition", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worktree task did not finish after lock release")
+	}
+	if got := startCalls.Load(); got != 0 {
+		t.Fatalf("StartTask calls = %d, want 0 after metadata changed while waiting", got)
+	}
+	if after := treeDigest(t, outside, false); after != before {
+		t.Fatalf("worktree task wrote through metadata changed during lock wait\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+func TestRunTaskRejectsWorktreeResourceSymlinkChangedWhileWaitingForPathLock(t *testing.T) {
+	t.Setenv("MULTICA_ENABLE_GIT_SNAPSHOT", "")
+	repoA := newTestGitRoot(t)
+	repoB := newTestGitRoot(t)
+	resourcePath := filepath.Join(t.TempDir(), "resource")
+	if err := os.Symlink(repoA, resourcePath); err != nil {
+		t.Fatalf("create resource symlink: %v", err)
+	}
+	beforeB := treeDigest(t, repoB, false)
+
+	waiting := make(chan struct{})
+	var waitOnce sync.Once
+	var startCalls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/wait-local-directory") {
+			waitOnce.Do(func() { close(waiting) })
+		}
+		if strings.HasSuffix(r.URL.Path, "/start") {
+			startCalls.Add(1)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	locker := NewLocalPathLocker()
+	release, err := locker.Acquire(context.Background(), repoA, "holder", nil)
+	if err != nil {
+		t.Fatalf("preclaim local path lock: %v", err)
+	}
+	t.Cleanup(release)
+	d := &Daemon{
+		client:         NewClient(srv.URL),
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:     make(map[string]*workspaceState),
+		activeEnvRoots: make(map[string]int),
+		localPathLocks: locker,
+		cfg: Config{
+			DaemonID:       "d-mine",
+			WorkspacesRoot: t.TempDir(),
+			Agents: map[string]AgentEntry{
+				"claude": {Path: filepath.Join(t.TempDir(), "missing-claude")},
+			},
+		},
+	}
+	task := Task{
+		ID:               "task-worktree-resource-symlink-lock-race",
+		WorkspaceID:      "ws-worktree-resource-symlink-lock-race",
+		RuntimeID:        "rt-worktree-resource-symlink-lock-race",
+		IssueID:          "issue-worktree-resource-symlink-lock-race",
+		AgentID:          "agent-worktree-resource-symlink-lock-race",
+		Agent:            &AgentData{ID: "agent-worktree-resource-symlink-lock-race", Name: "test-agent"},
+		ProjectResources: []ProjectResourceData{worktreeResourceForTest(t, "r1", resourcePath, "d-mine")},
+	}
+	errs := make(chan error, 1)
+	go func() {
+		_, runErr := d.runTask(context.Background(), task, "claude", 0, d.logger)
+		errs <- runErr
+	}()
+	select {
+	case <-waiting:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worktree task did not wait for the path lock")
+	}
+
+	if err := os.Remove(resourcePath); err != nil {
+		t.Fatalf("remove resource symlink while lock is held: %v", err)
+	}
+	if err := os.Symlink(repoB, resourcePath); err != nil {
+		t.Fatalf("retarget resource symlink while lock is held: %v", err)
+	}
+	release()
+
+	select {
+	case runErr := <-errs:
+		if runErr == nil || !strings.Contains(runErr.Error(), "changed while waiting for lock") {
+			t.Fatalf("runTask error = %v, want resource path changed while waiting for lock", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("worktree task did not finish after lock release")
+	}
+	if got := startCalls.Load(); got != 0 {
+		t.Fatalf("StartTask calls = %d, want 0 after resource symlink changed while waiting", got)
+	}
+	if afterB := treeDigest(t, repoB, false); afterB != beforeB {
+		t.Fatalf("worktree task touched replacement resource after symlink changed\nbefore: %s\nafter:  %s", beforeB, afterB)
 	}
 }
 

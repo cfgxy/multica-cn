@@ -77,6 +77,25 @@ func TestMountOrderParentAlwaysBeforeChild(t *testing.T) {
 	}
 }
 
+func TestMountOrderContainmentBeforeBusinessAndMetadata(t *testing.T) {
+	t.Parallel()
+	units := []SnapshotUnitSpec{
+		{Target: "/repo/apps/a"},
+		{Target: "/repo/.git"},
+		{Target: "/repo"},
+	}
+	order := mountOrder(units)
+	position := make(map[string]int, len(units))
+	for pos, i := range order {
+		position[units[i].Target] = pos
+	}
+	for _, child := range []string{"/repo/apps/a", "/repo/.git"} {
+		if position["/repo"] >= position[child] {
+			t.Errorf("containment root must mount before %s: order=%v", child, order)
+		}
+	}
+}
+
 func TestMountOrderEmpty(t *testing.T) {
 	t.Parallel()
 	if got := mountOrder(nil); len(got) != 0 {
