@@ -1,7 +1,7 @@
 "use client";
 
 // The "has recommendation" pill (RUYI-547): one shape shared by the list row
-// and the board card so a recommendation reads identically in both views.
+// and the inbox row so a recommendation reads identically in both views.
 
 export function DecisionRecommendedBadge({ label }: { label: string }) {
   return (
