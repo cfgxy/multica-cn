@@ -312,9 +312,10 @@ the view gate `canAccessPrivateAgent`):
 - `canInvokeAgent` judges by the *effective invoking user*: a member actor is
   itself; an agent/system actor is the top-of-chain human originator
   (`originatorUserID`), which is `""` when none resolved (agent_access.go:48-54);
-- the agent owner may always invoke their own agent (agent_access.go:57-59);
-- `permission_mode != "public_to"` (i.e. private) is deny-by-default — no admin
-  bypass, no A2A bypass; only the owner branch passes (agent_access.go:61-65);
+- the agent owner and workspace owner may invoke a private agent
+  (agent_access.go);
+- `permission_mode != "public_to"` (i.e. private) remains deny-by-default for
+  workspace admins, ordinary members and unresolved A2A principals;
 - `public_to` consults the invocation-target allow-list: a `workspace` target
   admits any workspace member AND workspace-internal agent/system principals even
   with no resolved human (`workspaceBroad`); `member` targets require the

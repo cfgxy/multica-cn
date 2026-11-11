@@ -25,6 +25,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/profiling"
 	"github.com/multica-ai/multica/server/internal/promquery"
+	"github.com/multica-ai/multica/server/internal/promrules"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/retrospective"
 	"github.com/multica-ai/multica/server/internal/scheduler"
@@ -608,6 +609,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	prometheusClient := promquery.NewClientFromEnv()
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		HTTPMetrics:         httpMetrics,
 		BusinessMetrics:     businessMetrics,
@@ -621,7 +623,7 @@ func main() {
 		WecomRelayOutbound:  wecomRelayOutbound,
 		FeatureFlags:        flags,
 		HeartbeatScheduler:  heartbeatScheduler,
-		Prometheus:          promquery.NewClientFromEnv(),
+		Prometheus:          prometheusClient,
 		LLMMaxRetries:       llmMaxRetries,
 	})
 
@@ -637,6 +639,10 @@ func main() {
 	// that cache's version, so an idle runtime could keep returning an empty
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
+	promRulesWorker := promrules.NewWorker(pool, prometheusClient, taskSvc)
+	if prometheusClient.Enabled() {
+		go promRulesWorker.Run(sweepCtx)
+	}
 	registerAutopilotListeners(bus, autopilotSvc)
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
@@ -682,6 +688,11 @@ func main() {
 	}
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
+	// RUYI-859 stage B: automatic agent error-rate suppression. Shares the
+	// autopilot shutdown context (the shutdown sequence's StopAutopilot hook
+	// cancels it) and reuses the router's TaskService so a released agent's
+	// EmptyClaim cache is bumped on the same object the claim path reads.
+	go runAgentErrorRateSuppressor(autopilotCtx, taskSvc, envAgentSuppressionConfig())
 	if autopilotSvc.QuotaEnabled() {
 		go runAutopilotQuotaReconciler(autopilotCtx, autopilotSvc)
 	}

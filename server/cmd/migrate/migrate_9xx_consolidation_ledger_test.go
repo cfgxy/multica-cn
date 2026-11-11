@@ -168,30 +168,38 @@ var postConsolidationStems = []string{
 	"977_mcp_file_access_operation_invocation_index",
 	"977_mcp_pre_auth_rejection_expiry_index",
 	"977_mcp_pre_auth_rejection_invocation_index",
-	"979_credential_000_vault",                         // RUYI-837
-	"979_credential_connector_workspace_index",         // RUYI-837
-	"979_credential_connector_binding_index",           // RUYI-837
-	"979_credential_vault_id_index",                    // RUYI-837
-	"979_credential_vault_workspace_created_index",     // RUYI-837
-	"979_credential_grant_id_index",                    // RUYI-837
-	"979_credential_grant_lookup_index",                // RUYI-837
-	"979_credential_grant_credential_index",            // RUYI-837
-	"979_credential_capability_hash_index",             // RUYI-837
-	"979_credential_capability_task_index",             // RUYI-837
-	"979_credential_capability_task_index_drop_unique", // RUYI-837
-	"979_credential_capability_task_index_nonunique",   // RUYI-837
-	"979_credential_audit_id_index",                    // RUYI-837
-	"979_credential_audit_workspace_created_index",     // RUYI-837
-	"980_runtime_concurrency_limit",                    // RUYI-843
-	"984_prompt_proposal_enactment_target",             // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
-	"994_clause_injection_observation",                 // RUYI-891 (claim-time degraded carrier observations)
+	"979_credential_000_vault",                           // RUYI-837
+	"979_credential_connector_workspace_index",           // RUYI-837
+	"979_credential_connector_binding_index",             // RUYI-837
+	"979_credential_vault_id_index",                      // RUYI-837
+	"979_credential_vault_workspace_created_index",       // RUYI-837
+	"979_credential_grant_id_index",                      // RUYI-837
+	"979_credential_grant_lookup_index",                  // RUYI-837
+	"979_credential_grant_credential_index",              // RUYI-837
+	"979_credential_capability_hash_index",               // RUYI-837
+	"979_credential_capability_task_index",               // RUYI-837
+	"979_credential_capability_task_index_drop_unique",   // RUYI-837
+	"979_credential_capability_task_index_nonunique",     // RUYI-837
+	"979_credential_audit_id_index",                      // RUYI-837
+	"979_credential_audit_workspace_created_index",       // RUYI-837
+	"980_runtime_concurrency_limit",                      // RUYI-843
+	"981_self_evolution_jev_config",                      // RUYI-769
+	"982_agent_backpressure_policy",                      // RUYI-859 (agent error-rate policy + suppression event tables)
+	"982_agent_suppression_event_index",                  // RUYI-859 (CONCURRENTLY index, separate single-statement stem)
+	"982_scheduling_pause_system_source",                 // RUYI-859 (created_by nullable: system error-rate suppression source)
+	"982_scheduling_pause_system_source_promql_recovery", // RUYI-859 forward recovery for historical policy databases
+	"983_daemon_token_owner",                             // daemon token ownership binding
+	"984_prompt_proposal_enactment_target",               // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
+	"993_runtime_removed_at",                             // RUYI-895 (hides a Runtime from user-managed lists)
+	"994_clause_injection_observation",                   // RUYI-891 (claim-time degraded carrier observations)
 	"994_clause_injection_observation_id_index",
 	"994_clause_injection_observation_task_scope_time_index",
 	"994_clause_injection_observation_workspace_time_index",
-	"996_task_usage_model_call_count",          // RUYI-870
-	"996_task_usage_model_call_evidence_index", // RUYI-870
-	"996_runtime_model_call_budget",            // RUYI-870
-	"997_agent_task_no_action",
+		"996_task_usage_model_call_count",          // RUYI-870
+		"996_task_usage_model_call_evidence_index", // RUYI-870
+		"996_runtime_model_call_budget",            // RUYI-870
+		"997_agent_task_no_action",                 // RUYI-884
+		"999_knowledge_entry_operation",            // RUYI-889
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,

@@ -38,6 +38,7 @@ SELECT
            atq.status IN ('running', 'waiting_local_directory')
            OR (
                atq.status = 'dispatched'
+               AND atq.dispatched_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
                AND atq.prepare_lease_expires_at IS NOT NULL
                AND atq.prepare_lease_expires_at >= now()
            )
@@ -104,6 +105,7 @@ SELECT
            atq.status IN ('running', 'waiting_local_directory')
            OR (
                atq.status = 'dispatched'
+               AND atq.dispatched_at >= $2::timestamptz
                AND atq.prepare_lease_expires_at IS NOT NULL
                AND atq.prepare_lease_expires_at >= now()
            )
@@ -301,6 +303,9 @@ SELECT
            atq.status IN ('running', 'waiting_local_directory')
            OR (
                atq.status = 'dispatched'
+               AND atq.dispatched_at >= to_timestamp(
+                   EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
+               )
                AND atq.prepare_lease_expires_at IS NOT NULL
                AND atq.prepare_lease_expires_at >= $1::timestamptz
            )

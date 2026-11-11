@@ -25,6 +25,7 @@ import {
   runtimeDisplayLabel,
 } from "@multica/core/runtimes";
 import {
+  memberListOptions,
   skillDetailOptions,
   skillListOptions,
   workspaceKeys,
@@ -62,9 +63,13 @@ export function SkillsTab({
   const { t } = useT("agents");
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: workspaceSkills = [] } = useQuery(skillListOptions(wsId));
+  const currentUserRole =
+    members.find((member) => member.user_id === currentUserId)?.role ?? null;
   const canReadRuntime =
-    runtime != null && isRuntimeUsableForUser(runtime, currentUserId ?? null);
+    runtime != null &&
+    isRuntimeUsableForUser(runtime, currentUserId ?? null, currentUserRole);
   const runtimeId =
     runtime?.runtime_mode === "local" &&
     runtime.status === "online" &&

@@ -322,6 +322,23 @@ describe("agent draft execution overrides", () => {
     });
   });
 
+  it("keeps the execution config for a workspace owner using another member's private runtime", () => {
+    const duplicate = buildDuplicateDraft(sourceAgent(), {
+      runtimes: [{ ...CODEX_RUNTIME, owner_id: "user-2" } as RuntimeDevice],
+      currentUserId: "user-1",
+      currentUserRole: "owner",
+      fallbackRuntimeId: "",
+      nameSuffix: " copy",
+    });
+
+    expect(duplicate).toMatchObject({
+      runtimeId: "runtime-1",
+      model: "gpt-5.6-sol",
+      thinkingLevel: "high",
+      serviceTier: "priority",
+    });
+  });
+
   it("enforces the 255-rune description limit the create API applies", () => {
     expect(isDraftDescriptionWithinLimit("a".repeat(255))).toBe(true);
     expect(isDraftDescriptionWithinLimit("a".repeat(256))).toBe(false);

@@ -1,6 +1,14 @@
 -- name: ListAgentRuntimes :many
 SELECT * FROM agent_runtime
 WHERE workspace_id = $1
+  AND removed_at IS NULL
+ORDER BY created_at ASC;
+
+-- name: ListAgentRuntimesIncludingRemoved :many
+-- Operational callers must still see a runtime hidden from the management
+-- list: hiding it neither stops its daemon nor withdraws its capabilities.
+SELECT * FROM agent_runtime
+WHERE workspace_id = $1
 ORDER BY created_at ASC;
 
 -- name: ListVisibleAgentRuntimes :many
@@ -9,6 +17,7 @@ ORDER BY created_at ASC;
 -- sees only runtimes the owner has explicitly shared with the workspace.
 SELECT * FROM agent_runtime
 WHERE workspace_id = $1
+  AND removed_at IS NULL
   AND (owner_id = $2 OR visibility = 'public')
 ORDER BY created_at ASC;
 
@@ -30,12 +39,16 @@ RETURNING *;
 -- The budget is per runtime. Provider-call consumption is calculated from
 -- task_usage separately at claim time; these columns only configure that
 -- admission check and never receive daemon-reported usage.
+WITH capacity_lock AS MATERIALIZED (
+    SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('id')::uuid::text || ':runtime_claim_capacity', 0))
+)
 UPDATE agent_runtime
 SET model_call_budget_enabled = @model_call_budget_enabled,
     model_call_budget_max_calls = @model_call_budget_max_calls,
     model_call_budget_window_seconds = @model_call_budget_window_seconds,
     updated_at = now()
 WHERE id = @id
+  AND EXISTS (SELECT 1 FROM capacity_lock)
 RETURNING *;
 
 -- name: LockRuntimeClaimCapacity :exec
@@ -93,6 +106,8 @@ ORDER BY last_seen_at DESC;
 -- (xmax = 0) AS inserted distinguishes a fresh insert (true) from an upsert
 -- that updated an existing row (false). Analytics reads this to fire
 -- runtime_registered/runtime_ready only on first-time registration.
+-- When required_owner_id is set, the conflict branch can update only a row
+-- already owned by that user. A different or NULL owner returns no row.
 INSERT INTO agent_runtime (
     workspace_id,
     daemon_id,
@@ -119,6 +134,8 @@ DO UPDATE SET
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
     last_seen_at = now(),
     updated_at = now()
+WHERE sqlc.narg('required_owner_id')::uuid IS NULL
+   OR agent_runtime.owner_id = sqlc.narg('required_owner_id')::uuid
 RETURNING *, (xmax = 0) AS inserted;
 
 -- name: UpsertAgentRuntimeWithProfile :one
@@ -128,7 +145,8 @@ RETURNING *, (xmax = 0) AS inserted;
 -- single daemon can host the built-in provider AND any number of custom
 -- profiles of the same protocol family. provider stays the protocol family so
 -- task routing (agent.New(provider)) is unchanged; profile_id is the stable
--- identity. (xmax = 0) AS inserted mirrors UpsertAgentRuntime.
+-- identity. (xmax = 0) AS inserted mirrors UpsertAgentRuntime, including the
+-- required_owner_id conflict fence.
 INSERT INTO agent_runtime (
     workspace_id,
     daemon_id,
@@ -153,7 +171,15 @@ DO UPDATE SET
     owner_id = COALESCE(EXCLUDED.owner_id, agent_runtime.owner_id),
     last_seen_at = now(),
     updated_at = now()
+WHERE sqlc.narg('required_owner_id')::uuid IS NULL
+   OR agent_runtime.owner_id = sqlc.narg('required_owner_id')::uuid
 RETURNING *, (xmax = 0) AS inserted;
+
+-- name: ListRuntimeOwnersByDaemon :many
+-- Registration pre-check: every runtime row already held by this daemon_id,
+-- including ownerless rows, must be compatible with the authenticated owner.
+SELECT id, owner_id FROM agent_runtime
+WHERE workspace_id = @workspace_id AND daemon_id = @daemon_id;
 
 -- name: UpdateAgentRuntimeVisibility :one
 -- Toggles a runtime between 'private' (only owner can bind agents) and
@@ -359,7 +385,23 @@ RETURNING task.*;
 -- name: ListAgentRuntimesByOwner :many
 SELECT * FROM agent_runtime
 WHERE workspace_id = $1 AND owner_id = $2
+  AND removed_at IS NULL
 ORDER BY created_at ASC;
+
+-- name: ListAgentRuntimesByOwnerIncludingRemoved :many
+-- Member revocation is a safety boundary, so it must converge every runtime
+-- owned by the departing user, including records hidden from management lists.
+SELECT * FROM agent_runtime
+WHERE workspace_id = $1 AND owner_id = $2
+ORDER BY created_at ASC;
+
+-- name: MarkAgentRuntimeRemovedFromList :exec
+-- Hides a runtime from user-managed lists without touching the runtime's
+-- registration, liveness, agents, or queued work. COALESCE makes retries
+-- idempotent while preserving the first removal timestamp for auditing.
+UPDATE agent_runtime
+SET removed_at = COALESCE(removed_at, now())
+WHERE id = $1;
 
 -- name: ForceOfflineRuntimesByIDs :many
 -- Unconditionally flips a known set of runtime IDs to offline. Distinct from

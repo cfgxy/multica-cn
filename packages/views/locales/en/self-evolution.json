@@ -524,7 +524,10 @@
     "jevThreshold": "threshold",
     "jevWarnFlag": "warn",
     "jevDisclaimer": "Low-cost advisory only — read it together with its probability basis; never a disposition basis on its own (warn-only sidecar, gate verdicts unaffected).",
-    "jevUnavailable": "unavailable, skipped (main flow unaffected)"
+    "jevUnavailable": "unavailable, skipped (main flow unaffected)",
+    "jevModel": "model={{model}}",
+    "jevCheckedAt": "checked {{date}}",
+    "jevFailureReason": "reason={{reason}}"
   },
   "retrospective": {
     "title": "Daily retrospective",
@@ -729,12 +732,14 @@
     "label": "Self-evolution sections",
     "overview": "Overview",
     "groupKnowledgeAssets": "Knowledge assets",
-    "groupMeasures": "Measures",
-    "groupLoop": "Evolution loop",
-    "groupConfig": "Configuration",
+    "groupQualityGovernance": "Quality & governance",
+    "groupWorkflow": "Self-evolution workflow",
     "knowledge": "Knowledge",
     "skills": "Skill evolution",
-    "quality": "Quality",
+    "quality": "Quality & measures",
+    "qualityTabs": "Quality and measures",
+    "governanceTabs": "Clause governance",
+    "clauses": "Clauses",
     "clauseGovernance": "Clause governance",
     "quiz": "Quiz",
     "proposals": "Proposals",
@@ -803,6 +808,7 @@
     "attrAdoption": "Adoption",
     "attrSource": "Source key",
     "attrUpdated": "Last confirmed",
+    "attrValue": "Estimated value",
     "attrKind": "Kind",
     "attrEntries": "Entries",
     "attrCreated": "Registered",
@@ -816,7 +822,29 @@
     "colSource": "Source",
     "colPath": "Path",
     "colHealth": "Health",
-    "colLastScan": "Last scan"
+    "colLastScan": "Last scan",
+    "edit": "Edit",
+    "save": "Queue edit",
+    "delete": "Delete",
+    "deleteConfirm": "Delete \"{{key}}\" from the workspace library? The daemon removes it only after this confirmation.",
+    "merge": "Merge selected",
+    "mergeCandidates": "Similar entries",
+    "mergeDescription": "Select source entries to replace with the consolidated content above.",
+    "mergeConfirm": "Merge and delete {{count}} selected source entries after the daemon verifies the consolidated Memory?",
+    "noMergeCandidates": "No duplicate or similar synced entries are available in this library.",
+    "duplicate": "Duplicate",
+    "similar": "Similar",
+    "highValue": "High value",
+    "lowValue": "Low value",
+    "editorPlaceholder": "Write the consolidated Markdown content",
+    "operationSyncing": "{{operation}} is syncing",
+    "operationFailed": "{{operation}} sync failed",
+    "operationType": {
+      "change": "Change",
+      "edit": "Edit",
+      "delete": "Delete",
+      "merge": "Merge"
+    }
   },
   "skillsSeg": {
     "managed": "Managed skills",
@@ -889,9 +917,36 @@
       "other": "other error"
     }
   },
+  "jevConfig": {
+    "title": "JEV risk precheck",
+    "description": "A warn-only advisory for prompt proposals. It never changes gate verdicts or owner approval.",
+    "endpoint": "Endpoint",
+    "apiKey": "API key",
+    "model": "Model",
+    "timeout": "Timeout (ms)",
+    "save": "Save and check",
+    "busy": "Working…",
+    "recheck": "Re-check",
+    "delete": "Remove configuration",
+    "saveOk": "JEV configuration saved.",
+    "deleteOk": "JEV configuration removed.",
+    "lastChecked": "Last checked {{date}}",
+    "engine": "Runtime {{engine}}",
+    "lastCheckError": "Last check: {{reason}}",
+    "encryptionNotReady": "This deployment has no per-workspace encryption key, so JEV configuration cannot be saved.",
+    "source": {
+      "workspace": "Workspace override",
+      "deployment": "Deployment default"
+    },
+    "status": {
+      "unconfigured": "Unconfigured",
+      "offline": "Offline",
+      "available": "Available"
+    }
+  },
   "configPage": {
     "title": "Module configuration",
-    "description": "The model service below backs quality scoring; Langfuse is instance-level and read-only here."
+    "description": "The model service below backs quality scoring; JEV is a warn-only proposal advisory. Langfuse is instance-level and read-only here."
   },
   "mobile": { "title": "Self-Evolution", "overview": "Overview", "versions": "Versions", "proposals": "Proposals", "proposal_count_label": "proposals", "pending_owner": "Awaiting owner", "skills": "Skills", "review_diff": "Review proposal diff", "empty_diff": "No diff lines", "cancel": "Cancel", "approve": "Approve", "approving": "Approving…", "reject": "Reject", "rejecting": "Rejecting…", "action_failed": "Action failed. Your changes were not saved. Review and try again.", "reject_reason": "Reason for rejection", "reject_unavailable": "Rejection reason entry is not available on this device.", "error": "Could not load proposal preview", "load_error": "Some data could not be loaded. Tap to retry.", "review_approve": "Review and approve", "no_proposals": "No proposals", "clauses": "Clause governance", "injections": "uses", "no_clauses": "No governed clauses", "retrospective": "Retrospective runs", "issues_analyzed": "tasks analyzed", "no_retrospectives": "No retrospective runs" }
 }

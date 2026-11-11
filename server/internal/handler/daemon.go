@@ -78,6 +78,29 @@ func (h *Handler) requireDaemonWorkspaceAccess(w http.ResponseWriter, r *http.Re
 	return ok
 }
 
+// daemonTokenRuntimeBindingAllowed enforces the runtime half of daemon-token
+// authorization. User credentials retain the existing workspace-membership
+// behavior. A daemon token must match the runtime owner and, when the runtime
+// is machine-bound, its daemon_id. NULL/empty runtime daemon_id remains
+// compatible with the existing unbound-runtime semantics.
+func daemonTokenRuntimeBindingAllowed(r *http.Request, runtime db.AgentRuntime) bool {
+	if middleware.DaemonWorkspaceIDFromContext(r.Context()) == "" {
+		return true
+	}
+	if !daemonTokenOwnerBindingAllowed(middleware.DaemonTokenOwnerIDFromContext(r.Context()), runtime.OwnerID) {
+		return false
+	}
+	tokenDaemonID := middleware.DaemonIDFromContext(r.Context())
+	if tokenDaemonID == "" {
+		return false
+	}
+	return !runtime.DaemonID.Valid || strings.TrimSpace(runtime.DaemonID.String) == "" || runtime.DaemonID.String == tokenDaemonID
+}
+
+func daemonTokenOwnerBindingAllowed(tokenOwnerID string, ownerID pgtype.UUID) bool {
+	return tokenOwnerID != "" && ownerID.Valid && uuidToString(ownerID) == tokenOwnerID
+}
+
 // requireDaemonRuntimeAccess looks up a runtime and verifies the caller owns its workspace.
 //
 // Only pgx.ErrNoRows is treated as a real "runtime gone" 404 — the daemon uses
@@ -100,6 +123,10 @@ func (h *Handler) requireDaemonRuntimeAccess(w http.ResponseWriter, r *http.Requ
 		return db.AgentRuntime{}, false
 	}
 	if !h.requireDaemonWorkspaceAccess(w, r, uuidToString(rt.WorkspaceID)) {
+		return db.AgentRuntime{}, false
+	}
+	if !daemonTokenRuntimeBindingAllowed(r, rt) {
+		writeError(w, http.StatusNotFound, "runtime not found")
 		return db.AgentRuntime{}, false
 	}
 	return rt, true
@@ -934,6 +961,70 @@ func (h *Handler) mergeLegacyRuntimes(r *http.Request, registered db.AgentRuntim
 			}
 		}
 	}
+}
+
+// RefreshKnowledgeDaemonToken extends the authenticated mdt credential in
+// place. Identity comes only from DaemonAuth context; request fields are never
+// consulted and PAT/JWT callers are rejected explicitly.
+func (h *Handler) RefreshKnowledgeDaemonToken(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if middleware.DaemonAuthPathFromContext(ctx) != middleware.DaemonAuthPathDaemonToken {
+		writeError(w, http.StatusUnauthorized, "daemon token authentication is required to refresh knowledge credentials")
+		return
+	}
+	if r.ContentLength != 0 {
+		var req struct {
+			DaemonID    string `json:"daemon_id"`
+			WorkspaceID string `json:"workspace_id"`
+			OwnerID     string `json:"owner_id"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if strings.TrimSpace(req.DaemonID) != "" || strings.TrimSpace(req.WorkspaceID) != "" || strings.TrimSpace(req.OwnerID) != "" {
+			writeError(w, http.StatusBadRequest, "knowledge credential identity must come from daemon authentication")
+			return
+		}
+	}
+	tokenHash := strings.TrimSpace(middleware.DaemonTokenHashFromContext(ctx))
+	workspaceID := strings.TrimSpace(middleware.DaemonWorkspaceIDFromContext(ctx))
+	daemonID := strings.TrimSpace(middleware.DaemonIDFromContext(ctx))
+	ownerIDString := strings.TrimSpace(middleware.DaemonTokenOwnerIDFromContext(ctx))
+	if tokenHash == "" || workspaceID == "" || daemonID == "" || ownerIDString == "" {
+		writeError(w, http.StatusUnauthorized, "daemon authentication is required to refresh knowledge credentials")
+		return
+	}
+	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+	ownerID, err := util.ParseUUID(ownerIDString)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "daemon credential is not bound to a valid owner")
+		return
+	}
+	if _, err := h.Queries.RenewDaemonToken(ctx, db.RenewDaemonTokenParams{
+		TokenHash:   tokenHash,
+		WorkspaceID: workspaceUUID,
+		DaemonID:    daemonID,
+		OwnerID:     ownerID,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusForbidden, "daemon credential is not bound to an active runtime")
+			return
+		}
+		slog.Warn("knowledge daemon credential refresh failed", "workspace_id", workspaceID, "daemon_id", daemonID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to refresh daemon credential")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"renewed": true})
 }
 
 // errRuntimeMergeFenced reports that the task-write fence refused the

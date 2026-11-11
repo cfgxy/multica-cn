@@ -34,6 +34,7 @@ import type { CreateAgentRequest } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { runtimeListOptions } from "@/data/queries/runtimes";
+import { memberListOptions } from "@/data/queries/members";
 import { useCreateAgent } from "@/data/mutations/agents";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -56,14 +57,18 @@ export default function NewAgentScreen() {
   const { data: runtimes, isLoading: runtimesLoading } = useQuery(
     runtimeListOptions(wsId),
   );
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const currentUserRole =
+    members.find((member) => member.user_id === me?.id)?.role ?? null;
 
   // Text slot: online + usable + text-capable.
   const runtimeChoices = useMemo(
     () =>
       agentSlotChoices(runtimes, "text", {
         currentUserId: me?.id ?? null,
+        currentUserRole,
       }),
-    [runtimes, me],
+    [runtimes, me, currentUserRole],
   );
 
   const runtimeReady = !runtimesLoading && runtimeChoices.length > 0;

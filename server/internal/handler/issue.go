@@ -272,28 +272,6 @@ func writeIssueStatusRaceError(w http.ResponseWriter, err error) bool {
 	return false
 }
 
-func (h *Handler) issueHasDraftPullRequest(ctx context.Context, issueID pgtype.UUID) (bool, error) {
-	githubPRs, err := h.Queries.ListPullRequestsByIssue(ctx, issueID)
-	if err != nil {
-		return false, err
-	}
-	for _, pr := range githubPRs {
-		if pr.State == "draft" {
-			return true, nil
-		}
-	}
-	vcsPRs, err := h.Queries.ListVCSPullRequestsByIssue(ctx, issueID)
-	if err != nil {
-		return false, err
-	}
-	for _, pr := range vcsPRs {
-		if pr.State == "draft" {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
 func validateIssueEnum(w http.ResponseWriter, field, value string, allowed []string) bool {
 	for _, a := range allowed {
 		if value == a {
@@ -3356,12 +3334,13 @@ func (h *Handler) writeInactiveTaskError(w http.ResponseWriter, r *http.Request,
 	return true
 }
 
+// actorType identifies the request actor for the cascade eligibility check.
 // entrySource names this write in the cascade audit details, distinguishing
 // http_update_issue from http_batch_update_issues. flippedOut is populated
 // on the success path with the decision cards this write flipped into
 // cancelled (nil when the write lands in no done category or flipped none),
 // so the caller can publish their realtime events post-commit.
-func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey, entrySource string, flippedOut *[]db.IssueDecision) (db.Issue, db.Issue, bool, error) {
+func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateIssueParams, rawFields map[string]json.RawMessage, titleBase, descriptionBase *string, attachmentIDs []pgtype.UUID, statusKey, actorType, entrySource string, flippedOut *[]db.IssueDecision) (db.Issue, db.Issue, bool, error) {
 	if h.TxStarter == nil {
 		return db.Issue{}, db.Issue{}, false, errors.New("atomic issue update requires transaction starter")
 	}
@@ -3463,10 +3442,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	// RUYI-865 P1: settle the done card cascade in THIS transaction, on this
 	// qtx, before the commit — a failed settle rolls back the whole write
 	// rather than leaving a committed done status behind open cards. The
-	// one-sided done gate makes this a no-op for writes that land in no
-	// done category.
+	// narrow member in_review -> done gate makes this a no-op elsewhere.
 	if flippedOut != nil {
-		flipped, err := h.settleDoneCascadeInTx(ctx, qtx, current, issue, entrySource)
+		flipped, err := h.settleDoneCascadeInTx(ctx, qtx, current, issue, actorType, entrySource)
 		if err != nil {
 			return db.Issue{}, current, false, fmt.Errorf("settle done cascade: %w", err)
 		}
@@ -3486,6 +3464,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := requestUserID(r)
 	workspaceID := uuidToString(prevIssue.WorkspaceID)
+	actorTypeForCascade, _ := h.resolveActor(r, userID, workspaceID)
 	activeTaskID, ok := h.activeTaskIDForIssueWrite(w, r)
 	if !ok {
 		return
@@ -3549,18 +3528,6 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		statusKeyForGuard = statusKey
-		if statusKey != prevIssue.Status && issuestatus.Effective(r.Context(), h.Queries, prevIssue.WorkspaceID, statusKey) == "in_review" {
-			blocked, err := h.issueHasDraftPullRequest(r.Context(), prevIssue.ID)
-			if err != nil {
-				slog.Error("update issue: check linked pull request state", append(logger.RequestAttrs(r), "issue_id", id, "error", err)...)
-				writeError(w, http.StatusInternalServerError, "failed to verify linked pull request state")
-				return
-			}
-			if blocked {
-				writeError(w, http.StatusConflict, "issue cannot enter in_review while a linked pull request is draft")
-				return
-			}
-		}
 		params.Status = pgtype.Text{String: statusKey, Valid: true}
 	}
 	if req.Priority != nil {
@@ -3722,7 +3689,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 {
 		var lockedPrev db.Issue
 		issue, lockedPrev, attachmentsChanged, err = h.updateIssueAtomically(
-			r.Context(), prevIssue.WorkspaceID, params, rawFields, req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard, "http_update_issue", &flippedCards,
+			r.Context(), prevIssue.WorkspaceID, params, rawFields, req.TitleBase, req.DescriptionBase, attachmentIDs, statusKeyForGuard, actorTypeForCascade, "http_update_issue", &flippedCards,
 		)
 		if lockedPrev.ID.Valid {
 			prevIssue = lockedPrev
@@ -3740,7 +3707,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			if req.Status == nil || !oldIssue.ID.Valid {
 				return nil
 			}
-			flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, "http_update_issue")
+			flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, actorTypeForCascade, "http_update_issue")
 			return innerErr
 		})
 	}
@@ -3950,9 +3917,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 // also rejects archived targets and runs the INVOKE gate — canInvokeAgent, not
 // the softer canAccessPrivateAgent view gate: assigning an issue produces a
 // run, so it must clear the same predicate as chat / @-mention (MUL-3963).
-// That means owner-only for a private agent, with NO workspace-admin bypass
-// and NO unconditional agent-to-agent bypass — an agent caller (X-Agent-ID) is
-// judged by the top-of-chain human originator like everywhere else.
+// For a private agent, that admits the agent owner or workspace owner, with NO
+// workspace-admin bypass and NO unconditional agent-to-agent bypass — an agent
+// caller (X-Agent-ID) is judged by the top-of-chain human originator like
+// everywhere else.
 // An autopilot run needs no special case here: since MUL-6951 a scheduled run
 // carries its trigger owner's originator, so it is judged by exactly the same
 // predicate as that human acting directly.
@@ -4357,6 +4325,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	actorTypeForCascade, _ := h.resolveActor(r, userID, workspaceID)
 	// Status is validated against this workspace's catalog, so it has to wait
 	// for wsUUID above. One check for the whole batch — every issue in it
 	// shares the workspace — and a rejection rather than a silent skip, so a
@@ -4366,31 +4335,6 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		batchStatusKey, _, ok = h.resolveIssueStatusKeyKind(w, r, wsUUID, *req.Updates.Status)
 		if !ok {
 			return
-		}
-	}
-	if req.Updates.Status != nil && issuestatus.Effective(r.Context(), h.Queries, wsUUID, batchStatusKey) == "in_review" {
-		for _, id := range req.IssueIDs {
-			issueUUID, err := util.ParseUUID(id)
-			if err != nil {
-				continue
-			}
-			issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: issueUUID, WorkspaceID: wsUUID})
-			if err != nil {
-				continue
-			}
-			if issue.Status == batchStatusKey {
-				continue
-			}
-			blocked, err := h.issueHasDraftPullRequest(r.Context(), issue.ID)
-			if err != nil {
-				slog.Error("batch update issues: check linked pull request state", append(logger.RequestAttrs(r), "issue_id", id, "error", err)...)
-				writeError(w, http.StatusInternalServerError, "failed to verify linked pull request state")
-				return
-			}
-			if blocked {
-				writeError(w, http.StatusConflict, "issue cannot enter in_review while a linked pull request is draft")
-				return
-			}
 		}
 	}
 	// The batch shares one project_id, so it is checked once here rather than
@@ -4590,7 +4534,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			// legacy single-update clients that omit description_base.
 			var lockedPrev db.Issue
 			issue, lockedPrev, _, err = h.updateIssueAtomically(
-				r.Context(), prevIssue.WorkspaceID, params, rawUpdates, nil, nil, nil, batchStatusKey, "http_batch_update_issues", &flippedCards,
+				r.Context(), prevIssue.WorkspaceID, params, rawUpdates, nil, nil, nil, batchStatusKey, actorTypeForCascade, "http_batch_update_issues", &flippedCards,
 			)
 			if err == nil {
 				prevIssue = lockedPrev
@@ -4611,7 +4555,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				if !oldIssue.ID.Valid {
 					return nil
 				}
-				flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, "http_batch_update_issues")
+				flippedCards, innerErr = h.settleDoneCascadeInTx(r.Context(), q, oldIssue, issue, actorTypeForCascade, "http_batch_update_issues")
 				return innerErr
 			})
 		}

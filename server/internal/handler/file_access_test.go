@@ -544,7 +544,7 @@ func TestDaemonHeartbeatHTTPDeliversClaimedFileOperations(t *testing.T) {
 	targetID := "heartbeat-files-" + uuid.NewString()
 	registerFileAccessTarget(t, runtimeID, targetID, true, []string{"/srv/data"}, []string{testWorkspaceID}, nil)
 	operationID := insertFileOperation(t, runtimeID, targetID, "file_list", "pending", 0)
-	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": runtimeID}, testWorkspaceID, "runtime-local-skills-daemon")
+	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": runtimeID}, testWorkspaceID, loadRuntime(t, runtimeID).DaemonID.String)
 	request.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityFileReadPolicyV1)
 	var response struct {
 		Pending []struct {
@@ -588,7 +588,7 @@ func TestDaemonHeartbeatDoesNotClaimOperationAfterRequesterACLRevocation(t *test
 	dbfx.Member(t, testWorkspaceID, otherMemberID, "member")
 	dbfx.Exec(t, `UPDATE daemon_file_access_target SET member_acl = $2::jsonb WHERE id = $1`, targetID, []byte(`["`+otherMemberID+`"]`))
 
-	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": runtimeID}, testWorkspaceID, "runtime-local-skills-daemon")
+	request := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": runtimeID}, testWorkspaceID, loadRuntime(t, runtimeID).DaemonID.String)
 	request.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityFileReadPolicyV1)
 	var response struct {
 		Pending []struct {

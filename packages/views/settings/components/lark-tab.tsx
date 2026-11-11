@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ChevronRight, ExternalLink, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronRight, ExternalLink, RefreshCw, ScanLine, Trash2 } from "lucide-react";
 // Named import, NOT default: react-qr-code is CJS, and electron-vite's
 // dep-optimizer default-import interop handed back the module namespace
 // object instead of the component, throwing "Element type is invalid …
@@ -74,7 +74,7 @@ export function LarkTab() {
 
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
-  const canManage =
+  const isWorkspaceAdmin =
     currentMember?.role === "owner" || currentMember?.role === "admin";
 
   const { data, isLoading } = useQuery({
@@ -167,7 +167,7 @@ export function LarkTab() {
                   <InstallationRow
                     key={inst.id}
                     installation={inst}
-                    canManage={canManage}
+                    isWorkspaceAdmin={isWorkspaceAdmin}
                     onDisconnect={() => setDisconnectTarget(inst.id)}
                   />
                 ))}
@@ -292,19 +292,23 @@ function useLarkCapabilityCopy() {
 // and get their own regression coverage.
 export function LarkCapabilityPanel({
   installation,
-  canManage,
+  isWorkspaceAdmin,
 }: {
   installation: LarkInstallation;
-  canManage: boolean;
+  // Settings passes workspace owner/admin only; agent ownership never grants this.
+  isWorkspaceAdmin: boolean;
 }) {
   const { t } = useT("settings");
   const { capabilityLabel, statusLabel } = useLarkCapabilityCopy();
   const wsId = useWorkspaceId();
   const qc = useQueryClient();
   const [checking, setChecking] = useState(false);
+  const [granting, setGranting] = useState(false);
+  const [grantQRCodeURL, setGrantQRCodeURL] = useState<string | null>(null);
 
   const caps = installation.capabilities;
   const missing = (caps ?? []).filter((c) => c.status === "missing");
+  const hasUnknown = (caps ?? []).some((c) => c.status === "unknown");
   const allGranted =
     !!caps && caps.length > 0 && missing.length === 0 &&
     caps.every((c) => c.status === "granted");
@@ -328,6 +332,26 @@ export function LarkCapabilityPanel({
     }
   }
 
+  async function handlePermissionGrant() {
+    if (!isWorkspaceAdmin || granting) return;
+    setGranting(true);
+    try {
+      const result = await api.beginLarkPermissionGrant(wsId, installation.id);
+      if (!result.qr_code_url) {
+        throw new Error(t(($) => $.lark.permissions_grant_failed));
+      }
+      setGrantQRCodeURL(result.qr_code_url);
+    } catch (e) {
+      toast.error(
+        e instanceof Error
+          ? e.message
+          : t(($) => $.lark.permissions_grant_failed),
+      );
+    } finally {
+      setGranting(false);
+    }
+  }
+
   // Only the old-server case (field absent) hides the panel entirely.
   // Null (read failure) and [] (never probed) must stay visible — the
   // recheck entry lives inside this panel.
@@ -343,7 +367,7 @@ export function LarkCapabilityPanel({
         <p className="text-caption font-medium">
           {t(($) => $.lark.permissions_title)}
         </p>
-        {canManage && (
+        {isWorkspaceAdmin && (
           <Button
             variant="ghost"
             size="sm"
@@ -387,11 +411,6 @@ export function LarkCapabilityPanel({
                   {statusLabel(c.status)}
                 </span>
                 <span>{capabilityLabel(c.capability)}</span>
-                {c.capability === "receive_messages" && c.status === "unknown" && (
-                  <span className="text-micro text-muted-foreground">
-                    {t(($) => $.lark.permissions_receive_note)}
-                  </span>
-                )}
               </li>
             ))}
           </ul>
@@ -434,12 +453,63 @@ export function LarkCapabilityPanel({
             </div>
           )}
 
+          {isWorkspaceAdmin && (missing.length > 0 || hasUnknown) && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-micro"
+              onClick={handlePermissionGrant}
+              disabled={granting}
+              data-testid="lark-permissions-grant"
+            >
+              <ScanLine className={cn("h-3 w-3", granting && "animate-pulse")} />
+              {granting
+                ? t(($) => $.lark.permissions_granting)
+                : t(($) => $.lark.permissions_grant)}
+            </Button>
+          )}
+
           {allGranted && (
             <p className="text-micro text-muted-foreground">
               {t(($) => $.lark.permissions_all_granted)}
             </p>
           )}
         </>
+      )}
+
+      {grantQRCodeURL && (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setGrantQRCodeURL(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{t(($) => $.lark.permissions_grant_title)}</DialogTitle>
+              <DialogDescription>
+                {t(($) => $.lark.permissions_grant_description)}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex justify-center py-2">
+              <QRCode value={grantQRCodeURL} size={192} />
+            </div>
+            <a
+              href={grantQRCodeURL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-center text-caption text-primary underline underline-offset-2"
+              data-testid="lark-permissions-grant-open-link"
+            >
+              {t(($) => $.lark.permissions_grant_open_link)}
+            </a>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setGrantQRCodeURL(null)}>
+                {t(($) => $.lark.install_close)}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );
@@ -492,11 +562,11 @@ function LarkPermissionCatalogList({
 
 function InstallationRow({
   installation,
-  canManage,
+  isWorkspaceAdmin,
   onDisconnect,
 }: {
   installation: LarkInstallation;
-  canManage: boolean;
+  isWorkspaceAdmin: boolean;
   onDisconnect: () => void;
 }) {
   const { t } = useT("settings");
@@ -542,7 +612,7 @@ function InstallationRow({
             </p>
           </div>
         </div>
-        {canManage && isActive && (
+        {isWorkspaceAdmin && isActive && (
           <Button variant="outline" size="sm" onClick={onDisconnect}>
             <Trash2 className="h-3 w-3" />
             {t(($) => $.lark.disconnect)}
@@ -554,7 +624,12 @@ function InstallationRow({
         and would mislead. The panel itself decides what to show for
         servers without the field (nothing) vs never-probed bots
         (not-checked hint + first check). */}
-      {isActive && <LarkCapabilityPanel installation={installation} canManage={canManage} />}
+      {isActive && (
+        <LarkCapabilityPanel
+          installation={installation}
+          isWorkspaceAdmin={isWorkspaceAdmin}
+        />
+      )}
     </div>
   );
 }

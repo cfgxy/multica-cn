@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -107,6 +108,10 @@ func setHandlerTestWorkspaceRepos(t *testing.T, repos []map[string]string) {
 
 // newDaemonTokenRequest creates an HTTP request with daemon token context set
 // (simulating DaemonAuth middleware for mdt_ tokens).
+func newOwnerDaemonRequest(method, path string, body any) *http.Request {
+	return newRequest(method, path, body)
+}
+
 func newDaemonTokenRequest(method, path string, body any, workspaceID, daemonID string) *http.Request {
 	var buf bytes.Buffer
 	if body != nil {
@@ -116,6 +121,7 @@ func newDaemonTokenRequest(method, path string, body any, workspaceID, daemonID 
 	req.Header.Set("Content-Type", "application/json")
 	// No X-User-ID — daemon tokens don't set it.
 	ctx := middleware.WithDaemonContext(req.Context(), workspaceID, daemonID)
+	ctx = middleware.WithDaemonTokenOwnerID(ctx, testUserID)
 	return req.WithContext(ctx)
 }
 
@@ -123,6 +129,7 @@ func TestRemoteMCPDaemonTokenForClaim(t *testing.T) {
 	runtime := db.AgentRuntime{
 		WorkspaceID: parseUUID(testWorkspaceID),
 		DaemonID:    strToText("daemon-remote-mcp"),
+		OwnerID:     parseUUID(testUserID),
 	}
 	raw, params, err := remoteMCPDaemonTokenForClaim(AgentTaskResponse{
 		RemoteMCPConnections: []remotemcp.Connection{{ContributionKey: "mobbin"}},
@@ -138,6 +145,9 @@ func TestRemoteMCPDaemonTokenForClaim(t *testing.T) {
 	}
 	if params[0].WorkspaceID != runtime.WorkspaceID || params[0].DaemonID != "daemon-remote-mcp" {
 		t.Fatalf("daemon token scope = (%v, %q)", params[0].WorkspaceID, params[0].DaemonID)
+	}
+	if params[0].OwnerID != runtime.OwnerID {
+		t.Fatalf("daemon token owner = %v, want %v", params[0].OwnerID, runtime.OwnerID)
 	}
 	remaining := time.Until(params[0].ExpiresAt.Time)
 	if remaining < 23*time.Hour || remaining > 24*time.Hour {
@@ -239,8 +249,14 @@ func claimTaskByRuntimeForTest(t *testing.T, runtimeID string) (*struct {
 }, string) {
 	t.Helper()
 
+	var daemonID string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT daemon_id FROM agent_runtime WHERE id = $1
+	`, runtimeID).Scan(&daemonID); err != nil {
+		t.Fatalf("load runtime daemon id: %v", err)
+	}
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
-		testWorkspaceID, "claim-reclaim-review")
+		testWorkspaceID, daemonID)
 	req = withURLParam(req, "runtimeId", runtimeID)
 	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 
@@ -757,8 +773,7 @@ func TestClaimTaskByRuntime_MissingRuntimeOwnerCancelsAndRejects(t *testing.T) {
 	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Missing owner claim agent")
 	taskID := createDispatchedClaimFixtureTask(t, ctx, agentID, runtimeID, issueID, "120 seconds", false)
 
-	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
-		testWorkspaceID, "missing-owner-claim")
+	req := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
 	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusInternalServerError)
 	if !strings.Contains(w.Body.String(), "runtime owner required to mint task token") {
@@ -884,6 +899,124 @@ func TestDaemonRegister_WithDaemonToken_WorkspaceMismatch(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("DaemonRegister with mismatched workspace: expected 404, got %d: %s", w.Code, w.Body.String())
 	}
+}
+
+func TestDaemonRegister_WithDaemonToken_DaemonMismatch(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	req := newDaemonTokenRequest("POST", "/api/daemon/register", map[string]any{
+		"workspace_id": testWorkspaceID,
+		"daemon_id":    "other-daemon",
+		"runtimes": []map[string]any{
+			{"name": "test-runtime", "type": "claude", "version": "1.0.0", "status": "online"},
+		},
+	}, testWorkspaceID, "token-daemon")
+	testutil.Call(t, testHandler.DaemonRegister, req).Want(http.StatusForbidden)
+}
+
+func TestRefreshKnowledgeDaemonTokenRequiresBoundDaemonCredential(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	daemonID := "refresh-daemon-" + uuid.New().String()
+	rawToken := "mdt_refresh_test_" + uuid.New().String()
+	tokenHash := auth.HashToken(rawToken)
+	runtimeID := dbfx.Insert(t, "agent_runtime", testutil.Cols{
+		"workspace_id": testWorkspaceID,
+		"daemon_id":    daemonID,
+		"name":         "refresh runtime",
+		"runtime_mode": "local",
+		"provider":     "refresh-test-" + uuid.New().String(),
+		"status":       "online",
+		"device_info":  "",
+		"metadata":     testutil.Raw("'{}'::jsonb"),
+		"last_seen_at": testutil.Raw("now()"),
+		"owner_id":     testUserID,
+	})
+	dbfx.Insert(t, "daemon_token", testutil.Cols{
+		"token_hash":   tokenHash,
+		"workspace_id": testWorkspaceID,
+		"daemon_id":    daemonID,
+		"expires_at":   testutil.Raw("now() + interval '1 hour'"),
+		"owner_id":     testUserID,
+	})
+
+	var beforeCount int
+	var beforeExpiry time.Time
+	dbfx.QueryRow(t, `SELECT count(*), max(expires_at) FROM daemon_token WHERE daemon_id = $1`, daemonID).Scan(&beforeCount, &beforeExpiry)
+	req := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", map[string]any{}, testWorkspaceID, daemonID)
+	req = req.WithContext(middleware.WithDaemonTokenHash(req.Context(), tokenHash))
+	w := testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, req).Want(http.StatusOK)
+	var response map[string]bool
+	w.JSON(&response)
+	if !response["renewed"] {
+		t.Fatalf("renewal response = %v, want renewed=true", response)
+	}
+
+	var afterCount int
+	var afterExpiry time.Time
+	var persistedHash string
+	dbfx.QueryRow(t, `SELECT count(*), max(expires_at), min(token_hash) FROM daemon_token WHERE daemon_id = $1`, daemonID).Scan(&afterCount, &afterExpiry, &persistedHash)
+	if afterCount != beforeCount || persistedHash != tokenHash {
+		t.Fatalf("renewal changed token rows: count %d -> %d, hash %q", beforeCount, afterCount, persistedHash)
+	}
+	if !afterExpiry.After(beforeExpiry) {
+		t.Fatalf("token expiry was not extended: before=%s after=%s", beforeExpiry, afterExpiry)
+	}
+	assertRejectedWithoutRenewal := func(req *http.Request) {
+		t.Helper()
+		var beforeExpiry time.Time
+		dbfx.QueryRow(t, `SELECT expires_at FROM daemon_token WHERE token_hash = $1`, tokenHash).Scan(&beforeExpiry)
+		testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, req).Want(http.StatusBadRequest)
+		var afterExpiry time.Time
+		dbfx.QueryRow(t, `SELECT expires_at FROM daemon_token WHERE token_hash = $1`, tokenHash).Scan(&afterExpiry)
+		if !afterExpiry.Equal(beforeExpiry) {
+			t.Fatalf("rejected request extended token expiry: before=%s after=%s", beforeExpiry, afterExpiry)
+		}
+	}
+	chunkedEmpty := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
+	chunkedEmpty.ContentLength = -1
+	chunkedEmpty = chunkedEmpty.WithContext(middleware.WithDaemonTokenHash(chunkedEmpty.Context(), tokenHash))
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, chunkedEmpty).Want(http.StatusOK)
+	for _, body := range []string{"{}{}", "{} trailing", "{"} {
+		invalidRequest := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
+		invalidRequest.Body = io.NopCloser(strings.NewReader(body))
+		invalidRequest.ContentLength = int64(len(body))
+		invalidRequest = invalidRequest.WithContext(middleware.WithDaemonTokenHash(invalidRequest.Context(), tokenHash))
+		assertRejectedWithoutRenewal(invalidRequest)
+	}
+	for _, body := range []map[string]any{
+		{"daemon_id": "other-daemon"},
+		{"workspace_id": "other-workspace"},
+		{"owner_id": uuid.New().String()},
+	} {
+		identityRequest := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", body, testWorkspaceID, daemonID)
+		identityRequest = identityRequest.WithContext(middleware.WithDaemonTokenHash(identityRequest.Context(), tokenHash))
+		assertRejectedWithoutRenewal(identityRequest)
+	}
+
+	wrongHash := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
+	wrongHash = wrongHash.WithContext(middleware.WithDaemonTokenHash(wrongHash.Context(), auth.HashToken("mdt_wrong")))
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, wrongHash).Want(http.StatusForbidden)
+
+	patRequest := newRequest("POST", "/api/daemon/knowledge/token/refresh", map[string]any{
+		"daemon_id": daemonID,
+	})
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, patRequest).Want(http.StatusUnauthorized)
+
+	dbfx.Exec(t, `UPDATE agent_runtime SET status = 'offline' WHERE id = $1`, runtimeID)
+	offlineRuntime := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
+	offlineRuntime = offlineRuntime.WithContext(middleware.WithDaemonTokenHash(offlineRuntime.Context(), tokenHash))
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, offlineRuntime).Want(http.StatusForbidden)
+
+	dbfx.Exec(t, `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
+	noRuntime := newDaemonTokenRequest("POST", "/api/daemon/knowledge/token/refresh", nil, testWorkspaceID, daemonID)
+	// No request field can substitute for the now-missing authenticated runtime binding.
+	noRuntime = noRuntime.WithContext(middleware.WithDaemonTokenHash(noRuntime.Context(), tokenHash))
+	testutil.Call(t, testHandler.RefreshKnowledgeDaemonToken, noRuntime).Want(http.StatusForbidden)
 }
 
 func TestDaemonHeartbeat_WithDaemonToken_CrossWorkspace(t *testing.T) {
@@ -1018,9 +1151,10 @@ func TestDaemonHeartbeat_SlowProbeDoesNotWedge(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
+	daemonID := loadRuntime(t, runtimeID).DaemonID.String
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{
 		"runtime_id": runtimeID,
-	}, testWorkspaceID, "runtime-local-skills-daemon")
+	}, testWorkspaceID, daemonID)
 
 	start := time.Now()
 	testHandler.DaemonHeartbeat(w, req)
@@ -1057,9 +1191,10 @@ func TestDaemonHeartbeat_EmptyQueueSkipsPopPending(t *testing.T) {
 		testHandler.LocalSkillImportStore = origImport
 	})
 
+	daemonID := loadRuntime(t, runtimeID).DaemonID.String
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{
 		"runtime_id": runtimeID,
-	}, testWorkspaceID, "runtime-local-skills-daemon")
+	}, testWorkspaceID, daemonID)
 	testutil.Call(t, testHandler.DaemonHeartbeat, req).Want(http.StatusOK)
 	if listSpy.popCalls != 0 {
 		t.Fatalf("expected 0 PopPending calls on empty list queue, got %d", listSpy.popCalls)
@@ -1123,7 +1258,10 @@ func TestGetTaskStatus_WithDaemonToken_CrossWorkspace(t *testing.T) {
 	req = newDaemonTokenRequest("GET", "/api/daemon/tasks/"+taskID+"/status", nil,
 		testWorkspaceID, "legit-daemon")
 	req = req.WithContext(context.WithValue(
-		middleware.WithDaemonContext(req.Context(), testWorkspaceID, "legit-daemon"),
+		middleware.WithDaemonTokenOwnerID(
+			middleware.WithDaemonContext(req.Context(), testWorkspaceID, "legit-daemon"),
+			testUserID,
+		),
 		chi.RouteCtxKey, rctx))
 
 	testHandler.GetTaskStatus(w, req)
@@ -4293,7 +4431,9 @@ func TestAckTaskCancelled(t *testing.T) {
 	} {
 		req = httptest.NewRequest("POST", "/api/daemon/tasks/"+unconfirmedTaskID+"/cancel-ack", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		req = req.WithContext(middleware.WithDaemonContext(req.Context(), testWorkspaceID, "legit-daemon"))
+		ctx := middleware.WithDaemonContext(req.Context(), testWorkspaceID, "legit-daemon")
+		ctx = middleware.WithDaemonTokenOwnerID(ctx, testUserID)
+		req = req.WithContext(ctx)
 		req = withURLParam(req, "taskId", unconfirmedTaskID)
 		testutil.Call(t, testHandler.AckTaskCancelled, req).Want(http.StatusBadRequest)
 		dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, unconfirmedTaskID).Scan(&status)

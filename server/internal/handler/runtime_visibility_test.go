@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -14,10 +15,10 @@ import (
 
 // TestCanUseRuntimeForAgent_Pure exercises the pure predicate behind the
 // CreateAgent / UpdateAgent runtime gate. The truth table is the single
-// product contract shared with the clients (MUL-6126): a private runtime is
-// usable only by its owner — workspace owners and admins included, since a
-// private runtime is another member's own machine — while a public runtime is
-// usable by anyone in the workspace. An ownerless runtime is usable by nobody,
+// product contract shared with the clients: a private runtime is usable by its
+// owner and workspace owner, while a public runtime is usable by anyone in the
+// workspace. Workspace admins remain subject to private visibility. An
+// ownerless runtime is usable by nobody,
 // public included: it cannot run tasks either (task claim requires a runtime
 // owner to mint the agent token, MUL-3292), so the gate refuses it up front
 // instead of letting the binding succeed and every task on it fail.
@@ -43,8 +44,7 @@ func TestCanUseRuntimeForAgent_Pure(t *testing.T) {
 		rt     db.AgentRuntime
 		want   bool
 	}{
-		// no workspace owner / admin override: role never widens access
-		{"workspace owner on private runtime owned by another", otherUserID, "owner", privateRT, false},
+		{"workspace owner on private runtime owned by another", otherUserID, "owner", privateRT, true},
 		{"workspace admin on private runtime owned by another", otherUserID, "admin", privateRT, false},
 		{"workspace admin on someone else's public runtime", otherUserID, "admin", publicRT, true},
 		// runtime owner
@@ -145,9 +145,8 @@ func runtimeVisibilityFixture(t *testing.T) (runtimeID, runtimeOwnerID, plainMem
 
 // TestCreateAgent_RejectsPrivateRuntimeForNonOwner walks the gate end-to-end:
 // the runtime is private and owned by a plain member, so only that owner can
-// create agents on it. Neither a plain workspace member nor the workspace
-// owner may — the admin override is gone (MUL-6126), which is what keeps the
-// API/CLI answer identical to the disabled runtime row the web UI renders.
+// create agents on it. The workspace owner may also create agents on it;
+// plain members and workspace admins may not.
 func TestCreateAgent_RejectsPrivateRuntimeForNonOwner(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -171,13 +170,11 @@ func TestCreateAgent_RejectsPrivateRuntimeForNonOwner(t *testing.T) {
 		}
 	}
 
-	// Workspace owner (testUserID): refused. This is the API/CLI half of
-	// MUL-6126 — the web UI has always disabled this row, and an admin who
-	// needs the machine flips its visibility to public instead.
+	// Workspace owner (testUserID): allowed.
 	w := httptest.NewRecorder()
 	testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body("runtime-visibility-test-admin")))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("CreateAgent as workspace owner on another member's private runtime: expected 403, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateAgent as workspace owner on another member's private runtime: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Runtime owner: allowed because they own the runtime.
@@ -284,6 +281,103 @@ func TestListAgentRuntimes_AllowsAdminsToGovernPrivateRuntimes(t *testing.T) {
 		}
 	}
 	t.Fatalf("admin runtime list did not include private runtime %s", privateRuntimeID)
+}
+
+func TestRemoveAgentRuntimeFromList_HidesOnlyTheManagementEntry(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	runtimeID, runtimeOwnerID, plainMemberID := runtimeVisibilityFixture(t)
+	boundAgentID := dbfx.Agent(t, "removed-runtime-agent", runtimeID)
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE agent_runtime SET visibility = 'public' WHERE id = $1`, runtimeID,
+	); err != nil {
+		t.Fatalf("make runtime public: %v", err)
+	}
+
+	remove := func(userID string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		req := withURLParam(
+			newRequestAs(userID, http.MethodPost, "/api/runtimes/"+runtimeID+"/remove-from-list", nil),
+			"runtimeId", runtimeID,
+		)
+		testHandler.RemoveAgentRuntimeFromList(w, req)
+		return w
+	}
+
+	if w := remove(plainMemberID); w.Code != http.StatusForbidden {
+		t.Fatalf("plain member remove: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if w := remove(testUserID); w.Code != http.StatusNoContent {
+		t.Fatalf("workspace owner remove: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var firstRemovedAt time.Time
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT removed_at FROM agent_runtime WHERE id = $1`, runtimeID,
+	).Scan(&firstRemovedAt); err != nil {
+		t.Fatalf("read removal state: %v", err)
+	}
+
+	if w := remove(runtimeOwnerID); w.Code != http.StatusNoContent {
+		t.Fatalf("runtime owner retry: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+	var retriedRemovedAt time.Time
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT removed_at FROM agent_runtime WHERE id = $1`, runtimeID,
+	).Scan(&retriedRemovedAt); err != nil {
+		t.Fatalf("read removal state after retry: %v", err)
+	}
+	if !retriedRemovedAt.Equal(firstRemovedAt) {
+		t.Fatalf("removal retry changed timestamp: first=%s retry=%s", firstRemovedAt, retriedRemovedAt)
+	}
+
+	for _, tc := range []struct {
+		name string
+		req  *http.Request
+	}{
+		{
+			name: "workspace admin list",
+			req:  newRequest(http.MethodGet, "/api/runtimes", nil),
+		},
+		{
+			name: "runtime owner list",
+			req:  newRequestAs(runtimeOwnerID, http.MethodGet, "/api/runtimes?owner=me", nil),
+		},
+		{
+			name: "plain member visible list",
+			req:  newRequestAs(plainMemberID, http.MethodGet, "/api/runtimes", nil),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := testutil.Call(t, testHandler.ListAgentRuntimes, tc.req).Want(http.StatusOK)
+			var runtimes []AgentRuntimeResponse
+			w.JSON(&runtimes)
+			for _, runtime := range runtimes {
+				if runtime.ID == runtimeID {
+					t.Fatalf("removed runtime %s was returned", runtimeID)
+				}
+			}
+		})
+	}
+
+	// Internal lookups and existing bindings must remain usable: hiding a
+	// management-list row is deliberately not a teardown or unbind operation.
+	rt := loadRuntime(t, runtimeID)
+	if !rt.RemovedAt.Valid {
+		t.Fatal("GetAgentRuntime did not return the removed runtime state")
+	}
+	var agentRuntimeID string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT runtime_id FROM agent WHERE id = $1`, boundAgentID,
+	).Scan(&agentRuntimeID); err != nil {
+		t.Fatalf("read bound agent: %v", err)
+	}
+	if agentRuntimeID != runtimeID {
+		t.Fatalf("agent runtime binding changed: got %s, want %s", agentRuntimeID, runtimeID)
+	}
 }
 
 func TestPrivateRuntimeReadEndpointsHideKnownRuntimeFromNonOwners(t *testing.T) {
@@ -419,14 +513,10 @@ func TestUpdateAgent_RejectsRebindToPrivateRuntime(t *testing.T) {
 	}
 }
 
-// TestUpdateAgent_WorkspaceAdminCannotRebindToMemberPrivateRuntime walks the
-// whole MUL-6126 contract as one story: a workspace owner cannot move an agent
-// onto a member's private runtime, cannot open that runtime up either, and
-// only once the runtime's own owner shares it does the same rebind go through.
-// Together those three steps are what makes owner-only real — a visibility
-// flip the admin could perform themselves would just be the old override with
-// an extra request.
-func TestUpdateAgent_WorkspaceAdminCannotRebindToMemberPrivateRuntime(t *testing.T) {
+// TestUpdateAgent_WorkspaceOwnerCanRebindToMemberPrivateRuntime covers the
+// Owner override through both binding and visibility changes. A workspace admin
+// does not receive either permission.
+func TestUpdateAgent_WorkspaceOwnerCanRebindToMemberPrivateRuntime(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -471,14 +561,13 @@ func TestUpdateAgent_WorkspaceAdminCannotRebindToMemberPrivateRuntime(t *testing
 		return w
 	}
 
-	if w := rebind(); w.Code != http.StatusForbidden {
-		t.Fatalf("UpdateAgent as workspace owner onto a member's private runtime: expected 403, got %d: %s",
+	if w := rebind(); w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgent as workspace owner onto a member's private runtime: expected 200, got %d: %s",
 			w.Code, w.Body.String())
 	}
 
-	// …and cannot route around it by publishing the member's machine itself.
-	if w := setVisibility(testUserID, "public"); w.Code != http.StatusForbidden {
-		t.Fatalf("UpdateAgentRuntime as workspace owner on a member's runtime: expected 403, got %d: %s",
+	if w := setVisibility(testUserID, "public"); w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgentRuntime as workspace owner on a member's runtime: expected 200, got %d: %s",
 			w.Code, w.Body.String())
 	}
 
@@ -494,10 +583,8 @@ func TestUpdateAgent_WorkspaceAdminCannotRebindToMemberPrivateRuntime(t *testing
 	}
 }
 
-// TestCanSetRuntimeVisibility_Pure pins the narrower gate: only the runtime
-// owner may flip private↔public. Workspace owners/admins keep canEditRuntime
-// for rename and delete, but sharing a machine is the owner's call — otherwise
-// the MUL-6126 bind rule would be one PATCH away from being bypassed.
+// TestCanSetRuntimeVisibility_Pure pins the visibility gate: runtime owners and
+// workspace owners may flip private↔public, while admins and members may not.
 func TestCanSetRuntimeVisibility_Pure(t *testing.T) {
 	ownerUserID := "11111111-1111-1111-1111-111111111111"
 	otherUserID := "22222222-2222-2222-2222-222222222222"
@@ -516,7 +603,7 @@ func TestCanSetRuntimeVisibility_Pure(t *testing.T) {
 		want   bool
 	}{
 		{"runtime owner", ownerUserID, "member", ownedRT, true},
-		{"workspace owner who does not own the runtime", otherUserID, "owner", ownedRT, false},
+		{"workspace owner who does not own the runtime", otherUserID, "owner", ownedRT, true},
 		{"workspace admin who does not own the runtime", otherUserID, "admin", ownedRT, false},
 		{"plain member", otherUserID, "member", ownedRT, false},
 		{"workspace owner on an ownerless runtime", otherUserID, "owner", ownerlessRT, false},
@@ -627,10 +714,9 @@ func TestUpdateAgentRuntime_InvalidVisibilityReturns400(t *testing.T) {
 	}
 }
 
-// TestUpdateAgentRuntime_VisibilityToggle covers the PATCH endpoint: the
-// runtime owner can flip private↔public; nobody else can — a workspace owner
-// is refused exactly like a plain member (MUL-6126) — and an unknown value is
-// rejected with 400.
+// TestUpdateAgentRuntime_VisibilityToggle covers the PATCH endpoint: runtime
+// owners and workspace owners can flip private↔public; admins and plain members
+// cannot; an unknown value is rejected with 400.
 func TestUpdateAgentRuntime_VisibilityToggle(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -661,11 +747,9 @@ func TestUpdateAgentRuntime_VisibilityToggle(t *testing.T) {
 		}
 	}
 
-	// Workspace owner (testUserID) cannot flip it back: canEditRuntime still
-	// admits them to this endpoint for rename/delete, and the visibility field
-	// alone is what refuses them.
-	if w := patch(testUserID, "private"); w.Code != http.StatusForbidden {
-		t.Fatalf("UpdateAgentRuntime as workspace owner → private: expected 403, got %d: %s", w.Code, w.Body.String())
+	// Workspace owner (testUserID) can flip it back.
+	if w := patch(testUserID, "private"); w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgentRuntime as workspace owner → private: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Its owner can, and the runtime is back to private for the rest of the case.

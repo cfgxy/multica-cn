@@ -37,8 +37,8 @@ type AgentRuntimeResponse struct {
 	DeviceInfo   string  `json:"device_info"`
 	Metadata     any     `json:"metadata"`
 	OwnerID      *string `json:"owner_id"`
-	// Visibility is "private" (default — only the owner can bind agents) or
-	// "public" (any workspace member can). See migration 083 and
+	// Visibility is "private" (the runtime owner and workspace owner can bind
+	// agents) or "public" (any workspace member can). See migration 083 and
 	// canUseRuntimeForAgent.
 	Visibility         string `json:"visibility"`
 	MaxConcurrentTasks int32  `json:"max_concurrent_tasks"`
@@ -578,9 +578,9 @@ func (h *Handler) resolveViewingTZ(r *http.Request) string {
 // (provider, daemon_id, status…) flows in from the daemon and is read-only here.
 type UpdateAgentRuntimeRequest struct {
 	MaxConcurrentTasks *int32 `json:"max_concurrent_tasks,omitempty"`
-	// Visibility flips a runtime between "private" (default — only the owner
-	// can bind agents) and "public" (any workspace member can). Runtime owner
-	// only, gated by canSetRuntimeVisibility — narrower than the rest of this
+	// Visibility flips a runtime between "private" (the runtime owner and
+	// workspace owner can bind agents) and "public" (any workspace member can).
+	// It is gated by canSetRuntimeVisibility — narrower than the rest of this
 	// request, which admins may also send.
 	Visibility *string `json:"visibility,omitempty"`
 	// CustomName sets or clears a user-facing display override (MUL-4217).
@@ -620,7 +620,8 @@ const maxRuntimeCustomNameLen = 100
 // is editable; the request shape is open-ended so future fields (display
 // name, description) can be added without a route change.
 // Workspace-membership-checked; write access is gated by canEditRuntime, and
-// `visibility` carries the narrower owner-only gate on top (MUL-6126).
+// `visibility` carries the narrower runtime-owner-or-workspace-owner gate on
+// top (MUL-6126).
 func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	runtimeID := chi.URLParam(r, "runtimeId")
 	runtimeUUID, ok := parseUUIDOrBadRequest(w, runtimeID, "runtime_id")
@@ -668,7 +669,7 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		// resubmitted agent permissions.
 		if v != rt.Visibility {
 			if !canSetRuntimeVisibility(member, rt) {
-				writeError(w, http.StatusForbidden, "only the runtime owner can change its visibility")
+				writeError(w, http.StatusForbidden, "only the runtime owner or workspace owner can change its visibility")
 				return
 			}
 			newVisibility = v
@@ -878,9 +879,10 @@ func (h *Handler) runtimeLookup(source string) service.RuntimeLookup {
 
 // requireRuntimeReadAccess protects runtime data and machine-triggering
 // capabilities. Governance access is deliberately separate: workspace owners
-// and admins may list, rename, or delete another member's private runtime,
-// but a private machine is readable or usable only by its owner. Returning
-// 404 for that case prevents a known runtime ID from becoming an oracle.
+// and admins may list, rename, or delete another member's private runtime.
+// Workspace owners may also read or use a private runtime; admins remain
+// blocked. Returning 404 for denied access prevents a known runtime ID from
+// becoming an oracle.
 //
 // source names the product behaviour behind the read for
 // multica_agent_runtime_lookup_total (MUL-6884). It matters here more than
@@ -928,13 +930,8 @@ func (h *Handler) runtimeHasLiveProfile(ctx context.Context, rt db.AgentRuntime)
 
 // canUseRuntimeForAgent reports whether a workspace member is allowed to
 // bind a new agent to — or move an existing agent onto — the given runtime.
-// A `public` runtime is usable by anyone in the workspace; a `private` one is
-// usable only by its owner, with NO workspace owner/admin override (MUL-6126):
-// a private runtime is someone's own machine, and running an agent on it
-// spends their credentials and their local files, which is not an
-// administrative decision. Sharing it is the owner's call, which is why
-// canSetRuntimeVisibility is owner-only too — otherwise an admin would keep
-// the same override with one extra step.
+// A `public` runtime is usable by anyone in the workspace. A `private` runtime
+// is usable by its owner and the workspace owner; admins remain blocked.
 //
 // An ownerless runtime is refused whatever its visibility: task claim needs an
 // owner to mint the agent's task token and cancels the task without one
@@ -947,6 +944,9 @@ func canUseRuntimeForAgent(member db.Member, rt db.AgentRuntime) bool {
 	if !rt.OwnerID.Valid {
 		return false
 	}
+	if member.Role == "owner" {
+		return true
+	}
 	if rt.Visibility == "public" {
 		return true
 	}
@@ -954,14 +954,11 @@ func canUseRuntimeForAgent(member db.Member, rt db.AgentRuntime) bool {
 }
 
 // canSetRuntimeVisibility reports whether a member may flip this runtime
-// between `private` and `public`. Owner-only, and deliberately narrower than
-// canEditRuntime: visibility is the owner's consent to lend their machine to
-// the workspace, so an admin who could flip it would still hold the override
-// canUseRuntimeForAgent removed. Admins keep canEditRuntime for the
-// organisational actions — rename, delete — that do not hand anyone else's
-// credentials out.
+// between `private` and `public`. The runtime owner and workspace owner may
+// change it; admins retain canEditRuntime for rename and delete but cannot
+// change visibility.
 func canSetRuntimeVisibility(member db.Member, rt db.AgentRuntime) bool {
-	return rt.OwnerID.Valid && uuidToString(rt.OwnerID) == uuidToString(member.UserID)
+	return rt.OwnerID.Valid && (member.Role == "owner" || uuidToString(rt.OwnerID) == uuidToString(member.UserID))
 }
 
 func (h *Handler) ListAgentRuntimes(w http.ResponseWriter, r *http.Request) {
@@ -1051,6 +1048,41 @@ func (h *Handler) PublishRuntimeTeardown(ctx context.Context, res service.Runtim
 // PublishRuntimeRefresh asks connected clients to refetch runtime state.
 func (h *Handler) PublishRuntimeRefresh(wsID, actorType, actorID, action string) {
 	h.publish(protocol.EventDaemonRegister, wsID, actorType, actorID, map[string]any{"action": action})
+}
+
+// RemoveAgentRuntimeFromList handles POST /api/runtimes/:id/remove-from-list.
+// It hides the runtime from management lists only; the daemon keeps its
+// registration and liveness record, and agents and tasks stay untouched.
+func (h *Handler) RemoveAgentRuntimeFromList(w http.ResponseWriter, r *http.Request) {
+	runtimeID := chi.URLParam(r, "runtimeId")
+	runtimeUUID, ok := parseUUIDOrBadRequest(w, runtimeID, "runtime_id")
+	if !ok {
+		return
+	}
+
+	rt, err := h.getAgentRuntime(r.Context(), obsmetrics.RuntimeLookupSourceRuntimeAPI, runtimeUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "runtime not found")
+		return
+	}
+
+	wsID := uuidToString(rt.WorkspaceID)
+	member, ok := h.requireWorkspaceMember(w, r, wsID, "runtime not found")
+	if !ok {
+		return
+	}
+	if !canEditRuntime(member, rt) {
+		writeError(w, http.StatusForbidden, "you can only remove your own runtimes from the management list")
+		return
+	}
+
+	if err := h.Queries.MarkAgentRuntimeRemovedFromList(r.Context(), runtimeUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove runtime from management list")
+		return
+	}
+
+	h.PublishRuntimeRefresh(wsID, "member", uuidToString(member.UserID), "remove_from_list")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) publishRuntimeTeardown(ctx context.Context, res service.RuntimeTeardownResult, wsID, userID string) {

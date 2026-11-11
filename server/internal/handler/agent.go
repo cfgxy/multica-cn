@@ -320,7 +320,7 @@ func (h *Handler) validateAgentVoiceBinding(w http.ResponseWriter, r *http.Reque
 		return pgtype.UUID{}, false
 	}
 	if !canUseRuntimeForAgent(member, vr) {
-		writeError(w, http.StatusForbidden, "this voice runtime is private; only its owner can bind agents to it")
+		writeError(w, http.StatusForbidden, "this voice runtime is private; only its owner or the workspace owner can bind agents to it")
 		return pgtype.UUID{}, false
 	}
 	caps, err := h.runtimeInstanceCapabilities(r.Context(), vr)
@@ -1332,18 +1332,18 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		if actorType == "agent" || alwaysRedact || !canViewAgentSecrets(a, userID, member.Role) {
 			redactMcpConfig(&resp)
 		}
-		// composio_toolkit_allowlist is owner-only — not because the slugs
+		// composio_toolkit_allowlist is available to the agent owner and
+		// workspace owner — not because the slugs
 		// are secret but because surfacing "what {owner} has opted into"
 		// across the workspace leaks the owner's integration footprint and
 		// confuses non-owners who cannot actually edit it. Workspace
-		// owner/admin do NOT bypass this gate (unlike mcp_config): the overlay
-		// uses the OWNER's connection and follows invocation permission
-		// (MUL-3963), so surfacing the slugs to admins gives them nothing
-		// actionable. Agent actors are also redacted (same A2A
+		// admins do NOT bypass this gate: the overlay uses the OWNER's
+		// connection and follows invocation permission. Agent actors are also
+		// redacted (same A2A
 		// lateral-movement reasoning as mcp_config).
 		if !h.composioMCPAppsEnabled(r.Context()) {
 			suppressComposioToolkitAllowlist(&resp)
-		} else if actorType == "agent" || uuidToString(a.OwnerID) != userID {
+		} else if actorType == "agent" || (uuidToString(a.OwnerID) != userID && member.Role != "owner") {
 			redactComposioToolkitAllowlist(&resp)
 		}
 		visible = append(visible, resp)
@@ -1398,18 +1398,20 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	alwaysRedact := workspaceAlwaysRedactSecrets(ws.Settings)
 	// Agent actors NEVER see mcp_config (see ListAgents for the rationale).
+	isWorkspaceOwner := false
 	if actorType == "agent" || alwaysRedact {
 		redactMcpConfig(&resp)
 	} else if member, ok := ctxMember(r.Context()); ok {
+		isWorkspaceOwner = member.Role == "owner"
 		if !canViewAgentSecrets(agent, userID, member.Role) {
 			redactMcpConfig(&resp)
 		}
 	}
-	// composio_toolkit_allowlist visibility is strictly owner-only (see
-	// ListAgents for the rationale). No workspace owner/admin bypass.
+	// composio_toolkit_allowlist visibility is available to the agent owner and
+	// workspace owner; admins remain redacted.
 	if !h.composioMCPAppsEnabled(r.Context()) {
 		suppressComposioToolkitAllowlist(&resp)
-	} else if actorType == "agent" || uuidToString(agent.OwnerID) != userID {
+	} else if actorType == "agent" || (uuidToString(agent.OwnerID) != userID && !isWorkspaceOwner) {
 		redactComposioToolkitAllowlist(&resp)
 	}
 
@@ -1603,7 +1605,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !canUseRuntimeForAgent(member, runtime) {
-		writeError(w, http.StatusForbidden, "this runtime is private; only its owner can create agents on it")
+		writeError(w, http.StatusForbidden, "this runtime is private; only its owner or the workspace owner can create agents on it")
 		return
 	}
 
@@ -1859,8 +1861,8 @@ type UpdateAgentRequest struct {
 	McpConfig  *json.RawMessage `json:"mcp_config"`
 	Visibility *string          `json:"visibility"`
 	// PermissionMode + InvocationTargets are the invocation-permission inputs
-	// (MUL-3963). Owner-only writes (like composio_toolkit_allowlist): a
-	// non-owner admin passing them is silently ignored, because the invoke
+	// (MUL-3963). The agent owner and workspace owner may write them; an
+	// admin passing them is ignored, because the invoke
 	// gate is owner/allow-list based and an admin-authored allow-list would
 	// confuse the owner about who can run their agent. permission_mode is
 	// authoritative when present; otherwise legacy visibility is mapped.
@@ -2214,14 +2216,14 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Same gate as CreateAgent — prevents UpdateAgent from being used to
-		// re-bind an agent onto someone else's private runtime, which would
+		// re-bind an agent onto an unauthorized private runtime, which would
 		// otherwise be a quiet end-run around the CreateAgent check.
 		member, ok := h.workspaceMember(w, r, uuidToString(existing.WorkspaceID))
 		if !ok {
 			return
 		}
 		if !canUseRuntimeForAgent(member, runtime) {
-			writeError(w, http.StatusForbidden, "this runtime is private; only its owner can move agents onto it")
+			writeError(w, http.StatusForbidden, "this runtime is private; only its owner or the workspace owner can move agents onto it")
 			return
 		}
 		// RUYI-425 §4.4 rule 2: same text-slot capability gate as CreateAgent —
@@ -2332,10 +2334,8 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			params.VoiceAdvanced = advancedRaw
 		}
 	}
-	// Invocation permission (MUL-3963). OWNER-ONLY write: access is the one
-	// agent property a workspace admin may NOT change (only the owner decides
-	// who can run their agent — the overlay uses the owner's own Composio
-	// connection, so admin-authored access would be confusing and unsafe).
+	// Invocation permission (MUL-3963). The agent owner and workspace owner
+	// may change access. An admin may not change it.
 	//
 	// Non-owner behaviour: a *real* change is rejected with 403 so the contract
 	// is explicit and matches the owner-only UI (the picker is read-only for
@@ -2349,14 +2349,15 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	var resolvedPerm resolvedPermission
 	if permissionTouched {
 		isAgentOwner := uuidToString(existing.OwnerID) == requestUserID(r)
-		if !isAgentOwner {
+		isWorkspaceOwner := h.requestIsWorkspaceOwner(r.Context(), requestUserID(r), existing.WorkspaceID)
+		if !isAgentOwner && !isWorkspaceOwner {
 			changed, permErr := h.permissionInputChangesAgent(r.Context(), existing, req, hasPermissionMode, hasTargets)
 			if permErr != nil {
 				writeError(w, http.StatusInternalServerError, "failed to evaluate invocation permission change")
 				return
 			}
 			if changed {
-				writeError(w, http.StatusForbidden, "only the agent owner can change access (permission_mode / invocation_targets)")
+				writeError(w, http.StatusForbidden, "only the agent owner or workspace owner can change access (permission_mode / invocation_targets)")
 				return
 			}
 			slog.Debug("update agent: non-owner permission fields matched current state; ignored",
@@ -2547,12 +2548,10 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// mirror thinking_level (see above): omitted → no change, null →
 	// ClearAgentComposioToolkitAllowlist, slice → wholesale replace.
 	//
-	// Owner-only WRITE. The caller is already past canManageAgent, which lets
-	// workspace owner/admins through alongside the agent owner — but the
-	// Composio overlay uses the agent OWNER's connection (MUL-3963), so an
-	// admin editing someone else's allowlist would silently reshape what the
-	// OWNER exposes through their own connected apps, confusing the owner
-	// about what their agent surfaces. Keep it owner-only.
+	// The agent owner and workspace owner may write this. An admin may not:
+	// the Composio overlay uses the agent owner's connection, so an admin
+	// editing another agent's allowlist would silently reshape what that
+	// owner exposes through their connected apps.
 	// Drop the field with a debug log instead of erroring so an over-eager
 	// UI that sends the whole agent payload back on every save (PATCH-as-PUT)
 	// keeps working — same "silent ignore" stance the issue calls out, and
@@ -2560,10 +2559,11 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	shouldClearComposioAllowlist := false
 	if _, hasAllowlist := rawFields["composio_toolkit_allowlist"]; hasAllowlist {
 		isAgentOwner := uuidToString(existing.OwnerID) == requestUserID(r)
+		isWorkspaceOwner := h.requestIsWorkspaceOwner(r.Context(), requestUserID(r), existing.WorkspaceID)
 		if !h.composioMCPAppsEnabled(r.Context()) {
 			slog.Debug("update agent: composio_toolkit_allowlist write dropped because feature flag is disabled",
 				append(logger.RequestAttrs(r), "agent_id", id)...)
-		} else if !isAgentOwner {
+		} else if !isAgentOwner && !isWorkspaceOwner {
 			slog.Debug("update agent: composio_toolkit_allowlist write by non-owner silently dropped",
 				append(logger.RequestAttrs(r), "agent_id", id)...)
 		} else if req.ComposioToolkitAllowlist == nil {

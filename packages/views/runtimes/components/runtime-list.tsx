@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ExternalLink,
   Globe,
+  ListMinus,
   Loader2,
   MoreHorizontal,
   Pencil,
@@ -60,6 +61,7 @@ import { ProviderLogo } from "./provider-logo";
 import { HealthIcon, useHealthLabel } from "./shared";
 import { DeleteRuntimeDialog } from "./delete-runtime-dialog";
 import { DeleteRuntimeProfileDialog } from "./delete-runtime-profile-dialog";
+import { RemoveRuntimeFromListDialog } from "./remove-runtime-from-list-dialog";
 import { RuntimeProfilesDialog } from "./runtime-profiles-dialog";
 import {
   computeCostInWindow,
@@ -148,6 +150,7 @@ export interface RuntimeRow {
   ownerMember: MemberWithUser | null;
   workload: RuntimeWorkload;
   canDelete: boolean;
+  canRemove: boolean;
 }
 
 // Per-runtime workload snapshot — agent IDs serving this runtime (drives
@@ -393,8 +396,9 @@ const COST_CELL_DAYS = 14;
 export function canReadRuntimeUsage(
   runtime: AgentRuntime,
   currentUserId: string | null,
+  currentUserRole: MemberWithUser["role"] | null = null,
 ): boolean {
-  return isRuntimeUsableForUser(runtime, currentUserId);
+  return isRuntimeUsableForUser(runtime, currentUserId, currentUserRole);
 }
 
 export function CostCell({
@@ -564,12 +568,14 @@ export function RuntimeRowMenu({
   profile,
   wsId,
   canDelete,
+  canRemove,
   detailHref,
 }: {
   runtime: AgentRuntime;
   profile: RuntimeProfile | null;
   wsId: string;
   canDelete: boolean;
+  canRemove: boolean;
   /**
    * Detail destination for the row, omitted when the row has none — pending
    * custom runtimes are not navigable, mirroring the list's own row link.
@@ -580,17 +586,17 @@ export function RuntimeRowMenu({
   const { t: tCommon } = useT("common");
   const intentNavigate = useIntentNavigate();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [removeOpen, setRemoveOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const isCustomRuntime = !!runtime.profile_id;
-  // Delete is the row's only management action; if the row can't run it, drop
-  // the kebab entirely so the column doesn't render a near-empty popover. We
-  // used to also hide it for self-healing runtimes (live local daemon
-  // re-registers within seconds), but MUL-3352 surfaced that owners read
-  // a missing kebab as "I lost my permission" rather than "the daemon
-  // would undo this". The dialog now carries the self-heal warning and
-  // the user gets to decide.
+  // If the row has no permitted management action, drop the kebab entirely so
+  // the column doesn't render a near-empty popover. We used to also hide it
+  // for self-healing runtimes (live local daemon re-registers within seconds),
+  // but MUL-3352 surfaced that owners read a missing kebab as "I lost my
+  // permission" rather than "the daemon would undo this". The dialog now
+  // carries the self-heal warning and the user gets to decide.
 
-  if (!canDelete) {
+  if (!canDelete && !canRemove) {
     return <span aria-hidden />;
   }
 
@@ -626,16 +632,24 @@ export function RuntimeRowMenu({
               {t(($) => $.list.edit_action)}
             </DropdownMenuItem>
           )}
-          <DropdownMenuItem
-            variant="destructive"
-            onClick={() => setDeleteOpen(true)}
-            title={t(($) => $.list.delete_permission_hint)}
-          >
-            <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
-            {isCustomRuntime
-              ? t(($) => $.list.delete_profile_action)
-              : t(($) => $.list.delete_action)}
-          </DropdownMenuItem>
+          {canRemove && (
+            <DropdownMenuItem onClick={() => setRemoveOpen(true)}>
+              <ListMinus aria-hidden="true" className="h-3.5 w-3.5" />
+              {t(($) => $.detail.remove_from_list_button)}
+            </DropdownMenuItem>
+          )}
+          {canDelete && (
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={() => setDeleteOpen(true)}
+              title={t(($) => $.list.delete_permission_hint)}
+            >
+              <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
+              {isCustomRuntime
+                ? t(($) => $.list.delete_profile_action)
+                : t(($) => $.list.delete_action)}
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
       {isCustomRuntime && profile && editOpen && (
@@ -666,6 +680,16 @@ export function RuntimeRowMenu({
           }}
         />
       )}
+      <RemoveRuntimeFromListDialog
+        open={removeOpen}
+        onOpenChange={setRemoveOpen}
+        runtime={runtime}
+        wsId={wsId}
+        onRemoved={() => {
+          setRemoveOpen(false);
+          toast.success(t(($) => $.detail.toast_removed_from_list));
+        }}
+      />
     </>
   );
 }
@@ -761,13 +785,16 @@ export function RuntimeList({
           ? isAdmin && !!profile
           : !isPendingCustomRuntime(runtime) &&
             (isAdmin || (!!user && runtime.owner_id === user.id)),
+        canRemove:
+          !isPendingCustomRuntime(runtime) &&
+          (isAdmin || (!!user && runtime.owner_id === user.id)),
       };
     });
   }, [runtimes, profileById, memberById, workloadIndex, isAdmin, user]);
 
   // Mirrors RuntimeRowMenu's render guard: the kebab track only earns its
   // width when at least one row will actually show the menu.
-  const showActions = rows.some((row) => row.canDelete);
+  const showActions = rows.some((row) => row.canDelete || row.canRemove);
 
   return (
     <div className="overflow-x-auto overflow-y-hidden @container">
@@ -851,7 +878,11 @@ export function RuntimeList({
                 ) : (
                   <CostCell
                     runtimeId={row.runtime.id}
-                    enabled={canReadRuntimeUsage(row.runtime, user?.id ?? null)}
+                    enabled={canReadRuntimeUsage(
+                      row.runtime,
+                      user?.id ?? null,
+                      currentMember?.role ?? null,
+                    )}
                   />
                 )}
               </ListGridCell>
@@ -868,6 +899,7 @@ export function RuntimeList({
                     profile={row.profile}
                     wsId={wsId}
                     canDelete={row.canDelete}
+                    canRemove={row.canRemove}
                     detailHref={detailHref}
                   />
                 </span>

@@ -2176,7 +2176,7 @@ func (h *Handler) advanceIssueToDone(ctx context.Context, issue db.Issue, worksp
 		// The card cascade commits with the status write: the one-sided done
 		// gate no-ops when nothing flipped, so a redelivery of an already
 		// converged transition appends no audit row.
-		flipped, err = h.settleDoneCascadeInTx(ctx, qtx, oldIssue, updated, "github_pr_merged")
+		flipped, err = h.settleDoneCascadeInTx(ctx, qtx, oldIssue, updated, "system", "github_pr_merged")
 		if err != nil {
 			return db.Issue{}, err
 		}

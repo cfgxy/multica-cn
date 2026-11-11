@@ -38,6 +38,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
+	"github.com/multica-ai/multica/server/internal/jevconfig"
+	"github.com/multica-ai/multica/server/internal/legislation"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/oauth"
@@ -1353,6 +1355,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				deployModel = h.LLM.DefaultModel()
 			}
 			h.SelfEvolution = selfevconfig.NewResolver(queries, box, h.LLM, deployModel)
+			h.JevConfig = jevconfig.NewResolver(queries, box, legislation.AdvisoryFromEnv())
 			slog.Info("self-evolution model config encryption enabled")
 		}
 	} else {
@@ -1794,6 +1797,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// bd IO never runs inside the server container.
 		r.Get("/knowledge/plan", h.GetKnowledgePlan)
 		r.Post("/knowledge/results", h.PostKnowledgeResults)
+		r.Post("/knowledge/token/refresh", h.RefreshKnowledgeDaemonToken)
 	})
 
 	// Public Plugin Action API. This is the stable, globally versioned contract
@@ -2191,6 +2195,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// inside the handler, mirroring revoke).
 					r.Get("/lark/permission-catalog", h.GetLarkPermissionCatalog)
 					r.Post("/lark/installations/{installationId}/recheck-permissions", h.RecheckLarkPermissions)
+					r.Post("/lark/installations/{installationId}/grant-permissions", h.BeginLarkPermissionGrant)
 					// Device-flow scan-to-install. Begin opens a new
 					// registration session against Lark and returns
 					// the QR-code URL; the frontend dialog then polls
@@ -2548,6 +2553,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/dirs/{id}/scan", h.ScanKnowledgeDir)
 				r.Delete("/dirs/{id}", h.DeleteKnowledgeDir)
 				r.Post("/entries/{id}/adopt", h.AdoptKnowledgeEntry)
+				r.Post("/entries/{id}/edit", h.EditKnowledgeEntry)
+				r.Post("/entries/{id}/delete", h.DeleteKnowledgeEntry)
+				r.Post("/entries/{id}/merge", h.MergeKnowledgeEntries)
 			})
 		})
 
@@ -2562,11 +2570,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Use(middleware.RequireWorkspaceMember(queries))
 			r.Get("/overview", h.GetSelfEvolutionOverview)
 			r.Get("/model-config", h.GetSelfEvolutionModelConfig)
+			r.Get("/jev-config", h.GetSelfEvolutionJevConfig)
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
 				r.Put("/model-config", h.PutSelfEvolutionModelConfig)
 				r.Delete("/model-config", h.DeleteSelfEvolutionModelConfig)
 				r.Post("/model-config/validate", h.ValidateSelfEvolutionModelConfig)
+				r.Put("/jev-config", h.PutSelfEvolutionJevConfig)
+				r.Delete("/jev-config", h.DeleteSelfEvolutionJevConfig)
+				r.Post("/jev-config/recheck", h.RecheckSelfEvolutionJevConfig)
 			})
 		})
 
@@ -2581,6 +2593,19 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
 				r.Put("/", h.PutWorkspaceBackpressureSettings)
+			})
+		})
+
+		// PromQL rules are generated from a fixed server-side metric catalog.
+		// Members can inspect state; only owners and admins can edit or preview.
+		r.Route("/api/workspace/promql-rules", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/", h.GetWorkspacePromQLRules)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner", "admin"))
+				r.Put("/", h.PutWorkspacePromQLRules)
+				r.Post("/preview", h.PreviewWorkspacePromQLRule)
 			})
 		})
 
@@ -2922,6 +2947,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/scheduling-pause", h.PauseAgentScheduling)
 					r.Delete("/scheduling-pause", h.ResumeAgentScheduling)
 					r.Get("/scheduling-pause", h.GetAgentSchedulingPause)
+					// Agent-level error-rate backpressure policy (RUYI-859
+					// stage A): config surface + read-only visibility.
+					// Writes are workspace owner/admin, human-only (the
+					// same gate as the scheduling freeze); reads follow the
+					// agent's visibility. Stage A does not pause anything —
+					// the automatic loop is stage B.
+					r.Get("/backpressure-policy", h.GetAgentBackpressurePolicy)
+					r.Put("/backpressure-policy", h.PutAgentBackpressurePolicy)
+					r.Delete("/backpressure-policy", h.DeleteAgentBackpressurePolicy)
+					r.Get("/backpressure-events", h.ListAgentBackpressureEvents)
 				})
 			})
 
@@ -3053,6 +3088,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateManualRuntime)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
+					r.Post("/remove-from-list", h.RemoveAgentRuntimeFromList)
 					// Daemon host backpressure settings + trigger history
 					// (RUYI-729 stage 1): reads member-visible, saves
 					// owner/admin-only, delivery over the heartbeat ack.
@@ -3060,6 +3096,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/backpressure-settings", h.PutRuntimeBackpressureSettings)
 					r.Delete("/backpressure-settings", h.DeleteRuntimeBackpressureSettings)
 					r.Get("/backpressure-events", h.ListRuntimeBackpressureEvents)
+					// Per-daemon host resources (RUYI-859): the usage
+					// panel narrowed to this runtime's daemon host.
+					r.Get("/resources", h.GetRuntimeResources)
 					r.Get("/model-call-budget", h.GetRuntimeModelCallBudget)
 					r.Put("/model-call-budget", h.PutRuntimeModelCallBudget)
 					r.Get("/usage", h.GetRuntimeUsage)

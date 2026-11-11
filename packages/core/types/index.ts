@@ -67,6 +67,7 @@ export type {
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
   KnowledgeEntry,
+  KnowledgeEntryOperation,
   SkillEffectMetrics,
   CreateSkillRequest,
   SkillImportResult,
@@ -115,6 +116,7 @@ export type {
   DashboardUsageResources,
   DashboardUsageTraffic,
   DashboardUsageTrafficDim,
+  RuntimeResources,
   SchedulingPauseScope,
   SchedulingPauseState,
 } from "./agent";
@@ -385,6 +387,7 @@ export type {
   LarkPermissionCatalogEntry,
   LarkPermissionCatalogResponse,
   RecheckLarkPermissionsResponse,
+  BeginLarkPermissionGrantResponse,
 } from "./lark";
 export type {
   ComposioToolkit,
@@ -528,6 +531,25 @@ export type {
   SelfEvolutionModelConfigSave,
 } from "./self-evolution-model-config";
 export type {
+  SelfEvolutionJevConfig,
+  SelfEvolutionJevConfigSave,
+  SelfEvolutionJevSource,
+  SelfEvolutionJevStatus,
+} from "./self-evolution-jev-config";
+export type {
   WorkspaceBackpressureSettings,
   WorkspaceBackpressureSettingsSave,
 } from "./workspace-backpressure";
+export type {
+  PromQLRuleMetric,
+  PromQLRuleGrouping,
+  PromQLRuleCondition,
+  PromQLRuleComparison,
+  PromQLRulePolicy,
+  PromQLRuleSample,
+  PromQLRuleState,
+  WorkspacePromQLRule,
+  WorkspacePromQLRuleSave,
+  WorkspacePromQLRules,
+  WorkspacePromQLRulePreview,
+} from "./workspace-promql";

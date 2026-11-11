@@ -1434,6 +1434,56 @@ func TestClaudeExecuteKeepsSessionOnNetworkFailure(t *testing.T) {
 	}
 }
 
+func TestClaudeExecuteMergesEvidenceAcrossResultModelKeyDrift(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\n" +
+		"IFS= read -r _\n" +
+		"printf '%s\\n' '{\"type\":\"assistant\",\"message\":{\"id\":\"m-call-1\",\"model\":\"gpt-5.6-terra\",\"usage\":{\"input_tokens\":123,\"output_tokens\":45}}}'\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"sess-key-drift\",\"result\":\"done\",\"modelUsage\":{\"gpt-5.6-terra[1m]\":{\"inputTokens\":123,\"outputTokens\":45}}}'\n"
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	backend, err := New("claude", Config{
+		ExecutablePath: fakePath,
+		Env:            map[string]string{"IS_SANDBOX": "1"},
+		Logger:         slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("new claude backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	select {
+	case result := <-session.Result:
+		if len(result.Usage) != 1 {
+			t.Fatalf("usage split across model spellings: %#v", result.Usage)
+		}
+		usage, ok := result.Usage["gpt-5.6-terra[1m]"]
+		if !ok {
+			t.Fatalf("expected the result usage key, got %#v", result.Usage)
+		}
+		if got := usage.ModelCallEvidenceIDs(); len(got) != 1 || got[0] != "m-call-1" {
+			t.Fatalf("expected assistant evidence on result key, got %#v", result.Usage)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+}
+
 func TestClaudeExecuteRecordsResultModelUsage(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

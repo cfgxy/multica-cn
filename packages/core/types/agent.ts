@@ -17,9 +17,9 @@ export type AgentVisibility = "workspace" | "private";
 // maps to `visibility: "private"`.
 //
 // Invocation semantics:
-//   - owner: always
-//   - permission_mode "private": ONLY the owner (workspace admins no longer
-//     bypass — the key behavior change vs the old visibility model)
+//   - agent owner: always
+//   - permission_mode "private": the agent owner and workspace owner
+//     (workspace admins do not bypass)
 //   - permission_mode "public_to" + workspace target: any workspace member
 //   - permission_mode "public_to" + member target: only the matching user
 //   - team target: reserved, INERT in v1 (never grants)
@@ -49,11 +49,11 @@ export interface AgentInvocationTargetInput {
 
 // Runtime visibility is a separate axis from agent visibility — different
 // vocabulary because it gates a different action. "private" (default) means
-// only the runtime owner can bind agents to it — workspace admins included,
-// and only the owner may flip the flag (MUL-6126); "public" opens binding to
-// any workspace member. Older backends that haven't shipped MUL-2062 omit the
-// field; the consumer must default to "private" so the strictest behavior is
-// the fallback.
+// the runtime owner and workspace owner can bind agents to it — workspace
+// admins do not bypass — and either owner may flip the flag (MUL-6126);
+// "public" opens binding to any workspace member. Older backends that haven't
+// shipped MUL-2062 omit the field; the consumer must default to "private" so
+// the strictest behavior is the fallback.
 export type RuntimeVisibility = "private" | "public";
 
 export interface RuntimeDevice {
@@ -1337,6 +1337,16 @@ export interface KnowledgeEntry {
   adopted_from_dir_id?: string;
   adopted_from_key?: string;
   adoption_error?: string;
+  pending_operation?: KnowledgeEntryOperation;
+}
+
+/** A daemon-owned mutation accepted into the durable knowledge queue. */
+export interface KnowledgeEntryOperation {
+  id: string;
+  status: string;
+  operation_type?: string;
+  error?: string;
+  requested_at?: string;
 }
 
 export interface CreateSkillRequest {
@@ -1564,6 +1574,28 @@ export interface DashboardUsageTraffic {
   window?: string;
   by?: DashboardUsageTrafficDim;
   step_seconds?: number;
+  /** Whether call rates cover every usage row in the selected traffic window. */
+  calls_complete?: boolean;
+  /** Usage rows in the selected traffic window without call evidence. */
+  calls_unknown_rows?: number;
+  series?: Record<string, UsageMetricSeries[]>;
+}
+
+// Per-Runtime host resources (RUYI-859 stage 1): the workspace's RUYI-618
+// resource panel narrowed server-side to this runtime's daemon host, plus
+// the Runtime-page extras. `sampled_at` (RFC3339, UTC) is the newest sample
+// timestamp across all series — "how fresh is this reading". `has_daemon`
+// is false for cloud / manual runtimes that bind no host; `configured` is
+// false when the server has no PROMETHEUS_URL. Both are visible states, not
+// errors. Series keys mirror the workspace panel (cpu_cores, memory_*,
+// swap_*, filesystem_*, disk_*) plus `boot_time_seconds` for host uptime.
+export interface RuntimeResources {
+  configured: boolean;
+  daemon_id?: string;
+  has_daemon?: boolean;
+  window?: string;
+  step_seconds?: number;
+  sampled_at?: string;
   series?: Record<string, UsageMetricSeries[]>;
 }
 

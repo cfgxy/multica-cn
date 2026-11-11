@@ -12,9 +12,9 @@ import (
 )
 
 const createDaemonToken = `-- name: CreateDaemonToken :one
-INSERT INTO daemon_token (token_hash, workspace_id, daemon_id, expires_at)
-VALUES ($1, $2, $3, $4)
-RETURNING id, token_hash, workspace_id, daemon_id, expires_at, created_at
+INSERT INTO daemon_token (token_hash, workspace_id, daemon_id, expires_at, owner_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, token_hash, workspace_id, daemon_id, expires_at, created_at, owner_id
 `
 
 type CreateDaemonTokenParams struct {
@@ -22,14 +22,19 @@ type CreateDaemonTokenParams struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	DaemonID    string             `json:"daemon_id"`
 	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	OwnerID     pgtype.UUID        `json:"owner_id"`
 }
 
+// owner_id binds the token to the runtime owner it was issued for; NULL is
+// reserved for managed daemon credentials whose ownership is checked by their
+// external connection record.
 func (q *Queries) CreateDaemonToken(ctx context.Context, arg CreateDaemonTokenParams) (DaemonToken, error) {
 	row := q.db.QueryRow(ctx, createDaemonToken,
 		arg.TokenHash,
 		arg.WorkspaceID,
 		arg.DaemonID,
 		arg.ExpiresAt,
+		arg.OwnerID,
 	)
 	var i DaemonToken
 	err := row.Scan(
@@ -39,6 +44,7 @@ func (q *Queries) CreateDaemonToken(ctx context.Context, arg CreateDaemonTokenPa
 		&i.DaemonID,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.OwnerID,
 	)
 	return i, err
 }
@@ -93,7 +99,7 @@ func (q *Queries) DeleteExpiredDaemonTokens(ctx context.Context) error {
 }
 
 const getDaemonTokenByHash = `-- name: GetDaemonTokenByHash :one
-SELECT id, token_hash, workspace_id, daemon_id, expires_at, created_at FROM daemon_token
+SELECT id, token_hash, workspace_id, daemon_id, expires_at, created_at, owner_id FROM daemon_token
 WHERE token_hash = $1 AND expires_at > now()
 `
 
@@ -107,6 +113,99 @@ func (q *Queries) GetDaemonTokenByHash(ctx context.Context, tokenHash string) (D
 		&i.DaemonID,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.OwnerID,
+	)
+	return i, err
+}
+
+const listLegacyDaemonTokenOwners = `-- name: ListLegacyDaemonTokenOwners :many
+SELECT DISTINCT tt.user_id
+FROM task_token tt
+JOIN agent_task_queue q ON q.id = tt.task_id
+JOIN agent_runtime r ON r.id = q.runtime_id
+WHERE tt.workspace_id = $1
+  AND tt.created_at = $2
+  AND tt.expires_at > now()
+  AND r.workspace_id = $1
+  AND r.daemon_id = $3::text
+LIMIT 2
+`
+
+type ListLegacyDaemonTokenOwnersParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	DaemonID    string             `json:"daemon_id"`
+}
+
+// Compatibility for Remote MCP daemon tokens minted before owner_id existed.
+// The daemon token and task_token were inserted in one transaction, so their
+// created_at values match. The caller accepts this result only when exactly one
+// live owner matches; LIMIT 2 is enough to detect ambiguity.
+func (q *Queries) ListLegacyDaemonTokenOwners(ctx context.Context, arg ListLegacyDaemonTokenOwnersParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listLegacyDaemonTokenOwners, arg.WorkspaceID, arg.CreatedAt, arg.DaemonID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var user_id pgtype.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const renewDaemonToken = `-- name: RenewDaemonToken :one
+UPDATE daemon_token AS dt
+SET expires_at = now() + interval '24 hours'
+WHERE dt.token_hash = $1
+  AND dt.workspace_id = $2
+  AND dt.daemon_id = $3
+  AND dt.owner_id = $4
+  AND dt.expires_at > now()
+  AND EXISTS (
+    SELECT 1
+    FROM agent_runtime AS r
+    WHERE r.workspace_id = dt.workspace_id
+      AND r.daemon_id = dt.daemon_id
+      AND r.owner_id = dt.owner_id
+      AND r.status = 'online'
+  )
+RETURNING id, token_hash, workspace_id, daemon_id, expires_at, created_at, owner_id
+`
+
+type RenewDaemonTokenParams struct {
+	TokenHash   string      `json:"token_hash"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	DaemonID    string      `json:"daemon_id"`
+	OwnerID     pgtype.UUID `json:"owner_id"`
+}
+
+// Renew the authenticated daemon credential in place. An online runtime owned
+// by the same owner is required so an old token cannot keep itself alive after
+// its runtime has gone offline, been removed, or been transferred.
+func (q *Queries) RenewDaemonToken(ctx context.Context, arg RenewDaemonTokenParams) (DaemonToken, error) {
+	row := q.db.QueryRow(ctx, renewDaemonToken,
+		arg.TokenHash,
+		arg.WorkspaceID,
+		arg.DaemonID,
+		arg.OwnerID,
+	)
+	var i DaemonToken
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.WorkspaceID,
+		&i.DaemonID,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+		&i.OwnerID,
 	)
 	return i, err
 }

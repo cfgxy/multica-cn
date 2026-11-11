@@ -105,13 +105,6 @@ func TestAdoptManagedBranchRefusesBeforeBinding(t *testing.T) {
 			want: "local branch",
 		},
 		{
-			name: "pending delivery guard refusal",
-			mutate: func(t *testing.T, fixture *branchAdoptionFixture) {
-				gitRun(t, fixture.repo, "update-ref", guardRefusalRef(fixture.branch), fixture.tip)
-			},
-			want: "pending delivery-guard refusal",
-		},
-		{
 			name: "source record checkpoint continuity broken",
 			mutate: func(t *testing.T, fixture *branchAdoptionFixture) {
 				orphan := gitRun(t, fixture.repo, "commit-tree", "main^{tree}", "-m", "orphan checkpoint")

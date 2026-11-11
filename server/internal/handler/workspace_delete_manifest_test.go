@@ -27,11 +27,18 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// rather than being genuinely workspace-agnostic.
 	"admin_audit_log":         workspaceDeleteSettle,
 	"agent":                   workspaceDelete,
-	"agent_builder_draft":     workspaceDelete,
-	"agent_invocation_target": workspaceDelete,
-	"agent_runtime":           workspaceDelete,
-	"agent_skill":             workspaceDelete,
-	"agent_task_queue":        workspaceDelete,
+	// RUYI-859 stage A: agent-level error-rate backpressure policy and the
+	// automatic-suppression transition history. Both are workspace-scoped
+	// with no FK, swept explicitly by DeleteWorkspaceLeafData (same
+	// treatment as daemon_backpressure_event below).
+	"agent_backpressure_policy": workspaceDelete,
+	"agent_promql_rule_pause":   workspaceDelete,
+	"agent_builder_draft":       workspaceDelete,
+	"agent_invocation_target":   workspaceDelete,
+	"agent_runtime":             workspaceDelete,
+	"agent_skill":               workspaceDelete,
+	"agent_suppression_event":   workspaceDelete,
+	"agent_task_queue":          workspaceDelete,
 	"agent_to_label":          workspaceDelete,
 	"attachment":              workspaceDelete,
 	// Workspace-scoped audit trail (RUYI-355): append-only rows carry no
@@ -126,16 +133,18 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// Self-evolution surfaces (RUYI-265/RUYI-305): the prompt-legislation
 	// pool, its structure baselines, the retrospective config/run/watermark
 	// tables, registered knowledge directories, their read-only mirror
-	// entries and the scan log all go with the workspace
+	// entries, daemon operation queue and scan log all go with the workspace
 	// (DeleteWorkspaceSelfEvolutionData).
 	"knowledge_dir":             workspaceDelete,
 	"knowledge_entry":           workspaceDelete,
+	"knowledge_entry_operation": workspaceDelete,
 	"knowledge_scan_batch":      workspaceDelete,
 	"prompt_proposal":           workspaceDelete,
 	"prompt_structure_baseline": workspaceDelete,
 	// Module model-service config (RUYI-551): workspace-keyed gateway
 	// credentials; the encrypted key material is destroyed with the workspace.
 	"self_evolution_model_config":   workspaceDelete,
+	"self_evolution_jev_config":     workspaceDelete,
 	"retrospective_config":          workspaceDelete,
 	"retrospective_issue_watermark": workspaceDelete,
 	"retrospective_run":             workspaceDelete,

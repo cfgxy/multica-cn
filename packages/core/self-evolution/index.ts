@@ -64,6 +64,9 @@ export {
   useScanKnowledgeDir,
   useUnregisterKnowledgeDir,
   useAdoptKnowledgeEntry,
+  useEditKnowledgeEntry,
+  useDeleteKnowledgeEntry,
+  useMergeKnowledgeEntries,
 } from "./knowledge-queries";
 export {
   promptVersionKeys,
@@ -79,3 +82,10 @@ export {
   useRestoreSelfEvolutionModelDefault,
   useValidateSelfEvolutionModelConfig,
 } from "./model-config-queries";
+export {
+  jevConfigKeys,
+  selfEvolutionJevConfigOptions,
+  useSaveSelfEvolutionJevConfig,
+  useDeleteSelfEvolutionJevConfig,
+  useRecheckSelfEvolutionJevConfig,
+} from "./jev-config-queries";

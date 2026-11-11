@@ -1991,22 +1991,10 @@ WHERE id = (
             -- The claiming runtime must be the agent's current binding; an
             -- unbound agent (NULL runtime) never matches.
             AND a.runtime_id = $2
-            -- Private runtimes only execute their owner's agents. Ownerless
-            -- runtime/agent rows remain claimable only so the handler can
-            -- settle them explicitly before daemon delivery; filtering them
-            -- here would leave every task silently queued until the TTL.
-            -- Public runtimes remain shareable across agent owners.
-            AND (
-                r.visibility = 'public'
-                OR (
-                    r.visibility = 'private'
-                    AND (
-                        r.owner_id IS NULL
-                        OR a.owner_id IS NULL
-                        OR r.owner_id = a.owner_id
-                    )
-                )
-            )
+            -- The binding write already authorizes this agent against the
+            -- runtime. Claims cannot reconstruct the member who made that
+            -- authorized write, so they execute the persisted binding rather
+            -- than imposing an agent/runtime owner-equality requirement.
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => $4::double precision)
@@ -2054,6 +2042,15 @@ WHERE id = (
           SELECT 1 FROM scheduling_pause sp
           WHERE sp.workspace_id = (SELECT ca.workspace_id FROM agent ca WHERE ca.id = $3)
             AND (sp.agent_id IS NULL OR sp.agent_id = atq.agent_id)
+      )
+      -- Advanced PromQL rules own independent pause rows so one rule's
+      -- resolve can never release a human, error-rate, or sibling-rule pause.
+      -- Like scheduling_pause, this fence is claim-only: queued rows stay
+      -- intact and dispatched/running work drains through completion paths.
+      AND NOT EXISTS (
+          SELECT 1 FROM agent_promql_rule_pause prp
+          WHERE prp.workspace_id = (SELECT ca.workspace_id FROM agent ca WHERE ca.id = $3)
+            AND prp.agent_id = atq.agent_id
       )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
@@ -8354,17 +8351,6 @@ WHERE atq.status = 'queued'
       JOIN agent_runtime r ON r.id = $1
       WHERE a.id = atq.agent_id
         AND a.runtime_id = $1
-        AND (
-            r.visibility = 'public'
-            OR (
-                r.visibility = 'private'
-                AND (
-                    r.owner_id IS NULL
-                    OR a.owner_id IS NULL
-                    OR r.owner_id = a.owner_id
-                )
-            )
-        )
   )
 ORDER BY atq.priority DESC, atq.created_at ASC
 `
@@ -8480,17 +8466,6 @@ WHERE atq.status = 'queued'
       JOIN agent_runtime r ON r.id = a.runtime_id
       WHERE a.id = atq.agent_id
         AND a.runtime_id = ANY($1::uuid[])
-        AND (
-            r.visibility = 'public'
-            OR (
-                r.visibility = 'private'
-                AND (
-                    r.owner_id IS NULL
-                    OR a.owner_id IS NULL
-                    OR r.owner_id = a.owner_id
-                )
-            )
-        )
   )
 ORDER BY atq.priority DESC, atq.created_at ASC
 `
@@ -10769,12 +10744,12 @@ WHERE id = (
       AND atq.dispatched_at < now() - make_interval(secs => $3::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
-          -- Authorization fence, kept in sync with ClaimAgentTask's RUYI-224
-          -- authority model: a dispatched row is owned by the runtime it was
-          -- claimed on (the claim rewrote runtime_id), so re-delivery stays
-          -- authorized only while that runtime is still the agent's CURRENT
-          -- binding — the outer runtime_id filter pins atq.runtime_id to the
-          -- polling runtime, making this fence "agent still bound here".
+          -- Authorization fence: a dispatched row is owned by the runtime it
+          -- was claimed on (the claim rewrote runtime_id), so re-delivery
+          -- stays authorized only while that runtime is still the agent's
+          -- CURRENT binding — the outer runtime_id filter pins atq.runtime_id
+          -- to the polling runtime, making this fence "agent still bound
+          -- here".
           -- A row whose agent moved away is never re-delivered by the old
           -- runtime; recovering that wedged dispatch is the stale-dispatch
           -- machinery's job, not this fence's.
@@ -10783,17 +10758,6 @@ WHERE id = (
           JOIN agent_runtime r ON r.id = atq.runtime_id
           WHERE a.id = atq.agent_id
             AND a.runtime_id = atq.runtime_id
-            AND (
-                r.visibility = 'public'
-                OR (
-                    r.visibility = 'private'
-                    AND (
-                        r.owner_id IS NULL
-                        OR a.owner_id IS NULL
-                        OR r.owner_id = a.owner_id
-                    )
-                )
-            )
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => $4::double precision)
@@ -10896,23 +10860,21 @@ func (q *Queries) ReclaimStaleDispatchedTaskForRuntime(ctx context.Context, arg 
 }
 
 const reclaimStaleDispatchedTasksForRuntimes = `-- name: ReclaimStaleDispatchedTasksForRuntimes :many
-UPDATE agent_task_queue
-SET dispatched_at = now(),
-    prepare_lease_expires_at = now() + make_interval(secs => $1::double precision)
-WHERE id IN (
-    SELECT atq.id FROM agent_task_queue atq
+WITH candidates AS MATERIALIZED (
+    SELECT atq.id, atq.runtime_id, atq.dispatched_at, atq.priority
+    FROM agent_task_queue atq
     WHERE atq.runtime_id = ANY($2::uuid[])
       AND atq.status = 'dispatched'
       AND atq.started_at IS NULL
       AND atq.dispatched_at < now() - make_interval(secs => $3::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
-          -- Authorization fence, kept in sync with ClaimAgentTask's RUYI-224
-          -- authority model: a dispatched row is owned by the runtime it was
-          -- claimed on (the claim rewrote runtime_id), so re-delivery stays
-          -- authorized only while that runtime is still the agent's CURRENT
-          -- binding — the outer runtime_id filter pins atq.runtime_id to the
-          -- polling runtime, making this fence "agent still bound here".
+          -- Authorization fence: a dispatched row is owned by the runtime it
+          -- was claimed on (the claim rewrote runtime_id), so re-delivery
+          -- stays authorized only while that runtime is still the agent's
+          -- CURRENT binding — the outer runtime_id filter pins atq.runtime_id
+          -- to the polling runtime, making this fence "agent still bound
+          -- here".
           -- A row whose agent moved away is never re-delivered by the old
           -- runtime; recovering that wedged dispatch is the stale-dispatch
           -- machinery's job, not this fence's.
@@ -10921,25 +10883,93 @@ WHERE id IN (
           JOIN agent_runtime r ON r.id = atq.runtime_id
           WHERE a.id = atq.agent_id
             AND a.runtime_id = atq.runtime_id
-            AND (
-                r.visibility = 'public'
-                OR (
-                    r.visibility = 'private'
-                    AND (
-                        r.owner_id IS NULL
-                        OR a.owner_id IS NULL
-                        OR r.owner_id = a.owner_id
-                    )
-                )
-            )
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => $4::double precision)
       )
-    ORDER BY atq.priority DESC, atq.dispatched_at ASC
-    LIMIT $5::int
+    ORDER BY atq.priority DESC, atq.dispatched_at ASC, atq.id
     FOR UPDATE SKIP LOCKED
+), runtime_ids AS (
+    SELECT DISTINCT runtime_id FROM candidates
+), admissions AS (
+    SELECT
+        r.id AS runtime_id,
+        r.model_call_budget_enabled,
+        r.model_call_budget_max_calls,
+        r.model_call_budget_window_seconds,
+        (SELECT COUNT(*)::bigint
+         FROM task_usage_model_call_evidence e
+         JOIN agent_task_queue atq ON atq.id = e.task_id
+         WHERE atq.runtime_id = r.id
+           AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+           ) AS known_calls,
+        (SELECT COUNT(*)::bigint
+         FROM (
+             SELECT tu.task_id, tu.provider, tu.model
+             FROM task_usage tu
+             JOIN agent_task_queue atq ON atq.id = tu.task_id
+             WHERE atq.runtime_id = r.id
+               AND tu.model_call_count IS NULL
+               AND COALESCE(tu.updated_at, tu.created_at) >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+         ) AS incomplete_usage) AS unknown_usage_rows,
+        (SELECT COUNT(*)::bigint
+         FROM agent_task_queue atq
+         WHERE atq.runtime_id = r.id
+           AND atq.status IN ('dispatched', 'running', 'waiting_local_directory')
+           AND atq.dispatched_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+           AND NOT EXISTS (
+               SELECT 1
+               FROM task_usage_model_call_evidence e
+               WHERE e.task_id = atq.id
+                 AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+           )) AS reserved_calls
+    FROM agent_runtime r
+    JOIN runtime_ids ids ON ids.runtime_id = r.id
+), scored AS (
+    SELECT
+        c.id, c.runtime_id, c.dispatched_at, c.priority,
+        a.model_call_budget_enabled,
+        a.model_call_budget_max_calls,
+        a.model_call_budget_window_seconds,
+        a.known_calls,
+        a.unknown_usage_rows,
+        a.reserved_calls,
+        (
+            c.dispatched_at >= now() - make_interval(secs => a.model_call_budget_window_seconds::double precision)
+            OR EXISTS (
+                SELECT 1
+                FROM task_usage_model_call_evidence e
+                WHERE e.task_id = c.id
+                  AND e.created_at >= now() - make_interval(secs => a.model_call_budget_window_seconds::double precision)
+            )
+        ) AS keeps_allocation
+    FROM candidates c
+    JOIN admissions a ON a.runtime_id = c.runtime_id
+), ranked AS (
+    SELECT id, runtime_id, dispatched_at, priority, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds, known_calls, unknown_usage_rows, reserved_calls, keeps_allocation,
+        SUM(CASE WHEN keeps_allocation THEN 0 ELSE 1 END) OVER (
+            PARTITION BY runtime_id
+            ORDER BY priority DESC, dispatched_at ASC, id
+        ) AS new_reservation_rank
+    FROM scored
+), allowed AS (
+    SELECT id, priority, dispatched_at
+    FROM ranked
+    WHERE NOT model_call_budget_enabled
+       OR model_call_budget_max_calls <= 0
+       OR model_call_budget_window_seconds <= 0
+       OR keeps_allocation
+       OR known_calls + reserved_calls + new_reservation_rank <= model_call_budget_max_calls
+), selected AS (
+    SELECT id
+    FROM allowed
+    ORDER BY priority DESC, dispatched_at ASC, id
+    LIMIT $5::int
 )
+UPDATE agent_task_queue
+SET dispatched_at = now(),
+    prepare_lease_expires_at = now() + make_interval(secs => $1::double precision)
+WHERE id IN (SELECT id FROM selected)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id, local_directory_scope, chat_model_snapshot, no_action_at, no_action_reason, comment_output_at
 `
 
@@ -10951,13 +10981,14 @@ type ReclaimStaleDispatchedTasksForRuntimesParams struct {
 	MaxTasks          int32         `json:"max_tasks"`
 }
 
-// Batch variant of ReclaimStaleDispatchedTaskForRuntime (MUL-4257): re-delivers
-// up to @max_tasks tasks across the whole runtime set in one round trip, so a
-// machine-level batch claim recovers lost-response dispatches for every runtime
-// it hosts without one query per runtime. Same eligibility as the singular
-// query (dispatched, never started, past the recovery window, expired/absent
-// prepare lease) and the same dispatched_at refresh; only the runtime filter
-// (= ANY) and the LIMIT (max_tasks instead of 1) differ.
+// Batch stale-response recovery is called inside the same runtime advisory
+// locks as fresh claims and budget edits. A dispatch that still has current
+// evidence or a current-window reservation keeps its allocation; an expired
+// dispatch consumes a new slot and is admitted only while the runtime budget
+// has capacity. Durable evidence counts immediately, even before terminal usage
+// arrives; a NULL terminal count remains unknown even when evidence is partial.
+// The final max-task limit is applied after admission so a rejected stale task
+// cannot starve a later task that keeps its allocation.
 func (q *Queries) ReclaimStaleDispatchedTasksForRuntimes(ctx context.Context, arg ReclaimStaleDispatchedTasksForRuntimesParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, reclaimStaleDispatchedTasksForRuntimes,
 		arg.PrepareLeaseSecs,

@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 
@@ -143,6 +146,30 @@ func localDirectoryAssignmentForTask(task Task, daemonID string) (*localDirector
 	return findLocalDirectoryAssignment(task.ProjectResources, daemonID)
 }
 
+// validateWorktreeGitMetadata applies the same read-only containment audit to
+// the established worktree backend that snapshot delivery uses. The gate can
+// leave an ordinary worktree resource out of snapshot planning, but it must
+// never let git worktree operations follow a metadata redirect into an
+// unmaterialized host path.
+func validateWorktreeGitMetadata(assignment *localDirectoryAssignment) error {
+	if !assignment.UsesWorktree() {
+		return nil
+	}
+	unit := snapshotUnit{Ref: assignment.Ref, AbsPath: assignment.AbsPath}
+	audit := auditSnapshotGitScope(&snapshotPlan{Units: []snapshotUnit{unit}, Primary: &unit})
+	if !audit.Safe {
+		return fmt.Errorf("local_directory: unsafe Git metadata prevents worktree preparation: %s", audit.Reason)
+	}
+	commonDirs := gitSnapshotCommonDirs(audit.Repositories)
+	for _, repository := range audit.Repositories {
+		writableMetadata := compactContainedPaths([]string{repository.GitDir, repository.CommonDir})
+		if err := auditGitMetadataRedirectsWithin(repository.Worktree, repository.GitDir, repository.CommonDir, repository.Dependencies, writableMetadata, repository.Dependencies, commonDirs, true); err != nil {
+			return fmt.Errorf("local_directory: unsafe Git metadata prevents worktree preparation: %s", err)
+		}
+	}
+	return nil
+}
+
 // localDirectoryLockExempt reports whether a task may run inside an in_place
 // local_directory WITHOUT serialising on the per-path mutex. It is asked only
 // after an assignment has been resolved and validated, so an exempt task still
@@ -268,6 +295,36 @@ func resolveRealPath(absPath string) (string, error) {
 		return absPath, nil
 	}
 	return real, nil
+}
+
+// resolveSnapshotScopeTarget resolves a declared scope against the resource
+// root and refuses a symlink traversal that leaves that root. The declaration
+// is a write boundary, so both the root and final target must be canonicalized
+// before a unit can carry the path into locking or materialization.
+func resolveSnapshotScopeTarget(resourceRoot, subdir string) (string, error) {
+	if err := validateLocalPath(resourceRoot); err != nil {
+		return "", err
+	}
+	rootReal, err := resolveRealPath(resourceRoot)
+	if err != nil {
+		return "", err
+	}
+	target := filepath.Join(resourceRoot, filepath.FromSlash(subdir))
+	if err := validateLocalPath(target); err != nil {
+		return "", err
+	}
+	targetReal, err := resolveRealPath(target)
+	if err != nil {
+		return "", err
+	}
+	if !scopePathContains(rootReal, targetReal) {
+		return "", fmt.Errorf(
+			"local_directory scope: resolved target %q escapes resource root %q",
+			targetReal,
+			resourceRoot,
+		)
+	}
+	return targetReal, nil
 }
 
 // validateLocalPath enforces the daemon-side preconditions for running an
@@ -494,6 +551,13 @@ func isGitWorkTree(ctx context.Context, path string) bool {
 type LocalPathLocker struct {
 	mu    sync.Mutex
 	locks map[string]*pathLockEntry
+
+	// scopeMu and scopeLocks are deliberately separate from locks. Ordinary
+	// local-directory users retain exact-path semantics; snapshot declarations
+	// need the stricter rule that ancestor and descendant paths conflict.
+	scopeMu      sync.Mutex
+	scopeLocks   []*scopePathLockEntry
+	scopeChanged chan struct{}
 }
 
 type pathLockEntry struct {
@@ -502,9 +566,17 @@ type pathLockEntry struct {
 	holderID string     // current owner, for UI hints; empty when free
 }
 
+type scopePathLockEntry struct {
+	taskID string
+	paths  []string
+}
+
 // NewLocalPathLocker returns an empty locker. Safe for concurrent use.
 func NewLocalPathLocker() *LocalPathLocker {
-	return &LocalPathLocker{locks: make(map[string]*pathLockEntry)}
+	return &LocalPathLocker{
+		locks:        make(map[string]*pathLockEntry),
+		scopeChanged: make(chan struct{}),
+	}
 }
 
 // Holder returns the task id currently holding the lock for realPath, or
@@ -597,6 +669,118 @@ func (l *LocalPathLocker) Acquire(ctx context.Context, realPath, taskID string, 
 	}
 }
 
+// AcquireOverlapping takes one atomic snapshot-scope lease. Unlike Acquire,
+// which intentionally only serializes identical paths, this method conflicts
+// when any requested path is equal to, contains, or is contained by a path in
+// an existing snapshot-scope lease. Acquiring the complete set atomically
+// avoids a task holding one scope while waiting for another, so overlapping
+// multi-scope declarations cannot form a lock-ordering deadlock.
+//
+// onWait runs at most once, synchronously and outside the locker mutex. It
+// receives the requested path that conflicted and the current holder task ID.
+// Waiting is cancellable without a waiter goroutine: release closes a
+// generation channel, which wakes all waiters to re-check the protected state.
+func (l *LocalPathLocker) AcquireOverlapping(ctx context.Context, realPaths []string, taskID string, onWait func(realPath, holder string)) (func(), error) {
+	if taskID == "" {
+		return nil, errors.New("local_directory: taskID required for lock")
+	}
+	paths := normalizedScopePaths(realPaths)
+	if len(paths) == 0 {
+		return nil, errors.New("local_directory: at least one realpath required for scope lock")
+	}
+
+	waited := false
+	for {
+		l.scopeMu.Lock()
+		if l.scopeChanged == nil {
+			l.scopeChanged = make(chan struct{})
+		}
+		conflictPath, holder := l.overlapHolderLocked(paths)
+		if conflictPath == "" {
+			entry := &scopePathLockEntry{taskID: taskID, paths: paths}
+			l.scopeLocks = append(l.scopeLocks, entry)
+			l.scopeMu.Unlock()
+			return l.overlapReleaser(entry), nil
+		}
+		changed := l.scopeChanged
+		l.scopeMu.Unlock()
+
+		if !waited && onWait != nil {
+			waited = true
+			onWait(conflictPath, holder)
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func normalizedScopePaths(realPaths []string) []string {
+	seen := make(map[string]struct{}, len(realPaths))
+	paths := make([]string, 0, len(realPaths))
+	for _, realPath := range realPaths {
+		if realPath == "" {
+			continue
+		}
+		path := filepath.Clean(realPath)
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func (l *LocalPathLocker) overlapHolderLocked(paths []string) (string, string) {
+	for _, held := range l.scopeLocks {
+		for _, path := range paths {
+			for _, heldPath := range held.paths {
+				if scopePathsOverlap(path, heldPath) {
+					return path, held.taskID
+				}
+			}
+		}
+	}
+	return "", ""
+}
+
+func scopePathsOverlap(a, b string) bool {
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	return scopePathContains(a, b) || scopePathContains(b, a)
+}
+
+func scopePathContains(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func (l *LocalPathLocker) overlapReleaser(entry *scopePathLockEntry) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.scopeMu.Lock()
+			for i, held := range l.scopeLocks {
+				if held != entry {
+					continue
+				}
+				l.scopeLocks = append(l.scopeLocks[:i], l.scopeLocks[i+1:]...)
+				close(l.scopeChanged)
+				l.scopeChanged = make(chan struct{})
+				break
+			}
+			l.scopeMu.Unlock()
+		})
+	}
+}
+
 // releaser returns the unlock callback. Idempotent via a once flag so a
 // deferred release is safe even when the caller has already explicitly
 // released after task completion.
@@ -633,13 +817,77 @@ type snapshotUnit struct {
 	// LockPath is the symlink-resolved unit target — the per-subdir lock key
 	// when the task declared its scope. Empty on undeclared (lock-free) units.
 	LockPath string
+	// InternalKey is only for daemon-internal Git containment and metadata
+	// overlays. It is outside the user's declared scope and its path hash keeps
+	// the snapshot tree name separate from resource subdirectories.
+	InternalKey string
+	// TargetDevice and TargetInode carry the identity captured at scope-lock
+	// admission into the worker spec. IdentityCaptured distinguishes an admitted
+	// zero-value identity from an undeclared unit that still needs path lookup.
+	TargetDevice     uint64
+	TargetInode      uint64
+	IdentityCaptured bool
+}
+
+type snapshotLockedUnit struct {
+	Path   string
+	Info   os.FileInfo
+	Device uint64
+	Inode  uint64
+}
+
+type snapshotLockBinding struct {
+	Units map[string]snapshotLockedUnit
+}
+
+func snapshotUnitKey(unit snapshotUnit) string {
+	return unit.ResourceID + "\x00" + unit.Subdir
+}
+
+func snapshotTargetIdentity(path string) (uint64, uint64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	device, inode, ok := snapshotFileIdentity(info)
+	if !ok {
+		return 0, 0, nil
+	}
+	return device, inode, nil
 }
 
 // snapshotPlan is the resolved execution brief for a snapshot-mode task.
 type snapshotPlan struct {
-	Units    []snapshotUnit
-	Primary  *snapshotUnit // where the task's cwd lands
-	Declared bool          // task carried a local_directory_scope declaration
+	Units               []snapshotUnit
+	GitContainmentUnits []snapshotUnit
+	GitMetadataUnits    []snapshotUnit
+	Primary             *snapshotUnit // where the task's cwd lands
+	Declared            bool          // task carried a local_directory_scope declaration
+}
+
+// materializedUnits returns the complete mount set shared by the worker and
+// ledger. A declared Git subdirectory gets a private repository-root
+// containment mount before its business and metadata mounts, so writes through
+// sibling paths cannot reach the pristine worktree. Internal units do not
+// participate in user-visible scope locks or change the primary cwd.
+func (p *snapshotPlan) materializedUnits() []snapshotUnit {
+	if p == nil {
+		return nil
+	}
+	units := make([]snapshotUnit, 0, len(p.Units)+len(p.GitContainmentUnits)+len(p.GitMetadataUnits))
+	units = append(units, p.GitContainmentUnits...)
+	units = append(units, p.Units...)
+	units = append(units, p.GitMetadataUnits...)
+	return units
+}
+
+func snapshotUnitStem(issueID, taskID string, unit snapshotUnit) string {
+	subdir := unit.Subdir
+	if unit.InternalKey != "" {
+		sum := sha256.Sum256([]byte(unit.InternalKey))
+		subdir = "git-metadata-" + hex.EncodeToString(sum[:8])
+	}
+	return execenv.SnapshotStem(issueID, subdir, taskID)
 }
 
 // DeclaredLockPaths returns the real paths every declared subdirectory locks
@@ -730,6 +978,7 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 
 	plan := &snapshotPlan{Declared: len(scopes) > 0}
 	if plan.Declared {
+		seenTargets := make(map[string]string)
 		for i, sc := range scopes {
 			row, ok := byID[sc.ResourceID]
 			if !ok {
@@ -743,18 +992,18 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 						"local_directory scope: %q is outside the effective set declared on resource %q; refusing to widen it",
 						sub, row.ref.LocalPath)
 				}
-				abs := filepath.Join(row.abs, filepath.FromSlash(sub))
-				if err := validateLocalPath(abs); err != nil {
-					return nil, err
-				}
-				real, err := resolveRealPath(abs)
+				real, err := resolveSnapshotScopeTarget(row.abs, sub)
 				if err != nil {
 					return nil, err
 				}
+				if previous, ok := seenTargets[real]; ok {
+					return nil, fmt.Errorf("local_directory scope: %q and %q resolve to the same directory %q", previous, sub, real)
+				}
+				seenTargets[real] = sub
 				plan.Units = append(plan.Units, snapshotUnit{
 					ResourceID: row.id,
 					Ref:        row.ref,
-					AbsPath:    abs,
+					AbsPath:    real,
 					Subdir:     sub,
 					Primary:    row.ref.Primary,
 					LockPath:   real,
@@ -800,11 +1049,16 @@ func resolveSnapshotPlan(task Task, daemonID string) (*snapshotPlan, error) {
 	if err := validateLocalPath(primary.abs); err != nil {
 		return nil, err
 	}
+	real, err := resolveRealPath(primary.abs)
+	if err != nil {
+		return nil, err
+	}
 	plan.Units = []snapshotUnit{{
 		ResourceID: primary.id,
 		Ref:        primary.ref,
-		AbsPath:    primary.abs,
+		AbsPath:    real,
 		Primary:    true,
+		LockPath:   real,
 	}}
 	plan.Primary = &plan.Units[0]
 	return plan, nil
@@ -845,7 +1099,13 @@ func subdirectoryInEffectiveSet(sub string, set []string) bool {
 // path for anything with a .git: branch delivery, resume, and half-finished
 // preservation stay exactly as they are.
 func gitToplevel(dir string) (string, bool) {
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	return gitToplevelContext(context.Background(), dir)
+}
+
+func gitToplevelContext(ctx context.Context, dir string) (string, bool) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--show-toplevel")
+	cmd.Env = execenv.SnapshotGitEnvironment()
+	out, err := cmd.Output()
 	if err != nil {
 		return "", false
 	}
@@ -879,16 +1139,37 @@ func snapshotWorktreeFallbackWithGitGateAndCapability(plan *snapshotPlan, gitSna
 	if plan == nil || plan.Primary == nil {
 		return nil, nil
 	}
-	// Recursively audit Git metadata before choosing the preserved worktree
-	// delivery path. The audit is intentionally non-mutating; an unsafe or
-	// incomplete shape still falls back without attempting to repair .git.
+	// Audit Git metadata before selecting snapshot delivery. An unsafe graph
+	// also cannot use the legacy worktree backend: it writes refs, worktree
+	// admin state, and objects that could follow an escaped metadata redirect
+	// into the host. Fail closed before startup; safe topologies outside the
+	// snapshot artifact contract retain the established worktree backend.
 	// Git snapshot delivery is deliberately narrower than the audit and is
 	// off by default. Operators opt in per daemon process only after the
 	// snapshot artifact/recovery path has been deployed.
 	audit := auditSnapshotGitScope(plan)
+	plan.GitContainmentUnits = nil
+	plan.GitMetadataUnits = nil
+	if !audit.Safe {
+		return nil, fmt.Errorf("local_directory: unsafe Git metadata prevents snapshot delivery and worktree fallback: %s", audit.Reason)
+	}
 	worktreeCandidate := strings.TrimSpace(plan.Primary.Ref.ExecutionMode) == localDirectoryModeWorktree
-	if audit.Safe && (!audit.HasGit || (!worktreeCandidate || snapshotCapable) && gitSnapshotDeliveryEligible(plan, gitSnapshotEnabled)) {
+	if audit.Safe && !audit.HasGit {
 		return nil, nil
+	}
+	if gitSnapshotEnabled && audit.HasGit {
+		if err := auditSnapshotGitConfiguration(audit); err != nil {
+			return nil, fmt.Errorf("local_directory: unsafe Git configuration prevents snapshot delivery and worktree fallback: %w", err)
+		}
+	}
+	if audit.Safe && (!worktreeCandidate || snapshotCapable) && gitSnapshotDeliveryEligibleFromAudit(plan, gitSnapshotEnabled, audit) {
+		if containment, ok := gitSnapshotContainmentUnits(plan, audit); ok {
+			if units, ok := gitSnapshotMetadataUnits(plan, audit); ok {
+				plan.GitContainmentUnits = containment
+				plan.GitMetadataUnits = units
+				return nil, nil
+			}
+		}
 	}
 	root := plan.Primary.Ref.LocalPath
 	abs, err := normalizeLocalPath(root)
@@ -901,7 +1182,99 @@ func snapshotWorktreeFallbackWithGitGateAndCapability(plan *snapshotPlan, gitSna
 	}
 	ref := plan.Primary.Ref
 	ref.ExecutionMode = localDirectoryModeWorktree
-	return &localDirectoryAssignment{Ref: ref, AbsPath: abs, RealPath: real}, nil
+	fallback := &localDirectoryAssignment{Ref: ref, AbsPath: abs, RealPath: real}
+	if err := validateWorktreeGitMetadata(fallback); err != nil {
+		return nil, err
+	}
+	return fallback, nil
+}
+
+// gitSnapshotContainmentUnits adds a root CoW view only for the already
+// eligible ordinary-repository declared-subdirectory shape. This keeps the
+// declared path as the worker cwd and lock scope, while preventing relative
+// traversal into an unmounted sibling from writing into the host worktree.
+func gitSnapshotContainmentUnits(plan *snapshotPlan, audit gitSnapshotAudit) ([]snapshotUnit, bool) {
+	repository, ok := gitSnapshotDeliveryRepository(plan, true, audit)
+	if !ok {
+		return nil, false
+	}
+	if plan.Primary == nil || !plan.Declared || plan.Primary.Subdir == "" {
+		return nil, true
+	}
+	if filepath.Clean(repository.Worktree) == filepath.Clean(plan.Primary.AbsPath) {
+		return nil, false
+	}
+	return []snapshotUnit{{
+		AbsPath:     repository.Worktree,
+		InternalKey: "git-worktree-containment:" + repository.Worktree,
+	}}, true
+}
+
+func gitSnapshotMetadataUnits(plan *snapshotPlan, audit gitSnapshotAudit) ([]snapshotUnit, bool) {
+	covered := make([]string, 0, len(plan.Units))
+	for _, unit := range plan.Units {
+		real, err := canonicalGitDirectory(unit.AbsPath)
+		if err != nil {
+			return nil, false
+		}
+		covered = append(covered, real)
+	}
+	var units []snapshotUnit
+	for _, dependency := range audit.Dependencies {
+		if withinAnyScope(dependency, covered) {
+			continue
+		}
+		for _, scope := range covered {
+			if withinAnyScope(scope, []string{dependency}) {
+				return nil, false
+			}
+		}
+		units = append(units, snapshotUnit{AbsPath: dependency, InternalKey: dependency})
+		covered = append(covered, dependency)
+	}
+	return units, true
+}
+
+// revalidateSnapshotGitPlan closes the interval between claim-time planning
+// and worker startup. Metadata units are mount inputs, so a topology change
+// cannot be applied in place after their overlay paths have been planned.
+func revalidateSnapshotGitPlan(plan *snapshotPlan, enabled bool) (gitSnapshotAudit, error) {
+	audit := auditSnapshotGitScope(plan)
+	if !audit.Safe {
+		return audit, fmt.Errorf("local_directory: unsafe Git metadata prevents snapshot startup: %s", audit.Reason)
+	}
+	if enabled && audit.HasGit {
+		if err := auditSnapshotGitConfiguration(audit); err != nil {
+			return audit, fmt.Errorf("local_directory: unsafe Git configuration prevents snapshot startup: %w", err)
+		}
+	}
+	if !audit.HasGit {
+		if len(plan.GitContainmentUnits) != 0 || len(plan.GitMetadataUnits) != 0 {
+			return audit, errors.New("local_directory: Git metadata topology changed after snapshot planning")
+		}
+		return audit, nil
+	}
+	if _, eligible := gitSnapshotDeliveryRepository(plan, enabled, audit); !eligible {
+		return audit, errors.New("local_directory: Git metadata topology no longer supports snapshot delivery")
+	}
+	containment, containmentOK := gitSnapshotContainmentUnits(plan, audit)
+	metadata, metadataOK := gitSnapshotMetadataUnits(plan, audit)
+	if !containmentOK || !metadataOK || !sameSnapshotUnits(plan.GitContainmentUnits, containment) || !sameSnapshotUnits(plan.GitMetadataUnits, metadata) {
+		return audit, errors.New("local_directory: Git metadata topology changed after snapshot planning")
+	}
+	return audit, nil
+}
+
+func sameSnapshotUnits(left, right []snapshotUnit) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if filepath.Clean(left[i].AbsPath) != filepath.Clean(right[i].AbsPath) || left[i].InternalKey != right[i].InternalKey {
+			return false
+		}
+	}
+	return true
 }
 
 // snapshotExecutionObservation is the non-sensitive decision record emitted
@@ -977,15 +1350,15 @@ func (p *snapshotPlan) materializeTrees(envRoot, issueID, taskID string) (string
 	if p == nil {
 		return "", nil
 	}
-	for _, u := range p.Units {
-		alias, upper, work := execenv.PlanSnapshotTree(envRoot, execenv.SnapshotStem(issueID, u.Subdir, taskID))
+	for _, u := range p.materializedUnits() {
+		alias, upper, work := execenv.PlanSnapshotTree(envRoot, snapshotUnitStem(issueID, taskID, u))
 		for _, dir := range []string{alias, upper, work} {
 			if err := os.MkdirAll(dir, 0o755); err != nil {
 				return "", fmt.Errorf("snapshot: create tree dir %s: %w", dir, err)
 			}
 		}
 	}
-	_, primaryUpper, _ := execenv.PlanSnapshotTree(envRoot, execenv.SnapshotStem(issueID, p.Primary.Subdir, taskID))
+	_, primaryUpper, _ := execenv.PlanSnapshotTree(envRoot, snapshotUnitStem(issueID, taskID, *p.Primary))
 	return primaryUpper, nil
 }
 

@@ -464,10 +464,12 @@ describe("execution log header geometry", () => {
     // cost stays — never a clipped "$2.0…", which would read as a different
     // figure than the issue actually spent.
     const cost = header.getByText("$2.00");
-    expect(header.getByText("892K").className).toContain(
+    const tokens = header.getByText("892K");
+    expect(tokens.className).toContain(
       "@max-[14rem]/execution-log:hidden",
     );
-    expect(header.getByText("·").className).toContain(
+    expect(tokens.nextElementSibling).toHaveTextContent("·");
+    expect(tokens.nextElementSibling?.className).toContain(
       "@max-[14rem]/execution-log:hidden",
     );
     expect(cost.className).not.toContain("hidden");

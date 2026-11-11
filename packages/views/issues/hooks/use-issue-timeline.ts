@@ -363,18 +363,17 @@ export function useIssueTimeline(issueId: string, userId?: string) {
 
   // The comment saved, but a mention did not clearly trigger (blocked, or an
   // unknown/future status we must not assume succeeded). Warn instead of a
-  // silent no-op (MUL-4525 §2): the comment IS posted, but N explicitly-named
+  // silent no-op (MUL-4525 §2): the comment IS saved, but N explicitly-named
   // targets were not triggered.
-  const warnUnhandledTriggers = useCallback(
-    (triggerOutcomes: unknown, content?: string) => {
-      const unhandled = unhandledCommentTriggerOutcomes(triggerOutcomes);
-      if (unhandled.length === 0) return;
-      // Name the target when a single mention was refused — the posted comment's
+  const warnCommentFeedback = useCallback(
+    (comment: Pick<Comment, "content" | "trigger_outcomes" | "invalid_mentions">) => {
+      const unhandled = unhandledCommentTriggerOutcomes(comment.trigger_outcomes);
+      // Name the target when a single mention was refused — the saved comment's
       // markup carries the label the user typed (the wire outcome omits it for
       // enumeration-safety). Several refusals fall back to a count.
       if (unhandled.length === 1) {
         const outcome = unhandled[0]!;
-        const name = mentionLabelsByTarget(content ?? "").get(
+        const name = mentionLabelsByTarget(comment.content).get(
           `${outcome.target_type}:${outcome.target_id}`,
         );
         if (name) {
@@ -384,12 +383,19 @@ export function useIssueTimeline(issueId: string, userId?: string) {
               reason: blockedShortReasonLabel(outcome.reason_code, t),
             }),
           );
-          return;
+        } else {
+          toast.warning(
+            t(($) => $.comment.posted_partial_trigger, { count: unhandled.length }),
+          );
         }
+      } else if (unhandled.length > 1) {
+        toast.warning(
+          t(($) => $.comment.posted_partial_trigger, { count: unhandled.length }),
+        );
       }
-      toast.warning(
-        t(($) => $.comment.posted_partial_trigger, { count: unhandled.length }),
-      );
+      if ((comment.invalid_mentions?.length ?? 0) > 0) {
+        toast.warning(t(($) => $.comment.posted_invalid_agent_mentions));
+      }
     },
     [t],
   );
@@ -403,7 +409,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
       if (!content.trim() || !userId) return false;
       try {
         const comment = await createComment({ content, attachmentIds, suppressAgentIds });
-        warnUnhandledTriggers(comment?.trigger_outcomes, comment?.content);
+        warnCommentFeedback(comment);
         return comment.id;
       } catch (err) {
         toast.error(
@@ -416,7 +422,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         return false;
       }
     },
-    [userId, createComment, warnUnhandledTriggers, t],
+    [userId, createComment, warnCommentFeedback, t],
   );
 
   const submitReply = useCallback(
@@ -430,7 +436,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
           attachmentIds,
           suppressAgentIds,
         });
-        warnUnhandledTriggers(comment?.trigger_outcomes, comment?.content);
+        warnCommentFeedback(comment);
         return comment.id;
       } catch (err) {
         toast.error(
@@ -443,7 +449,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         return false;
       }
     },
-    [userId, createComment, warnUnhandledTriggers, t],
+    [userId, createComment, warnCommentFeedback, t],
   );
 
   const editComment = useCallback(
@@ -455,9 +461,9 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         suppressAgentIds,
         contentBase,
       });
-      warnUnhandledTriggers(comment?.trigger_outcomes, comment?.content);
+      warnCommentFeedback(comment);
     },
-    [updateComment, warnUnhandledTriggers],
+    [updateComment, warnCommentFeedback],
   );
 
   const deleteComment = useCallback(

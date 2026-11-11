@@ -540,6 +540,15 @@ deleted_issue_decisions AS (
 ),
 deleted_decision_requests AS (
     DELETE FROM decision_requests WHERE workspace_id = $1
+),
+deleted_agent_promql_rule_pauses AS (
+    DELETE FROM agent_promql_rule_pause WHERE workspace_id = $1
+),
+deleted_agent_backpressure_policies AS (
+    DELETE FROM agent_backpressure_policy WHERE workspace_id = $1
+),
+deleted_agent_suppression_events AS (
+    DELETE FROM agent_suppression_event WHERE workspace_id = $1
 )
 UPDATE channel_media_pending_object
 SET state = CASE
@@ -589,6 +598,10 @@ WHERE channel_media_pending_object.workspace_id = $1
 // linked issue_decisions card is swept by the CTE above. Cascade directly.
 // Cross-space groups are revoked whole first — see
 // RevokeInFlightCrossSpaceDecisionRequests, which must run before this CTE.
+// Agent-level error-rate backpressure policy + suppression history
+// (RUYI-859 stage A): both are workspace-scoped with no FK and no
+// dependents outside this database, same treatment as
+// daemon_backpressure_event — swept explicitly with the workspace.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
@@ -765,6 +778,12 @@ deleted_retrospective_configs AS (
 deleted_model_configs AS (
     DELETE FROM self_evolution_model_config WHERE self_evolution_model_config.workspace_id = $1
 ),
+deleted_jev_configs AS (
+    DELETE FROM self_evolution_jev_config WHERE self_evolution_jev_config.workspace_id = $1
+),
+deleted_knowledge_operations AS (
+    DELETE FROM knowledge_entry_operation WHERE knowledge_entry_operation.workspace_id = $1
+),
 deleted_scan_batches AS (
     DELETE FROM knowledge_scan_batch WHERE knowledge_scan_batch.workspace_id = $1
 ),
@@ -776,8 +795,9 @@ DELETE FROM knowledge_dir WHERE knowledge_dir.workspace_id = $1
 
 // Self-evolution tables (RUYI-265, RUYI-305) have no foreign keys or cascades.
 // Every row — prompt legislation proposals, structure baselines, retrospective
-// runs/watermarks/config, the module model-service config (RUYI-551),
-// registered knowledge directories, mirror entries and scan batches — is
+// runs/watermarks/config, the module model-service config (RUYI-551), JEV
+// advisory config, registered knowledge directories, mirror entries, operation
+// queue and scan batches — is
 // workspace-keyed, so each table deletes by workspace_id
 // directly; no id-set indirection is needed.
 func (q *Queries) DeleteWorkspaceSelfEvolutionData(ctx context.Context, workspaceID pgtype.UUID) error {

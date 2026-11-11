@@ -19,8 +19,9 @@
  *       revision + updated_at audit trail, and content-changing edits re-run
  *       the comment's trigger computation (mention side effects). Defined
  *       failures come back as structured results keyed by `code` —
- *       permission_denied, revision_conflict, not_found, invalid_mentions —
- *       never as exception strings.
+ *       permission_denied, revision_conflict, not_found — never as exception
+ *       strings. Current servers return invalid_mentions as saved-comment
+ *       warnings; the legacy 422 mapping remains only for older servers.
  * Write (projects): create_project, update_project — project metadata only,
  *       never spawns agent runs. There is deliberately no delete_project:
  *       project deletion is a hard delete.
@@ -34,13 +35,15 @@
  *       optimistic locking; the descriptions say so.
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota).
- * Decisions (RUYI-688): list_decisions, get_decision, answer_decisions — the
+ * Decisions (RUYI-688): list_decisions, get_decision, answer_decisions,
+ *       cancel_decision — the
  *       same decision-card surface the mobile decision center drives, one
- *       store of truth. Reads are pure reads; answer_decisions is the only
- *       write and it rides the product's own member-only answer gates (an
+ *       store of truth. Reads are pure reads; writes ride the product's own
+ *       member-only decision gates (an
  *       OAuth token acts as the consenting member). SIDE EFFECT: a successful
  *       answer posts the product's echo comment that mentions the creating
- *       agent, which resumes that agent's run. Answer numbering and the
+ *       agent, which resumes that agent's run; cancel_decision never does.
+ *       Answer numbering and the
  *       "1a 2b" selection grammar mirror the product's comment convention;
  *       defined failures come back as structured results keyed by `code`.
  * Write (project resource bindings): list_project_resources,
@@ -663,10 +666,10 @@ function classifyUpdateFailure(error: unknown): BulkUpdateItemError {
 //
 // The comment management endpoints define a small outcome matrix — permission
 // denial (403), revision conflict (409), unknown/already-deleted comment (404),
-// blocked mention admission (422 invalid_agent_mentions). Tools surface these
-// as structured results keyed by `code` so callers branch on the code, never
-// on exception strings. Anything outside the matrix (auth, transport, 5xx,
-// other 422s) is rethrown to the MCP error surface unchanged.
+// Legacy backends may still reject blocked mentions with 422
+// invalid_agent_mentions. Current backends save the comment and return
+// trigger_outcomes / invalid_mentions warnings, but the compatibility mapping
+// remains so installed clients can still talk to an older server.
 
 function apiErrorMessage(error: MulticaApiError): string {
   const fromBody = error.body?.error;
@@ -776,6 +779,8 @@ function structuredDecisionFailure(error: unknown): Record<string, unknown> | un
       return { code: "permission_denied", message };
     case 404:
       return { code: "not_found", message };
+    case 409:
+      return { code: "conflict", message };
     default:
       return undefined;
   }
@@ -2126,7 +2131,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description:
       "Add a comment to an issue. Markdown is supported. " +
       "WARNING: an explicit @agent mention in the content dispatches that agent — a real run that consumes the token owner's quota. " +
-      "The response reports trigger_outcomes for every mentioned agent so the dispatch is visible.",
+      "The response reports trigger_outcomes for every parsed target and invalid_mentions warning spans for complete agent links the parser ignored.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2151,6 +2156,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         issue_id: comment.issue_id,
         created_at: comment.created_at,
         trigger_outcomes: comment.trigger_outcomes ?? [],
+        invalid_mentions: comment.invalid_mentions ?? [],
       };
     },
   },
@@ -2289,7 +2295,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       "WARNING (run side effects): a content-CHANGING edit re-runs the comment's whole trigger computation on the new body, exactly as if it were posted fresh — an explicit @agent/@squad mention kept or added in the new content dispatches that agent (a REAL run consuming the token owner's quota), and a member-edited comment on an agent/squad-assigned issue can also re-reach the assignee. Every dispatch outcome is reported in trigger_outcomes. " +
       "An edit that does not change the stored content triggers nothing. Removing a mention cancels the pending run the original comment triggered without re-dispatching it. Pass suppress_agent_ids to exclude specific agents from the re-trigger. " +
       "Audit: every content edit bumps revision and updated_at so edited comments stay recognizable (no per-edit content history is kept). " +
-      "Defined failure codes: permission_denied, revision_conflict (with actual_revision), not_found (unknown id or already deleted), invalid_mentions (a mentioned agent cannot be invoked; invalid_mentions carries the spans).",
+      "Defined failure codes: permission_denied, revision_conflict (with actual_revision), not_found (unknown id or already deleted). Blocked targets and unparsed agent links are successful edits reported through trigger_outcomes and invalid_mentions.",
     inputSchema: {
       type: "object",
       properties: {
@@ -2335,6 +2341,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         created_at: comment.created_at,
         updated_at: comment.updated_at,
         trigger_outcomes: comment.trigger_outcomes ?? [],
+        invalid_mentions: comment.invalid_mentions ?? [],
       };
     },
   },
@@ -5379,6 +5386,39 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           "Answered cards are updated in the same store the mobile decision center reads; the echo comment mentioning the creating agents has been posted.";
       }
       return payload;
+    },
+  },
+  {
+    name: "cancel_decision",
+    description:
+      "Cancel exactly one open decision card on an issue. This calls the platform's member-only cancellation endpoint, which enforces workspace and issue ownership, refuses authorization cards, and reports closed-card races as conflicts. It does not answer the card, post an echo comment, or trigger or resume an Agent run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        decision_id: {
+          type: "string",
+          description: "Decision card UUID, from list_decisions or get_decision.",
+        },
+      },
+      required: ["workspace", "issue", "decision_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueRef = requireString(args, "issue");
+      const decisionId = requireString(args, "decision_id");
+      try {
+        const decision = await client.cancelIssueDecision(workspace, issueRef, decisionId);
+        return {
+          cancelled: true,
+          decision: decisionCardBrief(decision),
+        };
+      } catch (error) {
+        const failure = structuredDecisionFailure(error);
+        if (failure === undefined) throw error;
+        return { cancelled: false, ...failure };
+      }
     },
   },
   {

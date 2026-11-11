@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3871,6 +3872,29 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return nil
 		}
 
+		budget, err := qtx.GetRuntimeModelCallBudgetAdmission(ctx, claimRuntimeID)
+		if err != nil {
+			outcome = "error_get_model_call_budget"
+			return fmt.Errorf("get runtime model-call budget admission: %w", err)
+		}
+		// Unknown usage does not inflate the known lower bound. Durable evidence
+		// is already a known call, while active claims without evidence reserve one
+		// call until their first evidence row appears in this rolling window.
+		if budget.ModelCallBudgetEnabled &&
+			budget.ModelCallBudgetMaxCalls > 0 &&
+			budget.ModelCallBudgetWindowSeconds > 0 &&
+			budget.KnownCalls+budget.ReservedCalls >= budget.ModelCallBudgetMaxCalls {
+			slog.Debug("task claim: runtime model-call budget exhausted",
+				"agent_id", util.UUIDToString(agentID),
+				"runtime_id", util.UUIDToString(claimRuntimeID),
+				"known_calls", budget.KnownCalls,
+				"reserved_calls", budget.ReservedCalls,
+				"max_calls", budget.ModelCallBudgetMaxCalls,
+			)
+			outcome = "no_model_call_budget"
+			return nil
+		}
+
 		t0 = time.Now()
 		running, err := qtx.CountRunningTasks(ctx, agentID)
 		countRunningMs = time.Since(t0).Milliseconds()
@@ -3968,6 +3992,38 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 	return claimed, nil
 }
 
+// reclaimStaleDispatchedTasks serializes stale-response recovery with fresh
+// claims and budget edits. A reclaim that already has current-window evidence
+// or a reservation keeps its allocation; an expired dispatch needs a new one.
+func (s *TaskService) reclaimStaleDispatchedTasks(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int) ([]db.AgentTaskQueue, error) {
+	lockedRuntimeIDs := append([]pgtype.UUID(nil), runtimeIDs...)
+	sort.Slice(lockedRuntimeIDs, func(i, j int) bool {
+		return util.UUIDToString(lockedRuntimeIDs[i]) < util.UUIDToString(lockedRuntimeIDs[j])
+	})
+
+	var reclaimed []db.AgentTaskQueue
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		for _, runtimeID := range lockedRuntimeIDs {
+			if err := qtx.LockRuntimeClaimCapacity(ctx, util.UUIDToString(runtimeID)); err != nil {
+				return fmt.Errorf("lock runtime claim capacity: %w", err)
+			}
+		}
+		var err error
+		reclaimed, err = qtx.ReclaimStaleDispatchedTasksForRuntimes(ctx, db.ReclaimStaleDispatchedTasksForRuntimesParams{
+			RuntimeIds:        runtimeIDs,
+			ClaimRecoverySecs: claimResponseRecoveryWindow.Seconds(),
+			PrepareLeaseSecs:  prepareLeaseDuration.Seconds(),
+			RuntimeStaleSecs:  RuntimeClaimFreshnessSeconds,
+			MaxTasks:          int32(maxTasks),
+		})
+		if err != nil {
+			return fmt.Errorf("reclaim stale dispatched tasks: %w", err)
+		}
+		return nil
+	})
+	return reclaimed, err
+}
+
 // ClaimTaskForRuntime claims the next runnable task for a runtime while
 // still respecting each agent's max_concurrent_tasks limit.
 //
@@ -4013,30 +4069,26 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 	checkStarted := time.Now()
 	if due := s.ReclaimCheck.DueRuntimeIDs(ctx, []string{runtimeKey}, checkStarted); len(due) > 0 {
 		reclaimCheckAfter := time.Now().Add(claimResponseRecoveryWindow + ReclaimCheckHintSafetyMargin)
-		stale, err := s.Queries.ReclaimStaleDispatchedTaskForRuntime(ctx, db.ReclaimStaleDispatchedTaskForRuntimeParams{
-			RuntimeID:         runtimeID,
-			ClaimRecoverySecs: claimResponseRecoveryWindow.Seconds(),
-			PrepareLeaseSecs:  prepareLeaseDuration.Seconds(),
-			RuntimeStaleSecs:  RuntimeClaimFreshnessSeconds,
-		})
-		if err == nil {
+		stale, err := s.reclaimStaleDispatchedTasks(ctx, []pgtype.UUID{runtimeID}, 1)
+		if err == nil && len(stale) > 0 {
+			reclaimed := stale[0]
 			s.ReclaimCheck.MarkChecked(
 				ctx,
 				[]string{runtimeKey},
 				checkStarted,
 				time.Now().Add(ReclaimCheckRetryInterval),
 			)
-			s.trackTaskForReclaim(stale, reclaimCheckAfter)
+			s.trackTaskForReclaim(reclaimed, reclaimCheckAfter)
 			outcome = "reclaimed_dispatched"
 			claimedFlag = true
 			slog.Info("stale dispatched task reclaimed",
-				"task_id", util.UUIDToString(stale.ID),
+				"task_id", util.UUIDToString(reclaimed.ID),
 				"runtime_id", runtimeKey,
-				"agent_id", util.UUIDToString(stale.AgentID),
+				"agent_id", util.UUIDToString(reclaimed.AgentID),
 			)
-			return &stale, nil
+			return &reclaimed, nil
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if err != nil {
 			outcome = "error_reclaim_dispatched"
 			return nil, fmt.Errorf("reclaim stale dispatched task: %w", err)
 		}
@@ -4135,7 +4187,15 @@ func (s *TaskService) FinalizeTaskClaim(
 			if err := qtx.DeleteExpiredDaemonTokens(ctx); err != nil {
 				return fmt.Errorf("delete expired daemon tokens: %w", err)
 			}
-			if _, err := qtx.CreateDaemonToken(ctx, daemonTokens[0]); err != nil {
+			daemonToken := daemonTokens[0]
+			// Rebind inside the finalization transaction to the same owner used
+			// for the task token. A stale pre-read cannot mint a credential for
+			// a runtime owner that changed before commit.
+			daemonToken.OwnerID = token.UserID
+			if !daemonToken.OwnerID.Valid {
+				return fmt.Errorf("create remote MCP daemon token: runtime owner required")
+			}
+			if _, err := qtx.CreateDaemonToken(ctx, daemonToken); err != nil {
 				return fmt.Errorf("create remote MCP daemon token: %w", err)
 			}
 		}
@@ -4277,13 +4337,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	var reclaimCheckAfter time.Time
 	if len(dueKeys) > 0 {
 		reclaimCheckAfter = time.Now().Add(claimResponseRecoveryWindow + ReclaimCheckHintSafetyMargin)
-		reclaimed, err = s.Queries.ReclaimStaleDispatchedTasksForRuntimes(ctx, db.ReclaimStaleDispatchedTasksForRuntimesParams{
-			RuntimeIds:        uniqueIDs,
-			ClaimRecoverySecs: claimResponseRecoveryWindow.Seconds(),
-			PrepareLeaseSecs:  prepareLeaseDuration.Seconds(),
-			RuntimeStaleSecs:  RuntimeClaimFreshnessSeconds,
-			MaxTasks:          int32(maxTasks),
-		})
+		reclaimed, err = s.reclaimStaleDispatchedTasks(ctx, uniqueIDs, maxTasks)
 		if err != nil {
 			return nil, fmt.Errorf("reclaim stale dispatched tasks: %w", err)
 		}
@@ -5205,11 +5259,11 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 	errMsg = util.SanitizeTextForPostgres(errMsg)
 
 	// RUYI-579 W3: a delivery_guard refusal arrives with the daemon's
-	// machine-readable trailer naming its shape and self-heal outcome. Split
+	// machine-readable trailer naming its shape. Split
 	// it at this boundary: the classifier and the persisted error column see
 	// only the plain text, while the task:failed event published below keeps
 	// the original message so taskFailedFields can lift the trailer into the
-	// structured guard_kind / guard_heal_attempted fields.
+	// structured guard_kind field.
 	eventErrMsg := errMsg
 	errMsg = taskfailure.StripGuardMeta(errMsg)
 
@@ -7802,8 +7856,7 @@ func (s *TaskService) broadcastTaskEvent(ctx context.Context, eventType string, 
 // attempt from a user-visible terminal failure.
 //
 // A delivery_guard refusal's message may carry the daemon's machine-readable
-// trailer (RUYI-579 W3): its shape and self-heal outcome become the
-// structured guard_kind / guard_heal_attempted fields and the trailer itself
+// trailer (RUYI-579 W3): its shape becomes the structured guard_kind field and the trailer itself
 // never reaches the user-facing error text. Messages without the trailer are
 // returned untouched.
 func taskFailedFields(errMsg, failureReason string, retryPending bool) map[string]any {
@@ -7811,11 +7864,10 @@ func taskFailedFields(errMsg, failureReason string, retryPending bool) map[strin
 		"failure_reason": failureReason,
 		"retry_pending":  retryPending,
 	}
-	if kind, healAttempted, remainder, ok := taskfailure.ParseGuardMeta(errMsg); ok {
+	if kind, remainder, ok := taskfailure.ParseGuardMeta(errMsg); ok {
 		if kind != "" {
 			fields["guard_kind"] = kind
 		}
-		fields["guard_heal_attempted"] = healAttempted
 		errMsg = remainder
 	}
 	if errMsg != "" && !retryPending {

@@ -41,6 +41,7 @@ interface CreateAgentForm {
   members: MemberWithUser[];
   workspaceSkills: SkillSummary[];
   currentUserId: string | null;
+  currentUserRole: MemberWithUser["role"] | null;
   /** Every non-name precondition the create button depends on. */
   draftReady: boolean;
 }
@@ -88,6 +89,8 @@ export function useCreateAgentForm(options?: {
   } = useQuery(runtimeListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: workspaceSkills = [] } = useQuery(skillListOptions(wsId));
+  const currentUserRole =
+    members.find((member) => member.user_id === currentUserId)?.role ?? null;
 
   const [draft, setDraft] = useState<AgentDraft>(EMPTY_AGENT_DRAFT);
 
@@ -96,9 +99,9 @@ export function useCreateAgentForm(options?: {
       runtimes.filter(
         (runtime) =>
           runtime.status === "online" &&
-          isRuntimeUsableForUser(runtime, currentUserId),
+          isRuntimeUsableForUser(runtime, currentUserId, currentUserRole),
       ),
-    [currentUserId, runtimes],
+    [currentUserId, currentUserRole, runtimes],
   );
   const selectedRuntime =
     runtimes.find((runtime) => runtime.id === draft.runtimeId) ?? null;
@@ -145,9 +148,10 @@ export function useCreateAgentForm(options?: {
     members,
     workspaceSkills,
     currentUserId,
+    currentUserRole,
     draftReady:
       selectedRuntime != null &&
-      isRuntimeUsableForUser(selectedRuntime, currentUserId) &&
+      isRuntimeUsableForUser(selectedRuntime, currentUserId, currentUserRole) &&
       isDraftDescriptionWithinLimit(draft.description) &&
       !accessInvalid &&
       !conversationStartersInvalid,

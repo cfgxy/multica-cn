@@ -10,6 +10,10 @@ CREATE TABLE IF NOT EXISTS task_usage_model_call_totals (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Rebuild the derived table so a crash after SQL execution but before the
+-- migration ledger write can be retried without duplicating backfill rows.
+DELETE FROM task_usage_model_call_totals;
+
 -- Recover aggregates for evidence written before this summary table existed.
 INSERT INTO task_usage_model_call_totals (task_id, provider, model, model_call_count)
 SELECT task_id, provider, model, COUNT(*)::bigint

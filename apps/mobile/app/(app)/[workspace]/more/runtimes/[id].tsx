@@ -12,7 +12,7 @@ import { Separator } from "@/components/ui/separator";
 import { agentListOptions } from "@/data/queries/agents";
 import { memberListOptions } from "@/data/queries/members";
 import { runtimeListOptions } from "@/data/queries/runtimes";
-import { useDeleteRuntime, useUnbindAgentsAndDeleteRuntime, useUpdateRuntime } from "@/data/mutations/runtime-management";
+import { useRemoveRuntimeFromList, useUpdateRuntime } from "@/data/mutations/runtime-management";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/use-t";
@@ -28,8 +28,7 @@ export default function RuntimeNodeDetailPage() {
   const members = useQuery(memberListOptions(wsId));
   const agents = useQuery(agentListOptions(wsId));
   const update = useUpdateRuntime();
-  const strictDelete = useDeleteRuntime();
-  const confirmedDelete = useUnbindAgentsAndDeleteRuntime();
+  const removeFromList = useRemoveRuntimeFromList();
   const [editing, setEditing] = useState(false);
   const [customName, setCustomName] = useState("");
 
@@ -41,7 +40,7 @@ export default function RuntimeNodeDetailPage() {
     () => (agents.data ?? []).filter((agent) => agent.runtime_id === runtimeId && !agent.archived_at),
     [agents.data, runtimeId],
   );
-  const isDeleting = strictDelete.isPending || confirmedDelete.isPending;
+  const isRemoving = removeFromList.isPending;
 
   if (runtimes.isLoading || members.isLoading || agents.isLoading) {
     return <View className="flex-1 items-center justify-center bg-background"><ActivityIndicator /></View>;
@@ -68,36 +67,21 @@ export default function RuntimeNodeDetailPage() {
   };
 
   const removeRuntime = () => {
-    if (!canEdit || isDeleting) return;
-    const names = boundAgents.map((agent) => agent.name).slice(0, 6).join("\n");
-    const detail = boundAgents.length > 0
-      ? t("mobile_nodes.delete_bound_description", "Bound agents will be kept but unbound; queued and running tasks will be cancelled.") + `\n\n${names}`
-      : t("mobile_nodes.delete_description", "This action cannot be undone.");
+    if (!canEdit || isRemoving) return;
+    const name = runtimeDisplayLabel(runtime);
     Alert.alert(
-      boundAgents.length > 0
-        ? t("mobile_nodes.delete_bound_title", "Unbind agents and delete runtime?")
-        : t("mobile_nodes.delete_title", "Delete runtime?"),
-      detail,
+      t("mobile_nodes.remove_title", "Remove \"{{name}}\" from your management list?", { name }),
+      t("mobile_nodes.remove_description", "\"{{name}}\" will no longer appear in your runtime list. Its agents, tasks, automation, and runtime process will not be changed.", { name }),
       [
         { text: t("common:cancel", "Cancel"), style: "cancel" },
         {
-          text: t("common:delete", "Delete"),
+          text: t("mobile_nodes.remove_confirm", "Remove from list"),
           style: "destructive",
           onPress: () => {
-            if (boundAgents.length > 0) {
-              confirmedDelete.mutate(
-                { runtimeId, expectedActiveAgentIds: boundAgents.map((agent) => agent.id) },
-                {
-                  onSuccess: () => router.back(),
-                  onError: () => Alert.alert(t("mobile_nodes.delete_failed", "The runtime changed or could not be deleted. Refresh and review the current bindings.")),
-                },
-              );
-            } else {
-              strictDelete.mutate(runtimeId, {
-                onSuccess: () => router.back(),
-                onError: () => Alert.alert(t("mobile_nodes.delete_failed", "The runtime changed or could not be deleted. Refresh and review the current bindings.")),
-              });
-            }
+            removeFromList.mutate(runtimeId, {
+              onSuccess: () => router.back(),
+              onError: () => Alert.alert(t("mobile_nodes.remove_failed", "Couldn't remove the runtime from your management list. Try again.")),
+            });
           },
         },
       ],
@@ -154,12 +138,10 @@ export default function RuntimeNodeDetailPage() {
               <Text>{t("mobile_nodes.rename", "Rename runtime")}</Text>
             </Button>
           )}
-          {!runtime.profile_id ? (
-            <Button variant="destructive" disabled={isDeleting} onPress={removeRuntime}>
-              <Ionicons name="trash-outline" size={17} />
-              <Text>{isDeleting ? t("mobile_nodes.deleting", "Deleting…") : t("common:delete", "Delete")}</Text>
-            </Button>
-          ) : null}
+          <Button variant="destructive" disabled={isRemoving} onPress={removeRuntime}>
+            <Ionicons name="remove-circle-outline" size={17} />
+            <Text>{isRemoving ? t("mobile_nodes.removing", "Removing…") : t("mobile_nodes.remove_button", "Remove from management list")}</Text>
+          </Button>
         </View>
       ) : null}
     </ScrollView>

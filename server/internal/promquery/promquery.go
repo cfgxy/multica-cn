@@ -1,7 +1,7 @@
-// Package promquery is a minimal client for the Prometheus HTTP API
-// (query_range only). The usage page's system-resource and model-traffic
-// panels fetch their data through the server proxy endpoints, which run
-// PromQL here — the browser never talks to Prometheus directly.
+// Package promquery is a minimal client for the Prometheus HTTP API. The
+// usage page's system-resource and model-traffic panels and workspace rules
+// fetch data through server proxy endpoints; the browser never talks to
+// Prometheus directly.
 package promquery
 
 import (
@@ -81,6 +81,18 @@ type apiResponse struct {
 	} `json:"data"`
 }
 
+type instantAPIResponse struct {
+	Status string `json:"status"`
+	Error  string `json:"error"`
+	Data   struct {
+		ResultType string `json:"resultType"`
+		Result     []struct {
+			Metric map[string]string `json:"metric"`
+			Value  []json.RawMessage `json:"value"`
+		} `json:"result"`
+	} `json:"data"`
+}
+
 // QueryRange evaluates q and returns the matrix result. Prometheus returns
 // sample timestamps as seconds and values as strings; both are normalized
 // here so callers never touch the wire encoding.
@@ -135,6 +147,61 @@ func (c *Client) QueryRange(ctx context.Context, q RangeQuery) ([]Series, error)
 			s.Points = append(s.Points, Point{Time: int64(ts), Value: val})
 		}
 		series = append(series, s)
+	}
+	return series, nil
+}
+
+// QueryInstant evaluates q at at and returns the vector result. A zero time
+// leaves evaluation time to Prometheus.
+func (c *Client) QueryInstant(ctx context.Context, query string, at time.Time) ([]Series, error) {
+	if !c.Enabled() {
+		return nil, fmt.Errorf("promquery: client is not configured")
+	}
+	params := url.Values{"query": {query}}
+	if !at.IsZero() {
+		params.Set("time", strconv.FormatFloat(float64(at.UnixNano())/float64(time.Second), 'f', 3, 64))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/api/v1/query?"+params.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("promquery: build instant request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("promquery: instant query %q: %w", query, err)
+	}
+	defer resp.Body.Close()
+	var decoded instantAPIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("promquery: decode instant response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK || decoded.Status != "success" {
+		return nil, fmt.Errorf("promquery: instant query %q failed: http %d %s", query, resp.StatusCode, decoded.Error)
+	}
+	if decoded.Data.ResultType != "vector" {
+		return nil, fmt.Errorf("promquery: instant query returned %q, want vector", decoded.Data.ResultType)
+	}
+	series := make([]Series, 0, len(decoded.Data.Result))
+	for _, result := range decoded.Data.Result {
+		if len(result.Value) != 2 {
+			continue
+		}
+		var timestamp float64
+		var raw string
+		if err := json.Unmarshal(result.Value[0], &timestamp); err != nil {
+			continue
+		}
+		if err := json.Unmarshal(result.Value[1], &raw); err != nil {
+			continue
+		}
+		value, err := strconv.ParseFloat(raw, 64)
+		if err != nil || math.IsInf(value, 0) || math.IsNaN(value) {
+			continue
+		}
+		series = append(series, Series{
+			Labels: result.Metric,
+			Points: []Point{{Time: int64(timestamp), Value: value}},
+		})
 	}
 	return series, nil
 }
