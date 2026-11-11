@@ -2592,6 +2592,14 @@ type TaskUsageModelCallEvidence struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
+type TaskUsageModelCallTotal struct {
+	TaskID         pgtype.UUID        `json:"task_id"`
+	Provider       string             `json:"provider"`
+	Model          string             `json:"model"`
+	ModelCallCount int64              `json:"model_call_count"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type User struct {
 	ID                      pgtype.UUID        `json:"id"`
 	Name                    string             `json:"name"`

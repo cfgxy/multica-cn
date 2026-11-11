@@ -17,6 +17,7 @@ const TEST_RESOURCES = {
 
 const mockUpdateRuntime = vi.hoisted(() => vi.fn());
 const mockDeleteRuntimeProfile = vi.hoisted(() => vi.fn());
+const mockRemoveRuntime = vi.hoisted(() => vi.fn());
 const mockQueryData = vi.hoisted(() => ({
   members: [] as Array<Record<string, unknown>>,
   profiles: [] as RuntimeProfile[],
@@ -124,10 +125,17 @@ vi.mock("@multica/core/runtimes", async () => ({
   deriveRuntimeHealth: () => "online",
   runtimeDisplayName: (rt: { name: string; custom_name?: string | null }) =>
     rt.custom_name?.trim() || rt.name,
+  runtimeDisplayLabel: (rt: { name: string; custom_name?: string | null }) =>
+    rt.custom_name?.trim() || rt.name,
   runtimeProfileListOptions: (wsId: string) => ({
     queryKey: ["runtime-profiles", wsId],
   }),
   parseRuntimeProfileBoundConflict: () => null,
+  useRemoveRuntimeFromList: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    mutateAsync: (...args: unknown[]) => mockRemoveRuntime(...args),
+  }),
   useDeleteRuntimeProfile: () => ({
     mutate: vi.fn(),
     isPending: false,
@@ -414,7 +422,9 @@ describe("RuntimeDetail visibility section", () => {
 
     expect(screen.queryByTestId("usage-section")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Delete runtime/i }),
+      screen.getByRole("button", {
+        name: /Remove from management list/i,
+      }),
     ).toBeInTheDocument();
   });
 
@@ -455,7 +465,7 @@ describe("RuntimeDetail visibility section", () => {
       }),
     );
     const btn = screen.getByRole("button", {
-      name: /Delete runtime/i,
+      name: /Remove from management list/i,
     }) as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
   });
@@ -469,16 +479,19 @@ describe("RuntimeDetail visibility section", () => {
       }),
     );
     expect(
-      screen.queryByRole("button", { name: /Delete runtime/i }),
+      screen.queryByRole("button", {
+        name: /Remove from management list/i,
+      }),
     ).not.toBeInTheDocument();
   });
 
-  it("routes custom runtime deletion through the profile delete dialog for admins", async () => {
+  it("routes custom runtime removal through the management-list dialog", async () => {
     const profile = makeProfile();
     mockQueryData.members = [
       { user_id: "user-me", role: "owner", name: "Me" },
     ];
     mockQueryData.profiles = [profile];
+    mockRemoveRuntime.mockResolvedValue(undefined);
 
     renderDetail(
       makeRuntime({
@@ -487,25 +500,20 @@ describe("RuntimeDetail visibility section", () => {
       }),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Delete runtime/i }));
-    expect(
-      screen.getByText("Delete custom runtime from workspace?"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("alertdialog", {
-        name: "Delete custom runtime from workspace?",
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /Remove from management list/i,
       }),
+    );
+    expect(
+      screen.getByText('Remove "Local Runtime" from your management list?'),
     ).toBeInTheDocument();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Delete from workspace" }),
-    );
-    await waitFor(() =>
-      expect(mockDeleteRuntimeProfile).toHaveBeenCalledWith(profile.id),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove from list" }));
+    await waitFor(() => expect(mockRemoveRuntime).toHaveBeenCalledWith("rt-1"));
   });
 
-  it("hides custom runtime delete for non-admin runtime owners", () => {
+  it("allows a runtime owner to remove a custom runtime from the list", () => {
     const profile = makeProfile();
     mockQueryData.profiles = [profile];
 
@@ -517,8 +525,10 @@ describe("RuntimeDetail visibility section", () => {
     );
 
     expect(
-      screen.queryByRole("button", { name: /Delete runtime/i }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", {
+        name: /Remove from management list/i,
+      }),
+    ).toBeInTheDocument();
   });
 
   // RUYI-859 P1 regression: the resources section mounts for every readable

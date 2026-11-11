@@ -1417,6 +1417,7 @@ describe("runtime model-call budget schema drift", () => {
     expect(parsed.report).toEqual({
       known_calls: 0,
       unknown_usage_rows: 0,
+      reserved_calls: 0,
       complete: false,
       active: false,
       window_started_at: "",

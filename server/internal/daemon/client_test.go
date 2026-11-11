@@ -399,6 +399,31 @@ func TestFailTask_RetriesOnTransient5xxThenSucceeds(t *testing.T) {
 	}
 }
 
+func TestReportTaskUsage_RetriesOnTransient5xxThenSucceeds(t *testing.T) {
+	defer noSleepRetry(t)()
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/daemon/tasks/task-usage/usage" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	if err := c.ReportTaskUsage(context.Background(), "task-usage", []TaskUsageEntry{{Provider: "claude", Model: "test", OutputTokens: 1}}); err != nil {
+		t.Fatalf("ReportTaskUsage: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("expected one retry after transient 5xx, got %d attempts", got)
+	}
+}
+
 func TestPostJSONWithRetry_TransientExhausts(t *testing.T) {
 	defer noSleepRetry(t)()
 

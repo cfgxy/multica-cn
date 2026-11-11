@@ -31,6 +31,7 @@ const DEFAULT_BUDGET = {
   report: {
     known_calls: 0,
     unknown_usage_rows: 0,
+    reserved_calls: 0,
     complete: true,
     active: false,
     window_started_at: "2026-10-24T00:00:00Z",
@@ -131,6 +132,29 @@ describe("ModelCallBudgetCard", () => {
         "New task claims are paused because known model calls reached the configured limit.",
       ),
     ).toBeTruthy();
+  });
+
+  it("explains a hold caused by active reservations", async () => {
+    mockGetBudget.mockResolvedValue({
+      config: { enabled: true, max_calls: 3, window_seconds: 3600 },
+      report: {
+        known_calls: 2,
+        reserved_calls: 1,
+        unknown_usage_rows: 0,
+        complete: true,
+        active: true,
+        window_started_at: "2026-10-24T00:00:00Z",
+      },
+    });
+    renderCard(makeRuntime());
+
+    expect(await screen.findByText("Held")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "New task claims are paused because active tasks reserved the remaining call capacity.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Reserved calls")).toBeTruthy();
   });
 
   it("renders the report read-only for members without scheduling control", async () => {

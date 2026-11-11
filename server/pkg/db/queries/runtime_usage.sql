@@ -34,15 +34,17 @@ ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provide
 -- name: GetRuntimeModelCallBudgetUsage :one
 -- Rolling provider-call admission budget. Known calls use each provider
 -- evidence row's insertion time, so calls are visible before task completion
--- and a long task can span multiple windows. Usage rows without complete
--- evidence, and live evidence without a matching terminal usage row, remain
--- unknown and make the window fail open.
+-- and a long task can span multiple windows. A NULL usage count remains
+-- unknown even when partial evidence exists; durable evidence counts immediately,
+-- before terminal usage arrives. Unknown rows do not inflate the known total, but
+-- cannot bypass a budget whose known lower bound has already reached its limit.
 SELECT
     (SELECT COUNT(*)::bigint
      FROM task_usage_model_call_evidence e
      JOIN agent_task_queue atq ON atq.id = e.task_id
      WHERE atq.runtime_id = @runtime_id
-       AND e.created_at >= @since::timestamptz) AS known_calls,
+       AND e.created_at >= @since::timestamptz
+       ) AS known_calls,
     (SELECT COUNT(*)::bigint
      FROM (
          SELECT tu.task_id, tu.provider, tu.model
@@ -51,22 +53,18 @@ SELECT
          WHERE atq.runtime_id = @runtime_id
            AND tu.model_call_count IS NULL
            AND COALESCE(tu.updated_at, tu.created_at) >= @since::timestamptz
-
-         UNION
-
-         SELECT e.task_id, e.provider, e.model
-         FROM task_usage_model_call_evidence e
-         JOIN agent_task_queue atq ON atq.id = e.task_id
-         WHERE atq.runtime_id = @runtime_id
-           AND e.created_at >= @since::timestamptz
-           AND NOT EXISTS (
-               SELECT 1
-               FROM task_usage tu
-               WHERE tu.task_id = e.task_id
-                 AND tu.provider = e.provider
-                 AND tu.model = e.model
-           )
-     ) AS incomplete_usage) AS unknown_usage_rows;
+     ) AS incomplete_usage) AS unknown_usage_rows,
+    (SELECT COUNT(*)::bigint
+     FROM agent_task_queue atq
+     WHERE atq.runtime_id = @runtime_id
+       AND atq.status IN ('dispatched', 'running', 'waiting_local_directory')
+       AND atq.dispatched_at >= @since::timestamptz
+       AND NOT EXISTS (
+           SELECT 1
+           FROM task_usage_model_call_evidence e
+           WHERE e.task_id = atq.id
+             AND e.created_at >= @since::timestamptz
+       )) AS reserved_calls;
 
 -- name: GetRuntimeModelCallBudgetAdmission :one
 -- The caller holds LockRuntimeClaimCapacity for this runtime. Count active
@@ -82,7 +80,8 @@ SELECT
      FROM task_usage_model_call_evidence e
      JOIN agent_task_queue atq ON atq.id = e.task_id
      WHERE atq.runtime_id = r.id
-       AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)) AS known_calls,
+       AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+       ) AS known_calls,
     (SELECT COUNT(*)::bigint
      FROM (
          SELECT tu.task_id, tu.provider, tu.model
@@ -91,21 +90,6 @@ SELECT
          WHERE atq.runtime_id = r.id
            AND tu.model_call_count IS NULL
            AND COALESCE(tu.updated_at, tu.created_at) >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
-
-         UNION
-
-         SELECT e.task_id, e.provider, e.model
-         FROM task_usage_model_call_evidence e
-         JOIN agent_task_queue atq ON atq.id = e.task_id
-         WHERE atq.runtime_id = r.id
-           AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
-           AND NOT EXISTS (
-               SELECT 1
-               FROM task_usage tu
-               WHERE tu.task_id = e.task_id
-                 AND tu.provider = e.provider
-                 AND tu.model = e.model
-           )
      ) AS incomplete_usage) AS unknown_usage_rows,
     (SELECT COUNT(*)::bigint
      FROM agent_task_queue atq
@@ -133,7 +117,8 @@ SELECT
      WHERE atq.runtime_id = rt.id
        AND e.created_at >= to_timestamp(
            EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
-       )) AS known_calls,
+       )
+       ) AS known_calls,
     (SELECT COUNT(*)::bigint
      FROM (
          SELECT tu.task_id, tu.provider, tu.model
@@ -144,24 +129,22 @@ SELECT
            AND COALESCE(tu.updated_at, tu.created_at) >= to_timestamp(
                EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
            )
-
-         UNION
-
-         SELECT e.task_id, e.provider, e.model
-         FROM task_usage_model_call_evidence e
-         JOIN agent_task_queue atq ON atq.id = e.task_id
-         WHERE atq.runtime_id = rt.id
-           AND e.created_at >= to_timestamp(
-               EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
-           )
-           AND NOT EXISTS (
-               SELECT 1
-               FROM task_usage tu
-               WHERE tu.task_id = e.task_id
-                 AND tu.provider = e.provider
-                 AND tu.model = e.model
-           )
-     ) AS incomplete_usage) AS unknown_usage_rows
+     ) AS incomplete_usage) AS unknown_usage_rows,
+    (SELECT COUNT(*)::bigint
+     FROM agent_task_queue atq
+     WHERE atq.runtime_id = rt.id
+       AND atq.status IN ('dispatched', 'running', 'waiting_local_directory')
+       AND atq.dispatched_at >= to_timestamp(
+           EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
+       )
+       AND NOT EXISTS (
+           SELECT 1
+           FROM task_usage_model_call_evidence e
+           WHERE e.task_id = atq.id
+             AND e.created_at >= to_timestamp(
+                 EXTRACT(EPOCH FROM @now::timestamptz) - rt.model_call_budget_window_seconds
+             )
+       )) AS reserved_calls
 FROM agent_runtime rt
 WHERE rt.id = ANY(@runtime_ids::uuid[]);
 

@@ -3877,13 +3877,12 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			outcome = "error_get_model_call_budget"
 			return fmt.Errorf("get runtime model-call budget admission: %w", err)
 		}
-		// Unknown usage deliberately fails open: the persisted evidence cannot
-		// establish a complete usage total. Otherwise every active claim reserves
-		// one call until its first evidence row appears in this rolling window.
+		// Unknown usage does not inflate the known lower bound. Durable evidence
+		// is already a known call, while active claims without evidence reserve one
+		// call until their first evidence row appears in this rolling window.
 		if budget.ModelCallBudgetEnabled &&
 			budget.ModelCallBudgetMaxCalls > 0 &&
 			budget.ModelCallBudgetWindowSeconds > 0 &&
-			budget.UnknownUsageRows == 0 &&
 			budget.KnownCalls+budget.ReservedCalls >= budget.ModelCallBudgetMaxCalls {
 			slog.Debug("task claim: runtime model-call budget exhausted",
 				"agent_id", util.UUIDToString(agentID),

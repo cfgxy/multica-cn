@@ -1339,9 +1339,10 @@ RETURNING *;
 -- locks as fresh claims and budget edits. A dispatch that still has current
 -- evidence or a current-window reservation keeps its allocation; an expired
 -- dispatch consumes a new slot and is admitted only while the runtime budget
--- has capacity. Unknown evidence deliberately fails open, matching fresh
--- claims. The final max-task limit is applied after admission so a rejected
--- stale task cannot starve a later task that keeps its allocation.
+-- has capacity. Durable evidence counts immediately, even before terminal usage
+-- arrives; a NULL terminal count remains unknown even when evidence is partial.
+-- The final max-task limit is applied after admission so a rejected stale task
+-- cannot starve a later task that keeps its allocation.
 WITH candidates AS MATERIALIZED (
     SELECT atq.id, atq.runtime_id, atq.dispatched_at, atq.priority
     FROM agent_task_queue atq
@@ -1383,7 +1384,8 @@ WITH candidates AS MATERIALIZED (
          FROM task_usage_model_call_evidence e
          JOIN agent_task_queue atq ON atq.id = e.task_id
          WHERE atq.runtime_id = r.id
-           AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)) AS known_calls,
+           AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+           ) AS known_calls,
         (SELECT COUNT(*)::bigint
          FROM (
              SELECT tu.task_id, tu.provider, tu.model
@@ -1392,21 +1394,6 @@ WITH candidates AS MATERIALIZED (
              WHERE atq.runtime_id = r.id
                AND tu.model_call_count IS NULL
                AND COALESCE(tu.updated_at, tu.created_at) >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
-
-             UNION
-
-             SELECT e.task_id, e.provider, e.model
-             FROM task_usage_model_call_evidence e
-             JOIN agent_task_queue atq ON atq.id = e.task_id
-             WHERE atq.runtime_id = r.id
-               AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
-               AND NOT EXISTS (
-                   SELECT 1
-                   FROM task_usage tu
-                   WHERE tu.task_id = e.task_id
-                     AND tu.provider = e.provider
-                     AND tu.model = e.model
-               )
          ) AS incomplete_usage) AS unknown_usage_rows,
         (SELECT COUNT(*)::bigint
          FROM agent_task_queue atq
@@ -1454,7 +1441,6 @@ WITH candidates AS MATERIALIZED (
     WHERE NOT model_call_budget_enabled
        OR model_call_budget_max_calls <= 0
        OR model_call_budget_window_seconds <= 0
-       OR unknown_usage_rows > 0
        OR keeps_allocation
        OR known_calls + reserved_calls + new_reservation_rank <= model_call_budget_max_calls
 ), selected AS (

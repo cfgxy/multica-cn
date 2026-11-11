@@ -563,6 +563,9 @@ func TestCopilotAssistantUsageIsAuthoritative(t *testing.T) {
 	if u.CacheReadTokens != 9000 || u.CacheWriteTokens != 1500 {
 		t.Fatalf("expected cache 9000/1500, got %d/%d", u.CacheReadTokens, u.CacheWriteTokens)
 	}
+	if got := u.ModelCallCount; got != 1 {
+		t.Fatalf("assistant.usage and assistant.message must identify one call, got %d", got)
+	}
 }
 
 func TestCopilotAssistantUsageNeverGoesNegative(t *testing.T) {
@@ -706,13 +709,12 @@ func TestCopilotAssistantMessageModelAttribution(t *testing.T) {
 	}
 }
 
-func TestCopilotModernStreamReportsNoUsage(t *testing.T) {
+func TestCopilotModernStreamReportsMessageEvidence(t *testing.T) {
 	t.Parallel()
 	// Copilot CLI 1.0.77 shape: assistant.message without outputTokens or model,
 	// tool.execution_complete without model, and no assistant.usage /
-	// session.shutdown (the CLI filters both off stdout). Nothing to report —
-	// this documents the upstream gap so a future CLI change shows up as a
-	// failing test rather than a silent one.
+	// session.shutdown (the CLI filters both off stdout). messageId is the
+	// remaining per-call identity and must keep the call visible to accounting.
 	lines := []string{
 		`{"type":"session.start","data":{"sessionId":"s1","version":1,"producer":"copilot-agent"},"id":"e1","timestamp":"2026-08-04T08:00:00.000Z"}`,
 		`{"type":"assistant.turn_start","data":{"turnId":"t1"},"id":"e2","timestamp":"2026-08-04T08:00:01.000Z"}`,
@@ -724,8 +726,12 @@ func TestCopilotModernStreamReportsNoUsage(t *testing.T) {
 
 	_, _, _, usage := simulateCopilotEventLoop(t, lines)
 
-	if len(usage) != 0 {
-		t.Fatalf("expected no usage from a 1.0.77-shaped stream, got %#v", usage)
+	u := usage["copilot"]
+	if got := u.ModelCallEvidenceIDs(); len(got) != 2 || got[0] != "m1" || got[1] != "m2" {
+		t.Fatalf("expected message IDs to identify both calls, got %#v", usage)
+	}
+	if u.ModelCallEvidenceIncomplete {
+		t.Fatalf("message IDs should make the evidence complete, got %#v", usage)
 	}
 }
 
@@ -1146,11 +1152,11 @@ func TestCopilotCallCountPerAssistantUsageEvent(t *testing.T) {
 		t.Parallel()
 		lines := []string{fixtureSessionStart, fixtureTurnStart, fixtureAssistantMessage, fixtureResult}
 		_, _, _, usage := simulateCopilotEventLoop(t, lines)
-		// Legacy assistant.message path: tokens land under the session's
-		// selected model, and no per-call evidence exists, so the count stays
-		// unknown (0) while the legacy tokens still report.
-		if u := usage["claude-sonnet-4"]; u.ModelCallCount != 0 || u.OutputTokens != 5 {
-			t.Fatalf("expected unknown calls with legacy tokens, got %#v", usage)
+		// Modern Copilot streams retain assistant.message.messageId even when
+		// assistant.usage is filtered, so the message identity makes this call
+		// complete rather than unknown.
+		if u := usage["claude-sonnet-4"]; u.ModelCallCount != 1 || u.OutputTokens != 5 {
+			t.Fatalf("expected one message-identified call, got %#v", usage)
 		}
 	})
 }
@@ -1175,10 +1181,188 @@ func TestCopilotAssistantUsageReportsCallEvidence(t *testing.T) {
 	if gotModel != "claude-sonnet-4.5" || gotID != "usage-call-1" {
 		t.Fatalf("evidence callback = (%q, %q), want model and provider event ID", gotModel, gotID)
 	}
-	evt.ID = ""
-	handleCopilotEvent(evt, st)
+	incompleteState := newCopilotEventState("copilot", false)
+	incompleteState.onModelCallEvidenceIncomplete = func(model string) {
+		incompleteModel = model
+	}
+	incompleteEvent := evt
+	incompleteEvent.ID = ""
+	handleCopilotEvent(incompleteEvent, incompleteState)
 	if incompleteModel != "claude-sonnet-4.5" {
 		t.Fatalf("incomplete evidence callback = %q, want model", incompleteModel)
+	}
+}
+
+func TestCopilotLiveEvidencePrefersFirstObservedIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		lines     []string
+		wantID    string
+		wantCallN int64
+	}{
+		{
+			name: "message first",
+			lines: []string{
+				`{"type":"assistant.message","data":{"model":"m","messageId":"message-1","content":"ok"}}`,
+				`{"type":"assistant.usage","data":{"model":"m","inputTokens":10,"outputTokens":2},"id":"usage-1"}`,
+			},
+			wantID:    "message-1",
+			wantCallN: 1,
+		},
+		{
+			name: "usage first",
+			lines: []string{
+				`{"type":"assistant.usage","data":{"model":"m","inputTokens":10,"outputTokens":2},"id":"usage-1"}`,
+				`{"type":"assistant.message","data":{"model":"m","messageId":"message-1","content":"ok"}}`,
+			},
+			wantID:    "usage-1",
+			wantCallN: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := newCopilotEventState("copilot", false)
+			var callbacks []string
+			st.onModelCallEvidence = func(_, evidenceID string) {
+				callbacks = append(callbacks, evidenceID)
+			}
+			for _, line := range tt.lines {
+				var evt copilotEvent
+				if err := json.Unmarshal([]byte(line), &evt); err != nil {
+					t.Fatal(err)
+				}
+				handleCopilotEvent(evt, st)
+			}
+			usage := st.resolveUsage()
+			if len(callbacks) != 1 || callbacks[0] != tt.wantID {
+				t.Fatalf("callbacks = %#v, want [%q]", callbacks, tt.wantID)
+			}
+			if u := usage["m"]; u.ModelCallCount != tt.wantCallN {
+				t.Fatalf("model call count = %d, want %d", u.ModelCallCount, tt.wantCallN)
+			}
+			if got := usage["m"].ModelCallEvidenceIDs(); len(got) != 1 || got[0] != tt.wantID {
+				t.Fatalf("evidence IDs = %#v, want [%q]", got, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestCopilotLiveEvidenceDoesNotDuplicateMixedCalls(t *testing.T) {
+	t.Parallel()
+
+	st := newCopilotEventState("copilot", false)
+	var callbacks []string
+	st.onModelCallEvidence = func(_, evidenceID string) {
+		callbacks = append(callbacks, evidenceID)
+	}
+	lines := []string{
+		`{"type":"assistant.message","data":{"model":"m","messageId":"message-1","content":"first"}}`,
+		`{"type":"assistant.usage","data":{"model":"m","inputTokens":10,"outputTokens":2},"id":"usage-1"}`,
+		`{"type":"assistant.usage","data":{"model":"m","inputTokens":20,"outputTokens":3},"id":"usage-2"}`,
+		`{"type":"assistant.message","data":{"model":"m","messageId":"message-2","content":"second"}}`,
+	}
+	for _, line := range lines {
+		var evt copilotEvent
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			t.Fatal(err)
+		}
+		handleCopilotEvent(evt, st)
+	}
+	usage := st.resolveUsage()
+	if len(callbacks) != 2 || callbacks[0] != "message-1" || callbacks[1] != "usage-2" {
+		t.Fatalf("callbacks = %#v, want [message-1 usage-2]", callbacks)
+	}
+	if u := usage["m"]; u.ModelCallCount != 2 {
+		t.Fatalf("model call count = %d, want 2", u.ModelCallCount)
+	}
+	if got := usage["m"].ModelCallEvidenceIDs(); len(got) != 2 || got[0] != "message-1" || got[1] != "usage-2" {
+		t.Fatalf("evidence IDs = %#v, want [message-1 usage-2]", got)
+	}
+}
+
+func TestCopilotEvidenceRecoversWhenOneStreamSuppliesTheIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, lines := range [][]string{
+		{
+			`{"type":"assistant.message","data":{"model":"m","content":"first"}}`,
+			`{"type":"assistant.usage","data":{"model":"m","inputTokens":10,"outputTokens":2},"id":"usage-1"}`,
+		},
+		{
+			`{"type":"assistant.usage","data":{"model":"m","inputTokens":10,"outputTokens":2}}`,
+			`{"type":"assistant.message","data":{"model":"m","messageId":"message-1","content":"first"}}`,
+		},
+	} {
+		st := newCopilotEventState("copilot", false)
+		for _, line := range lines {
+			var evt copilotEvent
+			if err := json.Unmarshal([]byte(line), &evt); err != nil {
+				t.Fatal(err)
+			}
+			handleCopilotEvent(evt, st)
+		}
+
+		u := st.resolveUsage()["m"]
+		if u.ModelCallEvidenceIncomplete || u.ModelCallCount != 1 {
+			t.Fatalf("recoverable evidence = %#v, want one complete call", u)
+		}
+		if len(u.ModelCallEvidenceIDs()) != 1 {
+			t.Fatalf("recoverable evidence IDs = %#v, want one identity", u.ModelCallEvidenceIDs())
+		}
+	}
+}
+
+func TestCopilotPartialEvidenceRemainsUnknown(t *testing.T) {
+	t.Parallel()
+
+	st := newCopilotEventState("copilot", false)
+	lines := []string{
+		`{"type":"assistant.message","data":{"model":"m","content":"first"}}`,
+		`{"type":"assistant.message","data":{"model":"m","content":"second"}}`,
+		`{"type":"assistant.usage","data":{"model":"m","inputTokens":10,"outputTokens":2},"id":"usage-1"}`,
+	}
+	for _, line := range lines {
+		var evt copilotEvent
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			t.Fatal(err)
+		}
+		handleCopilotEvent(evt, st)
+	}
+
+	u := st.resolveUsage()["m"]
+	if !u.ModelCallEvidenceIncomplete || u.ModelCallCount != 0 {
+		t.Fatalf("partial evidence = %#v, want incomplete with zero known count", u)
+	}
+	if got := u.ModelCallEvidenceIDs(); len(got) != 1 || got[0] != "usage-1" {
+		t.Fatalf("diagnostic evidence IDs = %#v, want [usage-1]", got)
+	}
+}
+
+func TestCopilotEvidencePairsAcrossModelKeyDrift(t *testing.T) {
+	t.Parallel()
+
+	st := newCopilotEventState("copilot", false)
+	for _, line := range []string{
+		`{"type":"assistant.message","data":{"model":"gpt-4.1","messageId":"message-1","content":"first"}}`,
+		`{"type":"assistant.usage","data":{"model":"gpt-4.1[1m]","inputTokens":10,"outputTokens":2},"id":"usage-1"}`,
+	} {
+		var evt copilotEvent
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			t.Fatal(err)
+		}
+		handleCopilotEvent(evt, st)
+	}
+
+	usage := st.resolveUsage()
+	if len(usage) != 1 {
+		t.Fatalf("usage buckets = %#v, want one model bucket", usage)
+	}
+	u := usage["gpt-4.1"]
+	if u.ModelCallEvidenceIncomplete || u.ModelCallCount != 1 {
+		t.Fatalf("drifted model evidence = %#v, want one complete call", u)
 	}
 }
 

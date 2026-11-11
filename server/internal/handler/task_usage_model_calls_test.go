@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -126,6 +127,33 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 		t.Fatalf("terminal replay call count = %d, want 1", liveCalls)
 	}
 
+	// A live evidence row can arrive before the terminal usage report. The
+	// Prometheus source query must expose that call even before hourly rollup.
+	liveOnlyTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"issue_id":   issueID,
+		"runtime_id": runtimeID,
+		"status":     "running",
+	})
+	liveOnlyReq := modelCallEvidenceRequest(t, runtimeID, liveOnlyTaskID,
+		`{"provider":"claude","model":"model-call-count-live-only","evidence_id":"live-only-1"}`)
+	testutil.Call(t, testHandler.ReportTaskModelCallEvidence, liveOnlyReq).Want(http.StatusOK)
+	metricsRows, err := queries.SumTaskUsageTotalsForMetrics(ctx)
+	if err != nil {
+		t.Fatalf("sum usage metrics: %v", err)
+	}
+	var liveOnlyFound bool
+	for _, row := range metricsRows {
+		if row.RuntimeID == runtimeID && row.Provider == "claude" && row.Model == "model-call-count-live-only" {
+			liveOnlyFound = true
+			if row.ModelCallCount != 1 || row.InputTokens != 0 || row.OutputTokens != 0 {
+				t.Fatalf("live-only metrics row = %+v, want one call and zero tokens", row)
+			}
+		}
+	}
+	if !liveOnlyFound {
+		t.Fatalf("live-only evidence missing from usage metrics source")
+	}
+
 	// Drive the rollup window function over the last hour — the production
 	// cron does the same with a 5-minute lag — and assert the two halves
 	// land in task_usage_hourly without bleeding into each other. The
@@ -146,8 +174,8 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 	`, taskID).Scan(&hourlyKnown, &hourlyUnknown); err != nil {
 		t.Fatalf("rollup read: %v", err)
 	}
-	if hourlyKnown != 3 {
-		t.Errorf("rollup known half = %d, want 3 (two success IDs plus one failure ID)", hourlyKnown)
+	if hourlyKnown != 4 {
+		t.Errorf("rollup known half = %d, want 4 (two success IDs, one failure ID, and the live evidence call)", hourlyKnown)
 	}
 	if hourlyUnknown != 1 {
 		t.Errorf("rollup unknown half = %d, want 1 (the row without call evidence)", hourlyUnknown)
@@ -185,5 +213,112 @@ func TestTaskUsageModelCallCountDBPath(t *testing.T) {
 	}
 	if !seenKnown || !seenUnknown {
 		t.Fatalf("daily rows missing the fixture buckets: known=%v unknown=%v", seenKnown, seenUnknown)
+	}
+}
+
+func TestUsageMetricsDeltaAndModelKeyDrift(t *testing.T) {
+	if testHandler == nil || testPool == nil || testHandler.TaskService == nil {
+		t.Skip("database or task service not available")
+	}
+	ctx := context.Background()
+
+	runtimeID := dbfx.Runtime(t, "UsageMetricsDeltaRuntime", testutil.Cols{
+		"daemon_id":    "usage-metrics-delta-daemon",
+		"runtime_mode": "local",
+	})
+	agentID := dbfx.Agent(t, "UsageMetricsDeltaAgent", runtimeID)
+	issueID := dbfx.Issue(t, "usage-metrics-delta-issue")
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"issue_id":   issueID,
+		"runtime_id": runtimeID,
+		"status":     "running",
+	})
+	dbfx.Cleanup(t, `DELETE FROM task_usage_model_call_evidence WHERE task_id = $1`, taskID)
+	dbfx.Cleanup(t, `DELETE FROM task_usage WHERE task_id = $1`, taskID)
+
+	metrics := obsmetrics.NewBusinessMetrics()
+	previousMetrics := testHandler.TaskService.Metrics
+	testHandler.TaskService.Metrics = metrics
+	t.Cleanup(func() { testHandler.TaskService.Metrics = previousMetrics })
+
+	report := func(body string) {
+		req := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/usage", taskID, json.RawMessage(body))
+		testutil.Call(t, testHandler.ReportTaskUsage, req).Want(http.StatusOK)
+	}
+
+	// A corrected report can move the provider's stable call identity to a new
+	// model key. Its cumulative totals must contribute only the increment beyond
+	// the old key, and a replay must not increment the process metrics again.
+	report(`{"usage":[{"provider":"claude","model":"usage-metrics-old","input_tokens":100,"output_tokens":10,"model_call_evidence_complete":true,"model_call_evidence_ids":["model-drift-1"]}]}`)
+	report(`{"usage":[{"provider":"claude","model":"usage-metrics-new","input_tokens":125,"output_tokens":15,"model_call_evidence_complete":true,"model_call_evidence_ids":["model-drift-1"]}]}`)
+	report(`{"usage":[{"provider":"claude","model":"usage-metrics-new","input_tokens":125,"output_tokens":15,"model_call_evidence_complete":true,"model_call_evidence_ids":["model-drift-1"]}]}`)
+
+	rows, err := testHandler.Queries.GetTaskUsage(ctx, parseUUID(taskID))
+	if err != nil {
+		t.Fatalf("read task usage: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Model != "usage-metrics-new" {
+		t.Fatalf("usage rows after model drift = %+v, want only usage-metrics-new", rows)
+	}
+	if !rows[0].ModelCallCount.Valid || rows[0].ModelCallCount.Int64 != 1 {
+		t.Fatalf("new model call count = %+v, want 1", rows[0].ModelCallCount)
+	}
+
+	// The same model reports cumulative totals twice. Only the 200+20 increase
+	// is observable in Prometheus, while replaying the second report is inert.
+	report(`{"usage":[{"provider":"claude","model":"usage-metrics-same","input_tokens":1000,"output_tokens":100,"model_call_evidence_complete":true,"model_call_evidence_ids":["same-model-1"]}]}`)
+	report(`{"usage":[{"provider":"claude","model":"usage-metrics-same","input_tokens":1200,"output_tokens":120,"model_call_evidence_complete":true,"model_call_evidence_ids":["same-model-1"]}]}`)
+	report(`{"usage":[{"provider":"claude","model":"usage-metrics-same","input_tokens":1200,"output_tokens":120,"model_call_evidence_complete":true,"model_call_evidence_ids":["same-model-1"]}]}`)
+
+	// A new evidence identity with no token totals still represents one provider
+	// request, but it must not move any token counter.
+	report(`{"usage":[{"provider":"claude","model":"usage-metrics-evidence-only","model_call_evidence_complete":true,"model_call_evidence_ids":["evidence-only-1"]}]}`)
+	report(`{"usage":[{"provider":"claude","model":"usage-metrics-evidence-only","model_call_evidence_complete":true,"model_call_evidence_ids":["evidence-only-1"]}]}`)
+	beforeUnknown := counterValue(t, metrics, "multica_llm_request_total")
+	unknownReq := modelCallEvidenceRequest(t, runtimeID, taskID,
+		`{"provider":"claude","model":"usage-metrics-unknown","incomplete":true}`)
+	testutil.Call(t, testHandler.ReportTaskModelCallEvidence, unknownReq).Want(http.StatusOK)
+	if got := counterValue(t, metrics, "multica_llm_request_total"); got != beforeUnknown {
+		t.Fatalf("incomplete evidence changed request counter: got %v, want %v", got, beforeUnknown)
+	}
+
+	if got := counterValue(t, metrics, "multica_llm_unpriced_tokens_total"); got != 1460 {
+		t.Fatalf("captured unpriced token delta = %v, want 1460 (model drift, same-model delta, and no evidence-only tokens)", got)
+	}
+	if got := counterValue(t, metrics, "multica_llm_request_total"); got != 5 {
+		t.Fatalf("captured usage reports = %v, want 5 after replay and evidence-only retry", got)
+	}
+
+	// A single terminal report can contain an incomplete old model row and a
+	// complete corrected row for the same provider call. The old row remains
+	// unknown because its token/cost totals are not proven to be replaced.
+	mixedTaskID := dbfx.Task(t, agentID, testutil.Cols{
+		"issue_id":   issueID,
+		"runtime_id": runtimeID,
+		"status":     "completed",
+	})
+	dbfx.Cleanup(t, `DELETE FROM task_usage_model_call_evidence WHERE task_id = $1`, mixedTaskID)
+	dbfx.Cleanup(t, `DELETE FROM task_usage WHERE task_id = $1`, mixedTaskID)
+	mixedReport := func(body string) {
+		req := daemonTaskRequest(t, "/api/daemon/tasks/"+mixedTaskID+"/usage", mixedTaskID, json.RawMessage(body))
+		testutil.Call(t, testHandler.ReportTaskUsage, req).Want(http.StatusOK)
+	}
+	mixedReport(`{"usage":[{"provider":"claude","model":"mixed-old","input_tokens":10,"model_call_evidence_complete":true,"model_call_evidence_ids":["mixed-evidence-1"]}]}`)
+	mixedReport(`{"usage":[{"provider":"claude","model":"mixed-old","input_tokens":20},{"provider":"claude","model":"mixed-new","input_tokens":30,"model_call_evidence_complete":true,"model_call_evidence_ids":["mixed-evidence-1"]}]}`)
+	mixedRows, err := testHandler.Queries.GetTaskUsage(ctx, parseUUID(mixedTaskID))
+	if err != nil {
+		t.Fatalf("read mixed model usage: %v", err)
+	}
+	var mixedOldUnknown, mixedNewKnown bool
+	for _, row := range mixedRows {
+		switch row.Model {
+		case "mixed-old":
+			mixedOldUnknown = !row.ModelCallCount.Valid
+		case "mixed-new":
+			mixedNewKnown = row.ModelCallCount.Valid && row.ModelCallCount.Int64 == 1
+		}
+	}
+	if !mixedOldUnknown || !mixedNewKnown {
+		t.Fatalf("mixed model usage = %+v, want old unknown and new known", mixedRows)
 	}
 }

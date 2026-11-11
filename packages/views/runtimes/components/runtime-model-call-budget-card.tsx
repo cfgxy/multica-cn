@@ -72,6 +72,10 @@ export function ModelCallBudgetCard({
   const active = report?.active === true;
   const unknownUsageRows = report?.unknown_usage_rows ?? 0;
   const knownCalls = report?.known_calls ?? 0;
+  const reservedCalls = report?.reserved_calls ?? 0;
+  const activeHint = knownCalls >= config.max_calls
+    ? t(($) => $.detail.mb_active_known_hint)
+    : t(($) => $.detail.mb_active_reserved_hint);
 
   const openEdit = () => {
     setDraft({ ...config });
@@ -144,6 +148,7 @@ export function ModelCallBudgetCard({
       <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-caption sm:grid-cols-3">
         <Fact label={t(($) => $.detail.mb_state)}>{state}</Fact>
         <Fact label={t(($) => $.detail.mb_known_calls)}>{knownCalls}</Fact>
+        <Fact label={t(($) => $.detail.mb_reserved_calls)}>{reservedCalls}</Fact>
         <Fact label={t(($) => $.detail.mb_limit)}>{config.max_calls}</Fact>
         <Fact label={t(($) => $.detail.mb_window)}>
           {t(($) => $.detail.mb_window_value, { seconds: config.window_seconds })}
@@ -164,9 +169,7 @@ export function ModelCallBudgetCard({
         </p>
       ) : null}
       {active ? (
-        <p className="mt-2 text-caption text-warning">
-          {t(($) => $.detail.mb_active_hint)}
-        </p>
+        <p className="mt-2 text-caption text-warning">{activeHint}</p>
       ) : !complete ? (
         <p className="mt-2 text-caption text-muted-foreground">
           {t(($) => $.detail.mb_incomplete_hint)}
