@@ -1,4 +1,10 @@
 import { z } from "zod";
+
+// A missing or malformed URL must not render a QR code: callers fall back to
+// an empty string and surface a recoverable failure instead.
+export const BeginLarkPermissionGrantResponseSchema = z.object({
+  qr_code_url: z.string().url(),
+}).loose();
 import type {
   AgentBuilderRuntimeSwitch,
   AgentBuilderSession,
@@ -1458,6 +1464,11 @@ export const CommentTriggerOutcomeSchema = z.object({
   reason_code: z.string().default(""),
 }).loose();
 
+const CommentMentionWarningSchema = z.object({
+  start: z.number().int().nonnegative(),
+  end: z.number().int().positive(),
+}).refine(({ start, end }) => end > start);
+
 export const CommentSchema = z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1477,6 +1488,12 @@ export const CommentSchema = z.object({
   trigger_outcomes: z.array(z.unknown()).catch([]).optional().transform((items) =>
     items?.flatMap((item) => {
       const parsed = CommentTriggerOutcomeSchema.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    }),
+  ),
+  invalid_mentions: z.array(z.unknown()).catch([]).optional().transform((items) =>
+    items?.flatMap((item) => {
+      const parsed = CommentMentionWarningSchema.safeParse(item);
       return parsed.success ? [parsed.data] : [];
     }),
   ),
@@ -1518,7 +1535,7 @@ const CommentTriggerPreviewAgentSchema = z.object({
 export const CommentTriggerPreviewSchema = z.object({
   agents: z.array(CommentTriggerPreviewAgentSchema).default([]),
   invalid_mentions: z
-    .array(z.object({ start: z.number().int().nonnegative(), end: z.number().int().nonnegative() }))
+    .array(CommentMentionWarningSchema)
     .catch([])
     .default([]),
   // Drop malformed blocked entries INDIVIDUALLY (MUL-4525): a single bad item
@@ -2058,13 +2075,12 @@ const CostSplitShape = {
 
 // Model API/Prompt call counts (migration 996). `model_call_count` is the
 // known half only; `model_call_unknown_count` counts the rows whose provider
-// gave no call evidence. Defaults mirror the cost split: a backend older than
-// the column sends neither, and once the backend carries them the unknown
-// count stays a real number (0 = every row had call evidence) rather than
-// undefined.
+// gave no call evidence. A backend older than the column sends neither field;
+// that omission is not equivalent to a complete zero-count response, so keep
+// it distinct for the UI.
 const ModelCallCountShape = {
-  model_call_count: z.number().default(0),
-  model_call_unknown_count: z.number().default(0),
+  model_call_count: z.number().optional(),
+  model_call_unknown_count: z.number().optional(),
 };
 
 const DashboardUsageDailySchema = z.object({
@@ -2108,8 +2124,32 @@ export const DashboardUsageTrafficSchema = z.object({
   window: z.string().optional(),
   by: z.string().default("provider"),
   step_seconds: z.number().optional(),
+  calls_complete: z.boolean().optional(),
+  calls_unknown_rows: z.number().optional(),
   series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
 }).loose();
+
+// Per-Runtime host resources (RUYI-859 stage 1): the RUYI-618 resource panel
+// narrowed server-side to the one daemon host the runtime binds. Three
+// distinct structured empty states the Runtime page must render visibly
+// instead of hiding the section:
+//   configured=false — the deployment has no PROMETHEUS_URL (normal);
+//   has_daemon=false — cloud/manual runtime binds no daemon host;
+//   configured+has_daemon with empty series — Prometheus is up but the
+//   daemon host is not scraping yet.
+// `sampled_at` is the newest sample timestamp across all series — "how
+// fresh is this reading" without a second request.
+export const RuntimeResourcesSchema = z.object({
+  configured: z.boolean(),
+  daemon_id: z.string().default(""),
+  has_daemon: z.boolean().default(false),
+  window: z.string().optional(),
+  step_seconds: z.number().optional(),
+  sampled_at: z.string().optional(),
+  series: z.record(z.string(), z.array(UsageMetricSeriesSchema)).default({}),
+}).loose();
+
+export type RuntimeResources = z.infer<typeof RuntimeResourcesSchema>;
 
 const DashboardUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
@@ -5311,6 +5351,14 @@ export const KnowledgeDirSchema = z.object({
 
 export const KnowledgeDirListSchema = z.array(KnowledgeDirSchema);
 
+export const KnowledgeEntryOperationSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+  operation_type: z.string().optional(),
+  error: z.string().optional(),
+  requested_at: z.string().optional(),
+}).loose();
+
 export const KnowledgeEntrySchema = z.object({
   id: z.string(),
   dir_id: z.string(),
@@ -5327,9 +5375,15 @@ export const KnowledgeEntrySchema = z.object({
   adopted_from_dir_id: z.string().optional(),
   adopted_from_key: z.string().optional(),
   adoption_error: z.string().optional(),
+  pending_operation: KnowledgeEntryOperationSchema.optional(),
 }).loose();
 
 export const KnowledgeEntryListSchema = z.array(KnowledgeEntrySchema);
+
+export const EMPTY_KNOWLEDGE_ENTRY_OPERATION = {
+  id: "",
+  status: "",
+};
 
 // --- Self-evolution workspace overview (RUYI-284) ---
 //
@@ -5495,6 +5549,23 @@ export const SelfEvolutionConfigValidationSchema = z.object({
   validated_at: z.string().optional(),
 });
 
+// ---- Workspace JEV advisory config ----
+// The browser never receives the encrypted key. A malformed response must
+// degrade to unconfigured so it cannot claim a working risk precheck.
+export const SelfEvolutionJevConfigSchema = z.object({
+  status: z.enum(["unconfigured", "offline", "available"]).default("unconfigured"),
+  source: z.enum(["unconfigured", "workspace", "deployment"]).default("unconfigured"),
+  endpoint: z.string().default(""),
+  model: z.string().default(""),
+  timeout_ms: z.number().int().min(100).max(30000).default(1500),
+  has_api_key: z.boolean().default(false),
+  last_checked_at: z.string().optional(),
+  last_check_ok: z.boolean().optional(),
+  last_check_error: z.string().default(""),
+  engine: z.string().optional(),
+  encryption_ready: z.boolean().default(true),
+});
+
 // Workspace host-backpressure settings (RUYI-618): the effective card the
 // settings form saves and every daemon receives on heartbeat acks. All
 // numeric fields default to the daemon code defaults so an old server
@@ -5511,6 +5582,46 @@ export const WorkspaceBackpressureSettingsSchema = z.object({
   window_size: z.number().default(6),
   custom: z.boolean().default(false),
 });
+
+export const WorkspacePromQLRuleSampleSchema = z.object({
+  labels: z.record(z.string(), z.string()).nullish().transform((value) => value ?? {}),
+  value: z.number().default(0),
+}).loose();
+
+export const WorkspacePromQLRuleSchema = z.object({
+  id: z.string().default(""),
+  name: z.string().default(""),
+  enabled: z.boolean().default(false),
+  metric: z.enum(["failures", "failure_rate"]).default("failure_rate"),
+  grouping: z.enum(["workspace", "agent"]).default("workspace"),
+  condition: z.enum(["threshold", "present"]).default("threshold"),
+  comparison: z.enum([">", ">=", "<", "<="]).optional(),
+  threshold: z.number().optional(),
+  recovery_threshold: z.number().optional(),
+  lookback_seconds: z.number().default(300),
+  evaluation_seconds: z.number().default(30),
+  for_seconds: z.number().default(0),
+  no_data_policy: z.enum(["keep", "trigger", "resolve"]).default("keep"),
+  query_error_policy: z.enum(["keep", "trigger", "resolve"]).default("keep"),
+  state: z.object({
+    firing: z.boolean().default(false),
+    pending_since: z.string().optional(),
+    last_evaluated_at: z.string().optional(),
+    last_error: z.string().optional(),
+    values: z.array(WorkspacePromQLRuleSampleSchema).optional(),
+  }).loose().default({ firing: false }),
+}).loose();
+
+export const WorkspacePromQLRulesSchema = z.object({
+  rules: z.array(WorkspacePromQLRuleSchema).default([]),
+  prometheus_configured: z.boolean().default(false),
+}).loose();
+
+export const WorkspacePromQLRulePreviewSchema = z.object({
+  query: z.string().default(""),
+  samples: z.array(WorkspacePromQLRuleSampleSchema).default([]),
+  matches: z.boolean().default(false),
+}).loose();
 
 // ---- Daemon host backpressure settings + event history (RUYI-729) ----
 // The daemon-host override card (Runtime detail page) and its report/event
@@ -5564,6 +5675,95 @@ export const RuntimeBackpressureSettingsSchema = z.object({
 
 export type RuntimeBackpressureSettings = z.infer<typeof RuntimeBackpressureSettingsSchema>;
 
+// RUYI-859 stage A: agent-level error-rate backpressure policy (config
+// surface + read-only visibility). A no-row agent answers with the server's
+// built-in defaults (monitor-only, auto-suppression off), so the card always
+// has concrete numbers. The two windows and the FIXED 0.5x recovery
+// threshold are product semantics the page must show.
+
+const AgentBackpressureConfigSchema = z.object({
+  window_minutes: z.number().default(60),
+  error_rate_threshold_pct: z.number().default(30),
+  min_samples: z.number().default(5),
+  recovery_window_minutes: z.number().default(30),
+  suppress_on_error_rate: z.boolean().default(false),
+  count_model_api_failures: z.boolean().default(true),
+  count_execution_failures: z.boolean().default(true),
+  promql_rule_ids: z.array(z.string()).default([]),
+}).loose();
+
+export type AgentBackpressureConfig = z.infer<typeof AgentBackpressureConfigSchema>;
+
+const AgentBackpressureSchedulingSchema = z.object({
+  paused: z.boolean().default(false),
+  scope: z.string().optional(),
+  reason: z.string().optional(),
+  created_by: z.string().optional(),
+  created_at: z.string().optional(),
+  queued_count: z.number().default(0),
+  promql_rule_paused: z.boolean().default(false),
+});
+
+const AgentBackpressureWindowSchema = z
+  .object({
+    window_minutes: z.number().default(0),
+    total_terminal: z.number().default(0),
+    selected_failures: z.number().default(0),
+    recovery_threshold_pct: z.number().default(0),
+    error_rate_pct: z.number().nullable().default(null),
+    by_class: z.record(z.string(), z.number()).default({}),
+  })
+  .loose();
+
+const AgentBackpressureEventSchema = z.object({
+  id: z.string().default(""),
+  event_type: z.string().default(""),
+  sample_count: z.number().default(0),
+  error_rate_pct: z.number().default(0),
+  effective_policy: z.unknown().optional(),
+  source: z.string().optional(),
+  rule_id: z.string().optional(),
+  rule_name: z.string().optional(),
+  reason: z.string().optional(),
+  occurred_at: z.string().default(""),
+}).loose();
+
+const AgentPromQLRuleStateSchema = z.object({
+  firing: z.boolean().default(false),
+  pending_since: z.string().optional(),
+  last_evaluated_at: z.string().optional(),
+  last_error: z.string().optional(),
+}).loose();
+
+const AgentPromQLRuleStatusSchema = z.object({
+  id: z.string().default(""),
+  name: z.string().default(""),
+  grouping: z.string().default(""),
+  state: AgentPromQLRuleStateSchema.default({ firing: false }),
+  status: z.string().default("inactive"),
+  source_active: z.boolean().default(false),
+  reason: z.string().optional(),
+  entered_at: z.string().optional(),
+  mapping_mismatch: z.boolean().default(false),
+}).loose();
+
+export const AgentBackpressurePolicySchema = z.object({
+  agent_id: z.string().default(""),
+  configured: z.boolean().default(false),
+  config: AgentBackpressureConfigSchema.nullish().catch(null),
+  updated_by: z.string().optional(),
+  updated_at: z.string().optional(),
+  window: AgentBackpressureWindowSchema.nullish().catch(null),
+  scheduling: AgentBackpressureSchedulingSchema.nullish().catch(null),
+  events: z.array(AgentBackpressureEventSchema).default([]),
+  promql_rules: z.array(AgentPromQLRuleStatusSchema).default([]),
+}).loose();
+
+export type AgentBackpressurePolicy = z.infer<typeof AgentBackpressurePolicySchema>;
+export type AgentBackpressureEvent = z.infer<typeof AgentBackpressureEventSchema>;
+
+export const AgentBackpressureEventListSchema = z.array(AgentBackpressureEventSchema);
+
 const DaemonBackpressureEventSchema = z.object({
   id: z.string().default(""),
   event_type: z.string().default(""),
@@ -5591,6 +5791,7 @@ const RuntimeModelCallBudgetConfigSchema = z.object({
 const RuntimeModelCallBudgetReportSchema = z.object({
   known_calls: z.number().int().nonnegative().default(0),
   unknown_usage_rows: z.number().int().nonnegative().default(0),
+  reserved_calls: z.number().int().nonnegative().default(0),
   complete: z.boolean().default(false),
   active: z.boolean().default(false),
   window_started_at: z.string().default(""),
@@ -5605,6 +5806,7 @@ export const RuntimeModelCallBudgetSchema = z.object({
   report: RuntimeModelCallBudgetReportSchema.default({
     known_calls: 0,
     unknown_usage_rows: 0,
+    reserved_calls: 0,
     complete: false,
     active: false,
     window_started_at: "",
@@ -5619,6 +5821,7 @@ export const EMPTY_RUNTIME_MODEL_CALL_BUDGET: RuntimeModelCallBudget = {
   report: {
     known_calls: 0,
     unknown_usage_rows: 0,
+    reserved_calls: 0,
     complete: false,
     active: false,
     window_started_at: "",

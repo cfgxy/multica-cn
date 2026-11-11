@@ -17,6 +17,9 @@ import type { ListAuditEventsParams, AuditEventsPage } from "../types/audit";
 import type {
   RuntimeBackpressureSettings,
   RuntimeBackpressureEvent,
+  AgentBackpressurePolicy,
+  AgentBackpressureConfig,
+  AgentBackpressureEvent,
   RuntimeModelCallBudget,
   RuntimeModelCallBudgetConfig,
 } from "./schemas";
@@ -110,10 +113,16 @@ import type {
   ClauseGovernanceReconciliation,
   SelfEvolutionOverview,
   SelfEvolutionConfigValidation,
+
+  SelfEvolutionJevConfig,
+  SelfEvolutionJevConfigSave,
   SelfEvolutionModelConfig,
   SelfEvolutionModelConfigSave,
   WorkspaceBackpressureSettings,
   WorkspaceBackpressureSettingsSave,
+  WorkspacePromQLRuleSave,
+  WorkspacePromQLRules,
+  WorkspacePromQLRulePreview,
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
@@ -147,6 +156,7 @@ import type {
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
   KnowledgeEntry,
+  KnowledgeEntryOperation,
   SkillEffect,
   CreateSkillRequest,
   UpdateSkillRequest,
@@ -164,6 +174,7 @@ import type {
   DashboardUsageResources,
   DashboardUsageTraffic,
   DashboardUsageTrafficDim,
+  RuntimeResources,
   DashboardUsageByAgent,
   DashboardAgentRunTime,
   DashboardRunTimeDaily,
@@ -279,6 +290,7 @@ import type {
   RedeemLarkBindingTokenResponse,
   LarkPermissionCatalogResponse,
   RecheckLarkPermissionsResponse,
+  BeginLarkPermissionGrantResponse,
   ComposioToolkit,
   ComposioConnection,
   ComposioConnectInitResponse,
@@ -411,6 +423,7 @@ import {
   DashboardUsageDailyListSchema,
   DashboardUsageResourcesSchema,
   DashboardUsageTrafficSchema,
+  RuntimeResourcesSchema,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
   EMPTY_CHAT_MESSAGE_LIST,
@@ -459,6 +472,10 @@ import {
   RuntimeHourlyActivityListSchema,
   RuntimeBackpressureSettingsSchema,
   RuntimeBackpressureEventListSchema,
+  WorkspacePromQLRulesSchema,
+  WorkspacePromQLRulePreviewSchema,
+  AgentBackpressurePolicySchema,
+  AgentBackpressureEventListSchema,
   RuntimeModelCallBudgetSchema,
   EMPTY_RUNTIME_MODEL_CALL_BUDGET,
   RuntimeUsageByAgentListSchema,
@@ -615,6 +632,8 @@ import {
   RetrospectiveRunSchema,
   KnowledgeDirListSchema,
   KnowledgeEntryListSchema,
+  KnowledgeEntryOperationSchema,
+  EMPTY_KNOWLEDGE_ENTRY_OPERATION,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
   IssueViewSchema,
@@ -668,6 +687,7 @@ import {
   EMPTY_CLAUSE_GOVERNANCE_RECONCILIATION,
   SelfEvolutionOverviewSchema,
   SelfEvolutionConfigValidationSchema,
+  SelfEvolutionJevConfigSchema,
   SelfEvolutionModelConfigSchema,
   WorkspaceBackpressureSettingsSchema,
   EMPTY_SELF_EVOLUTION_OVERVIEW,
@@ -695,6 +715,7 @@ import {
   EMPTY_SHARE_LINK,
   EMPTY_SHARE_LINK_INFO,
   EMPTY_JOIN_SHARE_LINK_RESPONSE,
+  BeginLarkPermissionGrantResponseSchema,
   type IssueView,
   type IssueViewPreference,
   type CreateIssueViewRequest,
@@ -1381,15 +1402,13 @@ export class ApiClient {
 
   async createIssueCredential(issueId: string, data: {
     name: string;
-    target_service: string;
-    connector_id: string;
-    connector_revision: number;
     purpose: string;
     subject_type: "agent" | "squad";
     subject_id: string;
     resource_scope: "single_use" | "issue" | "project" | "workspace" | "global";
     resource_id?: string;
     expires_at: string | null;
+    request_comment_id?: string;
     envelope: CredentialTransportEnvelope;
   }): Promise<CredentialMetadata | null> {
     const raw = await this.fetch<unknown>(`/api/issues/${issueId}/credentials`, {
@@ -1404,9 +1423,6 @@ export class ApiClient {
 
   async replaceIssueCredential(issueId: string, credentialId: string, data: {
     name: string;
-    target_service: string;
-    connector_id: string;
-    connector_revision: number;
     purpose: string;
     subject_type: "agent" | "squad";
     subject_id: string;
@@ -3260,6 +3276,97 @@ export class ApiClient {
     );
   }
 
+  // ---- Agent-level error-rate backpressure policy (RUYI-859 stage A) ----
+  // Config surface + read-only visibility on the Agent detail page. A
+  // malformed response degrades to the built-in defaults (monitor-only,
+  // auto-suppression off) rather than breaking the page.
+
+  async getAgentBackpressurePolicy(
+    agentId: string,
+  ): Promise<AgentBackpressurePolicy> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-policy`,
+    );
+    return parseWithFallback<AgentBackpressurePolicy>(
+      raw,
+      AgentBackpressurePolicySchema,
+      {
+        agent_id: agentId,
+        configured: false,
+        config: null,
+        window: null,
+        scheduling: null,
+        events: [],
+        promql_rules: [],
+      },
+      { endpoint: "GET /api/agents/:id/backpressure-policy" },
+    );
+  }
+
+  async putAgentBackpressurePolicy(
+    agentId: string,
+    config: AgentBackpressureConfig,
+  ): Promise<AgentBackpressurePolicy> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-policy`,
+      { method: "PUT", body: JSON.stringify(config) },
+    );
+    return parseWithFallback<AgentBackpressurePolicy>(
+      raw,
+      AgentBackpressurePolicySchema,
+      {
+        agent_id: agentId,
+        configured: true,
+        config: null,
+        window: null,
+        scheduling: null,
+        events: [],
+        promql_rules: [],
+      },
+      { endpoint: "PUT /api/agents/:id/backpressure-policy" },
+    );
+  }
+
+  async deleteAgentBackpressurePolicy(
+    agentId: string,
+  ): Promise<AgentBackpressurePolicy> {
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-policy`,
+      { method: "DELETE" },
+    );
+    return parseWithFallback<AgentBackpressurePolicy>(
+      raw,
+      AgentBackpressurePolicySchema,
+      {
+        agent_id: agentId,
+        configured: false,
+        config: null,
+        window: null,
+        scheduling: null,
+        events: [],
+        promql_rules: [],
+      },
+      { endpoint: "DELETE /api/agents/:id/backpressure-policy" },
+    );
+  }
+
+  async listAgentBackpressureEvents(
+    agentId: string,
+    params?: { limit?: number },
+  ): Promise<AgentBackpressureEvent[]> {
+    const search = new URLSearchParams();
+    if (params?.limit) search.set("limit", String(params.limit));
+    const raw = await this.fetch<unknown>(
+      `/api/agents/${agentId}/backpressure-events?${search}`,
+    );
+    return parseWithFallback<AgentBackpressureEvent[]>(
+      raw,
+      AgentBackpressureEventListSchema,
+      [],
+      { endpoint: "GET /api/agents/:id/backpressure-events" },
+    );
+  }
+
   async getRuntimeUsage(
     runtimeId: string,
     params?: { days?: number; tz?: string },
@@ -3381,6 +3488,27 @@ export class ApiClient {
       DashboardUsageResourcesSchema,
       { configured: false, series: {} },
       { endpoint: "GET /api/dashboard/usage/resources" },
+    );
+  }
+
+  // Per-Runtime host resources (RUYI-859): the RUYI-618 resource panel
+  // narrowed to this runtime's daemon host, server-side. A 200 with
+  // configured=false (no observability stack) or has_daemon=false (cloud
+  // runtime) is a normal state, not an error.
+  async getRuntimeResources(
+    runtimeId: string,
+    params: { window?: string },
+  ): Promise<RuntimeResources> {
+    const search = new URLSearchParams();
+    if (params.window) search.set("window", params.window);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/resources?${search}`,
+    );
+    return parseWithFallback<RuntimeResources>(
+      raw,
+      RuntimeResourcesSchema,
+      { configured: false, daemon_id: "", has_daemon: false, series: {} },
+      { endpoint: "GET /api/runtimes/:id/resources" },
     );
   }
 
@@ -4462,6 +4590,66 @@ export class ApiClient {
       error_kind: "other",
       message: "",
     }, { endpoint: "POST /api/self-evolution/model-config/validate" });
+  }
+
+  /** The workspace's warn-only JEV advisory endpoint and its last probe. */
+  async getSelfEvolutionJevConfig(): Promise<SelfEvolutionJevConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/jev-config");
+    return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
+      status: "unconfigured",
+      source: "unconfigured",
+      endpoint: "",
+      model: "",
+      timeout_ms: 1500,
+      has_api_key: false,
+      encryption_ready: true,
+    }, { endpoint: "GET /api/self-evolution/jev-config" });
+  }
+
+  /** Saves the JEV endpoint and records the immediate connectivity result. */
+  async putSelfEvolutionJevConfig(save: SelfEvolutionJevConfigSave): Promise<SelfEvolutionJevConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/jev-config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(save),
+    });
+    return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
+      status: "unconfigured",
+      source: "unconfigured",
+      endpoint: "",
+      model: "",
+      timeout_ms: 1500,
+      has_api_key: false,
+      encryption_ready: true,
+    }, { endpoint: "PUT /api/self-evolution/jev-config" });
+  }
+
+  async deleteSelfEvolutionJevConfig(): Promise<SelfEvolutionJevConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/jev-config", { method: "DELETE" });
+    return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
+      status: "unconfigured",
+      source: "unconfigured",
+      endpoint: "",
+      model: "",
+      timeout_ms: 1500,
+      has_api_key: false,
+      encryption_ready: true,
+    }, { endpoint: "DELETE /api/self-evolution/jev-config" });
+  }
+
+  async recheckSelfEvolutionJevConfig(): Promise<SelfEvolutionJevConfig> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/jev-config/recheck", {
+      method: "POST",
+    });
+    return parseWithFallback(raw, SelfEvolutionJevConfigSchema, {
+      status: "unconfigured",
+      source: "unconfigured",
+      endpoint: "",
+      model: "",
+      timeout_ms: 1500,
+      has_api_key: false,
+      encryption_ready: true,
+    }, { endpoint: "POST /api/self-evolution/jev-config/recheck" });
   }
 
   /**
@@ -5595,6 +5783,36 @@ export class ApiClient {
 
   async adoptKnowledgeEntry(id: string): Promise<{ status: string }> {
     return this.fetch(`/api/knowledge/entries/${encodeURIComponent(id)}/adopt`, { method: "POST" });
+  }
+
+  async editKnowledgeEntry(id: string, content: string): Promise<KnowledgeEntryOperation> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/edit`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+    return parseWithFallback(raw, KnowledgeEntryOperationSchema, EMPTY_KNOWLEDGE_ENTRY_OPERATION, {
+      endpoint: "POST /api/knowledge/entries/:id/edit",
+    });
+  }
+
+  async deleteKnowledgeEntry(id: string): Promise<KnowledgeEntryOperation> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({ confirm: true }),
+    });
+    return parseWithFallback(raw, KnowledgeEntryOperationSchema, EMPTY_KNOWLEDGE_ENTRY_OPERATION, {
+      endpoint: "POST /api/knowledge/entries/:id/delete",
+    });
+  }
+
+  async mergeKnowledgeEntries(id: string, content: string, sourceEntryIds: string[]): Promise<KnowledgeEntryOperation> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ content, source_entry_ids: sourceEntryIds, confirm: true }),
+    });
+    return parseWithFallback(raw, KnowledgeEntryOperationSchema, EMPTY_KNOWLEDGE_ENTRY_OPERATION, {
+      endpoint: "POST /api/knowledge/entries/:id/merge",
+    });
   }
 
   async createSkill(data: CreateSkillRequest): Promise<Skill> {
@@ -7188,6 +7406,26 @@ export class ApiClient {
     );
   }
 
+  /** Returns a confirmation QR code that adds the current permission catalog
+   * to an existing active Lark app. The backend enforces owner/admin access. */
+  async beginLarkPermissionGrant(
+    workspaceId: string,
+    installationId: string,
+  ): Promise<BeginLarkPermissionGrantResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/lark/installations/${installationId}/grant-permissions`,
+      { method: "POST" },
+    );
+    return parseWithFallback(
+      raw,
+      BeginLarkPermissionGrantResponseSchema,
+      { qr_code_url: "" },
+      {
+        endpoint: "POST /api/workspaces/:id/lark/installations/:installationId/grant-permissions",
+      },
+    );
+  }
+
   // Composio integration (MUL-3720). All routes are user-scoped (a connection
   // belongs to a user, not a workspace), so none take a workspaceId.
 
@@ -7530,5 +7768,38 @@ export class ApiClient {
       ...save,
       custom: true,
     }, { endpoint: "PUT /api/workspace/backpressure-settings" });
+  }
+
+  async getWorkspacePromQLRules(): Promise<WorkspacePromQLRules> {
+    const raw = await this.fetch<unknown>("/api/workspace/promql-rules");
+    return parseWithFallback(raw, WorkspacePromQLRulesSchema, {
+      rules: [],
+      prometheus_configured: false,
+    }, { endpoint: "GET /api/workspace/promql-rules" });
+  }
+
+  async putWorkspacePromQLRules(rules: WorkspacePromQLRuleSave[]): Promise<WorkspacePromQLRules> {
+    const raw = await this.fetch<unknown>("/api/workspace/promql-rules", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rules }),
+    });
+    return parseWithFallback(raw, WorkspacePromQLRulesSchema, {
+      rules: rules.map((rule) => ({ ...rule, state: { firing: false } })),
+      prometheus_configured: false,
+    }, { endpoint: "PUT /api/workspace/promql-rules" });
+  }
+
+  async previewWorkspacePromQLRule(rule: WorkspacePromQLRuleSave): Promise<WorkspacePromQLRulePreview> {
+    const raw = await this.fetch<unknown>("/api/workspace/promql-rules/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rule }),
+    });
+    return parseWithFallback(raw, WorkspacePromQLRulePreviewSchema, {
+      query: "",
+      samples: [],
+      matches: false,
+    }, { endpoint: "POST /api/workspace/promql-rules/preview" });
   }
 }

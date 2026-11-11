@@ -32,13 +32,7 @@ type TrafficDim = DashboardUsageTrafficDim;
  * (the observability convention), while cost and task counts are so small
  * per-second that per-hour reads better ($12/h, not $0.0033/s).
  */
-export function UsageTrafficCard({
-  wsId,
-  unknownCallCount,
-}: {
-  wsId: string;
-  unknownCallCount: number;
-}) {
+export function UsageTrafficCard({ wsId }: { wsId: string }) {
   const { t } = useT("usage");
   const [window, setWindow] = useState<UsageMetricWindow>("1h");
   const [by, setBy] = useState<TrafficDim>("provider");
@@ -48,6 +42,14 @@ export function UsageTrafficCard({
 
   const series = query.data?.series ?? {};
   const hasAny = Object.values(series).some((s) => s.length > 0);
+  const callsHint =
+    query.data?.calls_complete === true
+      ? undefined
+      : query.data?.calls_complete === false && query.data.calls_unknown_rows !== undefined
+        ? t(($) => $.metrics.traffic.calls_unknown_hint, {
+            unknown: query.data.calls_unknown_rows,
+          })
+        : t(($) => $.metrics.traffic.calls_unavailable_hint);
   const dimLabelOf = (labels: Record<string, string>): string => {
     const raw = labels[by] ?? "?";
     // A runtime_id label is a bare UUID; a short prefix is enough to tell
@@ -126,13 +128,7 @@ export function UsageTrafficCard({
             scale={3600}
             formatY={(v) => (v >= 10 ? v.toFixed(0) : v.toFixed(1))}
             formatTooltipValue={(v) => `${v.toFixed(1)}/h`}
-            hint={
-              unknownCallCount > 0
-                ? t(($) => $.metrics.traffic.calls_unknown_hint, {
-                    unknown: unknownCallCount,
-                  })
-                : undefined
-            }
+            hint={callsHint}
           />
         </div>
       )}

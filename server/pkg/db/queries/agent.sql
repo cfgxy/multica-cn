@@ -1398,8 +1398,15 @@ WITH candidates AS MATERIALIZED (
         (SELECT COUNT(*)::bigint
          FROM agent_task_queue atq
          WHERE atq.runtime_id = r.id
-           AND atq.status IN ('dispatched', 'running', 'waiting_local_directory')
-           AND atq.dispatched_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+           AND (
+               atq.status IN ('running', 'waiting_local_directory')
+               OR (
+                   atq.status = 'dispatched'
+                   AND atq.dispatched_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+                   AND atq.prepare_lease_expires_at IS NOT NULL
+                   AND atq.prepare_lease_expires_at >= now()
+               )
+           )
            AND NOT EXISTS (
                SELECT 1
                FROM task_usage_model_call_evidence e

@@ -87,8 +87,11 @@ import {
   EMPTY_PLUGIN_PREVIEW,
   ListGitLabRepositoriesResponseSchema,
   EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
-  EMPTY_ISSUE_USAGE_SUMMARY,
-  IssueUsageSummarySchema,
+	  EMPTY_ISSUE_USAGE_SUMMARY,
+	  IssueUsageSummarySchema,
+	  EMPTY_KNOWLEDGE_ENTRY_OPERATION,
+	  KnowledgeEntrySchema,
+	  KnowledgeEntryOperationSchema,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -96,9 +99,81 @@ import {
   IssueStatusEntrySchema,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_ISSUE_STATUS_ENTRY,
+  BeginLarkPermissionGrantResponseSchema,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 import { SkillSummaryListSchema } from "./schemas";
+import { SelfEvolutionJevConfigSchema } from "./schemas";
+
+describe("KnowledgeEntryOperationSchema", () => {
+  const endpoint = { endpoint: "POST /api/knowledge/entries/:id/edit" };
+
+  it("accepts an operation receipt and its pending-state details", () => {
+    expect(KnowledgeEntryOperationSchema.parse({
+      id: "op-1",
+      status: "queued",
+      operation_type: "edit",
+      error: "bd recall mismatch",
+      requested_at: "2026-11-05T07:00:00Z",
+      retry_after: 10,
+    })).toEqual({
+      id: "op-1",
+      status: "queued",
+      operation_type: "edit",
+      error: "bd recall mismatch",
+      requested_at: "2026-11-05T07:00:00Z",
+      retry_after: 10,
+    });
+  });
+
+  it("falls back when an operation receipt is malformed", () => {
+    expect(
+      parseWithFallback(
+        { id: "op-1", status: 202 },
+        KnowledgeEntryOperationSchema,
+        EMPTY_KNOWLEDGE_ENTRY_OPERATION,
+        endpoint,
+      ),
+    ).toEqual(EMPTY_KNOWLEDGE_ENTRY_OPERATION);
+  });
+
+  it("rejects malformed pending operation state in a knowledge entry", () => {
+    expect(KnowledgeEntrySchema.safeParse({
+      id: "entry-1",
+      dir_id: "dir-1",
+      key: "deploy-rollback",
+      content: "Use the tagged release.",
+      content_sha256: "abc123",
+      mirror_state: "synced",
+      first_seen_at: "2026-11-05T07:00:00Z",
+      last_confirmed_at: "2026-11-05T07:00:00Z",
+      adoption_state: "adopted",
+      pending_operation: { id: "op-1", status: 202 },
+    }).success).toBe(false);
+  });
+});
+
+describe("Lark permission grant response schema", () => {
+  const fallback = { qr_code_url: "" };
+
+  it("accepts a confirmation QR URL", () => {
+    expect(
+      BeginLarkPermissionGrantResponseSchema.parse({
+        qr_code_url: "https://open.feishu.cn/app?clientID=cli_existing",
+      }),
+    ).toEqual({ qr_code_url: "https://open.feishu.cn/app?clientID=cli_existing" });
+  });
+
+  it("falls back to an empty URL for malformed responses", () => {
+    for (const malformed of [null, {}, { qr_code_url: "not a URL" }]) {
+      expect(
+        parseWithFallback(malformed, BeginLarkPermissionGrantResponseSchema, fallback, {
+          endpoint: "POST /api/workspaces/:id/lark/installations/:installationId/grant-permissions",
+        }),
+      ).toEqual(fallback);
+    }
+  });
+});
 
 describe("issue usage summary response", () => {
   const base = {
@@ -1252,10 +1327,9 @@ describe("dashboard + runtime usage schema drift", () => {
     expect(RuntimeUsageByAgentListSchema.parse([{ model: "x" }])[0]?.provider).toBe("");
   });
 
-  it("defaults model call counts to 0 so a pre-migration-996 backend still renders", () => {
+  it("keeps omitted model call counts unavailable for a pre-migration-996 backend", () => {
     // A backend older than migration 996 sends neither call-count field. The
-    // row must survive with both halves at 0 — "no known calls, no unknown
-    // rows" — rather than a missing field reading as "unknown".
+    // row must survive, but missing evidence must not become a complete zero.
     for (const list of [
       DashboardUsageDailyListSchema.parse([{ date: "2026-05-19" }]),
       DashboardUsageByAgentListSchema.parse([{ model: "claude-opus-4-7" }]),
@@ -1263,8 +1337,8 @@ describe("dashboard + runtime usage schema drift", () => {
       RuntimeUsageByAgentListSchema.parse([{ model: "x" }]),
       RuntimeUsageByHourListSchema.parse([{ hour: 9 }]),
     ]) {
-      expect(list[0]?.model_call_count).toBe(0);
-      expect(list[0]?.model_call_unknown_count).toBe(0);
+      expect(list[0]?.model_call_count).toBeUndefined();
+      expect(list[0]?.model_call_unknown_count).toBeUndefined();
     }
     // A live backend sends the known half plus its unknown-row count; both
     // must round-trip untouched.
@@ -1343,6 +1417,7 @@ describe("runtime model-call budget schema drift", () => {
     expect(parsed.report).toEqual({
       known_calls: 0,
       unknown_usage_rows: 0,
+      reserved_calls: 0,
       complete: false,
       active: false,
       window_started_at: "",
@@ -1832,6 +1907,14 @@ describe("CommentSchema.trigger_outcomes", () => {
     ]);
     expect(CommentSchema.parse({ ...comment, trigger_outcomes: "bad" }).trigger_outcomes).toEqual([]);
     expect(CommentSchema.safeParse({ ...comment, id: 123 }).success).toBe(false);
+  });
+
+  it("parses saved-comment mention warnings and degrades malformed warning fields", () => {
+    expect(CommentSchema.parse({
+      ...comment,
+      invalid_mentions: [{ start: 3, end: 12 }],
+    }).invalid_mentions).toEqual([{ start: 3, end: 12 }]);
+    expect(CommentSchema.parse({ ...comment, invalid_mentions: "bad" }).invalid_mentions).toEqual([]);
   });
 });
 
@@ -2879,5 +2962,41 @@ describe("DecisionRequestSchema authorization receipt", () => {
       ...base,
       execution_result: { receipt_version: 1, side_effect_status: "maybe" },
     }).success).toBe(false);
+  });
+});
+
+describe("SelfEvolutionJevConfigSchema", () => {
+  const fallback = {
+    status: "unconfigured" as const,
+    source: "unconfigured" as const,
+    endpoint: "",
+    model: "",
+    timeout_ms: 1500,
+    has_api_key: false,
+    last_check_error: "",
+    encryption_ready: true,
+  };
+
+  it("defaults an incomplete legacy response to unconfigured values", () => {
+    expect(SelfEvolutionJevConfigSchema.parse({})).toEqual(fallback);
+  });
+
+  it("accepts the member-safe status and source response", () => {
+    expect(SelfEvolutionJevConfigSchema.parse({ status: "available", source: "workspace" })).toEqual({
+      ...fallback,
+      status: "available",
+      source: "workspace",
+    });
+  });
+
+  it("falls back when a response contains an invalid status or timeout", () => {
+    expect(
+      parseWithFallback(
+        { status: "ready", timeout_ms: 1, has_api_key: "yes" },
+        SelfEvolutionJevConfigSchema,
+        fallback,
+        { endpoint: "GET /api/self-evolution/jev-config" },
+      ),
+    ).toEqual(fallback);
   });
 });
