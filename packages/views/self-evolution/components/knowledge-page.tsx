@@ -1151,10 +1151,9 @@ function KnowledgeLifecycleActions({
   const [replacementOpen, setReplacementOpen] = useState(false);
   const [replacementQuery, setReplacementQuery] = useState("");
   const [writeback, setWriteback] = useState(false);
+  const [restoreVersionID, setRestoreVersionID] = useState("");
   const archived = entry.lifecycle_state !== "active";
-  const restorableVersion = entry.mirror_state === "source_deleted"
-    ? versions[0]
-    : versions.find((version) => version.content_sha256 !== entry.content_sha256);
+  const restorableVersion = versions.find((version) => version.id === restoreVersionID);
   const isComplete = Boolean(reason.trim() && evidenceRef.trim());
   const finalState = state !== "needs_review";
   const replacesEntry = state === "superseded" || state === "duplicate";
@@ -1252,6 +1251,29 @@ function KnowledgeLifecycleActions({
         })}>
           {t(($) => $.knowledgeSeg.applyLifecycle)}
         </Button>
+        {archived && versions.length ? (
+          <Select
+            items={versions.map((version) => ({
+              value: version.id,
+              label: t(($) => $.knowledgeSeg.versionWithSource, { version: version.version, source: version.source }),
+            }))}
+            value={restoreVersionID}
+            onValueChange={(next) => {
+              if (typeof next === "string") setRestoreVersionID(next);
+            }}
+          >
+            <SelectTrigger aria-label={t(($) => $.knowledgeSeg.version)} className="min-w-40">
+              <SelectValue placeholder={t(($) => $.knowledgeSeg.version)} />
+            </SelectTrigger>
+            <SelectContent>
+              {versions.map((version) => (
+                <SelectItem key={version.id} value={version.id}>
+                  {t(($) => $.knowledgeSeg.versionWithSource, { version: version.version, source: version.source })}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : null}
         {archived && restorableVersion ? (
           <Button size="sm" disabled={pending || !isComplete} onClick={() => onRestore({
             version_id: restorableVersion.id,

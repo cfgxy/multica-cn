@@ -354,6 +354,7 @@ var concurrentIndexCleanups = map[string][]string{
 	"998_knowledge_governance_run_active_scope_index":           {"uidx_knowledge_governance_run_active_scope"},
 	"998_knowledge_governance_run_finding_index":                {"idx_knowledge_governance_finding_run"},
 	"998_knowledge_governance_run_workspace_created_index":      {"idx_knowledge_governance_run_workspace_created"},
+	"999_knowledge_lifecycle_writeback_claim_index":             {"idx_knowledge_lifecycle_event_writeback_claim"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

@@ -279,17 +279,82 @@ WHERE id = $1 AND workspace_id = $2 AND removed = FALSE`, dirID, workspaceID)
 func (h *Handler) DeleteKnowledgeDir(w http.ResponseWriter, r *http.Request) {
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 	dirID := parseUUID(chi.URLParam(r, "id"))
-	tag, err := h.DB.Exec(r.Context(), `
-UPDATE knowledge_dir SET removed = TRUE, updated_at = now()
-WHERE id = $1 AND workspace_id = $2 AND kind = 'candidate_cli' AND removed = FALSE`,
-		dirID, workspaceID)
-	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusConflict, "only CLI-added directories can be unregistered here")
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to unregister the knowledge directory")
 		return
 	}
-	if _, err := h.DB.Exec(r.Context(),
-		`UPDATE knowledge_entry SET mirror_state = 'source_removed' WHERE dir_id = $1`, dirID); err != nil {
+	defer tx.Rollback(r.Context())
+	// Lock write-back events before the directory. claimKnowledgeWritebacks uses
+	// the same order, so unregister and claim cannot deadlock while deciding
+	// which side owns the physical write-back.
+	eventRows, err := tx.Query(r.Context(), `
+SELECT le.writeback_state
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+WHERE e.dir_id = $1 AND le.writeback_state IN ('queued', 'in_progress')
+ORDER BY le.id
+FOR UPDATE OF le`, dirID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	var writebackInProgress bool
+	for eventRows.Next() {
+		var state string
+		if err := eventRows.Scan(&state); err != nil {
+			eventRows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+			return
+		}
+		writebackInProgress = writebackInProgress || state == "in_progress"
+	}
+	if err := eventRows.Err(); err != nil {
+		eventRows.Close()
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	eventRows.Close()
+
+	var removed bool
+	if err := tx.QueryRow(r.Context(), `
+SELECT removed
+FROM knowledge_dir
+WHERE id = $1 AND workspace_id = $2 AND kind = 'candidate_cli'
+FOR UPDATE`, dirID, workspaceID).Scan(&removed); err != nil || removed {
+		writeError(w, http.StatusConflict, "only active CLI-added directories can be unregistered here")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_dir SET removed = TRUE, managed_active = FALSE, updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND kind = 'candidate_cli' AND removed = FALSE`,
+		dirID, workspaceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to unregister the knowledge directory")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_lifecycle_event
+SET writeback_state = 'cancelled', writeback_error = 'source directory unregistered', completed_at = now()
+WHERE entry_id IN (SELECT id FROM knowledge_entry WHERE dir_id = $1)
+  AND writeback_state = 'queued'`, dirID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to cancel pending knowledge write-back")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_entry
+SET mirror_state = 'source_removed',
+    writeback_state = CASE WHEN writeback_state = 'queued' THEN 'cancelled' ELSE writeback_state END,
+    writeback_error = CASE WHEN writeback_state = 'queued' THEN 'source directory unregistered' ELSE writeback_error END
+WHERE dir_id = $1`, dirID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to retire the mirrored entries")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to unregister the knowledge directory")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unregistered"})
@@ -478,6 +543,45 @@ ORDER BY created_at DESC`, workspaceID, entryID)
 	writeJSON(w, http.StatusOK, events)
 }
 
+func lockKnowledgeEntryWritebackEvents(ctx context.Context, tx pgx.Tx, entryID pgtype.UUID) (bool, error) {
+	rows, err := tx.Query(ctx, `
+SELECT writeback_state
+FROM knowledge_lifecycle_event
+WHERE entry_id = $1 AND writeback_state IN ('queued', 'in_progress')
+ORDER BY id
+FOR UPDATE`, entryID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	inProgress := false
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			return false, err
+		}
+		inProgress = inProgress || state == "in_progress"
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return inProgress, nil
+}
+
+// lockKnowledgeEntryDirectory establishes the common event -> directory ->
+// entry lock order. The directory must be locked before any entry join is
+// locked; PostgreSQL does not guarantee the relation order of FOR UPDATE OF.
+func lockKnowledgeEntryDirectory(ctx context.Context, tx pgx.Tx, entryID, workspaceID pgtype.UUID) (pgtype.UUID, error) {
+	var dirID pgtype.UUID
+	err := tx.QueryRow(ctx, `
+SELECT d.id
+FROM knowledge_dir d
+JOIN knowledge_entry e ON e.dir_id = d.id
+WHERE e.id = $1 AND e.workspace_id = $2
+FOR UPDATE OF d`, entryID, workspaceID).Scan(&dirID)
+	return dirID, err
+}
+
 func (h *Handler) PutKnowledgeDirManaged(w http.ResponseWriter, r *http.Request) {
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 	dirID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "id")
@@ -491,15 +595,56 @@ func (h *Handler) PutKnowledgeDirManaged(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid managed state")
 		return
 	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start managed state transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	rows, err := tx.Query(r.Context(), `
+SELECT le.writeback_state
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+WHERE e.dir_id = $1 AND le.writeback_state IN ('queued', 'in_progress')
+ORDER BY le.id
+FOR UPDATE OF le`, dirID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	writebackInProgress := false
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			rows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+			return
+		}
+		writebackInProgress = writebackInProgress || state == "in_progress"
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	rows.Close()
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
+		return
+	}
 	query := `
 UPDATE knowledge_dir SET managed_active = $3, updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND removed = FALSE`
 	if body.ManagedActive {
 		query += ` AND kind = 'candidate_cli' AND project_id IS NULL`
 	}
-	tag, err := h.DB.Exec(r.Context(), query, dirID, workspaceID, body.ManagedActive)
+	tag, err := tx.Exec(r.Context(), query, dirID, workspaceID, body.ManagedActive)
 	if err != nil || tag.RowsAffected() == 0 {
 		writeError(w, http.StatusConflict, "only active local candidate knowledge directories can enable managed write-back")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update managed knowledge directory")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"managed_active": body.ManagedActive})
@@ -654,17 +799,39 @@ func (h *Handler) PostKnowledgeEntryLifecycle(w http.ResponseWriter, r *http.Req
 		return
 	}
 	defer tx.Rollback(r.Context())
+	writebackInProgress, err := lockKnowledgeEntryWritebackEvents(r.Context(), tx, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
+		return
+	}
 	var previous, contentSHA, dirKind string
 	var dirID, currentVersionID, projectID pgtype.UUID
 	var managedActive, removed bool
+	if dirID, err = lockKnowledgeEntryDirectory(r.Context(), tx, entryID, workspaceID); err != nil {
+		writeError(w, http.StatusNotFound, "knowledge entry not found")
+		return
+	}
 	if err := tx.QueryRow(r.Context(), `
-SELECT e.lifecycle_state, e.content_sha256, e.dir_id, v.id, d.kind, d.project_id, d.managed_active, d.removed
+SELECT e.lifecycle_state, e.content_sha256, v.id, d.kind, d.project_id, d.managed_active, d.removed
 FROM knowledge_entry e
 JOIN knowledge_entry_version v ON v.entry_id = e.id AND v.workspace_id = e.workspace_id AND v.version = e.current_version
 JOIN knowledge_dir d ON d.id = e.dir_id
 WHERE e.id = $1 AND e.workspace_id = $2
-FOR UPDATE OF e, d`, entryID, workspaceID).Scan(&previous, &contentSHA, &dirID, &currentVersionID, &dirKind, &projectID, &managedActive, &removed); err != nil {
+FOR UPDATE OF e`, entryID, workspaceID).Scan(&previous, &contentSHA, &currentVersionID, &dirKind, &projectID, &managedActive, &removed); err != nil {
 		writeError(w, http.StatusNotFound, "knowledge entry not found")
+		return
+	}
+	writebackInProgress, err = lockKnowledgeEntryWritebackEvents(r.Context(), tx, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to recheck active knowledge write-back")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
 		return
 	}
 	if err := verifyKnowledgeEvidenceRef(r.Context(), tx, workspaceID, dirID, evidence); err != nil {
@@ -794,19 +961,41 @@ func (h *Handler) PostKnowledgeEntryRestore(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer tx.Rollback(r.Context())
+	writebackInProgress, err := lockKnowledgeEntryWritebackEvents(r.Context(), tx, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
+		return
+	}
 	var previous, currentContentSHA, dirKind string
 	var dirID, projectID pgtype.UUID
 	var managedActive, removed bool
 	var version, currentVersion int
+	if dirID, err = lockKnowledgeEntryDirectory(r.Context(), tx, entryID, workspaceID); err != nil {
+		writeError(w, http.StatusNotFound, "knowledge entry version not found")
+		return
+	}
 	err = tx.QueryRow(r.Context(), `
-			SELECT v.version, e.lifecycle_state, e.current_version, e.dir_id, e.content_sha256,
+			SELECT v.version, e.lifecycle_state, e.current_version, e.content_sha256,
 			       d.kind, d.project_id, d.managed_active, d.removed
 FROM knowledge_entry_version v JOIN knowledge_entry e ON e.id = v.entry_id
 JOIN knowledge_dir d ON d.id = e.dir_id
-WHERE v.id = $1 AND v.entry_id = $2 AND v.workspace_id = $3 FOR UPDATE OF e, d`, versionID, entryID, workspaceID).
-		Scan(&version, &previous, &currentVersion, &dirID, &currentContentSHA, &dirKind, &projectID, &managedActive, &removed)
+WHERE v.id = $1 AND v.entry_id = $2 AND v.workspace_id = $3 FOR UPDATE OF e`, versionID, entryID, workspaceID).
+		Scan(&version, &previous, &currentVersion, &currentContentSHA, &dirKind, &projectID, &managedActive, &removed)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "knowledge entry version not found")
+		return
+	}
+	writebackInProgress, err = lockKnowledgeEntryWritebackEvents(r.Context(), tx, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to recheck active knowledge write-back")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
 		return
 	}
 	if err := verifyKnowledgeEvidenceRef(r.Context(), tx, workspaceID, dirID, evidence); err != nil {
@@ -1120,7 +1309,17 @@ func (h *Handler) applyKnowledgeScanResult(ctx context.Context, workspaceID, dir
 	}
 
 	// Serialize diff application for a directory so concurrent daemon reports
-	// cannot each treat the same absence as a distinct confirmation.
+	// cannot each treat the same absence as a distinct confirmation. Active
+	// writeback events are locked first to preserve event -> directory -> entry.
+	if _, err := tx.Exec(ctx, `
+SELECT le.id
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+WHERE e.dir_id = $1 AND le.writeback_state IN ('queued', 'in_progress')
+ORDER BY le.id
+FOR UPDATE OF le`, dirID); err != nil {
+		return fail(err)
+	}
 	if _, err := tx.Exec(ctx, `SELECT id FROM knowledge_dir WHERE id = $1 FOR UPDATE`, dirID); err != nil {
 		return fail(err)
 	}

@@ -60,6 +60,15 @@ func testFinding(verdict string) Finding {
 	}
 }
 
+func testRetrievalRegression() RetrievalRegression {
+	return RetrievalRegression{
+		EntryID:  testEntryID,
+		Expected: "The current knowledge is not returned as active guidance.",
+		Observed: "The current knowledge was not returned.",
+		Passed:   true,
+	}
+}
+
 func parseTestOutput(t *testing.T, output RunOutput) (RunOutput, error) {
 	t.Helper()
 	raw, err := json.Marshal(output)
@@ -93,8 +102,9 @@ func TestPromptFromContextKeepsAdvisoryEvidenceBoundary(t *testing.T) {
 func TestParseRunOutputRequiresCoverageForValidFinding(t *testing.T) {
 	finding := testFinding("valid")
 	_, err := parseTestOutput(t, RunOutput{
-		Findings:        []Finding{finding},
-		BackupReference: "no writeback authorized",
+		Findings:             []Finding{finding},
+		RetrievalRegressions: []RetrievalRegression{testRetrievalRegression()},
+		BackupReference:      "no writeback authorized",
 	})
 	if err == nil || !strings.Contains(err.Error(), "coverage") {
 		t.Fatalf("expected retained coverage rejection, got %v", err)
@@ -107,7 +117,8 @@ func TestParseRunOutputRequiresCoverageForValidFinding(t *testing.T) {
 			CoverageEvidence:       testEvidence("code", "git:def456", "The current path still reads this rule."),
 			SampledCounterevidence: testEvidence("issue", "RUYI-916#evidence", "No newer contradiction was found."),
 		}},
-		BackupReference: "no writeback authorized",
+		RetrievalRegressions: []RetrievalRegression{testRetrievalRegression()},
+		BackupReference:      "no writeback authorized",
 	})
 	if err != nil {
 		t.Fatalf("expected valid report, got %v", err)
@@ -120,8 +131,9 @@ func TestParseRunOutputRequiresCoverageForValidFinding(t *testing.T) {
 func TestParseRunOutputKeepsNeedsReviewAdvisory(t *testing.T) {
 	finding := testFinding("needs_review")
 	parsed, err := parseTestOutput(t, RunOutput{
-		Findings:        []Finding{finding},
-		BackupReference: "no writeback authorized",
+		Findings:             []Finding{finding},
+		RetrievalRegressions: []RetrievalRegression{testRetrievalRegression()},
+		BackupReference:      "no writeback authorized",
 	})
 	if err != nil {
 		t.Fatalf("expected needs_review report to remain advisory, got %v", err)
@@ -134,8 +146,9 @@ func TestParseRunOutputKeepsNeedsReviewAdvisory(t *testing.T) {
 func TestParseRunOutputAcceptsInvalidFinding(t *testing.T) {
 	finding := testFinding("invalid")
 	parsed, err := parseTestOutput(t, RunOutput{
-		Findings:        []Finding{finding},
-		BackupReference: "no writeback authorized",
+		Findings:             []Finding{finding},
+		RetrievalRegressions: []RetrievalRegression{testRetrievalRegression()},
+		BackupReference:      "no writeback authorized",
 	})
 	if err != nil {
 		t.Fatalf("expected invalid report to validate, got %v", err)
@@ -149,8 +162,9 @@ func TestParseRunOutputRejectsAgentWritebackAuthorization(t *testing.T) {
 	finding := testFinding("deprecated")
 	finding.WritebackAuthorized = true
 	_, err := parseTestOutput(t, RunOutput{
-		Findings:        []Finding{finding},
-		BackupReference: "no writeback authorized",
+		Findings:             []Finding{finding},
+		RetrievalRegressions: []RetrievalRegression{testRetrievalRegression()},
+		BackupReference:      "no writeback authorized",
 	})
 	if err == nil || !strings.Contains(err.Error(), "authorize writeback") {
 		t.Fatalf("expected writeback authorization rejection, got %v", err)
@@ -165,8 +179,9 @@ func TestParseRunOutputAcceptsSSHEvidenceReplacingObsoleteExecRule(t *testing.T)
 	}
 	finding.Recommendation = "Submit an Owner-reviewed lifecycle transition from exec isolation to SSH transport guidance."
 	parsed, err := parseTestOutput(t, RunOutput{
-		Findings:        []Finding{finding},
-		BackupReference: "backup:knowledge-governance-run",
+		Findings:             []Finding{finding},
+		RetrievalRegressions: []RetrievalRegression{testRetrievalRegression()},
+		BackupReference:      "backup:knowledge-governance-run",
 	})
 	if err != nil {
 		t.Fatalf("expected SSH replacement report to validate, got %v", err)
@@ -180,8 +195,9 @@ func TestParseRunOutputRejectsUnsupportedEvidence(t *testing.T) {
 	finding := testFinding("needs_review")
 	finding.CounterEvidence[0].SourceType = "model_output"
 	_, err := parseTestOutput(t, RunOutput{
-		Findings:        []Finding{finding},
-		BackupReference: "no writeback authorized",
+		Findings:             []Finding{finding},
+		RetrievalRegressions: []RetrievalRegression{testRetrievalRegression()},
+		BackupReference:      "no writeback authorized",
 	})
 	if err == nil || !strings.Contains(err.Error(), "unknown source type") {
 		t.Fatalf("expected unsupported evidence rejection, got %v", err)
@@ -192,10 +208,58 @@ func TestParseRunOutputRequiresProblemCategory(t *testing.T) {
 	finding := testFinding("needs_review")
 	finding.ProblemCategories = nil
 	_, err := parseTestOutput(t, RunOutput{
-		Findings:        []Finding{finding},
-		BackupReference: "no writeback authorized",
+		Findings:             []Finding{finding},
+		RetrievalRegressions: []RetrievalRegression{testRetrievalRegression()},
+		BackupReference:      "no writeback authorized",
 	})
 	if err == nil || !strings.Contains(err.Error(), "supported conclusion") {
 		t.Fatalf("expected missing problem category rejection, got %v", err)
+	}
+}
+
+func TestParseRunOutputRequiresOneRetrievalOutcomePerSnapshotEntry(t *testing.T) {
+	finding := testFinding("needs_review")
+	tests := []struct {
+		name        string
+		regressions []RetrievalRegression
+	}{
+		{name: "empty"},
+		{name: "duplicate", regressions: []RetrievalRegression{testRetrievalRegression(), testRetrievalRegression()}},
+		{name: "unknown", regressions: []RetrievalRegression{{EntryID: "unknown", Expected: "miss", Observed: "miss", Passed: true}}},
+		{name: "missing outcome", regressions: []RetrievalRegression{{EntryID: testEntryID, Expected: "miss"}}},
+		{name: "ambiguous outcome", regressions: []RetrievalRegression{{EntryID: testEntryID, Expected: "miss", Observed: "miss", NotRunReason: "not run"}}},
+		{name: "not run cannot pass", regressions: []RetrievalRegression{{EntryID: testEntryID, Expected: "miss", NotRunReason: "not run", Passed: true}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseTestOutput(t, RunOutput{
+				Findings:             []Finding{finding},
+				RetrievalRegressions: tt.regressions,
+				BackupReference:      "no writeback authorized",
+			})
+			if err == nil || !strings.Contains(err.Error(), "retrieval") {
+				t.Fatalf("expected retrieval outcome rejection, got %v", err)
+			}
+		})
+	}
+}
+
+func TestParseRunOutputAcceptsObservedOrNotRunRetrievalOutcome(t *testing.T) {
+	finding := testFinding("needs_review")
+	for _, regression := range []RetrievalRegression{
+		testRetrievalRegression(),
+		{EntryID: testEntryID, Expected: "miss", NotRunReason: "no authorized writeback was performed"},
+	} {
+		parsed, err := parseTestOutput(t, RunOutput{
+			Findings:             []Finding{finding},
+			RetrievalRegressions: []RetrievalRegression{regression},
+			BackupReference:      "no writeback authorized",
+		})
+		if err != nil {
+			t.Fatalf("expected valid retrieval outcome, got %v", err)
+		}
+		if len(parsed.RetrievalRegressions) != 1 {
+			t.Fatalf("retrieval outcomes = %d, want 1", len(parsed.RetrievalRegressions))
+		}
 	}
 }

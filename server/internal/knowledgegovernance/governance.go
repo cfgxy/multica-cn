@@ -536,10 +536,18 @@ func ParseRunOutput(raw string, tc TaskContext) (RunOutput, error) {
 	if len(coverage) != len(valid) {
 		return RunOutput{}, errors.New("knowledge governance: every valid finding needs coverage and sampled counter-evidence")
 	}
+	if len(out.RetrievalRegressions) != len(entries) {
+		return RunOutput{}, errors.New("knowledge governance: every snapshot entry needs one retrieval regression")
+	}
+	retrievals := map[string]bool{}
 	for _, regression := range out.RetrievalRegressions {
-		if _, exists := entries[regression.EntryID]; !exists || strings.TrimSpace(regression.Expected) == "" || (strings.TrimSpace(regression.Observed) == "" && strings.TrimSpace(regression.NotRunReason) == "") {
-			return RunOutput{}, errors.New("knowledge governance: retrieval regressions require a scoped outcome or a not-run reason")
+		_, exists := entries[regression.EntryID]
+		observed := strings.TrimSpace(regression.Observed) != ""
+		notRun := strings.TrimSpace(regression.NotRunReason) != ""
+		if !exists || retrievals[regression.EntryID] || strings.TrimSpace(regression.Expected) == "" || observed == notRun || (notRun && regression.Passed) {
+			return RunOutput{}, errors.New("knowledge governance: retrieval regressions must map one-to-one to the snapshot with exactly one outcome")
 		}
+		retrievals[regression.EntryID] = true
 	}
 	return out, nil
 }

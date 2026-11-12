@@ -51,6 +51,7 @@ var legacyDuplicateMigrationStems = map[string][]string{
 	"124": {"124_autopilot_run_planned_at", "124_channel_generalization", "124_task_prepare_lease"},
 	"127": {"127_issue_pull_request_reference_only", "127_task_squad_id", "127_user_composio_connection"},
 	"128": {"128_agent_task_queue_runtime_mcp_overlay", "128_autopilot_collaborator", "128_comment_routing_escalation"},
+	"982": {"982_agent_backpressure_policy", "982_agent_suppression_event_index", "982_scheduling_pause_system_source", "982_scheduling_pause_system_source_promql_recovery"},
 }
 
 // concurrentMigrationPrefixGroups permits a post-consolidation issue to use
@@ -185,6 +186,20 @@ var concurrentMigrationPrefixGroups = map[string]struct {
 			"998_knowledge_governance_run_active_scope_index",
 			"998_knowledge_governance_run_finding_index",
 			"998_knowledge_governance_run_workspace_created_index",
+		},
+	},
+	"999": {
+		issue: "RUYI-916",
+		stems: []string{
+			"999_knowledge_entry_operation",
+			"999_knowledge_lifecycle_writeback_claim",
+			"999_knowledge_lifecycle_writeback_claim_index",
+		},
+		concurrentIndexes: []string{
+			"999_knowledge_lifecycle_writeback_claim_index",
+		},
+		supportingStems: []string{
+			"999_knowledge_entry_operation",
 		},
 	},
 }

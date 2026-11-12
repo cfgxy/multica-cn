@@ -527,12 +527,45 @@ describe("KnowledgePageBody", () => {
       },
     }, expect.anything());
 
+    await userEvent.click(within(dialog).getByRole("combobox", { name: "Version" }));
+    await userEvent.click(await screen.findByRole("option", { name: "v1 · initial" }));
     await userEvent.click(within(dialog).getByRole("button", { name: "Request restore v1" }));
     expect(m.restoreMutate).toHaveBeenCalledWith({
       id: "entry-1",
       data: {
         version_id: "version-1",
         reason: "Needs Owner review",
+        evidence_ref: "issue:00000000-0000-0000-0000-000000000916",
+      },
+    }, expect.anything());
+  });
+
+  it("restores the historical version explicitly selected by the owner", async () => {
+    m.role = "owner";
+    m.dirs = [dirFixture()];
+    m.entries = [entryFixture({ lifecycle_state: "deprecated", current_version: 3, content_sha256: "3".repeat(64) })];
+    m.versions = [
+      { id: "version-3", entry_id: "entry-1", version: 3, content: "Current procedure.", content_sha256: "3".repeat(64), source: "scan", created_at: "2026-09-30T00:00:00Z" },
+      { id: "version-2", entry_id: "entry-1", version: 2, content: "Intermediate procedure.", content_sha256: "2".repeat(64), source: "scan", created_at: "2026-09-29T00:00:00Z" },
+      { id: "version-1", entry_id: "entry-1", version: 1, content: "Original procedure.", content_sha256: "1".repeat(64), source: "initial", created_at: "2026-09-28T00:00:00Z" },
+    ];
+    mount();
+
+    await userEvent.click(await screen.findByTestId("knowledge-entry-deploy-rollback"));
+    const dialog = await screen.findByTestId("knowledge-entry-dialog");
+    await userEvent.type(within(dialog).getByPlaceholderText("Reason"), "Restore the original procedure");
+    await userEvent.type(within(dialog).getByPlaceholderText("Evidence reference"), "issue:00000000-0000-0000-0000-000000000916");
+    expect(within(dialog).queryByRole("button", { name: /Request restore v/ })).toBeNull();
+
+    await userEvent.click(within(dialog).getByRole("combobox", { name: "Version" }));
+    await userEvent.click(await screen.findByRole("option", { name: "v1 · initial" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Request restore v1" }));
+
+    expect(m.restoreMutate).toHaveBeenCalledWith({
+      id: "entry-1",
+      data: {
+        version_id: "version-1",
+        reason: "Restore the original procedure",
         evidence_ref: "issue:00000000-0000-0000-0000-000000000916",
       },
     }, expect.anything());

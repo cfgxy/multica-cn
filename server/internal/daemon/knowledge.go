@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -92,6 +93,7 @@ type KnowledgePlanOperation struct {
 type KnowledgePlanWriteback struct {
 	EventID               string `json:"event_id"`
 	EntryID               string `json:"entry_id"`
+	ClaimToken            string `json:"claim_token"`
 	Operation             string `json:"operation"`
 	Path                  string `json:"path"`
 	Key                   string `json:"key"`
@@ -160,18 +162,23 @@ type KnowledgeAdoptReport struct {
 }
 
 type KnowledgeWritebackReport struct {
-	EventID string `json:"event_id"`
-	EntryID string `json:"entry_id"`
-	OK      bool   `json:"ok"`
-	Error   string `json:"error,omitempty"`
+	EventID    string `json:"event_id"`
+	EntryID    string `json:"entry_id"`
+	ClaimToken string `json:"claim_token"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
 }
 
 // --- client -----------------------------------------------------------------
 
-func (c *Client) GetKnowledgePlan(ctx context.Context, daemonID string) (*KnowledgePlan, error) {
+func (c *Client) GetKnowledgePlan(ctx context.Context, daemonID, workspaceID string) (*KnowledgePlan, error) {
 	var plan KnowledgePlan
+	token := c.knowledgeToken(workspaceID)
+	if token == "" {
+		return nil, fmt.Errorf("knowledge daemon credential is unavailable for workspace %s", workspaceID)
+	}
 	path := "/api/daemon/knowledge/plan?daemon_id=" + url.QueryEscape(daemonID)
-	if err := c.getJSON(ctx, path, &plan); err != nil {
+	if err := c.getJSONWithToken(ctx, path, token, &plan); err != nil {
 		return nil, err
 	}
 	return &plan, nil
@@ -237,32 +244,47 @@ func knowledgeScanInterval() time.Duration {
 	return DefaultKnowledgeScanInterval
 }
 
-// knowledgeSync runs one pull cycle. Workspaces are isolated: each report is
-// posted with the daemon token issued for that workspace, so a token can never
-// authorize a callback for a different workspace.
+// knowledgeSync runs one pull cycle. Workspaces are isolated: each plan and
+// result request uses the daemon token issued for that workspace, so a token
+// can never claim or report work for a different workspace.
 func (d *Daemon) knowledgeSync(ctx context.Context) error {
-	plan, err := d.client.GetKnowledgePlan(ctx, d.cfg.DaemonID)
-	if err != nil {
-		return fmt.Errorf("fetch knowledge plan: %w", err)
+	d.mu.Lock()
+	workspaceIDs := make([]string, 0, len(d.workspaces))
+	for workspaceID := range d.workspaces {
+		workspaceIDs = append(workspaceIDs, workspaceID)
 	}
-	var reportErrs []error
-	for i := range plan.Workspaces {
-		ws := &plan.Workspaces[i]
-		if err := d.client.RefreshKnowledgeTokenIfNeeded(ctx, ws.WorkspaceID); err != nil {
-			reportErrs = append(reportErrs, fmt.Errorf("refresh knowledge credential for workspace %s: %w", ws.WorkspaceID, err))
-		}
-		results := &KnowledgeResults{}
-		d.knowledgeSyncWorkspace(ctx, ws, results)
-		if len(results.Discoveries) == 0 && len(results.Ultimates) == 0 &&
-			len(results.Scans) == 0 && len(results.Adoptions) == 0 &&
-			len(results.Operations) == 0 && len(results.Writebacks) == 0 {
+	d.mu.Unlock()
+	sort.Strings(workspaceIDs)
+
+	var cycleErrs []error
+	for _, workspaceID := range workspaceIDs {
+		if err := d.client.RefreshKnowledgeTokenIfNeeded(ctx, workspaceID); err != nil {
+			cycleErrs = append(cycleErrs, fmt.Errorf("refresh knowledge credential for workspace %s: %w", workspaceID, err))
 			continue
 		}
-		if _, err := d.client.PostKnowledgeResults(ctx, d.cfg.DaemonID, ws.WorkspaceID, results); err != nil {
-			reportErrs = append(reportErrs, fmt.Errorf("report knowledge results for workspace %s: %w", ws.WorkspaceID, err))
+		plan, err := d.client.GetKnowledgePlan(ctx, d.cfg.DaemonID, workspaceID)
+		if err != nil {
+			cycleErrs = append(cycleErrs, fmt.Errorf("fetch knowledge plan for workspace %s: %w", workspaceID, err))
+			continue
+		}
+		for i := range plan.Workspaces {
+			ws := &plan.Workspaces[i]
+			if ws.WorkspaceID != workspaceID {
+				continue
+			}
+			results := &KnowledgeResults{}
+			d.knowledgeSyncWorkspace(ctx, ws, results)
+			if len(results.Discoveries) == 0 && len(results.Ultimates) == 0 &&
+				len(results.Scans) == 0 && len(results.Adoptions) == 0 &&
+				len(results.Operations) == 0 && len(results.Writebacks) == 0 {
+				continue
+			}
+			if _, err := d.client.PostKnowledgeResults(ctx, d.cfg.DaemonID, ws.WorkspaceID, results); err != nil {
+				cycleErrs = append(cycleErrs, fmt.Errorf("report knowledge results for workspace %s: %w", ws.WorkspaceID, err))
+			}
 		}
 	}
-	return errors.Join(reportErrs...)
+	return errors.Join(cycleErrs...)
 }
 
 func (d *Daemon) knowledgeSyncWorkspace(ctx context.Context, ws *KnowledgePlanWorkspace, results *KnowledgeResults) {
@@ -331,7 +353,7 @@ func (d *Daemon) knowledgeSyncWorkspace(ctx context.Context, ws *KnowledgePlanWo
 	for _, job := range ws.Writebacks {
 		if report, err := d.runKnowledgeWriteback(ctx, job); err != nil {
 			d.logger.Warn("knowledge write-back failed", "event", job.EventID, "operation", job.Operation, "error", err)
-			results.Writebacks = append(results.Writebacks, KnowledgeWritebackReport{EventID: job.EventID, EntryID: job.EntryID, Error: err.Error()})
+			results.Writebacks = append(results.Writebacks, KnowledgeWritebackReport{EventID: job.EventID, EntryID: job.EntryID, ClaimToken: job.ClaimToken, Error: err.Error()})
 		} else {
 			results.Writebacks = append(results.Writebacks, report)
 		}
@@ -523,7 +545,7 @@ func (d *Daemon) runKnowledgeOperation(ctx context.Context, operation KnowledgeP
 }
 
 func (d *Daemon) runKnowledgeWriteback(ctx context.Context, job KnowledgePlanWriteback) (KnowledgeWritebackReport, error) {
-	report := KnowledgeWritebackReport{EventID: job.EventID, EntryID: job.EntryID}
+	report := KnowledgeWritebackReport{EventID: job.EventID, EntryID: job.EntryID, ClaimToken: job.ClaimToken}
 	if strings.TrimSpace(job.Path) == "" || strings.TrimSpace(job.Key) == "" {
 		return report, fmt.Errorf("knowledge write-back requires source path and key")
 	}
@@ -534,7 +556,11 @@ func (d *Daemon) runKnowledgeWriteback(ctx context.Context, job KnowledgePlanWri
 		if err != nil {
 			return report, fmt.Errorf("read source before deletion: %w", err)
 		}
-		if content, found := memories[job.Key]; found && job.ExpectedContentSha256 != "" && knowledgeContentSHA(content) != job.ExpectedContentSha256 {
+		content, found := memories[job.Key]
+		if !found {
+			break
+		}
+		if job.ExpectedContentSha256 != "" && knowledgeContentSHA(content) != job.ExpectedContentSha256 {
 			return report, fmt.Errorf("source content changed for key %s", job.Key)
 		}
 		if err := bdForget(ctx, job.Path, job.Key); err != nil {

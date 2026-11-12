@@ -290,14 +290,47 @@ func (f *fakeKnowledgeServer) posted(t *testing.T) []KnowledgeResults {
 func newKnowledgeTestDaemon(t *testing.T, fake *fakeKnowledgeServer) *Daemon {
 	t.Helper()
 	d := &Daemon{
-		cfg:    Config{DaemonID: "daemon-under-test"},
-		client: NewClient(fake.srv.URL),
-		logger: slog.Default(),
+		cfg:        Config{DaemonID: "daemon-under-test"},
+		client:     NewClient(fake.srv.URL),
+		logger:     slog.Default(),
+		workspaces: make(map[string]*workspaceState),
 	}
 	for _, workspace := range fake.plan.Workspaces {
+		d.workspaces[workspace.WorkspaceID] = &workspaceState{workspaceID: workspace.WorkspaceID}
 		d.client.SetKnowledgeToken(workspace.WorkspaceID, "mdt-test-"+workspace.WorkspaceID)
 	}
 	return d
+}
+
+func TestGetKnowledgePlanUsesWorkspaceDaemonToken(t *testing.T) {
+	var authorization string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		if got := r.URL.Query().Get("daemon_id"); got != "daemon-1" {
+			t.Fatalf("daemon_id query = %q, want daemon-1", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"workspaces":[]}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL)
+	client.SetToken("mul-profile-pat")
+	client.SetKnowledgeToken("workspace-1", "mdt-registration-token")
+	if _, err := client.GetKnowledgePlan(context.Background(), "daemon-1", "workspace-1"); err != nil {
+		t.Fatalf("get knowledge plan: %v", err)
+	}
+	if authorization != "Bearer mdt-registration-token" {
+		t.Fatalf("authorization = %q, want workspace daemon token", authorization)
+	}
+}
+
+func TestGetKnowledgePlanRequiresWorkspaceDaemonToken(t *testing.T) {
+	client := NewClient("http://example.invalid")
+	client.SetToken("mul-profile-pat")
+	if _, err := client.GetKnowledgePlan(context.Background(), "daemon-1", "workspace-missing"); err == nil {
+		t.Fatal("knowledge plan without a workspace daemon credential succeeded")
+	}
 }
 
 func TestPostKnowledgeResultsUsesWorkspaceDaemonToken(t *testing.T) {
@@ -1010,6 +1043,33 @@ func TestDaemonKnowledgeWritebackAppliesDirectSourceMutations(t *testing.T) {
 	}
 	if got := fakeKnowledgeBdState(t, source)["retire"]; got != "restored value" {
 		t.Fatalf("restore write-back source value = %q, want restored value", got)
+	}
+}
+
+func TestDaemonKnowledgeWritebackRemoveReplaySkipsAbsentSource(t *testing.T) {
+	fakeKnowledgeBdSetup(t)
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, ".beads"), 0o755); err != nil {
+		t.Fatalf("seed source .beads: %v", err)
+	}
+	fakeKnowledgeBdReplace(t, source, map[string]string{})
+	if err := os.WriteFile(filepath.Join(source, "FAIL_FORGET"), []byte("1"), 0o644); err != nil {
+		t.Fatalf("plant forget failure: %v", err)
+	}
+
+	d := newKnowledgeTestDaemon(t, newFakeKnowledgeServer(t, KnowledgePlan{}))
+	report, err := d.runKnowledgeWriteback(context.Background(), KnowledgePlanWriteback{
+		EventID: "event-remove", EntryID: "entry-1", Operation: "remove", Path: source, Key: "retire",
+	})
+	if err != nil || !report.OK {
+		t.Fatalf("replayed remove write-back: report=%+v err=%v", report, err)
+	}
+	log, err := os.ReadFile(filepath.Join(source, "invocations.log"))
+	if err != nil {
+		t.Fatalf("read bd invocation log: %v", err)
+	}
+	if strings.Contains(string(log), "forget") {
+		t.Fatalf("replayed remove must not invoke bd forget for an absent key: %s", log)
 	}
 }
 

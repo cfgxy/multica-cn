@@ -14,7 +14,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,6 +43,39 @@ func (db *failNextGovernanceBegin) Begin(ctx context.Context) (pgx.Tx, error) {
 		return nil, errors.New("transient report persistence failure")
 	}
 	return db.Pool.Begin(ctx)
+}
+
+// knowledgeBarrierTxStarter makes two handler transactions begin together and
+// applies a short lock timeout so a reverse lock order fails immediately.
+type knowledgeBarrierTxStarter struct {
+	inner   txStarter
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	begins  int
+}
+
+func (s *knowledgeBarrierTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	s.mu.Lock()
+	s.begins++
+	if s.begins == 2 {
+		s.once.Do(func() { close(s.release) })
+	}
+	s.mu.Unlock()
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	tx, err := s.inner.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout = '750ms'`); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	return tx, nil
 }
 
 // registerKnowledgeDir registers one directory (no scan happens in-process)
@@ -323,6 +358,10 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 			}},
 			ApplicableScope: "this directory", Recommendation: "Owner review required",
 		}},
+		RetrievalRegressions: []knowledgegovernance.RetrievalRegression{{
+			EntryID: entry.ID, Expected: "The unsupported guidance is not returned as active knowledge.",
+			NotRunReason: "no authorized writeback was performed",
+		}},
 		BackupReference: "backup:immutable-completed-task-result",
 	}
 	outputBytes, err := json.Marshal(report)
@@ -430,6 +469,37 @@ func TestKnowledgeGovernancePersistReportFailureFinishesRun(t *testing.T) {
 	}
 	if persistedPayload.TaskID != started.TaskID || persistedPayload.Output != output {
 		t.Fatalf("completed task result changed during replay: got %+v want task_id=%q output=%q", persistedPayload, started.TaskID, output)
+	}
+}
+
+func TestKnowledgePlanDaemonIdentityFence(t *testing.T) {
+	cases := []struct {
+		name          string
+		contextDaemon string
+		queryDaemon   string
+		wantStatus    int
+		wantDaemon    string
+	}{
+		{name: "unauthenticated query cannot claim", queryDaemon: "daemon-a", wantStatus: http.StatusUnauthorized},
+		{name: "foreign query is rejected", contextDaemon: "daemon-a", queryDaemon: "daemon-b", wantStatus: http.StatusForbidden},
+		{name: "authenticated daemon may use matching query", contextDaemon: "daemon-a", queryDaemon: "daemon-a", wantDaemon: "daemon-a"},
+		{name: "authenticated daemon may omit query", contextDaemon: "daemon-a", wantDaemon: "daemon-a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.contextDaemon != "" {
+				ctx = middleware.WithDaemonContext(ctx, testWorkspaceID, tc.contextDaemon)
+			}
+			r := newRequest(http.MethodGet, "/api/daemon/knowledge/plan?daemon_id="+tc.queryDaemon, nil).WithContext(ctx)
+			gotDaemon, gotStatus, _ := knowledgePlanDaemonID(r)
+			if gotStatus != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", gotStatus, tc.wantStatus)
+			}
+			if gotDaemon != tc.wantDaemon {
+				t.Fatalf("daemon = %q, want %q", gotDaemon, tc.wantDaemon)
+			}
+		})
 	}
 }
 
@@ -901,6 +971,58 @@ func TestKnowledgePlanExcludesUltimateFromScanDirs(t *testing.T) {
 	}
 }
 
+func TestKnowledgePlanRetriesFailedFirstScanUntilEmptySourceSucceeds(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-empty-source-recovery"
+	dirID := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE knowledge_dir SET daemon_id = $2 WHERE id = $1`, dirID, daemonID); err != nil {
+		t.Fatalf("bind candidate directory: %v", err)
+	}
+
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": dirID, "trigger_source": "initial", "ok": false, "error": "temporary read failure",
+		}},
+	})
+	plan := knowledgePlan(t, daemonID)
+	var planned *KnowledgePlanDir
+	for i := range plan.Workspaces {
+		for j := range plan.Workspaces[i].Dirs {
+			if plan.Workspaces[i].Dirs[j].DirID == dirID {
+				planned = &plan.Workspaces[i].Dirs[j]
+			}
+		}
+	}
+	if planned == nil || !planned.ScanRequired {
+		t.Fatalf("plan after failed first scan = %+v, want scan required", planned)
+	}
+
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": dirID, "trigger_source": "initial", "ok": true, "memories": map[string]string{},
+		}},
+	})
+	dir := knowledgeDirState(t, dirID)
+	if dir.HealthState != "ok" || latestScanBatch(t, dirID).Result != "noop" {
+		t.Fatalf("empty-source recovery: dir=%+v batch=%+v", dir, latestScanBatch(t, dirID))
+	}
+	plan = knowledgePlan(t, daemonID)
+	planned = nil
+	for i := range plan.Workspaces {
+		for j := range plan.Workspaces[i].Dirs {
+			if plan.Workspaces[i].Dirs[j].DirID == dirID {
+				planned = &plan.Workspaces[i].Dirs[j]
+			}
+		}
+	}
+	if planned == nil || planned.ScanRequired {
+		t.Fatalf("plan after successful empty scan = %+v, want scan satisfied", planned)
+	}
+}
+
 // TestKnowledgeResultsRefuseUltimateScanReports pins the server-side guard of
 // the same fix: a scan report for an ultimate directory is dropped at the
 // trust boundary — no mirror rows, no batch log, no health change — so
@@ -1156,25 +1278,15 @@ func TestKnowledgeManagedWritebackQueuesAndArchivesSourceChanges(t *testing.T) {
 		t.Fatalf("remove plan = %+v", remove)
 	}
 
-	// A subsequent Owner decision supersedes the queued physical delete before
-	// a daemon receives it. The source remains untouched until a new explicit
-	// write-back is requested.
+	// Once the daemon has claimed the job, a later Owner decision must wait for
+	// the physical write-back receipt instead of cancelling an in-flight event.
 	testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
 		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/lifecycle", map[string]any{
-			"state": "superseded", "reason": "a later Owner decision replaced the queued deletion", "evidence_ref": scanEvidence,
-		}), "id", entry.ID)).Want(http.StatusAccepted)
-	plan = knowledgePlan(t, daemonID)
-	if len(plan.Workspaces) != 1 || len(plan.Workspaces[0].Writebacks) != 0 {
-		t.Fatalf("superseded write-back plan = %+v, want no jobs", plan)
-	}
-	var cancelledState string
-	if err := testPool.QueryRow(context.Background(), `
-		SELECT writeback_state FROM knowledge_lifecycle_event WHERE id = $1`, remove.EventID).Scan(&cancelledState); err != nil {
-		t.Fatalf("read superseded write-back event: %v", err)
-	}
-	if cancelledState != "cancelled" {
-		t.Fatalf("superseded write-back state = %q, want cancelled", cancelledState)
-	}
+			"state": "superseded", "reason": "a later Owner decision replaced the claimed deletion", "evidence_ref": scanEvidence,
+		}), "id", entry.ID)).Want(http.StatusConflict)
+	postKnowledgeResults(t, daemonID, map[string]any{"writebacks": []map[string]any{{
+		"event_id": remove.EventID, "entry_id": entry.ID, "claim_token": remove.ClaimToken, "ok": true,
+	}}})
 
 	// Queue a fresh explicitly authorized delete for the remainder of the
 	// physical delete/restore receipt coverage below.
@@ -1188,7 +1300,7 @@ func TestKnowledgeManagedWritebackQueuesAndArchivesSourceChanges(t *testing.T) {
 	}
 	remove = plan.Workspaces[0].Writebacks[0]
 	postKnowledgeResults(t, daemonID, map[string]any{"writebacks": []map[string]any{{
-		"event_id": remove.EventID, "entry_id": entry.ID, "ok": true,
+		"event_id": remove.EventID, "entry_id": entry.ID, "claim_token": remove.ClaimToken, "ok": true,
 	}}})
 
 	deleted := knowledgeEntryByKey(t, candidate, "reviewed")
@@ -1210,12 +1322,608 @@ func TestKnowledgeManagedWritebackQueuesAndArchivesSourceChanges(t *testing.T) {
 		t.Fatalf("restore plan = %+v", restore)
 	}
 	postKnowledgeResults(t, daemonID, map[string]any{"writebacks": []map[string]any{{
-		"event_id": restore.EventID, "entry_id": entry.ID, "ok": true,
+		"event_id": restore.EventID, "entry_id": entry.ID, "claim_token": restore.ClaimToken, "ok": true,
 	}}})
 
 	updated := knowledgeEntryByKey(t, candidate, "reviewed")
 	if updated.LifecycleState != "active" || updated.WritebackState != "succeeded" || updated.CurrentVersion != entry.CurrentVersion+1 || updated.Content != entry.Content {
 		t.Fatalf("restore receipt did not create an active new version: %+v", updated)
+	}
+}
+
+func prepareClaimedKnowledgeWriteback(t *testing.T, daemonID, key string) (string, KnowledgeEntryResponse, KnowledgePlanWriteback) {
+	t.Helper()
+	candidate := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{key: "owner-reviewed content"},
+		}},
+	})
+	entry := knowledgeEntryByKey(t, candidate, key)
+	evidenceRef := "knowledge_scan_batch:" + knowledgeScanBatchID(t, candidate)
+	testutil.Call(t, testHandler.PutKnowledgeDirManaged,
+		withURLParam(newRequest(http.MethodPut, "/api/knowledge/dirs/"+candidate+"/managed",
+			map[string]any{"managed_active": true}), "id", candidate)).Want(http.StatusOK)
+	testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/lifecycle", map[string]any{
+			"state": "deprecated", "reason": "retired source", "evidence_ref": evidenceRef, "writeback": true,
+		}), "id", entry.ID)).Want(http.StatusAccepted)
+	plan := knowledgePlan(t, daemonID)
+	if len(plan.Workspaces) != 1 || len(plan.Workspaces[0].Writebacks) != 1 {
+		t.Fatalf("claimed write-back plan = %+v, want one job", plan)
+	}
+	return candidate, entry, plan.Workspaces[0].Writebacks[0]
+}
+
+func prepareQueuedKnowledgeWriteback(t *testing.T, daemonID, key string) (string, string, string) {
+	t.Helper()
+	candidate := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{key: "owner-reviewed content"},
+		}},
+	})
+	entry := knowledgeEntryByKey(t, candidate, key)
+	evidenceRef := "knowledge_scan_batch:" + knowledgeScanBatchID(t, candidate)
+	testutil.Call(t, testHandler.PutKnowledgeDirManaged,
+		withURLParam(newRequest(http.MethodPut, "/api/knowledge/dirs/"+candidate+"/managed",
+			map[string]any{"managed_active": true}), "id", candidate)).Want(http.StatusOK)
+	testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/lifecycle", map[string]any{
+			"state": "deprecated", "reason": "retired source", "evidence_ref": evidenceRef, "writeback": true,
+		}), "id", entry.ID)).Want(http.StatusAccepted)
+	var eventID string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT id::text FROM knowledge_lifecycle_event
+		WHERE entry_id = $1 AND operation = 'writeback_remove' AND writeback_state = 'queued'
+		ORDER BY id DESC LIMIT 1`, entry.ID).Scan(&eventID); err != nil {
+		t.Fatalf("read queued write-back event: %v", err)
+	}
+	return candidate, entry.ID, eventID
+}
+
+func TestKnowledgeWritebackClaimAndUnregisterUseSingleEventFence(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+
+	t.Run("claim wins", func(t *testing.T) {
+		const daemonID = "daemon-concurrent-claim-first"
+		candidate, entryID, eventID := prepareQueuedKnowledgeWriteback(t, daemonID, "concurrent-claim-first")
+		claimTx, err := testPool.Begin(context.Background())
+		if err != nil {
+			t.Fatalf("begin claim transaction: %v", err)
+		}
+		defer claimTx.Rollback(context.Background())
+		var state string
+		if err := claimTx.QueryRow(context.Background(), `
+			SELECT writeback_state FROM knowledge_lifecycle_event WHERE id = $1 FOR UPDATE`, eventID).Scan(&state); err != nil {
+			t.Fatalf("lock queued event for claim: %v", err)
+		}
+		if state != "queued" {
+			t.Fatalf("queued event state = %q, want queued", state)
+		}
+
+		started := make(chan struct{})
+		unregisterErr := make(chan error, 1)
+		go func() {
+			tx, beginErr := testPool.Begin(context.Background())
+			if beginErr != nil {
+				unregisterErr <- beginErr
+				return
+			}
+			defer tx.Rollback(context.Background())
+			close(started)
+			if _, err := tx.Exec(context.Background(), `SET LOCAL lock_timeout = '100ms'`); err != nil {
+				unregisterErr <- err
+				return
+			}
+			var ignored string
+			lockErr := tx.QueryRow(context.Background(), `
+				SELECT writeback_state FROM knowledge_lifecycle_event WHERE id = $1 FOR UPDATE`, eventID).Scan(&ignored)
+			unregisterErr <- lockErr
+		}()
+		<-started
+		if err := <-unregisterErr; err == nil {
+			t.Fatal("unregister transaction acquired the event lock while claim held it")
+		}
+
+		if _, err := claimTx.Exec(context.Background(), `
+			UPDATE knowledge_lifecycle_event
+			SET writeback_state = 'in_progress', writeback_claimed_by = $2,
+			    writeback_claimed_at = now(), writeback_claim_token = gen_random_uuid()
+			WHERE id = $1`, eventID, daemonID); err != nil {
+			t.Fatalf("claim event: %v", err)
+		}
+		if _, err := claimTx.Exec(context.Background(), `
+			UPDATE knowledge_entry SET writeback_state = 'in_progress'
+			WHERE id = $1`, entryID); err != nil {
+			t.Fatalf("claim entry: %v", err)
+		}
+		if err := claimTx.Commit(context.Background()); err != nil {
+			t.Fatalf("commit claim transaction: %v", err)
+		}
+
+		testutil.Call(t, testHandler.DeleteKnowledgeDir,
+			withURLParam(newRequest(http.MethodDelete, "/api/knowledge/dirs/"+candidate, nil), "id", candidate)).Want(http.StatusConflict)
+		var removed bool
+		if err := testPool.QueryRow(context.Background(), `SELECT removed FROM knowledge_dir WHERE id = $1`, candidate).Scan(&removed); err != nil {
+			t.Fatalf("read claim-first directory: %v", err)
+		}
+		if removed {
+			t.Fatal("claim-first directory was removed")
+		}
+	})
+
+	t.Run("unregister wins", func(t *testing.T) {
+		const daemonID = "daemon-concurrent-unregister-first"
+		candidate, entryID, eventID := prepareQueuedKnowledgeWriteback(t, daemonID, "concurrent-unregister-first")
+		unregisterTx, err := testPool.Begin(context.Background())
+		if err != nil {
+			t.Fatalf("begin unregister transaction: %v", err)
+		}
+		defer unregisterTx.Rollback(context.Background())
+		var state string
+		if err := unregisterTx.QueryRow(context.Background(), `
+			SELECT writeback_state FROM knowledge_lifecycle_event WHERE id = $1 FOR UPDATE`, eventID).Scan(&state); err != nil {
+			t.Fatalf("lock queued event for unregister: %v", err)
+		}
+		if state != "queued" {
+			t.Fatalf("queued event state = %q, want queued", state)
+		}
+
+		started := make(chan struct{})
+		claimErr := make(chan error, 1)
+		go func() {
+			tx, beginErr := testPool.Begin(context.Background())
+			if beginErr != nil {
+				claimErr <- beginErr
+				return
+			}
+			defer tx.Rollback(context.Background())
+			close(started)
+			if _, err := tx.Exec(context.Background(), `SET LOCAL lock_timeout = '100ms'`); err != nil {
+				claimErr <- err
+				return
+			}
+			var ignored string
+			lockErr := tx.QueryRow(context.Background(), `
+				SELECT writeback_state FROM knowledge_lifecycle_event WHERE id = $1 FOR UPDATE`, eventID).Scan(&ignored)
+			claimErr <- lockErr
+		}()
+		<-started
+		if err := <-claimErr; err == nil {
+			t.Fatal("claim transaction acquired the event lock while unregister held it")
+		}
+
+		if _, err := unregisterTx.Exec(context.Background(), `
+			UPDATE knowledge_dir SET removed = TRUE, managed_active = FALSE WHERE id = $1`, candidate); err != nil {
+			t.Fatalf("remove directory: %v", err)
+		}
+		if _, err := unregisterTx.Exec(context.Background(), `
+			UPDATE knowledge_lifecycle_event
+			SET writeback_state = 'cancelled', completed_at = now()
+			WHERE id = $1 AND writeback_state = 'queued'`, eventID); err != nil {
+			t.Fatalf("cancel queued event: %v", err)
+		}
+		if _, err := unregisterTx.Exec(context.Background(), `
+			UPDATE knowledge_entry SET writeback_state = 'cancelled', mirror_state = 'source_removed'
+			WHERE id = $1 AND writeback_state = 'queued'`, entryID); err != nil {
+			t.Fatalf("cancel queued entry: %v", err)
+		}
+		if err := unregisterTx.Commit(context.Background()); err != nil {
+			t.Fatalf("commit unregister transaction: %v", err)
+		}
+
+		var removed bool
+		if err := testPool.QueryRow(context.Background(), `SELECT removed FROM knowledge_dir WHERE id = $1`, candidate).Scan(&removed); err != nil {
+			t.Fatalf("read unregister-first directory: %v", err)
+		}
+		if !removed {
+			t.Fatal("unregister-first directory was not removed")
+		}
+		if err := testPool.QueryRow(context.Background(), `
+			SELECT writeback_state FROM knowledge_lifecycle_event WHERE id = $1`, eventID).Scan(&state); err != nil {
+			t.Fatalf("read unregister-first event: %v", err)
+		}
+		if state != "cancelled" {
+			t.Fatalf("unregister-first event state = %q, want cancelled", state)
+		}
+	})
+}
+
+func TestKnowledgeHandlersUseOneLockOrderWithoutActiveWriteback(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+
+	type operation struct {
+		name        string
+		makeRequest func(candidate string, entry KnowledgeEntryResponse, evidenceRef string) (*http.Request, func(http.ResponseWriter, *http.Request))
+	}
+	operations := []operation{
+		{
+			name: "lifecycle",
+			makeRequest: func(candidate string, entry KnowledgeEntryResponse, evidenceRef string) (*http.Request, func(http.ResponseWriter, *http.Request)) {
+				req := withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/lifecycle", map[string]any{
+					"state": "superseded", "reason": "concurrent lock-order regression", "evidence_ref": evidenceRef,
+				}), "id", entry.ID)
+				return req, testHandler.PostKnowledgeEntryLifecycle
+			},
+		},
+		{
+			name: "restore",
+			makeRequest: func(candidate string, entry KnowledgeEntryResponse, evidenceRef string) (*http.Request, func(http.ResponseWriter, *http.Request)) {
+				req := withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/restore", map[string]any{
+					"version_id": currentKnowledgeVersionID(t, entry.ID), "reason": "concurrent lock-order regression", "evidence_ref": evidenceRef,
+				}), "id", entry.ID)
+				return req, testHandler.PostKnowledgeEntryRestore
+			},
+		},
+		{
+			name: "managed disable",
+			makeRequest: func(candidate string, entry KnowledgeEntryResponse, evidenceRef string) (*http.Request, func(http.ResponseWriter, *http.Request)) {
+				req := withURLParam(newRequest(http.MethodPut, "/api/knowledge/dirs/"+candidate+"/managed", map[string]any{
+					"managed_active": false,
+				}), "id", candidate)
+				return req, testHandler.PutKnowledgeDirManaged
+			},
+		},
+	}
+
+	for _, tc := range operations {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
+			postKnowledgeResults(t, "daemon-lock-order", map[string]any{
+				"scans": []map[string]any{{
+					"dir_id": candidate, "trigger_source": "initial", "ok": true,
+					"memories": map[string]string{"lock-order": "stable content"},
+				}},
+			})
+			entry := knowledgeEntryByKey(t, candidate, "lock-order")
+			evidenceRef := "knowledge_scan_batch:" + knowledgeScanBatchID(t, candidate)
+			testutil.Call(t, testHandler.PutKnowledgeDirManaged,
+				withURLParam(newRequest(http.MethodPut, "/api/knowledge/dirs/"+candidate+"/managed",
+					map[string]any{"managed_active": true}), "id", candidate)).Want(http.StatusOK)
+
+			var activeEvents int
+			if err := testPool.QueryRow(context.Background(), `
+				SELECT count(*) FROM knowledge_lifecycle_event
+				WHERE entry_id = $1 AND writeback_state IN ('queued', 'in_progress')`, entry.ID).Scan(&activeEvents); err != nil {
+				t.Fatalf("count active write-back events: %v", err)
+			}
+			if activeEvents != 0 {
+				t.Fatalf("fixture has %d active write-back events before race", activeEvents)
+			}
+
+			previousStarter := testHandler.TxStarter
+			t.Cleanup(func() { testHandler.TxStarter = previousStarter })
+			barrier := &knowledgeBarrierTxStarter{
+				inner:   previousStarter,
+				release: make(chan struct{}),
+			}
+			testHandler.TxStarter = barrier
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			type result struct {
+				code int
+				body string
+			}
+			results := make(chan result, 2)
+			deleteReq := withURLParam(newRequest(http.MethodDelete, "/api/knowledge/dirs/"+candidate, nil).WithContext(ctx), "id", candidate)
+			otherReq, otherHandler := tc.makeRequest(candidate, entry, evidenceRef)
+			otherReq = otherReq.WithContext(ctx)
+			otherID := entry.ID
+			if tc.name == "managed disable" {
+				otherID = candidate
+			}
+			otherReq = withURLParam(otherReq, "id", otherID)
+			go func() {
+				recorder := httptest.NewRecorder()
+				testHandler.DeleteKnowledgeDir(recorder, deleteReq)
+				results <- result{code: recorder.Code, body: recorder.Body.String()}
+			}()
+			go func() {
+				recorder := httptest.NewRecorder()
+				otherHandler(recorder, otherReq)
+				results <- result{code: recorder.Code, body: recorder.Body.String()}
+			}()
+
+			for i := 0; i < 2; i++ {
+				got := <-results
+				if got.code >= http.StatusInternalServerError {
+					t.Errorf("concurrent %s handler returned %d: %s (transactions begun=%d)", tc.name, got.code, got.body, barrier.begins)
+				}
+			}
+		})
+	}
+}
+
+func TestDeleteKnowledgeDirRejectsClaimedWriteback(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-unregister-claimed-success"
+	candidate, entry, job := prepareClaimedKnowledgeWriteback(t, daemonID, "late-success")
+
+	testutil.Call(t, testHandler.DeleteKnowledgeDir,
+		withURLParam(newRequest(http.MethodDelete, "/api/knowledge/dirs/"+candidate, nil), "id", candidate)).Want(http.StatusConflict)
+
+	var state, claimToken string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT writeback_state, writeback_claim_token::text
+		FROM knowledge_lifecycle_event WHERE id = $1`, job.EventID).Scan(&state, &claimToken); err != nil {
+		t.Fatalf("read claimed write-back after unregister: %v", err)
+	}
+	if state != "in_progress" || claimToken != job.ClaimToken {
+		t.Fatalf("claimed write-back after rejected unregister = state %q token %q, want in_progress and original token", state, claimToken)
+	}
+	var removed, managedActive bool
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT removed, managed_active FROM knowledge_dir WHERE id = $1`, candidate).Scan(&removed, &managedActive); err != nil {
+		t.Fatalf("read directory after rejected unregister: %v", err)
+	}
+	if removed || !managedActive {
+		t.Fatalf("directory changed after rejected unregister: removed=%t managed_active=%t", removed, managedActive)
+	}
+	evidenceRef := "knowledge_scan_batch:" + knowledgeScanBatchID(t, candidate)
+	testutil.Call(t, testHandler.PutKnowledgeDirManaged,
+		withURLParam(newRequest(http.MethodPut, "/api/knowledge/dirs/"+candidate+"/managed",
+			map[string]any{"managed_active": false}), "id", candidate)).Want(http.StatusConflict)
+	testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/lifecycle", map[string]any{
+			"state": "superseded", "reason": "claimed write-back fence", "evidence_ref": evidenceRef,
+		}), "id", entry.ID)).Want(http.StatusConflict)
+	testutil.Call(t, testHandler.PostKnowledgeEntryRestore,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/restore", map[string]any{
+			"version_id": currentKnowledgeVersionID(t, entry.ID), "reason": "claimed write-back fence", "evidence_ref": evidenceRef, "writeback": true,
+		}), "id", entry.ID)).Want(http.StatusConflict)
+
+	ack := postKnowledgeResults(t, daemonID, map[string]any{"writebacks": []map[string]any{{
+		"event_id": job.EventID, "entry_id": entry.ID, "claim_token": job.ClaimToken, "ok": true,
+	}}})
+	if ack["writebacks_resolved"].(float64) != 1 {
+		t.Fatalf("late success acknowledgment = %v, want one resolved write-back", ack)
+	}
+	got := knowledgeEntryByKey(t, candidate, "late-success")
+	if got.MirrorState != "source_deleted" || got.WritebackState != "succeeded" {
+		t.Fatalf("claimed success projection = mirror %q writeback %q, want source_deleted/succeeded", got.MirrorState, got.WritebackState)
+	}
+
+	duplicate := postKnowledgeResults(t, daemonID, map[string]any{"writebacks": []map[string]any{{
+		"event_id": job.EventID, "entry_id": entry.ID, "claim_token": job.ClaimToken, "ok": true,
+	}}})
+	if duplicate["writebacks_resolved"].(float64) != 0 {
+		t.Fatalf("duplicate success acknowledgment = %v, want zero resolved write-backs", duplicate)
+	}
+}
+
+func TestKnowledgeWritebackLateFailureAndWrongTokenAreFenced(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-unregister-claimed-failure"
+	candidate, entry, job := prepareClaimedKnowledgeWriteback(t, daemonID, "late-failure")
+
+	testutil.Call(t, testHandler.DeleteKnowledgeDir,
+		withURLParam(newRequest(http.MethodDelete, "/api/knowledge/dirs/"+candidate, nil), "id", candidate)).Want(http.StatusConflict)
+	ack := postKnowledgeResults(t, daemonID, map[string]any{"writebacks": []map[string]any{{
+		"event_id": job.EventID, "entry_id": entry.ID, "claim_token": job.ClaimToken, "ok": false, "error": "bd was unavailable",
+	}}})
+	if ack["writebacks_resolved"].(float64) != 1 {
+		t.Fatalf("late failure acknowledgment = %v, want one resolved write-back", ack)
+	}
+	got := knowledgeEntryByKey(t, candidate, "late-failure")
+	if got.MirrorState != "synced" || got.WritebackState != "failed" || got.WritebackError != "bd was unavailable" {
+		t.Fatalf("late failure projection = mirror %q writeback %q error %q, want synced/failed/bd was unavailable", got.MirrorState, got.WritebackState, got.WritebackError)
+	}
+
+	wrongToken := postKnowledgeResults(t, daemonID, map[string]any{"writebacks": []map[string]any{{
+		"event_id": job.EventID, "entry_id": entry.ID, "claim_token": "00000000-0000-0000-0000-000000000001", "ok": true,
+	}}})
+	if wrongToken["writebacks_resolved"].(float64) != 0 {
+		t.Fatalf("late wrong-token acknowledgment = %v, want zero resolved write-backs", wrongToken)
+	}
+}
+
+func TestKnowledgeWritebackReportForRemovedDirectoryIsIgnored(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-removed-writeback-report"
+	candidate, entry, job := prepareClaimedKnowledgeWriteback(t, daemonID, "removed-report")
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE knowledge_dir SET removed = TRUE, managed_active = FALSE WHERE id = $1`, candidate); err != nil {
+		t.Fatalf("invalidate directory for stale report test: %v", err)
+	}
+
+	for _, report := range []map[string]any{
+		{"event_id": job.EventID, "entry_id": entry.ID, "claim_token": job.ClaimToken, "ok": true},
+		{"event_id": job.EventID, "entry_id": entry.ID, "claim_token": job.ClaimToken, "ok": false, "error": "late failure"},
+	} {
+		ack := postKnowledgeResults(t, daemonID, map[string]any{"writebacks": []map[string]any{report}})
+		if ack["writebacks_resolved"].(float64) != 0 {
+			t.Fatalf("removed-directory report acknowledgment = %v, want zero resolved write-backs", ack)
+		}
+	}
+	got := knowledgeEntryByKey(t, candidate, "removed-report")
+	if got.MirrorState != "synced" || got.WritebackState != "in_progress" {
+		t.Fatalf("removed-directory report changed projection: mirror=%q writeback=%q", got.MirrorState, got.WritebackState)
+	}
+}
+
+func TestKnowledgeWritebackStaleClaimReclaimsWithNewToken(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-stale-writeback-claim"
+	candidate, entry, oldJob := prepareClaimedKnowledgeWriteback(t, daemonID, "stale-claim")
+	var historicalEventID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO knowledge_lifecycle_event (
+			workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref,
+			version_id, expected_content_sha256, writeback_state, writeback_error, completed_at
+		)
+		SELECT workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref,
+			version_id, expected_content_sha256, 'failed', 'historical event must remain failed', now()
+		FROM knowledge_lifecycle_event
+		WHERE id = $1
+		RETURNING id::text`, oldJob.EventID).Scan(&historicalEventID); err != nil {
+		t.Fatalf("insert historical write-back event: %v", err)
+	}
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE knowledge_lifecycle_event
+		SET writeback_claimed_at = now() - interval '11 minutes'
+		WHERE id = $1`, oldJob.EventID); err != nil {
+		t.Fatalf("age write-back claim: %v", err)
+	}
+
+	foreignPlan := knowledgePlan(t, "daemon-foreign-stale-reclaimer")
+	for _, workspace := range foreignPlan.Workspaces {
+		if len(workspace.Writebacks) != 0 {
+			t.Fatalf("foreign daemon reclaimed write-back = %+v, want no jobs", foreignPlan)
+		}
+	}
+	var state string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT writeback_state FROM knowledge_lifecycle_event WHERE id = $1`, oldJob.EventID).Scan(&state); err != nil {
+		t.Fatalf("read claim after foreign reclaim attempt: %v", err)
+	}
+	if state != "in_progress" {
+		t.Fatalf("foreign daemon changed stale claim state to %q, want in_progress", state)
+	}
+
+	plan := knowledgePlan(t, daemonID)
+	if len(plan.Workspaces) != 1 || len(plan.Workspaces[0].Writebacks) != 1 {
+		t.Fatalf("reclaimed write-back plan = %+v, want one job", plan)
+	}
+	newJob := plan.Workspaces[0].Writebacks[0]
+	if newJob.ClaimToken == oldJob.ClaimToken {
+		t.Fatalf("reclaimed claim token reused %q", newJob.ClaimToken)
+	}
+	var historicalState, historicalError string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT writeback_state, writeback_error
+		FROM knowledge_lifecycle_event WHERE id = $1`, historicalEventID).Scan(&historicalState, &historicalError); err != nil {
+		t.Fatalf("read historical write-back event after reclaim: %v", err)
+	}
+	if historicalState != "failed" || historicalError != "historical event must remain failed" {
+		t.Fatalf("stale reclaim changed historical event: state=%q error=%q", historicalState, historicalError)
+	}
+	oldAck := postKnowledgeResults(t, daemonID, map[string]any{"writebacks": []map[string]any{{
+		"event_id": oldJob.EventID, "entry_id": entry.ID, "claim_token": oldJob.ClaimToken, "ok": true,
+	}}})
+	if oldAck["writebacks_resolved"].(float64) != 0 {
+		t.Fatalf("stale-token acknowledgment = %v, want zero resolved write-backs", oldAck)
+	}
+	active := knowledgeEntryByKey(t, candidate, "stale-claim")
+	if active.WritebackState != "in_progress" {
+		t.Fatalf("stale-token report changed entry writeback state to %q", active.WritebackState)
+	}
+
+	newAck := postKnowledgeResults(t, daemonID, map[string]any{"writebacks": []map[string]any{{
+		"event_id": newJob.EventID, "entry_id": entry.ID, "claim_token": newJob.ClaimToken, "ok": true,
+	}}})
+	if newAck["writebacks_resolved"].(float64) != 1 {
+		t.Fatalf("new-token acknowledgment = %v, want one resolved write-back", newAck)
+	}
+}
+
+func TestKnowledgeWritebackClaimTimeoutBoundary(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-writeback-timeout-boundary"
+	_, _, job := prepareClaimedKnowledgeWriteback(t, daemonID, "timeout-boundary")
+	claimTimeout := knowledgeWritebackClaimTimeout.String()
+
+	// A claim just inside the ten-minute threshold is still active and must not
+	// be reclaimed or exposed as a new queued job.
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE knowledge_lifecycle_event
+		SET writeback_claimed_at = now() - $2::interval + interval '1 second'
+		WHERE id = $1`, job.EventID, claimTimeout); err != nil {
+		t.Fatalf("set near-boundary write-back claim: %v", err)
+	}
+	inside := knowledgePlan(t, daemonID)
+	for _, workspace := range inside.Workspaces {
+		if len(workspace.Writebacks) != 0 {
+			t.Fatalf("near-boundary claim was reclaimed = %+v, want no jobs", inside)
+		}
+	}
+	var state, token string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT writeback_state, writeback_claim_token::text
+		FROM knowledge_lifecycle_event WHERE id = $1`, job.EventID).Scan(&state, &token); err != nil {
+		t.Fatalf("read near-boundary claim: %v", err)
+	}
+	if state != "in_progress" || token != job.ClaimToken {
+		t.Fatalf("near-boundary claim = state %q token %q, want in_progress and original token", state, token)
+	}
+
+	// Crossing the same threshold in the stale direction makes the claim
+	// reclaimable and fences the old token with a fresh one.
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE knowledge_lifecycle_event
+		SET writeback_claimed_at = now() - $2::interval - interval '1 second'
+		WHERE id = $1`, job.EventID, claimTimeout); err != nil {
+		t.Fatalf("set stale-boundary write-back claim: %v", err)
+	}
+	outside := knowledgePlan(t, daemonID)
+	if len(outside.Workspaces) != 1 || len(outside.Workspaces[0].Writebacks) != 1 {
+		t.Fatalf("stale-boundary plan = %+v, want one reclaimed job", outside)
+	}
+	if outside.Workspaces[0].Writebacks[0].ClaimToken == job.ClaimToken {
+		t.Fatalf("stale-boundary reclaim reused claim token %q", job.ClaimToken)
+	}
+
+}
+
+func TestDeleteKnowledgeDirCancelsQueuedWriteback(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-unregister-writeback"
+
+	candidate := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"retire": "owner-reviewed content"},
+		}},
+	})
+	entry := knowledgeEntryByKey(t, candidate, "retire")
+	evidenceRef := "knowledge_scan_batch:" + knowledgeScanBatchID(t, candidate)
+	testutil.Call(t, testHandler.PutKnowledgeDirManaged,
+		withURLParam(newRequest(http.MethodPut, "/api/knowledge/dirs/"+candidate+"/managed",
+			map[string]any{"managed_active": true}), "id", candidate)).Want(http.StatusOK)
+	testutil.Call(t, testHandler.PostKnowledgeEntryLifecycle,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/lifecycle", map[string]any{
+			"state": "deprecated", "reason": "retired source", "evidence_ref": evidenceRef, "writeback": true,
+		}), "id", entry.ID)).Want(http.StatusAccepted)
+
+	queued := knowledgeEntryByKey(t, candidate, "retire")
+	if queued.WritebackState != "queued" {
+		t.Fatalf("write-back was not queued: %+v", queued)
+	}
+	testutil.Call(t, testHandler.DeleteKnowledgeDir,
+		withURLParam(newRequest(http.MethodDelete, "/api/knowledge/dirs/"+candidate, nil), "id", candidate)).Want(http.StatusOK)
+
+	var state, errorText string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT writeback_state, writeback_error
+		FROM knowledge_lifecycle_event WHERE entry_id = $1 AND operation = 'writeback_remove'`, entry.ID).Scan(&state, &errorText); err != nil {
+		t.Fatalf("read cancelled write-back: %v", err)
+	}
+	if state != "cancelled" || errorText != "source directory unregistered" {
+		t.Fatalf("unregister write-back = state %q error %q", state, errorText)
+	}
+	got := knowledgeEntryByKey(t, candidate, "retire")
+	if got.MirrorState != "source_removed" || got.WritebackState != "cancelled" || got.WritebackError != "source directory unregistered" {
+		t.Fatalf("unregistered entry state = mirror %q writeback %q error %q", got.MirrorState, got.WritebackState, got.WritebackError)
 	}
 }
 

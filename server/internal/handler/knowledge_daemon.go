@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -87,6 +88,7 @@ type KnowledgePlanOperation struct {
 type KnowledgePlanWriteback struct {
 	EventID               string `json:"event_id"`
 	EntryID               string `json:"entry_id"`
+	ClaimToken            string `json:"claim_token"`
 	Operation             string `json:"operation"`
 	Path                  string `json:"path"`
 	Key                   string `json:"key"`
@@ -113,10 +115,181 @@ type KnowledgeOperationReport struct {
 }
 
 type KnowledgeWritebackReport struct {
-	EventID string `json:"event_id"`
-	EntryID string `json:"entry_id"`
-	OK      bool   `json:"ok"`
-	Error   string `json:"error,omitempty"`
+	EventID    string `json:"event_id"`
+	EntryID    string `json:"entry_id"`
+	ClaimToken string `json:"claim_token"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
+}
+
+const knowledgeWritebackClaimTimeout = 10 * time.Minute
+
+func (h *Handler) claimKnowledgeWritebacks(ctx context.Context, workspaceIDs []pgtype.UUID, daemonID string) (map[string][]KnowledgePlanWriteback, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Claims, unregisters, and Owner decisions all acquire lifecycle events
+	// before entry and directory rows. Keep the event lock separate from the
+	// later row locks so PostgreSQL cannot choose a reverse join lock order.
+	type claimTarget struct {
+		eventID     pgtype.UUID
+		entryID     pgtype.UUID
+		workspaceID pgtype.UUID
+	}
+	expiredRows, err := tx.Query(ctx, `
+SELECT le.id, le.entry_id, le.workspace_id
+FROM knowledge_lifecycle_event le
+WHERE le.workspace_id = ANY($1) AND le.writeback_state = 'in_progress'
+  AND le.writeback_claimed_by = $2
+  AND le.writeback_claimed_at < now() - $3::interval
+ORDER BY le.id
+FOR UPDATE OF le SKIP LOCKED`, workspaceIDs, daemonID, knowledgeWritebackClaimTimeout.String())
+	if err != nil {
+		return nil, err
+	}
+	var expired []claimTarget
+	for expiredRows.Next() {
+		var target claimTarget
+		if err := expiredRows.Scan(&target.eventID, &target.entryID, &target.workspaceID); err != nil {
+			expiredRows.Close()
+			return nil, err
+		}
+		expired = append(expired, target)
+	}
+	if err := expiredRows.Err(); err != nil {
+		expiredRows.Close()
+		return nil, err
+	}
+	expiredRows.Close()
+	for _, target := range expired {
+		var removed, managedActive bool
+		var boundDaemon string
+		if _, err := lockKnowledgeEntryDirectory(ctx, tx, target.entryID, target.workspaceID); err != nil {
+			return nil, err
+		}
+		err := tx.QueryRow(ctx, `
+SELECT d.removed, d.managed_active, d.daemon_id
+FROM knowledge_entry e
+JOIN knowledge_dir d ON d.id = e.dir_id
+WHERE e.id = $1 AND e.workspace_id = $2
+FOR UPDATE OF e`, target.entryID, target.workspaceID).Scan(&removed, &managedActive, &boundDaemon)
+		if err != nil {
+			return nil, err
+		}
+		cancel := removed || !managedActive || boundDaemon != daemonID
+		state := "queued"
+		if cancel {
+			state = "cancelled"
+		}
+		completedAt := "NULL"
+		if cancel {
+			completedAt = "now()"
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+UPDATE knowledge_lifecycle_event
+SET writeback_state = $2, writeback_claimed_by = '', writeback_claimed_at = NULL,
+    writeback_claim_token = NULL, writeback_error = 'write-back claim expired',
+    completed_at = %s
+WHERE id = $1 AND writeback_state = 'in_progress'`, completedAt), target.eventID, state); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE knowledge_entry AS e
+SET writeback_state = $2, writeback_error = 'write-back claim expired'
+WHERE e.id = $1 AND e.writeback_state = 'in_progress'
+  AND EXISTS (
+      SELECT 1
+      FROM knowledge_lifecycle_event le
+      WHERE le.id = $3 AND le.entry_id = e.id AND le.writeback_state = $2
+  )`, target.entryID, state, target.eventID); err != nil {
+			return nil, err
+		}
+	}
+
+	pendingRows, err := tx.Query(ctx, `
+SELECT le.id, le.entry_id, le.workspace_id
+FROM knowledge_lifecycle_event le
+WHERE le.workspace_id = ANY($1) AND le.writeback_state = 'queued'
+  AND le.operation IN ('writeback_remove', 'writeback_restore')
+ORDER BY le.id
+FOR UPDATE OF le SKIP LOCKED`, workspaceIDs)
+	if err != nil {
+		return nil, err
+	}
+	var pending []claimTarget
+	for pendingRows.Next() {
+		var target claimTarget
+		if err := pendingRows.Scan(&target.eventID, &target.entryID, &target.workspaceID); err != nil {
+			pendingRows.Close()
+			return nil, err
+		}
+		pending = append(pending, target)
+	}
+	if err := pendingRows.Err(); err != nil {
+		pendingRows.Close()
+		return nil, err
+	}
+	pendingRows.Close()
+
+	writebacks := make(map[string][]KnowledgePlanWriteback)
+	for _, target := range pending {
+		var workspaceID, actor string
+		var job KnowledgePlanWriteback
+		if _, err := lockKnowledgeEntryDirectory(ctx, tx, target.entryID, target.workspaceID); err != nil {
+			return nil, err
+		}
+		err := tx.QueryRow(ctx, `
+SELECT le.id::text, e.id::text, le.workspace_id::text, le.operation, d.path, e.key,
+       v.content, v.content_sha256, le.expected_content_sha256, COALESCE(le.actor_id::text, '')
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+JOIN knowledge_dir d ON d.id = e.dir_id
+JOIN knowledge_entry_version v ON v.id = le.version_id
+    AND v.entry_id = e.id AND v.workspace_id = le.workspace_id
+WHERE le.id = $1 AND le.writeback_state = 'queued'
+  AND e.writeback_state = 'queued'
+  AND e.lifecycle_state = le.to_state
+  AND d.kind = 'candidate_cli' AND d.project_id IS NULL AND d.managed_active = TRUE
+  AND d.removed = FALSE AND d.daemon_id = $2
+FOR UPDATE OF e`, target.eventID, daemonID).Scan(&job.EventID, &job.EntryID, &workspaceID, &job.Operation, &job.Path,
+			&job.Key, &job.Content, &job.ContentSha256, &job.ExpectedContentSha256, &actor)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.QueryRow(ctx, `
+UPDATE knowledge_lifecycle_event
+SET writeback_state = 'in_progress', writeback_claimed_by = $2,
+    writeback_claimed_at = now(), writeback_claim_token = gen_random_uuid(), writeback_error = ''
+WHERE id = $1 AND writeback_state = 'queued'
+RETURNING writeback_claim_token::text`, target.eventID, daemonID).Scan(&job.ClaimToken); err != nil {
+			return nil, err
+		}
+		if tag, err := tx.Exec(ctx, `
+UPDATE knowledge_entry SET writeback_state = 'in_progress', writeback_error = ''
+WHERE id = $1 AND writeback_state = 'queued'`, target.entryID); err != nil || tag.RowsAffected() != 1 {
+			if err != nil {
+				return nil, err
+			}
+			return nil, errors.New("knowledge write-back entry was not queued")
+		}
+		if job.Operation == "writeback_remove" {
+			job.Operation = "remove"
+		} else {
+			job.Operation = "restore"
+		}
+		job.Actor = "multica-" + actor
+		writebacks[workspaceID] = append(writebacks[workspaceID], job)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return writebacks, nil
 }
 
 // KnowledgeDiscoveryReport registers an auto-discovered candidate: a project
@@ -158,22 +331,18 @@ type KnowledgeAdoptReport struct {
 	Error         string `json:"error,omitempty"`
 }
 
-// knowledgePlanDaemonID resolves and cross-checks the daemon selected for a
-// read-only plan. User identities retain this compatibility path; write
-// reports must use knowledgeResultsDaemonID instead.
+// knowledgePlanDaemonID resolves and cross-checks the authenticated daemon
+// selected for a plan. The plan endpoint also claims writeback jobs, so a user
+// supplied daemon_id must never authorize it.
 func knowledgePlanDaemonID(r *http.Request) (string, int, string) {
-	daemonID := strings.TrimSpace(r.URL.Query().Get("daemon_id"))
 	ctxDaemonID := middleware.DaemonIDFromContext(r.Context())
-	if ctxDaemonID != "" {
-		if daemonID != "" && daemonID != ctxDaemonID {
-			return "", http.StatusForbidden, "daemon tokens can only address their own daemon"
-		}
-		return ctxDaemonID, 0, ""
+	if ctxDaemonID == "" {
+		return "", http.StatusUnauthorized, "daemon authentication is required to claim knowledge work"
 	}
-	if daemonID == "" {
-		return "", http.StatusBadRequest, "daemon_id is required"
+	if requested := strings.TrimSpace(r.URL.Query().Get("daemon_id")); requested != "" && requested != ctxDaemonID {
+		return "", http.StatusForbidden, "daemon tokens can only address their own daemon"
 	}
-	return daemonID, 0, ""
+	return ctxDaemonID, 0, ""
 }
 
 // knowledgeResultsDaemonID accepts reports only from an authenticated daemon.
@@ -300,7 +469,10 @@ WHERE pr.resource_type = 'local_directory'
 	}
 	dirRows, err := h.DB.Query(r.Context(), `
 SELECT d.id::text, d.workspace_id::text, d.kind, d.path, d.daemon_id, d.scan_requested,
-       EXISTS(SELECT 1 FROM knowledge_scan_batch b WHERE b.dir_id = d.id) AS has_batch
+	       EXISTS(
+	           SELECT 1 FROM knowledge_scan_batch b
+	           WHERE b.dir_id = d.id AND b.result IN ('noop', 'changed')
+	       ) AS has_successful_batch
 FROM knowledge_dir d
 WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
   AND (d.daemon_id = $2 OR d.daemon_id = '')`,
@@ -313,15 +485,15 @@ WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
 	for dirRows.Next() {
 		var row planDirRow
 		var daemonIDCol string
-		var hasBatch bool
+		var hasSuccessfulBatch bool
 		if err := dirRows.Scan(&row.dir.DirID, &row.workspaceID, &row.dir.Kind, &row.dir.Path,
-			&daemonIDCol, &row.dir.ScanRequested, &hasBatch); err != nil {
+			&daemonIDCol, &row.dir.ScanRequested, &hasSuccessfulBatch); err != nil {
 			dirRows.Close()
 			writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
 			return
 		}
 		row.dir.Bound = daemonIDCol == daemonID
-		row.dir.ScanRequired = row.dir.ScanRequested || !hasBatch
+		row.dir.ScanRequired = row.dir.ScanRequested || !hasSuccessfulBatch
 		row.dir.Mirror = map[string]string{}
 		row.dir.SourceDeleted = map[string]bool{}
 		if wsPlan, ok := planByWorkspace[row.workspaceID]; ok {
@@ -498,44 +670,16 @@ WHERE workspace_id::text = $1 AND id::text = ANY($2::text[])`, workspaceID, oper
 	}
 	opRows.Close()
 
-	writebackRows, err := h.DB.Query(r.Context(), `
-SELECT le.id::text, e.id::text, le.workspace_id::text, le.operation, d.path, e.key,
-       v.content, v.content_sha256, le.expected_content_sha256, COALESCE(le.actor_id::text, '')
-FROM knowledge_lifecycle_event le
-JOIN knowledge_entry e ON e.id = le.entry_id
-JOIN knowledge_dir d ON d.id = e.dir_id
-JOIN knowledge_entry_version v ON v.id = le.version_id
-    AND v.entry_id = e.id AND v.workspace_id = le.workspace_id
-WHERE le.workspace_id = ANY($1) AND le.writeback_state = 'queued'
-  AND le.operation IN ('writeback_remove', 'writeback_restore')
-  AND e.lifecycle_state = le.to_state
-  AND d.kind = 'candidate_cli' AND d.project_id IS NULL AND d.managed_active = TRUE
-  AND d.removed = FALSE AND d.daemon_id = $2`, workspaceIDs, daemonID)
+	writebacksByWorkspace, err := h.claimKnowledgeWritebacks(r.Context(), workspaceIDs, daemonID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
 		return
 	}
-	for writebackRows.Next() {
-		var workspaceID string
-		var job KnowledgePlanWriteback
-		var actor string
-		if err := writebackRows.Scan(&job.EventID, &job.EntryID, &workspaceID, &job.Operation, &job.Path,
-			&job.Key, &job.Content, &job.ContentSha256, &job.ExpectedContentSha256, &actor); err != nil {
-			writebackRows.Close()
-			writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
-			return
-		}
-		if job.Operation == "writeback_remove" {
-			job.Operation = "remove"
-		} else {
-			job.Operation = "restore"
-		}
-		job.Actor = "multica-" + actor
+	for workspaceID, writebacks := range writebacksByWorkspace {
 		if wsPlan := planByWorkspace[workspaceID]; wsPlan != nil {
-			wsPlan.Writebacks = append(wsPlan.Writebacks, job)
+			wsPlan.Writebacks = append(wsPlan.Writebacks, writebacks...)
 		}
 	}
-	writebackRows.Close()
 
 	// Materialize the accumulated workspaces in stable id order.
 	for _, ws := range workspaceIDs {
@@ -718,7 +862,8 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 	for _, writeback := range body.Writebacks {
 		eventID, eventOK := knowledgeParseUUID(writeback.EventID)
 		entryID, entryOK := knowledgeParseUUID(writeback.EntryID)
-		if !eventOK || !entryOK {
+		claimToken, claimOK := knowledgeParseUUID(writeback.ClaimToken)
+		if !eventOK || !entryOK || !claimOK {
 			continue
 		}
 		tx, err := h.TxStarter.Begin(r.Context())
@@ -728,14 +873,28 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		var workspaceID, sourceVersionID pgtype.UUID
 		var operation, boundDaemon string
 		err = tx.QueryRow(r.Context(), `
-SELECT le.workspace_id, le.operation, le.version_id, d.daemon_id
-FROM knowledge_lifecycle_event le
-JOIN knowledge_entry e ON e.id = le.entry_id
+SELECT workspace_id, operation, version_id
+FROM knowledge_lifecycle_event
+WHERE id = $1 AND entry_id = $2 AND writeback_state = 'in_progress'
+  AND writeback_claimed_by = $3 AND writeback_claim_token = $4
+FOR UPDATE`, eventID, entryID, daemonID, claimToken).
+			Scan(&workspaceID, &operation, &sourceVersionID)
+		if err != nil {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		if _, err := lockKnowledgeEntryDirectory(r.Context(), tx, entryID, workspaceID); err != nil {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		err = tx.QueryRow(r.Context(), `
+SELECT d.daemon_id
+FROM knowledge_entry e
 JOIN knowledge_dir d ON d.id = e.dir_id
-WHERE le.id = $1 AND le.entry_id = $2 AND le.writeback_state = 'queued'
-  AND d.kind = 'candidate_cli' AND d.project_id IS NULL AND d.managed_active = TRUE
-	  AND d.removed = FALSE
-		FOR UPDATE OF le, e, d`, eventID, entryID).Scan(&workspaceID, &operation, &sourceVersionID, &boundDaemon)
+WHERE e.id = $1 AND e.workspace_id = $2
+  AND d.kind = 'candidate_cli' AND d.project_id IS NULL
+  AND d.managed_active = TRUE AND d.removed = FALSE
+FOR UPDATE OF e`, entryID, workspaceID).Scan(&boundDaemon)
 		if err != nil || boundDaemon != daemonID {
 			_ = tx.Rollback(r.Context())
 			continue
@@ -750,7 +909,9 @@ WHERE le.id = $1 AND le.entry_id = $2 AND le.writeback_state = 'queued'
 		}
 		tag, err := tx.Exec(r.Context(), `
 UPDATE knowledge_lifecycle_event SET writeback_state = $2, writeback_error = $3, completed_at = now()
-WHERE id = $1 AND writeback_state = 'queued'`, eventID, state, writeback.Error)
+	, writeback_claimed_by = '', writeback_claimed_at = NULL, writeback_claim_token = NULL
+	WHERE id = $1 AND writeback_state = 'in_progress'
+	  AND writeback_claimed_by = $4 AND writeback_claim_token = $5`, eventID, state, writeback.Error, daemonID, claimToken)
 		if err != nil || tag.RowsAffected() == 0 {
 			_ = tx.Rollback(r.Context())
 			continue
@@ -776,12 +937,13 @@ WHERE le.id = $1 AND le.entry_id = $2`, eventID, entryID, nextVersion)
 					continue
 				}
 				tag, err = tx.Exec(r.Context(), `
-UPDATE knowledge_entry SET content = v.content, content_sha256 = v.content_sha256,
-    current_version = $3, lifecycle_state = 'active', mirror_state = 'synced',
+UPDATE knowledge_entry AS e SET content = v.content, content_sha256 = v.content_sha256,
+	    current_version = $3, lifecycle_state = 'active',
+	    mirror_state = CASE WHEN d.removed THEN 'source_removed' ELSE 'synced' END,
     missing_confirmation = 0, writeback_state = 'succeeded', writeback_error = '',
     last_confirmed_at = now()
-FROM knowledge_entry_version v
-WHERE knowledge_entry.id = $1 AND knowledge_entry.workspace_id = $2 AND v.id = $4`,
+FROM knowledge_entry_version AS v, knowledge_dir AS d
+	WHERE e.id = $1 AND e.workspace_id = $2 AND v.id = $4 AND d.id = e.dir_id`,
 					entryID, workspaceID, nextVersion, sourceVersionID)
 			} else {
 				tag, err = tx.Exec(r.Context(), `
