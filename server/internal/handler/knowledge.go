@@ -628,9 +628,35 @@ FOR UPDATE OF le`, dirID)
 		return
 	}
 	rows.Close()
+	var removed bool
+	if err := tx.QueryRow(r.Context(), `
+SELECT removed
+FROM knowledge_dir
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE`, dirID, workspaceID).Scan(&removed); err != nil || removed {
+		writeError(w, http.StatusConflict, "knowledge directory is not active")
+		return
+	}
 	if writebackInProgress {
 		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
 		return
+	}
+	if !body.ManagedActive {
+		if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_lifecycle_event
+SET writeback_state = 'cancelled', writeback_error = 'managed write-back disabled', completed_at = now()
+WHERE entry_id IN (SELECT id FROM knowledge_entry WHERE dir_id = $1)
+  AND writeback_state = 'queued'`, dirID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to cancel pending knowledge write-back")
+			return
+		}
+		if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_entry
+SET writeback_state = 'cancelled', writeback_error = 'managed write-back disabled'
+WHERE dir_id = $1 AND writeback_state = 'queued'`, dirID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to cancel pending knowledge write-back projection")
+			return
+		}
 	}
 	query := `
 UPDATE knowledge_dir SET managed_active = $3, updated_at = now()
@@ -1277,6 +1303,48 @@ type knowledgeAdoptError struct {
 
 func (e *knowledgeAdoptError) Error() string { return e.reason }
 
+var errKnowledgeScanStale = errors.New("stale knowledge scan report")
+
+func (h *Handler) beginKnowledgeScanReport(ctx context.Context, workspaceID, dirID pgtype.UUID, daemonID string) (pgx.Tx, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rollback := func(err error) (pgx.Tx, error) {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+SELECT le.id
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+WHERE e.dir_id = $1 AND le.writeback_state IN ('queued', 'in_progress')
+ORDER BY le.id
+FOR UPDATE OF le`, dirID); err != nil {
+		return rollback(err)
+	}
+	var removed bool
+	var boundDaemon string
+	if err := tx.QueryRow(ctx, `
+SELECT removed, daemon_id
+FROM knowledge_dir
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE`, dirID, workspaceID).Scan(&removed, &boundDaemon); err != nil {
+		return rollback(err)
+	}
+	if removed || (boundDaemon != "" && boundDaemon != daemonID) {
+		return rollback(errKnowledgeScanStale)
+	}
+	return tx, nil
+}
+
+func clearKnowledgeScanRequest(ctx context.Context, tx pgx.Tx, dirID pgtype.UUID) error {
+	_, err := tx.Exec(ctx, `
+UPDATE knowledge_dir SET scan_requested = FALSE, updated_at = now()
+WHERE id = $1 AND removed = FALSE`, dirID)
+	return err
+}
+
 // knowledgeUltimateDir resolves the workspace's active ultimate directory only
 // after a daemon has claimed it. Queuing a transfer without this binding would
 // leave it in transferring with no authenticated consumer.
@@ -1294,35 +1362,26 @@ ORDER BY created_at LIMIT 1`, workspaceID).Scan(&id, &path)
 }
 
 func (h *Handler) applyKnowledgeScanResult(ctx context.Context, workspaceID, dirID pgtype.UUID,
-	path, trigger string, memories map[string]string, started, finished time.Time) (*KnowledgeScanBatchResponse, error) {
+	path, trigger, daemonID string, memories map[string]string, started, finished time.Time) (*KnowledgeScanBatchResponse, error) {
 	batch := &KnowledgeScanBatchResponse{
 		DirID: uuidToString(dirID), TriggerSource: trigger, StartedAt: started,
 	}
-	tx, err := h.TxStarter.Begin(ctx)
+	tx, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID)
 	if err != nil {
-		return h.recordFailedScanBatch(ctx, workspaceID, dirID, trigger, started, finished, err.Error())
+		if errors.Is(err, errKnowledgeScanStale) {
+			return nil, err
+		}
+		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, trigger, started, finished, err.Error())
 	}
 	defer tx.Rollback(ctx)
 	fail := func(err error) (*KnowledgeScanBatchResponse, error) {
 		_ = tx.Rollback(ctx)
-		return h.recordFailedScanBatch(ctx, workspaceID, dirID, trigger, started, finished, err.Error())
+		if errors.Is(err, errKnowledgeScanStale) {
+			return nil, err
+		}
+		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, trigger, started, finished, err.Error())
 	}
 
-	// Serialize diff application for a directory so concurrent daemon reports
-	// cannot each treat the same absence as a distinct confirmation. Active
-	// writeback events are locked first to preserve event -> directory -> entry.
-	if _, err := tx.Exec(ctx, `
-SELECT le.id
-FROM knowledge_lifecycle_event le
-JOIN knowledge_entry e ON e.id = le.entry_id
-WHERE e.dir_id = $1 AND le.writeback_state IN ('queued', 'in_progress')
-ORDER BY le.id
-FOR UPDATE OF le`, dirID); err != nil {
-		return fail(err)
-	}
-	if _, err := tx.Exec(ctx, `SELECT id FROM knowledge_dir WHERE id = $1 FOR UPDATE`, dirID); err != nil {
-		return fail(err)
-	}
 	var batchID pgtype.UUID
 	if err := tx.QueryRow(ctx, `
 INSERT INTO knowledge_scan_batch (workspace_id, dir_id, trigger_source, result, started_at, finished_at)
@@ -1460,8 +1519,11 @@ WHERE id = $1`, batchID, batch.Result, batch.Added, batch.Updated, batch.Removed
 		`UPDATE knowledge_dir SET health_state = 'ok', health_note = '', updated_at = now() WHERE id = $1`, dirID); err != nil {
 		return fail(err)
 	}
+	if err := clearKnowledgeScanRequest(ctx, tx, dirID); err != nil {
+		return fail(err)
+	}
 	if err := tx.Commit(ctx); err != nil {
-		return h.recordFailedScanBatch(ctx, workspaceID, dirID, trigger, started, finished, err.Error())
+		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, trigger, started, finished, err.Error())
 	}
 
 	return batch, nil
@@ -1471,10 +1533,17 @@ WHERE id = $1`, batchID, batch.Result, batch.Added, batch.Updated, batch.Removed
 // verified byte-identical against the mirror SHA map (no diff payload sent),
 // refreshing confirmation timestamps in one statement.
 func (h *Handler) recordUnchangedScanBatch(ctx context.Context, workspaceID, dirID pgtype.UUID,
-	trigger string, started, finished time.Time) *KnowledgeScanBatchResponse {
-	_, _ = h.DB.Exec(ctx, `
-UPDATE knowledge_entry SET last_confirmed_at = now() WHERE dir_id = $1`, dirID)
-	_, err := h.DB.Exec(ctx, `
+	daemonID, trigger string, started, finished time.Time) (*KnowledgeScanBatchResponse, error) {
+	tx, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+	UPDATE knowledge_entry SET last_confirmed_at = now() WHERE dir_id = $1`, dirID); err != nil {
+		return nil, err
+	}
+	_, err = tx.Exec(ctx, `
 INSERT INTO knowledge_scan_batch (workspace_id, dir_id, trigger_source, result, started_at, finished_at)
 VALUES ($1, $2, $3, 'noop', $4, $5)`, workspaceID, dirID, trigger, started, finished)
 	batch := &KnowledgeScanBatchResponse{
@@ -1482,27 +1551,50 @@ VALUES ($1, $2, $3, 'noop', $4, $5)`, workspaceID, dirID, trigger, started, fini
 		StartedAt: started, FinishedAt: &finished,
 	}
 	if err != nil {
-		return batch
+		return batch, err
 	}
-	_, _ = h.DB.Exec(ctx,
-		`UPDATE knowledge_dir SET health_state = 'ok', health_note = '', updated_at = now() WHERE id = $1`, dirID)
-	return batch
+	if _, err := tx.Exec(ctx,
+		`UPDATE knowledge_dir SET health_state = 'ok', health_note = '', updated_at = now() WHERE id = $1`, dirID); err != nil {
+		return batch, err
+	}
+	if err := clearKnowledgeScanRequest(ctx, tx, dirID); err != nil {
+		return batch, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return batch, err
+	}
+	return batch, nil
 }
 
 // recordFailedScanBatch records a daemon-reported scan failure: the batch is
 // logged and the directory's health flips to no_access with the reason, so
 // the UI can show why a source is stale.
 func (h *Handler) recordFailedScanBatch(ctx context.Context, workspaceID, dirID pgtype.UUID,
-	trigger string, started, finished time.Time, reason string) (*KnowledgeScanBatchResponse, error) {
-	_, _ = h.DB.Exec(ctx, `
+	daemonID, trigger string, started, finished time.Time, reason string) (*KnowledgeScanBatchResponse, error) {
+	tx, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
 INSERT INTO knowledge_scan_batch (workspace_id, dir_id, trigger_source, result, error, started_at, finished_at)
-VALUES ($1, $2, $3, 'failed', $4, $5, $6)`, workspaceID, dirID, trigger, reason, started, finished)
-	_, _ = h.DB.Exec(ctx,
+	VALUES ($1, $2, $3, 'failed', $4, $5, $6)`, workspaceID, dirID, trigger, reason, started, finished); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx,
 		`UPDATE knowledge_dir SET health_state = 'no_access', health_note = $2, updated_at = now() WHERE id = $1`,
-		dirID, reason)
+		dirID, reason); err != nil {
+		return nil, err
+	}
+	if err := clearKnowledgeScanRequest(ctx, tx, dirID); err != nil {
+		return nil, err
+	}
 	batch := &KnowledgeScanBatchResponse{
 		DirID: uuidToString(dirID), TriggerSource: trigger, Result: "failed",
 		Error: reason, StartedAt: started, FinishedAt: &finished,
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return batch, err
 	}
 	return batch, &knowledgeAdoptError{reason}
 }

@@ -1241,6 +1241,45 @@ func TestKnowledgeResultsLandsScans(t *testing.T) {
 	}
 }
 
+func TestKnowledgeScanResultRejectsReboundDaemon(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-scan-owner"
+	candidate := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"stale": "before rebind"},
+		}},
+	})
+
+	var batchesBefore int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM knowledge_scan_batch WHERE dir_id = $1`, candidate).Scan(&batchesBefore); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE knowledge_dir SET daemon_id = 'new-daemon' WHERE id = $1`, candidate); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := testHandler.applyKnowledgeScanResult(
+		context.Background(), parseUUID(testWorkspaceID), parseUUID(candidate), "", "scheduled", daemonID,
+		map[string]string{"stale": "after rebind"}, time.Now(), time.Now())
+	if !errors.Is(err, errKnowledgeScanStale) {
+		t.Fatalf("rebound daemon scan error = %v, want stale report", err)
+	}
+	var batchesAfter int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM knowledge_scan_batch WHERE dir_id = $1`, candidate).Scan(&batchesAfter); err != nil {
+		t.Fatal(err)
+	}
+	if batchesAfter != batchesBefore {
+		t.Fatalf("stale scan created %d batch rows, want %d", batchesAfter, batchesBefore)
+	}
+}
+
 func TestKnowledgeManagedWritebackQueuesAndArchivesSourceChanges(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("database fixture is required")
@@ -1328,6 +1367,40 @@ func TestKnowledgeManagedWritebackQueuesAndArchivesSourceChanges(t *testing.T) {
 	updated := knowledgeEntryByKey(t, candidate, "reviewed")
 	if updated.LifecycleState != "active" || updated.WritebackState != "succeeded" || updated.CurrentVersion != entry.CurrentVersion+1 || updated.Content != entry.Content {
 		t.Fatalf("restore receipt did not create an active new version: %+v", updated)
+	}
+}
+
+func TestKnowledgeManagedDisableCancelsQueuedWriteback(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	candidate, entryID, eventID := prepareQueuedKnowledgeWriteback(t, "daemon-managed-disable", "managed-disable")
+
+	testutil.Call(t, testHandler.PutKnowledgeDirManaged,
+		withURLParam(newRequest(http.MethodPut, "/api/knowledge/dirs/"+candidate+"/managed",
+			map[string]any{"managed_active": false}), "id", candidate)).Want(http.StatusOK)
+
+	var eventState, eventError, entryState, entryError string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT le.writeback_state, le.writeback_error, e.writeback_state, e.writeback_error
+		FROM knowledge_lifecycle_event le
+		JOIN knowledge_entry e ON e.id = le.entry_id
+		WHERE le.id = $1`, eventID).Scan(&eventState, &eventError, &entryState, &entryError); err != nil {
+		t.Fatal(err)
+	}
+	if eventState != "cancelled" || eventError != "managed write-back disabled" {
+		t.Fatalf("managed-disabled event = state %q error %q", eventState, eventError)
+	}
+	if entryState != "cancelled" || entryError != "managed write-back disabled" {
+		t.Fatalf("managed-disabled entry %s = state %q error %q", entryID, entryState, entryError)
+	}
+
+	testutil.Call(t, testHandler.PutKnowledgeDirManaged,
+		withURLParam(newRequest(http.MethodPut, "/api/knowledge/dirs/"+candidate+"/managed",
+			map[string]any{"managed_active": true}), "id", candidate)).Want(http.StatusOK)
+	plan := knowledgePlan(t, "daemon-managed-disable")
+	if len(plan.Workspaces) != 1 || len(plan.Workspaces[0].Writebacks) != 0 {
+		t.Fatalf("cancelled write-back was requeued after managed enable: %+v", plan)
 	}
 }
 

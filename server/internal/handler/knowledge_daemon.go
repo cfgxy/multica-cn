@@ -822,17 +822,17 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		}
 		started := time.Now()
 		finished := time.Now()
+		var scanErr error
 		if !scan.OK {
-			h.recordFailedScanBatch(r.Context(), workspaceID, dirID, trigger, started, finished, "scan failed: "+scan.Error)
+			_, scanErr = h.recordFailedScanBatch(r.Context(), workspaceID, dirID, daemonID, trigger, started, finished, "scan failed: "+scan.Error)
 		} else if scan.Unchanged {
-			h.recordUnchangedScanBatch(r.Context(), workspaceID, dirID, trigger, started, finished)
+			_, scanErr = h.recordUnchangedScanBatch(r.Context(), workspaceID, dirID, daemonID, trigger, started, finished)
 		} else {
-			h.applyKnowledgeScanResult(r.Context(), workspaceID, dirID, dirPath, trigger, scan.Memories, started, finished)
+			_, scanErr = h.applyKnowledgeScanResult(r.Context(), workspaceID, dirID, dirPath, trigger, daemonID, scan.Memories, started, finished)
 		}
-		// A queued manual/initial scan request has been serviced either way;
-		// the outcome is visible through the batch log and health state.
-		_, _ = h.DB.Exec(r.Context(),
-			`UPDATE knowledge_dir SET scan_requested = FALSE, updated_at = now() WHERE id = $1`, dirID)
+		if errors.Is(scanErr, errKnowledgeScanStale) {
+			continue
+		}
 		// A successful scan claims an unclaimed directory for this daemon.
 		if scan.OK && boundDaemon == "" {
 			_, _ = h.DB.Exec(r.Context(),
