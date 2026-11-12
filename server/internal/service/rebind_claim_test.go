@@ -402,6 +402,37 @@ func TestMigrateAgentTaskQueueOnRuntimeRebind(t *testing.T) {
 	}
 }
 
+func TestRequeueAfterClaimFailureInvalidatesCurrentRebindRuntime(t *testing.T) {
+	ctx := context.Background()
+	rdb := newRedisTestClient(t)
+	f := newRebindFixture(t)
+	svc := NewTaskService(db.New(f.pool), f.pool, nil, events.New())
+	svc.EmptyClaim = NewEmptyClaimCache(rdb)
+
+	claimed, err := f.claim(t, ctx, f.oldRuntimeID)
+	if err != nil {
+		t.Fatalf("claim on old runtime: %v", err)
+	}
+	f.rebind(t)
+
+	newRuntimeKey := util.UUIDToString(f.newRuntimeID)
+	version := svc.EmptyClaim.CurrentVersion(ctx, newRuntimeKey)
+	svc.EmptyClaim.MarkEmpty(ctx, newRuntimeKey, version)
+	if !svc.EmptyClaim.IsEmpty(ctx, newRuntimeKey) {
+		t.Fatal("precondition: current rebind runtime should have an empty verdict")
+	}
+
+	if _, err := svc.RequeueTaskAfterClaimFailure(ctx, claimed); err != nil {
+		t.Fatalf("requeue after finalization failure: %v", err)
+	}
+	if svc.EmptyClaim.IsEmpty(ctx, newRuntimeKey) {
+		t.Fatal("requeue must invalidate the current binding runtime empty verdict")
+	}
+	if status, runtime := f.taskStatusRuntime(t, ctx, f.taskID); status != "queued" || runtime != util.UUIDToString(f.oldRuntimeID) {
+		t.Fatalf("task after requeue: status=%s runtime=%s, want queued on original claim runtime", status, runtime)
+	}
+}
+
 // TestClaimTasksForRuntimesHealsStrandedQueuedTask drives the full batch
 // daemon-poll path over the torn state: the machine polling the agent's
 // CURRENT runtime must come back with the stranded task, claimed onto that

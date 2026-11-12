@@ -673,7 +673,7 @@ const AgentInvocationTargetSchema: z.ZodType<AgentInvocationTarget> = z
 // where new modes/visibilities/statuses get added most often. We need only id,
 // name, avatar_url, and a couple of flags for the assignee picker + chat
 // header; everything else is informational and safe to default.
-export const AgentSchema: z.ZodType<Agent> = z.object({
+const AgentSchemaObject = z.object({
   id: z.string(),
   workspace_id: z.string().default(""),
   runtime_id: z.string().default(""),
@@ -725,7 +725,9 @@ export const AgentSchema: z.ZodType<Agent> = z.object({
   archived_by: z.string().nullable().default(null),
 }).loose();
 
-const AgentListItemSchema = AgentSchema.extend({
+export const AgentSchema: z.ZodType<Agent> = AgentSchemaObject;
+
+const AgentListItemSchema = AgentSchemaObject.extend({
   max_concurrent_tasks: z.number().int().nonnegative().catch(1).default(1),
 });
 

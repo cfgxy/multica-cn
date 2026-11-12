@@ -99,12 +99,12 @@ type TaskService struct {
 	analyticsContextCache map[string]analytics.TaskContext
 	analyticsContextOrder []string
 
-	// batchClaimFairnessCursor is the process-local fallback when Redis cannot
-	// provide the machine-shared batch claim cursor. It keeps the fairness
-	// guarantee for a single service process without making Redis availability a
-	// prerequisite for claim correctness.
-	batchClaimFairnessMu     sync.Mutex
-	batchClaimFairnessCursor map[string]int64
+	// batchClaimFairnessLastAgent is the process-local fallback when Redis cannot
+	// provide the machine-shared last-served Agent identity. Storing the identity
+	// rather than an integer cursor keeps rotation stable when the candidate set
+	// shrinks or grows between polls.
+	batchClaimFairnessMu       sync.Mutex
+	batchClaimFairnessLastAgent map[string]string
 }
 
 type SourceContextObjectStore interface {
@@ -4198,6 +4198,20 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 	s.ReconcileAgentStatus(ctx, requeued.AgentID)
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, requeued)
 	s.notifyTaskAvailable(requeued)
+	// The row still carries the runtime that performed the claim, but the Agent
+	// may have been rebound before finalization failed. Invalidate the current
+	// binding too, otherwise that runtime can keep a stale empty verdict while
+	// the requeued row is discoverable there.
+	bindings, bindingErr := s.Queries.GetAgentRuntimeBindings(ctx, []pgtype.UUID{requeued.AgentID})
+	if bindingErr != nil {
+		slog.Warn("task requeue: current Agent runtime lookup failed", "agent_id", util.UUIDToString(requeued.AgentID), "error", bindingErr)
+	} else {
+		for _, binding := range bindings {
+			if binding.RuntimeID.Valid && binding.RuntimeID != requeued.RuntimeID {
+				s.notifyRuntimeMayHaveWork(binding.RuntimeID, util.UUIDToString(requeued.ID))
+			}
+		}
+	}
 	slog.Info("task requeued after claim finalization failure",
 		"task_id", util.UUIDToString(requeued.ID),
 		"runtime_id", util.UUIDToString(requeued.RuntimeID),
@@ -4205,22 +4219,53 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 	return &requeued, nil
 }
 
-func (s *TaskService) nextBatchClaimCursor(ctx context.Context, runtimeSet string) int64 {
-	if cursor, ok := s.EmptyClaim.NextBatchClaimCursor(ctx, runtimeSet); ok {
-		return cursor
+func (s *TaskService) nextBatchClaimAgent(ctx context.Context, runtimeSet string, agentOrder []string) string {
+	if len(agentOrder) == 0 {
+		return ""
+	}
+	if lastAgent, available := s.EmptyClaim.LastBatchClaimAgent(ctx, runtimeSet); available {
+		return nextAgentAfter(agentOrder, lastAgent)
 	}
 
-	// Redis coordinates daemons that share a machine-level runtime set. Keep a
-	// local cursor as the availability fallback so one process still rotates
-	// Agent order when Redis is disabled or temporarily unavailable.
+	// Redis coordinates daemons that share a machine-level runtime set. Keep the
+	// last-served Agent identity locally when Redis is disabled or unavailable.
 	s.batchClaimFairnessMu.Lock()
 	defer s.batchClaimFairnessMu.Unlock()
-	if s.batchClaimFairnessCursor == nil {
-		s.batchClaimFairnessCursor = make(map[string]int64)
+	if s.batchClaimFairnessLastAgent == nil {
+		s.batchClaimFairnessLastAgent = make(map[string]string)
 	}
-	cursor := s.batchClaimFairnessCursor[runtimeSet]
-	s.batchClaimFairnessCursor[runtimeSet] = cursor + 1
-	return cursor
+	return nextAgentAfter(agentOrder, s.batchClaimFairnessLastAgent[runtimeSet])
+}
+
+func (s *TaskService) rememberBatchClaimAgent(ctx context.Context, runtimeSet, agentID string) {
+	if runtimeSet == "" || agentID == "" {
+		return
+	}
+	if s.EmptyClaim.RememberBatchClaimAgent(ctx, runtimeSet, agentID) {
+		return
+	}
+
+	s.batchClaimFairnessMu.Lock()
+	defer s.batchClaimFairnessMu.Unlock()
+	if s.batchClaimFairnessLastAgent == nil {
+		s.batchClaimFairnessLastAgent = make(map[string]string)
+	}
+	s.batchClaimFairnessLastAgent[runtimeSet] = agentID
+}
+
+func nextAgentAfter(agentOrder []string, lastAgent string) string {
+	if lastAgent == "" {
+		return agentOrder[0]
+	}
+	for i, agentID := range agentOrder {
+		if agentID == lastAgent {
+			return agentOrder[(i+1)%len(agentOrder)]
+		}
+		if agentID > lastAgent {
+			return agentID
+		}
+	}
+	return agentOrder[0]
 }
 
 // ClaimTasksForRuntimes is the machine-level (MUL-4257) batch counterpart of
@@ -4309,6 +4354,15 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	for _, rid := range uniqueIDs {
 		runtimeKeys = append(runtimeKeys, util.UUIDToString(rid))
 	}
+	runtimeSetKeys := append([]string(nil), runtimeKeys...)
+	sort.Strings(runtimeSetKeys)
+	runtimeSetKey := strings.Join(runtimeSetKeys, ",")
+	lastServedAgent := ""
+	defer func() {
+		if lastServedAgent != "" {
+			s.rememberBatchClaimAgent(ctx, runtimeSetKey, lastServedAgent)
+		}
+	}()
 	checkStarted := time.Now()
 	dueKeys := s.ReclaimCheck.DueRuntimeIDs(ctx, runtimeKeys, checkStarted)
 	var reclaimed []db.AgentTaskQueue
@@ -4338,6 +4392,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	for i := range reclaimed {
 		s.trackTaskForReclaim(reclaimed[i], reclaimCheckAfter)
 		claimed = append(claimed, reclaimed[i])
+		lastServedAgent = util.UUIDToString(reclaimed[i].AgentID)
 		slog.Info("stale dispatched task reclaimed (batch)",
 			"task_id", util.UUIDToString(reclaimed[i].ID),
 			"runtime_id", util.UUIDToString(reclaimed[i].RuntimeID),
@@ -4412,10 +4467,9 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		candidateBuckets[agentKey] = append(candidateBuckets[agentKey], candidate)
 	}
 	if len(agentOrder) > 1 {
-		runtimeSet := append([]string(nil), runtimeKeys...)
-		sort.Strings(runtimeSet)
-		cursor := s.nextBatchClaimCursor(ctx, strings.Join(runtimeSet, ","))
-		start := int(cursor % int64(len(agentOrder)))
+		sort.Strings(agentOrder)
+		startAgent := s.nextBatchClaimAgent(ctx, runtimeSetKey, agentOrder)
+		start := sort.SearchStrings(agentOrder, startAgent)
 		rotated := append(agentOrder[start:], agentOrder[:start]...)
 		rotatedCandidates := make([]db.ListQueuedClaimCandidatesByRuntimesRow, 0, len(candidates))
 		for _, agentKey := range rotated {
@@ -4465,6 +4519,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			return nil
 		}
 		claimed = append(claimed, *task)
+		lastServedAgent = util.UUIDToString(task.AgentID)
 		return nil
 	}
 

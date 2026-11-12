@@ -188,20 +188,26 @@ func TestClaimTasksForRuntimes_FairFirstPass(t *testing.T) {
 	}
 }
 
-// TestNextBatchClaimCursorLocalFallback verifies that fairness remains
-// process-local when Redis is unavailable.
-func TestNextBatchClaimCursorLocalFallback(t *testing.T) {
+// TestNextBatchClaimAgentLocalFallback verifies that the local fallback keeps
+// the last-served Agent identity across a changing candidate set.
+func TestNextBatchClaimAgentLocalFallback(t *testing.T) {
 	svc := &TaskService{}
 	ctx := context.Background()
+	order := []string{"agent-a", "agent-b", "agent-c"}
 
-	if got := svc.nextBatchClaimCursor(ctx, "runtime-a,runtime-b"); got != 0 {
-		t.Fatalf("first local cursor = %d, want 0", got)
+	if got := svc.nextBatchClaimAgent(ctx, "runtime-a,runtime-b", order); got != "agent-a" {
+		t.Fatalf("first local Agent = %s, want agent-a", got)
 	}
-	if got := svc.nextBatchClaimCursor(ctx, "runtime-a,runtime-b"); got != 1 {
-		t.Fatalf("second local cursor = %d, want 1", got)
+	svc.rememberBatchClaimAgent(ctx, "runtime-a,runtime-b", "agent-a")
+	if got := svc.nextBatchClaimAgent(ctx, "runtime-a,runtime-b", order); got != "agent-b" {
+		t.Fatalf("second local Agent = %s, want agent-b", got)
 	}
-	if got := svc.nextBatchClaimCursor(ctx, "runtime-c"); got != 0 {
-		t.Fatalf("independent local cursor = %d, want 0", got)
+	svc.rememberBatchClaimAgent(ctx, "runtime-a,runtime-b", "agent-b")
+	if got := svc.nextBatchClaimAgent(ctx, "runtime-a,runtime-b", []string{"agent-a", "agent-c"}); got != "agent-c" {
+		t.Fatalf("shrinking-set local Agent = %s, want agent-c", got)
+	}
+	if got := svc.nextBatchClaimAgent(ctx, "runtime-c", order); got != "agent-a" {
+		t.Fatalf("independent local Agent = %s, want agent-a", got)
 	}
 }
 
