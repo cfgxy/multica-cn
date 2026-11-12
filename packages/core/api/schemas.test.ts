@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { AgentRuntimeSchema, DecisionRequestSchema, IssueDecisionSchema } from "./schemas";
+import {
+  AgentRuntimeListSchema,
+  AgentRuntimeSchema,
+  DecisionRequestSchema,
+  IssueDecisionSchema,
+} from "./schemas";
 import {
   AppConfigSchema,
   MarketplaceItemSchema,
@@ -1260,6 +1265,19 @@ describe("agent runtime concurrency schema", () => {
     expect(AgentRuntimeSchema.parse({ max_concurrent_tasks: 8 }).max_concurrent_tasks).toBe(8);
     expect(AgentRuntimeSchema.safeParse({ max_concurrent_tasks: -1 }).success).toBe(false);
     expect(AgentRuntimeSchema.safeParse({ max_concurrent_tasks: "8" }).success).toBe(false);
+  });
+
+  it("keeps valid runtime rows when one concurrency field drifts", () => {
+    const parsed = AgentRuntimeListSchema.parse([
+      { id: "rt-null", max_concurrent_tasks: null },
+      { id: "rt-string", max_concurrent_tasks: "8" },
+      { id: "rt-negative", max_concurrent_tasks: -1 },
+      { id: "rt-valid", max_concurrent_tasks: 8 },
+    ]);
+
+    expect(parsed).toHaveLength(4);
+    expect(parsed.slice(0, 3).map((runtime) => runtime.max_concurrent_tasks)).toEqual([0, 0, 0]);
+    expect(parsed[3]?.max_concurrent_tasks).toBe(8);
   });
 });
 

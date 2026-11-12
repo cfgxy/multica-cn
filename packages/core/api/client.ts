@@ -372,6 +372,7 @@ import {
   AdminFileReadPolicySchema,
   AgentTaskListSchema,
   AgentRuntimeSchema,
+  AgentRuntimeListSchema,
   EMPTY_AGENT_RUNTIME,
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
@@ -2528,7 +2529,7 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/runtimes?${search}`, {
       headers: workspaceHeader(workspaceSlug),
     });
-    return parseWithFallback(raw, z.array(AgentRuntimeSchema), [], {
+    return parseWithFallback(raw, AgentRuntimeListSchema, [], {
       endpoint: "/api/runtimes",
     });
   }

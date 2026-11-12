@@ -17,15 +17,15 @@ import (
 // which closes the race where a slow claim writes an empty verdict
 // AFTER an enqueue has already invalidated it:
 //
-//   T1 claim:   v0 := GET version
-//               SELECT ... -> empty
-//               (slow, e.g. GC pause)
-//   T2 enqueue: INSERT row
-//               INCR version  (-> v1)
-//               wakeup
-//   T1 claim:   SET empty = v0
-//   T3 claim:   v1' := GET version (== v1)
-//               GET empty (== v0) -> v0 != v1, treat as miss -> SELECT
+//	T1 claim:   v0 := GET version
+//	            SELECT ... -> empty
+//	            (slow, e.g. GC pause)
+//	T2 enqueue: INSERT row
+//	            INCR version  (-> v1)
+//	            wakeup
+//	T1 claim:   SET empty = v0
+//	T3 claim:   v1' := GET version (== v1)
+//	            GET empty (== v0) -> v0 != v1, treat as miss -> SELECT
 //
 // Without the version tag T3 would have hit the stale empty key and
 // the just-queued task would sit idle until the empty key's TTL
@@ -34,6 +34,7 @@ import (
 const (
 	emptyClaimCachePrefix   = "mul:claim:runtime:empty:"
 	emptyClaimVersionPrefix = "mul:claim:runtime:version:"
+	batchClaimCursorPrefix  = "mul:claim:batch:cursor:"
 )
 
 // EmptyClaimCacheTTL bounds how long a cached "no queued task" verdict
@@ -82,8 +83,9 @@ func NewEmptyClaimCache(rdb *redis.Client) *EmptyClaimCache {
 	return &EmptyClaimCache{rdb: rdb}
 }
 
-func emptyClaimKey(runtimeID string) string   { return emptyClaimCachePrefix + runtimeID }
-func emptyClaimVersion(runtimeID string) string { return emptyClaimVersionPrefix + runtimeID }
+func emptyClaimKey(runtimeID string) string        { return emptyClaimCachePrefix + runtimeID }
+func emptyClaimVersion(runtimeID string) string    { return emptyClaimVersionPrefix + runtimeID }
+func batchClaimCursorKey(runtimeSet string) string { return batchClaimCursorPrefix + runtimeSet }
 
 func (c *EmptyClaimCache) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, emptyClaimRedisTimeout)
@@ -194,4 +196,24 @@ func (c *EmptyClaimCache) Bump(ctx context.Context, runtimeID string) {
 	if _, err := pipe.Exec(bctx); err != nil {
 		slog.Warn("empty_claim_cache: bump failed; entry will expire on TTL", "error", err)
 	}
+}
+
+// NextBatchClaimCursor advances the optional cross-poll fairness cursor. A
+// Redis failure returns ok=false so the caller can use a process-local cursor
+// rather than making Redis availability part of the claim path's correctness.
+func (c *EmptyClaimCache) NextBatchClaimCursor(ctx context.Context, runtimeSet string) (cursor int64, ok bool) {
+	if c == nil || runtimeSet == "" {
+		return 0, false
+	}
+	bctx, cancel := c.bounded(ctx)
+	defer cancel()
+	value, err := c.rdb.Incr(bctx, batchClaimCursorKey(runtimeSet)).Result()
+	if err != nil {
+		slog.Warn("empty_claim_cache: batch cursor increment failed; falling back to FIFO", "error", err)
+		return 0, false
+	}
+	// Return a zero-based cursor and keep the key bounded for machines that stop
+	// polling permanently after a daemon is removed.
+	c.rdb.Expire(bctx, batchClaimCursorKey(runtimeSet), emptyClaimVersionTTL)
+	return value - 1, true
 }

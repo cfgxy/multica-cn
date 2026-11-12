@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { AgentSchema, AgentTaskSchema } from "./schemas";
+import { AgentListSchema, AgentSchema, AgentTaskSchema } from "./schemas";
 
 describe("AgentSchema skill assignments", () => {
   it("preserves disabled assignments and tolerates older or malformed payloads", () => {
@@ -19,6 +19,19 @@ describe("AgentSchema concurrency", () => {
   it("rejects negative and fractional limits", () => {
     expect(AgentSchema.safeParse({ id: "a1", max_concurrent_tasks: -1 }).success).toBe(false);
     expect(AgentSchema.safeParse({ id: "a1", max_concurrent_tasks: 1.5 }).success).toBe(false);
+  });
+
+  it("keeps valid agent rows when one concurrency field drifts", () => {
+    const parsed = AgentListSchema.parse([
+      { id: "a-null", max_concurrent_tasks: null },
+      { id: "a-string", max_concurrent_tasks: "8" },
+      { id: "a-negative", max_concurrent_tasks: -1 },
+      { id: "a-valid", max_concurrent_tasks: 8 },
+    ]);
+
+    expect(parsed).toHaveLength(4);
+    expect(parsed.slice(0, 3).map((agent) => agent.max_concurrent_tasks)).toEqual([1, 1, 1]);
+    expect(parsed[3]?.max_concurrent_tasks).toBe(8);
   });
 });
 

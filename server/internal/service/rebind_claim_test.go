@@ -273,6 +273,10 @@ func TestListQueuedClaimCandidatesFollowAgentRebind(t *testing.T) {
 	if len(batch) != 1 || util.UUIDToString(batch[0].ID) != f.taskID {
 		t.Fatalf("batch candidates = %v, want exactly the stranded task %s", batch, f.taskID)
 	}
+	if util.UUIDToString(batch[0].RuntimeID) != util.UUIDToString(f.newRuntimeID) {
+		t.Fatalf("batch candidate runtime_id = %s, want current binding %s",
+			util.UUIDToString(batch[0].RuntimeID), util.UUIDToString(f.newRuntimeID))
+	}
 }
 
 // TestReclaimAuthorizationFollowsAgentBinding pins the reclaim fences: a

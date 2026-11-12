@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -97,6 +98,13 @@ type TaskService struct {
 	analyticsContextMu    sync.Mutex
 	analyticsContextCache map[string]analytics.TaskContext
 	analyticsContextOrder []string
+
+	// batchClaimFairnessCursor is the process-local fallback when Redis cannot
+	// provide the machine-shared batch claim cursor. It keeps the fairness
+	// guarantee for a single service process without making Redis availability a
+	// prerequisite for claim correctness.
+	batchClaimFairnessMu     sync.Mutex
+	batchClaimFairnessCursor map[string]int64
 }
 
 type SourceContextObjectStore interface {
@@ -4197,6 +4205,24 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 	return &requeued, nil
 }
 
+func (s *TaskService) nextBatchClaimCursor(ctx context.Context, runtimeSet string) int64 {
+	if cursor, ok := s.EmptyClaim.NextBatchClaimCursor(ctx, runtimeSet); ok {
+		return cursor
+	}
+
+	// Redis coordinates daemons that share a machine-level runtime set. Keep a
+	// local cursor as the availability fallback so one process still rotates
+	// Agent order when Redis is disabled or temporarily unavailable.
+	s.batchClaimFairnessMu.Lock()
+	defer s.batchClaimFairnessMu.Unlock()
+	if s.batchClaimFairnessCursor == nil {
+		s.batchClaimFairnessCursor = make(map[string]int64)
+	}
+	cursor := s.batchClaimFairnessCursor[runtimeSet]
+	s.batchClaimFairnessCursor[runtimeSet] = cursor + 1
+	return cursor
+}
+
 // ClaimTasksForRuntimes is the machine-level (MUL-4257) batch counterpart of
 // ClaimTaskForRuntime: it claims up to maxTasks tasks across every runtime in
 // runtimeIDs in a single call, so a daemon can poll for all of its runtimes
@@ -4369,6 +4395,33 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		if _, ok := withCandidates[key]; !ok {
 			s.EmptyClaim.MarkEmpty(ctx, key, versions[key])
 		}
+	}
+
+	// Rotate the distinct-agent order across polls. Candidate SQL ordering is
+	// intentionally stable for FIFO within an Agent, but a stable global first
+	// row would let the first busy Agent consume every maxTasks=1 poll.
+	// Redis provides a machine-shared cursor when configured; a process-local
+	// cursor preserves the same rotation when Redis is unavailable.
+	candidateBuckets := make(map[string][]db.ListQueuedClaimCandidatesByRuntimesRow, len(candidates))
+	agentOrder := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		agentKey := util.UUIDToString(candidate.AgentID)
+		if _, seen := candidateBuckets[agentKey]; !seen {
+			agentOrder = append(agentOrder, agentKey)
+		}
+		candidateBuckets[agentKey] = append(candidateBuckets[agentKey], candidate)
+	}
+	if len(agentOrder) > 1 {
+		runtimeSet := append([]string(nil), runtimeKeys...)
+		sort.Strings(runtimeSet)
+		cursor := s.nextBatchClaimCursor(ctx, strings.Join(runtimeSet, ","))
+		start := int(cursor % int64(len(agentOrder)))
+		rotated := append(agentOrder[start:], agentOrder[:start]...)
+		rotatedCandidates := make([]db.ListQueuedClaimCandidatesByRuntimesRow, 0, len(candidates))
+		for _, agentKey := range rotated {
+			rotatedCandidates = append(rotatedCandidates, candidateBuckets[agentKey]...)
+		}
+		candidates = rotatedCandidates
 	}
 
 	// 6. Claim candidates through the runtime-scoped helper until the batch is

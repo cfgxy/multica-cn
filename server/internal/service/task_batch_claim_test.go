@@ -188,6 +188,104 @@ func TestClaimTasksForRuntimes_FairFirstPass(t *testing.T) {
 	}
 }
 
+// TestNextBatchClaimCursorLocalFallback verifies that fairness remains
+// process-local when Redis is unavailable.
+func TestNextBatchClaimCursorLocalFallback(t *testing.T) {
+	svc := &TaskService{}
+	ctx := context.Background()
+
+	if got := svc.nextBatchClaimCursor(ctx, "runtime-a,runtime-b"); got != 0 {
+		t.Fatalf("first local cursor = %d, want 0", got)
+	}
+	if got := svc.nextBatchClaimCursor(ctx, "runtime-a,runtime-b"); got != 1 {
+		t.Fatalf("second local cursor = %d, want 1", got)
+	}
+	if got := svc.nextBatchClaimCursor(ctx, "runtime-c"); got != 0 {
+		t.Fatalf("independent local cursor = %d, want 0", got)
+	}
+}
+
+// TestClaimTasksForRuntimes_FairAcrossPolls verifies the Redis-backed cursor
+// rotates the first-pass Agent order when maxTasks is smaller than the number
+// of eligible Agents. Without the cursor, the first Agent wins every poll.
+func TestClaimTasksForRuntimes_FairAcrossPolls(t *testing.T) {
+	ctx := context.Background()
+	rdb := newRedisTestClient(t)
+	pool := newTaskClaimRacePool(t)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+	svc.EmptyClaim = NewEmptyClaimCache(rdb)
+
+	rt1, rt2 := batchClaimFixture(t, ctx, pool)
+	ids := []pgtype.UUID{util.MustParseUUID(rt1), util.MustParseUUID(rt2)}
+
+	var workspaceID, ownerID string
+	if err := pool.QueryRow(ctx, `
+		SELECT workspace_id, owner_id FROM agent_runtime WHERE id = $1
+	`, rt1).Scan(&workspaceID, &ownerID); err != nil {
+		t.Fatalf("load fixture ownership: %v", err)
+	}
+	var rt3, agent3 string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent_runtime
+		    (workspace_id, daemon_id, name, runtime_mode, provider, status,
+		     device_info, metadata, last_seen_at, visibility, owner_id)
+		VALUES ($1, 'daemon-batch', 'Batch RT3', 'cloud', 'batch_provider_3',
+		        'online', 'test runtime', '{}'::jsonb, now(), 'private', $2)
+		RETURNING id
+	`, workspaceID, ownerID).Scan(&rt3); err != nil {
+		t.Fatalf("create runtime 3: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent
+		    (workspace_id, name, description, runtime_mode, runtime_config,
+		     runtime_id, visibility, max_concurrent_tasks, owner_id)
+		VALUES ($1, 'Batch Agent3', '', 'cloud', '{}'::jsonb, $2,
+		        'private', 5, $3)
+		RETURNING id
+	`, workspaceID, rt3, ownerID).Scan(&agent3); err != nil {
+		t.Fatalf("create agent 3: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE agent_id = $1`, agent3)
+		pool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agent3)
+		pool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, rt3)
+	})
+
+	var issueID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, status, priority, creator_id,
+		                   creator_type, number, position)
+		VALUES ($1, 'batch fairness issue 4', 'in_progress', 'none', $2,
+		        'member', $3, 4)
+		RETURNING id
+	`, workspaceID, ownerID, 800004).Scan(&issueID); err != nil {
+		t.Fatalf("create fairness issue: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO agent_task_queue (agent_id, issue_id, status, priority,
+		                              context, runtime_id)
+		VALUES ($1, $2, 'queued', 0, '{}'::jsonb, $3)
+	`, agent3, issueID, rt3); err != nil {
+		t.Fatalf("create fairness task: %v", err)
+	}
+	ids = append(ids, util.MustParseUUID(rt3))
+
+	gotAgents := make([]string, 0, 3)
+	for poll := 0; poll < 3; poll++ {
+		claimed, err := svc.ClaimTasksForRuntimes(ctx, ids, 1)
+		if err != nil {
+			t.Fatalf("poll %d: %v", poll+1, err)
+		}
+		if len(claimed) != 1 {
+			t.Fatalf("poll %d claimed %d tasks, want 1", poll+1, len(claimed))
+		}
+		gotAgents = append(gotAgents, util.UUIDToString(claimed[0].AgentID))
+	}
+	if len(map[string]struct{}{gotAgents[0]: {}, gotAgents[1]: {}, gotAgents[2]: {}}) != 3 {
+		t.Fatalf("agents claimed across polls = %v, want all three eligible agents", gotAgents)
+	}
+}
+
 // TestClaimTasksForRuntimes_AnyDueRuntimeChecksTheCompleteSet pins MUL-6486's
 // collection-level reclaim gate. Per-runtime backstops can begin staggered, but
 // one due member must run the single UPDATE over every runtime on that daemon;
