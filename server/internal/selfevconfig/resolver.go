@@ -119,6 +119,11 @@ func (r *Resolver) ResolveRunTarget(ctx context.Context, workspaceID pgtype.UUID
 	if e, ok := r.cached(workspaceID); ok {
 		return e, nil
 	}
+	unlock := r.lockMutation(workspaceID)
+	defer unlock()
+	if e, ok := r.cached(workspaceID); ok {
+		return e, nil
+	}
 	row, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
 	if err != nil && !isNoRows(err) {
 		return RunTarget{}, err

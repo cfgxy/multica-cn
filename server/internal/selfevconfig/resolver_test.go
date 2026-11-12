@@ -44,12 +44,23 @@ type fakeStore struct {
 	lastVal        db.UpdateSelfEvolutionModelConfigValidationParams
 	validationRows *int64
 	deletes        int
+	blockNextGet   bool
+	getStarted     chan struct{}
+	releaseGet     chan struct{}
 }
 
 func (s *fakeStore) GetSelfEvolutionModelConfig(_ context.Context, ws pgtype.UUID) (db.SelfEvolutionModelConfig, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	row, ok := s.rows[ws]
+	block := s.blockNextGet
+	if block {
+		s.blockNextGet = false
+		close(s.getStarted)
+	}
+	s.mu.Unlock()
+	if block {
+		<-s.releaseGet
+	}
 	if !ok {
 		return db.SelfEvolutionModelConfig{}, pgx.ErrNoRows
 	}
@@ -356,6 +367,87 @@ func TestResolverInvalidatesOnSaveAndRestore(t *testing.T) {
 	}
 	if store.deletes != 1 {
 		t.Fatalf("deletes = %d, want 1", store.deletes)
+	}
+}
+
+func TestResolveDoesNotRecacheStaleConfigAfterConcurrentSave(t *testing.T) {
+	validationStarted := make(chan struct{})
+	releaseValidation := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(validationStarted)
+		<-releaseValidation
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"pong"}}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	ws := testWS(43)
+	box := testBox(t)
+	sealed, err := box.Seal([]byte("old-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		rows: map[pgtype.UUID]db.SelfEvolutionModelConfig{
+			ws: {
+				WorkspaceID:     ws,
+				BaseUrl:         pgtype.Text{String: srv.URL, Valid: true},
+				ApiKeyEncrypted: sealed,
+				Model:           pgtype.Text{String: "old-model", Valid: true},
+				ScoringEnabled:  true,
+			},
+		},
+		blockNextGet: true,
+		getStarted:   make(chan struct{}),
+		releaseGet:   make(chan struct{}),
+	}
+	r := NewResolver(store, box, llm.New(llm.Config{}), "")
+
+	resolveDone := make(chan struct{})
+	go func() {
+		if _, err := r.ResolveRunTarget(context.Background(), ws); err != nil {
+			t.Errorf("resolve: %v", err)
+		}
+		close(resolveDone)
+	}()
+	<-store.getStarted
+
+	saveDone := make(chan error, 1)
+	go func() {
+		_, failure, err := r.Save(context.Background(), ws, SaveInput{
+			BaseURL: srv.URL, APIKey: "new-key", Model: "new-model", ScoringEnabled: true,
+		})
+		if failure != nil && err == nil {
+			err = errors.New(failure.Message)
+		}
+		saveDone <- err
+	}()
+
+	// workspace 锁应阻止 Save 在 Resolve 读取并缓存期间访问网关；旧实现会让
+	// Save 先失效缓存，随后 Resolve 又用旧行重新填充缓存。
+	select {
+	case <-validationStarted:
+		close(releaseValidation)
+		if err := <-saveDone; err != nil {
+			t.Fatalf("save: %v", err)
+		}
+		close(store.releaseGet)
+	case <-time.After(250 * time.Millisecond):
+		close(store.releaseGet)
+		<-resolveDone
+		close(releaseValidation)
+		if err := <-saveDone; err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+	<-resolveDone
+
+	target, err := r.ResolveRunTarget(context.Background(), ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Model != "new-model" {
+		t.Fatalf("resolved model = %q, want new-model after concurrent save", target.Model)
 	}
 }
 
