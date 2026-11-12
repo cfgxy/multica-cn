@@ -2519,6 +2519,20 @@ type TaskUsage struct {
 	CacheWriteTokens int64              `json:"cache_write_tokens"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	// How the daemon accounted this row: legacy, delta, cumulative, or unknown.
+	AccountingMode string `json:"accounting_mode"`
+	// Provider session identity used to derive a cumulative snapshot baseline.
+	UsageSessionID pgtype.Text `json:"usage_session_id"`
+	// Raw provider snapshot before task-delta accounting; NULL for legacy rows.
+	RawInputTokens      pgtype.Int8 `json:"raw_input_tokens"`
+	RawOutputTokens     pgtype.Int8 `json:"raw_output_tokens"`
+	RawCacheReadTokens  pgtype.Int8 `json:"raw_cache_read_tokens"`
+	RawCacheWriteTokens pgtype.Int8 `json:"raw_cache_write_tokens"`
+	// Provider snapshot at task start; NULL when a cumulative baseline was unavailable.
+	BaselineInputTokens      pgtype.Int8 `json:"baseline_input_tokens"`
+	BaselineOutputTokens     pgtype.Int8 `json:"baseline_output_tokens"`
+	BaselineCacheReadTokens  pgtype.Int8 `json:"baseline_cache_read_tokens"`
+	BaselineCacheWriteTokens pgtype.Int8 `json:"baseline_cache_write_tokens"`
 	// Provider-reported cost in 1e-10 USD. NULL when the provider reports none; those rows are priced client-side from the static rate table.
 	CostUsdTicks     pgtype.Int8 `json:"cost_usd_ticks"`
 	ContextTokens    pgtype.Int8 `json:"context_tokens"`

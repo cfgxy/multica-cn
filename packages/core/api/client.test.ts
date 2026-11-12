@@ -1218,6 +1218,10 @@ describe("ApiClient", () => {
                   cache_read_tokens: 712_000,
                   cache_write_tokens: 50_000,
                   cost_usd_ticks: 19_990_000_000,
+                  accounting_mode: "cumulative",
+                  usage_session_id: "session-1",
+                  raw_input_tokens: 100_000,
+                  baseline_input_tokens: 4_000,
                 },
               ],
             },
@@ -1238,6 +1242,10 @@ describe("ApiClient", () => {
       input_tokens: 96_000,
       cache_read_tokens: 712_000,
       cost_usd_ticks: 19_990_000_000,
+      accounting_mode: "cumulative",
+      usage_session_id: "session-1",
+      raw_input_tokens: 100_000,
+      baseline_input_tokens: 4_000,
     });
     // Absent, not [] — "we have no figure" must stay distinguishable from
     // "the figure is zero" all the way to the UI.

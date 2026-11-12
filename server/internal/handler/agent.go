@@ -946,6 +946,18 @@ type TaskUsageData struct {
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
 	CostUsdTicks     *int64 `json:"cost_usd_ticks,omitempty"`
+	// AccountingMode is legacy/delta/cumulative/unknown. Unknown rows carry
+	// raw counters for audit but are excluded from task-delta totals.
+	AccountingMode       string `json:"accounting_mode,omitempty"`
+	UsageSessionID       string `json:"usage_session_id,omitempty"`
+	RawInputTokens       *int64 `json:"raw_input_tokens,omitempty"`
+	RawOutputTokens      *int64 `json:"raw_output_tokens,omitempty"`
+	RawCacheReadTokens   *int64 `json:"raw_cache_read_tokens,omitempty"`
+	RawCacheWriteTokens  *int64 `json:"raw_cache_write_tokens,omitempty"`
+	BaselineInputTokens      *int64 `json:"baseline_input_tokens,omitempty"`
+	BaselineOutputTokens     *int64 `json:"baseline_output_tokens,omitempty"`
+	BaselineCacheReadTokens  *int64 `json:"baseline_cache_read_tokens,omitempty"`
+	BaselineCacheWriteTokens *int64 `json:"baseline_cache_write_tokens,omitempty"`
 }
 
 // TaskAgentData holds agent info included in claim responses so the daemon

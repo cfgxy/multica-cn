@@ -238,7 +238,8 @@ export type TaskFailureReason =
   | "runtime_offline"
   | "runtime_reconnect_timeout"
   | "runtime_recovery"
-  | "manual";
+  | "manual"
+  | "needs_scope";
 
 // One daily bucket for the Agents-list ACTIVITY sparkline. The back-end
 // only returns days that had at least one completion; the front-end fills
@@ -628,6 +629,17 @@ export interface TaskUsage {
   cache_read_tokens: number;
   cache_write_tokens: number;
   cost_usd_ticks?: number;
+  /** How the daemon accounted this row: legacy, delta, cumulative, or unknown. */
+  accounting_mode?: string;
+  usage_session_id?: string;
+  raw_input_tokens?: number;
+  raw_output_tokens?: number;
+  raw_cache_read_tokens?: number;
+  raw_cache_write_tokens?: number;
+  baseline_input_tokens?: number;
+  baseline_output_tokens?: number;
+  baseline_cache_read_tokens?: number;
+  baseline_cache_write_tokens?: number;
 }
 
 /**
@@ -1393,6 +1405,11 @@ export interface IssueUsageSummary {
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
   task_count: number;
+  unknown_task_count?: number;
+  unknown_raw_input_tokens?: number;
+  unknown_raw_output_tokens?: number;
+  unknown_raw_cache_read_tokens?: number;
+  unknown_raw_cache_write_tokens?: number;
 }
 
 // `cost_usd_ticks` + `uncosted_*`: the cost split every usage row carries.

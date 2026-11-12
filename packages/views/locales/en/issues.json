@@ -752,6 +752,8 @@
     "total": "Total",
     "note_unpriced_one": "{{count}} run has no recorded usage and is not counted in the total.",
     "note_unpriced_other": "{{count}} runs have no recorded usage and are not counted in the total.",
+    "note_unknown_one": "{{count}} run has a cumulative usage snapshot without a task baseline; {{tokens}} raw tokens are shown as unknown and excluded from totals.",
+    "note_unknown_other": "{{count}} runs have cumulative usage snapshots without a task baseline; {{tokens}} raw tokens are shown as unknown and excluded from totals.",
     "note_unmapped": "No price on file for {{models}}; their tokens are counted but their cost is not.",
     "note_estimate": "Cost is estimated from published model rates, except where the provider reported its own figure."
   },

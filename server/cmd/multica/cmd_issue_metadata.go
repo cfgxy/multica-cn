@@ -347,6 +347,16 @@ func printMetadataTable(metadata map[string]any) {
 	cli.PrintTable(os.Stdout, headers, rows)
 }
 
+func sumMetadataValues(values ...any) float64 {
+	var total float64
+	for _, value := range values {
+		if n, ok := value.(float64); ok {
+			total += n
+		}
+	}
+	return total
+}
+
 func formatMetadataValue(v any) string {
 	switch x := v.(type) {
 	case string:

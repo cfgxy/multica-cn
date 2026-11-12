@@ -379,6 +379,19 @@ type TaskUsageEntry struct {
 	Turns            int   `json:"turns,omitempty"`
 	Compactions      int   `json:"compactions,omitempty"`
 	MaxContextTokens int64 `json:"max_context_tokens,omitempty"`
+	// Accounting metadata keeps cumulative provider snapshots separate from the
+	// task delta persisted by the server. Old servers ignore these fields.
+	AccountingMode           string `json:"accounting_mode,omitempty"`
+	SessionID                string `json:"session_id,omitempty"`
+	BaselineKnown            bool   `json:"baseline_known,omitempty"`
+	RawInputTokens           int64  `json:"raw_input_tokens,omitempty"`
+	RawOutputTokens          int64  `json:"raw_output_tokens,omitempty"`
+	RawCacheReadTokens       int64  `json:"raw_cache_read_tokens,omitempty"`
+	RawCacheWriteTokens      int64  `json:"raw_cache_write_tokens,omitempty"`
+	BaselineInputTokens      int64  `json:"baseline_input_tokens,omitempty"`
+	BaselineOutputTokens     int64  `json:"baseline_output_tokens,omitempty"`
+	BaselineCacheReadTokens  int64  `json:"baseline_cache_read_tokens,omitempty"`
+	BaselineCacheWriteTokens int64  `json:"baseline_cache_write_tokens,omitempty"`
 }
 
 // TaskResult is the outcome of executing a task.

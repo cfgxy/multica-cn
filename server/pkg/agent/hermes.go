@@ -409,7 +409,9 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			if !streamingCurrentTurn.Load() {
 				return
 			}
-			turnActivity.Add(1)
+			if msg.Type != MessageUsage {
+				turnActivity.Add(1)
+			}
 			deliverable.observe(msg)
 			trySend(msgCh, msg)
 		},
@@ -663,6 +665,7 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			// initialize / session setup stays dropped, but every notification
 			// belonging to this turn is processed.
 			streamingCurrentTurn.Store(true)
+			c.markPromptStarted(opts.MaxTokens > 0)
 			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
 				"sessionId": sessionID,
 				"prompt": []map[string]any{
@@ -809,22 +812,23 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		u := c.accumulatedUsage()
 
 		var usageMap map[string]TokenUsage
+		usageModel := effectiveModel
+		if usageModel == "" {
+			usageModel = "unknown"
+		}
 		if acpUsagePresent(u) {
-			model := effectiveModel
-			if model == "" {
-				model = "unknown"
-			}
-			usageMap = map[string]TokenUsage{model: u}
+			usageMap = map[string]TokenUsage{usageModel: u}
 		}
 
 		resCh <- Result{
-			Status:         finalStatus,
-			Output:         finalOutput,
-			Error:          finalError,
-			DurationMs:     duration.Milliseconds(),
-			SessionID:      sessionID,
-			ResumeRejected: resumeRejected,
-			Usage:          usageMap,
+			Status:          finalStatus,
+			Output:          finalOutput,
+			Error:           finalError,
+			DurationMs:      duration.Milliseconds(),
+			SessionID:       sessionID,
+			ResumeRejected:  resumeRejected,
+			Usage:           usageMap,
+			UsageAccounting: map[string]UsageAccounting{usageModel: c.usageAccounting(sessionID, opts.ResumeSessionID != "" && sessionID == opts.ResumeSessionID, opts.ResumeSessionID != "" && sessionID != opts.ResumeSessionID)},
 		}
 	}()
 
@@ -977,8 +981,10 @@ type hermesClient struct {
 	toolMu       sync.Mutex
 	pendingTools map[string]*pendingToolCall
 
-	usageMu sync.Mutex
-	usage   acpUsageAccumulator
+	usageMu       sync.Mutex
+	usage         acpUsageAccumulator
+	usageBaseline *acpUsageSnapshot
+	promptStarted bool
 
 	// terminalEnabled is only set for ACP runtimes whose client-side terminal
 	// calls are implemented below. Keeping it opt-in avoids advertising a
@@ -2146,7 +2152,12 @@ func (c *hermesClient) handleUsageUpdate(data json.RawMessage) {
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return
 	}
-	c.mergeUsage(parseACPTokenUsageSnapshot(msg.Usage))
+	snapshot := parseACPTokenUsageSnapshot(msg.Usage)
+	c.mergeUsage(snapshot)
+	if c.onMessage != nil && snapshot.has(acpUsageInput|acpUsageOutput|acpUsageCacheRead|acpUsageCacheWrite) {
+		u := snapshot.TokenUsage
+		c.onMessage(Message{Type: MessageUsage, Usage: &u, UsageCumulative: true})
+	}
 	if c.onContextOccupancy != nil {
 		if used, size, ok := parseACPContextOccupancy(data); ok {
 			c.onContextOccupancy(used, size)
@@ -2154,8 +2165,29 @@ func (c *hermesClient) handleUsageUpdate(data json.RawMessage) {
 	}
 }
 
-func (c *hermesClient) mergeUsage(usage acpUsageSnapshot) {
+func (c *hermesClient) markPromptStarted(emitBaseline bool) {
 	c.usageMu.Lock()
+	c.promptStarted = true
+	baseline := c.usage.TokenUsage
+	c.usageMu.Unlock()
+	// Give the daemon's live budget guard an explicit pre-prompt cumulative
+	// snapshot, including the zero snapshot when the provider has not reported
+	// any prior usage. Without this event the first post-prompt snapshot would
+	// be mistaken for the task baseline and the initial turn would be free.
+	if emitBaseline && c.onMessage != nil {
+		c.onMessage(Message{Type: MessageUsage, Usage: &baseline, UsageCumulative: true})
+	}
+}
+
+func (c *hermesClient) mergeUsage(usage acpUsageSnapshot) {
+	if !usage.has(acpUsageInput) && !usage.has(acpUsageOutput) && !usage.has(acpUsageCacheRead) && !usage.has(acpUsageCacheWrite) && !usage.has(acpUsageCost) {
+		return
+	}
+	c.usageMu.Lock()
+	if !c.promptStarted && c.usageBaseline == nil {
+		baseline := usage
+		c.usageBaseline = &baseline
+	}
 	c.usage.merge(usage)
 	c.usageMu.Unlock()
 }
@@ -2164,6 +2196,35 @@ func (c *hermesClient) accumulatedUsage() TokenUsage {
 	c.usageMu.Lock()
 	defer c.usageMu.Unlock()
 	return c.usage.TokenUsage
+}
+
+func usageModelForMap(usage map[string]TokenUsage) string {
+	for model := range usage {
+		return model
+	}
+	return ""
+}
+
+func (c *hermesClient) usageAccounting(sessionID string, resumed, resumeIdentityUncertain bool) UsageAccounting {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	accounting := UsageAccounting{
+		Mode:      UsageAccountingDelta,
+		SessionID: sessionID,
+		Raw:       c.usage.TokenUsage,
+	}
+	if resumeIdentityUncertain {
+		accounting.Mode = UsageAccountingUnknown
+		return accounting
+	}
+	if resumed {
+		accounting.Mode = UsageAccountingCumulative
+		if c.usageBaseline != nil {
+			accounting.BaselineKnown = true
+			accounting.Baseline = c.usageBaseline.TokenUsage
+		}
+	}
+	return accounting
 }
 
 // ── Helpers ──

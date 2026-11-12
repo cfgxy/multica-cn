@@ -602,6 +602,7 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 			}
 
 			streamingCurrentTurn.Store(true)
+			c.markPromptStarted(opts.MaxTokens > 0)
 			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
 				"sessionId": sessionID,
 				"prompt": []map[string]any{
@@ -706,13 +707,14 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		}
 
 		resCh <- Result{
-			Status:         finalStatus,
-			Output:         finalOutput,
-			Error:          finalError,
-			DurationMs:     duration.Milliseconds(),
-			SessionID:      sessionID,
-			ResumeRejected: resumeRejected,
-			Usage:          usageMap,
+			Status:          finalStatus,
+			Output:          finalOutput,
+			Error:           finalError,
+			DurationMs:      duration.Milliseconds(),
+			SessionID:       sessionID,
+			ResumeRejected:  resumeRejected,
+			Usage:           usageMap,
+			UsageAccounting: map[string]UsageAccounting{usageModelForMap(usageMap): c.usageAccounting(sessionID, opts.ResumeSessionID != "" && sessionID == opts.ResumeSessionID, opts.ResumeSessionID != "" && sessionID != opts.ResumeSessionID)},
 		}
 	}()
 

@@ -75,6 +75,55 @@ func TestReportTaskUsageNewDaemonToOldServerCompat(t *testing.T) {
 // which is what lets authoritativeTurns/authoritativeCompactions/
 // authoritativeMaxContextTokens treat "field absent" identically to "field
 // present but 0" (see internal/handler/daemon.go).
+func TestTaskUsageCumulativeSnapshotRequiresBaseline(t *testing.T) {
+	withBaseline := accountTaskUsage(TaskUsagePayload{
+		AccountingMode:       "cumulative",
+		SessionID:            "session-1",
+		BaselineKnown:        true,
+		InputTokens:          999,
+		RawInputTokens:       1000,
+		RawOutputTokens:      80,
+		BaselineInputTokens:  700,
+		BaselineOutputTokens: 20,
+	})
+	if withBaseline.mode != usageAccountingCumulative || withBaseline.inputTokens != 300 || withBaseline.outputTokens != 60 {
+		t.Fatalf("accounted cumulative usage = %+v, want delta 300/60", withBaseline)
+	}
+
+	withoutBaseline := accountTaskUsage(TaskUsagePayload{
+		AccountingMode:  "cumulative",
+		SessionID:       "session-1",
+		RawInputTokens:  1000,
+		RawOutputTokens: 80,
+	})
+	if withoutBaseline.mode != usageAccountingUnknown || withoutBaseline.inputTokens != 0 || !withoutBaseline.rawInputTokens.Valid {
+		t.Fatalf("unresolved cumulative usage = %+v, want unknown with raw audit counters", withoutBaseline)
+	}
+}
+
+func TestTaskUsageLegacyPayloadRemainsDelta(t *testing.T) {
+	got := accountTaskUsage(TaskUsagePayload{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 5})
+	if got.mode != usageAccountingLegacy || got.inputTokens != 11 || got.outputTokens != 7 || got.cacheReadTokens != 5 {
+		t.Fatalf("legacy usage = %+v, want original counters", got)
+	}
+}
+
+func TestTaskUsageExplicitDeltaRemainsBillable(t *testing.T) {
+	got := accountTaskUsage(TaskUsagePayload{
+		AccountingMode:  "delta",
+		InputTokens:     11,
+		OutputTokens:    7,
+		CacheReadTokens: 5,
+		SessionID:       "session-1",
+	})
+	if got.mode != usageAccountingDelta || got.inputTokens != 11 || got.outputTokens != 7 || got.cacheReadTokens != 5 {
+		t.Fatalf("explicit delta usage = %+v, want billable delta counters", got)
+	}
+	if !got.rawInputTokens.Valid || got.rawInputTokens.Int64 != 11 {
+		t.Fatalf("explicit delta raw input = %+v, want 11 for audit", got.rawInputTokens)
+	}
+}
+
 func TestTaskUsagePayloadOldDaemonMissingRunStatsDecodesToZero(t *testing.T) {
 	oldDaemonBody := []byte(`{
 		"provider": "anthropic",

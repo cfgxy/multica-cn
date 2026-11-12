@@ -5325,6 +5325,13 @@ func formatLegacyCommentEntry(comment CoalescedCommentData) string {
 
 // ReportTaskUsage stores per-task token usage. Called independently of
 // complete/fail so usage is captured even when tasks fail or are blocked.
+const (
+	usageAccountingLegacy     = "legacy"
+	usageAccountingDelta      = "delta"
+	usageAccountingCumulative = "cumulative"
+	usageAccountingUnknown    = "unknown"
+)
+
 type TaskUsagePayload struct {
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
@@ -5332,6 +5339,19 @@ type TaskUsagePayload struct {
 	OutputTokens     int64  `json:"output_tokens"`
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	// AccountingMode distinguishes a task delta from a provider session
+	// snapshot. It is optional so old daemons keep the legacy contract.
+	AccountingMode           string `json:"accounting_mode,omitempty"`
+	SessionID                string `json:"session_id,omitempty"`
+	BaselineKnown            bool   `json:"baseline_known,omitempty"`
+	RawInputTokens           int64  `json:"raw_input_tokens,omitempty"`
+	RawOutputTokens          int64  `json:"raw_output_tokens,omitempty"`
+	RawCacheReadTokens       int64  `json:"raw_cache_read_tokens,omitempty"`
+	RawCacheWriteTokens      int64  `json:"raw_cache_write_tokens,omitempty"`
+	BaselineInputTokens      int64  `json:"baseline_input_tokens,omitempty"`
+	BaselineOutputTokens     int64  `json:"baseline_output_tokens,omitempty"`
+	BaselineCacheReadTokens  int64  `json:"baseline_cache_read_tokens,omitempty"`
+	BaselineCacheWriteTokens int64  `json:"baseline_cache_write_tokens,omitempty"`
 	// CostUSDTicks is the provider's own price for this usage in 1e-10 USD.
 	// Absent or 0 from every daemon that doesn't have one (older builds, and
 	// every provider except Grok today) — stored as NULL so the reader knows
@@ -5404,6 +5424,102 @@ func authoritativeCostTicks(ticks int64) pgtype.Int8 {
 	return pgtype.Int8{Int64: ticks, Valid: true}
 }
 
+type accountedTaskUsage struct {
+	mode                 string
+	sessionID            pgtype.Text
+	inputTokens          int64
+	outputTokens         int64
+	cacheReadTokens      int64
+	cacheWriteTokens     int64
+	rawInputTokens       pgtype.Int8
+	rawOutputTokens      pgtype.Int8
+	rawCacheReadTokens   pgtype.Int8
+	rawCacheWriteTokens  pgtype.Int8
+	baselineInputTokens  pgtype.Int8
+	baselineOutputTokens pgtype.Int8
+	baselineCacheRead    pgtype.Int8
+	baselineCacheWrite   pgtype.Int8
+	costUSDTicks         pgtype.Int8
+}
+
+func nullableUsageCounter(value int64, valid bool) pgtype.Int8 {
+	if !valid {
+		return pgtype.Int8{}
+	}
+	return pgtype.Int8{Int64: value, Valid: true}
+}
+
+func nonNegativeUsageDelta(raw, baseline int64) int64 {
+	if raw < baseline {
+		// A provider session reset means the current snapshot is the new span.
+		return raw
+	}
+	return raw - baseline
+}
+
+func accountTaskUsage(u TaskUsagePayload) accountedTaskUsage {
+	mode := strings.ToLower(strings.TrimSpace(u.AccountingMode))
+	if mode == "" {
+		mode = usageAccountingLegacy
+	}
+	if mode != usageAccountingLegacy && mode != usageAccountingDelta && mode != usageAccountingCumulative {
+		mode = usageAccountingUnknown
+	}
+
+	result := accountedTaskUsage{
+		mode:         mode,
+		sessionID:    pgtype.Text{String: strings.TrimSpace(u.SessionID), Valid: strings.TrimSpace(u.SessionID) != ""},
+		costUSDTicks: authoritativeCostTicks(u.CostUSDTicks),
+	}
+	rawInput := u.RawInputTokens
+	rawOutput := u.RawOutputTokens
+	rawCacheRead := u.RawCacheReadTokens
+	rawCacheWrite := u.RawCacheWriteTokens
+	if rawInput == 0 && rawOutput == 0 && rawCacheRead == 0 && rawCacheWrite == 0 {
+		rawInput, rawOutput, rawCacheRead, rawCacheWrite = u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens
+	}
+	setRawCounters := func() {
+		result.rawInputTokens = nullableUsageCounter(rawInput, true)
+		result.rawOutputTokens = nullableUsageCounter(rawOutput, true)
+		result.rawCacheReadTokens = nullableUsageCounter(rawCacheRead, true)
+		result.rawCacheWriteTokens = nullableUsageCounter(rawCacheWrite, true)
+	}
+
+	if mode == usageAccountingLegacy || mode == usageAccountingDelta {
+		result.inputTokens = u.InputTokens
+		result.outputTokens = u.OutputTokens
+		result.cacheReadTokens = u.CacheReadTokens
+		result.cacheWriteTokens = u.CacheWriteTokens
+		if mode == usageAccountingLegacy {
+			return result
+		}
+		setRawCounters()
+		return result
+	}
+
+	setRawCounters()
+	if mode != usageAccountingCumulative || !u.BaselineKnown {
+		// A cumulative snapshot without a proven task-start baseline is retained
+		// for audit, but contributes no billable delta. Never guess zero baseline.
+		result.mode = usageAccountingUnknown
+		result.costUSDTicks = pgtype.Int8{}
+		return result
+	}
+
+	result.inputTokens = nonNegativeUsageDelta(rawInput, u.BaselineInputTokens)
+	result.outputTokens = nonNegativeUsageDelta(rawOutput, u.BaselineOutputTokens)
+	result.cacheReadTokens = nonNegativeUsageDelta(rawCacheRead, u.BaselineCacheReadTokens)
+	result.cacheWriteTokens = nonNegativeUsageDelta(rawCacheWrite, u.BaselineCacheWriteTokens)
+	result.baselineInputTokens = nullableUsageCounter(u.BaselineInputTokens, true)
+	result.baselineOutputTokens = nullableUsageCounter(u.BaselineOutputTokens, true)
+	result.baselineCacheRead = nullableUsageCounter(u.BaselineCacheReadTokens, true)
+	result.baselineCacheWrite = nullableUsageCounter(u.BaselineCacheWriteTokens, true)
+	// Provider cost snapshots are not guaranteed to use the same counter shape;
+	// leave cumulative costs unpriced until a provider supplies a cost baseline.
+	result.costUSDTicks = pgtype.Int8{}
+	return result
+}
+
 func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
@@ -5428,6 +5544,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	var runtimeProvider string
 	runtimeProviderLoaded := false
 	for _, u := range req.Usage {
+		accounted := accountTaskUsage(u)
 		provider := normalizeProvider(u.Provider)
 		if provider == "" {
 			if !runtimeProviderLoaded {
@@ -5442,30 +5559,44 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			provider = runtimeProvider
 		}
 		if err := h.Queries.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
-			TaskID:           parseUUID(taskID),
-			Provider:         provider,
-			Model:            u.Model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUsdTicks:     authoritativeCostTicks(u.CostUSDTicks),
-			ContextTokens:    authoritativeContextTokens(u.ContextTokens),
-			Turns:            authoritativeTurns(u.Turns),
-			Compactions:      authoritativeCompactions(u.Compactions),
-			MaxContextTokens: authoritativeMaxContextTokens(u.MaxContextTokens),
+			TaskID:                   parseUUID(taskID),
+			Provider:                 provider,
+			Model:                    u.Model,
+			InputTokens:              accounted.inputTokens,
+			OutputTokens:             accounted.outputTokens,
+			CacheReadTokens:          accounted.cacheReadTokens,
+			CacheWriteTokens:         accounted.cacheWriteTokens,
+			CostUsdTicks:             accounted.costUSDTicks,
+			ContextTokens:            authoritativeContextTokens(u.ContextTokens),
+			Turns:                    authoritativeTurns(u.Turns),
+			Compactions:              authoritativeCompactions(u.Compactions),
+			MaxContextTokens:         authoritativeMaxContextTokens(u.MaxContextTokens),
+			AccountingMode:           accounted.mode,
+			UsageSessionID:           accounted.sessionID,
+			RawInputTokens:           accounted.rawInputTokens,
+			RawOutputTokens:          accounted.rawOutputTokens,
+			RawCacheReadTokens:       accounted.rawCacheReadTokens,
+			RawCacheWriteTokens:      accounted.rawCacheWriteTokens,
+			BaselineInputTokens:      accounted.baselineInputTokens,
+			BaselineOutputTokens:     accounted.baselineOutputTokens,
+			BaselineCacheReadTokens:  accounted.baselineCacheRead,
+			BaselineCacheWriteTokens: accounted.baselineCacheWrite,
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
 			continue
 		}
-		h.TaskService.CaptureTaskUsage(r.Context(), task, provider, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSDTicks)
+		metricCost := u.CostUSDTicks
+		if accounted.mode == usageAccountingCumulative || accounted.mode == usageAccountingUnknown {
+			metricCost = 0
+		}
+		h.TaskService.CaptureTaskUsage(r.Context(), task, provider, u.Model, accounted.inputTokens, accounted.outputTokens, accounted.cacheReadTokens, accounted.cacheWriteTokens, metricCost)
 
 		// Surface prompt-cache effectiveness per run so cache hit rates are
 		// observable in logs, not just queryable from runtime_usage. The ratio
 		// is cached input over total input-side tokens; a persistently low
 		// value flags a prompt prefix that is not being reused across runs
 		// (e.g. volatile values poisoning the cacheable prefix). MUL-3887.
-		if totalInput := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens; totalInput > 0 {
+		if totalInput := accounted.inputTokens + accounted.cacheReadTokens + accounted.cacheWriteTokens; totalInput > 0 {
 			slog.Info("task prompt-cache usage",
 				"task_id", taskID,
 				"provider", provider,
@@ -6555,15 +6686,36 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 			v := row.CostUsdTicks.Int64
 			cost = &v
 		}
+		optionalCounter := func(value pgtype.Int8) *int64 {
+			if !value.Valid {
+				return nil
+			}
+			v := value.Int64
+			return &v
+		}
+		usageSessionID := ""
+		if row.UsageSessionID.Valid {
+			usageSessionID = row.UsageSessionID.String
+		}
 		taskID := uuidToString(row.TaskID)
 		byTask[taskID] = append(byTask[taskID], TaskUsageData{
-			Provider:         row.Provider,
-			Model:            row.Model,
-			InputTokens:      row.InputTokens,
-			OutputTokens:     row.OutputTokens,
-			CacheReadTokens:  row.CacheReadTokens,
-			CacheWriteTokens: row.CacheWriteTokens,
-			CostUsdTicks:     cost,
+			Provider:                 row.Provider,
+			Model:                    row.Model,
+			InputTokens:              row.InputTokens,
+			OutputTokens:             row.OutputTokens,
+			CacheReadTokens:          row.CacheReadTokens,
+			CacheWriteTokens:         row.CacheWriteTokens,
+			CostUsdTicks:             cost,
+			AccountingMode:           row.AccountingMode,
+			UsageSessionID:           usageSessionID,
+			RawInputTokens:           optionalCounter(row.RawInputTokens),
+			RawOutputTokens:          optionalCounter(row.RawOutputTokens),
+			RawCacheReadTokens:       optionalCounter(row.RawCacheReadTokens),
+			RawCacheWriteTokens:      optionalCounter(row.RawCacheWriteTokens),
+			BaselineInputTokens:      optionalCounter(row.BaselineInputTokens),
+			BaselineOutputTokens:     optionalCounter(row.BaselineOutputTokens),
+			BaselineCacheReadTokens:  optionalCounter(row.BaselineCacheReadTokens),
+			BaselineCacheWriteTokens: optionalCounter(row.BaselineCacheWriteTokens),
 		})
 		stats := runStatsByTask[taskID]
 		stats.mergeRow(row.Turns, row.Compactions, row.MaxContextTokens, row.ContextTokens)
@@ -6701,12 +6853,17 @@ func (h *Handler) GetIssueUsage(w http.ResponseWriter, r *http.Request) {
 		"total_cache_read_tokens":  row.TotalCacheReadTokens,
 		"total_cache_write_tokens": row.TotalCacheWriteTokens,
 		// Cost split — see the note on DashboardUsageDailyResponse.
-		"cost_usd_ticks":              row.TotalCostUsdTicks,
-		"uncosted_input_tokens":       row.UncostedInputTokens,
-		"uncosted_output_tokens":      row.UncostedOutputTokens,
-		"uncosted_cache_read_tokens":  row.UncostedCacheReadTokens,
-		"uncosted_cache_write_tokens": row.UncostedCacheWriteTokens,
-		"task_count":                  row.TaskCount,
+		"cost_usd_ticks":                 row.TotalCostUsdTicks,
+		"uncosted_input_tokens":          row.UncostedInputTokens,
+		"uncosted_output_tokens":         row.UncostedOutputTokens,
+		"uncosted_cache_read_tokens":     row.UncostedCacheReadTokens,
+		"uncosted_cache_write_tokens":    row.UncostedCacheWriteTokens,
+		"task_count":                     row.TaskCount,
+		"unknown_task_count":             row.UnknownTaskCount,
+		"unknown_raw_input_tokens":       row.UnknownRawInputTokens,
+		"unknown_raw_output_tokens":      row.UnknownRawOutputTokens,
+		"unknown_raw_cache_read_tokens":  row.UnknownRawCacheReadTokens,
+		"unknown_raw_cache_write_tokens": row.UnknownRawCacheWriteTokens,
 	})
 }
 

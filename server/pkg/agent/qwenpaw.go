@@ -314,6 +314,7 @@ func (b *qwenpawBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			}
 
 			// 4. Send the prompt and wait for PromptResponse.
+			c.markPromptStarted(opts.MaxTokens > 0)
 			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
 				"sessionId": sessionID,
 				"prompt": []map[string]any{
@@ -373,13 +374,14 @@ func (b *qwenpawBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 		}
 
 		resCh <- Result{
-			Status:         finalStatus,
-			Output:         finalOutput,
-			Error:          finalError,
-			DurationMs:     duration.Milliseconds(),
-			SessionID:      sessionID,
-			ResumeRejected: resumeRejected,
-			Usage:          usageMap,
+			Status:          finalStatus,
+			Output:          finalOutput,
+			Error:           finalError,
+			DurationMs:      duration.Milliseconds(),
+			SessionID:       sessionID,
+			ResumeRejected:  resumeRejected,
+			Usage:           usageMap,
+			UsageAccounting: map[string]UsageAccounting{"unknown": c.usageAccounting(sessionID, opts.ResumeSessionID != "" && sessionID == opts.ResumeSessionID, opts.ResumeSessionID != "" && sessionID != opts.ResumeSessionID)},
 		}
 	}()
 
