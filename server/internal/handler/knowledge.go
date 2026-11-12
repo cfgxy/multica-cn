@@ -263,7 +263,7 @@ func (h *Handler) ScanKnowledgeDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tag, err := h.DB.Exec(r.Context(), `
-UPDATE knowledge_dir SET scan_requested = TRUE, updated_at = now()
+UPDATE knowledge_dir SET scan_requested = TRUE, scan_token = gen_random_uuid(), updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND removed = FALSE`, dirID, workspaceID)
 	if err != nil || tag.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "knowledge directory not found")
@@ -1305,14 +1305,14 @@ func (e *knowledgeAdoptError) Error() string { return e.reason }
 
 var errKnowledgeScanStale = errors.New("stale knowledge scan report")
 
-func (h *Handler) beginKnowledgeScanReport(ctx context.Context, workspaceID, dirID pgtype.UUID, daemonID string) (pgx.Tx, error) {
+func (h *Handler) beginKnowledgeScanReport(ctx context.Context, workspaceID, dirID pgtype.UUID, daemonID string, scanFencing bool, scanToken string) (pgx.Tx, bool, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	rollback := func(err error) (pgx.Tx, error) {
+	rollback := func(err error) (pgx.Tx, bool, error) {
 		_ = tx.Rollback(ctx)
-		return nil, err
+		return nil, false, err
 	}
 	if _, err := tx.Exec(ctx, `
 SELECT le.id
@@ -1325,22 +1325,38 @@ FOR UPDATE OF le`, dirID); err != nil {
 	}
 	var removed bool
 	var boundDaemon string
+	var currentScanToken pgtype.Text
 	if err := tx.QueryRow(ctx, `
-SELECT removed, daemon_id
+SELECT removed, daemon_id, scan_token::text
 FROM knowledge_dir
 WHERE id = $1 AND workspace_id = $2
-FOR UPDATE`, dirID, workspaceID).Scan(&removed, &boundDaemon); err != nil {
+FOR UPDATE`, dirID, workspaceID).Scan(&removed, &boundDaemon, &currentScanToken); err != nil {
 		return rollback(err)
 	}
-	if removed || (boundDaemon != "" && boundDaemon != daemonID) {
+	if removed || (boundDaemon != "" && boundDaemon != daemonID) ||
+		(scanFencing && ((currentScanToken.Valid && scanToken != currentScanToken.String) ||
+			(!currentScanToken.Valid && scanToken != ""))) {
 		return rollback(errKnowledgeScanStale)
 	}
-	return tx, nil
+	return tx, boundDaemon == "", nil
+}
+
+func claimKnowledgeScanDirectory(ctx context.Context, tx pgx.Tx, dirID pgtype.UUID, daemonID string) error {
+	tag, err := tx.Exec(ctx, `
+UPDATE knowledge_dir SET daemon_id = $2, updated_at = now()
+WHERE id = $1 AND removed = FALSE AND daemon_id = ''`, dirID, daemonID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errKnowledgeScanStale
+	}
+	return nil
 }
 
 func clearKnowledgeScanRequest(ctx context.Context, tx pgx.Tx, dirID pgtype.UUID) error {
 	_, err := tx.Exec(ctx, `
-UPDATE knowledge_dir SET scan_requested = FALSE, updated_at = now()
+UPDATE knowledge_dir SET scan_requested = FALSE, scan_token = NULL, updated_at = now()
 WHERE id = $1 AND removed = FALSE`, dirID)
 	return err
 }
@@ -1362,16 +1378,16 @@ ORDER BY created_at LIMIT 1`, workspaceID).Scan(&id, &path)
 }
 
 func (h *Handler) applyKnowledgeScanResult(ctx context.Context, workspaceID, dirID pgtype.UUID,
-	path, trigger, daemonID string, memories map[string]string, started, finished time.Time) (*KnowledgeScanBatchResponse, error) {
+	path, trigger, daemonID string, scanFencing bool, scanToken string, memories map[string]string, started, finished time.Time) (*KnowledgeScanBatchResponse, error) {
 	batch := &KnowledgeScanBatchResponse{
 		DirID: uuidToString(dirID), TriggerSource: trigger, StartedAt: started,
 	}
-	tx, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID)
+	tx, unclaimed, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken)
 	if err != nil {
 		if errors.Is(err, errKnowledgeScanStale) {
 			return nil, err
 		}
-		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, trigger, started, finished, err.Error())
+		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken, trigger, started, finished, err.Error())
 	}
 	defer tx.Rollback(ctx)
 	fail := func(err error) (*KnowledgeScanBatchResponse, error) {
@@ -1379,7 +1395,7 @@ func (h *Handler) applyKnowledgeScanResult(ctx context.Context, workspaceID, dir
 		if errors.Is(err, errKnowledgeScanStale) {
 			return nil, err
 		}
-		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, trigger, started, finished, err.Error())
+		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken, trigger, started, finished, err.Error())
 	}
 
 	var batchID pgtype.UUID
@@ -1522,8 +1538,13 @@ WHERE id = $1`, batchID, batch.Result, batch.Added, batch.Updated, batch.Removed
 	if err := clearKnowledgeScanRequest(ctx, tx, dirID); err != nil {
 		return fail(err)
 	}
+	if unclaimed {
+		if err := claimKnowledgeScanDirectory(ctx, tx, dirID, daemonID); err != nil {
+			return fail(err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
-		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, trigger, started, finished, err.Error())
+		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken, trigger, started, finished, err.Error())
 	}
 
 	return batch, nil
@@ -1533,8 +1554,8 @@ WHERE id = $1`, batchID, batch.Result, batch.Added, batch.Updated, batch.Removed
 // verified byte-identical against the mirror SHA map (no diff payload sent),
 // refreshing confirmation timestamps in one statement.
 func (h *Handler) recordUnchangedScanBatch(ctx context.Context, workspaceID, dirID pgtype.UUID,
-	daemonID, trigger string, started, finished time.Time) (*KnowledgeScanBatchResponse, error) {
-	tx, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID)
+	daemonID string, scanFencing bool, scanToken, trigger string, started, finished time.Time) (*KnowledgeScanBatchResponse, error) {
+	tx, unclaimed, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken)
 	if err != nil {
 		return nil, err
 	}
@@ -1560,6 +1581,11 @@ VALUES ($1, $2, $3, 'noop', $4, $5)`, workspaceID, dirID, trigger, started, fini
 	if err := clearKnowledgeScanRequest(ctx, tx, dirID); err != nil {
 		return batch, err
 	}
+	if unclaimed {
+		if err := claimKnowledgeScanDirectory(ctx, tx, dirID, daemonID); err != nil {
+			return batch, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return batch, err
 	}
@@ -1570,8 +1596,8 @@ VALUES ($1, $2, $3, 'noop', $4, $5)`, workspaceID, dirID, trigger, started, fini
 // logged and the directory's health flips to no_access with the reason, so
 // the UI can show why a source is stale.
 func (h *Handler) recordFailedScanBatch(ctx context.Context, workspaceID, dirID pgtype.UUID,
-	daemonID, trigger string, started, finished time.Time, reason string) (*KnowledgeScanBatchResponse, error) {
-	tx, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID)
+	daemonID string, scanFencing bool, scanToken, trigger string, started, finished time.Time, reason string) (*KnowledgeScanBatchResponse, error) {
+	tx, _, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken)
 	if err != nil {
 		return nil, err
 	}

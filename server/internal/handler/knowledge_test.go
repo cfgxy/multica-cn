@@ -507,7 +507,7 @@ func knowledgePlan(t *testing.T, daemonID string) KnowledgePlanResponse {
 	t.Helper()
 	var plan KnowledgePlanResponse
 	testutil.Call(t, testHandler.GetKnowledgePlan,
-		newRequest(http.MethodGet, "/api/daemon/knowledge/plan?daemon_id="+daemonID, nil).WithContext(
+		newRequest(http.MethodGet, "/api/daemon/knowledge/plan?daemon_id="+daemonID+"&scan_fencing=1", nil).WithContext(
 			middleware.WithDaemonContext(context.Background(), testWorkspaceID, daemonID))).
 		Want(http.StatusOK).JSON(&plan)
 	return plan
@@ -519,9 +519,25 @@ func postKnowledgeResults(t *testing.T, daemonID string, body map[string]any) ma
 
 func postKnowledgeResultsForWorkspace(t *testing.T, workspaceID, daemonID string, body map[string]any) map[string]any {
 	t.Helper()
+	if scans, ok := body["scans"].([]map[string]any); ok {
+		for _, scan := range scans {
+			if _, hasToken := scan["scan_token"]; hasToken {
+				continue
+			}
+			dirID, ok := scan["dir_id"].(string)
+			if !ok {
+				continue
+			}
+			var scanToken string
+			if err := testPool.QueryRow(context.Background(),
+				`SELECT COALESCE(scan_token::text, '') FROM knowledge_dir WHERE id = $1`, dirID).Scan(&scanToken); err == nil && scanToken != "" {
+				scan["scan_token"] = scanToken
+			}
+		}
+	}
 	var ack map[string]any
 	testutil.Call(t, testHandler.PostKnowledgeResults,
-		newRequest(http.MethodPost, "/api/daemon/knowledge/results?daemon_id="+daemonID, body).WithContext(
+		newRequest(http.MethodPost, "/api/daemon/knowledge/results?daemon_id="+daemonID+"&scan_fencing=1", body).WithContext(
 			middleware.WithDaemonContext(context.Background(), workspaceID, daemonID))).
 		Want(http.StatusOK).JSON(&ack)
 	return ack
@@ -1265,7 +1281,7 @@ func TestKnowledgeScanResultRejectsReboundDaemon(t *testing.T) {
 	}
 
 	_, err := testHandler.applyKnowledgeScanResult(
-		context.Background(), parseUUID(testWorkspaceID), parseUUID(candidate), "", "scheduled", daemonID,
+		context.Background(), parseUUID(testWorkspaceID), parseUUID(candidate), "", "scheduled", daemonID, true, "",
 		map[string]string{"stale": "after rebind"}, time.Now(), time.Now())
 	if !errors.Is(err, errKnowledgeScanStale) {
 		t.Fatalf("rebound daemon scan error = %v, want stale report", err)
@@ -1277,6 +1293,49 @@ func TestKnowledgeScanResultRejectsReboundDaemon(t *testing.T) {
 	}
 	if batchesAfter != batchesBefore {
 		t.Fatalf("stale scan created %d batch rows, want %d", batchesAfter, batchesBefore)
+	}
+}
+
+func TestKnowledgeScanTokenFencesLateReport(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-scan-token"
+	candidate := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
+	plan := knowledgePlan(t, daemonID)
+	var scanToken string
+	for _, workspace := range plan.Workspaces {
+		for _, dir := range workspace.Dirs {
+			if dir.DirID == candidate {
+				scanToken = dir.ScanToken
+			}
+		}
+	}
+	if scanToken == "" {
+		t.Fatal("knowledge plan did not issue a scan token")
+	}
+
+	ack := postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "scan_token": scanToken, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"token": "first report"},
+		}},
+	})
+	if ack["scans_applied"].(float64) != 1 {
+		t.Fatalf("first scan acknowledgment = %v, want one applied scan", ack)
+	}
+
+	ack = postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "scan_token": scanToken, "trigger_source": "scheduled", "ok": true,
+			"memories": map[string]string{"token": "late report"},
+		}},
+	})
+	if ack["scans_applied"].(float64) != 0 {
+		t.Fatalf("late scan acknowledgment = %v, want zero applied scans", ack)
+	}
+	if entry := knowledgeEntryByKey(t, candidate, "token"); entry.Content != "first report" {
+		t.Fatalf("late scan changed content to %q, want first report", entry.Content)
 	}
 }
 

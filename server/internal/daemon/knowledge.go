@@ -61,6 +61,7 @@ type KnowledgePlanDir struct {
 	Path          string `json:"path"`
 	Bound         bool   `json:"bound"`
 	ScanRequested bool   `json:"scan_requested"`
+	ScanToken     string `json:"scan_token,omitempty"`
 	// ScanRequired is true when the server has never recorded a scan for the
 	// directory or an explicit refresh was requested — the daemon must report
 	// even a byte-identical source so the first scan lands.
@@ -141,7 +142,8 @@ type KnowledgeUltimateReport struct {
 }
 
 type KnowledgeScanReport struct {
-	DirID string `json:"dir_id"`
+	DirID     string `json:"dir_id"`
+	ScanToken string `json:"scan_token,omitempty"`
 	// scheduled | manual | initial
 	TriggerSource string `json:"trigger_source"`
 	OK            bool   `json:"ok"`
@@ -177,7 +179,7 @@ func (c *Client) GetKnowledgePlan(ctx context.Context, daemonID, workspaceID str
 	if token == "" {
 		return nil, fmt.Errorf("knowledge daemon credential is unavailable for workspace %s", workspaceID)
 	}
-	path := "/api/daemon/knowledge/plan?daemon_id=" + url.QueryEscape(daemonID)
+	path := "/api/daemon/knowledge/plan?daemon_id=" + url.QueryEscape(daemonID) + "&scan_fencing=1"
 	if err := c.getJSONWithToken(ctx, path, token, &plan); err != nil {
 		return nil, err
 	}
@@ -186,7 +188,7 @@ func (c *Client) GetKnowledgePlan(ctx context.Context, daemonID, workspaceID str
 
 func (c *Client) PostKnowledgeResults(ctx context.Context, daemonID, workspaceID string, results *KnowledgeResults) (*KnowledgeResultsAck, error) {
 	var ack KnowledgeResultsAck
-	path := "/api/daemon/knowledge/results?daemon_id=" + url.QueryEscape(daemonID)
+	path := "/api/daemon/knowledge/results?daemon_id=" + url.QueryEscape(daemonID) + "&scan_fencing=1"
 	token := c.knowledgeToken(workspaceID)
 	if token == "" {
 		return nil, fmt.Errorf("knowledge callback credential is unavailable for workspace %s", workspaceID)
@@ -365,7 +367,7 @@ func (d *Daemon) knowledgeSyncWorkspace(ctx context.Context, ws *KnowledgePlanWo
 // actually usable here; failures on them stay silent because another daemon
 // may host the path — the first successful scan claims the directory.
 func (d *Daemon) scanKnowledgeDir(ctx context.Context, dir KnowledgePlanDir) *KnowledgeScanReport {
-	report := &KnowledgeScanReport{DirID: dir.DirID}
+	report := &KnowledgeScanReport{DirID: dir.DirID, ScanToken: dir.ScanToken}
 	switch {
 	case dir.ScanRequested:
 		report.TriggerSource = "manual"

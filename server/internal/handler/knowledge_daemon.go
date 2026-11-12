@@ -52,6 +52,7 @@ type KnowledgePlanDir struct {
 	Path          string `json:"path"`
 	Bound         bool   `json:"bound"`
 	ScanRequested bool   `json:"scan_requested"`
+	ScanToken     string `json:"scan_token,omitempty"`
 	// ScanRequired is true when no scan batch has ever been recorded for the
 	// directory or an explicit refresh was queued — the daemon must report
 	// the source even when it matches the (possibly empty) mirror map.
@@ -310,7 +311,8 @@ type KnowledgeUltimateReport struct {
 }
 
 type KnowledgeScanReport struct {
-	DirID string `json:"dir_id"`
+	DirID     string `json:"dir_id"`
+	ScanToken string `json:"scan_token,omitempty"`
 	// scheduled | manual | initial
 	TriggerSource string `json:"trigger_source"`
 	OK            bool   `json:"ok"`
@@ -426,6 +428,7 @@ func (h *Handler) GetKnowledgePlan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, &KnowledgePlanResponse{})
 		return
 	}
+	scanFencing := r.URL.Query().Get("scan_fencing") == "1"
 
 	plan := &KnowledgePlanResponse{Workspaces: make([]KnowledgePlanWorkspace, 0, len(workspaceIDs))}
 	// planByWorkspace accumulates every per-workspace mutation; Workspaces is
@@ -467,16 +470,31 @@ WHERE pr.resource_type = 'local_directory'
 		workspaceID string
 		dir         KnowledgePlanDir
 	}
-	dirRows, err := h.DB.Query(r.Context(), `
+	dirQuery := `
 SELECT d.id::text, d.workspace_id::text, d.kind, d.path, d.daemon_id, d.scan_requested,
+       COALESCE(d.scan_token::text, ''),
 	       EXISTS(
 	           SELECT 1 FROM knowledge_scan_batch b
 	           WHERE b.dir_id = d.id AND b.result IN ('noop', 'changed')
 	       ) AS has_successful_batch
 FROM knowledge_dir d
 WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
-  AND (d.daemon_id = $2 OR d.daemon_id = '')`,
-		workspaceIDs, daemonID)
+  AND (d.daemon_id = $2 OR d.daemon_id = '')`
+	if scanFencing {
+		dirQuery = `
+UPDATE knowledge_dir AS d
+SET scan_token = COALESCE(d.scan_token, gen_random_uuid())
+WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
+  AND (d.daemon_id = $2 OR d.daemon_id = '')
+RETURNING d.id::text, d.workspace_id::text, d.kind, d.path, d.daemon_id, d.scan_requested,
+       COALESCE(d.scan_token::text, ''),
+	       EXISTS(
+	           SELECT 1 FROM knowledge_scan_batch b
+	           WHERE b.dir_id = d.id AND b.result IN ('noop', 'changed')
+	       ) AS has_successful_batch
+	`
+	}
+	dirRows, err := h.DB.Query(r.Context(), dirQuery, workspaceIDs, daemonID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
 		return
@@ -485,14 +503,16 @@ WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
 	for dirRows.Next() {
 		var row planDirRow
 		var daemonIDCol string
+		var scanToken string
 		var hasSuccessfulBatch bool
 		if err := dirRows.Scan(&row.dir.DirID, &row.workspaceID, &row.dir.Kind, &row.dir.Path,
-			&daemonIDCol, &row.dir.ScanRequested, &hasSuccessfulBatch); err != nil {
+			&daemonIDCol, &row.dir.ScanRequested, &scanToken, &hasSuccessfulBatch); err != nil {
 			dirRows.Close()
 			writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
 			return
 		}
 		row.dir.Bound = daemonIDCol == daemonID
+		row.dir.ScanToken = scanToken
 		row.dir.ScanRequired = row.dir.ScanRequested || !hasSuccessfulBatch
 		row.dir.Mirror = map[string]string{}
 		row.dir.SourceDeleted = map[string]bool{}
@@ -714,6 +734,7 @@ func (h *Handler) PostKnowledgeResults(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid knowledge results body")
 		return
 	}
+	scanFencing := r.URL.Query().Get("scan_fencing") == "1"
 
 	var registered, ultimatesAccepted, ultimatesConflicts, scansApplied, adoptionsResolved, operationsResolved, writebacksResolved int
 	for _, disc := range body.Discoveries {
@@ -794,10 +815,11 @@ ON CONFLICT DO NOTHING`,
 		}
 		var workspaceID pgtype.UUID
 		var dirPath, kind, boundDaemon string
+		var currentScanToken pgtype.Text
 		err := h.DB.QueryRow(r.Context(), `
-SELECT workspace_id, path, kind, daemon_id FROM knowledge_dir
+SELECT workspace_id, path, kind, daemon_id, scan_token::text FROM knowledge_dir
 WHERE id = $1 AND removed = FALSE`, dirID).
-			Scan(&workspaceID, &dirPath, &kind, &boundDaemon)
+			Scan(&workspaceID, &dirPath, &kind, &boundDaemon, &currentScanToken)
 		if err != nil {
 			continue
 		}
@@ -814,6 +836,10 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		if boundDaemon != "" && boundDaemon != daemonID {
 			continue
 		}
+		if scanFencing && ((currentScanToken.Valid && scan.ScanToken != currentScanToken.String) ||
+			(!currentScanToken.Valid && scan.ScanToken != "")) {
+			continue
+		}
 		// An unclaimed directory's failures are not recorded: the reporting
 		// daemon may merely lack the path while another daemon hosts it.
 		// Claim-by-scan below ties health tracking to a real owner.
@@ -824,19 +850,14 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		finished := time.Now()
 		var scanErr error
 		if !scan.OK {
-			_, scanErr = h.recordFailedScanBatch(r.Context(), workspaceID, dirID, daemonID, trigger, started, finished, "scan failed: "+scan.Error)
+			_, scanErr = h.recordFailedScanBatch(r.Context(), workspaceID, dirID, daemonID, scanFencing, scan.ScanToken, trigger, started, finished, "scan failed: "+scan.Error)
 		} else if scan.Unchanged {
-			_, scanErr = h.recordUnchangedScanBatch(r.Context(), workspaceID, dirID, daemonID, trigger, started, finished)
+			_, scanErr = h.recordUnchangedScanBatch(r.Context(), workspaceID, dirID, daemonID, scanFencing, scan.ScanToken, trigger, started, finished)
 		} else {
-			_, scanErr = h.applyKnowledgeScanResult(r.Context(), workspaceID, dirID, dirPath, trigger, daemonID, scan.Memories, started, finished)
+			_, scanErr = h.applyKnowledgeScanResult(r.Context(), workspaceID, dirID, dirPath, trigger, daemonID, scanFencing, scan.ScanToken, scan.Memories, started, finished)
 		}
 		if errors.Is(scanErr, errKnowledgeScanStale) {
 			continue
-		}
-		// A successful scan claims an unclaimed directory for this daemon.
-		if scan.OK && boundDaemon == "" {
-			_, _ = h.DB.Exec(r.Context(),
-				`UPDATE knowledge_dir SET daemon_id = $2 WHERE id = $1 AND daemon_id = ''`, dirID, daemonID)
 		}
 		scansApplied++
 	}
