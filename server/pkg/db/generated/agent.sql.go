@@ -5731,6 +5731,39 @@ func (q *Queries) GetAgentRuntimeBindings(ctx context.Context, agentIds []pgtype
 	return items, nil
 }
 
+const getAgentRuntimeBindingsForUpdate = `-- name: GetAgentRuntimeBindingsForUpdate :many
+SELECT id, runtime_id FROM agent
+WHERE id = ANY($1::uuid[])
+FOR UPDATE
+`
+
+type GetAgentRuntimeBindingsForUpdateRow struct {
+	ID        pgtype.UUID `json:"id"`
+	RuntimeID pgtype.UUID `json:"runtime_id"`
+}
+
+// Lock current Agent bindings while a claim failure is requeued so the queue
+// CAS and the binding read commit as one transaction.
+func (q *Queries) GetAgentRuntimeBindingsForUpdate(ctx context.Context, agentIds []pgtype.UUID) ([]GetAgentRuntimeBindingsForUpdateRow, error) {
+	rows, err := q.db.Query(ctx, getAgentRuntimeBindingsForUpdate, agentIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAgentRuntimeBindingsForUpdateRow{}
+	for rows.Next() {
+		var i GetAgentRuntimeBindingsForUpdateRow
+		if err := rows.Scan(&i.ID, &i.RuntimeID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getAgentTask = `-- name: GetAgentTask :one
 SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id, local_directory_scope, chat_model_snapshot, no_action_at, no_action_reason, comment_output_at FROM agent_task_queue
 WHERE id = $1

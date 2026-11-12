@@ -181,6 +181,12 @@ func TestEmptyClaimCache_MissingVersionIsAlwaysMiss(t *testing.T) {
 	if c.IsEmpty(ctx, "rt-missing-version") {
 		t.Fatal("missing version must force a cache miss")
 	}
+	if got := c.CurrentVersion(ctx, "rt-missing-version"); got != 0 {
+		t.Fatalf("recreated version = %d, want 0", got)
+	}
+	if c.IsEmpty(ctx, "rt-missing-version") {
+		t.Fatal("recreating a missing version must invalidate the surviving empty verdict")
+	}
 }
 
 func TestEmptyClaimCache_BatchFairnessIdentity(t *testing.T) {

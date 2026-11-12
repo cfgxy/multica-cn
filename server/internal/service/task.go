@@ -103,7 +103,7 @@ type TaskService struct {
 	// provide the machine-shared last-served Agent identity. Storing the identity
 	// rather than an integer cursor keeps rotation stable when the candidate set
 	// shrinks or grows between polls.
-	batchClaimFairnessMu       sync.Mutex
+	batchClaimFairnessMu        sync.Mutex
 	batchClaimFairnessLastAgent map[string]string
 }
 
@@ -4186,10 +4186,28 @@ func (s *TaskService) FinalizeTaskClaim(
 // SQL CAS includes dispatched_at so a late handler cannot roll back a newer
 // reclaim. This is not a fresh enqueue: do not duplicate queued analytics.
 func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.AgentTaskQueue) (*db.AgentTaskQueue, error) {
-	requeued, err := s.Queries.RequeueAgentTaskAfterClaimFailure(ctx, db.RequeueAgentTaskAfterClaimFailureParams{
-		TaskID:       task.ID,
-		RuntimeID:    task.RuntimeID,
-		DispatchedAt: task.DispatchedAt,
+	var requeued db.AgentTaskQueue
+	var currentRuntimeIDs []pgtype.UUID
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		var err error
+		requeued, err = qtx.RequeueAgentTaskAfterClaimFailure(ctx, db.RequeueAgentTaskAfterClaimFailureParams{
+			TaskID:       task.ID,
+			RuntimeID:    task.RuntimeID,
+			DispatchedAt: task.DispatchedAt,
+		})
+		if err != nil {
+			return err
+		}
+		bindings, err := qtx.GetAgentRuntimeBindingsForUpdate(ctx, []pgtype.UUID{requeued.AgentID})
+		if err != nil {
+			return fmt.Errorf("load current Agent runtime binding: %w", err)
+		}
+		for _, binding := range bindings {
+			if binding.RuntimeID.Valid {
+				currentRuntimeIDs = append(currentRuntimeIDs, binding.RuntimeID)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("requeue task after claim failure: %w", err)
@@ -4198,18 +4216,9 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 	s.ReconcileAgentStatus(ctx, requeued.AgentID)
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, requeued)
 	s.notifyTaskAvailable(requeued)
-	// The row still carries the runtime that performed the claim, but the Agent
-	// may have been rebound before finalization failed. Invalidate the current
-	// binding too, otherwise that runtime can keep a stale empty verdict while
-	// the requeued row is discoverable there.
-	bindings, bindingErr := s.Queries.GetAgentRuntimeBindings(ctx, []pgtype.UUID{requeued.AgentID})
-	if bindingErr != nil {
-		slog.Warn("task requeue: current Agent runtime lookup failed", "agent_id", util.UUIDToString(requeued.AgentID), "error", bindingErr)
-	} else {
-		for _, binding := range bindings {
-			if binding.RuntimeID.Valid && binding.RuntimeID != requeued.RuntimeID {
-				s.notifyRuntimeMayHaveWork(binding.RuntimeID, util.UUIDToString(requeued.ID))
-			}
+	for _, runtimeID := range currentRuntimeIDs {
+		if runtimeID != requeued.RuntimeID {
+			s.notifyRuntimeMayHaveWork(runtimeID, util.UUIDToString(requeued.ID))
 		}
 	}
 	slog.Info("task requeued after claim finalization failure",

@@ -338,6 +338,14 @@ RETURNING *;
 SELECT id, runtime_id FROM agent
 WHERE id = ANY(@agent_ids::uuid[]);
 
+-- name: GetAgentRuntimeBindingsForUpdate :many
+-- Lock the current Agent rows while a claim failure is requeued. This keeps
+-- the binding read and the queue CAS in one transaction so a concurrent rebind
+-- cannot slip between invalidation and commit.
+SELECT id, runtime_id FROM agent
+WHERE id = ANY(@agent_ids::uuid[])
+FOR UPDATE;
+
 -- name: ListActiveAgentsByRuntime :many
 -- Returns every non-archived agent bound to a runtime. Backs the cascade
 -- delete dialog: when DELETE /api/runtimes/:id refuses with

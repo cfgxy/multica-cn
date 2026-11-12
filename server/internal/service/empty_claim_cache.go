@@ -60,6 +60,10 @@ const emptyClaimRedisTimeout = 250 * time.Millisecond
 var currentClaimVersionScript = redis.NewScript(`
 local version = redis.call("GET", KEYS[1])
 if not version then
+  -- A missing version is an invalidation boundary. Remove any old verdict
+  -- before recreating the counter so an evicted/deleted version can never
+  -- make a surviving empty key look current again.
+  redis.call("DEL", KEYS[2])
   redis.call("SET", KEYS[1], "0", "NX")
   version = redis.call("GET", KEYS[1])
 end
@@ -140,7 +144,7 @@ func (c *EmptyClaimCache) CurrentVersion(ctx context.Context, runtimeID string) 
 	version, err := currentClaimVersionScript.Run(
 		bctx,
 		c.rdb,
-		[]string{emptyClaimVersion(runtimeID)},
+		[]string{emptyClaimVersion(runtimeID), emptyClaimKey(runtimeID)},
 	).Text()
 	if err != nil {
 		if !errors.Is(err, redis.Nil) {
