@@ -306,6 +306,14 @@ func TestDirectClauseRevisionUsesPreviewTokensAndCreatesNoProposal(t *testing.T)
 	if len(preview.PreviewSHA256) != 64 {
 		t.Fatalf("direct revision preview token = %q, want SHA256", preview.PreviewSHA256)
 	}
+	var removedOld, addedNew bool
+	for _, line := range preview.Diff {
+		removedOld = removedOld || (line.Kind == "del" && line.Text == currentContent)
+		addedNew = addedNew || (line.Kind == "add" && line.Text == proposed)
+	}
+	if !removedOld || !addedNew {
+		t.Fatalf("preview must show the actual clause replacement: %+v", preview.Diff)
+	}
 
 	mismatched := make(map[string]any, len(request)+2)
 	for key, value := range request {
@@ -565,6 +573,9 @@ func TestClauseRemoveRetiresClauseAndCarrier(t *testing.T) {
 func TestDirectClauseManagementEditsActiveClauseAndCarrier(t *testing.T) {
 	f := newClauseInjectionFixture(t)
 	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	// A legacy unmarked copy must leave the static column when its asset is
+	// revised; the new dynamic body still belongs exclusively to the library.
+	dbfx.Exec(t, `UPDATE workspace SET context = context || E'\n\n' || $2 WHERE id = $1`, f.wsID, cleanClauseText)
 	updated := `- **每日同步**：各成员开工前回报当日计划、阻塞与预计完成时间。`
 	code, body := legislationCall(t, testHandler.UpdateClauseContent,
 		legislationReq(f.memberID, f.wsID, http.MethodPatch, "/api/clauses/"+clauseID,
@@ -601,8 +612,16 @@ func TestDirectClauseManagementEditsActiveClauseAndCarrier(t *testing.T) {
 	if err := json.Unmarshal(conditions, &preservedConditions); err != nil || len(preservedConditions.TaskKinds) != 1 || preservedConditions.TaskKinds[0] != "issue" {
 		t.Fatalf("direct edit changed binding conditions: %s (decode error: %v)", conditions, err)
 	}
-	if !strings.Contains(carrier, "预计完成时间") || strings.Contains(carrier, "当日计划与阻塞。") {
-		t.Fatalf("workspace carrier was not updated to the direct edit:\n%s", carrier)
+	if strings.Contains(carrier, updated) || strings.Contains(carrier, cleanClauseText) || strings.Contains(carrier, "clause:id=") {
+		t.Fatalf("direct edit persisted dynamic clause content:\n%s", carrier)
+	}
+	rows, err := testHandler.Queries.ListActiveWorkspaceClauses(t.Context(), parseUUID(f.wsID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := clausemark.Render(carrier, renderedClausesByCarrier(rows, nil)[carrierRef{scope: "workspace", id: parseUUID(f.wsID)}])
+	if !strings.Contains(effective, updated) || strings.Contains(effective, cleanClauseText) {
+		t.Fatalf("composed workspace context did not pick up clause v2:\n%s", effective)
 	}
 
 	code, body = legislationCall(t, testHandler.UpdateClauseContent,
@@ -651,8 +670,16 @@ func TestDirectClauseManagementRerendersOnlyTargetProject(t *testing.T) {
 	var instructionsA, instructionsB string
 	dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, projectA).Scan(&instructionsA)
 	dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, projectB).Scan(&instructionsB)
-	if !strings.Contains(instructionsA, "项目甲修订后的条款内容") || strings.Contains(instructionsA, "项目乙条款内容") {
-		t.Fatalf("project A re-render contains wrong clauses:\n%s", instructionsA)
+	if strings.Contains(instructionsA, updatedA) || strings.Contains(instructionsA, "项目甲条款内容") || strings.Contains(instructionsA, "项目乙条款内容") || strings.Contains(instructionsA, "clause:id=") {
+		t.Fatalf("project A persisted dynamic clauses:\n%s", instructionsA)
+	}
+	rows, err := testHandler.Queries.ListActiveWorkspaceClauses(t.Context(), parseUUID(f.wsID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	effectiveA := clausemark.Render(instructionsA, renderedClausesByCarrier(rows, nil)[carrierRef{scope: "project", id: parseUUID(projectA)}])
+	if !strings.Contains(effectiveA, updatedA) || strings.Contains(effectiveA, "项目乙条款内容") {
+		t.Fatalf("project A effective context contains wrong clauses:\n%s", effectiveA)
 	}
 	if instructionsB != projectBBefore {
 		t.Fatalf("project B changed during project A edit:\n--- before ---\n%s\n--- after ---\n%s", projectBBefore, instructionsB)

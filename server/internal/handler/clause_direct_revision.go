@@ -16,6 +16,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/legislation"
+	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -38,10 +39,13 @@ type directClauseRevisionPrepared struct {
 	current              string
 	currentClauseContent string
 	next                 string
+	effectiveCurrent     string
+	effectiveNext        string
 }
 
-// DirectClauseRevisionPreviewResponse contains the canonical carrier diff and
+// DirectClauseRevisionPreviewResponse contains the composed carrier diff and
 // the exact version/hash tokens a subsequent confirmed write must echo.
+// Dynamic clause text is previewed here but stays out of the stored carrier.
 type DirectClauseRevisionPreviewResponse struct {
 	ClauseID                   string                 `json:"clause_id"`
 	Slug                       string                 `json:"slug"`
@@ -128,6 +132,8 @@ func directRevisionPreviewSHA256(prepared directClauseRevisionPrepared, req Dire
 		sha256Hex(prepared.current),
 		sha256Hex(content),
 		sha256Hex(prepared.next),
+		sha256Hex(prepared.effectiveCurrent),
+		sha256Hex(prepared.effectiveNext),
 		actorID,
 	} {
 		mac.Write([]byte(part))
@@ -151,6 +157,9 @@ func (h *Handler) prepareDirectClauseRevision(ctx context.Context, qtx *db.Queri
 	binding, err := qtx.GetActiveClauseBinding(ctx, clause.ID)
 	if err != nil {
 		return directClauseRevisionPrepared{}, fmt.Errorf("条款「%s」没有生效绑定，无法修订", clause.Title)
+	}
+	if binding.SinceClauseVersion != clause.Version {
+		return directClauseRevisionPrepared{}, errors.New("active clause binding version changed; reload before revising")
 	}
 	scope := promptVersionScope(binding.Scope)
 	if !isFourTierPromptScope(scope) {
@@ -191,21 +200,30 @@ func (h *Handler) prepareDirectClauseRevision(ctx context.Context, qtx *db.Queri
 	if err := legislation.ValidateRevisionText(clause.Title, content); err != nil {
 		return directClauseRevisionPrepared{}, err
 	}
-	next, err := h.renderCarrierFromActiveClausesTx(ctx, qtx, workspaceID, carrierRef{scope: binding.Scope, id: binding.ScopeID}, current, &clauseRenderOverride{
+	rows, err := h.activeClauseRowsTx(ctx, qtx, workspaceID)
+	if err != nil {
+		return directClauseRevisionPrepared{}, err
+	}
+	ref := carrierRef{scope: binding.Scope, id: binding.ScopeID}
+	active := renderedClausesByCarrier(rows, nil)[ref]
+	if err := clausemark.ValidateSnapshot(current, active); err != nil {
+		return directClauseRevisionPrepared{}, err
+	}
+	revised := renderedClausesByCarrier(rows, &clauseRenderOverride{
 		ClauseID:          clause.ID,
 		Version:           clause.Version + 1,
 		Content:           content,
 		SupersededContent: version.Content,
-	})
-	if err != nil {
-		return directClauseRevisionPrepared{}, err
-	}
+	})[ref]
+	next := clausemark.Static(current, revised)
 	return directClauseRevisionPrepared{
 		clause:               clause,
 		binding:              binding,
 		current:              current,
 		currentClauseContent: version.Content,
 		next:                 next,
+		effectiveCurrent:     clausemark.Render(current, active),
+		effectiveNext:        clausemark.Render(current, revised),
 	}, nil
 }
 
@@ -246,7 +264,7 @@ func (h *Handler) PreviewDirectClauseRevision(w http.ResponseWriter, r *http.Req
 		CurrentClauseContentSHA256: req.ExpectedClauseContentSHA256,
 		CurrentCarrierSHA256:       sha256Hex(prepared.current),
 		PreviewSHA256:              directRevisionPreviewSHA256(prepared, req, actorID),
-		Diff:                       legislation.DiffLines(prepared.current, prepared.next),
+		Diff:                       legislation.DiffLines(prepared.effectiveCurrent, prepared.effectiveNext),
 	})
 }
 
@@ -310,7 +328,7 @@ func (h *Handler) DirectReviseClause(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Sprintf("直接修订未通过结构门闸：%s", message))
 		return
 	}
-	if scan, allowed, reason := promptGovernanceGate(prepared.next); !allowed {
+	if scan, allowed, reason := promptGovernanceGate(prepared.effectiveNext); !allowed {
 		_ = scan
 		writeError(w, http.StatusConflict, fmt.Sprintf("直接修订未通过内容门闸：%s", reason))
 		return

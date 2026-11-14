@@ -235,7 +235,7 @@ func (d *Daemon) gcWorkspace(ctx context.Context, wsDir string, stats *gcStats) 
 		// entirely by the per-env-root ledger. Runs before the env-root
 		// disposition so a root the LocalDirectory exemption keeps around
 		// still sheds its expired snapshot trees on schedule.
-		if reaped := execenv.ReapExpiredSnapshots(taskDir, time.Now()); len(reaped) > 0 {
+		if reaped := d.reapSnapshotsWithRetention(taskDir, time.Now()); len(reaped) > 0 {
 			stats.snapshotTreesReaped += len(reaped)
 			d.logger.Info("gc: reaped expired local snapshot trees",
 				"env_root", taskDir,
@@ -271,6 +271,29 @@ func (d *Daemon) gcWorkspace(ctx context.Context, wsDir string, stats *gcStats) 
 			os.Remove(wsDir)
 		}
 	}
+}
+
+// Snapshot cleanup shares the same exclusion and dependency contract as full
+// environment cleanup. In particular, an inactive check before network work is
+// not sufficient to authorize later snapshot deletion.
+func (d *Daemon) reapSnapshotsWithRetention(taskDir string, now time.Time) []string {
+	release, ok := d.reserveEnvRootForGC(taskDir)
+	if !ok {
+		return nil
+	}
+	defer release()
+	if _, err := d.gcTaskDirOwner(taskDir); err != nil {
+		return nil
+	}
+	unlock, err := execenv.LockEnvironmentRetention(taskDir)
+	if err != nil {
+		return nil
+	}
+	defer unlock()
+	if retained, err := execenv.EnvironmentRetained(taskDir, now); retained || err != nil {
+		return nil
+	}
+	return execenv.ReapExpiredSnapshots(taskDir, now)
 }
 
 const issueGCBatchSize = 500
@@ -364,6 +387,18 @@ func (d *Daemon) applyGCAction(taskDir string, action gcAction, stats *gcStats) 
 		// reset cannot change ownership between validation and mutation.
 		if _, err := d.gcTaskDirOwner(taskDir); err != nil {
 			d.logger.Warn("gc: refusing to mutate task directory after ownership changed", "dir", taskDir, "error", err)
+			stats.skipped++
+			return 0
+		}
+		unlockRetention, err := execenv.LockEnvironmentRetention(taskDir)
+		if err != nil {
+			d.logger.Warn("gc: retention update in progress; preserving environment", "dir", taskDir, "error", err)
+			stats.skipped++
+			return 0
+		}
+		defer unlockRetention()
+		if retained, err := execenv.EnvironmentRetained(taskDir, time.Now()); retained || err != nil {
+			d.logger.Info("gc: preserving environment dependency", "dir", taskDir, "error", err)
 			stats.skipped++
 			return 0
 		}

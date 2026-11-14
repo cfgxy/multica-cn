@@ -89,6 +89,15 @@ const (
 	// agent timeout path.
 	ReasonTimeout Reason = "timeout"
 
+	// Per-execution stops can continue within the task's bounded retry policy.
+	// They do not mean a shared budget scope has been exhausted.
+	ReasonMaxTurns      Reason = "max_turns"
+	ReasonContextBudget Reason = "context_budget"
+
+	// Shared admission failures are terminal and must not trigger recovery.
+	ReasonBudgetExhausted Reason = "budget_exhausted"
+	ReasonBudgetInvalid   Reason = "budget_invalid"
+
 	// ReasonIterationLimit: the agent reached its per-run iteration
 	// cap and emitted a fallback "I reached the iteration limit"
 	// message. Treated as platform-side because it is a Multica-imposed
@@ -284,6 +293,10 @@ var allReasons = []Reason{
 	ReasonRuntimeReconnectTimeout,
 	ReasonRuntimeRecovery,
 	ReasonTimeout,
+	ReasonMaxTurns,
+	ReasonContextBudget,
+	ReasonBudgetExhausted,
+	ReasonBudgetInvalid,
 	ReasonIterationLimit,
 	ReasonAgentBlocked,
 	ReasonAPIInvalidRequest,

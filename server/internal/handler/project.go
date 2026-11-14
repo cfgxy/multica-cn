@@ -722,8 +722,8 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	var project db.Project
 	if _, writesInstructions := rawFields["instructions"]; writesInstructions {
-		tx, err := h.TxStarter.Begin(r.Context())
-		if err != nil {
+		tx, beginErr := h.TxStarter.Begin(r.Context())
+		if beginErr != nil {
 			writeError(w, http.StatusInternalServerError, "failed to update project")
 			return
 		}
@@ -738,6 +738,10 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			staticText = *req.Instructions
 		}
 		if !allowStaticClauseRefsWrite(w, r.Context(), qtx, wsUUID, map[carrierRef]string{{scope: "project", id: idUUID}: staticText}) {
+			return
+		}
+		if err := recordStaticPromptWriteTx(r.Context(), qtx, wsUUID, promptVersionScopeProject, idUUID, staticText, "edit"); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to record project prompt version")
 			return
 		}
 		project, err = qtx.UpdateProject(r.Context(), params)

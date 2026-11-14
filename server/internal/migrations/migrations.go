@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/selfexec"
@@ -73,12 +74,27 @@ func Files(direction string) ([]string, error) {
 		return nil, err
 	}
 
-	if direction == "down" {
-		sort.Sort(sort.Reverse(sort.StringSlice(files)))
-	} else {
-		sort.Strings(files)
-	}
+	sort.Slice(files, func(i, j int) bool {
+		if direction == "down" {
+			return migrationLess(files[j], files[i])
+		}
+		return migrationLess(files[i], files[j])
+	})
 	return files, nil
+}
+
+// migrationLess preserves name ordering within a sequence while placing a
+// four-digit sequence after three-digit predecessors on fresh databases.
+func migrationLess(a, b string) bool {
+	aName, bName := filepath.Base(a), filepath.Base(b)
+	aPrefix, _, _ := strings.Cut(aName, "_")
+	bPrefix, _, _ := strings.Cut(bName, "_")
+	aNumber, aErr := strconv.ParseUint(aPrefix, 10, 64)
+	bNumber, bErr := strconv.ParseUint(bPrefix, 10, 64)
+	if aErr == nil && bErr == nil && aNumber != bNumber {
+		return aNumber < bNumber
+	}
+	return aName < bName
 }
 
 // AllVersions returns every "up" migration version found on disk, in apply

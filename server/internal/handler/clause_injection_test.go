@@ -191,10 +191,10 @@ func enqueueAndClaimResponse(t *testing.T, f *clauseInjectionFixture) clauseInje
 		Task *struct {
 			ID               string `json:"id"`
 			WorkspaceContext string `json:"workspace_context"`
+			Agent            *struct {
+				Instructions string `json:"instructions"`
+			} `json:"agent"`
 		} `json:"task"`
-		Agent *struct {
-			Instructions string `json:"instructions"`
-		} `json:"agent"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode claim: %v (%s)", err, w.Body.String())
@@ -205,13 +205,13 @@ func enqueueAndClaimResponse(t *testing.T, f *clauseInjectionFixture) clauseInje
 	if resp.Task.ID != rawTaskID {
 		t.Fatalf("claimed task id = %s, want %s", resp.Task.ID, rawTaskID)
 	}
-	if resp.Agent == nil {
+	if resp.Task.Agent == nil {
 		t.Fatalf("expected claimed agent payload: %s", w.Body.String())
 	}
 	return clauseInjectionClaim{
 		taskID:            rawTaskID,
 		workspaceContext:  resp.Task.WorkspaceContext,
-		agentInstructions: resp.Agent.Instructions,
+		agentInstructions: resp.Task.Agent.Instructions,
 	}
 }
 
@@ -344,7 +344,14 @@ func TestClaimDynamicClauseInjectionRendersIntoNullCarrier(t *testing.T) {
 func TestClaimDynamicClauseInjectionFromNilWorkspaceContext(t *testing.T) {
 	f := newClauseInjectionFixture(t)
 	dbfx.Exec(t, `UPDATE workspace SET context = NULL WHERE id = $1`, f.wsID)
-	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	proposalID := createDraft(t, f.wsID, f.memberID, "每日同步", cleanClauseText)
+	dbfx.Exec(t, `UPDATE prompt_proposal SET target_section = '' WHERE id = $1`, proposalID)
+	submitDraft(t, f.wsID, f.memberID, proposalID)
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, proposalID); code != http.StatusOK {
+		t.Fatalf("enact unsectioned clause: expected 200, got %d: %s", code, body)
+	}
+	var clauseID string
+	dbfx.QueryRow(t, `SELECT clause_id::text FROM prompt_proposal WHERE id = $1`, proposalID).Scan(&clauseID)
 
 	var persistedCarrier pgtype.Text
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&persistedCarrier)
@@ -421,13 +428,16 @@ func TestClaimDynamicClauseInjectionKillSwitch(t *testing.T) {
 
 func TestClaimDynamicClauseInjectionBadCarrierDegrades(t *testing.T) {
 	f := newClauseInjectionFixture(t)
-	enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
 
 	// An Owner hand-edit that breaks the marker: the open tag's rev stops
 	// being a number, so neither the fast path nor the snapshot parse can
 	// read the carrier. The claim proceeds without injecting untrusted text.
 	var carrier string
 	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&carrier)
+	var slug string
+	dbfx.QueryRow(t, `SELECT slug FROM clause WHERE id = $1`, clauseID).Scan(&slug)
+	carrier = clausemark.Render(carrier, []clausemark.RenderedClause{{Slug: slug, Version: 1, Body: cleanClauseText}})
 	broken := strings.Replace(carrier, "rev=1 -->", "rev=oops -->", 1)
 	broken = strings.Replace(broken, clausemark.CloseTag(), "", 1)
 	if broken == carrier {

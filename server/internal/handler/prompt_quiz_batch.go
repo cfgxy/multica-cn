@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/promptquizsweep"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/promptquiz/bank"
@@ -160,14 +161,20 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 				writeError(w, http.StatusInternalServerError, "failed to encode the quiz context")
 				return
 			}
-			_, err = h.Queries.CreatePromptQuizTask(r.Context(), db.CreatePromptQuizTaskParams{
-				AgentID:   agent.id,
-				RuntimeID: agent.runtimeID,
-				// Same standing as sweep-ordered runs: below everything a
-				// human is waiting on, above nothing.
-				Priority: 0,
-				Context:  payload,
-				ItemID:   item.id,
+			tasks := h.TaskService
+			if tasks == nil {
+				tasks = &service.TaskService{Queries: h.Queries, TxStarter: h.TxStarter}
+			}
+			_, err = tasks.CreateBudgetedRootTask(r.Context(), nil, agent.id, func(q *db.Queries) (db.AgentTaskQueue, error) {
+				return q.CreatePromptQuizTask(r.Context(), db.CreatePromptQuizTaskParams{
+					AgentID:   agent.id,
+					RuntimeID: agent.runtimeID,
+					// Same standing as sweep-ordered runs: below everything a
+					// human is waiting on, above nothing.
+					Priority: 0,
+					Context:  payload,
+					ItemID:   item.id,
+				})
 			})
 			if errors.Is(err, pgx.ErrNoRows) {
 				// The fence refused (agent or runtime being deleted). Not an

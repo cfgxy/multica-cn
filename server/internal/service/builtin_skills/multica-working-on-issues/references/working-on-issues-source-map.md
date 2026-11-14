@@ -136,10 +136,18 @@ required. Regression coverage includes
 `TestWebhook_LinkOnlySiblingMergeAfterCloseKeywordPR` and the cross-provider
 aggregate tests in `vcs_webhook_test.go`.
 
-The Skill's continuous-delivery policy (reuse the same repository PR/MR, allow
-one required PR/MR per repository, Draft vs Ready, replacement handling and
-public-repository safety) is prompt policy layered on this persisted platform
-contract; it does not change webhook admission or close aggregation.
+The Skill's continuous-delivery policy is prompt policy layered on this
+persisted platform contract; it does not change webhook admission or close
+aggregation. A stable implementation candidate with self-test evidence becomes
+Ready before formal review. Required review and applicable QA cover that same
+candidate; Ready itself is not an approval. Before owner acceptance, the
+authorized status writer reads the current state and head of every required
+delivery PR/MR and checks candidate identity. This is workflow guidance, not a
+new status-write gate. Independent review/QA and non-PR tasks keep their own
+acceptance scope. Multiple repositories or independent delivery chains may
+legitimately produce multiple PRs; replacement handling closes an obsolete item
+only after its unique delta is accounted for, so an open obsolete link does not
+silently prevent the existing close aggregate from completing.
 
 ## Active Clause manifest
 
@@ -292,3 +300,21 @@ grep -n 'qualifyingIdents\|reference_only\|ReferenceOnly' internal/handler/githu
 grep -n 'prevIssue.Status == "backlog"\|func (h \*Handler) shouldEnqueueAgentTask' internal/handler/issue.go
 grep -n 'func (h \*Handler) notifyParentOfChildDone' internal/handler/issue_child_done.go
 ```
+
+## Expiring managed-environment dependency
+
+`multica worktree retain` is implemented by `newWorktreeRetainCommand` in
+`server/cmd/multica/cmd_worktree_retain.go`. It requires the active task and
+workspace environment variables to match `.task_owner`, then writes a versioned
+hold with responsible owner, reason, immutable candidate, evidence and expiry.
+`server/internal/daemon/execenv/retention.go` serializes updates with the final GC
+mutation and atomically replaces the hold file. Run completion metadata does not
+erase it. Corrupt or owner-mismatched records fail closed.
+
+`applyGCAction` in `server/internal/daemon/gc.go` rechecks retention after its
+existing root reservation and ownership checks. Active holds block full and
+artifact cleanup; expiry or explicit release restores the existing lifecycle and
+TTL decision. Release is not deletion. This is local managed-environment
+retention, not a generic external resource lease API. Regression tests live in
+`execenv/retention_test.go`, `daemon/gc_retention_test.go`, and
+`cmd/multica/cmd_worktree_retain_test.go`.

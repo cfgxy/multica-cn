@@ -34,6 +34,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
 	"github.com/multica-ai/multica/server/pkg/taskadaptation"
+	"github.com/multica-ai/multica/server/pkg/taskbudget"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
@@ -414,9 +415,10 @@ type Daemon struct {
 	skillCache *SkillBundleCache
 	logger     *slog.Logger
 
-	mu           sync.Mutex
-	workspaces   map[string]*workspaceState
-	runtimeIndex map[string]Runtime // runtimeID -> Runtime for provider lookups
+	mu            sync.Mutex
+	usageOutboxMu sync.Mutex
+	workspaces    map[string]*workspaceState
+	runtimeIndex  map[string]Runtime // runtimeID -> Runtime for provider lookups
 	// profileLaunchSpecs maps a custom runtime profile_id -> the absolute
 	// executable path plus fixed launch args resolved for that profile
 	// (MUL-3284). Populated in registerRuntimesForWorkspace when a profile's
@@ -5245,6 +5247,9 @@ func (d *Daemon) restartTargetBinary() (string, error) {
 // per-request timeout (WS) / the client's timeout (HTTP fallback), and the
 // server-side batch claim is index-backed + short.
 func (d *Daemon) pollLoop(ctx context.Context, taskWakeups <-chan taskWakeup) error {
+	usageCtx, stopUsage := context.WithCancel(ctx)
+	defer stopUsage()
+	go d.usageOutboxLoop(usageCtx)
 	sem := newTaskSlotSemaphore(d.cfg.MaxConcurrentTasks)
 	var taskWG sync.WaitGroup // tracks in-flight handleTask goroutines
 
@@ -5731,7 +5736,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	// runCtx is cancelled, so dropping this on the cancelled path silently
 	// under-reports billing.
 	if len(result.Usage) > 0 {
-		if usageErr := d.client.ReportTaskUsage(ctx, task.ID, result.Usage); usageErr != nil {
+		if usageErr := d.reportUsageDurably(ctx, task.ID, result.Usage); usageErr != nil {
 			taskLog.Warn("report task usage failed", "error", usageErr)
 		}
 	}
@@ -8922,11 +8927,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
+	budgetProfile, budgetErr := taskbudget.ParseRuntimeConfig(task.Agent.RuntimeConfig)
+	if budgetErr != nil {
+		return TaskResult{Status: "blocked", Comment: budgetErr.Error(), WorkDir: env.WorkDir, EnvRoot: env.RootDir, FailureReason: taskfailure.ReasonBudgetInvalid.String()}, nil
+	}
+	executionTimeout := d.cfg.AgentTimeout
+	if budgetProfile != nil {
+		executionTimeout = budgetProfile.Timeout(executionTimeout)
+	}
 	execOpts := agent.ExecOptions{
 		Cwd:                        env.WorkDir,
 		Model:                      model,
 		ThreadName:                 deriveTaskThreadName(task),
-		Timeout:                    d.cfg.AgentTimeout,
+		Timeout:                    executionTimeout,
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,
@@ -9080,7 +9093,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var retiredSessionID string
 	defer func() { taskResult.RetiredSessionID = retiredSessionID }()
 
-	if shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
+	// A budgeted task reserves one execution. Any fresh retry must go through
+	// server admission as a new task row so max_runs cannot be bypassed here.
+	if budgetProfile == nil && shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
 		firstResult := result
 		firstUsage := result.Usage
 		firstTools := tools
@@ -9180,28 +9195,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"agent_error", result.Error,
 	)
 
-	// Convert agent usage map to task usage entries.
-	var usageEntries []TaskUsageEntry
-	for model, u := range result.Usage {
-		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 {
-			continue
-		}
-		usageEntries = append(usageEntries, TaskUsageEntry{
-			Provider:         provider,
-			Model:            model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUSDTicks:     u.CostUSDTicks,
-			ContextTokens:    u.ContextTokens,
-			// Run-scoped (RUYI-154), not per-model — same values on every
-			// entry of this run; see TaskUsageEntry.Turns.
-			Turns:            result.Turns,
-			Compactions:      result.Compactions,
-			MaxContextTokens: result.MaxContextTokens,
-		})
-	}
+	usageEntries := taskUsageEntries(provider, result)
 
 	// MUL-5305: withhold a Codex session whose rollout never reached the per-issue
 	// store, for ANY terminal state — including `completed`, since a completed
@@ -9279,7 +9273,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// goes through the FailTask path that forwards session info.
 		comment := result.Error
 		if comment == "" {
-			comment = fmt.Sprintf("%s timed out after %s", provider, d.cfg.AgentTimeout)
+			comment = fmt.Sprintf("%s timed out after %s", provider, executionTimeout)
 		}
 		failureReason := "timeout"
 		if reason, ok := classifyResumeUnsafeTimeout(provider, comment); ok {
@@ -9298,12 +9292,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			Usage:         usageEntries,
 		}, nil
 	case "context_budget":
-		// In-run context ceiling crossed (runtime_config.max_context_tokens,
-		// RUYI-148): force-stopped by the backend, not a provider fault.
-		// Route identically to max_turns — blocked + failure_reason=timeout
-		// so the retryable classification auto-dispatches a continuation
-		// attempt; the claim-time session gate then swaps the oversized
-		// session for a fresh one carrying the brief.
+		// This execution reached its context ceiling. Preserve the work and
+		// allow only the existing bounded continuation policy; this says
+		// nothing about a shared scope's remaining budget.
 		comment := result.Error
 		if comment == "" {
 			comment = fmt.Sprintf("%s reached the in-run context budget", provider)
@@ -9314,17 +9305,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			SessionID:     result.SessionID,
 			WorkDir:       env.WorkDir,
 			EnvRoot:       env.RootDir,
-			FailureReason: "timeout",
+			FailureReason: executionBudgetStopReason(result.Status),
 			Usage:         usageEntries,
 		}, nil
 	case "max_turns":
-		// runtime_config.max_turns budget stop (claude error_max_turns):
-		// intentional force-stop, not a provider fault. Route as blocked with
-		// failure_reason "timeout" so the server's retryable classification
-		// auto-dispatches a continuation attempt that resumes this session;
-		// the resumed run's interruption-recovery discipline picks up the
-		// preserved worktree state. A task that exhausts every attempt's
-		// budget still fails visibly (max_attempts), never silently.
+		// A per-execution turn stop retains the session and worktree for a
+		// bounded continuation, independently of shared scope admission.
 		comment := result.Error
 		if comment == "" {
 			comment = fmt.Sprintf("%s reached the runtime_config.max_turns turn budget", provider)
@@ -9335,7 +9321,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			SessionID:     result.SessionID,
 			WorkDir:       env.WorkDir,
 			EnvRoot:       env.RootDir,
-			FailureReason: "timeout",
+			FailureReason: executionBudgetStopReason(result.Status),
 			Usage:         usageEntries,
 		}, nil
 	case "idle_watchdog":
@@ -9591,22 +9577,20 @@ func shouldRetryWithFreshSession(result agent.Result, priorSessionID string, too
 //     id (were it attached) would be re-selected. We keep the unrecoverable
 //     first result and only merge usage.
 //
-// Usage is merged across both attempts in every branch so billing is complete.
+// Usage and run statistics cover both executions, regardless of which
+// terminal result wins. Context size is a peak, while turns and compactions add.
 func reconcileFreshRetryResult(first agent.Result, firstUsage map[string]agent.TokenUsage, firstTools int32, retry agent.Result, retryTools int32, retryErr error) (agent.Result, int32) {
-	switch {
-	case retryErr != nil:
-		first.Usage = firstUsage
-		return first, firstTools
-	case retry.SessionID != "":
-		retry.Usage = mergeUsage(firstUsage, retry.Usage)
-		return retry, retryTools
-	case retry.Status == "completed":
-		retry.Usage = mergeUsage(firstUsage, retry.Usage)
-		return retry, retryTools
-	default:
-		first.Usage = mergeUsage(firstUsage, retry.Usage)
-		return first, firstTools
+	merged := first
+	tools := firstTools
+	if retryErr == nil && (retry.SessionID != "" || retry.Status == "completed") {
+		merged = retry
+		tools = retryTools
 	}
+	merged.Usage = mergeUsage(firstUsage, retry.Usage)
+	merged.Turns = first.Turns + retry.Turns
+	merged.Compactions = first.Compactions + retry.Compactions
+	merged.MaxContextTokens = max(first.MaxContextTokens, retry.MaxContextTokens)
+	return merged, tools
 }
 
 // freshSessionMayHelp reports whether restarting the conversation could

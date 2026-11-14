@@ -26,6 +26,11 @@ func TestDirectRevisionPreviewTokenBindsRenderedRevision(t *testing.T) {
 	if matchesDirectRevisionPreview(request, prepared, "owner-b") {
 		t.Fatal("preview token accepted a different owner")
 	}
+	changed := prepared
+	changed.effectiveNext = "another active clause changed after preview"
+	if matchesDirectRevisionPreview(request, changed, "owner-a") {
+		t.Fatal("preview token accepted a changed composed carrier")
+	}
 
 	request.Content = "- **每日同步**：未预览的替换正文。"
 	if matchesDirectRevisionPreview(request, prepared, "owner-a") {

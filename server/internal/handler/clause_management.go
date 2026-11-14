@@ -272,7 +272,10 @@ func (h *Handler) UpdateClauseContent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		texts[carrier] = carrierText
-		if err := h.rerenderAffectedCarriersTx(r.Context(), qtx, workspaceID, []carrierRef{carrier}, texts, nil, "member", userID); err != nil {
+		overrides := map[carrierRef]*clauseRenderOverride{
+			carrier: {ClauseID: clauseID, SupersededContent: version.Content},
+		}
+		if err := h.rerenderAffectedCarriersTx(r.Context(), qtx, workspaceID, []carrierRef{carrier}, texts, overrides, "member", userID); err != nil {
 			clauseRerenderFailure(w, err, "updated clause did not pass carrier validation", "failed to update clause carrier")
 			return
 		}

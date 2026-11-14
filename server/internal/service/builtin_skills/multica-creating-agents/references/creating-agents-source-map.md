@@ -149,3 +149,20 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | `CreateAgentParams` | generated from `queries/agent.sql` | typed params include nullable `Model`, `ThinkingLevel`, and `ServiceTier` |
 | `UpdateAgent` SET | generated from `queries/agent.sql` | COALESCE updates include model/thinking/service tier; dedicated clear queries restore each nullable override |
 | `UpdateAgentCustomEnv` (called by the `UpdateAgentEnv` handler) | 2652 | `SET custom_env = $2` — the only write path for env values |
+
+## Optional task-lineage budget
+
+`service.ValidateBudgetProfile` and `pkg/taskbudget.ParseRuntimeConfig` validate
+`runtime_config.budget_profile` at agent create/update boundaries. The profile
+contains nonnegative integer limits, with zero meaning unlimited; cost units
+are 1e-10 USD ticks and token totals include all four reported token categories.
+`service.budgetTaskCreate` freezes the first profile into task context, inherits
+it through retry/rerun/delegation lineage, and serializes scope admission with
+`LockTaskBudgetScope` (`pkg/db/queries/task_budget.sql`). `TaskBudgetRuntimeConfig`
+supplies that frozen profile at claim time instead of the mutable agent value.
+The daemon applies the tighter positive per-run timeout and preserves distinct
+segment-stop reasons. Token/cost gates use reported usage for subsequent
+admission; they are not realtime monetary caps or a named profile catalog.
+Regression coverage is in `pkg/taskbudget/profile_test.go`,
+`internal/service/task_budget_test.go`, `internal/daemon/task_budget_test.go`, and
+`internal/handler/task_budget_claim_test.go`.

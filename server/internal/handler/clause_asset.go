@@ -401,8 +401,9 @@ func (h *Handler) rerenderAffectedCarriersTx(ctx context.Context, qtx *db.Querie
 		if !ok {
 			continue
 		}
-		static := clausemark.Static(current, renderedClausesByCarrier(allClauses, overrides[c])[c])
-		scan, ok, reason := promptGovernanceGate(static)
+		active := renderedClausesByCarrier(allClauses, overrides[c])[c]
+		static := clausemark.Static(current, active)
+		scan, ok, reason := promptGovernanceGate(clausemark.Render(static, active))
 		if !ok {
 			return &carrierRenderValidationError{message: fmt.Sprintf("重渲染文本未通过内容门闸（%s）: %s", c.scope, reason)}
 		}

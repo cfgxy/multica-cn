@@ -37,7 +37,6 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/service"
-	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -324,8 +323,7 @@ func clauseBindingAllowsTaskKind(conditions []byte, taskKind string) bool {
 // carrier observations. Failures are logged and swallowed: attribution is
 // observability, never a claim precondition. Injection rows are idempotent by
 // task, clause, and version; observations are append-only per degraded claim.
-// carrier_version is resolved per scope at write time — the version the
-// carrier had when the run was injected.
+// carrier_version comes from the claim's captured, byte-matched evidence.
 func (h *Handler) recordClauseInjectionEvents(ctx context.Context, workspaceID, taskID pgtype.UUID, scopeIDs map[string]string, injections []clauseInjectionRecord, observations []clauseInjectionObservation) {
 	for _, observation := range observations {
 		if !observation.Degraded {
@@ -347,23 +345,14 @@ func (h *Handler) recordClauseInjectionEvents(ctx context.Context, workspaceID, 
 		return
 	}
 	versions := map[string]pgtype.Int4{}
-	for _, inj := range injections {
-		if _, done := versions[inj.Scope]; done {
-			continue
+	if task, err := h.Queries.GetAgentTask(ctx, taskID); err == nil {
+		if manifest := runtimeContextManifestFromContext(task.Context); manifest != nil {
+			for _, carrier := range manifest.Carriers {
+				if carrier.Version != nil && carrier.ScopeID == scopeIDs[carrier.Scope] {
+					versions[carrier.Scope] = pgtype.Int4{Int32: *carrier.Version, Valid: true}
+				}
+			}
 		}
-		versions[inj.Scope] = pgtype.Int4{}
-		parsed, err := util.ParseUUID(scopeIDs[inj.Scope])
-		if err != nil {
-			continue
-		}
-		v, err := h.Queries.GetLatestPromptVersion(ctx, db.GetLatestPromptVersionParams{
-			Scope:   inj.Scope,
-			ScopeID: parsed,
-		})
-		if err != nil {
-			continue
-		}
-		versions[inj.Scope] = pgtype.Int4{Int32: v.Version, Valid: true}
 	}
 	for _, inj := range injections {
 		if err := h.Queries.InsertClauseInjection(ctx, db.InsertClauseInjectionParams{

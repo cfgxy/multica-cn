@@ -130,7 +130,7 @@ multica agent copy <source-agent-id> --runtime-id <target> --model <model>  # cr
 | `thinking_level` | `agent.thinking_level` (nullable) | provider-level enum/safe-token gate; unknown literal → 400. Pi accepts only `off|minimal|low|medium|high|xhigh|max`, then the daemon checks the selected model's RPC-discovered subset. ACP runtimes that advertise an effort selector in `session/new` (currently `reasonix` and `hermes`) take the safe-token path and are checked against the discovered catalog by the daemon; that catalog covers only the model the discovery session was on, so other models show no picker until per-model probing exists. `hermes` covers two binaries — jcode advertises and applies an effort, Hermes Agent advertises none and gets no picker — so the answer there comes from the runtime's discovered catalog, not the provider name. Because that catalog is only written once a client requests a model list, a `hermes` runtime that has never been discovered is refused with a distinct "has not reported a model catalog yet" 400 rather than being assumed capable; `reasonix`, whose provider name does determine the binary, is allowed in that state. A runtime with no reasoning control at all (e.g. `copilot`, which executes outside ACP) rejects EVERY non-empty value and says so — that 400 is a capability answer, not a bad token | daemon; empty = runtime default |
 | `service_tier` | `agent.service_tier` (nullable) | Codex-only safe token; other providers reject; daemon checks either the explicit-standard capability or the exact model/catalog-tier pair | daemon → Codex app-server; empty = local Codex config, `default` = explicit Standard, catalog tier such as `priority` = explicit Fast |
 | `custom_args` | `agent.custom_args` (JSON array) | JSON shape checked CLI-side; server stores as-is | daemon (extra CLI switches); defaults to `[]` |
-| `runtime_config` | `agent.runtime_config` (JSON) | JSON shape checked CLI-side; server stores as-is | runtime-specific config; defaults to `{}` |
+| `runtime_config` | `agent.runtime_config` (JSON) | JSON shape checked CLI-side; optional `budget_profile` limits are also validated by the server | runtime-specific config; defaults to `{}` |
 | `custom_env` | `agent.custom_env` (JSON object) | — | daemon (process env); see Env & secrets |
 | `mcp_config` | `agent.mcp_config` (raw JSON) | CLI checks it is a JSON object or `null`; server stores as-is. At create, literal `null` is dropped (no-op); at update, `null` clears the column | daemon → provider (provider-specific MCP handling); redacted on read |
 | `visibility` | `agent.visibility` | — | access control; defaults to `private`; gates who can read/route a private agent (e.g. a private squad leader) — NOT the runtime prompt |
@@ -141,6 +141,29 @@ Other defaults when omitted: `runtime_config` → `{}`, `custom_env` → `{}`,
 `custom_args` → `[]`, `avatar_url` → a random `emoji:<glyph>`, `visibility` →
 `private`
 (all materialized server-side before the insert). `custom_args`/`runtime_config`
+
+### Optional execution budget profile
+
+An explicitly configured `runtime_config.budget_profile` accepts nonnegative
+integer fields `max_runs`, `max_total_tokens`, `max_cost_usd_ticks`, and
+`per_run_timeout_seconds`. Missing or zero limits are unlimited; unknown fields,
+negative values, and malformed types are rejected rather than disabling limits.
+Cost ticks use 1e-10 USD. Token totals include input, output, cache read, and cache
+write; they are not a context-window size.
+
+The first enqueue freezes a profile snapshot for the task lineage. Retry, rerun,
+and delegated recovery inherit it; changing the agent profile does not reset an
+existing lineage. `max_runs` reserves enqueue slots under a scope lock. Token and
+cost limits gate subsequent starts using reported usage, so they are soft
+admission limits, not a monetary cap on an already running request. Missing cost
+is not treated as zero when a cost limit is enabled. A new independent task may
+start a new scope; there is no implicit global issue budget.
+
+The profile timeout uses the tighter positive deadline with the daemon timeout.
+Legacy `max_turns` and context-window limits remain per execution and depend on
+provider support; segment stops retain their distinct reasons and bounded retry
+behavior. Budget exhaustion is terminal for automatic recovery. This profile
+does not create a realtime provider spending meter or a named budget catalog.
 are typed `[]string`/`any` and marshaled as-is — the JSON-shape rejection
 happens in the CLI, not the create handler.
 
