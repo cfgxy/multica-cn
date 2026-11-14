@@ -3,10 +3,13 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -35,6 +38,7 @@ type KnowledgePlanWorkspace struct {
 	Dirs            []KnowledgePlanDir       `json:"dirs"`
 	Adoptions       []KnowledgePlanAdopt     `json:"adoptions"`
 	Operations      []KnowledgePlanOperation `json:"operations"`
+	Writebacks      []KnowledgePlanWriteback `json:"writebacks"`
 }
 
 type KnowledgePlanUltimate struct {
@@ -48,6 +52,7 @@ type KnowledgePlanDir struct {
 	Path          string `json:"path"`
 	Bound         bool   `json:"bound"`
 	ScanRequested bool   `json:"scan_requested"`
+	ScanToken     string `json:"scan_token,omitempty"`
 	// ScanRequired is true when no scan batch has ever been recorded for the
 	// directory or an explicit refresh was queued — the daemon must report
 	// the source even when it matches the (possibly empty) mirror map.
@@ -55,6 +60,9 @@ type KnowledgePlanDir struct {
 	// Mirror maps every mirrored key to its content SHA-256 so the daemon can
 	// skip reporting unchanged sources entirely.
 	Mirror map[string]string `json:"mirror"`
+	// SourceDeleted 标识先前扫描中确认缺失的条目。即使内容 SHA 未变，
+	// 它们重新出现时也必须上报给服务端，以记录 source_restored。
+	SourceDeleted map[string]bool `json:"source_deleted"`
 }
 
 type KnowledgePlanAdopt struct {
@@ -78,6 +86,19 @@ type KnowledgePlanOperation struct {
 	UltimatePath  string   `json:"ultimate_path"`
 }
 
+type KnowledgePlanWriteback struct {
+	EventID               string `json:"event_id"`
+	EntryID               string `json:"entry_id"`
+	ClaimToken            string `json:"claim_token"`
+	Operation             string `json:"operation"`
+	Path                  string `json:"path"`
+	Key                   string `json:"key"`
+	Content               string `json:"content"`
+	ContentSha256         string `json:"content_sha256"`
+	ExpectedContentSha256 string `json:"expected_content_sha256,omitempty"`
+	Actor                 string `json:"actor"`
+}
+
 // KnowledgeResultsRequest is one daemon's report for a knowledge cycle.
 type KnowledgeResultsRequest struct {
 	Discoveries []KnowledgeDiscoveryReport `json:"discoveries"`
@@ -85,12 +106,191 @@ type KnowledgeResultsRequest struct {
 	Scans       []KnowledgeScanReport      `json:"scans"`
 	Adoptions   []KnowledgeAdoptReport     `json:"adoptions"`
 	Operations  []KnowledgeOperationReport `json:"operations"`
+	Writebacks  []KnowledgeWritebackReport `json:"writebacks"`
 }
 
 type KnowledgeOperationReport struct {
 	ID    string `json:"id"`
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+}
+
+type KnowledgeWritebackReport struct {
+	EventID    string `json:"event_id"`
+	EntryID    string `json:"entry_id"`
+	ClaimToken string `json:"claim_token"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
+}
+
+const knowledgeWritebackClaimTimeout = 10 * time.Minute
+
+func (h *Handler) claimKnowledgeWritebacks(ctx context.Context, workspaceIDs []pgtype.UUID, daemonID string) (map[string][]KnowledgePlanWriteback, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Claims, unregisters, and Owner decisions all acquire lifecycle events
+	// before entry and directory rows. Keep the event lock separate from the
+	// later row locks so PostgreSQL cannot choose a reverse join lock order.
+	type claimTarget struct {
+		eventID     pgtype.UUID
+		entryID     pgtype.UUID
+		workspaceID pgtype.UUID
+	}
+	expiredRows, err := tx.Query(ctx, `
+SELECT le.id, le.entry_id, le.workspace_id
+FROM knowledge_lifecycle_event le
+WHERE le.workspace_id = ANY($1) AND le.writeback_state = 'in_progress'
+  AND le.writeback_claimed_by = $2
+  AND le.writeback_claimed_at < now() - $3::interval
+ORDER BY le.id
+FOR UPDATE OF le SKIP LOCKED`, workspaceIDs, daemonID, knowledgeWritebackClaimTimeout.String())
+	if err != nil {
+		return nil, err
+	}
+	var expired []claimTarget
+	for expiredRows.Next() {
+		var target claimTarget
+		if err := expiredRows.Scan(&target.eventID, &target.entryID, &target.workspaceID); err != nil {
+			expiredRows.Close()
+			return nil, err
+		}
+		expired = append(expired, target)
+	}
+	if err := expiredRows.Err(); err != nil {
+		expiredRows.Close()
+		return nil, err
+	}
+	expiredRows.Close()
+	for _, target := range expired {
+		var removed, managedActive bool
+		var boundDaemon string
+		if _, err := lockKnowledgeEntryDirectory(ctx, tx, target.entryID, target.workspaceID); err != nil {
+			return nil, err
+		}
+		err := tx.QueryRow(ctx, `
+SELECT d.removed, d.managed_active, d.daemon_id
+FROM knowledge_entry e
+JOIN knowledge_dir d ON d.id = e.dir_id
+WHERE e.id = $1 AND e.workspace_id = $2
+FOR UPDATE OF e`, target.entryID, target.workspaceID).Scan(&removed, &managedActive, &boundDaemon)
+		if err != nil {
+			return nil, err
+		}
+		cancel := removed || !managedActive || boundDaemon != daemonID
+		state := "queued"
+		if cancel {
+			state = "cancelled"
+		}
+		completedAt := "NULL"
+		if cancel {
+			completedAt = "now()"
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`
+UPDATE knowledge_lifecycle_event
+SET writeback_state = $2, writeback_claimed_by = '', writeback_claimed_at = NULL,
+    writeback_claim_token = NULL, writeback_error = 'write-back claim expired',
+    completed_at = %s
+WHERE id = $1 AND writeback_state = 'in_progress'`, completedAt), target.eventID, state); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE knowledge_entry AS e
+SET writeback_state = $2, writeback_error = 'write-back claim expired'
+WHERE e.id = $1 AND e.writeback_state = 'in_progress'
+  AND EXISTS (
+      SELECT 1
+      FROM knowledge_lifecycle_event le
+      WHERE le.id = $3 AND le.entry_id = e.id AND le.writeback_state = $2
+  )`, target.entryID, state, target.eventID); err != nil {
+			return nil, err
+		}
+	}
+
+	pendingRows, err := tx.Query(ctx, `
+SELECT le.id, le.entry_id, le.workspace_id
+FROM knowledge_lifecycle_event le
+WHERE le.workspace_id = ANY($1) AND le.writeback_state = 'queued'
+  AND le.operation IN ('writeback_remove', 'writeback_restore')
+ORDER BY le.id
+FOR UPDATE OF le SKIP LOCKED`, workspaceIDs)
+	if err != nil {
+		return nil, err
+	}
+	var pending []claimTarget
+	for pendingRows.Next() {
+		var target claimTarget
+		if err := pendingRows.Scan(&target.eventID, &target.entryID, &target.workspaceID); err != nil {
+			pendingRows.Close()
+			return nil, err
+		}
+		pending = append(pending, target)
+	}
+	if err := pendingRows.Err(); err != nil {
+		pendingRows.Close()
+		return nil, err
+	}
+	pendingRows.Close()
+
+	writebacks := make(map[string][]KnowledgePlanWriteback)
+	for _, target := range pending {
+		var workspaceID, actor string
+		var job KnowledgePlanWriteback
+		if _, err := lockKnowledgeEntryDirectory(ctx, tx, target.entryID, target.workspaceID); err != nil {
+			return nil, err
+		}
+		err := tx.QueryRow(ctx, `
+SELECT le.id::text, e.id::text, le.workspace_id::text, le.operation, d.path, e.key,
+       v.content, v.content_sha256, le.expected_content_sha256, COALESCE(le.actor_id::text, '')
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+JOIN knowledge_dir d ON d.id = e.dir_id
+JOIN knowledge_entry_version v ON v.id = le.version_id
+    AND v.entry_id = e.id AND v.workspace_id = le.workspace_id
+WHERE le.id = $1 AND le.writeback_state = 'queued'
+  AND e.writeback_state = 'queued'
+  AND e.lifecycle_state = le.to_state
+  AND d.kind = 'candidate_cli' AND d.project_id IS NULL AND d.managed_active = TRUE
+  AND d.removed = FALSE AND d.daemon_id = $2
+FOR UPDATE OF e`, target.eventID, daemonID).Scan(&job.EventID, &job.EntryID, &workspaceID, &job.Operation, &job.Path,
+			&job.Key, &job.Content, &job.ContentSha256, &job.ExpectedContentSha256, &actor)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.QueryRow(ctx, `
+UPDATE knowledge_lifecycle_event
+SET writeback_state = 'in_progress', writeback_claimed_by = $2,
+    writeback_claimed_at = now(), writeback_claim_token = gen_random_uuid(), writeback_error = ''
+WHERE id = $1 AND writeback_state = 'queued'
+RETURNING writeback_claim_token::text`, target.eventID, daemonID).Scan(&job.ClaimToken); err != nil {
+			return nil, err
+		}
+		if tag, err := tx.Exec(ctx, `
+UPDATE knowledge_entry SET writeback_state = 'in_progress', writeback_error = ''
+WHERE id = $1 AND writeback_state = 'queued'`, target.entryID); err != nil || tag.RowsAffected() != 1 {
+			if err != nil {
+				return nil, err
+			}
+			return nil, errors.New("knowledge write-back entry was not queued")
+		}
+		if job.Operation == "writeback_remove" {
+			job.Operation = "remove"
+		} else {
+			job.Operation = "restore"
+		}
+		job.Actor = "multica-" + actor
+		writebacks[workspaceID] = append(writebacks[workspaceID], job)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return writebacks, nil
 }
 
 // KnowledgeDiscoveryReport registers an auto-discovered candidate: a project
@@ -111,7 +311,8 @@ type KnowledgeUltimateReport struct {
 }
 
 type KnowledgeScanReport struct {
-	DirID string `json:"dir_id"`
+	DirID     string `json:"dir_id"`
+	ScanToken string `json:"scan_token,omitempty"`
 	// scheduled | manual | initial
 	TriggerSource string `json:"trigger_source"`
 	OK            bool   `json:"ok"`
@@ -132,22 +333,18 @@ type KnowledgeAdoptReport struct {
 	Error         string `json:"error,omitempty"`
 }
 
-// knowledgePlanDaemonID resolves and cross-checks the daemon selected for a
-// read-only plan. User identities retain this compatibility path; write
-// reports must use knowledgeResultsDaemonID instead.
+// knowledgePlanDaemonID resolves and cross-checks the authenticated daemon
+// selected for a plan. The plan endpoint also claims writeback jobs, so a user
+// supplied daemon_id must never authorize it.
 func knowledgePlanDaemonID(r *http.Request) (string, int, string) {
-	daemonID := strings.TrimSpace(r.URL.Query().Get("daemon_id"))
 	ctxDaemonID := middleware.DaemonIDFromContext(r.Context())
-	if ctxDaemonID != "" {
-		if daemonID != "" && daemonID != ctxDaemonID {
-			return "", http.StatusForbidden, "daemon tokens can only address their own daemon"
-		}
-		return ctxDaemonID, 0, ""
+	if ctxDaemonID == "" {
+		return "", http.StatusUnauthorized, "daemon authentication is required to claim knowledge work"
 	}
-	if daemonID == "" {
-		return "", http.StatusBadRequest, "daemon_id is required"
+	if requested := strings.TrimSpace(r.URL.Query().Get("daemon_id")); requested != "" && requested != ctxDaemonID {
+		return "", http.StatusForbidden, "daemon tokens can only address their own daemon"
 	}
-	return daemonID, 0, ""
+	return ctxDaemonID, 0, ""
 }
 
 // knowledgeResultsDaemonID accepts reports only from an authenticated daemon.
@@ -231,6 +428,7 @@ func (h *Handler) GetKnowledgePlan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, &KnowledgePlanResponse{})
 		return
 	}
+	scanFencing := r.URL.Query().Get("scan_fencing") == "1"
 
 	plan := &KnowledgePlanResponse{Workspaces: make([]KnowledgePlanWorkspace, 0, len(workspaceIDs))}
 	// planByWorkspace accumulates every per-workspace mutation; Workspaces is
@@ -238,7 +436,10 @@ func (h *Handler) GetKnowledgePlan(w http.ResponseWriter, r *http.Request) {
 	// stale copy.
 	planByWorkspace := make(map[string]*KnowledgePlanWorkspace, len(workspaceIDs))
 	for _, ws := range workspaceIDs {
-		planByWorkspace[uuidToString(ws)] = &KnowledgePlanWorkspace{WorkspaceID: uuidToString(ws), DiscoveryRoots: []string{}, Dirs: []KnowledgePlanDir{}, Adoptions: []KnowledgePlanAdopt{}, Operations: []KnowledgePlanOperation{}}
+		planByWorkspace[uuidToString(ws)] = &KnowledgePlanWorkspace{
+			WorkspaceID: uuidToString(ws), DiscoveryRoots: []string{}, Dirs: []KnowledgePlanDir{},
+			Adoptions: []KnowledgePlanAdopt{}, Operations: []KnowledgePlanOperation{}, Writebacks: []KnowledgePlanWriteback{},
+		}
 	}
 
 	// Discovery roots: this daemon's local_directory project resources per
@@ -269,13 +470,31 @@ WHERE pr.resource_type = 'local_directory'
 		workspaceID string
 		dir         KnowledgePlanDir
 	}
-	dirRows, err := h.DB.Query(r.Context(), `
+	dirQuery := `
 SELECT d.id::text, d.workspace_id::text, d.kind, d.path, d.daemon_id, d.scan_requested,
-       EXISTS(SELECT 1 FROM knowledge_scan_batch b WHERE b.dir_id = d.id) AS has_batch
+       COALESCE(d.scan_token::text, ''),
+	       EXISTS(
+	           SELECT 1 FROM knowledge_scan_batch b
+	           WHERE b.dir_id = d.id AND b.result IN ('noop', 'changed')
+	       ) AS has_successful_batch
 FROM knowledge_dir d
 WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
-  AND (d.daemon_id = $2 OR d.daemon_id = '')`,
-		workspaceIDs, daemonID)
+  AND (d.daemon_id = $2 OR d.daemon_id = '')`
+	if scanFencing {
+		dirQuery = `
+UPDATE knowledge_dir AS d
+SET scan_token = COALESCE(d.scan_token, gen_random_uuid())
+WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
+  AND (d.daemon_id = $2 OR d.daemon_id = '')
+RETURNING d.id::text, d.workspace_id::text, d.kind, d.path, d.daemon_id, d.scan_requested,
+       COALESCE(d.scan_token::text, ''),
+	       EXISTS(
+	           SELECT 1 FROM knowledge_scan_batch b
+	           WHERE b.dir_id = d.id AND b.result IN ('noop', 'changed')
+	       ) AS has_successful_batch
+	`
+	}
+	dirRows, err := h.DB.Query(r.Context(), dirQuery, workspaceIDs, daemonID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
 		return
@@ -284,16 +503,19 @@ WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
 	for dirRows.Next() {
 		var row planDirRow
 		var daemonIDCol string
-		var hasBatch bool
+		var scanToken string
+		var hasSuccessfulBatch bool
 		if err := dirRows.Scan(&row.dir.DirID, &row.workspaceID, &row.dir.Kind, &row.dir.Path,
-			&daemonIDCol, &row.dir.ScanRequested, &hasBatch); err != nil {
+			&daemonIDCol, &row.dir.ScanRequested, &scanToken, &hasSuccessfulBatch); err != nil {
 			dirRows.Close()
 			writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
 			return
 		}
 		row.dir.Bound = daemonIDCol == daemonID
-		row.dir.ScanRequired = row.dir.ScanRequested || !hasBatch
+		row.dir.ScanToken = scanToken
+		row.dir.ScanRequired = row.dir.ScanRequested || !hasSuccessfulBatch
 		row.dir.Mirror = map[string]string{}
+		row.dir.SourceDeleted = map[string]bool{}
 		if wsPlan, ok := planByWorkspace[row.workspaceID]; ok {
 			wsPlan.Dirs = append(wsPlan.Dirs, row.dir)
 			if id, ok := knowledgeParseUUID(row.dir.DirID); ok {
@@ -305,24 +527,34 @@ WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
 
 	if len(dirIDs) > 0 {
 		shaRows, err := h.DB.Query(r.Context(), `
-SELECT dir_id::text, key, content_sha256 FROM knowledge_entry WHERE dir_id = ANY($1)`, dirIDs)
+	SELECT dir_id::text, key, content_sha256, mirror_state FROM knowledge_entry WHERE dir_id = ANY($1)`, dirIDs)
 		if err == nil {
 			mirrorByDir := make(map[string]map[string]string, len(dirIDs))
+			deletedByDir := make(map[string]map[string]bool, len(dirIDs))
 			for shaRows.Next() {
-				var dirID, key, sha string
-				if err := shaRows.Scan(&dirID, &key, &sha); err != nil {
+				var dirID, key, sha, mirrorState string
+				if err := shaRows.Scan(&dirID, &key, &sha, &mirrorState); err != nil {
 					break
 				}
 				if mirrorByDir[dirID] == nil {
 					mirrorByDir[dirID] = map[string]string{}
 				}
 				mirrorByDir[dirID][key] = sha
+				if mirrorState == "source_deleted" {
+					if deletedByDir[dirID] == nil {
+						deletedByDir[dirID] = map[string]bool{}
+					}
+					deletedByDir[dirID][key] = true
+				}
 			}
 			shaRows.Close()
 			for _, wsPlan := range planByWorkspace {
 				for j := range wsPlan.Dirs {
 					if mirror, ok := mirrorByDir[wsPlan.Dirs[j].DirID]; ok {
 						wsPlan.Dirs[j].Mirror = mirror
+					}
+					if deleted, ok := deletedByDir[wsPlan.Dirs[j].DirID]; ok {
+						wsPlan.Dirs[j].SourceDeleted = deleted
 					}
 				}
 			}
@@ -458,6 +690,17 @@ WHERE workspace_id::text = $1 AND id::text = ANY($2::text[])`, workspaceID, oper
 	}
 	opRows.Close()
 
+	writebacksByWorkspace, err := h.claimKnowledgeWritebacks(r.Context(), workspaceIDs, daemonID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
+		return
+	}
+	for workspaceID, writebacks := range writebacksByWorkspace {
+		if wsPlan := planByWorkspace[workspaceID]; wsPlan != nil {
+			wsPlan.Writebacks = append(wsPlan.Writebacks, writebacks...)
+		}
+	}
+
 	// Materialize the accumulated workspaces in stable id order.
 	for _, ws := range workspaceIDs {
 		if wsPlan, ok := planByWorkspace[uuidToString(ws)]; ok {
@@ -491,11 +734,18 @@ func (h *Handler) PostKnowledgeResults(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid knowledge results body")
 		return
 	}
+	scanFencing := r.URL.Query().Get("scan_fencing") == "1"
 
-	var registered, ultimatesAccepted, ultimatesConflicts, scansApplied, adoptionsResolved, operationsResolved int
+	var registered, ultimatesAccepted, ultimatesConflicts, scansApplied, adoptionsResolved, operationsResolved, writebacksResolved int
 	for _, disc := range body.Discoveries {
 		workspaceID, ok := allowed[disc.WorkspaceID]
 		if !ok || disc.Path == "" {
+			continue
+		}
+		// Discovery only registers paths returned from this daemon's own
+		// local_directory resources. A workspace match alone does not authorize
+		// one daemon to bind another daemon's source directory.
+		if !h.daemonOwnsKnowledgePath(r.Context(), uuidToString(workspaceID), daemonID, disc.Path) {
 			continue
 		}
 		tag, err := h.DB.Exec(r.Context(), `
@@ -565,10 +815,11 @@ ON CONFLICT DO NOTHING`,
 		}
 		var workspaceID pgtype.UUID
 		var dirPath, kind, boundDaemon string
+		var currentScanToken pgtype.Text
 		err := h.DB.QueryRow(r.Context(), `
-SELECT workspace_id, path, kind, daemon_id FROM knowledge_dir
+SELECT workspace_id, path, kind, daemon_id, scan_token::text FROM knowledge_dir
 WHERE id = $1 AND removed = FALSE`, dirID).
-			Scan(&workspaceID, &dirPath, &kind, &boundDaemon)
+			Scan(&workspaceID, &dirPath, &kind, &boundDaemon, &currentScanToken)
 		if err != nil {
 			continue
 		}
@@ -585,6 +836,10 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		if boundDaemon != "" && boundDaemon != daemonID {
 			continue
 		}
+		if scanFencing && ((currentScanToken.Valid && scan.ScanToken != currentScanToken.String) ||
+			(!currentScanToken.Valid && scan.ScanToken != "")) {
+			continue
+		}
 		// An unclaimed directory's failures are not recorded: the reporting
 		// daemon may merely lack the path while another daemon hosts it.
 		// Claim-by-scan below ties health tracking to a real owner.
@@ -593,21 +848,16 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		}
 		started := time.Now()
 		finished := time.Now()
+		var scanErr error
 		if !scan.OK {
-			h.recordFailedScanBatch(r.Context(), workspaceID, dirID, trigger, started, finished, "scan failed: "+scan.Error)
+			_, scanErr = h.recordFailedScanBatch(r.Context(), workspaceID, dirID, daemonID, scanFencing, scan.ScanToken, trigger, started, finished, "scan failed: "+scan.Error)
 		} else if scan.Unchanged {
-			h.recordUnchangedScanBatch(r.Context(), workspaceID, dirID, trigger, started, finished)
+			_, scanErr = h.recordUnchangedScanBatch(r.Context(), workspaceID, dirID, daemonID, scanFencing, scan.ScanToken, trigger, started, finished)
 		} else {
-			h.applyKnowledgeScanResult(r.Context(), workspaceID, dirID, dirPath, trigger, scan.Memories, started, finished)
+			_, scanErr = h.applyKnowledgeScanResult(r.Context(), workspaceID, dirID, dirPath, trigger, daemonID, scanFencing, scan.ScanToken, scan.Memories, started, finished)
 		}
-		// A queued manual/initial scan request has been serviced either way;
-		// the outcome is visible through the batch log and health state.
-		_, _ = h.DB.Exec(r.Context(),
-			`UPDATE knowledge_dir SET scan_requested = FALSE, updated_at = now() WHERE id = $1`, dirID)
-		// A successful scan claims an unclaimed directory for this daemon.
-		if scan.OK && boundDaemon == "" {
-			_, _ = h.DB.Exec(r.Context(),
-				`UPDATE knowledge_dir SET daemon_id = $2 WHERE id = $1 AND daemon_id = ''`, dirID, daemonID)
+		if errors.Is(scanErr, errKnowledgeScanStale) {
+			continue
 		}
 		scansApplied++
 	}
@@ -616,7 +866,7 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		if !ok {
 			continue
 		}
-		resolved := h.applyKnowledgeAdoptResult(r.Context(), daemonID, adopt.Kind, id, adopt.OK, adopt.UltimateDirID, adopt.Error)
+		resolved := h.applyKnowledgeAdoptResult(r.Context(), workspaceIDs, daemonID, adopt.Kind, id, adopt.OK, adopt.UltimateDirID, adopt.Error)
 		if resolved {
 			adoptionsResolved++
 		}
@@ -626,9 +876,116 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		if !ok {
 			continue
 		}
-		if h.applyKnowledgeOperationResult(r.Context(), id, daemonID, operation.OK, operation.Error) {
+		if h.applyKnowledgeOperationResult(r.Context(), workspaceIDs, id, daemonID, operation.OK, operation.Error) {
 			operationsResolved++
 		}
+	}
+	for _, writeback := range body.Writebacks {
+		eventID, eventOK := knowledgeParseUUID(writeback.EventID)
+		entryID, entryOK := knowledgeParseUUID(writeback.EntryID)
+		claimToken, claimOK := knowledgeParseUUID(writeback.ClaimToken)
+		if !eventOK || !entryOK || !claimOK {
+			continue
+		}
+		tx, err := h.TxStarter.Begin(r.Context())
+		if err != nil {
+			continue
+		}
+		var workspaceID, sourceVersionID pgtype.UUID
+		var operation, boundDaemon string
+		err = tx.QueryRow(r.Context(), `
+SELECT workspace_id, operation, version_id
+FROM knowledge_lifecycle_event
+WHERE id = $1 AND entry_id = $2 AND writeback_state = 'in_progress'
+  AND writeback_claimed_by = $3 AND writeback_claim_token = $4
+FOR UPDATE`, eventID, entryID, daemonID, claimToken).
+			Scan(&workspaceID, &operation, &sourceVersionID)
+		if err != nil {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		if _, err := lockKnowledgeEntryDirectory(r.Context(), tx, entryID, workspaceID); err != nil {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		err = tx.QueryRow(r.Context(), `
+SELECT d.daemon_id
+FROM knowledge_entry e
+JOIN knowledge_dir d ON d.id = e.dir_id
+WHERE e.id = $1 AND e.workspace_id = $2
+  AND d.kind = 'candidate_cli' AND d.project_id IS NULL
+  AND d.managed_active = TRUE AND d.removed = FALSE
+FOR UPDATE OF e`, entryID, workspaceID).Scan(&boundDaemon)
+		if err != nil || boundDaemon != daemonID {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		if _, allowedWorkspace := allowed[uuidToString(workspaceID)]; !allowedWorkspace {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		state := "failed"
+		if writeback.OK {
+			state = "succeeded"
+		}
+		tag, err := tx.Exec(r.Context(), `
+UPDATE knowledge_lifecycle_event SET writeback_state = $2, writeback_error = $3, completed_at = now()
+	, writeback_claimed_by = '', writeback_claimed_at = NULL, writeback_claim_token = NULL
+	WHERE id = $1 AND writeback_state = 'in_progress'
+	  AND writeback_claimed_by = $4 AND writeback_claim_token = $5`, eventID, state, writeback.Error, daemonID, claimToken)
+		if err != nil || tag.RowsAffected() == 0 {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		if writeback.OK {
+			if operation == "writeback_restore" {
+				var nextVersion int
+				if err := tx.QueryRow(r.Context(), `
+SELECT current_version + 1 FROM knowledge_entry
+WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID).Scan(&nextVersion); err != nil {
+					_ = tx.Rollback(r.Context())
+					continue
+				}
+				tag, err = tx.Exec(r.Context(), `
+INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+SELECT e.workspace_id, e.id, $3, v.content, v.content_sha256, 'restore', le.actor_id
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+JOIN knowledge_entry_version v ON v.id = le.version_id
+WHERE le.id = $1 AND le.entry_id = $2`, eventID, entryID, nextVersion)
+				if err != nil || tag.RowsAffected() != 1 {
+					_ = tx.Rollback(r.Context())
+					continue
+				}
+				tag, err = tx.Exec(r.Context(), `
+UPDATE knowledge_entry AS e SET content = v.content, content_sha256 = v.content_sha256,
+	    current_version = $3, lifecycle_state = 'active',
+	    mirror_state = CASE WHEN d.removed THEN 'source_removed' ELSE 'synced' END,
+    missing_confirmation = 0, writeback_state = 'succeeded', writeback_error = '',
+    last_confirmed_at = now()
+FROM knowledge_entry_version AS v, knowledge_dir AS d
+	WHERE e.id = $1 AND e.workspace_id = $2 AND v.id = $4 AND d.id = e.dir_id`,
+					entryID, workspaceID, nextVersion, sourceVersionID)
+			} else {
+				tag, err = tx.Exec(r.Context(), `
+UPDATE knowledge_entry SET mirror_state = $2, missing_confirmation = $3,
+	    writeback_state = 'succeeded', writeback_error = '', last_confirmed_at = now()
+	WHERE id = $1 AND workspace_id = $4`,
+					entryID, "source_deleted", 2, workspaceID)
+			}
+		} else {
+			tag, err = tx.Exec(r.Context(), `
+	UPDATE knowledge_entry SET writeback_state = 'failed', writeback_error = $2
+	WHERE id = $1 AND workspace_id = $3`, entryID, writeback.Error, workspaceID)
+		}
+		if err != nil || tag.RowsAffected() != 1 {
+			_ = tx.Rollback(r.Context())
+			continue
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			continue
+		}
+		writebacksResolved++
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -638,6 +995,7 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 		"scans_applied":          scansApplied,
 		"adoptions_resolved":     adoptionsResolved,
 		"operations_resolved":    operationsResolved,
+		"writebacks_resolved":    writebacksResolved,
 	})
 }
 
@@ -646,23 +1004,28 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 // completion markers share one transaction after the daemon has read back bd.
 // A daemon failure leaves the operation queued: bd commands can have applied a
 // prefix of a merge before reporting an error, and replay is idempotent.
-func (h *Handler) applyKnowledgeOperationResult(ctx context.Context, operationID pgtype.UUID, daemonID string, ok bool, failureReason string) bool {
+func (h *Handler) applyKnowledgeOperationResult(ctx context.Context, allowedWorkspaces []pgtype.UUID, operationID pgtype.UUID, daemonID string, ok bool, failureReason string) bool {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return false
 	}
 	defer tx.Rollback(ctx)
-	var workspaceID, operationType, content string
+	var operationType, content string
+	var workspaceID, requestedBy pgtype.UUID
 	var entryID pgtype.UUID
+	var currentVersion int
 	var sourceIDsJSON []byte
 	err = tx.QueryRow(ctx, `
-SELECT o.workspace_id::text, o.entry_id, o.operation_type, o.content, o.delete_entry_ids
+SELECT o.workspace_id, o.entry_id, o.operation_type, o.content, o.delete_entry_ids,
+       o.requested_by, e.current_version
 FROM knowledge_entry_operation o
 JOIN knowledge_entry e ON e.id = o.entry_id AND e.workspace_id = o.workspace_id
 JOIN knowledge_dir d ON d.id = e.dir_id AND d.workspace_id = o.workspace_id
 WHERE o.id = $1 AND o.status = 'queued' AND d.kind = 'ultimate'
-  AND d.removed = FALSE AND d.daemon_id = $2`, operationID, daemonID).
-		Scan(&workspaceID, &entryID, &operationType, &content, &sourceIDsJSON)
+	  AND d.removed = FALSE AND d.daemon_id = $2
+	  AND o.workspace_id = ANY($3::uuid[])
+FOR UPDATE OF o, e, d`, operationID, daemonID, allowedWorkspaces).
+		Scan(&workspaceID, &entryID, &operationType, &content, &sourceIDsJSON, &requestedBy, &currentVersion)
 	if err != nil {
 		return false
 	}
@@ -681,9 +1044,19 @@ WHERE id = $1 AND status = 'queued'`, operationID, failureReason)
 	}
 	switch operationType {
 	case "edit", "merge":
+		nextVersion := currentVersion + 1
+		contentSHA := knowledgeContentSHA(content)
 		tag, err := tx.Exec(ctx, `
-UPDATE knowledge_entry SET content = $2, content_sha256 = $3, last_confirmed_at = now(), mirror_state = 'synced'
-WHERE id = $1`, entryID, content, knowledgeContentSHA(content))
+	INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+VALUES ($1, $2, $3, $4, $5, 'operation', $6)`, workspaceID, entryID, nextVersion, content, contentSHA, requestedBy)
+		if err != nil || tag.RowsAffected() != 1 {
+			return false
+		}
+		tag, err = tx.Exec(ctx, `
+UPDATE knowledge_entry
+SET content = $2, content_sha256 = $3, current_version = $4,
+    last_confirmed_at = now(), mirror_state = 'synced'
+WHERE id = $1 AND workspace_id = $5`, entryID, content, contentSHA, nextVersion, workspaceID)
 		if err != nil || tag.RowsAffected() == 0 {
 			return false
 		}
@@ -693,15 +1066,16 @@ WHERE id = $1`, entryID, content, knowledgeContentSHA(content))
 				return false
 			}
 			tag, err = tx.Exec(ctx, `
-UPDATE knowledge_entry SET mirror_state = 'source_deleted', last_confirmed_at = now()
-WHERE workspace_id::text = $1 AND id::text = ANY($2::text[]) AND id <> $3`, workspaceID, sourceIDs, entryID)
+	UPDATE knowledge_entry SET mirror_state = 'source_deleted', last_confirmed_at = now()
+	WHERE workspace_id = $1 AND id::text = ANY($2::text[]) AND id <> $3`, workspaceID, sourceIDs, entryID)
 			if err != nil || tag.RowsAffected() != int64(len(sourceIDs)) {
 				return false
 			}
 		}
 	case "delete":
 		tag, err := tx.Exec(ctx, `
-UPDATE knowledge_entry SET mirror_state = 'source_deleted', last_confirmed_at = now() WHERE id = $1`, entryID)
+	UPDATE knowledge_entry SET mirror_state = 'source_deleted', last_confirmed_at = now()
+WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID)
 		if err != nil || tag.RowsAffected() == 0 {
 			return false
 		}
@@ -722,7 +1096,7 @@ WHERE id = $1 AND status = 'queued'`, operationID)
 // callbacks inert.
 // A successful read-back both marks the candidate adopted and materializes the
 // canonical ultimate mirror, so later owner edits target the memory bd wrote.
-func (h *Handler) applyKnowledgeAdoptResult(ctx context.Context, daemonID, kind string, id pgtype.UUID,
+func (h *Handler) applyKnowledgeAdoptResult(ctx context.Context, allowedWorkspaces []pgtype.UUID, daemonID, kind string, id pgtype.UUID,
 	ok bool, ultimateDirID, failureReason string) bool {
 	switch kind {
 	case "entry":
@@ -737,17 +1111,18 @@ func (h *Handler) applyKnowledgeAdoptResult(ctx context.Context, daemonID, kind 
 		}
 		defer tx.Rollback(ctx)
 
-		var workspaceID, sourceDirID, key, content, contentSHA string
+		var sourceDirID, key, content, contentSHA string
+		var workspaceID pgtype.UUID
 		var adoptedBy pgtype.UUID
 		err = tx.QueryRow(ctx, `
-SELECT e.workspace_id::text, e.dir_id::text, e.key, e.content, e.content_sha256, e.adopted_by
+	SELECT e.workspace_id, e.dir_id::text, e.key, e.content, e.content_sha256, e.adopted_by
 FROM knowledge_entry e
-JOIN knowledge_dir d ON d.workspace_id = e.workspace_id
+	JOIN knowledge_dir d ON d.id = $2::uuid AND d.workspace_id = e.workspace_id
 WHERE e.id = $1 AND e.adoption_state = 'transferring'
   AND d.kind = 'ultimate' AND d.removed = FALSE
 	  AND d.daemon_id = $3
-	  AND d.id = $2::uuid
-FOR UPDATE OF e`, id, ultimateDirID, daemonID).
+	  AND e.workspace_id = ANY($4::uuid[])
+FOR UPDATE OF e, d`, id, ultimateDirID, daemonID, allowedWorkspaces).
 			Scan(&workspaceID, &sourceDirID, &key, &content, &contentSHA, &adoptedBy)
 		if err != nil {
 			return false
@@ -759,7 +1134,7 @@ FOR UPDATE OF e`, id, ultimateDirID, daemonID).
 			}
 			tag, err := tx.Exec(ctx, `
 UPDATE knowledge_entry SET adoption_state = 'failed', adoption_error = $2
-WHERE id = $1 AND adoption_state = 'transferring'`, id, failureReason)
+			WHERE id = $1 AND workspace_id = $3 AND adoption_state = 'transferring'`, id, failureReason, workspaceID)
 			if err != nil || tag.RowsAffected() == 0 {
 				return false
 			}
@@ -770,31 +1145,77 @@ WHERE id = $1 AND adoption_state = 'transferring'`, id, failureReason)
 UPDATE knowledge_entry
 SET adoption_state = 'adopted', adopted_at = now(), ultimate_dir_id = $2::uuid,
     adopted_from_dir_id = dir_id, adopted_from_key = key, adoption_error = ''
-WHERE id = $1 AND adoption_state = 'transferring'`, id, ultimateDirID)
+			WHERE id = $1 AND workspace_id = $3 AND adoption_state = 'transferring'`, id, ultimateDirID, workspaceID)
 		if err != nil || tag.RowsAffected() == 0 {
 			return false
 		}
-		tag, err = tx.Exec(ctx, `
-INSERT INTO knowledge_entry (
-    workspace_id, dir_id, key, content, content_sha256, mirror_state,
-    adoption_state, adopted_at, adopted_by, ultimate_dir_id,
-    adopted_from_dir_id, adopted_from_key, adoption_error
-)
-VALUES ($1::uuid, $2::uuid, $3, $4, $5, 'synced', 'adopted', now(), $6, $2::uuid, $7::uuid, $3, '')
-ON CONFLICT (dir_id, key) DO UPDATE
-SET content = EXCLUDED.content,
-    content_sha256 = EXCLUDED.content_sha256,
-    mirror_state = 'synced',
-    last_confirmed_at = now(),
-    adoption_state = 'adopted',
-    adopted_at = EXCLUDED.adopted_at,
-    adopted_by = EXCLUDED.adopted_by,
-    ultimate_dir_id = EXCLUDED.ultimate_dir_id,
-    adopted_from_dir_id = EXCLUDED.adopted_from_dir_id,
-    adopted_from_key = EXCLUDED.adopted_from_key,
-    adoption_error = ''`, workspaceID, ultimateDirID, key, content, contentSHA, adoptedBy, sourceDirID)
-		if err != nil || tag.RowsAffected() == 0 {
+
+		var destinationID pgtype.UUID
+		var destinationContent, destinationSHA string
+		var destinationVersion int
+		err = tx.QueryRow(ctx, `
+	SELECT id, content, content_sha256, current_version
+	FROM knowledge_entry
+	WHERE workspace_id = $1 AND dir_id = $2::uuid AND key = $3
+	FOR UPDATE`, workspaceID, ultimateDirID, key).
+			Scan(&destinationID, &destinationContent, &destinationSHA, &destinationVersion)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return false
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			err = tx.QueryRow(ctx, `
+	INSERT INTO knowledge_entry (
+	    workspace_id, dir_id, key, content, content_sha256, mirror_state,
+	    adoption_state, adopted_at, adopted_by, ultimate_dir_id,
+	    adopted_from_dir_id, adopted_from_key, adoption_error
+)
+	VALUES ($1, $2::uuid, $3, $4, $5, 'synced', 'adopted', now(), $6, $2::uuid, $7::uuid, $3, '')
+	RETURNING id`, workspaceID, ultimateDirID, key, content, contentSHA, adoptedBy, sourceDirID).Scan(&destinationID)
+			if err != nil {
+				return false
+			}
+			tag, err = tx.Exec(ctx, `
+	INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+	VALUES ($1, $2, 1, $3, $4, 'initial', $5)`, workspaceID, destinationID, content, contentSHA, adoptedBy)
+			if err != nil || tag.RowsAffected() != 1 {
+				return false
+			}
+		} else {
+			if destinationContent != content || destinationSHA != contentSHA {
+				nextVersion := destinationVersion + 1
+				tag, err = tx.Exec(ctx, `
+	INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+	VALUES ($1, $2, $3, $4, $5, 'adoption', $6)`, workspaceID, destinationID, nextVersion, content, contentSHA, adoptedBy)
+				if err != nil || tag.RowsAffected() != 1 {
+					return false
+				}
+				tag, err = tx.Exec(ctx, `
+	UPDATE knowledge_entry
+	SET content = $2, content_sha256 = $3, current_version = $4,
+	    mirror_state = 'synced', last_confirmed_at = now(), adoption_state = 'adopted',
+	    adopted_at = now(), adopted_by = $5, ultimate_dir_id = $6::uuid,
+	    adopted_from_dir_id = $7::uuid, adopted_from_key = $8, adoption_error = ''
+	WHERE id = $1 AND workspace_id = $9`, destinationID, content, contentSHA, nextVersion, adoptedBy, ultimateDirID, sourceDirID, key, workspaceID)
+			} else {
+				// Legacy mirrors may have current_version without the corresponding
+				// immutable row. Materialize that row before updating adoption metadata.
+				tag, err = tx.Exec(ctx, `
+		INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, created_by)
+		VALUES ($1, $2, $3, $4, $5, 'adoption', $6)
+		ON CONFLICT (entry_id, version) DO NOTHING`, workspaceID, destinationID, destinationVersion, destinationContent, destinationSHA, adoptedBy)
+				if err != nil {
+					return false
+				}
+				tag, err = tx.Exec(ctx, `
+	UPDATE knowledge_entry
+	SET mirror_state = 'synced', last_confirmed_at = now(), adoption_state = 'adopted',
+	    adopted_at = now(), adopted_by = $2, ultimate_dir_id = $3::uuid,
+	    adopted_from_dir_id = $4::uuid, adopted_from_key = $5, adoption_error = ''
+	WHERE id = $1 AND workspace_id = $6`, destinationID, adoptedBy, ultimateDirID, sourceDirID, key, workspaceID)
+			}
+			if err != nil || tag.RowsAffected() != 1 {
+				return false
+			}
 		}
 		return tx.Commit(ctx) == nil
 	}

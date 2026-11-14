@@ -60,6 +60,10 @@ export {
   knowledgeKeys,
   knowledgeDirsOptions,
   knowledgeEntriesOptions,
+  knowledgeEntryVersionsOptions,
+  knowledgeEntryLifecycleOptions,
+  knowledgeGovernanceRunsOptions,
+  knowledgeGovernanceRunOptions,
   useRegisterKnowledgeDir,
   useScanKnowledgeDir,
   useUnregisterKnowledgeDir,
@@ -67,6 +71,12 @@ export {
   useEditKnowledgeEntry,
   useDeleteKnowledgeEntry,
   useMergeKnowledgeEntries,
+  useSetKnowledgeDirManaged,
+  useUpdateKnowledgeEntryLifecycle,
+  useRestoreKnowledgeEntry,
+  useStartKnowledgeGovernanceRun,
+  useCancelKnowledgeGovernanceRun,
+  useRetryKnowledgeGovernanceRun,
 } from "./knowledge-queries";
 export {
   promptVersionKeys,

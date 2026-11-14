@@ -286,6 +286,9 @@ func buildPromptBody(task Task, provider string) string {
 	if task.RetrospectivePrompt != "" {
 		return buildRetrospectivePrompt(task)
 	}
+	if task.KnowledgeGovernancePrompt != "" {
+		return buildKnowledgeGovernancePrompt(task)
+	}
 	if task.QuickCreatePrompt != "" {
 		return buildQuickCreatePrompt(task)
 	}
@@ -332,6 +335,12 @@ func buildQuizPrompt(task Task) string {
 // completion hook parses.
 func buildRetrospectivePrompt(task Task) string {
 	return task.RetrospectivePrompt
+}
+
+// buildKnowledgeGovernancePrompt passes through the server-owned evidence
+// contract. Adding daemon-local instructions here would weaken its audit shape.
+func buildKnowledgeGovernancePrompt(task Task) string {
+	return task.KnowledgeGovernancePrompt
 }
 
 // buildQuickCreatePrompt constructs a prompt for quick-create tasks. The

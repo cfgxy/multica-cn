@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/knowledgegovernance"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/retrospective"
@@ -85,6 +86,9 @@ type TaskService struct {
 	// build that never wired the runner). output is the run's final message
 	// ("" on the fail path); taskErr distinguishes success from failure.
 	RetrospectiveTerminal func(ctx context.Context, task db.AgentTaskQueue, output, taskErr string) (*retrospective.RunStats, error)
+	// KnowledgeGovernanceTerminal persists an evidence-led, issue-less knowledge
+	// governance report. The run is advisory; it cannot write back knowledge.
+	KnowledgeGovernanceTerminal func(ctx context.Context, task db.AgentTaskQueue, output, taskErr string) (*knowledgegovernance.RunStats, error)
 	// quickActionsInFlight (chat session id -> struct{}{}) and
 	// quickActionsRunning admit suggestion passes: one per session, and a
 	// process-wide ceiling. Both zero values are usable, so a TaskService built
@@ -3042,6 +3046,7 @@ func (s *TaskService) CancelTasksByTriggerComment(ctx context.Context, commentID
 func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, workspaceID string, cancelled []db.AgentTaskQueue) {
 	for _, t := range cancelled {
 		s.captureTaskCancelled(ctx, t)
+		s.settleKnowledgeGovernanceTerminal(ctx, t)
 		s.ReconcileAgentStatus(ctx, t.AgentID)
 		s.publishTaskEvent(protocol.EventTaskCancelled, workspaceID, t)
 	}
@@ -3061,6 +3066,7 @@ func (s *TaskService) BroadcastTaskQueued(ctx context.Context, task db.AgentTask
 func (s *TaskService) CaptureCancelledTasks(ctx context.Context, cancelled []db.AgentTaskQueue) {
 	for _, t := range cancelled {
 		s.captureTaskCancelled(ctx, t)
+		s.settleKnowledgeGovernanceTerminal(ctx, t)
 	}
 }
 
@@ -4847,6 +4853,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 					"current_status", existing.Status,
 					"agent_id", util.UUIDToString(existing.AgentID),
 				)
+				s.settleKnowledgeGovernanceTerminal(ctx, existing)
 				return &existing, false, nil
 			}
 			slog.Warn("complete task failed",
@@ -4873,6 +4880,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		slog.Info("task completion converged to cancelled (cancel race lost)",
 			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 		// Not a completion: the cancel path owns this row and its side effects.
+		s.settleKnowledgeGovernanceTerminal(ctx, task)
 		return &task, false, nil
 	}
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
@@ -4961,6 +4969,9 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			}
 		}
 	}
+	// Governance settlement reads the durable task result. A scheduler replay
+	// repairs transient report-persistence failures after callback delivery.
+	s.settleKnowledgeGovernanceTerminal(ctx, task)
 
 	// For chat tasks, broadcast chat:done AFTER commit. The single assistant
 	// outcome row (message or no_response) and the resume pointer were already
@@ -5530,6 +5541,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 					"current_status", existing.Status,
 					"agent_id", util.UUIDToString(existing.AgentID),
 				)
+				s.settleKnowledgeGovernanceTerminal(ctx, existing)
 				return &existing, nil
 			}
 			slog.Warn("fail task failed",
@@ -5556,6 +5568,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		// path owns this row now, same contract as the completion guard.
 		slog.Info("task failure converged to cancelled (cancel race lost)",
 			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
+		s.settleKnowledgeGovernanceTerminal(ctx, task)
 		return &task, nil
 	}
 
@@ -5655,6 +5668,9 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 				)
 			}
 		}
+	}
+	if retried == nil {
+		s.settleKnowledgeGovernanceTerminal(ctx, task)
 	}
 	// Reconcile agent status
 	s.ReconcileAgentStatus(ctx, task.AgentID)
@@ -7892,6 +7908,9 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 	if retroCtx, ok := s.parseRetrospectiveContext(task); ok {
 		return retroCtx.WorkspaceID
 	}
+	if governanceCtx, ok := s.parseKnowledgeGovernanceContext(task); ok {
+		return governanceCtx.WorkspaceID
+	}
 	return ""
 }
 
@@ -8278,6 +8297,51 @@ func (s *TaskService) parseRetrospectiveContext(task db.AgentTaskQueue) (retrosp
 		return retrospective.TaskContext{}, false
 	}
 	return retrospective.ParseTaskContext(task.Context)
+}
+
+// parseKnowledgeGovernanceContext recognizes the isolated advisory governance
+// task shape. Like retrospective, it must remain unlinked from issues, chat,
+// and autopilot runs so no regular task can accidentally enter this lifecycle.
+func (s *TaskService) parseKnowledgeGovernanceContext(task db.AgentTaskQueue) (knowledgegovernance.TaskContext, bool) {
+	if task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid || len(task.Context) == 0 {
+		return knowledgegovernance.TaskContext{}, false
+	}
+	return knowledgegovernance.ParseTaskContext(task.Context)
+}
+
+// settleKnowledgeGovernanceTerminal derives the report only from durable task
+// state. A duplicate daemon callback cannot introduce replacement output after
+// the task reached a terminal state; the scheduler repairs persistence failures.
+func (s *TaskService) settleKnowledgeGovernanceTerminal(ctx context.Context, task db.AgentTaskQueue) {
+	if s.KnowledgeGovernanceTerminal == nil {
+		return
+	}
+	if _, ok := s.parseKnowledgeGovernanceContext(task); !ok {
+		return
+	}
+	var output, taskErr string
+	switch task.Status {
+	case "completed":
+		var payload protocol.TaskCompletedPayload
+		if err := json.Unmarshal(task.Result, &payload); err != nil {
+			taskErr = "invalid persisted completion result"
+		} else {
+			output = payload.Output
+		}
+	case "failed":
+		taskErr = task.Error.String
+	case "cancelled":
+		taskErr = "cancelled"
+	default:
+		return
+	}
+	if _, err := s.KnowledgeGovernanceTerminal(ctx, task, output, taskErr); err != nil {
+		slog.Warn("knowledge governance terminal hook failed",
+			"task_id", util.UUIDToString(task.ID),
+			"status", task.Status,
+			"error", err,
+		)
+	}
 }
 
 func (s *TaskService) sourceContextAttachedByTask(ctx context.Context, task db.AgentTaskQueue, qc QuickCreateContext) (bool, error) {
