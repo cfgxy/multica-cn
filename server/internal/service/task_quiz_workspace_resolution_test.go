@@ -70,7 +70,7 @@ func newQuizResolutionFixture(t *testing.T) quizResolutionFixture {
 // production ordering paths (sweep tick + batch endpoint) share.
 func (f quizResolutionFixture) quizTask(t *testing.T, itemID string) string {
 	t.Helper()
-	context, err := promptquizsweep.TaskContextPayload(itemID, "quiz resolution regression body", pgtype.UUID{})
+	context, err := promptquizsweep.TaskContextPayload(itemID, "Quiz resolution regression", "quiz resolution regression body", pgtype.UUID{})
 	if err != nil {
 		t.Fatalf("build quiz context: %v", err)
 	}
