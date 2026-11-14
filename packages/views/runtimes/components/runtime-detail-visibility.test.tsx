@@ -151,12 +151,6 @@ vi.mock("@multica/core/runtimes/mutations", () => ({
     },
     isPending: false,
   }),
-  useDeleteRuntime: () => ({ mutate: vi.fn(), isPending: false, mutateAsync: vi.fn() }),
-  useUnbindAgentsAndDeleteRuntime: () => ({
-    mutate: vi.fn(),
-    isPending: false,
-    mutateAsync: vi.fn(),
-  }),
   useSaveRuntimeModelCallBudget: () => ({
     mutate: (_config: unknown, opts?: { onSuccess?: () => void }) => {
       opts?.onSuccess?.();

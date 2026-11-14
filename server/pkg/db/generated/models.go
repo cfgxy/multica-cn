@@ -2624,6 +2624,7 @@ type TaskUsage struct {
 	Turns            pgtype.Int4 `json:"turns"`
 	Compactions      pgtype.Int4 `json:"compactions"`
 	MaxContextTokens pgtype.Int8 `json:"max_context_tokens"`
+	ModelCallCount   pgtype.Int8 `json:"model_call_count"`
 }
 
 type TaskUsageHourly struct {

@@ -526,9 +526,9 @@ func (q *Queries) FindLegacyRuntimesByDaemonID(ctx context.Context, arg FindLega
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
-		&i.ModelCallBudgetEnabled,
-		&i.ModelCallBudgetMaxCalls,
-		&i.ModelCallBudgetWindowSeconds,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -707,9 +707,9 @@ func (q *Queries) GetAgentRuntimes(ctx context.Context, ids []pgtype.UUID) ([]Ag
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
-		&i.ModelCallBudgetEnabled,
-		&i.ModelCallBudgetMaxCalls,
-		&i.ModelCallBudgetWindowSeconds,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -837,9 +837,9 @@ func (q *Queries) ListAgentRuntimes(ctx context.Context, workspaceID pgtype.UUID
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
-		&i.ModelCallBudgetEnabled,
-		&i.ModelCallBudgetMaxCalls,
-		&i.ModelCallBudgetWindowSeconds,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -894,9 +894,9 @@ func (q *Queries) ListAgentRuntimesByOwner(ctx context.Context, arg ListAgentRun
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
-		&i.ModelCallBudgetEnabled,
-		&i.ModelCallBudgetMaxCalls,
-		&i.ModelCallBudgetWindowSeconds,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -952,9 +952,9 @@ func (q *Queries) ListAgentRuntimesByOwnerIncludingRemoved(ctx context.Context, 
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
-		&i.ModelCallBudgetEnabled,
-		&i.ModelCallBudgetMaxCalls,
-		&i.ModelCallBudgetWindowSeconds,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -1005,9 +1005,9 @@ func (q *Queries) ListAgentRuntimesIncludingRemoved(ctx context.Context, workspa
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
-		&i.ModelCallBudgetEnabled,
-		&i.ModelCallBudgetMaxCalls,
-		&i.ModelCallBudgetWindowSeconds,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -1168,9 +1168,9 @@ func (q *Queries) ListRuntimesWithCredentialRef(ctx context.Context) ([]AgentRun
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
-		&i.ModelCallBudgetEnabled,
-		&i.ModelCallBudgetMaxCalls,
-		&i.ModelCallBudgetWindowSeconds,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -1280,9 +1280,9 @@ func (q *Queries) ListVisibleAgentRuntimes(ctx context.Context, arg ListVisibleA
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
-		&i.ModelCallBudgetEnabled,
-		&i.ModelCallBudgetMaxCalls,
-		&i.ModelCallBudgetWindowSeconds,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -2279,9 +2279,9 @@ func (q *Queries) UpdateAgentRuntimeCustomNameByDaemon(ctx context.Context, arg 
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
-		&i.ModelCallBudgetEnabled,
-		&i.ModelCallBudgetMaxCalls,
-		&i.ModelCallBudgetWindowSeconds,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -2383,31 +2383,31 @@ type UpsertAgentRuntimeParams struct {
 }
 
 type UpsertAgentRuntimeRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	DaemonID           pgtype.Text        `json:"daemon_id"`
-	Name               string             `json:"name"`
-	RuntimeMode        string             `json:"runtime_mode"`
-	Provider           string             `json:"provider"`
-	Status             string             `json:"status"`
-	DeviceInfo         string             `json:"device_info"`
-	Metadata           []byte             `json:"metadata"`
-	LastSeenAt         pgtype.Timestamptz `json:"last_seen_at"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	OwnerID            pgtype.UUID        `json:"owner_id"`
-	LegacyDaemonID     pgtype.Text        `json:"legacy_daemon_id"`
-	Visibility         string             `json:"visibility"`
-	ProfileID          pgtype.UUID        `json:"profile_id"`
-	CustomName         pgtype.Text        `json:"custom_name"`
-	RegistrationSource string             `json:"registration_source"`
-	CredentialRef      pgtype.Text        `json:"credential_ref"`
-	MaxConcurrentTasks int32              `json:"max_concurrent_tasks"`
-	RemovedAt          pgtype.Timestamptz `json:"removed_at"`
-	ModelCallBudgetEnabled bool `json:"model_call_budget_enabled"`
-	ModelCallBudgetMaxCalls int64 `json:"model_call_budget_max_calls"`
-	ModelCallBudgetWindowSeconds int32 `json:"model_call_budget_window_seconds"`
-	Inserted           bool               `json:"inserted"`
+	ID                           pgtype.UUID        `json:"id"`
+	WorkspaceID                  pgtype.UUID        `json:"workspace_id"`
+	DaemonID                     pgtype.Text        `json:"daemon_id"`
+	Name                         string             `json:"name"`
+	RuntimeMode                  string             `json:"runtime_mode"`
+	Provider                     string             `json:"provider"`
+	Status                       string             `json:"status"`
+	DeviceInfo                   string             `json:"device_info"`
+	Metadata                     []byte             `json:"metadata"`
+	LastSeenAt                   pgtype.Timestamptz `json:"last_seen_at"`
+	CreatedAt                    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                    pgtype.Timestamptz `json:"updated_at"`
+	OwnerID                      pgtype.UUID        `json:"owner_id"`
+	LegacyDaemonID               pgtype.Text        `json:"legacy_daemon_id"`
+	Visibility                   string             `json:"visibility"`
+	ProfileID                    pgtype.UUID        `json:"profile_id"`
+	CustomName                   pgtype.Text        `json:"custom_name"`
+	RegistrationSource           string             `json:"registration_source"`
+	CredentialRef                pgtype.Text        `json:"credential_ref"`
+	MaxConcurrentTasks           int32              `json:"max_concurrent_tasks"`
+	RemovedAt                    pgtype.Timestamptz `json:"removed_at"`
+	ModelCallBudgetEnabled       bool               `json:"model_call_budget_enabled"`
+	ModelCallBudgetMaxCalls      int64              `json:"model_call_budget_max_calls"`
+	ModelCallBudgetWindowSeconds int32              `json:"model_call_budget_window_seconds"`
+	Inserted                     bool               `json:"inserted"`
 }
 
 // (xmax = 0) AS inserted distinguishes a fresh insert (true) from an upsert
@@ -2508,31 +2508,31 @@ type UpsertAgentRuntimeWithProfileParams struct {
 }
 
 type UpsertAgentRuntimeWithProfileRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	DaemonID           pgtype.Text        `json:"daemon_id"`
-	Name               string             `json:"name"`
-	RuntimeMode        string             `json:"runtime_mode"`
-	Provider           string             `json:"provider"`
-	Status             string             `json:"status"`
-	DeviceInfo         string             `json:"device_info"`
-	Metadata           []byte             `json:"metadata"`
-	LastSeenAt         pgtype.Timestamptz `json:"last_seen_at"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	OwnerID            pgtype.UUID        `json:"owner_id"`
-	LegacyDaemonID     pgtype.Text        `json:"legacy_daemon_id"`
-	Visibility         string             `json:"visibility"`
-	ProfileID          pgtype.UUID        `json:"profile_id"`
-	CustomName         pgtype.Text        `json:"custom_name"`
-	RegistrationSource string             `json:"registration_source"`
-	CredentialRef      pgtype.Text        `json:"credential_ref"`
-	MaxConcurrentTasks int32              `json:"max_concurrent_tasks"`
-	RemovedAt          pgtype.Timestamptz `json:"removed_at"`
-	ModelCallBudgetEnabled bool `json:"model_call_budget_enabled"`
-	ModelCallBudgetMaxCalls int64 `json:"model_call_budget_max_calls"`
-	ModelCallBudgetWindowSeconds int32 `json:"model_call_budget_window_seconds"`
-	Inserted           bool               `json:"inserted"`
+	ID                           pgtype.UUID        `json:"id"`
+	WorkspaceID                  pgtype.UUID        `json:"workspace_id"`
+	DaemonID                     pgtype.Text        `json:"daemon_id"`
+	Name                         string             `json:"name"`
+	RuntimeMode                  string             `json:"runtime_mode"`
+	Provider                     string             `json:"provider"`
+	Status                       string             `json:"status"`
+	DeviceInfo                   string             `json:"device_info"`
+	Metadata                     []byte             `json:"metadata"`
+	LastSeenAt                   pgtype.Timestamptz `json:"last_seen_at"`
+	CreatedAt                    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                    pgtype.Timestamptz `json:"updated_at"`
+	OwnerID                      pgtype.UUID        `json:"owner_id"`
+	LegacyDaemonID               pgtype.Text        `json:"legacy_daemon_id"`
+	Visibility                   string             `json:"visibility"`
+	ProfileID                    pgtype.UUID        `json:"profile_id"`
+	CustomName                   pgtype.Text        `json:"custom_name"`
+	RegistrationSource           string             `json:"registration_source"`
+	CredentialRef                pgtype.Text        `json:"credential_ref"`
+	MaxConcurrentTasks           int32              `json:"max_concurrent_tasks"`
+	RemovedAt                    pgtype.Timestamptz `json:"removed_at"`
+	ModelCallBudgetEnabled       bool               `json:"model_call_budget_enabled"`
+	ModelCallBudgetMaxCalls      int64              `json:"model_call_budget_max_calls"`
+	ModelCallBudgetWindowSeconds int32              `json:"model_call_budget_window_seconds"`
+	Inserted                     bool               `json:"inserted"`
 }
 
 // Custom-runtime registration: a daemon resolved a workspace runtime_profile's
