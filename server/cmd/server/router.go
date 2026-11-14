@@ -2588,6 +2588,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Put("/jev-config", h.PutSelfEvolutionJevConfig)
 				r.Delete("/jev-config", h.DeleteSelfEvolutionJevConfig)
 				r.Post("/jev-config/recheck", h.RecheckSelfEvolutionJevConfig)
+				r.Post("/model-config/models", h.ListSelfEvolutionModelConfigModels)
 			})
 		})
 

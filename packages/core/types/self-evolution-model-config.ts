@@ -68,3 +68,10 @@ export interface SelfEvolutionModelConfigSave {
   model: string;
   scoring_enabled?: boolean;
 }
+
+export interface SelfEvolutionModelListResult {
+  ok: boolean;
+  models: string[];
+  error_kind: string;
+  message: string;
+}

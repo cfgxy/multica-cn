@@ -5644,6 +5644,13 @@ export const SelfEvolutionJevConfigSchema = z.object({
   encryption_ready: z.boolean().default(true),
 });
 
+export const SelfEvolutionModelListResultSchema = z.object({
+  ok: z.boolean().default(false),
+  models: z.array(z.string()).default([]),
+  error_kind: z.string().default(""),
+  message: z.string().default(""),
+});
+
 // Workspace host-backpressure settings (RUYI-618): the effective card the
 // settings form saves and every daemon receives on heartbeat acks. All
 // numeric fields default to the daemon code defaults so an old server

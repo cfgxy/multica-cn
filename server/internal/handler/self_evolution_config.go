@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/selfevconfig"
+	"github.com/multica-ai/multica/server/pkg/llm"
 	"github.com/multica-ai/multica/server/pkg/promptperplexity"
 )
 
@@ -61,6 +62,13 @@ type modelConfigSaveRequest struct {
 	ScoringEnabled *bool  `json:"scoring_enabled"`
 }
 
+type modelConfigModelsResponse struct {
+	OK        bool     `json:"ok"`
+	Models    []string `json:"models"`
+	ErrorKind string   `json:"error_kind,omitempty"`
+	Message   string   `json:"message,omitempty"`
+}
+
 // GetSelfEvolutionModelConfig — GET /api/self-evolution/model-config
 func (h *Handler) GetSelfEvolutionModelConfig(w http.ResponseWriter, r *http.Request) {
 	if h.SelfEvolution == nil {
@@ -103,6 +111,10 @@ func (h *Handler) PutSelfEvolutionModelConfig(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		if errors.Is(err, selfevconfig.ErrIncompleteCreds) {
 			writeError(w, http.StatusBadRequest, "base_url 与 model 必须同时提供，或同时留空（仅保存启用开关）")
+			return
+		}
+		if errors.Is(err, selfevconfig.ErrConcurrentUpdate) {
+			writeError(w, http.StatusConflict, "model config changed during validation; retry")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to save model config")
@@ -174,6 +186,10 @@ func (h *Handler) ValidateSelfEvolutionModelConfig(w http.ResponseWriter, r *htt
 			writeError(w, http.StatusBadRequest, "base_url 与 model 必须同时提供")
 			return
 		}
+		if errors.Is(err, selfevconfig.ErrConcurrentUpdate) {
+			writeError(w, http.StatusConflict, "model config changed during validation; retry")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to validate model config")
 		return
 	}
@@ -186,6 +202,28 @@ func (h *Handler) ValidateSelfEvolutionModelConfig(w http.ResponseWriter, r *htt
 		resp["validated_at"] = out.ValidatedAt.UTC().Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ListSelfEvolutionModelConfigModels — POST /api/self-evolution/model-config/models
+func (h *Handler) ListSelfEvolutionModelConfigModels(w http.ResponseWriter, r *http.Request) {
+	if h.SelfEvolution == nil {
+		h.writeConfigUnavailable(w)
+		return
+	}
+	var req modelConfigSaveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ws := parseUUID(h.resolveWorkspaceID(r))
+	models, err := h.SelfEvolution.ListModels(r.Context(), ws, req.BaseURL, req.APIKey)
+	if err == nil {
+		writeJSON(w, http.StatusOK, modelConfigModelsResponse{OK: true, Models: models})
+		return
+	}
+	kind := llm.Classify(err)
+	message := llm.Summary(err)
+	writeJSON(w, http.StatusOK, modelConfigModelsResponse{OK: false, Models: []string{}, ErrorKind: string(kind), Message: message})
 }
 
 // readModelConfig composes the GET view from the resolver. ok=false means the
