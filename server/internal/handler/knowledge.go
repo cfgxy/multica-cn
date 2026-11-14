@@ -11,8 +11,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 // bd memories unified collection (RUYI-265, spec §K; execution moved to the
@@ -34,6 +37,7 @@ type KnowledgeDirResponse struct {
 	HealthNote    string                      `json:"health_note"`
 	Removed       bool                        `json:"removed"`
 	ScanRequested bool                        `json:"scan_requested"`
+	ManagedActive bool                        `json:"managed_active"`
 	EntryCount    int64                       `json:"entry_count"`
 	LastScan      *KnowledgeScanBatchResponse `json:"last_scan,omitempty"`
 	CreatedAt     time.Time                   `json:"created_at"`
@@ -54,22 +58,28 @@ type KnowledgeScanBatchResponse struct {
 }
 
 type KnowledgeEntryResponse struct {
-	ID               string                           `json:"id"`
-	DirID            string                           `json:"dir_id"`
-	Key              string                           `json:"key"`
-	Content          string                           `json:"content"`
-	ContentSha256    string                           `json:"content_sha256"`
-	MirrorState      string                           `json:"mirror_state"`
-	FirstSeenAt      time.Time                        `json:"first_seen_at"`
-	LastConfirmedAt  time.Time                        `json:"last_confirmed_at"`
-	AdoptionState    string                           `json:"adoption_state"`
-	AdoptedAt        *time.Time                       `json:"adopted_at,omitempty"`
-	AdoptedBy        *string                          `json:"adopted_by,omitempty"`
-	UltimateDirID    *string                          `json:"ultimate_dir_id,omitempty"`
-	AdoptedFromDirID *string                          `json:"adopted_from_dir_id,omitempty"`
-	AdoptedFromKey   *string                          `json:"adopted_from_key,omitempty"`
-	AdoptionError    string                           `json:"adoption_error,omitempty"`
-	PendingOperation *KnowledgeEntryOperationResponse `json:"pending_operation,omitempty"`
+	ID                  string                           `json:"id"`
+	DirID               string                           `json:"dir_id"`
+	Key                 string                           `json:"key"`
+	Content             string                           `json:"content"`
+	ContentSha256       string                           `json:"content_sha256"`
+	MirrorState         string                           `json:"mirror_state"`
+	LifecycleState      string                           `json:"lifecycle_state"`
+	CurrentVersion      int                              `json:"current_version"`
+	MissingConfirmation int                              `json:"missing_confirmation"`
+	ReplacementEntryID  *string                          `json:"replacement_entry_id,omitempty"`
+	WritebackState      string                           `json:"writeback_state"`
+	WritebackError      string                           `json:"writeback_error,omitempty"`
+	FirstSeenAt         time.Time                        `json:"first_seen_at"`
+	LastConfirmedAt     time.Time                        `json:"last_confirmed_at"`
+	AdoptionState       string                           `json:"adoption_state"`
+	AdoptedAt           *time.Time                       `json:"adopted_at,omitempty"`
+	AdoptedBy           *string                          `json:"adopted_by,omitempty"`
+	UltimateDirID       *string                          `json:"ultimate_dir_id,omitempty"`
+	AdoptedFromDirID    *string                          `json:"adopted_from_dir_id,omitempty"`
+	AdoptedFromKey      *string                          `json:"adopted_from_key,omitempty"`
+	AdoptionError       string                           `json:"adoption_error,omitempty"`
+	PendingOperation    *KnowledgeEntryOperationResponse `json:"pending_operation,omitempty"`
 }
 
 type KnowledgeEntryOperationResponse struct {
@@ -80,13 +90,38 @@ type KnowledgeEntryOperationResponse struct {
 	RequestedAt   *time.Time `json:"requested_at,omitempty"`
 }
 
+type KnowledgeEntryVersionResponse struct {
+	ID            string    `json:"id"`
+	EntryID       string    `json:"entry_id"`
+	Version       int       `json:"version"`
+	Content       string    `json:"content"`
+	ContentSha256 string    `json:"content_sha256"`
+	Source        string    `json:"source"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type KnowledgeLifecycleEventResponse struct {
+	ID                 string     `json:"id"`
+	EntryID            string     `json:"entry_id"`
+	FromState          string     `json:"from_state"`
+	ToState            string     `json:"to_state"`
+	Operation          string     `json:"operation"`
+	Reason             string     `json:"reason"`
+	EvidenceRef        string     `json:"evidence_ref"`
+	ReplacementEntryID *string    `json:"replacement_entry_id,omitempty"`
+	WritebackState     string     `json:"writeback_state"`
+	WritebackError     string     `json:"writeback_error,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	CompletedAt        *time.Time `json:"completed_at,omitempty"`
+}
+
 // GetKnowledgeDirs serves GET /api/knowledge/dirs: the workspace's registered
 // directories with entry counts and the latest scan batch per directory.
 func (h *Handler) GetKnowledgeDirs(w http.ResponseWriter, r *http.Request) {
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 	rows, err := h.DB.Query(r.Context(), `
-SELECT d.id, d.kind, d.path, d.project_id, d.label, d.health_state, d.health_note,
-       d.removed, d.scan_requested, d.created_at, d.updated_at,
+	SELECT d.id, d.kind, d.path, d.project_id, d.label, d.health_state, d.health_note,
+	       d.removed, d.scan_requested, d.managed_active, d.created_at, d.updated_at,
        (SELECT count(*) FROM knowledge_entry e WHERE e.dir_id = d.id),
        lb.id, COALESCE(lb.trigger_source, ''), COALESCE(lb.result, ''), COALESCE(lb.added, 0), COALESCE(lb.updated, 0),
        COALESCE(lb.removed, 0), COALESCE(lb.error, ''), lb.started_at, lb.finished_at
@@ -113,7 +148,7 @@ ORDER BY d.kind = 'ultimate' DESC, d.created_at`, workspaceID)
 		var startedAt pgtype.Timestamptz
 		var finishedAt pgtype.Timestamptz
 		if err := rows.Scan(&id, &dir.Kind, &dir.Path, &projectID, &dir.Label,
-			&dir.HealthState, &dir.HealthNote, &dir.Removed, &dir.ScanRequested,
+			&dir.HealthState, &dir.HealthNote, &dir.Removed, &dir.ScanRequested, &dir.ManagedActive,
 			&dir.CreatedAt, &dir.UpdatedAt,
 			&dir.EntryCount, &batchID, &trigger, &result, &added, &updatedCnt, &removed,
 			&batchErr, &startedAt, &finishedAt); err != nil {
@@ -228,7 +263,7 @@ func (h *Handler) ScanKnowledgeDir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tag, err := h.DB.Exec(r.Context(), `
-UPDATE knowledge_dir SET scan_requested = TRUE, updated_at = now()
+UPDATE knowledge_dir SET scan_requested = TRUE, scan_token = gen_random_uuid(), updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND removed = FALSE`, dirID, workspaceID)
 	if err != nil || tag.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "knowledge directory not found")
@@ -244,17 +279,82 @@ WHERE id = $1 AND workspace_id = $2 AND removed = FALSE`, dirID, workspaceID)
 func (h *Handler) DeleteKnowledgeDir(w http.ResponseWriter, r *http.Request) {
 	workspaceID := parseUUID(h.resolveWorkspaceID(r))
 	dirID := parseUUID(chi.URLParam(r, "id"))
-	tag, err := h.DB.Exec(r.Context(), `
-UPDATE knowledge_dir SET removed = TRUE, updated_at = now()
-WHERE id = $1 AND workspace_id = $2 AND kind = 'candidate_cli' AND removed = FALSE`,
-		dirID, workspaceID)
-	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusConflict, "only CLI-added directories can be unregistered here")
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to unregister the knowledge directory")
 		return
 	}
-	if _, err := h.DB.Exec(r.Context(),
-		`UPDATE knowledge_entry SET mirror_state = 'source_removed' WHERE dir_id = $1`, dirID); err != nil {
+	defer tx.Rollback(r.Context())
+	// Lock write-back events before the directory. claimKnowledgeWritebacks uses
+	// the same order, so unregister and claim cannot deadlock while deciding
+	// which side owns the physical write-back.
+	eventRows, err := tx.Query(r.Context(), `
+SELECT le.writeback_state
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+WHERE e.dir_id = $1 AND le.writeback_state IN ('queued', 'in_progress')
+ORDER BY le.id
+FOR UPDATE OF le`, dirID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	var writebackInProgress bool
+	for eventRows.Next() {
+		var state string
+		if err := eventRows.Scan(&state); err != nil {
+			eventRows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+			return
+		}
+		writebackInProgress = writebackInProgress || state == "in_progress"
+	}
+	if err := eventRows.Err(); err != nil {
+		eventRows.Close()
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	eventRows.Close()
+
+	var removed bool
+	if err := tx.QueryRow(r.Context(), `
+SELECT removed
+FROM knowledge_dir
+WHERE id = $1 AND workspace_id = $2 AND kind = 'candidate_cli'
+FOR UPDATE`, dirID, workspaceID).Scan(&removed); err != nil || removed {
+		writeError(w, http.StatusConflict, "only active CLI-added directories can be unregistered here")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_dir SET removed = TRUE, managed_active = FALSE, updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND kind = 'candidate_cli' AND removed = FALSE`,
+		dirID, workspaceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to unregister the knowledge directory")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_lifecycle_event
+SET writeback_state = 'cancelled', writeback_error = 'source directory unregistered', completed_at = now()
+WHERE entry_id IN (SELECT id FROM knowledge_entry WHERE dir_id = $1)
+  AND writeback_state = 'queued'`, dirID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to cancel pending knowledge write-back")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_entry
+SET mirror_state = 'source_removed',
+    writeback_state = CASE WHEN writeback_state = 'queued' THEN 'cancelled' ELSE writeback_state END,
+    writeback_error = CASE WHEN writeback_state = 'queued' THEN 'source directory unregistered' ELSE writeback_error END
+WHERE dir_id = $1`, dirID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to retire the mirrored entries")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to unregister the knowledge directory")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "unregistered"})
@@ -274,8 +374,18 @@ func (h *Handler) GetKnowledgeEntries(w http.ResponseWriter, r *http.Request) {
 		dirID = parsed
 	}
 	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	lifecycle := r.URL.Query().Get("lifecycle")
+	if lifecycle == "" {
+		lifecycle = "active"
+	}
+	if lifecycle != "active" && lifecycle != "archived" && lifecycle != "all" {
+		writeError(w, http.StatusBadRequest, "lifecycle must be active, archived or all")
+		return
+	}
 	rows, err := h.DB.Query(r.Context(), `
 SELECT e.id, e.dir_id, e.key, e.content, e.content_sha256, e.mirror_state,
+	       e.lifecycle_state, e.current_version, e.missing_confirmation, e.replacement_entry_id,
+	       e.writeback_state, e.writeback_error,
        e.first_seen_at, e.last_confirmed_at, e.adoption_state, e.adopted_at,
        e.adopted_by, e.ultimate_dir_id, e.adopted_from_dir_id, e.adopted_from_key,
        e.adoption_error, pending.id, COALESCE(pending.operation_type, ''),
@@ -292,8 +402,10 @@ FROM knowledge_entry e
 WHERE e.workspace_id = $1
   AND ($2::uuid IS NULL OR e.dir_id = $2)
   AND ($3 = '' OR position($3 in lower(e.key)) > 0 OR position($3 in lower(e.content)) > 0)
+	  AND ($4 = 'all' OR ($4 = 'active' AND e.lifecycle_state = 'active')
+	       OR ($4 = 'archived' AND e.lifecycle_state <> 'active'))
 ORDER BY e.last_confirmed_at DESC
-LIMIT 200`, workspaceID, dirID, query)
+	LIMIT 200`, workspaceID, dirID, query, lifecycle)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read knowledge entries")
 		return
@@ -302,11 +414,13 @@ LIMIT 200`, workspaceID, dirID, query)
 	entries := make([]KnowledgeEntryResponse, 0, 64)
 	for rows.Next() {
 		var entry KnowledgeEntryResponse
-		var id, entryDirID, adoptedBy, ultimateDirID, fromDirID, pendingID pgtype.UUID
+		var id, entryDirID, replacementEntryID, adoptedBy, ultimateDirID, fromDirID, pendingID pgtype.UUID
 		var adoptedAt, pendingRequestedAt pgtype.Timestamptz
 		var pendingOperationType, pendingStatus, pendingError string
 		if err := rows.Scan(&id, &entryDirID, &entry.Key, &entry.Content, &entry.ContentSha256,
-			&entry.MirrorState, &entry.FirstSeenAt, &entry.LastConfirmedAt, &entry.AdoptionState,
+			&entry.MirrorState, &entry.LifecycleState, &entry.CurrentVersion, &entry.MissingConfirmation,
+			&replacementEntryID, &entry.WritebackState, &entry.WritebackError,
+			&entry.FirstSeenAt, &entry.LastConfirmedAt, &entry.AdoptionState,
 			&adoptedAt, &adoptedBy, &ultimateDirID, &fromDirID, &entry.AdoptedFromKey,
 			&entry.AdoptionError, &pendingID, &pendingOperationType, &pendingStatus, &pendingError,
 			&pendingRequestedAt); err != nil {
@@ -315,6 +429,10 @@ LIMIT 200`, workspaceID, dirID, query)
 		}
 		entry.ID = uuidToString(id)
 		entry.DirID = uuidToString(entryDirID)
+		if replacementEntryID.Valid {
+			value := uuidToString(replacementEntryID)
+			entry.ReplacementEntryID = &value
+		}
 		if adoptedAt.Valid {
 			value := adoptedAt.Time
 			entry.AdoptedAt = &value
@@ -349,6 +467,608 @@ LIMIT 200`, workspaceID, dirID, query)
 		return
 	}
 	writeJSON(w, http.StatusOK, entries)
+}
+
+func (h *Handler) GetKnowledgeEntryVersions(w http.ResponseWriter, r *http.Request) {
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	entryID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "id")
+	if !ok {
+		return
+	}
+	rows, err := h.DB.Query(r.Context(), `
+SELECT id, entry_id, version, content, content_sha256, source, created_at
+FROM knowledge_entry_version
+WHERE workspace_id = $1 AND entry_id = $2
+ORDER BY version DESC`, workspaceID, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read knowledge entry versions")
+		return
+	}
+	defer rows.Close()
+	versions := make([]KnowledgeEntryVersionResponse, 0, 4)
+	for rows.Next() {
+		var version KnowledgeEntryVersionResponse
+		var id, rowEntryID pgtype.UUID
+		if err := rows.Scan(&id, &rowEntryID, &version.Version, &version.Content, &version.ContentSha256, &version.Source, &version.CreatedAt); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read knowledge entry versions")
+			return
+		}
+		version.ID = uuidToString(id)
+		version.EntryID = uuidToString(rowEntryID)
+		versions = append(versions, version)
+	}
+	writeJSON(w, http.StatusOK, versions)
+}
+
+func (h *Handler) GetKnowledgeEntryLifecycle(w http.ResponseWriter, r *http.Request) {
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	entryID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "id")
+	if !ok {
+		return
+	}
+	rows, err := h.DB.Query(r.Context(), `
+SELECT id, entry_id, from_state, to_state, operation, reason, evidence_ref,
+       replacement_entry_id, writeback_state, writeback_error, created_at, completed_at
+FROM knowledge_lifecycle_event
+WHERE workspace_id = $1 AND entry_id = $2
+ORDER BY created_at DESC`, workspaceID, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read knowledge lifecycle")
+		return
+	}
+	defer rows.Close()
+	events := make([]KnowledgeLifecycleEventResponse, 0, 4)
+	for rows.Next() {
+		var event KnowledgeLifecycleEventResponse
+		var id, rowEntryID, replacement pgtype.UUID
+		var completed pgtype.Timestamptz
+		if err := rows.Scan(&id, &rowEntryID, &event.FromState, &event.ToState, &event.Operation,
+			&event.Reason, &event.EvidenceRef, &replacement, &event.WritebackState,
+			&event.WritebackError, &event.CreatedAt, &completed); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read knowledge lifecycle")
+			return
+		}
+		event.ID = uuidToString(id)
+		event.EntryID = uuidToString(rowEntryID)
+		if replacement.Valid {
+			value := uuidToString(replacement)
+			event.ReplacementEntryID = &value
+		}
+		if completed.Valid {
+			value := completed.Time
+			event.CompletedAt = &value
+		}
+		events = append(events, event)
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+func lockKnowledgeEntryWritebackEvents(ctx context.Context, tx pgx.Tx, entryID pgtype.UUID) (bool, error) {
+	rows, err := tx.Query(ctx, `
+SELECT writeback_state
+FROM knowledge_lifecycle_event
+WHERE entry_id = $1 AND writeback_state IN ('queued', 'in_progress')
+ORDER BY id
+FOR UPDATE`, entryID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	inProgress := false
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			return false, err
+		}
+		inProgress = inProgress || state == "in_progress"
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return inProgress, nil
+}
+
+// lockKnowledgeEntryDirectory establishes the common event -> directory ->
+// entry lock order. The directory must be locked before any entry join is
+// locked; PostgreSQL does not guarantee the relation order of FOR UPDATE OF.
+func lockKnowledgeEntryDirectory(ctx context.Context, tx pgx.Tx, entryID, workspaceID pgtype.UUID) (pgtype.UUID, error) {
+	var dirID pgtype.UUID
+	err := tx.QueryRow(ctx, `
+SELECT d.id
+FROM knowledge_dir d
+JOIN knowledge_entry e ON e.dir_id = d.id
+WHERE e.id = $1 AND e.workspace_id = $2
+FOR UPDATE OF d`, entryID, workspaceID).Scan(&dirID)
+	return dirID, err
+}
+
+func (h *Handler) PutKnowledgeDirManaged(w http.ResponseWriter, r *http.Request) {
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	dirID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		ManagedActive bool `json:"managed_active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid managed state")
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start managed state transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	rows, err := tx.Query(r.Context(), `
+SELECT le.writeback_state
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+WHERE e.dir_id = $1 AND le.writeback_state IN ('queued', 'in_progress')
+ORDER BY le.id
+FOR UPDATE OF le`, dirID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	writebackInProgress := false
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			rows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+			return
+		}
+		writebackInProgress = writebackInProgress || state == "in_progress"
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	rows.Close()
+	var removed bool
+	if err := tx.QueryRow(r.Context(), `
+SELECT removed
+FROM knowledge_dir
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE`, dirID, workspaceID).Scan(&removed); err != nil || removed {
+		writeError(w, http.StatusConflict, "knowledge directory is not active")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
+		return
+	}
+	if !body.ManagedActive {
+		if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_lifecycle_event
+SET writeback_state = 'cancelled', writeback_error = 'managed write-back disabled', completed_at = now()
+WHERE entry_id IN (SELECT id FROM knowledge_entry WHERE dir_id = $1)
+  AND writeback_state = 'queued'`, dirID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to cancel pending knowledge write-back")
+			return
+		}
+		if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_entry
+SET writeback_state = 'cancelled', writeback_error = 'managed write-back disabled'
+WHERE dir_id = $1 AND writeback_state = 'queued'`, dirID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to cancel pending knowledge write-back projection")
+			return
+		}
+	}
+	query := `
+UPDATE knowledge_dir SET managed_active = $3, updated_at = now()
+WHERE id = $1 AND workspace_id = $2 AND removed = FALSE`
+	if body.ManagedActive {
+		query += ` AND kind = 'candidate_cli' AND project_id IS NULL`
+	}
+	tag, err := tx.Exec(r.Context(), query, dirID, workspaceID, body.ManagedActive)
+	if err != nil || tag.RowsAffected() == 0 {
+		writeError(w, http.StatusConflict, "only active local candidate knowledge directories can enable managed write-back")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update managed knowledge directory")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"managed_active": body.ManagedActive})
+}
+
+func validKnowledgeLifecycleState(state string) bool {
+	switch state {
+	case "needs_review", "superseded", "deprecated", "invalid", "duplicate":
+		return true
+	default:
+		return false
+	}
+}
+
+type knowledgeEvidenceKind string
+
+const (
+	knowledgeEvidenceIssue           knowledgeEvidenceKind = "issue"
+	knowledgeEvidencePullRequest     knowledgeEvidenceKind = "pr"
+	knowledgeEvidenceCodePullRequest knowledgeEvidenceKind = "code_pr"
+	knowledgeEvidenceRun             knowledgeEvidenceKind = "run"
+	knowledgeEvidenceScanBatch       knowledgeEvidenceKind = "knowledge_scan_batch"
+)
+
+type knowledgeEvidenceRef struct {
+	kind      knowledgeEvidenceKind
+	id        pgtype.UUID
+	sha       string
+	canonical string
+}
+
+func validKnowledgeEvidenceRef(ref string) bool {
+	_, ok := parseKnowledgeEvidenceRef(ref)
+	return ok
+}
+
+// parseKnowledgeEvidenceRef accepts only evidence records the server can
+// resolve within a workspace. The canonical result is safe to persist in the
+// lifecycle audit log after the matching database row is verified.
+func parseKnowledgeEvidenceRef(ref string) (knowledgeEvidenceRef, bool) {
+	ref = strings.TrimSpace(ref)
+	if strings.ContainsAny(ref, " \t\r\n") {
+		return knowledgeEvidenceRef{}, false
+	}
+	parseID := func(kind knowledgeEvidenceKind, raw string) (knowledgeEvidenceRef, bool) {
+		id, err := util.ParseUUID(raw)
+		if err != nil {
+			return knowledgeEvidenceRef{}, false
+		}
+		canonicalID := uuidToString(id)
+		return knowledgeEvidenceRef{kind: kind, id: id, canonical: string(kind) + ":" + canonicalID}, true
+	}
+
+	switch {
+	case strings.HasPrefix(ref, "issue:"):
+		return parseID(knowledgeEvidenceIssue, strings.TrimPrefix(ref, "issue:"))
+	case strings.HasPrefix(ref, "pr:"):
+		return parseID(knowledgeEvidencePullRequest, strings.TrimPrefix(ref, "pr:"))
+	case strings.HasPrefix(ref, "run:"):
+		return parseID(knowledgeEvidenceRun, strings.TrimPrefix(ref, "run:"))
+	case strings.HasPrefix(ref, "knowledge_scan_batch:"):
+		return parseID(knowledgeEvidenceScanBatch, strings.TrimPrefix(ref, "knowledge_scan_batch:"))
+	case strings.HasPrefix(ref, "code:pr:"):
+		rawPR, rawSHA, ok := strings.Cut(strings.TrimPrefix(ref, "code:pr:"), "@")
+		if !ok || !validGitObjectID(rawSHA) {
+			return knowledgeEvidenceRef{}, false
+		}
+		parsed, ok := parseID(knowledgeEvidenceCodePullRequest, rawPR)
+		if !ok {
+			return knowledgeEvidenceRef{}, false
+		}
+		parsed.sha = strings.ToLower(rawSHA)
+		parsed.canonical = "code:pr:" + uuidToString(parsed.id) + "@" + parsed.sha
+		return parsed, true
+	default:
+		return knowledgeEvidenceRef{}, false
+	}
+}
+
+func validGitObjectID(sha string) bool {
+	if len(sha) != 40 && len(sha) != 64 {
+		return false
+	}
+	for _, c := range sha {
+		if !(c >= '0' && c <= '9') && !(c >= 'a' && c <= 'f') && !(c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// verifyKnowledgeEvidenceRef proves the reference is available to the current
+// workspace before its lifecycle event is written. Scan batches are additionally
+// bound to the entry's directory so unrelated knowledge scopes cannot justify a
+// disposition.
+func verifyKnowledgeEvidenceRef(ctx context.Context, tx pgx.Tx, workspaceID, dirID pgtype.UUID, ref knowledgeEvidenceRef) error {
+	var found int
+	var err error
+	switch ref.kind {
+	case knowledgeEvidenceIssue:
+		err = tx.QueryRow(ctx, `SELECT 1 FROM issue WHERE id = $1 AND workspace_id = $2`, ref.id, workspaceID).Scan(&found)
+	case knowledgeEvidencePullRequest:
+		err = tx.QueryRow(ctx, `SELECT 1 FROM github_pull_request WHERE id = $1 AND workspace_id = $2`, ref.id, workspaceID).Scan(&found)
+	case knowledgeEvidenceCodePullRequest:
+		err = tx.QueryRow(ctx, `
+			SELECT 1 FROM github_pull_request
+			WHERE id = $1 AND workspace_id = $2 AND lower(head_sha) = $3`, ref.id, workspaceID, ref.sha).Scan(&found)
+	case knowledgeEvidenceRun:
+		err = tx.QueryRow(ctx, `
+			SELECT 1 FROM agent_task_queue q
+			JOIN agent a ON a.id = q.agent_id
+			WHERE q.id = $1 AND a.workspace_id = $2`, ref.id, workspaceID).Scan(&found)
+	case knowledgeEvidenceScanBatch:
+		err = tx.QueryRow(ctx, `
+			SELECT 1 FROM knowledge_scan_batch
+			WHERE id = $1 AND workspace_id = $2 AND dir_id = $3`, ref.id, workspaceID, dirID).Scan(&found)
+	default:
+		return errors.New("unsupported knowledge evidence reference")
+	}
+	return err
+}
+
+func (h *Handler) PostKnowledgeEntryLifecycle(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	entryID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		State              string `json:"state"`
+		Reason             string `json:"reason"`
+		EvidenceRef        string `json:"evidence_ref"`
+		ReplacementEntryID string `json:"replacement_entry_id"`
+		Writeback          bool   `json:"writeback"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "state, reason, and a locatable evidence_ref are required")
+		return
+	}
+	evidence, evidenceOK := parseKnowledgeEvidenceRef(body.EvidenceRef)
+	if !validKnowledgeLifecycleState(body.State) || strings.TrimSpace(body.Reason) == "" || !evidenceOK {
+		writeError(w, http.StatusBadRequest, "state, reason, and a locatable evidence_ref are required")
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start knowledge lifecycle transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	writebackInProgress, err := lockKnowledgeEntryWritebackEvents(r.Context(), tx, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
+		return
+	}
+	var previous, contentSHA, dirKind string
+	var dirID, currentVersionID, projectID pgtype.UUID
+	var managedActive, removed bool
+	if dirID, err = lockKnowledgeEntryDirectory(r.Context(), tx, entryID, workspaceID); err != nil {
+		writeError(w, http.StatusNotFound, "knowledge entry not found")
+		return
+	}
+	if err := tx.QueryRow(r.Context(), `
+SELECT e.lifecycle_state, e.content_sha256, v.id, d.kind, d.project_id, d.managed_active, d.removed
+FROM knowledge_entry e
+JOIN knowledge_entry_version v ON v.entry_id = e.id AND v.workspace_id = e.workspace_id AND v.version = e.current_version
+JOIN knowledge_dir d ON d.id = e.dir_id
+WHERE e.id = $1 AND e.workspace_id = $2
+FOR UPDATE OF e`, entryID, workspaceID).Scan(&previous, &contentSHA, &currentVersionID, &dirKind, &projectID, &managedActive, &removed); err != nil {
+		writeError(w, http.StatusNotFound, "knowledge entry not found")
+		return
+	}
+	writebackInProgress, err = lockKnowledgeEntryWritebackEvents(r.Context(), tx, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to recheck active knowledge write-back")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
+		return
+	}
+	if err := verifyKnowledgeEvidenceRef(r.Context(), tx, workspaceID, dirID, evidence); err != nil {
+		writeError(w, http.StatusBadRequest, "evidence_ref is not available in this knowledge scope")
+		return
+	}
+	var replacementEntryID pgtype.UUID
+	if replacement := strings.TrimSpace(body.ReplacementEntryID); replacement != "" {
+		if body.State != "superseded" && body.State != "duplicate" {
+			writeError(w, http.StatusBadRequest, "replacement_entry_id is only valid for superseded or duplicate lifecycle states")
+			return
+		}
+		parsed, err := util.ParseUUID(replacement)
+		if err != nil || parsed == entryID {
+			writeError(w, http.StatusBadRequest, "replacement_entry_id must identify a different entry in this knowledge directory")
+			return
+		}
+		var found int
+		var cycle bool
+		if err := tx.QueryRow(r.Context(), `
+			SELECT 1 FROM knowledge_entry
+			WHERE id = $1 AND workspace_id = $2 AND dir_id = $3`, parsed, workspaceID, dirID).Scan(&found); errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusBadRequest, "replacement_entry_id is not available in this knowledge directory")
+			return
+		} else if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to verify replacement knowledge entry")
+			return
+		}
+		if err := tx.QueryRow(r.Context(), `
+			WITH RECURSIVE replacement_chain AS (
+				SELECT id, replacement_entry_id
+				FROM knowledge_entry
+				WHERE id = $1 AND workspace_id = $2 AND dir_id = $3
+				UNION
+				SELECT e.id, e.replacement_entry_id
+				FROM knowledge_entry e
+				JOIN replacement_chain chain ON e.id = chain.replacement_entry_id
+				WHERE e.workspace_id = $2 AND e.dir_id = $3
+			)
+			SELECT EXISTS(SELECT 1 FROM replacement_chain WHERE id = $4)`,
+			parsed, workspaceID, dirID, entryID,
+		).Scan(&cycle); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate replacement knowledge entry")
+			return
+		}
+		if cycle {
+			writeError(w, http.StatusBadRequest, "replacement_entry_id must not create a replacement cycle")
+			return
+		}
+		replacementEntryID = parsed
+	}
+	if _, err := tx.Exec(r.Context(), `
+	UPDATE knowledge_lifecycle_event
+	SET writeback_state = 'cancelled', writeback_error = 'superseded by a later Owner lifecycle decision', completed_at = now()
+	WHERE entry_id = $1 AND writeback_state = 'queued'`, entryID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to supersede pending knowledge write-back")
+		return
+	}
+	operation := "transition"
+	writebackState := "not_requested"
+	expectedContentSHA := ""
+	versionID := pgtype.UUID{}
+	if body.Writeback {
+		if body.State == "needs_review" || dirKind != "candidate_cli" || projectID.Valid || !managedActive || removed {
+			writeError(w, http.StatusConflict, "write-back requires an active managed local candidate directory and a final lifecycle state")
+			return
+		}
+		operation = "writeback_remove"
+		writebackState = "queued"
+		expectedContentSHA = contentSHA
+		versionID = currentVersionID
+	}
+	if _, err := tx.Exec(r.Context(), `
+	UPDATE knowledge_entry SET lifecycle_state = $3, replacement_entry_id = $4,
+	    writeback_state = $5, writeback_error = '' WHERE id = $1 AND workspace_id = $2`,
+		entryID, workspaceID, body.State, replacementEntryID, writebackState); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update knowledge lifecycle")
+		return
+	}
+	_, err = tx.Exec(r.Context(), `
+INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, replacement_entry_id, version_id, expected_content_sha256, writeback_state, actor_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, '')::uuid, $10, $11, NULLIF($12, '')::uuid)`,
+		workspaceID, entryID, previous, body.State, operation, strings.TrimSpace(body.Reason), evidence.canonical, replacementEntryID, versionID, expectedContentSHA, writebackState, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record knowledge lifecycle")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit knowledge lifecycle update")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": writebackState})
+}
+
+func (h *Handler) PostKnowledgeEntryRestore(w http.ResponseWriter, r *http.Request) {
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := parseUUID(h.resolveWorkspaceID(r))
+	entryID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		VersionID   string `json:"version_id"`
+		Reason      string `json:"reason"`
+		EvidenceRef string `json:"evidence_ref"`
+		Writeback   bool   `json:"writeback"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "version_id, reason, and a locatable evidence_ref are required")
+		return
+	}
+	evidence, evidenceOK := parseKnowledgeEvidenceRef(body.EvidenceRef)
+	if body.VersionID == "" || strings.TrimSpace(body.Reason) == "" || !evidenceOK {
+		writeError(w, http.StatusBadRequest, "version_id, reason, and a locatable evidence_ref are required")
+		return
+	}
+	versionID, ok := parseUUIDOrBadRequest(w, body.VersionID, "version_id")
+	if !ok {
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start knowledge restoration transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	writebackInProgress, err := lockKnowledgeEntryWritebackEvents(r.Context(), tx, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to inspect active knowledge write-back")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
+		return
+	}
+	var previous, currentContentSHA, dirKind string
+	var dirID, projectID pgtype.UUID
+	var managedActive, removed bool
+	var version, currentVersion int
+	if dirID, err = lockKnowledgeEntryDirectory(r.Context(), tx, entryID, workspaceID); err != nil {
+		writeError(w, http.StatusNotFound, "knowledge entry version not found")
+		return
+	}
+	err = tx.QueryRow(r.Context(), `
+			SELECT v.version, e.lifecycle_state, e.current_version, e.content_sha256,
+			       d.kind, d.project_id, d.managed_active, d.removed
+FROM knowledge_entry_version v JOIN knowledge_entry e ON e.id = v.entry_id
+JOIN knowledge_dir d ON d.id = e.dir_id
+WHERE v.id = $1 AND v.entry_id = $2 AND v.workspace_id = $3 FOR UPDATE OF e`, versionID, entryID, workspaceID).
+		Scan(&version, &previous, &currentVersion, &currentContentSHA, &dirKind, &projectID, &managedActive, &removed)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "knowledge entry version not found")
+		return
+	}
+	writebackInProgress, err = lockKnowledgeEntryWritebackEvents(r.Context(), tx, entryID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to recheck active knowledge write-back")
+		return
+	}
+	if writebackInProgress {
+		writeError(w, http.StatusConflict, "knowledge write-back is in progress; retry after the daemon reports a result")
+		return
+	}
+	if err := verifyKnowledgeEvidenceRef(r.Context(), tx, workspaceID, dirID, evidence); err != nil {
+		writeError(w, http.StatusBadRequest, "evidence_ref is not available in this knowledge scope")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `
+	UPDATE knowledge_lifecycle_event
+	SET writeback_state = 'cancelled', writeback_error = 'superseded by a later Owner restoration decision', completed_at = now()
+	WHERE entry_id = $1 AND writeback_state = 'queued'`, entryID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to supersede pending knowledge write-back")
+		return
+	}
+	operation := "restore_candidate"
+	toState := "needs_review"
+	writebackState := "not_requested"
+	expectedContentSHA := ""
+	if body.Writeback {
+		if dirKind != "candidate_cli" || projectID.Valid || !managedActive || removed {
+			writeError(w, http.StatusConflict, "write-back requires an active managed local candidate directory")
+			return
+		}
+		operation = "writeback_restore"
+		toState = "active"
+		writebackState = "queued"
+		expectedContentSHA = currentContentSHA
+	}
+	if _, err := tx.Exec(r.Context(), `
+UPDATE knowledge_entry SET lifecycle_state = $3, replacement_entry_id = NULL,
+    writeback_state = $4, writeback_error = ''
+WHERE id = $1 AND workspace_id = $2`, entryID, workspaceID, toState, writebackState); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record knowledge restoration candidate")
+		return
+	}
+	_, err = tx.Exec(r.Context(), `
+	INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref, version_id, expected_content_sha256, writeback_state, actor_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, '')::uuid)`,
+		workspaceID, entryID, previous, toState, operation, strings.TrimSpace(body.Reason), evidence.canonical, versionID, expectedContentSHA, writebackState, userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record knowledge restoration candidate")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit knowledge restoration")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": writebackState, "version": currentVersion, "restored_from_version": version})
 }
 
 // AdoptKnowledgeEntry serves POST /api/knowledge/entries/{id}/adopt: the
@@ -583,6 +1303,64 @@ type knowledgeAdoptError struct {
 
 func (e *knowledgeAdoptError) Error() string { return e.reason }
 
+var errKnowledgeScanStale = errors.New("stale knowledge scan report")
+
+func (h *Handler) beginKnowledgeScanReport(ctx context.Context, workspaceID, dirID pgtype.UUID, daemonID string, scanFencing bool, scanToken string) (pgx.Tx, bool, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	rollback := func(err error) (pgx.Tx, bool, error) {
+		_ = tx.Rollback(ctx)
+		return nil, false, err
+	}
+	if _, err := tx.Exec(ctx, `
+SELECT le.id
+FROM knowledge_lifecycle_event le
+JOIN knowledge_entry e ON e.id = le.entry_id
+WHERE e.dir_id = $1 AND le.writeback_state IN ('queued', 'in_progress')
+ORDER BY le.id
+FOR UPDATE OF le`, dirID); err != nil {
+		return rollback(err)
+	}
+	var removed bool
+	var boundDaemon string
+	var currentScanToken pgtype.Text
+	if err := tx.QueryRow(ctx, `
+SELECT removed, daemon_id, scan_token::text
+FROM knowledge_dir
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE`, dirID, workspaceID).Scan(&removed, &boundDaemon, &currentScanToken); err != nil {
+		return rollback(err)
+	}
+	if removed || (boundDaemon != "" && boundDaemon != daemonID) ||
+		(scanFencing && ((currentScanToken.Valid && scanToken != currentScanToken.String) ||
+			(!currentScanToken.Valid && scanToken != ""))) {
+		return rollback(errKnowledgeScanStale)
+	}
+	return tx, boundDaemon == "", nil
+}
+
+func claimKnowledgeScanDirectory(ctx context.Context, tx pgx.Tx, dirID pgtype.UUID, daemonID string) error {
+	tag, err := tx.Exec(ctx, `
+UPDATE knowledge_dir SET daemon_id = $2, updated_at = now()
+WHERE id = $1 AND removed = FALSE AND daemon_id = ''`, dirID, daemonID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errKnowledgeScanStale
+	}
+	return nil
+}
+
+func clearKnowledgeScanRequest(ctx context.Context, tx pgx.Tx, dirID pgtype.UUID) error {
+	_, err := tx.Exec(ctx, `
+UPDATE knowledge_dir SET scan_requested = FALSE, scan_token = NULL, updated_at = now()
+WHERE id = $1 AND removed = FALSE`, dirID)
+	return err
+}
+
 // knowledgeUltimateDir resolves the workspace's active ultimate directory only
 // after a daemon has claimed it. Queuing a transfer without this binding would
 // leave it in transferring with no authenticated consumer.
@@ -599,68 +1377,147 @@ ORDER BY created_at LIMIT 1`, workspaceID).Scan(&id, &path)
 	return id, path, nil
 }
 
-// applyKnowledgeScanResult mirrors one daemon-reported scan into the database:
-// new keys are added, changed content is updated, vanished keys are flagged
-// source_deleted, and every batch — including zero-change ones — is logged so
-// incremental ingestion stays recomputable. This is the state-authority half
-// of the daemon-side scan (RUYI-289): no bd IO happens here.
 func (h *Handler) applyKnowledgeScanResult(ctx context.Context, workspaceID, dirID pgtype.UUID,
-	path, trigger string, memories map[string]string, started, finished time.Time) (*KnowledgeScanBatchResponse, error) {
+	path, trigger, daemonID string, scanFencing bool, scanToken string, memories map[string]string, started, finished time.Time) (*KnowledgeScanBatchResponse, error) {
 	batch := &KnowledgeScanBatchResponse{
 		DirID: uuidToString(dirID), TriggerSource: trigger, StartedAt: started,
 	}
-
-	existing := make(map[string]string, len(memories))
-	known, err := h.DB.Query(ctx,
-		`SELECT key, content_sha256 FROM knowledge_entry WHERE dir_id = $1`, dirID)
+	tx, unclaimed, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken)
 	if err != nil {
-		return h.recordFailedScanBatch(ctx, workspaceID, dirID, trigger, started, finished, err.Error())
+		if errors.Is(err, errKnowledgeScanStale) {
+			return nil, err
+		}
+		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken, trigger, started, finished, err.Error())
+	}
+	defer tx.Rollback(ctx)
+	fail := func(err error) (*KnowledgeScanBatchResponse, error) {
+		_ = tx.Rollback(ctx)
+		if errors.Is(err, errKnowledgeScanStale) {
+			return nil, err
+		}
+		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken, trigger, started, finished, err.Error())
+	}
+
+	var batchID pgtype.UUID
+	if err := tx.QueryRow(ctx, `
+INSERT INTO knowledge_scan_batch (workspace_id, dir_id, trigger_source, result, started_at, finished_at)
+VALUES ($1, $2, $3, 'noop', $4, $5) RETURNING id`,
+		workspaceID, dirID, trigger, started, finished).Scan(&batchID); err != nil {
+		return fail(err)
+	}
+	batch.ID = uuidToString(batchID)
+
+	type knownEntry struct {
+		id      pgtype.UUID
+		sha     string
+		version int
+		mirror  string
+	}
+	existing := make(map[string]knownEntry, len(memories))
+	known, err := tx.Query(ctx,
+		`SELECT id, key, content_sha256, current_version, mirror_state FROM knowledge_entry WHERE dir_id = $1`, dirID)
+	if err != nil {
+		return fail(err)
 	}
 	for known.Next() {
-		var key, sha string
-		if err := known.Scan(&key, &sha); err != nil {
+		var key string
+		var entry knownEntry
+		if err := known.Scan(&entry.id, &key, &entry.sha, &entry.version, &entry.mirror); err != nil {
 			known.Close()
-			return h.recordFailedScanBatch(ctx, workspaceID, dirID, trigger, started, finished, err.Error())
+			return fail(err)
 		}
-		existing[key] = sha
+		existing[key] = entry
+	}
+	if err := known.Err(); err != nil {
+		known.Close()
+		return fail(err)
 	}
 	known.Close()
+	recordSourceRestored := func(entryID pgtype.UUID) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref)
+	SELECT workspace_id, id, lifecycle_state, lifecycle_state, 'source_restored', 'source reappeared during scan', $2
+	FROM knowledge_entry WHERE id = $1`, entryID, "knowledge_scan_batch:"+uuidToString(batchID))
+		return err
+	}
 
 	for key, content := range memories {
 		sha := knowledgeContentSHA(content)
 		if prior, ok := existing[key]; ok {
-			if prior == sha {
-				_, _ = h.DB.Exec(ctx,
-					`UPDATE knowledge_entry SET last_confirmed_at = now() WHERE dir_id = $1 AND key = $2`, dirID, key)
+			restored := prior.mirror == "source_deleted"
+			if prior.sha == sha {
+				if _, err := tx.Exec(ctx,
+					`UPDATE knowledge_entry
+SET mirror_state = 'synced', missing_confirmation = 0, last_confirmed_at = now()
+	WHERE id = $1`, prior.id); err != nil {
+					return fail(err)
+				}
+				if restored {
+					if err := recordSourceRestored(prior.id); err != nil {
+						return fail(err)
+					}
+				}
 				continue
 			}
-			if _, err := h.DB.Exec(ctx, `
-UPDATE knowledge_entry SET content = $3, content_sha256 = $4, mirror_state = 'synced',
-    last_confirmed_at = now() WHERE dir_id = $1 AND key = $2`,
-				dirID, key, content, sha); err != nil {
-				return h.recordFailedScanBatch(ctx, workspaceID, dirID, trigger, started, finished, err.Error())
+			if _, err := tx.Exec(ctx, `
+	UPDATE knowledge_entry SET content = $2, content_sha256 = $3, current_version = current_version + 1,
+	    mirror_state = 'synced', missing_confirmation = 0, last_confirmed_at = now() WHERE id = $1`,
+				prior.id, content, sha); err != nil {
+				return fail(err)
+			}
+			if _, err := tx.Exec(ctx, `
+INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, scan_batch_id)
+VALUES ($1, $2, $3, $4, $5, 'scan', $6)`,
+				workspaceID, prior.id, prior.version+1, content, sha, batchID); err != nil {
+				return fail(err)
+			}
+			if restored {
+				if err := recordSourceRestored(prior.id); err != nil {
+					return fail(err)
+				}
 			}
 			batch.Updated++
 			continue
 		}
-		if _, err := h.DB.Exec(ctx, `
+		var entryID pgtype.UUID
+		if err := tx.QueryRow(ctx, `
 INSERT INTO knowledge_entry (workspace_id, dir_id, key, content, content_sha256)
-VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
-			workspaceID, dirID, key, content, sha); err != nil {
-			return h.recordFailedScanBatch(ctx, workspaceID, dirID, trigger, started, finished, err.Error())
+	VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING id`,
+			workspaceID, dirID, key, content, sha).Scan(&entryID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fail(err)
 		}
-		batch.Added++
+		if entryID.Valid {
+			if _, err := tx.Exec(ctx, `
+INSERT INTO knowledge_entry_version (workspace_id, entry_id, version, content, content_sha256, source, scan_batch_id)
+VALUES ($1, $2, 1, $3, $4, 'initial', $5)`, workspaceID, entryID, content, sha, batchID); err != nil {
+				return fail(err)
+			}
+			batch.Added++
+		}
 	}
-	for key := range existing {
+	for key, prior := range existing {
 		if _, stillThere := memories[key]; stillThere {
 			continue
 		}
-		if _, err := h.DB.Exec(ctx, `
-UPDATE knowledge_entry SET mirror_state = 'source_deleted', last_confirmed_at = now()
-WHERE dir_id = $1 AND key = $2 AND mirror_state = 'synced'`, dirID, key); err != nil {
-			return h.recordFailedScanBatch(ctx, workspaceID, dirID, trigger, started, finished, err.Error())
+		var deleted bool
+		if err := tx.QueryRow(ctx, `
+UPDATE knowledge_entry
+SET missing_confirmation = missing_confirmation + 1,
+    mirror_state = CASE WHEN missing_confirmation + 1 >= 2 THEN 'source_deleted' ELSE mirror_state END,
+    last_confirmed_at = now()
+WHERE id = $1
+RETURNING mirror_state = 'source_deleted'`, prior.id).Scan(&deleted); err != nil {
+			return fail(err)
 		}
-		batch.Removed++
+		if deleted && prior.mirror != "source_deleted" {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO knowledge_lifecycle_event (workspace_id, entry_id, from_state, to_state, operation, reason, evidence_ref)
+	SELECT workspace_id, id, lifecycle_state, lifecycle_state, 'source_deleted', 'confirmed absent in two successful scans', $2
+	FROM knowledge_entry WHERE id = $1`, prior.id, "knowledge_scan_batch:"+uuidToString(batchID)); err != nil {
+				return fail(err)
+			}
+			batch.Removed++
+		}
 	}
 
 	if batch.Added > 0 || batch.Updated > 0 || batch.Removed > 0 {
@@ -669,14 +1526,26 @@ WHERE dir_id = $1 AND key = $2 AND mirror_state = 'synced'`, dirID, key); err !=
 		batch.Result = "noop"
 	}
 	batch.FinishedAt = &finished
-	if _, err := h.DB.Exec(ctx, `
-INSERT INTO knowledge_scan_batch (workspace_id, dir_id, trigger_source, result, added, updated, removed, started_at, finished_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		workspaceID, dirID, trigger, batch.Result, batch.Added, batch.Updated, batch.Removed, started, finished); err != nil {
-		return batch, &knowledgeAdoptError{"scan succeeded but logging the batch failed: " + err.Error()}
+	if _, err := tx.Exec(ctx, `
+UPDATE knowledge_scan_batch SET result = $2, added = $3, updated = $4, removed = $5, finished_at = $6
+WHERE id = $1`, batchID, batch.Result, batch.Added, batch.Updated, batch.Removed, finished); err != nil {
+		return fail(err)
 	}
-	_, _ = h.DB.Exec(ctx,
-		`UPDATE knowledge_dir SET health_state = 'ok', health_note = '', updated_at = now() WHERE id = $1`, dirID)
+	if _, err := tx.Exec(ctx,
+		`UPDATE knowledge_dir SET health_state = 'ok', health_note = '', updated_at = now() WHERE id = $1`, dirID); err != nil {
+		return fail(err)
+	}
+	if err := clearKnowledgeScanRequest(ctx, tx, dirID); err != nil {
+		return fail(err)
+	}
+	if unclaimed {
+		if err := claimKnowledgeScanDirectory(ctx, tx, dirID, daemonID); err != nil {
+			return fail(err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return h.recordFailedScanBatch(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken, trigger, started, finished, err.Error())
+	}
 
 	return batch, nil
 }
@@ -685,10 +1554,17 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 // verified byte-identical against the mirror SHA map (no diff payload sent),
 // refreshing confirmation timestamps in one statement.
 func (h *Handler) recordUnchangedScanBatch(ctx context.Context, workspaceID, dirID pgtype.UUID,
-	trigger string, started, finished time.Time) *KnowledgeScanBatchResponse {
-	_, _ = h.DB.Exec(ctx, `
-UPDATE knowledge_entry SET last_confirmed_at = now() WHERE dir_id = $1`, dirID)
-	_, err := h.DB.Exec(ctx, `
+	daemonID string, scanFencing bool, scanToken, trigger string, started, finished time.Time) (*KnowledgeScanBatchResponse, error) {
+	tx, unclaimed, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+	UPDATE knowledge_entry SET last_confirmed_at = now() WHERE dir_id = $1`, dirID); err != nil {
+		return nil, err
+	}
+	_, err = tx.Exec(ctx, `
 INSERT INTO knowledge_scan_batch (workspace_id, dir_id, trigger_source, result, started_at, finished_at)
 VALUES ($1, $2, $3, 'noop', $4, $5)`, workspaceID, dirID, trigger, started, finished)
 	batch := &KnowledgeScanBatchResponse{
@@ -696,27 +1572,55 @@ VALUES ($1, $2, $3, 'noop', $4, $5)`, workspaceID, dirID, trigger, started, fini
 		StartedAt: started, FinishedAt: &finished,
 	}
 	if err != nil {
-		return batch
+		return batch, err
 	}
-	_, _ = h.DB.Exec(ctx,
-		`UPDATE knowledge_dir SET health_state = 'ok', health_note = '', updated_at = now() WHERE id = $1`, dirID)
-	return batch
+	if _, err := tx.Exec(ctx,
+		`UPDATE knowledge_dir SET health_state = 'ok', health_note = '', updated_at = now() WHERE id = $1`, dirID); err != nil {
+		return batch, err
+	}
+	if err := clearKnowledgeScanRequest(ctx, tx, dirID); err != nil {
+		return batch, err
+	}
+	if unclaimed {
+		if err := claimKnowledgeScanDirectory(ctx, tx, dirID, daemonID); err != nil {
+			return batch, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return batch, err
+	}
+	return batch, nil
 }
 
 // recordFailedScanBatch records a daemon-reported scan failure: the batch is
 // logged and the directory's health flips to no_access with the reason, so
 // the UI can show why a source is stale.
 func (h *Handler) recordFailedScanBatch(ctx context.Context, workspaceID, dirID pgtype.UUID,
-	trigger string, started, finished time.Time, reason string) (*KnowledgeScanBatchResponse, error) {
-	_, _ = h.DB.Exec(ctx, `
+	daemonID string, scanFencing bool, scanToken, trigger string, started, finished time.Time, reason string) (*KnowledgeScanBatchResponse, error) {
+	tx, _, err := h.beginKnowledgeScanReport(ctx, workspaceID, dirID, daemonID, scanFencing, scanToken)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
 INSERT INTO knowledge_scan_batch (workspace_id, dir_id, trigger_source, result, error, started_at, finished_at)
-VALUES ($1, $2, $3, 'failed', $4, $5, $6)`, workspaceID, dirID, trigger, reason, started, finished)
-	_, _ = h.DB.Exec(ctx,
+	VALUES ($1, $2, $3, 'failed', $4, $5, $6)`, workspaceID, dirID, trigger, reason, started, finished); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx,
 		`UPDATE knowledge_dir SET health_state = 'no_access', health_note = $2, updated_at = now() WHERE id = $1`,
-		dirID, reason)
+		dirID, reason); err != nil {
+		return nil, err
+	}
+	if err := clearKnowledgeScanRequest(ctx, tx, dirID); err != nil {
+		return nil, err
+	}
 	batch := &KnowledgeScanBatchResponse{
 		DirID: uuidToString(dirID), TriggerSource: trigger, Result: "failed",
 		Error: reason, StartedAt: started, FinishedAt: &finished,
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return batch, err
 	}
 	return batch, &knowledgeAdoptError{reason}
 }

@@ -1558,26 +1558,33 @@ type KnowledgeDir struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	DaemonID      string             `json:"daemon_id"`
 	ScanRequested bool               `json:"scan_requested"`
+	ManagedActive bool               `json:"managed_active"`
 }
 
 // Read-only mirror of bd memories entries; adoption_state=adopted only after transfer into the ultimate bd confirmed by read-back.
 type KnowledgeEntry struct {
-	ID               pgtype.UUID        `json:"id"`
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
-	DirID            pgtype.UUID        `json:"dir_id"`
-	Key              string             `json:"key"`
-	Content          string             `json:"content"`
-	ContentSha256    string             `json:"content_sha256"`
-	MirrorState      string             `json:"mirror_state"`
-	FirstSeenAt      pgtype.Timestamptz `json:"first_seen_at"`
-	LastConfirmedAt  pgtype.Timestamptz `json:"last_confirmed_at"`
-	AdoptionState    string             `json:"adoption_state"`
-	AdoptedAt        pgtype.Timestamptz `json:"adopted_at"`
-	AdoptedBy        pgtype.UUID        `json:"adopted_by"`
-	UltimateDirID    pgtype.UUID        `json:"ultimate_dir_id"`
-	AdoptedFromDirID pgtype.UUID        `json:"adopted_from_dir_id"`
-	AdoptedFromKey   pgtype.Text        `json:"adopted_from_key"`
-	AdoptionError    string             `json:"adoption_error"`
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	DirID               pgtype.UUID        `json:"dir_id"`
+	Key                 string             `json:"key"`
+	Content             string             `json:"content"`
+	ContentSha256       string             `json:"content_sha256"`
+	MirrorState         string             `json:"mirror_state"`
+	FirstSeenAt         pgtype.Timestamptz `json:"first_seen_at"`
+	LastConfirmedAt     pgtype.Timestamptz `json:"last_confirmed_at"`
+	AdoptionState       string             `json:"adoption_state"`
+	AdoptedAt           pgtype.Timestamptz `json:"adopted_at"`
+	AdoptedBy           pgtype.UUID        `json:"adopted_by"`
+	UltimateDirID       pgtype.UUID        `json:"ultimate_dir_id"`
+	AdoptedFromDirID    pgtype.UUID        `json:"adopted_from_dir_id"`
+	AdoptedFromKey      pgtype.Text        `json:"adopted_from_key"`
+	AdoptionError       string             `json:"adoption_error"`
+	LifecycleState      string             `json:"lifecycle_state"`
+	CurrentVersion      int32              `json:"current_version"`
+	MissingConfirmation int32              `json:"missing_confirmation"`
+	ReplacementEntryID  pgtype.UUID        `json:"replacement_entry_id"`
+	WritebackState      string             `json:"writeback_state"`
+	WritebackError      string             `json:"writeback_error"`
 }
 
 // Daemon-executed edit, delete and merge jobs for ultimate knowledge entries; mirror changes land only after bd read-back.
@@ -1593,6 +1600,78 @@ type KnowledgeEntryOperation struct {
 	Error          string             `json:"error"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	CompletedAt    pgtype.Timestamptz `json:"completed_at"`
+}
+
+type KnowledgeEntryVersion struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	EntryID       pgtype.UUID        `json:"entry_id"`
+	Version       int32              `json:"version"`
+	Content       string             `json:"content"`
+	ContentSha256 string             `json:"content_sha256"`
+	Source        string             `json:"source"`
+	ScanBatchID   pgtype.UUID        `json:"scan_batch_id"`
+	CreatedBy     pgtype.UUID        `json:"created_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+// Immutable per-entry governance findings with snapshot content, counter-evidence, scope, and disposition recommendation.
+type KnowledgeGovernanceFinding struct {
+	ID                  pgtype.UUID        `json:"id"`
+	RunID               pgtype.UUID        `json:"run_id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	EntryID             pgtype.UUID        `json:"entry_id"`
+	EntryKey            string             `json:"entry_key"`
+	OriginalContent     string             `json:"original_content"`
+	ContentVersion      int32              `json:"content_version"`
+	ContentSha256       string             `json:"content_sha256"`
+	Scope               string             `json:"scope"`
+	Verdict             string             `json:"verdict"`
+	ProblemCategories   []byte             `json:"problem_categories"`
+	CounterEvidence     []byte             `json:"counter_evidence"`
+	ApplicableScope     string             `json:"applicable_scope"`
+	ReplacementEntryID  pgtype.UUID        `json:"replacement_entry_id"`
+	Recommendation      string             `json:"recommendation"`
+	WritebackAuthorized bool               `json:"writeback_authorized"`
+	LifecycleEventRef   string             `json:"lifecycle_event_ref"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
+// Evidence-led knowledge governance execution records. A run is advisory only; lifecycle writeback remains an explicit owner action.
+type KnowledgeGovernanceRun struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	DirID         pgtype.UUID        `json:"dir_id"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	Status        string             `json:"status"`
+	Title         string             `json:"title"`
+	PromptVersion string             `json:"prompt_version"`
+	Trigger       string             `json:"trigger"`
+	Detail        []byte             `json:"detail"`
+	Report        []byte             `json:"report"`
+	CreatedBy     pgtype.UUID        `json:"created_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	FinishedAt    pgtype.Timestamptz `json:"finished_at"`
+}
+
+type KnowledgeLifecycleEvent struct {
+	ID                    pgtype.UUID        `json:"id"`
+	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
+	EntryID               pgtype.UUID        `json:"entry_id"`
+	FromState             string             `json:"from_state"`
+	ToState               string             `json:"to_state"`
+	Operation             string             `json:"operation"`
+	Reason                string             `json:"reason"`
+	EvidenceRef           string             `json:"evidence_ref"`
+	ReplacementEntryID    pgtype.UUID        `json:"replacement_entry_id"`
+	VersionID             pgtype.UUID        `json:"version_id"`
+	ExpectedContentSha256 string             `json:"expected_content_sha256"`
+	WritebackState        string             `json:"writeback_state"`
+	WritebackError        string             `json:"writeback_error"`
+	ActorID               pgtype.UUID        `json:"actor_id"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	CompletedAt           pgtype.Timestamptz `json:"completed_at"`
 }
 
 // Per-directory scan batch log; zero-change batches are logged too so incremental ingestion stays recomputable.

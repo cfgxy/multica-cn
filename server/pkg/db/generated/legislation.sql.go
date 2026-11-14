@@ -199,6 +199,211 @@ func (q *Queries) ApprovePromptProposal(ctx context.Context, arg ApprovePromptPr
 	return i, err
 }
 
+const createKnowledgeGovernanceTask = `-- name: CreateKnowledgeGovernanceTask :one
+WITH active_run AS (
+    SELECT knowledge_governance_run.id FROM knowledge_governance_run
+    WHERE knowledge_governance_run.id = $1
+      AND knowledge_governance_run.status = 'running'
+    FOR UPDATE
+),
+inserted_task AS (
+    INSERT INTO agent_task_queue (
+        agent_id,
+        runtime_id,
+        issue_id,
+        status,
+        priority,
+        context,
+        originator_user_id,
+        accountable_user_id,
+        originator_source,
+        trigger_evidence_kind,
+        trigger_evidence_ref_id
+    )
+    SELECT
+        $2, $3, NULL::uuid, 'queued', $4,
+        $5,
+        $6, $7,
+        'knowledge_governance', 'knowledge_governance_run', $1
+    WHERE EXISTS (SELECT 1 FROM active_run)
+      AND lock_task_owner_rows($2, NULL::uuid, $3)
+    RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id, local_directory_scope, chat_model_snapshot, no_action_at, no_action_reason, comment_output_at
+),
+linked_run AS (
+    UPDATE knowledge_governance_run
+    SET task_id = (SELECT inserted_task.id FROM inserted_task)
+    WHERE knowledge_governance_run.id = $1
+      AND knowledge_governance_run.status = 'running'
+      AND EXISTS (SELECT 1 FROM inserted_task)
+    RETURNING knowledge_governance_run.id
+)
+SELECT inserted_task.id, inserted_task.agent_id, inserted_task.issue_id, inserted_task.status, inserted_task.priority, inserted_task.dispatched_at, inserted_task.started_at, inserted_task.completed_at, inserted_task.result, inserted_task.error, inserted_task.created_at, inserted_task.context, inserted_task.runtime_id, inserted_task.session_id, inserted_task.work_dir, inserted_task.trigger_comment_id, inserted_task.chat_session_id, inserted_task.autopilot_run_id, inserted_task.attempt, inserted_task.max_attempts, inserted_task.parent_task_id, inserted_task.failure_reason, inserted_task.trigger_summary, inserted_task.force_fresh_session, inserted_task.is_leader_task, inserted_task.wait_reason, inserted_task.initiator_user_id, inserted_task.handoff_note, inserted_task.prepare_lease_expires_at, inserted_task.squad_id, inserted_task.runtime_mcp_overlay, inserted_task.escalation_for_task_id, inserted_task.fire_at, inserted_task.originator_user_id, inserted_task.runtime_connected_apps, inserted_task.coalesced_comment_ids, inserted_task.delivered_comment_ids, inserted_task.chat_input_task_id, inserted_task.chat_finalize_deferred_at, inserted_task.originator_source, inserted_task.delegated_from_task_id, inserted_task.retry_of_task_id, inserted_task.rerun_of_task_id, inserted_task.rule_version_id, inserted_task.trigger_evidence_kind, inserted_task.trigger_evidence_ref_id, inserted_task.accountable_user_id, inserted_task.session_rollout_missing, inserted_task.retired_session_id, inserted_task.quick_actions_disabled, inserted_task.regenerate_quick_actions_for, inserted_task.branch_name, inserted_task.durable_work_dir, inserted_task.channel_context_revision, inserted_task.prompt_versions, inserted_task.cancel_requested_by_user_id, inserted_task.cancel_requested_at, inserted_task.cancel_reason, inserted_task.cancel_actor_type, inserted_task.cancel_actor_id, inserted_task.local_directory_scope, inserted_task.chat_model_snapshot, inserted_task.no_action_at, inserted_task.no_action_reason, inserted_task.comment_output_at
+FROM inserted_task
+CROSS JOIN linked_run
+`
+
+type CreateKnowledgeGovernanceTaskParams struct {
+	RunID             pgtype.UUID `json:"run_id"`
+	AgentID           pgtype.UUID `json:"agent_id"`
+	RuntimeID         pgtype.UUID `json:"runtime_id"`
+	Priority          int32       `json:"priority"`
+	Context           []byte      `json:"context"`
+	OriginatorUserID  pgtype.UUID `json:"originator_user_id"`
+	AccountableUserID pgtype.UUID `json:"accountable_user_id"`
+}
+
+type CreateKnowledgeGovernanceTaskRow struct {
+	ID                        pgtype.UUID        `json:"id"`
+	AgentID                   pgtype.UUID        `json:"agent_id"`
+	IssueID                   pgtype.UUID        `json:"issue_id"`
+	Status                    string             `json:"status"`
+	Priority                  int32              `json:"priority"`
+	DispatchedAt              pgtype.Timestamptz `json:"dispatched_at"`
+	StartedAt                 pgtype.Timestamptz `json:"started_at"`
+	CompletedAt               pgtype.Timestamptz `json:"completed_at"`
+	Result                    []byte             `json:"result"`
+	Error                     pgtype.Text        `json:"error"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	Context                   []byte             `json:"context"`
+	RuntimeID                 pgtype.UUID        `json:"runtime_id"`
+	SessionID                 pgtype.Text        `json:"session_id"`
+	WorkDir                   pgtype.Text        `json:"work_dir"`
+	TriggerCommentID          pgtype.UUID        `json:"trigger_comment_id"`
+	ChatSessionID             pgtype.UUID        `json:"chat_session_id"`
+	AutopilotRunID            pgtype.UUID        `json:"autopilot_run_id"`
+	Attempt                   int32              `json:"attempt"`
+	MaxAttempts               int32              `json:"max_attempts"`
+	ParentTaskID              pgtype.UUID        `json:"parent_task_id"`
+	FailureReason             pgtype.Text        `json:"failure_reason"`
+	TriggerSummary            pgtype.Text        `json:"trigger_summary"`
+	ForceFreshSession         bool               `json:"force_fresh_session"`
+	IsLeaderTask              bool               `json:"is_leader_task"`
+	WaitReason                pgtype.Text        `json:"wait_reason"`
+	InitiatorUserID           pgtype.UUID        `json:"initiator_user_id"`
+	HandoffNote               pgtype.Text        `json:"handoff_note"`
+	PrepareLeaseExpiresAt     pgtype.Timestamptz `json:"prepare_lease_expires_at"`
+	SquadID                   pgtype.UUID        `json:"squad_id"`
+	RuntimeMcpOverlay         []byte             `json:"runtime_mcp_overlay"`
+	EscalationForTaskID       pgtype.UUID        `json:"escalation_for_task_id"`
+	FireAt                    pgtype.Timestamptz `json:"fire_at"`
+	OriginatorUserID          pgtype.UUID        `json:"originator_user_id"`
+	RuntimeConnectedApps      []byte             `json:"runtime_connected_apps"`
+	CoalescedCommentIds       []pgtype.UUID      `json:"coalesced_comment_ids"`
+	DeliveredCommentIds       []pgtype.UUID      `json:"delivered_comment_ids"`
+	ChatInputTaskID           pgtype.UUID        `json:"chat_input_task_id"`
+	ChatFinalizeDeferredAt    pgtype.Timestamptz `json:"chat_finalize_deferred_at"`
+	OriginatorSource          pgtype.Text        `json:"originator_source"`
+	DelegatedFromTaskID       pgtype.UUID        `json:"delegated_from_task_id"`
+	RetryOfTaskID             pgtype.UUID        `json:"retry_of_task_id"`
+	RerunOfTaskID             pgtype.UUID        `json:"rerun_of_task_id"`
+	RuleVersionID             pgtype.UUID        `json:"rule_version_id"`
+	TriggerEvidenceKind       pgtype.Text        `json:"trigger_evidence_kind"`
+	TriggerEvidenceRefID      pgtype.UUID        `json:"trigger_evidence_ref_id"`
+	AccountableUserID         pgtype.UUID        `json:"accountable_user_id"`
+	SessionRolloutMissing     bool               `json:"session_rollout_missing"`
+	RetiredSessionID          pgtype.Text        `json:"retired_session_id"`
+	QuickActionsDisabled      bool               `json:"quick_actions_disabled"`
+	RegenerateQuickActionsFor pgtype.UUID        `json:"regenerate_quick_actions_for"`
+	BranchName                pgtype.Text        `json:"branch_name"`
+	DurableWorkDir            pgtype.Text        `json:"durable_work_dir"`
+	ChannelContextRevision    pgtype.Int8        `json:"channel_context_revision"`
+	PromptVersions            []byte             `json:"prompt_versions"`
+	CancelRequestedByUserID   pgtype.UUID        `json:"cancel_requested_by_user_id"`
+	CancelRequestedAt         pgtype.Timestamptz `json:"cancel_requested_at"`
+	CancelReason              pgtype.Text        `json:"cancel_reason"`
+	CancelActorType           pgtype.Text        `json:"cancel_actor_type"`
+	CancelActorID             pgtype.UUID        `json:"cancel_actor_id"`
+	LocalDirectoryScope       []byte             `json:"local_directory_scope"`
+	ChatModelSnapshot         pgtype.Text        `json:"chat_model_snapshot"`
+	NoActionAt                pgtype.Timestamptz `json:"no_action_at"`
+	NoActionReason            pgtype.Text        `json:"no_action_reason"`
+	CommentOutputAt           pgtype.Timestamptz `json:"comment_output_at"`
+}
+
+// Governance uses the same issue-less task ownership fence as retrospective
+// runs. The context is a durable evidence-review snapshot and the terminal
+// processor is the only path that records its findings.
+func (q *Queries) CreateKnowledgeGovernanceTask(ctx context.Context, arg CreateKnowledgeGovernanceTaskParams) (CreateKnowledgeGovernanceTaskRow, error) {
+	row := q.db.QueryRow(ctx, createKnowledgeGovernanceTask,
+		arg.RunID,
+		arg.AgentID,
+		arg.RuntimeID,
+		arg.Priority,
+		arg.Context,
+		arg.OriginatorUserID,
+		arg.AccountableUserID,
+	)
+	var i CreateKnowledgeGovernanceTaskRow
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.PromptVersions,
+		&i.CancelRequestedByUserID,
+		&i.CancelRequestedAt,
+		&i.CancelReason,
+		&i.CancelActorType,
+		&i.CancelActorID,
+		&i.LocalDirectoryScope,
+		&i.ChatModelSnapshot,
+		&i.NoActionAt,
+		&i.NoActionReason,
+		&i.CommentOutputAt,
+	)
+	return i, err
+}
+
 const createPromptProposal = `-- name: CreatePromptProposal :one
 
 INSERT INTO prompt_proposal (
