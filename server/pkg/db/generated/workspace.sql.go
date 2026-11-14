@@ -218,6 +218,12 @@ cleared_scheduling_pauses AS (
     -- gate) but permanently unattributable litter; sweep both levels here.
     DELETE FROM scheduling_pause WHERE workspace_id = $1
 ),
+cleared_prompt_quiz_schedule_controls AS (
+    -- RUYI-941: Quiz scheduler overrides also use application-layer
+    -- referential integrity, so remove both workspace and agent rows during
+    -- teardown instead of leaving inert control-plane litter behind.
+    DELETE FROM prompt_quiz_schedule_control WHERE workspace_id = $1
+),
 cleared_issue_suspensions AS (
     -- RUYI-690: issue_suspension carries no FK (house rule) and outlives the
     -- issues it describes unless swept. A surviving row would be inert (no

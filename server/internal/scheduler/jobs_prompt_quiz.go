@@ -49,7 +49,7 @@ func PromptQuizJob(pool *pgxpool.Pool) JobSpec {
 }
 
 func makePromptQuizHandler(pool *pgxpool.Pool) Handler {
-	runner := promptquizsweep.Runner{Queries: db.New(pool)}
+	runner := promptquizsweep.Runner{Queries: db.New(pool), TxStarter: pool}
 	return func(ctx context.Context, in HandlerInput) (HandlerResult, error) {
 		out, err := runner.Run(ctx)
 		if err != nil {

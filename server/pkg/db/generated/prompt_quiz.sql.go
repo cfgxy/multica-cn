@@ -183,6 +183,21 @@ func (q *Queries) CreatePromptQuizItem(ctx context.Context, arg CreatePromptQuiz
 	return i, err
 }
 
+const lockWorkspaceForPromptQuizTaskCreate = `-- name: LockWorkspaceForPromptQuizTaskCreate :one
+SELECT w.id
+FROM workspace w
+JOIN agent a ON a.workspace_id = w.id
+WHERE a.id = $1
+FOR KEY SHARE OF w
+`
+
+func (q *Queries) LockWorkspaceForPromptQuizTaskCreate(ctx context.Context, agentID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForPromptQuizTaskCreate, agentID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const createPromptQuizTask = `-- name: CreatePromptQuizTask :one
 INSERT INTO agent_task_queue (
     agent_id,
@@ -199,6 +214,18 @@ SELECT
     $1, $2, NULL::uuid, 'queued', $3,
     $4, 'quiz', 'quiz_item', $5
 WHERE lock_task_owner_rows($1, NULL::uuid, $2)
+  -- RUYI-941: re-check the durable control at insertion time so a sweep
+  -- already inside its enqueue loop cannot create fresh Quiz work after an
+  -- operator disables the effective workspace/agent scope.
+  AND COALESCE((
+      SELECT c.enabled
+      FROM prompt_quiz_schedule_control c
+      JOIN agent a ON a.workspace_id = c.workspace_id
+      WHERE a.id = $1
+        AND (c.agent_id IS NULL OR c.agent_id = a.id)
+      ORDER BY c.agent_id NULLS LAST
+      LIMIT 1
+  ), TRUE)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id, local_directory_scope, chat_model_snapshot, no_action_at, no_action_reason, comment_output_at
 `
 
@@ -1174,6 +1201,16 @@ JOIN agent a ON a.id = pv.scope_id
 WHERE pv.scope = 'agent'
   AND a.archived_at IS NULL
   AND a.runtime_id IS NOT NULL
+  -- RUYI-941: resolve the most-specific durable override. Missing rows keep
+  -- the historical default: Quiz scheduling remains enabled.
+  AND COALESCE((
+      SELECT c.enabled
+      FROM prompt_quiz_schedule_control c
+      WHERE c.workspace_id = a.workspace_id
+        AND (c.agent_id IS NULL OR c.agent_id = a.id)
+      ORDER BY c.agent_id NULLS LAST
+      LIMIT 1
+  ), TRUE)
 ORDER BY pv.scope_id, pv.version DESC
 LIMIT $1::int
 `
