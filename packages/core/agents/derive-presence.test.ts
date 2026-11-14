@@ -350,6 +350,16 @@ describe("deriveAgentPresenceDetail", () => {
     expect(detail.capacity).toBe(3);
   });
 
+  it("mirrors the unlimited value 0 into capacity", () => {
+    const detail = deriveAgentPresenceDetail({
+      agent: makeAgent({ max_concurrent_tasks: 0 }),
+      runtime: makeRuntime(),
+      tasks: [],
+      now: NOW,
+    });
+    expect(detail.capacity).toBe(0);
+  });
+
   it("reports archived over any runtime/task signal for an archived agent", () => {
     // Archived wins over presence: a leftover online runtime and a running
     // task must never make a retired agent read as live. Availability

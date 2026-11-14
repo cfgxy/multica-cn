@@ -657,9 +657,11 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 			needVisibility = true
 		}
 	}
-	if req.MaxConcurrentTasks != nil && *req.MaxConcurrentTasks < 0 {
-		writeError(w, http.StatusBadRequest, "max_concurrent_tasks must be a non-negative integer")
-		return
+	if req.MaxConcurrentTasks != nil {
+		if *req.MaxConcurrentTasks < 0 {
+			writeError(w, http.StatusBadRequest, "max_concurrent_tasks must be a non-negative integer")
+			return
+		}
 	}
 
 	if req.CustomName != nil {

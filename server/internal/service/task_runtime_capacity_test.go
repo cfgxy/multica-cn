@@ -22,8 +22,8 @@ func TestClaimTaskRuntimeCapacityIsSharedAndAtomic(t *testing.T) {
 	workspaceID := bootstrap.Workspace(t, fmt.Sprintf("runtime-cap-%d", suffix), fmt.Sprintf("runtime-cap-%d", suffix))
 	fx := testutil.New(pool, workspaceID, userID)
 	runtimeID := fx.Runtime(t, "runtime-cap", testutil.Cols{"visibility": "public", "max_concurrent_tasks": 1})
-	agentA := fx.Agent(t, "runtime-cap-a", runtimeID, testutil.Cols{"max_concurrent_tasks": -1})
-	agentB := fx.Agent(t, "runtime-cap-b", runtimeID, testutil.Cols{"max_concurrent_tasks": -1})
+	agentA := fx.Agent(t, "runtime-cap-a", runtimeID, testutil.Cols{"max_concurrent_tasks": 0})
+	agentB := fx.Agent(t, "runtime-cap-b", runtimeID, testutil.Cols{"max_concurrent_tasks": 0})
 	queued := []string{
 		fx.Task(t, agentA, testutil.Cols{"runtime_id": runtimeID, "issue_id": fx.Issue(t, fmt.Sprintf("runtime-cap-a-%d", suffix))}),
 		fx.Task(t, agentB, testutil.Cols{"runtime_id": runtimeID, "issue_id": fx.Issue(t, fmt.Sprintf("runtime-cap-b-%d", suffix))}),
@@ -81,8 +81,8 @@ func TestClaimTaskUnlimitedAgentStillUsesRuntimeCapacityAndCountsActiveStates(t 
 	workspaceID := bootstrap.Workspace(t, fmt.Sprintf("runtime-cap-unlimited-%d", suffix), fmt.Sprintf("runtime-cap-unlimited-%d", suffix))
 	fx := testutil.New(pool, workspaceID, userID)
 	runtimeID := fx.Runtime(t, "runtime-cap-unlimited", testutil.Cols{"visibility": "public", "max_concurrent_tasks": 3})
-	agentA := fx.Agent(t, "runtime-cap-unlimited-a", runtimeID, testutil.Cols{"max_concurrent_tasks": -1})
-	agentB := fx.Agent(t, "runtime-cap-unlimited-b", runtimeID, testutil.Cols{"max_concurrent_tasks": -1})
+	agentA := fx.Agent(t, "runtime-cap-unlimited-a", runtimeID, testutil.Cols{"max_concurrent_tasks": 0})
+	agentB := fx.Agent(t, "runtime-cap-unlimited-b", runtimeID, testutil.Cols{"max_concurrent_tasks": 0})
 	for i, status := range []string{"dispatched", "running", "waiting_local_directory"} {
 		agentID := agentA
 		if i == 1 {
@@ -120,8 +120,8 @@ func TestClaimTaskZeroRuntimeLimitPreservesUnlimitedBehavior(t *testing.T) {
 	workspaceID := bootstrap.Workspace(t, fmt.Sprintf("runtime-cap-zero-%d", suffix), fmt.Sprintf("runtime-cap-zero-%d", suffix))
 	fx := testutil.New(pool, workspaceID, userID)
 	runtimeID := fx.Runtime(t, "runtime-cap-zero", testutil.Cols{"visibility": "public", "max_concurrent_tasks": 0})
-	agentA := fx.Agent(t, "runtime-cap-zero-a", runtimeID, testutil.Cols{"max_concurrent_tasks": -1})
-	agentB := fx.Agent(t, "runtime-cap-zero-b", runtimeID, testutil.Cols{"max_concurrent_tasks": -1})
+	agentA := fx.Agent(t, "runtime-cap-zero-a", runtimeID, testutil.Cols{"max_concurrent_tasks": 0})
+	agentB := fx.Agent(t, "runtime-cap-zero-b", runtimeID, testutil.Cols{"max_concurrent_tasks": 0})
 	issueA := fx.Issue(t, fmt.Sprintf("runtime-cap-zero-a-%d", suffix))
 	issueB := fx.Issue(t, fmt.Sprintf("runtime-cap-zero-b-%d", suffix))
 	fx.Task(t, agentA, testutil.Cols{"runtime_id": runtimeID, "issue_id": issueA})
