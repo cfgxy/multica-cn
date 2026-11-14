@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -70,6 +71,57 @@ func TestFinalizeTaskClaimFailureRollsBackTokenThenRequeue(t *testing.T) {
 	}
 	if status != "queued" {
 		t.Fatalf("task status = %s, want queued after requeue", status)
+	}
+}
+
+func TestRequeueTaskAfterClaimFailureCASMismatchLeavesTaskDispatched(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+	queries := db.New(pool)
+
+	taskID, _, _ := dispatchedCommentTaskFixture(t, ctx, pool)
+	task, err := queries.GetAgentTask(ctx, util.MustParseUUID(taskID))
+	if err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	stale := task
+	stale.DispatchedAt.Time = stale.DispatchedAt.Time.Add(-time.Second)
+
+	if _, err := svc.RequeueTaskAfterClaimFailure(ctx, stale); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("requeue with stale dispatched_at: err = %v, want pgx.ErrNoRows", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "dispatched" {
+		t.Fatalf("task status = %s, want dispatched after CAS mismatch", status)
+	}
+}
+
+func TestRequeueTaskAfterClaimFailureDBErrorLeavesTaskDispatched(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+	queries := db.New(pool)
+
+	taskID, _, _ := dispatchedCommentTaskFixture(t, ctx, pool)
+	task, err := queries.GetAgentTask(ctx, util.MustParseUUID(taskID))
+	if err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := svc.RequeueTaskAfterClaimFailure(canceled, task); err == nil {
+		t.Fatal("requeue with canceled context must fail")
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if status != "dispatched" {
+		t.Fatalf("task status = %s, want dispatched after DB error", status)
 	}
 }
 

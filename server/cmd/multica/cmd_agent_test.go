@@ -780,7 +780,8 @@ func TestAgentMaxConcurrentTasksFlagValidation(t *testing.T) {
 		return cmd
 	}
 
-	for _, value := range []string{"0", "-2", "51"} {
+	// Negative writes are rejected before any HTTP request.
+	for _, value := range []string{"-1", "-2", "51"} {
 		t.Run("create rejects "+value, func(t *testing.T) {
 			before := requestCount
 			err := runAgentCreate(newCreateCmd(t, value), nil)
@@ -804,15 +805,15 @@ func TestAgentMaxConcurrentTasksFlagValidation(t *testing.T) {
 		})
 	}
 
-	for _, value := range []string{"-1", "1", "50"} {
+	for _, value := range []string{"0", "1", "50"} {
 		t.Run("create accepts "+value, func(t *testing.T) {
 			gotBody = nil
 			if err := runAgentCreate(newCreateCmd(t, value), nil); err != nil {
 				t.Fatalf("runAgentCreate: %v", err)
 			}
 			want := float64(1)
-			if value == "-1" {
-				want = -1
+			if value == "0" {
+				want = 0
 			} else if value == "50" {
 				want = 50
 			}
@@ -827,8 +828,8 @@ func TestAgentMaxConcurrentTasksFlagValidation(t *testing.T) {
 				t.Fatalf("runAgentUpdate: %v", err)
 			}
 			want := float64(1)
-			if value == "-1" {
-				want = -1
+			if value == "0" {
+				want = 0
 			} else if value == "50" {
 				want = 50
 			}

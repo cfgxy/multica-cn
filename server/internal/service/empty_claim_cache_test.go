@@ -136,7 +136,8 @@ func TestEmptyClaimCache_TTL(t *testing.T) {
 	c := NewEmptyClaimCache(rdb)
 	ctx := context.Background()
 
-	c.MarkEmpty(ctx, "rt-ttl", 0)
+	version := c.CurrentVersion(ctx, "rt-ttl")
+	c.MarkEmpty(ctx, "rt-ttl", version)
 	ttl, err := rdb.TTL(ctx, emptyClaimKey("rt-ttl")).Result()
 	if err != nil {
 		t.Fatalf("TTL: %v", err)
@@ -161,5 +162,45 @@ func TestEmptyClaimCache_RuntimeIsolation(t *testing.T) {
 	c.MarkEmpty(ctx, "rt-B", vB)
 	if c.IsEmpty(ctx, "rt-A") {
 		t.Fatal("marking rt-B must not affect rt-A")
+	}
+}
+
+func TestEmptyClaimCache_MissingVersionIsAlwaysMiss(t *testing.T) {
+	rdb := newRedisTestClient(t)
+	c := NewEmptyClaimCache(rdb)
+	ctx := context.Background()
+
+	version := c.CurrentVersion(ctx, "rt-missing-version")
+	c.MarkEmpty(ctx, "rt-missing-version", version)
+	if !c.IsEmpty(ctx, "rt-missing-version") {
+		t.Fatal("precondition: matching version should hit")
+	}
+	if err := rdb.Del(ctx, emptyClaimVersion("rt-missing-version")).Err(); err != nil {
+		t.Fatalf("delete version: %v", err)
+	}
+	if c.IsEmpty(ctx, "rt-missing-version") {
+		t.Fatal("missing version must force a cache miss")
+	}
+	if got := c.CurrentVersion(ctx, "rt-missing-version"); got != 0 {
+		t.Fatalf("recreated version = %d, want 0", got)
+	}
+	if c.IsEmpty(ctx, "rt-missing-version") {
+		t.Fatal("recreating a missing version must invalidate the surviving empty verdict")
+	}
+}
+
+func TestEmptyClaimCache_BatchFairnessIdentity(t *testing.T) {
+	rdb := newRedisTestClient(t)
+	c := NewEmptyClaimCache(rdb)
+	ctx := context.Background()
+
+	if last, available := c.LastBatchClaimAgent(ctx, "rt-set"); !available || last != "" {
+		t.Fatalf("fresh fairness state = (%q, %v), want (empty, available)", last, available)
+	}
+	if !c.RememberBatchClaimAgent(ctx, "rt-set", "agent-b") {
+		t.Fatal("remembering fairness identity failed")
+	}
+	if last, available := c.LastBatchClaimAgent(ctx, "rt-set"); !available || last != "agent-b" {
+		t.Fatalf("stored fairness state = (%q, %v), want (agent-b, available)", last, available)
 	}
 }

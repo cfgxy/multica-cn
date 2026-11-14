@@ -5731,6 +5731,39 @@ func (q *Queries) GetAgentRuntimeBindings(ctx context.Context, agentIds []pgtype
 	return items, nil
 }
 
+const getAgentRuntimeBindingsForUpdate = `-- name: GetAgentRuntimeBindingsForUpdate :many
+SELECT id, runtime_id FROM agent
+WHERE id = ANY($1::uuid[])
+FOR UPDATE
+`
+
+type GetAgentRuntimeBindingsForUpdateRow struct {
+	ID        pgtype.UUID `json:"id"`
+	RuntimeID pgtype.UUID `json:"runtime_id"`
+}
+
+// Lock current Agent bindings while a claim failure is requeued so the queue
+// CAS and the binding read commit as one transaction.
+func (q *Queries) GetAgentRuntimeBindingsForUpdate(ctx context.Context, agentIds []pgtype.UUID) ([]GetAgentRuntimeBindingsForUpdateRow, error) {
+	rows, err := q.db.Query(ctx, getAgentRuntimeBindingsForUpdate, agentIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAgentRuntimeBindingsForUpdateRow{}
+	for rows.Next() {
+		var i GetAgentRuntimeBindingsForUpdateRow
+		if err := rows.Scan(&i.ID, &i.RuntimeID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getAgentTask = `-- name: GetAgentTask :one
 SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions, cancel_requested_by_user_id, cancel_requested_at, cancel_reason, cancel_actor_type, cancel_actor_id, local_directory_scope, chat_model_snapshot, no_action_at, no_action_reason, comment_output_at FROM agent_task_queue
 WHERE id = $1
@@ -8458,37 +8491,123 @@ func (q *Queries) ListQueuedClaimCandidatesByRuntime(ctx context.Context, id pgt
 }
 
 const listQueuedClaimCandidatesByRuntimes = `-- name: ListQueuedClaimCandidatesByRuntimes :many
-SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.prompt_versions, atq.cancel_requested_by_user_id, atq.cancel_requested_at, atq.cancel_reason, atq.cancel_actor_type, atq.cancel_actor_id, atq.local_directory_scope, atq.chat_model_snapshot, atq.no_action_at, atq.no_action_reason, atq.comment_output_at FROM agent_task_queue atq
+SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority,
+       atq.dispatched_at, atq.started_at, atq.completed_at, atq.result,
+       atq.error, atq.created_at, atq.context, a.runtime_id,
+       atq.session_id, atq.work_dir, atq.trigger_comment_id,
+       atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts,
+       atq.parent_task_id, atq.failure_reason, atq.trigger_summary,
+       atq.force_fresh_session, atq.is_leader_task, atq.wait_reason,
+       atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at,
+       atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id,
+       atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps,
+       atq.coalesced_comment_ids, atq.delivered_comment_ids,
+       atq.chat_input_task_id, atq.chat_finalize_deferred_at,
+       atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id,
+       atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind,
+       atq.trigger_evidence_ref_id, atq.accountable_user_id,
+       atq.session_rollout_missing, atq.retired_session_id,
+       atq.quick_actions_disabled, atq.regenerate_quick_actions_for,
+       atq.branch_name, atq.durable_work_dir, atq.channel_context_revision,
+       atq.prompt_versions, atq.cancel_requested_by_user_id,
+       atq.cancel_requested_at, atq.cancel_reason, atq.cancel_actor_type,
+       atq.cancel_actor_id, atq.local_directory_scope, atq.chat_model_snapshot,
+       atq.no_action_at, atq.no_action_reason, atq.comment_output_at
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
 WHERE atq.status = 'queued'
-  AND EXISTS (
-      SELECT 1
-      FROM agent a
-      JOIN agent_runtime r ON r.id = a.runtime_id
-      WHERE a.id = atq.agent_id
-        AND a.runtime_id = ANY($1::uuid[])
-  )
+  AND a.runtime_id = ANY($1::uuid[])
 ORDER BY atq.priority DESC, atq.created_at ASC
 `
+
+type ListQueuedClaimCandidatesByRuntimesRow struct {
+	ID                        pgtype.UUID        `json:"id"`
+	AgentID                   pgtype.UUID        `json:"agent_id"`
+	IssueID                   pgtype.UUID        `json:"issue_id"`
+	Status                    string             `json:"status"`
+	Priority                  int32              `json:"priority"`
+	DispatchedAt              pgtype.Timestamptz `json:"dispatched_at"`
+	StartedAt                 pgtype.Timestamptz `json:"started_at"`
+	CompletedAt               pgtype.Timestamptz `json:"completed_at"`
+	Result                    []byte             `json:"result"`
+	Error                     pgtype.Text        `json:"error"`
+	CreatedAt                 pgtype.Timestamptz `json:"created_at"`
+	Context                   []byte             `json:"context"`
+	RuntimeID                 pgtype.UUID        `json:"runtime_id"`
+	SessionID                 pgtype.Text        `json:"session_id"`
+	WorkDir                   pgtype.Text        `json:"work_dir"`
+	TriggerCommentID          pgtype.UUID        `json:"trigger_comment_id"`
+	ChatSessionID             pgtype.UUID        `json:"chat_session_id"`
+	AutopilotRunID            pgtype.UUID        `json:"autopilot_run_id"`
+	Attempt                   int32              `json:"attempt"`
+	MaxAttempts               int32              `json:"max_attempts"`
+	ParentTaskID              pgtype.UUID        `json:"parent_task_id"`
+	FailureReason             pgtype.Text        `json:"failure_reason"`
+	TriggerSummary            pgtype.Text        `json:"trigger_summary"`
+	ForceFreshSession         bool               `json:"force_fresh_session"`
+	IsLeaderTask              bool               `json:"is_leader_task"`
+	WaitReason                pgtype.Text        `json:"wait_reason"`
+	InitiatorUserID           pgtype.UUID        `json:"initiator_user_id"`
+	HandoffNote               pgtype.Text        `json:"handoff_note"`
+	PrepareLeaseExpiresAt     pgtype.Timestamptz `json:"prepare_lease_expires_at"`
+	SquadID                   pgtype.UUID        `json:"squad_id"`
+	RuntimeMcpOverlay         []byte             `json:"runtime_mcp_overlay"`
+	EscalationForTaskID       pgtype.UUID        `json:"escalation_for_task_id"`
+	FireAt                    pgtype.Timestamptz `json:"fire_at"`
+	OriginatorUserID          pgtype.UUID        `json:"originator_user_id"`
+	RuntimeConnectedApps      []byte             `json:"runtime_connected_apps"`
+	CoalescedCommentIds       []pgtype.UUID      `json:"coalesced_comment_ids"`
+	DeliveredCommentIds       []pgtype.UUID      `json:"delivered_comment_ids"`
+	ChatInputTaskID           pgtype.UUID        `json:"chat_input_task_id"`
+	ChatFinalizeDeferredAt    pgtype.Timestamptz `json:"chat_finalize_deferred_at"`
+	OriginatorSource          pgtype.Text        `json:"originator_source"`
+	DelegatedFromTaskID       pgtype.UUID        `json:"delegated_from_task_id"`
+	RetryOfTaskID             pgtype.UUID        `json:"retry_of_task_id"`
+	RerunOfTaskID             pgtype.UUID        `json:"rerun_of_task_id"`
+	RuleVersionID             pgtype.UUID        `json:"rule_version_id"`
+	TriggerEvidenceKind       pgtype.Text        `json:"trigger_evidence_kind"`
+	TriggerEvidenceRefID      pgtype.UUID        `json:"trigger_evidence_ref_id"`
+	AccountableUserID         pgtype.UUID        `json:"accountable_user_id"`
+	SessionRolloutMissing     bool               `json:"session_rollout_missing"`
+	RetiredSessionID          pgtype.Text        `json:"retired_session_id"`
+	QuickActionsDisabled      bool               `json:"quick_actions_disabled"`
+	RegenerateQuickActionsFor pgtype.UUID        `json:"regenerate_quick_actions_for"`
+	BranchName                pgtype.Text        `json:"branch_name"`
+	DurableWorkDir            pgtype.Text        `json:"durable_work_dir"`
+	ChannelContextRevision    pgtype.Int8        `json:"channel_context_revision"`
+	PromptVersions            []byte             `json:"prompt_versions"`
+	CancelRequestedByUserID   pgtype.UUID        `json:"cancel_requested_by_user_id"`
+	CancelRequestedAt         pgtype.Timestamptz `json:"cancel_requested_at"`
+	CancelReason              pgtype.Text        `json:"cancel_reason"`
+	CancelActorType           pgtype.Text        `json:"cancel_actor_type"`
+	CancelActorID             pgtype.UUID        `json:"cancel_actor_id"`
+	LocalDirectoryScope       []byte             `json:"local_directory_scope"`
+	ChatModelSnapshot         pgtype.Text        `json:"chat_model_snapshot"`
+	NoActionAt                pgtype.Timestamptz `json:"no_action_at"`
+	NoActionReason            pgtype.Text        `json:"no_action_reason"`
+	CommentOutputAt           pgtype.Timestamptz `json:"comment_output_at"`
+}
 
 // Batch variant of ListQueuedClaimCandidatesByRuntime (MUL-4257): returns
 // queued claim candidates across every runtime_id in the input set in ONE round
 // trip, so a daemon can list candidates for all of its runtimes with a single
-// query instead of one per runtime. Ordering matches the singular query
-// (priority, then FIFO) so the batch claim loop keeps the same fairness.
+// query instead of one per runtime. Ordering preserves priority and FIFO within
+// each Agent; the service rotates the Agent order between polls so one busy
+// Agent cannot monopolize a small maxTasks value.
 // RUYI-224: like the singular query, discovery keys on the agent's CURRENT
-// runtime binding (r = the runtime in the set the agent is bound to), so rows
-// stranded on an old runtime are surfaced for the runtime the agent uses now.
+// runtime binding (the runtime in the set the Agent is bound to), so rows
+// stranded on an old runtime are surfaced for the runtime the Agent uses now.
 // The cross-runtime ORDER BY still needs a sort step; the per-machine
 // candidate set is small, so this is cheap in practice.
-func (q *Queries) ListQueuedClaimCandidatesByRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) ([]AgentTaskQueue, error) {
+func (q *Queries) ListQueuedClaimCandidatesByRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) ([]ListQueuedClaimCandidatesByRuntimesRow, error) {
 	rows, err := q.db.Query(ctx, listQueuedClaimCandidatesByRuntimes, runtimeIds)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AgentTaskQueue{}
+	items := []ListQueuedClaimCandidatesByRuntimesRow{}
 	for rows.Next() {
-		var i AgentTaskQueue
+		var i ListQueuedClaimCandidatesByRuntimesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.AgentID,

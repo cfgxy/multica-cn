@@ -266,6 +266,29 @@ describe("CreateAgentDialog runtime visibility gate", () => {
     expect(onCreate.mock.calls[0]?.[0].runtime_id).toBe("rt-mine");
   });
 
+  it.each([0, 7, -1, -2])(
+    "copies only valid source concurrency %i in duplicate mode",
+    async (concurrency) => {
+      const runtime = makeRuntime({ id: "rt-mine", name: "My Runtime", owner_id: ME });
+      const source = {
+        ...makeDuplicateSource("rt-mine"),
+        max_concurrent_tasks: concurrency,
+      };
+      const { onCreate } = renderDialog([runtime], source);
+
+      fireEvent.click(screen.getByText("Create"));
+      await new Promise((r) => setTimeout(r, 0));
+
+      const payload = onCreate.mock.calls[0]?.[0];
+      expect(payload).toBeDefined();
+      if (concurrency >= 0) {
+        expect(payload.max_concurrent_tasks).toBe(concurrency);
+      } else {
+        expect(payload).not.toHaveProperty("max_concurrent_tasks");
+      }
+    },
+  );
+
   it("disables Create when the selected runtime is locked (duplicate source + no usable fallback)", () => {
     // Edge case: the source agent points at a locked runtime AND the workspace
     // has no usable alternatives in scope. The defense-in-depth gate on

@@ -569,8 +569,8 @@ function RuntimeConcurrencyEditor({
 
   useEffect(() => setDraft(String(current)), [current]);
 
-  const next = Number(draft);
-  const valid = Number.isInteger(next) && next >= 0 && next <= 2_147_483_647;
+  const next = /^(?:0|[1-9]\d*)$/.test(draft) ? Number(draft) : null;
+  const valid = next !== null && next <= 2_147_483_647;
   const save = () => {
     if (!valid || next === current) return;
     updateRuntime.mutate(

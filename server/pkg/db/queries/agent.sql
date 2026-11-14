@@ -338,6 +338,14 @@ RETURNING *;
 SELECT id, runtime_id FROM agent
 WHERE id = ANY(@agent_ids::uuid[]);
 
+-- name: GetAgentRuntimeBindingsForUpdate :many
+-- Lock the current Agent rows while a claim failure is requeued. This keeps
+-- the binding read and the queue CAS in one transaction so a concurrent rebind
+-- cannot slip between invalidation and commit.
+SELECT id, runtime_id FROM agent
+WHERE id = ANY(@agent_ids::uuid[])
+FOR UPDATE;
+
 -- name: ListActiveAgentsByRuntime :many
 -- Returns every non-archived agent bound to a runtime. Backs the cascade
 -- delete dialog: when DELETE /api/runtimes/:id refuses with
@@ -2939,22 +2947,40 @@ RETURNING *;
 -- Batch variant of ListQueuedClaimCandidatesByRuntime (MUL-4257): returns
 -- queued claim candidates across every runtime_id in the input set in ONE round
 -- trip, so a daemon can list candidates for all of its runtimes with a single
--- query instead of one per runtime. Ordering matches the singular query
--- (priority, then FIFO) so the batch claim loop keeps the same fairness.
+-- query instead of one per runtime. Ordering preserves priority and FIFO within
+-- each Agent; the service rotates the Agent order between polls so one busy
+-- Agent cannot monopolize a small maxTasks value.
 -- RUYI-224: like the singular query, discovery keys on the agent's CURRENT
--- runtime binding (r = the runtime in the set the agent is bound to), so rows
--- stranded on an old runtime are surfaced for the runtime the agent uses now.
+-- runtime binding (the runtime in the set the Agent is bound to), so rows
+-- stranded on an old runtime are surfaced for the runtime the Agent uses now.
 -- The cross-runtime ORDER BY still needs a sort step; the per-machine
 -- candidate set is small, so this is cheap in practice.
-SELECT atq.* FROM agent_task_queue atq
+SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority,
+       atq.dispatched_at, atq.started_at, atq.completed_at, atq.result,
+       atq.error, atq.created_at, atq.context, a.runtime_id,
+       atq.session_id, atq.work_dir, atq.trigger_comment_id,
+       atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts,
+       atq.parent_task_id, atq.failure_reason, atq.trigger_summary,
+       atq.force_fresh_session, atq.is_leader_task, atq.wait_reason,
+       atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at,
+       atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id,
+       atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps,
+       atq.coalesced_comment_ids, atq.delivered_comment_ids,
+       atq.chat_input_task_id, atq.chat_finalize_deferred_at,
+       atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id,
+       atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind,
+       atq.trigger_evidence_ref_id, atq.accountable_user_id,
+       atq.session_rollout_missing, atq.retired_session_id,
+       atq.quick_actions_disabled, atq.regenerate_quick_actions_for,
+       atq.branch_name, atq.durable_work_dir, atq.channel_context_revision,
+       atq.prompt_versions, atq.cancel_requested_by_user_id,
+       atq.cancel_requested_at, atq.cancel_reason, atq.cancel_actor_type,
+       atq.cancel_actor_id, atq.local_directory_scope, atq.chat_model_snapshot,
+       atq.no_action_at, atq.no_action_reason, atq.comment_output_at
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
 WHERE atq.status = 'queued'
-  AND EXISTS (
-      SELECT 1
-      FROM agent a
-      JOIN agent_runtime r ON r.id = a.runtime_id
-      WHERE a.id = atq.agent_id
-        AND a.runtime_id = ANY(@runtime_ids::uuid[])
-  )
+  AND a.runtime_id = ANY(@runtime_ids::uuid[])
 ORDER BY atq.priority DESC, atq.created_at ASC;
 
 -- name: PromoteDueDeferredTasksForRuntimes :many
