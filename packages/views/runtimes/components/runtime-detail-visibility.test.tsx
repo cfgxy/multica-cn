@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ComponentProps, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import type { AgentRuntime, RuntimeProfile } from "@multica/core/types";
+import type { AgentRuntime } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
 import enRuntimes from "../../locales/en/runtimes.json";
@@ -16,11 +16,10 @@ const TEST_RESOURCES = {
 };
 
 const mockUpdateRuntime = vi.hoisted(() => vi.fn());
-const mockDeleteRuntimeProfile = vi.hoisted(() => vi.fn());
-const mockRemoveRuntime = vi.hoisted(() => vi.fn());
+const mockRemoveRuntimeFromList = vi.hoisted(() => vi.fn());
+const mockToastError = vi.hoisted(() => vi.fn());
 const mockQueryData = vi.hoisted(() => ({
   members: [] as Array<Record<string, unknown>>,
-  profiles: [] as RuntimeProfile[],
 }));
 // The resources / backpressure-settings fixtures the useQuery mock answers
 // per runtime. The resources fixture feeds the real RuntimeResourcesCard body
@@ -39,16 +38,12 @@ vi.mock("@multica/core/hooks", () => ({
 vi.mock("@multica/core/api", () => ({
   api: {
     updateRuntime: (...args: unknown[]) => mockUpdateRuntime(...args),
-    deleteRuntime: vi.fn(),
-    unbindAgentsAndDeleteRuntime: vi.fn(),
-    deleteRuntimeProfile: (...args: unknown[]) =>
-      mockDeleteRuntimeProfile(...args),
   },
   ApiError: class ApiError extends Error {},
 }));
 
 vi.mock("sonner", () => ({
-  toast: { error: vi.fn(), success: vi.fn() },
+  toast: { error: mockToastError, success: vi.fn() },
 }));
 
 // Pull the bits we want to test directly from the detail file. They aren't
@@ -69,9 +64,6 @@ vi.mock("@tanstack/react-query", async () => {
     ...actual,
     useQuery: vi.fn((options: { queryKey?: readonly unknown[] }) => {
       const key = options?.queryKey;
-      if (key?.[0] === "runtime-profiles") {
-        return { data: mockQueryData.profiles, isLoading: false };
-      }
       if (key?.[0] === "workspaces" && key?.[2] === "members") {
         return { data: mockQueryData.members, isLoading: false };
       }
@@ -125,21 +117,14 @@ vi.mock("@multica/core/runtimes", async () => ({
   deriveRuntimeHealth: () => "online",
   runtimeDisplayName: (rt: { name: string; custom_name?: string | null }) =>
     rt.custom_name?.trim() || rt.name,
-  runtimeDisplayLabel: (rt: { name: string; custom_name?: string | null }) =>
-    rt.custom_name?.trim() || rt.name,
-  runtimeProfileListOptions: (wsId: string) => ({
-    queryKey: ["runtime-profiles", wsId],
-  }),
-  parseRuntimeProfileBoundConflict: () => null,
+  runtimeDisplayLabel: (
+    await vi.importActual<typeof import("@multica/core/runtimes")>(
+      "@multica/core/runtimes",
+    )
+  ).runtimeDisplayLabel,
   useRemoveRuntimeFromList: () => ({
-    mutate: vi.fn(),
     isPending: false,
-    mutateAsync: (...args: unknown[]) => mockRemoveRuntime(...args),
-  }),
-  useDeleteRuntimeProfile: () => ({
-    mutate: vi.fn(),
-    isPending: false,
-    mutateAsync: (...args: unknown[]) => mockDeleteRuntimeProfile(...args),
+    mutateAsync: (...args: unknown[]) => mockRemoveRuntimeFromList(...args),
   }),
 }));
 
@@ -165,12 +150,6 @@ vi.mock("@multica/core/runtimes/mutations", () => ({
       opts?.onSuccess?.();
     },
     isPending: false,
-  }),
-  useDeleteRuntime: () => ({ mutate: vi.fn(), isPending: false, mutateAsync: vi.fn() }),
-  useUnbindAgentsAndDeleteRuntime: () => ({
-    mutate: vi.fn(),
-    isPending: false,
-    mutateAsync: vi.fn(),
   }),
   useSaveRuntimeModelCallBudget: () => ({
     mutate: (_config: unknown, opts?: { onSuccess?: () => void }) => {
@@ -233,24 +212,6 @@ function makeRuntime(overrides: Partial<AgentRuntime>): AgentRuntime {
   };
 }
 
-function makeProfile(overrides: Partial<RuntimeProfile> = {}): RuntimeProfile {
-  return {
-    id: "profile-1",
-    workspace_id: "ws-1",
-    display_name: "Custom Codex",
-    protocol_family: "codex",
-    command_name: "custom-codex",
-    description: null,
-    fixed_args: [],
-    visibility: "workspace",
-    created_by: "user-me",
-    enabled: true,
-    created_at: "2026-04-01T00:00:00Z",
-    updated_at: "2026-04-01T00:00:00Z",
-    ...overrides,
-  };
-}
-
 function renderDetail(
   runtime: AgentRuntime,
   props: Pick<
@@ -272,10 +233,9 @@ describe("RuntimeDetail visibility section", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockQueryData.members = [];
-    mockQueryData.profiles = [];
     mockRuntimeFixtures.resources = {};
     mockRuntimeFixtures.backpressureSettings = {};
-    mockDeleteRuntimeProfile.mockResolvedValue(undefined);
+    mockRemoveRuntimeFromList.mockResolvedValue(undefined);
   });
 
   it("shows owner-editable visibility choices when the caller owns the runtime", () => {
@@ -363,6 +323,23 @@ describe("RuntimeDetail visibility section", () => {
     );
   });
 
+  it.each(["", "1.5", "1e2"])(
+    "does not save a non-strict integer draft %j",
+    (draft) => {
+      renderDetail(makeRuntime({ owner_id: "user-me", max_concurrent_tasks: 8 }));
+      const input = screen.getByRole("spinbutton", { name: "Parallel task limit" });
+      const save = screen.getByRole("button", { name: "Save parallel task limit" });
+
+      fireEvent.change(input, { target: { value: draft } });
+
+      expect(save).toBeDisabled();
+      fireEvent.click(save);
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(mockUpdateRuntime).not.toHaveBeenCalled();
+    },
+  );
+
   it("shows the unlimited runtime setting read-only to non-editors", () => {
     renderDetail(makeRuntime({ owner_id: "someone-else", max_concurrent_tasks: 0 }));
     expect(screen.getByText("Unlimited")).toBeInTheDocument();
@@ -422,9 +399,7 @@ describe("RuntimeDetail visibility section", () => {
 
     expect(screen.queryByTestId("usage-section")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", {
-        name: /Remove from management list/i,
-      }),
+      screen.getByRole("button", { name: /Remove from management list/i }),
     ).toBeInTheDocument();
   });
 
@@ -452,11 +427,7 @@ describe("RuntimeDetail visibility section", () => {
     expect(screen.queryByTestId("usage-section")).not.toBeInTheDocument();
   });
 
-  // MUL-3352: an owner viewing an online local (self-healing) runtime
-  // used to see a disabled Delete button with only a hover tooltip
-  // explaining why. The new contract: the button is always clickable
-  // for owner/admin; the dialog now carries the self-heal warning.
-  it("renders an enabled Delete runtime button for an owner on a self-healing local runtime", () => {
+  it("renders an enabled removal button for an owner on a local runtime", () => {
     renderDetail(
       makeRuntime({
         owner_id: "user-me",
@@ -470,7 +441,7 @@ describe("RuntimeDetail visibility section", () => {
     expect(btn.disabled).toBe(false);
   });
 
-  it("hides the Delete runtime button entirely for callers who cannot edit", () => {
+  it("hides the management-list removal button for callers who cannot edit", () => {
     renderDetail(
       makeRuntime({
         owner_id: "someone-else",
@@ -479,54 +450,58 @@ describe("RuntimeDetail visibility section", () => {
       }),
     );
     expect(
-      screen.queryByRole("button", {
-        name: /Remove from management list/i,
-      }),
+      screen.queryByRole("button", { name: /Remove from management list/i }),
     ).not.toBeInTheDocument();
   });
 
-  it("routes custom runtime removal through the management-list dialog", async () => {
-    const profile = makeProfile();
+  it("removes a custom runtime instance from the management list without deleting its profile", async () => {
     mockQueryData.members = [
       { user_id: "user-me", role: "owner", name: "Me" },
     ];
-    mockQueryData.profiles = [profile];
-    mockRemoveRuntime.mockResolvedValue(undefined);
 
     renderDetail(
       makeRuntime({
         owner_id: "someone-else",
-        profile_id: profile.id,
+        profile_id: "profile-1",
       }),
     );
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: /Remove from management list/i,
-      }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /Remove from management list/i }));
     expect(
       screen.getByText('Remove "Local Runtime" from your management list?'),
     ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Remove from list" }));
-    await waitFor(() => expect(mockRemoveRuntime).toHaveBeenCalledWith("rt-1"));
+    await waitFor(() =>
+      expect(mockRemoveRuntimeFromList).toHaveBeenCalledWith("rt-1"),
+    );
   });
 
-  it("allows a runtime owner to remove a custom runtime from the list", () => {
-    const profile = makeProfile();
-    mockQueryData.profiles = [profile];
+  it("shows removal for a custom runtime owner", () => {
 
     renderDetail(
       makeRuntime({
         owner_id: "user-me",
-        profile_id: profile.id,
+        profile_id: "profile-1",
       }),
     );
 
     expect(
-      screen.getByRole("button", {
-        name: /Remove from management list/i,
+      screen.getByRole("button", { name: /Remove from management list/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the dialog open and reports a removal failure", async () => {
+    mockRemoveRuntimeFromList.mockRejectedValueOnce(new Error("remove failed"));
+    renderDetail(makeRuntime({ owner_id: "user-me" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Remove from management list/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove from list" }));
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith("remove failed"));
+    expect(
+      screen.getByRole("alertdialog", {
+        name: 'Remove "Local Runtime" from your management list?',
       }),
     ).toBeInTheDocument();
   });

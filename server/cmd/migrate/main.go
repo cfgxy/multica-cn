@@ -346,11 +346,17 @@ var concurrentIndexCleanups = map[string][]string{
 	"979_credential_audit_id_index":                             {"credential_audit_id_uidx"},
 	"979_credential_audit_workspace_created_index":              {"credential_audit_workspace_created_idx"},
 	"982_agent_suppression_event_index":                         {"idx_agent_suppression_event_agent"},
-	"996_task_usage_model_call_evidence_index":                  {"uq_task_usage_model_call_evidence_identity"},
-	"1001_task_usage_model_call_totals_index":                   {"uq_task_usage_model_call_totals_identity"},
+	"1003_task_usage_model_call_evidence_index":                 {"uq_task_usage_model_call_evidence_identity"},
+	"1007_task_usage_model_call_totals_index":                   {"uq_task_usage_model_call_totals_identity"},
 	"994_clause_injection_observation_id_index":                 {"idx_clause_injection_observation_id"},
 	"994_clause_injection_observation_task_scope_time_index":    {"idx_clause_injection_observation_task_scope_time"},
 	"994_clause_injection_observation_workspace_time_index":     {"idx_clause_injection_observation_workspace_time"},
+	"995_knowledge_lifecycle_entry_version_index":               {"idx_knowledge_entry_version_entry"},
+	"995_knowledge_lifecycle_event_entry_index":                 {"idx_knowledge_lifecycle_event_entry"},
+	"998_knowledge_governance_run_active_scope_index":           {"uidx_knowledge_governance_run_active_scope"},
+	"998_knowledge_governance_run_finding_index":                {"idx_knowledge_governance_finding_run"},
+	"998_knowledge_governance_run_workspace_created_index":      {"idx_knowledge_governance_run_workspace_created"},
+	"999_knowledge_lifecycle_writeback_claim_index":             {"idx_knowledge_lifecycle_event_writeback_claim"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
