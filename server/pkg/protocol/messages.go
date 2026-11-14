@@ -120,15 +120,35 @@ type WorkerEvidenceRequest struct {
 	TimeoutMs int    `json:"timeout_ms"`
 }
 
+// WorkerBindingEvidence identifies the exact supervised worker that produced
+// the evidence. It deliberately excludes launch args, environment and paths.
+type WorkerBindingEvidence struct {
+	RunID          string     `json:"run_id,omitempty"`
+	TaskID         string     `json:"task_id,omitempty"`
+	RuntimeID      string     `json:"runtime_id,omitempty"`
+	DaemonID       string     `json:"daemon_id,omitempty"`
+	DaemonVersion  string     `json:"daemon_version,omitempty"`
+	State          string     `json:"state,omitempty"`
+	WorkerPID      int        `json:"worker_pid,omitempty"`
+	LauncherPID    int        `json:"launcher_pid,omitempty"`
+	Generation     int        `json:"generation,omitempty"`
+	StartedAt      *time.Time `json:"started_at,omitempty"`
+	ExitCode       *int       `json:"exit_code,omitempty"`
+	ExitSignal     string     `json:"exit_signal,omitempty"`
+	ExitObservedAt *time.Time `json:"exit_observed_at,omitempty"`
+	ExitSource     string     `json:"exit_source,omitempty"`
+}
+
 type WorkerEvidenceResponse struct {
-	RequestID       string     `json:"request_id"`
-	Available       bool       `json:"available"`
-	Unavailable     string     `json:"unavailable,omitempty"`
-	StdoutTail      string     `json:"stdout_tail,omitempty"`
-	StderrTail      string     `json:"stderr_tail,omitempty"`
-	NextCursor      string     `json:"next_cursor,omitempty"`
-	ObservedAt      *time.Time `json:"observed_at,omitempty"`
-	ProcessLiveness string     `json:"process_liveness"`
+	RequestID       string                `json:"request_id"`
+	Available       bool                  `json:"available"`
+	Unavailable     string                `json:"unavailable,omitempty"`
+	StdoutTail      string                `json:"stdout_tail,omitempty"`
+	StderrTail      string                `json:"stderr_tail,omitempty"`
+	NextCursor      string                `json:"next_cursor,omitempty"`
+	ObservedAt      *time.Time            `json:"observed_at,omitempty"`
+	ProcessLiveness string                `json:"process_liveness"`
+	Binding         WorkerBindingEvidence `json:"binding"`
 }
 
 // Message is the envelope for all WebSocket messages.

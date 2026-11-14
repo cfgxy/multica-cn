@@ -28,6 +28,7 @@ type Supervisor struct {
 	// manifest at Launch so reconciliation can attribute units to their
 	// launching daemon (RUYI-592 fix 1).
 	daemonID          string
+	daemonVersion     string
 	evidenceCursorKey [32]byte
 
 	// LockHeld probes the task's env-root execution lock for the lost
@@ -80,6 +81,9 @@ func (s *Supervisor) Manager() *Manager { return s.mgr }
 // Systemd exposes the systemd wrapper (reconciliation, tests).
 func (s *Supervisor) Systemd() *systemdCtl { return s.sys }
 
+// SetDaemonVersion records the daemon build identity for future manifests.
+func (s *Supervisor) SetDaemonVersion(version string) { s.daemonVersion = version }
+
 // SetDetaching flips the graceful-shutdown switch: from now on, session
 // cancellation detaches instead of killing (daemon is going away).
 func (s *Supervisor) SetDetaching() { s.detaching.Store(true) }
@@ -98,6 +102,9 @@ func (s *Supervisor) Launch(ctx context.Context, spec agent.LaunchSpec) (agent.W
 		RunID:         spec.RunID,
 		TaskID:        spec.TaskID,
 		Runtime:       spec.Runtime,
+		RuntimeID:     spec.RuntimeID,
+		Generation:    spec.Generation,
+		DaemonVersion: s.daemonVersion,
 		Unit:          UnitName(spec.RunID),
 		State:         StateRunning,
 		DaemonID:      s.daemonID,
