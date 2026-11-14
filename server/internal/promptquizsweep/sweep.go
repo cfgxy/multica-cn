@@ -303,9 +303,10 @@ func (r Runner) enqueue(ctx context.Context, budget int) (int, error) {
 				ItemID:    item.ID,
 			})
 			// No row means the fence refused: the agent or the runtime behind this
-			// scope is being deleted, or its workspace is. There is nothing left to
-			// measure for the scope, so stop ordering runs against it rather than
-			// failing the whole tick — the other scopes' samples are still valid.
+			// scope is being deleted, its workspace is being removed, or Quiz
+			// scheduling was disabled. There is nothing left to measure for the
+			// scope, so stop ordering runs against it rather than failing the whole
+			// tick — the other scopes' samples are still valid.
 			if errors.Is(err, pgx.ErrNoRows) {
 				break
 			}

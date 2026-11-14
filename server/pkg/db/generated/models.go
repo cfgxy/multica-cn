@@ -2255,6 +2255,19 @@ type PromptQuizResult struct {
 	GradedAt pgtype.Timestamptz `json:"graded_at"`
 }
 
+// RUYI-941 durable Quiz scheduler overrides. Missing row defaults to enabled; agent rows override workspace rows. Quiz data is retained when scheduling is disabled.
+type PromptQuizScheduleControl struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	// NULL applies to every agent in the workspace; a value applies only to that agent.
+	AgentID pgtype.UUID `json:"agent_id"`
+	Enabled bool        `json:"enabled"`
+	Reason  string      `json:"reason"`
+	// member.user_id of the owner/admin who changed the Quiz scheduler override.
+	UpdatedBy pgtype.UUID        `json:"updated_by"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type PromptQuizSweepState struct {
 	ID                int16              `json:"id"`
 	LastRunStartedAt  pgtype.Timestamptz `json:"last_run_started_at"`

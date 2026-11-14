@@ -86,8 +86,9 @@ const (
 	AuditAgentExecutionProfileActived = "agent.execution_profile_activated"
 	// Scheduling freeze lifecycle, agent-level (RUYI-608). The workspace-
 	// level twin anchors in ops below (no single agent dimension).
-	AuditAgentSchedulingPaused  = "agent.scheduling_paused"
-	AuditAgentSchedulingResumed = "agent.scheduling_resumed"
+	AuditAgentSchedulingPaused          = "agent.scheduling_paused"
+	AuditAgentSchedulingResumed         = "agent.scheduling_resumed"
+	AuditAgentPromptQuizScheduleUpdated = "agent.prompt_quiz_schedule_updated"
 
 	// Agent-level error-rate backpressure policy (RUYI-859 stage A): one
 	// event per save/restore of the agent_backpressure_policy card; details
@@ -152,8 +153,9 @@ const (
 
 	// Workspace-level scheduling freeze lifecycle (RUYI-608): no single
 	// agent dimension to anchor, so the workspace is the object.
-	AuditOpsSchedulingPaused  = "ops.scheduling_paused"
-	AuditOpsSchedulingResumed = "ops.scheduling_resumed"
+	AuditOpsSchedulingPaused          = "ops.scheduling_paused"
+	AuditOpsSchedulingResumed         = "ops.scheduling_resumed"
+	AuditOpsPromptQuizScheduleUpdated = "ops.prompt_quiz_schedule_updated"
 	// Daemon host backpressure settings lifecycle (RUYI-729): the gate
 	// that pauses task claims on a host. Scheduling-affecting config gets
 	// the same fail-closed trail as the freeze switch; details carry the

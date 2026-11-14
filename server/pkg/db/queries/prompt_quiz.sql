@@ -367,6 +367,18 @@ SELECT
     sqlc.arg('agent_id'), sqlc.arg('runtime_id'), NULL::uuid, 'queued', sqlc.arg('priority'),
     sqlc.arg('context'), 'quiz', 'quiz_item', sqlc.arg('item_id')
 WHERE lock_task_owner_rows(sqlc.arg('agent_id'), NULL::uuid, sqlc.arg('runtime_id'))
+  -- RUYI-941: re-check the durable control at insertion time so a sweep
+  -- already inside its enqueue loop cannot create fresh Quiz work after an
+  -- operator disables the effective workspace/agent scope.
+  AND COALESCE((
+      SELECT c.enabled
+      FROM prompt_quiz_schedule_control c
+      JOIN agent a ON a.workspace_id = c.workspace_id
+      WHERE a.id = sqlc.arg('agent_id')
+        AND (c.agent_id IS NULL OR c.agent_id = a.id)
+      ORDER BY c.agent_id NULLS LAST
+      LIMIT 1
+  ), TRUE)
 RETURNING *;
 
 -- name: ListFinishedPromptQuizTasks :many
@@ -499,6 +511,16 @@ JOIN agent a ON a.id = pv.scope_id
 WHERE pv.scope = 'agent'
   AND a.archived_at IS NULL
   AND a.runtime_id IS NOT NULL
+  -- RUYI-941: resolve the most-specific durable override. Missing rows keep
+  -- the historical default: Quiz scheduling remains enabled.
+  AND COALESCE((
+      SELECT c.enabled
+      FROM prompt_quiz_schedule_control c
+      WHERE c.workspace_id = a.workspace_id
+        AND (c.agent_id IS NULL OR c.agent_id = a.id)
+      ORDER BY c.agent_id NULLS LAST
+      LIMIT 1
+  ), TRUE)
 ORDER BY pv.scope_id, pv.version DESC
 LIMIT sqlc.arg('row_limit')::int;
 
