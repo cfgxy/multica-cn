@@ -11,6 +11,137 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getRuntimeModelCallBudgetAdmission = `-- name: GetRuntimeModelCallBudgetAdmission :one
+SELECT
+    r.model_call_budget_enabled,
+    r.model_call_budget_max_calls,
+    r.model_call_budget_window_seconds,
+    (SELECT COUNT(*)::bigint
+     FROM task_usage_model_call_evidence e
+     JOIN agent_task_queue atq ON atq.id = e.task_id
+     WHERE atq.runtime_id = r.id
+       AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+       ) AS known_calls,
+    (SELECT COUNT(*)::bigint
+     FROM (
+         SELECT tu.task_id, tu.provider, tu.model
+         FROM task_usage tu
+         JOIN agent_task_queue atq ON atq.id = tu.task_id
+         WHERE atq.runtime_id = r.id
+           AND tu.model_call_count IS NULL
+           AND COALESCE(tu.updated_at, tu.created_at) >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+     ) AS incomplete_usage) AS unknown_usage_rows,
+    (SELECT COUNT(*)::bigint
+     FROM agent_task_queue atq
+     WHERE atq.runtime_id = r.id
+       AND (
+           atq.status IN ('running', 'waiting_local_directory')
+           OR (
+               atq.status = 'dispatched'
+               AND atq.dispatched_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+               AND atq.prepare_lease_expires_at IS NOT NULL
+               AND atq.prepare_lease_expires_at >= now()
+           )
+       )
+       AND NOT EXISTS (
+           SELECT 1
+           FROM task_usage_model_call_evidence e
+           WHERE e.task_id = atq.id
+             AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+       )) AS reserved_calls
+FROM agent_runtime r
+WHERE r.id = $1
+`
+
+type GetRuntimeModelCallBudgetAdmissionRow struct {
+	ModelCallBudgetEnabled       bool  `json:"model_call_budget_enabled"`
+	ModelCallBudgetMaxCalls      int64 `json:"model_call_budget_max_calls"`
+	ModelCallBudgetWindowSeconds int32 `json:"model_call_budget_window_seconds"`
+	KnownCalls                   int64 `json:"known_calls"`
+	UnknownUsageRows             int64 `json:"unknown_usage_rows"`
+	ReservedCalls                int64 `json:"reserved_calls"`
+}
+
+// The caller holds LockRuntimeClaimCapacity for this runtime. Count active
+// claims as one call reservation until their first evidence row enters the
+// rolling window, so concurrent queued -> dispatched transitions cannot use
+// the same final budget slot. Reservations deliberately use dispatched_at:
+// a task claimed before the current window does not reserve a fresh slot.
+func (q *Queries) GetRuntimeModelCallBudgetAdmission(ctx context.Context, runtimeID pgtype.UUID) (GetRuntimeModelCallBudgetAdmissionRow, error) {
+	row := q.db.QueryRow(ctx, getRuntimeModelCallBudgetAdmission, runtimeID)
+	var i GetRuntimeModelCallBudgetAdmissionRow
+	err := row.Scan(
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
+		&i.KnownCalls,
+		&i.UnknownUsageRows,
+		&i.ReservedCalls,
+	)
+	return i, err
+}
+
+const getRuntimeModelCallBudgetUsage = `-- name: GetRuntimeModelCallBudgetUsage :one
+SELECT
+    (SELECT COUNT(*)::bigint
+     FROM task_usage_model_call_evidence e
+     JOIN agent_task_queue atq ON atq.id = e.task_id
+     WHERE atq.runtime_id = $1
+       AND e.created_at >= $2::timestamptz
+       ) AS known_calls,
+    (SELECT COUNT(*)::bigint
+     FROM (
+         SELECT tu.task_id, tu.provider, tu.model
+         FROM task_usage tu
+         JOIN agent_task_queue atq ON atq.id = tu.task_id
+         WHERE atq.runtime_id = $1
+           AND tu.model_call_count IS NULL
+           AND COALESCE(tu.updated_at, tu.created_at) >= $2::timestamptz
+     ) AS incomplete_usage) AS unknown_usage_rows,
+    (SELECT COUNT(*)::bigint
+     FROM agent_task_queue atq
+     WHERE atq.runtime_id = $1
+       AND (
+           atq.status IN ('running', 'waiting_local_directory')
+           OR (
+               atq.status = 'dispatched'
+               AND atq.dispatched_at >= $2::timestamptz
+               AND atq.prepare_lease_expires_at IS NOT NULL
+               AND atq.prepare_lease_expires_at >= now()
+           )
+       )
+       AND NOT EXISTS (
+           SELECT 1
+           FROM task_usage_model_call_evidence e
+           WHERE e.task_id = atq.id
+             AND e.created_at >= $2::timestamptz
+       )) AS reserved_calls
+`
+
+type GetRuntimeModelCallBudgetUsageParams struct {
+	RuntimeID pgtype.UUID        `json:"runtime_id"`
+	Since     pgtype.Timestamptz `json:"since"`
+}
+
+type GetRuntimeModelCallBudgetUsageRow struct {
+	KnownCalls       int64 `json:"known_calls"`
+	UnknownUsageRows int64 `json:"unknown_usage_rows"`
+	ReservedCalls    int64 `json:"reserved_calls"`
+}
+
+// Rolling provider-call admission budget. Known calls use each provider
+// evidence row's insertion time, so calls are visible before task completion
+// and a long task can span multiple windows. A NULL usage count remains
+// unknown even when partial evidence exists; durable evidence counts immediately,
+// before terminal usage arrives. Unknown rows do not inflate the known total, but
+// cannot bypass a budget whose known lower bound has already reached its limit.
+func (q *Queries) GetRuntimeModelCallBudgetUsage(ctx context.Context, arg GetRuntimeModelCallBudgetUsageParams) (GetRuntimeModelCallBudgetUsageRow, error) {
+	row := q.db.QueryRow(ctx, getRuntimeModelCallBudgetUsage, arg.RuntimeID, arg.Since)
+	var i GetRuntimeModelCallBudgetUsageRow
+	err := row.Scan(&i.KnownCalls, &i.UnknownUsageRows, &i.ReservedCalls)
+	return i, err
+}
+
 const getRuntimeTaskHourlyActivity = `-- name: GetRuntimeTaskHourlyActivity :many
 SELECT EXTRACT(HOUR FROM started_at AT TIME ZONE $2::text)::int AS hour,
        COUNT(*)::int AS count
@@ -66,6 +197,8 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS model_call_count,
+    COUNT(*) FILTER (WHERE tu.model_call_count IS NULL)::int  AS model_call_unknown_count,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
@@ -93,6 +226,8 @@ type GetRuntimeUsageByHourRow struct {
 	UncostedOutputTokens     int64  `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64  `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64  `json:"uncosted_cache_write_tokens"`
+	ModelCallCount           int64  `json:"model_call_count"`
+	ModelCallUnknownCount    int32  `json:"model_call_unknown_count"`
 	TaskCount                int32  `json:"task_count"`
 }
 
@@ -125,7 +260,97 @@ func (q *Queries) GetRuntimeUsageByHour(ctx context.Context, arg GetRuntimeUsage
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.ModelCallCount,
+			&i.ModelCallUnknownCount,
 			&i.TaskCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRuntimeModelCallBudgetUsage = `-- name: ListRuntimeModelCallBudgetUsage :many
+SELECT
+    rt.id AS runtime_id,
+    (SELECT COUNT(*)::bigint
+     FROM task_usage_model_call_evidence e
+     JOIN agent_task_queue atq ON atq.id = e.task_id
+     WHERE atq.runtime_id = rt.id
+       AND e.created_at >= to_timestamp(
+           EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
+       )
+       ) AS known_calls,
+    (SELECT COUNT(*)::bigint
+     FROM (
+         SELECT tu.task_id, tu.provider, tu.model
+         FROM task_usage tu
+         JOIN agent_task_queue atq ON atq.id = tu.task_id
+         WHERE atq.runtime_id = rt.id
+           AND tu.model_call_count IS NULL
+           AND COALESCE(tu.updated_at, tu.created_at) >= to_timestamp(
+               EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
+           )
+     ) AS incomplete_usage) AS unknown_usage_rows,
+    (SELECT COUNT(*)::bigint
+     FROM agent_task_queue atq
+     WHERE atq.runtime_id = rt.id
+       AND (
+           atq.status IN ('running', 'waiting_local_directory')
+           OR (
+               atq.status = 'dispatched'
+               AND atq.dispatched_at >= to_timestamp(
+                   EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
+               )
+               AND atq.prepare_lease_expires_at IS NOT NULL
+               AND atq.prepare_lease_expires_at >= $1::timestamptz
+           )
+       )
+       AND NOT EXISTS (
+           SELECT 1
+           FROM task_usage_model_call_evidence e
+           WHERE e.task_id = atq.id
+             AND e.created_at >= to_timestamp(
+                 EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
+             )
+       )) AS reserved_calls
+FROM agent_runtime rt
+WHERE rt.id = ANY($2::uuid[])
+`
+
+type ListRuntimeModelCallBudgetUsageParams struct {
+	Now        pgtype.Timestamptz `json:"now"`
+	RuntimeIds []pgtype.UUID      `json:"runtime_ids"`
+}
+
+type ListRuntimeModelCallBudgetUsageRow struct {
+	RuntimeID        pgtype.UUID `json:"runtime_id"`
+	KnownCalls       int64       `json:"known_calls"`
+	UnknownUsageRows int64       `json:"unknown_usage_rows"`
+	ReservedCalls    int64       `json:"reserved_calls"`
+}
+
+// Batch equivalent for queued-reason decoration and multi-runtime claims. The
+// time predicate derives its rolling boundary from each runtime's persisted
+// config, keeping a mixed set of windows correct in one round trip.
+func (q *Queries) ListRuntimeModelCallBudgetUsage(ctx context.Context, arg ListRuntimeModelCallBudgetUsageParams) ([]ListRuntimeModelCallBudgetUsageRow, error) {
+	rows, err := q.db.Query(ctx, listRuntimeModelCallBudgetUsage, arg.Now, arg.RuntimeIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRuntimeModelCallBudgetUsageRow{}
+	for rows.Next() {
+		var i ListRuntimeModelCallBudgetUsageRow
+		if err := rows.Scan(
+			&i.RuntimeID,
+			&i.KnownCalls,
+			&i.UnknownUsageRows,
+			&i.ReservedCalls,
 		); err != nil {
 			return nil, err
 		}
@@ -150,7 +375,9 @@ SELECT
     SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint           AS uncosted_input_tokens,
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
-    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens
+    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(model_call_count)::bigint         AS model_call_count,
+    SUM(model_call_unknown_count)::bigint AS model_call_unknown_count
 FROM task_usage_hourly
 WHERE runtime_id = $1
   AND bucket_hour >= $3::timestamptz
@@ -177,6 +404,8 @@ type ListRuntimeUsageRow struct {
 	UncostedOutputTokens     int64       `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64       `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64       `json:"uncosted_cache_write_tokens"`
+	ModelCallCount           int64       `json:"model_call_count"`
+	ModelCallUnknownCount    int64       `json:"model_call_unknown_count"`
 }
 
 // Reads from the UTC-bucketed `task_usage_hourly` rollup table,
@@ -212,6 +441,8 @@ func (q *Queries) ListRuntimeUsage(ctx context.Context, arg ListRuntimeUsagePara
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.ModelCallCount,
+			&i.ModelCallUnknownCount,
 		); err != nil {
 			return nil, err
 		}
@@ -237,6 +468,11 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    -- Call counts straight off the raw rows (this query has no hourly
+    -- rollup available): known half only, plus the row count without
+    -- provider evidence so readers cannot pad a partial sum to "complete".
+    COALESCE(SUM(tu.model_call_count) FILTER (WHERE tu.model_call_count IS NOT NULL), 0)::bigint AS model_call_count,
+    COUNT(*) FILTER (WHERE tu.model_call_count IS NULL)::int  AS model_call_unknown_count,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
@@ -264,6 +500,8 @@ type ListRuntimeUsageByAgentRow struct {
 	UncostedOutputTokens     int64       `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64       `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64       `json:"uncosted_cache_write_tokens"`
+	ModelCallCount           int64       `json:"model_call_count"`
+	ModelCallUnknownCount    int32       `json:"model_call_unknown_count"`
 	TaskCount                int32       `json:"task_count"`
 }
 
@@ -300,6 +538,8 @@ func (q *Queries) ListRuntimeUsageByAgent(ctx context.Context, arg ListRuntimeUs
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.ModelCallCount,
+			&i.ModelCallUnknownCount,
 			&i.TaskCount,
 		); err != nil {
 			return nil, err

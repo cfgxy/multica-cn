@@ -227,6 +227,46 @@ describe("computeDailyTotals", () => {
     expect(totals.cost).toBe(9); // 3M × $3/M
     expect(totals.taskCount).toBe(5);
   });
+
+  it("keeps missing model-call evidence distinct from an explicit zero", () => {
+    const complete = computeDailyTotals([
+      {
+        date: "2026-05-10",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        task_count: 0,
+        model_call_count: 0,
+        model_call_unknown_count: 0,
+      },
+    ]);
+    const unavailable = computeDailyTotals([
+      {
+        date: "2026-05-10",
+        provider: "claude",
+        model: "claude-sonnet-4-6",
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        task_count: 0,
+      },
+    ]);
+
+    expect(complete).toMatchObject({
+      modelCallCount: 0,
+      modelCallUnknownCount: 0,
+      modelCallEvidenceAvailable: true,
+    });
+    expect(unavailable).toMatchObject({
+      modelCallCount: 0,
+      modelCallUnknownCount: 0,
+      modelCallEvidenceAvailable: false,
+    });
+  });
 });
 
 describe("mergeAgentDashboardRows", () => {

@@ -2168,12 +2168,12 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	// daemon's own client-side gate stays the authoritative pre-claim
 	// barrier). Held runtimes' tasks stay queued — nothing fails.
 	claimable := authorized
+	now := time.Now()
 	if req.Backpressure != nil {
 		if req.Backpressure.Active {
 			claimable = nil
 		}
 	} else {
-		now := time.Now()
 		claimable = make([]pgtype.UUID, 0, len(authorized))
 		for _, rtID := range authorized {
 			if !runtimeHeldByBackpressure(runtimeByID[uuidToString(rtID)], now) {
@@ -2182,7 +2182,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(claimable) == 0 {
-		slog.Debug("batch claim: all runtimes held by backpressure",
+		slog.Debug("batch claim: all runtimes held by admission controls",
 			"daemon_id", req.DaemonID, "runtimes", len(authorized))
 		writeMeasuredJSON(w, http.StatusOK, map[string]any{"tasks": []AgentTaskResponse{}})
 		return
@@ -4152,13 +4152,13 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	// backpressure body, so the decision rides on the stored report with the
 	// same freshness TTL as the batch path. Held renders exactly like "no
 	// task": the queued row stays queued, the poller just gets nothing.
-	if runtimeHeldByBackpressure(runtime, time.Now()) {
+	now := time.Now()
+	if runtimeHeldByBackpressure(runtime, now) {
 		outcome = "bp_held"
 		slog.Debug("claim held: runtime backpressure active", "runtime_id", runtimeID)
 		payloadBytes, _ = writeMeasuredJSON(w, http.StatusOK, map[string]any{"task": nil})
 		return
 	}
-
 	claimStart := time.Now()
 	task, err := h.TaskService.ClaimTaskForRuntime(r.Context(), parseUUID(runtimeID))
 	claimMs = time.Since(claimStart).Milliseconds()
@@ -5358,6 +5358,19 @@ type TaskUsagePayload struct {
 	Turns            int   `json:"turns,omitempty"`
 	Compactions      int   `json:"compactions,omitempty"`
 	MaxContextTokens int64 `json:"max_context_tokens,omitempty"`
+	// ModelCallEvidenceIDs contains every provider-original identity for this
+	// (provider, model) usage row. The handler persists these under a unique key
+	// and derives the count from storage, so daemon report replay cannot count the
+	// same provider request twice.
+	ModelCallEvidenceIDs []string `json:"model_call_evidence_ids,omitempty"`
+	// ModelCallEvidenceComplete must be true only if the ID list covers every
+	// call. Its zero value makes an older daemon's omitted field unknown rather
+	// than a misleading known zero.
+	ModelCallEvidenceComplete bool `json:"model_call_evidence_complete,omitempty"`
+	// ModelCallCount is accepted only to decode reports from older daemons. New
+	// accounting intentionally ignores it because an aggregate is not replay-safe
+	// provider evidence.
+	ModelCallCount int64 `json:"model_call_count,omitempty"`
 }
 
 // authoritativeContextTokens converts a reported context size into the nullable
@@ -5410,6 +5423,140 @@ func authoritativeCostTicks(ticks int64) pgtype.Int8 {
 	return pgtype.Int8{Int64: ticks, Valid: true}
 }
 
+// completeModelCallEvidenceIDs validates and locally deduplicates a complete
+// provider evidence set before it reaches the database. Malformed or partial
+// evidence is unknown, not a client error: the daemon already completed work
+// and the only safe accounting result is a nullable count.
+func completeModelCallEvidenceIDs(usage TaskUsagePayload) []string {
+	if !usage.ModelCallEvidenceComplete || len(usage.ModelCallEvidenceIDs) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(usage.ModelCallEvidenceIDs))
+	ids := make([]string, 0, len(usage.ModelCallEvidenceIDs))
+	for _, evidenceID := range usage.ModelCallEvidenceIDs {
+		normalizedID := strings.TrimSpace(evidenceID)
+		if normalizedID == "" || strings.IndexByte(normalizedID, 0) >= 0 {
+			return nil
+		}
+		if _, duplicate := seen[normalizedID]; duplicate {
+			continue
+		}
+		seen[normalizedID] = struct{}{}
+		ids = append(ids, normalizedID)
+	}
+	return ids
+}
+
+func positiveUsageDelta(current, previous int64, hasPrevious bool) int64 {
+	if current < 0 {
+		return 0
+	}
+	if !hasPrevious {
+		return current
+	}
+	if current <= previous {
+		return 0
+	}
+	return current - previous
+}
+
+func positiveNullableUsageDelta(current, previous pgtype.Int8, hasPrevious bool) int64 {
+	if !current.Valid || current.Int64 <= 0 {
+		return 0
+	}
+	if !hasPrevious || !previous.Valid || previous.Int64 <= 0 {
+		return current.Int64
+	}
+	if current.Int64 <= previous.Int64 {
+		return 0
+	}
+	return current.Int64 - previous.Int64
+}
+
+func (h *Handler) ReportTaskModelCallEvidence(w http.ResponseWriter, r *http.Request) {
+	daemonID := middleware.DaemonIDFromContext(r.Context())
+	if middleware.DaemonWorkspaceIDFromContext(r.Context()) == "" || daemonID == "" {
+		writeError(w, http.StatusForbidden, "daemon credential required")
+		return
+	}
+	taskID := chi.URLParam(r, "taskId")
+	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	if !ok {
+		return
+	}
+	runtime, ok := h.requireDaemonRuntimeAccess(w, r, uuidToString(task.RuntimeID))
+	if !ok {
+		return
+	}
+	if !runtime.DaemonID.Valid || runtime.DaemonID.String != daemonID {
+		writeError(w, http.StatusForbidden, "daemon does not own task runtime")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+
+	var req struct {
+		Provider   string `json:"provider"`
+		Model      string `json:"model"`
+		EvidenceID string `json:"evidence_id"`
+		Incomplete bool   `json:"incomplete"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	provider := normalizeProvider(req.Provider)
+	model := req.Model
+	evidenceID := strings.TrimSpace(req.EvidenceID)
+	if provider == "" || strings.TrimSpace(model) == "" || strings.IndexByte(model, 0) >= 0 ||
+		(req.Incomplete && evidenceID != "") || (!req.Incomplete && (evidenceID == "" || strings.IndexByte(evidenceID, 0) >= 0)) {
+		writeError(w, http.StatusBadRequest, "provider and model are required with either evidence_id or incomplete=true")
+		return
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		slog.Warn("start live task usage transaction failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage evidence")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	lockedStatus, err := qtx.LockTaskForUsage(r.Context(), task.ID)
+	if err != nil {
+		slog.Warn("lock live task for usage failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage evidence")
+		return
+	}
+	if lockedStatus != "running" {
+		writeError(w, http.StatusConflict, "task is not running")
+		return
+	}
+	if req.Incomplete {
+		if err := qtx.MarkTaskUsageModelCallsUnknown(r.Context(), db.MarkTaskUsageModelCallsUnknownParams{
+			TaskID: task.ID, Provider: provider, Model: model,
+		}); err != nil {
+			slog.Warn("mark live task model-call usage unknown failed", "task_id", taskID, "model", model, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to store task usage evidence")
+			return
+		}
+	} else if err := qtx.InsertTaskUsageModelCallEvidence(r.Context(), db.InsertTaskUsageModelCallEvidenceParams{
+		TaskID:     task.ID,
+		Provider:   provider,
+		Model:      model,
+		EvidenceID: evidenceID,
+	}); err != nil {
+		slog.Warn("insert live task usage call evidence failed", "task_id", taskID, "model", model, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage evidence")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		slog.Warn("commit live task usage transaction failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage evidence")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
@@ -5433,6 +5580,11 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	// resolve to a provider instead of landing as '' and pricing $0.
 	var runtimeProvider string
 	runtimeProviderLoaded := false
+	type normalizedUsage struct {
+		payload  TaskUsagePayload
+		provider string
+	}
+	usage := make([]normalizedUsage, 0, len(req.Usage))
 	for _, u := range req.Usage {
 		provider := normalizeProvider(u.Provider)
 		if provider == "" {
@@ -5447,24 +5599,187 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			}
 			provider = runtimeProvider
 		}
-		if err := h.Queries.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
+		usage = append(usage, normalizedUsage{payload: u, provider: provider})
+	}
+
+	if len(usage) == 0 {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		slog.Warn("start task usage transaction failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	parsedTaskID := parseUUID(taskID)
+	if _, err := qtx.LockTaskForUsage(r.Context(), parsedTaskID); err != nil {
+		slog.Warn("lock task for usage failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage")
+		return
+	}
+	existingRows, err := qtx.GetTaskUsage(r.Context(), parsedTaskID)
+	if err != nil {
+		slog.Warn("read existing task usage failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage")
+		return
+	}
+	existingUsageRows := make(map[string]db.TaskUsage, len(existingRows))
+	for _, row := range existingRows {
+		existingUsageRows[row.Provider+"\x00"+row.Model] = row
+	}
+	captureUsage := make([]bool, len(usage))
+	metricDeltas := make([]TaskUsagePayload, len(usage))
+
+	for index, entry := range usage {
+		u := entry.payload
+		modelCallCount := pgtype.Int8{}
+		evidenceIDs := completeModelCallEvidenceIDs(u)
+		key := entry.provider + "\x00" + u.Model
+		previous, hadMetricBaseline := existingUsageRows[key]
+		var priorEvidenceModels []string
+		evidenceBefore := int64(0)
+		if len(evidenceIDs) > 0 {
+			var err error
+			priorEvidenceModels, err = qtx.ListTaskUsageEvidenceModels(r.Context(), db.ListTaskUsageEvidenceModelsParams{
+				TaskID:      parsedTaskID,
+				Provider:    entry.provider,
+				EvidenceIds: evidenceIDs,
+			})
+			if err != nil {
+				slog.Warn("list prior task usage evidence models failed", "task_id", taskID, "model", u.Model, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to store task usage")
+				return
+			}
+			if !hadMetricBaseline {
+				for _, oldModel := range priorEvidenceModels {
+					if oldModel == u.Model {
+						continue
+					}
+					if row, ok := existingUsageRows[entry.provider+"\x00"+oldModel]; ok {
+						previous = row
+						hadMetricBaseline = true
+						break
+					}
+				}
+			}
+			evidenceBefore, err = qtx.CountTaskUsageModelCallEvidenceByIDs(r.Context(), db.CountTaskUsageModelCallEvidenceByIDsParams{
+				TaskID:      parsedTaskID,
+				Provider:    entry.provider,
+				EvidenceIds: evidenceIDs,
+			})
+			if err != nil {
+				slog.Warn("count existing task usage call evidence failed", "task_id", taskID, "model", u.Model, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to store task usage")
+				return
+			}
+			for _, evidenceID := range evidenceIDs {
+				if err := qtx.InsertTaskUsageModelCallEvidence(r.Context(), db.InsertTaskUsageModelCallEvidenceParams{
+					TaskID:     parsedTaskID,
+					Provider:   entry.provider,
+					Model:      u.Model,
+					EvidenceID: evidenceID,
+				}); err != nil {
+					slog.Warn("insert task usage call evidence failed", "task_id", taskID, "model", u.Model, "error", err)
+					writeError(w, http.StatusInternalServerError, "failed to store task usage")
+					return
+				}
+			}
+			count, err := qtx.CountTaskUsageModelCallEvidence(r.Context(), db.CountTaskUsageModelCallEvidenceParams{
+				TaskID:   parsedTaskID,
+				Provider: entry.provider,
+				Model:    u.Model,
+			})
+			if err != nil {
+				slog.Warn("count task usage call evidence failed", "task_id", taskID, "model", u.Model, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to store task usage")
+				return
+			}
+			modelCallCount = pgtype.Int8{Int64: count, Valid: true}
+		}
+
+		currentCost := authoritativeCostTicks(u.CostUSDTicks)
+		metricDeltas[index] = TaskUsagePayload{
+			Provider:         entry.provider,
+			Model:            u.Model,
+			InputTokens:      positiveUsageDelta(u.InputTokens, previous.InputTokens, hadMetricBaseline),
+			OutputTokens:     positiveUsageDelta(u.OutputTokens, previous.OutputTokens, hadMetricBaseline),
+			CacheReadTokens:  positiveUsageDelta(u.CacheReadTokens, previous.CacheReadTokens, hadMetricBaseline),
+			CacheWriteTokens: positiveUsageDelta(u.CacheWriteTokens, previous.CacheWriteTokens, hadMetricBaseline),
+			CostUSDTicks:     positiveNullableUsageDelta(currentCost, previous.CostUsdTicks, hadMetricBaseline),
+		}
+		captureUsage[index] = !hadMetricBaseline || metricDeltas[index].InputTokens > 0 ||
+			metricDeltas[index].OutputTokens > 0 || metricDeltas[index].CacheReadTokens > 0 ||
+			metricDeltas[index].CacheWriteTokens > 0 || metricDeltas[index].CostUSDTicks > 0 ||
+			(evidenceBefore < int64(len(evidenceIDs)) && len(evidenceIDs) > 0)
+
+		if err := qtx.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
 			TaskID:           parseUUID(taskID),
-			Provider:         provider,
+			Provider:         entry.provider,
 			Model:            u.Model,
 			InputTokens:      u.InputTokens,
 			OutputTokens:     u.OutputTokens,
 			CacheReadTokens:  u.CacheReadTokens,
 			CacheWriteTokens: u.CacheWriteTokens,
-			CostUsdTicks:     authoritativeCostTicks(u.CostUSDTicks),
+			CostUsdTicks:     currentCost,
 			ContextTokens:    authoritativeContextTokens(u.ContextTokens),
 			Turns:            authoritativeTurns(u.Turns),
 			Compactions:      authoritativeCompactions(u.Compactions),
 			MaxContextTokens: authoritativeMaxContextTokens(u.MaxContextTokens),
+			ModelCallCount:   modelCallCount,
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
-			continue
+			writeError(w, http.StatusInternalServerError, "failed to store task usage")
+			return
 		}
-		h.TaskService.CaptureTaskUsage(r.Context(), task, provider, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSDTicks)
+		for _, oldModel := range priorEvidenceModels {
+			if oldModel == u.Model {
+				continue
+			}
+			if err := qtx.RefreshTaskUsageModelCallCount(r.Context(), db.RefreshTaskUsageModelCallCountParams{
+				TaskID:   parsedTaskID,
+				Provider: entry.provider,
+				Model:    oldModel,
+			}); err != nil {
+				slog.Warn("refresh superseded task usage model count failed", "task_id", taskID, "provider", entry.provider, "model", oldModel, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to store task usage")
+				return
+			}
+			if err := qtx.DeleteTaskUsageModelIfNoEvidence(r.Context(), db.DeleteTaskUsageModelIfNoEvidenceParams{
+				TaskID:   parsedTaskID,
+				Provider: entry.provider,
+				Model:    oldModel,
+			}); err != nil {
+				slog.Warn("delete superseded task usage model failed", "task_id", taskID, "provider", entry.provider, "model", oldModel, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to store task usage")
+				return
+			}
+		}
+		existingUsageRows[key] = db.TaskUsage{
+			Provider:         entry.provider,
+			Model:            u.Model,
+			InputTokens:      u.InputTokens,
+			OutputTokens:     u.OutputTokens,
+			CacheReadTokens:  u.CacheReadTokens,
+			CacheWriteTokens: u.CacheWriteTokens,
+			CostUsdTicks:     currentCost,
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		slog.Warn("commit task usage transaction failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to store task usage")
+		return
+	}
+
+	for index, entry := range usage {
+		u := entry.payload
+		metricDelta := metricDeltas[index]
+		if captureUsage[index] {
+			h.TaskService.CaptureTaskUsage(r.Context(), task, entry.provider, metricDelta.Model, metricDelta.InputTokens, metricDelta.OutputTokens, metricDelta.CacheReadTokens, metricDelta.CacheWriteTokens, metricDelta.CostUSDTicks)
+		}
 
 		// Surface prompt-cache effectiveness per run so cache hit rates are
 		// observable in logs, not just queryable from runtime_usage. The ratio
@@ -5474,7 +5789,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		if totalInput := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens; totalInput > 0 {
 			slog.Info("task prompt-cache usage",
 				"task_id", taskID,
-				"provider", provider,
+				"provider", entry.provider,
 				"model", u.Model,
 				"input_tokens", u.InputTokens,
 				"output_tokens", u.OutputTokens,
@@ -6578,6 +6893,11 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 			v := row.CostUsdTicks.Int64
 			cost = &v
 		}
+		var modelCallCount *int64
+		if row.ModelCallCount.Valid {
+			v := row.ModelCallCount.Int64
+			modelCallCount = &v
+		}
 		taskID := uuidToString(row.TaskID)
 		byTask[taskID] = append(byTask[taskID], TaskUsageData{
 			Provider:         row.Provider,
@@ -6587,6 +6907,7 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 			CacheReadTokens:  row.CacheReadTokens,
 			CacheWriteTokens: row.CacheWriteTokens,
 			CostUsdTicks:     cost,
+			ModelCallCount:   modelCallCount,
 		})
 		stats := runStatsByTask[taskID]
 		stats.mergeRow(row.Turns, row.Compactions, row.MaxContextTokens, row.ContextTokens)
@@ -6729,6 +7050,8 @@ func (h *Handler) GetIssueUsage(w http.ResponseWriter, r *http.Request) {
 		"uncosted_output_tokens":      row.UncostedOutputTokens,
 		"uncosted_cache_read_tokens":  row.UncostedCacheReadTokens,
 		"uncosted_cache_write_tokens": row.UncostedCacheWriteTokens,
+		"model_call_count":            row.ModelCallCount,
+		"model_call_unknown_count":    row.ModelCallUnknownCount,
 		"task_count":                  row.TaskCount,
 	})
 }

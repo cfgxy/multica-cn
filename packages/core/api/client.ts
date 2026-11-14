@@ -20,6 +20,8 @@ import type {
   AgentBackpressurePolicy,
   AgentBackpressureConfig,
   AgentBackpressureEvent,
+  RuntimeModelCallBudget,
+  RuntimeModelCallBudgetConfig,
 } from "./schemas";
 import type {
   Issue,
@@ -470,6 +472,7 @@ import {
   ListIssuesResponseSchema,
   CreateIssueResponseSchema,
   IssueSchema,
+  IssueUsageSummarySchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
   CommentSubIssueTaskResponseSchema,
@@ -481,6 +484,8 @@ import {
   WorkspacePromQLRulePreviewSchema,
   AgentBackpressurePolicySchema,
   AgentBackpressureEventListSchema,
+  RuntimeModelCallBudgetSchema,
+  EMPTY_RUNTIME_MODEL_CALL_BUDGET,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
@@ -491,6 +496,7 @@ import {
   EMPTY_EXECUTION_PROFILE,
   EMPTY_EXECUTION_PROFILE_LIST,
   EMPTY_EXECUTION_PROFILE_ACTIVATION,
+  EMPTY_ISSUE_USAGE_SUMMARY,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SquadSchema,
@@ -3246,6 +3252,36 @@ export class ApiClient {
     );
   }
 
+  async getRuntimeModelCallBudget(
+    runtimeId: string,
+  ): Promise<RuntimeModelCallBudget> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/model-call-budget`,
+    );
+    return parseWithFallback<RuntimeModelCallBudget>(
+      raw,
+      RuntimeModelCallBudgetSchema,
+      EMPTY_RUNTIME_MODEL_CALL_BUDGET,
+      { endpoint: "GET /api/runtimes/:id/model-call-budget" },
+    );
+  }
+
+  async putRuntimeModelCallBudget(
+    runtimeId: string,
+    config: RuntimeModelCallBudgetConfig,
+  ): Promise<RuntimeModelCallBudget> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/model-call-budget`,
+      { method: "PUT", body: JSON.stringify(config) },
+    );
+    return parseWithFallback<RuntimeModelCallBudget>(
+      raw,
+      RuntimeModelCallBudgetSchema,
+      EMPTY_RUNTIME_MODEL_CALL_BUDGET,
+      { endpoint: "PUT /api/runtimes/:id/model-call-budget" },
+    );
+  }
+
   async listRuntimeBackpressureEvents(
     runtimeId: string,
     params?: { limit?: number },
@@ -3884,7 +3920,10 @@ export class ApiClient {
   }
 
   async getIssueUsage(issueId: string): Promise<IssueUsageSummary> {
-    return this.fetch(`/api/issues/${issueId}/usage`);
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/usage`);
+    return parseWithFallback(raw, IssueUsageSummarySchema, EMPTY_ISSUE_USAGE_SUMMARY, {
+      endpoint: "GET /api/issues/:id/usage",
+    });
   }
 
   // The single-run cancel now answers with the RUYI-292 cancel matrix:

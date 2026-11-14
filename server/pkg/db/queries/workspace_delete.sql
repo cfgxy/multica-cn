@@ -203,6 +203,9 @@ WITH
 batch AS MATERIALIZED (
     SELECT id FROM unnest(@task_ids::uuid[]) AS t(id)
 ),
+deleted_task_usage_model_call_evidence AS (
+    DELETE FROM task_usage_model_call_evidence WHERE task_id IN (SELECT id FROM batch)
+),
 deleted_task_usage AS (
     DELETE FROM task_usage WHERE task_id IN (SELECT id FROM batch)
 ),

@@ -76,6 +76,8 @@ const TRAFFIC_FIXTURE = {
   configured: true,
   window: "1h",
   by: "provider",
+  calls_complete: true,
+  calls_unknown_rows: 0,
   series: {
     tokens_per_second: [
       series({ provider: "anthropic" }, [[1000, 10], [1060, 20]]),
@@ -85,6 +87,7 @@ const TRAFFIC_FIXTURE = {
       series({ provider: "anthropic" }, [[1000, 0.01], [1060, 0.02]]),
     ],
     tasks_per_second: [series({ provider: "anthropic" }, [[1000, 0.1], [1060, 0.2]])],
+    calls_per_second: [series({ provider: "anthropic" }, [[1000, 0.01], [1060, 0.02]])],
   },
 };
 
@@ -145,6 +148,36 @@ describe("UsageTrafficCard", () => {
     expect(screen.getByText("Tokens/s")).toBeInTheDocument();
     expect(screen.getByText("Cost/h")).toBeInTheDocument();
     expect(screen.getByText("Tasks/h")).toBeInTheDocument();
+    expect(screen.getByText("Calls/h")).toBeInTheDocument();
+    expect(screen.queryByText(/unreported in the selected period/)).toBeNull();
+  });
+
+  it("clarifies that Calls/h excludes unknown calls in its own traffic window", () => {
+    fixturesRef.current["usage-traffic"] = {
+      ...TRAFFIC_FIXTURE,
+      calls_complete: false,
+      calls_unknown_rows: 2,
+    };
+    renderWithI18n(<UsageTrafficCard wsId="ws-1" />);
+
+    expect(
+      screen.getByText(
+        "This traffic window has 2 usage rows with unknown call counts; Calls/h includes only calls with evidence.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Calls/h")).toBeInTheDocument();
+  });
+
+  it("keeps the call-coverage state unavailable when an older server omits it", () => {
+    const { calls_complete, calls_unknown_rows, ...legacyTraffic } = TRAFFIC_FIXTURE;
+    fixturesRef.current["usage-traffic"] = legacyTraffic;
+    renderWithI18n(<UsageTrafficCard wsId="ws-1" />);
+
+    expect(
+      screen.getByText(
+        "This server does not report whether Calls/h covers every usage row.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("switches the breakdown dimension through the query key", async () => {

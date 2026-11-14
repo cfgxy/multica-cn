@@ -1,3 +1,11 @@
+-- name: LockTaskForUsage :one
+-- Serializes terminal usage reports and live evidence writes for one task so
+-- replayed requests cannot compute the same Prometheus delta concurrently.
+SELECT status
+FROM agent_task_queue
+WHERE id = $1
+FOR UPDATE;
+
 -- name: UpsertTaskUsage :exec
 -- Bumps `updated_at` on INSERT and on conflict so the hourly-rollup worker
 -- detects the row as dirty and re-aggregates its bucket.
@@ -14,8 +22,12 @@
 -- turns / compactions / max_context_tokens (RUYI-154) are run-scoped stats
 -- reported exactly once, at task completion, so they are overwritten like the
 -- token counters rather than COALESCEd like context_tokens.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), now())
+-- model_call_count is NULL when complete provider-original per-call evidence is
+-- unavailable (migration 996). The handler derives a known count transactionally
+-- from task_usage_model_call_evidence; daemon-supplied aggregate counts are not
+-- trusted.
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, model_call_count, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), sqlc.narg('model_call_count'), now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -27,7 +39,68 @@ DO UPDATE SET
     turns = EXCLUDED.turns,
     compactions = EXCLUDED.compactions,
     max_context_tokens = EXCLUDED.max_context_tokens,
+    model_call_count = EXCLUDED.model_call_count,
     updated_at = now();
+
+-- name: InsertTaskUsageModelCallEvidence :exec
+INSERT INTO task_usage_model_call_evidence (task_id, provider, model, evidence_id)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (task_id, provider, evidence_id)
+DO UPDATE SET model = EXCLUDED.model;
+
+-- name: ListTaskUsageEvidenceModels :many
+SELECT DISTINCT model
+FROM task_usage_model_call_evidence
+WHERE task_id = @task_id
+  AND provider = @provider
+  AND evidence_id = ANY(@evidence_ids::text[]);
+
+-- name: CountTaskUsageModelCallEvidenceByIDs :one
+SELECT COUNT(*)::bigint
+FROM task_usage_model_call_evidence
+WHERE task_id = @task_id
+  AND provider = @provider
+  AND evidence_id = ANY(@evidence_ids::text[]);
+
+-- name: RefreshTaskUsageModelCallCount :exec
+UPDATE task_usage
+SET model_call_count = (
+        SELECT COUNT(*)::bigint
+        FROM task_usage_model_call_evidence AS e
+        WHERE e.task_id = @task_id
+          AND e.provider = @provider
+          AND e.model = @model
+    ),
+    updated_at = now()
+WHERE task_id = @task_id
+  AND provider = @provider
+  AND model = @model
+  AND model_call_count IS NOT NULL;
+
+-- name: DeleteTaskUsageModelIfNoEvidence :exec
+DELETE FROM task_usage
+WHERE task_usage.task_id = @task_id
+  AND task_usage.provider = @provider
+  AND task_usage.model = @model
+  AND task_usage.model_call_count IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM task_usage_model_call_evidence
+      WHERE task_id = @task_id
+        AND provider = @provider
+        AND model = @model
+  );
+
+-- name: MarkTaskUsageModelCallsUnknown :exec
+INSERT INTO task_usage (task_id, provider, model, model_call_count, updated_at)
+VALUES ($1, $2, $3, NULL, now())
+ON CONFLICT (task_id, provider, model)
+DO UPDATE SET model_call_count = NULL, updated_at = now();
+
+-- name: CountTaskUsageModelCallEvidence :one
+SELECT COUNT(*)::bigint
+FROM task_usage_model_call_evidence
+WHERE task_id = $1 AND provider = $2 AND model = $3;
 
 -- name: GetTaskUsage :many
 SELECT * FROM task_usage
@@ -68,6 +141,8 @@ LIMIT 1;
 -- RUYI-154) are run-scoped, not per-model: a run that reports more than one
 -- (provider, model) row carries the same run-level reading on each of its
 -- rows. The handler layer collapses them back to one figure per task.
+-- model_call_count stays per-model: NULL is an explicit unknown when provider
+-- original call evidence is incomplete, so consumers must not treat it as 0.
 --
 -- Ordering is by task then model so the client can group by task_id in one
 -- pass. Uses idx_agent_task_queue_issue_id (migration 035) + the task_usage
@@ -84,7 +159,8 @@ SELECT
     tu.context_tokens,
     tu.turns,
     tu.compactions,
-    tu.max_context_tokens
+    tu.max_context_tokens,
+    tu.model_call_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.issue_id = $1
@@ -101,6 +177,8 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(SUM(tu.model_call_count), 0)::bigint AS model_call_count,
+    COUNT(*) FILTER (WHERE tu.model_call_count IS NULL)::int AS model_call_unknown_count,
     COUNT(DISTINCT tu.task_id)::int AS task_count
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
@@ -141,6 +219,12 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    -- Call counts (migration 996): the known half plus the count of rows that
+    -- have no provider call evidence. Readers must not present
+    -- model_call_count as a complete total while model_call_unknown_count is
+    -- nonzero — that would turn "N rows unknown" into "0 calls".
+    SUM(model_call_count)::bigint                       AS model_call_count,
+    SUM(model_call_unknown_count)::bigint                AS model_call_unknown_count,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
@@ -181,6 +265,10 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    -- Call counts: known half + row count without provider evidence, same
+    -- consumer contract as ListDashboardUsageDaily.
+    SUM(model_call_count)::bigint                       AS model_call_count,
+    SUM(model_call_unknown_count)::bigint                AS model_call_unknown_count,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
@@ -354,6 +442,22 @@ WHERE a.workspace_id = $1
 GROUP BY atq.agent_id, 2
 ORDER BY atq.agent_id, 2;
 
+-- name: CountWorkspaceUsageUnknownCallsInWindow :one
+-- The traffic panel's model-call counter contains only rows backed by durable
+-- provider evidence. Count missing-evidence rows over the complete PromQL
+-- rate evaluation horizon, including the lookbehind before the visible window,
+-- so its client can distinguish a complete zero from a known-only rate.
+-- `task_usage.created_at` is the usage observation time; an evidence correction
+-- updates the row without moving it into a newer window.
+SELECT COUNT(*)::bigint
+FROM task_usage tu
+JOIN agent_task_queue atq ON atq.id = tu.task_id
+JOIN agent a ON a.id = atq.agent_id
+WHERE a.workspace_id = sqlc.arg('workspace_id')
+  AND tu.created_at >= sqlc.arg('since')::timestamptz
+  AND tu.created_at <= sqlc.arg('until')::timestamptz
+  AND tu.model_call_count IS NULL;
+
 -- name: SumTaskUsageTotalsForMetrics :many
 -- Lifetime per-(workspace, runtime, provider, model) token/cost/task sums for
 -- the Prometheus usage exposition (RUYI-618). The full-table lifetime sum is
@@ -368,23 +472,54 @@ ORDER BY atq.agent_id, 2;
 -- tokens being uncosted — same COALESCE shape as ListDashboardUsageDaily. The
 -- estimate itself is applied in Go (metrics.UsageCollector) via
 -- PriceForModelAlias, because sqlc cannot call the Go rate table.
+WITH token_totals AS (
+    SELECT
+        workspace_id::text AS workspace_id,
+        runtime_id::text AS runtime_id,
+        LOWER(provider) AS provider,
+        model,
+        SUM(input_tokens)::bigint AS input_tokens,
+        SUM(output_tokens)::bigint AS output_tokens,
+        SUM(cache_read_tokens)::bigint AS cache_read_tokens,
+        SUM(cache_write_tokens)::bigint AS cache_write_tokens,
+        SUM(cost_usd_ticks)::bigint AS cost_usd_ticks,
+        SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint AS uncosted_input_tokens,
+        SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint AS uncosted_output_tokens,
+        SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
+        SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+        SUM(task_count)::bigint AS task_count
+    FROM task_usage_hourly
+    GROUP BY workspace_id, runtime_id, LOWER(provider), model
+), call_totals AS (
+    SELECT
+        a.workspace_id::text AS workspace_id,
+        atq.runtime_id::text AS runtime_id,
+        LOWER(t.provider) AS provider,
+        t.model,
+        SUM(t.model_call_count)::bigint AS model_call_count
+    FROM task_usage_model_call_totals t
+    JOIN agent_task_queue atq ON atq.id = t.task_id
+    JOIN agent a ON a.id = atq.agent_id
+    GROUP BY a.workspace_id, atq.runtime_id, LOWER(t.provider), t.model
+)
 SELECT
-    workspace_id::text              AS workspace_id,
-    runtime_id::text                AS runtime_id,
-    LOWER(provider)                 AS provider,
-    model,
-    SUM(input_tokens)::bigint       AS input_tokens,
-    SUM(output_tokens)::bigint      AS output_tokens,
-    SUM(cache_read_tokens)::bigint  AS cache_read_tokens,
-    SUM(cache_write_tokens)::bigint AS cache_write_tokens,
-    SUM(cost_usd_ticks)::bigint     AS cost_usd_ticks,
-    SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint           AS uncosted_input_tokens,
-    SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
-    SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
-    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
-    SUM(task_count)::bigint         AS task_count
-FROM task_usage_hourly
-GROUP BY workspace_id, runtime_id, LOWER(provider), model;
+    COALESCE(t.workspace_id, c.workspace_id) AS workspace_id,
+    COALESCE(t.runtime_id, c.runtime_id) AS runtime_id,
+    COALESCE(t.provider, c.provider) AS provider,
+    COALESCE(t.model, c.model) AS model,
+    COALESCE(t.input_tokens, 0)::bigint AS input_tokens,
+    COALESCE(t.output_tokens, 0)::bigint AS output_tokens,
+    COALESCE(t.cache_read_tokens, 0)::bigint AS cache_read_tokens,
+    COALESCE(t.cache_write_tokens, 0)::bigint AS cache_write_tokens,
+    COALESCE(t.cost_usd_ticks, 0)::bigint AS cost_usd_ticks,
+    COALESCE(t.uncosted_input_tokens, 0)::bigint AS uncosted_input_tokens,
+    COALESCE(t.uncosted_output_tokens, 0)::bigint AS uncosted_output_tokens,
+    COALESCE(t.uncosted_cache_read_tokens, 0)::bigint AS uncosted_cache_read_tokens,
+    COALESCE(t.uncosted_cache_write_tokens, 0)::bigint AS uncosted_cache_write_tokens,
+    COALESCE(c.model_call_count, 0)::bigint AS model_call_count,
+    COALESCE(t.task_count, 0)::bigint AS task_count
+FROM token_totals t
+FULL OUTER JOIN call_totals c USING (workspace_id, runtime_id, provider, model);
 
 -- name: SumTaskFailuresForMetrics :many
 -- Lifetime per-(workspace, agent, provider, model, failure_reason) terminal

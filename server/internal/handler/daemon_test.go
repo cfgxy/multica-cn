@@ -249,8 +249,14 @@ func claimTaskByRuntimeForTest(t *testing.T, runtimeID string) (*struct {
 }, string) {
 	t.Helper()
 
+	var daemonID string
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT daemon_id FROM agent_runtime WHERE id = $1
+	`, runtimeID).Scan(&daemonID); err != nil {
+		t.Fatalf("load runtime daemon id: %v", err)
+	}
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
-		testWorkspaceID, "claim-reclaim-review")
+		testWorkspaceID, daemonID)
 	req = withURLParam(req, "runtimeId", runtimeID)
 	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 

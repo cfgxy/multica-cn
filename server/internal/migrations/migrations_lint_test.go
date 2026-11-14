@@ -148,6 +148,20 @@ var concurrentMigrationPrefixGroups = map[string]struct {
 		issue: "RUYI-843",
 		stems: []string{"980_runtime_concurrency_limit"},
 	},
+	"1003": {
+		issue: "RUYI-870",
+		stems: []string{
+			"1003_runtime_model_call_budget",
+			"1003_task_usage_model_call_count",
+			"1003_task_usage_model_call_evidence_index",
+		},
+		concurrentIndexes: []string{
+			"1003_task_usage_model_call_evidence_index",
+		},
+		supportingStems: []string{
+			"1003_runtime_model_call_budget",
+		},
+	},
 	"994": {
 		issue: "RUYI-891",
 		stems: []string{
@@ -288,8 +302,8 @@ func TestConcurrentMigrationPrefixGroupsUseSingleStatementIndexes(t *testing.T) 
 			t.Errorf("approved migration prefix %s must name its issue", prefix)
 		}
 		prefixNumber, err := strconv.Atoi(prefix)
-		if err != nil || prefixNumber < 900 || prefixNumber > 999 {
-			t.Errorf("approved migration prefix %s must be in the post-consolidation 9xx range", prefix)
+		if err != nil || prefixNumber < 900 {
+			t.Errorf("approved migration prefix %s must be in the post-consolidation numeric range", prefix)
 		}
 
 		registeredStems := append([]string(nil), group.concurrentIndexes...)

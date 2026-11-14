@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/selfexec"
@@ -74,11 +75,28 @@ func Files(direction string) ([]string, error) {
 	}
 
 	if direction == "down" {
-		sort.Sort(sort.Reverse(sort.StringSlice(files)))
+		sort.Slice(files, func(i, j int) bool {
+			return migrationOrderKey(files[i]) > migrationOrderKey(files[j])
+		})
 	} else {
-		sort.Strings(files)
+		sort.Slice(files, func(i, j int) bool {
+			return migrationOrderKey(files[i]) < migrationOrderKey(files[j])
+		})
 	}
 	return files, nil
+}
+
+func migrationOrderKey(filename string) string {
+	base := filepath.Base(filename)
+	prefix := base
+	if index := strings.IndexByte(prefix, '_'); index >= 0 {
+		prefix = prefix[:index]
+	}
+	version, err := strconv.Atoi(prefix)
+	if err != nil {
+		return base
+	}
+	return fmt.Sprintf("%020d_%s", version, base)
 }
 
 // AllVersions returns every "up" migration version found on disk, in apply

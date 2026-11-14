@@ -99,6 +99,7 @@ import { cn } from "@/lib/utils";
 import {
   FAILURE_CLASS_OPACITY,
   formatCompactNumber,
+  formatModelCallKpiValue,
   formatRatePercent,
   formatUsd,
 } from "@/lib/stats-format";
@@ -802,6 +803,40 @@ function UsagePane(props: UsagePaneProps) {
           })}
         />
       </View>
+
+      {/* Model API call KPI (migration 996): rendered only when the window
+          actually has data. The value is the known half; rows whose provider
+          gave no call evidence stay in the hint, never folded into the
+          number (contract: unknown must not read as 0). */}
+      {!props.totals.modelCallEvidenceAvailable ||
+      props.totals.modelCallCount > 0 ||
+      props.totals.modelCallUnknownCount > 0 ? (
+        <View className="mt-3 flex-row gap-3">
+          <KpiCard
+            label={t("kpi.calls_label", "Calls · {{days}}D", { days: props.windowLen })}
+            value={
+              props.totals.modelCallEvidenceAvailable
+                ? formatModelCallKpiValue(
+                    props.totals.modelCallCount,
+                    props.totals.modelCallUnknownCount,
+                  )
+                : "—"
+            }
+            hint={
+              !props.totals.modelCallEvidenceAvailable
+                ? t(
+                    "kpi.calls_unavailable_hint",
+                    "This server does not report model call evidence for the selected period.",
+                  )
+                : props.totals.modelCallUnknownCount > 0
+                  ? t("kpi.calls_unknown_hint", "{{unknown}} rows unreported", {
+                      unknown: props.totals.modelCallUnknownCount,
+                    })
+                  : undefined
+            }
+          />
+        </View>
+      ) : null}
 
       <TrendCard
         allowedDims={props.allowedDims}

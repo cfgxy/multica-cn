@@ -137,7 +137,7 @@ const clearAgentRuntimeCredentialRef = `-- name: ClearAgentRuntimeCredentialRef 
 UPDATE agent_runtime
 SET credential_ref = NULL, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds
 `
 
 // Unsets the instance's credential pointer. Runs in the same transaction as
@@ -168,6 +168,9 @@ func (q *Queries) ClearAgentRuntimeCredentialRef(ctx context.Context, id pgtype.
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 	)
 	return i, err
 }
@@ -227,7 +230,7 @@ INSERT INTO agent_runtime (
     workspace_id, name, runtime_mode, provider, status,
     device_info, metadata, owner_id, profile_id, visibility, registration_source
 ) VALUES ($1, $2, 'cloud', $3, 'online', '', $4, $5, $6, 'public', 'manual')
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds
 `
 
 type CreateManualAgentRuntimeParams struct {
@@ -280,6 +283,9 @@ func (q *Queries) CreateManualAgentRuntime(ctx context.Context, arg CreateManual
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 	)
 	return i, err
 }
@@ -462,7 +468,7 @@ func (q *Queries) FailTasksForOfflineRuntimes(ctx context.Context, arg FailTasks
 }
 
 const findLegacyRuntimesByDaemonID = `-- name: FindLegacyRuntimesByDaemonID :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE workspace_id = $1
   AND provider = $2
   AND LOWER(daemon_id) = LOWER($3)
@@ -520,6 +526,9 @@ func (q *Queries) FindLegacyRuntimesByDaemonID(ctx context.Context, arg FindLega
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -579,7 +588,7 @@ func (q *Queries) ForceOfflineRuntimesByIDs(ctx context.Context, runtimeIds []pg
 }
 
 const getAgentRuntime = `-- name: GetAgentRuntime :one
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE id = $1
 `
 
@@ -608,12 +617,15 @@ func (q *Queries) GetAgentRuntime(ctx context.Context, id pgtype.UUID) (AgentRun
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 	)
 	return i, err
 }
 
 const getAgentRuntimeForWorkspace = `-- name: GetAgentRuntimeForWorkspace :one
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -647,12 +659,15 @@ func (q *Queries) GetAgentRuntimeForWorkspace(ctx context.Context, arg GetAgentR
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 	)
 	return i, err
 }
 
 const getAgentRuntimes = `-- name: GetAgentRuntimes :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE id = ANY($1::uuid[])
 `
 
@@ -692,6 +707,9 @@ func (q *Queries) GetAgentRuntimes(ctx context.Context, ids []pgtype.UUID) ([]Ag
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -782,7 +800,7 @@ func (q *Queries) IsAgentRuntimeEligibleForGC(ctx context.Context, arg IsAgentRu
 }
 
 const listAgentRuntimes = `-- name: ListAgentRuntimes :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE workspace_id = $1
   AND removed_at IS NULL
 ORDER BY created_at ASC
@@ -819,6 +837,9 @@ func (q *Queries) ListAgentRuntimes(ctx context.Context, workspaceID pgtype.UUID
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -831,7 +852,7 @@ func (q *Queries) ListAgentRuntimes(ctx context.Context, workspaceID pgtype.UUID
 }
 
 const listAgentRuntimesByOwner = `-- name: ListAgentRuntimesByOwner :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE workspace_id = $1 AND owner_id = $2
   AND removed_at IS NULL
 ORDER BY created_at ASC
@@ -873,6 +894,9 @@ func (q *Queries) ListAgentRuntimesByOwner(ctx context.Context, arg ListAgentRun
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -885,7 +909,7 @@ func (q *Queries) ListAgentRuntimesByOwner(ctx context.Context, arg ListAgentRun
 }
 
 const listAgentRuntimesByOwnerIncludingRemoved = `-- name: ListAgentRuntimesByOwnerIncludingRemoved :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE workspace_id = $1 AND owner_id = $2
 ORDER BY created_at ASC
 `
@@ -928,6 +952,9 @@ func (q *Queries) ListAgentRuntimesByOwnerIncludingRemoved(ctx context.Context, 
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -940,7 +967,7 @@ func (q *Queries) ListAgentRuntimesByOwnerIncludingRemoved(ctx context.Context, 
 }
 
 const listAgentRuntimesIncludingRemoved = `-- name: ListAgentRuntimesIncludingRemoved :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -978,6 +1005,9 @@ func (q *Queries) ListAgentRuntimesIncludingRemoved(ctx context.Context, workspa
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -1100,7 +1130,7 @@ func (q *Queries) ListRuntimeOwnersByDaemon(ctx context.Context, arg ListRuntime
 }
 
 const listRuntimesWithCredentialRef = `-- name: ListRuntimesWithCredentialRef :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE credential_ref IS NOT NULL
 `
 
@@ -1138,6 +1168,9 @@ func (q *Queries) ListRuntimesWithCredentialRef(ctx context.Context) ([]AgentRun
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -1201,7 +1234,7 @@ func (q *Queries) ListStaleOfflineRuntimeGCCandidates(ctx context.Context, arg L
 }
 
 const listVisibleAgentRuntimes = `-- name: ListVisibleAgentRuntimes :many
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE workspace_id = $1
   AND removed_at IS NULL
   AND (owner_id = $2 OR visibility = 'public')
@@ -1247,6 +1280,9 @@ func (q *Queries) ListVisibleAgentRuntimes(ctx context.Context, arg ListVisibleA
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -1291,7 +1327,7 @@ func (q *Queries) ListWorkspaceDaemonIDs(ctx context.Context, workspaceID pgtype
 }
 
 const lockAgentRuntime = `-- name: LockAgentRuntime :one
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at FROM agent_runtime
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds FROM agent_runtime
 WHERE id = $1
 FOR UPDATE
 `
@@ -1334,6 +1370,9 @@ func (q *Queries) LockAgentRuntime(ctx context.Context, id pgtype.UUID) (AgentRu
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 	)
 	return i, err
 }
@@ -1413,7 +1452,7 @@ const markAgentRuntimeOnline = `-- name: MarkAgentRuntimeOnline :one
 UPDATE agent_runtime
 SET status = 'online', last_seen_at = now(), updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds
 `
 
 // Used on the offline→online transition (and on first heartbeat after
@@ -1444,6 +1483,9 @@ func (q *Queries) MarkAgentRuntimeOnline(ctx context.Context, id pgtype.UUID) (A
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 	)
 	return i, err
 }
@@ -1704,7 +1746,7 @@ const setAgentRuntimeCredentialRef = `-- name: SetAgentRuntimeCredentialRef :one
 UPDATE agent_runtime
 SET credential_ref = $2, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds
 `
 
 type SetAgentRuntimeCredentialRefParams struct {
@@ -1742,6 +1784,9 @@ func (q *Queries) SetAgentRuntimeCredentialRef(ctx context.Context, arg SetAgent
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 	)
 	return i, err
 }
@@ -2030,7 +2075,7 @@ UPDATE agent_runtime
 SET max_concurrent_tasks = $1, updated_at = now()
 WHERE id = $2::uuid
   AND EXISTS (SELECT 1 FROM capacity_lock)
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds
 `
 
 type UpdateAgentRuntimeConcurrencyLimitParams struct {
@@ -2063,6 +2108,9 @@ func (q *Queries) UpdateAgentRuntimeConcurrencyLimit(ctx context.Context, arg Up
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 	)
 	return i, err
 }
@@ -2071,7 +2119,7 @@ const updateAgentRuntimeCustomName = `-- name: UpdateAgentRuntimeCustomName :one
 UPDATE agent_runtime
 SET custom_name = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds
 `
 
 type UpdateAgentRuntimeCustomNameParams struct {
@@ -2109,6 +2157,9 @@ func (q *Queries) UpdateAgentRuntimeCustomName(ctx context.Context, arg UpdateAg
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 	)
 	return i, err
 }
@@ -2119,7 +2170,7 @@ SET custom_name = $1, updated_at = now()
 WHERE workspace_id = $2
   AND daemon_id = $3
   AND ($4::uuid IS NULL OR owner_id = $4)
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds
 `
 
 type UpdateAgentRuntimeCustomNameByDaemonParams struct {
@@ -2171,6 +2222,9 @@ func (q *Queries) UpdateAgentRuntimeCustomNameByDaemon(ctx context.Context, arg 
 			&i.CredentialRef,
 			&i.MaxConcurrentTasks,
 			&i.RemovedAt,
+			&i.ModelCallBudgetEnabled,
+			&i.ModelCallBudgetMaxCalls,
+			&i.ModelCallBudgetWindowSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -2182,11 +2236,72 @@ func (q *Queries) UpdateAgentRuntimeCustomNameByDaemon(ctx context.Context, arg 
 	return items, nil
 }
 
+const updateAgentRuntimeModelCallBudget = `-- name: UpdateAgentRuntimeModelCallBudget :one
+WITH capacity_lock AS MATERIALIZED (
+    SELECT pg_advisory_xact_lock(hashtextextended($4::uuid::text || ':runtime_claim_capacity', 0))
+)
+UPDATE agent_runtime
+SET model_call_budget_enabled = $1,
+    model_call_budget_max_calls = $2,
+    model_call_budget_window_seconds = $3,
+    updated_at = now()
+WHERE id = $4
+  AND EXISTS (SELECT 1 FROM capacity_lock)
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds
+`
+
+type UpdateAgentRuntimeModelCallBudgetParams struct {
+	ModelCallBudgetEnabled       bool        `json:"model_call_budget_enabled"`
+	ModelCallBudgetMaxCalls      int64       `json:"model_call_budget_max_calls"`
+	ModelCallBudgetWindowSeconds int32       `json:"model_call_budget_window_seconds"`
+	ID                           pgtype.UUID `json:"id"`
+}
+
+// The budget is per runtime. Provider-call consumption is calculated from
+// task_usage separately at claim time; these columns only configure that
+// admission check and never receive daemon-reported usage.
+func (q *Queries) UpdateAgentRuntimeModelCallBudget(ctx context.Context, arg UpdateAgentRuntimeModelCallBudgetParams) (AgentRuntime, error) {
+	row := q.db.QueryRow(ctx, updateAgentRuntimeModelCallBudget,
+		arg.ModelCallBudgetEnabled,
+		arg.ModelCallBudgetMaxCalls,
+		arg.ModelCallBudgetWindowSeconds,
+		arg.ID,
+	)
+	var i AgentRuntime
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DaemonID,
+		&i.Name,
+		&i.RuntimeMode,
+		&i.Provider,
+		&i.Status,
+		&i.DeviceInfo,
+		&i.Metadata,
+		&i.LastSeenAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OwnerID,
+		&i.LegacyDaemonID,
+		&i.Visibility,
+		&i.ProfileID,
+		&i.CustomName,
+		&i.RegistrationSource,
+		&i.CredentialRef,
+		&i.MaxConcurrentTasks,
+		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
+	)
+	return i, err
+}
+
 const updateAgentRuntimeVisibility = `-- name: UpdateAgentRuntimeVisibility :one
 UPDATE agent_runtime
 SET visibility = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds
 `
 
 type UpdateAgentRuntimeVisibilityParams struct {
@@ -2223,6 +2338,9 @@ func (q *Queries) UpdateAgentRuntimeVisibility(ctx context.Context, arg UpdateAg
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 	)
 	return i, err
 }
@@ -2252,7 +2370,7 @@ DO UPDATE SET
     updated_at = now()
 WHERE $10::uuid IS NULL
    OR agent_runtime.owner_id = $10::uuid
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, (xmax = 0) AS inserted
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds, (xmax = 0) AS inserted
 `
 
 type UpsertAgentRuntimeParams struct {
@@ -2269,28 +2387,31 @@ type UpsertAgentRuntimeParams struct {
 }
 
 type UpsertAgentRuntimeRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	DaemonID           pgtype.Text        `json:"daemon_id"`
-	Name               string             `json:"name"`
-	RuntimeMode        string             `json:"runtime_mode"`
-	Provider           string             `json:"provider"`
-	Status             string             `json:"status"`
-	DeviceInfo         string             `json:"device_info"`
-	Metadata           []byte             `json:"metadata"`
-	LastSeenAt         pgtype.Timestamptz `json:"last_seen_at"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	OwnerID            pgtype.UUID        `json:"owner_id"`
-	LegacyDaemonID     pgtype.Text        `json:"legacy_daemon_id"`
-	Visibility         string             `json:"visibility"`
-	ProfileID          pgtype.UUID        `json:"profile_id"`
-	CustomName         pgtype.Text        `json:"custom_name"`
-	RegistrationSource string             `json:"registration_source"`
-	CredentialRef      pgtype.Text        `json:"credential_ref"`
-	MaxConcurrentTasks int32              `json:"max_concurrent_tasks"`
-	RemovedAt          pgtype.Timestamptz `json:"removed_at"`
-	Inserted           bool               `json:"inserted"`
+	ID                           pgtype.UUID        `json:"id"`
+	WorkspaceID                  pgtype.UUID        `json:"workspace_id"`
+	DaemonID                     pgtype.Text        `json:"daemon_id"`
+	Name                         string             `json:"name"`
+	RuntimeMode                  string             `json:"runtime_mode"`
+	Provider                     string             `json:"provider"`
+	Status                       string             `json:"status"`
+	DeviceInfo                   string             `json:"device_info"`
+	Metadata                     []byte             `json:"metadata"`
+	LastSeenAt                   pgtype.Timestamptz `json:"last_seen_at"`
+	CreatedAt                    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                    pgtype.Timestamptz `json:"updated_at"`
+	OwnerID                      pgtype.UUID        `json:"owner_id"`
+	LegacyDaemonID               pgtype.Text        `json:"legacy_daemon_id"`
+	Visibility                   string             `json:"visibility"`
+	ProfileID                    pgtype.UUID        `json:"profile_id"`
+	CustomName                   pgtype.Text        `json:"custom_name"`
+	RegistrationSource           string             `json:"registration_source"`
+	CredentialRef                pgtype.Text        `json:"credential_ref"`
+	MaxConcurrentTasks           int32              `json:"max_concurrent_tasks"`
+	RemovedAt                    pgtype.Timestamptz `json:"removed_at"`
+	ModelCallBudgetEnabled       bool               `json:"model_call_budget_enabled"`
+	ModelCallBudgetMaxCalls      int64              `json:"model_call_budget_max_calls"`
+	ModelCallBudgetWindowSeconds int32              `json:"model_call_budget_window_seconds"`
+	Inserted                     bool               `json:"inserted"`
 }
 
 // (xmax = 0) AS inserted distinguishes a fresh insert (true) from an upsert
@@ -2338,6 +2459,9 @@ func (q *Queries) UpsertAgentRuntime(ctx context.Context, arg UpsertAgentRuntime
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 		&i.Inserted,
 	)
 	return i, err
@@ -2370,7 +2494,7 @@ DO UPDATE SET
     updated_at = now()
 WHERE $11::uuid IS NULL
    OR agent_runtime.owner_id = $11::uuid
-RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, (xmax = 0) AS inserted
+RETURNING id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, registration_source, credential_ref, max_concurrent_tasks, removed_at, model_call_budget_enabled, model_call_budget_max_calls, model_call_budget_window_seconds, (xmax = 0) AS inserted
 `
 
 type UpsertAgentRuntimeWithProfileParams struct {
@@ -2388,28 +2512,31 @@ type UpsertAgentRuntimeWithProfileParams struct {
 }
 
 type UpsertAgentRuntimeWithProfileRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	DaemonID           pgtype.Text        `json:"daemon_id"`
-	Name               string             `json:"name"`
-	RuntimeMode        string             `json:"runtime_mode"`
-	Provider           string             `json:"provider"`
-	Status             string             `json:"status"`
-	DeviceInfo         string             `json:"device_info"`
-	Metadata           []byte             `json:"metadata"`
-	LastSeenAt         pgtype.Timestamptz `json:"last_seen_at"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	OwnerID            pgtype.UUID        `json:"owner_id"`
-	LegacyDaemonID     pgtype.Text        `json:"legacy_daemon_id"`
-	Visibility         string             `json:"visibility"`
-	ProfileID          pgtype.UUID        `json:"profile_id"`
-	CustomName         pgtype.Text        `json:"custom_name"`
-	RegistrationSource string             `json:"registration_source"`
-	CredentialRef      pgtype.Text        `json:"credential_ref"`
-	MaxConcurrentTasks int32              `json:"max_concurrent_tasks"`
-	RemovedAt          pgtype.Timestamptz `json:"removed_at"`
-	Inserted           bool               `json:"inserted"`
+	ID                           pgtype.UUID        `json:"id"`
+	WorkspaceID                  pgtype.UUID        `json:"workspace_id"`
+	DaemonID                     pgtype.Text        `json:"daemon_id"`
+	Name                         string             `json:"name"`
+	RuntimeMode                  string             `json:"runtime_mode"`
+	Provider                     string             `json:"provider"`
+	Status                       string             `json:"status"`
+	DeviceInfo                   string             `json:"device_info"`
+	Metadata                     []byte             `json:"metadata"`
+	LastSeenAt                   pgtype.Timestamptz `json:"last_seen_at"`
+	CreatedAt                    pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                    pgtype.Timestamptz `json:"updated_at"`
+	OwnerID                      pgtype.UUID        `json:"owner_id"`
+	LegacyDaemonID               pgtype.Text        `json:"legacy_daemon_id"`
+	Visibility                   string             `json:"visibility"`
+	ProfileID                    pgtype.UUID        `json:"profile_id"`
+	CustomName                   pgtype.Text        `json:"custom_name"`
+	RegistrationSource           string             `json:"registration_source"`
+	CredentialRef                pgtype.Text        `json:"credential_ref"`
+	MaxConcurrentTasks           int32              `json:"max_concurrent_tasks"`
+	RemovedAt                    pgtype.Timestamptz `json:"removed_at"`
+	ModelCallBudgetEnabled       bool               `json:"model_call_budget_enabled"`
+	ModelCallBudgetMaxCalls      int64              `json:"model_call_budget_max_calls"`
+	ModelCallBudgetWindowSeconds int32              `json:"model_call_budget_window_seconds"`
+	Inserted                     bool               `json:"inserted"`
 }
 
 // Custom-runtime registration: a daemon resolved a workspace runtime_profile's
@@ -2457,6 +2584,9 @@ func (q *Queries) UpsertAgentRuntimeWithProfile(ctx context.Context, arg UpsertA
 		&i.CredentialRef,
 		&i.MaxConcurrentTasks,
 		&i.RemovedAt,
+		&i.ModelCallBudgetEnabled,
+		&i.ModelCallBudgetMaxCalls,
+		&i.ModelCallBudgetWindowSeconds,
 		&i.Inserted,
 	)
 	return i, err

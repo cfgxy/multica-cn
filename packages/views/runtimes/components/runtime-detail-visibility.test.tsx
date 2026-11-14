@@ -151,6 +151,12 @@ vi.mock("@multica/core/runtimes/mutations", () => ({
     },
     isPending: false,
   }),
+  useSaveRuntimeModelCallBudget: () => ({
+    mutate: (_config: unknown, opts?: { onSuccess?: () => void }) => {
+      opts?.onSuccess?.();
+    },
+    isPending: false,
+  }),
 }));
 
 // Stubbing ProviderLogo / UsageSection avoids dragging in chart libs and
@@ -237,6 +243,18 @@ describe("RuntimeDetail visibility section", () => {
     expect(screen.getByText("Visibility")).toBeInTheDocument();
     expect(screen.getByText("Private")).toBeInTheDocument();
     expect(screen.getByText("Public")).toBeInTheDocument();
+  });
+
+  it("mounts the model-call budget for a readable daemon-less cloud runtime", () => {
+    renderDetail(
+      makeRuntime({
+        runtime_mode: "cloud",
+        daemon_id: null,
+        owner_id: "user-me",
+      }),
+    );
+
+    expect(screen.getByTestId("model-call-budget-card")).toBeInTheDocument();
   });
 
   it("keeps daemon CLI version details without rendering update controls", () => {
@@ -337,9 +355,9 @@ describe("RuntimeDetail visibility section", () => {
     expect(screen.queryByText("Private")).not.toBeInTheDocument();
   });
 
-  // MUL-6126: a workspace admin may rename or hide someone else's runtime,
-  // but not share it — sharing is the owner's consent to lend their machine,
-  // and the PATCH refuses an admin regardless of what this UI renders.
+  // MUL-6126: a workspace admin may rename or delete someone else's runtime,
+  // but not share it — the runtime owner or workspace owner controls runtime
+  // visibility, and the PATCH refuses an admin regardless of this UI.
   it("keeps visibility read-only for a workspace admin who does not own the runtime", () => {
     mockQueryData.members = [
       { user_id: "user-me", role: "admin" },

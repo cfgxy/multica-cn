@@ -50,6 +50,11 @@ export function formatCompactNumber(value: number): string {
   );
 }
 
+export function formatModelCallKpiValue(known: number, unknown: number): string {
+  const knownValue = formatCompactNumber(known);
+  return unknown > 0 ? `${knownValue} + ?` : knownValue;
+}
+
 // CurrencyNumberFlow 的金额格式：$ 前缀、|v| < 100 两位小数、
 // ≥ 100 取整、无千分位。
 export function formatUsd(value: number): string {
