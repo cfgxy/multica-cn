@@ -2,9 +2,15 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/promptquizsweep"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -165,4 +171,115 @@ func TestPromptQuizScheduleAgentOverrideSurvivesWorkspaceDisable(t *testing.T) {
 	if status != "cancelled" {
 		t.Fatalf("Quiz task after restoring disabled workspace = %q; want cancelled", status)
 	}
+}
+
+// TestPromptQuizScheduleDisableSerializesQuizEnqueue holds the same workspace
+// lock as a real disable while a Quiz writer waits. Once the disable commits,
+// the writer's second transaction command gets a fresh snapshot and refuses the
+// task instead of leaving a queued row that could run after restore.
+func TestPromptQuizScheduleDisableSerializesQuizEnqueue(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pool := newTaskClaimRacePool(t)
+	workspaceID, agentID, runtimeID, ownerID := createSchedulingPauseFixture(t, ctx, pool)
+	workspaceUUID := util.MustParseUUID(workspaceID)
+	agentUUID := util.MustParseUUID(agentID)
+	ownerUUID := util.MustParseUUID(ownerID)
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin disable transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := db.New(tx)
+	if _, err := qtx.LockWorkspaceForPromptQuizSchedule(ctx, workspaceUUID); err != nil {
+		t.Fatalf("lock workspace for disable: %v", err)
+	}
+	if _, err := qtx.UpsertPromptQuizScheduleControl(ctx, db.UpsertPromptQuizScheduleControlParams{
+		WorkspaceID: workspaceUUID,
+		AgentID:     pgtypeUUIDNull(),
+		Enabled:     false,
+		Reason:      "concurrent disable test",
+		UpdatedBy:   ownerUUID,
+	}); err != nil {
+		t.Fatalf("write disabled control: %v", err)
+	}
+
+	type workspaceRowLock struct {
+		relation uint32
+		page     int32
+		tuple    int32
+	}
+	var lock workspaceRowLock
+	var ctid string
+	if err := pool.QueryRow(ctx, `
+		SELECT tableoid::oid, ctid::text FROM workspace WHERE id = $1
+	`, workspaceUUID).Scan(&lock.relation, &ctid); err != nil {
+		t.Fatalf("read workspace tuple: %v", err)
+	}
+	if _, err := fmt.Sscanf(ctid, "(%d,%d)", &lock.page, &lock.tuple); err != nil {
+		t.Fatalf("parse workspace tuple %q: %v", ctid, err)
+	}
+
+	enqueueErr := make(chan error, 1)
+	go func() {
+		_, err := promptquizsweep.CreatePromptQuizTask(ctx, db.New(pool), pool, db.CreatePromptQuizTaskParams{
+			AgentID:   agentUUID,
+			RuntimeID: util.MustParseUUID(runtimeID),
+			Context:   []byte(`{"kind":"quiz"}`),
+			ItemID:    util.MustParseUUID("00000000-0000-0000-0000-000000000001"),
+		})
+		enqueueErr <- err
+	}()
+
+	waitDeadline := time.Now().Add(2 * time.Second)
+	for {
+		var waiting bool
+		if err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_locks
+				WHERE locktype = 'tuple'
+				  AND relation = $1
+				  AND page = $2
+				  AND tuple = $3
+				  AND NOT granted
+			)
+		`, lock.relation, lock.page, lock.tuple).Scan(&waiting); err != nil {
+			t.Fatalf("observe enqueue lock wait: %v", err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(waitDeadline) {
+			t.Fatal("Quiz enqueue did not wait for the disable workspace lock")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit disable transaction: %v", err)
+	}
+	if err := <-enqueueErr; !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("Quiz enqueue after committed disable = %v; want pgx.ErrNoRows", err)
+	}
+
+	var queued int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE agent_id = $1 AND originator_source = 'quiz' AND status = 'queued'
+	`, agentUUID).Scan(&queued); err != nil {
+		t.Fatalf("count queued Quiz tasks: %v", err)
+	}
+	if queued != 0 {
+		t.Fatalf("queued Quiz tasks after committed disable = %d; want 0", queued)
+	}
+
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+	if _, err := svc.RestorePromptQuizSchedule(ctx, workspaceUUID, nil, ownerUUID); err != nil {
+		t.Fatalf("restore Quiz schedule after race test: %v", err)
+	}
+}
+
+func pgtypeUUIDNull() pgtype.UUID {
+	return pgtype.UUID{}
 }

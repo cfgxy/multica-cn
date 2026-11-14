@@ -11,6 +11,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const lockWorkspaceForPromptQuizSchedule = `-- name: LockWorkspaceForPromptQuizSchedule :one
+SELECT id
+FROM workspace
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) LockWorkspaceForPromptQuizSchedule(ctx context.Context, workspaceID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForPromptQuizSchedule, workspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const cancelQueuedPromptQuizTasksForScheduleScope = `-- name: CancelQueuedPromptQuizTasksForScheduleScope :many
 UPDATE agent_task_queue atq
 SET status = 'cancelled',

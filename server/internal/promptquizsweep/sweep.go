@@ -46,9 +46,44 @@ const EnqueueLimit = 20
 // not accumulate quiz runs faster than it drains them.
 const InFlightLimit = 40
 
+// TxStarter is the transaction boundary needed by the disable/enqueue fence.
+type TxStarter interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
+
 // Runner executes one sweep against one database.
 type Runner struct {
-	Queries *db.Queries
+	Queries   *db.Queries
+	TxStarter TxStarter
+}
+
+// CreatePromptQuizTask serializes Quiz insertion with a schedule-control write.
+// The workspace KEY SHARE lock is deliberately a separate command from the
+// INSERT: if it waits for a disable transaction, the INSERT receives a fresh
+// READ COMMITTED snapshot and cannot resurrect work after the disable commits.
+func CreatePromptQuizTask(ctx context.Context, q *db.Queries, starter TxStarter, params db.CreatePromptQuizTaskParams) (db.AgentTaskQueue, error) {
+	if starter == nil {
+		return db.AgentTaskQueue{}, errors.New("missing Quiz enqueue transaction starter")
+	}
+
+	tx, err := starter.Begin(ctx)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("begin Quiz task enqueue: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	qtx := q.WithTx(tx)
+	if _, err := qtx.LockWorkspaceForPromptQuizTaskCreate(ctx, params.AgentID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	task, err := qtx.CreatePromptQuizTask(ctx, params)
+	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("commit Quiz task enqueue: %w", err)
+	}
+	return task, nil
 }
 
 // Outcome reports what a tick did, for the scheduler's audit row.
@@ -292,7 +327,7 @@ func (r Runner) enqueue(ctx context.Context, budget int) (int, error) {
 			if err != nil {
 				return n, err
 			}
-			_, err = r.Queries.CreatePromptQuizTask(ctx, db.CreatePromptQuizTaskParams{
+			_, err = CreatePromptQuizTask(ctx, r.Queries, r.TxStarter, db.CreatePromptQuizTaskParams{
 				AgentID: s.AgentID,
 				// Quiz runs sit below everything a human is waiting on. A
 				// measurement that lands a cadence later is still a valid

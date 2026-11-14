@@ -183,6 +183,21 @@ func (q *Queries) CreatePromptQuizItem(ctx context.Context, arg CreatePromptQuiz
 	return i, err
 }
 
+const lockWorkspaceForPromptQuizTaskCreate = `-- name: LockWorkspaceForPromptQuizTaskCreate :one
+SELECT w.id
+FROM workspace w
+JOIN agent a ON a.workspace_id = w.id
+WHERE a.id = $1
+FOR KEY SHARE OF w
+`
+
+func (q *Queries) LockWorkspaceForPromptQuizTaskCreate(ctx context.Context, agentID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForPromptQuizTaskCreate, agentID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const createPromptQuizTask = `-- name: CreatePromptQuizTask :one
 INSERT INTO agent_task_queue (
     agent_id,

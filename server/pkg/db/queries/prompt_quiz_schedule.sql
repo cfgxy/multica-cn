@@ -1,5 +1,15 @@
 -- RUYI-941: Quiz scheduler control plane. Missing rows mean enabled.
 
+-- name: LockWorkspaceForPromptQuizSchedule :one
+-- Every Quiz control write takes the workspace lock before reading or changing
+-- the override. Quiz task creation takes the compatible KEY SHARE lock in a
+-- separate transaction command, so the insert's snapshot is fresh after a
+-- concurrent disable commits.
+SELECT id
+FROM workspace
+WHERE id = @workspace_id
+FOR UPDATE;
+
 -- name: GetPromptQuizScheduleControlForWorkspace :one
 SELECT *
 FROM prompt_quiz_schedule_control

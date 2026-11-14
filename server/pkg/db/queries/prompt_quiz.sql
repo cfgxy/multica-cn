@@ -338,6 +338,17 @@ FROM prompt_quiz_result
 WHERE batch_id = sqlc.arg('batch_id')::uuid
 GROUP BY outcome;
 
+-- name: LockWorkspaceForPromptQuizTaskCreate :one
+-- This is the writer half of RUYI-941's disable/enqueue fence. The caller
+-- executes this command before CreatePromptQuizTask in the same transaction;
+-- the subsequent INSERT therefore takes a fresh READ COMMITTED snapshot after
+-- any waiting workspace-level disable commits.
+SELECT w.id
+FROM workspace w
+JOIN agent a ON a.workspace_id = w.id
+WHERE a.id = @agent_id
+FOR KEY SHARE OF w;
+
 -- name: CreatePromptQuizTask :one
 -- A quiz run, enqueued on the existing no-issue path. issue_id is NULL by
 -- construction, which is what keeps it out of every issue-dimension query

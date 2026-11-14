@@ -50,6 +50,13 @@ func (s *TaskService) SetPromptQuizSchedule(ctx context.Context, workspaceID pgt
 		old    PromptQuizScheduleState
 	)
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		// Serialize every Quiz task writer in this workspace with the control
+		// change. CreatePromptQuizTask takes the compatible KEY SHARE lock in a
+		// separate transaction command before its INSERT, so a writer that was
+		// waiting here cannot use a pre-disable snapshot after this commit.
+		if _, err := qtx.LockWorkspaceForPromptQuizSchedule(ctx, workspaceID); err != nil {
+			return fmt.Errorf("lock workspace Quiz schedule: %w", err)
+		}
 		if agentID != nil {
 			if agent, err := qtx.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: *agentID, WorkspaceID: workspaceID}); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
@@ -120,6 +127,9 @@ func (s *TaskService) SetPromptQuizSchedule(ctx context.Context, workspaceID pgt
 func (s *TaskService) RestorePromptQuizSchedule(ctx context.Context, workspaceID pgtype.UUID, agentID *pgtype.UUID, actorID pgtype.UUID) (PromptQuizScheduleChange, error) {
 	var change PromptQuizScheduleChange
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if _, err := qtx.LockWorkspaceForPromptQuizSchedule(ctx, workspaceID); err != nil {
+			return fmt.Errorf("lock workspace Quiz schedule restore: %w", err)
+		}
 		old, err := promptQuizScheduleState(ctx, qtx, workspaceID, agentID)
 		if err != nil {
 			return err
