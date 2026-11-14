@@ -8917,6 +8917,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	selection := resolveTaskModelSelection(ctx, provider, agent.NewCommand(entry.Path, profileFixedArgs),
 		taskModelSelection{Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier}, taskLog)
 	model, thinkingLevel, serviceTier = selection.Model, selection.ThinkingLevel, selection.ServiceTier
+	taskBudget := execenv.TaskBudgetFromRuntimeConfig(task.Agent.RuntimeConfig)
+	var budgetState *taskBudgetState
+	if taskBudget.MaxTokens > 0 || taskBudget.MaxToolCalls > 0 || taskBudget.MaxWallClock > 0 {
+		budgetState = &taskBudgetState{}
+		if taskBudget.MaxWallClock > 0 {
+			budgetState.deadline = taskStart.Add(taskBudget.MaxWallClock)
+		}
+	}
+	executionTimeout := d.cfg.AgentTimeout
+	if taskBudget.MaxWallClock > 0 && (executionTimeout <= 0 || taskBudget.MaxWallClock < executionTimeout) {
+		executionTimeout = taskBudget.MaxWallClock
+	}
 
 	var idleWatchdogTimeout time.Duration
 	if provider == "opencode" || provider == "codearts" {
@@ -8926,7 +8938,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		Cwd:                        env.WorkDir,
 		Model:                      model,
 		ThreadName:                 deriveTaskThreadName(task),
-		Timeout:                    d.cfg.AgentTimeout,
+		Timeout:                    executionTimeout,
+		MaxTokens:                  taskBudget.MaxTokens,
+		MaxToolCalls:               taskBudget.MaxToolCalls,
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,
@@ -9066,7 +9080,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Shared across the resume-retry below so the retry's transcript rows
 	// keep ascending seq values for the same task.
 	var msgSeq atomic.Int32
-	result, tools, err := d.executeAndDrain(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
+	result, tools, err := d.executeAndDrainWithBudget(ctx, backend, prompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq, budgetState)
 	if err != nil {
 		return TaskResult{}, err
 	}
@@ -9133,7 +9147,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// this retry launches a fresh unit instead of reentering the old one.
 		execOpts.Supervision = d.planSupervisedRun(provider, task.ID, 2)
 
-		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq)
+		retryResult, retryTools, retryErr := d.executeAndDrainWithBudget(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, provider, &msgSeq, budgetState)
 		if retryErr != nil {
 			taskLog.Error("fresh session also failed to start; keeping the original poisoned result", "error", retryErr)
 			if errors.Is(retryErr, agent.ErrCancellationUnconfirmed) {
@@ -9183,10 +9197,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Convert agent usage map to task usage entries.
 	var usageEntries []TaskUsageEntry
 	for model, u := range result.Usage {
-		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 {
+		accounting, hasAccounting := result.UsageAccounting[model]
+		raw := accounting.Raw
+		if !hasAccounting || raw.InputTokens == 0 && raw.OutputTokens == 0 && raw.CacheReadTokens == 0 && raw.CacheWriteTokens == 0 {
+			raw = u
+		}
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 &&
+			raw.InputTokens == 0 && raw.OutputTokens == 0 && raw.CacheReadTokens == 0 && raw.CacheWriteTokens == 0 {
 			continue
 		}
-		usageEntries = append(usageEntries, TaskUsageEntry{
+		entry := TaskUsageEntry{
 			Provider:         provider,
 			Model:            model,
 			InputTokens:      u.InputTokens,
@@ -9200,7 +9220,21 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			Turns:            result.Turns,
 			Compactions:      result.Compactions,
 			MaxContextTokens: result.MaxContextTokens,
-		})
+		}
+		if hasAccounting {
+			entry.AccountingMode = accounting.Mode
+			entry.SessionID = accounting.SessionID
+			entry.BaselineKnown = accounting.BaselineKnown
+			entry.RawInputTokens = raw.InputTokens
+			entry.RawOutputTokens = raw.OutputTokens
+			entry.RawCacheReadTokens = raw.CacheReadTokens
+			entry.RawCacheWriteTokens = raw.CacheWriteTokens
+			entry.BaselineInputTokens = accounting.Baseline.InputTokens
+			entry.BaselineOutputTokens = accounting.Baseline.OutputTokens
+			entry.BaselineCacheReadTokens = accounting.Baseline.CacheReadTokens
+			entry.BaselineCacheWriteTokens = accounting.Baseline.CacheWriteTokens
+		}
+		usageEntries = append(usageEntries, entry)
 	}
 
 	// MUL-5305: withhold a Codex session whose rollout never reached the per-issue
@@ -9295,6 +9329,23 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			WorkDir:       env.WorkDir,
 			EnvRoot:       env.RootDir,
 			FailureReason: failureReason,
+			Usage:         usageEntries,
+		}, nil
+	case "budget_exceeded":
+		// A configured task budget is a user-scope boundary, not a provider
+		// failure. Report a structured needs_scope reason so the server does
+		// not silently enqueue a continuation with a fresh budget.
+		comment := result.Error
+		if comment == "" {
+			comment = "task budget exhausted; narrow the assignment or raise its budget"
+		}
+		return TaskResult{
+			Status:        "blocked",
+			Comment:       comment,
+			SessionID:     result.SessionID,
+			WorkDir:       env.WorkDir,
+			EnvRoot:       env.RootDir,
+			FailureReason: taskfailure.ReasonNeedsScope.String(),
 			Usage:         usageEntries,
 		}, nil
 	case "context_budget":
@@ -9593,19 +9644,167 @@ func shouldRetryWithFreshSession(result agent.Result, priorSessionID string, too
 //
 // Usage is merged across both attempts in every branch so billing is complete.
 func reconcileFreshRetryResult(first agent.Result, firstUsage map[string]agent.TokenUsage, firstTools int32, retry agent.Result, retryTools int32, retryErr error) (agent.Result, int32) {
+	first.Usage = firstUsage
 	switch {
 	case retryErr != nil:
 		first.Usage = firstUsage
 		return first, firstTools
 	case retry.SessionID != "":
-		retry.Usage = mergeUsage(firstUsage, retry.Usage)
+		winnerUsage := retry.Usage
+		retry.Usage, retry.UsageAccounting = mergeTaskAttemptUsage(first, retry)
+		applyWinningAttemptContext(retry.Usage, winnerUsage)
 		return retry, retryTools
 	case retry.Status == "completed":
-		retry.Usage = mergeUsage(firstUsage, retry.Usage)
+		winnerUsage := retry.Usage
+		retry.Usage, retry.UsageAccounting = mergeTaskAttemptUsage(first, retry)
+		applyWinningAttemptContext(retry.Usage, winnerUsage)
 		return retry, retryTools
 	default:
-		first.Usage = mergeUsage(firstUsage, retry.Usage)
+		winnerUsage := first.Usage
+		first.Usage, first.UsageAccounting = mergeTaskAttemptUsage(first, retry)
+		applyWinningAttemptContext(first.Usage, winnerUsage)
 		return first, firstTools
+	}
+}
+
+func usageHasTokenCounters(u agent.TokenUsage) bool {
+	return u.InputTokens != 0 || u.OutputTokens != 0 || u.CacheReadTokens != 0 || u.CacheWriteTokens != 0
+}
+
+func subtractTokenUsage(raw, baseline agent.TokenUsage) agent.TokenUsage {
+	return agent.TokenUsage{
+		InputTokens:      maxUsageCounter(raw.InputTokens, baseline.InputTokens) - baseline.InputTokens,
+		OutputTokens:     maxUsageCounter(raw.OutputTokens, baseline.OutputTokens) - baseline.OutputTokens,
+		CacheReadTokens:  maxUsageCounter(raw.CacheReadTokens, baseline.CacheReadTokens) - baseline.CacheReadTokens,
+		CacheWriteTokens: maxUsageCounter(raw.CacheWriteTokens, baseline.CacheWriteTokens) - baseline.CacheWriteTokens,
+	}
+}
+
+// taskAttemptUsage normalizes one provider result to task-local deltas before
+// two attempts are combined. A cumulative snapshot without a baseline remains
+// unbillable; charging it as a delta would recreate the cross-task amplification
+// this accounting layer is designed to prevent.
+func taskAttemptUsage(u agent.TokenUsage, accounting agent.UsageAccounting, hasAccounting bool) (agent.TokenUsage, bool, bool) {
+	if !hasAccounting || accounting.Mode == agent.UsageAccountingLegacy || accounting.Mode == agent.UsageAccountingDelta || accounting.Mode == "" {
+		return u, true, false
+	}
+	if accounting.Mode == agent.UsageAccountingCumulative {
+		if !accounting.BaselineKnown {
+			return agent.TokenUsage{}, false, true
+		}
+		raw := accounting.Raw
+		if !usageHasTokenCounters(raw) {
+			raw = u
+		}
+		delta := subtractTokenUsage(raw, accounting.Baseline)
+		delta.ContextTokens = u.ContextTokens
+		return delta, true, true
+	}
+	return agent.TokenUsage{}, false, true
+}
+
+// mergeTaskAttemptUsage combines fresh-session retry results at the task-delta
+// boundary. A resumed attempt may report cumulative counters while the fresh
+// retry reports deltas; summing their raw maps would charge the old session
+// history again. When a cumulative/unknown contribution is involved, provider
+// cost is discarded because no cost baseline is available for that snapshot.
+func mergeTaskAttemptUsage(first, retry agent.Result) (map[string]agent.TokenUsage, map[string]agent.UsageAccounting) {
+	models := make(map[string]struct{}, len(first.Usage)+len(retry.Usage))
+	for model := range first.Usage {
+		models[model] = struct{}{}
+	}
+	for model := range retry.Usage {
+		models[model] = struct{}{}
+	}
+	mergedUsage := make(map[string]agent.TokenUsage, len(models))
+	mergedAccounting := make(map[string]agent.UsageAccounting, len(models))
+	for model := range models {
+		firstUsage, firstOK := first.Usage[model]
+		retryUsage, retryOK := retry.Usage[model]
+		firstAccounting, firstHasAccounting := first.UsageAccounting[model]
+		retryAccounting, retryHasAccounting := retry.UsageAccounting[model]
+		if !firstOK {
+			mergedUsage[model] = retryUsage
+			if retryHasAccounting {
+				mergedAccounting[model] = retryAccounting
+			}
+			continue
+		}
+		if !retryOK {
+			mergedUsage[model] = firstUsage
+			if firstHasAccounting {
+				mergedAccounting[model] = firstAccounting
+			}
+			continue
+		}
+
+		firstDelta, firstBillable, firstOpaque := taskAttemptUsage(firstUsage, firstAccounting, firstHasAccounting)
+		retryDelta, retryBillable, retryOpaque := taskAttemptUsage(retryUsage, retryAccounting, retryHasAccounting)
+		if !firstBillable && !retryBillable {
+			// Preserve an audit-only snapshot when neither attempt has a reliable
+			// delta. The server will keep it out of billable totals.
+			raw := firstAccounting.Raw
+			if !firstHasAccounting || !usageHasTokenCounters(raw) {
+				raw = firstUsage
+			}
+			if retryHasAccounting {
+				raw.InputTokens += retryAccounting.Raw.InputTokens
+				raw.OutputTokens += retryAccounting.Raw.OutputTokens
+				raw.CacheReadTokens += retryAccounting.Raw.CacheReadTokens
+				raw.CacheWriteTokens += retryAccounting.Raw.CacheWriteTokens
+			}
+			mergedUsage[model] = raw
+			mergedAccounting[model] = agent.UsageAccounting{Mode: agent.UsageAccountingUnknown, Raw: raw}
+			continue
+		}
+
+		combined := firstDelta
+		combined.InputTokens += retryDelta.InputTokens
+		combined.OutputTokens += retryDelta.OutputTokens
+		combined.CacheReadTokens += retryDelta.CacheReadTokens
+		combined.CacheWriteTokens += retryDelta.CacheWriteTokens
+		if firstOpaque || retryOpaque {
+			combined.CostUSDTicks = 0
+		} else {
+			combined.CostUSDTicks = firstDelta.CostUSDTicks + retryDelta.CostUSDTicks
+		}
+		mergedUsage[model] = combined
+		accounting := agent.UsageAccounting{
+			Mode: agent.UsageAccountingDelta,
+			Raw:  combined,
+		}
+		// Keep the first cumulative snapshot's identity and baseline when a
+		// fresh retry is folded into the same task row. The billing counters are
+		// now aggregate task deltas, but losing this evidence would make the
+		// correction impossible to audit after the retry.
+		if firstHasAccounting && firstOpaque {
+			accounting.SessionID = firstAccounting.SessionID
+			accounting.Raw = firstAccounting.Raw
+			if !usageHasTokenCounters(accounting.Raw) {
+				accounting.Raw = firstUsage
+			}
+			accounting.Baseline = firstAccounting.Baseline
+			accounting.BaselineKnown = firstAccounting.BaselineKnown
+		} else if retryHasAccounting && retryOpaque {
+			accounting.SessionID = retryAccounting.SessionID
+			accounting.Raw = retryAccounting.Raw
+			if !usageHasTokenCounters(accounting.Raw) {
+				accounting.Raw = retryUsage
+			}
+			accounting.Baseline = retryAccounting.Baseline
+			accounting.BaselineKnown = retryAccounting.BaselineKnown
+		}
+		mergedAccounting[model] = accounting
+	}
+	return mergedUsage, mergedAccounting
+}
+
+func applyWinningAttemptContext(usage map[string]agent.TokenUsage, winner map[string]agent.TokenUsage) {
+	for model, value := range usage {
+		if winning, ok := winner[model]; ok {
+			value.ContextTokens = winning.ContextTokens
+			usage[model] = value
+		}
 	}
 }
 
@@ -9642,12 +9841,50 @@ func freshSessionMayHelp(errText string) bool {
 	}
 }
 
+func maxUsageCounter(value, fallback int64) int64 {
+	if fallback < value {
+		return value
+	}
+	return fallback
+}
+
+// taskBudgetState carries task-level counters across the daemon's bounded
+// fresh-session retry. Direct executeAndDrain callers keep the legacy per-call
+// behavior by passing no state.
+type taskBudgetState struct {
+	deadline   time.Time
+	tokensUsed int64
+	toolCalls  int32
+}
+
 // executeAndDrain runs a backend, drains its message stream (forwarding to the
 // server), and waits for the final result. msgSeq numbers the reported task
 // messages and is owned by the caller so a same-task retry continues the
 // sequence instead of restarting at 1 — the server orders the transcript by
 // seq alone, and duplicate seqs would interleave the two attempts' rows.
 func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome, provider string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
+	return d.executeAndDrainWithBudget(ctx, backend, prompt, opts, taskLog, taskID, codexHome, provider, msgSeq, nil)
+}
+
+func (d *Daemon) executeAndDrainWithBudget(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome, provider string, msgSeq *atomic.Int32, budget *taskBudgetState) (agent.Result, int32, error) {
+	if budget != nil {
+		if opts.MaxTokens > 0 && budget.tokensUsed >= opts.MaxTokens {
+			return agent.Result{Status: "budget_exceeded", Error: "task budget exhausted: tokens"}, budget.toolCalls, nil
+		}
+		if opts.MaxToolCalls > 0 && budget.toolCalls >= int32(opts.MaxToolCalls) {
+			return agent.Result{Status: "budget_exceeded", Error: "task budget exhausted: tool_calls"}, budget.toolCalls, nil
+		}
+		if !budget.deadline.IsZero() {
+			remaining := time.Until(budget.deadline)
+			if remaining <= 0 {
+				return agent.Result{Status: "budget_exceeded", Error: "task budget exhausted: wall_clock"}, budget.toolCalls, nil
+			}
+			if opts.Timeout <= 0 || remaining < opts.Timeout {
+				opts.Timeout = remaining
+			}
+		}
+	}
+
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the
 	// drain loop with a single cancel. Without this layer the backend would
@@ -9690,6 +9927,30 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	defer drainCancel()
 
 	var toolCount atomic.Int32
+	var budgetReason atomic.Value // string: tokens, tool_calls, or wall_clock
+	var cumulativeBaseline agent.TokenUsage
+	var cumulativeBaselineSet bool
+	var observedUsage agent.TokenUsage
+	usageTotal := func(u agent.TokenUsage) int64 {
+		return u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens
+	}
+	if budget != nil {
+		defer func() {
+			budget.tokensUsed += usageTotal(observedUsage)
+			budget.toolCalls += toolCount.Load()
+		}()
+	}
+	stopForBudget := func(reason string) {
+		if budgetReason.Load() == nil {
+			budgetReason.Store(reason)
+			agentCancel()
+		}
+	}
+	markWallClockBudget := func() {
+		if budget != nil && !budget.deadline.IsZero() && time.Now().After(budget.deadline) {
+			stopForBudget("wall_clock")
+		}
+	}
 	// lastActivityAt records (as unix nanos) when the drain loop most
 	// recently received a message from the backend. The idle watchdog
 	// reads this to decide whether the agent has gone silent for too long.
@@ -9880,6 +10141,34 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				observer.observeActivity()
 				mu.Unlock()
 				switch msg.Type {
+				case agent.MessageUsage:
+					if msg.Usage == nil || opts.MaxTokens <= 0 {
+						continue
+					}
+					if msg.UsageCumulative {
+						if !cumulativeBaselineSet {
+							cumulativeBaseline = *msg.Usage
+							cumulativeBaselineSet = true
+						}
+						observedUsage.InputTokens = maxUsageCounter(0, msg.Usage.InputTokens-cumulativeBaseline.InputTokens)
+						observedUsage.OutputTokens = maxUsageCounter(0, msg.Usage.OutputTokens-cumulativeBaseline.OutputTokens)
+						observedUsage.CacheReadTokens = maxUsageCounter(0, msg.Usage.CacheReadTokens-cumulativeBaseline.CacheReadTokens)
+						observedUsage.CacheWriteTokens = maxUsageCounter(0, msg.Usage.CacheWriteTokens-cumulativeBaseline.CacheWriteTokens)
+					} else {
+						observedUsage.InputTokens += msg.Usage.InputTokens
+						observedUsage.OutputTokens += msg.Usage.OutputTokens
+						observedUsage.CacheReadTokens += msg.Usage.CacheReadTokens
+						observedUsage.CacheWriteTokens += msg.Usage.CacheWriteTokens
+					}
+					if opts.MaxTokens > 0 {
+						used := usageTotal(observedUsage)
+						if budget != nil {
+							used += budget.tokensUsed
+						}
+						if used >= opts.MaxTokens {
+							stopForBudget("tokens")
+						}
+					}
 				case agent.MessageStatus:
 					// Persist the session/work_dir as soon as the backend
 					// reveals them. Without this, a daemon crash mid-run
@@ -9915,6 +10204,15 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					}
 				case agent.MessageToolUse:
 					n := toolCount.Add(1)
+					if opts.MaxToolCalls > 0 {
+						calls := int(n)
+						if budget != nil {
+							calls += int(budget.toolCalls)
+						}
+						if calls >= opts.MaxToolCalls {
+							stopForBudget("tool_calls")
+						}
+					}
 					inFlightTools.Add(1)
 					taskLog.Info(fmt.Sprintf("tool #%d: %s", n, msg.Tool))
 					mu.Lock()
@@ -10081,7 +10379,12 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 
 	select {
 	case result := <-session.Result:
+		markWallClockBudget()
 		waitForDrain()
+		if reason, ok := budgetReason.Load().(string); ok && reason != "" {
+			result.Status = "budget_exceeded"
+			result.Error = fmt.Sprintf("task budget exhausted: %s", reason)
+		}
 		if err := waitForSupervisedStop(); err != nil {
 			return result, toolCount.Load(), err
 		}
@@ -10098,11 +10401,24 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		}
 		return result, toolCount.Load(), nil
 	case <-drainCtx.Done():
+		markWallClockBudget()
 		// The drain loop is exiting on this same Done signal; wait for its
 		// final flush so the timeout/watchdog/cancel terminals below cannot
 		// hand back (and let runTask fail-and-broadcast) a still-flushing
 		// transcript either.
 		waitForDrain()
+		if reason, ok := budgetReason.Load().(string); ok && reason != "" {
+			select {
+			case result, ok := <-session.Result:
+				if ok {
+					result.Status = "budget_exceeded"
+					result.Error = fmt.Sprintf("task budget exhausted: %s", reason)
+					return result, toolCount.Load(), nil
+				}
+			case <-time.After(10 * time.Second):
+			}
+			return agent.Result{Status: "budget_exceeded", Error: fmt.Sprintf("task budget exhausted: %s", reason)}, toolCount.Load(), nil
+		}
 		// Idle watchdog cancels via agentCancel(), which propagates here as
 		// context.Canceled. Check this BEFORE the generic cancelled/timeout
 		// classifiers so a watchdog-induced stop isn't misreported as

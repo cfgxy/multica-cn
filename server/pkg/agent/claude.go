@@ -85,11 +85,14 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// run's numbers.
 	resumeTranscriptPath, resumeTranscriptFound := "", false
 	var runStatsStartOffset int64
+	var resumeUsageBaseline map[string]TokenUsage
+	resumeUsageBaselineKnown := false
 	if opts.ResumeSessionID != "" {
 		if p, ok := claudeTranscriptPath(claudeTranscriptRoot(), opts.Cwd, opts.ResumeSessionID); ok {
 			resumeTranscriptPath, resumeTranscriptFound = p, true
 			if st, err := os.Stat(p); err == nil {
 				runStatsStartOffset = st.Size()
+				resumeUsageBaseline, resumeUsageBaselineKnown = transcriptUsageBefore(p, runStatsStartOffset)
 			}
 		}
 	}
@@ -516,6 +519,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			DurationMs:       duration.Milliseconds(),
 			SessionID:        reportedSessionID,
 			Usage:            usage,
+			UsageAccounting:  claudeUsageAccounting(usage, resumeUsageBaseline, resumeUsageBaselineKnown, opts.ResumeSessionID != "" && resumeTranscriptFound && reportedSessionID == opts.ResumeSessionID, reportedSessionID),
 			ResumeRejected:   resumeRejected,
 			Turns:            resultTurns,
 			Compactions:      int(transcriptCompactions),
@@ -545,6 +549,13 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		u.CacheReadTokens += content.Usage.CacheReadInputTokens
 		u.CacheWriteTokens += content.Usage.CacheCreationInputTokens
 		usage[content.Model] = u
+		usageEvent := TokenUsage{
+			InputTokens:      content.Usage.InputTokens,
+			OutputTokens:     content.Usage.OutputTokens,
+			CacheReadTokens:  content.Usage.CacheReadInputTokens,
+			CacheWriteTokens: content.Usage.CacheCreationInputTokens,
+		}
+		trySend(ch, Message{Type: MessageUsage, Usage: &usageEvent})
 
 		// Context size, in contrast, is OVERWRITTEN by each assistant event
 		// rather than summed: the conversation the next resume would inherit
@@ -800,6 +811,32 @@ func claudeTerminalReasonFailure(terminalReason, resultText string) string {
 	return msg
 }
 
+func claudeUsageAccounting(usage, baseline map[string]TokenUsage, baselineKnown bool, resumed bool, sessionID string) map[string]UsageAccounting {
+	if len(usage) == 0 {
+		return nil
+	}
+	result := make(map[string]UsageAccounting, len(usage))
+	for model, raw := range usage {
+		accounting := UsageAccounting{
+			Mode:      UsageAccountingDelta,
+			SessionID: sessionID,
+			Raw:       raw,
+		}
+		if resumed {
+			accounting.Mode = UsageAccountingCumulative
+			accounting.BaselineKnown = baselineKnown
+			for key, value := range baseline {
+				if key == model || normalizeModelKey(key) == normalizeModelKey(model) {
+					accounting.Baseline = value
+					break
+				}
+			}
+		}
+		result[model] = accounting
+	}
+	return result
+}
+
 func claudeResultUsage(msg claudeSDKMessage, fallbackModel string) map[string]TokenUsage {
 	if len(msg.ModelUsage) > 0 {
 		usage := make(map[string]TokenUsage, len(msg.ModelUsage))
@@ -964,6 +1001,44 @@ func claudeTranscriptPath(root, cwd, sessionID string) (string, bool) {
 		}
 	}
 	return best, true
+}
+
+// transcriptUsageBefore sums the billing counters already present in a resumed
+// session transcript. Claude's result modelUsage may be cumulative for that
+// session, so this prefix is the task-start baseline used for delta accounting.
+func transcriptUsageBefore(path string, endOffset int64) (map[string]TokenUsage, bool) {
+	usage := make(map[string]TokenUsage)
+	fh, err := os.Open(path)
+	if err != nil {
+		return usage, false
+	}
+	defer fh.Close()
+	if endOffset <= 0 {
+		return usage, true
+	}
+	sc := bufio.NewScanner(io.NewSectionReader(fh, 0, endOffset))
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	seenMessageIDs := make(map[string]struct{})
+	for sc.Scan() {
+		var rec claudeTranscriptAssistant
+		if json.Unmarshal(sc.Bytes(), &rec) != nil || rec.Type != "assistant" || rec.IsSidechain || rec.Message.Usage == nil {
+			continue
+		}
+		if rec.Message.ID != "" {
+			if _, seen := seenMessageIDs[rec.Message.ID]; seen {
+				continue
+			}
+			seenMessageIDs[rec.Message.ID] = struct{}{}
+		}
+		u := rec.Message.Usage
+		current := usage[rec.Message.Model]
+		current.InputTokens += u.InputTokens
+		current.OutputTokens += u.OutputTokens
+		current.CacheReadTokens += u.CacheReadInputTokens
+		current.CacheWriteTokens += u.CacheCreationInputTokens
+		usage[rec.Message.Model] = current
+	}
+	return usage, sc.Err() == nil
 }
 
 // transcriptRunStats scans one session transcript for run-scoped

@@ -2373,13 +2373,16 @@ func runIssueUsage(cmd *cobra.Command, args []string) error {
 
 	// JSON numbers decode to float64; formatMetadataValue renders them as clean
 	// integers (no scientific notation for large cache-token counts).
-	headers := []string{"INPUT_TOKENS", "OUTPUT_TOKENS", "CACHE_READ", "CACHE_WRITE", "RUNS"}
+	headers := []string{"INPUT_TOKENS", "OUTPUT_TOKENS", "CACHE_READ", "CACHE_WRITE", "RUNS", "UNKNOWN_RUNS", "UNKNOWN_RAW_TOKENS"}
+	unknownRaw := sumMetadataValues(result["unknown_raw_input_tokens"], result["unknown_raw_output_tokens"], result["unknown_raw_cache_read_tokens"], result["unknown_raw_cache_write_tokens"])
 	rows := [][]string{{
 		formatMetadataValue(result["total_input_tokens"]),
 		formatMetadataValue(result["total_output_tokens"]),
 		formatMetadataValue(result["total_cache_read_tokens"]),
 		formatMetadataValue(result["total_cache_write_tokens"]),
 		formatMetadataValue(result["task_count"]),
+		formatMetadataValue(result["unknown_task_count"]),
+		formatMetadataValue(unknownRaw),
 	}}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil

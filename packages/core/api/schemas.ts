@@ -2315,6 +2315,16 @@ const TaskUsageSchema = z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   cost_usd_ticks: z.number().optional(),
+  accounting_mode: z.string().optional().catch(undefined),
+  usage_session_id: z.string().optional().catch(undefined),
+  raw_input_tokens: z.number().optional().catch(undefined),
+  raw_output_tokens: z.number().optional().catch(undefined),
+  raw_cache_read_tokens: z.number().optional().catch(undefined),
+  raw_cache_write_tokens: z.number().optional().catch(undefined),
+  baseline_input_tokens: z.number().optional().catch(undefined),
+  baseline_output_tokens: z.number().optional().catch(undefined),
+  baseline_cache_read_tokens: z.number().optional().catch(undefined),
+  baseline_cache_write_tokens: z.number().optional().catch(undefined),
 }).loose();
 
 export const AgentTaskSchema = z.object({
@@ -2391,6 +2401,24 @@ export const AgentTaskSchema = z.object({
 }).loose();
 
 export const AgentTaskListSchema = z.array(AgentTaskSchema);
+
+export const IssueUsageSummarySchema = z.object({
+  total_input_tokens: z.number().default(0),
+  total_output_tokens: z.number().default(0),
+  total_cache_read_tokens: z.number().default(0),
+  total_cache_write_tokens: z.number().default(0),
+  cost_usd_ticks: z.number().optional(),
+  uncosted_input_tokens: z.number().optional(),
+  uncosted_output_tokens: z.number().optional(),
+  uncosted_cache_read_tokens: z.number().optional(),
+  uncosted_cache_write_tokens: z.number().optional(),
+  task_count: z.number().default(0),
+  unknown_task_count: z.number().default(0),
+  unknown_raw_input_tokens: z.number().default(0),
+  unknown_raw_output_tokens: z.number().default(0),
+  unknown_raw_cache_read_tokens: z.number().default(0),
+  unknown_raw_cache_write_tokens: z.number().default(0),
+}).loose();
 
 // Task cancellation (`POST /api/tasks/:id/cancel`) is consumed directly by
 // chat recovery. Its optional message payload must be well-formed before the

@@ -1109,6 +1109,57 @@ func TestReconcileFreshRetryResult(t *testing.T) {
 	}
 }
 
+func TestReconcileFreshRetryNormalizesCumulativeUsage(t *testing.T) {
+	first := agent.Result{
+		Status: "failed",
+		Usage: map[string]agent.TokenUsage{
+			"model": {InputTokens: 100, OutputTokens: 20},
+		},
+		UsageAccounting: map[string]agent.UsageAccounting{
+			"model": {
+				Mode:          agent.UsageAccountingCumulative,
+				SessionID:     "old-session",
+				BaselineKnown: true,
+				Raw:           agent.TokenUsage{InputTokens: 100, OutputTokens: 20},
+				Baseline:      agent.TokenUsage{InputTokens: 70, OutputTokens: 5},
+			},
+		},
+	}
+	retry := agent.Result{
+		Status:    "completed",
+		SessionID: "new-session",
+		Usage: map[string]agent.TokenUsage{
+			"model": {InputTokens: 7, OutputTokens: 7, CostUSDTicks: 11},
+		},
+		UsageAccounting: map[string]agent.UsageAccounting{
+			"model": {
+				Mode:      agent.UsageAccountingDelta,
+				SessionID: "new-session",
+				Raw:       agent.TokenUsage{InputTokens: 7, OutputTokens: 7},
+			},
+		},
+	}
+
+	got, _ := reconcileFreshRetryResult(first, first.Usage, 0, retry, 0, nil)
+	usage := got.Usage["model"]
+	if usage.InputTokens != 37 || usage.OutputTokens != 22 {
+		t.Fatalf("merged usage = %+v, want task deltas 37/22", usage)
+	}
+	if usage.InputTokens == 107 {
+		t.Fatal("merged usage re-counted the cumulative session snapshot")
+	}
+	accounting := got.UsageAccounting["model"]
+	if accounting.Mode != agent.UsageAccountingDelta || !accounting.BaselineKnown {
+		t.Fatalf("merged accounting = %+v, want task-local delta with preserved cumulative baseline", accounting)
+	}
+	if accounting.Raw.InputTokens != 100 || accounting.Raw.OutputTokens != 20 || accounting.Baseline.InputTokens != 70 || accounting.SessionID != "old-session" {
+		t.Fatalf("merged raw accounting = %+v, want the original cumulative snapshot and baseline", accounting)
+	}
+	if usage.CostUSDTicks != 0 {
+		t.Fatalf("merged cost = %d, want zero without cumulative cost baseline", usage.CostUSDTicks)
+	}
+}
+
 func TestBuildPromptNoIssueDetails(t *testing.T) {
 	t.Parallel()
 
@@ -1748,6 +1799,72 @@ func (b *fakeBackend) Execute(_ context.Context, _ string, opts agent.ExecOption
 	close(msgCh)
 	resCh <- b.results[i]
 	return &agent.Session{Messages: msgCh, Result: resCh}, nil
+}
+
+type budgetToolBackend struct{}
+
+func (budgetToolBackend) Execute(ctx context.Context, _ string, _ agent.ExecOptions) (*agent.Session, error) {
+	messages := make(chan agent.Message, 1)
+	results := make(chan agent.Result, 1)
+	go func() {
+		messages <- agent.Message{Type: agent.MessageToolUse, Tool: "Bash", CallID: "budget-call"}
+		<-ctx.Done()
+		close(messages)
+		results <- agent.Result{Status: "aborted", Error: "cancelled"}
+	}()
+	return &agent.Session{Messages: messages, Result: results}, nil
+}
+
+type oneToolThenCompleteBackend struct{}
+
+func (oneToolThenCompleteBackend) Execute(context.Context, string, agent.ExecOptions) (*agent.Session, error) {
+	messages := make(chan agent.Message, 1)
+	messages <- agent.Message{Type: agent.MessageToolUse, Tool: "Bash", CallID: "one-tool"}
+	close(messages)
+	results := make(chan agent.Result, 1)
+	results <- agent.Result{Status: "failed", Error: "resume rejected", ResumeRejected: true}
+	return &agent.Session{Messages: messages, Result: results}, nil
+}
+
+func TestExecuteAndDrainStopsAtToolBudget(t *testing.T) {
+	d := newTestDaemon(t)
+	result, tools, err := d.executeAndDrain(
+		context.Background(), budgetToolBackend{}, "prompt",
+		agent.ExecOptions{MaxToolCalls: 1}, slog.Default(), "budget-tool", "", "", new(atomic.Int32),
+	)
+	if err != nil {
+		t.Fatalf("executeAndDrain: %v", err)
+	}
+	if result.Status != "budget_exceeded" || !strings.Contains(result.Error, "tool_calls") {
+		t.Fatalf("result = %+v, want tool budget stop", result)
+	}
+	if tools != 1 {
+		t.Fatalf("tools = %d, want 1", tools)
+	}
+}
+
+func TestExecuteAndDrainSharesBudgetAcrossFreshRetry(t *testing.T) {
+	d := newTestDaemon(t)
+	budget := &taskBudgetState{}
+	opts := agent.ExecOptions{MaxToolCalls: 2}
+	first, firstTools, err := d.executeAndDrainWithBudget(
+		context.Background(), oneToolThenCompleteBackend{}, "prompt", opts, slog.Default(), "budget-retry", "", "", new(atomic.Int32), budget,
+	)
+	if err != nil {
+		t.Fatalf("first executeAndDrain: %v", err)
+	}
+	if first.Status != "failed" || firstTools != 1 || budget.toolCalls != 1 {
+		t.Fatalf("first result/tools/budget = %+v/%d/%d, want failed/1/1", first, firstTools, budget.toolCalls)
+	}
+	second, secondTools, err := d.executeAndDrainWithBudget(
+		context.Background(), oneToolThenCompleteBackend{}, "prompt", opts, slog.Default(), "budget-retry", "", "", new(atomic.Int32), budget,
+	)
+	if err != nil {
+		t.Fatalf("retry executeAndDrain: %v", err)
+	}
+	if second.Status != "budget_exceeded" || !strings.Contains(second.Error, "tool_calls") || secondTools != 1 {
+		t.Fatalf("retry result/tools = %+v/%d, want shared tool budget stop", second, secondTools)
+	}
 }
 
 func newTestDaemon(t *testing.T) *Daemon {

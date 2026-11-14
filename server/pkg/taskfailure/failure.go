@@ -100,6 +100,11 @@ const (
 	// system error.
 	ReasonAgentBlocked Reason = "agent_blocked"
 
+	// ReasonNeedsScope means a configured task budget was exhausted. It is a
+	// user-scope boundary and must not create an automatic continuation with a
+	// fresh budget.
+	ReasonNeedsScope Reason = "needs_scope"
+
 	// ReasonAPIInvalidRequest: the upstream LLM API rejected the
 	// request body with a 400 invalid_request_error (oversized image,
 	// malformed payload, etc.). The conversation history itself is
@@ -268,7 +273,7 @@ const (
 	ReasonAgentUnknown Reason = "agent_error.unknown"
 )
 
-// allReasons is the canonical ordered list of the 27 reasons. Order is
+// allReasons is the canonical ordered list of the 28 reasons. Order is
 // stable so callers (e.g. Prometheus collectors that pre-warm series via
 // AllReasons) can build deterministic label sets across restarts.
 //
@@ -286,6 +291,7 @@ var allReasons = []Reason{
 	ReasonTimeout,
 	ReasonIterationLimit,
 	ReasonAgentBlocked,
+	ReasonNeedsScope,
 	ReasonAPIInvalidRequest,
 	ReasonSkillBundleUnavailable,
 	ReasonRuntimeCLITimeout,

@@ -37,6 +37,10 @@ type ExecOptions struct {
 	SystemPrompt string
 	ThreadName   string
 	MaxTurns     int
+	// MaxTokens and MaxToolCalls are daemon-enforced per-execute guardrails.
+	// Providers that cannot emit live usage fail open for MaxTokens.
+	MaxTokens    int64
+	MaxToolCalls int
 	// MaxContextHardTokens is the in-run context ceiling: the transcript
 	// poller force-stops the run when the live reading crosses it (status
 	// "context_budget"); the same value drives the CLI's native
@@ -185,6 +189,7 @@ const (
 	MessageStatus     MessageType = "status"
 	MessageError      MessageType = "error"
 	MessageLog        MessageType = "log"
+	MessageUsage      MessageType = "usage"
 )
 
 // Message is a unified event emitted by an agent during execution.
@@ -204,6 +209,10 @@ type Message struct {
 	// success — the failure rate computed from that would be wrong rather than
 	// visibly missing.
 	IsError *bool
+	Usage   *TokenUsage
+	// UsageCumulative is true when Usage is a provider session snapshot rather
+	// than a task-local increment.
+	UsageCumulative bool
 }
 
 // TokenUsage tracks token consumption for a single model.
@@ -240,14 +249,32 @@ type TokenUsage struct {
 // int64 all the way to the database instead of drifting through float64.
 const CostUSDTicksPerUSD = 10_000_000_000
 
+const (
+	UsageAccountingLegacy     = "legacy"
+	UsageAccountingDelta      = "delta"
+	UsageAccountingCumulative = "cumulative"
+	UsageAccountingUnknown    = "unknown"
+)
+
+// UsageAccounting describes how a provider result maps to one task.
+// Raw and Baseline are retained so the daemon can report an auditable delta.
+type UsageAccounting struct {
+	Mode          string
+	SessionID     string
+	Raw           TokenUsage
+	Baseline      TokenUsage
+	BaselineKnown bool
+}
+
 // Result is the final outcome after an agent session completes.
 type Result struct {
-	Status     string // "completed", "failed", "aborted", "timeout", "cancelled"
-	Output     string // final user-facing output selected by the backend
-	Error      string // error message if failed
-	DurationMs int64
-	SessionID  string
-	Usage      map[string]TokenUsage // keyed by model name
+	Status          string // "completed", "failed", "aborted", "timeout", "cancelled"
+	Output          string // final user-facing output selected by the backend
+	Error           string // error message if failed
+	DurationMs      int64
+	SessionID       string
+	Usage           map[string]TokenUsage // keyed by model name
+	UsageAccounting map[string]UsageAccounting
 	// Run-scoped observability (RUYI-154): turns = agentic turns executed;
 	// compactions = in-place auto-compacts performed; maxContextTokens =
 	// largest live context reading of any single request. Zero means the

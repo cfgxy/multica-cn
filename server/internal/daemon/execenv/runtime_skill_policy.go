@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const claudeRuntimeSkillSettingsFile = "claude-runtime-skill-settings.json"
@@ -100,6 +101,43 @@ func MaxContextTokensFromRuntimeConfig(runtimeConfig json.RawMessage) int64 {
 		return MinMaxContextTokens
 	}
 	return *cfg.MaxContextTokens
+}
+
+// TaskBudget is an optional per-task guardrail decoded from runtime_config.
+// Zero values disable the corresponding guard. Invalid or negative values are
+// ignored so a malformed runtime setting cannot stop short tasks unexpectedly.
+type TaskBudget struct {
+	MaxTokens    int64
+	MaxToolCalls int
+	MaxWallClock time.Duration
+}
+
+func TaskBudgetFromRuntimeConfig(runtimeConfig json.RawMessage) TaskBudget {
+	if len(runtimeConfig) == 0 {
+		return TaskBudget{}
+	}
+	var cfg struct {
+		MaxTokens           *int64 `json:"max_tokens"`
+		MaxTotalTokens      *int64 `json:"max_total_tokens"`
+		MaxToolCalls        *int   `json:"max_tool_calls"`
+		MaxWallClockSeconds *int64 `json:"max_wall_clock_seconds"`
+	}
+	if err := json.Unmarshal(runtimeConfig, &cfg); err != nil {
+		return TaskBudget{}
+	}
+	budget := TaskBudget{}
+	if cfg.MaxTokens != nil && *cfg.MaxTokens > 0 {
+		budget.MaxTokens = *cfg.MaxTokens
+	} else if cfg.MaxTotalTokens != nil && *cfg.MaxTotalTokens > 0 {
+		budget.MaxTokens = *cfg.MaxTotalTokens
+	}
+	if cfg.MaxToolCalls != nil && *cfg.MaxToolCalls > 0 {
+		budget.MaxToolCalls = *cfg.MaxToolCalls
+	}
+	if cfg.MaxWallClockSeconds != nil && *cfg.MaxWallClockSeconds > 0 {
+		budget.MaxWallClock = time.Duration(*cfg.MaxWallClockSeconds) * time.Second
+	}
+	return budget
 }
 
 func cleanRuntimeSkillKey(key string) (string, bool) {

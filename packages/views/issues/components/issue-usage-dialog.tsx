@@ -57,14 +57,35 @@ export function IssueUsageDialog({
   // the runtime usage page subscribes in usage-section.tsx.
   const pricings = useCustomPricingStore((s) => s.pricings);
 
-  // Only runs that actually recorded usage earn a row: a run with no figure
-  // contributes nothing to compare and would just add an all-em-dash line.
-  // Their existence is still accounted for in the footnote below.
-  const priced = useMemo(
+  // A run with no usage has no row. A cumulative snapshot without a task
+  // baseline is retained as unknown metadata, but must never become a fake
+  // zero-cost row or enter the issue total.
+  const recorded = useMemo(
     () => tasks.filter((task) => (task.usage?.length ?? 0) > 0),
     [tasks],
   );
-  const unpricedCount = tasks.length - priced.length;
+  const priced = useMemo(
+    () => recorded.filter((task) => task.usage?.some((slice) => slice.accounting_mode !== "unknown")),
+    [recorded],
+  );
+  const unpricedCount = tasks.length - recorded.length;
+  const unknownTasks = useMemo(
+    () => recorded.filter((task) => task.usage?.some((slice) => slice.accounting_mode === "unknown")),
+    [recorded],
+  );
+  const unknownRawTokens = unknownTasks.reduce(
+    (sum, task) =>
+      sum +
+      (task.usage ?? []).reduce((taskSum, slice) => {
+        if (slice.accounting_mode !== "unknown") return taskSum;
+        return taskSum +
+          (slice.raw_input_tokens ?? 0) +
+          (slice.raw_output_tokens ?? 0) +
+          (slice.raw_cache_read_tokens ?? 0) +
+          (slice.raw_cache_write_tokens ?? 0);
+      }, 0),
+    0,
+  );
 
   const total = useMemo(
     () => summarizeTaskUsageAcross(priced.map((task) => task.usage)),
@@ -107,15 +128,23 @@ export function IssueUsageDialog({
           <DialogDescription>
             {t(($) => $.usage_detail.subtitle, {
               identifier,
-              count: priced.length,
+              count: recorded.length,
             })}
           </DialogDescription>
         </DialogHeader>
 
         {total == null ? (
-          <p className="py-8 text-center text-body text-muted-foreground">
-            {t(($) => $.usage_detail.empty)}
-          </p>
+          <div className="space-y-2 py-8 text-center text-body text-muted-foreground">
+            <p>{t(($) => $.usage_detail.empty)}</p>
+            {unknownTasks.length > 0 && (
+              <p className="text-micro">
+                {t(($) => $.usage_detail.note_unknown, {
+                  count: unknownTasks.length,
+                  tokens: formatTokens(unknownRawTokens),
+                })}
+              </p>
+            )}
+          </div>
         ) : (
           /* `min-w-0`: DialogContent is a grid, and a grid item defaults to
              `min-width: auto` — it sizes to its content's minimum rather than
@@ -158,6 +187,14 @@ export function IssueUsageDialog({
             <div className="space-y-1 text-micro text-muted-foreground">
               {unpricedCount > 0 && (
                 <p>{t(($) => $.usage_detail.note_unpriced, { count: unpricedCount })}</p>
+              )}
+              {unknownTasks.length > 0 && (
+                <p>
+                  {t(($) => $.usage_detail.note_unknown, {
+                    count: unknownTasks.length,
+                    tokens: formatTokens(unknownRawTokens),
+                  })}
+                </p>
               )}
               {unmapped.length > 0 && (
                 <p>

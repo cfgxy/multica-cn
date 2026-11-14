@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPrepareClaudeSkillSettings(t *testing.T) {
@@ -212,6 +213,23 @@ func TestMaxContextTokensFromRuntimeConfig(t *testing.T) {
 		if got := MaxContextTokensFromRuntimeConfig(tc.raw); got != tc.want {
 			t.Errorf("%s: got %d, want %d", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestTaskBudgetFromRuntimeConfig(t *testing.T) {
+	t.Parallel()
+
+	budget := TaskBudgetFromRuntimeConfig(json.RawMessage(`{"max_tokens":1200,"max_tool_calls":7,"max_wall_clock_seconds":9}`))
+	if budget.MaxTokens != 1200 || budget.MaxToolCalls != 7 || budget.MaxWallClock != 9*time.Second {
+		t.Fatalf("budget = %+v, want tokens=1200 tools=7 wall=9s", budget)
+	}
+	alias := TaskBudgetFromRuntimeConfig(json.RawMessage(`{"max_total_tokens":800}`))
+	if alias.MaxTokens != 800 {
+		t.Fatalf("max_total_tokens alias = %+v, want 800 tokens", alias)
+	}
+	invalid := TaskBudgetFromRuntimeConfig(json.RawMessage(`{"max_tokens":-1,"max_tool_calls":0,"max_wall_clock_seconds":-5}`))
+	if invalid != (TaskBudget{}) {
+		t.Fatalf("invalid budget = %+v, want all guards disabled", invalid)
 	}
 }
 

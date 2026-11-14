@@ -14,8 +14,24 @@
 -- turns / compactions / max_context_tokens (RUYI-154) are run-scoped stats
 -- reported exactly once, at task completion, so they are overwritten like the
 -- token counters rather than COALESCEd like context_tokens.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), now())
+INSERT INTO task_usage (
+    task_id, provider, model,
+    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+    cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens,
+    accounting_mode, usage_session_id,
+    raw_input_tokens, raw_output_tokens, raw_cache_read_tokens, raw_cache_write_tokens,
+    baseline_input_tokens, baseline_output_tokens, baseline_cache_read_tokens, baseline_cache_write_tokens,
+    updated_at
+)
+VALUES (
+    $1, $2, $3,
+    $4, $5, $6, $7,
+    sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'),
+    COALESCE(sqlc.narg('accounting_mode'), 'legacy'), sqlc.narg('usage_session_id'),
+    sqlc.narg('raw_input_tokens'), sqlc.narg('raw_output_tokens'), sqlc.narg('raw_cache_read_tokens'), sqlc.narg('raw_cache_write_tokens'),
+    sqlc.narg('baseline_input_tokens'), sqlc.narg('baseline_output_tokens'), sqlc.narg('baseline_cache_read_tokens'), sqlc.narg('baseline_cache_write_tokens'),
+    now()
+)
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -27,10 +43,28 @@ DO UPDATE SET
     turns = EXCLUDED.turns,
     compactions = EXCLUDED.compactions,
     max_context_tokens = EXCLUDED.max_context_tokens,
+    accounting_mode = EXCLUDED.accounting_mode,
+    usage_session_id = EXCLUDED.usage_session_id,
+    raw_input_tokens = EXCLUDED.raw_input_tokens,
+    raw_output_tokens = EXCLUDED.raw_output_tokens,
+    raw_cache_read_tokens = EXCLUDED.raw_cache_read_tokens,
+    raw_cache_write_tokens = EXCLUDED.raw_cache_write_tokens,
+    baseline_input_tokens = EXCLUDED.baseline_input_tokens,
+    baseline_output_tokens = EXCLUDED.baseline_output_tokens,
+    baseline_cache_read_tokens = EXCLUDED.baseline_cache_read_tokens,
+    baseline_cache_write_tokens = EXCLUDED.baseline_cache_write_tokens,
     updated_at = now();
 
 -- name: GetTaskUsage :many
-SELECT * FROM task_usage
+SELECT
+    id, task_id, provider, model,
+    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+    created_at, updated_at, cost_usd_ticks, context_tokens,
+    turns, compactions, max_context_tokens,
+    accounting_mode, usage_session_id,
+    raw_input_tokens, raw_output_tokens, raw_cache_read_tokens, raw_cache_write_tokens,
+    baseline_input_tokens, baseline_output_tokens, baseline_cache_read_tokens, baseline_cache_write_tokens
+FROM task_usage
 WHERE task_id = $1
 ORDER BY model;
 
@@ -84,7 +118,17 @@ SELECT
     tu.context_tokens,
     tu.turns,
     tu.compactions,
-    tu.max_context_tokens
+    tu.max_context_tokens,
+    tu.accounting_mode,
+    tu.usage_session_id,
+    tu.raw_input_tokens,
+    tu.raw_output_tokens,
+    tu.raw_cache_read_tokens,
+    tu.raw_cache_write_tokens,
+    tu.baseline_input_tokens,
+    tu.baseline_output_tokens,
+    tu.baseline_cache_read_tokens,
+    tu.baseline_cache_write_tokens
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.issue_id = $1
@@ -101,7 +145,12 @@ SELECT
     COALESCE(SUM(tu.output_tokens)      FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_output_tokens,
     COALESCE(SUM(tu.cache_read_tokens)  FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_read_tokens,
     COALESCE(SUM(tu.cache_write_tokens) FILTER (WHERE tu.cost_usd_ticks IS NULL), 0)::bigint AS uncosted_cache_write_tokens,
-    COUNT(DISTINCT tu.task_id)::int AS task_count
+    COUNT(DISTINCT tu.task_id)::int AS task_count,
+    COUNT(DISTINCT tu.task_id) FILTER (WHERE tu.accounting_mode = 'unknown')::int AS unknown_task_count,
+    COALESCE(SUM(tu.raw_input_tokens) FILTER (WHERE tu.accounting_mode = 'unknown'), 0)::bigint AS unknown_raw_input_tokens,
+    COALESCE(SUM(tu.raw_output_tokens) FILTER (WHERE tu.accounting_mode = 'unknown'), 0)::bigint AS unknown_raw_output_tokens,
+    COALESCE(SUM(tu.raw_cache_read_tokens) FILTER (WHERE tu.accounting_mode = 'unknown'), 0)::bigint AS unknown_raw_cache_read_tokens,
+    COALESCE(SUM(tu.raw_cache_write_tokens) FILTER (WHERE tu.accounting_mode = 'unknown'), 0)::bigint AS unknown_raw_cache_write_tokens
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.issue_id = $1;

@@ -505,6 +505,7 @@ export type Priceable = Pick<
   | "cache_write_tokens"
 > & {
   provider?: string;
+  accounting_mode?: string;
   cost_usd_ticks?: number;
   uncosted_input_tokens?: number;
   uncosted_output_tokens?: number;
@@ -679,6 +680,7 @@ export function summarizeTaskUsage(
   if (!usage || usage.length === 0) return null;
 
   const models: string[] = [];
+  let knownSlices = 0;
   const summary: TaskUsageSummary = {
     tokens: 0, cost: 0, cacheSavings: 0,
     input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
@@ -686,6 +688,8 @@ export function summarizeTaskUsage(
   };
 
   for (const slice of usage) {
+    if (slice.accounting_mode === "unknown") continue;
+    knownSlices++;
     summary.input += slice.input_tokens;
     summary.output += slice.output_tokens;
     summary.cacheRead += slice.cache_read_tokens;
@@ -694,6 +698,7 @@ export function summarizeTaskUsage(
     summary.cacheSavings += estimateCacheSavings(slice);
     if (slice.model && !models.includes(slice.model)) models.push(slice.model);
   }
+  if (knownSlices === 0) return null;
   summary.tokens =
     summary.input + summary.output + summary.cacheRead + summary.cacheWrite;
 

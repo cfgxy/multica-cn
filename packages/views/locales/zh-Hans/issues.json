@@ -724,6 +724,7 @@
     "col_cost": "费用",
     "total": "合计",
     "note_unpriced_other": "有 {{count}} 次运行没有用量记录，不计入合计。",
+    "note_unknown_other": "有 {{count}} 次运行只有累计用量快照，缺少 task 基线；{{tokens}} 个原始 token 标记为未知，不计入合计。",
     "note_unmapped": "{{models}} 没有维护价格，token 已计入，费用未计入。",
     "note_estimate": "费用按各模型公开价目估算；供应商回报实际费用时以回报值为准。"
   },

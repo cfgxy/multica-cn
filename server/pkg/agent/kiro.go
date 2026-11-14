@@ -391,6 +391,7 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 			// shape can drive the turn.
 			// TODO: drop one field once Kiro lands on a single canonical payload.
 			streamingCurrentTurn.Store(true)
+			c.markPromptStarted(opts.MaxTokens > 0)
 			_, promptErr = c.request(runCtx, "session/prompt", map[string]any{
 				"sessionId": sessionID,
 				"content":   promptBlocks,
@@ -501,13 +502,14 @@ func (b *kiroBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		}
 
 		resCh <- Result{
-			Status:         finalStatus,
-			Output:         finalOutput,
-			Error:          finalError,
-			DurationMs:     duration.Milliseconds(),
-			SessionID:      sessionID,
-			ResumeRejected: resumeRejected,
-			Usage:          usageMap,
+			Status:          finalStatus,
+			Output:          finalOutput,
+			Error:           finalError,
+			DurationMs:      duration.Milliseconds(),
+			SessionID:       sessionID,
+			ResumeRejected:  resumeRejected,
+			Usage:           usageMap,
+			UsageAccounting: map[string]UsageAccounting{usageModelForMap(usageMap): c.usageAccounting(sessionID, opts.ResumeSessionID != "" && sessionID == opts.ResumeSessionID, opts.ResumeSessionID != "" && sessionID != opts.ResumeSessionID)},
 		}
 	}()
 

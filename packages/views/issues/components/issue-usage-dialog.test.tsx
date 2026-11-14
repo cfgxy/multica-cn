@@ -77,6 +77,25 @@ describe("IssueUsageDialog", () => {
     expect(screen.getByText(/100% hit rate/)).toBeInTheDocument();
   });
 
+  it("keeps cumulative snapshots without a baseline out of task totals", () => {
+    open([
+      makeTask({
+        usage: [
+          usage({
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            accounting_mode: "unknown",
+            raw_input_tokens: 12_000,
+          }),
+        ],
+      }),
+    ]);
+
+    expect(screen.getByText(/cumulative usage snapshots without a task baseline/)).toBeInTheDocument();
+    expect(screen.queryByText("12.0K")).not.toBeInTheDocument();
+  });
+
   it("keeps the full model list reachable when the cell truncates", () => {
     // A run that spilled across models carries ids long enough to set the
     // table's width on their own; the cell is capped, so the untruncated list
