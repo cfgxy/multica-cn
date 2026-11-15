@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -285,12 +286,7 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	var agentID, runtimeID string
-	if err := testPool.QueryRow(ctx, `
-		SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1
-	`, testWorkspaceID).Scan(&agentID, &runtimeID); err != nil {
-		t.Fatalf("setup: get agent: %v", err)
-	}
+	agentID, runtimeID, daemonID := createRuntimeGuardAgent(t, ctx)
 	var issueID string
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position)
@@ -316,9 +312,12 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 	}
 	post := func(t *testing.T, taskID, endpoint string, body map[string]any, call func(http.ResponseWriter, *http.Request)) {
 		t.Helper()
+		if endpoint == "cancel-ack" {
+			body["confirmed"] = true
+		}
 		w := httptest.NewRecorder()
 		req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/"+endpoint,
-			body, testWorkspaceID, "legit-daemon")
+			body, testWorkspaceID, daemonID)
 		rctx := chi.NewRouteContext()
 		rctx.URLParams.Add("taskId", taskID)
 		req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -345,6 +344,23 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 		}
 		return durableWorkDir.String
 	}
+
+	t.Run("cancel ack without confirmed worker stop leaves task and branch untouched", func(t *testing.T) {
+		for _, body := range []map[string]any{
+			{"branch_name": "agent/j/unconfirmed"},
+			{"branch_name": "agent/j/unconfirmed", "confirmed": false},
+		} {
+			taskID := newTask(t, "cancel_requested")
+			req := withURLParam(newDaemonTokenRequest(http.MethodPost,
+				"/api/daemon/tasks/"+taskID+"/cancel-ack", body, testWorkspaceID, daemonID), "taskId", taskID)
+			testutil.Call(t, testHandler.AckTaskCancelled, req).Want(http.StatusConflict)
+			var status string
+			dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status)
+			if status != "cancel_requested" || readBranch(t, taskID) != "" {
+				t.Fatalf("unconfirmed acknowledgement changed task: status=%q branch=%q", status, readBranch(t, taskID))
+			}
+		}
+	})
 
 	// A context-exhausted "success" is rerouted to the failure path server-side.
 	// The run still delivered a branch; the reroute must not eat it.
@@ -389,7 +405,7 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 		}
 	})
 
-	// Older daemons post an empty body here; that must stay a valid ack.
+	// A confirmed worker stop remains valid without branch metadata.
 	t.Run("cancel ack without a branch still succeeds", func(t *testing.T) {
 		taskID := newTask(t, "cancelled")
 		post(t, taskID, "cancel-ack", map[string]any{}, testHandler.AckTaskCancelled)

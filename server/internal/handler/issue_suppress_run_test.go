@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -12,7 +14,8 @@ import (
 // server-set task-token actor markers the auth middleware writes for a run's
 // own CLI call, so resolveActor yields the trusted "agent" actor — the only
 // input that may decide the agent branch (a client-declared field must not).
-func suppressRunRequest(issueID, status string, asAgent string) *http.Request {
+func suppressRunRequest(t *testing.T, issueID, status string, asAgent string) *http.Request {
+	t.Helper()
 	req := testutil.WithURLParams(
 		testutil.JSONRequest("PUT", "/api/issues/"+issueID, map[string]any{
 			"status": status, "suppress_run": true,
@@ -20,7 +23,7 @@ func suppressRunRequest(issueID, status string, asAgent string) *http.Request {
 		"id", issueID)
 	testutil.WithHeaders(req, "X-User-ID", testUserID, "X-Workspace-ID", testWorkspaceID)
 	if asAgent != "" {
-		testutil.WithHeaders(req, "X-Actor-Source", "task_token", "X-Agent-ID", asAgent)
+		stampSuppressTaskActor(t, req, issueID, asAgent)
 	}
 	return req
 }
@@ -56,7 +59,7 @@ func TestSuppressRunFromAgentNeedsAnchorRun(t *testing.T) {
 	// 1. agent actor + suppress + backlog→active + no task → enqueues anyway.
 	t.Run("agent without active run enqueues", func(t *testing.T) {
 		issueID := backlogIssueFor(t, agentID)
-		testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(issueID, "in_progress", agentID)).Want(http.StatusOK)
+		testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(t, issueID, "in_progress", agentID)).Want(http.StatusOK)
 		if got := taskCountFor(t, issueID, agentID); got != 1 {
 			t.Fatalf("agent suppress on a run-less issue must still enqueue: want 1 task, got %d", got)
 		}
@@ -66,7 +69,7 @@ func TestSuppressRunFromAgentNeedsAnchorRun(t *testing.T) {
 	//    affordance is untouched.
 	t.Run("member suppress still honored", func(t *testing.T) {
 		issueID := backlogIssueFor(t, agentID)
-		testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(issueID, "in_progress", "")).Want(http.StatusOK)
+		testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(t, issueID, "in_progress", "")).Want(http.StatusOK)
 		if got := taskCountFor(t, issueID, agentID); got != 0 {
 			t.Fatalf("member suppress_run must enqueue nothing, got %d tasks", got)
 		}
@@ -84,7 +87,7 @@ func TestSuppressRunFromAgentNeedsAnchorRun(t *testing.T) {
 			"status":     "running",
 			"runtime_id": runtimeIDForAgent(t, agentID),
 		})
-		testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(issueID, "in_progress", agentID)).Want(http.StatusOK)
+		testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(t, issueID, "in_progress", agentID)).Want(http.StatusOK)
 		if got := taskCountFor(t, issueID, agentID); got != 1 {
 			t.Fatalf("suppress with an active run must not add a second run: want the 1 pre-existing task, got %d", got)
 		}
@@ -96,7 +99,7 @@ func TestSuppressRunFromAgentNeedsAnchorRun(t *testing.T) {
 		issueID := dbfx.Issue(t, "suppress non-backlog", testutil.Cols{
 			"status": "todo", "assignee_type": "agent", "assignee_id": agentID,
 		})
-		testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(issueID, "in_progress", agentID)).Want(http.StatusOK)
+		testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(t, issueID, "in_progress", agentID)).Want(http.StatusOK)
 		if got := taskCountFor(t, issueID, agentID); got != 0 {
 			t.Fatalf("todo→in_progress is no trigger source, got %d tasks", got)
 		}
@@ -115,7 +118,7 @@ func TestBatchSuppressRunFromAgentNeedsAnchorRun(t *testing.T) {
 		})
 		testutil.WithHeaders(req, "X-User-ID", testUserID, "X-Workspace-ID", testWorkspaceID)
 		if asAgent != "" {
-			testutil.WithHeaders(req, "X-Actor-Source", "task_token", "X-Agent-ID", asAgent)
+			stampSuppressTaskActor(t, req, issueID, asAgent)
 		}
 		return req
 	}
@@ -135,4 +138,20 @@ func TestBatchSuppressRunFromAgentNeedsAnchorRun(t *testing.T) {
 			t.Fatalf("batch member suppress_run must enqueue nothing, got %d tasks", got)
 		}
 	})
+}
+
+// An agent write must carry a real active task. Without a target-issue anchor,
+// the caller runs on another issue so suppression still tests the run-less pair.
+func stampSuppressTaskActor(t *testing.T, req *http.Request, issueID, agentID string) {
+	t.Helper()
+	var taskID string
+	if err := testPool.QueryRow(t.Context(), `SELECT id FROM agent_task_queue
+		WHERE issue_id=$1 AND agent_id=$2 AND status IN ('running','dispatched','waiting_local_directory')
+		ORDER BY created_at DESC LIMIT 1`, issueID, agentID).Scan(&taskID); errors.Is(err, pgx.ErrNoRows) {
+		callerIssue := dbfx.Issue(t, "suppression caller")
+		taskID = dbfx.Task(t, agentID, testutil.Cols{"issue_id": callerIssue, "status": "running", "runtime_id": runtimeIDForAgent(t, agentID)})
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	testutil.WithHeaders(req, "X-Actor-Source", "task_token", "X-Agent-ID", agentID, "X-Task-ID", taskID)
 }

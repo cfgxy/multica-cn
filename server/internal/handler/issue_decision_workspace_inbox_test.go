@@ -335,3 +335,16 @@ func TestWorkspaceDecisionInboxAuthorizationCardExcluded(t *testing.T) {
 		t.Fatalf("question card auth_state = %v, want null", q.AuthState)
 	}
 }
+
+func TestWorkspaceDecisionInboxCountsIgnoreUnlistedParents(t *testing.T) {
+	validIssue := dbfx.Issue(t, "inbox valid parent")
+	validCard := insertInboxCard(t, testWorkspaceID, validIssue, "visible question", "open", "")
+	insertInboxCard(t, testWorkspaceID, uuidToString(dbid.NewV7()), "orphan question", "cancelled", "")
+	otherWorkspace := dbfx.Workspace(t, "Inbox foreign parent", handlerTestSlug(t.Name()))
+	foreignIssue := dbfx.Issue(t, "foreign parent", testutil.Cols{"workspace_id": otherWorkspace})
+	insertInboxCard(t, testWorkspaceID, foreignIssue, "mismatched parent", "answered", "")
+	resp := decodeInbox(t, getInbox(t, testWorkspaceID, ""))
+	if len(resp.Items) != 1 || resp.Items[0].ID != validCard || resp.Counts.Open != 1 || resp.Counts.Answered != 0 || resp.Counts.Cancelled != 0 {
+		t.Fatalf("inbox items/counts included missing or cross-workspace parent: %+v", resp)
+	}
+}

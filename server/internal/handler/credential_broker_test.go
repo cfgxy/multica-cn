@@ -136,7 +136,8 @@ func TestBatchClaimRequeuesDirectCredentialWhenCapabilityMintFails(t *testing.T)
 	}
 	status, response, err := h.DaemonRPCHandler(ctx, daemonws.ClientIdentity{
 		DaemonID: batchClaimTestDaemonID, UserID: testUserID, WorkspaceID: testWorkspaceID,
-		WorkspaceIDs: []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID},
+		DaemonTokenOwnerID: testUserID,
+		WorkspaceIDs:       []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID},
 		Capabilities: protocol.DaemonCapabilityCredentialMCPV1,
 	}, "tasks.claim", body)
 	if err != nil || status != http.StatusOK {
@@ -201,7 +202,8 @@ func TestBatchClaimRequeuesDirectCredentialWithoutCredentialMCPCapability(t *tes
 	}
 	status, response, err := testHandler.DaemonRPCHandler(ctx, daemonws.ClientIdentity{
 		DaemonID: batchClaimTestDaemonID, UserID: testUserID, WorkspaceID: testWorkspaceID,
-		WorkspaceIDs: []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID},
+		DaemonTokenOwnerID: testUserID,
+		WorkspaceIDs:       []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID},
 	}, "tasks.claim", body)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("claim status=%d err=%v body=%s", status, err, response)
@@ -262,7 +264,8 @@ func TestBatchClaimDoesNotMintDirectCredentialWithoutRuntimeOwner(t *testing.T) 
 	}
 	status, response, err := testHandler.DaemonRPCHandler(ctx, daemonws.ClientIdentity{
 		DaemonID: batchClaimTestDaemonID, UserID: testUserID, WorkspaceID: testWorkspaceID,
-		WorkspaceIDs: []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID},
+		DaemonTokenOwnerID: testUserID,
+		WorkspaceIDs:       []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID},
 		Capabilities: protocol.DaemonCapabilityCredentialMCPV1,
 	}, "tasks.claim", body)
 	if err != nil || status != http.StatusOK {
@@ -278,8 +281,9 @@ func TestBatchClaimDoesNotMintDirectCredentialWithoutRuntimeOwner(t *testing.T) 
 	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&taskStatus); err != nil {
 		t.Fatal("read task status")
 	}
-	if taskStatus != "cancelled" {
-		t.Fatalf("task status after missing runtime owner = %q, want cancelled", taskStatus)
+	// Ownerless runtimes fail authorization before any queued task is claimed.
+	if taskStatus != "queued" {
+		t.Fatalf("task status after missing runtime owner = %q, want queued", taskStatus)
 	}
 	var capabilityCount int
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM credential_capability WHERE task_id = $1`, taskID).Scan(&capabilityCount); err != nil {
@@ -558,7 +562,8 @@ func TestCredentialBrokerCapabilityIsControlBoundSingleUse(t *testing.T) {
 		t.Fatal("generate daemon session key")
 	}
 	identity := daemonws.ClientIdentity{DaemonID: batchClaimTestDaemonID, UserID: testUserID,
-		WorkspaceID: testWorkspaceID, WorkspaceIDs: []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID},
+		DaemonTokenOwnerID: testUserID,
+		WorkspaceID:        testWorkspaceID, WorkspaceIDs: []string{testWorkspaceID}, RuntimeIDs: []string{runtimeID},
 		Capabilities: "credential-mcp-v1"}
 	claimBody, err := json.Marshal(map[string]any{
 		"daemon_id": batchClaimTestDaemonID, "runtime_ids": []string{runtimeID}, "max_tasks": 1,

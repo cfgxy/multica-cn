@@ -726,11 +726,23 @@ func TestClauseMigrationRollbackRerendersOnlyMatchingProject(t *testing.T) {
 	var instructionsA, instructionsB string
 	dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, projectA).Scan(&instructionsA)
 	dbfx.QueryRow(t, `SELECT instructions FROM project WHERE id = $1`, projectB).Scan(&instructionsB)
-	if !strings.Contains(instructionsA, "项目甲保留正文") || strings.Contains(instructionsA, "项目乙保留正文") {
-		t.Fatalf("project A rollback rendered clauses from another carrier:\n%s", instructionsA)
-	}
-	if !strings.Contains(instructionsB, "项目乙保留正文") || strings.Contains(instructionsB, "项目甲保留正文") {
-		t.Fatalf("project B rollback rendered clauses from another carrier:\n%s", instructionsB)
+	for _, carrier := range []struct {
+		id, static, restored, remaining, foreign string
+	}{
+		{projectA, instructionsA, "项目甲迁移正文", "项目甲保留正文", "项目乙"},
+		{projectB, instructionsB, "项目乙迁移正文", "项目乙保留正文", "项目甲"},
+	} {
+		if !strings.Contains(carrier.static, carrier.restored) || strings.Contains(carrier.static, carrier.remaining) || strings.Contains(carrier.static, carrier.foreign) || strings.Contains(carrier.static, "clause:id=") {
+			t.Fatalf("rollback did not restore only this project's static text:\n%s", carrier.static)
+		}
+		rows, err := testHandler.Queries.ListActiveWorkspaceClauses(t.Context(), parseUUID(f.wsID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		effective := clausemark.Render(carrier.static, renderedClausesByCarrier(rows, nil)[carrierRef{scope: "project", id: parseUUID(carrier.id)}])
+		if !strings.Contains(effective, carrier.restored) || !strings.Contains(effective, carrier.remaining) || strings.Contains(effective, carrier.foreign) {
+			t.Fatalf("rollback effective context contains wrong project clauses:\n%s", effective)
+		}
 	}
 }
 
@@ -897,6 +909,151 @@ func TestClauseMoveBetweenCarriers(t *testing.T) {
 	if strings.Contains(wsContext, "clause:id=") || strings.Contains(wsContext, "每日同步") {
 		t.Fatalf("source carrier retained dynamic clause content:\n%s", wsContext)
 	}
+	rows, err := testHandler.Queries.ListActiveWorkspaceClauses(t.Context(), parseUUID(f.wsID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	byCarrier := renderedClausesByCarrier(rows, nil)
+	destination := clausemark.Render(squadInstructions, byCarrier[carrierRef{scope: "squad", id: parseUUID(squadID)}])
+	source := clausemark.Render(wsContext, byCarrier[carrierRef{scope: "workspace", id: parseUUID(f.wsID)}])
+	if !strings.Contains(destination, cleanClauseText) || strings.Contains(source, cleanClauseText) {
+		t.Fatalf("move effective contexts: source=%q destination=%q", source, destination)
+	}
+}
+
+func TestClauseMovePreservesSameNamedStaticBlock(t *testing.T) {
+	f := newClauseInjectionFixture(t)
+	squadID := dbfx.Squad(t, "move same title target", f.agentID,
+		testutil.Cols{"workspace_id": f.wsID, "instructions": squadCarrierText})
+	clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+	staticBlock := "- **每日同步**：保留在原载体的独立静态要求。"
+	var before string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&before)
+	before += "\n\n" + staticBlock
+	dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, before)
+	id := submitClauseOp(t, f, clauseOpBody(f.wsID, "move_clause", clauseID, "每日同步", "", map[string]any{
+		"move_to_scope": "squad", "move_to_scope_id": squadID,
+	}))
+	if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusOK {
+		t.Fatalf("move approve = %d: %s", code, body)
+	}
+	var source, destination string
+	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&source)
+	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, squadID).Scan(&destination)
+	if source != before || strings.Contains(destination, staticBlock) || strings.Contains(destination, cleanClauseText) {
+		t.Fatalf("move changed independent static text: source=%q destination=%q", source, destination)
+	}
+}
+
+func TestClauseMoveRevisionVersionsAndStaticStorage(t *testing.T) {
+	for _, revision := range []string{"", cleanClauseText, "- **每日同步**：迁移后先记录任务进展与阻塞。"} {
+		t.Run(fmt.Sprintf("revision=%q", revision), func(t *testing.T) {
+			f := newClauseInjectionFixture(t)
+			squadID := dbfx.Squad(t, "move revision target", f.agentID,
+				testutil.Cols{"workspace_id": f.wsID, "instructions": squadCarrierText})
+			clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+			id := submitClauseOp(t, f, clauseOpBody(f.wsID, "move_clause", clauseID, "每日同步", revision, map[string]any{
+				"move_to_scope": "squad", "move_to_scope_id": squadID,
+			}))
+			if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusOK {
+				t.Fatalf("move revision approve = %d: %s", code, body)
+			}
+			wantVersion, wantContent := 1, cleanClauseText
+			if revision != "" && revision != cleanClauseText {
+				wantVersion, wantContent = 2, revision
+			}
+			var version int
+			var content string
+			dbfx.QueryRow(t, `SELECT b.since_clause_version, v.content FROM clause_binding b JOIN clause_version v ON v.clause_id = b.clause_id AND v.version = b.since_clause_version WHERE b.clause_id = $1 AND b.status = 'active' AND b.scope_id = $2`, clauseID, squadID).Scan(&version, &content)
+			if version != wantVersion || content != wantContent {
+				t.Fatalf("moved asset = v%d %q, want v%d %q", version, content, wantVersion, wantContent)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM clause_version WHERE clause_id = $1`, clauseID); n != wantVersion {
+				t.Fatalf("version count = %d, want %d", n, wantVersion)
+			}
+			var source, destination string
+			dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&source)
+			dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, squadID).Scan(&destination)
+			if strings.Contains(source, "每日同步") || strings.Contains(destination, "每日同步") || strings.Contains(source+destination, "clause:id=") {
+				t.Fatalf("move persisted dynamic text: source=%q destination=%q", source, destination)
+			}
+			rows, err := testHandler.Queries.ListActiveWorkspaceClauses(t.Context(), parseUUID(f.wsID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			effective := clausemark.Render(destination, renderedClausesByCarrier(rows, nil)[carrierRef{scope: "squad", id: parseUUID(squadID)}])
+			if !strings.Contains(effective, wantContent) || !strings.Contains(effective, fmt.Sprintf("rev=%d", wantVersion)) {
+				t.Fatalf("moved effective text omitted asset revision: %s", effective)
+			}
+		})
+	}
+}
+
+func TestClauseMoveRevisionRejectsInvalidReferencesAtomically(t *testing.T) {
+	for _, kind := range []string{"missing", "cycle", "static heading"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newClauseInjectionFixture(t)
+			squadID := dbfx.Squad(t, "move rejected reference target", f.agentID,
+				testutil.Cols{"workspace_id": f.wsID, "instructions": squadCarrierText})
+			clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+			reference, finding := "cls_deadbeef", "缺失引用"
+			if kind == "cycle" {
+				dbfx.QueryRow(t, `SELECT slug FROM clause WHERE id = $1`, clauseID).Scan(&reference)
+				finding = "循环引用"
+			} else if kind == "static heading" {
+				reference, finding = "工作纪律", "反向静态引用"
+			}
+			id := submitClauseOp(t, f, clauseOpBody(f.wsID, "move_clause", clauseID, "每日同步", "- **每日同步**：执行前核对 "+reference+"。", map[string]any{
+				"move_to_scope": "squad", "move_to_scope_id": squadID,
+			}))
+			var sourceBefore, targetBefore string
+			dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&sourceBefore)
+			dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, squadID).Scan(&targetBefore)
+			if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusConflict || !strings.Contains(body, finding) {
+				t.Fatalf("move invalid %s = %d: %s", kind, code, body)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM clause_version WHERE clause_id = $1`, clauseID); n != 1 {
+				t.Fatalf("rejected move wrote versions: %d", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM clause_binding WHERE clause_id = $1`, clauseID); n != 1 {
+				t.Fatalf("rejected move wrote bindings: %d", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM clause_binding WHERE clause_id = $1 AND status = 'active' AND scope = 'workspace' AND scope_id = $2 AND since_clause_version = 1`, clauseID, f.wsID); n != 1 {
+				t.Fatal("rejected move changed active binding")
+			}
+			var sourceAfter, targetAfter string
+			dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, f.wsID).Scan(&sourceAfter)
+			dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, squadID).Scan(&targetAfter)
+			if sourceAfter != sourceBefore || targetAfter != targetBefore {
+				t.Fatalf("rejected move changed carriers: source=%q target=%q", sourceAfter, targetAfter)
+			}
+		})
+	}
+}
+
+func TestClauseMoveRejectsMismatchedActiveBinding(t *testing.T) {
+	for _, drift := range []string{"carrier", "version"} {
+		t.Run(drift, func(t *testing.T) {
+			f := newClauseInjectionFixture(t)
+			squadID := dbfx.Squad(t, "move binding target", f.agentID,
+				testutil.Cols{"workspace_id": f.wsID, "instructions": squadCarrierText})
+			clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+			id := submitClauseOp(t, f, clauseOpBody(f.wsID, "move_clause", clauseID, "每日同步", "", map[string]any{
+				"move_to_scope": "squad", "move_to_scope_id": squadID,
+			}))
+			if drift == "carrier" {
+				dbfx.Exec(t, `UPDATE clause_binding SET scope = 'squad', scope_id = $2 WHERE clause_id = $1 AND status = 'active'`, clauseID, squadID)
+			} else {
+				dbfx.Exec(t, `UPDATE clause_binding SET since_clause_version = 2 WHERE clause_id = $1 AND status = 'active'`, clauseID)
+			}
+			if code, body := ownerApprove(t, f.ownerID, f.wsID, id); code != http.StatusConflict || !strings.Contains(body, "active clause binding does not match") {
+				t.Fatalf("move with %s drift: expected binding conflict, got %d: %s", drift, code, body)
+			}
+			if got := dbfx.Count(t, `SELECT count(*) FROM clause_binding WHERE clause_id = $1 AND status = 'superseded'`, clauseID); got != 0 {
+				t.Fatalf("rejected move superseded %d bindings", got)
+			}
+		})
+	}
 }
 
 // Legacy name-only proposals keep working: an unqualified clause_name
@@ -1057,17 +1214,23 @@ func TestClauseReconciliationLayerViolation(t *testing.T) {
 func TestClauseReconciliationDriftKinds(t *testing.T) {
 	t.Run("stale_rev", func(t *testing.T) {
 		f := newClauseInjectionFixture(t)
-		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
-		dbfx.Exec(t, `UPDATE workspace SET context = context || $2 WHERE id = $1`, f.wsID,
-			"\n<!-- clause:id=cls_aaa00001 rev=7 -->\n")
+		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		withFeatureFlag(t, testHandler, featureflags.ClauseDynamicInjectionDisabled, true)
+		snapshot := clausemark.Render(legislationCarrierText, []clausemark.RenderedClause{
+			{Slug: activeSlug(t, clauseID), Version: 7, Body: cleanClauseText},
+		})
+		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, snapshot)
 		assertSingleDriftKind(t, f, "stale_rev")
 	})
 	t.Run("orphan_marker", func(t *testing.T) {
 		f := newClauseInjectionFixture(t)
-		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
-		// A hand-pasted marker referencing no live clause (or any clause).
-		dbfx.Exec(t, `UPDATE workspace SET context = context || $2 WHERE id = $1`, f.wsID,
-			"\n<!-- clause:id=cls_zzzzzzzz rev=1 -->\n")
+		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		withFeatureFlag(t, testHandler, featureflags.ClauseDynamicInjectionDisabled, true)
+		snapshot := clausemark.Render(legislationCarrierText, []clausemark.RenderedClause{
+			{Slug: activeSlug(t, clauseID), Version: 1, Body: cleanClauseText},
+			{Slug: "cls_zzzzzzzz", Version: 1, Body: "- **Old rule**: orphaned snapshot content."},
+		})
+		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, snapshot)
 		assertSingleDriftKind(t, f, "orphan_marker")
 	})
 	t.Run("static_carrier", func(t *testing.T) {
@@ -1118,9 +1281,12 @@ func TestClauseReconciliationDriftKinds(t *testing.T) {
 	})
 	t.Run("dynamic_injection_ignores_stale_and_orphan_snapshot_markers", func(t *testing.T) {
 		f := newClauseInjectionFixture(t)
-		enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
-		dbfx.Exec(t, `UPDATE workspace SET context = replace(context, 'rev=1', 'rev=7') || $2 WHERE id = $1`,
-			f.wsID, "\n<!-- clause:id=cls_zzzzzzzz rev=1 -->\n")
+		clauseID := enactWorkspaceClause(t, f, "每日同步", cleanClauseText)
+		snapshot := clausemark.Render(legislationCarrierText, []clausemark.RenderedClause{
+			{Slug: activeSlug(t, clauseID), Version: 7, Body: cleanClauseText},
+			{Slug: "cls_zzzzzzzz", Version: 1, Body: "- **Old rule**: orphaned snapshot content."},
+		})
+		dbfx.Exec(t, `UPDATE workspace SET context = $2 WHERE id = $1`, f.wsID, snapshot)
 
 		code, body := legislationCall(t, testHandler.GetClauseReconciliation,
 			legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/reconciliation", nil))
@@ -1253,7 +1419,7 @@ func TestClauseReconciliationScopesExpectedClausesToCarrier(t *testing.T) {
 		"instructions": "# Unbound project\n\n## Project rules\n",
 	})
 
-	body := legislationProposalBody(f.wsID, "project clause", cleanClauseText)
+	body := legislationProposalBody(f.wsID, "project clause", "- **project clause**: Project-specific facts.")
 	body.CarrierScope = "project"
 	body.CarrierScopeID = boundProjectID
 	body.TargetSection = "Project rules"
@@ -1273,6 +1439,15 @@ func TestClauseReconciliationScopesExpectedClausesToCarrier(t *testing.T) {
 	if code, response = ownerApprove(t, f.ownerID, f.wsID, created.ID); code != http.StatusOK {
 		t.Fatalf("approve project clause: expected 200, got %d: %s", code, response)
 	}
+	// Snapshot mode exercises scope-ID matching: only the bound project
+	// carries a snapshot, while the unbound project remains static.
+	var clauseID string
+	dbfx.QueryRow(t, `SELECT clause_id::text FROM prompt_proposal WHERE id = $1`, created.ID).Scan(&clauseID)
+	dbfx.Exec(t, `UPDATE project SET instructions = $2 WHERE id = $1`, boundProjectID,
+		clausemark.Render("# Bound project\n\n## Project rules\n", []clausemark.RenderedClause{
+			{Slug: activeSlug(t, clauseID), Version: 1, Body: body.ClauseText},
+		}))
+	withFeatureFlag(t, testHandler, featureflags.ClauseDynamicInjectionDisabled, true)
 
 	code, response = legislationCall(t, testHandler.GetClauseReconciliation,
 		legislationReq(f.memberID, f.wsID, http.MethodGet, "/api/prompt-legislation/governance/reconciliation", nil))

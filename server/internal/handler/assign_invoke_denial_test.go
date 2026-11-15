@@ -64,13 +64,18 @@ func TestAssignAgent_DenialReasonNamesPermissionNotMode(t *testing.T) {
 		assertDenialReason(t, resp, wantAgentReason)
 	})
 
-	// An AGENT actor with no resolvable human originator (no X-Task-ID). A2A is
-	// judged by the top of the chain, so this fails closed like any other
-	// principal — there is no unconditional agent-to-agent bypass.
+	// An agent run with no resolvable human originator. A2A is judged by the
+	// top of the chain, so it fails closed without an agent-to-agent bypass.
 	t.Run("agent actor with no originator is refused without naming the mode", func(t *testing.T) {
 		callerAgentID := createHandlerTestAgent(t, "assign-denial-caller-agent", nil)
+		// A trusted task establishes the agent identity; X-Agent-ID alone falls
+		// back to the member session and would exercise the workspace owner.
+		callerTaskID := dbfx.Task(t, callerAgentID, testutil.Cols{
+			"runtime_id": handlerTestRuntimeID(t), "status": "running",
+		})
 		req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, assignBody(privateAgentID))
 		req.Header.Set("X-Agent-ID", callerAgentID)
+		req.Header.Set("X-Task-ID", callerTaskID)
 		resp := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusForbidden)
 		assertDenialReason(t, resp, wantAgentReason)
 	})

@@ -78,6 +78,14 @@ func TestBudgetConcurrentAdmissionAndFrozenLineage(t *testing.T) {
 	create := func(q *db.Queries) (db.AgentTaskQueue, error) {
 		return q.CreateAgentTask(ctx, db.CreateAgentTaskParams{ID: dbid.NewV7(), AgentID: agentUUID, RuntimeID: runtimeID, HeadSha: pgtype.Text{String: "review", Valid: true}})
 	}
+	created := false
+	_, err := svc.budgetTaskCreate(ctx, nil, agentUUID, []pgtype.UUID{dbid.NewV7()}, func(*db.Queries) (db.AgentTaskQueue, error) {
+		created = true
+		return db.AgentTaskQueue{}, nil
+	})
+	if err == nil || created {
+		t.Fatalf("missing explicit budget ancestor must refuse before creation: created=%v err=%v", created, err)
+	}
 	root, err := svc.budgetTaskCreate(ctx, nil, agentUUID, nil, create)
 	if err != nil {
 		t.Fatal(err)

@@ -237,13 +237,11 @@ func TestCreateIssue_AssignToPrivateAgentForbidsPlainMember(t *testing.T) {
 		}
 	}
 
-	// Workspace owner (testUserID) who is NOT the agent owner: DENIED under
-	// the invocation-permission model (MUL-3963) — admin/owner status no
-	// longer grants the ability to invoke someone else's private agent.
+	// Workspace owners may invoke another member's private agent.
 	w := httptest.NewRecorder()
 	testHandler.CreateIssue(w, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body(testUserID)))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("CreateIssue as workspace owner (not agent owner): expected 403, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateIssue as workspace owner (not agent owner): expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Agent owner (plain member who happens to own the agent): allowed.
@@ -260,6 +258,12 @@ func TestCreateIssue_AssignToPrivateAgentForbidsPlainMember(t *testing.T) {
 	testHandler.CreateIssue(w, newRequestAs(memberID, "POST", "/api/issues?workspace_id="+testWorkspaceID, body(memberID)))
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("CreateIssue as plain member: expected 403, got %d: %s", w.Code, w.Body.String())
+	}
+	adminID := createPermissionTestAdmin(t, "private-assign-admin@multica.test")
+	w = httptest.NewRecorder()
+	testHandler.CreateIssue(w, newRequestAs(adminID, "POST", "/api/issues?workspace_id="+testWorkspaceID, body(adminID)))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("CreateIssue as workspace admin: expected 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

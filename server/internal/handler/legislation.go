@@ -378,8 +378,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	if isMove {
 		srcRef := carrierRef{scope: p.CarrierScope, id: p.CarrierScopeID}
 		dstRef := carrierRef{scope: p.MoveToScope.String, id: p.MoveToScopeID}
-		srcNext, dstNext, synthErr := legislation.SynthesizeMove(texts[srcRef], texts[dstRef], input,
-			legislation.MoveTarget{Scope: p.MoveToScope.String})
+		srcNext, dstNext, synthErr := h.synthesizeClauseMove(ctx, qtx, workspaceID, p, texts[srcRef], texts[dstRef])
 		if synthErr != nil {
 			res = errorResult(synthErr)
 		} else {
@@ -488,6 +487,69 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 		return false, true, errorResult(fmt.Errorf("enact 落账失败: %w", err))
 	}
 	return true, false, res
+}
+
+// synthesizeClauseMove reads the source body from its active library binding;
+// the business column contains only static context in the normal claim path.
+func (h *Handler) synthesizeClauseMove(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, src, dst string) (string, string, error) {
+	clause, err := resolveProposalClauseTx(ctx, qtx, workspaceID, p.ClauseID, p.ClauseName)
+	if err != nil {
+		return "", "", err
+	}
+	binding, err := qtx.GetActiveClauseBinding(ctx, clause.ID)
+	if err != nil {
+		return "", "", fmt.Errorf("active clause binding unavailable: %w", err)
+	}
+	if clause.Status != "active" || binding.Scope != p.CarrierScope || binding.ScopeID != p.CarrierScopeID || binding.SinceClauseVersion != clause.Version {
+		return "", "", errors.New("active clause binding does not match the proposal carrier/version")
+	}
+	version, err := qtx.GetClauseVersion(ctx, db.GetClauseVersionParams{ClauseID: clause.ID, Version: clause.Version})
+	if err != nil {
+		return "", "", err
+	}
+	rows, err := h.activeClauseRowsTx(ctx, qtx, workspaceID)
+	if err != nil {
+		return "", "", err
+	}
+	byCarrier := renderedClausesByCarrier(rows, nil)
+	srcClauses := byCarrier[carrierRef{scope: p.CarrierScope, id: p.CarrierScopeID}]
+	dstClauses := byCarrier[carrierRef{scope: p.MoveToScope.String, id: p.MoveToScopeID}]
+	if err := clausemark.ValidateSnapshot(src, srcClauses); err != nil {
+		return "", "", err
+	}
+	if err := clausemark.ValidateSnapshot(dst, dstClauses); err != nil {
+		return "", "", err
+	}
+	// Include destination assets in the engine's duplicate-title check without
+	// persisting their bodies or treating marker delimiters as clause content.
+	dstEffective := clausemark.Static(dst, dstClauses)
+	for _, item := range dstClauses {
+		dstEffective += "\n\n" + item.Body
+	}
+	// The asset identity selects the complete body. A same-named static
+	// block belongs to the source carrier and must never be extracted by title.
+	input := proposalInputFromRow(p)
+	input.ChangeKind, input.ClauseName, input.TargetSection = "add_clause", clause.Title, ""
+	input.ClauseText = clauseMoveContent(version.Content, p.ClauseText)
+	if strings.TrimSpace(p.ClauseText) != "" {
+		if err := legislation.ValidateRevisionText(clause.Title, p.ClauseText); err != nil {
+			return "", "", err
+		}
+	}
+	dstNext, err := legislation.Synthesize(dstEffective, input)
+	if err != nil {
+		return "", "", err
+	}
+	return clausemark.Static(src, srcClauses), clausemark.Static(dstNext, dstClauses), nil
+}
+
+// clauseMoveContent normalizes optional move revisions for synthesis and writes.
+// An empty body preserves the current version; an identical body is a no-op.
+func clauseMoveContent(current, proposed string) string {
+	if strings.TrimSpace(proposed) == "" {
+		return current
+	}
+	return strings.TrimRight(proposed, "\n")
 }
 
 // synthesizeProposalCarrier applies a proposal to the carrier representation
@@ -752,7 +814,7 @@ func (h *Handler) refContractGate(ctx context.Context, qtx *db.Queries, workspac
 			return []legislation.Finding{{Level: "error", Message: fmt.Sprintf("条款引用契约检查失败，已阻断（fail-closed）：%v", err)}}
 		}
 		selfNode = clause.Slug
-		if p.ChangeKind == "revise_clause" {
+		if p.ChangeKind == "revise_clause" || (p.ChangeKind == "move_clause" && strings.TrimSpace(p.ClauseText) != "") {
 			selfBody = p.ClauseText
 		}
 	}

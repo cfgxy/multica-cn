@@ -107,7 +107,9 @@ func TestRuntimeAccessGatesQueuedTaskClaims(t *testing.T) {
 		ownerlessAgent  bool
 		wantClaim       bool
 	}{
-		{name: "private runtime rejects foreign agent", visibility: "private", wantClaim: false, matchingBinding: true},
+		// Binding writes authorize access; a different Agent owner does not
+		// invalidate a persisted private-runtime binding at claim time.
+		{name: "private runtime accepts authorized foreign-owner binding", visibility: "private", wantClaim: true, matchingBinding: true},
 		{name: "private runtime accepts owner agent", visibility: "private", sameOwner: true, matchingBinding: true, wantClaim: true},
 		{name: "private runtime routes ownerless agent to handler", visibility: "private", sameOwner: true, matchingBinding: true, ownerlessAgent: true, wantClaim: true},
 		{name: "public runtime accepts foreign agent", visibility: "public", wantClaim: true, matchingBinding: true},
@@ -200,7 +202,7 @@ func TestRuntimeAccessGatesStaleDispatchReclaim(t *testing.T) {
 		ownerlessAgent  bool
 		wantReclaim     bool
 	}{
-		{name: "private runtime rejects foreign agent", visibility: "private", wantReclaim: false, matchingBinding: true},
+		{name: "private runtime reclaims authorized foreign-owner binding", visibility: "private", wantReclaim: true, matchingBinding: true},
 		{name: "private runtime accepts owner agent", visibility: "private", sameOwner: true, matchingBinding: true, wantReclaim: true},
 		{name: "private runtime routes ownerless agent to handler", visibility: "private", sameOwner: true, matchingBinding: true, ownerlessAgent: true, wantReclaim: true},
 		{name: "public runtime accepts foreign agent", visibility: "public", wantReclaim: true, matchingBinding: true},

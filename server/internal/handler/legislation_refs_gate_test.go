@@ -211,6 +211,14 @@ func TestRefsGateDeterministicOrdering(t *testing.T) {
 		`SELECT context FROM workspace WHERE id = $1`, wsID).Scan(&ctx); err != nil {
 		t.Fatalf("read carrier context: %v", err)
 	}
+	if strings.Contains(ctx, "clause:id=") || strings.Contains(ctx, cleanClauseText) || strings.Contains(ctx, "归档须留痕") {
+		t.Fatalf("static carrier persisted dynamic clauses:\n%s", ctx)
+	}
+	rows, err := testHandler.Queries.ListActiveWorkspaceClauses(t.Context(), parseUUID(wsID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = clausemark.Render(ctx, renderedClausesByCarrier(rows, nil)[carrierRef{scope: "workspace", id: parseUUID(wsID)}])
 	refs := clausemark.ScanMarkers(ctx)
 	if len(refs) != 2 {
 		t.Fatalf("carrier carries %d regions, want 2:\n%s", len(refs), ctx)

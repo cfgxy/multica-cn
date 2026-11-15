@@ -355,6 +355,28 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 		if p.MoveToScope.String == p.CarrierScope && p.MoveToScopeID == p.CarrierScopeID {
 			return out, errors.New("move_clause 目标载体与源载体相同")
 		}
+		currentVersion, err := qtx.GetClauseVersion(ctx, db.GetClauseVersionParams{ClauseID: clause.ID, Version: clause.Version})
+		if err != nil {
+			return out, fmt.Errorf("条款当前版本读取失败: %w", err)
+		}
+		next := clause.Version
+		content := clauseMoveContent(currentVersion.Content, p.ClauseText)
+		if content != currentVersion.Content {
+			if err := legislation.ValidateRevisionText(clause.Title, content); err != nil {
+				return out, err
+			}
+			next++
+			if _, err := qtx.CreateClauseVersion(ctx, db.CreateClauseVersionParams{
+				ClauseID: clause.ID, Version: next, Content: content,
+				ContentSha256: sha256Hex(content), Source: "legislation",
+				CarrierScope: p.MoveToScope.String, CreatedByType: actorType, CreatedByID: parseUUID(actorID),
+			}); err != nil {
+				return out, fmt.Errorf("条款版本写入失败: %w", err)
+			}
+			out.RenderOverrides[carrierRef{scope: p.MoveToScope.String, id: p.MoveToScopeID}] = &clauseRenderOverride{
+				ClauseID: clause.ID, SupersededContent: currentVersion.Content,
+			}
+		}
 		if _, err := qtx.SupersedeClauseBinding(ctx, db.SupersedeClauseBindingParams{
 			ClauseID: clause.ID,
 			Audit:    clauseAudit("binding_superseded", actorType, actorID, map[string]any{"proposal_id": uuidToString(p.ID), "to_scope": p.MoveToScope.String}),
@@ -366,12 +388,12 @@ func (h *Handler) enactClauseAssetsTx(ctx context.Context, qtx *db.Queries, work
 			Scope:              p.MoveToScope.String,
 			ScopeID:            p.MoveToScopeID,
 			Conditions:         conditionsJSON(p.Conditions),
-			SinceClauseVersion: clause.Version,
+			SinceClauseVersion: next,
 			AuditLog:           clauseAudit("binding_active", actorType, actorID, map[string]any{"proposal_id": uuidToString(p.ID), "from_scope": p.CarrierScope}),
 		}); err != nil {
 			return out, fmt.Errorf("目标载体绑定写入失败: %w", err)
 		}
-		out.ClauseID, out.Slug = clause.ID, clause.Slug
+		out.ClauseID, out.Slug, out.Version = clause.ID, clause.Slug, next
 
 	default:
 		return out, fmt.Errorf("未知变更类型 %q", p.ChangeKind)

@@ -491,15 +491,18 @@ func (s *TaskService) attributionFromComment(ctx context.Context, comment db.Com
 		AuthorType: comment.AuthorType,
 		AuthorID:   comment.AuthorID,
 	}
-	// For an agent-authored comment, walk comment.source_task_id → parent task →
-	// parent.originator_user_id (set by every agent comment-write path since
-	// migration 120). A NULL/missing source task leaves ParentOriginator
-	// invalid, which ClassifyComment maps to unattributed.
+	// For an agent-authored comment, inherit the source task's human when
+	// the row still exists. A missing source is unattributed, not a required
+	// budget ancestor. Explicit retry/rerun parents retain strict inheritance.
 	if comment.AuthorType == "agent" && comment.SourceTaskID.Valid {
-		facts.SourceTaskID = comment.SourceTaskID
-		if parent, err := s.Queries.GetAgentTask(ctx, comment.SourceTaskID); err == nil {
+		parent, err := s.Queries.GetAgentTask(ctx, comment.SourceTaskID)
+		if err == nil {
+			facts.SourceTaskID = comment.SourceTaskID
 			facts.ParentOriginator = parent.OriginatorUserID
 			facts.ParentAccountable = parent.AccountableUserID
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			// A read failure cannot authorize resetting a known lineage.
+			facts.SourceTaskID = comment.SourceTaskID
 		}
 	}
 	return attribution.ClassifyComment(facts, agentAuthoredSource)

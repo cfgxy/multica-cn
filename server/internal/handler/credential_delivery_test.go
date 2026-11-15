@@ -20,6 +20,7 @@ type credentialDeliveryFixture struct {
 	issueID   string
 	agentID   string
 	commentID string
+	writes    map[string]int
 }
 
 func newCredentialDeliveryFixture(t *testing.T, status string) credentialDeliveryFixture {
@@ -50,9 +51,11 @@ func newCredentialDeliveryFixture(t *testing.T, status string) credentialDeliver
 		"author_id":      agentID,
 		"source_task_id": taskID,
 	})
-	return credentialDeliveryFixture{
+	fixture := credentialDeliveryFixture{
 		h: &h, transport: &transportKey.PublicKey, issueID: issueID, agentID: agentID, commentID: commentID,
 	}
+	fixture.writes = credentialDeliveryWrites(t, issueID)
+	return fixture
 }
 
 func (f credentialDeliveryFixture) submit(t *testing.T, subjectID string) *httptest.ResponseRecorder {
@@ -82,8 +85,9 @@ func (f credentialDeliveryFixture) submit(t *testing.T, subjectID string) *httpt
 	return recorder
 }
 
-func assertCredentialDeliveryWrites(t *testing.T, issueID string, want int) {
+func credentialDeliveryWrites(t *testing.T, issueID string) map[string]int {
 	t.Helper()
+	counts := make(map[string]int)
 	for table, where := range map[string]string{
 		"credential_vault": "workspace_id = $1 AND name = 'Delivery fixture'",
 		"credential_grant": "workspace_id = $1 AND subject_type = 'agent'",
@@ -94,8 +98,16 @@ func assertCredentialDeliveryWrites(t *testing.T, issueID string, want int) {
 		if table == "activity_log" {
 			args = append(args, issueID)
 		}
-		if got := dbfx.Count(t, "SELECT count(*) FROM "+table+" WHERE "+where, args...); got != want {
-			t.Fatalf("%s writes = %d, want %d", table, got, want)
+		counts[table] = dbfx.Count(t, "SELECT count(*) FROM "+table+" WHERE "+where, args...)
+	}
+	return counts
+}
+
+func (f credentialDeliveryFixture) assertWrites(t *testing.T, want int) {
+	t.Helper()
+	for table, got := range credentialDeliveryWrites(t, f.issueID) {
+		if delta := got - f.writes[table]; delta != want {
+			t.Fatalf("%s writes = %d, want %d (before=%d after=%d)", table, delta, want, f.writes[table], got)
 		}
 	}
 }
@@ -112,7 +124,7 @@ func TestCredentialDeliveryIsSingleUseAndPublishesSafeActivity(t *testing.T) {
 	if response := fixture.submit(t, fixture.agentID); response.Code != http.StatusConflict {
 		t.Fatalf("repeat delivery status = %d, want 409: %s", response.Code, response.Body.String())
 	}
-	assertCredentialDeliveryWrites(t, fixture.issueID, 1)
+	fixture.assertWrites(t, 1)
 
 	var rawDetails []byte
 	dbfx.QueryRow(t, `SELECT details FROM activity_log
@@ -147,13 +159,13 @@ func TestCredentialDeliveryRejectsTerminalIssuesWithoutWrites(t *testing.T) {
 			if response := fixture.submit(t, fixture.agentID); response.Code != http.StatusConflict {
 				t.Fatalf("delivery on %s issue status = %d, want 409: %s", status, response.Code, response.Body.String())
 			}
-			assertCredentialDeliveryWrites(t, fixture.issueID, 0)
+			fixture.assertWrites(t, 0)
 		})
 	}
 
 	for _, category := range []string{"done", "cancelled"} {
 		t.Run("custom "+category, func(t *testing.T) {
-			key := fmt.Sprintf("delivery_%s_%d", category, time.Now().UnixNano())
+			key := fmt.Sprintf("dlv_%s_%x", category, time.Now().UnixNano())
 			dbfx.Insert(t, "issue_status", testutil.Cols{
 				"workspace_id": testWorkspaceID,
 				"key":          key,
@@ -167,7 +179,7 @@ func TestCredentialDeliveryRejectsTerminalIssuesWithoutWrites(t *testing.T) {
 			if response := fixture.submit(t, fixture.agentID); response.Code != http.StatusConflict {
 				t.Fatalf("delivery on custom %s issue status = %d, want 409: %s", category, response.Code, response.Body.String())
 			}
-			assertCredentialDeliveryWrites(t, fixture.issueID, 0)
+			fixture.assertWrites(t, 0)
 		})
 	}
 }
@@ -234,7 +246,7 @@ func TestCredentialDeliveryRejectsCommentLineageMismatchWithoutWrites(t *testing
 			if response := fixture.submit(t, subjectID); response.Code != http.StatusBadRequest {
 				t.Fatalf("delivery status = %d, want 400: %s", response.Code, response.Body.String())
 			}
-			assertCredentialDeliveryWrites(t, fixture.issueID, 0)
+			fixture.assertWrites(t, 0)
 		})
 	}
 }

@@ -35,7 +35,7 @@ func TestCommentMentionInvalidTargetsSaveWithBlockedOutcomes(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	privateID, _, _ := privateAgentTestFixture(t)
+	privateID, _, memberID := privateAgentTestFixture(t)
 	archivedID := createHandlerTestAgent(t, "soft-admission-archived", nil)
 	dbfx.Exec(t, `UPDATE agent SET archived_at = now() WHERE id = $1`, archivedID)
 
@@ -44,6 +44,11 @@ func TestCommentMentionInvalidTargetsSaveWithBlockedOutcomes(t *testing.T) {
 	foreignID := dbfx.Agent(t, "soft-admission-foreign-agent", foreignRuntimeID, testutil.Cols{"workspace_id": foreignWorkspaceID})
 
 	issueID := dbfx.Issue(t, "soft mention admission")
+	request := func(method, commentID, content string) *http.Request {
+		req := commentRequest(method, issueID, commentID, map[string]any{"content": content})
+		req.Header.Set("X-User-ID", memberID)
+		return req
+	}
 	cases := []struct {
 		name       string
 		targetID   string
@@ -62,7 +67,7 @@ func TestCommentMentionInvalidTargetsSaveWithBlockedOutcomes(t *testing.T) {
 
 			var created CommentResponse
 			testutil.Call(t, testHandler.CreateComment,
-				commentRequest(http.MethodPost, issueID, "", map[string]any{"content": content}),
+				request(http.MethodPost, "", content),
 			).Want(http.StatusCreated).JSON(&created)
 			outcome := findCommentOutcome(t, created.TriggerOutcomes, tc.targetID)
 			if outcome.Status != DispatchBlocked || outcome.ReasonCode != tc.wantReason {
@@ -75,10 +80,10 @@ func TestCommentMentionInvalidTargetsSaveWithBlockedOutcomes(t *testing.T) {
 				t.Fatalf("blocked create queued %d tasks", got)
 			}
 
-			existingID := dbfx.Comment(t, issueID, "original body")
+			existingID := dbfx.Comment(t, issueID, "original body", testutil.Cols{"author_id": memberID})
 			var updated CommentResponse
 			testutil.Call(t, testHandler.UpdateComment,
-				commentRequest(http.MethodPut, issueID, existingID, map[string]any{"content": content}),
+				request(http.MethodPut, existingID, content),
 			).Want(http.StatusOK).JSON(&updated)
 			outcome = findCommentOutcome(t, updated.TriggerOutcomes, tc.targetID)
 			if outcome.Status != DispatchBlocked || outcome.ReasonCode != tc.wantReason {
