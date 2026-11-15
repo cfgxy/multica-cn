@@ -112,7 +112,7 @@ func newBank(t *testing.T) *bank {
 
 	runtimeID := f.Runtime(t, "quiz-sweep-runtime")
 	agentID := f.Agent(t, "quiz-sweep-agent", runtimeID)
-	b := &bank{f: f, runner: Runner{Queries: db.New(testPool)}, agentID: agentID, runtimeID: runtimeID, version: 3}
+	b := &bank{f: f, runner: Runner{Queries: db.New(testPool), TxStarter: testPool}, agentID: agentID, runtimeID: runtimeID, version: 3}
 
 	f.Insert(t, "prompt_version", testutil.Cols{
 		"workspace_id":   testWorkspaceID,
