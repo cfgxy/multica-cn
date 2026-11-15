@@ -2036,6 +2036,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// already expose the same flag; freeze/resume writes
 					// stay in the owner/admin group below.
 					r.Get("/scheduling-pause", h.GetWorkspaceSchedulingPause)
+					r.Get("/prompt-quiz-schedule", h.GetWorkspacePromptQuizSchedule)
 					// The instance directory is browse-only and
 					// member-visible, for the same reason the installed list
 					// is: a member seeing what this instance offers is how
@@ -2120,6 +2121,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// in the group above.
 					r.Post("/scheduling-pause", h.PauseWorkspaceScheduling)
 					r.Delete("/scheduling-pause", h.ResumeWorkspaceScheduling)
+					r.Put("/prompt-quiz-schedule", h.PutWorkspacePromptQuizSchedule)
+					r.Delete("/prompt-quiz-schedule", h.DeleteWorkspacePromptQuizSchedule)
 					// Both outlive plugins_v1: they are the two cleanup levers.
 					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
@@ -2956,6 +2959,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/scheduling-pause", h.PauseAgentScheduling)
 					r.Delete("/scheduling-pause", h.ResumeAgentScheduling)
 					r.Get("/scheduling-pause", h.GetAgentSchedulingPause)
+					r.Get("/prompt-quiz-schedule", h.GetAgentPromptQuizSchedule)
+					r.Put("/prompt-quiz-schedule", h.PutAgentPromptQuizSchedule)
+					r.Delete("/prompt-quiz-schedule", h.DeleteAgentPromptQuizSchedule)
 					// Agent-level error-rate backpressure policy (RUYI-859
 					// stage A): config surface + read-only visibility.
 					// Writes are workspace owner/admin, human-only (the

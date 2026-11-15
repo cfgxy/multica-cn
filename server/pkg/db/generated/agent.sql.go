@@ -2043,6 +2043,20 @@ WHERE id = (
           WHERE sp.workspace_id = (SELECT ca.workspace_id FROM agent ca WHERE ca.id = $3)
             AND (sp.agent_id IS NULL OR sp.agent_id = atq.agent_id)
       )
+      -- RUYI-941: Quiz scheduling is independent from ordinary task
+      -- scheduling. A most-specific disabled override blocks only Quiz rows;
+      -- ordinary chat, Issue, and other issue-less tasks keep claiming.
+      AND (
+          atq.originator_source IS DISTINCT FROM 'quiz'
+          OR COALESCE((
+              SELECT c.enabled
+              FROM prompt_quiz_schedule_control c
+              WHERE c.workspace_id = (SELECT ca.workspace_id FROM agent ca WHERE ca.id = $3)
+                AND (c.agent_id IS NULL OR c.agent_id = atq.agent_id)
+              ORDER BY c.agent_id NULLS LAST
+              LIMIT 1
+          ), TRUE)
+      )
       -- Advanced PromQL rules own independent pause rows so one rule's
       -- resolve can never release a human, error-rate, or sibling-rule pause.
       -- Like scheduling_pause, this fence is claim-only: queued rows stay
