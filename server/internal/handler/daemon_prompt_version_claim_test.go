@@ -15,10 +15,20 @@ import (
 // of finding no history at all.
 func insertPromptVersionRow(t *testing.T, ctx context.Context, scope, scopeID string, version int) {
 	t.Helper()
+	var content string
+	query := map[string]string{
+		"workspace": `SELECT COALESCE(context, '') FROM workspace WHERE id = $1`,
+		"project":   `SELECT instructions FROM project WHERE id = $1`,
+		"squad":     `SELECT instructions FROM squad WHERE id = $1`,
+		"agent":     `SELECT instructions FROM agent WHERE id = $1`,
+	}[scope]
+	if err := testPool.QueryRow(ctx, query, scopeID).Scan(&content); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := testPool.Exec(ctx, `
 		INSERT INTO prompt_version (workspace_id, scope, scope_id, version, content, content_sha256, source)
-		VALUES ($1, $2, $3, $4, 'x', 'deadbeef', 'import')
-	`, testWorkspaceID, scope, scopeID, version); err != nil {
+		VALUES ($1, $2, $3, $4, $5, $6, 'import')
+	`, testWorkspaceID, scope, scopeID, version, content, promptTextSHA256(content)); err != nil {
 		t.Fatalf("insert prompt_version(%s, %s, v%d): %v", scope, scopeID, version, err)
 	}
 	t.Cleanup(func() {

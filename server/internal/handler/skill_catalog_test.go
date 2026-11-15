@@ -81,7 +81,7 @@ func TestReportLocalSkillListResultSyncsDiscoveryIndex(t *testing.T) {
 		w := httptest.NewRecorder()
 		req := withURLParams(
 			newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/local-skills/"+requestID+"/result",
-				map[string]any{"status": "completed", "skills": skills}, testWorkspaceID, "catalog-test-daemon"),
+				map[string]any{"status": "completed", "skills": skills}, testWorkspaceID, runtimeLocalSkillTestDaemonID(t, runtimeID)),
 			"runtimeId", runtimeID,
 			"requestId", requestID,
 		)

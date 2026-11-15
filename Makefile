@@ -841,7 +841,7 @@ migrate-down: ## Create the target DB if needed, then roll back database migrati
 	cd server && go run ./cmd/migrate down
 
 sqlc: ## Regenerate sqlc code
-	cd server && go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate
+	cd server && go run ./cmd/sqlcgen
 
 # Cleanup
 ##@ Cleanup

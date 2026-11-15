@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -421,7 +422,7 @@ func TestReconcileCommentsOnCompletion_AutopilotDelegationRestoresAuthority(t *t
 // must-fix #2 (review round 2): an edit is a NEW action, so it must judge (and
 // persist) authority by the CURRENT editing task, not the comment's original
 // authoring task. A same-issue edit keeps the autopilot-creator authority; a
-// cross-issue edit without an invoking human is rejected before persisting.
+// cross-issue edit saves with its current lineage and a blocked mention outcome.
 func TestUpdateComment_AutopilotAuthorityReStampedToEditingTask(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -429,7 +430,7 @@ func TestUpdateComment_AutopilotAuthorityReStampedToEditingTask(t *testing.T) {
 	ctx := context.Background()
 	workerID, ownerID, _ := privateAgentTestFixture(t)
 
-	editAddingMention := func(t *testing.T, editTaskID, commentID string, fx autopilotDelegationFixture, want int) {
+	editAddingMention := func(t *testing.T, editTaskID, commentID string, fx autopilotDelegationFixture) CommentResponse {
 		w := httptest.NewRecorder()
 		r := newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
 			"content": "[@Worker](mention://agent/" + workerID + ") please take this",
@@ -438,9 +439,14 @@ func TestUpdateComment_AutopilotAuthorityReStampedToEditingTask(t *testing.T) {
 		r.Header.Set("X-Task-ID", editTaskID)
 		r = withURLParam(r, "commentId", commentID)
 		testHandler.UpdateComment(w, r)
-		if w.Code != want {
-			t.Fatalf("UpdateComment: expected %d, got %d: %s", want, w.Code, w.Body.String())
+		if w.Code != http.StatusOK {
+			t.Fatalf("UpdateComment: expected 200, got %d: %s", w.Code, w.Body.String())
 		}
+		var response CommentResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode edited comment: %v", err)
+		}
+		return response
 	}
 	countQueued := func(t *testing.T, issueID string) int {
 		var n int
@@ -458,13 +464,16 @@ func TestUpdateComment_AutopilotAuthorityReStampedToEditingTask(t *testing.T) {
 		issueID := uuidToString(fx.Issue.ID)
 		commentID := seedLeaderPlainComment(t, issueID, fx.LeaderAgentID, fx.LeaderTaskID)
 		// Edit from the leader's own task on THIS autopilot issue.
-		editAddingMention(t, fx.LeaderTaskID, commentID, fx, http.StatusOK)
+		response := editAddingMention(t, fx.LeaderTaskID, commentID, fx)
+		if outcome := findCommentOutcome(t, response.TriggerOutcomes, workerID); outcome.Status != DispatchQueued {
+			t.Fatalf("same-issue edit outcome = %+v, want queued", outcome)
+		}
 		if got := countQueued(t, issueID); got != 1 {
 			t.Fatalf("same-issue edit should enqueue the private worker once, got %d", got)
 		}
 	})
 
-	t.Run("cross-issue edit without invoke authority preserves original comment", func(t *testing.T) {
+	t.Run("cross-issue edit without invoke authority saves with current lineage", func(t *testing.T) {
 		fx := newAutopilotDelegationFixture(t, workerID, ownerID, "autopilot")
 		issueID := uuidToString(fx.Issue.ID)
 		commentID := seedLeaderPlainComment(t, issueID, fx.LeaderAgentID, fx.LeaderTaskID)
@@ -473,18 +482,21 @@ func TestUpdateComment_AutopilotAuthorityReStampedToEditingTask(t *testing.T) {
 		// the old authoring run's human cannot be reached.
 		otherIssueID := seedBareIssue(t, fx.LeaderAgentID)
 		crossTaskID := seedTaskOnIssue(t, fx.LeaderAgentID, otherIssueID, fx.RuntimeID)
-		editAddingMention(t, crossTaskID, commentID, fx, http.StatusUnprocessableEntity)
+		response := editAddingMention(t, crossTaskID, commentID, fx)
+		if outcome := findCommentOutcome(t, response.TriggerOutcomes, workerID); outcome.Status != DispatchBlocked || outcome.ReasonCode != ReasonInvocationNotAllowed {
+			t.Fatalf("cross-issue edit outcome = %+v, want blocked/invocation_not_allowed", outcome)
+		}
 		if got := countQueued(t, issueID); got != 0 {
 			t.Fatalf("an edit made by a run with no human must not reach the private worker; got %d queued", got)
 		}
-		// The rejected write must not replace the original authoring lineage.
+		// Saved edits must replace the original authoring authority with this run.
 		var sourceTaskID pgtype.UUID
 		var content string
 		if err := testPool.QueryRow(ctx, `SELECT source_task_id, content FROM comment WHERE id = $1`, commentID).Scan(&sourceTaskID, &content); err != nil {
 			t.Fatalf("read comment source_task_id: %v", err)
 		}
-		if uuidToString(sourceTaskID) != fx.LeaderTaskID || content != "starting on this" {
-			t.Fatalf("rejected edit changed lineage or content: %q, %q", uuidToString(sourceTaskID), content)
+		if uuidToString(sourceTaskID) != crossTaskID || content != mention(workerID) {
+			t.Fatalf("saved edit lineage or content = %q, %q; want current task and edited body", uuidToString(sourceTaskID), content)
 		}
 	})
 }
@@ -575,8 +587,8 @@ func TestCreateComment_AutopilotWorkerResultWakesSquadLeader(t *testing.T) {
 // must-fix (review round 3): a workspace admin may EDIT another author's comment,
 // but that manage right is NOT an invoke right over the author's private agents
 // (canInvokeAgent is deny-by-default for private agents — no admin bypass). When an
-// admin edits an autopilot Agent's comment to add a private @mention while the
-// target is busy, the edit is rejected before changing content or lineage.
+// admin edits an autopilot Agent's comment to add a private @mention, the body
+// saves but clears the old lineage and cannot trigger immediately or on replay.
 func TestUpdateComment_AdminEditOfAgentCommentClearsStaleLineage(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -618,8 +630,15 @@ func TestUpdateComment_AdminEditOfAgentCommentClearsStaleLineage(t *testing.T) {
 	})
 	r = withURLParam(r, "commentId", commentID)
 	testHandler.UpdateComment(w, r)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("admin UpdateComment: expected 422, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin UpdateComment: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var response CommentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode admin edit: %v", err)
+	}
+	if outcome := findCommentOutcome(t, response.TriggerOutcomes, workerID); outcome.Status != DispatchBlocked || outcome.ReasonCode != ReasonInvocationNotAllowed {
+		t.Fatalf("admin edit outcome = %+v, want blocked/invocation_not_allowed", outcome)
 	}
 
 	// Immediate save is judged on the admin's member identity, which holds no invoke
@@ -628,19 +647,18 @@ func TestUpdateComment_AdminEditOfAgentCommentClearsStaleLineage(t *testing.T) {
 		t.Fatalf("admin edit must be blocked immediately (no invoke right over a private agent); got %d queued", got)
 	}
 
-	// The original lineage is unchanged because the comment body is unchanged.
+	// The saved body must clear stale lineage before completion can replay it.
 	var sourceTaskValid bool
 	var content string
 	if err := testPool.QueryRow(ctx, `SELECT source_task_id IS NOT NULL, content FROM comment WHERE id = $1`, commentID).Scan(&sourceTaskValid, &content); err != nil {
 		t.Fatalf("read comment source_task_id: %v", err)
 	}
-	if !sourceTaskValid || content != "starting on this" {
-		t.Fatalf("rejected admin edit changed original lineage or content: %v, %q", sourceTaskValid, content)
+	if sourceTaskValid || content != mention(workerID) {
+		t.Fatalf("admin edit must clear source lineage and save content: %v, %q", sourceTaskValid, content)
 	}
 
-	// The busy worker now completes: the completion reconcile routes the comment
-	// under its original agent author. The unchanged plain comment has no mention
-	// to reconcile, despite retaining its valid original task lineage.
+	// The worker now completes. Replaying the saved mention under its original
+	// agent author must not recover the cleared autopilot authority.
 	workerTaskID := seedCompletedTaskOnIssueBefore(t, workerID, issueID, fx.RuntimeID)
 	workerTask, err := testHandler.Queries.GetAgentTask(ctx, util.MustParseUUID(workerTaskID))
 	if err != nil {

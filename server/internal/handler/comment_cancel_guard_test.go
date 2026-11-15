@@ -122,7 +122,7 @@ func TestCreateComment_TaskTokenCancelRaceRejectsWrite(t *testing.T) {
 		result <- response{code: w.Code, body: w.Body.String()}
 	}()
 
-	waitForBlockedDatabaseQuery(t, ctx, "active_task", cancelPID)
+	waitForBlockedDatabaseQuery(t, ctx, "GetAgentTaskForUpdate", cancelPID)
 	if err := cancelTx.Commit(ctx); err != nil {
 		t.Fatalf("commit task cancellation: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/promptquizsweep"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/promptquiz/bank"
@@ -160,15 +161,31 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 				writeError(w, http.StatusInternalServerError, "failed to encode the quiz context")
 				return
 			}
-			_, err = promptquizsweep.CreatePromptQuizTask(r.Context(), h.Queries, h.TxStarter, db.CreatePromptQuizTaskParams{
-				AgentID:   agent.id,
-				RuntimeID: agent.runtimeID,
-				// Same standing as sweep-ordered runs: below everything a
-				// human is waiting on, above nothing.
-				Priority: 0,
-				Context:  payload,
-				ItemID:   item.id,
-			})
+			tasks := h.TaskService
+			if tasks == nil {
+				tasks = &service.TaskService{Queries: h.Queries, TxStarter: h.TxStarter}
+			}
+			tx, beginErr := h.TxStarter.Begin(r.Context())
+			if beginErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to start quiz enqueue")
+				return
+			}
+			qtx := h.Queries.WithTx(tx)
+			// Keep schedule-control locking and the budget snapshot in one
+			// transaction; neither fence may be bypassed by manual batches.
+			_, err = qtx.LockWorkspaceForPromptQuizTaskCreate(r.Context(), agent.id)
+			if err == nil {
+				_, err = tasks.CreateBudgetedRootTask(r.Context(), qtx, agent.id, func(q *db.Queries) (db.AgentTaskQueue, error) {
+					return q.CreatePromptQuizTask(r.Context(), db.CreatePromptQuizTaskParams{
+						AgentID: agent.id, RuntimeID: agent.runtimeID,
+						Priority: 0, Context: payload, ItemID: item.id,
+					})
+				})
+			}
+			if err == nil {
+				err = tx.Commit(r.Context())
+			}
+			_ = tx.Rollback(r.Context())
 			if errors.Is(err, pgx.ErrNoRows) {
 				// The fence refused (agent or runtime being deleted). Not an
 				// error for the batch: the remaining rows are still valid.

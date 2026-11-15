@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/knowledgegovernance"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -360,9 +361,16 @@ func (h *Handler) KnowledgeGovernanceTaskEnqueuer() knowledgegovernance.TaskEnqu
 		if err != nil {
 			return db.AgentTaskQueue{}, fmt.Errorf("knowledge governance task enqueue: invalid originator id: %w", err)
 		}
-		task, err := queries.CreateKnowledgeGovernanceTask(ctx, db.CreateKnowledgeGovernanceTaskParams{
-			AgentID: agentID, RuntimeID: runtimeID, Priority: knowledgegovernance.TaskPriority,
-			Context: params.Context, OriginatorUserID: originatorID, AccountableUserID: originatorID, RunID: runID,
+		tasks := h.TaskService
+		if tasks == nil {
+			tasks = &service.TaskService{Queries: h.Queries, TxStarter: h.TxStarter}
+		}
+		task, err := tasks.CreateBudgetedRootTask(ctx, queries, agentID, func(q *db.Queries) (db.AgentTaskQueue, error) {
+			created, err := q.CreateKnowledgeGovernanceTask(ctx, db.CreateKnowledgeGovernanceTaskParams{
+				AgentID: agentID, RuntimeID: runtimeID, Priority: knowledgegovernance.TaskPriority,
+				Context: params.Context, OriginatorUserID: originatorID, AccountableUserID: originatorID, RunID: runID,
+			})
+			return db.AgentTaskQueue(created), err
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return db.AgentTaskQueue{}, errors.New("knowledge governance task enqueue refused: agent or runtime is unavailable")
@@ -370,6 +378,6 @@ func (h *Handler) KnowledgeGovernanceTaskEnqueuer() knowledgegovernance.TaskEnqu
 		if err != nil {
 			return db.AgentTaskQueue{}, err
 		}
-		return db.AgentTaskQueue(task), nil
+		return task, nil
 	}
 }

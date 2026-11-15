@@ -2,8 +2,11 @@ package handler
 
 import (
 	"context"
+	"net/http"
 	"sort"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 type workspaceDeleteAction string
@@ -252,6 +255,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// against its prompt versions, which are deleted here too.
 	"prompt_quiz_item":   workspaceDelete,
 	"prompt_quiz_result": workspaceDelete,
+	// Both workspace defaults and agent overrides belong to their workspace;
+	// DeleteWorkspace explicitly sweeps them without foreign-key cascades.
+	"prompt_quiz_schedule_control": workspaceDelete,
 	// The sweep's single-row cursor has no workspace_id: it is the deployment's
 	// scheduler state, not any workspace's data.
 	"prompt_quiz_sweep_state": workspaceDeleteKeep,
@@ -389,5 +395,42 @@ WHERE table_schema = 'public'
 				t.Errorf("%s table %s lost workspace_id; update its teardown selector", action, table)
 			}
 		}
+	}
+}
+
+func TestDeleteWorkspace_RemovesPromptQuizScheduleControls(t *testing.T) {
+	target := dbfx.Insert(t, "workspace", testutil.Cols{
+		"name": "Quiz schedule deletion target", "slug": handlerTestSlug("quiz-delete-target"),
+	})
+	neighbor := dbfx.Insert(t, "workspace", testutil.Cols{
+		"name": "Quiz schedule deletion neighbor", "slug": handlerTestSlug("quiz-delete-neighbor"),
+	})
+	dbfx.Insert(t, "member", testutil.Cols{
+		"workspace_id": target, "user_id": testUserID, "role": "owner",
+	})
+	for _, wsID := range []string{target, neighbor} {
+		agentID := dbfx.Agent(t, "quiz-schedule-delete-agent", "", testutil.Cols{"workspace_id": wsID})
+		for _, scopeAgent := range []any{nil, agentID} {
+			dbfx.Insert(t, "prompt_quiz_schedule_control", testutil.Cols{
+				"workspace_id": wsID, "agent_id": scopeAgent, "enabled": false,
+				"reason": "Paused for deletion test", "updated_by": testUserID,
+			})
+		}
+	}
+	for _, wsID := range []string{target, neighbor} {
+		if got := dbfx.Count(t, `SELECT count(*) FROM prompt_quiz_schedule_control WHERE workspace_id = $1`, wsID); got != 2 {
+			t.Fatalf("before deletion controls = %d, want workspace and agent overrides", got)
+		}
+	}
+	req := withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+target, nil), "id", target)
+	testutil.Call(t, testHandler.DeleteWorkspace, req).Want(http.StatusNoContent)
+	if got := dbfx.Count(t, `SELECT count(*) FROM workspace WHERE id = $1`, target); got != 0 {
+		t.Fatalf("deleted workspace remains: %d", got)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM prompt_quiz_schedule_control WHERE workspace_id = $1`, target); got != 0 {
+		t.Fatalf("deleted workspace retains %d Quiz schedule controls", got)
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM prompt_quiz_schedule_control WHERE workspace_id = $1`, neighbor); got != 2 {
+		t.Fatalf("neighbor controls = %d, want both preserved", got)
 	}
 }

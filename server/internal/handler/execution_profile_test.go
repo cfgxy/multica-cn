@@ -531,11 +531,9 @@ func TestUpsertExecutionProfileEntry_AppliesRuntimeThinkingCapability(t *testing
 }
 
 // TestActivateExecutionProfile_RechecksPrivateRuntimePermission is the
-// permission guard. canUseRuntimeForAgent has no admin override (MUL-6126): a
-// private runtime is someone's own machine, credentials and files. The entry
-// was authorised when it was saved, but a runtime can be flipped to private
-// afterwards, so activation must re-authorise against the CURRENT caller and
-// the runtime's CURRENT visibility rather than trusting the stored entry.
+// permission guard. A private runtime is usable by its owner or workspace owner,
+// while an admin must be refused. Activation re-authorises against the CURRENT
+// caller and visibility instead of trusting the saved entry.
 func TestActivateExecutionProfile_RechecksPrivateRuntimePermission(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -543,6 +541,7 @@ func TestActivateExecutionProfile_RechecksPrivateRuntimePermission(t *testing.T)
 	clearActiveProfile(t)
 
 	otherUser := dbfx.User(t, "EP Runtime Owner", "ep-runtime-owner@example.com")
+	adminID := createPermissionTestAdmin(t, "ep-activation-admin@multica.test")
 	fromRuntime := dbfx.Runtime(t, "EP Perm From")
 	// Public at save time, so the entry is legitimately storable.
 	toRuntime := dbfx.Runtime(t, "EP Perm To", testutil.Cols{"visibility": "public"})
@@ -553,13 +552,15 @@ func TestActivateExecutionProfile_RechecksPrivateRuntimePermission(t *testing.T)
 		"agent_id": agentID, "runtime_id": toRuntime, "model": "new",
 	}).Want(http.StatusOK)
 
-	// The owner takes their machine back: public -> private, owned by someone
-	// who is not the caller.
+	// The runtime becomes private to someone other than the activating admin.
 	dbfx.Exec(t, `UPDATE agent_runtime SET visibility = 'private', owner_id = $1 WHERE id = $2`,
 		otherUser, toRuntime)
 
 	var out ExecutionProfileActivationResponse
-	activate(t, profileID).Want(http.StatusOK).JSON(&out)
+	req := testutil.WithURLParams(newRequestAs(adminID, http.MethodPost,
+		"/api/workspaces/"+testWorkspaceID+"/execution-profiles/"+profileID+"/activate", nil),
+		"id", testWorkspaceID, "profileId", profileID)
+	testutil.Call(t, testHandler.ActivateExecutionProfile, req).Want(http.StatusOK).JSON(&out)
 
 	if out.Applied != 0 || out.Failed != 1 {
 		t.Fatalf("expected the entry to be refused, got %+v", out)

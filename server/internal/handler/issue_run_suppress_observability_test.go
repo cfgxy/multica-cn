@@ -190,6 +190,10 @@ func TestAgentSuppressObservabilityFollowsHonoredDecision(t *testing.T) {
 			}
 			t.Run(name, func(t *testing.T) {
 				issueID := backlogIssueFor(t, agentID)
+				callerID := agentID
+				if active {
+					callerID = dbfx.Agent(t, "suppression coordinator", runtimeIDForAgent(t, agentID))
+				}
 				if active {
 					dbfx.Task(t, agentID, testutil.Cols{
 						"issue_id": issueID, "status": "running", "runtime_id": runtimeIDForAgent(t, agentID),
@@ -201,11 +205,11 @@ func TestAgentSuppressObservabilityFollowsHonoredDecision(t *testing.T) {
 						"issue_ids": []string{issueID},
 						"updates":   map[string]any{"status": "in_progress", "suppress_run": true},
 					})
-					testutil.WithHeaders(req, "X-User-ID", testUserID, "X-Workspace-ID", testWorkspaceID,
-						"X-Actor-Source", "task_token", "X-Agent-ID", agentID)
+					testutil.WithHeaders(req, "X-User-ID", testUserID, "X-Workspace-ID", testWorkspaceID)
+					stampSuppressTaskActor(t, req, issueID, callerID)
 					testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
 				} else {
-					testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(issueID, "in_progress", agentID)).Want(http.StatusOK)
+					testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(t, issueID, "in_progress", callerID)).Want(http.StatusOK)
 				}
 				if got := taskCountFor(t, issueID, agentID); got != 1 {
 					t.Fatalf("task count = %d, want 1", got)
@@ -214,7 +218,7 @@ func TestAgentSuppressObservabilityFollowsHonoredDecision(t *testing.T) {
 				if active {
 					want = 1
 					line := suppressWarnLine(t, logs.String())
-					for _, field := range []string{"issue_id=" + issueID, "actor_type=agent", "actor_id=" + agentID,
+					for _, field := range []string{"issue_id=" + issueID, "actor_type=agent", "actor_id=" + callerID,
 						"trigger_source=status", "target_status=in_progress"} {
 						if !strings.Contains(line, field) {
 							t.Fatalf("suppression WARN missing %q: %s", field, line)

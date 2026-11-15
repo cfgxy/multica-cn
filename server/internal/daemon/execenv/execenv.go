@@ -1701,7 +1701,7 @@ func envRootHoldsWork(envRoot string) (bool, error) {
 }
 
 func isEnvRootBookkeeping(name string) bool {
-	if name == envRootOwnerFile || name == envRootLockFile {
+	if name == envRootOwnerFile || name == envRootLockFile || name == retentionFile || name == ".environment_retention.lock" {
 		return true
 	}
 	// An unpublished owner temp is a crash leftover from writeEnvRootOwner, not

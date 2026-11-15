@@ -249,6 +249,9 @@ func TestUpdateAgentRebindMigratesSameProviderRuntimeSkillPolicies(t *testing.T)
 		t.Skip("database not available")
 	}
 	agentID, oldRT, newRT := rebindAgentFixture(t, "rebind-runtime-skills")
+	// Runtime fixtures default to handler_test_runtime; the policy identities
+	// below require actual matching provider metadata on both runtimes.
+	dbfx.Exec(t, `UPDATE agent_runtime SET provider = 'claude' WHERE id IN ($1, $2)`, oldRT, newRT)
 	initial := []DisabledRuntimeSkill{
 		{RuntimeID: oldRT, Provider: "claude", Root: "provider", Key: "review", Name: "Review"},
 		{RuntimeID: oldRT, Provider: "codex", Root: "provider", Key: "foreign"},
@@ -287,6 +290,7 @@ func TestUpdateAgentRebindDoesNotMapPoliciesAcrossProviders(t *testing.T) {
 		t.Skip("database not available")
 	}
 	agentID, oldRT, newRT := rebindAgentFixture(t, "rebind-runtime-skills-cross-provider")
+	dbfx.Exec(t, `UPDATE agent_runtime SET provider = 'claude' WHERE id = $1`, oldRT)
 	if _, err := testPool.Exec(context.Background(),
 		`UPDATE agent_runtime SET provider = 'codex' WHERE id = $1`, newRT); err != nil {
 		t.Fatalf("make target runtime codex: %v", err)

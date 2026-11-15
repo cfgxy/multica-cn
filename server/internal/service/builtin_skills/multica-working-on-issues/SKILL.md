@@ -105,17 +105,42 @@ explicitly.
 - Before creating a PR/MR, read the issue's current links with `multica issue
   pull-requests <issue-id> --output json`. Reuse an existing open/draft PR/MR for
   the same repository and delivery chain instead of opening another one.
-- One issue may legitimately require one working PR/MR per repository. Every
-  working PR/MR must be visibly linked. Multiple closing references are allowed:
-  Multica advances the issue only after every non-reference-only linked PR/MR is
-  no longer `open`/`draft` and at least one merged link carries close intent.
-- Draft means work is still in progress. Move the candidate to Ready only after
-  its version is stable and the required self-test, formal review, and QA or an
-  explicit waiver are recorded. If a PR/MR is replaced, verify whether it carries
-  unique delta, record the replacement, and close or mark the old one superseded.
+- An issue may legitimately require multiple working PRs/MRs, including separate
+  repositories or delivery chains. Every working PR/MR must be visibly linked.
+  Multiple closing references are allowed: Multica advances the issue only after
+  every non-reference-only linked PR/MR is no longer `open`/`draft` and at least
+  one merged link carries close intent.
+- After implementation and self-tests establish a stable candidate, move its
+  delivery PR/MR to Ready for formal review. Review and applicable QA must cover
+  the delivered candidate; Ready alone does not mean either has passed. Evidence
+  from work-in-progress review or QA remains reusable when it still covers that
+  candidate. Independent QA may run alongside review when it does not depend on
+  the review conclusion.
+- Before handing the issue to the owner for acceptance, the responsible status
+  writer re-reads every required delivery PR/MR's current state and head, records
+  the read time, and checks them against the reviewed/tested candidate. Unmerged
+  required PRs/MRs must be open and Ready, not Draft; merged items must trace to
+  the validated candidate and actual merge result. Unknown state or candidate
+  identity is not delivery evidence. Follow the applicable issue workflow and
+  role authorization; this policy adds no platform status-write gate.
+- If a PR/MR is replaced, verify its unique delta, record the replacement, and
+  close the obsolete item after confirming no required changes were lost.
+  Reference-only links are not delivery requirements; do not classify a required
+  change as reference-only. Non-code, explicitly local-only, and independent
+  review/QA tasks are accepted against their own deliverables without inventing
+  a PR requirement.
 - Public-repository safety wins over auto-linking. If an internal issue identifier
   must not be published, omit it and record the PR/MR URL and non-linking reason in
   the private issue instead.
+
+### Preserve a managed environment for the next dependency
+
+When authorized unfinished verification needs this task's managed local
+environment after the run ends, use `multica worktree retain` with a responsible
+owner, immutable version, evidence/rebuild inputs and expiry. Release the hold as
+soon as its dependency ends. Commands and boundaries are in
+`references/issue-delivery-examples.md`; this does not manage external leases.
+
 
 ## End a no-op turn without creating another run
 
@@ -465,35 +490,9 @@ below the marker. Never include a credential, token, API key, endpoint, or
 connector detail in the comment. The issue timeline presents the secure delivery
 form to an authorized member and records completion separately.
 
-## Incorrect → correct
+## Examples and references
 
-PR title (link the issue):
-
-```text
-Fix login redirect                  # incorrect — no issue key, won't link
-MUL-2759: fix login redirect        # correct — links the PR
-```
-
-Serial / phased sub-issues (don't start the whole chain at once):
-
-```bash
-# incorrect — all fire immediately, no ordering
-multica issue create --title "Step 2" --parent <issue-id> --assignee <agent> --status todo
-multica issue create --title "Step 3" --parent <issue-id> --assignee <agent> --status todo
-
-# correct — stage them; Stage 1 runs, later stages park and are promoted as
-# each stage's barrier closes
-multica issue create --title "Step 1" --parent <issue-id> --assignee <agent> --stage 1 --status todo
-multica issue create --title "Step 2" --parent <issue-id> --assignee <agent> --stage 2 --status backlog
-multica issue create --title "Step 3" --parent <issue-id> --assignee <agent> --stage 3 --status backlog
-```
-
-## References
-
-`references/working-on-issues-source-map.md` — accurate `file:line` for every
-contract above: the `pull-requests` CLI and route, the PR response field list,
-`derivePRState`, the two-path link (`extractIdentifiers`) vs close-intent
-(`extractClosingIdentifiers`) proof, the backlog enqueue lines, child-done
-notify, the stage column / `stageBarrierClosed` barrier and the `--stage` /
-`issue children` CLI, and the metadata CLI. Re-derive before depending on an
-exact line.
+See `references/issue-delivery-examples.md` for linking titles and phased child
+creation examples. The source map `references/working-on-issues-source-map.md`
+traces CLI, lifecycle, status, linking, and close-intent contracts to current
+symbols; re-derive numeric line locations before relying on them.

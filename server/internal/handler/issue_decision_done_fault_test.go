@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -115,7 +116,7 @@ func TestDoneCascadeFaultSingleUpdateConvergesOnRetry(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	issueID := dbfx.Issue(t, "fault single update done cascade issue")
+	issueID := dbfx.Issue(t, "fault single update done cascade issue", testutil.Cols{"status": "in_review"})
 	seedDecisionCards(t, issueID)
 	fault := installFaultyTxStarter(t)
 	events := countDecisionUpdatedSubs(t, issueID)
@@ -157,7 +158,7 @@ func TestDoneCascadeFaultBatchUpdateConvergesOnRetry(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	issueID := dbfx.Issue(t, "fault batch update done cascade issue")
+	issueID := dbfx.Issue(t, "fault batch update done cascade issue", testutil.Cols{"status": "in_review"})
 	seedDecisionCards(t, issueID)
 	fault := installFaultyTxStarter(t)
 	events := countDecisionUpdatedSubs(t, issueID)
@@ -289,18 +290,18 @@ func TestDoneCascadeFaultWebhookRedeliveryConverges(t *testing.T) {
 	}
 	assertNoCascadeArtifacts(t, issueID, events)
 
-	// The provider's redelivery (fault cleared) is the retry driver: it
-	// converges to exactly one audit row and two events.
+	// Webhook redelivery completes the issue, but only human review acceptance
+	// cancels question cards. Provider-driven completion preserves them.
 	fault.fail = false
 	if code := ghMergedPRDelivery(t, identifier, 1234); code != http.StatusAccepted {
 		t.Fatalf("redelivered webhook: expected 202, got %d", code)
 	}
-	if status, open := issueStatusAndCards(t, issueID); status != "done" || open != 0 {
-		t.Fatalf("after redelivery issue status=%q open cards=%d, want done / 0", status, open)
+	if status, open := issueStatusAndCards(t, issueID); status != "done" || open != 2 {
+		t.Fatalf("after redelivery issue status=%q open cards=%d, want done / 2", status, open)
 	}
-	assertCascadeEvents(t, issueID, 1)
-	if *events != 2 {
-		t.Errorf("decision:updated events after redelivery = %d, want 2 (one per flipped card)", *events)
+	assertCascadeEvents(t, issueID, 0)
+	if *events != 0 {
+		t.Errorf("decision:updated events after webhook = %d, want 0", *events)
 	}
 
 	// A third delivery of the same event is a no-op replay: the terminal
@@ -309,8 +310,8 @@ func TestDoneCascadeFaultWebhookRedeliveryConverges(t *testing.T) {
 	if code := ghMergedPRDelivery(t, identifier, 1234); code != http.StatusAccepted {
 		t.Fatalf("replayed webhook: expected 202, got %d", code)
 	}
-	assertCascadeEvents(t, issueID, 1)
-	if *events != 2 {
-		t.Errorf("decision:updated events after replay = %d, want still 2 (retries must not duplicate)", *events)
+	assertCascadeEvents(t, issueID, 0)
+	if *events != 0 {
+		t.Errorf("decision:updated events after replay = %d, want 0", *events)
 	}
 }

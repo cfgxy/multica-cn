@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -25,6 +24,10 @@ func TestPromptQuizScheduleDisableIsolatesQuizTasks(t *testing.T) {
 	workspaceUUID := util.MustParseUUID(workspaceID)
 	agentUUID := util.MustParseUUID(agentID)
 	ownerUUID := util.MustParseUUID(ownerID)
+	// Leave one slot for ordinary work while the existing Quiz run drains.
+	if _, err := pool.Exec(ctx, `UPDATE agent SET max_concurrent_tasks = 2 WHERE id = $1`, agentID); err != nil {
+		t.Fatal(err)
+	}
 
 	svc := NewTaskService(db.New(pool), pool, nil, events.New())
 	state, err := svc.PromptQuizScheduleState(ctx, workspaceUUID, &agentUUID)
@@ -205,46 +208,43 @@ func TestPromptQuizScheduleDisableSerializesQuizEnqueue(t *testing.T) {
 		t.Fatalf("write disabled control: %v", err)
 	}
 
-	type workspaceRowLock struct {
-		relation uint32
-		page     int32
-		tuple    int32
+	var blockerPID uint32
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&blockerPID); err != nil {
+		t.Fatalf("read disable transaction PID: %v", err)
 	}
-	var lock workspaceRowLock
-	var ctid string
-	if err := pool.QueryRow(ctx, `
-		SELECT tableoid::oid, ctid::text FROM workspace WHERE id = $1
-	`, workspaceUUID).Scan(&lock.relation, &ctid); err != nil {
-		t.Fatalf("read workspace tuple: %v", err)
-	}
-	if _, err := fmt.Sscanf(ctid, "(%d,%d)", &lock.page, &lock.tuple); err != nil {
-		t.Fatalf("parse workspace tuple %q: %v", ctid, err)
-	}
+	// PostgreSQL may represent a row-lock wait as a transaction-ID wait.
+	// Observe the actual blocking backend rather than an ungranted tuple lock.
+	writerPID := make(chan uint32, 1)
 
 	enqueueErr := make(chan error, 1)
 	go func() {
-		_, err := promptquizsweep.CreatePromptQuizTask(ctx, db.New(pool), pool, db.CreatePromptQuizTaskParams{
-			AgentID:   agentUUID,
-			RuntimeID: util.MustParseUUID(runtimeID),
-			Context:   []byte(`{"kind":"quiz"}`),
-			ItemID:    util.MustParseUUID("00000000-0000-0000-0000-000000000001"),
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			enqueueErr <- err
+			return
+		}
+		defer conn.Release()
+		writerPID <- conn.Conn().PgConn().PID()
+		_, err = promptquizsweep.CreatePromptQuizTask(ctx, db.New(conn), conn, db.CreatePromptQuizTaskParams{
+			AgentID: agentUUID, RuntimeID: util.MustParseUUID(runtimeID),
+			Context: []byte(`{"kind":"quiz"}`),
+			ItemID:  util.MustParseUUID("00000000-0000-0000-0000-000000000001"),
 		})
 		enqueueErr <- err
 	}()
+	var pid uint32
+	select {
+	case pid = <-writerPID:
+	case err := <-enqueueErr:
+		t.Fatalf("start Quiz writer: %v", err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
 
 	waitDeadline := time.Now().Add(2 * time.Second)
 	for {
 		var waiting bool
-		if err := pool.QueryRow(ctx, `
-			SELECT EXISTS (
-				SELECT 1 FROM pg_locks
-				WHERE locktype = 'tuple'
-				  AND relation = $1
-				  AND page = $2
-				  AND tuple = $3
-				  AND NOT granted
-			)
-		`, lock.relation, lock.page, lock.tuple).Scan(&waiting); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT $1::int = ANY(pg_blocking_pids($2::int))`, blockerPID, pid).Scan(&waiting); err != nil {
 			t.Fatalf("observe enqueue lock wait: %v", err)
 		}
 		if waiting {

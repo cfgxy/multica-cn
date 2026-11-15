@@ -143,11 +143,13 @@ func TestAuthorizeBranchAdoptionRejectsInvalidMappings(t *testing.T) {
 			mutate: func(t *testing.T, fixture *branchAdoptionAuthorizationFixture) {
 				foreignWorkspaceID := dbfx.Workspace(t, "branch adoption foreign workspace", "branch-adoption-foreign")
 				foreign := testutil.New(testPool, foreignWorkspaceID, testUserID)
-				foreignAgentID := foreign.Agent(t, "branch adoption foreign source agent", "")
+				foreignRuntimeID := foreign.Runtime(t, "branch adoption foreign runtime")
+				foreignAgentID := foreign.Agent(t, "branch adoption foreign source agent", foreignRuntimeID)
 				foreignIssueID := foreign.Issue(t, "branch adoption foreign source issue", testutil.Cols{
 					"suspended_at": testutil.Raw("now()"),
 				})
 				fixture.sourceTaskID = foreign.Task(t, foreignAgentID, testutil.Cols{
+					"runtime_id":  foreignRuntimeID,
 					"issue_id":    foreignIssueID,
 					"branch_name": fixture.branch,
 				})

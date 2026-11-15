@@ -288,7 +288,14 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 		avatarURL = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	squad, err := h.Queries.CreateSquad(r.Context(), db.CreateSquadParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create squad")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	squad, err := qtx.CreateSquad(r.Context(), db.CreateSquadParams{
 		WorkspaceID: wsUUID,
 		Name:        req.Name,
 		Description: req.Description,
@@ -300,14 +307,25 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create squad")
 		return
 	}
+	if err := seedPromptVersionV1(r.Context(), qtx, promptVersionScopeSquad, wsUUID, squad.ID, squad.Instructions); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create squad prompt baseline")
+		return
+	}
 
 	// Auto-add leader as a member with role "leader".
-	h.Queries.AddSquadMember(r.Context(), db.AddSquadMemberParams{
+	if _, err := qtx.AddSquadMember(r.Context(), db.AddSquadMemberParams{
 		SquadID:    squad.ID,
 		MemberType: "agent",
 		MemberID:   leaderUUID,
 		Role:       "leader",
-	})
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create squad")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create squad")
+		return
+	}
 
 	resp, err := h.squadToResponseWithPreview(r.Context(), squad)
 	if err != nil {
@@ -456,6 +474,13 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		}
 		params.LeaderID = lid
 		newLeaderRuntimeBound = newLeader.RuntimeID.Valid
+	}
+
+	if req.Instructions != nil {
+		if err := recordStaticPromptWriteTx(r.Context(), qtx, wsUUID, promptVersionScopeSquad, squad.ID, *req.Instructions, "edit"); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to record squad prompt version")
+			return
+		}
 	}
 
 	updated, err := qtx.UpdateSquad(r.Context(), params)

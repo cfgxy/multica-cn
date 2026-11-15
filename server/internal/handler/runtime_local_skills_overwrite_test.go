@@ -131,9 +131,14 @@ func initiateLocalSkillImport(t *testing.T, runtimeID string, body map[string]an
 func reportLocalSkillImport(t *testing.T, runtimeID, requestID string, body map[string]any) {
 	t.Helper()
 
+	// Daemon reports must carry the runtime's actual machine binding. A random
+	// daemon in the same workspace is not authorized to import into this runtime.
+	var daemonID string
+	dbfx.QueryRow(t, `SELECT daemon_id FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&daemonID)
+
 	w := httptest.NewRecorder()
 	req := withURLParams(
-		newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/local-skills/import/"+requestID+"/result", body, testWorkspaceID, "overwrite-test-daemon"),
+		newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/local-skills/import/"+requestID+"/result", body, testWorkspaceID, daemonID),
 		"runtimeId", runtimeID,
 		"requestId", requestID,
 	)

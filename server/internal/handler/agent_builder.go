@@ -121,6 +121,10 @@ func (h *Handler) CreateAgentBuilderSession(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, "failed to prepare agent builder")
 		return
 	}
+	if err := seedPromptVersionV1(r.Context(), qtx, promptVersionScopeAgent, workspaceUUID, builder.ID, builder.Instructions); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create agent builder prompt baseline")
+		return
+	}
 
 	session, err := qtx.CreateChatSession(r.Context(), db.CreateChatSessionParams{
 		ID:          dbid.NewV7(),

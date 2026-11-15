@@ -794,6 +794,10 @@ func (h *Handler) ApplyPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := recordStaticPromptWriteTx(r.Context(), qtx, locked.workspaceID, promptVersionScope(target.targetType), target.id, version.Content, "import"); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record applied prompt version")
+		return
+	}
 	if !h.writePromptToTarget(r, qtx, target.targetType, target.id, version.Content, blob) {
 		slog.Error("prompt apply write failed", append(logger.RequestAttrs(r),
 			"target_type", target.targetType, "target_id", uuidToString(target.id))...)
@@ -1055,6 +1059,10 @@ func (h *Handler) RestorePrompt(w http.ResponseWriter, r *http.Request) {
 	blob, err := encodePromptApplyState(restored)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to restore the prompt")
+		return
+	}
+	if err := recordStaticPromptWriteTx(r.Context(), qtx, locked.workspaceID, promptVersionScope(target.targetType), target.id, state.PreviousText, "revert"); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record restored prompt version")
 		return
 	}
 	if !h.writePromptToTarget(r, qtx, target.targetType, target.id, state.PreviousText, blob) {

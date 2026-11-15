@@ -5756,8 +5756,9 @@ type GetAgentRuntimeBindingsForUpdateRow struct {
 	RuntimeID pgtype.UUID `json:"runtime_id"`
 }
 
-// Lock current Agent bindings while a claim failure is requeued so the queue
-// CAS and the binding read commit as one transaction.
+// Lock the current Agent rows while a claim failure is requeued. This keeps
+// the binding read and the queue CAS in one transaction so a concurrent rebind
+// cannot slip between invalidation and commit.
 func (q *Queries) GetAgentRuntimeBindingsForUpdate(ctx context.Context, agentIds []pgtype.UUID) ([]GetAgentRuntimeBindingsForUpdateRow, error) {
 	rows, err := q.db.Query(ctx, getAgentRuntimeBindingsForUpdate, agentIds)
 	if err != nil {

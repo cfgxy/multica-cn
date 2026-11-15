@@ -11,20 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const lockWorkspaceForPromptQuizSchedule = `-- name: LockWorkspaceForPromptQuizSchedule :one
-SELECT id
-FROM workspace
-WHERE id = $1
-FOR UPDATE
-`
-
-func (q *Queries) LockWorkspaceForPromptQuizSchedule(ctx context.Context, workspaceID pgtype.UUID) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, lockWorkspaceForPromptQuizSchedule, workspaceID)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
-}
-
 const cancelQueuedPromptQuizTasksForScheduleScope = `-- name: CancelQueuedPromptQuizTasksForScheduleScope :many
 UPDATE agent_task_queue atq
 SET status = 'cancelled',
@@ -225,14 +211,12 @@ func (q *Queries) GetPromptQuizScheduleControlForAgent(ctx context.Context, arg 
 }
 
 const getPromptQuizScheduleControlForWorkspace = `-- name: GetPromptQuizScheduleControlForWorkspace :one
-
 SELECT id, workspace_id, agent_id, enabled, reason, updated_by, updated_at
 FROM prompt_quiz_schedule_control
 WHERE workspace_id = $1
   AND agent_id IS NULL
 `
 
-// RUYI-941: Quiz scheduler control plane. Missing rows mean enabled.
 func (q *Queries) GetPromptQuizScheduleControlForWorkspace(ctx context.Context, workspaceID pgtype.UUID) (PromptQuizScheduleControl, error) {
 	row := q.db.QueryRow(ctx, getPromptQuizScheduleControlForWorkspace, workspaceID)
 	var i PromptQuizScheduleControl
@@ -246,6 +230,26 @@ func (q *Queries) GetPromptQuizScheduleControlForWorkspace(ctx context.Context, 
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const lockWorkspaceForPromptQuizSchedule = `-- name: LockWorkspaceForPromptQuizSchedule :one
+
+SELECT id
+FROM workspace
+WHERE id = $1
+FOR UPDATE
+`
+
+// RUYI-941: Quiz scheduler control plane. Missing rows mean enabled.
+// Every Quiz control write takes the workspace lock before reading or changing
+// the override. Quiz task creation takes the compatible KEY SHARE lock in a
+// separate transaction command, so the insert's snapshot is fresh after a
+// concurrent disable commits.
+func (q *Queries) LockWorkspaceForPromptQuizSchedule(ctx context.Context, workspaceID pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockWorkspaceForPromptQuizSchedule, workspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const upsertPromptQuizScheduleControl = `-- name: UpsertPromptQuizScheduleControl :one

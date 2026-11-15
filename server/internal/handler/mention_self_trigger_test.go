@@ -205,6 +205,12 @@ func TestEnqueueMentionedAgentTasks_MissingSourceTaskFallsBackToNormalRouting(t 
 	if got := countQueuedOrDispatched(t, fx.JID, fx.IssueAID); got != 1 {
 		t.Fatalf("missing source task should use normal explicit routing, got %d queued task(s)", got)
 	}
+	var delegatedFrom *string
+	dbfx.QueryRow(t, `SELECT delegated_from_task_id::text FROM agent_task_queue
+		WHERE agent_id=$1 AND issue_id=$2 AND status='queued'`, fx.JID, fx.IssueAID).Scan(&delegatedFrom)
+	if delegatedFrom != nil {
+		t.Fatalf("normal fallback retained missing source as delegation: %s", *delegatedFrom)
+	}
 }
 
 // countQueuedOrDispatched returns the number of queued|dispatched tasks for

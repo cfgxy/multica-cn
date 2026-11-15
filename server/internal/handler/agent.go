@@ -491,14 +491,15 @@ type TaskIssueStatusData struct {
 }
 
 type AgentTaskResponse struct {
-	ID                   string                 `json:"id"`
-	AgentID              string                 `json:"agent_id"`
-	RuntimeID            string                 `json:"runtime_id"`
-	IssueID              string                 `json:"issue_id"`
-	WorkspaceID          string                 `json:"workspace_id"`
-	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
-	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
-	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
+	RuntimeContextManifest *RuntimeContextManifest `json:"runtime_context_manifest,omitempty"`
+	ID                     string                  `json:"id"`
+	AgentID                string                  `json:"agent_id"`
+	RuntimeID              string                  `json:"runtime_id"`
+	IssueID                string                  `json:"issue_id"`
+	WorkspaceID            string                  `json:"workspace_id"`
+	WorkspaceSlug          string                  `json:"workspace_slug,omitempty"`
+	IssueIdentifier        string                  `json:"issue_identifier,omitempty"`
+	RemoteMCPConnections   []remotemcp.Connection  `json:"remote_mcp_connections,omitempty"`
 	// PluginHookTools are the workspace's agent-trigger plugin hooks, which the
 	// daemon renders as MCP tools for this task. Resolved at claim time so
 	// disabling or uninstalling a plugin takes effect on the next task rather
@@ -1050,7 +1051,8 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		Kind:           computeTaskKind(t),
 		// Attribution labels + evidence + lineage + raw user ids (pure). Names are
 		// hydrated separately on user-facing surfaces (MUL-4302 §9).
-		Attribution: taskAttributionBase(t),
+		Attribution:            taskAttributionBase(t),
+		RuntimeContextManifest: runtimeContextManifestFromContext(t.Context),
 	}
 	if snapshot := taskadaptation.SnapshotFromContext(t.Context); snapshot != nil {
 		snapshot.TaskID = uuidToString(t.ID)
@@ -1682,6 +1684,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.RuntimeConfig == nil {
 		rc = []byte("{}")
 	}
+	if err := service.ValidateBudgetProfile(rc); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	ce, _ := json.Marshal(req.CustomEnv)
 	if req.CustomEnv == nil {
@@ -1784,6 +1790,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		slog.Warn("create agent failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create agent: "+err.Error())
+		return
+	}
+	if err := seedPromptVersionV1(r.Context(), qtx, promptVersionScopeAgent, wsUUID, created.ID, created.Instructions); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create agent prompt baseline")
 		return
 	}
 	if err := replaceInvocationTargetsWithQueries(r.Context(), qtx, created.ID, parseUUID(ownerID), perm.targets); err != nil {
@@ -2182,6 +2192,10 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		// and silently destroys the real secret (issue #3260).
 		preserveMaskedGatewayToken(req.RuntimeConfig, existing.RuntimeConfig)
 		rc, _ := json.Marshal(req.RuntimeConfig)
+		if err := service.ValidateBudgetProfile(rc); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		params.RuntimeConfig = rc
 	}
 	if req.CustomArgs != nil {
@@ -2842,6 +2856,11 @@ func (h *Handler) updateAgentPersisted(ctx context.Context, params db.UpdateAgen
 	locked, err := qtx.GetAgentForUpdate(ctx, params.ID)
 	if err != nil {
 		return db.Agent{}, 0, fmt.Errorf("lock agent for runtime rebind: %w", err)
+	}
+	if writeInstructions {
+		if err := recordStaticPromptWriteTx(ctx, qtx, workspaceID, promptVersionScopeAgent, params.ID, params.Instructions.String, "edit"); err != nil {
+			return db.Agent{}, 0, fmt.Errorf("record agent prompt version: %w", err)
+		}
 	}
 	updated, err := qtx.UpdateAgent(ctx, params)
 	if err != nil {

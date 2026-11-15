@@ -1559,6 +1559,7 @@ type KnowledgeDir struct {
 	DaemonID      string             `json:"daemon_id"`
 	ScanRequested bool               `json:"scan_requested"`
 	ManagedActive bool               `json:"managed_active"`
+	ScanToken     pgtype.UUID        `json:"scan_token"`
 }
 
 // Read-only mirror of bd memories entries; adoption_state=adopted only after transfer into the ultimate bd confirmed by read-back.
@@ -1672,6 +1673,9 @@ type KnowledgeLifecycleEvent struct {
 	ActorID               pgtype.UUID        `json:"actor_id"`
 	CreatedAt             pgtype.Timestamptz `json:"created_at"`
 	CompletedAt           pgtype.Timestamptz `json:"completed_at"`
+	WritebackClaimedBy    string             `json:"writeback_claimed_by"`
+	WritebackClaimedAt    pgtype.Timestamptz `json:"writeback_claimed_at"`
+	WritebackClaimToken   pgtype.UUID        `json:"writeback_claim_token"`
 }
 
 // Per-directory scan batch log; zero-change batches are logged too so incremental ingestion stays recomputable.

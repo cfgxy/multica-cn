@@ -43,6 +43,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/legislation"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/retrospective"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/clausemark"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -377,8 +378,7 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	if isMove {
 		srcRef := carrierRef{scope: p.CarrierScope, id: p.CarrierScopeID}
 		dstRef := carrierRef{scope: p.MoveToScope.String, id: p.MoveToScopeID}
-		srcNext, dstNext, synthErr := legislation.SynthesizeMove(texts[srcRef], texts[dstRef], input,
-			legislation.MoveTarget{Scope: p.MoveToScope.String})
+		srcNext, dstNext, synthErr := h.synthesizeClauseMove(ctx, qtx, workspaceID, p, texts[srcRef], texts[dstRef])
 		if synthErr != nil {
 			res = errorResult(synthErr)
 		} else {
@@ -489,12 +489,101 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	return true, false, res
 }
 
+// synthesizeClauseMove reads the source body from its active library binding;
+// the business column contains only static context in the normal claim path.
+func (h *Handler) synthesizeClauseMove(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, src, dst string) (string, string, error) {
+	clause, err := resolveProposalClauseTx(ctx, qtx, workspaceID, p.ClauseID, p.ClauseName)
+	if err != nil {
+		return "", "", err
+	}
+	binding, err := qtx.GetActiveClauseBinding(ctx, clause.ID)
+	if err != nil {
+		return "", "", fmt.Errorf("active clause binding unavailable: %w", err)
+	}
+	if clause.Status != "active" || binding.Scope != p.CarrierScope || binding.ScopeID != p.CarrierScopeID || binding.SinceClauseVersion != clause.Version {
+		return "", "", errors.New("active clause binding does not match the proposal carrier/version")
+	}
+	version, err := qtx.GetClauseVersion(ctx, db.GetClauseVersionParams{ClauseID: clause.ID, Version: clause.Version})
+	if err != nil {
+		return "", "", err
+	}
+	rows, err := h.activeClauseRowsTx(ctx, qtx, workspaceID)
+	if err != nil {
+		return "", "", err
+	}
+	byCarrier := renderedClausesByCarrier(rows, nil)
+	srcClauses := byCarrier[carrierRef{scope: p.CarrierScope, id: p.CarrierScopeID}]
+	dstClauses := byCarrier[carrierRef{scope: p.MoveToScope.String, id: p.MoveToScopeID}]
+	if err := clausemark.ValidateSnapshot(src, srcClauses); err != nil {
+		return "", "", err
+	}
+	if err := clausemark.ValidateSnapshot(dst, dstClauses); err != nil {
+		return "", "", err
+	}
+	// Include destination assets in the engine's duplicate-title check without
+	// persisting their bodies or treating marker delimiters as clause content.
+	dstEffective := clausemark.Static(dst, dstClauses)
+	for _, item := range dstClauses {
+		dstEffective += "\n\n" + item.Body
+	}
+	// The asset identity selects the complete body. A same-named static
+	// block belongs to the source carrier and must never be extracted by title.
+	input := proposalInputFromRow(p)
+	input.ChangeKind, input.ClauseName, input.TargetSection = "add_clause", clause.Title, ""
+	input.ClauseText = clauseMoveContent(version.Content, p.ClauseText)
+	if strings.TrimSpace(p.ClauseText) != "" {
+		if err := legislation.ValidateRevisionText(clause.Title, p.ClauseText); err != nil {
+			return "", "", err
+		}
+	}
+	dstNext, err := legislation.Synthesize(dstEffective, input)
+	if err != nil {
+		return "", "", err
+	}
+	return clausemark.Static(src, srcClauses), clausemark.Static(dstNext, dstClauses), nil
+}
+
+// clauseMoveContent normalizes optional move revisions for synthesis and writes.
+// An empty body preserves the current version; an identical body is a no-op.
+func clauseMoveContent(current, proposed string) string {
+	if strings.TrimSpace(proposed) == "" {
+		return current
+	}
+	return strings.TrimRight(proposed, "\n")
+}
+
 // synthesizeProposalCarrier applies a proposal to the carrier representation
 // that the selected landing target actually changes. Structured revisions are
 // addressed by Clause ID and deterministically rebuild their carrier from the
 // active asset set; static and legacy name-only proposals retain the text-
 // engine path.
 func (h *Handler) synthesizeProposalCarrier(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, p db.PromptProposal, current string) (string, error) {
+	if p.EnactmentTarget == "clause_library" && p.ChangeKind == "remove_clause" {
+		clause, err := resolveProposalClauseTx(ctx, qtx, workspaceID, p.ClauseID, p.ClauseName)
+		if err != nil {
+			return "", err
+		}
+		if clause.Status != "active" {
+			return "", fmt.Errorf("clause %s is not active", clause.Title)
+		}
+		binding, err := qtx.GetActiveClauseBinding(ctx, clause.ID)
+		if err != nil {
+			return "", fmt.Errorf("active clause binding unavailable: %w", err)
+		}
+		if binding.Scope != p.CarrierScope || binding.ScopeID != p.CarrierScopeID || binding.SinceClauseVersion != clause.Version {
+			return "", errors.New("active clause binding does not match the proposal carrier/version")
+		}
+		version, err := qtx.GetClauseVersion(ctx, db.GetClauseVersionParams{ClauseID: clause.ID, Version: clause.Version})
+		if err != nil {
+			return "", err
+		}
+		// Library clauses need not occur in the static business column. Remove
+		// any exact legacy copy; the reference gate still validates surviving
+		// static and library references before the asset is withdrawn.
+		return clausemark.Static(current, []clausemark.RenderedClause{{
+			Slug: clause.Slug, Version: int(clause.Version), Body: version.Content,
+		}}), nil
+	}
 	if p.EnactmentTarget != "clause_library" || p.ChangeKind != "revise_clause" || !p.ClauseID.Valid {
 		return legislation.Synthesize(current, proposalInputFromRow(p))
 	}
@@ -725,7 +814,7 @@ func (h *Handler) refContractGate(ctx context.Context, qtx *db.Queries, workspac
 			return []legislation.Finding{{Level: "error", Message: fmt.Sprintf("条款引用契约检查失败，已阻断（fail-closed）：%v", err)}}
 		}
 		selfNode = clause.Slug
-		if p.ChangeKind == "revise_clause" {
+		if p.ChangeKind == "revise_clause" || (p.ChangeKind == "move_clause" && strings.TrimSpace(p.ClauseText) != "") {
 			selfBody = p.ClauseText
 		}
 	}
@@ -1170,6 +1259,35 @@ func (h *Handler) PreviewPromptProposal(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusConflict, fmt.Sprintf("草案无法合成，已阻断：%v", err))
 		return
 	}
+	previewCurrent, previewNext := current, synth
+	if p.EnactmentTarget == "clause_library" && ((p.ChangeKind == "revise_clause" && p.ClauseID.Valid) || p.ChangeKind == "remove_clause") {
+		clause, err := resolveProposalClauseTx(r.Context(), h.Queries, workspaceID, p.ClauseID, p.ClauseName)
+		if err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		rows, err := h.activeClauseRowsTx(r.Context(), h.Queries, workspaceID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read preview clause set")
+			return
+		}
+		ref := carrierRef{scope: p.CarrierScope, id: p.CarrierScopeID}
+		active := renderedClausesByCarrier(rows, nil)[ref]
+		previewCurrent = clausemark.Render(current, active)
+		if p.ChangeKind == "revise_clause" {
+			previewNext = clausemark.Render(synth, renderedClausesByCarrier(rows, &clauseRenderOverride{
+				ClauseID: clause.ID, Version: clause.Version + 1, Content: strings.TrimRight(p.ClauseText, "\n"),
+			})[ref])
+		} else {
+			remaining := make([]clausemark.RenderedClause, 0, len(active))
+			for _, item := range active {
+				if item.Slug != clause.Slug {
+					remaining = append(remaining, item)
+				}
+			}
+			previewNext = clausemark.Render(synth, remaining)
+		}
+	}
 	baselineUsed := true
 	if _, err := h.Queries.GetPromptStructureBaseline(r.Context(), db.GetPromptStructureBaselineParams{
 		CarrierScope: p.CarrierScope, CarrierScopeID: p.CarrierScopeID,
@@ -1178,7 +1296,7 @@ func (h *Handler) PreviewPromptProposal(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, PromptProposalPreviewResponse{
 		Proposal:      proposalToResponse(p),
-		Diff:          legislation.DiffLines(current, synth),
+		Diff:          legislation.DiffLines(previewCurrent, previewNext),
 		CurrentSha256: sha256Hex(current),
 		BaselineUsed:  baselineUsed,
 	})
@@ -1938,14 +2056,20 @@ func (h *Handler) RetrospectiveTaskEnqueuer() retrospective.TaskEnqueuer {
 		if runErr != nil {
 			return "", fmt.Errorf("retrospective task enqueue: invalid run id: %w", runErr)
 		}
-		task, err := h.Queries.CreateRetrospectiveTask(ctx, db.CreateRetrospectiveTaskParams{
-			AgentID:           util.MustParseUUID(params.AgentID),
-			RuntimeID:         util.MustParseUUID(params.RuntimeID),
-			OriginatorUserID:  originator,
-			AccountableUserID: originator,
-			Priority:          params.Priority,
-			RunID:             runID,
-			Context:           params.Context,
+		tasks := h.TaskService
+		if tasks == nil {
+			tasks = &service.TaskService{Queries: h.Queries, TxStarter: h.TxStarter}
+		}
+		task, err := tasks.CreateBudgetedRootTask(ctx, nil, util.MustParseUUID(params.AgentID), func(q *db.Queries) (db.AgentTaskQueue, error) {
+			return q.CreateRetrospectiveTask(ctx, db.CreateRetrospectiveTaskParams{
+				AgentID:           util.MustParseUUID(params.AgentID),
+				RuntimeID:         util.MustParseUUID(params.RuntimeID),
+				OriginatorUserID:  originator,
+				AccountableUserID: originator,
+				Priority:          params.Priority,
+				RunID:             runID,
+				Context:           params.Context,
+			})
 		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

@@ -301,6 +301,10 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !allowStaticClauseRefsWrite(w, r.Context(), qtx, ws.ID, map[carrierRef]string{{scope: "workspace", id: ws.ID}: initialContext}) {
 		return
 	}
+	if err := seedPromptVersionV1(r.Context(), qtx, promptVersionScopeWorkspace, ws.ID, ws.ID, initialContext); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create workspace prompt baseline")
+		return
+	}
 
 	_, err = qtx.CreateMember(r.Context(), db.CreateMemberParams{
 		WorkspaceID: ws.ID,
@@ -499,8 +503,8 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	var ws db.Workspace
 	var err error
 	if req.Context != nil {
-		tx, err := h.TxStarter.Begin(r.Context())
-		if err != nil {
+		tx, beginErr := h.TxStarter.Begin(r.Context())
+		if beginErr != nil {
 			writeError(w, http.StatusInternalServerError, "failed to update workspace")
 			return
 		}
@@ -511,6 +515,10 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !allowStaticClauseRefsWrite(w, r.Context(), qtx, idUUID, map[carrierRef]string{{scope: "workspace", id: idUUID}: *req.Context}) {
+			return
+		}
+		if err := recordStaticPromptWriteTx(r.Context(), qtx, idUUID, promptVersionScopeWorkspace, idUUID, *req.Context, "edit"); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to record workspace prompt version")
 			return
 		}
 		ws, err = qtx.UpdateWorkspace(r.Context(), params)

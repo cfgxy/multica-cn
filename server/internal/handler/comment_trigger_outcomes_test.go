@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -34,9 +35,9 @@ func TestCreateComment_MixedMentionSurfacesPartialTriggerOutcomes(t *testing.T) 
 	ctx := context.Background()
 
 	allowedAgentID := createHandlerTestAgent(t, "Outcome Allowed Agent", nil)
-	// A private leader owned by someone other than testUserID: the workspace
-	// owner can VIEW it but cannot INVOKE it (no admin bypass).
+	// An admin can view the leader but cannot invoke its private agent.
 	privateLeaderID, _, _ := privateAgentTestFixture(t)
+	adminID := createPermissionTestAdmin(t, "partial-outcome-admin@multica.test")
 	squadID := createCommentTriggerPreviewSquad(t, "Outcome Private Squad", privateLeaderID)
 	issueID := createCommentTriggerPreviewIssue(t, "mixed mention partial outcomes", "", "")
 
@@ -46,7 +47,9 @@ func TestCreateComment_MixedMentionSurfacesPartialTriggerOutcomes(t *testing.T) 
 	)
 
 	// Preview surfaces both the allowed agent and the blocked squad.
-	preview := previewCommentTriggersForTest(t, issueID, map[string]any{"content": content})
+	var preview CommentTriggerPreviewResponse
+	previewReq := withURLParam(newRequestAs(adminID, http.MethodPost, "/api/issues/"+issueID+"/comments/trigger-preview", map[string]any{"content": content}), "id", issueID)
+	testutil.Call(t, testHandler.PreviewCommentTriggers, previewReq).Want(http.StatusOK).JSON(&preview)
 	requirePreviewAgents(t, preview, allowedAgentID)
 	if len(preview.Blocked) != 1 {
 		t.Fatalf("preview blocked = %+v, want 1 entry", preview.Blocked)
@@ -58,7 +61,7 @@ func TestCreateComment_MixedMentionSurfacesPartialTriggerOutcomes(t *testing.T) 
 
 	// Create the comment: it must save (201) and report partial outcomes.
 	w := httptest.NewRecorder()
-	r := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)
+	r := withURLParam(newRequestAs(adminID, http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)
 	testHandler.CreateComment(w, r)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("CreateComment: expected 201 (comment must save despite blocked mention), got %d: %s", w.Code, w.Body.String())
@@ -106,7 +109,7 @@ func TestCreateComment_BlockedMentionReasonDoesNotEnumeratePrivateAgent(t *testi
 		t.Skip("database not available")
 	}
 
-	privateAgentID, _, _ := privateAgentTestFixture(t)
+	privateAgentID, _, memberID := privateAgentTestFixture(t)
 	issueID := createCommentTriggerPreviewIssue(t, "blocked mention enumeration safety", "", "")
 	nonexistentID := "00000000-0000-0000-0000-0000000000ff"
 
@@ -114,7 +117,9 @@ func TestCreateComment_BlockedMentionReasonDoesNotEnumeratePrivateAgent(t *testi
 		"[@Private](mention://agent/%s) [@Ghost](mention://agent/%s) ping",
 		privateAgentID, nonexistentID,
 	)
-	preview := previewCommentTriggersForTest(t, issueID, map[string]any{"content": content})
+	var preview CommentTriggerPreviewResponse
+	previewReq := withURLParam(newRequestAs(memberID, http.MethodPost, "/api/issues/"+issueID+"/comments/trigger-preview", map[string]any{"content": content}), "id", issueID)
+	testutil.Call(t, testHandler.PreviewCommentTriggers, previewReq).Want(http.StatusOK).JSON(&preview)
 	if len(preview.Agents) != 0 {
 		t.Fatalf("preview agents = %+v, want none", preview.Agents)
 	}
@@ -125,6 +130,17 @@ func TestCreateComment_BlockedMentionReasonDoesNotEnumeratePrivateAgent(t *testi
 		if b.ReasonCode != ReasonInvocationNotAllowed {
 			t.Errorf("blocked %s reason = %q, want invocation_not_allowed (must not distinguish private-exists from not-found)", b.TargetID, b.ReasonCode)
 		}
+	}
+	var saved CommentResponse
+	createReq := withURLParam(newRequestAs(memberID, http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)
+	testutil.Call(t, testHandler.CreateComment, createReq).Want(http.StatusCreated).JSON(&saved)
+	for _, targetID := range []string{privateAgentID, nonexistentID} {
+		if outcome := findCommentOutcome(t, saved.TriggerOutcomes, targetID); outcome.Status != DispatchBlocked || outcome.ReasonCode != ReasonInvocationNotAllowed {
+			t.Errorf("saved blocked mention = %+v, want blocked/invocation_not_allowed", outcome)
+		}
+	}
+	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE trigger_comment_id = $1`, saved.ID); got != 0 {
+		t.Fatalf("blocked mentions queued %d tasks", got)
 	}
 }
 

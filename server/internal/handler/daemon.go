@@ -2635,12 +2635,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.CapabilityAdaptation.TaskID = uuidToString(task.ID)
 	}
 	var issueNumber int32
-	// promptVersionScopeIDs accumulates (scope -> scope_id) for every prompt
-	// tier this claim actually injects non-empty content for, populated at
-	// each injection site below. Written to agent_task_queue.prompt_versions
-	// once at the end (RUYI-183 T2) so a run's attribution reflects only what
-	// it really saw — a tier the agent/project/squad left blank, or a claim
-	// path that never reaches a given tier, must not appear as version 0.
+	// Carrier attribution is captured from each read, before any later edits.
 	promptVersionScopeIDs := map[string]string{}
 	// Clause dynamic injection (RUYI-751 / ADR 007 §5): every carrier read
 	// point below routes its text through the task_kind-filtered effective
@@ -2648,12 +2643,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// every failure inside applyDynamicClauses degrades to snapshot injection
 	// and never fails the claim.
 	taskKind := claimTaskKind(task)
+	runtimeManifest := newRuntimeContextManifest(task, taskKind)
 	claimWorkspaceID := parseUUID(runtimeWorkspaceID)
 	var clauseInjections []clauseInjectionRecord
 	var clauseObservations []clauseInjectionObservation
 	var clauseManifest []clauseManifestEntry
 	filterClauses := func(scope promptVersionScope, scopeID pgtype.UUID, text string) string {
 		res := h.applyDynamicClauses(r.Context(), claimWorkspaceID, scope, scopeID, taskKind, text)
+		h.captureRuntimeCarrier(r.Context(), runtimeManifest, string(scope), scopeID, text, res)
 		for i := range res.Injections {
 			res.Injections[i].Scope = string(scope)
 		}
@@ -2815,6 +2812,18 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	var runtimeConfig json.RawMessage
 	if rc := bytes.TrimSpace(agent.RuntimeConfig); len(rc) > 0 && !bytes.Equal(rc, []byte("{}")) && !bytes.Equal(rc, []byte("null")) {
 		runtimeConfig = json.RawMessage(agent.RuntimeConfig)
+	}
+	frozenRuntimeConfig, budgetErr := service.TaskBudgetRuntimeConfig(*task, runtimeConfig)
+	if budgetErr != nil {
+		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, h.failClaimedTaskBeforeLaunch(
+			r.Context(), task, "Task budget snapshot is invalid: "+budgetErr.Error(),
+			taskfailure.ReasonBudgetInvalid, "error_budget_snapshot", http.StatusUnprocessableEntity, "invalid task budget snapshot",
+		)
+	}
+	if !bytes.Equal(bytes.TrimSpace(frozenRuntimeConfig), []byte("{}")) {
+		runtimeConfig = frozenRuntimeConfig
+	} else {
+		runtimeConfig = nil
 	}
 	// The agent tier's business column goes through the dynamic clause
 	// filter before it reaches the response (ADR 007 §5): stable context is
@@ -3900,6 +3909,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			"workspace_id", resp.WorkspaceID,
 			"error", err,
 		)
+		runtimeManifest.Observations = append(runtimeManifest.Observations, runtimeCarrierObservation{Scope: "workspace", ScopeID: resp.WorkspaceID, Status: "unknown", Reason: "carrier_load_error"})
 	}
 	resp.WorkspaceContext = appendActiveClauseManifest(wsContext, taskKind, clauseManifest)
 
@@ -3997,59 +4007,26 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
-	h.recordClaimedPromptVersions(r.Context(), task.ID, promptVersionScopeIDs)
+	runtimeManifest.finish(resp)
+	if err := h.persistRuntimeContextManifest(r.Context(), *task, runtimeManifest); err != nil {
+		slog.Error("task claim: persist runtime context manifest failed; requeueing claim", "task_id", uuidToString(task.ID), "error", err)
+		// Requeue uses the same runtime_id + dispatched_at CAS, so an old
+		// builder cannot release a newer claim after losing the manifest CAS.
+		if _, requeueErr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), *task); requeueErr != nil {
+			slog.Error("task claim: requeue after runtime context manifest failure failed; stale reclaim will recover it",
+				"task_id", uuidToString(task.ID), "manifest_error", err, "error", requeueErr)
+		}
+		return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, &claimBuildFailure{
+			outcome: "error_runtime_context_manifest", status: http.StatusInternalServerError, message: "failed to persist runtime context manifest",
+		}
+	}
+	resp.RuntimeContextManifest = runtimeManifest
 	// Clause injection events (RUYI-751 §6): computed-selected = injected, so
 	// the accumulated records are the run's call-count basis. Scope strings
 	// were stamped by filterClauses at each read point.
 	h.recordClauseInjectionEvents(r.Context(), claimWorkspaceID, task.ID, promptVersionScopeIDs, clauseInjections, clauseObservations)
 
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
-}
-
-// recordClaimedPromptVersions resolves the current prompt_version.version
-// number for every tier this claim actually injected non-empty content for
-// (see promptVersionScopeIDs above) and persists it onto the claimed task row
-// (RUYI-183 T2), so a run's prompt-governance attribution can be read back
-// later without recomputing "what did this run actually see".
-//
-// A tier with no prompt_version row yet (never saved/edited since the
-// governance table shipped) is skipped rather than recorded as version 0 —
-// absent means "not attributable", never "version zero". Failure here is
-// logged and swallowed: attribution is observability, not a claim
-// precondition, so it must never turn a successful claim into a retry.
-func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype.UUID, scopeIDs map[string]string) {
-	if len(scopeIDs) == 0 {
-		return
-	}
-	versions := make(map[string]int32, len(scopeIDs))
-	for scope, scopeID := range scopeIDs {
-		parsedScopeID, err := util.ParseUUID(scopeID)
-		if err != nil {
-			continue
-		}
-		v, err := h.Queries.GetLatestPromptVersion(ctx, db.GetLatestPromptVersionParams{
-			Scope:   scope,
-			ScopeID: parsedScopeID,
-		})
-		if err != nil {
-			continue
-		}
-		versions[scope] = v.Version
-	}
-	if len(versions) == 0 {
-		return
-	}
-	payload, err := json.Marshal(versions)
-	if err != nil {
-		slog.Warn("task claim: failed to marshal prompt version attribution", "task_id", uuidToString(taskID), "error", err)
-		return
-	}
-	if err := h.Queries.SetAgentTaskQueuePromptVersions(ctx, db.SetAgentTaskQueuePromptVersionsParams{
-		ID:             taskID,
-		PromptVersions: payload,
-	}); err != nil {
-		slog.Warn("task claim: failed to persist prompt version attribution", "task_id", uuidToString(taskID), "error", err)
-	}
 }
 
 // localIsolationClaimBlockReason returns a user-facing reason when this
@@ -4323,10 +4300,9 @@ type resolveSkillBundleRef struct {
 // claim. The daemon calls this after claim and before execenv.Prepare so
 // runtimes still see complete local skill files at startup.
 //
-// If a requested hash no longer matches the agent's current skill bundle, the
-// endpoint returns the current bundle and hash. Stage 1 does not snapshot skill
-// content at claim time; the daemon validates the returned bundle before
-// writing it to cache and materializing it.
+// A changed workspace/builtin bundle is returned for API compatibility. The
+// manifest records both requested and returned hashes, without claiming use.
+// Pinned plugin bundles still reject a hash mismatch.
 func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request) {
 	runtimeID := chi.URLParam(r, "runtimeId")
 	taskID := chi.URLParam(r, "taskId")
@@ -4396,6 +4372,16 @@ func (h *Handler) ResolveTaskSkillBundles(w http.ResponseWriter, r *http.Request
 			return
 		}
 		resolved = append(resolved, bundle)
+	}
+
+	if err := h.recordRuntimeSkillResolutions(r.Context(), task, req.Skills, resolved); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusConflict, "task claim changed during skill resolution")
+			return
+		}
+		slog.Error("resolve skill bundles: persist manifest failed", "task_id", uuidToString(task.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to persist skill resolution evidence")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"bundles": resolved})
@@ -5433,6 +5419,14 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	// resolve to a provider instead of landing as '' and pricing $0.
 	var runtimeProvider string
 	runtimeProviderLoaded := false
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start task usage transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	normalized := make([]TaskUsagePayload, 0, len(req.Usage))
 	for _, u := range req.Usage {
 		provider := normalizeProvider(u.Provider)
 		if provider == "" {
@@ -5447,7 +5441,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			}
 			provider = runtimeProvider
 		}
-		if err := h.Queries.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
+		if err := qtx.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
 			TaskID:           parseUUID(taskID),
 			Provider:         provider,
 			Model:            u.Model,
@@ -5462,8 +5456,18 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			MaxContextTokens: authoritativeMaxContextTokens(u.MaxContextTokens),
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
-			continue
+			writeError(w, http.StatusInternalServerError, "failed to persist complete task usage report")
+			return
 		}
+		u.Provider = provider
+		normalized = append(normalized, u)
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit task usage report")
+		return
+	}
+	for _, u := range normalized {
+		provider := u.Provider
 		h.TaskService.CaptureTaskUsage(r.Context(), task, provider, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSDTicks)
 
 		// Surface prompt-cache effectiveness per run so cache hit rates are

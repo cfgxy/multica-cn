@@ -2694,10 +2694,7 @@ func TestCompleteTask_CommentTriggered_ReportsTrivialDoneOutput(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	var agentID, runtimeID string
-	dbfx.QueryRow(t, `
-		SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1
-	`, testWorkspaceID).Scan(&agentID, &runtimeID)
+	agentID, runtimeID, daemonID := createRuntimeGuardAgent(t, context.Background())
 
 	issueID := dbfx.Issue(t, "trivial-done-suppression fixture", testutil.Cols{
 		"status": "in_progress",
@@ -2717,7 +2714,7 @@ func TestCompleteTask_CommentTriggered_ReportsTrivialDoneOutput(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
 		map[string]any{"output": "Done."},
-		testWorkspaceID, "legit-daemon")
+		testWorkspaceID, daemonID)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("taskId", taskID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -2735,10 +2732,10 @@ func TestCompleteTask_CommentTriggered_ReportsTrivialDoneOutput(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("expected a terminal agent comment for trivial Done output, got %d", count)
 	}
-	var content string
-	dbfx.QueryRow(t, `SELECT content FROM comment WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2`, issueID, agentID).Scan(&content)
-	if !strings.Contains(content, "Run completed without a substantive comment.") || !strings.Contains(content, "mention://agent/"+agentID) {
-		t.Fatalf("terminal comment = %q, want fallback text and responsibility mention", content)
+	var content, sourceTaskID, parentID string
+	dbfx.QueryRow(t, `SELECT content, source_task_id::text, COALESCE(parent_id::text, '') FROM comment WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2`, issueID, agentID).Scan(&content, &sourceTaskID, &parentID)
+	if content != "Run completed without a substantive comment." || sourceTaskID != taskID || parentID != triggerCommentID {
+		t.Fatalf("terminal comment = %q, source task = %q, parent = %q; want fallback text replying to trigger %s from task %s", content, sourceTaskID, parentID, triggerCommentID, taskID)
 	}
 }
 
@@ -2747,10 +2744,7 @@ func TestCompleteTask_AssignmentTriggered_DoesNotSuppressTrivialDoneOutput(t *te
 		t.Skip("database not available")
 	}
 
-	var agentID, runtimeID string
-	dbfx.QueryRow(t, `
-		SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1
-	`, testWorkspaceID).Scan(&agentID, &runtimeID)
+	agentID, runtimeID, daemonID := createRuntimeGuardAgent(t, context.Background())
 
 	issueID := dbfx.Issue(t, "assignment-trivial-done fixture", testutil.Cols{
 		"status": "in_progress",
@@ -2767,7 +2761,7 @@ func TestCompleteTask_AssignmentTriggered_DoesNotSuppressTrivialDoneOutput(t *te
 	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
 		map[string]any{"output": "Done."},
-		testWorkspaceID, "legit-daemon")
+		testWorkspaceID, daemonID)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("taskId", taskID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
@@ -2777,14 +2771,14 @@ func TestCompleteTask_AssignmentTriggered_DoesNotSuppressTrivialDoneOutput(t *te
 		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var content string
+	var content, sourceTaskID, parentID string
 	dbfx.QueryRow(t, `
-		SELECT content FROM comment
+		SELECT content, source_task_id::text, COALESCE(parent_id::text, '') FROM comment
 		WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
 		ORDER BY created_at DESC LIMIT 1
-	`, issueID, agentID).Scan(&content)
-	if !strings.HasPrefix(content, "Run completed without a substantive comment.") || !strings.Contains(content, "mention://agent/"+agentID) {
-		t.Fatalf("synthesized comment content = %q, want fallback text and responsibility mention", content)
+	`, issueID, agentID).Scan(&content, &sourceTaskID, &parentID)
+	if content != "Run completed without a substantive comment." || sourceTaskID != taskID || parentID != "" {
+		t.Fatalf("synthesized comment = %q, source task = %q, parent = %q; want top-level fallback text from task %s", content, sourceTaskID, parentID, taskID)
 	}
 }
 

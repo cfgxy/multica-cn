@@ -135,8 +135,8 @@ func TestUpdateAgent_AllowlistRoundtripForOwner(t *testing.T) {
 }
 
 // TestUpdateAgent_AllowlistAllowsWorkspaceOwnerAndDropsAdmin verifies the
-// owner exception: a workspace owner may change an agent's allowlist, while a
-// workspace admin remains unable to widen it.
+// owner exception for writes. Responses remain redacted for both workspace
+// owners and admins who do not own the agent's integrations.
 func TestUpdateAgent_AllowlistAllowsWorkspaceOwnerAndDropsAdmin(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -176,11 +176,8 @@ func TestUpdateAgent_AllowlistAllowsWorkspaceOwnerAndDropsAdmin(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(resp.ComposioToolkitAllowlist) != 2 {
-		t.Errorf("workspace owner response allowlist=%v; want two entries", resp.ComposioToolkitAllowlist)
-	}
-	if resp.ComposioToolkitAllowlistRedacted {
-		t.Errorf("workspace owner response should not be redacted, got %+v", resp)
+	if len(resp.ComposioToolkitAllowlist) != 0 || !resp.ComposioToolkitAllowlistRedacted {
+		t.Errorf("workspace owner response must redact the agent owner's allowlist, got %+v", resp)
 	}
 
 	adminID := createPermissionTestAdmin(t, "allowlist-admin@multica.test")
@@ -198,12 +195,8 @@ func TestUpdateAgent_AllowlistAllowsWorkspaceOwnerAndDropsAdmin(t *testing.T) {
 	}
 }
 
-// TestGetAgent_AllowlistVisibility verifies the read-path redaction is
-// available to the agent owner and workspace owner:
-//   - the agent owner sees the slug list verbatim
-//   - the workspace owner sees the slug list verbatim
-//   - a workspace admin sees nothing + redacted=true
-//   - the response shape stays parseable in both cases (no nil-pointer panic)
+// TestGetAgent_AllowlistVisibility verifies the agent owner sees the allowlist,
+// while workspace owners and admins receive a redacted response.
 func TestGetAgent_AllowlistVisibility(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -235,7 +228,7 @@ func TestGetAgent_AllowlistVisibility(t *testing.T) {
 		t.Errorf("owner should not see redacted flag")
 	}
 
-	// Workspace owner (testUserID) is NOT the agent owner — but sees the list.
+	// Workspace management rights do not expose another owner's integrations.
 	w = httptest.NewRecorder()
 	testHandler.GetAgent(w, withURLParam(newRequest(
 		http.MethodGet, "/api/agents/"+agentID, nil,
@@ -247,11 +240,8 @@ func TestGetAgent_AllowlistVisibility(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &workspaceOwnerResp); err != nil {
 		t.Fatalf("decode workspace owner response: %v", err)
 	}
-	if len(workspaceOwnerResp.ComposioToolkitAllowlist) != 2 {
-		t.Errorf("ws-owner response allowlist=%v; want length 2", workspaceOwnerResp.ComposioToolkitAllowlist)
-	}
-	if workspaceOwnerResp.ComposioToolkitAllowlistRedacted {
-		t.Errorf("ws-owner response should not mark allowlist redacted")
+	if len(workspaceOwnerResp.ComposioToolkitAllowlist) != 0 || !workspaceOwnerResp.ComposioToolkitAllowlistRedacted {
+		t.Errorf("workspace owner response must be redacted, got %+v", workspaceOwnerResp)
 	}
 
 	adminID := createPermissionTestAdmin(t, "allowlist-read-admin@multica.test")

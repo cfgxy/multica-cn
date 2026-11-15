@@ -335,14 +335,22 @@ func TestCrossIssueDelegation_EveryEntryPointJudgesTheSameHuman(t *testing.T) {
 
 			t.Run("mention", func(t *testing.T) {
 				before := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, chain.IssueY)
-				want := http.StatusUnprocessableEntity
-				if tc.admit {
-					want = http.StatusCreated
-				}
+				var saved CommentResponse
 				agentComments(t, firstHop, firstTaskID, chain.IssueY, mention(secondHop),
-					triggerCommentOf(t, firstTaskID)).Want(want)
-				if !tc.admit && dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, chain.IssueY) != before {
-					t.Fatal("a refused delegation persisted its comment")
+					triggerCommentOf(t, firstTaskID)).Want(http.StatusCreated).JSON(&saved)
+				if dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, chain.IssueY) != before+1 {
+					t.Fatal("mention must save its comment independently of invocation permission")
+				}
+				outcome := findCommentOutcome(t, saved.TriggerOutcomes, secondHop)
+				if tc.admit {
+					if outcome.Status != DispatchQueued {
+						t.Fatalf("allowed mention outcome = %+v, want queued", outcome)
+					}
+				} else if outcome.Status != DispatchBlocked || outcome.ReasonCode != ReasonInvocationNotAllowed {
+					t.Fatalf("refused mention outcome = %+v, want blocked/invocation_not_allowed", outcome)
+				}
+				if got := commentSourceTaskOf(t, saved.ID); uuidToString(got) != firstTaskID {
+					t.Fatalf("saved mention source = %q, want %q", uuidToString(got), firstTaskID)
 				}
 				if _, _, got := queuedTaskFor(t, chain.IssueY, secondHop); got != tc.admit {
 					t.Fatalf("mention admitted = %v, want %v", got, tc.admit)
@@ -379,10 +387,14 @@ func TestCrossIssueDelegation_EveryEntryPointJudgesTheSameHuman(t *testing.T) {
 	// drive — a member-scoped allow-list has nobody to match.
 	t.Run("an unattributed chain grants nothing", func(t *testing.T) {
 		chain := newCrossIssueChain(t, bohan, nil)
+		var saved CommentResponse
 		agentComments(t, chain.CoordinatorID, chain.TaskA, chain.IssueY, mention(firstHop), "").
-			Want(http.StatusUnprocessableEntity)
-		if dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, chain.IssueY) != 0 {
-			t.Fatal("an unattributed delegation persisted its comment")
+			Want(http.StatusCreated).JSON(&saved)
+		if outcome := findCommentOutcome(t, saved.TriggerOutcomes, firstHop); outcome.Status != DispatchBlocked || outcome.ReasonCode != ReasonInvocationNotAllowed {
+			t.Fatalf("unattributed mention outcome = %+v, want blocked/invocation_not_allowed", outcome)
+		}
+		if got := commentSourceTaskOf(t, saved.ID); uuidToString(got) != chain.TaskA {
+			t.Fatalf("unattributed comment source = %q, want %q", uuidToString(got), chain.TaskA)
 		}
 		if _, _, ok := queuedTaskFor(t, chain.IssueY, firstHop); ok {
 			t.Fatal("an unattributed chain must not satisfy a member-scoped allow-list")

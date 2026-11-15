@@ -34,7 +34,7 @@ import (
 // enqueueQuizRun creates a real quiz run through the production query, so the
 // isolation under test is the shipped construction and not a test fixture's
 // idea of it.
-func enqueueQuizRun(t *testing.T, agentID, itemID string) db.AgentTaskQueue {
+func enqueueQuizRun(t *testing.T, agentID, itemID, runtimeID string) db.AgentTaskQueue {
 	t.Helper()
 	ctxBlob, err := json.Marshal(map[string]any{
 		"kind":          promptquiz.TaskKind,
@@ -47,7 +47,7 @@ func enqueueQuizRun(t *testing.T, agentID, itemID string) db.AgentTaskQueue {
 	}
 	task, err := testHandler.Queries.CreatePromptQuizTask(context.Background(), db.CreatePromptQuizTaskParams{
 		AgentID:   parseUUID(agentID),
-		RuntimeID: parseUUID(handlerTestRuntimeID(t)),
+		RuntimeID: parseUUID(runtimeID),
 		Priority:  0,
 		Context:   ctxBlob,
 		ItemID:    parseUUID(itemID),
@@ -70,7 +70,7 @@ func TestQuizRunIsInvisibleToIssueDimensionQueries(t *testing.T) {
 	itemID := seedQuizItem(t, "isolation-probe")
 	issueID := dbfx.Issue(t, "quiz isolation control issue")
 
-	quizRun := enqueueQuizRun(t, agentID, itemID)
+	quizRun := enqueueQuizRun(t, agentID, itemID, handlerTestRuntimeID(t))
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running' WHERE id = $1`, quizRun.ID)
 
 	// The control: the identical row with the isolation condition removed. This
@@ -149,7 +149,7 @@ func TestQuizRunIsNotCountedAsProductionActivity(t *testing.T) {
 	}
 	agentID := dbfx.Agent(t, "quiz-kind-agent", handlerTestRuntimeID(t))
 	itemID := seedQuizItem(t, "kind-probe")
-	quizRun := enqueueQuizRun(t, agentID, itemID)
+	quizRun := enqueueQuizRun(t, agentID, itemID, handlerTestRuntimeID(t))
 
 	if got := computeTaskKind(quizRun); got != promptquiz.TaskKind {
 		t.Fatalf("computeTaskKind = %q, want %q — an unmarked measurement is counted as production activity", got, promptquiz.TaskKind)
@@ -171,19 +171,48 @@ func TestCollectorCannotPickUpAProductionRun(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	agentID := dbfx.Agent(t, "quiz-collector-agent", handlerTestRuntimeID(t))
+	runtimeID := createClaimReclaimRuntime(t, ctx, "quiz-collector-runtime")
+	agentID := dbfx.Agent(t, "quiz-collector-agent", runtimeID, testutil.Cols{
+		"instructions": "Triage build failures and report the next diagnostic step.",
+	})
+	insertPromptVersionRow(t, ctx, "agent", agentID, 3)
 	itemID := seedQuizItem(t, "collector-probe")
-
-	quizRun := enqueueQuizRun(t, agentID, itemID)
+	quizRun := enqueueQuizRun(t, agentID, itemID, runtimeID)
+	versions := claimPromptVersionsForTest(t, ctx, runtimeID)
+	if versions["agent"] != 3 {
+		t.Fatalf("quiz claim agent-tier attribution = %v, want agent version 3", versions)
+	}
+	claimed, err := testHandler.Queries.GetAgentTask(ctx, quizRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.RuntimeID != parseUUID(runtimeID) || claimed.Status != "dispatched" {
+		t.Fatalf("quiz was not claimed on its actual runtime: runtime=%s status=%s", uuidToString(claimed.RuntimeID), claimed.Status)
+	}
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, quizRun.ID)
 
 	issueID := dbfx.Issue(t, "quiz collector control issue")
-	productionRun := dbfx.Task(t, agentID, map[string]any{
-		"status":            "completed",
-		"issue_id":          issueID,
-		"completed_at":      testutil.Raw("now()"),
-		"originator_source": "direct_human",
-	})
+	productionRuns := make(map[string]bool)
+	for _, control := range []struct {
+		source string
+		issue  any
+	}{
+		{"direct_human", issueID},
+		{"direct_human", nil},
+		{promptquiz.OriginatorSource, issueID},
+	} {
+		id := dbfx.Task(t, agentID, testutil.Cols{
+			"status":                  "completed",
+			"runtime_id":              runtimeID,
+			"issue_id":                control.issue,
+			"completed_at":            testutil.Raw("now()"),
+			"originator_source":       control.source,
+			"trigger_evidence_ref_id": itemID,
+			"context":                 string(claimed.Context),
+			"prompt_versions":         string(claimed.PromptVersions),
+		})
+		productionRuns[id] = true
+	}
 
 	rows, err := testHandler.Queries.ListFinishedPromptQuizTasks(ctx, 100)
 	if err != nil {
@@ -191,10 +220,14 @@ func TestCollectorCannotPickUpAProductionRun(t *testing.T) {
 	}
 	var sawQuiz, sawProduction bool
 	for _, r := range rows {
-		switch uuidToString(r.TaskID) {
-		case uuidToString(quizRun.ID):
+		id := uuidToString(r.TaskID)
+		if id == uuidToString(quizRun.ID) {
 			sawQuiz = true
-		case productionRun:
+			if r.RuntimeID != parseUUID(runtimeID) || string(r.PromptVersions) != string(claimed.PromptVersions) {
+				t.Fatalf("collector lost claim-time attribution: runtime=%s versions=%s", uuidToString(r.RuntimeID), r.PromptVersions)
+			}
+		}
+		if productionRuns[id] {
 			sawProduction = true
 		}
 	}

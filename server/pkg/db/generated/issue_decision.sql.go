@@ -311,12 +311,13 @@ func (q *Queries) CancelOpenIssueDecisionsForIssue(ctx context.Context, arg Canc
 
 const countWorkspaceIssueDecisionsByStatus = `-- name: CountWorkspaceIssueDecisionsByStatus :one
 SELECT
-    count(*) FILTER (WHERE status = 'open')::int AS open_count,
-    count(*) FILTER (WHERE status = 'answered')::int AS answered_count,
-    count(*) FILTER (WHERE status = 'cancelled')::int AS cancelled_count
-FROM issue_decisions
-WHERE workspace_id = $1
-  AND decision_kind = 'question'
+    count(*) FILTER (WHERE d.status = 'open')::int AS open_count,
+    count(*) FILTER (WHERE d.status = 'answered')::int AS answered_count,
+    count(*) FILTER (WHERE d.status = 'cancelled')::int AS cancelled_count
+FROM issue_decisions d
+JOIN issue i ON i.id = d.issue_id AND i.workspace_id = d.workspace_id
+WHERE d.workspace_id = $1
+  AND d.decision_kind = 'question'
 `
 
 type CountWorkspaceIssueDecisionsByStatusRow struct {
@@ -949,7 +950,7 @@ SELECT d.id, d.workspace_id, d.issue_id, d.source_comment_id, d.question, d.opti
        i.title AS issue_title,
        COALESCE(ws.issue_prefix || '-' || i.number::text, '')::text AS issue_identifier
 FROM issue_decisions d
-JOIN issue i ON i.id = d.issue_id
+JOIN issue i ON i.id = d.issue_id AND i.workspace_id = d.workspace_id
 LEFT JOIN workspace ws ON ws.id = d.workspace_id
 WHERE d.workspace_id = $1
   AND ($3::text IS NULL OR d.status = $3::text)

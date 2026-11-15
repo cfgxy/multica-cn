@@ -247,6 +247,10 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusInternalServerError, "failed to create onboarding assistant")
 			return
 		}
+		if err := seedPromptVersionV1(r.Context(), qtx, promptVersionScopeAgent, wsUUID, assistant.ID, assistant.Instructions); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create onboarding prompt baseline")
+			return
+		}
 		assistantCreated = true
 	}
 

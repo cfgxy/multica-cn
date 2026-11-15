@@ -54,6 +54,17 @@ func claimFixtureTask(t *testing.T, task db.AgentTaskQueue) AgentTaskResponse {
 	if err != nil {
 		t.Fatalf("load runtime: %v", err)
 	}
+	// The builder receives an already-claimed generation in production.
+	if _, err := testPool.Exec(t.Context(), `UPDATE agent_task_queue SET
+		status='dispatched', runtime_id=$2, dispatched_at=now(),
+		prepare_lease_expires_at=now()+interval '5 minutes', started_at=NULL
+		WHERE id=$1`, task.ID, parseUUID(runtimeID)); err != nil {
+		t.Fatal(err)
+	}
+	task, err = testHandler.Queries.GetAgentTask(t.Context(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil, testWorkspaceID, "decision-answer-context")
 	resp, _, _, _, failure := testHandler.buildClaimedTaskResponse(req, &task, runtime, runtimeID, testWorkspaceID)
 	if failure != nil {
