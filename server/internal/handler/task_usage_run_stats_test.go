@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -164,7 +166,7 @@ func TestReportTaskUsageOldDaemonMissingRunStatsCompat(t *testing.T) {
 	}
 
 	var (
-		inputTokens int64
+		inputTokens                                         int64
 		turns, compactions, maxContextTokens, contextTokens *int64
 	)
 	if err := testPool.QueryRow(ctx, `
@@ -214,9 +216,127 @@ func TestReportTaskUsageContextOnlyReachesSessionGate(t *testing.T) {
 	}
 	outcome := testHandler.decideSessionResumeForTask(ctx, db.Agent{
 		SessionMaxContextTokens: 400000,
-		SessionCompactPct:      80,
+		SessionCompactPct:       80,
 	}, taskUUID)
 	if !outcome.known || outcome.contextTokens != tokens.Int64 || outcome.decision != agentconfig.SessionResumeCompactSoft {
 		t.Fatalf("session gate = %+v, want measured 350000 and compact_soft", outcome)
+	}
+}
+
+func TestReportTaskUsagePreservesRetrySessionAttribution(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, taskID := seedNULTask(t, "session-attribution-agent")
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `SELECT issue_id FROM agent_task_queue WHERE id = $1`, taskID).Scan(&issueID); err != nil {
+		t.Fatalf("load task issue: %v", err)
+	}
+
+	postUsage := func(sessionID string, input int64) {
+		t.Helper()
+		body := map[string]any{"usage": []map[string]any{{
+			"session_id":   sessionID,
+			"provider":     "claude",
+			"model":        "claude-sonnet-5",
+			"input_tokens": input,
+		}}}
+		testutil.Call(t, testHandler.ReportTaskUsage,
+			daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/usage", taskID, body),
+		).Want(http.StatusOK)
+	}
+
+	// The resumed attempt contributes 50 to the old session, while the fresh
+	// retry contributes 10 to its own session under the same task and model.
+	postUsage("old-session", 50)
+	postUsage("fresh-session", 10)
+
+	var rows int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM task_usage
+		WHERE task_id = $1 AND provider = 'claude' AND model = 'claude-sonnet-5'`, taskID).Scan(&rows); err != nil {
+		t.Fatalf("count attributed usage rows: %v", err)
+	}
+	if rows != 2 {
+		t.Fatalf("attributed usage rows = %d, want 2", rows)
+	}
+
+	// Simulate the terminal callback rewriting the task's current resume pointer,
+	// then let the real claim endpoint read the fresh-session baseline.
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET status = 'completed', completed_at = now(), session_id = $2
+		WHERE id = $1`, taskID, "fresh-session"); err != nil {
+		t.Fatalf("complete retry task: %v", err)
+	}
+
+	var nextTaskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, session_id)
+		SELECT agent_id, runtime_id, issue_id, 'queued', 0, 'fresh-session'
+		FROM agent_task_queue WHERE id = $1
+		RETURNING id`, taskID).Scan(&nextTaskID); err != nil {
+		t.Fatalf("create next task: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, nextTaskID)
+	})
+
+	prior, err := testHandler.Queries.GetPriorSessionUsage(ctx, db.GetPriorSessionUsageParams{
+		SessionID: pgtype.Text{String: "fresh-session", Valid: true},
+		AgentID:   parseUUID(agentID),
+		ID:        parseUUID(nextTaskID),
+	})
+	if err != nil {
+		t.Fatalf("load fresh-session baseline: %v", err)
+	}
+	if len(prior) != 1 || prior[0].InputTokens != 10 {
+		t.Fatalf("fresh-session baseline = %+v, want one row with 10 input tokens", prior)
+	}
+
+	runtimeID := handlerTestRuntimeID(t)
+	claimRequest := newDaemonTokenRequest(
+		"POST",
+		"/api/daemon/runtimes/"+runtimeID+"/claim",
+		nil,
+		testWorkspaceID,
+		"session-attribution-daemon",
+	)
+	claimContext := chi.NewRouteContext()
+	claimContext.URLParams.Add("runtimeId", runtimeID)
+	claimRequest = claimRequest.WithContext(context.WithValue(claimRequest.Context(), chi.RouteCtxKey, claimContext))
+	claimResponse := httptest.NewRecorder()
+	testHandler.ClaimTaskByRuntime(claimResponse, claimRequest)
+	if claimResponse.Code != http.StatusOK {
+		t.Fatalf("ClaimTaskByRuntime returned %d: %s", claimResponse.Code, claimResponse.Body.String())
+	}
+	var claimed struct {
+		Task *struct {
+			PriorSessionID    string          `json:"prior_session_id"`
+			PriorSessionUsage []TaskUsageData `json:"prior_session_usage"`
+			UsageUnavailable  bool            `json:"prior_session_usage_unavailable"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(claimResponse.Body.Bytes(), &claimed); err != nil {
+		t.Fatalf("decode claim response: %v", err)
+	}
+	if claimed.Task == nil {
+		t.Fatalf("claim response has no task: %s", claimResponse.Body.String())
+	}
+	if claimed.Task.PriorSessionID != "fresh-session" || claimed.Task.UsageUnavailable {
+		t.Fatalf("claimed session baseline metadata = %+v, want fresh-session and available", claimed.Task)
+	}
+	if len(claimed.Task.PriorSessionUsage) != 1 || claimed.Task.PriorSessionUsage[0].InputTokens != 10 {
+		t.Fatalf("claimed fresh-session baseline = %+v, want one row with 10 input tokens", claimed.Task.PriorSessionUsage)
+	}
+
+	issueSummary, err := testHandler.Queries.GetIssueUsageSummary(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("load issue usage summary: %v", err)
+	}
+	if issueSummary.TotalInputTokens != 60 {
+		t.Fatalf("issue input total = %d, want 60 (old 50 + fresh 10)", issueSummary.TotalInputTokens)
 	}
 }

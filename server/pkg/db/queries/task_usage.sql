@@ -14,9 +14,9 @@
 -- turns / compactions / max_context_tokens (RUYI-154) are run-scoped stats
 -- reported exactly once, at task completion, so they are overwritten like the
 -- token counters rather than COALESCEd like context_tokens.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, usage_semantics_version, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), 2, now())
-ON CONFLICT (task_id, provider, model)
+INSERT INTO task_usage (task_id, session_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, usage_semantics_version, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), 2, now())
+ON CONFLICT (task_id, session_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
     output_tokens = EXCLUDED.output_tokens,
@@ -31,7 +31,7 @@ DO UPDATE SET
     updated_at = now();
 
 -- name: GetTaskUsage :many
-SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, usage_semantics_version
+SELECT id, task_id, session_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, usage_semantics_version
 FROM task_usage
 WHERE task_id = $1
 ORDER BY model;
@@ -73,7 +73,7 @@ SELECT
     COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
-WHERE atq.session_id = $1
+WHERE tu.session_id = $1
   AND atq.agent_id = $2
   AND atq.id <> $3
   AND tu.usage_semantics_version = 2

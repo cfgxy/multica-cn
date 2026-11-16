@@ -1662,6 +1662,28 @@ func TestMergeUsage(t *testing.T) {
 	}
 }
 
+func TestTaskUsageEntriesKeepRetrySessionAttribution(t *testing.T) {
+	t.Parallel()
+
+	result := agent.Result{Turns: 2, Usage: map[string]agent.TokenUsage{
+		"model-a": {InputTokens: 50, OutputTokens: 5},
+	}}
+	entries := taskUsageEntries("claude", "old-session", result, result.Usage)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].SessionID != "old-session" || entries[0].InputTokens != 50 || entries[0].Turns != 2 {
+		t.Fatalf("entry = %+v, want old-session/50/turns=2", entries[0])
+	}
+
+	fresh := taskUsageEntries("claude", "fresh-session", result, map[string]agent.TokenUsage{
+		"model-a": {InputTokens: 10, OutputTokens: 1},
+	})
+	if len(fresh) != 1 || fresh[0].SessionID != "fresh-session" || fresh[0].InputTokens != 10 {
+		t.Fatalf("fresh entry = %+v, want fresh-session/10", fresh)
+	}
+}
+
 func TestSubtractPriorSessionUsage(t *testing.T) {
 	t.Parallel()
 

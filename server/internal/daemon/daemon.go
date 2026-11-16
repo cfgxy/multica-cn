@@ -9081,8 +9081,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	defer func() { taskResult.RetiredSessionID = retiredSessionID }()
 
 	retriedFreshSession := false
+	var usageEntriesOverride []TaskUsageEntry
+	var usageEntriesOverridden bool
 	if shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
 		retriedFreshSession = true
+		priorSessionID := task.PriorSessionID
 		firstResult := result
 		firstUsage := normalizePriorSessionUsage(provider, task, result.Usage)
 		firstTools := tools
@@ -9154,6 +9157,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// session keeps firstResult so the bad session stays excluded rather
 		// than being relabeled resumable by a benign-looking second error.
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
+		usageEntriesOverridden = true
+		usageEntriesOverride = append(
+			usageEntriesOverride,
+			taskUsageEntries(provider, priorSessionID, firstResult, firstUsage)...,
+		)
+		usageEntriesOverride = append(
+			usageEntriesOverride,
+			taskUsageEntries(provider, retryResult.SessionID, retryResult, retryResult.Usage)...,
+		)
 	}
 
 	// ACP providers report billing usage cumulatively for a resumed session. The
@@ -9189,27 +9201,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"agent_error", result.Error,
 	)
 
-	// Convert agent usage map to task usage entries.
+	// Convert agent usage maps to task usage entries. A fresh-session retry
+	// needs two independently attributed rows for the same model, so its
+	// entries are assembled above instead of collapsing both attempts into one
+	// map entry.
 	var usageEntries []TaskUsageEntry
-	for model, u := range result.Usage {
-		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 {
-			continue
-		}
-		usageEntries = append(usageEntries, TaskUsageEntry{
-			Provider:         provider,
-			Model:            model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUSDTicks:     u.CostUSDTicks,
-			ContextTokens:    u.ContextTokens,
-			// Run-scoped (RUYI-154), not per-model — same values on every
-			// entry of this run; see TaskUsageEntry.Turns.
-			Turns:            result.Turns,
-			Compactions:      result.Compactions,
-			MaxContextTokens: result.MaxContextTokens,
-		})
+	if usageEntriesOverridden {
+		usageEntries = usageEntriesOverride
+	} else {
+		usageEntries = taskUsageEntries(provider, result.SessionID, result, result.Usage)
 	}
 
 	// MUL-5305: withhold a Codex session whose rollout never reached the per-issue
@@ -10311,6 +10311,32 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 		merged[model] = existing
 	}
 	return merged
+}
+
+func taskUsageEntries(provider, sessionID string, result agent.Result, usage map[string]agent.TokenUsage) []TaskUsageEntry {
+	entries := make([]TaskUsageEntry, 0, len(usage))
+	for model, u := range usage {
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 {
+			continue
+		}
+		entries = append(entries, TaskUsageEntry{
+			SessionID:        sessionID,
+			Provider:         provider,
+			Model:            model,
+			InputTokens:      u.InputTokens,
+			OutputTokens:     u.OutputTokens,
+			CacheReadTokens:  u.CacheReadTokens,
+			CacheWriteTokens: u.CacheWriteTokens,
+			CostUSDTicks:     u.CostUSDTicks,
+			ContextTokens:    u.ContextTokens,
+			// Run-scoped (RUYI-154), not per-model — same values on every
+			// entry of this run; see TaskUsageEntry.Turns.
+			Turns:            result.Turns,
+			Compactions:      result.Compactions,
+			MaxContextTokens: result.MaxContextTokens,
+		})
+	}
+	return entries
 }
 
 var acpSessionCumulativeProviders = map[string]bool{

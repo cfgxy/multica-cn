@@ -355,6 +355,7 @@ var concurrentIndexCleanups = map[string][]string{
 	"998_knowledge_governance_run_finding_index":                {"idx_knowledge_governance_finding_run"},
 	"998_knowledge_governance_run_workspace_created_index":      {"idx_knowledge_governance_run_workspace_created"},
 	"999_knowledge_lifecycle_writeback_claim_index":             {"idx_knowledge_lifecycle_event_writeback_claim"},
+	"1004_task_usage_session_attribution_index":                 {"uq_task_usage_task_session_provider_model"},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

@@ -5376,6 +5376,9 @@ func formatLegacyCommentEntry(comment CoalescedCommentData) string {
 // ReportTaskUsage stores per-task token usage. Called independently of
 // complete/fail so usage is captured even when tasks fail or are blocked.
 type TaskUsagePayload struct {
+	// SessionID identifies the provider session that produced this usage. Older
+	// daemons omit it; ReportTaskUsage falls back to the task's current session.
+	SessionID        string `json:"session_id,omitempty"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -5478,6 +5481,10 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	var runtimeProvider string
 	runtimeProviderLoaded := false
 	for _, u := range req.Usage {
+		sessionID := strings.TrimSpace(u.SessionID)
+		if sessionID == "" && task.SessionID.Valid {
+			sessionID = task.SessionID.String
+		}
 		provider := normalizeProvider(u.Provider)
 		if provider == "" {
 			if !runtimeProviderLoaded {
@@ -5493,6 +5500,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := h.Queries.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
 			TaskID:           parseUUID(taskID),
+			SessionID:        sessionID,
 			Provider:         provider,
 			Model:            u.Model,
 			InputTokens:      u.InputTokens,

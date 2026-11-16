@@ -362,6 +362,10 @@ type SkillFileRefData struct {
 
 // TaskUsageEntry represents token usage for a single model during a task execution.
 type TaskUsageEntry struct {
+	// SessionID identifies the provider session that produced this usage. It is
+	// optional for compatibility with older daemons; the server falls back to
+	// the task's current session when it is absent.
+	SessionID        string `json:"session_id,omitempty"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
