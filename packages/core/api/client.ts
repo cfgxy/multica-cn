@@ -141,6 +141,7 @@ import type {
   PromptProposalBatchOutcome,
   RetrospectiveConfig,
   RetrospectiveRun,
+  RetrospectiveRunStats,
   KnowledgeScanBatch,
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
@@ -606,7 +607,7 @@ import {
   PromptProposalBatchOutcomeSchema,
   RetrospectiveConfigSchema,
   RetrospectiveRunListSchema,
-  RetrospectiveRunSchema,
+  RetrospectiveRunTriggerResponseSchema,
   KnowledgeDirListSchema,
   KnowledgeEntryListSchema,
   SkillImportResultSchema,
@@ -5511,14 +5512,31 @@ export class ApiClient {
     });
   }
 
-  async triggerRetrospectiveRun(): Promise<RetrospectiveRun> {
+  async triggerRetrospectiveRun(): Promise<RetrospectiveRunStats> {
     const raw = await this.fetch<unknown>("/api/retrospective/run", {
       method: "POST",
       body: JSON.stringify({}),
     });
-    return parseWithFallback(raw, RetrospectiveRunSchema, raw as RetrospectiveRun, {
-      endpoint: "POST /api/retrospective/run",
-    });
+    const response = parseWithFallback(
+      raw,
+      RetrospectiveRunTriggerResponseSchema,
+      {
+        run: {
+          workspace_id: "",
+          run_id: "",
+          window_days: 0,
+          issues_scanned: 0,
+          issues_analyzed: 0,
+          proposals_created: 0,
+          proposals_merged: 0,
+          duplicates_skipped: 0,
+          ids_corrected: 0,
+          ids_ignored: 0,
+        },
+      },
+      { endpoint: "POST /api/retrospective/run" },
+    );
+    return response.run;
   }
 
   async listKnowledgeDirs(): Promise<KnowledgeDir[]> {

@@ -85,6 +85,7 @@ import {
   EMPTY_PLUGIN_PREVIEW,
   ListGitLabRepositoriesResponseSchema,
   EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
+  RetrospectiveRunTriggerResponseSchema,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -95,6 +96,34 @@ import {
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 import { SkillSummaryListSchema } from "./schemas";
+
+describe("retrospective trigger response", () => {
+  const stats = {
+    workspace_id: "workspace-1",
+    run_id: "run-1",
+    task_id: "task-1",
+    window_days: 30,
+    issues_scanned: 2,
+    issues_analyzed: 2,
+    proposals_created: 3,
+    proposals_merged: 0,
+    duplicates_skipped: 0,
+    ids_corrected: 0,
+    ids_ignored: 0,
+  };
+
+  it("accepts the asynchronous trigger envelope without treating it as a durable run row", () => {
+    expect(RetrospectiveRunTriggerResponseSchema.parse({ run: stats, note: "queued" })).toEqual({
+      run: stats,
+      note: "queued",
+    });
+  });
+
+  it("rejects a bare run row and malformed counters", () => {
+    expect(RetrospectiveRunTriggerResponseSchema.safeParse(stats).success).toBe(false);
+    expect(RetrospectiveRunTriggerResponseSchema.safeParse({ run: { ...stats, issues_scanned: "2" } }).success).toBe(false);
+  });
+});
 
 describe("decision request response", () => {
   const baseRequest = {

@@ -701,8 +701,8 @@
   },
   "clauseGovernance": {
     "title": "条項ガバナンス", "description": "立法から注入までの条項資産を表示", "window": "集計期間", "d7": "過去 7 日", "d30": "過去 30 日", "d90": "過去 90 日", "d365": "過去 365 日", "refresh": "更新",
-    "banner": { "dynamicOffTitle": "グローバル縮退スイッチが有効です", "dynamicOffBody": "すべての実行でスナップショット注入（静的注入相当）を使用しています", "healthyTitle": "動的注入は正常です", "healthyBody": "{{total}} 回中 {{degraded}} 回が縮退経路で注入されました", "findingsTitle": "照合またはドリフトの検出 {{count}} 件", "findingsBody": "下の「照合とドリフト」セクションを確認してください" },
-    "metrics": { "injections": "注入回数", "runs": "対象実行数", "runsUnit": "{{count}} 回の実行", "clauseTokens": "条項トークン", "clauseTokensNote": "注入された条項のレンダリングから推定", "degraded": "縮退注入", "migration": "移行カバー率" },
+    "banner": { "dynamicOffTitle": "グローバル縮退スイッチが有効です", "dynamicOffBody": "すべての実行でスナップショット注入（静的注入相当）を使用しています", "healthyTitle": "動的注入は正常です", "healthyBody": "{{total}} 件の注入記録のうち {{degradedRows}} 件が縮退経路を使用し、{{degradedRuns}} 件の異なる実行に影響しました", "findingsTitle": "照合またはドリフトの検出 {{count}} 件", "findingsBody": "下の「照合とドリフト」セクションを確認してください" },
+    "metrics": { "injections": "注入回数", "runs": "対象実行数", "runsUnit": "{{count}} 回の実行", "clauseTokens": "条項トークン", "clauseTokensNote": "注入された条項のレンダリングから推定", "degraded": "縮退注入記録", "degradedNote": "{{total}} 件中 {{rows}} 件の記録 · 異なる実行 {{runs}} 件", "migration": "移行カバー率" },
     "scope": { "workspace": "ワークスペース", "project": "プロジェクト", "squad": "チーム", "agent": "エージェント" },
     "recon": { "title": "照合とドリフト", "healthy": "すべての検査に合格", "findings": "検出 {{count}} 件", "scanned": "スキャン済みキャリア {{count}} 件", "violationsTitle": "レイヤー集合の違反", "violationsEmpty": "期間内にレイヤー集合の違反はありません", "colTime": "時刻", "colTask": "タスク", "colClause": "条項", "colVersion": "バージョン", "colScope": "スコープ", "colInjection": "注入方式", "truncated": "先頭 100 件のみ表示", "degradedFlag": "縮退スナップショット", "driftTitle": "キャリアのドリフト", "driftEmpty": "キャリアのマーカーと資産ライブラリは一致しています（{{count}} 件をスキャン）", "unnamedCarrier": "名前のないキャリア" },
     "driftKind": { "stale_rev": "リビジョン遅延", "orphan_marker": "孤立マーカー", "missing_segment": "レンダリング区間の欠落" },

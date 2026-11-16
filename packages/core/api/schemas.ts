@@ -5245,6 +5245,25 @@ export const RetrospectiveRunSchema = z.object({
 
 export const RetrospectiveRunListSchema = z.array(RetrospectiveRunSchema);
 
+export const RetrospectiveRunStatsSchema = z.object({
+  workspace_id: z.string(),
+  run_id: z.string(),
+  task_id: z.string().optional(),
+  window_days: z.number(),
+  issues_scanned: z.number(),
+  issues_analyzed: z.number(),
+  proposals_created: z.number(),
+  proposals_merged: z.number(),
+  duplicates_skipped: z.number(),
+  ids_corrected: z.number(),
+  ids_ignored: z.number(),
+}).loose();
+
+export const RetrospectiveRunTriggerResponseSchema = z.object({
+  run: RetrospectiveRunStatsSchema,
+  note: z.string().optional(),
+}).loose();
+
 export const KnowledgeScanBatchSchema = z.object({
   id: z.string(),
   dir_id: z.string(),

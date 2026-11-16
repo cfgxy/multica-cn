@@ -191,6 +191,24 @@ describe("ClauseGovernancePage", () => {
       expect(m.reconciliationQuery.mock.calls.length).toBeGreaterThan(reconciliationCalls);
     });
   });
+
+  it("keeps degraded records and distinct degraded runs separate", async () => {
+    m.overview = {
+      ...overviewFixture(),
+      totals: { ...overviewFixture().totals, injections: 5, degraded_rows: 0, degraded_runs: 7 },
+    };
+    m.reconciliation = {
+      ...reconciliationFixture(),
+      healthy: true,
+      totals: { injections: 5, runs: 4, degraded_rows: 0, degraded_runs: 7, clause_tokens: 0 },
+    };
+
+    mount(<ClauseGovernancePage />);
+    await screen.findByText("Sample clause");
+
+    expect(screen.getByText("0 of 5 injection records used the degraded path; 7 distinct runs had degraded observations")).toBeTruthy();
+    expect(screen.getByText("0/5 records · 7 distinct runs")).toBeTruthy();
+  });
 });
 
 describe("ClauseGovernanceDetailPage", () => {

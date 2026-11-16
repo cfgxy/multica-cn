@@ -200,7 +200,8 @@ export function ClauseGovernancePage() {
                       ? t(($) => $.clauseGovernance.banner.dynamicOffBody)
                       : healthy
                         ? t(($) => $.clauseGovernance.banner.healthyBody, {
-                            degraded: reconciliationData.totals.degraded_rows,
+                            degradedRows: reconciliationData.totals.degraded_rows,
+                            degradedRuns: reconciliationData.totals.degraded_runs,
                             total: reconciliationData.totals.injections,
                           })
                         : t(($) => $.clauseGovernance.banner.findingsBody)}
@@ -209,7 +210,15 @@ export function ClauseGovernancePage() {
                 <section aria-label={t(($) => $.clauseGovernance.metrics.injections)} className="grid grid-cols-1 gap-3 lg:grid-cols-2 xl:grid-cols-4">
                   <MetricCard title={t(($) => $.clauseGovernance.metrics.injections)} value={numberLabel(data.totals.injections)} note={t(($) => $.clauseGovernance.metrics.runsUnit, { count: data.totals.runs })} />
                   <MetricCard title={t(($) => $.clauseGovernance.metrics.clauseTokens)} value={numberLabel(data.totals.clause_tokens)} note={t(($) => $.clauseGovernance.metrics.clauseTokensNote)} />
-                  <MetricCard title={t(($) => $.clauseGovernance.metrics.degraded)} value={numberLabel(data.totals.degraded_rows)} note={`${data.totals.degraded_rows}/${data.totals.injections} · ${numberLabel(data.totals.degraded_runs)} ${t(($) => $.clauseGovernance.metrics.runs)}`} />
+                  <MetricCard
+                    title={t(($) => $.clauseGovernance.metrics.degraded)}
+                    value={numberLabel(data.totals.degraded_rows)}
+                    note={t(($) => $.clauseGovernance.metrics.degradedNote, {
+                      rows: numberLabel(data.totals.degraded_rows),
+                      total: numberLabel(data.totals.injections),
+                      runs: numberLabel(data.totals.degraded_runs),
+                    })}
+                  />
                   <Card>
                     <CardHeader className="pb-2"><CardTitle className="text-body">{t(($) => $.clauseGovernance.metrics.migration)}</CardTitle></CardHeader>
                     <CardContent className="space-y-2">

@@ -340,6 +340,10 @@ func (r *Runner) ProcessTaskTerminal(ctx context.Context, task db.AgentTaskQueue
 
 	stats := &RunStats{WorkspaceID: tc.WorkspaceID, RunID: tc.RunID}
 	detail := parseRunDetail(run.Detail)
+	// The trigger phase records the scanned membership on the run detail. The
+	// terminal phase constructs fresh stats, so restore that count before the
+	// final write; otherwise a successful report overwrites it with zero.
+	stats.IssuesScanned = len(detail.IssueIDs)
 
 	if strings.TrimSpace(taskErr) != "" || strings.TrimSpace(output) == "" {
 		var reason *runReason

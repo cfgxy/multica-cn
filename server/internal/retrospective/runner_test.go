@@ -229,6 +229,36 @@ func reportJSON(issueID, clauseName string) string {
 		issueID, issueID, clauseName)
 }
 
+// reportJSONForIssues models the observed 0/2/3 shape: two analyzed issues
+// may legitimately produce three independent proposal drafts.
+func reportJSONForIssues(issueA, issueB string) string {
+	draft := func(issueID, clauseName string) map[string]any {
+		return map[string]any{
+			"issue_id": issueID, "carrier_scope": "workspace", "target_section": "沟通规范",
+			"change_kind": "add_clause", "clause_name": clauseName,
+			"clause_text": "- **新条款**：测试条款内容",
+			"gate_answers": map[string]string{
+				"layer": "workspace=跨项目协作机制", "retention": "每轮输出都适用",
+				"cost": "少量常驻", "conflict": "无同主题条款", "dedup": "无重复",
+			},
+			"evidence_ref": "issue 标题", "evidence_note": "依据说明",
+		}
+	}
+	payload := map[string]any{
+		"analyzed_issue_ids": []string{issueA, issueB},
+		"drafts": []map[string]any{
+			draft(issueA, "发布复核条款"),
+			draft(issueA, "路径校验条款"),
+			draft(issueB, "回归验证条款"),
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
 // TestRunWorkspaceEnqueuesExactlyOneNoIssueTask: the trigger scans the
 // window, records the membership on the run row, and hands the enqueuer
 // exactly one params set naming the configured agent — with the context
@@ -378,12 +408,14 @@ func TestRunWorkspaceAgentGateReasons(t *testing.T) {
 	}
 }
 
-// TestProcessTaskTerminalLandsDrafts: the agent's JSON report becomes a
-// prompt_proposal draft, the issue gets its watermark, the run finishes
-// succeeded — and the issue surface is untouched.
+// TestProcessTaskTerminalLandsDrafts: the agent's JSON report becomes
+// prompt_proposal drafts, both scanned issues are analyzed, and the terminal
+// run preserves the trigger count. Two issues producing three drafts is the
+// concrete 0/2/3 regression reported by the owner.
 func TestProcessTaskTerminalLandsDrafts(t *testing.T) {
 	wsID, _ := retroFixture(t)
 	issueA := retroIssue(t, wsID, "发布脚本修复", "根因是路径拼接")
+	issueB := retroIssue(t, wsID, "查询性能修复", "根因是缺少索引")
 	runner, calls := newTestRunner(t)
 	if _, err := runner.RunWorkspace(context.Background(), wsID, "manual"); err != nil {
 		t.Fatalf("RunWorkspace: %v", err)
@@ -398,26 +430,38 @@ func TestProcessTaskTerminalLandsDrafts(t *testing.T) {
 		ID:      util.MustParseUUID(stubTaskID),
 		Context: (*calls)[0].params.Context,
 	}
-	out, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSON(issueA, "发布脚本复核条款"), "")
+	out, err := runner.ProcessTaskTerminal(context.Background(), task, reportJSONForIssues(issueA, issueB), "")
 	if err != nil {
 		t.Fatalf("ProcessTaskTerminal: %v", err)
 	}
-	if out.ProposalsCreated != 1 || out.IssuesAnalyzed != 1 {
-		t.Fatalf("stats wrong: %+v", out)
+	if out.IssuesScanned != 2 || out.ProposalsCreated != 3 || out.IssuesAnalyzed != 2 {
+		t.Fatalf("stats wrong for 0/2/3 regression: %+v", out)
 	}
 	issuesAfter, commentsAfter, proposalsAfter := counts(t, wsID)
 	if issuesAfter != issuesBefore || commentsAfter != commentsBefore {
 		t.Fatalf("completion touched the issue surface: issues %d→%d comments %d→%d",
 			issuesBefore, issuesAfter, commentsBefore, commentsAfter)
 	}
-	if proposalsAfter != proposalsBefore+1 {
-		t.Fatalf("expected one new proposal, got %d→%d", proposalsBefore, proposalsAfter)
+	if proposalsAfter != proposalsBefore+3 {
+		t.Fatalf("expected three new proposals, got %d→%d", proposalsBefore, proposalsAfter)
 	}
-	var watermark int
-	if err := testPool.QueryRow(context.Background(),
-		`SELECT count(*) FROM retrospective_issue_watermark WHERE workspace_id = $1 AND issue_id = $2`,
-		wsID, issueA).Scan(&watermark); err != nil || watermark != 1 {
-		t.Fatalf("watermark missing (%v, %d)", err, watermark)
+	for _, issueID := range []string{issueA, issueB} {
+		var watermark int
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT count(*) FROM retrospective_issue_watermark WHERE workspace_id = $1 AND issue_id = $2`,
+			wsID, issueID).Scan(&watermark); err != nil || watermark != 1 {
+			t.Fatalf("watermark missing for %s (%v, %d)", issueID, err, watermark)
+		}
+	}
+	var scanned, analyzed, created int
+	if err := testPool.QueryRow(context.Background(), `
+		SELECT issues_scanned, issues_analyzed, proposals_created
+		  FROM retrospective_run WHERE workspace_id = $1`, wsID).
+		Scan(&scanned, &analyzed, &created); err != nil {
+		t.Fatalf("read terminal run counters: %v", err)
+	}
+	if scanned != 2 || analyzed != 2 || created != 3 {
+		t.Fatalf("terminal run counters = %d/%d/%d, want 2/2/3", scanned, analyzed, created)
 	}
 	status, errMsg, detail := runRecord(t, wsID)
 	if status != "succeeded" || errMsg != "" {

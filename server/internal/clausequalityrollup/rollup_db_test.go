@@ -150,7 +150,7 @@ func TestRollbackSuggestionGeneratedOnce(t *testing.T) {
 	}
 
 	out = checker.EvaluateClauses(context.Background(), []pgtype.UUID{clauseUID(t, c.id)})
-	if out.Evaluated != 1 || len(out.Failures) != 0 {
+	if out.Evaluated != 1 || out.Suggested != 1 || len(out.Failures) != 0 {
 		t.Fatalf("evaluate: %+v", out)
 	}
 	if n := rollbackDraftCount(t, c.id, 2); n != 1 {
@@ -198,8 +198,8 @@ func clauseUID(t *testing.T, id string) pgtype.UUID {
 // ("样本不足"), so no draft appears even at a glaring rate gap.
 func TestRollbackSuggestionRespectsSampleGate(t *testing.T) {
 	c := newClauseFixture(t)
-	seedWindow(t, c.id, 1, 5, 1, 2)  // 10 runs — under the gate
-	seedWindow(t, c.id, 2, 5, 4, 2)  // 10 runs, 80% vs 10%
+	seedWindow(t, c.id, 1, 5, 1, 2) // 10 runs — under the gate
+	seedWindow(t, c.id, 2, 5, 4, 2) // 10 runs, 80% vs 10%
 
 	checker := RollbackChecker{Queries: db.New(testPool)}
 	out := checker.EvaluateClauses(context.Background(), []pgtype.UUID{clauseUID(t, c.id)})
