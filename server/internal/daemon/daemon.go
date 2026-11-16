@@ -8921,6 +8921,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
+	gateDecision, continuationSource := sessionGateProvenance(task)
 	execOpts := agent.ExecOptions{
 		Cwd:                        env.WorkDir,
 		Model:                      model,
@@ -8951,17 +8952,22 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// only the daemon knows — hence handing the backend finished text rather
 		// than a flag. Empty when the prompt already carries the notice, so a turn
 		// can never pay for it twice (MUL-5722).
-		ResumeExpected:         task.PriorSessionID != "",
-		ResumeContinuityNotice: backendResumeContinuityNotice(task),
-		ExtraArgs:              extraArgs,
-		CustomArgs:             customArgs,
-		McpConfig:              mcpConfig,
-		ThinkingLevel:          thinkingLevel,
-		ServiceTier:            serviceTier,
-		SubagentToolsAllowed:   taskCtx.SubagentToolsAllowed,
-		OpenclawMode:           openclawMode,
-		ClaudeSettingsPath:     env.ClaudeSettingsPath,
-		QwenpawWorkspace:       env.QwenpawWorkspace,
+		ResumeExpected:                task.PriorSessionID != "",
+		ResumeContinuityNotice:        backendResumeContinuityNotice(task),
+		PriorContextBriefSHA256:       provenanceTextHash(task.PriorContextBrief),
+		PriorSessionResumeUnavailable: task.PriorSessionResumeUnavailable,
+		SessionGate:                   gateDecision,
+		SyntheticContinuation:         strings.TrimSpace(task.PriorContextBrief) != "",
+		SyntheticContinuationSource:   continuationSource,
+		ExtraArgs:                     extraArgs,
+		CustomArgs:                    customArgs,
+		McpConfig:                     mcpConfig,
+		ThinkingLevel:                 thinkingLevel,
+		ServiceTier:                   serviceTier,
+		SubagentToolsAllowed:          taskCtx.SubagentToolsAllowed,
+		OpenclawMode:                  openclawMode,
+		ClaudeSettingsPath:            env.ClaudeSettingsPath,
+		QwenpawWorkspace:              env.QwenpawWorkspace,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:
@@ -9113,6 +9119,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		task.PriorSessionID = ""
 		task.PriorSessionResumeUnavailable = true
 		execOpts.ResumeContinuityNotice = ""
+		execOpts.PriorContextBriefSHA256 = provenanceTextHash(task.PriorContextBrief)
+		execOpts.PriorSessionResumeUnavailable = true
+		execOpts.SessionGate, continuationSource = sessionGateProvenance(task)
+		execOpts.SyntheticContinuation = strings.TrimSpace(task.PriorContextBrief) != ""
+		execOpts.SyntheticContinuationSource = continuationSource
 		taskCtx.PriorSessionResumed = false
 		var freshBrief string
 		var briefErr error
@@ -10101,6 +10112,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 				result.Error = watchdogTerminalError()
 			}
 		}
+		persistWorkerProvenance(opts, result, taskLog)
 		return result, toolCount.Load(), nil
 	case <-drainCtx.Done():
 		// The drain loop is exiting on this same Done signal; wait for its

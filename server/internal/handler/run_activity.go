@@ -64,6 +64,7 @@ type runActivityResponse struct {
 		StdoutTail        *string                        `json:"stdout_tail"`
 		StderrTail        *string                        `json:"stderr_tail"`
 		NextCursor        *string                        `json:"next_cursor"`
+		Provenance        json.RawMessage                `json:"provenance,omitempty"`
 		LastActivityAt    *string                        `json:"last_activity_at"`
 		ProcessLiveness   string                         `json:"process_liveness"`
 		Binding           protocol.WorkerBindingEvidence `json:"binding"`
@@ -195,7 +196,7 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 		})
 		cancel()
 		if proxyErr == nil {
-			if len(evidence.StdoutTail) > tailBytes || len(evidence.StderrTail) > tailBytes || len(evidence.NextCursor) > 512 || evidence.Available && !validWorkerEvidenceBinding(evidence.Binding, uuid.UUID(task.ID.Bytes).String(), uuid.UUID(task.RuntimeID.Bytes).String()) {
+			if len(evidence.StdoutTail) > tailBytes || len(evidence.StderrTail) > tailBytes || len(evidence.NextCursor) > 512 || len(evidence.Provenance) > 32<<10 || len(evidence.Provenance) > 0 && !json.Valid(evidence.Provenance) || evidence.Available && !validWorkerEvidenceBinding(evidence.Binding, uuid.UUID(task.ID.Bytes).String(), uuid.UUID(task.RuntimeID.Bytes).String()) {
 				proxyErr = fmt.Errorf("invalid evidence response")
 			}
 		}
@@ -204,6 +205,7 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 			if evidence.Available {
 				resp.WorkerEvidence.UnavailableReason = ""
 				resp.WorkerEvidence.Binding = evidence.Binding
+				resp.WorkerEvidence.Provenance = append(json.RawMessage(nil), evidence.Provenance...)
 				resp.ProgressAssessment.Basis = []string{"run_state", "worker_evidence_available"}
 				stdout, stderr := redact.Text(evidence.StdoutTail), redact.Text(evidence.StderrTail)
 				resp.WorkerEvidence.StdoutTail = &stdout
