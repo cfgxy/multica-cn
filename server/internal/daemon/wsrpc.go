@@ -343,19 +343,30 @@ func (c *wsRPCClient) sendWorkerEvidenceResponse(body protocol.WorkerEvidenceRes
 	if c == nil || body.RequestID == "" {
 		return
 	}
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return
-	}
 	c.mu.Lock()
 	send := c.sendFrame
 	c.mu.Unlock()
 	if send == nil {
 		return
 	}
+	sendWorkerEvidenceResponseOnConnection(send, body)
+}
+
+// sendWorkerEvidenceResponseOnConnection sends a server-initiated evidence
+// response on the connection that supplied its request. The server stores the
+// correlation channel on that connection, so using a later replacement sender
+// would make a valid response indistinguishable from a timeout.
+func sendWorkerEvidenceResponseOnConnection(sendFrame func([]byte) (*wsOutbound, error), body protocol.WorkerEvidenceResponse) {
+	if sendFrame == nil || body.RequestID == "" {
+		return
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return
+	}
 	frame, err := json.Marshal(protocol.Message{Type: protocol.EventDaemonWorkerEvidenceResponse, Payload: raw})
 	if err == nil {
-		_, _ = send(frame)
+		_, _ = sendFrame(frame)
 	}
 }
 
