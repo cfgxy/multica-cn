@@ -169,7 +169,7 @@ func (h *Handler) runtimeModelCallBudgetHolds(ctx context.Context, runtimes []db
 		if !ok {
 			continue
 		}
-		holds[id] = modelCallBudgetActive(config, row.KnownCalls, row.ReservedCalls)
+		holds[id] = modelCallBudgetAdmissionActive(config, row.KnownCalls, row.ReservedCalls, row.LiveUnknownUsageRows)
 	}
 	return holds
 }

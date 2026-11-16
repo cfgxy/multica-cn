@@ -428,9 +428,9 @@ func TestListTasksByIssue_QueuedReasonModelCallBudget(t *testing.T) {
 		t.Fatalf("queued reason = %q, want runtime_model_call_budget", got)
 	}
 
-	// Live evidence without terminal usage has the same precedence over the
-	// partial sum: it is observable in the budget report, but never rendered as
-	// an admission hold.
+	// Live evidence without terminal usage makes admission fail open: it is
+	// observable in the budget report, but must not render a budget hold or
+	// prevent the queued task from being claimed.
 	liveAgentID, liveIssueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "model-call-budget-queued-reason-live")
 	liveTaskID := seedQueuedIssueTask(t, ctx, liveAgentID, runtimeID, liveIssueID)
 	if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, liveTaskID); err != nil {
@@ -439,7 +439,7 @@ func TestListTasksByIssue_QueuedReasonModelCallBudget(t *testing.T) {
 	req := modelCallEvidenceRequest(t, runtimeID, liveTaskID,
 		`{"provider":"copilot","model":"unknown-live","evidence_id":"queued-reason-live-call-1"}`)
 	testutil.Call(t, testHandler.ReportTaskModelCallEvidence, req).Want(http.StatusOK)
-	if got := runs()[queuedID].QueuedReason; got != "runtime_model_call_budget" {
-		t.Fatalf("known exhausted budget lost queued reason after incomplete live evidence: got %q", got)
+	if got := runs()[queuedID].QueuedReason; got != "" {
+		t.Fatalf("incomplete live budget window still carries queued reason %q", got)
 	}
 }
