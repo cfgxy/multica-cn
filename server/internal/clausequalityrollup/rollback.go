@@ -50,7 +50,7 @@ type RollbackOutcome struct {
 
 // versionWindow is one version's whole recorded history, summed over days.
 type versionWindow struct {
-	FinishedRuns   int64
+	FinishedRuns      int64
 	AttributableFails int64
 }
 
@@ -74,22 +74,26 @@ func (c RollbackChecker) EvaluateClauses(ctx context.Context, clauseIDs []pgtype
 	var out RollbackOutcome
 	for _, clauseID := range clauseIDs {
 		out.Evaluated++
-		if err := c.evaluateClause(ctx, clauseID); err != nil {
+		suggested, err := c.evaluateClause(ctx, clauseID)
+		if err != nil {
 			out.Failures = append(out.Failures, fmt.Sprintf("clause %s: %s", uuidString(clauseID), err))
 			continue
+		}
+		if suggested {
+			out.Suggested++
 		}
 	}
 	return out
 }
 
-func (c RollbackChecker) evaluateClause(ctx context.Context, clauseID pgtype.UUID) error {
+func (c RollbackChecker) evaluateClause(ctx context.Context, clauseID pgtype.UUID) (bool, error) {
 	latest, err := c.Queries.LatestClauseVersion(ctx, clauseID)
 	if err != nil {
-		return fmt.Errorf("read latest version: %w", err)
+		return false, fmt.Errorf("read latest version: %w", err)
 	}
 	// A first version has no predecessor to compare against.
 	if latest < 2 {
-		return nil
+		return false, nil
 	}
 
 	latched, err := c.Queries.HasRollbackSuggestionForVersion(ctx, db.HasRollbackSuggestionForVersionParams{
@@ -97,39 +101,42 @@ func (c RollbackChecker) evaluateClause(ctx context.Context, clauseID pgtype.UUI
 		RollbackOfVersion: latest,
 	})
 	if err != nil {
-		return fmt.Errorf("read suggestion latch: %w", err)
+		return false, fmt.Errorf("read suggestion latch: %w", err)
 	}
 	if latched > 0 {
-		return nil
+		return false, nil
 	}
 
 	cur, curFound, err := c.window(ctx, clauseID, latest)
 	if err != nil || !curFound {
 		if err != nil {
-			return fmt.Errorf("read current window: %w", err)
+			return false, fmt.Errorf("read current window: %w", err)
 		}
-		return nil
+		return false, nil
 	}
 	base, baseFound, err := c.window(ctx, clauseID, latest-1)
 	if err != nil {
-		return fmt.Errorf("read baseline window: %w", err)
+		return false, fmt.Errorf("read baseline window: %w", err)
 	}
 	if !baseFound {
-		return nil
+		return false, nil
 	}
 
 	// Sample gate: either window under the threshold yields no percentage
 	// conclusion ("样本不足"), per ADR 007 §7.
 	if cur.FinishedRuns < MinSampleRuns || base.FinishedRuns < MinSampleRuns {
-		return nil
+		return false, nil
 	}
 
 	z, p := twoProportionZ(base, cur)
 	if !(z > 0 && p < Alpha) {
-		return nil
+		return false, nil
 	}
 
-	return c.suggestRollback(ctx, clauseID, latest, base, cur, z, p)
+	if err := c.suggestRollback(ctx, clauseID, latest, base, cur, z, p); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (c RollbackChecker) suggestRollback(ctx context.Context, clauseID pgtype.UUID, version int32, base, cur versionWindow, z, p float64) error {
@@ -176,8 +183,8 @@ func (c RollbackChecker) suggestRollback(ctx context.Context, clauseID pgtype.UU
 	}
 
 	_, err = c.Queries.CreatePromptProposal(ctx, db.CreatePromptProposalParams{
-		WorkspaceID:   clauseRow.WorkspaceID,
-		CarrierScope:  binding.Scope,
+		WorkspaceID:    clauseRow.WorkspaceID,
+		CarrierScope:   binding.Scope,
 		CarrierScopeID: binding.ScopeID,
 		// revise_clause re-renders the clause at its existing marker
 		// position; target_section is unused on this path.
@@ -185,23 +192,23 @@ func (c RollbackChecker) suggestRollback(ctx context.Context, clauseID pgtype.UU
 		ChangeKind:    "revise_clause",
 		ClauseName:    clauseRow.Title,
 		// Restoring V(n-1) as new content keeps the version line append-only.
-		ClauseText: baseVersion.Content,
-		ClauseID:   clauseID,
-		Conditions: binding.Conditions,
+		ClauseText:          baseVersion.Content,
+		ClauseID:            clauseID,
+		Conditions:          binding.Conditions,
 		GateAnswerLayer:     "系统回滚建议：由条款质量统计自动生成，层级与原条款一致",
 		GateAnswerRetention: "系统回滚建议：恢复 V" + fmt.Sprint(version-1) + " 文本，保留条款身份",
 		GateAnswerCost:      stats,
 		GateAnswerConflict:  "系统回滚建议：恢复既往已审文本，不引入新冲突面",
 		GateAnswerDedup:     "每版本仅此一次计划内对比，同版本不会重复生成",
-		Problem:        pgtype.Text{String: "版本 V" + fmt.Sprint(version) + " 经检验显著劣化。", Valid: true},
-		ExpectedEffect: pgtype.Text{String: "回滚至 V" + fmt.Sprint(version-1) + " 文本与行为。", Valid: true},
-		ExpectedGain:   pgtype.Text{String: stats, Valid: true},
-		EvidenceAnchors: []byte("[]"),
-		Source:          "system",
-		CreatedByType:   "system",
-		CreatedByID:     pgtype.UUID{},
-		AuditLog:        audit,
-		RollbackOfVersion: pgtype.Int4{Int32: version, Valid: true},
+		Problem:             pgtype.Text{String: "版本 V" + fmt.Sprint(version) + " 经检验显著劣化。", Valid: true},
+		ExpectedEffect:      pgtype.Text{String: "回滚至 V" + fmt.Sprint(version-1) + " 文本与行为。", Valid: true},
+		ExpectedGain:        pgtype.Text{String: stats, Valid: true},
+		EvidenceAnchors:     []byte("[]"),
+		Source:              "system",
+		CreatedByType:       "system",
+		CreatedByID:         pgtype.UUID{},
+		AuditLog:            audit,
+		RollbackOfVersion:   pgtype.Int4{Int32: version, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("create rollback draft: %w", err)

@@ -197,3 +197,23 @@ export interface RetrospectiveRun {
    */
   task_id?: string | null;
 }
+
+/** Counters returned immediately by the asynchronous manual trigger endpoint. */
+export interface RetrospectiveRunStats {
+  workspace_id: string;
+  run_id: string;
+  task_id?: string;
+  window_days: number;
+  issues_scanned: number;
+  issues_analyzed: number;
+  proposals_created: number;
+  proposals_merged: number;
+  duplicates_skipped: number;
+  ids_corrected: number;
+  ids_ignored: number;
+}
+
+export interface RetrospectiveRunTriggerResponse {
+  run: RetrospectiveRunStats;
+  note?: string;
+}
