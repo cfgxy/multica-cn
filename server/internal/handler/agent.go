@@ -3541,19 +3541,19 @@ func (h *Handler) ListWorkspaceAgentTaskSnapshot(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// hydrateQuizItemTitles fills presentation metadata missing from older quiz
-// task contexts. The item read is workspace-scoped and failures leave the
-// persisted item identity intact without inventing a title.
+// hydrateQuizItemTitles resolves quiz titles from the current workspace item
+// rows. Context titles are enqueue-time snapshots and must never survive when
+// the item is no longer readable.
 func (h *Handler) hydrateQuizItemTitles(ctx context.Context, workspaceID string, tasks []AgentTaskResponse) {
-	workspaceUUID, err := util.ParseUUID(workspaceID)
-	if err != nil {
-		return
-	}
 	itemIDs := make([]pgtype.UUID, 0, len(tasks))
 	seen := make(map[pgtype.UUID]struct{}, len(tasks))
 	for i := range tasks {
 		task := &tasks[i]
-		if task.Kind != promptquiz.TaskKind || task.QuizItemTitle != "" || task.QuizItemID == "" {
+		if task.Kind != promptquiz.TaskKind {
+			continue
+		}
+		task.QuizItemTitle = ""
+		if task.QuizItemID == "" {
 			continue
 		}
 		itemUUID, err := util.ParseUUID(task.QuizItemID)
@@ -3566,6 +3566,10 @@ func (h *Handler) hydrateQuizItemTitles(ctx context.Context, workspaceID string,
 		}
 	}
 	if len(itemIDs) == 0 {
+		return
+	}
+	workspaceUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
 		return
 	}
 	items, err := h.Queries.ListPromptQuizItemTitles(ctx, db.ListPromptQuizItemTitlesParams{
@@ -3583,7 +3587,7 @@ func (h *Handler) hydrateQuizItemTitles(ctx context.Context, workspaceID string,
 	}
 	for i := range tasks {
 		task := &tasks[i]
-		if task.Kind != promptquiz.TaskKind || task.QuizItemTitle != "" {
+		if task.Kind != promptquiz.TaskKind {
 			continue
 		}
 		itemUUID, err := util.ParseUUID(task.QuizItemID)
