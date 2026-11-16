@@ -79,6 +79,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       APP_ENV: ${{ inputs.app_env || 'production' }}
+      # The Gradle release bundle runs Expo with NODE_ENV=production. The
+      # selected dotenv-cli file is authoritative for every build variant.
+      EXPO_NO_DOTENV: "1"
     outputs:
       # 实际构建版本号，供 publish-release 生成 Release。
       app_version: ${{ steps.resolve-version.outputs.version }}
@@ -180,7 +183,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build release APK
-        working-directory: apps/mobile/android
+        working-directory: apps/mobile
         env:
           # RUYI-80: DOM components（mermaid 渲染）经 expo export 的
           # split-chunks 路径会在 HTML 序列化时抛 "Asset not found:
@@ -188,7 +191,44 @@ jobs:
           # export:embed 与 expo export 同路径）。本 app 只有一个 DOM 组件，
           # 分包没有收益，官方逃生口 EXPO_NO_BUNDLE_SPLITTING=1 直接绕开。
           EXPO_NO_BUNDLE_SPLITTING: "1"
-        run: ./gradlew assembleRelease --build-cache --parallel --no-daemon
+        run: pnpm exec dotenv -e .env.${{ env.APP_ENV }} -- ./android/gradlew -p android assembleRelease --build-cache --parallel --no-daemon
+
+      - name: Verify bundled public API environment
+        working-directory: apps/mobile
+        run: |
+          set -euo pipefail
+          apk=(android/app/build/outputs/apk/release/*.apk)
+          if [[ "${#apk[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one release APK, found ${#apk[@]}"
+            exit 1
+          fi
+
+          expected_url=$(pnpm exec dotenv -e ".env.${APP_ENV}" -- sh -c 'printf %s "$EXPO_PUBLIC_API_URL"')
+          if [[ -z "$expected_url" ]]; then
+            echo "::error::.env.${APP_ENV} does not define EXPO_PUBLIC_API_URL"
+            exit 1
+          fi
+
+          alternate_env=production
+          if [[ "$APP_ENV" == "production" ]]; then
+            alternate_env=staging
+          fi
+          alternate_url=$(pnpm exec dotenv -e ".env.${alternate_env}" -- sh -c 'printf %s "$EXPO_PUBLIC_API_URL"')
+
+          bundle=$(mktemp)
+          trap 'rm -f "$bundle"' EXIT
+          unzip -p "${apk[0]}" assets/index.android.bundle > "$bundle"
+
+          if ! grep -Fq -- "$expected_url" "$bundle"; then
+            echo "::error::Release bundle does not contain the selected public API configuration"
+            exit 1
+          fi
+          if grep -Fq -- "$alternate_url" "$bundle"; then
+            echo "::error::Release bundle contains the alternate environment public API configuration"
+            exit 1
+          fi
+
+          printf 'Verified release bundle for APP_ENV=%s: selected public API configuration present; %s configuration absent.\n' "$APP_ENV" "$alternate_env"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
