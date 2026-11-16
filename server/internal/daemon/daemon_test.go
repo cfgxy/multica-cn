@@ -5180,6 +5180,89 @@ func TestHandleTask_ReportsUsageBeforeCancel(t *testing.T) {
 	}
 }
 
+func TestHandleTask_DropsUnavailablePriorSessionUsage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	t.Parallel()
+
+	var usageCalls, completeCalls, runnerCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/usage"):
+			usageCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/complete"):
+			completeCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	fakeBin := filepath.Join(t.TempDir(), "claude")
+	fakeScript := `#!/bin/sh
+IFS= read -r _
+printf '%s\n' '{"type":"system","session_id":"session-old"}'
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":60,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[{"type":"text","text":"done"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"session-old","result":"done"}'
+`
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake agent: %v", err)
+	}
+
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:         make(map[string]*workspaceState),
+		runtimeIndex:       map[string]Runtime{"rt-leader": {ID: "rt-leader", Provider: "claude"}},
+		activeEnvRoots:     make(map[string]int),
+		cancelPollInterval: time.Hour,
+		cfg: Config{
+			WorkspacesRoot: t.TempDir(),
+			AgentTimeout:   5 * time.Second,
+			ServerBaseURL:  srv.URL,
+			Agents:         map[string]AgentEntry{"claude": {Path: fakeBin}},
+		},
+	}
+
+	firstTask := leaderReuseTestTask("task-prior-session")
+	firstResult, err := d.runTask(context.Background(), firstTask, "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("prepare prior session with runTask: %v", err)
+	}
+	if firstResult.SessionID == "" || firstResult.WorkDir == "" {
+		t.Fatalf("prior run did not establish resume state: %+v", firstResult)
+	}
+	if len(firstResult.Usage) != 1 || firstResult.Usage[0].InputTokens != 60 {
+		t.Fatalf("fake runner usage = %+v, want one cumulative input snapshot of 60", firstResult.Usage)
+	}
+
+	d.runner = taskRunnerFunc(func(runCtx context.Context, task Task, provider string, slot int, log *slog.Logger) (TaskResult, error) {
+		runnerCalls.Add(1)
+		return d.runTask(runCtx, task, provider, slot, log)
+	})
+	secondTask := leaderReuseTestTask("task-unavailable-prior-usage")
+	secondTask.PriorSessionID = firstResult.SessionID
+	secondTask.PriorWorkDir = firstResult.WorkDir
+	secondTask.PriorSessionUsageUnavailable = true
+	d.handleTask(context.Background(), secondTask, 0)
+
+	if got := runnerCalls.Load(); got != 1 {
+		t.Fatalf("runner calls = %d, want 1; handleTask may have exited before execution", got)
+	}
+	if got := usageCalls.Load(); got != 0 {
+		t.Fatalf("usage calls = %d, want 0; unavailable cumulative snapshot must not be reported", got)
+	}
+	if got := completeCalls.Load(); got != 1 {
+		t.Fatalf("complete calls = %d, want 1; task did not reach terminal completion", got)
+	}
+}
+
 // TestHandleTask_ReportsUsageWhenCancelledByPoll verifies that ReportTaskUsage is
 // called even when the task is cancelled mid-execution by the poll goroutine.
 // Regression test for the cancelledByPoll early-return path that previously
