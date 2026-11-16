@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactElement, ReactNode } from "react";
+import {
+  createElement,
+  type ChangeEvent,
+  type InputHTMLAttributes,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
 import enAuth from "../locales/en/auth.json";
@@ -35,6 +41,24 @@ const mockApiSetToken = vi.hoisted(() => vi.fn());
 const mockApiGetMe = vi.hoisted(() => vi.fn());
 const mockApiIssueCliToken = vi.hoisted(() => vi.fn());
 const mockSetQueryData = vi.hoisted(() => vi.fn());
+
+type MockBaseInputProps = InputHTMLAttributes<HTMLInputElement> & {
+  onValueChange?: (value: string) => void;
+};
+
+vi.mock("@base-ui/react/input", () => ({
+  Input: ({
+    onValueChange,
+    onChange: _onChange,
+    ...props
+  }: MockBaseInputProps) =>
+    createElement("input", {
+      ...props,
+      onChange: (event: ChangeEvent<HTMLInputElement>) => {
+        onValueChange?.(event.currentTarget.value);
+      },
+    }),
+}));
 
 vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>(
@@ -158,6 +182,18 @@ describe("LoginPage", () => {
   // -------------------------------------------------------------------------
   // sendCode flow
   // -------------------------------------------------------------------------
+
+  it("updates email state through Base UI's value callback", async () => {
+    renderWithI18n(<LoginPage onSuccess={onSuccess} />);
+
+    const user = userEvent.setup();
+    const button = screen.getByRole("button", { name: /continue/i });
+    expect(button).toBeDisabled();
+
+    await user.type(screen.getByLabelText(/email/i), "test@example.com");
+
+    expect(button).toBeEnabled();
+  });
 
   it("calls sendCode on form submit with email", async () => {
     mockSendCode.mockResolvedValueOnce(undefined);

@@ -569,7 +569,15 @@ type AgentTaskResponse struct {
 	LocalDirectoryScope json.RawMessage `json:"local_directory_scope,omitempty"`
 	CreatedAt           string          `json:"created_at"`
 	PriorSessionID      string          `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
-	PriorWorkDir        string          `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
+	// PriorSessionUsage is the billing usage already recorded for the session
+	// being resumed. ACP providers report session-cumulative usage, so the daemon
+	// subtracts this baseline before persisting the current run's delta.
+	PriorSessionUsage []TaskUsageData `json:"prior_session_usage,omitempty"`
+	// PriorSessionUsageUnavailable distinguishes a successful empty baseline from
+	// a failed lookup. The daemon must not persist a resumed cumulative snapshot
+	// when the lookup failed.
+	PriorSessionUsageUnavailable bool   `json:"prior_session_usage_unavailable,omitempty"`
+	PriorWorkDir                 string `json:"prior_work_dir,omitempty"` // work_dir from a previous task on same issue
 	// PriorSessionResumeUnavailable is set when a more recent Codex session was
 	// withheld because its rollout was missing (MUL-5305); PriorSessionID (if
 	// any) is then an older fallback. The daemon surfaces the continuity gap in

@@ -163,6 +163,107 @@ func (q *Queries) GetIssueUsageSummary(ctx context.Context, issueID pgtype.UUID)
 	return i, err
 }
 
+const getPriorSessionUsage = `-- name: GetPriorSessionUsage :many
+SELECT
+    LOWER(tu.provider) AS provider,
+    tu.model,
+    SUM(tu.input_tokens)::bigint        AS input_tokens,
+    SUM(tu.output_tokens)::bigint       AS output_tokens,
+    SUM(tu.cache_read_tokens)::bigint   AS cache_read_tokens,
+    SUM(tu.cache_write_tokens)::bigint  AS cache_write_tokens,
+    COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks
+FROM task_usage tu
+JOIN agent_task_queue atq ON atq.id = tu.task_id
+WHERE tu.session_id = $1
+  AND atq.agent_id = $2
+  AND atq.id <> $3
+  AND tu.session_attribution_known = TRUE
+  AND tu.usage_semantics_version = 2
+GROUP BY LOWER(tu.provider), tu.model
+ORDER BY LOWER(tu.provider), tu.model
+`
+
+type GetPriorSessionUsageParams struct {
+	SessionID pgtype.Text `json:"session_id"`
+	AgentID   pgtype.UUID `json:"agent_id"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+type GetPriorSessionUsageRow struct {
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	InputTokens      int64  `json:"input_tokens"`
+	OutputTokens     int64  `json:"output_tokens"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	CostUsdTicks     int64  `json:"cost_usd_ticks"`
+}
+
+const hasUnattributedPriorSessionUsage = `-- name: HasUnattributedPriorSessionUsage :one
+SELECT EXISTS (
+    SELECT 1
+    FROM task_usage tu
+    JOIN agent_task_queue prior ON prior.id = tu.task_id
+    JOIN agent_task_queue current_task ON current_task.id = $1
+    WHERE prior.id <> current_task.id
+      AND prior.agent_id = $2
+      AND current_task.issue_id IS NOT NULL
+      AND prior.issue_id = current_task.issue_id
+      AND LOWER(tu.provider) = LOWER($3)
+      AND tu.session_attribution_known = FALSE
+      AND tu.usage_semantics_version = 2
+) AS unavailable
+`
+
+type HasUnattributedPriorSessionUsageParams struct {
+	ID       pgtype.UUID `json:"id"`
+	AgentID  pgtype.UUID `json:"agent_id"`
+	Provider string      `json:"provider"`
+}
+
+// Unknown v2 usage is retained in Issue totals but cannot seed a cumulative
+// session baseline. The claim path uses this marker to fail closed.
+func (q *Queries) HasUnattributedPriorSessionUsage(ctx context.Context, arg HasUnattributedPriorSessionUsageParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasUnattributedPriorSessionUsage, arg.ID, arg.AgentID, arg.Provider)
+	var unavailable bool
+	err := row.Scan(&unavailable)
+	return unavailable, err
+}
+
+// ACP providers report cumulative usage for a resumed session. Return the
+// billing counters already persisted by earlier tasks in that session so the
+// daemon can subtract them from the next cumulative snapshot before writing
+// the current task's delta. The current task is excluded defensively because
+// claim normally happens before its usage exists, but a retrying claim must not
+// use a partially written row as its own baseline.
+func (q *Queries) GetPriorSessionUsage(ctx context.Context, arg GetPriorSessionUsageParams) ([]GetPriorSessionUsageRow, error) {
+	rows, err := q.db.Query(ctx, getPriorSessionUsage, arg.SessionID, arg.AgentID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetPriorSessionUsageRow{}
+	for rows.Next() {
+		var i GetPriorSessionUsageRow
+		if err := rows.Scan(
+			&i.Provider,
+			&i.Model,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheReadTokens,
+			&i.CacheWriteTokens,
+			&i.CostUsdTicks,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getTaskContextTokens = `-- name: GetTaskContextTokens :one
 SELECT context_tokens
 FROM task_usage
@@ -192,7 +293,7 @@ func (q *Queries) GetTaskContextTokens(ctx context.Context, taskID pgtype.UUID) 
 }
 
 const getTaskUsage = `-- name: GetTaskUsage :many
-SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, model_call_count FROM task_usage
+SELECT id, task_id, session_id, session_attribution_known, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, usage_semantics_version, model_call_count FROM task_usage
 WHERE task_id = $1
 ORDER BY model
 `
@@ -209,6 +310,8 @@ func (q *Queries) GetTaskUsage(ctx context.Context, taskID pgtype.UUID) ([]TaskU
 		if err := rows.Scan(
 			&i.ID,
 			&i.TaskID,
+			&i.SessionID,
+			&i.SessionAttributionKnown,
 			&i.Provider,
 			&i.Model,
 			&i.InputTokens,
@@ -222,6 +325,7 @@ func (q *Queries) GetTaskUsage(ctx context.Context, taskID pgtype.UUID) ([]TaskU
 			&i.Turns,
 			&i.Compactions,
 			&i.MaxContextTokens,
+			&i.UsageSemanticsVersion,
 			&i.ModelCallCount,
 		); err != nil {
 			return nil, err
@@ -969,9 +1073,9 @@ func (q *Queries) LockTaskForUsage(ctx context.Context, id pgtype.UUID) (string,
 }
 
 const markTaskUsageModelCallsUnknown = `-- name: MarkTaskUsageModelCallsUnknown :exec
-INSERT INTO task_usage (task_id, provider, model, model_call_count, updated_at)
-VALUES ($1, $2, $3, NULL, now())
-ON CONFLICT (task_id, provider, model)
+INSERT INTO task_usage (task_id, session_id, session_attribution_known, provider, model, model_call_count, updated_at)
+VALUES ($1, '', FALSE, $2, $3, NULL, now())
+ON CONFLICT (task_id, session_id, provider, model)
 DO UPDATE SET model_call_count = NULL, updated_at = now()
 `
 
@@ -1225,10 +1329,11 @@ func (q *Queries) SumTaskUsageTotalsForMetrics(ctx context.Context) ([]SumTaskUs
 }
 
 const upsertTaskUsage = `-- name: UpsertTaskUsage :exec
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, model_call_count, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now())
-ON CONFLICT (task_id, provider, model)
+INSERT INTO task_usage (task_id, session_id, session_attribution_known, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, usage_semantics_version, model_call_count, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 2, $15, now())
+ON CONFLICT (task_id, session_id, provider, model)
 DO UPDATE SET
+    session_attribution_known = EXCLUDED.session_attribution_known,
     input_tokens = EXCLUDED.input_tokens,
     output_tokens = EXCLUDED.output_tokens,
     cache_read_tokens = EXCLUDED.cache_read_tokens,
@@ -1238,24 +1343,27 @@ DO UPDATE SET
     turns = EXCLUDED.turns,
     compactions = EXCLUDED.compactions,
     max_context_tokens = EXCLUDED.max_context_tokens,
+    usage_semantics_version = 2,
     model_call_count = EXCLUDED.model_call_count,
     updated_at = now()
 `
 
 type UpsertTaskUsageParams struct {
-	TaskID           pgtype.UUID `json:"task_id"`
-	Provider         string      `json:"provider"`
-	Model            string      `json:"model"`
-	InputTokens      int64       `json:"input_tokens"`
-	OutputTokens     int64       `json:"output_tokens"`
-	CacheReadTokens  int64       `json:"cache_read_tokens"`
-	CacheWriteTokens int64       `json:"cache_write_tokens"`
-	CostUsdTicks     pgtype.Int8 `json:"cost_usd_ticks"`
-	ContextTokens    pgtype.Int8 `json:"context_tokens"`
-	Turns            pgtype.Int4 `json:"turns"`
-	Compactions      pgtype.Int4 `json:"compactions"`
-	MaxContextTokens pgtype.Int8 `json:"max_context_tokens"`
-	ModelCallCount   pgtype.Int8 `json:"model_call_count"`
+	TaskID                  pgtype.UUID `json:"task_id"`
+	SessionID               string      `json:"session_id"`
+	SessionAttributionKnown bool        `json:"session_attribution_known"`
+	Provider                string      `json:"provider"`
+	Model                   string      `json:"model"`
+	InputTokens             int64       `json:"input_tokens"`
+	OutputTokens            int64       `json:"output_tokens"`
+	CacheReadTokens         int64       `json:"cache_read_tokens"`
+	CacheWriteTokens        int64       `json:"cache_write_tokens"`
+	CostUsdTicks            pgtype.Int8 `json:"cost_usd_ticks"`
+	ContextTokens           pgtype.Int8 `json:"context_tokens"`
+	Turns                   pgtype.Int4 `json:"turns"`
+	Compactions             pgtype.Int4 `json:"compactions"`
+	MaxContextTokens        pgtype.Int8 `json:"max_context_tokens"`
+	ModelCallCount          pgtype.Int8 `json:"model_call_count"`
 }
 
 // Bumps `updated_at` on INSERT and on conflict so the hourly-rollup worker
@@ -1280,6 +1388,8 @@ type UpsertTaskUsageParams struct {
 func (q *Queries) UpsertTaskUsage(ctx context.Context, arg UpsertTaskUsageParams) error {
 	_, err := q.db.Exec(ctx, upsertTaskUsage,
 		arg.TaskID,
+		arg.SessionID,
+		arg.SessionAttributionKnown,
 		arg.Provider,
 		arg.Model,
 		arg.InputTokens,

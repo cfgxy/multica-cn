@@ -9180,9 +9180,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var retiredSessionID string
 	defer func() { taskResult.RetiredSessionID = retiredSessionID }()
 
+	retriedFreshSession := false
+	var usageEntriesOverride []TaskUsageEntry
+	var usageEntriesOverridden bool
 	if shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
+		retriedFreshSession = true
+		priorSessionID := task.PriorSessionID
 		firstResult := result
-		firstUsage := result.Usage
+		firstUsage := normalizePriorSessionUsage(provider, task, result.Usage)
 		firstTools := tools
 		if !result.ResumeRejectedTransient {
 			retiredSessionID = task.PriorSessionID
@@ -9252,6 +9257,22 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// session keeps firstResult so the bad session stays excluded rather
 		// than being relabeled resumable by a benign-looking second error.
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
+		usageEntriesOverridden = true
+		usageEntriesOverride = append(
+			usageEntriesOverride,
+			taskUsageEntries(provider, priorSessionID, firstResult, firstUsage)...,
+		)
+		usageEntriesOverride = append(
+			usageEntriesOverride,
+			taskUsageEntries(provider, retryResult.SessionID, retryResult, retryResult.Usage)...,
+		)
+	}
+
+	// ACP providers report billing usage cumulatively for a resumed session. The
+	// resumed attempt is normalized before it is merged with a fresh retry, so a
+	// fresh session's independent usage is never reduced by the old baseline.
+	if !retriedFreshSession {
+		result.Usage = normalizePriorSessionUsage(provider, task, result.Usage)
 	}
 
 	// Snapshot lifecycle (RUYI-669): the agent process is done, so the mounts
@@ -9280,31 +9301,39 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		"agent_error", result.Error,
 	)
 
-	// Convert agent usage map to task usage entries.
+	// Convert agent usage maps to task usage entries. A fresh-session retry
+	// needs two independently attributed rows for the same model, so its
+	// entries are assembled above instead of collapsing both attempts into one
+	// map entry.
 	var usageEntries []TaskUsageEntry
-	for model, u := range result.Usage {
-		evidenceIDs := u.ModelCallEvidenceIDs()
-		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 && len(evidenceIDs) == 0 && !u.ModelCallEvidenceIncomplete {
-			continue
+	if usageEntriesOverridden {
+		usageEntries = usageEntriesOverride
+	} else {
+		for model, u := range result.Usage {
+			evidenceIDs := u.ModelCallEvidenceIDs()
+			if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 && len(evidenceIDs) == 0 && !u.ModelCallEvidenceIncomplete {
+				continue
+			}
+			usageEntries = append(usageEntries, TaskUsageEntry{
+				SessionID:                 result.SessionID,
+				Provider:                  provider,
+				Model:                     model,
+				InputTokens:               u.InputTokens,
+				OutputTokens:              u.OutputTokens,
+				CacheReadTokens:           u.CacheReadTokens,
+				CacheWriteTokens:          u.CacheWriteTokens,
+				CostUSDTicks:              u.CostUSDTicks,
+				ContextTokens:             u.ContextTokens,
+				ModelCallEvidenceIDs:      evidenceIDs,
+				ModelCallEvidenceComplete: len(evidenceIDs) > 0 && !u.ModelCallEvidenceIncomplete,
+				ModelCallCount:            u.ModelCallCount,
+				// Run-scoped (RUYI-154), not per-model — same values on every
+				// entry of this run; see TaskUsageEntry.Turns.
+				Turns:            result.Turns,
+				Compactions:      result.Compactions,
+				MaxContextTokens: result.MaxContextTokens,
+			})
 		}
-		usageEntries = append(usageEntries, TaskUsageEntry{
-			Provider:                  provider,
-			Model:                     model,
-			InputTokens:               u.InputTokens,
-			OutputTokens:              u.OutputTokens,
-			CacheReadTokens:           u.CacheReadTokens,
-			CacheWriteTokens:          u.CacheWriteTokens,
-			CostUSDTicks:              u.CostUSDTicks,
-			ContextTokens:             u.ContextTokens,
-			ModelCallEvidenceIDs:      evidenceIDs,
-			ModelCallEvidenceComplete: len(evidenceIDs) > 0 && !u.ModelCallEvidenceIncomplete,
-			ModelCallCount:            u.ModelCallCount,
-			// Run-scoped (RUYI-154), not per-model — same values on every
-			// entry of this run; see TaskUsageEntry.Turns.
-			Turns:            result.Turns,
-			Compactions:      result.Compactions,
-			MaxContextTokens: result.MaxContextTokens,
-		})
 	}
 
 	// MUL-5305: withhold a Codex session whose rollout never reached the per-issue
@@ -10418,6 +10447,110 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 		merged[model] = existing
 	}
 	return merged
+}
+
+func taskUsageEntries(provider, sessionID string, result agent.Result, usage map[string]agent.TokenUsage) []TaskUsageEntry {
+	entries := make([]TaskUsageEntry, 0, len(usage))
+	for model, u := range usage {
+		if u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 && u.ContextTokens == 0 {
+			continue
+		}
+		entries = append(entries, TaskUsageEntry{
+			SessionID:        sessionID,
+			Provider:         provider,
+			Model:            model,
+			InputTokens:      u.InputTokens,
+			OutputTokens:     u.OutputTokens,
+			CacheReadTokens:  u.CacheReadTokens,
+			CacheWriteTokens: u.CacheWriteTokens,
+			CostUSDTicks:     u.CostUSDTicks,
+			ContextTokens:    u.ContextTokens,
+			// Run-scoped (RUYI-154), not per-model — same values on every
+			// entry of this run; see TaskUsageEntry.Turns.
+			Turns:            result.Turns,
+			Compactions:      result.Compactions,
+			MaxContextTokens: result.MaxContextTokens,
+		})
+	}
+	return entries
+}
+
+var acpSessionCumulativeProviders = map[string]bool{
+	"claude":     true,
+	"hermes":     true,
+	"kimi":       true,
+	"kiro":       true,
+	"qoder":      true,
+	"qoderclicn": true,
+	"traecli":    true,
+	"grok":       true,
+	"qwenpaw":    true,
+	"mcode":      true,
+	"dim":        true,
+	"zeroclaw":   true,
+	"deerflow":   true,
+	"reasonix":   true,
+	"zcode":      true,
+}
+
+func isACPSessionCumulativeProvider(provider string) bool {
+	return acpSessionCumulativeProviders[strings.ToLower(strings.TrimSpace(provider))]
+}
+
+// subtractPriorSessionUsage converts session-cumulative ACP snapshots into the
+// current task's billing delta. Each bucket is clamped independently because a
+// provider can omit, reset, or revise one counter without invalidating the
+// others. ContextTokens is intentionally untouched: it describes the final
+// conversation size, not spend.
+func subtractPriorSessionUsage(provider string, baseline []TaskUsageEntry, usage map[string]agent.TokenUsage) map[string]agent.TokenUsage {
+	if !isACPSessionCumulativeProvider(provider) || len(baseline) == 0 || len(usage) == 0 {
+		return usage
+	}
+
+	byModel := make(map[string]TaskUsageEntry, len(baseline))
+	for _, entry := range baseline {
+		if strings.EqualFold(entry.Provider, provider) {
+			byModel[entry.Model] = entry
+		}
+	}
+	if len(byModel) == 0 {
+		return usage
+	}
+
+	for model, current := range usage {
+		prior, ok := byModel[model]
+		if !ok {
+			continue
+		}
+		current.InputTokens = nonNegativeUsageDelta(current.InputTokens, prior.InputTokens)
+		current.OutputTokens = nonNegativeUsageDelta(current.OutputTokens, prior.OutputTokens)
+		current.CacheReadTokens = nonNegativeUsageDelta(current.CacheReadTokens, prior.CacheReadTokens)
+		current.CacheWriteTokens = nonNegativeUsageDelta(current.CacheWriteTokens, prior.CacheWriteTokens)
+		if prior.CostUSDTicks > 0 {
+			current.CostUSDTicks = nonNegativeUsageDelta(current.CostUSDTicks, prior.CostUSDTicks)
+		}
+		usage[model] = current
+	}
+	return usage
+}
+
+func normalizePriorSessionUsage(provider string, task Task, usage map[string]agent.TokenUsage) map[string]agent.TokenUsage {
+	if task.PriorSessionID == "" || !isACPSessionCumulativeProvider(provider) {
+		return usage
+	}
+	if task.PriorSessionUsageUnavailable {
+		// The cumulative snapshot cannot be made safe without its baseline. Do not
+		// let it reach the billing table; a fresh retry is merged separately.
+		return nil
+	}
+	return subtractPriorSessionUsage(provider, task.PriorSessionUsage, usage)
+}
+
+func nonNegativeUsageDelta(current, prior int64) int64 {
+	if current <= prior {
+		return 0
+	}
+	return current - prior
 }
 
 // repoDataToInfo converts daemon RepoData to repocache RepoInfo.
