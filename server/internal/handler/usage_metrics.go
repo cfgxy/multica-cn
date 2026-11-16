@@ -8,7 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/promquery"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // usageMetricWindows are the selectable ranges for the usage page's
@@ -215,11 +218,24 @@ func (h *Handler) GetDashboardUsageTraffic(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	plan := planUsageMetricsWindow(window, time.Now())
+	unknownCallRows, err := h.Queries.CountWorkspaceUsageUnknownCallsInWindow(
+		r.Context(),
+		db.CountWorkspaceUsageUnknownCallsInWindowParams{
+			WorkspaceID: parseUUID(workspaceID),
+			Since:       pgtype.Timestamptz{Time: plan.Start.Add(-plan.RateWindow), Valid: true},
+			Until:       pgtype.Timestamptz{Time: plan.End, Valid: true},
+		},
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read model call completeness")
+		return
+	}
 	ws := fmt.Sprintf("workspace_id=%q", promquery.EscapeLabelValue(workspaceID))
 	queries := []usageQuery{
 		{"tokens_per_second", fmt.Sprintf("sum by (%s) (rate(multica_task_usage_tokens_total{%s}[%s]))", dim.by, ws, durationProm(plan.RateWindow))},
 		{"cost_usd_per_second", fmt.Sprintf("sum by (%s) (rate(multica_task_usage_cost_usd_total{%s}[%s]))", dim.by, ws, durationProm(plan.RateWindow))},
 		{"tasks_per_second", fmt.Sprintf("sum by (%s) (rate(multica_task_usage_tasks_total{%s}[%s]))", dim.by, ws, durationProm(plan.RateWindow))},
+		{"calls_per_second", fmt.Sprintf("sum by (%s) (rate(multica_task_usage_model_calls_total{%s}[%s]))", dim.by, ws, durationProm(plan.RateWindow))},
 	}
 	series, err := h.runUsageQueries(r.Context(), queries, plan)
 	if err != nil {
@@ -227,11 +243,13 @@ func (h *Handler) GetDashboardUsageTraffic(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"configured":   true,
-		"window":       windowName,
-		"by":           dim.label,
-		"step_seconds": int(plan.Step.Seconds()),
-		"series":       series,
+		"configured":         true,
+		"window":             windowName,
+		"by":                 dim.label,
+		"step_seconds":       int(plan.Step.Seconds()),
+		"calls_complete":     unknownCallRows == 0,
+		"calls_unknown_rows": unknownCallRows,
+		"series":             series,
 	})
 }
 

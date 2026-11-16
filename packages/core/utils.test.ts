@@ -4,6 +4,7 @@ import {
   createSafeId,
   generateUUID,
   isImeComposing,
+  truncateToCodePoints,
   truncateWithEllipsis,
 } from "./utils";
 
@@ -104,5 +105,20 @@ describe("truncateWithEllipsis", () => {
     expect(truncateWithEllipsis("hello", 0)).toBe("");
     expect(truncateWithEllipsis("hello", -5)).toBe("");
     expect(truncateWithEllipsis("hello", Number.NaN)).toBe("…");
+  });
+});
+
+describe("truncateToCodePoints", () => {
+  it("preserves text at the limit and truncates later code points", () => {
+    expect(truncateToCodePoints("hello", 5)).toBe("hello");
+    expect(truncateToCodePoints("hello world", 5)).toBe("hello");
+  });
+
+  it("matches Go rune counting without splitting astral characters", () => {
+    const result = truncateToCodePoints("😀".repeat(201), 200);
+
+    expect(result).toBe("😀".repeat(200));
+    expect(Array.from(result)).toHaveLength(200);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(result)).toBe(false);
   });
 });

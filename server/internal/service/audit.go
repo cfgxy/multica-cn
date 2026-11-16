@@ -165,6 +165,8 @@ const (
 	AuditOpsPromQLRulesUpdated          = "ops.promql_rules_updated"
 	AuditOpsPromQLRuleFired             = "ops.promql_rule_fired"
 	AuditOpsPromQLRuleResolved          = "ops.promql_rule_resolved"
+	AuditOpsRuntimeModelCallBudgetUpdated = "ops.runtime_model_call_budget_updated"
+
 
 	AuditMCPInvocationStarted  = "mcp.invocation_started"
 	AuditMCPInvocationFinished = "mcp.invocation_finished"

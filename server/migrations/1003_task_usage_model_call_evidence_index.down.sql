@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS uq_task_usage_model_call_evidence_identity;

@@ -20,6 +20,8 @@ import type {
   AgentBackpressurePolicy,
   AgentBackpressureConfig,
   AgentBackpressureEvent,
+  RuntimeModelCallBudget,
+  RuntimeModelCallBudgetConfig,
 } from "./schemas";
 import type {
   Issue,
@@ -116,6 +118,7 @@ import type {
   SelfEvolutionJevConfigSave,
   SelfEvolutionModelConfig,
   SelfEvolutionModelConfigSave,
+  SelfEvolutionModelListResult,
   WorkspaceBackpressureSettings,
   WorkspaceBackpressureSettingsSave,
   WorkspacePromQLRuleSave,
@@ -470,6 +473,7 @@ import {
   ListIssuesResponseSchema,
   CreateIssueResponseSchema,
   IssueSchema,
+  IssueUsageSummarySchema,
   AgentTaskSchema,
   SourceContextPreviewSchema,
   CommentSubIssueTaskResponseSchema,
@@ -481,6 +485,8 @@ import {
   WorkspacePromQLRulePreviewSchema,
   AgentBackpressurePolicySchema,
   AgentBackpressureEventListSchema,
+  RuntimeModelCallBudgetSchema,
+  EMPTY_RUNTIME_MODEL_CALL_BUDGET,
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
@@ -491,6 +497,7 @@ import {
   EMPTY_EXECUTION_PROFILE,
   EMPTY_EXECUTION_PROFILE_LIST,
   EMPTY_EXECUTION_PROFILE_ACTIVATION,
+  EMPTY_ISSUE_USAGE_SUMMARY,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SquadSchema,
@@ -700,6 +707,7 @@ import {
   SelfEvolutionConfigValidationSchema,
   SelfEvolutionJevConfigSchema,
   SelfEvolutionModelConfigSchema,
+  SelfEvolutionModelListResultSchema,
   WorkspaceBackpressureSettingsSchema,
   EMPTY_SELF_EVOLUTION_OVERVIEW,
   PromptGovernanceVersionSchema,
@@ -1986,11 +1994,22 @@ export class ApiClient {
   // only; answering/cancelling stays on the issue-scoped endpoints above.
   async listWorkspaceDecisionInbox(
     workspaceId: string,
-    params?: { status?: IssueDecision["status"]; limit?: number },
+    params?: {
+      status?: IssueDecision["status"];
+      limit?: number;
+      /** RUYI-864: raw keyword — LIKE wildcards are escaped server-side. */
+      q?: string;
+      /** RUYI-864 keyset cursor pair (last row of the previous page). */
+      after_created_at?: string;
+      after_id?: string;
+    },
   ): Promise<WorkspaceDecisionInbox> {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
     if (params?.limit != null) qs.set("limit", String(params.limit));
+    if (params?.q) qs.set("q", params.q);
+    if (params?.after_created_at) qs.set("after_created_at", params.after_created_at);
+    if (params?.after_id) qs.set("after_id", params.after_id);
     const query = qs.size > 0 ? `?${qs.toString()}` : "";
     const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-inbox${query}`);
     const inbox = parseWithFallback(raw, WorkspaceDecisionInboxSchema, null, {
@@ -2093,11 +2112,24 @@ export class ApiClient {
   // the server refuses agent callers regardless of what the client sends.
   async listDecisionRequests(
     workspaceId: string,
-    params?: { status?: string; limit?: number },
+    params?: {
+      status?: string;
+      limit?: number;
+      order?: "asc" | "desc";
+      after_created_at?: string;
+      after_id?: string;
+    },
   ): Promise<DecisionRequestsList> {
     const qs = new URLSearchParams();
     if (params?.status) qs.set("status", params.status);
     if (params?.limit != null) qs.set("limit", String(params.limit));
+    // RUYI-864: 'asc' = oldest-first (the pending authorization queue),
+    // 'desc' = newest-first (the history surface; the default when absent).
+    if (params?.order) qs.set("order", params.order);
+    // RUYI-864 rework: the keyset cursor pair — both halves or neither, the
+    // server rejects a lone half with 400.
+    if (params?.after_created_at) qs.set("after_created_at", params.after_created_at);
+    if (params?.after_id) qs.set("after_id", params.after_id);
     const query = qs.size > 0 ? `?${qs.toString()}` : "";
     const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/decision-requests${query}`);
     const list = parseWithFallback(raw, DecisionRequestsListSchema, null, {
@@ -3246,6 +3278,36 @@ export class ApiClient {
     );
   }
 
+  async getRuntimeModelCallBudget(
+    runtimeId: string,
+  ): Promise<RuntimeModelCallBudget> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/model-call-budget`,
+    );
+    return parseWithFallback<RuntimeModelCallBudget>(
+      raw,
+      RuntimeModelCallBudgetSchema,
+      EMPTY_RUNTIME_MODEL_CALL_BUDGET,
+      { endpoint: "GET /api/runtimes/:id/model-call-budget" },
+    );
+  }
+
+  async putRuntimeModelCallBudget(
+    runtimeId: string,
+    config: RuntimeModelCallBudgetConfig,
+  ): Promise<RuntimeModelCallBudget> {
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/model-call-budget`,
+      { method: "PUT", body: JSON.stringify(config) },
+    );
+    return parseWithFallback<RuntimeModelCallBudget>(
+      raw,
+      RuntimeModelCallBudgetSchema,
+      EMPTY_RUNTIME_MODEL_CALL_BUDGET,
+      { endpoint: "PUT /api/runtimes/:id/model-call-budget" },
+    );
+  }
+
   async listRuntimeBackpressureEvents(
     runtimeId: string,
     params?: { limit?: number },
@@ -3884,7 +3946,10 @@ export class ApiClient {
   }
 
   async getIssueUsage(issueId: string): Promise<IssueUsageSummary> {
-    return this.fetch(`/api/issues/${issueId}/usage`);
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/usage`);
+    return parseWithFallback(raw, IssueUsageSummarySchema, EMPTY_ISSUE_USAGE_SUMMARY, {
+      endpoint: "GET /api/issues/:id/usage",
+    });
   }
 
   // The single-run cancel now answers with the RUYI-292 cancel matrix:
@@ -4634,6 +4699,20 @@ export class ApiClient {
       has_api_key: false,
       encryption_ready: true,
     }, { endpoint: "POST /api/self-evolution/jev-config/recheck" });
+  }
+
+  async listSelfEvolutionModelConfigModels(input: Pick<SelfEvolutionModelConfigSave, "base_url" | "api_key">): Promise<SelfEvolutionModelListResult> {
+    const raw = await this.fetch<unknown>("/api/self-evolution/model-config/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return parseWithFallback(raw, SelfEvolutionModelListResultSchema, {
+      ok: false,
+      models: [],
+      error_kind: "other",
+      message: "",
+    }, { endpoint: "POST /api/self-evolution/model-config/models" });
   }
 
   /**

@@ -99,7 +99,10 @@ export interface WorkspaceDecisionInboxItem extends IssueDecision {
   issue_title: string;
 }
 
-/** Workspace totals, independent of any status filter on the list window. */
+/** Workspace totals scoped to the list's filter window (status + keyword,
+ * never the page window), so section headers and empty states stay true to
+ * the rows on screen. An unfiltered call is the workspace total — the
+ * badge source, which stays limit-immune. */
 export interface DecisionInboxCounts {
   open: number;
   answered: number;
@@ -110,6 +113,14 @@ export interface DecisionInboxCounts {
 export interface WorkspaceDecisionInbox {
   items: WorkspaceDecisionInboxItem[];
   counts: DecisionInboxCounts;
+  /**
+   * RUYI-864: keyset cursor for the next page — the last row's created_at
+   * (sub-second precision) plus its id. Both null when the last page came
+   * back short (the window ended). Paginate with
+   * `after_created_at`/`after_id`, pass null through as "no more pages".
+   */
+  next_cursor: string | null;
+  next_cursor_id: string | null;
 }
 
 // ── Agent authorization requests (RUYI-630) ─────────────────────────────────
@@ -216,13 +227,32 @@ export interface DecisionRequestDetail {
 }
 
 export interface DecisionRequestCounts {
+  /** Strictly `status = 'pending'` — exactly the rows the queue can show. */
   pending: number;
+  /** Agreed, not yet executed or failed — reported under its own name. */
+  approved: number;
+  /** RUYI-630 buckets, kept for pre-rework clients of this endpoint. */
   closed: number;
   executed: number;
+  /**
+   * The history entry's authoritative total: every NON-pending row. Same
+   * set the `status=history` list window walks, so the entry's number and
+   * the expandable rows can never disagree (a "no pending, only approved"
+   * workspace badges 0 in the queue but >0 here — the entry stays visible).
+   */
+  history: number;
 }
 
 /** Mirrors handler.ListDecisionRequests' {items, counts} envelope. */
 export interface DecisionRequestsList {
   items: DecisionRequest[];
   counts: DecisionRequestCounts;
+  /**
+   * RUYI-864: keyset cursor for the next page — the last row's created_at
+   * (sub-second precision) plus its id. Both null when the last page came
+   * back short (the window ended). Paginate with
+   * `after_created_at`/`after_id`, pass null through as "no more pages".
+   */
+  next_cursor: string | null;
+  next_cursor_id: string | null;
 }

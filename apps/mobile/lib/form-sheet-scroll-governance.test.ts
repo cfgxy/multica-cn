@@ -142,7 +142,6 @@ const TWO_SNAP_ROUTES = [
   "more/agents/[id]/run-config",
   "issue/[id]/runs",
   "issues-filter",
-  "decisions-filter",
 ];
 
 /**
@@ -163,7 +162,6 @@ const SCROLLABLE_SHEET_BODIES = [
   "components/squads/member-add-sheet.tsx",
   "app/(app)/[workspace]/skill-picker.tsx",
   "app/(app)/[workspace]/issues-filter.tsx",
-  "app/(app)/[workspace]/decisions-filter.tsx",
   "app/(app)/[workspace]/switch-workspace.tsx",
   "app/(app)/[workspace]/inbox/[id].tsx",
   "app/(app)/[workspace]/issue/[id]/runs.tsx",

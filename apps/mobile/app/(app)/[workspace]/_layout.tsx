@@ -546,9 +546,9 @@ export default function WorkspaceLayout() {
           name="tasks-actor-picker"
           options={LONG_CONTENT_SHEET_OPTIONS}
         />
-        {/* Decisions-tab filter sheet (RUYI-530, formSheet presentation) —
-            reads/writes decisions-view-store directly. */}
-        <Stack.Screen name="decisions-filter" options={SHEET_OPTIONS} />
+        {/* RUYI-864: the decisions-filter formSheet went away with the
+            client-side 有推荐 / Agent 发起 toggles — the status window is the
+            TAB pills + keyword on the tab itself, so the sheet has no job. */}
         <Stack.Screen
           name="more/agents"
           options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
