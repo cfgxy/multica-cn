@@ -708,8 +708,8 @@
   },
   "clauseGovernance": {
     "title": "조항 거버넌스", "description": "입법부터 주입까지 조항 자산 전 과정을 확인합니다", "window": "집계 기간", "d7": "최근 7일", "d30": "최근 30일", "d90": "최근 90일", "d365": "최근 365일", "refresh": "새로고침",
-    "banner": { "dynamicOffTitle": "전역 성능 저하 스위치가 켜져 있습니다", "dynamicOffBody": "모든 실행에서 스냅샷 주입(정적 주입과 동등한 방식)을 사용합니다", "healthyTitle": "동적 주입이 정상입니다", "healthyBody": "{{total}}회 중 {{degraded}}회가 성능 저하 경로로 주입되었습니다", "findingsTitle": "대사 또는 드리프트 발견 {{count}}건", "findingsBody": "아래 대사 및 드리프트 영역을 확인하세요" },
-    "metrics": { "injections": "주입 횟수", "runs": "대상 실행", "runsUnit": "실행 {{count}}회", "clauseTokens": "조항 토큰", "clauseTokensNote": "주입된 조항 렌더링을 바탕으로 추정", "degraded": "성능 저하 주입", "migration": "마이그레이션 적용률" },
+    "banner": { "dynamicOffTitle": "전역 성능 저하 스위치가 켜져 있습니다", "dynamicOffBody": "모든 실행에서 스냅샷 주입(정적 주입과 동등한 방식)을 사용합니다", "healthyTitle": "동적 주입이 정상입니다", "healthyBody": "주입 기록 {{total}}회 중 {{degradedRows}}회가 성능 저하 경로를 사용했으며, 서로 다른 실행 {{degradedRuns}}회에 영향을 주었습니다", "findingsTitle": "대사 또는 드리프트 발견 {{count}}건", "findingsBody": "아래 대사 및 드리프트 영역을 확인하세요" },
+    "metrics": { "injections": "주입 횟수", "runs": "대상 실행", "runsUnit": "실행 {{count}}회", "clauseTokens": "조항 토큰", "clauseTokensNote": "주입된 조항 렌더링을 바탕으로 추정", "degraded": "성능 저하 주입 기록", "degradedNote": "{{total}}회 중 {{rows}}회 기록 · 서로 다른 실행 {{runs}}회", "migration": "마이그레이션 적용률" },
     "scope": { "workspace": "워크스페이스", "project": "프로젝트", "squad": "스쿼드", "agent": "에이전트" },
     "recon": { "title": "대사 및 드리프트", "healthy": "모든 검사 통과", "findings": "발견 {{count}}건", "scanned": "캐리어 {{count}}개 검사", "violationsTitle": "레이어 집합 위반", "violationsEmpty": "기간 내 레이어 집합 위반이 없습니다", "colTime": "시간", "colTask": "작업", "colClause": "조항", "colVersion": "버전", "colScope": "범위", "colInjection": "주입 방식", "truncated": "처음 100건만 표시", "degradedFlag": "성능 저하 스냅샷", "driftTitle": "캐리어 드리프트", "driftEmpty": "캐리어 마커가 자산 라이브러리와 일치합니다(캐리어 {{count}}개 검사)", "unnamedCarrier": "이름 없는 캐리어" },
     "driftKind": { "stale_rev": "리비전 지연", "orphan_marker": "고아 마커", "missing_segment": "렌더링 구간 누락" },
