@@ -8383,6 +8383,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		snapshotPrimaryUpper = primaryUpper
 		env.WorkDir = snapPlan.Primary.AbsPath
 		materializedUnits := snapPlan.materializedUnits()
+		repository, gitDeliveryEligible := gitSnapshotDeliveryRepository(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1", gitAudit)
 		units := make([]execenv.SnapshotUnitSpec, 0, len(materializedUnits))
 		for _, u := range materializedUnits {
 			alias, upper, work := execenv.PlanSnapshotTree(resolvedRoot, snapshotUnitStem(task.IssueID, task.ID, u))
@@ -8397,11 +8398,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			units = append(units, execenv.SnapshotUnitSpec{
 				Target: u.AbsPath, Subdir: u.Subdir, TargetDevice: device, TargetInode: inode,
 				TargetIdentitySet: u.IdentityCaptured || device != 0 || inode != 0,
+				GitRoot:           gitDeliveryEligible && filepath.Clean(u.AbsPath) == filepath.Clean(repository.Worktree),
 				Alias:             alias, Upper: upper, Work: work,
 			})
 		}
 		var gitArtifact *execenv.SnapshotGitArtifactSpec
-		if repository, eligible := gitSnapshotDeliveryRepository(snapPlan, os.Getenv("MULTICA_ENABLE_GIT_SNAPSHOT") == "1", gitAudit); eligible {
+		if gitDeliveryEligible {
 			baseline, baselineErr := execenv.SnapshotGitBaseline(snapPlan.Primary.AbsPath)
 			if baselineErr != nil {
 				return TaskResult{}, asEnvironmentSetupFailure(baselineErr)
