@@ -12,8 +12,10 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"golang.org/x/sys/unix"
 )
 
 // Host-dependent smoke tests for the snapshot capability. They are opt-in
@@ -171,7 +173,29 @@ func TestSnapshotWorkerCapturesGitArtifactSmoke(t *testing.T) {
 	gitForSnapshotTest(t, target, "add", "tracked.txt")
 	gitForSnapshotTest(t, target, "commit", "-qm", "base")
 	baseline := strings.TrimSpace(gitForSnapshotTest(t, target, "rev-parse", "HEAD"))
+	mainBranch := strings.TrimSpace(gitForSnapshotTest(t, target, "branch", "--show-current"))
+	gitForSnapshotTest(t, target, "switch", "-q", "-c", "host-secret")
+	if err := os.WriteFile(filepath.Join(target, "secret.txt"), []byte("must not enter snapshot\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, target, "add", "secret.txt")
+	gitForSnapshotTest(t, target, "commit", "-qm", "host secret")
+	secret := strings.TrimSpace(gitForSnapshotTest(t, target, "rev-parse", "HEAD"))
+	gitForSnapshotTest(t, target, "switch", "-q", mainBranch)
+	// These local settings must not enter the private repository. In particular,
+	// copying either command-valued config or autocrlf after checkout makes the
+	// worker's behavior depend on mutable host configuration.
+	gitForSnapshotTest(t, target, "config", "diff.host-secret.command", "/bin/false")
+	gitForSnapshotTest(t, target, "config", "core.autocrlf", "true")
+	gitForSnapshotTest(t, target, "reset", "--hard", "-q", baseline)
 	pristineRefs := gitForSnapshotTest(t, target, "show-ref", "--head")
+	if err := os.WriteFile(filepath.Join(target, "tracked.txt"), []byte("host-dirty\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "host-untracked.txt"), []byte("must not enter snapshot\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pristineStatus := gitForSnapshotTest(t, target, "status", "--porcelain=v1", "--untracked-files=all")
 
 	alias := filepath.Join(scratch, "alias")
 	upper := filepath.Join(scratch, "upper")
@@ -196,7 +220,14 @@ func TestSnapshotWorkerCapturesGitArtifactSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := "printf 'changed\\n' > tracked.txt" +
+	payload := "test \"$(cat tracked.txt)\" = 'base'" +
+		" && test ! -e host-untracked.txt" +
+		" && ! git show-ref --verify --quiet refs/heads/host-secret" +
+		" && ! git cat-file -e " + secret + "^{commit}" +
+		" && test -z \"$(git remote)\"" +
+		" && ! git config --local --get diff.host-secret.command" +
+		" && ! git config --local --get core.autocrlf" +
+		" && printf 'changed\\n' > tracked.txt" +
 		" && printf 'untracked\\n' > untracked.txt" +
 		" && printf '\\000\\001\\002\\377' > binary.bin"
 	out, err := spawnWithSnapshotNamespaces(t,
@@ -206,16 +237,16 @@ func TestSnapshotWorkerCapturesGitArtifactSmoke(t *testing.T) {
 		t.Fatalf("worker failed: %v\n%s", err, out)
 	}
 
-	if got, err := os.ReadFile(filepath.Join(target, "tracked.txt")); err != nil || string(got) != "base\n" {
-		t.Fatalf("pristine tracked file = %q, err=%v; want base content", got, err)
+	if got, err := os.ReadFile(filepath.Join(target, "tracked.txt")); err != nil || string(got) != "host-dirty\n" {
+		t.Fatalf("host tracked file = %q, err=%v; snapshot must not rewrite it", got, err)
 	}
 	for _, name := range []string{"untracked.txt", "binary.bin"} {
 		if _, err := os.Stat(filepath.Join(target, name)); !os.IsNotExist(err) {
 			t.Fatalf("worker write %s leaked into pristine (stat err=%v)", name, err)
 		}
 	}
-	if got := gitForSnapshotTest(t, target, "status", "--porcelain"); got != "" {
-		t.Fatalf("pristine repository must remain clean, status=%q", got)
+	if got := gitForSnapshotTest(t, target, "status", "--porcelain=v1", "--untracked-files=all"); got != pristineStatus {
+		t.Fatalf("host repository status changed, before=%q after=%q", pristineStatus, got)
 	}
 	if got := gitForSnapshotTest(t, target, "show-ref", "--head"); got != pristineRefs {
 		t.Fatalf("snapshot commit must not change pristine refs, got %q want %q", got, pristineRefs)
@@ -236,8 +267,14 @@ func TestSnapshotWorkerCapturesGitArtifactSmoke(t *testing.T) {
 	if got := []byte(gitForSnapshotTest(t, clone, "show", "snapshot:binary.bin")); string(got) != string([]byte{0, 1, 2, 255}) {
 		t.Fatalf("captured binary content = %v", got)
 	}
-	if entries, err := os.ReadDir(alias); err != nil || len(entries) != 0 {
-		t.Fatalf("worker mount namespace must be gone; alias entries=%d err=%v", len(entries), err)
+	if got, err := os.ReadFile(filepath.Join(alias, "tracked.txt")); err != nil || string(got) != "base\n" {
+		t.Fatalf("private Git lower must remain available for ledger cleanup, got %q err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(alias, ".git")); err != nil {
+		t.Fatalf("private Git lower metadata must be materialized: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(alias, "host-untracked.txt")); !os.IsNotExist(err) {
+		t.Fatalf("host untracked content entered private lower, stat err=%v", err)
 	}
 }
 
@@ -300,7 +337,19 @@ func TestSnapshotWorkerCapturesDeclaredGitSubdirectoryArtifactSmoke(t *testing.T
 				t.Fatal(err)
 			}
 		}
-		return SnapshotUnitSpec{Target: target, Alias: alias, Upper: upper, Work: work}
+		var identity unix.Stat_t
+		if err := unix.Stat(target, &identity); err != nil {
+			t.Fatal(err)
+		}
+		return SnapshotUnitSpec{
+			Target:            target,
+			TargetDevice:      uint64(identity.Dev),
+			TargetInode:       uint64(identity.Ino),
+			TargetIdentitySet: true,
+			Alias:             alias,
+			Upper:             upper,
+			Work:              work,
+		}
 	}
 	artifactDir := filepath.Join(scratch, "artifact")
 	spec := &SnapshotRunSpec{
@@ -377,11 +426,77 @@ func TestSnapshotWorkerCapturesDeclaredGitSubdirectoryArtifactSmoke(t *testing.T
 	}
 }
 
-// TestSnapshotWorkerRejectsExternalHooksPathBeforeAgentCommitSmoke proves the
-// worker-side hook gate runs before the agent's ordinary git commit can invoke
-// a host hook. The daemon admission audit rejects this topology earlier; this
-// smoke covers the final execution-time backstop against configuration drift.
-func TestSnapshotWorkerRejectsExternalHooksPathBeforeAgentCommitSmoke(t *testing.T) {
+func TestSnapshotWorkerCapturesSHA256GitArtifactSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	scratch := t.TempDir()
+	repo := filepath.Join(scratch, "sha256-repo")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "init", "--object-format=sha256", "-q")
+	gitForSnapshotTest(t, repo, "config", "user.name", "Test")
+	gitForSnapshotTest(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "add", "tracked.txt")
+	gitForSnapshotTest(t, repo, "commit", "-qm", "base")
+	baseline := strings.TrimSpace(gitForSnapshotTest(t, repo, "rev-parse", "HEAD"))
+	if len(baseline) != 64 {
+		t.Fatalf("SHA-256 baseline = %q, want 64 hex characters", baseline)
+	}
+
+	alias, upper, work := filepath.Join(scratch, "alias"), filepath.Join(scratch, "upper"), filepath.Join(scratch, "work")
+	for _, path := range []string{alias, upper, work} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	artifactDir := filepath.Join(scratch, "artifact")
+	spec := &SnapshotRunSpec{
+		TaskID: "sha256-git-artifact",
+		Units:  []SnapshotUnitSpec{{Target: repo, Alias: alias, Upper: upper, Work: work}},
+		Cwd:    repo,
+		GitArtifact: &SnapshotGitArtifactSpec{
+			ArtifactDir: artifactDir,
+			Baseline:    baseline,
+			EnvRoot:     filepath.Join(scratch, "env"),
+		},
+	}
+	wrap, err := BuildSnapshotWrap(bin, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := "test \"$(git rev-parse --show-object-format)\" = sha256" +
+		" && test \"$(git rev-parse HEAD)\" = " + baseline +
+		" && test \"$(cat tracked.txt)\" = base" +
+		" && printf 'changed\\n' > tracked.txt && git add tracked.txt && git commit -qm isolated"
+	out, err := spawnWithSnapshotNamespaces(t,
+		bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+		"/bin/sh", "-c", payload)
+	if err != nil {
+		t.Fatalf("SHA-256 snapshot worker failed: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(gitForSnapshotTest(t, alias, "rev-parse", "--show-object-format")); got != "sha256" {
+		t.Fatalf("private Git lower object format = %q, want sha256", got)
+	}
+	if got := strings.TrimSpace(gitForSnapshotTest(t, alias, "rev-parse", "HEAD")); got != baseline {
+		t.Fatalf("private Git lower baseline = %q, want %s", got, baseline)
+	}
+
+	clone := filepath.Join(scratch, "clone")
+	gitForSnapshotTest(t, "", "clone", "-q", repo, clone)
+	gitForSnapshotTest(t, clone, "fetch", filepath.Join(artifactDir, "changes.bundle"), "HEAD:refs/heads/snapshot")
+	gitForSnapshotTest(t, clone, "checkout", "-q", "snapshot")
+	gitForSnapshotTest(t, clone, "fsck", "--no-dangling")
+	if got := gitForSnapshotTest(t, clone, "show", "snapshot:tracked.txt"); got != "changed\n" {
+		t.Fatalf("SHA-256 artifact tracked content = %q, want changed", got)
+	}
+}
+
+// TestSnapshotWorkerDropsExternalHooksPathSmoke proves a host Git template
+// is neither imported nor executed by the private snapshot repository.
+func TestSnapshotWorkerDropsExternalHooksPathSmoke(t *testing.T) {
 	bin := snapshotSmokeBinary(t)
 	scratch := t.TempDir()
 	repo := filepath.Join(scratch, "pristine-repo")
@@ -398,22 +513,20 @@ func TestSnapshotWorkerRejectsExternalHooksPathBeforeAgentCommitSmoke(t *testing
 	gitForSnapshotTest(t, repo, "commit", "-qm", "base")
 	baseline := strings.TrimSpace(gitForSnapshotTest(t, repo, "rev-parse", "HEAD"))
 
-	outside := filepath.Join(scratch, "outside-hooks")
-	hooks := filepath.Join(outside, "hooks")
+	template := filepath.Join(scratch, "git-template")
+	hooks := filepath.Join(template, "hooks")
 	if err := os.MkdirAll(hooks, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(template, "sentinel"), []byte("must remain untouched\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	hook := "#!/bin/sh\nprintf hook-ran > " + filepath.Join(outside, "hook-ran") + "\n"
+	hook := "#!/bin/sh\nprintf hook-ran > " + filepath.Join(template, "hook-ran") + "\n"
 	if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte(hook), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command("git", "-C", repo, "config", "core.hooksPath", hooks).CombinedOutput(); err != nil {
-		t.Fatalf("configure external hooks path: %v (%s)", err, out)
-	}
-	before := smokeTreeDigest(t, outside, false)
+	t.Setenv("GIT_TEMPLATE_DIR", template)
+	before := smokeTreeDigest(t, template, false)
 
 	alias, upper, work := filepath.Join(scratch, "alias"), filepath.Join(scratch, "upper"), filepath.Join(scratch, "work")
 	for _, path := range []string{alias, upper, work} {
@@ -422,7 +535,7 @@ func TestSnapshotWorkerRejectsExternalHooksPathBeforeAgentCommitSmoke(t *testing
 		}
 	}
 	spec := &SnapshotRunSpec{
-		TaskID: "reject-external-hooks-before-agent-commit",
+		TaskID: "drop-external-hooks-path",
 		Units:  []SnapshotUnitSpec{{Target: repo, Alias: alias, Upper: upper, Work: work}},
 		Cwd:    repo,
 		GitArtifact: &SnapshotGitArtifactSpec{
@@ -437,15 +550,12 @@ func TestSnapshotWorkerRejectsExternalHooksPathBeforeAgentCommitSmoke(t *testing
 	}
 	out, err := spawnWithSnapshotNamespaces(t,
 		bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
-		"/bin/sh", "-c", "printf changed > tracked.txt && git add tracked.txt && git commit -qm isolated")
-	if err == nil {
-		t.Fatalf("worker must reject external hooks path before agent commit, output: %s", out)
+		"/bin/sh", "-c", "! git config --local --get core.hooksPath && test ! -e .git/hooks/pre-commit && test ! -e "+filepath.Join(alias, ".git", "hooks", "pre-commit")+" && printf changed > tracked.txt && git add tracked.txt && git commit -qm isolated")
+	if err != nil {
+		t.Fatalf("worker must isolate external Git template: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "core.hooksPath") {
-		t.Fatalf("worker rejection must identify hooks path, output: %s", out)
-	}
-	if after := smokeTreeDigest(t, outside, false); after != before {
-		t.Fatalf("external hook wrote outside snapshot before agent commit was rejected\nbefore: %s\nafter:  %s", before, after)
+	if after := smokeTreeDigest(t, template, false); after != before {
+		t.Fatalf("external template hook wrote outside snapshot\nbefore: %s\nafter:  %s", before, after)
 	}
 }
 
@@ -661,6 +771,92 @@ func TestSnapshotWorkerCapturesLinkedWorktreeArtifactSmoke(t *testing.T) {
 	}
 }
 
+// TestReviewLinkedWorktreeWithShallowerCommonDir fixes the Git-root selection
+// regression where mountOrder chose a shallow linked-worktree common directory
+// before the deeper primary worktree unit.
+func TestReviewLinkedWorktreeWithShallowerCommonDir(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	scratch := t.TempDir()
+	base := filepath.Join(scratch, "repo")
+	linked := filepath.Join(scratch, "nested", "deep", "linked")
+	if err := os.MkdirAll(filepath.Dir(linked), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, base, "init", "-q")
+	gitForSnapshotTest(t, base, "config", "user.name", "Test")
+	gitForSnapshotTest(t, base, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(base, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, base, "add", "tracked.txt")
+	gitForSnapshotTest(t, base, "commit", "-qm", "base")
+	gitForSnapshotTest(t, base, "worktree", "add", "-q", "--detach", linked)
+
+	baseline := strings.TrimSpace(gitForSnapshotTest(t, linked, "rev-parse", "HEAD"))
+	commonDir := strings.TrimSpace(gitForSnapshotTest(t, linked, "rev-parse", "--git-common-dir"))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(linked, commonDir)
+	}
+	if strings.Count(filepath.Clean(commonDir), string(filepath.Separator)) >= strings.Count(filepath.Clean(linked), string(filepath.Separator)) {
+		t.Fatalf("test topology is not shallow-common: common=%s linked=%s", commonDir, linked)
+	}
+	before := linkedGitFingerprint(t, linked, commonDir)
+
+	unit := func(name, target string) SnapshotUnitSpec {
+		alias := filepath.Join(scratch, name, "alias")
+		upper := filepath.Join(scratch, name, "upper")
+		work := filepath.Join(scratch, name, "work")
+		for _, dir := range []string{alias, upper, work} {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return SnapshotUnitSpec{Target: target, Alias: alias, Upper: upper, Work: work}
+	}
+	artifactDir := filepath.Join(scratch, "artifact")
+	spec := &SnapshotRunSpec{
+		TaskID: "review-shallow-common-linked-worktree",
+		Units: []SnapshotUnitSpec{
+			unit("worktree", linked),
+			unit("common", commonDir),
+		},
+		Cwd: linked,
+		GitArtifact: &SnapshotGitArtifactSpec{
+			ArtifactDir: artifactDir,
+			Baseline:    baseline,
+			EnvRoot:     filepath.Join(scratch, "env"),
+		},
+	}
+	wrap, err := BuildSnapshotWrap(bin, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := "printf 'changed\\n' > tracked.txt && git add -A && git commit -qm isolated"
+	out, err := spawnWithSnapshotNamespaces(t,
+		bin, SnapshotWorkerSubcommand, wrap.SpecJSON, agent.SnapshotWorkerSep,
+		"/bin/sh", "-c", payload)
+	if err != nil {
+		t.Fatalf("worker failed for shallow common linked worktree: %v\\n%s", err, out)
+	}
+	if after := linkedGitFingerprint(t, linked, commonDir); after != before {
+		t.Fatalf("shallow-common linked worktree wrote through to pristine Git state\\nbefore: %s\\nafter:  %s", before, after)
+	}
+	if got, err := os.ReadFile(filepath.Join(linked, "tracked.txt")); err != nil || string(got) != "base\n" {
+		t.Fatalf("linked pristine tracked file = %q, err=%v; want base content", got, err)
+	}
+
+	clone := filepath.Join(scratch, "clone")
+	gitForSnapshotTest(t, "", "clone", "-q", base, clone)
+	gitForSnapshotTest(t, clone, "fetch", filepath.Join(artifactDir, "changes.bundle"), "HEAD:refs/heads/snapshot")
+	gitForSnapshotTest(t, clone, "checkout", "-q", "snapshot")
+	if got := gitForSnapshotTest(t, clone, "show", "snapshot:tracked.txt"); got != "changed\n" {
+		t.Fatalf("captured shallow-common tracked content = %q, want changed", got)
+	}
+}
+
 func TestSnapshotWorkerNestedUnitsUseIndependentUpperLayersSmoke(t *testing.T) {
 	bin := snapshotSmokeBinary(t)
 	scratch := t.TempDir()
@@ -852,4 +1048,240 @@ func TestSnapshotWorkerInterruptedAgentKeepsRecoverableArtifactSmoke(t *testing.
 	if _, err := os.Stat(upper); err != nil {
 		t.Fatalf("interrupted task must retain its overlay upperdir: %v", err)
 	}
+}
+
+func TestSnapshotWorkerConcurrentViewsRemainPinnedAcrossHostGitOperationsSmoke(t *testing.T) {
+	bin := snapshotSmokeBinary(t)
+	scratch := t.TempDir()
+	repo := filepath.Join(scratch, "host")
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "init", "-q")
+	gitForSnapshotTest(t, repo, "config", "user.name", "Test")
+	gitForSnapshotTest(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("base\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "add", "tracked.txt")
+	gitForSnapshotTest(t, repo, "commit", "-qm", "baseline")
+	baseline := strings.TrimSpace(gitForSnapshotTest(t, repo, "rev-parse", "HEAD"))
+	mainBranch := strings.TrimSpace(gitForSnapshotTest(t, repo, "branch", "--show-current"))
+
+	remote := filepath.Join(scratch, "remote.git")
+	gitForSnapshotTest(t, "", "init", "--bare", "-q", remote)
+	gitForSnapshotTest(t, repo, "remote", "add", "origin", remote)
+	gitForSnapshotTest(t, repo, "push", "-q", "-u", "origin", mainBranch)
+
+	type worker struct {
+		name        string
+		unit        SnapshotUnitSpec
+		envRoot     string
+		artifactDir string
+		ready       string
+		release     string
+		outputDir   string
+		done        chan snapshotSmokeWorkerResult
+	}
+	control := filepath.Join(scratch, "control")
+	if err := os.MkdirAll(control, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	newWorker := func(name string) *worker {
+		root := filepath.Join(scratch, name)
+		envRoot := filepath.Join(root, "env")
+		alias, upper, work := PlanSnapshotTree(envRoot, name)
+		for _, dir := range []string{alias, upper, work} {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		artifactDir := SnapshotGitArtifactDir(envRoot, name)
+		unit := SnapshotUnitSpec{Target: repo, Alias: alias, Upper: upper, Work: work}
+		return &worker{
+			name:        name,
+			unit:        unit,
+			envRoot:     envRoot,
+			artifactDir: artifactDir,
+			ready:       filepath.Join(control, name+"-ready"),
+			release:     filepath.Join(control, name+"-release"),
+			outputDir:   control,
+			done:        make(chan snapshotSmokeWorkerResult, 1),
+		}
+	}
+	workers := []*worker{newWorker("alpha"), newWorker("walkthrough")}
+
+	for _, w := range workers {
+		artifact := &SnapshotGitArtifactSpec{ArtifactDir: w.artifactDir, Baseline: baseline, EnvRoot: w.envRoot}
+		if err := RecordSnapshotStart(w.envRoot, SnapshotLedgerEntry{
+			TaskID:      w.name,
+			IssueID:     "RUYI-942",
+			Root:        w.envRoot,
+			Primary:     repo,
+			Units:       []SnapshotUnitSpec{w.unit},
+			GitArtifact: artifact,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		spec := &SnapshotRunSpec{
+			TaskID:      w.name,
+			Units:       []SnapshotUnitSpec{w.unit},
+			Cwd:         repo,
+			GitArtifact: artifact,
+		}
+		wrap, err := BuildSnapshotWrap(bin, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := snapshotSmokeProbePayload(w.ready, w.release, w.outputDir, w.name, 6)
+		go func(name, specJSON string, done chan<- snapshotSmokeWorkerResult) {
+			cmd := exec.Command(bin, SnapshotWorkerSubcommand, specJSON, agent.SnapshotWorkerSep, "/bin/sh", "-c", payload)
+			cmd.SysProcAttr = &syscall.SysProcAttr{
+				Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+				UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+				GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+			}
+			cmd.Env = snapshotSmokeEnvironment()
+			out, err := cmd.CombinedOutput()
+			done <- snapshotSmokeWorkerResult{name: name, out: out, err: err}
+		}(w.name, wrap.SpecJSON, w.done)
+	}
+	for _, w := range workers {
+		waitForSnapshotSmokeFile(t, w.ready)
+	}
+
+	assertProbe := func(stage int) {
+		for _, w := range workers {
+			if err := os.WriteFile(filepath.Join(control, fmt.Sprintf("probe-%d", stage)), []byte("go\n"), 0o600); err != nil && !os.IsExist(err) {
+				t.Fatal(err)
+			}
+			waitForSnapshotSmokeFile(t, filepath.Join(control, fmt.Sprintf("%s-probe-%d", w.name, stage)))
+			got, err := os.ReadFile(filepath.Join(control, fmt.Sprintf("%s-probe-%d", w.name, stage)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := fmt.Sprintf("head=%s\ntracked=base\npulled=absent\n", baseline)
+			if string(got) != want {
+				t.Fatalf("%s view drifted after %s\ngot:\n%s\nwant:\n%s", w.name, snapshotSmokeStageName(stage), got, want)
+			}
+		}
+	}
+
+	assertProbe(0)
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("host-uncommitted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	assertProbe(1)
+
+	gitForSnapshotTest(t, repo, "add", "tracked.txt")
+	gitForSnapshotTest(t, repo, "commit", "-qm", "host commit")
+	gitForSnapshotTest(t, repo, "push", "-q", "origin", mainBranch)
+	assertProbe(2)
+
+	gitForSnapshotTest(t, repo, "switch", "-q", "-c", "host-alt")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("host-switch\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, repo, "add", "tracked.txt")
+	gitForSnapshotTest(t, repo, "commit", "-qm", "host switch")
+	assertProbe(3)
+
+	gitForSnapshotTest(t, repo, "switch", "-q", mainBranch)
+	updater := filepath.Join(scratch, "updater")
+	gitForSnapshotTest(t, "", "clone", "-q", remote, updater)
+	gitForSnapshotTest(t, updater, "config", "user.name", "Test")
+	gitForSnapshotTest(t, updater, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(updater, "pulled.txt"), []byte("remote\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gitForSnapshotTest(t, updater, "add", "pulled.txt")
+	gitForSnapshotTest(t, updater, "commit", "-qm", "remote fast forward")
+	gitForSnapshotTest(t, updater, "push", "-q", "origin", mainBranch)
+	gitForSnapshotTest(t, repo, "pull", "-q", "--ff-only", "origin", mainBranch)
+	assertProbe(4)
+
+	gitForSnapshotTest(t, repo, "reset", "--hard", "-q", baseline)
+	assertProbe(5)
+
+	for _, w := range workers {
+		if err := os.WriteFile(w.release, []byte("release\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, w := range workers {
+		select {
+		case result := <-w.done:
+			if result.err != nil {
+				t.Fatalf("%s worker failed: %v\n%s", result.name, result.err, result.out)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s worker did not finish", w.name)
+		}
+	}
+
+	if got := strings.TrimSpace(gitForSnapshotTest(t, repo, "rev-parse", "HEAD")); got != baseline {
+		t.Fatalf("host reset head = %s, want baseline %s", got, baseline)
+	}
+	if got := gitForSnapshotTest(t, repo, "status", "--porcelain"); got != "" {
+		t.Fatalf("host repository must remain clean, status=%q", got)
+	}
+	for _, w := range workers {
+		clone := filepath.Join(scratch, "clone-"+w.name)
+		gitForSnapshotTest(t, "", "clone", "-q", repo, clone)
+		gitForSnapshotTest(t, clone, "fetch", w.artifactDir+"/changes.bundle", "HEAD:refs/heads/snapshot")
+		if parent := strings.TrimSpace(gitForSnapshotTest(t, clone, "rev-parse", "snapshot^")); parent != baseline {
+			t.Fatalf("%s artifact parent = %s, want baseline %s", w.name, parent, baseline)
+		}
+		if got := gitForSnapshotTest(t, clone, "show", "snapshot:task-result.txt"); got != w.name+"\n" {
+			t.Fatalf("%s artifact output = %q", w.name, got)
+		}
+		if err := FinalizeSnapshot(w.envRoot, w.name, false); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Dir(w.unit.Alias)); !os.IsNotExist(err) {
+			t.Fatalf("%s overlay tree retained after finalization: %v", w.name, err)
+		}
+		if _, err := os.Stat(w.artifactDir); err != nil {
+			t.Fatalf("%s delivered artifact missing after finalization: %v", w.name, err)
+		}
+		ReapExpiredSnapshots(w.envRoot, time.Now().Add(snapshotFailedRetention))
+		if _, err := os.Stat(w.artifactDir); !os.IsNotExist(err) {
+			t.Fatalf("%s delivered artifact retained after expiry: %v", w.name, err)
+		}
+	}
+}
+
+type snapshotSmokeWorkerResult struct {
+	name string
+	out  []byte
+	err  error
+}
+
+func snapshotSmokeProbePayload(ready, release, outputDir, name string, stages int) string {
+	var script strings.Builder
+	fmt.Fprintf(&script, "printf ready > %s; ", ready)
+	for stage := 0; stage < stages; stage++ {
+		fmt.Fprintf(&script, "while [ ! -e %s/probe-%d ]; do sleep 0.01; done; ", outputDir, stage)
+		fmt.Fprintf(&script, "{ printf 'head='; git rev-parse HEAD; printf 'tracked='; tr -d '\\n' < tracked.txt; printf '\\npulled='; if [ -e pulled.txt ]; then printf present; else printf absent; fi; printf '\\n'; } > %s/%s-probe-%d.tmp; mv %s/%s-probe-%d.tmp %s/%s-probe-%d; ", outputDir, name, stage, outputDir, name, stage, outputDir, name, stage)
+	}
+	fmt.Fprintf(&script, "while [ ! -e %s ]; do sleep 0.01; done; printf '%s\\n' > task-result.txt", release, name)
+	return script.String()
+}
+
+func waitForSnapshotSmokeFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
+}
+
+func snapshotSmokeStageName(stage int) string {
+	return []string{"initial snapshot", "host uncommitted write", "host commit", "host switch", "host fast-forward pull", "host forced reset"}[stage]
 }
