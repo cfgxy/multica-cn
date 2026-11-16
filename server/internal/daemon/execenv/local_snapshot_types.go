@@ -61,16 +61,19 @@ type SnapshotUnitSpec struct {
 	// "" for the whole root. It is metadata here (naming, diagnostics); the
 	// mount itself only needs Target.
 	Subdir string `json:"subdir,omitempty"`
+	// GitRoot marks the repository worktree unit that owns the private Git
+	// lower. It is explicit because mount order is about overlay topology, not
+	// Git ownership; linked-worktree metadata may be mounted at a shallower
+	// path than the worktree itself.
+	GitRoot bool `json:"git_root,omitempty"`
 	// TargetDevice and TargetInode identify the directory that was admitted by
 	// the daemon. Linux workers verify and anchor the mount to this object
 	// rather than trusting a path that may have been replaced after admission.
 	TargetDevice      uint64 `json:"target_device,omitempty"`
 	TargetInode       uint64 `json:"target_inode,omitempty"`
 	TargetIdentitySet bool   `json:"target_identity_set,omitempty"`
-	// Alias receives the pristine bind mount, taken BEFORE the overlay covers
-	// Target: inside the namespace the pristine content stays reachable
-	// through Alias for the lifetime of the view (decision 1: pristine via
-	// bind alias).
+	// Alias 是 OverlayFS lowerdir。普通 snapshot 在此 bind pristine 目录；Git
+	// artifact snapshot 则先在 worker namespace 内物化私有 lower 副本。
 	Alias string `json:"alias"`
 	// Upper accumulates the task's writes (copy-up targets and new files).
 	Upper string `json:"upper"`

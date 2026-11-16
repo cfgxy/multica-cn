@@ -141,10 +141,18 @@ type Task struct {
 	// parser (protocol.ParseTaskDirectoryScope) at run start; nil means
 	// undeclared — primary-resource fallback with no task-lifetime lock.
 	// Mirror field: internal/handler/agent.go, same JSON name.
-	LocalDirectoryScope           json.RawMessage        `json:"local_directory_scope,omitempty"`
-	IsLeaderTask                  bool                   `json:"is_leader_task,omitempty"`                   // true when executing in the squad-leader coordinator role
-	LeaderRoleResolved            bool                   `json:"leader_role_resolved,omitempty"`             // server capability: IsLeaderTask/SquadID authoritatively answer "is this a leader run". Absent on servers predating it — those before #4951 never sent is_leader_task at all, later ones send it without this guarantee — so taskIsSquadLeader falls back to the briefing marker for both (MUL-5811)
-	PriorSessionID                string                 `json:"prior_session_id,omitempty"`                 // Claude session ID from a previous task on this issue
+	LocalDirectoryScope json.RawMessage `json:"local_directory_scope,omitempty"`
+	IsLeaderTask        bool            `json:"is_leader_task,omitempty"`       // true when executing in the squad-leader coordinator role
+	LeaderRoleResolved  bool            `json:"leader_role_resolved,omitempty"` // server capability: IsLeaderTask/SquadID authoritatively answer "is this a leader run". Absent on servers predating it — those before #4951 never sent is_leader_task at all, later ones send it without this guarantee — so taskIsSquadLeader falls back to the briefing marker for both (MUL-5811)
+	PriorSessionID      string          `json:"prior_session_id,omitempty"`     // Claude session ID from a previous task on this issue
+	// PriorSessionUsage is the billing usage already recorded for the session
+	// being resumed. ACP providers report cumulative session usage; the daemon
+	// converts it to this task's delta before reporting it.
+	PriorSessionUsage []TaskUsageEntry `json:"prior_session_usage,omitempty"`
+	// PriorSessionUsageUnavailable means the server could not load the baseline.
+	// A resumed ACP snapshot is then unsafe to persist as billing usage; the
+	// daemon drops that attempt's usage while retaining any fresh-session retry.
+	PriorSessionUsageUnavailable  bool                   `json:"prior_session_usage_unavailable,omitempty"`
 	PriorWorkDir                  string                 `json:"prior_work_dir,omitempty"`                   // work_dir from a previous task on this issue
 	PriorSessionResumeUnavailable bool                   `json:"prior_session_resume_unavailable,omitempty"` // MUL-5305: server signals a more recent Codex session was withheld (rollout missing) and PriorSessionID (if any) is an older fallback; the run must disclose the continuity gap even if that older session resumes cleanly. Absent/false on old servers.
 	PriorContextBrief             string                 `json:"prior_context_brief,omitempty"`              // RUYI-107: mechanically assembled hand-off (previous result + unresolved threads + recent activity) replacing a session the server's context gate declined to resume. Mutually exclusive with PriorSessionResumeUnavailable — one says context was carried over, the other says it was lost. Empty on old servers.
@@ -354,6 +362,10 @@ type SkillFileRefData struct {
 
 // TaskUsageEntry represents token usage for a single model during a task execution.
 type TaskUsageEntry struct {
+	// SessionID identifies the provider session that produced this usage. It is
+	// optional for compatibility with older daemons; the server falls back to
+	// the task's current session when it is absent.
+	SessionID        string `json:"session_id,omitempty"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`

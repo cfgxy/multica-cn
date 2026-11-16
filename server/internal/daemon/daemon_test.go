@@ -1662,6 +1662,191 @@ func TestMergeUsage(t *testing.T) {
 	}
 }
 
+func TestTaskUsageEntriesKeepRetrySessionAttribution(t *testing.T) {
+	t.Parallel()
+
+	result := agent.Result{Turns: 2, Usage: map[string]agent.TokenUsage{
+		"model-a": {InputTokens: 50, OutputTokens: 5},
+	}}
+	entries := taskUsageEntries("claude", "old-session", result, result.Usage)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].SessionID != "old-session" || entries[0].InputTokens != 50 || entries[0].Turns != 2 {
+		t.Fatalf("entry = %+v, want old-session/50/turns=2", entries[0])
+	}
+
+	fresh := taskUsageEntries("claude", "fresh-session", result, map[string]agent.TokenUsage{
+		"model-a": {InputTokens: 10, OutputTokens: 1},
+	})
+	if len(fresh) != 1 || fresh[0].SessionID != "fresh-session" || fresh[0].InputTokens != 10 {
+		t.Fatalf("fresh entry = %+v, want fresh-session/10", fresh)
+	}
+}
+
+func TestSubtractPriorSessionUsage(t *testing.T) {
+	t.Parallel()
+
+	baseline := []TaskUsageEntry{{
+		Provider:         "claude",
+		Model:            "model-a",
+		InputTokens:      100,
+		OutputTokens:     40,
+		CacheReadTokens:  30,
+		CacheWriteTokens: 20,
+		CostUSDTicks:     700,
+	}}
+
+	t.Run("subtracts each billing bucket and preserves context", func(t *testing.T) {
+		usage := map[string]agent.TokenUsage{
+			"model-a": {
+				InputTokens:      150,
+				OutputTokens:     55,
+				CacheReadTokens:  45,
+				CacheWriteTokens: 35,
+				CostUSDTicks:     900,
+				ContextTokens:    1200,
+			},
+		}
+
+		got := subtractPriorSessionUsage("claude", baseline, usage)["model-a"]
+		want := agent.TokenUsage{
+			InputTokens:      50,
+			OutputTokens:     15,
+			CacheReadTokens:  15,
+			CacheWriteTokens: 15,
+			CostUSDTicks:     200,
+			ContextTokens:    1200,
+		}
+		if got != want {
+			t.Fatalf("expected usage delta %+v, got %+v", want, got)
+		}
+	})
+
+	t.Run("clamps counters independently and leaves unknown cost unchanged", func(t *testing.T) {
+		baselineWithoutCost := append([]TaskUsageEntry(nil), baseline...)
+		baselineWithoutCost[0].CostUSDTicks = 0
+		usage := map[string]agent.TokenUsage{
+			"model-a": {
+				InputTokens:      90,
+				OutputTokens:     50,
+				CacheReadTokens:  30,
+				CacheWriteTokens: 25,
+				CostUSDTicks:     12,
+			},
+		}
+
+		got := subtractPriorSessionUsage("claude", baselineWithoutCost, usage)["model-a"]
+		if got.InputTokens != 0 || got.OutputTokens != 10 || got.CacheReadTokens != 0 || got.CacheWriteTokens != 5 || got.CostUSDTicks != 12 {
+			t.Fatalf("expected independent non-negative deltas with unknown cost preserved, got %+v", got)
+		}
+	})
+
+	t.Run("does not subtract when provider or model is not matched", func(t *testing.T) {
+		original := agent.TokenUsage{InputTokens: 150, OutputTokens: 55, ContextTokens: 1200}
+		for _, provider := range []string{"codex"} {
+			usage := map[string]agent.TokenUsage{"model-a": original}
+			got := subtractPriorSessionUsage(provider, baseline, usage)["model-a"]
+			if got != original {
+				t.Fatalf("provider %q should be unchanged, got %+v", provider, got)
+			}
+		}
+
+		usage := map[string]agent.TokenUsage{"model-b": original}
+		got := subtractPriorSessionUsage("claude", baseline, usage)["model-b"]
+		if got != original {
+			t.Fatalf("unmatched model should be unchanged, got %+v", got)
+		}
+	})
+
+	t.Run("normalizes resumed usage before merging a fresh retry", func(t *testing.T) {
+		task := Task{PriorSessionID: "session-a", PriorSessionUsage: baseline}
+		first := agent.Result{Usage: map[string]agent.TokenUsage{
+			"model-a": {InputTokens: 200, OutputTokens: 60},
+		}}
+		retry := agent.Result{
+			Status: "completed",
+			Usage: map[string]agent.TokenUsage{
+				"model-a": {InputTokens: 50, OutputTokens: 10},
+			},
+		}
+		firstUsage := normalizePriorSessionUsage("claude", task, first.Usage)
+		merged, _ := reconcileFreshRetryResult(first, firstUsage, 0, retry, 0, nil)
+		got := merged.Usage["model-a"]
+		if got.InputTokens != 150 || got.OutputTokens != 30 {
+			t.Fatalf("expected resumed delta plus fresh usage, got %+v", got)
+		}
+	})
+
+	t.Run("fresh usage is preserved when resumed snapshot is below baseline", func(t *testing.T) {
+		task := Task{PriorSessionID: "session-a", PriorSessionUsage: baseline}
+		first := agent.Result{Usage: map[string]agent.TokenUsage{
+			"model-a": {InputTokens: 50, OutputTokens: 10},
+		}}
+		retry := agent.Result{
+			Status: "completed",
+			Usage: map[string]agent.TokenUsage{
+				"model-a": {InputTokens: 30, OutputTokens: 7},
+			},
+		}
+		firstUsage := normalizePriorSessionUsage("claude", task, first.Usage)
+		merged, _ := reconcileFreshRetryResult(first, firstUsage, 0, retry, 0, nil)
+		got := merged.Usage["model-a"]
+		if got.InputTokens != 30 || got.OutputTokens != 7 {
+			t.Fatalf("expected fresh usage to remain independent, got %+v", got)
+		}
+	})
+
+	t.Run("query failure drops resumed usage but keeps fresh usage", func(t *testing.T) {
+		task := Task{
+			PriorSessionID:               "session-a",
+			PriorSessionUsageUnavailable: true,
+			PriorSessionUsage:            baseline,
+		}
+		first := agent.Result{Usage: map[string]agent.TokenUsage{
+			"model-a": {InputTokens: 200, OutputTokens: 60},
+		}}
+		retry := agent.Result{
+			Status: "completed",
+			Usage: map[string]agent.TokenUsage{
+				"model-a": {InputTokens: 30, OutputTokens: 7},
+			},
+		}
+		firstUsage := normalizePriorSessionUsage("claude", task, first.Usage)
+		merged, _ := reconcileFreshRetryResult(first, firstUsage, 0, retry, 0, nil)
+		got := merged.Usage["model-a"]
+		if got.InputTokens != 30 || got.OutputTokens != 7 {
+			t.Fatalf("expected only fresh usage after unavailable baseline, got %+v", got)
+		}
+	})
+
+	t.Run("explicit fresh baseline turns next cumulative snapshot into delta", func(t *testing.T) {
+		task := Task{
+			PriorSessionID: "fresh-session",
+			PriorSessionUsage: []TaskUsageEntry{{
+				Provider:    "claude",
+				Model:       "claude-sonnet-5",
+				InputTokens: 10,
+			}},
+		}
+		usage := map[string]agent.TokenUsage{
+			"claude-sonnet-5": {InputTokens: 20},
+		}
+		got := normalizePriorSessionUsage("claude", task, usage)["claude-sonnet-5"]
+		if got.InputTokens != 10 {
+			t.Fatalf("expected cumulative snapshot 20 minus baseline 10 = delta 10, got %+v", got)
+		}
+	})
+	t.Run("successful empty baseline keeps resumed snapshot", func(t *testing.T) {
+		task := Task{PriorSessionID: "session-a"}
+		usage := map[string]agent.TokenUsage{"model-a": {InputTokens: 200, OutputTokens: 60}}
+		got := normalizePriorSessionUsage("claude", task, usage)["model-a"]
+		if got.InputTokens != 200 || got.OutputTokens != 60 {
+			t.Fatalf("expected snapshot unchanged with empty baseline, got %+v", got)
+		}
+	})
+}
+
 func TestRunTask_ReportsContextOnlyUsage(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fixture is POSIX-only")
@@ -5049,6 +5234,170 @@ func TestHandleTask_ReportsUsageBeforeCancel(t *testing.T) {
 	}
 	if usageIdx > statusIdx {
 		t.Fatalf("usage was reported AFTER status check (order: %v) — regression", order)
+	}
+}
+
+func TestHandleTask_ReportsSessionIDForNormalClaudeRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	t.Parallel()
+
+	const sessionID = "session-normal-usage"
+	var usageCalls atomic.Int32
+	var usageMu sync.Mutex
+	var usagePayload struct {
+		Usage []TaskUsageEntry `json:"usage"`
+	}
+	var usageDecodeErr error
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/usage"):
+			var payload struct {
+				Usage []TaskUsageEntry `json:"usage"`
+			}
+			err := json.NewDecoder(r.Body).Decode(&payload)
+			usageMu.Lock()
+			usagePayload = payload
+			usageDecodeErr = err
+			usageMu.Unlock()
+			usageCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	fakeBin := filepath.Join(t.TempDir(), "claude")
+	fakeScript := fmt.Sprintf(`#!/bin/sh
+IFS= read -r _
+printf '%%s\n' '{"type":"system","session_id":"%s"}' '{"type":"assistant","message":{"id":"usage-call-1","model":"claude-sonnet-5","usage":{"input_tokens":60,"output_tokens":5},"content":[{"type":"text","text":"done"}]}}' '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"done"}'
+`, sessionID, sessionID)
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake agent: %v", err)
+	}
+
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:         make(map[string]*workspaceState),
+		runtimeIndex:       map[string]Runtime{"rt-leader": {ID: "rt-leader", Provider: "claude"}},
+		activeEnvRoots:     make(map[string]int),
+		cancelPollInterval: time.Hour,
+		cfg: Config{
+			WorkspacesRoot: t.TempDir(),
+			AgentTimeout:   5 * time.Second,
+			ServerBaseURL:  srv.URL,
+			Agents:         map[string]AgentEntry{"claude": {Path: fakeBin}},
+		},
+	}
+	d.runner = taskRunnerFunc(func(runCtx context.Context, task Task, provider string, slot int, log *slog.Logger) (TaskResult, error) {
+		return d.runTask(runCtx, task, provider, slot, log)
+	})
+
+	d.handleTask(context.Background(), leaderReuseTestTask("task-normal-session-usage"), 0)
+
+	if got := usageCalls.Load(); got != 1 {
+		t.Fatalf("usage calls = %d, want 1", got)
+	}
+	usageMu.Lock()
+	payload, decodeErr := usagePayload, usageDecodeErr
+	usageMu.Unlock()
+	if decodeErr != nil {
+		t.Fatalf("decode usage payload: %v", decodeErr)
+	}
+	if len(payload.Usage) != 1 {
+		t.Fatalf("usage payload entries = %d, want 1: %+v", len(payload.Usage), payload.Usage)
+	}
+	if got := payload.Usage[0].SessionID; got != sessionID {
+		t.Fatalf("usage session_id = %q, want %q", got, sessionID)
+	}
+}
+
+func TestHandleTask_DropsUnavailablePriorSessionUsage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	t.Parallel()
+
+	var usageCalls, completeCalls, runnerCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/usage"):
+			usageCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/complete"):
+			completeCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	fakeBin := filepath.Join(t.TempDir(), "claude")
+	fakeScript := `#!/bin/sh
+IFS= read -r _
+printf '%s\n' '{"type":"system","session_id":"session-old"}'
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-sonnet-5","usage":{"input_tokens":60,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[{"type":"text","text":"done"}]}}'
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"session-old","result":"done"}'
+`
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake agent: %v", err)
+	}
+
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:         make(map[string]*workspaceState),
+		runtimeIndex:       map[string]Runtime{"rt-leader": {ID: "rt-leader", Provider: "claude"}},
+		activeEnvRoots:     make(map[string]int),
+		cancelPollInterval: time.Hour,
+		cfg: Config{
+			WorkspacesRoot: t.TempDir(),
+			AgentTimeout:   5 * time.Second,
+			ServerBaseURL:  srv.URL,
+			Agents:         map[string]AgentEntry{"claude": {Path: fakeBin}},
+		},
+	}
+
+	firstTask := leaderReuseTestTask("task-prior-session")
+	firstResult, err := d.runTask(context.Background(), firstTask, "claude", 0, d.logger)
+	if err != nil {
+		t.Fatalf("prepare prior session with runTask: %v", err)
+	}
+	if firstResult.SessionID == "" || firstResult.WorkDir == "" {
+		t.Fatalf("prior run did not establish resume state: %+v", firstResult)
+	}
+	if len(firstResult.Usage) != 1 || firstResult.Usage[0].InputTokens != 60 {
+		t.Fatalf("fake runner usage = %+v, want one cumulative input snapshot of 60", firstResult.Usage)
+	}
+
+	d.runner = taskRunnerFunc(func(runCtx context.Context, task Task, provider string, slot int, log *slog.Logger) (TaskResult, error) {
+		runnerCalls.Add(1)
+		return d.runTask(runCtx, task, provider, slot, log)
+	})
+	secondTask := leaderReuseTestTask("task-unavailable-prior-usage")
+	secondTask.PriorSessionID = firstResult.SessionID
+	secondTask.PriorWorkDir = firstResult.WorkDir
+	secondTask.PriorSessionUsageUnavailable = true
+	d.handleTask(context.Background(), secondTask, 0)
+
+	if got := runnerCalls.Load(); got != 1 {
+		t.Fatalf("runner calls = %d, want 1; handleTask may have exited before execution", got)
+	}
+	if got := usageCalls.Load(); got != 0 {
+		t.Fatalf("usage calls = %d, want 0; unavailable cumulative snapshot must not be reported", got)
+	}
+	if got := completeCalls.Load(); got != 1 {
+		t.Fatalf("complete calls = %d, want 1; task did not reach terminal completion", got)
 	}
 }
 

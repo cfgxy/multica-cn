@@ -2815,6 +2815,46 @@ func TestClaimResponseAgentIdentityMatches(t *testing.T) {
 	}
 }
 
+func TestApplyPriorSessionUsage(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty successful baseline stays available", func(t *testing.T) {
+		resp := AgentTaskResponse{}
+		applyPriorSessionUsage(&resp, nil, nil)
+		if resp.PriorSessionUsageUnavailable {
+			t.Fatal("empty successful baseline must not be marked unavailable")
+		}
+		if len(resp.PriorSessionUsage) != 0 {
+			t.Fatalf("expected no usage rows, got %d", len(resp.PriorSessionUsage))
+		}
+	})
+
+	t.Run("successful baseline is copied with cost", func(t *testing.T) {
+		resp := AgentTaskResponse{}
+		applyPriorSessionUsage(&resp, []db.GetPriorSessionUsageRow{{
+			Provider:     "claude",
+			Model:        "model-a",
+			InputTokens:  100,
+			OutputTokens: 20,
+			CostUsdTicks: 7,
+		}}, nil)
+		if len(resp.PriorSessionUsage) != 1 || resp.PriorSessionUsage[0].Provider != "claude" {
+			t.Fatalf("unexpected copied baseline: %+v", resp.PriorSessionUsage)
+		}
+		if resp.PriorSessionUsage[0].CostUsdTicks == nil || *resp.PriorSessionUsage[0].CostUsdTicks != 7 {
+			t.Fatalf("expected cost pointer 7, got %+v", resp.PriorSessionUsage[0].CostUsdTicks)
+		}
+	})
+
+	t.Run("lookup failure is represented separately by claim", func(t *testing.T) {
+		resp := AgentTaskResponse{}
+		applyPriorSessionUsage(&resp, nil, errors.New("baseline query failed"))
+		if !resp.PriorSessionUsageUnavailable {
+			t.Fatal("claim lookup failure must be distinguishable from empty success")
+		}
+	})
+}
+
 type claimRuntimeGuardTask struct {
 	PriorSessionID                string   `json:"prior_session_id"`
 	PriorWorkDir                  string   `json:"prior_work_dir"`

@@ -8,7 +8,7 @@ import (
 var snapshotBlockedGitEnvironment = map[string]bool{
 	"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_COMMON_DIR": true,
 	"GIT_OBJECT_DIRECTORY": true, "GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
-	"GIT_INDEX_FILE":    true,
+	"GIT_INDEX_FILE": true, "GIT_TEMPLATE_DIR": true,
 	"GIT_CONFIG_GLOBAL": true, "GIT_CONFIG_SYSTEM": true, "GIT_CONFIG_NOSYSTEM": true,
 	"GIT_CONFIG_COUNT": true, "GIT_CONFIG_PARAMETERS": true,
 }
