@@ -164,8 +164,8 @@ func newRuntimeModelCallBudgetClaimFixture(t *testing.T, pool *pgxpool.Pool, max
 		"model_call_budget_max_calls":      maxCalls,
 		"model_call_budget_window_seconds": 3600,
 	})
-	agentA := fx.Agent(t, fmt.Sprintf("runtime-budget-a-%d", suffix), runtimeID, testutil.Cols{"max_concurrent_tasks": -1})
-	agentB := fx.Agent(t, fmt.Sprintf("runtime-budget-b-%d", suffix), runtimeID, testutil.Cols{"max_concurrent_tasks": -1})
+	agentA := fx.Agent(t, fmt.Sprintf("runtime-budget-a-%d", suffix), runtimeID, testutil.Cols{"max_concurrent_tasks": 0})
+	agentB := fx.Agent(t, fmt.Sprintf("runtime-budget-b-%d", suffix), runtimeID, testutil.Cols{"max_concurrent_tasks": 0})
 	taskA := fx.Task(t, agentA, testutil.Cols{
 		"runtime_id": runtimeID,
 		"issue_id":   fx.Issue(t, fmt.Sprintf("runtime-budget-a-issue-%d", suffix)),

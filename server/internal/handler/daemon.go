@@ -161,7 +161,11 @@ func (h *Handler) requireDaemonTaskAccess(w http.ResponseWriter, r *http.Request
 // ResolveTaskWorkspaceID lookup. The two helpers share their entire
 // implementation; the simpler one is preserved for ergonomic call sites
 // that genuinely don't need workspace_id.
-func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r *http.Request, taskID string) (db.AgentTaskQueue, string, bool) {
+// requireDaemonTaskWorkspaceAccess resolves a task and verifies workspace access
+// without applying the daemon-token-to-runtime binding. Evidence reporting uses
+// this narrower gate so it can return the explicit runtime-owner error below
+// instead of masking a same-workspace cross-daemon report as a missing task.
+func (h *Handler) requireDaemonTaskWorkspaceAccess(w http.ResponseWriter, r *http.Request, taskID string) (db.AgentTaskQueue, string, bool) {
 	taskUUID, ok := parseUUIDOrBadRequest(w, taskID, "task_id")
 	if !ok {
 		return db.AgentTaskQueue{}, "", false
@@ -185,8 +189,15 @@ func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r 
 		writeError(w, http.StatusNotFound, "task not found")
 		return db.AgentTaskQueue{}, "", false
 	}
-
 	if !h.requireDaemonWorkspaceAccess(w, r, wsID) {
+		return db.AgentTaskQueue{}, "", false
+	}
+	return task, wsID, true
+}
+
+func (h *Handler) requireDaemonTaskAccessWithWorkspace(w http.ResponseWriter, r *http.Request, taskID string) (db.AgentTaskQueue, string, bool) {
+	task, wsID, ok := h.requireDaemonTaskWorkspaceAccess(w, r, taskID)
+	if !ok {
 		return db.AgentTaskQueue{}, "", false
 	}
 	if middleware.DaemonWorkspaceIDFromContext(r.Context()) != "" {
@@ -5481,15 +5492,29 @@ func (h *Handler) ReportTaskModelCallEvidence(w http.ResponseWriter, r *http.Req
 		return
 	}
 	taskID := chi.URLParam(r, "taskId")
-	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	task, taskWorkspaceID, ok := h.requireDaemonTaskWorkspaceAccess(w, r, taskID)
 	if !ok {
 		return
 	}
-	runtime, ok := h.requireDaemonRuntimeAccess(w, r, uuidToString(task.RuntimeID))
-	if !ok {
+	if !task.RuntimeID.Valid {
+		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	if !runtime.DaemonID.Valid || runtime.DaemonID.String != daemonID {
+	runtime, err := h.getAgentRuntime(r.Context(), obsmetrics.RuntimeLookupSourceDaemonAPI, task.RuntimeID)
+	if err != nil {
+		if isNotFound(err) {
+			writeError(w, http.StatusNotFound, "task not found")
+			return
+		}
+		slog.Warn("get task runtime failed", "task_id", taskID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to load task")
+		return
+	}
+	if uuidToString(runtime.WorkspaceID) != taskWorkspaceID {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if !daemonTokenRuntimeBindingAllowed(r, runtime) || !runtime.DaemonID.Valid || runtime.DaemonID.String != daemonID {
 		writeError(w, http.StatusForbidden, "daemon does not own task runtime")
 		return
 	}

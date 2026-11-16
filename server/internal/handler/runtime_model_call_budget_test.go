@@ -68,7 +68,7 @@ func TestValidateRuntimeModelCallBudgetConfig(t *testing.T) {
 func runtimeModelCallBudgetFixture(t *testing.T, name string) string {
 	t.Helper()
 	runtimeID := dbfx.Runtime(t, "model-call-budget-"+name, testutil.Cols{
-		"daemon_id":    "model-call-budget-daemon-" + name,
+		"daemon_id":    batchClaimTestDaemonID,
 		"runtime_mode": "local",
 		"visibility":   "public",
 	})

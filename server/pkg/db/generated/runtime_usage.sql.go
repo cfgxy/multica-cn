@@ -42,11 +42,43 @@ SELECT
                AND atq.prepare_lease_expires_at >= now()
            )
        )
+       AND (
+           EXISTS (
+               SELECT 1
+               FROM task_usage_model_call_evidence e
+               WHERE e.task_id = atq.id
+                 AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+           )
+           OR EXISTS (
+               SELECT 1
+               FROM task_usage tu
+               WHERE tu.task_id = atq.id
+                 AND tu.model_call_count IS NULL
+                 AND COALESCE(tu.updated_at, tu.created_at) >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+           )
+       )) AS live_unknown_usage_rows,
+    (SELECT COUNT(*)::bigint
+     FROM agent_task_queue atq
+     WHERE atq.runtime_id = r.id
+       AND (
+           atq.status IN ('running', 'waiting_local_directory')
+           OR (
+               atq.status = 'dispatched'
+               AND atq.prepare_lease_expires_at IS NOT NULL
+               AND atq.prepare_lease_expires_at >= now()
+           )
+       )
        AND NOT EXISTS (
            SELECT 1
            FROM task_usage_model_call_evidence e
            WHERE e.task_id = atq.id
              AND e.created_at >= now() - make_interval(secs => r.model_call_budget_window_seconds::double precision)
+       )
+       AND NOT EXISTS (
+           SELECT 1
+           FROM task_usage tu
+           WHERE tu.task_id = atq.id
+             AND tu.model_call_count IS NULL
        )) AS reserved_calls
 FROM agent_runtime r
 WHERE r.id = $1
@@ -58,13 +90,14 @@ type GetRuntimeModelCallBudgetAdmissionRow struct {
 	ModelCallBudgetWindowSeconds int32 `json:"model_call_budget_window_seconds"`
 	KnownCalls                   int64 `json:"known_calls"`
 	UnknownUsageRows             int64 `json:"unknown_usage_rows"`
+	LiveUnknownUsageRows         int64 `json:"live_unknown_usage_rows"`
 	ReservedCalls                int64 `json:"reserved_calls"`
 }
 
 // The caller holds LockRuntimeClaimCapacity for this runtime. Count active
-// claims as one call reservation until their first evidence row enters the
-// rolling window, so concurrent queued -> dispatched transitions cannot use
-// the same final budget slot. Reservations deliberately use dispatched_at:
+// claims as one call reservation until their first evidence or incomplete-usage
+// marker appears, so concurrent queued -> dispatched transitions cannot use the
+// same final budget slot. Reservations deliberately use dispatched_at:
 // a task claimed before the current window does not reserve a fresh slot.
 func (q *Queries) GetRuntimeModelCallBudgetAdmission(ctx context.Context, runtimeID pgtype.UUID) (GetRuntimeModelCallBudgetAdmissionRow, error) {
 	row := q.db.QueryRow(ctx, getRuntimeModelCallBudgetAdmission, runtimeID)
@@ -75,6 +108,7 @@ func (q *Queries) GetRuntimeModelCallBudgetAdmission(ctx context.Context, runtim
 		&i.ModelCallBudgetWindowSeconds,
 		&i.KnownCalls,
 		&i.UnknownUsageRows,
+		&i.LiveUnknownUsageRows,
 		&i.ReservedCalls,
 	)
 	return i, err
@@ -108,11 +142,43 @@ SELECT
                AND atq.prepare_lease_expires_at >= now()
            )
        )
+       AND (
+           EXISTS (
+               SELECT 1
+               FROM task_usage_model_call_evidence e
+               WHERE e.task_id = atq.id
+                 AND e.created_at >= $2::timestamptz
+           )
+           OR EXISTS (
+               SELECT 1
+               FROM task_usage tu
+               WHERE tu.task_id = atq.id
+                 AND tu.model_call_count IS NULL
+                 AND COALESCE(tu.updated_at, tu.created_at) >= $2::timestamptz
+           )
+       )) AS live_unknown_usage_rows,
+    (SELECT COUNT(*)::bigint
+     FROM agent_task_queue atq
+     WHERE atq.runtime_id = $1
+       AND (
+           atq.status IN ('running', 'waiting_local_directory')
+           OR (
+               atq.status = 'dispatched'
+               AND atq.prepare_lease_expires_at IS NOT NULL
+               AND atq.prepare_lease_expires_at >= now()
+           )
+       )
        AND NOT EXISTS (
            SELECT 1
            FROM task_usage_model_call_evidence e
            WHERE e.task_id = atq.id
              AND e.created_at >= $2::timestamptz
+       )
+       AND NOT EXISTS (
+           SELECT 1
+           FROM task_usage tu
+           WHERE tu.task_id = atq.id
+             AND tu.model_call_count IS NULL
        )) AS reserved_calls
 `
 
@@ -122,9 +188,10 @@ type GetRuntimeModelCallBudgetUsageParams struct {
 }
 
 type GetRuntimeModelCallBudgetUsageRow struct {
-	KnownCalls       int64 `json:"known_calls"`
-	UnknownUsageRows int64 `json:"unknown_usage_rows"`
-	ReservedCalls    int64 `json:"reserved_calls"`
+	KnownCalls           int64 `json:"known_calls"`
+	UnknownUsageRows     int64 `json:"unknown_usage_rows"`
+	LiveUnknownUsageRows int64 `json:"live_unknown_usage_rows"`
+	ReservedCalls        int64 `json:"reserved_calls"`
 }
 
 // Rolling provider-call admission budget. Known calls use each provider
@@ -133,10 +200,17 @@ type GetRuntimeModelCallBudgetUsageRow struct {
 // unknown even when partial evidence exists; durable evidence counts immediately,
 // before terminal usage arrives. Unknown rows do not inflate the known total, but
 // cannot bypass a budget whose known lower bound has already reached its limit.
+// An active task with an incomplete usage marker has already reported progress,
+// so it must not consume a second speculative reservation.
 func (q *Queries) GetRuntimeModelCallBudgetUsage(ctx context.Context, arg GetRuntimeModelCallBudgetUsageParams) (GetRuntimeModelCallBudgetUsageRow, error) {
 	row := q.db.QueryRow(ctx, getRuntimeModelCallBudgetUsage, arg.RuntimeID, arg.Since)
 	var i GetRuntimeModelCallBudgetUsageRow
-	err := row.Scan(&i.KnownCalls, &i.UnknownUsageRows, &i.ReservedCalls)
+	err := row.Scan(
+		&i.KnownCalls,
+		&i.UnknownUsageRows,
+		&i.LiveUnknownUsageRows,
+		&i.ReservedCalls,
+	)
 	return i, err
 }
 
@@ -305,6 +379,36 @@ SELECT
                AND atq.prepare_lease_expires_at >= $1::timestamptz
            )
        )
+       AND (
+           EXISTS (
+               SELECT 1
+               FROM task_usage_model_call_evidence e
+               WHERE e.task_id = atq.id
+                 AND e.created_at >= to_timestamp(
+                     EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
+                 )
+           )
+           OR EXISTS (
+               SELECT 1
+               FROM task_usage tu
+               WHERE tu.task_id = atq.id
+                 AND tu.model_call_count IS NULL
+                 AND COALESCE(tu.updated_at, tu.created_at) >= to_timestamp(
+                     EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
+                 )
+           )
+       )) AS live_unknown_usage_rows,
+    (SELECT COUNT(*)::bigint
+     FROM agent_task_queue atq
+     WHERE atq.runtime_id = rt.id
+       AND (
+           atq.status IN ('running', 'waiting_local_directory')
+           OR (
+               atq.status = 'dispatched'
+               AND atq.prepare_lease_expires_at IS NOT NULL
+               AND atq.prepare_lease_expires_at >= $1::timestamptz
+           )
+       )
        AND NOT EXISTS (
            SELECT 1
            FROM task_usage_model_call_evidence e
@@ -312,6 +416,12 @@ SELECT
              AND e.created_at >= to_timestamp(
                  EXTRACT(EPOCH FROM $1::timestamptz) - rt.model_call_budget_window_seconds
              )
+       )
+       AND NOT EXISTS (
+           SELECT 1
+           FROM task_usage tu
+           WHERE tu.task_id = atq.id
+             AND tu.model_call_count IS NULL
        )) AS reserved_calls
 FROM agent_runtime rt
 WHERE rt.id = ANY($2::uuid[])
@@ -323,10 +433,11 @@ type ListRuntimeModelCallBudgetUsageParams struct {
 }
 
 type ListRuntimeModelCallBudgetUsageRow struct {
-	RuntimeID        pgtype.UUID `json:"runtime_id"`
-	KnownCalls       int64       `json:"known_calls"`
-	UnknownUsageRows int64       `json:"unknown_usage_rows"`
-	ReservedCalls    int64       `json:"reserved_calls"`
+	RuntimeID            pgtype.UUID `json:"runtime_id"`
+	KnownCalls           int64       `json:"known_calls"`
+	UnknownUsageRows     int64       `json:"unknown_usage_rows"`
+	LiveUnknownUsageRows int64       `json:"live_unknown_usage_rows"`
+	ReservedCalls        int64       `json:"reserved_calls"`
 }
 
 // Batch equivalent for queued-reason decoration and multi-runtime claims. The
@@ -345,6 +456,7 @@ func (q *Queries) ListRuntimeModelCallBudgetUsage(ctx context.Context, arg ListR
 			&i.RuntimeID,
 			&i.KnownCalls,
 			&i.UnknownUsageRows,
+			&i.LiveUnknownUsageRows,
 			&i.ReservedCalls,
 		); err != nil {
 			return nil, err

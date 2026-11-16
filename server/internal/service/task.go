@@ -3897,6 +3897,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		if budget.ModelCallBudgetEnabled &&
 			budget.ModelCallBudgetMaxCalls > 0 &&
 			budget.ModelCallBudgetWindowSeconds > 0 &&
+			budget.LiveUnknownUsageRows == 0 &&
 			budget.KnownCalls+budget.ReservedCalls >= budget.ModelCallBudgetMaxCalls {
 			slog.Debug("task claim: runtime model-call budget exhausted",
 				"agent_id", util.UUIDToString(agentID),
@@ -3945,7 +3946,6 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				slog.Debug("task claim: no tasks available", "agent_id", util.UUIDToString(agentID))
 				outcome = "no_tasks"
 				return nil
 			}
