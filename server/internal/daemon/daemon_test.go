@@ -5237,6 +5237,87 @@ func TestHandleTask_ReportsUsageBeforeCancel(t *testing.T) {
 	}
 }
 
+func TestHandleTask_ReportsSessionIDForNormalClaudeRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	t.Parallel()
+
+	const sessionID = "session-normal-usage"
+	var usageCalls atomic.Int32
+	var usageMu sync.Mutex
+	var usagePayload struct {
+		Usage []TaskUsageEntry `json:"usage"`
+	}
+	var usageDecodeErr error
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/usage"):
+			var payload struct {
+				Usage []TaskUsageEntry `json:"usage"`
+			}
+			err := json.NewDecoder(r.Body).Decode(&payload)
+			usageMu.Lock()
+			usagePayload = payload
+			usageDecodeErr = err
+			usageMu.Unlock()
+			usageCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"running"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	fakeBin := filepath.Join(t.TempDir(), "claude")
+	fakeScript := fmt.Sprintf(`#!/bin/sh
+IFS= read -r _
+printf '%%s\n' '{"type":"system","session_id":"%s"}' '{"type":"assistant","message":{"id":"usage-call-1","model":"claude-sonnet-5","usage":{"input_tokens":60,"output_tokens":5},"content":[{"type":"text","text":"done"}]}}' '{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"done"}'
+`, sessionID, sessionID)
+	if err := os.WriteFile(fakeBin, []byte(fakeScript), 0o755); err != nil {
+		t.Fatalf("write fake agent: %v", err)
+	}
+
+	d := &Daemon{
+		client:             NewClient(srv.URL),
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workspaces:         make(map[string]*workspaceState),
+		runtimeIndex:       map[string]Runtime{"rt-leader": {ID: "rt-leader", Provider: "claude"}},
+		activeEnvRoots:     make(map[string]int),
+		cancelPollInterval: time.Hour,
+		cfg: Config{
+			WorkspacesRoot: t.TempDir(),
+			AgentTimeout:   5 * time.Second,
+			ServerBaseURL:  srv.URL,
+			Agents:         map[string]AgentEntry{"claude": {Path: fakeBin}},
+		},
+	}
+	d.runner = taskRunnerFunc(func(runCtx context.Context, task Task, provider string, slot int, log *slog.Logger) (TaskResult, error) {
+		return d.runTask(runCtx, task, provider, slot, log)
+	})
+
+	d.handleTask(context.Background(), leaderReuseTestTask("task-normal-session-usage"), 0)
+
+	if got := usageCalls.Load(); got != 1 {
+		t.Fatalf("usage calls = %d, want 1", got)
+	}
+	usageMu.Lock()
+	payload, decodeErr := usagePayload, usageDecodeErr
+	usageMu.Unlock()
+	if decodeErr != nil {
+		t.Fatalf("decode usage payload: %v", decodeErr)
+	}
+	if len(payload.Usage) != 1 {
+		t.Fatalf("usage payload entries = %d, want 1: %+v", len(payload.Usage), payload.Usage)
+	}
+	if got := payload.Usage[0].SessionID; got != sessionID {
+		t.Fatalf("usage session_id = %q, want %q", got, sessionID)
+	}
+}
+
 func TestHandleTask_DropsUnavailablePriorSessionUsage(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fixture is POSIX-only")
