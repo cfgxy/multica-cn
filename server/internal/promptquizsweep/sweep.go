@@ -133,20 +133,25 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 		if !run.RuntimeID.Valid {
 			continue
 		}
+		snapshot, ok := quizItemSnapshotFromContext(run.Context, run.ItemID)
+		if !ok {
+			continue
+		}
+		batch, ok := batchIDFromContext(run.Context)
+		if !ok {
+			continue
+		}
+
 		item, err := r.Queries.GetPromptQuizItem(ctx, db.GetPromptQuizItemParams{
 			ID:          run.ItemID,
 			WorkspaceID: run.WorkspaceID,
 		})
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				continue
-			}
+		itemMatchesSnapshot := false
+		if err == nil {
+			itemMatchesSnapshot = item.Revision == snapshot.Revision &&
+				promptquiz.BodyDigest(item.Body) == promptquiz.BodyDigest(snapshot.Prompt)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return n, fmt.Errorf("read quiz item: %w", err)
-		}
-
-		batch, ok := batchIDFromContext(run.Context)
-		if !ok {
-			continue
 		}
 
 		params := db.UpsertPromptQuizResultParams{
@@ -155,8 +160,8 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 			ScopeID:        run.AgentID,
 			Version:        version,
 			ItemID:         run.ItemID,
-			ItemRevision:   item.Revision,
-			ItemBodySha256: promptquiz.BodyDigest(item.Body),
+			ItemRevision:   snapshot.Revision,
+			ItemBodySha256: promptquiz.BodyDigest(snapshot.Prompt),
 			RuntimeID:      run.RuntimeID,
 			BatchID:        batch,
 			TaskID:         run.TaskID,
@@ -200,7 +205,7 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 		// not-gradeable NULLs would be re-collected every tick and crowd
 		// the bounded collection window.
 		params.GradedAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
-		if run.Status == "completed" {
+		if run.Status == "completed" && itemMatchesSnapshot {
 			grade, detail := r.gradeTask(ctx, run.TaskID, item.RubricChecks)
 			if grade.Graded {
 				params.Score = pgtype.Float4{Float32: float32(grade.Score), Valid: true}
@@ -329,7 +334,7 @@ func (r Runner) enqueue(ctx context.Context, budget int) (int, error) {
 // field, so this function could not send the answer key even by mistake.
 // sweep_test.go asserts the payload's field set rather than trusting that.
 func taskContext(item db.ListActivePromptQuizItemsForProfileRow, batch pgtype.UUID) ([]byte, error) {
-	return TaskContextPayload(uuid.UUID(item.ID.Bytes).String(), item.Title, item.Body, batch)
+	return TaskContextPayloadWithRevision(uuid.UUID(item.ID.Bytes).String(), item.Title, item.Body, item.Revision, batch)
 }
 
 // TaskContextPayload builds the payload a quiz run's daemon receives, exported
@@ -341,12 +346,23 @@ func taskContext(item db.ListActivePromptQuizItemsForProfileRow, batch pgtype.UU
 // prompt under test plus a fixed string. The guarantee is the caller's to keep
 // on this path: pass the body and identity/display metadata, never the rubric.
 func TaskContextPayload(itemID, itemTitle, body string, batch pgtype.UUID) ([]byte, error) {
+	return TaskContextPayloadWithRevision(itemID, itemTitle, body, 1, batch)
+}
+
+// TaskContextPayloadWithRevision builds a quiz payload with the exact public
+// item snapshot used to order the run. The collector uses it to avoid grading a
+// completed run against a later edit of the question.
+func TaskContextPayloadWithRevision(itemID, itemTitle, body string, revision int32, batch pgtype.UUID) ([]byte, error) {
+	if revision <= 0 {
+		return nil, fmt.Errorf("quiz item revision must be positive")
+	}
 	payload, err := json.Marshal(map[string]any{
-		"kind":            promptquiz.TaskKind,
-		"quiz_batch_id":   uuid.UUID(batch.Bytes).String(),
-		"quiz_item_id":    itemID,
-		"quiz_item_title": itemTitle,
-		"quiz_prompt":     body,
+		"kind":               promptquiz.TaskKind,
+		"quiz_batch_id":      uuid.UUID(batch.Bytes).String(),
+		"quiz_item_id":       itemID,
+		"quiz_item_title":    itemTitle,
+		"quiz_item_revision": revision,
+		"quiz_prompt":        body,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode quiz context: %w", err)
@@ -388,6 +404,28 @@ func batchIDFromContext(raw []byte) (pgtype.UUID, bool) {
 		return pgtype.UUID{}, false
 	}
 	return pgtype.UUID{Bytes: parsed, Valid: true}, true
+}
+
+type quizItemSnapshot struct {
+	ItemID   string `json:"quiz_item_id"`
+	Revision int32  `json:"quiz_item_revision"`
+	Prompt   string `json:"quiz_prompt"`
+	BatchID  string `json:"quiz_batch_id"`
+}
+
+func quizItemSnapshotFromContext(raw []byte, itemID pgtype.UUID) (quizItemSnapshot, bool) {
+	var snapshot quizItemSnapshot
+	if len(raw) == 0 || json.Unmarshal(raw, &snapshot) != nil || snapshot.Revision <= 0 || snapshot.Prompt == "" {
+		return quizItemSnapshot{}, false
+	}
+	parsedItemID, err := uuid.Parse(snapshot.ItemID)
+	if err != nil || !itemID.Valid || parsedItemID != itemID.Bytes {
+		return quizItemSnapshot{}, false
+	}
+	if _, ok := batchIDFromContext(raw); !ok {
+		return quizItemSnapshot{}, false
+	}
+	return snapshot, true
 }
 
 func newUUID() pgtype.UUID {
