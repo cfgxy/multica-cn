@@ -269,6 +269,32 @@ describe("ActivityTab prompt-quiz runs", () => {
       .toBeInTheDocument();
     expect(screen.queryByText("Untracked")).not.toBeInTheDocument();
   });
+
+  it("keeps quiz attribution and stable identifiers when the item title is unavailable", async () => {
+    agentTasksRef.current = () => Promise.resolve([
+      {
+        id: "task-quiz-deleted-item",
+        agent_id: "agent-1",
+        issue_id: "",
+        status: "completed",
+        created_at: "2026-10-11T00:05:00Z",
+        completed_at: "2026-10-11T00:06:00Z",
+        kind: "quiz",
+        quiz_item_id: "8d4e0000-0000-4000-8000-111122223333",
+        quiz_item_title: "   ",
+        quiz_batch_id: "9e5f0000-0000-4000-8000-444455556666",
+      },
+    ] as unknown as AgentTask[]);
+    renderTab();
+
+    const title = await screen.findByText(
+      "Quiz scoring · Batch 55556666 / Item 22223333",
+    );
+    expect(within(title.closest(".group")!).getByText("Quiz scoring"))
+      .toBeInTheDocument();
+    expect(screen.queryByText("Deleted quiz title")).not.toBeInTheDocument();
+    expect(screen.queryByText("Untracked")).not.toBeInTheDocument();
+  });
 });
 
 describe("ActivityTab task experience receipts (RUYI-846)", () => {

@@ -155,7 +155,7 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 	ordered := 0
 	for _, agent := range agents {
 		for _, item := range items {
-			payload, err := promptquizsweep.TaskContextPayload(uuid.UUID(item.id.Bytes).String(), item.title, item.body, batch)
+			payload, err := promptquizsweep.TaskContextPayloadWithRevision(uuid.UUID(item.id.Bytes).String(), item.title, item.body, item.revision, batch)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to encode the quiz context")
 				return
@@ -190,9 +190,10 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 // narrow: body, not rubric — the payload builder takes what the daemon sees
 // and nothing more, mirroring the sweep's structural isolation.
 type batchItem struct {
-	id    pgtype.UUID
-	title string
-	body  string
+	id       pgtype.UUID
+	title    string
+	body     string
+	revision int32
 }
 
 // resolveBatchItems turns the request's item selection into batchItems. Empty
@@ -209,7 +210,7 @@ func (h *Handler) resolveBatchItems(r *http.Request, workspaceID pgtype.UUID, it
 			return nil, err
 		}
 		for _, row := range rows {
-			out = append(out, batchItem{id: row.ID, title: row.Title, body: row.Body})
+			out = append(out, batchItem{id: row.ID, title: row.Title, body: row.Body, revision: row.Revision})
 		}
 		return out, nil
 	}
@@ -234,7 +235,7 @@ func (h *Handler) resolveBatchItems(r *http.Request, workspaceID pgtype.UUID, it
 		if !item.Active {
 			continue
 		}
-		out = append(out, batchItem{id: item.ID, title: item.Title, body: item.Body})
+		out = append(out, batchItem{id: item.ID, title: item.Title, body: item.Body, revision: item.Revision})
 	}
 	return out, nil
 }
