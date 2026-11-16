@@ -497,6 +497,22 @@ func TestUnknownTaskUsageFailsClosedForIssueSessionBaseline(t *testing.T) {
 		t.Fatalf("claim returned an unsafe fresh baseline = %+v, want empty", claimed.Task.PriorSessionUsage)
 	}
 
+	// normalizePriorSessionUsage returns nil for the next cumulative snapshot when
+	// the baseline is unavailable. Client.ReportTaskUsage consequently sends an
+	// empty usage array; exercise that real handler boundary rather than inserting
+	// the expected absence directly into the database.
+	reportReq := daemonTaskRequest(t, "/api/daemon/tasks/"+nextTaskID+"/usage", nextTaskID, json.RawMessage(`{"usage":[]}`))
+	testutil.Call(t, testHandler.ReportTaskUsage, reportReq).Want(http.StatusOK)
+
+	var currentRunRows int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM task_usage WHERE task_id = $1`, nextTaskID).Scan(&currentRunRows); err != nil {
+		t.Fatalf("read unavailable cumulative snapshot rows: %v", err)
+	}
+	if currentRunRows != 0 {
+		t.Fatalf("unavailable cumulative snapshot created %d current-run rows, want none", currentRunRows)
+	}
+
 	issueSummary, err := testHandler.Queries.GetIssueUsageSummary(ctx, parseUUID(issueID))
 	if err != nil {
 		t.Fatalf("load issue usage summary: %v", err)
