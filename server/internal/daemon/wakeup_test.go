@@ -81,6 +81,62 @@ func TestHandleWorkerEvidenceRPCChecksRuntimeAndSupervisorOwnership(t *testing.T
 	}
 }
 
+func TestHandleWorkerEvidenceRPCOnConnectionDoesNotUseReplacementSender(t *testing.T) {
+	const taskID = "11111111-1111-4111-8111-111111111111"
+	const runID = taskID + "-1"
+	mgr, err := supervisor.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup, err := supervisor.New(mgr, nil, "/tmp/fake-daemon", "daemon-a", "owner-a", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mgr.Dir(runID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stdout := filepath.Join(mgr.Dir(runID), "worker-stdout.log")
+	if err := os.WriteFile(stdout, []byte("owned output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.WriteManifest(&supervisor.Manifest{RunID: runID, TaskID: taskID, RuntimeID: "runtime-a", DaemonID: "daemon-a", State: supervisor.StateExited, StdoutLog: stdout, StderrLog: filepath.Join(mgr.Dir(runID), "worker-stderr.log")}); err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{supervisor: sup, wsRPC: newWSRPCClient(0), logger: slog.Default(), workspaces: map[string]*workspaceState{"workspace-a": {runtimeIDs: []string{"runtime-a"}}}}
+	oldFrames := make(chan []byte, 1)
+	newFrames := make(chan []byte, 1)
+	oldSender := func(frame []byte) (*wsOutbound, error) {
+		oldFrames <- frame
+		return &wsOutbound{data: frame}, nil
+	}
+	d.wsRPC.attach(oldSender)
+	d.wsRPC.attach(func(frame []byte) (*wsOutbound, error) {
+		newFrames <- frame
+		return &wsOutbound{data: frame}, nil
+	})
+
+	d.handleWorkerEvidenceRPCWithSender(protocol.WorkerEvidenceRequest{RequestID: "request-old", RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 128, TimeoutMs: 2500}, oldSender)
+
+	select {
+	case frame := <-oldFrames:
+		var msg protocol.Message
+		if err := json.Unmarshal(frame, &msg); err != nil {
+			t.Fatal(err)
+		}
+		var got protocol.WorkerEvidenceResponse
+		if msg.Type != protocol.EventDaemonWorkerEvidenceResponse || json.Unmarshal(msg.Payload, &got) != nil || got.RequestID != "request-old" || !got.Available || got.StdoutTail != "owned output" {
+			t.Fatalf("response=%+v message_type=%q", got, msg.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("response was not sent on the request connection")
+	}
+	select {
+	case <-newFrames:
+		t.Fatal("response was sent on the replacement connection")
+	default:
+	}
+}
+
 func TestTaskWakeupURL(t *testing.T) {
 	tests := []struct {
 		name       string
