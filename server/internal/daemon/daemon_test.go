@@ -1820,6 +1820,23 @@ func TestSubtractPriorSessionUsage(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit fresh baseline turns next cumulative snapshot into delta", func(t *testing.T) {
+		task := Task{
+			PriorSessionID: "fresh-session",
+			PriorSessionUsage: []TaskUsageEntry{{
+				Provider:    "claude",
+				Model:       "claude-sonnet-5",
+				InputTokens: 10,
+			}},
+		}
+		usage := map[string]agent.TokenUsage{
+			"claude-sonnet-5": {InputTokens: 20},
+		}
+		got := normalizePriorSessionUsage("claude", task, usage)["claude-sonnet-5"]
+		if got.InputTokens != 10 {
+			t.Fatalf("expected cumulative snapshot 20 minus baseline 10 = delta 10, got %+v", got)
+		}
+	})
 	t.Run("successful empty baseline keeps resumed snapshot", func(t *testing.T) {
 		task := Task{PriorSessionID: "session-a"}
 		usage := map[string]agent.TokenUsage{"model-a": {InputTokens: 200, OutputTokens: 60}}
