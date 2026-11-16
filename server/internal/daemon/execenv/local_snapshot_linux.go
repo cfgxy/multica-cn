@@ -3,10 +3,12 @@
 package execenv
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -289,12 +291,34 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 	}
 	closePrechecked()
 	mounted := make([]snapshotMountedUnit, 0, len(spec.Units))
-	for _, i := range mountOrder(spec.Units) {
+	gitRootIndex, err := snapshotGitRootIndex(spec)
+	if err != nil {
+		mounts.Close()
+		_ = rootAnchor.Close()
+		return nil, err
+	}
+	for _, i := range snapshotMountOrder(spec.Units, gitRootIndex) {
 		parent, relative, nested := snapshotMountedAncestor(mounted, spec.Units[i].Target)
 		var lower *os.File
 		if nested {
 			verificationPath := filepath.Join(parent.Alias, relative)
-			verificationTarget, openErr := openSnapshotTargetAt(&spec.Units[i], verificationPath, true)
+			// Every host target was admitted and identity-checked above. A Git
+			// artifact's nested lower is different: it is a daemon-materialized
+			// private clone, so the host TargetDevice/TargetInode must not be
+			// applied to this new object. Non-Git nested units retain the
+			// original identity check and inode comparison below.
+			// Every host target was admitted and identity-checked above. A Git
+			// artifact's nested lower is different: it is a daemon-materialized
+			// private clone, so the host TargetDevice/TargetInode must not be
+			// applied to this new object. Non-Git nested units retain the
+			// original identity check and inode comparison below.
+			// Every host target was admitted and identity-checked above. A Git
+			// artifact's nested lower is different: it is a daemon-materialized
+			// private clone, so the host TargetDevice/TargetInode must not be
+			// applied to this new object. Non-Git nested units retain the
+			// original identity check and inode comparison below.
+			verifyHostIdentity := spec.GitArtifact == nil
+			verificationTarget, openErr := openSnapshotTargetAt(&spec.Units[i], verificationPath, verifyHostIdentity)
 			if openErr != nil {
 				mounts.Close()
 				_ = rootAnchor.Close()
@@ -311,7 +335,10 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 			_ = rootAnchor.Close()
 			return nil, fmt.Errorf("open unit %d (%s): %w", i, spec.Units[i].Target, openErr)
 		}
-		if nested {
+		if lower == nil {
+			lower = target
+		}
+		if nested && spec.GitArtifact == nil {
 			if err := snapshotTargetsShareInode(lower, target); err != nil {
 				_ = lower.Close()
 				_ = target.Close()
@@ -320,10 +347,8 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 				return nil, fmt.Errorf("verify nested unit %d (%s): %w", i, spec.Units[i].Target, err)
 			}
 		}
-		if lower == nil {
-			lower = target
-		}
-		if err := mountSnapshotUnit(&spec.Units[i], lower, target); err != nil {
+		gitRoot := spec.GitArtifact != nil && i == gitRootIndex
+		if err := mountSnapshotUnit(&spec.Units[i], lower, target, spec.GitArtifact, gitRoot); err != nil {
 			if lower != target {
 				_ = lower.Close()
 			}
@@ -376,6 +401,124 @@ func mountSnapshotViews(spec *SnapshotRunSpec) (*snapshotMounts, error) {
 	}
 	_ = rootAnchor.Close()
 	return mounts, nil
+}
+
+// snapshotGitRootIndex selects the unit whose worktree owns the private Git
+// lower. The production daemon marks this unit explicitly. Older hand-built
+// specs are accepted only when Cwd and the unit topology identify one root;
+// mount order is never used as a fallback because a linked-worktree common
+// directory can be shallower than the worktree.
+func snapshotGitRootIndex(spec *SnapshotRunSpec) (int, error) {
+	if spec == nil || spec.GitArtifact == nil {
+		return -1, nil
+	}
+	rootIndex := -1
+	for i, unit := range spec.Units {
+		if !unit.GitRoot {
+			continue
+		}
+		if rootIndex >= 0 {
+			return -1, errors.New("snapshot Git spec marks multiple private lower roots")
+		}
+		rootIndex = i
+	}
+	if rootIndex >= 0 {
+		return rootIndex, nil
+	}
+	if spec.Cwd == "" {
+		return -1, errors.New("snapshot Git spec has no explicit root or cwd")
+	}
+
+	cwd := filepath.Clean(spec.Cwd)
+	bestIndex := -1
+	bestDepth := -1
+	for i, unit := range spec.Units {
+		target := filepath.Clean(unit.Target)
+		rel, err := filepath.Rel(target, cwd)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		depth := strings.Count(target, string(filepath.Separator))
+		// Prefer the deepest proper ancestor when Cwd is a declared business
+		// directory. Its repository containment unit owns .git; the business
+		// overlay itself does not. An exact Cwd unit wins for linked worktrees.
+		if rel == "." {
+			if bestIndex < 0 || bestDepth < depth {
+				bestIndex, bestDepth = i, depth
+			}
+			continue
+		}
+		if bestIndex < 0 || bestDepth < depth {
+			bestIndex, bestDepth = i, depth
+		}
+	}
+	if bestIndex < 0 {
+		return -1, fmt.Errorf("snapshot Git cwd %s is not covered by a unit", spec.Cwd)
+	}
+
+	// If an exact Cwd unit exists and a proper ancestor also exists, the
+	// ancestor is the repository containment unit used by declared subdirs.
+	// Otherwise the exact Cwd unit is the primary/worktree unit.
+	exactIndex := -1
+	exactDepth := -1
+	ancestorIndex := -1
+	ancestorDepth := -1
+	for i, unit := range spec.Units {
+		target := filepath.Clean(unit.Target)
+		depth := strings.Count(target, string(filepath.Separator))
+		rel, err := filepath.Rel(target, cwd)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if rel == "." && depth > exactDepth {
+			exactIndex, exactDepth = i, depth
+		} else if rel != "." && depth > ancestorDepth {
+			ancestorIndex, ancestorDepth = i, depth
+		}
+	}
+	if exactIndex >= 0 && ancestorIndex >= 0 {
+		return ancestorIndex, nil
+	}
+	return bestIndex, nil
+}
+
+// snapshotMountOrder keeps the overlay parent-before-child rule while moving
+// the Git root ahead of unrelated metadata units. A linked-worktree common
+// directory may be shallower than the worktree; mounting it first would hide
+// the common metadata before the root can be materialized from its source.
+func snapshotMountOrder(units []SnapshotUnitSpec, gitRootIndex int) []int {
+	order := mountOrder(units)
+	if gitRootIndex < 0 || gitRootIndex >= len(units) {
+		return order
+	}
+	rootPosition := -1
+	insertPosition := 0
+	for position, index := range order {
+		if index == gitRootIndex {
+			rootPosition = position
+			continue
+		}
+		if snapshotPathIsProperAncestor(units[index].Target, units[gitRootIndex].Target) {
+			insertPosition = position + 1
+		}
+	}
+	if rootPosition < 0 || rootPosition <= insertPosition {
+		return order
+	}
+	root := order[rootPosition]
+	order = append(order[:rootPosition], order[rootPosition+1:]...)
+	if insertPosition > rootPosition {
+		insertPosition--
+	}
+	order = append(order, 0)
+	copy(order[insertPosition+1:], order[insertPosition:])
+	order[insertPosition] = root
+	return order
+}
+
+func snapshotPathIsProperAncestor(parent, child string) bool {
+	rel, err := filepath.Rel(filepath.Clean(parent), filepath.Clean(child))
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // snapshotCwdView opens Cwd through the stable parent anchor and requires the
@@ -564,10 +707,8 @@ func snapshotTargetStillAtPath(target *os.File, expected string) error {
 	return nil
 }
 
-// snapshotTargetsShareInode binds a nested overlay's visible mountpoint to the
-// verified directory opened through the parent's pristine alias. Overlayfs
-// changes st_dev for the visible target but preserves the lower inode until a
-// replacement directory occupies that path.
+// snapshotTargetsShareInode 保证普通 bind lowerdir 与将承载嵌套 overlay 的
+// target 指向同一 inode。Git artifact snapshot 刻意使用独立的私有副本。
 func snapshotTargetsShareInode(lower, target *os.File) error {
 	if lower == nil || target == nil {
 		return errors.New("nested snapshot target check is missing descriptor")
@@ -585,7 +726,7 @@ func snapshotTargetsShareInode(lower, target *os.File) error {
 	return nil
 }
 
-func mountSnapshotUnit(u *SnapshotUnitSpec, lower, target *os.File) error {
+func mountSnapshotUnit(u *SnapshotUnitSpec, lower, target *os.File, gitArtifact *SnapshotGitArtifactSpec, gitRoot bool) error {
 	if u.Target == "" || u.Alias == "" || u.Upper == "" || u.Work == "" {
 		return errors.New("unit is missing target/alias/upper/work")
 	}
@@ -597,9 +738,27 @@ func mountSnapshotUnit(u *SnapshotUnitSpec, lower, target *os.File) error {
 			return fmt.Errorf("prepare %s: %w", d, err)
 		}
 	}
-	lowerFDPath := filepath.Join("/proc/self/fd", fmt.Sprint(lower.Fd()))
-	if err := unix.Mount(lowerFDPath, u.Alias, "", unix.MS_BIND, ""); err != nil {
-		return fmt.Errorf("bind %s -> %s: %w", u.Target, u.Alias, err)
+	if gitArtifact != nil {
+		switch {
+		case gitRoot:
+			if err := materializeSnapshotGitLower(lower, u.Alias, gitArtifact); err != nil {
+				return fmt.Errorf("materialize Git private lower for %s: %w", u.Target, err)
+			}
+		case lower != target:
+			if err := materializeSnapshotLower(lower, u.Alias); err != nil {
+				return fmt.Errorf("materialize nested private lower for %s: %w", u.Target, err)
+			}
+		default:
+			// A Git metadata unit is covered by the independent clone made for
+			// the repository root. Keep this lower empty; mounting the host
+			// descriptor here would reintroduce the very source of drift this
+			// private view is meant to prevent.
+		}
+	} else {
+		lowerFDPath := filepath.Join("/proc/self/fd", fmt.Sprint(lower.Fd()))
+		if err := unix.Mount(lowerFDPath, u.Alias, "", unix.MS_BIND, ""); err != nil {
+			return fmt.Errorf("bind %s -> %s: %w", u.Target, u.Alias, err)
+		}
 	}
 	targetFDPath := filepath.Join("/proc/self/fd", fmt.Sprint(target.Fd()))
 	opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s,userxattr", u.Alias, u.Upper, u.Work)
@@ -607,6 +766,277 @@ func mountSnapshotUnit(u *SnapshotUnitSpec, lower, target *os.File) error {
 		return fmt.Errorf("overlay on %s: %w", u.Target, err)
 	}
 	return nil
+}
+
+// materializeSnapshotGitLower creates a complete private repository at the
+// recorded baseline. The source descriptor is used only to pack objects
+// reachable from that commit. It imports neither refs, local configuration nor
+// remotes from the mutable host view.
+func materializeSnapshotGitLower(lower *os.File, destination string, spec *SnapshotGitArtifactSpec) error {
+	if lower == nil || spec == nil || spec.Baseline == "" {
+		return errors.New("Git private lower source or baseline is missing")
+	}
+	sourceFD, err := unix.Dup(int(lower.Fd()))
+	if err != nil {
+		return fmt.Errorf("duplicate Git private lower source: %w", err)
+	}
+	sourceFile := os.NewFile(uintptr(sourceFD), "snapshot-git-source")
+	defer sourceFile.Close()
+	env := snapshotGitEnvironment(nil)
+	objectFormat, err := snapshotGitObjectFormat(sourceFile, env)
+	if err != nil {
+		return err
+	}
+	if out, err := runSnapshotGitSourceCommand(sourceFile, env, "cat-file", "-e", spec.Baseline+"^{commit}"); err != nil {
+		return fmt.Errorf("verify private baseline %s in source: %s: %w", spec.Baseline, strings.TrimSpace(out), err)
+	}
+	if out, err := runSnapshotGitCommand("", env, "init", "--quiet", "--object-format="+objectFormat, destination); err != nil {
+		return fmt.Errorf("initialize private Git repository with %s object format: %s: %w", objectFormat, strings.TrimSpace(out), err)
+	}
+	if err := preserveSnapshotGitIdentity(sourceFile, destination, env); err != nil {
+		return err
+	}
+	if err := importSnapshotGitBaseline(sourceFile, destination, spec.Baseline, env); err != nil {
+		return err
+	}
+	if out, err := runSnapshotGitCommand(destination, env, "update-ref", "refs/snapshot/baseline", spec.Baseline); err != nil {
+		return fmt.Errorf("record private baseline ref: %s: %w", strings.TrimSpace(out), err)
+	}
+	if out, err := runSnapshotGitCommand(destination, env, "checkout", "--detach", "--quiet", spec.Baseline); err != nil {
+		return fmt.Errorf("checkout baseline %s: %s: %w", spec.Baseline, strings.TrimSpace(out), err)
+	}
+	if out, err := runSnapshotGitCommand(destination, env, "rev-parse", "HEAD"); err != nil || strings.TrimSpace(out) != spec.Baseline {
+		if err != nil {
+			return fmt.Errorf("verify private baseline: %w", err)
+		}
+		return fmt.Errorf("private baseline is %s, want %s", strings.TrimSpace(out), spec.Baseline)
+	}
+	if out, err := runSnapshotGitCommand(destination, env, "status", "--porcelain"); err != nil {
+		return fmt.Errorf("verify private baseline status: %w", err)
+	} else if strings.TrimSpace(out) != "" {
+		return fmt.Errorf("private baseline is not clean: %s", strings.TrimSpace(out))
+	}
+	return nil
+}
+
+func snapshotGitObjectFormat(source *os.File, env []string) (string, error) {
+	out, err := runSnapshotGitSourceCommand(source, env, "rev-parse", "--show-object-format")
+	if err != nil {
+		return "", fmt.Errorf("resolve source Git object format: %s: %w", strings.TrimSpace(out), err)
+	}
+	format := strings.TrimSpace(out)
+	switch format {
+	case "sha1", "sha256":
+		return format, nil
+	default:
+		return "", fmt.Errorf("unsupported source Git object format %q", format)
+	}
+}
+
+func preserveSnapshotGitIdentity(source *os.File, destination string, env []string) error {
+	for _, key := range []string{"user.name", "user.email"} {
+		out, err := runSnapshotGitSourceCommand(source, env, "config", "--local", "--no-includes", "--get", key)
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+				continue
+			}
+			return fmt.Errorf("read private Git identity %s: %s: %w", key, strings.TrimSpace(out), err)
+		}
+		if _, err := runSnapshotGitCommand(destination, env, "config", "--local", key, strings.TrimSuffix(out, "\n")); err != nil {
+			return fmt.Errorf("record private Git identity %s: %w", key, err)
+		}
+	}
+	return nil
+}
+
+func importSnapshotGitBaseline(source *os.File, destination, baseline string, env []string) error {
+	pack := exec.Command("git", "-C", "/proc/self/fd/3", "pack-objects", "--stdout", "--revs")
+	pack.Env = env
+	pack.ExtraFiles = []*os.File{source}
+	pack.Stdin = strings.NewReader(baseline + "\n")
+	packOut, err := pack.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("open private baseline object stream: %w", err)
+	}
+	var packErr bytes.Buffer
+	pack.Stderr = &packErr
+
+	index := exec.Command("git", "-C", destination, "index-pack", "--stdin", "--fix-thin")
+	index.Env = env
+	index.Stdin = packOut
+	var indexOut bytes.Buffer
+	index.Stdout = &indexOut
+	index.Stderr = &indexOut
+	if err := pack.Start(); err != nil {
+		return fmt.Errorf("start private baseline object pack: %w", err)
+	}
+	if err := index.Start(); err != nil {
+		_ = pack.Process.Kill()
+		_ = pack.Wait()
+		return fmt.Errorf("start private baseline object import: %w", err)
+	}
+	if err := pack.Wait(); err != nil {
+		_ = index.Wait()
+		return fmt.Errorf("pack private baseline objects: %s: %w", strings.TrimSpace(packErr.String()), err)
+	}
+	if err := index.Wait(); err != nil {
+		return fmt.Errorf("import private baseline objects: %s: %w", strings.TrimSpace(indexOut.String()), err)
+	}
+	if out, err := runSnapshotGitCommand(destination, env, "cat-file", "-e", baseline+"^{commit}"); err != nil {
+		return fmt.Errorf("verify imported private baseline %s: %s: %w", baseline, strings.TrimSpace(out), err)
+	}
+	return nil
+}
+
+func runSnapshotGitSourceCommand(source *os.File, env []string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", "/proc/self/fd/3"}, args...)...)
+	cmd.Env = env
+	cmd.ExtraFiles = []*os.File{source}
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func runSnapshotGitCommand(directory string, env []string, args ...string) (string, error) {
+	full := args
+	if directory != "" {
+		full = append([]string{"-C", directory}, args...)
+	}
+	cmd := exec.Command("git", full...)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// materializeSnapshotLower 为 Git artifact snapshot 生成稳定的 lowerdir。
+// bind mount 只是实时源文件系统的别名，无法在主工作目录持续变更时表示时间点。
+func materializeSnapshotLower(lower *os.File, destination string) error {
+	if lower == nil {
+		return errors.New("private lower source is missing")
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		return fmt.Errorf("read private lower root: %w", err)
+	}
+	if len(entries) != 0 {
+		return errors.New("private lower root is not empty")
+	}
+	sourcePath := filepath.Join("/proc/self/fd", fmt.Sprint(lower.Fd()))
+	sourceFD, err := unix.Open(sourcePath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open private lower source: %w", err)
+	}
+	return copySnapshotDirectory(sourceFD, destination)
+}
+
+func copySnapshotDirectory(sourceFD int, destination string) error {
+	source := os.NewFile(uintptr(sourceFD), "snapshot-lower")
+	defer source.Close()
+	var info unix.Stat_t
+	if err := unix.Fstat(sourceFD, &info); err != nil {
+		return fmt.Errorf("stat source directory: %w", err)
+	}
+	if info.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return errors.New("private lower source is not a directory")
+	}
+	if err := os.Chmod(destination, os.FileMode(info.Mode&0o777)); err != nil {
+		return fmt.Errorf("set private lower directory mode: %w", err)
+	}
+	entries, err := source.ReadDir(-1)
+	if err != nil {
+		return fmt.Errorf("read source directory: %w", err)
+	}
+	for _, entry := range entries {
+		if err := copySnapshotEntry(sourceFD, destination, entry.Name()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copySnapshotEntry(sourceFD int, destination, name string) error {
+	var before unix.Stat_t
+	if err := unix.Fstatat(sourceFD, name, &before, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return fmt.Errorf("stat private lower entry %q: %w", name, err)
+	}
+	destinationPath := filepath.Join(destination, name)
+	switch before.Mode & unix.S_IFMT {
+	case unix.S_IFDIR:
+		if err := os.Mkdir(destinationPath, os.FileMode(before.Mode&0o777)); err != nil {
+			return fmt.Errorf("create private lower directory %q: %w", name, err)
+		}
+		childFD, err := unix.Openat(sourceFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return fmt.Errorf("open private lower directory %q: %w", name, err)
+		}
+		var after unix.Stat_t
+		if err := unix.Fstat(childFD, &after); err != nil {
+			_ = unix.Close(childFD)
+			return fmt.Errorf("stat private lower directory %q: %w", name, err)
+		}
+		if before.Dev != after.Dev || before.Ino != after.Ino {
+			_ = unix.Close(childFD)
+			return fmt.Errorf("private lower directory %q changed while materializing", name)
+		}
+		if err := copySnapshotDirectory(childFD, destinationPath); err != nil {
+			return err
+		}
+		return nil
+	case unix.S_IFREG:
+		return copySnapshotRegularFile(sourceFD, destinationPath, name, &before)
+	case unix.S_IFLNK:
+		target, err := readSnapshotSymlink(sourceFD, name)
+		if err != nil {
+			return err
+		}
+		if err := os.Symlink(target, destinationPath); err != nil {
+			return fmt.Errorf("copy private lower symlink %q: %w", name, err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("private lower entry %q has unsupported mode %o", name, before.Mode)
+	}
+}
+
+func copySnapshotRegularFile(sourceFD int, destination, name string, before *unix.Stat_t) error {
+	fd, err := unix.Openat(sourceFD, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open private lower file %q: %w", name, err)
+	}
+	source := os.NewFile(uintptr(fd), "snapshot-lower-file")
+	defer source.Close()
+	var after unix.Stat_t
+	if err := unix.Fstat(fd, &after); err != nil {
+		return fmt.Errorf("stat private lower file %q: %w", name, err)
+	}
+	if after.Mode&unix.S_IFMT != unix.S_IFREG || before.Dev != after.Dev || before.Ino != after.Ino {
+		return fmt.Errorf("private lower file %q changed while materializing", name)
+	}
+	destinationFile, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, os.FileMode(before.Mode&0o777))
+	if err != nil {
+		return fmt.Errorf("create private lower file %q: %w", name, err)
+	}
+	_, copyErr := io.Copy(destinationFile, source)
+	closeErr := destinationFile.Close()
+	if copyErr != nil {
+		return fmt.Errorf("copy private lower file %q: %w", name, copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close private lower file %q: %w", name, closeErr)
+	}
+	return nil
+}
+
+func readSnapshotSymlink(sourceFD int, name string) (string, error) {
+	buf := make([]byte, 4096)
+	n, err := unix.Readlinkat(sourceFD, name, buf)
+	if err != nil {
+		return "", fmt.Errorf("read private lower symlink %q: %w", name, err)
+	}
+	if n == len(buf) {
+		return "", fmt.Errorf("private lower symlink %q exceeds the supported length", name)
+	}
+	return string(buf[:n]), nil
 }
 
 // RunSnapshotProbe is the startup capability probe

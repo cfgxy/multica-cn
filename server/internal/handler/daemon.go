@@ -3955,6 +3955,46 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// user asked to isolate. That is the exact outcome worktree mode exists to
 	// prevent, so it fails closed here, against the version of the runtime that
 	// is actually claiming.
+	// ACP providers report cumulative billing snapshots when a session is
+	// resumed. Carry the usage already persisted for that session so the
+	// daemon can turn the next snapshot into this task's delta. This is
+	// observability-only at claim time: a lookup failure must not strand a
+	// valid task in dispatched state.
+	if resp.PriorSessionID != "" {
+		unattributed, markerErr := h.Queries.HasUnattributedPriorSessionUsage(r.Context(), db.HasUnattributedPriorSessionUsageParams{
+			ID:       task.ID,
+			AgentID:  task.AgentID,
+			Provider: runtime.Provider,
+		})
+		if markerErr != nil {
+			slog.Warn("task claim: failed to check unattributed prior session usage",
+				"task_id", uuidToString(task.ID),
+				"session_id", resp.PriorSessionID,
+				"error", markerErr,
+			)
+			resp.PriorSessionUsageUnavailable = true
+		} else if unattributed {
+			// The Issue total remains queryable, but an unknown historical row
+			// cannot safely seed this cumulative session. Do not turn the next
+			// snapshot into a full Run delta.
+			resp.PriorSessionUsageUnavailable = true
+		} else {
+			priorUsage, usageErr := h.Queries.GetPriorSessionUsage(r.Context(), db.GetPriorSessionUsageParams{
+				SessionID: pgtype.Text{String: resp.PriorSessionID, Valid: true},
+				AgentID:   task.AgentID,
+				ID:        task.ID,
+			})
+			if usageErr != nil {
+				slog.Warn("task claim: failed to load prior session usage baseline",
+					"task_id", uuidToString(task.ID),
+					"session_id", resp.PriorSessionID,
+					"error", usageErr,
+				)
+			}
+			applyPriorSessionUsage(&resp, priorUsage, usageErr)
+		}
+	}
+
 	if reason := localIsolationClaimBlockReason(
 		resp.ProjectResources,
 		runtime,
@@ -4015,6 +4055,29 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	h.recordClauseInjectionEvents(r.Context(), claimWorkspaceID, task.ID, promptVersionScopeIDs, clauseInjections, clauseObservations)
 
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
+}
+
+func applyPriorSessionUsage(resp *AgentTaskResponse, priorUsage []db.GetPriorSessionUsageRow, usageErr error) {
+	if usageErr != nil {
+		resp.PriorSessionUsageUnavailable = true
+		return
+	}
+	for _, row := range priorUsage {
+		var cost *int64
+		if row.CostUsdTicks > 0 {
+			value := row.CostUsdTicks
+			cost = &value
+		}
+		resp.PriorSessionUsage = append(resp.PriorSessionUsage, TaskUsageData{
+			Provider:         row.Provider,
+			Model:            row.Model,
+			InputTokens:      row.InputTokens,
+			OutputTokens:     row.OutputTokens,
+			CacheReadTokens:  row.CacheReadTokens,
+			CacheWriteTokens: row.CacheWriteTokens,
+			CostUsdTicks:     cost,
+		})
+	}
 }
 
 // recordClaimedPromptVersions resolves the current prompt_version.version
@@ -5343,6 +5406,9 @@ func formatLegacyCommentEntry(comment CoalescedCommentData) string {
 // ReportTaskUsage stores per-task token usage. Called independently of
 // complete/fail so usage is captured even when tasks fail or are blocked.
 type TaskUsagePayload struct {
+	// SessionID identifies the provider session that produced this usage. Older
+	// daemons omit it; ReportTaskUsage falls back to the task's current session.
+	SessionID        string `json:"session_id,omitempty"`
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	InputTokens      int64  `json:"input_tokens"`
@@ -5606,11 +5672,19 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	var runtimeProvider string
 	runtimeProviderLoaded := false
 	type normalizedUsage struct {
-		payload  TaskUsagePayload
-		provider string
+		payload                 TaskUsagePayload
+		provider                string
+		sessionID               string
+		sessionAttributionKnown bool
 	}
 	usage := make([]normalizedUsage, 0, len(req.Usage))
 	for _, u := range req.Usage {
+		sessionID := strings.TrimSpace(u.SessionID)
+		// An omitted session_id is not evidence that the usage belongs to the
+		// task's current session. Old daemons can merge resumed and fresh ACP
+		// snapshots before reporting them, so preserve the row as unattributed
+		// and let the next cumulative claim fail closed.
+		sessionAttributionKnown := sessionID != ""
 		provider := normalizeProvider(u.Provider)
 		if provider == "" {
 			if !runtimeProviderLoaded {
@@ -5624,7 +5698,12 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			}
 			provider = runtimeProvider
 		}
-		usage = append(usage, normalizedUsage{payload: u, provider: provider})
+		usage = append(usage, normalizedUsage{
+			payload:                 u,
+			provider:                provider,
+			sessionID:               sessionID,
+			sessionAttributionKnown: sessionAttributionKnown,
+		})
 	}
 
 	if len(usage) == 0 {
@@ -5652,9 +5731,12 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to store task usage")
 		return
 	}
+	usageRowKey := func(sessionID, provider, model string) string {
+		return sessionID + "\x00" + provider + "\x00" + model
+	}
 	existingUsageRows := make(map[string]db.TaskUsage, len(existingRows))
 	for _, row := range existingRows {
-		existingUsageRows[row.Provider+"\x00"+row.Model] = row
+		existingUsageRows[usageRowKey(row.SessionID, row.Provider, row.Model)] = row
 	}
 	captureUsage := make([]bool, len(usage))
 	metricDeltas := make([]TaskUsagePayload, len(usage))
@@ -5663,8 +5745,9 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		u := entry.payload
 		modelCallCount := pgtype.Int8{}
 		evidenceIDs := completeModelCallEvidenceIDs(u)
-		key := entry.provider + "\x00" + u.Model
+		key := usageRowKey(entry.sessionID, entry.provider, u.Model)
 		previous, hadMetricBaseline := existingUsageRows[key]
+		hadMetricBaseline = hadMetricBaseline && entry.sessionAttributionKnown && previous.SessionAttributionKnown
 		var priorEvidenceModels []string
 		evidenceBefore := int64(0)
 		if len(evidenceIDs) > 0 {
@@ -5684,7 +5767,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 					if oldModel == u.Model {
 						continue
 					}
-					if row, ok := existingUsageRows[entry.provider+"\x00"+oldModel]; ok {
+					if row, ok := existingUsageRows[usageRowKey(entry.sessionID, entry.provider, oldModel)]; ok && entry.sessionAttributionKnown && row.SessionAttributionKnown {
 						previous = row
 						hadMetricBaseline = true
 						break
@@ -5742,19 +5825,21 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			(evidenceBefore < int64(len(evidenceIDs)) && len(evidenceIDs) > 0)
 
 		if err := qtx.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
-			TaskID:           parseUUID(taskID),
-			Provider:         entry.provider,
-			Model:            u.Model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUsdTicks:     currentCost,
-			ContextTokens:    authoritativeContextTokens(u.ContextTokens),
-			Turns:            authoritativeTurns(u.Turns),
-			Compactions:      authoritativeCompactions(u.Compactions),
-			MaxContextTokens: authoritativeMaxContextTokens(u.MaxContextTokens),
-			ModelCallCount:   modelCallCount,
+			TaskID:                  parseUUID(taskID),
+			SessionID:               entry.sessionID,
+			SessionAttributionKnown: entry.sessionAttributionKnown,
+			Provider:                entry.provider,
+			Model:                   u.Model,
+			InputTokens:             u.InputTokens,
+			OutputTokens:            u.OutputTokens,
+			CacheReadTokens:         u.CacheReadTokens,
+			CacheWriteTokens:        u.CacheWriteTokens,
+			CostUsdTicks:            currentCost,
+			ContextTokens:           authoritativeContextTokens(u.ContextTokens),
+			Turns:                   authoritativeTurns(u.Turns),
+			Compactions:             authoritativeCompactions(u.Compactions),
+			MaxContextTokens:        authoritativeMaxContextTokens(u.MaxContextTokens),
+			ModelCallCount:          modelCallCount,
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to store task usage")
@@ -5784,13 +5869,15 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		existingUsageRows[key] = db.TaskUsage{
-			Provider:         entry.provider,
-			Model:            u.Model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUsdTicks:     currentCost,
+			SessionID:               entry.sessionID,
+			SessionAttributionKnown: entry.sessionAttributionKnown,
+			Provider:                entry.provider,
+			Model:                   u.Model,
+			InputTokens:             u.InputTokens,
+			OutputTokens:            u.OutputTokens,
+			CacheReadTokens:         u.CacheReadTokens,
+			CacheWriteTokens:        u.CacheWriteTokens,
+			CostUsdTicks:            currentCost,
 		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
