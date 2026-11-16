@@ -8,6 +8,58 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("ApiClient retrospective trigger contract", () => {
+  const stats = {
+    workspace_id: "workspace-1",
+    run_id: "run-1",
+    task_id: "task-1",
+    window_days: 30,
+    issues_scanned: 2,
+    issues_analyzed: 2,
+    proposals_created: 3,
+    proposals_merged: 0,
+    duplicates_skipped: 0,
+    ids_corrected: 0,
+    ids_ignored: 0,
+  };
+
+  it("unwraps the server envelope and preserves the 2/2/3 counters", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ run: stats }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new ApiClient("https://api.example.test").triggerRetrospectiveRun()).resolves.toEqual(stats);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/retrospective/run");
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+  });
+
+  it("fails closed for a bare durable-run shape instead of trusting a cast", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "run-1",
+      status: "succeeded",
+      issues_scanned: 2,
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    })));
+
+    await expect(new ApiClient("https://api.example.test").triggerRetrospectiveRun()).resolves.toEqual({
+      workspace_id: "",
+      run_id: "",
+      window_days: 0,
+      issues_scanned: 0,
+      issues_analyzed: 0,
+      proposals_created: 0,
+      proposals_merged: 0,
+      duplicates_skipped: 0,
+      ids_corrected: 0,
+      ids_ignored: 0,
+    });
+  });
+});
+
 describe("ApiClient knowledge governance compatibility", () => {
 	it("preserves an invalid governance verdict from a newer server", async () => {
 		vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
