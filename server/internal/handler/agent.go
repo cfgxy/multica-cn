@@ -929,7 +929,7 @@ type CoalescedCommentData struct {
 	CreatedAt  string `json:"created_at,omitempty"`
 }
 
-// TaskUsageData is one (provider, model) slice of a single run's token usage.
+// TaskUsageData is one (provider, model) slice of a single run's usage.
 // Field names match the runtime/dashboard usage rows exactly so the client can
 // feed it to the same `estimateCost` / `estimateCacheSavings` helpers without
 // an adapter.
@@ -947,6 +947,9 @@ type TaskUsageData struct {
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
 	CostUsdTicks     *int64 `json:"cost_usd_ticks,omitempty"`
+	// ModelCallCount is omitted when the provider did not supply complete
+	// original call evidence. Zero is a complete, known count.
+	ModelCallCount *int64 `json:"model_call_count,omitempty"`
 }
 
 // TaskAgentData holds agent info included in claim responses so the daemon

@@ -52,6 +52,7 @@ import { BackpressureBadge } from "./runtime-backpressure-badge";
 import { BackpressureSettingsCard } from "./runtime-backpressure-settings-card";
 import { RuntimeResourcesCard } from "./runtime-resources-card";
 import { runtimeBackpressureSettingsOptions } from "@multica/core/runtimes/queries";
+import { ModelCallBudgetCard } from "./runtime-model-call-budget-card";
 import { useT, useTimeAgo } from "../../i18n";
 
 function getCliVersion(metadata: Record<string, unknown>): string | null {
@@ -132,7 +133,7 @@ export function RuntimeDetail({
   const isRuntimeOwner = Boolean(user && runtime.owner_id === user.id);
   const canEditRuntime = isAdmin || isRuntimeOwner;
   const canEditVisibility =
-    currentMember?.role === "owner" || !!isRuntimeOwner;
+    currentMember?.role === "owner" || isRuntimeOwner;
   const canReadRuntime = isRuntimeUsableForUser(
     runtime,
     user?.id ?? null,
@@ -223,6 +224,7 @@ export function RuntimeDetail({
                 )}
               </section>
             )}
+            {canReadRuntime && <ModelCallBudgetCard runtime={runtime} canEdit={isAdmin} />}
             {canReadRuntime && <UsageSection runtime={runtime} />}
           </div>
 
@@ -506,7 +508,7 @@ function DiagnosticsCard({
    * Runtime owner only — narrower than the card's other affordances on
    * purpose (MUL-6126). Sharing a machine with the workspace is the owner's
    * call, so a workspace admin sees the read-only chip here even though they
-   * may still rename or delete the runtime.
+   * may still rename or hide the runtime.
    */
   canEditVisibility: boolean;
   canEditConcurrency: boolean;

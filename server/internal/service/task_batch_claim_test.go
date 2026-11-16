@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -438,5 +440,294 @@ func TestClaimTasksForRuntimes_EmptyInputs(t *testing.T) {
 	rt1, _ := batchClaimFixture(t, ctx, pool)
 	if got, err := svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{util.MustParseUUID(rt1)}, 0); err != nil || got != nil {
 		t.Fatalf("maxTasks=0: got=%v err=%v, want nil,nil", got, err)
+	}
+}
+
+func TestClaimTasksForRuntimes_ModelCallBudgetLeavesResidue(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	fixture := newRuntimeModelCallBudgetClaimFixture(t, pool, 1)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+
+	claimed, err := svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{util.MustParseUUID(fixture.runtimeID)}, 2)
+	if err != nil {
+		t.Fatalf("batch claim: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("batch claimed %d tasks with one remaining model-call slot, want 1", len(claimed))
+	}
+	var dispatched, queued int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE status = 'dispatched'), count(*) FILTER (WHERE status = 'queued')
+		FROM agent_task_queue
+		WHERE id = ANY($1::uuid[])
+	`, []string{fixture.taskA, fixture.taskB}).Scan(&dispatched, &queued); err != nil {
+		t.Fatalf("count task states: %v", err)
+	}
+	if dispatched != 1 || queued != 1 {
+		t.Fatalf("task states after batch claim: dispatched=%d queued=%d, want 1 and 1", dispatched, queued)
+	}
+}
+
+func TestClaimTaskAndBatchShareRuntimeModelCallBudget(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	fixture := newRuntimeModelCallBudgetClaimFixture(t, pool, 1)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+	for _, agentID := range []string{fixture.agentA, fixture.agentB} {
+		triggerName := fmt.Sprintf("claim_budget_batch_sleep_%d", time.Now().UnixNano())
+		createSleepTrigger(t, ctx, pool, triggerName, triggerName+"_fn", agentID)
+	}
+
+	start := make(chan struct{})
+	singleResult := make(chan *db.AgentTaskQueue, 1)
+	batchResult := make(chan []db.AgentTaskQueue, 1)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		task, err := svc.ClaimTask(ctx, util.MustParseUUID(fixture.agentA))
+		if err != nil {
+			errs <- err
+			return
+		}
+		singleResult <- task
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		tasks, err := svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{util.MustParseUUID(fixture.runtimeID)}, 2)
+		if err != nil {
+			errs <- err
+			return
+		}
+		batchResult <- tasks
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent claim: %v", err)
+	}
+	single := <-singleResult
+	batch := <-batchResult
+	claimed := len(batch)
+	if single != nil {
+		claimed++
+	}
+	if claimed != 1 {
+		t.Fatalf("single and batch claimed %d tasks with one remaining model-call slot, want 1", claimed)
+	}
+	var dispatched, queued int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE status = 'dispatched'), count(*) FILTER (WHERE status = 'queued')
+		FROM agent_task_queue
+		WHERE id = ANY($1::uuid[])
+	`, []string{fixture.taskA, fixture.taskB}).Scan(&dispatched, &queued); err != nil {
+		t.Fatalf("count task states: %v", err)
+	}
+	if dispatched != 1 || queued != 1 {
+		t.Fatalf("task states after concurrent single and batch claims: dispatched=%d queued=%d, want 1 and 1", dispatched, queued)
+	}
+}
+
+func TestClaimTasksForRuntimes_ModelCallBudgetCountsStaleReclaimReservation(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	fixture := newRuntimeModelCallBudgetClaimFixture(t, pool, 1)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET status = 'dispatched',
+		    dispatched_at = now() - interval '10 minutes',
+		    started_at = NULL,
+		    prepare_lease_expires_at = NULL
+		WHERE id = $1
+	`, fixture.taskA); err != nil {
+		t.Fatalf("make task stale-dispatched: %v", err)
+	}
+
+	claimed, err := svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{util.MustParseUUID(fixture.runtimeID)}, 2)
+	if err != nil {
+		t.Fatalf("batch claim: %v", err)
+	}
+	if len(claimed) != 1 || util.UUIDToString(claimed[0].ID) != fixture.taskA {
+		t.Fatalf("reclaimed tasks = %v, want only stale task %s", claimed, fixture.taskA)
+	}
+	var dispatched, queued int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE status = 'dispatched'), count(*) FILTER (WHERE status = 'queued')
+		FROM agent_task_queue
+		WHERE id = ANY($1::uuid[])
+	`, []string{fixture.taskA, fixture.taskB}).Scan(&dispatched, &queued); err != nil {
+		t.Fatalf("count task states: %v", err)
+	}
+	if dispatched != 1 || queued != 1 {
+		t.Fatalf("task states after stale reclaim: dispatched=%d queued=%d, want 1 and 1", dispatched, queued)
+	}
+}
+
+func TestClaimTasksForRuntimes_ModelCallBudgetRejectsExpiredStaleReservation(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	fixture := newRuntimeModelCallBudgetClaimFixture(t, pool, 1)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET status = 'dispatched',
+		    dispatched_at = now() - interval '2 hours',
+		    started_at = NULL,
+		    prepare_lease_expires_at = NULL
+		WHERE id = $1
+	`, fixture.taskA); err != nil {
+		t.Fatalf("make task stale-dispatched outside the budget window: %v", err)
+	}
+	fixture.fx.Insert(t, "task_usage", testutil.Cols{
+		"task_id":          fixture.taskB,
+		"provider":         "budget-test",
+		"model":            "budget-exhausted",
+		"model_call_count": int64(1),
+	})
+	fixture.fx.InsertNoID(t, "task_usage_model_call_evidence", testutil.Cols{
+		"task_id":     fixture.taskB,
+		"provider":    "budget-test",
+		"model":       "budget-exhausted",
+		"evidence_id": "budget-exhausted-1",
+	}, "task_id = $1 AND provider = $2 AND model = $3 AND evidence_id = $4", fixture.taskB, "budget-test", "budget-exhausted", "budget-exhausted-1")
+
+	claimed, err := svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{util.MustParseUUID(fixture.runtimeID)}, 2)
+	if err != nil {
+		t.Fatalf("batch claim: %v", err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("claimed %v with an exhausted model-call budget, want none", claimed)
+	}
+	var taskAStatus, taskBStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, fixture.taskA).Scan(&taskAStatus); err != nil {
+		t.Fatalf("read stale task status: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, fixture.taskB).Scan(&taskBStatus); err != nil {
+		t.Fatalf("read queued task status: %v", err)
+	}
+	if taskAStatus != "dispatched" || taskBStatus != "queued" {
+		t.Fatalf("task states after exhausted stale reclaim: taskA=%s taskB=%s, want dispatched and queued", taskAStatus, taskBStatus)
+	}
+}
+
+func TestClaimTasksForRuntimes_ModelCallBudgetSkipsRejectedStaleCandidates(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	fixture := newRuntimeModelCallBudgetClaimFixture(t, pool, 1)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET status = 'dispatched',
+		    priority = CASE WHEN id = $1 THEN 10 ELSE 0 END,
+		    dispatched_at = CASE
+		        WHEN id = $1 THEN now() - interval '2 hours'
+		        ELSE now() - interval '10 minutes'
+		    END,
+		    started_at = NULL,
+		    prepare_lease_expires_at = NULL
+		WHERE id = ANY($2::uuid[])
+	`, fixture.taskA, []string{fixture.taskA, fixture.taskB}); err != nil {
+		t.Fatalf("create rejected and retained stale candidates: %v", err)
+	}
+	fixture.fx.Insert(t, "task_usage", testutil.Cols{
+		"task_id":          fixture.taskB,
+		"provider":         "budget-test",
+		"model":            "retained-stale-candidate",
+		"model_call_count": int64(1),
+	})
+	fixture.fx.InsertNoID(t, "task_usage_model_call_evidence", testutil.Cols{
+		"task_id":     fixture.taskB,
+		"provider":    "budget-test",
+		"model":       "retained-stale-candidate",
+		"evidence_id": "retained-stale-candidate-1",
+	}, "task_id = $1 AND provider = $2 AND model = $3 AND evidence_id = $4", fixture.taskB, "budget-test", "retained-stale-candidate", "retained-stale-candidate-1")
+
+	claimed, err := svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{util.MustParseUUID(fixture.runtimeID)}, 1)
+	if err != nil {
+		t.Fatalf("batch claim: %v", err)
+	}
+	if len(claimed) != 1 || util.UUIDToString(claimed[0].ID) != fixture.taskB {
+		t.Fatalf("reclaimed tasks = %v, want retained candidate %s", claimed, fixture.taskB)
+	}
+}
+
+func TestClaimTaskAndStaleReclaimShareRuntimeModelCallBudget(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	fixture := newRuntimeModelCallBudgetClaimFixture(t, pool, 1)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET status = 'dispatched',
+		    dispatched_at = now() - interval '2 hours',
+		    started_at = NULL,
+		    prepare_lease_expires_at = NULL
+		WHERE id = $1
+	`, fixture.taskA); err != nil {
+		t.Fatalf("make task stale-dispatched outside the budget window: %v", err)
+	}
+	triggerName := fmt.Sprintf("claim_budget_stale_reclaim_sleep_%d", time.Now().UnixNano())
+	createSleepTrigger(t, ctx, pool, triggerName, triggerName+"_fn", fixture.agentB)
+
+	start := make(chan struct{})
+	freshResult := make(chan *db.AgentTaskQueue, 1)
+	reclaimResult := make(chan []db.AgentTaskQueue, 1)
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		task, err := svc.ClaimTask(ctx, util.MustParseUUID(fixture.agentB))
+		if err != nil {
+			errs <- err
+			return
+		}
+		freshResult <- task
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		tasks, err := svc.ClaimTasksForRuntimes(ctx, []pgtype.UUID{util.MustParseUUID(fixture.runtimeID)}, 1)
+		if err != nil {
+			errs <- err
+			return
+		}
+		reclaimResult <- tasks
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent fresh claim and stale reclaim: %v", err)
+	}
+
+	claimed := len(<-reclaimResult)
+	if <-freshResult != nil {
+		claimed++
+	}
+	if claimed != 1 {
+		t.Fatalf("fresh claim and expired stale reclaim claimed %d tasks with one remaining model-call slot, want 1", claimed)
+	}
+	var dispatched, queued int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE status = 'dispatched'), count(*) FILTER (WHERE status = 'queued')
+		FROM agent_task_queue
+		WHERE id = ANY($1::uuid[])
+	`, []string{fixture.taskA, fixture.taskB}).Scan(&dispatched, &queued); err != nil {
+		t.Fatalf("count task states: %v", err)
+	}
+	if dispatched != 1 || queued != 1 {
+		t.Fatalf("task states after concurrent fresh claim and stale reclaim: dispatched=%d queued=%d, want 1 and 1", dispatched, queued)
 	}
 }
