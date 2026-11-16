@@ -1662,6 +1662,99 @@ func TestMergeUsage(t *testing.T) {
 	}
 }
 
+func TestSubtractPriorSessionUsage(t *testing.T) {
+	t.Parallel()
+
+	baseline := []TaskUsageEntry{{
+		Provider:         "claude",
+		Model:            "model-a",
+		InputTokens:      100,
+		OutputTokens:     40,
+		CacheReadTokens:  30,
+		CacheWriteTokens: 20,
+		CostUSDTicks:     700,
+	}}
+
+	t.Run("subtracts each billing bucket and preserves context", func(t *testing.T) {
+		usage := map[string]agent.TokenUsage{
+			"model-a": {
+				InputTokens:      150,
+				OutputTokens:     55,
+				CacheReadTokens:  45,
+				CacheWriteTokens: 35,
+				CostUSDTicks:     900,
+				ContextTokens:    1200,
+			},
+		}
+
+		got := subtractPriorSessionUsage("claude", baseline, usage)["model-a"]
+		want := agent.TokenUsage{
+			InputTokens:      50,
+			OutputTokens:     15,
+			CacheReadTokens:  15,
+			CacheWriteTokens: 15,
+			CostUSDTicks:     200,
+			ContextTokens:    1200,
+		}
+		if got != want {
+			t.Fatalf("expected usage delta %+v, got %+v", want, got)
+		}
+	})
+
+	t.Run("clamps counters independently and leaves unknown cost unchanged", func(t *testing.T) {
+		baselineWithoutCost := append([]TaskUsageEntry(nil), baseline...)
+		baselineWithoutCost[0].CostUSDTicks = 0
+		usage := map[string]agent.TokenUsage{
+			"model-a": {
+				InputTokens:      90,
+				OutputTokens:     50,
+				CacheReadTokens:  30,
+				CacheWriteTokens: 25,
+				CostUSDTicks:     12,
+			},
+		}
+
+		got := subtractPriorSessionUsage("claude", baselineWithoutCost, usage)["model-a"]
+		if got.InputTokens != 0 || got.OutputTokens != 10 || got.CacheReadTokens != 0 || got.CacheWriteTokens != 5 || got.CostUSDTicks != 12 {
+			t.Fatalf("expected independent non-negative deltas with unknown cost preserved, got %+v", got)
+		}
+	})
+
+	t.Run("does not subtract when provider or model is not matched", func(t *testing.T) {
+		original := agent.TokenUsage{InputTokens: 150, OutputTokens: 55, ContextTokens: 1200}
+		for _, provider := range []string{"codex"} {
+			usage := map[string]agent.TokenUsage{"model-a": original}
+			got := subtractPriorSessionUsage(provider, baseline, usage)["model-a"]
+			if got != original {
+				t.Fatalf("provider %q should be unchanged, got %+v", provider, got)
+			}
+		}
+
+		usage := map[string]agent.TokenUsage{"model-b": original}
+		got := subtractPriorSessionUsage("claude", baseline, usage)["model-b"]
+		if got != original {
+			t.Fatalf("unmatched model should be unchanged, got %+v", got)
+		}
+	})
+
+	t.Run("subtracts baseline once after fresh retry usage is merged", func(t *testing.T) {
+		first := agent.Result{Usage: map[string]agent.TokenUsage{
+			"model-a": {InputTokens: 100, OutputTokens: 20},
+		}}
+		retry := agent.Result{
+			Status: "completed",
+			Usage: map[string]agent.TokenUsage{
+				"model-a": {InputTokens: 50, OutputTokens: 10},
+			},
+		}
+		merged, _ := reconcileFreshRetryResult(first, first.Usage, 0, retry, 0, nil)
+		got := subtractPriorSessionUsage("claude", baseline, merged.Usage)["model-a"]
+		if got.InputTokens != 50 || got.OutputTokens != 0 {
+			t.Fatalf("expected merged usage to subtract the prior session once, got %+v", got)
+		}
+	})
+}
+
 func TestRunTask_ReportsContextOnlyUsage(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fixture is POSIX-only")

@@ -3944,6 +3944,43 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// user asked to isolate. That is the exact outcome worktree mode exists to
 	// prevent, so it fails closed here, against the version of the runtime that
 	// is actually claiming.
+	// ACP providers report cumulative billing snapshots when a session is
+	// resumed. Carry the usage already persisted for that session so the
+	// daemon can turn the next snapshot into this task's delta. This is
+	// observability-only at claim time: a lookup failure must not strand a
+	// valid task in dispatched state.
+	if resp.PriorSessionID != "" {
+		priorUsage, usageErr := h.Queries.GetPriorSessionUsage(r.Context(), db.GetPriorSessionUsageParams{
+			SessionID: pgtype.Text{String: resp.PriorSessionID, Valid: true},
+			AgentID:   task.AgentID,
+			ID:        task.ID,
+		})
+		if usageErr != nil {
+			slog.Warn("task claim: failed to load prior session usage baseline",
+				"task_id", uuidToString(task.ID),
+				"session_id", resp.PriorSessionID,
+				"error", usageErr,
+			)
+		} else {
+			for _, row := range priorUsage {
+				var cost *int64
+				if row.CostUsdTicks > 0 {
+					value := row.CostUsdTicks
+					cost = &value
+				}
+				resp.PriorSessionUsage = append(resp.PriorSessionUsage, TaskUsageData{
+					Provider:         row.Provider,
+					Model:            row.Model,
+					InputTokens:      row.InputTokens,
+					OutputTokens:     row.OutputTokens,
+					CacheReadTokens:  row.CacheReadTokens,
+					CacheWriteTokens: row.CacheWriteTokens,
+					CostUsdTicks:     cost,
+				})
+			}
+		}
+	}
+
 	if reason := localIsolationClaimBlockReason(
 		resp.ProjectResources,
 		runtime,

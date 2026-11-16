@@ -54,6 +54,29 @@ WHERE task_id = $1 AND context_tokens IS NOT NULL
 ORDER BY context_tokens DESC
 LIMIT 1;
 
+-- name: GetPriorSessionUsage :many
+-- ACP providers report cumulative usage for a resumed session. Return the
+-- billing counters already persisted by earlier tasks in that session so the
+-- daemon can subtract them from the next cumulative snapshot before writing
+-- the current task's delta. The current task is excluded defensively because
+-- claim normally happens before its usage exists, but a retrying claim must not
+-- use a partially written row as its own baseline.
+SELECT
+    tu.provider,
+    tu.model,
+    SUM(tu.input_tokens)::bigint        AS input_tokens,
+    SUM(tu.output_tokens)::bigint       AS output_tokens,
+    SUM(tu.cache_read_tokens)::bigint   AS cache_read_tokens,
+    SUM(tu.cache_write_tokens)::bigint  AS cache_write_tokens,
+    COALESCE(SUM(tu.cost_usd_ticks), 0)::bigint AS cost_usd_ticks
+FROM task_usage tu
+JOIN agent_task_queue atq ON atq.id = tu.task_id
+WHERE atq.session_id = $1
+  AND atq.agent_id = $2
+  AND atq.id <> $3
+GROUP BY tu.provider, tu.model
+ORDER BY tu.provider, tu.model;
+
 -- name: ListIssueTaskUsage :many
 -- Per-(task, provider, model) usage rows for every task on one issue — the
 -- per-run half of GetIssueUsageSummary's issue-wide total.
