@@ -719,7 +719,7 @@
       "dynamicOffTitle": "全局降级开关已开启",
       "dynamicOffBody": "所有运行均以快照注入模式运行（等价静态注入）",
       "healthyTitle": "动态注入正常",
-      "healthyBody": "窗口内降级注入 {{degraded}}/{{total}} 次",
+      "healthyBody": "窗口内有 {{degradedRows}}/{{total}} 条注入记录走降级路径；涉及 {{degradedRuns}} 次不同运行",
       "findingsTitle": "发现 {{count}} 项对账或漂移问题",
       "findingsBody": "详见下方「对账与漂移」区块"
     },
@@ -729,7 +729,8 @@
       "runsUnit": "{{count}} 次运行",
       "clauseTokens": "条款 token",
       "clauseTokensNote": "条款渲染注入估算",
-      "degraded": "降级注入",
+      "degraded": "降级注入记录",
+      "degradedNote": "{{rows}}/{{total}} 条记录 · 涉及 {{runs}} 次不同运行",
       "migration": "迁移覆盖"
     },
     "scope": { "workspace": "工作区", "project": "项目", "squad": "小队", "agent": "智能体" },
