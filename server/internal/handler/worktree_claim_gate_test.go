@@ -378,6 +378,7 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 	t.Run("cancel ack records the branch", func(t *testing.T) {
 		taskID := newTask(t, "cancelled")
 		post(t, taskID, "cancel-ack", map[string]any{
+			"confirmed":        true,
 			"branch_name":      "agent/j/cancel11",
 			"durable_work_dir": "/Users/dev/project",
 		}, testHandler.AckTaskCancelled)
@@ -389,10 +390,10 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 		}
 	})
 
-	// Older daemons post an empty body here; that must stay a valid ack.
-	t.Run("cancel ack without a branch still succeeds", func(t *testing.T) {
+	// A confirmed acknowledgement without a branch remains valid.
+	t.Run("cancel ack without a branch succeeds", func(t *testing.T) {
 		taskID := newTask(t, "cancelled")
-		post(t, taskID, "cancel-ack", map[string]any{}, testHandler.AckTaskCancelled)
+		post(t, taskID, "cancel-ack", map[string]any{"confirmed": true}, testHandler.AckTaskCancelled)
 		if got := readBranch(t, taskID); got != "" {
 			t.Errorf("branch_name = %q, want empty", got)
 		}
@@ -406,6 +407,7 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 			"output": "done", "branch_name": "agent/j/original",
 		}, testHandler.CompleteTask)
 		post(t, taskID, "cancel-ack", map[string]any{
+			"confirmed":   true,
 			"branch_name": "agent/j/latecomer",
 		}, testHandler.AckTaskCancelled)
 		if got := readBranch(t, taskID); got != "agent/j/original" {
@@ -430,6 +432,7 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 		taskID := newTask(t, "cancelled")
 		const preserved = "local_directory worktree: could not commit; the work is preserved in the worktree at /env/worktree"
 		post(t, taskID, "cancel-ack", map[string]any{
+			"confirmed":      true,
 			"error_message":  preserved,
 			"failure_reason": "local_directory_error",
 		}, testHandler.AckTaskCancelled)
@@ -452,6 +455,7 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 			t.Fatalf("seed existing error: %v", err)
 		}
 		post(t, taskID, "cancel-ack", map[string]any{
+			"confirmed":      true,
 			"error_message":  "latecomer",
 			"failure_reason": "local_directory_error",
 		}, testHandler.AckTaskCancelled)
@@ -466,6 +470,7 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 	t.Run("cancel ack replay is idempotent", func(t *testing.T) {
 		taskID := newTask(t, "cancelled")
 		body := map[string]any{
+			"confirmed":        true,
 			"branch_name":      "agent/j/replay11",
 			"durable_work_dir": "/Users/dev/project",
 			"error_message":    "preserved at /env/worktree",
@@ -493,6 +498,7 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 		taskID := newTask(t, "running")
 		post(t, taskID, "complete", map[string]any{"output": "all done"}, testHandler.CompleteTask)
 		post(t, taskID, "cancel-ack", map[string]any{
+			"confirmed":        true,
 			"branch_name":      "agent/j/stale011",
 			"durable_work_dir": "/Users/dev/stale-project",
 			"error_message":    "stale preserved-path message",
@@ -514,6 +520,7 @@ func TestWorktreeDeliveryMetadataSurvivesEveryTerminalPath(t *testing.T) {
 		taskID := newTask(t, "running")
 		post(t, taskID, "fail", map[string]any{"error": "agent crashed"}, testHandler.FailTask)
 		post(t, taskID, "cancel-ack", map[string]any{
+			"confirmed":        true,
 			"branch_name":      "agent/j/stale012",
 			"durable_work_dir": "/Users/dev/stale-project",
 		}, testHandler.AckTaskCancelled)

@@ -174,6 +174,12 @@ type AgentRuntime struct {
 	CredentialRef      pgtype.Text        `json:"credential_ref"`
 	MaxConcurrentTasks int32              `json:"max_concurrent_tasks"`
 	RemovedAt          pgtype.Timestamptz `json:"removed_at"`
+	// Whether complete known provider-call usage may hold new task claims for this runtime.
+	ModelCallBudgetEnabled bool `json:"model_call_budget_enabled"`
+	// Maximum complete known provider calls allowed in the rolling budget window.
+	ModelCallBudgetMaxCalls int64 `json:"model_call_budget_max_calls"`
+	// Rolling provider-call budget window in seconds.
+	ModelCallBudgetWindowSeconds int32 `json:"model_call_budget_window_seconds"`
 }
 
 type AgentSkill struct {
@@ -2618,6 +2624,7 @@ type TaskUsage struct {
 	Turns            pgtype.Int4 `json:"turns"`
 	Compactions      pgtype.Int4 `json:"compactions"`
 	MaxContextTokens pgtype.Int8 `json:"max_context_tokens"`
+	ModelCallCount   pgtype.Int8 `json:"model_call_count"`
 }
 
 type TaskUsageHourly struct {
@@ -2662,6 +2669,22 @@ type TaskUsageHourlyRollupState struct {
 	LastRunFinishedAt pgtype.Timestamptz `json:"last_run_finished_at"`
 	LastRunRows       int64              `json:"last_run_rows"`
 	LastError         pgtype.Text        `json:"last_error"`
+}
+
+type TaskUsageModelCallEvidence struct {
+	TaskID     pgtype.UUID        `json:"task_id"`
+	Provider   string             `json:"provider"`
+	Model      string             `json:"model"`
+	EvidenceID string             `json:"evidence_id"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type TaskUsageModelCallTotal struct {
+	TaskID         pgtype.UUID        `json:"task_id"`
+	Provider       string             `json:"provider"`
+	Model          string             `json:"model"`
+	ModelCallCount int64              `json:"model_call_count"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
 type User struct {

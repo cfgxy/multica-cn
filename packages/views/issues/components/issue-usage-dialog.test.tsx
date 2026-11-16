@@ -151,4 +151,27 @@ describe("IssueUsageDialog", () => {
     expect(scroller?.className).toContain("overflow-auto");
     expect(scroller?.className).toContain("min-w-0");
   });
+
+  it("keeps mixed model call evidence visibly incomplete in the KPI and table", () => {
+    open([
+      makeTask({
+        usage: [
+          usage({ model_call_count: 4 }),
+          usage({ model: "gpt-5.6-terra" }),
+        ],
+      }),
+    ]);
+
+    expect(screen.getByText("Model calls")).toBeInTheDocument();
+    expect(screen.getByText("4 known · 1 unknown")).toBeInTheDocument();
+    expect(screen.getAllByText("4 + ? calls")).toHaveLength(3);
+    expect(screen.queryByText("4 calls")).not.toBeInTheDocument();
+  });
+
+  it("shows the complete model call count when every usage record has evidence", () => {
+    open([makeTask({ usage: [usage({ model_call_count: 4 })] })]);
+
+    expect(screen.getAllByText("4 calls")).toHaveLength(3);
+    expect(screen.queryByText("4 + ? calls")).not.toBeInTheDocument();
+  });
 });

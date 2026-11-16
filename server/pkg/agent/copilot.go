@@ -50,11 +50,17 @@ type copilotEventState struct {
 	//
 	// They must never be summed together: all three describe the same tokens.
 	callUsage     map[string]TokenUsage
+	messageUsage  map[string]TokenUsage
 	msgUsage      map[string]TokenUsage
 	shutdownUsage map[string]TokenUsage
 	// resumed marks a run that continued an existing Copilot session, which is
 	// what disqualifies the session.shutdown totals — see resolveUsage.
-	resumed bool
+	resumed                       bool
+	onModelCallEvidence           func(model, evidenceID string)
+	onModelCallEvidenceIncomplete func(model string)
+	liveCallEvidence              map[string][]string
+	messageCalls                  map[string]int
+	usageCalls                    map[string]int
 }
 
 // resolveUsage picks the single best usage source this run produced, most
@@ -73,16 +79,102 @@ type copilotEventState struct {
 // letting it win over a source with the full breakdown would silently drop the
 // input and cache tiers.
 func (st *copilotEventState) resolveUsage() map[string]TokenUsage {
-	if !st.resumed && hasTokens(st.shutdownUsage) {
-		return st.shutdownUsage
+	var usage map[string]TokenUsage
+	// Pick the token source by completeness only. Per-call evidence must not
+	// promote a tokenless assistant.usage source above one that actually
+	// carries tokens: the identities ride onto whichever source wins, and a
+	// count-only entry never shadows a real token report.
+	switch {
+	case !st.resumed && hasTokens(st.shutdownUsage):
+		usage = st.shutdownUsage
+	case hasTokens(st.callUsage):
+		usage = st.callUsage
+	case hasTokens(st.msgUsage):
+		usage = st.msgUsage
+	default:
+		usage = map[string]TokenUsage{}
 	}
-	if hasTokens(st.callUsage) {
-		return st.callUsage
+	// Per-call evidence is independent of which token source wins:
+	// assistant.usage identifies calls from this run even when the final token
+	// total comes from session.shutdown. Models named only by a session total
+	// remain unknown because that aggregate has no per-call identity.
+	st.attachCallEvidence(usage)
+	return usage
+}
+
+func (st *copilotEventState) attachCallEvidence(usage map[string]TokenUsage) {
+	models := make(map[string]struct{}, len(st.callUsage)+len(st.messageUsage))
+	for model := range st.callUsage {
+		models[model] = struct{}{}
 	}
-	if hasTokens(st.msgUsage) {
-		return st.msgUsage
+	for model := range st.messageUsage {
+		models[model] = struct{}{}
 	}
-	return map[string]TokenUsage{}
+	for model := range st.messageCalls {
+		models[model] = struct{}{}
+	}
+	for model := range st.usageCalls {
+		models[model] = struct{}{}
+	}
+	for model := range models {
+		callUsage := st.callUsage[model]
+		messageUsage := st.messageUsage[model]
+		evidenceIDs := append([]string(nil), st.liveCallEvidence[model]...)
+		if len(evidenceIDs) == 0 {
+			messageIDs := messageUsage.ModelCallEvidenceIDs()
+			callIDs := callUsage.ModelCallEvidenceIDs()
+			// Copilot exposes two identities for the same call on older CLI
+			// versions. Prefer the message identity when both streams have the
+			// same number of calls; append only unmatched usage calls.
+			evidenceIDs = append(evidenceIDs, messageIDs...)
+			if len(callIDs) > len(messageIDs) {
+				evidenceIDs = append(evidenceIDs, callIDs[len(messageIDs):]...)
+			}
+		}
+		// Any missing provider identity makes the whole model total unknown.
+		// Collected IDs remain diagnostic and may still reserve known capacity,
+		// but they must not turn a partial evidence set into a complete count.
+		expectedCalls := st.messageCalls[model]
+		if st.usageCalls[model] > expectedCalls {
+			expectedCalls = st.usageCalls[model]
+		}
+		incomplete := (callUsage.ModelCallEvidenceIncomplete || messageUsage.ModelCallEvidenceIncomplete) &&
+			(expectedCalls == 0 || len(evidenceIDs) < expectedCalls)
+		if len(evidenceIDs) == 0 && !incomplete {
+			continue
+		}
+		u := usage[model]
+		// The winning token source can be callUsage, which already contains the
+		// usage-event IDs. Replace those raw IDs with the deduplicated identities
+		// selected above rather than appending to them.
+		u.modelCallEvidence = ""
+		u.ModelCallEvidenceIncomplete = false
+		u.ModelCallCount = 0
+		for _, evidenceID := range evidenceIDs {
+			u = appendModelCallEvidence(u, evidenceID)
+		}
+		if incomplete {
+			u.ModelCallEvidenceIncomplete = true
+			u.ModelCallCount = 0
+		}
+		usage[model] = u
+	}
+}
+
+func (st *copilotEventState) emitLiveCallEvidence(model, evidenceID string) {
+	evidenceID = strings.TrimSpace(evidenceID)
+	if evidenceID == "" {
+		return
+	}
+	for _, existing := range st.liveCallEvidence[model] {
+		if existing == evidenceID {
+			return
+		}
+	}
+	st.liveCallEvidence[model] = append(st.liveCallEvidence[model], evidenceID)
+	if st.onModelCallEvidence != nil {
+		st.onModelCallEvidence(model, evidenceID)
+	}
 }
 
 // hasTokens reports whether a source carries any real numbers. Presence alone
@@ -140,13 +232,37 @@ func (st *copilotEventState) finalOutput() string {
 
 func newCopilotEventState(seedModel string, resumed bool) *copilotEventState {
 	return &copilotEventState{
-		activeModel:   seedModel,
-		finalStatus:   "completed",
-		callUsage:     make(map[string]TokenUsage),
-		msgUsage:      make(map[string]TokenUsage),
-		shutdownUsage: make(map[string]TokenUsage),
-		resumed:       resumed,
+		activeModel:      seedModel,
+		finalStatus:      "completed",
+		callUsage:        make(map[string]TokenUsage),
+		messageUsage:     make(map[string]TokenUsage),
+		msgUsage:         make(map[string]TokenUsage),
+		shutdownUsage:    make(map[string]TokenUsage),
+		liveCallEvidence: make(map[string][]string),
+		messageCalls:     make(map[string]int),
+		usageCalls:       make(map[string]int),
+		resumed:          resumed,
 	}
+}
+
+// copilotModelKey keeps per-event usage sources under one key when the CLI
+// changes only the spelling of a model between message, usage, and shutdown
+// events. The first observed key remains the stable output key.
+func copilotModelKey(st *copilotEventState, model string) string {
+	for _, usage := range []map[string]TokenUsage{st.callUsage, st.messageUsage, st.msgUsage, st.shutdownUsage} {
+		if _, ok := usage[model]; ok {
+			return model
+		}
+	}
+	normalized := normalizeModelKey(model)
+	for _, usage := range []map[string]TokenUsage{st.callUsage, st.messageUsage, st.msgUsage, st.shutdownUsage} {
+		for existing := range usage {
+			if normalizeModelKey(existing) == normalized {
+				return existing
+			}
+		}
+	}
+	return model
 }
 
 // handleCopilotEvent processes a single parsed copilotEvent, updates state,
@@ -206,6 +322,25 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		if msg.Model != "" {
 			st.activeModel = msg.Model
 		}
+		model := copilotModelKey(st, st.activeModel)
+		st.activeModel = model
+		st.messageCalls[model]++
+		messageUsage := st.messageUsage[model]
+		if evidenceID := strings.TrimSpace(msg.MessageID); evidenceID != "" {
+			messageUsage = appendModelCallEvidence(messageUsage, evidenceID)
+			messageIDs := messageUsage.ModelCallEvidenceIDs()
+			callIDs := st.callUsage[model].ModelCallEvidenceIDs()
+			if len(messageIDs) > len(callIDs) {
+				st.emitLiveCallEvidence(model, evidenceID)
+			}
+		} else {
+			messageUsage.ModelCallEvidenceIncomplete = true
+			messageUsage.ModelCallCount = 0
+			if st.onModelCallEvidenceIncomplete != nil {
+				st.onModelCallEvidenceIncomplete(model)
+			}
+		}
+		st.messageUsage[model] = messageUsage
 		if msg.ReasoningText != "" {
 			msgs = append(msgs, Message{Type: MessageThinking, Content: msg.ReasoningText})
 		}
@@ -237,10 +372,31 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 		// the session already resolved rather than opening a bogus usage row.
 		if model == "" || model == "unknown" {
 			model = st.activeModel
-		} else {
-			st.activeModel = model
 		}
+		model = copilotModelKey(st, model)
+		st.activeModel = model
+		st.usageCalls[model]++
 		addUsage(st.callUsage, model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)
+		// This event is one model API call. Its envelope ID is the stable
+		// provider-original identity persisted by the accounting path; an event
+		// without one makes the model's total unknown rather than partial.
+		callUsage := st.callUsage[model]
+		callUsage = appendModelCallEvidence(callUsage, evt.ID)
+		st.callUsage[model] = callUsage
+		callIDs := callUsage.ModelCallEvidenceIDs()
+		messageIDs := st.messageUsage[model].ModelCallEvidenceIDs()
+		if evidenceID := strings.TrimSpace(evt.ID); evidenceID != "" {
+			if len(callIDs) > len(messageIDs) {
+				st.emitLiveCallEvidence(model, evidenceID)
+			}
+		} else {
+			callUsage.ModelCallEvidenceIncomplete = true
+			callUsage.ModelCallCount = 0
+			st.callUsage[model] = callUsage
+			if st.onModelCallEvidenceIncomplete != nil {
+				st.onModelCallEvidenceIncomplete(model)
+			}
+		}
 
 	case "session.shutdown":
 		// Session-wide per-model totals, emitted once as the session tears down.
@@ -252,6 +408,7 @@ func handleCopilotEvent(evt copilotEvent, st *copilotEventState) []Message {
 			if model == "" {
 				model = st.activeModel
 			}
+			model = copilotModelKey(st, model)
 			addUsage(st.shutdownUsage, model, m.Usage.InputTokens, m.Usage.OutputTokens, m.Usage.CacheReadTokens, m.Usage.CacheWriteTokens)
 		}
 
@@ -391,6 +548,8 @@ func (b *copilotBackend) Execute(ctx context.Context, prompt string, opts ExecOp
 			seedModel = "copilot"
 		}
 		st := newCopilotEventState(seedModel, opts.ResumeSessionID != "")
+		st.onModelCallEvidence = b.cfg.OnModelCallEvidence
+		st.onModelCallEvidenceIncomplete = b.cfg.OnModelCallEvidenceIncomplete
 
 		go func() {
 			<-runCtx.Done()

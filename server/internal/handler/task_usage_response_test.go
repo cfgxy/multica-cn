@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestListTasksByIssueHydratesUsage guards the per-run token figure on the
+// TestListTasksByIssueHydratesUsage guards the per-run usage figure on the
 // execution log: the sidebar row, its header total, and the usage dialog all
 // read `usage` off this endpoint, so a task that recorded usage must come back
 // carrying it — at the (provider, model) grain, because cost is priced
@@ -56,9 +56,9 @@ func TestListTasksByIssueHydratesUsage(t *testing.T) {
 	unpricedTask := newTask("completed")
 
 	if _, err := testPool.Exec(ctx, `
-		INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks)
-		VALUES ($1, 'anthropic', 'claude-opus-5',  96000, 34000, 712000, 50000, NULL),
-		       ($1, 'openai',    'gpt-5.6-terra',  31000, 12000, 158000, 11000, 3310000000)
+		INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, model_call_count)
+		VALUES ($1, 'anthropic', 'claude-opus-5',  96000, 34000, 712000, 50000, NULL, 4),
+		       ($1, 'openai',    'gpt-5.6-terra',  31000, 12000, 158000, 11000, 3310000000, NULL)
 	`, pricedTask); err != nil {
 		t.Fatalf("insert task usage: %v", err)
 	}
@@ -110,6 +110,9 @@ func TestListTasksByIssueHydratesUsage(t *testing.T) {
 	if opus.CostUsdTicks != nil {
 		t.Errorf("opus cost_usd_ticks = %d, want nil (provider reported none)", *opus.CostUsdTicks)
 	}
+	if opus.ModelCallCount == nil || *opus.ModelCallCount != 4 {
+		t.Errorf("opus model_call_count = %v, want 4", opus.ModelCallCount)
+	}
 
 	terra, ok := byModel["gpt-5.6-terra"]
 	if !ok {
@@ -117,6 +120,27 @@ func TestListTasksByIssueHydratesUsage(t *testing.T) {
 	}
 	if terra.CostUsdTicks == nil || *terra.CostUsdTicks != 3310000000 {
 		t.Errorf("terra cost_usd_ticks = %v, want 3310000000", terra.CostUsdTicks)
+	}
+	if terra.ModelCallCount != nil {
+		t.Errorf("terra model_call_count = %v, want nil for incomplete evidence", *terra.ModelCallCount)
+	}
+
+	usageReq := newRequest("GET", "/api/issues/"+issueID+"/usage", nil)
+	usageReq = withURLParam(usageReq, "id", issueID)
+	usageW := httptest.NewRecorder()
+	testHandler.GetIssueUsage(usageW, usageReq)
+	if usageW.Code != http.StatusOK {
+		t.Fatalf("issue usage expected 200, got %d: %s", usageW.Code, usageW.Body.String())
+	}
+	var issueUsage struct {
+		ModelCallCount        int64 `json:"model_call_count"`
+		ModelCallUnknownCount int32 `json:"model_call_unknown_count"`
+	}
+	if err := json.Unmarshal(usageW.Body.Bytes(), &issueUsage); err != nil {
+		t.Fatalf("decode issue usage: %v", err)
+	}
+	if issueUsage.ModelCallCount != 4 || issueUsage.ModelCallUnknownCount != 1 {
+		t.Errorf("issue model calls = %+v, want known=4 unknown=1", issueUsage)
 	}
 
 	unpriced, ok := byID[unpricedTask]
