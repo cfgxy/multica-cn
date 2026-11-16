@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -308,5 +309,40 @@ func TestWorkerEvidenceClassifiesMissingExpiredLog(t *testing.T) {
 	resp := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, Stream: "stdout", TailBytes: 8})
 	if resp.Available || resp.Unavailable != "expired" {
 		t.Fatalf("missing expired log = %+v, want expired", resp)
+	}
+}
+
+func TestWorkerEvidenceReturnsBoundedProvenanceAndRejectsMismatch(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const taskID, runID = "88888888-8888-4888-8888-888888888888", "88888888-8888-4888-8888-888888888888-1"
+	if err := os.MkdirAll(mgr.Dir(runID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stdoutLogPath(mgr.Dir(runID)), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stderrLogPath(mgr.Dir(runID)), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.WriteManifest(&Manifest{RunID: runID, TaskID: taskID, RuntimeID: "runtime-a", Generation: 1, DaemonID: "daemon-a", State: StateExited}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.WriteWorkerProvenance(runID, agent.RunProvenance{TaskID: taskID, RuntimeID: "runtime-a", Generation: 1, Provider: "claude", RequestedSessionID: "session-a"}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Supervisor{mgr: mgr, daemonID: "daemon-a", evidenceCursorKey: [32]byte{1}}
+	resp := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 8})
+	if !resp.Available || len(resp.Provenance) == 0 || !json.Valid(resp.Provenance) {
+		t.Fatalf("provenance unavailable or malformed: %+v", resp)
+	}
+	if err := mgr.WriteWorkerProvenance(runID, agent.RunProvenance{TaskID: "wrong-task", RuntimeID: "runtime-a", Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	resp = s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: taskID, RuntimeID: "runtime-a", Stream: "stdout", TailBytes: 8})
+	if resp.Available || resp.Unavailable != "not_found" {
+		t.Fatalf("mismatched provenance accepted: %+v", resp)
 	}
 }

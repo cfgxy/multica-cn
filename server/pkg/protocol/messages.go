@@ -147,6 +147,7 @@ type WorkerEvidenceResponse struct {
 	StderrTail      string                `json:"stderr_tail,omitempty"`
 	NextCursor      string                `json:"next_cursor,omitempty"`
 	ObservedAt      *time.Time            `json:"observed_at,omitempty"`
+	Provenance      json.RawMessage       `json:"provenance,omitempty"`
 	ProcessLiveness string                `json:"process_liveness"`
 	Binding         WorkerBindingEvidence `json:"binding"`
 }

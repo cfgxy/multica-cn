@@ -97,6 +97,23 @@ func (s *Supervisor) WorkerEvidence(ctx context.Context, req protocol.WorkerEvid
 	}
 
 	out.Binding = workerBinding(man, generation)
+	if provenance, provenanceErr := s.mgr.ReadWorkerProvenance(man.RunID); provenanceErr == nil {
+		if provenance.TaskID != "" && provenance.TaskID != man.TaskID ||
+			provenance.RuntimeID != "" && provenance.RuntimeID != man.RuntimeID ||
+			provenance.Generation != 0 && provenance.Generation != generation {
+			out.Unavailable = "not_found"
+			return out
+		}
+		if raw, marshalErr := json.Marshal(provenance); marshalErr == nil && len(raw) <= 32<<10 {
+			out.Provenance = raw
+		} else {
+			out.Unavailable = "not_found"
+			return out
+		}
+	} else if !errors.Is(provenanceErr, os.ErrNotExist) {
+		out.Unavailable = "not_found"
+		return out
+	}
 	cur := evidenceCursor{Generation: generation}
 	if req.Cursor != "" {
 		var reason string
