@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -116,11 +118,14 @@ func TestTaskToResponseQuizFields(t *testing.T) {
 	}
 }
 
-func TestHydrateQuizItemTitlesForLegacyTask(t *testing.T) {
+func TestQuizTaskTitleHydrationDropsDeletedItemSnapshot(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	const slug = "legacy-quiz-task-title-read"
+	const (
+		slug    = "legacy-quiz-task-title-read"
+		batchID = "8a1f0000-0000-4000-8000-000000000001"
+	)
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(),
 			`DELETE FROM prompt_quiz_item WHERE workspace_id = $1 AND slug = $2`, testWorkspaceID, slug)
@@ -129,31 +134,96 @@ func TestHydrateQuizItemTitlesForLegacyTask(t *testing.T) {
 	var created map[string]any
 	testutil.Call(t, testHandler.CreatePromptQuizItem,
 		newRequest("POST", "/api/prompt-quiz/items", map[string]any{
-			"slug": slug, "title": "旧任务对应的真实题目", "body": "题面",
+			"slug": slug, "title": "当前可读题目", "body": "题面",
 		})).Want(200).JSON(&created)
 	itemID, ok := created["id"].(string)
 	if !ok || itemID == "" {
 		t.Fatalf("created item id = %v, want string ID", created["id"])
 	}
 
-	tasks := []AgentTaskResponse{{
-		Kind: "quiz", QuizItemID: itemID,
-	}}
-	testHandler.hydrateQuizItemTitles(context.Background(), testWorkspaceID, tasks)
-	if tasks[0].QuizItemTitle != "旧任务对应的真实题目" {
-		t.Fatalf("hydrated title = %q, want current item title", tasks[0].QuizItemTitle)
+	taskContext, err := json.Marshal(map[string]string{
+		"kind":            "quiz",
+		"quiz_item_id":    itemID,
+		"quiz_item_title": "入队时历史标题",
+		"quiz_batch_id":   batchID,
+	})
+	if err != nil {
+		t.Fatalf("marshal quiz task context: %v", err)
 	}
+	agentID := createHandlerTestAgent(t, "quiz-title-hydration-agent", []byte(`{}`))
+	taskID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":        handlerTestRuntimeID(t),
+		"status":            "completed",
+		"completed_at":      testutil.Raw("now()"),
+		"originator_source": "quiz",
+		"context":           string(taskContext),
+	})
+
+	storedTask, err := testHandler.Queries.GetAgentTask(context.Background(), parseUUID(taskID))
+	if err != nil {
+		t.Fatalf("read quiz task: %v", err)
+	}
+	beforeDelete := taskToResponse(storedTask, testWorkspaceID)
+	if beforeDelete.Kind != "quiz" || beforeDelete.QuizItemTitle != "入队时历史标题" {
+		t.Fatalf("taskToResponse = %#v, want quiz snapshot title", beforeDelete)
+	}
+
+	assertListResponse := func(t *testing.T, wantTitle string) {
+		t.Helper()
+		listCases := []struct {
+			name string
+			call func(http.ResponseWriter, *http.Request)
+			req  *http.Request
+		}{
+			{
+				name: "agent task list",
+				call: testHandler.ListAgentTasks,
+				req:  withURLParam(newRequest(http.MethodGet, "/api/agents/"+agentID+"/tasks", nil), "id", agentID),
+			},
+			{
+				name: "workspace task snapshot",
+				call: testHandler.ListWorkspaceAgentTaskSnapshot,
+				req:  newRequest(http.MethodGet, "/api/agent-task-snapshot", nil),
+			},
+		}
+		for _, tc := range listCases {
+			t.Run(tc.name, func(t *testing.T) {
+				w := httptest.NewRecorder()
+				tc.call(w, tc.req)
+				if w.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+				}
+				var tasks []AgentTaskResponse
+				if err := json.NewDecoder(w.Body).Decode(&tasks); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				var got *AgentTaskResponse
+				for i := range tasks {
+					if tasks[i].ID == taskID {
+						got = &tasks[i]
+						break
+					}
+				}
+				if got == nil {
+					t.Fatalf("task %s missing from response", taskID)
+				}
+				if got.Kind != "quiz" || got.QuizItemID != itemID || got.QuizBatchID != batchID {
+					t.Errorf("quiz identity = %#v, want source and stable item/batch IDs", got)
+				}
+				if got.QuizItemTitle != wantTitle {
+					t.Errorf("quiz item title = %q, want %q", got.QuizItemTitle, wantTitle)
+				}
+			})
+		}
+	}
+
+	assertListResponse(t, "当前可读题目")
 
 	if _, err := testPool.Exec(context.Background(),
 		`DELETE FROM prompt_quiz_item WHERE workspace_id = $1 AND id = $2::uuid`, testWorkspaceID, itemID); err != nil {
 		t.Fatalf("delete quiz item: %v", err)
 	}
-	tasks[0].QuizItemTitle = ""
-	testHandler.hydrateQuizItemTitles(context.Background(), testWorkspaceID, tasks)
-	if tasks[0].QuizItemID != itemID || tasks[0].QuizItemTitle != "" {
-		t.Errorf("unreadable item metadata = %q/%q, want ID retained and no fabricated title",
-			tasks[0].QuizItemID, tasks[0].QuizItemTitle)
-	}
+	assertListResponse(t, "")
 }
 
 func TestTaskToResponseExposesOnlyMatchingAdaptationReceipt(t *testing.T) {
