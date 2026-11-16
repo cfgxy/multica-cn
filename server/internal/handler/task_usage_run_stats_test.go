@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -164,13 +166,17 @@ func TestReportTaskUsageOldDaemonMissingRunStatsCompat(t *testing.T) {
 	}
 
 	var (
-		inputTokens int64
+		inputTokens                                         int64
 		turns, compactions, maxContextTokens, contextTokens *int64
+		attributionKnown                                    bool
+		sessionID                                           string
 	)
 	if err := testPool.QueryRow(ctx, `
-		SELECT input_tokens, turns, compactions, max_context_tokens, context_tokens
+		SELECT input_tokens, turns, compactions, max_context_tokens, context_tokens,
+			session_id, session_attribution_known
 		FROM task_usage WHERE task_id = $1`, taskID).
-		Scan(&inputTokens, &turns, &compactions, &maxContextTokens, &contextTokens); err != nil {
+		Scan(&inputTokens, &turns, &compactions, &maxContextTokens, &contextTokens,
+			&sessionID, &attributionKnown); err != nil {
 		t.Fatalf("read persisted task usage: %v", err)
 	}
 	if inputTokens != 1000 {
@@ -178,6 +184,9 @@ func TestReportTaskUsageOldDaemonMissingRunStatsCompat(t *testing.T) {
 	}
 	if turns != nil || compactions != nil || maxContextTokens != nil || contextTokens != nil {
 		t.Errorf("run stats = turns=%v compactions=%v max_ctx=%v ctx=%v, want all NULL", turns, compactions, maxContextTokens, contextTokens)
+	}
+	if sessionID != "" || attributionKnown {
+		t.Errorf("old daemon attribution = session_id=%q known=%v, want empty/unknown", sessionID, attributionKnown)
 	}
 }
 
@@ -214,9 +223,301 @@ func TestReportTaskUsageContextOnlyReachesSessionGate(t *testing.T) {
 	}
 	outcome := testHandler.decideSessionResumeForTask(ctx, db.Agent{
 		SessionMaxContextTokens: 400000,
-		SessionCompactPct:      80,
+		SessionCompactPct:       80,
 	}, taskUUID)
 	if !outcome.known || outcome.contextTokens != tokens.Int64 || outcome.decision != agentconfig.SessionResumeCompactSoft {
 		t.Fatalf("session gate = %+v, want measured 350000 and compact_soft", outcome)
+	}
+}
+
+func TestReportTaskUsagePreservesRetrySessionAttribution(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, taskID := seedNULTask(t, "session-attribution-agent")
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `SELECT issue_id FROM agent_task_queue WHERE id = $1`, taskID).Scan(&issueID); err != nil {
+		t.Fatalf("load task issue: %v", err)
+	}
+
+	postUsage := func(sessionID string, input int64) {
+		t.Helper()
+		body := map[string]any{"usage": []map[string]any{{
+			"session_id":   sessionID,
+			"provider":     "claude",
+			"model":        "claude-sonnet-5",
+			"input_tokens": input,
+		}}}
+		testutil.Call(t, testHandler.ReportTaskUsage,
+			daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/usage", taskID, body),
+		).Want(http.StatusOK)
+	}
+
+	// The resumed attempt contributes 50 to the old session, while the fresh
+	// retry contributes 10 to its own session under the same task and model.
+	postUsage("old-session", 50)
+	postUsage("fresh-session", 10)
+
+	var rows int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM task_usage
+		WHERE task_id = $1 AND provider = 'claude' AND model = 'claude-sonnet-5'`, taskID).Scan(&rows); err != nil {
+		t.Fatalf("count attributed usage rows: %v", err)
+	}
+	if rows != 2 {
+		t.Fatalf("attributed usage rows = %d, want 2", rows)
+	}
+	var knownRows int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM task_usage
+		WHERE task_id = $1 AND provider = 'claude' AND model = 'claude-sonnet-5'
+		  AND session_attribution_known = TRUE`, taskID).Scan(&knownRows); err != nil {
+		t.Fatalf("count known attributed usage rows: %v", err)
+	}
+	if knownRows != 2 {
+		t.Fatalf("known attributed usage rows = %d, want 2", knownRows)
+	}
+
+	// Simulate the terminal callback rewriting the task's current resume pointer,
+	// then let the real claim endpoint read the fresh-session baseline.
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET status = 'completed', completed_at = now(), session_id = $2
+		WHERE id = $1`, taskID, "fresh-session"); err != nil {
+		t.Fatalf("complete retry task: %v", err)
+	}
+
+	var nextTaskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, session_id)
+		SELECT agent_id, runtime_id, issue_id, 'queued', 0, 'fresh-session'
+		FROM agent_task_queue WHERE id = $1
+		RETURNING id`, taskID).Scan(&nextTaskID); err != nil {
+		t.Fatalf("create next task: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, nextTaskID)
+	})
+
+	prior, err := testHandler.Queries.GetPriorSessionUsage(ctx, db.GetPriorSessionUsageParams{
+		SessionID: pgtype.Text{String: "fresh-session", Valid: true},
+		AgentID:   parseUUID(agentID),
+		ID:        parseUUID(nextTaskID),
+	})
+	if err != nil {
+		t.Fatalf("load fresh-session baseline: %v", err)
+	}
+	if len(prior) != 1 || prior[0].InputTokens != 10 {
+		t.Fatalf("fresh-session baseline = %+v, want one row with 10 input tokens", prior)
+	}
+
+	runtimeID := handlerTestRuntimeID(t)
+	claimRequest := newDaemonTokenRequest(
+		"POST",
+		"/api/daemon/runtimes/"+runtimeID+"/claim",
+		nil,
+		testWorkspaceID,
+		"session-attribution-daemon",
+	)
+	claimContext := chi.NewRouteContext()
+	claimContext.URLParams.Add("runtimeId", runtimeID)
+	claimRequest = claimRequest.WithContext(context.WithValue(claimRequest.Context(), chi.RouteCtxKey, claimContext))
+	claimResponse := httptest.NewRecorder()
+	testHandler.ClaimTaskByRuntime(claimResponse, claimRequest)
+	if claimResponse.Code != http.StatusOK {
+		t.Fatalf("ClaimTaskByRuntime returned %d: %s", claimResponse.Code, claimResponse.Body.String())
+	}
+	var claimed struct {
+		Task *struct {
+			PriorSessionID    string          `json:"prior_session_id"`
+			PriorSessionUsage []TaskUsageData `json:"prior_session_usage"`
+			UsageUnavailable  bool            `json:"prior_session_usage_unavailable"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(claimResponse.Body.Bytes(), &claimed); err != nil {
+		t.Fatalf("decode claim response: %v", err)
+	}
+	if claimed.Task == nil {
+		t.Fatalf("claim response has no task: %s", claimResponse.Body.String())
+	}
+	if claimed.Task.PriorSessionID != "fresh-session" || claimed.Task.UsageUnavailable {
+		t.Fatalf("claimed session baseline metadata = %+v, want fresh-session and available", claimed.Task)
+	}
+	if len(claimed.Task.PriorSessionUsage) != 1 || claimed.Task.PriorSessionUsage[0].InputTokens != 10 {
+		t.Fatalf("claimed fresh-session baseline = %+v, want one row with 10 input tokens", claimed.Task.PriorSessionUsage)
+	}
+
+	issueSummary, err := testHandler.Queries.GetIssueUsageSummary(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("load issue usage summary: %v", err)
+	}
+	if issueSummary.TotalInputTokens != 60 {
+		t.Fatalf("issue input total = %d, want 60 (old 50 + fresh 10)", issueSummary.TotalInputTokens)
+	}
+}
+
+func TestUnknownTaskUsageFailsClosedForIssueSessionBaseline(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, priorTaskID := seedNULTask(t, "unknown-session-attribution-agent")
+
+	var issueID, previousProvider string
+	if err := testPool.QueryRow(ctx, `
+		SELECT q.issue_id, r.provider
+		FROM agent_task_queue q
+		JOIN agent_runtime r ON r.id = q.runtime_id
+		WHERE q.id = $1`, priorTaskID).Scan(&issueID, &previousProvider); err != nil {
+		t.Fatalf("load task issue and runtime provider: %v", err)
+	}
+	// The claim gate checks the runtime provider. Make this fixture an ACP
+	// provider so the handler response exercises the same provider key that the
+	// daemon uses for cumulative-session usage.
+	if _, err := testPool.Exec(ctx, `UPDATE agent_runtime SET provider = 'claude' WHERE id = (SELECT runtime_id FROM agent_task_queue WHERE id = $1)`, priorTaskID); err != nil {
+		t.Fatalf("set fixture runtime provider: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `
+			UPDATE agent_runtime SET provider = $2
+			WHERE id = (SELECT runtime_id FROM agent_task_queue WHERE id = $1)`, priorTaskID, previousProvider)
+	})
+
+	// This is the old daemon wire shape: the usage entry has no session_id.
+	// It must remain unattributed instead of being rebound to the task's later
+	// session by the terminal callback.
+	oldDaemonPayload := json.RawMessage(`{"usage":[{"provider":"claude","model":"claude-sonnet-5","input_tokens":60,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0}]}`)
+	testutil.Call(t, testHandler.ReportTaskUsage,
+		daemonTaskRequest(t, "/api/daemon/tasks/"+priorTaskID+"/usage", priorTaskID, oldDaemonPayload),
+	).Want(http.StatusOK)
+
+	var storedSessionID string
+	var storedAttributionKnown bool
+	if err := testPool.QueryRow(ctx, `
+		SELECT session_id, session_attribution_known
+		FROM task_usage
+		WHERE task_id = $1 AND provider = 'claude' AND model = 'claude-sonnet-5'`, priorTaskID).
+		Scan(&storedSessionID, &storedAttributionKnown); err != nil {
+		t.Fatalf("read old-daemon usage attribution: %v", err)
+	}
+	if storedSessionID != "" || storedAttributionKnown {
+		t.Fatalf("old-daemon usage attribution = session %q, known=%v; want empty/unknown", storedSessionID, storedAttributionKnown)
+	}
+
+	// Drive the real terminal callback so TaskService, rather than a direct SQL
+	// update, rewrites the task's current session pointer.
+	completeReq := daemonTaskRequest(t, "/api/daemon/tasks/"+priorTaskID+"/complete", priorTaskID, map[string]any{
+		"output":     "completed",
+		"session_id": "fresh-session",
+	})
+	testutil.Call(t, testHandler.CompleteTask, completeReq).Want(http.StatusOK)
+
+	var status, completedSessionID string
+	if err := testPool.QueryRow(ctx, `
+		SELECT status, session_id FROM agent_task_queue WHERE id = $1`, priorTaskID).
+		Scan(&status, &completedSessionID); err != nil {
+		t.Fatalf("read completed task: %v", err)
+	}
+	if status != "completed" || completedSessionID != "fresh-session" {
+		t.Fatalf("completed task state = status %q, session %q; want completed/fresh-session", status, completedSessionID)
+	}
+
+	var nextTaskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, session_id)
+		SELECT agent_id, runtime_id, issue_id, 'queued', 10000, 'fresh-session'
+		FROM agent_task_queue WHERE id = $1
+		RETURNING id`, priorTaskID).Scan(&nextTaskID); err != nil {
+		t.Fatalf("create next task: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage WHERE task_id = $1`, priorTaskID)
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, nextTaskID)
+	})
+
+	prior, err := testHandler.Queries.GetPriorSessionUsage(ctx, db.GetPriorSessionUsageParams{
+		SessionID: pgtype.Text{String: "fresh-session", Valid: true},
+		AgentID:   parseUUID(agentID),
+		ID:        parseUUID(nextTaskID),
+	})
+	if err != nil {
+		t.Fatalf("load fresh baseline: %v", err)
+	}
+	if len(prior) != 0 {
+		t.Fatalf("unknown usage entered fresh baseline = %+v, want empty", prior)
+	}
+
+	unavailable, err := testHandler.Queries.HasUnattributedPriorSessionUsage(ctx, db.HasUnattributedPriorSessionUsageParams{
+		ID:       parseUUID(nextTaskID),
+		AgentID:  parseUUID(agentID),
+		Provider: "claude",
+	})
+	if err != nil {
+		t.Fatalf("check unknown usage marker: %v", err)
+	}
+	if !unavailable {
+		t.Fatal("unknown usage did not mark the issue baseline unavailable")
+	}
+
+	runtimeID := handlerTestRuntimeID(t)
+	claimReq := newDaemonTokenRequest(
+		http.MethodPost,
+		"/api/daemon/runtimes/"+runtimeID+"/claim",
+		nil,
+		testWorkspaceID,
+		"usage-attribution-claim-daemon",
+	)
+	claimReq = withURLParam(claimReq, "runtimeId", runtimeID)
+	claimResponse := httptest.NewRecorder()
+	testHandler.ClaimTaskByRuntime(claimResponse, claimReq)
+	if claimResponse.Code != http.StatusOK {
+		t.Fatalf("ClaimTaskByRuntime returned %d: %s", claimResponse.Code, claimResponse.Body.String())
+	}
+	var claimed struct {
+		Task *AgentTaskResponse `json:"task"`
+	}
+	if err := json.Unmarshal(claimResponse.Body.Bytes(), &claimed); err != nil {
+		t.Fatalf("decode claim response: %v", err)
+	}
+	if claimed.Task == nil {
+		t.Fatalf("claim response has no task: %s", claimResponse.Body.String())
+	}
+	if claimed.Task.ID != nextTaskID {
+		t.Fatalf("claimed task = %s, want %s", claimed.Task.ID, nextTaskID)
+	}
+	if claimed.Task.PriorSessionID != "fresh-session" {
+		t.Fatalf("claimed prior session = %q, want fresh-session", claimed.Task.PriorSessionID)
+	}
+	if !claimed.Task.PriorSessionUsageUnavailable {
+		t.Fatalf("claim did not propagate PriorSessionUsageUnavailable: %+v", claimed.Task)
+	}
+	if len(claimed.Task.PriorSessionUsage) != 0 {
+		t.Fatalf("claim returned an unsafe fresh baseline = %+v, want empty", claimed.Task.PriorSessionUsage)
+	}
+
+	// normalizePriorSessionUsage returns nil for the next cumulative snapshot when
+	// the baseline is unavailable. Client.ReportTaskUsage consequently sends an
+	// empty usage array; exercise that real handler boundary rather than inserting
+	// the expected absence directly into the database.
+	reportReq := daemonTaskRequest(t, "/api/daemon/tasks/"+nextTaskID+"/usage", nextTaskID, json.RawMessage(`{"usage":[]}`))
+	testutil.Call(t, testHandler.ReportTaskUsage, reportReq).Want(http.StatusOK)
+
+	var currentRunRows int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM task_usage WHERE task_id = $1`, nextTaskID).Scan(&currentRunRows); err != nil {
+		t.Fatalf("read unavailable cumulative snapshot rows: %v", err)
+	}
+	if currentRunRows != 0 {
+		t.Fatalf("unavailable cumulative snapshot created %d current-run rows, want none", currentRunRows)
+	}
+
+	issueSummary, err := testHandler.Queries.GetIssueUsageSummary(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("load issue usage summary: %v", err)
+	}
+	if issueSummary.TotalInputTokens != 60 {
+		t.Fatalf("issue input total = %d, want 60 while baseline remains unavailable", issueSummary.TotalInputTokens)
 	}
 }

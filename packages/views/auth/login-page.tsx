@@ -1,6 +1,14 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, type ReactNode } from "react";
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useRef,
+  type ComponentProps,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Card,
@@ -23,6 +31,13 @@ import { workspaceKeys } from "@multica/core/workspace/queries";
 import { api } from "@multica/core/api";
 import type { User } from "@multica/core/types";
 import { useT } from "../i18n";
+
+// The shared Input forwards Base UI's controlled callback but its public type
+// still mirrors the native input props.
+type ControlledInputProps = ComponentProps<typeof Input> & {
+  onValueChange?: (value: string) => void;
+};
+const ControlledInput = Input as ComponentType<ControlledInputProps>;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -422,12 +437,12 @@ export function LoginPage({
           <form id="login-form" onSubmit={handleSendCode} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="login-email">{t(($) => $.common.email)}</Label>
-              <Input
+              <ControlledInput
                 id="login-email"
                 type="email"
                 placeholder={t(($) => $.common.email_placeholder)}
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onValueChange={setEmail}
                 autoFocus
                 required
               />
