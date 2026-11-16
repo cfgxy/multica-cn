@@ -9080,9 +9080,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var retiredSessionID string
 	defer func() { taskResult.RetiredSessionID = retiredSessionID }()
 
+	retriedFreshSession := false
 	if shouldRetryWithFreshSession(result, task.PriorSessionID, tools, provider) {
+		retriedFreshSession = true
 		firstResult := result
-		firstUsage := result.Usage
+		firstUsage := normalizePriorSessionUsage(provider, task, result.Usage)
 		firstTools := tools
 		if !result.ResumeRejectedTransient {
 			retiredSessionID = task.PriorSessionID
@@ -9154,12 +9156,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		result, tools = reconcileFreshRetryResult(firstResult, firstUsage, firstTools, retryResult, retryTools, retryErr)
 	}
 
-	// ACP providers report billing usage cumulatively for a resumed session.
-	// Normalize only after the optional fresh-session retry has been merged so
-	// the prior-session baseline is subtracted exactly once from the complete
-	// task result. Codex has its own start-time baseline handling and is not in
-	// this family.
-	result.Usage = subtractPriorSessionUsage(provider, task.PriorSessionUsage, result.Usage)
+	// ACP providers report billing usage cumulatively for a resumed session. The
+	// resumed attempt is normalized before it is merged with a fresh retry, so a
+	// fresh session's independent usage is never reduced by the old baseline.
+	if !retriedFreshSession {
+		result.Usage = normalizePriorSessionUsage(provider, task, result.Usage)
+	}
 
 	// Snapshot lifecycle (RUYI-669): the agent process is done, so the mounts
 	// it held died with its namespace. A completed run drops the snapshot
@@ -10368,6 +10370,18 @@ func subtractPriorSessionUsage(provider string, baseline []TaskUsageEntry, usage
 		usage[model] = current
 	}
 	return usage
+}
+
+func normalizePriorSessionUsage(provider string, task Task, usage map[string]agent.TokenUsage) map[string]agent.TokenUsage {
+	if task.PriorSessionID == "" || !isACPSessionCumulativeProvider(provider) {
+		return usage
+	}
+	if task.PriorSessionUsageUnavailable {
+		// The cumulative snapshot cannot be made safe without its baseline. Do not
+		// let it reach the billing table; a fresh retry is merged separately.
+		return nil
+	}
+	return subtractPriorSessionUsage(provider, task.PriorSessionUsage, usage)
 }
 
 func nonNegativeUsageDelta(current, prior int64) int64 {

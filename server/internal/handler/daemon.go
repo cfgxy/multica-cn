@@ -3961,24 +3961,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				"session_id", resp.PriorSessionID,
 				"error", usageErr,
 			)
-		} else {
-			for _, row := range priorUsage {
-				var cost *int64
-				if row.CostUsdTicks > 0 {
-					value := row.CostUsdTicks
-					cost = &value
-				}
-				resp.PriorSessionUsage = append(resp.PriorSessionUsage, TaskUsageData{
-					Provider:         row.Provider,
-					Model:            row.Model,
-					InputTokens:      row.InputTokens,
-					OutputTokens:     row.OutputTokens,
-					CacheReadTokens:  row.CacheReadTokens,
-					CacheWriteTokens: row.CacheWriteTokens,
-					CostUsdTicks:     cost,
-				})
-			}
 		}
+		applyPriorSessionUsage(&resp, priorUsage, usageErr)
 	}
 
 	if reason := localIsolationClaimBlockReason(
@@ -4041,6 +4025,29 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	h.recordClauseInjectionEvents(r.Context(), claimWorkspaceID, task.ID, promptVersionScopeIDs, clauseInjections, clauseObservations)
 
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
+}
+
+func applyPriorSessionUsage(resp *AgentTaskResponse, priorUsage []db.GetPriorSessionUsageRow, usageErr error) {
+	if usageErr != nil {
+		resp.PriorSessionUsageUnavailable = true
+		return
+	}
+	for _, row := range priorUsage {
+		var cost *int64
+		if row.CostUsdTicks > 0 {
+			value := row.CostUsdTicks
+			cost = &value
+		}
+		resp.PriorSessionUsage = append(resp.PriorSessionUsage, TaskUsageData{
+			Provider:         row.Provider,
+			Model:            row.Model,
+			InputTokens:      row.InputTokens,
+			OutputTokens:     row.OutputTokens,
+			CacheReadTokens:  row.CacheReadTokens,
+			CacheWriteTokens: row.CacheWriteTokens,
+			CostUsdTicks:     cost,
+		})
+	}
 }
 
 // recordClaimedPromptVersions resolves the current prompt_version.version

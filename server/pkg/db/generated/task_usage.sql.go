@@ -61,7 +61,7 @@ func (q *Queries) GetIssueUsageSummary(ctx context.Context, issueID pgtype.UUID)
 
 const getPriorSessionUsage = `-- name: GetPriorSessionUsage :many
 SELECT
-    tu.provider,
+    LOWER(tu.provider) AS provider,
     tu.model,
     SUM(tu.input_tokens)::bigint        AS input_tokens,
     SUM(tu.output_tokens)::bigint       AS output_tokens,
@@ -73,8 +73,9 @@ JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.session_id = $1
   AND atq.agent_id = $2
   AND atq.id <> $3
-GROUP BY tu.provider, tu.model
-ORDER BY tu.provider, tu.model
+  AND tu.usage_semantics_version = 2
+GROUP BY LOWER(tu.provider), tu.model
+ORDER BY LOWER(tu.provider), tu.model
 `
 
 type GetPriorSessionUsageParams struct {
@@ -156,7 +157,7 @@ func (q *Queries) GetTaskContextTokens(ctx context.Context, taskID pgtype.UUID) 
 }
 
 const getTaskUsage = `-- name: GetTaskUsage :many
-SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens FROM task_usage
+SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, usage_semantics_version FROM task_usage
 WHERE task_id = $1
 ORDER BY model
 `
@@ -186,6 +187,7 @@ func (q *Queries) GetTaskUsage(ctx context.Context, taskID pgtype.UUID) ([]TaskU
 			&i.Turns,
 			&i.Compactions,
 			&i.MaxContextTokens,
+			&i.UsageSemanticsVersion,
 		); err != nil {
 			return nil, err
 		}

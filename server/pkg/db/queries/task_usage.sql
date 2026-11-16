@@ -14,8 +14,8 @@
 -- turns / compactions / max_context_tokens (RUYI-154) are run-scoped stats
 -- reported exactly once, at task completion, so they are overwritten like the
 -- token counters rather than COALESCEd like context_tokens.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), now())
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, usage_semantics_version, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), sqlc.narg('turns'), sqlc.narg('compactions'), sqlc.narg('max_context_tokens'), 2, now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -27,10 +27,12 @@ DO UPDATE SET
     turns = EXCLUDED.turns,
     compactions = EXCLUDED.compactions,
     max_context_tokens = EXCLUDED.max_context_tokens,
+    usage_semantics_version = 2,
     updated_at = now();
 
 -- name: GetTaskUsage :many
-SELECT * FROM task_usage
+SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, usage_semantics_version
+FROM task_usage
 WHERE task_id = $1
 ORDER BY model;
 
@@ -62,7 +64,7 @@ LIMIT 1;
 -- claim normally happens before its usage exists, but a retrying claim must not
 -- use a partially written row as its own baseline.
 SELECT
-    tu.provider,
+    LOWER(tu.provider) AS provider,
     tu.model,
     SUM(tu.input_tokens)::bigint        AS input_tokens,
     SUM(tu.output_tokens)::bigint       AS output_tokens,
@@ -74,8 +76,9 @@ JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.session_id = $1
   AND atq.agent_id = $2
   AND atq.id <> $3
-GROUP BY tu.provider, tu.model
-ORDER BY tu.provider, tu.model;
+  AND tu.usage_semantics_version = 2
+GROUP BY LOWER(tu.provider), tu.model
+ORDER BY LOWER(tu.provider), tu.model;
 
 -- name: ListIssueTaskUsage :many
 -- Per-(task, provider, model) usage rows for every task on one issue — the

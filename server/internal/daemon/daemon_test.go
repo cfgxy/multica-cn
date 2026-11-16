@@ -1737,9 +1737,10 @@ func TestSubtractPriorSessionUsage(t *testing.T) {
 		}
 	})
 
-	t.Run("subtracts baseline once after fresh retry usage is merged", func(t *testing.T) {
+	t.Run("normalizes resumed usage before merging a fresh retry", func(t *testing.T) {
+		task := Task{PriorSessionID: "session-a", PriorSessionUsage: baseline}
 		first := agent.Result{Usage: map[string]agent.TokenUsage{
-			"model-a": {InputTokens: 100, OutputTokens: 20},
+			"model-a": {InputTokens: 200, OutputTokens: 60},
 		}}
 		retry := agent.Result{
 			Status: "completed",
@@ -1747,10 +1748,62 @@ func TestSubtractPriorSessionUsage(t *testing.T) {
 				"model-a": {InputTokens: 50, OutputTokens: 10},
 			},
 		}
-		merged, _ := reconcileFreshRetryResult(first, first.Usage, 0, retry, 0, nil)
-		got := subtractPriorSessionUsage("claude", baseline, merged.Usage)["model-a"]
-		if got.InputTokens != 50 || got.OutputTokens != 0 {
-			t.Fatalf("expected merged usage to subtract the prior session once, got %+v", got)
+		firstUsage := normalizePriorSessionUsage("claude", task, first.Usage)
+		merged, _ := reconcileFreshRetryResult(first, firstUsage, 0, retry, 0, nil)
+		got := merged.Usage["model-a"]
+		if got.InputTokens != 150 || got.OutputTokens != 30 {
+			t.Fatalf("expected resumed delta plus fresh usage, got %+v", got)
+		}
+	})
+
+	t.Run("fresh usage is preserved when resumed snapshot is below baseline", func(t *testing.T) {
+		task := Task{PriorSessionID: "session-a", PriorSessionUsage: baseline}
+		first := agent.Result{Usage: map[string]agent.TokenUsage{
+			"model-a": {InputTokens: 50, OutputTokens: 10},
+		}}
+		retry := agent.Result{
+			Status: "completed",
+			Usage: map[string]agent.TokenUsage{
+				"model-a": {InputTokens: 30, OutputTokens: 7},
+			},
+		}
+		firstUsage := normalizePriorSessionUsage("claude", task, first.Usage)
+		merged, _ := reconcileFreshRetryResult(first, firstUsage, 0, retry, 0, nil)
+		got := merged.Usage["model-a"]
+		if got.InputTokens != 30 || got.OutputTokens != 7 {
+			t.Fatalf("expected fresh usage to remain independent, got %+v", got)
+		}
+	})
+
+	t.Run("query failure drops resumed usage but keeps fresh usage", func(t *testing.T) {
+		task := Task{
+			PriorSessionID:               "session-a",
+			PriorSessionUsageUnavailable: true,
+			PriorSessionUsage:            baseline,
+		}
+		first := agent.Result{Usage: map[string]agent.TokenUsage{
+			"model-a": {InputTokens: 200, OutputTokens: 60},
+		}}
+		retry := agent.Result{
+			Status: "completed",
+			Usage: map[string]agent.TokenUsage{
+				"model-a": {InputTokens: 30, OutputTokens: 7},
+			},
+		}
+		firstUsage := normalizePriorSessionUsage("claude", task, first.Usage)
+		merged, _ := reconcileFreshRetryResult(first, firstUsage, 0, retry, 0, nil)
+		got := merged.Usage["model-a"]
+		if got.InputTokens != 30 || got.OutputTokens != 7 {
+			t.Fatalf("expected only fresh usage after unavailable baseline, got %+v", got)
+		}
+	})
+
+	t.Run("successful empty baseline keeps resumed snapshot", func(t *testing.T) {
+		task := Task{PriorSessionID: "session-a"}
+		usage := map[string]agent.TokenUsage{"model-a": {InputTokens: 200, OutputTokens: 60}}
+		got := normalizePriorSessionUsage("claude", task, usage)["model-a"]
+		if got.InputTokens != 200 || got.OutputTokens != 60 {
+			t.Fatalf("expected snapshot unchanged with empty baseline, got %+v", got)
 		}
 	})
 }
