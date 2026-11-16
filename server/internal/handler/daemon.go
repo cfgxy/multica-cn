@@ -3950,19 +3950,38 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// observability-only at claim time: a lookup failure must not strand a
 	// valid task in dispatched state.
 	if resp.PriorSessionID != "" {
-		priorUsage, usageErr := h.Queries.GetPriorSessionUsage(r.Context(), db.GetPriorSessionUsageParams{
-			SessionID: pgtype.Text{String: resp.PriorSessionID, Valid: true},
-			AgentID:   task.AgentID,
-			ID:        task.ID,
+		unattributed, markerErr := h.Queries.HasUnattributedPriorSessionUsage(r.Context(), db.HasUnattributedPriorSessionUsageParams{
+			ID:       task.ID,
+			AgentID:  task.AgentID,
+			Provider: runtime.Provider,
 		})
-		if usageErr != nil {
-			slog.Warn("task claim: failed to load prior session usage baseline",
+		if markerErr != nil {
+			slog.Warn("task claim: failed to check unattributed prior session usage",
 				"task_id", uuidToString(task.ID),
 				"session_id", resp.PriorSessionID,
-				"error", usageErr,
+				"error", markerErr,
 			)
+			resp.PriorSessionUsageUnavailable = true
+		} else if unattributed {
+			// The Issue total remains queryable, but an unknown historical row
+			// cannot safely seed this cumulative session. Do not turn the next
+			// snapshot into a full Run delta.
+			resp.PriorSessionUsageUnavailable = true
+		} else {
+			priorUsage, usageErr := h.Queries.GetPriorSessionUsage(r.Context(), db.GetPriorSessionUsageParams{
+				SessionID: pgtype.Text{String: resp.PriorSessionID, Valid: true},
+				AgentID:   task.AgentID,
+				ID:        task.ID,
+			})
+			if usageErr != nil {
+				slog.Warn("task claim: failed to load prior session usage baseline",
+					"task_id", uuidToString(task.ID),
+					"session_id", resp.PriorSessionID,
+					"error", usageErr,
+				)
+			}
+			applyPriorSessionUsage(&resp, priorUsage, usageErr)
 		}
-		applyPriorSessionUsage(&resp, priorUsage, usageErr)
 	}
 
 	if reason := localIsolationClaimBlockReason(
@@ -5482,9 +5501,11 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	runtimeProviderLoaded := false
 	for _, u := range req.Usage {
 		sessionID := strings.TrimSpace(u.SessionID)
-		if sessionID == "" && task.SessionID.Valid {
-			sessionID = task.SessionID.String
-		}
+		// An omitted session_id is not evidence that the usage belongs to the
+		// task's current session. Old daemons can merge resumed and fresh ACP
+		// snapshots before reporting them, so preserve the row as unattributed
+		// and let the next cumulative claim fail closed.
+		sessionAttributionKnown := sessionID != ""
 		provider := normalizeProvider(u.Provider)
 		if provider == "" {
 			if !runtimeProviderLoaded {
@@ -5499,19 +5520,20 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			provider = runtimeProvider
 		}
 		if err := h.Queries.UpsertTaskUsage(r.Context(), db.UpsertTaskUsageParams{
-			TaskID:           parseUUID(taskID),
-			SessionID:        sessionID,
-			Provider:         provider,
-			Model:            u.Model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUsdTicks:     authoritativeCostTicks(u.CostUSDTicks),
-			ContextTokens:    authoritativeContextTokens(u.ContextTokens),
-			Turns:            authoritativeTurns(u.Turns),
-			Compactions:      authoritativeCompactions(u.Compactions),
-			MaxContextTokens: authoritativeMaxContextTokens(u.MaxContextTokens),
+			TaskID:                  parseUUID(taskID),
+			SessionID:               sessionID,
+			SessionAttributionKnown: sessionAttributionKnown,
+			Provider:                provider,
+			Model:                   u.Model,
+			InputTokens:             u.InputTokens,
+			OutputTokens:            u.OutputTokens,
+			CacheReadTokens:         u.CacheReadTokens,
+			CacheWriteTokens:        u.CacheWriteTokens,
+			CostUsdTicks:            authoritativeCostTicks(u.CostUSDTicks),
+			ContextTokens:           authoritativeContextTokens(u.ContextTokens),
+			Turns:                   authoritativeTurns(u.Turns),
+			Compactions:             authoritativeCompactions(u.Compactions),
+			MaxContextTokens:        authoritativeMaxContextTokens(u.MaxContextTokens),
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
 			continue

@@ -2602,17 +2602,18 @@ type TaskToken struct {
 }
 
 type TaskUsage struct {
-	ID               pgtype.UUID        `json:"id"`
-	TaskID           pgtype.UUID        `json:"task_id"`
-	SessionID        string             `json:"session_id"`
-	Provider         string             `json:"provider"`
-	Model            string             `json:"model"`
-	InputTokens      int64              `json:"input_tokens"`
-	OutputTokens     int64              `json:"output_tokens"`
-	CacheReadTokens  int64              `json:"cache_read_tokens"`
-	CacheWriteTokens int64              `json:"cache_write_tokens"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	ID                      pgtype.UUID        `json:"id"`
+	TaskID                  pgtype.UUID        `json:"task_id"`
+	SessionID               string             `json:"session_id"`
+	SessionAttributionKnown bool               `json:"session_attribution_known"`
+	Provider                string             `json:"provider"`
+	Model                   string             `json:"model"`
+	InputTokens             int64              `json:"input_tokens"`
+	OutputTokens            int64              `json:"output_tokens"`
+	CacheReadTokens         int64              `json:"cache_read_tokens"`
+	CacheWriteTokens        int64              `json:"cache_write_tokens"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
 	// Provider-reported cost in 1e-10 USD. NULL when the provider reports none; those rows are priced client-side from the static rate table.
 	CostUsdTicks          pgtype.Int8 `json:"cost_usd_ticks"`
 	ContextTokens         pgtype.Int8 `json:"context_tokens"`

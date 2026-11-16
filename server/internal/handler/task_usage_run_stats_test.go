@@ -168,11 +168,15 @@ func TestReportTaskUsageOldDaemonMissingRunStatsCompat(t *testing.T) {
 	var (
 		inputTokens                                         int64
 		turns, compactions, maxContextTokens, contextTokens *int64
+		attributionKnown                                    bool
+		sessionID                                           string
 	)
 	if err := testPool.QueryRow(ctx, `
-		SELECT input_tokens, turns, compactions, max_context_tokens, context_tokens
+		SELECT input_tokens, turns, compactions, max_context_tokens, context_tokens,
+			session_id, session_attribution_known
 		FROM task_usage WHERE task_id = $1`, taskID).
-		Scan(&inputTokens, &turns, &compactions, &maxContextTokens, &contextTokens); err != nil {
+		Scan(&inputTokens, &turns, &compactions, &maxContextTokens, &contextTokens,
+			&sessionID, &attributionKnown); err != nil {
 		t.Fatalf("read persisted task usage: %v", err)
 	}
 	if inputTokens != 1000 {
@@ -180,6 +184,9 @@ func TestReportTaskUsageOldDaemonMissingRunStatsCompat(t *testing.T) {
 	}
 	if turns != nil || compactions != nil || maxContextTokens != nil || contextTokens != nil {
 		t.Errorf("run stats = turns=%v compactions=%v max_ctx=%v ctx=%v, want all NULL", turns, compactions, maxContextTokens, contextTokens)
+	}
+	if sessionID != "" || attributionKnown {
+		t.Errorf("old daemon attribution = session_id=%q known=%v, want empty/unknown", sessionID, attributionKnown)
 	}
 }
 
@@ -262,6 +269,16 @@ func TestReportTaskUsagePreservesRetrySessionAttribution(t *testing.T) {
 	if rows != 2 {
 		t.Fatalf("attributed usage rows = %d, want 2", rows)
 	}
+	var knownRows int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM task_usage
+		WHERE task_id = $1 AND provider = 'claude' AND model = 'claude-sonnet-5'
+		  AND session_attribution_known = TRUE`, taskID).Scan(&knownRows); err != nil {
+		t.Fatalf("count known attributed usage rows: %v", err)
+	}
+	if knownRows != 2 {
+		t.Fatalf("known attributed usage rows = %d, want 2", knownRows)
+	}
 
 	// Simulate the terminal callback rewriting the task's current resume pointer,
 	// then let the real claim endpoint read the fresh-session baseline.
@@ -338,5 +355,81 @@ func TestReportTaskUsagePreservesRetrySessionAttribution(t *testing.T) {
 	}
 	if issueSummary.TotalInputTokens != 60 {
 		t.Fatalf("issue input total = %d, want 60 (old 50 + fresh 10)", issueSummary.TotalInputTokens)
+	}
+}
+
+func TestUnknownTaskUsageFailsClosedForIssueSessionBaseline(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID, priorTaskID := seedNULTask(t, "unknown-session-attribution-agent")
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `SELECT issue_id FROM agent_task_queue WHERE id = $1`, priorTaskID).Scan(&issueID); err != nil {
+		t.Fatalf("load task issue: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO task_usage (
+			task_id, session_id, session_attribution_known, provider, model,
+			input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+			usage_semantics_version
+		) VALUES ($1, 'legacy-session', FALSE, 'claude', 'claude-sonnet-5', 60, 0, 0, 0, 2)
+	`, priorTaskID); err != nil {
+		t.Fatalf("insert unknown historical usage: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM task_usage WHERE task_id = $1`, priorTaskID)
+	})
+
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_task_queue
+		SET status = 'completed', completed_at = now(), session_id = 'fresh-session'
+		WHERE id = $1`, priorTaskID); err != nil {
+		t.Fatalf("complete legacy task: %v", err)
+	}
+
+	var nextTaskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, session_id)
+		SELECT agent_id, runtime_id, issue_id, 'queued', 0, 'fresh-session'
+		FROM agent_task_queue WHERE id = $1
+		RETURNING id`, priorTaskID).Scan(&nextTaskID); err != nil {
+		t.Fatalf("create next task: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, nextTaskID)
+	})
+
+	prior, err := testHandler.Queries.GetPriorSessionUsage(ctx, db.GetPriorSessionUsageParams{
+		SessionID: pgtype.Text{String: "fresh-session", Valid: true},
+		AgentID:   parseUUID(agentID),
+		ID:        parseUUID(nextTaskID),
+	})
+	if err != nil {
+		t.Fatalf("load fresh baseline: %v", err)
+	}
+	if len(prior) != 0 {
+		t.Fatalf("unknown usage entered fresh baseline = %+v, want empty", prior)
+	}
+
+	unavailable, err := testHandler.Queries.HasUnattributedPriorSessionUsage(ctx, db.HasUnattributedPriorSessionUsageParams{
+		ID:       parseUUID(nextTaskID),
+		AgentID:  parseUUID(agentID),
+		Provider: "claude",
+	})
+	if err != nil {
+		t.Fatalf("check unknown usage marker: %v", err)
+	}
+	if !unavailable {
+		t.Fatal("unknown usage did not mark the issue baseline unavailable")
+	}
+
+	issueSummary, err := testHandler.Queries.GetIssueUsageSummary(ctx, parseUUID(issueID))
+	if err != nil {
+		t.Fatalf("load issue usage summary: %v", err)
+	}
+	if issueSummary.TotalInputTokens != 60 {
+		t.Fatalf("issue input total = %d, want 60 while baseline remains unavailable", issueSummary.TotalInputTokens)
 	}
 }
