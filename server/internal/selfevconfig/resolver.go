@@ -19,6 +19,7 @@ package selfevconfig
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -26,9 +27,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/llm"
-	"github.com/multica-ai/multica/server/internal/util/secretbox"
 )
 
 // Source labels for the priority chain. Frontend and run records carry them
@@ -63,7 +64,8 @@ const (
 type Store interface {
 	GetSelfEvolutionModelConfig(ctx context.Context, workspaceID pgtype.UUID) (db.SelfEvolutionModelConfig, error)
 	UpsertSelfEvolutionModelConfig(ctx context.Context, arg db.UpsertSelfEvolutionModelConfigParams) (db.SelfEvolutionModelConfig, error)
-	UpdateSelfEvolutionModelConfigValidation(ctx context.Context, arg db.UpdateSelfEvolutionModelConfigValidationParams) error
+	UpdateSelfEvolutionModelConfig(ctx context.Context, arg db.UpdateSelfEvolutionModelConfigParams) (db.SelfEvolutionModelConfig, error)
+	UpdateSelfEvolutionModelConfigValidation(ctx context.Context, arg db.UpdateSelfEvolutionModelConfigValidationParams) (int64, error)
 	DeleteSelfEvolutionModelConfig(ctx context.Context, workspaceID pgtype.UUID) error
 }
 
@@ -86,8 +88,10 @@ type Resolver struct {
 	deployModel string
 	now         func() time.Time
 
-	mu    sync.Mutex
-	cache map[pgtype.UUID]cacheEntry
+	mu            sync.Mutex
+	mutationMu    sync.Mutex
+	mutationLocks map[pgtype.UUID]*sync.Mutex
+	cache         map[pgtype.UUID]cacheEntry
 }
 
 type cacheEntry struct {
@@ -100,17 +104,23 @@ type cacheEntry struct {
 // disabled client, which simply keeps the chain falling through to none.
 func NewResolver(store Store, box *secretbox.Box, deploy *llm.Client, deployModel string) *Resolver {
 	return &Resolver{
-		store:       store,
-		box:         box,
-		deploy:      deploy,
-		deployModel: deployModel,
-		now:         time.Now,
-		cache:       map[pgtype.UUID]cacheEntry{},
+		store:         store,
+		box:           box,
+		deploy:        deploy,
+		deployModel:   deployModel,
+		now:           time.Now,
+		mutationLocks: map[pgtype.UUID]*sync.Mutex{},
+		cache:         map[pgtype.UUID]cacheEntry{},
 	}
 }
 
 // ResolveRunTarget walks the priority chain (cached; see cacheTTL).
 func (r *Resolver) ResolveRunTarget(ctx context.Context, workspaceID pgtype.UUID) (RunTarget, error) {
+	if e, ok := r.cached(workspaceID); ok {
+		return e, nil
+	}
+	unlock := r.lockMutation(workspaceID)
+	defer unlock()
 	if e, ok := r.cached(workspaceID); ok {
 		return e, nil
 	}
@@ -156,12 +166,12 @@ func (r *Resolver) ScoringEnabled(ctx context.Context, workspaceID pgtype.UUID) 
 
 // State is the module-config view the status cards render.
 type State struct {
-	Status          string // ok | unconfigured | error | disabled
-	EffectiveSource string // module_config | deploy_default | "" when unconfigured
-	Model           string
-	LastValidatedAt pgtype.Timestamptz
+	Status           string // ok | unconfigured | error | disabled
+	EffectiveSource  string // module_config | deploy_default | "" when unconfigured
+	Model            string
+	LastValidatedAt  pgtype.Timestamptz
 	LastValidationOK pgtype.Bool
-	ValidationError string
+	ValidationError  string
 }
 
 // ScoringState derives the four-state closed loop for the quality/status
@@ -243,6 +253,9 @@ type ValidationOutcome struct {
 // Save validates (mandatory whenever credentials are present) and only then
 // persists, returning the stored row. A failed validation persists nothing.
 func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInput) (db.SelfEvolutionModelConfig, *ValidationFailure, error) {
+	unlock := r.lockMutation(workspaceID)
+	defer unlock()
+
 	in.BaseURL = strings.TrimSpace(in.BaseURL)
 	in.Model = strings.TrimSpace(in.Model)
 	in.APIKey = strings.TrimSpace(in.APIKey)
@@ -253,14 +266,30 @@ func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInp
 		return zero, nil, ErrIncompleteCreds
 	}
 
-	var apiKey []byte
+	var (
+		apiKey            []byte
+		expectedUpdatedAt pgtype.Timestamptz
+		stored            db.SelfEvolutionModelConfig
+		storedFound       bool
+	)
 	if creds {
-		stored, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
+		row, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
 		if err != nil && !isNoRows(err) {
 			return zero, nil, err
 		}
+		if err == nil {
+			stored = row
+			storedFound = true
+			expectedUpdatedAt = row.UpdatedAt
+		}
+		if in.APIKey == "" && storedFound && len(stored.ApiKeyEncrypted) > 0 && !sameBaseURL(in.BaseURL, stored.BaseUrl.String) {
+			return zero, &ValidationFailure{
+				Kind:    llm.ErrorKindCredentials,
+				Message: "A new API key is required when changing the Base URL",
+			}, nil
+		}
 		plainKey := in.APIKey
-		if plainKey == "" && err == nil && len(stored.ApiKeyEncrypted) > 0 {
+		if plainKey == "" && storedFound && len(stored.ApiKeyEncrypted) > 0 && sameBaseURL(in.BaseURL, stored.BaseUrl.String) {
 			plain, err := r.box.Open(stored.ApiKeyEncrypted)
 			if err != nil {
 				return zero, nil, err
@@ -279,11 +308,18 @@ func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInp
 		if !outcome.OK {
 			return zero, &ValidationFailure{Kind: outcome.Kind, Message: outcome.Message}, nil
 		}
+	} else if row, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID); err == nil {
+		stored = row
+		storedFound = true
+		expectedUpdatedAt = row.UpdatedAt
+	} else if !isNoRows(err) {
+		return zero, nil, err
 	}
 
 	params := db.UpsertSelfEvolutionModelConfigParams{
-		WorkspaceID:    workspaceID,
-		ScoringEnabled: in.ScoringEnabled,
+		WorkspaceID:       workspaceID,
+		ScoringEnabled:    in.ScoringEnabled,
+		ExpectedUpdatedAt: expectedUpdatedAt,
 	}
 	if creds {
 		params.BaseUrl = pgtype.Text{String: in.BaseURL, Valid: true}
@@ -291,8 +327,34 @@ func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInp
 		params.ApiKeyEncrypted = apiKey
 		params.LastValidatedAt = pgtype.Timestamptz{Time: r.now(), Valid: true}
 		params.LastValidationOk = pgtype.Bool{Bool: true, Valid: true}
+	} else if storedFound {
+		params.BaseUrl = stored.BaseUrl
+		params.ApiKeyEncrypted = stored.ApiKeyEncrypted
+		params.Model = stored.Model
+		params.LastValidatedAt = stored.LastValidatedAt
+		params.LastValidationOk = stored.LastValidationOk
+		params.LastValidationError = stored.LastValidationError
 	}
-	row, err := r.store.UpsertSelfEvolutionModelConfig(ctx, params)
+	var row db.SelfEvolutionModelConfig
+	var err error
+	if storedFound {
+		row, err = r.store.UpdateSelfEvolutionModelConfig(ctx, db.UpdateSelfEvolutionModelConfigParams{
+			WorkspaceID:         params.WorkspaceID,
+			BaseUrl:             params.BaseUrl,
+			ApiKeyEncrypted:     params.ApiKeyEncrypted,
+			Model:               params.Model,
+			ScoringEnabled:      params.ScoringEnabled,
+			LastValidatedAt:     params.LastValidatedAt,
+			LastValidationOk:    params.LastValidationOk,
+			LastValidationError: params.LastValidationError,
+			ExpectedUpdatedAt:   params.ExpectedUpdatedAt,
+		})
+	} else {
+		row, err = r.store.UpsertSelfEvolutionModelConfig(ctx, params)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return zero, nil, ErrConcurrentUpdate
+	}
 	if err != nil {
 		return zero, nil, err
 	}
@@ -303,16 +365,70 @@ func (r *Resolver) Save(ctx context.Context, workspaceID pgtype.UUID, in SaveInp
 // ValidateOnly runs a validation pass for the given input without touching
 // the store (pre-save preview from the config card).
 func (r *Resolver) ValidateOnly(ctx context.Context, workspaceID pgtype.UUID, in SaveInput) (ValidationOutcome, error) {
-	// The workspace id is unused today; it keeps the signature ready for
-	// per-workspace rate limits without a breaking change.
-	_ = workspaceID
-	return r.validate(ctx, strings.TrimSpace(in.BaseURL), strings.TrimSpace(in.APIKey), strings.TrimSpace(in.Model)), nil
+	baseURL := strings.TrimSpace(in.BaseURL)
+	model := strings.TrimSpace(in.Model)
+	apiKey := strings.TrimSpace(in.APIKey)
+	if baseURL != "" && model != "" && apiKey == "" {
+		stored, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
+		if err != nil && !isNoRows(err) {
+			return ValidationOutcome{}, err
+		}
+		if err == nil && len(stored.ApiKeyEncrypted) > 0 && sameBaseURL(baseURL, stored.BaseUrl.String) {
+			plain, err := r.box.Open(stored.ApiKeyEncrypted)
+			if err != nil {
+				return ValidationOutcome{}, err
+			}
+			apiKey = string(plain)
+		}
+	}
+	return r.validate(ctx, baseURL, apiKey, model), nil
+}
+
+// ListModels queries the selected OpenAI-compatible endpoint without saving
+// the draft. An empty API key reuses the workspace's encrypted key only when
+// the Base URL is unchanged.
+func (r *Resolver) ListModels(ctx context.Context, workspaceID pgtype.UUID, baseURL, apiKey string) ([]string, error) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	apiKey = strings.TrimSpace(apiKey)
+	if baseURL == "" {
+		return nil, ErrIncompleteCreds
+	}
+	if apiKey == "" {
+		stored, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
+		if err != nil && !isNoRows(err) {
+			return nil, err
+		}
+		if err == nil && len(stored.ApiKeyEncrypted) > 0 && sameBaseURL(baseURL, stored.BaseUrl.String) {
+			plain, err := r.box.Open(stored.ApiKeyEncrypted)
+			if err != nil {
+				return nil, err
+			}
+			apiKey = string(plain)
+		}
+	}
+	listCtx, cancel := context.WithTimeout(ctx, validationTimeout)
+	defer cancel()
+	return llm.New(llm.Config{
+		BaseURL:                   baseURL,
+		APIKey:                    apiKey,
+		IsolateAmbientCredentials: true,
+	}).ListModels(listCtx)
+}
+
+func sameBaseURL(a, b string) bool {
+	normalize := func(value string) string {
+		return strings.TrimRight(strings.TrimSpace(value), "/")
+	}
+	return normalize(a) != "" && normalize(a) == normalize(b)
 }
 
 // RevalidateStored re-runs validation against the stored override and
 // persists the outcome (the status card's 重新校验). A workspace without an
 // override validates to not-ok without writing anything.
 func (r *Resolver) RevalidateStored(ctx context.Context, workspaceID pgtype.UUID) (ValidationOutcome, error) {
+	unlock := r.lockMutation(workspaceID)
+	defer unlock()
+
 	row, err := r.store.GetSelfEvolutionModelConfig(ctx, workspaceID)
 	if isNoRows(err) {
 		return ValidationOutcome{OK: false, Kind: llm.ErrorKindNotConfigured}, nil
@@ -334,13 +450,18 @@ func (r *Resolver) RevalidateStored(ctx context.Context, workspaceID pgtype.UUID
 	outcome := r.validate(ctx, row.BaseUrl.String, plainKey, row.Model.String)
 
 	nowValidated := pgtype.Timestamptz{Time: r.now(), Valid: true}
-	if err := r.store.UpdateSelfEvolutionModelConfigValidation(ctx, db.UpdateSelfEvolutionModelConfigValidationParams{
-		WorkspaceID:        workspaceID,
-		LastValidatedAt:    nowValidated,
-		LastValidationOk:   pgtype.Bool{Bool: outcome.OK, Valid: true},
+	rows, err := r.store.UpdateSelfEvolutionModelConfigValidation(ctx, db.UpdateSelfEvolutionModelConfigValidationParams{
+		WorkspaceID:         workspaceID,
+		LastValidatedAt:     nowValidated,
+		LastValidationOk:    pgtype.Bool{Bool: outcome.OK, Valid: true},
 		LastValidationError: maskedOrEmpty(outcome),
-	}); err != nil {
+		ExpectedUpdatedAt:   row.UpdatedAt,
+	})
+	if err != nil {
 		return outcome, err
+	}
+	if rows != 1 {
+		return outcome, ErrConcurrentUpdate
 	}
 	r.invalidate(workspaceID)
 	return outcome, nil
@@ -349,6 +470,9 @@ func (r *Resolver) RevalidateStored(ctx context.Context, workspaceID pgtype.UUID
 // RestoreDefault deletes the override row (credentials and validation state
 // with it) — 恢复部署默认.
 func (r *Resolver) RestoreDefault(ctx context.Context, workspaceID pgtype.UUID) error {
+	unlock := r.lockMutation(workspaceID)
+	defer unlock()
+
 	if err := r.store.DeleteSelfEvolutionModelConfig(ctx, workspaceID); err != nil {
 		return err
 	}
@@ -375,6 +499,8 @@ func (r *Resolver) Override(ctx context.Context, workspaceID pgtype.UUID) (db.Se
 // and model must be provided together (or both blank for a switch-only save).
 var ErrIncompleteCreds = &incompleteCredsError{}
 
+var ErrConcurrentUpdate = errors.New("selfevconfig: configuration changed during validation")
+
 type incompleteCredsError struct{}
 
 func (*incompleteCredsError) Error() string {
@@ -383,8 +509,9 @@ func (*incompleteCredsError) Error() string {
 
 func (r *Resolver) buildClient(row db.SelfEvolutionModelConfig) (*llm.Client, error) {
 	cfg := llm.Config{
-		BaseURL:      row.BaseUrl.String,
-		DefaultModel: row.Model.String,
+		BaseURL:                   row.BaseUrl.String,
+		DefaultModel:              row.Model.String,
+		IsolateAmbientCredentials: true,
 	}
 	if len(row.ApiKeyEncrypted) > 0 {
 		plain, err := r.box.Open(row.ApiKeyEncrypted)
@@ -403,7 +530,12 @@ func (r *Resolver) validate(ctx context.Context, baseURL, apiKey, model string) 
 	if baseURL == "" || model == "" {
 		return ValidationOutcome{OK: false, Kind: llm.ErrorKindNotConfigured, Message: "base URL and model are both required"}
 	}
-	client := llm.New(llm.Config{APIKey: apiKey, BaseURL: baseURL, DefaultModel: model})
+	client := llm.New(llm.Config{
+		APIKey:                    apiKey,
+		BaseURL:                   baseURL,
+		DefaultModel:              model,
+		IsolateAmbientCredentials: true,
+	})
 	pingCtx, cancel := context.WithTimeout(ctx, validationTimeout)
 	defer cancel()
 	_, err := client.GenerateText(pingCtx, model, "You are a connectivity health check. Reply with the single word: pong.", "ping")
@@ -460,6 +592,18 @@ func rowCredsConfigured(row db.SelfEvolutionModelConfig) bool {
 }
 
 func isNoRows(err error) bool { return err != nil && err == pgx.ErrNoRows }
+
+func (r *Resolver) lockMutation(ws pgtype.UUID) func() {
+	r.mutationMu.Lock()
+	lock := r.mutationLocks[ws]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		r.mutationLocks[ws] = lock
+	}
+	r.mutationMu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
 
 func (r *Resolver) cached(ws pgtype.UUID) (RunTarget, bool) {
 	r.mu.Lock()
