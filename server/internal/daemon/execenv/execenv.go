@@ -203,15 +203,18 @@ type TaskContextForEnv struct {
 	AutopilotSource         string
 	AutopilotTriggerPayload string
 	QuickCreatePrompt       string // non-empty for quick-create tasks
-	// QuickCreateAttachments carries the uploaded attachment rows. issue_context.md
-	// exposes filenames and content types for context, but does not repeat them
-	// in the description; the IDs are bound by the issue-create call. Task-static:
-	// safe for the prompt-cache prefix.
-	QuickCreateAttachments []QuickCreateAttachmentForEnv
-	QuizPrompt             string // item under test for prompt-quiz runs; rendered verbatim into the prompt and issue_context.md
-	RetrospectivePrompt    string // daily-retrospective window prompt (RUYI-552 direction 3); rendered verbatim into the prompt and issue_context.md
-	HandoffNote            string // assignment handoff instruction; rendered into issue_context.md (MUL-3375)
-	IsSquadLeader          bool   // true when THIS TASK runs the agent in the squad-leader role (may exit silently on no_action); derived from the claim's is_leader_task / squad_id, never sniffed from instructions text (MUL-5811)
+	// QuickCreateAttachments carries the full attachment rows behind the
+	// quick-create upload (RUYI-478). Rendered into issue_context.md so the
+	// delegated create-run knows the files exist and can inline images into
+	// the new issue's description; quick-create forbids non-create CLI
+	// calls, so each row must be self-contained (durable markdown URL, no
+	// download instruction). Task-static: safe for the prompt-cache prefix.
+	QuickCreateAttachments    []QuickCreateAttachmentForEnv
+	QuizPrompt                string // item under test for prompt-quiz runs; rendered verbatim into the prompt and issue_context.md
+	RetrospectivePrompt       string // daily-retrospective window prompt (RUYI-552 direction 3); rendered verbatim into the prompt and issue_context.md
+	KnowledgeGovernancePrompt string // evidence-led governance prompt; rendered verbatim into the prompt and issue_context.md
+	HandoffNote               string // assignment handoff instruction; rendered into issue_context.md (MUL-3375)
+	IsSquadLeader             bool   // true when THIS TASK runs the agent in the squad-leader role (may exit silently on no_action); derived from the claim's is_leader_task / squad_id, never sniffed from instructions text (MUL-5811)
 	// WorkspaceContext is the workspace-level system prompt (workspace.context
 	// in the DB). Rendered into the brief as `## Workspace Context` when
 	// non-empty so every agent in the workspace sees the same shared context,

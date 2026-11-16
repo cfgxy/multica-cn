@@ -205,7 +205,7 @@ func init() {
 	agentCreateCmd.Flags().String("permission-mode", "", "Invocation permission mode: private (owner only) or public_to (allow-list via --public-to-*). Authoritative over --visibility when set.")
 	agentCreateCmd.Flags().Bool("public-to-workspace", false, "public_to: allow every workspace member to invoke this agent.")
 	agentCreateCmd.Flags().StringSlice("public-to-member", nil, "public_to: allow the given member user id(s) to invoke this agent. Repeatable.")
-	agentCreateCmd.Flags().Int32("max-concurrent-tasks", 6, "Maximum concurrent tasks (1-50), or -1 for no agent-level cap")
+	agentCreateCmd.Flags().Int32("max-concurrent-tasks", 6, "Maximum concurrent tasks (1-50), or 0 for no agent-level cap")
 	agentCreateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// agent update
@@ -235,7 +235,7 @@ func init() {
 	agentUpdateCmd.Flags().Bool("public-to-workspace", false, "public_to: allow every workspace member to invoke this agent.")
 	agentUpdateCmd.Flags().StringSlice("public-to-member", nil, "public_to: allow the given member user id(s) to invoke this agent. Repeatable.")
 	agentUpdateCmd.Flags().String("status", "", "New status")
-	agentUpdateCmd.Flags().Int32("max-concurrent-tasks", 0, "New max concurrent tasks (1-50), or -1 for no agent-level cap")
+	agentUpdateCmd.Flags().Int32("max-concurrent-tasks", 0, "New max concurrent tasks (1-50), or 0 for no agent-level cap")
 	agentUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// agent archive

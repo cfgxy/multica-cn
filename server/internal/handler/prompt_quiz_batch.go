@@ -160,7 +160,7 @@ func (h *Handler) CreatePromptQuizBatch(w http.ResponseWriter, r *http.Request) 
 				writeError(w, http.StatusInternalServerError, "failed to encode the quiz context")
 				return
 			}
-			_, err = h.Queries.CreatePromptQuizTask(r.Context(), db.CreatePromptQuizTaskParams{
+			_, err = promptquizsweep.CreatePromptQuizTask(r.Context(), h.Queries, h.TxStarter, db.CreatePromptQuizTaskParams{
 				AgentID:   agent.id,
 				RuntimeID: agent.runtimeID,
 				// Same standing as sweep-ordered runs: below everything a

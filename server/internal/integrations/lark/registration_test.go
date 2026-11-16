@@ -2,10 +2,12 @@ package lark
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -119,6 +121,11 @@ func TestRegistrationClient_Begin_HappyPath(t *testing.T) {
 	if q.Get("name") != "Ada - Multica" {
 		t.Errorf("qr name=%q want %q", q.Get("name"), "Ada - Multica")
 	}
+	var addons PermissionAddons
+	if err := json.Unmarshal([]byte(q.Get("addons")), &addons); err != nil {
+		t.Fatalf("decode QR addons: %v", err)
+	}
+	assertRegistrationAddons(t, addons)
 }
 
 // TestRegistrationClient_Begin_OmitsNameWhenPresetEmpty pins that an
@@ -143,6 +150,58 @@ func TestRegistrationClient_Begin_OmitsNameWhenPresetEmpty(t *testing.T) {
 	}
 	if _, ok := u.Query()["name"]; ok {
 		t.Errorf("qr URL should omit name when preset empty, got %q", res.QRCodeURL)
+	}
+}
+
+func TestPermissionGrantQRCodeURLUsesExistingAppAndCompleteAddons(t *testing.T) {
+	t.Parallel()
+
+	qrURL, err := PermissionGrantQRCodeURL(RegionFeishu, "cli_existing")
+	if err != nil {
+		t.Fatalf("PermissionGrantQRCodeURL: %v", err)
+	}
+	u, err := url.Parse(qrURL)
+	if err != nil {
+		t.Fatalf("parse QR URL: %v", err)
+	}
+	if got := u.Query().Get("clientID"); got != "cli_existing" {
+		t.Fatalf("clientID = %q, want existing app id", got)
+	}
+	var addons PermissionAddons
+	if err := json.Unmarshal([]byte(u.Query().Get("addons")), &addons); err != nil {
+		t.Fatalf("decode addons: %v", err)
+	}
+	assertRegistrationAddons(t, addons)
+}
+
+func assertRegistrationAddons(t *testing.T, addons PermissionAddons) {
+	t.Helper()
+
+	if !slices.Contains(addons.Events, receiveMessageEvent) {
+		t.Errorf("addons events = %v, want %q", addons.Events, receiveMessageEvent)
+	}
+	if slices.Contains(addons.Scopes, legacyMessageSendScope) {
+		t.Errorf("addons scopes must exclude closed legacy scope %q", legacyMessageSendScope)
+	}
+	for _, spec := range CapabilityCatalog() {
+		for _, group := range spec.Scopes {
+			for _, scope := range group {
+				if scope == legacyMessageSendScope {
+					continue
+				}
+				if !slices.Contains(addons.Scopes, scope) {
+					t.Errorf("addons scopes missing %q from capability %q", scope, spec.ID)
+				}
+			}
+		}
+	}
+}
+
+func TestPermissionGrantQRCodeURLRejectsEmptyAppID(t *testing.T) {
+	t.Parallel()
+
+	if _, err := PermissionGrantQRCodeURL(RegionFeishu, ""); err == nil {
+		t.Fatal("expected empty app id to fail")
 	}
 }
 
@@ -485,11 +544,11 @@ func TestRegistrationClient_Poll_DomainSwitchOnFeishuTenant(t *testing.T) {
 // gate flips on only one side.
 func TestRegistrationClient_Poll_NoSwitchWhenAlreadyOnMatchingHost(t *testing.T) {
 	cases := []struct {
-		name        string
-		brand       string
-		begunOn     string
-		feishuHost  string
-		larkHost    string
+		name       string
+		brand      string
+		begunOn    string
+		feishuHost string
+		larkHost   string
 	}{
 		{
 			name:       "lark brand on lark host is a no-op",

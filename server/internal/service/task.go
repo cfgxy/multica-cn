@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/chattitle"
@@ -23,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/knowledgegovernance"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/retrospective"
@@ -85,6 +88,9 @@ type TaskService struct {
 	// build that never wired the runner). output is the run's final message
 	// ("" on the fail path); taskErr distinguishes success from failure.
 	RetrospectiveTerminal func(ctx context.Context, task db.AgentTaskQueue, output, taskErr string) (*retrospective.RunStats, error)
+	// KnowledgeGovernanceTerminal persists an evidence-led, issue-less knowledge
+	// governance report. The run is advisory; it cannot write back knowledge.
+	KnowledgeGovernanceTerminal func(ctx context.Context, task db.AgentTaskQueue, output, taskErr string) (*knowledgegovernance.RunStats, error)
 	// quickActionsInFlight (chat session id -> struct{}{}) and
 	// quickActionsRunning admit suggestion passes: one per session, and a
 	// process-wide ceiling. Both zero values are usable, so a TaskService built
@@ -96,6 +102,13 @@ type TaskService struct {
 	analyticsContextMu    sync.Mutex
 	analyticsContextCache map[string]analytics.TaskContext
 	analyticsContextOrder []string
+
+	// batchClaimFairnessLastAgent is the process-local fallback when Redis cannot
+	// provide the machine-shared last-served Agent identity. Storing the identity
+	// rather than an integer cursor keeps rotation stable when the candidate set
+	// shrinks or grows between polls.
+	batchClaimFairnessMu        sync.Mutex
+	batchClaimFairnessLastAgent map[string]string
 }
 
 type SourceContextObjectStore interface {
@@ -3042,6 +3055,7 @@ func (s *TaskService) CancelTasksByTriggerComment(ctx context.Context, commentID
 func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, workspaceID string, cancelled []db.AgentTaskQueue) {
 	for _, t := range cancelled {
 		s.captureTaskCancelled(ctx, t)
+		s.settleKnowledgeGovernanceTerminal(ctx, t)
 		s.ReconcileAgentStatus(ctx, t.AgentID)
 		s.publishTaskEvent(protocol.EventTaskCancelled, workspaceID, t)
 	}
@@ -3061,6 +3075,7 @@ func (s *TaskService) BroadcastTaskQueued(ctx context.Context, task db.AgentTask
 func (s *TaskService) CaptureCancelledTasks(ctx context.Context, cancelled []db.AgentTaskQueue) {
 	for _, t := range cancelled {
 		s.captureTaskCancelled(ctx, t)
+		s.settleKnowledgeGovernanceTerminal(ctx, t)
 	}
 }
 
@@ -3887,7 +3902,10 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		if weight < 1 {
 			weight = 1
 		}
-		if agent.MaxConcurrentTasks != -1 && running*weight >= int64(agent.MaxConcurrentTasks) {
+		// Unlimited (0) skips the agent-level gate; the runtime-level gate
+		// above still applies.
+		if !agentconfig.IsUnlimitedMaxConcurrentTasks(agent.MaxConcurrentTasks) &&
+			running*weight >= int64(agent.MaxConcurrentTasks) {
 			slog.Debug("task claim: no capacity", "agent_id", util.UUIDToString(agentID), "running", running, "weight", weight, "max", agent.MaxConcurrentTasks)
 			outcome = "no_capacity"
 			return nil
@@ -4174,10 +4192,28 @@ func (s *TaskService) FinalizeTaskClaim(
 // SQL CAS includes dispatched_at so a late handler cannot roll back a newer
 // reclaim. This is not a fresh enqueue: do not duplicate queued analytics.
 func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.AgentTaskQueue) (*db.AgentTaskQueue, error) {
-	requeued, err := s.Queries.RequeueAgentTaskAfterClaimFailure(ctx, db.RequeueAgentTaskAfterClaimFailureParams{
-		TaskID:       task.ID,
-		RuntimeID:    task.RuntimeID,
-		DispatchedAt: task.DispatchedAt,
+	var requeued db.AgentTaskQueue
+	var currentRuntimeIDs []pgtype.UUID
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		var err error
+		requeued, err = qtx.RequeueAgentTaskAfterClaimFailure(ctx, db.RequeueAgentTaskAfterClaimFailureParams{
+			TaskID:       task.ID,
+			RuntimeID:    task.RuntimeID,
+			DispatchedAt: task.DispatchedAt,
+		})
+		if err != nil {
+			return err
+		}
+		bindings, err := qtx.GetAgentRuntimeBindingsForUpdate(ctx, []pgtype.UUID{requeued.AgentID})
+		if err != nil {
+			return fmt.Errorf("load current Agent runtime binding: %w", err)
+		}
+		for _, binding := range bindings {
+			if binding.RuntimeID.Valid {
+				currentRuntimeIDs = append(currentRuntimeIDs, binding.RuntimeID)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("requeue task after claim failure: %w", err)
@@ -4186,11 +4222,65 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 	s.ReconcileAgentStatus(ctx, requeued.AgentID)
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, requeued)
 	s.notifyTaskAvailable(requeued)
+	for _, runtimeID := range currentRuntimeIDs {
+		if runtimeID != requeued.RuntimeID {
+			s.notifyRuntimeMayHaveWork(runtimeID, util.UUIDToString(requeued.ID))
+		}
+	}
 	slog.Info("task requeued after claim finalization failure",
 		"task_id", util.UUIDToString(requeued.ID),
 		"runtime_id", util.UUIDToString(requeued.RuntimeID),
 	)
 	return &requeued, nil
+}
+
+func (s *TaskService) nextBatchClaimAgent(ctx context.Context, runtimeSet string, agentOrder []string) string {
+	if len(agentOrder) == 0 {
+		return ""
+	}
+	if lastAgent, available := s.EmptyClaim.LastBatchClaimAgent(ctx, runtimeSet); available {
+		return nextAgentAfter(agentOrder, lastAgent)
+	}
+
+	// Redis coordinates daemons that share a machine-level runtime set. Keep the
+	// last-served Agent identity locally when Redis is disabled or unavailable.
+	s.batchClaimFairnessMu.Lock()
+	defer s.batchClaimFairnessMu.Unlock()
+	if s.batchClaimFairnessLastAgent == nil {
+		s.batchClaimFairnessLastAgent = make(map[string]string)
+	}
+	return nextAgentAfter(agentOrder, s.batchClaimFairnessLastAgent[runtimeSet])
+}
+
+func (s *TaskService) rememberBatchClaimAgent(ctx context.Context, runtimeSet, agentID string) {
+	if runtimeSet == "" || agentID == "" {
+		return
+	}
+	if s.EmptyClaim.RememberBatchClaimAgent(ctx, runtimeSet, agentID) {
+		return
+	}
+
+	s.batchClaimFairnessMu.Lock()
+	defer s.batchClaimFairnessMu.Unlock()
+	if s.batchClaimFairnessLastAgent == nil {
+		s.batchClaimFairnessLastAgent = make(map[string]string)
+	}
+	s.batchClaimFairnessLastAgent[runtimeSet] = agentID
+}
+
+func nextAgentAfter(agentOrder []string, lastAgent string) string {
+	if lastAgent == "" {
+		return agentOrder[0]
+	}
+	for i, agentID := range agentOrder {
+		if agentID == lastAgent {
+			return agentOrder[(i+1)%len(agentOrder)]
+		}
+		if agentID > lastAgent {
+			return agentID
+		}
+	}
+	return agentOrder[0]
 }
 
 // ClaimTasksForRuntimes is the machine-level (MUL-4257) batch counterpart of
@@ -4279,6 +4369,15 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	for _, rid := range uniqueIDs {
 		runtimeKeys = append(runtimeKeys, util.UUIDToString(rid))
 	}
+	runtimeSetKeys := append([]string(nil), runtimeKeys...)
+	sort.Strings(runtimeSetKeys)
+	runtimeSetKey := strings.Join(runtimeSetKeys, ",")
+	lastServedAgent := ""
+	defer func() {
+		if lastServedAgent != "" {
+			s.rememberBatchClaimAgent(ctx, runtimeSetKey, lastServedAgent)
+		}
+	}()
 	checkStarted := time.Now()
 	dueKeys := s.ReclaimCheck.DueRuntimeIDs(ctx, runtimeKeys, checkStarted)
 	var reclaimed []db.AgentTaskQueue
@@ -4308,6 +4407,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	for i := range reclaimed {
 		s.trackTaskForReclaim(reclaimed[i], reclaimCheckAfter)
 		claimed = append(claimed, reclaimed[i])
+		lastServedAgent = util.UUIDToString(reclaimed[i].AgentID)
 		slog.Info("stale dispatched task reclaimed (batch)",
 			"task_id", util.UUIDToString(reclaimed[i].ID),
 			"runtime_id", util.UUIDToString(reclaimed[i].RuntimeID),
@@ -4367,8 +4467,40 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		}
 	}
 
-	// 6. Claim per distinct agent through the runtime-scoped helper, preserving
-	// per-(issue, agent) serialization, capacity caps, and dispatch side effects.
+	// Rotate the distinct-agent order across polls. Candidate SQL ordering is
+	// intentionally stable for FIFO within an Agent, but a stable global first
+	// row would let the first busy Agent consume every maxTasks=1 poll.
+	// Redis provides a machine-shared cursor when configured; a process-local
+	// cursor preserves the same rotation when Redis is unavailable.
+	candidateBuckets := make(map[string][]db.ListQueuedClaimCandidatesByRuntimesRow, len(candidates))
+	agentOrder := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		agentKey := util.UUIDToString(candidate.AgentID)
+		if _, seen := candidateBuckets[agentKey]; !seen {
+			agentOrder = append(agentOrder, agentKey)
+		}
+		candidateBuckets[agentKey] = append(candidateBuckets[agentKey], candidate)
+	}
+	if len(agentOrder) > 1 {
+		sort.Strings(agentOrder)
+		startAgent := s.nextBatchClaimAgent(ctx, runtimeSetKey, agentOrder)
+		start := sort.SearchStrings(agentOrder, startAgent)
+		rotated := append(agentOrder[start:], agentOrder[:start]...)
+		rotatedCandidates := make([]db.ListQueuedClaimCandidatesByRuntimesRow, 0, len(candidates))
+		for _, agentKey := range rotated {
+			rotatedCandidates = append(rotatedCandidates, candidateBuckets[agentKey]...)
+		}
+		candidates = rotatedCandidates
+	}
+
+	// 6. Claim candidates through the runtime-scoped helper until the batch is
+	// full. The helper preserves per-(issue, agent) serialization, Agent
+	// capacity caps, and dispatch side effects; invoking it for each candidate
+	// lets an unlimited Agent fill multiple Runtime slots in one poll while a
+	// bounded Agent naturally stops when its own capacity is reached. The first
+	// pass gives each Agent one opportunity so a large queue for one Agent cannot
+	// starve other Agents when maxTasks is smaller than the total free capacity;
+	// the second pass uses the remaining slots to drain more work fairly.
 	// RUYI-224: pass an empty runtimeID so claimTask resolves the agent's
 	// CURRENT binding as the claim runtime. The step-4 candidate fence already
 	// guarantees that binding is in the polled set; the row's persisted
@@ -4376,21 +4508,50 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	// candidate SELECT and this claim, or a row stranded by a torn rebind),
 	// and claiming by that stale value would bounce off the service-side
 	// runtime_mismatch fence and strand the row forever. The SQL claim
-	// rewrites the row onto the resolved runtime; the runtimeInSet guard below
-	// keeps the routing contract.
-	triedAgents := make(map[string]struct{}, len(candidates))
+	// rewrites the row onto the resolved runtime. If the binding moves outside
+	// this daemon's set after the candidate SELECT, immediately requeue that
+	// committed claim and exclude the Agent from the rest of this batch.
+	excludedAgents := make(map[string]struct{})
+	claimOne := func(agentID pgtype.UUID) error {
+		task, err := s.claimTask(ctx, agentID, pgtype.UUID{})
+		if err != nil {
+			return fmt.Errorf("claim task: %w", err)
+		}
+		if task == nil {
+			return nil
+		}
+		// The SQL claim is scoped to the candidate runtime. Retain this guard as
+		// a defensive contract check so a rebind race cannot route work to a
+		// runtime this daemon does not host.
+		if _, ok := runtimeInSet[util.UUIDToString(task.RuntimeID)]; !ok {
+			if _, err := s.RequeueTaskAfterClaimFailure(ctx, *task); err != nil {
+				slog.Error("batch claim: requeue outside runtime set failed; leaving claim for stale recovery",
+					"task_id", util.UUIDToString(task.ID),
+					"runtime_id", util.UUIDToString(task.RuntimeID),
+					"error", err)
+			}
+			excludedAgents[util.UUIDToString(agentID)] = struct{}{}
+			return nil
+		}
+		claimed = append(claimed, *task)
+		lastServedAgent = util.UUIDToString(task.AgentID)
+		return nil
+	}
+
+	seenAgents := make(map[string]struct{}, len(candidates))
 	for i := range candidates {
 		if len(claimed) >= maxTasks {
 			break
 		}
 		agentKey := util.UUIDToString(candidates[i].AgentID)
-		if _, tried := triedAgents[agentKey]; tried {
+		if _, excluded := excludedAgents[agentKey]; excluded {
 			continue
 		}
-		triedAgents[agentKey] = struct{}{}
-
-		task, err := s.claimTask(ctx, candidates[i].AgentID, pgtype.UUID{})
-		if err != nil {
+		if _, seen := seenAgents[agentKey]; seen {
+			continue
+		}
+		seenAgents[agentKey] = struct{}{}
+		if err := claimOne(candidates[i].AgentID); err != nil {
 			// Each scoped claim commits in its own transaction, so earlier
 			// iterations (and step-2 reclaims) are already dispatched
 			// server-side. Returning nil here would drop them and force the
@@ -4401,18 +4562,31 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 					"error", err, "claimed", len(claimed))
 				return claimed, nil
 			}
-			return nil, fmt.Errorf("claim task: %w", err)
+			return nil, err
 		}
-		if task == nil {
+	}
+
+	secondPassSeen := make(map[string]struct{}, len(seenAgents))
+	for i := range candidates {
+		if len(claimed) >= maxTasks {
+			break
+		}
+		agentKey := util.UUIDToString(candidates[i].AgentID)
+		if _, excluded := excludedAgents[agentKey]; excluded {
 			continue
 		}
-		// The SQL claim is scoped to the candidate runtime. Retain this guard as
-		// a defensive contract check so a future query change cannot route work
-		// to a runtime this daemon does not host.
-		if _, ok := runtimeInSet[util.UUIDToString(task.RuntimeID)]; !ok {
+		if _, seen := secondPassSeen[agentKey]; !seen {
+			secondPassSeen[agentKey] = struct{}{}
 			continue
 		}
-		claimed = append(claimed, *task)
+		if err := claimOne(candidates[i].AgentID); err != nil {
+			if len(claimed) > 0 {
+				slog.Error("batch claim: claim task failed after partial success; returning claimed tasks to avoid loss",
+					"error", err, "claimed", len(claimed))
+				return claimed, nil
+			}
+			return nil, err
+		}
 	}
 
 	return claimed, nil
@@ -4847,6 +5021,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 					"current_status", existing.Status,
 					"agent_id", util.UUIDToString(existing.AgentID),
 				)
+				s.settleKnowledgeGovernanceTerminal(ctx, existing)
 				return &existing, false, nil
 			}
 			slog.Warn("complete task failed",
@@ -4873,6 +5048,7 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		slog.Info("task completion converged to cancelled (cancel race lost)",
 			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 		// Not a completion: the cancel path owns this row and its side effects.
+		s.settleKnowledgeGovernanceTerminal(ctx, task)
 		return &task, false, nil
 	}
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
@@ -4961,6 +5137,9 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 			}
 		}
 	}
+	// Governance settlement reads the durable task result. A scheduler replay
+	// repairs transient report-persistence failures after callback delivery.
+	s.settleKnowledgeGovernanceTerminal(ctx, task)
 
 	// For chat tasks, broadcast chat:done AFTER commit. The single assistant
 	// outcome row (message or no_response) and the resume pointer were already
@@ -5530,6 +5709,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 					"current_status", existing.Status,
 					"agent_id", util.UUIDToString(existing.AgentID),
 				)
+				s.settleKnowledgeGovernanceTerminal(ctx, existing)
 				return &existing, nil
 			}
 			slog.Warn("fail task failed",
@@ -5556,6 +5736,7 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		// path owns this row now, same contract as the completion guard.
 		slog.Info("task failure converged to cancelled (cancel race lost)",
 			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
+		s.settleKnowledgeGovernanceTerminal(ctx, task)
 		return &task, nil
 	}
 
@@ -5655,6 +5836,9 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 				)
 			}
 		}
+	}
+	if retried == nil {
+		s.settleKnowledgeGovernanceTerminal(ctx, task)
 	}
 	// Reconcile agent status
 	s.ReconcileAgentStatus(ctx, task.AgentID)
@@ -7892,6 +8076,9 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 	if retroCtx, ok := s.parseRetrospectiveContext(task); ok {
 		return retroCtx.WorkspaceID
 	}
+	if governanceCtx, ok := s.parseKnowledgeGovernanceContext(task); ok {
+		return governanceCtx.WorkspaceID
+	}
 	return ""
 }
 
@@ -8278,6 +8465,51 @@ func (s *TaskService) parseRetrospectiveContext(task db.AgentTaskQueue) (retrosp
 		return retrospective.TaskContext{}, false
 	}
 	return retrospective.ParseTaskContext(task.Context)
+}
+
+// parseKnowledgeGovernanceContext recognizes the isolated advisory governance
+// task shape. Like retrospective, it must remain unlinked from issues, chat,
+// and autopilot runs so no regular task can accidentally enter this lifecycle.
+func (s *TaskService) parseKnowledgeGovernanceContext(task db.AgentTaskQueue) (knowledgegovernance.TaskContext, bool) {
+	if task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid || len(task.Context) == 0 {
+		return knowledgegovernance.TaskContext{}, false
+	}
+	return knowledgegovernance.ParseTaskContext(task.Context)
+}
+
+// settleKnowledgeGovernanceTerminal derives the report only from durable task
+// state. A duplicate daemon callback cannot introduce replacement output after
+// the task reached a terminal state; the scheduler repairs persistence failures.
+func (s *TaskService) settleKnowledgeGovernanceTerminal(ctx context.Context, task db.AgentTaskQueue) {
+	if s.KnowledgeGovernanceTerminal == nil {
+		return
+	}
+	if _, ok := s.parseKnowledgeGovernanceContext(task); !ok {
+		return
+	}
+	var output, taskErr string
+	switch task.Status {
+	case "completed":
+		var payload protocol.TaskCompletedPayload
+		if err := json.Unmarshal(task.Result, &payload); err != nil {
+			taskErr = "invalid persisted completion result"
+		} else {
+			output = payload.Output
+		}
+	case "failed":
+		taskErr = task.Error.String
+	case "cancelled":
+		taskErr = "cancelled"
+	default:
+		return
+	}
+	if _, err := s.KnowledgeGovernanceTerminal(ctx, task, output, taskErr); err != nil {
+		slog.Warn("knowledge governance terminal hook failed",
+			"task_id", util.UUIDToString(task.ID),
+			"status", task.Status,
+			"error", err,
+		)
+	}
 }
 
 func (s *TaskService) sourceContextAttachedByTask(ctx context.Context, task db.AgentTaskQueue, qc QuickCreateContext) (bool, error) {

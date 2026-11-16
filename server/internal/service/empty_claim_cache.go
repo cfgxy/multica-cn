@@ -17,15 +17,15 @@ import (
 // which closes the race where a slow claim writes an empty verdict
 // AFTER an enqueue has already invalidated it:
 //
-//   T1 claim:   v0 := GET version
-//               SELECT ... -> empty
-//               (slow, e.g. GC pause)
-//   T2 enqueue: INSERT row
-//               INCR version  (-> v1)
-//               wakeup
-//   T1 claim:   SET empty = v0
-//   T3 claim:   v1' := GET version (== v1)
-//               GET empty (== v0) -> v0 != v1, treat as miss -> SELECT
+//	T1 claim:   v0 := GET version
+//	            SELECT ... -> empty
+//	            (slow, e.g. GC pause)
+//	T2 enqueue: INSERT row
+//	            INCR version  (-> v1)
+//	            wakeup
+//	T1 claim:   SET empty = v0
+//	T3 claim:   v1' := GET version (== v1)
+//	            GET empty (== v0) -> v0 != v1, treat as miss -> SELECT
 //
 // Without the version tag T3 would have hit the stale empty key and
 // the just-queued task would sit idle until the empty key's TTL
@@ -34,6 +34,7 @@ import (
 const (
 	emptyClaimCachePrefix   = "mul:claim:runtime:empty:"
 	emptyClaimVersionPrefix = "mul:claim:runtime:version:"
+	batchClaimCursorPrefix  = "mul:claim:batch:cursor:"
 )
 
 // EmptyClaimCacheTTL bounds how long a cached "no queued task" verdict
@@ -44,18 +45,56 @@ const (
 // during Bump.
 const EmptyClaimCacheTTL = 3 * time.Minute
 
-// emptyClaimVersionTTL keeps the version counter alive long enough that
-// a rarely-polled runtime doesn't reset to 0 between an enqueue's
-// INCR and the next claim's GET (which would let a stale tagged
-// empty key suddenly look valid again). Sliding TTL is renewed on
-// every Bump and every Get.
-const emptyClaimVersionTTL = 24 * time.Hour
+// batchClaimCursorTTL bounds abandoned fairness state after a runtime set is
+// removed. Version keys intentionally do not expire: their monotonic counter is
+// the ABA guard for empty verdicts, so expiring and recreating a key could make
+// an old version look current again.
+const batchClaimCursorTTL = 24 * time.Hour
 
 // emptyClaimRedisTimeout caps every Redis call from this cache. Enqueue
 // paths use a background context so the cache outlives the request,
 // but a wedged Redis must not stall enqueue indefinitely — bound the
 // blast radius and degrade to "no cache" instead.
 const emptyClaimRedisTimeout = 250 * time.Millisecond
+
+var currentClaimVersionScript = redis.NewScript(`
+local version = redis.call("GET", KEYS[1])
+if not version then
+  -- A missing version is an invalidation boundary. Remove any old verdict
+  -- before recreating the counter so an evicted/deleted version can never
+  -- make a surviving empty key look current again.
+  redis.call("DEL", KEYS[2])
+  redis.call("SET", KEYS[1], "0", "NX")
+  version = redis.call("GET", KEYS[1])
+end
+return version
+`)
+
+var isEmptyClaimScript = redis.NewScript(`
+local version = redis.call("GET", KEYS[2])
+if not version then
+  return 0
+end
+local empty = redis.call("GET", KEYS[1])
+if empty ~= version then
+  return 0
+end
+return 1
+`)
+
+var markEmptyClaimScript = redis.NewScript(`
+local version = redis.call("GET", KEYS[2])
+if not version or version ~= ARGV[1] then
+  return 0
+end
+redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[2])
+return 1
+`)
+
+var bumpClaimVersionScript = redis.NewScript(`
+local version = redis.call("INCR", KEYS[1])
+return version
+`)
 
 // EmptyClaimCache caches "this runtime currently has no queued task"
 // so the daemon's poll-based claim path can short-circuit before
@@ -82,76 +121,64 @@ func NewEmptyClaimCache(rdb *redis.Client) *EmptyClaimCache {
 	return &EmptyClaimCache{rdb: rdb}
 }
 
-func emptyClaimKey(runtimeID string) string   { return emptyClaimCachePrefix + runtimeID }
-func emptyClaimVersion(runtimeID string) string { return emptyClaimVersionPrefix + runtimeID }
+func emptyClaimKey(runtimeID string) string        { return emptyClaimCachePrefix + runtimeID }
+func emptyClaimVersion(runtimeID string) string    { return emptyClaimVersionPrefix + runtimeID }
+func batchClaimCursorKey(runtimeSet string) string { return batchClaimCursorPrefix + runtimeSet }
 
 func (c *EmptyClaimCache) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, emptyClaimRedisTimeout)
 }
 
 // CurrentVersion returns the runtime's current invalidation version.
-// Callers MUST read this BEFORE the DB SELECT they are about to cache,
-// then pass it back to MarkEmpty so a concurrent Bump invalidates the
-// would-be cache write. Returns 0 (treated as "unknown") on cache miss
-// or any Redis error — the caller falls through to the DB path.
-//
-// The version key is read with a short Expire refresh so that a long
-// idle runtime does not let the counter expire and reset to 0 between
-// an enqueue's Bump and the next claim's MarkEmpty.
+// Callers MUST read this BEFORE the DB SELECT they are about to cache, then
+// pass it back to MarkEmpty so a concurrent Bump invalidates the would-be
+// cache write. The Redis script initializes a fresh version key atomically;
+// version keys never expire, which prevents an old version from becoming valid
+// again after an expiry-and-recreate ABA sequence.
 func (c *EmptyClaimCache) CurrentVersion(ctx context.Context, runtimeID string) int64 {
 	if c == nil || runtimeID == "" {
 		return 0
 	}
 	bctx, cancel := c.bounded(ctx)
 	defer cancel()
-	v, err := c.rdb.Get(bctx, emptyClaimVersion(runtimeID)).Int64()
+	version, err := currentClaimVersionScript.Run(
+		bctx,
+		c.rdb,
+		[]string{emptyClaimVersion(runtimeID), emptyClaimKey(runtimeID)},
+	).Text()
 	if err != nil {
 		if !errors.Is(err, redis.Nil) {
 			slog.Warn("empty_claim_cache: version get failed; falling back to DB", "error", err)
 		}
 		return 0
 	}
-	// Refresh TTL so the counter doesn't expire and reset on a low-
-	// traffic runtime. Errors here are best-effort.
-	c.rdb.Expire(bctx, emptyClaimVersion(runtimeID), emptyClaimVersionTTL)
-	return v
+	value, err := strconv.ParseInt(version, 10, 64)
+	if err != nil {
+		slog.Warn("empty_claim_cache: invalid version value; falling back to DB", "value", version, "error", err)
+		return 0
+	}
+	return value
 }
 
-// IsEmpty returns true only when (a) an empty verdict is cached AND
-// (b) it carries the runtime's current version. A stale verdict
-// written before a concurrent Bump returns false so the caller falls
-// through to the DB.
+// IsEmpty returns true only when an empty verdict and its version are read
+// atomically and the version key still exists. Missing versions are always a
+// cache miss; they must never be interpreted as version zero.
 func (c *EmptyClaimCache) IsEmpty(ctx context.Context, runtimeID string) bool {
 	if c == nil || runtimeID == "" {
 		return false
 	}
 	bctx, cancel := c.bounded(ctx)
 	defer cancel()
-	// MGET returns []interface{} of either the value (string) or nil.
-	vals, err := c.rdb.MGet(bctx, emptyClaimKey(runtimeID), emptyClaimVersion(runtimeID)).Result()
+	matched, err := isEmptyClaimScript.Run(
+		bctx,
+		c.rdb,
+		[]string{emptyClaimKey(runtimeID), emptyClaimVersion(runtimeID)},
+	).Int()
 	if err != nil {
-		slog.Warn("empty_claim_cache: mget failed; falling back to DB", "error", err)
+		slog.Warn("empty_claim_cache: version check failed; falling back to DB", "error", err)
 		return false
 	}
-	if len(vals) != 2 || vals[0] == nil {
-		return false
-	}
-	emptyVer, ok := vals[0].(string)
-	if !ok {
-		return false
-	}
-	// A missing version key means "no enqueue has ever bumped this
-	// runtime", which is logically version 0 — i.e. the same value
-	// CurrentVersion returns on miss. A MarkEmpty written with v=0
-	// must match here, otherwise the fast path would never trigger
-	// for fresh runtimes.
-	curVer := "0"
-	if vals[1] != nil {
-		if s, ok := vals[1].(string); ok {
-			curVer = s
-		}
-	}
-	return emptyVer == curVer
+	return matched == 1
 }
 
 // MarkEmpty stores the empty verdict tagged with observedVersion. The
@@ -169,8 +196,21 @@ func (c *EmptyClaimCache) MarkEmpty(ctx context.Context, runtimeID string, obser
 	}
 	bctx, cancel := c.bounded(ctx)
 	defer cancel()
-	if err := c.rdb.Set(bctx, emptyClaimKey(runtimeID), strconv.FormatInt(observedVersion, 10), EmptyClaimCacheTTL).Err(); err != nil {
+	matched, err := markEmptyClaimScript.Run(
+		bctx,
+		c.rdb,
+		[]string{emptyClaimKey(runtimeID), emptyClaimVersion(runtimeID)},
+		strconv.FormatInt(observedVersion, 10),
+		int64(EmptyClaimCacheTTL/time.Second),
+	).Int()
+	if err != nil {
 		slog.Warn("empty_claim_cache: set failed", "error", err)
+		return
+	}
+	if matched != 1 {
+		// A concurrent Bump changed the version after the SELECT. Do not
+		// install an empty verdict for that stale observation.
+		slog.Debug("empty_claim_cache: stale empty verdict rejected", "runtime_id", runtimeID, "version", observedVersion)
 	}
 }
 
@@ -188,10 +228,46 @@ func (c *EmptyClaimCache) Bump(ctx context.Context, runtimeID string) {
 	}
 	bctx, cancel := c.bounded(ctx)
 	defer cancel()
-	pipe := c.rdb.Pipeline()
-	pipe.Incr(bctx, emptyClaimVersion(runtimeID))
-	pipe.Expire(bctx, emptyClaimVersion(runtimeID), emptyClaimVersionTTL)
-	if _, err := pipe.Exec(bctx); err != nil {
+	if _, err := bumpClaimVersionScript.Run(
+		bctx,
+		c.rdb,
+		[]string{emptyClaimVersion(runtimeID)},
+	).Int64(); err != nil {
 		slog.Warn("empty_claim_cache: bump failed; entry will expire on TTL", "error", err)
 	}
+}
+
+// LastBatchClaimAgent reads the stable Agent identity served most recently for
+// this runtime set. The boolean is true when Redis was reachable, including a
+// missing key; callers can then distinguish a fresh set from a Redis failure.
+func (c *EmptyClaimCache) LastBatchClaimAgent(ctx context.Context, runtimeSet string) (agentID string, available bool) {
+	if c == nil || runtimeSet == "" {
+		return "", false
+	}
+	bctx, cancel := c.bounded(ctx)
+	defer cancel()
+	value, err := c.rdb.Get(bctx, batchClaimCursorKey(runtimeSet)).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", true
+	}
+	if err != nil {
+		slog.Warn("empty_claim_cache: batch fairness state read failed; falling back locally", "error", err)
+		return "", false
+	}
+	return value, true
+}
+
+// RememberBatchClaimAgent stores the stable Agent identity served most recently
+// for this runtime set. A false result tells the caller to use local fallback.
+func (c *EmptyClaimCache) RememberBatchClaimAgent(ctx context.Context, runtimeSet, agentID string) bool {
+	if c == nil || runtimeSet == "" || agentID == "" {
+		return false
+	}
+	bctx, cancel := c.bounded(ctx)
+	defer cancel()
+	if err := c.rdb.Set(bctx, batchClaimCursorKey(runtimeSet), agentID, batchClaimCursorTTL).Err(); err != nil {
+		slog.Warn("empty_claim_cache: batch fairness state write failed; falling back locally", "error", err)
+		return false
+	}
+	return true
 }

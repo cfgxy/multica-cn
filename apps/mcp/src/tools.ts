@@ -35,13 +35,15 @@
  *       optimistic locking; the descriptions say so.
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota).
- * Decisions (RUYI-688): list_decisions, get_decision, answer_decisions — the
+ * Decisions (RUYI-688): list_decisions, get_decision, answer_decisions,
+ *       cancel_decision — the
  *       same decision-card surface the mobile decision center drives, one
- *       store of truth. Reads are pure reads; answer_decisions is the only
- *       write and it rides the product's own member-only answer gates (an
+ *       store of truth. Reads are pure reads; writes ride the product's own
+ *       member-only decision gates (an
  *       OAuth token acts as the consenting member). SIDE EFFECT: a successful
  *       answer posts the product's echo comment that mentions the creating
- *       agent, which resumes that agent's run. Answer numbering and the
+ *       agent, which resumes that agent's run; cancel_decision never does.
+ *       Answer numbering and the
  *       "1a 2b" selection grammar mirror the product's comment convention;
  *       defined failures come back as structured results keyed by `code`.
  * Write (project resource bindings): list_project_resources,
@@ -777,6 +779,8 @@ function structuredDecisionFailure(error: unknown): Record<string, unknown> | un
       return { code: "permission_denied", message };
     case 404:
       return { code: "not_found", message };
+    case 409:
+      return { code: "conflict", message };
     default:
       return undefined;
   }
@@ -4360,8 +4364,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         thinking_level: { type: "string", description: "Runtime-native reasoning/effort token (optional)." },
         max_concurrent_tasks: {
           type: "integer",
-          description: "How many runs this agent may execute in parallel; -1 disables the agent-level cap (the runtime cap still applies).",
-          minimum: -1,
+          description:
+            "How many runs this agent may execute in parallel (0 or 1-50); 0 disables the agent-level cap (the runtime cap still applies).",
+          minimum: 0,
+          maximum: 50,
         },
       },
       required: ["workspace", "name", "runtime_id"],
@@ -4375,7 +4381,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         instructions: optionalString(args, "instructions") ?? "",
         model: optionalString(args, "model") ?? "",
         thinking_level: optionalString(args, "thinking_level") ?? "",
-        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: -1 }),
+        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: 0, max: 50 }),
       });
       return {
         created: true,
@@ -4405,7 +4411,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description: "New reasoning/effort token. Pass empty string to clear back to the runtime default.",
         },
         service_tier: { type: "string", description: "Runtime-native execution tier (Codex). Empty string clears." },
-        max_concurrent_tasks: { type: "integer", description: "New parallel-run cap; -1 disables the agent-level cap (the runtime cap still applies).", minimum: -1 },
+        max_concurrent_tasks: { type: "integer", description: "New parallel-run cap; 0 disables the agent-level cap (the runtime cap still applies); values above 50 and negative values are rejected.", minimum: 0, maximum: 50 },
         runtime_id: { type: "string", description: "Rebind to this runtime UUID (from list_runtimes)." },
       },
       required: ["workspace", "agent_id"],
@@ -4420,7 +4426,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         model: optionalString(args, "model"),
         thinking_level: optionalString(args, "thinking_level"),
         service_tier: optionalString(args, "service_tier"),
-        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: -1 }),
+        max_concurrent_tasks: optionalInt(args, "max_concurrent_tasks", { min: 0, max: 50 }),
         runtime_id: optionalString(args, "runtime_id"),
       });
       return {
@@ -5382,6 +5388,39 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           "Answered cards are updated in the same store the mobile decision center reads; the echo comment mentioning the creating agents has been posted.";
       }
       return payload;
+    },
+  },
+  {
+    name: "cancel_decision",
+    description:
+      "Cancel exactly one open decision card on an issue. This calls the platform's member-only cancellation endpoint, which enforces workspace and issue ownership, refuses authorization cards, and reports closed-card races as conflicts. It does not answer the card, post an echo comment, or trigger or resume an Agent run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        decision_id: {
+          type: "string",
+          description: "Decision card UUID, from list_decisions or get_decision.",
+        },
+      },
+      required: ["workspace", "issue", "decision_id"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueRef = requireString(args, "issue");
+      const decisionId = requireString(args, "decision_id");
+      try {
+        const decision = await client.cancelIssueDecision(workspace, issueRef, decisionId);
+        return {
+          cancelled: true,
+          decision: decisionCardBrief(decision),
+        };
+      } catch (error) {
+        const failure = structuredDecisionFailure(error);
+        if (failure === undefined) throw error;
+        return { cancelled: false, ...failure };
+      }
     },
   },
   {

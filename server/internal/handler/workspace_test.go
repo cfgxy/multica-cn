@@ -954,6 +954,24 @@ func assertRevoked(t *testing.T, fx revocationFixture) {
 	}
 }
 
+func hideRevocationRuntime(t *testing.T, fx revocationFixture) {
+	t.Helper()
+
+	if err := testHandler.Queries.MarkAgentRuntimeRemovedFromList(context.Background(), parseUUID(fx.RuntimeID)); err != nil {
+		t.Fatalf("hide runtime from management list: %v", err)
+	}
+	runtimes, err := testHandler.Queries.ListAgentRuntimesByOwner(context.Background(), db.ListAgentRuntimesByOwnerParams{
+		WorkspaceID: parseUUID(fx.WorkspaceID),
+		OwnerID:     parseUUID(fx.TargetUserID),
+	})
+	if err != nil {
+		t.Fatalf("list visible runtimes for owner: %v", err)
+	}
+	if len(runtimes) != 0 {
+		t.Fatalf("hidden runtime remained in management list: %+v", runtimes)
+	}
+}
+
 // TestDeleteMember_RevokesTargetRuntimes verifies that when an admin removes
 // another member from a workspace, every runtime owned by the removed member
 // has its agents archived, its in-flight tasks cancelled, its row flipped
@@ -961,6 +979,18 @@ func assertRevoked(t *testing.T, fx revocationFixture) {
 // row deletion.
 func TestDeleteMember_RevokesTargetRuntimes(t *testing.T) {
 	fx := setupRevocationFixture(t, handlerTestSlug("handler-tests-revoke-kick"), "daemon-revoke-kick")
+
+	req := newRequest("DELETE", "/api/workspaces/"+fx.WorkspaceID+"/members/"+fx.MemberID, nil)
+	req.Header.Set("X-Workspace-ID", fx.WorkspaceID)
+	req = withURLParams(req, "id", fx.WorkspaceID, "memberId", fx.MemberID)
+	testutil.Call(t, testHandler.DeleteMember, req).Want(http.StatusNoContent)
+
+	assertRevoked(t, fx)
+}
+
+func TestDeleteMember_RevokesHiddenTargetRuntimes(t *testing.T) {
+	fx := setupRevocationFixture(t, handlerTestSlug("handler-tests-revoke-hidden-kick"), "daemon-revoke-hidden-kick")
+	hideRevocationRuntime(t, fx)
 
 	req := newRequest("DELETE", "/api/workspaces/"+fx.WorkspaceID+"/members/"+fx.MemberID, nil)
 	req.Header.Set("X-Workspace-ID", fx.WorkspaceID)
@@ -1138,6 +1168,19 @@ func TestLeaveWorkspace_RevokesOwnRuntimes(t *testing.T) {
 
 	// Re-target the request from the leaving member's perspective: the
 	// leaver is the request actor, not the workspace owner.
+	req := newRequest("DELETE", "/api/workspaces/"+fx.WorkspaceID+"/leave", nil)
+	req.Header.Set("X-User-ID", fx.TargetUserID)
+	req.Header.Set("X-Workspace-ID", fx.WorkspaceID)
+	req = withURLParam(req, "id", fx.WorkspaceID)
+	testutil.Call(t, testHandler.LeaveWorkspace, req).Want(http.StatusNoContent)
+
+	assertRevoked(t, fx)
+}
+
+func TestLeaveWorkspace_RevokesHiddenOwnRuntimes(t *testing.T) {
+	fx := setupRevocationFixture(t, handlerTestSlug("handler-tests-revoke-hidden-leave"), "daemon-revoke-hidden-leave")
+	hideRevocationRuntime(t, fx)
+
 	req := newRequest("DELETE", "/api/workspaces/"+fx.WorkspaceID+"/leave", nil)
 	req.Header.Set("X-User-ID", fx.TargetUserID)
 	req.Header.Set("X-Workspace-ID", fx.WorkspaceID)

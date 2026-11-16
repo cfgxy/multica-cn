@@ -154,6 +154,14 @@ import type {
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
   KnowledgeEntry,
+  KnowledgeEntryOperation,
+  KnowledgeEntryVersion,
+  KnowledgeLifecycleEvent,
+  UpdateKnowledgeLifecycleRequest,
+  RestoreKnowledgeEntryRequest,
+  KnowledgeGovernanceRun,
+  KnowledgeGovernanceRunDetail,
+  KnowledgeGovernanceRunStart,
   SkillEffect,
   CreateSkillRequest,
   UpdateSkillRequest,
@@ -287,6 +295,7 @@ import type {
   RedeemLarkBindingTokenResponse,
   LarkPermissionCatalogResponse,
   RecheckLarkPermissionsResponse,
+  BeginLarkPermissionGrantResponse,
   ComposioToolkit,
   ComposioConnection,
   ComposioConnectInitResponse,
@@ -375,6 +384,7 @@ import {
   AdminFileReadPolicySchema,
   AgentTaskListSchema,
   AgentRuntimeSchema,
+  AgentRuntimeListSchema,
   EMPTY_AGENT_RUNTIME,
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
@@ -624,6 +634,17 @@ import {
   RetrospectiveRunSchema,
   KnowledgeDirListSchema,
   KnowledgeEntryListSchema,
+  KnowledgeEntryOperationSchema,
+  EMPTY_KNOWLEDGE_ENTRY_OPERATION,
+  KnowledgeEntryVersionListSchema,
+  KnowledgeLifecycleEventListSchema,
+  KnowledgeDirManagedSchema,
+  KnowledgeLifecycleUpdateSchema,
+  KnowledgeEntryRestoreSchema,
+  KnowledgeGovernanceRunListResponseSchema,
+  KnowledgeGovernanceRunDetailSchema,
+  KnowledgeGovernanceRunStartSchema,
+  KnowledgeGovernanceCancelSchema,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
   IssueViewSchema,
@@ -705,6 +726,7 @@ import {
   EMPTY_SHARE_LINK,
   EMPTY_SHARE_LINK_INFO,
   EMPTY_JOIN_SHARE_LINK_RESPONSE,
+  BeginLarkPermissionGrantResponseSchema,
   type IssueView,
   type IssueViewPreference,
   type CreateIssueViewRequest,
@@ -2556,7 +2578,7 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/runtimes?${search}`, {
       headers: workspaceHeader(workspaceSlug),
     });
-    return parseWithFallback(raw, z.array(AgentRuntimeSchema), [], {
+    return parseWithFallback(raw, AgentRuntimeListSchema, [], {
       endpoint: "/api/runtimes",
     });
   }
@@ -2874,6 +2896,12 @@ export class ApiClient {
 
   async deleteRuntime(runtimeId: string): Promise<void> {
     await this.fetch(`/api/runtimes/${runtimeId}`, { method: "DELETE" });
+  }
+
+  async removeRuntimeFromList(runtimeId: string): Promise<void> {
+    await this.fetch(`/api/runtimes/${runtimeId}/remove-from-list`, {
+      method: "POST",
+    });
   }
 
   // Confirmed variant of deleteRuntime. The strict DELETE refuses with
@@ -5750,10 +5778,11 @@ export class ApiClient {
     return this.fetch(`/api/knowledge/dirs/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
-  async listKnowledgeEntries(params?: { dir_id?: string; q?: string }): Promise<KnowledgeEntry[]> {
+  async listKnowledgeEntries(params?: { dir_id?: string; q?: string; lifecycle?: "active" | "archived" | "all" }): Promise<KnowledgeEntry[]> {
     const query = new URLSearchParams();
     if (params?.dir_id) query.set("dir_id", params.dir_id);
     if (params?.q) query.set("q", params.q);
+    if (params?.lifecycle) query.set("lifecycle", params.lifecycle);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
     const raw = await this.fetch<unknown>(`/api/knowledge/entries${suffix}`);
     return parseWithFallback(raw, KnowledgeEntryListSchema, [], {
@@ -5763,6 +5792,127 @@ export class ApiClient {
 
   async adoptKnowledgeEntry(id: string): Promise<{ status: string }> {
     return this.fetch(`/api/knowledge/entries/${encodeURIComponent(id)}/adopt`, { method: "POST" });
+  }
+
+  async editKnowledgeEntry(id: string, content: string): Promise<KnowledgeEntryOperation> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/edit`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
+    });
+    return parseWithFallback(raw, KnowledgeEntryOperationSchema, EMPTY_KNOWLEDGE_ENTRY_OPERATION, {
+      endpoint: "POST /api/knowledge/entries/:id/edit",
+    });
+  }
+
+  async deleteKnowledgeEntry(id: string): Promise<KnowledgeEntryOperation> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/delete`, {
+      method: "POST",
+      body: JSON.stringify({ confirm: true }),
+    });
+    return parseWithFallback(raw, KnowledgeEntryOperationSchema, EMPTY_KNOWLEDGE_ENTRY_OPERATION, {
+      endpoint: "POST /api/knowledge/entries/:id/delete",
+    });
+  }
+
+  async mergeKnowledgeEntries(id: string, content: string, sourceEntryIds: string[]): Promise<KnowledgeEntryOperation> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ content, source_entry_ids: sourceEntryIds, confirm: true }),
+    });
+    return parseWithFallback(raw, KnowledgeEntryOperationSchema, EMPTY_KNOWLEDGE_ENTRY_OPERATION, {
+      endpoint: "POST /api/knowledge/entries/:id/merge",
+    });
+  }
+
+  async listKnowledgeEntryVersions(id: string): Promise<KnowledgeEntryVersion[]> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/versions`);
+    return parseWithFallback(raw, KnowledgeEntryVersionListSchema, [], {
+      endpoint: "GET /api/knowledge/entries/{id}/versions",
+    });
+  }
+
+  async listKnowledgeEntryLifecycle(id: string): Promise<KnowledgeLifecycleEvent[]> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/lifecycle`);
+    return parseWithFallback(raw, KnowledgeLifecycleEventListSchema, [], {
+      endpoint: "GET /api/knowledge/entries/{id}/lifecycle",
+    });
+  }
+
+  async setKnowledgeDirManaged(id: string, managed_active: boolean): Promise<{ managed_active: boolean }> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/dirs/${encodeURIComponent(id)}/managed`, {
+      method: "PUT",
+      body: JSON.stringify({ managed_active }),
+    });
+    return parseWithFallback(raw, KnowledgeDirManagedSchema, { managed_active: false }, {
+      endpoint: "PUT /api/knowledge/dirs/{id}/managed",
+    });
+  }
+
+  async updateKnowledgeEntryLifecycle(id: string, data: UpdateKnowledgeLifecycleRequest): Promise<{ status: string }> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/lifecycle`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, KnowledgeLifecycleUpdateSchema, { status: "" }, {
+      endpoint: "POST /api/knowledge/entries/{id}/lifecycle",
+    });
+  }
+
+  async restoreKnowledgeEntry(id: string, data: RestoreKnowledgeEntryRequest): Promise<{ status: string; version: number }> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries/${encodeURIComponent(id)}/restore`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, KnowledgeEntryRestoreSchema, { status: "", version: 0 }, {
+      endpoint: "POST /api/knowledge/entries/{id}/restore",
+    });
+  }
+
+  async listKnowledgeGovernanceRuns(dirId?: string): Promise<KnowledgeGovernanceRun[]> {
+    const query = dirId ? `?dir_id=${encodeURIComponent(dirId)}` : "";
+    const raw = await this.fetch<unknown>(`/api/knowledge/governance/runs${query}`);
+    return parseWithFallback(raw, KnowledgeGovernanceRunListResponseSchema, { runs: [] }, {
+      endpoint: "GET /api/knowledge/governance/runs",
+    }).runs;
+  }
+
+  async getKnowledgeGovernanceRun(id: string): Promise<KnowledgeGovernanceRunDetail | null> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/governance/runs/${encodeURIComponent(id)}`);
+    return parseWithFallback(raw, KnowledgeGovernanceRunDetailSchema, null, {
+      endpoint: "GET /api/knowledge/governance/runs/{id}",
+    });
+  }
+
+  async startKnowledgeGovernanceRun(dirId: string): Promise<KnowledgeGovernanceRunStart | null> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/dirs/${encodeURIComponent(dirId)}/governance`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const response = parseWithFallback<{ run: KnowledgeGovernanceRunStart } | null>(raw, KnowledgeGovernanceRunStartSchema, null, {
+      endpoint: "POST /api/knowledge/dirs/{id}/governance",
+    });
+    return response?.run ?? null;
+  }
+
+  async cancelKnowledgeGovernanceRun(id: string): Promise<{ status: string; task_id: string } | null> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/governance/runs/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, KnowledgeGovernanceCancelSchema, null, {
+      endpoint: "POST /api/knowledge/governance/runs/{id}/cancel",
+    });
+  }
+
+  async retryKnowledgeGovernanceRun(id: string): Promise<KnowledgeGovernanceRunStart | null> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/governance/runs/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const response = parseWithFallback<{ run: KnowledgeGovernanceRunStart } | null>(raw, KnowledgeGovernanceRunStartSchema, null, {
+      endpoint: "POST /api/knowledge/governance/runs/{id}/retry",
+    });
+    return response?.run ?? null;
   }
 
   async createSkill(data: CreateSkillRequest): Promise<Skill> {
@@ -7353,6 +7503,26 @@ export class ApiClient {
     return this.fetch(
       `/api/workspaces/${workspaceId}/lark/installations/${installationId}/recheck-permissions`,
       { method: "POST" },
+    );
+  }
+
+  /** Returns a confirmation QR code that adds the current permission catalog
+   * to an existing active Lark app. The backend enforces owner/admin access. */
+  async beginLarkPermissionGrant(
+    workspaceId: string,
+    installationId: string,
+  ): Promise<BeginLarkPermissionGrantResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/lark/installations/${installationId}/grant-permissions`,
+      { method: "POST" },
+    );
+    return parseWithFallback(
+      raw,
+      BeginLarkPermissionGrantResponseSchema,
+      { qr_code_url: "" },
+      {
+        endpoint: "POST /api/workspaces/:id/lark/installations/:installationId/grant-permissions",
+      },
     );
   }
 

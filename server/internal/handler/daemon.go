@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/knowledgegovernance"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/retrospective"
@@ -636,6 +637,10 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "workspace not found")
 			return
 		}
+		if tokenDaemonID := middleware.DaemonIDFromContext(r.Context()); tokenDaemonID == "" || tokenDaemonID != req.DaemonID {
+			writeError(w, http.StatusForbidden, "daemon tokens can only register their own daemon")
+			return
+		}
 		allowLegacyMerge = false
 		tokenOwnerID := middleware.DaemonTokenOwnerIDFromContext(r.Context())
 		ownerUUID, err := util.ParseUUID(tokenOwnerID)
@@ -973,6 +978,16 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		}, prow.Inserted)
 	}
 
+	// Issue a workspace-bound callback credential after registration succeeds.
+	// The raw value is returned only in this response and is never logged; the
+	// database stores only its hash and the owner binding used by DaemonAuth.
+	daemonToken, err := h.issueDaemonRegistrationToken(r.Context(), wsUUID, req.DaemonID, ownerID)
+	if err != nil {
+		slog.Warn("daemon registration token issuance failed", "workspace_id", req.WorkspaceID, "daemon_id", req.DaemonID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to issue daemon credential")
+		return
+	}
+
 	slog.Info("daemon registered", "workspace_id", req.WorkspaceID, "daemon_id", req.DaemonID, "runtimes_count", len(resp))
 
 	h.publish(protocol.EventDaemonRegister, req.WorkspaceID, "system", "", map[string]any{
@@ -986,7 +1001,89 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 		"repos":         repoResp.Repos,
 		"repos_version": repoResp.ReposVersion,
 		"settings":      repoResp.Settings,
+		"daemon_token":  daemonToken,
 	})
+}
+
+// RefreshKnowledgeDaemonToken extends the authenticated mdt credential in
+// place. Identity comes only from DaemonAuth context; request fields are never
+// consulted and PAT/JWT callers are rejected explicitly.
+func (h *Handler) RefreshKnowledgeDaemonToken(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if middleware.DaemonAuthPathFromContext(ctx) != middleware.DaemonAuthPathDaemonToken {
+		writeError(w, http.StatusUnauthorized, "daemon token authentication is required to refresh knowledge credentials")
+		return
+	}
+	if r.ContentLength != 0 {
+		var req struct {
+			DaemonID    string `json:"daemon_id"`
+			WorkspaceID string `json:"workspace_id"`
+			OwnerID     string `json:"owner_id"`
+		}
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if strings.TrimSpace(req.DaemonID) != "" || strings.TrimSpace(req.WorkspaceID) != "" || strings.TrimSpace(req.OwnerID) != "" {
+			writeError(w, http.StatusBadRequest, "knowledge credential identity must come from daemon authentication")
+			return
+		}
+	}
+	tokenHash := strings.TrimSpace(middleware.DaemonTokenHashFromContext(ctx))
+	workspaceID := strings.TrimSpace(middleware.DaemonWorkspaceIDFromContext(ctx))
+	daemonID := strings.TrimSpace(middleware.DaemonIDFromContext(ctx))
+	ownerIDString := strings.TrimSpace(middleware.DaemonTokenOwnerIDFromContext(ctx))
+	if tokenHash == "" || workspaceID == "" || daemonID == "" || ownerIDString == "" {
+		writeError(w, http.StatusUnauthorized, "daemon authentication is required to refresh knowledge credentials")
+		return
+	}
+	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+	ownerID, err := util.ParseUUID(ownerIDString)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "daemon credential is not bound to a valid owner")
+		return
+	}
+	if _, err := h.Queries.RenewDaemonToken(ctx, db.RenewDaemonTokenParams{
+		TokenHash:   tokenHash,
+		WorkspaceID: workspaceUUID,
+		DaemonID:    daemonID,
+		OwnerID:     ownerID,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusForbidden, "daemon credential is not bound to an active runtime")
+			return
+		}
+		slog.Warn("knowledge daemon credential refresh failed", "workspace_id", workspaceID, "daemon_id", daemonID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to refresh daemon credential")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"renewed": true})
+}
+
+func (h *Handler) issueDaemonRegistrationToken(ctx context.Context, workspaceID pgtype.UUID, daemonID string, ownerID pgtype.UUID) (string, error) {
+	raw, err := auth.GenerateDaemonToken()
+	if err != nil {
+		return "", fmt.Errorf("generate daemon token: %w", err)
+	}
+	if _, err := h.Queries.CreateDaemonToken(ctx, db.CreateDaemonTokenParams{
+		TokenHash:   auth.HashToken(raw),
+		WorkspaceID: workspaceID,
+		DaemonID:    daemonID,
+		ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(24 * time.Hour), Valid: true},
+		OwnerID:     ownerID,
+	}); err != nil {
+		return "", fmt.Errorf("store daemon token: %w", err)
+	}
+	return raw, nil
 }
 
 // mergeLegacyRuntimes folds every runtime row keyed on a prior hostname-derived
@@ -3729,6 +3826,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// the run must not create issues or comments, which the prompt
 			// states as a hard boundary and the completion hook enforces.
 			resp.RetrospectivePrompt = retroPrompt
+		} else if governancePrompt, ok := knowledgegovernance.PromptFromContext(task.Context); ok {
+			// Knowledge governance is a dedicated issue-less task. The complete
+			// evidence contract is server-rendered and advisory: lifecycle writes
+			// remain unavailable until a later owner operation.
+			resp.KnowledgeGovernancePrompt = governancePrompt
 		}
 	}
 
@@ -5775,6 +5877,23 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 		}
 		service.TryAppendAuditEvents(r.Context(), h.Queries, service.TaskCancelledEvent(r.Context(), h.Queries, confirmed,
 			service.AuditReasonUserRequested, ackActor, confirmed.CancelRequestedByUserID, nil, service.AuditTrigger{}))
+	}
+	// Issue-less governance tasks do not traverse TaskService's complete or
+	// fail paths. Settle the advisory run after a confirmed cancellation; a
+	// replay reads the already-cancelled task and retries this idempotent hook
+	// if its first persistence attempt failed.
+	terminalTask := task
+	if confirmedFlip {
+		terminalTask = confirmed
+	}
+	if terminalTask.Status == "cancelled" && h.KnowledgeGovernanceRunner != nil {
+		if _, ok := knowledgegovernance.ParseTaskContext(terminalTask.Context); ok {
+			if _, err := h.KnowledgeGovernanceRunner.ProcessTaskTerminal(r.Context(), terminalTask, "", "cancelled"); err != nil {
+				slog.Error("cancel ack: settle knowledge governance run failed", "task_id", taskID, "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to settle knowledge governance cancellation")
+				return
+			}
+		}
 	}
 	if durableWorkDir := strings.TrimSpace(req.DurableWorkDir); durableWorkDir != "" {
 		if err := h.Queries.SetAgentTaskDurableWorkDir(r.Context(), db.SetAgentTaskDurableWorkDirParams{

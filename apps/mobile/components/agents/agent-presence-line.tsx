@@ -83,11 +83,16 @@ export function AgentPresenceLine({
           </Text>
           {isWorking ? (
             <Text className="text-xs tabular-nums text-muted-foreground">
-              {t("presence.running_ratio", {
-                defaultValue: "{{running}}/{{capacity}} running",
-                running: detail.runningCount,
-                capacity: detail.capacity,
-              })}
+              {detail.capacity === 0
+                ? t("presence.running_count", {
+                    defaultValue: "{{count}} running",
+                    count: detail.runningCount,
+                  })
+                : t("presence.running_ratio", {
+                    defaultValue: "{{running}}/{{capacity}} running",
+                    running: detail.runningCount,
+                    capacity: detail.capacity,
+                  })}
             </Text>
           ) : null}
           {showQueueBadge ? (

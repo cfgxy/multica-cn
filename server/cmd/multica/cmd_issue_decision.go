@@ -26,7 +26,8 @@ var issueDecisionCmd = &cobra.Command{
 		"Create a card with `add` during a run; the owner picks options in the web\n" +
 		"comment stream; the platform replies with the chosen options and wakes the\n" +
 		"creating agent via the usual mention pipeline. Cards cannot be answered\n" +
-		"from the CLI by design — answering is the owner's act in the UI.",
+		"from the CLI by design — answering is the owner's act in the UI. A human\n" +
+		"member may cancel one open card with `cancel` without posting that reply.",
 }
 
 var issueDecisionAddCmd = &cobra.Command{
@@ -43,10 +44,18 @@ var issueDecisionListCmd = &cobra.Command{
 	RunE:  runIssueDecisionList,
 }
 
+var issueDecisionCancelCmd = &cobra.Command{
+	Use:   "cancel <issue-id> <decision-id>",
+	Short: "Cancel one open decision card",
+	Args:  exactArgs(2),
+	RunE:  runIssueDecisionCancel,
+}
+
 func init() {
 	issueCmd.AddCommand(issueDecisionCmd)
 	issueDecisionCmd.AddCommand(issueDecisionAddCmd)
 	issueDecisionCmd.AddCommand(issueDecisionListCmd)
+	issueDecisionCmd.AddCommand(issueDecisionCancelCmd)
 
 	issueDecisionAddCmd.Flags().String("question", "", "The decision question (1-500 characters)")
 	issueDecisionAddCmd.Flags().String("context", "", "Structured decision context as a JSON object")
@@ -65,6 +74,7 @@ func init() {
 	issueDecisionAddCmd.Flags().String("output", "json", "Output format: table or json")
 
 	issueDecisionListCmd.Flags().String("output", "json", "Output format: table or json")
+	issueDecisionCancelCmd.Flags().String("output", "json", "Output format: table or json")
 }
 
 // deriveDecisionIdempotencyKey builds the run-scoped retry key (RUYI-514).
@@ -227,6 +237,34 @@ func runIssueDecisionList(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stdout, "%s\t%s\t%s\n", id, status, question)
 		}
 		return nil
+	}
+	return cli.PrintJSON(os.Stdout, result)
+}
+
+func runIssueDecisionCancel(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueRef, err := resolveIssueRef(ctx, client, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+
+	var result map[string]any
+	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/decisions/"+args[1]+"/cancel", map[string]any{}, &result); err != nil {
+		return fmt.Errorf("cancel decision card: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "table" {
+		if id, _ := result["id"].(string); id != "" {
+			fmt.Fprintf(os.Stdout, "%s\n", id)
+			return nil
+		}
 	}
 	return cli.PrintJSON(os.Stdout, result)
 }

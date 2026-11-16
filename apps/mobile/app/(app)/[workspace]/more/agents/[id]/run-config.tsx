@@ -41,6 +41,7 @@ import * as Haptics from "expo-haptics";
 import {
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
+  AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
   AGENT_SESSION_COMPACT_PCT_DEFAULT,
   AGENT_SESSION_COMPACT_PCT_MAX,
   AGENT_SESSION_COMPACT_PCT_MIN,
@@ -80,7 +81,10 @@ import {
   resolveThinkingLevels,
 } from "@/lib/model-capability";
 import { useT } from "@/lib/use-t";
-import { buildProfilePatch, parseBounded } from "@/lib/agent-profile-patch";
+import {
+  buildProfilePatch,
+  parseBounded,
+} from "@/lib/agent-profile-patch";
 
 function formatTokens(n: number): string {
   return new Intl.NumberFormat().format(n);
@@ -132,7 +136,7 @@ export default function AgentRunConfig() {
     setModel(agent.model);
     setThinking(agent.thinking_level ?? "");
     setTier(agent.service_tier ?? "");
-    setConcurrency(String(agent.max_concurrent_tasks || 1));
+    setConcurrency(String(agent.max_concurrent_tasks));
     setMaxContext(
       String(
         agent.session_max_context_tokens ??
@@ -267,9 +271,20 @@ export default function AgentRunConfig() {
   const voiceAdvancedInvalid =
     voiceProviderId !== "none" &&
     parseVoiceAdvancedDraft(voiceAdvanced) === "invalid";
+  const concurrencyInvalid =
+    parseBounded(
+      concurrency,
+      AGENT_MAX_CONCURRENT_TASKS_MIN,
+      AGENT_MAX_CONCURRENT_TASKS_MAX,
+      AGENT_MAX_CONCURRENT_TASKS_UNLIMITED,
+    ) === null;
 
   const canSave =
-    !!patch && dirty && !voiceAdvancedInvalid && !update.isPending;
+    !!patch &&
+    dirty &&
+    !voiceAdvancedInvalid &&
+    !concurrencyInvalid &&
+    !update.isPending;
 
   const onSave = () => {
     if (!canSave || !patch) return;
@@ -475,7 +490,7 @@ export default function AgentRunConfig() {
         <Field label={t("inspector.prop_concurrency", "Concurrency")}>
           <TextInput
             value={concurrency}
-            onChangeText={(v) => setConcurrency(v.replace(/[^0-9]/g, ""))}
+            onChangeText={setConcurrency}
             keyboardType="number-pad"
             className="text-base text-foreground bg-secondary/50 rounded-md px-3 py-2 w-24"
             editable={!update.isPending}
@@ -485,6 +500,12 @@ export default function AgentRunConfig() {
               min: AGENT_MAX_CONCURRENT_TASKS_MIN,
               max: AGENT_MAX_CONCURRENT_TASKS_MAX,
             })}
+          </Text>
+          <Text className="text-xs text-muted-foreground">
+            {t(
+              "pickers.concurrency_hint",
+              "Use 0 to disable this agent's cap; the runtime cap still applies.",
+            )}
           </Text>
         </Field>
 

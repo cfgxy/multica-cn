@@ -657,9 +657,11 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 			needVisibility = true
 		}
 	}
-	if req.MaxConcurrentTasks != nil && *req.MaxConcurrentTasks < 0 {
-		writeError(w, http.StatusBadRequest, "max_concurrent_tasks must be a non-negative integer")
-		return
+	if req.MaxConcurrentTasks != nil {
+		if *req.MaxConcurrentTasks < 0 {
+			writeError(w, http.StatusBadRequest, "max_concurrent_tasks must be a non-negative integer")
+			return
+		}
 	}
 
 	if req.CustomName != nil {
@@ -1029,6 +1031,41 @@ func (h *Handler) PublishRuntimeTeardown(ctx context.Context, res service.Runtim
 // PublishRuntimeRefresh asks connected clients to refetch runtime state.
 func (h *Handler) PublishRuntimeRefresh(wsID, actorType, actorID, action string) {
 	h.publish(protocol.EventDaemonRegister, wsID, actorType, actorID, map[string]any{"action": action})
+}
+
+// RemoveAgentRuntimeFromList handles POST /api/runtimes/:id/remove-from-list.
+// It hides the runtime from management lists only; the daemon keeps its
+// registration and liveness record, and agents and tasks stay untouched.
+func (h *Handler) RemoveAgentRuntimeFromList(w http.ResponseWriter, r *http.Request) {
+	runtimeID := chi.URLParam(r, "runtimeId")
+	runtimeUUID, ok := parseUUIDOrBadRequest(w, runtimeID, "runtime_id")
+	if !ok {
+		return
+	}
+
+	rt, err := h.getAgentRuntime(r.Context(), obsmetrics.RuntimeLookupSourceRuntimeAPI, runtimeUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "runtime not found")
+		return
+	}
+
+	wsID := uuidToString(rt.WorkspaceID)
+	member, ok := h.requireWorkspaceMember(w, r, wsID, "runtime not found")
+	if !ok {
+		return
+	}
+	if !canEditRuntime(member, rt) {
+		writeError(w, http.StatusForbidden, "you can only remove your own runtimes from the management list")
+		return
+	}
+
+	if err := h.Queries.MarkAgentRuntimeRemovedFromList(r.Context(), runtimeUUID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove runtime from management list")
+		return
+	}
+
+	h.PublishRuntimeRefresh(wsID, "member", uuidToString(member.UserID), "remove_from_list")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) publishRuntimeTeardown(ctx context.Context, res service.RuntimeTeardownResult, wsID, userID string) {

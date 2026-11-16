@@ -357,3 +357,141 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 		})
 	})
 }
+
+// TestQuickCreateDirectoryScopeAcceptsEligibleStoredModes exercises the real
+// quick-create handler path. The API stores a worktree declaration for the
+// daemon to decide later: deployment-local Git detection, feature gates, and
+// snapshot capability must not turn a valid user declaration into a 400 here.
+func TestQuickCreateDirectoryScopeAcceptsEligibleStoredModes(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	var agentID, runtimeID string
+	if err := testPool.QueryRow(ctx,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID,
+	).Scan(&agentID, &runtimeID); err != nil {
+		t.Fatalf("fetch quick-create agent: %v", err)
+	}
+	if _, err := testPool.Exec(ctx,
+		`UPDATE agent_runtime SET metadata = jsonb_build_object('cli_version', $1::text) WHERE id = $2`,
+		agent.MinQuickCreateFieldsCLIVersion, runtimeID,
+	); err != nil {
+		t.Fatalf("set runtime cli version: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `UPDATE agent_runtime SET metadata = '{}'::jsonb WHERE id = $1`, runtimeID)
+	})
+
+	var projectID string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO project (workspace_id, title) VALUES ($1, $2) RETURNING id`,
+		testWorkspaceID, "quick-create directory scope",
+	).Scan(&projectID); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID)
+	})
+
+	addResource := func(t *testing.T, mode, path string, subdirectories []string) string {
+		t.Helper()
+		ref, err := json.Marshal(map[string]any{
+			"local_path":     path,
+			"daemon_id":      "quick-create-directory-scope-daemon",
+			"execution_mode": mode,
+			"subdirectories": subdirectories,
+		})
+		if err != nil {
+			t.Fatalf("marshal resource ref: %v", err)
+		}
+		var resourceID string
+		if err := testPool.QueryRow(ctx, `
+			INSERT INTO project_resource (project_id, workspace_id, resource_type, resource_ref, position)
+			VALUES ($1, $2, 'local_directory', $3::jsonb, 0)
+			RETURNING id
+		`, projectID, testWorkspaceID, ref).Scan(&resourceID); err != nil {
+			t.Fatalf("create %q local directory resource: %v", mode, err)
+		}
+		return resourceID
+	}
+
+	worktreeID := addResource(t, "worktree", "/quick-create/worktree", []string{"apps/a"})
+	snapshotID := addResource(t, "snapshot", "/quick-create/snapshot", []string{"apps/a"})
+	inPlaceID := addResource(t, "in_place", "/quick-create/in-place", []string{"apps/a"})
+	emptyModeID := addResource(t, "", "/quick-create/legacy", []string{"apps/a"})
+
+	requestScope := func(t *testing.T, resourceID, subdirectory string) *httptest.ResponseRecorder {
+		t.Helper()
+		scope, err := json.Marshal([]map[string]any{{
+			"resource_id":    resourceID,
+			"subdirectories": []string{subdirectory},
+		}})
+		if err != nil {
+			t.Fatalf("marshal scope: %v", err)
+		}
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/quick-create", map[string]any{
+			"agent_id":              agentID,
+			"prompt":                "Create a scoped issue",
+			"project_id":            projectID,
+			"local_directory_scope": json.RawMessage(scope),
+		})
+		testHandler.QuickCreateIssue(w, req)
+		return w
+	}
+
+	assertStoredScope := func(t *testing.T, w *httptest.ResponseRecorder, resourceID, subdirectory string) {
+		t.Helper()
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+		}
+		var response QuickCreateIssueResponse
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, response.TaskID)
+		})
+		var rawScope []byte
+		if err := testPool.QueryRow(ctx,
+			`SELECT local_directory_scope FROM agent_task_queue WHERE id = $1`, response.TaskID,
+		).Scan(&rawScope); err != nil {
+			t.Fatalf("load queued scope: %v", err)
+		}
+		var stored []struct {
+			ResourceID     string   `json:"resource_id"`
+			Subdirectories []string `json:"subdirectories"`
+		}
+		if err := json.Unmarshal(rawScope, &stored); err != nil {
+			t.Fatalf("decode queued scope: %v", err)
+		}
+		if len(stored) != 1 || stored[0].ResourceID != resourceID || len(stored[0].Subdirectories) != 1 || stored[0].Subdirectories[0] != subdirectory {
+			t.Fatalf("stored scope = %#v, want resource %q / %q", stored, resourceID, subdirectory)
+		}
+	}
+
+	// Worktree resources are accepted without checking the daemon's feature
+	// gate or the local Git state. A nested declaration remains within the
+	// resource's configured set and is stored for daemon-side resolution.
+	assertStoredScope(t, requestScope(t, worktreeID, "apps/a/child"), worktreeID, "apps/a/child")
+	assertStoredScope(t, requestScope(t, snapshotID, "apps/a"), snapshotID, "apps/a")
+
+	for _, tc := range []struct {
+		name       string
+		resourceID string
+		subdir     string
+	}{
+		{name: "in place mode", resourceID: inPlaceID, subdir: "apps/a"},
+		{name: "empty mode", resourceID: emptyModeID, subdir: "apps/a"},
+		{name: "outside configured set", resourceID: worktreeID, subdir: "apps/b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := requestScope(t, tc.resourceID, tc.subdir)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}

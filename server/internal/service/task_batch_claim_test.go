@@ -95,10 +95,9 @@ func batchClaimFixture(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (r
 }
 
 // TestClaimTasksForRuntimes_MultiRuntimeDrain verifies the machine-level batch
-// claim (MUL-4257): a single call claims across all runtimes, one task per
-// agent per call (matching the singular path's dedup), routes each task to its
-// runtime, respects a subsequent drain, and reports empty once nothing is
-// queued.
+// claim (MUL-4257): a single call claims across all runtimes, fills multiple
+// slots for an unlimited Agent, routes each task to its runtime, respects a
+// subsequent drain, and reports empty once nothing is queued.
 func TestClaimTasksForRuntimes_MultiRuntimeDrain(t *testing.T) {
 	ctx := context.Background()
 	pool := newTaskClaimRacePool(t)
@@ -107,36 +106,33 @@ func TestClaimTasksForRuntimes_MultiRuntimeDrain(t *testing.T) {
 	rt1, rt2 := batchClaimFixture(t, ctx, pool)
 	ids := []pgtype.UUID{util.MustParseUUID(rt1), util.MustParseUUID(rt2)}
 
-	// Call 1: one task per agent (agent1→rt1, agent2→rt2) => 2 tasks, one per runtime.
+	// Call 1: agent1 fills both of its available tasks and agent2 contributes one
+	// task, so the batch drains all three candidates in one poll.
 	got1, err := svc.ClaimTasksForRuntimes(ctx, ids, 5)
 	if err != nil {
 		t.Fatalf("call1: %v", err)
 	}
-	if len(got1) != 2 {
-		t.Fatalf("call1 claimed %d tasks, want 2", len(got1))
+	if len(got1) != 3 {
+		t.Fatalf("call1 claimed %d tasks, want 3", len(got1))
 	}
 	seen := map[string]int{}
 	for _, task := range got1 {
 		seen[util.UUIDToString(task.RuntimeID)]++
 	}
-	if seen[rt1] != 1 || seen[rt2] != 1 {
-		t.Fatalf("call1 runtime distribution = %v, want one task each for rt1/rt2", seen)
+	if seen[rt1] != 2 || seen[rt2] != 1 {
+		t.Fatalf("call1 runtime distribution = %v, want two tasks on rt1 and one on rt2", seen)
 	}
 
-	// Call 2: agent1 still has a second queued task (different issue, capacity 5);
-	// agent2 is drained => exactly 1 task, on rt1.
+	// Call 2: everything is dispatched, so the batch is empty.
 	got2, err := svc.ClaimTasksForRuntimes(ctx, ids, 5)
 	if err != nil {
 		t.Fatalf("call2: %v", err)
 	}
-	if len(got2) != 1 {
-		t.Fatalf("call2 claimed %d tasks, want 1", len(got2))
-	}
-	if util.UUIDToString(got2[0].RuntimeID) != rt1 {
-		t.Fatalf("call2 claimed runtime = %s, want rt1", util.UUIDToString(got2[0].RuntimeID))
+	if len(got2) != 0 {
+		t.Fatalf("call2 claimed %d tasks, want 0", len(got2))
 	}
 
-	// Call 3: everything dispatched => empty.
+	// Call 3: the empty result remains stable on a subsequent poll.
 	got3, err := svc.ClaimTasksForRuntimes(ctx, ids, 5)
 	if err != nil {
 		t.Fatalf("call3: %v", err)
@@ -162,6 +158,137 @@ func TestClaimTasksForRuntimes_MaxTasksCap(t *testing.T) {
 	}
 	if len(got) != 1 {
 		t.Fatalf("claimed %d tasks with max_tasks=1, want 1", len(got))
+	}
+}
+
+// TestClaimTasksForRuntimes_FairFirstPass verifies the first pass gives each
+// Agent one opportunity before the batch uses remaining capacity on a busy
+// Agent.
+func TestClaimTasksForRuntimes_FairFirstPass(t *testing.T) {
+	ctx := context.Background()
+	pool := newTaskClaimRacePool(t)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+
+	rt1, rt2 := batchClaimFixture(t, ctx, pool)
+	ids := []pgtype.UUID{util.MustParseUUID(rt1), util.MustParseUUID(rt2)}
+
+	got, err := svc.ClaimTasksForRuntimes(ctx, ids, 2)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("claimed %d tasks with max_tasks=2, want 2", len(got))
+	}
+	seen := map[string]int{}
+	for _, task := range got {
+		seen[util.UUIDToString(task.RuntimeID)]++
+	}
+	if seen[rt1] != 1 || seen[rt2] != 1 {
+		t.Fatalf("runtime distribution = %v, want one task per runtime", seen)
+	}
+}
+
+// TestNextBatchClaimAgentLocalFallback verifies that the local fallback keeps
+// the last-served Agent identity across a changing candidate set.
+func TestNextBatchClaimAgentLocalFallback(t *testing.T) {
+	svc := &TaskService{}
+	ctx := context.Background()
+	order := []string{"agent-a", "agent-b", "agent-c"}
+
+	if got := svc.nextBatchClaimAgent(ctx, "runtime-a,runtime-b", order); got != "agent-a" {
+		t.Fatalf("first local Agent = %s, want agent-a", got)
+	}
+	svc.rememberBatchClaimAgent(ctx, "runtime-a,runtime-b", "agent-a")
+	if got := svc.nextBatchClaimAgent(ctx, "runtime-a,runtime-b", order); got != "agent-b" {
+		t.Fatalf("second local Agent = %s, want agent-b", got)
+	}
+	svc.rememberBatchClaimAgent(ctx, "runtime-a,runtime-b", "agent-b")
+	if got := svc.nextBatchClaimAgent(ctx, "runtime-a,runtime-b", []string{"agent-a", "agent-c"}); got != "agent-c" {
+		t.Fatalf("shrinking-set local Agent = %s, want agent-c", got)
+	}
+	if got := svc.nextBatchClaimAgent(ctx, "runtime-c", order); got != "agent-a" {
+		t.Fatalf("independent local Agent = %s, want agent-a", got)
+	}
+}
+
+// TestClaimTasksForRuntimes_FairAcrossPolls verifies the Redis-backed cursor
+// rotates the first-pass Agent order when maxTasks is smaller than the number
+// of eligible Agents. Without the cursor, the first Agent wins every poll.
+func TestClaimTasksForRuntimes_FairAcrossPolls(t *testing.T) {
+	ctx := context.Background()
+	rdb := newRedisTestClient(t)
+	pool := newTaskClaimRacePool(t)
+	svc := NewTaskService(db.New(pool), pool, nil, events.New())
+	svc.EmptyClaim = NewEmptyClaimCache(rdb)
+
+	rt1, rt2 := batchClaimFixture(t, ctx, pool)
+	ids := []pgtype.UUID{util.MustParseUUID(rt1), util.MustParseUUID(rt2)}
+
+	var workspaceID, ownerID string
+	if err := pool.QueryRow(ctx, `
+		SELECT workspace_id, owner_id FROM agent_runtime WHERE id = $1
+	`, rt1).Scan(&workspaceID, &ownerID); err != nil {
+		t.Fatalf("load fixture ownership: %v", err)
+	}
+	var rt3, agent3 string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent_runtime
+		    (workspace_id, daemon_id, name, runtime_mode, provider, status,
+		     device_info, metadata, last_seen_at, visibility, owner_id)
+		VALUES ($1, 'daemon-batch', 'Batch RT3', 'cloud', 'batch_provider_3',
+		        'online', 'test runtime', '{}'::jsonb, now(), 'private', $2)
+		RETURNING id
+	`, workspaceID, ownerID).Scan(&rt3); err != nil {
+		t.Fatalf("create runtime 3: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent
+		    (workspace_id, name, description, runtime_mode, runtime_config,
+		     runtime_id, visibility, max_concurrent_tasks, owner_id)
+		VALUES ($1, 'Batch Agent3', '', 'cloud', '{}'::jsonb, $2,
+		        'private', 5, $3)
+		RETURNING id
+	`, workspaceID, rt3, ownerID).Scan(&agent3); err != nil {
+		t.Fatalf("create agent 3: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE agent_id = $1`, agent3)
+		pool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agent3)
+		pool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, rt3)
+	})
+
+	var issueID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, title, status, priority, creator_id,
+		                   creator_type, number, position)
+		VALUES ($1, 'batch fairness issue 4', 'in_progress', 'none', $2,
+		        'member', $3, 4)
+		RETURNING id
+	`, workspaceID, ownerID, 800004).Scan(&issueID); err != nil {
+		t.Fatalf("create fairness issue: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO agent_task_queue (agent_id, issue_id, status, priority,
+		                              context, runtime_id)
+		VALUES ($1, $2, 'queued', 0, '{}'::jsonb, $3)
+	`, agent3, issueID, rt3); err != nil {
+		t.Fatalf("create fairness task: %v", err)
+	}
+	ids = append(ids, util.MustParseUUID(rt3))
+
+	gotAgents := make([]string, 0, 3)
+	for poll := 0; poll < 3; poll++ {
+		claimed, err := svc.ClaimTasksForRuntimes(ctx, ids, 1)
+		if err != nil {
+			t.Fatalf("poll %d: %v", poll+1, err)
+		}
+		if len(claimed) != 1 {
+			t.Fatalf("poll %d claimed %d tasks, want 1", poll+1, len(claimed))
+		}
+		gotAgents = append(gotAgents, util.UUIDToString(claimed[0].AgentID))
+	}
+	if len(map[string]struct{}{gotAgents[0]: {}, gotAgents[1]: {}, gotAgents[2]: {}}) != 3 {
+		t.Fatalf("agents claimed across polls = %v, want all three eligible agents", gotAgents)
 	}
 }
 

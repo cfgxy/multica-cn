@@ -67,6 +67,15 @@ export type {
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
   KnowledgeEntry,
+  KnowledgeEntryOperation,
+  KnowledgeEntryVersion,
+  KnowledgeLifecycleEvent,
+  UpdateKnowledgeLifecycleRequest,
+  RestoreKnowledgeEntryRequest,
+  KnowledgeGovernanceRun,
+  KnowledgeGovernanceFinding,
+  KnowledgeGovernanceRunDetail,
+  KnowledgeGovernanceRunStart,
   SkillEffectMetrics,
   CreateSkillRequest,
   SkillImportResult,
@@ -386,6 +395,7 @@ export type {
   LarkPermissionCatalogEntry,
   LarkPermissionCatalogResponse,
   RecheckLarkPermissionsResponse,
+  BeginLarkPermissionGrantResponse,
 } from "./lark";
 export type {
   ComposioToolkit,

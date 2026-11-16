@@ -1,0 +1,2 @@
+CREATE INDEX CONCURRENTLY idx_knowledge_governance_run_workspace_created
+ON knowledge_governance_run (workspace_id, created_at DESC);

@@ -1796,6 +1796,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// bd IO never runs inside the server container.
 		r.Get("/knowledge/plan", h.GetKnowledgePlan)
 		r.Post("/knowledge/results", h.PostKnowledgeResults)
+		r.Post("/knowledge/token/refresh", h.RefreshKnowledgeDaemonToken)
 	})
 
 	// Public Plugin Action API. This is the stable, globally versioned contract
@@ -2035,6 +2036,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// already expose the same flag; freeze/resume writes
 					// stay in the owner/admin group below.
 					r.Get("/scheduling-pause", h.GetWorkspaceSchedulingPause)
+					r.Get("/prompt-quiz-schedule", h.GetWorkspacePromptQuizSchedule)
 					// The instance directory is browse-only and
 					// member-visible, for the same reason the installed list
 					// is: a member seeing what this instance offers is how
@@ -2119,6 +2121,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// in the group above.
 					r.Post("/scheduling-pause", h.PauseWorkspaceScheduling)
 					r.Delete("/scheduling-pause", h.ResumeWorkspaceScheduling)
+					r.Put("/prompt-quiz-schedule", h.PutWorkspacePromptQuizSchedule)
+					r.Delete("/prompt-quiz-schedule", h.DeleteWorkspacePromptQuizSchedule)
 					// Both outlive plugins_v1: they are the two cleanup levers.
 					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
@@ -2193,6 +2197,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// inside the handler, mirroring revoke).
 					r.Get("/lark/permission-catalog", h.GetLarkPermissionCatalog)
 					r.Post("/lark/installations/{installationId}/recheck-permissions", h.RecheckLarkPermissions)
+					r.Post("/lark/installations/{installationId}/grant-permissions", h.BeginLarkPermissionGrant)
 					// Device-flow scan-to-install. Begin opens a new
 					// registration session against Lark and returns
 					// the QR-code URL; the frontend dialog then polls
@@ -2543,13 +2548,26 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Use(middleware.RequireWorkspaceMember(queries))
 				r.Get("/dirs", h.GetKnowledgeDirs)
 				r.Get("/entries", h.GetKnowledgeEntries)
+				r.Get("/entries/{id}/versions", h.GetKnowledgeEntryVersions)
+				r.Get("/entries/{id}/lifecycle", h.GetKnowledgeEntryLifecycle)
+				r.Get("/governance/runs", h.ListKnowledgeGovernanceRuns)
+				r.Get("/governance/runs/{id}", h.GetKnowledgeGovernanceRun)
 			})
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
 				r.Post("/dirs", h.PostKnowledgeDir)
+				r.Put("/dirs/{id}/managed", h.PutKnowledgeDirManaged)
 				r.Post("/dirs/{id}/scan", h.ScanKnowledgeDir)
 				r.Delete("/dirs/{id}", h.DeleteKnowledgeDir)
 				r.Post("/entries/{id}/adopt", h.AdoptKnowledgeEntry)
+				r.Post("/entries/{id}/edit", h.EditKnowledgeEntry)
+				r.Post("/entries/{id}/delete", h.DeleteKnowledgeEntry)
+				r.Post("/entries/{id}/merge", h.MergeKnowledgeEntries)
+				r.Post("/entries/{id}/lifecycle", h.PostKnowledgeEntryLifecycle)
+				r.Post("/entries/{id}/restore", h.PostKnowledgeEntryRestore)
+				r.Post("/dirs/{id}/governance", h.StartKnowledgeGovernanceRun)
+				r.Post("/governance/runs/{id}/cancel", h.CancelKnowledgeGovernanceRun)
+				r.Post("/governance/runs/{id}/retry", h.RetryKnowledgeGovernanceRun)
 			})
 		})
 
@@ -2941,6 +2959,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/scheduling-pause", h.PauseAgentScheduling)
 					r.Delete("/scheduling-pause", h.ResumeAgentScheduling)
 					r.Get("/scheduling-pause", h.GetAgentSchedulingPause)
+					r.Get("/prompt-quiz-schedule", h.GetAgentPromptQuizSchedule)
+					r.Put("/prompt-quiz-schedule", h.PutAgentPromptQuizSchedule)
+					r.Delete("/prompt-quiz-schedule", h.DeleteAgentPromptQuizSchedule)
 					// Agent-level error-rate backpressure policy (RUYI-859
 					// stage A): config surface + read-only visibility.
 					// Writes are workspace owner/admin, human-only (the
@@ -3082,6 +3103,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateManualRuntime)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
+					r.Post("/remove-from-list", h.RemoveAgentRuntimeFromList)
 					// Daemon host backpressure settings + trigger history
 					// (RUYI-729 stage 1): reads member-visible, saves
 					// owner/admin-only, delivery over the heartbeat ack.

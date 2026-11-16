@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AgentRuntimeListSchema,
   AgentRuntimeSchema,
   DecisionRequestSchema,
   DecisionRequestsListSchema,
@@ -90,6 +91,9 @@ import {
   EMPTY_PLUGIN_PREVIEW,
   ListGitLabRepositoriesResponseSchema,
   EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
+  EMPTY_KNOWLEDGE_ENTRY_OPERATION,
+  KnowledgeEntrySchema,
+  KnowledgeEntryOperationSchema,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -97,10 +101,81 @@ import {
   IssueStatusEntrySchema,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_ISSUE_STATUS_ENTRY,
+  BeginLarkPermissionGrantResponseSchema,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
 import { SkillSummaryListSchema } from "./schemas";
 import { SelfEvolutionJevConfigSchema } from "./schemas";
+
+describe("KnowledgeEntryOperationSchema", () => {
+  const endpoint = { endpoint: "POST /api/knowledge/entries/:id/edit" };
+
+  it("accepts an operation receipt and its pending-state details", () => {
+    expect(KnowledgeEntryOperationSchema.parse({
+      id: "op-1",
+      status: "queued",
+      operation_type: "edit",
+      error: "bd recall mismatch",
+      requested_at: "2026-11-05T07:00:00Z",
+      retry_after: 10,
+    })).toEqual({
+      id: "op-1",
+      status: "queued",
+      operation_type: "edit",
+      error: "bd recall mismatch",
+      requested_at: "2026-11-05T07:00:00Z",
+      retry_after: 10,
+    });
+  });
+
+  it("falls back when an operation receipt is malformed", () => {
+    expect(
+      parseWithFallback(
+        { id: "op-1", status: 202 },
+        KnowledgeEntryOperationSchema,
+        EMPTY_KNOWLEDGE_ENTRY_OPERATION,
+        endpoint,
+      ),
+    ).toEqual(EMPTY_KNOWLEDGE_ENTRY_OPERATION);
+  });
+
+  it("rejects malformed pending operation state in a knowledge entry", () => {
+    expect(KnowledgeEntrySchema.safeParse({
+      id: "entry-1",
+      dir_id: "dir-1",
+      key: "deploy-rollback",
+      content: "Use the tagged release.",
+      content_sha256: "abc123",
+      mirror_state: "synced",
+      first_seen_at: "2026-11-05T07:00:00Z",
+      last_confirmed_at: "2026-11-05T07:00:00Z",
+      adoption_state: "adopted",
+      pending_operation: { id: "op-1", status: 202 },
+    }).success).toBe(false);
+  });
+});
+
+describe("Lark permission grant response schema", () => {
+  const fallback = { qr_code_url: "" };
+
+  it("accepts a confirmation QR URL", () => {
+    expect(
+      BeginLarkPermissionGrantResponseSchema.parse({
+        qr_code_url: "https://open.feishu.cn/app?clientID=cli_existing",
+      }),
+    ).toEqual({ qr_code_url: "https://open.feishu.cn/app?clientID=cli_existing" });
+  });
+
+  it("falls back to an empty URL for malformed responses", () => {
+    for (const malformed of [null, {}, { qr_code_url: "not a URL" }]) {
+      expect(
+        parseWithFallback(malformed, BeginLarkPermissionGrantResponseSchema, fallback, {
+          endpoint: "POST /api/workspaces/:id/lark/installations/:installationId/grant-permissions",
+        }),
+      ).toEqual(fallback);
+    }
+  });
+});
 
 describe("decision request response", () => {
   const baseRequest = {
@@ -1262,10 +1337,23 @@ describe("agent runtime concurrency schema", () => {
     expect(AgentRuntimeSchema.parse({}).max_concurrent_tasks).toBe(0);
   });
 
-  it("accepts non-negative runtime limits and falls back on malformed values", () => {
+  it("accepts non-negative runtime limits and rejects malformed values", () => {
     expect(AgentRuntimeSchema.parse({ max_concurrent_tasks: 8 }).max_concurrent_tasks).toBe(8);
-    expect(AgentRuntimeSchema.parse({ max_concurrent_tasks: -1 }).max_concurrent_tasks).toBe(0);
-    expect(AgentRuntimeSchema.parse({ max_concurrent_tasks: "8" }).max_concurrent_tasks).toBe(0);
+    expect(AgentRuntimeSchema.safeParse({ max_concurrent_tasks: -1 }).success).toBe(false);
+    expect(AgentRuntimeSchema.safeParse({ max_concurrent_tasks: "8" }).success).toBe(false);
+  });
+
+  it("keeps valid runtime rows when one concurrency field drifts", () => {
+    const parsed = AgentRuntimeListSchema.parse([
+      { id: "rt-null", max_concurrent_tasks: null },
+      { id: "rt-string", max_concurrent_tasks: "8" },
+      { id: "rt-negative", max_concurrent_tasks: -1 },
+      { id: "rt-valid", max_concurrent_tasks: 8 },
+    ]);
+
+    expect(parsed).toHaveLength(4);
+    expect(parsed.slice(0, 3).map((runtime) => runtime.max_concurrent_tasks)).toEqual([0, 0, 0]);
+    expect(parsed[3]?.max_concurrent_tasks).toBe(8);
   });
 });
 

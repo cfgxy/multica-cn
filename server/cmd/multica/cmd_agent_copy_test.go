@@ -156,8 +156,8 @@ func TestAgentCopySameRuntimeCopiesPortableFields(t *testing.T) {
 	}
 }
 
-func TestAgentCopyOmitsInvalidHistoricalConcurrency(t *testing.T) {
-	for _, value := range []any{0, -2, 51} {
+func TestAgentCopyOmitsInvalidConcurrency(t *testing.T) {
+	for _, value := range []any{-1, -2, 51} {
 		t.Run(fmt.Sprint(value), func(t *testing.T) {
 			source := fullSourceAgent()
 			source["max_concurrent_tasks"] = value
@@ -172,27 +172,29 @@ func TestAgentCopyOmitsInvalidHistoricalConcurrency(t *testing.T) {
 				t.Fatalf("runAgentCopy: %v", err)
 			}
 			if _, ok := gotBody["max_concurrent_tasks"]; ok {
-				t.Errorf("invalid historical max_concurrent_tasks must be omitted, got %v", gotBody["max_concurrent_tasks"])
+				t.Errorf("invalid max_concurrent_tasks must be omitted, got %v", gotBody["max_concurrent_tasks"])
 			}
 		})
 	}
 }
 
-func TestAgentCopyPreservesUnlimitedConcurrency(t *testing.T) {
-	source := fullSourceAgent()
-	source["max_concurrent_tasks"] = float64(-1)
+func TestAgentCopyCopiesValidConcurrency(t *testing.T) {
+	for _, value := range []any{float64(0), float64(7)} {
+		source := fullSourceAgent()
+		source["max_concurrent_tasks"] = value
 
-	var gotBody map[string]any
-	srv := copyMockServer(t, source, &gotBody)
-	defer srv.Close()
-	setCopyTestEnv(t, srv.URL)
+		var gotBody map[string]any
+		srv := copyMockServer(t, source, &gotBody)
+		setCopyTestEnv(t, srv.URL)
 
-	cmd := newAgentCopyTestCmd()
-	if err := runAgentCopy(cmd, []string{"agent-src"}); err != nil {
-		t.Fatalf("runAgentCopy: %v", err)
-	}
-	if gotBody["max_concurrent_tasks"] != float64(-1) {
-		t.Errorf("max_concurrent_tasks = %v, want -1", gotBody["max_concurrent_tasks"])
+		cmd := newAgentCopyTestCmd()
+		if err := runAgentCopy(cmd, []string{"agent-src"}); err != nil {
+			t.Fatalf("runAgentCopy (source %v): %v", value, err)
+		}
+		if gotBody["max_concurrent_tasks"] != value {
+			t.Errorf("source %v: max_concurrent_tasks = %v, want %v", value, gotBody["max_concurrent_tasks"], value)
+		}
+		srv.Close()
 	}
 }
 
@@ -217,15 +219,19 @@ func TestAgentCopyValidConcurrencyOverrideRepairsInvalidSource(t *testing.T) {
 }
 
 func TestAgentCopyRejectsInvalidConcurrencyOverrideBeforeRequest(t *testing.T) {
-	cmd := newAgentCopyTestCmd()
-	_ = cmd.Flags().Set("max-concurrent-tasks", "51")
+	for _, value := range []string{"-1", "-2", "51"} {
+		t.Run(value, func(t *testing.T) {
+			cmd := newAgentCopyTestCmd()
+			_ = cmd.Flags().Set("max-concurrent-tasks", value)
 
-	err := runAgentCopy(cmd, []string{"agent-src"})
-	if err == nil {
-		t.Fatal("expected invalid --max-concurrent-tasks error")
-	}
-	if !strings.Contains(err.Error(), "between 1 and 50") {
-		t.Fatalf("error = %q, want 1-50 range", err.Error())
+			err := runAgentCopy(cmd, []string{"agent-src"})
+			if err == nil {
+				t.Fatal("expected invalid --max-concurrent-tasks error")
+			}
+			if !strings.Contains(err.Error(), "between 1 and 50") {
+				t.Fatalf("error = %q, want 1-50 range", err.Error())
+			}
+		})
 	}
 }
 

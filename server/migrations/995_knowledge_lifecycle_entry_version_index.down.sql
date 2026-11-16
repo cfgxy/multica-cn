@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_knowledge_entry_version_entry;

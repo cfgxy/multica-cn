@@ -190,11 +190,23 @@ var postConsolidationStems = []string{
 	"982_scheduling_pause_system_source_promql_recovery", // RUYI-859 forward recovery for historical policy databases
 	"983_daemon_token_owner",                             // daemon token ownership binding
 	"984_prompt_proposal_enactment_target",               // RUYI-858 (persistent enactment target on prompt_proposal: clause_library default vs static_prompt)
+	"993_runtime_removed_at",                             // RUYI-895 (hides a Runtime from user-managed lists)
 	"994_clause_injection_observation",                   // RUYI-891 (claim-time degraded carrier observations)
 	"994_clause_injection_observation_id_index",
 	"994_clause_injection_observation_task_scope_time_index",
 	"994_clause_injection_observation_workspace_time_index",
-	"997_agent_task_no_action",
+	"995_knowledge_lifecycle", // RUYI-916
+	"995_knowledge_lifecycle_entry_version_index",
+	"995_knowledge_lifecycle_event_entry_index",
+	"996_knowledge_entry_version_provenance", // RUYI-916
+	"997_agent_task_no_action",               // RUYI-884
+	"998_knowledge_governance_run",           // RUYI-916
+	"998_knowledge_governance_run_active_scope_index",
+	"998_knowledge_governance_run_finding_index",
+	"998_knowledge_governance_run_workspace_created_index",
+	"999_knowledge_entry_operation",           // RUYI-889
+	"999_knowledge_lifecycle_writeback_claim", // RUYI-916
+	"999_knowledge_lifecycle_writeback_claim_index",
 }
 
 // consolidationStems are the 17 canonical 9xx stems of the consolidated tree,
