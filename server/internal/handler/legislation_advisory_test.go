@@ -123,14 +123,15 @@ func TestLegislationAdvisorySubmitPrecheck(t *testing.T) {
 	wantSHA := hex.EncodeToString(sum[:])
 	var resp struct {
 		JevAdvisory *struct {
-			Stage       string  `json:"stage"`
-			Available   bool    `json:"available"`
-			Engine      string  `json:"engine"`
-			PFailure    float64 `json:"p_failure"`
-			Threshold   float64 `json:"threshold"`
-			Warn        bool    `json:"warn"`
-			InputSHA256 string  `json:"input_sha256"`
-			CheckedAt   string  `json:"checked_at"`
+			Stage           string  `json:"stage"`
+			Available       bool    `json:"available"`
+			Engine          string  `json:"engine"`
+			PFailure        float64 `json:"p_failure"`
+			Threshold       float64 `json:"threshold"`
+			ThresholdSource string  `json:"threshold_source"`
+			Warn            bool    `json:"warn"`
+			InputSHA256     string  `json:"input_sha256"`
+			CheckedAt       string  `json:"checked_at"`
 		} `json:"jev_advisory"`
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
@@ -143,15 +144,15 @@ func TestLegislationAdvisorySubmitPrecheck(t *testing.T) {
 	if adv.Stage != "submit" || !adv.Available || adv.Engine != "stub-engine" {
 		t.Fatalf("advisory stage/available/engine = %s/%v/%s", adv.Stage, adv.Available, adv.Engine)
 	}
-	if adv.PFailure != 0.8 || adv.Threshold != 0.3 || !adv.Warn {
-		t.Fatalf("advisory verdict = p_failure %v threshold %v warn %v, want 0.8/0.3/true", adv.PFailure, adv.Threshold, adv.Warn)
+	if adv.PFailure != 0.8 || adv.Threshold != 0.3 || adv.ThresholdSource != "default" || !adv.Warn {
+		t.Fatalf("advisory verdict = p_failure %v threshold %v threshold_source %q warn %v, want 0.8/0.3/default/true", adv.PFailure, adv.Threshold, adv.ThresholdSource, adv.Warn)
 	}
 	if adv.InputSHA256 != wantSHA || adv.CheckedAt == "" {
 		t.Fatalf("advisory provenance: sha %q checked_at %q", adv.InputSHA256, adv.CheckedAt)
 	}
 
 	row := jevAdvisoryRow(t, wsID, id)
-	if row == nil || !strings.Contains(advCompact(row), `"stage":"submit"`) || !strings.Contains(advCompact(row), `"warn":true`) {
+	if row == nil || !strings.Contains(advCompact(row), `"stage":"submit"`) || !strings.Contains(advCompact(row), `"threshold_source":"default"`) || !strings.Contains(advCompact(row), `"warn":true`) {
 		t.Fatalf("row jev_advisory not persisted with the submit report: %s", advStr(row))
 	}
 }

@@ -517,9 +517,13 @@
       "gate": "门闸软判据"
     },
     "jevThreshold": "阈值",
+    "jevThresholdSource": "阈值来源",
     "jevWarnFlag": "预警",
     "jevDisclaimer": "仅低成本预警参考，须结合概率依据判断，不单独作为处置依据（warn-only 旁路，不影响门闸判定）。",
-    "jevUnavailable": "不可用，已跳过（不影响主流程）"
+    "jevUnavailable": "不可用，已跳过（不影响主流程）",
+    "jevDisabled": "未配置或已关闭",
+    "jevUnreachable": "已配置但不可达",
+    "jevEmptyInput": "未评分：输入为空"
   },
   "retrospective": {
     "title": "每日总复盘",

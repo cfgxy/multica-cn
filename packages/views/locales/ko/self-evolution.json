@@ -512,9 +512,13 @@
       "gate": "게이트 소프트 판정"
     },
     "jevThreshold": "임계값",
+    "jevThresholdSource": "임계값 출처",
     "jevWarnFlag": "경고",
     "jevDisclaimer": "저비용 경고 참고용입니다. 확률 근거와 함께 판단하고 단독으로 처분 근거로 삼지 마세요(warn-only 우회, 게이트 판정에는 영향 없음).",
     "jevUnavailable": "사용 불가, 건너뜀(본 흐름에는 영향 없음)",
+    "jevDisabled": "구성되지 않았거나 비활성화됨",
+    "jevUnreachable": "구성되었지만 연결할 수 없음",
+    "jevEmptyInput": "판정하지 않음: 입력이 비어 있음",
     "enactmentTargetLabel": "조항 반영 대상",
     "enactmentTargetOptions": {
       "clause_library": "조항 라이브러리에 등록",

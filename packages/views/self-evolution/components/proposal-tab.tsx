@@ -567,7 +567,26 @@ export function ProposalTab({ wsId }: { wsId: string }) {
               {(() => {
                 const jev = selected.jev_advisory;
                 if (!jev) return null;
-                return jev.available ? (
+                if (!jev.available) {
+                  const reason = jev.skipped_reason;
+                  const status =
+                    reason === "disabled"
+                      ? t(($) => $.legislation.jevDisabled)
+                      : reason === "empty_input"
+                        ? t(($) => $.legislation.jevEmptyInput)
+                        : reason?.startsWith("unreachable:")
+                          ? t(($) => $.legislation.jevUnreachable)
+                          : t(($) => $.legislation.jevUnavailable);
+                  return (
+                    <div
+                      className="text-muted-foreground text-caption"
+                      data-testid="legislation-jev-advisory-unavailable"
+                    >
+                      {t(($) => $.legislation.jevAdvisoryLabel)}: {status}
+                    </div>
+                  );
+                }
+                return (
                   <div
                     className={
                       jev.warn
@@ -584,17 +603,13 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                     {jev.threshold != null
                       ? ` / ${t(($) => $.legislation.jevThreshold)}=${jev.threshold.toFixed(3)}`
                       : ""}
+                    {jev.threshold_source
+                      ? ` / ${t(($) => $.legislation.jevThresholdSource)}=${jev.threshold_source}`
+                      : ""}
                     {jev.warn ? ` · ${t(($) => $.legislation.jevWarnFlag)}` : ""}
                     <div className="text-muted-foreground text-caption">
                       {t(($) => $.legislation.jevDisclaimer)}
                     </div>
-                  </div>
-                ) : (
-                  <div
-                    className="text-muted-foreground text-caption"
-                    data-testid="legislation-jev-advisory-unavailable"
-                  >
-                    {t(($) => $.legislation.jevAdvisoryLabel)}: {t(($) => $.legislation.jevUnavailable)}
                   </div>
                 );
               })()}

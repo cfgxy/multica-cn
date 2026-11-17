@@ -517,9 +517,13 @@
       "gate": "ゲートソフト判定"
     },
     "jevThreshold": "しきい値",
+    "jevThresholdSource": "しきい値の出所",
     "jevWarnFlag": "警告",
     "jevDisclaimer": "低コストの警告参考値です。確率根拠と合わせて判断し、単独で処理判断の根拠にしないでください（warn-only 副背路、ゲート判定には影響しません）。",
-    "jevUnavailable": "利用不可、スキップしました（本体フローには影響しません）"
+    "jevUnavailable": "利用不可、スキップしました（本体フローには影響しません）",
+    "jevDisabled": "未設定または無効",
+    "jevUnreachable": "設定済みですが到達不能",
+    "jevEmptyInput": "判定なし：入力が空です"
   },
   "retrospective": {
     "title": "日次ふりかえり",

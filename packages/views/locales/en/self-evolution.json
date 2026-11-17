@@ -518,9 +518,13 @@
       "gate": "gate advisory"
     },
     "jevThreshold": "threshold",
+    "jevThresholdSource": "threshold source",
     "jevWarnFlag": "warn",
     "jevDisclaimer": "Low-cost advisory only — read it together with its probability basis; never a disposition basis on its own (warn-only sidecar, gate verdicts unaffected).",
-    "jevUnavailable": "unavailable, skipped (main flow unaffected)"
+    "jevUnavailable": "unavailable, skipped (main flow unaffected)",
+    "jevDisabled": "not configured or disabled",
+    "jevUnreachable": "configured but unreachable",
+    "jevEmptyInput": "not judged: empty input"
   },
   "retrospective": {
     "title": "Daily retrospective",

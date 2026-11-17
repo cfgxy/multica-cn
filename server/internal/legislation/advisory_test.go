@@ -52,8 +52,8 @@ func TestAdvisoryAssessWarnSemantics(t *testing.T) {
 	if !rep.Available || !rep.Warn {
 		t.Fatalf("expected available warn report, got %+v", rep)
 	}
-	if rep.PFailure != 0.62 || rep.Threshold != 0.3 || rep.Engine != "kev_local" {
-		t.Fatalf("probability fields not passed through: %+v", rep)
+	if rep.PFailure != 0.62 || rep.Threshold != 0.3 || rep.Engine != "kev_local" || rep.ThresholdSource != "default" {
+		t.Fatalf("probability/config fields not passed through: %+v", rep)
 	}
 	if rep.Stage != "submit" || rep.Decision != "warn" {
 		t.Fatalf("stage/decision mismatch: %+v", rep)
