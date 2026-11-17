@@ -590,9 +590,6 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                     >
                       {t(($) => $.legislation.jevAdvisoryLabel)}: {status}
                       {jev.model ? ` · ${t(($) => $.legislation.jevModel, { model: jev.model })}` : ""}
-                      {jev.skipped_reason
-                        ? ` · ${t(($) => $.legislation.jevFailureReason, { reason: jev.skipped_reason })}`
-                        : ""}
                       {jev.checked_at
                         ? ` · ${t(($) => $.legislation.jevCheckedAt, {
                             date: new Date(jev.checked_at).toLocaleString(),

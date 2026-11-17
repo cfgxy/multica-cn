@@ -227,8 +227,9 @@ func TestLegislationAdvisoryGateWarnOnly(t *testing.T) {
 }
 
 // TestLegislationAdvisoryDisabledKeepsGateIdentical: with the layer switched
-// off (empty BaseURL) the advisory column stays NULL and the E1–E4 verdicts
-// are byte-identical to the enabled run over the same weak clause.
+// off (empty BaseURL) the advisory column records the explicit disabled state
+// and the E1–E4 verdicts are byte-identical to the enabled run over the same
+// weak clause.
 func TestLegislationAdvisoryDisabledKeepsGateIdentical(t *testing.T) {
 	wsOn, ownerOn, memberOn := legislationFixture(t)
 	wsOff, ownerOff, memberOff := legislationFixture(t)
@@ -250,8 +251,11 @@ func TestLegislationAdvisoryDisabledKeepsGateIdentical(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("submit (disabled): expected 200, got %d: %s", code, body)
 	}
-	if row := jevAdvisoryRow(t, wsOff, idOff); row != nil {
-		t.Fatalf("disabled layer wrote jev_advisory: %s", advStr(row))
+	if row := jevAdvisoryRow(t, wsOff, idOff); row == nil ||
+		!strings.Contains(advCompact(row), `"stage":"submit"`) ||
+		!strings.Contains(advCompact(row), `"available":false`) ||
+		!strings.Contains(advCompact(row), `"skipped_reason":"disabled"`) {
+		t.Fatalf("disabled submit must persist an explicit advisory state: %s", advStr(row))
 	}
 	if code, body := ownerApprove(t, ownerOff, wsOff, idOff); code != http.StatusConflict {
 		t.Fatalf("approve (disabled): expected 409 gate_failed, got %d: %s", code, body)
@@ -264,10 +268,17 @@ func TestLegislationAdvisoryDisabledKeepsGateIdentical(t *testing.T) {
 	if errsOn == "" || errsOn != errsOff {
 		t.Fatalf("E1–E4 verdict differs between enabled and disabled runs:\n enabled:  %s\n disabled: %s", errsOn, errsOff)
 	}
-	// The enabled row's last verdict is the gate-stage report; the disabled
-	// row keeps NULL — the switch semantics from the dispatch card.
+	// The enabled row's last verdict is the gate-stage report; the disabled row
+	// keeps the gate-stage disabled report so it remains distinguishable from a
+	// legacy row that was never checked.
 	if row := jevAdvisoryRow(t, wsOn, idOn); row == nil || !strings.Contains(advCompact(row), `"stage":"gate"`) {
 		t.Fatalf("enabled run lost its gate-stage advisory: %s", advStr(row))
+	}
+	if row := jevAdvisoryRow(t, wsOff, idOff); row == nil ||
+		!strings.Contains(advCompact(row), `"stage":"gate"`) ||
+		!strings.Contains(advCompact(row), `"available":false`) ||
+		!strings.Contains(advCompact(row), `"skipped_reason":"disabled"`) {
+		t.Fatalf("disabled gate must persist an explicit advisory state: %s", advStr(row))
 	}
 }
 
