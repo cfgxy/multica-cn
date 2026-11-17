@@ -2653,6 +2653,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// it really saw — a tier the agent/project/squad left blank, or a claim
 	// path that never reaches a given tier, must not appear as version 0.
 	promptVersionScopeIDs := map[string]string{}
+	promptVersionScopeVersions := map[string]int32{}
 	// Clause dynamic injection (RUYI-751 / ADR 007 §5): every carrier read
 	// point below routes its text through the task_kind-filtered effective
 	// clause set. Injection rows accumulate here and persist once at the end;
@@ -2851,12 +2852,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		SessionCompactPct:       agent.SessionCompactPct,
 		DisabledRuntimeSkills:   disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
-	// Attribute the agent tier off the filtered text above, not the raw
-	// column: a tier whose every clause the conditions filtered out — and
-	// whose stable context is empty — injected nothing and earns no
-	// attribution. The Mika-composed text below still attributes to the same
-	// tier: the system layer ships with the binary and is never written
-	// through prompt-governance, so it has no prompt_version to attribute to.
+	// Attribute ordinary agent tiers from filtered carrier content. Mika's
+	// product-owned binary layer is versioned separately below.
 	if strings.TrimSpace(agentInstructions) != "" {
 		promptVersionScopeIDs["agent"] = uuidToString(agent.ID)
 	}
@@ -2871,6 +2868,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// place a claimed task's agent payload is assembled.
 	if agent.SystemKey.String == service.MikaSystemKey {
 		resp.Agent.Instructions = service.ComposeMikaInstructions(agent.Name, agentInstructions)
+		staticPrompt := service.ComposeMikaInstructions(agent.Name, agent.Instructions)
+		version, err := h.ensureMikaPromptSnapshot(r.Context(), claimWorkspaceID, agent.ID, agent.Instructions, staticPrompt)
+		if err != nil {
+			slog.Warn("task claim: failed to snapshot Mika prompt", "task_id", uuidToString(task.ID), "error", err)
+		}
+		// A failed snapshot must not fall back to an unrelated latest version.
+		promptVersionScopeVersions["agent"] = version
 	}
 	if useSkillRefs {
 		_, skillRefs, err := h.TaskService.LoadAgentSkillBundles(r.Context(), task.AgentID)
@@ -4048,7 +4052,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
-	h.recordClaimedPromptVersions(r.Context(), task.ID, promptVersionScopeIDs)
+	h.recordClaimedPromptVersions(r.Context(), task.ID, promptVersionScopeIDs, promptVersionScopeVersions)
 	// Clause injection events (RUYI-751 §6): computed-selected = injected, so
 	// the accumulated records are the run's call-count basis. Scope strings
 	// were stamped by filterClauses at each read point.
@@ -4080,23 +4084,28 @@ func applyPriorSessionUsage(resp *AgentTaskResponse, priorUsage []db.GetPriorSes
 	}
 }
 
-// recordClaimedPromptVersions resolves the current prompt_version.version
-// number for every tier this claim actually injected non-empty content for
-// (see promptVersionScopeIDs above) and persists it onto the claimed task row
-// (RUYI-183 T2), so a run's prompt-governance attribution can be read back
-// later without recomputing "what did this run actually see".
+// recordClaimedPromptVersions resolves ordinary tier versions and persists
+// claim-time fixed versions where a snapshot must not race a later edit.
 //
 // A tier with no prompt_version row yet (never saved/edited since the
 // governance table shipped) is skipped rather than recorded as version 0 —
 // absent means "not attributable", never "version zero". Failure here is
 // logged and swallowed: attribution is observability, not a claim
 // precondition, so it must never turn a successful claim into a retry.
-func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype.UUID, scopeIDs map[string]string) {
-	if len(scopeIDs) == 0 {
+func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype.UUID, scopeIDs map[string]string, fixedVersions map[string]int32) {
+	if len(scopeIDs) == 0 && len(fixedVersions) == 0 {
 		return
 	}
-	versions := make(map[string]int32, len(scopeIDs))
+	versions := make(map[string]int32, len(scopeIDs)+len(fixedVersions))
+	for scope, version := range fixedVersions {
+		if version > 0 {
+			versions[scope] = version
+		}
+	}
 	for scope, scopeID := range scopeIDs {
+		if _, fixed := fixedVersions[scope]; fixed {
+			continue
+		}
 		parsedScopeID, err := util.ParseUUID(scopeID)
 		if err != nil {
 			continue
