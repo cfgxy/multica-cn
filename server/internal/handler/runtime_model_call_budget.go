@@ -77,10 +77,6 @@ func modelCallBudgetActive(config runtimeModelCallBudgetConfig, knownCalls, rese
 		config.Enabled && knownCalls+reservedCalls >= config.MaxCalls
 }
 
-func modelCallBudgetAdmissionActive(config runtimeModelCallBudgetConfig, knownCalls, reservedCalls, liveUnknownUsageRows int64) bool {
-	return modelCallBudgetActive(config, knownCalls, reservedCalls) && liveUnknownUsageRows == 0
-}
-
 func (h *Handler) runtimeModelCallBudgetResponse(
 	ctx context.Context,
 	rt db.AgentRuntime,
@@ -102,7 +98,7 @@ func (h *Handler) runtimeModelCallBudgetResponse(
 			UnknownUsageRows: usage.UnknownUsageRows,
 			ReservedCalls:    usage.ReservedCalls,
 			Complete:         usage.UnknownUsageRows == 0,
-			Active:           modelCallBudgetAdmissionActive(config, usage.KnownCalls, usage.ReservedCalls, usage.LiveUnknownUsageRows),
+			Active:           modelCallBudgetActive(config, usage.KnownCalls, usage.ReservedCalls),
 			WindowStartedAt:  windowStart.Format(time.RFC3339),
 		},
 	}, nil
@@ -133,7 +129,7 @@ func (h *Handler) runtimeHeldByModelCallBudget(ctx context.Context, rt db.AgentR
 			"runtime_id", uuidToString(rt.ID), "error", err)
 		return false
 	}
-	return modelCallBudgetAdmissionActive(config, usage.KnownCalls, usage.ReservedCalls, usage.LiveUnknownUsageRows)
+	return modelCallBudgetActive(config, usage.KnownCalls, usage.ReservedCalls)
 }
 
 // runtimeModelCallBudgetHolds batch-loads usage for queue decoration and the
@@ -169,7 +165,7 @@ func (h *Handler) runtimeModelCallBudgetHolds(ctx context.Context, runtimes []db
 		if !ok {
 			continue
 		}
-		holds[id] = modelCallBudgetAdmissionActive(config, row.KnownCalls, row.ReservedCalls, row.LiveUnknownUsageRows)
+		holds[id] = modelCallBudgetActive(config, row.KnownCalls, row.ReservedCalls)
 	}
 	return holds
 }
