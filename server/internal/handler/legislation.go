@@ -402,14 +402,14 @@ func (h *Handler) runGateAndEnactTx(ctx context.Context, r *http.Request, qtx *d
 	// full text is judged and the gate-stage report overwrites the
 	// submit-stage one (stage disambiguates) — on gate_failed rows too, so
 	// the owner reads the advisory next to the rejection. A synthesis failure
-	// or a disabled layer keeps the previous verdict in place. Either way the
-	// E1–E4 verdict above is untouched — this layer reports, never blocks.
-	// The judged text is the source carrier's synthesized result.
+	// keeps the previous verdict in place; disabled and unreachable clients
+	// still produce explicit gate-stage reports. Either way the E1–E4 verdict
+	// above is untouched — this layer reports, never blocks. The judged text is
+	// the source carrier's synthesized result.
 	advisory := p.JevAdvisory
 	if srcText, synthed := synth[carrierRef{scope: p.CarrierScope, id: p.CarrierScopeID}]; synthed {
-		if client := h.jevAdvisory(ctx, workspaceID); client.Enabled() {
-			advisory = client.Assess(ctx, "gate", srcText).JSON()
-		}
+		client := h.jevAdvisory(ctx, workspaceID)
+		advisory = client.Assess(ctx, "gate", srcText).JSON()
 	}
 
 	if !res.OK() {

@@ -282,6 +282,31 @@ func TestLegislationAdvisoryDisabledKeepsGateIdentical(t *testing.T) {
 	}
 }
 
+// TestLegislationAdvisoryDisabledOwnerApprovePersistsGateStage exercises the
+// successful ownerApprove path directly: disabled JEV must overwrite the
+// submit-stage report with an explicit gate-stage report before enactment.
+func TestLegislationAdvisoryDisabledOwnerApprovePersistsGateStage(t *testing.T) {
+	wsID, ownerID, memberID := legislationFixture(t)
+	withJevAdvisory(t, &legislation.AdvisoryClient{})
+
+	id := createDraft(t, wsID, memberID, "每日同步", cleanClauseText)
+	submitDraft(t, wsID, memberID, id)
+	if code, body := ownerApprove(t, ownerID, wsID, id); code != http.StatusOK {
+		t.Fatalf("approve (disabled): expected 200, got %d, %s", code, body)
+	}
+	if got := proposalStatus(t, wsID, id); got != "enacted" {
+		t.Fatalf("disabled advisory changed enactment status: %s", got)
+	}
+
+	row := jevAdvisoryRow(t, wsID, id)
+	if row == nil ||
+		!strings.Contains(advCompact(row), `"stage":"gate"`) ||
+		!strings.Contains(advCompact(row), `"available":false`) ||
+		!strings.Contains(advCompact(row), `"skipped_reason":"disabled"`) {
+		t.Fatalf("disabled approve must persist a gate-stage advisory: %s", advStr(row))
+	}
+}
+
 // TestLegislationAdvisoryUnreachableDegrades: a dead service must not fail
 // submit or approve — the report records the skip reason and both flows
 // complete exactly as they would with the layer off.
@@ -308,6 +333,12 @@ func TestLegislationAdvisoryUnreachableDegrades(t *testing.T) {
 	}
 	if got := proposalStatus(t, wsID, id); got != "enacted" {
 		t.Fatalf("advisory outage blocked the enact: status = %s", got)
+	}
+	if row := jevAdvisoryRow(t, wsID, id); row == nil ||
+		!strings.Contains(advCompact(row), `"stage":"gate"`) ||
+		!strings.Contains(advCompact(row), `"available":false`) ||
+		!strings.Contains(advCompact(row), `"skipped_reason":"unreachable"`) {
+		t.Fatalf("unreachable approve must persist a gate-stage advisory: %s", advStr(row))
 	}
 }
 
