@@ -196,13 +196,10 @@ func (c *AdvisoryClient) Enabled() bool {
 	return c != nil && strings.TrimSpace(c.BaseURL) != ""
 }
 
-// JSON marshals the report for the jev_advisory column. It returns nil when
-// the layer is disabled, so the column stays NULL (未检/关态) rather than
-// carrying a placeholder report.
+// JSON marshals the report for the jev_advisory column. Disabled and
+// unavailable reports are retained so owner-visible reads can distinguish an
+// explicit skip from a legacy row that was never checked.
 func (r AdvisoryReport) JSON() []byte {
-	if !r.Available && r.SkippedReason == "disabled" {
-		return nil
-	}
 	b, err := json.Marshal(r)
 	if err != nil {
 		return nil

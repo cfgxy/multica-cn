@@ -225,7 +225,12 @@ it("renders JEV provenance and classifies unavailable advisory states", async ()
     ];
     const view = mount();
     await waitFor(() => expect(screen.getByTestId("legislation-jev-advisory-unavailable")).toBeTruthy());
-    expect(screen.getByTestId("legislation-jev-advisory-unavailable").textContent).toContain(expected);
+    const advisory = screen.getByTestId("legislation-jev-advisory-unavailable");
+    expect(advisory.textContent).toContain(expected);
+    if (skipped_reason.startsWith("unreachable:")) {
+      expect(advisory.textContent).not.toContain("connection refused");
+      expect(advisory.textContent).not.toContain("reason=");
+    }
     view.unmount();
   }
 });
@@ -564,7 +569,7 @@ it("renders — for legacy rows without the decision-context fields", async () =
   }
 });
 
-it("renders the stored JEV model, check time, and safe failure reason", async () => {
+it("renders the stored JEV model and check time without legacy transport details", async () => {
   state.proposals = [proposal({
     jev_advisory: {
       stage: "submit",
@@ -572,7 +577,7 @@ it("renders the stored JEV model, check time, and safe failure reason", async ()
       model: "jev-local",
       warn: false,
       input_sha256: "a".repeat(64),
-      skipped_reason: "unreachable",
+      skipped_reason: "unreachable: dial tcp 127.0.0.1:8321: connection refused",
       checked_at: "2026-11-05T12:00:00Z",
     },
   })];
@@ -581,6 +586,8 @@ it("renders the stored JEV model, check time, and safe failure reason", async ()
 
   const advisory = await screen.findByTestId("legislation-jev-advisory-unavailable");
   expect(advisory.textContent).toContain("model=jev-local");
-  expect(advisory.textContent).toContain("reason=unreachable");
+  expect(advisory.textContent).toContain("configured but unreachable");
+  expect(advisory.textContent).not.toContain("127.0.0.1:8321");
+  expect(advisory.textContent).not.toContain("connection refused");
   expect(advisory.textContent).toContain("checked");
 });
