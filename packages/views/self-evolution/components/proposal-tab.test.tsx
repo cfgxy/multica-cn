@@ -180,6 +180,56 @@ function retroRun(overrides: Partial<RetrospectiveRun> = {}): RetrospectiveRun {
   };
 }
 
+it("renders JEV provenance and classifies unavailable advisory states", async () => {
+  state.role = "member";
+  state.proposals = [
+    proposal({
+      jev_advisory: {
+        stage: "gate",
+        available: true,
+        engine: "stub-engine",
+        p_failure: 0.8,
+        threshold: 0.3,
+        threshold_source: "calibrated",
+        warn: true,
+        decision: "warn",
+        input_sha256: "a".repeat(64),
+        checked_at: "2026-11-17T00:00:00Z",
+      },
+    }),
+  ];
+  const first = mount();
+  await waitFor(() => expect(screen.getByTestId("legislation-jev-advisory")).toBeTruthy());
+  expect(screen.getByTestId("legislation-jev-advisory").textContent).toContain(
+    "threshold source=calibrated",
+  );
+  first.unmount();
+
+  const unavailableCases = [
+    ["disabled", "not configured or disabled"],
+    ["unreachable: connection refused", "configured but unreachable"],
+    ["empty_input", "not judged: empty input"],
+  ] as const;
+  for (const [skipped_reason, expected] of unavailableCases) {
+    state.proposals = [
+      proposal({
+        jev_advisory: {
+          stage: "submit",
+          available: false,
+          warn: false,
+          input_sha256: "b".repeat(64),
+          skipped_reason,
+          checked_at: "2026-11-17T00:00:00Z",
+        },
+      }),
+    ];
+    const view = mount();
+    await waitFor(() => expect(screen.getByTestId("legislation-jev-advisory-unavailable")).toBeTruthy());
+    expect(screen.getByTestId("legislation-jev-advisory-unavailable").textContent).toContain(expected);
+    view.unmount();
+  }
+});
+
 it("moves the lifecycle controls with the selected row's status", async () => {
   state.role = "owner";
   state.proposals = [proposal({ id: "prop-a", status: "pending_owner" })];
