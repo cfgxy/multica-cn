@@ -98,7 +98,12 @@ func rawString(fields map[string]json.RawMessage, key string) string {
 func compactSummarySource(fields map[string]json.RawMessage) string {
 	for _, key := range []string{"summarySource", "summary_source", "source"} {
 		if value := rawString(fields, key); value != "" {
-			return value
+			switch value {
+			case "native":
+				return value
+			default:
+				return "unknown"
+			}
 		}
 	}
 	return "transcript"

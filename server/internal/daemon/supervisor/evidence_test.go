@@ -133,6 +133,40 @@ func TestWorkerEvidenceUsesOwnedManifestAndOpaqueBoundedCursor(t *testing.T) {
 	}
 }
 
+func TestWorkerEvidenceTailBytesContract(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const task = "88888888-8888-4888-8888-888888888888"
+	run := task + "-1"
+	if err := os.MkdirAll(mgr.Dir(run), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	payload := strings.Repeat("x", 70000)
+	for _, path := range []string{stdoutLogPath(mgr.Dir(run)), stderrLogPath(mgr.Dir(run))} {
+		if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mgr.WriteManifest(&Manifest{RunID: run, TaskID: task, DaemonID: "daemon-a", State: StateExited}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Supervisor{mgr: mgr, daemonID: "daemon-a", evidenceCursorKey: [32]byte{1}}
+	for _, n := range []int{4096, 4097, 16384, 65536} {
+		got := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: task, Stream: "both", TailBytes: n})
+		if !got.Available || got.StdoutTail != payload[len(payload)-n:] || got.StderrTail != payload[len(payload)-n:] {
+			t.Fatalf("tail %d: available=%v stdout=%d stderr=%d", n, got.Available, len(got.StdoutTail), len(got.StderrTail))
+		}
+	}
+	for _, n := range []int{0, -1, 65537} {
+		got := s.WorkerEvidence(context.Background(), protocol.WorkerEvidenceRequest{RunID: task, Stream: "stdout", TailBytes: n})
+		if got.Available {
+			t.Fatalf("accepted invalid tail %d", n)
+		}
+	}
+}
+
 func TestWorkerEvidenceRejectsCursorFromStaleManifestGeneration(t *testing.T) {
 	mgr, err := NewManager(t.TempDir())
 	if err != nil {

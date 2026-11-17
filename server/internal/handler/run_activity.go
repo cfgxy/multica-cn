@@ -118,14 +118,10 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "stream must be stdout, stderr, or both")
 		return
 	}
-	tailBytes := 4096
-	if raw := r.URL.Query().Get("tail_bytes"); raw != "" {
-		n, parseErr := strconv.Atoi(raw)
-		if parseErr != nil || n < 1 || n > 4096 {
-			writeError(w, http.StatusBadRequest, "tail_bytes must be an integer in [1,4096]")
-			return
-		}
-		tailBytes = n
+	tailBytes, err := parseRunActivityTailBytes(r.URL.Query().Get("tail_bytes"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	workerCursor := r.URL.Query().Get("worker_cursor")
 	if workerCursor != "" {
@@ -236,6 +232,9 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if len(resp.SemanticActivity.Messages) == 0 {
+			if trimRunActivityWorkerEvidence(&resp) {
+				continue
+			}
 			writeError(w, http.StatusInternalServerError, "run activity response exceeds limit")
 			return
 		}
@@ -273,6 +272,24 @@ func applyWorkerEvidenceProgress(resp *runActivityResponse, hadCursor bool, stdo
 	resp.ProgressAssessment.Basis = append(resp.ProgressAssessment.Basis, "worker_evidence_delta")
 }
 
+func trimRunActivityWorkerEvidence(resp *runActivityResponse) bool {
+	if resp == nil {
+		return false
+	}
+	tails := []*string{resp.WorkerEvidence.StdoutTail, resp.WorkerEvidence.StderrTail}
+	var selected *string
+	for _, tail := range tails {
+		if tail != nil && len(*tail) > 0 && (selected == nil || len(*tail) > len(*selected)) {
+			selected = tail
+		}
+	}
+	if selected == nil {
+		return false
+	}
+	*selected = truncateUTF8(*selected, len(*selected)/2)
+	return true
+}
+
 func validWorkerEvidenceBinding(binding protocol.WorkerBindingEvidence, taskID, runtimeID string) bool {
 	if binding.RunID == "" || binding.TaskID != taskID || binding.RuntimeID != runtimeID || binding.DaemonID == "" || binding.Generation < 1 {
 		return false
@@ -305,6 +322,17 @@ func parseRunActivityAfterSeq(raw string) (int32, bool, error) {
 		return 0, false, fmt.Errorf("after_seq must be a non-negative 32-bit integer")
 	}
 	return int32(n), true, nil
+}
+
+func parseRunActivityTailBytes(raw string) (int, error) {
+	if raw == "" {
+		return 16384, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > 65536 {
+		return 0, fmt.Errorf("tail_bytes must be an integer in [1,65536]")
+	}
+	return n, nil
 }
 
 func parseRunActivityLimit(raw string) (int, error) {
