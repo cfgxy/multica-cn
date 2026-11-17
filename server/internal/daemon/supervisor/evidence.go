@@ -17,7 +17,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-const maxWorkerEvidenceTailBytes = 4096
+const maxWorkerEvidenceTailBytes = 65536
 
 type evidenceCursor struct {
 	Daemon     string    `json:"d"`
