@@ -52,8 +52,8 @@ func TestAdvisoryAssessWarnSemantics(t *testing.T) {
 	if !rep.Available || !rep.Warn {
 		t.Fatalf("expected available warn report, got %+v", rep)
 	}
-	if rep.PFailure != 0.62 || rep.Threshold != 0.3 || rep.Engine != "kev_local" {
-		t.Fatalf("probability fields not passed through: %+v", rep)
+	if rep.PFailure != 0.62 || rep.Threshold != 0.3 || rep.Engine != "kev_local" || rep.ThresholdSource != "default" {
+		t.Fatalf("probability/config fields not passed through: %+v", rep)
 	}
 	if rep.Stage != "submit" || rep.Decision != "warn" {
 		t.Fatalf("stage/decision mismatch: %+v", rep)
@@ -115,6 +115,17 @@ func TestAdvisoryAssessDisabled(t *testing.T) {
 	}
 	if rep.Stage != "gate" || len(rep.InputSHA256) != 64 || rep.CheckedAt == "" {
 		t.Fatalf("degraded report must still carry stage/sha/checked_at: %+v", rep)
+	}
+	encoded := rep.JSON()
+	if encoded == nil {
+		t.Fatal("disabled report must be serialized so it is distinguishable from a never-called row")
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(encoded, &stored); err != nil {
+		t.Fatalf("decode disabled report JSON: %v", err)
+	}
+	if stored["available"] != false || stored["skipped_reason"] != "disabled" {
+		t.Fatalf("serialized disabled report = %s, want available=false and skipped_reason=disabled", encoded)
 	}
 
 	// nil 客户端同样降级（不 panic）。

@@ -126,14 +126,15 @@ func TestLegislationAdvisorySubmitPrecheck(t *testing.T) {
 	wantSHA := hex.EncodeToString(sum[:])
 	var resp struct {
 		JevAdvisory *struct {
-			Stage       string  `json:"stage"`
-			Available   bool    `json:"available"`
-			Engine      string  `json:"engine"`
-			PFailure    float64 `json:"p_failure"`
-			Threshold   float64 `json:"threshold"`
-			Warn        bool    `json:"warn"`
-			InputSHA256 string  `json:"input_sha256"`
-			CheckedAt   string  `json:"checked_at"`
+			Stage           string  `json:"stage"`
+			Available       bool    `json:"available"`
+			Engine          string  `json:"engine"`
+			PFailure        float64 `json:"p_failure"`
+			Threshold       float64 `json:"threshold"`
+			ThresholdSource string  `json:"threshold_source"`
+			Warn            bool    `json:"warn"`
+			InputSHA256     string  `json:"input_sha256"`
+			CheckedAt       string  `json:"checked_at"`
 		} `json:"jev_advisory"`
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
@@ -146,15 +147,15 @@ func TestLegislationAdvisorySubmitPrecheck(t *testing.T) {
 	if adv.Stage != "submit" || !adv.Available || adv.Engine != "stub-engine" {
 		t.Fatalf("advisory stage/available/engine = %s/%v/%s", adv.Stage, adv.Available, adv.Engine)
 	}
-	if adv.PFailure != 0.8 || adv.Threshold != 0.3 || !adv.Warn {
-		t.Fatalf("advisory verdict = p_failure %v threshold %v warn %v, want 0.8/0.3/true", adv.PFailure, adv.Threshold, adv.Warn)
+	if adv.PFailure != 0.8 || adv.Threshold != 0.3 || adv.ThresholdSource != "default" || !adv.Warn {
+		t.Fatalf("advisory verdict = p_failure %v threshold %v threshold_source %q warn %v, want 0.8/0.3/default/true", adv.PFailure, adv.Threshold, adv.ThresholdSource, adv.Warn)
 	}
 	if adv.InputSHA256 != wantSHA || adv.CheckedAt == "" {
 		t.Fatalf("advisory provenance: sha %q checked_at %q", adv.InputSHA256, adv.CheckedAt)
 	}
 
 	row := jevAdvisoryRow(t, wsID, id)
-	if row == nil || !strings.Contains(advCompact(row), `"stage":"submit"`) || !strings.Contains(advCompact(row), `"warn":true`) {
+	if row == nil || !strings.Contains(advCompact(row), `"stage":"submit"`) || !strings.Contains(advCompact(row), `"threshold_source":"default"`) || !strings.Contains(advCompact(row), `"warn":true`) {
 		t.Fatalf("row jev_advisory not persisted with the submit report: %s", advStr(row))
 	}
 }
@@ -226,8 +227,9 @@ func TestLegislationAdvisoryGateWarnOnly(t *testing.T) {
 }
 
 // TestLegislationAdvisoryDisabledKeepsGateIdentical: with the layer switched
-// off (empty BaseURL) the advisory column stays NULL and the E1–E4 verdicts
-// are byte-identical to the enabled run over the same weak clause.
+// off (empty BaseURL) the advisory column records the explicit disabled state
+// and the E1–E4 verdicts are byte-identical to the enabled run over the same
+// weak clause.
 func TestLegislationAdvisoryDisabledKeepsGateIdentical(t *testing.T) {
 	wsOn, ownerOn, memberOn := legislationFixture(t)
 	wsOff, ownerOff, memberOff := legislationFixture(t)
@@ -249,8 +251,11 @@ func TestLegislationAdvisoryDisabledKeepsGateIdentical(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("submit (disabled): expected 200, got %d: %s", code, body)
 	}
-	if row := jevAdvisoryRow(t, wsOff, idOff); row != nil {
-		t.Fatalf("disabled layer wrote jev_advisory: %s", advStr(row))
+	if row := jevAdvisoryRow(t, wsOff, idOff); row == nil ||
+		!strings.Contains(advCompact(row), `"stage":"submit"`) ||
+		!strings.Contains(advCompact(row), `"available":false`) ||
+		!strings.Contains(advCompact(row), `"skipped_reason":"disabled"`) {
+		t.Fatalf("disabled submit must persist an explicit advisory state: %s", advStr(row))
 	}
 	if code, body := ownerApprove(t, ownerOff, wsOff, idOff); code != http.StatusConflict {
 		t.Fatalf("approve (disabled): expected 409 gate_failed, got %d: %s", code, body)
@@ -263,10 +268,42 @@ func TestLegislationAdvisoryDisabledKeepsGateIdentical(t *testing.T) {
 	if errsOn == "" || errsOn != errsOff {
 		t.Fatalf("E1–E4 verdict differs between enabled and disabled runs:\n enabled:  %s\n disabled: %s", errsOn, errsOff)
 	}
-	// The enabled row's last verdict is the gate-stage report; the disabled
-	// row keeps NULL — the switch semantics from the dispatch card.
+	// The enabled row's last verdict is the gate-stage report; the disabled row
+	// keeps the gate-stage disabled report so it remains distinguishable from a
+	// legacy row that was never checked.
 	if row := jevAdvisoryRow(t, wsOn, idOn); row == nil || !strings.Contains(advCompact(row), `"stage":"gate"`) {
 		t.Fatalf("enabled run lost its gate-stage advisory: %s", advStr(row))
+	}
+	if row := jevAdvisoryRow(t, wsOff, idOff); row == nil ||
+		!strings.Contains(advCompact(row), `"stage":"gate"`) ||
+		!strings.Contains(advCompact(row), `"available":false`) ||
+		!strings.Contains(advCompact(row), `"skipped_reason":"disabled"`) {
+		t.Fatalf("disabled gate must persist an explicit advisory state: %s", advStr(row))
+	}
+}
+
+// TestLegislationAdvisoryDisabledOwnerApprovePersistsGateStage exercises the
+// successful ownerApprove path directly: disabled JEV must overwrite the
+// submit-stage report with an explicit gate-stage report before enactment.
+func TestLegislationAdvisoryDisabledOwnerApprovePersistsGateStage(t *testing.T) {
+	wsID, ownerID, memberID := legislationFixture(t)
+	withJevAdvisory(t, &legislation.AdvisoryClient{})
+
+	id := createDraft(t, wsID, memberID, "每日同步", cleanClauseText)
+	submitDraft(t, wsID, memberID, id)
+	if code, body := ownerApprove(t, ownerID, wsID, id); code != http.StatusOK {
+		t.Fatalf("approve (disabled): expected 200, got %d, %s", code, body)
+	}
+	if got := proposalStatus(t, wsID, id); got != "enacted" {
+		t.Fatalf("disabled advisory changed enactment status: %s", got)
+	}
+
+	row := jevAdvisoryRow(t, wsID, id)
+	if row == nil ||
+		!strings.Contains(advCompact(row), `"stage":"gate"`) ||
+		!strings.Contains(advCompact(row), `"available":false`) ||
+		!strings.Contains(advCompact(row), `"skipped_reason":"disabled"`) {
+		t.Fatalf("disabled approve must persist a gate-stage advisory: %s", advStr(row))
 	}
 }
 
@@ -296,6 +333,12 @@ func TestLegislationAdvisoryUnreachableDegrades(t *testing.T) {
 	}
 	if got := proposalStatus(t, wsID, id); got != "enacted" {
 		t.Fatalf("advisory outage blocked the enact: status = %s", got)
+	}
+	if row := jevAdvisoryRow(t, wsID, id); row == nil ||
+		!strings.Contains(advCompact(row), `"stage":"gate"`) ||
+		!strings.Contains(advCompact(row), `"available":false`) ||
+		!strings.Contains(advCompact(row), `"skipped_reason":"unreachable"`) {
+		t.Fatalf("unreachable approve must persist a gate-stage advisory: %s", advStr(row))
 	}
 }
 
