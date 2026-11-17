@@ -61,17 +61,18 @@ type jevJudgeResponse struct {
 // Only the probability verdict and a digest of the input are stored — never
 // the judged text itself.
 type AdvisoryReport struct {
-	Stage         string  `json:"stage"` // "submit" | "gate"
-	Available     bool    `json:"available"`
-	Engine        string  `json:"engine,omitempty"`
-	Model         string  `json:"model,omitempty"`
-	PFailure      float64 `json:"p_failure,omitempty"`
-	Threshold     float64 `json:"threshold,omitempty"`
-	Warn          bool    `json:"warn"`
-	Decision      string  `json:"decision,omitempty"`
-	InputSHA256   string  `json:"input_sha256"`
-	SkippedReason string  `json:"skipped_reason,omitempty"`
-	CheckedAt     string  `json:"checked_at"`
+	Stage           string  `json:"stage"` // "submit" | "gate"
+	Available       bool    `json:"available"`
+	Engine          string  `json:"engine,omitempty"`
+	Model           string  `json:"model,omitempty"`
+	PFailure        float64 `json:"p_failure,omitempty"`
+	Threshold       float64 `json:"threshold,omitempty"`
+	ThresholdSource string  `json:"threshold_source,omitempty"`
+	Warn            bool    `json:"warn"`
+	Decision        string  `json:"decision,omitempty"`
+	InputSHA256     string  `json:"input_sha256"`
+	SkippedReason   string  `json:"skipped_reason,omitempty"`
+	CheckedAt       string  `json:"checked_at"`
 }
 
 // Judge posts one text to the service and returns the raw verdict.
@@ -149,6 +150,7 @@ func (c *AdvisoryClient) Assess(ctx context.Context, stage, text string) Advisor
 	rep.Engine = out.Engine
 	rep.PFailure = out.PFailure
 	rep.Threshold = out.Threshold
+	rep.ThresholdSource = out.ThresholdSource
 	rep.Warn = out.Warn
 	rep.Decision = out.Decision
 	return rep
