@@ -573,7 +573,32 @@ export function ProposalTab({ wsId }: { wsId: string }) {
               {(() => {
                 const jev = selected.jev_advisory;
                 if (!jev) return null;
-                return jev.available ? (
+                if (!jev.available) {
+                  const reason = jev.skipped_reason;
+                  const status =
+                    reason === "disabled"
+                      ? t(($) => $.legislation.jevDisabled)
+                      : reason === "empty_input"
+                        ? t(($) => $.legislation.jevEmptyInput)
+                          : reason === "unreachable" || reason?.startsWith("unreachable:")
+                          ? t(($) => $.legislation.jevUnreachable)
+                          : t(($) => $.legislation.jevUnavailable);
+                  return (
+                    <div
+                      className="text-muted-foreground text-caption"
+                      data-testid="legislation-jev-advisory-unavailable"
+                    >
+                      {t(($) => $.legislation.jevAdvisoryLabel)}: {status}
+                      {jev.model ? ` · ${t(($) => $.legislation.jevModel, { model: jev.model })}` : ""}
+                      {jev.checked_at
+                        ? ` · ${t(($) => $.legislation.jevCheckedAt, {
+                            date: new Date(jev.checked_at).toLocaleString(),
+                          })}`
+                        : ""}
+                    </div>
+                  );
+                }
+                return (
                   <div
                     className={
                       jev.warn
@@ -591,6 +616,9 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                     {jev.threshold != null
                       ? ` / ${t(($) => $.legislation.jevThreshold)}=${jev.threshold.toFixed(3)}`
                       : ""}
+                    {jev.threshold_source
+                      ? ` / ${t(($) => $.legislation.jevThresholdSource)}=${jev.threshold_source}`
+                      : ""}
                     {jev.warn ? ` · ${t(($) => $.legislation.jevWarnFlag)}` : ""}
                     {jev.checked_at
                       ? ` · ${t(($) => $.legislation.jevCheckedAt, {
@@ -600,22 +628,6 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                     <div className="text-muted-foreground text-caption">
                       {t(($) => $.legislation.jevDisclaimer)}
                     </div>
-                  </div>
-                ) : (
-                  <div
-                    className="text-muted-foreground text-caption"
-                    data-testid="legislation-jev-advisory-unavailable"
-                  >
-                    {t(($) => $.legislation.jevAdvisoryLabel)}: {t(($) => $.legislation.jevUnavailable)}
-                    {jev.model ? ` · ${t(($) => $.legislation.jevModel, { model: jev.model })}` : ""}
-                    {jev.skipped_reason
-                      ? ` · ${t(($) => $.legislation.jevFailureReason, { reason: jev.skipped_reason })}`
-                      : ""}
-                    {jev.checked_at
-                      ? ` · ${t(($) => $.legislation.jevCheckedAt, {
-                          date: new Date(jev.checked_at).toLocaleString(),
-                        })}`
-                      : ""}
                   </div>
                 );
               })()}

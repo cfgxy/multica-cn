@@ -59,6 +59,7 @@ export interface PromptJevAdvisory {
   model?: string;
   p_failure?: number;
   threshold?: number;
+  threshold_source?: string;
   warn: boolean;
   decision?: string;
   input_sha256: string;

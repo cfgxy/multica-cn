@@ -5248,6 +5248,20 @@ export const PromptProposalMergeRefSchema = z.object({
   run_id: z.string(),
 });
 
+export const PromptJevAdvisorySchema = z.object({
+  stage: z.enum(["submit", "gate"]),
+  available: z.boolean(),
+  engine: z.string().optional(),
+  p_failure: z.number().optional(),
+  threshold: z.number().optional(),
+  threshold_source: z.string().optional(),
+  warn: z.boolean(),
+  decision: z.string().optional(),
+  input_sha256: z.string(),
+  skipped_reason: z.string().optional(),
+  checked_at: z.string(),
+}).loose();
+
 export const PromptProposalSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
@@ -5271,6 +5285,7 @@ export const PromptProposalSchema = z.object({
   status: z.string(),
   gate_errors: z.array(LegislationGateFindingSchema),
   gate_warnings: z.array(LegislationGateFindingSchema),
+  jev_advisory: PromptJevAdvisorySchema.nullable().optional(),
   enacted_version: z.number().optional(),
   rollback_of_version: z.number().optional(),
   rollback_reason: z.string(),
