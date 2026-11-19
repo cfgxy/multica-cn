@@ -66,21 +66,17 @@ describe("withAlphaColor", () => {
   });
 });
 
-describe("plus-panel accent tile background (RUYI-741)", () => {
+describe("plus-panel fixed-grid color contract", () => {
   const source = fs.readFileSync(
     path.join(MOBILE_ROOT, "components/chat/plus-panel.tsx"),
     "utf8",
   );
 
-  it("no longer concatenates a hex-alpha suffix onto a theme token", () => {
+  it("does not concatenate a hex-alpha suffix onto a theme token", () => {
     expect(source).not.toMatch(/\+\s*"1A"/);
   });
 
-  it("builds the big-tile background via withAlphaColor(theme.brand, 0.1)", () => {
-    expect(source).toMatch(/withAlphaColor\(theme\.brand,\s*0\.1\)/);
-  });
-
-  it("renders the big-tile icon in the brand color", () => {
-    expect(source).toMatch(/color=\{theme\.brand\}/);
+  it("uses the foreground contrast token for fixed-grid icons", () => {
+    expect(source).toMatch(/<Ionicons name=\{icon\} size=\{22\} color=\{theme\.foreground\}/);
   });
 });

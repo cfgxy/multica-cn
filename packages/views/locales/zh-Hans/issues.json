@@ -1231,6 +1231,7 @@
     "answer_failed": "提交答案失败",
     "cancel_failed": "取消卡片失败",
     "filter_all": "全部",
+    "filter_label": "筛选决策卡",
     "filter_empty": "暂无匹配的决策卡",
     "restore_card": "恢复决策卡",
     "restore_failed": "恢复决策卡失败",
