@@ -819,7 +819,7 @@ func TestVCSWebhook_UnknownConnection(t *testing.T) {
 	}
 }
 
-func TestListPullRequestsForIssueSkipsUnavailableVCS(t *testing.T) {
+func TestListPullRequestsForIssueHandlesEnabledAndUnavailableVCS(t *testing.T) {
 	ctx := context.Background()
 	box := withVCSBox(t)
 	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forgejo-list-disabled.test")
@@ -846,6 +846,19 @@ func TestListPullRequestsForIssueSkipsUnavailableVCS(t *testing.T) {
 	}, raw))
 	if webhook.Code != http.StatusAccepted {
 		t.Fatalf("seed VCS pull request: status %d (%s)", webhook.Code, webhook.Body.String())
+	}
+
+	// A self-hosted deployment keeps the integration enabled and must read the
+	// VCS association without turning a storage failure into this route's 500.
+	enabledReq := withURLParam(httptest.NewRequest(http.MethodGet, "/api/issues/"+issue.ID+"/pull-requests", nil), "id", issue.ID)
+	enabledReq.Header.Set("X-User-ID", testUserID)
+	enabledReq.Header.Set("X-Workspace-ID", testWorkspaceID)
+	var enabledResponse struct {
+		PullRequests []GitHubPullRequestResponse `json:"pull_requests"`
+	}
+	testutil.Call(t, testHandler.ListPullRequestsForIssue, enabledReq).Want(http.StatusOK).JSON(&enabledResponse)
+	if len(enabledResponse.PullRequests) != 1 {
+		t.Fatalf("enabled VCS integration returned %d pull requests, want 1", len(enabledResponse.PullRequests))
 	}
 
 	// The managed-cloud deployment disables this integration. Its regular PR
