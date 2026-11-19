@@ -78,7 +78,10 @@ export default function IssuePullRequestsRoute() {
       ) : error ? (
         <View className="flex-1 items-center justify-center gap-3 px-6">
           <Text className="text-center text-sm text-destructive">
-            {error instanceof Error ? error.message : String(error)}
+            {t(
+              "detail.pull_requests_load_failed",
+              "Couldn't load pull requests.",
+            )}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
             <Text>{t("mobile.detail.retry", "Retry")}</Text>

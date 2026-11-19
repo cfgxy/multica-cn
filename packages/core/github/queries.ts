@@ -41,6 +41,13 @@ export const issuePullRequestsOptions = (issueId: string) =>
     queryKey: githubKeys.pullRequests(issueId),
     queryFn: () => api.listIssuePullRequests(issueId),
     enabled: !!issueId,
+    // A failed PR endpoint used to inherit the global retry and remount
+    // behaviour. The issue detail has several consumers of this key, so a
+    // persistent API failure could repeatedly remount and re-request it.
+    // Keep the failure stable until the user explicitly retries.
+    retry: false,
+    retryOnMount: false,
+    refetchOnMount: (query) => query.state.status !== "error",
   });
 
 /**
