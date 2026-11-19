@@ -92,7 +92,8 @@ describe("decision entries", () => {
   // the important breakpoint-scoped width clamped to the viewport gutters —
   // on the timeline entry that owns it.
   it("reads the card at the issue body column width, not the base 384px dialog", async () => {
-    renderWithI18n(<DecisionTimelineRow decision={decision("d-1", "open")} />);
+    const d1 = decision("d-1", "open");
+    renderWithI18n(<DecisionTimelineRow decision={d1} decisions={[d1]} />);
     fireEvent.click(screen.getByTestId("decision-summary-d-1"));
     const content = (await screen.findByTestId("decision-card-detail"))
       .closest('[data-slot="dialog-content"]');
