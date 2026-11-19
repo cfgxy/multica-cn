@@ -1231,6 +1231,7 @@
     "answer_failed": "답변 제출 실패",
     "cancel_failed": "카드 취소 실패",
     "filter_all": "전체",
+    "filter_label": "의사결정 카드 필터",
     "filter_empty": "조건에 맞는 결정 카드가 없습니다",
     "restore_card": "결정 카드 복원",
     "restore_failed": "카드 복원 실패",
