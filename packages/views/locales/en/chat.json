@@ -387,6 +387,8 @@
       "mention": "Mention",
       "skill": "Skill",
       "quick_replies": "Quick replies",
+      "model": "Model",
+      "model_unavailable": "Model unavailable",
       "close": "Close"
     }
   }

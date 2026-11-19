@@ -813,7 +813,7 @@ function UsagePane(props: UsagePaneProps) {
       props.totals.modelCallUnknownCount > 0 ? (
         <View className="mt-3 flex-row gap-3">
           <KpiCard
-            label={t("kpi.calls_label", "Calls · {{days}}D", { days: props.windowLen })}
+            label={t("kpi.calls_label", "Model calls · {{days}}D", { days: props.windowLen })}
             value={
               props.totals.modelCallEvidenceAvailable
                 ? formatModelCallKpiValue(
@@ -829,7 +829,7 @@ function UsagePane(props: UsagePaneProps) {
                     "This server does not report model call evidence for the selected period.",
                   )
                 : props.totals.modelCallUnknownCount > 0
-                  ? t("kpi.calls_unknown_hint", "{{unknown}} rows unreported", {
+                  ? t("kpi.calls_unknown_hint", "{{unknown}} usage rows have an unknown model call count; excluded from the known total.", {
                       unknown: props.totals.modelCallUnknownCount,
                     })
                   : undefined

@@ -383,6 +383,8 @@
       "mention": "멘션",
       "skill": "스킬",
       "quick_replies": "빠른 답변",
+      "model": "모델",
+      "model_unavailable": "모델을 사용할 수 없음",
       "close": "닫기"
     }
   }

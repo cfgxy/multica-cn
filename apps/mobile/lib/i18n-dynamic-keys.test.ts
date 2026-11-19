@@ -469,6 +469,12 @@ const PREFIX_VALUES: Record<string, string[]> = {
   // RUYI-690: 挂起中心状态筛选 pill 按四窗口枚举拼接（同 web
   // SuspensionCenterPage 的 STATUS_FILTERS）。
   "suspensions:filter": ["active", "resumed", "cancelled", "all"],
+  "issues:decisions": [
+    "filter_all",
+    "status_open",
+    "status_answered",
+    "status_cancelled",
+  ],
   // RUYI-630: 授权请求行状态 pill 按请求状态枚举拼接（组件内
   // STATUS_LABEL_KEYS，七个状态与 core 的 DecisionRequestStatus 一致）。
   "decisions:requests": [

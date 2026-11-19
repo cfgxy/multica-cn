@@ -383,6 +383,8 @@
       "mention": "メンション",
       "skill": "スキル",
       "quick_replies": "クイック返信",
+      "model": "モデル",
+      "model_unavailable": "モデルを利用できません",
       "close": "閉じる"
     }
   }

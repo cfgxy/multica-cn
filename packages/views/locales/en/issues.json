@@ -1272,6 +1272,7 @@
     "answer_failed": "Failed to submit answer",
     "cancel_failed": "Failed to cancel card",
     "filter_all": "All",
+    "filter_label": "Filter decision cards",
     "filter_empty": "No matching decision cards",
     "restore_card": "Restore decision card",
     "restore_failed": "Failed to restore card",
