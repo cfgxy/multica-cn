@@ -278,8 +278,8 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
             <Text className="text-xs text-brand">{t("requests.review_prompt_content", "Review approved prompt")}</Text>
           </Pressable>
           {promptHash ? <Text selectable className="text-xs text-muted-foreground">{promptHash}</Text> : null}
-          {showPrompt && detail.isPending ? <Text accessibilityLiveRegion="polite" className="text-xs text-muted-foreground">{t("requests.script_details_loading", "Loading prompt snapshot")}</Text> : null}
-          {showPrompt && detail.isError ? <Text accessibilityRole="alert" className="text-xs text-destructive">{t("requests.script_details_error", "Unable to load the prompt snapshot")}</Text> : null}
+          {showPrompt && detail.isPending ? <Text accessibilityLiveRegion="polite" className="text-xs text-muted-foreground">{t("requests.prompt_details_loading", "Loading prompt snapshot")}</Text> : null}
+          {showPrompt && detail.isError ? <Text accessibilityRole="alert" className="text-xs text-destructive">{t("requests.prompt_details_error", "Unable to load the prompt snapshot")}</Text> : null}
           {showPrompt && promptContent !== null ? <Text selectable className="rounded border border-border p-2 text-xs">{promptContent}</Text> : null}
         </View>
       ) : null}
@@ -355,31 +355,31 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
             onPress={() => setShowSteps((value) => !value)}
             accessibilityRole="button"
             accessibilityState={{ expanded: showSteps }}
-            accessibilityLabel={t("requests.steps_title", "Approval timeline")}
+            accessibilityLabel={t("requests.steps_title", "Per-workspace steps")}
             testID="decision-request-steps-toggle"
           >
             <Text className="text-xs text-muted-foreground">
-              {showSteps ? "⌄ " : "› "}{t("requests.steps_title", "Approval timeline")}
+              {showSteps ? "⌄ " : "› "}{t("requests.steps_title", "Per-workspace steps")}
             </Text>
           </Pressable>
           {showSteps ? (
             <View className="mt-1 border-l border-border pl-3" accessibilityRole="list">
               {detail.isPending ? (
                 <Text accessibilityRole="text" accessibilityLiveRegion="polite" className="text-xs text-muted-foreground">
-                  {t("requests.steps_loading", "Loading approval steps")}
+                  {t("requests.steps_loading", "Loading steps")}
                 </Text>
               ) : null}
               {detail.isError ? (
                 <Text accessibilityRole="alert" className="text-xs text-destructive">
-                  {t("requests.detail_error", "Unable to load approval steps")}
+                  {t("requests.detail_error", "Failed to load step details")}
                 </Text>
               ) : null}
               {(detail.data?.steps ?? []).map((step) => (
                 <View key={step.id} className="flex-row flex-wrap gap-x-2 py-0.5" accessibilityLabel={`${step.role} ${step.status}`} testID="decision-request-step">
                   <Text className="text-xs font-medium">
                     {step.role === "target"
-                      ? t("requests.step_target", "Target space")
-                      : t("requests.step_origin", "Origin space")}
+                      ? t("requests.step_target", "Target")
+                      : t("requests.step_origin", "Origin")}
                   </Text>
                   <Text className="text-xs text-muted-foreground">
                     {t(`requests.${STATUS_LABEL_KEYS[step.status]}`, String(step.status))}
@@ -396,7 +396,9 @@ export function DecisionRequestRow({ request }: { request: DecisionRequest }) {
 
       {request.status === "execute_failed" && request.execution_error ? (
         <Text className="mt-1 text-xs text-destructive" numberOfLines={2}>
-          {t("requests.executed_failed", "Execution failed; it was not retried")}
+          {t("requests.executed_failed", "Execution failed: {{reason}}", {
+            reason: request.execution_error,
+          })}
         </Text>
       ) : null}
       {receipt?.side_effect_status === "unknown" ? (

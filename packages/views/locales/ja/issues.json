@@ -1231,6 +1231,7 @@
     "answer_failed": "回答の送信に失敗しました",
     "cancel_failed": "カードのキャンセルに失敗しました",
     "filter_all": "すべて",
+    "filter_label": "意思決定カードを絞り込む",
     "filter_empty": "該当する意思決定カードはありません",
     "restore_card": "決定カードを復元",
     "restore_failed": "カードの復元に失敗しました",

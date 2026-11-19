@@ -69,7 +69,7 @@ describe("enriched-markdown 原生高度回传契约", () => {
     const nativeWrapper = readNativeSource("src/native", "EnrichedMarkdownText.tsx");
 
     expect(markdown).toMatch(
-      /<EnrichedMarkdownText[\s\S]*?flavor="github"[\s\S]*?markdown=\{seg\.content\}/,
+      /<EnrichedMarkdownText[\s\S]*?flavor="github"[\s\S]*?markdown=\{segment\.content\}/,
     );
     expect(nativeWrapper).toMatch(
       /if \(flavor === 'github'\) \{\s*return <EnrichedMarkdownNativeComponent \{\.\.\.sharedProps\} \/>;\s*\}/,
