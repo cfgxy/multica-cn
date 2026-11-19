@@ -1001,10 +1001,13 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	// card list. They live in their own provider-tagged tables, so they merge
 	// in here mapped to the same response shape; the combined list is re-sorted
 	// newest-first.
-	vcsRows, err := h.Queries.ListVCSPullRequestsByIssue(r.Context(), issue.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list pull requests")
-		return
+	vcsRows := []db.ListVCSPullRequestsByIssueRow(nil)
+	if h.isVCSAvailable() {
+		vcsRows, err = h.Queries.ListVCSPullRequestsByIssue(r.Context(), issue.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list pull requests")
+			return
+		}
 	}
 	for _, row := range vcsRows {
 		out = append(out, vcsPullRequestRowToResponse(row))

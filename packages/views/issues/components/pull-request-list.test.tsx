@@ -16,7 +16,10 @@ vi.mock("@multica/core/github/queries", async () => {
     ...actual,
     issuePullRequestsOptions: (issueId: string) => ({
       queryKey: ["github", "pull-requests", issueId],
-      queryFn: async () => ({ pull_requests: mockPRs }),
+      queryFn: async () => {
+        if (mockError) throw mockError;
+        return { pull_requests: mockPRs };
+      },
       enabled: !!issueId,
     }),
   };
@@ -26,6 +29,7 @@ import { PullRequestList } from "./pull-request-list";
 import { PendingPullRequestSection } from "./pending-pull-request-section";
 
 let mockPRs: GitHubPullRequest[] = [];
+let mockError: Error | null = null;
 
 function makePR(overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest {
   return {
@@ -91,6 +95,19 @@ async function waitForRender() {
 }
 
 describe("PullRequestList sidebar rows", () => {
+  beforeEach(() => {
+    mockError = null;
+  });
+
+  it("shows a stable retry state when the PR endpoint fails", async () => {
+    mockError = new Error("server returned 500");
+    renderList();
+
+    expect(await screen.findByText("Couldn't load pull requests.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByText("No linked pull requests yet. Reference this issue's identifier in a PR's branch name, title, or body to auto-link it.")).not.toBeInTheDocument();
+  });
+
   it("shows GitLab MR without the GitHub sidebar and hides GitHub and legacy rows", async () => {
     mockPRs = [
       makePR({ id: "github", title: "GitHub PR" }),

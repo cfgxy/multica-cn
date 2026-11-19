@@ -36,6 +36,11 @@ export const issuePullRequestsOptions = (issueId: string | null) =>
     queryKey: githubKeys.pullRequests(issueId),
     queryFn: ({ signal }) => api.listIssuePullRequests(issueId ?? "", { signal }),
     enabled: !!issueId,
+    // Mirror web's failure policy: a persistent 5xx must remain an explicit
+    // retry action instead of replaying through remounts or foregrounding.
+    retry: false,
+    retryOnMount: false,
+    refetchOnMount: (query) => query.state.status !== "error",
   });
 
 // Same gate shape as web's pullRequestLookupOptions (packages/core/github/
