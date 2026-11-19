@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   AgentRuntimeListSchema,
   AgentRuntimeSchema,
-  AgentTaskSchema,
   DecisionRequestSchema,
   DecisionRequestsListSchema,
   IssueDecisionSchema,
@@ -95,8 +94,6 @@ import {
   EMPTY_KNOWLEDGE_ENTRY_OPERATION,
   KnowledgeEntrySchema,
   KnowledgeEntryOperationSchema,
-  EMPTY_ISSUE_USAGE_SUMMARY,
-  IssueUsageSummarySchema,
   RetrospectiveRunTriggerResponseSchema,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
