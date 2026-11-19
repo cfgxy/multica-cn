@@ -56,11 +56,25 @@ const STATE_ICON: Record<
 export function PullRequestList({ issueId, showGitHub = true }: { issueId: string; showGitHub?: boolean }) {
   const { t } = useT("issues");
   const [expanded, setExpanded] = useState(false);
-  const { data, isLoading } = useQuery(issuePullRequestsOptions(issueId));
+  const { data, isLoading, error, refetch } = useQuery(issuePullRequestsOptions(issueId));
   const prs = (data?.pull_requests ?? []).filter((pr) => isVisiblePullRequest(pr, showGitHub));
 
   if (isLoading) {
     return <p className="text-caption text-muted-foreground px-2">{t(($) => $.detail.pull_requests_loading)}</p>;
+  }
+  if (error) {
+    return (
+      <div className="space-y-1 px-2 text-caption">
+        <p className="text-destructive">{t(($) => $.detail.pull_requests_load_failed)}</p>
+        <button
+          type="button"
+          onClick={() => void refetch()}
+          className="text-muted-foreground underline hover:text-foreground"
+        >
+          {t(($) => $.detail.pull_requests_retry)}
+        </button>
+      </div>
+    );
   }
   if (prs.length === 0) {
     return (

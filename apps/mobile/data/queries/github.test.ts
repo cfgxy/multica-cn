@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { pullRequestLookupOptions } from "./github";
+import { issuePullRequestsOptions, pullRequestLookupOptions } from "./github";
 
 // queryFn delegates to the fetch client; mock it so the Node test never
 // loads RN modules and can assert the exact workspace-scoped call shape.
@@ -10,6 +10,21 @@ import { pullRequestLookupOptions } from "./github";
 const { lookupPullRequest } = vi.hoisted(() => ({ lookupPullRequest: vi.fn() }));
 vi.mock("@/data/api", () => ({ api: { lookupPullRequest } }));
 
+describe("issuePullRequestsOptions failure policy", () => {
+  it("does not retry or remount a failed request automatically", () => {
+    const options = issuePullRequestsOptions("issue-1");
+
+    const refetchOnMount = options.refetchOnMount;
+    if (typeof refetchOnMount !== "function") {
+      throw new Error("expected a refetch-on-mount policy");
+    }
+
+    expect(options.retry).toBe(false);
+    expect(options.retryOnMount).toBe(false);
+    expect(refetchOnMount({ state: { status: "error" } } as never)).toBe(false);
+    expect(refetchOnMount({ state: { status: "success" } } as never)).toBe(true);
+  });
+});
 describe("pullRequestLookupOptions workspace threading (RUYI-635 返工)", () => {
   beforeEach(() => {
     lookupPullRequest.mockReset();

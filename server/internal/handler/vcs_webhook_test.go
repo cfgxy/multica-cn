@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -815,6 +816,50 @@ func TestVCSWebhook_UnknownConnection(t *testing.T) {
 	testHandler.HandleVCSWebhook(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestListPullRequestsForIssueSkipsUnavailableVCS(t *testing.T) {
+	ctx := context.Background()
+	box := withVCSBox(t)
+	connID := seedVCSConnection(t, ctx, box, "forgejo", "https://forgejo-list-disabled.test")
+	issue := newVCSIssue(t, "Unavailable VCS list")
+	t.Cleanup(func() { cleanupVCS(ctx, issue.ID) })
+
+	raw, err := json.Marshal(map[string]any{
+		"action": "opened",
+		"pull_request": map[string]any{
+			"number": 1, "html_url": "https://forgejo-list-disabled.test/acme/widget/pulls/1",
+			"title": "Fix " + issue.Identifier, "state": "open", "merged": false,
+			"created_at": "2026-04-28T00:00:00Z", "updated_at": "2026-04-28T00:00:00Z",
+			"head": map[string]any{"ref": "fix", "sha": "head"},
+			"user": map[string]any{"username": "octo"},
+		},
+		"repository": map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webhook := httptest.NewRecorder()
+	testHandler.HandleVCSWebhook(webhook, vcsWebhookReq(connID, map[string]string{
+		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
+	}, raw))
+	if webhook.Code != http.StatusAccepted {
+		t.Fatalf("seed VCS pull request: status %d (%s)", webhook.Code, webhook.Body.String())
+	}
+
+	// The managed-cloud deployment disables this integration. Its regular PR
+	// endpoint must still serve GitHub rows without touching VCS-only storage.
+	testHandler.cfg.VCSIntegrationEnabled = false
+	req := withURLParam(httptest.NewRequest(http.MethodGet, "/api/issues/"+issue.ID+"/pull-requests", nil), "id", issue.ID)
+	req.Header.Set("X-User-ID", testUserID)
+	req.Header.Set("X-Workspace-ID", testWorkspaceID)
+	var response struct {
+		PullRequests []GitHubPullRequestResponse `json:"pull_requests"`
+	}
+	testutil.Call(t, testHandler.ListPullRequestsForIssue, req).Want(http.StatusOK).JSON(&response)
+	if len(response.PullRequests) != 0 {
+		t.Fatalf("disabled VCS integration returned %d pull requests, want none", len(response.PullRequests))
 	}
 }
 
