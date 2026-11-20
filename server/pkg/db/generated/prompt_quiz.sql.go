@@ -597,9 +597,12 @@ SELECT
     COALESCE(tu.total_tokens, 0)::bigint AS run_tokens
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
-JOIN prompt_quiz_item pqi
-  ON pqi.id = atq.trigger_evidence_ref_id
- AND pqi.workspace_id = a.workspace_id
+	-- A deleted item can still be collected from the immutable task snapshot.
+	-- A live item must belong to the agent's workspace; an item id that exists in
+	-- another workspace is never allowed to fall through the deleted-item path.
+	LEFT JOIN prompt_quiz_item pqi
+	  ON pqi.id = atq.trigger_evidence_ref_id
+	 AND pqi.workspace_id = a.workspace_id
 LEFT JOIN LATERAL (
     SELECT
         SUM(u.input_tokens + u.output_tokens)::bigint AS total_tokens,
@@ -628,6 +631,30 @@ WHERE atq.originator_source = 'quiz'
     )
   )
   AND atq.runtime_id IS NOT NULL
+	-- The task context carries the public item snapshot used at enqueue time.
+	-- Keep malformed or mismatched snapshots out of the bounded window, because
+	-- the collector cannot recover their identity after the item is deleted.
+	AND jsonb_typeof(atq.context -> 'quiz_item_id') = 'string'
+	AND atq.context ->> 'quiz_item_id' = atq.trigger_evidence_ref_id::text
+	AND jsonb_typeof(atq.context -> 'quiz_item_revision') = 'number'
+	AND atq.context ->> 'quiz_item_revision' ~ '^[1-9][0-9]{0,9}$'
+	AND (
+	  length(atq.context ->> 'quiz_item_revision') < 10
+	  OR (
+	    length(atq.context ->> 'quiz_item_revision') = 10
+	    AND (atq.context ->> 'quiz_item_revision') COLLATE "C" <= '2147483647'
+	  )
+	)
+	AND jsonb_typeof(atq.context -> 'quiz_prompt') = 'string'
+	AND atq.context ->> 'quiz_prompt' <> ''
+	AND (
+	  pqi.id IS NOT NULL
+	  OR NOT EXISTS (
+	    SELECT 1
+	    FROM prompt_quiz_item any_pqi
+	    WHERE any_pqi.id = atq.trigger_evidence_ref_id
+	  )
+	)
   -- batchIDFromContext accepts canonical, URN, raw-hex, and braced UUID forms.
   -- Keep every form it can parse; malformed contexts cannot produce a result.
   AND jsonb_typeof(atq.context -> 'quiz_batch_id') = 'string'
@@ -670,9 +697,6 @@ type ListFinishedPromptQuizTasksRow struct {
 // collector writes when it judges the run not gradeable. Rows from
 // score-incapable writers (all three NULL) keep coming back and are graded —
 // or explicitly judged — on a later tick.
-// The collector cannot form a result when the item is gone or belongs to a
-// different workspace. Keep those terminal rows out of the bounded candidate
-// set instead of discovering the permanent condition after LIMIT.
 func (q *Queries) ListFinishedPromptQuizTasks(ctx context.Context, rowLimit int32) ([]ListFinishedPromptQuizTasksRow, error) {
 	rows, err := q.db.Query(ctx, listFinishedPromptQuizTasks, rowLimit)
 	if err != nil {
@@ -910,6 +934,43 @@ func (q *Queries) ListPromptQuizItemDiscrimination(ctx context.Context, workspac
 			&i.Median,
 			&i.Iqr,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPromptQuizItemTitles = `-- name: ListPromptQuizItemTitles :many
+SELECT id, title
+FROM prompt_quiz_item
+WHERE workspace_id = $1::uuid
+  AND id = ANY($2::uuid[])
+`
+
+type ListPromptQuizItemTitlesParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+type ListPromptQuizItemTitlesRow struct {
+	ID    pgtype.UUID `json:"id"`
+	Title string      `json:"title"`
+}
+
+func (q *Queries) ListPromptQuizItemTitles(ctx context.Context, arg ListPromptQuizItemTitlesParams) ([]ListPromptQuizItemTitlesRow, error) {
+	rows, err := q.db.Query(ctx, listPromptQuizItemTitles, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPromptQuizItemTitlesRow{}
+	for rows.Next() {
+		var i ListPromptQuizItemTitlesRow
+		if err := rows.Scan(&i.ID, &i.Title); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

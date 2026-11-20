@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -251,6 +252,70 @@ func TestSweepCollectsEachRunExactlyOnce(t *testing.T) {
 	}
 	if revision != 1 {
 		t.Errorf("measurement item_revision %d, want 1", revision)
+	}
+}
+
+func TestSweepUsesImmutableItemSnapshotWhenItemChangesDuringRun(t *testing.T) {
+	b := newBank(t)
+	const originalPrompt = "Summarise your operating constraints in one sentence."
+	checks := `[{"id":"constraint","kind":"includes_all","weight":1,"phrases":["前台阻塞"]}]`
+	b.f.Exec(t, `UPDATE prompt_quiz_item SET rubric_checks = $1::jsonb WHERE id = $2`, checks, b.itemID)
+	taskID := b.finishedRun(t, `{"agent": 3}`)
+	b.f.Insert(t, "task_message", testutil.Cols{
+		"task_id": taskID, "seq": 1, "type": "text", "content": "前台阻塞已经收齐。",
+	})
+
+	// The queue row has already captured revision 1 and the original prompt. A
+	// later edit must not grade that run with the new wording or rubric identity.
+	b.f.Exec(t, `UPDATE prompt_quiz_item
+		SET body = 'The edited prompt has a different execution snapshot.', revision = 2
+		WHERE id = $1`, b.itemID)
+
+	if out := b.run(t); out.Collected != 1 {
+		t.Fatalf("collected %d runs, want 1", out.Collected)
+	}
+
+	var revision int32
+	var digest string
+	var score *float64
+	b.f.QueryRow(t, `SELECT item_revision, item_body_sha256, score
+		FROM prompt_quiz_result WHERE task_id = $1`, taskID).
+		Scan(&revision, &digest, &score)
+	if revision != 1 {
+		t.Errorf("stored item_revision = %d, want immutable revision 1", revision)
+	}
+	if digest != promptquiz.BodyDigest(originalPrompt) {
+		t.Errorf("stored item_body_sha256 = %q, want digest of the original prompt", digest)
+	}
+	if score != nil {
+		t.Errorf("edited item received a score %v, want NULL because the snapshot no longer matches", *score)
+	}
+}
+
+func TestSweepKeepsSnapshotIdentityWhenItemIsDeleted(t *testing.T) {
+	b := newBank(t)
+	const originalPrompt = "Summarise your operating constraints in one sentence."
+	taskID := b.finishedRun(t, `{"agent": 3}`)
+	b.f.Exec(t, `DELETE FROM prompt_quiz_item WHERE id = $1`, b.itemID)
+
+	if out := b.run(t); out.Collected != 1 {
+		t.Fatalf("collected %d runs, want 1 after item deletion", out.Collected)
+	}
+
+	var itemID, digest string
+	var revision int32
+	var score *float64
+	b.f.QueryRow(t, `SELECT item_id::text, item_revision, item_body_sha256, score
+		FROM prompt_quiz_result WHERE task_id = $1`, taskID).
+		Scan(&itemID, &revision, &digest, &score)
+	if itemID != b.itemID || revision != 1 {
+		t.Errorf("deleted item identity = %s@%d, want %s@1", itemID, revision, b.itemID)
+	}
+	if digest != promptquiz.BodyDigest(originalPrompt) {
+		t.Errorf("deleted item digest = %q, want snapshot digest", digest)
+	}
+	if score != nil {
+		t.Errorf("deleted item received a score %v, want NULL", *score)
 	}
 }
 
@@ -524,7 +589,7 @@ func TestQuizPayloadCarriesNoRubric(t *testing.T) {
 	if err := json.Unmarshal([]byte(payload), &fields); err != nil {
 		t.Fatalf("payload is not an object: %v", err)
 	}
-	want := []string{"kind", "quiz_batch_id", "quiz_item_id", "quiz_prompt"}
+	want := []string{"kind", "quiz_batch_id", "quiz_item_id", "quiz_item_revision", "quiz_item_title", "quiz_prompt"}
 	if len(fields) != len(want) {
 		t.Errorf("payload has fields %v, want exactly %v", keysOf(fields), want)
 	}
@@ -532,6 +597,9 @@ func TestQuizPayloadCarriesNoRubric(t *testing.T) {
 		if _, ok := fields[k]; !ok {
 			t.Errorf("payload is missing %q", k)
 		}
+	}
+	if got, ok := fields["quiz_item_title"].(string); !ok || got != "Sweep item" {
+		t.Errorf("quiz item title = %v, want %q", fields["quiz_item_title"], "Sweep item")
 	}
 	if strings.Contains(payload, secret) {
 		t.Error("the payload sent to the measured run contains the item's rubric")
@@ -566,6 +634,25 @@ func TestQuizPayloadCarriesNoRubric(t *testing.T) {
 	}
 }
 
+func TestTaskContextPayloadIncludesItemTitle(t *testing.T) {
+	payload, err := TaskContextPayload(
+		"5b0e0000-0000-4000-8000-000000000001",
+		"Stability question",
+		"Describe the stability risks.",
+		pgtype.UUID{},
+	)
+	if err != nil {
+		t.Fatalf("build quiz context: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatalf("decode quiz context: %v", err)
+	}
+	if fields["quiz_item_title"] != "Stability question" {
+		t.Errorf("quiz_item_title = %v, want %q", fields["quiz_item_title"], "Stability question")
+	}
+}
+
 func keysOf(m map[string]any) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -585,8 +672,8 @@ func (b *bank) finishedRun(t *testing.T, promptVersions string) string {
 func (b *bank) finishedRunWith(t *testing.T, promptVersions string, overrides testutil.Cols) string {
 	t.Helper()
 	batch := "11111111-2222-3333-4444-555555555555"
-	payload := fmt.Sprintf(`{"kind": %q, "quiz_batch_id": %q, "quiz_item_id": %q, "quiz_prompt": "x"}`,
-		promptquiz.TaskKind, batch, b.itemID)
+	payload := fmt.Sprintf(`{"kind": %q, "quiz_batch_id": %q, "quiz_item_id": %q, "quiz_item_revision": 1, "quiz_item_title": "Sweep item", "quiz_prompt": %q}`,
+		promptquiz.TaskKind, batch, b.itemID, "Summarise your operating constraints in one sentence.")
 	cols := testutil.Cols{
 		"runtime_id":              b.runtimeID,
 		"status":                  "completed",
