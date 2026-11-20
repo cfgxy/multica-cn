@@ -40,13 +40,15 @@ type WorkerSupervisor interface {
 // control socket), so the daemon never holds an anonymous pipe into the
 // worker.
 type LaunchSpec struct {
-	RunID   string   // unique per launch attempt; unit/directory identity
-	TaskID  string   // server-side task this attempt belongs to
-	Runtime string   // provider/runtime identity, for audit only
-	Path    string   // worker program
-	Args    []string // worker argv (after Path)
-	Env     []string // full worker environment (may carry credentials; the supervisor stores it 0600, same trust domain as the daemon process)
-	Dir     string   // worker working directory
+	RunID      string   // unique per launch attempt; unit/directory identity
+	TaskID     string   // server-side task this attempt belongs to
+	Runtime    string   // provider/runtime identity, for audit only
+	RuntimeID  string   // server runtime identity, for evidence binding
+	Generation int      // manifest generation for this task attempt
+	Path       string   // worker program
+	Args       []string // worker argv (after Path)
+	Env        []string // full worker environment (may carry credentials; the supervisor stores it 0600, same trust domain as the daemon process)
+	Dir        string   // worker working directory
 }
 
 // WorkerHandle is the daemon-side end of one supervised worker.
@@ -130,8 +132,10 @@ type Supervision struct {
 	RunID      string
 	// TaskID is the server-side task this run belongs to (audit + reconcile
 	// joins). Runtime is the provider identity, audit only.
-	TaskID  string
-	Runtime string
+	TaskID     string
+	Runtime    string
+	RuntimeID  string
+	Generation int
 	// Reattach marks this Execute as a continuation of an already-launched
 	// worker (daemon restart reconciliation). Backends must not write the
 	// initial prompt/handshake to a reattached worker — it consumed its

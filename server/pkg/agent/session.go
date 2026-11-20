@@ -139,13 +139,15 @@ func (s *workerSession) Start(ctx context.Context, logger *slog.Logger) error {
 	}
 
 	spec := LaunchSpec{
-		RunID:   s.sup.RunID,
-		TaskID:  s.sup.TaskID,
-		Runtime: s.sup.Runtime,
-		Path:    s.cmd.Path,
-		Args:    s.cmd.Args,
-		Env:     s.cmd.Env,
-		Dir:     s.cmd.Dir,
+		RunID:      s.sup.RunID,
+		TaskID:     s.sup.TaskID,
+		Runtime:    s.sup.Runtime,
+		RuntimeID:  s.sup.RuntimeID,
+		Generation: s.sup.Generation,
+		Path:       s.cmd.Path,
+		Args:       s.cmd.Args,
+		Env:        s.cmd.Env,
+		Dir:        s.cmd.Dir,
 	}
 	if len(spec.Args) > 0 {
 		// exec.Cmd.Args[0] is the argv[0] convention; the launcher rebuilds

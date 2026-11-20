@@ -267,6 +267,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		terminalReasonError := ""
 		var sessionID string
 		sawAsyncLaunch := false
+		toolNames := make([]string, 0, MaxProvenanceTools)
+		eventTypes := make([]string, 0, MaxProvenanceStreamTypes)
 		usage := make(map[string]TokenUsage)
 		// Context size is measured separately from the billing counters in
 		// `usage` because the two answer different questions, and because the
@@ -325,12 +327,39 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				continue
 			}
 			eventCount++
+			if msg.Type != "" && len(eventTypes) < MaxProvenanceStreamTypes {
+				seen := false
+				for _, eventType := range eventTypes {
+					if eventType == msg.Type {
+						seen = true
+						break
+					}
+				}
+				if !seen {
+					eventTypes = append(eventTypes, msg.Type)
+				}
+			}
 
 			switch msg.Type {
 			case "assistant":
 				assistantEventCount++
 				turn := b.handleAssistant(msg, msgCh, usage, contextTokens)
 				toolUseCount += turn.toolUses
+				for _, toolName := range turn.toolNames {
+					if len(toolNames) >= MaxProvenanceTools || toolName == "" {
+						break
+					}
+					seen := false
+					for _, existing := range toolNames {
+						if existing == toolName {
+							seen = true
+							break
+						}
+					}
+					if !seen {
+						toolNames = append(toolNames, toolName)
+					}
+				}
 				if !turn.understood {
 					unreadableAssistantCount++
 				}
@@ -523,6 +552,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// Run-scoped observability (RUYI-154): one extra transcript pass
 		// yields the largest single-request context and the number of native
 		// auto-compacts; turns come from the result event's num_turns.
+		var transcriptEvidence claudeTranscriptProvenance
 		if path, ok := claudeTranscriptPath(claudeTranscriptRoot(), opts.Cwd, reportedSessionID); ok {
 			// Only honor the pre-run offset when this run's transcript is
 			// provably the same file we stat'd before starting the process.
@@ -535,6 +565,49 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			if maxCtx, compactions, has := transcriptRunStats(path, offset); has {
 				transcriptMaxCtx, transcriptCompactions = maxCtx, compactions
 			}
+			transcriptEvidence, _ = transcriptRunProvenance(path, offset)
+		}
+
+		provenance := &RunProvenance{
+			Provider:                      "claude",
+			RequestedSessionID:            opts.ResumeSessionID,
+			EffectiveSessionID:            reportedSessionID,
+			SessionGate:                   opts.SessionGate,
+			ResumeRejected:                resumeRejected,
+			PriorSessionResumeUnavailable: opts.PriorSessionResumeUnavailable,
+			PriorContextBriefSHA256:       opts.PriorContextBriefSHA256,
+			SyntheticContinuation:         opts.SyntheticContinuation,
+			SyntheticContinuationSource:   opts.SyntheticContinuationSource,
+			TranscriptSHA256:              transcriptEvidence.SHA256,
+			TranscriptStartOffset:         transcriptEvidence.StartOffset,
+			TranscriptEndOffset:           transcriptEvidence.EndOffset,
+			Compactions:                   transcriptEvidence.Compactions,
+			Tools:                         toolNames,
+			ObservedAt:                    time.Now().UTC(),
+			Stream: ProviderStreamProvenance{
+				EventCount:          eventCount,
+				InvalidEventCount:   invalidEventCount,
+				AssistantEventCount: assistantEventCount,
+				ToolUseCount:        toolUseCount,
+				UnreadableAssistant: unreadableAssistantCount,
+				EventTypes:          eventTypes,
+			},
+			Permission: PermissionSnapshot{
+				MCPConfigured:    hasManagedMcpConfig(opts.McpConfig),
+				SettingsProvided: opts.ClaudeSettingsPath != "",
+			},
+		}
+		if opts.ResumeContinuityNotice != "" {
+			provenance.ResumeContinuityNoticeSHA256 = sha256Hex([]byte(opts.ResumeContinuityNotice))
+		}
+		if len(transcriptEvidence.Compactions) > 0 {
+			provenance.SummarySource = transcriptEvidence.Compactions[0].Source
+		}
+		if opts.Supervision != nil {
+			provenance.RunID = opts.Supervision.RunID
+			provenance.TaskID = opts.Supervision.TaskID
+			provenance.RuntimeID = opts.Supervision.RuntimeID
+			provenance.Generation = opts.Supervision.Generation
 		}
 
 		resCh <- Result{
@@ -548,6 +621,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			Turns:            resultTurns,
 			Compactions:      int(transcriptCompactions),
 			MaxContextTokens: transcriptMaxCtx,
+			Provenance:       provenance,
 		}
 	}()
 
@@ -614,6 +688,9 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 			}
 		case "tool_use":
 			toolUseCount++
+			if block.Name != "" {
+				turn.toolNames = append(turn.toolNames, block.Name)
+			}
 			var input map[string]any
 			if block.Input != nil {
 				_ = json.Unmarshal(block.Input, &input)
