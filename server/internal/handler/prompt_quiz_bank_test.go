@@ -345,8 +345,8 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 		t.Fatalf("%d task rows, want 2", len(contexts))
 	}
 	for _, c := range contexts {
-		if !strings.Contains(c, created.BatchID) || !strings.Contains(c, "quiz_item_id") || !strings.Contains(c, "quiz_prompt") {
-			t.Fatalf("payload is missing the batch/item/prompt fields: %s", c)
+		if !strings.Contains(c, created.BatchID) || !strings.Contains(c, "quiz_item_id") || !strings.Contains(c, "quiz_item_title") || !strings.Contains(c, "quiz_prompt") {
+			t.Fatalf("payload is missing the batch/item/title/prompt fields: %s", c)
 		}
 	}
 
