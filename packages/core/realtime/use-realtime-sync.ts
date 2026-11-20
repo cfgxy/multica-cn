@@ -13,6 +13,7 @@ import { issueKeys } from "../issues/queries";
 import { upsertDecisionInCache, decisionInboxKeys } from "../issues/decisions";
 import { decisionRequestKeys } from "../issues/decision-requests";
 import { projectKeys } from "../projects/queries";
+import { projectResourceKeys } from "../projects/resource-queries";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
@@ -977,6 +978,7 @@ export function useRealtimeSync(
     const specificEvents = new Set([
       "workspace:updated",
       "issue:updated", "issue:created", "issue:deleted", "issue_attachments:changed", "issue_labels:changed", "issue_metadata:changed", "issue_properties:changed", "property:created", "property:updated", "inbox:new",
+      "project_resource:created", "project_resource:updated", "project_resource:deleted",
       "comment:created", "comment:updated", "comment:deleted",
       "comment:resolved", "comment:unresolved",
       "activity:created",
@@ -1093,6 +1095,26 @@ export function useRealtimeSync(
         }
       }),
     );
+
+    const onProjectResourceChanged = (payload: unknown) => {
+      const projectId =
+        payload &&
+        typeof payload === "object" &&
+        typeof (payload as { project_id?: unknown }).project_id === "string"
+          ? (payload as { project_id: string }).project_id
+          : null;
+      const wsId = getCurrentWsId();
+      if (wsId && projectId) {
+        qc.invalidateQueries({
+          queryKey: projectResourceKeys.list(wsId, projectId),
+        });
+      }
+    };
+    const unsubProjectResourceChanged = [
+      ws.on("project_resource:created", onProjectResourceChanged),
+      ws.on("project_resource:updated", onProjectResourceChanged),
+      ws.on("project_resource:deleted", onProjectResourceChanged),
+    ];
 
     const unsubInboxNew = ws.on("inbox:new", async (p) => {
       const { item } = p as InboxNewPayload;
@@ -1801,6 +1823,7 @@ export function useRealtimeSync(
       unsubIssueMetadataChanged();
       unsubIssuePropertiesChanged();
       unsubPropertyChanged.forEach((unsub) => unsub());
+      unsubProjectResourceChanged.forEach((unsub) => unsub());
       unsubInboxNew();
       unsubCommentCreated();
       unsubCommentUpdated();
