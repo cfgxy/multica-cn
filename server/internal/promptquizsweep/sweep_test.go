@@ -269,6 +269,23 @@ func TestSweepSkipsRunsWithNoAgentTierVersion(t *testing.T) {
 	}
 }
 
+// Quiz collection is source-gated as well as version-gated: a terminal task
+// from another producer must never enter prompt_quiz_result just because it
+// happens to carry an agent-tier-looking JSON object.
+func TestSweepSkipsNonQuizTerminalRuns(t *testing.T) {
+	b := newBank(t)
+	b.finishedRunWith(t, `{"agent": 3}`, testutil.Cols{
+		"originator_source": "issue",
+	})
+
+	if out := b.run(t); out.Collected != 0 {
+		t.Errorf("collected %d non-Quiz runs, want 0", out.Collected)
+	}
+	if got := b.results(t); got != 0 {
+		t.Errorf("%d measurements stored for non-Quiz run, want 0", got)
+	}
+}
+
 func TestAgentTierVersion(t *testing.T) {
 	tests := []struct {
 		name string
