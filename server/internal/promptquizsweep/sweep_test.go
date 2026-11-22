@@ -221,6 +221,33 @@ func TestSweepOrdersRunsOnTheNoIssuePath(t *testing.T) {
 	}
 }
 
+// TestSweepSkipsSystemAgents ensures hidden system execution carriers (such as
+// Agent Builder conversations) do not receive prompt-quality measurements.
+func TestSweepSkipsSystemAgents(t *testing.T) {
+	b := newBank(t)
+	systemAgentID := b.f.Agent(t, "hidden-agent-builder", b.runtimeID, testutil.Cols{
+		"kind":       "system",
+		"system_key": "agent_builder:prompt-quiz-fixture",
+	})
+	b.f.Insert(t, "prompt_version", testutil.Cols{
+		"workspace_id":   testWorkspaceID,
+		"scope":          "agent",
+		"scope_id":       systemAgentID,
+		"version":        1,
+		"content":        "hidden builder instructions",
+		"content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+		"source":         "import",
+	})
+	b.f.Cleanup(t, `DELETE FROM agent_task_queue WHERE agent_id = $1`, systemAgentID)
+
+	b.run(t)
+
+	if got := b.f.Count(t, `SELECT count(*) FROM agent_task_queue
+		WHERE agent_id = $1 AND originator_source = $2`, systemAgentID, promptquiz.OriginatorSource); got != 0 {
+		t.Errorf("system agent received %d Quiz runs, want 0", got)
+	}
+}
+
 // TestSweepCollectsEachRunExactlyOnce covers collection idempotence: the
 // collector upserts on task_id, so a tick re-entered after a crash rewrites the
 // measurement it already wrote instead of doubling the sample.
