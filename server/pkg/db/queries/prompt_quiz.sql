@@ -520,6 +520,11 @@ SELECT DISTINCT ON (pv.scope_id)
 FROM prompt_version pv
 JOIN agent a ON a.id = pv.scope_id
 WHERE pv.scope = 'agent'
+  -- Quiz measures user-authored agents only. System execution carriers (for
+  -- example Agent Builder's hidden conversation agents) are implementation
+  -- details, not user prompt configurations, and must never consume the
+  -- measurement budget.
+  AND a.kind = 'user'
   AND a.archived_at IS NULL
   AND a.runtime_id IS NOT NULL
   -- RUYI-941: resolve the most-specific durable override. Missing rows keep
