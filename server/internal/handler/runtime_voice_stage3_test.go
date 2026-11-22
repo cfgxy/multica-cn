@@ -655,11 +655,20 @@ func TestVoiceGateway_RelaySetupTranscriptHandle(t *testing.T) {
 		return len(provider.clientMsgs) >= 1
 	})
 	provider.mu.Lock()
-	forwarded := len(provider.clientMsgs)
+	forwarded := append([][]byte(nil), provider.clientMsgs...)
 	setupsSeen := len(provider.setups)
 	provider.mu.Unlock()
-	if forwarded != 1 {
-		t.Fatalf("stub received %d upstream frames, want exactly the 1 audio frame", forwarded)
+	// RUYI-874 adds one server-composed initial context frame (the pinned
+	// Skill catalog); ensure the real audio still forwards exactly once and a
+	// client-authored setup never reaches the provider.
+	audioFrames := 0
+	for _, frame := range forwarded {
+		if strings.Contains(string(frame), `"realtimeInput"`) {
+			audioFrames++
+		}
+	}
+	if audioFrames != 1 {
+		t.Fatalf("stub received %d audio frames in %d upstream frames, want exactly 1", audioFrames, len(forwarded))
 	}
 	if setupsSeen != 1 {
 		t.Fatalf("stub received %d setups, want 1 — a client setup frame leaked through", setupsSeen)

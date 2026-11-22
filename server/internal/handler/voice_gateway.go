@@ -1187,7 +1187,9 @@ func (h *Handler) relayVoiceSessionConn(
 		// context (project, recent messages with semantic mentions, images),
 		// while every entry point receives the same hash-pinned skill catalog.
 		var parts []map[string]any
+		hasRichContext := false
 		if ctx := h.composeVoiceChatContext(r.Context(), session); ctx != nil {
+			hasRichContext = true
 			if strings.TrimSpace(ctx.Text) != "" {
 				parts = append(parts, map[string]any{"text": ctx.Text})
 			}
@@ -1196,21 +1198,25 @@ func (h *Handler) relayVoiceSessionConn(
 			}
 		}
 		if ctx := h.composeVoiceIssueContext(r.Context(), session, plan.issueID); ctx != nil {
+			hasRichContext = true
 			if strings.TrimSpace(ctx.Text) != "" {
 				parts = append(parts, map[string]any{"text": ctx.Text})
+			}
+		}
+		// The Skill catalog supplements context; it must not suppress the
+		// established plain-voice continuity fallback.
+		if !hasRichContext {
+			if section := h.loadVoiceSessionSection(r.Context(), session.WorkspaceID, session.AgentID); strings.TrimSpace(section) != "" {
+				parts = append(parts, map[string]any{"text": section})
 			}
 		}
 		if catalog := voiceSkillCatalogContext(plan.skillRefs); catalog != "" {
 			parts = append(parts, map[string]any{"text": catalog})
 		}
 		if len(parts) == 0 {
-			section := h.loadVoiceSessionSection(r.Context(), session.WorkspaceID, session.AgentID)
-			if strings.TrimSpace(section) == "" {
-				// §3.6: nothing to hand over is rendered as nothing — never
-				// as an invented continuity line.
-				return
-			}
-			parts = []map[string]any{{"text": section}}
+			// §3.6: nothing to hand over is rendered as nothing — never as an
+			// invented continuity line.
+			return
 		}
 		turn, err := json.Marshal(map[string]any{
 			"clientContent": map[string]any{

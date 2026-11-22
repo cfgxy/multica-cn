@@ -655,8 +655,20 @@ func TestVoiceGateway_HeaderPathSwallowsClientAuthFrame(t *testing.T) {
 		upstream[i] = string(m)
 	}
 	provider.mu.Unlock()
-	if len(upstream) != 1 || !strings.Contains(upstream[0], "clientContent") {
-		t.Fatalf("provider received %v, want exactly the 1 clientContent turn (auth envelope must be swallowed, never forwarded)", upstream)
+	// RUYI-874 emits a server-composed initial context frame before client
+	// traffic. The auth envelope itself must still be absent, while the real
+	// client turn arrives exactly once.
+	clientTurns := 0
+	for _, frame := range upstream {
+		if strings.Contains(frame, "redundant-with-cookie") {
+			t.Fatalf("auth envelope leaked upstream: %v", upstream)
+		}
+		if strings.Contains(frame, `"text":"hello"`) {
+			clientTurns++
+		}
+	}
+	if clientTurns != 1 {
+		t.Fatalf("provider received %v, want exactly one forwarded client turn", upstream)
 	}
 
 	// The relay stays live after the swallow: a provider frame still reaches
