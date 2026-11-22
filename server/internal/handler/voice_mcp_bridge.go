@@ -31,6 +31,9 @@ type voiceMCPTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+	Annotations struct {
+		ReadOnlyHint bool `json:"readOnlyHint"`
+	} `json:"annotations"`
 }
 
 type voiceMCPRPCResponse struct {
@@ -134,7 +137,37 @@ func (b *voiceMCPBridge) call(ctx context.Context, name string, arguments json.R
 	return response.Result, nil
 }
 
+// voiceMCPReadOnlyTools is the voice execution boundary. A live model can
+// issue function calls without an interactive confirmation surface, so it may
+// only receive canonical MCP tools whose own risk metadata marks them read
+// only. Missing annotations fail closed. load_skill stays separately handled
+// below because it rechecks the session's agent assignment and bundle hash.
+func voiceMCPReadOnlyTools(tools []voiceMCPTool) []voiceMCPTool {
+	readOnly := make([]voiceMCPTool, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Name == "" || tool.Name == "load_skill" || !tool.Annotations.ReadOnlyHint {
+			continue
+		}
+		readOnly = append(readOnly, tool)
+	}
+	return readOnly
+}
+
+func voiceMCPAllowedToolNames(tools []voiceMCPTool) map[string]struct{} {
+	allowed := make(map[string]struct{}, len(tools))
+	for _, tool := range voiceMCPReadOnlyTools(tools) {
+		allowed[tool.Name] = struct{}{}
+	}
+	return allowed
+}
+
+func voiceMCPToolAllowed(allowed map[string]struct{}, name string) bool {
+	_, ok := allowed[name]
+	return ok
+}
+
 func voiceMCPFunctionDeclarations(tools []voiceMCPTool) []map[string]any {
+	tools = voiceMCPReadOnlyTools(tools)
 	decls := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
 		var schema any
@@ -292,5 +325,6 @@ func prepareVoiceToolDeclarations(ctx context.Context, plan *voiceSessionPlan, t
 		return declarations
 	}
 	plan.mcp = bridge
+	plan.mcpAllowedTools = voiceMCPAllowedToolNames(tools)
 	return append(voiceMCPFunctionDeclarations(tools), declarations...)
 }

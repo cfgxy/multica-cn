@@ -41,8 +41,10 @@ func TestVoiceMCPBridge_UsesCanonicalToolsListAndCall(t *testing.T) {
 		switch request.Method {
 		case "tools/list":
 			result = map[string]any{"tools": []map[string]any{
-				{"name": "list_workspaces", "description": "canonical MCP workspace tool", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
-				{"name": "list_projects", "description": "canonical MCP project tool", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"workspace": map[string]any{"type": "string"}}, "required": []string{"workspace"}}},
+				{"name": "list_workspaces", "description": "canonical MCP workspace tool", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}, "annotations": map[string]any{"readOnlyHint": true}},
+				{"name": "list_projects", "description": "canonical MCP project tool", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"workspace": map[string]any{"type": "string"}}, "required": []string{"workspace"}}, "annotations": map[string]any{"readOnlyHint": true}},
+				{"name": "create_issue", "description": "must not be callable by voice", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}, "annotations": map[string]any{"readOnlyHint": false}},
+				{"name": "legacy_unannotated", "description": "missing risk metadata must fail closed", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{}}},
 			}}
 		case "tools/call":
 			switch request.Params.Name {
@@ -67,12 +69,16 @@ func TestVoiceMCPBridge_UsesCanonicalToolsListAndCall(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools, err := bridge.tools(context.Background())
-	if err != nil || len(tools) != 2 || tools[0].Name != "list_workspaces" || tools[1].Name != "list_projects" {
+	if len(tools) != 4 || tools[0].Name != "list_workspaces" || tools[1].Name != "list_projects" {
 		t.Fatalf("tools = %+v, err = %v", tools, err)
 	}
 	declarations := voiceMCPFunctionDeclarations(tools)
 	if len(declarations) != 2 || declarations[0]["name"] != "list_workspaces" || declarations[1]["name"] != "list_projects" {
 		t.Fatalf("Gemini declarations = %#v", declarations)
+	}
+	allowed := voiceMCPAllowedToolNames(tools)
+	if !voiceMCPToolAllowed(allowed, "list_workspaces") || voiceMCPToolAllowed(allowed, "create_issue") || voiceMCPToolAllowed(allowed, "legacy_unannotated") {
+		t.Fatalf("voice MCP allow-list = %#v, want read-only tools only", allowed)
 	}
 	workspaceResult, err := bridge.call(context.Background(), "list_workspaces", nil)
 	if err != nil {
@@ -127,10 +133,18 @@ func TestVoiceGateway_MCPToolCallReturnsStructuredResponseToProvider(t *testing.
 		switch request.Method {
 		case "initialize":
 		case "tools/list":
-			result = map[string]any{"tools": []map[string]any{{
-				"name": "list_workspaces", "description": "list visible workspaces",
-				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
-			}}}
+			result = map[string]any{"tools": []map[string]any{
+				{
+					"name": "list_workspaces", "description": "list visible workspaces",
+					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+					"annotations": map[string]any{"readOnlyHint": true},
+				},
+				{
+					"name": "create_issue", "description": "must not be callable by voice",
+					"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+					"annotations": map[string]any{"readOnlyHint": false},
+				},
+			}}
 		case "tools/call":
 			if request.Params.Name != "list_workspaces" {
 				http.Error(w, "unexpected tool name", http.StatusBadRequest)
@@ -217,21 +231,27 @@ func TestVoiceGateway_MCPToolCallReturnsStructuredResponseToProvider(t *testing.
 			setups := provider.setupsRecorded(t)
 			setup := setups[len(setups)-1]["setup"].(map[string]any)
 			declared := false
+			declaredWrite := false
 			for _, rawGroup := range setup["tools"].([]any) {
 				group := rawGroup.(map[string]any)
 				for _, rawDecl := range group["functionDeclarations"].([]any) {
 					decl := rawDecl.(map[string]any)
 					declared = declared || decl["name"] == "list_workspaces"
+					declaredWrite = declaredWrite || decl["name"] == "create_issue"
 				}
 			}
 			if !declared {
 				t.Fatalf("provider setup omitted list_workspaces: %v", setup["tools"])
 			}
+			if declaredWrite {
+				t.Fatalf("provider setup exposed mutating MCP tool: %v", setup["tools"])
+			}
 			if tt.revokeMembership {
 				dbfx.Exec(t, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, memberID)
 			}
 
-			provider.sendDownstream(provider.gatewayConn(t), map[string]any{
+			stubConn := provider.gatewayConn(t)
+			provider.sendDownstream(stubConn, map[string]any{
 				"toolCall": map[string]any{"functionCalls": []any{map[string]any{
 					"id": tt.callID, "name": "list_workspaces", "args": map[string]any{},
 				}}},
@@ -291,6 +311,28 @@ func TestVoiceGateway_MCPToolCallReturnsStructuredResponseToProvider(t *testing.
 				t.Fatalf("provider toolResponse count for %s = %d, want 1", tt.callID, len(responseFrames))
 			}
 			assertJSONEqual(t, responseFrames[0], `{"toolResponse":{"functionResponses":[{"id":"`+tt.callID+`","name":"list_workspaces","response":`+tt.wantResult+`}]}}`)
+
+			// A provider-side raw call must not bypass the setup declaration: write
+			// tools are deliberately absent from voice even when canonical MCP
+			// exposes them to interactive clients.
+			if tt.name == "owner succeeds" {
+				const writeCallID = "write-tool-must-be-rejected"
+				provider.sendDownstream(stubConn, map[string]any{
+					"toolCall": map[string]any{"functionCalls": []any{map[string]any{
+						"id": writeCallID, "name": "create_issue", "args": map[string]any{},
+					}}},
+				})
+				waitFor(t, 3*time.Second, func() bool {
+					provider.mu.Lock()
+					defer provider.mu.Unlock()
+					for _, msg := range provider.clientMsgs {
+						if strings.Contains(string(msg), writeCallID) && strings.Contains(string(msg), `"forbidden"`) {
+							return true
+						}
+					}
+					return false
+				})
+			}
 
 			bearer := "Bearer " + tt.token
 			mcpMu.Lock()
