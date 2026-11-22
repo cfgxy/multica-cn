@@ -191,10 +191,10 @@ func enqueueAndClaimResponse(t *testing.T, f *clauseInjectionFixture) clauseInje
 		Task *struct {
 			ID               string `json:"id"`
 			WorkspaceContext string `json:"workspace_context"`
+			Agent            *struct {
+				Instructions string `json:"instructions"`
+			} `json:"agent"`
 		} `json:"task"`
-		Agent *struct {
-			Instructions string `json:"instructions"`
-		} `json:"agent"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode claim: %v (%s)", err, w.Body.String())
@@ -205,13 +205,13 @@ func enqueueAndClaimResponse(t *testing.T, f *clauseInjectionFixture) clauseInje
 	if resp.Task.ID != rawTaskID {
 		t.Fatalf("claimed task id = %s, want %s", resp.Task.ID, rawTaskID)
 	}
-	if resp.Agent == nil {
+	if resp.Task.Agent == nil {
 		t.Fatalf("expected claimed agent payload: %s", w.Body.String())
 	}
 	return clauseInjectionClaim{
 		taskID:            rawTaskID,
 		workspaceContext:  resp.Task.WorkspaceContext,
-		agentInstructions: resp.Agent.Instructions,
+		agentInstructions: resp.Task.Agent.Instructions,
 	}
 }
 
