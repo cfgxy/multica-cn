@@ -511,16 +511,17 @@ func (h *Handler) PreflightVoiceSession(w http.ResponseWriter, r *http.Request) 
 // chain sessions, the runtime instance for legacy ones (RUYI-692 D1 ③:
 // start 拨号失败即时置态, extended to the D2 pool in RUYI-693).
 type voiceSessionPlan struct {
-	session      db.LiveSession
-	target       *voiceTarget
-	apiKey       string
-	instructions string
-	model        string
-	advanced     map[string]json.RawMessage
-	mcp          *voiceMCPBridge
-	tools        []map[string]any
-	skillRefs    []service.AgentSkillRefData
-	issueID      pgtype.UUID
+	session         db.LiveSession
+	target          *voiceTarget
+	apiKey          string
+	instructions    string
+	model           string
+	advanced        map[string]json.RawMessage
+	mcp             *voiceMCPBridge
+	mcpAllowedTools map[string]struct{}
+	tools           []map[string]any
+	skillRefs       []service.AgentSkillRefData
+	issueID         pgtype.UUID
 }
 
 // Transport modes for live_session rows (RUYI-626). RUYI-692 D1 ② retired
@@ -1289,6 +1290,10 @@ func (h *Handler) relayVoiceSessionConn(
 						result, _ = h.executeVoiceSkill(execCtx, session, plan.skillRefs, call.Args)
 					} else if plan.mcp == nil {
 						result = voiceToolError("unavailable", "Multica MCP is unavailable for this voice session")
+					} else if !voiceMCPToolAllowed(plan.mcpAllowedTools, call.Name) {
+						// The provider must not be able to bypass the read-only
+						// declarations we exposed in setup by emitting a raw call.
+						result = voiceToolError("forbidden", "this MCP tool is not available in voice sessions")
 					} else if result, err = plan.mcp.call(execCtx, call.Name, call.Args); err != nil || result == nil {
 						result = voiceToolError("unavailable", "Multica MCP tool call failed")
 					}
