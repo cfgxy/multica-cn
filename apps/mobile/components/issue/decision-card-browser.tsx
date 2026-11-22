@@ -167,7 +167,7 @@ export function MobileDecisionCardBrowser({
               {currentIndex + 1} / {filtered.length}
             </Text>
           </View>
-          <DecisionCard decision={current} />
+          <DecisionCard key={`${current.id}:${current.status}`} decision={current} />
           <View className="flex-row justify-between gap-2 px-4 pb-2">
             <Button
               size="sm"
