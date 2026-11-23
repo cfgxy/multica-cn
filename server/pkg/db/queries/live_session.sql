@@ -7,10 +7,13 @@
 -- name: CreateLiveSession :one
 -- mode (RUYI-626) tags the transport that opened the session: the gateway
 -- relay writes 'gateway', the direct-connect handoff writes 'direct'. The
--- CHECK in migration 937 pins the enum.
+-- CHECK in migration 937 pins the enum. chat_session_id (RUYI-874 link ①)
+-- names the chat_session the session was opened from; NULL for sessions
+-- started outside a chat surface. The caller validates it belongs to this
+-- workspace and agent (repo rule: no FK, application-side resolution).
 INSERT INTO live_session (
-    workspace_id, agent_id, runtime_instance_id, user_id, model, context_snapshot, mode
-) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    workspace_id, agent_id, runtime_instance_id, user_id, model, context_snapshot, mode, chat_session_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg(chat_session_id))
 RETURNING *;
 
 -- name: GetLiveSession :one

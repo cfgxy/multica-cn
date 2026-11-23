@@ -393,7 +393,7 @@ func TestVoiceGateway_InjectsInitialContextTurnAfterSetupComplete(t *testing.T) 
 	}
 }
 
-func TestVoiceGateway_NoContextTurnWhenNothingToProject(t *testing.T) {
+func TestVoiceGateway_InjectsSkillCatalogWhenNothingElseToProject(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -408,12 +408,15 @@ func TestVoiceGateway_NoContextTurnWhenNothingToProject(t *testing.T) {
 		t.Fatalf("expected setupComplete, got %v (%v)", first, err)
 	}
 
-	// §3.6: the brief never invents content — no prior session, no turn.
-	waitFor(t, 2*time.Second, func() bool { return true })
+	waitFor(t, 5*time.Second, func() bool {
+		provider.mu.Lock()
+		defer provider.mu.Unlock()
+		return len(provider.clientMsgs) == 1
+	})
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	if len(provider.clientMsgs) != 0 {
-		t.Fatalf("provider received %d upstream frames, want 0 (nothing to project)", len(provider.clientMsgs))
+	if len(provider.clientMsgs) != 1 || !strings.Contains(string(provider.clientMsgs[0]), "### Available agent skills") {
+		t.Fatalf("provider messages = %q, want one hash-pinned skill catalog", provider.clientMsgs)
 	}
 }
 
@@ -652,8 +655,20 @@ func TestVoiceGateway_HeaderPathSwallowsClientAuthFrame(t *testing.T) {
 		upstream[i] = string(m)
 	}
 	provider.mu.Unlock()
-	if len(upstream) != 1 || !strings.Contains(upstream[0], "clientContent") {
-		t.Fatalf("provider received %v, want exactly the 1 clientContent turn (auth envelope must be swallowed, never forwarded)", upstream)
+	// RUYI-874 emits a server-composed initial context frame before client
+	// traffic. The auth envelope itself must still be absent, while the real
+	// client turn arrives exactly once.
+	clientTurns := 0
+	for _, frame := range upstream {
+		if strings.Contains(frame, "redundant-with-cookie") {
+			t.Fatalf("auth envelope leaked upstream: %v", upstream)
+		}
+		if strings.Contains(frame, `"text":"hello"`) {
+			clientTurns++
+		}
+	}
+	if clientTurns != 1 {
+		t.Fatalf("provider received %v, want exactly one forwarded client turn", upstream)
 	}
 
 	// The relay stays live after the swallow: a provider frame still reaches
@@ -695,11 +710,48 @@ func TestComposeVoiceSetupFrame_ToolsReserved(t *testing.T) {
 		"temperature": json.RawMessage(`0.7`),
 		"tools":       json.RawMessage(`[{"functionDeclarations":[{"name":"shadow_tool"}]}]`),
 	}
-	setup := composeVoiceSetupFrame("instructions", "m", advanced)["setup"].(map[string]any)
-	if _, ok := setup["tools"]; ok {
-		t.Fatalf("advanced JSON must not inject tools (reserved key): %v", setup["tools"])
+	setup := composeVoiceSetupFrame("instructions", "m", advanced, []map[string]any{voiceSkillFunctionDeclaration()})["setup"].(map[string]any)
+
+	// RUYI-692 D1 rule still holds: a USER-supplied tools list from the
+	// advanced JSON must never reach the provider — a shadow declaration
+	// with no server-side executor would stall the session.
+	var advancedInjected bool
+	decls := []string{"load_skill"}
+	for _, group := range setup["tools"].([]map[string]any) {
+		for _, raw := range group["functionDeclarations"].([]map[string]any) {
+			if raw["name"] == "shadow_tool" {
+				advancedInjected = true
+			}
+		}
+	}
+	if advancedInjected {
+		t.Fatalf("advanced JSON injected a user tool declaration: %v", setup["tools"])
+	}
+
+	// RUYI-874 ③: the server COMPOSES the controlled bridge face itself, so
+	// the setup carries exactly the registered bridge tool names.
+	if len(decls) == 0 || !containsAllNames(setup, decls) {
+		t.Fatalf("server-composed bridge tools missing from setup: %v (want %v)", setup["tools"], decls)
 	}
 	if raw, ok := setup["temperature"].(json.RawMessage); !ok || string(raw) != "0.7" {
 		t.Fatalf("non-reserved advanced passthrough broken: %v", setup["temperature"])
 	}
+}
+
+// containsAllNames reports whether every want name appears in the setup's
+// composed functionDeclarations.
+func containsAllNames(setup map[string]any, wants []string) bool {
+	have := map[string]bool{}
+	for _, group := range setup["tools"].([]map[string]any) {
+		for _, decl := range group["functionDeclarations"].([]map[string]any) {
+			name, _ := decl["name"].(string)
+			have[name] = true
+		}
+	}
+	for _, want := range wants {
+		if !have[want] {
+			return false
+		}
+	}
+	return true
 }
