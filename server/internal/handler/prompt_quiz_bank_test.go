@@ -19,7 +19,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/promptquizsweep"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/promptquiz/bank"
 )
@@ -325,51 +327,71 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 		t.Fatalf("ordered = %d, want 2", created.Ordered)
 	}
 
-	// The batch id is IN the payload the daemon will receive, next to the
-	// item id — the field set the sweep's payload test pins.
-	var contexts []string
+	// The batch id and the exact item snapshot are IN each payload the daemon
+	// receives. Map queue rows by quiz_item_id, never by created_at: the database
+	// is free to return the two tasks in either order.
+	type taskContext struct {
+		BatchID  string `json:"quiz_batch_id"`
+		ItemID   string `json:"quiz_item_id"`
+		Revision int32  `json:"quiz_item_revision"`
+		Title    string `json:"quiz_item_title"`
+		Prompt   string `json:"quiz_prompt"`
+	}
+	type queuedTask struct {
+		ID      string
+		Context taskContext
+	}
+	var queued []queuedTask
 	rows, err := testPool.Query(context.Background(),
-		`SELECT context FROM agent_task_queue WHERE agent_id = $1::uuid`, agentID)
+		`SELECT id::text, context FROM agent_task_queue
+		 WHERE agent_id = $1::uuid AND originator_source = $2`, agentID, promptquiz.OriginatorSource)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for rows.Next() {
-		var c []byte
-		if err := rows.Scan(&c); err != nil {
+		var taskID string
+		var raw []byte
+		if err := rows.Scan(&taskID, &raw); err != nil {
 			t.Fatal(err)
 		}
-		contexts = append(contexts, string(c))
+		var ctx taskContext
+		if err := json.Unmarshal(raw, &ctx); err != nil {
+			t.Fatalf("decode task %s context: %v", taskID, err)
+		}
+		if ctx.BatchID != created.BatchID || ctx.ItemID == "" || ctx.Revision <= 0 || ctx.Title == "" || ctx.Prompt == "" {
+			t.Fatalf("task %s has incomplete quiz snapshot: %+v", taskID, ctx)
+		}
+		queued = append(queued, queuedTask{ID: taskID, Context: ctx})
 	}
 	rows.Close()
-	if len(contexts) != 2 {
-		t.Fatalf("%d task rows, want 2", len(contexts))
-	}
-	for _, c := range contexts {
-		if !strings.Contains(c, created.BatchID) || !strings.Contains(c, "quiz_item_id") || !strings.Contains(c, "quiz_prompt") {
-			t.Fatalf("payload is missing the batch/item/prompt fields: %s", c)
-		}
+	if len(queued) != 2 {
+		t.Fatalf("%d task rows, want 2", len(queued))
 	}
 
-	// One answered-and-graded run, one errored run, both on the batch.
-	gradedScore := 0.75
-	for _, outcome := range []string{promptquiz.OutcomeAnswered, promptquiz.OutcomeErrored} {
-		taskID := dbfx.Task(t, agentID, map[string]any{
-			"status": "completed", "originator_source": promptquiz.OriginatorSource,
-			"completed_at": testutil.Raw("now()"),
-		})
-		cols := map[string]any{
-			"workspace_id": testWorkspaceID, "scope": "agent", "scope_id": agentID,
-			"version": 1, "item_id": itemA, "item_revision": 1,
-			"item_body_sha256": promptquiz.BodyDigest("anchor"),
-			"batch_id":         created.BatchID, "task_id": taskID, "outcome": outcome,
+	gradedScore := 1.0
+	checks := `[{"id":"c1","kind":"includes_all","weight":1,"phrases":["前台"]}]`
+	dbfx.Exec(t, `UPDATE prompt_quiz_item SET rubric_checks = $1::jsonb WHERE id = $2::uuid`, checks, itemA)
+	for _, task := range queued {
+		status := "failed"
+		if task.Context.ItemID == itemA {
+			status = "completed"
+			dbfx.Insert(t, "task_message", map[string]any{
+				"task_id": task.ID, "seq": 1, "type": "text", "content": "前台阻塞已经收齐。",
+			})
 		}
-		if outcome == promptquiz.OutcomeAnswered {
-			detail, _ := json.Marshal([]map[string]any{{"id": "c1", "kind": "includes_all", "passed": true, "weight": 1}})
-			cols["score"] = gradedScore
-			cols["score_detail"] = testutil.Raw("'" + strings.ReplaceAll(string(detail), "'", "''") + "'::jsonb")
-			cols["graded_at"] = testutil.Raw("now()")
-		}
-		dbfx.Insert(t, "prompt_quiz_result", cols)
+		dbfx.Exec(t, `UPDATE agent_task_queue
+			SET status = $1, prompt_versions = '{"agent":1}'::jsonb,
+			    started_at = now(), completed_at = now()
+			WHERE id = $2::uuid`, status, task.ID)
+	}
+
+	// The real collector writes the result rows from those same queue tasks.
+	out, err := (promptquizsweep.Runner{Queries: db.New(testPool)}).Run(context.Background())
+	if err != nil {
+		t.Fatalf("collect batch tasks: %v", err)
+	}
+	if out.Collected != 2 {
+		t.Fatalf("collector wrote %d rows, want 2", out.Collected)
 	}
 
 	req := newRequest("GET", "/api/prompt-quiz/batches/"+created.BatchID, nil)
@@ -406,7 +428,19 @@ func TestPromptQuizBatchOrdersRealRunsAndReadsBack(t *testing.T) {
 		t.Fatalf("scores = %d@%v, want 1@%v — the errored row must not read as 0",
 			batch.Scores.Graded, batch.Scores.Mean, gradedScore)
 	}
+	expectedTaskByItem := map[string]string{}
+	for _, task := range queued {
+		expectedTaskByItem[task.Context.ItemID] = task.ID
+	}
 	for _, row := range batch.Rows {
+		expectedTaskID, ok := expectedTaskByItem[row.ItemID]
+		if !ok || row.TaskID != expectedTaskID {
+			t.Errorf("batch row lost the original item/task mapping: %+v, want task %q", row, expectedTaskID)
+		}
+		taskStatus := row.TaskStatus
+		if taskStatus != "completed" && taskStatus != "failed" {
+			t.Errorf("batch row has unexpected terminal task status %q: %+v", taskStatus, row)
+		}
 		switch row.Outcome {
 		case promptquiz.OutcomeAnswered:
 			if row.Score == nil || *row.Score != gradedScore || len(row.Detail) == 0 {

@@ -78,6 +78,12 @@ FROM prompt_quiz_item
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid;
 
+-- name: ListPromptQuizItemTitles :many
+SELECT id, title
+FROM prompt_quiz_item
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND id = ANY(sqlc.arg('ids')::uuid[]);
+
 -- name: GetPromptQuizItemWorkspace :one
 -- Workspace resolution for quiz runs (RUYI-286 rework). ResolveTaskWorkspaceID
 -- knows only the task, so this is the one item read that cannot be
@@ -436,12 +442,12 @@ SELECT
     COALESCE(tu.total_tokens, 0)::bigint AS run_tokens
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
--- The collector cannot form a result when the item is gone or belongs to a
--- different workspace. Keep those terminal rows out of the bounded candidate
--- set instead of discovering the permanent condition after LIMIT.
-JOIN prompt_quiz_item pqi
-  ON pqi.id = atq.trigger_evidence_ref_id
- AND pqi.workspace_id = a.workspace_id
+	-- A deleted item can still be collected from the immutable task snapshot.
+	-- A live item must belong to the agent's workspace; an item id that exists in
+	-- another workspace is never allowed to fall through the deleted-item path.
+	LEFT JOIN prompt_quiz_item pqi
+	  ON pqi.id = atq.trigger_evidence_ref_id
+	 AND pqi.workspace_id = a.workspace_id
 LEFT JOIN LATERAL (
     SELECT
         SUM(u.input_tokens + u.output_tokens)::bigint AS total_tokens,
@@ -470,6 +476,30 @@ WHERE atq.originator_source = 'quiz'
     )
   )
   AND atq.runtime_id IS NOT NULL
+	-- The task context carries the public item snapshot used at enqueue time.
+	-- Keep malformed or mismatched snapshots out of the bounded window, because
+	-- the collector cannot recover their identity after the item is deleted.
+	AND jsonb_typeof(atq.context -> 'quiz_item_id') = 'string'
+	AND atq.context ->> 'quiz_item_id' = atq.trigger_evidence_ref_id::text
+	AND jsonb_typeof(atq.context -> 'quiz_item_revision') = 'number'
+	AND atq.context ->> 'quiz_item_revision' ~ '^[1-9][0-9]{0,9}$'
+	AND (
+	  length(atq.context ->> 'quiz_item_revision') < 10
+	  OR (
+	    length(atq.context ->> 'quiz_item_revision') = 10
+	    AND (atq.context ->> 'quiz_item_revision') COLLATE "C" <= '2147483647'
+	  )
+	)
+	AND jsonb_typeof(atq.context -> 'quiz_prompt') = 'string'
+	AND atq.context ->> 'quiz_prompt' <> ''
+	AND (
+	  pqi.id IS NOT NULL
+	  OR NOT EXISTS (
+	    SELECT 1
+	    FROM prompt_quiz_item any_pqi
+	    WHERE any_pqi.id = atq.trigger_evidence_ref_id
+	  )
+	)
   -- batchIDFromContext accepts canonical, URN, raw-hex, and braced UUID forms.
   -- Keep every form it can parse; malformed contexts cannot produce a result.
   AND jsonb_typeof(atq.context -> 'quiz_batch_id') = 'string'
