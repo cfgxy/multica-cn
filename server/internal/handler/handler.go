@@ -1129,6 +1129,56 @@ func (h *Handler) isWorkspaceEntity(ctx context.Context, userType, userID, works
 	}
 }
 
+func (h *Handler) loadIssueForRead(w http.ResponseWriter, r *http.Request, issueID string) (db.Issue, bool) {
+	if _, ok := requireUserID(w, r); !ok {
+		return db.Issue{}, false
+	}
+
+	workspaceID := h.resolveWorkspaceID(r)
+	if workspaceID == "" {
+		writeError(w, http.StatusBadRequest, "workspace_id is required")
+		return db.Issue{}, false
+	}
+
+	if issue, ok := h.resolveIssueByIdentifier(r.Context(), issueID, workspaceID); ok {
+		return issue, true
+	}
+
+	issueUUID, err := util.ParseUUID(issueID)
+	if err != nil {
+		writeErrorCode(w, http.StatusNotFound, "not_found", "issue unavailable")
+		return db.Issue{}, false
+	}
+	wsUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid workspace_id")
+		return db.Issue{}, false
+	}
+	issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+		ID:          issueUUID,
+		WorkspaceID: wsUUID,
+	})
+	if err == nil {
+		return issue, true
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusInternalServerError, "failed to load issue")
+		return db.Issue{}, false
+	}
+
+	exists, err := h.Queries.IssueExists(r.Context(), issueUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load issue")
+		return db.Issue{}, false
+	}
+	code := "not_found"
+	if exists {
+		code = "cross_workspace_unavailable"
+	}
+	writeErrorCode(w, http.StatusNotFound, code, "issue unavailable")
+	return db.Issue{}, false
+}
+
 func (h *Handler) loadIssueForUser(w http.ResponseWriter, r *http.Request, issueID string) (db.Issue, bool) {
 	if _, ok := requireUserID(w, r); !ok {
 		return db.Issue{}, false

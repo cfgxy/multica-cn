@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, renderHook, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { setApiInstance } from "@multica/core/api";
+import { ApiError, setApiInstance } from "@multica/core/api";
 import type { ApiClient } from "@multica/core/api/client";
 import { NavigationProvider } from "../../navigation";
 import type { NavigationAdapter } from "../../navigation";
@@ -187,7 +187,7 @@ describe("IssueDetailRoute with an identifier that names no issue", () => {
   it("settles on not-found without looping requests", async () => {
     replace.mockClear();
     push.mockClear();
-    const getIssue = vi.fn().mockRejectedValue(new Error("issue not found"));
+    const getIssue = vi.fn().mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
     setApiInstance({ getIssue } as unknown as ApiClient);
     const qc = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
@@ -237,6 +237,38 @@ describe("IssueDetailRoute with an identifier that names no issue", () => {
 
     // A failed resolve must never rewrite the URL.
     expect(replace).not.toHaveBeenCalled();
+    qc.clear();
+  });
+
+  it("keeps a non-404 resolution failure retryable instead of rendering unavailable", async () => {
+    const getIssue = vi.fn().mockRejectedValue(new ApiError("server error", 500, "Internal Server Error"));
+    setApiInstance({ getIssue } as unknown as ApiClient);
+    const qc = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    });
+
+    const { getByRole } = render(
+      <QueryClientProvider client={qc}>
+        <NavigationProvider
+          value={{
+            push,
+            replace,
+            back: vi.fn(),
+            pathname: "/acme/issues/ZZZ-134",
+            searchParams: new URLSearchParams(),
+            hash: "",
+            getShareableUrl: (p: string) => `https://app.multica.com${p}`,
+          }}
+        >
+          <IssueDetailRoute routeId="ZZZ-134" />
+        </NavigationProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(getByRole("button")).toBeInTheDocument());
+
+    fireEvent.click(getByRole("button"));
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
     qc.clear();
   });
 });

@@ -25,6 +25,7 @@ import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
 import type { Issue } from "@multica/core/types";
+import { issueUnavailableReason } from "@multica/core/issues";
 import { effectiveTruncatedKinds } from "@multica/core/issues/timeline-query";
 import { issueKeys as coreIssueKeys } from "@multica/core/issues/queries";
 import { Text } from "@/components/ui/text";
@@ -68,6 +69,20 @@ import {
 import i18n from "i18next";
 import { useT } from "@/lib/use-t";
 import { CurrentIssueIdProvider } from "@/lib/current-issue-context";
+
+/**
+ * Only a server-confirmed 404 may enter the privacy-safe unavailable state.
+ * A transport, authorization, or server failure remains recoverable and must
+ * keep its existing error + retry UI. Unknown 404 codes intentionally render
+ * the generic not-found wording through issueUnavailableReason.
+ */
+function isUnavailableIssueError(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    (error as { status?: unknown }).status === 404
+  );
+}
 
 export default function IssueDetail() {
   const { t } = useT("issues");
@@ -138,6 +153,18 @@ export default function IssueDetail() {
   }, [detail, qc, wsId, id]);
 
   const issue = detail.data;
+  const unavailableReason = isUnavailableIssueError(detail.error)
+    ? issueUnavailableReason(detail.error)
+    : undefined;
+  const returnToTasks = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+    } else if (wsSlug) {
+      router.replace(`/${wsSlug}/tasks`);
+    } else {
+      router.replace("/select-workspace");
+    }
+  }, [wsSlug]);
   const deleteIssue = useDeleteIssue();
   const userId = useAuthStore((s) => s.user?.id ?? null);
   const { data: pins } = useQuery(pinListOptions(wsId, userId));
@@ -373,10 +400,20 @@ export default function IssueDetail() {
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator />
         </View>
+      ) : unavailableReason ? (
+        <View className="flex-1 items-center justify-center px-6 gap-3">
+          <Text className="text-sm text-destructive text-center">
+            {unavailableReason === "cross_workspace_unavailable"
+              ? t("detail.cross_workspace_unavailable", "This task belongs to another workspace")
+              : t("detail.not_found", "This task doesn't exist or has been deleted.")}
+          </Text>
+          <Button variant="outline" onPress={returnToTasks}>
+            <Text>{t("detail.back", "Back")}</Text>
+          </Button>
+        </View>
       ) : detail.error || !issue ? (
         <View className="flex-1 items-center justify-center px-6 gap-3">
           <Text className="text-sm text-destructive text-center">
-            {/* 同 select-workspace：整句插值，不做「失败：<详情>」拼接。 */}
             {t("mobile.detail.load_failed", "Failed to load issue: {{reason}}", {
               reason:
                 detail.error instanceof Error

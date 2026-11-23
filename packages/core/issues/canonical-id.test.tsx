@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { setApiInstance } from "../api";
+import { ApiError, setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
 import type { Issue } from "../types";
 import { createQueryClient } from "../query-client";
@@ -141,7 +141,7 @@ describe("useCanonicalIssue", () => {
   });
 
   it("reports a nonexistent identifier as terminally not-found", async () => {
-    getIssue.mockRejectedValue(new Error("issue not found"));
+    getIssue.mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
 
     const { result } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
       wrapper: createWrapper(qc),
@@ -168,7 +168,7 @@ describe("useCanonicalIssue", () => {
       // 1 can only mean a remount refetched.
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
     });
-    getIssue.mockRejectedValue(new Error("issue not found"));
+    getIssue.mockRejectedValue(new ApiError("issue not found", 404, "Not Found"));
 
     const { result, rerender } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
       wrapper: createWrapper(noRetry),
@@ -183,6 +183,92 @@ describe("useCanonicalIssue", () => {
     expect(getIssue).toHaveBeenCalledTimes(settled);
     expect(result.current.notFound).toBe(true);
 
+    noRetry.clear();
+  });
+
+  it("classifies a cross-workspace UUID without retaining metadata", async () => {
+    getIssue.mockRejectedValue(
+      new ApiError("issue unavailable", 404, "Not Found", {
+        error: "issue unavailable",
+        code: "cross_workspace_unavailable",
+      }),
+    );
+
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", ISSUE_UUID), {
+      wrapper: createWrapper(qc),
+    });
+
+    await waitFor(
+      () => expect(result.current.notFound).toBe(true),
+      { timeout: 5000 },
+    );
+    expect(result.current.unavailableReason).toBe("cross_workspace_unavailable");
+    expect(result.current.issue).toBeUndefined();
+  });
+
+  it("safely downgrades unknown failure codes to not_found", async () => {
+    getIssue.mockRejectedValue(
+      new ApiError("issue unavailable", 404, "Not Found", {
+        error: "issue unavailable",
+        code: "unrecognized_failure",
+      }),
+    );
+
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", ISSUE_UUID), {
+      wrapper: createWrapper(qc),
+    });
+
+    await waitFor(
+      () => expect(result.current.notFound).toBe(true),
+      { timeout: 5000 },
+    );
+    expect(result.current.unavailableReason).toBe("not_found");
+  });
+
+  it("keeps non-404 failures retryable instead of classifying them unavailable", async () => {
+    const noRetry = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    });
+    getIssue.mockRejectedValue(new ApiError("server error", 500, "Internal Server Error"));
+
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", ISSUE_UUID), {
+      wrapper: createWrapper(noRetry),
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.notFound).toBe(false);
+    expect(result.current.unavailableReason).toBeUndefined();
+    expect(result.current.retry).toEqual(expect.any(Function));
+    noRetry.clear();
+  });
+
+  it("does not retain an unavailable reason after the workspace changes", async () => {
+    const noRetry = new QueryClient({
+      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
+    });
+    const first = new Promise<never>(() => undefined);
+    getIssue
+      .mockRejectedValueOnce(
+        new ApiError("issue unavailable", 404, "Not Found", {
+          error: "issue unavailable",
+          code: "cross_workspace_unavailable",
+        }),
+      )
+      .mockImplementationOnce(() => first);
+
+    const { result, rerender } = renderHook(
+      ({ wsId }: { wsId: string }) => useCanonicalIssue(wsId, ISSUE_UUID),
+      { wrapper: createWrapper(noRetry), initialProps: { wsId: "ws-a" } },
+    );
+
+    await waitFor(
+      () => expect(result.current.unavailableReason).toBe("cross_workspace_unavailable"),
+      { timeout: 5000 },
+    );
+    rerender({ wsId: "ws-b" });
+
+    expect(result.current.unavailableReason).toBeUndefined();
+    expect(result.current.notFound).toBe(false);
     noRetry.clear();
   });
 
