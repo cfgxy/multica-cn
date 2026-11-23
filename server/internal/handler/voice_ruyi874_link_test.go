@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -638,7 +640,99 @@ func TestVoiceChatContext_RichInjection(t *testing.T) {
 	conn.Close()
 }
 
-// TestVoiceChatContext_SemanticIssueAndProjectMentions proves the chat
+func TestLoadVoiceChatImagePartsKeepsOnlyCompleteImagesWithinBudget(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	agentID, _ := seedUsableVoiceSetup(t, "Image Budget", `{"model":"stubby-live-1"}`)
+	originalStorage := testHandler.Storage
+	store := &mockStorage{}
+	testHandler.Storage = store
+	t.Cleanup(func() { testHandler.Storage = originalStorage })
+
+	addImage := func(chatID, key string, data []byte, createdAt time.Time) {
+		t.Helper()
+		url, err := store.Upload(context.Background(), key, data, "image/png", key)
+		if err != nil {
+			t.Fatalf("upload %s: %v", key, err)
+		}
+		dbfx.Insert(t, "attachment", testutil.Cols{
+			"workspace_id":    testWorkspaceID,
+			"chat_session_id": chatID,
+			"uploader_type":   "member",
+			"uploader_id":     testUserID,
+			"filename":        key,
+			"url":             url,
+			"content_type":    "image/png",
+			"size_bytes":      int64(len(data)),
+			"created_at":      createdAt,
+		})
+	}
+	partData := func(parts []map[string]any, index int) []byte {
+		t.Helper()
+		if index >= len(parts) {
+			t.Fatalf("part %d absent from %#v", index, parts)
+		}
+		inline, ok := parts[index]["inlineData"].(map[string]string)
+		if !ok || inline["mimeType"] != "image/png" {
+			t.Fatalf("part %d inlineData = %#v", index, parts[index]["inlineData"])
+		}
+		data, err := base64.StdEncoding.DecodeString(inline["data"])
+		if err != nil {
+			t.Fatalf("decode part %d: %v", index, err)
+		}
+		return data
+	}
+
+	t.Run("skips an oversized newest image without truncating it", func(t *testing.T) {
+		chatID := createHandlerTestChatSession(t, agentID)
+		oldest := []byte("oldest complete image")
+		newer := []byte("newer complete image")
+		oversized := bytes.Repeat([]byte("x"), voiceChatImageBytesMax+1)
+		at := time.Unix(1_700_000_000, 0)
+		addImage(chatID, "budget-oldest.png", oldest, at)
+		addImage(chatID, "budget-newer.png", newer, at.Add(time.Second))
+		addImage(chatID, "budget-oversized.png", oversized, at.Add(2*time.Second))
+
+		parts := testHandler.loadVoiceChatImageParts(context.Background(), parseUUID(chatID), parseUUID(testWorkspaceID))
+		if len(parts) != 2 {
+			t.Fatalf("parts = %d, want the two complete images after skipping oversized", len(parts))
+		}
+		if got := partData(parts, 0); !bytes.Equal(got, newer) {
+			t.Errorf("newest complete image = %q, want %q", got, newer)
+		}
+		if got := partData(parts, 1); !bytes.Equal(got, oldest) {
+			t.Errorf("older complete image = %q, want %q", got, oldest)
+		}
+	})
+
+	t.Run("preserves complete newest images within the cumulative budget", func(t *testing.T) {
+		chatID := createHandlerTestChatSession(t, agentID)
+		newest := bytes.Repeat([]byte("n"), 64)
+		previous := bytes.Repeat([]byte("p"), voiceChatImageBytesMax-len(newest))
+		oldest := []byte("must lose to the two newest images")
+		at := time.Unix(1_700_000_100, 0)
+		addImage(chatID, "budget-priority-oldest.png", oldest, at)
+		addImage(chatID, "budget-priority-previous.png", previous, at.Add(time.Second))
+		addImage(chatID, "budget-priority-newest.png", newest, at.Add(2*time.Second))
+
+		parts := testHandler.loadVoiceChatImageParts(context.Background(), parseUUID(chatID), parseUUID(testWorkspaceID))
+		if len(parts) != 2 {
+			t.Fatalf("parts = %d, want two newest complete images", len(parts))
+		}
+		if got := partData(parts, 0); !bytes.Equal(got, newest) {
+			t.Errorf("newest image = %d bytes, want complete %d-byte image", len(got), len(newest))
+		}
+		if got := partData(parts, 1); !bytes.Equal(got, previous) {
+			t.Errorf("previous image = %d bytes, want complete %d-byte image", len(got), len(previous))
+		}
+		if total := len(partData(parts, 0)) + len(partData(parts, 1)); total != voiceChatImageBytesMax {
+			t.Errorf("total image bytes = %d, want budget %d", total, voiceChatImageBytesMax)
+		}
+	})
+}
+
 // composer contract for link ②: Issue and project mentions are resolved under
 // the live session user's current workspace membership. Valid rows become
 // entity context; malformed or foreign references degrade without passing a
