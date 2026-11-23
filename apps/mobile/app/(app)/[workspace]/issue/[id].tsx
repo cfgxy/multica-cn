@@ -70,6 +70,20 @@ import i18n from "i18next";
 import { useT } from "@/lib/use-t";
 import { CurrentIssueIdProvider } from "@/lib/current-issue-context";
 
+/**
+ * Only a server-confirmed 404 may enter the privacy-safe unavailable state.
+ * A transport, authorization, or server failure remains recoverable and must
+ * keep its existing error + retry UI. Unknown 404 codes intentionally render
+ * the generic not-found wording through issueUnavailableReason.
+ */
+function isUnavailableIssueError(error: unknown): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    (error as { status?: unknown }).status === 404
+  );
+}
+
 export default function IssueDetail() {
   const { t } = useT("issues");
   // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
@@ -139,7 +153,9 @@ export default function IssueDetail() {
   }, [detail, qc, wsId, id]);
 
   const issue = detail.data;
-  const unavailableReason = issueUnavailableReason(detail.error);
+  const unavailableReason = isUnavailableIssueError(detail.error)
+    ? issueUnavailableReason(detail.error)
+    : undefined;
   const returnToTasks = useCallback(() => {
     if (router.canGoBack()) {
       router.back();
@@ -384,7 +400,7 @@ export default function IssueDetail() {
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator />
         </View>
-      ) : detail.error || !issue ? (
+      ) : unavailableReason ? (
         <View className="flex-1 items-center justify-center px-6 gap-3">
           <Text className="text-sm text-destructive text-center">
             {unavailableReason === "cross_workspace_unavailable"
@@ -393,6 +409,20 @@ export default function IssueDetail() {
           </Text>
           <Button variant="outline" onPress={returnToTasks}>
             <Text>{t("detail.back", "Back")}</Text>
+          </Button>
+        </View>
+      ) : detail.error || !issue ? (
+        <View className="flex-1 items-center justify-center px-6 gap-3">
+          <Text className="text-sm text-destructive text-center">
+            {t("mobile.detail.load_failed", "Failed to load issue: {{reason}}", {
+              reason:
+                detail.error instanceof Error
+                  ? detail.error.message
+                  : t("mobile.detail.not_found", "not found"),
+            })}
+          </Text>
+          <Button variant="outline" onPress={() => detail.refetch()}>
+            <Text>{t("mobile.detail.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : (
