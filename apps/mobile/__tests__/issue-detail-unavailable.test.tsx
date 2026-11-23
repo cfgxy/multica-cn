@@ -157,6 +157,15 @@ describe("issue detail unavailable states", () => {
     expect(screen.queryByText("Retry")).toBeNull();
   });
 
+  it("renders unknown 404 codes as generic not-found", async () => {
+    mockGetIssue.mockRejectedValue(unavailable("unrecognized_code"));
+    const screen = await renderPage();
+
+    await waitFor(() => expect(screen.getByText("This task doesn't exist or has been deleted.")).toBeTruthy());
+    expect(screen.getByText("Back")).toBeTruthy();
+    expect(screen.queryByText("Retry")).toBeNull();
+  });
+
   it("keeps the recoverable error and retry action for a non-404 failure", async () => {
     mockGetIssue.mockRejectedValue(serverFailure());
     const screen = await renderPage();
