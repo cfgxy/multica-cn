@@ -633,7 +633,7 @@ function mockTimelineResult(
 // Import component under test (after mocks)
 // ---------------------------------------------------------------------------
 
-import { IssueDetail, groupSubIssuesByStage, isCredentialRequestAvailable } from "./issue-detail";
+import { IssueDetail, IssueNotFound, groupSubIssuesByStage, isCredentialRequestAvailable } from "./issue-detail";
 import { CommentMentionCard } from "./comment-mention-card";
 
 // ---------------------------------------------------------------------------
@@ -1410,9 +1410,20 @@ describe("IssueDetail (shared)", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText("This issue does not exist or has been deleted in this workspace."),
+        screen.getByText("This task doesn't exist or has been deleted."),
       ).toBeInTheDocument();
     });
+  });
+
+  it("renders the cross-workspace state without resource metadata", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <IssueNotFound reason="cross_workspace_unavailable" />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText("This task belongs to another workspace")).toBeInTheDocument();
+    expect(screen.queryByText(/identifier|workspace name|Example/i)).toBeNull();
   });
 
   it("shows 'Back' button when issue is not found and no onDelete prop", async () => {
