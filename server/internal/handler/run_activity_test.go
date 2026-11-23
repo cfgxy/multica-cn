@@ -53,6 +53,75 @@ func TestParseRunActivityCursorAndLimit(t *testing.T) {
 	}
 }
 
+func TestParseRunActivityTailBytes(t *testing.T) {
+	for _, tt := range []struct {
+		raw  string
+		want int
+		bad  bool
+	}{
+		{"", 16384, false}, {"1", 1, false}, {"4096", 4096, false}, {"4097", 4097, false}, {"65536", 65536, false}, {"0", 0, true}, {"65537", 0, true}, {"-1", 0, true}, {"invalid", 0, true},
+	} {
+		got, err := parseRunActivityTailBytes(tt.raw)
+		if got != tt.want || (err != nil) != tt.bad {
+			t.Errorf("tail_bytes %q: got %d, %v", tt.raw, got, err)
+		}
+	}
+}
+
+func TestRunActivityWorkerEvidenceShrinksBeforeResponseLimitFailure(t *testing.T) {
+	controlText := strings.Repeat("\x00", 65536)
+	resp := runActivityResponse{}
+	resp.WorkerEvidence.LogAvailable = true
+	resp.WorkerEvidence.StdoutTail = &controlText
+	stderr := controlText
+	resp.WorkerEvidence.StderrTail = &stderr
+
+	for {
+		encoded, err := json.Marshal(resp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) <= runActivityResponseMax {
+			break
+		}
+		if !trimRunActivityWorkerEvidence(&resp) {
+			t.Fatalf("could not bound %d-byte response", len(encoded))
+		}
+	}
+	if *resp.WorkerEvidence.StdoutTail == controlText && *resp.WorkerEvidence.StderrTail == controlText {
+		t.Fatal("expected at least one worker tail to be bounded")
+	}
+}
+
+func TestGetRunActivityTailBytesContract(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	for _, tt := range []struct {
+		raw    string
+		status int
+	}{
+		{"", http.StatusOK}, {"4096", http.StatusOK}, {"4097", http.StatusOK}, {"65536", http.StatusOK}, {"0", http.StatusBadRequest}, {"65537", http.StatusBadRequest},
+	} {
+		t.Run(tt.raw, func(t *testing.T) {
+			issueID, taskID := createRunActivityTestIssueTask(t)
+			url := "/api/issues/" + issueID + "/tasks/" + taskID + "/activity"
+			if tt.raw != "" {
+				url += "?tail_bytes=" + tt.raw
+			}
+			req := withURLParams(newRequestAs(testUserID, http.MethodGet, url, nil), "id", issueID, "taskId", taskID)
+			w := httptest.NewRecorder()
+			testHandler.GetRunActivity(w, req)
+			if w.Code != tt.status {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tt.status, w.Body.String())
+			}
+			if tt.status == http.StatusOK && w.Body.Len() > runActivityResponseMax {
+				t.Fatalf("response too large: %d", w.Body.Len())
+			}
+		})
+	}
+}
+
 func TestGetRunActivitySerializesRateLimitAndAllowsRetryAfterWindow(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")

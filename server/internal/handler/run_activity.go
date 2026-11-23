@@ -59,13 +59,15 @@ type runActivityResponse struct {
 		LastActivityAt *string              `json:"last_activity_at"`
 	} `json:"semantic_activity"`
 	WorkerEvidence struct {
-		LogAvailable      bool    `json:"log_available"`
-		UnavailableReason string  `json:"unavailable_reason"`
-		StdoutTail        *string `json:"stdout_tail"`
-		StderrTail        *string `json:"stderr_tail"`
-		NextCursor        *string `json:"next_cursor"`
-		LastActivityAt    *string `json:"last_activity_at"`
-		ProcessLiveness   string  `json:"process_liveness"`
+		LogAvailable      bool                           `json:"log_available"`
+		UnavailableReason string                         `json:"unavailable_reason"`
+		StdoutTail        *string                        `json:"stdout_tail"`
+		StderrTail        *string                        `json:"stderr_tail"`
+		NextCursor        *string                        `json:"next_cursor"`
+		Provenance        json.RawMessage                `json:"provenance,omitempty"`
+		LastActivityAt    *string                        `json:"last_activity_at"`
+		ProcessLiveness   string                         `json:"process_liveness"`
+		Binding           protocol.WorkerBindingEvidence `json:"binding"`
 	} `json:"worker_evidence"`
 	ProgressAssessment struct {
 		Status string   `json:"status"`
@@ -116,14 +118,10 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "stream must be stdout, stderr, or both")
 		return
 	}
-	tailBytes := 16 << 10
-	if raw := r.URL.Query().Get("tail_bytes"); raw != "" {
-		n, parseErr := strconv.Atoi(raw)
-		if parseErr != nil || n < 1 || n > 64<<10 {
-			writeError(w, http.StatusBadRequest, "tail_bytes must be an integer in [1,65536]")
-			return
-		}
-		tailBytes = n
+	tailBytes, err := parseRunActivityTailBytes(r.URL.Query().Get("tail_bytes"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	workerCursor := r.URL.Query().Get("worker_cursor")
 	if workerCursor != "" {
@@ -194,7 +192,7 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 		})
 		cancel()
 		if proxyErr == nil {
-			if len(evidence.StdoutTail) > tailBytes || len(evidence.StderrTail) > tailBytes || len(evidence.NextCursor) > 512 {
+			if len(evidence.StdoutTail) > tailBytes || len(evidence.StderrTail) > tailBytes || len(evidence.NextCursor) > 512 || len(evidence.Provenance) > 32<<10 || len(evidence.Provenance) > 0 && !json.Valid(evidence.Provenance) || evidence.Available && !validWorkerEvidenceBinding(evidence.Binding, uuid.UUID(task.ID.Bytes).String(), uuid.UUID(task.RuntimeID.Bytes).String()) {
 				proxyErr = fmt.Errorf("invalid evidence response")
 			}
 		}
@@ -202,6 +200,8 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 			resp.WorkerEvidence.LogAvailable = evidence.Available
 			if evidence.Available {
 				resp.WorkerEvidence.UnavailableReason = ""
+				resp.WorkerEvidence.Binding = evidence.Binding
+				resp.WorkerEvidence.Provenance = append(json.RawMessage(nil), evidence.Provenance...)
 				resp.ProgressAssessment.Basis = []string{"run_state", "worker_evidence_available"}
 				stdout, stderr := redact.Text(evidence.StdoutTail), redact.Text(evidence.StderrTail)
 				resp.WorkerEvidence.StdoutTail = &stdout
@@ -232,6 +232,9 @@ func (h *Handler) GetRunActivity(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if len(resp.SemanticActivity.Messages) == 0 {
+			if trimRunActivityWorkerEvidence(&resp) {
+				continue
+			}
 			writeError(w, http.StatusInternalServerError, "run activity response exceeds limit")
 			return
 		}
@@ -269,6 +272,31 @@ func applyWorkerEvidenceProgress(resp *runActivityResponse, hadCursor bool, stdo
 	resp.ProgressAssessment.Basis = append(resp.ProgressAssessment.Basis, "worker_evidence_delta")
 }
 
+func trimRunActivityWorkerEvidence(resp *runActivityResponse) bool {
+	if resp == nil {
+		return false
+	}
+	tails := []*string{resp.WorkerEvidence.StdoutTail, resp.WorkerEvidence.StderrTail}
+	var selected *string
+	for _, tail := range tails {
+		if tail != nil && len(*tail) > 0 && (selected == nil || len(*tail) > len(*selected)) {
+			selected = tail
+		}
+	}
+	if selected == nil {
+		return false
+	}
+	*selected = truncateUTF8(*selected, len(*selected)/2)
+	return true
+}
+
+func validWorkerEvidenceBinding(binding protocol.WorkerBindingEvidence, taskID, runtimeID string) bool {
+	if binding.RunID == "" || binding.TaskID != taskID || binding.RuntimeID != runtimeID || binding.DaemonID == "" || binding.Generation < 1 {
+		return false
+	}
+	return binding.State == "running" || binding.State == "exited"
+}
+
 func stableWorkerUnavailable(value string) string {
 	switch value {
 	case "not_supervised", "expired", "not_found", "daemon_unreachable":
@@ -294,6 +322,17 @@ func parseRunActivityAfterSeq(raw string) (int32, bool, error) {
 		return 0, false, fmt.Errorf("after_seq must be a non-negative 32-bit integer")
 	}
 	return int32(n), true, nil
+}
+
+func parseRunActivityTailBytes(raw string) (int, error) {
+	if raw == "" {
+		return 16384, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > 65536 {
+		return 0, fmt.Errorf("tail_bytes must be an integer in [1,65536]")
+	}
+	return n, nil
 }
 
 func parseRunActivityLimit(raw string) (int, error) {
