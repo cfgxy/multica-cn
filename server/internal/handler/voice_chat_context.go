@@ -284,13 +284,17 @@ func (h *Handler) loadVoiceChatImageParts(ctx context.Context, chatSessionID, wo
 			slog.Warn("voice chat image read failed; skipping attachment", "key", key, "error", rerr)
 			continue
 		}
-		data, rerr := io.ReadAll(io.LimitReader(reader, int64(voiceChatImageBytesMax-total)))
+		remaining := voiceChatImageBytesMax - total
+		// Read one byte beyond the remaining budget so a full image that fits
+		// exactly is included while an oversized image is skipped intact rather
+		// than sent as a corrupt inlineData payload.
+		data, rerr := io.ReadAll(io.LimitReader(reader, int64(remaining)+1))
 		reader.Close()
 		if rerr != nil {
 			slog.Warn("voice chat image read failed; skipping attachment", "key", key, "error", rerr)
 			continue
 		}
-		if len(data) == 0 {
+		if len(data) == 0 || len(data) > remaining {
 			continue
 		}
 		parts = append(parts, map[string]any{
