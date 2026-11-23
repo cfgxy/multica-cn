@@ -525,12 +525,13 @@ func TestExecuteVoiceSkillRechecksInvokePermission(t *testing.T) {
 	}
 	agentID, _ := seedUsableVoiceSetup(t, "Voice Skill Revoke", `{"model":"stubby-live-1"}`)
 	ownerID := createPermissionTestMember(t, "voice-skill-owner-"+time.Now().UTC().Format("20060102150405.000000000")+"@multica.test")
+	callerID := createPermissionTestMember(t, "voice-skill-caller-"+time.Now().UTC().Format("20060102150405.000000000")+"@multica.test")
 	dbfx.Exec(t, `UPDATE agent SET owner_id = $2, visibility = 'workspace', permission_mode = 'public_to' WHERE id = $1`, agentID, ownerID)
 	dbfx.InsertNoID(t, "agent_invocation_target", testutil.Cols{
 		"agent_id":    agentID,
 		"target_type": "member",
-		"target_id":   testUserID,
-	}, "agent_id = $1 AND target_type = 'member' AND target_id = $2", agentID, testUserID)
+		"target_id":   callerID,
+	}, "agent_id = $1 AND target_type = 'member' AND target_id = $2", agentID, callerID)
 	dbfx.Cleanup(t, `DELETE FROM agent_invocation_target WHERE agent_id = $1`, agentID)
 
 	skillName := "voice-revocable-skill-" + time.Now().UTC().Format("20060102150405.000000000")
@@ -542,7 +543,7 @@ func TestExecuteVoiceSkillRechecksInvokePermission(t *testing.T) {
 	session := db.LiveSession{
 		WorkspaceID: parseUUID(testWorkspaceID),
 		AgentID:     parseUUID(agentID),
-		UserID:      parseUUID(testUserID),
+		UserID:      parseUUID(callerID),
 	}
 	if result, err := testHandler.executeVoiceSkill(context.Background(), session, catalog, voiceSkillArgs(t, ref, ref.Hash)); err != nil || !strings.Contains(string(result), `"content"`) {
 		t.Fatalf("load skill before revoke = %s, err = %v", result, err)
