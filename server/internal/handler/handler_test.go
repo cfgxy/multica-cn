@@ -707,6 +707,38 @@ func TestDeleteIssueByIdentifier(t *testing.T) {
 	}
 }
 
+func TestGetIssueClassifiesCrossWorkspaceWithoutMetadata(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	foreignIssueID, _ := setupForeignWorkspaceFixture(t)
+	req := newRequest("GET", "/api/issues/"+foreignIssueID, nil)
+	req = withURLParam(req, "id", foreignIssueID)
+	w := testutil.Call(t, testHandler.GetIssue, req).Want(http.StatusNotFound)
+
+	var body map[string]any
+	w.JSON(&body)
+	if got := body["code"]; got != "cross_workspace_unavailable" {
+		t.Fatalf("cross-workspace code = %v, want cross_workspace_unavailable", got)
+	}
+	if len(body) != 2 || body["error"] != "issue unavailable" {
+		t.Fatalf("cross-workspace response leaked fields: %#v", body)
+	}
+
+	req = newRequest("GET", "/api/issues/00000000-0000-0000-0000-000000000000", nil)
+	req = withURLParam(req, "id", "00000000-0000-0000-0000-000000000000")
+	w = testutil.Call(t, testHandler.GetIssue, req).Want(http.StatusNotFound)
+	body = map[string]any{}
+	w.JSON(&body)
+	if got := body["code"]; got != "not_found" {
+		t.Fatalf("missing issue code = %v, want not_found", got)
+	}
+	if len(body) != 2 || body["error"] != "issue unavailable" {
+		t.Fatalf("missing issue response leaked fields: %#v", body)
+	}
+}
+
 // TestGetIssueByIdentifierEnforcesPrefix covers the contract behind the
 // human-readable issue URL `/{ws}/issues/{key}`: the prefix is part of the key,
 // not decoration. Identifier resolution used to compare the number only, so

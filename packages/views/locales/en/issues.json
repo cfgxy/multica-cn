@@ -321,7 +321,8 @@
     "ordered_by": "Board ordered by {{field}}"
   },
   "detail": {
-    "not_found": "This issue does not exist or has been deleted in this workspace.",
+    "not_found": "This task doesn't exist or has been deleted.",
+    "cross_workspace_unavailable": "This task belongs to another workspace",
     "breadcrumb_project_unknown": "Unknown project",
     "back": "Back",
     "title_placeholder": "Issue title",

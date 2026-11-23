@@ -869,6 +869,17 @@ func (q *Queries) GetIssueGCStatus(ctx context.Context, id pgtype.UUID) (GetIssu
 	return i, err
 }
 
+const issueExists = `-- name: IssueExists :one
+SELECT EXISTS(SELECT 1 FROM issue WHERE id = $1)
+`
+
+func (q *Queries) IssueExists(ctx context.Context, id pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, issueExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const getIssueInWorkspace = `-- name: GetIssueInWorkspace :one
 SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, run_suppressed, run_suppressed_at, suspended_at FROM issue
 WHERE id = $1 AND workspace_id = $2

@@ -25,6 +25,7 @@ import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
 import type { Issue } from "@multica/core/types";
+import { issueUnavailableReason } from "@multica/core/issues";
 import { effectiveTruncatedKinds } from "@multica/core/issues/timeline-query";
 import { issueKeys as coreIssueKeys } from "@multica/core/issues/queries";
 import { Text } from "@/components/ui/text";
@@ -138,6 +139,16 @@ export default function IssueDetail() {
   }, [detail, qc, wsId, id]);
 
   const issue = detail.data;
+  const unavailableReason = issueUnavailableReason(detail.error);
+  const returnToTasks = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+    } else if (wsSlug) {
+      router.replace(`/${wsSlug}/tasks`);
+    } else {
+      router.replace("/select-workspace");
+    }
+  }, [wsSlug]);
   const deleteIssue = useDeleteIssue();
   const userId = useAuthStore((s) => s.user?.id ?? null);
   const { data: pins } = useQuery(pinListOptions(wsId, userId));
@@ -376,16 +387,12 @@ export default function IssueDetail() {
       ) : detail.error || !issue ? (
         <View className="flex-1 items-center justify-center px-6 gap-3">
           <Text className="text-sm text-destructive text-center">
-            {/* 同 select-workspace：整句插值，不做「失败：<详情>」拼接。 */}
-            {t("mobile.detail.load_failed", "Failed to load issue: {{reason}}", {
-              reason:
-                detail.error instanceof Error
-                  ? detail.error.message
-                  : t("mobile.detail.not_found", "not found"),
-            })}
+            {unavailableReason === "cross_workspace_unavailable"
+              ? t("detail.cross_workspace_unavailable", "This task belongs to another workspace")
+              : t("detail.not_found", "This task doesn't exist or has been deleted.")}
           </Text>
-          <Button variant="outline" onPress={() => detail.refetch()}>
-            <Text>{t("mobile.detail.retry", "Retry")}</Text>
+          <Button variant="outline" onPress={returnToTasks}>
+            <Text>{t("detail.back", "Back")}</Text>
           </Button>
         </View>
       ) : (

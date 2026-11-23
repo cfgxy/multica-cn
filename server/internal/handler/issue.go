@@ -2275,7 +2275,7 @@ ORDER BY
 
 func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	issue, ok := h.loadIssueForUser(w, r, id)
+	issue, ok := h.loadIssueForRead(w, r, id)
 	if !ok {
 		return
 	}

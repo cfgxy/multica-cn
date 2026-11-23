@@ -97,7 +97,7 @@ export function useHighlightHash(): { hash: string; commentId?: string; decision
  */
 export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
-  const { canonicalId, issue, isResolving, notFound } = useCanonicalIssue(wsId, routeId);
+  const { canonicalId, issue, isResolving, notFound, unavailableReason } = useCanonicalIssue(wsId, routeId);
   const highlight = useHighlightHash();
 
   useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash);
@@ -108,7 +108,9 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   // `IssueDetail` would mount a second observer on the query that just failed,
   // refetch it, and restart this component's resolve/remount cycle — an
   // unbounded request loop that never settles. See `CanonicalIssue.notFound`.
-  if (notFound || !canonicalId) return <IssueNotFound showBackLink={!onDelete} />;
+  if (notFound || !canonicalId) {
+    return <IssueNotFound showBackLink={!onDelete} reason={unavailableReason} />;
+  }
 
   return (
     <IssueDetail
