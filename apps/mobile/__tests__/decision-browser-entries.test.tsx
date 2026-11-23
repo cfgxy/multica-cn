@@ -19,8 +19,11 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ScrollView } from "react-native";
 import type { ComponentType } from "react";
 import type { IssueDecision } from "@multica/core/types";
+
+const mockScrollTo = ScrollView.prototype.scrollTo as jest.Mock;
 
 // --- router params, per-test mutable (mock-prefixed so jest hoisting allows)
 let mockGlobalParams: { cardId?: string; filter?: string } = {};
@@ -44,17 +47,27 @@ jest.mock("@/data/queries/decisions", () => ({
   }),
 }));
 
-// The card face has its own suite (decision-card.test.tsx); stub it to a
-// test-id marker so this file asserts the browser's position, not the card.
+// The card face has its own suite (decision-card.test.tsx); use a small stateful
+// stub so this file asserts both browser positioning and remount-on-card-change.
 jest.mock("@/components/issue/decision-card", () => {
-  const { View, Text } = jest.requireActual<typeof import("react-native")>("react-native");
+  const { Pressable, View, Text } = jest.requireActual<typeof import("react-native")>("react-native");
+  const ReactActual = jest.requireActual<typeof import("react")>("react");
   return {
-    DecisionCard: ({ decision }: { decision: IssueDecision }) => (
-      <View testID="browser-stub-card">
-        <Text testID="stub-card-question">{decision.question}</Text>
-        <Text testID="stub-card-status">{decision.status}</Text>
-      </View>
-    ),
+    DecisionCard: ({ decision }: { decision: IssueDecision }) => {
+      const [selected, setSelected] = ReactActual.useState(false);
+      return (
+        <View testID="browser-stub-card">
+          <Text testID="stub-card-question">{decision.question}</Text>
+          <Text testID="stub-card-status">{decision.status}</Text>
+          <Pressable
+            testID={`stub-select-${decision.id}`}
+            onPress={() => setSelected(true)}
+          >
+            <Text testID={`stub-selected-${decision.id}`}>{String(selected)}</Text>
+          </Pressable>
+        </View>
+      );
+    },
   };
 });
 
@@ -157,6 +170,7 @@ function question() {
 
 beforeEach(() => {
   mockGlobalParams = {};
+  mockScrollTo.mockClear();
 });
 
 afterEach(() => {
@@ -190,6 +204,61 @@ describe("RUYI-863 mobile decision-card entries (shared browser)", () => {
     expect(screen.getByTestId("decision-browser-next")).toBeTruthy();
   });
 
+  it("resets the scroll position for the initial card, navigation and filter changes", async () => {
+    await renderEntry(MoreMenuScreen, threeCards);
+
+    expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false });
+
+    mockScrollTo.mockClear();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("decision-browser-next"));
+    });
+    await waitFor(() =>
+      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
+    );
+
+    mockScrollTo.mockClear();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("decision-browser-previous"));
+    });
+    await waitFor(() =>
+      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
+    );
+
+    mockScrollTo.mockClear();
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("decision-browser-filter-cancelled"));
+    });
+    await waitFor(() =>
+      expect(mockScrollTo).toHaveBeenLastCalledWith({ y: 0, animated: false }),
+    );
+  });
+
+  it("remounts the card face when identity or lifecycle status changes", async () => {
+    const qc = await renderEntry(MoreMenuScreen, threeCards);
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("stub-select-c1"));
+    });
+    expect(screen.getByTestId("stub-selected-c1").props.children).toBe("true");
+
+    await act(async () => {
+      qc.setQueryData<IssueDecision[]>(["issues", "decisions", "issue-1"], [
+        card({ id: "c1", question: "First card", status: "answered" }),
+        ...threeCards.slice(1),
+      ]);
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("stub-card-status").props.children).toBe("answered"),
+    );
+    expect(screen.getByTestId("stub-selected-c1").props.children).toBe("false");
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId("decision-browser-next"));
+    });
+    expect(screen.getByTestId("stub-card-question").props.children).toBe("Second card");
+    expect(screen.getByTestId("stub-selected-c2").props.children).toBe("false");
+  });
   it("info-feed single-card entry pins the target card even when it is cancelled (no bounce)", async () => {
     mockGlobalParams = { cardId: "c3" };
     await renderEntry(MoreMenuScreen, threeCards);
