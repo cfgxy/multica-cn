@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, waitFor } from "@testing-library/react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const ISSUE_ID = "cb240efb-154c-42a8-ae92-42b02676feca";
@@ -67,7 +67,12 @@ jest.mock("@/data/stores/timeline-sort-store", () => ({
 jest.mock("@/data/realtime/use-issue-realtime", () => ({ useIssueRealtime: jest.fn() }));
 jest.mock("@/lib/issue-picker-routes", () => ({ issuePickerHref: () => null }));
 jest.mock("@/lib/use-t", () => ({
-  useT: () => ({ t: (_key: string, fallback?: string) => fallback ?? "" }),
+  useT: () => ({
+    t: (_key: string, fallback?: string, values?: Record<string, unknown>) =>
+      (fallback ?? "").replace(/\{\{(\w+)\}\}/g, (_match, name: string) =>
+        String(values?.[name] ?? ""),
+      ),
+  }),
 }));
 jest.mock("@/lib/current-issue-context", () => ({
   CurrentIssueIdProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -103,8 +108,13 @@ import IssueDetail from "@/app/(app)/[workspace]/issue/[id]";
 
 function unavailable(code: string) {
   return Object.assign(new Error("issue unavailable"), {
+    status: 404,
     body: { error: "issue unavailable", code },
   });
+}
+
+function serverFailure() {
+  return Object.assign(new Error("server error"), { status: 500 });
 }
 
 async function renderPage() {
@@ -145,6 +155,19 @@ describe("issue detail unavailable states", () => {
     await waitFor(() => expect(screen.getByText("This task doesn't exist or has been deleted.")).toBeTruthy());
     expect(screen.getByText("Back")).toBeTruthy();
     expect(screen.queryByText("Retry")).toBeNull();
+  });
+
+  it("keeps the recoverable error and retry action for a non-404 failure", async () => {
+    mockGetIssue.mockRejectedValue(serverFailure());
+    const screen = await renderPage();
+
+    await waitFor(() => expect(screen.getByText("Failed to load issue: server error")).toBeTruthy());
+    const retry = screen.getByText("Retry");
+    await act(async () => {
+      fireEvent.press(retry);
+    });
+    await waitFor(() => expect(mockGetIssue).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("This task doesn't exist or has been deleted.")).toBeNull();
   });
 
   it("keeps the normal detail path when the issue loads", async () => {
