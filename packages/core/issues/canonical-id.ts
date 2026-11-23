@@ -20,19 +20,14 @@ export interface CanonicalIssue {
   /** The issue itself, read from the UUID-keyed entry. */
   issue: Issue | undefined;
   isResolving: boolean;
-  /**
-   * Terminal: this identifier does not name an issue in this workspace.
-   *
-   * Callers MUST branch on this and render a not-found state rather than
-   * handing the unresolved segment to a view that will query it again. A
-   * second observer mounting on the failed query refetches it
-   * (`retryOnMount`), which flips this hook back to resolving, unmounts that
-   * view, and remounts it when the refetch fails — an unbounded request loop
-   * that never settles on "not found".
-   */
+  /** True only when the server confirmed this target is unavailable with a 404. */
   notFound: boolean;
   /** The intentionally coarse reason for the terminal unavailable state. */
   unavailableReason?: IssueUnavailableReason;
+  /** A non-404 failure that must remain retryable rather than look unavailable. */
+  isError: boolean;
+  /** Retries the failed resolution or canonical detail request. */
+  retry?: () => void;
 }
 
 /**
@@ -103,11 +98,24 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
   const failed = resolveFailed || detailFailed;
   const failure = resolveFailed ? resolve.error : detailFailed ? detail.error : undefined;
 
+  // Only a server-confirmed 404 is terminally unavailable. Transport and
+  // server failures must retain a retryable error entry rather than claim the
+  // task was deleted or belongs to another workspace.
+  const unavailableReason = failed ? issueUnavailableReason(failure) : undefined;
+  const isError = failed && unavailableReason === undefined;
+  const retry = resolveFailed
+    ? () => { void resolve.refetch(); }
+    : detailFailed
+      ? () => { void detail.refetch(); }
+      : undefined;
+
   return {
     canonicalId,
     issue: detail.data,
     isResolving: resolveEnabled && !failed && resolve.data === undefined,
-    notFound: failed,
-    unavailableReason: failed ? issueUnavailableReason(failure) : undefined,
+    notFound: unavailableReason !== undefined,
+    unavailableReason,
+    isError,
+    retry,
   };
 }

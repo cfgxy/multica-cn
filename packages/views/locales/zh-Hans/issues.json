@@ -319,6 +319,8 @@
   "detail": {
     "not_found": "任务不存在或已被删除",
     "cross_workspace_unavailable": "该任务属于其他工作区",
+    "load_failed_generic": "无法加载此任务，请重试。",
+    "retry": "重试",
     "breadcrumb_project_unknown": "未知项目",
     "back": "返回",
     "title_placeholder": "任务标题",
