@@ -319,6 +319,8 @@
   "detail": {
     "not_found": "このタスクは存在しないか、削除されています。",
     "cross_workspace_unavailable": "このタスクは別のワークスペースに属しています",
+    "load_failed_generic": "このタスクを読み込めませんでした。もう一度お試しください。",
+    "retry": "再試行",
     "breadcrumb_project_unknown": "不明なプロジェクト",
     "back": "戻る",
     "title_placeholder": "タスクのタイトル",

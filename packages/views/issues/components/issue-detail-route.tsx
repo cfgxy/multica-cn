@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { useCanonicalIssue } from "@multica/core/issues/canonical-id";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
+import { Button } from "@multica/ui/components/ui/button";
+import { useT } from "../../i18n";
 import { useNavigation } from "../../navigation";
 import { IssueDetail, IssueDetailSkeleton, IssueNotFound } from "./issue-detail";
 
@@ -15,6 +17,21 @@ interface IssueDetailRouteProps {
    */
   routeId: string;
   onDelete?: () => void;
+}
+
+function IssueLoadError({ onRetry }: { onRetry?: () => void }) {
+  const { t } = useT("issues");
+
+  return (
+    <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
+      <p>{t(($) => $.detail.load_failed_generic)}</p>
+      {onRetry && (
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          {t(($) => $.detail.retry)}
+        </Button>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -97,7 +114,7 @@ export function useHighlightHash(): { hash: string; commentId?: string; decision
  */
 export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
-  const { canonicalId, issue, isResolving, notFound, unavailableReason } = useCanonicalIssue(wsId, routeId);
+  const { canonicalId, issue, isResolving, notFound, unavailableReason, isError, retry } = useCanonicalIssue(wsId, routeId);
   const highlight = useHighlightHash();
 
   useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash);
@@ -108,6 +125,8 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   // `IssueDetail` would mount a second observer on the query that just failed,
   // refetch it, and restart this component's resolve/remount cycle — an
   // unbounded request loop that never settles. See `CanonicalIssue.notFound`.
+  if (isError) return <IssueLoadError onRetry={retry} />;
+
   if (notFound || !canonicalId) {
     return <IssueNotFound showBackLink={!onDelete} reason={unavailableReason} />;
   }

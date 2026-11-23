@@ -323,6 +323,8 @@
   "detail": {
     "not_found": "This task doesn't exist or has been deleted.",
     "cross_workspace_unavailable": "This task belongs to another workspace",
+    "load_failed_generic": "Couldn't load this issue. Try again.",
+    "retry": "Retry",
     "breadcrumb_project_unknown": "Unknown project",
     "back": "Back",
     "title_placeholder": "Issue title",
