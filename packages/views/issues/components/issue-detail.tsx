@@ -8,6 +8,7 @@ import {
   issueStatusCategory,
   statusCategoryOfKey,
 } from "@multica/core/issues";
+import type { IssueUnavailableReason } from "@multica/core/issues";
 import { useStatusLabel } from "../utils/status-label";
 import { priorityLabel } from "../utils/priority-label";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
@@ -1078,8 +1079,11 @@ interface IssueDetailProps {
 export function IssueNotFound({
   showBackLink = true,
   leading,
+  reason = "not_found",
 }: {
   showBackLink?: boolean;
+  /** The only reason classification the issue-read API exposes to clients. */
+  reason?: IssueUnavailableReason;
   /**
    * Host-supplied way back, mirrored from `IssueDetailProps.leadingAction`. A
    * host that hands its whole screen to this component (the inbox, on a phone)
@@ -1098,7 +1102,11 @@ export function IssueNotFound({
         <div className={cn("flex h-12 shrink-0 items-center gap-2 border-b", PAGE_GUTTER)}>{leading}</div>
       )}
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        <p>{t(($) => $.detail.not_found)}</p>
+        <p>
+          {reason === "cross_workspace_unavailable"
+            ? t(($) => $.detail.cross_workspace_unavailable)
+            : t(($) => $.detail.not_found)}
+        </p>
         {showBackLink && (
           <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
             <ChevronLeft className="mr-1 h-3.5 w-3.5" />

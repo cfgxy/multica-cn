@@ -1,5 +1,6 @@
 export * from "./store";
 export * from "./canonical-id";
+export * from "./issue-unavailable";
 export * from "./queries";
 export * from "./mutations";
 export * from "./ws-updaters";

@@ -77,6 +77,9 @@ FROM issue
 WHERE workspace_id = sqlc.arg('workspace_id')
   AND id = ANY(sqlc.arg('issue_ids')::uuid[]);
 
+-- name: IssueExists :one
+SELECT EXISTS(SELECT 1 FROM issue WHERE id = $1);
+
 -- name: GetIssueInWorkspace :one
 SELECT * FROM issue
 WHERE id = $1 AND workspace_id = $2;

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "../types";
+import { issueUnavailableReason, type IssueUnavailableReason } from "./issue-unavailable";
 import { issueDetailOptions, issueKeys } from "./queries";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -30,6 +31,8 @@ export interface CanonicalIssue {
    * that never settles on "not found".
    */
   notFound: boolean;
+  /** The intentionally coarse reason for the terminal unavailable state. */
+  unavailableReason?: IssueUnavailableReason;
 }
 
 /**
@@ -95,12 +98,16 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
   // data": a failed resolution must present as terminally not-found, never as
   // still-resolving, or the caller flips back to a loading frame and the
   // remount loop described on `notFound` starts.
-  const failed = resolveEnabled && resolve.isError;
+  const resolveFailed = resolveEnabled && resolve.isError && resolve.data === undefined;
+  const detailFailed = !!canonicalId && detail.isError && detail.data === undefined;
+  const failed = resolveFailed || detailFailed;
+  const failure = resolveFailed ? resolve.error : detailFailed ? detail.error : undefined;
 
   return {
     canonicalId,
     issue: detail.data,
     isResolving: resolveEnabled && !failed && resolve.data === undefined,
     notFound: failed,
+    unavailableReason: failed ? issueUnavailableReason(failure) : undefined,
   };
 }
