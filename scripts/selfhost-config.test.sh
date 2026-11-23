@@ -63,6 +63,27 @@ require_config "$config" 'MULTICA_DATABASE_CONNECT_TIMEOUT: 5s'
 require_config "$config" 'MULTICA_BACKUP_RETENTION_DAYS: "14"'
 require_config "$config" 'MULTICA_BACKUP_INTERVAL: 12h'
 
+# The self-host overlay has two MCP consumers with different network scopes:
+# the backend must reach the co-deployed service through Docker DNS, while the
+# frontend only receives an operator-provided browser rewrite target. Pin this
+# separation so an empty public MCP_URL cannot silently disable voice tools.
+JWT_SECRET="$JWT_SECRET" docker compose \
+  --env-file .env.example \
+  -f docker-compose.selfhost.yml \
+  -f docker-compose.selfhost.local.yml \
+  config --format json |
+  node -e '
+const config = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const backend = config.services.backend;
+const frontend = config.services.frontend;
+if (backend.environment.MCP_URL !== "http://mcp:3002") {
+  throw new Error(`backend MCP_URL must use the canonical Compose endpoint, got: ${backend.environment.MCP_URL}`);
+}
+if (frontend.environment.MCP_URL) {
+  throw new Error(`frontend MCP_URL must remain an optional public rewrite target, got: ${frontend.environment.MCP_URL}`);
+}
+'
+
 JWT_SECRET="$JWT_SECRET" docker compose --env-file .env.example -f docker-compose.selfhost.yml config --format json |
   node -e '
 const config = JSON.parse(require("fs").readFileSync(0, "utf8"));

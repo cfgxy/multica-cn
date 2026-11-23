@@ -843,6 +843,10 @@ export default function ChatDetailScreen() {
       <VoiceSessionOverlay
         agentId={voiceOpen && currentAgent !== null ? currentAgent.id : null}
         workspaceSlug={wsSlug ?? ""}
+        // RUYI-874 ①: open the voice conversation FROM this chat session —
+        // the gateway links the write-back and the rich context to it (a
+        // not-yet-created "new" chat has no session id and stays plain).
+        chatSessionId={activeSessionId}
         onClose={() => setVoiceOpen(false)}
       />
     </View>

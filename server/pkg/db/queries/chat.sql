@@ -528,6 +528,18 @@ VALUES (
 )
 RETURNING *;
 
+-- name: CreateVoiceChatMessageIfAbsent :execrows
+-- RUYI-874 link ①: idempotent voice write-back into the chat session the
+-- voice UI was opened from. The caller derives the row id deterministically
+-- (UUIDv5 over live session + role + turn index), so a replay of the same
+-- session's merged turns collides on the primary key and collapses —
+-- ON CONFLICT DO NOTHING makes every write safe to retry, and the affected
+-- row count distinguishes first insert (publish the chat:message event) from
+-- replay (silent).
+INSERT INTO chat_message (chat_session_id, role, content, message_kind, id, created_at)
+VALUES ($1, $2, $3, 'voice', $4, $5)
+ON CONFLICT (id) DO NOTHING;
+
 -- name: TaskHasChannelIngestedMessages :one
 -- Immutable channel provenance for a task's user-message input batch:
 -- channel_ingested is stamped inside the channel append transaction and never
