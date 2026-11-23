@@ -64,10 +64,12 @@ const (
 // on supervisor-initiated stops). Always replaced atomically — readers never
 // see a partial file, and a daemon crash mid-write leaves the previous state.
 type Manifest struct {
-	Version int    `json:"version"`
-	RunID   string `json:"run_id"`
-	TaskID  string `json:"task_id"`
-	Runtime string `json:"runtime"`
+	Version    int    `json:"version"`
+	RunID      string `json:"run_id"`
+	TaskID     string `json:"task_id"`
+	Runtime    string `json:"runtime"`
+	RuntimeID  string `json:"runtime_id,omitempty"`
+	Generation int    `json:"generation,omitempty"`
 	// Owner is the RUYI-607 identity of the daemon that launched this run
 	// (OwnerIdentity of its profile). Empty on pre-RUYI-607 manifests:
 	// ownership is then unproven, and reconcile never takes a destructive
@@ -90,7 +92,8 @@ type Manifest struct {
 	// must never be the evidence a kill rides on. Written once at Launch;
 	// manifests from before the field existed carry no owner, which an
 	// identified daemon treats as foreign (quarantine, never kill).
-	DaemonID string `json:"daemon_id,omitempty"`
+	DaemonID      string `json:"daemon_id,omitempty"`
+	DaemonVersion string `json:"daemon_version,omitempty"`
 	// ConvergedAt is set by the daemon task layer once a finished run's
 	// output and exit have been reported to the server and folded into the
 	// task's final state (RUYI-464). Reconciliation skips converged runs;

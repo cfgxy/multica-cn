@@ -179,7 +179,7 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 	// close(writes), and the sender holds sendMu across its non-blocking send.
 	var sendMu sync.Mutex
 	sendClosed := false
-	wsRPCGeneration := d.wsRPC.attach(func(frame []byte) (*wsOutbound, error) {
+	sendFrame := func(frame []byte) (*wsOutbound, error) {
 		sendMu.Lock()
 		defer sendMu.Unlock()
 		if sendClosed {
@@ -192,7 +192,8 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 		default:
 			return nil, errWSRPCWriteBufferFull
 		}
-	})
+	}
+	wsRPCGeneration := d.wsRPC.attach(sendFrame)
 	sessionKey, err := credentialcrypto.NewSessionKey()
 	if err != nil {
 		d.wsRPC.attach(nil)
@@ -212,7 +213,7 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- d.readTaskWakeupMessagesForConnection(conn, taskWakeups, wsRPCGeneration)
+		errCh <- d.readTaskWakeupMessagesForConnectionWithSender(conn, taskWakeups, wsRPCGeneration, sendFrame)
 	}()
 
 	// Defer cleanup must shut goroutines down in this order:
@@ -383,6 +384,14 @@ func (d *Daemon) readTaskWakeupMessages(conn *websocket.Conn, taskWakeups chan<-
 }
 
 func (d *Daemon) readTaskWakeupMessagesForConnection(conn *websocket.Conn, taskWakeups chan<- taskWakeup, wsRPCGeneration uint64) error {
+	return d.readTaskWakeupMessagesForConnectionWithSender(conn, taskWakeups, wsRPCGeneration, nil)
+}
+
+// readTaskWakeupMessagesForConnectionWithSender keeps server-initiated RPC
+// replies on the connection that delivered their request. The shared wsRPC
+// sender can point at a replacement connection before asynchronous handling
+// completes, but the server correlates evidence responses to the original one.
+func (d *Daemon) readTaskWakeupMessagesForConnectionWithSender(conn *websocket.Conn, taskWakeups chan<- taskWakeup, wsRPCGeneration uint64, sendFrame func([]byte) (*wsOutbound, error)) error {
 	d.configureTaskWakeupReadLiveness(conn)
 	for {
 		_, raw, err := conn.ReadMessage()
@@ -455,13 +464,23 @@ func (d *Daemon) readTaskWakeupMessagesForConnection(conn *websocket.Conn, taskW
 		case protocol.EventDaemonWorkerEvidenceRequest:
 			var req protocol.WorkerEvidenceRequest
 			if json.Unmarshal(msg.Payload, &req) == nil {
-				go d.handleWorkerEvidenceRPC(req)
+				go d.handleWorkerEvidenceRPCWithSender(req, sendFrame)
 			}
 		}
 	}
 }
 
 func (d *Daemon) handleWorkerEvidenceRPC(input protocol.WorkerEvidenceRequest) {
+	d.handleWorkerEvidenceRPCWithSender(input, nil)
+}
+
+func (d *Daemon) handleWorkerEvidenceRPCWithSender(input protocol.WorkerEvidenceRequest, sendFrame func([]byte) (*wsOutbound, error)) {
+	respond := d.wsRPC.sendWorkerEvidenceResponse
+	if sendFrame != nil {
+		respond = func(body protocol.WorkerEvidenceResponse) {
+			sendWorkerEvidenceResponseOnConnection(sendFrame, body)
+		}
+	}
 	if input.RequestID == "" || input.RuntimeID == "" || input.TimeoutMs < 1 || input.TimeoutMs > 2500 {
 		return
 	}
@@ -473,7 +492,7 @@ func (d *Daemon) handleWorkerEvidenceRPC(input protocol.WorkerEvidenceRequest) {
 		}
 	}
 	if !allowed || d.supervisor == nil {
-		d.wsRPC.sendWorkerEvidenceResponse(protocol.WorkerEvidenceResponse{RequestID: input.RequestID, Unavailable: "daemon_unreachable", ProcessLiveness: "unknown"})
+		respond(protocol.WorkerEvidenceResponse{RequestID: input.RequestID, Unavailable: "daemon_unreachable", ProcessLiveness: "unknown"})
 		return
 	}
 	ctx := context.Background()
@@ -481,7 +500,7 @@ func (d *Daemon) handleWorkerEvidenceRPC(input protocol.WorkerEvidenceRequest) {
 	defer cancel()
 	evidence := d.supervisor.WorkerEvidence(ctx, input)
 	evidence.RequestID = input.RequestID
-	d.wsRPC.sendWorkerEvidenceResponse(evidence)
+	respond(evidence)
 }
 
 func (d *Daemon) configureTaskWakeupReadLiveness(conn *websocket.Conn) {

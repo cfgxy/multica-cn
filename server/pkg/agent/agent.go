@@ -98,6 +98,13 @@ type ExecOptions struct {
 	// knows the resume is gone, and the backend covers only the case the daemon
 	// cannot see — a live resume RPC rejected mid-run.
 	ResumeContinuityNotice string
+	// These fields are hashes and bounded decisions used for worker evidence;
+	// their source text is never persisted in provenance.
+	PriorContextBriefSHA256       string
+	PriorSessionResumeUnavailable bool
+	SessionGate                   string
+	SyntheticContinuation         bool
+	SyntheticContinuationSource   string
 	// ExtraArgs is honoured only by backends that opt in by reading it; the
 	// rest ignore it. Deliberately not enumerated here — the previous list
 	// went stale as backends were added, which is how MULTICA_QWENPAW_ARGS
@@ -308,6 +315,9 @@ type Result struct {
 	Turns            int
 	Compactions      int
 	MaxContextTokens int64
+	// Provenance is bounded, redacted evidence for authenticated run activity.
+	// It is nil for backends that do not expose a provider-specific scanner.
+	Provenance *RunProvenance
 	// ResumeRejected is positive evidence that this run's requested resume
 	// was permanently refused — the transcript is gone, the session belongs to
 	// another provider account, OR the session still exists but its history
