@@ -80,6 +80,21 @@ func TestV7QueriesBindAnIDWithADatabaseFallback(t *testing.T) {
 	}
 }
 
+// TestCreateRetryTaskDoesNotInferAHistoricalPartialIndex prevents /fail from
+// aborting its parent-failure transaction when an installation recorded an old
+// or missing pending-slot index. Migration 1011 restores the full uniqueness
+// predicate; generic conflict handling keeps the failure callback safe while
+// that repair is applied.
+func TestCreateRetryTaskDoesNotInferAHistoricalPartialIndex(t *testing.T) {
+	block := queryBlock(t, "agent.sql", "CreateRetryTask")
+	if strings.Contains(block, "ON CONFLICT (issue_id, agent_id)") {
+		t.Fatalf("CreateRetryTask must not require a particular partial-index predicate:\n%s", block)
+	}
+	if !strings.Contains(block, "ON CONFLICT DO NOTHING") {
+		t.Fatalf("CreateRetryTask must yield rather than abort on a pending-slot conflict:\n%s", block)
+	}
+}
+
 const (
 	dbImportPath   = "github.com/multica-ai/multica/server/pkg/db/generated"
 	dbidImportPath = "github.com/multica-ai/multica/server/pkg/dbid"
