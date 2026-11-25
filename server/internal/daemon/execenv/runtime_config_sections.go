@@ -880,7 +880,7 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 		b.WriteString("- Do NOT call `multica issue comment add` — the issue you just created has no conversation context for this run.\n")
 		b.WriteString("- Print exactly one final line: `Created <identifier-or-id>: <title>` after a successful `multica issue create`, using the created issue's `identifier` from JSON output (fall back to its `id`; never assume a workspace issue prefix such as `MUL-`).\n")
 		b.WriteString("- On CLI failure, exit with the CLI error as the only output — the platform turns it into a `quick_create_failed` inbox item for the user.\n\n")
-		b.WriteString("**Delivering files here:** your stdout is text-only. A file that belongs to the new issue goes on the `multica issue create` call itself via `--attachment <path>`; never put its path in the description or in your stdout line.\n")
+		b.WriteString("**Delivering files here:** your stdout is text-only. A file that belongs to the new issue goes on the `multica issue create` call itself via `--attachment <path>`; never put its path in the description or in your stdout line. To embed an image or file card inline at a specific spot in the description, write `![caption](attachment://<filename>)` (or `!file[name](attachment://<filename>)`) while passing `--attachment <path>` — the CLI automatically rewrites it to a durable attachment URL after upload.\n")
 	case kindChat:
 		b.WriteString("This is a chat session. Your reply is delivered directly to the chat window the user is reading.\n\n")
 		// Two-layer channel policy (MUL-4899). This is the DELIVERY layer, and
@@ -916,7 +916,7 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 		}
 		b.WriteString("**Post exactly ONE comment per run when no_action was not recorded — your final result, before this turn exits.** Do NOT post progress updates or plans along the way.\n\n")
 		b.WriteString("Keep comments concise and natural — state the outcome, not the process.\n\n")
-		b.WriteString("**Delivering files here:** pass `--attachment <path>` to `multica issue comment add` (repeatable) — the only way a screenshot or artifact reaches the reader.\n")
+		b.WriteString("**Delivering files here:** pass `--attachment <path>` to `multica issue comment add` (repeatable) — the only way a screenshot or artifact reaches the reader. To embed an image or file card inline at a specific spot in the comment body, write `![caption](attachment://<filename>)` (or `!file[name](attachment://<filename>)`) alongside `--attachment <path>` — the CLI automatically rewrites it to a durable attachment URL after upload.\n")
 	}
 	b.WriteString("\n")
 	writeDeliveryInvariant(b)

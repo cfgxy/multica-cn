@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Attachment } from "@multica/core/types";
 import { resolveLinkAction } from "./link-route";
 
 /**
@@ -99,6 +100,36 @@ describe("resolveLinkAction", () => {
       kind: "attachment",
       id,
       fallbackUrl: url,
+    });
+  });
+
+  it("attachment:// 命中附件时走 attachment 动作，未命中时静默忽略而不外跳", () => {
+    const id = "11111111-2222-3333-4444-555555555555";
+    const att = {
+      id,
+      workspace_id: "ws-1",
+      issue_id: null,
+      comment_id: null,
+      chat_session_id: null,
+      chat_message_id: null,
+      uploader_type: "member",
+      uploader_id: "u1",
+      filename: "report.pdf",
+      url: "https://cdn.example.test/report.pdf",
+      download_url: `/api/attachments/${id}/download`,
+      markdown_url: `https://cdn.example.test/api/attachments/${id}/download`,
+      content_type: "application/pdf",
+      size_bytes: 100,
+      created_at: "2026-08-05T00:00:00Z",
+    } satisfies Attachment;
+
+    expect(resolveLinkAction("attachment://report.pdf", "ws", [att])).toEqual({
+      kind: "attachment",
+      id,
+      fallbackUrl: `/api/attachments/${id}/download`,
+    });
+    expect(resolveLinkAction("attachment://missing.pdf", "ws", [att])).toEqual({
+      kind: "noop",
     });
   });
 

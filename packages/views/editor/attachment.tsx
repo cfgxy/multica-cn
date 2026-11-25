@@ -34,7 +34,11 @@ import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { api } from "@multica/core/api";
 import { useConfigStore } from "@multica/core/config";
-import type { Attachment as AttachmentRecord } from "@multica/core/types";
+import {
+  isAttachmentProtocolURL,
+  parseAttachmentProtocolTarget,
+  type Attachment as AttachmentRecord,
+} from "@multica/core/types";
 import { useT } from "../i18n";
 import { useAttachmentDownloadResolver } from "./attachment-download-context";
 import { useAttachmentPreview } from "./attachment-preview-modal";
@@ -128,33 +132,22 @@ function normalize(
     };
   }
   const record = input.url ? resolve(input.url) : undefined;
+  const unresolvedAttachmentProtocol =
+    !record && isAttachmentProtocolURL(input.url);
+  const resolvedUrl = unresolvedAttachmentProtocol
+    ? ""
+    : absolutizeMediaURL(
+        record ? pickInlineMediaURL(record, input.url, cdnDomain, cdnSigned) : input.url,
+      );
   return {
-    filename: input.filename || record?.filename || "",
+    filename:
+      input.filename ||
+      record?.filename ||
+      (unresolvedAttachmentProtocol
+        ? parseAttachmentProtocolTarget(input.url)?.filename ?? ""
+        : ""),
     contentType: input.contentType || record?.content_type || "",
-    // When the markdown URL resolved to an attachment record, swap to
-    // the record's freshly-loadable URL. The persisted markdown URL
-    // (`/api/attachments/<id>/download` for new content; raw stored URL
-    // for legacy) is correct as a stable reference but doesn't
-    // necessarily load as a native <img>/<video> resource for every
-    // client — token-mode clients can't attach an Authorization header
-    // to bare /api/* fetches, and a CloudFront-signed `download_url`
-    // is the only working media src in that mode. `pickInlineMediaURL`
-    // picks the URL with embedded credentials when one exists and
-    // falls back to the input URL otherwise so legacy / unresolved
-    // markdown stays on its existing path. See MUL-3130 review.
-    //
-    // After picking the credential-bearing URL we run the absolutize
-    // pass so a site-relative `/api/attachments/...` or `/uploads/...`
-    // path becomes a proper origin-bearing URL when the renderer's
-    // document origin doesn't proxy /api or /uploads to the API host
-    // (Electron desktop, mobile webview). Web with a same-origin
-    // proxy keeps `apiBaseUrl=""` and the helper is a no-op there.
-    // See MUL-3192 — quick-create modal regressed because the freshly-
-    // uploaded image URL stayed site-relative and Electron's renderer
-    // origin (file://) couldn't load it.
-    url: absolutizeMediaURL(
-      record ? pickInlineMediaURL(record, input.url, cdnDomain, cdnSigned) : input.url,
-    ),
+    url: resolvedUrl,
     attachmentId: record?.id,
     record,
     uploading: !!input.uploading,
@@ -500,7 +493,7 @@ function ImageAttachmentView({
   // selection / cursor placement and route preview through the explicit
   // Maximize button. The CSS rule `.image-figure[data-clickable="true"] {
   // cursor: zoom-in }` keys off this same flag for the cursor affordance.
-  const clickable = !editable && !uploading;
+  const clickable = !editable && !uploading && Boolean(src);
 
   // DOM mirrors the original ReadonlyImage (span-only chain so it stays
   // valid HTML5 when rendered inside a markdown <p>). In editor surfaces
