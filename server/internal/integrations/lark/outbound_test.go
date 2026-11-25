@@ -130,8 +130,12 @@ type fakeAPIClient struct {
 	textSent   []SendTextParams
 	mdCardSent []SendMarkdownCardParams
 	sendReturn string
-	sendErr    error
-	patchErr   error
+	// sendReturns, when supplied, returns a distinct card message ID for each
+	// SendInteractiveCard call. It lets lifecycle tests prove concurrent tasks
+	// patch their own original card rather than a shared latest-card pointer.
+	sendReturns []string
+	sendErr     error
+	patchErr    error
 	// patchRateLimitFailures, when > 0, makes the next N patch attempts
 	// answer with a 230020 rate limit. Unlike patchErr it needs no mid-run
 	// mutation — which a finalize running outside the event's goroutine
@@ -192,6 +196,9 @@ func (f *fakeAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParam
 	f.sent = append(f.sent, p)
 	if f.threadReplyErr != nil && p.ReplyTarget.IsSet() {
 		return "", f.threadReplyErr
+	}
+	if i := len(f.sent) - 1; i < len(f.sendReturns) {
+		return f.sendReturns[i], f.sendErr
 	}
 	return f.sendReturn, f.sendErr
 }
