@@ -134,7 +134,7 @@ export function attachmentMatchesProtocolURL(
 }
 
 function blankOutPreservingNewlines(text: string): string {
-  return text.replace(/[^\n]/g, " ");
+  return text.replace(/[^\r\n]/g, " ");
 }
 
 /**
@@ -150,7 +150,7 @@ export function maskMarkdownCode(content: string): string {
     const line = lines[i]!;
     if (fence !== null) {
       lines[i] = blankOutPreservingNewlines(line);
-      const closeMatch = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      const closeMatch = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*\r?$/.exec(line);
       if (
         closeMatch !== null &&
         closeMatch[1]![0] === fence[0] &&
@@ -160,7 +160,7 @@ export function maskMarkdownCode(content: string): string {
       }
       continue;
     }
-    const openMatch = /^[ \t]{0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    const openMatch = /^[ \t]{0,3}(`{3,}|~{3,})([^\r\n]*)\r?$/.exec(line);
     if (openMatch !== null) {
       const marker = openMatch[1]!;
       const info = openMatch[2] ?? "";
@@ -191,7 +191,10 @@ export function maskMarkdownCode(content: string): string {
     let j = i + openLen;
     let foundClose = -1;
     while (j < chars.length) {
-      if (chars[j] === "\n" && chars[j + 1] === "\n") {
+      if (
+        chars[j] === "\n" &&
+        (chars[j + 1] === "\n" || (chars[j + 1] === "\r" && chars[j + 2] === "\n"))
+      ) {
         // Inline code spans cannot cross a blank line (paragraph boundary).
         break;
       }
@@ -211,7 +214,7 @@ export function maskMarkdownCode(content: string): string {
     }
     if (foundClose !== -1) {
       for (let k = i; k < foundClose; k++) {
-        if (chars[k] !== "\n") chars[k] = " ";
+        if (chars[k] !== "\n" && chars[k] !== "\r") chars[k] = " ";
       }
       i = foundClose;
     } else {
@@ -292,7 +295,7 @@ function contentReferencesURL(content: string, url?: string): boolean {
 }
 
 const MARKDOWN_ATTACHMENT_PROTOCOL_RE =
-  /!?\[(?:\\.|[^\]\\\n])*\]\(\s*(?:<(attachment:\/\/[^>\n]+)>|(attachment:\/\/(?:[^()\s]+|\([^()\s]*\))+))[^)]*\)/gi;
+  /!?\[(?:\\.|[^\]\\\n])*\]\(\s*(?:<(attachment:\/\/[^>\r\n]+)>|(attachment:\/\/(?:[^()\s]+|\([^()\s]*\))+))[^)]*\)/gi;
 const HTML_ATTACHMENT_PROTOCOL_RE =
   /<(?:img|a)\b[^>]*?\s(?:src|href)\s*=\s*(?:"(attachment:\/\/[^"]*)"|'(attachment:\/\/[^']*)'|(attachment:\/\/[^\s"'>]+))[^>]*>/gi;
 const AUTOLINK_ATTACHMENT_PROTOCOL_RE = /<(attachment:\/\/[^\s<>]+)>/gi;

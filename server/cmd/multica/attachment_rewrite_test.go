@@ -90,6 +90,111 @@ func TestRewriteUploadedAttachmentRefs(t *testing.T) {
 	}
 }
 
+func TestRewriteUploadedAttachmentRefs_ClosedFenceImmediatelyFollowedByImage(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	const attID = "11111111-1111-4111-8111-111111111111"
+	const imgURL = "https://cdn.example.test/api/attachments/" + attID + "/download"
+	uploaded := []uploadedAttachment{
+		{
+			localPath: "demo.png",
+			resp: cli.AttachmentResponse{
+				ID:          attID,
+				Filename:    "demo.png",
+				MarkdownURL: imgURL,
+			},
+		},
+	}
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "backtick fence LF immediately followed by image",
+			in:   "```md\n![code](attachment://demo.png)\n```\n![real](attachment://demo.png)",
+			want: "```md\n![code](attachment://demo.png)\n```\n![real](" + imgURL + ")",
+		},
+		{
+			name: "tilde fence CRLF immediately followed by image",
+			in:   "~~~md\r\n![code](attachment://demo.png)\r\n~~~\r\n![real](attachment://demo.png)",
+			want: "~~~md\r\n![code](attachment://demo.png)\r\n~~~\r\n![real](" + imgURL + ")",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := rewriteUploadedAttachmentRefs(tc.in, uploaded); got != tc.want {
+				t.Fatalf("mismatch.\ngot:\n%q\nwant:\n%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRewriteUploadedAttachmentRefs_NestedLinksAndMixedRefs(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	const imgID = "11111111-1111-4111-8111-111111111111"
+	const pdfID = "22222222-2222-4222-8222-222222222222"
+	const imgURL = "https://cdn.example.test/api/attachments/" + imgID + "/download"
+	const pdfURL = "/api/attachments/" + pdfID + "/download"
+
+	uploaded := []uploadedAttachment{
+		{
+			localPath: "demo.png",
+			resp: cli.AttachmentResponse{
+				ID:          imgID,
+				Filename:    "demo.png",
+				MarkdownURL: imgURL,
+			},
+		},
+		{
+			localPath: "report.pdf",
+			resp: cli.AttachmentResponse{
+				ID:       pdfID,
+				Filename: "report.pdf",
+			},
+		},
+	}
+
+	t.Run("nested clickable image distinct targets", func(t *testing.T) {
+		in := "[![thumb](attachment://demo.png)](attachment://report.pdf)"
+		want := "[![thumb](" + imgURL + ")](" + pdfURL + ")"
+		if got := rewriteUploadedAttachmentRefs(in, uploaded); got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("nested clickable image identical target", func(t *testing.T) {
+		in := "[![thumb](attachment://demo.png)](attachment://demo.png)"
+		want := "[![thumb](" + imgURL + ")](" + imgURL + ")"
+		if got := rewriteUploadedAttachmentRefs(in, uploaded); got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("reference links and inline links sharing target", func(t *testing.T) {
+		in := strings.Join([]string{
+			"Compare [ref-first][1] and [inline-mid](attachment://demo.png) and [ref-last][1].",
+			"",
+			"Next paragraph [inline-two](attachment://demo.png).",
+			"",
+			"[1]: attachment://demo.png",
+		}, "\n")
+		want := strings.Join([]string{
+			"Compare [ref-first][1] and [inline-mid](" + imgURL + ") and [ref-last][1].",
+			"",
+			"Next paragraph [inline-two](" + imgURL + ").",
+			"",
+			"[1]: " + imgURL,
+		}, "\n")
+		if got := rewriteUploadedAttachmentRefs(in, uploaded); got != want {
+			t.Fatalf("mismatch.\ngot:\n%s\n\nwant:\n%s", got, want)
+		}
+	})
+}
+
 func TestRunIssueCommentAddRewritesInlineAttachmentsAndRejectsLocalPaths(t *testing.T) {
 	const issueID = "11111111-1111-4111-8111-111111111111"
 	const attID = "22222222-2222-4222-8222-222222222222"
