@@ -86,6 +86,25 @@ func decodeCard(t *testing.T, raw string) map[string]any {
 	return doc
 }
 
+func progressPlainTextRows(t *testing.T, raw string) []string {
+	t.Helper()
+	doc := decodeCard(t, raw)
+	body, _ := doc["body"].(map[string]any)
+	elements, _ := body["elements"].([]any)
+	rows := make([]string, 0, len(elements))
+	for _, element := range elements {
+		div, ok := element.(map[string]any)
+		if !ok || div["tag"] != "div" {
+			continue
+		}
+		text, _ := div["text"].(map[string]any)
+		if content, ok := text["content"].(string); ok {
+			rows = append(rows, content)
+		}
+	}
+	return rows
+}
+
 // TestProgressCardRenderCarriesUpdateMulti pins the one card-config field a
 // patchable card cannot live without: Lark silently no-ops PATCH on a card
 // whose config does not declare update_multi.
@@ -115,36 +134,81 @@ func TestProgressCardRenderCarriesUpdateMulti(t *testing.T) {
 	}
 }
 
-// TestProgressCardTerminalStatesMatchCCConnect pins the header colour and the
-// stopped-updating footer for each terminal state. The footer is what keeps the
-// card from reading as the answer's container — the answer arrives as the next
-// ordinary message (cc-connect platform/feishu/feishu.go:2804-2822).
-func TestProgressCardTerminalStatesMatchCCConnect(t *testing.T) {
+// TestProgressCardTerminalStatesAreOneLine verifies each terminal PATCH
+// replaces the process detail with a one-line, state-accurate summary. The
+// detailed answer/error remains a separate outbound message.
+func TestProgressCardTerminalStatesAreOneLine(t *testing.T) {
 	cases := []struct {
-		state    ProgressState
-		template string
-		footer   string
+		state   ProgressState
+		summary string
 	}{
-		{ProgressStateCompleted, "green", "完整答复见下一条消息"},
-		{ProgressStateFailed, "red", "完整错误说明见下一条消息"},
-		{ProgressStateCancelled, "grey", "已取消"},
+		{ProgressStateCompleted, "任务已完成，完整答复见下一条消息。"},
+		{ProgressStateFailed, "任务失败，完整错误说明见下一条消息。"},
+		{ProgressStateCancelled, "任务已取消。"},
 	}
 	for _, tc := range cases {
 		render, err := NewDefaultProgressRenderer().RenderProgress(ProgressInput{
 			AgentName: "TestAgent",
 			State:     tc.state,
-			Entries:   []ProgressEntry{{Kind: ProgressEntryThinking, Text: "done"}},
+			Entries: []ProgressEntry{
+				{Kind: ProgressEntryToolUse, Tool: "Bash", Text: "sensitive command"},
+				{Kind: ProgressEntryToolResult, Tool: "Bash", Text: "sensitive result"},
+			},
 		})
 		if err != nil {
 			t.Fatalf("render %s card: %v", tc.state, err)
 		}
 		doc := decodeCard(t, render.JSON)
-		header, _ := doc["header"].(map[string]any)
-		if header["template"] != tc.template {
-			t.Errorf("state %s: header template = %v, want %s", tc.state, header["template"], tc.template)
+		if _, hasHeader := doc["header"]; hasHeader {
+			t.Errorf("state %s: terminal card must not retain a header: %s", tc.state, render.JSON)
 		}
-		if !strings.Contains(render.JSON, tc.footer) {
-			t.Errorf("state %s: card must carry the stopped-updating footer %q; got %s", tc.state, tc.footer, render.JSON)
+		if rows := progressPlainTextRows(t, render.JSON); len(rows) != 1 || rows[0] != tc.summary {
+			t.Errorf("state %s: rows = %q, want one summary %q", tc.state, rows, tc.summary)
+		}
+		if strings.Contains(render.JSON, "sensitive command") || strings.Contains(render.JSON, "sensitive result") {
+			t.Errorf("state %s: terminal summary must not retain process detail: %s", tc.state, render.JSON)
+		}
+	}
+}
+
+// TestProgressCardRunningEntriesAreCompactGreyPlainText pins the in-progress
+// visual contract: tool calls, results, and errors are all compact, muted, and
+// un-emphasized while retaining literal URLs and failure markers.
+func TestProgressCardRunningEntriesAreCompactGreyPlainText(t *testing.T) {
+	failed := false
+	render, err := NewDefaultProgressRenderer().RenderProgress(ProgressInput{
+		AgentName: "TestAgent",
+		State:     ProgressStateRunning,
+		Entries: []ProgressEntry{
+			{Kind: ProgressEntryToolUse, Tool: "Read", Text: "https://example.test/log"},
+			{Kind: ProgressEntryToolResult, Tool: "Read", Text: "permission denied", Success: &failed},
+			{Kind: ProgressEntryError, Text: "network timeout"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("render running card: %v", err)
+	}
+	if strings.Contains(render.JSON, "**") || strings.Contains(render.JSON, `"tag":"markdown"`) {
+		t.Fatalf("running process entries must not use markdown emphasis: %s", render.JSON)
+	}
+	doc := decodeCard(t, render.JSON)
+	body, _ := doc["body"].(map[string]any)
+	elements, _ := body["elements"].([]any)
+	for _, element := range elements {
+		div, ok := element.(map[string]any)
+		if !ok || div["tag"] != "div" {
+			continue
+		}
+		text, _ := div["text"].(map[string]any)
+		if text["tag"] != "plain_text" || text["text_size"] != "notation" || text["text_color"] != "grey" {
+			t.Fatalf("running entry must be compact grey plain text; got %#v", text)
+		}
+	}
+	rows := progressPlainTextRows(t, render.JSON)
+	joined := strings.Join(rows, "\n")
+	for _, want := range []string{"工具调用 · Read · https://example.test/log", "工具结果 · 🔴 Read · permission denied", "错误 · network timeout"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("running rows %q missing %q", rows, want)
 		}
 	}
 }
@@ -215,8 +279,167 @@ func TestProgressCardSendsFirstFrameThenPatches(t *testing.T) {
 		t.Fatalf("chat-done must write the terminal card frame; patched=%d", len(api.patched))
 	}
 	last := api.patched[len(api.patched)-1].CardJSON
-	if !strings.Contains(last, "已完成") || !strings.Contains(last, "green") {
-		t.Errorf("terminal frame must flip the card to completed; got %s", last)
+	if !strings.Contains(last, "任务已完成") || strings.Contains(last, "planning the change") || strings.Contains(last, "Read") {
+		t.Errorf("terminal frame must replace process detail with the completion summary; got %s", last)
+	}
+}
+
+// TestProgressCardFinalizesNoToolRunWithSeparateReply covers a task that only
+// emitted ordinary text progress. It must still compact its card and preserve
+// the complete final reply as its own Lark text message.
+func TestProgressCardFinalizesNoToolRunWithSeparateReply(t *testing.T) {
+	p, q, api, _ := newProgressTestPatcher(t)
+	taskID := "ee121212-ee12-ee12-ee12-eeeeeeeeeeee"
+	sessionID := uuidString(q.binding.ChatSessionID)
+
+	p.handleTaskMessage(progressFrame(taskID, sessionID, 1, protocol.TaskMessagePayload{
+		Type: "text", Content: "checking task state",
+	}))
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        taskID,
+		ChatSessionID: sessionID,
+		Payload: protocol.ChatDonePayload{
+			TaskID: taskID, ChatSessionID: sessionID, Content: "完整的最终答复，不应被卡片摘要替代。",
+		},
+	})
+	p.progress.waitIdle()
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.sent) != 1 || len(api.patched) != 1 {
+		t.Fatalf("no-tool task must send one process card and patch that card once; sent=%d patched=%d", len(api.sent), len(api.patched))
+	}
+	if len(api.textSent) != 1 || api.textSent[0].Text != "完整的最终答复，不应被卡片摘要替代。" {
+		t.Fatalf("final text reply must remain complete and separate; textSent=%+v", api.textSent)
+	}
+	if got := api.patched[0].CardJSON; !strings.Contains(got, "任务已完成") || strings.Contains(got, "checking task state") {
+		t.Errorf("terminal card must be a completion summary, not the process trace: %s", got)
+	}
+}
+
+// TestProgressCardTerminalEventsDistinguishFailureAndCancellation verifies the
+// two non-success terminal event paths update the existing process card with
+// their actual outcome instead of reporting success or appending a second
+// process card.
+func TestProgressCardTerminalEventsDistinguishFailureAndCancellation(t *testing.T) {
+	cases := []struct {
+		name             string
+		eventType        string
+		payload          any
+		summary          string
+		wantTextMessages int
+		wantExtraCards   int
+	}{
+		{
+			name:             "failed",
+			eventType:        protocol.EventTaskFailed,
+			payload:          map[string]any{"error": "agent failed"},
+			summary:          "任务失败",
+			wantTextMessages: 0,
+			wantExtraCards:   1, // existing detailed failure reply remains unchanged.
+		},
+		{
+			name:             "cancelled",
+			eventType:        protocol.EventTaskCancelled,
+			payload:          map[string]any{"status": "cancelled"},
+			summary:          "任务已取消",
+			wantTextMessages: 0,
+			wantExtraCards:   0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p, q, api, _ := newProgressTestPatcher(t)
+			taskID := "ee131313-ee13-ee13-ee13-eeeeeeeeeeee"
+			sessionID := uuidString(q.binding.ChatSessionID)
+			toolFailed := true
+			p.handleTaskMessage(progressFrame(taskID, sessionID, 1, protocol.TaskMessagePayload{
+				Type: "tool_result", Tool: "Bash", Output: "failed command", IsError: &toolFailed,
+			}))
+
+			p.handleEvent(events.Event{Type: tc.eventType, TaskID: taskID, ChatSessionID: sessionID, Payload: tc.payload})
+			p.progress.waitIdle()
+
+			api.mu.Lock()
+			defer api.mu.Unlock()
+			if len(api.sent) != 1+tc.wantExtraCards || len(api.textSent) != tc.wantTextMessages {
+				t.Fatalf("unexpected terminal delivery; cards=%d text=%d", len(api.sent), len(api.textSent))
+			}
+			if len(api.patched) != 1 || !strings.Contains(api.patched[0].CardJSON, tc.summary) {
+				t.Fatalf("terminal patch must carry %q exactly once; patches=%+v", tc.summary, api.patched)
+			}
+		})
+	}
+}
+
+// TestProgressCardTerminalPatchFailureKeepsFinalReply proves a terminal-card
+// transport failure cannot suppress or duplicate the already-complete answer.
+func TestProgressCardTerminalPatchFailureKeepsFinalReply(t *testing.T) {
+	p, q, api, _ := newProgressTestPatcher(t)
+	taskID := "ee141414-ee14-ee14-ee14-eeeeeeeeeeee"
+	sessionID := uuidString(q.binding.ChatSessionID)
+	p.handleTaskMessage(progressFrame(taskID, sessionID, 1, protocol.TaskMessagePayload{
+		Type: "text", Content: "working",
+	}))
+	api.mu.Lock()
+	api.patchTransportFailures = progressFinalAttempts
+	api.mu.Unlock()
+
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        taskID,
+		ChatSessionID: sessionID,
+		Payload: protocol.ChatDonePayload{
+			TaskID: taskID, ChatSessionID: sessionID, Content: "最终正文必须保留。",
+		},
+	})
+	p.progress.waitIdle()
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.textSent) != 1 || api.textSent[0].Text != "最终正文必须保留。" {
+		t.Fatalf("terminal patch failures must not suppress final text: %+v", api.textSent)
+	}
+	if len(api.sent) != 1 || len(api.patched) != progressFinalAttempts {
+		t.Fatalf("must retry only the original card without creating duplicates; cards=%d patches=%d", len(api.sent), len(api.patched))
+	}
+	for i, outcome := range api.patchOutcomes {
+		if outcome == nil {
+			t.Fatalf("terminal patch %d unexpectedly succeeded; outcomes=%v", i, api.patchOutcomes)
+		}
+	}
+}
+
+// TestProgressCardsKeepConcurrentTasksAssociated proves two active tasks in
+// one chat retain distinct original card IDs through independent finalization;
+// neither final summary is routed to the other task's card or reply.
+func TestProgressCardsKeepConcurrentTasksAssociated(t *testing.T) {
+	p, q, api, clock := newProgressTestPatcher(t)
+	sessionID := uuidString(q.binding.ChatSessionID)
+	taskA := "ee151515-ee15-ee15-ee15-eeeeeeeeeeee"
+	taskB := "ee161616-ee16-ee16-ee16-eeeeeeeeeeee"
+	api.mu.Lock()
+	api.sendReturns = []string{"lark_card_A", "lark_card_B"}
+	api.mu.Unlock()
+
+	p.handleTaskMessage(progressFrame(taskA, sessionID, 1, protocol.TaskMessagePayload{Type: "text", Content: "only task A"}))
+	clock.now = clock.now.Add(2 * time.Second)
+	p.handleTaskMessage(progressFrame(taskB, sessionID, 1, protocol.TaskMessagePayload{Type: "text", Content: "only task B"}))
+
+	p.handleEvent(events.Event{Type: protocol.EventChatDone, TaskID: taskA, ChatSessionID: sessionID, Payload: protocol.ChatDonePayload{Content: "answer A"}})
+	p.progress.waitIdle()
+	clock.now = clock.now.Add(2 * time.Second)
+	p.handleEvent(events.Event{Type: protocol.EventChatDone, TaskID: taskB, ChatSessionID: sessionID, Payload: protocol.ChatDonePayload{Content: "answer B"}})
+	p.progress.waitIdle()
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.textSent) != 2 || api.textSent[0].Text != "answer A" || api.textSent[1].Text != "answer B" {
+		t.Fatalf("each task must retain its own final reply; textSent=%+v", api.textSent)
+	}
+	if len(api.patched) != 2 || api.patched[0].LarkCardMessageID != "lark_card_A" || api.patched[1].LarkCardMessageID != "lark_card_B" {
+		t.Fatalf("terminal patches must target their own original cards; patches=%+v", api.patched)
 	}
 }
 
@@ -769,33 +992,11 @@ func TestProgressEntryFromPayloadDerivesToolText(t *testing.T) {
 	}
 }
 
-// progressMarkdownRows extracts the markdown-element contents of a rendered
-// card, one per entry row, so format assertions read against the exact row a
-// Lark chat will show.
-func progressMarkdownRows(t *testing.T, render CardRender) []string {
-	t.Helper()
-	doc := decodeCard(t, render.JSON)
-	body, _ := doc["body"].(map[string]any)
-	els, _ := body["elements"].([]any)
-	var rows []string
-	for _, el := range els {
-		m, ok := el.(map[string]any)
-		if !ok || m["tag"] != "markdown" {
-			continue
-		}
-		if c, ok := m["content"].(string); ok {
-			rows = append(rows, c)
-		}
-	}
-	return rows
-}
-
 // TestProgressCardRendersToolTitleAndResultSummary pins the two information
-// layers the issue asks for: a tool_use row reads 「工具调用 tool 标题」 and a
-// tool_result row 「工具结果 圆点 tool 结果：预览」. A failed result keeps its red
+// layers the issue asks for: a tool_use row reads 「工具调用 · tool · 标题」 and a
+// tool_result row 「工具结果 · 圆点 tool · 预览」. A failed result keeps its red
 // dot beside the summary — the preview must not mask the error state — and
-// entries with nothing derivable render exactly the bare row the card
-// shipped with, with no trailing separators.
+// every process row stays compact grey plain text.
 func TestProgressCardRendersToolTitleAndResultSummary(t *testing.T) {
 	failed := false
 	ok := true
@@ -813,13 +1014,13 @@ func TestProgressCardRendersToolTitleAndResultSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render progress card: %v", err)
 	}
-	rows := progressMarkdownRows(t, render)
+	rows := progressPlainTextRows(t, render.JSON)
 	want := []string{
-		"<text_tag color='blue'>工具调用</text_tag> **Bash** git status",
-		"<text_tag color='green'>工具结果</text_tag> 🟢 **Bash** 结果：clean tree",
-		"<text_tag color='green'>工具结果</text_tag> 🔴 **Bash** 结果：boom",
-		"<text_tag color='blue'>工具调用</text_tag> **Read**",
-		"<text_tag color='green'>工具结果</text_tag> ⚪ **Read**",
+		"工具调用 · Bash · git status",
+		"工具结果 · 🟢 Bash · clean tree",
+		"工具结果 · 🔴 Bash · boom",
+		"工具调用 · Read",
+		"工具结果 · ⚪ Read",
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("expected %d tool rows, got %d: %+v", len(want), len(rows), rows)
@@ -855,10 +1056,10 @@ func TestProgressCardCarriesToolTitleAndResultSummary(t *testing.T) {
 		t.Fatalf("the result frame must patch the card; patched=%d", len(api.patched))
 	}
 	last := api.patched[0].CardJSON
-	if !strings.Contains(last, "**Bash** git status") {
-		t.Errorf("card must carry the tool title; got %s", last)
+	if !strings.Contains(last, "工具调用 · Bash · git status") {
+		t.Errorf("card must carry the compact tool title; got %s", last)
 	}
-	if !strings.Contains(last, "结果：clean tree") {
-		t.Errorf("card must carry the unwrapped result preview; got %s", last)
+	if !strings.Contains(last, "工具结果 · ⚪ Bash · clean tree") {
+		t.Errorf("card must carry the compact unwrapped result preview; got %s", last)
 	}
 }
